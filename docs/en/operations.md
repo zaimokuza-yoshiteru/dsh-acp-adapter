@@ -40,8 +40,8 @@ Production publishing uses GitHub Actions Trusted Publishing. The npm package is
 `zaimokuza-yoshiteru/dsh-acp-adapter`, workflow `publish.yml`, and environment
 `npm-publish`. The workflow uses OIDC and does not read a long-lived npm token.
 
-For a release, update the version in `package.json`, pass every gate, then create and push a
-matching tag such as `v0.1.0-rc.2`. In GitHub Actions, manually run `publish npm` from that
+For a release, update the version in `package.json`, pass every gate, then create and push the
+matching `v<package-version>` tag. In GitHub Actions, manually run `publish npm` from that
 tag. The workflow proves that HEAD, tag, and version agree, packs once, and publishes that
 same tarball. Prereleases use `next`; stable releases use `latest`. After publishing, verify
 the public packument, tarball, and dist-tags. A prerelease must not occupy `latest`.

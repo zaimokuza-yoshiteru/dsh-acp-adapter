@@ -36,8 +36,8 @@ npm/GitHub Actions。未实际执行的 CI、npm publish、Windows 或 Agent E2E
 `zaimokuza-yoshiteru/dsh-acp-adapter`、工作流 `publish.yml` 和 environment
 `npm-publish`；工作流使用 OIDC，不读取长期 npm token。
 
-发布时更新 `package.json` 版本并通过全部门禁，创建并推送与版本完全一致的 tag（例如
-`v0.1.0-rc.2`），然后在 GitHub Actions 中从该 tag 手动运行 `publish npm`。工作流会
+发布时更新 `package.json` 版本并通过全部门禁，创建并推送与版本完全一致的
+`v<package-version>` tag，然后在 GitHub Actions 中从该 tag 手动运行 `publish npm`。工作流会
 验证 HEAD、tag 和版本一致，打包一次并发布同一份 tarball。预发布版本进入 `next`，稳定
 版本进入 `latest`；发布后必须检查公开 packument、tarball 和 dist-tag。预发布版本不应
 占用 `latest`。
