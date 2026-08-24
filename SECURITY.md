@@ -1,5 +1,7 @@
 # 安全策略
 
+[中文](SECURITY.md) | [English](SECURITY.en.md)
+
 本插件采用 external-login-only：认证由 Devin、Codex、Kimi 或 Claude 自己的 CLI 管理。
 插件不会读取、复制、解析或回传 token、cookie、私钥、credential 文件内容；日志和
 sidecar 只保存 opaque 路径引用、键名、哈希或脱敏摘要。

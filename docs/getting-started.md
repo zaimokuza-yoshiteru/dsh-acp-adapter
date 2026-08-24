@@ -1,5 +1,7 @@
 # 入门
 
+[中文](getting-started.md) | [English](en/getting-started.md)
+
 ## 环境
 
 - DSH `0.1.1-rc.2` 或更高版本（本项目已验证 rc.2；不支持 rc.8）。
@@ -29,7 +31,7 @@ dsh web
 ## 创建第一个 ACP 会话
 
 1. 按 [Agent 指南索引](agents/README.md) 完成 CLI 自己的登录与健康检查。
-2. 打开 DSH ACP 设置，选择 Devin、Codex、Kimi 或 Claude 模板。
+2. 打开 DSH ACP 设置，选择目前支持的 Devin、Codex、Kimi 或 Claude 模板。
 3. 确认命令可执行、协议初始化通过、health 为 `ready`。
 4. 选择 Agent 暴露的 model/mode/config option 后创建会话。
 5. 首次 prompt 前确认设置面板已经显示 workspace 权限和 Agent mode 两条独立信息。

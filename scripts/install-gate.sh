@@ -39,7 +39,7 @@
 #      恢复、无残留 patch row），profile manifest 与 node_modules 无包名残留。
 #
 # 有意不覆盖：
-#   - 「从上一 rc 包升级」：0.1.0-rc.1 是首个发布版，无上一 rc 包——首版 N/A。
+#   - 「从上一 rc 包升级」仍需在独立升级验收中覆盖；本脚本只验证当前 tarball 的干净安装。
 #     后续版本应在独立升级门禁中安装前一版 tarball，再验证 settings 与 sidecar
 #     binding 保留；首版脚本不伪造不存在的升级来源。
 #   - DSH 版本不匹配的活体错误文案：host-compat structure-gate 的 fail closed 与

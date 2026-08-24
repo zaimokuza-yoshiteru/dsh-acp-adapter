@@ -1,5 +1,7 @@
 # Kimi
 
+[中文](kimi.md) | [English](../en/agents/kimi.md)
+
 ## CLI 检查
 
 本机验证过 Kimi CLI 提供以下入口：

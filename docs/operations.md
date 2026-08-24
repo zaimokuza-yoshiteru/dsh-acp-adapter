@@ -1,5 +1,7 @@
 # 操作与发布检查
 
+[中文](operations.md) | [English](en/operations.md)
+
 ## 日常诊断
 
 先记录 profile、Agent 命令、版本、health 状态和错误类别，不记录环境变量值或认证文件。
@@ -30,13 +32,12 @@ npm/GitHub Actions。未实际执行的 CI、npm publish、Windows 或 Agent E2E
 
 ## npm 发布
 
-首次发布需要维护者用 npm 账户完成一次 bootstrap。确认 `npm whoami` 返回包 scope 的
-所有者，创建并推送与 `package.json` 完全一致的 tag（例如 `v0.1.0-rc.1`），然后执行
-`pnpm verify:release` 和 `npm publish --access public --tag next`。前一个命令会验证当前
-HEAD 正好位于版本 tag；预发布版本禁止占用 `latest`。
-
-首次发布后，在 npm 包设置中把 GitHub Actions Trusted Publisher 绑定到
+正式发布使用 GitHub Actions Trusted Publishing。npm 包绑定
 `zaimokuza-yoshiteru/dsh-acp-adapter`、工作流 `publish.yml` 和 environment
-`npm-publish`，允许 `npm publish`。后续版本只需更新版本号、通过 CI、创建对应 tag，
-再从该 tag 手动运行 `publish npm` 工作流。工作流使用 OIDC，不读取长期 npm token；
-预发布版本自动进入 `next`，稳定版本自动进入 `latest`。
+`npm-publish`；工作流使用 OIDC，不读取长期 npm token。
+
+发布时更新 `package.json` 版本并通过全部门禁，创建并推送与版本完全一致的 tag（例如
+`v0.1.0-rc.2`），然后在 GitHub Actions 中从该 tag 手动运行 `publish npm`。工作流会
+验证 HEAD、tag 和版本一致，打包一次并发布同一份 tarball。预发布版本进入 `next`，稳定
+版本进入 `latest`；发布后必须检查公开 packument、tarball 和 dist-tag。预发布版本不应
+占用 `latest`。

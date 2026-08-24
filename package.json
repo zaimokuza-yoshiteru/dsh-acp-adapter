@@ -1,7 +1,7 @@
 {
   "name": "@zaimokuza/dsh-acp-adapter",
   "version": "0.1.0-rc.1",
-  "description": "Use Devin, Codex, Kimi, or Claude ACP agents from the DSH session UI with host-managed approvals, workspace boundaries, and auditable recovery.",
+  "description": "Use AI agents from the DSH session UI.",
   "keywords": [
     "dsh",
     "dsh-plugin",
@@ -138,8 +138,10 @@
     "lib/typert.remote-client.d.ts",
     "cordis.patch.yml",
     "README.md",
+    "README.en.md",
     "docs/**/*.md",
     "SECURITY.md",
+    "SECURITY.en.md",
     "LICENSE"
   ]
 }

@@ -1,5 +1,7 @@
 # Devin
 
+[中文](devin.md) | [English](../en/agents/devin.md)
+
 ## CLI 检查
 
 插件使用 `devin acp`。先在 Devin 自己的终端完成登录，再检查 CLI：

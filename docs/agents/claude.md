@@ -1,5 +1,7 @@
 # Claude
 
+[中文](claude.md) | [English](../en/agents/claude.md)
+
 ## CLI 检查
 
 插件使用 `claude-agent-acp`。请先按 Claude CLI 的官方流程完成登录，并在不暴露账户

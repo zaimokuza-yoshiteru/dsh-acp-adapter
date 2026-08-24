@@ -1,5 +1,9 @@
 # 架构说明
 
+[中文](architecture.md) | [English](en/architecture.md)
+
+插件把 ACP 智能体接入 DSH 会话页面，同时保持 DSH 与智能体各自的职责边界：
+
 ```text
 DSH host / Cordis
       │ typed Remote + host structure gate

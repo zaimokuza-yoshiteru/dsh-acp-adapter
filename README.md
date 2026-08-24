@@ -1,8 +1,12 @@
 # @zaimokuza/dsh-acp-adapter
 
-将外部 [Agent Client Protocol (ACP)](https://agentclientprotocol.com/) Agent 接入
-[DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness) 的插件。DSH
-继续负责会话、工作区、审批和宿主审计；ACP Agent 负责自己的推理、工具和运行时状态。
+[中文](README.md) | [English](README.en.md)
+
+一个用于通过 [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness)
+会话页面使用智能体的插件。目前支持通过
+[Agent Client Protocol (ACP)](https://agentclientprotocol.com/) 接入 Devin、Codex、Kimi
+和 Claude。每个智能体继续负责自己的推理、工具和运行时状态；DSH 提供统一的会话页面、
+工作区、审批交互和宿主审计。
 
 当前包为发布候选版本，已针对 DSH `0.1.1-rc.2` 在 macOS 上验证。Windows、远程 ACP
 transport、同一会话跨 backend 迁移和 DSH tools/skills/MCP 注入不在已验证范围内。
@@ -50,13 +54,13 @@ dsh web
 
 ## 文档
 
-- [入门与安装](docs/getting-started.md)
-- [Agent 指南索引](docs/agents/README.md)：[Devin](docs/agents/devin.md) · [Codex](docs/agents/codex.md) · [Kimi](docs/agents/kimi.md) · [Claude](docs/agents/claude.md)
-- [操作与验收](docs/operations.md)
-- [架构与生命周期](docs/architecture.md)
-- [兼容性与已知限制](docs/compatibility.md)
-- [故障排查](docs/troubleshooting.md)
-- [安全策略](SECURITY.md)
+- [入门与安装](docs/getting-started.md) · [English](docs/en/getting-started.md)
+- [智能体指南索引](docs/agents/README.md) · [English](docs/en/agents/README.md)：[Devin](docs/agents/devin.md) · [Codex](docs/agents/codex.md) · [Kimi](docs/agents/kimi.md) · [Claude](docs/agents/claude.md)
+- [操作与验收](docs/operations.md) · [English](docs/en/operations.md)
+- [架构与生命周期](docs/architecture.md) · [English](docs/en/architecture.md)
+- [兼容性与已知限制](docs/compatibility.md) · [English](docs/en/compatibility.md)
+- [故障排查](docs/troubleshooting.md) · [English](docs/en/troubleshooting.md)
+- [安全策略](SECURITY.md) · [English](SECURITY.en.md)
 
 ## 本地开发
 

@@ -1,5 +1,7 @@
 # Codex
 
+[中文](codex.md) | [English](../en/agents/codex.md)
+
 ## CLI 检查
 
 插件使用 `codex-acp`：

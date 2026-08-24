@@ -1,5 +1,7 @@
 # 故障排查
 
+[中文](troubleshooting.md) | [English](en/troubleshooting.md)
+
 ## health 不是 ready
 
 确认 CLI 可执行、外部登录已完成、workspace 权限允许 Agent data home，并重新运行 Agent

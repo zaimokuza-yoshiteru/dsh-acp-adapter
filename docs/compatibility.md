@@ -1,5 +1,7 @@
 # 兼容性
 
+[中文](compatibility.md) | [English](en/compatibility.md)
+
 | 项目 | 接受范围 | 已验证 |
 | --- | --- | --- |
 | DSH | `>=0.1.1-rc.2` | `0.1.1-rc.2` |
