@@ -1,0 +1,14 @@
+node_modules/
+lib/
+.typert/
+.idea/
+.DS_Store
+
+# local pack/scratch output
+tmp/
+
+# local-only plans, research notes, raw evidence, and generated release material
+.local/
+
+# optional read-only DSH checkout used by upstream compatibility tests
+reference/

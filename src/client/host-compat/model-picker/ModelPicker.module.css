@@ -1,0 +1,514 @@
+/* ACP model picker stylesheet。
+ *
+ * Same mechanism as AcpSection.module.css: lightningcss-compiled hashed
+ * locals, injected as one tagged `<style>` at factory execution. Every color
+ * resolves through a `--dsw-alias-*` token (ModelSelect.module.css /
+ * ModelsSection.module.css vocabulary); the menu shadow rides the theme's
+ * `--dsw-shadow-lv3` elevation token (ModelSelect.module.css:88 precedent —
+ * the rgba inside the token is the theme owner's business, not ours). The
+ * seat anchors its menu above the trigger (the composer sits at the viewport
+ * bottom).
+ *
+ * 样式基线来自上游 packages/client/ui-model-selection/src/client/
+ * ModelSelect.module.css）：trigger（无边框 24px 圆角 chip、13/20/500、
+ * translucent hover、45cqw 行相对上限）、menu 面（border-inverted +
+ * `--dsw-specific-menu`、width max-content 界 240–420、padding 4px、
+ * scrollbar elevation 重绑定）、selected 行（transparent + 尾部 check）、
+ * check 色（label-primary）与上游逐值一致。
+ *
+ * 刻意分歧（ACP 扩展面所需，不再对齐上游）：
+ * - `.menu` 保留 `gap: 6px` 与 `overflow-y: auto`——本菜单含 filter 栏 /
+ * live 选项区 / 披露区（上游无），ACP 扩展 要求内容超出 max-height 时在
+ *   卡片内部滚动；上游 `overflow: hidden` + 仅 .groups 滚动的形态不适用。
+ *   max-height 480px（上游 360px）同理：ACP live 区需要更高预算。
+ * - `.menu` 锚定 `left: 0`（上游 `right: 0`）：trigger 在 composer 左侧，
+ *   左对齐避免窄屏右溢出。
+ * - `.option` 留在 `.optionRow` flex 容器内（行尾还有「设为默认」按钮），
+ *   故取 flex:1 1 auto 而非上游的 width:auto/min-width:100%。
+ * - `.notice` 保留 340px 上限（一次性提示条，ACP 独有面）。
+ */
+
+.root {
+  position: relative;
+  display: inline-flex;
+  min-width: 0;
+}
+/* 与上游 .trigger 逐值一致（13/20/500
+   secondary label、4px gap、28px 高、无边框 24px 圆角 chip）。 */
+.trigger {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  height: 28px;
+  /* 上限同上游：legacy 220px 兜底 + 行相对 45cqw（长模型名更多空间，
+     不许吞噬 composer）。 */
+  max-width: 220px;
+  max-width: min(360px, 45cqw);
+  padding: 0 4px 0 8px;
+  border: none;
+  border-radius: 24px;
+  outline: none;
+  font: inherit;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+}
+.trigger:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+.trigger:disabled {
+  color: var(--dsw-alias-label-dimmed);
+  cursor: default;
+}
+.trigger:focus-visible {
+  box-shadow: 0 0 0 2px var(--dsw-alias-border-l3);
+}
+.triggerLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.triggerEffort {
+  flex: 0 0 auto;
+  color: var(--dsw-alias-label-caption);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chevron {
+  flex: none;
+  display: inline-flex;
+  color: var(--dsw-alias-label-caption);
+  transition: transform 120ms ease;
+}
+.chevronOpen {
+  transform: rotate(180deg);
+}
+/* 上游样式基线：menu 面与上游一致——border-inverted + `--dsw-specific-menu`（与
+   ui-primitives Menu 卡同材质）、width max-content 界 240–420、padding 4px、
+   scrollbar elevation 在面（非滚动子节点）上重绑定 l2 档（ui-theme
+   styles/scrollbar.css 的重绑定约定）。gap/overflow-y/max-height/left:0
+   是刻意分歧，见文件头。 */
+.menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  box-sizing: border-box;
+  width: max-content;
+  min-width: min(240px, calc(100vw - 32px));
+  max-width: min(420px, calc(100vw - 32px));
+  max-height: min(480px, calc(100vh - 120px));
+ /* ACP 扩展：内容超出 max-height 时在卡片内部滚动，绝不溢出卡片边界。 */
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--dsw-alias-border-inverted);
+  border-radius: 12px;
+  background: var(--dsw-specific-menu);
+  box-shadow: var(--dsw-shadow-lv3);
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-primary);
+  /* Elevated surface: scrollbar thumb 取 l2 elevation 档；声明在面上，
+     自定义属性继承到实际滚动的后代（本菜单自身滚动）。 */
+  --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);
+  --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);
+}
+.cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 8px;
+  font: inherit;
+  text-align: left;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.cell:hover {
+  background: var(--dsw-alias-interactive-bg-hover-solid);
+}
+.cellLabel {
+  flex: none;
+}
+.cellValue {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+  color: var(--dsw-alias-label-tertiary);
+}
+.cellChevron {
+  flex: none;
+  display: inline-flex;
+  color: var(--dsw-alias-label-tertiary);
+}
+.filter {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.filterInput {
+  box-sizing: border-box;
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 18px;
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-primary);
+}
+.filterInput:focus {
+  outline: none;
+  border-color: var(--dsw-alias-brand-primary);
+}
+.segment {
+  flex: none;
+  display: inline-flex;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.segmentButton {
+  border: none;
+  padding: 0 8px;
+  height: 26px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 18px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+}
+.segmentButton + .segmentButton {
+  border-left: 1px solid var(--dsw-alias-border-l2);
+}
+.segmentActive {
+  background: var(--dsw-alias-button-primary-fill);
+  color: var(--dsw-alias-label-primary-foreground);
+}
+.groups {
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.group {
+  display: flex;
+  flex-direction: column;
+}
+.groupTitle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px 2px;
+  font-size: 11px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+}
+/* 被拒工具回放不对称1：chip 字号阶梯对齐宿主（ui-conversation 构建 CSS 的最小档即
+   11px/18px tertiary chip）——原 10px/14px 不在宿主阶梯上，移除。 */
+.tag {
+  flex: none;
+  padding: 0 4px;
+  border: 1px solid var(--dsw-alias-border-l3);
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-secondary);
+}
+.optionRow {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+}
+.option {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 10px;
+  outline: none;
+  font: inherit;
+  text-align: left;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+/* 上游样式基线：hover/focus 用 translucent 档（上游 .option 同款；-solid 已退役）。 */
+.option:hover:not(:disabled),
+.option:focus-visible {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+.option:disabled {
+  color: var(--dsw-alias-label-dimmed);
+  cursor: default;
+}
+/* 上游样式基线：选中标记是尾部 check，不是填充——与 ui-primitives Menu 的 selected
+   处理一致（上游 .selected 同款）。 */
+.optionSelected {
+  background: transparent;
+}
+.optionCopy {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.modelName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.description {
+  font-size: 11px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 上游样式基线：check 与上游 .check 逐值一致（label-primary，非 brand-primary）。 */
+.check {
+  flex: 0 0 18px;
+  display: grid;
+  place-items: center;
+  color: var(--dsw-alias-label-primary);
+}
+.defaultButton {
+  flex: none;
+  align-self: center;
+  border: none;
+  border-radius: 6px;
+  padding: 2px 6px;
+  font: inherit;
+  font-size: 11px;
+  line-height: 18px;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  cursor: pointer;
+}
+.defaultButton:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover-solid);
+  color: var(--dsw-alias-label-primary);
+}
+.defaultButton:disabled {
+  cursor: default;
+}
+.isDefault {
+  color: var(--dsw-alias-state-success-primary);
+  cursor: default;
+}
+.status,
+.empty {
+  padding: 8px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+}
+.error,
+.warning {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 18px;
+}
+.error {
+  color: var(--dsw-alias-state-error-primary);
+}
+.warning {
+  color: var(--dsw-alias-state-warn-label);
+}
+.error > span,
+.warning > span {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.retry {
+  flex: none;
+  border: none;
+  border-radius: 6px;
+  padding: 2px 8px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 18px;
+  background: transparent;
+  color: var(--dsw-alias-brand-primary);
+  cursor: pointer;
+}
+.retry:hover {
+  background: var(--dsw-alias-interactive-bg-hover-solid);
+}
+.liveSection {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--dsw-alias-border-l2);
+  padding-top: 4px;
+}
+.liveSection:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+.liveTitle {
+  padding: 2px 8px;
+  font-size: 11px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+}
+.liveRow {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 8px;
+}
+/* 长文本换行：label/value 都允许收缩换行（原 label nowrap+ellipsis、value
+   flex:none——长降级文案不换行直接横向溢出卡片右缘）；anywhere 兜底长词。 */
+.liveRowLabel {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.liveRowValue {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--dsw-alias-label-tertiary);
+}
+.liveToggle {
+  flex: none;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 10px;
+  padding: 1px 8px;
+  font: inherit;
+  font-size: 11px;
+  line-height: 18px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+}
+.liveToggle[aria-checked='true'] {
+  background: var(--dsw-alias-button-primary-fill);
+  border-color: transparent;
+  color: var(--dsw-alias-label-primary-foreground);
+}
+.liveToggle:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.liveGroupName {
+  color: var(--dsw-alias-label-tertiary);
+}
+.policy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--dsw-alias-border-l2);
+}
+.policyNote {
+  margin: 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+  overflow-wrap: anywhere;
+}
+/* 披露区使用 `key: value` 行内流（同一行自然换行，不再左右分栏）。
+   key 用 secondary 色分层：普通 500，安全相关（权限范围/沙箱）600。 */
+.kvLine {
+  margin: 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+  overflow-wrap: anywhere;
+}
+.kvKey {
+  font-weight: 500;
+  color: var(--dsw-alias-label-secondary);
+}
+.kvKeyStrong {
+  font-weight: 600;
+  color: var(--dsw-alias-label-secondary);
+}
+/* ACP 扩展：披露详情折叠区（原生 details/summary，无新依赖）；summary 用原生
+   展开三角，点击区整行。summary 与内容之间留 2px 间距、点击区带
+   内边距，与块内 4px 行距保持一致节奏。 */
+.policyDetails {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.policySummary {
+  margin: 0 -4px 2px;
+  padding: 2px 4px;
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 500;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+  border-radius: 4px;
+}
+.policySummary:hover {
+  background: var(--dsw-alias-interactive-bg-hover-solid);
+}
+/* 披露面板的协议能力区使用 `key: value` 行内流，并以细分隔线分组。 */
+.capBlock {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--dsw-alias-border-l2);
+  border-bottom: 1px solid var(--dsw-alias-border-l2);
+  padding: 2px 0;
+}
+/* 跨 backend 行的「需新会话」行级标记（可见但点击分流到新会话流程）。
+   chip 对齐宿主最小档 11px/18px（原 10px/14px 移除）。 */
+.crossBadge {
+  flex: none;
+  align-self: center;
+  padding: 0 4px;
+  border: 1px solid var(--dsw-alias-state-warn-label);
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 18px;
+  color: var(--dsw-alias-state-warn-label);
+}
+/* 「在新会话中使用」成功后的一次性提示条（挂在 trigger 上方，自动消退）。 */
+.notice {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  z-index: 40;
+  width: max-content;
+  max-width: min(340px, calc(100vw - 32px));
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 18px;
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-secondary);
+  box-shadow: var(--dsw-shadow-lv3);
+}

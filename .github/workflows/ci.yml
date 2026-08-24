@@ -1,0 +1,134 @@
+# 最低宿主 lane 是发布门禁；host-latest 只做前向兼容预警。合同测试使用固定的
+# DSH rc.2 checkout，比对插件内的 host-compat 复制壳与上游基线。
+
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  macos:
+    name: macOS minimum lane（install/typecheck/build/test + install-gate 机械钉全 fail-hard）
+    runs-on: macos-15
+    env:
+      DSH_UPSTREAM_CHECKOUT: ${{ github.workspace }}/reference/deepseek-harness
+    steps:
+      - uses: actions/checkout@v4
+      - name: checkout DSH compatibility baseline
+        uses: actions/checkout@v4
+        with:
+          repository: deepseek-ai/deepseek-harness
+          ref: dsh-v0.1.1-rc.2
+          path: reference/deepseek-harness
+
+      # 工具链钉版：node 取 .nvmrc（24.19.0），pnpm 由 corepack 按
+      # packageManager 字段激活（11.7.0）；scripts/check-toolchain.mjs 在每步
+      # typecheck/test/build 开头复核。
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - name: corepack 激活 pnpm（packageManager 钉版）
+        run: corepack enable
+
+      - name: install
+        run: corepack pnpm install --frozen-lockfile
+
+      - name: typecheck
+        run: corepack pnpm typecheck
+
+      - name: build（末尾 verify-bundle：manifest/产物闭包/module requests/样式管线/tarball 精确互等）
+        run: corepack pnpm build
+
+      - name: test（mock 协议/进程树/sandbox/bundle verifier）
+        run: corepack pnpm test
+
+      # 干净安装/卸载门禁。DSH_ACP_GATE_ROOT 固定到 runner.temp 以便产物上传；
+      # 脚本默认 mktemp。注意 prepack 会随 pnpm pack 把 typecheck/test/build 再跑
+      # 一遍——刻意保持与发布路径完全一致，不为省时长降级。
+      - name: install-gate（.tgz 干净安装 + dump-config 断言 + boot 冒烟 + native 回归 + 卸载恢复）
+        run: bash scripts/install-gate.sh
+        env:
+          DSH_ACP_GATE_ROOT: ${{ runner.temp }}/install-gate
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+
+      - name: 上传产物（npm tarball + dump-config + boot/native 证据）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-gate-artifacts-macos
+          path: |
+            ${{ runner.temp }}/install-gate/host-version.txt
+            ${{ runner.temp }}/install-gate/zaimokuza-dsh-acp-adapter-*.tgz
+            ${{ runner.temp }}/install-gate/dump-stock.txt
+            ${{ runner.temp }}/install-gate/dump-acp.txt
+            ${{ runner.temp }}/install-gate/dump.diff
+            ${{ runner.temp }}/install-gate/dump-acp-after-remove.txt
+            ${{ runner.temp }}/install-gate/boot.log
+            ${{ runner.temp }}/install-gate/boot-processes.txt
+            ${{ runner.temp }}/install-gate/native-regression.txt
+            ${{ runner.temp }}/install-gate/sidecar-summary.txt
+          if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------
+  # 前向兼容预警：失败不阻止 rc.2 最低宿主发布，但必须作为兼容问题登记处理。
+  host-latest:
+    name: host-latest lane（@deepseek-ai/*@next + 真实最新宿主 install-gate）
+    runs-on: macos-15
+    continue-on-error: true
+    env:
+      DSH_UPSTREAM_CHECKOUT: ${{ github.workspace }}/reference/deepseek-harness
+    steps:
+      - uses: actions/checkout@v4
+      - name: checkout DSH compatibility baseline
+        uses: actions/checkout@v4
+        with:
+          repository: deepseek-ai/deepseek-harness
+          ref: dsh-v0.1.1-rc.2
+          path: reference/deepseek-harness
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - name: corepack 激活 pnpm（packageManager 钉版）
+        run: corepack enable
+      - name: "@deepseek-ai/* 经 overrides 改写到 next dist-tag"
+        run: node scripts/use-host-tag.mjs next
+      - name: install（非 frozen：lockfile 随改写重解）
+        run: corepack pnpm install --no-frozen-lockfile
+      - name: typecheck
+        run: corepack pnpm typecheck
+      - name: build（末尾 verify-bundle）
+        run: corepack pnpm build
+      - name: test
+        run: corepack pnpm test
+
+      # 第二段：真实最新 DSH 宿主 + pnpm pack 产物的行为契约门禁
+      # （latest lane 安装真实最新 DSH 后再安装 pnpm pack 产物）。
+      # lane=latest：行为断言 fail-hard，跨版本机械断言降级为告警+证据；
+      # pack 步随 prepack 在本 lane 的 next devDeps 下重跑全量门禁，刻意不省。
+      - name: install-gate latest（真实最新宿主 + pack 产物安装/行为契约）
+        run: bash scripts/install-gate.sh
+        env:
+          DSH_ACP_GATE_LANE: latest
+          DSH_ACP_GATE_HOST_SPEC: next
+          DSH_ACP_GATE_ROOT: ${{ runner.temp }}/install-gate-latest
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+
+      - name: 上传产物（latest 宿主实际版本 + tarball + 行为契约证据）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-gate-artifacts-host-latest
+          path: |
+            ${{ runner.temp }}/install-gate-latest/host-version.txt
+            ${{ runner.temp }}/install-gate-latest/zaimokuza-dsh-acp-adapter-*.tgz
+            ${{ runner.temp }}/install-gate-latest/dump-stock.txt
+            ${{ runner.temp }}/install-gate-latest/dump-acp.txt
+            ${{ runner.temp }}/install-gate-latest/dump.diff
+            ${{ runner.temp }}/install-gate-latest/dump-acp-after-remove.txt
+            ${{ runner.temp }}/install-gate-latest/boot.log
+            ${{ runner.temp }}/install-gate-latest/boot-processes.txt
+            ${{ runner.temp }}/install-gate-latest/native-regression.txt
+            ${{ runner.temp }}/install-gate-latest/sidecar-summary.txt
+          if-no-files-found: warn

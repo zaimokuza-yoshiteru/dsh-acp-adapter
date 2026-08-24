@@ -1,0 +1,495 @@
+/**
+ * ACP approval bridge。所有无法精确表达的选择都 fail closed，审计写入 sidecar：
+ * ACP `session/request_permission` → `ctx.approval.request({ agent, toolName,
+ * callId, reason, signal })` (only inside an open turn) → the web two-button
+ * panel's `allowed-once` maps ONLY to the agent's `allow_once`-kind option id,
+ * `rejected` ONLY to its `reject_once`-kind one — matched by
+ * `PermissionOptionKind`, never by button label text. 审批语义精确匹配：
+ * 双按钮面板没有永久授权，桥**绝不**把一次性选择升格为
+ * always 类 optionId——该侧缺 once-kind 选项时答 `cancelled`（decided 审计
+ * note `allow-once-unsupported` / `reject-once-unsupported`；拒绝无法忠实
+ * 表达时同样升格为永久拒绝，cancelled 对 agent 同样不授权），并在 ask 时的
+ * `reason` 里如实披露该侧不可用（{@link ACP_PERMISSION_NO_ALLOW_ONCE_DISCLOSURE} /
+ * {@link ACP_PERMISSION_NO_REJECT_ONCE_DISCLOSURE}）。
+ *
+ * This handler is the package's ONLY consumer of the approval service, wired
+ * exclusively as `AcpClientConnection.onPermissionRequest` — which the
+ * connection invokes solely for wire `session/request_permission` frames
+ * (the approval UI therefore appears only for requests the agent
+ * actually sent; 全仓无第二个 `approval.request` 调用点).
+ *
+ * Fail closed everywhere: a request arriving outside an open turn, a missing
+ * or throwing approval service, an un-mappable option list, or a failed audit
+ * append all answer `cancelled` and log — the bridge never defaults to allow.
+ *
+ * Pending-request settlement：Devin 的挂起请求永不悬挂，但桥**不设
+ * 护栏超时** ACP v1 对 `session/request_permission` 没有 wire 级超时约定
+ * （协议唯一条款：client 发 `session/cancel` 时 MUST 对所有挂起权限请求答
+ * `cancelled`——reference/agent-client-protocol docs/protocol/v1/
+ * prompt-turn.mdx §cancellation），用户思考时间本就无界；且 dsh 把未答
+ * 问题作为 durable pending 持有（浏览器断开不取消、重连 replay——宿主
+ * api-proxy 应答者语义），桥侧自造超时会在 agent 已被告知 cancelled 之后
+ * 把 dsh 侧问题留成仍可应答的僵尸。取代超时的是终局结算保证：
+ * - turn/会话取消或 dispose：turn abort signal 经 `turnSignal` 透传，审批
+ *   服务以 `cancelled` 结案并丢弃迟到答复，桥答 cancelled（协议 MUST 条款
+ *   由此满足）；
+ * - 插件卸载/agent dispose：compat 拆除链 `cancel({kind:'disposed'})` →
+ *   `whenIdle()` → `scope.dispose()` → 连接关闭杀子进程——即便 cancelled
+ *   回包与关流竞速落败（SDK 吞掉迟到写，无 unhandled rejection），子进程
+ *   死亡即结算 agent 侧挂起请求；
+ * - 审批网关自身 teardown：宿主把其挂起问题全部结算 `cancelled`。
+ * UI/浏览器单纯断开**不**结算任何问题（问题保持可答，桥忠实等待、绝不
+ * 伪造答复）；审批服务缺席/抛错则立即 fail closed `cancelled`。
+ *
+ * Audit (审批审计边界, sidecar 持久化规则 通道): the asked/decided pair (payload 见 ./events.ts) 经注入的
+ * {@link AcpPermissionAuditChannel} 落 **sidecar**（不落 session log——spike 实证
+ * 直写 sessionPersistence 在 live session 上吞后续 live 事件，
+ * `审批顺序探针`）——asked BEFORE consulting the
+ * approval service, decided BEFORE responding to the agent. An audit append
+ * failure aborts the request with `cancelled`: returning an unlogged decision
+ * would violate the audit pair. asked 记 agent 原样的完整选项列表与 toolCall
+ * 快照（含 rawInput）；decided 记 outcome/optionId/approvalOutcome/
+ * note——拒绝结案（用户点拒或 never 策略）的 decided 带 note
+ * `user-rejected`（taxonomy 预留词， 归位）。
+ *
+ * 观测面：deps.log 的第二参携带结构化字段（operation=permission +
+ * acpSessionId + result 终局码，宿主接线层补 dshSessionId/acpProvider）；
+ * deps.metrics 计 acp.approval.requested / acp.approval.decided{outcome}
+ * 配对计数（缺席 = 不记录；词表见 ../observability/metrics.ts 模块头）。
+ *
+ * @module @zaimokuza/dsh-acp-adapter/domain/policy/permissions
+ */
+
+import { randomUUID } from 'node:crypto'
+import type * as acp from '@agentclientprotocol/sdk'
+import type { Agent } from '@deepseek-ai/dsh-agent'
+import { CallId } from '@deepseek-ai/dsh-llm'
+import type { PermissionRequestHandler } from '../../protocol/v1/types.ts'
+import { acpUnknownToolName } from '../../protocol/v1/translate.ts'
+import type { AcpLogFields } from '../observability/logging.ts'
+import { ACP_METRIC } from '../observability/metrics.ts'
+import type { AcpMetricsLike } from '../observability/metrics.ts'
+import {
+  ACP_PERMISSION_AUDIT_KIND,
+  createPermissionAskedAudit,
+  createPermissionDecidedAudit,
+  type AcpApprovalOutcome,
+  type AcpPermissionAuditData,
+} from './events.ts'
+import { summarizeRawInputForAudit } from './events.ts'
+
+export type { AcpApprovalOutcome } from './events.ts'
+
+/**
+ * ask 时 `reason` 的可用性披露句：agent 选项表缺 `allow_once` kind 时附——
+ * 面板的选择允许无法忠实表达，桥将视为取消（绝不升格 allow_always）。
+ */
+export const ACP_PERMISSION_NO_ALLOW_ONCE_DISCLOSURE = '该 agent 未提供单次允许选项，选择允许将被视为取消'
+
+/**
+ * ask 时 `reason` 的可用性披露句：agent 选项表缺 `reject_once` kind 时附——
+ * 面板的选择拒绝无法忠实表达，桥将视为取消（绝不升格 reject_always）。
+ */
+export const ACP_PERMISSION_NO_REJECT_ONCE_DISCLOSURE = '该 agent 未提供单次拒绝选项，选择拒绝将被视为取消'
+
+/** rawInput JSON 摘要的截断上限（reason 单行可读性）。 */
+export const RAW_INPUT_SUMMARY_MAX_CHARS = 300
+
+/**
+ * Structural narrowing of dsh-user-approval's `ApprovalRequest` (this package
+ * does not depend on that package; field-for-field identical, so the real
+ * service is assignable to {@link AcpApprovalRequester}).
+ */
+export interface AcpApprovalRequest {
+  /** The agent on whose behalf the question is asked (routing + audit target). */
+  readonly agent: Agent
+  /** The tool the question is about (ACP `name`/`title` — presentation and audit). */
+  readonly toolName: string
+  /** The exact tool call being decided — `CallId(toolCall.toolCallId)`, matching the streamed `tool/call`. */
+  readonly callId?: CallId
+  /** Human-readable why: tool title/kind, rawInput summary, locations, once-option availability disclosure. */
+  readonly reason?: string
+  /** Turn abort signal: aborting settles the question `'cancelled'`. */
+  readonly signal?: AbortSignal
+}
+
+/** The dsh approval service face the bridge needs (`ctx.approval` in production). */
+export interface AcpApprovalRequester {
+  /**
+   * Ask for one decision. Rejects when no turn is open.
+   * @param req - the pending decision (agent, tool identity, reason, signal).
+   * @returns the closed outcome; `'allowed-once'` is the only grant.
+   */
+  request(req: AcpApprovalRequest): Promise<AcpApprovalOutcome>
+}
+
+/**
+ * 一条待落盘的审批审计记录：sidecar permission entry 的全字段形态（`time` 由桥
+ * 用注入时钟打好——测试确定性；生产接线即 `(record) => sidecar.append(sessionId,
+ * record)`，见 src/persistence/sidecar.ts 的 `AcpSidecarEntryInput`）。
+ */
+export interface AcpPermissionAuditRecord {
+  readonly kind: typeof ACP_PERMISSION_AUDIT_KIND
+  /** Unix epoch milliseconds. */
+  readonly time: number
+  readonly data: AcpPermissionAuditData
+}
+
+/**
+ * 审计落盘通道（seam；sidecar 持久化规则 后唯一的持久化出口）。生产实现 =
+ * `AcpSidecar.append` 绑定到所属 dsh sessionId（接线点：
+ * `permissionHandler` 注入处构造）。
+ *
+ * 与 sidecar 持久化规则 前的契约差异：不再有 `nextSeq()` 与单调下限——sidecar 是
+ * append-only 旁路存储（SQLite WAL 单库），无 session-log seq 概念；
+ * 顺序由调用先后保证，permission 审计走同步 durable 路径（append 落库 commit
+ * 后才 resolve——本桥 fail-closed 语义依赖此）。
+ */
+export interface AcpPermissionAuditChannel {
+  /**
+   * Persist one audit record (production: `sidecar.append(sessionId, record)`).
+   * @param record - fully-stamped permission audit record.
+   */
+  append(record: AcpPermissionAuditRecord): Promise<void>
+}
+
+/** Dependencies of {@link createAcpPermissionHandler}. */
+export interface AcpPermissionBridgeDeps {
+  /** The dsh agent handle forwarded to `approval.request` (routing + audit pair target). */
+  readonly agent: Agent
+  /**
+   * The dsh approval service (`ctx.approval` in production). ABSENT means the
+   * UI answerer is unavailable → every request fails closed to `cancelled`.
+   */
+  readonly approval?: AcpApprovalRequester | undefined
+  /** The audit append channel (see its contract). */
+  readonly audit: AcpPermissionAuditChannel
+  /**
+   * Whether the owning dsh session currently sits inside an open turn — the
+   * `approval.request` precondition. The wiring (AcpAgent turn driver) knows
+   * this; requests arriving when false are answered `cancelled` + logged.
+   */
+  readonly hasOpenTurn: () => boolean
+  /** The current turn's abort signal, if a turn is open (forwarded to `approval.request`). */
+  readonly turnSignal?: (() => AbortSignal | undefined) | undefined
+  /**
+ * Log sink for fail-closed paths (production: 结构化 logger 的 warn 绑定，
+ * 见 src/host/factory/agent-loop.ts)；第二参携带结构化字段（词表，适用
+   * 字段缺失即省略）。default noop.
+   */
+  readonly log?: ((message: string, fields?: AcpLogFields) => void) | undefined
+  /** Clock for audit timestamps (default `Date.now`); tests inject determinism. */
+  readonly now?: (() => number) | undefined
+  /**
+ * 指标 sink：`acp.approval.requested` / `acp.approval.decided`
+   * （decided 带 outcome 标签）。缺席 = 不记录。
+   */
+  readonly metrics?: AcpMetricsLike | undefined
+}
+
+/** The outcome→optionId mapping result. */
+type MappedDecision =
+  | { readonly outcome: 'selected'; readonly optionId: string }
+  | { readonly outcome: 'cancelled'; readonly note: string }
+
+/**
+ * requestId 用 `randomUUID()`——跨进程/跨 DSH 重启全局唯一。旧实现是
+ * 模块级计数器（`dsh-acp-permission-<n>`），重启后从 1 重新计数，两个进程先后写
+ * 同一 sidecar 时第二个进程的 decided 会因 `decided:<requestId>` 撞名被去重跳过
+ * （新 asked 保留、对应 decided 丢失）。去重键组成见 sidecar.ts
+ * `decidedDedupeKeyOf`：DSH session（文件键）+ ACP session + tool call + request
+ * occurrence（本 id）。
+ */
+function newPermissionRequestId(): string {
+  return `dsh-acp-permission-${randomUUID()}`
+}
+
+function cancelledResponse(): acp.RequestPermissionResponse {
+  return { outcome: { outcome: 'cancelled' } }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+/**
+ * Pick the option id for a grant side, by `PermissionOptionKind` (never by
+ * label text): ONLY the once-kind option qualifies ( — the two-button
+ * panel expresses one-time semantics; an always-kind or unknown-kind option is
+ * never a faithful answer, so its absence resolves to `cancelled`).
+ */
+function pickOption(
+  options: readonly acp.PermissionOption[],
+  onceKind: acp.PermissionOptionKind,
+  missingNote: string,
+): MappedDecision {
+  const once = options.find((option) => option.kind === onceKind)
+  if (once !== undefined) return { outcome: 'selected', optionId: once.optionId }
+  return { outcome: 'cancelled', note: missingNote }
+}
+
+/** dsh outcome → ACP response mapping (see module doc for the table). */
+function mapOutcome(outcome: AcpApprovalOutcome, options: readonly acp.PermissionOption[]): MappedDecision {
+  switch (outcome) {
+    case 'allowed-once':
+      return pickOption(options, 'allow_once', 'allow-once-unsupported')
+    case 'rejected':
+      return pickOption(options, 'reject_once', 'reject-once-unsupported')
+    case 'cancelled':
+      return { outcome: 'cancelled', note: 'cancelled' }
+    case 'unavailable':
+      return { outcome: 'cancelled', note: 'approval-unavailable' }
+  }
+}
+
+/** True when the agent's option list offers the given kind. */
+function hasKind(options: readonly acp.PermissionOption[], kind: acp.PermissionOptionKind): boolean {
+  return options.some((option) => option.kind === kind)
+}
+
+const PERMISSION_REASON_MAX_CHARS = 180
+const PERMISSION_TOOL_TITLE_MAX_CHARS = 80
+const SHELL_SECRET_VALUE = `(?:"[^"]*"|'[^']*'|[^\\s'"]+)`
+const SECRET_JSON_PROPERTY_PATTERN = new RegExp(`((?:["']?)(?:token|secret|password|passwd|api[-_]?key|authorization|credential|private[-_]?key)(?:["']?)\\s*[:=]\\s*)(?:"[^"]*"|'[^']*'|[^,\\s}\\]]+(?=\\s*[,}\\]]))`, 'gi')
+const SECRET_ENV_ASSIGNMENT_PATTERN = new RegExp(`(\\b[A-Za-z][A-Za-z0-9_-]*(?:token|secret|password|passwd|api[-_]?key|authorization|credential|private[-_]?key)[A-Za-z0-9_-]*)\\s*=\\s*${SHELL_SECRET_VALUE}`, 'gi')
+const SECRET_OPTION_PATTERN = new RegExp(`(--?[A-Za-z0-9_-]*(?:token|secret|password|passwd|api[-_]?key|authorization|credential|private[-_]?key)[A-Za-z0-9_-]*)(?:\\s*=\\s*|\\s+)${SHELL_SECRET_VALUE}`, 'gi')
+const SECRET_HEADER_PATTERN = new RegExp(`(\\b(?:authorization|proxy-authorization|x-api-key|api-key)\\b\\s*:\\s*(?:bearer\\s+)?)(?:"[^"]*"|'[^']*'|[^\\s'"]+)`, 'gi')
+
+function safeReasonText(value: string, max = PERMISSION_REASON_MAX_CHARS): string {
+  const sanitized = value
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .replace(SECRET_HEADER_PATTERN, '$1<redacted>')
+    .replace(SECRET_JSON_PROPERTY_PATTERN, '$1<redacted>')
+    .replace(SECRET_ENV_ASSIGNMENT_PATTERN, '$1=<redacted>')
+    .replace(SECRET_OPTION_PATTERN, '$1=<redacted>')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (sanitized.length <= max) return sanitized
+  return `${sanitized.slice(0, max - 1)}…`
+}
+
+function rawRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined
+}
+
+function rawString(record: Record<string, unknown> | undefined, keys: readonly string[]): string | undefined {
+  if (record === undefined) return undefined
+  for (const key of keys) {
+    if (/(?:token|secret|password|passwd|api[-_]?key|authorization|credential|private[-_]?key)/i.test(key)) continue
+    const value = record[key]
+    if (typeof value === 'string' && value.trim() !== '') return value
+    if (Array.isArray(value) && value.every((item) => typeof item === 'string') && value.length > 0) return value.join(' ')
+  }
+  return undefined
+}
+
+function shortTargetPath(value: string): string {
+  // Select the tail before applying the display bound; truncating the complete
+  // path first can discard the actual filename and leave only parent segments.
+  const clean = safeReasonText(value, Number.MAX_SAFE_INTEGER).replaceAll('\\', '/')
+  const absolute = clean.startsWith('/')
+  const parts = clean.split('/').filter(Boolean)
+  if (parts.length === 0) return clean
+  const display = absolute || clean.length > 90 || parts.length > 4 ? `…/${parts.slice(-3).join('/')}` : clean
+  return safeReasonText(display)
+}
+
+function requestDetail(tool: acp.RequestPermissionRequest['toolCall']): string | undefined {
+  const record = rawRecord(tool.rawInput)
+  const kind = tool.kind ?? ''
+  if (kind === 'execute') {
+    const command = typeof tool.rawInput === 'string' ? tool.rawInput : rawString(record, ['command', 'cmd', 'argv'])
+    return command === undefined ? undefined : `命令：${safeReasonText(command)}`
+  }
+  if (kind === 'edit' || kind === 'read' || kind === 'delete' || kind === 'move') {
+    if (kind === 'move') {
+      const source = rawString(record, ['source', 'source_path', 'sourcePath', 'from'])
+      const destination = rawString(record, ['destination', 'destination_path', 'destinationPath', 'dest', 'to', 'target'])
+      if (source !== undefined && destination !== undefined) {
+        return `来源：${shortTargetPath(source)}；目标：${shortTargetPath(destination)}`
+      }
+      const oneSided = source ?? destination
+      if (oneSided !== undefined) return `${source === undefined ? '目标' : '来源'}：${shortTargetPath(oneSided)}`
+    }
+    const rawPath = rawString(record, ['file_path', 'filePath', 'path', 'target', 'source', 'destination', 'dest', 'filename'])
+    const location = tool.locations?.find((entry) => typeof entry.path === 'string')?.path
+    const target = rawPath ?? location
+    return target === undefined ? undefined : `目标：${shortTargetPath(target)}`
+  }
+  // For unknown shapes, only use the existing field-level redacted summary;
+  // never put raw JSON in a user-facing approval prompt.
+  if (tool.rawInput !== undefined) {
+    const summary = summarizeRawInputForAudit(tool.rawInput).summary
+    return summary === '{}' ? undefined : `详情：${safeReasonText(summary)}`
+  }
+  return undefined
+}
+
+/**
+ * Assemble a self-contained, bounded approval reason.  ACP does not require a
+ * preceding tool_call, and the host approval panel does not render locations
+ * from a missing pairing, so the request itself carries a small redacted title
+ * and command/path detail.  It deliberately never includes raw JSON.
+ */
+export function buildPermissionReason(params: acp.RequestPermissionRequest): string {
+  const reasonByKind: Record<string, string> = {
+    execute: 'ACP Agent 请求执行一条需要额外权限的命令。',
+    edit: 'ACP Agent 请求修改文件，此操作需要额外权限。',
+    delete: 'ACP Agent 请求删除文件，此操作需要额外权限。',
+    move: 'ACP Agent 请求移动文件，此操作需要额外权限。',
+    read: 'ACP Agent 请求读取受限内容，此操作需要额外权限。',
+    fetch: 'ACP Agent 请求访问受限的外部资源。',
+  }
+  const kind = params.toolCall.kind ?? ''
+  const lines = [reasonByKind[kind] ?? 'ACP Agent 请求执行一项需要额外权限的操作。']
+  const title = params.toolCall.title ?? params.toolCall.name
+  if (typeof title === 'string' && title.trim() !== '') lines.push(`工具：${safeReasonText(title)}`)
+  const detail = requestDetail(params.toolCall)
+  if (detail !== undefined) lines.push(detail)
+  if (!hasKind(params.options, 'allow_once')) {
+    lines.push(`注意：${ACP_PERMISSION_NO_ALLOW_ONCE_DISCLOSURE}`)
+  }
+  if (!hasKind(params.options, 'reject_once')) {
+    lines.push(`注意：${ACP_PERMISSION_NO_REJECT_ONCE_DISCLOSURE}`)
+  }
+  return lines.join('\n')
+}
+
+/** 审批标题：优先 Agent 标题；否则用稳定语义标签，最后才回退有界 callId。 */
+function permissionToolName(tool: acp.RequestPermissionRequest['toolCall']): string {
+  const explicit = tool.title ?? tool.name
+  if (typeof explicit === 'string') {
+    const safe = safeReasonText(explicit, PERMISSION_TOOL_TITLE_MAX_CHARS)
+    if (safe !== '') return safe
+  }
+  const byKind: Record<string, string> = {
+    execute: '运行命令',
+    edit: '编辑文件',
+    delete: '删除文件',
+    move: '移动文件',
+    read: '读取文件',
+    fetch: '访问外部资源',
+  }
+  return byKind[tool.kind ?? ''] ?? acpUnknownToolName(tool.toolCallId)
+}
+
+/**
+ * Create the `session/request_permission` handler for one ACP agent session
+ * (wired as `AcpAgentOptions.permissionHandler` → `AcpClientConnection`'s
+ * `onPermissionRequest`; the connection invokes it per agent request).
+ *
+ * Flow per request: outside a turn → `cancelled` + log (no audit — a bare
+ * asked record between turns has no pairing context). Inside a turn: asked
+ * record → `approval.request` → map the outcome (kind-based, once-kind only;
+ * no always fallback) → decided record → response. Any missing/throwing
+ * dependency or failed audit append resolves to `cancelled` + log (fail
+ * closed).
+ *
+ * @param deps - see {@link AcpPermissionBridgeDeps}.
+ * @returns the permission handler for `AcpClientConnection`.
+ */
+export function createAcpPermissionHandler(deps: AcpPermissionBridgeDeps): PermissionRequestHandler {
+  const log = deps.log ?? ((): void => undefined)
+  const now = deps.now ?? ((): number => Date.now())
+
+  return async (params: acp.RequestPermissionRequest): Promise<acp.RequestPermissionResponse> => {
+    const toolTitle = params.toolCall.title ?? params.toolCall.toolCallId
+ // 结构化字段（acpSessionId 来自请求本身；dshSessionId/acpProvider 由
+    // 生产接线的 log 绑定补齐）与指标（requested/decided 配对计数）
+    const fields = (result: string): AcpLogFields => ({ operation: 'permission', acpSessionId: params.sessionId, result })
+    const decided = (outcome: 'selected' | 'cancelled'): void => {
+      deps.metrics?.increment(ACP_METRIC.approvalDecided, { outcome })
+    }
+    deps.metrics?.increment(ACP_METRIC.approvalRequested)
+
+    if (!deps.hasOpenTurn()) {
+      log(`dsh-acp permission bridge: request for "${toolTitle}" arrived outside an open turn; responding cancelled (fail closed)`, fields('cancelled'))
+      decided('cancelled')
+      return cancelledResponse()
+    }
+
+    const requestId = newPermissionRequestId()
+    try {
+      await deps.audit.append({
+        kind: ACP_PERMISSION_AUDIT_KIND,
+        time: now(),
+        data: createPermissionAskedAudit({
+          requestId,
+          agentSessionId: params.sessionId,
+          toolCall: params.toolCall,
+          options: params.options,
+        }),
+      })
+    } catch (error: unknown) {
+      log(`dsh-acp permission bridge: asked audit append failed for "${toolTitle}" (${errorMessage(error)}); responding cancelled (fail closed)`, fields('cancelled'))
+      decided('cancelled')
+      return cancelledResponse()
+    }
+
+    let outcome: AcpApprovalOutcome
+    let errorNote: string | undefined
+    const approval = deps.approval
+    if (approval === undefined) {
+      outcome = 'unavailable'
+      log(`dsh-acp permission bridge: no approval service available for "${toolTitle}" (UI absent); responding cancelled (fail closed)`, fields('cancelled'))
+    } else {
+      try {
+        const signal = deps.turnSignal?.()
+        outcome = await approval.request({
+          agent: deps.agent,
+          // name/title 双缺时回退到含 callId 的有界中文标签（真机 Devin
+          // 的 request_permission 常不带 name/title——审批 UI 不再显示字面量
+          // 'unknown-tool'）；fail-closed 语义不变。
+          toolName: permissionToolName(params.toolCall),
+          callId: CallId(params.toolCall.toolCallId),
+          reason: buildPermissionReason(params),
+          ...(signal === undefined ? {} : { signal }),
+        })
+      } catch (error: unknown) {
+        outcome = 'unavailable'
+        errorNote = 'approval-error'
+        log(`dsh-acp permission bridge: approval service threw for "${toolTitle}" (${errorMessage(error)}); responding cancelled (fail closed)`, fields('cancelled'))
+      }
+    }
+
+    const mapped = mapOutcome(outcome, params.options)
+    if (mapped.outcome === 'cancelled' && (mapped.note === 'allow-once-unsupported' || mapped.note === 'reject-once-unsupported')) {
+      log(`dsh-acp permission bridge: agent offered no once-kind ${mapped.note === 'allow-once-unsupported' ? 'allow' : 'reject'} option for "${toolTitle}"; responding cancelled (fail closed)`, fields('cancelled'))
+    }
+
+    try {
+      await deps.audit.append({
+        kind: ACP_PERMISSION_AUDIT_KIND,
+        time: now(),
+        data: createPermissionDecidedAudit({
+          requestId,
+          agentSessionId: params.sessionId,
+          toolCallId: params.toolCall.toolCallId,
+          outcome: mapped.outcome,
+          approvalOutcome: outcome,
+          ...(mapped.outcome === 'selected'
+            ? {
+                optionId: mapped.optionId,
+ // taxonomy 词 user-rejected 归位：审批服务以
+                // `rejected` 结案（用户点拒或 never 策略）且桥答出 reject 类
+                // 选项——审计可按该词 grep 出所有拒绝决定。
+                ...(outcome === 'rejected' ? { note: 'user-rejected' } : {}),
+              }
+            : { note: errorNote ?? mapped.note }),
+        }),
+      })
+    } catch (error: unknown) {
+      // 决定已出但审计未落：回 selected 会违反 asked/decided 配对（fail closed）
+      log(`dsh-acp permission bridge: decided audit append failed for "${toolTitle}" (${errorMessage(error)}); responding cancelled (fail closed)`, fields('cancelled'))
+      decided('cancelled')
+      return cancelledResponse()
+    }
+
+    decided(mapped.outcome)
+    return mapped.outcome === 'selected'
+      ? { outcome: { outcome: 'selected', optionId: mapped.optionId } }
+      : cancelledResponse()
+  }
+}

@@ -1,0 +1,222 @@
+/**
+ * Pure catalog and backend compatibility logic for the model picker.
+ *
+ * The selector facade re-exports this module so existing imports remain
+ * stable; this module has no UI, store, or host dependency.
+ */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const proto: unknown = Object.getPrototypeOf(value)
+  return proto === Object.prototype || proto === null
+}
+
+/** Shared catalog shapes used by the facade and the catalog-only helpers. */
+export interface PickerModelSelection {
+  provider: string
+  model: string
+  reasoningEffort?: string
+}
+
+export interface PickerReasoningEffort {
+  id: string
+  name: string
+  description?: string
+}
+
+export interface PickerModelReasoning {
+  efforts: PickerReasoningEffort[]
+  defaultEffort?: string
+}
+
+export interface PickerCatalogModel {
+  id: string
+  name: string
+  description?: string
+  reasoning?: PickerModelReasoning
+}
+
+export interface PickerProviderGroup {
+  id: string
+  name: string
+  models: PickerCatalogModel[]
+}
+
+
+/** ACP route id convention (src/domain/session/agent-config.ts `acpRouteId`): every ACP provider route carries this prefix. */
+export const ACP_ROUTE_PREFIX = 'acp-'
+
+/** Normalized provider bucket of one route id: ACP routes vs. native API providers. */
+export type ProviderKind = 'api' | 'acp'
+
+/** Classify one provider route id: `acp-` means ACP; other routes are native API. */
+export function providerKindOf(providerId: string): ProviderKind {
+  return providerId.startsWith(ACP_ROUTE_PREFIX) ? 'acp' : 'api'
+}
+
+/** Whether a selection/provider route belongs to an ACP agent (null-safe for the pre-load state). */
+export function isAcpProvider(provider: string | null | undefined): boolean {
+  return provider !== null && provider !== undefined && provider.startsWith(ACP_ROUTE_PREFIX)
+}
+
+/** Display label of each provider bucket (the group name is adapter free text; the tag is not). */
+export const PROVIDER_KIND_LABELS: Record<ProviderKind, string> = { api: 'Model', acp: 'ACP' }
+
+/**
+ * ACP 提供方的模型目录是 **session 级探测采样**（一次 probe 会话的
+ * configOptions 快照），不是 provider-global catalog——cwd/账号/配置改变后可能
+ * 过期（TTL 兜底 + 面板「重新检查」强制重探）。该作用域标注只挂 ACP 路由的
+ * 披露区；native 路由的目录是宿主 catalog，不展示此条。采样时间在 ACP 面板
+ * 健康卡的「上次探测」行（health 行已有 at）。
+ */
+export function showsAcpCatalogScopeNote(provider: string | null | undefined): boolean {
+  return isAcpProvider(provider)
+}
+
+/** 注册表 displayName 的 ACP 组名后缀（`<name> · ACP`，）。 */
+const ACP_GROUP_NAME_SUFFIX = ' · ACP'
+
+/**
+ * ACP 区块分区题注的 agent 显示名推导（「Agent 模式（{agent}）」的参数源——
+ * 不再硬编码单个 agent 名）：目录 groups 中按路由 id 找到组名并剥掉
+ * ` · ACP` 后缀（host 注册表的 displayName 形态）；目录未加载/组缺席时兜底
+ * `acp-<id>` 去前缀的裸 agent id。调用方只在 ACP 面板渲染时调用（provider 是
+ * 已知 acp 路由）。
+ */
+export function acpAgentDisplayName(groups: readonly PickerProviderGroup[], provider: string): string {
+  const group = groups.find((candidate) => candidate.id === provider)
+  if (group !== undefined) {
+    const stripped = group.name.endsWith(ACP_GROUP_NAME_SUFFIX)
+      ? group.name.slice(0, group.name.length - ACP_GROUP_NAME_SUFFIX.length)
+      : group.name
+    if (stripped !== '') return stripped
+  }
+  return provider.startsWith(ACP_ROUTE_PREFIX) ? provider.slice(ACP_ROUTE_PREFIX.length) : provider
+}
+
+/**
+ * The provider filter of the picker's filter bar includes a 'current'
+ * （「当前」Tab）——只按会话 backend 的精确 provider/profile 路由过滤现有 DSH
+ * 模型目录；该 Tab 的存在性由 {@link currentTabAvailable} 决定（host
+ * `backendOf` 权威），绝不从全局默认模型或 `state.current` 推断。
+ */
+export type ProviderFilter = 'current' | 'all' | ProviderKind
+
+/** Backend state returned by the host; established means a provider route is locked. */
+export type PickerBackendState =
+  | { state: 'blank' }
+  | { state: 'established'; provider: string }
+
+/** Validating decoder for the `backendOf` wire reply; malformed → undefined. */
+export function decodeBackendState(raw: unknown): PickerBackendState | undefined {
+  if (!isPlainObject(raw)) return undefined
+  if (raw['state'] === 'blank') return { state: 'blank' }
+  if (raw['state'] === 'established' && typeof raw['provider'] === 'string' && raw['provider'] !== '') {
+    return { state: 'established', provider: raw['provider'] }
+  }
+  return undefined
+}
+
+/**
+ * 一条 provider 路由的 backend 身份。backend 的词表就是路由 id 本身
+ * （`acp-<id>` 前缀 = ACP profile，其余 = native）——本函数是这个对应关系的
+ * 命名语义点，不是变换。
+ */
+export function backendOfProvider(provider: string): string {
+  return provider
+}
+
+/**
+ * 兼容性判定：该 selection 是否与会话已锁定的 backend 同 backend。
+ * blank → 只允许不改变执行后端类别的选择：native→native 可沿用 DSH 原生
+ * 模型选择，同一 ACP profile 可沿用当前 ACP loop；native↔ACP、跨 ACP profile
+ * 必须新建会话。currentProvider 缺席时 fail-closed：仅 native 行可原地选择。
+ * established →
+ * 只有同一路由的行可选（同 ACP profile 的不同模型行走 set_config_option 既有
+ * 路径）；其余 = 跨 backend，picker 标记并分流到「在新会话中使用」。
+ */
+export function isSameBackendSelection(
+  selection: Pick<PickerModelSelection, 'provider'>,
+  backend: PickerBackendState,
+  currentProvider?: string | null,
+): boolean {
+  if (backend.state === 'blank') {
+    if (currentProvider === undefined || currentProvider === null) return !isAcpProvider(selection.provider)
+    if (isAcpProvider(currentProvider)) return selection.provider === currentProvider
+    return !isAcpProvider(selection.provider)
+  }
+  return backend.provider === backendOfProvider(selection.provider)
+}
+
+/** Native fail-soft predicate shared by the composer picker and `/model`.
+ * Unknown/ACP current backends intentionally return false so command paths
+ * cannot bypass the cross-backend confirmation gate. */
+export function isNativeToNativeSelection(
+  currentProvider: string | null | undefined,
+  selectionProvider: string,
+): boolean {
+  return currentProvider !== undefined
+    && currentProvider !== null
+    && !isAcpProvider(currentProvider)
+    && !isAcpProvider(selectionProvider)
+}
+
+/**
+ * ACP Remote 不可用时的可见目录：无法取得权威 backend 就不能提供可能改变
+ * execution backend 的行。native 当前会话仅保留 native 目录；ACP 当前会话只
+ * 保留当前已选模型（可见但不可借故障窗口切换）。
+ */
+export function failClosedGroupsForUnavailableProbe(
+  groups: readonly PickerProviderGroup[],
+  current: PickerModelSelection | null,
+): PickerProviderGroup[] {
+  if (current !== null && isAcpProvider(current.provider)) {
+    const group = groups.find((candidate) => candidate.id === current.provider)
+    const model = group?.models.find((candidate) => candidate.id === current.model)
+    return group === undefined || model === undefined ? [] : [{ ...group, models: [model] }]
+  }
+  return groups.filter((group) => !isAcpProvider(group.id))
+}
+
+// ---------- ACP 子系统可用性探测（native-only 降级的输入面） ----------
+
+/**
+ * `backendOf` 探测的三值结果。`ok` = RPC 与解码都成功（`state` 为
+ * null 表示「未知」——合法的空答，照旧不标记）；`unavailable` = ACP Remote
+ * 失败/超时/非法载荷——picker 进入 native-only 模式：Current/ACP 档隐藏，
+ * 非阻塞诊断上屏，原生目录与选择不受影响（native 语义零 ACP side effects
+ * 由 popup/目录路径自身保证）。
+ */
+export type AcpBackendProbe =
+  | { status: 'ok'; state: PickerBackendState | null }
+  | { status: 'unavailable'; message: string }
+
+/**
+ * filter bar 的分档。ACP 子系统不可用（probe unavailable）时
+ * Current/ACP 档隐藏（native-only）；probe 尚未到达（null）保持到场前的
+ * 原生三档外观。Current 档仍只由「已建立 ACP binding」事实（currentTab）
+ * 开启，绝不从目录或默认模型推断。
+ */
+export function filterBucketsOf(probe: AcpBackendProbe | null, currentTab: boolean): readonly ProviderFilter[] {
+  if (probe?.status === 'unavailable') return ['all', 'api']
+  return currentTab ? ['current', 'all', 'api', 'acp'] : ['all', 'api', 'acp']
+}
+
+/** native-only 下落定前已选中 Current/ACP 档时折叠回 'all'（其余原样）。 */
+export function nativeOnlyFilterOf(filter: ProviderFilter, probe: AcpBackendProbe | null): ProviderFilter {
+  return probe?.status === 'unavailable' && (filter === 'current' || filter === 'acp') ? 'all' : filter
+}
+
+/** 非阻塞诊断的消息参数——unavailable 时给出失败消息，否则 null（不上屏）。 */
+export function acpUnavailableMessageOf(probe: AcpBackendProbe | null): string | null {
+  return probe?.status === 'unavailable' ? probe.message : null
+}
+
+// ---------- /model popup 行（收进兼容岛） ----------
+//
+// 内置 optionsOf/selectionOf 的复制（verbatim fork + [Model]/[ACP] 标签修改型
+// fork）与 PickerSelectOption 行契约已移入 client 侧兼容岛：
+// src/client/host-compat/model-picker/popup.ts（漂移钉版同随）。
+
+// ---------- 活体选项（窄化 contract 见 src/contract/remote.ts + ACP schema v1） ----------
+
+/** One flat select value of a live config option (ACP `SessionConfigSelectOption`). */

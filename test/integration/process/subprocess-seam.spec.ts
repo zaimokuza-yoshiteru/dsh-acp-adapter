@@ -1,0 +1,261 @@
+// subprocess-seam.spec.ts — 随附测试：ctx.subprocess seam 的结构窄化、
+// env tombstone/scrub 镜像钉版、真 spawn 白名单实证、fail-closed 分类与依赖面守卫。
+//
+// 钉版对象：
+//   - narrowSubprocessSeam：形态判定 + spawn 调用点固定填入 pipe/pipe/pipe stdio
+//   - compat 镜像：ACP_SENSITIVE_ENV_PATTERN / ACP_DSH_ENV_PREFIX /
+//     predictScrubbedParentEnv 与 devDep @deepseek-ai/dsh-subprocess rc.2 真值对拍
+//   - envSpecWithTombstones：白名单语义的 spawn env 组装（纯函数）
+//   - 真 spawn 白名单：污染父 env 后经 AcpAgentProcess 启动内联 agent，
+//     子进程所见恰为期望集（scrub 存活但未期望的键被 tombstone 删除、
+//     显式 credential 形条目穿透）
+//   - fail closed：spec.subprocess 缺席构造即抛 spawn-failure；seam 同步抛错 →
+//     initialize 分类 spawn-failure 且文案同格
+//   - 依赖面守卫：两包仅在 devDependencies（精确 rc.2），src/** 零值级 import
+//     （宿主模块实例一致性 纪律：值级 import dsh 包会让产物解析到第二实例）
+
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { beforeAll, describe, expect, it } from 'vitest';
+import { DSH_ENV_PREFIX, SENSITIVE_ENV_PATTERN, scrubbedParentEnv } from '@deepseek-ai/dsh-subprocess';
+import {
+  ACP_DSH_ENV_PREFIX,
+  ACP_SENSITIVE_ENV_PATTERN,
+  ACP_SUBPROCESS_UNAVAILABLE_MESSAGE,
+  envSpecWithTombstones,
+  narrowSubprocessSeam,
+  predictScrubbedParentEnv,
+} from '../../../src/runtime/process/subprocess.ts';
+import type { SubprocessSeam } from '../../../src/runtime/process/subprocess.ts';
+import { AcpAgentProcess } from '../../../src/runtime/process/agent-process.ts';
+import { AcpClientConnection } from '../../../src/protocol/v1/connection.ts';
+import { AcpClientError } from '../../../src/protocol/v1/errors.ts';
+import type { AcpConnectionSpec } from '../../../src/runtime/process/types.ts';
+import { sharedTestSubprocess } from '../../fixtures/subprocess-seam-testing.ts';
+
+const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
+const PKG_ROOT = path.resolve(TEST_DIR, '..', '..', '..');
+
+let subprocess: SubprocessSeam;
+
+beforeAll(async () => {
+  subprocess = (await sharedTestSubprocess()).seam;
+});
+
+/** 临时污染 process.env（key 带 spec 前缀防撞真环境），fn 结束后逐键还原。 */
+async function withPollutedEnv(entries: Record<string, string>, fn: () => Promise<void> | void): Promise<void> {
+  const saved = new Map<string, string | undefined>();
+  for (const key of Object.keys(entries)) saved.set(key, process.env[key]);
+  try {
+    for (const [key, value] of Object.entries(entries)) process.env[key] = value;
+    await fn();
+  } finally {
+    for (const [key, value] of saved) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
+describe('narrowSubprocessSeam 结构化窄化', () => {
+  it('缺 spawn/resolveExecutable 方法面的候选一律 undefined（调用方 fail closed）', () => {
+    expect(narrowSubprocessSeam(undefined)).toBeUndefined();
+    expect(narrowSubprocessSeam(null)).toBeUndefined();
+    expect(narrowSubprocessSeam('subprocess')).toBeUndefined();
+    expect(narrowSubprocessSeam({})).toBeUndefined();
+    expect(narrowSubprocessSeam({ spawn: () => ({}) })).toBeUndefined();
+    expect(narrowSubprocessSeam({ resolveExecutable: () => ({}) })).toBeUndefined();
+  });
+
+  it('适配产物在 spawn 调用点固定填入 pipe/pipe/pipe stdio（本包唯一 stdio 形态）', () => {
+    let seen: unknown;
+    const candidate = {
+      spawn: (spec: unknown): never => {
+        seen = spec;
+        throw new Error('capture-only');
+      },
+      resolveExecutable: (): Promise<string> => Promise.reject(new Error('unused')),
+    };
+    const seam = narrowSubprocessSeam(candidate);
+    expect(seam).toBeDefined();
+    expect(() => seam?.spawn({ argv: ['cmd', '--flag'], cwd: '/tmp', graceMs: 100 })).toThrow('capture-only');
+    expect(seen).toEqual({
+      argv: ['cmd', '--flag'],
+      cwd: '/tmp',
+      graceMs: 100,
+      stdio: { stdin: 'pipe', stdout: 'pipe', stderr: 'pipe' },
+    });
+  });
+
+  it('真实服务（LocalSubprocessRuntime 实例）通过窄化', () => {
+    // sharedTestSubprocess 挂载时已窄化一次；此处对原始实例再窄化证明形态吻合
+    expect(narrowSubprocessSeam(subprocess)).toBeDefined();
+  });
+});
+
+describe('compat 镜像钉版（上游 @deepseek-ai/dsh-subprocess rc.2 真值对拍）', () => {
+  it('ACP_SENSITIVE_ENV_PATTERN / ACP_DSH_ENV_PREFIX 与上游常量同格', () => {
+    expect(ACP_SENSITIVE_ENV_PATTERN.source).toBe(SENSITIVE_ENV_PATTERN.source);
+    expect(ACP_SENSITIVE_ENV_PATTERN.flags).toBe(SENSITIVE_ENV_PATTERN.flags);
+    expect(ACP_DSH_ENV_PREFIX).toBe(DSH_ENV_PREFIX);
+  });
+
+  it('predictScrubbedParentEnv 与 scrubbedParentEnv() 对拍：污染后逐键一致', async () => {
+    await withPollutedEnv(
+      {
+        // scrub 存活形（非 credential、非 DSH_ 前缀）：必须进底座
+        ACP_SEAM_PROXYISH: 'survives-scrub',
+        // credential 形名：scrub 删除
+        DSH_ACP_SEAM_API_KEY: 'sk-pin',
+        DSH_ACP_SEAM_PASSWORD: 'pw-pin',
+        DSH_ACP_SEAM_TOKEN: 'tok-pin',
+        // DSH_ 前缀（含小写——上游大小写不敏感）：scrub 删除
+        DSH_ACP_SEAM_MARKER: 'dsh-pin',
+        dsh_acp_seam_lower: 'dsh-lower-pin',
+      },
+      () => {
+        expect(predictScrubbedParentEnv(process.env)).toEqual(scrubbedParentEnv());
+      },
+    );
+  });
+});
+
+describe('envSpecWithTombstones 白名单 env 组装（纯函数）', () => {
+  it('scrub 存活但不在期望集的键逐个下 tombstone；期望集原样放行', () => {
+    const spec = envSpecWithTombstones({ PLAIN: '1' }, { PATH: '/bin', HTTP_PROXY: 'http://x', MY_API_KEY: 'secret', DSH_FOO: '1' });
+    expect(spec).toEqual({ PATH: undefined, HTTP_PROXY: undefined, PLAIN: '1' });
+  });
+
+  it('显式 credential 形条目穿透 scrub（刻意的 opt-in）', () => {
+    const spec = envSpecWithTombstones({ MY_API_KEY: 'explicit' }, { MY_API_KEY: 'base', HOME: '/home/x' });
+    expect(spec).toEqual({ HOME: undefined, MY_API_KEY: 'explicit' });
+  });
+
+  it('期望集覆盖 scrub 存活键时不产 tombstone', () => {
+    const spec = envSpecWithTombstones({ PATH: '/custom' }, { PATH: '/bin' });
+    expect(spec).toEqual({ PATH: '/custom' });
+  });
+});
+
+describe('真 spawn 白名单实证（AcpAgentProcess 生产路径）', () => {
+  it('子进程所见恰为期望集：白名单外键（含 scrub 存活的代理/SOCK）被 tombstone，显式 credential 形条目穿透', async () => {
+    await withPollutedEnv(
+      {
+        HTTP_PROXY: 'http://127.0.0.1:9', // scrub 存活 → 必须被 tombstone
+        SSH_AUTH_SOCK: '/tmp/dsh-acp-seam-fake.sock', // scrub 存活 → tombstone
+        DSH_ACP_SEAM_API_KEY: 'sk-should-not-leak', // provider scrub 删除
+        DSH_ACP_SEAM_MARKER: 'dsh-should-not-leak', // provider scrub 删除
+      },
+      async () => {
+        const outPath = path.join(os.tmpdir(), `dsh-acp-seam-env-${String(process.pid)}.json`);
+        try {
+          const desired = { EXPOSED_API_KEY: 'explicit-credential-passthrough', PLAIN_VAR: 'plain-ok' };
+          const proc = new AcpAgentProcess(
+            {
+              argv: [process.execPath, '-e', 'require("node:fs").writeFileSync(process.argv[1], JSON.stringify(process.env))', outPath],
+              cwd: os.tmpdir(),
+              env: desired,
+              subprocess,
+            },
+            { eofGraceMs: 200, termGraceMs: 300 },
+          );
+          await proc.close();
+          expect(proc.exited).toEqual({ code: 0, signal: null });
+          const env = JSON.parse(fs.readFileSync(outPath, 'utf8')) as Record<string, string>;
+          // 显式条目（含 credential 形名）穿透
+          expect(env['EXPOSED_API_KEY']).toBe('explicit-credential-passthrough');
+          expect(env['PLAIN_VAR']).toBe('plain-ok');
+          // 白名单外键一律不在（HTTP_PROXY/SSH_AUTH_SOCK 这类 scrub 存活键也被 tombstone）
+          expect(env['HTTP_PROXY']).toBeUndefined();
+          expect(env['SSH_AUTH_SOCK']).toBeUndefined();
+          expect(env['DSH_ACP_SEAM_API_KEY']).toBeUndefined();
+          expect(env['DSH_ACP_SEAM_MARKER']).toBeUndefined();
+          expect(env['PATH']).toBeUndefined();
+          // 最强钉版：子进程所见恰为期望集（唯一豁免：macOS CoreFoundation 在
+          // posix_spawn 时注入 __CF_USER_TEXT_ENCODING；win32 有 OS 级注入键，跳过）
+          if (process.platform === 'darwin') {
+            expect(Object.keys(env).sort()).toEqual(['EXPOSED_API_KEY', 'PLAIN_VAR', '__CF_USER_TEXT_ENCODING']);
+          } else if (process.platform !== 'win32') {
+            expect(Object.keys(env).sort()).toEqual(['EXPOSED_API_KEY', 'PLAIN_VAR']);
+          }
+        } finally {
+          fs.rmSync(outPath, { force: true });
+        }
+      },
+    );
+  });
+});
+
+describe('fail closed（spawn-failure 分类）', () => {
+  it('spec.subprocess 缺席（运行时裸 spec）→ 构造即抛 spawn-failure + 统一诊断文案', () => {
+    const bare = { argv: [process.execPath, '-e', ''], cwd: os.tmpdir(), env: {} } as unknown as AcpConnectionSpec;
+    let thrown: unknown;
+    try {
+      void new AcpClientConnection(bare);
+    } catch (error: unknown) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(AcpClientError);
+    const acpErr = thrown as AcpClientError;
+    expect(acpErr.kind).toBe('spawn-failure');
+    expect(acpErr.message).toBe(ACP_SUBPROCESS_UNAVAILABLE_MESSAGE);
+  });
+
+  it('seam spawn 同步抛错 → initialize 分类 spawn-failure，文案含命令名与原始错误', async () => {
+    const throwingSeam: SubprocessSeam = {
+      spawn: () => {
+        throw new Error('boom-sync-spawn');
+      },
+      resolveExecutable: () => Promise.reject(new Error('unused')),
+    };
+    const conn = new AcpClientConnection(
+      { argv: ['/bin/dsh-acp-false-agent', 'acp'], cwd: os.tmpdir(), env: {}, subprocess: throwingSeam },
+      { initializeTimeoutMs: 1000 },
+    );
+    let thrown: unknown;
+    try {
+      await conn.initialize();
+    } catch (error: unknown) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(AcpClientError);
+    const acpErr = thrown as AcpClientError;
+    expect(acpErr.kind).toBe('spawn-failure');
+    expect(acpErr.message).toContain('/bin/dsh-acp-false-agent');
+    expect(acpErr.message).toContain('boom-sync-spawn');
+    await conn.close();
+  });
+});
+
+describe('依赖面守卫（宿主模块实例一致性 纪律）', () => {
+  it('package.json：两包仅在 devDependencies 且精确钉 0.1.1-rc.2；dependencies/peerDependencies 不含', () => {
+    const pkg = JSON.parse(fs.readFileSync(path.join(PKG_ROOT, 'package.json'), 'utf8')) as {
+      dependencies?: Record<string, string>;
+      peerDependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+    };
+    for (const name of ['@deepseek-ai/dsh-subprocess', '@deepseek-ai/dsh-subprocess-local']) {
+      expect(pkg.dependencies?.[name]).toBeUndefined();
+      expect(pkg.peerDependencies?.[name]).toBeUndefined();
+      expect(pkg.devDependencies?.[name]).toBe('0.1.1-rc.2');
+    }
+  });
+
+  it('src/** 零 dsh-subprocess 值级 import（结构镜像全在 src/runtime/process/subprocess.ts）', () => {
+    const files: string[] = [];
+    const walk = (dir: string): void => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) walk(full);
+        else if (entry.name.endsWith('.ts')) files.push(full);
+      }
+    };
+    walk(path.join(PKG_ROOT, 'src'));
+    expect(files.length).toBeGreaterThan(0);
+    const importPattern = /(?:from|import)\s*\(?\s*['"]@deepseek-ai\/dsh-subprocess/;
+    const offenders = files.filter((file) => importPattern.test(fs.readFileSync(file, 'utf8')));
+    expect(offenders).toEqual([]);
+  });
+});
