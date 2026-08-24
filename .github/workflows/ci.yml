@@ -15,9 +15,9 @@ jobs:
     env:
       DSH_UPSTREAM_CHECKOUT: ${{ github.workspace }}/reference/deepseek-harness
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: checkout DSH compatibility baseline
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: deepseek-ai/deepseek-harness
           ref: dsh-v0.1.1-rc.2
@@ -26,7 +26,7 @@ jobs:
       # 工具链钉版：node 取 .nvmrc（24.19.0），pnpm 由 corepack 按
       # packageManager 字段激活（11.7.0）；scripts/check-toolchain.mjs 在每步
       # typecheck/test/build 开头复核。
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version-file: .nvmrc
       - name: corepack 激活 pnpm（packageManager 钉版）
@@ -80,14 +80,14 @@ jobs:
     env:
       DSH_UPSTREAM_CHECKOUT: ${{ github.workspace }}/reference/deepseek-harness
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: checkout DSH compatibility baseline
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: deepseek-ai/deepseek-harness
           ref: dsh-v0.1.1-rc.2
           path: reference/deepseek-harness
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version-file: .nvmrc
       - name: corepack 激活 pnpm（packageManager 钉版）
