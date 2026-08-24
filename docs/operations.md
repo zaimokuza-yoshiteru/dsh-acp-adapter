@@ -32,7 +32,8 @@ npm/GitHub Actions。未实际执行的 CI、npm publish、Windows 或 Agent E2E
 
 首次发布需要维护者用 npm 账户完成一次 bootstrap。确认 `npm whoami` 返回包 scope 的
 所有者，创建并推送与 `package.json` 完全一致的 tag（例如 `v0.1.0-rc.1`），然后执行
-`npm publish --access public --tag next`。预发布版本禁止占用 `latest`。
+`pnpm verify:release` 和 `npm publish --access public --tag next`。前一个命令会验证当前
+HEAD 正好位于版本 tag；预发布版本禁止占用 `latest`。
 
 首次发布后，在 npm 包设置中把 GitHub Actions Trusted Publisher 绑定到
 `zaimokuza-yoshiteru/dsh-acp-adapter`、工作流 `publish.yml` 和 environment

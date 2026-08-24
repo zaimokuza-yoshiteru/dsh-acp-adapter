@@ -4,6 +4,7 @@
  * 预发布版本进入 next，稳定版本进入 latest；同时给工作流输出唯一 tarball 文件名。
  */
 import { appendFileSync, readFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -11,7 +12,20 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
 const version = String(pkg.version ?? '')
 const refType = process.env.GITHUB_REF_TYPE
-const tag = process.argv[2] ?? process.env.GITHUB_REF_NAME
+
+function exactHeadTag() {
+  try {
+    return execFileSync('git', ['describe', '--tags', '--exact-match', 'HEAD'], {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim()
+  } catch {
+    return undefined
+  }
+}
+
+const tag = process.argv[2] ?? process.env.GITHUB_REF_NAME ?? exactHeadTag()
 
 if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) {
   throw new Error(`package.json version 不是可发布的 SemVer: ${version || '<empty>'}`)
