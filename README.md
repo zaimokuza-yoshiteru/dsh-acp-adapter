@@ -16,7 +16,7 @@ transport、同一会话跨 backend 迁移和 DSH tools/skills/MCP 注入不在�
 先安装并启动 DSH `0.1.1-rc.2`，然后在目标 profile 中安装插件：
 
 ```bash
-dsh plugin --profile web add @zaimokuza/dsh-acp-adapter
+dsh plugin --profile web add @zaimokuza/dsh-acp-adapter@next
 dsh web
 ```
 

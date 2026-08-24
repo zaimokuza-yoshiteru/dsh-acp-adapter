@@ -18,7 +18,7 @@ tools, skills, or MCP servers are outside the verified scope.
 Install and start DSH `0.1.1-rc.2`, then add the plugin to the target profile:
 
 ```bash
-dsh plugin --profile web add @zaimokuza/dsh-acp-adapter
+dsh plugin --profile web add @zaimokuza/dsh-acp-adapter@next
 dsh web
 ```
 

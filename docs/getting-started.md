@@ -13,7 +13,7 @@
 公开包安装：
 
 ```bash
-dsh plugin --profile web add @zaimokuza/dsh-acp-adapter
+dsh plugin --profile web add @zaimokuza/dsh-acp-adapter@next
 dsh web
 ```
 

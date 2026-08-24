@@ -45,6 +45,12 @@ describe('public documentation contract', () => {
     expect(read('README.en.md')).toMatch(/It\s+currently connects Devin, Codex, Kimi, and Claude/)
   })
 
+  it('installs release candidates explicitly from the next channel', () => {
+    for (const path of ['README.md', 'README.en.md', 'docs/getting-started.md', 'docs/en/getting-started.md']) {
+      expect(read(path)).toContain('dsh plugin --profile web add @zaimokuza/dsh-acp-adapter@next')
+    }
+  })
+
   it('keeps every local documentation link resolvable', () => {
     const paths = [...new Set(bilingualPairs.flat())]
 

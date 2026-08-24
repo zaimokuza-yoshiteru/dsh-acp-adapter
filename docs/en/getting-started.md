@@ -13,7 +13,7 @@
 Install the public package:
 
 ```bash
-dsh plugin --profile web add @zaimokuza/dsh-acp-adapter
+dsh plugin --profile web add @zaimokuza/dsh-acp-adapter@next
 dsh web
 ```
 
