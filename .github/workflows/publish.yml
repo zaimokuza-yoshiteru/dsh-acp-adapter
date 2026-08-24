@@ -1,0 +1,96 @@
+# npm 发布只允许人工从版本 tag 发起。pack job 生成并验证唯一 tarball；publish job
+# 下载同一份产物并通过 npm Trusted Publishing（OIDC）发布，不接触长期 token。
+
+name: publish npm
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
+jobs:
+  pack:
+    name: Pack and verify npm tarball
+    runs-on: macos-15
+    env:
+      DSH_UPSTREAM_CHECKOUT: ${{ github.workspace }}/reference/deepseek-harness
+    outputs:
+      dist-tag: ${{ steps.release.outputs.dist-tag }}
+      tarball: ${{ steps.release.outputs.tarball }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout DSH compatibility baseline
+        uses: actions/checkout@v6
+        with:
+          repository: deepseek-ai/deepseek-harness
+          ref: dsh-v0.1.1-rc.2
+          path: reference/deepseek-harness
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+
+      - name: Enable pinned pnpm
+        run: corepack enable
+
+      - name: Install immutable dependencies
+        run: corepack pnpm install --frozen-lockfile
+
+      - name: Verify release tag and version
+        id: release
+        run: node scripts/verify-release.mjs
+
+      - name: Create artifact directory
+        run: mkdir -p dist/npm
+
+      - name: Pack exact release artifact
+        run: npm pack --pack-destination dist/npm
+
+      - name: Verify expected artifact exists alone
+        run: |
+          test -f "dist/npm/${{ steps.release.outputs.tarball }}"
+          test "$(find dist/npm -maxdepth 1 -type f -name '*.tgz' | wc -l | tr -d ' ')" = 1
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-release-tarball
+          path: dist/npm/${{ steps.release.outputs.tarball }}
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish exact tarball to npm
+    needs: pack
+    runs-on: ubuntu-24.04
+    environment: npm-publish
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Download verified artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: npm-release-tarball
+          path: dist/npm
+
+      - name: Publish with OIDC
+        run: npm publish "dist/npm/${{ needs.pack.outputs.tarball }}" --access public --tag "${{ needs.pack.outputs.dist-tag }}"

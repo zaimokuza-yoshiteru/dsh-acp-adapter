@@ -56,7 +56,7 @@ dsh web
 - [架构与生命周期](docs/architecture.md)
 - [兼容性与已知限制](docs/compatibility.md)
 - [故障排查](docs/troubleshooting.md)
-- [安全报告](SECURITY.md) · [变更记录](CHANGELOG.md)
+- [安全策略](SECURITY.md)
 
 ## 本地开发
 

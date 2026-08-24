@@ -2,6 +2,14 @@
   "name": "@zaimokuza/dsh-acp-adapter",
   "version": "0.1.0-rc.1",
   "description": "Use Devin, Codex, Kimi, or Claude ACP agents from the DSH session UI with host-managed approvals, workspace boundaries, and auditable recovery.",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "agent-client-protocol",
+    "acp",
+    "ai-agents"
+  ],
   "license": "MIT",
   "type": "module",
   "packageManager": "pnpm@11.7.0",
@@ -64,6 +72,7 @@
     "typecheck": "node scripts/check-toolchain.mjs && node scripts/gen-typert.mjs && tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
     "test": "node scripts/check-toolchain.mjs && node scripts/gen-typert.mjs && vitest run",
     "verify": "node scripts/verify-bundle.mjs",
+    "verify:release": "node scripts/verify-release.mjs",
     "check:picker-diff": "node scripts/check-upstream-picker-diff.mjs",
     "check:stale-build": "node scripts/check-stale-build.mjs",
     "prepack": "node scripts/prepack.mjs"
@@ -131,7 +140,6 @@
     "README.md",
     "docs/**/*.md",
     "SECURITY.md",
-    "CHANGELOG.md",
     "LICENSE"
   ]
 }

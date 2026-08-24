@@ -27,3 +27,15 @@ git diff --check
 从最终工作树重新 `pnpm pack`，检查 tarball 只包含 lib、patch、许可证、README 和 docs
 用户文档；在干净 DSH rc.2 profile 完成 install/boot/uninstall 后，再由发布负责人执行
 npm/GitHub Actions。未实际执行的 CI、npm publish、Windows 或 Agent E2E 不得写成 PASS。
+
+## npm 发布
+
+首次发布需要维护者用 npm 账户完成一次 bootstrap。确认 `npm whoami` 返回包 scope 的
+所有者，创建并推送与 `package.json` 完全一致的 tag（例如 `v0.1.0-rc.1`），然后执行
+`npm publish --access public --tag next`。预发布版本禁止占用 `latest`。
+
+首次发布后，在 npm 包设置中把 GitHub Actions Trusted Publisher 绑定到
+`zaimokuza-yoshiteru/dsh-acp-adapter`、工作流 `publish.yml` 和 environment
+`npm-publish`，允许 `npm publish`。后续版本只需更新版本号、通过 CI、创建对应 tag，
+再从该 tag 手动运行 `publish npm` 工作流。工作流使用 OIDC，不读取长期 npm token；
+预发布版本自动进入 `next`，稳定版本自动进入 `latest`。
