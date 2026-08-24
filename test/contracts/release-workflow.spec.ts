@@ -13,7 +13,15 @@ describe('npm release contract', () => {
     const stdout = execFileSync(
       process.execPath,
       [new URL('scripts/verify-release.mjs', root).pathname, `v${pkg.version}`],
-      { encoding: 'utf8', env: { ...process.env, GITHUB_OUTPUT: output } },
+      {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          GITHUB_OUTPUT: output,
+          GITHUB_REF_TYPE: 'tag',
+          GITHUB_REF_NAME: `v${pkg.version}`,
+        },
+      },
     )
 
     expect(stdout).toContain(`v${pkg.version} -> npm next`)
