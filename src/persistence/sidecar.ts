@@ -318,7 +318,8 @@ export type AcpBindingLookup =
  *   短于 agent 回放）
  * - binding 不可用：`binding-in-use`（双绑守卫冲突）/`binding-missing`
  *   （日志有 ACP 历史但无 binding——sidecar 丢失）/`binding-outdated`
- * （binding 缺 必填字段）
+ * （binding 缺 必填字段）/`backend-conflict`（binding、日志或恢复请求的
+ * execution provider 互相矛盾）
  */
 export type AcpReconciliationCause =
   | 'cwd-changed'
@@ -335,6 +336,7 @@ export type AcpReconciliationCause =
   | 'binding-in-use'
   | 'binding-missing'
   | 'binding-outdated'
+  | 'backend-conflict'
 
 /**
  * `reconciliation` 记录的载荷：进入 reconciliation-required 的事实。
@@ -941,7 +943,7 @@ class SidecarStore implements AcpSidecar {
    * 后插，同进程同步执行无竞争）。binding 同时 upsert 最新索引表。
    */
   private insertSync(sessionId: string, entry: StampedEntry): void {
-    this.ensureDb()
+    const db = this.ensureDb()
     const ids = deriveAcpIds(entry.kind, entry.data)
     const dedupeKey = decidedDedupeKeyOf(entry.kind, entry.data)
     const payload = stableStringify(entry.data)
@@ -953,6 +955,31 @@ class SidecarStore implements AcpSidecar {
       if (result !== undefined && Number(result.changes) === 0) return
       return
     }
+    if (entry.kind === 'binding') {
+      // binding 是恢复索引，不是可被任意最新写覆盖的普通审计行。把迁移校验、
+      // audit 追加和最新索引更新放进同一个 IMMEDIATE 事务：错误 provider 或错误
+      // generation 即使来自另一进程，也不能先污染 audit 或覆盖正确索引。
+      db.exec('BEGIN IMMEDIATE')
+      try {
+        this.assertBindingTransition(sessionId, entry)
+        const { seq, recordId } = this.nextAuditIdentity(sessionId, entry)
+        this.stmtInsert?.run(recordId, sessionId, seq, entry.time, entry.kind, ids.acpProviderId ?? null, ids.acpSessionId ?? null, null, payload)
+        this.stmtUpsertBinding?.run(sessionId, entry.time, ids.acpProviderId ?? null, ids.acpSessionId ?? null, payload)
+        db.exec('COMMIT')
+      } catch (error: unknown) {
+        try { db.exec('ROLLBACK') } catch { /* 原错误优先 */ }
+        // nextSeq 的内存种子可能已在失败事务内前移；丢弃后从 durable MAX 重种。
+        this.seqCounters.delete(sessionId)
+        throw error
+      }
+      return
+    }
+    const { seq, recordId } = this.nextAuditIdentity(sessionId, entry)
+    this.stmtInsert?.run(recordId, sessionId, seq, entry.time, entry.kind, ids.acpProviderId ?? null, ids.acpSessionId ?? null, null, payload)
+  }
+
+  /** 为一条非去重审计分配 seq 与无碰撞 record id。 */
+  private nextAuditIdentity(sessionId: string, entry: StampedEntry): { seq: number; recordId: string } {
     const seq = this.nextSeq(sessionId)
     const base = contentRecordIdBase(entry.kind, entry.time, entry.data)
     let recordId = base
@@ -960,9 +987,54 @@ class SidecarStore implements AcpSidecar {
       if (this.stmtHasRecordId?.get(sessionId, recordId) === undefined) break
       recordId = `${base}-${String(suffix)}`
     }
-    this.stmtInsert?.run(recordId, sessionId, seq, entry.time, entry.kind, ids.acpProviderId ?? null, ids.acpSessionId ?? null, null, payload)
-    if (entry.kind === 'binding') {
-      this.stmtUpsertBinding?.run(sessionId, entry.time, ids.acpProviderId ?? null, ids.acpSessionId ?? null, payload)
+    return { seq, recordId }
+  }
+
+  /**
+   * binding 状态迁移门。数据库是最后一道恢复防线，不能只相信调用方的
+   * TypeScript 类型：同代只允许推进日志锚点；新代只允许同 provider 的
+   * rebindBlank，并且 generation 必须恰好 +1。校验与 upsert 位于同一个
+   * `BEGIN IMMEDIATE` 事务内，因此并发进程也不能 last-writer-wins。
+   */
+  private assertBindingTransition(sessionId: string, entry: Extract<StampedEntry, { kind: 'binding' }>): void {
+    const next = toBindingRecord(entry.time, entry.data)
+    const row = this.stmtGetBinding?.get(sessionId) as BindingRow | undefined
+    // 首条旧形状 binding 仍可被读取为 outdated，保留明确的恢复诊断；但一旦
+    // 已有索引，任何畸形写都不得破坏一条可恢复 binding。
+    if (row === undefined) return
+    const current = this.parseBindingRow(row)
+    if (current === undefined) {
+      throw new Error(`dsh-acp sidecar: refusing to overwrite an outdated binding for session ${JSON.stringify(sessionId)}`)
+    }
+    if (next === undefined) {
+      throw new Error(`dsh-acp sidecar: refusing to overwrite a valid binding with an invalid binding for session ${JSON.stringify(sessionId)}`)
+    }
+    if (current.provider !== next.provider) {
+      throw new Error(
+        `dsh-acp sidecar: execution backend for session ${JSON.stringify(sessionId)} is immutable ` +
+        `(${JSON.stringify(current.provider)} cannot be replaced by ${JSON.stringify(next.provider)})`,
+      )
+    }
+    if (current.profileId !== next.profileId) {
+      throw new Error(`dsh-acp sidecar: refusing to change the ACP profile for session ${JSON.stringify(sessionId)}`)
+    }
+    if (next.generation === current.generation) {
+      if (next.agentSessionId !== current.agentSessionId) {
+        throw new Error(`dsh-acp sidecar: refusing to change the Agent session id without a new generation for session ${JSON.stringify(sessionId)}`)
+      }
+      if (next.historyBaseSeq !== current.historyBaseSeq || next.establishedAt !== current.establishedAt) {
+        throw new Error(`dsh-acp sidecar: refusing to rewrite same-generation continuity anchors for session ${JSON.stringify(sessionId)}`)
+      }
+      if (next.dshCommittedSeq < current.dshCommittedSeq) {
+        throw new Error(`dsh-acp sidecar: refusing to move the committed DSH sequence backwards for session ${JSON.stringify(sessionId)}`)
+      }
+      return
+    }
+    if (next.generation !== current.generation + 1) {
+      throw new Error(`dsh-acp sidecar: binding generation must advance by exactly one for session ${JSON.stringify(sessionId)}`)
+    }
+    if (next.historyBaseSeq < current.dshCommittedSeq || next.establishedAt < current.establishedAt) {
+      throw new Error(`dsh-acp sidecar: refusing a new binding generation with regressed continuity anchors for session ${JSON.stringify(sessionId)}`)
     }
   }
 

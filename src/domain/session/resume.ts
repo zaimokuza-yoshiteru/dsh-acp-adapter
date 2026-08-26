@@ -172,7 +172,7 @@ export const ACP_FORK_BLANK_NOTE =
  * 纯工具 turn 有 tool 事件，不触发；说明消息省略 sourceEventSeqs，不进对账。
  */
 export const ACP_EMPTY_RESPONSE_NOTE =
-  '本轮对话 ACP agent 正常结束，但没有返回任何内容（无正文、无工具调用）。这通常表示 agent 认为无需回应；若你预期有输出，请检查 agent 侧日志或重试。'
+  '本轮对话 ACP agent 已结束，但没有返回任何内容（无正文、无工具调用）。这不能证明请求已完成；可能与 Agent 配置、登录状态或上游行为有关，请检查 Agent 侧日志或重试。'
 
 /**
  * 模型说明文本的单字段长度上限（建立时模型收敛分叉说明用）：模型名来自
@@ -218,6 +218,7 @@ export const ACP_RECONCILIATION_CAUSE_DETAILS: Record<AcpReconciliationCause, st
   'binding-in-use': '上次绑定的 ACP 会话正绑定在另一个活动 dsh 会话上（sidecar 记录冲突），拒绝共享同一份 ACP 上下文',
   'binding-missing': '会话日志包含 ACP 历史但 sidecar 中不存在 binding 记录（sidecar 数据丢失或不可读）',
   'binding-outdated': 'sidecar binding 记录缺少必需字段（版本过旧或已损坏）',
+  'backend-conflict': '会话的 execution backend 事实互相矛盾；为防止恢复到错误 Agent，已拒绝继续',
 }
 
 /**
@@ -670,7 +671,10 @@ export function resolveExpectedRange(
 
 /**
  * 折出 DSH 侧期望可见历史（`[from, to)` 区间内的可见事件，seq 顺序）：
- * user/message → user（text 块拼接）；assistant/message（**仅带
+ * user/message → user（text 块拼接；同一 DSH turn 开头的连续多条
+ * user/message 再拼成一个锚点——DSH 会把宿主注入与真实用户输入分条记录，
+ * 而 ACP Agent 可在 session/load 中按实际 prompt 边界合并回放）；
+ * assistant/message（**仅带
  * sourceEventSeqs 字段的**——省略该字段的是本适配器的说明消息，不参与）→
  * assistant（type==='text' 块拼接）；tool/call → tool（title 优先取
  * `meta.acpToolCall.title`（起 name 恒为稳定名，首帧 wire title 的落盘
@@ -693,11 +697,30 @@ export function expectedVisibleHistory(
 ): AcpVisibleHistoryEntry[] {
   const builders: HistoryEntryBuilder[] = []
   const toolIndexByCallId = new Map<string, number>()
+  // user/message 自身没有 turn 字段，所以从原始日志的 turn 括号恢复归属。
+  // 不能把“一条 user 事件”当成“一次 ACP prompt”：DSH 可在首个模型步前
+  // 先注入宿主上下文（例如 user-approval 策略变更），再追加真实用户输入。
+  // Codex ACP 会把这些 content block 按一次 prompt 合并回放；只合并同 turn、
+  // 且在可见历史中仍连续的 user 事件，避免吞掉跨 turn 或工具交互边界。
+  let currentTurn: number | undefined
+  let lastUserTurn: number | undefined
   for (const event of events) {
-    if (event.seq < from || event.seq >= to) continue
+    // 即使 turn/start 在 from 之前，也要扫描它以恢复区间起点的 turn 归属。
+    if (event.seq >= to) break
+    if (event.type === 'turn/start') currentTurn = event.data.turn
+    if (event.seq < from) {
+      if (event.type === 'turn/end' && event.data.turn === currentTurn) currentTurn = undefined
+      continue
+    }
     if (event.type === 'user/message') {
       const text = event.data.content.filter((block) => block.type === 'text').map((block) => block.text).join('')
-      builders.push({ kind: 'user', text })
+      const previous = builders.at(-1)
+      if (currentTurn !== undefined && lastUserTurn === currentTurn && previous?.kind === 'user') {
+        previous.text += text
+      } else {
+        builders.push({ kind: 'user', text })
+      }
+      lastUserTurn = currentTurn
     } else if (event.type === 'assistant/message') {
       if (event.sourceEventSeqs === undefined) continue // 本适配器的说明消息
       const text = event.data.message.content.filter((block) => block.type === 'text').map((block) => block.text).join('')
@@ -746,6 +769,7 @@ export function expectedVisibleHistory(
         }
       }
     }
+    if (event.type === 'turn/end' && event.data.turn === currentTurn) currentTurn = undefined
   }
   return builders.map((builder) => finalizeBuilder(builder, policy))
 }

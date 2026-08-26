@@ -980,7 +980,7 @@ describe('dshAcp/setOption', () => {
 // ----------：五态 state 矩阵 ----------
 
 describe('dshAcp/health 五态 state', () => {
-  it('ok probe 但零模型 + descriptor 声明 auth refs → auth-required（未登录的定型信号）', async () => {
+  it('ok probe 但零模型仍只表示协议可用，不能据此推断未登录', async () => {
     const zeroModels: AcpProbeSnapshotLike = {
       at: NOW + 4,
       key: acpProbeConfigKey(DEVIN),
@@ -995,7 +995,7 @@ describe('dshAcp/health 五态 state', () => {
     const { registry } = createFakeRegistry({ devin: DEVIN }, { 'acp-devin': zeroModels });
     const { service } = buildService({ registry });
     const row = (await service.health()).providers[0];
-    expect(row?.state).toBe('auth-required');
+    expect(row?.state).toBe('ready');
   });
 
   it(' 目录口径：ok probe 零模型但 configOptions 含 category=model 项 → ready（kimi 形态，不再是 auth-required 误判）', async () => {

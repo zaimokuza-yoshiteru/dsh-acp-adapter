@@ -522,55 +522,73 @@ export default class AcpAgentLoop extends AgentLoop {
 
   /**
    * Resume an owned agent, routing sessions whose provider hits the ACP
- * registry to {@link AcpAgent}. Provider resolution is marker-first (   * sidecar 持久化规则): the explicit `options.agentOptions.provider` when given, otherwise
-   * the sidecar binding's provider, otherwise the persisted log's last
-   * `request/header` provider (read-only `inspect` peek). The binding also
-   * carries the ACP-side session id for `session/load` — passed to the agent
-   * only when the binding's provider matches the resolved route (an explicit
-   * override must not inherit another provider's ACP session). 显式非 ACP
-   * 路由不做任何窥测（与旧行为逐字节一致）。
+   * registry to {@link AcpAgent}. Provider resolution is marker-first（sidecar
+   * binding → persisted `request/header` → transient resume options）。与持久 provider
+   * 匹配的最后一条 `request/header` model 同样是会话真源；刷新/重启时
+   * 宿主携带的新全局默认 model 不得覆盖它。binding 中的 ACP
+   * session id 仅在 binding provider 与最终路由一致时用于 `session/load`；
+   * 瞬时的显式选项不得继承另一 provider 的 ACP 会话。
    */
   override async resume(ownerCtx: Context, options: ResumeAgentOptions): Promise<AgentHandle> {
     const persistence = getResumePersistence(this.acpRuntime.ctx)
     if (persistence === undefined) {
       throw new Error('cannot resume: session persistence is not configured (load a dsh-session-persistence backend)')
     }
+    // 恢复必须 marker-first。宿主传入的 provider 可能只是刷新/重启瞬间的全局
+    // 默认值；它不是历史 execution backend 的真源，绝不能在读取 binding 之前
+    // 决定机器类型。
     const explicit = options.agentOptions?.provider
-    if (explicit !== undefined) {
-      const resolved = this.acpRegistry.resolveRoute(explicit)
-      if (resolved === undefined) return super.resume(ownerCtx, options)
- // 显式 ACP 路由：只读 sidecar binding（全字段记录）——不碰
-      // persistence.inspect（钉死的旧契约：显式 resume 跳过日志窥测）；fork 防御
-      // 统一在 createAcpMachine 用已加载的 session.header 判定
-      const routed = await this.readBindingFor(explicit, options.resumeSessionId)
-      const guard: AcpBindingGuardResult = routed?.blocked !== undefined
-        ? { blocked: routed.blocked }
-        : await this.guardBindingReuse(persistence, options.resumeSessionId, routed?.binding)
-      const agentOptions: AgentOptions = { ...options.agentOptions, provider: explicit }
-      await this.acpRouteReady()
-      return resumeAcpLifecycle(
-        this.acpInternals,
-        ownerCtx,
-        persistence,
-        options,
-        agentOptions,
-        (loopCtx, session) => this.createAcpMachine(loopCtx, options.resumeSessionId, agentOptions, session, resolved, guard.binding, guard.blocked),
+    const peeked = await this.peekStoredRoute(persistence, options.resumeSessionId, options.signal)
+    const binding = peeked?.binding
+    const loggedProvider = peeked?.provider
+    const provider = binding?.provider ?? loggedProvider ?? explicit
+    if (provider === undefined) return super.resume(ownerCtx, options)
+
+    // binding 与 DSH 历史矛盾时，binding 仍用于定位应该展示/处置的 Agent，
+    // 但预置 continuity 闩锁；绝不 spawn，也绝不让任一方覆盖另一方。
+    const routeConflict = binding !== undefined
+      && loggedProvider !== undefined
+      && binding.provider !== loggedProvider
+    const blocked: AcpReconciliationCause | undefined = routeConflict
+      ? 'backend-conflict'
+      : peeked?.blocked
+
+    const resolved = this.acpRegistry.resolveRoute(provider)
+    if (resolved === undefined) {
+      // 持久历史命中 ACP 但 profile 已删除/改名时，不能静默退回 native。
+      if (provider.startsWith('acp-') || binding !== undefined || blocked !== undefined) {
+        throw new AcpClientError(
+          'protocol-error',
+          `dsh-acp: execution backend ${JSON.stringify(provider)} for session ${JSON.stringify(String(options.resumeSessionId))} is unavailable; restore that ACP profile or start a new session`,
+          { category: 'config' },
+        )
+      }
+      // 已有 native request/header 同样优先于瞬时默认值。
+      const nativeOptions: ResumeAgentOptions = {
+        ...options,
+        agentOptions: {
+          ...options.agentOptions,
+          ...(peeked?.model === undefined ? {} : { model: peeked.model }),
+          provider,
+        },
+      }
+      return super.resume(ownerCtx, nativeOptions)
+    }
+
+    if (explicit !== undefined && explicit !== provider) {
+      this.acpLog.warn(
+        `dsh-acp: ignoring transient resume provider ${JSON.stringify(explicit)}; persisted backend ${JSON.stringify(provider)} is authoritative`,
+        { dshSessionId: String(options.resumeSessionId), acpProvider: provider, operation: 'resume-route', result: 'binding-first' },
       )
     }
-    const peeked = await this.peekStoredRoute(persistence, options.resumeSessionId, options.signal)
-    // 隐式路径 marker-first：provider 来自 binding 时 binding 必然与之匹配
-    const binding = peeked?.binding
-    const provider = binding?.provider ?? peeked?.provider
-    if (provider === undefined) return super.resume(ownerCtx, options)
-    const resolved = this.acpRegistry.resolveRoute(provider)
-    if (resolved === undefined) return super.resume(ownerCtx, options)
+    const persistedModel = loggedProvider === provider ? peeked?.model : undefined
     const agentOptions: AgentOptions = {
-      ...(peeked?.model === undefined ? {} : { model: peeked.model }),
       ...options.agentOptions,
+      ...(persistedModel === undefined ? {} : { model: persistedModel }),
       provider,
     }
-    const guard: AcpBindingGuardResult = peeked?.blocked !== undefined
-      ? { blocked: peeked.blocked }
+    const guard: AcpBindingGuardResult = blocked !== undefined
+      ? { ...(binding === undefined ? {} : { binding }), blocked }
       : await this.guardBindingReuse(persistence, options.resumeSessionId, binding)
     await this.acpRouteReady()
     return resumeAcpLifecycle(
@@ -581,19 +599,6 @@ export default class AcpAgentLoop extends AgentLoop {
       agentOptions,
       (loopCtx, session) => this.createAcpMachine(loopCtx, options.resumeSessionId, agentOptions, session, resolved, guard.binding, guard.blocked),
     )
-  }
-
-  /**
- * 读 sidecar binding 并按路由过滤（lookup 三态）：ok 且 provider 匹配 →
-   * `{binding}`；语义门槛失败 → `{blocked:'binding-outdated'}`（不可用 binding，
-   * 调用方预置 continuity 闩锁）；无记录/读取失败/provider 不匹配 → `undefined`
-   * （读取失败非权威，照常走 session/new）。
-   */
-  private async readBindingFor(provider: string, id: SessionId): Promise<{ binding?: AcpBindingRecord; blocked?: AcpReconciliationCause } | undefined> {
-    const lookup: AcpBindingLookup | undefined = await this.acpSidecar?.readLatestBinding(id).catch((): undefined => undefined)
-    if (lookup === undefined) return undefined
-    if (lookup.status === 'outdated') return { blocked: 'binding-outdated' }
-    return lookup.binding.provider === provider ? { binding: lookup.binding } : undefined
   }
 
   /**
@@ -744,6 +749,12 @@ export default class AcpAgentLoop extends AgentLoop {
       )
     }
     const forked = session.header.parentSession !== undefined
+    // 正常 fork 的新 DSH id 不会有 sidecar binding。若二者同时出现，说明 id
+    // 碰撞或残留索引；自动 session/new 会覆盖唯一恢复证据。保留 binding 并预置
+    // reconciliation，只有用户显式 rebindBlank 才允许推进到下一 generation。
+    const effectiveBlocked = forked && resumeBinding !== undefined
+      ? 'backend-conflict'
+      : presetBlocked
     const attachments = getCtxSlot<AttachmentStore>(loopCtx, 'attachments')
     const driver: AcpAgentOptions = {
       profile: resolved,
@@ -752,12 +763,12 @@ export default class AcpAgentLoop extends AgentLoop {
       metrics: this.acpMetrics,
       cancelPendingPermissions: (sessionId: string) => this.acpPendingPermissions.cancelSession(sessionId),
       cancelPendingElicitations: (sessionId: string) => this.acpPendingElicitations.cancelSession(sessionId),
-      ...(resumeBinding === undefined || forked ? {} : { resumeBinding }),
- // 双绑守卫/ 语义门槛拒绝复用 binding 时预置 blocked 原因——
+      ...(resumeBinding === undefined ? {} : { resumeBinding }),
+ // 双绑守卫/语义门槛/fork-id 碰撞拒绝复用 binding 时预置 blocked 原因——
       // AcpAgent 构造期置 continuity 闩锁，后续 turn 以 ACP_RECONCILIATION_REQUIRED
-      // 失败（零 spawn）。fork 永不携带（fork 是新 dsh id、无 binding，守卫不会
-      // 进场；forked 条件是与 resumeBinding 同款的纵深防御）。
-      ...(presetBlocked === undefined || forked ? {} : { presetBlocked }),
+      // 失败（零 spawn）。正常 fork 是新 dsh id、天然无 binding；若异常命中，
+      // 上方 effectiveBlocked 保留该证据并要求显式 reconciliation。
+      ...(effectiveBlocked === undefined ? {} : { presetBlocked: effectiveBlocked }),
       // sidecar 持久化规则：建立（new 或对账通过的 load）后 fail-closed 写 binding；分轴审计与
       // reconciliation 记录同通道落盘。闭包绑定本 dsh sessionId。
       recordBinding: (binding) => sidecar.append(id, { kind: 'binding', data: binding }),

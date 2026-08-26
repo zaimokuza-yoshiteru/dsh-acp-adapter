@@ -23,7 +23,7 @@ from source by following the [official repository instructions](https://github.c
 On the machine running DSH, run:
 
 ```bash
-npx @deepseek-ai/dsh plugin --profile web add @zaimokuza/dsh-acp-adapter
+npx @deepseek-ai/dsh plugin --profile web add @zaimokuza/dsh-acp-adapter@next
 npx @deepseek-ai/dsh web
 ```
 

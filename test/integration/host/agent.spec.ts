@@ -202,11 +202,11 @@ describe('路由：AcpAgentLoop.createAgent / resume', () => {
     ).rejects.toThrow('session persistence is not configured');
   });
 
-  it('resume：显式 agentOptions.provider 命中 → AcpAgent（跳过日志窥测）', async () => {
+  it('resume：历史 provider 优先于瞬时 agentOptions.provider，不能把 native 会话改成 ACP', async () => {
     const harness = await boot();
     const profile = mockProfile(harness.logDir, 'happy');
     await registerAcpAgents(harness, [profile]);
-    // 日志里存的是别的 provider：显式 provider 必须优先
+    // 日志里存的是 native provider：恢复真源必须优先于 UI/默认值快照。
     harness.persistence.seed(SessionId('resume-explicit'), seedLogWithHeader('deepseek', 'deepseek-chat'));
 
     const handle = await harness.loop.resume(harness.ctx, {
@@ -215,8 +215,9 @@ describe('路由：AcpAgentLoop.createAgent / resume', () => {
     });
     harness.handles.push(handle);
 
-    expect(handle.agent).toBeInstanceOf(AcpAgent);
-    expect(harness.persistence.inspectCalls).toEqual([]);
+    expect(handle.agent).not.toBeInstanceOf(AcpAgent);
+    expect(handle.agent.options.provider).toBe('deepseek');
+    expect(harness.persistence.inspectCalls).toEqual([SessionId('resume-explicit')]);
     expect(harness.persistence.prepareCalls).toEqual([SessionId('resume-explicit')]);
   });
 
@@ -263,7 +264,7 @@ describe('路由：AcpAgentLoop.createAgent / resume', () => {
     expect(reconciliationEntries.map((entry) => entry.data.cause)).toEqual(['binding-missing']);
   }, 15_000);
 
-  it('resume：日志末 provider 非 ACP → 委派父类（窥测执行、agentOptions 原样透传）', async () => {
+  it('resume：日志末 provider 非 ACP → 以历史 provider 委派父类', async () => {
     const harness = await boot();
     const profile = mockProfile(harness.logDir, 'happy');
     await registerAcpAgents(harness, [profile]);
@@ -271,14 +272,18 @@ describe('路由：AcpAgentLoop.createAgent / resume', () => {
     harness.persistence.seed(SessionId('resume-native'), seedLogWithHeader('deepseek', 'deepseek-chat'));
 
     // 不带 agentOptions.provider：强制走 request/header 窥测一路
-    const handle = await harness.loop.resume(harness.ctx, { resumeSessionId: SessionId('resume-native') });
+    const handle = await harness.loop.resume(harness.ctx, {
+      resumeSessionId: SessionId('resume-native'),
+      agentOptions: { provider: routeOf(profile), model: 'transient-default-model' },
+    });
     harness.handles.push(handle);
 
     expect(handle.agent).not.toBeInstanceOf(AcpAgent);
     expect(handle.agent.constructor.name).toBe('ReactLoopAgent');
     expect(harness.persistence.inspectCalls).toEqual([SessionId('resume-native')]);
-    // 「原样委派」：窥测结果只用于路由判定，不回填 agentOptions
-    expect(handle.agent.options.provider).toBeUndefined();
+    // 历史 provider 是恢复真源；回填后不依赖瞬时全局默认或 waterfall 才能续接。
+    expect(handle.agent.options.provider).toBe('deepseek');
+    expect(handle.agent.options.model).toBe('deepseek-chat');
 
     // 委派出的原生 agent 是活体：经 agent/request waterfall 供路由（dsh 既定扩展点）跑通 turn
     harness.ctx.on('agent/request', async (payload, next) => {

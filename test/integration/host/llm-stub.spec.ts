@@ -139,7 +139,7 @@ describe('probe 模型目录与缓存', () => {
     const models = await adapter.listModels(ROUTE);
     expect(models.map((model) => model.id)).toEqual(['mock-model-a', 'mock-model-b', 'mock-model-c']);
     expect(models[0]).toEqual({ provider: ROUTE, id: 'mock-model-a', name: 'Mock Model A' });
- // initialize 握手的 agentInfo/agentCapabilities 随 ok 缓存保留（health 行与披露面板的事实源）
+ // initialize 握手的 agentInfo/agentCapabilities 随 ok 缓存保留（健康诊断与审计的事实源）
     const snapshot = adapter.probeSnapshot(ROUTE);
     expect(snapshot?.result.kind).toBe('ok');
     if (snapshot?.result.kind === 'ok') {

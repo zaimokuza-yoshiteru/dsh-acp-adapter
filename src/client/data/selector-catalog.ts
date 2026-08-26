@@ -61,17 +61,6 @@ export function isAcpProvider(provider: string | null | undefined): boolean {
 /** Display label of each provider bucket (the group name is adapter free text; the tag is not). */
 export const PROVIDER_KIND_LABELS: Record<ProviderKind, string> = { api: 'Model', acp: 'ACP' }
 
-/**
- * ACP 提供方的模型目录是 **session 级探测采样**（一次 probe 会话的
- * configOptions 快照），不是 provider-global catalog——cwd/账号/配置改变后可能
- * 过期（TTL 兜底 + 面板「重新检查」强制重探）。该作用域标注只挂 ACP 路由的
- * 披露区；native 路由的目录是宿主 catalog，不展示此条。采样时间在 ACP 面板
- * 健康卡的「上次探测」行（health 行已有 at）。
- */
-export function showsAcpCatalogScopeNote(provider: string | null | undefined): boolean {
-  return isAcpProvider(provider)
-}
-
 /** 注册表 displayName 的 ACP 组名后缀（`<name> · ACP`，）。 */
 const ACP_GROUP_NAME_SUFFIX = ' · ACP'
 

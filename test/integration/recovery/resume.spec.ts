@@ -674,7 +674,7 @@ describe('阻断：id-not-found / load-failed 与 list 抛错的分岔', () => {
 });
 
 describe('fork 防御', () => {
-  it('header.parentSession 在场时即便 sidecar 有 binding 也走 session/new，新会话写自己的 binding（generation 重计）', async () => {
+  it('fork id 异常命中既有 binding 时 fail-closed，不自动覆盖恢复证据', async () => {
     const harness = await boot();
     const profile = mockProfile(harness.logDir, 'happy', {
       MOCK_PRESET_SESSIONS: JSON.stringify(['preset-parent']),
@@ -690,8 +690,7 @@ describe('fork 防御', () => {
     const handle = await resumeImplicit(harness, profile, sessionId);
     const agent = handle.agent;
     expect(agent).toBeInstanceOf(AcpAgent);
-    // fork 不预置闩锁（fork 是新 dsh id 的正当新建，不是阻断场景）
-    expect((agent as AcpAgent).continuityState).toEqual({ status: 'ok', cause: null, detail: null });
+    expect((agent as AcpAgent).continuityState).toEqual({ status: 'blocked', cause: 'backend-conflict', detail: null });
 
  // fork 诚实提示：首个 turn 前已落一条说明（turn 字段 = fork 源日志末个
     // turn 号 1），如实告知「agent 侧上下文不继承、从空白开始」
@@ -702,29 +701,16 @@ describe('fork 防御', () => {
     agent.followup(userText('continue'));
     await agent.whenIdle();
 
-    // 不恢复 parent 的 ACP 上下文：不查 list、不试 load，直接 session/new
-    expect(mockRequests(profile.logPath)).toEqual(['initialize', 'session/new', 'session/prompt']);
-    // fork 是沉默的 session/new，不是阻断：无 reconciliation 记录；说明消息只有
-    // 那条 fork 提示（无 residue/outcome-unknown）
-    expect(await reconciliationCauses(harness, sessionId)).toEqual([]);
+    // 不恢复 parent，也不覆盖碰撞 binding：在 spawn 前即阻断。
+    expect(fs.existsSync(profile.logPath)).toBe(false);
+    expect(await reconciliationCauses(harness, sessionId)).toEqual(['backend-conflict']);
     expect(assistantTexts(agent)).not.toContain(ACP_RESUME_RESIDUE_NOTE);
     expect(assistantTexts(agent).filter((text) => text === ACP_FORK_BLANK_NOTE)).toHaveLength(1);
-    expect(turnEndReasons(agent).at(-1)).toEqual({ turn: 2, reason: { kind: 'completed' } });
+    expectBlocked(agent, 'backend-conflict');
 
-    // 新会话最终写自己的 binding（重写掉碰撞残留；fork 不携带旧 binding →
-    // generation 从 1 重计）。3 行 = 残留 fixture + 建立 + turn 收束锚点刷新；
-    // 建立行的 historyBaseSeq=锚点取本 fork 的建立 turn 起点（refresh 行原样沿用）
+    // 唯一 binding 保持字节级语义不变；用户可显式 rebindBlank 进入下一代。
     const bindings = await bindingEntries(harness, sessionId);
-    expect(bindings.map((entry) => entry.data.agentSessionId)).toEqual(['preset-parent', 'mock-session-1', 'mock-session-1']);
-    const established = bindings[1]!.data;
-    expect(established.provider).toBe(routeOf(profile));
-    expect(established.generation).toBe(1);
-    expect(established.historyBaseSeq).toBeGreaterThan(0);
-    expect(established.historyBaseSeq).toBe(established.dshCommittedSeq);
-    const latest = bindings.at(-1)!.data;
-    expect(latest.generation).toBe(1);
-    expect(latest.historyBaseSeq).toBe(established.historyBaseSeq);
-    expect(latest.dshCommittedSeq).toBe(agent.session.seq);
+    expect(bindings.map((entry) => entry.data.agentSessionId)).toEqual(['preset-parent']);
   }, 15_000);
 
   it('fork 提示幂等：dispose 后重 resume（宿主重启等价）不重复追加；非 fork 的 resume 不多发', async () => {
@@ -832,13 +818,13 @@ describe('崩溃中途恢复（outcome-unknown）', () => {
 });
 
 describe('marker-first 路由', () => {
-  it('隐式 resume：binding 优先于日志 request/header 窥测（日志指向他 provider 也按 binding 路由）', async () => {
+  it('binding 与日志 provider 冲突：进入 backend-conflict，零 spawn、零覆盖', async () => {
     const harness = await boot();
     const profile = mockProfile(harness.logDir, 'happy', {
       MOCK_PRESET_SESSIONS: JSON.stringify(['preset-delta']),
     });
     const sessionId = SessionId('resume-marker-priority');
-    // 日志末个 header 指向 deepseek（非 ACP）；binding 指向本 profile——binding 必须赢
+    // 两个持久事实相互矛盾，不能猜哪一边正确。
     harness.persistence.seed(sessionId, seedLogMatchingLoadReplay('deepseek', 'deepseek-chat'), { cwd: harness.logDir });
     await presetBinding(harness, sessionId, bindingFixture(profile, {
       agentSessionId: 'preset-delta',
@@ -850,17 +836,18 @@ describe('marker-first 路由', () => {
     expect(agent).toBeInstanceOf(AcpAgent);
     expect(agent.options.provider).toBe(routeOf(profile));
 
+    expect((agent as AcpAgent).continuityState).toEqual({ status: 'blocked', cause: 'backend-conflict', detail: null });
+    const bindingBefore = await harness.loop.acpSidecar?.readLatestBinding(sessionId);
+
     agent.followup(userText('continue'));
     await agent.whenIdle();
 
-    // 按 binding 恢复了 ACP 侧会话：list 命中 → load；无 session/new
-    expect(mockRequests(profile.logPath)).toEqual(['initialize', 'session/list', 'session/load', 'session/prompt']);
-    const headers = eventsOf(agent, 'request/header');
-    expect(headers.at(-1)?.data.header.config).toEqual({ provider: routeOf(profile), model: 'mock-model-a' });
-    expect(turnEndReasons(agent).at(-1)).toEqual({ turn: 2, reason: { kind: 'completed' } });
+    expect(fs.existsSync(profile.logPath)).toBe(false);
+    expectBlocked(agent, 'backend-conflict');
+    expect(await harness.loop.acpSidecar?.readLatestBinding(sessionId)).toEqual(bindingBefore);
   }, 15_000);
 
-  it('显式 provider resume：binding provider 不匹配则不生效（不继承别的 provider 的 ACP 会话）', async () => {
+  it('显式 provider 与 binding 不同：binding-first 恢复原 backend，不启动瞬时 provider', async () => {
     const harness = await boot();
     const profileA = mockProfile(harness.logDir, 'happy');
     const profileB = mockProfile(harness.logDir, 'happy', {
@@ -868,32 +855,34 @@ describe('marker-first 路由', () => {
     });
     await registerAcpAgents(harness, [profileA, profileB]);
     const sessionId = SessionId('resume-binding-mismatch');
-    harness.persistence.seed(sessionId, seedLogWithHeader(routeOf(profileB), 'mock-model-a'), { cwd: harness.logDir });
+    harness.persistence.seed(sessionId, seedLogMatchingLoadReplay(routeOf(profileB), 'mock-model-a'), { cwd: harness.logDir });
     // binding 属于 B；显式以 A resume
-    await presetBinding(harness, sessionId, bindingFixture(profileB, { agentSessionId: 'preset-b' }));
+    await presetBinding(harness, sessionId, bindingFixture(profileB, {
+      agentSessionId: 'preset-b',
+      overrides: { dshCommittedSeq: LOAD_REPLAY_MATCHED_COMMITTED_SEQ },
+    }));
 
     const handle = await harness.loop.resume(harness.ctx, {
       resumeSessionId: sessionId,
-      agentOptions: { provider: routeOf(profileA) },
+      agentOptions: { provider: routeOf(profileA), model: 'transient-default-model' },
     });
     harness.handles.push(handle);
     expect(handle.agent).toBeInstanceOf(AcpAgent);
-    expect(handle.agent.options.provider).toBe(routeOf(profileA));
-    // 钉死的既有契约：显式 resume 跳过日志窥测
-    expect(harness.persistence.inspectCalls).toEqual([]);
+    expect(handle.agent.options.provider).toBe(routeOf(profileB));
+    expect(handle.agent.options.model).toBe('mock-model-a');
+    expect(harness.persistence.inspectCalls).toEqual([sessionId]);
 
     handle.agent.followup(userText('continue'));
     await handle.agent.whenIdle();
 
-    // A 的 mock 只收到 session/new（binding 不生效 → 无 list/load；日志 header 指向
-    // 的是 B，与本路由无关 → 无 binding-missing 闩锁）；B 从未 spawn
-    expect(mockRequests(profileA.logPath)).toEqual(['initialize', 'session/new', 'session/prompt']);
-    expect(fs.existsSync(profileB.logPath)).toBe(false);
+    // A 从未 spawn；B 按原 binding load，不能被默认/显式选择覆盖。
+    expect(fs.existsSync(profileA.logPath)).toBe(false);
+    expect(mockRequests(profileB.logPath)).toEqual(['initialize', 'session/list', 'session/load', 'session/prompt']);
     expect((handle.agent as AcpAgent).continuityState.status).toBe('ok');
-    // binding 重写为 A 路由 + A 的新会话 id
+    // binding 仍属于 B。
     const bindings = await bindingEntries(harness, sessionId);
-    expect(bindings.at(-1)?.data.provider).toBe(routeOf(profileA));
-    expect(bindings.at(-1)?.data.agentSessionId).toBe('mock-session-1');
+    expect(bindings.at(-1)?.data.provider).toBe(routeOf(profileB));
+    expect(bindings.at(-1)?.data.agentSessionId).toBe('preset-b');
   }, 15_000);
 
  it('无 sidecar binding：日志有本路由 ACP 史 → binding-missing 阻断（不再沉默 session/new）', async () => {

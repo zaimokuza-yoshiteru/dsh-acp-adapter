@@ -24,8 +24,7 @@
 // - decodeHealthResponse：三种 probe 分支逐字段、 state 五态词表强制、
 //     畸形 body/行/probe 整体拒绝（传染）
 // - decodeSandboxFact：合法事实透传；缺席/畸形容忍归 null（不传染健康数据）
-// - loginStateOf（none/methods/unknown）、probeNeedsLogin、rowNeedsLogin、
-//     showsLoginHint、healthRowOf
+// - healthRowOf（按 Agent ID 匹配健康数据）
 // - errorMessageOf（起旁路 HTTP 词汇 ACP_HEALTH_PATH/acpAuthenticatePath/
 //     parseHttpErrorMessage 已随 dshAcp Remote 迁移删除）
 
@@ -55,14 +54,9 @@ import {
   formatArgsText,
   formatEnvText,
   healthRowOf,
-  healthLayersOf,
-  loginStateOf,
   panelSettingsOf,
   parseArgsText,
   parseEnvText,
-  probeNeedsLogin,
-  rowNeedsLogin,
-  showsLoginHint,
   sortedAgentIds,
   validateAgentDraft,
   withAgent,
@@ -160,12 +154,6 @@ const authErrorRow: AcpProviderHealth = {
   version: null,
   state: 'auth-required',
   probe: { status: 'error', at: 1_700_000_000_001, failureKind: 'auth_required', message: 'sign in first', phase: 'session' },
-};
-
-const timeoutRow: AcpProviderHealth = {
-  ...authErrorRow,
-  state: 'unavailable',
-  probe: { status: 'error', at: 1_700_000_000_002, failureKind: 'timeout', message: 'probe timed out', phase: null },
 };
 
 function validDraft(overrides: Partial<AgentDraft> = {}): AgentDraft {
@@ -983,86 +971,6 @@ describe('decodeHealthResponse', () => {
   });
 });
 
-// ---------- 健康四层（executable / initialize / session / prompt-auth） ----------
-
-describe('healthLayersOf', () => {
-  it('行缺席 → 四层全 unknown（端点未覆盖该 agent）', () => {
-    expect(healthLayersOf(undefined)).toEqual({
-      executable: { state: 'unknown' },
-      initialize: { state: 'unknown' },
-      session: { state: 'unknown' },
-      promptAuth: { state: 'unknown' },
-    });
-  });
-
-  it('never：只 executable 有事实，其余三层 unknown（未探测不猜测）', () => {
-    expect(healthLayersOf(neverRow)).toEqual({
-      executable: { state: 'failed' },
-      initialize: { state: 'unknown' },
-      session: { state: 'unknown' },
-      promptAuth: { state: 'unknown' },
-    });
-    const executableNever: AcpProviderHealth = { ...neverRow, executable: true, version: '0.1.0' };
-    expect(healthLayersOf(executableNever).executable).toEqual({ state: 'ok' });
-  });
-
-  it('ok：executable/initialize/session 全 ok（session 带模型数），promptAuth 诚实标 unverified', () => {
-    expect(healthLayersOf(okRow)).toEqual({
-      executable: { state: 'ok' },
-      initialize: { state: 'ok' },
-      session: { state: 'ok', modelCount: 2 },
-      promptAuth: { state: 'unverified' },
-    });
-    // 模型数 0 如实透传（agent 未广告模型选项）
-    const zeroModels: AcpProviderHealth = {
-      ...okRow,
-      probe: { status: 'ok', at: 1, modelCount: 0, authMethods: null, agentInfo: null, capabilities: null, cleanup: null, capabilityHash: null, protocolVersion: null, versionPolicy: null, versionCompatibility: null, matrix: okMatrix },
-    };
-    expect(healthLayersOf(zeroModels).session).toEqual({ state: 'ok', modelCount: 0 });
-  });
-
-  it('error + phase=session：initialize 已证 ok，session failed 带 failureKind', () => {
-    expect(healthLayersOf(authErrorRow)).toEqual({
-      executable: { state: 'ok' },
-      initialize: { state: 'ok' },
-      session: { state: 'failed', failureKind: 'auth_required' },
-      promptAuth: { state: 'needsLogin' },
-    });
-  });
-
-  it('error + phase=initialize：initialize failed，session blocked（未到达）', () => {
-    const initFailRow: AcpProviderHealth = {
-      ...authErrorRow,
-      probe: { status: 'error', at: 2, failureKind: 'protocol-error', message: 'bad handshake', phase: 'initialize' },
-    };
-    expect(healthLayersOf(initFailRow)).toEqual({
-      executable: { state: 'ok' },
-      initialize: { state: 'failed', failureKind: 'protocol-error' },
-      session: { state: 'blocked' },
-      promptAuth: { state: 'blocked' },
-    });
-  });
-
-  it('error + phase=null：不猜测到达点——initialize failed、session unknown', () => {
-    expect(healthLayersOf(timeoutRow)).toEqual({
-      executable: { state: 'ok' },
-      initialize: { state: 'failed', failureKind: 'timeout' },
-      session: { state: 'unknown' },
-      promptAuth: { state: 'blocked' },
-    });
-  });
-
-  it('promptAuth：auth_required → needsLogin（可行动），其余 failureKind → blocked', () => {
-    // auth_required 即使发生在 initialize 阶段也给 needsLogin（登录是唯一的下一步）
-    const earlyAuth: AcpProviderHealth = {
-      ...authErrorRow,
-      probe: { status: 'error', at: 3, failureKind: 'auth_required', message: 'sign in', phase: 'initialize' },
-    };
-    expect(healthLayersOf(earlyAuth).promptAuth).toEqual({ state: 'needsLogin' });
-    expect(healthLayersOf(timeoutRow).promptAuth).toEqual({ state: 'blocked' });
-  });
-});
-
 // ---------- 沙箱 enforcement 事实解码（容忍式，与 decodeHealthResponse 的整体拒绝不同） ----------
 
 describe('decodeSandboxFact', () => {
@@ -1124,65 +1032,8 @@ describe('decodeBoundSessions', () => {
   });
 });
 
-// ---------- 登录态派生 ----------
-
-describe('loginStateOf', () => {
-  it('ok + authMethods [] → 无需认证；非空 → N 种方式（原样透传）', () => {
-    const noMethods: AcpProviderHealth = { ...okRow, probe: { status: 'ok', at: 1, modelCount: 1, authMethods: [], agentInfo: null, capabilities: null, cleanup: null, capabilityHash: null, protocolVersion: null, versionPolicy: null, versionCompatibility: null, matrix: okMatrix } };
-    expect(loginStateOf(noMethods)).toEqual({ kind: 'none' });
-    const methods = [
-      { id: 'oauth', name: 'OAuth' },
-      { id: 'token', name: 'Token' },
-    ];
-    const withMethods: AcpProviderHealth = { ...okRow, probe: { status: 'ok', at: 1, modelCount: 1, authMethods: methods, agentInfo: null, capabilities: null, cleanup: null, capabilityHash: null, protocolVersion: null, versionPolicy: null, versionCompatibility: null, matrix: okMatrix } };
-    const state = loginStateOf(withMethods);
-    expect(state).toEqual({ kind: 'methods', methods });
-    if (state.kind === 'methods') expect(state.methods).toBe(methods);
-  });
-
-  it('unknown：行缺席 / never / error / authMethods null', () => {
-    expect(loginStateOf(undefined)).toEqual({ kind: 'unknown' });
-    expect(loginStateOf(neverRow)).toEqual({ kind: 'unknown' });
-    expect(loginStateOf(authErrorRow)).toEqual({ kind: 'unknown' });
-    const nullMethods: AcpProviderHealth = { ...okRow, probe: { status: 'ok', at: 1, modelCount: 1, authMethods: null, agentInfo: null, capabilities: null, cleanup: null, capabilityHash: null, protocolVersion: null, versionPolicy: null, versionCompatibility: null, matrix: okMatrix } };
-    expect(loginStateOf(nullMethods)).toEqual({ kind: 'unknown' });
-  });
-});
-
-describe('probeNeedsLogin / rowNeedsLogin / showsLoginHint / healthRowOf', () => {
-  it('probeNeedsLogin：仅 error + auth_required 为真', () => {
-    expect(probeNeedsLogin(authErrorRow)).toBe(true);
-    expect(probeNeedsLogin(timeoutRow)).toBe(false);
-    expect(probeNeedsLogin(okRow)).toBe(false);
-    expect(probeNeedsLogin(neverRow)).toBe(false);
-    expect(probeNeedsLogin(undefined)).toBe(false);
-  });
-
- it('rowNeedsLogin：probe auth_required 或 state=auth-required 任一成立即为真', () => {
-    expect(rowNeedsLogin(authErrorRow)).toBe(true); // 两者皆真
-    // state 单源：probe 是 timeout 但宿主判 state=auth-required（如 ok 零模型行）
-    expect(rowNeedsLogin({ ...timeoutRow, state: 'auth-required' })).toBe(true);
-    // probe 单源：state 未跟上但 probe 已报 auth_required
-    expect(rowNeedsLogin({ ...authErrorRow, state: 'unavailable' })).toBe(true);
-    expect(rowNeedsLogin(timeoutRow)).toBe(false);
-    expect(rowNeedsLogin(okRow)).toBe(false);
-    expect(rowNeedsLogin(undefined)).toBe(false);
-  });
-
-  it('showsLoginHint：要登录（rowNeedsLogin）或广告了 auth 方式才显示', () => {
-    expect(showsLoginHint(authErrorRow)).toBe(true); // auth_required error
-    expect(showsLoginHint({ ...timeoutRow, state: 'auth-required' })).toBe(true); // state 单源
-    expect(showsLoginHint(okRow)).toBe(true); // methods advertised
-    const noMethods: AcpProviderHealth = { ...okRow, probe: { status: 'ok', at: 1, modelCount: 1, authMethods: [], agentInfo: null, capabilities: null, cleanup: null, capabilityHash: null, protocolVersion: null, versionPolicy: null, versionCompatibility: null, matrix: okMatrix } };
-    expect(showsLoginHint(noMethods)).toBe(false); // 无需认证
-    const nullMethods: AcpProviderHealth = { ...okRow, probe: { status: 'ok', at: 1, modelCount: 1, authMethods: null, agentInfo: null, capabilities: null, cleanup: null, capabilityHash: null, protocolVersion: null, versionPolicy: null, versionCompatibility: null, matrix: okMatrix } };
-    expect(showsLoginHint(nullMethods)).toBe(false); // 未知
-    expect(showsLoginHint(timeoutRow)).toBe(false); // 非登录类失败
-    expect(showsLoginHint(neverRow)).toBe(false);
-    expect(showsLoginHint(undefined)).toBe(false);
-  });
-
-  it('healthRowOf 按 id 匹配；未覆盖/空列表 → undefined', () => {
+describe('healthRowOf', () => {
+  it('按 id 匹配；未覆盖或空列表时返回 undefined', () => {
     const rows = [okRow, neverRow, authErrorRow];
     expect(healthRowOf(rows, 'devin')).toBe(okRow);
     expect(healthRowOf(rows, 'foo')).toBe(neverRow);

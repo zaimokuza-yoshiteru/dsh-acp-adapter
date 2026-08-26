@@ -743,6 +743,33 @@ describe('对账纯函数', () => {
       expect(withText('café')).toBe(withText('café'));
       expect(withText('line1\nline2')).not.toBe(withText('line1\nline3'));
     });
+
+    it('同一 DSH turn 开头的宿主注入 + 用户输入合并为一个 ACP user 锚点；跨 turn 仍严格分开', () => {
+      const approvalNotice = 'The approval policy changed from "ask" to "never" (changed by the user).';
+      const prompt = 'Reply with exactly: ACP_SMOKE_OK';
+      const events = [
+        { type: 'turn/start', seq: 10, time: 10, data: { turn: 1 } },
+        { type: 'user/message', seq: 11, time: 11, data: userText(approvalNotice), surfaceOp: 'append' },
+        { type: 'user/message', seq: 12, time: 12, data: userText(prompt), surfaceOp: 'append' },
+        { type: 'turn/end', seq: 13, time: 13, data: { turn: 1, reason: { kind: 'completed' } } },
+        { type: 'turn/start', seq: 14, time: 14, data: { turn: 2 } },
+        { type: 'user/message', seq: 15, time: 15, data: userText('second turn'), surfaceOp: 'append' },
+        { type: 'turn/end', seq: 16, time: 16, data: { turn: 2, reason: { kind: 'completed' } } },
+      ] as unknown as SessionEvent[];
+
+      // from 故意落在 turn/start 之后，钉死函数会从区间前恢复 turn 归属。
+      const expected = expectedVisibleHistory(events, 11, 17);
+      expect(expected).toHaveLength(2);
+      expect(expected[0]).toMatchObject({ kind: 'user', text: approvalNotice + prompt });
+      expect(expected[1]).toMatchObject({ kind: 'user', text: 'second turn' });
+
+      const replay = replayEntries([
+        { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: approvalNotice + prompt }, messageId: 'u1' },
+        { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '' }, messageId: 'separator' },
+        { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'second turn' }, messageId: 'u2' },
+      ] as unknown as SessionUpdate[]);
+      expect(reconcileVisibleHistory(replay, expected)).toEqual({ ok: true });
+    });
   });
 
  describe('replayVisibleHistory（回放共轨：ReplayTranslator → 同一提取函数）', () => {

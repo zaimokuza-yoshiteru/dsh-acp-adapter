@@ -424,57 +424,12 @@
 .liveGroupName {
   color: var(--dsw-alias-label-tertiary);
 }
-.policy {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--dsw-alias-border-l2);
-}
 .policyNote {
   margin: 0;
   font-size: 12px;
   line-height: 18px;
   color: var(--dsw-alias-label-tertiary);
   overflow-wrap: anywhere;
-}
-/* 披露区使用 `key: value` 行内流（同一行自然换行，不再左右分栏）。
-   key 用 secondary 色分层：普通 500，安全相关（权限范围/沙箱）600。 */
-.kvLine {
-  margin: 0;
-  font-size: 12px;
-  line-height: 18px;
-  color: var(--dsw-alias-label-tertiary);
-  overflow-wrap: anywhere;
-}
-.kvKey {
-  font-weight: 500;
-  color: var(--dsw-alias-label-secondary);
-}
-.kvKeyStrong {
-  font-weight: 600;
-  color: var(--dsw-alias-label-secondary);
-}
-/* ACP 扩展：披露详情折叠区（原生 details/summary，无新依赖）；summary 用原生
-   展开三角，点击区整行。summary 与内容之间留 2px 间距、点击区带
-   内边距，与块内 4px 行距保持一致节奏。 */
-.policyDetails {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.policySummary {
-  margin: 0 -4px 2px;
-  padding: 2px 4px;
-  font-size: 12px;
-  line-height: 18px;
-  font-weight: 500;
-  color: var(--dsw-alias-label-secondary);
-  cursor: pointer;
-  border-radius: 4px;
-}
-.policySummary:hover {
-  background: var(--dsw-alias-interactive-bg-hover-solid);
 }
 /* 披露面板的协议能力区使用 `key: value` 行内流，并以细分隔线分组。 */
 .capBlock {

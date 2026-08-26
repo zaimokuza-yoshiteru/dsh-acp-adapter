@@ -6,9 +6,8 @@
  * declaration。
  *
  * registers the ACP settings section: agent CRUD over the `dsh-acp`
- * settings namespace, per-agent health cards fed by the `dshAcp` Remote
- * namespace (the handwritten bypass HTTP endpoints are gone), and
- * the always-visible boundary notice, and adds
+ * settings namespace and concise per-agent health states fed by the `dshAcp`
+ * Remote namespace (the handwritten bypass HTTP endpoints are gone), and adds
  * the enhanced model picker. moves both seats onto the slot store
  * discipline: each registration declares an exclusive store factory
  * (`store: createAcpPanelStore` / `store: createModelPickerStore`), the
@@ -353,6 +352,12 @@ export function apply(ctx: Context): void {
               if (failure !== undefined) throw new Error(failure)
               return
             }
+            if (probe.state.state === 'blank' && isAcpProvider(selection.provider)) {
+              const name = modelNameOf(directory.getSnapshot(), selection)
+              const failure = await service.adoptBlankSession(session.sessionId, selection, name)
+              if (failure !== undefined) throw new Error(failure)
+              return
+            }
             if (isAcpProvider(selection.provider)) {
               await service.enableNativeAccess(session.sessionId)
             }
@@ -406,6 +411,7 @@ export function apply(ctx: Context): void {
               // 非阻塞诊断），原生选择不受影响。
               backend: () => service.backendProbe(sessionId),
               useInNewSession: (selection, label) => service.useInNewSession(sessionId, selection, label),
+              adoptBlankSession: (selection, label) => service.adoptBlankSession(sessionId, selection, label),
               takeNotice: () => service.takePendingNotice(),
             }
             return {

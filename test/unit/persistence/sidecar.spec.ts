@@ -77,7 +77,12 @@ function bindingData(overrides: Partial<AcpBindingData> = {}): AcpBindingData {
 
 const BINDING_A: AcpBindingData = bindingData()
 
-const BINDING_B: AcpBindingData = bindingData({ agentSessionId: 'agent-session-2' })
+const BINDING_B: AcpBindingData = bindingData({
+  agentSessionId: 'agent-session-2',
+  generation: 2,
+  historyBaseSeq: BINDING_A.dshCommittedSeq,
+  establishedAt: TIME_BASE + 1,
+})
 
 function permissionData(requestId: string) {
   return createPermissionAskedAudit({
@@ -231,8 +236,7 @@ describe('createAcpSidecar 基本读写（v2 envelope 契约）', () => {
     expect(record?.provider).toBe('acp-devin')
     expect(record?.agentSessionId).toBe('agent-session-2')
     // permission entry 不干扰 binding 读取
-    await store.append(SessionId('sess-1'), { kind: 'binding', time: 40, data: BINDING_A })
-    expect((await latestBinding('sess-1'))?.agentSessionId).toBe('agent-session-1')
+    expect((await latestBinding('sess-1'))?.agentSessionId).toBe('agent-session-2')
   })
 
   it('不同 sessionId 各自独立行集（共享单库；目录不出现按 session 分文件）', async () => {
@@ -295,17 +299,29 @@ describe('createAcpSidecar 基本读写（v2 envelope 契约）', () => {
 })
 
 describe(' binding 语义门槛（readLatestBinding 三态）', () => {
-  it('最新 binding 语义畸形 → {status:"outdated"}，绝不回退更早的合法 binding', async () => {
+  it('已有合法 binding 时拒绝畸形覆盖，索引与 audit 同事务保持不变', async () => {
     await store.append(SessionId('sess-1'), { kind: 'binding', time: 10, data: BINDING_A })
- // 旧版（前）形状的 binding：envelope 合法但 payload 只有 provider/agentSessionId
-    //（写路径不做语义校验——与 JSONL 时代一致；索引表 upsert 覆盖合法 binding）
-    await store.append(SessionId('sess-1'), {
+    await expect(store.append(SessionId('sess-1'), {
       kind: 'binding',
       time: 20,
       data: { provider: 'acp-devin', agentSessionId: 'agent-session-9' } as unknown as AcpBindingData,
-    })
-    expect(await store.readLatestBinding(SessionId('sess-1'))).toEqual({ status: 'outdated' })
-    expect(warns.some((message) => message.includes('outdated'))).toBe(true)
+    })).rejects.toThrow('invalid binding')
+    expect((await latestBinding('sess-1'))?.agentSessionId).toBe('agent-session-1')
+    expect(await readEnvelopes('sess-1')).toHaveLength(1)
+  })
+
+  it('跨 provider、同代换 Agent session、generation 跳跃均拒绝且不污染原 binding', async () => {
+    await store.append(SessionId('sess-cas'), { kind: 'binding', time: 10, data: BINDING_A })
+    const invalid = [
+      bindingData({ provider: 'acp-codex', profileId: 'codex' }),
+      bindingData({ agentSessionId: 'other-session' }),
+      bindingData({ agentSessionId: 'future-session', generation: 3, historyBaseSeq: 8, establishedAt: TIME_BASE + 1 }),
+    ]
+    for (const [index, data] of invalid.entries()) {
+      await expect(store.append(SessionId('sess-cas'), { kind: 'binding', time: 20 + index, data })).rejects.toThrow()
+    }
+    expect((await latestBinding('sess-cas'))?.agentSessionId).toBe(BINDING_A.agentSessionId)
+    expect(await readEnvelopes('sess-cas')).toHaveLength(1)
   })
 
   it('语义门槛逐字段钉版：删任一必填字段即 outdated', async () => {
@@ -653,7 +669,6 @@ describe('listBindings 全量 binding 索引（双绑守卫扫描面）', () => 
   })
 
   it('outdated binding 的行集不进索引（语义门槛与 readLatestBinding 同源）', async () => {
-    await store.append(SessionId('sess-1'), { kind: 'binding', time: 10, data: BINDING_A })
     await store.append(SessionId('sess-1'), {
       kind: 'binding',
       time: 20,

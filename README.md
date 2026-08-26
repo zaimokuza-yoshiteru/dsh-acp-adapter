@@ -22,7 +22,7 @@ DSH 默认在 `http://127.0.0.1:3080` 启动 Web 页面。也可以按照
 在 DSH 运行的机器上执行：
 
 ```bash
-npx @deepseek-ai/dsh plugin --profile web add @zaimokuza/dsh-acp-adapter
+npx @deepseek-ai/dsh plugin --profile web add @zaimokuza/dsh-acp-adapter@next
 npx @deepseek-ai/dsh web
 ```
 

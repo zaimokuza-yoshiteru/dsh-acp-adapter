@@ -20,14 +20,13 @@
 //     configOptions:null 归一为"agent 未提供"、未知 type 字符串的选项逐项跳过不传染、
 // capabilities 的 null 词表与畸形拒绝；路径构造
 //     acpSessionOptionsPath 已随 dshAcp Remote 迁移删除）
-//   - pickerDegradationsOf（披露面板可用性提示逐条命中、顺序固定、全绿空列表）
 //   - liveOptionSectionOf（mode 先于 model；category model_config 入模型配置；category 缺席
 //     或未知 → other）/ partitionLiveOptions 五分区 / flattenLiveValues（group/flat 拍平带
 //     groupName）/ withLiveOptionValue（原生类型保真：select 收 string、boolean 收原生
 //     boolean；mode 类连带 currentModeId 仅限 string 值；未知 id 原引用返回）/ liveValueNameOf
 //   - decodeAgentDefaultModel / defaultModelOps（effort 缺席且有旧值才 unset）/
 //     isDefaultSelection（只比 provider/model）
-//   - presetOfPermissionsProjection（权限范围只读展示的数据源：currentValue 透传，
+//   - presetOfPermissionsProjection（ACP 选择确认的权限投影：currentValue 透传，
 // 非 plain object / 非 string → undefined； ack 清单与 gate 判定已删除）
 // - native-only 降级面：filterBucketsOf / nativeOnlyFilterOf /
 //     acpUnavailableMessageOf（AcpBackendProbe 三值派生）
@@ -68,10 +67,8 @@ import {
   liveOptionSectionOf,
   liveValueNameOf,
   partitionLiveOptions,
-  pickerDegradationsOf,
   presetOfPermissionsProjection,
   providerKindOf,
-  showsAcpCatalogScopeNote,
   filterBucketsOf,
   nativeOnlyFilterOf,
   acpUnavailableMessageOf,
@@ -999,7 +996,7 @@ describe('decodeAgentDefaultModel / defaultModelOps / isDefaultSelection', () =>
   });
 });
 
-// ---------- 权限范围只读展示 ----------
+// ---------- ACP 选择确认的 DSH 权限投影 ----------
 
 describe('presetOfPermissionsProjection', () => {
   it('非 plain object / currentValue 非 string → undefined', () => {
@@ -1011,71 +1008,6 @@ describe('presetOfPermissionsProjection', () => {
     expect(presetOfPermissionsProjection(null)).toBeUndefined();
     expect(presetOfPermissionsProjection('danger-full-access')).toBeUndefined();
     expect(presetOfPermissionsProjection([])).toBeUndefined();
-  });
-});
-
-// ---------- 披露面板：当前降级项 ----------
-
-describe('pickerDegradationsOf', () => {
-  const READY_SNAPSHOT: LiveOptionsSnapshot = {
-    sessionId: 's1',
-    configOptions: [],
-    currentModeId: null,
-    capabilities: {
-      loadSession: true,
-      sessionList: false,
-      sessionClose: false,
-      sessionDelete: true,
-      promptImage: true,
-      promptAudio: false,
-      promptEmbeddedContext: true,
-      mcpHttp: false,
-      mcpSse: false,
-    },
-    continuity: CONTINUITY_OK,
-    contextUsage: null,
-    ...LIVE_FIXED,
-  };
-
-  it('全绿（preset 在场 + 握手完成 + 目录健康）→ 空列表', () => {
-    expect(pickerDegradationsOf({ preset: 'workspace-write', snapshot: READY_SNAPSHOT, providerFailed: false })).toEqual([]);
-  });
-
-  it('可用性提示逐条命中且顺序固定（权限投影、会话能力、目录健康）', () => {
-    expect(pickerDegradationsOf({ preset: undefined, snapshot: READY_SNAPSHOT, providerFailed: true })).toEqual([
-      'presetUnknown',
-      'probeFailed',
-    ]);
-    // configOptions/capabilities 同时未知时仍分别披露。
-    const worst: LiveOptionsSnapshot = {
-      sessionId: 's1',
-      configOptions: null,
-      currentModeId: null,
-      capabilities: null,
-      continuity: CONTINUITY_OK,
-      contextUsage: null,
-      ...LIVE_FIXED,
-    };
-    expect(pickerDegradationsOf({ preset: undefined, snapshot: worst, providerFailed: true })).toEqual([
-      'presetUnknown',
-      'noConfigOptions',
-      'noHandshake',
-      'probeFailed',
-    ]);
-  });
-
-  it('快照未加载（null）：configOptions 与握手同时未知', () => {
-    expect(pickerDegradationsOf({ preset: 'workspace-write', snapshot: null, providerFailed: false })).toEqual([
-      'noConfigOptions',
-      'noHandshake',
-    ]);
-  });
-
-  it('configOptions null / capabilities null 各自独立命中', () => {
-    const noOptions: LiveOptionsSnapshot = { ...READY_SNAPSHOT, configOptions: null };
-    expect(pickerDegradationsOf({ preset: 'ws', snapshot: noOptions, providerFailed: false })).toEqual(['noConfigOptions']);
-    const noHandshake: LiveOptionsSnapshot = { ...READY_SNAPSHOT, capabilities: null };
-    expect(pickerDegradationsOf({ preset: 'ws', snapshot: noHandshake, providerFailed: false })).toEqual(['noHandshake']);
   });
 });
 
@@ -1115,16 +1047,6 @@ describe('formatCompactTokens / acpContextUsageLine', () => {
       .toBe('上下文 517K/1M · 51.7%');
     expect(acpContextUsageLine(backend, { used: 200, size: 1000, percent: 20, cost: { amount: 0.5, currency: 'USD' } }, t))
       .toBe('上下文 200/1K · 20% · Agent 上报的会话累计成本 $0.50');
-  });
-});
-
-describe('showsAcpCatalogScopeNote', () => {
- // /模型目录作用域：目录作用域说明只对 ACP provider 现身；本地直连 provider 无该提示。
-  it('is true only for acp-* providers', () => {
-    expect(showsAcpCatalogScopeNote('acp-mock')).toBe(true);
-    expect(showsAcpCatalogScopeNote('openai')).toBe(false);
-    expect(showsAcpCatalogScopeNote(null)).toBe(false);
-    expect(showsAcpCatalogScopeNote(undefined)).toBe(false);
   });
 });
 

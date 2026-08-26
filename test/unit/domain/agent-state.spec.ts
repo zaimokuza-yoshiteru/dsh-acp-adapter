@@ -49,18 +49,18 @@ describe('deriveAcpAgentState（五态）', () => {
     }
   });
 
-  it('probe ok + descriptor 声明 auth refs：模型目录非空 → ready；空目录 → auth-required（认证状态注入 形态）', () => {
+  it('probe ok 只证明协议运行时可用，模型目录不能证明登录状态', () => {
     expect(deriveAcpAgentState(BASE)).toBe('ready');
     expect(deriveAcpAgentState({ ...BASE, probe: { result: { kind: 'ok', modelCount: 1, hasModelConfigOption: false } } })).toBe('ready');
-    expect(deriveAcpAgentState({ ...BASE, probe: { result: { kind: 'ok', modelCount: 0, hasModelConfigOption: false } } })).toBe('auth-required');
+    expect(deriveAcpAgentState({ ...BASE, probe: { result: { kind: 'ok', modelCount: 0, hasModelConfigOption: false } } })).toBe('ready');
   });
 
   it(' 目录口径：probe ok 零 models 但 configOptions 含 category=model 项 → ready（kimi 形态：目录只经 configOptions 提供）', () => {
     // kimi 形态（、实际 ACP 行为）：legacy models 恒空，目录在 configOptions——
     // 旧口径会把 declaresAuthRefs 的 kimi 误判成 auth-required
     expect(deriveAcpAgentState({ ...BASE, probe: { result: { kind: 'ok', modelCount: 0, hasModelConfigOption: true } } })).toBe('ready');
-    // 反例：无 model 类 configOption 的零 models 仍按原口径折 auth-required（devin 认证状态注入 检出不变）
-    expect(deriveAcpAgentState({ ...BASE, probe: { result: { kind: 'ok', modelCount: 0, hasModelConfigOption: false } } })).toBe('auth-required');
+    // 无目录同样不能反向证明未登录；只有显式 auth_required 才进入登录阻断态。
+    expect(deriveAcpAgentState({ ...BASE, probe: { result: { kind: 'ok', modelCount: 0, hasModelConfigOption: false } } })).toBe('ready');
   });
 
   it('probe ok + 未声明 auth refs（无 descriptor）→ ready（不看模型数）', () => {

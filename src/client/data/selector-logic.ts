@@ -834,34 +834,7 @@ export function isDefaultSelection(
   return stored?.provider === provider && stored?.model === model
 }
 
-// ---------- 披露面板：当前降级项（事实驱动，逐条可核） ----------
-
-/** 披露面板降级项的 token 词表（文案在 selector-locales 的 `deg.*` 键）。 */
-export type PickerDegradation = 'presetUnknown' | 'noConfigOptions' | 'noHandshake' | 'probeFailed'
-
-/**
- * 推导 ACP 披露面板的「当前降级项」列表（仅 acp 路由渲染面板时调用）。
- * 每条对应一类能力缺口的实事：
- * - `presetUnknown`：DSH 权限范围投影缺席（安全边界读数缺失，单列一条）；
- * - `noConfigOptions`：快照未加载或 agent 未提供会话级 config options；
- * - `noHandshake`：会话未懒启动/未握手，协议能力未知（快照 capabilities 为 null）；
- * - `probeFailed`：当前 provider 的模型目录探测失败（directory.failures 命中）。
- * 顺序固定（权限投影、会话能力、目录健康）；无降级项时调用方显示 deg.none。
- */
-export function pickerDegradationsOf(args: {
-  preset: string | undefined
-  snapshot: LiveOptionsSnapshot | null
-  providerFailed: boolean
-}): readonly PickerDegradation[] {
-  const out: PickerDegradation[] = []
-  if (args.preset === undefined) out.push('presetUnknown')
-  if (args.snapshot === null || args.snapshot.configOptions === null) out.push('noConfigOptions')
-  if (args.snapshot === null || args.snapshot.capabilities === null) out.push('noHandshake')
-  if (args.providerFailed) out.push('probeFailed')
-  return out
-}
-
-// ---------- 权限范围只读展示（/权限与模式双轴展示：DSH 权限轴的镜像，非本插件可改） ----------
+// ---------- DSH 权限投影（仅用于 ACP 选择时请求宿主原生确认） ----------
 
 /**
  * Decode the `permissions` session projection's current preset id (the host
@@ -869,8 +842,8 @@ export function pickerDegradationsOf(args: {
  * Undefined when the capability is absent or the value is malformed.
  *
  * 口径：DSH 权限范围是安全边界（宿主 sandbox 强制的能力上限），与 ACP
- * agent mode（agent 侧行为配置）是两个独立维度。本插件只读展示该档位——不
- * 修改、不阻断、不做二次确认（Full Access 确认只留 DSH 原生一层）。
+ * agent mode（agent 侧行为配置）是两个独立维度。本插件只读该档位，
+ * 并在选择 ACP 时复用 DSH 原生 Full Access 确认。
  */
 export function presetOfPermissionsProjection(value: unknown): string | undefined {
   if (!isPlainObject(value)) return undefined

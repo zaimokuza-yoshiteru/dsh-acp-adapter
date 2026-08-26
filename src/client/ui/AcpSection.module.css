@@ -28,42 +28,6 @@
   line-height: 22px;
   color: var(--dsw-alias-label-tertiary);
 }
-/* 常驻边界说明：普通信息盒样式，无折叠控件（产品边界说明 要求常驻可见）。 */
-.boundary {
-  margin: 0;
-  padding: 10px 12px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-left: 3px solid var(--dsw-alias-brand-primary);
-  border-radius: 8px;
-  background: var(--dsw-alias-bg-module-platform);
-  font-size: 12px;
-  line-height: 18px;
-  color: var(--dsw-alias-label-secondary);
-}
-/* 常驻能力披露盒：紧随 boundary，同样无折叠控件。 */
-.disclosure {
-  margin: 0;
-  padding: 10px 12px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 8px;
-  background: var(--dsw-alias-bg-module-platform);
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.disclosureTitle {
-  margin: 0;
-  font-size: 12px;
-  line-height: 18px;
-  font-weight: 500;
-  color: var(--dsw-alias-label-secondary);
-}
-.disclosureLine {
-  margin: 0;
-  font-size: 12px;
-  line-height: 18px;
-  color: var(--dsw-alias-label-tertiary);
-}
 .notice {
   margin: 0;
   font-size: 12px;
@@ -139,42 +103,12 @@
   opacity: 0.4;
   cursor: default;
 }
-/* Agent 卡片折叠交互：卡片折叠钮与 chevron 旋转态（chevronFlip 供下拉触发钮的下箭头用）。 */
-.expandButton {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  border: none;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--dsw-alias-label-tertiary);
-  cursor: pointer;
-}
-.expandButton:hover {
-  background: var(--dsw-alias-interactive-bg-hover-solid);
-  color: var(--dsw-alias-label-primary);
-}
 .chevron {
   display: inline-flex;
   transition: transform 0.15s ease;
 }
-.chevronOpen {
-  transform: rotate(90deg);
-}
 .chevronFlip {
   transform: rotate(180deg);
-}
-/* Agent 卡片折叠交互：折叠态也在位的一行状态摘要（label 小字 muted，与健康卡同词表）。 */
-.statusLine {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  font-size: 12px;
-  line-height: 18px;
 }
 .rows {
   list-style: none;
@@ -195,11 +129,13 @@
 .rowHead {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 10px;
 }
 .rowIdentity {
   display: inline-flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
   min-width: 0;
 }
@@ -208,62 +144,39 @@
   line-height: 22px;
   font-weight: 500;
 }
+.statusBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 18px;
+}
+.statusDot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.statusReady {
+  color: var(--dsw-alias-state-success-primary);
+}
+.statusError {
+  color: var(--dsw-alias-state-error-primary);
+}
+.statusMuted {
+  color: var(--dsw-alias-label-tertiary);
+}
 .rowActions {
   display: inline-flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 4px;
   margin-left: auto;
 }
-.commandLine {
-  margin: 0;
-  font-family: var(--ds-font-family-code, monospace);
-  font-size: 12px;
-  line-height: 18px;
-  color: var(--dsw-alias-label-secondary);
-  overflow-wrap: anywhere;
-}
-.health {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  border-top: 1px solid var(--dsw-alias-border-l2);
-  padding-top: 10px;
-}
-/* 健康信息堆叠布局：健康卡各行改堆叠格式——小标题（label，muted）独占一行，
-   正文（value）换行在下一行；不再左 label 右 value 同行挤压。
-   label 与 value 同 12/18（宿主 dt/dd 同号、仅靠颜色分层的先例，
-   见 ui-conversation 构建 CSS），上轮拍脑袋的 11/16 移除。 */
-.healthRow {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 2px;
-  font-size: 12px;
-  line-height: 18px;
-}
-.healthLabel {
-  flex: none;
-  color: var(--dsw-alias-label-tertiary);
-}
-.healthValue {
-  min-width: 0;
-  color: var(--dsw-alias-label-primary);
-  overflow-wrap: anywhere;
-}
 .healthMuted {
   color: var(--dsw-alias-label-tertiary);
-}
-.healthBad {
-  color: var(--dsw-alias-state-error-primary);
-}
-.healthOk {
-  color: var(--dsw-alias-state-success-primary);
-}
-.authMethods {
-  display: inline-flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  align-items: center;
 }
 /* 编辑器里疑似 secret 的存量 env 键行（键名 + 已配置 + 移除，值不回显）。 */
 .maskedEnvRows {

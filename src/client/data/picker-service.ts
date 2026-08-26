@@ -469,6 +469,11 @@ export class PickerService {
       const detail = probe.status === 'unavailable' ? ` (${probe.message})` : ''
       throw new Error(`ACP subsystem unavailable; model selection is disabled until backend identity can be verified${detail}`)
     }
+    if (probe.state.state === 'blank' && isAcpProvider(selection.provider)) {
+      const failure = await this.adoptBlankSession(sessionId, selection)
+      if (failure !== undefined) throw new Error(failure)
+      return
+    }
     if (!isSameBackendSelection(selection, probe.state, current?.provider)) {
       throw new Error('changing execution backend requires confirmation and a new session')
     }
@@ -519,7 +524,7 @@ export class PickerService {
     if (this.newSessionInflight) return this.deps.t('cross.inflight')
     this.newSessionInflight = true
     try {
-      return await this.runCrossHandoff(ticket)
+      return await this.runCrossHandoff(ticket, 'cross')
     } finally {
       this.newSessionInflight = false
     }
@@ -530,7 +535,28 @@ export class PickerService {
     return this.confirmCrossHandoff(this.prepareCrossHandoff(sessionId, selection, label))
   }
 
-  private async runCrossHandoff(ticket: CrossHandoffTicket): Promise<string | undefined> {
+  /**
+   * 空白 native session 无可迁移上下文，但 rc.2 也无法替换其已实例化的
+   * AgentHandle。透明创建并打开 ACP session；不修改旧 session 的模型或权限。
+   */
+  async adoptBlankSession(sessionId: string, selection: PickerModelSelection, label?: string): Promise<string | undefined> {
+    const probe = await this.backendProbe(sessionId)
+    if (probe.status !== 'ok' || probe.state?.state !== 'blank') {
+      throw new Error('blank-session adoption requires a verified blank execution backend')
+    }
+    if (!isAcpProvider(selection.provider)) {
+      throw new Error('blank-session ACP adoption requires an ACP model')
+    }
+    if (this.newSessionInflight) return this.deps.t('cross.inflight')
+    this.newSessionInflight = true
+    try {
+      return await this.runCrossHandoff(this.prepareCrossHandoff(sessionId, selection, label), 'blank')
+    } finally {
+      this.newSessionInflight = false
+    }
+  }
+
+  private async runCrossHandoff(ticket: CrossHandoffTicket, kind: 'cross' | 'blank'): Promise<string | undefined> {
     const t = this.deps.t
     const model = ticket.label ?? ticket.selection.model
     // ---- ① 工作区解析（先于任何写；失败 → 请用户选择，不猜测目录） ----
@@ -614,7 +640,7 @@ export class PickerService {
     // 提示先于 open 落槽：新会话的 seat 挂载即取走本条（attach 失败如实告知未分组）。
     this.pendingNotice = attachFailure !== null
       ? t('cross.attachFailed', { model, message: attachFailure })
-      : t('cross.started', { model })
+      : t(kind === 'blank' ? 'blank.started' : 'cross.started', { model })
     this.deps.sessions.open(newSessionId)
     return undefined
   }

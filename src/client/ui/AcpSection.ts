@@ -18,23 +18,19 @@
 
 import { createElement as h, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import { IconChevronDownOutline14, IconChevronRightOutline14 } from '@deepseek-ai/dsh-client-ui-primitives'
+import { IconChevronDownOutline14 } from '@deepseek-ai/dsh-client-ui-primitives'
 import {
   ACP_BUILTIN_AGENT_TEMPLATES,
-  commandLineOf,
   draftFromAgent,
   draftFromTemplate,
   dropMaskedEnvKey,
   emptyDraft,
   errorMessageOf,
-  healthLayersOf,
   healthRowOf,
-  loginStateOf,
-  showsLoginHint,
   sortedAgentIds,
   validateAgentDraft,
 } from '../data/logic.ts'
-import type { AcpAgentConfig, AcpCapabilityMatrixRow, AcpProviderHealth, AgentDraft, DraftError, HealthLayerView } from '../data/logic.ts'
+import type { AcpAgentConfig, AcpProviderHealth, AgentDraft, DraftError } from '../data/logic.ts'
 import type { AcpLocaleKey } from './locales.ts'
 import type { AcpPanelSnapshot, HealthState } from '../data/stores/panel-store.ts'
 import css from './AcpSection.module.css'
@@ -145,15 +141,6 @@ function Loaded({ t, useStore, panel }: {
   const children: ReactNode[] = [
     h('h2', { key: 'title', className: css.title }, t('title')),
     h('p', { key: 'intro', className: css.intro }, t('intro')),
-    // 产品边界说明 边界说明：常驻、不可折叠，任何状态下都渲染。
-    h('p', { key: 'boundary', className: css.boundary, role: 'note' }, t('boundary')),
-    // 常驻披露只说明实际复用边界。正式 ACP 会话使用 Native Agent Access，
-    // health probe 的临时沙箱事实不是会话能力，因此不在这里展示。
-    h('div', { key: 'disclosure', className: css.disclosure, role: 'note' },
-      h('p', { className: css.disclosureTitle }, t('discTitle')),
-      h('p', { className: css.disclosureLine }, t('discReusable')),
-      h('p', { className: css.disclosureLine }, t('discNotReusable')),
-    ),
   ]
 
   if (settings.status !== 'ready') {
@@ -293,7 +280,7 @@ function Loaded({ t, useStore, panel }: {
   return h('div', { className: css.section }, children)
 }
 
-/** One configured agent (可折叠的精简 Agent 卡片): head row = 名称 + 重新检查/编辑/删除 + 展开 chevron, plus a one-line status summary; identity detail rows, command line, delete flow and health card render once expanded, plus its editor when open. */
+/** 一个已配置 Agent：默认只展示名称、可操作状态和管理动作。 */
 function AgentCard(props: {
   t: AcpTranslate
   id: string
@@ -316,13 +303,6 @@ function AgentCard(props: {
   const [boundCount, setBoundCount] = useState<number | undefined>(undefined)
   const checking = props.health.status === 'loading' || props.health.checkingAgentIds.includes(id)
   const checkError = props.health.agentErrors[id]
- // Agent 卡片折叠交互：卡片默认折叠——头行 + 一行状态摘要常驻；命令行与健康卡详情点击
- // 展开后渲染。编辑动作自动展开（编辑器在卡内）。精简卡片头部：头行精简为「仅
-  // 名称 + 重新检查/编辑/删除 + 展开 chevron」——身份 tag 移出头行
-  // （「ACP」tag 删除，面板本身就是 ACP 语境；id/runtime 收进
-  // 展开详情顶部的堆叠行，信息不丢），「重新检查」从详情底部上提到头行。
-  const [expanded, setExpanded] = useState(false)
-
   const confirmDelete = (): void => {
     setDeleting(true)
     setFailure(undefined)
@@ -338,29 +318,27 @@ function AgentCard(props: {
       .finally(() => { setDeleting(false) })
   }
 
- // 折叠态的一行状态摘要：复用 五态行展示词；健康端点未覆盖该 agent
-  // 时如实标注（不可达 / 已保存未探测）。
   const healthRow = healthRowOf(props.health.rows, id)
-  const statusSummary: ReactNode = healthRow === undefined
-    ? h('span', { className: css.healthMuted },
-      t(props.health.status === 'unreachable' ? 'healthUnavailableCard' : 'stateSavedUnverified'))
-    : stateValue(t, healthRow.state)
+  const state = healthRow?.state
+  const statusText = state === undefined
+    ? t(props.health.status === 'unreachable' ? 'healthUnavailableCard' : 'stateSavedUnverified')
+    : stateText(t, state)
+  const statusTone = state === 'ready'
+    ? css.statusReady
+    : state === undefined || state === 'saved-unverified'
+      ? css.statusMuted
+      : css.statusError
+  const probeError = healthRow?.probe.status === 'error' ? healthRow.probe.message : undefined
+  const diagnostic = checkError ?? probeError
 
   const children: ReactNode[] = [
     h('div', { key: 'head', className: css.rowHead },
-      h('button', {
-        type: 'button',
-        className: css.expandButton,
-        'aria-expanded': expanded,
-        'aria-label': t(expanded ? 'collapseDetails' : 'expandDetails'),
-        title: t(expanded ? 'collapseDetails' : 'expandDetails'),
-        onClick: () => { setExpanded((previous) => !previous) },
-      }, h(IconChevronRightOutline14, {
-        size: 14,
-        className: expanded ? `${css.chevron} ${css.chevronOpen}` : css.chevron,
-      })),
       h('span', { className: css.rowIdentity },
         h('span', { className: css.rowName }, config.name),
+        h('span', { className: `${css.statusBadge} ${statusTone}` },
+          h('span', { className: css.statusDot, 'aria-hidden': true }),
+          statusText,
+        ),
       ),
       h('span', { className: css.rowActions },
         h('button', {
@@ -372,10 +350,7 @@ function AgentCard(props: {
         h('button', {
           type: 'button',
           className: `${css.secondaryButton} ${css.compact}`,
-          onClick: () => {
-            setExpanded(true)
-            props.onEdit()
-          },
+          onClick: props.onEdit,
         }, t('edit')),
         h('button', {
           type: 'button',
@@ -391,19 +366,19 @@ function AgentCard(props: {
         }, t('remove')),
       ),
     ),
-    h('div', { key: 'summary', className: css.statusLine },
-      h('span', { className: css.healthLabel }, t('stateLabel')),
-      statusSummary,
-    ),
   ]
 
-  if (checkError !== undefined) {
-    children.push(h('p', { key: 'check-error', className: css.error, role: 'alert' },
-      t('healthCheckFailed', { message: checkError })))
+  if (diagnostic !== undefined) {
+    children.push(h('p', { key: 'diagnostic', className: css.error, role: 'alert' },
+      t('healthCheckFailed', { message: diagnostic })))
   }
-
-  if (expanded) {
-    children.push(h('p', { key: 'cmd', className: css.commandLine }, `$ ${commandLineOf(config)}`))
+  if (state === 'auth-required' && config.loginHint !== undefined) {
+    children.push(h('p', { key: 'login-hint', className: css.hint },
+      t('loginInstruction', { hint: config.loginHint })))
+  }
+  if (state === 'incompatible') {
+    children.push(h('p', { key: 'incompatible-hint', className: css.hint },
+      t('incompatibleInstruction')))
   }
 
   if (confirming) {
@@ -430,24 +405,6 @@ function AgentCard(props: {
     ))
   }
 
-  if (expanded) {
- // 精简卡片头部：头行移除的身份信息收进详情顶部堆叠行（缺席不渲染，不冒充
-    // 「未知」；编辑器不暴露这两个高级字段的纪律不变——卡片只读展示）。
-    children.push(h(HealthCard, {
-      key: 'health',
-      t,
-      id,
-      loginHint: config.loginHint,
-      health: props.health,
-      identityRows: [
-        healthField(t('fieldId'), id, 'detail-id'),
-        config.runtime === undefined
-          ? null
-          : healthField(t('detailRuntime'), config.runtime, 'detail-runtime'),
-      ],
-    }))
-  }
-
   if (props.editing) {
     children.push(h(AgentForm, {
       key: `edit-${id}`,
@@ -465,248 +422,20 @@ function AgentCard(props: {
   return h('li', { className: css.rowCard }, children)
 }
 
-/**
- * The per-agent health card（四层：executable / initialize / session /
- * prompt-auth，healthLayersOf 驱动）。分层语义见 logic.ts：probe 到达 session
- * 阶段即证明 initialize 已通过；prompt-auth 无零消耗探测手段，通过也只标
- * 「未验证」。顶部五态 `state` 行由 host 侧派生；认证行只展示
- * 登录态事实与 loginHint——登录动作在 agent 自家 CLI 完成（external-login-only，
- * 面板不再有 authenticate 按钮）。
- */
-function HealthCard(props: {
-  t: AcpTranslate
-  id: string
-  loginHint: string | undefined
-  health: HealthState
- /** 精简卡片头部：头行精简后收进详情顶部的身份堆叠行（ID/runtime）。 */
-  identityRows: readonly ReactNode[]
-}): ReactNode {
-  const { t, id, health } = props
-  const row = healthRowOf(health.rows, id)
-
-  const rows: ReactNode[] = [...props.identityRows]
-  if (row === undefined) {
-    // No row: the endpoint never covered this agent (just added) or is down.
-    rows.push(h('div', { key: 'none', className: css.healthRow },
-      h('span', { className: css.healthMuted },
-        t(health.status === 'unreachable' ? 'healthUnavailableCard' : 'healthNoRow')),
-    ))
-  } else {
-    const layers = healthLayersOf(row)
- // ── 五态行（host 侧 deriveAcpAgentState 的派生事实）
-    rows.push(healthField(t('stateLabel'), stateValue(t, row.state), 'state', row.state === 'saved-unverified'))
-    // ── executable 层（既有可执行/版本行）
-    rows.push(healthField(t('healthExecutable'), row.executable
-      ? h('span', { className: css.healthOk }, t('healthFound'))
-      : h('span', { className: css.healthBad }, t('healthMissing')), 'exe'))
-    rows.push(healthField(t('healthVersion'), row.version ?? t('healthUnknown'), 'ver', row.version === null))
-    // ── initialize 层
-    rows.push(layerRow(t, t('layerInitialize'), layers.initialize, 'init', () => {
-      const info = row.probe.status === 'ok' ? row.probe.agentInfo : null
-      return info === null
-        ? t('healthInitOk')
-        : t('healthInitOkInfo', { name: info.name, version: info.version })
-    }))
- // 端到端能力矩阵（端到端能力）：不再直译 initialize 广告布尔——host 侧已把
-    // 广告 × adapter path × host seam 折成三值交集（matrix 是 probe-ok 必填键）。
-    if (row.probe.status === 'ok') {
-      rows.push(...capabilityMatrixRows(t, row.probe.matrix))
-    }
-    // ── session 层（ok 值带模型选项数；probe 失败 message 与上次探测行归此层）
-    rows.push(layerRow(t, t('layerSession'), layers.session, 'sess', (layer) =>
-      t('healthSessionOk', { count: layer.modelCount ?? 0 })))
-    if (row.probe.status === 'error') {
-      rows.push(h('div', { key: 'probeError', className: css.healthRow },
-        h('span', { className: css.healthBad }, row.probe.message),
-      ))
-    }
-    rows.push(healthField(
-      t('healthProbeAt'),
-      row.probe.at === null ? t('healthProbeNever') : new Date(row.probe.at).toLocaleString(),
-      'at',
-      row.probe.at === null,
-    ))
- // ──：probe 会话清理事实（probe 清理）+ 能力指纹。delete 未广告/失败是明确降级，
-    // 如实展示；cleanup/capabilityHash 为 null（旧条目）时该子行不渲染。
-    if (row.probe.status === 'ok' && row.probe.cleanup !== null) {
-      const cleanup = row.probe.cleanup
-      const degraded = cleanup.delete !== 'done'
-      const text = cleanup.delete === 'done'
-        ? t('cleanupDone')
-        : cleanup.delete === 'not-advertised'
-          ? t('cleanupDeleteNotAdvertised')
-          : t('cleanupDeleteFailed', { message: cleanup.message ?? '' })
-      rows.push(healthField(
-        t('cleanupLabel'),
-        degraded ? h('span', { className: css.healthBad }, text) : text,
-        'cleanup',
-      ))
-    }
-    if (row.probe.status === 'ok' && row.probe.capabilityHash !== null) {
-      rows.push(healthField(t('capabilityHashLabel'), row.probe.capabilityHash, 'capabilityHash', true))
-    }
- // ── readiness：协议版本行恒渲染（probe-ok 时）；兼容状态行只在可判定
-    // 时渲染（无 descriptor/握手无版本 = 诚实不渲染，不冒充「兼容」）。drifted
-    // 高亮——钉版是验收事实，漂移不阻断但要可见。
-    if (row.probe.status === 'ok') {
-      rows.push(healthField(
-        t('healthProtocolVersion'),
-        row.probe.protocolVersion === null ? t('healthUnknown') : `v${String(row.probe.protocolVersion)}`,
-        'protocolVersion',
-        row.probe.protocolVersion === null,
-      ))
-      if (row.probe.versionCompatibility !== null) {
-        const compat = row.probe.versionCompatibility
-        const pin = row.probe.versionPolicy?.adapter ?? row.probe.versionPolicy?.wrappedCli ?? ''
-        const text = compat === 'pinned'
-          ? t('versionCompatPinned', { version: pin })
-          : compat === 'drifted'
-            ? t('versionCompatDrifted', { pin, current: row.probe.agentInfo?.version ?? '' })
-            : t('versionCompatUnpinned')
-        rows.push(healthField(
-          t('versionCompatLabel'),
-          compat === 'drifted' ? h('span', { className: css.healthBad }, text) : text,
-          'versionCompat',
-        ))
-      }
-    }
-    // ── prompt-auth 层（状态行 + 认证事实行 + 登录指引行）
-    rows.push(layerRow(t, t('layerPromptAuth'), layers.promptAuth, 'promptAuth'))
-    rows.push(h('div', { key: 'auth', className: css.healthRow },
-      h('span', { className: css.healthLabel }, t('authLabel')),
-      h('span', { className: css.healthValue }, authText(t, row)),
-    ))
-    if (showsLoginHint(row) && props.loginHint !== undefined) {
-      rows.push(h('div', { key: 'hint', className: css.healthRow },
-        h('span', { className: css.healthLabel }, t('loginHintLabel')),
-        h('span', { className: css.healthMuted }, props.loginHint),
-      ))
-    }
-  }
-
- // 精简卡片头部：详情底部原「重新检查」actions 行移除——按钮已上提到卡片头行右侧。
-  return h('div', { className: css.health }, rows)
-}
-
 /** 五态行的展示词（各态如实标注）。 */
-function stateValue(t: AcpTranslate, state: AcpProviderHealth['state']): ReactNode {
+function stateText(t: AcpTranslate, state: AcpProviderHealth['state']): string {
   switch (state) {
     case 'ready':
-      return h('span', { className: css.healthOk }, t('stateReady'))
+      return t('stateReady')
     case 'auth-required':
-      return h('span', { className: css.healthBad }, t('stateAuthRequired'))
+      return t('stateAuthRequired')
     case 'unavailable':
-      return h('span', { className: css.healthBad }, t('stateUnavailable'))
+      return t('stateUnavailable')
     case 'incompatible':
-      return h('span', { className: css.healthBad }, t('stateIncompatible'))
+      return t('stateIncompatible')
     case 'saved-unverified':
       return t('stateSavedUnverified')
   }
-}
-
-/**
- * The auth cell: plain login-state text（external-login-only：不再渲染登录
- * 按钮——登录动作在 agent 自家 CLI 完成，面板只展示事实与指引）。
- */
-function authText(t: AcpTranslate, row: AcpProviderHealth): ReactNode {
-  const login = loginStateOf(row)
-  if (login.kind === 'none') return t('authNone')
-  if (login.kind === 'unknown') {
-    return h('span', { className: css.healthMuted }, t('authUnknown'))
-  }
-  return t('authMethodsCount', { count: login.methods.length })
-}
-
-/**
- * 一层健康的 label/value 行：ok 用层自定义文案（okText），其余状态落状态词——
- * failed 带 kind 分流、needsLogin 可行动、blocked/unverified/unknown 各如实标注。
- */
-function layerRow(
-  t: AcpTranslate,
-  label: string,
-  layer: HealthLayerView,
-  key: string,
-  okText?: (layer: HealthLayerView) => string,
-): ReactNode {
-  let value: string
-  // css.* 索引在 noUncheckedIndexedAccess 下是 string | undefined；className 同样接受 undefined。
-  let cls: string | undefined = css.healthValue
-  if (layer.state === 'ok') {
-    value = okText?.(layer) ?? ''
-    cls = css.healthOk
-  } else if (layer.state === 'failed') {
-    value = t('probeError', { kind: layer.failureKind ?? 'unknown' })
-    cls = css.healthBad
-  } else if (layer.state === 'needsLogin') {
-    value = t('healthNeedsLogin')
-    cls = css.healthBad
-  } else if (layer.state === 'blocked') {
-    value = t('healthBlocked')
-    cls = css.healthMuted
-  } else if (layer.state === 'unverified') {
-    value = t('healthUnverified')
-    cls = css.healthMuted
-  } else {
-    value = t('healthProbeNever')
-    cls = css.healthMuted
-  }
-  return h('div', { key, className: css.healthRow },
-    h('span', { className: css.healthLabel }, label),
-    h('span', { className: cls }, value),
-  )
-}
-
-/** One label/value line of the health card. */
-function healthField(label: string, value: ReactNode, key: string, muted = false): ReactNode {
-  return h('div', { key, className: css.healthRow },
-    h('span', { className: css.healthLabel }, label),
-    h('span', { className: muted ? css.healthMuted : css.healthValue }, value),
-  )
-}
-
-/** 矩阵行 id → 行标签 locale 键（词表外 id 用原始 id 作标签，向前兼容 host 新增行）。 */
-const MATRIX_LABEL_KEYS: Record<string, AcpLocaleKey> = {
-  loadSession: 'capLoadSession',
-  sessionList: 'capSessionList',
-  sessionClose: 'capSessionClose',
-  sessionDelete: 'capSessionDelete',
-  promptImage: 'capPromptImage',
-  promptAudio: 'capPromptAudio',
-  promptEmbeddedContext: 'capPromptEmbeddedContext',
-  mcpHttp: 'capMcpHttp',
-  mcpSse: 'capMcpSse',
-}
-
-/**
- * 端到端能力矩阵的渲染：每行 = 标签 + 三值状态词（supported/degraded/
- * unsupported 分色），note 在位时追加一条 muted 次级说明（host 事实原文）。
- */
-function capabilityMatrixRows(t: AcpTranslate, matrix: readonly AcpCapabilityMatrixRow[]): ReactNode[] {
-  const rows: ReactNode[] = [h('div', { key: 'cap-matrix-title', className: css.healthRow },
-    h('span', { className: css.healthLabel }, t('capMatrixTitle')))]
-  for (const entry of matrix) {
-    const labelKey = MATRIX_LABEL_KEYS[entry.id]
-    const statusCls = entry.status === 'supported'
-      ? css.healthOk
-      : entry.status === 'degraded'
-        ? css.healthBad
-        : css.healthMuted
-    const statusWord = t(entry.status === 'supported'
-      ? 'capStatusSupported'
-      : entry.status === 'degraded'
-        ? 'capStatusDegraded'
-        : 'capStatusUnsupported')
-    rows.push(h('div', { key: `cap-${entry.id}`, className: css.healthRow },
-      h('span', { className: css.healthLabel }, labelKey === undefined ? entry.id : t(labelKey)),
-      h('span', { className: statusCls }, statusWord),
-    ))
-    if (entry.note !== undefined) {
-      rows.push(h('div', { key: `cap-${entry.id}-note`, className: css.healthRow },
-        h('span', { className: css.healthMuted }, entry.note),
-      ))
-    }
-  }
-  return rows
 }
 
 /** The add/edit editor card: staged text fields validated live, saved through the controller. */

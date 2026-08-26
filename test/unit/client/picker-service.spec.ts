@@ -793,6 +793,32 @@ describe('PickerService backendOf / useInNewSession / takePendingNotice', () => 
     expect(service.takePendingNotice()).toBeNull();
   });
 
+  it('空白 native 会话选择 ACP：透明创建并打开新会话，不污染旧 session 的模型', async () => {
+    const h = createFlowHarness();
+    const fake = createFakeRemote([]);
+    fake.remote.backendOf = () => Promise.resolve({ ok: true as const, value: { state: 'blank' as const } });
+    h.deps.acpRemote = fake.remote;
+    const selectModel = vi.fn(() => Promise.resolve({
+      result: { ok: true as const, value: { selected: { provider: 'acp-devin', model: 'm' } } },
+    }));
+    h.deps.connection.api.sessions.selectModel = selectModel as never;
+    h.resolveModels({
+      current: { provider: 'deepseek', model: 'deepseek-chat' },
+      routable: true,
+      groups: [{ id: 'deepseek', name: 'DeepSeek', models: [{ id: 'deepseek-chat', name: 'DeepSeek Chat' }] }],
+      failures: [],
+    });
+    const service = new PickerService(h.deps);
+    await service.pickerFor(SESSION_ID).directory.load();
+
+    await expect(service.selectModel(SESSION_ID, { provider: 'acp-devin', model: 'm' }))
+      .resolves.toBeUndefined();
+    expect(selectModel).not.toHaveBeenCalled();
+    expect(h.createCalls).toHaveLength(1);
+    expect(h.openCalls).toEqual([h.createCalls[0]!.sessionId]);
+    expect(service.takePendingNotice()).toBe('blank.started:{"model":"m"}');
+  });
+
   it('工作区解析回退：当前会话无所属工作区 → recentWorkspaceId；无工作区 → 当前会话 cwd 直建；皆无 → 响亮报错且不写默认', async () => {
     // recent 回退
     const h1 = createFlowHarness({ workspaceItems: [], recentWorkspaceId: 'ws-recent' });
@@ -1186,29 +1212,6 @@ describe('PickerService.selectModel 统一路由（同 provider ACP → coordina
     expect(h.beginModelSwitch.mock.calls[0]?.[1]).toMatchObject({ targetModel: 'm2' });
     expect(h.selectModel).toHaveBeenCalledWith({ sessionId: SESSION_ID, provider: 'acp-mock', model: 'm2' });
     expect(h.commitModelSwitch).toHaveBeenCalledTimes(1);
-  });
-
-  it('blank 会话选择 ACP：在原 session 首次采用，不走新会话 handoff', async () => {
-    const h = createHarness();
-    const fr = createFakeRemote([]);
-    fr.remote.backendOf = () => Promise.resolve({ ok: true as const, value: { state: 'blank' as const } });
-    h.deps.acpRemote = fr.remote;
-    const selectModel = vi.fn(() => Promise.resolve({
-      result: { ok: true as const, value: { selected: { provider: 'acp-mock', model: 'm1' } } },
-    }));
-    h.deps.connection.api.sessions.selectModel = selectModel as never;
-    h.resolveModels({
-      current: { provider: 'deepseek', model: 'deepseek-chat' },
-      routable: true,
-      groups: [{ id: 'deepseek', name: 'DeepSeek', models: [{ id: 'deepseek-chat', name: 'DeepSeek Chat' }] }],
-      failures: [],
-    });
-    const service = new PickerService(h.deps);
-    const picker = service.pickerFor(SESSION_ID);
-    await picker.directory.load();
-    await expect(service.selectModel(SESSION_ID, { provider: 'acp-mock', model: 'm1' }))
-      .resolves.toBeUndefined();
-    expect(selectModel).toHaveBeenCalledWith({ sessionId: SESSION_ID, provider: 'acp-mock', model: 'm1' });
   });
 
   it('异 provider / 异 ACP profile 选择 → service 纵深拒绝，必须走确认后新会话', async () => {

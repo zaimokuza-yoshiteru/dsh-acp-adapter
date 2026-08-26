@@ -528,6 +528,13 @@ export class AcpAgent implements Agent {
     this.driver = driver
     this.cancelGraceMs = driver.cancelGraceMs ?? ACP_CANCEL_SETTLE_GRACE_MS
     this.providerRoute = `acp-${driver.profile.id}`
+    if (driver.resumeBinding !== undefined && driver.resumeBinding.provider !== this.providerRoute) {
+      throw new AcpClientError(
+        'protocol-error',
+        `dsh-acp: refusing to construct ${JSON.stringify(this.providerRoute)} with a binding owned by ${JSON.stringify(driver.resumeBinding.provider)}`,
+        { category: 'config' },
+      )
+    }
     this.log = createAcpLogger(loopCtx.logger, { dshSessionId: String(id), acpProvider: this.providerRoute })
     this.dispatch = agentEvents(loopCtx, this)
     this.inbox = new Inbox(session, {
@@ -550,11 +557,14 @@ export class AcpAgent implements Agent {
     // reconciliation 记录不在此落盘（构造期不能 await，fire-and-forget 无持久化
     // 保证）——首个被拒的 turn 经 blockError await 落盘（见 turn 闩锁分支）；
     // 从未 prompt 的 blocked 会话由 health/liveSessions 的 continuity 如实披露。
+    const historicalProvider = foldRequestHeader(session.events)?.config.provider
     const presetBlocked = driver.presetBlocked
-      ?? (driver.resumeBinding === undefined
-        && session.header.parentSession === undefined
-        && foldRequestHeader(session.events)?.config.provider === this.providerRoute
-        ? 'binding-missing' as const
+      ?? (driver.resumeBinding === undefined && session.header.parentSession === undefined
+        ? historicalProvider === this.providerRoute
+          ? 'binding-missing' as const
+          : historicalProvider?.startsWith('acp-') === true
+            ? 'backend-conflict' as const
+            : undefined
         : undefined)
     if (presetBlocked !== undefined) {
       this.continuity = { status: 'blocked', cause: presetBlocked, detail: null }

@@ -102,6 +102,7 @@ export function optionsOf(
     const needsNativeAccess = permissionPreset !== undefined
       && isAcpProvider(group.id)
       && permissionPreset !== 'danger-full-access'
+    const blankAdoption = backend?.state === 'blank' && isAcpProvider(group.id)
     for (const model of group.models) {
       const base = model.description !== undefined
         ? `[${tag}] ${group.name} · ${model.description}`
@@ -118,7 +119,7 @@ export function optionsOf(
             title: t(needsNativeAccess ? 'native.popup.title' : 'cross.popup.title'),
             description: t(
               needsNativeAccess
-                ? crossBackend ? 'native.popup.crossDescription' : 'native.popup.description'
+                ? blankAdoption ? 'native.popup.blankDescription' : crossBackend ? 'native.popup.crossDescription' : 'native.popup.description'
                 : 'cross.popup.description',
               { model: model.name },
             ),
@@ -126,7 +127,7 @@ export function optionsOf(
             cancelLabel: t(needsNativeAccess ? 'native.cancel' : 'cross.popup.cancel'),
             confirmLabel: t(
               needsNativeAccess
-                ? crossBackend ? 'native.confirmCrossButton' : 'native.confirmButton'
+                ? blankAdoption ? 'native.confirmBlankButton' : crossBackend ? 'native.confirmCrossButton' : 'native.confirmButton'
                 : 'cross.popup.confirm',
             ),
           },

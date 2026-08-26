@@ -18,8 +18,7 @@
 //
 // 已完全自有（上游不存在，本套件不钉）：filter.ts、live-controller.ts、
 // selector-logic.ts 的 filter/pinned/可见性/默认解析族（default.ts + preset-effort.ts
-// 族）、live 选项快照类型与解码、披露面板（pickerDegradationsOf 与 ModelPicker
-// disclosurePanel）、健康四层（logic.ts healthLayersOf）。
+// 族）以及 live 选项快照类型与解码。
 //
 // 语义对照（非 verbatim，钉在注释而非断言）：上游 host 端 buildModelCatalog 对单个
 // provider 探测失败只记 failures 不拖垮目录（reference/.../packages/host/apiproxy/

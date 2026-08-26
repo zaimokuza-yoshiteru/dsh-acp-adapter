@@ -10,16 +10,11 @@
  * - an "ACP 会话选项" pane rendering the session's live config options
  *   (mode/model/thought_level/model_config sections) through the dshAcp
  *   Remote namespace, optimistic refresh + rollback handled by the live glue;
- * - the two-axis display: a read-only "权限范围（DSH）" row at
- *   the menu top (a DSH session attribute — THE security boundary, mirrored
- *   from the permissions projection; this plugin never writes it) vs. the
- *   "Agent 模式（{agent}）" section in the live pane (agent-side behavior
- *   configuration, written through the config-options seam; the caption is
- *   parameterized with the current ACP route's display name via
- * `acpAgentDisplayName` — not bound to any specific agent). The -era
- *   full-access acknowledgement gate (checkbox + localStorage ack + composer
- *   block) is deleted: Full Access confirmation lives solely in the native
- *   DSH permission-preset dialog.
+ * - the "Agent 模式（{agent}）" section in the live pane writes agent-side
+ *   behavior through the config-options seam. DSH access and Agent mode stay
+ *   independent: the current DSH preset is read only to route ACP selection
+ *   through the native Full Access confirmation, not rendered as permanent
+ *   picker disclosure.
  *
  * compat island: this shell lives in `src/client/host-compat/model-picker/`
  * — the client-side counterpart of the host-side `src/host-compat/` island
@@ -38,11 +33,9 @@
  * verbatim (JSX → createElement translation makes a mechanical diff
  * meaningless; test/contracts/upstream-picker-diff.spec.ts pins the upstream structure
  * instead so an upstream bump forces review). Adapter-original surfaces: the
- * filter bar, the per-row default action, the live-options pane, and the
- * disclosure panel below — the static reuse/not-reusable/cross-backend
- * lines and the fact-driven availability list (`pickerDegradationsOf`).
- * Detailed end-to-end capability facts live in Settings health cards instead
- * of the primary model-switch workflow.
+ * filter bar, the per-row default action, and the live-options pane. Product
+ * boundaries belong in documentation, while actionable access and backend
+ * changes are confirmed at selection time instead of occupying the picker.
  *
  * fail-soft: when the ACP Remote/backend probe is unavailable, the seat
  * enters native-only mode — Current/ACP filter buckets hide, a non-blocking
@@ -87,10 +80,8 @@ import {
   isSameBackendSelection,
   nativeOnlyFilterOf,
   partitionLiveOptions,
-  pickerDegradationsOf,
   PROVIDER_KIND_LABELS,
   providerKindOf,
-  showsAcpCatalogScopeNote,
   type AcpBackendProbe,
   type CurrentRouteFacts,
   type LiveConfigOption,
@@ -153,6 +144,8 @@ export interface ModelPickerWire {
    * undefined（宿主随即打开新会话）。
    */
   useInNewSession(selection: PickerModelSelection, label?: string): Promise<string | undefined>
+  /** 空白 native 会话选择 ACP：无上下文确认，透明创建并打开目标 ACP 会话。 */
+  adoptBlankSession(selection: PickerModelSelection, label?: string): Promise<string | undefined>
   /** 取走一次性提示（seat 挂载时消费；无 → null）。 */
   takeNotice(): string | null
 }
@@ -267,6 +260,7 @@ function Loaded({ locked, available, t, useStore, useDefaultModel, picker }: {
     selection: PickerModelSelection
     label: string
     cross: boolean
+    blank: boolean
   } | null>(null)
   const [nativeAcknowledged, setNativeAcknowledged] = useState(false)
   const [nativeError, setNativeError] = useState<string | null>(null)
@@ -495,15 +489,30 @@ function Loaded({ locked, available, t, useStore, useDefaultModel, picker }: {
       .catch((error: unknown) => { setCrossError(errorMessageOf(error)) })
   }
 
+  const adoptBlank = (selection: PickerModelSelection, label: string): void => {
+    setCrossError(null)
+    void picker.adoptBlankSession(selection, label)
+      .then((message) => {
+        if (message !== undefined) setCrossError(message)
+        else close()
+      })
+      .catch((error: unknown) => { setCrossError(errorMessageOf(error)) })
+  }
+
   const requestSelection = (
     selection: PickerModelSelection,
     label: string,
     cross: boolean,
   ): void => {
+    const blank = backend?.state === 'blank' && isAcpProvider(selection.provider)
     if (isAcpProvider(selection.provider) && disclosure.preset !== 'danger-full-access') {
       setNativeError(null)
       setNativeAcknowledged(false)
-      setConfirmingNative({ selection, label, cross })
+      setConfirmingNative({ selection, label, cross, blank })
+      return
+    }
+    if (blank) {
+      adoptBlank(selection, label)
       return
     }
     if (cross) setConfirmingCross({ selection, label })
@@ -515,6 +524,10 @@ function Loaded({ locked, available, t, useStore, useDefaultModel, picker }: {
     if (pending === null || !nativeAcknowledged) return
     setConfirmingNative(null)
     setNativeAcknowledged(false)
+    if (pending.blank) {
+      adoptBlank(pending.selection, pending.label)
+      return
+    }
     if (pending.cross) {
       useInNew(pending.selection, pending.label)
       return
@@ -674,7 +687,7 @@ function Loaded({ locked, available, t, useStore, useDefaultModel, picker }: {
     if (confirmingNative !== null) {
       children.push(h('div', { key: 'native-confirm', className: css.warning },
         h('p', { className: css.policyNote }, t(
-          confirmingNative.cross ? 'native.confirmCrossPrompt' : 'native.confirmPrompt',
+          confirmingNative.blank ? 'native.confirmBlankPrompt' : confirmingNative.cross ? 'native.confirmCrossPrompt' : 'native.confirmPrompt',
           { model: confirmingNative.label },
         )),
         h('label', { className: css.policyNote },
@@ -692,7 +705,7 @@ function Loaded({ locked, available, t, useStore, useDefaultModel, picker }: {
           className: css.retry,
           disabled: !nativeAcknowledged,
           onClick: confirmNativeSelection,
-        }, t(confirmingNative.cross ? 'native.confirmCrossButton' : 'native.confirmButton')),
+        }, t(confirmingNative.blank ? 'native.confirmBlankButton' : confirmingNative.cross ? 'native.confirmCrossButton' : 'native.confirmButton')),
         h('button', {
           type: 'button',
           className: css.retry,
@@ -977,49 +990,6 @@ function Loaded({ locked, available, t, useStore, useDefaultModel, picker }: {
     return children
   }
 
-  const disclosurePanel = (): ReactNode => {
-    // 主模型菜单只展示 Native 访问状态和会话边界。图片、MCP 等
-    // 端到端能力属于设置页健康卡，不占用模型切换主流程。
-    if (!acp) return null
-    const snapshot = live.snapshot
-    const providerFailed = state.current !== null
-      && state.failures.some((failure) => failure.id === state.current?.provider)
-    const degradations = pickerDegradationsOf({ preset: disclosure.preset, snapshot, providerFailed })
- // 披露区 label/value 使用 `key: value` 行内流（同一行自然换行，
-    // 不再左右分栏）；安全相关 key（权限范围/沙箱）600 加粗，其余 key 500。
-    // 冒号走 locale（kv.colon：zh 全角 / en 半角+空格），不硬编码。
-    const kvRow = (label: string, value: string, key: string, strong = false): ReactNode =>
-      h('p', { key, className: css.kvLine },
-        h('span', { className: strong ? css.kvKeyStrong : css.kvKey }, `${label}${t('kv.colon')}`),
-        value)
-    const permissionLabel = disclosure.preset === 'danger-full-access'
-      ? t('permission.native')
-      : t('permission.notNative')
-    // 长说明与可用性提示收进默认折叠区；Native 访问状态保持常驻。menu 本体
-    // max-height + overflow-y 兜底（见 ModelPicker.module.css .menu），任何
-    // 内容不得溢出卡片。
-    return h('div', { className: css.policy, role: 'note' },
-      kvRow(t('permission.label'), permissionLabel, 'permission', true),
-      h('p', { className: css.policyNote }, t('permission.note')),
-      h('details', { className: css.policyDetails },
-        h('summary', { className: css.policySummary }, t('disclosure.details')),
-        h('p', { className: css.policyNote }, t('disclosure.reusable')),
-        h('p', { className: css.policyNote }, t('disclosure.notReusable')),
-        h('p', { className: css.policyNote }, t('disclosure.crossBackend')),
- // 模型目录作用域：模型目录是 session 级探测采样——作用域标注常驻 ACP 披露区，
-        // 不得称 provider-global catalog；采样时间在 ACP 面板健康卡（health 行有 at）
-        showsAcpCatalogScopeNote(state.current?.provider)
-          ? h('p', { className: css.policyNote }, t('disclosure.catalogScope'))
-          : null,
-        kvRow(t('deg.title'),
-          degradations.length === 0
-            ? t('deg.none')
-            : degradations.map((degradation) => t(`deg.${degradation}`)).join(t('deg.separator')),
-          'degradations'),
-      ),
-    )
-  }
-
   const rootPane = (): ReactNode[] => [
     h('button', {
       ref: itemRef(),
@@ -1103,7 +1073,6 @@ function Loaded({ locked, available, t, useStore, useDefaultModel, picker }: {
         'aria-label': t('menu.aria'),
         'aria-busy': state.status === 'loading' || busy,
       },
-        disclosurePanel(),
         pane === 'root' ? rootPane() : null,
         pane === 'model' ? modelPane() : null,
         pane === 'effort' ? effortPane() : null,
