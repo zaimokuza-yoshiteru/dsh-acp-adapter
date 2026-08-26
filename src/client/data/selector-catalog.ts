@@ -127,9 +127,8 @@ export function backendOfProvider(provider: string): string {
 
 /**
  * 兼容性判定：该 selection 是否与会话已锁定的 backend 同 backend。
- * blank → 只允许不改变执行后端类别的选择：native→native 可沿用 DSH 原生
- * 模型选择，同一 ACP profile 可沿用当前 ACP loop；native↔ACP、跨 ACP profile
- * 必须新建会话。currentProvider 缺席时 fail-closed：仅 native 行可原地选择。
+ * blank 表示尚未建立任何执行 backend；目前目录中的 provider/model 只是 UI
+ * 默认值，因此 native 或任意 ACP profile 均可在原 DSH session 中首次采用。
  * established →
  * 只有同一路由的行可选（同 ACP profile 的不同模型行走 set_config_option 既有
  * 路径）；其余 = 跨 backend，picker 标记并分流到「在新会话中使用」。
@@ -137,13 +136,9 @@ export function backendOfProvider(provider: string): string {
 export function isSameBackendSelection(
   selection: Pick<PickerModelSelection, 'provider'>,
   backend: PickerBackendState,
-  currentProvider?: string | null,
+  _currentProvider?: string | null,
 ): boolean {
-  if (backend.state === 'blank') {
-    if (currentProvider === undefined || currentProvider === null) return !isAcpProvider(selection.provider)
-    if (isAcpProvider(currentProvider)) return selection.provider === currentProvider
-    return !isAcpProvider(selection.provider)
-  }
+  if (backend.state === 'blank') return true
   return backend.provider === backendOfProvider(selection.provider)
 }
 

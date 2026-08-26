@@ -146,7 +146,7 @@ export function AcpToolRow({ block, cwd, openFile, inspect, t }: AcpToolRowProps
   const title = model.agentExtension === undefined
     ? baseTitle
     : `${t('tool.codexSubagent')} · ${baseTitle}`
-  const extensionSummary = model.agentExtension?.type === 'collaboration'
+  const extensionSummary = model.agentExtension?.type === 'collaboration' && model.agentExtension.receiverThreadIds.length > 0
     ? t('tool.codexCollaboration', {
         tool: model.agentExtension.tool,
         count: model.agentExtension.receiverThreadIds.length,

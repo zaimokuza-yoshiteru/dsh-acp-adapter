@@ -119,8 +119,6 @@ interface FakeLiveAgentOverrides {
   agentCapabilities?: acp.AgentCapabilities;
  /** 最新已知上下文占用（缺省 null = 未收到过 usage_update）。 */
   contextUsage?: AcpContextUsageView | null;
- /** 边界：workspace-write 档可用性（缺省 'supported'）。 */
-  workspaceWriteSupport?: 'supported' | 'unsupported';
   /** seam 注入失败（竞态忙 / 未启动）。 */
   setConfigOptionError?: Error;
   setModeError?: Error;
@@ -152,9 +150,6 @@ function createFakeLiveAgent(overrides: FakeLiveAgentOverrides = {}) {
     },
     get contextUsage() {
       return overrides.contextUsage ?? null;
-    },
-    get workspaceWriteSupport() {
-      return overrides.workspaceWriteSupport ?? 'supported';
     },
     get continuityState() {
       return { status: 'ok' as const, cause: null, detail: null };
@@ -200,6 +195,7 @@ interface DepsParts {
   backendFacts?: AcpRemoteServiceDeps['backendFacts'];
  /** boundSessions 的 binding 计数源假件（不注入 = boundSessions 响亮拒绝「未接线」）。 */
   bindingFacts?: AcpRemoteServiceDeps['bindingFacts'];
+  imageInputAvailable?: boolean;
 }
 
 function buildService(parts: DepsParts) {
@@ -224,6 +220,7 @@ function buildService(parts: DepsParts) {
     ...(parts.metricsSnapshot === undefined ? {} : { metricsSnapshot: parts.metricsSnapshot }),
     ...(parts.backendFacts === undefined ? {} : { backendFacts: parts.backendFacts }),
     ...(parts.bindingFacts === undefined ? {} : { bindingFacts: parts.bindingFacts }),
+    ...(parts.imageInputAvailable === undefined ? {} : { imageInputAvailable: parts.imageInputAvailable }),
   };
   const ctx = new Context();
   const service = new AcpRemoteService(ctx, deps);
@@ -322,19 +319,25 @@ describe('AcpRemoteService 注册', () => {
     expect(service.typertRemote.service).toBe(service);
   });
 
- it('生成物恰好承载九条 invocation（health/options/setOption/rebindBlank/backendOf/boundSessions + 增 beginModelSwitch/commitModelSwitch/rollbackModelSwitch； authenticate 移出 Remote 面）', () => {
+ it('生成物恰好承载十五条 invocation（模型/会话、ACP 权限与 elicitation；authenticate 移出 Remote 面）', () => {
     const manifest = TYPERT as {
       package: string;
       invocations: Array<{ id: string; parameters: Array<{ name: string }>; cancellation?: { parameter: string } }>;
     };
     expect(manifest.package).toBe('@zaimokuza/dsh-acp-adapter');
     expect(manifest.invocations.map((invocation) => invocation.id)).toEqual([
+      '@zaimokuza/dsh-acp-adapter#dshAcp/answerElicitation',
+      '@zaimokuza/dsh-acp-adapter#dshAcp/answerPermission',
       '@zaimokuza/dsh-acp-adapter#dshAcp/backendOf',
       '@zaimokuza/dsh-acp-adapter#dshAcp/beginModelSwitch',
       '@zaimokuza/dsh-acp-adapter#dshAcp/boundSessions',
+      '@zaimokuza/dsh-acp-adapter#dshAcp/cancelElicitation',
+      '@zaimokuza/dsh-acp-adapter#dshAcp/cancelPermission',
       '@zaimokuza/dsh-acp-adapter#dshAcp/commitModelSwitch',
       '@zaimokuza/dsh-acp-adapter#dshAcp/health',
       '@zaimokuza/dsh-acp-adapter#dshAcp/options',
+      '@zaimokuza/dsh-acp-adapter#dshAcp/pendingElicitations',
+      '@zaimokuza/dsh-acp-adapter#dshAcp/pendingPermissions',
       '@zaimokuza/dsh-acp-adapter#dshAcp/rebindBlank',
       '@zaimokuza/dsh-acp-adapter#dshAcp/rollbackModelSwitch',
       '@zaimokuza/dsh-acp-adapter#dshAcp/setOption',
@@ -551,26 +554,17 @@ describe('dshAcp/health', () => {
     });
   });
 
- it(' 能力矩阵随 probe-ok 行下发：promptImage 广告=true 仍 unsupported（端到端能力 核心事实）；注入 partial sandboxPosture 时 sandbox 行 degraded 带平台', async () => {
+ it('能力矩阵随 probe-ok 行下发：图片需 Agent 广告与 attachment seam 同时满足；probe sandbox 不冒充正式会话能力', async () => {
     const posture = { platform: 'win32', enforcement: 'partial' as const, note: 'windows-acl 恒为 partial enforcement' };
     const { registry } = createFakeRegistry({ devin: DEVIN }, { 'acp-devin': OK_SNAPSHOT });
-    const { service } = buildService({ registry, sandboxPosture: posture });
+    const { service } = buildService({ registry, sandboxPosture: posture, imageInputAvailable: true });
     const view = await service.health();
     const probe = view.providers[0]?.probe;
     if (probe?.status !== 'ok') throw new Error('expected an ok probe row');
-    expect(probe.matrix).toEqual(acpCapabilityMatrix(PROBE_CAPABILITY_FACTS, posture));
+    expect(probe.matrix).toEqual(acpCapabilityMatrix(PROBE_CAPABILITY_FACTS, posture, { imageInput: true }));
     const imageRow = probe.matrix.find((row) => row.id === 'promptImage');
-    // 端到端能力：Agent 广告了 image，但 adapter v1 仅文本 prompt——端到端不支持，note 点破阻止语义
-    expect(imageRow).toMatchObject({ advertised: true, status: 'unsupported', adapterPath: 'text-only-block' });
-    expect(imageRow?.note).toContain('text-only');
-    expect(probe.matrix.find((row) => row.id === 'sandbox')).toEqual({
-      id: 'sandbox',
-      advertised: null,
-      adapterPath: 'confined-spawn',
-      hostSeam: 'sandbox-enforcement',
-      status: 'degraded',
-      note: 'win32: windows-acl 恒为 partial enforcement',
-    });
+    expect(imageRow).toMatchObject({ advertised: true, status: 'supported', adapterPath: 'durable-attachment-to-inline-image', hostSeam: 'attachments' });
+    expect(probe.matrix.find((row) => row.id === 'sandbox')).toBeUndefined();
   });
 
  it(' 钉：Remote 面不再暴露 authenticate（登录只在 agent 自己的 CLI 完成）', async () => {
@@ -596,9 +590,7 @@ describe('dshAcp/options', () => {
       configOptions: [MODEL_OPTION, MODE_OPTION],
       currentModeId: 'code',
       capabilities: null,
-      sandbox: null,
       continuity: OK_CONTINUITY,
-      workspaceWrite: 'supported',
       contextUsage: null,
       ...LIVE_FIXED,
     });
@@ -626,9 +618,7 @@ describe('dshAcp/options', () => {
       configOptions: [MODEL_OPTION, MODE_OPTION],
       currentModeId: 'code',
       capabilities: PROBE_CAPABILITY_FACTS,
-      sandbox: sandboxPosture,
       continuity: OK_CONTINUITY,
-      workspaceWrite: 'supported',
       contextUsage: null,
       ...LIVE_FIXED,
     });
@@ -638,7 +628,7 @@ describe('dshAcp/options', () => {
     const { registry } = createFakeRegistry({ devin: DEVIN }, {});
     const agent = createFakeLiveAgent({ configOptions: null, currentModeId: null });
     const { service } = buildService({ registry, liveAgents: new Map([['sess-1', agent.face]]) });
-    expect(await service.liveOptions('sess-1')).toEqual({ sessionId: 'sess-1', configOptions: null, currentModeId: null, capabilities: null, sandbox: null, continuity: OK_CONTINUITY, workspaceWrite: 'supported', contextUsage: null, ...LIVE_FIXED });
+    expect(await service.liveOptions('sess-1')).toEqual({ sessionId: 'sess-1', configOptions: null, currentModeId: null, capabilities: null, continuity: OK_CONTINUITY, contextUsage: null, ...LIVE_FIXED });
   });
 
  it('：contextUsage 三态——未收到 usage_update 归 null；有快照直通（含 cost 透传）', async () => {
@@ -685,9 +675,7 @@ describe('dshAcp/rebindBlank', () => {
       configOptions: [MODEL_OPTION, MODE_OPTION],
       currentModeId: 'code',
       capabilities: null,
-      sandbox: null,
       continuity: OK_CONTINUITY,
-      workspaceWrite: 'supported',
       contextUsage: null,
       ...LIVE_FIXED,
     });
@@ -847,9 +835,7 @@ describe('dshAcp/setOption', () => {
       configOptions: [MODEL_OPTION, { ...MODE_OPTION, currentValue: 'plan' }],
       currentModeId: 'code',
       capabilities: null,
-      sandbox: null,
       continuity: OK_CONTINUITY,
-      workspaceWrite: 'supported',
       contextUsage: null,
       ...LIVE_FIXED,
     });
@@ -1149,6 +1135,27 @@ describe(' 收尾：health recheck（面板「重新检查」按钮）', () => {
     expect(reprobed).toEqual(['acp-devin']);
     // fake 缓存无条目 → saved-unverified（重探失败的真实服务会把失败条目落缓存）
     expect(row?.state).toBe('saved-unverified');
+  });
+
+  it('recheck=true + agentId：只检查并返回目标 provider', async () => {
+    const agents = { devin: DEVIN, broken: BROKEN };
+    const { registry, invalidated, reprobed } = createFakeRegistry(agents, {
+      'acp-devin': OK_SNAPSHOT,
+      'acp-broken': undefined,
+    });
+    const { service, versionCalls } = buildService({ registry });
+    const view = await service.health({ recheck: true, agentId: 'devin' });
+    expect(view.providers.map((row) => row.id)).toEqual(['devin']);
+    expect(invalidated).toEqual(['acp-devin']);
+    expect(reprobed).toEqual(['acp-devin']);
+    expect(versionCalls).toEqual(['devin']);
+  });
+
+  it('agentId 不允许脱离 recheck，未知 agent 也会 fail closed', async () => {
+    const { registry } = createFakeRegistry({ devin: DEVIN }, { 'acp-devin': OK_SNAPSHOT });
+    const { service } = buildService({ registry });
+    await expect(service.health({ agentId: 'devin' })).rejects.toThrow('requires recheck=true');
+    await expect(service.health({ recheck: true, agentId: 'missing' })).rejects.toThrow('unknown ACP agent');
   });
 });
 

@@ -22,6 +22,7 @@ import { fileURLToPath } from 'node:url';
 import { Context } from '@deepseek-ai/cordis';
 import AgentRegistry from '@deepseek-ai/dsh-agent';
 import type { Agent, AgentHandle } from '@deepseek-ai/dsh-agent';
+import type { AttachmentStore } from '@deepseek-ai/dsh-attachment';
 import LlmRuntime, { LlmAdapter, createAssistantMessage, createToolResultMessage, createUserMessage } from '@deepseek-ai/dsh-llm';
 import type { GenerateOptions, StreamChunk, UserMessage } from '@deepseek-ai/dsh-llm';
 import SessionStore, {
@@ -312,8 +313,7 @@ export interface BindingFixtureOptions {
  * 恢复时逐项命中、不阻断；capabilityHash/configHash 按 mock happy 形态的真值
  * 预算（连 advisory warn 都不产生）。launchFingerprint 经真组装函数
  * （src/domain/session/launch-fingerprint.ts）预填——与 startSession 的预检②
- * canonical 哈希同源同算法；`agentDataHome`/`agentDataGeneration` 默认 null
- * （非 data home profile 的新写形态）。generation/historyBaseSeq/establishedAt/
+ * canonical 哈希同源同算法。generation/historyBaseSeq/establishedAt/
  * dshCommittedSeq 是锚点字段，按用例经 overrides 钉。
  */
 export function bindingFixture(profile: MockProfile, options: BindingFixtureOptions): AcpBindingData {
@@ -327,7 +327,6 @@ export function bindingFixture(profile: MockProfile, options: BindingFixtureOpti
       profileId: profile.id,
       config: profile.config,
       descriptor: descriptorOf(profile.id, profile.config),
-      generation: 1,
     }),
     agent: { name: 'dsh-mock-acp-agent', version: '1.0.0' },
     protocolVersion: 1,
@@ -337,8 +336,6 @@ export function bindingFixture(profile: MockProfile, options: BindingFixtureOpti
     historyBaseSeq: 0,
     establishedAt: 1,
     dshCommittedSeq: 0,
-    agentDataHome: null,
-    agentDataGeneration: null,
     ...options.overrides,
   };
 }
@@ -479,12 +476,12 @@ export class FakeSandbox {
 
 /**
  * sandboxPolicy fake（既定规则的模式来源）：`resolve({session})` 返回可变 slot
- * `mode`（默认 workspace-write）+ `session.header.cwd ?? process.cwd()`。
+ * `mode`（ACP 正式会话默认原生 Agent 访问）+ `session.header.cwd ?? process.cwd()`。
  */
 export class FakeSandboxPolicy {
   readonly resolveCalls: number[] = [];
 
-  constructor(public mode: AcpSandboxMode = 'workspace-write') {}
+  constructor(public mode: AcpSandboxMode = 'danger-full-access') {}
 
   resolve(request: { session: Session }): { mode: AcpSandboxMode; workspaceRoot: string } {
     this.resolveCalls.push(1);
@@ -635,6 +632,8 @@ export interface CreateHarnessOptions {
   approval?: FakeApproval;
   /** 提供则注入 ctx.commands（slash 命令桥 e2e）。 */
   commands?: FakeCommands;
+  /** 提供则注入 DSH durable attachment read seam。 */
+  attachments?: Pick<AttachmentStore, 'readImage'>;
 }
 
 /**
@@ -659,7 +658,7 @@ export async function createHarness(logDir: string, options: CreateHarnessOption
   const persistence = new FakeSessionPersistence();
   const assembleCalls: unknown[] = [];
   const sandbox = options.sandbox === false ? undefined : new FakeSandbox();
-  const sandboxPolicy = options.sandboxPolicy === false ? undefined : new FakeSandboxPolicy(options.sandboxMode ?? 'workspace-write');
+  const sandboxPolicy = options.sandboxPolicy === false ? undefined : new FakeSandboxPolicy(options.sandboxMode ?? 'danger-full-access');
   const dshHome = path.join(logDir, 'dsh-home');
   ctx.provide('settings', settings);
   ctx.provide('systemPrompt', fakeSystemPrompt(assembleCalls));
@@ -671,6 +670,7 @@ export async function createHarness(logDir: string, options: CreateHarnessOption
   if (options.dshHomePath !== false) ctx.provide('dshHomePath', (...segments: string[]) => path.join(dshHome, ...segments));
   if (options.approval !== undefined) ctx.provide('approval', options.approval);
   if (options.commands !== undefined) ctx.provide('commands', options.commands);
+  if (options.attachments !== undefined) ctx.provide('attachments', options.attachments as AttachmentStore);
   await ctx.plugin(AcpAgentLoop, { agents: [] });
   const loop = ctx.agentLoop as AcpAgentLoop;
   return { ctx, loop, settings, persistence, llm: ctx.llm, logDir, handles: [], sandbox, sandboxPolicy, dshHome, assembleCalls };

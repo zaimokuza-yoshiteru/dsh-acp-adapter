@@ -55,14 +55,14 @@ import {
   userText,
   waitFor,
 } from '../../fixtures/agent-test-helpers.ts';
-import type { AgentHarness, MockProfile } from '../../fixtures/agent-test-helpers.ts';
+import type { AgentHarness, CreateHarnessOptions, MockProfile } from '../../fixtures/agent-test-helpers.ts';
 
 let suiteDir = '';
 
 /** 本测试文件创建的全部 harness；afterEach 统一拆除其 handle。 */
 const harnesses: AgentHarness[] = [];
 
-async function boot(options?: { persistence?: boolean }): Promise<AgentHarness> {
+async function boot(options?: CreateHarnessOptions): Promise<AgentHarness> {
   const logDir = fs.mkdtempSync(path.join(suiteDir, 'case-'));
   const harness = await createHarness(logDir, options ?? {});
   harnesses.push(harness);
@@ -960,51 +960,52 @@ setInterval(() => {}, 1 << 30);
   }, 20_000);
 });
 
-describe(' 图片输入阻止（端到端能力：Agent 广告 image，adapter v1 仅文本 prompt）', () => {
-  it('含 image 块的 prompt 被阻止：零 prompt 帧到达 agent + turn/end error 带文本 only 解释（用户可见）+ agent/error 报告', async () => {
-    const harness = await boot();
-    // happy 形态的 mock 与 Devin 一样广告 promptCapabilities.image: true——
-    // 广告不等于端到端支持，adapter 必须在发送前阻止并解释
+describe('图片输入（Agent 能力 ∩ DSH durable attachment seam）', () => {
+  it('image-only prompt 通过 attachment store 读取并发送，原消息只保留 durable ref', async () => {
+    const attachment = { attachmentId: 'att-1' as never, mediaType: 'image/png' as const, bytes: 3, width: 8, height: 8 };
+    const readImage = vi.fn().mockResolvedValue({ ref: attachment, data: Uint8Array.of(1, 2, 3) });
+    const harness = await boot({ attachments: { readImage } });
     const profile = mockProfile(harness.logDir, 'happy');
-    const handle = await createAcpAgent(harness, profile, SessionId('image-blocked'));
+    const handle = await createAcpAgent(harness, profile, SessionId('image-supported'));
     const agent = handle.agent;
     const errors = trackErrors(harness, agent);
 
     agent.followup(createUserMessage({
-      content: [
-        { type: 'text', text: 'look at this screenshot' },
-        {
-          type: 'image',
-          attachment: { attachmentId: 'att-1' as never, mediaType: 'image/png' as const, bytes: 128, width: 8, height: 8 },
-        },
-      ],
+      content: [{ type: 'image', attachment }],
       source: { kind: 'user' },
     }));
     await agent.whenIdle();
 
-    // 解释如实可见：turn/end error 落 DSH 会话日志（产品历史真源），message 带
-    // 「v1 prompts are text-only」说明与稳定 code
     const reasons = turnEndReasons(agent);
     expect(reasons).toHaveLength(1);
-    expect(reasons[0]?.reason.kind).toBe('error');
-    const failure = reasons[0]?.reason.kind === 'error' ? reasons[0].reason.error : undefined;
-    expect(failure?.code).toBe('ACP_UNSUPPORTED_CONTENT');
-    expect(failure?.message).toContain('v1 prompts are text-only');
-    expect(failure?.message).toContain('"image"');
-    // 失败在存活边界报告过一次（agent/error 事件）
-    expect(errors).toHaveLength(1);
-    expect((errors[0] as Error).name).toBe('AcpPromptContentError');
-
-    // 未发出任何 prompt 帧（懒启动的 initialize/session/new 照常，session/prompt 零次）
-    const log = readLog(profile.logPath);
-    expect(log).not.toContain('--> session/prompt');
-    // user/message 已先落盘（持久化顺序：历史如实保留这条被阻止的输入）
+    expect(reasons[0]?.reason).toEqual({ kind: 'completed' });
+    expect(errors).toEqual([]);
+    expect(readImage).toHaveBeenCalledWith(attachment, expect.any(AbortSignal));
+    expect(readLog(profile.logPath)).toContain('--> session/prompt');
     const userMessages = eventsOf(agent, 'user/message');
     expect(userMessages).toHaveLength(1);
-    expect(userMessages[0]?.data.content[1]?.type).toBe('image');
+    expect(userMessages[0]?.data.content).toEqual([{ type: 'image', attachment }]);
     expect(agent.status).toBe('idle');
-    // 无 assistant 输出被编造
-    expect(eventsOf(agent, 'assistant/message')).toEqual([]);
+  }, 15_000);
+
+  it('缺少 attachment service 时在 session/prompt 前阻止并给出可操作错误', async () => {
+    const harness = await boot();
+    const profile = mockProfile(harness.logDir, 'happy');
+    const handle = await createAcpAgent(harness, profile, SessionId('image-no-store'));
+    const agent = handle.agent;
+    agent.followup(createUserMessage({
+      content: [{
+        type: 'image',
+        attachment: { attachmentId: 'att-missing' as never, mediaType: 'image/png' as const, bytes: 1, width: 1, height: 1 },
+      }],
+      source: { kind: 'user' },
+    }));
+    await agent.whenIdle();
+
+    const reason = turnEndReasons(agent)[0]?.reason;
+    expect(reason?.kind).toBe('error');
+    if (reason?.kind === 'error') expect(reason.error.message).toContain('attachment storage is unavailable');
+    expect(readLog(profile.logPath)).not.toContain('--> session/prompt');
   }, 15_000);
 });
 

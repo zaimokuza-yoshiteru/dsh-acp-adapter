@@ -15,11 +15,11 @@
 //     （无 store/inject，不注册假可执行工具）。
 //   卸载残留：跑完全部 fiber disposer 后——两个 locale 命名空间退订、controller
 //     dispose（scope 退订、sink 断开）、pickerService dispose（remote 两路 +
-//     connection/reset 退订）、commandUi 贡献撤下、四个 slot 注册 disposer 被调。
+//     connection/reset 退订）、commandUi 贡献撤下、六个 slot 注册 disposer 被调。
 //   per-session picker 清理骑 session fiber（非本插件 fiber），其钉在
 //   picker-service.spec.ts。
 // 隔离：每个贡献（settings.section / /model 命令 / conversation.input.model
-//     seat / composer dock / toolview）占独立 inject scope——可选 ACP 子模块
+//     seat / composer dock / permission dock / elicitation dock / toolview）占独立 inject scope——可选 ACP 子模块
 //     （dock/toolview/seat）注册失败不撤销 picker 核心贡献与兄弟贡献；
 //     pickerService 装配失败只禁用 picker 族，设置面板存活（fail closed 点名）。
 
@@ -39,6 +39,7 @@ interface RegisteredEntry {
 
 function createFakeCtx(options: {
   failOnRegister?: string
+  failOnRegisterId?: string
   failRemoteOn?: boolean
   models?: SessionModelsView
   remoteReady?: boolean
@@ -75,7 +76,10 @@ function createFakeCtx(options: {
     },
     register(entry: RegisteredEntry, _component: unknown) {
  // 隔离钉的故障注入点：指定槽位的 register 抛错（槽结构漂移等价物）。
-      if (options.failOnRegister !== undefined && entry.name === options.failOnRegister) {
+      if (
+        (options.failOnRegister !== undefined && entry.name === options.failOnRegister)
+        || (options.failOnRegisterId !== undefined && entry.id === options.failOnRegisterId)
+      ) {
         throw new Error(`simulated slot registration failure: ${entry.name}`);
       }
       registeredEntries.push(entry);
@@ -233,8 +237,8 @@ describe('client 入口注册形态（slot/store 纪律）', () => {
     const h = createFakeCtx();
     apply(h.ctx as never);
 
-    expect(h.registeredEntries).toHaveLength(4);
-    const [section, picker, dock, toolview] = h.registeredEntries as [RegisteredEntry, RegisteredEntry, RegisteredEntry, RegisteredEntry];
+    expect(h.registeredEntries).toHaveLength(6);
+    const [section, picker, dock, permissionDock, elicitationDock, toolview] = h.registeredEntries as [RegisteredEntry, RegisteredEntry, RegisteredEntry, RegisteredEntry, RegisteredEntry, RegisteredEntry];
 
     expect(section.name).toBe('settings.section');
     expect(picker.name).toBe('conversation.input.model');
@@ -244,6 +248,16 @@ describe('client 入口注册形态（slot/store 纪律）', () => {
     expect(dock.order).toBe(1);
     expect(dock.store).toBeUndefined();
     expect(dock.inject).toBeUndefined();
+
+    expect(permissionDock.name).toBe('conversation.input.dock');
+    expect(permissionDock.id).toBe('acp-permissions');
+    expect(permissionDock.order).toBe(-10);
+    expect(permissionDock.locale).toBe('settings.acp');
+
+    expect(elicitationDock.name).toBe('conversation.input.dock');
+    expect(elicitationDock.id).toBe('acp-elicitations');
+    expect(elicitationDock.order).toBe(-9);
+    expect(elicitationDock.locale).toBe('settings.acp');
 
  // keyed toolview 渲染器——key 是稳定 wire name，locale 挂
     // 'acp-model' 命名空间；纯渲染贡献（无 store/inject seat）。
@@ -269,6 +283,7 @@ describe('client 入口注册形态（slot/store 纪律）', () => {
     }, never>;
     const sectionFace = section.inject!(panelStore.actions);
     expect(typeof (sectionFace['panel'] as Record<string, unknown>)['refreshHealth']).toBe('function');
+    expect(typeof (sectionFace['panel'] as Record<string, unknown>)['refreshAgentHealth']).toBe('function');
     expect(panelStore.getSnapshot().settings.status).toBe('ready');
 
     // conversation.input.model 注入工厂（session+store 形态：(sessionId, actions)）。
@@ -325,7 +340,7 @@ describe('client 入口注册形态（slot/store 纪律）', () => {
 
     // 模拟 scope 通知存活（卸载前基线：订阅在）。
     h.notifyScope();
-    expect(h.registeredEntries).toHaveLength(4);
+    expect(h.registeredEntries).toHaveLength(6);
 
     // fiber 卸载：cordis 逆序跑 effect disposers（本 fake 顺序无关——断言全集）。
     for (const { run } of h.effectDisposers) run();
@@ -358,12 +373,23 @@ describe('client 入口注册形态（slot/store 纪律）', () => {
 // ----------：per-contribution 失败隔离 ----------
 
 describe(' per-contribution 隔离（可选 ACP 子模块失败不撤销 picker 核心）', () => {
-  it('composer dock 注册失败：picker seat / toolview / /model / 设置面板照常挂载', () => {
-    const h = createFakeCtx({ failOnRegister: 'conversation.composer.dock' });
+  it('permission input dock 注册失败：elicitation / picker / toolview / /model / 设置面板照常挂载', () => {
+    const h = createFakeCtx({ failOnRegisterId: 'acp-permissions' });
     apply(h.ctx as never);
 
     const names = h.registeredEntries.map((entry) => entry.name);
-    expect(names).toEqual(['settings.section', 'conversation.input.model', 'tool.call.toolview']);
+    expect(names).toEqual(['settings.section', 'conversation.input.model', 'conversation.composer.dock', 'conversation.input.dock', 'tool.call.toolview']);
+    expect(h.registeredEntries.find((entry) => entry.name === 'conversation.input.dock')?.id).toBe('acp-elicitations');
+    expect(h.commandDisposers).toHaveLength(1);
+  });
+
+  it('elicitation input dock 注册失败：permission / picker / toolview / /model / 设置面板照常挂载', () => {
+    const h = createFakeCtx({ failOnRegisterId: 'acp-elicitations' });
+    apply(h.ctx as never);
+
+    const names = h.registeredEntries.map((entry) => entry.name);
+    expect(names).toEqual(['settings.section', 'conversation.input.model', 'conversation.composer.dock', 'conversation.input.dock', 'tool.call.toolview']);
+    expect(h.registeredEntries.find((entry) => entry.name === 'conversation.input.dock')?.id).toBe('acp-permissions');
     expect(h.commandDisposers).toHaveLength(1);
   });
 
@@ -372,7 +398,7 @@ describe(' per-contribution 隔离（可选 ACP 子模块失败不撤销 picker 
     apply(h.ctx as never);
 
     const names = h.registeredEntries.map((entry) => entry.name);
-    expect(names).toEqual(['settings.section', 'conversation.input.model', 'conversation.composer.dock']);
+    expect(names).toEqual(['settings.section', 'conversation.input.model', 'conversation.composer.dock', 'conversation.input.dock', 'conversation.input.dock']);
     expect(h.commandDisposers).toHaveLength(1);
   });
 
@@ -381,7 +407,7 @@ describe(' per-contribution 隔离（可选 ACP 子模块失败不撤销 picker 
     apply(h.ctx as never);
 
     const names = h.registeredEntries.map((entry) => entry.name);
-    expect(names).toEqual(['settings.section', 'conversation.composer.dock', 'tool.call.toolview']);
+    expect(names).toEqual(['settings.section', 'conversation.composer.dock', 'conversation.input.dock', 'conversation.input.dock', 'tool.call.toolview']);
     expect(h.commandDisposers).toHaveLength(1);
   });
 

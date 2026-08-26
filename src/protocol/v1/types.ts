@@ -108,17 +108,14 @@ export type PermissionRequestHandler = (
   params: acp.RequestPermissionRequest,
 ) => acp.RequestPermissionResponse | Promise<acp.RequestPermissionResponse>
 
-/**
- * agent → client elicitation 请求观察器（边界）。SDK 1.3.0 的 elicitation 面仍是
- * unstable（`unstable_createElicitation`），本适配器不接 DSH interaction UI：
- * `elicitation/create` 一律以协议标准响应变体 `{ action: 'decline' }` 应答
- * （decline 是 zCreateElicitationResponse 的合法判别值，非错误）。本回调是
- * 纯观察口（同步 void；抛错由连接层吞掉，不污染协议流），供 domain 层生成
- * 可见降级事件（用户说明 + sidecar 审计）。
- */
-export type ElicitationRequestObserver = (params: acp.CreateElicitationRequest) => void
+/** agent → client ACP v1 form/url elicitation handler. */
+export type ElicitationRequestHandler = (
+  params: acp.CreateElicitationRequest,
+) => acp.CreateElicitationResponse | Promise<acp.CreateElicitationResponse>
 
 export interface AcpConnectionOptions extends AcpProcessOptions {
+  /** Validated profile-owned MCP snapshot. Probe callers intentionally omit it. */
+  mcpServers?: readonly acp.McpServer[]
   /** `initialize` 的 clientInfo。 */
   clientInfo?: acp.Implementation
   /** initialize 握手超时（默认见 ./connection.ts 的 DEFAULT_INITIALIZE_TIMEOUT_MS）。 */
@@ -127,12 +124,8 @@ export interface AcpConnectionOptions extends AcpProcessOptions {
   onSessionUpdate?: SessionUpdateListener
   /** 权限请求处理器；缺省回 `cancelled`（fail closed）。 */
   onPermissionRequest?: PermissionRequestHandler
-  /**
- * elicitation 请求观察器（边界）。应答恒为 `{ action: 'decline' }`（本适配器
-   * 不广告 elicitation capability——`clientCapabilities: {}`——但主动注册 handler
-   * 以产出可见降级事件；缺省观察器 = 静默 decline）。
-   */
-  onElicitationRequest?: ElicitationRequestObserver
+  /** Form/url elicitation handler. If absent, the connection declines fail-closed. */
+  onElicitationRequest?: ElicitationRequestHandler
 }
 
 /**

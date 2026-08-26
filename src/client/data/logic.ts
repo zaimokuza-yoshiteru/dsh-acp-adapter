@@ -22,6 +22,8 @@ export interface AcpAgentConfig {
   args: readonly string[]
  /** Env entries (literal values only; 不再有 `$credential:` 引用语法). */
   env: Record<string, string>
+  /** Explicit profile-owned MCP entries; not an automatic import of DSH MCP. */
+  mcpServers?: readonly AcpMcpServerConfig[]
   /** Login guidance shown with the agent's auth row. */
   loginHint?: string
   /**
@@ -32,6 +34,12 @@ export interface AcpAgentConfig {
    */
   runtime?: AcpAgentRuntimeId
 }
+
+export type AcpMcpServerConfig =
+  | { readonly type: 'stdio'; readonly name: string; readonly command: string; readonly args: readonly string[]; readonly env: Record<string, AcpMcpValue> }
+  | { readonly type: 'http' | 'sse'; readonly name: string; readonly url: string; readonly headers: Record<string, AcpMcpValue> }
+
+export type AcpMcpValue = string | { readonly valueFromEnv: string }
 
 /** runtime descriptor 绑定词表（镜像 host 侧 `AcpAgentId`；边界）。 */
 export type AcpAgentRuntimeId = 'devin' | 'codex' | 'kimi' | 'claude'
@@ -64,6 +72,7 @@ export const ACP_ENV_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/
  * 挂回，除非用户在文本框里同名重填或在掩码行上点移除）。
  */
 export const ACP_SECRET_ENV_KEY_PATTERN = /KEY|PASSWORD|SECRET|TOKEN/i
+const ACP_MCP_SENSITIVE_KEY_PATTERN = /KEY|TOKEN|SECRET|PASSWORD|AUTH|CREDENTIAL/i
 
 /**
  * One-click template for the "添加 Devin" button. Client-side copy of the host
@@ -108,7 +117,7 @@ export const CODEX_ACP_TEMPLATE: AcpAgentConfig & { id: string } = {
   command: 'codex-acp',
   args: [],
   env: {},
-  loginHint: 'codex login',
+  loginHint: 'codex-acp cli login（或 codex login）',
   runtime: 'codex',
 }
 
@@ -190,6 +199,8 @@ function decodeAgentConfig(id: string, raw: unknown): AcpAgentConfig | undefined
   if (!Array.isArray(args) || !args.every((arg) => typeof arg === 'string')) return undefined
   const env = raw['env'] ?? {}
   if (!isPlainObject(env) || !Object.values(env).every((value) => typeof value === 'string')) return undefined
+  const mcpServers = decodeMcpServers(raw['mcpServers'])
+  if (mcpServers === undefined) return undefined
   const loginHint = raw['loginHint']
   if (loginHint !== undefined && typeof loginHint !== 'string') return undefined
  // 边界：runtime 绑定只收四个合法值，其余整体拒绝（镜像 host schema 的 reject 语义）
@@ -200,6 +211,7 @@ function decodeAgentConfig(id: string, raw: unknown): AcpAgentConfig | undefined
     command,
     args: [...args] as string[],
     env: { ...env } as Record<string, string>,
+    ...(mcpServers.length === 0 ? {} : { mcpServers }),
     ...(loginHint === undefined ? {} : { loginHint }),
     ...(runtime === undefined ? {} : { runtime: runtime as AcpAgentRuntimeId }),
   }
@@ -216,6 +228,8 @@ export interface AgentDraft {
   argsText: string
   /** One `KEY=VALUE` per line（疑似 secret 的键不进文本框——见 `maskedEnv`）。 */
   envText: string
+  /** JSON array of explicit profile-owned MCP entries; secret values are masked in the UI. */
+  mcpText?: string
   loginHint: string
   /**
    * 疑似 secret（键名命中 {@link ACP_SECRET_ENV_KEY_PATTERN}）的存量 env 值
@@ -264,6 +278,7 @@ export function draftFromAgent(id: string, config: AcpAgentConfig): AgentDraft {
     command: config.command,
     argsText: formatArgsText(config.args),
     envText: formatEnvText(visibleEnv),
+    ...((config.mcpServers?.length ?? 0) === 0 ? {} : { mcpText: formatMcpText(config.mcpServers ?? []) }),
     loginHint: config.loginHint ?? '',
     ...(Object.keys(maskedEnv).length === 0 ? {} : { maskedEnv }),
  // 边界：runtime 绑定不暴露编辑，原样过站（保存时挂回，见 validateAgentDraft）
@@ -301,6 +316,48 @@ export function formatArgsText(args: readonly string[]): string {
 export type EnvParseFailure =
   | { readonly line: number; readonly reason: 'key' }
   | { readonly line: number; readonly reason: 'duplicate' }
+
+function decodeMcpServers(value: unknown): AcpMcpServerConfig[] | undefined {
+  if (value === undefined) return []
+  if (!Array.isArray(value)) return undefined
+  const seen = new Set<string>()
+  const out: AcpMcpServerConfig[] = []
+  for (const item of value) {
+    if (!isPlainObject(item) || typeof item.name !== 'string' || item.name.trim() === '' || seen.has(item.name)) return undefined
+    seen.add(item.name)
+    if (item.type === 'stdio') {
+      // Browser-side cross-platform shape check. Host validation uses the
+      // platform-native path.isAbsolute before anything is launched.
+      const absoluteCommand = typeof item.command === 'string'
+        && (/^\//.test(item.command) || /^[A-Za-z]:[\\/]/.test(item.command) || /^\\\\/.test(item.command))
+      if (!absoluteCommand || !Array.isArray(item.args) || !item.args.every((arg) => typeof arg === 'string')) return undefined
+      const env = item.env ?? {}
+      if (!isPlainObject(env) || !Object.values(env).every((v) => typeof v === 'string' || (isPlainObject(v) && typeof v.valueFromEnv === 'string'))) return undefined
+      if (Object.entries(env).some(([key, v]) => ACP_MCP_SENSITIVE_KEY_PATTERN.test(key) && typeof v === 'string')) return undefined
+      out.push({ type: 'stdio', name: item.name, command: item.command as string, args: [...item.args] as string[], env: { ...env } as Record<string, AcpMcpValue> })
+    } else if (item.type === 'http' || item.type === 'sse') {
+      if (typeof item.url !== 'string') return undefined
+      const headers = item.headers ?? {}
+      if (!isPlainObject(headers) || !Object.values(headers).every((v) => typeof v === 'string' || (isPlainObject(v) && typeof v.valueFromEnv === 'string'))) return undefined
+      if (Object.entries(headers).some(([key, v]) => ACP_MCP_SENSITIVE_KEY_PATTERN.test(key) && typeof v === 'string')) return undefined
+      out.push({ type: item.type, name: item.name, url: item.url, headers: { ...headers } as Record<string, AcpMcpValue> })
+    } else return undefined
+  }
+  return out
+}
+
+function formatMcpText(servers: readonly AcpMcpServerConfig[]): string {
+  return servers.length === 0 ? '' : JSON.stringify(servers, null, 2)
+}
+
+function parseMcpText(text: string): AcpMcpServerConfig[] | { error: 'json' | 'shape' } {
+  if (text.trim() === '') return []
+  try {
+    const parsed = JSON.parse(text) as unknown
+    const decoded = decodeMcpServers(parsed)
+    return decoded === undefined ? { error: 'shape' } : decoded
+  } catch { return { error: 'json' } }
+}
 
 /**
  * Parse the env textarea: one `KEY=VALUE` per line (split on the FIRST `=`),
@@ -340,6 +397,8 @@ export type DraftErrorKey =
   | 'errorEnvKey'
   | 'errorEnvDuplicate'
   | 'errorRuntimeTaken'
+  | 'errorMcpJson'
+  | 'errorMcpShape'
 
 /** One validation failure: locale key plus template params (e.g. the env line number). */
 export interface DraftError {
@@ -353,6 +412,7 @@ export interface DraftValidation {
   readonly name?: DraftError
   readonly command?: DraftError
   readonly env?: DraftError
+  readonly mcp?: DraftError
   /**
  * （内置 runtime 唯一性）内置 runtime singleton 冲突：草稿的生效 runtime 已被另一个
    * 存量 profile 绑定。params 携带 `{runtime, id, name}` 点名已有 profile——
@@ -397,6 +457,7 @@ export function validateAgentDraft(
     name?: DraftError
     command?: DraftError
     env?: DraftError
+    mcp?: DraftError
     runtime?: DraftError
   } = {}
   if (id === '') validation.id = { key: 'errorIdRequired' }
@@ -405,6 +466,8 @@ export function validateAgentDraft(
   if (name === '') validation.name = { key: 'errorNameRequired' }
   if (command === '') validation.command = { key: 'errorCommandRequired' }
   const parsedEnv = parseEnvText(draft.envText)
+  const parsedMcp = parseMcpText(draft.mcpText ?? '')
+  if ('error' in parsedMcp) validation.mcp = { key: parsedMcp.error === 'json' ? 'errorMcpJson' : 'errorMcpShape' }
   if (!parsedEnv.ok) {
     const key: DraftErrorKey = parsedEnv.failure.reason === 'key' ? 'errorEnvKey' : 'errorEnvDuplicate'
     validation.env = { key, params: { line: parsedEnv.failure.line } }
@@ -422,7 +485,7 @@ export function validateAgentDraft(
   }
   if (validation.id !== undefined || validation.name !== undefined
     || validation.command !== undefined || validation.env !== undefined
-    || validation.runtime !== undefined || !parsedEnv.ok) {
+    || validation.runtime !== undefined || validation.mcp !== undefined || !parsedEnv.ok) {
     return validation
   }
   return {
@@ -433,6 +496,7 @@ export function validateAgentDraft(
       args: parseArgsText(draft.argsText),
  // 掩码键原样合回（用户同名重填的显式行优先 = 轮换值）
       env: { ...draft.maskedEnv, ...parsedEnv.env },
+      ...(Array.isArray(parsedMcp) && parsedMcp.length > 0 ? { mcpServers: parsedMcp } : {}),
       ...(loginHint === '' ? {} : { loginHint }),
  // 边界：存量 agent 的 runtime 绑定原样挂回（编辑器不暴露，保存不得静默解除）
       ...(draft.runtime === undefined ? {} : { runtime: draft.runtime }),

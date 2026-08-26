@@ -225,6 +225,17 @@ afterAll(async () => {
 });
 
 describe('握手（happy / minimal-caps / no-config-options）', () => {
+  it('仅在接线 elicitation handler 时广告 form/url 能力', async () => {
+    const script = `let b=''; process.stdin.on('data', d => { b += d; let i; while ((i=b.indexOf('\\n')) >= 0) { const line=b.slice(0,i); b=b.slice(i+1); if (!line.trim()) continue; const m=JSON.parse(line); if (m.method === 'initialize') { process.stderr.write(JSON.stringify(m.params.clientCapabilities)+'\\n'); process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result:{protocolVersion:1,agentInfo:{name:'cap-test',version:'1'},agentCapabilities:{}}})+'\\n'); } } }); setInterval(()=>{}, 1<<30);`
+    const withHandler = connectInline(script, { onElicitationRequest: () => ({ action: 'cancel' }) })
+    await withHandler.initialize()
+    expect(withHandler.stderrLines().join('')).toContain('elicitation')
+    await withHandler.close()
+    const withoutHandler = connectInline(script)
+    await withoutHandler.initialize()
+    expect(withoutHandler.stderrLines().join('')).not.toContain('elicitation')
+    await withoutHandler.close()
+  }, 10_000)
   it('happy：initialize 记录 agentInfo/capabilities/authMethods，重复调用幂等', async () => {
     const { conn } = connectMock('happy');
     const init = await conn.initialize();

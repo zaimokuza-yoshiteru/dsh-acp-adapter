@@ -54,8 +54,6 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import type { AgentHandle } from '@deepseek-ai/dsh-agent';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import { AcpAgent } from '../../../src/domain/session/agent.ts';
-import { ACP_ELICITATION_DECLINED_NOTE } from '../../../src/domain/session/resume.ts';
-import { createDefaultSandboxPlatform } from '../../../src/domain/policy/platform/index.ts';
 import { AcpClientError } from '../../../src/protocol/v1/errors.ts';
 import { AcpRemoteService } from '../../../src/remote/service.ts';
 import {
@@ -82,7 +80,7 @@ const harnesses: AgentHarness[] = [];
 
 async function boot(options?: CreateHarnessOptions): Promise<AgentHarness> {
   const logDir = fs.mkdtempSync(path.join(suiteDir, 'case-'));
-  const harness = await createHarness(logDir, options ?? {});
+  const harness = await createHarness(logDir, { sandboxMode: 'danger-full-access', ...(options ?? {}) });
   harnesses.push(harness);
   return harness;
 }
@@ -143,79 +141,24 @@ afterAll(() => {
 });
 
 describe('生产接线：sandbox spawn 计划注入懒启动', () => {
-  it('workspace-write（默认档）：confine 以 canonical 会话 cwd 为 root，XDG/TMPDIR 指入 per-session tmp', async () => {
-    const harness = await boot();
-    const profile = mockProfile(harness.logDir, 'fs-probe');
-    const handle = await createAcpAgent(harness, profile, SessionId('wiring-spawn-ww'));
-    const agent = handle.agent as AcpAgent;
+  it.each(['read-only', 'workspace-write'] as const)('%s：选择阶段若未切换原生访问，域层在 spawn 前拒绝', async (sandboxMode) => {
+    const harness = await boot({ sandboxMode });
+    const profile = mockProfile(harness.logDir, 'happy');
+    const sessionId = SessionId(`wiring-native-gate-${sandboxMode}`);
+    const handle = await createAcpAgent(harness, profile, sessionId);
 
-    agent.followup(userText('probe the filesystem'));
-    await agent.whenIdle();
+    handle.agent.followup(userText('must not reach the ACP process'));
+    await handle.agent.whenIdle();
 
- // 创建门：createAgent 前先补一次 confined probe（call[0]），会话 spawn 是 call[1]
-    expect(harness.sandbox?.confineCalls).toHaveLength(2);
-    expect(harness.sandbox?.confineCalls[0]?.policy.sessionId).toBeUndefined(); // 门内 probe（agentless）
-    const call = harness.sandbox?.confineCalls[1];
-    expect(call?.policy.mode).toBe('workspace-write');
-    expect(call?.policy.workspaceRoot).toBe(fs.realpathSync(harness.logDir));
-    expect(call?.policy.sessionId).toBe('wiring-spawn-ww');
-    expect(call?.argv).toEqual([profile.config.command, ...profile.config.args]);
-    // XDG 注入经 spawnPlan.env 整体替换到达子进程（workspace-write 档 = os.tmpdir 下 per-session 目录）
-    const echo = fsProbeEcho(agent);
-    expect(echo.envEcho.XDG_DATA_HOME).toContain('dsh-acp-');
-    expect(echo.envEcho.TMPDIR).toContain('dsh-acp-');
-  }, 15_000);
-
-  it('read-only：confine 以 canonical stateRoot 为 root（裁决②选址 dshHome/dsh-acp/state/<id>），目录实建', async () => {
-    const harness = await boot({ sandboxMode: 'read-only' });
-    const profile = mockProfile(harness.logDir, 'fs-probe');
-    const handle = await createAcpAgent(harness, profile, SessionId('wiring-spawn-ro'));
-    const agent = handle.agent as AcpAgent;
-
-    agent.followup(userText('probe the filesystem'));
-    await agent.whenIdle();
-
-    const stateRoot = fs.realpathSync(path.join(harness.dshHome, 'dsh-acp', 'state', profile.id));
- // 创建门：call[0] 是门内 probe（read-only 档 confine 到 probeRoot），会话 spawn 是 call[1]
-    expect(harness.sandbox?.confineCalls).toHaveLength(2);
-    const call = harness.sandbox?.confineCalls[1];
-    expect(call?.policy.mode).toBe('workspace-write'); // 权限映射 重映射：read-only 以 stateRoot 为可写 root
-    expect(call?.policy.workspaceRoot).toBe(stateRoot);
-    const echo = fsProbeEcho(agent);
-    expect(echo.envEcho.XDG_DATA_HOME).toBe(path.join(stateRoot, 'xdg-data'));
-    expect(echo.envEcho.TMPDIR).toBe(path.join(stateRoot, 'tmp'));
-  }, 15_000);
-
- it('read-only + devin descriptor 的 XDG 镜像 opaque ref：symlink 经 agent.ts 接线物化进 stateRoot（会话链路）', async () => {
-    const harness = await boot({ sandboxMode: 'read-only' });
-    const profile = mockProfile(harness.logDir, 'fs-probe');
- // 边界：auth refs 只按 descriptor 绑定命中（runtime 字段或 id 回退）——把 profile 挂到 devin id 上
-    profile.id = 'devin';
-    // agent.ts 走生产默认 os.homedir()（POSIX 下取 $HOME）：测试以 $HOME 注入假 home，结束即恢复
-    const fakeHome = fs.mkdtempSync(path.join(suiteDir, 'home-'));
-    fs.mkdirSync(path.join(fakeHome, '.local', 'share', 'devin'), { recursive: true });
-    const realCredential = path.join(fakeHome, '.local', 'share', 'devin', 'credentials.toml');
-    fs.writeFileSync(realCredential, 'wiring-token');
-    const realHome = process.env['HOME'];
-    let handle: AgentHandle | undefined;
-    process.env['HOME'] = fakeHome;
-    try {
-      handle = await createAcpAgent(harness, profile, SessionId('wiring-cred-mirror'));
-      handle.agent.followup(userText('probe the filesystem'));
-      await handle.agent.whenIdle();
-    } finally {
-      if (realHome === undefined) delete process.env['HOME'];
-      else process.env['HOME'] = realHome;
-    }
-
-    expect(handle).toBeDefined();
-    expect(eventsOf(handle?.agent as AcpAgent, 'turn/end').at(-1)?.data.reason).toEqual({ kind: 'completed' });
-    const stateRoot = fs.realpathSync(path.join(harness.dshHome, 'dsh-acp', 'state', profile.id));
-    const link = path.join(stateRoot, 'xdg-data', 'devin', 'credentials.toml');
-    // 零字节复制钉：落点是指向真实凭证的 symlink（无 0600 副本）
-    expect(fs.lstatSync(link).isSymbolicLink()).toBe(true);
-    expect(fs.readlinkSync(link)).toBe(realCredential);
-    expect(fs.readFileSync(link, 'utf8')).toBe('wiring-token');
+    const reason = eventsOf(handle.agent as AcpAgent, 'turn/end').at(-1)?.data.reason;
+    expect(reason?.kind).toBe('error');
+    expect(reason?.kind === 'error' ? reason.error.code : undefined).toBe('ACP_SPAWN_CONFIG');
+    expect(reason?.kind === 'error' ? reason.error.message : '').toContain('Native Agent Access');
+    // 只有设置目录 probe；正式 session 零 confine、零 binding、零 data-home。
+    expect(harness.sandbox?.confineCalls).toHaveLength(1);
+    expect(harness.sandbox?.confineCalls[0]?.policy.sessionId).toBeUndefined();
+    expect(((await harness.loop.acpSidecar?.list(sessionId)) ?? []).some((entry) => entry.kind === 'binding')).toBe(false);
+    expect(fs.existsSync(path.join(harness.dshHome, 'dsh-acp', 'agent-data'))).toBe(false);
   }, 15_000);
 
   it('danger-full-access：不 confine + 一次性 warn + permission-scope/agent-mode 分轴审计落条', async () => {
@@ -244,6 +187,93 @@ describe('生产接线：sandbox spawn 计划注入懒启动', () => {
     const modes = entries.filter((entry) => entry.kind === 'agent-mode');
     expect(modes).toHaveLength(1);
     expect(modes[0]?.data).toEqual({ modeId: 'accept-edits', via: 'session-setup' });
+  }, 15_000);
+
+  it('danger-full-access native：不创建/重定向 runtime data home，并原样透传宿主显式 data-home/XDG env', async () => {
+    const harness = await boot({ sandboxMode: 'danger-full-access' });
+    const profile = mockProfile(harness.logDir, 'fs-probe');
+    profile.id = 'codex';
+    profile.config = { ...profile.config, runtime: 'codex' };
+    const nativeHome = fs.mkdtempSync(path.join(suiteDir, 'native-home-'));
+    const previous = new Map<string, string | undefined>([
+      ['CODEX_HOME', process.env.CODEX_HOME],
+      ['XDG_DATA_HOME', process.env.XDG_DATA_HOME],
+      ['XDG_CONFIG_HOME', process.env.XDG_CONFIG_HOME],
+    ]);
+    process.env.CODEX_HOME = path.join(nativeHome, 'codex');
+    process.env.XDG_DATA_HOME = path.join(nativeHome, 'data');
+    process.env.XDG_CONFIG_HOME = path.join(nativeHome, 'config');
+    try {
+      const handle = await createAcpAgent(harness, profile, SessionId('wiring-native-runtime'));
+      handle.agent.followup(userText('probe native environment'));
+      await handle.agent.whenIdle();
+      const echo = fsProbeEcho(handle.agent as AcpAgent);
+      expect(echo.envEcho.CODEX_HOME).toBe(path.join(nativeHome, 'codex'));
+      expect(echo.envEcho.XDG_DATA_HOME).toBe(path.join(nativeHome, 'data'));
+      expect(echo.envEcho.XDG_CONFIG_HOME).toBe(path.join(nativeHome, 'config'));
+      expect(fs.existsSync(path.join(harness.dshHome, 'dsh-acp', 'agent-data'))).toBe(false);
+    } finally {
+      for (const [key, value] of previous) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  }, 15_000);
+
+  it('probe native state root 配置非绝对路径：响亮失败且不遗留 run 目录', async () => {
+    const harness = await boot();
+    const profile = mockProfile(harness.logDir, 'happy');
+    profile.id = 'codex';
+    profile.config = { ...profile.config, runtime: 'codex', env: { ...profile.config.env, CODEX_HOME: 'relative-codex-home' } };
+    await registerAcpAgents(harness, [profile]);
+    await expect(harness.loop.acpRegistry.adapter.listModels(routeOf(profile))).rejects.toThrow('CODEX_HOME must be an absolute path');
+    const probeBase = path.join(harness.dshHome, 'dsh-acp', 'probe', 'codex');
+    expect(fs.existsSync(probeBase) ? fs.readdirSync(probeBase) : []).toEqual([]);
+  }, 15_000);
+
+  it('native stale options：重算 fingerprint 使用 binding 记录的 native strategy', async () => {
+    const harness = await boot({ sandboxMode: 'danger-full-access' });
+    const profile = mockProfile(harness.logDir, 'happy');
+    const sessionId = SessionId('wiring-native-stale-fingerprint');
+    const handle = await createAcpAgent(harness, profile, sessionId);
+    handle.agent.followup(userText('native stale fingerprint'));
+    await handle.agent.whenIdle();
+    const remote = harness.ctx.get('dshAcp' as never) as unknown as AcpRemoteService;
+    await handle.dispose();
+    const stale = await remote.liveOptions(sessionId);
+    expect(stale.freshness).toBe('stale');
+    expect(stale.fingerprintChanged).toBe(false);
+  }, 15_000);
+
+  it('native state env 漂移：CODEX_HOME/XDG_STATE_HOME 变化使 stale fingerprintChanged', async () => {
+    const harness = await boot({ sandboxMode: 'danger-full-access' });
+    const profile = mockProfile(harness.logDir, 'happy');
+    profile.id = 'codex';
+    profile.config = { ...profile.config, runtime: 'codex' };
+    const previous = new Map<string, string | undefined>([
+      ['CODEX_HOME', process.env.CODEX_HOME],
+      ['XDG_STATE_HOME', process.env.XDG_STATE_HOME],
+    ]);
+    process.env.CODEX_HOME = path.join(suiteDir, 'native-fingerprint-a');
+    process.env.XDG_STATE_HOME = path.join(suiteDir, 'native-state-a');
+    const sessionId = SessionId('wiring-native-state-env-fingerprint');
+    try {
+      const handle = await createAcpAgent(harness, profile, sessionId);
+      handle.agent.followup(userText('native state fingerprint'));
+      await handle.agent.whenIdle();
+      const remote = harness.ctx.get('dshAcp' as never) as unknown as AcpRemoteService;
+      await handle.dispose();
+      process.env.CODEX_HOME = path.join(suiteDir, 'native-fingerprint-b');
+      process.env.XDG_STATE_HOME = path.join(suiteDir, 'native-state-b');
+      const stale = await remote.liveOptions(sessionId);
+      expect(stale.freshness).toBe('stale');
+      expect(stale.fingerprintChanged).toBe(true);
+    } finally {
+      for (const [key, value] of previous) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
   }, 15_000);
 
  it(' tool result fidelity：非文本内容按占位/摘要落 log + meta，sidecar 恰一条 degradation', async () => {
@@ -298,7 +328,7 @@ describe('生产接线：sandbox spawn 计划注入懒启动', () => {
     });
   }, 15_000);
 
-  it('sandboxPolicy 缺席：回退 read-only fail-safe（confine root = stateRoot）+ 一次性 warn', async () => {
+  it('sandboxPolicy 缺席：回退 read-only 后被 Native-only 纵深门拒绝 + 一次性 warn', async () => {
     const harness = await boot({ sandboxPolicy: false });
     const warns = captureWarns(harness);
     const profile = mockProfile(harness.logDir, 'happy');
@@ -307,13 +337,12 @@ describe('生产接线：sandbox spawn 计划注入懒启动', () => {
     handle.agent.followup(userText('hello'));
     await handle.agent.whenIdle();
 
-    const stateRoot = fs.realpathSync(path.join(harness.dshHome, 'dsh-acp', 'state', profile.id));
- // 创建门：call[0] 是门内 probe，会话 spawn（回退档）是 call[1]
-    expect(harness.sandbox?.confineCalls).toHaveLength(2);
-    expect(harness.sandbox?.confineCalls[1]?.policy.workspaceRoot).toBe(stateRoot);
+    // 只有门内 probe；正式 session 在 spawn 前被拒绝。
+    expect(harness.sandbox?.confineCalls).toHaveLength(1);
     expect(warns.filter((message) => message.includes('sandboxPolicy service'))).toHaveLength(1);
-    // 回退档下 turn 照常完成
-    expect(eventsOf(handle.agent, 'turn/end').at(-1)?.data.reason).toEqual({ kind: 'completed' });
+    const reason = eventsOf(handle.agent, 'turn/end').at(-1)?.data.reason;
+    expect(reason?.kind === 'error' ? reason.error.code : undefined).toBe('ACP_SPAWN_CONFIG');
+    expect(reason?.kind === 'error' ? reason.error.message : '').toContain('Native Agent Access');
   }, 15_000);
 
  it('sandbox 缺席：confined probe fail closed → 创建门以 sandbox-unavailable 拒绝 createAgent，零 spawn', async () => {
@@ -540,22 +569,15 @@ describe('生产接线：dshAcp Remote service 注册 + resolveLiveAgent', () =>
     expect(remote).toBeInstanceOf(AcpRemoteService);
 
     // 未启动（零 turn）：活体已注册（publish 即入 agents），快照槽为 null；
- // capabilities 未握手归 null，sandbox 随接线透传本平台 enforcement 事实；
+ // capabilities 未握手归 null；
  // 未收到过 usage_update，contextUsage 诚实归 null
-    const platform = createDefaultSandboxPlatform();
     expect(await remote.liveOptions(sessionId)).toEqual({
       sessionId,
       configOptions: null,
       currentModeId: null,
       capabilities: null,
-      sandbox: {
-        platform: platform.platformId,
-        enforcement: platform.enforcementExpectation,
-        note: platform.enforcementNote,
-      },
  // 全新会话（无 ACP 史）连续性 ok，null 词表
       continuity: { status: 'ok', cause: null, detail: null },
-      workspaceWrite: 'supported',
       contextUsage: null,
  // live 快照的固定四键
       freshness: 'live',
@@ -642,11 +664,14 @@ describe('生产接线：probe confine（read-only 档）+ authMethods 透传', 
     profile.id = 'devin';
     // confiner 走生产默认 os.homedir()（POSIX 下取 $HOME）：测试以 $HOME 注入假 home，结束即恢复
     const fakeHome = fs.mkdtempSync(path.join(suiteDir, 'home-'));
-    fs.mkdirSync(path.join(fakeHome, '.local', 'share', 'devin'), { recursive: true });
-    const realCredential = path.join(fakeHome, '.local', 'share', 'devin', 'credentials.toml');
+    const customXdgData = path.join(suiteDir, 'custom-xdg-data');
+    fs.mkdirSync(path.join(customXdgData, 'devin'), { recursive: true });
+    const realCredential = path.join(customXdgData, 'devin', 'credentials.toml');
     fs.writeFileSync(realCredential, 'probe-token');
     const realHome = process.env['HOME'];
+    const realXdgDataHome = process.env['XDG_DATA_HOME'];
     process.env['HOME'] = fakeHome;
+    process.env['XDG_DATA_HOME'] = customXdgData;
     let observed: { link: string; target: string; content: string } | undefined;
     let runRoot: string | undefined;
     try {
@@ -671,6 +696,8 @@ describe('生产接线：probe confine（read-only 档）+ authMethods 透传', 
     } finally {
       if (realHome === undefined) delete process.env['HOME'];
       else process.env['HOME'] = realHome;
+      if (realXdgDataHome === undefined) delete process.env['XDG_DATA_HOME'];
+      else process.env['XDG_DATA_HOME'] = realXdgDataHome;
     }
     expect(observed).toBeDefined();
     expect(observed?.target).toBe(realCredential);
@@ -778,9 +805,9 @@ describe('生产接线：会话创建门与运行时登录失效', () => {
     await handle.agent.whenIdle();
 
     expect(eventsOf(handle.agent, 'turn/end').at(-1)?.data.reason).toEqual({ kind: 'completed' });
-    // 门命中新鲜缓存 → 只多一次会话 confine，无第二次 probe
-    expect(harness.sandbox?.confineCalls).toHaveLength(2);
-    expect(harness.sandbox?.confineCalls[1]?.policy.sessionId).toBe('wiring-gate-ready');
+    // 门命中新鲜缓存；正式 Native session 不 confine，因此只保留门内 probe。
+    expect(harness.sandbox?.confineCalls).toHaveLength(1);
+    expect(harness.sandbox?.confineCalls[0]?.policy.sessionId).toBeUndefined();
   }, 15_000);
 
   it('auth_required probe（未登录）→ 门以 ACP_AUTH_REQUIRED 拒绝，消息带 loginHint，零 spawn', async () => {
@@ -845,42 +872,46 @@ describe('生产接线：会话创建门与运行时登录失效', () => {
   }, 15_000);
 });
 
-// ---------- 边界：elicitation 标准能力降级 + 未知扩展免疫 ----------
+// ---------- 边界：elicitation 标准交互 + 未知扩展免疫 ----------
 
-describe('边界：elicitation/create 协议标准 decline + 未知 _meta/扩展变体免疫', () => {
-  it('elicitation/create → decline 应答；turn 完成，一次性用户说明 + sidecar degradation 审计', async () => {
+describe('边界：elicitation/create form 交互 + 未知 _meta/扩展变体免疫', () => {
+  it('elicitation/create → 显式 decline 应答；turn 完成并保留结构化 sidecar 审计', async () => {
     const harness = await boot();
-    const warns = captureWarns(harness);
     const profile = mockProfile(harness.logDir, 'elicitation');
     const sessionId = SessionId('wiring-elicitation');
     const handle = await createAcpAgent(harness, profile, sessionId);
     const agent = handle.agent;
 
     agent.followup(userText('hello'));
+    const broker = (harness.loop as unknown as { acpPendingElicitations: { list(sessionId?: string): readonly { requestId: string }[]; answer(sessionId: string, answer: { requestId: string; action: 'decline' }): Promise<void> } }).acpPendingElicitations
+    const deadline = Date.now() + 5_000
+    while (broker.list(String(sessionId)).length === 0) {
+      if (Date.now() > deadline) throw new Error('elicitation request was not surfaced')
+      await sleep(5)
+    }
+    await broker.answer(String(sessionId), { requestId: broker.list(String(sessionId))[0]!.requestId, action: 'decline' })
     await agent.whenIdle();
 
     // decline 是协议内应答而非失败：turn 正常完成，mock 收到 decline 后继续文本输出
     expect(eventsOf(agent, 'turn/end').at(-1)?.data.reason).toEqual({ kind: 'completed' });
     // mock 见证：client 应答恰为协议标准变体 {action:'decline'}
     expect(readLog(profile.logPath)).toContain('elicitation response {"action":"decline"}');
-    // 会话日志：一次性用户可见说明（闩锁：恰一条，即使 agent 反复请求）；
     // turn 文本照常聚合落盘（含 decline 后的续写）
     const texts = eventsOf(agent, 'assistant/message').flatMap((event) =>
       event.data.message.content.flatMap((block) => (block.type === 'text' ? [block.text] : [])),
     );
-    expect(texts.filter((text) => text === ACP_ELICITATION_DECLINED_NOTE)).toHaveLength(1);
     expect(texts).toContain('I need structured input. Elicitation answered with action=decline; continuing in plain text.');
-    // sidecar degradation 审计恰一条（fire-and-forget 写，轮询等落盘）
+    // sidecar requested/decided 审计均存在，且不记录用户值。
     let entries = (await harness.loop.acpSidecar?.list(sessionId)) ?? [];
-    const deadline = Date.now() + 5_000;
-    while (!entries.some((entry) => entry.kind === 'degradation')) {
-      if (Date.now() > deadline) throw new Error('elicitation degradation audit was not persisted within timeout');
+    const auditDeadline = Date.now() + 5_000;
+    while (!entries.some((entry) => entry.kind === 'elicitation')) {
+      if (Date.now() > auditDeadline) throw new Error('elicitation audit was not persisted within timeout');
       await sleep(5);
       entries = (await harness.loop.acpSidecar?.list(sessionId)) ?? [];
     }
-    const degradations = entries.filter((entry) => entry.kind === 'degradation');
-    expect(degradations.map((entry) => entry.data.code)).toEqual(['elicitation-declined']);
-    expect(warns.some((message) => message.includes('declined an elicitation/create request'))).toBe(true);
+    const audits = entries.filter((entry) => entry.kind === 'elicitation');
+    expect(audits.map((entry) => entry.data.phase)).toEqual(['requested', 'decided']);
+    expect(JSON.stringify(audits)).not.toContain('deployment target name');
   }, 15_000);  it('未知 _meta（session/new 响应 + 每条 update）与未知 sessionUpdate 变体：SDK 丢弃，turn 完成、文本照常落盘', async () => {
     const harness = await boot();
     const profile = mockProfile(harness.logDir, 'unknown-meta');

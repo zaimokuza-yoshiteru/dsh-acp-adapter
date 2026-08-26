@@ -1,94 +1,127 @@
 # @zaimokuza/dsh-acp-adapter
 
-[中文](README.md) | [English](README.en.md)
+[中文](README.md)
 
-A plugin for using AI agents from the
-[DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness) session UI. It
-currently connects Devin, Codex, Kimi, and Claude through the
-[Agent Client Protocol (ACP)](https://agentclientprotocol.com/). Each agent remains
-responsible for its own reasoning, tools, and runtime state, while DSH provides a unified
-session UI, workspace, approval interaction, and host audit trail.
+Use Devin, Codex, Kimi, or Claude agents from the DeepSeek Harness (DSH) session UI.
+The plugin currently connects these agents through ACP. Each agent remains responsible
+for its own model, tools, skills, login state, and runtime; DSH provides the shared session
+UI, process management, notifications, and audit display.
 
-This package is a release candidate verified with DSH `0.1.1-rc.2` on macOS. Windows,
-remote ACP transports, cross-backend migration within one session, and injection of DSH
-tools, skills, or MCP servers are outside the verified scope.
+## Install DSH
 
-## Installation
-
-Install and start DSH `0.1.1-rc.2`, then add the plugin to the target profile:
+You need Node.js `^22.19.0 || >=24.0.0` and DSH `>=0.1.1-rc.2`. The shortest local setup is:
 
 ```bash
-dsh plugin --profile web add @zaimokuza/dsh-acp-adapter@next
-dsh web
+npx @deepseek-ai/dsh web
 ```
 
-For local tarball verification, run `pnpm pack` in this repository and pass the generated
-`.tgz` absolute path to `dsh plugin --profile web add`. Verify installation and removal in
-a clean profile before release. Never copy local authentication files into the plugin
-directory or logs.
+DSH starts its Web UI at `http://127.0.0.1:3080` by default. You can also install and run DSH
+from source by following the [official repository instructions](https://github.com/deepseek-ai/deepseek-harness).
 
-The minimum host version is `0.1.1-rc.2`. Peer dependencies accept that version and later
-versions, but the structure compatibility gate and current verification baseline remain
-rc.2; rc.8 is not supported. The Node.js range matches DSH `0.1.1-rc.2`:
-`^22.19.0 || >=24.0.0`. Repository gates use Node 24.19.0 and pnpm 11.7.0.
+## Install the plugin
 
-## First session
-
-1. Follow [Getting started](docs/en/getting-started.md) to check DSH and plugin status.
-2. Log in and run health checks in the agent's own CLI, then select a built-in template in DSH ACP settings.
-3. Create an ACP session and wait for the health status to become `ready` before sending a prompt.
-4. See the [agent guide index](docs/en/agents/README.md) for commands, model/mode behavior, and data-directory notes.
-
-Authentication is always managed by the agent. The plugin uses only command names,
-environment-variable names, and opaque path references. It does not read, copy, or log
-tokens, cookies, or secret configuration values.
-
-## Capabilities and security boundaries
-
-- A DSH session's execution backend is immutable after creation. Switching between native and ACP backends requires a new session.
-- ACP model, mode, and reasoning controls appear only when the agent exposes the corresponding config option.
-- `allowed-once` retains one-time semantics and is never mapped to `allow_always`.
-- Session recovery performs staging reconciliation first. If continuity cannot be proven, recovery fails closed instead of silently attaching old DSH history to a new ACP session.
-- The sidecar stores ACP binding, recovery, and approval audit data. The DSH session log remains the source of truth for user-visible history.
-- An external agent's tools, skills, MCP servers, system prompt, native token accounting, and retry policy do not automatically become native DSH capabilities.
-
-See [Architecture](docs/en/architecture.md), [Compatibility](docs/en/compatibility.md), and
-[Security](SECURITY.en.md) for the detailed boundaries.
-
-## Documentation
-
-- [Getting started](docs/en/getting-started.md) · [中文](docs/getting-started.md)
-- [Agent guides](docs/en/agents/README.md) · [中文](docs/agents/README.md): [Devin](docs/en/agents/devin.md) · [Codex](docs/en/agents/codex.md) · [Kimi](docs/en/agents/kimi.md) · [Claude](docs/en/agents/claude.md)
-- [Operations and release checks](docs/en/operations.md) · [中文](docs/operations.md)
-- [Architecture and lifecycle](docs/en/architecture.md) · [中文](docs/architecture.md)
-- [Compatibility and known limitations](docs/en/compatibility.md) · [中文](docs/compatibility.md)
-- [Troubleshooting](docs/en/troubleshooting.md) · [中文](docs/troubleshooting.md)
-- [Security policy](SECURITY.en.md) · [中文](SECURITY.md)
-
-## Local development
-
-Contract tests require a read-only checkout of DSH `0.1.1-rc.2`. The directory is ignored
-by Git:
+On the machine running DSH, run:
 
 ```bash
-git clone --depth 1 --branch dsh-v0.1.1-rc.2 \
-  https://github.com/deepseek-ai/deepseek-harness.git reference/deepseek-harness
-export DSH_UPSTREAM_CHECKOUT="$PWD/reference/deepseek-harness"
+npx @deepseek-ai/dsh plugin --profile web add @zaimokuza/dsh-acp-adapter
+npx @deepseek-ai/dsh web
 ```
 
-Run these commands sequentially:
+Open DSH and go to ACP settings. Agent configurations are managed in the ACP panel; the model
+picker shows the models and configuration options actually returned by the Agent's ACP session.
+To remove the plugin:
 
 ```bash
-pnpm install --frozen-lockfile
-pnpm typecheck
-pnpm test
-pnpm build
-pnpm pack --dry-run
+npx @deepseek-ai/dsh plugin --profile web remove @zaimokuza/dsh-acp-adapter
 ```
 
-Tests and builds must run sequentially because they share `lib/` and `.typert/`. Before a
-release, also run `pnpm check:stale-build`, `pnpm check:picker-diff`, and the install gate
-without real credentials.
+## Configure a supported Agent
+
+Install and log in through the Agent's own CLI first. Then select its built-in template in DSH
+ACP settings and run the health check. Never paste tokens, cookies, credential files, or passwords
+into DSH.
+
+### Devin
+
+```bash
+devin --version
+devin auth login
+devin auth status
+devin acp --help
+```
+
+Select the Devin template in DSH ACP settings and create a session after the check is ready.
+
+### Codex
+
+`codex-acp` is the ACP executable and can run its own CLI login flow. If the Codex CLI is
+also installed, `codex login` is supported as an alternative:
+
+```bash
+codex-acp --version
+codex-acp cli login
+codex-acp --help
+```
+
+Or:
+
+```bash
+codex --version
+codex login
+```
+
+After completing either login flow, select the Codex template in DSH ACP settings.
+
+### Kimi
+
+```bash
+kimi --version
+kimi login
+kimi doctor
+kimi acp --help
+```
+
+Select the Kimi template and wait for its health check to complete before creating a session.
+
+### Claude
+
+Claude Code and its ACP adapter manage authentication through their own CLI. Complete the
+Claude CLI login flow first, then check the ACP executable:
+
+```bash
+claude --version
+claude-agent-acp --version
+claude-agent-acp --help
+```
+
+If you are not logged in, run `claude` and follow its terminal prompts. Do not enter Claude
+credentials in DSH. Then select the Claude template in DSH ACP settings. If Claude is configured
+to use a compatible backend such as DeepSeek, DSH still displays the ACP Agent identity; the
+plugin does not reinterpret the downstream model provider.
+
+## Native Agent Access
+
+ACP sessions use “Native Agent Access” by default (the DSH permission identifier is
+`danger-full-access`) so the Agent can use its own configuration, login state, data home, skills,
+and MCP definitions. The Agent's native mode and ACP approval flow control its file and command
+permissions; DSH approval is not a security boundary against an uncooperative Agent. Use this
+mode only with local Agents you trust, and configure permissions in the Agent's own CLI.
+
+DSH workspace, session history, and the Agent's runtime state remain separate responsibility
+boundaries. Switching to another Agent or a native model creates a new session; history is not
+implicitly migrated to a different execution backend.
+
+## Verify the installation
+
+1. Select an Agent template in DSH ACP settings and run its health check.
+2. Create an ACP session after the status is ready.
+3. Send a simple prompt that does not modify files and confirm that messages, tool activity, and notifications
+   appear in the session UI.
+4. Create a new session when changing Agent; do not treat an existing session's execution
+   backend as portable context.
+
+If a check fails, run the Agent's `--version`, `--help`, or health command in its own CLI. Confirm
+that the ACP executable is available in the `PATH` inherited by DSH, then run the ACP check again.
 
 ## License
 

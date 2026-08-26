@@ -49,6 +49,7 @@ export type UsePanelStore = <S>(selector: (snapshot: AcpPanelSnapshot) => S, equ
 export interface AcpSectionWire {
  /** recheck = true 即「重新检查」（收尾：丢弃 probe 缓存并重探）；省略 = 只读缓存视图。 */
   refreshHealth(recheck?: boolean): void
+  refreshAgentHealth(agentId: string): void
   saveAgent(editingId: string | undefined, draft: AgentDraft): Promise<string | undefined>
   deleteAgent(id: string): Promise<string | undefined>
   /**
@@ -146,21 +147,12 @@ function Loaded({ t, useStore, panel }: {
     h('p', { key: 'intro', className: css.intro }, t('intro')),
     // 产品边界说明 边界说明：常驻、不可折叠，任何状态下都渲染。
     h('p', { key: 'boundary', className: css.boundary, role: 'note' }, t('boundary')),
- // 常驻能力披露：可复用/不可复用清单 + 本平台沙箱 enforcement 事实
-    // （health 未加载/未接线时不渲染末行——不拿缺席冒充 full）。
+    // 常驻披露只说明实际复用边界。正式 ACP 会话使用 Native Agent Access，
+    // health probe 的临时沙箱事实不是会话能力，因此不在这里展示。
     h('div', { key: 'disclosure', className: css.disclosure, role: 'note' },
       h('p', { className: css.disclosureTitle }, t('discTitle')),
       h('p', { className: css.disclosureLine }, t('discReusable')),
       h('p', { className: css.disclosureLine }, t('discNotReusable')),
-      snapshot.health.sandbox === null
-        ? null
-        : h('p', { className: css.disclosureLine },
-          snapshot.health.sandbox.enforcement === 'full'
-            ? t('sandboxFull', { platform: snapshot.health.sandbox.platform })
-            : t('sandboxPartial', {
-              platform: snapshot.health.sandbox.platform,
-              note: snapshot.health.sandbox.note ?? '',
-            })),
     ),
   ]
 
@@ -191,9 +183,8 @@ function Loaded({ t, useStore, panel }: {
       children.push(h('p', { key: 'unreachable-detail', className: css.hint }, snapshot.health.message))
     }
   }
- // sandbox enforcement 标注已挪入常驻披露块（full/partial 两态都如实显示）。
-
   const refreshing = snapshot.health.status === 'loading'
+  const checkingAnyAgent = snapshot.health.checkingAgentIds.length > 0
   children.push(h('div', { key: 'toolbar', className: css.toolbar },
  // Agent 卡片折叠交互：one-click 模板从平铺枚举改为「添加 agent」下拉（宿主「模型」
     // 配置页「添加提供方」同款形态：一个触发钮 + 下拉列出全部内置模板与
@@ -250,7 +241,7 @@ function Loaded({ t, useStore, panel }: {
     h('button', {
       type: 'button',
       className: css.secondaryButton,
-      disabled: refreshing,
+      disabled: refreshing || checkingAnyAgent,
       onClick: () => { panel.refreshHealth(true) },
     }, t(refreshing ? 'refreshing' : 'refresh')),
   ))
@@ -323,6 +314,8 @@ function AgentCard(props: {
   const [failure, setFailure] = useState<string | undefined>(undefined)
  // 删除确认的绑定计数（确认块打开时现取；undefined = 不可得，不冒充 0）
   const [boundCount, setBoundCount] = useState<number | undefined>(undefined)
+  const checking = props.health.status === 'loading' || props.health.checkingAgentIds.includes(id)
+  const checkError = props.health.agentErrors[id]
  // Agent 卡片折叠交互：卡片默认折叠——头行 + 一行状态摘要常驻；命令行与健康卡详情点击
  // 展开后渲染。编辑动作自动展开（编辑器在卡内）。精简卡片头部：头行精简为「仅
   // 名称 + 重新检查/编辑/删除 + 展开 chevron」——身份 tag 移出头行
@@ -373,9 +366,9 @@ function AgentCard(props: {
         h('button', {
           type: 'button',
           className: `${css.secondaryButton} ${css.compact}`,
-          disabled: props.health.status === 'loading',
-          onClick: () => { panel.refreshHealth(true) },
-        }, t(props.health.status === 'loading' ? 'refreshing' : 'refresh')),
+          disabled: checking,
+          onClick: () => { panel.refreshAgentHealth(id) },
+        }, t(checking ? 'refreshing' : 'refresh')),
         h('button', {
           type: 'button',
           className: `${css.secondaryButton} ${css.compact}`,
@@ -403,6 +396,11 @@ function AgentCard(props: {
       statusSummary,
     ),
   ]
+
+  if (checkError !== undefined) {
+    children.push(h('p', { key: 'check-error', className: css.error, role: 'alert' },
+      t('healthCheckFailed', { message: checkError })))
+  }
 
   if (expanded) {
     children.push(h('p', { key: 'cmd', className: css.commandLine }, `$ ${commandLineOf(config)}`))
@@ -682,14 +680,11 @@ const MATRIX_LABEL_KEYS: Record<string, AcpLocaleKey> = {
 /**
  * 端到端能力矩阵的渲染：每行 = 标签 + 三值状态词（supported/degraded/
  * unsupported 分色），note 在位时追加一条 muted 次级说明（host 事实原文）。
- * sandbox 行不逐卡渲染——沙箱姿态是 provider 无关的宿主事实，已由面板顶部
- * 常驻披露块（sandboxFull/sandboxPartial）展示，避免重复。
  */
 function capabilityMatrixRows(t: AcpTranslate, matrix: readonly AcpCapabilityMatrixRow[]): ReactNode[] {
   const rows: ReactNode[] = [h('div', { key: 'cap-matrix-title', className: css.healthRow },
     h('span', { className: css.healthLabel }, t('capMatrixTitle')))]
   for (const entry of matrix) {
-    if (entry.id === 'sandbox') continue
     const labelKey = MATRIX_LABEL_KEYS[entry.id]
     const statusCls = entry.status === 'supported'
       ? css.healthOk
@@ -821,6 +816,18 @@ function AgentForm(props: {
       multiline: true,
       placeholder: 'NO_COLOR=1',
       onChange: (value) => { edit({ envText: value }) },
+    }),
+    textField({
+      t,
+      id: `dsh-acp-${scope}-mcp`,
+      label: t('fieldMcp'),
+      hint: t('fieldMcpHint'),
+      error: validation.mcp,
+      value: draft.mcpText ?? '',
+      disabled,
+      multiline: true,
+      placeholder: '[{"type":"stdio","name":"my-server","command":"/absolute/path/mcp","args":[],"env":{}}]',
+      onChange: (value) => { edit({ mcpText: value }) },
     }),
  // 疑似 secret 的存量 env 键只展示键名 + 已配置状态，值永不进文本框；
     // 「移除」从草稿的 maskedEnv 删键（保存后即从 settings 抹去）。

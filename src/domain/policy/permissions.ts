@@ -1,16 +1,13 @@
 /**
  * ACP approval bridge。所有无法精确表达的选择都 fail closed，审计写入 sidecar：
- * ACP `session/request_permission` → `ctx.approval.request({ agent, toolName,
- * callId, reason, signal })` (only inside an open turn) → the web two-button
- * panel's `allowed-once` maps ONLY to the agent's `allow_once`-kind option id,
- * `rejected` ONLY to its `reject_once`-kind one — matched by
- * `PermissionOptionKind`, never by button label text. 审批语义精确匹配：
- * 双按钮面板没有永久授权，桥**绝不**把一次性选择升格为
- * always 类 optionId——该侧缺 once-kind 选项时答 `cancelled`（decided 审计
- * note `allow-once-unsupported` / `reject-once-unsupported`；拒绝无法忠实
- * 表达时同样升格为永久拒绝，cancelled 对 agent 同样不授权），并在 ask 时的
- * `reason` 里如实披露该侧不可用（{@link ACP_PERMISSION_NO_ALLOW_ONCE_DISCLOSURE} /
- * {@link ACP_PERMISSION_NO_REJECT_ONCE_DISCLOSURE}）。
+ * ACP `session/request_permission` uses the plugin-owned browser broker when a
+ * fresh observer lease exists, preserving the exact optionId (including
+ * always-kind options). Without that lease it falls back to
+ * `ctx.approval.request({ agent, toolName, callId, reason, signal })`; that
+ * legacy two-button seam maps only once-kind options and never promotes a
+ * choice to always. Missing once-kind options fail closed with an explicit
+ * disclosure (see {@link ACP_PERMISSION_NO_ALLOW_ONCE_DISCLOSURE} /
+ * {@link ACP_PERMISSION_NO_REJECT_ONCE_DISCLOSURE}).
  *
  * This handler is the package's ONLY consumer of the approval service, wired
  * exclusively as `AcpClientConnection.onPermissionRequest` — which the
@@ -38,8 +35,9 @@
  *   回包与关流竞速落败（SDK 吞掉迟到写，无 unhandled rejection），子进程
  *   死亡即结算 agent 侧挂起请求；
  * - 审批网关自身 teardown：宿主把其挂起问题全部结算 `cancelled`。
- * UI/浏览器单纯断开**不**结算任何问题（问题保持可答，桥忠实等待、绝不
- * 伪造答复）；审批服务缺席/抛错则立即 fail closed `cancelled`。
+ * UI/浏览器单纯断开不会取消已经交给 broker 的问题（问题保持可答，桥忠实
+ * 等待、绝不伪造答复）；后续请求因 observer lease 过期而精确降级到 DSH
+ * approval。审批服务缺席/抛错则立即 fail closed `cancelled`。
  *
  * Audit (审批审计边界, sidecar 持久化规则 通道): the asked/decided pair (payload 见 ./events.ts) 经注入的
  * {@link AcpPermissionAuditChannel} 落 **sidecar**（不落 session log——spike 实证
@@ -66,6 +64,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import { CallId } from '@deepseek-ai/dsh-llm'
 import type { PermissionRequestHandler } from '../../protocol/v1/types.ts'
 import { acpUnknownToolName } from '../../protocol/v1/translate.ts'
+import type { AcpToolCallPresentationSnapshot } from '../../protocol/v1/translate.ts'
 import type { AcpLogFields } from '../observability/logging.ts'
 import { ACP_METRIC } from '../observability/metrics.ts'
 import type { AcpMetricsLike } from '../observability/metrics.ts'
@@ -73,6 +72,7 @@ import {
   ACP_PERMISSION_AUDIT_KIND,
   createPermissionAskedAudit,
   createPermissionDecidedAudit,
+  redactSecretText,
   type AcpApprovalOutcome,
   type AcpPermissionAuditData,
 } from './events.ts'
@@ -91,6 +91,12 @@ export const ACP_PERMISSION_NO_ALLOW_ONCE_DISCLOSURE = '该 agent 未提供单�
  * 面板的选择拒绝无法忠实表达，桥将视为取消（绝不升格 reject_always）。
  */
 export const ACP_PERMISSION_NO_REJECT_ONCE_DISCLOSURE = '该 agent 未提供单次拒绝选项，选择拒绝将被视为取消'
+
+function isToolKind(value: string | undefined): value is acp.ToolKind {
+  return value === 'read' || value === 'edit' || value === 'delete' || value === 'move'
+    || value === 'search' || value === 'execute' || value === 'think' || value === 'fetch'
+    || value === 'switch_mode' || value === 'other'
+}
 
 /** rawInput JSON 摘要的截断上限（reason 单行可读性）。 */
 export const RAW_INPUT_SUMMARY_MAX_CHARS = 300
@@ -121,6 +127,170 @@ export interface AcpApprovalRequester {
    * @returns the closed outcome; `'allowed-once'` is the only grant.
    */
   request(req: AcpApprovalRequest): Promise<AcpApprovalOutcome>
+}
+
+export type AcpPendingPermissionDecision =
+  | { readonly outcome: 'selected'; readonly optionId: string }
+  | { readonly outcome: 'cancelled' }
+
+/** Broker-owned view; remote/service maps this structurally to the wire contract. */
+export interface AcpPendingPermissionView {
+  readonly requestId: string
+  readonly sessionId: string
+  readonly acpSessionId: string
+  readonly toolCallId: string
+  readonly title: string
+  readonly kind: string
+  readonly reason: string
+  readonly agentId?: string
+  readonly agentName?: string
+  readonly locations?: readonly { readonly path: string; readonly line?: number }[]
+  readonly inputSummary?: string
+  readonly options: readonly { readonly optionId: string; readonly name: string; readonly kind: string }[]
+  readonly createdAt: number
+}
+
+export interface AcpPendingPermissionRequest {
+  readonly requestId: string
+  readonly sessionId: string
+  readonly acpSessionId: string
+  readonly toolCall: acp.RequestPermissionRequest['toolCall']
+  readonly options: readonly acp.PermissionOption[]
+  readonly reason: string
+  readonly agentId?: string
+  readonly agentName?: string
+  readonly signal?: AbortSignal
+}
+
+/** Plugin-owned broker preserving every ACP optionId until the client answers. */
+export interface AcpPendingPermissionBroker {
+  open(request: AcpPendingPermissionRequest): Promise<AcpPendingPermissionDecision>
+  list(sessionId?: string): readonly AcpPendingPermissionView[]
+  /** Mark the browser permission surface as reachable for this DSH session. */
+  observe(sessionId: string): void
+  /** True only while a recent browser heartbeat exists; stale observers fail over to DSH approval. */
+  hasFreshObserver(sessionId: string, now?: number): boolean
+  answer(sessionId: string, requestId: string, optionId: string): void
+  cancel(sessionId: string, requestId: string): void
+  cancelSession(sessionId: string): void
+  dispose(): void
+}
+
+interface PendingPermissionEntry {
+  readonly view: AcpPendingPermissionView
+  readonly options: readonly acp.PermissionOption[]
+  readonly resolve: (decision: AcpPendingPermissionDecision) => void
+  readonly signal?: AbortSignal
+  readonly abort: () => void
+}
+
+export class InMemoryAcpPendingPermissionBroker implements AcpPendingPermissionBroker {
+  private readonly entries = new Map<string, PendingPermissionEntry>()
+  private readonly observers = new Map<string, number>()
+  private readonly clock: () => number
+  /** Poll cadence is 750ms; this lease only selects the answerer and never times out an approval. */
+  static readonly OBSERVER_LEASE_MS = 5_000
+  constructor(clock: () => number = Date.now) {
+    this.clock = clock
+  }
+
+  open(request: AcpPendingPermissionRequest): Promise<AcpPendingPermissionDecision> {
+    const key = this.key(request.sessionId, request.requestId)
+    if (this.entries.has(key)) throw new Error('pending ACP permission "' + request.requestId + '" is already active')
+    if (request.signal?.aborted === true) return Promise.resolve({ outcome: 'cancelled' })
+    const view: AcpPendingPermissionView = {
+      requestId: request.requestId,
+      sessionId: request.sessionId,
+      acpSessionId: request.acpSessionId,
+      toolCallId: request.toolCall.toolCallId,
+      title: permissionToolName(request.toolCall),
+      kind: request.toolCall.kind ?? 'unknown',
+      reason: request.reason,
+      ...(request.agentId === undefined ? {} : { agentId: request.agentId }),
+      ...(request.agentName === undefined ? {} : { agentName: request.agentName }),
+      ...(request.toolCall.locations == null ? {} : { locations: request.toolCall.locations.slice(0, 4).map((location) => ({
+        path: shortTargetPath(location.path).slice(0, 160),
+        ...(location.line === undefined || location.line === null ? {} : { line: location.line }),
+      })) }),
+      ...(request.toolCall.rawInput === undefined ? {} : { inputSummary: summarizeRawInputForAudit(request.toolCall.rawInput).summary }),
+      options: request.options.map((option) => ({ optionId: option.optionId, name: option.name, kind: option.kind })),
+      createdAt: this.clock(),
+    }
+    return new Promise((resolve) => {
+      const abort = (): void => this.settle(key, { outcome: 'cancelled' })
+      const entry: PendingPermissionEntry = {
+        view,
+        options: request.options,
+        resolve,
+        abort,
+        ...(request.signal === undefined ? {} : { signal: request.signal }),
+      }
+      this.entries.set(key, entry)
+      request.signal?.addEventListener('abort', abort, { once: true })
+      // Close the tiny registration/abort race: an abort can land between the
+      // pre-check above and listener registration.
+      if (request.signal?.aborted === true) abort()
+    })
+  }
+
+  list(sessionId?: string): readonly AcpPendingPermissionView[] {
+    return [...this.entries.values()]
+      .map((entry) => entry.view)
+      .filter((view) => sessionId === undefined || view.sessionId === sessionId)
+      .sort((left, right) => left.createdAt - right.createdAt)
+  }
+
+  observe(sessionId: string): void {
+    this.observers.set(sessionId, this.clock())
+  }
+
+  hasFreshObserver(sessionId: string, now = this.clock()): boolean {
+    const observedAt = this.observers.get(sessionId)
+    if (observedAt === undefined) return false
+    if (now - observedAt > InMemoryAcpPendingPermissionBroker.OBSERVER_LEASE_MS) {
+      this.observers.delete(sessionId)
+      return false
+    }
+    return true
+  }
+
+  answer(sessionId: string, requestId: string, optionId: string): void {
+    const key = this.key(sessionId, requestId)
+    const entry = this.entries.get(key)
+    if (entry === undefined) throw new Error('pending ACP permission "' + requestId + '" is not active')
+    if (!entry.options.some((option) => option.optionId === optionId)) {
+      throw new Error('optionId "' + optionId + '" was not offered by the Agent')
+    }
+    this.settle(key, { outcome: 'selected', optionId })
+  }
+
+  cancel(sessionId: string, requestId: string): void {
+    const key = this.key(sessionId, requestId)
+    if (!this.entries.has(key)) throw new Error('pending ACP permission "' + requestId + '" is not active')
+    this.settle(key, { outcome: 'cancelled' })
+  }
+
+  cancelSession(sessionId: string): void {
+    this.observers.delete(sessionId)
+    for (const [key, entry] of this.entries) if (entry.view.sessionId === sessionId) this.settle(key, { outcome: 'cancelled' })
+  }
+
+  dispose(): void {
+    this.observers.clear()
+    for (const key of [...this.entries.keys()]) this.settle(key, { outcome: 'cancelled' })
+  }
+
+  private key(sessionId: string, requestId: string): string {
+    return sessionId + '\u0000' + requestId
+  }
+
+  private settle(key: string, decision: AcpPendingPermissionDecision): void {
+    const entry = this.entries.get(key)
+    if (entry === undefined) return
+    this.entries.delete(key)
+    if (entry.signal !== undefined) entry.signal.removeEventListener('abort', entry.abort)
+    entry.resolve(decision)
+  }
 }
 
 /**
@@ -157,11 +327,20 @@ export interface AcpPermissionAuditChannel {
 export interface AcpPermissionBridgeDeps {
   /** The dsh agent handle forwarded to `approval.request` (routing + audit pair target). */
   readonly agent: Agent
+  /** Bounded profile identity shown in the plugin-owned permission card. */
+  readonly agentId?: string
+  readonly agentName?: string
+  /** DSH session identity used by the plugin-owned pending broker (distinct from ACP sessionId). */
+  readonly dshSessionId?: string | undefined
   /**
    * The dsh approval service (`ctx.approval` in production). ABSENT means the
    * UI answerer is unavailable → every request fails closed to `cancelled`.
    */
   readonly approval?: AcpApprovalRequester | undefined
+  /** Optional plugin-owned broker; preserves every ACP optionId. */
+  readonly pending?: AcpPendingPermissionBroker | undefined
+  /** Bounded translator identity used when request_permission omits title/kind. */
+  readonly toolCallPresentation?: ((toolCallId: string) => AcpToolCallPresentationSnapshot | undefined) | undefined
   /** The audit append channel (see its contract). */
   readonly audit: AcpPermissionAuditChannel
   /**
@@ -249,19 +428,10 @@ function hasKind(options: readonly acp.PermissionOption[], kind: acp.PermissionO
 
 const PERMISSION_REASON_MAX_CHARS = 180
 const PERMISSION_TOOL_TITLE_MAX_CHARS = 80
-const SHELL_SECRET_VALUE = `(?:"[^"]*"|'[^']*'|[^\\s'"]+)`
-const SECRET_JSON_PROPERTY_PATTERN = new RegExp(`((?:["']?)(?:token|secret|password|passwd|api[-_]?key|authorization|credential|private[-_]?key)(?:["']?)\\s*[:=]\\s*)(?:"[^"]*"|'[^']*'|[^,\\s}\\]]+(?=\\s*[,}\\]]))`, 'gi')
-const SECRET_ENV_ASSIGNMENT_PATTERN = new RegExp(`(\\b[A-Za-z][A-Za-z0-9_-]*(?:token|secret|password|passwd|api[-_]?key|authorization|credential|private[-_]?key)[A-Za-z0-9_-]*)\\s*=\\s*${SHELL_SECRET_VALUE}`, 'gi')
-const SECRET_OPTION_PATTERN = new RegExp(`(--?[A-Za-z0-9_-]*(?:token|secret|password|passwd|api[-_]?key|authorization|credential|private[-_]?key)[A-Za-z0-9_-]*)(?:\\s*=\\s*|\\s+)${SHELL_SECRET_VALUE}`, 'gi')
-const SECRET_HEADER_PATTERN = new RegExp(`(\\b(?:authorization|proxy-authorization|x-api-key|api-key)\\b\\s*:\\s*(?:bearer\\s+)?)(?:"[^"]*"|'[^']*'|[^\\s'"]+)`, 'gi')
 
 function safeReasonText(value: string, max = PERMISSION_REASON_MAX_CHARS): string {
-  const sanitized = value
+  const sanitized = redactSecretText(value)
     .replace(/[\u0000-\u001f\u007f]/g, ' ')
-    .replace(SECRET_HEADER_PATTERN, '$1<redacted>')
-    .replace(SECRET_JSON_PROPERTY_PATTERN, '$1<redacted>')
-    .replace(SECRET_ENV_ASSIGNMENT_PATTERN, '$1=<redacted>')
-    .replace(SECRET_OPTION_PATTERN, '$1=<redacted>')
     .replace(/\s+/g, ' ')
     .trim()
   if (sanitized.length <= max) return sanitized
@@ -395,7 +565,17 @@ export function createAcpPermissionHandler(deps: AcpPermissionBridgeDeps): Permi
   const now = deps.now ?? ((): number => Date.now())
 
   return async (params: acp.RequestPermissionRequest): Promise<acp.RequestPermissionResponse> => {
-    const toolTitle = params.toolCall.title ?? params.toolCall.toolCallId
+    const accumulated = deps.toolCallPresentation?.(params.toolCall.toolCallId)
+    const toolCall = accumulated === undefined
+      ? params.toolCall
+      : {
+          ...params.toolCall,
+          ...(params.toolCall.title == null && accumulated.title !== undefined ? { title: accumulated.title } : {}),
+          ...(params.toolCall.kind == null && isToolKind(accumulated.kind) ? { kind: accumulated.kind } : {}),
+          ...(params.toolCall.locations == null && accumulated.locations !== undefined ? { locations: [...accumulated.locations] } : {}),
+          ...(params.toolCall.rawInput == null && accumulated.inputSummary !== undefined ? { rawInput: accumulated.inputSummary } : {}),
+        }
+    const toolTitle = toolCall.title ?? toolCall.toolCallId
  // 结构化字段（acpSessionId 来自请求本身；dshSessionId/acpProvider 由
     // 生产接线的 log 绑定补齐）与指标（requested/decided 配对计数）
     const fields = (result: string): AcpLogFields => ({ operation: 'permission', acpSessionId: params.sessionId, result })
@@ -418,7 +598,7 @@ export function createAcpPermissionHandler(deps: AcpPermissionBridgeDeps): Permi
         data: createPermissionAskedAudit({
           requestId,
           agentSessionId: params.sessionId,
-          toolCall: params.toolCall,
+          toolCall,
           options: params.options,
         }),
       })
@@ -429,22 +609,65 @@ export function createAcpPermissionHandler(deps: AcpPermissionBridgeDeps): Permi
     }
 
     let outcome: AcpApprovalOutcome
+    let pendingDecision: MappedDecision | undefined
     let errorNote: string | undefined
-    const approval = deps.approval
-    if (approval === undefined) {
+    let selectedOptionKind: acp.PermissionOption['kind'] | undefined
+    const signal = deps.turnSignal?.()
+    const dshSessionId = deps.dshSessionId ?? String(deps.agent.id)
+    const usePluginUi = deps.pending !== undefined && deps.pending.hasFreshObserver(dshSessionId)
+    if (usePluginUi && deps.pending !== undefined) {
+      try {
+        const decision = await deps.pending.open({
+          requestId,
+          sessionId: dshSessionId,
+          acpSessionId: params.sessionId,
+          toolCall,
+          options: params.options,
+          reason: buildPermissionReason({ ...params, toolCall }),
+          ...(deps.agentId === undefined ? {} : { agentId: deps.agentId }),
+          ...(deps.agentName === undefined ? {} : { agentName: deps.agentName }),
+          ...(signal === undefined ? {} : { signal }),
+        })
+        if (decision.outcome === 'selected') {
+          const option = params.options.find((candidate) => candidate.optionId === decision.optionId)
+          if (option === undefined) {
+            outcome = 'unavailable'
+            pendingDecision = { outcome: 'cancelled', note: 'invalid-option-id' }
+          } else if (option.kind === 'allow_once' || option.kind === 'allow_always') {
+            outcome = 'allowed-once'
+            selectedOptionKind = option.kind
+            pendingDecision = { outcome: 'selected', optionId: option.optionId }
+          } else if (option.kind === 'reject_once' || option.kind === 'reject_always') {
+            outcome = 'rejected'
+            selectedOptionKind = option.kind
+            pendingDecision = { outcome: 'selected', optionId: option.optionId }
+          } else {
+            outcome = 'unavailable'
+            pendingDecision = { outcome: 'cancelled', note: 'unknown-option-kind' }
+          }
+        } else {
+          outcome = 'cancelled'
+          pendingDecision = { outcome: 'cancelled', note: 'cancelled' }
+        }
+      } catch (error: unknown) {
+        outcome = 'unavailable'
+        errorNote = 'pending-broker-error'
+        pendingDecision = { outcome: 'cancelled', note: errorNote }
+        log('dsh-acp permission broker failed for "' + toolTitle + '" (' + errorMessage(error) + '); responding cancelled (fail closed)', fields('cancelled'))
+      }
+    } else if (deps.approval === undefined) {
       outcome = 'unavailable'
-      log(`dsh-acp permission bridge: no approval service available for "${toolTitle}" (UI absent); responding cancelled (fail closed)`, fields('cancelled'))
+      log(`dsh-acp permission bridge: no fresh plugin observer or approval service available for "${toolTitle}" (no approval service); responding cancelled (fail closed)`, fields('cancelled'))
     } else {
       try {
-        const signal = deps.turnSignal?.()
-        outcome = await approval.request({
+        outcome = await deps.approval.request({
           agent: deps.agent,
           // name/title 双缺时回退到含 callId 的有界中文标签（真机 Devin
           // 的 request_permission 常不带 name/title——审批 UI 不再显示字面量
           // 'unknown-tool'）；fail-closed 语义不变。
-          toolName: permissionToolName(params.toolCall),
-          callId: CallId(params.toolCall.toolCallId),
-          reason: buildPermissionReason(params),
+          toolName: permissionToolName(toolCall),
+          callId: CallId(toolCall.toolCallId),
+          reason: buildPermissionReason({ ...params, toolCall }),
           ...(signal === undefined ? {} : { signal }),
         })
       } catch (error: unknown) {
@@ -454,7 +677,10 @@ export function createAcpPermissionHandler(deps: AcpPermissionBridgeDeps): Permi
       }
     }
 
-    const mapped = mapOutcome(outcome, params.options)
+    const mapped = pendingDecision ?? mapOutcome(outcome, params.options)
+    if (mapped.outcome === 'selected' && selectedOptionKind === undefined) {
+      selectedOptionKind = params.options.find((option) => option.optionId === mapped.optionId)?.kind
+    }
     if (mapped.outcome === 'cancelled' && (mapped.note === 'allow-once-unsupported' || mapped.note === 'reject-once-unsupported')) {
       log(`dsh-acp permission bridge: agent offered no once-kind ${mapped.note === 'allow-once-unsupported' ? 'allow' : 'reject'} option for "${toolTitle}"; responding cancelled (fail closed)`, fields('cancelled'))
     }
@@ -468,7 +694,9 @@ export function createAcpPermissionHandler(deps: AcpPermissionBridgeDeps): Permi
           agentSessionId: params.sessionId,
           toolCallId: params.toolCall.toolCallId,
           outcome: mapped.outcome,
-          approvalOutcome: outcome,
+          ...(usePluginUi ? {} : { approvalOutcome: outcome }),
+          ...(selectedOptionKind === undefined ? {} : { selectedOptionKind }),
+          decisionVia: usePluginUi ? 'acp-ui' : 'native-fallback',
           ...(mapped.outcome === 'selected'
             ? {
                 optionId: mapped.optionId,

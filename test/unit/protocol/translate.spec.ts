@@ -454,6 +454,27 @@ describe('messageId 归属与块切换', () => {
     expect(translator.warnings).toEqual([])
   })
 
+  it('同 messageId 跨 tool 边界分成多个片段，但 append 顺序保持稳定', () => {
+    const { sink, translator } = makeTranslator()
+    translator.beginTurn(1)
+    translator.feed(notification(messageChunk('before', 'same')))
+    translator.feed(notification({ sessionUpdate: 'tool_call', toolCallId: 'timeline-tool', title: 'Timeline tool', kind: 'read', status: 'in_progress' }))
+    translator.feed(notification({ sessionUpdate: 'tool_call_update', toolCallId: 'timeline-tool', status: 'completed' }))
+    translator.feed(notification(messageChunk('after', 'same')))
+    translator.endTurn()
+
+    const messages = ofType(sink.events, 'assistant/message')
+    const tool = at(ofType(sink.events, 'tool/call'), 0)
+    const result = at(ofType(sink.events, 'tool/result'), 0)
+    expect(messages.map((event) => event.data.message.content)).toEqual([
+      [{ type: 'text', text: 'before' }],
+      [{ type: 'text', text: 'after' }],
+    ])
+    expect(messages[0]!.seq).toBeLessThan(tool.seq)
+    expect(tool.seq).toBeLessThan(result.seq)
+    expect(result.seq).toBeLessThan(messages[1]!.seq)
+  })
+
   it('messageId 缺失的匿名 run：同 kind 连续聚合，与具名/异 kind 均构成切换', () => {
     const { sink, translator } = makeTranslator()
     translator.beginTurn(1)
@@ -482,6 +503,14 @@ describe('messageId 归属与块切换', () => {
 // ---------- tool_call / tool_call_update ----------
 
 describe('tool_call / tool_call_update', () => {
+  it('tool-call presentation snapshot is a bounded read-only correlation lookup', () => {
+    const { translator } = makeTranslator()
+    translator.feed(notification({ sessionUpdate: 'tool_call', toolCallId: 'corr-1', title: 'Read file', kind: 'read', locations: [{ path: '/tmp/a.txt' }], rawInput: { path: '/tmp/a.txt' } }))
+    expect(translator.getToolCallPresentationSnapshot('corr-1')).toEqual({
+      toolCallId: 'corr-1', title: 'Read file', kind: 'read', locations: [{ path: '/tmp/a.txt' }], inputSummary: { path: '/tmp/a.txt' },
+    })
+    expect(translator.getToolCallPresentationSnapshot('missing')).toBeUndefined()
+  })
  it('tool/call 形状：name 恒稳定名、title 落 meta、不稳定 name 字段不被采纳、rawInput 序列化与缺席回退 {}、kind/locations 落 meta', () => {
     const { sink, translator } = makeTranslator()
     translator.beginTurn(1)

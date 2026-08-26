@@ -43,6 +43,7 @@ import type { SubprocessSeam } from '../../../src/runtime/process/subprocess.ts'
 import { sharedTestSubprocess } from '../../fixtures/subprocess-seam-testing.ts';
 import {
   ACP_ENV_INHERIT_DEFAULT,
+  nativeAgentEnvironmentKeys,
   AcpSpawnPlanError,
   buildAcpAgentEnv,
   buildAcpSpawnPlan,
@@ -129,11 +130,34 @@ describe('buildAcpAgentEnv（env allowlist）', () => {
     expect(Object.values(env)).not.toContain('host-only');
   });
 
- it('默认白名单内容固定（原 agent.ts MINIMAL_ENV_KEYS 清单， 起由本模块统一供给）', () => {
+  it('默认白名单内容固定（原 agent.ts MINIMAL_ENV_KEYS 清单， 起由本模块统一供给）', () => {
     expect(ACP_ENV_INHERIT_DEFAULT).toEqual([
       'PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'LC_ALL', 'LC_CTYPE',
       'TMPDIR', 'TEMP', 'TMP', 'TERM', 'SystemRoot', 'PATHEXT', 'COMSPEC', 'USERPROFILE',
     ]);
+  });
+
+  it('native 环境键：保留显式 data-home 与所有显式 XDG_*，不读取其值以外的宿主键', async () => {
+    const source = {
+      CODEX_HOME: '/home/user/.codex',
+      KIMI_CODE_HOME: '/home/user/.kimi-code',
+      XDG_DATA_HOME: '/home/user/.local/share',
+      XDG_STATE_HOME: '/home/user/.local/state',
+      XDG_CURRENT_DESKTOP: 'test-desktop',
+      RANDOM_HOST_FACT: 'must-not-pass',
+    };
+    const env = await buildAcpAgentEnv({ inherit: [...new Set([...ACP_ENV_INHERIT_DEFAULT, ...nativeAgentEnvironmentKeys(source)])], source: { ...source, PATH: '/usr/bin', HOME: '/home/user' } });
+    expect(env).toMatchObject({
+      CODEX_HOME: source.CODEX_HOME,
+      KIMI_CODE_HOME: source.KIMI_CODE_HOME,
+      XDG_DATA_HOME: source.XDG_DATA_HOME,
+      XDG_STATE_HOME: source.XDG_STATE_HOME,
+    });
+    expect(env.RANDOM_HOST_FACT).toBeUndefined();
+    expect(env.XDG_CURRENT_DESKTOP).toBeUndefined();
+    expect(env.PATH).toBe('/usr/bin');
+    expect(env.HOME).toBe('/home/user');
+    expect(nativeAgentEnvironmentKeys({}).sort()).toEqual([...['CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'KIMI_CODE_HOME']].sort());
   });
 
   it('自定义 inherit 覆盖默认集（部署相关键须显式放行）', async () => {

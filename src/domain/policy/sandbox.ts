@@ -204,6 +204,33 @@ export const ACP_ENV_INHERIT_DEFAULT: readonly string[] = [
   'USERPROFILE',
 ]
 
+/**
+ * Environment names whose values belong to an Agent's native installation.
+ * Native/full-access sessions preserve these values when the user has set
+ * them; protected sessions deliberately construct their own redirected values.
+ * Only the standard XDG directory homes are included; unrelated XDG flags are
+ * not widened into the child environment.
+ */
+export const ACP_NATIVE_DATA_HOME_ENV_KEYS: readonly string[] = [
+  'CODEX_HOME',
+  'KIMI_CODE_HOME',
+  'CLAUDE_CONFIG_DIR',
+]
+
+/** XDG directory homes that are part of an Agent's native configuration. */
+export const ACP_NATIVE_XDG_ENV_KEYS: readonly string[] = [
+  'XDG_CONFIG_HOME',
+  'XDG_DATA_HOME',
+  'XDG_CACHE_HOME',
+  'XDG_STATE_HOME',
+]
+
+export function nativeAgentEnvironmentKeys(source: Readonly<Record<string, string | undefined>>): string[] {
+  const keys = new Set<string>(ACP_NATIVE_DATA_HOME_ENV_KEYS)
+  for (const key of ACP_NATIVE_XDG_ENV_KEYS) if (source[key] !== undefined) keys.add(key)
+  return [...keys]
+}
+
 /** {@link buildAcpAgentEnv} 的输入。 */
 export interface AcpAgentEnvOptions {
   /** 显式放行的宿主变量名（默认 {@link ACP_ENV_INHERIT_DEFAULT}）。 */

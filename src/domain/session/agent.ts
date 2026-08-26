@@ -18,7 +18,8 @@
 
 /// <reference types="node" />
 
-import { chmodSync, mkdirSync, realpathSync } from 'node:fs'
+import { realpathSync } from 'node:fs'
+import { Buffer } from 'node:buffer'
 import process from 'node:process'
 import type { Context } from '@deepseek-ai/cordis'
 import type {
@@ -35,10 +36,11 @@ import { assertNever, createUserMessage, errorChain } from '@deepseek-ai/dsh-llm
 import type { LlmFailure } from '@deepseek-ai/dsh-llm'
 import { canonicalHeader, foldRequestHeader, headerEquals } from '@deepseek-ai/dsh-session'
 import type { Session, SessionId, TurnEndReason, UserMessage } from '@deepseek-ai/dsh-session'
+import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
 import type * as acp from '@agentclientprotocol/sdk'
 import { AcpClientConnection } from '../../protocol/v1/connection.ts'
 import { AcpClientError, acpErrorRef } from '../../protocol/v1/errors.ts'
-import type { PermissionRequestHandler } from '../../protocol/v1/types.ts'
+import type { ElicitationRequestHandler, PermissionRequestHandler } from '../../protocol/v1/types.ts'
 import type { AcpConnectionSpec } from '../../runtime/process/types.ts'
 import type { SubprocessSeamResolution } from '../../runtime/process/subprocess.ts'
 import { waitWithin } from '../../runtime/process/timeout.ts'
@@ -53,20 +55,20 @@ import { createAcpLogger } from '../observability/logging.ts'
 import type { AcpLogFields, AcpLogger } from '../observability/logging.ts'
 import { ACP_METRIC } from '../observability/metrics.ts'
 import type { AcpMetricsLike } from '../observability/metrics.ts'
-import { buildAcpAgentEnv, buildAcpSpawnPlan, AcpSpawnPlanError, createDeterministicSessionStateDir, ensureDeterministicSessionStateDir, removeDeterministicSessionStateDir, stageOpaqueRefs } from '../policy/sandbox.ts'
+import { buildAcpSpawnPlan, AcpSpawnPlanError } from '../policy/sandbox.ts'
 import type { AcpSandboxMode, AcpSandboxProviderLike, AcpSpawnPlan } from '../policy/sandbox.ts'
 import { ACP_DEGRADATION_AUDIT_KIND } from '../policy/events.ts'
 import type { AcpAgentModeAuditVia, AcpDegradationAuditData } from '../policy/events.ts'
 import { ACP_STEP, ACP_UNKNOWN_MODEL, ReplayTranslator, TurnTranslator, sessionEventSink } from '../../protocol/v1/translate.ts'
-import type { AcpContextUsageSnapshot } from '../../protocol/v1/translate.ts'
-import { descriptorEnvRefValues, descriptorOf, descriptorStagingSourcesOf } from './agent-config.ts'
+import type { AcpContextUsageSnapshot, AcpToolCallPresentationSnapshot } from '../../protocol/v1/translate.ts'
+import { descriptorOf } from './agent-config.ts'
+import { acpMcpSnapshot, acpMcpServersOf } from './mcp.ts'
 import type { AcpResolvedAgent } from './agent-config.ts'
-import { acpLaunchFingerprint } from './launch-fingerprint.ts'
+import { acpLaunchEnvironment, acpLaunchFingerprint } from './launch-fingerprint.ts'
 import {
   AcpBindingPersistError,
   AcpReconciliationError,
   acpModelDivergenceNote,
-  appendElicitationDeclinedNote,
   appendEmptyResponseNote,
   appendForkBlankNote,
   appendModelDivergenceNote,
@@ -153,11 +155,19 @@ export interface AcpAgentOptions {
    * ACP_SPAWN_FAILURE fail closed——零 spawn、零目录副作用，不自制 child_process 回退。
    */
   subprocess: SubprocessSeamResolution
+  /** DSH durable attachment service. Required only when a prompt contains images. */
+  attachments?: Pick<AttachmentStore, 'readImage'>
   /**
  * 权限 seam（审批桥）：agent → client 的 `session/request_permission` 处理器。
    * 缺省走 AcpClientConnection 的 fail-closed 默认（回 `cancelled`）。
    */
   permissionHandler?: PermissionRequestHandler
+  /** ACP v1 form/url elicitation handler; assigned after construction like the permission bridge. */
+  elicitationHandler?: ElicitationRequestHandler
+  /** Session-scoped cancellation for plugin-owned pending permission UI. */
+  cancelPendingPermissions?: (sessionId: string) => void
+  /** Session/plugin teardown settles pending elicitation requests. */
+  cancelPendingElicitations?: (sessionId: string) => void
   /**
  * 恢复 seam（转正； 现在为整条 binding 记录）：sidecar 里读出的最新
    * 合法 binding（sidecar 持久化规则 后 binding 落 sidecar；读取与语义门槛见
@@ -259,7 +269,7 @@ export const ACP_REPLAY_STAGING_MAX_ENTRIES = 2_000
 /** staging 回放缓冲的累计文本上界（字节数近似，按 JS 串 length 计）。 */
 export const ACP_REPLAY_STAGING_MAX_CHARS = 8_000_000
 
-/** prompt 内容拒绝：v1 只发文本块（图片/音频附件的接受面属附件解析服务，不在本包）。 */
+/** Prompt content cannot be represented by the negotiated end-to-end bridge. */
 class AcpPromptContentError extends Error {
   constructor(message: string) {
     super(message)
@@ -336,8 +346,19 @@ function stopReasonToTurnEnd(reason: acp.StopReason): TurnEndReason {
   }
 }
 
-/** 把当前发布 claim 到的消息折成 ACP prompt 内容块；v1 仅文本（非文本块拒收并解释）。 */
-function toAcpPrompt(messages: readonly UserMessage[]): acp.ContentBlock[] {
+/**
+ * Resolve claimed DSH messages into ordered ACP prompt blocks. Images are read
+ * only through DSH's durable attachment service; UI paths and arbitrary file
+ * URLs are never trusted as attachment bytes.
+ */
+async function toAcpPrompt(
+  messages: readonly UserMessage[],
+  options: {
+    readonly imageEnabled: boolean
+    readonly attachments?: Pick<AttachmentStore, 'readImage'>
+    readonly signal: AbortSignal
+  },
+): Promise<acp.ContentBlock[]> {
   const blocks: acp.ContentBlock[] = []
   for (const message of messages) {
     for (const block of message.content) {
@@ -345,14 +366,30 @@ function toAcpPrompt(messages: readonly UserMessage[]): acp.ContentBlock[] {
         blocks.push({ type: 'text', text: block.text })
         continue
       }
+      if (block.type === 'image') {
+        if (!options.imageEnabled) {
+          throw new AcpPromptContentError('dsh-acp: the ACP agent did not advertise image prompt support; the image was not sent')
+        }
+        if (options.attachments === undefined) {
+          throw new AcpPromptContentError('dsh-acp: DSH attachment storage is unavailable; the image was not sent')
+        }
+        options.signal.throwIfAborted()
+        const stored = await options.attachments.readImage(block.attachment, options.signal)
+        options.signal.throwIfAborted()
+        blocks.push({
+          type: 'image',
+          data: Buffer.from(stored.data).toString('base64'),
+          mimeType: stored.ref.mediaType,
+        })
+        continue
+      }
       throw new AcpPromptContentError(
-        `dsh-acp: v1 prompts are text-only; dropped nothing but cannot send a "${block.type}" block ` +
-        '(attachment support follows the prompt-capability matrix, )',
+        `dsh-acp: cannot represent a "${block.type}" prompt block on the negotiated ACP connection; nothing was sent`,
       )
     }
   }
   if (blocks.length === 0) {
-    throw new AcpPromptContentError('dsh-acp: the claimed message(s) carry no text content; nothing to send to the ACP agent')
+    throw new AcpPromptContentError('dsh-acp: the claimed message(s) carry no supported content; nothing to send to the ACP agent')
   }
   return blocks
 }
@@ -388,7 +425,7 @@ export class AcpAgent implements Agent {
 
   private readonly driver: AcpAgentOptions
   /** Runtime-scoped history compatibility; never infer a Devin workaround for other ACP agents. */
-  private readonly historyProjectionPolicy: AcpHistoryProjectionPolicy
+  private historyProjectionPolicy: AcpHistoryProjectionPolicy = {}
  /** 路由 id：`acp-<id>`（注册表约定，既定行为）。 公开：dshAcp Remote `backendOf` 的活体 backend 判定读它。 */
   readonly providerRoute: string
   /**
@@ -426,7 +463,6 @@ export class AcpAgent implements Agent {
    * （agent 可能在单 turn 内反复请求，说明不刷屏）。rebindBlank 不复位——说明
    * 面向的是本会话历史读者，一条足够。
    */
-  private elicitationDeclineNoted = false
   /**
  * config 变更代际（generation 守卫）：setConfigOption/setMode 每次进场
    * 递增；响应到达时代际已易主（并发/迟到——JSON-RPC 允许对端乱序响应）→
@@ -492,10 +528,6 @@ export class AcpAgent implements Agent {
     this.driver = driver
     this.cancelGraceMs = driver.cancelGraceMs ?? ACP_CANCEL_SETTLE_GRACE_MS
     this.providerRoute = `acp-${driver.profile.id}`
-    const historyRuntime = driver.profile.config.runtime
-      ?? driver.resumeBinding?.launchFingerprint.descriptorId
-      ?? (driver.profile.id === 'devin' ? 'devin' : undefined)
-    this.historyProjectionPolicy = historyRuntime === undefined ? {} : { runtime: historyRuntime }
     this.log = createAcpLogger(loopCtx.logger, { dshSessionId: String(id), acpProvider: this.providerRoute })
     this.dispatch = agentEvents(loopCtx, this)
     this.inbox = new Inbox(session, {
@@ -811,7 +843,12 @@ export class AcpAgent implements Agent {
       const translator = this.requireTranslator()
       translator.beginTurn(turn)
       try {
-        turnEnds = await this.promptOnce(toAcpPrompt(claimed), signal)
+        const prompt = await toAcpPrompt(claimed, {
+          imageEnabled: this.conn?.agentCapabilities?.promptCapabilities?.image === true,
+          ...(this.driver.attachments === undefined ? {} : { attachments: this.driver.attachments }),
+          signal,
+        })
+        turnEnds = await this.promptOnce(prompt, signal)
       } finally {
         // crash/cancel 路径同样收口：保留已流出的部分输出（translator 的既有能力）
         translator.endTurn()
@@ -1077,62 +1114,6 @@ export class AcpAgent implements Agent {
     return { mode: 'read-only', workspaceRoot: this.session.header.cwd ?? process.cwd() }
   }
 
-  /** profile 级持久 stateRoot（状态目录规则：`dshHomePath('dsh-acp','state',<agentId>)`）；slot 缺席 → undefined。 */
-  private stateRoot(): string | undefined {
-    const dshHomePath = getCtxSlot<(...segments: string[]) => string>(this.ctx, 'dshHomePath')
-    return dshHomePath === undefined ? undefined : dshHomePath('dsh-acp', 'state', this.driver.profile.id)
-  }
-
-  /**
- * 确定性 data home 选址（仅 descriptor 带 dataHomeEnv 的本地状态 agent
-   * 调用）：resume 复用 binding 记录的数据根（`agentDataHome` 非空字符串时；
-   * 旧 binding 缺该字段由指纹哈希预检以 'profile-changed' 阻断在前，这里走到
-   * 缺席分支只是防御）；新代际建
-   * `<dshHome>/dsh-acp/agent-data/<profileId>/<sessionId>/<generation>`（0700）。
-   * 返回 canonical（realpath）路径；不同代际目录并存，绝不覆盖旧代际。
-   * dshHomePath slot 缺席 → AcpSpawnPlanError fail loud（本地状态 agent 无确定性
-   * 数据根就不能 spawn——退回去写宿主真实 home 不可接受）。
-   */
-  private resolveAgentDataHome(binding: AcpBindingRecord | undefined, generation: number): string {
-    const existing = binding?.agentDataHome
-    if (typeof existing === 'string' && existing.length > 0) {
-      mkdirSync(existing, { recursive: true })
-      chmodSync(existing, 0o700)
-      return realpathSync(existing)
-    }
-    const dshHomePath = getCtxSlot<(...segments: string[]) => string>(this.ctx, 'dshHomePath')
-    if (dshHomePath === undefined) {
-      throw new AcpSpawnPlanError(
-        'ACP_SPAWN_CONFIG',
-        'dshHomePath slot is absent; cannot place the deterministic agent data home (fail-closed for local-state agents)',
-      )
-    }
-    const dir = dshHomePath('dsh-acp', 'agent-data', this.driver.profile.id, this.id, String(generation))
-    mkdirSync(dir, { recursive: true })
-    chmodSync(dir, 0o700)
-    return realpathSync(dir)
-  }
-
-  /**
- * 确定性会话状态目录选址（仅 descriptor `sessionStateDir: 'deterministic'`
-   * 的 agent 在 workspace-write 档调用；devin）：resume 复用 binding 记录的目录
-   * （`agentDataHome` 非空字符串时——形态校验在 `ensureDeterministicSessionStateDir`
-   * 内，非本机制产出的路径 fail loud；被 OS 清掉则幂等重建空目录，会话缺失由
-   * list/load 的既有 fail-loud 对账诚实暴露）；新代际建
-   * `os.tmpdir /dsh-acp-state-<profileId>-<sessionId>-<generation>`（0700
- * canonical）。与 data home 同「复用或新建」纪律，但落点在 tmp——
-   * workspace-write 档 confine 的可写面只有 workspaceRoot + 平台 tmp 区
-   * （dsh-sandbox writableRoots），dshHome 下的目录对 confined 子进程只读
- * （agent-config.ts `sessionStateDir` 注释、创建门同一堵墙）。
-   */
-  private resolveSessionStateDir(binding: AcpBindingRecord | undefined, generation: number): string {
-    const existing = binding?.agentDataHome
-    if (typeof existing === 'string' && existing.length > 0) {
-      return ensureDeterministicSessionStateDir(existing)
-    }
-    return createDeterministicSessionStateDir(`${this.driver.profile.id}-${this.id}-${String(generation)}`)
-  }
-
   /**
  * danger-full-access spawn 的强提示（生产接线；/模式展示 修订）：一次性
    * warn（每实例闩锁）。配套的二次确认 gate 与 `dsh-acp/full-access-spawn` 事件
@@ -1203,35 +1184,6 @@ export class AcpAgent implements Agent {
     void this.driver.recordAudit({ kind: ACP_DEGRADATION_AUDIT_KIND, data: entry }).catch((error: unknown) => {
       this.log.warn(`dsh-acp: failed to persist the degradation audit (${errorChain(error)})`, this.logFields({ operation: 'audit', result: 'error' }))
     })
-  }
-
-  /**
- * elicitation 降级（连接层观察器回调，同步 fire-and-forget；连接层已先以
-   * 协议标准变体 `{ action: 'decline' }` 应答）：每次请求落一条 sidecar
-   * degradation 审计（code 'elicitation-declined'）+ warn；首次另追加一条用户
-   * 可见说明（一次性闩锁 {@link elicitationDeclineNoted}——agent 可能在单 turn
-   * 内反复请求，说明不刷屏）。说明消息省略 sourceEventSeqs，不参与 resume 对账
-   * 期望序列（见 ./resume.ts 模块头）；落盘失败仅 warn，不污染在飞 turn。
-   */
-  private noteElicitationDeclined(): void {
-    this.noteDegradation({
-      code: 'elicitation-declined',
-      items: [{ type: 'elicitation/create', reason: '本适配器不支持结构化 elicitation 交互，已按协议 decline 应答' }],
-      keptPreviewChars: 0,
-      truncated: false,
-    })
-    this.log.warn(
-      'dsh-acp: declined an elicitation/create request (structured elicitation input is not supported by this adapter)',
-      this.logFields({ operation: 'elicitation', result: 'declined' }),
-    )
-    if (this.elicitationDeclineNoted) return
-    this.elicitationDeclineNoted = true
-    const turn = this.phase.kind === 'running' ? this.phase.turn : this.phase.lastTurn
-    try {
-      appendElicitationDeclinedNote(this.session, this.providerRoute, turn, this.translator?.route.model)
-    } catch (error: unknown) {
-      this.log.warn(`dsh-acp: failed to append the elicitation-declined note (${errorChain(error)})`, this.logFields({ operation: 'elicitation', result: 'error' }))
-    }
   }
 
   /**
@@ -1339,94 +1291,46 @@ export class AcpAgent implements Agent {
     const subprocess = this.driver.subprocess
  // 宿主能力缺失属部署/配置问题：taxonomy 覆盖为 config
     if (!subprocess.ok) throw new AcpClientError('spawn-failure', subprocess.message, { category: 'config' })
- // 生产接线：权限映射 三档 spawn 计划。模式来源 = ctx.sandboxPolicy（既定规则，
-    // 与全部 enforcing 工具同一来源）；env = 白名单继承 + profile env 字面值
-    // 透传；confined 两档 fail closed（sandbox 缺席/confine 抛错 =
-    // ACP_SANDBOX_UNAVAILABLE，绝不静默放行）。已知残余：spawn 失败文案里的
-    // `argv[0]` 在 confined 档是 runner 名而非 agent 命令（协议连接层
-    // （src/protocol/v1/connection.ts）既有行为，29 测试钉死，不改）。
+    // ACP 正式会话的产品语义是“原生 Agent 访问”：Agent 使用自己的
+    // 配置、登录、tools、skills 和 MCP。选择器会在建立 ACP backend 前请求
+    // 用户确认并写入 DSH `/permission danger-full-access`；本层作为纵深防线，
+    // 投影/命令缺失或会话被后续降档时在 spawn 之前拒绝；正式 ACP 会话不存在
+    // 受保护 data-home 兼容路径。
     const policy = this.resolveSandboxPolicy()
-    const env = await buildAcpAgentEnv({ entries: profile.config.env })
-    const sandbox = getCtxSlot<AcpSandboxProviderLike>(this.ctx, 'sandbox')
- // descriptor 解析：本 turn 的 descriptor 驱动决策（envRefs 注入、
-    // data home、opaque staging、指纹分量）共用同一次解析。
-    const descriptor = descriptorOf(profile.id, profile.config)
- // fail-closed 创建门：本地状态 agent（descriptor semanticState 'local'）
-    // 的确定性 data home 在 `<dshHome>/dsh-acp/agent-data/...`，不在 confine root
-    // 内——workspace-write 档的公开 policy 只有一个可写 workspaceRoot（项目），
-    // 「项目可写 + data home 可写」无法同时满足（不把 data home 塞进
-    // 项目隐藏目录、不拿用户 home 当 workspaceRoot、不复制 credential 字节）。
-    // 在 resolveAgentDataHome 的 fs 副作用之前响亮拒绝：零目录创建、零 confine
-    // 调用。出路：read-only 或 danger-full-access。UI 标注见 liveSnapshot 的
-    // workspaceWrite 键（picker 披露面板降级项）。
-    if (policy.mode === 'workspace-write' && descriptor?.semanticState === 'local') {
+    if (policy.mode !== 'danger-full-access') {
       throw new AcpSpawnPlanError(
         'ACP_SPAWN_CONFIG',
-        `agent "${profile.id}" keeps its semantic state in a local data home (semanticState=local), which the workspace-write sandbox mode cannot cover: the host sandbox exposes a single writable workspaceRoot (the project), so project-writable and data-home-writable cannot hold at once — switch this session to read-only or danger-full-access`,
+        `ACP session "${this.id}" requires Native Agent Access; confirm the ACP model selection or switch this DSH session to danger-full-access before sending a message`,
       )
     }
- // binding 顺序：binding 与代际提前到 spawn 计划之前确定——data home 选址与
-    // launch fingerprint 都消费代际，resume 复用 binding 记录的数据根。
+    // Resolve the launch template once; Native sessions preserve the Agent's
+    // own configuration and use the same environment snapshot for MCP secrets
+    // and continuity fingerprinting.
+    const descriptor = descriptorOf(profile.id, profile.config)
+    const nativeSourceEnv = await acpLaunchEnvironment({ config: profile.config, descriptor, dataHomeStrategy: 'native' })
+    const env = nativeSourceEnv
+    const sandbox = getCtxSlot<AcpSandboxProviderLike>(this.ctx, 'sandbox')
+    // Binding/generation must be known before fingerprinting so resume and a
+    // newly-created Agent session use the same continuity inputs.
     const binding = this.forceBlank ? undefined : this.driver.resumeBinding
     const generation = binding === undefined ? this.previousBindingGeneration + 1 : binding.generation
- // 确定性 data home（仅 descriptor 带 dataHomeEnv 的本地状态 agent）：
-    // resume 复用 binding.agentDataHome；新代际建 agent-data/<profileId>/<sessionId>/<generation>。
-    const agentDataHome = descriptor?.dataHomeEnv === undefined ? undefined : this.resolveAgentDataHome(binding, generation)
- // 确定性会话状态目录（descriptor sessionStateDir 'deterministic' 的
-    // agent 在 workspace-write 档；devin）：resume 复用 binding.agentDataHome；
-    // 新代际建 tmp 下固定名目录。read-only 档不消费（该档状态目录 = profile 级
-    // 持久 stateRoot，confine root 即它，天然 durable）；danger 档不注入状态目录。
-    const sessionStateDir = descriptor?.sessionStateDir === 'deterministic' && policy.mode === 'workspace-write'
-      ? this.resolveSessionStateDir(binding, generation)
-      : undefined
-    if (descriptor !== undefined) {
- // 边界：白名单 env 引用按声明键名从 DSH 进程环境取值注入（值绝不进
-      // 日志/指纹/binding——descriptor 只声明键名）。
-      Object.assign(env, descriptorEnvRefValues(descriptor, process.env))
- // 边界：高级 CLI override env（claude 的 CLAUDE_CODE_EXECUTABLE）同纪律
-      // 注入子进程——它不是认证面故不在 envRefs 词表，但缺席注入会让 launch
-      // fingerprint 的 executableOverride.present 成为谎话（指纹记了在场、值却
-      // 从未到达子进程；当前实现该  缺口）。值同样绝不进日志/指纹。
-      const overrideEnv = descriptor.executableOverrideEnv
-      if (overrideEnv !== undefined) {
-        const overrideValue = process.env[overrideEnv]
-        if (overrideValue !== undefined && overrideValue !== '') env[overrideEnv] = overrideValue
-      }
-      if (agentDataHome !== undefined) {
- // 边界：data home 经 descriptor 声明的 env 键指给子进程；opaque refs
-        // （凭证/配置）symlink 物化进 data home（机制与防线同 authPathRefs staging）。
-        env[descriptor.dataHomeEnv as string] = agentDataHome
-        stageOpaqueRefs({
-          refs: descriptor.opaqueRefs,
-          dataHome: agentDataHome,
-          onWarn: (message) => { this.log.warn(`dsh-acp: ${message}`, this.logFields({ operation: 'spawn-plan' })) },
-        })
-      }
-    }
+    // Native 会话不创建、重定向或 staging 任何 adapter-owned Agent data home。
+    // Settings 探测仍拥有独立的可丢弃临时资源，不与正式 session 复用。
  // 边界：完整 launch fingerprint 一次计算（预检②与 binding 落盘共用；
     // 分量清单与显式排除项见 ./launch-fingerprint.ts 模块头注释）。
-    const fingerprint = acpLaunchFingerprint({ profileId: profile.id, config: profile.config, descriptor, generation })
- // 边界：data home agent 的 read-only confine root = data home（语义历史在
-    // 本地数据根）；其余 agent 维持 profile 级持久 stateRoot（devin 逐字节不变）。
-    const stateRoot = agentDataHome ?? this.stateRoot()
- // 认证状态注入 auth 路径注入（descriptor 驱动）：profile 绑定的 descriptor
- // 声明的 XDG 镜像 opaque refs（本地状态 agent 的 refs 走上方 确定性 data home 数据根
-    // 机制）；未绑定/无 XDG 镜像条目 = 行为逐字节同前。
-    const stagingSources = descriptorStagingSourcesOf(descriptor)
+    const fingerprint = acpLaunchFingerprint({
+      profileId: profile.id,
+      config: profile.config,
+      descriptor,
+      env,
+    })
     const plan = buildAcpSpawnPlan({
       mode: policy.mode,
       workspaceRoot: policy.workspaceRoot,
-      ...(stateRoot === undefined ? {} : { stateRoot }),
       argv,
       env,
       sessionId: this.id,
       ...(sandbox === undefined ? {} : { sandbox }),
-      // confined 两档由宿主 symlink 进状态目录 XDG 映射位；danger-full-access
-      // 档由 buildAcpSpawnPlan 忽略本字段。
-      ...(stagingSources === undefined ? {} : { authPathRefs: stagingSources }),
- // 边界：workspace-write 档的确定性 per-session 状态目录（devin）；
-      // 其余档/其余 agent 不传，buildAcpSpawnPlan 行为逐字节同前。
-      ...(sessionStateDir === undefined ? {} : { sessionStateDir }),
       onWarn: (message) => { this.log.warn(`dsh-acp: ${message}`, this.logFields({ operation: 'spawn-plan' })) },
     })
     if (plan.confined === null) this.warnUnconfinedSpawn()
@@ -1439,11 +1343,12 @@ export class AcpAgent implements Agent {
       subprocess: subprocess.seam,
     }
     const conn = new AcpClientConnection(spec, {
+      mcpServers: acpMcpSnapshot(acpMcpServersOf(profile.config.mcpServers), nativeSourceEnv),
       ...(this.driver.permissionHandler === undefined ? {} : { onPermissionRequest: this.driver.permissionHandler }),
       onSessionUpdate: (notification) => { this.routeUpdate(notification) },
- // 边界：elicitation/create 恒由连接层 decline 应答，本观察器产出可见降级
-      // 事件（每次审计 + 一次性用户说明）
-      onElicitationRequest: () => { this.noteElicitationDeclined() },
+      // Elicitation handler is assigned by the host after the session-scoped
+      // broker and Remote/UI seam are available.
+      ...(this.driver.elicitationHandler === undefined ? {} : { onElicitationRequest: this.driver.elicitationHandler }),
  // 进程半的内核级异常告警（waitForExit 超预算）接实例结构化 logger
       onProcessWarn: (message) => { this.log.warn(message, this.logFields({ operation: 'teardown', result: 'stalled' })) },
     })
@@ -1453,6 +1358,13 @@ export class AcpAgent implements Agent {
       const initializeStarted = Date.now()
       try {
         await conn.initialize({ signal })
+        // The narrow replay workaround is selected from the live ACP
+        // handshake, never from a user-chosen profile id or template label.
+        // This keeps renamed/custom profiles correct while preventing a
+        // profile from impersonating a different Agent implementation.
+        this.historyProjectionPolicy = conn.agentInfo?.name.toLowerCase().includes('devin') === true
+          ? { runtime: 'devin' }
+          : {}
         this.driver.metrics?.observe(ACP_METRIC.initialize, Date.now() - initializeStarted, { result: 'ok' })
       } catch (error: unknown) {
         this.driver.metrics?.observe(ACP_METRIC.initialize, Date.now() - initializeStarted, { result: error instanceof AcpClientError ? error.kind : 'unknown' })
@@ -1592,7 +1504,6 @@ export class AcpAgent implements Agent {
         sink: sessionEventSink(this.session),
         provider: this.providerRoute,
         model: modelOfConfigOptions(configOptions) ?? this.options.model ?? '',
-        ...(this.driver.profile.config.runtime === undefined ? {} : { runtime: this.driver.profile.config.runtime }),
         degradation: (entry) => { this.noteDegradation(entry) },
         ...(configOptions === undefined ? {} : { configOptions }),
         ...(currentModeId === undefined ? {} : { currentModeId }),
@@ -1633,13 +1544,6 @@ export class AcpAgent implements Agent {
         capabilityHash: acpCanonicalHash16(conn.agentCapabilities ?? null),
         configHash: acpCanonicalHash16(configHashInput(configOptions, currentModeId)),
         generation,
- // 边界：data home agent 记确定性数据根与建立代际（resume 复用同一
- // 路径）；边界：确定性会话状态目录 agent（devin，workspace-write 档）
-        // 复用同两键记 tmp 系状态目录——语义同一（agent 的 per-session 数据根）。
-        // 其余 agent 记 null（键恒写出——旧 binding 缺键 → 指纹哈希
-        // 预检阻断，见 ./launch-fingerprint.ts 模块头注释）
-        agentDataHome: agentDataHome ?? sessionStateDir ?? null,
-        agentDataGeneration: agentDataHome === undefined && sessionStateDir === undefined ? null : generation,
         historyBaseSeq: binding === undefined ? this.turnBaseSeq : binding.historyBaseSeq,
         establishedAt: binding === undefined ? Date.now() : binding.establishedAt,
         dshCommittedSeq: this.turnBaseSeq,
@@ -1908,6 +1812,8 @@ export class AcpAgent implements Agent {
       )
       throw error
     } finally {
+      this.driver.cancelPendingPermissions?.(String(this.id))
+      this.driver.cancelPendingElicitations?.(String(this.id))
       this.lifecycle.transition('disposed')
     }
   }
@@ -1931,25 +1837,14 @@ export class AcpAgent implements Agent {
    * {@link ACP_REBIND_BLANK_NOTE} 说明——文案在 ./resume.ts）。仅 idle 可调用
  * （执行中拒绝是 同款策略）；settling（closing/disposed）抛错。连接拆除
    * 失败 = 孤儿回收失败：计数 + warn 后上抛（lifecycle 仍回 cold——连接句柄已
- * 丢弃，闩锁已复位，重开路径不被卡死）。边界：被放弃代际的确定性会话
-   * 状态目录（tmp 系，devin workspace-write）在 finally 里整删（形态校验在
- * 删除原语内）；data home（dshHome 系）恒保留。
+ * 丢弃，闩锁已复位，重开路径不被卡死）。Native 会话不创建或删除 Agent
+   * data home；它只拆除当前 ACP 连接并让下一次建立获得新代际。
    */
   async rebindBlank(): Promise<void> {
     if (this.phase.kind !== 'idle') throw new Error(`agent "${this.id}": rebindBlank is only allowed while idle`)
     if (this.lifecycle.settling) throw new Error(`agent "${this.id}": session is closing/disposed; rebindBlank is not available`)
     const conn = this.conn
     this.conn = undefined
- // 边界：确定性会话状态目录（tmp 系）的超龄代际清理点——显式放弃旧代际时
-    // 整删其状态目录（旧代际的 ACP 上下文已被放弃，目录从此刻是 确定性状态目录 意义上的
- // litter）。data home（dshHome 系，codex/kimi/claude）恒保留——它是
-    // 持久 resume 真源，绝不删。捕获必须先于下方状态复位（currentBinding 清零）。
-    // 形态校验在删除原语内部（非本机制产出的路径一律不删）。
-    const boundStateDir = this.currentBinding?.agentDataHome ?? this.driver.resumeBinding?.agentDataHome
-    const supersededStateDir = descriptorOf(this.driver.profile.id, this.driver.profile.config)?.sessionStateDir === 'deterministic'
-      && typeof boundStateDir === 'string' && boundStateDir.length > 0
-      ? boundStateDir
-      : undefined
     // 先复位全部会话状态：即使拆除上抛，下一次建立也不得摸到旧代际残渣
     this.forceBlank = true
     this.continuity = { status: 'ok', cause: null, detail: null }
@@ -1986,14 +1881,6 @@ export class AcpAgent implements Agent {
       )
       throw error
     } finally {
- // 边界：超龄代际目录清理（即使拆除上抛也执行——旧代际已被显式放弃）。
-      // 删不掉（OS 已清理/形态不符/IO 失败）仅 warn，不阻断重开。
-      if (supersededStateDir !== undefined && !removeDeterministicSessionStateDir(supersededStateDir)) {
-        this.log.warn(
-          'dsh-acp: could not remove the superseded session state directory during rebindBlank (already swept or failed validation); the OS tmp cleaner owns its retention',
-          this.logFields({ operation: 'teardown', result: 'degraded' }),
-        )
-      }
       if (this.lifecycle.kind === 'live') this.lifecycle.transition('cold')
     }
   }
@@ -2001,6 +1888,11 @@ export class AcpAgent implements Agent {
  /** 当前 open turn 的 abort signal（running 时存在； 审批桥的 `turnSignal` 消费）。 */
   get turnAbortSignal(): AbortSignal | undefined {
     return this.phase.kind === 'running' ? this.phase.abort.signal : undefined
+  }
+
+  /** Bounded tool identity for permission correlation; raw arguments stay internal, while a bounded summary crosses the translator seam. */
+  getToolCallPresentationSnapshot(toolCallId: string): AcpToolCallPresentationSnapshot | undefined {
+    return this.translator?.getToolCallPresentationSnapshot(toolCallId)
   }
 
   /** 最新 configOptions 快照（translator 状态槽；未启动时为会话建立前的推送种子）。只读。 */
@@ -2015,18 +1907,6 @@ export class AcpAgent implements Agent {
    */
   get agentCapabilities(): acp.AgentCapabilities | undefined {
     return this.conn?.agentCapabilities
-  }
-
-  /**
- * workspace-write 沙箱档对本 profile 的可用性（边界；dshAcp Remote 经
-   * AcpLiveAgentFace 消费，直通进 liveSnapshot 的 `workspaceWrite` 必填键）。
-   * 本地状态 agent（绑定 descriptor 的 semanticState 'local'）恒 'unsupported'
-   * ——与 startSession 的 fail-closed 创建门同一判定源（descriptorOf），值由
-   * profile 绑定决定、抗会话中途的 settings 漂移；无 descriptor 的普通 profile
-   * 与 remote 语义 agent 恒 'supported'。
-   */
-  get workspaceWriteSupport(): 'supported' | 'unsupported' {
-    return descriptorOf(this.driver.profile.id, this.driver.profile.config)?.semanticState === 'local' ? 'unsupported' : 'supported'
   }
 
   /** 最新模式 id（`current_mode_update` 推送或会话响应种子）；未知前为 undefined。 */

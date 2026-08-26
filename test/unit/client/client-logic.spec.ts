@@ -252,7 +252,7 @@ describe('常量：与宿主侧契约逐字对齐', () => {
       command: 'codex-acp',
       args: [],
       env: {},
-      loginHint: 'codex login',
+      loginHint: 'codex-acp cli login（或 codex login）',
       runtime: 'codex',
     });
   });
@@ -667,7 +667,7 @@ describe('草稿种子：emptyDraft / draftFromTemplate / draftFromAgent', () =>
       command: 'codex-acp',
       argsText: '',
       envText: '',
-      loginHint: 'codex login',
+      loginHint: 'codex-acp cli login（或 codex login）',
       runtime: 'codex',
     });
     const { id: _cxId, ...codexValue } = CODEX_ACP_TEMPLATE;

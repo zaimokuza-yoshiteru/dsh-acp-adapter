@@ -272,6 +272,69 @@ export interface AcpOptionWrite {
   readonly value: string | boolean
 }
 
+/** ACP permission choice exposed without semantic compression. */
+export interface AcpPermissionOptionView {
+  readonly optionId: string
+  readonly name: string
+  readonly kind: string
+}
+
+/** One host-owned pending ACP permission request. */
+export interface AcpPendingPermissionView {
+  readonly requestId: string
+  readonly sessionId: string
+  readonly acpSessionId: string
+  readonly toolCallId: string
+  readonly title: string
+  readonly kind: string
+  readonly reason: string
+  readonly agentId?: string
+  readonly agentName?: string
+  readonly locations?: readonly { readonly path: string; readonly line?: number }[]
+  readonly inputSummary?: string
+  readonly options: readonly AcpPermissionOptionView[]
+  readonly createdAt: number
+}
+
+export interface AcpPermissionAnswerRequest {
+  readonly requestId: string
+  readonly optionId: string
+}
+
+export interface AcpElicitationFieldView {
+  readonly name: string
+  readonly type: string
+  readonly title?: string | null
+  readonly description?: string | null
+  readonly required: boolean
+  readonly options?: readonly { readonly value: string; readonly title?: string | null; readonly description?: string | null }[]
+  readonly defaultValue?: string | number | boolean | readonly string[]
+  readonly minimum?: number
+  readonly maximum?: number
+  readonly minItems?: number
+  readonly maxItems?: number
+  readonly format?: 'email' | 'uri' | 'date' | 'date-time'
+}
+
+export interface AcpPendingElicitationView {
+  readonly requestId: string
+  readonly sessionId: string
+  readonly acpSessionId?: string
+  readonly mode: 'form' | 'url'
+  readonly message: string
+  readonly fields: readonly AcpElicitationFieldView[]
+  readonly url?: string
+  readonly createdAt: number
+}
+
+export type AcpElicitationValue = string | number | boolean | readonly string[]
+
+export interface AcpElicitationAnswerRequest {
+  readonly requestId: string
+  readonly action: 'accept' | 'decline' | 'cancel'
+  readonly values?: readonly { readonly name: string; readonly value: AcpElicitationValue }[]
+}
+
 // ---------- ModelSwitchCoordinator 的 wire 词汇 ----------
 
 /**
@@ -330,12 +393,14 @@ export interface AcpModelSwitchResolveRequest {
 }
 
 /**
- * `health()` 的请求（收尾）：缺省/省略 = 只读缓存视图（面板打开不 spawn
- * probe）；`recheck: true` = 面板「重新检查」按钮——host 先丢弃每个 provider
- * 的 probe 缓存再重探（有界 probe 序列），返回新鲜健康行。
+ * `health()` 的请求：缺省/省略 = 只读缓存视图（面板打开不 spawn
+ * probe）；`recheck: true` = 重新检查。`agentId` 在场时只检查并返回该
+ * provider，缺席时检查并返回全部 provider。`agentId` 只允许与
+ * `recheck: true` 同时使用。
  */
 export interface AcpHealthRequest {
   readonly recheck?: boolean
+  readonly agentId?: string
 }
 
 /**
@@ -353,8 +418,8 @@ export type AcpBackendState =
   | { readonly state: 'established'; readonly provider: string }
 
 /**
- * `options()`/`setOption()` 的活体选项快照。`capabilities`/`sandbox`/
- * `contextUsage` 是 null 词表的必填键（会话未懒启动/未握手、host 未接线、
+ * `options()`/`setOption()` 的活体选项快照。`capabilities`/`contextUsage`
+ * 是 null 词表的必填键（会话未懒启动/未握手、
  * 未收到过 usage_update 时如实归 null，不拿 probe 缓存或零值冒充活体事实）。
  *
  * 冷启动（冷启动选项快照）：无活体 Agent 但 sidecar 存有界 last-known 快照时，
@@ -373,16 +438,8 @@ export interface AcpLiveOptionsSnapshot {
   readonly configOptions: readonly AcpConfigOption[] | null
   readonly currentModeId: string | null
   readonly capabilities: AcpCapabilityFacts | null
-  readonly sandbox: AcpSandboxPosture | null
  /** 连续性闩锁状态（rebindBlank 的响应也携带复位后的快照）。 */
   readonly continuity: AcpSessionContinuity
-  /**
- * workspace-write 沙箱档对本 profile 的可用性（必填键）：本地状态 agent
-   * （descriptor semanticState 'local'）恒 'unsupported'——宿主沙箱公开 policy
-   * 只有一个可写 workspaceRoot（项目），项目可写与 data home 可写无法同时成立；
-   * host 侧 startSession 有同判定源的 fail-closed 创建门（ACP_SPAWN_CONFIG）。
-   */
-  readonly workspaceWrite: 'supported' | 'unsupported'
   /**
  * 最新已知 ACP 上下文占用（独立 context 统计；domain 真源是
    * src/protocol/v1/translate.ts `AcpContextUsageSnapshot`，host 侧直通映射）。

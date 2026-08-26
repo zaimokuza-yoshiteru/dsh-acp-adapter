@@ -92,6 +92,7 @@ import type {
   SessionUpdate,
   ToolCall,
   ToolCallContent,
+  ToolCallLocation,
   ToolCallUpdate,
   UsageUpdate,
 } from '@agentclientprotocol/sdk'
@@ -182,12 +183,8 @@ export const ACP_DEGRADATION_ITEMS_MAX = 32
  * src/domain/policy/events.ts 以 re-export 暴露本类型，sidecar kind 常量
  * `ACP_DEGRADATION_AUDIT_KIND` 也住在那里）。
  *
- * 增补 `'elicitation-declined'`：agent 发起 `elicitation/create` 而本适配器
- * 恒以协议标准变体 decline 应答（SDK 1.3.0 elicitation 仍 unstable，不接 DSH
- * interaction UI）——每次请求一条审计（无同名 warning，生产点是
- * ./connection.ts 的 elicitation 观察器回调，非 translator）。
  */
-export type AcpDegradationCode = 'unsupported-tool-content' | 'unsupported-chunk-content' | 'elicitation-declined'
+export type AcpDegradationCode = 'unsupported-tool-content' | 'unsupported-chunk-content'
 
 /**
  * 单个被降级内容项的事实：只含标量（类型/有界短语原因/原始大小），
@@ -444,8 +441,6 @@ export interface TurnTranslatorOptions {
   provider: string
   /** Initial ACP-side model id; later overridable via {@link TurnTranslator.setRoute}. */
   model: string
-  /** 已解析 profile runtime；只用于白名单私有扩展投影。 */
-  runtime?: string
   /**
    * Seed for the {@link TurnTranslator.configOptions} slot, typically the
    * `configOptions` from the `session/new`/`session/load` response (those are
@@ -508,6 +503,16 @@ interface PendingToolCall {
   snapshot: TerminalSnapshotState
   /** 是否有任何 update 帧携带过 title/kind/locations/rawInput（终态快照 meta 的落盘闸）。 */
   snapshotUpdated: boolean
+}
+
+/** Bounded, read-only identity facts available to permission correlation. */
+export interface AcpToolCallPresentationSnapshot {
+  readonly toolCallId: string
+  readonly title?: string
+  readonly kind?: string
+  readonly locations?: readonly ToolCallLocation[]
+  /** Raw tool arguments stay internal; only a bounded input summary is exposed here. */
+  readonly inputSummary?: JsonValue
 }
 
 /**
@@ -980,7 +985,7 @@ function acpTerminalSnapshotFromFrame(frame: {
   readonly locations?: readonly { path: string; line?: number | null }[] | null
   readonly rawInput?: unknown
   readonly _meta?: unknown
-}, runtime?: string): TerminalSnapshotState {
+}): TerminalSnapshotState {
   const snapshot: TerminalSnapshotState = {}
   if (typeof frame.title === 'string' && frame.title !== '') snapshot.title = frame.title
   if (typeof frame.kind === 'string') snapshot.kind = frame.kind
@@ -991,10 +996,10 @@ function acpTerminalSnapshotFromFrame(frame: {
     const canonical = acpCanonicalJsonRoundTrip(frame.rawInput)
     if (canonical !== undefined) snapshot.rawInput = canonical
   }
-  if (runtime === 'codex') {
-    const extension = codexAgentExtension(frame._meta)
-    if (extension !== undefined) snapshot.agentExtension = extension
-  }
+  // Extension identity comes from the namespaced wire fact itself. Profile
+  // names and built-in templates are user configuration, not protocol facts.
+  const extension = codexAgentExtension(frame._meta)
+  if (extension !== undefined) snapshot.agentExtension = extension
   return snapshot
 }
 
@@ -1132,7 +1137,6 @@ export class PresentationSegmenter {
 export class TurnTranslator {
   private readonly sink: SessionEventSink
   private readonly degradation: ((entry: AcpDegradationAuditData) => void) | undefined
-  private readonly runtime: string | undefined
   private currentRoute: TranslatorRoute
   /**
    * Latch of the last non-empty model seen (constructor or {@link TurnTranslator.setRoute}).
@@ -1177,7 +1181,6 @@ export class TurnTranslator {
   constructor(options: TurnTranslatorOptions) {
     this.sink = options.sink
     this.degradation = options.degradation
-    this.runtime = options.runtime
     this.currentRoute = { provider: options.provider, model: options.model }
     if (options.model !== '') this.lastKnownModel = options.model
     if (options.configOptions !== undefined) this.configOptionsState = options.configOptions
@@ -1207,6 +1210,20 @@ export class TurnTranslator {
   /** The provider/model identity currently stamped on new events. */
   get route(): TranslatorRoute {
     return { ...this.currentRoute }
+  }
+
+  /** Lookup bounded presentation identity; raw input/output stay internal, while a bounded input summary crosses this seam. */
+  getToolCallPresentationSnapshot(toolCallId: string): AcpToolCallPresentationSnapshot | undefined {
+    const pending = this.pendingCalls.get(toolCallId)
+    if (pending === undefined) return undefined
+    const snapshot = pending.snapshot
+    return {
+      toolCallId,
+      ...(snapshot.title === undefined ? {} : { title: snapshot.title }),
+      ...(snapshot.kind === undefined ? {} : { kind: snapshot.kind }),
+      ...(snapshot.locations === undefined ? {} : { locations: [...snapshot.locations] }),
+      ...(snapshot.rawInput === undefined ? {} : { inputSummary: acpToolInputSummary(snapshot.rawInput) }),
+    }
   }
 
   /**
@@ -1621,7 +1638,7 @@ export class TurnTranslator {
       fallback: mapToolContent(update.content),
  // 非对称工具回放：终态快照以首帧 wire 事实为初值（占位首帧的
       // rawInput/locations 缺席即缺席，由后续 update 帧补齐），后续 update 覆盖。
-      snapshot: acpTerminalSnapshotFromFrame(update, this.runtime),
+      snapshot: acpTerminalSnapshotFromFrame(update),
       snapshotUpdated: false,
     })
     events.push(event)
@@ -1658,12 +1675,10 @@ export class TurnTranslator {
         touched = true
       }
     }
-    if (this.runtime === 'codex') {
-      const extension = codexAgentExtension(update._meta)
-      if (extension !== undefined) {
-        snapshot.agentExtension = extension
-        touched = true
-      }
+    const extension = codexAgentExtension(update._meta)
+    if (extension !== undefined) {
+      snapshot.agentExtension = extension
+      touched = true
     }
     if (touched) pending.snapshotUpdated = true
     if (update.content !== undefined && update.content !== null) {
@@ -1717,14 +1732,14 @@ export class TurnTranslator {
     // 键不相交，浅合并共存。
     const terminalMeta = pending !== undefined
       ? acpToolCallTerminalMetaJson(pending.snapshot, pending.snapshotUpdated)
-      : acpToolCallTerminalMetaJson(acpTerminalSnapshotFromFrame(update, this.runtime), true)
+      : acpToolCallTerminalMetaJson(acpTerminalSnapshotFromFrame(update), true)
  // 展示信封（meta.acpToolPresentation）恒落——name 恒为稳定名后，
     // 渲染器靠信封拿 title/kind/locations/content 的展示形态。title 取终态
     // 快照（latest-wins 含首帧），缺席回退 acpUnknownToolName；inputSummary
     // 是快照 rawInput 的有界折叠（acpToolInputSummary）。信封是展示通道，
     // 不进对账 digest（resume.ts dshToolResultProjectionMeta 只计
     // acpToolContent 键）；回放侧经同一代码路径产出同样信封，天然对称。
-    const snapshot = pending?.snapshot ?? acpTerminalSnapshotFromFrame(update, this.runtime)
+    const snapshot = pending?.snapshot ?? acpTerminalSnapshotFromFrame(update)
     const inputSummary = snapshot.rawInput === undefined ? undefined : acpToolInputSummary(snapshot.rawInput)
     const presentation: AcpToolPresentationV1 = {
       version: 1,

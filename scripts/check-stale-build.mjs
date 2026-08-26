@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // 陈旧构建产物验收（独立 gate 脚本，不进 prepack——两次完整 build 对每次
-// 打包太慢；由维护者在发布前按 docs/operations.md 运行）。
+// 打包太慢；由维护者在发布前通过 `pnpm verify:stale-build` 单独运行）。
 //
 // 证明「删除源文件后重新 build，旧产物不再留在 lib/ 与 npm tarball」：
 //   1. 写入一次性 throwaway 源文件 src/remote/__stale-build-check__.ts

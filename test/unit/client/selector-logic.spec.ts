@@ -18,9 +18,9 @@
 //     selectionOf（同路由保留 effort，否则落模型 defaultEffort，未知行 undefined）
 //   - decodeLiveOptionsSnapshot（整包拒绝制、null description/category 归一、
 //     configOptions:null 归一为"agent 未提供"、未知 type 字符串的选项逐项跳过不传染、
-// capabilities/sandbox 两键的 null 词表与畸形拒绝；路径构造
+// capabilities 的 null 词表与畸形拒绝；路径构造
 //     acpSessionOptionsPath 已随 dshAcp Remote 迁移删除）
-//   - pickerDegradationsOf（披露面板降级项：五类事实逐条命中、顺序固定、全绿空列表）
+//   - pickerDegradationsOf（披露面板可用性提示逐条命中、顺序固定、全绿空列表）
 //   - liveOptionSectionOf（mode 先于 model；category model_config 入模型配置；category 缺席
 //     或未知 → other）/ partitionLiveOptions 五分区 / flattenLiveValues（group/flat 拍平带
 //     groupName）/ withLiveOptionValue（原生类型保真：select 收 string、boolean 收原生
@@ -68,7 +68,6 @@ import {
   liveOptionSectionOf,
   liveValueNameOf,
   partitionLiveOptions,
-  pickerCapabilityWords,
   pickerDegradationsOf,
   presetOfPermissionsProjection,
   providerKindOf,
@@ -94,7 +93,6 @@ import {
   rowId,
   selectionOf,
 } from '../../../src/client/host-compat/model-picker/popup.ts';
-import { ALL_ADVERTISED, DEVIN_LIKE, NONE_ADVERTISED } from '../../fixtures/capability-facts.ts';
 
 // ---------- 夹具：原生目录（wire 形状对齐 sessions.schema.ts） ----------
 
@@ -210,9 +208,7 @@ const liveSnapshot: LiveOptionsSnapshot = {
   configOptions: liveOptions,
   currentModeId: 'code',
   capabilities: null,
-  sandbox: null,
   continuity: CONTINUITY_OK,
-  workspaceWrite: 'supported',
   contextUsage: null,
   ...LIVE_FIXED,
 };
@@ -400,14 +396,14 @@ describe('backend 兼容矩阵（backendOfProvider / isSameBackendSelection / de
     expect(backendOfProvider('deepseek')).toBe('deepseek');
   });
 
-  it('blank backend：native→native 可原地选择；native↔ACP / 跨 ACP profile 必须新会话', () => {
+  it('blank backend：没有执行 backend，native 或任意 ACP profile 都在原会话首次采用', () => {
     const blank: PickerBackendState = { state: 'blank' };
     expect(isSameBackendSelection({ provider: 'deepseek' }, blank)).toBe(true);
-    expect(isSameBackendSelection({ provider: 'acp-devin' }, blank)).toBe(false);
-    expect(isSameBackendSelection({ provider: 'acp-devin' }, blank, 'deepseek')).toBe(false);
+    expect(isSameBackendSelection({ provider: 'acp-devin' }, blank)).toBe(true);
+    expect(isSameBackendSelection({ provider: 'acp-devin' }, blank, 'deepseek')).toBe(true);
     expect(isSameBackendSelection({ provider: 'anthropic' }, blank, 'deepseek')).toBe(true);
     expect(isSameBackendSelection({ provider: 'acp-devin' }, blank, 'acp-devin')).toBe(true);
-    expect(isSameBackendSelection({ provider: 'acp-other' }, blank, 'acp-devin')).toBe(false);
+    expect(isSameBackendSelection({ provider: 'acp-other' }, blank, 'acp-devin')).toBe(true);
   });
 
   it('/model 与 composer 共享 native fail-soft 路由：Remote 不可用时只放行已知 native→native', () => {
@@ -460,11 +456,11 @@ describe('backend 兼容矩阵（backendOfProvider / isSameBackendSelection / de
     expect(rows[0]).not.toHaveProperty('confirmation');
   });
 
-  it('optionsOf 带 blank backend：按 current.provider 标记 native→ACP 为跨 backend', () => {
+  it('optionsOf 带 blank backend：ACP 与 native 均为原会话首次采用', () => {
     const t: PickerTranslate = (key, params) => `${key}:${params?.['message'] ?? params?.['detail'] ?? ''}`;
     const rows = optionsOf(directory, t, { state: 'blank' });
     expect(rows.filter((row) => row.id.startsWith('deepseek/')).every((row) => row.crossBackend !== true)).toBe(true);
-    expect(rows.filter((row) => row.id.startsWith('acp-devin/')).every((row) => row.crossBackend === true)).toBe(true);
+    expect(rows.filter((row) => row.id.startsWith('acp-devin/')).every((row) => row.crossBackend !== true)).toBe(true);
   });
 });
 
@@ -578,13 +574,11 @@ describe(' 当前 Tab（currentTabAvailable / defaultFilterOf / currentRouteFact
 
 
 describe('decodeLiveOptionsSnapshot', () => {
-  // capabilities/sandbox/continuity/workspaceWrite/contextUsage 的"未握手/未接线/ok 闩锁/可写/未收到 usage_update"词表（宿主恒发五键；合法值与畸形见专项用例）。
+  // capabilities/continuity/contextUsage 的“未握手/ok 闩锁/未收到 usage_update”词表。
  // freshness/editable/fingerprintChanged/modelSwitch 同为必填键（live 恒值形态）。
   const NO_FACTS = {
     capabilities: null,
-    sandbox: null,
     continuity: CONTINUITY_OK,
-    workspaceWrite: 'supported',
     contextUsage: null,
     freshness: 'live',
     editable: true,
@@ -676,12 +670,10 @@ describe('decodeLiveOptionsSnapshot', () => {
     // currentModeId 必须是 null 或 string
     expect(decodeLiveOptionsSnapshot({ sessionId: 's1', configOptions: null, ...NO_FACTS })).toBeUndefined();
     expect(decodeLiveOptionsSnapshot({ sessionId: 's1', configOptions: null, currentModeId: 42, ...NO_FACTS })).toBeUndefined();
-    // capabilities/sandbox 同为宿主恒发的必填键（null 词表或合法事实对象；缺 key 即违规）
+    // capabilities 是宿主恒发的必填键（null 词表或合法事实对象；缺 key 即违规）
     expect(decodeLiveOptionsSnapshot({ sessionId: 's1', configOptions: null, currentModeId: null })).toBeUndefined();
-    expect(decodeLiveOptionsSnapshot({ sessionId: 's1', configOptions: null, currentModeId: null, sandbox: null })).toBeUndefined();
-    expect(decodeLiveOptionsSnapshot({ sessionId: 's1', configOptions: null, currentModeId: null, capabilities: null })).toBeUndefined();
     // contextUsage 同为宿主恒发的必填键：缺 key / 畸形即整包拒绝
-    expect(decodeLiveOptionsSnapshot({ sessionId: 's1', configOptions: null, currentModeId: null, capabilities: null, sandbox: null })).toBeUndefined();
+    expect(decodeLiveOptionsSnapshot({ sessionId: 's1', configOptions: null, currentModeId: null, capabilities: null })).toBeUndefined();
   });
 
  it(' continuity 必填键：ok/blocked（cause/detail 原样）解出；缺席/畸形整包拒', () => {
@@ -691,7 +683,7 @@ describe('decodeLiveOptionsSnapshot', () => {
     expect(decodeLiveOptionsSnapshot({ ...base, continuity: blocked })).toEqual({ ...base, continuity: blocked });
     expect(decodeLiveOptionsSnapshot({ ...base, continuity: CONTINUITY_OK })).toEqual({ ...base, continuity: CONTINUITY_OK });
     // 缺 key / 非对象 / status 词表外 / cause/detail 非 null|string：整包拒绝
-    expect(decodeLiveOptionsSnapshot({ sessionId: 's1', configOptions: null, currentModeId: null, capabilities: null, sandbox: null, contextUsage: null })).toBeUndefined();
+    expect(decodeLiveOptionsSnapshot({ sessionId: 's1', configOptions: null, currentModeId: null, capabilities: null, contextUsage: null })).toBeUndefined();
     for (const continuity of [
       null,
       42,
@@ -795,7 +787,7 @@ describe('decodeLiveOptionsSnapshot', () => {
     }
   });
 
-  it('capabilities/sandbox 事实：null 词表与合法对象解出；畸形或缺键整包拒绝', () => {
+  it('capabilities 事实：null 词表与合法对象解出；畸形整包拒绝', () => {
     const capabilities = {
       loadSession: true,
       sessionList: false,
@@ -807,20 +799,16 @@ describe('decodeLiveOptionsSnapshot', () => {
       mcpHttp: false,
       mcpSse: false,
     };
-    const sandboxFull = { platform: 'darwin', enforcement: 'full', note: null };
-    expect(decodeLiveOptionsSnapshot({ sessionId: 's1', configOptions: null, currentModeId: null, capabilities, sandbox: sandboxFull, continuity: CONTINUITY_OK, workspaceWrite: 'supported', contextUsage: null, ...LIVE_FIXED })).toEqual({
+    expect(decodeLiveOptionsSnapshot({ sessionId: 's1', configOptions: null, currentModeId: null, capabilities, continuity: CONTINUITY_OK, contextUsage: null, ...LIVE_FIXED })).toEqual({
       sessionId: 's1',
       configOptions: null,
       currentModeId: null,
       capabilities,
-      sandbox: sandboxFull,
       continuity: CONTINUITY_OK,
-      workspaceWrite: 'supported',
       contextUsage: null,
       ...LIVE_FIXED,
     });
-    // partial 档带残余风险 note；九键全 false（未广告任何能力）同样合法
-    const sandboxPartial = { platform: 'win32', enforcement: 'partial', note: 'Windows ACL 不覆盖进程外设备' };
+    // 九键全 false（未广告任何能力）同样合法
     const noCaps = {
       loadSession: false,
       sessionList: false,
@@ -833,20 +821,15 @@ describe('decodeLiveOptionsSnapshot', () => {
       mcpSse: false,
     };
     expect(
-      decodeLiveOptionsSnapshot({ sessionId: 's1', configOptions: null, currentModeId: null, capabilities: noCaps, sandbox: sandboxPartial, continuity: CONTINUITY_OK, workspaceWrite: 'supported', contextUsage: null, ...LIVE_FIXED }),
-    ).toEqual({ sessionId: 's1', configOptions: null, currentModeId: null, capabilities: noCaps, sandbox: sandboxPartial, continuity: CONTINUITY_OK, workspaceWrite: 'supported', contextUsage: null, ...LIVE_FIXED });
+      decodeLiveOptionsSnapshot({ sessionId: 's1', configOptions: null, currentModeId: null, capabilities: noCaps, continuity: CONTINUITY_OK, contextUsage: null, ...LIVE_FIXED }),
+    ).toEqual({ sessionId: 's1', configOptions: null, currentModeId: null, capabilities: noCaps, continuity: CONTINUITY_OK, contextUsage: null, ...LIVE_FIXED });
     const bads: Array<[string, Record<string, unknown>]> = [
-      ['capabilities 非 object', { capabilities: 1, sandbox: null }],
-      ['capabilities 缺键', { capabilities: { loadSession: true }, sandbox: null }],
-      ['capabilities 值非 boolean', { capabilities: { ...capabilities, loadSession: 'yes' }, sandbox: null }],
-      ['sandbox 非 object', { capabilities: null, sandbox: 'x' }],
-      ['sandbox 缺 platform', { capabilities: null, sandbox: { enforcement: 'full', note: null } }],
-      ['sandbox enforcement 非法', { capabilities: null, sandbox: { platform: 'darwin', enforcement: 'none', note: null } }],
-      ['sandbox note 非 string/null', { capabilities: null, sandbox: { platform: 'darwin', enforcement: 'full', note: 0 } }],
-      ['sandbox note 缺席', { capabilities: null, sandbox: { platform: 'darwin', enforcement: 'full' } }],
+      ['capabilities 非 object', { capabilities: 1 }],
+      ['capabilities 缺键', { capabilities: { loadSession: true } }],
+      ['capabilities 值非 boolean', { capabilities: { ...capabilities, loadSession: 'yes' } }],
     ];
     for (const [label, facts] of bads) {
-      expect(decodeLiveOptionsSnapshot({ sessionId: 's1', configOptions: null, currentModeId: null, continuity: CONTINUITY_OK, workspaceWrite: 'supported', contextUsage: null, ...LIVE_FIXED, ...facts }), label).toBeUndefined();
+      expect(decodeLiveOptionsSnapshot({ sessionId: 's1', configOptions: null, currentModeId: null, continuity: CONTINUITY_OK, contextUsage: null, ...LIVE_FIXED, ...facts }), label).toBeUndefined();
     }
   });
 });
@@ -943,9 +926,7 @@ describe('withLiveOptionValue', () => {
       configOptions: [{ type: 'boolean', id: 'safe', name: 'S', category: 'mode', currentValue: false }],
       currentModeId: null,
       capabilities: null,
-      sandbox: null,
       continuity: CONTINUITY_OK,
-      workspaceWrite: 'supported',
       contextUsage: null,
       ...LIVE_FIXED,
     };
@@ -956,7 +937,7 @@ describe('withLiveOptionValue', () => {
 
   it('未知 configId / configOptions null → 原引用返回（无乐观更新）', () => {
     expect(withLiveOptionValue(liveSnapshot, 'ghost', 'x')).toBe(liveSnapshot);
-    const nullSnapshot: LiveOptionsSnapshot = { sessionId: 's1', configOptions: null, currentModeId: null, capabilities: null, sandbox: null, continuity: CONTINUITY_OK, workspaceWrite: 'supported', contextUsage: null, ...LIVE_FIXED };
+    const nullSnapshot: LiveOptionsSnapshot = { sessionId: 's1', configOptions: null, currentModeId: null, capabilities: null, continuity: CONTINUITY_OK, contextUsage: null, ...LIVE_FIXED };
     expect(withLiveOptionValue(nullSnapshot, 'model', 'x')).toBe(nullSnapshot);
   });
 });
@@ -1051,38 +1032,27 @@ describe('pickerDegradationsOf', () => {
       mcpHttp: false,
       mcpSse: false,
     },
-    sandbox: { platform: 'darwin', enforcement: 'full', note: null },
     continuity: CONTINUITY_OK,
-    workspaceWrite: 'supported',
     contextUsage: null,
     ...LIVE_FIXED,
   };
 
-  it('全绿（preset 在场 + 握手完成 + full enforcement + 目录健康）→ 空列表', () => {
+  it('全绿（preset 在场 + 握手完成 + 目录健康）→ 空列表', () => {
     expect(pickerDegradationsOf({ preset: 'workspace-write', snapshot: READY_SNAPSHOT, providerFailed: false })).toEqual([]);
   });
 
-  it('五类降级逐条命中且顺序固定（先安全边界、再会话能力、后目录健康）', () => {
-    // capabilities 在场 → 不报 noHandshake；preset 缺席 + partial + 目录失败三条按序
-    const partial: LiveOptionsSnapshot = {
-      ...READY_SNAPSHOT,
-      sandbox: { platform: 'win32', enforcement: 'partial', note: 'ACL 加固为尽力而为' },
-    };
-    expect(pickerDegradationsOf({ preset: undefined, snapshot: partial, providerFailed: true })).toEqual([
+  it('可用性提示逐条命中且顺序固定（权限投影、会话能力、目录健康）', () => {
+    expect(pickerDegradationsOf({ preset: undefined, snapshot: READY_SNAPSHOT, providerFailed: true })).toEqual([
       'presetUnknown',
-      'sandboxPartial',
       'probeFailed',
     ]);
-    // 五类全命中：preset 缺席 + 快照 null（含 noConfigOptions/noHandshake）+ partial 需快照在场，
-    // 用「configOptions/capabilities 为 null 且 sandbox partial」的极端快照一次覆盖
+    // configOptions/capabilities 同时未知时仍分别披露。
     const worst: LiveOptionsSnapshot = {
       sessionId: 's1',
       configOptions: null,
       currentModeId: null,
       capabilities: null,
-      sandbox: { platform: 'win32', enforcement: 'partial', note: 'x' },
       continuity: CONTINUITY_OK,
-      workspaceWrite: 'supported',
       contextUsage: null,
       ...LIVE_FIXED,
     };
@@ -1090,7 +1060,6 @@ describe('pickerDegradationsOf', () => {
       'presetUnknown',
       'noConfigOptions',
       'noHandshake',
-      'sandboxPartial',
       'probeFailed',
     ]);
   });
@@ -1107,41 +1076,6 @@ describe('pickerDegradationsOf', () => {
     expect(pickerDegradationsOf({ preset: 'ws', snapshot: noOptions, providerFailed: false })).toEqual(['noConfigOptions']);
     const noHandshake: LiveOptionsSnapshot = { ...READY_SNAPSHOT, capabilities: null };
     expect(pickerDegradationsOf({ preset: 'ws', snapshot: noHandshake, providerFailed: false })).toEqual(['noHandshake']);
-  });
-
-  it('sandbox 缺席（host 未接线）不报 sandboxPartial；partial 才报', () => {
-    const unwired: LiveOptionsSnapshot = { ...READY_SNAPSHOT, sandbox: null };
-    expect(pickerDegradationsOf({ preset: 'ws', snapshot: unwired, providerFailed: false })).toEqual([]);
-  });
-});
-
-// ---------- 披露面板：能力三值词（收尾；domain 能力矩阵的 client 镜像） ----------
-
-describe('pickerCapabilityWords（收尾；三值口径 = 支持/不支持/未广告）', () => {
-  it('广告门控四键：广告 → supported，未广告 → notAdvertised', () => {
-    const all = pickerCapabilityWords(ALL_ADVERTISED);
-    const none = pickerCapabilityWords(NONE_ADVERTISED);
-    for (const key of ['loadSession', 'sessionList', 'sessionClose', 'sessionDelete'] as const) {
-      expect(all[key], key).toBe('supported');
-      expect(none[key], key).toBe('notAdvertised');
-    }
-  });
-
-  it('image/audio/embeddedContext 与 MCP：广告与否恒 unsupported（adapter v1 仅文本 prompt；D10 mcpServers 固定 []）', () => {
-    for (const caps of [ALL_ADVERTISED, NONE_ADVERTISED, DEVIN_LIKE]) {
-      const words = pickerCapabilityWords(caps);
-      for (const key of ['promptImage', 'promptAudio', 'promptEmbeddedContext', 'mcpHttp', 'mcpSse'] as const) {
-        expect(words[key], key).toBe('unsupported');
-      }
-    }
-  });
-
-  it('Devin 实证形态：image 广告了也如实显示「不支持」（矩阵同口径的共有夹具）', () => {
-    const words = pickerCapabilityWords(DEVIN_LIKE);
-    expect(DEVIN_LIKE.promptImage).toBe(true); // 上游确实广告 image
-    expect(words.promptImage).toBe('unsupported'); // 端到端仍不支持（发送被阻止并解释）
-    expect(words.loadSession).toBe('supported');
-    expect(words.promptAudio).toBe('unsupported'); // 不广告也不支持：词归 unsupported（adapter path 决定）
   });
 });
 
@@ -1194,47 +1128,6 @@ describe('showsAcpCatalogScopeNote', () => {
   });
 });
 
-// ---------- 边界：workspaceWrite 键与 workspaceWriteUnsupported 降级项 ----------
-
-describe('workspaceWrite（live 快照必填键 + 披露面板降级项）', () => {
-  /** 全绿快照（workspaceWrite: supported；capabilities 九键在场避免 noHandshake 干扰）。 */
-  const READY: LiveOptionsSnapshot = {
-    sessionId: 's1',
-    configOptions: [],
-    currentModeId: null,
-    capabilities: NONE_ADVERTISED,
-    sandbox: null,
-    continuity: CONTINUITY_OK,
-    workspaceWrite: 'supported',
-    contextUsage: null,
-    ...LIVE_FIXED,
-  };
-  it('decode：supported/unsupported 解出；缺席或词表外整包拒', () => {
-    const base = { sessionId: 's1', configOptions: null, currentModeId: null, capabilities: null, sandbox: null, continuity: CONTINUITY_OK, contextUsage: null, ...LIVE_FIXED };
-    expect(decodeLiveOptionsSnapshot({ ...base, workspaceWrite: 'unsupported' }))
-      .toEqual({ ...base, workspaceWrite: 'unsupported' });
-    expect(decodeLiveOptionsSnapshot({ ...base, workspaceWrite: 'supported' }))
-      .toEqual({ ...base, workspaceWrite: 'supported' });
-    expect(decodeLiveOptionsSnapshot({ ...base })).toBeUndefined(); // 缺键
-    for (const workspaceWrite of [null, 42, 'maybe', 'READ-ONLY']) {
-      expect(decodeLiveOptionsSnapshot({ ...base, workspaceWrite }), String(workspaceWrite)).toBeUndefined();
-    }
-  });
-
-  it('pickerDegradationsOf：workspace-write 档 + unsupported → 降级项（序在 presetUnknown 之后）；其余组合不报', () => {
-    const unsupported: LiveOptionsSnapshot = { ...READY, workspaceWrite: 'unsupported' };
-    expect(pickerDegradationsOf({ preset: 'workspace-write', snapshot: unsupported, providerFailed: false }))
-      .toEqual(['workspaceWriteUnsupported']);
-    // 缺席 preset 时报 presetUnknown 在前、workspaceWriteUnsupported 紧随其后
-    expect(pickerDegradationsOf({ preset: undefined, snapshot: unsupported, providerFailed: false })).toEqual(['presetUnknown']);
-    // 非 workspace-write 档：unsupported 与本档无关，不报
-    expect(pickerDegradationsOf({ preset: 'read-only', snapshot: unsupported, providerFailed: false })).toEqual([]);
-    expect(pickerDegradationsOf({ preset: 'danger-full-access', snapshot: unsupported, providerFailed: false })).toEqual([]);
-    // supported 恒不报
-    expect(pickerDegradationsOf({ preset: 'workspace-write', snapshot: READY, providerFailed: false })).toEqual([]);
-  });
-});
-
 // ---------- 边界：ACP 区块分区题注的 agent 显示名 ----------
 
 describe('acpAgentDisplayName（「Agent 模式（{agent}）」的参数源）', () => {
@@ -1261,9 +1154,7 @@ describe('必填键（freshness/editable/fingerprintChanged/modelSwitch）', () 
     configOptions: null,
     currentModeId: null,
     capabilities: null,
-    sandbox: null,
     continuity: CONTINUITY_OK,
-    workspaceWrite: 'supported',
     contextUsage: null,
   } as const;
 

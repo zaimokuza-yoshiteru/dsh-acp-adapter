@@ -63,7 +63,7 @@
  * {@link AcpSidecar.readLatestBinding} 对 bindings 表最新 payload 做全字段语义校验
  * （{@link AcpBindingData} 全部必填字段）；不通过判 `{status:'outdated'}`（调用方
  * 映射 'binding-outdated'，绝不回退更早的 binding——索引表只有最新一条）。
- * binding 顺序 新增的指纹分量与 `agentDataHome`/`agentDataGeneration` 一律 optional：
+ * binding 指纹的扩展分量一律 optional：
  * 缺席（旧版本写出的 binding）不判 outdated，由 agent.ts 的指纹 canonical 哈希
  * 预检以既有 'profile-changed' 阻断；字段在场时这里只做形态校验。
  *
@@ -115,6 +115,7 @@ import type {
   AcpAgentConfigAuditData,
   AcpAgentModeAuditData,
   AcpDegradationAuditData,
+  AcpElicitationAuditData,
   AcpPermissionAuditData,
   AcpPermissionScopeAuditData,
 } from '../domain/policy/events.ts'
@@ -239,12 +240,12 @@ export interface AcpLaunchFingerprint {
   readonly wrappedCliVersion?: string | null
  /** 边界：envRef 存在性（`{key,present}`，按 key 排序；无 descriptor 记 null）。 */
   readonly envRefs?: readonly { readonly key: string; readonly present: boolean }[] | null
- /** 边界：opaque ref 展开后 source + targetRelative（排序固定；无 descriptor 记 null）。 */
-  readonly opaqueRefs?: readonly { readonly source: string; readonly targetRelative: string }[] | null
  /** 边界：executable override env 的 `{name,present}`（无声明记 null）。 */
   readonly executableOverride?: { readonly name: string; readonly present: boolean } | null
- /** data home 代际：data home agent 的建立代际（非 data home agent 记 null）。 */
-  readonly dataHomeGeneration?: number | null
+  /** Native final state-location env shape: fixed keys, presence, and value hashes only. */
+  readonly nativeStateEnv?: readonly { readonly key: string; readonly present: boolean; readonly hash16?: string }[] | null
+  /** Secret-free hash of the profile-owned MCP snapshot used for this ACP session. */
+  readonly mcpFingerprint?: string | null
 }
 
 /** initialize 握手回报的 agent 身份（`agentInfo`；未回报字段如实缺省）。 */
@@ -290,17 +291,6 @@ export interface AcpBindingData {
   readonly establishedAt: number
   /** 本 binding 担保的 DSH 已提交日志前缀上界（不含；见类型注释）。 */
   readonly dshCommittedSeq: number
-  /**
- * 边界：data home agent（descriptor 带 dataHomeEnv）本次建立的确定性数据根
-   * canonical 路径（resume 复用同一路径）；非 data home agent 与旧版本 binding
- * 记 null/缺席。同一字段也用于确定性会话状态目录 Agent（Devin，
-   * workspace-write 档的 tmp 系 per-session 状态目录——语义同一：agent 的
-   * per-session 数据根）。optional——缺席不判 outdated（旧 binding 由指纹哈希
-   * 预检阻断）。
-   */
-  readonly agentDataHome?: string | null
- /** 边界：`agentDataHome` 对应的建立代际（同上，optional）。 */
-  readonly agentDataGeneration?: number | null
 }
 
 /** {@link AcpSidecar.readLatestBinding} 的读出模型：最新一条合法 binding + 落盘时间。 */
@@ -378,7 +368,7 @@ export interface AcpSidecarEnvelopeV2 {
   readonly dshSessionId: string
   readonly acpProviderId?: string
   readonly acpSessionId?: string
-  readonly payload: AcpBindingData | AcpPermissionAuditData | AcpPermissionScopeAuditData | AcpAgentModeAuditData | AcpAgentConfigAuditData | AcpReconciliationData | AcpDegradationAuditData
+  readonly payload: AcpBindingData | AcpPermissionAuditData | AcpPermissionScopeAuditData | AcpAgentModeAuditData | AcpAgentConfigAuditData | AcpReconciliationData | AcpDegradationAuditData | AcpElicitationAuditData
 }
 
 /** 统一读取模型的公共 envelope 字段。 */
@@ -411,10 +401,10 @@ interface AcpSidecarEntryBase {
  * {@link AcpReconciliationData}）； 新增 `degradation`（tool result 内容
  * 降级事实，载荷见 {@link AcpDegradationAuditData}）。
  */
-export type AcpSidecarKind = 'binding' | 'permission' | 'permission-scope' | 'agent-mode' | 'agent-config' | 'reconciliation' | 'degradation'
+export type AcpSidecarKind = 'binding' | 'permission' | 'permission-scope' | 'agent-mode' | 'agent-config' | 'reconciliation' | 'degradation' | 'elicitation'
 
 /** 写/读路径共同承认的 v2 kind 全集（行校验用）。 */
-const ACP_SIDECAR_KINDS: readonly AcpSidecarKind[] = ['binding', 'permission', 'permission-scope', 'agent-mode', 'agent-config', 'reconciliation', 'degradation']
+const ACP_SIDECAR_KINDS: readonly AcpSidecarKind[] = ['binding', 'permission', 'permission-scope', 'agent-mode', 'agent-config', 'reconciliation', 'degradation', 'elicitation']
 
 /**
  * 同步 durable 路径的 kind（有界审计队列）：append 落库 commit 后才 resolve。
@@ -424,7 +414,7 @@ const ACP_SIDECAR_KINDS: readonly AcpSidecarKind[] = ['binding', 'permission', '
  *   src/domain/policy/permissions.ts）。
  * 其余 kind 进有界内存队列（见 {@link ACP_SIDECAR_AUDIT_QUEUE_LIMIT}）。
  */
-const ACP_SIDECAR_SYNC_KINDS: readonly AcpSidecarKind[] = ['binding', 'permission']
+const ACP_SIDECAR_SYNC_KINDS: readonly AcpSidecarKind[] = ['binding', 'permission', 'elicitation']
 
 /**
  * agent 配置改动审计的 sidecar 行键（伪 dsh sessionId）：配置改动先于
@@ -447,6 +437,7 @@ export type AcpSidecarEntry =
   | (AcpSidecarEntryBase & { readonly kind: 'agent-config'; readonly data: AcpAgentConfigAuditData })
   | (AcpSidecarEntryBase & { readonly kind: 'reconciliation'; readonly data: AcpReconciliationData })
   | (AcpSidecarEntryBase & { readonly kind: 'degradation'; readonly data: AcpDegradationAuditData })
+  | (AcpSidecarEntryBase & { readonly kind: 'elicitation'; readonly data: AcpElicitationAuditData })
 
 /** {@link AcpSidecar.append} 的入参：`time` 可缺省（由 store 的 `now()` 补齐）。 */
 export type AcpSidecarEntryInput =
@@ -457,6 +448,7 @@ export type AcpSidecarEntryInput =
   | { readonly kind: 'agent-config'; readonly time?: number; readonly data: AcpAgentConfigAuditData }
   | { readonly kind: 'reconciliation'; readonly time?: number; readonly data: AcpReconciliationData }
   | { readonly kind: 'degradation'; readonly time?: number; readonly data: AcpDegradationAuditData }
+  | { readonly kind: 'elicitation'; readonly time?: number; readonly data: AcpElicitationAuditData }
 
 /** 补齐 `time` 后的待落盘记录（envelope 分量由 store 分配）。 */
 type StampedEntry =
@@ -467,6 +459,7 @@ type StampedEntry =
   | { readonly kind: 'agent-config'; readonly time: number; readonly data: AcpAgentConfigAuditData }
   | { readonly kind: 'reconciliation'; readonly time: number; readonly data: AcpReconciliationData }
   | { readonly kind: 'degradation'; readonly time: number; readonly data: AcpDegradationAuditData }
+  | { readonly kind: 'elicitation'; readonly time: number; readonly data: AcpElicitationAuditData }
 
 /** {@link AcpSidecar.exportAudit} 的构造项。 */
 export interface AcpSidecarExportOptions {
@@ -1428,7 +1421,6 @@ function toBindingRecord(time: number, raw: unknown): AcpBindingRecord | undefin
     provider, agentSessionId, profileId, canonicalCwd,
     launchFingerprint, agent, protocolVersion, capabilityHash, configHash,
     generation, historyBaseSeq, establishedAt, dshCommittedSeq,
-    agentDataHome, agentDataGeneration,
   } = raw
   if (typeof provider !== 'string' || provider.length === 0) return undefined
   if (typeof agentSessionId !== 'string' || agentSessionId.length === 0) return undefined
@@ -1451,20 +1443,20 @@ function toBindingRecord(time: number, raw: unknown): AcpBindingRecord | undefin
       if (!isPlainObject(ref) || typeof ref.key !== 'string' || typeof ref.present !== 'boolean') return undefined
     }
   }
-  if (launchFingerprint.opaqueRefs !== undefined && launchFingerprint.opaqueRefs !== null) {
-    if (!Array.isArray(launchFingerprint.opaqueRefs)) return undefined
-    for (const ref of launchFingerprint.opaqueRefs as unknown[]) {
-      if (!isPlainObject(ref) || typeof ref.source !== 'string' || typeof ref.targetRelative !== 'string') return undefined
-    }
-  }
   if (launchFingerprint.executableOverride !== undefined && launchFingerprint.executableOverride !== null) {
     const override = launchFingerprint.executableOverride as unknown
     if (!isPlainObject(override) || typeof override.name !== 'string' || typeof override.present !== 'boolean') return undefined
   }
-  if (launchFingerprint.dataHomeGeneration !== undefined && launchFingerprint.dataHomeGeneration !== null) {
-    const value = launchFingerprint.dataHomeGeneration as unknown
-    if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) return undefined
+  if (launchFingerprint.nativeStateEnv !== undefined && launchFingerprint.nativeStateEnv !== null) {
+    if (!Array.isArray(launchFingerprint.nativeStateEnv)) return undefined
+    for (const entry of launchFingerprint.nativeStateEnv as unknown[]) {
+      if (!isPlainObject(entry) || typeof entry.key !== 'string' || typeof entry.present !== 'boolean') return undefined
+      if (entry.hash16 !== undefined && (typeof entry.hash16 !== 'string' || !/^[0-9a-f]{16}$/.test(entry.hash16))) return undefined
+      if (!entry.present && entry.hash16 !== undefined) return undefined
+    }
   }
+  if (launchFingerprint.mcpFingerprint !== undefined && launchFingerprint.mcpFingerprint !== null
+    && (typeof launchFingerprint.mcpFingerprint !== 'string' || !/^[0-9a-f]{16}$/.test(launchFingerprint.mcpFingerprint))) return undefined
   if (!isPlainObject(agent)) return undefined
   if (agent.name !== undefined && typeof agent.name !== 'string') return undefined
   if (agent.version !== undefined && typeof agent.version !== 'string') return undefined
@@ -1475,10 +1467,6 @@ function toBindingRecord(time: number, raw: unknown): AcpBindingRecord | undefin
   if (typeof historyBaseSeq !== 'number' || !Number.isInteger(historyBaseSeq) || historyBaseSeq < 0) return undefined
   if (typeof establishedAt !== 'number' || !Number.isFinite(establishedAt)) return undefined
   if (typeof dshCommittedSeq !== 'number' || !Number.isInteger(dshCommittedSeq) || dshCommittedSeq < 0) return undefined
- // 字段：optional——缺席不判 outdated；在场时形态校验（null 或非空
-  // 字符串路径 / null 或整数 ≥1 代际）。
-  if (agentDataHome !== undefined && agentDataHome !== null && (typeof agentDataHome !== 'string' || agentDataHome.length === 0)) return undefined
-  if (agentDataGeneration !== undefined && agentDataGeneration !== null && (typeof agentDataGeneration !== 'number' || !Number.isInteger(agentDataGeneration) || agentDataGeneration < 1)) return undefined
   return {
     time,
     provider,
@@ -1494,8 +1482,6 @@ function toBindingRecord(time: number, raw: unknown): AcpBindingRecord | undefin
     historyBaseSeq,
     establishedAt,
     dshCommittedSeq,
-    ...(agentDataHome === undefined ? {} : { agentDataHome: agentDataHome as string | null }),
-    ...(agentDataGeneration === undefined ? {} : { agentDataGeneration: agentDataGeneration as number | null }),
   }
 }
 

@@ -186,8 +186,8 @@ describe('presentationHash16', () => {
 // ---------- 端到端：tool/result meta.acpToolPresentation ----------
 
 describe('信封落盘（TurnTranslator → tool/result meta）', () => {
-  it('Codex runtime：只投影 namespaced collaboration/subagent 元数据，不伪造 DSH subagent 事件', () => {
-    const { sink, translator } = makeTranslator({ runtime: 'codex' })
+  it('只按 namespaced collaboration/subagent 元数据识别 Codex 扩展，不依赖 profile runtime，也不伪造 DSH subagent 事件', () => {
+    const { sink, translator } = makeTranslator()
     translator.beginTurn(1)
     translator.feed({ sessionId: 'test-session', update: {
       sessionUpdate: 'tool_call',
@@ -235,8 +235,8 @@ describe('信封落盘（TurnTranslator → tool/result meta）', () => {
     expect(sink.events.some((event) => event.type.startsWith('subagent/'))).toBe(false)
   })
 
-  it('非 Codex runtime：相同私有 _meta 不进入展示信封', () => {
-    const { sink, translator } = makeTranslator({ runtime: 'claude' })
+  it('用户给 profile 起其他名字时，Codex namespaced _meta 仍按协议事实进入展示信封', () => {
+    const { sink, translator } = makeTranslator()
     translator.beginTurn(1)
     translator.feed({ sessionId: 'test-session', update: {
       sessionUpdate: 'tool_call', toolCallId: 'tc-meta', title: 'Tool',
@@ -246,7 +246,13 @@ describe('信封落盘（TurnTranslator → tool/result meta）', () => {
       sessionUpdate: 'tool_call_update', toolCallId: 'tc-meta', status: 'completed',
     } as unknown as SessionUpdate })
     translator.endTurn()
-    expect(presentationOf(sink, 0)).not.toHaveProperty('agentExtension')
+    expect(presentationOf(sink, 0).agentExtension).toEqual({
+      runtime: 'codex',
+      type: 'subagent-activity',
+      threadId: 'child',
+      path: '/agents/worker',
+      activity: 'started',
+    })
   })
 
   it('completed：title/kind/locations/inputSummary/content 全量；name 恒稳定名', () => {

@@ -82,9 +82,10 @@ function createHarness() {
             }
           : undefined,
       binding: (sessionId) =>
-        sessionId === SESSION_ID
+        sessionId === SESSION_ID || sessionListSnapshot.byId[sessionId] !== undefined
           ? {
               session: {
+                command: () => Promise.resolve({ ok: true as const, value: { matched: true } }),
                 projections: {
                   faceOf: () => ({
                     getSnapshot: () => projectionSnapshot,
@@ -291,9 +292,7 @@ const CONTINUITY_BLOCKED_WIRE = {
   configOptions: null,
   currentModeId: null,
   capabilities: null,
-  sandbox: null,
   contextUsage: null,
-  workspaceWrite: 'supported',
   continuity: { status: 'blocked', cause: 'reconciliation-required', detail: 'host restart dropped the live session' },
   ...LIVE_WIRE_FIXED,
 };
@@ -436,9 +435,7 @@ const LIVE_WIRE_INITIAL = {
     mcpHttp: false,
     mcpSse: false,
   },
-  sandbox: { platform: 'darwin', enforcement: 'full', note: null },
   contextUsage: null,
-  workspaceWrite: 'supported',
   continuity: { status: 'ok', cause: null, detail: null },
   ...LIVE_WIRE_FIXED,
 };
@@ -1148,9 +1145,7 @@ describe('PickerService.selectModel 统一路由（同 provider ACP → coordina
       ],
       currentModeId: 'code',
       capabilities: null,
-      sandbox: null,
       continuity: { status: 'ok', cause: null, detail: null },
-      workspaceWrite: 'supported',
       contextUsage: null,
       ...LIVE_WIRE_FIXED,
     };
@@ -1193,7 +1188,7 @@ describe('PickerService.selectModel 统一路由（同 provider ACP → coordina
     expect(h.commitModelSwitch).toHaveBeenCalledTimes(1);
   });
 
-  it('blank native 会话选择 ACP：service 纵深拒绝直接 select，必须走新会话 handoff', async () => {
+  it('blank 会话选择 ACP：在原 session 首次采用，不走新会话 handoff', async () => {
     const h = createHarness();
     const fr = createFakeRemote([]);
     fr.remote.backendOf = () => Promise.resolve({ ok: true as const, value: { state: 'blank' as const } });
@@ -1212,8 +1207,8 @@ describe('PickerService.selectModel 统一路由（同 provider ACP → coordina
     const picker = service.pickerFor(SESSION_ID);
     await picker.directory.load();
     await expect(service.selectModel(SESSION_ID, { provider: 'acp-mock', model: 'm1' }))
-      .rejects.toThrow('requires confirmation and a new session');
-    expect(selectModel).not.toHaveBeenCalled();
+      .resolves.toBeUndefined();
+    expect(selectModel).toHaveBeenCalledWith({ sessionId: SESSION_ID, provider: 'acp-mock', model: 'm1' });
   });
 
   it('异 provider / 异 ACP profile 选择 → service 纵深拒绝，必须走确认后新会话', async () => {

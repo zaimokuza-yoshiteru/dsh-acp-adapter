@@ -274,13 +274,6 @@ export interface LiveCapabilityFacts {
   mcpSse: boolean
 }
 
-/** 本平台沙箱 enforcement 事实（wire copy of `AcpSandboxPosture`, src/contract/remote.ts）。 */
-export interface LiveSandboxPosture {
-  platform: string
-  enforcement: 'full' | 'partial'
-  note: string | null
-}
-
 /**
  * 会话连续性闩锁事实（wire copy of `AcpSessionContinuity`, src/contract/remote.ts）：
  * 'ok' = 已对齐；'blocked' = reconciliation-required（cause 是 sidecar
@@ -324,16 +317,8 @@ export interface LiveOptionsSnapshot {
   currentModeId: string | null
   /** 本会话握手的协议能力实际值（会话未懒启动/未握手时为 null——披露区如实显示，不拿 probe 缓存冒充）。 */
   capabilities: LiveCapabilityFacts | null
-  /** 本平台沙箱 enforcement 事实（host 未接线时为 null）。 */
-  sandbox: LiveSandboxPosture | null
  /** 连续性闩锁状态（宿主恒发；rebindBlank 的响应也携带复位后的快照）。 */
   continuity: LiveSessionContinuity
-  /**
- * workspace-write 沙箱档对本 profile 的可用性（必填键；host 侧
-   * startSession 有同判定源的 fail-closed 创建门）。本地状态 agent 恒
-   * 'unsupported'，披露面板据此产出 workspaceWriteUnsupported 降级项。
-   */
-  workspaceWrite: 'supported' | 'unsupported'
  /** 最新已知上下文占用（未收到过 usage_update 为 null——诚实空缺，dock 组件不渲染）。 */
   contextUsage: LiveContextUsage | null
   /**
@@ -448,18 +433,6 @@ function decodeLiveCapabilityFacts(raw: unknown): LiveCapabilityFacts | null | u
   return facts
 }
 
-/** 沙箱事实解码：null 词表（未接线）或 platform/enforcement/note 三键齐备；其余整体拒绝。 */
-function decodeLiveSandboxPosture(raw: unknown): LiveSandboxPosture | null | undefined {
-  if (raw === null) return null
-  if (!isPlainObject(raw)) return undefined
-  if (typeof raw['platform'] !== 'string') return undefined
-  const enforcement = raw['enforcement']
-  if (enforcement !== 'full' && enforcement !== 'partial') return undefined
-  const note = raw['note']
-  if (note !== null && typeof note !== 'string') return undefined
-  return { platform: raw['platform'], enforcement, note }
-}
-
 /** Agent 明确提供的累计成本事实（wire copy of `AcpContextUsageCostView`, src/contract/remote.ts）。 */
 export interface LiveContextUsageCost {
   amount: number
@@ -565,9 +538,9 @@ function decodeLiveModelSwitch(raw: unknown): LiveModelSwitchView | undefined {
  * `decodeHealthResponse` 同款口径); a well-formed option with an unrecognized
  * `type` string is skipped instead (protocol: the client SHOULD ignore it — the
  * agent default stands and no control is rendered for it). `capabilities` /
- * `sandbox` / `continuity` / `workspaceWrite` / `contextUsage` 是必填键
- * （capabilities/sandbox/contextUsage 是 null 词表——未握手/未接线/未收到过
- * usage_update 时如实归 null；continuity/workspaceWrite 恒有值）：缺席或畸形
+ * `continuity` / `contextUsage` 是必填键
+ * （capabilities/contextUsage 是 null 词表——未握手/未收到过
+ * usage_update 时如实归 null；continuity 恒有值）：缺席或畸形
  * 同样整包拒绝（与 host liveSnapshot 恒定下发七键的契约互锁）。
  * `freshness` / `editable` / `fingerprintChanged` / `modelSwitch`
  * 同为必填键，同一整包拒绝口径。
@@ -581,13 +554,8 @@ export function decodeLiveOptionsSnapshot(body: unknown): LiveOptionsSnapshot | 
   if (!(rawMode === null || typeof rawMode === 'string')) return undefined
   const capabilities = decodeLiveCapabilityFacts(body['capabilities'])
   if (capabilities === undefined) return undefined
-  const sandbox = decodeLiveSandboxPosture(body['sandbox'])
-  if (sandbox === undefined) return undefined
   const continuity = decodeLiveContinuity(body['continuity'])
   if (continuity === undefined) return undefined
- // 必填键：词表外/缺席同样整包拒绝（与 host liveSnapshot 恒定下发的契约互锁）
-  const workspaceWrite = body['workspaceWrite']
-  if (workspaceWrite !== 'supported' && workspaceWrite !== 'unsupported') return undefined
   const contextUsage = decodeLiveContextUsage(body['contextUsage'])
   if (contextUsage === undefined) return undefined
  // 必填键三件套（stale 快照只读纪律 + 指纹漂移诊断）
@@ -604,9 +572,7 @@ export function decodeLiveOptionsSnapshot(body: unknown): LiveOptionsSnapshot | 
     sessionId: body['sessionId'],
     currentModeId: rawMode,
     capabilities,
-    sandbox,
     continuity,
-    workspaceWrite,
     contextUsage,
     freshness,
     editable,
@@ -868,59 +834,19 @@ export function isDefaultSelection(
   return stored?.provider === provider && stored?.model === model
 }
 
-// ---------- 披露面板：能力三值词（收尾；domain 能力矩阵的 client 镜像） ----------
-
-/**
- * 披露区能力行的三值词表（与 能力矩阵一致的三值口径）：
- * - `supported`：端到端支持（广告门控行 = agent 已广告）；
- * - `unsupported`：端到端不支持（adapter path 决定，与广告无关——图片/音频/
- *   嵌入上下文即便 agent 广告了，adapter v1 prompt 仅文本块，发送会被阻止；
- *   MCP 按 D10 设计恒 mcpServers: []）；
- * - `notAdvertised`：agent 未广告（仅广告门控行出现）。
- */
-export type PickerCapabilityWord = 'supported' | 'unsupported' | 'notAdvertised'
-
-/**
- * 广告门控键：domain/policy/capability-matrix.ts 里 advertised=true ⟺ status
- * 'supported' 的四行（其余五行的 status 由 adapter path 决定，与广告无关）。
- */
-const GATED_CAPABILITY_KEYS = ['loadSession', 'sessionList', 'sessionClose', 'sessionDelete'] as const
-
-/**
- * 会话级能力事实（liveSnapshot.capabilities）→ 每键三值展示词。本函数是
- * `acpCapabilityMatrix` 行 status 的 client 镜像纯函数——分层纪律禁止 client
- * import domain（test/contracts/architecture.spec.ts），两侧输出一致性由共有夹具钉在
- * test/capability-matrix.spec.ts（gated 行 word 'supported' ⟺ matrix status
- * 'supported'；word 'unsupported'/'notAdvertised' ⟹ matrix status 'unsupported'）。
- */
-export function pickerCapabilityWords(caps: LiveCapabilityFacts): Record<keyof LiveCapabilityFacts, PickerCapabilityWord> {
-  const words = {} as Record<keyof LiveCapabilityFacts, PickerCapabilityWord>
-  for (const key of LIVE_CAPABILITY_KEYS) {
-    words[key] = (GATED_CAPABILITY_KEYS as readonly string[]).includes(key)
-      ? caps[key] ? 'supported' : 'notAdvertised'
-      : 'unsupported'
-  }
-  return words
-}
-
 // ---------- 披露面板：当前降级项（事实驱动，逐条可核） ----------
 
 /** 披露面板降级项的 token 词表（文案在 selector-locales 的 `deg.*` 键）。 */
-export type PickerDegradation = 'presetUnknown' | 'workspaceWriteUnsupported' | 'noConfigOptions' | 'noHandshake' | 'sandboxPartial' | 'probeFailed'
+export type PickerDegradation = 'presetUnknown' | 'noConfigOptions' | 'noHandshake' | 'probeFailed'
 
 /**
  * 推导 ACP 披露面板的「当前降级项」列表（仅 acp 路由渲染面板时调用）。
  * 每条对应一类能力缺口的实事：
  * - `presetUnknown`：DSH 权限范围投影缺席（安全边界读数缺失，单列一条）；
- * - `workspaceWriteUnsupported`（边界）：本地状态 agent 在 workspace-write 档
- *   不可用——宿主沙箱公开 policy 只有一个可写 workspaceRoot（项目），项目可写
- *   与 data home 可写无法同时成立；host 侧 startSession 有同判定源的
- *   fail-closed 创建门（ACP_SPAWN_CONFIG），本条是创建门击沉前的 UI 预告；
  * - `noConfigOptions`：快照未加载或 agent 未提供会话级 config options；
  * - `noHandshake`：会话未懒启动/未握手，协议能力未知（快照 capabilities 为 null）；
- * - `sandboxPartial`：本平台沙箱为 partial enforcement（win32 恒此档）；
  * - `probeFailed`：当前 provider 的模型目录探测失败（directory.failures 命中）。
- * 顺序固定（先安全边界、再会话能力、后目录健康）；无降级项时调用方显示 deg.none。
+ * 顺序固定（权限投影、会话能力、目录健康）；无降级项时调用方显示 deg.none。
  */
 export function pickerDegradationsOf(args: {
   preset: string | undefined
@@ -929,10 +855,8 @@ export function pickerDegradationsOf(args: {
 }): readonly PickerDegradation[] {
   const out: PickerDegradation[] = []
   if (args.preset === undefined) out.push('presetUnknown')
-  if (args.preset === 'workspace-write' && args.snapshot?.workspaceWrite === 'unsupported') out.push('workspaceWriteUnsupported')
   if (args.snapshot === null || args.snapshot.configOptions === null) out.push('noConfigOptions')
   if (args.snapshot === null || args.snapshot.capabilities === null) out.push('noHandshake')
-  if (args.snapshot?.sandbox?.enforcement === 'partial') out.push('sandboxPartial')
   if (args.providerFailed) out.push('probeFailed')
   return out
 }

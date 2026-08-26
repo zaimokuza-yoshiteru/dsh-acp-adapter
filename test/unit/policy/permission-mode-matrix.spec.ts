@@ -47,7 +47,6 @@ import {
 } from '../../fixtures/agent-test-helpers.ts';
 import type { AgentHarness, CreateHarnessOptions, MockProfile } from '../../fixtures/agent-test-helpers.ts';
 import type { AcpRemoteService } from '../../../src/remote/service.ts';
-import type { AcpSandboxMode } from '../../../src/domain/policy/sandbox.ts';
 
 /** loop 构造时注册的 dshAcp Remote service（ctx.get 返回 traceable proxy，方法调用落到同一实例）。 */
 function acpRemote(harness: AgentHarness): AcpRemoteService {
@@ -100,12 +99,11 @@ afterAll(() => {
   fs.rmSync(suiteDir, { recursive: true, force: true });
 });
 
-describe('3 权限档 × mode 切换矩阵（权限与模式双轴展示 分轴）', () => {
-  for (const perm of ['read-only', 'workspace-write', 'danger-full-access'] as const satisfies readonly AcpSandboxMode[]) {
-    it(`权限档 ${perm}：mode 热切换（set_config_option）全程零重 confine/零重 spawn，两轴各自审计`, async () => {
-      const harness = await boot({ sandboxMode: perm });
+describe('原生 Agent 访问 × Agent mode（两轴独立）', () => {
+    it('Agent mode 热切换全程不改变 DSH 原生访问权限、不重启进程', async () => {
+      const harness = await boot({ sandboxMode: 'danger-full-access' });
       const profile = mockProfile(harness.logDir, 'happy');
-      const sessionId = SessionId(`matrix-${perm}`);
+      const sessionId = SessionId('matrix-native');
       const handle = await createAcpAgent(harness, profile, sessionId);
       const agent = handle.agent as AcpAgent;
 
@@ -113,20 +111,9 @@ describe('3 权限档 × mode 切换矩阵（权限与模式双轴展示 分轴�
       await agent.whenIdle();
       expect(eventsOf(agent, 'turn/end').at(-1)?.data.reason).toEqual({ kind: 'completed' });
 
- // 权限轴事实： 创建门 probe（call[0]，sessionId undefined，固定 read-only
-      // 档恒 confine）+ turn 1 会话 spawn（call[1]）各落定一次；confined 两档恰两次
-      // confine，danger 档仅 probe 一次（会话 spawn 不 confine）
-      const expectedConfinements = perm === 'danger-full-access' ? 1 : 2;
-      const expectedRoot =
-        perm === 'read-only'
-          ? fs.realpathSync(path.join(harness.dshHome, 'dsh-acp', 'state', profile.id))
-          : fs.realpathSync(harness.logDir);
-      expect(harness.sandbox?.confineCalls).toHaveLength(expectedConfinements);
+      // 只有设置 probe 受 confine；正式 ACP session 是原生访问。
+      expect(harness.sandbox?.confineCalls).toHaveLength(1);
       expect(harness.sandbox?.confineCalls[0]?.policy.sessionId).toBeUndefined(); // 门内 probe
-      if (perm !== 'danger-full-access') {
-        expect(harness.sandbox?.confineCalls[1]?.policy.mode).toBe('workspace-write'); // 权限映射 重映射
-        expect(harness.sandbox?.confineCalls[1]?.policy.workspaceRoot).toBe(expectedRoot);
-      }
       expect(spawnedPids(profile.logPath)).toHaveLength(2); // probe + 会话
 
       // 建立时两轴各落一条
@@ -134,9 +121,7 @@ describe('3 权限档 × mode 切换矩阵（权限与模式双轴展示 分轴�
       expect(sidecar).toBeDefined();
       const initial = (await sidecar?.list(sessionId)) ?? [];
       expect(initial.filter((entry) => entry.kind === 'permission-scope').map((entry) => entry.data)).toEqual([
-        perm === 'danger-full-access'
-          ? { mode: 'danger-full-access', confined: null, platform: process.platform }
-          : { mode: perm, confined: { workspaceRoot: expectedRoot, enforcement: 'full' }, platform: process.platform },
+        { mode: 'danger-full-access', confined: null, platform: process.platform },
       ]);
       expect(initial.filter((entry) => entry.kind === 'agent-mode').map((entry) => entry.data)).toEqual([
         { modeId: 'accept-edits', via: 'session-setup' },
@@ -146,7 +131,7 @@ describe('3 权限档 × mode 切换矩阵（权限与模式双轴展示 分轴�
       for (const mode of ['plan', 'bypass']) {
         await acpRemote(harness).setOption(sessionId, { configId: 'mode', value: mode });
         // mode 不是安全边界：不触发重 confine、不重 spawn
-        expect(harness.sandbox?.confineCalls).toHaveLength(expectedConfinements);
+        expect(harness.sandbox?.confineCalls).toHaveLength(1);
         expect(spawnedPids(profile.logPath)).toHaveLength(2);
         // mock 补推 current_mode_update → 状态槽最终一致（响应快照的 currentModeId
         // 可能是推送前的旧值，不断言它）
@@ -158,7 +143,7 @@ describe('3 权限档 × mode 切换矩阵（权限与模式双轴展示 分轴�
       await agent.whenIdle();
       expect(eventsOf(agent, 'turn/end').map((event) => event.data.turn)).toEqual([1, 2]);
       expect(eventsOf(agent, 'turn/end').at(-1)?.data.reason).toEqual({ kind: 'completed' });
-      expect(harness.sandbox?.confineCalls).toHaveLength(expectedConfinements);
+      expect(harness.sandbox?.confineCalls).toHaveLength(1);
       expect(spawnedPids(profile.logPath)).toHaveLength(2);
 
       // 终态审计：权限轴仍恰 1 条（spawn 一次）；mode 轴恰 3 条——mock 双发的
@@ -171,33 +156,30 @@ describe('3 权限档 × mode 切换矩阵（权限与模式双轴展示 分轴�
         { modeId: 'bypass', via: 'set_config_option' },
       ]);
     }, 20_000);
-  }
 });
 
 describe('spawn 前每次重新解析 sandboxPolicy（钉）', () => {
-  it('confine 失败 fail closed 零审计；同会话改档后 followup 重 spawn 用新档', async () => {
-    const harness = await boot({ sandboxMode: 'read-only' });
+  it('受限档在 spawn 前拒绝；同会话明确切到原生访问后可重试', async () => {
+    const harness = await boot({ sandboxMode: 'workspace-write' });
     const profile = mockProfile(harness.logDir, 'happy');
     const sessionId = SessionId('matrix-repolicy');
     const handle = await createAcpAgent(harness, profile, sessionId);
     const agent = handle.agent as AcpAgent;
 
-    // turn 1：confine 注入失败 → fail closed（ACP_SANDBOX_UNAVAILABLE），零会话
- // spawn、零审计。注： 创建门 probe 已在 createAgent 时成功 confine + spawn
-    // （各一次，见 confineCalls[0] / spawnedPids 第 1 条），failNextConfine 只咬会话 spawn。
-    if (harness.sandbox !== undefined) harness.sandbox.failNextConfine = true;
+    // turn 1：还是 workspace-write，域层在正式进程 spawn 前拒绝。
     agent.followup(userText('hello'));
     await agent.whenIdle();
     const failed = eventsOf(agent, 'turn/end').at(-1)?.data.reason;
     expect(failed?.kind).toBe('error');
-    expect(failed?.kind === 'error' ? failed.error.code : undefined).toBe('ACP_SANDBOX_UNAVAILABLE');
+    expect(failed?.kind === 'error' ? failed.error.code : undefined).toBe('ACP_SPAWN_CONFIG');
+    expect(failed?.kind === 'error' ? failed.error.message : '').toContain('Native Agent Access');
     expect(spawnedPids(profile.logPath)).toHaveLength(1); // 仅门内 probe，零会话 spawn
     expect(harness.sandbox?.confineCalls).toHaveLength(1); // 仅门内 probe
     expect(harness.sandboxPolicy?.resolveCalls).toHaveLength(1);
     const sidecar = harness.loop.acpSidecar;
     expect(((await sidecar?.list(sessionId)) ?? []).filter((entry) => entry.kind === 'permission-scope')).toHaveLength(0);
 
-    // 同会话档位翻为 danger-full-access（不重启宿主、不重建会话）→ followup 触发
+    // 同会话档位切为 danger-full-access（不重启宿主、不重建会话）→ followup 触发
     // 重 spawn：policy 重新解析（resolveCalls=2）、新档不 confine、spawn 成功
     if (harness.sandboxPolicy !== undefined) harness.sandboxPolicy.mode = 'danger-full-access';
     agent.followup(userText('retry'));
@@ -220,7 +202,7 @@ describe('spawn 前每次重新解析 sandboxPolicy（钉）', () => {
 
 describe('legacy set_mode 路径的 mode 审计', () => {
   it('no-config-options 形态：setOption mode → session/set_mode，agent-mode 落 via=set_mode', async () => {
-    const harness = await boot(); // 默认 workspace-write 档
+    const harness = await boot({ sandboxMode: 'danger-full-access' });
     const profile = mockProfile(harness.logDir, 'no-config-options');
     const sessionId = SessionId('matrix-legacy-mode');
     const handle = await createAcpAgent(harness, profile, sessionId);
@@ -240,8 +222,8 @@ describe('legacy set_mode 路径的 mode 审计', () => {
       { modeId: 'accept-edits', via: 'session-setup' },
       { modeId: 'plan', via: 'set_mode' },
     ]);
-    // mode 切换不碰 sandbox：仍只 confine 两次（门内 probe + 会话）、spawn 两次
-    expect(harness.sandbox?.confineCalls).toHaveLength(2);
+    // mode 切换不碰 sandbox：只有门内 probe 的一次 confine。
+    expect(harness.sandbox?.confineCalls).toHaveLength(1);
     expect(spawnedPids(profile.logPath)).toHaveLength(2);
   }, 20_000);
 });

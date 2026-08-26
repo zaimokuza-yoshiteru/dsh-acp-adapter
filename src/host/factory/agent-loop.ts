@@ -54,6 +54,7 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
 import { AgentLoop } from '@deepseek-ai/dsh-agent-loop'
 import type { Config } from '@deepseek-ai/dsh-agent-loop'
 import type {
@@ -71,7 +72,7 @@ import { acpAgentIdFromRoute, acpProbeConfigKey, acpProbeFresh, acpRouteId, desc
 import type { AcpResolvedAgent } from '../../domain/session/agent-config.ts'
 import { deriveAcpAgentState } from '../../domain/session/agent-state.ts'
 import type { AcpAgentConfigState } from '../../domain/session/agent-state.ts'
-import { acpLaunchFingerprint } from '../../domain/session/launch-fingerprint.ts'
+import { acpLaunchEnvironment, acpLaunchFingerprint } from '../../domain/session/launch-fingerprint.ts'
 import { AcpClientError } from '../../protocol/v1/errors.ts'
 import {
   AcpFactoryOwnership,
@@ -85,7 +86,8 @@ import { initHostScope } from '../../host-compat/host-scope.ts'
 import type { HostLoaderLike } from '../../host-compat/host-scope.ts'
 import { assertHostCompatible, initStructureGate } from '../../host-compat/structure-gate.ts'
 import { AcpRemoteService } from '../../remote/service.ts'
-import { createAcpPermissionHandler } from '../../domain/policy/permissions.ts'
+import { createAcpPermissionHandler, InMemoryAcpPendingPermissionBroker } from '../../domain/policy/permissions.ts'
+import { InMemoryAcpElicitationBroker, elicitationResponseOf } from '../../domain/policy/elicitation.ts'
 import type { AcpApprovalRequester, AcpPermissionAuditChannel } from '../../domain/policy/permissions.ts'
 import { createAgentConfigAudit } from '../../domain/policy/events.ts'
 import { createDefaultSandboxPlatform } from '../../domain/policy/platform/index.ts'
@@ -189,6 +191,17 @@ export default class AcpAgentLoop extends AgentLoop {
    * fail closed（spawn-failure），native 路由不受影响。
    */
   private readonly acpSubprocess: SubprocessSeamResolution
+  /** Session-scoped ACP permission waits; the Remote and handler share this broker. */
+  private readonly acpPendingPermissions = new InMemoryAcpPendingPermissionBroker()
+  /** Session-scoped ACP form/url elicitation broker shared by connection handlers and Remote UI. */
+  private readonly acpPendingElicitations = new InMemoryAcpElicitationBroker(Date.now, (sessionId, audit) => {
+    const sidecar = this.acpSidecar
+    if (sidecar === undefined) return
+    return sidecar.append(sessionId as SessionId, { kind: 'elicitation', data: audit }).catch((error: unknown) => {
+      this.acpLog.warn(`dsh-acp: failed to persist elicitation audit (${errorChain(error)})`, { operation: 'audit', result: 'error' })
+      throw error
+    })
+  })
   /**
    * 宿主模块实例一致性 宿主 scope 解析的结算凭证。构造期 fire-and-forget 启动（initHostScope
    * 永不 reject，失败被 host-compat/host-scope 缓存并在首个 hostCreateScope 处
@@ -271,11 +284,16 @@ export default class AcpAgentLoop extends AgentLoop {
           }),
     })
     ctx.effect(() => () => this.acpOwnership.dispose(), 'acpAgentLoop.transactions()')
+    ctx.effect(() => () => this.acpPendingPermissions.dispose(), 'acpAgentLoop.pendingPermissions()')
+    ctx.effect(() => () => this.acpPendingElicitations.dispose(), 'acpAgentLoop.pendingElicitations()')
  // （原 生产接线）：dshAcp Remote service（health / live options /
     // rebindBlank）。构造即注册 cordis service；strict descriptor 由
     // scripts/gen-typert.mjs 预生成、typert-loader 自动注册，gateway 经 /api
     // 信任围栏派发——不再依赖 webServer 旁路路由（headless 宿主同构可用）。
     new AcpRemoteService(ctx, {
+      pendingPermissions: this.acpPendingPermissions,
+      pendingElicitations: this.acpPendingElicitations,
+      imageInputAvailable: getCtxSlot<AttachmentStore>(ctx, 'attachments') !== undefined,
       registry: {
         agents: () => this.acpRegistry.agents(),
         probeCache: this.acpRegistry.adapter,
@@ -372,14 +390,20 @@ export default class AcpAgentLoop extends AgentLoop {
                 if (profileId === undefined) return undefined
                 const config = this.acpRegistry.agents().get(profileId)
                 if (config === undefined) return undefined
-                const launchFingerprint = acpLaunchFingerprint({
+                const descriptor = descriptorOf(profileId, config)
+                const effectiveEnv = await acpLaunchEnvironment({
+                  config,
+                  descriptor,
+                  dataHomeStrategy: 'native',
+                })
+                const computedFingerprint = acpLaunchFingerprint({
                   profileId,
                   config,
-                  descriptor: descriptorOf(profileId, config),
-                  generation: binding.generation,
+                  descriptor,
+                  env: effectiveEnv,
                 })
                 return acpCanonicalHash16({
-                  launchFingerprint,
+                  launchFingerprint: computedFingerprint,
                   agent: { name: binding.agent.name ?? null, version: binding.agent.version ?? null },
                   protocolVersion: binding.protocolVersion,
                 })
@@ -720,10 +744,14 @@ export default class AcpAgentLoop extends AgentLoop {
       )
     }
     const forked = session.header.parentSession !== undefined
+    const attachments = getCtxSlot<AttachmentStore>(loopCtx, 'attachments')
     const driver: AcpAgentOptions = {
       profile: resolved,
       subprocess: this.acpSubprocess,
+      ...(attachments === undefined ? {} : { attachments }),
       metrics: this.acpMetrics,
+      cancelPendingPermissions: (sessionId: string) => this.acpPendingPermissions.cancelSession(sessionId),
+      cancelPendingElicitations: (sessionId: string) => this.acpPendingElicitations.cancelSession(sessionId),
       ...(resumeBinding === undefined || forked ? {} : { resumeBinding }),
  // 双绑守卫/ 语义门槛拒绝复用 binding 时预置 blocked 原因——
       // AcpAgent 构造期置 continuity 闩锁，后续 turn 以 ACP_RECONCILIATION_REQUIRED
@@ -753,7 +781,12 @@ export default class AcpAgentLoop extends AgentLoop {
     const agent = new AcpAgent(loopCtx, id, options, session, driver)
     driver.permissionHandler = createAcpPermissionHandler({
       agent,
+      agentId: resolved.id,
+      agentName: resolved.config.name,
+      dshSessionId: String(id),
       approval: getCtxSlot<AcpApprovalRequester>(loopCtx, 'approval'),
+      pending: this.acpPendingPermissions,
+      toolCallPresentation: (toolCallId) => agent.getToolCallPresentationSnapshot(toolCallId),
       audit: acpAuditChannel(sidecar, id),
       hasOpenTurn: () => hasOpenTurn(session),
       turnSignal: () => agent.turnAbortSignal,
@@ -761,6 +794,7 @@ export default class AcpAgentLoop extends AgentLoop {
       log: (message, fields) => { this.acpLog.warn(message, { dshSessionId: String(id), acpProvider: `acp-${resolved.id}`, ...fields }) },
       metrics: this.acpMetrics,
     })
+    driver.elicitationHandler = (params) => this.acpPendingElicitations.open({ sessionId: String(id), params, ...(agent.turnAbortSignal === undefined ? {} : { signal: agent.turnAbortSignal }) }).then(elicitationResponseOf)
     return agent
   }
 }

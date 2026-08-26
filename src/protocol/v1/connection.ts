@@ -17,10 +17,8 @@
  * spec 必填 `subprocess`（`ctx.subprocess` 的窄化 seam）：spawn 与
  *   终止全经宿主服务（跨平台树级回收），无 seam 即构造即抛 spawn-failure
  *   （fail closed，不自制 child_process 回退）。
- * - 客户端能力固定最小化：不广告 fs/terminal/MCP，agent 用自带工具（决策 D10）。
- * 补充：elicitation（SDK 1.3.0 仍 unstable）不广告、但主动注册
- *   `elicitation/create` handler 恒回 `{ action: 'decline' }`（协议标准降级变体；
- *   观察器回调产出可见降级事件）；未知 `_meta` 与未知 sessionUpdate 变体由 SDK
+ * - 客户端能力固定最小化：不广告 fs/terminal；MCP 与 form/url elicitation 在
+ *   host/client seam 完整接线时按协商事实广告。未知 `_meta` 与未知 sessionUpdate 变体由 SDK
  *   校验层丢弃（通知验证失败仅 console.error，连接不断），translate.ts 对未知
  *   sessionUpdate 另有 default 分支兜底——会话绝不因扩展流量失败。
  * - 全 RPC deadline：initialize/new/load/list/set_config_option/
@@ -69,7 +67,7 @@ import type {
   AcpProbePhase,
   AcpProbeResult,
   AcpRpcOptions,
-  ElicitationRequestObserver,
+  ElicitationRequestHandler,
   PermissionRequestHandler,
   SessionUpdateListener,
 } from './types.ts'
@@ -166,7 +164,8 @@ export class AcpClientConnection {
   private readonly clientInfo: acp.Implementation
   private readonly initializeTimeoutMs: number
   private readonly onPermissionRequest: PermissionRequestHandler | undefined
-  private readonly onElicitationRequest: ElicitationRequestObserver | undefined
+  private readonly onElicitationRequest: ElicitationRequestHandler | undefined
+  private readonly mcpServers: readonly acp.McpServer[]
   private readonly updateListeners = new Set<SessionUpdateListener>()
   private initializePromise: Promise<acp.InitializeResponse> | undefined
   private negotiated: acp.InitializeResponse | undefined
@@ -206,6 +205,7 @@ export class AcpClientConnection {
     this.initializeTimeoutMs = options.initializeTimeoutMs ?? DEFAULT_INITIALIZE_TIMEOUT_MS
     this.onPermissionRequest = options.onPermissionRequest
     this.onElicitationRequest = options.onElicitationRequest
+    this.mcpServers = (options.mcpServers ?? []).map((server) => structuredClone(server))
     if (options.onSessionUpdate !== undefined) this.updateListeners.add(options.onSessionUpdate)
 
  // 结构化 spawn：argv 直达 seam，不经 shell（堵注入面； 经 spawnPlan/wrapArgv 包
@@ -281,14 +281,29 @@ export class AcpClientConnection {
     return this.initializePromise
   }
 
-  /** 建 ACP 会话；cwd 缺省用 spec.cwd。MCP servers 固定空（D10）。 */
+  /** 建 ACP 会话；使用同一份 profile-owned MCP snapshot。 */
   async newSession(params: { cwd?: string } = {}, options: AcpRpcOptions = {}): Promise<acp.NewSessionResponse> {
-    return await this.rpc('session/new', (agent) => agent.request('session/new', { cwd: params.cwd ?? this.spec.cwd, mcpServers: [] }), options, DEFAULT_SESSION_SETUP_TIMEOUT_MS)
+    this.assertMcpCapabilities('session/new')
+    return await this.rpc('session/new', (agent) => agent.request('session/new', { cwd: params.cwd ?? this.spec.cwd, mcpServers: this.mcpServers.map((server) => structuredClone(server)) }), options, DEFAULT_SESSION_SETUP_TIMEOUT_MS)
   }
 
   /** 恢复 ACP 会话（agent 须广告 loadSession；回放更新走 session/update 通知）。 */
   async loadSession(sessionId: string, params: { cwd?: string } = {}, options: AcpRpcOptions = {}): Promise<acp.LoadSessionResponse> {
-    return await this.rpc('session/load', (agent) => agent.request('session/load', { sessionId, cwd: params.cwd ?? this.spec.cwd, mcpServers: [] }), options, DEFAULT_SESSION_SETUP_TIMEOUT_MS)
+    this.assertMcpCapabilities('session/load')
+    return await this.rpc('session/load', (agent) => agent.request('session/load', { sessionId, cwd: params.cwd ?? this.spec.cwd, mcpServers: this.mcpServers.map((server) => structuredClone(server)) }), options, DEFAULT_SESSION_SETUP_TIMEOUT_MS)
+  }
+
+  private assertMcpCapabilities(operation: string): void {
+    const caps = this.negotiated?.agentCapabilities?.mcpCapabilities
+    for (const server of this.mcpServers) {
+      if ('command' in server) continue
+      if (server.type === 'http' && caps?.http !== true) {
+        throw new AcpClientError('protocol-error', `ACP agent did not advertise MCP HTTP support; cannot send configured server "${server.name}" during ${operation}`, { category: 'protocol-incompatible' })
+      }
+      if (server.type === 'sse' && caps?.sse !== true) {
+        throw new AcpClientError('protocol-error', `ACP agent did not advertise MCP SSE support; cannot send configured server "${server.name}" during ${operation}`, { category: 'protocol-incompatible' })
+      }
+    }
   }
 
   /** 列 ACP 会话（agent 须广告 sessionCapabilities.list）。 */
@@ -428,7 +443,9 @@ export class AcpClientConnection {
         Promise.race([
           this.conn.agent.request('initialize', {
             protocolVersion: acp.PROTOCOL_VERSION,
-            clientCapabilities: {},
+            clientCapabilities: this.onElicitationRequest === undefined
+              ? {}
+              : { elicitation: { form: {}, url: {} } },
             clientInfo: this.clientInfo,
           }),
           this.process.spawnFailureArm,
@@ -467,19 +484,12 @@ export class AcpClientConnection {
         }
         return handler(params)
       })
- // elicitation：SDK 1.3.0 的 elicitation 面仍是 unstable，本适配器不接
-      // DSH interaction UI——主动注册 handler 以协议标准变体 `{ action: 'decline' }`
-      // 应答（不注册则 SDK 自动回 -32601 methodNotFound：decline 是对端可理解的
-      // 优雅降级，methodNotFound 会把不查 clientCapabilities 的 agent 打成协议错误）。
-      // 观察器是 fire-and-forget 的降级事件出口（domain 层落用户说明 + sidecar
-      // 审计）；抛错吞掉，绝不污染协议流。
+      // Elicitation is handled only when the full host broker + Remote + UI seam
+      // is present; otherwise the standard decline response remains fail-closed.
       .onRequest('elicitation/create', ({ params }) => {
-        try {
-          this.onElicitationRequest?.(params)
-        } catch {
-          // 观察器错误不得污染协议流（同 session/update 监听器纪律）
-        }
-        return { action: 'decline' }
+        const handler = this.onElicitationRequest
+        if (handler === undefined) return { action: 'decline' }
+        return handler(params)
       })
   }
 

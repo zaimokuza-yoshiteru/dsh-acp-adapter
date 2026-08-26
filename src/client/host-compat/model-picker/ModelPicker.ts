@@ -40,9 +40,9 @@
  * instead so an upstream bump forces review). Adapter-original surfaces: the
  * filter bar, the per-row default action, the live-options pane, and the
  * disclosure panel below — the static reuse/not-reusable/cross-backend
- * lines, the handshake capability facts (from the live snapshot, never the
- * probe cache), the sandbox enforcement row, and the fact-driven degradation
- * list (`pickerDegradationsOf`).
+ * lines and the fact-driven availability list (`pickerDegradationsOf`).
+ * Detailed end-to-end capability facts live in Settings health cards instead
+ * of the primary model-switch workflow.
  *
  * fail-soft: when the ACP Remote/backend probe is unavailable, the seat
  * enters native-only mode — Current/ACP filter buckets hide, a non-blocking
@@ -87,7 +87,6 @@ import {
   isSameBackendSelection,
   nativeOnlyFilterOf,
   partitionLiveOptions,
-  pickerCapabilityWords,
   pickerDegradationsOf,
   PROVIDER_KIND_LABELS,
   providerKindOf,
@@ -96,7 +95,6 @@ import {
   type CurrentRouteFacts,
   type LiveConfigOption,
   type LiveOptionSection,
-  type PickerCapabilityWord,
   type PickerCatalogModel,
   type PickerModelSelection,
   type PickerProviderGroup,
@@ -123,6 +121,8 @@ export interface ModelPickerWire {
   load(): void
   /** Submit a full provider/model/reasoning selection; resolves to host acceptance. */
   select(selection: PickerModelSelection): Promise<boolean>
+  /** 在 UI 明确确认后，经 DSH `/permission` 切换为原生 Agent 访问。 */
+  enableNativeAccess(): Promise<string | undefined>
   /** Write one selection to the `agent-default-model` namespace; error message or undefined. */
   setDefault(selection: PickerModelSelection): Promise<string | undefined>
   /** Switch one live config option (protocol-native vocabulary: string value ids for select rows, real booleans for boolean rows). */
@@ -263,6 +263,13 @@ function Loaded({ locked, available, t, useStore, useDefaultModel, picker }: {
  // 跨 backend 行的两段式确认（confirmingRebind 同款先例）——确认步显式
   // 陈述「创建全新会话 + 当前上下文不带过去」；取消即丢弃，一切不变（包括默认模型）。
   const [confirmingCross, setConfirmingCross] = useState<{ selection: PickerModelSelection; label: string } | null>(null)
+  const [confirmingNative, setConfirmingNative] = useState<{
+    selection: PickerModelSelection
+    label: string
+    cross: boolean
+  } | null>(null)
+  const [nativeAcknowledged, setNativeAcknowledged] = useState(false)
+  const [nativeError, setNativeError] = useState<string | null>(null)
  // 跨 backend 分流成功后的一次性提示（本 seat 属于 New Session 流程
   // 打开的新会话；自动消退，不阻断 composer）。
   const [notice, setNotice] = useState<string | null>(null)
@@ -383,6 +390,8 @@ function Loaded({ locked, available, t, useStore, useDefaultModel, picker }: {
     setPane('root')
     setOpen(true)
     setConfirmingCross(null)
+    setConfirmingNative(null)
+    setNativeAcknowledged(false)
     setFilter('all')
     filterTouched.current = false
     reload()
@@ -402,6 +411,8 @@ function Loaded({ locked, available, t, useStore, useDefaultModel, picker }: {
     setOpen(false)
     setPane('root')
     setConfirmingCross(null)
+    setConfirmingNative(null)
+    setNativeAcknowledged(false)
     if (restoreFocus) queueMicrotask(() => { triggerRef.current?.focus() })
   }
 
@@ -484,6 +495,42 @@ function Loaded({ locked, available, t, useStore, useDefaultModel, picker }: {
       .catch((error: unknown) => { setCrossError(errorMessageOf(error)) })
   }
 
+  const requestSelection = (
+    selection: PickerModelSelection,
+    label: string,
+    cross: boolean,
+  ): void => {
+    if (isAcpProvider(selection.provider) && disclosure.preset !== 'danger-full-access') {
+      setNativeError(null)
+      setNativeAcknowledged(false)
+      setConfirmingNative({ selection, label, cross })
+      return
+    }
+    if (cross) setConfirmingCross({ selection, label })
+    else choose(selection)
+  }
+
+  const confirmNativeSelection = (): void => {
+    const pending = confirmingNative
+    if (pending === null || !nativeAcknowledged) return
+    setConfirmingNative(null)
+    setNativeAcknowledged(false)
+    if (pending.cross) {
+      useInNew(pending.selection, pending.label)
+      return
+    }
+    setNativeError(null)
+    void picker.enableNativeAccess()
+      .then((message) => {
+        if (message !== undefined) {
+          setNativeError(message)
+          return
+        }
+        choose(pending.selection)
+      })
+      .catch((error: unknown) => { setNativeError(errorMessageOf(error)) })
+  }
+
  // ACP 触发器身份展示：ACP 模型的 seat 触发钮显示「<Agent 名> · <模型名>」——agent 名
   // 复用 acpAgentDisplayName（组 displayName 剥 ` · ACP` 后缀的唯一来源，
   // 不二次硬编码切割）；native 模型保持只显示模型名。
@@ -533,7 +580,7 @@ function Loaded({ locked, available, t, useStore, useDefaultModel, picker }: {
         className: selected ? `${css.option} ${css.optionSelected}` : css.option,
         title: model.name,
         disabled: busy,
-        onClick: () => { if (cross) setConfirmingCross({ selection, label: model.name }); else choose(selection) },
+        onClick: () => { requestSelection(selection, model.name, cross) },
       },
         h('span', { className: css.optionCopy },
           h('span', { className: css.modelName }, model.name),
@@ -624,6 +671,38 @@ function Loaded({ locked, available, t, useStore, useDefaultModel, picker }: {
         }, t('cross.confirmCancel')),
       ))
     }
+    if (confirmingNative !== null) {
+      children.push(h('div', { key: 'native-confirm', className: css.warning },
+        h('p', { className: css.policyNote }, t(
+          confirmingNative.cross ? 'native.confirmCrossPrompt' : 'native.confirmPrompt',
+          { model: confirmingNative.label },
+        )),
+        h('label', { className: css.policyNote },
+          h('input', {
+            type: 'checkbox',
+            checked: nativeAcknowledged,
+            onChange: (event: { target: { checked: boolean } }) => {
+              setNativeAcknowledged(event.target.checked)
+            },
+          }),
+          ` ${t('native.acknowledge')}`,
+        ),
+        h('button', {
+          type: 'button',
+          className: css.retry,
+          disabled: !nativeAcknowledged,
+          onClick: confirmNativeSelection,
+        }, t(confirmingNative.cross ? 'native.confirmCrossButton' : 'native.confirmButton')),
+        h('button', {
+          type: 'button',
+          className: css.retry,
+          onClick: () => {
+            setConfirmingNative(null)
+            setNativeAcknowledged(false)
+          },
+        }, t('native.cancel')),
+      ))
+    }
  // Agent 当前值不在 provider 目录的只读行（不注入未知模型；
     // 重试即重新拉目录 + live 快照）。
     if (showNotInCatalog && currentFacts?.currentValue != null) {
@@ -670,6 +749,11 @@ function Loaded({ locked, available, t, useStore, useDefaultModel, picker }: {
     if (crossError !== null) {
       children.push(h('div', { key: 'crossError', className: css.error, role: 'alert' },
         h('span', {}, crossError),
+      ))
+    }
+    if (nativeError !== null) {
+      children.push(h('div', { key: 'nativeError', className: css.error, role: 'alert' },
+        h('span', {}, t('native.failed', { message: nativeError })),
       ))
     }
     return children
@@ -894,22 +978,13 @@ function Loaded({ locked, available, t, useStore, useDefaultModel, picker }: {
   }
 
   const disclosurePanel = (): ReactNode => {
- // 分轴展示（权限与模式双轴展示）+ 常驻能力披露。协议能力/沙箱事实只读 live
-    // 快照（握手后可见），不拿 probe 缓存冒充活体事实；降级项由
-    // pickerDegradationsOf 事实驱动推导，无降级时如实显示「无」。
+    // 主模型菜单只展示 Native 访问状态和会话边界。图片、MCP 等
+    // 端到端能力属于设置页健康卡，不占用模型切换主流程。
     if (!acp) return null
     const snapshot = live.snapshot
-    const capabilities = snapshot?.capabilities ?? null
-    const sandbox = snapshot?.sandbox ?? null
     const providerFailed = state.current !== null
       && state.failures.some((failure) => failure.id === state.current?.provider)
     const degradations = pickerDegradationsOf({ preset: disclosure.preset, snapshot, providerFailed })
- // 收尾：能力行三值口径（支持/不支持/未广告）——domain 能力矩阵的 client
-    // 镜像（pickerCapabilityWords，selector-logic.ts）；image/audio/embedded 与
-    // MCP 行即便 agent 广告了也如实显示「不支持」（adapter v1 prompt 仅文本块、
-    // mcpServers 固定 []，矩阵同口径）。
-    const capWord = (word: PickerCapabilityWord): string =>
-      t(word === 'supported' ? 'cap.supported' : word === 'notAdvertised' ? 'cap.notAdvertised' : 'cap.unsupported')
  // 披露区 label/value 使用 `key: value` 行内流（同一行自然换行，
     // 不再左右分栏）；安全相关 key（权限范围/沙箱）600 加粗，其余 key 500。
     // 冒号走 locale（kv.colon：zh 全角 / en 半角+空格），不硬编码。
@@ -917,31 +992,14 @@ function Loaded({ locked, available, t, useStore, useDefaultModel, picker }: {
       h('p', { key, className: css.kvLine },
         h('span', { className: strong ? css.kvKeyStrong : css.kvKey }, `${label}${t('kv.colon')}`),
         value)
-    const capabilityBlock = (): ReactNode => {
-      if (capabilities === null) return h('p', { className: css.policyNote }, t('cap.pending'))
-      const words = pickerCapabilityWords(capabilities)
-      return h('div', { key: 'caps', className: css.capBlock },
-        kvRow(t('cap.loadSession'), capWord(words.loadSession), 'loadSession'),
-        kvRow(t('cap.sessionList'), capWord(words.sessionList), 'sessionList'),
-        kvRow(t('cap.sessionClose'), capWord(words.sessionClose), 'sessionClose'),
-        kvRow(t('cap.sessionDelete'), capWord(words.sessionDelete), 'sessionDelete'),
-        kvRow(t('cap.prompt'), t('cap.promptValue', {
-          image: capWord(words.promptImage),
-          audio: capWord(words.promptAudio),
-          context: capWord(words.promptEmbeddedContext),
-        }), 'prompt'),
-        kvRow(t('cap.mcp'), t('cap.mcpValue', {
-          http: capWord(words.mcpHttp),
-          sse: capWord(words.mcpSse),
-        }), 'mcp'),
-      )
-    }
- // ACP 扩展：长说明文案 + 能力矩阵/沙箱/降级行收进默认折叠的 details（权限
-    // 范围行与注记是 权限与模式双轴展示 安全边界展示，保持常驻不折叠）；menu 本体
+    const permissionLabel = disclosure.preset === 'danger-full-access'
+      ? t('permission.native')
+      : t('permission.notNative')
+    // 长说明与可用性提示收进默认折叠区；Native 访问状态保持常驻。menu 本体
     // max-height + overflow-y 兜底（见 ModelPicker.module.css .menu），任何
     // 内容不得溢出卡片。
     return h('div', { className: css.policy, role: 'note' },
-      kvRow(t('permission.label'), disclosure.preset ?? t('permission.unknown'), 'permission', true),
+      kvRow(t('permission.label'), permissionLabel, 'permission', true),
       h('p', { className: css.policyNote }, t('permission.note')),
       h('details', { className: css.policyDetails },
         h('summary', { className: css.policySummary }, t('disclosure.details')),
@@ -953,13 +1011,6 @@ function Loaded({ locked, available, t, useStore, useDefaultModel, picker }: {
         showsAcpCatalogScopeNote(state.current?.provider)
           ? h('p', { className: css.policyNote }, t('disclosure.catalogScope'))
           : null,
-        capabilityBlock(),
-        sandbox === null
-          ? null
-          : kvRow(t('sandbox.label'),
-            sandbox.enforcement === 'full'
-              ? t('sandbox.full')
-              : t('sandbox.partial', { note: sandbox.note ?? '' }), 'sandbox', true),
         kvRow(t('deg.title'),
           degradations.length === 0
             ? t('deg.none')

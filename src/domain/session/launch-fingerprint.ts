@@ -12,13 +12,9 @@
  * （钉版）；实际安装版本无可靠探测面，声明值变即指纹变。
  * - `envRefs`：descriptor 白名单 env 引用的**存在性**（`{key,present}`，按
  *   targetName 排序）——值绝不入指纹。
- * - `opaqueRefs`：opaque 引用的 `~` 展开 + normalize 后的 source 与
- *   targetRelative（排序固定）；凭证内容绝不入。
  * - `executableOverride`：高级 CLI override env 的 `{name,present}` 或 null。
- * - `dataHomeGeneration`：data home agent（descriptor 带 dataHomeEnv）或确定性
- *   会话状态目录 agent（descriptor `sessionStateDir: 'deterministic'`，如 Devin）
- *   记入建立代际；其余 agent 记 null。旧 Devin binding 缺少该分量，resume 预检
- *   沿用 `profile-changed` 阻断，不引入不可靠的隐式迁移。
+ * - `nativeStateEnv`：Agent 原生状态目录相关环境键的存在性与路径 hash；
+ *   HOME/CODEX_HOME/XDG 等变化会阻止把旧 Agent 上下文交给新运行环境。
  *
  * 显式**不进** blocking 指纹的分量（保持既有语义）：
  * - canonical cwd：由 binding.canonicalCwd 与预检①（'cwd-changed'）覆盖。
@@ -29,9 +25,10 @@
  */
 /// <reference types="node" />
 
-import os from 'node:os'
-import path from 'node:path'
-import type { AcpAgentRuntimeDescriptor, AcpStubAgentConfig } from './agent-config.ts'
+import { createHash } from 'node:crypto'
+import { descriptorEnvRefValues, type AcpAgentRuntimeDescriptor, type AcpStubAgentConfig } from './agent-config.ts'
+import { acpMcpFingerprint, acpMcpServersOf } from './mcp.ts'
+import { ACP_NATIVE_DATA_HOME_ENV_KEYS, ACP_NATIVE_XDG_ENV_KEYS, buildAcpAgentEnv } from '../policy/sandbox.ts'
 import type { AcpLaunchFingerprint } from '../../persistence/sidecar.ts'
 
 /** {@link acpLaunchFingerprint} 的输入。 */
@@ -42,18 +39,54 @@ export interface AcpLaunchFingerprintInput {
   readonly config: AcpStubAgentConfig
   /** 解析出的 descriptor（普通 profile 为 undefined）。 */
   readonly descriptor: AcpAgentRuntimeDescriptor | undefined
-  /** 本次建立的 ACP 代际（data home agent 记入指纹）。 */
-  readonly generation: number
   /** envRef/override 存在性判定的取值面；缺省 `process.env`（参数化供测试注入）。 */
   readonly env?: Record<string, string | undefined>
-  /** opaque ref `~` 展开的家目录；缺省 `os.homedir()`（参数化供测试注入）。 */
-  readonly homeDir?: string
 }
 
-/** `~`/`~/...` 展开为绝对路径后 normalize（非 `~` 开头的源原样 normalize）。 */
-function expandOpaqueSource(source: string, homeDir: string): string {
-  const expanded = source === '~' ? homeDir : source.startsWith('~/') ? path.join(homeDir, source.slice(2)) : source
-  return path.normalize(expanded)
+export interface AcpLaunchEnvironmentInput {
+  readonly config: AcpStubAgentConfig
+  readonly descriptor: AcpAgentRuntimeDescriptor | undefined
+  readonly dataHomeStrategy: 'native' | 'protected'
+  readonly source?: Record<string, string | undefined>
+}
+
+/**
+ * Reconstruct the pre-spawn environment.
+ *
+ * Native Agent Access intentionally matches an ordinary child process: every
+ * defined variable inherited by DSH is available to the trusted local Agent.
+ * This is required for Agent-owned proxies, SSH sockets, native MCP servers,
+ * skills and provider configuration. Profile values are the explicit final
+ * override. Protected probe/test paths retain the narrow allowlist.
+ */
+export async function acpLaunchEnvironment(input: AcpLaunchEnvironmentInput): Promise<Record<string, string>> {
+  const source = input.source ?? process.env
+  const env = input.dataHomeStrategy === 'native'
+    ? Object.fromEntries(Object.entries(source).filter((entry): entry is [string, string] => entry[1] !== undefined))
+    : await buildAcpAgentEnv({ source })
+  if (input.descriptor !== undefined) {
+    Object.assign(env, descriptorEnvRefValues(input.descriptor, source))
+    const overrideEnv = input.descriptor.executableOverrideEnv
+    if (overrideEnv !== undefined) {
+      const overrideValue = source[overrideEnv]
+      if (overrideValue !== undefined && overrideValue !== '') env[overrideEnv] = overrideValue
+    }
+  }
+  // A profile entry is an explicit user choice and therefore wins over both
+  // ambient inheritance and built-in descriptor aliases.
+  Object.assign(env, input.config.env)
+  return env
+}
+
+const NATIVE_STATE_ENV_KEYS = ['HOME', ...ACP_NATIVE_DATA_HOME_ENV_KEYS, ...ACP_NATIVE_XDG_ENV_KEYS]
+
+function nativeStateEnvFingerprint(env: Readonly<Record<string, string | undefined>>): readonly { key: string; present: boolean; hash16?: string }[] {
+  return NATIVE_STATE_ENV_KEYS.map((key) => {
+    const value = env[key]
+    return value === undefined
+      ? { key, present: false }
+      : { key, present: true, hash16: createHash('sha256').update(value).digest('hex').slice(0, 16) }
+  })
 }
 
 /**
@@ -62,7 +95,6 @@ function expandOpaqueSource(source: string, homeDir: string): string {
  */
 export function acpLaunchFingerprint(input: AcpLaunchFingerprintInput): AcpLaunchFingerprint {
   const env = input.env ?? process.env
-  const homeDir = input.homeDir ?? os.homedir()
   const descriptor = input.descriptor
   const envRefs =
     descriptor === undefined
@@ -70,16 +102,6 @@ export function acpLaunchFingerprint(input: AcpLaunchFingerprintInput): AcpLaunc
       : descriptor.envRefs
           .map((ref) => ({ key: ref.targetName, present: env[ref.sourceName] !== undefined && env[ref.sourceName] !== '' }))
           .sort((left, right) => left.key.localeCompare(right.key))
-  const opaqueRefs =
-    descriptor === undefined
-      ? null
-      : descriptor.opaqueRefs
-          .map((ref) => ({ source: expandOpaqueSource(ref.source, homeDir), targetRelative: ref.targetRelative }))
-          .sort((left, right) =>
-            left.targetRelative === right.targetRelative
-              ? left.source.localeCompare(right.source)
-              : left.targetRelative.localeCompare(right.targetRelative),
-          )
   const executableOverride =
     descriptor?.executableOverrideEnv === undefined
       ? null
@@ -96,8 +118,8 @@ export function acpLaunchFingerprint(input: AcpLaunchFingerprintInput): AcpLaunc
     adapterVersion: descriptor?.versionPolicy.adapter ?? null,
     wrappedCliVersion: descriptor?.versionPolicy.wrappedCli ?? null,
     envRefs,
-    opaqueRefs,
     executableOverride,
-    dataHomeGeneration: descriptor?.dataHomeEnv !== undefined || descriptor?.sessionStateDir === 'deterministic' ? input.generation : null,
+    nativeStateEnv: nativeStateEnvFingerprint(env),
+    mcpFingerprint: acpMcpFingerprint(acpMcpServersOf(input.config.mcpServers), env),
   }
 }

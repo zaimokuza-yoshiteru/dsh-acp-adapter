@@ -1,3 +1,9 @@
+import os from 'node:os'
+import path from 'node:path'
+import { AcpSpawnPlanError } from '../policy/errors.ts'
+import { acpMcpFingerprint, acpMcpServersOf } from './mcp.ts'
+import type { AcpMcpServerConfig } from './mcp.ts'
+
 /**
  * ACP provider 的配置 datum 与路由约定（分层：原 registry.ts / llm-stub.ts
  * 的纯数据部分下沉至此）。零 import 叶子模块——settings 文档形状
@@ -69,6 +75,8 @@ export interface AcpStubAgentConfig {
  * 无 confiner 的 probe 路径原样透传（旧行为，测试用）。
    */
   env: Record<string, string>
+  /** Explicit profile-owned MCP servers passed unchanged to ACP session/new/load. */
+  mcpServers?: readonly AcpMcpServerConfig[]
   /** Login guidance shown when a probe fails with auth_required. */
   loginHint?: string
   /**
@@ -104,9 +112,10 @@ export interface AcpAgentEnvRef {
 }
 
 /**
- * opaque path ref（边界）：agent 私有状态/凭证在宿主上的位置声明，staging 只以
+ * opaque path ref（边界）：Agent 私有状态/凭证在宿主上的位置声明。正式会话
+ * 直接使用 Agent 原生目录；健康探测把必要的单文件引用以
  * **symlink** 物化（零字节复制；机制与安全口径见 src/domain/policy/platform/staging.ts
- * 模块头注释）。`targetRelative` 是落进 agent 数据根（data home / XDG 镜像位）下的
+ * 模块头注释）。`targetRelative` 是健康探测临时数据根下的
  * 相对路径；`optional: false` = 实证上缺它 auth 必败（仍按「缺失即诚实暴露」处理，
  * 不是 staging 硬错误——当前 staging 对缺失源 warn + 跳过）。
  */
@@ -132,8 +141,9 @@ export interface AcpAgentVersionPolicy {
  * 内置受信数据——普通 profile 不能经 settings 构造宿主 path/env ref，只能经
  * `runtime` 字段或 id 回退**绑定**到这里的某一条。
  *
- * Devin 使用 XDG 镜像 staging；Codex、Kimi 和 Claude 的 spawn/probe 会注入
- * 确定性 data home、disposable probe、envRefs 与 executableOverride。
+ * Native/full-access spawn uses the Agent's existing home and explicit env.
+ * Every health probe uses its own disposable root; descriptor refs only make
+ * the minimum login/config files visible inside that disposable probe.
  * descriptor 的 command 必须是 PATH 上的
  * 已安装可执行名（用户自行安装明确版本），**绝不** `npx -y <pkg>@latest` 之类
  * 每次 spawn 下载代码的形态；钉版见各条 `versionPolicy`。
@@ -142,29 +152,8 @@ export interface AcpAgentRuntimeDescriptor {
   readonly id: AcpAgentId
   readonly command: string
   readonly args: readonly string[]
-  /** 语义状态归属：remote = 语义历史在服务端（devin）；local = 语义历史在本地数据根。 */
-  readonly semanticState: 'remote' | 'local'
- /** 本地状态 agent 的数据根 env 键（确定性 data home 的目标键）。 */
+ /** 健康探测使用的临时数据根 env 键；正式 Native 会话不重定向该变量。 */
   readonly dataHomeEnv?: 'CODEX_HOME' | 'KIMI_CODE_HOME' | 'CLAUDE_CONFIG_DIR'
-  /**
- * workspace-write 档的会话状态目录策略（边界）：'deterministic' = 确定性
-   * per-session-generation 目录（`os.tmpdir()` 下 `dsh-acp-<profileId>-<sessionId>-<generation>`，
-   * 0700 canonical），路径记入 binding 的 `agentDataHome`/`agentDataGeneration`，
-   * resume 复用同一目录——agent 的本地会话注册（例如 Devin 的 sessions.db）
-   * 在宿主重启后仍找得到；
-   * 缺席 = volatile mkdtemp（每次 spawn 新目录，OS 清理后走恢复降级——
-   * generic profile 旧行为不变）。
-   *
-   * 为什么确定性目录仍在 `os.tmpdir()` 而不在 `<dshHome>`：workspace-write 档的
-   * 公开 confine policy 只有一个可写 workspaceRoot（项目）加平台 tmp 区
-   * （dsh-sandbox `writableRoots` = workspaceRoot + /tmp + os.tmpdir()，seatbelt
-   * profile 对其余路径 deny file-write*）——dshHome 下的状态目录对 confined
- * 子进程只读，sessions.db 与重定向 TMPDIR 的写会被拒（创建门背后的
-   * 同一堵墙）。retention 如实口径：该目录不受 sidecar retention 覆盖，靠
-   * rebindBlank 清超龄代际 + OS 的 tmp 清理；read-only 档的 devin 状态目录是
-   * profile 级持久 stateRoot（confine root 即它，天然 durable），不受本策略影响。
-   */
-  readonly sessionStateDir?: 'deterministic'
   readonly envRefs: readonly AcpAgentEnvRef[]
   readonly opaqueRefs: readonly AcpAgentOpaqueRef[]
  /** 高级 CLI override env 键（边界：进 launch fingerprint 并跑独立兼容测试）。 */
@@ -185,16 +174,8 @@ export const ACP_AGENT_RUNTIME_DESCRIPTORS: readonly AcpAgentRuntimeDescriptor[]
     id: 'devin',
     command: 'devin',
     args: ['acp'],
-    semanticState: 'remote',
- // 边界：devin 的会话注册（sessions.db）实测落在 XDG 重定向后的状态目录
-    // ——workspace-write 档给它确定性 per-session 状态目录并记入 binding，否则
-    // 宿主重启后 resume 换新 mkdtemp 会导致 id-not-found。
-    sessionStateDir: 'deterministic',
     envRefs: [],
- // 实证：devin 启动期经 XDG_DATA_HOME 读 `<data>/devin/credentials.toml`。
-    // macOS 前缀规则（platform/macos.ts）把 `~/.local/share` 映到重定向 XDG_DATA_HOME
- // 下的 `xdg-data/`，前缀下相对路径恰等于 targetRelative——staging 行为与
-    // authPathRefs 逐字节一致。
+    // 健康探测需要读取 Devin 登录态；正式会话直接读取原生位置。
     opaqueRefs: [
       { source: '~/.local/share/devin/credentials.toml', targetRelative: 'devin/credentials.toml', kind: 'credential', optional: false },
     ],
@@ -207,7 +188,6 @@ export const ACP_AGENT_RUNTIME_DESCRIPTORS: readonly AcpAgentRuntimeDescriptor[]
     id: 'codex',
     command: 'codex-acp',
     args: [],
-    semanticState: 'local',
     dataHomeEnv: 'CODEX_HOME',
     envRefs: [],
     // 本机探针显示：无 auth.json 则 session/new
@@ -218,13 +198,12 @@ export const ACP_AGENT_RUNTIME_DESCRIPTORS: readonly AcpAgentRuntimeDescriptor[]
     ],
     versionPolicy: { adapter: '1.6.2' },
     probeCleanup: 'protocol-and-disposable-root',
-    loginHint: 'codex login',
+    loginHint: 'codex-acp cli login（或 codex login）',
   },
   {
     id: 'kimi',
     command: 'kimi',
     args: ['acp'],
-    semanticState: 'local',
     dataHomeEnv: 'KIMI_CODE_HOME',
     envRefs: [],
     //  的通用映射（`~/.kimi-code/credentials` 下 regular files）落地为本机
@@ -245,7 +224,6 @@ export const ACP_AGENT_RUNTIME_DESCRIPTORS: readonly AcpAgentRuntimeDescriptor[]
     id: 'claude',
     command: 'claude-agent-acp',
     args: [],
-    semanticState: 'local',
     dataHomeEnv: 'CLAUDE_CONFIG_DIR',
     executableOverrideEnv: 'CLAUDE_CODE_EXECUTABLE',
     //  的固定白名单九条（全 optional；值只经键名从 DSH 进程环境取值，
@@ -280,18 +258,17 @@ export function descriptorOf(agentId: string, config?: { readonly runtime?: AcpA
 }
 
 /**
- * 现有 XDG 镜像 staging（src/domain/policy/platform/staging.ts）消费的 opaque ref
- * 源清单。**仅无 `dataHomeEnv` 的 descriptor**（devin：semanticState remote，凭证落
- * 在 XDG_DATA_HOME 语义位，源路径命中 macOS XDG 前缀规则表）——本地状态 agent
- * （codex/kimi/claude）的 opaqueRefs 由 确定性 data home 的确定性 data home 机制消费
- * （ 已接线：spawn 注入见 ./agent.ts、probe 注入见
- * src/host/composition/registry.ts `createProbeConfiner`），其源路径不在 XDG 前缀
- * 规则表内，绝不喂给 XDG staging（会把 probe/spawn fail loud）。返回 undefined =
- * 与引入 authPathRefs 前逐字节一致。
+ * 健康探测兼容面使用的 opaque ref 源清单。仅无 `dataHomeEnv` 的 descriptor
+ * （目前是 Devin）返回 XDG 语义下的源；Codex、Kimi、Claude 由探测器直接把
+ * refs 物化到各自的 disposable data home。正式 Native 会话不消费本函数。
  */
-export function descriptorStagingSourcesOf(descriptor: AcpAgentRuntimeDescriptor | undefined): readonly string[] | undefined {
+export function descriptorStagingSourcesOf(
+  descriptor: AcpAgentRuntimeDescriptor | undefined,
+  environment?: Readonly<Record<string, string | undefined>>,
+): readonly string[] | undefined {
   if (descriptor === undefined || descriptor.dataHomeEnv !== undefined || descriptor.opaqueRefs.length === 0) return undefined
-  return descriptor.opaqueRefs.map((ref) => ref.source)
+  const refs = descriptorOpaqueRefsForEnvironment(descriptor, environment ?? {})
+  return refs?.map((ref) => ref.source)
 }
 
 /**
@@ -320,6 +297,65 @@ export function descriptorEnvRefValues(
     if (value !== undefined && value !== '') values[ref.targetName] = value
   }
   return values
+}
+
+const DESCRIPTOR_NATIVE_ROOT_ENV: Partial<Record<AcpAgentId, string>> = {
+  devin: 'XDG_DATA_HOME',
+  codex: 'CODEX_HOME',
+  kimi: 'KIMI_CODE_HOME',
+  claude: 'CLAUDE_CONFIG_DIR',
+}
+
+const DESCRIPTOR_DEFAULT_ROOT: Partial<Record<AcpAgentId, string>> = {
+  devin: '~/.local/share',
+  codex: '~/.codex',
+  kimi: '~/.kimi-code',
+  claude: '~/.claude',
+}
+
+/**
+ * Resolve built-in opaque refs against an explicitly selected native Agent
+ * state root. The returned refs still point at host paths and are only used
+ * for path-only symlink staging; no file bytes are read by this adapter.
+ * Missing selectors retain the descriptor's default `~` source. Explicit
+ * selectors must be absolute so a typo cannot silently fall back to a user's
+ * default home.
+ */
+export function descriptorOpaqueRefsForEnvironment(
+  descriptor: AcpAgentRuntimeDescriptor | undefined,
+  environment: Readonly<Record<string, string | undefined>>,
+  homeDir = os.homedir(),
+): readonly AcpAgentOpaqueRef[] | undefined {
+  if (descriptor === undefined || descriptor.opaqueRefs.length === 0) return descriptor?.opaqueRefs
+  const envKey = DESCRIPTOR_NATIVE_ROOT_ENV[descriptor.id]
+  const defaultRoot = DESCRIPTOR_DEFAULT_ROOT[descriptor.id]
+  if (envKey === undefined || defaultRoot === undefined) return descriptor.opaqueRefs
+  const configuredHome = environment.HOME
+  const effectiveHome = configuredHome === undefined || configuredHome === '' ? homeDir : configuredHome
+  if (!path.isAbsolute(effectiveHome)) {
+    throw new AcpSpawnPlanError('ACP_SPAWN_CONFIG', 'HOME must be an absolute path when selecting an Agent native state root')
+  }
+  const selectedRoot = environment[envKey]
+  if (selectedRoot !== undefined && selectedRoot !== '' && !path.isAbsolute(selectedRoot)) {
+    throw new AcpSpawnPlanError('ACP_SPAWN_CONFIG', `${envKey} must be an absolute path when selecting an Agent state root`)
+  }
+  const resolveSources = (selectedRoot !== undefined && selectedRoot !== '') || effectiveHome !== path.normalize(homeDir)
+  if (!resolveSources) return descriptor.opaqueRefs
+  const expandedDefault = path.normalize(path.join(effectiveHome, defaultRoot.slice(2)))
+  const normalizedSelected = path.normalize(selectedRoot === undefined || selectedRoot === '' ? expandedDefault : selectedRoot)
+  return descriptor.opaqueRefs.map((ref) => {
+    const expandedSource = ref.source === '~'
+      ? effectiveHome
+      : ref.source.startsWith('~/') ? path.join(effectiveHome, ref.source.slice(2)) : ref.source
+    const normalizedSource = path.normalize(expandedSource)
+    if (normalizedSource !== expandedDefault && !normalizedSource.startsWith(`${expandedDefault}${path.sep}`)) {
+      throw new AcpSpawnPlanError('ACP_SPAWN_CONFIG', `${descriptor.id} opaque ref is outside its declared native state root`)
+    }
+    return {
+      ...ref,
+      source: path.join(normalizedSelected, path.relative(expandedDefault, normalizedSource)),
+    }
+  })
 }
 
 /**
@@ -408,7 +444,7 @@ export const CODEX_ACP_TEMPLATE: AcpBuiltinAgentTemplate = {
   command: 'codex-acp',
   args: [],
   env: {},
-  loginHint: 'codex login',
+  loginHint: 'codex-acp cli login（或 codex login）',
   runtime: 'codex',
 }
 
@@ -445,9 +481,7 @@ export const ACP_BUILTIN_AGENT_TEMPLATES: readonly AcpBuiltinAgentTemplate[] = [
  * 集合** + `runtime` 绑定, env key-order normalized). The probe cache is keyed on it: a rename or a
  * loginHint edit must NOT re-probe, an env reorder must not either, and any real
  * change must. `runtime` 参与键：它决定 descriptor 绑定（边界），绑定变了
- * staging 的 opaque ref 集合就变，probe 结果可能不同——必须重探（时代
- * authPathRefs 是 agent id 的纯函数故不参与；`runtime` 字段引入后该不变量
- * 只能显式维持）。The hash is the
+ * staging 的 opaque ref 集合就变，probe 结果可能不同——必须重探。The hash is the
  * canonical JSON itself — no crypto needed for an in-memory cache key. Generic
  * parameter so a full {@link AcpStubAgentConfig} passes without tripping
  * excess-property checks.
@@ -462,9 +496,10 @@ export const ACP_BUILTIN_AGENT_TEMPLATES: readonly AcpBuiltinAgentTemplate[] = [
  * 五态派生新鲜度判定）与 hostFactory 层（会话创建门）都要消费它，放 host
  * 组合层会把它们拖进 host import（分层守卫禁止）。
  */
-export function acpProbeConfigKey<C extends Pick<AcpStubAgentConfig, 'command' | 'args' | 'env'> & { readonly runtime?: AcpAgentId }>(config: C): string {
+export function acpProbeConfigKey<C extends Pick<AcpStubAgentConfig, 'command' | 'args' | 'env'> & { readonly runtime?: AcpAgentId; readonly mcpServers?: readonly AcpMcpServerConfig[] }>(config: C): string {
   const envKeys = Object.keys(config.env).sort()
-  return JSON.stringify({ command: config.command, args: config.args, envKeys, runtime: config.runtime ?? null })
+  const mcpServers = acpMcpServersOf(config.mcpServers)
+  return JSON.stringify({ command: config.command, args: config.args, envKeys, runtime: config.runtime ?? null, mcpFingerprint: acpMcpFingerprint(mcpServers) })
 }
 
 /**
@@ -553,7 +588,7 @@ function diffEnvKeys(
 function diffOneAgentConfig(agentId: string, prev: AcpAgentConfig | undefined, next: AcpAgentConfig | undefined): AcpAgentConfigChange | undefined {
   if (prev === undefined && next === undefined) return undefined
   if (prev === undefined && next !== undefined) {
-    const fields = ['name', 'command', 'args', ...(Object.keys(next.env).length > 0 ? ['env'] : []),
+    const fields = ['name', 'command', 'args', ...(Object.keys(next.env).length > 0 ? ['env'] : []), ...(next.mcpServers !== undefined && next.mcpServers.length > 0 ? ['mcpServers'] : []),
       ...(next.loginHint === undefined ? [] : ['loginHint']), ...(next.runtime === undefined ? [] : ['runtime'])]
     const env = diffEnvKeys({}, next.env)
     return {
@@ -566,7 +601,7 @@ function diffOneAgentConfig(agentId: string, prev: AcpAgentConfig | undefined, n
     }
   }
   if (next === undefined && prev !== undefined) {
-    const fields = ['name', 'command', 'args', ...(Object.keys(prev.env).length > 0 ? ['env'] : []),
+    const fields = ['name', 'command', 'args', ...(Object.keys(prev.env).length > 0 ? ['env'] : []), ...(prev.mcpServers !== undefined && prev.mcpServers.length > 0 ? ['mcpServers'] : []),
       ...(prev.loginHint === undefined ? [] : ['loginHint']), ...(prev.runtime === undefined ? [] : ['runtime'])]
     const env = diffEnvKeys(prev.env, {})
     return {
@@ -592,6 +627,7 @@ function diffOneAgentConfig(agentId: string, prev: AcpAgentConfig | undefined, n
   }
   if ((before.loginHint ?? undefined) !== (current.loginHint ?? undefined)) fields.add('loginHint')
   if ((before.runtime ?? undefined) !== (current.runtime ?? undefined)) fields.add('runtime')
+  if (JSON.stringify(before.mcpServers ?? []) !== JSON.stringify(current.mcpServers ?? [])) fields.add('mcpServers')
   const env = diffEnvKeys(before.env, current.env)
   const envTouched = env.added.length > 0 || env.removed.length > 0 || env.changed.length > 0
   if (envTouched) fields.add('env')

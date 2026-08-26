@@ -21,9 +21,10 @@
  * SessionEventMap declaration merging 与 `ignorable:true` 构造器不会回归——本包
  * 不再向 session log 写任何自定义事件。
  *
- * 两阶段保留完整审计：双按钮 web 面板与 agent 选项表无法精确对应的一侧
- * （此时桥答 cancelled，绝不把一次选择升格为 always 类 optionId——见
- * ./permissions.ts 模块头），`asked` 里的完整选项列表仍是唯一未损记录。
+ * 两阶段保留完整审计：插件 ACP UI 的 `selectedOptionKind`/`decisionVia` 记录
+ * 原始选项语义；旧 DSH 双按钮 fallback 无法精确对应时仍只选择 once-kind，
+ * 绝不把一次选择升格为 always 类 optionId。`asked` 里的完整选项列表仍是
+ * 唯一未损记录。
  *
  * @module @zaimokuza/dsh-acp-adapter/domain/policy/events
  */
@@ -52,6 +53,10 @@ export const ACP_AGENT_CONFIG_AUDIT_KIND = 'agent-config' as const
  * 接线在 src/domain/session/agent.ts（经 recordAudit seam 落 sidecar）。
  */
 export const ACP_DEGRADATION_AUDIT_KIND = 'degradation' as const
+
+/** Structured ACP elicitation audit; submitted values and URL query strings are excluded. */
+export const ACP_ELICITATION_AUDIT_KIND = 'elicitation' as const
+export type { AcpElicitationAudit as AcpElicitationAuditData } from './elicitation.ts'
 
 /**
  * 降级条目 payload 的类型真源在生产方 src/protocol/v1/translate.ts（架构白名单：
@@ -210,6 +215,27 @@ const REDACT_DEPTH_MAX = 6
 const REDACT_ARRAY_MAX = 32
 const REDACT_STRING_MAX = 200
 
+const SHELL_SECRET_VALUE = `(?:"[^"]*"|'[^']*'|[^\\s'"]+)`
+const SECRET_JSON_PROPERTY_PATTERN = new RegExp(`((?:["']?)(?:token|secret|password|passwd|api[-_]?key|authorization|credential|private[-_]?key)(?:["']?)\\s*[:=]\\s*)(?:"[^"]*"|'[^']*'|[^,\\s}\\]]+(?=\\s*[,}\\]]))`, 'gi')
+const SECRET_ENV_ASSIGNMENT_PATTERN = new RegExp(`(\\b(?:[A-Za-z][A-Za-z0-9_-]*(?:token|secret|password|passwd|api[-_]?key|authorization|credential|private[-_]?key)[A-Za-z0-9_-]*|token|secret|password|passwd|api[-_]?key|authorization|credential|private[-_]?key)\\b)\\s*=\\s*${SHELL_SECRET_VALUE}`, 'gi')
+const SECRET_OPTION_PATTERN = new RegExp(`(--?[A-Za-z0-9_-]*(?:token|secret|password|passwd|api[-_]?key|authorization|credential|private[-_]?key)[A-Za-z0-9_-]*)(?:\\s*=\\s*|\\s+)${SHELL_SECRET_VALUE}`, 'gi')
+const SECRET_HEADER_PATTERN = new RegExp(`(\\b(?:authorization|proxy-authorization|x-api-key|api-key)\\b\\s*:\\s*(?:bearer\\s+)?)(?:"[^"]*"|'[^']*'|[^\\s'"]+)`, 'gi')
+
+/**
+ * 跨审计摘要与审批展示共用的 secret-text 脱敏规则。
+ *
+ * 对象字段由 {@link redactForAudit} 按 key 脱敏；但 command/header/env 等
+ * 字符串内部仍可能携带 secret，因此这里也处理常见的文本形态。调用方
+ * 必须在 raw input canonical hash 之外使用本函数，不能用脱敏值替代完整性哈希。
+ */
+export function redactSecretText(value: string): string {
+  return value
+    .replace(SECRET_HEADER_PATTERN, '$1<redacted>')
+    .replace(SECRET_JSON_PROPERTY_PATTERN, '$1<redacted>')
+    .replace(SECRET_ENV_ASSIGNMENT_PATTERN, '$1=<redacted>')
+    .replace(SECRET_OPTION_PATTERN, '$1=<redacted>')
+}
+
 function isPlainObjectValue(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -218,7 +244,8 @@ function isPlainObjectValue(value: unknown): value is Record<string, unknown> {
 function redactForAudit(value: unknown, depth: number): unknown {
   if (depth > REDACT_DEPTH_MAX) return '…'
   if (typeof value === 'string') {
-    return value.length > REDACT_STRING_MAX ? `${value.slice(0, REDACT_STRING_MAX)}…` : value
+    const redacted = redactSecretText(value)
+    return redacted.length > REDACT_STRING_MAX ? `${redacted.slice(0, REDACT_STRING_MAX)}…` : redacted
   }
   if (Array.isArray(value)) {
     const items: unknown[] = value.slice(0, REDACT_ARRAY_MAX).map((item) => redactForAudit(item, depth + 1))
@@ -297,6 +324,10 @@ export interface AcpPermissionDecidedAuditData {
   readonly optionId?: string
   /** The dsh approval service's own outcome, when it was consulted. */
   readonly approvalOutcome?: AcpApprovalOutcome
+  /** Exact option kind selected, without collapsing allow_once/allow_always. */
+  readonly selectedOptionKind?: PermissionOption['kind']
+  /** Which answerer produced the decision. */
+  readonly decisionVia?: 'acp-ui' | 'native-fallback'
   /**
    * Outcome cause. Vocabulary: `user-rejected`（审批服务以 `rejected` 结案——
  * 用户点拒或 `never` 策略——且桥选中 reject 类选项回包； taxonomy
@@ -332,6 +363,8 @@ export interface PermissionDecidedAuditInit {
   readonly outcome: 'selected' | 'cancelled'
   readonly optionId?: string
   readonly approvalOutcome?: AcpApprovalOutcome
+  readonly selectedOptionKind?: PermissionOption['kind']
+  readonly decisionVia?: 'acp-ui' | 'native-fallback'
   readonly note?: string
 }
 
@@ -373,6 +406,8 @@ export function createPermissionDecidedAudit(init: PermissionDecidedAuditInit): 
     outcome: init.outcome,
     ...(init.optionId === undefined ? {} : { optionId: init.optionId }),
     ...(init.approvalOutcome === undefined ? {} : { approvalOutcome: init.approvalOutcome }),
+    ...(init.selectedOptionKind === undefined ? {} : { selectedOptionKind: init.selectedOptionKind }),
+    ...(init.decisionVia === undefined ? {} : { decisionVia: init.decisionVia }),
     ...(init.note === undefined ? {} : { note: init.note }),
   }
 }

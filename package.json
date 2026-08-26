@@ -83,6 +83,7 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "4.0.1",
+    "@deepseek-ai/dsh-attachment": ">=0.1.1-rc.2",
     "@deepseek-ai/dsh-api-remotes": ">=0.1.1-rc.2",
     "@deepseek-ai/dsh-client-connection": ">=0.1.1-rc.2",
     "@deepseek-ai/dsh-client-locale": ">=0.1.1-rc.2",
@@ -95,6 +96,7 @@
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.0.1",
+    "@deepseek-ai/dsh-attachment": "0.1.1-rc.2",
     "@deepseek-ai/dsh-agent": "0.1.1-rc.2",
     "@deepseek-ai/dsh-agent-loop": "0.1.1-rc.2",
     "@deepseek-ai/dsh-agent-presets": "0.1.1-rc.2",
@@ -139,9 +141,6 @@
     "cordis.patch.yml",
     "README.md",
     "README.en.md",
-    "docs/**/*.md",
-    "SECURITY.md",
-    "SECURITY.en.md",
     "LICENSE"
   ]
 }

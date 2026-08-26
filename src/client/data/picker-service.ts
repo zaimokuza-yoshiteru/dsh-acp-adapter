@@ -64,6 +64,10 @@ interface ProjectionSnapshotLike {
 
 interface SessionBindingLike {
   session: {
+    command(line: string): Promise<
+      | { ok: true; value: { matched: boolean } }
+      | { ok: false; error: { code: string; message: string } }
+    >
     projections: {
       faceOf(name: string): ProjectionSnapshotLike
     }
@@ -419,6 +423,29 @@ export class PickerService {
   }
 
   /**
+   * ACP 正式会话只使用 Agent 原生访问。这里走 DSH 公开
+   * `/permission` 命令，使 projection、session event 和真实 spawn policy 保持一致。
+   * 风险确认由调用方 UI 在进入本方法之前完成；本方法不猜测或伪造
+   * permission projection。
+   */
+  async enableNativeAccess(sessionId: string): Promise<void> {
+    const binding = this.deps.sessions.binding(sessionId)
+    if (binding === undefined) throw new Error('this session is not materialized yet')
+    const result = await binding.session.command('/permission danger-full-access')
+    if (!result.ok) {
+      throw new Error(`permission switch failed: ${result.error.code}: ${result.error.message}`)
+    }
+    if (!result.value.matched) throw new Error('the host offers no /permission command')
+  }
+
+  /** 读取 DSH 权限投影；只用于决定 ACP 行是否需要展示原生访问确认。 */
+  permissionPreset(sessionId: string): string | undefined {
+    return presetOfPermissionsProjection(this.deps.sessions
+      .binding(sessionId)
+      ?.session.projections.faceOf('permissions').getSnapshot())
+  }
+
+  /**
  * 模型选择的统一路由（seat wire `select` 与 /model popup 共用）：
    * - 同 provider 的 ACP 选择 → ModelSwitchCoordinator 的持久事务（唯一热切换
    *   入口；失败时错误已落目录 select 文案位，本方法抛出同源消息）；
@@ -571,6 +598,18 @@ export class PickerService {
     // ---- ④ 有界确认行进列表镜像 → open（契约：open 的 id 必须在列表） ----
     if (!(await this.waitForSessionRow(newSessionId, timeoutMs))) {
       return t('cross.confirmTimeout', { sessionId: newSessionId })
+    }
+    // ACP backend 不继承受限模式：新会话入列后，在导航/首轮之前
+    // 经 DSH 公开命令写入真实 permission event。调用本事务代表用户已在
+    // picker/popup 的确认层明确接受原生 Agent 访问。
+    if (isAcpProvider(ticket.selection.provider)) {
+      try {
+        await this.enableNativeAccess(newSessionId)
+      } catch (error) {
+        this.pendingNotice = t('cross.nativeAccessFailed', { message: errorMessageOf(error) })
+        this.deps.sessions.open(newSessionId)
+        return undefined
+      }
     }
     // 提示先于 open 落槽：新会话的 seat 挂载即取走本条（attach 失败如实告知未分组）。
     this.pendingNotice = attachFailure !== null

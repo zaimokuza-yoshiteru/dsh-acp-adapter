@@ -26,6 +26,7 @@ import {
   validateAgentDraft,
 } from './logic.ts'
 import type {
+  AcpProviderHealth,
   AcpScopeSnapshot,
   AgentDraft,
 } from './logic.ts'
@@ -63,7 +64,10 @@ export interface AcpPanelControllerDeps {
 
 export class AcpPanelController {
   private scopeSnapshot: AcpScopeSnapshot
-  private health: HealthState = { status: 'idle', rows: [], sandbox: null, fetchedAt: undefined, message: undefined }
+  private health: HealthState = {
+    status: 'idle', rows: [], sandbox: null, fetchedAt: undefined, message: undefined,
+    checkingAgentIds: [], agentErrors: {},
+  }
   private sink: AcpPanelStoreActions | null = null
   private readonly unsubscribeScope: () => void
   private readonly remote: AcpRemoteLike
@@ -105,8 +109,14 @@ export class AcpPanelController {
    *   面板按钮路径）；false/省略 = 只读缓存视图（面板打开路径，不 spawn probe）。
    */
   async refreshHealth(recheck = false): Promise<void> {
-    if (this.health.status === 'loading') return
-    this.health = { ...this.health, status: 'loading', message: undefined }
+    if (this.health.status === 'loading' || this.health.checkingAgentIds.length > 0) return
+    this.health = {
+      ...this.health,
+      status: 'loading',
+      message: undefined,
+      checkingAgentIds: [],
+      agentErrors: {},
+    }
     this.sink?.healthLoading()
     try {
       const result = await this.remote.health(recheck ? { recheck: true } : undefined)
@@ -122,10 +132,57 @@ export class AcpPanelController {
  // sandbox enforcement 事实是附加字段，容忍式解码（缺席/畸形归 null）
       const sandbox = decodeSandboxFact(result.value)
       const fetchedAt = Date.now()
-      this.health = { status: 'ready', rows, sandbox, fetchedAt, message: undefined }
+      this.health = {
+        status: 'ready', rows, sandbox, fetchedAt, message: undefined,
+        checkingAgentIds: [], agentErrors: {},
+      }
       this.sink?.healthReady(rows, sandbox, fetchedAt)
     } catch (error: unknown) {
       this.failHealth(errorMessageOf(error))
+    }
+  }
+
+  /**
+   * Re-probe exactly one configured agent. Different agents may run in
+   * parallel; the same agent and a panel-wide refresh are deduplicated. Only
+   * the returned target row is merged, preventing out-of-order concurrent
+   * responses from rolling another agent back to an older snapshot.
+   */
+  async refreshAgentHealth(agentId: string): Promise<void> {
+    if (this.health.status === 'loading' || this.health.checkingAgentIds.includes(agentId)) return
+    this.health = {
+      ...this.health,
+      checkingAgentIds: [...this.health.checkingAgentIds, agentId].sort(),
+      agentErrors: withoutKey(this.health.agentErrors, agentId),
+    }
+    this.sink?.agentHealthLoading(agentId)
+    try {
+      const result = await this.remote.health({ recheck: true, agentId })
+      if (!result.ok) {
+        this.failAgentHealth(agentId, result.error.message)
+        return
+      }
+      const rows = decodeHealthResponse(result.value)
+      const row = rows?.find((candidate) => candidate.id === agentId)
+      if (row === undefined) {
+        this.failAgentHealth(agentId, `health response did not contain agent ${JSON.stringify(agentId)}`)
+        return
+      }
+      const sandbox = decodeSandboxFact(result.value)
+      const fetchedAt = Date.now()
+      this.health = {
+        ...this.health,
+        status: 'ready',
+        rows: mergeHealthRow(this.health.rows, row),
+        sandbox,
+        fetchedAt,
+        message: undefined,
+        checkingAgentIds: this.health.checkingAgentIds.filter((id) => id !== agentId),
+        agentErrors: withoutKey(this.health.agentErrors, agentId),
+      }
+      this.sink?.agentHealthReady(agentId, row, sandbox, fetchedAt)
+    } catch (error: unknown) {
+      this.failAgentHealth(agentId, errorMessageOf(error))
     }
   }
 
@@ -193,11 +250,32 @@ export class AcpPanelController {
   }
 
   private failHealth(message: string): void {
-    this.health = { ...this.health, status: 'unreachable', message }
+    this.health = { ...this.health, status: 'unreachable', message, checkingAgentIds: [] }
     this.sink?.healthUnreachable(message)
+  }
+
+  private failAgentHealth(agentId: string, message: string): void {
+    this.health = {
+      ...this.health,
+      checkingAgentIds: this.health.checkingAgentIds.filter((id) => id !== agentId),
+      agentErrors: { ...this.health.agentErrors, [agentId]: message },
+    }
+    this.sink?.agentHealthFailed(agentId, message)
   }
 
   private project(): AcpPanelSnapshot {
     return { settings: panelSettingsOf(this.scopeSnapshot), health: this.health }
   }
+}
+
+function withoutKey(values: Record<string, string>, key: string): Record<string, string> {
+  const next = { ...values }
+  delete next[key]
+  return next
+}
+
+function mergeHealthRow(rows: readonly AcpProviderHealth[], row: AcpProviderHealth): readonly AcpProviderHealth[] {
+  const index = rows.findIndex((candidate) => candidate.id === row.id)
+  if (index < 0) return [...rows, row].sort((left, right) => left.id.localeCompare(right.id))
+  return rows.map((candidate, candidateIndex) => candidateIndex === index ? row : candidate)
 }

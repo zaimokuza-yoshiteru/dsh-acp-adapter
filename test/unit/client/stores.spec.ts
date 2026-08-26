@@ -89,12 +89,38 @@ describe('createAcpPanelStore（settings.section 独占工厂）', () => {
     actions.healthLoading();
     expect(inst.getSnapshot().health.status).toBe('loading');
     actions.healthReady([], null, 1234);
-    expect(inst.getSnapshot().health).toEqual({ status: 'ready', rows: [], sandbox: null, fetchedAt: 1234, message: undefined });
+    expect(inst.getSnapshot().health).toEqual({
+      status: 'ready', rows: [], sandbox: null, fetchedAt: 1234, message: undefined,
+      checkingAgentIds: [], agentErrors: {},
+    });
     actions.healthUnreachable('boom');
     const health = inst.getSnapshot().health;
     expect(health.status).toBe('unreachable');
     expect(health.message).toBe('boom');
     expect(health.fetchedAt).toBe(1234); // 失败保留上一份成功行
+  });
+
+  it('卡片级健康状态按 agent 隔离，并只合并对应健康行', () => {
+    const inst = createAcpPanelStore().create();
+    const row = (id: string, version: string) => ({
+      id, name: id, command: id, args: [], loginHint: null,
+      executable: true, version, state: 'saved-unverified' as const,
+      probe: { status: 'never' as const, at: null },
+    });
+    inst.actions.healthReady([row('devin', 'old'), row('kimi', 'old')], null, 1);
+    inst.actions.agentHealthLoading('devin');
+    inst.actions.agentHealthLoading('kimi');
+    expect(inst.getSnapshot().health.checkingAgentIds).toEqual(['devin', 'kimi']);
+
+    inst.actions.agentHealthReady('kimi', row('kimi', 'new'), null, 2);
+    expect(inst.getSnapshot().health.checkingAgentIds).toEqual(['devin']);
+    expect(inst.getSnapshot().health.rows.map((entry) => [entry.id, entry.version])).toEqual([
+      ['devin', 'old'], ['kimi', 'new'],
+    ]);
+
+    inst.actions.agentHealthFailed('devin', 'probe failed');
+    expect(inst.getSnapshot().health.checkingAgentIds).toEqual([]);
+    expect(inst.getSnapshot().health.agentErrors).toEqual({ devin: 'probe failed' });
   });
 
   it('resync 一次性灌入全量投影（attach 路径）', () => {
@@ -116,9 +142,7 @@ const LIVE_SNAPSHOT: LiveOptionsSnapshot = {
   ],
   currentModeId: null,
   capabilities: null,
-  sandbox: null,
   continuity: { status: 'ok', cause: null, detail: null },
-  workspaceWrite: 'supported',
   contextUsage: null,
   freshness: 'live',
   editable: true,

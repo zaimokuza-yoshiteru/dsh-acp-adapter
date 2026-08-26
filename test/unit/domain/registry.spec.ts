@@ -32,6 +32,7 @@ import {
   acpRouteId,
   acpVersionCompatibility,
   descriptorDeclaresAuthRefs,
+  descriptorOpaqueRefsForEnvironment,
   descriptorOf,
   descriptorStagingSourcesOf,
   type AcpAgentConfig,
@@ -266,7 +267,7 @@ describe('纯函数：路由 id 与模板', () => {
       command: 'codex-acp',
       args: [],
       env: {},
-      loginHint: 'codex login',
+      loginHint: 'codex-acp cli login（或 codex login）',
       runtime: 'codex',
     });
     // 模板的用户可配置部分必须过自己的 schema
@@ -334,7 +335,6 @@ describe('runtime descriptor（数据面钉版 + 绑定解析）', () => {
         id: 'devin',
         command: 'devin',
         args: ['acp'],
-        semanticState: 'remote',
         envRefs: [],
         opaqueRefs: [
           { source: '~/.local/share/devin/credentials.toml', targetRelative: 'devin/credentials.toml', kind: 'credential', optional: false },
@@ -342,15 +342,11 @@ describe('runtime descriptor（数据面钉版 + 绑定解析）', () => {
         versionPolicy: {},
         probeCleanup: 'protocol-and-disposable-root',
         loginHint: 'devin auth login',
- // 边界：devin 的 per-session 状态目录走确定性 tmp 目录（dsh-acp-state-*），
- // 非 data home（devin 无 dataHomeEnv）
-        sessionStateDir: 'deterministic',
       },
       {
         id: 'codex',
         command: 'codex-acp',
         args: [],
-        semanticState: 'local',
         dataHomeEnv: 'CODEX_HOME',
         envRefs: [],
         opaqueRefs: [
@@ -359,13 +355,12 @@ describe('runtime descriptor（数据面钉版 + 绑定解析）', () => {
         ],
         versionPolicy: { adapter: '1.6.2' },
         probeCleanup: 'protocol-and-disposable-root',
-        loginHint: 'codex login',
+        loginHint: 'codex-acp cli login（或 codex login）',
       },
       {
         id: 'kimi',
         command: 'kimi',
         args: ['acp'],
-        semanticState: 'local',
         dataHomeEnv: 'KIMI_CODE_HOME',
         envRefs: [],
         opaqueRefs: [
@@ -381,7 +376,6 @@ describe('runtime descriptor（数据面钉版 + 绑定解析）', () => {
         id: 'claude',
         command: 'claude-agent-acp',
         args: [],
-        semanticState: 'local',
         dataHomeEnv: 'CLAUDE_CONFIG_DIR',
         executableOverrideEnv: 'CLAUDE_CODE_EXECUTABLE',
         envRefs: [
@@ -452,13 +446,26 @@ describe('runtime descriptor（数据面钉版 + 绑定解析）', () => {
     expect(new Set(keys).size).toBe(3);
   });
 
- it('descriptorStagingSourcesOf：仅 devin（无 dataHomeEnv）产出 XDG 镜像 staging 源，与 authPathRefs 逐字节一致', () => {
+  it('descriptorStagingSourcesOf：仅 Devin 健康探测产出 XDG 镜像 staging 源', () => {
     expect(descriptorStagingSourcesOf(descriptorOf('devin'))).toEqual(['~/.local/share/devin/credentials.toml']);
- // 本地状态 Agent 的 opaqueRefs 走确定性 data home 机制，绝不喂给 XDG staging。
+ // 其他 Agent 的 probe refs 直接进入其可丢弃 data home，不喂给 XDG staging。
     expect(descriptorStagingSourcesOf(descriptorOf('codex'))).toBeUndefined();
     expect(descriptorStagingSourcesOf(descriptorOf('kimi'))).toBeUndefined();
     expect(descriptorStagingSourcesOf(descriptorOf('claude'))).toBeUndefined();
     expect(descriptorStagingSourcesOf(undefined)).toBeUndefined();
+  });
+
+  it('native opaque ref 源跟随显式 data-home/XDG 选择，probe 目标仍由调用方单独提供', () => {
+    const home = '/users/tester'
+    const codex = descriptorOpaqueRefsForEnvironment(descriptorOf('codex'), { CODEX_HOME: '/private/codex-state' }, home)
+    expect(codex?.map((ref) => ref.source)).toEqual([
+      '/private/codex-state/auth.json',
+      '/private/codex-state/config.toml',
+    ])
+    const devin = descriptorStagingSourcesOf(descriptorOf('devin'), { XDG_DATA_HOME: '/private/xdg-data' })
+    expect(devin).toEqual(['/private/xdg-data/devin/credentials.toml'])
+    expect(() => descriptorOpaqueRefsForEnvironment(descriptorOf('codex'), { CODEX_HOME: 'relative-state' }, home))
+      .toThrow('CODEX_HOME must be an absolute path')
   });
 
   it('descriptorDeclaresAuthRefs：opaqueRefs/envRefs 任一非空即声明；无 descriptor 归 false', () => {
@@ -486,7 +493,7 @@ describe('runtime descriptor（数据面钉版 + 绑定解析）', () => {
 
   it('runtime 参与 probe 缓存键（descriptor 绑定变化必须重探）', () => {
     const base = acpProbeConfigKey(devinAgent);
-    expect(JSON.parse(base)).toEqual({ command: 'devin', args: ['acp'], envKeys: [], runtime: null });
+    expect(JSON.parse(base)).toEqual({ command: 'devin', args: ['acp'], envKeys: [], runtime: null, mcpFingerprint: '4f53cda18c2baa0c' });
     expect(acpProbeConfigKey({ ...devinAgent, runtime: 'devin' })).not.toBe(base);
     expect(acpProbeConfigKey({ ...devinAgent, runtime: 'devin' })).not.toBe(acpProbeConfigKey({ ...devinAgent, runtime: 'claude' }));
     expect(acpProbeConfigKey({ ...devinAgent, runtime: 'devin' })).toBe(acpProbeConfigKey({ ...devinAgent, runtime: 'devin' }));
@@ -638,8 +645,8 @@ describe('纯函数：registration facts / probe 配置 hash', () => {
  // 边界：runtime 是 descriptor 绑定（变了则 ref 集合变），进 probe 缓存键；
  // 键形状恰为 {command, args, envKeys, runtime}（envKeys 为排序后的键名数组，不含值；
     // runtime 缺席归 null）
-    expect(JSON.parse(base)).toEqual({ command: 'devin', args: ['acp'], envKeys: [], runtime: null });
-    expect(JSON.parse(withEnv)).toEqual({ command: 'devin', args: ['acp'], envKeys: ['A', 'B'], runtime: null });
+    expect(JSON.parse(base)).toEqual({ command: 'devin', args: ['acp'], envKeys: [], runtime: null, mcpFingerprint: '4f53cda18c2baa0c' });
+    expect(JSON.parse(withEnv)).toEqual({ command: 'devin', args: ['acp'], envKeys: ['A', 'B'], runtime: null, mcpFingerprint: '4f53cda18c2baa0c' });
   });
 });
 

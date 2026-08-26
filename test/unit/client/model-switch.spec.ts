@@ -93,9 +93,6 @@ function makeLiveAgent(spec: FakeAgentSpec = {}) {
     get contextUsage() {
       return null
     },
-    get workspaceWriteSupport() {
-      return 'supported' as const
-    },
     get continuityState() {
       return { status: 'ok' as const, cause: null, detail: null }
     },
@@ -501,9 +498,7 @@ describe('dshAcp/options stale 快照（冷启动）', () => {
       ],
       currentModeId: 'plan',
       capabilities: null,
-      sandbox: null,
       continuity: { status: 'ok', cause: null, detail: null },
-      workspaceWrite: 'supported',
       contextUsage: null,
       freshness: 'stale',
       editable: false,

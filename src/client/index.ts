@@ -72,6 +72,7 @@ import {
   isSameBackendSelection,
   isNativeToNativeSelection,
   failClosedGroupsForUnavailableProbe,
+  isAcpProvider,
 } from './data/selector-logic.ts'
 import type { ModelDirectoryState, PickerModelSelection, PickerTranslate } from './data/selector-logic.ts'
 // 复制壳（/model popup 行 + composer seat 组件 + picker 文案）收进
@@ -83,6 +84,8 @@ import type { PickerSelectOption } from './host-compat/model-picker/popup.ts'
 import { en as pickerEn, zh as pickerZh } from './host-compat/model-picker/selector-locales.ts'
 import { AcpToolRow } from './ui/AcpToolRow.ts'
 import { ACP_EXTERNAL_TOOL_NAME } from './data/tool-presentation.ts'
+import { createAcpPermissionInputDock } from './ui/AcpPermissionInputDock.ts'
+import { createAcpElicitationInputDock } from './ui/AcpElicitationInputDock.ts'
 
 /** Dictionary namespaces owned by this plugin ( panel / picker). */
 const NS = 'settings.acp'
@@ -191,13 +194,22 @@ export function apply(ctx: Context): void {
     beginModelSwitch: async (sessionId, request) => (await namespace()).beginModelSwitch(sessionId, request),
     commitModelSwitch: async (sessionId, request) => (await namespace()).commitModelSwitch(sessionId, request),
     rollbackModelSwitch: async (sessionId, request) => (await namespace()).rollbackModelSwitch(sessionId, request),
+    pendingPermissions: async (sessionId) => (await namespace()).pendingPermissions(sessionId),
+    answerPermission: async (sessionId, request) => (await namespace()).answerPermission(sessionId, request),
+    cancelPermission: async (sessionId, request) => (await namespace()).cancelPermission(sessionId, request),
+    pendingElicitations: async (sessionId) => (await namespace()).pendingElicitations(sessionId),
+    answerElicitation: async (sessionId, request) => (await namespace()).answerElicitation(sessionId, request),
+    cancelElicitation: async (sessionId, request) => (await namespace()).cancelElicitation(sessionId, request),
   }
+  const acpPermissionInputDock = createAcpPermissionInputDock(acpRemote)
+  const acpElicitationInputDock = createAcpElicitationInputDock(acpRemote)
 
   const controller = new AcpPanelController({ scope, settings: connection.api.settings, remote: acpRemote })
   ctx.effect(() => () => { controller.dispose() }, '@zaimokuza/dsh-acp-adapter: ACP panel controller')
 
   const panelWire: AcpSectionWire = {
     refreshHealth: (recheck) => { void controller.refreshHealth(recheck) },
+    refreshAgentHealth: (agentId) => { void controller.refreshAgentHealth(agentId) },
     saveAgent: (editingId, draft) => controller.saveAgent(editingId, draft),
     deleteAgent: (id) => controller.deleteAgent(id),
     countBoundSessions: (id) => controller.countBoundSessions(id),
@@ -299,12 +311,15 @@ export function apply(ctx: Context): void {
             const groups = probe.status === 'unavailable' || probe.state === null
               ? failClosedGroupsForUnavailableProbe(state.groups, state.current)
               : state.groups
-            return optionsOf({
+            const view = {
               current: state.current,
               routable: state.routable ?? false,
               groups: [...groups],
               failures: [...state.failures],
-            }, t, ...(probe.status === 'ok' && probe.state !== null ? [probe.state] : []))
+            }
+            return probe.status === 'ok' && probe.state !== null
+              ? optionsOf(view, t, probe.state, service.permissionPreset(session.sessionId) ?? null)
+              : optionsOf(view, t)
           },
           onSelect: async (option, session) => {
             if (sessions.subagentAddress(session.sessionId) !== undefined) {
@@ -337,6 +352,9 @@ export function apply(ctx: Context): void {
               const failure = await service.useInNewSession(session.sessionId, selection, name)
               if (failure !== undefined) throw new Error(failure)
               return
+            }
+            if (isAcpProvider(selection.provider)) {
+              await service.enableNativeAccess(session.sessionId)
             }
             await service.selectModel(session.sessionId, selection)
           },
@@ -372,6 +390,8 @@ export function apply(ctx: Context): void {
  // 同 provider ACP 选择经 ModelSwitchCoordinator 的持久事务
               // （service 内路由；native 走目录旧路径）
               select: (selection) => service.selectModel(sessionId, selection).then(() => true, () => false),
+              enableNativeAccess: () => service.enableNativeAccess(sessionId)
+                .then(() => undefined, (error: unknown) => error instanceof Error ? error.message : String(error)),
               setDefault: (selection) => service.setDefaultModel(selection),
               switchOption: (configId, value) => { void picker.live.switchOption(configId, value) },
               reloadLive: () => { picker.live.load().catch(() => { /* surfaced on the store */ }) },
@@ -417,6 +437,26 @@ export function apply(ctx: Context): void {
           backendOf: (sessionId: string) => service.backendOf(sessionId),
           liveFor: (sessionId: string) => service.pickerFor(sessionId).live,
         }),
+      ))
+    })
+
+    // ACP permission requests are interactive full-width rows above the
+    // composer. The input dock is the public slot for clickable prose; the
+    // ambient composer dock remains reserved for readouts such as context.
+    ctx.inject(['slots'], (scope) => {
+      const scopeSlots = scope.get('slots') as SlotsLike
+      scopeSlots.inject('conversation.input.dock', () => scopeSlots.register(
+        { name: 'conversation.input.dock', id: 'acp-permissions', order: -10, locale: NS },
+        acpPermissionInputDock,
+      ))
+    })
+    // Elicitation has its own fiber: a host drift or render failure in one
+    // interactive broker must not remove the other broker from the composer.
+    ctx.inject(['slots'], (scope) => {
+      const scopeSlots = scope.get('slots') as SlotsLike
+      scopeSlots.inject('conversation.input.dock', () => scopeSlots.register(
+        { name: 'conversation.input.dock', id: 'acp-elicitations', order: -9, locale: NS },
+        acpElicitationInputDock,
       ))
     })
 

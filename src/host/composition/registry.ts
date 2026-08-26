@@ -42,9 +42,9 @@ import {
   ACP_SETTINGS_NS,
   acpAgentIdFromRoute,
   acpRouteId,
+  descriptorOpaqueRefsForEnvironment,
   descriptorEnvRefValues,
   descriptorOf,
-  descriptorStagingSourcesOf,
   diffAcpAgentConfigs,
 } from '../../domain/session/agent-config.ts'
 import type { AcpAgentConfig, AcpAgentConfigChange, AcpAgentId, AcpBuiltinAgentTemplate, AcpResolvedAgent } from '../../domain/session/agent-config.ts'
@@ -53,9 +53,11 @@ import type { AcpMetricsLike } from '../../domain/observability/metrics.ts'
 import { AcpStubAdapter, acpProbeConfigKey } from './llm-stub.ts'
 import type { AcpProbeConfiner } from './llm-stub.ts'
 import { AcpSpawnPlanError, buildAcpAgentEnv, buildAcpSpawnPlan, stageOpaqueRefs } from '../../domain/policy/sandbox.ts'
+import { acpLaunchEnvironment } from '../../domain/session/launch-fingerprint.ts'
 import type { AcpSandboxProviderLike } from '../../domain/policy/sandbox.ts'
 import { ACP_SUBPROCESS_UNAVAILABLE_MESSAGE } from '../../runtime/process/subprocess.ts'
 import type { SubprocessSeamResolution } from '../../runtime/process/subprocess.ts'
+import { acpMcpServersOf } from '../../domain/session/mcp.ts'
 
 export { acpProbeConfigKey }
 
@@ -141,6 +143,7 @@ function agentConfigOf(id: string, raw: unknown): AcpAgentConfig {
   if (!isPlainObject(env) || !Object.values(env).every((value) => typeof value === 'string')) {
     throw new TypeError(`dsh-acp settings: agents.${id}.env must be a map of string values`)
   }
+  const mcpServers = acpMcpServersOf(raw['mcpServers'])
   const loginHint = raw['loginHint']
   if (loginHint !== undefined && typeof loginHint !== 'string') {
     throw new TypeError(`dsh-acp settings: agents.${id}.loginHint must be a string`)
@@ -158,6 +161,7 @@ function agentConfigOf(id: string, raw: unknown): AcpAgentConfig {
     command,
     args: [...args] as string[],
     env: { ...env } as Record<string, string>,
+    ...(mcpServers.length === 0 ? {} : { mcpServers }),
     ...(loginHint === undefined ? {} : { loginHint }),
     ...(runtime === undefined ? {} : { runtime: runtime as AcpAgentId }),
   }
@@ -224,6 +228,12 @@ export const acpSettingsSchema: AcpSettingsSchema = Object.assign(
               },
               args: { type: 'array', items: { type: 'string' }, default: [] },
               env: { type: 'object', additionalProperties: { type: 'string' }, default: {} },
+              mcpServers: {
+                type: 'array',
+                description: '显式传给 ACP session/new/load 的 MCP；不会自动复用 DSH MCP 注册表。stdio/http/sse 由 profile 自己声明。',
+                items: { type: 'object' },
+                default: [],
+              },
               loginHint: { type: 'string' },
               runtime: { enum: [...ACP_AGENT_IDS] },
             },
@@ -312,8 +322,8 @@ function isUnloading(ctx: Context): boolean {
  * AcpSpawnPlanError 响亮进缓存；`sandbox` 缺席 → `buildAcpSpawnPlan` 的
  * sandbox-unavailable fail closed 进缓存。profile 绑定的 descriptor（边界，
  * `runtime` 字段或 id 回退）声明的 XDG 镜像 opaque refs 同档注入（认证状态注入：
- * probe 也要读登录态，否则模型目录为空）；本地状态 Agent 使用确定性 data home
- * （dataHomeEnv descriptor）改为：envRefs 按声明键名从 DSH 进程环境取值注入、
+ * probe 也要读登录态，否则模型目录为空）；本地状态 Agent 的健康探测使用一次性
+ * data home（dataHomeEnv descriptor）：envRefs 按声明键名从 DSH 进程环境取值注入、
  * dataHomeEnv 指向 disposable 根、opaqueRefs symlink 物化进 disposable 根。
  * 源缺失的 warn 走 `ctx.logger.warn`。
  */
@@ -346,10 +356,24 @@ function createProbeConfiner(ctx: Context): AcpProbeConfiner {
         onWarn(`failed to sweep a stale probe run directory (${error instanceof Error ? error.message : String(error)}); continuing`)
       }
     }
-    const probeRoot = fs.realpathSync.native(fs.mkdtempSync(path.join(probeBase, 'run-')))
     const descriptor = descriptorOf(agentId, config)
+    // Resolve opaque sources from the same effective native selector/profile
+    // environment used by sessions. The probe destination remains disposable.
+    const nativeEnvironment = await acpLaunchEnvironment({
+      config,
+      descriptor,
+      dataHomeStrategy: 'native',
+    })
+    const probeRoot = fs.realpathSync.native(fs.mkdtempSync(path.join(probeBase, 'run-')))
+    const cleanupProbeRoot = (): void => {
+      try {
+        fs.rmSync(probeRoot, { recursive: true, force: true })
+      } catch (error: unknown) {
+        onWarn(`failed to remove disposable probe root after setup failure (${error instanceof Error ? error.message : String(error)})`)
+      }
+    }
+    try {
     const env = await buildAcpAgentEnv({ entries: config.env })
-    let authPathRefs = descriptorStagingSourcesOf(descriptor)
     if (descriptor !== undefined) {
  // 边界：白名单 env 引用按声明键名取值注入（值绝不进日志/指纹）。
       Object.assign(env, descriptorEnvRefValues(descriptor, process.env))
@@ -362,13 +386,24 @@ function createProbeConfiner(ctx: Context): AcpProbeConfiner {
         if (overrideValue !== undefined && overrideValue !== '') env[overrideEnv] = overrideValue
       }
       if (descriptor.dataHomeEnv !== undefined) {
- // disposable data home：本地状态 agent 的数据根 = disposable run 目录本身；opaque
-        // refs symlink 物化进该根（机制同 authPathRefs staging），probe 结束整删。
+        // disposable data home：健康探测的数据根 = disposable run 目录本身；opaque
+        // refs 只以 symlink 物化进该根，probe 结束整删。
         env[descriptor.dataHomeEnv] = probeRoot
-        stageOpaqueRefs({ refs: descriptor.opaqueRefs, dataHome: probeRoot, onWarn })
-        // dataHomeEnv descriptor 的 opaqueRefs 不经 XDG 镜像位（stagingSources
-        // 对其恒返回 undefined，此处仅作显式不变量记录）。
-        authPathRefs = undefined
+        stageOpaqueRefs({
+          refs: descriptorOpaqueRefsForEnvironment(descriptor, nativeEnvironment) ?? [],
+          dataHome: probeRoot,
+          onWarn,
+        })
+      } else if (descriptor.opaqueRefs.length > 0) {
+        // Devin's XDG source is selected from the effective native env. Stage
+        // it directly under the probe's redirected XDG data directory so a
+        // custom absolute XDG_DATA_HOME is never forced through the default
+        // home-prefix mapper. The destination remains disposable.
+        stageOpaqueRefs({
+          refs: descriptorOpaqueRefsForEnvironment(descriptor, nativeEnvironment) ?? [],
+          dataHome: path.join(probeRoot, 'xdg-data'),
+          onWarn,
+        })
       }
     }
     const sandbox = holder.get('sandbox') as AcpSandboxProviderLike | undefined
@@ -379,15 +414,16 @@ function createProbeConfiner(ctx: Context): AcpProbeConfiner {
       argv,
       env,
       sandbox,
-      ...(authPathRefs === undefined ? {} : { authPathRefs }),
       onWarn,
     })
     return {
       plan,
       cwd: probeRoot,
-      cleanup: () => {
-        fs.rmSync(probeRoot, { recursive: true, force: true })
-      },
+      cleanup: cleanupProbeRoot,
+    }
+    } catch (error: unknown) {
+      cleanupProbeRoot()
+      throw error
     }
   }
 }

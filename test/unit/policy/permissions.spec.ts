@@ -13,8 +13,8 @@
 //     审计落盘失败（即便审批通过也 cancelled）
 //   - 审计断言：record 形状 {kind, time, data}、asked 含完整 options 与 toolCall
 //     快照（rawInput 落脱敏摘要 rawInputSummary + 哈希 rawInputHash，
-//     不落原文）、decided 含 outcome/optionId/approvalOutcome/
-// note（拒绝结案带 user-rejected 分类词；无 degraded 字段）、
+//     不落原文）、decided 含 outcome/optionId/selectedOptionKind/decisionVia；
+//     native fallback 才含 approvalOutcome，拒绝结案带 user-rejected 分类词；
 //     asked→approval→decided 顺序、同 turn 多次请求的记录顺序与 requestId 配对
 // - 断连语义：审批挂起且 turn 存活时桥忠实等待不伪造答复，abort 到达才
 // 结算 cancelled； always-only agent 每次请求都得 cancelled（不授权），
@@ -55,6 +55,7 @@ import {
   ACP_PERMISSION_NO_REJECT_ONCE_DISCLOSURE,
   buildPermissionReason,
   createAcpPermissionHandler,
+  InMemoryAcpPendingPermissionBroker,
   type AcpApprovalOutcome,
   type AcpApprovalRequest,
   type AcpApprovalRequester,
@@ -261,6 +262,53 @@ describe('events.ts 审计载荷构造器与类型守卫', () => {
     expect(reordered.toolCall.rawInputHash).toBe(data.toolCall.rawInputHash)
   })
 
+  it('asked sidecar 与 broker view 共同脱敏字符串内嵌的 command/header/env/option secret', async () => {
+    const rawInput = {
+      command: 'curl -H "Authorization: Bearer command-header-secret" --api-key command-option-secret',
+      nested: {
+        header: 'X-Api-Key: nested-header-secret',
+        env: 'TOKEN=nested-env-secret',
+        option: '--password nested-option-secret',
+      },
+    }
+    const data = createPermissionAskedAudit({
+      requestId: 'req-string-secret',
+      agentSessionId: 's',
+      toolCall: { toolCallId: 'tc-string-secret', rawInput },
+      options: [],
+    })
+    const summary = data.toolCall.rawInputSummary ?? ''
+    for (const secret of [
+      'command-header-secret',
+      'command-option-secret',
+      'nested-header-secret',
+      'nested-env-secret',
+      'nested-option-secret',
+    ]) expect(summary).not.toContain(secret)
+    expect(summary).toContain('<redacted>')
+
+    const broker = new InMemoryAcpPendingPermissionBroker()
+    const pending = broker.open({
+      requestId: 'pending-string-secret',
+      sessionId: 'dsh-string-secret',
+      acpSessionId: 's',
+      toolCall: { toolCallId: 'tc-string-secret', rawInput },
+      options: PERMISSION_OPTIONS,
+      reason: 'permission request',
+    })
+    const view = broker.list('dsh-string-secret')[0]
+    expect(view?.inputSummary).toBe(summary)
+    for (const secret of [
+      'command-header-secret',
+      'command-option-secret',
+      'nested-header-secret',
+      'nested-env-secret',
+      'nested-option-secret',
+    ]) expect(view?.inputSummary).not.toContain(secret)
+    broker.cancel('dsh-string-secret', 'pending-string-secret')
+    await expect(pending).resolves.toEqual({ outcome: 'cancelled' })
+  })
+
  it('decided 构造器：可选字段缺席而非 undefined（起无 degraded 字段；agentSessionId/toolCallId 必填）', () => {
     const cancelled = createPermissionDecidedAudit({
       requestId: 'req-1',
@@ -327,6 +375,7 @@ describe('createAcpPermissionHandler 结局映射', () => {
     expect(req?.reason).toContain('命令：echo hello')
     expect(req?.reason).not.toContain('/work/a.txt')
     expect(req?.reason).not.toContain(ACP_PERMISSION_NO_ALLOW_ONCE_DISCLOSURE)
+    expect(decidedDataOf(audit.records[1])).toMatchObject({ selectedOptionKind: 'allow_once', decisionVia: 'native-fallback' })
     expect(req?.reason).not.toContain(ACP_PERMISSION_NO_REJECT_ONCE_DISCLOSURE)
 
     expect(audit.records).toHaveLength(2)
@@ -1178,5 +1227,110 @@ describe('e2e：真 AcpClientConnection + permission-flow', () => {
       note: 'allow-once-unsupported',
     })
     expect('optionId' in decided).toBe(false)
+  })
+
+  it('插件 pending broker：完整 optionId 原样返回，且错误 optionId 不会结算', async () => {
+    const broker = new InMemoryAcpPendingPermissionBroker()
+    const result = broker.open({
+      requestId: 'pending-1',
+      sessionId: 'dsh-1',
+      acpSessionId: PARAMS.sessionId,
+      toolCall: PARAMS.toolCall,
+      options: PARAMS.options,
+      reason: 'permission request',
+      agentId: 'codex',
+      agentName: 'Codex',
+    })
+    expect(broker.list('dsh-1')[0]).toMatchObject({
+      agentId: 'codex',
+      agentName: 'Codex',
+      locations: [{ path: '…/work/a.txt' }],
+      inputSummary: '{"command":"echo hello"}',
+    })
+    expect(broker.list('dsh-1')[0]?.options).toEqual(PERMISSION_OPTIONS)
+    expect(() => broker.answer('dsh-1', 'pending-1', 'not-offered')).toThrow('was not offered')
+    broker.answer('dsh-1', 'pending-1', 'allow_always')
+    await expect(result).resolves.toEqual({ outcome: 'selected', optionId: 'allow_always' })
+    expect(broker.list('dsh-1')).toEqual([])
+  })
+
+  it('插件 pending broker：turn abort 与 session dispose 都结算 cancelled', async () => {
+    const broker = new InMemoryAcpPendingPermissionBroker()
+    const controller = new AbortController()
+    const aborted = broker.open({
+      requestId: 'pending-abort', sessionId: 'dsh-1', acpSessionId: PARAMS.sessionId,
+      toolCall: PARAMS.toolCall, options: PARAMS.options, reason: 'permission request', signal: controller.signal,
+    })
+    controller.abort()
+    await expect(aborted).resolves.toEqual({ outcome: 'cancelled' })
+
+    const disposed = broker.open({
+      requestId: 'pending-dispose', sessionId: 'dsh-2', acpSessionId: PARAMS.sessionId,
+      toolCall: PARAMS.toolCall, options: PARAMS.options, reason: 'permission request',
+    })
+    broker.cancelSession('dsh-2')
+    await expect(disposed).resolves.toEqual({ outcome: 'cancelled' })
+  })
+
+  it('observer lease：无 observer/过期 observer 走 DSH approval，活跃 observer 才等待插件 UI', async () => {
+    let clock = 100
+    const broker = new InMemoryAcpPendingPermissionBroker(() => clock)
+    const { deps, approval } = makeDeps()
+    const handler = createAcpPermissionHandler({ ...deps, dshSessionId: 'dsh-lease', pending: broker })
+
+    // No browser lease: the existing DSH approval service remains the precise fallback.
+    await expect(handler(PARAMS)).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'allow_once' } })
+    expect(approval.requests).toHaveLength(1)
+
+    broker.observe('dsh-lease')
+    clock += InMemoryAcpPendingPermissionBroker.OBSERVER_LEASE_MS + 1
+    await expect(handler(PARAMS)).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'allow_once' } })
+    expect(approval.requests).toHaveLength(2)
+
+    clock = 200
+    broker.observe('dsh-lease')
+    const pending = handler(PARAMS)
+    await waitFor(() => broker.list('dsh-lease').length === 1)
+    broker.answer('dsh-lease', broker.list('dsh-lease')[0]!.requestId, 'allow_always')
+    await expect(pending).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'allow_always' } })
+    expect(approval.requests).toHaveLength(2)
+    const acpUiDecision = decidedDataOf((deps.audit as FakeAuditChannel).records.at(-1))
+    expect(acpUiDecision).toMatchObject({ selectedOptionKind: 'allow_always', decisionVia: 'acp-ui', optionId: 'allow_always' })
+    expect('approvalOutcome' in acpUiDecision).toBe(false)
+  })
+
+  it('permission correlation：request 只有 toolCallId 时采用 translator 的累计 title/kind/location', async () => {
+    const { deps, approval, audit } = makeDeps()
+    const handler = createAcpPermissionHandler({
+      ...deps,
+      toolCallPresentation: () => ({ toolCallId: PARAMS.toolCall.toolCallId, title: 'Accumulated execute', kind: 'execute', locations: [{ path: '/safe/a.txt' }], inputSummary: { command: 'echo bounded' } }),
+    })
+    const { title: _title, kind: _kind, locations: _locations, rawInput: _rawInput, ...bareToolCall } = PARAMS.toolCall
+    const response = await handler({ ...PARAMS, toolCall: bareToolCall })
+    expect(response).toEqual({ outcome: { outcome: 'selected', optionId: 'allow_once' } })
+    expect(approval.requests[0]?.toolName).toBe('Accumulated execute')
+    expect(approval.requests[0]?.reason).toContain('echo bounded')
+    expect(askedDataOf(audit.records[0]).toolCall).toMatchObject({ title: 'Accumulated execute', kind: 'execute', locations: [{ path: '/safe/a.txt' }] })
+  })
+
+  it('pending broker：open 对已 abort signal 立即取消，重复 requestId 不覆盖旧 promise', async () => {
+    const broker = new InMemoryAcpPendingPermissionBroker()
+    const aborted = new AbortController()
+    aborted.abort()
+    await expect(broker.open({
+      requestId: 'already-aborted', sessionId: 'dsh-race', acpSessionId: PARAMS.sessionId,
+      toolCall: PARAMS.toolCall, options: PARAMS.options, reason: 'permission', signal: aborted.signal,
+    })).resolves.toEqual({ outcome: 'cancelled' })
+
+    const first = broker.open({
+      requestId: 'duplicate', sessionId: 'dsh-race', acpSessionId: PARAMS.sessionId,
+      toolCall: PARAMS.toolCall, options: PARAMS.options, reason: 'permission',
+    })
+    expect(() => broker.open({
+      requestId: 'duplicate', sessionId: 'dsh-race', acpSessionId: PARAMS.sessionId,
+      toolCall: PARAMS.toolCall, options: PARAMS.options, reason: 'permission',
+    })).toThrow('already active')
+    broker.cancel('dsh-race', 'duplicate')
+    await expect(first).resolves.toEqual({ outcome: 'cancelled' })
   })
 })

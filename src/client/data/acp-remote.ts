@@ -26,7 +26,13 @@ import type {
   AcpModelSwitchBeginResult,
   AcpModelSwitchResolveRequest,
   AcpOptionWrite,
+  AcpPendingPermissionView,
+  AcpPermissionAnswerRequest,
+  AcpElicitationAnswerRequest,
+  AcpPendingElicitationView,
 } from '../../contract/remote.ts'
+
+export type { AcpElicitationAnswerRequest, AcpPendingPermissionView, AcpPendingElicitationView } from '../../contract/remote.ts'
 
 /** Minimal `RemoteResult` face the glue consumes (message-only errors). */
 export type AcpRemoteResultLike<T> =
@@ -37,7 +43,8 @@ export type AcpRemoteResultLike<T> =
 export interface AcpRemoteLike {
   /**
    * 健康视图。省略 request = 只读缓存视图（面板打开不 spawn probe）；
- * `{recheck: true}` = 「重新检查」（收尾：host 丢弃 probe 缓存并重探）。
+ * `{recheck: true}` = 重探全部 provider；`{recheck: true, agentId}` = 只重探
+   * 指定 provider。
    */
   health(request?: AcpHealthRequest): Promise<AcpRemoteResultLike<AcpHealthView>>
   options(sessionId: string): Promise<AcpRemoteResultLike<AcpLiveOptionsSnapshot>>
@@ -49,6 +56,12 @@ export interface AcpRemoteLike {
   backendOf(sessionId: string): Promise<AcpRemoteResultLike<AcpBackendState>>
  /** 收尾：rebindBlank 逃生门（reconciliation-required 的可执行出路），返回复位后的选项快照。 */
   rebindBlank(sessionId: string): Promise<AcpRemoteResultLike<AcpLiveOptionsSnapshot>>
+  pendingPermissions?(sessionId: string): Promise<AcpRemoteResultLike<readonly AcpPendingPermissionView[]>>
+  answerPermission?(sessionId: string, request: AcpPermissionAnswerRequest): Promise<AcpRemoteResultLike<null>>
+  cancelPermission?(sessionId: string, request: Pick<AcpPermissionAnswerRequest, 'requestId'>): Promise<AcpRemoteResultLike<null>>
+  pendingElicitations?(sessionId: string): Promise<AcpRemoteResultLike<readonly AcpPendingElicitationView[]>>
+  answerElicitation?(sessionId: string, request: AcpElicitationAnswerRequest): Promise<AcpRemoteResultLike<null>>
+  cancelElicitation?(sessionId: string, request: Pick<AcpElicitationAnswerRequest, 'requestId'>): Promise<AcpRemoteResultLike<null>>
  /** 删除确认提示的 binding 计数（该 profile 被多少个既有会话引用；纯读）。 */
   boundSessions(agentId: string): Promise<AcpRemoteResultLike<AcpBoundSessionsView>>
   /**

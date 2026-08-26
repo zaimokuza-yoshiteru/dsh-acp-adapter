@@ -165,16 +165,6 @@ export const ACP_FORK_BLANK_NOTE =
   '此会话由 DSH 历史分支（fork）而来：上方历史仅作展示，ACP agent 侧上下文不继承——agent 从空白开始，对此前的对话内容一无所知。'
 
 /**
- * elicitation 降级说明文案（边界）：agent 请求结构化输入（elicitation/create），
- * 当前版本不支持（SDK 1.3.0 elicitation 面仍 unstable，不接 DSH interaction UI），
- * 已按协议标准变体 decline 应答。每会话最多一条（一次性闩锁见
- * ./agent.ts `elicitationDeclineNoted`）；每次都另有 sidecar `degradation` 审计
- * （code `elicitation-declined`）。
- */
-export const ACP_ELICITATION_DECLINED_NOTE =
-  'ACP agent 请求了结构化输入（elicitation）：当前版本不支持该交互，已按协议回绝（decline）。agent 会收到明确的拒绝答复并据此继续；若它反复请求，请检查该 agent 的版本或改用文本对话。'
-
-/**
  * 空响应说明文案（ACP_EMPTY_RESPONSE）：turn 正常完成（stopReason 非
  * error/cancel）但 agent 全程未产出任何可见输出（无正文、无工具调用、无工具
  * 结果）时，append 一条说明消息代替「静默的空 turn」——不产生空 assistant
@@ -1070,18 +1060,6 @@ export function appendForkBlankNote(session: Session, providerRoute: string, tur
  */
 export function appendResumeResidueNote(session: Session, providerRoute: string, turn: number, model?: string): void {
   appendAssistantNote(session, providerRoute, turn, ACP_RESUME_RESIDUE_NOTE, model)
-}
-
-/**
- * 追加 elicitation 降级说明（边界；每次 elicitation 请求均被 decline 后调用，
- * 每会话最多一条——闩锁在调用方 ./agent.ts）。
- * @param session - 已 prepare 的会话。
- * @param providerRoute - 当前路由（`acp-<id>`）。
- * @param turn - 当前 turn 号（请求到达时通常有活动 turn）。
- * @param model - 调用点已知的当前 ACP 模型；缺省/空串时走兜底链。
- */
-export function appendElicitationDeclinedNote(session: Session, providerRoute: string, turn: number, model?: string): void {
-  appendAssistantNote(session, providerRoute, turn, ACP_ELICITATION_DECLINED_NOTE, model)
 }
 
 /**

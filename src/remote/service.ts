@@ -46,7 +46,7 @@ import os from 'node:os'
 import type { Context } from '@deepseek-ai/cordis'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import type * as acp from '@agentclientprotocol/sdk'
-import { acpRouteId, acpAgentIdFromRoute, ACP_AGENT_ID_PATTERN } from '../domain/session/agent-config.ts'
+import { acpRouteId, ACP_AGENT_ID_PATTERN } from '../domain/session/agent-config.ts'
 import { acpProbeConfigKey, acpProbeFresh, acpVersionCompatibility, descriptorDeclaresAuthRefs, descriptorOf } from '../domain/session/agent-config.ts'
 import type { AcpAgentConfig, AcpAgentRuntimeDescriptor } from '../domain/session/agent-config.ts'
 import { ACP_MODE_OPTION_ID } from '../domain/session/agent-config.ts'
@@ -55,6 +55,8 @@ import type { AcpAgentStateProbeView } from '../domain/session/agent-state.ts'
 import { acpCapabilityMatrix } from '../domain/policy/capability-matrix.ts'
 import type { AcpSessionContinuityState } from '../domain/session/agent.ts'
 import type { AcpMetricsSnapshot } from '../domain/observability/metrics.ts'
+import type { AcpPendingPermissionBroker } from '../domain/policy/permissions.ts'
+import type { AcpElicitationAnswer, AcpElicitationBroker } from '../domain/policy/elicitation.ts'
 import { ACP_SUBPROCESS_UNAVAILABLE_MESSAGE } from '../runtime/process/subprocess.ts'
 import { abortAfter } from '../runtime/process/timeout.ts'
 import type { AcpSubprocessHandle, SubprocessSeam, SubprocessSeamResolution } from '../runtime/process/subprocess.ts'
@@ -76,6 +78,10 @@ import type {
   AcpModelSwitchResolveRequest,
   AcpModelSwitchView,
   AcpOptionWrite,
+  AcpPendingPermissionView,
+  AcpPermissionAnswerRequest,
+  AcpElicitationAnswerRequest,
+  AcpPendingElicitationView,
   AcpProbeCleanupView,
   AcpProviderHealth,
   AcpSandboxPosture,
@@ -246,11 +252,6 @@ export interface AcpLiveAgentFace {
   readonly contextUsage: AcpContextUsageView | null
  /** 连续性闩锁状态（直通进快照的 `continuity` 字段）。 */
   readonly continuityState: AcpSessionContinuityState
-  /**
- * workspace-write 沙箱档对本 profile 的可用性（边界；直通进快照的
-   * `workspaceWrite` 必填键）。本地状态 agent 恒 'unsupported'。
-   */
-  readonly workspaceWriteSupport: 'supported' | 'unsupported'
   setConfigOption(configId: string, value: string | boolean): Promise<void>
   setMode(modeId: string): Promise<void>
  /** 显式放弃旧 ACP 上下文并重开全新 ACP 会话（仅 idle，错误原样传播）。 */
@@ -394,6 +395,11 @@ export interface AcpRemoteServiceDeps {
    * host/factory/agent-loop.ts。
    */
   snapshotFingerprint?: (sessionId: string) => Promise<string | undefined>
+  /** Plugin-owned pending permission broker (complete ACP option vocabulary). */
+  pendingPermissions?: AcpPendingPermissionBroker
+  pendingElicitations?: AcpElicitationBroker
+  /** Whether the DSH durable attachment service is mounted for ACP image input. */
+  imageInputAvailable?: boolean
 }
 
 // ---------- 缺省实现：executable / version（全经宿主 subprocess seam） ----------
@@ -495,6 +501,9 @@ interface ResolvedDeps {
   readonly optionSnapshotStore: NonNullable<AcpRemoteServiceDeps['optionSnapshotStore']> | null
  /** 缺省 null（fingerprintChanged 恒 false）。 */
   readonly snapshotFingerprint: ((sessionId: string) => Promise<string | undefined>) | null
+  readonly pendingPermissions: AcpPendingPermissionBroker | null
+  readonly pendingElicitations: AcpElicitationBroker | null
+  readonly imageInputAvailable: boolean
 }
 
 /**
@@ -554,28 +563,88 @@ export class AcpRemoteService extends TypertRemoteService {
       modelSwitchStore: deps.modelSwitchStore ?? null,
       optionSnapshotStore: deps.optionSnapshotStore ?? null,
       snapshotFingerprint: deps.snapshotFingerprint ?? null,
+      pendingPermissions: deps.pendingPermissions ?? null,
+      pendingElicitations: deps.pendingElicitations ?? null,
+      imageInputAvailable: deps.imageInputAvailable ?? false,
     }
   }
 
  /** 在飞切换闩锁（sessionId → 在飞操作；并发点击/重复投递的进程内第一道闸）。 */
   private readonly modelSwitchInflight = new Map<string, { readonly operationId: string; readonly targetModel: string }>()
 
+  /** List complete, session-scoped ACP permission requests awaiting a client answer. */
+  @Remote
+  pendingPermissions(sessionId: string): readonly AcpPendingPermissionView[] {
+    if (this.resolved.pendingPermissions === null) throw new Error('ACP permission interaction is unavailable on this host')
+    this.resolved.pendingPermissions.observe(sessionId)
+    return this.resolved.pendingPermissions.list(sessionId)
+  }
+
+  /** Return the exact Agent-provided optionId; no once/always compression occurs. */
+  @Remote
+  answerPermission(sessionId: string, request: AcpPermissionAnswerRequest): null {
+    if (this.resolved.pendingPermissions === null) throw new Error('ACP permission interaction is unavailable on this host')
+    this.resolved.pendingPermissions.answer(sessionId, request.requestId, request.optionId)
+    return null
+  }
+
+  /** Explicitly cancel one pending ACP permission request. */
+  @Remote
+  cancelPermission(sessionId: string, request: { readonly requestId: string }): null {
+    if (this.resolved.pendingPermissions === null) throw new Error('ACP permission interaction is unavailable on this host')
+    this.resolved.pendingPermissions.cancel(sessionId, request.requestId)
+    return null
+  }
+
+  @Remote
+  pendingElicitations(sessionId: string): readonly AcpPendingElicitationView[] {
+    if (this.resolved.pendingElicitations === null) throw new Error('ACP elicitation interaction is unavailable on this host')
+    return this.resolved.pendingElicitations.list(sessionId).map((item) => item as unknown as AcpPendingElicitationView)
+  }
+
+  @Remote
+  answerElicitation(sessionId: string, request: AcpElicitationAnswerRequest): null {
+    if (this.resolved.pendingElicitations === null) throw new Error('ACP elicitation interaction is unavailable on this host')
+    this.resolved.pendingElicitations.answer(sessionId, request as AcpElicitationAnswer)
+    return null
+  }
+
+  @Remote
+  cancelElicitation(sessionId: string, request: { readonly requestId: string }): null {
+    if (this.resolved.pendingElicitations === null) throw new Error('ACP elicitation interaction is unavailable on this host')
+    this.resolved.pendingElicitations.cancel(sessionId, request.requestId)
+    return null
+  }
+
   /**
  * 全部 provider 的健康行（executable/version/probe 快照收窄透传 + 五态
-   * `state`）+ 沙箱/指标/活体会话连续性事实。`request.recheck === true`（面板
- * 「重新检查」按钮， 收尾接线）时先丢弃该 provider 的 probe 缓存再触发一次
-   * 重探（listModels——probe 自身有界，失败落负缓存即失败事实），健康行按新鲜
-   * 快照产出；缺省只读缓存视图（面板打开不 spawn probe）。
+ * `state`）+ 沙箱/指标/活体会话连续性事实。`request.recheck === true` 时重探：
+   * `agentId` 在场只检查并返回该 provider，缺席检查并返回全部。这样卡片操作
+   * 不会为无关 Agent 运行 executable/version/protocol probe；缺省只读缓存视图
+   * （面板打开不 spawn probe）。
    */
   @Remote
   async health(request?: AcpHealthRequest): Promise<AcpHealthView> {
-    const entries = [...this.resolved.registry.agents().entries()].sort(([left], [right]) => left.localeCompare(right))
+    const allEntries = [...this.resolved.registry.agents().entries()].sort(([left], [right]) => left.localeCompare(right))
     // 五态派生的宿主结构门输入（每行共享同一事实；deps 缺省恒 true）
     const hostCompatible = this.resolved.hostCompatible()
     const recheck = request?.recheck === true
+    const targetAgentId = request?.agentId
+    if (targetAgentId !== undefined) {
+      if (!recheck) throw new Error('dsh-acp: health agentId requires recheck=true')
+      if (!ACP_AGENT_ID_PATTERN.test(targetAgentId)) {
+        throw new Error(`dsh-acp: invalid health agent id ${JSON.stringify(targetAgentId)}`)
+      }
+      if (!allEntries.some(([id]) => id === targetAgentId)) {
+        throw new Error(`dsh-acp: unknown ACP agent ${JSON.stringify(targetAgentId)}`)
+      }
+    }
+    const entries = targetAgentId === undefined
+      ? allEntries
+      : allEntries.filter(([id]) => id === targetAgentId)
     const providers: AcpProviderHealth[] = await Promise.all(
       entries.map(async ([id, config]) => {
-        if (recheck) {
+        if (recheck && (targetAgentId === undefined || targetAgentId === id)) {
  // 「重新检查」强制丢弃 probe cache 并重探（条文的接线路径）；重探
           // 失败不抛出——失败条目落缓存，下方照常按新鲜度产出 unavailable 行。
           const routeId = acpRouteId(id)
@@ -601,7 +670,7 @@ export class AcpRemoteService extends TypertRemoteService {
           loginHint: config.loginHint ?? null,
           executable,
           version,
-          probe: probeRow(snapshot, this.resolved.sandboxPosture, descriptor),
+          probe: probeRow(snapshot, this.resolved.sandboxPosture, descriptor, this.resolved.imageInputAvailable, config),
           // registry 的 agents map 经 settings schema 校验（非法值根本写不进来），configValid 恒 true
           state: deriveAcpAgentState({
             hostCompatible,
@@ -1101,10 +1170,7 @@ export class AcpRemoteService extends TypertRemoteService {
       configOptions: contractConfigOptionsOf(agent.configOptions),
       currentModeId: agent.currentModeId ?? null,
       capabilities: capabilityFactsOf(agent.agentCapabilities),
-      sandbox: this.resolved.sandboxPosture,
       continuity,
- // 边界：workspace-write 可用性直通（profile 绑定决定；创建门在 startSession）
-      workspaceWrite: agent.workspaceWriteSupport,
  // 上下文占用直通（used/size/percent/cost 已是收窄形状，无映射）。
       contextUsage: agent.contextUsage,
       freshness: 'live',
@@ -1118,9 +1184,7 @@ export class AcpRemoteService extends TypertRemoteService {
   /**
  * 冷启动 stale 快照：sidecar last-known 快照的收窄副本。capabilities 归
    * null（无握手事实）；continuity 如实归 ok——连续性闩锁是活体对账概念，
-   * 冷启动无活体可判，resume 路径自有对账门（不拿快照冒充）；workspaceWrite
-   * 以 binding provider → descriptor 同判定源重组（与 AcpAgent.workspaceWriteSupport
-   * 同口径），判不出时归 'supported'（与非本地 agent 的缺省一致）。
+   * 冷启动无活体可判，resume 路径自有对账门（不拿快照冒充）。
    */
   private async staleSnapshot(sessionId: string): Promise<AcpLiveOptionsSnapshot> {
     const store = this.resolved.optionSnapshotStore
@@ -1135,9 +1199,7 @@ export class AcpRemoteService extends TypertRemoteService {
       configOptions: contractConfigOptionsFromSnapshot(snapshot),
       currentModeId: snapshot.currentModeId,
       capabilities: null,
-      sandbox: this.resolved.sandboxPosture,
       continuity: { status: 'ok', cause: null, detail: null },
-      workspaceWrite: await this.staleWorkspaceWrite(sessionId),
       contextUsage: null,
       freshness: 'stale',
       editable: false,
@@ -1146,16 +1208,6 @@ export class AcpRemoteService extends TypertRemoteService {
     }
   }
 
-  /** stale 快照的 workspace-write 判定（binding provider → descriptor semanticState；判不出归 'supported'）。 */
-  private async staleWorkspaceWrite(sessionId: string): Promise<'supported' | 'unsupported'> {
-    const facts = this.resolved.backendFacts
-    const provider = facts === null ? undefined : await facts.readBindingProvider(sessionId).catch(() => undefined)
-    const agentId = provider === undefined ? undefined : acpAgentIdFromRoute(provider)
-    if (agentId === undefined) return 'supported'
-    const config = this.resolved.registry.agents().get(agentId)
-    if (config === undefined) return 'supported'
-    return descriptorOf(agentId, config)?.semanticState === 'local' ? 'unsupported' : 'supported'
-  }
 }
 
 /** 新鲜 probe 条目 → 五态派生的最小视图（ok 留目录事实，error 留分流 kind）。 */
@@ -1176,7 +1228,7 @@ function contractCleanupOf(cleanup: { readonly close: string; readonly delete: s
   return { close, delete: del, message: cleanup.message ?? null }
 }
 
-function probeRow(snapshot: AcpProbeSnapshotLike | undefined, sandboxPosture: AcpSandboxPosture | null, descriptor: AcpAgentRuntimeDescriptor | undefined): AcpProviderHealth['probe'] {  if (snapshot === undefined) return { status: 'never', at: null }
+function probeRow(snapshot: AcpProbeSnapshotLike | undefined, sandboxPosture: AcpSandboxPosture | null, descriptor: AcpAgentRuntimeDescriptor | undefined, imageInputAvailable: boolean, config?: AcpAgentConfig): AcpProviderHealth['probe'] {  if (snapshot === undefined) return { status: 'never', at: null }
   const { result, at } = snapshot
   if (result.kind === 'ok') {
     const capabilities = capabilityFactsOf(result.agentCapabilities)
@@ -1200,7 +1252,11 @@ function probeRow(snapshot: AcpProbeSnapshotLike | undefined, sandboxPosture: Ac
       versionCompatibility: acpVersionCompatibility(descriptor, result.agentInfo?.version),
  // 端到端能力矩阵（广告 × adapter path × sandbox posture；纯函数
       // 直通，形状与 contract `AcpCapabilityMatrixRow` 结构一致，无映射）
-      matrix: acpCapabilityMatrix(capabilities, sandboxPosture),
+      matrix: acpCapabilityMatrix(capabilities, sandboxPosture, {
+        imageInput: imageInputAvailable,
+        mcpHttpConfigured: config?.mcpServers?.some((server) => server.type === 'http') === true,
+        mcpSseConfigured: config?.mcpServers?.some((server) => server.type === 'sse') === true,
+      }),
     }
   }
   return {

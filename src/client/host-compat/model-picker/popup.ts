@@ -76,7 +76,12 @@ export function rowId(providerId: string, modelId: string): string {
  * （稳定排序，其余组保持目录原序）。：跨 backend 行附壳内确认框文案
  * （壳在 onSelect 前强制勾选确认；取消不触发 onSelect，默认模型不变）。
  */
-export function optionsOf(directory: SessionModelsView, t: PickerTranslate, backend?: PickerBackendState): PickerSelectOption[] {
+export function optionsOf(
+  directory: SessionModelsView,
+  t: PickerTranslate,
+  backend?: PickerBackendState,
+  permissionPreset?: string | null,
+): PickerSelectOption[] {
   const rows: PickerSelectOption[] = []
   const pinnedProvider = backend !== undefined && backend.state === 'established' && isAcpProvider(backend.provider)
     ? backend.provider
@@ -92,6 +97,11 @@ export function optionsOf(directory: SessionModelsView, t: PickerTranslate, back
       backend,
       directory.current.provider,
     )
+    // 第四参缺席 = 纯目录构建器（保持上游兼容）；显式 null =
+    // 宿主权限投影缺席，仍需 fail-safe 风险确认。
+    const needsNativeAccess = permissionPreset !== undefined
+      && isAcpProvider(group.id)
+      && permissionPreset !== 'danger-full-access'
     for (const model of group.models) {
       const base = model.description !== undefined
         ? `[${tag}] ${group.name} · ${model.description}`
@@ -102,14 +112,23 @@ export function optionsOf(directory: SessionModelsView, t: PickerTranslate, back
         detail: crossBackend ? t('option.crossBackend', { detail: base }) : base,
         ...(directory.current.provider === group.id && directory.current.model === model.id
           ? { active: true } : {}),
-        ...(crossBackend ? {
-          crossBackend: true,
+        ...(crossBackend ? { crossBackend: true } : {}),
+        ...(crossBackend || needsNativeAccess ? {
           confirmation: {
-            title: t('cross.popup.title'),
-            description: t('cross.popup.description', { model: model.name }),
-            acknowledgeLabel: t('cross.popup.acknowledge'),
-            cancelLabel: t('cross.popup.cancel'),
-            confirmLabel: t('cross.popup.confirm'),
+            title: t(needsNativeAccess ? 'native.popup.title' : 'cross.popup.title'),
+            description: t(
+              needsNativeAccess
+                ? crossBackend ? 'native.popup.crossDescription' : 'native.popup.description'
+                : 'cross.popup.description',
+              { model: model.name },
+            ),
+            acknowledgeLabel: t(needsNativeAccess ? 'native.acknowledge' : 'cross.popup.acknowledge'),
+            cancelLabel: t(needsNativeAccess ? 'native.cancel' : 'cross.popup.cancel'),
+            confirmLabel: t(
+              needsNativeAccess
+                ? crossBackend ? 'native.confirmCrossButton' : 'native.confirmButton'
+                : 'cross.popup.confirm',
+            ),
           },
         } : {}),
       })
