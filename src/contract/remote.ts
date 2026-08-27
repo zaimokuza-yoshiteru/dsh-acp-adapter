@@ -71,15 +71,6 @@ export interface AcpProbeCleanupView {
   readonly message: string | null
 }
 
-/** 本平台 confined 档的沙箱强制级别事实（enforcement 透传）。 */
-export interface AcpSandboxPosture {
-  /** 平台标识（`process.platform` 值，如 darwin/win32）。 */
-  readonly platform: string
-  /** confined 档的 enforcement 预期：'full'（seatbelt/bwrap）| 'partial'（windows-acl 恒报）。 */
-  readonly enforcement: 'full' | 'partial'
-  /** partial 档已知残余风险文案；full 为 null。 */
-  readonly note: string | null
-}
 
 /**
  * 收窄的 ACP `AuthMethod`：每个变体都有的 id/name/description 三键；
@@ -212,7 +203,7 @@ export interface AcpProviderHealth {
         readonly versionCompatibility: 'pinned' | 'drifted' | 'unpinned' | null
         /**
  * 端到端能力矩阵：host 侧由 capabilities（广告事实）
-         * × adapter path × sandbox posture 计算（src/domain/policy/
+         * × adapter path 计算（src/domain/policy/
          * capability-matrix.ts）；capabilities 为 null 时矩阵照常下发（广告列
          * 全 null）。UI 只许展示本矩阵的交集结论，不再直译广告布尔。
          */
@@ -227,10 +218,9 @@ export interface AcpProviderHealth {
       }
 }
 
-/** `health()` 的整包视图：provider 行 + 沙箱事实 + 指标快照（未接线各归 null）。 */
+/** `health()` 的整包视图：provider 行 + 指标快照（未接线各归 null）。 */
 export interface AcpHealthView {
   readonly providers: readonly AcpProviderHealth[]
-  readonly sandbox: AcpSandboxPosture | null
   readonly metrics: AcpMetricsSnapshotView | null
  /** 活体 ACP 会话的连续性清单（未接线/无活体会话归 null 或空数组，如实区分）。 */
   readonly liveSessions: readonly AcpLiveSessionContinuity[] | null
@@ -290,8 +280,13 @@ export interface AcpPendingPermissionView {
   readonly reason: string
   readonly agentId?: string
   readonly agentName?: string
-  readonly locations?: readonly { readonly path: string; readonly line?: number }[]
+  readonly locations?: readonly { readonly path: string; readonly displayPath?: string; readonly line?: number }[]
+  /** Total Agent locations and the number intentionally omitted from the bounded view. */
+  readonly locationCount?: number
+  readonly omittedLocationCount?: number
   readonly inputSummary?: string
+  /** Redacted, bounded command summary for execute requests. */
+  readonly command?: string
   readonly options: readonly AcpPermissionOptionView[]
   readonly createdAt: number
 }
@@ -405,9 +400,11 @@ export interface AcpHealthRequest {
 
 /**
  * `backendOf(sessionId)` 的应答（「backend 不可变」的 host 权威查询）。
- * - `'blank'`：尚无 backend 承诺——无活体 ACP agent、无 sidecar binding、日志无
- *   request/header。blank 会话的 current.provider 只是实时默认选择的影子（上游
- *   blank-follows-default 语义），不算定 backend，任何路由都还可选。
+ * - `'blank'`：尚无 ACP backend 承诺——无活体 ACP agent、无 sidecar binding、日志无
+ *   request/header。若 DSH 已为该会话实例化 native wrapper，`current.provider` 会
+ *   暴露该事实；由于 rc.2 没有 live wrapper 替换 seam，跨到 ACP 会自动新建会话。
+ * - `'draft'`：空白会话已启动 ACP wrapper、可读取会话级配置，但首条 prompt 尚未
+ *   提交 ACP binding；同一 ACP profile 可原地选模型，跨 profile/native 会自动新建会话。
  * - `'established'`：backend 已锁定；`provider` 即路由 id（`acp-<id>` 前缀 =
  *   ACP profile，其余 = native）。executionBackend 的持久化真源：ACP 侧 =
  * sidecar binding（创建时即写）+ 日志 request/header（首 turn 落）；
@@ -415,6 +412,7 @@ export interface AcpHealthRequest {
  */
 export type AcpBackendState =
   | { readonly state: 'blank' }
+  | { readonly state: 'draft'; readonly provider: string }
   | { readonly state: 'established'; readonly provider: string }
 
 /**
@@ -440,6 +438,8 @@ export interface AcpLiveOptionsSnapshot {
   readonly capabilities: AcpCapabilityFacts | null
  /** 连续性闩锁状态（rebindBlank 的响应也携带复位后的快照）。 */
   readonly continuity: AcpSessionContinuity
+  /** Durable recovery state; healthy means prompts are allowed. */
+  readonly recovery: AcpRecoveryView
   /**
  * 最新已知 ACP 上下文占用（独立 context 统计；domain 真源是
    * src/protocol/v1/translate.ts `AcpContextUsageSnapshot`，host 侧直通映射）。
@@ -455,6 +455,26 @@ export interface AcpLiveOptionsSnapshot {
  /** 必填键：待定模型切换事务视图。 */
   readonly modelSwitch: AcpModelSwitchView
 }
+
+export type AcpRecoveryKind = 'healthy' | 'reconnect-required' | 'outcome-unknown' | 'reconciliation-required' | 'session-lost' | 'local-history-damaged' | 'resumed-unverified'
+
+/** Minimal recovery view used by the independent session recovery surface. */
+export interface AcpRecoveryView {
+  readonly dshSessionId: string
+  readonly kind: AcpRecoveryKind
+  readonly cause: string | null
+  readonly detail: string | null
+  readonly provider: string | null
+  readonly acpSessionId: string | null
+  readonly generation: number | null
+  readonly interruptedTurnId: string | null
+  readonly lastAttemptAt: number | null
+  readonly lastUserAction: string | null
+  readonly updatedAt: number
+}
+
+/** Explicit user decisions recorded by the recovery surface. */
+export type AcpRecoveryUserAction = 'retry-original' | 'rebind-blank' | 'new-session'
 
 /** Agent 明确提供的累计成本事实（wire 副本；amount/currency 原样透传，不换算不聚合）。 */
 export interface AcpContextUsageCostView {

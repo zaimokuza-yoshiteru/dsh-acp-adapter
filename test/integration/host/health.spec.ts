@@ -16,7 +16,7 @@
 //   - health()：全绿（executable+version+probe ok 含 modelCount/authMethods/loginHint）/
 //     缺命令（executable=false → version=null 且 --version 不发起）/probe 超时态
 // （failureKind+message 透传）/从未 probe（status 'never'）；：
-// sandboxPosture 注入时视图携带 sandbox enforcement 事实、缺省归 null；：
+// health 视图只暴露 Agent probe 与可观测性事实；不会宣称宿主隔离能力。
 //     metricsSnapshot 接线时视图顶层 metrics 为快照原值、缺省归 null；
 // 密钥边界钉——agent 配置的 env 键名与值（含疑似密钥）绝不出现在视图里；
 // 每行携带五态 state（deriveAcpAgentState），Remote 面不再暴露 authenticate
@@ -104,7 +104,7 @@ const MODE_OPTION: acp.SessionConfigOption = {
 const FAST_OPTION: acp.SessionConfigOption = { id: 'fast', type: 'boolean', name: 'Fast', currentValue: false };
 
 /** 必填键的 live 恒值（freshness 'live' / editable / 指纹未漂移 / 无待定切换）。 */
-const LIVE_FIXED = { freshness: 'live', editable: true, fingerprintChanged: false, modelSwitch: { status: 'idle' } } as const;
+const LIVE_FIXED = { freshness: 'live', editable: true, fingerprintChanged: false, modelSwitch: { status: 'idle' }, recovery: { dshSessionId: 'sess-1', kind: 'healthy', cause: null, detail: null, provider: null, acpSessionId: null, generation: null, interruptedTurnId: null, lastAttemptAt: null, lastUserAction: null, updatedAt: 0 } } as const;
 
 /** 未知 type 选项（协议：未知类型忽略；写入必须被拒；出栈收窄时丢弃）。 */
 const EXOTIC_OPTION = { id: 'temperature', type: 'slider', name: 'Temperature', currentValue: 'low' } as unknown as acp.SessionConfigOption;
@@ -133,7 +133,7 @@ function createFakeLiveAgent(overrides: FakeLiveAgentOverrides = {}) {
         : (overrides.configOptions ?? [structuredClone(MODEL_OPTION), structuredClone(MODE_OPTION)]),
     currentModeId: overrides.currentModeId === null ? undefined : (overrides.currentModeId ?? ('code' as string | undefined)),
   };
-  const calls = { setConfigOption: [] as Array<[string, string | boolean]>, setMode: [] as string[], rebindBlank: 0 };
+  const calls = { prepare: 0, setConfigOption: [] as Array<[string, string | boolean]>, setMode: [] as string[], rebindBlank: 0, reconnectOriginal: 0, recordRecoveryAction: [] as string[] };
   const face: AcpLiveAgentFace = {
     providerRoute: 'acp-test',
     get status() {
@@ -154,8 +154,20 @@ function createFakeLiveAgent(overrides: FakeLiveAgentOverrides = {}) {
     get continuityState() {
       return { status: 'ok' as const, cause: null, detail: null };
     },
+    prepare() {
+      calls.prepare += 1;
+      return Promise.resolve();
+    },
     rebindBlank() {
       calls.rebindBlank += 1;
+      return Promise.resolve();
+    },
+    reconnectOriginal() {
+      calls.reconnectOriginal += 1;
+      return Promise.resolve();
+    },
+    recordRecoveryAction(action) {
+      calls.recordRecoveryAction.push(action);
       return Promise.resolve();
     },
     setConfigOption(configId, value) {
@@ -187,8 +199,6 @@ interface DepsParts {
   useDefaults?: boolean;
  /** seam 解析产物（useDefaults 时决定缺省实现形态）。 */
   subprocess?: AcpRemoteServiceDeps['subprocess'];
- /** 本平台沙箱 enforcement 事实（不注入 = 视图 sandbox 字段为 null）。 */
-  sandboxPosture?: AcpRemoteServiceDeps['sandboxPosture'];
  /** 内存指标快照导出（不注入 = 视图 metrics 字段为 null）。 */
   metricsSnapshot?: AcpRemoteServiceDeps['metricsSnapshot'];
  /** backendOf 的事实源假件（不注入 = backendOf 响亮拒绝「未接线」）。 */
@@ -216,7 +226,6 @@ function buildService(parts: DepsParts) {
         }),
     ...(parts.hostCompatible === undefined ? {} : { hostCompatible: parts.hostCompatible }),
     ...(parts.subprocess === undefined ? {} : { subprocess: parts.subprocess }),
-    ...(parts.sandboxPosture === undefined ? {} : { sandboxPosture: parts.sandboxPosture }),
     ...(parts.metricsSnapshot === undefined ? {} : { metricsSnapshot: parts.metricsSnapshot }),
     ...(parts.backendFacts === undefined ? {} : { backendFacts: parts.backendFacts }),
     ...(parts.bindingFacts === undefined ? {} : { bindingFacts: parts.bindingFacts }),
@@ -319,7 +328,7 @@ describe('AcpRemoteService 注册', () => {
     expect(service.typertRemote.service).toBe(service);
   });
 
- it('生成物恰好承载十五条 invocation（模型/会话、ACP 权限与 elicitation；authenticate 移出 Remote 面）', () => {
+ it('生成物恰好承载十六条 invocation（模型/会话、ACP 权限与 elicitation；authenticate 移出 Remote 面）', () => {
     const manifest = TYPERT as {
       package: string;
       invocations: Array<{ id: string; parameters: Array<{ name: string }>; cancellation?: { parameter: string } }>;
@@ -339,9 +348,33 @@ describe('AcpRemoteService 注册', () => {
       '@zaimokuza/dsh-acp-adapter#dshAcp/pendingElicitations',
       '@zaimokuza/dsh-acp-adapter#dshAcp/pendingPermissions',
       '@zaimokuza/dsh-acp-adapter#dshAcp/rebindBlank',
+      '@zaimokuza/dsh-acp-adapter#dshAcp/reconnectOriginal',
+      '@zaimokuza/dsh-acp-adapter#dshAcp/recordRecoveryAction',
       '@zaimokuza/dsh-acp-adapter#dshAcp/rollbackModelSwitch',
       '@zaimokuza/dsh-acp-adapter#dshAcp/setOption',
     ]);
+  });
+});
+
+describe('dshAcp/reconnectOriginal', () => {
+  it('调用原 ACP 会话重连动作并返回 recovery 快照', async () => {
+    const { registry } = createFakeRegistry({ devin: DEVIN }, {});
+    const agent = createFakeLiveAgent();
+    const { service } = buildService({ registry, liveAgents: new Map([['sess-1', agent.face]]) });
+    const snapshot = await service.reconnectOriginal('sess-1');
+    expect(agent.calls.reconnectOriginal).toBe(1);
+    expect(snapshot.recovery.kind).toBe('healthy');
+  });
+});
+
+describe('dshAcp/recordRecoveryAction', () => {
+  it('records an explicit recovery decision without changing the execution route', async () => {
+    const { registry } = createFakeRegistry({ devin: DEVIN }, {});
+    const agent = createFakeLiveAgent();
+    const { service } = buildService({ registry, liveAgents: new Map([['sess-1', agent.face]]) });
+    const snapshot = await service.recordRecoveryAction('sess-1', 'new-session');
+    expect(agent.calls.recordRecoveryAction).toEqual(['new-session']);
+    expect(snapshot.recovery.kind).toBe('healthy');
   });
 });
 
@@ -373,9 +406,8 @@ describe('dshAcp/health', () => {
  // 清理事实（三态 + message 收窄为 null）与 capability hash 透传
             cleanup: { close: 'not-advertised', delete: 'done', message: null },
             capabilityHash: 'abcdef0123456789',
- // 端到端能力矩阵（probe-ok 必填键；未注入 sandboxPosture 时
-            // sandbox 行 degraded「未接线」——期望直接用被测纯函数计算，避免复述）
-            matrix: acpCapabilityMatrix(PROBE_CAPABILITY_FACTS, null),
+ // 端到端能力矩阵（probe-ok 必填键；直接用被测纯函数计算，避免复述）
+            matrix: acpCapabilityMatrix(PROBE_CAPABILITY_FACTS),
  // 边界：fake probe 快照未带 protocolVersion → null 词表；devin
             // descriptor 无版本 pin → versionPolicy 双 null、compatibility 'unpinned'
             protocolVersion: null,
@@ -384,8 +416,7 @@ describe('dshAcp/health', () => {
           },
         },
       ],
- // 未注入 sandboxPosture 时如实归 null；：未接线 metricsSnapshot 时如实归 null
-      sandbox: null,
+ // 未接线 metricsSnapshot 时如实归 null
       metrics: null,
  // 未注入 listLiveSessions 时如实归 null（区分「未接线」与「无活体会话」）
       liveSessions: null,
@@ -445,7 +476,6 @@ describe('dshAcp/health', () => {
           },
         },
       ],
-      sandbox: null,
       metrics: null,
  // 未注入 listLiveSessions 时如实归 null（区分「未接线」与「无活体会话」）
       liveSessions: null,
@@ -477,7 +507,6 @@ describe('dshAcp/health', () => {
           },
         },
       ],
-      sandbox: null,
       metrics: null,
  // 未注入 listLiveSessions 时如实归 null（区分「未接线」与「无活体会话」）
       liveSessions: null,
@@ -536,35 +565,15 @@ describe('dshAcp/health', () => {
     expect(view.providers[0]?.state).toBe('saved-unverified');
   });
 
- it(' enforcement 透传：注入 sandboxPosture 时 health 视图携带 sandbox 事实（win32 partial 形态）', async () => {
-    const { registry } = createFakeRegistry({ devin: DEVIN }, {});
-    const { service } = buildService({
-      registry,
-      sandboxPosture: {
-        platform: 'win32',
-        enforcement: 'partial',
-        note: 'windows-acl 恒为 partial enforcement（Everyone 保留 + NTFS 硬链接别名）',
-      },
-    });
-    const view = await service.health();
-    expect(view.sandbox).toEqual({
-      platform: 'win32',
-      enforcement: 'partial',
-      note: 'windows-acl 恒为 partial enforcement（Everyone 保留 + NTFS 硬链接别名）',
-    });
-  });
-
- it('能力矩阵随 probe-ok 行下发：图片需 Agent 广告与 attachment seam 同时满足；probe sandbox 不冒充正式会话能力', async () => {
-    const posture = { platform: 'win32', enforcement: 'partial' as const, note: 'windows-acl 恒为 partial enforcement' };
+ it('能力矩阵随 probe-ok 行下发：图片需 Agent 广告与 attachment seam 同时满足', async () => {
     const { registry } = createFakeRegistry({ devin: DEVIN }, { 'acp-devin': OK_SNAPSHOT });
-    const { service } = buildService({ registry, sandboxPosture: posture, imageInputAvailable: true });
+    const { service } = buildService({ registry, imageInputAvailable: true });
     const view = await service.health();
     const probe = view.providers[0]?.probe;
     if (probe?.status !== 'ok') throw new Error('expected an ok probe row');
-    expect(probe.matrix).toEqual(acpCapabilityMatrix(PROBE_CAPABILITY_FACTS, posture, { imageInput: true }));
+    expect(probe.matrix).toEqual(acpCapabilityMatrix(PROBE_CAPABILITY_FACTS, { imageInput: true }));
     const imageRow = probe.matrix.find((row) => row.id === 'promptImage');
     expect(imageRow).toMatchObject({ advertised: true, status: 'supported', adapterPath: 'durable-attachment-to-inline-image', hostSeam: 'attachments' });
-    expect(probe.matrix.find((row) => row.id === 'sandbox')).toBeUndefined();
   });
 
  it(' 钉：Remote 面不再暴露 authenticate（登录只在 agent 自己的 CLI 完成）', async () => {
@@ -594,6 +603,7 @@ describe('dshAcp/options', () => {
       contextUsage: null,
       ...LIVE_FIXED,
     });
+    expect(agent.calls.prepare).toBe(1);
   });
 
   it('收窄钉：未知 type 的 config option 出栈即丢弃（client 解码器 SHOULD-ignore 同效）', async () => {
@@ -604,14 +614,12 @@ describe('dshAcp/options', () => {
     expect(snapshot.configOptions?.map((option) => option.id)).toEqual(['model']);
   });
 
- it(' 能力披露：已握手活体带 capabilities 事实；注入 sandboxPosture 时快照带 sandbox', async () => {
+ it(' 能力披露：已握手活体带 capabilities 事实', async () => {
     const { registry } = createFakeRegistry({ devin: DEVIN }, {});
     const agent = createFakeLiveAgent({ agentCapabilities: PROBE_AGENT_CAPABILITIES });
-    const sandboxPosture = { platform: 'darwin', enforcement: 'full' as const, note: null };
     const { service } = buildService({
       registry,
       liveAgents: new Map([['sess-1', agent.face]]),
-      sandboxPosture,
     });
     expect(await service.liveOptions('sess-1')).toEqual({
       sessionId: 'sess-1',
@@ -719,13 +727,24 @@ describe('dshAcp/backendOf', () => {
     };
   }
 
-  it('活体 AcpAgent 在场 → established（provider = 活体路由；不看 binding/header）', async () => {
+  it('活体 AcpAgent 不能越过持久化真源：binding 在场才 established', async () => {
     const { registry } = createFakeRegistry({ devin: DEVIN }, {});
     const agent = createFakeLiveAgent();
     const { service } = buildService({
       registry,
       liveAgents: new Map([['sess-1', agent.face]]),
-      backendFacts: fakeFacts({ binding: 'acp-other', header: 'deepseek' }),
+      backendFacts: fakeFacts({ binding: 'acp-test', header: 'deepseek' }),
+    });
+    await expect(service.backendOf('sess-1')).resolves.toEqual({ state: 'established', provider: 'acp-test' });
+  });
+
+  it('尚未 session/new 但已有 AcpAgent → established（避免空白会话误建第二个会话）', async () => {
+    const { registry } = createFakeRegistry({ devin: DEVIN }, {});
+    const agent = createFakeLiveAgent();
+    const { service } = buildService({
+      registry,
+      liveAgents: new Map([['sess-1', agent.face]]),
+      backendFacts: fakeFacts({ live: true }),
     });
     await expect(service.backendOf('sess-1')).resolves.toEqual({ state: 'established', provider: 'acp-test' });
   });

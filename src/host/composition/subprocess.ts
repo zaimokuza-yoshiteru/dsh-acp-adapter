@@ -8,8 +8,8 @@
  * 把 `message` 包装成 `AcpClientError('spawn-failure', …)`（ACP 路由响亮失败，
  * native 路由不经过本解析、不受影响）。绝不回退自制 child_process。
  *
- * 结构化窄化先例：src/domain/policy/sandbox.ts 的 `AcpSandboxProviderLike`、
- * 本模块同目录 registry.ts 对 dsh-settings 的 `ctx.get('settings')` 窄化。
+ * 结构化窄化先例：src/domain/policy/sandbox.ts 的权限策略类型、
+ * 本模块同目录 installed-profile-registry.ts 对 dsh-settings 的 `ctx.get('settings')` 窄化。
  * @module @zaimokuza/dsh-acp-adapter/host/composition/subprocess
  */
 

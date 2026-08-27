@@ -4,13 +4,13 @@
  * No DOM, fetch, or React imports: every export here is directly
  * vitest-testable without jsdom ( drives this module). The wire and
  * settings shapes are CLIENT-SIDE COPIES of the host-half contracts
- * (src/host/composition/registry.ts, src/contract/remote.ts, and ACP schema v1 for AuthMethod) — the
+ * (src/host/composition/installed-profile-registry.ts, src/contract/remote.ts, and ACP schema v1 for AuthMethod) — the
  * client bundle must not import host modules: they target Node, and a value
  * import would be inlined into the browser bundle.
  * @module @zaimokuza/dsh-acp-adapter/client/logic
  */
 
-// ---------- settings shape（镜像 src/host/composition/registry.ts；禁止 import host src） ----------
+// ---------- settings shape（镜像 src/host/composition/installed-profile-registry.ts；禁止 import host src） ----------
 
 /** One ACP agent's stored configuration (the `dsh-acp` settings per-id value). */
 export interface AcpAgentConfig {
@@ -22,8 +22,6 @@ export interface AcpAgentConfig {
   args: readonly string[]
  /** Env entries (literal values only; 不再有 `$credential:` 引用语法). */
   env: Record<string, string>
-  /** Explicit profile-owned MCP entries; not an automatic import of DSH MCP. */
-  mcpServers?: readonly AcpMcpServerConfig[]
   /** Login guidance shown with the agent's auth row. */
   loginHint?: string
   /**
@@ -34,12 +32,6 @@ export interface AcpAgentConfig {
    */
   runtime?: AcpAgentRuntimeId
 }
-
-export type AcpMcpServerConfig =
-  | { readonly type: 'stdio'; readonly name: string; readonly command: string; readonly args: readonly string[]; readonly env: Record<string, AcpMcpValue> }
-  | { readonly type: 'http' | 'sse'; readonly name: string; readonly url: string; readonly headers: Record<string, AcpMcpValue> }
-
-export type AcpMcpValue = string | { readonly valueFromEnv: string }
 
 /** runtime descriptor 绑定词表（镜像 host 侧 `AcpAgentId`；边界）。 */
 export type AcpAgentRuntimeId = 'devin' | 'codex' | 'kimi' | 'claude'
@@ -72,7 +64,6 @@ export const ACP_ENV_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/
  * 挂回，除非用户在文本框里同名重填或在掩码行上点移除）。
  */
 export const ACP_SECRET_ENV_KEY_PATTERN = /KEY|PASSWORD|SECRET|TOKEN/i
-const ACP_MCP_SENSITIVE_KEY_PATTERN = /KEY|TOKEN|SECRET|PASSWORD|AUTH|CREDENTIAL/i
 
 /**
  * One-click template for the "添加 Devin" button. Client-side copy of the host
@@ -108,7 +99,7 @@ export const CLAUDE_ACP_TEMPLATE: AcpAgentConfig & { id: string } = {
 
 /**
  * Codex 预设的 client 侧副本（真源 host 侧 CODEX_ACP_TEMPLATE，逐字段
- * 钉版见 client-logic.spec.ts）。env 空（认证走 descriptor opaqueRefs）；
+ * 钉版见 client-logic.spec.ts）。env 空；认证由 Codex CLI 自己管理。
  * `runtime: 'codex'` 显式绑定 descriptor。
  */
 export const CODEX_ACP_TEMPLATE: AcpAgentConfig & { id: string } = {
@@ -117,14 +108,14 @@ export const CODEX_ACP_TEMPLATE: AcpAgentConfig & { id: string } = {
   command: 'codex-acp',
   args: [],
   env: {},
-  loginHint: 'codex-acp cli login（或 codex login）',
+  loginHint: 'codex login',
   runtime: 'codex',
 }
 
 /**
  * Kimi 预设的 client 侧副本（真源 host 侧 KIMI_ACP_TEMPLATE，逐字段
- * 钉版见 client-logic.spec.ts）。env 空（认证走 descriptor opaqueRefs 的
- * `~/.kimi-code` 三件套物化）；`runtime: 'kimi'` 显式绑定 descriptor。
+ * 钉版见 client-logic.spec.ts）。env 空；认证由 Kimi CLI 自己管理。
+ * `runtime: 'kimi'` 显式绑定 descriptor。
  */
 export const KIMI_ACP_TEMPLATE: AcpAgentConfig & { id: string } = {
   id: 'kimi',
@@ -156,7 +147,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 /**
  * Validating decoder for the settings scope's `decode` hook, mirroring the
- * host schema's strip semantics (src/host/composition/registry.ts `acpSettingsSchema`): an
+ * host schema's strip semantics (src/host/composition/installed-profile-registry.ts `acpSettingsSchema`): an
  * absent section resolves to zero agents; anything invalid resolves the whole
  * section to undefined, which the panel renders as the invalid-config state
  * rather than silently editing a partial view.
@@ -199,8 +190,6 @@ function decodeAgentConfig(id: string, raw: unknown): AcpAgentConfig | undefined
   if (!Array.isArray(args) || !args.every((arg) => typeof arg === 'string')) return undefined
   const env = raw['env'] ?? {}
   if (!isPlainObject(env) || !Object.values(env).every((value) => typeof value === 'string')) return undefined
-  const mcpServers = decodeMcpServers(raw['mcpServers'])
-  if (mcpServers === undefined) return undefined
   const loginHint = raw['loginHint']
   if (loginHint !== undefined && typeof loginHint !== 'string') return undefined
  // 边界：runtime 绑定只收四个合法值，其余整体拒绝（镜像 host schema 的 reject 语义）
@@ -211,7 +200,6 @@ function decodeAgentConfig(id: string, raw: unknown): AcpAgentConfig | undefined
     command,
     args: [...args] as string[],
     env: { ...env } as Record<string, string>,
-    ...(mcpServers.length === 0 ? {} : { mcpServers }),
     ...(loginHint === undefined ? {} : { loginHint }),
     ...(runtime === undefined ? {} : { runtime: runtime as AcpAgentRuntimeId }),
   }
@@ -228,8 +216,6 @@ export interface AgentDraft {
   argsText: string
   /** One `KEY=VALUE` per line（疑似 secret 的键不进文本框——见 `maskedEnv`）。 */
   envText: string
-  /** JSON array of explicit profile-owned MCP entries; secret values are masked in the UI. */
-  mcpText?: string
   loginHint: string
   /**
    * 疑似 secret（键名命中 {@link ACP_SECRET_ENV_KEY_PATTERN}）的存量 env 值
@@ -278,7 +264,6 @@ export function draftFromAgent(id: string, config: AcpAgentConfig): AgentDraft {
     command: config.command,
     argsText: formatArgsText(config.args),
     envText: formatEnvText(visibleEnv),
-    ...((config.mcpServers?.length ?? 0) === 0 ? {} : { mcpText: formatMcpText(config.mcpServers ?? []) }),
     loginHint: config.loginHint ?? '',
     ...(Object.keys(maskedEnv).length === 0 ? {} : { maskedEnv }),
  // 边界：runtime 绑定不暴露编辑，原样过站（保存时挂回，见 validateAgentDraft）
@@ -316,48 +301,6 @@ export function formatArgsText(args: readonly string[]): string {
 export type EnvParseFailure =
   | { readonly line: number; readonly reason: 'key' }
   | { readonly line: number; readonly reason: 'duplicate' }
-
-function decodeMcpServers(value: unknown): AcpMcpServerConfig[] | undefined {
-  if (value === undefined) return []
-  if (!Array.isArray(value)) return undefined
-  const seen = new Set<string>()
-  const out: AcpMcpServerConfig[] = []
-  for (const item of value) {
-    if (!isPlainObject(item) || typeof item.name !== 'string' || item.name.trim() === '' || seen.has(item.name)) return undefined
-    seen.add(item.name)
-    if (item.type === 'stdio') {
-      // Browser-side cross-platform shape check. Host validation uses the
-      // platform-native path.isAbsolute before anything is launched.
-      const absoluteCommand = typeof item.command === 'string'
-        && (/^\//.test(item.command) || /^[A-Za-z]:[\\/]/.test(item.command) || /^\\\\/.test(item.command))
-      if (!absoluteCommand || !Array.isArray(item.args) || !item.args.every((arg) => typeof arg === 'string')) return undefined
-      const env = item.env ?? {}
-      if (!isPlainObject(env) || !Object.values(env).every((v) => typeof v === 'string' || (isPlainObject(v) && typeof v.valueFromEnv === 'string'))) return undefined
-      if (Object.entries(env).some(([key, v]) => ACP_MCP_SENSITIVE_KEY_PATTERN.test(key) && typeof v === 'string')) return undefined
-      out.push({ type: 'stdio', name: item.name, command: item.command as string, args: [...item.args] as string[], env: { ...env } as Record<string, AcpMcpValue> })
-    } else if (item.type === 'http' || item.type === 'sse') {
-      if (typeof item.url !== 'string') return undefined
-      const headers = item.headers ?? {}
-      if (!isPlainObject(headers) || !Object.values(headers).every((v) => typeof v === 'string' || (isPlainObject(v) && typeof v.valueFromEnv === 'string'))) return undefined
-      if (Object.entries(headers).some(([key, v]) => ACP_MCP_SENSITIVE_KEY_PATTERN.test(key) && typeof v === 'string')) return undefined
-      out.push({ type: item.type, name: item.name, url: item.url, headers: { ...headers } as Record<string, AcpMcpValue> })
-    } else return undefined
-  }
-  return out
-}
-
-function formatMcpText(servers: readonly AcpMcpServerConfig[]): string {
-  return servers.length === 0 ? '' : JSON.stringify(servers, null, 2)
-}
-
-function parseMcpText(text: string): AcpMcpServerConfig[] | { error: 'json' | 'shape' } {
-  if (text.trim() === '') return []
-  try {
-    const parsed = JSON.parse(text) as unknown
-    const decoded = decodeMcpServers(parsed)
-    return decoded === undefined ? { error: 'shape' } : decoded
-  } catch { return { error: 'json' } }
-}
 
 /**
  * Parse the env textarea: one `KEY=VALUE` per line (split on the FIRST `=`),
@@ -397,8 +340,6 @@ export type DraftErrorKey =
   | 'errorEnvKey'
   | 'errorEnvDuplicate'
   | 'errorRuntimeTaken'
-  | 'errorMcpJson'
-  | 'errorMcpShape'
 
 /** One validation failure: locale key plus template params (e.g. the env line number). */
 export interface DraftError {
@@ -412,7 +353,6 @@ export interface DraftValidation {
   readonly name?: DraftError
   readonly command?: DraftError
   readonly env?: DraftError
-  readonly mcp?: DraftError
   /**
  * （内置 runtime 唯一性）内置 runtime singleton 冲突：草稿的生效 runtime 已被另一个
    * 存量 profile 绑定。params 携带 `{runtime, id, name}` 点名已有 profile——
@@ -457,7 +397,6 @@ export function validateAgentDraft(
     name?: DraftError
     command?: DraftError
     env?: DraftError
-    mcp?: DraftError
     runtime?: DraftError
   } = {}
   if (id === '') validation.id = { key: 'errorIdRequired' }
@@ -466,8 +405,6 @@ export function validateAgentDraft(
   if (name === '') validation.name = { key: 'errorNameRequired' }
   if (command === '') validation.command = { key: 'errorCommandRequired' }
   const parsedEnv = parseEnvText(draft.envText)
-  const parsedMcp = parseMcpText(draft.mcpText ?? '')
-  if ('error' in parsedMcp) validation.mcp = { key: parsedMcp.error === 'json' ? 'errorMcpJson' : 'errorMcpShape' }
   if (!parsedEnv.ok) {
     const key: DraftErrorKey = parsedEnv.failure.reason === 'key' ? 'errorEnvKey' : 'errorEnvDuplicate'
     validation.env = { key, params: { line: parsedEnv.failure.line } }
@@ -485,7 +422,7 @@ export function validateAgentDraft(
   }
   if (validation.id !== undefined || validation.name !== undefined
     || validation.command !== undefined || validation.env !== undefined
-    || validation.runtime !== undefined || validation.mcp !== undefined || !parsedEnv.ok) {
+    || validation.runtime !== undefined || !parsedEnv.ok) {
     return validation
   }
   return {
@@ -496,7 +433,6 @@ export function validateAgentDraft(
       args: parseArgsText(draft.argsText),
  // 掩码键原样合回（用户同名重填的显式行优先 = 轮换值）
       env: { ...draft.maskedEnv, ...parsedEnv.env },
-      ...(Array.isArray(parsedMcp) && parsedMcp.length > 0 ? { mcpServers: parsedMcp } : {}),
       ...(loginHint === '' ? {} : { loginHint }),
  // 边界：存量 agent 的 runtime 绑定原样挂回（编辑器不暴露，保存不得静默解除）
       ...(draft.runtime === undefined ? {} : { runtime: draft.runtime }),
@@ -838,36 +774,6 @@ function decodeCapabilityMatrix(raw: unknown): readonly AcpCapabilityMatrixRow[]
     })
   }
   return rows
-}
-
-// ---------- 沙箱 enforcement 事实（镜像 src/contract/remote.ts 的 AcpSandboxPosture） ----------
-
-/** 宿主透传的本平台沙箱强制级别事实（health 响应顶层 `sandbox` 字段）。 */
-export interface AcpSandboxFact {
-  /** 平台标识（`process.platform` 值，如 darwin/win32）。 */
-  platform: string
-  /** confined 档的 enforcement 预期：'full'（seatbelt/bwrap）| 'partial'（windows-acl 恒报）。 */
-  enforcement: 'full' | 'partial'
-  /** partial 档已知残余风险文案；full 为 null。 */
-  note: string | null
-}
-
-/**
- * 容忍式解码 health 响应里的 sandbox 事实：字段缺席（旧版 host 半）或畸形
- * 一律归 null——面板只是少一行标注，绝不让健康数据整体失格（与
- * {@link decodeHealthResponse} 的「畸形整体拒绝」不同：本字段是附加事实，
- * 不是行数据）。
- */
-export function decodeSandboxFact(body: unknown): AcpSandboxFact | null {
-  if (!isPlainObject(body)) return null
-  const raw = body['sandbox']
-  if (raw === undefined || raw === null) return null
-  if (!isPlainObject(raw)) return null
-  const { platform, enforcement, note } = raw as Record<string, unknown>
-  if (typeof platform !== 'string' || platform === '') return null
-  if (enforcement !== 'full' && enforcement !== 'partial') return null
-  if (!(typeof note === 'string' || note === null)) return null
-  return { platform, enforcement, note }
 }
 
 /** `boundSessions(agentId)` 的应答（删除确认提示；client 侧镜像 src/contract/remote.ts `AcpBoundSessionsView`）。 */

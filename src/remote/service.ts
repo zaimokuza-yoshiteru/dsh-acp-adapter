@@ -47,7 +47,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import type * as acp from '@agentclientprotocol/sdk'
 import { acpRouteId, ACP_AGENT_ID_PATTERN } from '../domain/session/agent-config.ts'
-import { acpProbeConfigKey, acpProbeFresh, acpVersionCompatibility, descriptorDeclaresAuthRefs, descriptorOf } from '../domain/session/agent-config.ts'
+import { acpProbeConfigKey, acpProbeFresh, acpVersionCompatibility, descriptorOf } from '../domain/session/agent-config.ts'
 import type { AcpAgentConfig, AcpAgentRuntimeDescriptor } from '../domain/session/agent-config.ts'
 import { ACP_MODE_OPTION_ID } from '../domain/session/agent-config.ts'
 import { deriveAcpAgentState } from '../domain/session/agent-state.ts'
@@ -69,6 +69,7 @@ import type {
   AcpConfigOption,
   AcpConfigSelectValue,
   AcpContextUsageView,
+  AcpRecoveryView,
   AcpHealthView,
   AcpHealthRequest,
   AcpLiveOptionsSnapshot,
@@ -84,7 +85,6 @@ import type {
   AcpPendingElicitationView,
   AcpProbeCleanupView,
   AcpProviderHealth,
-  AcpSandboxPosture,
   AcpSessionContinuity,
 } from '../contract/remote.ts'
 
@@ -168,6 +168,39 @@ function contractConfigOptionsOf(options: readonly acp.SessionConfigOption[] | u
   return mapped
 }
 
+function healthyRecoveryView(sessionId: string): AcpRecoveryView {
+  return {
+    dshSessionId: sessionId,
+    kind: 'healthy',
+    cause: null,
+    detail: null,
+    provider: null,
+    acpSessionId: null,
+    generation: null,
+    interruptedTurnId: null,
+    lastAttemptAt: null,
+    lastUserAction: null,
+    updatedAt: 0,
+  }
+}
+
+function recoveryViewOf(state: AcpLiveAgentFace['recoveryState'] | undefined, sessionId: string): AcpRecoveryView {
+  if (state === undefined) return healthyRecoveryView(sessionId)
+  return {
+    dshSessionId: state.dshSessionId,
+    kind: state.kind,
+    cause: state.cause ?? null,
+    detail: state.detail ?? null,
+    provider: state.provider ?? null,
+    acpSessionId: state.acpSessionId ?? null,
+    generation: state.generation ?? null,
+    interruptedTurnId: state.interruptedTurnId ?? null,
+    lastAttemptAt: state.lastAttemptAt ?? null,
+    lastUserAction: state.lastUserAction ?? null,
+    updatedAt: state.updatedAt,
+  }
+}
+
 // ---------- 依赖注入面（接线；测试给假） ----------
 
 /**
@@ -239,6 +272,8 @@ export interface AcpHealthRegistryLike {
  */
 export interface AcpLiveAgentFace {
   readonly status: 'idle' | 'running'
+  /** Live ACP wrapper phase; draft is not yet a committed execution backend. */
+  readonly backendState?: 'blank' | 'draft' | 'established'
  /** 本会话的 provider 路由（`acp-<id>`； `backendOf` 的权威 backend 判定之一）。 */
   readonly providerRoute: string
   readonly configOptions: readonly acp.SessionConfigOption[] | undefined
@@ -252,10 +287,27 @@ export interface AcpLiveAgentFace {
   readonly contextUsage: AcpContextUsageView | null
  /** 连续性闩锁状态（直通进快照的 `continuity` 字段）。 */
   readonly continuityState: AcpSessionContinuityState
+  readonly recoveryState?: {
+    readonly dshSessionId: string
+    readonly kind: AcpRecoveryView['kind']
+    readonly cause?: string
+    readonly detail?: string
+    readonly provider?: string
+    readonly acpSessionId?: string
+    readonly generation?: number
+    readonly interruptedTurnId?: string
+    readonly lastAttemptAt?: number
+    readonly lastUserAction?: string
+    readonly updatedAt: number
+  }
+  /** Idempotently establish the real ACP session before the first prompt. */
+  prepare(): Promise<void>
   setConfigOption(configId: string, value: string | boolean): Promise<void>
   setMode(modeId: string): Promise<void>
  /** 显式放弃旧 ACP 上下文并重开全新 ACP 会话（仅 idle，错误原样传播）。 */
   rebindBlank(): Promise<void>
+  reconnectOriginal?: () => Promise<void>
+  recordRecoveryAction?: (action: 'retry-original' | 'rebind-blank' | 'new-session') => Promise<void>
 }
 
 /** Resolve a dsh session id to its live ACP agent；undefined = 无活体（调用即抛错）。 */
@@ -324,14 +376,6 @@ export interface AcpRemoteServiceDeps {
    */
   subprocess?: SubprocessSeamResolution
   /**
- * 本平台沙箱强制级别事实（enforcement 透传；缺省时 health 视图的
-   * `sandbox` 字段为 null）。生产接线 = host/factory/agent-loop.ts 以
-   * `createDefaultSandboxPlatform()` 的 enforcementExpectation/enforcementNote
- * 组装；probe 路径与本字段无关（probe 绝不触发认证，登录只发生在
-   * agent 自家 CLI，权限分离由 health.spec.ts / acp-client.spec.ts 钉死）。
-   */
-  sandboxPosture?: AcpSandboxPosture
-  /**
  * 内存指标快照导出（缺省时 health 视图的顶层 `metrics` 字段为 null）。
    * 生产接线 = host/factory/agent-loop.ts 的共享 `AcpMetricsRegistry.snapshot`。
    * 快照只含计数/延迟聚合与低基标签（result/cause/provider），绝无
@@ -387,6 +431,10 @@ export interface AcpRemoteServiceDeps {
    */
   optionSnapshotStore?: {
     readonly read: (sessionId: string) => Promise<AcpOptionsSnapshotLike | undefined>
+  }
+  /** Durable recovery state used when a session is not currently live. */
+  recoveryStateStore?: {
+    readonly read: (sessionId: string) => Promise<AcpRecoveryView | undefined>
   }
   /**
  * stale 快照的指纹比对源：以当前 profile 配置重组运行时指纹（与
@@ -485,8 +533,6 @@ interface ResolvedDeps {
   readonly hostCompatible: () => boolean
   readonly checkExecutable: (command: string) => Promise<boolean>
   readonly queryVersion: (command: string) => Promise<string | null>
- /** 缺省 null（host 未接线时视图如实不带 sandbox 事实）。 */
-  readonly sandboxPosture: AcpSandboxPosture | null
  /** 缺省 null（host 未接线时视图如实不带指标快照）。 */
   readonly metricsSnapshot: (() => AcpMetricsSnapshot) | null
  /** 缺省 null（host 未接线时视图如实不带活体会话连续性清单）。 */
@@ -499,6 +545,7 @@ interface ResolvedDeps {
   readonly modelSwitchStore: NonNullable<AcpRemoteServiceDeps['modelSwitchStore']> | null
  /** 缺省 null（无活体时 liveOptions 维持旧抛错行为）。 */
   readonly optionSnapshotStore: NonNullable<AcpRemoteServiceDeps['optionSnapshotStore']> | null
+  readonly recoveryStateStore: NonNullable<AcpRemoteServiceDeps['recoveryStateStore']> | null
  /** 缺省 null（fingerprintChanged 恒 false）。 */
   readonly snapshotFingerprint: ((sessionId: string) => Promise<string | undefined>) | null
   readonly pendingPermissions: AcpPendingPermissionBroker | null
@@ -511,7 +558,7 @@ interface ResolvedDeps {
  * strict descriptor 找到实例并调用）。方法清单（前三条对应旧旁路路由，
  * rebindBlank 是 新增，model-switch 三方法见）：
  * - `health()`                    ← GET /dsh-acp/health（provider 行 + 顶层
- *   sandbox 事实 + metrics 快照；**密钥边界** 只回显 command/args/loginHint，
+ *   metrics 快照；**密钥边界** 只回显 command/args/loginHint，
  * env 永不在响应里——钉版见 test/integration/host/health.spec.ts；每行携带五态
  *   `state`，派生规则见 src/domain/session/agent-state.ts）
  * - `options(sessionId)` ← GET /dsh-acp/sessions/<id>/options（
@@ -555,13 +602,13 @@ export class AcpRemoteService extends TypertRemoteService {
       queryVersion: deps.queryVersion ?? (subprocess.ok
         ? (command: string) => acpQueryVersion(subprocess.seam, command)
         : () => Promise.resolve(null)),
-      sandboxPosture: deps.sandboxPosture ?? null,
       metricsSnapshot: deps.metricsSnapshot ?? null,
       listLiveSessions: deps.listLiveSessions ?? null,
       backendFacts: deps.backendFacts ?? null,
       bindingFacts: deps.bindingFacts ?? null,
       modelSwitchStore: deps.modelSwitchStore ?? null,
       optionSnapshotStore: deps.optionSnapshotStore ?? null,
+      recoveryStateStore: deps.recoveryStateStore ?? null,
       snapshotFingerprint: deps.snapshotFingerprint ?? null,
       pendingPermissions: deps.pendingPermissions ?? null,
       pendingElicitations: deps.pendingElicitations ?? null,
@@ -659,7 +706,7 @@ export class AcpRemoteService extends TypertRemoteService {
         // TTL（ok 10min / error 30s）才算新鲜；不新鲜/缺席按「从未探测」计入
         // state（probe 行仍如实展示上次探测事实）。
         const fresh = snapshot !== undefined && acpProbeFresh(snapshot, acpProbeConfigKey(config), Date.now()) ? snapshot : undefined
- // readiness 派生：descriptor 一次解析，五态派生（declaresAuthRefs）与 readiness
+        // readiness 派生：probe 握手事实与配置状态共同决定 readiness
         // 版本字段（versionPolicy/兼容状态）共用同一绑定事实。
         const descriptor = descriptorOf(id, config)
         return {
@@ -670,13 +717,12 @@ export class AcpRemoteService extends TypertRemoteService {
           loginHint: config.loginHint ?? null,
           executable,
           version,
-          probe: probeRow(snapshot, this.resolved.sandboxPosture, descriptor, this.resolved.imageInputAvailable, config),
+          probe: probeRow(snapshot, descriptor, this.resolved.imageInputAvailable),
           // registry 的 agents map 经 settings schema 校验（非法值根本写不进来），configValid 恒 true
           state: deriveAcpAgentState({
             hostCompatible,
             configValid: true,
             probe: fresh === undefined ? undefined : probeStateView(fresh),
-            declaresAuthRefs: descriptorDeclaresAuthRefs(descriptor),
           }),
         }
       }),
@@ -686,14 +732,13 @@ export class AcpRemoteService extends TypertRemoteService {
       : this.resolved.listLiveSessions().map((entry) => ({ sessionId: entry.sessionId, continuity: entry.continuity }))
     return {
       providers,
-      sandbox: this.resolved.sandboxPosture,
       metrics: this.resolved.metricsSnapshot === null ? null : this.resolved.metricsSnapshot(),
       liveSessions,
     }
   }
 
   /**
-   * 活体会话的 configOptions/currentModeId 快照（收窄后）；capabilities/sandbox 是
+   * 活体会话的 configOptions/currentModeId 快照（收窄后）；capabilities 是
  * null 词表必填键。：无活体 Agent 但 sidecar 存有界 last-known 快照时返回
    * stale 副本（freshness 'stale'、editable false、全部控件只读）；无活体且无
    * 快照维持旧抛错行为。
@@ -701,7 +746,10 @@ export class AcpRemoteService extends TypertRemoteService {
   @Remote('options')
   async liveOptions(sessionId: string): Promise<AcpLiveOptionsSnapshot> {
     const agent = this.resolved.resolveLiveAgent(sessionId)
-    if (agent !== undefined) return this.liveSnapshot(sessionId, agent)
+    if (agent !== undefined) {
+      if (agent.continuityState.status === 'ok') await agent.prepare()
+      return this.liveSnapshot(sessionId, agent)
+    }
     return this.staleSnapshot(sessionId)
   }
 
@@ -773,6 +821,28 @@ export class AcpRemoteService extends TypertRemoteService {
   async rebindBlank(sessionId: string): Promise<AcpLiveOptionsSnapshot> {
     const agent = this.requireLiveAgent(sessionId)
     await agent.rebindBlank()
+    return this.liveSnapshot(sessionId, agent)
+  }
+
+  /** Reconnect the original ACP session. This action only initialize/load/reconciles;
+   * it never creates a session or sends a prompt. */
+  @Remote('reconnectOriginal')
+  async reconnectOriginal(sessionId: string): Promise<AcpLiveOptionsSnapshot> {
+    const agent = this.requireLiveAgent(sessionId)
+    if (agent.reconnectOriginal === undefined) throw new Error(`live ACP agent for session "${sessionId}" does not support reconnectOriginal`)
+    await agent.reconnectOriginal()
+    return this.liveSnapshot(sessionId, agent)
+  }
+
+  /** Record a recovery-surface decision without changing the recovery gate. */
+  @Remote('recordRecoveryAction')
+  async recordRecoveryAction(sessionId: string, action: 'retry-original' | 'rebind-blank' | 'new-session'): Promise<AcpLiveOptionsSnapshot> {
+    if (action !== 'retry-original' && action !== 'rebind-blank' && action !== 'new-session') {
+      throw new Error(`unknown recovery action ${JSON.stringify(action)}`)
+    }
+    const agent = this.requireLiveAgent(sessionId)
+    if (agent.recordRecoveryAction === undefined) throw new Error(`live ACP agent for session "${sessionId}" does not support recovery action recording`)
+    await agent.recordRecoveryAction(action)
     return this.liveSnapshot(sessionId, agent)
   }
 
@@ -1037,18 +1107,16 @@ export class AcpRemoteService extends TypertRemoteService {
   }
 
   /**
- * backendOf（「backend 不可变」的 picker 主防线数据面）：host 权威的
-   * 会话 backend 查询，纯读零副作用。判定优先级：活体 AcpAgent（host 注册表）→
-   * sidecar binding（ACP 会话创建即有，覆盖 header 空洞）→ 日志末条
-   * request/header 的 provider（只读 inspect 窥测）→ 都没有 = 'blank'（blank
+   * backendOf（「backend 不可变」的 picker 主防线数据面）：host 权威的
+   * 会话 backend 查询，纯读零副作用。判定优先级：sidecar binding（ACP 会话
+   * 创建即有）→ 尚未建立 binding 的活体 AcpAgent → 日志末条 request/header 的 provider（只读
+   * inspect 窥测）→ 都没有 = 'blank'（blank
    * 会话的 current.provider 只是实时默认的影子，不算定 backend）。
    * 会话不存在/日志不可读且无任何在场证据 → 响亮报错（protocol-error）：调用方
    * 手里应都是真实 session，冒充 blank 会让 picker 放行一个不可判定的会话。
    */
   @Remote('backendOf')
   async backendOf(sessionId: string): Promise<AcpBackendState> {
-    const live = this.resolved.resolveLiveAgent(sessionId)
-    if (live !== undefined) return { state: 'established', provider: live.providerRoute }
     const facts = this.resolved.backendFacts
     if (facts === null) {
       throw new AcpClientError(
@@ -1059,6 +1127,15 @@ export class AcpRemoteService extends TypertRemoteService {
     }
     const bound = await facts.readBindingProvider(sessionId)
     if (bound !== undefined) return { state: 'established', provider: bound }
+    // A newly-created session whose default model is ACP owns a live wrapper,
+    // but that wrapper is only a draft until its first prompt commits a
+    // binding. rc.2 cannot replace the wrapper in place; picker code uses the
+    // provider to route cross-profile/native choices to a new DSH session.
+    const liveAcp = this.resolved.resolveLiveAgent(sessionId)
+    if (liveAcp !== undefined) {
+      const state = liveAcp.backendState ?? 'established'
+      return state === 'blank' ? { state: 'blank' } : { state, provider: liveAcp.providerRoute }
+    }
     try {
       const header = await facts.peekHeaderProvider(sessionId)
       return header === undefined ? { state: 'blank' } : { state: 'established', provider: header }
@@ -1171,6 +1248,7 @@ export class AcpRemoteService extends TypertRemoteService {
       currentModeId: agent.currentModeId ?? null,
       capabilities: capabilityFactsOf(agent.agentCapabilities),
       continuity,
+      recovery: recoveryViewOf(agent.recoveryState, sessionId),
  // 上下文占用直通（used/size/percent/cost 已是收窄形状，无映射）。
       contextUsage: agent.contextUsage,
       freshness: 'live',
@@ -1189,21 +1267,25 @@ export class AcpRemoteService extends TypertRemoteService {
   private async staleSnapshot(sessionId: string): Promise<AcpLiveOptionsSnapshot> {
     const store = this.resolved.optionSnapshotStore
     const snapshot = store === null ? undefined : await store.read(sessionId)
-    if (snapshot === undefined) {
+    const recovery = this.resolved.recoveryStateStore === null
+      ? undefined
+      : await this.resolved.recoveryStateStore.read(sessionId)
+    if (snapshot === undefined && recovery === undefined) {
       throw new Error(`no live ACP agent for session "${sessionId}" (not an ACP session, or already disposed)`)
     }
     const fingerprintSeam = this.resolved.snapshotFingerprint
-    const current = fingerprintSeam === null ? undefined : await fingerprintSeam(sessionId)
+    const current = fingerprintSeam === null || snapshot === undefined ? undefined : await fingerprintSeam(sessionId)
     return {
       sessionId,
-      configOptions: contractConfigOptionsFromSnapshot(snapshot),
-      currentModeId: snapshot.currentModeId,
+      configOptions: snapshot === undefined ? null : contractConfigOptionsFromSnapshot(snapshot),
+      currentModeId: snapshot?.currentModeId ?? null,
       capabilities: null,
       continuity: { status: 'ok', cause: null, detail: null },
+      recovery: recovery ?? healthyRecoveryView(sessionId),
       contextUsage: null,
       freshness: 'stale',
       editable: false,
-      fingerprintChanged: current !== undefined && current !== snapshot.fingerprint,
+      fingerprintChanged: snapshot !== undefined && current !== undefined && current !== snapshot.fingerprint,
       modelSwitch: await this.modelSwitchViewOf(sessionId),
     }
   }
@@ -1228,7 +1310,7 @@ function contractCleanupOf(cleanup: { readonly close: string; readonly delete: s
   return { close, delete: del, message: cleanup.message ?? null }
 }
 
-function probeRow(snapshot: AcpProbeSnapshotLike | undefined, sandboxPosture: AcpSandboxPosture | null, descriptor: AcpAgentRuntimeDescriptor | undefined, imageInputAvailable: boolean, config?: AcpAgentConfig): AcpProviderHealth['probe'] {  if (snapshot === undefined) return { status: 'never', at: null }
+function probeRow(snapshot: AcpProbeSnapshotLike | undefined, descriptor: AcpAgentRuntimeDescriptor | undefined, imageInputAvailable: boolean): AcpProviderHealth['probe'] {  if (snapshot === undefined) return { status: 'never', at: null }
   const { result, at } = snapshot
   if (result.kind === 'ok') {
     const capabilities = capabilityFactsOf(result.agentCapabilities)
@@ -1250,12 +1332,10 @@ function probeRow(snapshot: AcpProbeSnapshotLike | undefined, sandboxPosture: Ac
         ? null
         : { adapter: descriptor.versionPolicy.adapter ?? null, wrappedCli: descriptor.versionPolicy.wrappedCli ?? null },
       versionCompatibility: acpVersionCompatibility(descriptor, result.agentInfo?.version),
- // 端到端能力矩阵（广告 × adapter path × sandbox posture；纯函数
+ // 端到端能力矩阵（广告 × adapter path；纯函数
       // 直通，形状与 contract `AcpCapabilityMatrixRow` 结构一致，无映射）
-      matrix: acpCapabilityMatrix(capabilities, sandboxPosture, {
+      matrix: acpCapabilityMatrix(capabilities, {
         imageInput: imageInputAvailable,
-        mcpHttpConfigured: config?.mcpServers?.some((server) => server.type === 'http') === true,
-        mcpSseConfigured: config?.mcpServers?.some((server) => server.type === 'sse') === true,
       }),
     }
   }

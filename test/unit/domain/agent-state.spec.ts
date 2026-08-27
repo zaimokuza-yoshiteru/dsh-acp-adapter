@@ -14,7 +14,6 @@ const BASE: AcpAgentStateInput = {
   hostCompatible: true,
   configValid: true,
   probe: { result: { kind: 'ok', modelCount: 3, hasModelConfigOption: true } },
-  declaresAuthRefs: true,
 };
 
 describe('deriveAcpAgentState（五态）', () => {
@@ -22,7 +21,7 @@ describe('deriveAcpAgentState（五态）', () => {
     expect(deriveAcpAgentState({ ...BASE, hostCompatible: false })).toBe('incompatible');
     // 优先级钉：即使 probe 报错/配置无效，结构门先裁决
     expect(
-      deriveAcpAgentState({ hostCompatible: false, configValid: false, probe: { result: { kind: 'error', failureKind: 'crash' } }, declaresAuthRefs: true }),
+      deriveAcpAgentState({ hostCompatible: false, configValid: false, probe: { result: { kind: 'error', failureKind: 'crash' } } }),
     ).toBe('incompatible');
   });
 
@@ -34,17 +33,15 @@ describe('deriveAcpAgentState（五态）', () => {
 
   it('无新鲜 probe（undefined）→ saved-unverified（与声明与否无关）', () => {
     expect(deriveAcpAgentState({ ...BASE, probe: undefined })).toBe('saved-unverified');
-    expect(deriveAcpAgentState({ ...BASE, probe: undefined, declaresAuthRefs: false })).toBe('saved-unverified');
   });
 
   it('probe error + auth_required → auth-required（与声明、模型数无关）', () => {
     const probe = { result: { kind: 'error', failureKind: 'auth_required' } } as const;
     expect(deriveAcpAgentState({ ...BASE, probe })).toBe('auth-required');
-    expect(deriveAcpAgentState({ ...BASE, probe, declaresAuthRefs: false })).toBe('auth-required');
   });
 
-  it('probe error + 其余 kind → unavailable（spawn-failure/timeout/crash/protocol-error/sandbox-unavailable 同桶）', () => {
-    for (const failureKind of ['spawn-failure', 'timeout', 'crash', 'protocol-error', 'sandbox-unavailable']) {
+  it('probe error + 其余 kind → unavailable（spawn-failure/timeout/crash/protocol-error 同桶）', () => {
+    for (const failureKind of ['spawn-failure', 'timeout', 'crash', 'protocol-error']) {
       expect(deriveAcpAgentState({ ...BASE, probe: { result: { kind: 'error', failureKind } } }), failureKind).toBe('unavailable');
     }
   });
@@ -63,10 +60,6 @@ describe('deriveAcpAgentState（五态）', () => {
     expect(deriveAcpAgentState({ ...BASE, probe: { result: { kind: 'ok', modelCount: 0, hasModelConfigOption: false } } })).toBe('ready');
   });
 
-  it('probe ok + 未声明 auth refs（无 descriptor）→ ready（不看模型数）', () => {
-    expect(deriveAcpAgentState({ ...BASE, declaresAuthRefs: false })).toBe('ready');
-    expect(deriveAcpAgentState({ ...BASE, declaresAuthRefs: false, probe: { result: { kind: 'ok', modelCount: 0, hasModelConfigOption: false } } })).toBe('ready');
-  });
 });
 
 // ----------：probe 缓存新鲜度（key 相等 + TTL；全仓唯一判定落点） ----------

@@ -20,7 +20,6 @@ import {
   ACP_SETTINGS_NS,
   decodeBoundSessions,
   decodeHealthResponse,
-  decodeSandboxFact,
   errorMessageOf,
   panelSettingsOf,
   validateAgentDraft,
@@ -65,7 +64,7 @@ export interface AcpPanelControllerDeps {
 export class AcpPanelController {
   private scopeSnapshot: AcpScopeSnapshot
   private health: HealthState = {
-    status: 'idle', rows: [], sandbox: null, fetchedAt: undefined, message: undefined,
+    status: 'idle', rows: [], fetchedAt: undefined, message: undefined,
     checkingAgentIds: [], agentErrors: {},
   }
   private sink: AcpPanelStoreActions | null = null
@@ -129,14 +128,12 @@ export class AcpPanelController {
         this.failHealth('malformed dshAcp/health payload')
         return
       }
- // sandbox enforcement 事实是附加字段，容忍式解码（缺席/畸形归 null）
-      const sandbox = decodeSandboxFact(result.value)
       const fetchedAt = Date.now()
       this.health = {
-        status: 'ready', rows, sandbox, fetchedAt, message: undefined,
+        status: 'ready', rows, fetchedAt, message: undefined,
         checkingAgentIds: [], agentErrors: {},
       }
-      this.sink?.healthReady(rows, sandbox, fetchedAt)
+      this.sink?.healthReady(rows, fetchedAt)
     } catch (error: unknown) {
       this.failHealth(errorMessageOf(error))
     }
@@ -168,19 +165,17 @@ export class AcpPanelController {
         this.failAgentHealth(agentId, `health response did not contain agent ${JSON.stringify(agentId)}`)
         return
       }
-      const sandbox = decodeSandboxFact(result.value)
       const fetchedAt = Date.now()
       this.health = {
         ...this.health,
         status: 'ready',
         rows: mergeHealthRow(this.health.rows, row),
-        sandbox,
         fetchedAt,
         message: undefined,
         checkingAgentIds: this.health.checkingAgentIds.filter((id) => id !== agentId),
         agentErrors: withoutKey(this.health.agentErrors, agentId),
       }
-      this.sink?.agentHealthReady(agentId, row, sandbox, fetchedAt)
+      this.sink?.agentHealthReady(agentId, row, fetchedAt)
     } catch (error: unknown) {
       this.failAgentHealth(agentId, errorMessageOf(error))
     }

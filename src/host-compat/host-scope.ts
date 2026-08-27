@@ -153,12 +153,16 @@ async function importScopeModule(deps: HostScopeDeps, entry: string): Promise<Ho
 // process.stderr，活体日志缺失时仍能从进程输出看到解析走向。
 function reportWarn(logger: HostScopeLogger, message: string): void {
   logger.warn(message)
-  process.stderr.write(`[dsh-acp host-scope] WARN ${message}\n`)
+  if (process.env['VITEST'] !== 'true' || process.env['DSH_ACP_TEST_HOST_SCOPE_STDERR'] === '1') {
+    process.stderr.write(`[dsh-acp host-scope] WARN ${message}\n`)
+  }
 }
 
 function reportError(logger: HostScopeLogger, message: string): void {
   logger.error(message)
-  process.stderr.write(`[dsh-acp host-scope] ERROR ${message}\n`)
+  if (process.env['VITEST'] !== 'true' || process.env['DSH_ACP_TEST_HOST_SCOPE_STDERR'] === '1') {
+    process.stderr.write(`[dsh-acp host-scope] ERROR ${message}\n`)
+  }
 }
 
 let cached: HostScope | undefined

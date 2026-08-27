@@ -123,6 +123,19 @@ function textOf(
   return localized === undefined || localized.trim() === '' ? fallback : localized
 }
 
+/** Visible disclosure for bounded location lists; legacy payloads derive the count when possible. */
+export function permissionLocationOmissionText(
+  item: AcpPendingPermissionView,
+  t?: AcpPermissionInputDockProps['t'],
+): string | undefined {
+  const shown = item.locations?.length ?? 0
+  const omitted = item.omittedLocationCount
+    ?? (item.locationCount === undefined ? 0 : Math.max(0, item.locationCount - shown))
+  return omitted > 0
+    ? textOf(t, 'permissionLocationsOmitted', '{count} more locations omitted', { count: omitted })
+    : undefined
+}
+
 function PermissionCard({ sessionId, pending, remote, t, onPending }: {
   sessionId: string
   pending: readonly AcpPendingPermissionView[]
@@ -176,12 +189,24 @@ function PermissionCard({ sessionId, pending, remote, t, onPending }: {
               ),
               h('div', null, h('dt', null, textOf(t, 'permissionOperation', 'Operation')), h('dd', null, item.kind)),
               h('div', null, h('dt', null, textOf(t, 'permissionToolCall', 'Tool call')), h('dd', null, item.toolCallId)),
-              item.locations === undefined || item.locations.length === 0 ? null : h('div', null,
+              item.locations === undefined || (item.locations.length === 0 && permissionLocationOmissionText(item, t) === undefined) ? null : h('div', null,
                 h('dt', null, textOf(t, 'permissionLocations', 'Locations')),
-                h('dd', null, item.locations.map((location) => `${location.path}${location.line === undefined ? '' : `:${String(location.line)}`}`).join(' · ')),
+                h('dd', null, [
+                  ...(item.locations ?? []).map((location) => h('code', {
+                    key: `${location.path}:${location.line ?? ''}`,
+                    title: location.path,
+                  }, `${location.displayPath ?? location.path}${location.line === undefined ? '' : `:${String(location.line)}`}`)).reduce<ReactNode[]>((all, node, index) => index === 0 ? [node] : [...all, ' · ', node], []),
+                  permissionLocationOmissionText(item, t) === undefined
+                    ? null
+                    : ` · ${permissionLocationOmissionText(item, t)}`,
+                ]),
               ),
               item.inputSummary === undefined ? null : h('div', null,
                 h('dt', null, textOf(t, 'permissionInputSummary', 'Input summary')), h('dd', null, item.inputSummary),
+              ),
+              item.command === undefined ? null : h('div', null,
+                h('dt', null, textOf(t, 'permissionCommand', 'Command')),
+                h('dd', null, h('pre', { className: css.command }, item.command)),
               ),
             ),
           ),

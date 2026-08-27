@@ -774,7 +774,7 @@ export function liveValueNameOf(option: LiveConfigOption, value: string): string
   return flattenLiveValues(option).find((row) => row.value === value)?.name ?? value
 }
 
-// ---------- “设为默认”（agent-default-model ns，core/agent-default-model 同款形状） ----------
+// ---------- DSH 默认模型设置（跨 backend 创建与原生“选择即默认”语义） ----------
 
 /** Settings namespace carrying the default model selection for future Agents. */
 export const AGENT_DEFAULT_MODEL_NS = 'agent-default-model'
@@ -834,16 +834,16 @@ export function isDefaultSelection(
   return stored?.provider === provider && stored?.model === model
 }
 
-// ---------- DSH 权限投影（仅用于 ACP 选择时请求宿主原生确认） ----------
+// ---------- DSH 权限投影（用于 ACP Full Access 自动收敛） ----------
 
 /**
  * Decode the `permissions` session projection's current preset id (the host
  * `PermissionSelect.currentValue`; ui-permission-presets reads the same face).
  * Undefined when the capability is absent or the value is malformed.
  *
- * 口径：DSH 权限范围是安全边界（宿主 sandbox 强制的能力上限），与 ACP
- * agent mode（agent 侧行为配置）是两个独立维度。本插件只读该档位，
- * 并在选择 ACP 时复用 DSH 原生 Full Access 确认。
+ * 口径：DSH 只负责选择 Native Agent Access admission mode，与 ACP
+ * agent mode（agent 侧行为配置）是两个独立维度。本插件读取该档位，在 ACP
+ * backend 上自动恢复 Full Access；Agent mode 不随之改变。
  */
 export function presetOfPermissionsProjection(value: unknown): string | undefined {
   if (!isPlainObject(value)) return undefined

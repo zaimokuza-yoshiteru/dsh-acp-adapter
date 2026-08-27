@@ -4,7 +4,7 @@
  * （src/host/composition/llm-stub.ts 失败文案、src/remote/service.ts 方法、
  * turn 错误）分流；`message` 面向用户可读。
  *
- * 统一 taxonomy（错误分类；九分类词表见 ./types.ts
+ * 统一 taxonomy（错误分类；八分类词表见 ./types.ts
  * `AcpErrorCategory` 的逐类注释）：
  * - 每个用户可见错误携带三件套：**稳定 code**（`ACP_*`，kind → code 映射见
  *   {@link ACP_ERROR_CODES}，turn/end 与 llm-stub 沿用同一张表）、**taxonomy
@@ -40,7 +40,6 @@ export const ACP_ERROR_CODES: Record<AcpErrorKind, string> = {
   timeout: 'ACP_TIMEOUT',
   'protocol-error': 'ACP_PROTOCOL_ERROR',
   crash: 'ACP_CRASH',
-  'sandbox-unavailable': 'ACP_SANDBOX_UNAVAILABLE',
   aborted: 'ACP_ABORTED',
 }
 
@@ -51,7 +50,6 @@ export const ACP_ERROR_KIND_CATEGORY: Record<AcpErrorKind, AcpErrorCategory> = {
   timeout: 'timeout',
   'protocol-error': 'protocol-incompatible',
   crash: 'agent-crash',
-  'sandbox-unavailable': 'sandbox-unavailable',
   aborted: 'user-rejected',
 }
 
@@ -63,7 +61,6 @@ export const ACP_ERROR_CATEGORY_LABELS: Record<AcpErrorCategory, string> = {
   'protocol-incompatible': '协议不兼容',
   timeout: '操作超时',
   'agent-crash': 'agent 意外崩溃',
-  'sandbox-unavailable': '沙箱不可用（已拒绝非受限启动）',
   'user-rejected': '用户已拒绝',
   'resume-conflict': '会话恢复冲突',
 }

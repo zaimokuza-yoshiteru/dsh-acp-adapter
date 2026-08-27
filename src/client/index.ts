@@ -85,6 +85,7 @@ import { AcpToolRow } from './ui/AcpToolRow.ts'
 import { ACP_EXTERNAL_TOOL_NAME } from './data/tool-presentation.ts'
 import { createAcpPermissionInputDock } from './ui/AcpPermissionInputDock.ts'
 import { createAcpElicitationInputDock } from './ui/AcpElicitationInputDock.ts'
+import { createAcpRecoveryInputDock } from './ui/AcpRecoveryInputDock.ts'
 
 /** Dictionary namespaces owned by this plugin ( panel / picker). */
 const NS = 'settings.acp'
@@ -188,6 +189,8 @@ export function apply(ctx: Context): void {
     setOption: async (sessionId, request) => (await namespace()).setOption(sessionId, request),
     backendOf: async (sessionId) => (await namespace()).backendOf(sessionId),
     rebindBlank: async (sessionId) => (await namespace()).rebindBlank(sessionId),
+    reconnectOriginal: async (sessionId) => (await namespace()).reconnectOriginal(sessionId),
+    recordRecoveryAction: async (sessionId, action) => (await namespace()).recordRecoveryAction(sessionId, action),
     boundSessions: async (agentId) => (await namespace()).boundSessions(agentId),
  // 模型热切换持久事务三方法（ModelSwitchController 的 host 侧）
     beginModelSwitch: async (sessionId, request) => (await namespace()).beginModelSwitch(sessionId, request),
@@ -282,6 +285,12 @@ export function apply(ctx: Context): void {
 
   if (pickerService !== null) {
     const service: PickerService = pickerService
+    const acpRecoveryInputDock = createAcpRecoveryInputDock(acpRemote, async (sessionId) => {
+      const current = service.pickerFor(sessionId).directory.getSnapshot().current
+      if (current === null) throw new Error('没有可用于创建新会话的模型')
+      const failure = await service.useInNewSession(sessionId, current, current.model)
+      if (failure !== undefined) throw new Error(failure)
+    })
 
  // 入口 1：/model popupSelect（内置同名命令的等价注册；pre- 双载时命令
     // 名冲突会 throw；该宿主窗口期冲突不由本插件处理，故注册在独立
@@ -317,7 +326,7 @@ export function apply(ctx: Context): void {
               failures: [...state.failures],
             }
             return probe.status === 'ok' && probe.state !== null
-              ? optionsOf(view, t, probe.state, service.permissionPreset(session.sessionId) ?? null)
+              ? optionsOf(view, t, probe.state)
               : optionsOf(view, t)
           },
           onSelect: async (option, session) => {
@@ -331,8 +340,9 @@ export function apply(ctx: Context): void {
             }
  // 分流：跨 backend 不 selectModel（host 只会忽略它）；popup 行
             // 已带壳内确认框（optionsOf 的 confirmation），onSelect 运行 = 用户已
-            // 确认。事务：解析工作区 → CAS 写默认 → 公开 session.create（预分配
-            // id，同 id 重试幂等）→ 列表确认 → open。失败 → throw（错误条如实显示）。
+            // 确认。事务：解析工作区 → 公开 session.create（预分配 id，同 id
+            // 重试幂等）→ 列表确认 → open。目标选择保留为后续默认，复制
+            // DSH 原生“选择即默认”语义。失败 → throw（错误条如实显示）。
             const probe = await service.backendProbe(session.sessionId)
             if (probe.status === 'unavailable' || probe.state === null) {
               const currentProvider = directory.getSnapshot().current?.provider
@@ -352,12 +362,10 @@ export function apply(ctx: Context): void {
               if (failure !== undefined) throw new Error(failure)
               return
             }
-            if (probe.state.state === 'blank' && isAcpProvider(selection.provider)) {
-              const name = modelNameOf(directory.getSnapshot(), selection)
-              const failure = await service.adoptBlankSession(session.sessionId, selection, name)
-              if (failure !== undefined) throw new Error(failure)
-              return
-            }
+            // A blank native wrapper cannot be replaced through DSH rc.2's
+            // public seam. PickerService therefore performs a transparent
+            // new-session handoff for cross-wrapper selections; only an ACP
+            // draft or live session with the same profile is switched in place.
             if (isAcpProvider(selection.provider)) {
               await service.enableNativeAccess(session.sessionId)
             }
@@ -371,15 +379,10 @@ export function apply(ctx: Context): void {
     // store seat：single 槽一个 entry 只有一个 store 位，目录/活体/披露三面以
     // 复合 store 的三 slice 承载（stores/picker-store.ts 的机制说明）。注入工厂
     // 收到框架烘焙的 actions（session+store 形态的第二位置参数）即 attach glue；
-    // defaultModel 是框架 settings scope 的裸 observable（非本插件 store），留在
- // hooks 隔间。：seat 与下方 dock/toolview 各占独立 scope——可选 ACP
+    // seat 与下方 dock/toolview 各占独立 scope——可选 ACP
     // 子模块的失败各自隔离，picker 核心贡献（本 seat + 上方 /model）始终挂载。
     ctx.inject(['slots'], (scope) => {
       const scopeSlots = scope.get('slots') as SlotsLike
-      const defaultScope = binder.bind({
-        namespace: AGENT_DEFAULT_MODEL_NS,
-        decode: decodeAgentDefaultModel,
-      })
       scopeSlots.inject('conversation.input.model', () => scopeSlots.register(
         {
           name: 'conversation.input.model',
@@ -397,13 +400,8 @@ export function apply(ctx: Context): void {
               select: (selection) => service.selectModel(sessionId, selection).then(() => true, () => false),
               enableNativeAccess: () => service.enableNativeAccess(sessionId)
                 .then(() => undefined, (error: unknown) => error instanceof Error ? error.message : String(error)),
-              setDefault: (selection) => service.setDefaultModel(selection),
               switchOption: (configId, value) => { void picker.live.switchOption(configId, value) },
               reloadLive: () => { picker.live.load().catch(() => { /* surfaced on the store */ }) },
- // 收尾：reconciliation-required 逃生门（continuity blocked 时 UI 展示）。
-              rebind: () => { void picker.live.rebind() },
- // 待定模型切换的用户回滚出路（rollback-required / undecidable banner 的按钮）。
-              rollbackSwitch: () => { void picker.modelSwitch.rollback() },
  // backend 查询（行级跨 backend 标记）+「在新会话中使用」分流
  // （确认框在组件层两段式；本 wire 即确认后的唯一写入口）
  // + 一次性提示（新会话 seat 挂载时取走）。：三值探测——
@@ -417,11 +415,17 @@ export function apply(ctx: Context): void {
             return {
               available: true,
               picker: pickerWire,
-              hooks: { defaultModel: defaultScope },
             }
           },
         },
         ModelPicker,
+      ))
+    })
+    ctx.inject(['slots'], (scope) => {
+      const scopeSlots = scope.get('slots') as SlotsLike
+      scopeSlots.inject('conversation.input.dock', () => scopeSlots.register(
+        { name: 'conversation.input.dock', id: 'acp-recovery', order: -8, locale: NS },
+        acpRecoveryInputDock,
       ))
     })
 

@@ -113,13 +113,18 @@ const stderrText = (spy: ReturnType<typeof spyStderr>): string => spy.mock.calls
 
 describe('host-scope (ESM 语义)', () => {
   let mod: HostScopeModule
+  let previousStderrFlag: string | undefined
 
   beforeEach(async () => {
+    previousStderrFlag = process.env['DSH_ACP_TEST_HOST_SCOPE_STDERR']
+    process.env['DSH_ACP_TEST_HOST_SCOPE_STDERR'] = '1'
     vi.resetModules()
     mod = await import('../../../src/host-compat/host-scope.ts')
   })
 
   afterEach(() => {
+    if (previousStderrFlag === undefined) delete process.env['DSH_ACP_TEST_HOST_SCOPE_STDERR']
+    else process.env['DSH_ACP_TEST_HOST_SCOPE_STDERR'] = previousStderrFlag
     vi.restoreAllMocks()
   })
 

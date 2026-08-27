@@ -117,7 +117,7 @@ export type AcpToolPresentationContentV1 =
     truncated?: true
   }
   | {
-    /** terminal 占位：DSH 无 terminal 能力，`text` 是占位事实行（输出不可得）。 */
+    /** terminal 降级：协议能力已接线但 UI 无实时终端 seam，`text` 是可见事实行。 */
     type: 'terminal'
     terminalId: string
     text: string

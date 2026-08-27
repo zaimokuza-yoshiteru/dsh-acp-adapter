@@ -4,11 +4,12 @@
 // ② 产物存在性 ③ 产物闭包（__ModuleLoader__ 包装形态 / id == 包名 /
 // sourcemap 在场且 sources 非空）④ module requests（产物内 require 全部落在
 // rc.2 baseline ∪ dsh.client.external）⑤ 源码消费审计（ctx.get 服务读取必须有
-// 模块级 inject 或显式可选登记）⑥ npm tarball 内容精确性（pnpm pack --dry-run）。
+// 模块级 inject 或显式可选登记）⑥ npm tarball 内容精确性（npm pack --dry-run）。
 // 规范出处：reference/deepseek-harness packages/client/tsdown.client.ts（preset）、
 // packages/client/web/src/platform.ts（baseline）、scripts/verify-client-packages.ts（门禁）。
 import { execFileSync } from 'node:child_process'
-import { existsSync, globSync, readFileSync } from 'node:fs'
+import { existsSync, globSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import os from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -281,21 +282,20 @@ for (const service of [...serviceReads].sort()) {
 console.log(`[verify-bundle] cordis inject: [${[...moduleInject].join(', ')}]; optional reads: [${[...OPTIONAL_SERVICE_READS].join(', ')}]`)
 
 // ---------------------------------------------------------------------------
-// ⑥ tarball 内容：pnpm pack --dry-run --json
+// ⑥ tarball 内容：npm pack --dry-run --json
 // ---------------------------------------------------------------------------
 
 function packDryRun() {
-  const args = ['pack', '--dry-run', '--json']
-  // pnpm 11 的 pack（含 --dry-run）会先跑 prepack；带嵌套标记让 scripts/prepack.mjs
-  // 空转退出——全量门禁由外层 build/prepack 跑过，此处只要 tarball 清单。
-  const env = { ...process.env, DSH_ACP_PREPACK_NESTED: '1' }
+  const cache = mkdtempSync(join(os.tmpdir(), 'dsh-acp-npm-cache-'))
   try {
-    // corepack 直调优先（理由见 prepack.mjs 同款注释）：corepack 生命周期内 PATH
-    // 上的裸 pnpm shim 可能钉在别的版本且拒切 packageManager 钉版。
-    return execFileSync('corepack', ['pnpm', ...args], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env })
-  } catch (error) {
-    if (error?.code !== 'ENOENT') throw error
-    return execFileSync('pnpm', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env })
+    return execFileSync('npm', ['--cache', cache, 'pack', '--dry-run', '--json', '--ignore-scripts'], {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: process.platform === 'win32',
+    })
+  } finally {
+    rmSync(cache, { recursive: true, force: true })
   }
 }
 
@@ -303,14 +303,15 @@ let packOutput = null
 try {
   packOutput = packDryRun()
 } catch (error) {
-  fail(`pnpm pack --dry-run --json 执行失败：${String(error).slice(0, 300)}`)
+  fail(`npm pack --dry-run --json 执行失败：${String(error).slice(0, 300)}`)
 }
 if (packOutput !== null) {
   let tar
   try {
-    tar = JSON.parse(packOutput.slice(packOutput.indexOf('{')))
+    const parsed = JSON.parse(packOutput)
+    tar = Array.isArray(parsed) ? parsed[0] : parsed
   } catch {
-    fail('pnpm pack --dry-run --json 输出不是合法 JSON')
+    fail('npm pack --dry-run --json 输出不是合法 JSON')
     tar = null
   }
   if (tar !== null) {

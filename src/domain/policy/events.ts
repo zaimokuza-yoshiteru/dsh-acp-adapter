@@ -1,11 +1,11 @@
 /**
  * ACP 审批与运行边界的 sidecar 审计载荷。
- * `asked`/`decided` 配对记录 ACP agent 的完整选项列表与最终决定。
+ * `asked`/`decided` 配对记录 ACP agent 的选项列表（经过有界脱敏）与最终决定。
  *
  * 本模块同时承载权限范围与 Agent mode 两条独立审计轴：
- * - `permission-scope`（{@link AcpPermissionScopeAuditData}）：DSH 权限范围轴——每次
- *   ACP spawn 重新解析 `ctx.sandboxPolicy` 后的实际 confine 事实。这是安全边界
- *   （宿主 sandbox 强制的能力上限），与 ACP mode 无关。
+ * - `permission-scope`（{@link AcpPermissionScopeAuditData}）：每次 ACP spawn
+ *   重新解析 `ctx.sandboxPolicy` 后记录 Native Agent Access 的准入事实。它不
+ *   表示插件建立了操作系统安全边界，与 ACP mode 无关。
  * - `agent-mode`（{@link AcpAgentModeAuditData}）：ACP agent mode 轴——mode 的建立
  *   与每次经本插件 seam 下发的切换。这是 agent 侧行为配置，不是安全边界。
  * 两轴各自独立条目、分别落盘，不做隐式双向同步；agent 自发推送的
@@ -21,17 +21,16 @@
  * SessionEventMap declaration merging 与 `ignorable:true` 构造器不会回归——本包
  * 不再向 session log 写任何自定义事件。
  *
- * 两阶段保留完整审计：插件 ACP UI 的 `selectedOptionKind`/`decisionVia` 记录
+ * 两阶段保留可追溯审计：插件 ACP UI 的 `selectedOptionKind`/`decisionVia` 记录
  * 原始选项语义；旧 DSH 双按钮 fallback 无法精确对应时仍只选择 once-kind，
- * 绝不把一次选择升格为 always 类 optionId。`asked` 里的完整选项列表仍是
- * 唯一未损记录。
+ * 绝不把一次选择升格为 always 类 optionId。`asked` 里的 optionId 保持精确，
+ * 其余外部字段按持久化边界有界化。
  *
  * @module @zaimokuza/dsh-acp-adapter/domain/policy/events
  */
 
 import { createHash } from 'node:crypto'
 import type { PermissionOption, ToolCallLocation, ToolCallUpdate } from '@agentclientprotocol/sdk'
-import type { AcpConfinedArgv, AcpSandboxMode } from './sandbox.ts'
 
 /** 审批审计 entry 在 sidecar 里的 `kind`（src/persistence/sidecar.ts entry 联合的判别值之一）。 */
 export const ACP_PERMISSION_AUDIT_KIND = 'permission' as const
@@ -58,6 +57,23 @@ export const ACP_DEGRADATION_AUDIT_KIND = 'degradation' as const
 export const ACP_ELICITATION_AUDIT_KIND = 'elicitation' as const
 export type { AcpElicitationAudit as AcpElicitationAuditData } from './elicitation.ts'
 
+/** Durable terminal lifecycle summary; command environment values are never included. */
+export interface AcpTerminalAuditData {
+  readonly operation: 'create' | 'output-summary' | 'exit' | 'kill' | 'release'
+  readonly terminalId: string
+  readonly dshSessionId: string
+  readonly profileId: string
+  readonly acpSessionId: string
+  readonly command: string
+  readonly argCount: number
+  readonly cwd: string
+  readonly outputBytes: number
+  readonly truncated: boolean
+  readonly outcome: 'started' | 'running' | 'exited' | 'killed' | 'released' | 'timeout' | 'error'
+  readonly exitCode?: number | null
+  readonly signal?: string | null
+}
+
 /**
  * 降级条目 payload 的类型真源在生产方 src/protocol/v1/translate.ts（架构白名单：
  * protocol 层不得 import domain，domainPolicy → protocol 是许可方向，故此处
@@ -67,27 +83,21 @@ export type { AcpElicitationAudit as AcpElicitationAuditData } from './elicitati
 export type { AcpDegradationAuditData, AcpDegradationCode, AcpDegradationItem } from '../../protocol/v1/translate.ts'
 
 /**
- * DSH 权限范围轴的审计快照：每次 spawn 前 `ctx.sandboxPolicy.resolve`
- * 重新解析出档位，本条目记录该次 spawn **实际应用**的 confine 事实。
+ * DSH 权限范围轴的审计快照：每次 spawn 前重新解析档位，本条目记录
+ * ACP 进程采用的 Native Agent Access 事实。审批不是操作系统安全边界。
  */
 export interface AcpPermissionScopeAuditData {
-  /** spawn 时重新解析的 DSH 会话权限档位（安全边界，与 ACP mode 无关）。 */
-  readonly mode: AcpSandboxMode
+  /** spawn 时重新解析并验证过的 DSH 会话权限档位。 */
+  readonly mode: 'danger-full-access'
   /**
- * 产出该次 spawn 计划的平台标识（扩展字段；= 平台 adapter 的
-   * `process.platform` 值）——enforcement 事实的平台归属据此可读
-   * （win32 恒 partial，见 src/domain/policy/platform/windows.ts）。
+   * 产出该次 spawn 计划的平台标识（扩展字段；= `process.platform`）。
    */
   readonly platform: string
   /**
-   * 实际 confine 事实（可写 root + enforcement 如实透传）；`null` = 未 confine
-   * （danger-full-access：子进程持有宿主用户的 OS 级写权限——此时唯一防线是
-   * DSH 原生 Full Access 确认与审批桥，二者都不是 sandbox 意义上的边界）。
+   * 恒为 `null`：插件不包装或隔离 Agent 子进程；子进程持有宿主用户可用的
+   * OS 权限，ACP 审批不是强制安全边界。
    */
-  readonly confined: {
-    readonly workspaceRoot: string
-    readonly enforcement: AcpConfinedArgv['enforcement']
-  } | null
+  readonly confined: null
 }
 
 /** ACP agent mode 轴审计快照的来源词表。 */
@@ -210,6 +220,10 @@ export const AUDIT_SECRET_KEY_PATTERN = /(?:token|secret|password|passwd|api[-_]
 /** rawInput 审计摘要的截断上限（单行可读性；与审批 reason 摘要同口径）。 */
 export const RAW_INPUT_AUDIT_SUMMARY_MAX_CHARS = 300
 
+/** Bounds for ACP permission audit fields supplied by an external Agent. */
+export const ACP_PERMISSION_AUDIT_OPTIONS_MAX = 32
+export const ACP_PERMISSION_AUDIT_FIELD_MAX_CHARS = 512
+
 /** 脱敏遍历界限：嵌套深度 / 数组条数 / 单字符串长度（防巨型 rawInput 放大审计体积）。 */
 const REDACT_DEPTH_MAX = 6
 const REDACT_ARRAY_MAX = 32
@@ -262,6 +276,11 @@ function redactForAudit(value: unknown, depth: number): unknown {
   return value
 }
 
+function boundedAuditText(value: string, max = ACP_PERMISSION_AUDIT_FIELD_MAX_CHARS): string {
+  const sanitized = redactSecretText(value).replace(/[\u0000-\u001f\u007f]/g, ' ')
+  return sanitized.length <= max ? sanitized : `${sanitized.slice(0, max - 1)}…`
+}
+
 /** canonical JSON（对象键排序递归）：哈希与摘要的稳定输入（与生产者键序无关）。 */
 function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item)).join(',')}]`
@@ -298,8 +317,16 @@ export interface AcpPermissionAskedAuditData {
   /** ACP-side session id the request arrived on (diagnostics). */
   readonly agentSessionId: string
   readonly toolCall: AcpPermissionToolCallSnapshot
-  /** The agent's complete option list, verbatim (审批审计边界: audit loses nothing). */
+  /** The agent's option list, bounded and redacted for durable audit. */
   readonly options: readonly PermissionOption[]
+  /** Number of options in the original ACP request (before audit bounding). Optional for pre-count sidecar rows. */
+  readonly optionCount?: number
+  /** Number of original options omitted from this bounded audit payload. Optional for pre-count sidecar rows. */
+  readonly omittedOptionCount?: number
+  /** Number of locations in the original ACP tool-call (before audit bounding). Optional for pre-count sidecar rows. */
+  readonly locationCount?: number
+  /** Number of original locations omitted from this bounded audit payload. Optional for pre-count sidecar rows. */
+  readonly omittedLocationCount?: number
 }
 
 /** `decided` phase payload: what the bridge answered, and why. */
@@ -349,7 +376,7 @@ export interface PermissionAskedAuditInit {
   readonly agentSessionId: string
   /** The ACP permission request's tool call; snapshotted down to id/title/kind/locations/rawInput. */
   readonly toolCall: ToolCallUpdate
-  /** The agent's complete option list; persisted verbatim by the sidecar's JSON snapshot. */
+  /** The agent's option list; durable fields are bounded/redacted below. */
   readonly options: readonly PermissionOption[]
 }
 
@@ -369,25 +396,41 @@ export interface PermissionDecidedAuditInit {
 }
 
 /**
- * Build the `asked` audit payload: the question exactly as the agent posed it.
- * @param init - the ACP permission request's identity and verbatim option list.
+ * Build the `asked` audit payload: a bounded, redacted record of the question
+ * as the agent posed it. The option id remains exact because it is the ACP
+ * response identity used to answer the request; labels and collection size
+ * are bounded for durable storage.
+ * @param init - the ACP permission request's identity and option list.
  * @returns the sidecar-ready `asked` payload.
  */
 export function createPermissionAskedAudit(init: PermissionAskedAuditInit): AcpPermissionAskedAuditData {
   const { toolCall } = init
   const rawInput = toolCall.rawInput == null ? undefined : summarizeRawInputForAudit(toolCall.rawInput)
+  const optionCount = init.options.length
+  const locationCount = toolCall.locations?.length ?? 0
   return {
     phase: 'asked',
     requestId: init.requestId,
     agentSessionId: init.agentSessionId,
     toolCall: {
-      toolCallId: toolCall.toolCallId,
-      ...(toolCall.title == null ? {} : { title: toolCall.title }),
-      ...(toolCall.kind == null ? {} : { kind: toolCall.kind }),
-      ...(toolCall.locations == null ? {} : { locations: toolCall.locations }),
+      toolCallId: boundedAuditText(toolCall.toolCallId),
+      ...(toolCall.title == null ? {} : { title: boundedAuditText(toolCall.title, 200) }),
+      ...(toolCall.kind == null ? {} : { kind: boundedAuditText(toolCall.kind, 64) }),
+      ...(toolCall.locations == null ? {} : { locations: toolCall.locations.slice(0, 4).map((location) => ({
+        path: boundedAuditText(location.path),
+        ...(location.line == null ? {} : { line: location.line }),
+      })) }),
       ...(rawInput === undefined ? {} : { rawInputSummary: rawInput.summary, rawInputHash: rawInput.hash }),
     },
-    options: init.options,
+    options: init.options.slice(0, ACP_PERMISSION_AUDIT_OPTIONS_MAX).map((option) => ({
+      ...option,
+      optionId: option.optionId,
+      name: boundedAuditText(option.name, 200),
+    })),
+    optionCount,
+    omittedOptionCount: Math.max(0, optionCount - ACP_PERMISSION_AUDIT_OPTIONS_MAX),
+    locationCount,
+    omittedLocationCount: Math.max(0, locationCount - 4),
   }
 }
 

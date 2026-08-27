@@ -4,6 +4,9 @@
 name: publish npm
 
 on:
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
 
 permissions:
@@ -41,11 +44,13 @@ jobs:
           node-version-file: .nvmrc
           package-manager-cache: false
 
-      - name: Enable pinned pnpm
-        run: corepack enable
+      - name: Set CI pnpm version
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.7.0
 
       - name: Install immutable dependencies
-        run: corepack pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile
 
       - name: Verify release tag and version
         id: release

@@ -80,7 +80,6 @@ export function optionsOf(
   directory: SessionModelsView,
   t: PickerTranslate,
   backend?: PickerBackendState,
-  permissionPreset?: string | null,
 ): PickerSelectOption[] {
   const rows: PickerSelectOption[] = []
   const pinnedProvider = backend !== undefined && backend.state === 'established' && isAcpProvider(backend.provider)
@@ -97,12 +96,9 @@ export function optionsOf(
       backend,
       directory.current.provider,
     )
-    // 第四参缺席 = 纯目录构建器（保持上游兼容）；显式 null =
-    // 宿主权限投影缺席，仍需 fail-safe 风险确认。
-    const needsNativeAccess = permissionPreset !== undefined
-      && isAcpProvider(group.id)
-      && permissionPreset !== 'danger-full-access'
-    const blankAdoption = backend?.state === 'blank' && isAcpProvider(group.id)
+    // blank/draft handoff is automatic because rc.2 cannot replace the live
+    // wrapper. Only an established backend needs an explicit confirmation.
+    const explicitConfirmation = backend?.state === 'established'
     for (const model of group.models) {
       const base = model.description !== undefined
         ? `[${tag}] ${group.name} · ${model.description}`
@@ -114,22 +110,13 @@ export function optionsOf(
         ...(directory.current.provider === group.id && directory.current.model === model.id
           ? { active: true } : {}),
         ...(crossBackend ? { crossBackend: true } : {}),
-        ...(crossBackend || needsNativeAccess ? {
+        ...(crossBackend && explicitConfirmation ? {
           confirmation: {
-            title: t(needsNativeAccess ? 'native.popup.title' : 'cross.popup.title'),
-            description: t(
-              needsNativeAccess
-                ? blankAdoption ? 'native.popup.blankDescription' : crossBackend ? 'native.popup.crossDescription' : 'native.popup.description'
-                : 'cross.popup.description',
-              { model: model.name },
-            ),
-            acknowledgeLabel: t(needsNativeAccess ? 'native.acknowledge' : 'cross.popup.acknowledge'),
-            cancelLabel: t(needsNativeAccess ? 'native.cancel' : 'cross.popup.cancel'),
-            confirmLabel: t(
-              needsNativeAccess
-                ? blankAdoption ? 'native.confirmBlankButton' : crossBackend ? 'native.confirmCrossButton' : 'native.confirmButton'
-                : 'cross.popup.confirm',
-            ),
+            title: t('cross.popup.title'),
+            description: t('cross.popup.description', { model: model.name }),
+            acknowledgeLabel: t('cross.popup.acknowledge'),
+            cancelLabel: t('cross.popup.cancel'),
+            confirmLabel: t('cross.popup.confirm'),
           },
         } : {}),
       })

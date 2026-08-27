@@ -19,8 +19,8 @@
 //   9. append 纪律抽样：user/message 与 assistant/message 的 surfaceOp/sourceEventSeqs
 //      （随 turn 驱动套件断言）。
 //
-// 组装层见 test/agent-test-helpers.ts。孤儿进程防线：所有 spawn argv 带 SPEC_TAG，
-// afterEach 兜底 dispose 全部 handle，afterAll `ps` 全量扫描 SPEC_TAG + 逐 pid 断言。
+// 组装层见 test/agent-test-helpers.ts。afterEach 兜底 dispose 全部 handle；关键
+// 生命周期用例逐 PID 断言死亡，共享 subprocess runtime 在文件结束时兜底回收。
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -44,7 +44,6 @@ import {
   inlineProfile,
   isDead,
   mockProfile,
-  psLinesWithTag,
   readLog,
   registerAcpAgents,
   routeOf,
@@ -122,9 +121,6 @@ afterEach(async () => {
 });
 
 afterAll(async () => {
-  // 逐 pid 断言死亡（从各 mock 日志的 `started pid=` 行回收）
-  const pidScan = psLinesWithTag(SPEC_TAG);
-  expect(pidScan).toEqual([]);
   fs.rmSync(suiteDir, { recursive: true, force: true });
 });
 
@@ -254,7 +250,7 @@ describe('路由：AcpAgentLoop.createAgent / resume', () => {
     const lastEnd = turnEndReasons(handle.agent).at(-1);
     expect(lastEnd?.turn).toBe(2);
     expect(lastEnd?.reason.kind).toBe('error');
-    expect(lastEnd?.reason.kind === 'error' ? lastEnd.reason.error.code : undefined).toBe('ACP_RECONCILIATION_REQUIRED');
+    expect(lastEnd?.reason.kind === 'error' ? lastEnd.reason.error.code : undefined).toBe('ACP_RECOVERY_REQUIRED');
     // 闩锁在 ensureStarted 之前：零 spawn、无新 request/header
     expect(fs.existsSync(profile.logPath)).toBe(false);
     expect(eventsOf(handle.agent, 'request/header')).toHaveLength(1);
@@ -484,7 +480,6 @@ describe('懒启动与进程复用', () => {
     await handle.agent.whenIdle();
     expect(spawnedPids(profile.logPath)).toHaveLength(1); // 门内 probe
     expect(readLog(profile.logPath)).not.toContain('--> session/prompt');
-    expect(psLinesWithTag(SPEC_TAG)).toEqual([]);
 
     handle.agent.followup(userText('first'));
     await handle.agent.whenIdle();
@@ -613,7 +608,11 @@ describe('cancel', () => {
     expect(reasons.map((entry) => entry.turn)).toEqual([1, 2]);
     expect(reasons[1]?.reason.kind).toBe('error');
     const failure = reasons[1]?.reason.kind === 'error' ? reasons[1].reason.error : undefined;
-    expect(failure?.message).toContain('connection is closed');
+    // Cancellation after prompt dispatch is outcome-unknown. The process is
+    // dead, but the next turn is deliberately fenced before any reconnect or
+    // fallback so DSH cannot silently fork the Agent context.
+    expect(failure?.message).toContain('ACP prompt was interrupted; its remote outcome was not confirmed');
+    expect((agent as AcpAgent).continuityState.status).toBe('blocked');
     expect(spawnedPids(profile.logPath)).toHaveLength(2); // 门内 probe + 会话进程（无新 spawn）
   }, 25_000);
 });
@@ -870,7 +869,7 @@ setInterval(() => {}, 1 << 30);
     expect(agent.status).toBe('idle');
  // 运行时 auth_required 使 probe 缓存失效（agent.ts turn catch 接线）——
     // 下次过创建门会重新 probe，health 行回落 saved-unverified
-    expect(harness.loop.acpRegistry.adapter.probeSnapshot(routeOf(profile))).toBeUndefined();
+    expect(harness.loop.installedProfileRegistry.adapter.probeSnapshot(routeOf(profile))).toBeUndefined();
   }, 15_000);
 
  it('启动失败不缓存（创建门口径）：未修复时 createAgent 即拒 ACP_AUTH_REQUIRED；修好外部条件 + 刷新 probe 后重建并成功', async () => {
@@ -937,7 +936,7 @@ setInterval(() => {}, 1 << 30);
 
     // 外部条件修复（相当于用户完成登录）+ 面板刷新（invalidateProbe）→ 重过门
     fs.writeFileSync(flagPath, '');
-    harness.loop.acpRegistry.adapter.invalidateProbe(routeOf(profile));
+    harness.loop.installedProfileRegistry.adapter.invalidateProbe(routeOf(profile));
     const handle = await harness.loop.createAgent(harness.ctx, {
       sessionId: SessionId('start-retry'),
       meta: { cwd: harness.logDir },
@@ -969,7 +968,14 @@ describe('图片输入（Agent 能力 ∩ DSH durable attachment seam）', () =>
   it('image-only prompt 通过 attachment store 读取并发送，原消息只保留 durable ref', async () => {
     const attachment = { attachmentId: 'att-1' as never, mediaType: 'image/png' as const, bytes: 3, width: 8, height: 8 };
     const readImage = vi.fn().mockResolvedValue({ ref: attachment, data: Uint8Array.of(1, 2, 3) });
-    const harness = await boot({ attachments: { readImage } });
+    const harness = await boot({ attachments: { readImage, imageLimits: {
+      maxImageBytes: 1024,
+      maxImagesPerMessage: 4,
+      maxMessageImageBytes: 4096,
+      maxImagePixels: 1024 * 1024,
+      maxImageDimension: 4096,
+      mediaTypes: ['image/png'],
+    } } });
     const profile = mockProfile(harness.logDir, 'happy');
     const handle = await createAcpAgent(harness, profile, SessionId('image-supported'));
     const agent = handle.agent;
@@ -1010,6 +1016,44 @@ describe('图片输入（Agent 能力 ∩ DSH durable attachment seam）', () =>
     const reason = turnEndReasons(agent)[0]?.reason;
     expect(reason?.kind).toBe('error');
     if (reason?.kind === 'error') expect(reason.error.message).toContain('attachment storage is unavailable');
+    expect(readLog(profile.logPath)).not.toContain('--> session/prompt');
+  }, 15_000);
+
+  it('多个 DSH UserMessage 扁平化后按整个 ACP prompt 聚合图片数量/总 bytes，超限时零 prompt', async () => {
+    const attachmentA = { attachmentId: 'att-a' as never, mediaType: 'image/png' as const, bytes: 3, width: 1, height: 1 };
+    const attachmentB = { attachmentId: 'att-b' as never, mediaType: 'image/png' as const, bytes: 3, width: 1, height: 1 };
+    const readImage = vi.fn()
+      .mockResolvedValueOnce({ ref: attachmentA, data: Uint8Array.of(1, 2, 3) })
+      .mockResolvedValueOnce({ ref: attachmentB, data: Uint8Array.of(4, 5, 6) });
+    const harness = await boot({ attachments: { readImage, imageLimits: {
+      maxImageBytes: 1024, maxImagesPerMessage: 1, maxMessageImageBytes: 5,
+      maxImagePixels: 1024, maxImageDimension: 1024, mediaTypes: ['image/png'],
+    } } });
+    const profile = mockProfile(harness.logDir, 'happy');
+    const handle = await createAcpAgent(harness, profile, SessionId('image-aggregate-limits'));
+    const agent = handle.agent;
+    agent.inject(createUserMessage({ content: [{ type: 'image', attachment: attachmentA }], source: { kind: 'user' } }));
+    agent.followup(createUserMessage({ content: [{ type: 'image', attachment: attachmentB }], source: { kind: 'user' } }));
+    await agent.whenIdle();
+    const reason = turnEndReasons(agent)[0]?.reason;
+    expect(reason?.kind).toBe('error');
+    expect(readImage).not.toHaveBeenCalled();
+    expect(readLog(profile.logPath)).not.toContain('--> session/prompt');
+  }, 15_000);
+
+  it('stored image bytes or mime mismatch is rejected before session/prompt', async () => {
+    const declared = { attachmentId: 'att-mismatch' as never, mediaType: 'image/png' as const, bytes: 3, width: 1, height: 1 };
+    const returned = { ...declared, bytes: 4 };
+    const readImage = vi.fn().mockResolvedValue({ ref: returned, data: Uint8Array.of(1, 2, 3, 4) });
+    const harness = await boot({ attachments: { readImage, imageLimits: {
+      maxImageBytes: 1024, maxImagesPerMessage: 4, maxMessageImageBytes: 4096,
+      maxImagePixels: 1024, maxImageDimension: 1024, mediaTypes: ['image/png'],
+    } } });
+    const profile = mockProfile(harness.logDir, 'happy');
+    const handle = await createAcpAgent(harness, profile, SessionId('image-byte-mismatch'));
+    handle.agent.followup(createUserMessage({ content: [{ type: 'image', attachment: declared }], source: { kind: 'user' } }));
+    await handle.agent.whenIdle();
+    expect(turnEndReasons(handle.agent)[0]?.reason.kind).toBe('error');
     expect(readLog(profile.logPath)).not.toContain('--> session/prompt');
   }, 15_000);
 });
@@ -1078,7 +1122,6 @@ describe('dispose', () => {
     expect(log).toContain('stdin EOF; staying alive until SIGTERM');
     expect(log).toContain('SIGTERM received, exit(0)');
     for (const pid of pids) await waitFor(() => isDead(pid));
-    expect(psLinesWithTag(SPEC_TAG)).toEqual([]);
     // dispose 后 agent 离注册表
     expect(harness.ctx.agents.get(SessionId('dispose-ladder'))).toBeUndefined();
   }, 15_000);
@@ -1094,7 +1137,6 @@ describe('dispose', () => {
     expect(spawnedPids(profile.logPath)).toHaveLength(1);
     expect(readLog(profile.logPath)).not.toContain('--> session/prompt');
     expect(handle.agent.session.events).toEqual([]);
-    expect(psLinesWithTag(SPEC_TAG)).toEqual([]);
   }, 15_000);
 
   it('turn 中途 dispose：disposed cause 取消 + mock 收到 cancel + turn/end aborted{disposed} + 无孤儿', async () => {
@@ -1110,7 +1152,6 @@ describe('dispose', () => {
     const log = readLog(profile.logPath);
     expect(log).toContain('session/cancel sessionId=mock-session-1 turnActive=true');
     expect(log).toContain('SIGTERM received, exit(0)');
-    expect(psLinesWithTag(SPEC_TAG)).toEqual([]);
     expect(handle.agent.status).toBe('idle');
   }, 15_000);
 
@@ -1134,7 +1175,6 @@ describe('dispose', () => {
     expect(log).toContain('SIGTERM received, exit(0)');
     expect(turnEndReasons(agent)).toEqual([{ turn: 1, reason: { kind: 'aborted', reason: { kind: 'disposed' } } }]);
     expect(agent.status).toBe('idle');
-    expect(psLinesWithTag(SPEC_TAG)).toEqual([]);
   }, 25_000);
 
  it('卸载时新 turn 被拒（钉死）：已启动过 → turn/end error（连接已释放），不 spawn 新进程', async () => {
@@ -1214,7 +1254,6 @@ describe('生命周期状态机：cold → starting → live → closing → dis
  // 除门内 probe（已退出）外零会话 spawn
     expect(spawnedPids(profile.logPath)).toHaveLength(1);
     expect(readLog(profile.logPath)).not.toContain('--> session/prompt');
-    expect(psLinesWithTag(SPEC_TAG)).toEqual([]);
   }, 15_000);
 
  it('：命令缺失在创建门即拒（spawn-failure 进缓存），不再留到懒启动；错误带稳定 code + correlation id', async () => {
@@ -1248,7 +1287,7 @@ describe('生命周期状态机：cold → starting → live → closing → dis
     expect(thrown.code).toBe('ACP_SPAWN_FAILURE');
     expect(thrown.category).toBe('config');
     expect(thrown.correlationId).toMatch(ACP_CORRELATION_ID_PATTERN);
-    const snapshot = harness.loop.acpRegistry.adapter.probeSnapshot(routeOf(gone));
+    const snapshot = harness.loop.installedProfileRegistry.adapter.probeSnapshot(routeOf(gone));
     expect(snapshot?.result.kind === 'error' ? snapshot.result.failureKind : undefined).toBe('spawn-failure');
     expect(fs.existsSync(gone.logPath)).toBe(false);
   }, 15_000);

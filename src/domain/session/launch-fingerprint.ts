@@ -26,8 +26,7 @@
 /// <reference types="node" />
 
 import { createHash } from 'node:crypto'
-import { descriptorEnvRefValues, type AcpAgentRuntimeDescriptor, type AcpStubAgentConfig } from './agent-config.ts'
-import { acpMcpFingerprint, acpMcpServersOf } from './mcp.ts'
+import { type AcpAgentRuntimeDescriptor, type AcpStubAgentConfig } from './agent-config.ts'
 import { ACP_NATIVE_DATA_HOME_ENV_KEYS, ACP_NATIVE_XDG_ENV_KEYS, buildAcpAgentEnv } from '../policy/sandbox.ts'
 import type { AcpLaunchFingerprint } from '../../persistence/sidecar.ts'
 
@@ -64,14 +63,10 @@ export async function acpLaunchEnvironment(input: AcpLaunchEnvironmentInput): Pr
   const env = input.dataHomeStrategy === 'native'
     ? Object.fromEntries(Object.entries(source).filter((entry): entry is [string, string] => entry[1] !== undefined))
     : await buildAcpAgentEnv({ source })
-  if (input.descriptor !== undefined) {
-    Object.assign(env, descriptorEnvRefValues(input.descriptor, source))
-    const overrideEnv = input.descriptor.executableOverrideEnv
-    if (overrideEnv !== undefined) {
-      const overrideValue = source[overrideEnv]
-      if (overrideValue !== undefined && overrideValue !== '') env[overrideEnv] = overrideValue
-    }
-  }
+  // Native Agent Access inherits the already-resolved host environment verbatim;
+  // the adapter does not copy credential values through a descriptor allowlist.
+  // An explicit executable override remains a non-secret routing choice and is
+  // inherited naturally (or supplied by the profile env below).
   // A profile entry is an explicit user choice and therefore wins over both
   // ambient inheritance and built-in descriptor aliases.
   Object.assign(env, input.config.env)
@@ -96,12 +91,10 @@ function nativeStateEnvFingerprint(env: Readonly<Record<string, string | undefin
 export function acpLaunchFingerprint(input: AcpLaunchFingerprintInput): AcpLaunchFingerprint {
   const env = input.env ?? process.env
   const descriptor = input.descriptor
-  const envRefs =
-    descriptor === undefined
-      ? null
-      : descriptor.envRefs
-          .map((ref) => ({ key: ref.targetName, present: env[ref.sourceName] !== undefined && env[ref.sourceName] !== '' }))
-          .sort((left, right) => left.key.localeCompare(right.key))
+  // Credential/environment references are intentionally not modeled by the
+  // adapter. Native Agent Access inherits the process snapshot; old bindings
+  // may still carry the nullable field for migration compatibility.
+  const envRefs = null
   const executableOverride =
     descriptor?.executableOverrideEnv === undefined
       ? null
@@ -120,6 +113,8 @@ export function acpLaunchFingerprint(input: AcpLaunchFingerprintInput): AcpLaunc
     envRefs,
     executableOverride,
     nativeStateEnv: nativeStateEnvFingerprint(env),
-    mcpFingerprint: acpMcpFingerprint(acpMcpServersOf(input.config.mcpServers), env),
+    // DSH rc.2 does not expose a safe, serializable MCP registry to plugins.
+    // Formal ACP sessions therefore inject no host-owned MCP definition.
+    mcpFingerprint: null,
   }
 }

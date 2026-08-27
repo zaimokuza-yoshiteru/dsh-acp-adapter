@@ -2,7 +2,7 @@
  * The picker seat's composite store. Mechanism ruling:
  * `conversation.input.model` is a `kind: 'single'` slot — one entry declares
  * exactly one `store:` seat, so the picker's three data faces (model
- * directory / live options / capability disclosure) ride as SLICES of one
+ * directory / live options / backend access) ride as SLICES of one
  * composite store, each with its own semantic transition set (the slice
  * modules own the per-slice write vocabulary; this table only routes drafts).
  * The registration passes the exclusive factory (`store:
@@ -23,20 +23,20 @@ import type { ActionsDecl, BakedActions, StoreHandle } from './engine.ts'
 import { directoryTransitions } from './directory-store.ts'
 import { initialLiveOptionsState, liveTransitions } from './live-options-store.ts'
 import type { LiveOptionsState } from './live-options-store.ts'
-import { disclosureTransitions, initialDisclosureState } from './disclosure-store.ts'
-import type { CapabilityDisclosureState } from './disclosure-store.ts'
+import { backendAccessTransitions, initialBackendAccessState } from './backend-access-store.ts'
+import type { BackendAccessState } from './backend-access-store.ts'
 
 /** The picker seat's composite state: three independently-transitioned slices. */
 export interface ModelPickerState {
   directory: ModelDirectoryState
   live: LiveOptionsState
-  disclosure: CapabilityDisclosureState
+  backendAccess: BackendAccessState
 }
 
 const initialPickerState = (): ModelPickerState => ({
   directory: { ...INITIAL_DIRECTORY_STATE },
   live: initialLiveOptionsState(),
-  disclosure: initialDisclosureState(),
+  backendAccess: initialBackendAccessState(),
 })
 
 /** The composite write set: one action per slice transition, draft routed to the slice. */
@@ -103,8 +103,8 @@ const pickerActions = {
   liveReset(draft: ModelPickerState): void {
     liveTransitions.reset(draft.live)
   },
-  disclosureUpdated(draft: ModelPickerState, provider: string, preset: string | undefined): void {
-    disclosureTransitions.updated(draft.disclosure, provider, preset)
+  backendAccessUpdated(draft: ModelPickerState, provider: string, preset: string | undefined): void {
+    backendAccessTransitions.updated(draft.backendAccess, provider, preset)
   },
 } satisfies ActionsDecl<ModelPickerState>
 
@@ -138,7 +138,7 @@ export type LiveStoreActions = Pick<
   | 'liveRebindFailed'
   | 'liveReset'
 >
-export type DisclosureStoreActions = Pick<ModelPickerStoreActions, 'disclosureUpdated'>
+export type BackendAccessStoreActions = Pick<ModelPickerStoreActions, 'backendAccessUpdated'>
 
 /**
  * The exclusive-factory registration currency of the picker's store seat.

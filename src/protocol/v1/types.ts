@@ -5,8 +5,8 @@
  * @module @zaimokuza/dsh-acp-adapter/protocol/v1/types
  */
 
-import type * as acp from '@agentclientprotocol/sdk'
 import type { AcpProcessExit, AcpProcessOptions } from '../../runtime/process/types.ts'
+import type * as acp from '@agentclientprotocol/sdk'
 
 /**
  * ACP 连接错误的结构化分类。
@@ -16,7 +16,6 @@ import type { AcpProcessExit, AcpProcessOptions } from '../../runtime/process/ty
  *   超预算放弃（connection poison 的触发源之一）也归本类
  * - `protocol-error`：JSON-RPC 层错误（方法未实现、参数非法等）及其它未分类失败
  * - `crash`：agent 进程意外退出（含 exit code + signal；主动 close 触发的断开不算）
- * - `sandbox-unavailable`：预留给 ——confine 不可用时 fail closed，不静默放行
  * - `aborted`：调用方 AbortSignal 中止在飞 RPC，promise 被放弃
  *   （连接随之 poison 拆除）；taxonomy 默认映射 `user-rejected`
  */
@@ -26,11 +25,10 @@ export type AcpErrorKind =
   | 'timeout'
   | 'protocol-error'
   | 'crash'
-  | 'sandbox-unavailable'
   | 'aborted'
 
 /**
- * 统一错误 taxonomy（九分类；分类标签与 kind 映射的值表见 ./errors.ts）。
+ * 统一错误 taxonomy（八分类；分类标签与 kind 映射的值表见 ./errors.ts）。
  * `AcpErrorKind` 是协议层的传输期分类（线上接口形状，remote/service 与 client
  * 面板消费，不变）；本词表是跨层统一的用户问题分类：
  * - `config`：配置/部署错误（agent 配置非法、spawn 计划组装失败、宿主缺 subprocess 能力）
@@ -39,7 +37,6 @@ export type AcpErrorKind =
  * - `protocol-incompatible`：协议不兼容/对端 RPC 拒绝及其它未分类失败
  * - `timeout`：各握手/RPC 超预算
  * - `agent-crash`：agent 进程意外退出
- * - `sandbox-unavailable`：沙箱拒绝/不可用（confine fail closed）
  * - `user-rejected`：用户拒绝/取消（审批拒绝以 ACP outcome `reject_*`/`cancelled`
  * 表达，非 thrown error； 调用方中止在飞 RPC 的 `aborted` kind 归本类）
  * - `resume-conflict`：恢复冲突（预留：当前恢复冲突一律降级为说明性 assistant
@@ -52,7 +49,6 @@ export type AcpErrorCategory =
   | 'protocol-incompatible'
   | 'timeout'
   | 'agent-crash'
-  | 'sandbox-unavailable'
   | 'user-rejected'
   | 'resume-conflict'
 
@@ -114,8 +110,14 @@ export type ElicitationRequestHandler = (
 ) => acp.CreateElicitationResponse | Promise<acp.CreateElicitationResponse>
 
 export interface AcpConnectionOptions extends AcpProcessOptions {
-  /** Validated profile-owned MCP snapshot. Probe callers intentionally omit it. */
-  mcpServers?: readonly acp.McpServer[]
+  /** Both handlers must be present before ACP fs capability is advertised. */
+  fileSystemHandlers?: {
+    readonly readTextFile: (params: acp.ReadTextFileRequest) => acp.ReadTextFileResponse | Promise<acp.ReadTextFileResponse>
+    readonly writeTextFile: (params: acp.WriteTextFileRequest) => acp.WriteTextFileResponse | Promise<acp.WriteTextFileResponse>
+    readonly dispose?: () => void
+  }
+  /** ACP v1 terminal handlers; supplied per connection generation. */
+  terminalHandlers?: AcpTerminalHandlers
   /** `initialize` 的 clientInfo。 */
   clientInfo?: acp.Implementation
   /** initialize 握手超时（默认见 ./connection.ts 的 DEFAULT_INITIALIZE_TIMEOUT_MS）。 */
@@ -126,6 +128,18 @@ export interface AcpConnectionOptions extends AcpProcessOptions {
   onPermissionRequest?: PermissionRequestHandler
   /** Form/url elicitation handler. If absent, the connection declines fail-closed. */
   onElicitationRequest?: ElicitationRequestHandler
+}
+
+/** Protocol-side structural face for the per-connection terminal host. */
+export interface AcpTerminalHandlers {
+  readonly createTerminal: (params: acp.CreateTerminalRequest) => Promise<acp.CreateTerminalResponse>
+  readonly terminalOutput: (params: acp.TerminalOutputRequest) => Promise<acp.TerminalOutputResponse>
+  readonly waitForExit: (params: acp.WaitForTerminalExitRequest) => Promise<acp.WaitForTerminalExitResponse>
+  readonly killTerminal: (params: acp.KillTerminalRequest) => Promise<acp.KillTerminalResponse>
+  readonly releaseTerminal: (params: acp.ReleaseTerminalRequest) => Promise<acp.ReleaseTerminalResponse>
+  readonly cancelSession?: (acpSessionId: string) => void
+  readonly releaseSession?: (acpSessionId: string) => Promise<void>
+  readonly dispose: () => Promise<void>
 }
 
 /**

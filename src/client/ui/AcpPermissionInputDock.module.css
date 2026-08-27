@@ -101,6 +101,20 @@
   white-space: pre-wrap;
 }
 
+.command {
+  max-height: 120px;
+  margin: 0;
+  padding: 6px 8px;
+  overflow: auto;
+  border-radius: 6px;
+  background: var(--dsw-alias-background-tertiary);
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-family: var(--dsw-font-family-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .actionRow {
   display: flex;
   align-items: center;

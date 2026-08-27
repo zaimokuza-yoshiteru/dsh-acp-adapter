@@ -20,10 +20,9 @@
  * - `.menu` 保留 `gap: 6px` 与 `overflow-y: auto`——本菜单含 filter 栏 /
  * live 选项区 / 披露区（上游无），ACP 扩展 要求内容超出 max-height 时在
  *   卡片内部滚动；上游 `overflow: hidden` + 仅 .groups 滚动的形态不适用。
- *   max-height 480px（上游 360px）同理：ACP live 区需要更高预算。
- * - `.menu` 锚定 `left: 0`（上游 `right: 0`）：trigger 在 composer 左侧，
- *   左对齐避免窄屏右溢出。
- * - `.option` 留在 `.optionRow` flex 容器内（行尾还有「设为默认」按钮），
+ *   保持上游 360px 高度，使空白会话中位于页面中部的 composer 也不会把
+ *   菜单顶端推出视口；ACP live 区继续在卡片内部滚动。
+ * - `.option` 留在 `.optionRow` flex 容器内，
  *   故取 flex:1 1 auto 而非上游的 width:auto/min-width:100%。
  * - `.notice` 保留 340px 上限（一次性提示条，ACP 独有面）。
  */
@@ -93,12 +92,11 @@
 /* 上游样式基线：menu 面与上游一致——border-inverted + `--dsw-specific-menu`（与
    ui-primitives Menu 卡同材质）、width max-content 界 240–420、padding 4px、
    scrollbar elevation 在面（非滚动子节点）上重绑定 l2 档（ui-theme
-   styles/scrollbar.css 的重绑定约定）。gap/overflow-y/max-height/left:0
-   是刻意分歧，见文件头。 */
+   styles/scrollbar.css 的重绑定约定）。gap/overflow-y 是刻意分歧，见文件头。 */
 .menu {
   position: absolute;
   bottom: calc(100% + 6px);
-  left: 0;
+  right: 0;
   z-index: 30;
   display: flex;
   flex-direction: column;
@@ -107,7 +105,7 @@
   width: max-content;
   min-width: min(240px, calc(100vw - 32px));
   max-width: min(420px, calc(100vw - 32px));
-  max-height: min(480px, calc(100vh - 120px));
+  max-height: min(360px, calc(100vh - 120px));
  /* ACP 扩展：内容超出 max-height 时在卡片内部滚动，绝不溢出卡片边界。 */
   overflow-y: auto;
   padding: 4px;
@@ -296,30 +294,6 @@
   display: grid;
   place-items: center;
   color: var(--dsw-alias-label-primary);
-}
-.defaultButton {
-  flex: none;
-  align-self: center;
-  border: none;
-  border-radius: 6px;
-  padding: 2px 6px;
-  font: inherit;
-  font-size: 11px;
-  line-height: 18px;
-  background: transparent;
-  color: var(--dsw-alias-label-tertiary);
-  cursor: pointer;
-}
-.defaultButton:hover:not(:disabled) {
-  background: var(--dsw-alias-interactive-bg-hover-solid);
-  color: var(--dsw-alias-label-primary);
-}
-.defaultButton:disabled {
-  cursor: default;
-}
-.isDefault {
-  color: var(--dsw-alias-state-success-primary);
-  cursor: default;
 }
 .status,
 .empty {

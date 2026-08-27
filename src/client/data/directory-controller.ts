@@ -154,7 +154,7 @@ export class SessionModelDirectory {
     this.publish({ ...INITIAL_DIRECTORY_STATE }, (sink) => { sink.directoryReset() })
   }
 
-  /** Authority first, mirror second, recompute last (block/disclosure read the new state). */
+  /** Authority first, mirror second, recompute last (block/backend-access read the new state). */
   private publish(next: ModelDirectoryState, mirror: (sink: DirectoryStoreActions) => void): void {
     this.state = next
     if (this.sink !== null) mirror(this.sink)

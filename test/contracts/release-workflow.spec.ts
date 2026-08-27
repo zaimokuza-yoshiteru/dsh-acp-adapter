@@ -8,7 +8,7 @@ const root = new URL('../..', import.meta.url)
 const pkg = JSON.parse(readFileSync(new URL('package.json', root), 'utf8'))
 
 describe('npm release contract', () => {
-  it('requires the exact version tag and maps prereleases away from latest', () => {
+  it('requires the exact version tag and publishes through the single latest channel', () => {
     const output = join(mkdtempSync(join(tmpdir(), 'dsh-acp-release-')), 'output')
     const stdout = execFileSync(
       process.execPath,
@@ -24,8 +24,8 @@ describe('npm release contract', () => {
       },
     )
 
-    expect(stdout).toContain(`v${pkg.version} -> npm next`)
-    expect(readFileSync(output, 'utf8')).toContain('dist-tag=next\n')
+    expect(stdout).toContain(`v${pkg.version} -> npm latest`)
+    expect(readFileSync(output, 'utf8')).toContain('dist-tag=latest\n')
     expect(readFileSync(output, 'utf8')).toContain(`tarball=zaimokuza-dsh-acp-adapter-${pkg.version}.tgz\n`)
   })
 
@@ -42,7 +42,11 @@ describe('npm release contract', () => {
 
   it('uses OIDC and never wires a long-lived npm token into the workflow', () => {
     const workflow = readFileSync(new URL('.github/workflows/publish.yml', root), 'utf8')
+    expect(workflow).toContain("tags:\n      - 'v*'")
     expect(workflow).toContain('workflow_dispatch:')
+    expect(workflow).toContain('pnpm/action-setup@v4')
+    expect(workflow).toContain('version: 10.7.0')
+    expect(workflow).not.toContain('corepack')
     expect(workflow).toContain('id-token: write')
     expect(workflow).toContain('environment: npm-publish')
     expect(workflow).toContain('npm publish "dist/npm/${{ needs.pack.outputs.tarball }}"')

@@ -1416,6 +1416,37 @@ describe('非文本内容（chunk 有界可见占位；tool result 占位/摘要
     expect(at(translator.warnings, 0).message).toContain('已按占位/摘要落盘')
   })
 
+  it('terminal content uses the live M5 snapshot when the terminal ID is owned', () => {
+    const { sink, translator } = makeTranslator({
+      terminalSnapshot: (terminalId) => terminalId === 'term-live'
+        ? {
+            terminalId,
+            command: '/bin/echo',
+            output: 'hello from terminal',
+            truncated: false,
+            exitStatus: { exitCode: 0, signal: null },
+            released: true,
+          }
+        : undefined,
+    })
+    translator.beginTurn(1)
+    translator.feed(notification({ sessionUpdate: 'tool_call', toolCallId: 'tc-live-terminal', title: 'Run command' }))
+    translator.feed(notification({
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'tc-live-terminal',
+      status: 'completed',
+      content: [{ type: 'terminal', terminalId: 'term-live' }],
+    }))
+    const result = at(ofType(sink.events, 'tool/result'), 0)
+    expect(toolResultTexts(sink.events, 0)[0]).toContain('hello from terminal')
+    expect(result.data.meta).toMatchObject({
+      acpToolPresentation: {
+        content: [{ type: 'terminal', terminalId: 'term-live' }],
+      },
+    })
+    expect(warningCodes(translator)).toEqual([])
+  })
+
   it('fallback（tool_call 帧 content）与终态 update 同源映射：非文本项同样占位落盘', () => {
     const { sink, translator } = makeTranslator()
     translator.beginTurn(1)
@@ -1637,14 +1668,14 @@ describe(' tool result fidelity：每种 ACP content type 在 export 中都有�
 
   it('terminal：占位块（terminalId + 输出不可得原因）+ meta + degradation', () => {
     const { degradations, texts, meta } = runToolResult([{ type: 'terminal', terminalId: 'term-42' }])
-    expect(at(texts, 0)).toBe('[terminal 占位] terminalId=term-42：DSH 未广告 terminal 能力，输出不可得')
+    expect(at(texts, 0)).toBe('[terminal 占位] terminalId=term-42：DSH 暂未提供 terminal 实时展示；输出由 Agent 通过 ACP terminal/output 获取')
     expect(at(meta?.acpToolContent.items ?? [], 0)).toEqual({
       type: 'terminal',
       terminalId: 'term-42',
-      reason: 'DSH 未广告 terminal 能力，输出不可得',
+      reason: 'DSH 暂未提供 terminal 实时展示；输出由 Agent 通过 ACP terminal/output 获取',
     })
     expect(degradations[0]?.items).toEqual([
-      { type: 'terminal', reason: 'DSH 未广告 terminal 能力，输出不可得' },
+      { type: 'terminal', reason: 'DSH 暂未提供 terminal 实时展示；输出由 Agent 通过 ACP terminal/output 获取' },
     ])
   })
 
@@ -1833,7 +1864,7 @@ describe(' tool result fidelity：每种 ACP content type 在 export 中都有�
       status: 'completed',
       content: [{ type: 'terminal', terminalId: 't-1' }],
     }))
-    expect(toolResultTexts(sink.events, 0)).toEqual(['[terminal 占位] terminalId=t-1：DSH 未广告 terminal 能力，输出不可得'])
+    expect(toolResultTexts(sink.events, 0)).toEqual(['[terminal 占位] terminalId=t-1：DSH 暂未提供 terminal 实时展示；输出由 Agent 通过 ACP terminal/output 获取'])
     expect(toolResultMeta(sink.events, 0)?.acpToolContent.originalItems).toBe(1)
     expect(warningCodes(translator)).toEqual(['unsupported-tool-content'])
   })

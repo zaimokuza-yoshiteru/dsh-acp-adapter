@@ -6,7 +6,7 @@
 //   1. 写入一次性 throwaway 源文件 src/remote/__stale-build-check__.ts
 //      （落在 files[] 的 lib/remote/**/*.js 与 lib/types/**/*.d.ts 覆盖内）；
 //   2. pnpm build → 断言三个产物（.js / .d.ts / .d.ts.map）在 lib/ 存在，
-//      且 .js 与 .d.ts 出现在 pnpm pack --dry-run --json 清单（.d.ts.map
+//      且 .js 与 .d.ts 出现在 npm pack --dry-run --json 清单（.d.ts.map
 //      按 verify-bundle 纪律不进 tarball）；
 //   3. 删除源文件 → pnpm build → 断言三个产物从 lib/ 消失，且 pack 清单
 //      不含任何 __stale-build-check__ 路径。
@@ -14,7 +14,8 @@
 // 安全：marker 源文件已存在即 fail loud（绝不覆盖用户文件）；任何失败在
 // finally 里删除 marker 源，绝不留仓内垃圾。只用 node: 标准库，无 shell。
 import { execFileSync } from 'node:child_process'
-import { existsSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import os from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -38,15 +39,10 @@ if (existsSync(MARKER_SOURCE)) {
   process.exit(1)
 }
 
-/** corepack 直调优先（理由见 prepack.mjs 同款注释），ENOENT 回退 PATH pnpm。 */
+/** Resolve pnpm from PATH; CI selects its version explicitly. */
 function pnpm(args, options = {}) {
-  const opts = { cwd: root, stdio: 'inherit', ...options }
-  try {
-    return execFileSync('corepack', ['pnpm', ...args], opts)
-  } catch (error) {
-    if (error?.code !== 'ENOENT') throw error
-    return execFileSync('pnpm', args, opts)
-  }
+  const opts = { cwd: root, stdio: 'inherit', shell: process.platform === 'win32', ...options }
+  return execFileSync('pnpm', args, opts)
 }
 
 function build() {
@@ -54,16 +50,22 @@ function build() {
   pnpm(['run', 'build'])
 }
 
-/** pnpm pack --dry-run --json 的 tarball 文件清单（嵌套标记防 prepack 递归）。 */
+/** npm pack --dry-run --json 的 tarball 文件清单。 */
 function packFileList() {
-  const env = { ...process.env, DSH_ACP_PREPACK_NESTED: '1' }
-  const out = pnpm(['pack', '--dry-run', '--json'], {
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-    env,
-  })
-  const tar = JSON.parse(out.slice(out.indexOf('{')))
-  return new Set((tar.files ?? []).map((file) => file.path))
+  const cache = mkdtempSync(join(os.tmpdir(), 'dsh-acp-npm-cache-'))
+  try {
+    const out = execFileSync('npm', ['--cache', cache, 'pack', '--dry-run', '--json', '--ignore-scripts'], {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: process.platform === 'win32',
+    })
+    const parsed = JSON.parse(out)
+    const tar = Array.isArray(parsed) ? parsed[0] : parsed
+    return new Set((tar?.files ?? []).map((file) => file.path))
+  } finally {
+    rmSync(cache, { recursive: true, force: true })
+  }
 }
 
 const failures = []
@@ -82,7 +84,8 @@ try {
   }
   if (failures.length === 0) console.log('[stale-build] 首轮：marker 产物在 lib/ 与 tarball 均在场（符合预期）')
 
-  rmSync(MARKER_SOURCE)
+  // Keep cleanup idempotent so a failed build never leaves the marker behind.
+  rmSync(MARKER_SOURCE, { force: true })
 
   build()
   for (const rel of MARKER_ARTIFACTS) {

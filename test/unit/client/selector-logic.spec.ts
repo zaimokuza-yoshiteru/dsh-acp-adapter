@@ -378,8 +378,9 @@ describe('rowId / optionsOf / selectionOf', () => {
 // ---------- backend 兼容矩阵 ----------
 
 describe('backend 兼容矩阵（backendOfProvider / isSameBackendSelection / decodeBackendState）', () => {
-  it('decodeBackendState：blank / established 两形态；畸形整体 undefined', () => {
+  it('decodeBackendState：blank / draft / established 三形态；畸形整体 undefined', () => {
     expect(decodeBackendState({ state: 'blank' })).toEqual({ state: 'blank' });
+    expect(decodeBackendState({ state: 'draft', provider: 'acp-devin' })).toEqual({ state: 'draft', provider: 'acp-devin' });
     expect(decodeBackendState({ state: 'established', provider: 'acp-devin' })).toEqual({ state: 'established', provider: 'acp-devin' });
     expect(decodeBackendState({ state: 'established' })).toBeUndefined();
     expect(decodeBackendState({ state: 'established', provider: '' })).toBeUndefined();
@@ -393,14 +394,21 @@ describe('backend 兼容矩阵（backendOfProvider / isSameBackendSelection / de
     expect(backendOfProvider('deepseek')).toBe('deepseek');
   });
 
-  it('blank backend：没有执行 backend，native 或任意 ACP profile 都在原会话首次采用', () => {
+  it('blank backend：无 live wrapper 时可在原会话首次采用；已有 wrapper 只能保留原路由', () => {
     const blank: PickerBackendState = { state: 'blank' };
     expect(isSameBackendSelection({ provider: 'deepseek' }, blank)).toBe(true);
     expect(isSameBackendSelection({ provider: 'acp-devin' }, blank)).toBe(true);
-    expect(isSameBackendSelection({ provider: 'acp-devin' }, blank, 'deepseek')).toBe(true);
-    expect(isSameBackendSelection({ provider: 'anthropic' }, blank, 'deepseek')).toBe(true);
+    expect(isSameBackendSelection({ provider: 'acp-devin' }, blank, 'deepseek')).toBe(false);
+    expect(isSameBackendSelection({ provider: 'anthropic' }, blank, 'deepseek')).toBe(false);
     expect(isSameBackendSelection({ provider: 'acp-devin' }, blank, 'acp-devin')).toBe(true);
-    expect(isSameBackendSelection({ provider: 'acp-other' }, blank, 'acp-devin')).toBe(true);
+    expect(isSameBackendSelection({ provider: 'acp-other' }, blank, 'acp-devin')).toBe(false);
+  });
+
+  it('draft backend：ACP wrapper 已启动但首条 prompt 未提交，仅同 profile 可原地切换', () => {
+    const draft: PickerBackendState = { state: 'draft', provider: 'acp-devin' };
+    expect(isSameBackendSelection({ provider: 'acp-devin' }, draft)).toBe(true);
+    expect(isSameBackendSelection({ provider: 'acp-kimi' }, draft)).toBe(false);
+    expect(isSameBackendSelection({ provider: 'deepseek' }, draft)).toBe(false);
   });
 
   it('/model 与 composer 共享 native fail-soft 路由：Remote 不可用时只放行已知 native→native', () => {
@@ -453,11 +461,22 @@ describe('backend 兼容矩阵（backendOfProvider / isSameBackendSelection / de
     expect(rows[0]).not.toHaveProperty('confirmation');
   });
 
-  it('optionsOf 带 blank backend：ACP 与 native 均为原会话首次采用', () => {
+  it('optionsOf 带 blank backend：已有 native wrapper 时 ACP 行标为跨 backend（点击自动新建）', () => {
     const t: PickerTranslate = (key, params) => `${key}:${params?.['message'] ?? params?.['detail'] ?? ''}`;
     const rows = optionsOf(directory, t, { state: 'blank' });
     expect(rows.filter((row) => row.id.startsWith('deepseek/')).every((row) => row.crossBackend !== true)).toBe(true);
-    expect(rows.filter((row) => row.id.startsWith('acp-devin/')).every((row) => row.crossBackend !== true)).toBe(true);
+    expect(rows.filter((row) => row.id.startsWith('acp-devin/')).every((row) => row.crossBackend === true)).toBe(true);
+  });
+
+  it('ACP 不再增加权限确认；blank→ACP 自动新建，不展示壳内确认', () => {
+    const t: PickerTranslate = (key) => key;
+    const blankRows = optionsOf(directory, t, { state: 'blank' });
+    expect(blankRows.filter((row) => row.id.startsWith('acp-devin/'))
+      .every((row) => row.confirmation === undefined)).toBe(true);
+
+    const establishedRows = optionsOf(directory, t, { state: 'established', provider: 'acp-devin' });
+    expect(establishedRows.find((row) => row.id === 'acp-devin/devin-latest')?.confirmation)
+      .toBeUndefined();
   });
 });
 
@@ -939,7 +958,7 @@ describe('withLiveOptionValue', () => {
   });
 });
 
-// ---------- 设为默认（agent-default-model ns） ----------
+// ---------- DSH 默认模型设置（agent-default-model ns） ----------
 
 describe('decodeAgentDefaultModel / defaultModelOps / isDefaultSelection', () => {
   it('decodeAgentDefaultModel：缺席/畸形 → undefined；合法解出且杂键剥离', () => {

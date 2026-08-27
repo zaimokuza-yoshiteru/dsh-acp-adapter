@@ -1,7 +1,6 @@
 /**
  * 端到端能力矩阵：Agent 在 initialize 握手广告的能力不等于
- * 产品端到端能力——图片输入还要求 DSH durable attachment seam，MCP 还要求
- * profile 明确配置。本模块把每行能力的三列事实（Agent advertisement / adapter path /
+ * 产品端到端能力——图片输入还要求 DSH durable attachment seam。本模块把每行能力的三列事实（Agent advertisement / adapter path /
  * host seam）折成三值状态（supported | degraded | unsupported），host 侧计算
  * （src/remote/service.ts 的 health probe-ok 分支）、wire 传输
  * （src/contract/remote.ts `AcpCapabilityMatrixRow`）、client 渲染
@@ -50,18 +49,10 @@ export interface AcpCapabilityAdvertisement {
 }
 
 /** Health probe 的临时沙箱事实；保留为兼容输入，但不作为正式会话能力展示。 */
-export interface AcpSandboxPostureFact {
-  readonly platform: string
-  readonly enforcement: 'full' | 'partial'
-  readonly note: string | null
-}
 
 /** Host/plugin seams that materially change end-to-end capability. */
 export interface AcpCapabilityHostSeams {
   readonly imageInput: boolean
-  /** Whether this profile has an explicit MCP transport configured. */
-  readonly mcpHttpConfigured?: boolean
-  readonly mcpSseConfigured?: boolean
 }
 
 /** caps 为 null（无握手数据）时广告门控行的统一说明。 */
@@ -138,11 +129,30 @@ function imageRow(advertised: boolean | null, available: boolean): AcpCapability
   }
 }
 
-/** MCP 行：profile 显式配置 + Agent transport 广告共同决定端到端状态。 */
-function mcpRow(id: string, advertised: boolean | null, configured: boolean): AcpCapabilityMatrixRow {
-  if (!configured) return { id, advertised, adapterPath: 'profile-mcp-snapshot', hostSeam: null, status: 'unsupported', note: 'no MCP server is configured for this profile' }
-  if (advertised === true) return { id, advertised, adapterPath: 'profile-mcp-snapshot', hostSeam: 'profile-settings', status: 'supported' }
-  return { id, advertised, adapterPath: 'profile-mcp-snapshot', hostSeam: 'profile-settings', status: 'unsupported', note: advertised === null ? UNKNOWN_ADVERTISEMENT_NOTE : 'the agent did not advertise this MCP transport' }
+/**
+ * ACP 传输广告只说明 Agent 能接收 client 传入的 MCP server。当前插件
+ * 没有 DSH 可序列化 MCP registry seam，session/new 与 session/load 传空列表，
+ * 因此不能把该广告标成端到端支持。Agent 自己的 MCP 配置仍由 Agent 管理。
+ */
+function mcpRow(id: string, advertised: boolean | null): AcpCapabilityMatrixRow {
+  if (advertised === true) {
+    return {
+      id,
+      advertised,
+      adapterPath: 'mcpServers-empty',
+      hostSeam: null,
+      status: 'degraded',
+      note: 'the Agent advertises this MCP transport, but DSH MCP servers are not injected; Agent-native MCP configuration remains authoritative',
+    }
+  }
+  return {
+    id,
+    advertised,
+    adapterPath: 'mcpServers-empty',
+    hostSeam: null,
+    status: 'unsupported',
+    note: advertised === null ? UNKNOWN_ADVERTISEMENT_NOTE : 'the Agent did not advertise this MCP transport',
+  }
 }
 
 /**
@@ -152,7 +162,6 @@ function mcpRow(id: string, advertised: boolean | null, configured: boolean): Ac
  */
 export function acpCapabilityMatrix(
   caps: AcpCapabilityAdvertisement | null,
-  _sandbox: AcpSandboxPostureFact | null,
   host: AcpCapabilityHostSeams = { imageInput: false },
 ): readonly AcpCapabilityMatrixRow[] {
   const advertised = (key: keyof AcpCapabilityAdvertisement): boolean | null => (caps === null ? null : caps[key])
@@ -166,7 +175,7 @@ export function acpCapabilityMatrix(
     imageRow(advertised('promptImage'), host.imageInput),
     textOnlyRow('promptAudio', advertised('promptAudio'), 'audio'),
     textOnlyRow('promptEmbeddedContext', advertised('promptEmbeddedContext'), 'embedded-context'),
-    mcpRow('mcpHttp', advertised('mcpHttp'), host.mcpHttpConfigured === true),
-    mcpRow('mcpSse', advertised('mcpSse'), host.mcpSseConfigured === true),
+    mcpRow('mcpHttp', advertised('mcpHttp')),
+    mcpRow('mcpSse', advertised('mcpSse')),
   ]
 }

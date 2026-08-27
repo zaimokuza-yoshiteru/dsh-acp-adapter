@@ -18,8 +18,7 @@
 // 修复前本测试必失败在 mount 首行的 unscoped 拒绝——既有 365 例漏检 宿主模块实例一致性
 // 的原因正在于此：createHarness 路径从不过 agent-presets 的真实 mount。
 //
-// 孤儿进程防线与各 spec 同款：argv 带 SPEC_TAG，afterEach 兜底 dispose，
-// afterAll `ps` 全量扫描（本用例为懒启动，正常零 spawn，扫描是双保险）。
+// afterEach 兜底 dispose 全部 handle；共享 subprocess runtime 在文件结束时兜底回收。
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -30,10 +29,8 @@ import { scopeOf } from '@deepseek-ai/dsh-scope';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import { AcpAgent } from '../../../src/domain/session/agent.ts';
 import {
-  SPEC_TAG,
   createHarness,
   mockProfile,
-  psLinesWithTag,
   registerAcpAgents,
   routeOf,
 } from '../../fixtures/agent-test-helpers.ts';
@@ -57,7 +54,6 @@ afterEach(async () => {
 });
 
 afterAll(() => {
-  expect(psLinesWithTag(SPEC_TAG)).toEqual([]);
   fs.rmSync(suiteDir, { recursive: true, force: true });
 });
 

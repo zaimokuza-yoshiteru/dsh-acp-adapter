@@ -1,7 +1,7 @@
 // client-logic.spec.ts — 随附测试：设置面板 client 半纯逻辑（src/client/data/logic.ts）黑盒契约测试。
 //
 // 被测模块零 import（无 DOM/fetch/React），直接 vitest 可测。契约值交叉核对自宿主侧
-// src/host/composition/registry.ts（settings 形状与 DEVIN_ACP_TEMPLATE）、src/contract/remote.ts（dshAcp
+// src/host/composition/installed-profile-registry.ts（settings 形状与 DEVIN_ACP_TEMPLATE）、src/contract/remote.ts（dshAcp
 // Remote wire 形状）、src/protocol/v1/types.ts（AcpErrorKind 的 'auth_required'），此处以字面值
 // 钉死——client 半禁止 import host 模块，本测试同样只 import 被测模块。
 //
@@ -23,7 +23,6 @@
 //   - commandLineOf、panelSettingsOf 四态投影（ready/unavailable/loading/invalid）
 // - decodeHealthResponse：三种 probe 分支逐字段、 state 五态词表强制、
 //     畸形 body/行/probe 整体拒绝（传染）
-// - decodeSandboxFact：合法事实透传；缺席/畸形容忍归 null（不传染健康数据）
 // - healthRowOf（按 Agent ID 匹配健康数据）
 // - errorMessageOf（起旁路 HTTP 词汇 ACP_HEALTH_PATH/acpAuthenticatePath/
 //     parseHttpErrorMessage 已随 dshAcp Remote 迁移删除）
@@ -44,7 +43,6 @@ import {
   decodeAcpSettings,
   decodeBoundSessions,
   decodeHealthResponse,
-  decodeSandboxFact,
   draftFromAgent,
   draftFromTemplate,
   dropMaskedEnvKey,
@@ -104,7 +102,7 @@ const okCleanup = { close: 'not-advertised' as const, delete: 'done' as const, m
 /** 端到端能力矩阵夹具（okRow 与各 ok probe 字面量共用；两行覆盖 supported/unsupported + note）。 */
 const okMatrix = [
   { id: 'loadSession', advertised: true, adapterPath: 'resume-staging', hostSeam: null, status: 'supported' as const },
-  { id: 'promptImage', advertised: true, adapterPath: 'text-only-block', hostSeam: null, status: 'unsupported' as const, note: 'agent advertises image but adapter v1 is text-only' },
+  { id: 'promptImage', advertised: true, adapterPath: 'durable-attachment-to-inline-image', hostSeam: 'attachments', status: 'supported' as const },
 ];
 
 const okRow: AcpProviderHealth = {
@@ -240,7 +238,7 @@ describe('常量：与宿主侧契约逐字对齐', () => {
       command: 'codex-acp',
       args: [],
       env: {},
-      loginHint: 'codex-acp cli login（或 codex login）',
+      loginHint: 'codex login',
       runtime: 'codex',
     });
   });
@@ -293,7 +291,7 @@ describe('decodeAcpSettings', () => {
     expect(decodeAcpSettings({ agents: 1 })).toBeUndefined();
   });
 
- it('解码合法条目：args/env 缺席补默认（null 同缺席）、loginHint 保留、未知键剥离（credentialReadPaths 已废，按未知键剥离）', () => {
+ it('解码合法条目：args/env 缺席补默认，已删除的凭证路径与 profile MCP 字段按未知键剥离', () => {
     const decoded = decodeAcpSettings({
       agents: {
         devin: {
@@ -303,6 +301,7 @@ describe('decodeAcpSettings', () => {
           env: { A: '1' },
           loginHint: 'devin auth login',
           credentialReadPaths: ['~/.local/share/devin/credentials.toml'],
+          mcpServers: [{ type: 'stdio', name: 'legacy' }],
           stray: true,
         },
         foo: { name: 'Foo', command: 'foo-cli' },
@@ -655,7 +654,7 @@ describe('草稿种子：emptyDraft / draftFromTemplate / draftFromAgent', () =>
       command: 'codex-acp',
       argsText: '',
       envText: '',
-      loginHint: 'codex-acp cli login（或 codex login）',
+      loginHint: 'codex login',
       runtime: 'codex',
     });
     const { id: _cxId, ...codexValue } = CODEX_ACP_TEMPLATE;
@@ -967,40 +966,6 @@ describe('decodeHealthResponse', () => {
     ];
     for (const [label, probe] of badProbes) {
       expect(decodeHealthResponse({ providers: [{ ...okRow, probe }] }), label).toBeUndefined();
-    }
-  });
-});
-
-// ---------- 沙箱 enforcement 事实解码（容忍式，与 decodeHealthResponse 的整体拒绝不同） ----------
-
-describe('decodeSandboxFact', () => {
-  it('合法事实逐字段透传：full/note=null 与 partial/note=文案 两态', () => {
-    expect(decodeSandboxFact({ providers: [], sandbox: { platform: 'darwin', enforcement: 'full', note: null } })).toEqual({
-      platform: 'darwin',
-      enforcement: 'full',
-      note: null,
-    });
-    const partial = { platform: 'win32', enforcement: 'partial', note: 'ACL 加固为尽力而为' };
-    expect(decodeSandboxFact({ providers: [], sandbox: partial })).toEqual(partial);
-  });
-
-  it('容忍缺席/畸形一律归 null：面板少一行标注，绝不让健康数据失格', () => {
-    const bads: Array<[string, unknown]> = [
-      ['body 非 object（null）', null],
-      ['body 非 object（数组）', []],
-      ['sandbox 键缺席（旧版 host 半）', { providers: [] }],
-      ['sandbox 为 null', { sandbox: null }],
-      ['sandbox 非 object', { sandbox: 'partial' }],
-      ['platform 缺席', { sandbox: { enforcement: 'full', note: null } }],
-      ['platform 空串', { sandbox: { platform: '', enforcement: 'full', note: null } }],
-      ['platform 非 string', { sandbox: { platform: 42, enforcement: 'full', note: null } }],
-      ['enforcement 非法值', { sandbox: { platform: 'darwin', enforcement: 'enforced', note: null } }],
-      ['enforcement 缺席', { sandbox: { platform: 'darwin', note: null } }],
-      ['note 非 string/null', { sandbox: { platform: 'darwin', enforcement: 'full', note: 0 } }],
-      ['note 缺席', { sandbox: { platform: 'darwin', enforcement: 'full' } }],
-    ];
-    for (const [label, body] of bads) {
-      expect(decodeSandboxFact(body), label).toBeNull();
     }
   });
 });

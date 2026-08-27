@@ -12,7 +12,7 @@
  * @module @zaimokuza/dsh-acp-adapter/client/stores/panel-store
  */
 
-import type { AcpProviderHealth, AcpSandboxFact, PanelSettingsState } from '../logic.ts'
+import type { AcpProviderHealth, PanelSettingsState } from '../logic.ts'
 import { defineSnapshotStore } from './engine.ts'
 import type { ActionsDecl, BakedActions, StoreHandle } from './engine.ts'
 
@@ -21,8 +21,6 @@ export interface HealthState {
   /** 'idle' until the panel first mounts; 'unreachable' = the dshAcp Remote namespace cannot be reached (host half absent/down). */
   status: 'idle' | 'loading' | 'ready' | 'unreachable'
   rows: readonly AcpProviderHealth[]
- /** 本平台沙箱 enforcement 事实（health 响应顶层 `sandbox` 字段的容忍式解码结果）。与 rows 同款纪律：只在成功刷新时更新，刷新失败保留上一份。 */
-  sandbox: AcpSandboxFact | null
   fetchedAt: number | undefined
   message: string | undefined
   /** 正在执行卡片级检查的 agent；不同 agent 可并行，同一 agent 自动去重。 */
@@ -42,7 +40,7 @@ const initialPanelState = (): AcpPanelSnapshot => ({
   // 时的 resync 会立刻把真实投影灌进来，这只是工厂播种值）。
   settings: { status: 'loading', writable: false, agents: {}, revision: undefined },
   health: {
-    status: 'idle', rows: [], sandbox: null, fetchedAt: undefined, message: undefined,
+    status: 'idle', rows: [], fetchedAt: undefined, message: undefined,
     checkingAgentIds: [], agentErrors: {},
   },
 })
@@ -60,15 +58,14 @@ const panelActions = {
     draft.health.checkingAgentIds = []
     draft.health.agentErrors = {}
   },
-  /** A refresh landed: rows/sandbox replace wholesale, the error clears. */
+  /** A refresh landed: rows replace wholesale, the error clears. */
   healthReady(
     draft: AcpPanelSnapshot,
     rows: readonly AcpProviderHealth[],
-    sandbox: AcpSandboxFact | null,
     fetchedAt: number,
   ): void {
     draft.health = {
-      status: 'ready', rows, sandbox, fetchedAt, message: undefined,
+      status: 'ready', rows, fetchedAt, message: undefined,
       checkingAgentIds: [], agentErrors: {},
     }
   },
@@ -91,7 +88,6 @@ const panelActions = {
     draft: AcpPanelSnapshot,
     agentId: string,
     row: AcpProviderHealth,
-    sandbox: AcpSandboxFact | null,
     fetchedAt: number,
   ): void {
     draft.health.status = 'ready'
@@ -102,7 +98,6 @@ const panelActions = {
     draft.health.rows = index < 0
       ? [...draft.health.rows, row].sort((left, right) => left.id.localeCompare(right.id))
       : draft.health.rows.map((candidate, candidateIndex) => candidateIndex === index ? row : candidate)
-    draft.health.sandbox = sandbox
     draft.health.fetchedAt = fetchedAt
   },
   /** A targeted transport/contract failure belongs to that card, not the whole panel. */

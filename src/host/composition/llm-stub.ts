@@ -10,7 +10,7 @@
  * error 30s, agent-config.ts `acpProbeFresh`) so the model selector
  * never re-spawns on reopen, and the panel refreshes via {@link AcpStubAdapter.invalidateProbe}.
  *
- * The adapter owns no registration: ./registry.ts registers/replaces routes and
+ * The adapter owns no registration: ./installed-profile-registry.ts registers/replaces routes and
  * directory entries. This module is deliberately free of cordis imports so the
  * cache and failure mapping stay unit-testable with plain fakes.
  *
@@ -38,16 +38,14 @@ import type { AcpSpawnPlanView } from '../../runtime/process/types.ts'
 import type { SubprocessSeamResolution } from '../../runtime/process/subprocess.ts'
 
 // probe 缓存键的真源下沉到 domain/session/agent-config.ts（remote/创建门
-// 消费）；本 re-export 保持旧 import 路径（registry.ts 与 test/ 先例）不变。
+// 消费）；本 re-export 保持稳定的 composition import 路径。
 export { acpProbeConfigKey }
 
 /**
- * Probe confiner（probe 与会话同档 confine，并固定为 read-only；
- * disposable 数据根）：./registry.ts 组装，读 `dshHomePath`/`sandbox` slot 产出
- * probe 的 {@link AcpProbeConfinement}（spawn 计划 + disposable run 目录 cwd +
- * 清理回调；机制见 registry.ts `createProbeConfiner`）。
+ * Probe runtime preparation：为健康探测准备临时 cwd 和清理回调；正式会话
+ * 不经探测临时目录，也不重定向 Agent data home。
  */
-export interface AcpProbeConfineInput {
+export interface AcpProbeRuntimePreparationInput {
   /** 完整路由 id（`acp-<id>`）。 */
   readonly provider: string
   /** 该路由的当前配置。 */
@@ -57,14 +55,14 @@ export interface AcpProbeConfineInput {
 }
 
 /**
- * Probe confinement 产物（disposable probe）：spawn 计划 + 可选的 probe
+ * Probe runtime preparation 产物（disposable probe）：spawn 计划 + 可选的 probe
  * cwd（disposable 数据根——probe 的 session/new 落点，ownsCwd=false，probe 自身
  * 不删）+ 清理回调。`cleanup` 由 {@link AcpStubAdapter} 在 probe 结束后（成功、
  * 失败、清理失败一律）于 finally 调用；cleanup 自身失败仅 warn，不翻转 probe
  * 结果（协议清理尽力而为 + disposable 根必删的纪律见 与
- * src/domain/session/agent-config.ts descriptor `probeCleanup`）。
+ * session configuration keeps only the probe's protocol cleanup outcome.
  */
-export interface AcpProbeConfinement {
+export interface AcpProbeRuntimePreparation {
   /** probe 的 spawn 计划（env 整体由计划供给）。 */
   readonly plan: AcpSpawnPlanView
   /** disposable probe cwd；缺席时 probe 用系统临时目录（ownsCwd=true 自删，旧行为）。 */
@@ -73,8 +71,8 @@ export interface AcpProbeConfinement {
   readonly cleanup: () => Promise<void> | void
 }
 
-/** Probe confiner：返回 confinement；失败抛错（经 {@link AcpStubAdapter} 的失败映射进 probe 缓存）。 */
-export type AcpProbeConfiner = (input: AcpProbeConfineInput) => Promise<AcpProbeConfinement>
+/** Probe runtime preparer：返回临时运行目录和清理回调。 */
+export type AcpProbeRuntimePreparer = (input: AcpProbeRuntimePreparationInput) => Promise<AcpProbeRuntimePreparation>
 
 export interface AcpStubAdapterOptions {
   /**
@@ -91,13 +89,13 @@ export interface AcpStubAdapterOptions {
    */
   subprocess: SubprocessSeamResolution
   /**
- * Probe 的 spawn 计划 confiner（裁决：probe 同档 confine，read-only）。
+ * Probe 的 runtime preparation（临时 cwd + cleanup，不提供安全隔离）。
  * 存在时 probe 以 `spawnPlan` spawn（env 整体由计划供给）；缺席时保持
    * 逐字节旧行为（配置 env 原样透传、无 confine——纯模块单测路径）。
    */
-  confineProbe?: AcpProbeConfiner
+  prepareProbe?: AcpProbeRuntimePreparer
   /**
- * 结构性 warn 通道（边界：confinement cleanup 失败只 warn 不翻转 probe
+ * 结构性 warn 通道（runtime cleanup 失败只 warn 不翻转 probe
    * 结果）。缺席时写 `process.stderr` 保底。
    */
   onWarn?: (message: string) => void
@@ -216,10 +214,9 @@ function acpProbeFailure(error: unknown, config: AcpStubAgentConfig): { kind: Ac
         const fact = exit === undefined ? '退出状态未知' : `exit code ${String(exit.code ?? 'none')}, signal ${exit.signal ?? 'none'}`
         return wrap(error.kind, `ACP agent "${config.command}" 在探测期间意外退出（${fact}）；修复后请在 ACP 面板点「重新检查」重试${ref}`)
       }
- // protocol-error / sandbox-unavailable( 预留)：协议层（connection
+ // protocol-error（预留）：协议层（connection
       // classify）的 message 已是完整的诊断事实，透传即可。
       case 'protocol-error':
-      case 'sandbox-unavailable':
         return wrap(error.kind, `${error.message}${ref}`)
     }
   }
@@ -309,37 +306,36 @@ export class AcpStubAdapter extends LlmAdapter {
   private async probeAndCache(provider: string, config: AcpStubAgentConfig, key: string): Promise<readonly LlmModelInfo[]> {
  // 埋点：实际 probe 的延迟与结果（缓存命中/在飞合并不计）
     const started = Date.now()
- // 边界：confinement 的清理回调（disposable probe 根必删）——成功、失败、
+ // 边界：runtime preparation 的清理回调（disposable probe 根必删）——成功、失败、
     // probe 内清理失败一律经 finally 执行；cleanup 自身失败仅 warn，不翻转结果。
-    let confinement: AcpProbeConfinement | undefined
+    let preparation: AcpProbeRuntimePreparation | undefined
     try {
  // fail closed：seam 缺席（宿主无 subprocess 服务）时 probe 以
       // spawn-failure 响亮进缓存——零 spawn、零目录副作用，不自制回退。
       const resolution = this.options.subprocess
       if (!resolution.ok) throw new AcpClientError('spawn-failure', resolution.message, { category: 'config' })
-      // cwd 仅作 spawn/session/new 的落点：无 confiner 时 probe 用系统临时目录，
- // 与任何工作区无关。confiner 在场时（接线）probe 同档 confine
- // （read-only）；confinement 携带 disposable run 目录作 cwd
+      // cwd 仅作 spawn/session/new 的落点：无 preparation 时 probe 用系统临时目录，
+      // 与任何工作区无关。preparer 在场时使用 disposable run 目录作 cwd。
       // （ownsCwd=false，probe 不自删，由 finally 的 cleanup 删除），env 由
       // spawn 计划整体供给；缺省保持配置 env 原样透传的旧行为。
       const argv = [config.command, ...config.args]
-      const confiner = this.options.confineProbe
-      confinement = confiner === undefined ? undefined : await confiner({ provider, config, argv })
+      const preparer = this.options.prepareProbe
+      preparation = preparer === undefined ? undefined : await preparer({ provider, config, argv })
       const probe = await AcpClientConnection.probe(
-        confinement === undefined
+        preparation === undefined
           ? { argv, cwd: os.tmpdir(), env: { ...config.env }, subprocess: resolution.seam }
           : {
               argv,
-              cwd: confinement.cwd ?? os.tmpdir(),
+              cwd: preparation.cwd ?? os.tmpdir(),
               env: {},
-              spawnPlan: confinement.plan,
+              spawnPlan: preparation.plan,
               subprocess: resolution.seam,
             },
  // 边界：disposable run 目录同时作 session/new 落点（options.cwd 提供则
-        // probe 不自删——由 finally 的 confinement.cleanup 删除）。
-        confinement?.cwd === undefined
+        // probe 不自删——由 finally 的 preparation.cleanup 删除）。
+        preparation?.cwd === undefined
           ? this.probeOptions
-          : { ...this.probeOptions, cwd: confinement.cwd },
+          : { ...this.probeOptions, cwd: preparation.cwd },
       )
       const models = probeModels(provider, probe.configOptions)
       this.options.metrics?.observe(ACP_METRIC.probe, Date.now() - started, { provider, result: 'ok' })
@@ -374,12 +370,12 @@ export class AcpStubAdapter extends LlmAdapter {
       })
       throw failure.error
     } finally {
-      if (confinement !== undefined) {
+      if (preparation !== undefined) {
         try {
-          await confinement.cleanup()
+          await preparation.cleanup()
         } catch (error: unknown) {
           const warn = this.options.onWarn ?? ((message: string) => { process.stderr.write(`dsh-acp: ${message}\n`) })
-          warn(`probe confinement cleanup failed for "${provider}" (${error instanceof Error ? error.message : String(error)}); the disposable probe root may linger until the next probe sweep`)
+          warn(`probe runtime cleanup failed for "${provider}" (${error instanceof Error ? error.message : String(error)}); the disposable probe root may linger until the next probe sweep`)
         }
       }
     }

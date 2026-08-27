@@ -5,7 +5,7 @@
 //   hostCompat       src/host-compat/**        —— 宿主兼容岛（vendor/窄化/fail-closed，不得出岛）
 //   runtime          src/runtime/**            —— 进程/超时/stderr 等无协议语义的运行时件
 //   protocol         src/protocol/**           —— ACP 协议半（连接、翻译、命令；可依赖 runtime）
-//   domainPolicy     src/domain/policy/**      —— 审批桥、审计载荷、sandbox spawn plan
+//   domainPolicy     src/domain/policy/**      —— 审批桥、审计载荷、原生访问启动策略
 // domainObservability src/domain/observability/** —— 结构化日志包装与内存指标
 //                                             registry（零 import 叶子，各层可向下消费）
 //   domainSession    src/domain/session/**     —— AcpAgent、resume、options-sync、agent 配置 datum
@@ -124,7 +124,8 @@ const HOST_LAYERS: readonly Layer[] = [
 /** 跨层白名单：key 层可 import 的异层集合（同层恒允许，不入表）。 */
 const ALLOWED_CROSS_LAYER: Readonly<Record<Layer, readonly Layer[]>> = {
   hostCompat: [],
-  runtime: [],
+  // Native client capabilities expose ACP handlers and durable audit payloads.
+  runtime: ['protocol', 'domainPolicy'],
   protocol: ['runtime'],
   domainPolicy: ['protocol', 'runtime', 'domainObservability'],
  // domain/observability 是零 import 叶子（结构化日志包装 + 内存指标）：

@@ -11,14 +11,14 @@
  *   同一 Connection/jsonrpc 核心（test/contracts/sdk-contract.spec.ts 已同步迁移复验）：
  *   容忍未知 `_vendor` 通知、garbage 行跳行、崩溃时挂起请求以
  *   `Error('ACP connection closed')` reject 且已流出 chunk 不丢。
- * - 结构化 spawn 规格（{@link AcpConnectionSpec}）：`spawnPlan`（沙箱
- *   confine 计划，见 src/domain/policy/sandbox.ts）与 `wrapArgv` 是 spawn 包装
- *   插口，互斥、缺省恒等；解析出的最终 argv/env 交给 `AcpAgentProcess`。
+ * - 结构化 spawn 规格（{@link AcpConnectionSpec}）：`spawnPlan` 承载已校验的
+ *   原生访问启动参数，`wrapArgv` 是宿主进程层的可选包装插口；两者互斥，
+ *   解析出的最终 argv/env 交给 `AcpAgentProcess`。
  * spec 必填 `subprocess`（`ctx.subprocess` 的窄化 seam）：spawn 与
  *   终止全经宿主服务（跨平台树级回收），无 seam 即构造即抛 spawn-failure
  *   （fail closed，不自制 child_process 回退）。
- * - 客户端能力固定最小化：不广告 fs/terminal；MCP 与 form/url elicitation 在
- *   host/client seam 完整接线时按协商事实广告。未知 `_meta` 与未知 sessionUpdate 变体由 SDK
+ * - 客户端能力固定最小化：只有 read/write 两个 FS handler 均已接线时才广告 fs；terminal
+ *   只有完整 terminal host 接线时广告；MCP 与 form/url elicitation 在 host/client seam 完整接线时按协商事实广告。未知 `_meta` 与未知 sessionUpdate 变体由 SDK
  *   校验层丢弃（通知验证失败仅 console.error，连接不断），translate.ts 对未知
  *   sessionUpdate 另有 default 分支兜底——会话绝不因扩展流量失败。
  * - 全 RPC deadline：initialize/new/load/list/set_config_option/
@@ -37,7 +37,7 @@
  *   10s——SIGKILL 后仍不退出是内核级异常，响亮告警后 resolve，不挂死 shutdown）。
  * Devin 不响应 stdin EOF，EOF 仅作礼貌窗口。
  * - 错误分类（{@link AcpErrorKind}）：spawn-failure / auth_required / timeout /
- * protocol-error / crash / sandbox-unavailable（预留）。spawn-failure
+ * protocol-error / crash。spawn-failure
  * 的判定来源：seam spawn 同步抛错 / handle `pid === -1` 后 `done`
  * reject（ENOENT 等）。每个错误另携带 taxonomy 分类
  *   （`AcpErrorCategory`，本构造点的 spec/seam 类失败覆盖为 `config`）与
@@ -165,9 +165,12 @@ export class AcpClientConnection {
   private readonly initializeTimeoutMs: number
   private readonly onPermissionRequest: PermissionRequestHandler | undefined
   private readonly onElicitationRequest: ElicitationRequestHandler | undefined
-  private readonly mcpServers: readonly acp.McpServer[]
+  private readonly fileSystemHandlers: AcpConnectionOptions['fileSystemHandlers']
+  private readonly terminalHandlers: AcpConnectionOptions['terminalHandlers']
+  private readonly activeSessionIds = new Set<string>()
   private readonly updateListeners = new Set<SessionUpdateListener>()
   private initializePromise: Promise<acp.InitializeResponse> | undefined
+  private connectionClosePromise: Promise<void> | undefined
   private negotiated: acp.InitializeResponse | undefined
   /**
  * connection poison：触发放弃的 RPC 操作名（未 poison 为 undefined）。
@@ -205,7 +208,8 @@ export class AcpClientConnection {
     this.initializeTimeoutMs = options.initializeTimeoutMs ?? DEFAULT_INITIALIZE_TIMEOUT_MS
     this.onPermissionRequest = options.onPermissionRequest
     this.onElicitationRequest = options.onElicitationRequest
-    this.mcpServers = (options.mcpServers ?? []).map((server) => structuredClone(server))
+    this.fileSystemHandlers = options.fileSystemHandlers
+    this.terminalHandlers = options.terminalHandlers
     if (options.onSessionUpdate !== undefined) this.updateListeners.add(options.onSessionUpdate)
 
  // 结构化 spawn：argv 直达 seam，不经 shell（堵注入面； 经 spawnPlan/wrapArgv 包
@@ -271,7 +275,8 @@ export class AcpClientConnection {
   }
 
   /**
-   * ACP v1 initialize 握手：最小 client capabilities（不广告 fs/terminal/MCP，D10），
+   * ACP v1 initialize 握手：按实际接线生成最小 client capabilities（fs 只有 read/write
+   * handler 同时存在时广告；terminal 只有完整 handler 接线时广告），
    * 记录 agentInfo/capabilities/authMethods。并发/重复调用共享同一次握手（幂等）；
    * `options` 只对真正发起握手的那次调用生效（后续共享调用忽略）。
    * 失败按 {@link AcpErrorKind} 分类，且拒绝前先把未公开的子进程拆除（无孤儿）。
@@ -281,29 +286,18 @@ export class AcpClientConnection {
     return this.initializePromise
   }
 
-  /** 建 ACP 会话；使用同一份 profile-owned MCP snapshot。 */
+  /** 建 ACP 会话；Agent 使用自己的 MCP 配置，插件不注入宿主 MCP 定义。 */
   async newSession(params: { cwd?: string } = {}, options: AcpRpcOptions = {}): Promise<acp.NewSessionResponse> {
-    this.assertMcpCapabilities('session/new')
-    return await this.rpc('session/new', (agent) => agent.request('session/new', { cwd: params.cwd ?? this.spec.cwd, mcpServers: this.mcpServers.map((server) => structuredClone(server)) }), options, DEFAULT_SESSION_SETUP_TIMEOUT_MS)
+    const response = await this.rpc<acp.NewSessionResponse>('session/new', async (agent) => await agent.request('session/new', { cwd: params.cwd ?? this.spec.cwd, mcpServers: [] }) as acp.NewSessionResponse, options, DEFAULT_SESSION_SETUP_TIMEOUT_MS)
+    this.activeSessionIds.add(response.sessionId)
+    return response
   }
 
   /** 恢复 ACP 会话（agent 须广告 loadSession；回放更新走 session/update 通知）。 */
   async loadSession(sessionId: string, params: { cwd?: string } = {}, options: AcpRpcOptions = {}): Promise<acp.LoadSessionResponse> {
-    this.assertMcpCapabilities('session/load')
-    return await this.rpc('session/load', (agent) => agent.request('session/load', { sessionId, cwd: params.cwd ?? this.spec.cwd, mcpServers: this.mcpServers.map((server) => structuredClone(server)) }), options, DEFAULT_SESSION_SETUP_TIMEOUT_MS)
-  }
-
-  private assertMcpCapabilities(operation: string): void {
-    const caps = this.negotiated?.agentCapabilities?.mcpCapabilities
-    for (const server of this.mcpServers) {
-      if ('command' in server) continue
-      if (server.type === 'http' && caps?.http !== true) {
-        throw new AcpClientError('protocol-error', `ACP agent did not advertise MCP HTTP support; cannot send configured server "${server.name}" during ${operation}`, { category: 'protocol-incompatible' })
-      }
-      if (server.type === 'sse' && caps?.sse !== true) {
-        throw new AcpClientError('protocol-error', `ACP agent did not advertise MCP SSE support; cannot send configured server "${server.name}" during ${operation}`, { category: 'protocol-incompatible' })
-      }
-    }
+    const response = await this.rpc<acp.LoadSessionResponse>('session/load', async (agent) => await agent.request('session/load', { sessionId, cwd: params.cwd ?? this.spec.cwd, mcpServers: [] }) as acp.LoadSessionResponse, options, DEFAULT_SESSION_SETUP_TIMEOUT_MS)
+    this.activeSessionIds.add(sessionId)
+    return response
   }
 
   /** 列 ACP 会话（agent 须广告 sessionCapabilities.list）。 */
@@ -313,12 +307,24 @@ export class AcpClientConnection {
 
  /** 关闭 ACP 会话（agent 须广告 sessionCapabilities.close； probe 清理用）。 */
   async closeSession(sessionId: string, options: AcpRpcOptions = {}): Promise<acp.CloseSessionResponse> {
-    return await this.rpc('session/close', (agent) => agent.request('session/close', { sessionId }), options, DEFAULT_SESSION_CLEANUP_TIMEOUT_MS)
+    await this.terminalHandlers?.releaseSession?.(sessionId)
+    try {
+      return await this.rpc('session/close', (agent) => agent.request('session/close', { sessionId }), options, DEFAULT_SESSION_CLEANUP_TIMEOUT_MS)
+    } finally {
+      this.activeSessionIds.delete(sessionId)
+      await this.terminalHandlers?.releaseSession?.(sessionId)
+    }
   }
 
   /** 删除 ACP 会话（agent 须广告 sessionCapabilities.delete；删除后不再出现在 session/list）。 */
   async deleteSession(sessionId: string, options: AcpRpcOptions = {}): Promise<acp.DeleteSessionResponse> {
-    return await this.rpc('session/delete', (agent) => agent.request('session/delete', { sessionId }), options, DEFAULT_SESSION_CLEANUP_TIMEOUT_MS)
+    await this.terminalHandlers?.releaseSession?.(sessionId)
+    try {
+      return await this.rpc('session/delete', (agent) => agent.request('session/delete', { sessionId }), options, DEFAULT_SESSION_CLEANUP_TIMEOUT_MS)
+    } finally {
+      this.activeSessionIds.delete(sessionId)
+      await this.terminalHandlers?.releaseSession?.(sessionId)
+    }
   }
 
   /**
@@ -359,7 +365,12 @@ export class AcpClientConnection {
 
   /** 发送 `session/cancel` 通知。 */
   async cancel(sessionId: string): Promise<void> {
-    await this.rpc('session/cancel', (agent) => agent.notify('session/cancel', { sessionId }))
+    this.terminalHandlers?.cancelSession?.(sessionId)
+    try {
+      await this.rpc('session/cancel', (agent) => agent.notify('session/cancel', { sessionId }))
+    } finally {
+      this.terminalHandlers?.cancelSession?.(sessionId)
+    }
   }
 
   /**
@@ -370,7 +381,20 @@ export class AcpClientConnection {
    * Promise。spawn 失败/已退出时立即返回。
    */
   close(): Promise<void> {
-    return this.process.close()
+    // Stop host-side FS work before tearing down stdio. Otherwise a slow disk
+    // operation could outlive the ACP connection and resolve against a future
+    // session/process generation.
+    this.fileSystemHandlers?.dispose?.()
+    return this.connectionClosePromise ??= (async () => {
+      try {
+        await this.terminalHandlers?.dispose?.()
+      } finally {
+        // Terminal cleanup is an auxiliary capability. A broken terminal
+        // handle must never prevent the owner process from entering the
+        // bounded termination ladder.
+        await this.process.close()
+      }
+    })()
   }
 
   /**
@@ -443,9 +467,11 @@ export class AcpClientConnection {
         Promise.race([
           this.conn.agent.request('initialize', {
             protocolVersion: acp.PROTOCOL_VERSION,
-            clientCapabilities: this.onElicitationRequest === undefined
-              ? {}
-              : { elicitation: { form: {}, url: {} } },
+            clientCapabilities: {
+              ...(this.onElicitationRequest === undefined ? {} : { elicitation: { form: {}, url: {} } }),
+              ...(this.fileSystemHandlers === undefined ? {} : { fs: { readTextFile: true, writeTextFile: true } }),
+              ...(this.terminalHandlers === undefined ? {} : { terminal: true }),
+            },
             clientInfo: this.clientInfo,
           }),
           this.process.spawnFailureArm,
@@ -487,8 +513,56 @@ export class AcpClientConnection {
       // Elicitation is handled only when the full host broker + Remote + UI seam
       // is present; otherwise the standard decline response remains fail-closed.
       .onRequest('elicitation/create', ({ params }) => {
+        // ACP v1 requests are session-scoped when a sessionId is present. Do
+        // not let a peer use this connection's broker to cross that boundary;
+        // request-scoped variants (requestId only) remain eligible for the
+        // currently bound connection.
+        const sessionId = 'sessionId' in params && typeof params.sessionId === 'string' ? params.sessionId : undefined
+        if (sessionId !== undefined && !this.activeSessionIds.has(sessionId)) return { action: 'decline' }
         const handler = this.onElicitationRequest
         if (handler === undefined) return { action: 'decline' }
+        return handler(params)
+      })
+      .onRequest('fs/read_text_file', ({ params }) => {
+        const handler = this.fileSystemHandlers?.readTextFile
+        if (handler === undefined) throw new Error('ACP fs/read_text_file is not available')
+        if (!this.activeSessionIds.has(params.sessionId)) throw new Error(`ACP fs/read_text_file rejected: session ${params.sessionId} is not owned by this connection`)
+        return handler(params)
+      })
+      .onRequest('fs/write_text_file', ({ params }) => {
+        const handler = this.fileSystemHandlers?.writeTextFile
+        if (handler === undefined) throw new Error('ACP fs/write_text_file is not available')
+        if (!this.activeSessionIds.has(params.sessionId)) throw new Error(`ACP fs/write_text_file rejected: session ${params.sessionId} is not owned by this connection`)
+        return handler(params)
+      })
+      .onRequest('terminal/create', ({ params }) => {
+        const handler = this.terminalHandlers?.createTerminal
+        if (handler === undefined) throw new Error('ACP terminal/create is not available')
+        if (!this.activeSessionIds.has(params.sessionId)) throw new Error(`ACP terminal/create rejected: session ${params.sessionId} is not owned by this connection`)
+        return handler(params)
+      })
+      .onRequest('terminal/output', ({ params }) => {
+        const handler = this.terminalHandlers?.terminalOutput
+        if (handler === undefined) throw new Error('ACP terminal/output is not available')
+        if (!this.activeSessionIds.has(params.sessionId)) throw new Error(`ACP terminal/output rejected: session ${params.sessionId} is not owned by this connection`)
+        return handler(params)
+      })
+      .onRequest('terminal/wait_for_exit', ({ params }) => {
+        const handler = this.terminalHandlers?.waitForExit
+        if (handler === undefined) throw new Error('ACP terminal/wait_for_exit is not available')
+        if (!this.activeSessionIds.has(params.sessionId)) throw new Error(`ACP terminal/wait_for_exit rejected: session ${params.sessionId} is not owned by this connection`)
+        return handler(params)
+      })
+      .onRequest('terminal/kill', ({ params }) => {
+        const handler = this.terminalHandlers?.killTerminal
+        if (handler === undefined) throw new Error('ACP terminal/kill is not available')
+        if (!this.activeSessionIds.has(params.sessionId)) throw new Error(`ACP terminal/kill rejected: session ${params.sessionId} is not owned by this connection`)
+        return handler(params)
+      })
+      .onRequest('terminal/release', ({ params }) => {
+        const handler = this.terminalHandlers?.releaseTerminal
+        if (handler === undefined) throw new Error('ACP terminal/release is not available')
+        if (!this.activeSessionIds.has(params.sessionId)) throw new Error(`ACP terminal/release rejected: session ${params.sessionId} is not owned by this connection`)
         return handler(params)
       })
   }

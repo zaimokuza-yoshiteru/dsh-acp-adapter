@@ -105,7 +105,7 @@
 
 /// <reference types="node" />
 
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, readdirSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync, type StatementSync } from 'node:sqlite'
@@ -118,6 +118,7 @@ import type {
   AcpElicitationAuditData,
   AcpPermissionAuditData,
   AcpPermissionScopeAuditData,
+  AcpTerminalAuditData,
 } from '../domain/policy/events.ts'
 import {
   ACP_SNAPSHOT_TOTAL_BYTES,
@@ -244,7 +245,7 @@ export interface AcpLaunchFingerprint {
   readonly executableOverride?: { readonly name: string; readonly present: boolean } | null
   /** Native final state-location env shape: fixed keys, presence, and value hashes only. */
   readonly nativeStateEnv?: readonly { readonly key: string; readonly present: boolean; readonly hash16?: string }[] | null
-  /** Secret-free hash of the profile-owned MCP snapshot used for this ACP session. */
+  /** Legacy continuity slot; formal sessions write null because profile MCP injection was removed. */
   readonly mcpFingerprint?: string | null
 }
 
@@ -338,6 +339,47 @@ export type AcpReconciliationCause =
   | 'binding-outdated'
   | 'backend-conflict'
 
+/** Durable current recovery state. Unlike the append-only audit stream this is
+ * the small, directly readable state that survives refresh/restart and drives
+ * the composer/recovery UI. */
+export type AcpRecoveryStateKind =
+  | 'healthy'
+  | 'reconnect-required'
+  | 'outcome-unknown'
+  | 'reconciliation-required'
+  | 'session-lost'
+  | 'local-history-damaged'
+  | 'resumed-unverified'
+
+export interface AcpRecoveryState {
+  readonly dshSessionId: string
+  readonly kind: AcpRecoveryStateKind
+  readonly cause?: string
+  readonly detail?: string
+  readonly provider?: string
+  readonly acpSessionId?: string
+  readonly generation?: number
+  readonly interruptedTurnId?: string
+  /** Last time the host attempted a non-healthy recovery transition. */
+  readonly lastAttemptAt?: number
+  /** Explicit user action, when the recovery surface records one. */
+  readonly lastUserAction?: string
+  readonly updatedAt: number
+}
+
+/** Append-only recovery transition evidence. The current row is not enough to
+ * explain who/when cleared a blocker after a restart. */
+export interface AcpRecoveryTransition {
+  readonly transitionId: string
+  readonly dshSessionId: string
+  readonly time: number
+  readonly fromKind?: AcpRecoveryStateKind
+  readonly toKind: AcpRecoveryStateKind
+  readonly cause?: string
+  readonly userAction?: string
+  readonly detail?: string
+}
+
 /**
  * `reconciliation` 记录的载荷：进入 reconciliation-required 的事实。
  * `detail` 是有界、无秘密的人类可读摘要（分叉 index 与两侧截断摘要等）；
@@ -370,7 +412,7 @@ export interface AcpSidecarEnvelopeV2 {
   readonly dshSessionId: string
   readonly acpProviderId?: string
   readonly acpSessionId?: string
-  readonly payload: AcpBindingData | AcpPermissionAuditData | AcpPermissionScopeAuditData | AcpAgentModeAuditData | AcpAgentConfigAuditData | AcpReconciliationData | AcpDegradationAuditData | AcpElicitationAuditData
+  readonly payload: AcpBindingData | AcpPermissionAuditData | AcpPermissionScopeAuditData | AcpAgentModeAuditData | AcpAgentConfigAuditData | AcpReconciliationData | AcpDegradationAuditData | AcpElicitationAuditData | AcpFileSystemAuditData | AcpTerminalAuditData
 }
 
 /** 统一读取模型的公共 envelope 字段。 */
@@ -393,8 +435,8 @@ interface AcpSidecarEntryBase {
 
 /**
  * sidecar 记录的 `kind` 全集（判别联合的判别值）：`binding`/`permission` 原有
- * 两类； 分轴审计两类——`permission-scope`（DSH 权限范围轴：每次 spawn
- * 重新解析后的实际 confine 事实）与 `agent-mode`（ACP agent mode 轴：建立与每次
+ * 两类； 分轴审计两类——`permission-scope`（每次 spawn 的 Native Agent Access
+ * 准入事实）与 `agent-mode`（ACP agent mode 轴：建立与每次
  * 经本插件 seam 下发的切换），两轴各自独立条目、互不推导（权限与模式双轴展示）； 新增
  * `agent-config`（agent 配置改动审计摘要：command/args 变更记新值快照，env 只记
  * 键名级 diff——值永不落盘），落配置审计专档（伪 sessionId
@@ -403,10 +445,21 @@ interface AcpSidecarEntryBase {
  * {@link AcpReconciliationData}）； 新增 `degradation`（tool result 内容
  * 降级事实，载荷见 {@link AcpDegradationAuditData}）。
  */
-export type AcpSidecarKind = 'binding' | 'permission' | 'permission-scope' | 'agent-mode' | 'agent-config' | 'reconciliation' | 'degradation' | 'elicitation'
+export interface AcpFileSystemAuditData {
+  readonly operation: 'read' | 'write'
+  readonly path: string
+  readonly bytes: number
+  readonly beforeHash: string | null
+  readonly afterHash: string | null
+  readonly outcome: 'ok' | 'error' | 'aborted' | 'timeout' | 'concurrent-change'
+  readonly acpSessionId: string
+  readonly profileId: string
+}
+
+export type AcpSidecarKind = 'binding' | 'permission' | 'permission-scope' | 'agent-mode' | 'agent-config' | 'reconciliation' | 'degradation' | 'elicitation' | 'filesystem' | 'terminal'
 
 /** 写/读路径共同承认的 v2 kind 全集（行校验用）。 */
-const ACP_SIDECAR_KINDS: readonly AcpSidecarKind[] = ['binding', 'permission', 'permission-scope', 'agent-mode', 'agent-config', 'reconciliation', 'degradation', 'elicitation']
+const ACP_SIDECAR_KINDS: readonly AcpSidecarKind[] = ['binding', 'permission', 'permission-scope', 'agent-mode', 'agent-config', 'reconciliation', 'degradation', 'elicitation', 'filesystem', 'terminal']
 
 /**
  * 同步 durable 路径的 kind（有界审计队列）：append 落库 commit 后才 resolve。
@@ -414,9 +467,11 @@ const ACP_SIDECAR_KINDS: readonly AcpSidecarKind[] = ['binding', 'permission', '
  *   src/domain/session/agent.ts）；
  * - `permission`：审批桥 fail-closed（append reject → cancelled，见
  *   src/domain/policy/permissions.ts）。
- * 其余 kind 进有界内存队列（见 {@link ACP_SIDECAR_AUDIT_QUEUE_LIMIT}）。
+ * `filesystem` 也同步落库：文件操作是已经发生的外部副作用，不能在队列尚未
+ * flush 时向调用方返回成功。其余 kind 进有界内存队列（见
+ * {@link ACP_SIDECAR_AUDIT_QUEUE_LIMIT}）。
  */
-const ACP_SIDECAR_SYNC_KINDS: readonly AcpSidecarKind[] = ['binding', 'permission', 'elicitation']
+const ACP_SIDECAR_SYNC_KINDS: readonly AcpSidecarKind[] = ['binding', 'permission', 'elicitation', 'filesystem', 'terminal']
 
 /**
  * agent 配置改动审计的 sidecar 行键（伪 dsh sessionId）：配置改动先于
@@ -440,6 +495,8 @@ export type AcpSidecarEntry =
   | (AcpSidecarEntryBase & { readonly kind: 'reconciliation'; readonly data: AcpReconciliationData })
   | (AcpSidecarEntryBase & { readonly kind: 'degradation'; readonly data: AcpDegradationAuditData })
   | (AcpSidecarEntryBase & { readonly kind: 'elicitation'; readonly data: AcpElicitationAuditData })
+  | (AcpSidecarEntryBase & { readonly kind: 'filesystem'; readonly data: AcpFileSystemAuditData })
+  | (AcpSidecarEntryBase & { readonly kind: 'terminal'; readonly data: AcpTerminalAuditData })
 
 /** {@link AcpSidecar.append} 的入参：`time` 可缺省（由 store 的 `now()` 补齐）。 */
 export type AcpSidecarEntryInput =
@@ -451,6 +508,8 @@ export type AcpSidecarEntryInput =
   | { readonly kind: 'reconciliation'; readonly time?: number; readonly data: AcpReconciliationData }
   | { readonly kind: 'degradation'; readonly time?: number; readonly data: AcpDegradationAuditData }
   | { readonly kind: 'elicitation'; readonly time?: number; readonly data: AcpElicitationAuditData }
+  | { readonly kind: 'filesystem'; readonly time?: number; readonly data: AcpFileSystemAuditData }
+  | { readonly kind: 'terminal'; readonly time?: number; readonly data: AcpTerminalAuditData }
 
 /** 补齐 `time` 后的待落盘记录（envelope 分量由 store 分配）。 */
 type StampedEntry =
@@ -462,6 +521,8 @@ type StampedEntry =
   | { readonly kind: 'reconciliation'; readonly time: number; readonly data: AcpReconciliationData }
   | { readonly kind: 'degradation'; readonly time: number; readonly data: AcpDegradationAuditData }
   | { readonly kind: 'elicitation'; readonly time: number; readonly data: AcpElicitationAuditData }
+  | { readonly kind: 'filesystem'; readonly time: number; readonly data: AcpFileSystemAuditData }
+  | { readonly kind: 'terminal'; readonly time: number; readonly data: AcpTerminalAuditData }
 
 /** {@link AcpSidecar.exportAudit} 的构造项。 */
 export interface AcpSidecarExportOptions {
@@ -541,6 +602,12 @@ export interface AcpSidecar {
    * → `undefined`（resume 回退 request/header 窥测的信号）。
    */
   readLatestBinding(sessionId: SessionId): Promise<AcpBindingLookup | undefined>
+  /** Read the durable recovery state; missing rows mean healthy/never degraded. */
+  readRecoveryState(sessionId: SessionId): Promise<AcpRecoveryState | undefined>
+  /** Atomically replace the current recovery state for a DSH session. */
+  writeRecoveryState(state: AcpRecoveryState): Promise<void>
+  /** Read append-only recovery transitions for diagnostics and audit UI. */
+  listRecoveryTransitions(sessionId: SessionId): Promise<readonly AcpRecoveryTransition[]>
   /**
  * 全量 binding 索引（双绑守卫的唯一消费点 = host/factory/agent-loop.ts 的
    * resume 路由）：查 bindings 表全部行，仅语义校验通过（`{status:'ok'}`）者计入
@@ -635,6 +702,22 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+function toRecoveryState(raw: unknown): AcpRecoveryState | undefined {
+  if (!isPlainObject(raw) || typeof raw.dshSessionId !== 'string' || raw.dshSessionId.length === 0) return undefined
+  const kinds: readonly string[] = ['healthy', 'reconnect-required', 'outcome-unknown', 'reconciliation-required', 'session-lost', 'local-history-damaged', 'resumed-unverified']
+  if (typeof raw.kind !== 'string' || !kinds.includes(raw.kind)) return undefined
+  if (typeof raw.updatedAt !== 'number' || !Number.isFinite(raw.updatedAt)) return undefined
+  for (const key of ['cause', 'detail', 'provider', 'acpSessionId', 'interruptedTurnId'] as const) {
+    if (key in raw && raw[key] !== undefined && typeof raw[key] !== 'string') return undefined
+  }
+  if ('generation' in raw && raw.generation !== undefined && (!Number.isInteger(raw.generation) || (raw.generation as number) < 0)) return undefined
+  for (const key of ['lastAttemptAt'] as const) {
+    if (key in raw && raw[key] !== undefined && (typeof raw[key] !== 'number' || !Number.isFinite(raw[key] as number))) return undefined
+  }
+  if ('lastUserAction' in raw && raw.lastUserAction !== undefined && (typeof raw.lastUserAction !== 'string' || raw.lastUserAction.length > 256)) return undefined
+  return raw as unknown as AcpRecoveryState
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
@@ -661,6 +744,14 @@ function deriveAcpIds(
     }
   }
   if (kind === 'reconciliation') {
+    const acpSessionId = typeof data.acpSessionId === 'string' && data.acpSessionId.length > 0 ? data.acpSessionId : undefined
+    return acpSessionId === undefined ? {} : { acpSessionId }
+  }
+  if (kind === 'filesystem') {
+    const acpSessionId = typeof data.acpSessionId === 'string' && data.acpSessionId.length > 0 ? data.acpSessionId : undefined
+    return acpSessionId === undefined ? {} : { acpSessionId }
+  }
+  if (kind === 'terminal') {
     const acpSessionId = typeof data.acpSessionId === 'string' && data.acpSessionId.length > 0 ? data.acpSessionId : undefined
     return acpSessionId === undefined ? {} : { acpSessionId }
   }
@@ -740,6 +831,17 @@ interface BindingRow {
   readonly payload: string
 }
 
+interface RecoveryTransitionRow {
+  readonly transition_id: string
+  readonly dsh_session_id: string
+  readonly time: number
+  readonly from_kind: string | null
+  readonly to_kind: string
+  readonly cause: string | null
+  readonly user_action: string | null
+  readonly detail: string | null
+}
+
 /** 排队中的非审批审计（seq 在入队时分配——与同步写的 seq 分配同源，保追加序）。 */
 interface QueuedAudit {
   readonly sessionId: string
@@ -779,6 +881,23 @@ CREATE TABLE IF NOT EXISTS option_snapshots (
   time INTEGER NOT NULL,
   payload TEXT NOT NULL
 ) STRICT;
+CREATE TABLE IF NOT EXISTS recovery_states (
+  dsh_session_id TEXT PRIMARY KEY,
+  time INTEGER NOT NULL,
+  last_attempt_at INTEGER,
+  last_user_action TEXT,
+  payload TEXT NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS recovery_transitions (
+  transition_id TEXT PRIMARY KEY,
+  dsh_session_id TEXT NOT NULL,
+  time INTEGER NOT NULL,
+  from_kind TEXT,
+  to_kind TEXT NOT NULL,
+  cause TEXT,
+  user_action TEXT,
+  detail TEXT
+) STRICT;
 `
 
 class SidecarStore implements AcpSidecar {
@@ -806,8 +925,16 @@ class SidecarStore implements AcpSidecar {
   private stmtGetOptionSnapshot: StatementSync | undefined
   private stmtUpsertOptionSnapshot: StatementSync | undefined
   private stmtDeleteOptionSnapshot: StatementSync | undefined
+  private stmtGetRecoveryState: StatementSync | undefined
+  private stmtUpsertRecoveryState: StatementSync | undefined
+  private stmtDeleteRecoveryState: StatementSync | undefined
+  private stmtInsertRecoveryTransition: StatementSync | undefined
+  private stmtListRecoveryTransitions: StatementSync | undefined
+  private stmtDeleteRecoveryTransitions: StatementSync | undefined
   private stmtDeleteOverAge: StatementSync | undefined
   private stmtDeleteOverAgeSession: StatementSync | undefined
+  private stmtDeleteOverAgeRecoveryTransition: StatementSync | undefined
+  private stmtDeleteOverAgeRecoveryTransitionSession: StatementSync | undefined
   private stmtExportAll: StatementSync | undefined
   private stmtCountAudit: StatementSync | undefined
   private stmtCountBindings: StatementSync | undefined
@@ -853,6 +980,11 @@ class SidecarStore implements AcpSidecar {
       db.exec('PRAGMA synchronous = NORMAL')
       db.exec('PRAGMA busy_timeout = 5000')
       db.exec(SCHEMA_SQL)
+      // v2 databases predate the recovery columns/table. Migrate by schema
+      // inspection so an old sidecar remains readable without a reset.
+      const recoveryColumns = new Set((db.prepare('PRAGMA table_info(recovery_states)').all() as Array<{ name?: string }>).map((row) => row.name))
+      if (!recoveryColumns.has('last_attempt_at')) db.exec('ALTER TABLE recovery_states ADD COLUMN last_attempt_at INTEGER')
+      if (!recoveryColumns.has('last_user_action')) db.exec('ALTER TABLE recovery_states ADD COLUMN last_user_action TEXT')
     } catch (error: unknown) {
       this.warn(`dsh-acp sidecar: failed to open ${this.dbPath} (${errorMessage(error)}); the sidecar store fails loud`)
       throw error
@@ -875,8 +1007,16 @@ class SidecarStore implements AcpSidecar {
     this.stmtGetOptionSnapshot = db.prepare('SELECT * FROM option_snapshots WHERE dsh_session_id = ?')
     this.stmtUpsertOptionSnapshot = db.prepare('INSERT INTO option_snapshots (dsh_session_id, time, payload) VALUES (?, ?, ?) ON CONFLICT(dsh_session_id) DO UPDATE SET time = excluded.time, payload = excluded.payload')
     this.stmtDeleteOptionSnapshot = db.prepare('DELETE FROM option_snapshots WHERE dsh_session_id = ?')
+    this.stmtGetRecoveryState = db.prepare('SELECT * FROM recovery_states WHERE dsh_session_id = ?')
+    this.stmtUpsertRecoveryState = db.prepare('INSERT INTO recovery_states (dsh_session_id, time, last_attempt_at, last_user_action, payload) VALUES (?, ?, ?, ?, ?) ON CONFLICT(dsh_session_id) DO UPDATE SET time = excluded.time, last_attempt_at = excluded.last_attempt_at, last_user_action = excluded.last_user_action, payload = excluded.payload')
+    this.stmtDeleteRecoveryState = db.prepare('DELETE FROM recovery_states WHERE dsh_session_id = ?')
+    this.stmtInsertRecoveryTransition = db.prepare('INSERT INTO recovery_transitions (transition_id, dsh_session_id, time, from_kind, to_kind, cause, user_action, detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+    this.stmtListRecoveryTransitions = db.prepare('SELECT * FROM recovery_transitions WHERE dsh_session_id = ? ORDER BY time ASC, transition_id ASC')
+    this.stmtDeleteRecoveryTransitions = db.prepare('DELETE FROM recovery_transitions WHERE dsh_session_id = ?')
     this.stmtDeleteOverAge = db.prepare('DELETE FROM audit WHERE time < ?')
     this.stmtDeleteOverAgeSession = db.prepare('DELETE FROM audit WHERE dsh_session_id = ? AND time < ?')
+    this.stmtDeleteOverAgeRecoveryTransition = db.prepare('DELETE FROM recovery_transitions WHERE time < ?')
+    this.stmtDeleteOverAgeRecoveryTransitionSession = db.prepare('DELETE FROM recovery_transitions WHERE dsh_session_id = ? AND time < ?')
     this.stmtExportAll = db.prepare('SELECT * FROM audit ORDER BY dsh_session_id ASC, seq ASC')
     this.stmtCountAudit = db.prepare('SELECT COUNT(*) AS n FROM audit')
     this.stmtCountBindings = db.prepare('SELECT COUNT(*) AS n FROM bindings')
@@ -1159,6 +1299,89 @@ class SidecarStore implements AcpSidecar {
     }
   }
 
+  readRecoveryState(sessionId: SessionId): Promise<AcpRecoveryState | undefined> {
+    assertSafeSessionId(sessionId)
+    try {
+      const db = this.openIfExists()
+      if (db === undefined) return Promise.resolve(undefined)
+      const row = this.stmtGetRecoveryState?.get(sessionId) as { payload: string } | undefined
+      if (row === undefined) return Promise.resolve(undefined)
+      let payload: unknown
+      try { payload = JSON.parse(row.payload) } catch { payload = undefined }
+      const state = toRecoveryState(payload)
+      if (state === undefined || state.dshSessionId !== (sessionId as string)) {
+        throw new Error(`dsh-acp sidecar: recovery state for session ${JSON.stringify(sessionId as string)} is malformed; local recovery history is damaged`)
+      }
+      return Promise.resolve(state)
+    } catch (error: unknown) {
+      return Promise.reject(error instanceof Error ? error : new Error(errorMessage(error)))
+    }
+  }
+
+  writeRecoveryState(state: AcpRecoveryState): Promise<void> {
+    assertSafeSessionId(state.dshSessionId)
+    const validated = toRecoveryState(state)
+    if (validated === undefined) throw new TypeError(`dsh-acp sidecar: malformed recovery state for session ${JSON.stringify(state.dshSessionId)}`)
+    try {
+      const db = this.ensureDb()
+      db.exec('BEGIN IMMEDIATE')
+      const previousRow = this.stmtGetRecoveryState?.get(validated.dshSessionId) as { payload?: string } | undefined
+      let previous: AcpRecoveryState | undefined
+      if (previousRow?.payload !== undefined) {
+        try { previous = toRecoveryState(JSON.parse(previousRow.payload)) } catch { previous = undefined }
+      }
+      const transitionTime = validated.lastAttemptAt ?? validated.updatedAt
+      const transitionId = `recovery:${validated.dshSessionId}:${transitionTime}:${randomUUID()}`
+      try {
+        this.stmtUpsertRecoveryState?.run(
+          validated.dshSessionId,
+          validated.updatedAt,
+          validated.lastAttemptAt ?? null,
+          validated.lastUserAction ?? null,
+          stableStringify(validated),
+        )
+        this.stmtInsertRecoveryTransition?.run(
+          transitionId,
+          validated.dshSessionId,
+          transitionTime,
+          previous?.kind ?? null,
+          validated.kind,
+          validated.cause ?? null,
+          validated.lastUserAction ?? null,
+          validated.detail ?? null,
+        )
+        db.exec('COMMIT')
+      } catch (error: unknown) {
+        try { db.exec('ROLLBACK') } catch { /* preserve original failure */ }
+        throw error
+      }
+      return Promise.resolve()
+    } catch (error: unknown) {
+      return Promise.reject(error instanceof Error ? error : new Error(errorMessage(error)))
+    }
+  }
+
+  listRecoveryTransitions(sessionId: SessionId): Promise<readonly AcpRecoveryTransition[]> {
+    assertSafeSessionId(sessionId)
+    try {
+      const db = this.openIfExists()
+      if (db === undefined) return Promise.resolve([])
+      const rows = (this.stmtListRecoveryTransitions?.all(sessionId) ?? []) as unknown as RecoveryTransitionRow[]
+      return Promise.resolve(rows.map((row) => ({
+        transitionId: row.transition_id,
+        dshSessionId: row.dsh_session_id,
+        time: row.time,
+        ...(row.from_kind === null ? {} : { fromKind: row.from_kind as AcpRecoveryStateKind }),
+        toKind: row.to_kind as AcpRecoveryStateKind,
+        ...(row.cause === null ? {} : { cause: row.cause }),
+        ...(row.user_action === null ? {} : { userAction: row.user_action }),
+        ...(row.detail === null ? {} : { detail: row.detail }),
+      })))
+    } catch (error: unknown) {
+      return Promise.reject(error instanceof Error ? error : new Error(errorMessage(error)))
+    }
+  }
+
   listBindings(): Promise<readonly AcpBoundSessionBinding[]> {
     try {
       this.drainQueue()
@@ -1213,6 +1436,8 @@ class SidecarStore implements AcpSidecar {
       this.stmtDeleteBinding?.run(sessionId)
       this.stmtDeleteModelSwitch?.run(sessionId)
       this.stmtDeleteOptionSnapshot?.run(sessionId)
+      this.stmtDeleteRecoveryState?.run(sessionId)
+      this.stmtDeleteRecoveryTransitions?.run(sessionId)
       this.seqCounters.delete(sessionId)
       return Promise.resolve()
     } catch (error: unknown) {
@@ -1323,6 +1548,7 @@ class SidecarStore implements AcpSidecar {
       const cutoff = this.now() - (retentionMs ?? this.retentionMs)
       const result = this.stmtDeleteOverAgeSession?.run(sessionId, cutoff)
       const removed = Number(result?.changes ?? 0)
+      this.stmtDeleteOverAgeRecoveryTransitionSession?.run(sessionId, cutoff)
       if (removed > 0) {
         this.warn(`dsh-acp sidecar: retention removed ${String(removed)} audit row(s) older than ${new Date(cutoff).toISOString()} for session ${JSON.stringify(sessionId as string)}`)
       }
@@ -1378,8 +1604,14 @@ class SidecarStore implements AcpSidecar {
       const result = options?.sessionId === undefined
         ? this.stmtDeleteOverAge?.run(cutoff)
         : this.stmtDeleteOverAgeSession?.run(options.sessionId, cutoff)
+      const transitionResult = options?.sessionId === undefined
+        ? this.stmtDeleteOverAgeRecoveryTransition?.run(cutoff)
+        : this.stmtDeleteOverAgeRecoveryTransitionSession?.run(options.sessionId, cutoff)
       const removed = Number(result?.changes ?? 0)
       if (removed > 0) this.warn(`dsh-acp sidecar: retention removed ${String(removed)} audit row(s) older than ${new Date(cutoff).toISOString()}`)
+      // The public count remains the audit count; transition cleanup is an
+      // internal retention detail and must not change existing callers.
+      void transitionResult
       return Promise.resolve({ removed, cutoff })
     } catch (error: unknown) {
       return Promise.reject(error instanceof Error ? error : new Error(errorMessage(error)))

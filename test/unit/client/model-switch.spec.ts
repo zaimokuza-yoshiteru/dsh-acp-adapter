@@ -96,6 +96,9 @@ function makeLiveAgent(spec: FakeAgentSpec = {}) {
     get continuityState() {
       return { status: 'ok' as const, cause: null, detail: null }
     },
+    prepare() {
+      return Promise.resolve()
+    },
     rebindBlank() {
       return Promise.resolve()
     },
@@ -499,6 +502,7 @@ describe('dshAcp/options stale 快照（冷启动）', () => {
       currentModeId: 'plan',
       capabilities: null,
       continuity: { status: 'ok', cause: null, detail: null },
+      recovery: { dshSessionId: SESSION, kind: 'healthy', cause: null, detail: null, provider: null, acpSessionId: null, generation: null, interruptedTurnId: null, lastAttemptAt: null, lastUserAction: null, updatedAt: 0 },
       contextUsage: null,
       freshness: 'stale',
       editable: false,

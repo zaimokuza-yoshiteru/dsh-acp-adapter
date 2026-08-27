@@ -23,26 +23,25 @@ jobs:
           ref: dsh-v0.1.1-rc.2
           path: reference/deepseek-harness
 
-      # 工具链钉版：node 取 .nvmrc（24.19.0），pnpm 由 corepack 按
-      # packageManager 字段激活（11.7.0）；scripts/check-toolchain.mjs 在每步
-      # typecheck/test/build 开头复核。
+      # CI 环境显式选择 pnpm；用户本地工具版本不由 package.json 强制。
       - uses: actions/setup-node@v6
         with:
           node-version-file: .nvmrc
-      - name: corepack 激活 pnpm（packageManager 钉版）
-        run: corepack enable
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.7.0
 
       - name: install
-        run: corepack pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile
 
       - name: typecheck
-        run: corepack pnpm typecheck
+        run: pnpm typecheck
 
       - name: build（末尾 verify-bundle：manifest/产物闭包/module requests/样式管线/tarball 精确互等）
-        run: corepack pnpm build
+        run: pnpm build
 
       - name: test（mock 协议/进程树/sandbox/bundle verifier）
-        run: corepack pnpm test
+        run: pnpm test
 
       # 干净安装/卸载门禁。DSH_ACP_GATE_ROOT 固定到 runner.temp 以便产物上传；
       # 脚本默认 mktemp。注意 prepack 会随 pnpm pack 把 typecheck/test/build 再跑
@@ -90,18 +89,19 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version-file: .nvmrc
-      - name: corepack 激活 pnpm（packageManager 钉版）
-        run: corepack enable
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.7.0
       - name: "@deepseek-ai/* 经 overrides 改写到 next dist-tag"
         run: node scripts/use-host-tag.mjs next
       - name: install（非 frozen：lockfile 随改写重解）
-        run: corepack pnpm install --no-frozen-lockfile
+        run: pnpm install --no-frozen-lockfile
       - name: typecheck
-        run: corepack pnpm typecheck
+        run: pnpm typecheck
       - name: build（末尾 verify-bundle）
-        run: corepack pnpm build
+        run: pnpm build
       - name: test
-        run: corepack pnpm test
+        run: pnpm test
 
       # 第二段：真实最新 DSH 宿主 + pnpm pack 产物的行为契约门禁
       # （latest lane 安装真实最新 DSH 后再安装 pnpm pack 产物）。

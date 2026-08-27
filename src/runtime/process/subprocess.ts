@@ -7,8 +7,8 @@
  * （POSIX detached 进程组负 pgid 信号 / Windows taskkill /T /F，SIGTERM →
  * graceMs → SIGKILL 树级升级）、waitForExit 给整树退出证明、服务 dispose 兜底
  * 强杀全部托管进程。本模块定义本包消费的最小结构面（{@link SubprocessSeam}），
- * 与 sandbox.ts 的 `AcpSandboxProviderLike` 同款手法：**纯结构镜像、零 dsh 值级
- * import**（宿主模块实例一致性 纪律：值级 import dsh 包会让产物解析到第二实例；钉版锚点见
+ * 采用**纯结构镜像、零 dsh 值级 import**（宿主模块实例一致性纪律：值级 import
+ * dsh 包会让产物解析到第二实例；钉版锚点见
  * 各常量注释）。
  *
  * env 纪律（保留白名单语义）：provider 的 spawn 底座是 `scrubbedParentEnv()`

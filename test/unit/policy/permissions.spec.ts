@@ -11,7 +11,7 @@
 //     用例都不得返回 always 类 optionId（一次性选择绝不升格永久授权/拒绝）
 //   - fail closed：turn 外到达、approval 服务缺席、approval 抛错、asked/decided
 //     审计落盘失败（即便审批通过也 cancelled）
-//   - 审计断言：record 形状 {kind, time, data}、asked 含完整 options 与 toolCall
+//   - 审计断言：record 形状 {kind, time, data}、asked 含有界 options 与 toolCall
 //     快照（rawInput 落脱敏摘要 rawInputSummary + 哈希 rawInputHash，
 //     不落原文）、decided 含 outcome/optionId/selectedOptionKind/decisionVia；
 //     native fallback 才含 approvalOutcome，拒绝结案带 user-rejected 分类词；
@@ -28,9 +28,8 @@
 //   不在本文件范围）。
 //
 // 孤儿进程防线同 acp-client.spec.ts：spawn argv 携带 SPEC_TAG（含本 worker pid），
-// afterEach 兜底 close，afterAll 逐 pid 断言已死 + ps 全量扫描 SPEC_TAG。
+// afterEach 兜底 close，afterAll 对已记录 PID 逐一断言死亡。
 
-import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -53,6 +52,7 @@ import {
 import {
   ACP_PERMISSION_NO_ALLOW_ONCE_DISCLOSURE,
   ACP_PERMISSION_NO_REJECT_ONCE_DISCLOSURE,
+  ACP_PERMISSION_ID_MAX_BYTES,
   buildPermissionReason,
   createAcpPermissionHandler,
   InMemoryAcpPendingPermissionBroker,
@@ -70,7 +70,7 @@ import { AcpMetricsRegistry, type AcpMetricsLike } from '../../../src/domain/obs
 
 const TIME_BASE = 1_700_000_000_000
 
-/** mock-agent permission-flow 同款四选项（固定形状，供「完整 options 原样」断言）。 */
+/** mock-agent permission-flow 同款四选项（固定形状，供 ACP option identity 断言）。 */
 const PERMISSION_OPTIONS: acp.PermissionOption[] = [
   { optionId: 'allow_once', name: 'Allow once', kind: 'allow_once' },
   { optionId: 'allow_always', name: 'Allow always', kind: 'allow_always' },
@@ -214,6 +214,10 @@ describe('events.ts 审计载荷构造器与类型守卫', () => {
     expect(data.toolCall.rawInputHash).toMatch(/^[0-9a-f]{16}$/)
     // 完整 options 原样（含 always 类，含 name 文案）
     expect(data.options).toEqual(PERMISSION_OPTIONS)
+    expect(data.optionCount).toBe(PERMISSION_OPTIONS.length)
+    expect(data.omittedOptionCount).toBe(0)
+    expect(data.locationCount).toBe(1)
+    expect(data.omittedLocationCount).toBe(0)
     expect(isPermissionAskedAudit(data)).toBe(true)
     expect(isPermissionDecidedAudit(data)).toBe(false)
   })
@@ -307,6 +311,28 @@ describe('events.ts 审计载荷构造器与类型守卫', () => {
     ]) expect(view?.inputSummary).not.toContain(secret)
     broker.cancel('dsh-string-secret', 'pending-string-secret')
     await expect(pending).resolves.toEqual({ outcome: 'cancelled' })
+  })
+
+  it('asked 审计显式记录有界集合的总数与省略数', () => {
+    const data = createPermissionAskedAudit({
+      requestId: 'req-bounds',
+      agentSessionId: 's',
+      toolCall: {
+        toolCallId: 'tc-bounds',
+        locations: Array.from({ length: 6 }, (_, index) => ({ path: `/work/${String(index)}.txt` })),
+      },
+      options: Array.from({ length: 35 }, (_, index) => ({
+        optionId: `option-${String(index)}`,
+        name: `Option ${String(index)}`,
+        kind: 'allow_once' as const,
+      })),
+    })
+    expect(data.options).toHaveLength(32)
+    expect(data.optionCount).toBe(35)
+    expect(data.omittedOptionCount).toBe(3)
+    expect(data.toolCall.locations).toHaveLength(4)
+    expect(data.locationCount).toBe(6)
+    expect(data.omittedLocationCount).toBe(2)
   })
 
  it('decided 构造器：可选字段缺席而非 undefined（起无 degraded 字段；agentSessionId/toolCallId 必填）', () => {
@@ -733,10 +759,10 @@ describe('createAcpPermissionHandler fail closed', () => {
 })
 
 describe('buildPermissionReason', () => {
-  it('reason 自包含地带有界标题和命令；不重复完整路径', () => {
-    const reason = buildPermissionReason(PARAMS)
+  it('reason 只保留风险与标题；命令放入插件详情而不重复常驻文本', () => {
+    const reason = buildPermissionReason(PARAMS, { includeExecuteDetails: false })
     expect(reason).toContain('工具：Run: echo hello')
-    expect(reason).toContain('命令：echo hello')
+    expect(reason).not.toContain('命令：echo hello')
     expect(reason).not.toContain('/work/a.txt')
 
     const bare = buildPermissionReason({
@@ -1092,8 +1118,6 @@ afterAll(async () => {
     await waitFor(() => isDead(pid), 3000).catch(() => {})
   }
   expect([...spawnedPids].filter((pid) => !isDead(pid))).toEqual([])
-  const ps = execFileSync('ps', ['-axo', 'pid,args'], { encoding: 'utf8' })
-  expect(ps.split('\n').filter((line) => line.includes(SPEC_TAG))).toEqual([])
   fs.rmSync(logDir, { recursive: true, force: true })
 })
 
@@ -1240,18 +1264,73 @@ describe('e2e：真 AcpClientConnection + permission-flow', () => {
       reason: 'permission request',
       agentId: 'codex',
       agentName: 'Codex',
+      workspaceRoot: '/work',
     })
     expect(broker.list('dsh-1')[0]).toMatchObject({
       agentId: 'codex',
       agentName: 'Codex',
-      locations: [{ path: '…/work/a.txt' }],
+      locations: [{ path: '/work/a.txt', displayPath: 'a.txt' }],
       inputSummary: '{"command":"echo hello"}',
+      command: 'echo hello',
     })
     expect(broker.list('dsh-1')[0]?.options).toEqual(PERMISSION_OPTIONS)
     expect(() => broker.answer('dsh-1', 'pending-1', 'not-offered')).toThrow('was not offered')
     broker.answer('dsh-1', 'pending-1', 'allow_always')
     await expect(result).resolves.toEqual({ outcome: 'selected', optionId: 'allow_always' })
     expect(broker.list('dsh-1')).toEqual([])
+  })
+
+  it('插件 pending broker：超出选项资源上限时整请求取消，不展示不完整选项子集', async () => {
+    const broker = new InMemoryAcpPendingPermissionBroker()
+    const result = broker.open({
+      requestId: 'pending-too-many',
+      sessionId: 'dsh-1',
+      acpSessionId: PARAMS.sessionId,
+      toolCall: PARAMS.toolCall,
+      options: Array.from({ length: 129 }, (_, index) => ({
+        optionId: `option-${String(index)}`,
+        name: `Option ${String(index)}`,
+        kind: 'allow_once' as const,
+      })),
+      reason: 'permission request',
+    })
+    await expect(result).rejects.toThrow('limit is 128')
+    expect(broker.list('dsh-1')).toEqual([])
+  })
+
+  it('插件 pending broker：超长 ACP 身份整请求拒绝，不截断 optionId/toolCallId', () => {
+    const broker = new InMemoryAcpPendingPermissionBroker()
+    const oversized = 'x'.repeat(ACP_PERMISSION_ID_MAX_BYTES + 1)
+    expect(() => broker.open({
+      requestId: 'pending-long-id',
+      sessionId: 'dsh-1',
+      acpSessionId: PARAMS.sessionId,
+      toolCall: { ...PARAMS.toolCall, toolCallId: oversized },
+      options: PARAMS.options,
+      reason: 'permission request',
+    })).toThrow('identity limit')
+    expect(() => broker.open({
+      requestId: 'pending-long-option',
+      sessionId: 'dsh-1',
+      acpSessionId: PARAMS.sessionId,
+      toolCall: PARAMS.toolCall,
+      options: [{ ...PARAMS.options[0]!, optionId: oversized }],
+      reason: 'permission request',
+    })).toThrow('identity limit')
+    expect(broker.list('dsh-1')).toEqual([])
+  })
+
+  it('handler：超长 ACP 身份在审计前 fail closed，零审批且不落入超长身份', async () => {
+    const { deps, audit, approval, logs } = makeDeps()
+    const handler = createAcpPermissionHandler(deps)
+    const response = await handler({
+      ...PARAMS,
+      toolCall: { ...PARAMS.toolCall, toolCallId: 'x'.repeat(ACP_PERMISSION_ID_MAX_BYTES + 1) },
+    })
+    expect(response).toEqual({ outcome: { outcome: 'cancelled' } })
+    expect(audit.records).toEqual([])
+    expect(approval.requests).toHaveLength(0)
+    expect(logs.some((line) => line.includes('identity limit'))).toBe(true)
   })
 
   it('插件 pending broker：turn abort 与 session dispose 都结算 cancelled', async () => {

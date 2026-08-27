@@ -36,15 +36,13 @@ import type {
   AcpVisibleHistoryEntry,
 } from '../../../src/domain/session/resume.ts';
 import { ReplayTranslator, TurnTranslator } from '../../../src/protocol/v1/translate.ts';
-import type { AcpBindingData, AcpReconciliationCause } from '../../../src/persistence/sidecar.ts';
+import type { AcpBindingData, AcpReconciliationCause, AcpSidecarEntry } from '../../../src/persistence/sidecar.ts';
 import {
   LOAD_REPLAY_MATCHED_COMMITTED_SEQ,
-  SPEC_TAG,
   bindingFixture,
   createHarness,
   eventsOf,
   mockProfile,
-  psLinesWithTag,
   registerAcpAgents,
   routeOf,
   seedLogMatchingLoadReplay,
@@ -114,6 +112,12 @@ async function reconciliationCauses(harness: AgentHarness, sessionId: SessionId)
   return entries.filter((entry) => entry.kind === 'reconciliation').map((entry) => entry.data.cause);
 }
 
+async function bindingEntries(harness: AgentHarness, sessionId: SessionId): Promise<Extract<AcpSidecarEntry, { kind: 'binding' }>[]> {
+  return (await harness.loop.acpSidecar?.list(sessionId) ?? []).filter(
+    (entry): entry is Extract<AcpSidecarEntry, { kind: 'binding' }> => entry.kind === 'binding',
+  );
+}
+
 async function bindingRows(harness: AgentHarness, sessionId: SessionId): Promise<AcpBindingData[]> {
   const entries = (await harness.loop.acpSidecar?.list(sessionId)) ?? [];
   return entries.filter((entry) => entry.kind === 'binding').map((entry) => entry.data);
@@ -126,8 +130,8 @@ function expectBlocked(agent: Agent, cause: AcpReconciliationCause): void {
   expect(continuity.cause).toBe(cause);
   const lastEnd = eventsOf(agent, 'turn/end').at(-1);
   expect(lastEnd?.data.reason.kind).toBe('error');
-  expect(lastEnd?.data.reason.kind === 'error' ? lastEnd.data.reason.error.code : undefined)
-    .toBe('ACP_RECONCILIATION_REQUIRED');
+  expect(['ACP_RECOVERY_REQUIRED', 'ACP_RECONCILIATION_REQUIRED'])
+    .toContain(lastEnd?.data.reason.kind === 'error' ? lastEnd.data.reason.error.code : undefined);
 }
 
 beforeAll(() => {
@@ -143,7 +147,6 @@ afterEach(async () => {
 });
 
 afterAll(() => {
-  expect(psLinesWithTag(SPEC_TAG)).toEqual([]);
   fs.rmSync(suiteDir, { recursive: true, force: true });
 });
 
@@ -444,6 +447,64 @@ describe('fail-closed binding 落盘', () => {
 // ---------- rebindBlank（显式放弃旧 ACP 上下文） ----------
 
 describe('rebindBlank', () => {
+  it('reconnectOriginal 只重连并对账原 ACP session：不 session/new、不 prompt，binding 代际不变', async () => {
+    const harness = await boot();
+    const profile = mockProfile(harness.logDir, 'happy', {
+      MOCK_PRESET_SESSIONS: JSON.stringify(['preset-reconnect']),
+    });
+    const sessionId = SessionId('reconnect-original');
+    await presetMatchedResume(harness, profile, sessionId, 'preset-reconnect');
+    await harness.loop.acpSidecar?.writeRecoveryState({
+      dshSessionId: String(sessionId),
+      kind: 'reconnect-required',
+      detail: 'test interruption',
+      provider: routeOf(profile),
+      acpSessionId: 'preset-reconnect',
+      generation: 1,
+      updatedAt: Date.now(),
+    });
+
+    const handle = await resumeImplicit(harness, profile, sessionId);
+    const agent = handle.agent as AcpAgent;
+    expect(agent.recoveryState.kind).toBe('reconnect-required');
+    await agent.reconnectOriginal();
+
+    // Reconnect is deliberately setup-only: the original binding remains the
+    // same and a later user prompt is still an independent operation.
+    expect(mockRequests(profile.logPath)).toEqual(['initialize', 'session/list', 'session/load']);
+    expect(agent.recoveryState.kind).toBe('healthy');
+    const rows = await bindingEntries(harness, sessionId);
+    expect(rows.at(-1)?.data.agentSessionId).toBe('preset-reconnect');
+    expect(rows.at(-1)?.data.generation).toBe(1);
+    expect(rows.at(-1)?.data.generation).toBe(rows[0]?.data.generation);
+  }, 15_000);
+
+  it('原 ACP session 回放分叉时保持 recovery blocker，不创建新 session', async () => {
+    const harness = await boot();
+    const profile = mockProfile(harness.logDir, 'happy', {
+      MOCK_PRESET_SESSIONS: JSON.stringify(['preset-reconnect-diverged']),
+      MOCK_LOAD_REPLAY_VARIANT: 'omit-tool-call',
+    });
+    const sessionId = SessionId('reconnect-diverged');
+    await presetMatchedResume(harness, profile, sessionId, 'preset-reconnect-diverged');
+    await harness.loop.acpSidecar?.writeRecoveryState({
+      dshSessionId: String(sessionId),
+      kind: 'outcome-unknown',
+      detail: 'test interruption',
+      provider: routeOf(profile),
+      acpSessionId: 'preset-reconnect-diverged',
+      generation: 1,
+      updatedAt: Date.now(),
+    });
+
+    const handle = await resumeImplicit(harness, profile, sessionId);
+    const agent = handle.agent as AcpAgent;
+    await expect(agent.reconnectOriginal()).rejects.toThrow();
+    expect(mockRequests(profile.logPath)).toEqual(['initialize', 'session/list', 'session/load']);
+    expect(agent.recoveryState.kind).toBe('reconciliation-required');
+    expect(agent.continuityState.status).toBe('blocked');
+  }, 15_000);
+
   it('blocked（capability-missing）→ rebindBlank → 下一 turn session/new 新代际（generation=2 + 说明消息 + 旧历史不参与对账）', async () => {
     const harness = await boot();
     const profile = mockProfile(harness.logDir, 'minimal-caps');

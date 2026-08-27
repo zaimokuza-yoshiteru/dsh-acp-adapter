@@ -45,8 +45,8 @@
  * `审批顺序探针`）——asked BEFORE consulting the
  * approval service, decided BEFORE responding to the agent. An audit append
  * failure aborts the request with `cancelled`: returning an unlogged decision
- * would violate the audit pair. asked 记 agent 原样的完整选项列表与 toolCall
- * 快照（含 rawInput）；decided 记 outcome/optionId/approvalOutcome/
+ * would violate the audit pair. asked 记 agent 选项列表（有界脱敏）与 toolCall
+ * 快照（含 rawInput 摘要）；decided 记 outcome/optionId/approvalOutcome/
  * note——拒绝结案（用户点拒或 never 策略）的 decided 带 note
  * `user-rejected`（taxonomy 预留词， 归位）。
  *
@@ -59,6 +59,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
+import { Buffer } from 'node:buffer'
 import type * as acp from '@agentclientprotocol/sdk'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { CallId } from '@deepseek-ai/dsh-llm'
@@ -91,6 +92,36 @@ export const ACP_PERMISSION_NO_ALLOW_ONCE_DISCLOSURE = '该 agent 未提供单�
  * 面板的选择拒绝无法忠实表达，桥将视为取消（绝不升格 reject_always）。
  */
 export const ACP_PERMISSION_NO_REJECT_ONCE_DISCLOSURE = '该 agent 未提供单次拒绝选项，选择拒绝将被视为取消'
+
+/** Maximum option buttons retained by the plugin-owned approval surface. */
+export const ACP_PERMISSION_OPTIONS_MAX = 128
+/** Maximum UTF-8 byte length of ACP identities retained or echoed by the bridge. */
+export const ACP_PERMISSION_ID_MAX_BYTES = 512
+
+class AcpPermissionOptionsLimitError extends Error {
+  constructor(count: number) {
+    super(`ACP permission request contains ${String(count)} options; limit is ${String(ACP_PERMISSION_OPTIONS_MAX)}`)
+    this.name = 'AcpPermissionOptionsLimitError'
+  }
+}
+
+class AcpPermissionIdentityLimitError extends Error {
+  constructor(kind: 'toolCallId' | 'optionId') {
+    super(`ACP permission ${kind} exceeds the ${String(ACP_PERMISSION_ID_MAX_BYTES)}-byte identity limit`)
+    this.name = 'AcpPermissionIdentityLimitError'
+  }
+}
+
+function assertPermissionIdentity(value: string, kind: 'toolCallId' | 'optionId'): void {
+  if (Buffer.byteLength(value, 'utf8') > ACP_PERMISSION_ID_MAX_BYTES) {
+    throw new AcpPermissionIdentityLimitError(kind)
+  }
+}
+
+function assertPermissionIdentities(toolCallId: string, options: readonly acp.PermissionOption[]): void {
+  assertPermissionIdentity(toolCallId, 'toolCallId')
+  for (const option of options) assertPermissionIdentity(option.optionId, 'optionId')
+}
 
 function isToolKind(value: string | undefined): value is acp.ToolKind {
   return value === 'read' || value === 'edit' || value === 'delete' || value === 'move'
@@ -144,8 +175,13 @@ export interface AcpPendingPermissionView {
   readonly reason: string
   readonly agentId?: string
   readonly agentName?: string
-  readonly locations?: readonly { readonly path: string; readonly line?: number }[]
+  readonly locations?: readonly { readonly path: string; readonly displayPath?: string; readonly line?: number }[]
+  /** Total locations in the Agent request and count omitted from the bounded view. */
+  readonly locationCount?: number
+  readonly omittedLocationCount?: number
   readonly inputSummary?: string
+  /** A bounded, redacted command summary for execute requests. */
+  readonly command?: string
   readonly options: readonly { readonly optionId: string; readonly name: string; readonly kind: string }[]
   readonly createdAt: number
 }
@@ -159,6 +195,8 @@ export interface AcpPendingPermissionRequest {
   readonly reason: string
   readonly agentId?: string
   readonly agentName?: string
+  /** Workspace root used only to derive a compact, user-facing path label. */
+  readonly workspaceRoot?: string
   readonly signal?: AbortSignal
 }
 
@@ -198,6 +236,14 @@ export class InMemoryAcpPendingPermissionBroker implements AcpPendingPermissionB
     const key = this.key(request.sessionId, request.requestId)
     if (this.entries.has(key)) throw new Error('pending ACP permission "' + request.requestId + '" is already active')
     if (request.signal?.aborted === true) return Promise.resolve({ outcome: 'cancelled' })
+    assertPermissionIdentities(request.toolCall.toolCallId, request.options)
+    // Never show a partial option set: the response identity must remain a
+    // faithful projection of the Agent request. Refuse oversized requests as
+    // a whole; the handler records the refusal and answers cancelled.
+    if (request.options.length > ACP_PERMISSION_OPTIONS_MAX) {
+      return Promise.reject(new AcpPermissionOptionsLimitError(request.options.length))
+    }
+    const command = requestCommand(request.toolCall)
     const view: AcpPendingPermissionView = {
       requestId: request.requestId,
       sessionId: request.sessionId,
@@ -208,12 +254,29 @@ export class InMemoryAcpPendingPermissionBroker implements AcpPendingPermissionB
       reason: request.reason,
       ...(request.agentId === undefined ? {} : { agentId: request.agentId }),
       ...(request.agentName === undefined ? {} : { agentName: request.agentName }),
-      ...(request.toolCall.locations == null ? {} : { locations: request.toolCall.locations.slice(0, 4).map((location) => ({
-        path: shortTargetPath(location.path).slice(0, 160),
-        ...(location.line === undefined || location.line === null ? {} : { line: location.line }),
-      })) }),
+      ...(request.toolCall.locations == null ? {} : { locations: request.toolCall.locations.slice(0, 4).map((location) => {
+        const path = safeReasonText(location.path, 4_096).replaceAll('\\', '/')
+        return {
+          // `path` is the bounded, redacted technical fact. `displayPath` is
+          // the compact label rendered in the primary details row.
+          path,
+          displayPath: displayTargetPath(path, request.workspaceRoot),
+          ...(location.line === undefined || location.line === null ? {} : { line: location.line }),
+        }
+      }) }),
+      ...(request.toolCall.locations == null ? {} : {
+        locationCount: request.toolCall.locations.length,
+        omittedLocationCount: Math.max(0, request.toolCall.locations.length - 4),
+      }),
       ...(request.toolCall.rawInput === undefined ? {} : { inputSummary: summarizeRawInputForAudit(request.toolCall.rawInput).summary }),
-      options: request.options.map((option) => ({ optionId: option.optionId, name: option.name, kind: option.kind })),
+      ...(command === undefined ? {} : { command }),
+      options: request.options.map((option) => ({
+        // Keep optionId byte-for-byte: it is the ACP response identity, not a
+        // display field. The visible label is the bounded field below.
+        optionId: option.optionId,
+        name: safeReasonText(option.name, 200),
+        kind: option.kind,
+      })),
       createdAt: this.clock(),
     }
     return new Promise((resolve) => {
@@ -255,6 +318,7 @@ export class InMemoryAcpPendingPermissionBroker implements AcpPendingPermissionB
   }
 
   answer(sessionId: string, requestId: string, optionId: string): void {
+    assertPermissionIdentity(optionId, 'optionId')
     const key = this.key(sessionId, requestId)
     const entry = this.entries.get(key)
     if (entry === undefined) throw new Error('pending ACP permission "' + requestId + '" is not active')
@@ -332,6 +396,8 @@ export interface AcpPermissionBridgeDeps {
   readonly agentName?: string
   /** DSH session identity used by the plugin-owned pending broker (distinct from ACP sessionId). */
   readonly dshSessionId?: string | undefined
+  /** Workspace root for compact approval path labels; never a security boundary. */
+  readonly workspaceRoot?: string | undefined
   /**
    * The dsh approval service (`ctx.approval` in production). ABSENT means the
    * UI answerer is unavailable → every request fails closed to `cancelled`.
@@ -466,6 +532,19 @@ function shortTargetPath(value: string): string {
   return safeReasonText(display)
 }
 
+/** Prefer a workspace-relative label; otherwise keep a short path tail. */
+function displayTargetPath(value: string, workspaceRoot?: string): string {
+  const clean = value.replaceAll('\\', '/').replace(/\/+/g, '/')
+  const root = workspaceRoot === undefined
+    ? undefined
+    : workspaceRoot.replaceAll('\\', '/').replace(/\/+/g, '/').replace(/\/$/, '')
+  if (root !== undefined && root !== '' && (clean === root || clean.startsWith(`${root}/`))) {
+    const relative = clean.slice(root.length).replace(/^\//, '')
+    return safeReasonText(relative === '' ? '.' : relative, 160)
+  }
+  return shortTargetPath(clean).slice(0, 160)
+}
+
 function requestDetail(tool: acp.RequestPermissionRequest['toolCall']): string | undefined {
   const record = rawRecord(tool.rawInput)
   const kind = tool.kind ?? ''
@@ -497,13 +576,29 @@ function requestDetail(tool: acp.RequestPermissionRequest['toolCall']): string |
   return undefined
 }
 
+/** Extract only an execute command for a readable approval code block. */
+function requestCommand(tool: acp.RequestPermissionRequest['toolCall']): string | undefined {
+  if (tool.kind !== 'execute') return undefined
+  const record = rawRecord(tool.rawInput)
+  const command = typeof tool.rawInput === 'string' ? tool.rawInput : rawString(record, ['command', 'cmd', 'argv'])
+  return command === undefined ? undefined : safeReasonText(command, 512)
+}
+
 /**
  * Assemble a self-contained, bounded approval reason.  ACP does not require a
  * preceding tool_call, and the host approval panel does not render locations
  * from a missing pairing, so the request itself carries a small redacted title
  * and command/path detail.  It deliberately never includes raw JSON.
  */
-export function buildPermissionReason(params: acp.RequestPermissionRequest): string {
+export interface AcpPermissionReasonOptions {
+  /** Native DSH fallback has no folded detail panel, so retain its command summary. */
+  readonly includeExecuteDetails?: boolean
+}
+
+export function buildPermissionReason(
+  params: acp.RequestPermissionRequest,
+  options: AcpPermissionReasonOptions = {},
+): string {
   const reasonByKind: Record<string, string> = {
     execute: 'ACP Agent 请求执行一条需要额外权限的命令。',
     edit: 'ACP Agent 请求修改文件，此操作需要额外权限。',
@@ -517,7 +612,7 @@ export function buildPermissionReason(params: acp.RequestPermissionRequest): str
   const title = params.toolCall.title ?? params.toolCall.name
   if (typeof title === 'string' && title.trim() !== '') lines.push(`工具：${safeReasonText(title)}`)
   const detail = requestDetail(params.toolCall)
-  if (detail !== undefined) lines.push(detail)
+  if (detail !== undefined && (params.toolCall.kind !== 'execute' || options.includeExecuteDetails !== false)) lines.push(detail)
   if (!hasKind(params.options, 'allow_once')) {
     lines.push(`注意：${ACP_PERMISSION_NO_ALLOW_ONCE_DISCLOSURE}`)
   }
@@ -575,7 +670,7 @@ export function createAcpPermissionHandler(deps: AcpPermissionBridgeDeps): Permi
           ...(params.toolCall.locations == null && accumulated.locations !== undefined ? { locations: [...accumulated.locations] } : {}),
           ...(params.toolCall.rawInput == null && accumulated.inputSummary !== undefined ? { rawInput: accumulated.inputSummary } : {}),
         }
-    const toolTitle = toolCall.title ?? toolCall.toolCallId
+    const toolTitle = safeReasonText(toolCall.title ?? toolCall.toolCallId, PERMISSION_TOOL_TITLE_MAX_CHARS)
  // 结构化字段（acpSessionId 来自请求本身；dshSessionId/acpProvider 由
     // 生产接线的 log 绑定补齐）与指标（requested/decided 配对计数）
     const fields = (result: string): AcpLogFields => ({ operation: 'permission', acpSessionId: params.sessionId, result })
@@ -586,6 +681,17 @@ export function createAcpPermissionHandler(deps: AcpPermissionBridgeDeps): Permi
 
     if (!deps.hasOpenTurn()) {
       log(`dsh-acp permission bridge: request for "${toolTitle}" arrived outside an open turn; responding cancelled (fail closed)`, fields('cancelled'))
+      decided('cancelled')
+      return cancelledResponse()
+    }
+
+    // ACP identities are echoed back in the response and used as broker keys.
+    // Refuse the complete request before creating an audit row or pending UI;
+    // truncating either identity could answer a different Agent request.
+    try {
+      assertPermissionIdentities(toolCall.toolCallId, params.options)
+    } catch (error: unknown) {
+      log(`dsh-acp permission bridge: request identity exceeds the safe limit for "${toolTitle}" (${errorMessage(error)}); responding cancelled (fail closed)`, fields('cancelled'))
       decided('cancelled')
       return cancelledResponse()
     }
@@ -623,9 +729,14 @@ export function createAcpPermissionHandler(deps: AcpPermissionBridgeDeps): Permi
           acpSessionId: params.sessionId,
           toolCall,
           options: params.options,
-          reason: buildPermissionReason({ ...params, toolCall }),
+          // The plugin dock renders execute details in a folded code block;
+          // do not repeat a potentially long command in the always-visible
+          // reason. Native fallback below keeps the detail because it has no
+          // separate ACP request panel.
+          reason: buildPermissionReason({ ...params, toolCall }, { includeExecuteDetails: false }),
           ...(deps.agentId === undefined ? {} : { agentId: deps.agentId }),
           ...(deps.agentName === undefined ? {} : { agentName: deps.agentName }),
+          ...(deps.workspaceRoot === undefined ? {} : { workspaceRoot: deps.workspaceRoot }),
           ...(signal === undefined ? {} : { signal }),
         })
         if (decision.outcome === 'selected') {
@@ -651,7 +762,7 @@ export function createAcpPermissionHandler(deps: AcpPermissionBridgeDeps): Permi
         }
       } catch (error: unknown) {
         outcome = 'unavailable'
-        errorNote = 'pending-broker-error'
+        errorNote = error instanceof AcpPermissionOptionsLimitError ? 'options-limit' : 'pending-broker-error'
         pendingDecision = { outcome: 'cancelled', note: errorNote }
         log('dsh-acp permission broker failed for "' + toolTitle + '" (' + errorMessage(error) + '); responding cancelled (fail closed)', fields('cancelled'))
       }

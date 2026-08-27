@@ -4,8 +4,8 @@
  * The `dsh-acp` settings namespace owns the agent list; every agent gets an LLM
  * route `acp-<id>` backed by one shared stub adapter so the prompt gate
  * (`turnAgentFor`) accepts ACP selections. Settings changes
- * re-`replace` routes in place; rc.7 emits `llm/adapters-updated` from inside
- * the commit point, so the selector refreshes with no manual emit.
+ * re-`replace` routes in place and emits `llm/adapters-updated` from the commit
+ * point, so the selector refreshes without a manual event.
  *
  * 不向 DSH configurable provider directory 注册 ACP 管理项：Settings → Models
  * 页不显示 ACP 配置，profile 的
@@ -14,7 +14,7 @@
  *
  * Layering: the pure core (route id derivation, registration facts,
  * probe config hash, settings schema) is exported for unit tests;
- * every `ctx`/`ctx.llm` side effect lives in {@link installAcpRegistry}.
+ * every `ctx`/`ctx.llm` side effect lives in {@link installInstalledProfileRegistry}.
  *
  * Settings access follows the `installSettingsSection` precedent
  * (`packages/core/agent-default-model`, `packages/llm/llm-pi-ai`) but inlines
@@ -25,8 +25,8 @@
  *
  * 分层：路由 id 约定与 per-agent 配置 datum 下沉到
  * src/domain/session/agent-config.ts（零 import 叶子），本模块只做 host 侧
- * 组合——settings ns 注册、路由同步与 probe confiner 编排。
- * @module @zaimokuza/dsh-acp-adapter/host/composition/registry
+ * 组合——settings ns 注册、路由同步与 probe runtime preparation 编排。
+ * @module @zaimokuza/dsh-acp-adapter/host/composition/installed-profile-registry
  */
 /// <reference types="node" />
 
@@ -42,8 +42,6 @@ import {
   ACP_SETTINGS_NS,
   acpAgentIdFromRoute,
   acpRouteId,
-  descriptorOpaqueRefsForEnvironment,
-  descriptorEnvRefValues,
   descriptorOf,
   diffAcpAgentConfigs,
 } from '../../domain/session/agent-config.ts'
@@ -51,22 +49,19 @@ import type { AcpAgentConfig, AcpAgentConfigChange, AcpAgentId, AcpBuiltinAgentT
 import { createAcpLogger } from '../../domain/observability/logging.ts'
 import type { AcpMetricsLike } from '../../domain/observability/metrics.ts'
 import { AcpStubAdapter, acpProbeConfigKey } from './llm-stub.ts'
-import type { AcpProbeConfiner } from './llm-stub.ts'
-import { AcpSpawnPlanError, buildAcpAgentEnv, buildAcpSpawnPlan, stageOpaqueRefs } from '../../domain/policy/sandbox.ts'
+import type { AcpProbeRuntimePreparer } from './llm-stub.ts'
+import { AcpSpawnPlanError, buildAcpSpawnPlan } from '../../domain/policy/sandbox.ts'
 import { acpLaunchEnvironment } from '../../domain/session/launch-fingerprint.ts'
-import type { AcpSandboxProviderLike } from '../../domain/policy/sandbox.ts'
 import { ACP_SUBPROCESS_UNAVAILABLE_MESSAGE } from '../../runtime/process/subprocess.ts'
 import type { SubprocessSeamResolution } from '../../runtime/process/subprocess.ts'
-import { acpMcpServersOf } from '../../domain/session/mcp.ts'
 
 export { acpProbeConfigKey }
 
 /** Agent id → config template, e.g. the panel's "添加 Devin" button. */
 export type AcpAgentTemplate = AcpBuiltinAgentTemplate
 
-// 边界：内置模板与 runtime descriptor 的真源下沉到零 import 叶子
-// src/domain/session/agent-config.ts（spawn/probe/health/创建门多处消费）；
-// 本 re-export 保持旧 import 路径（test/ 与面板文档先例）不变。
+// Built-in templates and runtime descriptors live in the zero-import profile
+// data module and are re-exported here for the host composition surface.
 export { ACP_BUILTIN_AGENT_TEMPLATES, CLAUDE_ACP_TEMPLATE, CODEX_ACP_TEMPLATE, DEVIN_ACP_TEMPLATE, KIMI_ACP_TEMPLATE } from '../../domain/session/agent-config.ts'
 
 /** Resolved `dsh-acp` settings section. */
@@ -143,7 +138,6 @@ function agentConfigOf(id: string, raw: unknown): AcpAgentConfig {
   if (!isPlainObject(env) || !Object.values(env).every((value) => typeof value === 'string')) {
     throw new TypeError(`dsh-acp settings: agents.${id}.env must be a map of string values`)
   }
-  const mcpServers = acpMcpServersOf(raw['mcpServers'])
   const loginHint = raw['loginHint']
   if (loginHint !== undefined && typeof loginHint !== 'string') {
     throw new TypeError(`dsh-acp settings: agents.${id}.loginHint must be a string`)
@@ -161,7 +155,6 @@ function agentConfigOf(id: string, raw: unknown): AcpAgentConfig {
     command,
     args: [...args] as string[],
     env: { ...env } as Record<string, string>,
-    ...(mcpServers.length === 0 ? {} : { mcpServers }),
     ...(loginHint === undefined ? {} : { loginHint }),
     ...(runtime === undefined ? {} : { runtime: runtime as AcpAgentId }),
   }
@@ -170,8 +163,9 @@ function agentConfigOf(id: string, raw: unknown): AcpAgentConfig {
 /**
  * （ 内置 runtime 唯一性）内置 runtime singleton 的跨条目校验：每个内置 runtime
  * （devin/codex/kimi/claude）至多一个 profile。生效绑定 = 显式 `runtime`
- * 字段优先，缺席时按 agent id 回退（与 descriptorOf 同口径——共享同一
- * descriptor 数据面的两个 profile 必然撞 staging/data home，必须拒绝）。
+ * 字段优先，缺席时按 agent id 回退（与 descriptorOf 同口径）。重复的
+ * 内置 runtime 会让安装检查、模型目录与会话恢复无法稳定指向唯一配置，
+ * 因此必须拒绝。
  * 无 runtime 身份的 generic profile 不受限（多实例靠稳定 profile id 区分）。
  * 错误点名已有 profile（id + 显示名），不自动覆盖/删除——绕过 UI 直写
  * settings 同样被本闸拒绝。
@@ -228,12 +222,6 @@ export const acpSettingsSchema: AcpSettingsSchema = Object.assign(
               },
               args: { type: 'array', items: { type: 'string' }, default: [] },
               env: { type: 'object', additionalProperties: { type: 'string' }, default: {} },
-              mcpServers: {
-                type: 'array',
-                description: '显式传给 ACP session/new/load 的 MCP；不会自动复用 DSH MCP 注册表。stdio/http/sse 由 profile 自己声明。',
-                items: { type: 'object' },
-                default: [],
-              },
               loginHint: { type: 'string' },
               runtime: { enum: [...ACP_AGENT_IDS] },
             },
@@ -265,11 +253,12 @@ export function acpRegistrationFacts(agents: Record<string, AcpAgentConfig>): Ac
     .map(([id, config]) => ({ provider: acpRouteId(id), displayName: config.name }))
 }
 
-/** Live face of the installed registry. */
-export interface AcpRegistry {
+/** Live face of the installed-profile route registry.
+ * This is deliberately not the official ACP Registry catalog. */
+export interface InstalledProfileRegistry {
   /**
    * The shared stub adapter. Route registration/replacement keeps this one
- * instance (rc.7 `replace` semantics), and the health endpoint reads
+ * instance (`replace` semantics), and the health endpoint reads
    * probe snapshots / triggers refreshes through it.
    */
   readonly adapter: AcpStubAdapter
@@ -283,7 +272,7 @@ export interface AcpRegistry {
   resolveRoute(provider: string): AcpResolvedAgent | undefined
 }
 
-export interface AcpRegistryOptions {
+export interface InstalledProfileRegistryOptions {
   /** Connection knobs forwarded to every probe (tests shorten the teardown ladder). */
   probeOptions?: AcpProbeOptions
   /**
@@ -310,24 +299,20 @@ function isUnloading(ctx: Context): boolean {
 }
 
 /**
- * Probe confiner 的组装（裁决：probe 同档 confine，固定 read-only；
- * disposable 数据根）。流程：`dshHomePath('dsh-acp','probe',<agentId>)`
+ * Probe 进程的组装。健康检查必须复用 Agent 原生配置与登录状态，但不能把
+ * 检查工作区与用户项目混在一起。流程：`dshHomePath('dsh-acp','probe',<agentId>)`
  * 作持久 probeBase（仅是 run 目录的容器）→ 清扫全部旧 run 子目录（上次 probe
  * 的崩溃残留；删除失败仅 warn 不阻断）→ `mkdtemp(probeBase/run-*)` 出本次的
- * disposable 根并 canonicalize → read-only spawn 计划（workspaceRoot/stateRoot
- * 同为该 run 目录）→ 返回 confinement（`cleanup` 整棵删除 run 目录，由
+ * disposable 根并 canonicalize → Native Agent Access spawn 计划（工作区为
+ * 该 run 目录）→ 返回 runtime preparation（`cleanup` 整棵删除 run 目录，由
  * llm-stub 的 finally 调用，不依赖 agent 侧 delete 成功）。
  *
  * slot 在 probe 发起时现取（服务后挂载也生效）：`dshHomePath` 缺席 →
- * AcpSpawnPlanError 响亮进缓存；`sandbox` 缺席 → `buildAcpSpawnPlan` 的
- * sandbox-unavailable fail closed 进缓存。profile 绑定的 descriptor（边界，
- * `runtime` 字段或 id 回退）声明的 XDG 镜像 opaque refs 同档注入（认证状态注入：
- * probe 也要读登录态，否则模型目录为空）；本地状态 Agent 的健康探测使用一次性
- * data home（dataHomeEnv descriptor）：envRefs 按声明键名从 DSH 进程环境取值注入、
- * dataHomeEnv 指向 disposable 根、opaqueRefs symlink 物化进 disposable 根。
- * 源缺失的 warn 走 `ctx.logger.warn`。
+ * AcpSpawnPlanError 响亮进缓存。probe 不读取、复制或重定向 credential/data-home；
+ * 登录失败由 Agent 返回 `auth_required`，用户按 Agent 自己的 CLI 登录。临时根
+ * 仅用于 cwd 与清理，不代表正式会话的访问边界。
  */
-function createProbeConfiner(ctx: Context): AcpProbeConfiner {
+function createProbeRuntimePreparer(ctx: Context): AcpProbeRuntimePreparer {
   const log = createAcpLogger(ctx.logger)
   return async ({ provider, config, argv }) => {
     const holder = ctx as Context & { get(name: string, strict?: boolean): unknown }
@@ -336,7 +321,7 @@ function createProbeConfiner(ctx: Context): AcpProbeConfiner {
     if (dshHomePath === undefined) {
       throw new AcpSpawnPlanError(
         'ACP_SPAWN_CONFIG',
-        `dsh-acp: cannot confine the probe for "${provider}": the dshHomePath slot is absent, so the probe state root is unresolvable`,
+        `dsh-acp: cannot prepare the probe for "${provider}": the dshHomePath slot is absent, so the temporary probe root is unresolvable`,
       )
     }
     const onWarn = (message: string): void => { log.warn(`dsh-acp: ${message}`, { acpProvider: provider, operation: 'spawn-plan' }) }
@@ -357,13 +342,6 @@ function createProbeConfiner(ctx: Context): AcpProbeConfiner {
       }
     }
     const descriptor = descriptorOf(agentId, config)
-    // Resolve opaque sources from the same effective native selector/profile
-    // environment used by sessions. The probe destination remains disposable.
-    const nativeEnvironment = await acpLaunchEnvironment({
-      config,
-      descriptor,
-      dataHomeStrategy: 'native',
-    })
     const probeRoot = fs.realpathSync.native(fs.mkdtempSync(path.join(probeBase, 'run-')))
     const cleanupProbeRoot = (): void => {
       try {
@@ -373,48 +351,17 @@ function createProbeConfiner(ctx: Context): AcpProbeConfiner {
       }
     }
     try {
-    const env = await buildAcpAgentEnv({ entries: config.env })
-    if (descriptor !== undefined) {
- // 边界：白名单 env 引用按声明键名取值注入（值绝不进日志/指纹）。
-      Object.assign(env, descriptorEnvRefValues(descriptor, process.env))
- // 边界：高级 CLI override env（如 CLAUDE_CODE_EXECUTABLE）同纪律注入
-      // probe 子进程——probe 必须在与会话一致的可执行事实下运行，否则指纹的
-      // executableOverride.present 与健康行各说各话（ 缺口，当前实现）。
-      const overrideEnv = descriptor.executableOverrideEnv
-      if (overrideEnv !== undefined) {
-        const overrideValue = process.env[overrideEnv]
-        if (overrideValue !== undefined && overrideValue !== '') env[overrideEnv] = overrideValue
-      }
-      if (descriptor.dataHomeEnv !== undefined) {
-        // disposable data home：健康探测的数据根 = disposable run 目录本身；opaque
-        // refs 只以 symlink 物化进该根，probe 结束整删。
-        env[descriptor.dataHomeEnv] = probeRoot
-        stageOpaqueRefs({
-          refs: descriptorOpaqueRefsForEnvironment(descriptor, nativeEnvironment) ?? [],
-          dataHome: probeRoot,
-          onWarn,
-        })
-      } else if (descriptor.opaqueRefs.length > 0) {
-        // Devin's XDG source is selected from the effective native env. Stage
-        // it directly under the probe's redirected XDG data directory so a
-        // custom absolute XDG_DATA_HOME is never forced through the default
-        // home-prefix mapper. The destination remains disposable.
-        stageOpaqueRefs({
-          refs: descriptorOpaqueRefsForEnvironment(descriptor, nativeEnvironment) ?? [],
-          dataHome: path.join(probeRoot, 'xdg-data'),
-          onWarn,
-        })
-      }
-    }
-    const sandbox = holder.get('sandbox') as AcpSandboxProviderLike | undefined
+    // Probes use the same native environment and login state as a formal
+    // session. The probe workspace is disposable, but HOME/CODEX_HOME/XDG
+    // must never be redirected or credential files mirrored by the adapter.
+    // Login failures are reported by ACP as auth_required; the plugin never
+    // reads, stores, or calls authenticate on a credential.
+    const env = await acpLaunchEnvironment({ config, descriptor, dataHomeStrategy: 'native' })
     const plan = buildAcpSpawnPlan({
-      mode: 'read-only',
+      mode: 'danger-full-access',
       workspaceRoot: probeRoot,
-      stateRoot: probeRoot,
       argv,
       env,
-      sandbox,
-      onWarn,
     })
     return {
       plan,
@@ -439,7 +386,7 @@ function createProbeConfiner(ctx: Context): AcpProbeConfiner {
  * Without a settings service the plugin stays dormant (nothing registers);
  * with one, an empty agents map is likewise dormant until the panel adds one.
  */
-export function installAcpRegistry(ctx: Context, options: AcpRegistryOptions = {}): AcpRegistry {
+export function installInstalledProfileRegistry(ctx: Context, options: InstalledProfileRegistryOptions = {}): InstalledProfileRegistry {
   const log = createAcpLogger(ctx.logger)
   let agents: Record<string, AcpAgentConfig> = {}
   const adapter = new AcpStubAdapter({
@@ -448,8 +395,8 @@ export function installAcpRegistry(ctx: Context, options: AcpRegistryOptions = {
  // probe 的 spawn 也走宿主 subprocess seam；未接线 = fail closed（不自制回退）
     subprocess: options.subprocess ?? { ok: false, message: ACP_SUBPROCESS_UNAVAILABLE_MESSAGE },
  // 裁决：probe 同档 confine（read-only；probe 无会话档位，取最严档）
-    confineProbe: createProbeConfiner(ctx),
- // 边界：confinement cleanup 失败走结构化 warn（不翻转 probe 结果）
+    prepareProbe: createProbeRuntimePreparer(ctx),
+ // runtime cleanup failure is a warning and does not rewrite the probe result.
     onWarn: (message) => { log.warn(`dsh-acp: ${message}`, { operation: 'probe', result: 'cleanup-error' }) },
  // probe 指标透传
     ...(options.metrics === undefined ? {} : { metrics: options.metrics }),
@@ -466,8 +413,7 @@ export function installAcpRegistry(ctx: Context, options: AcpRegistryOptions = {
     if (key === registeredKey) return
     const routes = facts.map((fact) => fact.provider)
     if (registration === undefined) {
-      // Dormant posture: an empty agents map registers nothing (rc.7 forbids an
-      // empty INITIAL registration; `replace([])` is the legal empty form).
+      // An empty agents map registers nothing; `replace([])` is the legal empty form.
       if (routes.length === 0) {
         registeredKey = key
         return

@@ -19,7 +19,7 @@
 //   选址——语义原样保留。
 //
 // 新增覆盖：权限位（目录 0700 / 库与 wal/shm 0600）、decided dedupe_key 幂等、
-// 有界审计队列（满丢弃 + warn + flush 落齐；binding/permission 同步 durable 不走
+// 有界审计队列（满丢弃 + warn + flush 落齐；binding/permission/filesystem 同步 durable 不走
 // 队列）、exportAudit（jsonl/json、按 session/全量）、enforceRetention、health
 // （quick_check/行计数/队列水位）、十万条 append 性能（线性耗时、无全文重写）、
 // 旧 JSONL 残留一律忽略（不读不迁不删，warn 一次）。
@@ -48,6 +48,7 @@ import {
   type AcpBindingRecord,
   type AcpOptionsSnapshotRecord,
   type AcpPendingModelSwitch,
+  type AcpRecoveryState,
   type AcpSidecar,
   type AcpSidecarEnvelopeV2,
 } from '../../../src/persistence/sidecar.ts'
@@ -155,6 +156,56 @@ afterEach(async () => {
 })
 
 describe('createAcpSidecar 基本读写（v2 envelope 契约）', () => {
+  it('recovery state is durable and independent from the audit stream', async () => {
+    const state: AcpRecoveryState = {
+      dshSessionId: 'sess-1',
+      kind: 'outcome-unknown',
+      cause: 'prompt-timeout',
+      detail: 'remote outcome was not confirmed',
+      provider: 'acp-devin',
+      acpSessionId: 'agent-session-1',
+      generation: 1,
+      interruptedTurnId: '3',
+      updatedAt: TIME_BASE,
+    }
+    await store.writeRecoveryState(state)
+    const transitions = await store.listRecoveryTransitions(SessionId('sess-1'))
+    expect(transitions).toHaveLength(1)
+    expect(transitions[0]).toMatchObject({ dshSessionId: 'sess-1', toKind: 'outcome-unknown', cause: 'prompt-timeout' })
+    await store.dispose()
+    store = createAcpSidecar({ root, now: () => TIME_BASE + 1 })
+    await expect(store.readRecoveryState(SessionId('sess-1'))).resolves.toEqual(state)
+    await expect(store.readRecoveryState(SessionId('missing'))).resolves.toBeUndefined()
+  })
+  it('recovery schema migrates legacy current-state rows and creates transition evidence', async () => {
+    const legacy = new DatabaseSync(dbFile())
+    legacy.exec('CREATE TABLE recovery_states (dsh_session_id TEXT PRIMARY KEY, time INTEGER NOT NULL, payload TEXT NOT NULL) STRICT')
+    legacy.close()
+    const state: AcpRecoveryState = {
+      dshSessionId: 'sess-legacy',
+      kind: 'reconnect-required',
+      cause: 'load-failed',
+      detail: 'retry the original session',
+      updatedAt: TIME_BASE + 2,
+      lastAttemptAt: TIME_BASE + 2,
+      lastUserAction: 'retry-original',
+    }
+    await store.writeRecoveryState(state)
+    await expect(store.readRecoveryState(SessionId('sess-legacy'))).resolves.toEqual(state)
+    await expect(store.listRecoveryTransitions(SessionId('sess-legacy'))).resolves.toHaveLength(1)
+    const columns = new DatabaseSync(dbFile()).prepare('PRAGMA table_info(recovery_states)').all() as Array<{ name: string }>
+    expect(columns.map((column) => column.name)).toEqual(expect.arrayContaining(['last_attempt_at', 'last_user_action']))
+  })
+  it('malformed recovery state fails loudly instead of becoming an empty/healthy read', async () => {
+    await store.writeRecoveryState({ dshSessionId: 'sess-1', kind: 'outcome-unknown', updatedAt: TIME_BASE })
+    const db = rawDb()
+    try {
+      db.prepare('UPDATE recovery_states SET payload = ? WHERE dsh_session_id = ?').run('{"kind":', 'sess-1')
+    } finally {
+      db.close()
+    }
+    await expect(store.readRecoveryState(SessionId('sess-1'))).rejects.toThrow('local recovery history is damaged')
+  })
   it('append 落库：exportAudit 逐行重建 v2 envelope（schemaVersion/recordId/seq/time/kind/dshSessionId/acp*/payload 逐字段）', async () => {
     await store.append(SessionId('sess-1'), { kind: 'binding', data: BINDING_A })
     const lines = await readEnvelopes('sess-1')
@@ -183,6 +234,29 @@ describe('createAcpSidecar 基本读写（v2 envelope 契约）', () => {
     expect(decided?.recordId).toBe('decided:agent-session-1:tc-1:req-1')
     expect(decided?.acpSessionId).toBe('agent-session-1') // decided 载荷也带 ACP 身份
     expect(decided?.payload).toEqual(decidedData('req-1'))
+  })
+
+  it('旧 permission JSON 缺少集合计数字段仍可 list/export，且不把旧记录伪装成完整集合', async () => {
+    await store.append(SessionId('sess-1'), { kind: 'permission', time: 1, data: permissionData('legacy-req') })
+    const db = rawDb()
+    try {
+      const row = db.prepare('SELECT payload FROM audit WHERE dsh_session_id = ?').get('sess-1') as { payload: string }
+      const payload = JSON.parse(row.payload) as Record<string, unknown>
+      delete payload.optionCount
+      delete payload.omittedOptionCount
+      delete payload.locationCount
+      delete payload.omittedLocationCount
+      db.prepare('UPDATE audit SET payload = ? WHERE dsh_session_id = ?').run(JSON.stringify(payload), 'sess-1')
+    } finally {
+      db.close()
+    }
+    const listed = await store.list(SessionId('sess-1'))
+    const asked = listed[0]?.data as AcpPermissionAuditData
+    expect(asked).not.toHaveProperty('optionCount')
+    expect(asked).not.toHaveProperty('omittedOptionCount')
+    const exported = (await readEnvelopes('sess-1'))[0]
+    expect(exported?.payload).not.toHaveProperty('optionCount')
+    expect(exported?.payload).not.toHaveProperty('omittedOptionCount')
   })
 
   it('显式 time 原样保留（permissions 桥注入时钟的确定性路径）', async () => {
@@ -523,7 +597,7 @@ describe(' 分轴审计 kind（permission-scope / agent-mode）', () => {
     await store.append(SessionId('sess-1'), {
       kind: 'permission-scope',
       time: 1,
-      data: { mode: 'workspace-write', confined: { workspaceRoot: '/proj', enforcement: 'full' }, platform: process.platform },
+      data: { mode: 'danger-full-access', confined: null, platform: process.platform },
     })
     await store.append(SessionId('sess-1'), {
       kind: 'agent-mode',
@@ -539,8 +613,8 @@ describe(' 分轴审计 kind（permission-scope / agent-mode）', () => {
     const entries = await store.list(SessionId('sess-1'))
     expect(entries.map((entry) => entry.kind)).toEqual(['permission-scope', 'agent-mode', 'permission-scope'])
     expect(entries[0]?.data).toEqual({
-      mode: 'workspace-write',
-      confined: { workspaceRoot: '/proj', enforcement: 'full' },
+      mode: 'danger-full-access',
+      confined: null,
       platform: process.platform,
     })
     expect(entries[1]?.data).toEqual({ modeId: 'accept-edits', via: 'session-setup' })
@@ -760,6 +834,24 @@ describe('有界审计队列 + flush（有界审计队列）', () => {
     raw.close()
     expect(rows.map((row) => row.kind)).toEqual(['permission', 'binding'])
     expect(binding).toBeDefined()
+  })
+
+  it('filesystem 审计在 append 返回前已 durable，避免文件副作用与审计脱节', async () => {
+    const pending = store.append(SessionId('sess-1'), {
+      kind: 'filesystem',
+      time: 3,
+      data: {
+        operation: 'write', path: '/tmp/a.txt', bytes: 3,
+        beforeHash: null, afterHash: 'abc', outcome: 'ok',
+        acpSessionId: 'agent-session-1', profileId: 'devin',
+      },
+    })
+    const raw = rawDb()
+    const row = raw.prepare('SELECT kind FROM audit WHERE dsh_session_id = ?').get('sess-1') as { kind: string } | undefined
+    raw.close()
+    expect(row?.kind).toBe('filesystem')
+    await pending
+    expect(await store.health()).toMatchObject({ queuedEntries: 0 })
   })
 
   it('队列满 → 丢弃新记录并 warn 计数（绝不阻塞）；health 暴露丢弃数', async () => {

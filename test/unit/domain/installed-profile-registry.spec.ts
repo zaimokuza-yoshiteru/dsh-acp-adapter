@@ -1,4 +1,4 @@
-// registry.spec.ts — 随附测试：settings schema/纯函数核心 + 注册/替换调用序列。
+// installed-profile-registry.spec.ts — settings schema/纯函数核心 + 注册/替换调用序列。
 //
 // 覆盖：
 //   - 纯函数：acpRouteId / acpAgentIdFromRoute / 内置一键模板（DEVIN_ACP_TEMPLATE +
@@ -7,11 +7,11 @@
 //     acpProbeConfigKey（env 键序无关、name/loginHint 不参与、
 //     runtime 参与——descriptor 绑定变化必须重探）
 // - runtime descriptor：四条内置 descriptor 数据面钉版、descriptorOf 绑定解析
-//     （runtime 命中 / id 回退 / 普通 profile 无 descriptor）、staging 源清单闸
+//     （runtime 命中 / id 回退 / 普通 profile 无 descriptor）
 //   - acpSettingsSchema：空 section 默认值、字段默认值补齐、loginHint/runtime 保留、未知键剥离、
 //     各类非法输入拒绝（坏 id/空 name/空 command/坏 args/坏 env/非法 runtime）；
 // 内置 runtime singleton 跨条目拒绝（点名已有 profile；generic profile 多实例不受限）
-//   - installAcpRegistry（假 ctx.llm 记录调用、内存 settings fake 走真 schema）：
+//   - installInstalledProfileRegistry（假 ctx.llm 记录调用、内存 settings fake 走真 schema）：
 // 空配置 dormant → 首个 agent 只触发 registerAdapter（不再注册
 //     Models 目录条目——Settings → Models 页零 ACP 行）；
 //     增删 agent → 同一 adapter 实例 replace；改名（displayName 是注册事实）→ replace 同路由集；
@@ -31,10 +31,7 @@ import {
   acpAgentIdFromRoute,
   acpRouteId,
   acpVersionCompatibility,
-  descriptorDeclaresAuthRefs,
-  descriptorOpaqueRefsForEnvironment,
   descriptorOf,
-  descriptorStagingSourcesOf,
   type AcpAgentConfig,
   type AcpAgentConfigChange,
 } from '../../../src/domain/session/agent-config.ts';
@@ -49,10 +46,10 @@ import {
   acpProbeConfigKey,
   acpRegistrationFacts,
   acpSettingsSchema,
-  installAcpRegistry,
+  installInstalledProfileRegistry,
   type AcpSettings,
   type AcpSettingsSchema,
-} from '../../../src/host/composition/registry.ts';
+} from '../../../src/host/composition/installed-profile-registry.ts';
 
 // ---------- 内存 settings fake（对齐 dsh-settings 语义：schema 校验 + deepEqual commit 通知） ----------
 
@@ -267,7 +264,7 @@ describe('纯函数：路由 id 与模板', () => {
       command: 'codex-acp',
       args: [],
       env: {},
-      loginHint: 'codex-acp cli login（或 codex login）',
+      loginHint: 'codex login',
       runtime: 'codex',
     });
     // 模板的用户可配置部分必须过自己的 schema
@@ -294,7 +291,7 @@ describe('纯函数：路由 id 与模板', () => {
     expect(roundTripped.agents['kimi']).toEqual(templateValue);
   });
 
-  it('模板 secret 纪律钉：所有一键模板不预填/持久化任何疑似 secret 键（token 只经 descriptor envRefs 注入）', () => {
+  it('模板 secret 纪律钉：所有一键模板不预填/持久化任何疑似 secret 键', () => {
     for (const template of ACP_BUILTIN_AGENT_TEMPLATES) {
       for (const key of Object.keys(template.env)) {
         expect(ACP_SENSITIVE_ENV_PATTERN.test(key), `${template.id}.${key}`).toBe(false);
@@ -308,16 +305,11 @@ describe('纯函数：路由 id 与模板', () => {
 
  it(' 模板清洁钉：npm 分发的模板与 descriptor 不打包用户路径/用户名/凭据', () => {
     // devin/claude/codex/kimi 模板 env 为空；
-    // descriptor 的 opaque ref 源只用 `~/` 前缀（无绝对路径）
+    // Descriptor/template data is static and must not embed the build user's home.
     expect(DEVIN_ACP_TEMPLATE.env).toEqual({});
     expect(CLAUDE_ACP_TEMPLATE.env).toEqual({});
     expect(CODEX_ACP_TEMPLATE.env).toEqual({});
     expect(KIMI_ACP_TEMPLATE.env).toEqual({});
-    for (const descriptor of ACP_AGENT_RUNTIME_DESCRIPTORS) {
-      for (const ref of descriptor.opaqueRefs) {
-        expect(ref.source.startsWith('~/')).toBe(true);
-      }
-    }
     // 模板与 descriptor 都是静态字面量——构建机/用户的 home 与登录名绝不能被烘进 npm 包
     const wire = JSON.stringify({ templates: ACP_BUILTIN_AGENT_TEMPLATES, descriptors: ACP_AGENT_RUNTIME_DESCRIPTORS });
     expect(wire).not.toContain(os.homedir());
@@ -335,63 +327,29 @@ describe('runtime descriptor（数据面钉版 + 绑定解析）', () => {
         id: 'devin',
         command: 'devin',
         args: ['acp'],
-        envRefs: [],
-        opaqueRefs: [
-          { source: '~/.local/share/devin/credentials.toml', targetRelative: 'devin/credentials.toml', kind: 'credential', optional: false },
-        ],
         versionPolicy: {},
-        probeCleanup: 'protocol-and-disposable-root',
         loginHint: 'devin auth login',
       },
       {
         id: 'codex',
         command: 'codex-acp',
         args: [],
-        dataHomeEnv: 'CODEX_HOME',
-        envRefs: [],
-        opaqueRefs: [
-          { source: '~/.codex/auth.json', targetRelative: 'auth.json', kind: 'credential', optional: false },
-          { source: '~/.codex/config.toml', targetRelative: 'config.toml', kind: 'config', optional: true },
-        ],
         versionPolicy: { adapter: '1.6.2' },
-        probeCleanup: 'protocol-and-disposable-root',
-        loginHint: 'codex-acp cli login（或 codex login）',
+        loginHint: 'codex login',
       },
       {
         id: 'kimi',
         command: 'kimi',
         args: ['acp'],
-        dataHomeEnv: 'KIMI_CODE_HOME',
-        envRefs: [],
-        opaqueRefs: [
-          { source: '~/.kimi-code/config.toml', targetRelative: 'config.toml', kind: 'config', optional: false },
-          { source: '~/.kimi-code/credentials/kimi-code.json', targetRelative: 'credentials/kimi-code.json', kind: 'credential', optional: false },
-          { source: '~/.kimi-code/oauth/kimi-code', targetRelative: 'oauth/kimi-code', kind: 'credential', optional: false },
-        ],
         versionPolicy: { wrappedCli: '0.36.1' },
-        probeCleanup: 'protocol-and-disposable-root',
         loginHint: 'kimi 登录（见 kimi CLI）',
       },
       {
         id: 'claude',
         command: 'claude-agent-acp',
         args: [],
-        dataHomeEnv: 'CLAUDE_CONFIG_DIR',
         executableOverrideEnv: 'CLAUDE_CODE_EXECUTABLE',
-        envRefs: [
-          { sourceName: 'ANTHROPIC_API_KEY', targetName: 'ANTHROPIC_API_KEY', secret: true, optional: true },
-          { sourceName: 'ANTHROPIC_AUTH_TOKEN', targetName: 'ANTHROPIC_AUTH_TOKEN', secret: true, optional: true },
-          { sourceName: 'ANTHROPIC_BASE_URL', targetName: 'ANTHROPIC_BASE_URL', secret: false, optional: true },
-          { sourceName: 'ANTHROPIC_MODEL', targetName: 'ANTHROPIC_MODEL', secret: false, optional: true },
-          { sourceName: 'ANTHROPIC_DEFAULT_OPUS_MODEL', targetName: 'ANTHROPIC_DEFAULT_OPUS_MODEL', secret: false, optional: true },
-          { sourceName: 'ANTHROPIC_DEFAULT_SONNET_MODEL', targetName: 'ANTHROPIC_DEFAULT_SONNET_MODEL', secret: false, optional: true },
-          { sourceName: 'ANTHROPIC_DEFAULT_HAIKU_MODEL', targetName: 'ANTHROPIC_DEFAULT_HAIKU_MODEL', secret: false, optional: true },
-          { sourceName: 'CLAUDE_CODE_SUBAGENT_MODEL', targetName: 'CLAUDE_CODE_SUBAGENT_MODEL', secret: false, optional: true },
-          { sourceName: 'CLAUDE_CODE_EFFORT_LEVEL', targetName: 'CLAUDE_CODE_EFFORT_LEVEL', secret: false, optional: true },
-        ],
-        opaqueRefs: [],
         versionPolicy: { adapter: '0.70.0' },
-        probeCleanup: 'protocol-and-disposable-root',
         loginHint: 'claude（外部登录，或经 ANTHROPIC_* 环境变量提供路由）',
       },
     ]);
@@ -446,38 +404,6 @@ describe('runtime descriptor（数据面钉版 + 绑定解析）', () => {
     expect(new Set(keys).size).toBe(3);
   });
 
-  it('descriptorStagingSourcesOf：仅 Devin 健康探测产出 XDG 镜像 staging 源', () => {
-    expect(descriptorStagingSourcesOf(descriptorOf('devin'))).toEqual(['~/.local/share/devin/credentials.toml']);
- // 其他 Agent 的 probe refs 直接进入其可丢弃 data home，不喂给 XDG staging。
-    expect(descriptorStagingSourcesOf(descriptorOf('codex'))).toBeUndefined();
-    expect(descriptorStagingSourcesOf(descriptorOf('kimi'))).toBeUndefined();
-    expect(descriptorStagingSourcesOf(descriptorOf('claude'))).toBeUndefined();
-    expect(descriptorStagingSourcesOf(undefined)).toBeUndefined();
-  });
-
-  it('native opaque ref 源跟随显式 data-home/XDG 选择，probe 目标仍由调用方单独提供', () => {
-    const home = '/users/tester'
-    const codex = descriptorOpaqueRefsForEnvironment(descriptorOf('codex'), { CODEX_HOME: '/private/codex-state' }, home)
-    expect(codex?.map((ref) => ref.source)).toEqual([
-      '/private/codex-state/auth.json',
-      '/private/codex-state/config.toml',
-    ])
-    const devin = descriptorStagingSourcesOf(descriptorOf('devin'), { XDG_DATA_HOME: '/private/xdg-data' })
-    expect(devin).toEqual(['/private/xdg-data/devin/credentials.toml'])
-    expect(() => descriptorOpaqueRefsForEnvironment(descriptorOf('codex'), { CODEX_HOME: 'relative-state' }, home))
-      .toThrow('CODEX_HOME must be an absolute path')
-  });
-
-  it('descriptorDeclaresAuthRefs：opaqueRefs/envRefs 任一非空即声明；无 descriptor 归 false', () => {
-    expect(descriptorDeclaresAuthRefs(descriptorOf('devin'))).toBe(true);
-    expect(descriptorDeclaresAuthRefs(descriptorOf('codex'))).toBe(true);
-    expect(descriptorDeclaresAuthRefs(descriptorOf('kimi'))).toBe(true);
-    // claude 经 envRefs 命中（opaqueRefs 为空）
-    expect(descriptorDeclaresAuthRefs(descriptorOf('claude'))).toBe(true);
-    expect(descriptorDeclaresAuthRefs(descriptorOf('foo', fooAgent))).toBe(false);
-    expect(descriptorDeclaresAuthRefs(undefined)).toBe(false);
-  });
-
   it('acpSettingsSchema 收 runtime 字段：四个合法值保留，非法值/非 string 拒绝', () => {
     for (const runtime of ['devin', 'codex', 'kimi', 'claude'] as const) {
       const resolved = acpSettingsSchema({ agents: { my: { name: 'M', command: 'm', runtime } } });
@@ -493,7 +419,7 @@ describe('runtime descriptor（数据面钉版 + 绑定解析）', () => {
 
   it('runtime 参与 probe 缓存键（descriptor 绑定变化必须重探）', () => {
     const base = acpProbeConfigKey(devinAgent);
-    expect(JSON.parse(base)).toEqual({ command: 'devin', args: ['acp'], envKeys: [], runtime: null, mcpFingerprint: '4f53cda18c2baa0c' });
+    expect(JSON.parse(base)).toEqual({ command: 'devin', args: ['acp'], envKeys: [], runtime: null });
     expect(acpProbeConfigKey({ ...devinAgent, runtime: 'devin' })).not.toBe(base);
     expect(acpProbeConfigKey({ ...devinAgent, runtime: 'devin' })).not.toBe(acpProbeConfigKey({ ...devinAgent, runtime: 'claude' }));
     expect(acpProbeConfigKey({ ...devinAgent, runtime: 'devin' })).toBe(acpProbeConfigKey({ ...devinAgent, runtime: 'devin' }));
@@ -534,8 +460,8 @@ describe('acpSettingsSchema', () => {
     expect(resolved.agents['kimi']).toEqual({ name: 'Kimi', command: '/usr/local/bin/kimi', args: ['acp'], env: {} });
   });
 
-  it('未知键被剥离（schemastery strip 语义）', () => {
-    const resolved = acpSettingsSchema({ agents: { devin: { name: 'Devin', command: 'devin', typoField: 1 } }, stray: true });
+  it('未知键被剥离；已删除的 profile MCP 字段不会继续进入产品配置', () => {
+    const resolved = acpSettingsSchema({ agents: { devin: { name: 'Devin', command: 'devin', typoField: 1, mcpServers: [{ type: 'stdio' }] } }, stray: true });
     expect(resolved).toEqual({ agents: { devin: { name: 'Devin', command: 'devin', args: [], env: {} } } });
   });
 
@@ -645,21 +571,21 @@ describe('纯函数：registration facts / probe 配置 hash', () => {
  // 边界：runtime 是 descriptor 绑定（变了则 ref 集合变），进 probe 缓存键；
  // 键形状恰为 {command, args, envKeys, runtime}（envKeys 为排序后的键名数组，不含值；
     // runtime 缺席归 null）
-    expect(JSON.parse(base)).toEqual({ command: 'devin', args: ['acp'], envKeys: [], runtime: null, mcpFingerprint: '4f53cda18c2baa0c' });
-    expect(JSON.parse(withEnv)).toEqual({ command: 'devin', args: ['acp'], envKeys: ['A', 'B'], runtime: null, mcpFingerprint: '4f53cda18c2baa0c' });
+    expect(JSON.parse(base)).toEqual({ command: 'devin', args: ['acp'], envKeys: [], runtime: null });
+    expect(JSON.parse(withEnv)).toEqual({ command: 'devin', args: ['acp'], envKeys: ['A', 'B'], runtime: null });
   });
 });
 
-describe('installAcpRegistry：注册/替换调用序列', () => {
+describe('installInstalledProfileRegistry：注册/替换调用序列', () => {
   it('空配置 dormant：启动不注册任何路由', () => {
     const { ctx, llm } = fakeHarness();
-    installAcpRegistry(ctx);
+    installInstalledProfileRegistry(ctx);
     expect(llm.calls).toEqual([]);
   });
 
- it('首个 agent 注册路由（只 registerAdapter，不再有 configurable-provider 目录注册）；adapter 实例即 registry.adapter', async () => {
+  it('首个 agent 注册路由（只 registerAdapter，不再有 configurable-provider 目录注册）；adapter 实例即 registry.adapter', async () => {
     const { ctx, llm, settings } = fakeHarness();
-    const registry = installAcpRegistry(ctx);
+    const registry = installInstalledProfileRegistry(ctx);
     await settings.mutate([{ op: 'set', path: ['agents', 'devin'], value: { ...devinAgent } }]);
     expect(llm.calls).toEqual(['registerAdapter:acp-devin']);
     expect(llm.adapters).toEqual([registry.adapter]);
@@ -668,7 +594,7 @@ describe('installAcpRegistry：注册/替换调用序列', () => {
 
   it('增删 agent 走同一注册的 replace（排序后的完整路由集）', async () => {
     const { ctx, llm, settings } = fakeHarness();
-    installAcpRegistry(ctx);
+    installInstalledProfileRegistry(ctx);
     await settings.mutate([{ op: 'set', path: ['agents', 'devin'], value: { ...devinAgent } }]);
     await settings.mutate([{ op: 'set', path: ['agents', 'foo'], value: { ...fooAgent } }]);
     await settings.mutate([{ op: 'unset', path: ['agents', 'devin'] }]);
@@ -683,7 +609,7 @@ describe('installAcpRegistry：注册/替换调用序列', () => {
 
   it('改名是注册事实：replace 同一路由集以刷新选择器标签', async () => {
     const { ctx, llm, settings } = fakeHarness();
-    const registry = installAcpRegistry(ctx);
+    const registry = installInstalledProfileRegistry(ctx);
     await settings.mutate([{ op: 'set', path: ['agents', 'devin'], value: { ...devinAgent } }]);
     await settings.mutate([{ op: 'set', path: ['agents', 'devin', 'name'], value: 'Devin Pro' }]);
     expect(llm.calls).toEqual([
@@ -695,7 +621,7 @@ describe('installAcpRegistry：注册/替换调用序列', () => {
 
   it('仅 loginHint/args/env 变化不动注册（它们不是注册捕获的事实）', async () => {
     const { ctx, llm, settings } = fakeHarness();
-    installAcpRegistry(ctx);
+    installInstalledProfileRegistry(ctx);
     await settings.mutate([{ op: 'set', path: ['agents', 'devin'], value: { ...devinAgent } }]);
     llm.calls.length = 0;
     await settings.mutate([{ op: 'set', path: ['agents', 'devin', 'loginHint'], value: 'devin login --new' }]);
@@ -703,9 +629,9 @@ describe('installAcpRegistry：注册/替换调用序列', () => {
     expect(llm.calls).toEqual([]);
   });
 
-  it('删空走 replace([])（rc.7 合法的空形式），注册仍存活', async () => {
+  it('删空走 replace([])（合法的空形式），注册仍存活', async () => {
     const { ctx, llm, settings } = fakeHarness();
-    installAcpRegistry(ctx);
+    installInstalledProfileRegistry(ctx);
     await settings.mutate([{ op: 'set', path: ['agents', 'devin'], value: { ...devinAgent } }]);
     await settings.replace({ agents: {} });
     expect(llm.calls).toEqual([
@@ -720,7 +646,7 @@ describe('installAcpRegistry：注册/替换调用序列', () => {
 
  it('：删除 profile 后目录失效——路由撤下、resolveRoute 归 undefined、listModels 响亮拒绝（不静默改用其他 profile）', async () => {
     const { ctx, settings } = fakeHarness();
-    const registry = installAcpRegistry(ctx);
+    const registry = installInstalledProfileRegistry(ctx);
     await settings.mutate([{ op: 'set', path: ['agents', 'devin'], value: { ...devinAgent } }]);
     await settings.mutate([{ op: 'set', path: ['agents', 'foo'], value: { ...fooAgent } }]);
     await settings.mutate([{ op: 'unset', path: ['agents', 'devin'] }]);
@@ -735,7 +661,7 @@ describe('installAcpRegistry：注册/替换调用序列', () => {
 
   it('settings 文档键重排不触发任何注册动作', async () => {
     const { ctx, llm, settings } = fakeHarness();
-    installAcpRegistry(ctx);
+    installInstalledProfileRegistry(ctx);
     await settings.mutate([
       { op: 'set', path: ['agents', 'devin'], value: { ...devinAgent } },
       { op: 'set', path: ['agents', 'foo'], value: { ...fooAgent } },
@@ -747,7 +673,7 @@ describe('installAcpRegistry：注册/替换调用序列', () => {
 
   it('非法写入被 schema 拒绝，既有路由不变', async () => {
     const { ctx, llm, settings } = fakeHarness();
-    installAcpRegistry(ctx);
+    installInstalledProfileRegistry(ctx);
     await settings.mutate([{ op: 'set', path: ['agents', 'devin'], value: { ...devinAgent } }]);
     llm.calls.length = 0;
     await expect(settings.replace({ agents: { Broken: { name: 'B', command: 'b' } } })).rejects.toThrow(TypeError);
@@ -756,7 +682,7 @@ describe('installAcpRegistry：注册/替换调用序列', () => {
 
   it('resolveRoute：acp-<id> 命中，外部路由与未知 id 返回 undefined', async () => {
     const { ctx, settings } = fakeHarness();
-    const registry = installAcpRegistry(ctx);
+    const registry = installInstalledProfileRegistry(ctx);
     expect(registry.resolveRoute('acp-devin')).toBeUndefined();
     await settings.mutate([{ op: 'set', path: ['agents', 'devin'], value: { ...devinAgent } }]);
  // 边界：解析结果只携带 id+config；descriptor 由消费方经 descriptorOf(id, config) 现取
@@ -769,11 +695,11 @@ describe('installAcpRegistry：注册/替换调用序列', () => {
   });
 });
 
-describe('installAcpRegistry：agent 配置改动审计', () => {
+describe('installInstalledProfileRegistry：agent 配置改动审计', () => {
   it('settings 实改动产出 added/changed/removed 摘要；env 只记键名（值不落）', async () => {
     const { ctx, settings } = fakeHarness();
     const audits: AcpAgentConfigChange[][] = [];
-    installAcpRegistry(ctx, { auditConfigChange: (changes) => { audits.push([...changes]); } });
+    installInstalledProfileRegistry(ctx, { auditConfigChange: (changes) => { audits.push([...changes]); } });
     await settings.mutate([{ op: 'set', path: ['agents', 'devin'], value: { ...devinAgent, env: { DEVIN_API_KEY: 'sk-first' } } }]);
     await settings.mutate([
       { op: 'set', path: ['agents', 'devin', 'command'], value: 'devin-next' },
@@ -819,7 +745,7 @@ describe('installAcpRegistry：agent 配置改动审计', () => {
     const { ctx, llm, settings } = fakeHarness();
     settings.seed({ agents: { devin: { ...devinAgent } } });
     const audits: unknown[] = [];
-    installAcpRegistry(ctx, { auditConfigChange: (changes) => { audits.push(changes); } });
+    installInstalledProfileRegistry(ctx, { auditConfigChange: (changes) => { audits.push(changes); } });
     // 首帧照常注册路由，但不产审计条目
     expect(llm.calls).toEqual(['registerAdapter:acp-devin']);
     expect(audits).toEqual([]);
@@ -833,7 +759,7 @@ describe('installAcpRegistry：agent 配置改动审计', () => {
 
   it('审计回调抛错只 warn，不阻断设置同步（路由照常注册）', async () => {
     const { ctx, llm, settings, warnings } = fakeHarness();
-    installAcpRegistry(ctx, {
+    installInstalledProfileRegistry(ctx, {
       auditConfigChange: () => {
         throw new Error('sidecar full');
       },

@@ -25,7 +25,7 @@ function row(id: string, version: string): AcpProviderHealth {
 }
 
 function view(rows: readonly AcpProviderHealth[]): AcpHealthView {
-  return { providers: rows, sandbox: null, metrics: null, liveSessions: null }
+  return { providers: rows, metrics: null, liveSessions: null }
 }
 
 describe('AcpPanelController targeted health checks', () => {

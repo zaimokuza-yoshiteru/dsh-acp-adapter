@@ -18,8 +18,9 @@
  * 置 continuity 闩锁（blocked）、落 sidecar `reconciliation` 记录、抛
  * {@link AcpReconciliationError}（turn/end error code
  * `ACP_RECONCILIATION_REQUIRED`），**不再自动 session/new**。崩溃尾巴（锚点后
- * 全部可见事件都属于以 `turn/end{interrupted}` 收束的 turn）是正常恢复路径：
- * 期望区间扩展到 baselineSeq 一并纳入对账，不阻断。
+ * 全部可见事件都属于以 `turn/end{interrupted}` 收束的 turn）可纳入对账，
+ * 但 remote outcome 仍不可证明；构造器会将会话置为 outcome-unknown，必须由
+ * 用户显式重连、放弃上下文或新建会话后才能继续。
  *
  * binding 语义门槛与双绑守卫（增补保留，出口从降级改为阻断）：
  * - **主键纪律** dsh sessionId 永远是 UI/路由/审计主键；ACP session id 只是
@@ -625,7 +626,7 @@ function isVisibleDshEvent(event: SessionEvent): boolean {
  * 定期望区间（对账第一步）：`[historyBaseSeq, dshCommittedSeq)` 是 binding
  * 担保的前缀。锚点之后（`[dshCommittedSeq, baselineSeq)`）若存在可见事件：
  * 全部属于以 `turn/end{interrupted}` 收束的 turn（崩溃尾巴）→ 区间扩展到
- * baselineSeq（崩溃恢复是正常路径，崩溃尾巴一并纳入期望）；否则 →
+ * baselineSeq（崩溃尾巴可纳入期望，但会话仍进入 outcome-unknown）；否则 →
  * 'dsh-log-diverged'（有未解释的可见事件，拒绝猜）。`baselineSeq` 由调用方在
  * 追加本 run 自己的说明消息**之前**捕获，把说明消息排除在本检查之外
  * （说明消息省略 sourceEventSeqs，本就不算可见事件，双保险）。

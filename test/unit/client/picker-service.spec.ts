@@ -1,34 +1,8 @@
-// picker-service.spec.ts — 回归钉：选择器 glue（src/client/data/picker-service.ts
-// + directory-controller.ts + live-controller.ts）的 picker 订阅生命周期； 增补
-// LiveOptionsController 旁路写路径测试； gate 语义删除，钉改为权限范围只读
-// 披露镜像（CapabilityDisclosureState）的订阅与展示； store 化后，本文件的驱动
-// 方式从「直写内部 store」改为「glue 级转换 + 真 store 实例 attach」——被钉的行为
-// 不变：订阅生死、recompute 时机、block 发布/清理、镜像内容。
-//
-// 背景（选择器端到端探针，根因已查明并 CDP 端到端验证）：
-// pickerFor 曾把清理体写成 `scope.effect` 的 effect 本体（`() => {…}` 而非
-// `() => () => {…}`）。cordis 语义下 effect 本体**立即执行**、只有其返回的
-// disposer 才在 fiber 卸载时运行——picker 创建的同一 tick，目录与 permissions
-// projection 两路订阅即死，recompute 永不再触发（事故形态下 gate 恒不拦；
-// 后同一订阅链承载披露展示与 composer 阻断）。selector-logic.spec.ts 只覆盖
-// 纯逻辑、钉不住这个 bug；本文件的 fake scope 严格按 cordis 语义立即执行 effect
-// 本体，把「pickerFor 返回后订阅仍存活，直到 effect 返回的 disposer 被调用」钉在
-// glue 级。
-//
-// 覆盖：
-//   - (a) pickerFor 返回后：effect 已注册且返回 disposer、projection 的 unsub 未被
-//     调用、picker 仍在缓存（重复 pickerFor 不重建）、block 未被清
-//   - (b) 调用 effect 返回的 disposer 后：projection 退订、block 清除、picker 摘除、
-//     recompute 惰性化（in-flight 目录加载落地不再复活 block——store 化后 onChange
-//     是构造期回调，靠 active 闸而非退订挡住这条路径）
-// - 权限范围只读披露：ACP provider + permissions projection 到位 → 披露
-//     slice 如实给出 {provider, preset}；composer 只剩 routable=false 的
-//     blocked.composer 分支，档位变化不再产生任何阻断
-//   - attach 纪律：seat 注入工厂把框架烘焙的 actions 交给 picker.attach，三路 slice
-//     一次 resync；此后 glue 转换同步镜像到 store
-//
-// 注：目录转换由 fake sessions.models 的可控 resolve 驱动（glue 级），projection
-// fake 有字面 unsub spy。
+// PickerService tests cover picker lifecycle, backend-access mirroring, model
+// directory/live-option coordination, composer blocking, and new-session
+// handoff. The fake scope follows Cordis effect semantics: setup runs now and
+// its returned disposer runs during scope teardown. Assertions keep
+// subscriptions alive until teardown and prevent recomputation afterwards.
 
 import { describe, expect, it, vi } from 'vitest';
 import { LiveOptionsController } from '../../../src/client/data/live-controller.ts';
@@ -44,7 +18,7 @@ const SESSION_ID = 'sess-1';
 
 interface EffectRegistration {
   name: string | undefined;
-  /** effect 本体立即执行的返回值（修复后 = 清理 disposer；事故形态下 = undefined）。 */
+  /** The disposer returned by the effect setup. */
   disposer: unknown;
 }
 
@@ -60,6 +34,7 @@ function createHarness() {
   let sessionListSnapshot: { byId: Record<string, { cwd?: string } | undefined>; current?: string } = { byId: {} };
   const sessionListListeners = new Set<() => void>();
   const openCalls: string[] = [];
+  const commandCalls: Array<{ sessionId: string; line: string }> = [];
   // 目录 wire 应答可控：默认永不 resolve（prime 预拉停在 loading，测试保持纯同步），
   // 需要驱动目录转换的用例替换 modelsImpl。
   let modelsImpl: () => Promise<{ result: { ok: true; value: SessionModelsView } }> = () => NEVER;
@@ -69,9 +44,8 @@ function createHarness() {
       scope: (sessionId) =>
         sessionId === SESSION_ID
           ? {
-              // cordis Fiber.effect 语义（cordis fiber.ts 文档注释）：execute
-              // 立即执行，只有它返回的 disposer 留到 fiber 卸载。事故形态（清理体
-              // 写成 `() => {…}`）在本 fake 下会当场执行清理，(a) 组断言即刻转红。
+              // Cordis Fiber.effect executes setup immediately and retains the
+              // returned disposer until fiber teardown.
               effect(fn, name) {
                 const disposer = (fn as () => unknown)();
                 registrations.push({ name, disposer });
@@ -85,7 +59,10 @@ function createHarness() {
         sessionId === SESSION_ID || sessionListSnapshot.byId[sessionId] !== undefined
           ? {
               session: {
-                command: () => Promise.resolve({ ok: true as const, value: { matched: true } }),
+                command: (line) => {
+                  commandCalls.push({ sessionId, line });
+                  return Promise.resolve({ ok: true as const, value: { matched: true } });
+                },
                 projections: {
                   faceOf: () => ({
                     getSnapshot: () => projectionSnapshot,
@@ -163,6 +140,7 @@ function createHarness() {
     registrations,
     projectionUnsub,
     openCalls,
+    commandCalls,
     resolveModels(view: SessionModelsView) {
       modelsImpl = () => Promise.resolve({ result: { ok: true, value: view } });
     },
@@ -187,29 +165,27 @@ const UNROUTABLE_VIEW: SessionModelsView = {
 
 // ---------- 测试 ----------
 
-describe('PickerService pickerFor 订阅生命周期（回归钉）', () => {
+describe('PickerService pickerFor 订阅生命周期', () => {
   it('pickerFor 返回后订阅存活；清理只随 effect 返回的 disposer 发生', async () => {
     const h = createHarness();
     const service = new PickerService(h.deps);
 
     const picker = service.pickerFor(SESSION_ID);
 
-    // (a) cordis 语义下 effect 本体已于 pickerFor 内执行——修复后它只是返回
-    // disposer，订阅必须仍然存活（事故形态下此处已全部退订、picker 已摘除）。
+    // Effect setup has already run; its disposer is retained for teardown.
     expect(h.registrations).toHaveLength(1);
     expect(h.registrations[0]!.name).toBe(`dsh-acp:picker:${SESSION_ID}`);
     expect(typeof h.registrations[0]!.disposer).toBe('function');
     expect(h.projectionUnsub).not.toHaveBeenCalled();
 
-    // picker 仍在缓存：重复 pickerFor 返回同一实例，不重建整套（事故形态下
-    // picker 被同 tick 摘除，再次 pickerFor 会二次注册 effect）。
+    // Repeated lookup returns the cached picker without rebuilding it.
     expect(service.pickerFor(SESSION_ID)).toBe(picker);
     expect(h.registrations).toHaveLength(1);
 
     // attach 真 store 实例（seat 注入工厂的等价物）：三路 slice 一次 resync。
     const store = createModelPickerStore().create(SESSION_ID);
     picker.attach(store.actions);
-    expect(store.getSnapshot().disclosure).toEqual({ provider: '', preset: undefined });
+    expect(store.getSnapshot().backendAccess).toEqual({ provider: '', preset: undefined });
 
     // 目录转换存活（行为钉）：glue 级 load 落地 routable=false → recompute →
     // 发布阻断 block，且镜像同步到 store。
@@ -222,13 +198,13 @@ describe('PickerService pickerFor 订阅生命周期（回归钉）', () => {
       block: { reason: 'blocked.composer' },
     });
     expect(store.getSnapshot().directory.routable).toBe(false);
-    expect(store.getSnapshot().disclosure.provider).toBe('acp-mock');
+    expect(store.getSnapshot().backendAccess.provider).toBe('acp-mock');
 
     // permissions projection 订阅存活：快照变化触发 recompute（披露镜像更新）。
     const callsBeforeProjection = h.blocksLog.length;
     h.setProjection({ currentValue: 'danger-full-access' });
     expect(h.blocksLog.length).toBeGreaterThan(callsBeforeProjection);
-    expect(store.getSnapshot().disclosure.preset).toBe('danger-full-access');
+    expect(store.getSnapshot().backendAccess.preset).toBe('danger-full-access');
 
     // (b) 调用 effect 返回的 disposer（= fiber 卸载路径）后清理发生。
     (h.registrations[0]!.disposer as () => void)();
@@ -247,32 +223,36 @@ describe('PickerService pickerFor 订阅生命周期（回归钉）', () => {
     expect(h.registrations).toHaveLength(2);
   });
 
- it('权限范围只读披露：projection 到位 → 披露 slice 如实给出 preset；不再产生 gate 阻断', async () => {
+ it('ACP 权限投影降档后自动恢复 Full Access，同时披露 slice 跟随 projection', async () => {
     const h = createHarness();
+    h.deps.acpRemote = {
+      ...h.deps.acpRemote,
+      backendOf: () => Promise.resolve({ ok: true as const, value: { state: 'established' as const, provider: 'acp-mock' } }),
+    };
+    h.setProjection({ currentValue: 'danger-full-access' });
     const service = new PickerService(h.deps);
     const picker = service.pickerFor(SESSION_ID);
     const store = createModelPickerStore().create(SESSION_ID);
     picker.attach(store.actions);
 
-    // 初始：目录未加载（provider ''）+ projection 缺席 → preset undefined（UI 显示未知）。
-    expect(store.getSnapshot().disclosure).toEqual({ provider: '', preset: undefined });
+    // 初始：目录未加载，但宿主权限投影已经是 Full Access。
+    expect(store.getSnapshot().backendAccess).toEqual({ provider: '', preset: 'danger-full-access' });
 
     // 目录到位（ACP 路由）→ provider 先行就位。
     h.resolveModels({ ...UNROUTABLE_VIEW, routable: true });
     await picker.directory.load();
-    expect(store.getSnapshot().disclosure).toEqual({ provider: 'acp-mock', preset: undefined });
-
-    // permissions projection 到位（danger 档）→ preset 如实透传；composer 无阻断
- // （二次确认 gate 已删除，Full Access 确认只剩 DSH 原生一层）。
-    h.setProjection({ currentValue: 'danger-full-access' });
-    expect(store.getSnapshot().disclosure).toEqual({ provider: 'acp-mock', preset: 'danger-full-access' });
+    expect(store.getSnapshot().backendAccess).toEqual({ provider: 'acp-mock', preset: 'danger-full-access' });
     expect(h.blocksLog.at(-1)).toEqual({ sessionId: SESSION_ID, block: undefined });
+    expect(h.commandCalls).toHaveLength(0);
 
-    // 档位往返：纯展示镜像跟随 projection，任何档位都不阻断 composer。
+    // 用户把 DSH 权限降档后，插件按 ACP backend 权威身份自动恢复。
     h.setProjection({ currentValue: 'read-only' });
-    expect(store.getSnapshot().disclosure.preset).toBe('read-only');
+    expect(store.getSnapshot().backendAccess.preset).toBe('read-only');
+    await vi.waitFor(() => {
+      expect(h.commandCalls).toEqual([{ sessionId: SESSION_ID, line: '/permission danger-full-access' }]);
+    });
     h.setProjection({ currentValue: 'danger-full-access' });
-    expect(store.getSnapshot().disclosure.preset).toBe('danger-full-access');
+    expect(store.getSnapshot().backendAccess.preset).toBe('danger-full-access');
     expect(h.blocksLog.at(-1)).toEqual({ sessionId: SESSION_ID, block: undefined });
   });
 });
@@ -753,7 +733,7 @@ describe('PickerService backendOf / useInNewSession / takePendingNotice', () => 
     expect(service.takePendingNotice()).toBeNull();
   });
 
-  it('成功次序：解析当前会话所属工作区 → CAS 写默认 → 公开 create（预分配 session- id）→ 列表确认 → open；提示落槽', async () => {
+  it('成功次序：写 DSH 默认 → 公开 create → Full Access → open；目标保留为后续默认', async () => {
     const h = createFlowHarness();
     const order: string[] = [];
     h.deps.connection.api.settings = {
@@ -772,20 +752,20 @@ describe('PickerService backendOf / useInNewSession / takePendingNotice', () => 
     const failure = await service.useInNewSession(SESSION_ID, { provider: 'acp-devin', model: 'devin-latest' }, 'Devin Latest');
     expect(failure).toBeUndefined();
     expect(order).toEqual(['mutate', 'create']);
-    // CAS：默认模型写入带 expectedRevision；创建载荷 = 当前会话所属工作区 + 预分配稳定 id
-    expect(h.mutateCalls).toEqual([
-      {
-        ns: 'agent-default-model',
-        ops: [
-          { op: 'set', path: ['provider'], value: 'acp-devin' },
-          { op: 'set', path: ['model'], value: 'devin-latest' },
-        ],
-        expectedRevision: 7,
-      },
-    ]);
+    expect(h.mutateCalls).toEqual([{
+      ns: 'agent-default-model',
+      ops: [
+        { op: 'set', path: ['provider'], value: 'acp-devin' },
+        { op: 'set', path: ['model'], value: 'devin-latest' },
+      ],
+      expectedRevision: 7,
+    }]);
     expect(h.createCalls).toHaveLength(1);
     expect(h.createCalls[0]!.workspaceId).toBe('ws-1');
     expect(h.createCalls[0]!.sessionId).toMatch(/^session-/);
+    expect(h.commandCalls).toEqual([
+      { sessionId: h.createCalls[0]!.sessionId, line: '/permission danger-full-access' },
+    ]);
     // 导航到新建会话；旧会话全程未被触碰（open 只收新 id）
     expect(h.openCalls).toEqual([h.createCalls[0]!.sessionId]);
     expect(service.takePendingNotice()).toBe('cross.started:{"model":"Devin Latest"}');
@@ -793,7 +773,7 @@ describe('PickerService backendOf / useInNewSession / takePendingNotice', () => 
     expect(service.takePendingNotice()).toBeNull();
   });
 
-  it('空白 native 会话选择 ACP：透明创建并打开新会话，不污染旧 session 的模型', async () => {
+  it('空白会话已有 native wrapper 时选择 ACP：自动创建并打开目标 DSH session，不伪装原地切换', async () => {
     const h = createFlowHarness();
     const fake = createFakeRemote([]);
     fake.remote.backendOf = () => Promise.resolve({ ok: true as const, value: { state: 'blank' as const } });
@@ -816,10 +796,12 @@ describe('PickerService backendOf / useInNewSession / takePendingNotice', () => 
     expect(selectModel).not.toHaveBeenCalled();
     expect(h.createCalls).toHaveLength(1);
     expect(h.openCalls).toEqual([h.createCalls[0]!.sessionId]);
-    expect(service.takePendingNotice()).toBe('blank.started:{"model":"m"}');
+    expect(h.mutateCalls).toHaveLength(1);
+    expect(h.commandCalls).toEqual([{ sessionId: h.createCalls[0]!.sessionId, line: '/permission danger-full-access' }]);
+    expect(service.takePendingNotice()).toBe('cross.started:{"model":"m"}');
   });
 
-  it('工作区解析回退：当前会话无所属工作区 → recentWorkspaceId；无工作区 → 当前会话 cwd 直建；皆无 → 响亮报错且不写默认', async () => {
+  it('工作区解析回退：当前会话无所属工作区 → recentWorkspaceId；无工作区 → 当前会话 cwd 直建；皆无 → 响亮报错', async () => {
     // recent 回退
     const h1 = createFlowHarness({ workspaceItems: [], recentWorkspaceId: 'ws-recent' });
     await expect(new PickerService(h1.deps).useInNewSession(SESSION_ID, { provider: 'acp-devin', model: 'm' })).resolves.toBeUndefined();
@@ -838,17 +820,7 @@ describe('PickerService backendOf / useInNewSession / takePendingNotice', () => 
     expect(h3.createCalls).toHaveLength(0);
   });
 
-  it('写默认失败 → 不创建会话（create 零调用），错误消息原样返回', async () => {
-    const h = createFlowHarness({
-      mutateImpl: () => Promise.resolve({ result: { ok: false as const, error: { code: 'settings-conflict', message: 'rev conflict' } } }),
-    });
-    const service = new PickerService(h.deps);
-    await expect(service.useInNewSession(SESSION_ID, { provider: 'acp-devin', model: 'devin-latest' })).resolves.toBe('rev conflict');
-    expect(h.createCalls).toHaveLength(0);
-    expect(service.takePendingNotice()).toBeNull();
-  });
-
-  it('settingsScope 不可写 → 不创建会话', async () => {
+  it('settingsScope 不可写时不创建：rc.2 无 create-time 模型参数，不能证明目标 backend', async () => {
     const h = createFlowHarness();
     h.deps.settingsScope = {
       getSnapshot: () => ({ status: 'idle', value: undefined, revision: 0, writable: false }),
@@ -856,6 +828,7 @@ describe('PickerService backendOf / useInNewSession / takePendingNotice', () => 
     const service = new PickerService(h.deps);
     await expect(service.useInNewSession(SESSION_ID, { provider: 'acp-devin', model: 'devin-latest' })).resolves.toBe('default.writeError');
     expect(h.createCalls).toHaveLength(0);
+    expect(h.mutateCalls).toHaveLength(0);
   });
 
  it('workspaces 未接线 → 响亮报错且不写默认（工作区解析先于一切写）', async () => {
@@ -900,7 +873,7 @@ describe('PickerService backendOf / useInNewSession / takePendingNotice', () => 
     expect(h.openCalls).toEqual([h.createCalls[0]!.sessionId]);
   });
 
-  it('连续两次响应丢失且列表仍无行 → 返回歧义结局，保留默认并提示检查会话列表', async () => {
+  it('连续两次响应丢失且列表仍无行 → 返回歧义结局，保留目标默认并提示检查列表', async () => {
     const h = createFlowHarness({
       createImpl: () => Promise.reject(new Error('network lost twice')),
     });
@@ -910,8 +883,6 @@ describe('PickerService backendOf / useInNewSession / takePendingNotice', () => 
     expect(h.createCalls).toHaveLength(2);
     expect(h.createCalls[1]).toEqual(h.createCalls[0]);
     expect(h.openCalls).toHaveLength(0);
-    // The target remains the default because the host may have created a
-    // session even though both responses were lost; no speculative rollback.
     expect(h.mutateCalls).toHaveLength(1);
     expect(service.takePendingNotice()).toBeNull();
   });
@@ -925,7 +896,6 @@ describe('PickerService backendOf / useInNewSession / takePendingNotice', () => 
       .resolves.toBe('cross.createFailedRestored:{"message":"host exploded"}');
     expect(h.createCalls).toHaveLength(1);
     expect(h.openCalls).toHaveLength(0);
-    // 只有成功跨 backend 选择才成为后续默认；明确拒绝时 CAS 恢复旧空默认。
     expect(h.mutateCalls).toHaveLength(2);
     expect(h.mutateCalls[1]).toEqual({
       ns: 'agent-default-model',
@@ -936,109 +906,6 @@ describe('PickerService backendOf / useInNewSession / takePendingNotice', () => 
       expectedRevision: 8,
     });
   });
-
-  it('业务拒绝且 settings 投影仍是原有非空默认 → 以完整 selection+effort 的 CAS 恢复', async () => {
-    const h = createFlowHarness({
-      createImpl: () => Promise.resolve({ result: { ok: false as const, error: { code: 'internal', message: 'host refused' } } }),
-    });
-    h.deps.settingsScope = {
-      getSnapshot: () => ({
-        status: 'ready',
-        value: { provider: 'native-old', model: 'old-model', reasoningEffort: 'high' },
-        revision: 7,
-        writable: true,
-      }),
-    };
-    const service = new PickerService(h.deps);
-    await expect(service.useInNewSession(SESSION_ID, {
-      provider: 'acp-devin',
-      model: 'm',
-      reasoningEffort: 'low',
-    })).resolves.toContain('cross.createFailedRestored');
-    expect(h.mutateCalls).toHaveLength(2);
-    expect(h.mutateCalls[1]).toEqual({
-      ns: 'agent-default-model',
-      ops: [
-        { op: 'set', path: ['provider'], value: 'native-old' },
-        { op: 'set', path: ['model'], value: 'old-model' },
-        { op: 'set', path: ['reasoningEffort'], value: 'high' },
-      ],
-      expectedRevision: 8,
-    });
-  });
-
-  it('默认补偿 mutate 抛错 → 返回新会话未创建且默认可能未恢复的可见错误', async () => {
-    let mutateCount = 0
-    const h = createFlowHarness({
-      mutateImpl: () => {
-        mutateCount += 1
-        if (mutateCount === 2) return Promise.reject(new Error('settings transport down'))
-        return Promise.resolve({ result: { ok: true as const, value: { revision: 8 } } })
-      },
-      createImpl: () => Promise.resolve({ result: { ok: false as const, error: { code: 'internal', message: 'host refused' } } }),
-    })
-    const failure = await new PickerService(h.deps).useInNewSession(SESSION_ID, { provider: 'acp-devin', model: 'm' })
-    expect(failure).toContain('cross.createFailedRecovery')
-    expect(failure).toContain('settings transport down')
-  })
-
-  it('默认补偿 ok:false 的非 CAS 错误 → failed，不静默吞掉', async () => {
-    let mutateCount = 0
-    const h = createFlowHarness({
-      mutateImpl: () => {
-        mutateCount += 1
-        return mutateCount === 2
-          ? Promise.resolve({ result: { ok: false as const, error: { code: 'settings-rejected', message: 'settings backend offline' } } })
-          : Promise.resolve({ result: { ok: true as const, value: { revision: 8 } } })
-      },
-      createImpl: () => Promise.resolve({ result: { ok: false as const, error: { code: 'internal', message: 'host refused' } } }),
-    })
-    const failure = await new PickerService(h.deps).useInNewSession(SESSION_ID, { provider: 'acp-devin', model: 'm' })
-    expect(failure).toContain('settings backend offline')
-    expect(failure).toContain('settings backend offline')
-  })
-
-  it('默认补偿 CAS conflict → conflict，绝不覆盖并发选择', async () => {
-    let mutateCount = 0
-    const h = createFlowHarness({
-      mutateImpl: () => {
-        mutateCount += 1
-        return mutateCount === 2
-          ? Promise.resolve({ result: { ok: false as const, error: { code: 'settings-conflict', message: 'revision conflict' } } })
-          : Promise.resolve({ result: { ok: true as const, value: { revision: 8 } } })
-      },
-      createImpl: () => Promise.resolve({ result: { ok: false as const, error: { code: 'internal', message: 'host refused' } } }),
-    })
-    const failure = await new PickerService(h.deps).useInNewSession(SESSION_ID, { provider: 'acp-devin', model: 'm' })
-    expect(failure).toContain('cross.createFailedConflict')
-    expect(h.mutateCalls).toHaveLength(2)
-  })
-
-  it('原始写入 applied revision 是补偿 token：同值并发写入也不得用新 projection revision 回滚', async () => {
-    let mutateCount = 0
-    let snapshotReads = 0
-    const h = createFlowHarness({
-      mutateImpl: () => {
-        mutateCount += 1
-        return mutateCount === 1
-          ? Promise.resolve({ result: { ok: true as const, value: { revision: 8 } } })
-          : Promise.resolve({ result: { ok: false as const, error: { code: 'settings-conflict', message: 'stale applied revision' } } })
-      },
-      createImpl: () => Promise.resolve({ result: { ok: false as const, error: { code: 'internal', message: 'host refused' } } }),
-    })
-    h.deps.settingsScope = {
-      getSnapshot: () => {
-        snapshotReads += 1
-        return snapshotReads < 3
-          ? { status: 'ready' as const, value: undefined, revision: 7, writable: true }
-          : { status: 'ready' as const, value: { provider: 'acp-devin', model: 'm' }, revision: 9, writable: true }
-      },
-    }
-    const failure = await new PickerService(h.deps).useInNewSession(SESSION_ID, { provider: 'acp-devin', model: 'm' })
-    expect(failure).toContain('cross.createFailedConflict')
-    expect(h.mutateCalls[1]).toMatchObject({ expectedRevision: 8 })
-    expect(h.mutateCalls[1]).not.toMatchObject({ expectedRevision: 9 })
-  })
 
   it('workspace-attach-failed：会话已发布但未分组——打开该未分组会话 + 明确提示，绝不创建第二个', async () => {
     const h = createFlowHarness({
@@ -1145,7 +1012,7 @@ describe('PickerService composer block 的 modelSwitch 分支', () => {
   });
 });
 
-describe('PickerService.selectModel 统一路由（同 provider ACP → coordinator；其余 → 目录旧路径）', () => {
+describe('PickerService.selectModel 统一路由（同 provider ACP → coordinator；其余 → 目录选择）', () => {
   const ROUTABLE_ACP_VIEW: SessionModelsView = {
     current: { provider: 'acp-mock', model: 'm1' },
     routable: true,

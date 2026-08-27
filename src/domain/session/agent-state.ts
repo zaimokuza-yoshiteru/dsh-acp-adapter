@@ -9,13 +9,14 @@
  * - `saved-unverified`：配置已存但从未（以当前配置）探测过——既不能说 ready
  *   也不能说有故障。
  * - `ready`：新鲜 probe 成功，表示命令可启动、ACP initialize/session 探测可用。
- *   它**不表示已登录**：模型目录与 config option 都不是凭证有效性的证据；没有
- *   标准、无副作用的鉴权探测时，UI 必须另行标注“登录状态未验证”。
+ *   它**不表示已登录**：模型目录与 config option 都不是凭证有效性的证据。UI
+ *   只展示“协议可用”，不虚构持续登录状态；明确的 auth_required 只作为本次
+ *   检查诊断和外部登录指引展示。
  * - `auth-required`：新鲜 probe 明确以 ACP `auth_required` 失败。出路 = 按
  *   loginHint 在 agent 自家 CLI 登录（external-login-only，面板不发起
  *   authenticate，也不读取凭证文件）。
  * - `unavailable`：新鲜 probe 以其余 kind 失败（spawn-failure/timeout/crash/
- *   protocol-error/sandbox-unavailable），或配置无效。
+ *   protocol-error），或配置无效。
  * - `incompatible`：宿主结构门未通过（ACP 路由整体不可用）。
  *
  * 新鲜度纪律（包含 TTL）：「新鲜」= 缓存条目的 key 与当前配置的
@@ -59,12 +60,6 @@ export interface AcpAgentStateInput {
   readonly configValid: boolean
   /** 新鲜 probe 视图；undefined = 从未探测或缓存已随配置漂移失效。 */
   readonly probe: AcpAgentStateProbeView | undefined
-  /**
-   * 该 profile 绑定的 runtime descriptor 是否声明了非空 opaqueRefs/envRefs
- * （口径；无 descriptor = false）。计算落点 =
-   * agent-config.ts `descriptorDeclaresAuthRefs(descriptorOf(id, config))`。
-   */
-  readonly declaresAuthRefs: boolean
 }
 
 /** 三路事实 → 五态（判定顺序即词表优先级，先结构后配置再 probe）。 */

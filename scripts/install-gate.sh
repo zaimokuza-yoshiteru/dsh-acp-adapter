@@ -13,7 +13,7 @@
 #     host-compat structure-gate 在运行时 fail-closed。
 #
 # 流程：
-# 1. corepack pnpm pack（触发 prepack 全量门禁：clean（realpath 守卫
+# 1. pnpm pack（触发 prepack 全量门禁：clean（realpath 守卫
 #      清理）→ typecheck → test → build（build 自身也先 clean，tarball 恒来自
 #      干净构建，绝不装到陈旧 lib/ 产物）→ 含 verify-bundle → pack --dry-run；
 #      见 scripts/prepack.mjs）产 .tgz。
@@ -21,7 +21,7 @@
 #      为宿主（生产形态：宿主链落 lib 构建产物，不经 reference 仓 tsx 源启），
 #      DSH_HOME 隔离在 GATE_ROOT 下。HOST_SPEC 默认 0.1.1-rc.2（minimum lane）。
 #   3. 预置两个 profile（gate-stock 对照 + gate-acp 受测），形态与 DSH web profile
-#      一致（附加 packageManager 字段只为钉住 profile 内层 pnpm
+#      一致（临时项目不声明 packageManager，使用 PATH 中的 pnpm）
 #      版本，对 dsh 无语义）。
 #   4. dsh plugin add <abs>.tgz 安装 → 启动前 --dump-config 双重断言：
 #      gate-acp 出现 agent-loop-acp 行（name = @zaimokuza/dsh-acp-adapter）、
@@ -52,7 +52,7 @@
 # DSH_ACP_GATE_TGZ（门禁调试/分段复跑用：跳过 pack 步，直接门禁一个已产出的
 # tarball——该 tarball 未经本流程的 clean build 重建，陈旧产物风险由调用者自担；
 # 正式发布证据必须跑默认全流程，不得以本覆写冒充）。
-# 依赖：PATH 上有 node（24.19.0）与 corepack pnpm shim；网络可达 npm registry
+# 依赖：PATH 上有 node（24.19.0）与 pnpm；网络可达 npm registry
 # （装宿主 dsh 与本包运行时依赖 @agentclientprotocol/sdk、zod）。
 # 平台：保持 bash + lsof/curl（非 npm script，不在 跨平台 clean 范围）；
 # Windows 移植注意项见 .github/workflows/ci.yml windows lane 头注。
@@ -136,7 +136,7 @@ trap cleanup EXIT
 preflight() {
   step "0/8 前置检查（GATE_ROOT=${GATE_ROOT}）"
   command -v node >/dev/null || fail "node 不在 PATH"
-  command -v pnpm >/dev/null || fail "pnpm 不在 PATH（corepack enable 提供 shim；dsh plugin 内层转发的是字面 pnpm）"
+  command -v pnpm >/dev/null || fail "pnpm 不在 PATH"
   command -v curl >/dev/null || fail "curl 不在 PATH"
   command -v lsof >/dev/null || fail "lsof 不在 PATH（端口/进程树断言需要）"
   if lsof -ti :"$PORT" >/dev/null 2>&1; then
@@ -157,7 +157,7 @@ pack_tarball() {
     TGZ="$DSH_ACP_GATE_TGZ"
   else
     step "1/8 pnpm pack（prepack 全量门禁随之运行，需数分钟）"
-    (cd "$ADAPTER_DIR" && corepack pnpm pack --pack-destination "$GATE_ROOT")
+    (cd "$ADAPTER_DIR" && pnpm pack --pack-destination "$GATE_ROOT")
     TGZ="$(ls "$GATE_ROOT"/zaimokuza-dsh-acp-adapter-*.tgz 2>/dev/null | head -1)"
   fi
   [[ -f "$TGZ" ]] || fail "未找到 pack 产物 tarball（${TGZ:-未定位}）"
@@ -171,13 +171,12 @@ provision_host() {
 {
   "name": "dsh-acp-install-gate-host",
   "private": true,
-  "packageManager": "pnpm@11.7.0",
   "dependencies": {
     "@deepseek-ai/dsh": "${HOST_SPEC}"
   }
 }
 JSON
-  # 宿主树的 build script 一律显式跳过（pnpm 11 对未决的 ignored builds 报
+  # 宿主树的 build script 一律显式跳过（CI pnpm 对未决的 ignored builds 报
   # ERR_PNPM_IGNORED_BUILDS 非零退出，必须逐一点名）：三个原生件随包发布
   # prebuilt 二进制（与本仓 pnpm-workspace.yaml 同一口径）；@google/genai 与
  # protobufjs 的 postinstall 对 dsh boot 非必需（首跑实测钉入）。
@@ -193,7 +192,7 @@ allowBuilds:
   '@google/genai': false
   protobufjs: false
 YAML
-  (cd "$HOST_DIR" && corepack pnpm install)
+  (cd "$HOST_DIR" && pnpm install)
   [[ -x "$DSH_BIN" ]] || fail "宿主 dsh bin 缺失：$DSH_BIN"
   # 落证据：spec（dist-tag 可变）对应的实际解析版本——latest lane 的「真实最新
   # 宿主」以本文件为准，不看步骤名。
@@ -203,7 +202,7 @@ YAML
   echo "宿主实际版本：$(cat "$GATE_ROOT/host-version.txt")（spec=${HOST_SPEC}）"
 }
 
-# 预置一个 profile（initProfile 产物形态 + packageManager 钉版，见头部注释）。
+# 预置一个 profile（initProfile 产物形态；工具版本由 PATH 决定）。
 preset_profile() {
   local name="$1" dir="$DSH_HOME/profiles/$1"
   mkdir -p "$dir"
@@ -211,7 +210,6 @@ preset_profile() {
 {
   "name": "dsh-profile-${name}",
   "private": true,
-  "packageManager": "pnpm@11.7.0",
   "dependencies": {},
   "dsh": {
     "profile": {

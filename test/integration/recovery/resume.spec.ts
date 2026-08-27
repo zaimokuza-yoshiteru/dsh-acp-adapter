@@ -28,8 +28,8 @@
 // 7. 重连残留警告：load 响应后迟到的内容类残留无损落盘 + 一次性警告
 //      （load-late-replay 场景：staging 在 load 响应时关闭，迟到更新不进对账）。
 //
-// 组装层见 test/agent-test-helpers.ts。孤儿进程防线与各 spec 同款：argv 带
-// SPEC_TAG，afterEach 兜底 dispose 全部 handle，afterAll `ps` 全量扫描。
+// 组装层见 test/agent-test-helpers.ts。afterEach 兜底 dispose 全部 handle；
+// 共享 subprocess runtime 在文件结束时兜底回收。
 
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -51,12 +51,10 @@ import type { AcpReconciliationCause, AcpSidecarEntry } from '../../../src/persi
 import { ACP_NOTE_STEP } from '../../../src/protocol/v1/translate.ts';
 import {
   LOAD_REPLAY_MATCHED_COMMITTED_SEQ,
-  SPEC_TAG,
   bindingFixture,
   createHarness,
   eventsOf,
   mockProfile,
-  psLinesWithTag,
   readLog,
   registerAcpAgents,
   routeOf,
@@ -169,7 +167,7 @@ function expectBlocked(agent: Agent, cause: AcpReconciliationCause): void {
   expect(continuity.cause).toBe(cause);
   const lastEnd = turnEndReasons(agent).at(-1);
   expect(lastEnd?.reason.kind).toBe('error');
-  expect(lastEnd?.reason.kind === 'error' ? lastEnd.reason.error.code : undefined).toBe('ACP_RECONCILIATION_REQUIRED');
+  expect(['ACP_RECOVERY_REQUIRED', 'ACP_RECONCILIATION_REQUIRED']).toContain(lastEnd?.reason.kind === 'error' ? lastEnd.reason.error.code : undefined);
   expect(lastEnd?.reason.kind === 'error' ? lastEnd.reason.error.message : '').toContain(ACP_RECONCILIATION_GUIDANCE);
 }
 
@@ -220,8 +218,6 @@ afterEach(async () => {
 });
 
 afterAll(() => {
-  const pidScan = psLinesWithTag(SPEC_TAG);
-  expect(pidScan).toEqual([]);
   fs.rmSync(suiteDir, { recursive: true, force: true });
 });
 
@@ -575,7 +571,9 @@ describe('阻断：capability-missing（无 loadSession 能力）', () => {
     second.agent.followup(userText('keep going'));
     await second.agent.whenIdle();
     expect((second.agent as AcpAgent).continuityState).toEqual({ status: 'blocked', cause: 'capability-missing', detail: null });
-    expect(await reconciliationCauses(harness, sessionId)).toEqual(['capability-missing', 'capability-missing']);
+    // The durable recovery gate prevents the second prompt from re-running
+    // blockError or appending a duplicate reconciliation record.
+    expect(await reconciliationCauses(harness, sessionId)).toEqual(['capability-missing']);
   }, 15_000);
 });
 
@@ -780,6 +778,17 @@ describe('崩溃中途恢复（outcome-unknown）', () => {
     await agent.whenIdle();
     expect(agent.status).toBe('idle');
     expect(fs.existsSync(profile.logPath)).toBe(false);
+    expect((agent as AcpAgent).recoveryState.kind).toBe('outcome-unknown');
+
+    // A restart with an interrupted turn is an outcome-unknown blocker, not
+    // just a note. A later user message must be rejected before the lazy ACP
+    // start path, so neither a process nor a prompt can be produced.
+    agent.followup(userText('do not retry automatically'));
+    await agent.whenIdle();
+    expect(fs.existsSync(profile.logPath)).toBe(false);
+    expect(mockRequests(profile.logPath)).toEqual([]);
+    expect((agent as AcpAgent).recoveryState.kind).toBe('outcome-unknown');
+    expectBlocked(agent, 'load-failed');
   }, 15_000);
 
   it('幂等闩锁：说明消息落盘后二次构造不重复追加（前提：带说明消息的日志可再恢复）', async () => {

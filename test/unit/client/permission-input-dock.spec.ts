@@ -3,6 +3,7 @@ import type { AcpPendingPermissionView, AcpRemoteLike } from '../../../src/clien
 import {
   optionKindLabel,
   pendingForSession,
+  permissionLocationOmissionText,
   submitPermissionAnswer,
   submitPermissionCancel,
 } from '../../../src/client/ui/AcpPermissionInputDock.ts'
@@ -29,6 +30,7 @@ const t = (key: string, params?: Record<string, string | number>): string => ({
   permissionOptionRejectOnce: '拒绝一次',
   permissionOptionRejectAlways: '始终拒绝',
   permissionOptionUnknown: `未知(${String(params?.kind ?? '')})`,
+  permissionLocationsOmitted: `另有${String(params?.count ?? '')}个位置未显示`,
 }[key] ?? key)
 
 function remoteOf(overrides: Partial<AcpRemoteLike> = {}): AcpRemoteLike {
@@ -91,5 +93,15 @@ describe('ACP permission input.dock surface', () => {
     expect(optionKindLabel('allow_always', t)).toBe('始终允许')
     expect(optionKindLabel('reject_once', t)).toBe('拒绝一次')
     expect(optionKindLabel('future_kind', t)).toBe('未知(future_kind)')
+  })
+
+  it('bounded locations disclose omitted entries, including legacy count metadata', () => {
+    const item = {
+      ...pending[0]!,
+      locations: [{ path: '/work/a.txt' }],
+      locationCount: 5,
+    }
+    expect(permissionLocationOmissionText(item, t)).toBe('另有4个位置未显示')
+    expect(permissionLocationOmissionText({ ...item, omittedLocationCount: 0 }, t)).toBeUndefined()
   })
 })

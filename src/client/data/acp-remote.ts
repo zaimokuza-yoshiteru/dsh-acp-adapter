@@ -56,6 +56,8 @@ export interface AcpRemoteLike {
   backendOf(sessionId: string): Promise<AcpRemoteResultLike<AcpBackendState>>
  /** 收尾：rebindBlank 逃生门（reconciliation-required 的可执行出路），返回复位后的选项快照。 */
   rebindBlank(sessionId: string): Promise<AcpRemoteResultLike<AcpLiveOptionsSnapshot>>
+  reconnectOriginal?(sessionId: string): Promise<AcpRemoteResultLike<AcpLiveOptionsSnapshot>>
+  recordRecoveryAction?(sessionId: string, action: 'retry-original' | 'rebind-blank' | 'new-session'): Promise<AcpRemoteResultLike<AcpLiveOptionsSnapshot>>
   pendingPermissions?(sessionId: string): Promise<AcpRemoteResultLike<readonly AcpPendingPermissionView[]>>
   answerPermission?(sessionId: string, request: AcpPermissionAnswerRequest): Promise<AcpRemoteResultLike<null>>
   cancelPermission?(sessionId: string, request: Pick<AcpPermissionAnswerRequest, 'requestId'>): Promise<AcpRemoteResultLike<null>>

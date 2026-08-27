@@ -1,6 +1,6 @@
 /**
  * ACP 子进程规格与退出事实的类型面（自 acp-client.ts 切出的共享类型）。
- * 纯类型模块：协议连接层（src/protocol/v1/connection.ts）与沙箱
+ * 纯类型模块：协议连接层（src/protocol/v1/connection.ts）与原生访问
  * （src/domain/policy/sandbox.ts）共享此处的结构定义；本模块不 import 任何
  * 包内模块（./subprocess.ts 的 seam 类型除外，同层叶子），从根本上杜绝环。
  * @module @zaimokuza/dsh-acp-adapter/runtime/process/types
@@ -10,11 +10,11 @@ import type { SubprocessSeam } from './subprocess.ts'
 
 /**
  * 连接层消费的 spawn 计划结构面（`src/domain/policy/sandbox.ts` 的
- * `AcpSpawnPlan` 满足之；sandbox 反向 import src/protocol/v1/errors.ts 的
- * AcpClientError，故此处不 import 回去，以免成环）。
+ * The native spawn planner satisfies it; this module remains independent from
+ * domain policy to avoid a dependency cycle.
  */
 export interface AcpSpawnPlanView {
-  /** 最终 argv（confined 档已是 confine 产物，不再过 {@link AcpConnectionSpec.wrapArgv}）。 */
+  /** Final argv; the process layer does not add a shell or wrapper. */
   readonly argv: readonly string[]
   /** 完整子进程期望环境（整体替换 {@link AcpConnectionSpec.env}；spawn 时经 tombstone 压制 scrub 底座残留）。 */
   readonly env: Record<string, string>
@@ -42,16 +42,9 @@ export interface AcpConnectionSpec {
    * 必填——无 seam 即无 ACP 子进程（fail closed，不自制 child_process 回退）。
    */
   subprocess: SubprocessSeam
-  /**
- * 沙箱接入插口：spawn 前包装 argv（如 confine 前置 `sandbox-exec`）。
-   * 缺省恒等。禁止在包装中引入 shell 拼接。与 {@link AcpConnectionSpec.spawnPlan}
-   * 互斥（spawnPlan 的 argv 已是最终形态，二次包装会双重 confine）。
-   */
+  /** Legacy argv transform seam; ACP native sessions normally leave this unset. */
   wrapArgv?: (argv: string[]) => string[]
-  /**
- * 沙箱 spawn 计划（`buildAcpSpawnPlan` 的产物）。存在时 spawn 以其
-   * argv/env 为准（env 整体替换 spec.env）；缺省时行为与引入本字段前逐字节一致。
-   */
+  /** Native spawn plan (argv/env) supplied by the domain session layer. */
   spawnPlan?: AcpSpawnPlanView
 }
 

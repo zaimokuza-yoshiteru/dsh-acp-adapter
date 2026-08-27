@@ -54,6 +54,7 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+import process from 'node:process'
 import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
 import { AgentLoop } from '@deepseek-ai/dsh-agent-loop'
 import type { Config } from '@deepseek-ai/dsh-agent-loop'
@@ -67,8 +68,10 @@ import { errorChain } from '@deepseek-ai/dsh-llm'
 import { foldRequestHeader, SessionPreparation } from '@deepseek-ai/dsh-session'
 import type { Session, SessionHeader, SessionId } from '@deepseek-ai/dsh-session'
 import { AcpAgent } from '../../domain/session/agent.ts'
-import type { AcpAgentOptions } from '../../domain/session/agent.ts'
-import { acpAgentIdFromRoute, acpProbeConfigKey, acpProbeFresh, acpRouteId, descriptorDeclaresAuthRefs, descriptorOf } from '../../domain/session/agent-config.ts'
+import type { AcpAgentOptions, AcpConnectionRuntimeContext } from '../../domain/session/agent.ts'
+import { createAcpFileSystemHandlers } from '../../runtime/client-capabilities/filesystem.ts'
+import { createAcpTerminalHandlers } from '../../runtime/client-capabilities/terminal.ts'
+import { acpAgentIdFromRoute, acpProbeConfigKey, acpProbeFresh, acpRouteId, descriptorOf } from '../../domain/session/agent-config.ts'
 import type { AcpResolvedAgent } from '../../domain/session/agent-config.ts'
 import { deriveAcpAgentState } from '../../domain/session/agent-state.ts'
 import type { AcpAgentConfigState } from '../../domain/session/agent-state.ts'
@@ -90,16 +93,15 @@ import { createAcpPermissionHandler, InMemoryAcpPendingPermissionBroker } from '
 import { InMemoryAcpElicitationBroker, elicitationResponseOf } from '../../domain/policy/elicitation.ts'
 import type { AcpApprovalRequester, AcpPermissionAuditChannel } from '../../domain/policy/permissions.ts'
 import { createAgentConfigAudit } from '../../domain/policy/events.ts'
-import { createDefaultSandboxPlatform } from '../../domain/policy/platform/index.ts'
 import { createAcpLogger } from '../../domain/observability/logging.ts'
 import type { AcpLogger } from '../../domain/observability/logging.ts'
 import { AcpMetricsRegistry, createAcpMetricReporter } from '../../domain/observability/metrics.ts'
-import { installAcpRegistry } from '../composition/registry.ts'
-import type { AcpRegistry } from '../composition/registry.ts'
+import { installInstalledProfileRegistry } from '../composition/installed-profile-registry.ts'
+import type { InstalledProfileRegistry } from '../composition/installed-profile-registry.ts'
 import { resolveSubprocessSeam } from '../composition/subprocess.ts'
 import type { SubprocessSeamResolution } from '../../runtime/process/subprocess.ts'
 import { ACP_SIDECAR_CONFIG_AUDIT_ID, acpCanonicalHash16, installAcpSidecar } from '../../persistence/sidecar.ts'
-import type { AcpBindingLookup, AcpBindingRecord, AcpBoundSessionBinding, AcpReconciliationCause, AcpSidecar } from '../../persistence/sidecar.ts'
+import type { AcpBindingLookup, AcpBindingRecord, AcpBoundSessionBinding, AcpReconciliationCause, AcpRecoveryState, AcpSidecar } from '../../persistence/sidecar.ts'
 
 /**
  * widen-accessor：读没有类型增强声明的 ctx slot（approval/webServer 的类型增强
@@ -160,7 +162,7 @@ export default class AcpAgentLoop extends AgentLoop {
    * here so the loop and its consumers share exactly one registry; the health
  * endpoint reads probe snapshots through it.
    */
-  readonly acpRegistry: AcpRegistry
+  readonly installedProfileRegistry: InstalledProfileRegistry
   /**
    * sidecar 持久化规则 sidecar 存储（审计 + ACP binding 的唯一持久化通道）。`dshHomePath`
  * slot 缺席时为 `undefined`（installAcpSidecar 已 warn）；这是 ACP
@@ -262,7 +264,7 @@ export default class AcpAgentLoop extends AgentLoop {
         this.acpLog.warn(`dsh-acp: sidecar retention sweep failed; continuing without it (${errorChain(error)})`, { operation: 'startup', result: 'retention-failed' })
       })
     }
-    this.acpRegistry = installAcpRegistry(ctx, {
+    this.installedProfileRegistry = installInstalledProfileRegistry(ctx, {
       subprocess: this.acpSubprocess,
       metrics: this.acpMetrics,
  // agent 配置改动审计摘要 → sidecar `agent-config` 专档（异步落盘，
@@ -295,8 +297,8 @@ export default class AcpAgentLoop extends AgentLoop {
       pendingElicitations: this.acpPendingElicitations,
       imageInputAvailable: getCtxSlot<AttachmentStore>(ctx, 'attachments') !== undefined,
       registry: {
-        agents: () => this.acpRegistry.agents(),
-        probeCache: this.acpRegistry.adapter,
+        agents: () => this.installedProfileRegistry.agents(),
+        probeCache: this.installedProfileRegistry.adapter,
       },
       resolveLiveAgent: (sessionId) => {
         const agent = this.acpRuntime.ctx.agents.get(sessionId as SessionId)
@@ -314,16 +316,6 @@ export default class AcpAgentLoop extends AgentLoop {
  // health 的默认实现经宿主 seam spawn/解析；
       // 缺席时 fail closed（executable=false / version=null）
       subprocess: this.acpSubprocess,
- // 本平台 confined 档的 enforcement 事实透传给设置面板（win32 恒
-      // partial + 已知残余风险文案；真源 = domain/policy/platform/ adapter）
-      sandboxPosture: (() => {
-        const platform = createDefaultSandboxPlatform()
-        return {
-          platform: platform.platformId,
-          enforcement: platform.enforcementExpectation,
-          note: platform.enforcementNote,
-        }
-      })(),
  // 内存指标快照随 health 视图导出（顶层 `metrics` 字段）
       metricsSnapshot: () => this.acpMetrics.snapshot(),
  // 活体 ACP 会话的连续性清单随 health 视图导出（`liveSessions` 字段）
@@ -379,6 +371,25 @@ export default class AcpAgentLoop extends AgentLoop {
               optionSnapshotStore: {
                 read: (sessionId: string) => sidecar.readOptionSnapshot(sessionId as SessionId),
               },
+              recoveryStateStore: {
+                read: async (sessionId: string) => {
+                  const state = await sidecar.readRecoveryState(sessionId as SessionId)
+                  if (state === undefined) return undefined
+                  return {
+                    dshSessionId: state.dshSessionId,
+                    kind: state.kind,
+                    cause: state.cause ?? null,
+                    detail: state.detail ?? null,
+                    provider: state.provider ?? null,
+                    acpSessionId: state.acpSessionId ?? null,
+                    generation: state.generation ?? null,
+                    interruptedTurnId: state.interruptedTurnId ?? null,
+                    lastAttemptAt: state.lastAttemptAt ?? null,
+                    lastUserAction: state.lastUserAction ?? null,
+                    updatedAt: state.updatedAt,
+                  }
+                },
+              },
  // 以当前 profile 配置重组运行时指纹（与 AcpAgent 的
               // optionsSnapshotFingerprint 同公式），比对 stale 快照的指纹；
               // 无 binding/无 profile 配置 → undefined（fingerprintChanged 恒 false）
@@ -388,7 +399,7 @@ export default class AcpAgentLoop extends AgentLoop {
                 const binding = lookup.binding
                 const profileId = acpAgentIdFromRoute(binding.provider)
                 if (profileId === undefined) return undefined
-                const config = this.acpRegistry.agents().get(profileId)
+                const config = this.installedProfileRegistry.agents().get(profileId)
                 if (config === undefined) return undefined
                 const descriptor = descriptorOf(profileId, config)
                 const effectiveEnv = await acpLaunchEnvironment({
@@ -442,13 +453,13 @@ export default class AcpAgentLoop extends AgentLoop {
   private async assertAcpProfileReady(resolved: AcpResolvedAgent): Promise<void> {
     const routeId = acpRouteId(resolved.id)
     const key = acpProbeConfigKey(resolved.config)
-    let snapshot = this.acpRegistry.adapter.probeSnapshot(routeId)
+    let snapshot = this.installedProfileRegistry.adapter.probeSnapshot(routeId)
  // 新鲜度集中判定（agent-config.ts acpProbeFresh）——key 漂移或过 TTL
     // 的条目按「从未探测」计，先补一次 listModels 探测（过期条目在 llm-stub
     // 里按 miss 重 probe；失败同样落缓存——缓存的错误即失败事实）
     if (snapshot === undefined || !acpProbeFresh(snapshot, key, Date.now())) {
-      await this.acpRegistry.adapter.listModels(routeId).catch(() => undefined)
-      snapshot = this.acpRegistry.adapter.probeSnapshot(routeId)
+      await this.installedProfileRegistry.adapter.listModels(routeId).catch(() => undefined)
+      snapshot = this.installedProfileRegistry.adapter.probeSnapshot(routeId)
     }
     const fresh = snapshot !== undefined && acpProbeFresh(snapshot, key, Date.now()) ? snapshot : undefined
     const state: AcpAgentConfigState = deriveAcpAgentState({
@@ -459,7 +470,6 @@ export default class AcpAgentLoop extends AgentLoop {
         : fresh.result.kind === 'ok'
           ? { result: { kind: 'ok', modelCount: fresh.result.models.length, hasModelConfigOption: fresh.result.hasModelConfigOption } }
           : { result: { kind: 'error', failureKind: fresh.result.failureKind } },
-      declaresAuthRefs: descriptorDeclaresAuthRefs(descriptorOf(resolved.id, resolved.config)),
     })
     if (state === 'ready') return
     if (state === 'auth-required') {
@@ -495,7 +505,7 @@ export default class AcpAgentLoop extends AgentLoop {
   override async createAgent(ownerCtx: Context, options: CreateAgentOptions): Promise<AgentHandle> {
     const provider = options.agentOptions?.provider
     if (provider === undefined) return super.createAgent(ownerCtx, options)
-    const resolved = this.acpRegistry.resolveRoute(provider)
+    const resolved = this.installedProfileRegistry.resolveRoute(provider)
     if (resolved === undefined) return super.createAgent(ownerCtx, options)
     const agentOptions = options.agentOptions ?? {}
     await this.acpRouteReady()
@@ -553,7 +563,7 @@ export default class AcpAgentLoop extends AgentLoop {
       ? 'backend-conflict'
       : peeked?.blocked
 
-    const resolved = this.acpRegistry.resolveRoute(provider)
+    const resolved = this.installedProfileRegistry.resolveRoute(provider)
     if (resolved === undefined) {
       // 持久历史命中 ACP 但 profile 已删除/改名时，不能静默退回 native。
       if (provider.startsWith('acp-') || binding !== undefined || blocked !== undefined) {
@@ -597,7 +607,7 @@ export default class AcpAgentLoop extends AgentLoop {
       persistence,
       options,
       agentOptions,
-      (loopCtx, session) => this.createAcpMachine(loopCtx, options.resumeSessionId, agentOptions, session, resolved, guard.binding, guard.blocked),
+      (loopCtx, session) => this.createAcpMachine(loopCtx, options.resumeSessionId, agentOptions, session, resolved, guard.binding, guard.blocked, peeked?.recovery),
     )
   }
 
@@ -692,7 +702,7 @@ export default class AcpAgentLoop extends AgentLoop {
     persistence: AcpResumePersistence,
     id: SessionId,
     signal: AbortSignal | undefined,
-  ): Promise<{ provider?: string; model?: string; binding?: AcpBindingRecord; blocked?: AcpReconciliationCause } | undefined> {
+  ): Promise<{ provider?: string; model?: string; binding?: AcpBindingRecord; blocked?: AcpReconciliationCause; recovery?: AcpRecoveryState } | undefined> {
     let route: { provider?: string; model?: string } | undefined
     try {
       const inspected = signal === undefined
@@ -706,15 +716,55 @@ export default class AcpAgentLoop extends AgentLoop {
     } catch {
       route = undefined
     }
-    const lookup: AcpBindingLookup | undefined = await this.acpSidecar?.readLatestBinding(id).catch((): undefined => undefined)
+    let lookup: AcpBindingLookup | undefined
+    let bindingReadFailed = false
+    let recovery: AcpRecoveryState | undefined
+    if (this.acpSidecar !== undefined) {
+      try {
+        lookup = await this.acpSidecar.readLatestBinding(id)
+      } catch (error: unknown) {
+        bindingReadFailed = true
+        // A binding read error is not equivalent to “no binding”. Keep the
+        // route only as a diagnostic hint and force a loud recovery state.
+        this.acpLog.warn(`dsh-acp: failed to read binding for session ${String(id)} (${error instanceof Error ? error.message : String(error)})`, { operation: 'binding-read', result: 'error' })
+        recovery = {
+          dshSessionId: String(id),
+          kind: 'local-history-damaged',
+          cause: 'dsh-log-truncated',
+          detail: `binding state could not be read: ${errorChain(error)}`,
+          updatedAt: Date.now(),
+        }
+      }
+    }
+    let recoveryReadFailed = false
+    if (this.acpSidecar !== undefined) {
+      try {
+        const storedRecovery = await this.acpSidecar.readRecoveryState(id)
+        // A binding read failure is itself unrecoverable local evidence loss;
+        // do not let an older healthy recovery row mask that fact.
+        if (recovery === undefined || storedRecovery?.kind !== 'healthy') recovery = storedRecovery
+      } catch (error: unknown) {
+        recoveryReadFailed = true
+        recovery = {
+          dshSessionId: String(id),
+          kind: 'local-history-damaged',
+          cause: 'dsh-log-truncated',
+          detail: `recovery state could not be read: ${errorChain(error)}`,
+          updatedAt: Date.now(),
+        }
+      }
+    }
     const binding = lookup?.status === 'ok' ? lookup.binding : undefined
-    const blocked: AcpReconciliationCause | undefined = lookup?.status === 'outdated' ? 'binding-outdated' : undefined
-    if (route === undefined && binding === undefined && blocked === undefined) return undefined
+    const blocked: AcpReconciliationCause | undefined = bindingReadFailed || recoveryReadFailed
+      ? 'dsh-log-truncated'
+      : lookup?.status === 'outdated' ? 'binding-outdated' : undefined
+    if (route === undefined && binding === undefined && blocked === undefined && recovery === undefined) return undefined
     return {
       ...route?.provider === undefined ? {} : { provider: route.provider },
       ...route?.model === undefined ? {} : { model: route.model },
       ...(binding === undefined ? {} : { binding }),
       ...(blocked === undefined ? {} : { blocked }),
+      ...(recovery === undefined ? {} : { recovery }),
     }
   }
 
@@ -739,6 +789,7 @@ export default class AcpAgentLoop extends AgentLoop {
     resolved: AcpResolvedAgent,
     resumeBinding?: AcpBindingRecord,
     presetBlocked?: AcpReconciliationCause,
+    recoveryState?: AcpRecoveryState,
   ): AcpAgent {
     const sidecar = this.acpSidecar
     if (sidecar === undefined) {
@@ -764,6 +815,7 @@ export default class AcpAgentLoop extends AgentLoop {
       cancelPendingPermissions: (sessionId: string) => this.acpPendingPermissions.cancelSession(sessionId),
       cancelPendingElicitations: (sessionId: string) => this.acpPendingElicitations.cancelSession(sessionId),
       ...(resumeBinding === undefined ? {} : { resumeBinding }),
+      ...(recoveryState === undefined ? {} : { recoveryState }),
  // 双绑守卫/语义门槛/fork-id 碰撞拒绝复用 binding 时预置 blocked 原因——
       // AcpAgent 构造期置 continuity 闩锁，后续 turn 以 ACP_RECONCILIATION_REQUIRED
       // 失败（零 spawn）。正常 fork 是新 dsh id、天然无 binding；若异常命中，
@@ -772,12 +824,13 @@ export default class AcpAgentLoop extends AgentLoop {
       // sidecar 持久化规则：建立（new 或对账通过的 load）后 fail-closed 写 binding；分轴审计与
       // reconciliation 记录同通道落盘。闭包绑定本 dsh sessionId。
       recordBinding: (binding) => sidecar.append(id, { kind: 'binding', data: binding }),
+      recordRecoveryState: (state) => sidecar.writeRecoveryState(state),
       recordAudit: (entry) => sidecar.append(id, entry),
       // 非审批审计在 sidecar 有界队列里，turn 收束/dispose 前落齐
       flushAudit: () => sidecar.flush(),
  // 运行时 auth_required（登录态在 probe 之后漂移）→ 丢弃该路由的
       // probe 缓存，下次 health/目录构建/创建门重探测到真实状态
-      invalidateProbeCache: () => { this.acpRegistry.adapter.invalidateProbe(acpRouteId(resolved.id)) },
+      invalidateProbeCache: () => { this.installedProfileRegistry.adapter.invalidateProbe(acpRouteId(resolved.id)) },
  // 待定模型切换事务的持久 seam（options-sync 守卫 / rebindBlank 清行
       // 共用；闭包绑定本 dsh sessionId）
       modelSwitchStore: {
@@ -788,13 +841,42 @@ export default class AcpAgentLoop extends AgentLoop {
  // 活体权威快照到达（建立/set_config_option/set_mode/turn 收束）即刷新
       // sidecar 的 last-known option 快照（冷启动 stale 只读展示面的唯一写路径）
       recordOptionsSnapshot: (snapshot) => sidecar.writeOptionSnapshot(id, snapshot),
+      recordFileAudit: async (event) => sidecar.append(id, { kind: 'filesystem', data: event }),
     }
+    driver.fileSystemHandlers = () => createAcpFileSystemHandlers({
+      profileId: resolved.id,
+      audit: (event) => driver.recordFileAudit?.(event),
+      onAuditError: (error, event) => {
+        this.acpLog.warn(`dsh-acp: filesystem ${event.operation} completed but its audit was not persisted (${errorChain(error)})`, {
+          dshSessionId: String(id), acpProvider: `acp-${resolved.id}`, operation: 'filesystem-audit', result: 'error',
+        })
+      },
+    })
+    driver.terminalHandlers = ({ cwd, env }: AcpConnectionRuntimeContext) => createAcpTerminalHandlers({
+      subprocess: this.acpSubprocess.ok
+        ? this.acpSubprocess.seam
+        : (() => { throw new Error(this.acpSubprocess.message) })(),
+      profileId: resolved.id,
+      dshSessionId: String(id),
+      // Terminal commands inherit the exact immutable native launch snapshot
+      // used by this ACP connection. This includes descriptor aliases and
+      // executable overrides; values are never copied into terminal audits.
+      cwd,
+      env,
+      audit: (event) => driver.recordAudit?.({ kind: 'terminal', data: event }) ?? Promise.resolve(),
+      onAuditError: (error, event) => {
+        this.acpLog.warn(`dsh-acp: terminal ${event.operation} completed but its audit was not persisted (${errorChain(error)})`, {
+          dshSessionId: String(id), acpProvider: `acp-${resolved.id}`, operation: 'terminal-audit', result: 'error',
+        })
+      },
+    })
     const agent = new AcpAgent(loopCtx, id, options, session, driver)
     driver.permissionHandler = createAcpPermissionHandler({
       agent,
       agentId: resolved.id,
       agentName: resolved.config.name,
       dshSessionId: String(id),
+      workspaceRoot: session.header.cwd ?? process.cwd(),
       approval: getCtxSlot<AcpApprovalRequester>(loopCtx, 'approval'),
       pending: this.acpPendingPermissions,
       toolCallPresentation: (toolCallId) => agent.getToolCallPresentationSnapshot(toolCallId),

@@ -21,7 +21,6 @@ const ALL_KINDS: readonly AcpErrorKind[] = [
   'timeout',
   'protocol-error',
   'crash',
-  'sandbox-unavailable',
   'aborted',
 ];
 
@@ -32,7 +31,6 @@ const ALL_CATEGORIES: readonly AcpErrorCategory[] = [
   'protocol-incompatible',
   'timeout',
   'agent-crash',
-  'sandbox-unavailable',
   'user-rejected',
   'resume-conflict',
 ];
@@ -45,7 +43,6 @@ describe(' 错误 taxonomy', () => {
       timeout: 'ACP_TIMEOUT',
       'protocol-error': 'ACP_PROTOCOL_ERROR',
       crash: 'ACP_CRASH',
-      'sandbox-unavailable': 'ACP_SANDBOX_UNAVAILABLE',
       aborted: 'ACP_ABORTED',
     });
   });
@@ -57,12 +54,11 @@ describe(' 错误 taxonomy', () => {
       timeout: 'timeout',
       'protocol-error': 'protocol-incompatible',
       crash: 'agent-crash',
-      'sandbox-unavailable': 'sandbox-unavailable',
       aborted: 'user-rejected',
     });
   });
 
-  it('两张映射表覆盖全部 kind；中文标签表覆盖全部九分类', () => {
+  it('两张映射表覆盖全部 kind；中文标签表覆盖全部八分类', () => {
     expect(Object.keys(ACP_ERROR_CODES).sort()).toEqual([...ALL_KINDS].sort());
     expect(Object.keys(ACP_ERROR_KIND_CATEGORY).sort()).toEqual([...ALL_KINDS].sort());
     expect(Object.keys(ACP_ERROR_CATEGORY_LABELS).sort()).toEqual([...ALL_CATEGORIES].sort());

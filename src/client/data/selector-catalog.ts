@@ -93,12 +93,16 @@ export type ProviderFilter = 'current' | 'all' | ProviderKind
 /** Backend state returned by the host; established means a provider route is locked. */
 export type PickerBackendState =
   | { state: 'blank' }
+  | { state: 'draft'; provider: string }
   | { state: 'established'; provider: string }
 
 /** Validating decoder for the `backendOf` wire reply; malformed → undefined. */
 export function decodeBackendState(raw: unknown): PickerBackendState | undefined {
   if (!isPlainObject(raw)) return undefined
   if (raw['state'] === 'blank') return { state: 'blank' }
+  if (raw['state'] === 'draft' && typeof raw['provider'] === 'string' && raw['provider'] !== '') {
+    return { state: 'draft', provider: raw['provider'] }
+  }
   if (raw['state'] === 'established' && typeof raw['provider'] === 'string' && raw['provider'] !== '') {
     return { state: 'established', provider: raw['provider'] }
   }
@@ -116,8 +120,9 @@ export function backendOfProvider(provider: string): string {
 
 /**
  * 兼容性判定：该 selection 是否与会话已锁定的 backend 同 backend。
- * blank 表示尚未建立任何执行 backend；目前目录中的 provider/model 只是 UI
- * 默认值，因此 native 或任意 ACP profile 均可在原 DSH session 中首次采用。
+ * blank 表示尚未建立 ACP backend；若 host 已实例化 native wrapper，调用方会通过
+ * currentProvider 传入其实际路由。由于 rc.2 没有 live Agent 替换 seam，跨到另一
+ * wrapper 必须自动创建新 DSH session；只有无 wrapper 或同路由才可原地采用。
  * established →
  * 只有同一路由的行可选（同 ACP profile 的不同模型行走 set_config_option 既有
  * 路径）；其余 = 跨 backend，picker 标记并分流到「在新会话中使用」。
@@ -125,9 +130,16 @@ export function backendOfProvider(provider: string): string {
 export function isSameBackendSelection(
   selection: Pick<PickerModelSelection, 'provider'>,
   backend: PickerBackendState,
-  _currentProvider?: string | null,
+  currentProvider?: string | null,
 ): boolean {
-  if (backend.state === 'blank') return true
+  // A blank DSH session may already have a live native wrapper. The plugin has
+  // no public rc.2 seam to replace that wrapper, so only the current provider
+  // is an in-place selection; a different provider must use a new DSH session.
+  if (backend.state === 'blank') return currentProvider === undefined || currentProvider === null || backendOfProvider(selection.provider) === currentProvider
+  // A draft has a live ACP wrapper, but no committed semantic binding. rc.2
+  // cannot replace that wrapper either: only the same ACP profile can switch
+  // in place; another profile/native backend must open a new DSH session.
+  if (backend.state === 'draft') return backend.provider === backendOfProvider(selection.provider)
   return backend.provider === backendOfProvider(selection.provider)
 }
 

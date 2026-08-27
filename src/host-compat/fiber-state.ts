@@ -8,7 +8,7 @@
  *
  * 复制原因：agent-loop 的 `FactoryOwnership.isActive`（上游 packages/core/
  * agent-loop/src/index.ts:33-37 的 INACTIVE_STATES = {UNLOADING, DISPOSED, FAILED}）
- * 与 registry.ts 的 isUnloading 只需 FAILED=3 / DISPOSED=4 / UNLOADING=5 三值；
+ * 与 installed-profile-registry.ts 的 isUnloading 只需 FAILED=3 / DISPOSED=4 / UNLOADING=5 三值；
  * dsh-settings 的 installSettingsSection 有同款数值镜像先例。
  *
  * 漂移检测：test/host-compat.spec.ts 对照 node_modules 已构建 lib 的

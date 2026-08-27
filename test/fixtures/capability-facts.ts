@@ -1,6 +1,6 @@
 // capability-facts.ts — picker 三值词镜像（client selector-logic.ts
 // `pickerCapabilityWords`）与 domain 能力矩阵（domain/policy/capability-matrix.ts
-// `acpCapabilityMatrix`）的共有输入夹具（收尾）。
+// `acpCapabilityMatrix`）的共有输入夹具。
 //
 // 分层纪律禁止 client import domain（test/contracts/architecture.spec.ts），因此 picker
 // 披露区的三值词是矩阵行 status 的镜像纯函数；本夹具是「同一输入、两侧独立
@@ -50,9 +50,9 @@ export const NONE_ADVERTISED: CapabilityFactsFixture = {
 }
 
 /**
- * Devin 实证形态（记录）：load/list/close/delete 全广告，prompt 广告
- * image 但不广告 audio/embeddedContext，MCP 不广告。关键语义：image 广告了，
- * 端到端仍是「不支持」（adapter v1 prompt 仅文本块）——picker 必须如实显示。
+ * Devin 实证形态：load/list/close/delete 全广告，prompt 广告 image，
+ * 但不广告 audio/embeddedContext，MCP 不广告。图片的端到端状态还需
+ * 结合 DSH attachment seam 计算，不能只根据 Agent 广告判定。
  */
 export const DEVIN_LIKE: CapabilityFactsFixture = {
   loadSession: true,

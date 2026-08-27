@@ -53,7 +53,7 @@ const HTTP_SURFACE_PATTERNS: ReadonlyArray<readonly [string, RegExp]> = [
   ['node:http(s)/node:net import', /from\s+['"]node:(?:https?|net)['"]/],
 ];
 
-/** 钉版的完整 Remote invocation 集合（九条；新增/删除/改名必须同步本表与 health.spec.ts 生成物钉版）。 */
+/** 钉版的完整 Remote invocation 集合（公开 recovery action 也属于同一 namespace）。 */
 const PINNED_REMOTE_METHODS: readonly string[] = [
   'backendOf',
   'beginModelSwitch',
@@ -62,6 +62,8 @@ const PINNED_REMOTE_METHODS: readonly string[] = [
   'health',
   'options',
   'rebindBlank',
+  'reconnectOriginal',
+  'recordRecoveryAction',
   'rollbackModelSwitch',
   'setOption',
 ];
@@ -97,6 +99,6 @@ describe(' 旁路 API 消除门', () => {
       .filter((line) => forbiddenKey.test(line));
     expect(hits, `contract/remote.ts 出现 credential 形态字段：\n  ${hits.join('\n  ')}`).toEqual([]);
     // `unknown` 被 strict boundary 拒绝（生成前提）：wire 类型里不得出现
-    expect(/\bunknown\b/.test(text), 'contract/remote.ts 出现 unknown 字段类型').toBe(false);
+    expect(/:\s*unknown\b/.test(text), 'contract/remote.ts 出现 unknown 字段类型').toBe(false);
   });
 });

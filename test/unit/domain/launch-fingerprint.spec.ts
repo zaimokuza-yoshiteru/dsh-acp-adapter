@@ -41,6 +41,31 @@ describe('acpLaunchEnvironment（Native-first）', () => {
       source: { PATH: '/usr/bin', HOME, GITHUB_TOKEN: 'must-not-pass' },
     })).resolves.toEqual({ PATH: '/usr/bin', HOME })
   })
+
+  it('Native connection snapshot includes descriptor aliases and profile overrides exactly once', async () => {
+    const config: AcpStubAgentConfig = {
+      name: 'Claude', command: 'claude-agent-acp', args: [], runtime: 'claude',
+      env: { ANTHROPIC_BASE_URL: 'https://profile.example', PROFILE_ONLY: 'yes' },
+    }
+    const descriptor = descriptorOf('claude', config)
+    await expect(acpLaunchEnvironment({
+      config,
+      descriptor,
+      dataHomeStrategy: 'native',
+      source: {
+        PATH: '/usr/bin',
+        ANTHROPIC_API_KEY: 'secret',
+        ANTHROPIC_BASE_URL: 'https://host.example',
+        CLAUDE_CODE_EXECUTABLE: '/opt/claude',
+      },
+    })).resolves.toEqual({
+      PATH: '/usr/bin',
+      ANTHROPIC_API_KEY: 'secret',
+      ANTHROPIC_BASE_URL: 'https://profile.example',
+      CLAUDE_CODE_EXECUTABLE: '/opt/claude',
+      PROFILE_ONLY: 'yes',
+    })
+  })
 })
 
 function baseConfig(): AcpStubAgentConfig {
@@ -69,7 +94,7 @@ describe('acpLaunchFingerprint（Native 会话连续性）', () => {
     expect(JSON.stringify(base)).not.toContain('"1"')
   })
 
-  it('env refs 与 executable override 只记录存在性，不记录 secret 或路径值', () => {
+  it('不接管 Agent 凭证引用；executable override 只记录存在性', () => {
     const secret = 'sk-test-SECRET-value-never-persisted'
     const config: AcpStubAgentConfig = { name: 'Claude', command: 'claude-agent-acp', args: [], env: {}, runtime: 'claude' }
     const descriptor = descriptorOf('claude', config)
@@ -77,7 +102,7 @@ describe('acpLaunchFingerprint（Native 会话连续性）', () => {
       profileId: 'claude', config, descriptor,
       env: { ANTHROPIC_API_KEY: secret, CLAUDE_CODE_EXECUTABLE: '/opt/claude/bin/claude' },
     })
-    expect(withValues.envRefs?.find((ref) => ref.key === 'ANTHROPIC_API_KEY')).toEqual({ key: 'ANTHROPIC_API_KEY', present: true })
+    expect(withValues.envRefs).toBeNull()
     expect(withValues.executableOverride).toEqual({ name: 'CLAUDE_CODE_EXECUTABLE', present: true })
     expect(JSON.stringify(withValues)).not.toContain(secret)
     expect(JSON.stringify(withValues)).not.toContain('/opt/claude/bin/claude')

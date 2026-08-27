@@ -8,7 +8,7 @@
 //   - 已发布引用绝不被原地改写（draft 是克隆，旧快照保持原值）
 //   - subscribe/unsubscribe 语义
 // 面板/选择器 store 的语义动作表（settingsMirrored/healthReady/liveSwitchStarted
-// 乐观写/disclosureUpdated 等）也在此钉一轮纯转换行为；glue 级的编排钉留在
+// 乐观写/backendAccessUpdated 等）也在此钉一轮纯转换行为；glue 级的编排钉留在
 // selector-controller.spec.ts（驱动方式改为 glue + 真 store 实例）。
 
 import { describe, expect, it, vi } from 'vitest';
@@ -88,9 +88,9 @@ describe('createAcpPanelStore（settings.section 独占工厂）', () => {
 
     actions.healthLoading();
     expect(inst.getSnapshot().health.status).toBe('loading');
-    actions.healthReady([], null, 1234);
+    actions.healthReady([], 1234);
     expect(inst.getSnapshot().health).toEqual({
-      status: 'ready', rows: [], sandbox: null, fetchedAt: 1234, message: undefined,
+      status: 'ready', rows: [], fetchedAt: 1234, message: undefined,
       checkingAgentIds: [], agentErrors: {},
     });
     actions.healthUnreachable('boom');
@@ -107,12 +107,12 @@ describe('createAcpPanelStore（settings.section 独占工厂）', () => {
       executable: true, version, state: 'saved-unverified' as const,
       probe: { status: 'never' as const, at: null },
     });
-    inst.actions.healthReady([row('devin', 'old'), row('kimi', 'old')], null, 1);
+    inst.actions.healthReady([row('devin', 'old'), row('kimi', 'old')], 1);
     inst.actions.agentHealthLoading('devin');
     inst.actions.agentHealthLoading('kimi');
     expect(inst.getSnapshot().health.checkingAgentIds).toEqual(['devin', 'kimi']);
 
-    inst.actions.agentHealthReady('kimi', row('kimi', 'new'), null, 2);
+    inst.actions.agentHealthReady('kimi', row('kimi', 'new'), 2);
     expect(inst.getSnapshot().health.checkingAgentIds).toEqual(['devin']);
     expect(inst.getSnapshot().health.rows.map((entry) => [entry.id, entry.version])).toEqual([
       ['devin', 'old'], ['kimi', 'new'],
@@ -156,7 +156,7 @@ describe('createModelPickerStore（conversation.input.model 三 slice 复合）'
     const snap = inst.getSnapshot();
     expect(snap.directory).toEqual(INITIAL_DIRECTORY_STATE);
     expect(snap.live.status).toBe('idle');
-    expect(snap.disclosure).toEqual({ provider: '', preset: undefined });
+    expect(snap.backendAccess).toEqual({ provider: '', preset: undefined });
   });
 
   it('目录 slice：load → loaded → selectStarted/selected → reset', () => {
@@ -227,21 +227,21 @@ describe('createModelPickerStore（conversation.input.model 三 slice 复合）'
     expect(failed.snapshot).toEqual(blocked);
   });
 
-  it('披露 slice：disclosureUpdated 如实透传 provider/preset（含 undefined 未知档）', () => {
+  it('backend access slice：backendAccessUpdated 如实透传 provider/preset（含 undefined 未知档）', () => {
     const inst = createModelPickerStore().create();
-    inst.actions.disclosureUpdated('acp-dev', 'danger-full-access');
-    expect(inst.getSnapshot().disclosure).toEqual({ provider: 'acp-dev', preset: 'danger-full-access' });
-    inst.actions.disclosureUpdated('acp-dev', undefined);
-    expect(inst.getSnapshot().disclosure.preset).toBeUndefined();
+    inst.actions.backendAccessUpdated('acp-dev', 'danger-full-access');
+    expect(inst.getSnapshot().backendAccess).toEqual({ provider: 'acp-dev', preset: 'danger-full-access' });
+    inst.actions.backendAccessUpdated('acp-dev', undefined);
+    expect(inst.getSnapshot().backendAccess.preset).toBeUndefined();
   });
 
-  it('slice 互不染指：目录转换不动 live/disclosure 的值', () => {
+  it('slice 互不染指：目录转换不动 live/backendAccess 的值', () => {
     const inst = createModelPickerStore().create();
     inst.actions.liveLoaded(LIVE_SNAPSHOT);
-    inst.actions.disclosureUpdated('acp-dev', 'read-only');
+    inst.actions.backendAccessUpdated('acp-dev', 'read-only');
     const before = inst.getSnapshot();
     inst.actions.directoryLoadStarted();
     expect(inst.getSnapshot().live).toEqual(before.live);
-    expect(inst.getSnapshot().disclosure).toEqual(before.disclosure);
+    expect(inst.getSnapshot().backendAccess).toEqual(before.backendAccess);
   });
 });

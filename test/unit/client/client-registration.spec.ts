@@ -237,12 +237,13 @@ describe('client 入口注册形态（slot/store 纪律）', () => {
     const h = createFakeCtx();
     apply(h.ctx as never);
 
-    expect(h.registeredEntries).toHaveLength(6);
-    const [section, picker, dock, permissionDock, elicitationDock, toolview] = h.registeredEntries as [RegisteredEntry, RegisteredEntry, RegisteredEntry, RegisteredEntry, RegisteredEntry, RegisteredEntry];
+    expect(h.registeredEntries).toHaveLength(7);
+    const [section, picker, recoveryDock, dock, permissionDock, elicitationDock, toolview] = h.registeredEntries as [RegisteredEntry, RegisteredEntry, RegisteredEntry, RegisteredEntry, RegisteredEntry, RegisteredEntry, RegisteredEntry];
 
     expect(section.name).toBe('settings.section');
     expect(picker.name).toBe('conversation.input.model');
  // ACP context 统计行进 composer dock（list 槽；宿主 stats(0) 之后，无 store/inject seat）
+    expect(recoveryDock.id).toBe('acp-recovery');
     expect(dock.name).toBe('conversation.composer.dock');
     expect(dock.id).toBe('acp-context-usage');
     expect(dock.order).toBe(1);
@@ -288,15 +289,15 @@ describe('client 入口注册形态（slot/store 纪律）', () => {
 
     // conversation.input.model 注入工厂（session+store 形态：(sessionId, actions)）。
     const pickerStore = picker.store!().create('sess-1') as StoreInstance<{
-      disclosure: { provider: string; preset: string | undefined };
+      backendAccess: { provider: string; preset: string | undefined };
     }, never>;
     const pickerFace = picker.inject!('sess-1', pickerStore.actions);
     expect(pickerFace['available']).toBe(true);
     expect(typeof (pickerFace['picker'] as Record<string, unknown>)['select']).toBe('function');
-    // attach 即披露 resync（无 binding → provider ''、preset undefined 的诚实未知）。
-    expect(pickerStore.getSnapshot().disclosure).toEqual({ provider: '', preset: undefined });
-    // defaultModel 留在 hooks 隔间（框架 settings scope 裸 observable，非本插件 store）。
-    expect((pickerFace['hooks'] as Record<string, unknown>)['defaultModel']).toBeDefined();
+    // attach immediately resyncs backend access (no binding means provider '' and unknown preset).
+    expect(pickerStore.getSnapshot().backendAccess).toEqual({ provider: '', preset: undefined });
+    // 插件不再添加独立“设为默认”动作，也不向 seat 注入默认模型观察面。
+    expect(pickerFace).not.toHaveProperty('hooks');
 
     // /model 命令注册在独立 scope（commandUi 贡献已捕获）。
     expect(h.commandDisposers).toHaveLength(1);
@@ -340,7 +341,7 @@ describe('client 入口注册形态（slot/store 纪律）', () => {
 
     // 模拟 scope 通知存活（卸载前基线：订阅在）。
     h.notifyScope();
-    expect(h.registeredEntries).toHaveLength(6);
+    expect(h.registeredEntries).toHaveLength(7);
 
     // fiber 卸载：cordis 逆序跑 effect disposers（本 fake 顺序无关——断言全集）。
     for (const { run } of h.effectDisposers) run();
@@ -378,8 +379,8 @@ describe(' per-contribution 隔离（可选 ACP 子模块失败不撤销 picker 
     apply(h.ctx as never);
 
     const names = h.registeredEntries.map((entry) => entry.name);
-    expect(names).toEqual(['settings.section', 'conversation.input.model', 'conversation.composer.dock', 'conversation.input.dock', 'tool.call.toolview']);
-    expect(h.registeredEntries.find((entry) => entry.name === 'conversation.input.dock')?.id).toBe('acp-elicitations');
+    expect(names).toEqual(['settings.section', 'conversation.input.model', 'conversation.input.dock', 'conversation.composer.dock', 'conversation.input.dock', 'tool.call.toolview']);
+    expect(h.registeredEntries.find((entry) => entry.id === 'acp-elicitations')?.id).toBe('acp-elicitations');
     expect(h.commandDisposers).toHaveLength(1);
   });
 
@@ -388,8 +389,8 @@ describe(' per-contribution 隔离（可选 ACP 子模块失败不撤销 picker 
     apply(h.ctx as never);
 
     const names = h.registeredEntries.map((entry) => entry.name);
-    expect(names).toEqual(['settings.section', 'conversation.input.model', 'conversation.composer.dock', 'conversation.input.dock', 'tool.call.toolview']);
-    expect(h.registeredEntries.find((entry) => entry.name === 'conversation.input.dock')?.id).toBe('acp-permissions');
+    expect(names).toEqual(['settings.section', 'conversation.input.model', 'conversation.input.dock', 'conversation.composer.dock', 'conversation.input.dock', 'tool.call.toolview']);
+    expect(h.registeredEntries.find((entry) => entry.id === 'acp-permissions')?.id).toBe('acp-permissions');
     expect(h.commandDisposers).toHaveLength(1);
   });
 
@@ -398,7 +399,7 @@ describe(' per-contribution 隔离（可选 ACP 子模块失败不撤销 picker 
     apply(h.ctx as never);
 
     const names = h.registeredEntries.map((entry) => entry.name);
-    expect(names).toEqual(['settings.section', 'conversation.input.model', 'conversation.composer.dock', 'conversation.input.dock', 'conversation.input.dock']);
+    expect(names).toEqual(['settings.section', 'conversation.input.model', 'conversation.input.dock', 'conversation.composer.dock', 'conversation.input.dock', 'conversation.input.dock']);
     expect(h.commandDisposers).toHaveLength(1);
   });
 
@@ -407,7 +408,7 @@ describe(' per-contribution 隔离（可选 ACP 子模块失败不撤销 picker 
     apply(h.ctx as never);
 
     const names = h.registeredEntries.map((entry) => entry.name);
-    expect(names).toEqual(['settings.section', 'conversation.composer.dock', 'conversation.input.dock', 'conversation.input.dock', 'tool.call.toolview']);
+    expect(names).toEqual(['settings.section', 'conversation.input.dock', 'conversation.composer.dock', 'conversation.input.dock', 'conversation.input.dock', 'tool.call.toolview']);
     expect(h.commandDisposers).toHaveLength(1);
   });
 

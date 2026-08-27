@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { InMemoryAcpElicitationBroker } from '../../../src/domain/policy/elicitation.ts'
 
 const form = (properties: Record<string, unknown>, required: string[] = []) => ({
@@ -21,10 +21,17 @@ describe('InMemoryAcpElicitationBroker', () => {
     expect(JSON.stringify(audits)).not.toContain('prod')
   })
 
-  it('declines sensitive or unknown schemas before showing a form', async () => {
-    const broker = new InMemoryAcpElicitationBroker()
+  it('declines credential-shaped form fields so sensitive input uses URL elicitation', async () => {
+    const audits: unknown[] = []
+    const broker = new InMemoryAcpElicitationBroker(Date.now, (_session, audit) => { audits.push(audit) })
     await expect(broker.open({ sessionId: 'dsh-1', params: form({ api_token: { type: 'string' } }, ['api_token']) })).resolves.toEqual({ action: 'decline' })
-    expect(broker.list('dsh-1')).toHaveLength(0)
+    expect(broker.list('dsh-1')).toEqual([])
+    expect(JSON.stringify(audits)).not.toContain('secret-value')
+    expect(audits).toEqual(expect.arrayContaining([expect.objectContaining({ phase: 'decided', result: 'decline', fieldNames: ['api_token'], schemaSummary: [{ name: 'api_token', type: 'string', required: true }] })]))
+  })
+
+  it('declines unknown schemas before showing a form', async () => {
+    const broker = new InMemoryAcpElicitationBroker()
     await expect(broker.open({ sessionId: 'dsh-1', params: form({ nested: { type: 'object' } }) })).resolves.toEqual({ action: 'decline' })
   })
 
@@ -71,5 +78,19 @@ describe('InMemoryAcpElicitationBroker', () => {
     await expect(pending).resolves.toEqual({ action: 'accept', content: {} })
     expect(JSON.stringify(audits)).not.toContain('token=secret')
     await expect(broker.open({ sessionId: 'dsh-2', params: { mode: 'url', sessionId: 'acp-session', elicitationId: 'el-2', message: 'bad', url: 'https://user:pass@example.com/' } })).resolves.toEqual({ action: 'decline' })
+  })
+
+  it('cancels an unanswered request at the bounded deadline', async () => {
+    vi.useFakeTimers()
+    try {
+      const broker = new InMemoryAcpElicitationBroker(Date.now, undefined, 100)
+      const pending = broker.open({ sessionId: 'dsh-1', params: form({ target: { type: 'string' } }) })
+      expect(broker.list('dsh-1')).toHaveLength(1)
+      await vi.advanceTimersByTimeAsync(100)
+      await expect(pending).resolves.toEqual({ action: 'cancel' })
+      expect(broker.list('dsh-1')).toHaveLength(0)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

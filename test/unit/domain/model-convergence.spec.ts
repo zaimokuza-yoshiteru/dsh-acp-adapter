@@ -18,8 +18,8 @@
 //   6. 待定切换行在场（rollback-required）→ 建立收敛让位 pending-switch 守卫：
 //      零 set_config_option、零 prompt，turn 被守卫响亮锁定。
 //
-// 组装层见 test/agent-test-helpers.ts。孤儿进程防线与各 spec 同款：argv 带
-// SPEC_TAG，afterEach 兜底 dispose 全部 handle，afterAll `ps` 全量扫描。
+// 组装层见 test/agent-test-helpers.ts。afterEach 兜底 dispose 全部 handle；
+// 共享 subprocess runtime 在文件结束时兜底回收。
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -29,12 +29,10 @@ import type { AgentHandle } from '@deepseek-ai/dsh-agent';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import {
   LOAD_REPLAY_MATCHED_COMMITTED_SEQ,
-  SPEC_TAG,
   bindingFixture,
   createHarness,
   eventsOf,
   mockProfile,
-  psLinesWithTag,
   readLog,
   registerAcpAgents,
   routeOf,
@@ -92,8 +90,6 @@ afterEach(async () => {
 });
 
 afterAll(() => {
-  const pidScan = psLinesWithTag(SPEC_TAG);
-  expect(pidScan).toEqual([]);
   fs.rmSync(suiteDir, { recursive: true, force: true });
 });
 

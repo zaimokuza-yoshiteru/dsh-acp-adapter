@@ -7,7 +7,7 @@
 //     AgentLoop 的 static inject 要求它们存在 → ctx.provide 最小 fake
 //     （systemPrompt 仅需 variable()/assemble()；tools 仅需存在，纯文本响应不触达）。
 //   - settings 服务用内存 fake（dsh-settings 语义：schema 校验 + watch 通知），
-//     ACP 注册表经它写入 agent 配置（registry.spec.ts 先例）。
+//     ACP 已安装 profile registry 经它写入 agent 配置（installed-profile-registry.spec.ts 先例）。
 //   - sessionPersistence 用内存 fake（host/factory/agent-loop.ts 的 AcpResumePersistence 结构窄化只有
 //     inspect/prepare 两个成员；父类 resumeWith 也只消费 prepare/session/dispose）。
 //
@@ -15,7 +15,6 @@
 // pid），afterAll 用 `ps` 全量扫描；mock 的 MOCK_LOG 同时承担 spawn 计数
 // （`started pid=` 行）与 session/cancel、SIGTERM 阶梯断言。
 
-import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -36,7 +35,7 @@ import AcpAgentLoop from '../../src/index.ts';
 import type { AcpCommandDefinition } from '../../src/protocol/v1/commands.ts';
 import type { AcpApprovalOutcome, AcpApprovalRequest } from '../../src/domain/policy/permissions.ts';
 import type { AcpAgentConfig } from '../../src/domain/session/agent-config.ts';
-import type { AcpSandboxMode, AcpSandboxPolicyLike } from '../../src/domain/policy/sandbox.ts';
+import type { AcpSandboxMode } from '../../src/domain/policy/sandbox.ts';
 import { acpCanonicalHash16 } from '../../src/persistence/sidecar.ts';
 import type { AcpBindingData } from '../../src/persistence/sidecar.ts';
 import { descriptorOf } from '../../src/domain/session/agent-config.ts';
@@ -68,12 +67,6 @@ export function isDead(pid: number): boolean {
   } catch {
     return true;
   }
-}
-
-/** `ps` 全量扫描本 spec 的 SPEC_TAG（验收：无孤儿 mock/内联进程）。 */
-export function psLinesWithTag(tag: string): string[] {
-  const ps = execFileSync('ps', ['-axo', 'pid,args'], { encoding: 'utf8' });
-  return ps.split('\n').filter((line) => line.includes(tag));
 }
 
 export function readLog(logPath: string): string {
@@ -452,28 +445,6 @@ function fakeTools() {
   return {};
 }
 
-// ---------- 接线 fakes（sandbox / sandboxPolicy / approval / commands） ----------
-
-/**
- * sandbox fake（pass-through）：记录每次 confine 的 argv+policy，返回不包装的
- * argv（enforcement 'full'）。confined 两档因此照常 spawn，policy 断言由测试读
- * `confineCalls` 完成。
- */
-export class FakeSandbox {
-  readonly confineCalls: { argv: string[]; policy: AcpSandboxPolicyLike }[] = [];
-  /** 置 true 时下一次 confine 不记录直接抛错（注入 sandbox 能力失败，钉 fail-closed/重解析行为）。 */
-  failNextConfine = false;
-
-  confine(argv: readonly string[], policy: AcpSandboxPolicyLike) {
-    if (this.failNextConfine) {
-      this.failNextConfine = false;
-      throw new Error('confine boom (injected)');
-    }
-    this.confineCalls.push({ argv: [...argv], policy });
-    return { argv: [...argv], enforcement: 'full' as const, denialSignatures: [], runnerFailureRules: [] };
-  }
-}
-
 /**
  * sandboxPolicy fake（既定规则的模式来源）：`resolve({session})` 返回可变 slot
  * `mode`（ACP 正式会话默认原生 Agent 访问）+ `session.header.cwd ?? process.cwd()`。
@@ -605,8 +576,6 @@ export interface AgentHarness {
   logDir: string;
   /** 待拆除的 AgentHandle；afterEach 统一 dispose。 */
   handles: AgentHandle[];
-  /** sandbox fake（pass-through；confine 调用记录）。options.sandbox === false 时为 undefined。 */
-  sandbox: FakeSandbox | undefined;
   /** sandboxPolicy fake（模式 slot 可变）。options.sandboxPolicy === false 时为 undefined。 */
   sandboxPolicy: FakeSandboxPolicy | undefined;
   /** fake harness-home 根（dshHomePath 的落点：`<logDir>/dsh-home`）。 */
@@ -622,8 +591,6 @@ export interface CreateHarnessOptions {
   sandboxMode?: AcpSandboxMode;
   /** false = 不提供 sandboxPolicy 服务（AcpAgent 回退 read-only + 一次性 warn）。 */
   sandboxPolicy?: boolean;
-  /** false = 不提供 sandbox 服务（confined 档 fail closed：ACP_SANDBOX_UNAVAILABLE）。 */
-  sandbox?: boolean;
  /** false = 不提供 ctx.subprocess 服务（fail closed：各 ACP spawn 点 ACP_SPAWN_FAILURE，native 路由不受影响）。 */
   subprocess?: boolean;
   /** false = 不提供 dshHomePath slot（sidecar 禁用；read-only 档 stateRoot 不可解析 → fail loud）。 */
@@ -633,7 +600,7 @@ export interface CreateHarnessOptions {
   /** 提供则注入 ctx.commands（slash 命令桥 e2e）。 */
   commands?: FakeCommands;
   /** 提供则注入 DSH durable attachment read seam。 */
-  attachments?: Pick<AttachmentStore, 'readImage'>;
+  attachments?: Pick<AttachmentStore, 'readImage' | 'imageLimits'>;
 }
 
 /**
@@ -641,9 +608,8 @@ export interface CreateHarnessOptions {
  * + settings/systemPrompt/tools/sessionPersistence（provide fake）+ AcpAgentLoop。
  * 先 provide 再 plugin：AgentLoop 的 static inject 五项齐备才能激活。
  *
- * 默认还提供：sandbox（pass-through fake）+ sandboxPolicy（workspace-write
- * fake）+ dshHomePath（`<logDir>/dsh-home`）——否则所有 ACP spawn 在 read-only
- * 无沙箱下 fail closed。
+ * 默认还提供 sandboxPolicy（Native Agent Access 模式来源）与 dshHomePath
+ *（`<logDir>/dsh-home`）。ACP 不消费宿主 sandbox provider。
  *
  * 默认提供 ctx.subprocess（共享的真实 subprocess-local 服务单例，
  * test/subprocess-seam-testing.ts；必须先于 AcpAgentLoop 挂载——seam 在构造期
@@ -657,14 +623,12 @@ export async function createHarness(logDir: string, options: CreateHarnessOption
   const settings = new FakeSettingsProvider();
   const persistence = new FakeSessionPersistence();
   const assembleCalls: unknown[] = [];
-  const sandbox = options.sandbox === false ? undefined : new FakeSandbox();
   const sandboxPolicy = options.sandboxPolicy === false ? undefined : new FakeSandboxPolicy(options.sandboxMode ?? 'danger-full-access');
   const dshHome = path.join(logDir, 'dsh-home');
   ctx.provide('settings', settings);
   ctx.provide('systemPrompt', fakeSystemPrompt(assembleCalls));
   ctx.provide('tools', fakeTools());
   if (options.persistence !== false) ctx.provide('sessionPersistence', persistence);
-  if (sandbox !== undefined) ctx.provide('sandbox', sandbox);
   if (sandboxPolicy !== undefined) ctx.provide('sandboxPolicy', sandboxPolicy);
   if (options.subprocess !== false) ctx.provide('subprocess', (await sharedTestSubprocess()).raw);
   if (options.dshHomePath !== false) ctx.provide('dshHomePath', (...segments: string[]) => path.join(dshHome, ...segments));
@@ -673,7 +637,7 @@ export async function createHarness(logDir: string, options: CreateHarnessOption
   if (options.attachments !== undefined) ctx.provide('attachments', options.attachments as AttachmentStore);
   await ctx.plugin(AcpAgentLoop, { agents: [] });
   const loop = ctx.agentLoop as AcpAgentLoop;
-  return { ctx, loop, settings, persistence, llm: ctx.llm, logDir, handles: [], sandbox, sandboxPolicy, dshHome, assembleCalls };
+  return { ctx, loop, settings, persistence, llm: ctx.llm, logDir, handles: [], sandboxPolicy, dshHome, assembleCalls };
 }
 
 /** 把若干 ACP agent 写进 settings（触发注册表路由注册），并等路由可见。 */
@@ -682,7 +646,7 @@ export async function registerAcpAgents(harness: AgentHarness, profiles: readonl
   for (const profile of profiles) agents[profile.id] = profile.config;
   await harness.settings.write('dsh-acp', { agents });
   for (const profile of profiles) {
-    await waitFor(() => harness.loop.acpRegistry.resolveRoute(`acp-${profile.id}`) !== undefined);
+    await waitFor(() => harness.loop.installedProfileRegistry.resolveRoute(`acp-${profile.id}`) !== undefined);
   }
 }
 

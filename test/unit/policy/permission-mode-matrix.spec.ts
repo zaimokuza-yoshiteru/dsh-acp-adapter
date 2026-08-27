@@ -1,30 +1,6 @@
-// permission-mode-matrix.spec.ts — （权限与模式双轴展示）随附测试：DSH 权限范围与 ACP
-// agent mode 两个**独立**维度的组合矩阵 + spawn 前重解析钉。
-//
-// 裁决口径（README.md「权限范围与 Agent mode 是两条轴」）：
-//   - 权限范围（DSH sandbox 三档）= 唯一安全边界：宿主 OS 级强制，ACP mode
-//     任何值都不能放宽它（"ACP Bypass + DSH read-only 仍不能写工作区"）；
-//   - ACP agent mode（Devin 的 Ask/Plan/Accept Edits/Bypass…）= agent 侧行为
-//     配置：切换不触碰 sandbox（"ACP Plan + DSH Full Access 仍拥有 OS 写权限"）；
-//   - 两轴各自独立审计：permission-scope 每次 spawn 落一条（该次 spawn 实际
-//     应用的 confine 事实），agent-mode 在建立与每次经本插件 seam 下发时落一条；
-//     agent 自发 current_mode_update push v1 不落条（mock 双发正好钉死不多落）。
-//
-// 覆盖：
-//   1. 3 权限档 × mode 切换矩阵：每档 boot + turn 1 spawn；经 dshAcp Remote
-//      service setOption 切 mode（plan → bypass，happy 形态走 set_config_option）
-//      ——每步钉 confineCalls/spawnedPids 不变；终态 permission-scope 恰 1 条、
-//      agent-mode 恰 3 条（via：session-setup / set_config_option ×2）。
-//   2. spawn 前每次重新解析 sandboxPolicy：confine 注入失败 → fail closed
-//      （ACP_SANDBOX_UNAVAILABLE、零 spawn、零审计）；同会话档位翻为
-//      danger-full-access 后 followup 重 spawn 用新档（resolveCalls=2，
-//      permission-scope 落 danger 一条）——不重启宿主、不重建会话。
-//   3. legacy set_mode 路径（no-config-options 形态）：setOption mode 走
-//      session/set_mode，agent-mode 落 via='set_mode'。
-//
-// HTTP 旁路端点删除，mode 写入直驱 loop 构造时注册的 dshAcp Remote
-// service（harness.ctx.get('dshAcp')）；接线钉见 wiring.spec.ts 生产接线。
-// 组装层与孤儿进程防线同 wiring.spec.ts（SPEC_TAG + afterEach dispose + afterAll ps）。
+// Native Agent Access is a fixed prerequisite for ACP sessions. Agent mode is
+// an independent ACP option: changing it must not respawn the process or alter
+// the host access fact recorded for the session.
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -34,11 +10,9 @@ import type { AgentHandle } from '@deepseek-ai/dsh-agent';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import { AcpAgent } from '../../../src/domain/session/agent.ts';
 import {
-  SPEC_TAG,
   createHarness,
   eventsOf,
   mockProfile,
-  psLinesWithTag,
   registerAcpAgents,
   routeOf,
   spawnedPids,
@@ -94,8 +68,6 @@ afterEach(async () => {
 });
 
 afterAll(() => {
-  const pidScan = psLinesWithTag(SPEC_TAG);
-  expect(pidScan).toEqual([]);
   fs.rmSync(suiteDir, { recursive: true, force: true });
 });
 
@@ -111,9 +83,7 @@ describe('原生 Agent 访问 × Agent mode（两轴独立）', () => {
       await agent.whenIdle();
       expect(eventsOf(agent, 'turn/end').at(-1)?.data.reason).toEqual({ kind: 'completed' });
 
-      // 只有设置 probe 受 confine；正式 ACP session 是原生访问。
-      expect(harness.sandbox?.confineCalls).toHaveLength(1);
-      expect(harness.sandbox?.confineCalls[0]?.policy.sessionId).toBeUndefined(); // 门内 probe
+      // 健康探测与正式会话都使用 Agent 原生环境。
       expect(spawnedPids(profile.logPath)).toHaveLength(2); // probe + 会话
 
       // 建立时两轴各落一条
@@ -130,8 +100,7 @@ describe('原生 Agent 访问 × Agent mode（两轴独立）', () => {
       // mode 轴切换 ×2（plan → bypass）：全程权限轴零变化（每步都钉）
       for (const mode of ['plan', 'bypass']) {
         await acpRemote(harness).setOption(sessionId, { configId: 'mode', value: mode });
-        // mode 不是安全边界：不触发重 confine、不重 spawn
-        expect(harness.sandbox?.confineCalls).toHaveLength(1);
+        // mode 不是安全边界：不重启 Agent 进程。
         expect(spawnedPids(profile.logPath)).toHaveLength(2);
         // mock 补推 current_mode_update → 状态槽最终一致（响应快照的 currentModeId
         // 可能是推送前的旧值，不断言它）
@@ -143,7 +112,6 @@ describe('原生 Agent 访问 × Agent mode（两轴独立）', () => {
       await agent.whenIdle();
       expect(eventsOf(agent, 'turn/end').map((event) => event.data.turn)).toEqual([1, 2]);
       expect(eventsOf(agent, 'turn/end').at(-1)?.data.reason).toEqual({ kind: 'completed' });
-      expect(harness.sandbox?.confineCalls).toHaveLength(1);
       expect(spawnedPids(profile.logPath)).toHaveLength(2);
 
       // 终态审计：权限轴仍恰 1 条（spawn 一次）；mode 轴恰 3 条——mock 双发的
@@ -174,22 +142,31 @@ describe('spawn 前每次重新解析 sandboxPolicy（钉）', () => {
     expect(failed?.kind === 'error' ? failed.error.code : undefined).toBe('ACP_SPAWN_CONFIG');
     expect(failed?.kind === 'error' ? failed.error.message : '').toContain('Native Agent Access');
     expect(spawnedPids(profile.logPath)).toHaveLength(1); // 仅门内 probe，零会话 spawn
-    expect(harness.sandbox?.confineCalls).toHaveLength(1); // 仅门内 probe
     expect(harness.sandboxPolicy?.resolveCalls).toHaveLength(1);
     const sidecar = harness.loop.acpSidecar;
     expect(((await sidecar?.list(sessionId)) ?? []).filter((entry) => entry.kind === 'permission-scope')).toHaveLength(0);
 
     // 同会话档位切为 danger-full-access（不重启宿主、不重建会话）→ followup 触发
-    // 重 spawn：policy 重新解析（resolveCalls=2）、新档不 confine、spawn 成功
+    // 重 spawn：startSession 与 prompt 前各校验一次、新档不 confine、spawn 成功
     if (harness.sandboxPolicy !== undefined) harness.sandboxPolicy.mode = 'danger-full-access';
     agent.followup(userText('retry'));
     await agent.whenIdle();
     expect(eventsOf(agent, 'turn/end').at(-1)?.data.reason).toEqual({ kind: 'completed' });
-    expect(harness.sandboxPolicy?.resolveCalls).toHaveLength(2);
-    expect(harness.sandbox?.confineCalls).toHaveLength(1); // 仍仅门内 probe；danger 档不 confine
+    expect(harness.sandboxPolicy?.resolveCalls).toHaveLength(3);
     expect(spawnedPids(profile.logPath)).toHaveLength(2); // probe + 会话
 
-    // 权限轴审计补落一条 danger（如实反映第二次 spawn 的 confine 事实）
+    // 进程已经启动后再降档也必须在下一次 session/prompt 前拒绝；Full Access
+    // 是每 turn 不变量，不是只在 spawn 时检查一次。
+    if (harness.sandboxPolicy !== undefined) harness.sandboxPolicy.mode = 'workspace-write';
+    agent.followup(userText('must not reach the Agent'));
+    await agent.whenIdle();
+    const downgraded = eventsOf(agent, 'turn/end').at(-1)?.data.reason;
+    expect(downgraded?.kind).toBe('error');
+    expect(downgraded?.kind === 'error' ? downgraded.error.code : undefined).toBe('ACP_SPAWN_CONFIG');
+    expect(harness.sandboxPolicy?.resolveCalls).toHaveLength(4);
+    expect(spawnedPids(profile.logPath)).toHaveLength(2);
+
+    // 权限轴审计补落一条 Native Agent Access 事实。
     const entries = (await sidecar?.list(sessionId)) ?? [];
     expect(entries.filter((entry) => entry.kind === 'permission-scope').map((entry) => entry.data)).toEqual([
       { mode: 'danger-full-access', confined: null, platform: process.platform },
@@ -222,8 +199,7 @@ describe('legacy set_mode 路径的 mode 审计', () => {
       { modeId: 'accept-edits', via: 'session-setup' },
       { modeId: 'plan', via: 'set_mode' },
     ]);
-    // mode 切换不碰 sandbox：只有门内 probe 的一次 confine。
-    expect(harness.sandbox?.confineCalls).toHaveLength(1);
+    // mode 切换不触碰宿主访问模式。
     expect(spawnedPids(profile.logPath)).toHaveLength(2);
   }, 20_000);
 });

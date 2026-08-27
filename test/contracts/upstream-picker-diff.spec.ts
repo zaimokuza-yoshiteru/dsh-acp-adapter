@@ -67,6 +67,10 @@ const UI_CONVERSATION_SLOTS = fs.readFileSync(
 const SELECTOR_LOGIC_SRC = fs.readFileSync(new URL('../../src/client/data/selector-logic.ts', import.meta.url), 'utf8')
 // verbatim popup fork（rowId/selectionOf/optionsOf）收在 client 侧兼容岛。
 const POPUP_SRC = fs.readFileSync(new URL('../../src/client/host-compat/model-picker/popup.ts', import.meta.url), 'utf8')
+const MODEL_PICKER_CSS = fs.readFileSync(
+  new URL('../../src/client/host-compat/model-picker/ModelPicker.module.css', import.meta.url),
+  'utf8',
+)
 
 /** 脱类型：与上游构建产物的差距只剩排版/注释（归一化吸收）。 */
 function transpile(source: string): string {
@@ -195,6 +199,14 @@ describe('模型选择器 fork 钉版（上游 ui-model-selection @ dsh-v0.1.1-r
     // selectionOf 保持 verbatim（不含任何 tag/kind 逻辑）
     const ours = extractFunction(transpile(POPUP_SRC), 'selectionOf')
     expect(ours).not.toContain('PROVIDER_KIND_LABELS')
+  })
+
+  it('布局钉：模型菜单沿触发器右侧锚定，且保持上游 360px 高度预算', () => {
+    const menu = MODEL_PICKER_CSS.match(/\.menu\s*\{([\s\S]*?)\}/)?.[1]
+    expect(menu).toBeDefined()
+    expect(menu).toMatch(/\bright:\s*0\s*;/)
+    expect(menu).not.toMatch(/\bleft:\s*0\s*;/)
+    expect(menu).toContain('max-height: min(360px, calc(100vh - 120px));')
   })
 
   it('独立脚本钉：scripts/check-upstream-picker-diff.mjs 对默认 checkout 全绿（exit 0）', () => {

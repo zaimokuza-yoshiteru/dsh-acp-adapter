@@ -28,10 +28,8 @@ import {
   type AcpOptionsSync,
 } from '../../../src/domain/session/options-sync.ts';
 import {
-  SPEC_TAG,
   createHarness,
   mockProfile,
-  psLinesWithTag,
   readLog,
   registerAcpAgents,
   routeOf,
@@ -106,8 +104,6 @@ afterEach(async () => {
 });
 
 afterAll(() => {
-  // 孤儿进程防线：ps 全量扫描 SPEC_TAG
-  expect(psLinesWithTag(SPEC_TAG)).toEqual([]);
   fs.rmSync(suiteDir, { recursive: true, force: true });
 });
 

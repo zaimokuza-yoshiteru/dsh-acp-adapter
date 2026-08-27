@@ -35,10 +35,10 @@ describe('public documentation contract', () => {
 
   it('documents Native Agent Access and external-login-only truthfully', () => {
     expect(read('README.md')).toContain('原生 Agent 访问')
-    expect(read('README.md')).toContain('审批交互不是一个能够')
+    expect(read('README.md')).toContain('无法限制绕过 ACP 审批的 Agent 工具')
     expect(read('README.md')).toContain('插件不会要求你把 token')
     expect(read('README.en.md')).toContain('Native Agent Access')
-    expect(read('README.en.md')).toContain('DSH approval is not a security boundary')
+    expect(read('README.en.md')).toContain('cannot constrain Agent tools that bypass that flow')
   })
 
   it('keeps every local README link resolvable', () => {

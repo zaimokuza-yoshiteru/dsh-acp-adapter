@@ -451,6 +451,16 @@ export interface TurnTranslatorOptions {
   currentModeId?: string
   /** Seed for the {@link TurnTranslator.availableCommands} slot. */
   availableCommands?: AvailableCommand[]
+  /** Optional live terminal snapshot lookup. Missing IDs remain an explicit degradation. */
+  terminalSnapshot?: (terminalId: string) => {
+    readonly terminalId: string
+    readonly command: string
+    readonly output: string
+    readonly truncated: boolean
+    /** ACP's schema makes both exit fields optional on some terminal states. */
+    readonly exitStatus: { readonly exitCode?: number | null; readonly signal?: string | null } | null
+    readonly released: boolean
+  } | undefined
   /**
  * 降级审计回调（同步 fire-and-forget）：每次终端态 tool_call_update 发生
    * 内容降级（非文本项按占位/摘要落盘，或超界截断）回调**一条**
@@ -615,8 +625,8 @@ const EMPTY_TOOL_CONTENT: ToolContentMapping = { blocks: [], degraded: [], keptC
  * （插件无此 seam），故 image/audio/blob 只落 mime/size/hash 占位，字节不落盘。
  */
 const ACP_NO_ATTACHMENT_SEAM_REASON = 'v1 无附件 seam，字节不落盘'
-/** terminal 占位原因：DSH 未广告 terminal 能力，无法取回输出。 */
-const ACP_TERMINAL_UNAVAILABLE_REASON = 'DSH 未广告 terminal 能力，输出不可得'
+/** terminal 降级原因：协议能力已接线，但当前 DSH UI 没有实时终端渲染 seam。 */
+const ACP_TERMINAL_UNAVAILABLE_REASON = 'DSH 暂未提供 terminal 实时展示；输出由 Agent 通过 ACP terminal/output 获取'
 
 /**
  * 逐 item 映射（设计：任何类型都不静默消失）——
@@ -630,7 +640,10 @@ const ACP_TERMINAL_UNAVAILABLE_REASON = 'DSH 未广告 terminal 能力，输出�
  * terminal 是占位事实行；image 只留 ref（uri ?? sha256:hash16）+ 元数据；
  * audio 与未知类型折叠为 text 占位项（信封五变体无 audio/unknown）。
  */
-function mapToolContentItem(item: ToolCallContent): MappedToolContentItem {
+function mapToolContentItem(
+  item: ToolCallContent,
+  terminalSnapshot?: TurnTranslatorOptions['terminalSnapshot'],
+): MappedToolContentItem {
   if (item.type === 'content') {
     const block = item.content
     switch (block.type) {
@@ -795,6 +808,34 @@ function mapToolContentItem(item: ToolCallContent): MappedToolContentItem {
     }
   }
   if (item.type === 'terminal') {
+    const snapshot = terminalSnapshot?.(item.terminalId)
+    if (snapshot !== undefined) {
+      const output = acpToolPresentationPreview(snapshot.output)
+      const status = snapshot.exitStatus === null
+        ? '运行中'
+        : snapshot.exitStatus.exitCode === 0
+          ? '已退出 0'
+          : `已退出 ${snapshot.exitStatus.exitCode ?? snapshot.exitStatus.signal ?? 'unknown'}`
+      const text = `[terminal] ${snapshot.command}（${status}）${output.text === '' ? '' : `\n${output.text}`}`
+      return {
+        text,
+        meta: {
+          type: 'terminal',
+          terminalId: item.terminalId,
+          chars: snapshot.output.length,
+          ...(output.truncated || snapshot.truncated ? { truncated: true } : {}),
+        },
+        presentation: {
+          type: 'terminal',
+          terminalId: item.terminalId,
+          text,
+          ...(output.truncated || snapshot.truncated ? { truncated: true as const } : {}),
+        },
+        ...(output.truncated || snapshot.truncated
+          ? { degraded: { type: 'terminal', reason: 'terminal 输出按有界预览展示', originalSize: snapshot.output.length } }
+          : {}),
+      }
+    }
     const reason = ACP_TERMINAL_UNAVAILABLE_REASON
     const placeholder = `[terminal 占位] terminalId=${item.terminalId}：${reason}`
     return {
@@ -827,7 +868,10 @@ function mapToolContentItem(item: ToolCallContent): MappedToolContentItem {
  * boundAcpToolPresentationItems 双闸归一化后随 `presentation` 返回（恒在场，
  * 空集合为空数组）。
  */
-function mapToolContent(content: readonly ToolCallContent[] | null | undefined): ToolContentMapping {
+function mapToolContent(
+  content: readonly ToolCallContent[] | null | undefined,
+  terminalSnapshot?: TurnTranslatorOptions['terminalSnapshot'],
+): ToolContentMapping {
   if (content == null || content.length === 0) return EMPTY_TOOL_CONTENT
   const blocks: TextBlock[] = []
   const metaItems: AcpToolContentMetaItem[] = []
@@ -837,7 +881,7 @@ function mapToolContent(content: readonly ToolCallContent[] | null | undefined):
   let truncated = false
   let omitted = 0
   for (const item of content) {
-    const entry = mapToolContentItem(item)
+    const entry = mapToolContentItem(item, terminalSnapshot)
     if (entry.meta.truncated === true) truncated = true
     if (entry.degraded !== undefined) degraded.push(entry.degraded)
     presentationItems.push(entry.presentation)
@@ -1137,6 +1181,7 @@ export class PresentationSegmenter {
 export class TurnTranslator {
   private readonly sink: SessionEventSink
   private readonly degradation: ((entry: AcpDegradationAuditData) => void) | undefined
+  private readonly terminalSnapshot: TurnTranslatorOptions['terminalSnapshot']
   private currentRoute: TranslatorRoute
   /**
    * Latch of the last non-empty model seen (constructor or {@link TurnTranslator.setRoute}).
@@ -1181,6 +1226,7 @@ export class TurnTranslator {
   constructor(options: TurnTranslatorOptions) {
     this.sink = options.sink
     this.degradation = options.degradation
+    this.terminalSnapshot = options.terminalSnapshot
     this.currentRoute = { provider: options.provider, model: options.model }
     if (options.model !== '') this.lastKnownModel = options.model
     if (options.configOptions !== undefined) this.configOptionsState = options.configOptions
@@ -1557,7 +1603,7 @@ export class TurnTranslator {
       // 身份、有界 size/hash 事实、超界 head/tail 截断标记，原始字节不落盘）
       // 生成有界可见占位；占位作为独立完整块落盘（关闭当前开放块后
       // block-start/delta/block-end 三连，不进开放块聚合），降级事实仍落审计。
-      const mapped = mapToolContent([{ type: 'content', content }])
+      const mapped = mapToolContent([{ type: 'content', content }], this.terminalSnapshot)
       const text = mapped.blocks[0]?.text ?? ''
       const chunkName = kind === 'text' ? 'agent_message_chunk' : 'agent_thought_chunk'
       this.warn('unsupported-chunk-content', `${chunkName} 的非文本块 "${content.type}" 无法原样呈现，已按有界占位落盘（结构化事实见 sidecar degradation 审计）`)
@@ -1635,7 +1681,7 @@ export class TurnTranslator {
     this.pendingCalls.set(update.toolCallId, {
       callSeq: event.seq,
       step,
-      fallback: mapToolContent(update.content),
+      fallback: mapToolContent(update.content, this.terminalSnapshot),
  // 非对称工具回放：终态快照以首帧 wire 事实为初值（占位首帧的
       // rawInput/locations 缺席即缺席，由后续 update 帧补齐），后续 update 覆盖。
       snapshot: acpTerminalSnapshotFromFrame(update),
@@ -1682,7 +1728,7 @@ export class TurnTranslator {
     }
     if (touched) pending.snapshotUpdated = true
     if (update.content !== undefined && update.content !== null) {
-      pending.fallback = mapToolContent(update.content)
+      pending.fallback = mapToolContent(update.content, this.terminalSnapshot)
     }
   }
 
@@ -1709,7 +1755,7 @@ export class TurnTranslator {
     }
     const mapped = update.content === undefined
       ? pending?.fallback ?? EMPTY_TOOL_CONTENT
-      : mapToolContent(update.content)
+      : mapToolContent(update.content, this.terminalSnapshot)
     if (mapped.degraded.length > 0) {
  // 如实口径：非文本/超限内容不静默丢弃，按占位/摘要落盘
       this.warn('unsupported-tool-content', `tool result "${update.toolCallId}" 有 ${String(mapped.degraded.length)} 项内容无法原样呈现，已按占位/摘要落盘（结构化事实见 tool/result meta，降级事实见 sidecar degradation 审计）`)

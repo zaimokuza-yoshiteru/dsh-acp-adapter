@@ -191,7 +191,14 @@ function validDefault(item: Record<string, unknown>, type: string, options: read
 
 function fieldViewOf(name: string, item: unknown, required: boolean): AcpElicitationFieldView | undefined {
   if (!plain(item) || typeof item.type !== 'string') return undefined
-  if (SENSITIVE_FIELD.test(name) || (typeof item.title === 'string' && SENSITIVE_FIELD.test(item.title))) return undefined
+  // ACP v1 form elicitation is intentionally non-sensitive. Credential-shaped
+  // fields must use URL elicitation; never render a password control or accept
+  // a value merely because a caller bypassed the UI.
+  if (SENSITIVE_FIELD.test(name)
+    || (typeof item.title === 'string' && SENSITIVE_FIELD.test(item.title))
+    || (typeof item.description === 'string' && SENSITIVE_FIELD.test(item.description))
+    || item.sensitive === true
+    || item.secret === true) return undefined
   if (item.title !== undefined && item.title !== null && typeof item.title !== 'string') return undefined
   if (item.description !== undefined && item.description !== null && typeof item.description !== 'string') return undefined
   const type = item.type
@@ -263,6 +270,23 @@ function schemaOf(params: acp.CreateElicitationRequest): { fields: readonly AcpE
   return { fields, valid: true }
 }
 
+/**
+ * Audits retain only field names, coarse schema types, and required-ness. Keep
+ * this independent of the renderable view so a declined sensitive schema is
+ * still observable without exposing a value or accidentally rendering it.
+ */
+function auditFieldsOf(params: acp.CreateElicitationRequest): readonly { readonly name: string; readonly type: string; readonly required: boolean }[] {
+  if (params.mode !== 'form') return []
+  const schema = formSchemaOf(params)
+  if (!plain(schema) || !plain(schema.properties)) return []
+  const required = new Set(Array.isArray(schema.required) ? schema.required.filter((value): value is string => typeof value === 'string') : [])
+  return Object.entries(schema.properties).map(([name, item]) => ({
+    name,
+    type: plain(item) && typeof item.type === 'string' ? item.type : 'unknown',
+    required: required.has(name),
+  }))
+}
+
 function validateValues(params: acp.CreateElicitationRequest, input: readonly { readonly name: string; readonly value: string | number | boolean | readonly string[] }[] | undefined): Record<string, acp.ElicitationContentValue> | undefined {
   if (params.mode !== 'form') return {}
   const schema = formSchemaOf(params)
@@ -275,7 +299,13 @@ function validateValues(params: acp.CreateElicitationRequest, input: readonly { 
   const out: Record<string, acp.ElicitationContentValue> = {}
   for (const item of values) {
     const schema = properties[item.name] as Record<string, unknown> | undefined
-    if (schema === undefined || SENSITIVE_FIELD.test(item.name) || Object.prototype.hasOwnProperty.call(out, item.name)) return undefined
+    if (schema === undefined
+      || SENSITIVE_FIELD.test(item.name)
+      || (typeof schema.title === 'string' && SENSITIVE_FIELD.test(schema.title))
+      || (typeof schema.description === 'string' && SENSITIVE_FIELD.test(schema.description))
+      || schema.sensitive === true
+      || schema.secret === true
+      || Object.prototype.hasOwnProperty.call(out, item.name)) return undefined
     const type = schema.type
     const validType = type === 'string' ? typeof item.value === 'string'
       : type === 'number' ? typeof item.value === 'number' && Number.isFinite(item.value)
@@ -316,11 +346,16 @@ interface Entry {
   readonly resolve: (decision: AcpElicitationDecision) => void
   readonly signal?: AbortSignal
   readonly abort: () => void
+  readonly timer: ReturnType<typeof setTimeout>
 }
 
 export class InMemoryAcpElicitationBroker implements AcpElicitationBroker {
   private readonly entries = new Map<string, Entry>()
-  constructor(private readonly now: () => number = Date.now, private readonly audit?: (sessionId: string, audit: AcpElicitationAudit) => Promise<void> | void) {}
+  constructor(
+    private readonly now: () => number = Date.now,
+    private readonly audit?: (sessionId: string, audit: AcpElicitationAudit) => Promise<void> | void,
+    private readonly timeoutMs = 15 * 60 * 1000,
+  ) {}
 
   async open(request: AcpPendingElicitationRequest): Promise<AcpElicitationDecision> {
     const id = requestIdOf(request.params)
@@ -339,14 +374,14 @@ export class InMemoryAcpElicitationBroker implements AcpElicitationBroker {
       ...(request.params.mode === 'url' && typeof request.params.url === 'string' ? { url: request.params.url } : {}),
       createdAt: this.now(),
     }
-    const summary = fields.map((field) => ({ name: field.name, type: field.type, required: field.required }))
-    const auditRequested = this.audit?.(request.sessionId, { phase: 'requested', requestId: id, ...(view.acpSessionId === undefined ? {} : { acpSessionId: view.acpSessionId }), mode: view.mode, fieldNames: fields.map((field) => field.name), schemaSummary: summary })
+    const summary = auditFieldsOf(request.params)
+    const auditRequested = this.audit?.(request.sessionId, { phase: 'requested', requestId: id, ...(view.acpSessionId === undefined ? {} : { acpSessionId: view.acpSessionId }), mode: view.mode, fieldNames: summary.map((field) => field.name), schemaSummary: summary })
     if (auditRequested !== undefined) {
       try { await Promise.resolve(auditRequested) } catch { return { action: 'cancel' } }
     }
     if (!schema.valid) {
       try {
-        await Promise.resolve(this.audit?.(request.sessionId, { phase: 'decided', requestId: id, ...(view.acpSessionId === undefined ? {} : { acpSessionId: view.acpSessionId }), mode: view.mode, fieldNames: fields.map((field) => field.name), schemaSummary: summary, result: 'decline' }))
+        await Promise.resolve(this.audit?.(request.sessionId, { phase: 'decided', requestId: id, ...(view.acpSessionId === undefined ? {} : { acpSessionId: view.acpSessionId }), mode: view.mode, fieldNames: summary.map((field) => field.name), schemaSummary: summary, result: 'decline' }))
       } catch { return { action: 'cancel' } }
       return { action: 'decline' }
     }
@@ -358,7 +393,8 @@ export class InMemoryAcpElicitationBroker implements AcpElicitationBroker {
     }
     return new Promise((resolve) => {
       const abort = (): void => { void this.cancelEntry(key) }
-      this.entries.set(key, { view, params: request.params, resolve, abort, ...(request.signal === undefined ? {} : { signal: request.signal }) })
+      const timer = setTimeout(() => { void this.cancelEntry(key) }, Math.max(1, this.timeoutMs))
+      this.entries.set(key, { view, params: request.params, resolve, abort, timer, ...(request.signal === undefined ? {} : { signal: request.signal }) })
       request.signal?.addEventListener('abort', abort, { once: true })
       if (request.signal?.aborted === true) abort()
     })
@@ -426,6 +462,7 @@ export class InMemoryAcpElicitationBroker implements AcpElicitationBroker {
     const entry = this.entries.get(key)
     if (entry === undefined) return
     this.entries.delete(key)
+    clearTimeout(entry.timer)
     entry.signal?.removeEventListener('abort', entry.abort)
     entry.resolve(decision)
   }

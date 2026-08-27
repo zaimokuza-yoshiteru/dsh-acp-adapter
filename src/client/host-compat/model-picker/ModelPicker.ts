@@ -1,56 +1,12 @@
 /**
- * ModelPicker: the composer's enhanced model seat (`conversation.input.model`),
- * — copied from the built-in ui-model-selection ModelSelect.tsx (MIT)
- * with the task-card enhancements:
- * - provider filter bar (text + Current|All|Model|ACP — Current only for
- * sessions with an established ACP binding, ) over the provider-grouped
- *   list, with `[Model]`/`[ACP]` tags on group headings
- *   (filterGroups/filterFailures);
- * - a per-row "设为默认" action writing the `agent-default-model` namespace;
- * - an "ACP 会话选项" pane rendering the session's live config options
- *   (mode/model/thought_level/model_config sections) through the dshAcp
- *   Remote namespace, optimistic refresh + rollback handled by the live glue;
- * - the "Agent 模式（{agent}）" section in the live pane writes agent-side
- *   behavior through the config-options seam. DSH access and Agent mode stay
- *   independent: the current DSH preset is read only to route ACP selection
- *   through the native Full Access confirmation, not rendered as permanent
- *   picker disclosure.
+ * Render the ACP-aware model picker seat. Directory data, live ACP options,
+ * backend access, and cross-backend handoff come from data-layer services;
+ * this module owns only the host-compatible interaction shell.
  *
- * compat island: this shell lives in `src/client/host-compat/model-picker/`
- * — the client-side counterpart of the host-side `src/host-compat/` island
- * (moving client code into src/host-compat/ would break the bundle layering:
- * that layer is host-only, self-contained, and the client bundle never includes
- * it). Island discipline: the copied shell only adapts DSH row/popup/slot
- * interactions; ALL ACP business logic (filters, backend probe, live snapshot
- * decoding, capability words, degradations, switch coordination) is imported
- * from `../../data/*` business modules, never reimplemented here. DSH private
- * store/types do not leak the other way (architecture.spec.ts layer guard).
+ * When the ACP backend probe is unavailable, the picker enters native-only mode:
+ * ACP filters are hidden and native model selection remains available. Native
+ * Agent Access and Agent-mode options remain separate controls.
  *
- * Fork provenance (upstream dsh-v0.1.1-rc.2, commit b150a551b8; the upstream
- * package is unpublished, hence a source-level fork): the dropdown shell —
- * trigger + root/model/effort panes, outside-mousedown close, Escape/arrow-key
- * handling, option row layout — follows upstream`ModelSelect.tsx` nearly
- * verbatim (JSX → createElement translation makes a mechanical diff
- * meaningless; test/contracts/upstream-picker-diff.spec.ts pins the upstream structure
- * instead so an upstream bump forces review). Adapter-original surfaces: the
- * filter bar, the per-row default action, and the live-options pane. Product
- * boundaries belong in documentation, while actionable access and backend
- * changes are confirmed at selection time instead of occupying the picker.
- *
- * fail-soft: when the ACP Remote/backend probe is unavailable, the seat
- * enters native-only mode — Current/ACP filter buckets hide, a non-blocking
- * diagnostic line shows the failure message, and native directory/selection
- * keeps working (it never touches ACP modules). See `filterBucketsOf` /
- * `nativeOnlyFilterOf` / `acpUnavailableMessageOf` in data/selector-logic.ts.
- *
- * : state rides the entry's composite store seat — `useStore` over
- * ModelPickerState with directory/live/disclosure slices (the PropsStore
- * `actions` share is the glue-only write set, unused here); the wire
- * callbacks arrive as the `picker` member; only the framework-owned
- * default-model scope still comes through the hooks compartment
- * (`useDefaultModel`). : classes come from ModelPicker.module.css and the
- * glyphs are the ui-primitives ic_ds_* icons (baseline module-table row) —
- * the former text-glyph deviation is closed.
  * @module @zaimokuza/dsh-acp-adapter/client/host-compat/model-picker/ModelPicker
  */
 
@@ -69,14 +25,12 @@ import {
   currentRouteFactsOf,
   currentTabAvailable,
   currentValueNotInCatalog,
-  decodeAgentDefaultModel,
   defaultFilterOf,
   filterBucketsOf,
   filterFailures,
   filterGroups,
   flattenLiveValues,
   isAcpProvider,
-  isDefaultSelection,
   isSameBackendSelection,
   nativeOnlyFilterOf,
   partitionLiveOptions,
@@ -100,36 +54,18 @@ import css from './ModelPicker.module.css'
 /** The seat's translate seat (slot renderer binds it from the entry's `locale` declaration). */
 export type AcpModelTranslate = (key: AcpModelKey, params?: Record<string, string | number>) => string
 
-/** The default-model settings scope snapshot face (SettingsScopeLike read side). */
-interface DefaultScopeSnapshot {
-  status: 'idle' | 'loading' | 'ready' | 'error'
-  value: unknown
-}
-
 /** The controller wire handed to the seat (bound in apply; plain callbacks). */
 export interface ModelPickerWire {
   /** Refresh the advisory directory (fire-and-forget; errors land on the store). */
   load(): void
   /** Submit a full provider/model/reasoning selection; resolves to host acceptance. */
   select(selection: PickerModelSelection): Promise<boolean>
-  /** 在 UI 明确确认后，经 DSH `/permission` 切换为原生 Agent 访问。 */
+  /** 经 DSH `/permission` 把 ACP 会话收敛到原生 Agent 访问。 */
   enableNativeAccess(): Promise<string | undefined>
-  /** Write one selection to the `agent-default-model` namespace; error message or undefined. */
-  setDefault(selection: PickerModelSelection): Promise<string | undefined>
   /** Switch one live config option (protocol-native vocabulary: string value ids for select rows, real booleans for boolean rows). */
   switchOption(configId: string, value: string | boolean): void
   /** Reload the live options snapshot. */
   reloadLive(): void
-  /**
- * 收尾：reconciliation-required 的可执行出路——放弃旧 ACP 上下文并重开
-   * （dshAcp/rebindBlank；仅 continuity blocked 时 UI 展示入口，DSH 侧历史保留）。
-   */
-  rebind(): void
-  /**
- * 待定模型切换的用户回滚出路（rollback-required / live-undecidable
-   * banner 的按钮；ModelSwitchController.rollback 直通）。
-   */
-  rollbackSwitch(): void
   /**
  * host 权威的会话 backend 查询（行级跨 backend 标记的数据面）。
  * 返回三值探测：ok(state) 照常；unavailable(message) = ACP Remote
@@ -139,7 +75,7 @@ export interface ModelPickerWire {
   backend(): Promise<AcpBackendProbe>
   /**
  * 跨 backend 分流（确认后的唯一写入口；确认框两段式在组件层，取消即
-   * 不调用）：CAS 写默认 → 公开 session.create（预分配 id，同 id 重试幂等）
+   * 不调用）：保存 DSH 默认选择 → 公开 session.create（预分配 id，同 id重试幂等）
    * → sessions.list 有界确认 → sessions.open。返回错误消息；成功为
    * undefined（宿主随即打开新会话）。
    */
@@ -156,7 +92,6 @@ export interface ModelPickerProps {
   available?: boolean | undefined
   t?: AcpModelTranslate | undefined
   useStore?: SnapshotSelectorHook<ModelPickerState> | undefined
-  useDefaultModel?: SnapshotSelectorHook<DefaultScopeSnapshot> | undefined
   picker?: ModelPickerWire | undefined
 }
 
@@ -185,10 +120,6 @@ interface FocusEventLike {
   relatedTarget: unknown
 }
 
-interface MouseEventLike {
-  stopPropagation(): void
-}
-
 let nextPickerId = 0
 
 const LIVE_SECTION_TITLE: Record<LiveOptionSection, AcpModelKey> = {
@@ -209,33 +140,27 @@ const LIVE_SECTION_ORDER: readonly LiveOptionSection[] = ['mode', 'thought_level
  * shell has not injected yet (ModelsSection precedent).
  */
 export function ModelPicker(props: ModelPickerProps): ReactNode {
-  const { t, useStore, useDefaultModel, picker } = props
-  if (t === undefined || useStore === undefined || useDefaultModel === undefined || picker === undefined) return null
+  const { t, useStore, picker } = props
+  if (t === undefined || useStore === undefined || picker === undefined) return null
   return h(Loaded, {
     locked: props.locked === true,
     available: props.available === true,
     t,
     useStore,
-    useDefaultModel,
     picker,
   })
 }
 
-function Loaded({ locked, available, t, useStore, useDefaultModel, picker }: {
+function Loaded({ locked, available, t, useStore, picker }: {
   locked: boolean
   available: boolean
   t: AcpModelTranslate
   useStore: SnapshotSelectorHook<ModelPickerState>
-  useDefaultModel: SnapshotSelectorHook<DefaultScopeSnapshot>
   picker: ModelPickerWire
 }): ReactNode {
   const state = useStore((value) => value.directory)
   const live = useStore((value) => value.live)
-  const disclosure = useStore((value) => value.disclosure)
-  const defaultSnap = useDefaultModel((value) => value)
-  const storedDefault = decodeAgentDefaultModel(
-    defaultSnap.status === 'ready' ? defaultSnap.value : undefined,
-  )
+  const backendAccess = useStore((value) => value.backendAccess)
 
   const [open, setOpen] = useState(false)
   const [pane, setPane] = useState<Pane>('root')
@@ -245,7 +170,6 @@ function Loaded({ locked, available, t, useStore, useDefaultModel, picker }: {
  // backend 异步到位前用户已手动切档时，默认档落定不得覆盖用户选择。
   const filterTouched = useRef(false)
   const [search, setSearch] = useState('')
-  const [defaultError, setDefaultError] = useState<string | null>(null)
  // 会话 backend 事实（菜单打开时经 host backendOf 拉取）。 现在为
   // 三值探测：unavailable = ACP 子系统故障 → native-only 模式（Current/ACP 档
   // 隐藏 + 非阻塞诊断）；ok(null) = 「未知」——不标记，host turn 时 throw 兜底。
@@ -256,20 +180,10 @@ function Loaded({ locked, available, t, useStore, useDefaultModel, picker }: {
  // 跨 backend 行的两段式确认（confirmingRebind 同款先例）——确认步显式
   // 陈述「创建全新会话 + 当前上下文不带过去」；取消即丢弃，一切不变（包括默认模型）。
   const [confirmingCross, setConfirmingCross] = useState<{ selection: PickerModelSelection; label: string } | null>(null)
-  const [confirmingNative, setConfirmingNative] = useState<{
-    selection: PickerModelSelection
-    label: string
-    cross: boolean
-    blank: boolean
-  } | null>(null)
-  const [nativeAcknowledged, setNativeAcknowledged] = useState(false)
   const [nativeError, setNativeError] = useState<string | null>(null)
  // 跨 backend 分流成功后的一次性提示（本 seat 属于 New Session 流程
   // 打开的新会话；自动消退，不阻断 composer）。
   const [notice, setNotice] = useState<string | null>(null)
-  // rebindBlank 二次确认闩锁（AcpSection confirmDelete 同款两段式；
-  // 确认步显式陈述「DSH 历史保留 + Agent 语义上下文清空」两个事实）。
-  const [confirmingRebind, setConfirmingRebind] = useState(false)
   const rootRef = useRef<HTMLDivElement | null>(null)
   const triggerRef = useRef<HTMLButtonElement | null>(null)
   const itemRefs = useRef<(HTMLButtonElement | null)[]>([])
@@ -317,7 +231,7 @@ function Loaded({ locked, available, t, useStore, useDefaultModel, picker }: {
   const acp = isAcpProvider(state.current?.provider)
   // 分区题注的 agent 显示名（目录组名剥 ` · ACP` 后缀；目录未加载兜底裸 agent
   // id——selector-logic.ts acpAgentDisplayName）。仅 ACP 面板渲染时消费。
-  const acpAgentName = acp ? acpAgentDisplayName(state.groups, state.current?.provider ?? disclosure.provider) : ''
+  const acpAgentName = acp ? acpAgentDisplayName(state.groups, state.current?.provider ?? backendAccess.provider) : ''
 
  // 「当前」Tab 事实——仅 host backendOf established ACP 时在场（绝不由
   // state.current 或全局默认推断）；allowedValues/currentValue 取自 live/
@@ -384,8 +298,6 @@ function Loaded({ locked, available, t, useStore, useDefaultModel, picker }: {
     setPane('root')
     setOpen(true)
     setConfirmingCross(null)
-    setConfirmingNative(null)
-    setNativeAcknowledged(false)
     setFilter('all')
     filterTouched.current = false
     reload()
@@ -405,8 +317,6 @@ function Loaded({ locked, available, t, useStore, useDefaultModel, picker }: {
     setOpen(false)
     setPane('root')
     setConfirmingCross(null)
-    setConfirmingNative(null)
-    setNativeAcknowledged(false)
     if (restoreFocus) queueMicrotask(() => { triggerRef.current?.focus() })
   }
 
@@ -465,18 +375,11 @@ function Loaded({ locked, available, t, useStore, useDefaultModel, picker }: {
     })
   }
 
-  const setDefault = (selection: PickerModelSelection): void => {
-    setDefaultError(null)
-    void picker.setDefault(selection)
-      .then((message) => { if (message !== undefined) setDefaultError(message) })
-      .catch((error: unknown) => { setDefaultError(errorMessageOf(error)) })
-  }
-
   /**
  * 跨 backend 分流：不 selectModel（host 只会忽略它）。两段式确认后才
    * 调 wire（确认块见 modelPane；取消 = 丢弃 confirmingCross，一切不变）。
-   * 事务在 PickerService：解析工作区 → CAS 写默认 → 公开 session.create →
-   * 列表确认 → open。失败落错误条（不创建会话）；成功即关闭菜单——宿主随即
+   * 事务在 PickerService：解析工作区 → 公开 session.create → 列表确认 → open。
+   * 失败落错误条（不创建会话）；成功即关闭菜单——宿主随即
    * 打开新会话，提示条由新会话的 seat 展示。
    */
   const useInNew = (selection: PickerModelSelection, label: string): void => {
@@ -489,59 +392,37 @@ function Loaded({ locked, available, t, useStore, useDefaultModel, picker }: {
       .catch((error: unknown) => { setCrossError(errorMessageOf(error)) })
   }
 
-  const adoptBlank = (selection: PickerModelSelection, label: string): void => {
-    setCrossError(null)
-    void picker.adoptBlankSession(selection, label)
-      .then((message) => {
-        if (message !== undefined) setCrossError(message)
-        else close()
-      })
-      .catch((error: unknown) => { setCrossError(errorMessageOf(error)) })
-  }
-
   const requestSelection = (
     selection: PickerModelSelection,
     label: string,
     cross: boolean,
   ): void => {
-    const blank = backend?.state === 'blank' && isAcpProvider(selection.provider)
-    if (isAcpProvider(selection.provider) && disclosure.preset !== 'danger-full-access') {
+    // The host does not expose a seam to replace an already-created live Agent
+    // wrapper. Cross-wrapper choices therefore use the same automatic handoff
+    // path as the /model entry, without a second confirmation dialog.
+    const automaticDraftHandoff = backend?.state === 'blank' || backend?.state === 'draft'
+    if (cross && automaticDraftHandoff) {
+      useInNew(selection, label)
+      return
+    }
+    if (cross) {
+      setConfirmingCross({ selection, label })
+      return
+    }
+    if (isAcpProvider(selection.provider) && backendAccess.preset !== 'danger-full-access') {
       setNativeError(null)
-      setNativeAcknowledged(false)
-      setConfirmingNative({ selection, label, cross, blank })
+      void picker.enableNativeAccess()
+        .then((message) => {
+          if (message !== undefined) {
+            setNativeError(message)
+            return
+          }
+          choose(selection)
+        })
+        .catch((error: unknown) => { setNativeError(errorMessageOf(error)) })
       return
     }
-    if (blank) {
-      adoptBlank(selection, label)
-      return
-    }
-    if (cross) setConfirmingCross({ selection, label })
-    else choose(selection)
-  }
-
-  const confirmNativeSelection = (): void => {
-    const pending = confirmingNative
-    if (pending === null || !nativeAcknowledged) return
-    setConfirmingNative(null)
-    setNativeAcknowledged(false)
-    if (pending.blank) {
-      adoptBlank(pending.selection, pending.label)
-      return
-    }
-    if (pending.cross) {
-      useInNew(pending.selection, pending.label)
-      return
-    }
-    setNativeError(null)
-    void picker.enableNativeAccess()
-      .then((message) => {
-        if (message !== undefined) {
-          setNativeError(message)
-          return
-        }
-        choose(pending.selection)
-      })
-      .catch((error: unknown) => { setNativeError(errorMessageOf(error)) })
+    choose(selection)
   }
 
  // ACP 触发器身份展示：ACP 模型的 seat 触发钮显示「<Agent 名> · <模型名>」——agent 名
@@ -580,7 +461,6 @@ function Loaded({ locked, available, t, useStore, useDefaultModel, picker }: {
         ? {}
         : { reasoningEffort: model.reasoning.defaultEffort },
     }
-    const isDefault = isDefaultSelection(storedDefault, group.id, model.id)
  // 会话 backend 已锁定且不等于本行路由 = 跨 backend——行仍可见
     // （可发现性），带「需新会话」行级标记，点击分流到「在新会话中使用」。
     const cross = backend !== null && !isSameBackendSelection(selection, backend, state.current?.provider)
@@ -604,18 +484,6 @@ function Loaded({ locked, available, t, useStore, useDefaultModel, picker }: {
         cross ? h('span', { className: css.crossBadge }, t('cross.badge')) : null,
         h('span', { className: css.check }, selected ? h(IconCheckOutline16, { size: 16 }) : null),
       ),
-      isDefault
-        ? h('span', { className: `${css.defaultButton} ${css.isDefault}` }, t('default.isDefault'))
-        : h('button', {
-          ref: itemRef(),
-          type: 'button',
-          className: css.defaultButton,
-          title: t('default.set'),
-          onClick: (event: MouseEventLike) => {
-            event.stopPropagation()
-            setDefault(selection)
-          },
-        }, t('default.set')),
     )
   }
 
@@ -654,8 +522,8 @@ function Loaded({ locked, available, t, useStore, useDefaultModel, picker }: {
         ),
       ),
     ]
- // native-only 非阻塞诊断——ACP 子系统故障如实点名（Remote/超时/非法
-    // 载荷），不阻断原生目录浏览与选择；修复后重开菜单即恢复全量分档。
+    // Native-only diagnostic: report ACP failures without blocking native
+    // directory browsing or selection.
     if (acpUnavailableMessage !== null) {
       children.push(h('div', { key: 'acp-unavailable', className: css.warning },
         h('span', {}, t('acp.unavailable', { message: acpUnavailableMessage })),
@@ -682,38 +550,6 @@ function Loaded({ locked, available, t, useStore, useDefaultModel, picker }: {
           className: css.retry,
           onClick: () => { setConfirmingCross(null) },
         }, t('cross.confirmCancel')),
-      ))
-    }
-    if (confirmingNative !== null) {
-      children.push(h('div', { key: 'native-confirm', className: css.warning },
-        h('p', { className: css.policyNote }, t(
-          confirmingNative.blank ? 'native.confirmBlankPrompt' : confirmingNative.cross ? 'native.confirmCrossPrompt' : 'native.confirmPrompt',
-          { model: confirmingNative.label },
-        )),
-        h('label', { className: css.policyNote },
-          h('input', {
-            type: 'checkbox',
-            checked: nativeAcknowledged,
-            onChange: (event: { target: { checked: boolean } }) => {
-              setNativeAcknowledged(event.target.checked)
-            },
-          }),
-          ` ${t('native.acknowledge')}`,
-        ),
-        h('button', {
-          type: 'button',
-          className: css.retry,
-          disabled: !nativeAcknowledged,
-          onClick: confirmNativeSelection,
-        }, t(confirmingNative.blank ? 'native.confirmBlankButton' : confirmingNative.cross ? 'native.confirmCrossButton' : 'native.confirmButton')),
-        h('button', {
-          type: 'button',
-          className: css.retry,
-          onClick: () => {
-            setConfirmingNative(null)
-            setNativeAcknowledged(false)
-          },
-        }, t('native.cancel')),
       ))
     }
  // Agent 当前值不在 provider 目录的只读行（不注入未知模型；
@@ -753,11 +589,6 @@ function Loaded({ locked, available, t, useStore, useDefaultModel, picker }: {
     ))
     if (state.status === 'ready' && filteredGroups.length === 0) {
       children.push(h('div', { key: 'empty', className: css.empty }, t('empty.models')))
-    }
-    if (defaultError !== null) {
-      children.push(h('div', { key: 'defaultError', className: css.error, role: 'alert' },
-        h('span', {}, defaultError),
-      ))
     }
     if (crossError !== null) {
       children.push(h('div', { key: 'crossError', className: css.error, role: 'alert' },
@@ -869,92 +700,6 @@ function Loaded({ locked, available, t, useStore, useDefaultModel, picker }: {
           className: css.retry,
           onClick: () => { picker.reloadLive() },
         }, t('action.reload')),
-      ))
-    }
- // 收尾：reconciliation-required 的可执行出路（不只是文案）——连续性闩锁
-    // blocked 时展示 cause/指引 + rebindBlank 逃生按钮（放弃旧 ACP 上下文并重开；
-    // DSH 侧历史完整保留）。逃生按钮改两段式确认（AcpSection confirmDelete
-    // 同款）——首击展开确认步，确认步显式陈述两个事实（DSH 侧历史完整保留；
-    // Agent 语义上下文将被清空且不可恢复）后才发起 rebind。失败经 live.error
-    // （errorSource='rebind'）如实显示。
-    const continuity = live.snapshot?.continuity ?? null
-    if (continuity?.status === 'blocked') {
-      children.push(h('div', { key: 'blocked', className: css.warning },
-        h('p', { className: css.policyNote }, t('live.blocked', {
-          cause: continuity.detail ?? continuity.cause ?? '',
-        })),
-        h('p', { className: css.policyNote }, t('live.blockedGuidance')),
-        confirmingRebind
-          ? h('div', { key: 'rebind-confirm' },
-            h('p', { className: css.policyNote }, t('live.rebindConfirm')),
-            h('button', {
-              type: 'button',
-              className: css.retry,
-              disabled: live.rebinding,
-              onClick: () => {
-                setConfirmingRebind(false)
-                picker.rebind()
-              },
-            }, t(live.rebinding ? 'live.rebinding' : 'live.rebindConfirmButton')),
-            h('button', {
-              type: 'button',
-              className: css.retry,
-              disabled: live.rebinding,
-              onClick: () => { setConfirmingRebind(false) },
-            }, t('live.rebindCancel')),
-          )
-          : h('button', {
-            type: 'button',
-            className: css.retry,
-            disabled: live.rebinding,
-            onClick: () => { setConfirmingRebind(true) },
-          }, t(live.rebinding ? 'live.rebinding' : 'live.rebind')),
-      ))
-    }
- // stale 快照横幅（冷启动只读展示面——不得显示「Agent 不支持」或通用
-    // 错误条）；指纹漂移追加诊断行（旧快照只作诊断，不作能力结论）。
-    const switchView = live.snapshot?.modelSwitch ?? null
-    if (live.snapshot?.freshness === 'stale') {
-      children.push(h('div', { key: 'stale', className: css.warning },
-        h('span', {}, t('live.staleBanner')),
-        live.snapshot.fingerprintChanged
-          ? h('p', { className: css.policyNote }, t('live.fingerprintChanged'))
-          : null,
-      ))
-    }
- // 待定模型切换事务的 banner。rollback-required/corrupt 或 live 下的
-    // undecidable pending = composer 已锁定（blocked.modelSwitch），此处给出路
-    // （回滚按钮；corrupt 无 operationId 可信，不给回滚只指 rebind）；stale 下
-    // 的 pending 如实预告 resume 后自动收敛。
-    if (switchView?.status === 'rollback-required') {
-      children.push(h('div', { key: 'switch-locked', className: css.warning },
-        h('p', { className: css.policyNote }, t('live.switchLocked', {
-          previous: switchView.previousModel,
-          target: switchView.targetModel,
-        })),
-        h('button', {
-          type: 'button',
-          className: css.retry,
-          onClick: () => { picker.rollbackSwitch() },
-        }, t('live.switchRollback', { model: switchView.previousModel })),
-      ))
-    } else if (switchView?.status === 'corrupt') {
-      children.push(h('div', { key: 'switch-corrupt', className: css.warning },
-        h('p', { className: css.policyNote }, t('live.switchCorrupt')),
-      ))
-    } else if (switchView?.status === 'pending') {
-      children.push(h('div', { key: 'switch-pending', className: css.warning },
-        h('p', { className: css.policyNote }, t(
-          live.snapshot?.freshness === 'live' ? 'live.switchUndecidable' : 'live.switchPendingStale',
-          { previous: switchView.previousModel, target: switchView.targetModel },
-        )),
-        live.snapshot?.freshness === 'live'
-          ? h('button', {
-            type: 'button',
-            className: css.retry,
-            onClick: () => { picker.rollbackSwitch() },
-          }, t('live.switchRollback', { model: switchView.previousModel }))
-          : null,
       ))
     }
     const snapshot = live.snapshot

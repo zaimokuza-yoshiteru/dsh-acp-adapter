@@ -321,13 +321,11 @@ function AgentCard(props: {
   const healthRow = healthRowOf(props.health.rows, id)
   const state = healthRow?.state
   const statusText = state === undefined
-    ? t(props.health.status === 'unreachable' ? 'healthUnavailableCard' : 'stateSavedUnverified')
+    ? t('stateSavedUnverified')
     : stateText(t, state)
   const statusTone = state === 'ready'
     ? css.statusReady
-    : state === undefined || state === 'saved-unverified'
-      ? css.statusMuted
-      : css.statusError
+    : css.statusMuted
   const probeError = healthRow?.probe.status === 'error' ? healthRow.probe.message : undefined
   const diagnostic = checkError ?? probeError
 
@@ -422,20 +420,12 @@ function AgentCard(props: {
   return h('li', { className: css.rowCard }, children)
 }
 
-/** 五态行的展示词（各态如实标注）。 */
+/**
+ * 产品状态只承诺“未探测 / 协议可用”。失败类别仍通过下方诊断和登录
+ * 指引展示，但不会伪装成可持续跟踪的外部登录状态。
+ */
 function stateText(t: AcpTranslate, state: AcpProviderHealth['state']): string {
-  switch (state) {
-    case 'ready':
-      return t('stateReady')
-    case 'auth-required':
-      return t('stateAuthRequired')
-    case 'unavailable':
-      return t('stateUnavailable')
-    case 'incompatible':
-      return t('stateIncompatible')
-    case 'saved-unverified':
-      return t('stateSavedUnverified')
-  }
+  return t(state === 'ready' ? 'stateReady' : 'stateSavedUnverified')
 }
 
 /** The add/edit editor card: staged text fields validated live, saved through the controller. */
@@ -545,18 +535,6 @@ function AgentForm(props: {
       multiline: true,
       placeholder: 'NO_COLOR=1',
       onChange: (value) => { edit({ envText: value }) },
-    }),
-    textField({
-      t,
-      id: `dsh-acp-${scope}-mcp`,
-      label: t('fieldMcp'),
-      hint: t('fieldMcpHint'),
-      error: validation.mcp,
-      value: draft.mcpText ?? '',
-      disabled,
-      multiline: true,
-      placeholder: '[{"type":"stdio","name":"my-server","command":"/absolute/path/mcp","args":[],"env":{}}]',
-      onChange: (value) => { edit({ mcpText: value }) },
     }),
  // 疑似 secret 的存量 env 键只展示键名 + 已配置状态，值永不进文本框；
     // 「移除」从草稿的 maskedEnv 删键（保存后即从 settings 抹去）。

@@ -6,9 +6,10 @@
  * 只有历史前缀、工作区与启动指纹均可证明连续时才允许继续。无法对账时进入
  * reconciliation-required，不会用新 ACP 会话静默接续旧历史。
  *
- * DSH 的 workspace 权限与 Agent 的 mode/config option 是两个独立维度。spawn 计划
- * 使用宿主 sandbox policy；Agent 返回的 mode、model 和 thinking option 只作为下游
- * 配置展示与写入。审批保持 ACP option 的原始语义，单次允许不会升级为永久允许。
+ * ACP 会话固定使用“原生 Agent 访问”；DSH 权限投影只用于保持这一会话
+ * 事实，不会模拟 Agent 自己的安全模式。Agent 返回的 mode、model 和 thinking
+ * option 作为下游配置展示与写入。审批保持 ACP option 的原始语义，
+ * 单次允许不会升级为永久允许。
  *
  * 取消和销毁均有超时与进程树终止梯子。日志、指标和 sidecar 审计不得包含 prompt、
  * 凭据或完整工具参数。ACP context occupancy 使用独立状态，不伪装成 DSH TokenUsage。
@@ -19,7 +20,6 @@
 /// <reference types="node" />
 
 import { realpathSync } from 'node:fs'
-import { Buffer } from 'node:buffer'
 import process from 'node:process'
 import type { Context } from '@deepseek-ai/cordis'
 import type {
@@ -39,6 +39,8 @@ import type { Session, SessionId, TurnEndReason, UserMessage } from '@deepseek-a
 import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
 import type * as acp from '@agentclientprotocol/sdk'
 import { AcpClientConnection } from '../../protocol/v1/connection.ts'
+import type { AcpFileSystemHandlers } from '../../runtime/client-capabilities/filesystem.ts'
+import type { AcpTerminalHandlers } from '../../runtime/client-capabilities/terminal.ts'
 import { AcpClientError, acpErrorRef } from '../../protocol/v1/errors.ts'
 import type { ElicitationRequestHandler, PermissionRequestHandler } from '../../protocol/v1/types.ts'
 import type { AcpConnectionSpec } from '../../runtime/process/types.ts'
@@ -56,18 +58,18 @@ import type { AcpLogFields, AcpLogger } from '../observability/logging.ts'
 import { ACP_METRIC } from '../observability/metrics.ts'
 import type { AcpMetricsLike } from '../observability/metrics.ts'
 import { buildAcpSpawnPlan, AcpSpawnPlanError } from '../policy/sandbox.ts'
-import type { AcpSandboxMode, AcpSandboxProviderLike, AcpSpawnPlan } from '../policy/sandbox.ts'
+import type { AcpSandboxMode, AcpSpawnPlan } from '../policy/sandbox.ts'
 import { ACP_DEGRADATION_AUDIT_KIND } from '../policy/events.ts'
 import type { AcpAgentModeAuditVia, AcpDegradationAuditData } from '../policy/events.ts'
 import { ACP_STEP, ACP_UNKNOWN_MODEL, ReplayTranslator, TurnTranslator, sessionEventSink } from '../../protocol/v1/translate.ts'
 import type { AcpContextUsageSnapshot, AcpToolCallPresentationSnapshot } from '../../protocol/v1/translate.ts'
 import { descriptorOf } from './agent-config.ts'
-import { acpMcpSnapshot, acpMcpServersOf } from './mcp.ts'
 import type { AcpResolvedAgent } from './agent-config.ts'
 import { acpLaunchEnvironment, acpLaunchFingerprint } from './launch-fingerprint.ts'
 import {
   AcpBindingPersistError,
   AcpReconciliationError,
+  ACP_RECONCILIATION_GUIDANCE,
   acpModelDivergenceNote,
   appendEmptyResponseNote,
   appendForkBlankNote,
@@ -84,6 +86,7 @@ import {
   resolveExpectedRange,
 } from './resume.ts'
 import { acpCanonicalHash16, acpOptionsSnapshotOf } from '../../persistence/sidecar.ts'
+import { AcpPromptContentError, toAcpPrompt, validImageLimits } from './prompt-content.ts'
 import type {
   AcpBindingData,
   AcpBindingRecord,
@@ -91,6 +94,7 @@ import type {
   AcpPendingModelSwitch,
   AcpPendingModelSwitchLookup,
   AcpReconciliationCause,
+  AcpRecoveryState,
   AcpSidecarEntryInput,
 } from '../../persistence/sidecar.ts'
 
@@ -109,9 +113,8 @@ declare module '@deepseek-ai/cordis' {
 }
 
 /**
- * 子进程环境与 spawn 计划由 ../policy/sandbox.ts 统一供给（接线后本模块不再自持
- * 最小环境清单）：`buildAcpAgentEnv` 组 env、`buildAcpSpawnPlan` 出最终
- * argv/env + confine 事实。
+ * 子进程环境与 Native Agent Access spawn 计划由 ../policy/sandbox.ts 统一供给：
+ * `buildAcpAgentEnv` 组 env，`buildAcpSpawnPlan` 验证准入模式并产出原生 argv/env。
  */
 
 /**
@@ -156,7 +159,7 @@ export interface AcpAgentOptions {
    */
   subprocess: SubprocessSeamResolution
   /** DSH durable attachment service. Required only when a prompt contains images. */
-  attachments?: Pick<AttachmentStore, 'readImage'>
+  attachments?: Pick<AttachmentStore, 'readImage' | 'imageLimits'>
   /**
  * 权限 seam（审批桥）：agent → client 的 `session/request_permission` 处理器。
    * 缺省走 AcpClientConnection 的 fail-closed 默认（回 `cancelled`）。
@@ -178,6 +181,9 @@ export interface AcpAgentOptions {
    * dshCommittedSeq（{@link AcpBindingData} 注释）。
    */
   resumeBinding?: AcpBindingRecord
+  /** Durable recovery snapshot restored after a host restart. Non-healthy
+   * states are fail-closed until the user explicitly recovers or rebinds. */
+  recoveryState?: AcpRecoveryState
   /**
  * 恢复守卫预置的 blocked 原因（binding-in-use 双绑冲突 / binding-outdated
    * 语义门槛失败，路由层 agent-loop.ts 判定后传入）。生效即构造期置 continuity
@@ -202,9 +208,11 @@ export interface AcpAgentOptions {
    * 本回调，那一径写失败仅 warn（下次 resume 以 'dsh-log-diverged' fail-safe）。
    */
   recordBinding?: (binding: AcpBindingData) => Promise<void>
+  /** Durable current recovery state; unlike audit this is read directly after restart. */
+  recordRecoveryState?: (state: AcpRecoveryState) => Promise<void>
   /**
  * 分轴审计 seam（权限与模式双轴展示）：`permission-scope`（每次 spawn 计划组装成功后的
-   * 实际 confine 事实）与 `agent-mode`（建立/经本插件 seam 下发的切换）两类独立
+   * Native Agent Access 准入事实）与 `agent-mode`（建立/经本插件 seam 下发的切换）两类独立
    * entry 的落盘回调；生产接线 = src/host/factory/agent-loop.ts 闭包
    * `sidecar.append(sessionId, entry)`。缺席 = 不持久化（裸 Context 单测）；
    * 写失败仅 warn 不炸 turn（审计丢失 ≠ turn 失败，同 recordBinding 纪律）。
@@ -235,8 +243,13 @@ export interface AcpAgentOptions {
    * （裸 Context 单测）。
    */
   recordOptionsSnapshot?: (snapshot: AcpOptionsSnapshotRecord) => Promise<void>
+  /** Native ACP filesystem handlers; a factory gives each ACP connection its own lifecycle. */
+  fileSystemHandlers?: AcpFileSystemHandlers | (() => AcpFileSystemHandlers)
+  /** Native ACP terminals; a factory gives each ACP connection its own lifecycle. */
+  terminalHandlers?: AcpTerminalHandlers | ((context: AcpConnectionRuntimeContext) => AcpTerminalHandlers)
+  recordFileAudit?: (event: import('../../runtime/client-capabilities/filesystem.ts').AcpFileOperationAudit) => Promise<void>
   /**
-   * 恢复 seam（回放抑制的外挂过滤器；spike 遗留）：返回 `false` 的
+   * 恢复 seam（回放抑制的可选过滤器）：返回 `false` 的
    * `session/update` 不进 translator。内置抑制由 `replayActive` 旗标承担
    * （`session/load` await 全程）；本过滤器在其之后组合，保留给测试/调试。
    */
@@ -251,10 +264,20 @@ export interface AcpAgentOptions {
  * 运行时登录态失效 seam：turn 内撞到 `auth_required`（凭证被吊销/
    * 过期等运行时漂移）时回调一次，丢弃该路由的 probe 缓存——下次 health/
    * 目录构建/创建门重探测到真实登录态。生产接线 = host/factory/agent-loop.ts
-   * 闭包 `acpRegistry.adapter.invalidateProbe(acp-<id>)`；缺席 = 不失效
+   * 闭包 `installedProfileRegistry.adapter.invalidateProbe(acp-<id>)`；缺席 = 不失效
    * （裸 Context 单测）。
    */
   invalidateProbeCache?: () => void
+}
+
+/**
+ * Immutable launch snapshot shared by an ACP connection and its client-owned
+ * terminal host. Keeping this as a factory input prevents terminal children
+ * from rebuilding environment variables independently of the Agent process.
+ */
+export interface AcpConnectionRuntimeContext {
+  readonly cwd: string
+  readonly env: Readonly<Record<string, string>>
 }
 
 /**
@@ -269,11 +292,12 @@ export const ACP_REPLAY_STAGING_MAX_ENTRIES = 2_000
 /** staging 回放缓冲的累计文本上界（字节数近似，按 JS 串 length 计）。 */
 export const ACP_REPLAY_STAGING_MAX_CHARS = 8_000_000
 
-/** Prompt content cannot be represented by the negotiated end-to-end bridge. */
-class AcpPromptContentError extends Error {
-  constructor(message: string) {
-    super(message)
-    this.name = 'AcpPromptContentError'
+/** A durable recovery state must be resolved before another prompt is allowed. */
+class AcpRecoveryRequiredError extends Error {
+  readonly code = 'ACP_RECOVERY_REQUIRED'
+  constructor(readonly recovery: AcpRecoveryState) {
+    super(`${recovery.detail ?? `ACP recovery is required (${recovery.kind}) before another prompt can be sent`}。${ACP_RECONCILIATION_GUIDANCE}`)
+    this.name = 'AcpRecoveryRequiredError'
   }
 }
 
@@ -313,6 +337,9 @@ function toTurnFailure(error: unknown, loginHint: string | undefined): LlmFailur
   if (error instanceof AcpPromptContentError) {
     return { message: error.message, code: 'ACP_UNSUPPORTED_CONTENT' }
   }
+  if (error instanceof AcpRecoveryRequiredError) {
+    return { message: error.message, code: error.code }
+  }
   return { message: errorChain(error), code: 'UNKNOWN' }
 }
 
@@ -344,54 +371,6 @@ function stopReasonToTurnEnd(reason: acp.StopReason): TurnEndReason {
     default:
       return assertNever(reason, 'ACP stopReason')
   }
-}
-
-/**
- * Resolve claimed DSH messages into ordered ACP prompt blocks. Images are read
- * only through DSH's durable attachment service; UI paths and arbitrary file
- * URLs are never trusted as attachment bytes.
- */
-async function toAcpPrompt(
-  messages: readonly UserMessage[],
-  options: {
-    readonly imageEnabled: boolean
-    readonly attachments?: Pick<AttachmentStore, 'readImage'>
-    readonly signal: AbortSignal
-  },
-): Promise<acp.ContentBlock[]> {
-  const blocks: acp.ContentBlock[] = []
-  for (const message of messages) {
-    for (const block of message.content) {
-      if (block.type === 'text') {
-        blocks.push({ type: 'text', text: block.text })
-        continue
-      }
-      if (block.type === 'image') {
-        if (!options.imageEnabled) {
-          throw new AcpPromptContentError('dsh-acp: the ACP agent did not advertise image prompt support; the image was not sent')
-        }
-        if (options.attachments === undefined) {
-          throw new AcpPromptContentError('dsh-acp: DSH attachment storage is unavailable; the image was not sent')
-        }
-        options.signal.throwIfAborted()
-        const stored = await options.attachments.readImage(block.attachment, options.signal)
-        options.signal.throwIfAborted()
-        blocks.push({
-          type: 'image',
-          data: Buffer.from(stored.data).toString('base64'),
-          mimeType: stored.ref.mediaType,
-        })
-        continue
-      }
-      throw new AcpPromptContentError(
-        `dsh-acp: cannot represent a "${block.type}" prompt block on the negotiated ACP connection; nothing was sent`,
-      )
-    }
-  }
-  if (blocks.length === 0) {
-    throw new AcpPromptContentError('dsh-acp: the claimed message(s) carry no supported content; nothing to send to the ACP agent')
-  }
-  return blocks
 }
 
 type Phase =
@@ -437,7 +416,11 @@ export class AcpAgent implements Agent {
 
   private conn: AcpClientConnection | undefined
   private acpSessionId: string | undefined
+  /** Latest binding used for a reconnect; unlike the constructor input this advances after each turn. */
+  private resumeBindingOverride: AcpBindingData | undefined
   private startPromise: Promise<void> | undefined
+  /** Monotonic fence for draft/start async work. Rebind invalidates stale completions. */
+  private startGeneration = 0
   private translator: TurnTranslator | undefined
   /** 会话建立前的状态槽种子（devin 实测 config_option_update 先于 session/new 响应）。 */
   private pendingConfigOptions: acp.SessionConfigOption[] | undefined
@@ -499,6 +482,10 @@ export class AcpAgent implements Agent {
    * 复位路径是 {@link AcpAgent.rebindBlank}（显式放弃）或重启宿主重走对账。
    */
   private continuity: AcpSessionContinuityState = { status: 'ok', cause: null, detail: null }
+  /** Durable recovery state; continuity is retained only as a legacy projection. */
+  private currentRecoveryState: AcpRecoveryState
+  /** Whether currentRecoveryState has been written to the sidecar in this process. */
+  private recoveryDurable = false
   /** rebindBlank 置位：下一次建立强制 session/new（跳过 binding 预检/load），成功后复位。 */
   private forceBlank = false
   /** 上一 ACP 代际号（构造时自 driver.resumeBinding 播种；每次建立新代际后跟进）。 */
@@ -509,6 +496,9 @@ export class AcpAgent implements Agent {
   private turnBaseSeq = 0
   /** 最近一次成功落盘的 binding 载荷（turn 收束后锚点刷新的底稿）。 */
   private currentBinding: AcpBindingData | undefined
+  /** Binding assembled during a draft session, but deliberately not durable until first prompt. */
+  private pendingBinding: AcpBindingData | undefined
+  private startMode: 'draft' | 'established' | undefined
  /** 快照去重闩锁：最近一次成功落盘的 last-known 快照内容哈希（未变不重写）。 */
   private lastPersistedSnapshotKey: string | undefined
  /** staging 回放翻译器（回放共轨：replayActive 期间 routeUpdate 喂它；undefined = 非 staging 期）。 */
@@ -549,6 +539,14 @@ export class AcpAgent implements Agent {
     // 可见事件，此处是双保险）
     this.baselineSeq = session.seq
     this.previousBindingGeneration = driver.resumeBinding?.generation ?? 0
+    this.resumeBindingOverride = driver.resumeBinding
+    this.currentRecoveryState = driver.recoveryState ?? {
+      dshSessionId: String(id),
+      kind: 'healthy',
+      provider: this.providerRoute,
+      updatedAt: Date.now(),
+    }
+    this.recoveryDurable = driver.recoveryState !== undefined
  // 构造期预置 blocked（无需 spawn 即可判定的三因）：路由层传入
     // binding-in-use / binding-outdated；否则「日志有本路由 ACP 历史但无 binding」
     // （sidecar 丢失/不可读）→ binding-missing。fork（parentSession 在场）与显式
@@ -566,7 +564,29 @@ export class AcpAgent implements Agent {
             ? 'backend-conflict' as const
             : undefined
         : undefined)
+    const persistedRecovery = driver.recoveryState
+    if (persistedRecovery !== undefined && persistedRecovery.kind !== 'healthy' && presetBlocked === undefined) {
+      this.currentRecoveryState = persistedRecovery
+      const persistedCause = persistedRecovery.cause
+      const knownCauses: readonly string[] = ['cwd-changed', 'profile-changed', 'agent-changed', 'protocol-changed', 'capability-missing', 'id-not-found', 'load-failed', 'replay-overflow', 'replay-diverged', 'dsh-log-diverged', 'dsh-log-truncated', 'binding-in-use', 'binding-missing', 'binding-outdated', 'backend-conflict']
+      const cause: AcpReconciliationCause = persistedCause !== undefined && knownCauses.includes(persistedCause)
+        ? persistedCause as AcpReconciliationCause
+        : persistedRecovery.kind === 'session-lost'
+        ? 'id-not-found'
+        : persistedRecovery.kind === 'local-history-damaged'
+          ? 'dsh-log-truncated'
+          : 'load-failed'
+      this.continuity = { status: 'blocked', cause, detail: persistedRecovery.detail ?? null }
+    }
     if (presetBlocked !== undefined) {
+      this.currentRecoveryState = {
+        ...this.currentRecoveryState,
+        dshSessionId: String(id),
+        kind: 'reconciliation-required',
+        cause: presetBlocked,
+        updatedAt: Date.now(),
+        ...(this.currentRecoveryState.detail === undefined ? {} : { detail: this.currentRecoveryState.detail }),
+      }
       this.continuity = { status: 'blocked', cause: presetBlocked, detail: null }
     }
     // 恢复连续性规则：崩溃中断尾巴（日志末条为 interrupted turn/end）→ 追加 outcome-unknown
@@ -574,6 +594,23 @@ export class AcpAgent implements Agent {
  // 追加在 publish 前：经 attachPrepared 的 suffix 机制随 enter 落盘（自动化测试 覆盖）。
     const interruptedTurn = detectInterruptedTail(session)
     if (interruptedTurn !== undefined) {
+      // An interrupted tail is not merely an explanatory history note.  The
+      // remote outcome cannot be reconstructed from DSH's log, so a resumed
+      // wrapper must remain fail-closed in this process as well as after the
+      // recovery row is eventually written by the first blocked prompt.
+      if (this.currentRecoveryState.kind === 'healthy') {
+        const detail = 'ACP turn was interrupted before restart and its remote outcome is unknown'
+        this.currentRecoveryState = {
+          dshSessionId: String(id),
+          kind: 'outcome-unknown',
+          detail,
+          interruptedTurnId: String(interruptedTurn),
+          provider: this.providerRoute,
+          updatedAt: Date.now(),
+        }
+        this.continuity = { status: 'blocked', cause: 'load-failed', detail }
+        this.recoveryDurable = false
+      }
       try {
         appendOutcomeUnknownNote(session, this.providerRoute, interruptedTurn)
       } catch (error: unknown) {
@@ -658,6 +695,21 @@ export class AcpAgent implements Agent {
 
   get status(): AgentStatus {
     return this.phase.kind === 'idle' || this.phase.kind === 'maintenance' ? 'idle' : 'running'
+  }
+
+  /**
+   * 在首个 prompt 前建立真实 ACP 会话，让界面可以提前展示 session-scoped
+   * config options。这不是临时 probe 会话，但在首条用户消息前只是 draft：
+   * binding 仍由真实 turn 在 prompt 发送前持久化，空白 DSH 会话仍可自由更换 backend。
+   */
+  async prepare(): Promise<void> {
+    if (this.lifecycle.kind !== 'live' && this.lifecycle.kind !== 'starting' && this.phase.kind !== 'idle') {
+      throw new Error(`agent "${this.id}": prepare is only allowed while idle`)
+    }
+    // Preparing the picker must not commit a semantic Agent binding.  The
+    // first user prompt is the commit point; this keeps an empty DSH session
+    // freely switchable between ACP profiles and native models.
+    await this.ensureStarted(new AbortController().signal, 'draft')
   }
 
  /** 会话生命周期快照（诊断/测试面；词表与转换表见 ./lifecycle.ts）。 */
@@ -821,6 +873,7 @@ export class AcpAgent implements Agent {
     }
     phase.turn = turn
     let turnEnds: TurnEndReason | null = null
+    let promptDispatched = false
     try {
       signal.throwIfAborted()
       // ACP 一轮一个 prompt：claim 语义对齐参考实现首轮——next-step 全量 + 一个排队 turn
@@ -834,15 +887,43 @@ export class AcpAgent implements Agent {
         turnEnds = { kind: 'completed' }
         return false
       }
+      // Reject impossible image turns before creating an ACP session. The
+      // negotiated image capability is checked after initialize, but missing
+      // DSH storage/limits is local knowledge and must not cause session/new.
+      const claimedHasImage = claimed.some((message) => message.content.some((block) => block.type === 'image'))
+      if (claimedHasImage && this.driver.attachments === undefined) {
+        throw new AcpPromptContentError('dsh-acp: DSH attachment storage is unavailable; the image was not sent')
+      }
+      if (claimedHasImage && this.driver.attachments !== undefined && !validImageLimits(this.driver.attachments.imageLimits)) {
+        throw new AcpPromptContentError('dsh-acp: DSH image limits are unavailable or invalid; the image was not sent')
+      }
  // 连续性闩锁：blocked 状态下 user/message 已如实落盘，但绝不 spawn——
       // turn 以 ACP_RECONCILIATION_REQUIRED 收束（闩锁进程内不重试；出路见
       // resume.ts ACP_RECONCILIATION_GUIDANCE）。blockError 幂等于闩锁本身，
       // reconciliation 记录在此 await 落盘（每个被拒 turn 一条审计）。
-      if (this.continuity.status === 'blocked') {
-        throw await this.blockError(this.continuity.cause, this.continuity.detail ?? undefined)
+      // Durable recovery is the authoritative prompt gate.  In particular,
+      // pressing send again after outcome-unknown must not rewrite the state
+      // as a generic reconciliation failure.
+      if (this.currentRecoveryState.kind !== 'healthy' || this.continuity.status === 'blocked') {
+        if (!this.recoveryDurable) {
+          await this.persistRecoveryState({
+            kind: this.currentRecoveryState.kind,
+            ...(this.currentRecoveryState.cause === undefined ? {} : { cause: this.currentRecoveryState.cause as AcpReconciliationCause }),
+            ...(this.currentRecoveryState.detail === undefined ? {} : { detail: this.currentRecoveryState.detail }),
+            ...(this.currentRecoveryState.interruptedTurnId === undefined ? {} : { interruptedTurnId: this.currentRecoveryState.interruptedTurnId }),
+          }, undefined, true)
+          if (this.currentRecoveryState.cause !== undefined) {
+            await this.noteReconciliation(this.currentRecoveryState.cause as AcpReconciliationCause, this.currentRecoveryState.detail)
+          }
+        }
+        throw new AcpRecoveryRequiredError(this.currentRecoveryState)
       }
-      await this.ensureStarted(signal)
+      await this.ensureStarted(signal, 'established')
       signal.throwIfAborted()
+      // Full Access is an ACP backend invariant, not merely a spawn-time
+      // setting. If the user downgrades the DSH preset after the process is
+      // already live, refuse the next prompt until the client restores it.
+      this.requireNativeAccess()
  // 每 turn 前的 options-sync（原生选择器路径兼容）。落在 driver 内
       // turn 顶——wakeDriver 的 running claim 必须保持同步（agent.spec 钉死
       // followup 后同步 status==='running'），driver 内多 turn 间不经过 idle，
@@ -858,6 +939,7 @@ export class AcpAgent implements Agent {
           ...(this.driver.attachments === undefined ? {} : { attachments: this.driver.attachments }),
           signal,
         })
+        promptDispatched = true
         turnEnds = await this.promptOnce(prompt, signal)
       } finally {
         // crash/cancel 路径同样收口：保留已流出的部分输出（translator 的既有能力）
@@ -874,9 +956,24 @@ export class AcpAgent implements Agent {
           }
         }
       }
+      // Some ACP agents acknowledge session/cancel by resolving prompt with
+      // stopReason=cancelled instead of rejecting it. In that case the outer
+      // catch is never entered; still fence the next prompt because the
+      // remote outcome cannot be proven from DSH's local turn result.
+      if (signal.aborted && promptDispatched) {
+        this.continuity = { status: 'blocked', cause: 'load-failed', detail: 'ACP prompt was interrupted; its remote outcome was not confirmed' }
+        await this.persistRecoveryState({ kind: 'outcome-unknown', detail: 'ACP prompt was interrupted; its remote outcome was not confirmed', interruptedTurnId: String(turn) }, undefined, true)
+      }
     } catch (error: unknown) {
       if (signal.aborted) {
         turnEnds = { kind: 'aborted', reason: signal.reason as AgentCancelCause }
+        if (promptDispatched) {
+          this.continuity = { status: 'blocked', cause: 'load-failed', detail: 'ACP prompt was interrupted; its remote outcome was not confirmed' }
+          await this.persistRecoveryState({ kind: 'outcome-unknown', detail: 'ACP prompt was interrupted; its remote outcome was not confirmed', interruptedTurnId: String(turn) }, undefined, true)
+        } else {
+          this.continuity = { status: 'blocked', cause: 'load-failed', detail: 'ACP turn setup was interrupted before prompt dispatch' }
+          await this.persistRecoveryState({ kind: 'reconnect-required', detail: 'ACP turn setup was interrupted before prompt dispatch' }, undefined, true)
+        }
         throw error
       }
  // 运行时 auth_required = 登录态在 probe 之后漂移（吊销/过期）——丢弃
@@ -1106,10 +1203,9 @@ export class AcpAgent implements Agent {
   }
 
   /**
-   * 会话权限模式 + 工作区根（既定规则：`ctx.sandboxPolicy` 是唯一 policy owner，
-   * 与全部 enforcing 工具同一来源）。服务缺席 → 回退 read-only + 一次性 warn
-   * （fail-safe，与 dsh 自带缺省 `SandboxPolicyService.Config` 一致）；
-   * workspaceRoot 回退 `session.header.cwd ?? process.cwd()`。
+   * 读取 DSH 权限投影和会话工作区。`ctx.sandboxPolicy` 是公开的会话模式
+   * 真源；缺席时回退 read-only 并警告，从而让后续原生访问准入校验
+   * fail closed。`workspaceRoot` 只用于会话关联和默认 cwd，不构成文件访问边界。
    */
   private resolveSandboxPolicy(): { mode: AcpSandboxMode; workspaceRoot: string } {
     const resolver = getCtxSlot<AcpSandboxPolicyResolver>(this.ctx, 'sandboxPolicy')
@@ -1117,17 +1213,29 @@ export class AcpAgent implements Agent {
     if (!this.sandboxPolicyWarned) {
       this.sandboxPolicyWarned = true
       this.log.warn(
-        'dsh-acp: sandboxPolicy service (ctx.sandboxPolicy) is absent; falling back to read-only confinement for ACP spawns (fail-safe default)',
+        'dsh-acp: sandboxPolicy service (ctx.sandboxPolicy) is absent; ACP sessions require an explicit Native Agent Access mode',
         { operation: 'spawn-plan', result: 'degraded' },
       )
     }
     return { mode: 'read-only', workspaceRoot: this.session.header.cwd ?? process.cwd() }
   }
 
+  /** Resolve and enforce the product-wide ACP Full Access invariant. */
+  private requireNativeAccess(): { mode: AcpSandboxMode; workspaceRoot: string } {
+    const policy = this.resolveSandboxPolicy()
+    if (policy.mode !== 'danger-full-access') {
+      throw new AcpSpawnPlanError(
+        'ACP_SPAWN_CONFIG',
+        `ACP session "${this.id}" requires Native Agent Access; reopen the session or switch this DSH session to danger-full-access before sending a message`,
+      )
+    }
+    return policy
+  }
+
   /**
  * danger-full-access spawn 的强提示（生产接线；/模式展示 修订）：一次性
    * warn（每实例闩锁）。配套的二次确认 gate 与 `dsh-acp/full-access-spawn` 事件
-   * 已删除——Full Access 确认只剩 DSH 宿主原生一层。
+ * 已删除——ACP 会话由客户端自动收敛 Full Access，并在每次 prompt 前复核。
    */
   private warnUnconfinedSpawn(): void {
     if (!this.fullAccessWarned) {
@@ -1142,7 +1250,7 @@ export class AcpAgent implements Agent {
 
   /**
  * 分轴审计·权限范围轴：spawn 计划组装成功后落一条 `permission-scope`
-   * （本次 spawn 实际应用的 confine 事实；initialize/spawn 失败不回购——条目
+   * （本次 spawn 的 Native Agent Access 准入事实；initialize/spawn 失败不回购——条目
    * 记录的是计划事实）。await 且不抛：写失败仅 warn（同 recordBinding 纪律），
    * await 保证测试可确定性断言落条。
    */
@@ -1155,9 +1263,7 @@ export class AcpAgent implements Agent {
           mode: plan.mode,
  // 平台标识随条目落盘（win32 的 enforcement 恒 partial，平台归属据此可读）
           platform: plan.platformId,
-          confined: plan.confined === null || plan.confinedRoot === null
-            ? null
-            : { workspaceRoot: plan.confinedRoot, enforcement: plan.confined.enforcement },
+          confined: null,
         },
       })
     } catch (error: unknown) {
@@ -1260,39 +1366,56 @@ export class AcpAgent implements Agent {
    * 失败 → cold 在结算臂提交。若拆除在启动在飞时进场（starting → closing，
    * 见 closeConnection），结算臂让位（所有权已移交拆除路径，不回迁也不再前进）。
    */
-  private ensureStarted(signal: AbortSignal): Promise<void> {
+  private ensureStarted(signal: AbortSignal, mode: 'draft' | 'established' = 'established'): Promise<void> {
     if (this.startPromise === undefined) {
       // cold → starting；disposed/closing 后到达此处 = 非法转换，fail loud
       // （相位机在 ensureStarted 前的 throwIfAborted 已挡住 dispose 后的 turn，
       // 此处是纵深防御）
       this.lifecycle.transition('starting')
-      this.startPromise = this.startSession(signal).then(
-        () => {
+      this.startMode = mode
+      const generation = ++this.startGeneration
+      this.startPromise = this.startSession(signal, mode === 'established').then(
+        async (startedConnection) => {
+          // A draft can be abandoned while its ACP process is still starting.
+          // rc.2 has no live-agent replacement seam, so a late completion must
+          // be fenced and its process reclaimed instead of becoming a ghost
+          // backend in the abandoned DSH session.
+          if (generation !== this.startGeneration || this.lifecycle.settling) {
+            await startedConnection.close()
+            if (this.conn === startedConnection) this.conn = undefined
+            throw new Error(`agent "${this.id}": stale ACP start generation was discarded`)
+          }
           if (this.lifecycle.kind === 'starting') this.lifecycle.transition('live')
         },
         (error: unknown) => {
           this.startPromise = undefined
+          this.startMode = undefined
           if (this.lifecycle.kind === 'starting') this.lifecycle.transition('cold')
           throw error
         },
       )
     }
-    return this.startPromise
+    const started = this.startPromise
+    if (mode === 'established' && this.startMode === 'draft') {
+      return started.then(() => this.commitPendingBinding())
+    }
+    return started
   }
 
   /**
- * spawn → initialize →（binding 在场且非 forceBlank 时按 设计说明顺序预检 +
+ * spawn → initialize →（binding 在场且非 forceBlank 时按设计说明顺序预检 +
    * staging load + 对账）→ 建 translator → **fail-closed 写 sidecar binding**。
    * 预检顺序：canonicalCwd → launchFingerprint → agent 身份 → protocolVersion →
    * loadSession 能力 →（广告 list 则分页预查，确定 miss 阻断，list 抛错不权威）→
    * staging `session/load`（回放入有界缓冲不落盘）→ 对账（崩溃尾巴扩展区间后逐条
    * 比对）。任一失败 → {@link blockError}（continuity 闩锁 + reconciliation 记录 +
    * AcpReconciliationError），本方法 catch 拆连接、ensureStarted 失败臂回 cold；
-   * capabilityHash/configHash 漂移仅 warn。binding 写缺席/失败 →
+ * capabilityHash/configHash 漂移仅 warn。正式 prompt 路径在 commit 前必须写 binding；
+ * draft 预览路径只保留内存候选。binding 写缺席/失败 →
    * AcpBindingPersistError（同 catch 路径拒启）。对账通过的 load arm 重连残留
  * 观察窗（`residueWatchArmed`）。
    */
-  private async startSession(signal: AbortSignal): Promise<void> {
+  private async startSession(signal: AbortSignal, commitBinding: boolean): Promise<AcpClientConnection> {
     const { profile } = this.driver
     const argv = [profile.config.command, ...profile.config.args]
  // fail closed：subprocess seam 缺席（宿主 composition 缺 subprocess-local
@@ -1302,27 +1425,20 @@ export class AcpAgent implements Agent {
  // 宿主能力缺失属部署/配置问题：taxonomy 覆盖为 config
     if (!subprocess.ok) throw new AcpClientError('spawn-failure', subprocess.message, { category: 'config' })
     // ACP 正式会话的产品语义是“原生 Agent 访问”：Agent 使用自己的
-    // 配置、登录、tools、skills 和 MCP。选择器会在建立 ACP backend 前请求
-    // 用户确认并写入 DSH `/permission danger-full-access`；本层作为纵深防线，
+    // 配置、登录、tools、skills 和 MCP。客户端会在建立 ACP backend 前自动
+    // 写入 DSH `/permission danger-full-access`；本层作为纵深防线，
     // 投影/命令缺失或会话被后续降档时在 spawn 之前拒绝；正式 ACP 会话不存在
     // 受保护 data-home 兼容路径。
-    const policy = this.resolveSandboxPolicy()
-    if (policy.mode !== 'danger-full-access') {
-      throw new AcpSpawnPlanError(
-        'ACP_SPAWN_CONFIG',
-        `ACP session "${this.id}" requires Native Agent Access; confirm the ACP model selection or switch this DSH session to danger-full-access before sending a message`,
-      )
-    }
+    const policy = this.requireNativeAccess()
     // Resolve the launch template once; Native sessions preserve the Agent's
     // own configuration and use the same environment snapshot for MCP secrets
     // and continuity fingerprinting.
     const descriptor = descriptorOf(profile.id, profile.config)
     const nativeSourceEnv = await acpLaunchEnvironment({ config: profile.config, descriptor, dataHomeStrategy: 'native' })
     const env = nativeSourceEnv
-    const sandbox = getCtxSlot<AcpSandboxProviderLike>(this.ctx, 'sandbox')
     // Binding/generation must be known before fingerprinting so resume and a
     // newly-created Agent session use the same continuity inputs.
-    const binding = this.forceBlank ? undefined : this.driver.resumeBinding
+    const binding = this.forceBlank ? undefined : this.resumeBindingOverride
     const generation = binding === undefined ? this.previousBindingGeneration + 1 : binding.generation
     // Native 会话不创建、重定向或 staging 任何 adapter-owned Agent data home。
     // Settings 探测仍拥有独立的可丢弃临时资源，不与正式 session 复用。
@@ -1339,26 +1455,31 @@ export class AcpAgent implements Agent {
       workspaceRoot: policy.workspaceRoot,
       argv,
       env,
-      sessionId: this.id,
-      ...(sandbox === undefined ? {} : { sandbox }),
-      onWarn: (message) => { this.log.warn(`dsh-acp: ${message}`, this.logFields({ operation: 'spawn-plan' })) },
     })
     if (plan.confined === null) this.warnUnconfinedSpawn()
     await this.notePermissionScope(plan)
+    const sessionCwd = this.session.header.cwd ?? process.cwd()
     const spec: AcpConnectionSpec = {
       argv,
-      cwd: this.session.header.cwd ?? process.cwd(),
+      cwd: sessionCwd,
       env,
       spawnPlan: plan,
       subprocess: subprocess.seam,
     }
+    const fileSystemHandlers = typeof this.driver.fileSystemHandlers === 'function'
+      ? this.driver.fileSystemHandlers()
+      : this.driver.fileSystemHandlers
+    const terminalHandlers = typeof this.driver.terminalHandlers === 'function'
+      ? this.driver.terminalHandlers({ cwd: sessionCwd, env })
+      : this.driver.terminalHandlers
     const conn = new AcpClientConnection(spec, {
-      mcpServers: acpMcpSnapshot(acpMcpServersOf(profile.config.mcpServers), nativeSourceEnv),
       ...(this.driver.permissionHandler === undefined ? {} : { onPermissionRequest: this.driver.permissionHandler }),
       onSessionUpdate: (notification) => { this.routeUpdate(notification) },
       // Elicitation handler is assigned by the host after the session-scoped
       // broker and Remote/UI seam are available.
       ...(this.driver.elicitationHandler === undefined ? {} : { onElicitationRequest: this.driver.elicitationHandler }),
+      ...(fileSystemHandlers === undefined ? {} : { fileSystemHandlers }),
+      ...(terminalHandlers === undefined ? {} : { terminalHandlers }),
  // 进程半的内核级异常告警（waitForExit 超预算）接实例结构化 logger
       onProcessWarn: (message) => { this.log.warn(message, this.logFields({ operation: 'teardown', result: 'stalled' })) },
     })
@@ -1515,6 +1636,7 @@ export class AcpAgent implements Agent {
         provider: this.providerRoute,
         model: modelOfConfigOptions(configOptions) ?? this.options.model ?? '',
         degradation: (entry) => { this.noteDegradation(entry) },
+        ...(terminalHandlers?.presentationSnapshot === undefined ? {} : { terminalSnapshot: terminalHandlers.presentationSnapshot }),
         ...(configOptions === undefined ? {} : { configOptions }),
         ...(currentModeId === undefined ? {} : { currentModeId }),
         ...(this.pendingAvailableCommands === undefined ? {} : { availableCommands: [...this.pendingAvailableCommands] }),
@@ -1558,22 +1680,16 @@ export class AcpAgent implements Agent {
         establishedAt: binding === undefined ? Date.now() : binding.establishedAt,
         dshCommittedSeq: this.turnBaseSeq,
       }
-      if (this.driver.recordBinding === undefined) {
-        throw new AcpBindingPersistError('recordBinding seam is absent (sidecar storage unavailable)')
+      this.pendingBinding = bindingData
+      if (commitBinding || binding !== undefined) {
+        await this.commitPendingBinding()
       }
-      try {
-        await this.driver.recordBinding(bindingData)
-      } catch (error: unknown) {
-        throw new AcpBindingPersistError(errorChain(error))
-      }
-      this.currentBinding = bindingData
-      this.previousBindingGeneration = bindingData.generation
  // 建立即刷新 last-known option 快照（冷启动只读展示的唯一事实副本；
       // 取代旧 binding 的一次性无界 configSnapshot）。写失败仅 warn，不炸建立路径。
       await this.persistOptionsSnapshot()
  // rebindBlank 重开：binding 落盘后、首个 prompt 前追加显式放弃说明；
       // 说明消息落盘失败不炸 turn（诚实性诉求 ≠ 阻断工作）
-      if (this.forceBlank) {
+      if (commitBinding && this.forceBlank) {
         this.forceBlank = false
         try {
           const turn = this.phase.kind === 'running' ? this.phase.turn : this.phase.lastTurn
@@ -1594,6 +1710,7 @@ export class AcpAgent implements Agent {
       // 内部全捕获不炸建立——abort 中止除外）。无 DSH 侧选择 / 双侧相等 /
       // 待定切换行在场（让位守卫）时为零 RPC no-op。
       await this.convergeModelAtEstablishment(signal)
+      return conn
     } catch (error: unknown) {
  // 埋点：启动路径上的 crash 分类统一在此计数（initialize/session 各阶段
       // 各计一次；prompt 阶段的 crash 由 promptOnce 计数，不经过这里）
@@ -1612,6 +1729,110 @@ export class AcpAgent implements Agent {
       }
       if (this.conn === conn) this.conn = undefined
       throw error
+    }
+  }
+
+  /** Persist the draft's binding exactly once, immediately before prompt dispatch. */
+  private async commitPendingBinding(): Promise<void> {
+    if (this.currentBinding !== undefined && this.pendingBinding === undefined) return
+    const candidate = this.pendingBinding
+    const resumeBinding = this.resumeBindingOverride ?? this.driver.resumeBinding
+    const bindingData = candidate === undefined
+      ? undefined
+      : (this.forceBlank || resumeBinding === undefined)
+        ? {
+            ...candidate,
+            // prepare() happens outside a turn, so its initial seq is only a
+            // draft placeholder. Rebase a newly-created generation at the
+            // actual first-turn boundary before writing durable state.
+            historyBaseSeq: this.turnBaseSeq,
+            dshCommittedSeq: this.turnBaseSeq,
+          }
+        : this.turnBaseSeq === 0 && candidate.dshCommittedSeq < resumeBinding.dshCommittedSeq
+          ? {
+              ...candidate,
+              // ReconnectOriginal is setup-only and therefore has no current
+              // turn boundary. Preserve the durable committed prefix rather
+              // than attempting to move it backwards to the draft default 0.
+              dshCommittedSeq: resumeBinding.dshCommittedSeq,
+            }
+          : candidate
+    if (bindingData === undefined) throw new AcpBindingPersistError('ACP session was prepared without a binding candidate')
+    if (this.driver.recordBinding === undefined) {
+      throw new AcpBindingPersistError('recordBinding seam is absent (sidecar storage unavailable)')
+    }
+    try {
+      await this.driver.recordBinding(bindingData)
+    } catch (error: unknown) {
+      throw new AcpBindingPersistError(errorChain(error))
+    }
+    // The binding becomes the reconnect source only after it has been durably
+    // written.  A failed write must leave the old in-memory state untouched so
+    // the caller cannot accidentally clear a recovery gate.
+    await this.persistRecoveryState({ kind: 'healthy' }, bindingData, true)
+    this.currentBinding = bindingData
+    this.resumeBindingOverride = bindingData
+    this.previousBindingGeneration = bindingData.generation
+    this.pendingBinding = undefined
+    if (this.forceBlank) {
+      this.forceBlank = false
+      try {
+        const turn = this.phase.kind === 'running' ? this.phase.turn : this.phase.lastTurn
+        appendRebindBlankNote(this.session, this.providerRoute, turn, this.translator?.route.model)
+      } catch (error: unknown) {
+        this.log.warn(`dsh-acp: failed to append the rebind-blank note (${errorChain(error)})`, this.logFields({ operation: 'resume-note', result: 'error' }))
+      }
+    }
+  }
+
+  private async persistRecoveryState(
+    state: Pick<AcpRecoveryState, 'kind' | 'cause' | 'detail' | 'interruptedTurnId' | 'lastUserAction'>,
+    bindingOverride?: AcpBindingData | null,
+    failClosed = false,
+  ): Promise<void> {
+    if (this.driver.recordRecoveryState === undefined) {
+      if (failClosed) throw new Error('recordRecoveryState seam is absent (sidecar storage unavailable)')
+      return
+    }
+    const binding = bindingOverride === null
+      ? undefined
+      : bindingOverride ?? this.currentBinding ?? this.pendingBinding ?? this.driver.resumeBinding
+    // Keep the latest user action visible across the following transition. In
+    // particular, a failed reconnect must not erase the fact that the user
+    // selected "retry original" merely because blockError wrote a refined
+    // failure kind afterwards.
+    const lastUserAction = state.lastUserAction ?? this.currentRecoveryState.lastUserAction
+    const persisted: AcpRecoveryState = {
+      dshSessionId: String(this.id),
+      ...state,
+      ...(lastUserAction === undefined ? {} : { lastUserAction }),
+      provider: this.providerRoute,
+      ...(binding?.agentSessionId === undefined ? {} : { acpSessionId: binding.agentSessionId }),
+      ...(binding?.generation === undefined ? {} : { generation: binding.generation }),
+      ...(state.kind === 'healthy' ? {} : { lastAttemptAt: Date.now() }),
+      updatedAt: Date.now(),
+    }
+    try {
+      await this.driver.recordRecoveryState(persisted)
+      // Durable first, process-local second.  This ordering is essential for
+      // clearing a blocker: a healthy state which failed to reach the sidecar
+      // must never unlock the next prompt in this process.
+      this.currentRecoveryState = persisted
+      this.recoveryDurable = true
+      if (persisted.kind === 'healthy') {
+        this.continuity = { status: 'ok', cause: null, detail: null }
+      } else {
+        const knownCauses: readonly string[] = ['cwd-changed', 'profile-changed', 'agent-changed', 'protocol-changed', 'capability-missing', 'id-not-found', 'load-failed', 'replay-overflow', 'replay-diverged', 'dsh-log-diverged', 'dsh-log-truncated', 'binding-in-use', 'binding-missing', 'binding-outdated', 'backend-conflict']
+        const cause = persisted.cause !== undefined && knownCauses.includes(persisted.cause)
+          ? persisted.cause as AcpReconciliationCause
+          : persisted.kind === 'session-lost' ? 'id-not-found' as const
+            : persisted.kind === 'local-history-damaged' ? 'dsh-log-truncated' as const
+              : 'load-failed' as const
+        this.continuity = { status: 'blocked', cause, detail: persisted.detail ?? null }
+      }
+    } catch (error: unknown) {
+      this.log.warn(`dsh-acp: failed to persist recovery state (${errorChain(error)})`, this.logFields({ operation: 'recovery-state', result: 'error' }))
+      if (failClosed) throw error
     }
   }
 
@@ -1711,24 +1932,46 @@ export class AcpAgent implements Agent {
    * startSession 的 catch 负责拆连接，ensureStarted 失败臂把 lifecycle 回 cold。
    */
   private async blockError(cause: AcpReconciliationCause, detail?: string): Promise<AcpReconciliationError> {
-    this.continuity = { status: 'blocked', cause, detail: detail ?? null }
-    this.driver.metrics?.increment(ACP_METRIC.resumeDegraded, { cause })
-    if (this.driver.recordAudit !== undefined) {
-      const binding = this.driver.resumeBinding
-      try {
-        await this.driver.recordAudit({
-          kind: 'reconciliation',
-          data: {
-            cause,
-            ...(detail === undefined ? {} : { detail }),
-            ...(binding === undefined ? {} : { acpSessionId: binding.agentSessionId, generation: binding.generation }),
-          },
-        })
-      } catch (error: unknown) {
-        this.log.warn(`dsh-acp: failed to persist the reconciliation record (${errorChain(error)})`, this.logFields({ operation: 'reconciliation', result: 'error' }))
+    try {
+      await this.persistRecoveryState({
+        kind: cause === 'id-not-found' ? 'session-lost' : 'reconciliation-required',
+        cause,
+        ...(detail === undefined ? {} : { detail }),
+      }, undefined, true)
+    } catch (error: unknown) {
+      // Persistence failure is itself a local-history failure. Keep this
+      // process closed even though the durable transition could not be saved.
+      this.currentRecoveryState = {
+        dshSessionId: String(this.id),
+        kind: 'local-history-damaged',
+        cause: 'dsh-log-truncated',
+        detail: `recovery state could not be persisted: ${errorChain(error)}`,
+        provider: this.providerRoute,
+        updatedAt: Date.now(),
       }
+      this.continuity = { status: 'blocked', cause: 'dsh-log-truncated', detail: this.currentRecoveryState.detail ?? null }
+      throw error
     }
+    this.driver.metrics?.increment(ACP_METRIC.resumeDegraded, { cause })
+    await this.noteReconciliation(cause, detail)
     return new AcpReconciliationError(cause, detail)
+  }
+
+  private async noteReconciliation(cause: AcpReconciliationCause, detail?: string): Promise<void> {
+    if (this.driver.recordAudit === undefined) return
+    const binding = this.currentBinding ?? this.resumeBindingOverride ?? this.driver.resumeBinding
+    try {
+      await this.driver.recordAudit({
+        kind: 'reconciliation',
+        data: {
+          cause,
+          ...(detail === undefined ? {} : { detail }),
+          ...(binding === undefined ? {} : { acpSessionId: binding.agentSessionId, generation: binding.generation }),
+        },
+      })
+    } catch (error: unknown) {
+      this.log.warn(`dsh-acp: failed to persist the reconciliation record (${errorChain(error)})`, this.logFields({ operation: 'reconciliation', result: 'error' }))
+    }
   }
 
   /**
@@ -1749,6 +1992,7 @@ export class AcpAgent implements Agent {
     try {
       await this.driver.recordBinding(refreshed)
       this.currentBinding = refreshed
+      this.resumeBindingOverride = refreshed
     } catch (error: unknown) {
       this.log.warn(
         `dsh-acp: failed to refresh the binding anchor (${errorChain(error)}); the next resume will fail safe with 'dsh-log-diverged'`,
@@ -1835,9 +2079,79 @@ export class AcpAgent implements Agent {
     return this.acpSessionId
   }
 
+  /** Backend phase used by the picker guard. A live ACP wrapper is only a draft
+   * until its binding has been committed before the first prompt. */
+  get backendState(): 'blank' | 'draft' | 'established' {
+    if (this.currentBinding !== undefined) return 'established'
+    if (this.startPromise !== undefined || this.conn !== undefined || this.pendingBinding !== undefined) return 'draft'
+    return 'blank'
+  }
+
  /** 连续性状态（对账闩锁； dshAcp Remote 经 AcpLiveAgentFace 消费）。 */
   get continuityState(): AcpSessionContinuityState {
     return this.continuity
+  }
+
+  /** Durable recovery state exposed to the public remote snapshot. */
+  get recoveryState(): AcpRecoveryState {
+    return this.currentRecoveryState
+  }
+
+  /** Record a user decision made on the recovery surface without changing the
+   * recovery kind. The action is durable evidence, not an implicit unlock. */
+  async recordRecoveryAction(action: 'retry-original' | 'rebind-blank' | 'new-session'): Promise<void> {
+    await this.persistRecoveryState({
+      kind: this.currentRecoveryState.kind,
+      ...(this.currentRecoveryState.cause === undefined ? {} : { cause: this.currentRecoveryState.cause as AcpReconciliationCause }),
+      ...(this.currentRecoveryState.detail === undefined ? {} : { detail: this.currentRecoveryState.detail }),
+      ...(this.currentRecoveryState.interruptedTurnId === undefined ? {} : { interruptedTurnId: this.currentRecoveryState.interruptedTurnId }),
+      lastUserAction: action,
+    }, undefined, true)
+  }
+
+  /**
+   * Reconnect the original ACP session after a recoverable interruption.
+   * This deliberately keeps the existing binding/session id and only performs
+   * initialize + load/replay reconciliation. It never creates a new ACP
+   * session and never sends a prompt.
+   */
+  async reconnectOriginal(): Promise<void> {
+    if (this.phase.kind !== 'idle') throw new Error(`agent "${this.id}": reconnectOriginal is only allowed while idle`)
+    if (this.lifecycle.settling) throw new Error(`agent "${this.id}": reconnectOriginal is not available while the session is closing`)
+    if (this.currentRecoveryState.kind === 'healthy') throw new Error(`agent "${this.id}": reconnectOriginal is only available while recovery is required`)
+    const binding = this.currentBinding ?? this.resumeBindingOverride
+    if (binding === undefined) throw new Error(`agent "${this.id}": no original ACP binding is available to reconnect`)
+    // Record the user action before any teardown. If the reconnect fails, the
+    // ensuing blocker transition inherits this marker for audit/UI diagnosis.
+    await this.persistRecoveryState({
+      kind: this.currentRecoveryState.kind,
+      ...(this.currentRecoveryState.cause === undefined ? {} : { cause: this.currentRecoveryState.cause as AcpReconciliationCause }),
+      ...(this.currentRecoveryState.detail === undefined ? {} : { detail: this.currentRecoveryState.detail }),
+      ...(this.currentRecoveryState.interruptedTurnId === undefined ? {} : { interruptedTurnId: this.currentRecoveryState.interruptedTurnId }),
+      lastUserAction: 'retry-original',
+    }, binding, true)
+    const old = this.conn
+    this.conn = undefined
+    this.startGeneration += 1
+    this.startPromise = undefined
+    this.startMode = undefined
+    this.translator = undefined
+    this.acpSessionId = undefined
+    this.pendingBinding = undefined
+    this.pendingConfigOptions = undefined
+    this.pendingModeId = undefined
+    this.pendingAvailableCommands = undefined
+    this.currentBinding = undefined
+    this.forceBlank = false
+    this.resumeBindingOverride = binding
+    try {
+      await old?.close()
+    } finally {
+      if (this.lifecycle.kind === 'live') this.lifecycle.transition('cold')
+    }
+    // Re-establish performs session/load and the existing replay gate. It does
+    // not call prompt; the next user turn remains a separate explicit action.
+    await this.ensureStarted(new AbortController().signal, 'established')
   }
 
   /**
@@ -1855,12 +2169,15 @@ export class AcpAgent implements Agent {
     if (this.lifecycle.settling) throw new Error(`agent "${this.id}": session is closing/disposed; rebindBlank is not available`)
     const conn = this.conn
     this.conn = undefined
+    this.startGeneration += 1
     // 先复位全部会话状态：即使拆除上抛，下一次建立也不得摸到旧代际残渣
     this.forceBlank = true
     this.continuity = { status: 'ok', cause: null, detail: null }
     this.translator = undefined
     this.acpSessionId = undefined
     this.startPromise = undefined
+    this.startMode = undefined
+    this.pendingBinding = undefined
     this.pendingConfigOptions = undefined
     this.pendingModeId = undefined
     this.pendingAvailableCommands = undefined
@@ -1893,6 +2210,9 @@ export class AcpAgent implements Agent {
     } finally {
       if (this.lifecycle.kind === 'live') this.lifecycle.transition('cold')
     }
+    // Explicit rebind is a user-confirmed recovery action; clear the durable
+    // blocker immediately, before the next prompt creates the new generation.
+    await this.persistRecoveryState({ kind: 'healthy', lastUserAction: 'rebind-blank' }, null, true)
   }
 
  /** 当前 open turn 的 abort signal（running 时存在； 审批桥的 `turnSignal` 消费）。 */

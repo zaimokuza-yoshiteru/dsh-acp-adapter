@@ -542,7 +542,7 @@ function terminalMergeReplay(updates) {
 // 与 devin/claude 的形态差异（wiring.spec.ts  用例逐一钉版）：
 //   - execute 工具：终端输出挂 content[{type:'terminal', terminalId}] +
 //     _meta.terminal_info；终态帧的 stdout 走 _meta.terminal_output/terminal_exit
-//     （DSH 未广告 terminal 能力 → 翻译层落 terminal 占位 + degradation 审计）；
+//     （当前测试 UI 未提供 terminal 实时 seam → 翻译层落 terminal 占位 + degradation 审计）；
 //   - edit 工具：patch 以 {type:'diff'} 内容项随 tool_call 首帧到达（→ diff 摘要
 //     降级——完整 patch 字节不入日志）；
 //   - 消息块带 _meta.codex.phase 标记（未知 _meta 忽略，文本原样不降级）；

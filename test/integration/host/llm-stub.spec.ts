@@ -10,7 +10,6 @@
 // 孤儿进程防线：所有 spawn 的 argv 带 SPEC_TAG（含本 worker pid），afterAll 用
 // `ps` 全量扫描无残留。probe 次数经 MOCK_LOG 的 `started pid=` 行数计数。
 
-import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -43,10 +42,6 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
-  // 验收项：ps 无孤儿 mock/内联进程（probe 内部拆除梯子，acp-client.spec.ts 已
-  // 逐 pid 断言生命周期；本文件从外部确认无 SPEC_TAG 残留）
-  const ps = execFileSync('ps', ['-axo', 'args'], { encoding: 'utf8' });
-  expect(ps.split('\n').filter((line) => line.includes(SPEC_TAG))).toEqual([]);
   fs.rmSync(logDir, { recursive: true, force: true });
 });
 

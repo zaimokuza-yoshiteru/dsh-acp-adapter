@@ -1,15 +1,15 @@
 /**
- * PickerService ( split from selector-controller.ts): per-session
- * directory/live/disclosure orchestration + composer block publishing.
+ * PickerService coordinates per-session model directory, live ACP options,
+ * backend access, and composer block publishing.
  *
- * store discipline: the three data faces are slices of the picker seat's
- * composite store (stores/picker-store.ts). The glue controllers own the
- * authoritative state; this service owns the MERGED disclosure projection
- * (directory route + permissions projection) and wires the store mirror:
+ * The three data faces are slices of the picker seat's composite store
+ * (stores/picker-store.ts). Glue controllers own authoritative data; this
+ * service computes the merged backend-access projection (route + permissions)
+ * and wires the store mirror:
  * the seat's inject factory calls `picker.attach(actions)` with the
  * framework-baked actions, which resyncs all three slices in one pass
- * (directoryReplaced / liveReplaced / disclosureUpdated). The composer block
- * reads glue authority (directory.getSnapshot + live continuity, ) —
+ * (directoryReplaced / liveReplaced / backendAccessUpdated). The composer block
+ * reads glue authority (directory snapshot + live continuity) —
  * never the store — so it works with or without a mounted seat.
  * @module @zaimokuza/dsh-acp-adapter/client/picker-service
  */
@@ -31,7 +31,7 @@ import { LiveOptionsController } from './live-controller.ts'
 import { ModelSwitchController } from './model-switch-controller.ts'
 import type { AcpRemoteLike } from './acp-remote.ts'
 import type { SessionsWireLike, SettingsWireLike } from './picker-wire.ts'
-import type { CapabilityDisclosureState } from './stores/disclosure-store.ts'
+import type { BackendAccessState } from './stores/backend-access-store.ts'
 import type { ModelPickerStoreActions } from './stores/picker-store.ts'
 
 // ---------------------------------------------------------------------------
@@ -75,12 +75,8 @@ interface SessionBindingLike {
 }
 
 interface SessionScopeLike {
-  // 与 cordis Fiber.effect 真实签名对齐（fiber.ts：execute 立即执行，只有它
-  // 返回的 disposer 才在 fiber 卸载时运行；类型上 execute 必须返回 disposer，
-  // 不接受 void）。此前声明为 `fn: () => void`——TS 的 void 返回签名兼容任意
-  // 返回值，`() => {…}`（清理体误当本体）与 `() => () => {…}`（正确形态）都
- // 能过 typecheck，这正是 订阅创建即死事故漏网的原因（事故档案：
-  // 该 disposer 必须由 Fiber 保留到卸载时执行。
+  // Cordis Fiber.effect executes the setup immediately and retains the returned
+  // disposer until unload; the structural face preserves that lifecycle contract.
   effect(fn: () => () => void, name?: string): () => void
 }
 
@@ -129,6 +125,7 @@ interface RemoteLike {
 
 /** One session's picker glue pair plus the seat attach point. */
 export interface SessionPicker {
+  readonly sessionId: string
   directory: SessionModelDirectory
   live: LiveOptionsController
  /** 同 profile 模型热切换的协调器（seat wire `select` 与 /model popup 的 ACP 同路由选择经此走持久事务）。 采用惰性：native 会话访问不到它。 */
@@ -171,7 +168,7 @@ export const DEFAULT_LIST_CONFIRM_TIMEOUT_MS = 10_000
  * 跨 backend 新会话确认单。{@link PickerService.prepareCrossHandoff}
  * 纯组装（零 I/O、零写）；UI 持有 ticket 呈现确认框，确认才调
  * {@link PickerService.confirmCrossHandoff}（唯一写入口），取消 = 丢弃
- * ticket——包括默认模型在内一切不变。
+ * ticket——包括当前会话与默认模型在内一切不变。
  */
 export interface CrossHandoffTicket {
   readonly sessionId: string
@@ -179,8 +176,7 @@ export interface CrossHandoffTicket {
   readonly label?: string | undefined
 }
 
-/** Outcome of the best-effort default-model compensation after a rejected create. */
-export type RestoreDefaultModelResult =
+type RestoreDefaultModelResult =
   | { readonly status: 'restored' }
   | { readonly status: 'conflict' }
   | { readonly status: 'failed'; readonly message: string }
@@ -196,6 +192,8 @@ export class PickerService {
   private pendingNotice: string | null = null
  /** 跨 backend 新会话事务的在飞闩锁——双击/快速重复选择恰好产生一个会话。 */
   private newSessionInflight = false
+  /** One Full Access convergence command per session at a time. */
+  private readonly nativeAccessInflight = new Set<string>()
 
   constructor(private readonly deps: PickerServiceDeps) {
     // adapter 拓扑提交、设置文档变化、host 重启都会改变目录（内置 service 同
@@ -222,10 +220,10 @@ export class PickerService {
   /** 加载目录；活体选项只对 ACP 会话预拉（非 ACP 会话调 dshAcp options 必然 throw）。 */
   private prime(picker: SessionPicker): void {
     void picker.directory.load()
-      .then(() => {
+      .then(async () => {
         if (isAcpProvider(picker.directory.getSnapshot().current?.provider)) {
- // live 快照落地后跑崩溃恢复——pending 事务行按
-          // decideModelSwitchRecovery 收敛（stale/无行时 recover 无操作）
+          await this.maintainNativeAccess(picker.sessionId, this.permissionPreset(picker.sessionId))
+          // Live snapshot arrival also runs pending model-switch recovery.
           void picker.live.load()
             .then(() => picker.modelSwitch.recover())
             .catch(() => undefined)
@@ -243,9 +241,8 @@ export class PickerService {
       throw new Error(`dsh-acp: session scope not ready: ${sessionId}`)
     }
 
-    // 权限范围披露投影：目录 current（路由）+ permissions projection（preset）
- // 两路合并（只读展示镜像，不含任何确认/阻断语义）。
-    const computeDisclosure = (): CapabilityDisclosureState => {
+    // Backend route + permissions projection form one read-only access state.
+    const computeBackendAccess = (): BackendAccessState => {
       const provider = directory.getSnapshot().current?.provider ?? ''
       const projection = this.deps.sessions
         .binding(sessionId)
@@ -260,10 +257,8 @@ export class PickerService {
       const conversation = this.deps.conversation
       if (!conversation) return
       const state = directory.getSnapshot()
-      // continuity blocked 同样禁用 composer（此前横幅只在 picker live
-      // pane 内，picker 未打开时失败要到 prompt 时才浮现；composer 会先把
-      // prompt 放行进一个必被拒的 turn）。routable 分支优先；live 快照未
-      // 加载/未握手（continuity 缺席）时如实不阻断。
+      // A blocked continuity state also disables the composer. Routable status
+      // wins first; an absent live snapshot does not block input.
       const liveSnapshot = live.getSnapshot().snapshot
       const continuityBlocked = liveSnapshot?.continuity.status === 'blocked'
  // 待定模型切换无法自证一致时 composer 锁定——rollback-required /
@@ -286,14 +281,17 @@ export class PickerService {
 
     let sink: ModelPickerStoreActions | null = null
     // 会话 scope 死后 recompute 必须惰性化：in-flight 的 directory.load() 落地
-    // 仍会触发 onChange，没有这道闸会把已清空的 composer block 重新发布给死会话
-    // （旧实现靠 store.subscribe 的退订挡住同一路径）。
+    // still triggers onChange; this guard prevents a dead session from receiving
+    // a composer block after teardown.
     let active = true
     const recompute = () => {
       if (!active) return
-      const disclosure = computeDisclosure()
-      sink?.disclosureUpdated(disclosure.provider, disclosure.preset)
+      const backendAccess = computeBackendAccess()
+      sink?.backendAccessUpdated(backendAccess.provider, backendAccess.preset)
       publishBlock()
+      if (isAcpProvider(backendAccess.provider) && backendAccess.preset !== 'danger-full-access') {
+        void this.maintainNativeAccess(sessionId, backendAccess.preset)
+      }
     }
 
     const directory = new SessionModelDirectory({
@@ -305,11 +303,8 @@ export class PickerService {
       sessionId,
       remote: this.deps.acpRemote,
     })
- // 模型热切换协调器（同 provider ACP 选择的唯一入口；事务状态机见
- // model-switch-controller.ts）。 采用惰性构造：非 ACP 会话不应加载或调用
-    // switch coordinator——getter 只在真实 ACP 路径（prime 的 ACP 分支 /
-    // selectModel 同 provider ACP 分流 / seat 的 rollbackSwitch）首次触达时
-    // 才创建实例；native 会话全程零构造、零 RPC。
+    // Model-switch coordinator (the sole same-provider ACP selection entry).
+    // It is lazy so native sessions never construct it or issue RPCs.
     let modelSwitchInstance: ModelSwitchController | null = null
     const lazyModelSwitch = (): ModelSwitchController => {
       modelSwitchInstance ??= new ModelSwitchController({
@@ -326,8 +321,8 @@ export class PickerService {
       sink = actions
       directory.attach(actions)
       live.attach(actions)
-      const disclosure = computeDisclosure()
-      actions.disclosureUpdated(disclosure.provider, disclosure.preset)
+      const backendAccess = computeBackendAccess()
+      actions.backendAccessUpdated(backendAccess.provider, backendAccess.preset)
     }
 
     const unsubs: Array<() => void> = []
@@ -340,7 +335,7 @@ export class PickerService {
     // 转换下 publishBlock 幂等，块内容不变只是重发同值）。
     unsubs.push(live.subscribe(recompute))
 
-    const picker: SessionPicker = { directory, live, attach, get modelSwitch() { return lazyModelSwitch() } }
+    const picker: SessionPicker = { sessionId, directory, live, attach, get modelSwitch() { return lazyModelSwitch() } }
     this.pickers.set(sessionId, picker)
 
     // 首次建 picker 时主动加载（内置 directoryFor 不预拉，由入口打开时触发；
@@ -425,8 +420,7 @@ export class PickerService {
   /**
    * ACP 正式会话只使用 Agent 原生访问。这里走 DSH 公开
    * `/permission` 命令，使 projection、session event 和真实 spawn policy 保持一致。
-   * 风险确认由调用方 UI 在进入本方法之前完成；本方法不猜测或伪造
-   * permission projection。
+   * 本方法不猜测或伪造 permission projection。
    */
   async enableNativeAccess(sessionId: string): Promise<void> {
     const binding = this.deps.sessions.binding(sessionId)
@@ -438,7 +432,28 @@ export class PickerService {
     if (!result.value.matched) throw new Error('the host offers no /permission command')
   }
 
-  /** 读取 DSH 权限投影；只用于决定 ACP 行是否需要展示原生访问确认。 */
+  /**
+   * Keep an ACP execution backend on DSH Full Access. Backend identity comes
+   * from the host, so a native session that merely mirrors an ACP default is
+   * never widened. Failures remain guarded by AcpAgent before spawn and are
+   * retried on the next projection or directory refresh.
+   */
+  private async maintainNativeAccess(sessionId: string, observedPreset?: string): Promise<void> {
+    if (observedPreset === 'danger-full-access' || this.nativeAccessInflight.has(sessionId)) return
+    this.nativeAccessInflight.add(sessionId)
+    try {
+      const probe = await this.backendProbe(sessionId)
+      if (probe.status !== 'ok' || probe.state?.state !== 'established' || !isAcpProvider(probe.state.provider)) return
+      await this.enableNativeAccess(sessionId)
+    } catch {
+      // Early convergence can race session materialization or a host reset.
+      // The next observed projection/directory update retries it.
+    } finally {
+      this.nativeAccessInflight.delete(sessionId)
+    }
+  }
+
+  /** 读取 DSH 权限投影；用于 ACP Full Access 自动收敛。 */
   permissionPreset(sessionId: string): string | undefined {
     return presetOfPermissionsProjection(this.deps.sessions
       .binding(sessionId)
@@ -449,8 +464,8 @@ export class PickerService {
  * 模型选择的统一路由（seat wire `select` 与 /model popup 共用）：
    * - 同 provider 的 ACP 选择 → ModelSwitchCoordinator 的持久事务（唯一热切换
    *   入口；失败时错误已落目录 select 文案位，本方法抛出同源消息）；
-   * - 其余（native 路由）→ 目录的 select-then-adopt 旧路径。
- * 跨 backend 的选择不走这里（的 popup 分流到「在新会话中使用」）。
+   * - 其他 routes → directory select-then-adopt.
+ * Cross-backend choices use the explicit new-session handoff instead.
    */
   async selectModel(sessionId: string, selection: PickerModelSelection): Promise<void> {
     const picker = this.pickerFor(sessionId)
@@ -469,12 +484,12 @@ export class PickerService {
       const detail = probe.status === 'unavailable' ? ` (${probe.message})` : ''
       throw new Error(`ACP subsystem unavailable; model selection is disabled until backend identity can be verified${detail}`)
     }
-    if (probe.state.state === 'blank' && isAcpProvider(selection.provider)) {
-      const failure = await this.adoptBlankSession(sessionId, selection)
-      if (failure !== undefined) throw new Error(failure)
-      return
-    }
     if (!isSameBackendSelection(selection, probe.state, current?.provider)) {
+      if (probe.state.state === 'blank' || probe.state.state === 'draft') {
+        const failure = await this.useInNewSession(sessionId, selection)
+        if (failure !== undefined) throw new Error(failure)
+        return
+      }
       throw new Error('changing execution backend requires confirmation and a new session')
     }
     const sameProviderAcp = probe.state.state === 'established'
@@ -494,30 +509,28 @@ export class PickerService {
   /**
  * 「在新会话中使用」的确认单组装（纯读零写）。UI 拿 ticket 渲染确认框
    * （「将创建新会话；当前上下文不会带过去」）；取消 = 丢弃 ticket，
-   * {@link confirmCrossHandoff} 永不运行——包括 `agent-default-model` 默认在
-   * 内一切不变。
+   * {@link confirmCrossHandoff} 永不运行——当前会话与默认模型都不改变。
    */
   prepareCrossHandoff(sessionId: string, selection: PickerModelSelection, label?: string): CrossHandoffTicket {
     return { sessionId, selection, ...(label === undefined ? {} : { label }) }
   }
 
   /**
- * 确认后的跨 backend 新会话事务（唯一写入口；顺序即 末段与
- * 的契约次序）：
-   * ① 解析工作区（当前会话所属 workspace → 宿主 recentWorkspaceId → 当前会话
+ * 确认后的跨 backend 新会话事务：
+   * 解析工作区（当前会话所属 workspace → 宿主 recentWorkspaceId → 当前会话
    *    cwd 直建未分组会话）；三者皆无 → 报错请用户选择，**绝不猜测目录**；
-   * ② CAS 写 `agent-default-model`（复用 {@link setDefaultModel}）——失败即返
-   *    回，不创建会话；成功后目标模型保持为后续新会话默认（不还原，与 DSH
-   *    原生模型选择一致）；
-   * ③ 预生成稳定 `session-${randomUUID()}`，调公开 wire `session.create`
+   * 写入目标 `agent-default-model`。DSH create wire 没有模型参数，
+   *    新 Agent 只能从该官方默认选择创建；这也复制 DSH“选择即默认”语义；
+   * 预生成稳定 `session-${randomUUID()}`，调公开 wire `session.create`
    *    （connection.api.sessions.create；host 对同 id 同 cwd 幂等——
    *    reference ensureSession 采用活体/持久会话）；
-   * ④ 有界窗口内经公开 `sessions.list` 镜像确认行到场，再 `sessions.open`
+   * 有界窗口内经公开 `sessions.list` 镜像确认行到场，再 `sessions.open`
    *    （open 契约要求 id 已入列表）；
-   * ⑤ 网络/响应丢失只用同一个 session id 重试（先查列表采用已发布行）；
+   * 网络/响应丢失只用同一个 session id 重试（先查列表采用已发布行）；
    *    `workspace-attach-failed` = 会话已发布但未分组——打开该未分组会话并
    *    留明确提示，绝不创建第二个。
-   * 旧会话全程不动、保持可导航。
+   * 旧会话全程不动、保持可导航；目标选择成为后续新会话默认，与 DSH
+   * 原生模型选择一致。宿主明确拒绝创建时用 CAS 恢复旧默认。
    * @returns 错误消息；成功为 undefined。
    */
   async confirmCrossHandoff(ticket: CrossHandoffTicket): Promise<string | undefined> {
@@ -536,30 +549,32 @@ export class PickerService {
   }
 
   /**
-   * 空白 native session 无可迁移上下文，但 rc.2 也无法替换其已实例化的
-   * AgentHandle。透明创建并打开 ACP session；不修改旧 session 的模型或权限。
+   * A blank native session has no portable context and its AgentHandle cannot
+   * be replaced. Create and open a new ACP session without changing the old one.
    */
   async adoptBlankSession(sessionId: string, selection: PickerModelSelection, label?: string): Promise<string | undefined> {
     const probe = await this.backendProbe(sessionId)
-    if (probe.status !== 'ok' || probe.state?.state !== 'blank') {
-      throw new Error('blank-session adoption requires a verified blank execution backend')
+    if (probe.status !== 'ok' || (probe.state?.state !== 'blank' && probe.state?.state !== 'draft')) {
+      throw new Error('blank-session adoption requires a verified blank or draft execution backend')
     }
     if (!isAcpProvider(selection.provider)) {
       throw new Error('blank-session ACP adoption requires an ACP model')
     }
-    if (this.newSessionInflight) return this.deps.t('cross.inflight')
-    this.newSessionInflight = true
-    try {
-      return await this.runCrossHandoff(this.prepareCrossHandoff(sessionId, selection, label), 'blank')
-    } finally {
-      this.newSessionInflight = false
+    // Kept as a compatibility method for older callers. If a live wrapper is
+    // already present, only its own profile may be switched in place; a
+    // different wrapper must use the automatic new-session handoff.
+    const current = this.pickerFor(sessionId).directory.getSnapshot().current
+    if (!isSameBackendSelection(selection, probe.state, current?.provider)) {
+      return this.useInNewSession(sessionId, selection, label)
     }
+    await this.pickerFor(sessionId).directory.select(selection)
+    return undefined
   }
 
   private async runCrossHandoff(ticket: CrossHandoffTicket, kind: 'cross' | 'blank'): Promise<string | undefined> {
     const t = this.deps.t
     const model = ticket.label ?? ticket.selection.model
-    // ---- ① 工作区解析（先于任何写；失败 → 请用户选择，不猜测目录） ----
+    // Resolve the workspace before any write; if absent, ask the user rather than guessing.
     const workspaces = this.deps.workspaces
     if (workspaces === undefined) return t('cross.unavailable')
     const workspaceSnapshot = workspaces.list.getSnapshot()
@@ -569,14 +584,14 @@ export class PickerService {
       ? this.deps.sessions.list.getSnapshot().byId[ticket.sessionId]?.cwd
       : undefined
     if (workspaceId === undefined && (cwd === undefined || cwd === '')) return t('cross.noWorkspace')
-    // ---- ② CAS 写默认模型（失败不创建会话）；只有新会话成功发布后它才应
-    // 成为产品默认。业务明确拒绝创建时，下方用 CAS 补偿恢复旧默认。
+    // The create wire has no model parameter: write the official default first.
+    // 目标继续作为默认；明确创建失败时才用下方 CAS 补偿恢复。
     const defaultScopeBefore = this.deps.settingsScope.getSnapshot()
     const defaultBefore = decodeAgentDefaultModel(defaultScopeBefore.value)
     const write = await this.writeDefaultModel(ticket.selection)
     if (!write.ok) return write.message
     const appliedRevision = write.appliedRevision
-    // ---- ③ 预分配 id + 公开 wire create（同 id 重试幂等） ----
+    // Preallocate an id and retry the public create wire with that same id.
     const newSessionId = `session-${globalThis.crypto.randomUUID()}`
     const payload = workspaceId !== undefined
       ? { workspaceId, sessionId: newSessionId }
@@ -609,25 +624,29 @@ export class PickerService {
     }
     if (!published) {
       if (definitiveCreateFailure) {
-        const restore = await this.restoreDefaultModelAfterFailedHandoff(ticket.selection, defaultBefore, defaultScopeBefore.revision, appliedRevision)
+        const restore = await this.restoreDefaultModelAfterFailedHandoff(
+          ticket.selection,
+          defaultBefore,
+          defaultScopeBefore.revision,
+          appliedRevision,
+        )
         if (restore.status === 'restored') return t('cross.createFailedRestored', { message: lastError })
         if (restore.status === 'conflict') return t('cross.createFailedConflict', { message: lastError })
         return t('cross.createFailedRecovery', { message: lastError, recovery: restore.message })
       }
       // Two transport failures with no list evidence are ambiguous: the host
       // may have created the session even though both responses were lost.
-      // Keep the target as the default and tell the user exactly what is
-      // unknown; silently calling this a definitive failure invites duplicate
-      // sessions on retry.
+      // Tell the user exactly what is unknown; silently calling this a
+      // definitive failure invites duplicate sessions on retry.
       return t('cross.createAmbiguous', { model, message: lastError })
     }
-    // ---- ④ 有界确认行进列表镜像 → open（契约：open 的 id 必须在列表） ----
+    // Confirm the row in the bounded list mirror before opening it.
     if (!(await this.waitForSessionRow(newSessionId, timeoutMs))) {
       return t('cross.confirmTimeout', { sessionId: newSessionId })
     }
     // ACP backend 不继承受限模式：新会话入列后，在导航/首轮之前
-    // 经 DSH 公开命令写入真实 permission event。调用本事务代表用户已在
-    // picker/popup 的确认层明确接受原生 Agent 访问。
+    // 经 DSH 公开命令写入真实 permission event。ACP 的产品约定是自动使用
+    // 原生 Agent 访问；这里不增加第二层确认。
     if (isAcpProvider(ticket.selection.provider)) {
       try {
         await this.enableNativeAccess(newSessionId)
@@ -642,13 +661,27 @@ export class PickerService {
       ? t('cross.attachFailed', { model, message: attachFailure })
       : t(kind === 'blank' ? 'blank.started' : 'cross.started', { model })
     this.deps.sessions.open(newSessionId)
+    // A cross-backend handoff is an explicit recovery decision for an old ACP
+    // session. Record it after the new session is known to exist; failure to
+    // write the audit marker never changes the new-session outcome, but is
+    // surfaced instead of being presented as durable evidence.
+    if (this.deps.acpRemote.recordRecoveryAction !== undefined) {
+      const oldBackend = await this.backendProbe(ticket.sessionId)
+      if (oldBackend.status === 'ok'
+        && oldBackend.state !== null
+        && oldBackend.state.state === 'established'
+        && isAcpProvider(oldBackend.state.provider)) {
+        try {
+          await this.deps.acpRemote.recordRecoveryAction(ticket.sessionId, 'new-session')
+        } catch (error) {
+          this.pendingNotice = t('cross.recoveryActionFailed', { message: errorMessageOf(error) })
+        }
+      }
+    }
     return undefined
   }
 
-  /**
-   * 创建被宿主明确拒绝后的默认模型补偿。只在设置仍精确等于本次目标时 CAS
-   * 恢复，避免覆盖用户在并发窗口中的后续选择；响应丢失等歧义结局不调用。
-   */
+  /** 宿主明确拒绝创建后恢复旧默认；CAS 避免覆盖并发产生的新选择。 */
   private async restoreDefaultModelAfterFailedHandoff(
     target: PickerModelSelection,
     previous: ReturnType<typeof decodeAgentDefaultModel>,
@@ -663,12 +696,8 @@ export class PickerService {
       && left?.model === right?.model
       && left?.reasoningEffort === right?.reasoningEffort
     const isTarget = sameSelection(current, target)
-    // Some host settings projections update asynchronously. If the revision
-    // and full selection (including effort) are still exactly the pre-write
-    // snapshot, the successful write may simply not be projected yet. In both
-    // stale and target projections, the compensation CAS must use the revision
-    // returned by the original write. A later writer that chose the same value
-    // still advances that revision and is therefore never overwritten.
+    // settings 投影可能尚未反映成功写入；这种情况下仍使用写响应给出的 revision
+    // 做补偿 CAS。任何后续写都会推进 revision，因此不会被本事务覆盖。
     const isUnchangedPreWrite = snapshot.revision === previousRevision && sameSelection(current, previous)
     if (!isTarget && !isUnchangedPreWrite) return { status: 'conflict' }
     const ops = previous === undefined
@@ -687,10 +716,8 @@ export class PickerService {
         expectedRevision: appliedRevision,
       })
       if (response.result.ok) return { status: 'restored' }
-      const message = response.result.error.message || 'settings compensation rejected'
-      const code = response.result.error.code ?? ''
-      if (code === 'settings-conflict') return { status: 'conflict' }
-      return { status: 'failed', message }
+      if (response.result.error.code === 'settings-conflict') return { status: 'conflict' }
+      return { status: 'failed', message: response.result.error.message || 'settings compensation rejected' }
     } catch (error) {
       return { status: 'failed', message: errorMessageOf(error) }
     }

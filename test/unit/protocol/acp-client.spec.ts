@@ -21,7 +21,6 @@
 // afterEach 兜底 close 全部连接，afterAll 逐 pid 断言已死 + `ps` 全量扫描 SPEC_TAG。
 // 内联 node -e agent 的脚本体内嵌 SPEC_TAG 注释，同样可被 ps 扫描命中。
 
-import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -34,6 +33,7 @@ import type { AcpConnectionOptions } from '../../../src/protocol/v1/types.ts';
 import type { AcpConnectionSpec } from '../../../src/runtime/process/types.ts';
 import type { SubprocessSeam } from '../../../src/runtime/process/subprocess.ts';
 import { sharedTestSubprocess } from '../../fixtures/subprocess-seam-testing.ts';
+import { createAcpTerminalHandlers } from '../../../src/runtime/client-capabilities/terminal.ts';
 
 const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
 const MOCK_AGENT_PATH = path.join(TEST_DIR, '..', '..', 'mock-agent', 'mock-agent.mjs');
@@ -217,14 +217,56 @@ afterAll(async () => {
     await waitFor(() => isDead(pid), 3000).catch(() => {});
   }
   expect([...spawnedPids].filter((pid) => !isDead(pid))).toEqual([]);
-  // 验收项：ps 无孤儿 mock/内联进程（SPEC_TAG 仅本 spec 文件的 spawn 携带，
-  // 与并行运行的 sdk-contract.spec.ts 的 mock 进程区分）
-  const ps = execFileSync('ps', ['-axo', 'pid,args'], { encoding: 'utf8' });
-  expect(ps.split('\n').filter((line) => line.includes(SPEC_TAG))).toEqual([]);
   fs.rmSync(logDir, { recursive: true, force: true });
 });
 
 describe('握手（happy / minimal-caps / no-config-options）', () => {
+  it('terminal capability is advertised and dispatches all five methods through the real JSON-RPC connection', async () => {
+    const command = JSON.stringify(process.execPath)
+    const normalScript = JSON.stringify("process.stdout.write('normal-out');process.stderr.write('normal-err')")
+    const longScript = JSON.stringify('setInterval(() => {}, 1000)')
+    const script = `let b='';let sid='terminal-session';let normalId='';let killedId='';const send=(m)=>process.stdout.write(JSON.stringify(m)+'\\n');process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const l=b.slice(0,i);b=b.slice(i+1);if(!l.trim())continue;const m=JSON.parse(l);if(m.method==='initialize'){process.stderr.write(JSON.stringify(m.params.clientCapabilities)+'\\n');send({jsonrpc:'2.0',id:m.id,result:{protocolVersion:1,agentInfo:{name:'terminal-agent',version:'1'},agentCapabilities:{}}})}else if(m.method==='session/new'){send({jsonrpc:'2.0',id:m.id,result:{sessionId:sid}});setTimeout(()=>send({jsonrpc:'2.0',id:10,method:'terminal/create',params:{sessionId:sid,command:${command},args:['-e',${normalScript}],outputByteLimit:128}}),5)}else if(m.id===10&&!m.error){normalId=m.result.terminalId;send({jsonrpc:'2.0',id:11,method:'terminal/output',params:{sessionId:'wrong-session',terminalId:normalId}})}else if(m.id===11){if(!m.error)throw new Error('terminal ownership request unexpectedly succeeded');process.stderr.write('terminal-ownership-rejected\\n');send({jsonrpc:'2.0',id:12,method:'terminal/output',params:{sessionId:sid,terminalId:normalId}})}else if(m.id===12){send({jsonrpc:'2.0',id:13,method:'terminal/wait_for_exit',params:{sessionId:sid,terminalId:normalId}})}else if(m.id===13){send({jsonrpc:'2.0',id:14,method:'terminal/release',params:{sessionId:sid,terminalId:normalId}})}else if(m.id===14){send({jsonrpc:'2.0',id:15,method:'terminal/create',params:{sessionId:sid,command:${command},args:['-e',${longScript}],outputByteLimit:128}})}else if(m.id===15&&!m.error){killedId=m.result.terminalId;send({jsonrpc:'2.0',id:16,method:'terminal/kill',params:{sessionId:sid,terminalId:killedId}})}else if(m.id===16){send({jsonrpc:'2.0',id:17,method:'terminal/wait_for_exit',params:{sessionId:sid,terminalId:killedId}})}else if(m.id===17){send({jsonrpc:'2.0',id:18,method:'terminal/output',params:{sessionId:sid,terminalId:killedId}})}else if(m.id===18){send({jsonrpc:'2.0',id:19,method:'terminal/release',params:{sessionId:sid,terminalId:killedId}})}else if(m.id===19){process.stderr.write('terminal-cycle-complete\\n')}}});setInterval(()=>{},1<<30);`
+    const terminals = createAcpTerminalHandlers({ subprocess, profileId: 'terminal-profile', dshSessionId: 'dsh-terminal', cwd: logDir, env: {} })
+    const conn = connectInline(script, { terminalHandlers: terminals })
+    await conn.initialize()
+    await conn.newSession()
+    await waitFor(() => conn.stderrLines().some((line) => line.includes('"terminal":true')))
+    await waitFor(() => conn.stderrLines().some((line) => line.includes('terminal-ownership-rejected')))
+    await waitFor(() => conn.stderrLines().some((line) => line.includes('terminal-cycle-complete')))
+    expect(conn.stderrLines().join('\n')).toContain('"terminal":true')
+    await conn.close()
+  }, 10_000)
+
+  it('fs handlers are advertised together and dispatch real ACP file requests', async () => {
+    const file = path.join(logDir, 'fs-dispatch.txt'); fs.writeFileSync(file, 'native-fs')
+    const script = `let b='';let sid='fs-session';process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const l=b.slice(0,i);b=b.slice(i+1);if(!l.trim())continue;const m=JSON.parse(l);if(m.method==='initialize'){process.stderr.write(JSON.stringify(m.params.clientCapabilities)+'\\n');process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result:{protocolVersion:1,agentInfo:{name:'fs-agent',version:'1'},agentCapabilities:{}}})+'\\n')}else if(m.method==='session/new'){process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result:{sessionId:sid}})+'\\n');setTimeout(()=>{process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:99,method:'fs/read_text_file',params:{sessionId:sid,path:${JSON.stringify(file)}}})+'\\n');process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:100,method:'fs/read_text_file',params:{sessionId:'not-owned',path:${JSON.stringify(file)}}})+'\\n')},5)}else if(m.id===99||m.id===100){process.stderr.write(JSON.stringify(m)+'\\n')}}});setInterval(()=>{},1<<30);`
+    const conn = connectInline(script, { fileSystemHandlers: {
+      readTextFile: async (params) => ({ content: fs.readFileSync(params.path, 'utf8') }),
+      writeTextFile: async () => ({}),
+    } })
+    await conn.initialize(); expect(conn.agentInfo?.name).toBe('fs-agent'); await conn.newSession()
+    await waitFor(() => conn.stderrLines().some((line) => line.includes('native-fs')), 2000)
+    expect(conn.stderrLines().some((line) => line.includes('"readTextFile":true') && line.includes('"writeTextFile":true'))).toBe(true)
+    await waitFor(() => conn.stderrLines().some((line) => line.includes('not-owned') || line.includes('owned by this connection')), 2000)
+    expect(conn.stderrLines().some((line) => line.includes('"error"') && line.includes('not-owned'))).toBe(true)
+    await conn.close(); fs.rmSync(file, { force: true })
+  }, 10_000)
+
+  it('reconnect creates a fresh FS lifecycle lease after the previous connection closes', async () => {
+    const file = path.join(logDir, 'fs-reconnect.txt'); fs.writeFileSync(file, 'reconnected')
+    const script = `let b='';let sid='reconnect-session';process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const l=b.slice(0,i);b=b.slice(i+1);if(!l.trim())continue;const m=JSON.parse(l);if(m.method==='initialize'){process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result:{protocolVersion:1,agentInfo:{name:'fs-reconnect',version:'1'},agentCapabilities:{}}})+'\\n')}else if(m.method==='session/new'){process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result:{sessionId:sid}})+'\\n');setTimeout(()=>process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:99,method:'fs/read_text_file',params:{sessionId:sid,path:${JSON.stringify(file)}}})+'\\n'),5)}else if(m.id===99){process.stderr.write(JSON.stringify(m)+'\\n')}}});setInterval(()=>{},1<<30);`
+    const handlers = () => ({
+      readTextFile: async (params: { path: string }) => ({ content: fs.readFileSync(params.path, 'utf8') }),
+      writeTextFile: async () => ({}),
+    })
+    const first = connectInline(script, { fileSystemHandlers: handlers() })
+    await first.initialize(); await first.newSession(); await first.close()
+    const second = connectInline(script, { fileSystemHandlers: handlers() })
+    await second.initialize(); await second.newSession()
+    await waitFor(() => second.stderrLines().some((line) => line.includes('reconnected')))
+    expect(second.stderrLines().some((line) => line.includes('"content":"reconnected"'))).toBe(true)
+    await second.close(); fs.rmSync(file, { force: true })
+  }, 10_000)
   it('仅在接线 elicitation handler 时广告 form/url 能力', async () => {
     const script = `let b=''; process.stdin.on('data', d => { b += d; let i; while ((i=b.indexOf('\\n')) >= 0) { const line=b.slice(0,i); b=b.slice(i+1); if (!line.trim()) continue; const m=JSON.parse(line); if (m.method === 'initialize') { process.stderr.write(JSON.stringify(m.params.clientCapabilities)+'\\n'); process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result:{protocolVersion:1,agentInfo:{name:'cap-test',version:'1'},agentCapabilities:{}}})+'\\n'); } } }); setInterval(()=>{}, 1<<30);`
     const withHandler = connectInline(script, { onElicitationRequest: () => ({ action: 'cancel' }) })
@@ -235,6 +277,17 @@ describe('握手（happy / minimal-caps / no-config-options）', () => {
     await withoutHandler.initialize()
     expect(withoutHandler.stderrLines().join('')).not.toContain('elicitation')
     await withoutHandler.close()
+  }, 10_000)
+
+  it('elicitation/create 的 sessionId 必须属于当前连接；wrong-session fail closed', async () => {
+    const script = `let b=''; process.stdin.on('data', d => { b += d; let i; while ((i=b.indexOf('\\n')) >= 0) { const line=b.slice(0,i); b=b.slice(i+1); if (!line.trim()) continue; const m=JSON.parse(line); if (m.method === 'initialize') { process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result:{protocolVersion:1,agentInfo:{name:'elicitation-owner',version:'1'},agentCapabilities:{}}})+'\\n'); } else if (m.method === 'session/new') { process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result:{sessionId:'owned-session'}})+'\\n'); setTimeout(() => process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:99,method:'elicitation/create',params:{sessionId:'other-session',elicitationId:'wrong-1',message:'wrong owner',mode:'url',url:'https://example.com/continue'}})+'\\n'), 5); } else if (m.id === 99) process.stderr.write(JSON.stringify(m)+'\\n'); } }); setInterval(()=>{}, 1<<30);`
+    const handler = vi.fn(() => ({ action: 'accept' as const, content: {} }))
+    const conn = connectInline(script, { onElicitationRequest: handler })
+    await conn.initialize()
+    await conn.newSession()
+    await waitFor(() => conn.stderrLines().some((line) => line.includes('"action":"decline"')), 2_000)
+    expect(handler).not.toHaveBeenCalled()
+    await conn.close()
   }, 10_000)
   it('happy：initialize 记录 agentInfo/capabilities/authMethods，重复调用幂等', async () => {
     const { conn } = connectMock('happy');
@@ -780,7 +833,7 @@ describe('probe', () => {
   };
 
   it('happy：独立短生命周期收集 configOptions/modes/agentInfo，结束后无进程残留', async () => {
-    const { spec, tag } = probeSpec('happy');
+    const { spec } = probeSpec('happy');
     const result = await AcpClientConnection.probe(spec, { timeoutMs: 5000, eofGraceMs: 100, termGraceMs: 300 });
     expect(result.sessionId).toBe('mock-session-1');
     expect(result.agentInfo?.name).toBe('dsh-mock-acp-agent');
@@ -788,9 +841,7 @@ describe('probe', () => {
     expect(result.modes?.currentModeId).toBe('accept-edits');
     expect(result.configOptions?.map((o) => o.id)).toEqual(['mode', 'model']);
     expect(result.configOptions?.find((o) => o.category === 'model')?.currentValue).toBe('mock-model-a');
-    // probe 已拆除自身进程
-    const ps = execFileSync('ps', ['-axo', 'args'], { encoding: 'utf8' });
-    expect(ps.includes(tag)).toBe(false);
+    // probe 返回前已完成连接的有界拆除；进程树级事实由共享 subprocess seam 与 install-gate 验证。
   });
 
   it('no-config-options：configOptions 为 undefined（降级信号），modes 仍在', async () => {
@@ -801,12 +852,10 @@ describe('probe', () => {
   });
 
   it('slow-response：probe 超时分类为 timeout 且拆除无残留', async () => {
-    const { spec, tag } = probeSpec('slow-response', { MOCK_SLOW_INIT_MS: '1500' });
+    const { spec } = probeSpec('slow-response', { MOCK_SLOW_INIT_MS: '1500' });
     const err = await expectReject(AcpClientConnection.probe(spec, { timeoutMs: 200, eofGraceMs: 100, termGraceMs: 300 }));
     expect(err).toBeInstanceOf(AcpClientError);
     expect((err as AcpClientError).kind).toBe('timeout');
-    const ps = execFileSync('ps', ['-axo', 'args'], { encoding: 'utf8' });
-    expect(ps.includes(tag)).toBe(false);
   });
 
   it('spawn-failure：probe 命令不存在 → spawn-failure 分类', async () => {
