@@ -63,13 +63,31 @@ function textOf(t: AcpRecoveryInputDockProps['t'], key: AcpLocaleKey, fallback: 
   return value === undefined || value.trim() === '' ? fallback : value
 }
 
-function summary(snapshot: RecoverySnapshot, t: AcpRecoveryInputDockProps['t']): string {
+export function recoverySummary(snapshot: RecoverySnapshot, t?: AcpRecoveryInputDockProps['t']): string {
+  switch (snapshot.recovery.cause) {
+    case 'cwd-changed':
+    case 'profile-changed':
+    case 'agent-changed':
+    case 'protocol-changed':
+      return textOf(t, 'recoveryEnvironmentChanged', 'The Agent environment no longer matches the one used by this session. Sending is paused to avoid loading the wrong context.')
+    case 'replay-diverged':
+    case 'replay-overflow':
+    case 'dsh-log-diverged':
+    case 'dsh-log-truncated':
+      return textOf(t, 'recoveryHistoryMismatch', 'The Agent history and the DSH history could not be proven to match. Sending is paused to protect both histories.')
+    case 'binding-missing':
+    case 'binding-outdated':
+      return textOf(t, 'recoveryBindingUnavailable', 'The link to the original Agent session is missing or belongs to an unsupported adapter version.')
+    case 'backend-conflict':
+    case 'binding-in-use':
+      return textOf(t, 'recoveryBindingConflict', 'This Agent session is already linked elsewhere or conflicts with the current backend.')
+  }
   switch (snapshot.recovery.kind) {
     case 'outcome-unknown': return textOf(t, 'recoveryOutcomeUnknown', 'The previous Agent outcome is unknown. Reconnect or explicitly abandon the context before continuing.')
     case 'reconnect-required': return textOf(t, 'recoveryReconnectRequired', 'The Agent session needs to be reconnected.')
     case 'session-lost': return textOf(t, 'recoverySessionLost', 'The original Agent session is unavailable.')
     case 'local-history-damaged': return textOf(t, 'recoveryHistoryDamaged', 'Local ACP recovery data is damaged; execution is blocked.')
-    default: return snapshot.recovery.detail ?? textOf(t, 'recoveryGeneric', 'The ACP session requires recovery.')
+    default: return textOf(t, 'recoveryGeneric', 'The ACP session requires recovery.')
   }
 }
 
@@ -119,16 +137,16 @@ export function AcpRecoveryInputDock(props: AcpRecoveryInputDockProps): ReactNod
   const switchView = snapshot.modelSwitch
   const switchPending = switchView.status !== 'idle'
   const actions = recoveryActionAvailability(snapshot, {
-    reconnect: remote.reconnectOriginal !== undefined,
+    reconnect: remote.reconnectOriginal !== undefined && snapshot.recovery.acpSessionId !== null,
     newSession: props.newSession !== undefined,
   })
   const title = textOf(props.t, 'recoveryTitle', 'ACP session recovery required')
   const message = switchPending && snapshot.recovery.kind === 'healthy'
       ? textOf(props.t, 'recoveryModelSwitch', 'The model switch needs to be resolved', { previous: switchView.previousModel === undefined ? '' : ` (${switchView.previousModel})` })
-      : summary(snapshot, props.t)
+      : recoverySummary(snapshot, props.t)
   const actionButtons = h('div', { className: css.actions },
       actions.reconnect
-        ? h(Button, { type: 'button', variant: 'primary', disabled: busy !== null, onClick: () => run('reconnect', () => remote.reconnectOriginal!(sessionId)) }, busy === 'reconnect' ? textOf(props.t, 'recoveryBusy', 'Working…') : textOf(props.t, 'recoveryReconnect', 'Reconnect original Agent session'))
+        ? h(Button, { type: 'button', variant: 'primary', disabled: busy !== null, onClick: () => run('reconnect', () => remote.reconnectOriginal!(sessionId)) }, busy === 'reconnect' ? textOf(props.t, 'recoveryBusy', 'Working…') : textOf(props.t, 'recoveryReconnect', 'Retry original Agent session'))
         : null,
       actions.rebind
         ? h(Button, { type: 'button', variant: 'outline', disabled: busy !== null, onClick: () => run('rebind', () => remote.rebindBlank(sessionId)) }, busy === 'rebind' ? textOf(props.t, 'recoveryBusy', 'Working…') : textOf(props.t, 'recoveryRebind', 'Abandon context and continue'))
@@ -145,21 +163,25 @@ export function AcpRecoveryInputDock(props: AcpRecoveryInputDockProps): ReactNod
       h('span', { className: css.summary }, message),
       h(Button, { type: 'button', variant: 'outline', disabled: busy !== null, onClick: () => setDetailsOpen(true) }, textOf(props.t, 'recoveryDetails', 'View recovery details')),
     ),
-    error === null ? null : h('div', { className: css.error, role: 'alert' }, error),
+    error === null || detailsOpen ? null : h('div', { className: css.error, role: 'alert' }, error),
     h(Modal, {
       open: detailsOpen,
       onClose: () => setDetailsOpen(false),
       title,
       description: message,
       closeLabel: textOf(props.t, 'recoveryClose', 'Close'),
+      className: css.modal ?? '',
       contentClassName: css.modalContent ?? '',
       footer: actionButtons,
     },
-      h('dl', { className: css.diagnostics },
-        h('dt', null, 'State'), h('dd', null, snapshot.recovery.kind),
-        h('dt', null, 'Agent session'), h('dd', null, snapshot.recovery.acpSessionId ?? '—'),
-        snapshot.recovery.detail === null ? null : h('dt', null, 'Details'),
-        snapshot.recovery.detail === null ? null : h('dd', null, snapshot.recovery.detail),
+      h('div', { className: css.recoveryExplanation },
+        error === null ? null : h('p', { className: css.modalError, role: 'alert' }, error),
+        h('p', null, textOf(props.t, 'recoveryChoiceHelp', 'Choose how to continue. Retry keeps the original Agent context; abandoning it keeps the visible DSH history but starts the Agent with no previous context; a new session leaves this session unchanged.')),
+        h('p', { className: css.historyNotice }, textOf(props.t, 'recoveryHistoryPreserved', 'The conversation already shown in DSH is not deleted by any of these choices.')),
+        h('p', { className: css.issueCode },
+          h('span', null, textOf(props.t, 'recoveryIssueCode', 'Issue code')),
+          h('code', null, snapshot.recovery.cause ?? snapshot.recovery.kind),
+        ),
       ),
     ),
   )

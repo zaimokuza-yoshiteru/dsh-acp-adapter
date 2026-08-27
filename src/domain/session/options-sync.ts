@@ -225,10 +225,12 @@ export interface AcpOptionsSync {
    * Native-path sync before one turn: trigger `system-prompt/assemble` (real
    * service) + `agent/request` (seed = ACP current value), then apply what the
    * user changed through the native selector — an explicitly selected
-   * reasoning effort maps onto the `thought_level` option (MODEL changes are
- * NOT applied here: made the ModelSwitchCoordinator the single model
-   * write entry; the DSH selection's initial application is the establish-time
- * convergence in ./agent.ts (边界), and a divergence observed here means
+   * reasoning effort maps onto the `thought_level` option. Before the first
+   * request/header, a same-profile model choice is applied once as draft
+   * initialization because DSH exposes no create-time selection seam. After
+   * that boundary, ModelSwitchCoordinator is the single model write entry;
+   * the construction selection's initial application is the establish-time
+ * convergence in ./agent.ts, and a later divergence means
    * that convergence was declined/failed — it only feeds the pending-switch
    * guard / a warn-once note). A foreign
  * provider throws {@link AcpBackendImmutableError} ( loud refusal).
@@ -329,7 +331,20 @@ export function createAcpOptionsSync(deps: AcpOptionsSyncDeps): AcpOptionsSync {
     //    selector's listener applies the assembled selection on top
     //    (model-selection.ts:54-70). No selection ⇒ the seed passes through.
     const seed: LlmCallConfig = { provider: providerRoute, model: currentAcpModel() }
-    const merged = await dispatch.waterfall('agent/request', { turn, step, signal }, () => Promise.resolve(seed))
+    let merged = await dispatch.waterfall('agent/request', { turn, step, signal }, () => Promise.resolve(seed))
+
+    // DSH 的空白会话没有 session-local selection：每次读取都会投影当前全局
+    // 默认。ACP wrapper 却已在创建时固定 provider。首条 request/header 之前的
+    // foreign provider 因此只是默认影子，不是一次可执行的跨 backend 热切换。
+    // 采用 wrapper 真值；首轮落下 request/header 后，DSH 自己也会稳定到同一路由。
+    const hasDurableRoute = agent.session.requestHeader() !== undefined
+    if (!hasDurableRoute && merged.provider !== providerRoute) {
+      infoOnce(
+        'blank-default-shadow',
+        `dsh-acp: ignored the blank session's live default shadow "${merged.provider}"; the actual wrapper is "${providerRoute}"`,
+      )
+      merged = seed
+    }
 
     if (merged.provider !== providerRoute) {
  // 「backend 不可变」：原生选择器指向别的 provider（native 或另一个
@@ -340,6 +355,16 @@ export function createAcpOptionsSync(deps: AcpOptionsSyncDeps): AcpOptionsSync {
         `dsh-acp: this session's execution backend is "${providerRoute}" and cannot be switched to "${merged.provider}" mid-life; ` +
         'pick a model of the same provider, or start a new session for the other backend',
       )
+    }
+
+    // 同 profile 在首条消息前的模型选择属于 draft 初始化，不是热切换。
+    // DSH 没有 create-time selection seam，故在首个 request/header 前把该选择
+    // 一次性应用到 Agent；建立后仍只有 ModelSwitchCoordinator 可以改模型。
+    if (!hasDurableRoute && merged.model !== currentAcpModel()) {
+      const option = modelOptionOf(agent.configOptions)
+      if (option?.type === 'select' && selectValuesOf(option).includes(merged.model)) {
+        await agent.setConfigOption(option.id, merged.model, { signal })
+      }
     }
 
  // 3. 待定模型切换守卫（崩溃恢复的 turn 时 enforcement）：sidecar
@@ -410,7 +435,7 @@ export function createAcpOptionsSync(deps: AcpOptionsSyncDeps): AcpOptionsSync {
       }
     }
 
- // 3b. 模型写不再经原生路径重申（coordinator 是唯一写入口）。无待定
+ // 3b. 持久 route 建立后模型写不再经原生路径重申（coordinator 是唯一热切换入口）。无待定
  // 行而双侧值仍不同：会话建立时已做过一次性模型收敛
     //     （./agent.ts convergeModelAtEstablishment——建立后、首个 prompt 前把
     //     DSH 选定值单向应用到 Agent），此处仍分叉即那次收敛被拒/失败

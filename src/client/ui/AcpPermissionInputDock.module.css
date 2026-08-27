@@ -142,11 +142,14 @@
   flex: 0 0 auto;
 }
 
-.option:hover:not(:disabled) {
-  background: var(--dsw-alias-interactive-bg-hover);
+.cancel:hover:not(:disabled) {
+  color: var(--dsw-alias-state-error-primary);
 }
 
-.cancel:hover:not(:disabled) {
+/* 与 DSH 原生审批的拒绝操作一致，避免普通灰色 hover 模糊风险语义。 */
+.reject:hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--dsw-alias-interactive-bg-hover-danger);
   color: var(--dsw-alias-state-error-primary);
 }
 

@@ -84,6 +84,32 @@ Upgrade an installed plugin with:
 npx @deepseek-ai/dsh plugin --profile web update @zaimokuza/dsh-acp-adapter
 ```
 
+### Prerelease data compatibility
+
+ACP sidecar data is not guaranteed to remain compatible until the stable
+`0.1.0` release. If an old session reports “ACP session recovery required” or
+`profile-changed` after an upgrade, stop DSH, then back up and recreate the
+plugin's private data:
+
+macOS / Linux:
+
+```bash
+mv "$HOME/.dsh/dsh-acp" "$HOME/.dsh/dsh-acp.backup"
+```
+
+Windows PowerShell:
+
+```powershell
+Rename-Item "$env:USERPROFILE\.dsh\dsh-acp" "dsh-acp.backup"
+```
+
+Restart DSH and create a brand-new DSH session. This directory contains only
+the plugin's ACP bindings, recovery state, audit data, option snapshots, and
+model-switch transactions. It does not contain the Agent's login, skills, MCP
+configuration, or data home. Existing ACP conversations remain visible in DSH,
+but cannot be resumed after their bindings are removed. You do not need to
+delete the whole `~/.dsh/profiles/web` directory.
+
 Uninstall:
 
 ```bash

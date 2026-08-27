@@ -197,6 +197,7 @@ export function apply(ctx: Context): void {
     commitModelSwitch: async (sessionId, request) => (await namespace()).commitModelSwitch(sessionId, request),
     rollbackModelSwitch: async (sessionId, request) => (await namespace()).rollbackModelSwitch(sessionId, request),
     pendingPermissions: async (sessionId) => (await namespace()).pendingPermissions(sessionId),
+    toolPresentation: async (sessionId, toolCallId) => (await namespace()).toolPresentation(sessionId, toolCallId),
     answerPermission: async (sessionId, request) => (await namespace()).answerPermission(sessionId, request),
     cancelPermission: async (sessionId, request) => (await namespace()).cancelPermission(sessionId, request),
     pendingElicitations: async (sessionId) => (await namespace()).pendingElicitations(sessionId),
@@ -479,7 +480,14 @@ export function apply(ctx: Context): void {
     ctx.inject(['slots'], (scope) => {
       const scopeSlots = scope.get('slots') as SlotsLike
       scopeSlots.inject('tool.call.toolview', () => scopeSlots.register(
-        { name: 'tool.call.toolview', key: ACP_EXTERNAL_TOOL_NAME, locale: PICKER_NS },
+        {
+          name: 'tool.call.toolview',
+          key: ACP_EXTERNAL_TOOL_NAME,
+          locale: PICKER_NS,
+          inject: (sessionId: string) => ({
+            loadPresentation: (toolCallId: string) => acpRemote.toolPresentation!(sessionId, toolCallId),
+          }),
+        },
         AcpToolRow,
       ))
     })

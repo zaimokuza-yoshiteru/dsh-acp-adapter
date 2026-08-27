@@ -306,6 +306,10 @@
 .secondaryButton:hover:not(:disabled) {
   background: var(--dsw-alias-interactive-bg-hover-solid);
 }
+/* 顶部管理操作与下方 Agent 行内按钮共用 14px 圆角，避免同一区域出现两套按钮轮廓。 */
+.toolbarButton {
+  border-radius: 14px;
+}
 .dangerButton {
   background: transparent;
   color: var(--dsw-alias-state-error-primary);

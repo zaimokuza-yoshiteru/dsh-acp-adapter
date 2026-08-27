@@ -881,7 +881,8 @@ describe('对账纯函数', () => {
         frame,
         { sessionUpdate: 'tool_call_update', toolCallId: 't1', status: 'completed' },
       ] as unknown as SessionUpdate[]);
-      expect(fallbackUsed[0]?.digest).toBe(acpToolHistoryDigest({
+      const fallbackTool = fallbackUsed.find(entry => entry.kind === 'tool');
+      expect(fallbackTool?.digest).toBe(acpToolHistoryDigest({
         toolKind: null,
         locations: [],
         input: {},
@@ -893,14 +894,15 @@ describe('对账纯函数', () => {
         frame,
         { sessionUpdate: 'tool_call_update', toolCallId: 't1', status: 'completed', content: null },
       ] as unknown as SessionUpdate[]);
-      expect(explicitEmpty[0]?.digest).toBe(acpToolHistoryDigest({
+      const emptyTool = explicitEmpty.find(entry => entry.kind === 'tool');
+      expect(emptyTool?.digest).toBe(acpToolHistoryDigest({
         toolKind: null,
         locations: [],
         input: {},
         status: 'completed',
         result: { text: '', meta: null },
       }));
-      expect(explicitEmpty[0]?.digest).not.toBe(fallbackUsed[0]?.digest);
+      expect(emptyTool?.digest).not.toBe(fallbackTool?.digest);
     });
 
     it('raw input/locations/kind 进摘要：同 title 不同参数或 locations → 不同 digest', () => {
@@ -915,7 +917,7 @@ describe('对账纯函数', () => {
             rawInput: { path: 'a.txt' },
             ...over,
           },
-        ] as unknown as SessionUpdate[])[0]?.digest ?? '';
+        ] as unknown as SessionUpdate[]).find(entry => entry.kind === 'tool')?.digest ?? '';
       const base = replay({});
       expect(replay({ rawInput: { path: 'b.txt' } })).not.toBe(base);
       expect(replay({ locations: [{ path: '/repo/b.txt' }] })).not.toBe(base);
@@ -1190,9 +1192,20 @@ describe('对账纯函数', () => {
         { type: 'turn/start', seq: 0, time: 1, data: { turn: 1 } },
         { type: 'user/message', seq: 1, time: 2, data: userText('write the file'), surfaceOp: 'append' },
         {
+          type: 'assistant/message', seq: 2, time: 3, surfaceOp: 'append', sourceEventSeqs: [],
+          data: {
+            turn: 1, step: 1,
+            message: {
+              id: 'assistant-call-1', role: 'assistant',
+              content: [{ type: 'tool-call', id: 'c1', name: 'Preparing file…', arguments: '{"path":"f.txt","content":"x"}' }],
+              source: { kind: 'model', provider: 'acp-mock', model: 'mock-model-a' },
+            },
+          },
+        },
+        {
           type: 'tool/call',
-          seq: 2,
-          time: 3,
+          seq: 3,
+          time: 4,
           data: {
             turn: 1,
             step: 1,
@@ -1204,8 +1217,8 @@ describe('对账纯函数', () => {
         },
         {
           type: 'tool/result',
-          seq: 3,
-          time: 4,
+          seq: 4,
+          time: 5,
           data: {
             turn: 1,
             step: 1,
@@ -1217,7 +1230,7 @@ describe('对账纯函数', () => {
             },
           },
         },
-        { type: 'turn/end', seq: 4, time: 5, data: { turn: 1, reason: { kind: 'completed' } } },
+        { type: 'turn/end', seq: 5, time: 6, data: { turn: 1, reason: { kind: 'completed' } } },
       ] as unknown as SessionEvent[];
       const staged = replayEntries([
         { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'write the file' }, messageId: 'u1' },
@@ -1237,11 +1250,13 @@ describe('对账纯函数', () => {
           content: [{ type: 'content', content: { type: 'text', text: 'ok' } }],
         },
       ] as unknown as SessionUpdate[]);
-      const expected = expectedVisibleHistory(events, 0, 4);
+      const expected = expectedVisibleHistory(events, 0, 5);
       // title 展示字段各自保留（detail 摘要用），但 digest 相同 → 多重集相符
-      expect(staged[1]).toMatchObject({ kind: 'tool', title: 'Write /repo/f.txt' });
-      expect(expected[1]).toMatchObject({ kind: 'tool', title: 'Preparing file…' });
-      expect(staged[1]?.digest).toBe(expected[1]?.digest);
+      const stagedTool = staged.find(entry => entry.kind === 'tool');
+      const expectedTool = expected.find(entry => entry.kind === 'tool');
+      expect(stagedTool).toMatchObject({ kind: 'tool', title: 'Write /repo/f.txt' });
+      expect(expectedTool).toMatchObject({ kind: 'tool', title: 'Preparing file…' });
+      expect(stagedTool?.digest).toBe(expectedTool?.digest);
       expect(reconcileVisibleHistory(staged, expected)).toEqual({ ok: true });
     });
 
@@ -1345,8 +1360,10 @@ describe('对账纯函数', () => {
       // 两侧 tool 条目 digest 相等（终态快照对称：kind/locations/input/status/result
       // 全是终态事实；result.meta 只计 acpToolContent 投影——终态快照键不污染 result
       // digest 由本相等性蕴含）
-      expect(expected[1]).toMatchObject({ kind: 'tool', title: 'Write /repo/fix-round.txt' });
-      expect(expected[1]?.digest).toBe(staged[1]?.digest);
+      const expectedTool = expected.find(entry => entry.kind === 'tool');
+      const stagedTool = staged.find(entry => entry.kind === 'tool');
+      expect(expectedTool).toMatchObject({ kind: 'tool', title: 'Write /repo/fix-round.txt' });
+      expect(expectedTool?.digest).toBe(stagedTool?.digest);
       expect(reconcileVisibleHistory(staged, expected)).toEqual({ ok: true });
       expect(reconcileVisibleHistory(expected, staged)).toEqual({ ok: true });
     });

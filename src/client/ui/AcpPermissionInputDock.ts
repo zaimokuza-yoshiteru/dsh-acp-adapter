@@ -69,6 +69,24 @@ export function optionKindLabel(
   return localized === undefined || localized.trim() === '' ? fallback : localized
 }
 
+/**
+ * 与 DSH 原生审批保持同一操作层级：只有可撤销的单次允许是主操作。
+ * 持久授权和拒绝都不应通过黑色主按钮诱导用户选择。
+ */
+export function permissionOptionVariant(kind: string): 'primary' | 'outline' {
+  return kind === 'allow_once' ? 'primary' : 'outline'
+}
+
+/** 已知 ACP 语义使用产品本地化标签；Agent 原文保留在按钮 title 中。 */
+export function permissionOptionText(
+  option: AcpPendingPermissionView['options'][number],
+  t: ((key: AcpLocaleKey, params?: Record<string, string | number>) => string) | undefined,
+): string {
+  return ['allow_once', 'allow_always', 'reject_once', 'reject_always'].includes(option.kind)
+    ? optionKindLabel(option.kind, t)
+    : option.name
+}
+
 export type PermissionActionResult =
   | { readonly ok: true; readonly pending: readonly AcpPendingPermissionView[] }
   | { readonly ok: false; readonly message: string }
@@ -187,7 +205,12 @@ function PermissionCard({ sessionId, pending, remote, t, onPending }: {
                 h('dt', null, textOf(t, 'permissionAgent', 'Agent')),
                 h('dd', null, [item.agentName, item.agentId === undefined ? undefined : ` (${item.agentId})`].filter(Boolean).join('')),
               ),
-              h('div', null, h('dt', null, textOf(t, 'permissionOperation', 'Operation')), h('dd', null, item.kind)),
+              // ACP 允许 Agent 不提供 kind。缺失时隐藏这一行，不把协议空缺
+              // 包装成对用户没有帮助的技术值 "unknown"；标题、命令与位置仍保留。
+              item.kind === 'unknown' ? null : h('div', null,
+                h('dt', null, textOf(t, 'permissionOperation', 'Operation')),
+                h('dd', null, item.kind),
+              ),
               h('div', null, h('dt', null, textOf(t, 'permissionToolCall', 'Tool call')), h('dd', null, item.toolCallId)),
               item.locations === undefined || (item.locations.length === 0 && permissionLocationOmissionText(item, t) === undefined) ? null : h('div', null,
                 h('dt', null, textOf(t, 'permissionLocations', 'Locations')),
@@ -213,14 +236,15 @@ function PermissionCard({ sessionId, pending, remote, t, onPending }: {
         ),
         h('div', { className: css.actionRow },
           h('div', { className: css.options }, item.options.map((option) => h(Button, {
-            className: css.option,
+            className: option.kind.startsWith('reject') ? `${css.option} ${css.reject}` : css.option,
             key: option.optionId,
             type: 'button',
-            variant: option.kind.startsWith('reject') ? 'outline' : 'primary',
+            variant: permissionOptionVariant(option.kind),
             disabled: busy !== null,
             onClick: () => answer(item, option.optionId),
+            title: option.name,
             'data-acp-option-id': option.optionId,
-          }, option.name + ' · ' + optionKindLabel(option.kind, t))),
+          }, permissionOptionText(option, t))),
           ),
           h(Button, { className: css.cancel, variant: 'ghost', type: 'button', disabled: busy !== null, onClick: () => cancel(item) }, textOf(t, 'permissionCancel', 'Cancel request')),
         ),

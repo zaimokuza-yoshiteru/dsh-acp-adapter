@@ -10,9 +10,9 @@
 //     两次必须产出不同 handle）；注入工厂收到烘焙 actions 即 attach glue（面板
 //     store 被 resync 到 scope 投影；picker store 三 slice 一次灌入）；/model
 // 命令注册在独立 scope； 的 dock 统计行（conversation.composer.dock）
-// 是无 store/inject 的 list 槽 entry；的 toolview 渲染器
+// 是无 store/inject 的 list 槽 entry；toolview 渲染器
 //     （tool.call.toolview，key = 稳定名 dsh_acp_external_tool）是纯渲染贡献
-//     （无 store/inject，不注册假可执行工具）。
+//     （只按 sessionId 注入有界运行态展示查询，不注册假可执行工具）。
 //   卸载残留：跑完全部 fiber disposer 后——两个 locale 命名空间退订、controller
 //     dispose（scope 退订、sink 断开）、pickerService dispose（remote 两路 +
 //     connection/reset 退订）、commandUi 贡献撤下、六个 slot 注册 disposer 被调。
@@ -152,6 +152,7 @@ function createFakeCtx(options: {
             setOption: () => Promise.resolve({ ok: false, error: { message: 'unused' } }),
             backendOf: () => options.backendOf ?? { ok: false, error: { message: 'ACP unavailable' } },
             rebindBlank: () => Promise.resolve({ ok: false, error: { message: 'unused' } }),
+            toolPresentation: () => Promise.resolve({ ok: true, value: null }),
             boundSessions: () => Promise.resolve({ ok: true, value: { count: 0 } }),
             beginModelSwitch: () => Promise.resolve({ ok: false, error: { message: 'unused' } }),
             commitModelSwitch: () => Promise.resolve({ ok: false, error: { message: 'unused' } }),
@@ -261,12 +262,14 @@ describe('client 入口注册形态（slot/store 纪律）', () => {
     expect(elicitationDock.locale).toBe('settings.acp');
 
  // keyed toolview 渲染器——key 是稳定 wire name，locale 挂
-    // 'acp-model' 命名空间；纯渲染贡献（无 store/inject seat）。
+ // 'acp-model' 命名空间；inject 只闭包当前 session 的有界展示查询。
     expect(toolview.name).toBe('tool.call.toolview');
     expect(toolview.key).toBe('dsh_acp_external_tool');
     expect(toolview.locale).toBe('acp-model');
     expect(toolview.store).toBeUndefined();
-    expect(toolview.inject).toBeUndefined();
+    expect(typeof toolview.inject).toBe('function');
+    const toolFace = toolview.inject!('session-tool') as { loadPresentation: (callId: string) => Promise<unknown> };
+    expect(typeof toolFace.loadPresentation).toBe('function');
 
     // 独占工厂形态：store 位是函数，连调产出不同 handle（共享 handle 会被
     // 模块缓存伪装成跨重载单例——register 的 store 位只接受工厂或共享 handle，

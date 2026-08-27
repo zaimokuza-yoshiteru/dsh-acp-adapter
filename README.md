@@ -83,6 +83,28 @@ ACP 会话自动使用“原生 Agent 访问”（DSH 权限标识为 `danger-fu
 npx @deepseek-ai/dsh plugin --profile web update @zaimokuza/dsh-acp-adapter
 ```
 
+### 预发布版本的数据兼容
+
+`0.1.0` 正式版之前不保证 ACP sidecar 数据跨版本兼容。如果升级后旧会话提示
+“ACP 会话需要恢复”或 `profile-changed`，请先停止 DSH，再备份并重建插件私有数据：
+
+macOS / Linux：
+
+```bash
+mv "$HOME/.dsh/dsh-acp" "$HOME/.dsh/dsh-acp.backup"
+```
+
+Windows PowerShell：
+
+```powershell
+Rename-Item "$env:USERPROFILE\.dsh\dsh-acp" "dsh-acp.backup"
+```
+
+重启 DSH 后请创建一个全新的 DSH 会话。该目录只包含插件的 ACP binding、恢复状态、
+审计、选项快照和模型切换事务；不会删除 Agent 自己的登录、skills、MCP 或 data home。
+旧 ACP 会话的 DSH 页面历史仍可查看，但清理 binding 后不能继续恢复。无需删除整个
+`~/.dsh/profiles/web`。
+
 卸载：
 
 ```bash

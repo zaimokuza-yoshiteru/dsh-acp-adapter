@@ -235,8 +235,8 @@ describe('happy 全序列（mock-agent happy scenario 复刻）', () => {
       ['assistant/chunk', 'assistant/chunk', 'assistant/chunk'], // thought block-end + text block-start + 'Hello'
       ['assistant/chunk'], // text-delta ', mock'
       ['assistant/chunk'], // text-delta ' world.'
- // tool_call 到达前先 flush 开放文本段（block-end + assistant/message），再落 tool/call
-      ['assistant/chunk', 'assistant/message', 'tool/call'],
+ // tool_call 到达前先 flush 文本，再落标准 assistant tool-call 块与独立 tool/call
+      ['assistant/chunk', 'assistant/message', 'assistant/chunk', 'assistant/message', 'tool/call'],
       ['tool/result'],
       ['assistant/chunk', 'assistant/chunk', 'assistant/chunk'], // plan 三元组（新 segment，step 3）
       ['request/context'],
@@ -255,6 +255,8 @@ describe('happy 全序列（mock-agent happy scenario 复刻）', () => {
       'assistant/chunk',
       'assistant/chunk',
       'assistant/message',
+      'assistant/chunk',
+      'assistant/message',
       'tool/call',
       'tool/result',
       'assistant/chunk',
@@ -265,25 +267,25 @@ describe('happy 全序列（mock-agent happy scenario 复刻）', () => {
     ])
 
     // seq 从 0 连续；time 由 sink 分配
-    expect(sink.events.map(e => e.seq)).toEqual(Array.from({ length: 16 }, (_, i) => i))
+    expect(sink.events.map(e => e.seq)).toEqual(Array.from({ length: 18 }, (_, i) => i))
     expect(sink.events.every(e => typeof e.time === 'number')).toBe(true)
 
     // feed/endTurn 返回的事件就是 sink 新追加的事件（同值、同序）
-    expect(perFeed.flat()).toEqual(sink.events.slice(0, 15))
-    expect(endEvents).toEqual([at(sink.events, 15)])
+    expect(perFeed.flat()).toEqual(sink.events.slice(0, 17))
+    expect(endEvents).toEqual([at(sink.events, 17)])
 
  // 所有 turn 作用域事件归属 turn 1；step 是 presentation step：
-    // segment 1（thought+text，seq 0-8）= 1；tool 段（seq 9-10）= 2；plan 段（seq 11-13、15）= 3
+    // segment 1（thought+text，seq 0-8）= 1；tool 段（seq 9-12）= 2；plan 段（seq 13-15、17）= 3
     const turnScoped = [
       ...ofType(sink.events, 'assistant/chunk'),
       ...ofType(sink.events, 'assistant/message'),
       ...ofType(sink.events, 'tool/call'),
       ...ofType(sink.events, 'tool/result'),
     ]
-    expect(turnScoped).toHaveLength(15)
+    expect(turnScoped).toHaveLength(17)
     for (const e of turnScoped) {
       expect(e.data.turn).toBe(1)
-      const expectedStep = e.seq <= 8 ? 1 : e.seq <= 10 ? 2 : 3
+      const expectedStep = e.seq <= 8 ? 1 : e.seq <= 12 ? 2 : 3
       expect(e.data.step).toBe(expectedStep)
     }
 
@@ -299,7 +301,7 @@ describe('happy 全序列（mock-agent happy scenario 复刻）', () => {
  // turn 内两条 assistant/message——segment 1（thought+text，tool/call
     // 到达前 flush）与 segment 3（plan 折叠的 reasoning，endTurn 收口）
     const messages = ofType(sink.events, 'assistant/message')
-    expect(messages).toHaveLength(2)
+    expect(messages).toHaveLength(3)
 
     const msg = at(messages, 0)
     expect(msg.surfaceOp).toBe('append')
@@ -320,9 +322,15 @@ describe('happy 全序列（mock-agent happy scenario 复刻）', () => {
     // （上下文占用走 translator.contextUsage 快照 / live state 通道，见专项套件）
     expect('usage' in msg.data).toBe(false)
 
-    const planMsg = at(messages, 1)
+    const toolMsg = at(messages, 1)
+    expect(toolMsg.data.message.content).toEqual([{
+      type: 'tool-call', id: 'mock-tool-1', name: 'Read README.md', arguments: '{"path":"README.md"}',
+    }])
+    expect(toolMsg.sourceEventSeqs).toEqual([9])
+
+    const planMsg = at(messages, 2)
     expect(planMsg.surfaceOp).toBe('append')
-    expect(planMsg.sourceEventSeqs).toEqual([11, 12, 13])
+    expect(planMsg.sourceEventSeqs).toEqual([13, 14, 15])
     expect(planMsg.data.turn).toBe(1)
     expect(planMsg.data.step).toBe(3)
     expect(planMsg.data.message.content).toEqual([
@@ -348,9 +356,13 @@ describe('happy 全序列（mock-agent happy scenario 复刻）', () => {
       index: 1,
       block: { type: 'text', text: 'Hello, mock world.' },
     })
-    expect(at(chunks, 8).data.chunk).toEqual({ type: 'block-start', index: 0, blockType: 'reasoning' })
-    expect(at(chunks, 9).data.chunk).toEqual({ type: 'reasoning-delta', index: 0, text: HAPPY_PLAN_TEXT })
-    expect(at(chunks, 10).data.chunk).toEqual({
+    expect(at(chunks, 8).data.chunk).toEqual({
+      type: 'block-end', index: 0,
+      block: { type: 'tool-call', id: 'mock-tool-1', name: 'Read README.md', arguments: '{"path":"README.md"}' },
+    })
+    expect(at(chunks, 9).data.chunk).toEqual({ type: 'block-start', index: 0, blockType: 'reasoning' })
+    expect(at(chunks, 10).data.chunk).toEqual({ type: 'reasoning-delta', index: 0, text: HAPPY_PLAN_TEXT })
+    expect(at(chunks, 11).data.chunk).toEqual({
       type: 'block-end',
       index: 0,
       block: { type: 'reasoning', text: HAPPY_PLAN_TEXT },
@@ -468,11 +480,12 @@ describe('messageId 归属与块切换', () => {
     const result = at(ofType(sink.events, 'tool/result'), 0)
     expect(messages.map((event) => event.data.message.content)).toEqual([
       [{ type: 'text', text: 'before' }],
+      [{ type: 'tool-call', id: 'timeline-tool', name: 'Timeline tool', arguments: '{}' }],
       [{ type: 'text', text: 'after' }],
     ])
     expect(messages[0]!.seq).toBeLessThan(tool.seq)
     expect(tool.seq).toBeLessThan(result.seq)
-    expect(result.seq).toBeLessThan(messages[1]!.seq)
+    expect(result.seq).toBeLessThan(messages[2]!.seq)
   })
 
   it('messageId 缺失的匿名 run：同 kind 连续聚合，与具名/异 kind 均构成切换', () => {
@@ -752,8 +765,12 @@ describe('tool_call / tool_call_update', () => {
     const result = at(ofType(sink.events, 'tool/result'), 0)
     expect(result.data.turn).toBe(2)
     expect(result.sourceEventSeqs).toEqual([call.seq])
-    // 两个 turn 都没有 assistant/message（turn 2 只有 tool/result，不算内容聚合）
-    expect(ofType(sink.events, 'assistant/message')).toEqual([])
+    // tool call 以标准 assistant tool-call message 注册，终态才不会被轨迹视为 orphan。
+    const messages = ofType(sink.events, 'assistant/message')
+    expect(messages).toHaveLength(1)
+    expect(messages[0]?.data.message.content).toEqual([{
+      type: 'tool-call', id: 'late', name: 'Late call', arguments: '{}',
+    }])
     expect(translator.warnings).toEqual([])
   })
 })
@@ -1319,6 +1336,8 @@ describe('append 纪律抽样', () => {
  // tool_call 到达前的 segment flush（block-end + assistant/message）
       'assistant/chunk',
       'assistant/message',
+      'assistant/chunk',
+      'assistant/message',
       'tool/call',
       'tool/result',
       'request/context',
@@ -1327,8 +1346,8 @@ describe('append 纪律抽样', () => {
       e => e.type === 'assistant/chunk' || e.type === 'tool/call' || e.type === 'request/context',
     )
     const surfaced = sink.events.filter(e => e.type === 'assistant/message' || e.type === 'tool/result')
-    expect(logOnly).toHaveLength(5)
-    expect(surfaced).toHaveLength(2)
+    expect(logOnly).toHaveLength(6)
+    expect(surfaced).toHaveLength(3)
     for (const e of logOnly) {
       expect('surfaceOp' in e).toBe(false)
       expect('sourceEventSeqs' in e).toBe(false)
@@ -1524,7 +1543,7 @@ describe('live/replay 一致性：同一纯 reducer 对同一事件流跑两遍�
  // 防呆：比对对象不是空流（turn1 16 事件（tool/call 前的 segment flush
     // 多一条 assistant/message）+ turn2 非文本 chunk 占位三连 + 孤儿 tool/result
     // 前的占位段 flush message + 孤儿 tool/result，共 5 事件）
-    expect(JSON.parse(live.events)).toHaveLength(21)
+    expect(JSON.parse(live.events)).toHaveLength(23)
     expect(JSON.parse(live.counts)).toEqual({
       'unsupported-chunk-content': 1,
       'orphan-tool-result': 1,
@@ -1902,7 +1921,7 @@ describe(' PresentationSegmenter 验收矩阵（消息展示顺序：正文与 t
     expect(translator.warnings).toEqual([])
   })
 
-  it('纯工具 turn：不产 assistant/message；tool 事件 step 1；turnProducedOutput = true（不触发空响应）', () => {
+  it('纯工具 turn：产标准 assistant tool-call message；tool 事件 step 1；turnProducedOutput = true', () => {
     const { sink, translator } = makeTranslator()
     translator.beginTurn(1)
     translator.feed(notification(toolCallFrame('t1', 'Read')))
@@ -1910,7 +1929,11 @@ describe(' PresentationSegmenter 验收矩阵（消息展示顺序：正文与 t
     const endEvents = translator.endTurn()
 
     expect(endEvents).toEqual([])
-    expect(ofType(sink.events, 'assistant/message')).toEqual([])
+    const messages = ofType(sink.events, 'assistant/message')
+    expect(messages).toHaveLength(1)
+    expect(messages[0]?.data.message.content).toEqual([{
+      type: 'tool-call', id: 't1', name: 'Read', arguments: '{}',
+    }])
     const call = at(ofType(sink.events, 'tool/call'), 0)
     const result = at(ofType(sink.events, 'tool/result'), 0)
     expect(call.data.step).toBe(ACP_STEP)
@@ -1930,6 +1953,7 @@ describe(' PresentationSegmenter 验收矩阵（消息展示顺序：正文与 t
     translator.endTurn()
 
     const messages = ofType(sink.events, 'assistant/message')
+      .filter(event => event.data.message.content.some(block => block.type !== 'tool-call'))
     const call = at(ofType(sink.events, 'tool/call'), 0)
     const result = at(ofType(sink.events, 'tool/result'), 0)
     expect(messages).toHaveLength(2)
@@ -1962,6 +1986,7 @@ describe(' PresentationSegmenter 验收矩阵（消息展示顺序：正文与 t
 
     const calls = ofType(sink.events, 'tool/call')
     const messages = ofType(sink.events, 'assistant/message')
+      .filter(event => event.data.message.content.some(block => block.type !== 'tool-call'))
     expect(messages).toHaveLength(1)
     expect(at(calls, 0).data.step).toBe(1)
     expect(at(messages, 0).data.step).toBe(2)
@@ -1988,6 +2013,7 @@ describe(' PresentationSegmenter 验收矩阵（消息展示顺序：正文与 t
 
     const calls = ofType(sink.events, 'tool/call')
     const messages = ofType(sink.events, 'assistant/message')
+      .filter(event => event.data.message.content.some(block => block.type !== 'tool-call'))
     expect(at(messages, 0).data.step).toBe(1)
     expect(at(calls, 0).data.step).toBe(2)
     expect(at(calls, 1).data.step).toBe(3)
@@ -2018,7 +2044,9 @@ describe(' PresentationSegmenter 验收矩阵（消息展示顺序：正文与 t
 
     // 当前开放文本段未被扰动：endTurn 才收口
     expect(typeNames(translator.endTurn())).toEqual(['assistant/chunk', 'assistant/message'])
-    const msg = at(ofType(sink.events, 'assistant/message'), 0)
+    const msg = at(ofType(sink.events, 'assistant/message').filter(
+      event => event.data.message.content.some(block => block.type !== 'tool-call'),
+    ), 0)
     expect(msg.data.turn).toBe(2)
     expect(msg.data.step).toBe(1) // turn 2 的首个 segment 从 1 起
     expect(msg.data.message.content).toEqual([{ type: 'text', text: 'turn two text' }])
@@ -2056,6 +2084,7 @@ describe(' PresentationSegmenter 验收矩阵（消息展示顺序：正文与 t
     translator.endTurn()
 
     const messages = ofType(sink.events, 'assistant/message')
+      .filter(event => event.data.message.content.some(block => block.type !== 'tool-call'))
     expect(messages).toHaveLength(2)
     // 已提交消息的内容与引用逐字节不变（后续文本绝不回写旧消息）
     expect(at(messages, 0)).toBe(committed)

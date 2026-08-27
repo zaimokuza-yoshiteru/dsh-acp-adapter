@@ -675,9 +675,10 @@ export function resolveExpectedRange(
  * user/message → user（text 块拼接；同一 DSH turn 开头的连续多条
  * user/message 再拼成一个锚点——DSH 会把宿主注入与真实用户输入分条记录，
  * 而 ACP Agent 可在 session/load 中按实际 prompt 边界合并回放）；
- * assistant/message（**仅带
- * sourceEventSeqs 字段的**——省略该字段的是本适配器的说明消息，不参与）→
- * assistant（type==='text' 块拼接）；tool/call → tool（title 优先取
+ * assistant/message（**仅带 sourceEventSeqs 字段且不是纯 tool-call
+ * message 的**——省略该字段的是说明消息，纯 tool-call message 只是 DSH UI
+ * 结构注册头，二者均不参与）→ assistant（type==='text' 块拼接）；
+ * tool/call → tool（title 优先取
  * `meta.acpToolCall.title`（起 name 恒为稳定名，首帧 wire title 的落盘
  * 通道）、缺席回退 name，仅作展示摘要字段、不进 digest；kind/locations 读事件
  * `meta.acpToolCall`，raw input
@@ -724,6 +725,11 @@ export function expectedVisibleHistory(
       lastUserTurn = currentTurn
     } else if (event.type === 'assistant/message') {
       if (event.sourceEventSeqs === undefined) continue // 本适配器的说明消息
+      // 纯 tool-call assistant message 是 DSH UI 的结构注册头；工具语义由紧随的
+      // tool/call + tool/result 唯一计入。把这个空正文再算作 assistant 会制造
+      // 无意义的重复历史项，并让 UI 修复反向污染恢复连续性。
+      if (event.data.message.content.length > 0
+        && event.data.message.content.every((block) => block.type === 'tool-call')) continue
       const text = event.data.message.content.filter((block) => block.type === 'text').map((block) => block.text).join('')
       builders.push({ kind: 'assistant', text })
     } else if (event.type === 'tool/call') {

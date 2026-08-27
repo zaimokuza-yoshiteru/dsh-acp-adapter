@@ -4,6 +4,8 @@ import {
   optionKindLabel,
   pendingForSession,
   permissionLocationOmissionText,
+  permissionOptionText,
+  permissionOptionVariant,
   submitPermissionAnswer,
   submitPermissionCancel,
 } from '../../../src/client/ui/AcpPermissionInputDock.ts'
@@ -93,6 +95,20 @@ describe('ACP permission input.dock surface', () => {
     expect(optionKindLabel('allow_always', t)).toBe('始终允许')
     expect(optionKindLabel('reject_once', t)).toBe('拒绝一次')
     expect(optionKindLabel('future_kind', t)).toBe('未知(future_kind)')
+  })
+
+  it('only reversible allow-once is promoted to the DSH primary action', () => {
+    expect(permissionOptionVariant('allow_once')).toBe('primary')
+    expect(permissionOptionVariant('allow_always')).toBe('outline')
+    expect(permissionOptionVariant('reject_once')).toBe('outline')
+    expect(permissionOptionVariant('reject_always')).toBe('outline')
+  })
+
+  it('known options use one localized label while preserving unknown Agent labels', () => {
+    expect(permissionOptionText(pending[0]!.options[0]!, t)).toBe('允许一次')
+    expect(permissionOptionText(pending[0]!.options[1]!, t)).toBe('始终允许')
+    expect(permissionOptionText({ optionId: 'ask-admin', name: 'Ask an administrator', kind: 'future_kind' }, t))
+      .toBe('Ask an administrator')
   })
 
   it('bounded locations disclose omitted entries, including legacy count metadata', () => {

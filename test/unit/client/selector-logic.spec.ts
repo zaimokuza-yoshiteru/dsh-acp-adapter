@@ -381,6 +381,10 @@ describe('backend 兼容矩阵（backendOfProvider / isSameBackendSelection / de
   it('decodeBackendState：blank / draft / established 三形态；畸形整体 undefined', () => {
     expect(decodeBackendState({ state: 'blank' })).toEqual({ state: 'blank' });
     expect(decodeBackendState({ state: 'draft', provider: 'acp-devin' })).toEqual({ state: 'draft', provider: 'acp-devin' });
+    expect(decodeBackendState({ state: 'draft', provider: 'acp-devin', model: 'devin-fast' })).toEqual({
+      state: 'draft', provider: 'acp-devin', model: 'devin-fast',
+    });
+    expect(decodeBackendState({ state: 'draft', provider: 'acp-devin', model: '' })).toBeUndefined();
     expect(decodeBackendState({ state: 'established', provider: 'acp-devin' })).toEqual({ state: 'established', provider: 'acp-devin' });
     expect(decodeBackendState({ state: 'established' })).toBeUndefined();
     expect(decodeBackendState({ state: 'established', provider: '' })).toBeUndefined();

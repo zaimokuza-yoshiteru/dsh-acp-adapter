@@ -93,7 +93,7 @@ export type ProviderFilter = 'current' | 'all' | ProviderKind
 /** Backend state returned by the host; established means a provider route is locked. */
 export type PickerBackendState =
   | { state: 'blank' }
-  | { state: 'draft'; provider: string }
+  | { state: 'draft'; provider: string; model?: string }
   | { state: 'established'; provider: string }
 
 /** Validating decoder for the `backendOf` wire reply; malformed → undefined. */
@@ -101,7 +101,12 @@ export function decodeBackendState(raw: unknown): PickerBackendState | undefined
   if (!isPlainObject(raw)) return undefined
   if (raw['state'] === 'blank') return { state: 'blank' }
   if (raw['state'] === 'draft' && typeof raw['provider'] === 'string' && raw['provider'] !== '') {
-    return { state: 'draft', provider: raw['provider'] }
+    if (raw['model'] !== undefined && (typeof raw['model'] !== 'string' || raw['model'] === '')) return undefined
+    return {
+      state: 'draft',
+      provider: raw['provider'],
+      ...(typeof raw['model'] === 'string' ? { model: raw['model'] } : {}),
+    }
   }
   if (raw['state'] === 'established' && typeof raw['provider'] === 'string' && raw['provider'] !== '') {
     return { state: 'established', provider: raw['provider'] }

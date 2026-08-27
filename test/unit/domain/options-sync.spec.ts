@@ -54,6 +54,8 @@ const ROUTE = 'acp-test';
 
 interface FakeAgentSpec {
   status?: 'idle' | 'running';
+  /** false = 首条 request/header 尚未落盘（空白会话的 live default 仍只是影子）。 */
+  durableRoute?: boolean;
   /** options.model 兜底（无 configOptions 时的 ACP 当前模型）。 */
   fallbackModel?: string;
   configOptions?: acp.SessionConfigOption[];
@@ -85,6 +87,11 @@ function makeAgent(spec: FakeAgentSpec = {}) {
   const seam = {
     id: 'session-1',
     options: { model: spec.fallbackModel ?? '' },
+    session: {
+      requestHeader: () => spec.durableRoute === false
+        ? undefined
+        : { config: { provider: ROUTE, model: spec.fallbackModel ?? '' } },
+    },
     get status() {
       return state.status;
     },
@@ -211,6 +218,28 @@ async function expectSyncError(promise: Promise<void>, code: AcpOptionsSyncError
 // ---------- syncBeforeTurn（原生路径） ----------
 
 describe('syncBeforeTurn', () => {
+  it('首条消息前忽略 foreign 全局默认影子，采用实际 ACP wrapper', async () => {
+    const { sync, calls, logger, selection } = makeHarness({
+      durableRoute: false,
+      configOptions: [modelOption('m1', ['m1', 'm2'])],
+    });
+    selection.current = { provider: 'acp-other', model: 'other-model' };
+    await expect(sync.syncBeforeTurn()).resolves.toBeUndefined();
+    expect(calls).toEqual([]);
+    expect(logger.info).toHaveBeenCalledOnce();
+  });
+
+  it('同 profile 的 draft 模型选择在首条消息前真实应用到 Agent', async () => {
+    const { sync, calls, state, selection } = makeHarness({
+      durableRoute: false,
+      configOptions: [modelOption('m1', ['m1', 'm2'])],
+    });
+    selection.current = { provider: ROUTE, model: 'm2' };
+    await sync.syncBeforeTurn();
+    expect(calls).toEqual([{ method: 'setConfigOption', args: ['model', 'm2'] }]);
+    expect(state.configOptions?.[0]).toMatchObject({ currentValue: 'm2' });
+  });
+
   it('无原生选择：两个 waterfall 均触发、seed = ACP 当前值、seam 零调用零提示', async () => {
     const { sync, calls, logger, assembleContexts, seeds } = makeHarness({
       configOptions: [modelOption('m1', ['m1', 'm2'])],

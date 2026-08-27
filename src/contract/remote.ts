@@ -291,6 +291,16 @@ export interface AcpPendingPermissionView {
   readonly createdAt: number
 }
 
+/**
+ * 运行中 ACP 工具的有界展示身份。DSH 的 running Tool 节点不会携带
+ * `tool/call.meta`，因此插件通过会话级 Remote 只补取 title/kind；参数、输出和
+ * 路径不跨这条临时展示通道。
+ */
+export interface AcpToolCallPresentationView {
+  readonly title?: string
+  readonly kind?: string
+}
+
 export interface AcpPermissionAnswerRequest {
   readonly requestId: string
   readonly optionId: string
@@ -412,7 +422,7 @@ export interface AcpHealthRequest {
  */
 export type AcpBackendState =
   | { readonly state: 'blank' }
-  | { readonly state: 'draft'; readonly provider: string }
+  | { readonly state: 'draft'; readonly provider: string; readonly model?: string }
   | { readonly state: 'established'; readonly provider: string }
 
 /**

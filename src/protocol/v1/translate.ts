@@ -33,6 +33,8 @@
  *   `assistant/message`**（落盘 seq 先于 tool/call —— settled 锚点因此恒在
  *   tool 卡片之上，不再跳变）；
  * - 每个 tool call id 首次出现分配稳定 step，其后的 update/result 复用；
+ *   同 step 先落一个标准 assistant tool-call message 注册 DSH 的调用归属，
+ *   再落独立 tool/call；否则完成态会被上游轨迹视为 orphan 并移到顶部；
  * - tool 之后的新文本开**新的** assistant segment（新 step、新
  *   `assistant/message`），绝不回写已提交的旧消息；
  * - `endTurn` 只 flush 当前开放 segment，不移动已提交消息；
@@ -1396,7 +1398,9 @@ export class TurnTranslator {
    *   are aggregated into synthetic `user/message` events by
    *   {@link ReplayTranslator} before reaching this translator.
  * - `tool_call` → 先 flush 当前开放 assistant segment（钉死「正文在
-   *   tool 卡片上方」，见 {@link PresentationSegmenter}），再发 one `tool/call`
+   *   tool 卡片上方」，见 {@link PresentationSegmenter}），再发一个仅含
+   *   tool-call block 的标准 `assistant/message`（其人类可读 name 取 ACP title，
+   *   供 DSH 轨迹归属和标题展示）以及 one `tool/call`
    *   with `{callId: CallId(toolCallId),
    *   name: ACP_EXTERNAL_TOOL_NAME, arguments: JSON.stringify(rawInput ?? {})}` ( * the unstable ACP `name` field is NOT consulted；：`name` 恒为稳定名
    *   {@link ACP_EXTERNAL_TOOL_NAME}——宿主 keyed `tool.call.toolview` 槽位
@@ -1656,6 +1660,29 @@ export class TurnTranslator {
     // 不再出现「流式期在上方、endTurn 后跳到下方」的跳变。
     const events = this.flushSegment()
     const step = this.segmenter.stepForToolCall(update.toolCallId)
+    const callTitle = boundAcpToolTitle(update.title) ?? acpUnknownToolName(update.toolCallId)
+    const assistantCall: ContentBlock = {
+      type: 'tool-call',
+      id: CallId(update.toolCallId),
+      // 轨迹使用 assistant block 的 name 展示；这里保留 ACP 的人类可读标题。
+      // 独立 tool/call 仍使用稳定 wire name，以命中插件的 keyed toolview。
+      name: callTitle,
+      arguments: JSON.stringify(update.rawInput ?? {}),
+    }
+    const callChunk = this.sink.append('assistant/chunk', {
+      turn: this.turnNumber,
+      step,
+      chunk: { type: 'block-end', index: 0, block: assistantCall },
+    })
+    events.push(callChunk)
+    events.push(this.sink.append('assistant/message', {
+      turn: this.turnNumber,
+      step,
+      message: createAssistantMessage({
+        content: [assistantCall],
+        source: { provider: this.currentRoute.provider, model: this.effectiveModel() },
+      }),
+    }, { surfaceOp: 'append', sourceEventSeqs: [callChunk.seq] }))
     const meta = acpToolCallMetaJson(update)
     const data: AcpToolCallEventData = {
       turn: this.turnNumber,

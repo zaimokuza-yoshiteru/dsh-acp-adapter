@@ -111,6 +111,8 @@ const EXOTIC_OPTION = { id: 'temperature', type: 'slider', name: 'Temperature', 
 
 interface FakeLiveAgentOverrides {
   status?: 'idle' | 'running';
+  backendState?: 'blank' | 'draft' | 'established';
+  selectedModel?: string;
   /** null = agent 未提供 configOptions（优雅降级矩阵）。 */
   configOptions?: acp.SessionConfigOption[] | null;
   /** null = 模式未知（无推送也无会话响应种子）。 */
@@ -122,6 +124,7 @@ interface FakeLiveAgentOverrides {
   /** seam 注入失败（竞态忙 / 未启动）。 */
   setConfigOptionError?: Error;
   setModeError?: Error;
+  toolPresentation?: { title?: string; kind?: string };
 }
 
 function createFakeLiveAgent(overrides: FakeLiveAgentOverrides = {}) {
@@ -136,6 +139,8 @@ function createFakeLiveAgent(overrides: FakeLiveAgentOverrides = {}) {
   const calls = { prepare: 0, setConfigOption: [] as Array<[string, string | boolean]>, setMode: [] as string[], rebindBlank: 0, reconnectOriginal: 0, recordRecoveryAction: [] as string[] };
   const face: AcpLiveAgentFace = {
     providerRoute: 'acp-test',
+    ...(overrides.selectedModel === undefined ? {} : { selectedModel: overrides.selectedModel }),
+    ...(overrides.backendState === undefined ? {} : { backendState: overrides.backendState }),
     get status() {
       return state.status;
     },
@@ -153,6 +158,9 @@ function createFakeLiveAgent(overrides: FakeLiveAgentOverrides = {}) {
     },
     get continuityState() {
       return { status: 'ok' as const, cause: null, detail: null };
+    },
+    getToolCallPresentationSnapshot() {
+      return overrides.toolPresentation;
     },
     prepare() {
       calls.prepare += 1;
@@ -328,7 +336,7 @@ describe('AcpRemoteService 注册', () => {
     expect(service.typertRemote.service).toBe(service);
   });
 
- it('生成物恰好承载十六条 invocation（模型/会话、ACP 权限与 elicitation；authenticate 移出 Remote 面）', () => {
+ it('生成物承载完整的模型/会话、交互与运行态工具展示 invocation', () => {
     const manifest = TYPERT as {
       package: string;
       invocations: Array<{ id: string; parameters: Array<{ name: string }>; cancellation?: { parameter: string } }>;
@@ -352,7 +360,22 @@ describe('AcpRemoteService 注册', () => {
       '@zaimokuza/dsh-acp-adapter#dshAcp/recordRecoveryAction',
       '@zaimokuza/dsh-acp-adapter#dshAcp/rollbackModelSwitch',
       '@zaimokuza/dsh-acp-adapter#dshAcp/setOption',
+      '@zaimokuza/dsh-acp-adapter#dshAcp/toolPresentation',
     ]);
+  });
+});
+
+describe('dshAcp/toolPresentation', () => {
+  it('只投影运行中工具的 title/kind，缺失调用返回 null', () => {
+    const { registry } = createFakeRegistry({ kimi: DEVIN }, {});
+    const present = createFakeLiveAgent({ toolPresentation: { title: 'Bash', kind: 'execute' } });
+    const absent = createFakeLiveAgent();
+    const { service } = buildService({ registry, liveAgents: new Map([
+      ['present', present.face],
+      ['absent', absent.face],
+    ]) });
+    expect(service.toolPresentation('present', 'call-1')).toEqual({ title: 'Bash', kind: 'execute' });
+    expect(service.toolPresentation('absent', 'call-2')).toBeNull();
   });
 });
 
@@ -747,6 +770,19 @@ describe('dshAcp/backendOf', () => {
       backendFacts: fakeFacts({ live: true }),
     });
     await expect(service.backendOf('sess-1')).resolves.toEqual({ state: 'established', provider: 'acp-test' });
+  });
+
+  it('新会话的空白 AcpAgent wrapper → 带 provider 的 draft，而不是丢失身份的 blank', async () => {
+    const { registry } = createFakeRegistry({ devin: DEVIN }, {});
+    const agent = createFakeLiveAgent({ backendState: 'blank', selectedModel: 'devin-fast' });
+    const { service } = buildService({
+      registry,
+      liveAgents: new Map([['sess-1', agent.face]]),
+      backendFacts: fakeFacts({ live: true }),
+    });
+    await expect(service.backendOf('sess-1')).resolves.toEqual({
+      state: 'draft', provider: 'acp-test', model: 'devin-fast',
+    });
   });
 
   it('无活体、sidecar binding 在场 → established（覆盖 header 空洞：ACP 会话创建即有 binding）', async () => {

@@ -86,6 +86,7 @@ import type {
   AcpProbeCleanupView,
   AcpProviderHealth,
   AcpSessionContinuity,
+  AcpToolCallPresentationView,
 } from '../contract/remote.ts'
 
 /** `<command> --version` 尽力而为的短超时（毫秒）。 */
@@ -276,6 +277,8 @@ export interface AcpLiveAgentFace {
   readonly backendState?: 'blank' | 'draft' | 'established'
  /** 本会话的 provider 路由（`acp-<id>`； `backendOf` 的权威 backend 判定之一）。 */
   readonly providerRoute: string
+  /** 构造该 wrapper 时采用的会话模型；draft 阶段用于覆盖 DSH 的全局默认影子。 */
+  readonly selectedModel?: string | undefined
   readonly configOptions: readonly acp.SessionConfigOption[] | undefined
   readonly currentModeId: string | undefined
   /** 本会话 initialize 握手的 agent capabilities 实际值（未懒启动时缺席 → 快照归 null）。 */
@@ -308,6 +311,10 @@ export interface AcpLiveAgentFace {
   rebindBlank(): Promise<void>
   reconnectOriginal?: () => Promise<void>
   recordRecoveryAction?: (action: 'retry-original' | 'rebind-blank' | 'new-session') => Promise<void>
+  getToolCallPresentationSnapshot?: (toolCallId: string) => {
+    readonly title?: string
+    readonly kind?: string
+  } | undefined
 }
 
 /** Resolve a dsh session id to its live ACP agent；undefined = 无活体（调用即抛错）。 */
@@ -625,6 +632,20 @@ export class AcpRemoteService extends TypertRemoteService {
     if (this.resolved.pendingPermissions === null) throw new Error('ACP permission interaction is unavailable on this host')
     this.resolved.pendingPermissions.observe(sessionId)
     return this.resolved.pendingPermissions.list(sessionId)
+  }
+
+  /**
+   * 补足 DSH running Tool 节点不透传 `tool/call.meta` 的展示缺口。只返回有界
+   * title/kind；工具结束后正式展示仍以持久化的 tool/result 信封为准。
+   */
+  @Remote
+  toolPresentation(sessionId: string, toolCallId: string): AcpToolCallPresentationView | null {
+    const snapshot = this.requireLiveAgent(sessionId).getToolCallPresentationSnapshot?.(toolCallId)
+    if (snapshot === undefined) return null
+    return {
+      ...(snapshot.title === undefined ? {} : { title: snapshot.title }),
+      ...(snapshot.kind === undefined ? {} : { kind: snapshot.kind }),
+    }
   }
 
   /** Return the exact Agent-provided optionId; no once/always compression occurs. */
@@ -1127,14 +1148,24 @@ export class AcpRemoteService extends TypertRemoteService {
     }
     const bound = await facts.readBindingProvider(sessionId)
     if (bound !== undefined) return { state: 'established', provider: bound }
-    // A newly-created session whose default model is ACP owns a live wrapper,
-    // but that wrapper is only a draft until its first prompt commits a
-    // binding. rc.2 cannot replace the wrapper in place; picker code uses the
-    // provider to route cross-profile/native choices to a new DSH session.
+    // A newly-created session whose default model is ACP already owns an ACP
+    // wrapper. Before session/new it has no durable binding yet, but its
+    // execution-backend identity is not blank: rc.2 cannot replace that live
+    // wrapper in place. Report it as a provider-qualified draft so the client
+    // can converge Native Agent Access and route model choices without asking
+    // the user to select the same Agent a second time.
     const liveAcp = this.resolved.resolveLiveAgent(sessionId)
     if (liveAcp !== undefined) {
       const state = liveAcp.backendState ?? 'established'
-      return state === 'blank' ? { state: 'blank' } : { state, provider: liveAcp.providerRoute }
+      return state === 'blank'
+        ? {
+            state: 'draft',
+            provider: liveAcp.providerRoute,
+            ...(liveAcp.selectedModel === undefined || liveAcp.selectedModel === ''
+              ? {}
+              : { model: liveAcp.selectedModel }),
+          }
+        : { state, provider: liveAcp.providerRoute }
     }
     try {
       const header = await facts.peekHeaderProvider(sessionId)

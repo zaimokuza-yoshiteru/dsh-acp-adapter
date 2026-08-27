@@ -384,6 +384,16 @@ type Phase =
  * 每 dsh 会话一个实例（AcpAgentLoop 创建）；拆卸由生命周期拥有方走
  * `cancel({kind:'disposed'})` → `whenIdle()` → `scope.dispose()`。
  */
+/**
+ * `session/prompt` 的本地收束与远端确认事实必须分开：用户点击停止时，DSH 的
+ * turn 一律是 aborted；只有 Agent 没有按 ACP 返回原 prompt 响应时，后续会话
+ * 才需要进入 outcome-unknown 恢复闩锁。
+ */
+interface AcpPromptOutcome {
+  readonly turnEnd: TurnEndReason
+  readonly remoteOutcomeConfirmed: boolean
+}
+
 export class AcpAgent implements Agent {
   readonly inbox: Inbox
   private phase: Phase
@@ -874,6 +884,7 @@ export class AcpAgent implements Agent {
     phase.turn = turn
     let turnEnds: TurnEndReason | null = null
     let promptDispatched = false
+    let remoteOutcomeConfirmed = false
     try {
       signal.throwIfAborted()
       // ACP 一轮一个 prompt：claim 语义对齐参考实现首轮——next-step 全量 + 一个排队 turn
@@ -940,7 +951,9 @@ export class AcpAgent implements Agent {
           signal,
         })
         promptDispatched = true
-        turnEnds = await this.promptOnce(prompt, signal)
+        const outcome = await this.promptOnce(prompt, signal)
+        turnEnds = outcome.turnEnd
+        remoteOutcomeConfirmed = outcome.remoteOutcomeConfirmed
       } finally {
         // crash/cancel 路径同样收口：保留已流出的部分输出（translator 的既有能力）
         translator.endTurn()
@@ -956,11 +969,10 @@ export class AcpAgent implements Agent {
           }
         }
       }
-      // Some ACP agents acknowledge session/cancel by resolving prompt with
-      // stopReason=cancelled instead of rejecting it. In that case the outer
-      // catch is never entered; still fence the next prompt because the
-      // remote outcome cannot be proven from DSH's local turn result.
-      if (signal.aborted && promptDispatched) {
+      // ACP v1 要求 Agent 在收到 session/cancel 后，以 stopReason=cancelled
+      // 收束原 session/prompt。该响应就是远端已停稳的确认；只有连接关闭、超时
+      // 升级等没有收到 prompt 响应的路径，才属于 outcome-unknown。
+      if (signal.aborted && promptDispatched && !remoteOutcomeConfirmed) {
         this.continuity = { status: 'blocked', cause: 'load-failed', detail: 'ACP prompt was interrupted; its remote outcome was not confirmed' }
         await this.persistRecoveryState({ kind: 'outcome-unknown', detail: 'ACP prompt was interrupted; its remote outcome was not confirmed', interruptedTurnId: String(turn) }, undefined, true)
       }
@@ -1024,7 +1036,7 @@ export class AcpAgent implements Agent {
    * 预算、取消语义全由本梯子治理；连接层的放弃/poison 只发生在调用方显式给
    * prompt 传 {@link AcpRpcOptions} 且竞速胜出时（本类从不这么做）。
    */
-  private async promptOnce(prompt: acp.ContentBlock[], signal: AbortSignal): Promise<TurnEndReason> {
+  private async promptOnce(prompt: acp.ContentBlock[], signal: AbortSignal): Promise<AcpPromptOutcome> {
     const conn = this.conn
     const agentSessionId = this.acpSessionId
     /* 不可达兜底：ensureStarted 先于本调用完成 */
@@ -1074,14 +1086,22 @@ export class AcpAgent implements Agent {
       const response = await prompting
       if (signal.aborted) {
         this.driver.metrics?.observe(ACP_METRIC.prompt, Date.now() - promptStarted, { result: 'cancelled' })
-        return { kind: 'aborted', reason: signal.reason as AgentCancelCause }
+        return {
+          turnEnd: { kind: 'aborted', reason: signal.reason as AgentCancelCause },
+          remoteOutcomeConfirmed: true,
+        }
       }
       this.driver.metrics?.observe(ACP_METRIC.prompt, Date.now() - promptStarted, { result: response.stopReason })
-      return stopReasonToTurnEnd(response.stopReason)
+      return { turnEnd: stopReasonToTurnEnd(response.stopReason), remoteOutcomeConfirmed: true }
     } catch (error: unknown) {
       this.driver.metrics?.observe(ACP_METRIC.prompt, Date.now() - promptStarted, { result: error instanceof AcpClientError ? error.kind : 'unknown' })
       if (error instanceof AcpClientError && error.kind === 'crash') this.driver.metrics?.increment(ACP_METRIC.crash, { provider: this.providerRoute })
-      if (signal.aborted) return { kind: 'aborted', reason: signal.reason as AgentCancelCause }
+      if (signal.aborted) {
+        return {
+          turnEnd: { kind: 'aborted', reason: signal.reason as AgentCancelCause },
+          remoteOutcomeConfirmed: false,
+        }
+      }
       throw error
     } finally {
       signal.removeEventListener('abort', onAbort)
@@ -1523,11 +1543,17 @@ export class AcpAgent implements Agent {
         if (canonicalCwd !== binding.canonicalCwd) {
           throw await this.blockError('cwd-changed', `binding="${binding.canonicalCwd}" current="${canonicalCwd}"`)
         }
- // ② 启动指纹（完整分量，canonical 哈希比对；env 值永不参与——
+        // ② 启动指纹（完整分量，canonical 哈希比对；env 值永不参与——
         // 密钥纪律。旧版本写出的指纹缺新键，哈希天然不等 → 既有 'profile-changed'
         // 阻断，无第二套机制）
-        if (acpCanonicalHash16(fingerprint) !== acpCanonicalHash16(binding.launchFingerprint)) {
-          throw await this.blockError('profile-changed', `binding=${JSON.stringify(binding.launchFingerprint)} current=${JSON.stringify(fingerprint)}`)
+        const bindingFingerprintHash = acpCanonicalHash16(binding.launchFingerprint)
+        const currentFingerprintHash = acpCanonicalHash16(fingerprint)
+        if (currentFingerprintHash !== bindingFingerprintHash) {
+          this.log.warn(
+            `dsh-acp: launch fingerprint changed (${bindingFingerprintHash} → ${currentFingerprintHash})`,
+            this.logFields({ operation: 'resume', result: 'profile-changed' }),
+          )
+          throw await this.blockError('profile-changed', 'The Agent launch environment no longer matches this session binding')
         }
         // ③ agent 身份（name/version；在场性归一为 ''）
         const agentInfo = conn.agentInfo
@@ -2077,6 +2103,11 @@ export class AcpAgent implements Agent {
  /** 当前 ACP 会话 id（懒启动后存在； 标记事件 / Remote options 消费）。 */
   get agentSessionId(): string | undefined {
     return this.acpSessionId
+  }
+
+  /** 创建当前 ACP wrapper 时 DSH 实际交付的模型；空白会话的全局默认变化不能改写它。 */
+  get selectedModel(): string | undefined {
+    return this.options.model
   }
 
   /** Backend phase used by the picker guard. A live ACP wrapper is only a draft

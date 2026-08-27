@@ -194,12 +194,20 @@ export class PickerService {
   private newSessionInflight = false
   /** One Full Access convergence command per session at a time. */
   private readonly nativeAccessInflight = new Set<string>()
+  /** Composer gate while a default-ACP draft is being admitted to Full Access. */
+  private readonly nativeAccessPending = new Set<string>()
+  /** Last admission failure; kept visible instead of allowing a doomed prompt. */
+  private readonly nativeAccessErrors = new Map<string, string>()
+  /** Per-session block recomputation without coupling the controllers to UI state. */
+  private readonly blockRefreshers = new Map<string, () => void>()
 
   constructor(private readonly deps: PickerServiceDeps) {
     // adapter 拓扑提交、设置文档变化、host 重启都会改变目录（内置 service 同
     // 款三个触发器）。重置先清空再拉，避免显示上一个 host 世代的投影。
     const resetAll = () => {
       for (const picker of this.pickers.values()) {
+        this.nativeAccessPending.delete(picker.sessionId)
+        this.nativeAccessErrors.delete(picker.sessionId)
         picker.directory.resetConnected()
         picker.live.resetConnected()
         this.prime(picker)
@@ -221,7 +229,20 @@ export class PickerService {
   private prime(picker: SessionPicker): void {
     void picker.directory.load()
       .then(async () => {
-        if (isAcpProvider(picker.directory.getSnapshot().current?.provider)) {
+        const probe = await this.backendProbe(picker.sessionId)
+        if (probe.status === 'ok'
+          && probe.state?.state === 'draft'
+          && isAcpProvider(probe.state.provider)
+          && probe.state.model !== undefined) {
+          const current = picker.directory.getSnapshot().current
+          if (current?.provider !== probe.state.provider || current.model !== probe.state.model) {
+            picker.directory.applyBackendSelection({ provider: probe.state.provider, model: probe.state.model })
+          }
+        }
+        const actualProvider = probe.status === 'ok' && probe.state?.state !== 'blank'
+          ? probe.state?.provider
+          : picker.directory.getSnapshot().current?.provider
+        if (isAcpProvider(actualProvider)) {
           await this.maintainNativeAccess(picker.sessionId, this.permissionPreset(picker.sessionId))
           // Live snapshot arrival also runs pending model-switch recovery.
           void picker.live.load()
@@ -269,13 +290,18 @@ export class PickerService {
         || liveSnapshot.modelSwitch.status === 'corrupt'
         || (liveSnapshot.modelSwitch.status === 'pending' && liveSnapshot.freshness === 'live')
       )
+      const nativeAccessError = this.nativeAccessErrors.get(sessionId)
       const reason = state.routable === false
         ? this.deps.t('blocked.composer')
         : continuityBlocked
           ? this.deps.t('blocked.continuity')
           : switchBlocked
             ? this.deps.t('blocked.modelSwitch')
-            : null
+            : nativeAccessError !== undefined
+              ? this.deps.t('native.failed', { message: nativeAccessError })
+              : this.nativeAccessPending.has(sessionId)
+                ? this.deps.t('native.preparing')
+                : null
       conversation.blocks.set(sessionId, reason === null ? undefined : { reason })
     }
 
@@ -337,6 +363,7 @@ export class PickerService {
 
     const picker: SessionPicker = { sessionId, directory, live, attach, get modelSwitch() { return lazyModelSwitch() } }
     this.pickers.set(sessionId, picker)
+    this.blockRefreshers.set(sessionId, publishBlock)
 
     // 首次建 picker 时主动加载（内置 directoryFor 不预拉，由入口打开时触发；
     // 本插件的权限展示/composer block 需要 provider+preset 尽快就位，故预拉），
@@ -348,6 +375,9 @@ export class PickerService {
       active = false
       for (const unsub of unsubs) unsub()
       this.deps.conversation?.blocks.set(sessionId, undefined)
+      this.nativeAccessPending.delete(sessionId)
+      this.nativeAccessErrors.delete(sessionId)
+      this.blockRefreshers.delete(sessionId)
       this.pickers.delete(sessionId)
     }, `dsh-acp:picker:${sessionId}`)
     return picker
@@ -435,21 +465,39 @@ export class PickerService {
   /**
    * Keep an ACP execution backend on DSH Full Access. Backend identity comes
    * from the host, so a native session that merely mirrors an ACP default is
-   * never widened. Failures remain guarded by AcpAgent before spawn and are
-   * retried on the next projection or directory refresh.
+   * never widened. A provider-qualified draft is already an ACP wrapper and
+   * must converge before its first prompt; waiting for an established binding
+   * creates a deadlock because AcpAgent refuses to establish outside Full
+   * Access. Failures remain guarded by AcpAgent before spawn and are retried on
+   * the next projection or directory refresh.
    */
   private async maintainNativeAccess(sessionId: string, observedPreset?: string): Promise<void> {
-    if (observedPreset === 'danger-full-access' || this.nativeAccessInflight.has(sessionId)) return
+    if (observedPreset === 'danger-full-access') {
+      this.nativeAccessPending.delete(sessionId)
+      this.nativeAccessErrors.delete(sessionId)
+      this.blockRefreshers.get(sessionId)?.()
+      return
+    }
+    if (this.nativeAccessInflight.has(sessionId)) return
     this.nativeAccessInflight.add(sessionId)
     try {
       const probe = await this.backendProbe(sessionId)
-      if (probe.status !== 'ok' || probe.state?.state !== 'established' || !isAcpProvider(probe.state.provider)) return
+      if (probe.status !== 'ok'
+        || probe.state === null
+        || probe.state.state === 'blank'
+        || !isAcpProvider(probe.state.provider)) return
+      this.nativeAccessPending.add(sessionId)
+      this.nativeAccessErrors.delete(sessionId)
+      this.blockRefreshers.get(sessionId)?.()
       await this.enableNativeAccess(sessionId)
-    } catch {
-      // Early convergence can race session materialization or a host reset.
-      // The next observed projection/directory update retries it.
+    } catch (error) {
+      // Keep the composer blocked with the actionable failure. A later
+      // projection/directory refresh retries convergence.
+      this.nativeAccessErrors.set(sessionId, errorMessageOf(error))
     } finally {
+      this.nativeAccessPending.delete(sessionId)
       this.nativeAccessInflight.delete(sessionId)
+      this.blockRefreshers.get(sessionId)?.()
     }
   }
 
@@ -752,5 +800,9 @@ export class PickerService {
   dispose(): void {
     for (const dispose of this.disposers) dispose()
     this.disposers.length = 0
+    this.nativeAccessInflight.clear()
+    this.nativeAccessPending.clear()
+    this.nativeAccessErrors.clear()
+    this.blockRefreshers.clear()
   }
 }

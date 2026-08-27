@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   recoveryActionAvailability,
   recoveryDockVisible,
+  recoverySummary,
   type RecoverySnapshot,
 } from '../../../src/client/ui/AcpRecoveryInputDock.ts'
 
@@ -32,5 +33,21 @@ describe('ACP recovery input dock projection', () => {
     expect(recoveryActionAvailability(snapshot('session-lost'), { reconnect: false, newSession: false })).toEqual({
       reconnect: false, rebind: true, rollback: false, newSession: false,
     })
+  })
+
+  it('never exposes raw recovery diagnostics as the user-facing summary', () => {
+    const view: RecoverySnapshot = {
+      recovery: {
+        kind: 'reconciliation-required',
+        cause: 'profile-changed',
+        detail: 'binding={"secret":"internal"} current={"secret":"internal"}',
+        acpSessionId: 'agent-session',
+        generation: 1,
+      },
+      modelSwitch: { status: 'idle' },
+    }
+    expect(recoverySummary(view)).toContain('environment')
+    expect(recoverySummary(view)).not.toContain('binding=')
+    expect(recoverySummary(view)).not.toContain('internal')
   })
 })

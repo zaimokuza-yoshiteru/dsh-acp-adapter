@@ -30,9 +30,10 @@ import type {
   AcpPermissionAnswerRequest,
   AcpElicitationAnswerRequest,
   AcpPendingElicitationView,
+  AcpToolCallPresentationView,
 } from '../../contract/remote.ts'
 
-export type { AcpElicitationAnswerRequest, AcpPendingPermissionView, AcpPendingElicitationView } from '../../contract/remote.ts'
+export type { AcpElicitationAnswerRequest, AcpPendingPermissionView, AcpPendingElicitationView, AcpToolCallPresentationView } from '../../contract/remote.ts'
 
 /** Minimal `RemoteResult` face the glue consumes (message-only errors). */
 export type AcpRemoteResultLike<T> =
@@ -59,6 +60,7 @@ export interface AcpRemoteLike {
   reconnectOriginal?(sessionId: string): Promise<AcpRemoteResultLike<AcpLiveOptionsSnapshot>>
   recordRecoveryAction?(sessionId: string, action: 'retry-original' | 'rebind-blank' | 'new-session'): Promise<AcpRemoteResultLike<AcpLiveOptionsSnapshot>>
   pendingPermissions?(sessionId: string): Promise<AcpRemoteResultLike<readonly AcpPendingPermissionView[]>>
+  toolPresentation?(sessionId: string, toolCallId: string): Promise<AcpRemoteResultLike<AcpToolCallPresentationView | null>>
   answerPermission?(sessionId: string, request: AcpPermissionAnswerRequest): Promise<AcpRemoteResultLike<null>>
   cancelPermission?(sessionId: string, request: Pick<AcpPermissionAnswerRequest, 'requestId'>): Promise<AcpRemoteResultLike<null>>
   pendingElicitations?(sessionId: string): Promise<AcpRemoteResultLike<readonly AcpPendingElicitationView[]>>

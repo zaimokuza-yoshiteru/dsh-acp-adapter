@@ -329,7 +329,8 @@ describe('turn 驱动事件序列（happy）', () => {
       'assistant/chunk', 'assistant/chunk', // thought：block-start + reasoning-delta
       'assistant/chunk', 'assistant/chunk', 'assistant/chunk', // block-end + text block-start + delta
       'assistant/chunk', 'assistant/chunk', // text-delta ×2
-      'assistant/chunk', 'assistant/message', 'tool/call', // segment flush 先于 tool/call
+      'assistant/chunk', 'assistant/message', // 文本段收口
+      'assistant/chunk', 'assistant/message', 'tool/call', // 标准 tool-call message 注册后执行
       'tool/result',
       'assistant/chunk', 'assistant/chunk', 'assistant/chunk', // plan 三元组（新 segment）
       'request/context',
@@ -364,7 +365,8 @@ describe('turn 驱动事件序列（happy）', () => {
       expect(chunk.data.turn).toBe(1);
       expect(chunk.data.step).toBe(ACP_STEP);
     }
-    for (const chunk of chunks.slice(8)) {
+    expect(chunks[8]?.data.step).toBe(2); // assistant tool-call block
+    for (const chunk of chunks.slice(9)) {
       expect(chunk.data.turn).toBe(1);
       expect(chunk.data.step).toBe(3);
     }
@@ -381,10 +383,9 @@ describe('turn 驱动事件序列（happy）', () => {
     expect(toolResults[0]?.sourceEventSeqs).toEqual([toolCalls[0]?.seq]);
     expect(toolResults[0]?.data.error).toBeUndefined();
 
- // turn 内两条 assistant/message——segment 1（tool/call 前 flush，
-    // sourceEventSeqs 恰为本段全部 chunk）与 plan 段（endTurn 收口）
+ // turn 内三条 assistant/message——正文、标准 tool-call 注册、plan。
     const assistant = eventsOf(agent, 'assistant/message');
-    expect(assistant).toHaveLength(2);
+    expect(assistant).toHaveLength(3);
     const message = assistant[0];
     expect(message?.surfaceOp).toBe('append');
     expect(message?.sourceEventSeqs).toEqual(chunks.slice(0, 8).map((event) => event.seq));
@@ -394,9 +395,14 @@ describe('turn 驱动事件序列（happy）', () => {
       { type: 'reasoning', text: 'Thinking about the mock request.' },
       { type: 'text', text: 'Hello, mock world.' },
     ]);
-    const planMessage = assistant[1];
+    const toolMessage = assistant[1];
+    expect(toolMessage?.data.message.content).toEqual([{
+      type: 'tool-call', id: 'mock-tool-1', name: 'Read README.md', arguments: '{"path":"README.md"}',
+    }]);
+    expect(toolMessage?.sourceEventSeqs).toEqual([chunks[8]?.seq]);
+    const planMessage = assistant[2];
     expect(planMessage?.surfaceOp).toBe('append');
-    expect(planMessage?.sourceEventSeqs).toEqual(chunks.slice(8).map((event) => event.seq));
+    expect(planMessage?.sourceEventSeqs).toEqual(chunks.slice(9).map((event) => event.seq));
     expect(planMessage?.data.turn).toBe(1);
     expect(planMessage?.data.step).toBe(3);
     expect(planMessage?.data.message.content).toEqual([
@@ -435,7 +441,7 @@ describe('turn 驱动事件序列（happy）', () => {
     expect(eventsOf(agent, 'user/message')).toHaveLength(2);
     expect(eventsOf(agent, 'request/header')).toHaveLength(1);
  // happy turn 每 turn 两条 assistant/message（文本段 + plan 段）
-    expect(eventsOf(agent, 'assistant/message')).toHaveLength(4);
+    expect(eventsOf(agent, 'assistant/message')).toHaveLength(6);
   }, 15_000);
 });
 
@@ -494,7 +500,7 @@ describe('懒启动与进程复用', () => {
 });
 
 describe('cancel', () => {
-  it('turn 中途 cancel：session/cancel 到达 mock + turn/end aborted{user} + 已流 chunk 保留 + 无 agent/error', async () => {
+  it('turn 中途 cancel：Agent 确认 cancelled 后保留原 binding，下一轮可直接继续', async () => {
     const harness = await boot();
     // 拉宽 update 间隔，留出 cancel 插入窗口
     const profile = mockProfile(harness.logDir, 'happy', { MOCK_STEP_DELAY_MS: '80' });
@@ -522,6 +528,16 @@ describe('cancel', () => {
     expect(errors).toEqual([]);
     expect(agent.status).toBe('idle');
     expect(statuses).toEqual(['running', 'idle']);
+    expect((agent as AcpAgent).recoveryState.kind).toBe('healthy');
+    expect((agent as AcpAgent).continuityState.status).toBe('ok');
+
+    // 已按 ACP 收到原 prompt 的 cancelled 响应，不应再走 session/load 对账；
+    // 同一进程、同一 Agent session 可以直接接受下一轮。
+    agent.followup(userText('continue after confirmed cancellation'));
+    await agent.whenIdle();
+    expect(turnEndReasons(agent).map((entry) => entry.reason.kind)).toEqual(['aborted', 'completed']);
+    expect(readLog(profile.logPath).match(/--> session\/prompt/g)).toHaveLength(2);
+    expect(spawnedPids(profile.logPath)).toHaveLength(2); // probe + 同一个会话进程
   }, 15_000);
 
   it('idle 时 cancel 无副作用：无事件、无 spawn、保持 idle', async () => {
@@ -712,11 +728,13 @@ describe('request/header change（setConfigOption 热切换）', () => {
     expect(headers[1]?.data.header.config).toEqual({ provider: routeOf(profile), model: 'mock-model-b' });
     const assistant = eventsOf(agent, 'assistant/message');
  // happy turn 每 turn 两条（文本段 + plan 段）；换模型后 turn 2 两条都跟随新模型
-    expect(assistant).toHaveLength(4);
+    expect(assistant).toHaveLength(6);
     expect(assistant[0]?.data.message.source).toMatchObject({ model: 'mock-model-a' });
     expect(assistant[1]?.data.message.source).toMatchObject({ model: 'mock-model-a' });
-    expect(assistant[2]?.data.message.source).toMatchObject({ model: 'mock-model-b' });
+    expect(assistant[2]?.data.message.source).toMatchObject({ model: 'mock-model-a' });
     expect(assistant[3]?.data.message.source).toMatchObject({ model: 'mock-model-b' });
+    expect(assistant[4]?.data.message.source).toMatchObject({ model: 'mock-model-b' });
+    expect(assistant[5]?.data.message.source).toMatchObject({ model: 'mock-model-b' });
     expect(turnEndReasons(agent)).toEqual([
       { turn: 1, reason: { kind: 'completed' } },
       { turn: 2, reason: { kind: 'completed' } },

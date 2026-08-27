@@ -255,6 +255,89 @@ describe('PickerService pickerFor 订阅生命周期', () => {
     expect(store.getSnapshot().backendAccess.preset).toBe('danger-full-access');
     expect(h.blocksLog.at(-1)).toEqual({ sessionId: SESSION_ID, block: undefined });
   });
+
+  it('默认 ACP 创建出的 draft 会话自动启用 Full Access，无需重新选择 Agent', async () => {
+    const h = createHarness();
+    h.deps.acpRemote = {
+      ...h.deps.acpRemote,
+      backendOf: () => Promise.resolve({ ok: true as const, value: { state: 'draft' as const, provider: 'acp-mock' } }),
+    };
+    h.setProjection({ currentValue: 'workspace-write' });
+    h.resolveModels({ ...UNROUTABLE_VIEW, routable: true });
+
+    const service = new PickerService(h.deps);
+    await service.pickerFor(SESSION_ID).directory.load();
+
+    await vi.waitFor(() => {
+      expect(h.commandCalls).toEqual([{ sessionId: SESSION_ID, line: '/permission danger-full-access' }]);
+    });
+  });
+
+  it('空白页的全局 Kimi 影子不会覆盖实际 Codex wrapper 的页面选择', async () => {
+    const h = createHarness();
+    h.deps.acpRemote = {
+      ...h.deps.acpRemote,
+      backendOf: () => Promise.resolve({
+        ok: true as const,
+        value: { state: 'draft' as const, provider: 'acp-codex', model: 'codex-mini' },
+      }),
+    };
+    h.setProjection({ currentValue: 'danger-full-access' });
+    h.resolveModels({
+      current: { provider: 'acp-kimi', model: 'kimi-default' },
+      routable: true,
+      groups: [
+        { id: 'acp-kimi', name: 'Kimi · ACP', models: [{ id: 'kimi-default', name: 'Kimi' }] },
+        { id: 'acp-codex', name: 'Codex · ACP', models: [{ id: 'codex-mini', name: 'Codex Mini' }] },
+      ],
+      failures: [],
+    });
+    const service = new PickerService(h.deps);
+    const picker = service.pickerFor(SESSION_ID);
+    const store = createModelPickerStore().create(SESSION_ID);
+    picker.attach(store.actions);
+
+    await vi.waitFor(() => {
+      expect(store.getSnapshot().directory.current).toEqual({ provider: 'acp-codex', model: 'codex-mini' });
+    });
+  });
+
+  it('draft ACP 的 Full Access 尚未收敛时阻断 composer，权限投影确认后自动放行', async () => {
+    const h = createHarness();
+    const permission = Promise.withResolvers<{ ok: true; value: { matched: boolean } }>();
+    const originalBinding = h.deps.sessions.binding;
+    h.deps.sessions.binding = (sessionId) => {
+      const binding = originalBinding(sessionId);
+      if (binding === undefined) return undefined;
+      return {
+        session: {
+          ...binding.session,
+          command: (line) => {
+            h.commandCalls.push({ sessionId, line });
+            return permission.promise;
+          },
+        },
+      };
+    };
+    h.deps.acpRemote = {
+      ...h.deps.acpRemote,
+      backendOf: () => Promise.resolve({ ok: true as const, value: { state: 'draft' as const, provider: 'acp-mock' } }),
+    };
+    h.setProjection({ currentValue: 'workspace-write' });
+    h.resolveModels({ ...UNROUTABLE_VIEW, routable: true });
+
+    const service = new PickerService(h.deps);
+    await service.pickerFor(SESSION_ID).directory.load();
+    await vi.waitFor(() => {
+      expect(h.blocksLog.at(-1)).toEqual({ sessionId: SESSION_ID, block: { reason: 'native.preparing' } });
+    });
+
+    permission.resolve({ ok: true, value: { matched: true } });
+    h.setProjection({ currentValue: 'danger-full-access' });
+    await vi.waitFor(() => {
+      expect(h.blocksLog.at(-1)).toEqual({ sessionId: SESSION_ID, block: undefined });
+    });
+  });
 });
 
 // ---------- continuity blocked 禁用 composer ----------
@@ -1216,10 +1299,10 @@ describe(' 失败降级：backendProbe 三值 + native 路径免疫', () => {
     // prime 的目录预拉落地（native current）——不应触发 live 预拉
     await picker.directory.load();
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(fake.calls).toEqual([]);
+    expect(fake.calls).toEqual(['backendOf']);
     // native 选择：不触碰协调器（native provider 永不满足 sameProviderAcp 分流）
     await service.selectModel(SESSION_ID, { provider: 'deepseek', model: 'deepseek-reasoner' });
-    expect(fake.calls).toEqual(['backendOf']);
+    expect(fake.calls).toEqual(['backendOf', 'backendOf']);
     expect(fake.calls.some((call) => call.startsWith('beginModelSwitch') || call.startsWith('commitModelSwitch') || call.startsWith('rollbackModelSwitch'))).toBe(false);
   });
 

@@ -152,7 +152,7 @@ function messageText(event: AssistantMessageEvent): string {
 }
 
 function assistantTexts(agent: Agent): string[] {
-  return eventsOf(agent, 'assistant/message').map(messageText);
+  return eventsOf(agent, 'assistant/message').map(messageText).filter((text) => text !== '');
 }
 
 /** turn/end 的 {turn, reason} 序列。 */
@@ -261,7 +261,7 @@ describe('正常恢复（binding + 预检 + 对账全过）', () => {
     expect(eventsOf(agent, 'user/message')).toHaveLength(2); // seed + 新 turn
  // 新 turn 两条 assistant/message（tool/call 前的文本段 flush + 尾部
     // plan 的 reasoning 段 flush），加 seed 一条共 3 条
-    expect(eventsOf(agent, 'assistant/message')).toHaveLength(3);
+    expect(eventsOf(agent, 'assistant/message')).toHaveLength(4);
     expect(eventsOf(agent, 'tool/call').map((event) => ({ turn: event.data.turn, callId: event.data.callId })))
       .toEqual([
         { turn: 1, callId: 'mock-load-tool-1' }, // seed（与回放对账相符的那条）
@@ -334,7 +334,7 @@ describe('正常恢复（binding + 预检 + 对账全过）', () => {
     expect(firstTypes.indexOf('assistant/message')).toBeGreaterThan(-1);
     expect(firstTypes.indexOf('assistant/message')).toBeLessThan(firstTypes.indexOf('tool/call'));
     expect(firstTypes.indexOf('assistant/message')).toBeLessThan(firstTypes.indexOf('tool/result'));
-    expect(eventsOf(first.agent, 'assistant/message')).toHaveLength(2);
+    expect(eventsOf(first.agent, 'assistant/message')).toHaveLength(3);
     expect(assistantTexts(first.agent)).toEqual(['Let me read the file.', 'Done reading.']);
 
     // dispose + re-seed 模拟宿主重启（内存 fake 不回写 append；meta.cwd 一并带回）
@@ -365,7 +365,7 @@ describe('正常恢复（binding + 预检 + 对账全过）', () => {
  // assistant 四份（混合 turn 每 turn 两条 segment message）；
     // tool/call 两个 turn 各一条
     expect(eventsOf(second.agent, 'user/message')).toHaveLength(2);
-    expect(eventsOf(second.agent, 'assistant/message')).toHaveLength(4);
+    expect(eventsOf(second.agent, 'assistant/message')).toHaveLength(6);
     expect(eventsOf(second.agent, 'tool/call').map((event) => ({ turn: event.data.turn, callId: event.data.callId })))
       .toEqual([
         { turn: 1, callId: 'mock-tool-mixed-1' },
@@ -451,7 +451,7 @@ describe('正常恢复（binding + 预检 + 对账全过）', () => {
 
  // 回放零落盘 + 新 turn 正常落盘（混合 turn 每 turn 两条 segment message）
     expect(eventsOf(second.agent, 'user/message')).toHaveLength(2);
-    expect(eventsOf(second.agent, 'assistant/message')).toHaveLength(4);
+    expect(eventsOf(second.agent, 'assistant/message')).toHaveLength(6);
     expect(eventsOf(second.agent, 'tool/call').map((event) => event.data.turn)).toEqual([1, 2]);
 
     // binding 全程指同一 ACP 会话，最新一行锚点推进到日志尖
@@ -631,7 +631,7 @@ describe('阻断：id-not-found / load-failed 与 list 抛错的分岔', () => {
     // 新 turn 两条 segment message + seed 一条 = 3）
     expect(await reconciliationCauses(harness, sessionId)).toEqual([]);
     expect(eventsOf(agent, 'user/message')).toHaveLength(2);
-    expect(eventsOf(agent, 'assistant/message')).toHaveLength(3);
+    expect(eventsOf(agent, 'assistant/message')).toHaveLength(4);
     expect(eventsOf(agent, 'tool/call').map((event) => ({ turn: event.data.turn, callId: event.data.callId })))
       .toEqual([
         { turn: 1, callId: 'mock-load-tool-1' },

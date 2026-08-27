@@ -333,7 +333,7 @@ describe('生产接线：options-sync 每 turn 前同步', () => {
     expect(readLog(profile.logPath)).not.toContain('set_config_option');
   }, 15_000);
 
- it('agent/request 监听器改模型： 不再重申（零 set_config_option），turn 按 ACP 当前模型完成', async () => {
+ it('首条消息前同 profile 的 DSH 选择真实应用到 ACP，后续 turn 不重复写', async () => {
     const harness = await boot();
     const profile = mockProfile(harness.logDir, 'happy');
     const handle = await createAcpAgent(harness, profile, SessionId('wiring-sync-model'));
@@ -349,11 +349,10 @@ describe('生产接线：options-sync 每 turn 前同步', () => {
     await handle.agent.whenIdle();
 
     const log = readLog(profile.logPath);
-    // 模型写已移出原生路径：MOCK_LOG 零 set_config_option（分叉仅一次性 warn）
-    expect(log).not.toContain('set_config_option');
+    expect(log.match(/session\/set_config_option/g)).toHaveLength(1);
     const headers = eventsOf(handle.agent, 'request/header');
     expect(headers).toHaveLength(1); // 模型未变：无 change header
-    expect(headers[0]?.data.header.config).toEqual({ provider: routeOf(profile), model: 'mock-model-a' });
+    expect(headers[0]?.data.header.config).toEqual({ provider: routeOf(profile), model: 'mock-model-b' });
     expect(eventsOf(handle.agent, 'turn/end').at(-1)?.data.reason).toEqual({ kind: 'completed' });
   }, 15_000);
 
@@ -361,13 +360,16 @@ describe('生产接线：options-sync 每 turn 前同步', () => {
     const harness = await boot();
     const profile = mockProfile(harness.logDir, 'happy');
     const handle = await createAcpAgent(harness, profile, SessionId('wiring-sync-foreign'));
-    // 原生选择器等价物：waterfall 把 provider 改成另一个 backend（跨 backend 热切换）
+    // 首轮先建立持久 route；空白页上的 foreign 全局默认影子会被正确忽略。
+    handle.agent.followup(userText('establish'));
+    await handle.agent.whenIdle();
+    // 建立后再注入 foreign provider，才是真正的跨 backend 热切换。
     const off = harness.ctx.on('agent/request', async (payload, next) => {
       if (payload.agent !== handle.agent) return next();
       return { ...(await next()), provider: 'native-anthropic', model: 'claude-x' };
     });
 
-    handle.agent.followup(userText('first'));
+    handle.agent.followup(userText('foreign'));
     await handle.agent.whenIdle();
 
     // turn 响亮失败：error code = ACP_PROTOCOL_ERROR，消息明说两端 backend 与出路
@@ -378,14 +380,14 @@ describe('生产接线：options-sync 每 turn 前同步', () => {
     expect(failure?.message).toContain(routeOf(profile));
     expect(failure?.message).toContain('native-anthropic');
     expect(failure?.message).toContain('new session');
-    // 失败点在 prompt 之前：session/new 已建立（懒启动在 sync 之前），prompt 零发出
+    // 第二轮失败点在 prompt 之前；只有建立轮的一次 prompt。
     const mockLog = readLog(profile.logPath);
     expect(mockLog).toContain('session/new');
-    expect(mockLog).not.toContain('session/prompt');
+    expect(mockLog.match(/session\/prompt/g)).toHaveLength(1);
 
     // 不是闩锁：撤掉 foreign 选择后下一 turn 正常完成
     off();
-    handle.agent.followup(userText('second'));
+    handle.agent.followup(userText('after'));
     await handle.agent.whenIdle();
     expect(eventsOf(handle.agent, 'turn/end').at(-1)?.data.reason).toEqual({ kind: 'completed' });
   }, 15_000);

@@ -188,7 +188,7 @@ function Loaded({ t, useStore, panel }: {
     },
       h('button', {
         type: 'button',
-        className: css.secondaryButton,
+        className: `${css.secondaryButton} ${css.toolbarButton}`,
         disabled: readOnly,
         'aria-haspopup': 'menu',
         'aria-expanded': addMenuOpen,
@@ -227,7 +227,7 @@ function Loaded({ t, useStore, panel }: {
     ),
     h('button', {
       type: 'button',
-      className: css.secondaryButton,
+      className: `${css.secondaryButton} ${css.toolbarButton}`,
       disabled: refreshing || checkingAnyAgent,
       onClick: () => { panel.refreshHealth(true) },
     }, t(refreshing ? 'refreshing' : 'refresh')),

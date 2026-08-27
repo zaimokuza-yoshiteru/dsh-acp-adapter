@@ -135,6 +135,21 @@ export class SessionModelDirectory {
   }
 
   /**
+   * 空白 ACP wrapper 的身份校正。DSH 对空白会话返回实时全局默认值，但 wrapper
+   * 已在创建时固定；这里仅修正本会话的 UI 投影，不写设置、不触发模型切换。
+   */
+  applyBackendSelection(selection: PickerModelSelection): void {
+    this.generation += 1
+    this.publish({
+      ...this.state,
+      current: selection,
+      routable: true,
+      status: 'ready',
+      error: null,
+    }, (sink) => { sink.directorySelected(selection) })
+  }
+
+  /**
  * ModelSwitchCoordinator 的事务开始——目录进入 selecting 闩锁（复用
    * select 的状态词；generation +1 作废在飞 load/select 的迟到响应）。
    */

@@ -30,7 +30,7 @@
  * @module @zaimokuza/dsh-acp-adapter/client/AcpToolRow
  */
 
-import { createElement as h, useState } from 'react'
+import { createElement as h, useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import {
   DiffBlock,
@@ -50,6 +50,7 @@ import {
   decodeAcpToolPresentation,
 } from '../data/tool-presentation.ts'
 import type { AcpToolIconKey } from '../data/tool-presentation.ts'
+import type { AcpRemoteResultLike, AcpToolCallPresentationView } from '../data/acp-remote.ts'
 import type { AcpModelKey } from '../host-compat/model-picker/selector-locales.ts'
 import css from './AcpToolRow.module.css'
 
@@ -82,6 +83,7 @@ export type AcpToolCallBlockLike = RunningToolCallLike | ToolResultNodeLike
 
 /** Registration-position props: the keyed toolview owner currency plus the locale seat. */
 export interface AcpToolRowProps {
+  sessionId?: string | undefined
   callId: string
   toolName: string
   block: AcpToolCallBlockLike
@@ -90,6 +92,7 @@ export interface AcpToolRowProps {
   openFile: (path: string) => void
   inspect?: (() => void) | undefined
   t: AcpToolRowTranslate
+  loadPresentation?: ((toolCallId: string) => Promise<AcpRemoteResultLike<AcpToolCallPresentationView | null>>) | undefined
 }
 
 interface MouseEventLike {
@@ -124,10 +127,30 @@ function resultTextOf(block: ToolResultNodeLike): string {
  * The ACP external-tool row. All decisions live in ../data/tool-presentation.ts
  * (acpToolRowModel); this component is the pure render of that model.
  */
-export function AcpToolRow({ block, cwd, openFile, inspect, t }: AcpToolRowProps) {
+export function AcpToolRow({ callId, block, cwd, openFile, inspect, t, loadPresentation }: AcpToolRowProps) {
   const [expanded, setExpanded] = useState(false)
+  const [livePresentation, setLivePresentation] = useState<AcpToolCallPresentationView | undefined>(undefined)
   const settled = 'kind' in block
   const running = !settled
+  useEffect(() => {
+    if (!running || loadPresentation === undefined) {
+      setLivePresentation(undefined)
+      return
+    }
+    let disposed = false
+    const refresh = (): void => {
+      void loadPresentation(callId).then((result) => {
+        if (disposed || !result.ok || result.value === null) return
+        setLivePresentation(result.value)
+      }).catch(() => undefined)
+    }
+    refresh()
+    const timer = setInterval(refresh, 500)
+    return () => {
+      disposed = true
+      clearInterval(timer)
+    }
+  }, [callId, loadPresentation, running])
   const envelope = settled ? decodeAcpToolPresentation(block.meta) : undefined
   const model = acpToolRowModel({
     running,
@@ -138,11 +161,11 @@ export function AcpToolRow({ block, cwd, openFile, inspect, t }: AcpToolRowProps
     cwd,
   })
   const open = expanded && model.expandable
-  const iconKey = acpToolIconKey(envelope?.kind)
+  const iconKey = acpToolIconKey(envelope?.kind ?? livePresentation?.kind)
   const icon = model.agentExtension === undefined
     ? h(ICONS[iconKey], { size: 14 })
     : h(IconSparkle16, { size: 14 })
-  const baseTitle = model.title ?? t('tool.title')
+  const baseTitle = model.title ?? livePresentation?.title ?? t('tool.title')
   const title = model.agentExtension === undefined
     ? baseTitle
     : `${t('tool.codexSubagent')} · ${baseTitle}`
