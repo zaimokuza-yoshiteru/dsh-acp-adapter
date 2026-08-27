@@ -1,7 +1,7 @@
 // config-options.spec.ts — 验收测试：ACP v1 Session Config Options 四形态集成。
 //
 // 四形态（mock scenario 对齐协议 §Session Config Options 的过渡矩阵）：
-//   both（happy）            modes + configOptions 双发（devin 3000.4.25 实测形态）——
+//   both（happy）            modes + configOptions 双发（Devin 3000.4.25 历史实测形态）——
 //                            mode 类 option 一律走 session/set_config_option（不经 set_mode）
 //   config-options-only      只有 configOptions 无 modes——set_config_option 照常，无 legacy 面
 //   legacy-modes-only        只有 modes 无 configOptions（no-config-options scenario）——

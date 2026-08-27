@@ -14,7 +14,7 @@
 
 const zh = {
   'command.description': '选择模型（Model / ACP）',
-  'option.loadError': '加载失败：{message}',
+  'option.loadError': '加载失败，请检查 DSH 日志。{reference}',
   'trigger.fallback': '选择模型',
   'trigger.selectAria': '选择模型',
   'trigger.aria': '当前模型：{model}',
@@ -29,7 +29,7 @@ const zh = {
   'error.technical': '若问题持续，请检查 DSH 与 Agent 日志。{reference}',
   'error.noModel': '当前没有可用于创建新会话的模型。',
   'action.reload': '重试',
-  'warning.groupLoad': '「{name}」的模型目录加载失败：{message}',
+  'warning.groupLoad': '「{name}」的模型目录加载失败，请检查 DSH 日志。{reference}',
   'empty.models': '没有匹配的模型。',
   'empty.efforts': '该模型没有可选的推理等级。',
   'blocked.composer': '当前会话没有可路由的模型，请先恢复提供方后再输入。',
@@ -109,7 +109,7 @@ const zh = {
 
 const en: { [K in keyof typeof zh]: string } = {
   'command.description': 'Select model (Model / ACP)',
-  'option.loadError': 'Failed to load: {message}',
+  'option.loadError': 'Failed to load. Check the DSH logs.{reference}',
   'trigger.fallback': 'Select model',
   'trigger.selectAria': 'Select model',
   'trigger.aria': 'Current model: {model}',
@@ -124,7 +124,7 @@ const en: { [K in keyof typeof zh]: string } = {
   'error.technical': 'If the problem persists, check the DSH and Agent logs.{reference}',
   'error.noModel': 'No model is available for creating a new session.',
   'action.reload': 'Retry',
-  'warning.groupLoad': 'Catalog of "{name}" failed to load: {message}',
+  'warning.groupLoad': 'Catalog of "{name}" failed to load. Check the DSH logs.{reference}',
   'empty.models': 'No matching models.',
   'empty.efforts': 'This model has no selectable reasoning efforts.',
   'blocked.composer': 'This session has no routable model; restore a provider before typing.',

@@ -53,6 +53,25 @@ export const ACP_AGENT_CONFIG_AUDIT_KIND = 'agent-config' as const
  */
 export const ACP_DEGRADATION_AUDIT_KIND = 'degradation' as const
 
+/** DSH fork → ACP fork outcome, kept separate from degradation records. */
+export const ACP_SESSION_FORK_AUDIT_KIND = 'session-fork' as const
+export type AcpSessionForkOutcome = 'inherited' | 'blank'
+export type AcpSessionForkReason =
+  | 'inherited'
+  | 'agent-does-not-advertise-fork'
+  | 'parent-binding-unavailable'
+  | 'parent-binding-mismatch'
+  | 'seed-not-latest-semantic-boundary'
+  | 'candidate-not-available'
+
+export interface AcpSessionForkAuditData {
+  readonly outcome: AcpSessionForkOutcome
+  readonly reason: AcpSessionForkReason
+  readonly parentSessionId?: string
+  readonly parentAgentSessionId?: string
+  readonly agentSessionId?: string
+}
+
 /** Structured ACP elicitation audit; submitted values and URL query strings are excluded. */
 export const ACP_ELICITATION_AUDIT_KIND = 'elicitation' as const
 export type { AcpElicitationAudit as AcpElicitationAuditData } from './elicitation.ts'

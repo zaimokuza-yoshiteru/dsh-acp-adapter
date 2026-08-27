@@ -175,6 +175,7 @@ const zh = {
   auditSummaryElicitationDecided: '补充信息决定已记录',
   auditSummaryFilesystem: '文件操作已记录',
   auditSummaryTerminal: '终端操作已记录',
+  auditSummarySessionFork: '会话分叉结果已记录',
   auditSummaryAgentEvent: 'Agent 事件已记录',
   auditStatusNativeAccess: '原生 Agent 访问',
   auditStatusConfigSync: '配置同步',
@@ -191,6 +192,13 @@ const zh = {
   auditStatusExited: '已退出',
   auditStatusKilled: '已终止',
   auditStatusReleased: '已释放',
+  auditForkInherited: '已继承 Agent 上下文',
+  auditForkBlank: '未继承 Agent 上下文',
+  auditForkUnsupported: 'Agent 不支持会话分叉',
+  auditForkParentUnavailable: '无法读取原会话绑定',
+  auditForkParentMismatch: '原会话绑定不匹配',
+  auditForkOlderBoundary: '分叉点不是最新语义边界',
+  auditForkCandidateUnavailable: '缺少可验证的分叉信息',
 } as const
 
 /** Locale key union the section's `t` seat is typed against. */
@@ -365,6 +373,7 @@ const en: Record<AcpLocaleKey, string> = {
   auditSummaryElicitationDecided: 'Additional-input decision recorded',
   auditSummaryFilesystem: 'Filesystem operation recorded',
   auditSummaryTerminal: 'Terminal operation recorded',
+  auditSummarySessionFork: 'Session fork result recorded',
   auditSummaryAgentEvent: 'Agent event recorded',
   auditStatusNativeAccess: 'Native Agent access',
   auditStatusConfigSync: 'Configuration sync',
@@ -381,6 +390,13 @@ const en: Record<AcpLocaleKey, string> = {
   auditStatusExited: 'Exited',
   auditStatusKilled: 'Terminated',
   auditStatusReleased: 'Released',
+  auditForkInherited: 'Agent context inherited',
+  auditForkBlank: 'Agent context not inherited',
+  auditForkUnsupported: 'Agent does not support session fork',
+  auditForkParentUnavailable: 'Parent session binding unavailable',
+  auditForkParentMismatch: 'Parent session binding does not match',
+  auditForkOlderBoundary: 'Fork point is not the latest semantic boundary',
+  auditForkCandidateUnavailable: 'Verifiable fork information unavailable',
 }
 
 export { en, zh }

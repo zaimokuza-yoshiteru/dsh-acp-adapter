@@ -45,13 +45,15 @@ const summaryKeys: Record<AcpAuditSummaryCode, AcpLocaleKey> = {
   'elicitation.decided': 'auditSummaryElicitationDecided',
   'filesystem.operation': 'auditSummaryFilesystem',
   'terminal.operation': 'auditSummaryTerminal',
+  'session-fork.completed': 'auditSummarySessionFork',
   'agent.event': 'auditSummaryAgentEvent',
 }
 
 export function auditSummaryOf(t: Translate | undefined, entry: AcpAuditTimelineEntry): string {
   const base = textOf(t, summaryKeys[entry.summaryCode], 'Agent event recorded')
+  const subject = entry.subject === null ? null : auditStatusOf(t, entry.subject)
   const status = entry.status === null ? null : auditStatusOf(t, entry.status)
-  return [base, entry.subject, status].filter((value): value is string => value !== null && value !== '').join(' · ')
+  return [base, subject, status].filter((value): value is string => value !== null && value !== '').join(' · ')
 }
 
 function auditStatusOf(t: Translate | undefined, status: string): string {
@@ -71,6 +73,13 @@ function auditStatusOf(t: Translate | undefined, status: string): string {
     exited: 'auditStatusExited',
     killed: 'auditStatusKilled',
     released: 'auditStatusReleased',
+    inherited: 'auditForkInherited',
+    blank: 'auditForkBlank',
+    'agent-does-not-advertise-fork': 'auditForkUnsupported',
+    'parent-binding-unavailable': 'auditForkParentUnavailable',
+    'parent-binding-mismatch': 'auditForkParentMismatch',
+    'seed-not-latest-semantic-boundary': 'auditForkOlderBoundary',
+    'candidate-not-available': 'auditForkCandidateUnavailable',
   }
   const localeKey = key[status]
   return localeKey === undefined ? status : textOf(t, localeKey, status)

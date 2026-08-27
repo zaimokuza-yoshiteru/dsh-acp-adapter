@@ -21,7 +21,8 @@
 // 族）以及 live 选项快照类型与解码。
 //
 // 语义对照（非 verbatim，钉在注释而非断言）：上游 host 端 buildModelCatalog 对单个
-// provider 探测失败只记 failures 不拖垮目录（reference/.../packages/host/apiproxy/
+// provider 探测失败只记 failures 不拖垮目录（DSH 0.1.1-rc.2
+// reference/.../packages/host/apiproxy/
 // src/api/sessions.ts）；本适配器宿主 composition/llm-stub 同款语义，由
 // test/llm-stub.spec.ts 的「失败隔离」用例钉。
 

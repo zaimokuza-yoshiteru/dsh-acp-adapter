@@ -405,6 +405,17 @@ describe('prompt 流与 typed 方法', () => {
     expect(updates).toHaveLength(before);
   });
 
+  it('session/fork：仅在广告能力时调用 typed unstable method，并登记新 session', async () => {
+    const { conn, logPath } = connectMock('happy', { env: { MOCK_ADVERTISE_FORK: '1' } });
+    const initialized = await conn.initialize();
+    expect(initialized.agentCapabilities?.sessionCapabilities?.fork).toEqual({});
+    const parent = await conn.newSession();
+    const forked = await conn.forkSession(parent.sessionId, { cwd: logDir });
+    expect(forked.sessionId).toBe('mock-session-2');
+    expect(forked.configOptions?.find((option) => option.id === 'model')?.currentValue).toBe('mock-model-a');
+    expect(fs.readFileSync(logPath, 'utf8')).toContain('session/fork parent=mock-session-1 child=mock-session-2');
+  });
+
   it('cancel：turn 中途取消 → stopReason=cancelled，mock 侧确认收到', async () => {
     const { conn, logPath } = connectMock('happy', { env: { MOCK_STEP_DELAY_MS: '50' } });
     await conn.initialize();

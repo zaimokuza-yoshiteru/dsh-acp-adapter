@@ -15,9 +15,8 @@
 //      id-not-found / load-failed → turn 以 ACP_RECONCILIATION_REQUIRED 收束、
 //      continuityState blocked、sidecar 落 reconciliation 记录、binding 不重写。
 //      list 调用抛错不权威——照试 load（load 才是权威），恢复成功。
-//   3. fork 防御：session header 带 parentSession 时即便 sidecar 有 binding 也走
-//      session/new（不恢复 parent 的 ACP 上下文），新会话写自己的 binding
-//      （generation 从 1 重新计数——fork 不携带旧 binding）。
+//   3. fork：最新语义边界且 Agent 广告 fork 时走 session/fork；不具备条件时
+//      session/new 并明确记录空白降级。
 //   4. 崩溃中途：seed 日志以 turn/end{interrupted} 结尾 → outcome-unknown 说明
 //      （turn 号正确）、幂等闩锁、不自动重试（零 spawn）。
 //   5. marker-first 路由：有 binding 时 binding 优先于日志窥测；显式 provider 与
@@ -45,6 +44,7 @@ import {
   ACP_RECONCILIATION_GUIDANCE,
   ACP_RESUME_OUTCOME_UNKNOWN_NOTE,
   ACP_RESUME_RESIDUE_NOTE,
+  isLatestSemanticForkSeed,
   stableToolInputProjection,
 } from '../../../src/domain/session/resume.ts';
 import type { AcpReconciliationCause, AcpSidecarEntry } from '../../../src/persistence/sidecar.ts';
@@ -66,6 +66,19 @@ import {
 import type { AgentHarness, MockProfile } from '../../fixtures/agent-test-helpers.ts';
 
 let suiteDir = '';
+
+describe('fork seed semantic boundary', () => {
+  it('allows only non-visible host metadata after the committed prefix', () => {
+    const seed = [
+      { type: 'turn/end', seq: 0, time: 1, data: { turn: 1, reason: { kind: 'completed' } } },
+      { type: 'session/title', seq: 1, time: 2, data: { title: 'branch' } },
+    ] as unknown as SessionEvent[];
+    expect(isLatestSemanticForkSeed(seed, 1)).toBe(true);
+    expect(isLatestSemanticForkSeed(seed, 0)).toBe(true);
+    const olderCut = [...seed, { type: 'user/message', seq: 2, time: 3, data: { content: [], source: { kind: 'user' } } }] as unknown as SessionEvent[];
+    expect(isLatestSemanticForkSeed(olderCut, 1)).toBe(false);
+  });
+});
 
 describe('Devin multi-diff content projection', () => {
   it('finds an exact path/hash/length match after an unrelated first diff', () => {
@@ -135,11 +148,17 @@ async function presetBinding(
 }
 
 type BindingEntry = Extract<AcpSidecarEntry, { kind: 'binding' }>;
+type ForkEntry = Extract<AcpSidecarEntry, { kind: 'session-fork' }>;
 
 /** 该会话 sidecar 里的全部 binding entry（落盘顺序 = append 顺序）。 */
 async function bindingEntries(harness: AgentHarness, sessionId: SessionId): Promise<BindingEntry[]> {
   const entries = (await harness.loop.acpSidecar?.list(sessionId)) ?? [];
   return entries.filter((entry): entry is BindingEntry => entry.kind === 'binding');
+}
+
+async function forkEntries(harness: AgentHarness, sessionId: SessionId): Promise<ForkEntry[]> {
+  const entries = (await harness.loop.acpSidecar?.list(sessionId)) ?? [];
+  return entries.filter((entry): entry is ForkEntry => entry.kind === 'session-fork');
 }
 
 /** 该会话 sidecar 里的全部 reconciliation 记录的 cause（落盘顺序）。 */
@@ -710,6 +729,188 @@ describe('阻断：id-not-found / load-failed 与 list 抛错的分岔', () => {
 });
 
 describe('fork 防御', () => {
+  it('draft prepare 先于首条 prompt 时仍按 seed 边界 fork，并在首个 turn 提交正确锚点', async () => {
+    const harness = await boot();
+    const profile = mockProfile(harness.logDir, 'happy', {
+      MOCK_ADVERTISE_FORK: '1',
+      MOCK_PRESET_SESSIONS: JSON.stringify(['preset-parent']),
+    });
+    await registerAcpAgents(harness, [profile]);
+    const parentId = SessionId('fork-parent-draft');
+    const childId = SessionId('fork-child-draft');
+    const seed = seedLogWithHeader(routeOf(profile), 'mock-model-a');
+    await presetBinding(harness, parentId, bindingFixture(profile, {
+      agentSessionId: 'preset-parent',
+      overrides: { historyBaseSeq: 2, dshCommittedSeq: seed.length },
+    }));
+
+    const handle = await harness.loop.createAgent(harness.ctx, {
+      sessionId: childId,
+      seed,
+      meta: { cwd: harness.logDir, parentSession: parentId, seedLength: seed.length },
+      agentOptions: { provider: routeOf(profile), model: 'mock-model-a' },
+    });
+    harness.handles.push(handle);
+    const agent = handle.agent as AcpAgent;
+
+    // The live picker prepares the ACP session before the child has a real
+    // turn, so turnBaseSeq is still zero here.  This must use seedLength,
+    // not the draft turn boundary, and must not persist a zero anchor.
+    await agent.prepare();
+    expect(mockRequests(profile.logPath)).toEqual([
+      'initialize', 'session/new', 'session/delete',
+      'initialize', 'session/fork',
+    ]);
+    expect(assistantTexts(agent)).not.toContain(ACP_FORK_BLANK_NOTE);
+
+    agent.followup(userText('continue in the prepared fork'));
+    await agent.whenIdle();
+
+    expect(mockRequests(profile.logPath)).toEqual([
+      'initialize', 'session/new', 'session/delete',
+      'initialize', 'session/fork', 'session/prompt',
+    ]);
+    const childBindings = await bindingEntries(harness, childId);
+    expect(childBindings.at(-1)?.data).toMatchObject({
+      provider: routeOf(profile),
+      agentSessionId: 'mock-session-1',
+      generation: 1,
+      historyBaseSeq: 2,
+    });
+    const firstPromptTurnStart = agent.session.events
+      .filter((event) => event.type === 'turn/start')
+      .at(-1);
+    expect(childBindings[0]?.data.dshCommittedSeq).toBe(firstPromptTurnStart?.seq);
+    expect(childBindings[0]?.data.dshCommittedSeq).toBeGreaterThan(0);
+    expect(childBindings.at(-1)?.data.dshCommittedSeq).toBeGreaterThanOrEqual(seed.length);
+    expect((await forkEntries(harness, childId)).map((entry) => entry.data)).toContainEqual(expect.objectContaining({
+      outcome: 'inherited',
+      reason: 'inherited',
+      parentAgentSessionId: 'preset-parent',
+      agentSessionId: 'mock-session-1',
+    }));
+  }, 15_000);
+
+  it('最新语义边界 + Agent 广告 fork：继承原 ACP 上下文，子会话使用独立 binding', async () => {
+    const harness = await boot();
+    const profile = mockProfile(harness.logDir, 'happy', {
+      MOCK_ADVERTISE_FORK: '1',
+      MOCK_PRESET_SESSIONS: JSON.stringify(['preset-parent']),
+    });
+    await registerAcpAgents(harness, [profile]);
+    const parentId = SessionId('fork-parent-latest');
+    const childId = SessionId('fork-child-latest');
+    const seed = seedLogWithHeader(routeOf(profile), 'mock-model-a');
+    await presetBinding(harness, parentId, bindingFixture(profile, {
+      agentSessionId: 'preset-parent',
+      overrides: { historyBaseSeq: 2, dshCommittedSeq: seed.length },
+    }));
+
+    const handle = await harness.loop.createAgent(harness.ctx, {
+      sessionId: childId,
+      seed,
+      meta: { cwd: harness.logDir, parentSession: parentId, seedLength: seed.length },
+      // A changed transient default must not steal the fork from its seed route.
+      agentOptions: { provider: 'openai', model: 'unrelated-default' },
+    });
+    harness.handles.push(handle);
+    handle.agent.followup(userText('continue in the fork'));
+    await handle.agent.whenIdle();
+
+    expect(mockRequests(profile.logPath)).toEqual([
+      'initialize', 'session/new', 'session/delete',
+      'initialize', 'session/fork', 'session/prompt',
+    ]);
+    expect(readLog(profile.logPath)).toContain('session/fork parent=preset-parent child=mock-session-1');
+    expect(assistantTexts(handle.agent)).not.toContain(ACP_FORK_BLANK_NOTE);
+    const childBindings = await bindingEntries(harness, childId);
+    expect(childBindings.at(-1)?.data).toMatchObject({
+      provider: routeOf(profile),
+      agentSessionId: 'mock-session-1',
+      generation: 1,
+      historyBaseSeq: 2,
+    });
+    expect((await bindingEntries(harness, parentId)).at(-1)?.data.agentSessionId).toBe('preset-parent');
+    expect((await forkEntries(harness, childId)).map((entry) => entry.data)).toContainEqual(expect.objectContaining({
+      outcome: 'inherited',
+      reason: 'inherited',
+      parentSessionId: String(parentId),
+      parentAgentSessionId: 'preset-parent',
+      agentSessionId: 'mock-session-1',
+    }));
+  }, 15_000);
+
+  it('Agent 未广告 fork：显式空白降级并记录原因，不伪装为上下文继承', async () => {
+    const harness = await boot();
+    const profile = mockProfile(harness.logDir, 'happy', {
+      MOCK_PRESET_SESSIONS: JSON.stringify(['preset-parent']),
+    });
+    await registerAcpAgents(harness, [profile]);
+    const parentId = SessionId('fork-parent-unsupported');
+    const childId = SessionId('fork-child-unsupported');
+    const seed = seedLogWithHeader(routeOf(profile), 'mock-model-a');
+    await presetBinding(harness, parentId, bindingFixture(profile, {
+      agentSessionId: 'preset-parent',
+      overrides: { dshCommittedSeq: seed.length },
+    }));
+
+    const handle = await harness.loop.createAgent(harness.ctx, {
+      sessionId: childId,
+      seed,
+      meta: { cwd: harness.logDir, parentSession: parentId, seedLength: seed.length },
+      agentOptions: { provider: routeOf(profile), model: 'mock-model-a' },
+    });
+    harness.handles.push(handle);
+    handle.agent.followup(userText('continue without native fork'));
+    await handle.agent.whenIdle();
+
+    expect(mockRequests(profile.logPath)).toEqual([
+      'initialize', 'session/new', 'session/delete',
+      'initialize', 'session/new', 'session/prompt',
+    ]);
+    expect(assistantTexts(handle.agent).filter((text) => text === ACP_FORK_BLANK_NOTE)).toHaveLength(1);
+    expect((await forkEntries(harness, childId)).map((entry) => entry.data)).toContainEqual(expect.objectContaining({
+      outcome: 'blank',
+      reason: 'agent-does-not-advertise-fork',
+      parentAgentSessionId: 'preset-parent',
+    }));
+  }, 15_000);
+
+  it('Agent 广告 fork 但 RPC 失败：首条消息失败且不静默创建空白 ACP 会话', async () => {
+    const harness = await boot();
+    const profile = mockProfile(harness.logDir, 'happy', {
+      MOCK_ADVERTISE_FORK: '1',
+      MOCK_FORK_FAIL: '1',
+      MOCK_PRESET_SESSIONS: JSON.stringify(['preset-parent']),
+    });
+    await registerAcpAgents(harness, [profile]);
+    const parentId = SessionId('fork-parent-rpc-fail');
+    const childId = SessionId('fork-child-rpc-fail');
+    const seed = seedLogWithHeader(routeOf(profile), 'mock-model-a');
+    await presetBinding(harness, parentId, bindingFixture(profile, {
+      agentSessionId: 'preset-parent',
+      overrides: { dshCommittedSeq: seed.length },
+    }));
+
+    const handle = await harness.loop.createAgent(harness.ctx, {
+      sessionId: childId,
+      seed,
+      meta: { cwd: harness.logDir, parentSession: parentId, seedLength: seed.length },
+      agentOptions: { provider: routeOf(profile), model: 'mock-model-a' },
+    });
+    harness.handles.push(handle);
+    handle.agent.followup(userText('do not silently lose the parent context'));
+    await handle.agent.whenIdle();
+
+    expect(mockRequests(profile.logPath)).toEqual([
+      'initialize', 'session/new', 'session/delete',
+      'initialize', 'session/fork',
+    ]);
+    expect(turnEndReasons(handle.agent).at(-1)?.reason.kind).toBe('error');
+    expect(await bindingEntries(harness, childId)).toEqual([]);
+    expect(assistantTexts(handle.agent)).not.toContain(ACP_FORK_BLANK_NOTE);
+  }, 15_000);
+
   it('fork id 异常命中既有 binding 时 fail-closed，不自动覆盖恢复证据', async () => {
     const harness = await boot();
     const profile = mockProfile(harness.logDir, 'happy', {

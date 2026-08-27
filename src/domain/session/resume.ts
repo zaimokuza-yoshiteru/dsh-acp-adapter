@@ -8,7 +8,7 @@
  *
  * 本模块只含纯函数与文案常量，接线在 src/host/factory/agent-loop.ts（marker-first
  * 路由：sidecar binding 优先，无记录回退 `request/header` 窥测）与 ./agent.ts
- * （能力驱动的 session/resume 或 session/load + 阻断闩锁 + 说明消息）。
+ * （能力驱动的 session/resume/session/load/session/fork + 说明消息）。
  *
  * 恢复流程（设计说明字面顺序）：binding 在场且非 forceBlank → initialize 后
  * 逐项预检（canonicalCwd → launchFingerprint → agent 身份 → protocolVersion →
@@ -159,11 +159,9 @@ export const ACP_REBIND_BLANK_NOTE =
   'The previous ACP context was explicitly abandoned and this DSH session is now bound to a new ACP Agent session. The Agent cannot see the history above; conversation continues normally from this point.'
 
 /**
- * fork 说明文案（ACP 会话被 fork 时 agent 侧上下文不继承——fork 防御
- * （host/factory/agent-loop.ts `createAcpMachine`）在 parentSession 在场时丢
- * resumeBinding，agent 以空白 session/new 开始；本说明把这个事实写进产品历史，
- * 免得「UI 历史完整但 agent 已失忆」再成静默分叉）。追加于 fork 出的会话
- * 构造期、首个 turn 之前；幂等闸见 {@link hasForkBlankNote}。
+ * fork 空白降级说明文案（仅当 ACP Agent 未广告/无法使用 session/fork 时）。
+ * 能力驱动的成功 fork 不追加本说明；它只记录 DSH 历史展示与 ACP 语义上下文
+ * 都已由 fork 继承的事实。追加于降级 fork 会话首个 turn 之前。
  */
 export const ACP_FORK_BLANK_NOTE =
   'This session was forked from DSH history. The history above is display-only: the ACP Agent context is not inherited, so the Agent starts blank and cannot see the earlier conversation.'
@@ -625,9 +623,20 @@ function finalizeBuilder(builder: HistoryEntryBuilder, policy: AcpHistoryProject
 }
 
 /** 判定 DSH 事件是否属于可见历史（assistant/message 必须带 sourceEventSeqs——见模块注释）。 */
-function isVisibleDshEvent(event: SessionEvent): boolean {
+export function isVisibleDshEvent(event: SessionEvent): boolean {
   if (event.type === 'user/message' || event.type === 'tool/call' || event.type === 'tool/result') return true
   return event.type === 'assistant/message' && event.sourceEventSeqs !== undefined
+}
+
+/**
+ * A DSH fork may include title/session metadata appended after the parent's
+ * committed semantic prefix. Those events are safe to carry into a fork, but
+ * an older semantic cut (or any new user/assistant/tool event) must never call
+ * ACP session/fork because ACP has no atSeq parameter.
+ */
+export function isLatestSemanticForkSeed(seed: readonly SessionEvent[], committedSeq: number): boolean {
+  if (!Number.isInteger(committedSeq) || committedSeq < 0 || seed.length < committedSeq) return false
+  return seed.every((event) => event.seq < committedSeq || !isVisibleDshEvent(event))
 }
 
 /**

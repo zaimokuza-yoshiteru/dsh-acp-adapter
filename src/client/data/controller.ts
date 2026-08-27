@@ -38,7 +38,7 @@ export interface SettingsScopeLike {
   subscribe(listener: () => void): () => void
 }
 
-/** One path-addressed settings edit (dsh-apiproxy SettingsPathOpView). */
+/** One path-addressed settings edit (DSH 0.1.1-rc.2 ApiProxy `SettingsPathOpView`). */
 export type AcpSettingsOp =
   | { op: 'set'; path: string[]; value: unknown }
   | { op: 'unset'; path: string[] }

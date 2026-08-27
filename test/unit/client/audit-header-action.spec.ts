@@ -48,4 +48,13 @@ describe('ACP audit header utility behavior', () => {
     expect(auditSummaryOf((key) => zh[key], setup)).toContain('配置同步')
     expect(auditSummaryOf((key) => zh[key], setup)).not.toContain('set_config_option')
   })
+
+  it('localizes session-fork outcomes and fallback reasons in both languages', () => {
+    const inherited = entry({ summaryCode: 'session-fork.completed', category: 'agent', subject: 'inherited', status: null })
+    const fallback = entry({ summaryCode: 'session-fork.completed', category: 'agent', subject: 'blank', status: 'seed-not-latest-semantic-boundary' })
+    expect(auditSummaryOf((key) => zh[key], inherited)).toBe('会话分叉结果已记录 · 已继承 Agent 上下文')
+    expect(auditSummaryOf((key) => en[key], inherited)).toBe('Session fork result recorded · Agent context inherited')
+    expect(auditSummaryOf((key) => zh[key], fallback)).toBe('会话分叉结果已记录 · 未继承 Agent 上下文 · 分叉点不是最新语义边界')
+    expect(auditSummaryOf((key) => en[key], fallback)).toBe('Session fork result recorded · Agent context not inherited · Fork point is not the latest semantic boundary')
+  })
 })

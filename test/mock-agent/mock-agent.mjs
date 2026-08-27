@@ -10,7 +10,7 @@
 // 已实现 scenario：
 //   happy              全能力 + configOptions + 完整 prompt 更新流
 //                      (thought→message×3→tool_call→tool_call_update→plan→usage_update→end_turn)。
-//                      配置形态 = 「configOptions + legacy modes 双发」（真机 devin 3000.4.25
+//                      配置形态 = 「configOptions + legacy modes 双发」（历史真机证据：Devin 3000.4.25
 //                      实测形态，Devin ACP 真机验收）
 //   minimal-caps       最小能力；未声明的可选方法（load/list/delete/close）一律 -32601；
 //                      session/new 无 modes/configOptions；prompt 只发 message chunk
@@ -98,7 +98,7 @@
 //   config-write-fail  同 happy，但 session/set_config_option 恒回 -32603（值不应用）
 // ——建立时模型收敛「写入未获确认 → 分叉说明 + turn 照常」用
 //
-// 真机对齐（devin 3000.4.25 实测，Devin ACP 真机验收）：
+// 历史真机证据（Devin 3000.4.25；当前版本另走真实 Agent 冒烟）：
 //   - sessionCapabilities 广告 { list, delete, additionalDirectories }（无 close；
 //     session/close 处理器保留作测试便利，广告面对齐真机）；
 //   - mode id 用 accept-edits（显示名 "Code"）等 5 项，modes 与 configOptions.mode
@@ -220,6 +220,7 @@ const PRESET_SESSIONS = (() => {
 })();
 const LIST_PAGE_SIZE = intEnv('MOCK_LIST_PAGE_SIZE', 0);
 const ADVERTISE_RESUME = process.env.MOCK_ADVERTISE_RESUME === '1';
+const ADVERTISE_FORK = process.env.MOCK_ADVERTISE_FORK === '1';
 // never-resolve：永不响应的方法集合（RPC deadline 矩阵；默认只挂 session/new）
 const NEVER_METHODS = (() => {
   try {
@@ -293,7 +294,7 @@ const advertisesDelete = () => fullCaps() && state.scenario !== 'no-delete';
 const advertisesClose = () => state.scenario === 'cleanup-close-delete';
 
 // ---------- 固定脚本数据（对齐 reference/agent-client-protocol/schema/v1/schema.json） ----------
-// mode 集合对齐 devin 3000.4.25 实测：id accept-edits（显示名 "Code"）等 5 项，
+// mode 集合固定自 Devin 3000.4.25 的历史实测：id accept-edits（显示名 "Code"）等 5 项，
 // modes 与 configOptions.mode 一一对应双发。
 const MODE_ENTRIES = [
   { id: 'accept-edits', name: 'Code', description: 'Write and edit code' },
@@ -862,12 +863,13 @@ async function handleInitialize(msg) {
     await sleep(SLOW_INIT_MS);
   }
   // AgentCapabilities：happy 系全能力；minimal-caps 仅基线。
-  // sessionCapabilities 对齐 devin 3000.4.25 实测：{ list, delete, additionalDirectories }，无 close；
+  // fixture 基线来自 Devin 3000.4.25 历史实测：{ list, delete, additionalDirectories }，无 close；
  // 清理矩阵的 scenario 旋钮（no-delete / cleanup-close-delete）改写 delete/close 两键。
   const sessionCapabilities = fullCaps()
     ? {
         list: {},
         ...(ADVERTISE_RESUME ? { resume: {} } : {}),
+        ...(ADVERTISE_FORK ? { fork: {} } : {}),
         ...(advertisesDelete() ? { delete: {} } : {}),
         ...(advertisesClose() ? { close: {} } : {}),
         additionalDirectories: {},
@@ -992,6 +994,21 @@ function handleSessionResume(msg) {
   const result = {};
   if (session.modes) result.modes = session.modes;
   if (session.configOptions) result.configOptions = session.configOptions;
+  respond(msg.id, result);
+}
+
+function handleSessionFork(msg) {
+  const parent = getSession(msg);
+  if (!parent) return;
+  if (!ADVERTISE_FORK) return respondError(msg.id, -32601, 'Method not found: session/fork');
+  if (process.env.MOCK_FORK_FAIL === '1') return respondError(msg.id, -32603, 'mock: session/fork failed');
+  const child = createSession(`mock-session-${++state.sessionSeq}`, msg.params?.cwd ?? parent.cwd);
+  child.configOptions = parent.configOptions ? JSON.parse(JSON.stringify(parent.configOptions)) : null;
+  child.modes = parent.modes ? JSON.parse(JSON.stringify(parent.modes)) : null;
+  log(`session/fork parent=${parent.id} child=${child.id}`);
+  const result = { sessionId: child.id };
+  if (child.modes) result.modes = child.modes;
+  if (child.configOptions) result.configOptions = child.configOptions;
   respond(msg.id, result);
 }
 
@@ -1418,6 +1435,8 @@ function handleRequest(msg) {
       return handleSessionLoad(msg);
     case 'session/resume':
       return handleSessionResume(msg);
+    case 'session/fork':
+      return handleSessionFork(msg);
     case 'session/list':
       return handleSessionList(msg);
     case 'session/delete':

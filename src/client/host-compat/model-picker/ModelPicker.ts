@@ -567,7 +567,7 @@ function Loaded({ locked, available, t, useStore, picker }: {
     if (state.error !== null) children.push(errorStrip(state.error, 'error'))
     for (const failure of filteredFailures) {
       children.push(h('div', { key: `failure-${failure.id}`, className: css.warning },
-        h('span', {}, t('warning.groupLoad', { name: failure.name, message: failure.message })),
+        h('span', {}, localizedDiagnostic(t, 'warning.groupLoad', failure.message, { name: failure.name })),
         h('button', { type: 'button', className: css.retry, onClick: reload }, t('action.reload')),
       ))
     }

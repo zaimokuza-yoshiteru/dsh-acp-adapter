@@ -333,7 +333,7 @@ function createProbeRuntimePreparer(ctx: Context): AcpProbeRuntimePreparer {
       /* 并发回收等竞态：权限收紧失败不阻断 probe */
     }
  // 崩溃残留清扫（边界）：上一轮的 disposable run 目录若没被 cleanup 删掉
-    // （进程崩溃/kill），当前发布 probe 前整棵移除；删不动仅 warn，不阻断当前发布 probe。
+    // （进程崩溃/kill），本次 probe 前整棵移除；删不动仅 warn，不阻断本次 probe。
     for (const entry of fs.readdirSync(probeBase)) {
       try {
         fs.rmSync(path.join(probeBase, entry), { recursive: true, force: true })

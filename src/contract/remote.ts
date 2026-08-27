@@ -245,6 +245,7 @@ export type AcpAuditSummaryCode =
   | 'elicitation.decided'
   | 'filesystem.operation'
   | 'terminal.operation'
+  | 'session-fork.completed'
   | 'agent.event'
 
 /** ACP 审计视图的一条有界 sidecar 记录；UI 文案由客户端 locale 生成。 */

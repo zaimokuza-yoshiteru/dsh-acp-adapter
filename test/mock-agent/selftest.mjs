@@ -198,7 +198,7 @@ test('happy: 全生命周期 + 帧序列 + EOF 不退出', async () => {
     assert(caps.promptCapabilities?.image === true, 'happy caps promptCapabilities.image=true');
     assert(typeof caps.sessionCapabilities?.list === 'object', 'happy caps sessionCapabilities.list');
     assert(typeof caps.sessionCapabilities?.delete === 'object', 'happy caps sessionCapabilities.delete');
-    // 对齐 devin 3000.4.25 实测：additionalDirectories 在场、close 不在广告面
+    // 固定 Devin 3000.4.25 历史实测：additionalDirectories 在场、close 不在广告面
     assert(typeof caps.sessionCapabilities?.additionalDirectories === 'object', 'happy caps sessionCapabilities.additionalDirectories');
     assert(!('close' in (caps.sessionCapabilities ?? {})), 'happy caps 无 sessionCapabilities.close（对齐真机）');
     assert(Array.isArray(init.result?.authMethods) && init.result.authMethods.length === 0, 'happy authMethods=[]');

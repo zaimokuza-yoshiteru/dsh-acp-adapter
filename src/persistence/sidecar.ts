@@ -6,7 +6,7 @@
  * 为什么不在 session log：live-event ordering evidence 表明（
  * orchestrator 复跑复证）——插件直写 `ctx.sessionPersistence.append` 会在 live
  * session 上每条 marker 静默吞掉其后一条 live 事件（重启才显形）；`Session.append`
- * 又无 ignorable 写入面。dsh core 增 ignorable 写入口（根治方案）留 backlog。
+ * 又无 ignorable 写入面。在宿主提供可忽略审计事件入口前，sidecar 是审计真源。
  *
  * ## node:sqlite（DatabaseSync）+ WAL 生产化重写
  *
@@ -18,15 +18,16 @@
  * NORMAL` 下 commit 不逐条 fsync（无 fsync 风暴），进程崩溃不丢已提交记录；整库
  * checkpoint 在 {@link AcpSidecar.flush}/{@link AcpSidecar.dispose} 周期性执行。
  *
- * **不做 JSONL 迁移层**（项目未投产，硬约束「不为未发布实现增加迁移层」）：启动时
- * root 下若存在旧 `<sessionId>.jsonl` 一律忽略（打开库时 warn 一次提示运维），不读
- * 不迁不删；旧会话 resume 因查无 binding 自然落 reconciliation-required
- * fail-safe（'binding-missing'，既有行为）。`.corrupt-*` 坏行隔离概念随之删除——
- * SQLite 要么库损坏要么不损坏，不存在行级隔离；库无法打开/校验失败 → open 即
- * fail loud（warn 并抛），读路径不再吞错继续。
+ * **不自动迁移旧 JSONL**：SQLite 重写发生在 1.0 前的 RC 阶段，旧
+ * `<sessionId>.jsonl` 从未成为稳定存储契约。启动时若发现旧文件，仅 warn 并忽略，
+ * 不读、不迁、不删；对应旧会话因缺少 binding 进入 reconciliation-required
+ * fail-safe（`binding-missing`）。需要保留旧 Agent 上下文时，应先用生成该 JSONL
+ * 的旧插件版本处理；否则由用户显式放弃旧 ACP 上下文。当前 SQLite 数据库保持兼容。
+ * `.corrupt-*` 坏行隔离概念随之删除——SQLite 要么库损坏要么不损坏，不存在行级
+ * 隔离；库无法打开或校验失败时 open 即 fail loud，读路径不吞错继续。
  *
  * `platform` option 与 ./platform.ts（rename/重试画像）随本重写一并移除——SQLite
- * 的 commit/WAL 恢复取代了 tmp+rename 发布面，包未发布，允许此 breaking。
+ * 的 commit/WAL 恢复取代了 tmp+rename 发布面；这是上述 1.0 前 RC 的存储破坏性变更。
  *
  * ## 表结构
  *
@@ -72,7 +73,7 @@
  * 同步 durable 路径（append 落库 commit 后才 resolve）：`binding`（recordBinding
  * fail-closed：binding 先于 prompt）与 `permission`（审批桥 fail-closed：append
  * reject → cancelled，见 src/domain/policy/permissions.ts）。其余 kind
- * （permission-scope/agent-mode/agent-config/reconciliation/degradation）进**有界
+ * （permission-scope/agent-mode/agent-config/reconciliation/degradation/session-fork）进**有界
  * 内存队列**（上限 {@link ACP_SIDECAR_AUDIT_QUEUE_LIMIT}，默认 1024；满 → 丢弃
  * 新记录并 warn 计数，绝不阻塞 turn），microtask 批量事务落库；
  * {@link AcpSidecar.flush} 落齐全部排队记录（生产接线：AcpAgent turn 收束与
@@ -119,6 +120,7 @@ import type {
   AcpPermissionAuditData,
   AcpPermissionScopeAuditData,
   AcpTerminalAuditData,
+  AcpSessionForkAuditData,
 } from '../domain/policy/events.ts'
 import {
   ACP_SNAPSHOT_TOTAL_BYTES,
@@ -420,7 +422,7 @@ export interface AcpSidecarEnvelopeV2 {
   readonly dshSessionId: string
   readonly acpProviderId?: string
   readonly acpSessionId?: string
-  readonly payload: AcpBindingData | AcpPermissionAuditData | AcpPermissionScopeAuditData | AcpAgentModeAuditData | AcpAgentConfigAuditData | AcpReconciliationData | AcpReplayAssessmentData | AcpDegradationAuditData | AcpElicitationAuditData | AcpFileSystemAuditData | AcpTerminalAuditData
+  readonly payload: AcpBindingData | AcpPermissionAuditData | AcpPermissionScopeAuditData | AcpAgentModeAuditData | AcpAgentConfigAuditData | AcpReconciliationData | AcpReplayAssessmentData | AcpDegradationAuditData | AcpElicitationAuditData | AcpFileSystemAuditData | AcpTerminalAuditData | AcpSessionForkAuditData
 }
 
 /** 统一读取模型的公共 envelope 字段。 */
@@ -451,7 +453,9 @@ interface AcpSidecarEntryBase {
  * {@link ACP_SIDECAR_CONFIG_AUDIT_ID}），不进任何会话行集； 新增
  * `reconciliation`（恢复对账失败 → reconciliation-required 的事实记录，载荷见
  * {@link AcpReconciliationData}）； 新增 `degradation`（tool result 内容
- * 降级事实，载荷见 {@link AcpDegradationAuditData}）。
+ * 降级事实，载荷见 {@link AcpDegradationAuditData}）； 新增 `session-fork`
+ *（DSH fork 是否调用 ACP session/fork 及受控降级原因，载荷见
+ * {@link AcpSessionForkAuditData}）。
  */
 export interface AcpFileSystemAuditData {
   readonly operation: 'read' | 'write'
@@ -464,10 +468,10 @@ export interface AcpFileSystemAuditData {
   readonly profileId: string
 }
 
-export type AcpSidecarKind = 'binding' | 'permission' | 'permission-scope' | 'agent-mode' | 'agent-config' | 'reconciliation' | 'replay-assessment' | 'degradation' | 'elicitation' | 'filesystem' | 'terminal'
+export type AcpSidecarKind = 'binding' | 'permission' | 'permission-scope' | 'agent-mode' | 'agent-config' | 'reconciliation' | 'replay-assessment' | 'degradation' | 'elicitation' | 'filesystem' | 'terminal' | 'session-fork'
 
 /** 写/读路径共同承认的 v2 kind 全集（行校验用）。 */
-const ACP_SIDECAR_KINDS: readonly AcpSidecarKind[] = ['binding', 'permission', 'permission-scope', 'agent-mode', 'agent-config', 'reconciliation', 'replay-assessment', 'degradation', 'elicitation', 'filesystem', 'terminal']
+const ACP_SIDECAR_KINDS: readonly AcpSidecarKind[] = ['binding', 'permission', 'permission-scope', 'agent-mode', 'agent-config', 'reconciliation', 'replay-assessment', 'degradation', 'elicitation', 'filesystem', 'terminal', 'session-fork']
 
 /**
  * 同步 durable 路径的 kind（有界审计队列）：append 落库 commit 后才 resolve。
@@ -506,6 +510,7 @@ export type AcpSidecarEntry =
   | (AcpSidecarEntryBase & { readonly kind: 'elicitation'; readonly data: AcpElicitationAuditData })
   | (AcpSidecarEntryBase & { readonly kind: 'filesystem'; readonly data: AcpFileSystemAuditData })
   | (AcpSidecarEntryBase & { readonly kind: 'terminal'; readonly data: AcpTerminalAuditData })
+  | (AcpSidecarEntryBase & { readonly kind: 'session-fork'; readonly data: AcpSessionForkAuditData })
 
 /** {@link AcpSidecar.append} 的入参：`time` 可缺省（由 store 的 `now()` 补齐）。 */
 export type AcpSidecarEntryInput =
@@ -520,6 +525,7 @@ export type AcpSidecarEntryInput =
   | { readonly kind: 'elicitation'; readonly time?: number; readonly data: AcpElicitationAuditData }
   | { readonly kind: 'filesystem'; readonly time?: number; readonly data: AcpFileSystemAuditData }
   | { readonly kind: 'terminal'; readonly time?: number; readonly data: AcpTerminalAuditData }
+  | { readonly kind: 'session-fork'; readonly time?: number; readonly data: AcpSessionForkAuditData }
 
 /** 补齐 `time` 后的待落盘记录（envelope 分量由 store 分配）。 */
 type StampedEntry =
@@ -534,6 +540,7 @@ type StampedEntry =
   | { readonly kind: 'elicitation'; readonly time: number; readonly data: AcpElicitationAuditData }
   | { readonly kind: 'filesystem'; readonly time: number; readonly data: AcpFileSystemAuditData }
   | { readonly kind: 'terminal'; readonly time: number; readonly data: AcpTerminalAuditData }
+  | { readonly kind: 'session-fork'; readonly time: number; readonly data: AcpSessionForkAuditData }
 
 /** {@link AcpSidecar.exportAudit} 的构造项。 */
 export interface AcpSidecarExportOptions {
@@ -766,6 +773,10 @@ function deriveAcpIds(
   }
   if (kind === 'terminal') {
     const acpSessionId = typeof data.acpSessionId === 'string' && data.acpSessionId.length > 0 ? data.acpSessionId : undefined
+    return acpSessionId === undefined ? {} : { acpSessionId }
+  }
+  if (kind === 'session-fork') {
+    const acpSessionId = typeof data.agentSessionId === 'string' && data.agentSessionId.length > 0 ? data.agentSessionId : undefined
     return acpSessionId === undefined ? {} : { acpSessionId }
   }
   if (kind !== 'permission') return {}

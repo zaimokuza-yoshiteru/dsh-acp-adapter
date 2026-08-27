@@ -25,7 +25,7 @@
  * `cancelled`——reference/agent-client-protocol docs/protocol/v1/
  * prompt-turn.mdx §cancellation），用户思考时间本就无界；且 dsh 把未答
  * 问题作为 durable pending 持有（浏览器断开不取消、重连 replay——宿主
- * api-proxy 应答者语义），桥侧自造超时会在 agent 已被告知 cancelled 之后
+ * DSH 0.1.1-rc.2 ApiProxy 应答者语义），桥侧自造超时会在 agent 已被告知 cancelled 之后
  * 把 dsh 侧问题留成仍可应答的僵尸。取代超时的是终局结算保证：
  * - turn/会话取消或 dispose：turn abort signal 经 `turnSignal` 透传，审批
  *   服务以 `cancelled` 结案并丢弃迟到答复，桥答 cancelled（协议 MUST 条款

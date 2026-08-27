@@ -34,7 +34,7 @@
  * - fully adapter-owned (absent upstream): the filter/pinned/visibility/
  *   default-resolution family, `live-controller.ts`, and the live-options
  *   snapshot types + decoder below.
- * Host-side semantics parity (not verbatim): upstream`buildModelCatalog`
+ * Host-side semantics parity (not verbatim): DSH 0.1.1-rc.2 upstream `buildModelCatalog`
  * records a per-provider probe failure without sinking the whole catalog
  * (packages/host/apiproxy/src/api/sessions.ts); the adapter host composition
  * does the same. test/contracts/upstream-picker-diff.spec.ts pins all of the above —

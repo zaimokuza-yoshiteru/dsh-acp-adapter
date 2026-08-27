@@ -3,7 +3,7 @@
 //
 // 被测模块零 import（无 DOM/fetch/React/host 模块），直接 vitest 可测。契约值交叉
 // 核对自：dsh-api-remotes sessions.ts 的 wire 形状（reference/deepseek-harness
-// packages/host/apiproxy/src/api/sessions.schema.ts：session.models 响应值字段
+// DSH 0.1.1-rc.2 packages/host/apiproxy/src/api/sessions.schema.ts：session.models 响应值字段
 // current/routable/groups/failures）、src/contract/remote.ts（AcpLiveOptionsSnapshot）、
 // src/domain/session/options-sync.ts（model/thought_level/mode
 // 分类口径）、core/agent-default-model（ns + {provider, model, reasoningEffort?}）。
@@ -313,7 +313,7 @@ describe('rowId / optionsOf / selectionOf', () => {
       { id: 'deepseek/deepseek-reasoner', label: 'DeepSeek Reasoner', detail: '[Model] DeepSeek' },
       { id: 'acp-devin/devin-latest', label: 'Devin Latest', detail: '[ACP] Devin · 云端智能体' },
       { id: 'acp-devin/devin-sonnet', label: 'Devin Sonnet', detail: '[ACP] Devin' },
-      { id: 'failure/deepseek', label: 'DeepSeek', detail: 'option.loadError:HTTP 401' },
+      { id: 'failure/deepseek', label: 'DeepSeek', detail: 'option.loadError:' },
     ]);
     // failure 行永不携带 active（内置语义：可见但不可选）
     expect(rows[4]).not.toHaveProperty('active');
@@ -453,7 +453,7 @@ describe('backend 兼容矩阵（backendOfProvider / isSameBackendSelection / de
       { id: 'deepseek/deepseek-reasoner', label: 'DeepSeek Reasoner', detail: '[Model] DeepSeek' },
       { id: 'acp-devin/devin-latest', label: 'Devin Latest', detail: '需新会话:[ACP] Devin · 云端智能体', crossBackend: true, confirmation },
       { id: 'acp-devin/devin-sonnet', label: 'Devin Sonnet', detail: '需新会话:[ACP] Devin', crossBackend: true, confirmation },
-      { id: 'failure/deepseek', label: 'DeepSeek', detail: 'option.loadError:HTTP 401' },
+      { id: 'failure/deepseek', label: 'DeepSeek', detail: 'option.loadError:' },
     ]);
     // failure 行不受 backend 标记影响
     expect(rows[4]).not.toHaveProperty('crossBackend');

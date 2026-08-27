@@ -39,7 +39,7 @@ import { canonicalHeader, foldRequestHeader, headerEquals } from '@deepseek-ai/d
 import type { Session, SessionId, TurnEndReason, UserMessage } from '@deepseek-ai/dsh-session'
 import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
 import type * as acp from '@agentclientprotocol/sdk'
-import { AcpClientConnection } from '../../protocol/v1/connection.ts'
+import { AcpClientConnection, supportsFork } from '../../protocol/v1/connection.ts'
 import type { AcpFileSystemHandlers } from '../../runtime/client-capabilities/filesystem.ts'
 import type { AcpTerminalHandlers } from '../../runtime/client-capabilities/terminal.ts'
 import { AcpClientError, acpErrorRef } from '../../protocol/v1/errors.ts'
@@ -60,8 +60,8 @@ import { ACP_METRIC } from '../observability/metrics.ts'
 import type { AcpMetricsLike } from '../observability/metrics.ts'
 import { buildAcpSpawnPlan, AcpSpawnPlanError } from '../policy/sandbox.ts'
 import type { AcpSandboxMode, AcpSpawnPlan } from '../policy/sandbox.ts'
-import { ACP_DEGRADATION_AUDIT_KIND } from '../policy/events.ts'
-import type { AcpAgentModeAuditVia, AcpDegradationAuditData } from '../policy/events.ts'
+import { ACP_DEGRADATION_AUDIT_KIND, ACP_SESSION_FORK_AUDIT_KIND } from '../policy/events.ts'
+import type { AcpAgentModeAuditVia, AcpDegradationAuditData, AcpSessionForkReason } from '../policy/events.ts'
 import { ACP_STEP, ACP_UNKNOWN_MODEL, ReplayTranslator, TurnTranslator, sessionEventSink } from '../../protocol/v1/translate.ts'
 import type { AcpContextUsageSnapshot, AcpToolCallPresentationSnapshot } from '../../protocol/v1/translate.ts'
 import { descriptorOf } from './agent-config.ts'
@@ -82,6 +82,7 @@ import {
   type AcpHistoryProjectionPolicy,
   expectedVisibleHistory,
   hasForkBlankNote,
+  isLatestSemanticForkSeed,
   reconcileVisibleHistory,
   replayVisibleHistory,
   resolveExpectedRange,
@@ -153,6 +154,11 @@ export interface AcpAgentScope {
 export interface AcpAgentOptions {
   /** 注册表命中的 provider：`config.command/args/env` 是子进程 spawn 规格，`id` 决定路由 `acp-<id>`。 */
   profile: AcpResolvedAgent
+  /** Candidate parent binding for a DSH fork. Only passed after the factory
+   * proves the seed is the parent's latest committed semantic boundary. */
+  forkCandidate?: AcpForkCandidate
+  /** Why a parent fork candidate could not be formed; used for the audit fact. */
+  forkFallbackReason?: AcpSessionForkReason
   /**
  * 加载期解析的 subprocess seam（host/factory/agent-loop.ts 经
    * `resolveSubprocessSeam(ctx)` 解析一次后随 driver 传入）：懒启动的 spawn/拆除
@@ -271,6 +277,12 @@ export interface AcpAgentOptions {
    * （裸 Context 单测）。
    */
   invalidateProbeCache?: () => void
+}
+
+export interface AcpForkCandidate {
+  readonly parentSessionId: SessionId
+  readonly parentBinding: AcpBindingRecord
+  readonly seedLength: number
 }
 
 /**
@@ -416,6 +428,8 @@ export class AcpAgent implements Agent {
   private readonly dispatch: AgentEventDispatch
 
   private readonly driver: AcpAgentOptions
+  private forkOutcome: 'inherited' | 'blank-fallback' | undefined
+  private forkReason: AcpSessionForkReason | undefined
   /** Runtime-scoped history compatibility; never infer a Devin workaround for other ACP agents. */
   private historyProjectionPolicy: AcpHistoryProjectionPolicy = {}
  /** 路由 id：`acp-<id>`（注册表约定，既定行为）。 公开：dshAcp Remote `backendOf` 的活体 backend 判定读它。 */
@@ -652,12 +666,11 @@ export class AcpAgent implements Agent {
         this.log.warn(`dsh-acp: failed to append the outcome-unknown note (${errorChain(error)})`, { operation: 'resume-note', result: 'error' })
       }
     }
- // fork 诚实提示：fork 出的会话（parentSession 在场）在首个 turn 前落
-    // 一条说明——ACP agent 侧上下文不继承（fork 防御丢 resumeBinding，agent 从
-    // 空白 session/new 开始），上方历史仅作展示。幂等闸：说明消息按文本查重，
-    // 后续 resume 重建本 agent 时不重复追加。落盘失败不炸构造（诚实性诉求 ≠
-    // 阻断工作，与 outcome-unknown 同款容错）。
-    if (session.header.parentSession !== undefined && !hasForkBlankNote(session)) {
+    // Legacy callers that do not provide a fork candidate still get the
+    // honest blank-context note. The capability-driven path defers this
+    // decision until initialize, when the Agent's advertised capabilities are
+    // available.
+    if (session.header.parentSession !== undefined && driver.forkCandidate === undefined && !hasForkBlankNote(session)) {
       try {
         appendForkBlankNote(session, this.providerRoute, lastTurn)
       } catch (error: unknown) {
@@ -1450,6 +1463,24 @@ export class AcpAgent implements Agent {
     })
   }
 
+  /** Record the fork decision in the existing bounded sidecar audit stream. */
+  private noteForkOutcome(outcome: 'inherited' | 'blank-fallback', reason: AcpSessionForkReason): void {
+    if (this.driver.recordAudit === undefined) return
+    void this.driver.recordAudit({ kind: ACP_SESSION_FORK_AUDIT_KIND, data: {
+      outcome: outcome === 'inherited' ? 'inherited' : 'blank',
+      reason,
+      ...(this.session.header.parentSession === undefined ? {} : {
+        parentSessionId: this.session.header.parentSession,
+      }),
+      ...(this.driver.forkCandidate === undefined ? {} : {
+        parentAgentSessionId: this.driver.forkCandidate.parentBinding.agentSessionId,
+      }),
+      ...(this.acpSessionId === undefined ? {} : { agentSessionId: this.acpSessionId }),
+    } }).catch((error: unknown) => {
+      this.log.warn(`dsh-acp: failed to persist the session-fork audit (${errorChain(error)})`, this.logFields({ operation: 'audit', result: 'error' }))
+    })
+  }
+
   /**
    * 落齐 sidecar 的非审批审计队列（degradation/reconciliation 等走有界
    * 队列的 kind）。调用点：turn 收束（binding 锚点刷新后）与 dispose
@@ -1685,6 +1716,7 @@ export class AcpAgent implements Agent {
         configOptions: acp.SessionConfigOption[] | undefined
         currentModeId: string | undefined
       } | undefined
+      let forkBlankReason: string | undefined
  // canonical cwd 一次计算，预检比对与 binding 落盘共用
       const cwd = this.session.header.cwd ?? process.cwd()
       let canonicalCwd: string
@@ -1695,6 +1727,54 @@ export class AcpAgent implements Agent {
           throw await this.blockError('cwd-changed', `cannot realpath cwd "${cwd}" (${errorChain(error)})`)
         }
         throw error
+      }
+      const forkCandidate = this.driver.forkCandidate
+      if (forkCandidate !== undefined) {
+        const parent = forkCandidate.parentBinding
+        // `startSession('draft')` may run before DSH opens the child's first
+        // turn.  `turnBaseSeq` is therefore still zero at that point and is
+        // not the fork cut.  The factory already validated and captured the
+        // immutable seed length, so use that boundary for the defense-in-depth
+        // semantic check as well.  Anything appended after the seed (such as
+        // the child's turn/start or user input) must not affect eligibility.
+        const seed = this.session.events.slice(0, forkCandidate.seedLength)
+        const parentMatches = this.session.header.parentSession === forkCandidate.parentSessionId
+          && parent.provider === this.providerRoute
+          // The DSH fork seed may include trailing host-only events (for
+          // example a session/title update) after the parent's committed
+          // semantic boundary. ACP session/fork has no atSeq, so the factory
+          // and this defense-in-depth check must reject only older cuts or
+          // newly visible model events, not harmless host metadata.
+          && forkCandidate.seedLength >= parent.dshCommittedSeq
+          // Validate only the immutable fork seed, never the draft/first-turn
+          // boundary.  A short session event array is not a valid seed.
+          && seed.length === forkCandidate.seedLength
+          && isLatestSemanticForkSeed(seed, parent.dshCommittedSeq)
+          && canonicalCwd === parent.canonicalCwd
+          && acpCanonicalHash16(fingerprint) === acpCanonicalHash16(parent.launchFingerprint)
+          && (conn.agentInfo?.name ?? '') === (parent.agent.name ?? '')
+          && (conn.agentInfo?.version ?? '') === (parent.agent.version ?? '')
+          && conn.protocolVersion === parent.protocolVersion
+        if (!parentMatches) {
+          forkBlankReason = 'parent binding or seed is not the latest compatible semantic boundary'
+          this.forkReason = 'parent-binding-mismatch'
+        } else if (!supportsFork(conn.agentCapabilities)) {
+          forkBlankReason = 'Agent does not advertise session/fork'
+          this.forkReason = 'agent-does-not-advertise-fork'
+        } else {
+          // Do not fall back to session/new when the peer advertised fork but
+          // rejected the request: that would silently lose the intended
+          // Agent context. The connection RPC still supplies the normal
+          // timeout/abort/poison discipline.
+          const forked = await conn.forkSession(parent.agentSessionId, { cwd }, { signal })
+          established = {
+            agentSessionId: forked.sessionId,
+            configOptions: forked.configOptions ?? undefined,
+            currentModeId: forked.modes?.currentModeId,
+          }
+          this.forkOutcome = 'inherited'
+          this.forkReason = 'inherited'
+        }
       }
       if (binding !== undefined) {
  // 预检（设计说明字面顺序，任一不符即 block，绝不自动降级 session/new）：
@@ -1835,6 +1915,13 @@ export class AcpAgent implements Agent {
           configOptions: created.configOptions ?? undefined,
           currentModeId: created.modes?.currentModeId,
         }
+        if (this.session.header.parentSession !== undefined) {
+          this.forkOutcome = 'blank-fallback'
+          if (forkBlankReason === undefined) {
+            forkBlankReason = 'fork context was not eligible for ACP session/fork'
+            this.forkReason = this.driver.forkFallbackReason ?? (this.driver.forkCandidate === undefined ? 'candidate-not-available' : 'seed-not-latest-semantic-boundary')
+          }
+        }
       }
       let { configOptions, currentModeId } = established
       this.acpSessionId = established.agentSessionId
@@ -1886,13 +1973,27 @@ export class AcpAgent implements Agent {
         capabilityHash: acpCanonicalHash16(conn.agentCapabilities ?? null),
         configHash: acpCanonicalHash16(configHashInput(configOptions, currentModeId)),
         generation,
-        historyBaseSeq: binding === undefined ? this.turnBaseSeq : binding.historyBaseSeq,
+        historyBaseSeq: binding === undefined
+          ? this.forkOutcome === 'inherited' && forkCandidate !== undefined
+            ? forkCandidate.parentBinding.historyBaseSeq
+            : this.turnBaseSeq
+          : binding.historyBaseSeq,
         establishedAt: binding === undefined ? Date.now() : binding.establishedAt,
         dshCommittedSeq: this.turnBaseSeq,
       }
       this.pendingBinding = bindingData
       if (commitBinding || binding !== undefined) {
         await this.commitPendingBinding()
+      }
+      if (this.session.header.parentSession !== undefined && this.forkOutcome === 'blank-fallback' && !hasForkBlankNote(this.session)) {
+        try {
+          appendForkBlankNote(this.session, this.providerRoute, this.phase.kind === 'running' ? this.phase.turn : this.phase.lastTurn)
+        } catch (error: unknown) {
+          this.log.warn(`dsh-acp: failed to append the fork-blank note (${errorChain(error)})`, this.logFields({ operation: 'resume-note', result: 'error' }))
+        }
+      }
+      if (this.forkOutcome !== undefined) {
+        this.noteForkOutcome(this.forkOutcome, this.forkReason ?? 'candidate-not-available')
       }
  // rebindBlank 重开：binding 落盘后、首个 prompt 前追加显式放弃说明；
       // 说明消息落盘失败不炸 turn（诚实性诉求 ≠ 阻断工作）
@@ -1954,7 +2055,7 @@ export class AcpAgent implements Agent {
     const resumeBinding = this.resumeBindingOverride ?? this.driver.resumeBinding
     const bindingData = candidate === undefined
       ? undefined
-      : (this.forceBlank || resumeBinding === undefined)
+      : (this.forceBlank || (resumeBinding === undefined && this.forkOutcome !== 'inherited'))
         ? {
             ...candidate,
             // prepare() happens outside a turn, so its initial seq is only a
@@ -1963,7 +2064,17 @@ export class AcpAgent implements Agent {
             historyBaseSeq: this.turnBaseSeq,
             dshCommittedSeq: this.turnBaseSeq,
           }
-        : this.turnBaseSeq === 0 && candidate.dshCommittedSeq < resumeBinding.dshCommittedSeq
+        : resumeBinding === undefined && this.forkOutcome === 'inherited' && this.startMode === 'draft'
+          ? {
+              ...candidate,
+              // Draft preparation establishes the forked ACP session before
+              // DSH opens its first real turn.  Its initial boundary is zero
+              // only because no turn exists yet; on the first prompt advance
+              // the committed prefix to that turn's immutable start while
+              // retaining the parent's historyBaseSeq.
+              dshCommittedSeq: this.turnBaseSeq,
+            }
+          : resumeBinding !== undefined && this.turnBaseSeq === 0 && candidate.dshCommittedSeq < resumeBinding.dshCommittedSeq
           ? {
               ...candidate,
               // ReconnectOriginal is setup-only and therefore has no current

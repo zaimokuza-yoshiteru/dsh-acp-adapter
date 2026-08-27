@@ -88,6 +88,11 @@ export const DEFAULT_SESSION_WRITE_TIMEOUT_MS = 15_000
  */
 export const DEFAULT_SESSION_CLEANUP_TIMEOUT_MS = 10_000
 
+/** Whether the negotiated Agent advertises the ACP unstable fork capability. */
+export function supportsFork(capabilities: acp.AgentCapabilities | undefined): boolean {
+  return capabilities?.sessionCapabilities?.fork !== undefined && capabilities?.sessionCapabilities?.fork !== null
+}
+
 /** ACP `auth_required` 的 JSON-RPC code（SDK `RequestError.authRequired()`，jsonrpc.js）。 */
 const ACP_ERROR_CODE_AUTH_REQUIRED = -32000
 /** SDK 连接关闭时拒绝挂起请求的文案（实测）。 */
@@ -101,7 +106,7 @@ function isConnectionClosedError(error: unknown): boolean {
  * probe 会话清理：按 initialize 广告的 sessionCapabilities
  * 决定发不发帧——广告了 close 先 `session/close`，广告了 delete 再
  * `session/delete`（次序固定：close 是「释放资源」，delete 是「移出列表」；
- * Devin 3000.4.25 只广告 delete）。各自独立 try/catch：单步失败/超时只把该步
+ * 历史实测的 Devin 3000.4.25 只广告 delete）。各自独立 try/catch：单步失败/超时只把该步
  * 记为 'failed' 并继续下一步，绝不抛出——清理失败不翻转 probe 成败，也不阻塞
  * 调用方 finally 的进程强杀与临时目录删除。每步 RPC 走 门卫与
  * `DEFAULT_SESSION_CLEANUP_TIMEOUT_MS` 预算（超预算 poison 的是这条将被拆除的
@@ -309,6 +314,29 @@ export class AcpClientConnection {
   async resumeSession(sessionId: string, params: { cwd?: string } = {}, options: AcpRpcOptions = {}): Promise<acp.ResumeSessionResponse> {
     const response = await this.rpc<acp.ResumeSessionResponse>('session/resume', async (agent) => await agent.request('session/resume', { sessionId, cwd: params.cwd ?? this.spec.cwd, mcpServers: [] }) as acp.ResumeSessionResponse, options, DEFAULT_SESSION_SETUP_TIMEOUT_MS)
     this.activeSessionIds.add(sessionId)
+    return response
+  }
+
+  /**
+   * Fork an ACP session using the draft/unstable capability. Callers must
+   * gate this on the negotiated `sessionCapabilities.fork` capability; the
+   * connection still owns timeout/abort/poison handling for the typed SDK
+   * method.
+   */
+  async forkSession(sessionId: string, params: { cwd?: string } = {}, options: AcpRpcOptions = {}): Promise<acp.ForkSessionResponse> {
+    const response = await this.rpc<acp.ForkSessionResponse>('session/fork', async (agent) => {
+      const request = {
+        sessionId,
+        cwd: params.cwd ?? this.spec.cwd,
+        mcpServers: [],
+      } satisfies acp.ForkSessionRequest
+      // ACP SDK 1.3.0 declares unstable_forkSession on ClientContext, but the
+      // ESM runtime ClientContext returned by client().connect() does not
+      // install that convenience method. Its typed generic request surface is
+      // the interoperable path until the SDK declaration/runtime drift closes.
+      return await agent.request<acp.ForkSessionResponse, acp.ForkSessionRequest>('session/fork', request)
+    }, options, DEFAULT_SESSION_SETUP_TIMEOUT_MS)
+    this.activeSessionIds.add(response.sessionId)
     return response
   }
 

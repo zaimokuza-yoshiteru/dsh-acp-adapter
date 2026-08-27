@@ -23,6 +23,7 @@
  */
 
 import { isAcpProvider, isSameBackendSelection, PROVIDER_KIND_LABELS, providerKindOf } from '../../data/selector-logic.ts'
+import { localizedDiagnostic } from '../../data/diagnostics.ts'
 import type {
   ModelDirectoryState,
   PickerBackendState,
@@ -127,7 +128,7 @@ export function optionsOf(
     rows.push({
       id: `failure/${failure.id}`,
       label: failure.name,
-      detail: t('option.loadError', { message: failure.message }),
+      detail: localizedDiagnostic(t, 'option.loadError', failure.message),
     })
   }
   return rows

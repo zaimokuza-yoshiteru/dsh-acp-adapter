@@ -22,10 +22,9 @@
  * since the refusal **blocks** the session (`binding-in-use`
  * reconciliation-required, zero spawn) instead of degrading to `session/new`.
  * The same holds for a binding that fails the semantic gate
- * (`binding-outdated`). Forked sessions
- * never restore a binding (fork defense: `createAcpMachine` drops
- * `resumeBinding` when `session.header.parentSession` is present;
- * 恢复连续性规则 fork = `session/new`).
+ * (`binding-outdated`). Forked sessions use a parent binding only after the
+ * factory proves the seed is the parent's latest semantic boundary; the ACP
+ * Agent then decides whether the peer supports `session/fork`.
  * Everything else (including the `create()` config path — config-driven ACP
  * entries keep the stock ReactLoopAgent and fail loudly on the stub route,
  *  v1 boundary) delegates to the parent unchanged.
@@ -68,7 +67,8 @@ import { errorChain } from '@deepseek-ai/dsh-llm'
 import { foldRequestHeader, SessionPreparation } from '@deepseek-ai/dsh-session'
 import type { Session, SessionHeader, SessionId } from '@deepseek-ai/dsh-session'
 import { AcpAgent } from '../../domain/session/agent.ts'
-import type { AcpAgentOptions, AcpConnectionRuntimeContext } from '../../domain/session/agent.ts'
+import type { AcpAgentOptions, AcpConnectionRuntimeContext, AcpForkCandidate } from '../../domain/session/agent.ts'
+import { isLatestSemanticForkSeed } from '../../domain/session/resume.ts'
 import { createAcpFileSystemHandlers } from '../../runtime/client-capabilities/filesystem.ts'
 import { createAcpTerminalHandlers } from '../../runtime/client-capabilities/terminal.ts'
 import { acpAgentIdFromRoute, acpProbeConfigKey, acpProbeFresh, acpRouteId, descriptorOf } from '../../domain/session/agent-config.ts'
@@ -77,6 +77,7 @@ import { deriveAcpAgentState } from '../../domain/session/agent-state.ts'
 import type { AcpAgentConfigState } from '../../domain/session/agent-state.ts'
 import { acpLaunchEnvironment, acpLaunchFingerprint } from '../../domain/session/launch-fingerprint.ts'
 import { AcpClientError } from '../../protocol/v1/errors.ts'
+import type { AcpSessionForkReason } from '../../domain/policy/events.ts'
 import {
   AcpFactoryOwnership,
   getResumePersistence,
@@ -184,6 +185,11 @@ function auditTimelineRowOf(entry: AcpSidecarEntry): {
     case 'degradation':
       summaryCode = 'degradation.recorded'
       subject = boundedAuditSubject(data['code'] ?? data['itemCount'])
+      break
+    case 'session-fork':
+      summaryCode = 'session-fork.completed'
+      subject = boundedAuditSubject(data['outcome'])
+      status = data['reason'] === data['outcome'] ? null : boundedAuditSubject(data['reason'])
       break
     case 'elicitation':
       summaryCode = data['phase'] === 'requested' ? 'elicitation.requested' : 'elicitation.decided'
@@ -605,13 +611,60 @@ export default class AcpAgentLoop extends AgentLoop {
    * Create an owned agent, routing ACP providers (`acp-<id>`) to
    * {@link AcpAgent}. Non-ACP providers delegate to the parent unchanged.
    */
+  private async resolveForkCandidate(options: CreateAgentOptions, provider: string): Promise<{ candidate?: AcpForkCandidate; fallbackReason?: AcpSessionForkReason }> {
+    const parentSessionId = options.meta?.parentSession
+    const seedLength = options.meta?.seedLength
+    const seed = options.seed
+    if (parentSessionId === undefined) return {}
+    if (seedLength === undefined || seed === undefined) return { fallbackReason: 'candidate-not-available' }
+    if (!Number.isInteger(seedLength) || seedLength !== seed.length || !isLatestSemanticForkSeed(seed, seedLength)) return { fallbackReason: 'seed-not-latest-semantic-boundary' }
+    const sidecar = this.acpSidecar
+    if (sidecar === undefined) return { fallbackReason: 'parent-binding-unavailable' }
+    let lookup: AcpBindingLookup | undefined
+    try {
+      lookup = await sidecar.readLatestBinding(parentSessionId)
+    } catch (error: unknown) {
+      this.acpLog.warn(`dsh-acp: unable to read the parent binding for fork; using a blank ACP context (${errorChain(error)})`, { operation: 'fork-candidate', result: 'binding-read-failed' })
+      return { fallbackReason: 'parent-binding-unavailable' }
+    }
+    if (lookup?.status !== 'ok') return { fallbackReason: 'parent-binding-unavailable' }
+    const parentBinding = lookup.binding
+    if (parentBinding.provider !== provider) return { fallbackReason: 'parent-binding-mismatch' }
+    if (!isLatestSemanticForkSeed(seed, parentBinding.dshCommittedSeq)) return { fallbackReason: 'seed-not-latest-semantic-boundary' }
+    return { candidate: { parentSessionId, parentBinding, seedLength } }
+  }
+
   override async createAgent(ownerCtx: Context, options: CreateAgentOptions): Promise<AgentHandle> {
-    const provider = options.agentOptions?.provider
+    const seedHeader = options.seed === undefined ? undefined : foldRequestHeader(options.seed)
+    const seedProvider = seedHeader?.config.provider
+    // A native parent remains native even if DSH's transient picker currently
+    // points at an ACP model. Do not let the plugin capture that fork.
+    if (options.meta?.parentSession !== undefined && seedProvider !== undefined && !seedProvider.startsWith('acp-')) {
+      return super.createAgent(ownerCtx, {
+        ...options,
+        agentOptions: {
+          ...(options.agentOptions ?? {}),
+          provider: seedProvider,
+          ...(seedHeader?.config.model === undefined ? {} : { model: seedHeader.config.model }),
+        },
+      })
+    }
+    // DSH's transient default is not authoritative for a fork. If the seed
+    // proves an ACP route, keep that route (and model) even when the caller
+    // supplied the currently selected global default from another backend.
+    const provider = options.meta?.parentSession !== undefined && seedProvider?.startsWith('acp-') === true
+      ? seedProvider
+      : options.agentOptions?.provider
     if (provider === undefined) return super.createAgent(ownerCtx, options)
     const resolved = this.installedProfileRegistry.resolveRoute(provider)
     if (resolved === undefined) return super.createAgent(ownerCtx, options)
-    const agentOptions = options.agentOptions ?? {}
+    const agentOptions: AgentOptions = {
+      ...(options.agentOptions ?? {}),
+      ...(seedProvider === provider && seedHeader?.config.model === undefined ? {} : seedProvider === provider && seedHeader?.config.model !== undefined ? { model: seedHeader.config.model } : {}),
+      provider,
+    }
     await this.acpRouteReady()
+    const forkResolution = await this.resolveForkCandidate(options, provider)
  // 会话创建门：只有五态为 ready 的 profile 允许创建新 ACP 会话
     await this.assertAcpProfileReady(resolved)
     const preparation = SessionPreparation.create(this.acpRuntime.ctx.sessions.prepare(options.sessionId, {
@@ -627,7 +680,7 @@ export default class AcpAgentLoop extends AgentLoop {
       options.setup,
       options.signal,
       'startup',
-      (loopCtx, session) => this.createAcpMachine(loopCtx, options.sessionId, agentOptions, session, resolved),
+      (loopCtx, session) => this.createAcpMachine(loopCtx, options.sessionId, agentOptions, session, resolved, undefined, undefined, undefined, forkResolution.candidate, forkResolution.fallbackReason),
     )
     this.acpOwnership.trackWrapper(published)
     return published
@@ -893,6 +946,8 @@ export default class AcpAgentLoop extends AgentLoop {
     resumeBinding?: AcpBindingRecord,
     presetBlocked?: AcpReconciliationCause,
     recoveryState?: AcpRecoveryState,
+    forkCandidate?: AcpForkCandidate,
+    forkFallbackReason?: AcpSessionForkReason,
   ): AcpAgent {
     const sidecar = this.acpSidecar
     if (sidecar === undefined) {
@@ -912,6 +967,8 @@ export default class AcpAgentLoop extends AgentLoop {
     const attachments = getCtxSlot<AttachmentStore>(loopCtx, 'attachments')
     const driver: AcpAgentOptions = {
       profile: resolved,
+      ...(forkCandidate === undefined ? {} : { forkCandidate }),
+      ...(forkFallbackReason === undefined ? {} : { forkFallbackReason }),
       subprocess: this.acpSubprocess,
       ...(attachments === undefined ? {} : { attachments }),
       metrics: this.acpMetrics,
