@@ -240,13 +240,13 @@ describe('生产接线：原生访问启动计划', () => {
     // 每种 ACP content type 在 export 中都有事实（text 原样，其余占位/摘要/引用记录）
     expect(texts).toHaveLength(7);
     expect(texts[0]).toBe('visible text part');
-    expect(texts[1]).toContain('[diff 摘要]');
-    expect(texts[1]).toContain('README.md（修改）');
-    expect(texts[2]).toContain('[terminal 占位] terminalId=mock-term-1');
-    expect(texts[3]).toContain('[图片占位] image/png');
-    expect(texts[4]).toContain('[资源 file:///mock/cwd/notes.txt（text/plain）]');
-    expect(texts[5]).toContain('[二进制资源占位] file:///mock/cwd/bin.dat');
-    expect(texts[6]).toContain('[资源引用] report.pdf（报表） → file:///mock/cwd/report.pdf');
+    expect(texts[1]).toContain('[Diff summary]');
+    expect(texts[1]).toContain('README.md (modify)');
+    expect(texts[2]).toContain('[Terminal placeholder] terminalId=mock-term-1');
+    expect(texts[3]).toContain('[Image placeholder] image/png');
+    expect(texts[4]).toContain('[Resource file:///mock/cwd/notes.txt (text/plain)]');
+    expect(texts[5]).toContain('[Binary resource placeholder] file:///mock/cwd/bin.dat');
+    expect(texts[6]).toContain('[Resource link] report.pdf (报表) → file:///mock/cwd/report.pdf');
     // meta 携带逐项结构化事实；字节不落盘（序列化不含 base64 载荷）
     const meta = results[0]?.data.meta as { acpToolContent: { items: { type: string }[]; truncated: boolean; originalItems: number } } | undefined;
     expect(meta?.acpToolContent.originalItems).toBe(7);
@@ -436,10 +436,10 @@ describe('生产接线：permissions 桥', () => {
     expect(approval.requests).toHaveLength(1);
     const request = approval.requests[0];
     expect(request?.toolName).toBe('Run: echo hello');
-    expect(request?.reason).toContain('工具：Run: echo hello');
+    expect(request?.reason).toContain('Tool: Run: echo hello');
     // Native DSH fallback has no separate ACP details panel, so it retains
     // the redacted command summary in its reason.
-    expect(request?.reason).toContain('命令：echo hello');
+    expect(request?.reason).toContain('Command: echo hello');
     expect(request?.signal).toBeInstanceOf(AbortSignal);
     expect(request?.agent).toBe(handle.agent);
     // mock 侧收到 allow_once 并继续执行
@@ -810,9 +810,9 @@ describe('：codex 事件形态经 translate 投影——tool kind/locations、r
           ? block.content.flatMap((nested) => (nested.type === 'text' ? [nested.text] : []))
           : []));
     expect(resultTexts[0]).toEqual([]);
-    expect(resultTexts[1]?.[0]).toContain('[terminal 占位] terminalId=codex-tool-exec-1');
-    expect(resultTexts[2]?.[0]).toContain('[diff 摘要]');
-    expect(resultTexts[2]?.[0]).toContain('notes.txt（修改）');
+    expect(resultTexts[1]?.[0]).toContain('[Terminal placeholder] terminalId=codex-tool-exec-1');
+    expect(resultTexts[2]?.[0]).toContain('[Diff summary]');
+    expect(resultTexts[2]?.[0]).toContain('notes.txt (modify)');
     // codex 的终端 stdout 走 _meta.terminal_output（未知 _meta 忽略）：输出字节不进日志
     expect(JSON.stringify(results.map((event) => event.data))).not.toContain('codex-shape\n');
 
@@ -822,7 +822,7 @@ describe('：codex 事件形态经 translate 投影——tool kind/locations、r
     const reasoning = messages.flatMap((event) =>
       event.data.message.content.flatMap((block) => (block.type === 'reasoning' ? [block.text] : [])));
     expect(reasoning).toContain('Reasoning about the codex request.');
-    const planText = reasoning.find((text) => text.startsWith('Agent 计划：'));
+    const planText = reasoning.find((text) => text.startsWith('Agent plan:'));
     expect(planText).toContain('- [completed] Search for the needle');
     expect(planText).toContain('- [completed] Apply the edit');
     const texts = messages.flatMap((event) =>

@@ -123,6 +123,7 @@ export function optionsOf(
     }
   }
   for (const failure of directory.failures) {
+    if (isAcpProvider(failure.id)) continue
     rows.push({
       id: `failure/${failure.id}`,
       label: failure.name,

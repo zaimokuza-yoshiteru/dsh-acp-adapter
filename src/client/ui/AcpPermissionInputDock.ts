@@ -10,6 +10,7 @@ import { createElement as h, useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { AcpPendingPermissionView, AcpRemoteLike } from '../data/acp-remote.ts'
+import { localizedDiagnostic } from '../data/diagnostics.ts'
 import type { AcpLocaleKey } from './locales.ts'
 import css from './AcpPermissionInputDock.module.css'
 
@@ -141,6 +142,57 @@ function textOf(
   return localized === undefined || localized.trim() === '' ? fallback : localized
 }
 
+/** Product-owned permission explanation localized from structured ACP facts. */
+export function permissionReasonText(
+  item: AcpPendingPermissionView,
+  t?: AcpPermissionInputDockProps['t'],
+): string {
+  const key: AcpLocaleKey = item.kind === 'execute'
+    ? 'permissionReasonExecute'
+    : item.kind === 'edit'
+      ? 'permissionReasonEdit'
+      : item.kind === 'delete'
+        ? 'permissionReasonDelete'
+        : item.kind === 'move'
+          ? 'permissionReasonMove'
+          : item.kind === 'read'
+            ? 'permissionReasonRead'
+            : item.kind === 'fetch'
+              ? 'permissionReasonFetch'
+              : 'permissionReasonGeneric'
+  const lines = [textOf(t, key, 'The Agent requests permission to perform a restricted operation.')]
+  if (!item.options.some((option) => option.kind === 'allow_once')) {
+    lines.push(textOf(t, 'permissionNoAllowOnce', 'This Agent did not offer an Allow once option. DSH will not promote a one-time choice to permanent access.'))
+  }
+  if (!item.options.some((option) => option.kind === 'reject_once')) {
+    lines.push(textOf(t, 'permissionNoRejectOnce', 'This Agent did not offer a Reject once option.'))
+  }
+  return lines.join('\n')
+}
+
+/** Known ACP operation kinds use product-localized labels; unknown values stay Agent-owned facts. */
+export function permissionOperationText(
+  kind: string,
+  t?: AcpPermissionInputDockProps['t'],
+): string {
+  const key: AcpLocaleKey | undefined = kind === 'execute'
+    ? 'permissionOperationExecute'
+    : kind === 'edit'
+      ? 'permissionOperationEdit'
+      : kind === 'delete'
+        ? 'permissionOperationDelete'
+        : kind === 'move'
+          ? 'permissionOperationMove'
+          : kind === 'read'
+            ? 'permissionOperationRead'
+            : kind === 'fetch'
+              ? 'permissionOperationFetch'
+              : kind === 'other'
+                ? 'permissionOperationOther'
+                : undefined
+  return key === undefined ? kind : textOf(t, key, kind)
+}
+
 /** Visible disclosure for bounded location lists; legacy payloads derive the count when possible. */
 export function permissionLocationOmissionText(
   item: AcpPendingPermissionView,
@@ -163,10 +215,8 @@ function PermissionCard({ sessionId, pending, remote, t, onPending }: {
 }): ReactNode {
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const messageOf = (key: 'permissionRequestFailed' | 'permissionCancelFailed', message: string): string => {
-    const localized = t?.(key, { message })
-    return localized === undefined || localized.trim() === '' ? message : localized
-  }
+  const messageOf = (key: 'permissionRequestFailed' | 'permissionCancelFailed', message: string): string =>
+    t === undefined ? message : localizedDiagnostic(t, key, message)
 
   const answer = (item: AcpPendingPermissionView, optionId: string): void => {
     setError(null)
@@ -197,7 +247,7 @@ function PermissionCard({ sessionId, pending, remote, t, onPending }: {
       pending.map((item) => h('div', { key: item.requestId, className: css.request },
         h('div', { className: css.body, tabIndex: 0, role: 'group', 'aria-label': textOf(t, 'permissionDetails', 'Permission details') },
           h('strong', { className: css.headline }, item.title),
-          h('div', { className: css.reason }, item.reason),
+          h('div', { className: css.reason }, permissionReasonText(item, t)),
           h('details', { className: css.details },
             h('summary', { className: css.detailsSummary }, textOf(t, 'permissionDetails', 'Details')),
             h('dl', { className: css.detailList },
@@ -209,7 +259,7 @@ function PermissionCard({ sessionId, pending, remote, t, onPending }: {
               // 包装成对用户没有帮助的技术值 "unknown"；标题、命令与位置仍保留。
               item.kind === 'unknown' ? null : h('div', null,
                 h('dt', null, textOf(t, 'permissionOperation', 'Operation')),
-                h('dd', null, item.kind),
+                h('dd', null, permissionOperationText(item.kind, t)),
               ),
               h('div', null, h('dt', null, textOf(t, 'permissionToolCall', 'Tool call')), h('dd', null, item.toolCallId)),
               item.locations === undefined || (item.locations.length === 0 && permissionLocationOmissionText(item, t) === undefined) ? null : h('div', null,

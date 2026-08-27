@@ -345,6 +345,7 @@ describe('AcpRemoteService 注册', () => {
     expect(manifest.invocations.map((invocation) => invocation.id)).toEqual([
       '@zaimokuza/dsh-acp-adapter#dshAcp/answerElicitation',
       '@zaimokuza/dsh-acp-adapter#dshAcp/answerPermission',
+      '@zaimokuza/dsh-acp-adapter#dshAcp/auditTimeline',
       '@zaimokuza/dsh-acp-adapter#dshAcp/backendOf',
       '@zaimokuza/dsh-acp-adapter#dshAcp/beginModelSwitch',
       '@zaimokuza/dsh-acp-adapter#dshAcp/boundSessions',

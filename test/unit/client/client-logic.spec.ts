@@ -226,7 +226,7 @@ describe('常量：与宿主侧契约逐字对齐', () => {
       command: 'claude-agent-acp',
       args: [],
       env: {},
-      loginHint: 'claude 外部登录，或经 ANTHROPIC_* 环境变量配置路由（external-login-only）',
+      loginHint: 'claude',
       runtime: 'claude',
     });
   });

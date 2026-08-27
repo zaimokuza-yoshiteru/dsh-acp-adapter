@@ -200,19 +200,20 @@ export function filterGroups(
 }
 
 /**
- * Failure rows follow the provider bucket but NOT the search text: a catalog
- * failure is a health signal and must not vanish because the user typed.
- * 当 filter 为 'current' 时只保留精确路由的失败行（路由缺席 = 无失败行）。
+ * 模型选择器只展示原生模型 provider 的目录失败。ACP profile 的探测和修复入口
+ * 统一归 ACP 设置页，避免同一健康错误长期占据 composer 与 `/model`；数据层仍
+ * 保留全部 failure，失败 ACP 组也不会因此进入可选目录。
  */
 export function filterFailures(
   failures: readonly PickerCatalogFailure[],
   filter: ProviderFilter,
   currentProvider?: string,
 ): PickerCatalogFailure[] {
+  const visible = failures.filter((failure) => !isAcpProvider(failure.id))
   if (filter === 'current') {
-    return failures.filter((failure) => failure.id === currentProvider)
+    return visible.filter((failure) => failure.id === currentProvider)
   }
-  return failures.filter((failure) => filter === 'all' || providerKindOf(failure.id) === filter)
+  return visible.filter((failure) => filter === 'all' || providerKindOf(failure.id) === filter)
 }
 
 // ---------- backend 兼容矩阵（「backend 不可变」的 picker 主防线） ----------

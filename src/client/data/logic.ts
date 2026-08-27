@@ -93,7 +93,7 @@ export const CLAUDE_ACP_TEMPLATE: AcpAgentConfig & { id: string } = {
   command: 'claude-agent-acp',
   args: [],
   env: {},
-  loginHint: 'claude 外部登录，或经 ANTHROPIC_* 环境变量配置路由（external-login-only）',
+  loginHint: 'claude',
   runtime: 'claude',
 }
 

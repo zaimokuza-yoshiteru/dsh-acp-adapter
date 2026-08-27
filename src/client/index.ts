@@ -51,6 +51,7 @@ import type {} from '../../lib/typert.remote-client.js'
 import { AcpPanelController } from './data/controller.ts'
 import type { SettingsMutateLike, SettingsScopeLike } from './data/controller.ts'
 import type { AcpRemoteLike } from './data/acp-remote.ts'
+import { localizedDiagnostic } from './data/diagnostics.ts'
 import { createAcpPanelStore } from './data/stores/panel-store.ts'
 import type { AcpPanelStoreActions } from './data/stores/panel-store.ts'
 import { createModelPickerStore } from './data/stores/picker-store.ts'
@@ -86,6 +87,7 @@ import { ACP_EXTERNAL_TOOL_NAME } from './data/tool-presentation.ts'
 import { createAcpPermissionInputDock } from './ui/AcpPermissionInputDock.ts'
 import { createAcpElicitationInputDock } from './ui/AcpElicitationInputDock.ts'
 import { createAcpRecoveryInputDock } from './ui/AcpRecoveryInputDock.ts'
+import { createAcpAuditHeaderAction } from './ui/AcpAuditHeaderAction.ts'
 
 /** Dictionary namespaces owned by this plugin ( panel / picker). */
 const NS = 'settings.acp'
@@ -203,9 +205,11 @@ export function apply(ctx: Context): void {
     pendingElicitations: async (sessionId) => (await namespace()).pendingElicitations(sessionId),
     answerElicitation: async (sessionId, request) => (await namespace()).answerElicitation(sessionId, request),
     cancelElicitation: async (sessionId, request) => (await namespace()).cancelElicitation(sessionId, request),
+    auditTimeline: async (sessionId, request) => (await namespace()).auditTimeline(sessionId, request),
   }
   const acpPermissionInputDock = createAcpPermissionInputDock(acpRemote)
   const acpElicitationInputDock = createAcpElicitationInputDock(acpRemote)
+  const acpAuditHeaderAction = createAcpAuditHeaderAction(acpRemote)
 
   const controller = new AcpPanelController({ scope, settings: connection.api.settings, remote: acpRemote })
   ctx.effect(() => () => { controller.dispose() }, '@zaimokuza/dsh-acp-adapter: ACP panel controller')
@@ -288,9 +292,19 @@ export function apply(ctx: Context): void {
     const service: PickerService = pickerService
     const acpRecoveryInputDock = createAcpRecoveryInputDock(acpRemote, async (sessionId) => {
       const current = service.pickerFor(sessionId).directory.getSnapshot().current
-      if (current === null) throw new Error('没有可用于创建新会话的模型')
+      if (current === null) throw new Error(t('error.noModel'))
       const failure = await service.useInNewSession(sessionId, current, current.model)
       if (failure !== undefined) throw new Error(failure)
+    })
+
+    // ACP 专属审计入口挂在公开的 session header utility 槽；组件自行通过
+    // backendOf 过滤 native 会话，不伪造 DSH trajectory event。
+    ctx.inject(['slots'], (scope) => {
+      const scopeSlots = scope.get('slots') as SlotsLike
+      scopeSlots.inject('conversation.session.header.utilities', () => scopeSlots.register(
+        { name: 'conversation.session.header.utilities', id: 'acp-audit', order: 20, locale: NS },
+        acpAuditHeaderAction,
+      ))
     })
 
  // 入口 1：/model popupSelect（内置同名命令的等价注册；pre- 双载时命令
@@ -354,7 +368,9 @@ export function apply(ctx: Context): void {
                 await service.selectModel(session.sessionId, selection)
                 return
               }
-              const detail = probe.status === 'unavailable' ? ` (${probe.message})` : ''
+              const detail = probe.status === 'unavailable'
+                ? ` (${localizedDiagnostic(t, 'error.technical', probe.message)})`
+                : ''
               throw new Error(`ACP subsystem unavailable; model selection is disabled until backend identity can be verified${detail}`)
             }
             if (!isSameBackendSelection(selection, probe.state, directory.getSnapshot().current?.provider)) {

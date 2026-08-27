@@ -140,7 +140,7 @@ function decodeAgentExtension(value: unknown): AcpAgentExtension | undefined {
 
 /** 未识别变体的占位项（与协议侧「未知内容类型占位点名」同一纪律：不静默消失）。 */
 function unknownContentItem(acpType: unknown): AcpToolPresentationContent {
-  return { type: 'text', text: `[未识别的展示内容项 ${typeof acpType === 'string' ? acpType : '?'}]` }
+  return { type: 'text', text: `[Unrecognized presentation item: ${typeof acpType === 'string' ? acpType : '?'}]` }
 }
 
 function decodeContentItem(value: unknown): AcpToolPresentationContent {
@@ -160,7 +160,7 @@ function decodeContentItem(value: unknown): AcpToolPresentationContent {
       return {
         type: 'diff',
         path: record.path,
-        operation: typeof record.operation === 'string' ? record.operation : '修改',
+        operation: typeof record.operation === 'string' ? record.operation : 'modify',
         linesAdded: typeof record.linesAdded === 'number' ? record.linesAdded : 0,
         linesRemoved: typeof record.linesRemoved === 'number' ? record.linesRemoved : 0,
         patch: record.patch,
@@ -303,8 +303,8 @@ function argsPreview(argsRaw: string | undefined): string {
 function imageFactLine(item: Extract<AcpToolPresentationContent, { type: 'image' }>): string {
   const extras: string[] = []
   if (item.mimeType !== undefined) extras.push(item.mimeType)
-  if (item.size !== undefined) extras.push(`${String(item.size)} 字节`)
-  return `[图片] ${item.ref}${extras.length === 0 ? '' : `（${extras.join('，')}）`}`
+  if (item.size !== undefined) extras.push(`${String(item.size)} bytes`)
+  return `[Image] ${item.ref}${extras.length === 0 ? '' : ` (${extras.join(', ')})`}`
 }
 
 /** resource 项的事实行（uri/name + summary 预览）。 */

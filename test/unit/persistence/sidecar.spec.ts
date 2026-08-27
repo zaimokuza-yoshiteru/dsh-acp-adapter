@@ -299,6 +299,21 @@ describe('createAcpSidecar 基本读写（v2 envelope 契约）', () => {
     expect(typeof entries[0]?.recordId).toBe('string')
   })
 
+  it('listPage 使用 session 内 seq 游标稳定分页且不串入其他会话', async () => {
+    await store.append(SessionId('sess-1'), { kind: 'binding', time: 1, data: BINDING_A })
+    await store.append(SessionId('sess-2'), { kind: 'binding', time: 2, data: BINDING_A })
+    await store.append(SessionId('sess-1'), { kind: 'permission', time: 3, data: permissionData('req-1') })
+    await store.append(SessionId('sess-1'), { kind: 'binding', time: 4, data: BINDING_B })
+
+    const first = await store.listPage(SessionId('sess-1'), 0, 2)
+    const second = await store.listPage(SessionId('sess-1'), first.at(-1)?.seq ?? 0, 2)
+    expect(first.map((entry) => entry.seq)).toEqual([1, 2])
+    expect(second.map((entry) => entry.seq)).toEqual([3])
+    expect([...first, ...second].every((entry) => entry.dshSessionId === 'sess-1')).toBe(true)
+    expect(() => store.listPage(SessionId('sess-1'), -1, 2)).toThrow('cursor')
+    expect(() => store.listPage(SessionId('sess-1'), 0, 101)).toThrow('page size')
+  })
+
   it('readLatestBinding 返回最新一条 binding（ok 臂：含落库 time）', async () => {
     await store.append(SessionId('sess-1'), { kind: 'binding', time: 10, data: BINDING_A })
     await store.append(SessionId('sess-1'), { kind: 'permission', time: 20, data: permissionData('req-1') })

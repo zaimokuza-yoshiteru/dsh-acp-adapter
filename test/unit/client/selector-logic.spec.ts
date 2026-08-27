@@ -289,10 +289,10 @@ describe('filterGroups / filterFailures', () => {
     expect(filterGroups([apiGroup, acpGroup], 'acp', 'chat')).toEqual([]);
   });
 
-  it('filterFailures 只吃档位不吃文本（失败是健康信号，不随搜索消失）', () => {
-    expect(filterFailures([apiFailure, acpFailure], 'all')).toEqual([apiFailure, acpFailure]);
+  it('filterFailures 只展示原生 provider 错误，ACP 诊断归 ACP 设置页', () => {
+    expect(filterFailures([apiFailure, acpFailure], 'all')).toEqual([apiFailure]);
     expect(filterFailures([apiFailure, acpFailure], 'api')).toEqual([apiFailure]);
-    expect(filterFailures([apiFailure, acpFailure], 'acp')).toEqual([acpFailure]);
+    expect(filterFailures([apiFailure, acpFailure], 'acp')).toEqual([]);
     expect(filterFailures([], 'all')).toEqual([]);
   });
 });
@@ -305,7 +305,7 @@ describe('rowId / optionsOf / selectionOf', () => {
     expect(rowId('acp-devin', 'devin-latest')).toBe('acp-devin/devin-latest');
   });
 
-  it('optionsOf：拍平分组 + [Model]/[ACP] 标签 detail + 当前行 active + failure 行尾随不可选', () => {
+  it('optionsOf：拍平分组 + [Model]/[ACP] 标签 detail + 只展示原生 failure 行', () => {
     const t: PickerTranslate = (key, params) => `${key}:${params?.['message'] ?? ''}`;
     const rows = optionsOf(directory, t);
     expect(rows).toEqual([
@@ -314,11 +314,9 @@ describe('rowId / optionsOf / selectionOf', () => {
       { id: 'acp-devin/devin-latest', label: 'Devin Latest', detail: '[ACP] Devin · 云端智能体' },
       { id: 'acp-devin/devin-sonnet', label: 'Devin Sonnet', detail: '[ACP] Devin' },
       { id: 'failure/deepseek', label: 'DeepSeek', detail: 'option.loadError:HTTP 401' },
-      { id: 'failure/acp-foo', label: 'Foo', detail: 'option.loadError:spawn failed' },
     ]);
     // failure 行永不携带 active（内置语义：可见但不可选）
     expect(rows[4]).not.toHaveProperty('active');
-    expect(rows[5]).not.toHaveProperty('active');
   });
 
   it('optionsOf 空目录 → 空行集', () => {
@@ -456,7 +454,6 @@ describe('backend 兼容矩阵（backendOfProvider / isSameBackendSelection / de
       { id: 'acp-devin/devin-latest', label: 'Devin Latest', detail: '需新会话:[ACP] Devin · 云端智能体', crossBackend: true, confirmation },
       { id: 'acp-devin/devin-sonnet', label: 'Devin Sonnet', detail: '需新会话:[ACP] Devin', crossBackend: true, confirmation },
       { id: 'failure/deepseek', label: 'DeepSeek', detail: 'option.loadError:HTTP 401' },
-      { id: 'failure/acp-foo', label: 'Foo', detail: 'option.loadError:spawn failed' },
     ]);
     // failure 行不受 backend 标记影响
     expect(rows[4]).not.toHaveProperty('crossBackend');
@@ -539,8 +536,8 @@ describe(' 当前 Tab（currentTabAvailable / defaultFilterOf / currentRouteFact
     expect(filterGroups([apiGroup], 'current', '', { provider: 'acp-devin', allowedValues: null, currentValue: null })).toEqual([]);
   });
 
-  it('filterFailures current：只保留精确路由的失败行（健康信号不随档位消失，也不跨路由串扰）', () => {
-    expect(filterFailures([apiFailure, acpFailure], 'current', 'acp-foo')).toEqual([acpFailure]);
+  it('filterFailures current：ACP 当前路由失败也只在 ACP 设置页展示', () => {
+    expect(filterFailures([apiFailure, acpFailure], 'current', 'acp-foo')).toEqual([]);
     expect(filterFailures([apiFailure, acpFailure], 'current', 'acp-devin')).toEqual([]);
     expect(filterFailures([apiFailure, acpFailure], 'current')).toEqual([]);
   });
@@ -561,7 +558,6 @@ describe(' 当前 Tab（currentTabAvailable / defaultFilterOf / currentRouteFact
       'deepseek/deepseek-chat',
       'deepseek/deepseek-reasoner',
       'failure/deepseek',
-      'failure/acp-foo',
     ]);
     // native established / blank：目录原序不变
     expect(optionsOf(directory, t, { state: 'established', provider: 'deepseek' }).map((row) => row.id))

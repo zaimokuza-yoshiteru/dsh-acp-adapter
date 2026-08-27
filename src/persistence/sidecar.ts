@@ -392,6 +392,14 @@ export interface AcpReconciliationData {
   readonly generation?: number
 }
 
+/** Non-blocking result of comparing a session/load replay with DSH-visible history. */
+export interface AcpReplayAssessmentData {
+  readonly status: 'matched' | 'different' | 'overflow' | 'not-compared' | 'unavailable'
+  readonly detail?: string
+  readonly acpSessionId?: string
+  readonly generation?: number
+}
+
 /** {@link AcpSidecar.listBindings} 的行项：一份有效 binding + 其所属 dsh sessionId（行键）。 */
 export interface AcpBoundSessionBinding {
   readonly dshSessionId: string
@@ -412,7 +420,7 @@ export interface AcpSidecarEnvelopeV2 {
   readonly dshSessionId: string
   readonly acpProviderId?: string
   readonly acpSessionId?: string
-  readonly payload: AcpBindingData | AcpPermissionAuditData | AcpPermissionScopeAuditData | AcpAgentModeAuditData | AcpAgentConfigAuditData | AcpReconciliationData | AcpDegradationAuditData | AcpElicitationAuditData | AcpFileSystemAuditData | AcpTerminalAuditData
+  readonly payload: AcpBindingData | AcpPermissionAuditData | AcpPermissionScopeAuditData | AcpAgentModeAuditData | AcpAgentConfigAuditData | AcpReconciliationData | AcpReplayAssessmentData | AcpDegradationAuditData | AcpElicitationAuditData | AcpFileSystemAuditData | AcpTerminalAuditData
 }
 
 /** 统一读取模型的公共 envelope 字段。 */
@@ -456,10 +464,10 @@ export interface AcpFileSystemAuditData {
   readonly profileId: string
 }
 
-export type AcpSidecarKind = 'binding' | 'permission' | 'permission-scope' | 'agent-mode' | 'agent-config' | 'reconciliation' | 'degradation' | 'elicitation' | 'filesystem' | 'terminal'
+export type AcpSidecarKind = 'binding' | 'permission' | 'permission-scope' | 'agent-mode' | 'agent-config' | 'reconciliation' | 'replay-assessment' | 'degradation' | 'elicitation' | 'filesystem' | 'terminal'
 
 /** 写/读路径共同承认的 v2 kind 全集（行校验用）。 */
-const ACP_SIDECAR_KINDS: readonly AcpSidecarKind[] = ['binding', 'permission', 'permission-scope', 'agent-mode', 'agent-config', 'reconciliation', 'degradation', 'elicitation', 'filesystem', 'terminal']
+const ACP_SIDECAR_KINDS: readonly AcpSidecarKind[] = ['binding', 'permission', 'permission-scope', 'agent-mode', 'agent-config', 'reconciliation', 'replay-assessment', 'degradation', 'elicitation', 'filesystem', 'terminal']
 
 /**
  * 同步 durable 路径的 kind（有界审计队列）：append 落库 commit 后才 resolve。
@@ -493,6 +501,7 @@ export type AcpSidecarEntry =
   | (AcpSidecarEntryBase & { readonly kind: 'agent-mode'; readonly data: AcpAgentModeAuditData })
   | (AcpSidecarEntryBase & { readonly kind: 'agent-config'; readonly data: AcpAgentConfigAuditData })
   | (AcpSidecarEntryBase & { readonly kind: 'reconciliation'; readonly data: AcpReconciliationData })
+  | (AcpSidecarEntryBase & { readonly kind: 'replay-assessment'; readonly data: AcpReplayAssessmentData })
   | (AcpSidecarEntryBase & { readonly kind: 'degradation'; readonly data: AcpDegradationAuditData })
   | (AcpSidecarEntryBase & { readonly kind: 'elicitation'; readonly data: AcpElicitationAuditData })
   | (AcpSidecarEntryBase & { readonly kind: 'filesystem'; readonly data: AcpFileSystemAuditData })
@@ -506,6 +515,7 @@ export type AcpSidecarEntryInput =
   | { readonly kind: 'agent-mode'; readonly time?: number; readonly data: AcpAgentModeAuditData }
   | { readonly kind: 'agent-config'; readonly time?: number; readonly data: AcpAgentConfigAuditData }
   | { readonly kind: 'reconciliation'; readonly time?: number; readonly data: AcpReconciliationData }
+  | { readonly kind: 'replay-assessment'; readonly time?: number; readonly data: AcpReplayAssessmentData }
   | { readonly kind: 'degradation'; readonly time?: number; readonly data: AcpDegradationAuditData }
   | { readonly kind: 'elicitation'; readonly time?: number; readonly data: AcpElicitationAuditData }
   | { readonly kind: 'filesystem'; readonly time?: number; readonly data: AcpFileSystemAuditData }
@@ -519,6 +529,7 @@ type StampedEntry =
   | { readonly kind: 'agent-mode'; readonly time: number; readonly data: AcpAgentModeAuditData }
   | { readonly kind: 'agent-config'; readonly time: number; readonly data: AcpAgentConfigAuditData }
   | { readonly kind: 'reconciliation'; readonly time: number; readonly data: AcpReconciliationData }
+  | { readonly kind: 'replay-assessment'; readonly time: number; readonly data: AcpReplayAssessmentData }
   | { readonly kind: 'degradation'; readonly time: number; readonly data: AcpDegradationAuditData }
   | { readonly kind: 'elicitation'; readonly time: number; readonly data: AcpElicitationAuditData }
   | { readonly kind: 'filesystem'; readonly time: number; readonly data: AcpFileSystemAuditData }
@@ -616,6 +627,8 @@ export interface AcpSidecar {
   listBindings(): Promise<readonly AcpBoundSessionBinding[]>
   /** 该 sessionId 全量合法 entry（按 seq 升序；行级校验失败者跳过并 warn）；库不存在 → 空数组。 */
   list(sessionId: SessionId): Promise<readonly AcpSidecarEntry[]>
+  /** Cursor-paged audit read. Only the requested bounded window is decoded. */
+  listPage(sessionId: SessionId, afterSeq: number, limit: number): Promise<readonly AcpSidecarEntry[]>
   /** 删除该 sessionId 的全部 sidecar 行（audit + bindings + model_switches + option_snapshots；fork/删除连带清理用）；幂等，不存在不报错。 */
   remove(sessionId: SessionId): Promise<void>
   /**
@@ -914,6 +927,7 @@ class SidecarStore implements AcpSidecar {
   private stmtHasRecordId: StatementSync | undefined
   private stmtHasDedupe: StatementSync | undefined
   private stmtList: StatementSync | undefined
+  private stmtListPage: StatementSync | undefined
   private stmtGetBinding: StatementSync | undefined
   private stmtListBindings: StatementSync | undefined
   private stmtUpsertBinding: StatementSync | undefined
@@ -996,6 +1010,7 @@ class SidecarStore implements AcpSidecar {
     this.stmtHasRecordId = db.prepare('SELECT 1 AS x FROM audit WHERE dsh_session_id = ? AND record_id = ?')
     this.stmtHasDedupe = db.prepare('SELECT 1 AS x FROM audit WHERE dsh_session_id = ? AND dedupe_key = ?')
     this.stmtList = db.prepare('SELECT * FROM audit WHERE dsh_session_id = ? ORDER BY seq ASC')
+    this.stmtListPage = db.prepare('SELECT * FROM audit WHERE dsh_session_id = ? AND seq > ? ORDER BY seq ASC LIMIT ?')
     this.stmtGetBinding = db.prepare('SELECT * FROM bindings WHERE dsh_session_id = ?')
     this.stmtListBindings = db.prepare('SELECT * FROM bindings ORDER BY dsh_session_id ASC')
     this.stmtUpsertBinding = db.prepare('INSERT INTO bindings (dsh_session_id, time, acp_provider_id, acp_session_id, payload) VALUES (?, ?, ?, ?, ?) ON CONFLICT(dsh_session_id) DO UPDATE SET time = excluded.time, acp_provider_id = excluded.acp_provider_id, acp_session_id = excluded.acp_session_id, payload = excluded.payload')
@@ -1420,6 +1435,29 @@ class SidecarStore implements AcpSidecar {
         else entries.push(entry)
       }
       if (skipped > 0) this.warn(`dsh-acp sidecar: skipped ${String(skipped)} malformed audit row(s) for session ${JSON.stringify(sessionId as string)}`)
+      return Promise.resolve(entries)
+    } catch (error: unknown) {
+      return Promise.reject(error instanceof Error ? error : new Error(errorMessage(error)))
+    }
+  }
+
+  listPage(sessionId: SessionId, afterSeq: number, limit: number): Promise<readonly AcpSidecarEntry[]> {
+    assertSafeSessionId(sessionId)
+    if (!Number.isSafeInteger(afterSeq) || afterSeq < 0) throw new TypeError('dsh-acp sidecar: audit cursor must be a non-negative integer')
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new TypeError('dsh-acp sidecar: audit page size must be between 1 and 100')
+    try {
+      this.drainQueue()
+      const db = this.openIfExists()
+      if (db === undefined) return Promise.resolve([])
+      const rows = (this.stmtListPage?.all(sessionId, afterSeq, limit) ?? []) as unknown as AuditRow[]
+      const entries: AcpSidecarEntry[] = []
+      let skipped = 0
+      for (const row of rows) {
+        const entry = rowToEntry(row)
+        if (entry === undefined) skipped += 1
+        else entries.push(entry)
+      }
+      if (skipped > 0) this.warn(`dsh-acp sidecar: skipped ${String(skipped)} malformed audit row(s) in page for session ${JSON.stringify(sessionId as string)}`)
       return Promise.resolve(entries)
     } catch (error: unknown) {
       return Promise.reject(error instanceof Error ? error : new Error(errorMessage(error)))

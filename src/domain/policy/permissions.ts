@@ -85,13 +85,13 @@ export type { AcpApprovalOutcome } from './events.ts'
  * ask 时 `reason` 的可用性披露句：agent 选项表缺 `allow_once` kind 时附——
  * 面板的选择允许无法忠实表达，桥将视为取消（绝不升格 allow_always）。
  */
-export const ACP_PERMISSION_NO_ALLOW_ONCE_DISCLOSURE = '该 agent 未提供单次允许选项，选择允许将被视为取消'
+export const ACP_PERMISSION_NO_ALLOW_ONCE_DISCLOSURE = 'This agent did not offer an allow-once option; a one-time allow choice will be treated as cancelled'
 
 /**
  * ask 时 `reason` 的可用性披露句：agent 选项表缺 `reject_once` kind 时附——
  * 面板的选择拒绝无法忠实表达，桥将视为取消（绝不升格 reject_always）。
  */
-export const ACP_PERMISSION_NO_REJECT_ONCE_DISCLOSURE = '该 agent 未提供单次拒绝选项，选择拒绝将被视为取消'
+export const ACP_PERMISSION_NO_REJECT_ONCE_DISCLOSURE = 'This agent did not offer a reject-once option; a one-time reject choice will be treated as cancelled'
 
 /** Maximum option buttons retained by the plugin-owned approval surface. */
 export const ACP_PERMISSION_OPTIONS_MAX = 128
@@ -550,28 +550,28 @@ function requestDetail(tool: acp.RequestPermissionRequest['toolCall']): string |
   const kind = tool.kind ?? ''
   if (kind === 'execute') {
     const command = typeof tool.rawInput === 'string' ? tool.rawInput : rawString(record, ['command', 'cmd', 'argv'])
-    return command === undefined ? undefined : `命令：${safeReasonText(command)}`
+    return command === undefined ? undefined : `Command: ${safeReasonText(command)}`
   }
   if (kind === 'edit' || kind === 'read' || kind === 'delete' || kind === 'move') {
     if (kind === 'move') {
       const source = rawString(record, ['source', 'source_path', 'sourcePath', 'from'])
       const destination = rawString(record, ['destination', 'destination_path', 'destinationPath', 'dest', 'to', 'target'])
       if (source !== undefined && destination !== undefined) {
-        return `来源：${shortTargetPath(source)}；目标：${shortTargetPath(destination)}`
+        return `Source: ${shortTargetPath(source)}; destination: ${shortTargetPath(destination)}`
       }
       const oneSided = source ?? destination
-      if (oneSided !== undefined) return `${source === undefined ? '目标' : '来源'}：${shortTargetPath(oneSided)}`
+      if (oneSided !== undefined) return `${source === undefined ? 'Destination' : 'Source'}: ${shortTargetPath(oneSided)}`
     }
     const rawPath = rawString(record, ['file_path', 'filePath', 'path', 'target', 'source', 'destination', 'dest', 'filename'])
     const location = tool.locations?.find((entry) => typeof entry.path === 'string')?.path
     const target = rawPath ?? location
-    return target === undefined ? undefined : `目标：${shortTargetPath(target)}`
+    return target === undefined ? undefined : `Target: ${shortTargetPath(target)}`
   }
   // For unknown shapes, only use the existing field-level redacted summary;
   // never put raw JSON in a user-facing approval prompt.
   if (tool.rawInput !== undefined) {
     const summary = summarizeRawInputForAudit(tool.rawInput).summary
-    return summary === '{}' ? undefined : `详情：${safeReasonText(summary)}`
+    return summary === '{}' ? undefined : `Details: ${safeReasonText(summary)}`
   }
   return undefined
 }
@@ -600,24 +600,24 @@ export function buildPermissionReason(
   options: AcpPermissionReasonOptions = {},
 ): string {
   const reasonByKind: Record<string, string> = {
-    execute: 'ACP Agent 请求执行一条需要额外权限的命令。',
-    edit: 'ACP Agent 请求修改文件，此操作需要额外权限。',
-    delete: 'ACP Agent 请求删除文件，此操作需要额外权限。',
-    move: 'ACP Agent 请求移动文件，此操作需要额外权限。',
-    read: 'ACP Agent 请求读取受限内容，此操作需要额外权限。',
-    fetch: 'ACP Agent 请求访问受限的外部资源。',
+    execute: 'The ACP Agent requests permission to run a command.',
+    edit: 'The ACP Agent requests permission to edit files.',
+    delete: 'The ACP Agent requests permission to delete files.',
+    move: 'The ACP Agent requests permission to move files.',
+    read: 'The ACP Agent requests permission to read restricted content.',
+    fetch: 'The ACP Agent requests permission to access a restricted external resource.',
   }
   const kind = params.toolCall.kind ?? ''
-  const lines = [reasonByKind[kind] ?? 'ACP Agent 请求执行一项需要额外权限的操作。']
+  const lines = [reasonByKind[kind] ?? 'The ACP Agent requests permission to perform a restricted operation.']
   const title = params.toolCall.title ?? params.toolCall.name
-  if (typeof title === 'string' && title.trim() !== '') lines.push(`工具：${safeReasonText(title)}`)
+  if (typeof title === 'string' && title.trim() !== '') lines.push(`Tool: ${safeReasonText(title)}`)
   const detail = requestDetail(params.toolCall)
   if (detail !== undefined && (params.toolCall.kind !== 'execute' || options.includeExecuteDetails !== false)) lines.push(detail)
   if (!hasKind(params.options, 'allow_once')) {
-    lines.push(`注意：${ACP_PERMISSION_NO_ALLOW_ONCE_DISCLOSURE}`)
+    lines.push(`Note: ${ACP_PERMISSION_NO_ALLOW_ONCE_DISCLOSURE}`)
   }
   if (!hasKind(params.options, 'reject_once')) {
-    lines.push(`注意：${ACP_PERMISSION_NO_REJECT_ONCE_DISCLOSURE}`)
+    lines.push(`Note: ${ACP_PERMISSION_NO_REJECT_ONCE_DISCLOSURE}`)
   }
   return lines.join('\n')
 }
@@ -630,12 +630,12 @@ function permissionToolName(tool: acp.RequestPermissionRequest['toolCall']): str
     if (safe !== '') return safe
   }
   const byKind: Record<string, string> = {
-    execute: '运行命令',
-    edit: '编辑文件',
-    delete: '删除文件',
-    move: '移动文件',
-    read: '读取文件',
-    fetch: '访问外部资源',
+    execute: 'Run command',
+    edit: 'Edit files',
+    delete: 'Delete files',
+    move: 'Move files',
+    read: 'Read files',
+    fetch: 'Access external resource',
   }
   return byKind[tool.kind ?? ''] ?? acpUnknownToolName(tool.toolCallId)
 }

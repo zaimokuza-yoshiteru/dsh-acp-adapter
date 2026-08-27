@@ -309,13 +309,14 @@ if (packOutput !== null) {
   let tar
   try {
     const parsed = JSON.parse(packOutput)
-    tar = Array.isArray(parsed) ? parsed[0] : parsed
+    // npm <= 11 输出数组；npm >= 12 输出以包名为键的对象。
+    tar = Array.isArray(parsed) ? parsed[0] : (parsed?.[pkg.name] ?? parsed)
   } catch {
     fail('npm pack --dry-run --json 输出不是合法 JSON')
     tar = null
   }
   if (tar !== null) {
-    const actual = new Set((tar.files ?? []).map((file) => file.path))
+    const actual = new Set((tar.files ?? []).map((file) => file.path.replaceAll('\\', '/')))
     for (const path of actual) {
       if (/^(src|test|scripts)\//.test(path)) fail(`tarball 含开发面路径: ${path}`)
       if (/evidence/i.test(path)) fail(`tarball 含证据目录残留: ${path}`)
@@ -334,7 +335,8 @@ if (packOutput !== null) {
     const expected = new Set(['package.json'])
     for (const entry of pkg.files ?? []) {
       if (/[*{[]/.test(entry)) {
-        for (const match of globSync(entry, { cwd: root })) expected.add(match)
+        // Windows 上 globSync 返回反斜杠路径；npm 的 tar 清单统一使用正斜杠。
+        for (const match of globSync(entry, { cwd: root })) expected.add(match.replaceAll('\\', '/'))
       } else if (existsSync(join(root, entry))) {
         expected.add(entry)
       } else {

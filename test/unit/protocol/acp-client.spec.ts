@@ -386,6 +386,25 @@ describe('prompt 流与 typed 方法', () => {
     ]);
   });
 
+  it('session/resume：恢复已有会话且不回放历史 update', async () => {
+    const updates: acp.SessionNotification[] = [];
+    const { conn } = connectMock('happy', {
+      env: { MOCK_ADVERTISE_RESUME: '1' },
+      conn: { onSessionUpdate: (notification) => updates.push(notification) },
+    });
+    const initialized = await conn.initialize();
+    expect(initialized.agentCapabilities?.sessionCapabilities?.resume).toEqual({});
+    const session = await conn.newSession();
+    await waitFor(() => updates.length >= 2);
+    const before = updates.length;
+
+    const resumed = await conn.resumeSession(session.sessionId);
+
+    expect(resumed.modes?.currentModeId).toBe('accept-edits');
+    expect(resumed.configOptions?.find((option) => option.id === 'model')?.currentValue).toBe('mock-model-a');
+    expect(updates).toHaveLength(before);
+  });
+
   it('cancel：turn 中途取消 → stopReason=cancelled，mock 侧确认收到', async () => {
     const { conn, logPath } = connectMock('happy', { env: { MOCK_STEP_DELAY_MS: '50' } });
     await conn.initialize();
@@ -637,7 +656,7 @@ describe(' 全 RPC deadline 与 connection poison（never-resolve 矩阵）', ()
     if (pid !== undefined) await waitFor(() => isDead(pid));
   }
 
-  it('预算常量钉版：initialize 15s / 会话建立类（new/load/list）30s / 会话写类（set-option/set-mode）15s', () => {
+  it('预算常量钉版：initialize 15s / 会话建立类（new/load/resume/list）30s / 会话写类（set-option/set-mode）15s', () => {
     expect(DEFAULT_INITIALIZE_TIMEOUT_MS).toBe(15_000);
     expect(DEFAULT_SESSION_SETUP_TIMEOUT_MS).toBe(30_000);
     expect(DEFAULT_SESSION_WRITE_TIMEOUT_MS).toBe(15_000);
@@ -657,6 +676,14 @@ describe(' 全 RPC deadline 与 connection poison（never-resolve 矩阵）', ()
     const error = await expectReject(conn.loadSession('mock-session-1', {}, { timeoutMs: NEVER_BUDGET_MS }));
     expectTimeoutKind(error, 'session/load');
     await expectPoisoned(conn, 'session/load');
+  });
+
+  it('session/resume 永不应答 → 预算内 timeout → poison', async () => {
+    const { conn } = connectNever(['session/resume']);
+    await conn.initialize();
+    const error = await expectReject(conn.resumeSession('mock-session-1', {}, { timeoutMs: NEVER_BUDGET_MS }));
+    expectTimeoutKind(error, 'session/resume');
+    await expectPoisoned(conn, 'session/resume');
   });
 
   it('session/list 永不应答 → 预算内 timeout → poison', async () => {

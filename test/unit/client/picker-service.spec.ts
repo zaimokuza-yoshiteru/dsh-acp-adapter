@@ -909,7 +909,8 @@ describe('PickerService backendOf / useInNewSession / takePendingNotice', () => 
       getSnapshot: () => ({ status: 'idle', value: undefined, revision: 0, writable: false }),
     };
     const service = new PickerService(h.deps);
-    await expect(service.useInNewSession(SESSION_ID, { provider: 'acp-devin', model: 'devin-latest' })).resolves.toBe('default.writeError');
+    await expect(service.useInNewSession(SESSION_ID, { provider: 'acp-devin', model: 'devin-latest' }))
+      .resolves.toBe('cross.createFailed:{"message":"error.technical:{\\"reference\\":\\"\\"}"}');
     expect(h.createCalls).toHaveLength(0);
     expect(h.mutateCalls).toHaveLength(0);
   });
@@ -962,7 +963,7 @@ describe('PickerService backendOf / useInNewSession / takePendingNotice', () => 
     });
     const service = new PickerService(h.deps);
     await expect(service.useInNewSession(SESSION_ID, { provider: 'acp-devin', model: 'm' }, 'M'))
-      .resolves.toBe('cross.createAmbiguous:{"model":"M","message":"network lost twice"}');
+      .resolves.toBe('cross.createAmbiguous:{"model":"M","message":"error.technical:{\\"reference\\":\\"\\"}"}');
     expect(h.createCalls).toHaveLength(2);
     expect(h.createCalls[1]).toEqual(h.createCalls[0]);
     expect(h.openCalls).toHaveLength(0);
@@ -976,7 +977,7 @@ describe('PickerService backendOf / useInNewSession / takePendingNotice', () => 
     });
     const service = new PickerService(h.deps);
     await expect(service.useInNewSession(SESSION_ID, { provider: 'acp-devin', model: 'm' }))
-      .resolves.toBe('cross.createFailedRestored:{"message":"host exploded"}');
+      .resolves.toBe('cross.createFailedRestored:{"message":"error.technical:{\\"reference\\":\\"\\"}"}');
     expect(h.createCalls).toHaveLength(1);
     expect(h.openCalls).toHaveLength(0);
     expect(h.mutateCalls).toHaveLength(2);
@@ -1003,7 +1004,7 @@ describe('PickerService backendOf / useInNewSession / takePendingNotice', () => 
     await expect(service.useInNewSession(SESSION_ID, { provider: 'acp-devin', model: 'm' }, 'M')).resolves.toBeUndefined();
     expect(h.createCalls).toHaveLength(1);
     expect(h.openCalls).toEqual([h.createCalls[0]!.sessionId]);
-    expect(service.takePendingNotice()).toBe('cross.attachFailed:{"model":"M","message":"registry write failed"}');
+    expect(service.takePendingNotice()).toBe('cross.attachFailed:{"model":"M","message":"error.technical:{\\"reference\\":\\"\\"}"}');
   });
 
   it('create 成功但行在确认窗口内未到场 → 诚实报错（含 session id），不 open', async () => {
@@ -1306,7 +1307,7 @@ describe(' 失败降级：backendProbe 三值 + native 路径免疫', () => {
     expect(fake.calls.some((call) => call.startsWith('beginModelSwitch') || call.startsWith('commitModelSwitch') || call.startsWith('rollbackModelSwitch'))).toBe(false);
   });
 
-  it('一个损坏/失败的 ACP profile 只落失败行：/model 目录与 native 行照常可选', async () => {
+  it('一个损坏/失败的 ACP profile 保留诊断事实，但 /model 只展示可用模型', async () => {
     const h = createHarness();
     // 目录 wire 应答：native 组完好 + acp-devin 组探测失败（host buildModelCatalog
     // 同款失败隔离的 client 侧消费面）
@@ -1321,7 +1322,7 @@ describe(' 失败降级：backendProbe 三值 + native 路径免疫', () => {
     expect(state.status).toBe('ready');
     expect(state.failures.map((failure) => failure.id)).toEqual(['acp-devin']);
     // /model popup 行构建（src/client/index.ts 入口 1 的等价路径）：native 行
-    // 可选（active/selectable），失败行只读展示、selectionOf 拒绝解析
+    // 可选（active/selectable），ACP 失败行不在 picker 重复展示。
     const { optionsOf, selectionOf } = await import('../../../src/client/host-compat/model-picker/popup.ts');
     const t = ((key: string) => key) as never;
     const rows = optionsOf({
@@ -1332,8 +1333,7 @@ describe(' 失败降级：backendProbe 三值 + native 路径免疫', () => {
     }, t);
     expect(rows.some((row) => row.id === 'deepseek/deepseek-reasoner' && row.active === undefined)).toBe(true);
     const failureRow = rows.find((row) => row.id === 'failure/acp-devin');
-    expect(failureRow).toBeDefined();
-    expect(failureRow!.active).toBeUndefined();
+    expect(failureRow).toBeUndefined();
     expect(selectionOf(state, 'deepseek/deepseek-reasoner')).toEqual({ provider: 'deepseek', model: 'deepseek-reasoner' });
     expect(selectionOf(state, 'failure/acp-devin')).toBeUndefined();
   });

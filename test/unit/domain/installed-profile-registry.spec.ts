@@ -251,7 +251,7 @@ describe('纯函数：路由 id 与模板', () => {
       command: 'claude-agent-acp',
       args: [],
       env: {},
-      loginHint: 'claude 外部登录，或经 ANTHROPIC_* 环境变量配置路由（external-login-only）',
+      loginHint: 'claude',
       runtime: 'claude',
       // 不假设推理提供方：下游路由不属于本插件的模型身份范围
     });
@@ -342,7 +342,7 @@ describe('runtime descriptor（数据面钉版 + 绑定解析）', () => {
         command: 'kimi',
         args: ['acp'],
         versionPolicy: { wrappedCli: '0.36.1' },
-        loginHint: 'kimi 登录（见 kimi CLI）',
+        loginHint: 'kimi login',
       },
       {
         id: 'claude',
@@ -350,7 +350,7 @@ describe('runtime descriptor（数据面钉版 + 绑定解析）', () => {
         args: [],
         executableOverrideEnv: 'CLAUDE_CODE_EXECUTABLE',
         versionPolicy: { adapter: '0.70.0' },
-        loginHint: 'claude（外部登录，或经 ANTHROPIC_* 环境变量提供路由）',
+        loginHint: 'claude',
       },
     ]);
   });

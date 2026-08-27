@@ -109,7 +109,7 @@ export type AcpToolPresentationContentV1 =
     type: 'diff'
     path: string
     /** 操作类型（按 oldText/newText 可空推断；与 acpToolContent meta 同口径）。 */
-    operation: '新建' | '修改' | '删除'
+    operation: 'create' | 'modify' | 'delete'
     linesAdded: number
     linesRemoved: number
     patch: string
@@ -260,7 +260,7 @@ function slicePresentationItem(item: AcpToolPresentationContentV1, chars: number
 
 /** 总量闸耗尽后的固定注记项（五变体内唯一的 meta 项；计数含被条数闸丢弃的项）。 */
 function omittedNoteItem(omitted: number): AcpToolPresentationContentV1 {
-  return { type: 'text', text: `[……另有 ${String(omitted)} 项内容未纳入展示信封……]` }
+  return { type: 'text', text: `[…${String(omitted)} additional item(s) omitted from the presentation envelope…]` }
 }
 
 /**

@@ -55,6 +55,7 @@ const HTTP_SURFACE_PATTERNS: ReadonlyArray<readonly [string, RegExp]> = [
 
 /** 钉版的完整 Remote invocation 集合（公开 recovery action 也属于同一 namespace）。 */
 const PINNED_REMOTE_METHODS: readonly string[] = [
+  'auditTimeline',
   'backendOf',
   'beginModelSwitch',
   'boundSessions',

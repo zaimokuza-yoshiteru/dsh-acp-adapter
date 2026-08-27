@@ -297,7 +297,7 @@ describe('acpToolRowModel', () => {
       },
       cwd: undefined,
     })
-    expect(model.outputText).toBe('[图片] sha256:abc（image/png，8 字节）\nfile:///x.txt\nbody\n[terminal 占位] term-1')
+    expect(model.outputText).toBe('[Image] sha256:abc (image/png, 8 bytes)\nfile:///x.txt\nbody\n[terminal 占位] term-1')
     expect(model.diffs).toEqual([])
   })
 })

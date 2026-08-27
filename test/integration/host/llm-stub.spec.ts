@@ -106,8 +106,8 @@ describe('stream 门禁与 providerInfo', () => {
     expect(thrown).toBeInstanceOf(LlmError);
     const error = thrown as LlmError;
     expect(error.code).toBe('ACP_STUB_ROUTE');
-    expect(error.message).toContain('默认模型');
-    expect(error.message).toContain('新建会话');
+    expect(error.message).toContain('native model-call path');
+    expect(error.message).toContain('new session');
   });
 
   it('providerInfo 的选择器分组标签是 `<Name> · ACP`；未知路由回退路由 id', () => {
@@ -325,7 +325,7 @@ describe('probe 失败文案（AcpClientError.kind → 面向用户 message）',
     expect(first).toBeInstanceOf(LlmError);
     expect(first.code).toBe('ACP_PROBE_FAILED');
     expect(first.message).toContain('/nonexistent/dsh-acp-missing-bin');
-    expect(first.message).toContain('command/args');
+    expect(first.message).toContain('command and arguments');
     // 失败也进缓存：重抛同一 error 实例，不会每次打开选择器都重 spawn
     const second = await expectListModelsError(adapter, ROUTE);
     expect(second).toBe(first);
@@ -368,7 +368,7 @@ setInterval(() => {}, 1 << 30);
     const { adapter } = makeAdapter({ [ROUTE]: config });
     const error = (await expectListModelsError(adapter, ROUTE)) as LlmError;
     expect(error.code).toBe('ACP_PROBE_FAILED');
-    expect(error.message).toContain('需要登录');
+    expect(error.message).toContain('requires authentication');
     expect(error.message).toContain('devin auth login');
     const snapshot = adapter.probeSnapshot(ROUTE);
     if (snapshot?.result.kind === 'error') expect(snapshot.result.failureKind).toBe('auth_required');
@@ -383,7 +383,7 @@ setInterval(() => {}, 1 << 30);
     });
     const error = (await expectListModelsError(adapter, ROUTE)) as LlmError;
     expect(error.code).toBe('ACP_PROBE_FAILED');
-    expect(error.message).toContain('超时');
+    expect(error.message).toContain('probe timeout');
     await expectListModelsError(adapter, ROUTE);
     expect(probeCount(logPath)).toBe(1);
     const snapshot = adapter.probeSnapshot(ROUTE);

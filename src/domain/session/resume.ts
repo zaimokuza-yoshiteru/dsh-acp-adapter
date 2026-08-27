@@ -1,20 +1,23 @@
 /**
  * Resume / fork / reconciliation。
  *
- * DSH session log 是产品历史真源；ACP binding 保存在 sidecar。恢复时必须先对账，
- * 任何无法证明连续性的情况都 fail closed，不能静默降级为 session/new。ACP 专属
- * binding 与审计不直接写 session log，以免未知事件破坏宿主事件顺序。
+ * DSH session log 是页面与审计历史真源；ACP Agent 会话是语义上下文真源，binding
+ * 保存在 sidecar。恢复时必须先验证本地日志边界与 binding 身份；任何无法证明
+ * 连续性的情况都 fail closed，不能静默降级为 session/new。ACP 专属 binding 与
+ * 审计不直接写 session log，以免未知事件破坏宿主事件顺序。
  *
  * 本模块只含纯函数与文案常量，接线在 src/host/factory/agent-loop.ts（marker-first
  * 路由：sidecar binding 优先，无记录回退 `request/header` 窥测）与 ./agent.ts
- * （session/load 预检 + staging 回放 + 对账 + 阻断闩锁 + 说明消息）。
+ * （能力驱动的 session/resume 或 session/load + 阻断闩锁 + 说明消息）。
  *
  * 恢复流程（设计说明字面顺序）：binding 在场且非 forceBlank → initialize 后
  * 逐项预检（canonicalCwd → launchFingerprint → agent 身份 → protocolVersion →
- * loadSession 能力 → 广告 list 则先查列表确定 miss）→ staging 式 session/load
- * （回放期更新经 ReplayTranslator 入有界 staging，不落盘）→ 对账（{@link resolveExpectedRange} 定期望区间
- * → {@link expectedVisibleHistory} 折出 DSH 侧期望可见历史 →
- * {@link reconcileVisibleHistory} 与 {@link replayVisibleHistory} 折出的回放侧分段比对）→ 任何一步失败：
+ * session/resume 或 loadSession 能力 → 广告 list 则先查列表确定 miss）→
+ * {@link resolveExpectedRange} 验证 DSH 本地担保区间 → Agent 广告 resume 时直接恢复
+ * 同一语义会话（协议明确不回放历史）；否则 staging 式 session/load（回放期更新经
+ * ReplayTranslator 入有界 staging，不落盘）→ {@link expectedVisibleHistory} 折出
+ * DSH 侧期望可见历史 → {@link reconcileVisibleHistory} 与
+ * {@link replayVisibleHistory} 折出的回放侧分段比对）→ 任何一步失败：
  * 置 continuity 闩锁（blocked）、落 sidecar `reconciliation` 记录、抛
  * {@link AcpReconciliationError}（turn/end error code
  * `ACP_RECONCILIATION_REQUIRED`），**不再自动 session/new**。崩溃尾巴（锚点后
@@ -24,7 +27,7 @@
  *
  * binding 语义门槛与双绑守卫（增补保留，出口从降级改为阻断）：
  * - **主键纪律** dsh sessionId 永远是 UI/路由/审计主键；ACP session id 只是
- *   sidecar binding 的载荷（`session/load` 的输入），不作任何索引键。
+ *   sidecar binding 的载荷（`session/resume` / `session/load` 的输入），不作任何索引键。
  * - **双绑守卫** 同一 ACP session 不得同时绑定两个活动 dsh session——路由层
  *   （agent-loop.ts `guardBindingReuse`）冲突时不再降级，而是预置 blocked
  *   （cause 'binding-in-use'），会话拒绝启动直到用户处置。
@@ -137,7 +140,7 @@ export function detectInterruptedTail(session: Session): number | undefined {
  * 之后（turn 字段 = 被中断的 turn 号）。
  */
 export const ACP_RESUME_OUTCOME_UNKNOWN_NOTE =
-  '上一对话轮次因宿主进程中断而结局未知：ACP agent 侧上下文可能已推进到本消息之后的状态。dsh 不会自动重试该轮，请核对工作区状态后继续。'
+  'The previous turn was interrupted by the host, so its outcome is unknown. The ACP Agent context may have advanced beyond the state shown here. DSH will not retry the turn automatically; verify the workspace state before continuing.'
 
 /**
  * 重连残留警告文案（重连 update 无法经 record id / turn 边界证明去重时，
@@ -146,14 +149,14 @@ export const ACP_RESUME_OUTCOME_UNKNOWN_NOTE =
  * 每次恢复最多一条（一次性闩锁见 ./agent.ts `residueWatchArmed`）。
  */
 export const ACP_RESUME_RESIDUE_NOTE =
-  '恢复完成后、下一轮对话开始前收到 ACP agent 的游离更新：无法证明它是新推送还是规范违规（先回 session/load 响应再回放）的残留。内容已如实保留、未静默合并；若与上方历史重复，请以 dsh 侧历史为准核对。'
+  'A detached ACP Agent update arrived after recovery and before the next turn. DSH cannot prove whether it is new or a late replay sent after session/load. The content was preserved without silent merging; if it duplicates earlier content, verify it against the DSH history.'
 
 /**
  * rebindBlank 说明文案（用户显式放弃 ACP 侧上下文后的重开标记）。
  * 追加于新 binding 落盘之后、首个 prompt 之前（turn 字段 = 发起重开的 turn 号）。
  */
 export const ACP_REBIND_BLANK_NOTE =
-  '用户已显式放弃此前的 ACP 侧上下文，本会话已重新绑定到一个全新的 ACP 会话；上方历史不会再回灌给 agent，但从现在起的对话会正常续接。'
+  'The previous ACP context was explicitly abandoned and this DSH session is now bound to a new ACP Agent session. The Agent cannot see the history above; conversation continues normally from this point.'
 
 /**
  * fork 说明文案（ACP 会话被 fork 时 agent 侧上下文不继承——fork 防御
@@ -163,7 +166,7 @@ export const ACP_REBIND_BLANK_NOTE =
  * 构造期、首个 turn 之前；幂等闸见 {@link hasForkBlankNote}。
  */
 export const ACP_FORK_BLANK_NOTE =
-  '此会话由 DSH 历史分支（fork）而来：上方历史仅作展示，ACP agent 侧上下文不继承——agent 从空白开始，对此前的对话内容一无所知。'
+  'This session was forked from DSH history. The history above is display-only: the ACP Agent context is not inherited, so the Agent starts blank and cannot see the earlier conversation.'
 
 /**
  * 空响应说明文案（ACP_EMPTY_RESPONSE）：turn 正常完成（stopReason 非
@@ -173,7 +176,7 @@ export const ACP_FORK_BLANK_NOTE =
  * 纯工具 turn 有 tool 事件，不触发；说明消息省略 sourceEventSeqs，不进对账。
  */
 export const ACP_EMPTY_RESPONSE_NOTE =
-  '本轮对话 ACP agent 已结束，但没有返回任何内容（无正文、无工具调用）。这不能证明请求已完成；可能与 Agent 配置、登录状态或上游行为有关，请检查 Agent 侧日志或重试。'
+  'The ACP Agent ended this turn without returning visible content or tool calls. This does not prove the request completed. Check the Agent configuration, login state, and Agent logs, or retry.'
 
 /**
  * 模型说明文本的单字段长度上限（建立时模型收敛分叉说明用）：模型名来自
@@ -197,7 +200,7 @@ function boundedModelName(model: string): string {
 export function acpModelDivergenceNote(selectedModel: string, actualModel: string, reason: string): string {
   const selected = boundedModelName(selectedModel)
   const actual = boundedModelName(actualModel)
-  return `本会话选择的模型「${selected}」未能应用到 ACP agent（${reason}）。本轮起 agent 将使用其侧实际模型「${actual || '（agent 未报告）'}」继续对话；请求头与历史记录如实反映实际使用的模型。如需改用「${selected}」，请通过模型选择器切换（热切换经 ModelSwitchCoordinator 事务），或新建会话。`
+  return `The selected model "${selected}" could not be applied to the ACP Agent (${reason}). The Agent will continue with its actual model "${actual || '(not reported by Agent)'}"; request headers and history will record the actual model. To use "${selected}", switch it in the model picker or start a new session.`
 }
 
 /**
@@ -205,21 +208,21 @@ export function acpModelDivergenceNote(selectedModel: string, actualModel: strin
  * 前半；后半是 {@link ACP_RECONCILIATION_GUIDANCE}）。
  */
 export const ACP_RECONCILIATION_CAUSE_DETAILS: Record<AcpReconciliationCause, string> = {
-  'cwd-changed': '会话工作目录与 binding 记录不一致（cwd 已变化），无法证明 ACP 侧上下文与当前环境对应',
-  'profile-changed': 'ACP agent 启动配置（command/args/env 键名）与 binding 记录不一致',
-  'agent-changed': '对端 agent 身份（name/version）与 binding 记录不一致',
-  'protocol-changed': '对端协商的 ACP 协议版本与 binding 记录不一致',
-  'capability-missing': '该 ACP agent 未声明会话恢复（loadSession）能力，无法续接上次 ACP 上下文',
-  'id-not-found': '该 ACP agent 的会话列表中未找到上次会话（可能已被清理）',
-  'load-failed': 'session/load 调用失败',
-  'replay-overflow': 'session/load 回放超出 staging 缓冲上限，无法完整对账',
-  'replay-diverged': 'agent 回放的历史与 DSH 日志担保前缀不一致',
-  'dsh-log-diverged': 'DSH 日志在 binding 担保前缀之后存在非崩溃尾巴的可见事件',
-  'dsh-log-truncated': 'agent 回放的历史多于 DSH 日志的可见记录（DSH 侧历史缺失）',
-  'binding-in-use': '上次绑定的 ACP 会话正绑定在另一个活动 dsh 会话上（sidecar 记录冲突），拒绝共享同一份 ACP 上下文',
-  'binding-missing': '会话日志包含 ACP 历史但 sidecar 中不存在 binding 记录（sidecar 数据丢失或不可读）',
-  'binding-outdated': 'sidecar binding 记录缺少必需字段（版本过旧或已损坏）',
-  'backend-conflict': '会话的 execution backend 事实互相矛盾；为防止恢复到错误 Agent，已拒绝继续',
+  'cwd-changed': 'the session working directory no longer matches its binding, so the ACP context cannot be proven to belong to this environment',
+  'profile-changed': 'the ACP Agent launch configuration no longer matches its binding',
+  'agent-changed': 'the remote Agent identity no longer matches its binding',
+  'protocol-changed': 'the negotiated ACP protocol version no longer matches its binding',
+  'capability-missing': 'the ACP Agent advertises neither session/resume nor session/load, so its prior context cannot be restored',
+  'id-not-found': 'the previous session was not found in the ACP Agent session list',
+  'load-failed': 'the ACP session restore request failed',
+  'replay-overflow': 'the session/load replay exceeded the staging limit and cannot be reconciled completely',
+  'replay-diverged': 'the Agent replay does not match the DSH history prefix guaranteed by the binding',
+  'dsh-log-diverged': 'the DSH log contains visible non-crash-tail events beyond the binding checkpoint',
+  'dsh-log-truncated': 'the Agent replay contains more history than the visible DSH log',
+  'binding-in-use': 'the ACP Agent session is already bound to another active DSH session',
+  'binding-missing': 'the DSH log contains ACP history but the sidecar binding is missing or unreadable',
+  'binding-outdated': 'the sidecar binding is missing required fields and is outdated or damaged',
+  'backend-conflict': 'the session execution-backend facts conflict, so DSH refused to resume the wrong Agent',
 }
 
 /**
@@ -227,7 +230,7 @@ export const ACP_RECONCILIATION_CAUSE_DETAILS: Record<AcpReconciliationCause, st
  * 后半）：本进程内闩锁不重试；重启宿主会重走对账（修好成因可自愈）。
  */
 export const ACP_RECONCILIATION_GUIDANCE =
-  '出路：① 修复成因（如恢复原 cwd / agent 配置 / sidecar 数据）后重启宿主重试；② 调用 rebindBlank 显式放弃旧 ACP 上下文并重开全新 ACP 会话；③ 新建会话。DSH 侧历史在所有出路下都完整保留。'
+  'Restore the original environment and restart DSH to retry, explicitly abandon the ACP context and reopen with rebindBlank, or start a new session. DSH-side history is preserved in every case.'
 
 /**
  * 对账失败 / 恢复预检失败的错误类型（turn/end error code =
@@ -242,7 +245,7 @@ export class AcpReconciliationError extends Error {
 
   constructor(cause: AcpReconciliationCause, detail?: string) {
     super(
-      `${ACP_RECONCILIATION_CAUSE_DETAILS[cause]}${detail !== undefined && detail.length > 0 ? `（${detail}）` : ''}。${ACP_RECONCILIATION_GUIDANCE}`,
+      `${ACP_RECONCILIATION_CAUSE_DETAILS[cause]}${detail !== undefined && detail.length > 0 ? ` (${detail})` : ''}. ${ACP_RECONCILIATION_GUIDANCE}`,
     )
     this.name = 'AcpReconciliationError'
     this.cause = cause
@@ -259,7 +262,7 @@ export class AcpBindingPersistError extends Error {
 
   constructor(detail: string) {
     super(
-      `ACP binding 持久化失败（${detail}）：为保证恢复有据，该 ACP 会话未启动。请检查 DSH_HOME 下 dsh-acp 目录的可写性后重试。`,
+      `Failed to persist the ACP binding (${detail}). The ACP session was not started because it could not be recovered safely. Check that the dsh-acp directory under DSH_HOME is writable, then retry.`,
     )
     this.name = 'AcpBindingPersistError'
   }
@@ -415,12 +418,12 @@ function boundToolInput(rawInput: unknown): unknown {
 
 /**
  * ACP session/load 可合法回放为信息更少的终态快照。Devin 3000.5.20 的文件编辑
- * 实证形态是：live rawInput={file_path,content}，load rawInput={file_path}，而终态
+ * 实证形态是：live rawInput={file_path|path,content}，load 会省略 content，而终态
  * diff 的 path/newText 摘要与结构化结果（含完整 newText 的 hash16）逐字节相同。
  * 仅对明确 runtime=devin、`kind=edit` 且结果确有同路径 diff 的工具，且
  * `sha256(content).slice(0,16)` 与 diff.hash16、originalChars 与 content.length
  * 全部匹配时，才把 `content` 视为结果通道已完整证明的冗余字段并剔除。工具
- * 存在性、kind、locations、其余 input（含 file_path）、status 与完整的有界
+ * 存在性、kind、locations、其余 input（含原始路径键）、status 与完整的有界
  * result/meta 仍参与 digest，Devin 被拒工具回放不对称 的缺工具防线不变。非 Devin、非 edit、无 diff、
  * 路径/hash/长度不匹配或非字符串 content 均不改写。
  */
@@ -445,7 +448,12 @@ export function stableToolInputProjection(
   const items = (envelope as Record<string, unknown>).items
   if (!Array.isArray(items)) return canonical
   const record = canonical as Record<string, unknown>
-  const filePath = record.file_path
+  // Devin 不同版本出现过 snake_case `file_path` 与 ACP 风格 `path`。只接受恰好
+  // 一种拼写；双键歧义时保持原样，避免兼容例外掩盖真实路径分叉。
+  const pathKeys = ['file_path', 'path'].filter((key) => typeof record[key] === 'string')
+  if (pathKeys.length !== 1) return canonical
+  const pathKey = pathKeys[0]!
+  const filePath = record[pathKey]
   const content = record.content
   if (typeof filePath !== 'string' || typeof content !== 'string') return canonical
   // Devin can report several diffs in one terminal result.  Search every diff

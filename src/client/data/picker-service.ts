@@ -15,6 +15,7 @@
  */
 
 import { errorMessageOf } from './logic.ts'
+import { localizedDiagnostic } from './diagnostics.ts'
 import {
   AGENT_DEFAULT_MODEL_NS,
   decodeAgentDefaultModel,
@@ -298,7 +299,9 @@ export class PickerService {
           : switchBlocked
             ? this.deps.t('blocked.modelSwitch')
             : nativeAccessError !== undefined
-              ? this.deps.t('native.failed', { message: nativeAccessError })
+              ? this.deps.t('native.failed', {
+                  message: localizedDiagnostic(this.deps.t, 'error.technical', nativeAccessError),
+                })
               : this.nativeAccessPending.has(sessionId)
                 ? this.deps.t('native.preparing')
                 : null
@@ -529,7 +532,9 @@ export class PickerService {
       if (current !== null
         && current.provider === selection.provider
         && current.model === selection.model) return
-      const detail = probe.status === 'unavailable' ? ` (${probe.message})` : ''
+      const detail = probe.status === 'unavailable'
+        ? ` (${localizedDiagnostic(this.deps.t, 'error.technical', probe.message)})`
+        : ''
       throw new Error(`ACP subsystem unavailable; model selection is disabled until backend identity can be verified${detail}`)
     }
     if (!isSameBackendSelection(selection, probe.state, current?.provider)) {
@@ -621,6 +626,7 @@ export class PickerService {
 
   private async runCrossHandoff(ticket: CrossHandoffTicket, kind: 'cross' | 'blank'): Promise<string | undefined> {
     const t = this.deps.t
+    const technical = (message: string): string => localizedDiagnostic(t, 'error.technical', message)
     const model = ticket.label ?? ticket.selection.model
     // Resolve the workspace before any write; if absent, ask the user rather than guessing.
     const workspaces = this.deps.workspaces
@@ -637,7 +643,7 @@ export class PickerService {
     const defaultScopeBefore = this.deps.settingsScope.getSnapshot()
     const defaultBefore = decodeAgentDefaultModel(defaultScopeBefore.value)
     const write = await this.writeDefaultModel(ticket.selection)
-    if (!write.ok) return write.message
+    if (!write.ok) return t('cross.createFailed', { message: technical(write.message) })
     const appliedRevision = write.appliedRevision
     // Preallocate an id and retry the public create wire with that same id.
     const newSessionId = `session-${globalThis.crypto.randomUUID()}`
@@ -678,15 +684,18 @@ export class PickerService {
           defaultScopeBefore.revision,
           appliedRevision,
         )
-        if (restore.status === 'restored') return t('cross.createFailedRestored', { message: lastError })
-        if (restore.status === 'conflict') return t('cross.createFailedConflict', { message: lastError })
-        return t('cross.createFailedRecovery', { message: lastError, recovery: restore.message })
+        if (restore.status === 'restored') return t('cross.createFailedRestored', { message: technical(lastError) })
+        if (restore.status === 'conflict') return t('cross.createFailedConflict', { message: technical(lastError) })
+        return t('cross.createFailedRecovery', {
+          message: technical(lastError),
+          recovery: technical(restore.message),
+        })
       }
       // Two transport failures with no list evidence are ambiguous: the host
       // may have created the session even though both responses were lost.
       // Tell the user exactly what is unknown; silently calling this a
       // definitive failure invites duplicate sessions on retry.
-      return t('cross.createAmbiguous', { model, message: lastError })
+      return t('cross.createAmbiguous', { model, message: technical(lastError) })
     }
     // Confirm the row in the bounded list mirror before opening it.
     if (!(await this.waitForSessionRow(newSessionId, timeoutMs))) {
@@ -699,14 +708,14 @@ export class PickerService {
       try {
         await this.enableNativeAccess(newSessionId)
       } catch (error) {
-        this.pendingNotice = t('cross.nativeAccessFailed', { message: errorMessageOf(error) })
+        this.pendingNotice = t('cross.nativeAccessFailed', { message: technical(errorMessageOf(error)) })
         this.deps.sessions.open(newSessionId)
         return undefined
       }
     }
     // 提示先于 open 落槽：新会话的 seat 挂载即取走本条（attach 失败如实告知未分组）。
     this.pendingNotice = attachFailure !== null
-      ? t('cross.attachFailed', { model, message: attachFailure })
+      ? t('cross.attachFailed', { model, message: technical(attachFailure) })
       : t(kind === 'blank' ? 'blank.started' : 'cross.started', { model })
     this.deps.sessions.open(newSessionId)
     // A cross-backend handoff is an explicit recovery decision for an old ACP
@@ -722,7 +731,7 @@ export class PickerService {
         try {
           await this.deps.acpRemote.recordRecoveryAction(ticket.sessionId, 'new-session')
         } catch (error) {
-          this.pendingNotice = t('cross.recoveryActionFailed', { message: errorMessageOf(error) })
+          this.pendingNotice = t('cross.recoveryActionFailed', { message: technical(errorMessageOf(error)) })
         }
       }
     }

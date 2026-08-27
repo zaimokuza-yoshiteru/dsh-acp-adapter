@@ -41,8 +41,9 @@ export interface AcpOptionsSnapshotOption {
  * 按 DSH session 持久化的 last-known config option 快照（`option_snapshots`
  * 表 payload）。`fingerprint` 是运行时指纹（launch fingerprint + agentInfo +
  * protocolVersion 的 canonical 哈希）：恢复后指纹变化 → 旧快照只作诊断，
- * 不作能力结论。本快照是冷启动只读展示面——绝不授权热切换（coordinator
- * 预检要求活体可写 option）。
+ * 不作能力结论。快照既供冷启动只读展示，也供同一 binding 建立时恢复仍由
+ * 活体 Agent 广告且值域兼容的非模型选项；它本身绝不授权热切换（coordinator
+ * 预检仍要求活体可写 option）。
  */
 export interface AcpOptionsSnapshotRecord {
   readonly options: readonly AcpOptionsSnapshotOption[]

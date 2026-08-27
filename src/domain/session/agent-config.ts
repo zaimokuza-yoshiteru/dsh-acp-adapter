@@ -141,7 +141,7 @@ export const ACP_AGENT_RUNTIME_DESCRIPTORS: readonly AcpAgentRuntimeDescriptor[]
     args: ['acp'],
     // kimi 的 ACP 面是 kimi CLI 的 `acp` 子命令，adapter 即 wrapped CLI 本身。
     versionPolicy: { wrappedCli: '0.36.1' },
-    loginHint: 'kimi 登录（见 kimi CLI）',
+    loginHint: 'kimi login',
   },
   {
     id: 'claude',
@@ -149,7 +149,7 @@ export const ACP_AGENT_RUNTIME_DESCRIPTORS: readonly AcpAgentRuntimeDescriptor[]
     args: [],
     executableOverrideEnv: 'CLAUDE_CODE_EXECUTABLE',
     versionPolicy: { adapter: '0.70.0' },
-    loginHint: 'claude（外部登录，或经 ANTHROPIC_* 环境变量提供路由）',
+    loginHint: 'claude',
   },
 ]
 
@@ -229,7 +229,7 @@ export const CLAUDE_ACP_TEMPLATE: AcpBuiltinAgentTemplate = {
   command: 'claude-agent-acp',
   args: [],
   env: {},
-  loginHint: 'claude 外部登录，或经 ANTHROPIC_* 环境变量配置路由（external-login-only）',
+  loginHint: 'claude',
   runtime: 'claude',
 }
 

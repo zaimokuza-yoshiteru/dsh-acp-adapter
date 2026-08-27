@@ -218,7 +218,7 @@ export const acpSettingsSchema: AcpSettingsSchema = Object.assign(
               command: {
                 type: 'string',
                 minLength: 1,
-                description: '单个可执行名或绝对路径；拒绝空白与 shell 元字符（spawn 为 argv 数组，不经 shell；参数放 args）',
+                description: 'Executable name or absolute path. Shell metacharacters are rejected; put arguments in args.',
               },
               args: { type: 'array', items: { type: 'string' }, default: [] },
               env: { type: 'object', additionalProperties: { type: 'string' }, default: {} },

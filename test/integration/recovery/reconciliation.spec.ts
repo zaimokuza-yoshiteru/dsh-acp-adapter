@@ -241,10 +241,10 @@ describe('预检阻断（①-④）', () => {
   }, 15_000);
 });
 
-// ---------- 回放对账阻断（staging 装载后比对失败；load 已发生，无 new/prompt） ----------
+// ---------- 回放内容评估（staging 装载后差异只记审计；load 后仍可继续） ----------
 
-describe('回放对账阻断', () => {
-  it('replay-diverged：回放少了结尾（MOCK_LOAD_REPLAY_VARIANT=omit-assistant-tail）→ 阻断', async () => {
+describe('回放内容评估', () => {
+  it('replay-diverged：回放少了结尾（MOCK_LOAD_REPLAY_VARIANT=omit-assistant-tail）→ 只记审计并继续', async () => {
     const harness = await boot();
     const profile = mockProfile(harness.logDir, 'happy', {
       MOCK_PRESET_SESSIONS: JSON.stringify(['preset-r1']),
@@ -257,18 +257,18 @@ describe('回放对账阻断', () => {
     handle.agent.followup(userText('continue'));
     await handle.agent.whenIdle();
 
-    // load 确实试过了（回放 5 条 = 6 - 1），对账内容不符 → 阻断；无 session/new
-    expect(mockRequests(profile.logPath)).toEqual(['initialize', 'session/list', 'session/load']);
+    // load 确实试过了（回放 5 条 = 6 - 1）；内容不符不再阻断原 Agent 会话。
+    expect(mockRequests(profile.logPath)).toEqual(['initialize', 'session/list', 'session/load', 'session/prompt']);
     expect(fs.readFileSync(profile.logPath, 'utf8')).toContain('replaying 5 updates (variant=omit-assistant-tail)');
-    expectBlocked(handle.agent, 'replay-diverged');
-    // detail 带段级分叉位置（第几 turn 段、哪一层不符）与两侧摘要（有界、无秘密）
-    expect((handle.agent as AcpAgent).continuityState.detail).toContain('turn segment 1');
-    expect((handle.agent as AcpAgent).continuityState.detail).toContain('assistant text');
-    expect(await reconciliationCauses(harness, sessionId)).toEqual(['replay-diverged']);
-    expect((await bindingRows(harness, sessionId)).map((row) => row.agentSessionId)).toEqual(['preset-r1']);
+    expect((handle.agent as AcpAgent).recoveryState.kind).toBe('healthy');
+    const assessment = (await harness.loop.acpSidecar?.list(sessionId) ?? []).find((entry) => entry.kind === 'replay-assessment');
+    expect(assessment?.data.status).toBe('different');
+    expect(assessment?.data.detail).toContain('assistant text');
+    expect(await reconciliationCauses(harness, sessionId)).toEqual([]);
+    expect((await bindingRows(harness, sessionId)).every((row) => row.agentSessionId === 'preset-r1')).toBe(true);
   }, 15_000);
 
-  it('dsh-log-truncated：回放多出尾部（MOCK_LOAD_REPLAY_VARIANT=extra-user）→ 阻断', async () => {
+  it('dsh-log-truncated：回放多出尾部（MOCK_LOAD_REPLAY_VARIANT=extra-user）→ 只记审计并继续', async () => {
     const harness = await boot();
     const profile = mockProfile(harness.logDir, 'happy', {
       MOCK_PRESET_SESSIONS: JSON.stringify(['preset-r2']),
@@ -281,10 +281,12 @@ describe('回放对账阻断', () => {
     handle.agent.followup(userText('continue'));
     await handle.agent.whenIdle();
 
-    expect(mockRequests(profile.logPath)).toEqual(['initialize', 'session/list', 'session/load']);
-    expectBlocked(handle.agent, 'dsh-log-truncated');
-    expect((handle.agent as AcpAgent).continuityState.detail).toContain('extra replay tail');
-    expect(await reconciliationCauses(harness, sessionId)).toEqual(['dsh-log-truncated']);
+    expect(mockRequests(profile.logPath)).toEqual(['initialize', 'session/list', 'session/load', 'session/prompt']);
+    expect((handle.agent as AcpAgent).recoveryState.kind).toBe('healthy');
+    const assessment = (await harness.loop.acpSidecar?.list(sessionId) ?? []).find((entry) => entry.kind === 'replay-assessment');
+    expect(assessment?.data.status).toBe('different');
+    expect(assessment?.data.detail).toContain('extra replay tail');
+    expect(await reconciliationCauses(harness, sessionId)).toEqual([]);
   }, 15_000);
 
   it('dsh-log-diverged：担保前缀之后还有非崩溃尾巴的可见事件（完整 turn 2）→ 阻断', async () => {
@@ -312,7 +314,9 @@ describe('回放对账阻断', () => {
     handle.agent.followup(userText('continue'));
     await handle.agent.whenIdle();
 
-    expect(mockRequests(profile.logPath)).toEqual(['initialize', 'session/list', 'session/load']);
+    // DSH 本地担保区间先于 Agent 恢复方法检查；本地日志已分叉时不应再调用
+    // session/load/session/resume。
+    expect(mockRequests(profile.logPath)).toEqual(['initialize', 'session/list']);
     expectBlocked(handle.agent, 'dsh-log-diverged');
     expect((handle.agent as AcpAgent).continuityState.detail).toContain('turn 2');
     expect(await reconciliationCauses(harness, sessionId)).toEqual(['dsh-log-diverged']);
@@ -322,7 +326,7 @@ describe('回放对账阻断', () => {
 // ---------- digest 对账阻断（同 title/status 的隐性分叉现在必须判分叉） ----------
 
 describe('digest 对账阻断', () => {
-  /** 各 variant 的公共断言骨架：load 已发生、replay-diverged 阻断、detail 无篡改原文。 */
+  /** 各 variant 的公共断言骨架：load 已发生、内容差异仅作 advisory audit。 */
   async function expectDigestDivergence(
     variant: string,
     sessionKey: string,
@@ -340,17 +344,15 @@ describe('digest 对账阻断', () => {
     handle.agent.followup(userText('continue'));
     await handle.agent.whenIdle();
 
-    expect(mockRequests(profile.logPath)).toEqual(['initialize', 'session/list', 'session/load']);
-    expectBlocked(handle.agent, 'replay-diverged');
-    const detail = (handle.agent as AcpAgent).continuityState.detail ?? '';
+    expect(mockRequests(profile.logPath)).toEqual(['initialize', 'session/list', 'session/load', 'session/prompt']);
+    expect((handle.agent as AcpAgent).recoveryState.kind).toBe('healthy');
+    const detail = ((await harness.loop.acpSidecar?.list(sessionId) ?? []).find((entry) => entry.kind === 'replay-assessment')?.data.detail) ?? '';
     expect(detail).toContain(detailHints.contains);
     if (detailHints.notContains !== undefined) expect(detail).not.toContain(detailHints.notContains);
-    expect(await reconciliationCauses(harness, sessionId)).toEqual(['replay-diverged']);
+    expect(await reconciliationCauses(harness, sessionId)).toEqual([]);
   }
 
-  it('Devin 被拒工具回放不对称 回归镜像：被拒 tool call 不进回放（omit-tool-call）→ 仍按 replay-diverged 阻断', async () => {
-    // /不得为绕过 Devin 被拒工具回放不对称 放宽对账：回放少了 tool 条目 = 段内 tool
-    // 多重集回放缺项 → replay-diverged 阻断
+  it('Devin 被拒工具回放不对称 回归镜像：被拒 tool call 不进回放（omit-tool-call）→ 记录差异但继续', async () => {
     await expectDigestDivergence('omit-tool-call', 'rejected-tool', { contains: 'tool multiset' });
   }, 15_000);
 
@@ -447,6 +449,96 @@ describe('fail-closed binding 落盘', () => {
 // ---------- rebindBlank（显式放弃旧 ACP 上下文） ----------
 
 describe('rebindBlank', () => {
+  it('旧版 replay blocker 在 Agent 广告 session/resume 时迁移为可重试状态', async () => {
+    const harness = await boot();
+    const profile = mockProfile(harness.logDir, 'happy', {
+      MOCK_PRESET_SESSIONS: JSON.stringify(['preset-native-resume']),
+      MOCK_ADVERTISE_RESUME: '1',
+      // 如果错误地回退 session/load，该缺帧会稳定触发 replay-diverged。
+      MOCK_LOAD_REPLAY_VARIANT: 'omit-assistant-tail',
+    });
+    const sessionId = SessionId('reconnect-native-resume');
+    await presetMatchedResume(harness, profile, sessionId, 'preset-native-resume');
+    await harness.loop.acpSidecar?.writeRecoveryState({
+      dshSessionId: String(sessionId),
+      kind: 'reconciliation-required',
+      cause: 'replay-diverged',
+      detail: 'legacy session/load returned an incomplete replay',
+      provider: routeOf(profile),
+      acpSessionId: 'preset-native-resume',
+      generation: 1,
+      updatedAt: Date.now(),
+    });
+
+    const handle = await resumeImplicit(harness, profile, sessionId);
+    const agent = handle.agent as AcpAgent;
+    expect(agent.recoveryState.kind).toBe('healthy');
+    expect(agent.continuityState).toEqual({ status: 'ok', cause: null, detail: null });
+
+    agent.followup(userText('continue'));
+    await agent.whenIdle();
+
+    expect(mockRequests(profile.logPath)).toEqual(['initialize', 'session/list', 'session/resume', 'session/prompt']);
+    const log = fs.readFileSync(profile.logPath, 'utf8');
+    expect(log).toContain('session/resume preset-native-resume: no replay');
+    expect(log).not.toContain('session/load preset-native-resume');
+    expect(agent.recoveryState.kind).toBe('healthy');
+    expect(agent.continuityState).toEqual({ status: 'ok', cause: null, detail: null });
+    const assessment = (await harness.loop.acpSidecar?.list(sessionId) ?? []).find((entry) => entry.kind === 'replay-assessment');
+    expect(assessment?.data.status).toBe('unavailable');
+    expect((await harness.loop.acpSidecar?.readRecoveryState(sessionId))?.kind).toBe('healthy');
+    const rows = await bindingEntries(harness, sessionId);
+    expect(rows.at(-1)?.data.agentSessionId).toBe('preset-native-resume');
+    expect(rows.at(-1)?.data.generation).toBe(1);
+  }, 15_000);
+
+  it('旧版硬性日志分叉不会被 replay 窄迁移放开', async () => {
+    const harness = await boot();
+    const profile = mockProfile(harness.logDir, 'happy', {
+      MOCK_PRESET_SESSIONS: JSON.stringify(['preset-hard-recovery']),
+    });
+    const sessionId = SessionId('recon-hard-recovery');
+    await presetMatchedResume(harness, profile, sessionId, 'preset-hard-recovery');
+    await harness.loop.acpSidecar?.writeRecoveryState({
+      dshSessionId: String(sessionId),
+      kind: 'reconciliation-required',
+      cause: 'dsh-log-diverged',
+      detail: 'a non-crash DSH tail is outside the committed prefix',
+      provider: routeOf(profile),
+      acpSessionId: 'preset-hard-recovery',
+      generation: 1,
+      updatedAt: Date.now(),
+    });
+
+    const handle = await resumeImplicit(harness, profile, sessionId);
+    const agent = handle.agent as AcpAgent;
+    expect(agent.recoveryState.kind).toBe('reconciliation-required');
+    expect(agent.continuityState).toEqual({ status: 'blocked', cause: 'dsh-log-diverged', detail: 'a non-crash DSH tail is outside the committed prefix' });
+  }, 15_000);
+
+  it.each(['replay-overflow', 'dsh-log-truncated'] as const)('旧版 %s 也迁移为可重试状态', async (cause) => {
+    const harness = await boot();
+    const profile = mockProfile(harness.logDir, 'happy', {
+      MOCK_PRESET_SESSIONS: JSON.stringify([`preset-${cause}`]),
+    });
+    const sessionId = SessionId(`recon-${cause}`);
+    await presetMatchedResume(harness, profile, sessionId, `preset-${cause}`);
+    await harness.loop.acpSidecar?.writeRecoveryState({
+      dshSessionId: String(sessionId),
+      kind: 'reconciliation-required',
+      cause,
+      provider: routeOf(profile),
+      acpSessionId: `preset-${cause}`,
+      generation: 1,
+      updatedAt: Date.now(),
+    });
+
+    const handle = await resumeImplicit(harness, profile, sessionId);
+    const agent = handle.agent as AcpAgent;
+    expect(agent.recoveryState.kind).toBe('healthy');
+    expect(agent.continuityState.status).toBe('ok');
+  }, 15_000);
+
   it('reconnectOriginal 只重连并对账原 ACP session：不 session/new、不 prompt，binding 代际不变', async () => {
     const harness = await boot();
     const profile = mockProfile(harness.logDir, 'happy', {
@@ -479,7 +571,7 @@ describe('rebindBlank', () => {
     expect(rows.at(-1)?.data.generation).toBe(rows[0]?.data.generation);
   }, 15_000);
 
-  it('原 ACP session 回放分叉时保持 recovery blocker，不创建新 session', async () => {
+  it('原 ACP session 回放分叉时保持原 session，并记录 advisory assessment', async () => {
     const harness = await boot();
     const profile = mockProfile(harness.logDir, 'happy', {
       MOCK_PRESET_SESSIONS: JSON.stringify(['preset-reconnect-diverged']),
@@ -499,10 +591,11 @@ describe('rebindBlank', () => {
 
     const handle = await resumeImplicit(harness, profile, sessionId);
     const agent = handle.agent as AcpAgent;
-    await expect(agent.reconnectOriginal()).rejects.toThrow();
+    await expect(agent.reconnectOriginal()).resolves.toBeUndefined();
     expect(mockRequests(profile.logPath)).toEqual(['initialize', 'session/list', 'session/load']);
-    expect(agent.recoveryState.kind).toBe('reconciliation-required');
-    expect(agent.continuityState.status).toBe('blocked');
+    expect(agent.recoveryState.kind).toBe('healthy');
+    expect(agent.continuityState.status).toBe('ok');
+    expect((await harness.loop.acpSidecar?.list(sessionId) ?? []).some((entry) => entry.kind === 'replay-assessment' && entry.data.status === 'different')).toBe(true);
   }, 15_000);
 
   it('blocked（capability-missing）→ rebindBlank → 下一 turn session/new 新代际（generation=2 + 说明消息 + 旧历史不参与对账）', async () => {

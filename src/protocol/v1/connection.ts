@@ -21,7 +21,7 @@
  *   只有完整 terminal host 接线时广告；MCP 与 form/url elicitation 在 host/client seam 完整接线时按协商事实广告。未知 `_meta` 与未知 sessionUpdate 变体由 SDK
  *   校验层丢弃（通知验证失败仅 console.error，连接不断），translate.ts 对未知
  *   sessionUpdate 另有 default 分支兜底——会话绝不因扩展流量失败。
- * - 全 RPC deadline：initialize/new/load/list/set_config_option/
+ * - 全 RPC deadline：initialize/new/load/resume/list/set_config_option/
  * set_mode 各带预算常量（下方 `DEFAULT_*_TIMEOUT_MS`）， 增 close/delete
  *   清理类预算（`DEFAULT_SESSION_CLEANUP_TIMEOUT_MS` 10s），且全部接受
  *   {@link AcpRpcOptions}（`signal` + 单笔 `timeoutMs` 覆盖）；`session/prompt`
@@ -75,8 +75,9 @@ import type {
 export const DEFAULT_INITIALIZE_TIMEOUT_MS = 15_000
 const DEFAULT_PROBE_TIMEOUT_MS = 15_000
 /**
- * 会话建立类 RPC 的默认预算（session/new、session/load、session/list）：
- * load 要回放历史，给足 30s；三档同值，调用方可经 {@link AcpRpcOptions.timeoutMs} 覆盖。
+ * 会话建立类 RPC 的默认预算（session/new、session/load、session/resume、session/list）：
+ * load 要回放历史，给足 30s；其余沿用同一建立预算，调用方可经
+ * {@link AcpRpcOptions.timeoutMs} 覆盖。
  */
 export const DEFAULT_SESSION_SETUP_TIMEOUT_MS = 30_000
 /** 会话写类 RPC 的默认预算（session/set_config_option、session/set_mode）。 */
@@ -296,6 +297,17 @@ export class AcpClientConnection {
   /** 恢复 ACP 会话（agent 须广告 loadSession；回放更新走 session/update 通知）。 */
   async loadSession(sessionId: string, params: { cwd?: string } = {}, options: AcpRpcOptions = {}): Promise<acp.LoadSessionResponse> {
     const response = await this.rpc<acp.LoadSessionResponse>('session/load', async (agent) => await agent.request('session/load', { sessionId, cwd: params.cwd ?? this.spec.cwd, mcpServers: [] }) as acp.LoadSessionResponse, options, DEFAULT_SESSION_SETUP_TIMEOUT_MS)
+    this.activeSessionIds.add(sessionId)
+    return response
+  }
+
+  /**
+   * 无回放地恢复 ACP 会话。调用方必须先确认 Agent 广告
+   * `sessionCapabilities.resume`；成功响应表示 Agent 已恢复原语义上下文，历史展示
+   * 继续以 DSH 日志为准。
+   */
+  async resumeSession(sessionId: string, params: { cwd?: string } = {}, options: AcpRpcOptions = {}): Promise<acp.ResumeSessionResponse> {
+    const response = await this.rpc<acp.ResumeSessionResponse>('session/resume', async (agent) => await agent.request('session/resume', { sessionId, cwd: params.cwd ?? this.spec.cwd, mcpServers: [] }) as acp.ResumeSessionResponse, options, DEFAULT_SESSION_SETUP_TIMEOUT_MS)
     this.activeSessionIds.add(sessionId)
     return response
   }

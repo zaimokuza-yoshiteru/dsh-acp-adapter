@@ -189,7 +189,7 @@ const HAPPY_UPDATES: SessionUpdate[] = [
 ]
 
 const HAPPY_PLAN_TEXT =
-  'Agent 计划：\n- [completed] Inspect the request\n- [completed] Produce a reply\n- [completed] Report usage'
+  'Agent plan:\n- [completed] Inspect the request\n- [completed] Produce a reply\n- [completed] Report usage'
 
 const CONFIG_OPT_A: SessionConfigOption = {
   id: 'mode',
@@ -585,7 +585,7 @@ describe('tool_call / tool_call_update', () => {
     expect('meta' in at(calls, 1).data).toBe(false)
     // 回退标签本身有界：超长 callId 截断加省略号
     expect(acpUnknownToolName('x'.repeat(ACP_UNKNOWN_TOOL_CALL_ID_MAX_CHARS + 10)))
-      .toBe(`Agent 工具请求 (${'x'.repeat(ACP_UNKNOWN_TOOL_CALL_ID_MAX_CHARS)}…)`)
+      .toBe(`Agent tool request (${'x'.repeat(ACP_UNKNOWN_TOOL_CALL_ID_MAX_CHARS)}…)`)
   })
 
   it('failed 终态：isError + error{AcpToolError, ACP_TOOL_FAILED} + sourceEventSeqs 引用', () => {
@@ -836,10 +836,10 @@ describe('非对称工具回放：终态快照回写（claude 0.70.0 占位首�
     // diff 摘要块落盘 + acpToolContent meta 与终态快照键共存 + degradation 恰一条
     const texts = toolResultTexts(sink.events, 0)
     expect(texts).toHaveLength(1)
-    expect(at(texts, 0)).toContain('[diff 摘要] /repo/fix-round.txt（新建）：+1/−0 行')
+    expect(at(texts, 0)).toContain('[Diff summary] /repo/fix-round.txt (create): +1/−0 lines')
     const meta = at(ofType(sink.events, 'tool/result'), 0).data.meta as TerminalMeta
     expect(meta.acpToolContent?.items).toEqual([
-      { type: 'diff', path: '/repo/fix-round.txt', operation: '新建', linesAdded: 1, linesRemoved: 0, originalChars: 10, hash16: '62dab328f8d89f9f' },
+      { type: 'diff', path: '/repo/fix-round.txt', operation: 'create', linesAdded: 1, linesRemoved: 0, originalChars: 10, hash16: '62dab328f8d89f9f' },
     ])
     expect(degradations).toHaveLength(1)
     expect(degradations[0]?.code).toBe('unsupported-tool-content')
@@ -965,7 +965,7 @@ describe('plan 折叠', () => {
     }))
     translator.endTurn()
 
-    const text = 'Agent 计划：\n- [pending] do a\n- [in_progress] do b\n- [completed] do c'
+    const text = 'Agent plan:\n- [pending] do a\n- [in_progress] do b\n- [completed] do c'
     const chunks = ofType(sink.events, 'assistant/chunk')
     expect(chunks.map(e => e.data.chunk)).toEqual([
       { type: 'block-start', index: 0, blockType: 'reasoning' },
@@ -999,8 +999,8 @@ describe('plan 折叠', () => {
     expect(ofType(planEvents, 'assistant/chunk').map(e => e.data.chunk)).toEqual([
       { type: 'block-end', index: 0, block: { type: 'text', text: 'open text' } },
       { type: 'block-start', index: 1, blockType: 'reasoning' },
-      { type: 'reasoning-delta', index: 1, text: 'Agent 计划：\n- [pending] p' },
-      { type: 'block-end', index: 1, block: { type: 'reasoning', text: 'Agent 计划：\n- [pending] p' } },
+      { type: 'reasoning-delta', index: 1, text: 'Agent plan:\n- [pending] p' },
+      { type: 'block-end', index: 1, block: { type: 'reasoning', text: 'Agent plan:\n- [pending] p' } },
     ])
     translator.endTurn()
     expect(translator.warnings).toEqual([])
@@ -1371,7 +1371,7 @@ describe('非文本内容（chunk 有界可见占位；tool result 占位/摘要
       messageId: 'm1',
     }))
     const imageHash = createHash('sha256').update('aGVsbG8=', 'utf8').digest('hex').slice(0, ACP_TOOL_CONTENT_HASH_HEX_CHARS)
-    const placeholder = `[图片占位] image/png，wire 载荷 8 字节（base64），sha256:${imageHash}——v1 无附件 seam，字节不落盘`
+    const placeholder = `[Image placeholder] image/png, 8 wire bytes (base64), sha256:${imageHash} — v1 has no attachment seam; binary bytes are not persisted`
     // 占位是独立完整块：block-start/text-delta/block-end 三连
     expect(placed.map(e => (e.data as { chunk: { type: string } }).chunk.type)).toEqual(['block-start', 'text-delta', 'block-end'])
     expect(warningCodes(translator)).toEqual(['unsupported-chunk-content'])
@@ -1401,7 +1401,7 @@ describe('非文本内容（chunk 有界可见占位；tool result 占位/摘要
     expect(at(translator.warnings, 0).message).toContain('agent_thought_chunk')
     translator.endTurn()
     const msg = at(ofType(sink.events, 'assistant/message'), 0)
-    expect(msg.data.message.content).toEqual([{ type: 'reasoning', text: '[资源 file:///x（text/plain）]\nx' }])
+    expect(msg.data.message.content).toEqual([{ type: 'reasoning', text: '[Resource file:///x (text/plain)]\nx' }])
   })
 
   it('tool result 的非文本项按占位/摘要落盘（unsupported-tool-content），文本项保持顺序', () => {
@@ -1425,14 +1425,14 @@ describe('非文本内容（chunk 有界可见占位；tool result 占位/摘要
     const texts = toolResultTexts(sink.events, 0)
     expect(texts).toHaveLength(4)
     expect(at(texts, 0)).toBe('ok')
-    expect(at(texts, 1)).toContain('[diff 摘要] /a.ts')
-    expect(at(texts, 2)).toContain('[terminal 占位] terminalId=term-1')
-    expect(at(texts, 3)).toContain('[图片占位] image/png')
+    expect(at(texts, 1)).toContain('[Diff summary] /a.ts')
+    expect(at(texts, 2)).toContain('[Terminal placeholder] terminalId=term-1')
+    expect(at(texts, 3)).toContain('[Image placeholder] image/png')
     // 如实口径：占位/摘要落盘而非 dropped
     expect(warningCodes(translator)).toEqual(['unsupported-tool-content'])
     expect(at(translator.warnings, 0).message).toContain('3')
     expect(at(translator.warnings, 0).message).toContain('tc-mixed')
-    expect(at(translator.warnings, 0).message).toContain('已按占位/摘要落盘')
+    expect(at(translator.warnings, 0).message).toContain('placeholders or summaries were persisted')
   })
 
   it('terminal content uses the live M5 snapshot when the terminal ID is owned', () => {
@@ -1484,7 +1484,7 @@ describe('非文本内容（chunk 有界可见占位；tool result 占位/摘要
     const texts = toolResultTexts(sink.events, 0)
     expect(texts).toHaveLength(2)
     expect(at(texts, 0)).toBe('keep')
-    expect(at(texts, 1)).toContain('[diff 摘要] /b.ts')
+    expect(at(texts, 1)).toContain('[Diff summary] /b.ts')
     expect(warningCodes(translator)).toEqual(['unsupported-tool-content'])
     expect(at(translator.warnings, 0).message).toContain('1')
   })
@@ -1627,8 +1627,8 @@ describe(' tool result fidelity：每种 ACP content type 在 export 中都有�
     ])
     expect(texts).toHaveLength(1)
     const summary = at(texts, 0)
-    expect(summary).toContain('[diff 摘要] /src/a.ts（修改）：+1/−2 行')
-    expect(summary).toContain('新内容预览（原始 8 字符')
+    expect(summary).toContain('[Diff summary] /src/a.ts (modify): +1/−2 lines')
+    expect(summary).toContain('new-content preview (8 original characters')
     expect(summary).toContain('new line')
     // meta 只有标量事实：path/操作/行数/原始长度——完整 patch 字节不进 meta
     expect(meta?.acpToolContent.truncated).toBe(false)
@@ -1636,7 +1636,7 @@ describe(' tool result fidelity：每种 ACP content type 在 export 中都有�
     expect(at(meta?.acpToolContent.items ?? [], 0)).toEqual({
       type: 'diff',
       path: '/src/a.ts',
-      operation: '修改',
+      operation: 'modify',
       linesAdded: 1,
       linesRemoved: 2,
       originalChars: 8,
@@ -1649,17 +1649,17 @@ describe(' tool result fidelity：每种 ACP content type 在 export 中都有�
       toolCallId: 'tc-m21',
       truncated: false,
     })
-    expect(degradations[0]?.items).toEqual([{ type: 'diff', reason: '摘要落盘（完整 patch 字节不入日志）', originalSize: 8 + 15 }])
+    expect(degradations[0]?.items).toEqual([{ type: 'diff', reason: 'summary persisted; full patch bytes are not logged', originalSize: 8 + 15 }])
   })
 
   it('diff 操作类型按 oldText/newText 可空推断：新建 / 删除 / 修改', () => {
     for (const [item, operation] of [
-      [{ type: 'diff', path: '/n.ts', newText: 'x\n' } as ToolCallContent, '新建'],
-      [{ type: 'diff', path: '/d.ts', oldText: 'x\n', newText: '' } as ToolCallContent, '删除'],
-      [{ type: 'diff', path: '/m.ts', oldText: 'x\n', newText: 'y\n' } as ToolCallContent, '修改'],
+      [{ type: 'diff', path: '/n.ts', newText: 'x\n' } as ToolCallContent, 'create'],
+      [{ type: 'diff', path: '/d.ts', oldText: 'x\n', newText: '' } as ToolCallContent, 'delete'],
+      [{ type: 'diff', path: '/m.ts', oldText: 'x\n', newText: 'y\n' } as ToolCallContent, 'modify'],
     ] as const) {
       const { texts, meta } = runToolResult([item])
-      expect(at(texts, 0)).toContain(`（${operation}）`)
+      expect(at(texts, 0)).toContain(`(${operation})`)
       expect(at(meta?.acpToolContent.items ?? [], 0)).toMatchObject({ operation })
     }
   })
@@ -1675,26 +1675,26 @@ describe(' tool result fidelity：每种 ACP content type 在 export 中都有�
       { type: 'diff', path: '/big.ts', oldText: null, newText: original },
     ])
     const summary = at(texts, 0)
-    expect(summary).toContain('[……已截断：原始 4100 字符，仅保留前 2000 / 后 2000 字符……]')
+    expect(summary).toContain('[…truncated: 4100 original characters; kept the first 2000 and last 2000 characters…]')
     expect(summary).toContain('H'.repeat(100))
     expect(summary).not.toContain('M'.repeat(100))
     expect(summary).toContain('T'.repeat(100))
     expect(at(meta?.acpToolContent.items ?? [], 0)).toMatchObject({ truncated: true, originalChars: 4_100 })
     expect(meta?.acpToolContent.truncated).toBe(true)
     expect(degradations[0]).toMatchObject({ truncated: true })
-    expect(degradations[0]?.items[0]?.reason).toContain('截断')
+    expect(degradations[0]?.items[0]?.reason).toContain('truncated')
   })
 
   it('terminal：占位块（terminalId + 输出不可得原因）+ meta + degradation', () => {
     const { degradations, texts, meta } = runToolResult([{ type: 'terminal', terminalId: 'term-42' }])
-    expect(at(texts, 0)).toBe('[terminal 占位] terminalId=term-42：DSH 暂未提供 terminal 实时展示；输出由 Agent 通过 ACP terminal/output 获取')
+    expect(at(texts, 0)).toBe('[Terminal placeholder] terminalId=term-42: DSH does not expose a live terminal view; the Agent reads output through ACP terminal/output')
     expect(at(meta?.acpToolContent.items ?? [], 0)).toEqual({
       type: 'terminal',
       terminalId: 'term-42',
-      reason: 'DSH 暂未提供 terminal 实时展示；输出由 Agent 通过 ACP terminal/output 获取',
+      reason: 'DSH does not expose a live terminal view; the Agent reads output through ACP terminal/output',
     })
     expect(degradations[0]?.items).toEqual([
-      { type: 'terminal', reason: 'DSH 暂未提供 terminal 实时展示；输出由 Agent 通过 ACP terminal/output 获取' },
+      { type: 'terminal', reason: 'DSH does not expose a live terminal view; the Agent reads output through ACP terminal/output' },
     ])
   })
 
@@ -1707,22 +1707,22 @@ describe(' tool result fidelity：每种 ACP content type 在 export 中都有�
     ])
     const imageHash = createHash('sha256').update(imageData, 'utf8').digest('hex').slice(0, ACP_TOOL_CONTENT_HASH_HEX_CHARS)
     const audioHash = createHash('sha256').update(audioData, 'utf8').digest('hex').slice(0, ACP_TOOL_CONTENT_HASH_HEX_CHARS)
-    expect(at(texts, 0)).toContain(`[图片占位] image/png，wire 载荷 ${String(imageData.length)} 字节（base64），sha256:${imageHash}`)
-    expect(at(texts, 1)).toContain(`[音频占位] audio/wav，wire 载荷 ${String(audioData.length)} 字节（base64），sha256:${audioHash}`)
+    expect(at(texts, 0)).toContain(`[Image placeholder] image/png, ${String(imageData.length)} wire bytes (base64), sha256:${imageHash}`)
+    expect(at(texts, 1)).toContain(`[Audio placeholder] audio/wav, ${String(audioData.length)} wire bytes (base64), sha256:${audioHash}`)
     expect(at(meta?.acpToolContent.items ?? [], 0)).toEqual({
       type: 'image',
       mimeType: 'image/png',
       size: imageData.length,
       hash16: imageHash,
       uri: 'file:///shot.png',
-      reason: 'v1 无附件 seam，字节不落盘',
+      reason: 'v1 has no attachment seam; binary bytes are not persisted',
     })
     expect(at(meta?.acpToolContent.items ?? [], 1)).toMatchObject({ type: 'audio', mimeType: 'audio/wav', hash16: audioHash })
     // 字节不落盘：整个 appended 事件的 JSON 序列化不含 base64 载荷
     const serialized = JSON.stringify(result)
     expect(serialized).not.toContain(imageData)
     expect(serialized).not.toContain(audioData)
-    expect(serialized).toContain('[图片占位]')
+    expect(serialized).toContain('[Image placeholder]')
     expect(degradations).toHaveLength(1)
     expect(degradations[0]?.items.map(item => item.type)).toEqual(['image', 'audio'])
   })
@@ -1731,7 +1731,7 @@ describe(' tool result fidelity：每种 ACP content type 在 export 中都有�
     const { translator, degradations, result, texts } = runToolResult([
       { type: 'content', content: { type: 'resource', resource: { uri: 'file:///x.txt', mimeType: 'text/plain', text: 'resource body' } } },
     ])
-    expect(at(texts, 0)).toBe('[资源 file:///x.txt（text/plain）]\nresource body')
+    expect(at(texts, 0)).toBe('[Resource file:///x.txt (text/plain)]\nresource body')
     expect(Object.keys(result.data.meta ?? {})).toEqual(['acpToolPresentation'])
     expect(degradations).toEqual([])
     expect(translator.warnings).toEqual([])
@@ -1743,8 +1743,8 @@ describe(' tool result fidelity：每种 ACP content type 在 export 中都有�
       { type: 'content', content: { type: 'resource', resource: { uri: 'file:///big.txt', text: original } } },
     ])
     const block = at(texts, 0)
-    expect(block.startsWith('[资源 file:///big.txt]\n' + 'A'.repeat(100))).toBe(true)
-    expect(block).toContain('[……已截断：原始 4100 字符，仅保留前 2000 / 后 2000 字符……]')
+    expect(block.startsWith('[Resource file:///big.txt]\n' + 'A'.repeat(100))).toBe(true)
+    expect(block).toContain('[…truncated: 4100 original characters; kept the first 2000 and last 2000 characters…]')
     expect(block.endsWith('C'.repeat(100))).toBe(true)
     expect(at(meta?.acpToolContent.items ?? [], 0)).toEqual({
       type: 'resource',
@@ -1753,7 +1753,7 @@ describe(' tool result fidelity：每种 ACP content type 在 export 中都有�
       truncated: true,
     })
     expect(degradations[0]?.items).toEqual([
-      { type: 'resource', reason: '超界截断（head/tail preview）', originalSize: 4_100 },
+      { type: 'resource', reason: 'truncated to a bounded head/tail preview', originalSize: 4_100 },
     ])
   })
 
@@ -1763,24 +1763,24 @@ describe(' tool result fidelity：每种 ACP content type 在 export 中都有�
       { type: 'content', content: { type: 'resource', resource: { uri: 'file:///bin.dat', mimeType: 'application/octet-stream', blob } } },
     ])
     const hash = createHash('sha256').update(blob, 'utf8').digest('hex').slice(0, ACP_TOOL_CONTENT_HASH_HEX_CHARS)
-    expect(at(texts, 0)).toContain(`[二进制资源占位] file:///bin.dat（application/octet-stream），wire 载荷 ${String(blob.length)} 字节（base64），sha256:${hash}`)
+    expect(at(texts, 0)).toContain(`[Binary resource placeholder] file:///bin.dat (application/octet-stream), ${String(blob.length)} wire bytes (base64), sha256:${hash}`)
     expect(at(meta?.acpToolContent.items ?? [], 0)).toEqual({
       type: 'blob',
       uri: 'file:///bin.dat',
       mimeType: 'application/octet-stream',
       size: blob.length,
       hash16: hash,
-      reason: 'v1 无附件 seam，字节不落盘',
+      reason: 'v1 has no attachment seam; binary bytes are not persisted',
     })
     expect(JSON.stringify(result)).not.toContain(blob)
-    expect(degradations[0]?.items).toEqual([{ type: 'blob', reason: 'v1 无附件 seam，字节不落盘', originalSize: blob.length }])
+    expect(degradations[0]?.items).toEqual([{ type: 'blob', reason: 'v1 has no attachment seam; binary bytes are not persisted', originalSize: blob.length }])
   })
 
   it('resource_link：引用元数据（name/title/uri/mimeType/size）全量记录，不算降级', () => {
     const { translator, degradations, result, texts } = runToolResult([
       { type: 'content', content: { type: 'resource_link', name: 'report.pdf', title: '季度报告', uri: 'file:///report.pdf', mimeType: 'application/pdf', size: 12_345 } },
     ])
-    expect(at(texts, 0)).toBe('[资源引用] report.pdf（季度报告） → file:///report.pdf（application/pdf，12345 字节）')
+    expect(at(texts, 0)).toBe('[Resource link] report.pdf (季度报告) → file:///report.pdf (application/pdf, 12345 bytes)')
     expect(Object.keys(result.data.meta ?? {})).toEqual(['acpToolPresentation'])
     expect(degradations).toEqual([])
     expect(translator.warnings).toEqual([])
@@ -1790,13 +1790,13 @@ describe(' tool result fidelity：每种 ACP content type 在 export 中都有�
     const { degradations, texts, meta } = runToolResult([
       { type: 'hologram', payload: 'volumetric' } as unknown as ToolCallContent,
     ])
-    expect(at(texts, 0)).toBe('[未知内容类型 hologram] 未知内容类型，已按占位记录，原始字段不落盘')
+    expect(at(texts, 0)).toBe('[Unknown content type hologram] unknown content type recorded as a placeholder; original fields are not persisted')
     expect(at(meta?.acpToolContent.items ?? [], 0)).toEqual({
       type: 'unknown',
       acpType: 'hologram',
-      reason: '未知内容类型，已按占位记录',
+      reason: 'unknown content type recorded as a placeholder',
     })
-    expect(degradations[0]?.items).toEqual([{ type: 'hologram', reason: '未知内容类型，已按占位记录' }])
+    expect(degradations[0]?.items).toEqual([{ type: 'hologram', reason: 'unknown content type recorded as a placeholder' }])
   })
 
   it('合计上限：超界块就地截断并标记，预算耗尽的后续项折叠为一条占位；truncated 置位', () => {
@@ -1809,11 +1809,11 @@ describe(' tool result fidelity：每种 ACP content type 在 export 中都有�
     expect(at(texts, 0)).toBe('A'.repeat(10_000))
     const truncatedBlock = at(texts, 1)
     expect(truncatedBlock.startsWith('B'.repeat(6_000))).toBe(true)
-    expect(truncatedBlock).toContain(`[……因单条结果总量上限 ${String(ACP_TOOL_CONTENT_TOTAL_MAX_CHARS)} 字符截断，本块原始 10000 字符……]`)
-    expect(at(texts, 2)).toBe('[……另有 1 项内容因总量上限未显示……]')
+    expect(truncatedBlock).toContain(`[…truncated at the ${String(ACP_TOOL_CONTENT_TOTAL_MAX_CHARS)}-character aggregate limit; this item originally had 10000 characters…]`)
+    expect(at(texts, 2)).toBe('[…1 additional item(s) hidden by the aggregate limit…]')
     expect(meta?.acpToolContent.truncated).toBe(true)
     expect(meta?.acpToolContent.originalItems).toBe(3)
-    expect(degradations[0]?.items.some(item => item.reason.includes('总量上限截断'))).toBe(true)
+    expect(degradations[0]?.items.some(item => item.reason.includes('aggregate limit'))).toBe(true)
     expect(degradations[0]?.truncated).toBe(true)
   })
 
@@ -1861,11 +1861,11 @@ describe(' tool result fidelity：每种 ACP content type 在 export 中都有�
       messageId: 'm1',
     }))
     const hash = createHash('sha256').update('aGk=', 'utf8').digest('hex').slice(0, ACP_TOOL_CONTENT_HASH_HEX_CHARS)
-    const placeholder = `[图片占位] image/png，wire 载荷 4 字节（base64），sha256:${hash}——v1 无附件 seam，字节不落盘`
+    const placeholder = `[Image placeholder] image/png, 4 wire bytes (base64), sha256:${hash} — v1 has no attachment seam; binary bytes are not persisted`
     expect(degradations).toEqual([
       {
         code: 'unsupported-chunk-content',
-        items: [{ type: 'image', reason: 'v1 无附件 seam，字节不落盘', originalSize: 4 }],
+        items: [{ type: 'image', reason: 'v1 has no attachment seam; binary bytes are not persisted', originalSize: 4 }],
         keptPreviewChars: placeholder.length,
         truncated: false,
       },
@@ -1883,7 +1883,7 @@ describe(' tool result fidelity：每种 ACP content type 在 export 中都有�
       status: 'completed',
       content: [{ type: 'terminal', terminalId: 't-1' }],
     }))
-    expect(toolResultTexts(sink.events, 0)).toEqual(['[terminal 占位] terminalId=t-1：DSH 暂未提供 terminal 实时展示；输出由 Agent 通过 ACP terminal/output 获取'])
+    expect(toolResultTexts(sink.events, 0)).toEqual(['[Terminal placeholder] terminalId=t-1: DSH does not expose a live terminal view; the Agent reads output through ACP terminal/output'])
     expect(toolResultMeta(sink.events, 0)?.acpToolContent.originalItems).toBe(1)
     expect(warningCodes(translator)).toEqual(['unsupported-tool-content'])
   })

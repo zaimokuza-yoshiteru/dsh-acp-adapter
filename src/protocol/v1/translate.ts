@@ -270,7 +270,7 @@ export function acpUnknownToolName(callId: string): string {
   const id = callId.length > ACP_UNKNOWN_TOOL_CALL_ID_MAX_CHARS
     ? `${callId.slice(0, ACP_UNKNOWN_TOOL_CALL_ID_MAX_CHARS)}…`
     : callId
-  return `Agent 工具请求 (${id})`
+  return `Agent tool request (${id})`
 }
 
 /**
@@ -553,7 +553,7 @@ export type AcpToolContentMetaItem = {
   /** 二进制 wire payload 或 diff 完整 newText 的 sha256 前 {@link ACP_TOOL_CONTENT_HASH_HEX_CHARS} hex（原始字节不落盘）。 */
   hash16?: string
   /** diff 操作类型（按 oldText/newText 可空推断）。 */
-  operation?: '新建' | '修改' | '删除'
+  operation?: 'create' | 'modify' | 'delete'
   /** diff 新内容行数（近似，按 `\n` 分段计数）。 */
   linesAdded?: number
   /** diff 原内容行数（新建为 0）。 */
@@ -626,9 +626,9 @@ const EMPTY_TOOL_CONTENT: ToolContentMapping = { blocks: [], degraded: [], keptC
  * v1 无附件 seam：dsh `ImageBlock` 需要 attachment service 的 `ImageAttachmentRef`
  * （插件无此 seam），故 image/audio/blob 只落 mime/size/hash 占位，字节不落盘。
  */
-const ACP_NO_ATTACHMENT_SEAM_REASON = 'v1 无附件 seam，字节不落盘'
+const ACP_NO_ATTACHMENT_SEAM_REASON = 'v1 has no attachment seam; binary bytes are not persisted'
 /** terminal 降级原因：协议能力已接线，但当前 DSH UI 没有实时终端渲染 seam。 */
-const ACP_TERMINAL_UNAVAILABLE_REASON = 'DSH 暂未提供 terminal 实时展示；输出由 Agent 通过 ACP terminal/output 获取'
+const ACP_TERMINAL_UNAVAILABLE_REASON = 'DSH does not expose a live terminal view; the Agent reads output through ACP terminal/output'
 
 /**
  * 逐 item 映射（设计：任何类型都不静默消失）——
@@ -665,8 +665,8 @@ function mapToolContentItem(
       case 'audio': {
         const reason = ACP_NO_ATTACHMENT_SEAM_REASON
         const hash16 = hash16Of(block.data)
-        const label = block.type === 'image' ? '图片' : '音频'
-        const placeholder = `[${label}占位] ${block.mimeType}，wire 载荷 ${String(block.data.length)} 字节（base64），sha256:${hash16}——${reason}`
+        const label = block.type === 'image' ? 'Image' : 'Audio'
+        const placeholder = `[${label} placeholder] ${block.mimeType}, ${String(block.data.length)} wire bytes (base64), sha256:${hash16} — ${reason}`
         return {
           text: placeholder,
           meta: {
@@ -694,9 +694,9 @@ function mapToolContentItem(
       case 'resource_link': {
         const extras: string[] = []
         if (block.mimeType != null) extras.push(block.mimeType)
-        if (block.size != null) extras.push(`${String(block.size)} 字节`)
+        if (block.size != null) extras.push(`${String(block.size)} bytes`)
         return {
-          text: `[资源引用] ${block.name}${block.title == null ? '' : `（${block.title}）`} → ${block.uri}${extras.length === 0 ? '' : `（${extras.join('，')}）`}`,
+          text: `[Resource link] ${block.name}${block.title == null ? '' : ` (${block.title})`} → ${block.uri}${extras.length === 0 ? '' : ` (${extras.join(', ')})`}`,
           meta: {
             type: 'resource_link',
             name: block.name,
@@ -711,18 +711,18 @@ function mapToolContentItem(
             name: block.name,
             ...(block.mimeType == null ? {} : { mimeType: block.mimeType }),
             ...(block.size == null ? {} : { size: block.size }),
-            summary: extras.length === 0 ? (block.title ?? '') : extras.join('，'),
+            summary: extras.length === 0 ? (block.title ?? '') : extras.join(', '),
           },
         }
       }
       case 'resource': {
         const resource = block.resource
-        const mime = resource.mimeType == null ? '' : `（${resource.mimeType}）`
+        const mime = resource.mimeType == null ? '' : ` (${resource.mimeType})`
         if ('text' in resource) {
           const preview = headTailPreview(resource.text)
           const presentationPreview = acpToolPresentationPreview(resource.text)
           return {
-            text: `[资源 ${resource.uri}${mime}]\n${preview.text}`,
+            text: `[Resource ${resource.uri}${mime}]\n${preview.text}`,
             meta: {
               type: 'resource',
               uri: resource.uri,
@@ -738,13 +738,13 @@ function mapToolContentItem(
               ...(presentationPreview.truncated ? { truncated: true as const } : {}),
             },
             ...(preview.truncated
-              ? { degraded: { type: 'resource', reason: '超界截断（head/tail preview）', originalSize: resource.text.length } }
+              ? { degraded: { type: 'resource', reason: 'truncated to a bounded head/tail preview', originalSize: resource.text.length } }
               : {}),
           }
         }
         const reason = ACP_NO_ATTACHMENT_SEAM_REASON
         const hash16 = hash16Of(resource.blob)
-        const placeholder = `[二进制资源占位] ${resource.uri}${mime}，wire 载荷 ${String(resource.blob.length)} 字节（base64），sha256:${hash16}——${reason}`
+        const placeholder = `[Binary resource placeholder] ${resource.uri}${mime}, ${String(resource.blob.length)} wire bytes (base64), sha256:${hash16} — ${reason}`
         return {
           text: placeholder,
           meta: {
@@ -770,13 +770,13 @@ function mapToolContentItem(
   }
   if (item.type === 'diff') {
     const oldText = item.oldText ?? null
-    const operation = oldText === null ? '新建' : item.newText === '' ? '删除' : '修改'
+    const operation = oldText === null ? 'create' : item.newText === '' ? 'delete' : 'modify'
     const linesAdded = countLines(item.newText)
     const linesRemoved = oldText === null ? 0 : countLines(oldText)
     const preview = headTailPreview(item.newText)
     const patchPreview = acpToolPresentationPreview(item.newText)
     return {
-      text: `[diff 摘要] ${item.path}（${operation}）：+${String(linesAdded)}/−${String(linesRemoved)} 行；新内容预览（原始 ${String(item.newText.length)} 字符${preview.truncated ? '，已截断' : ''}）：\n${preview.text}`,
+      text: `[Diff summary] ${item.path} (${operation}): +${String(linesAdded)}/−${String(linesRemoved)} lines; new-content preview (${String(item.newText.length)} original characters${preview.truncated ? ', truncated' : ''}):\n${preview.text}`,
       meta: {
         type: 'diff',
         path: item.path,
@@ -804,7 +804,7 @@ function mapToolContentItem(
       },
       degraded: {
         type: 'diff',
-        reason: preview.truncated ? '摘要落盘，预览超界截断' : '摘要落盘（完整 patch 字节不入日志）',
+        reason: preview.truncated ? 'summary persisted; preview truncated' : 'summary persisted; full patch bytes are not logged',
         originalSize: item.newText.length + (oldText?.length ?? 0),
       },
     }
@@ -814,11 +814,11 @@ function mapToolContentItem(
     if (snapshot !== undefined) {
       const output = acpToolPresentationPreview(snapshot.output)
       const status = snapshot.exitStatus === null
-        ? '运行中'
+        ? 'running'
         : snapshot.exitStatus.exitCode === 0
-          ? '已退出 0'
-          : `已退出 ${snapshot.exitStatus.exitCode ?? snapshot.exitStatus.signal ?? 'unknown'}`
-      const text = `[terminal] ${snapshot.command}（${status}）${output.text === '' ? '' : `\n${output.text}`}`
+          ? 'exited 0'
+          : `exited ${snapshot.exitStatus.exitCode ?? snapshot.exitStatus.signal ?? 'unknown'}`
+      const text = `[Terminal] ${snapshot.command} (${status})${output.text === '' ? '' : `\n${output.text}`}`
       return {
         text,
         meta: {
@@ -834,12 +834,12 @@ function mapToolContentItem(
           ...(output.truncated || snapshot.truncated ? { truncated: true as const } : {}),
         },
         ...(output.truncated || snapshot.truncated
-          ? { degraded: { type: 'terminal', reason: 'terminal 输出按有界预览展示', originalSize: snapshot.output.length } }
+          ? { degraded: { type: 'terminal', reason: 'terminal output shown as a bounded preview', originalSize: snapshot.output.length } }
           : {}),
       }
     }
     const reason = ACP_TERMINAL_UNAVAILABLE_REASON
-    const placeholder = `[terminal 占位] terminalId=${item.terminalId}：${reason}`
+    const placeholder = `[Terminal placeholder] terminalId=${item.terminalId}: ${reason}`
     return {
       text: placeholder,
       meta: { type: 'terminal', terminalId: item.terminalId, reason },
@@ -849,8 +849,8 @@ function mapToolContentItem(
   }
   // SDK 升级 / vendor 扩展引入的未知内容类型：绝不静默消失（占位点名类型）
   const acpType = (item as { readonly type: string }).type
-  const reason = '未知内容类型，已按占位记录'
-  const placeholder = `[未知内容类型 ${acpType}] ${reason}，原始字段不落盘`
+  const reason = 'unknown content type recorded as a placeholder'
+  const placeholder = `[Unknown content type ${acpType}] ${reason}; original fields are not persisted`
   return {
     text: placeholder,
     meta: { type: 'unknown', acpType, reason },
@@ -898,10 +898,10 @@ function mapToolContent(
     } else {
       truncated = true
       entry.meta.truncated = true
-      degraded.push({ type: entry.meta.type, reason: `总量上限截断（${String(ACP_TOOL_CONTENT_TOTAL_MAX_CHARS)} 字符）`, originalSize: entry.text.length })
+      degraded.push({ type: entry.meta.type, reason: `truncated at the ${String(ACP_TOOL_CONTENT_TOTAL_MAX_CHARS)}-character aggregate limit`, originalSize: entry.text.length })
       blocks.push({
         type: 'text',
-        text: `${entry.text.slice(0, remaining)}\n[……因单条结果总量上限 ${String(ACP_TOOL_CONTENT_TOTAL_MAX_CHARS)} 字符截断，本块原始 ${String(entry.text.length)} 字符……]`,
+        text: `${entry.text.slice(0, remaining)}\n[…truncated at the ${String(ACP_TOOL_CONTENT_TOTAL_MAX_CHARS)}-character aggregate limit; this item originally had ${String(entry.text.length)} characters…]`,
       })
       keptChars = ACP_TOOL_CONTENT_TOTAL_MAX_CHARS
     }
@@ -909,7 +909,7 @@ function mapToolContent(
   }
   if (omitted > 0) {
     truncated = true
-    blocks.push({ type: 'text', text: `[……另有 ${String(omitted)} 项内容因总量上限未显示……]` })
+    blocks.push({ type: 'text', text: `[…${String(omitted)} additional item(s) hidden by the aggregate limit…]` })
   }
  // 信封 content 独立过条数 + 文本总量双闸（与落盘 text 块同界限值、
   // 各自计数——两条通道的截断互不影响，信封截断由项上 truncated 表达）。
@@ -1077,7 +1077,7 @@ function acpToolCallTerminalMetaJson(snapshot: TerminalSnapshotState, updated: b
  */
 function renderPlan(entries: readonly PlanEntry[]): string {
   const lines = entries.map(entry => `- [${entry.status}] ${entry.content}`)
-  return `Agent 计划：\n${lines.join('\n')}`
+  return `Agent plan:\n${lines.join('\n')}`
 }
 
 /**
@@ -1610,12 +1610,12 @@ export class TurnTranslator {
       const mapped = mapToolContent([{ type: 'content', content }], this.terminalSnapshot)
       const text = mapped.blocks[0]?.text ?? ''
       const chunkName = kind === 'text' ? 'agent_message_chunk' : 'agent_thought_chunk'
-      this.warn('unsupported-chunk-content', `${chunkName} 的非文本块 "${content.type}" 无法原样呈现，已按有界占位落盘（结构化事实见 sidecar degradation 审计）`)
+      this.warn('unsupported-chunk-content', `${chunkName} non-text block "${content.type}" cannot be rendered verbatim; a bounded placeholder was persisted (see sidecar degradation audit)`)
       this.noteDegradation({
         code: 'unsupported-chunk-content',
         items: mapped.degraded.length > 0
           ? [...mapped.degraded]
-          : [{ type: content.type, reason: '消息 chunk 非文本块以有界占位落盘' }],
+          : [{ type: content.type, reason: 'non-text message chunk persisted as a bounded placeholder' }],
         keptPreviewChars: mapped.keptChars,
         truncated: mapped.truncated,
       })
@@ -1785,7 +1785,7 @@ export class TurnTranslator {
       : mapToolContent(update.content, this.terminalSnapshot)
     if (mapped.degraded.length > 0) {
  // 如实口径：非文本/超限内容不静默丢弃，按占位/摘要落盘
-      this.warn('unsupported-tool-content', `tool result "${update.toolCallId}" 有 ${String(mapped.degraded.length)} 项内容无法原样呈现，已按占位/摘要落盘（结构化事实见 tool/result meta，降级事实见 sidecar degradation 审计）`)
+      this.warn('unsupported-tool-content', `tool result "${update.toolCallId}" contains ${String(mapped.degraded.length)} item(s) that cannot be rendered verbatim; placeholders or summaries were persisted (see tool/result metadata and sidecar degradation audit)`)
       this.noteDegradation({
         code: 'unsupported-tool-content',
         toolCallId: update.toolCallId,

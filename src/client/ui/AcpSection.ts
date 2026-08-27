@@ -30,6 +30,7 @@ import {
   sortedAgentIds,
   validateAgentDraft,
 } from '../data/logic.ts'
+import { localizedDiagnostic } from '../data/diagnostics.ts'
 import type { AcpAgentConfig, AcpProviderHealth, AgentDraft, DraftError } from '../data/logic.ts'
 import type { AcpLocaleKey } from './locales.ts'
 import type { AcpPanelSnapshot, HealthState } from '../data/stores/panel-store.ts'
@@ -167,7 +168,8 @@ function Loaded({ t, useStore, panel }: {
   if (snapshot.health.status === 'unreachable') {
     children.push(h('p', { key: 'unreachable', className: css.notice }, t('healthUnreachable')))
     if (snapshot.health.message !== undefined) {
-      children.push(h('p', { key: 'unreachable-detail', className: css.hint }, snapshot.health.message))
+      children.push(h('p', { key: 'unreachable-detail', className: css.hint },
+        localizedDiagnostic(t, 'healthCheckTransportFailed', snapshot.health.message)))
     }
   }
   const refreshing = snapshot.health.status === 'loading'
@@ -309,12 +311,14 @@ function AgentCard(props: {
     void panel.deleteAgent(id)
       .then((message) => {
         if (message !== undefined) {
-          setFailure(message)
+          setFailure(localizedDiagnostic(t, 'actionDeleteFailed', message))
           return
         }
         props.onDeleted(id)
       })
-      .catch((error: unknown) => { setFailure(errorMessageOf(error)) })
+      .catch((error: unknown) => {
+        setFailure(localizedDiagnostic(t, 'actionDeleteFailed', errorMessageOf(error)))
+      })
       .finally(() => { setDeleting(false) })
   }
 
@@ -326,8 +330,7 @@ function AgentCard(props: {
   const statusTone = state === 'ready'
     ? css.statusReady
     : css.statusMuted
-  const probeError = healthRow?.probe.status === 'error' ? healthRow.probe.message : undefined
-  const diagnostic = checkError ?? probeError
+  const diagnostic = healthDiagnostic(t, config.command, healthRow, checkError)
 
   const children: ReactNode[] = [
     h('div', { key: 'head', className: css.rowHead },
@@ -368,7 +371,7 @@ function AgentCard(props: {
 
   if (diagnostic !== undefined) {
     children.push(h('p', { key: 'diagnostic', className: css.error, role: 'alert' },
-      t('healthCheckFailed', { message: diagnostic })))
+      diagnostic))
   }
   if (state === 'auth-required' && config.loginHint !== undefined) {
     children.push(h('p', { key: 'login-hint', className: css.hint },
@@ -420,6 +423,31 @@ function AgentCard(props: {
   return h('li', { className: css.rowCard }, children)
 }
 
+/** Localize product-owned probe failures from stable facts; never render host prose verbatim. */
+export function healthDiagnostic(
+  t: AcpTranslate,
+  command: string,
+  health: AcpProviderHealth | undefined,
+  transportError?: string | undefined,
+): string | undefined {
+  if (transportError !== undefined) {
+    return localizedDiagnostic(t, 'healthCheckTransportFailed', transportError)
+  }
+  if (health?.probe.status !== 'error') return undefined
+  const key: AcpLocaleKey = health.probe.failureKind === 'spawn-failure'
+    ? 'probeNotInstalled'
+    : health.probe.failureKind === 'auth_required'
+      ? 'probeAuthRequired'
+      : health.probe.failureKind === 'timeout'
+        ? 'probeTimeout'
+        : health.probe.failureKind === 'crash'
+          ? 'probeCrash'
+          : health.probe.failureKind === 'aborted'
+            ? 'probeCancelled'
+            : 'probeProtocolError'
+  return localizedDiagnostic(t, key, health.probe.message, { command })
+}
+
 /**
  * 产品状态只承诺“未探测 / 协议可用”。失败类别仍通过下方诊断和登录
  * 指引展示，但不会伪装成可持续跟踪的外部登录状态。
@@ -461,12 +489,14 @@ function AgentForm(props: {
     void props.panel.saveAgent(props.editingId, draft)
       .then((message) => {
         if (message !== undefined) {
-          setFailure(message)
+          setFailure(localizedDiagnostic(t, 'actionSaveFailed', message))
           return
         }
         props.onClose(true)
       })
-      .catch((error: unknown) => { setFailure(errorMessageOf(error)) })
+      .catch((error: unknown) => {
+        setFailure(localizedDiagnostic(t, 'actionSaveFailed', errorMessageOf(error)))
+      })
       .finally(() => { setBusy(false) })
   }
 

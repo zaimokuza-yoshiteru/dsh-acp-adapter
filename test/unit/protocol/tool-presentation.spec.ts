@@ -142,7 +142,7 @@ describe('boundAcpToolPresentationItems（条数 + 文本总量双闸）', () =>
     const items = Array.from({ length: 70 }, (_, i) => textItem(`item-${String(i)}`))
     const bounded = boundAcpToolPresentationItems(items)
     expect(bounded.items).toHaveLength(ACP_TOOL_CONTENT_META_ITEMS_MAX)
-    expect(bounded.items.at(-1)).toEqual({ type: 'text', text: '[……另有 7 项内容未纳入展示信封……]' })
+    expect(bounded.items.at(-1)).toEqual({ type: 'text', text: '[…7 additional item(s) omitted from the presentation envelope…]' })
     expect(bounded.truncated).toBe(true)
     expect(bounded.omitted).toBe(7)
   })
@@ -159,7 +159,7 @@ describe('boundAcpToolPresentationItems（条数 + 文本总量双闸）', () =>
     // 第二项只剩 10 字符预算 → 就地截断 + truncated 标记
     expect(bounded.items[1]).toEqual({ type: 'text', text: 'B'.repeat(10), truncated: true })
     // 第三项预算耗尽 → 注记
-    expect(bounded.items[2]).toEqual({ type: 'text', text: '[……另有 1 项内容未纳入展示信封……]' })
+    expect(bounded.items[2]).toEqual({ type: 'text', text: '[…1 additional item(s) omitted from the presentation envelope…]' })
     expect(bounded.truncated).toBe(true)
   })
 
@@ -325,7 +325,7 @@ describe('信封落盘（TurnTranslator → tool/result meta）', () => {
       {
         type: 'diff',
         path: '/src/a.ts',
-        operation: '修改',
+        operation: 'modify',
         linesAdded: 1,
         linesRemoved: 2,
         patch: 'new line',
@@ -371,9 +371,9 @@ describe('信封落盘（TurnTranslator → tool/result meta）', () => {
     const content = presentationOf(sink, 0).content as { type: string }[]
     expect(content[0]).toMatchObject({ type: 'image', ref: 'file:///shot.png' })
     expect(content[1]?.type).toBe('text')
-    expect((content[1] as unknown as { text: string }).text).toContain('[音频占位]')
+    expect((content[1] as unknown as { text: string }).text).toContain('[Audio placeholder]')
     expect(content[2]?.type).toBe('text')
-    expect((content[2] as unknown as { text: string }).text).toContain('[未知内容类型 hologram]')
+    expect((content[2] as unknown as { text: string }).text).toContain('[Unknown content type hologram]')
   })
 
   it('孤儿终态 update：信封仍落（title 取本帧/fallback），content 来自本帧', () => {

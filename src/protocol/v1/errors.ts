@@ -53,16 +53,16 @@ export const ACP_ERROR_KIND_CATEGORY: Record<AcpErrorKind, AcpErrorCategory> = {
   aborted: 'user-rejected',
 }
 
-/** taxonomy 各类的中文名（日志/文档/面板对齐用；呈现层完整文案见模块头注释）。 */
+/** Locale-neutral taxonomy labels for logs and diagnostics. UI copy is localized client-side. */
 export const ACP_ERROR_CATEGORY_LABELS: Record<AcpErrorCategory, string> = {
-  config: '配置错误',
-  'not-installed': 'agent 未安装或不可执行',
-  'auth-required': 'agent 未认证',
-  'protocol-incompatible': '协议不兼容',
-  timeout: '操作超时',
-  'agent-crash': 'agent 意外崩溃',
-  'user-rejected': '用户已拒绝',
-  'resume-conflict': '会话恢复冲突',
+  config: 'configuration error',
+  'not-installed': 'agent not installed or not executable',
+  'auth-required': 'agent authentication required',
+  'protocol-incompatible': 'protocol incompatible',
+  timeout: 'operation timed out',
+  'agent-crash': 'agent exited unexpectedly',
+  'user-rejected': 'user rejected',
+  'resume-conflict': 'session recovery conflict',
 }
 
 /** correlation id 的形状（`acperr-<UTC 紧凑时间戳>-<base36 序号>-<6 位 hex>`）；测试与日志检索共用。 */

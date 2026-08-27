@@ -25,7 +25,7 @@ export type AcpToolContentMetaItem = {
   size?: number
   chars?: number
   hash16?: string
-  operation?: '新建' | '修改' | '删除'
+  operation?: 'create' | 'modify' | 'delete'
   linesAdded?: number
   linesRemoved?: number
   originalChars?: number
@@ -57,7 +57,7 @@ export function countLines(text: string): number {
 export function headTailPreview(text: string): { text: string; truncated: boolean } {
   const budget = ACP_TOOL_CONTENT_PREVIEW_HEAD_CHARS + ACP_TOOL_CONTENT_PREVIEW_TAIL_CHARS
   if (text.length <= budget) return { text, truncated: false }
-  const marker = `\n[……已截断：原始 ${String(text.length)} 字符，仅保留前 ${String(ACP_TOOL_CONTENT_PREVIEW_HEAD_CHARS)} / 后 ${String(ACP_TOOL_CONTENT_PREVIEW_TAIL_CHARS)} 字符……]\n`
+  const marker = `\n[…truncated: ${String(text.length)} original characters; kept the first ${String(ACP_TOOL_CONTENT_PREVIEW_HEAD_CHARS)} and last ${String(ACP_TOOL_CONTENT_PREVIEW_TAIL_CHARS)} characters…]\n`
   return {
     text: text.slice(0, ACP_TOOL_CONTENT_PREVIEW_HEAD_CHARS) + marker + text.slice(text.length - ACP_TOOL_CONTENT_PREVIEW_TAIL_CHARS),
     truncated: true,

@@ -238,10 +238,11 @@ describe('client 入口注册形态（slot/store 纪律）', () => {
     const h = createFakeCtx();
     apply(h.ctx as never);
 
-    expect(h.registeredEntries).toHaveLength(7);
-    const [section, picker, recoveryDock, dock, permissionDock, elicitationDock, toolview] = h.registeredEntries as [RegisteredEntry, RegisteredEntry, RegisteredEntry, RegisteredEntry, RegisteredEntry, RegisteredEntry, RegisteredEntry];
+    expect(h.registeredEntries).toHaveLength(8);
+    const [section, auditHeader, picker, recoveryDock, dock, permissionDock, elicitationDock, toolview] = h.registeredEntries as [RegisteredEntry, RegisteredEntry, RegisteredEntry, RegisteredEntry, RegisteredEntry, RegisteredEntry, RegisteredEntry, RegisteredEntry];
 
     expect(section.name).toBe('settings.section');
+    expect(auditHeader.name).toBe('conversation.session.header.utilities');
     expect(picker.name).toBe('conversation.input.model');
  // ACP context 统计行进 composer dock（list 槽；宿主 stats(0) 之后，无 store/inject seat）
     expect(recoveryDock.id).toBe('acp-recovery');
@@ -344,7 +345,7 @@ describe('client 入口注册形态（slot/store 纪律）', () => {
 
     // 模拟 scope 通知存活（卸载前基线：订阅在）。
     h.notifyScope();
-    expect(h.registeredEntries).toHaveLength(7);
+    expect(h.registeredEntries).toHaveLength(8);
 
     // fiber 卸载：cordis 逆序跑 effect disposers（本 fake 顺序无关——断言全集）。
     for (const { run } of h.effectDisposers) run();
@@ -382,7 +383,7 @@ describe(' per-contribution 隔离（可选 ACP 子模块失败不撤销 picker 
     apply(h.ctx as never);
 
     const names = h.registeredEntries.map((entry) => entry.name);
-    expect(names).toEqual(['settings.section', 'conversation.input.model', 'conversation.input.dock', 'conversation.composer.dock', 'conversation.input.dock', 'tool.call.toolview']);
+    expect(names).toEqual(['settings.section', 'conversation.session.header.utilities', 'conversation.input.model', 'conversation.input.dock', 'conversation.composer.dock', 'conversation.input.dock', 'tool.call.toolview']);
     expect(h.registeredEntries.find((entry) => entry.id === 'acp-elicitations')?.id).toBe('acp-elicitations');
     expect(h.commandDisposers).toHaveLength(1);
   });
@@ -392,7 +393,7 @@ describe(' per-contribution 隔离（可选 ACP 子模块失败不撤销 picker 
     apply(h.ctx as never);
 
     const names = h.registeredEntries.map((entry) => entry.name);
-    expect(names).toEqual(['settings.section', 'conversation.input.model', 'conversation.input.dock', 'conversation.composer.dock', 'conversation.input.dock', 'tool.call.toolview']);
+    expect(names).toEqual(['settings.section', 'conversation.session.header.utilities', 'conversation.input.model', 'conversation.input.dock', 'conversation.composer.dock', 'conversation.input.dock', 'tool.call.toolview']);
     expect(h.registeredEntries.find((entry) => entry.id === 'acp-permissions')?.id).toBe('acp-permissions');
     expect(h.commandDisposers).toHaveLength(1);
   });
@@ -402,7 +403,7 @@ describe(' per-contribution 隔离（可选 ACP 子模块失败不撤销 picker 
     apply(h.ctx as never);
 
     const names = h.registeredEntries.map((entry) => entry.name);
-    expect(names).toEqual(['settings.section', 'conversation.input.model', 'conversation.input.dock', 'conversation.composer.dock', 'conversation.input.dock', 'conversation.input.dock']);
+    expect(names).toEqual(['settings.section', 'conversation.session.header.utilities', 'conversation.input.model', 'conversation.input.dock', 'conversation.composer.dock', 'conversation.input.dock', 'conversation.input.dock']);
     expect(h.commandDisposers).toHaveLength(1);
   });
 
@@ -411,7 +412,7 @@ describe(' per-contribution 隔离（可选 ACP 子模块失败不撤销 picker 
     apply(h.ctx as never);
 
     const names = h.registeredEntries.map((entry) => entry.name);
-    expect(names).toEqual(['settings.section', 'conversation.input.dock', 'conversation.composer.dock', 'conversation.input.dock', 'conversation.input.dock', 'tool.call.toolview']);
+    expect(names).toEqual(['settings.section', 'conversation.session.header.utilities', 'conversation.input.dock', 'conversation.composer.dock', 'conversation.input.dock', 'conversation.input.dock', 'tool.call.toolview']);
     expect(h.commandDisposers).toHaveLength(1);
   });
 

@@ -79,6 +79,15 @@ describe('Devin multi-diff content projection', () => {
     expect(stableToolInputProjection(input, 'edit', meta, { runtime: 'devin' })).toEqual({ file_path: input.file_path });
   });
 
+  it('accepts Devin path spelling while preserving the original key', () => {
+    const content = 'target-content';
+    const hash16 = createHash('sha256').update(content, 'utf8').digest('hex').slice(0, 16);
+    const input = { path: '/workspace/target.txt', content, overwrite: true };
+    const meta = { acpToolContent: { items: [{ type: 'diff', path: input.path, hash16, originalChars: content.length }] } };
+    expect(stableToolInputProjection(input, 'edit', meta, { runtime: 'devin' }))
+      .toEqual({ path: input.path, overwrite: true });
+  });
+
   it('stays fail-closed for near matches, wrong runtime, and missing diffs', () => {
     const content = 'target-content';
     const hash16 = createHash('sha256').update(content, 'utf8').digest('hex').slice(0, 16);
@@ -87,6 +96,8 @@ describe('Devin multi-diff content projection', () => {
     expect(stableToolInputProjection(input, 'edit', meta, { runtime: 'devin' })).toEqual(input);
     expect(stableToolInputProjection(input, 'edit', { acpToolContent: { items: [] } }, { runtime: 'devin' })).toEqual(input);
     expect(stableToolInputProjection(input, 'edit', meta, { runtime: 'codex' })).toEqual(input);
+    expect(stableToolInputProjection({ file_path: input.file_path, path: '/workspace/other.txt', content }, 'edit', meta, { runtime: 'devin' }))
+      .toEqual({ file_path: input.file_path, path: '/workspace/other.txt', content });
   });
 });
 
@@ -222,6 +233,33 @@ afterAll(() => {
 });
 
 describe('正常恢复（binding + 预检 + 对账全过）', () => {
+  it('后台连接重建：Agent 广告 session/resume 时首个新 turn 直接恢复原语义会话', async () => {
+    const harness = await boot();
+    const profile = mockProfile(harness.logDir, 'happy', {
+      MOCK_PRESET_SESSIONS: JSON.stringify(['preset-background-resume']),
+      MOCK_ADVERTISE_RESUME: '1',
+      // session/load 若被误用会因回放缺失而失败，确保本用例真实钉住分流。
+      MOCK_LOAD_REPLAY_VARIANT: 'omit-assistant-tail',
+    });
+    const sessionId = SessionId('resume-background-native');
+    harness.persistence.seed(sessionId, seedLogMatchingLoadReplay(routeOf(profile), 'mock-model-a'), { cwd: harness.logDir });
+    await presetBinding(harness, sessionId, bindingFixture(profile, {
+      agentSessionId: 'preset-background-resume',
+      overrides: { dshCommittedSeq: LOAD_REPLAY_MATCHED_COMMITTED_SEQ },
+    }));
+
+    const handle = await resumeImplicit(harness, profile, sessionId);
+    handle.agent.followup(userText('continue after being idle'));
+    await handle.agent.whenIdle();
+
+    expect(mockRequests(profile.logPath)).toEqual(['initialize', 'session/list', 'session/resume', 'session/prompt']);
+    expect(readLog(profile.logPath)).toContain('session/resume preset-background-resume: no replay');
+    expect(readLog(profile.logPath)).not.toContain('session/load preset-background-resume');
+    expect((handle.agent as AcpAgent).continuityState).toEqual({ status: 'ok', cause: null, detail: null });
+    expect(await reconciliationCauses(harness, sessionId)).toEqual([]);
+    expect(turnEndReasons(handle.agent).at(-1)).toEqual({ turn: 2, reason: { kind: 'completed' } });
+  }, 15_000);
+
   it('首 turn 走 session/load 而非 new；回放零落盘（事件计数钉死）；回放后新 turn 正常落盘；binding 续代重写同 id', async () => {
     const harness = await boot();
     const profile = mockProfile(harness.logDir, 'happy', {
@@ -429,7 +467,7 @@ describe('正常恢复（binding + 预检 + 对账全过）', () => {
     expect(resultBlock?.type).toBe('tool-result');
     if (resultBlock?.type === 'tool-result') {
       expect(resultBlock.content.map((block) => (block.type === 'text' ? block.text : '')).join(''))
-        .toContain(`[diff 摘要] ${harness.logDir}/merged.txt（新建）`);
+        .toContain(`[Diff summary] ${harness.logDir}/merged.txt (create)`);
     }
 
     // dispose + re-seed 模拟宿主重启

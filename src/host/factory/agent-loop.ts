@@ -92,7 +92,7 @@ import { AcpRemoteService } from '../../remote/service.ts'
 import { createAcpPermissionHandler, InMemoryAcpPendingPermissionBroker } from '../../domain/policy/permissions.ts'
 import { InMemoryAcpElicitationBroker, elicitationResponseOf } from '../../domain/policy/elicitation.ts'
 import type { AcpApprovalRequester, AcpPermissionAuditChannel } from '../../domain/policy/permissions.ts'
-import { createAgentConfigAudit } from '../../domain/policy/events.ts'
+import { createAgentConfigAudit, redactSecretText } from '../../domain/policy/events.ts'
 import { createAcpLogger } from '../../domain/observability/logging.ts'
 import type { AcpLogger } from '../../domain/observability/logging.ts'
 import { AcpMetricsRegistry, createAcpMetricReporter } from '../../domain/observability/metrics.ts'
@@ -101,7 +101,8 @@ import type { InstalledProfileRegistry } from '../composition/installed-profile-
 import { resolveSubprocessSeam } from '../composition/subprocess.ts'
 import type { SubprocessSeamResolution } from '../../runtime/process/subprocess.ts'
 import { ACP_SIDECAR_CONFIG_AUDIT_ID, acpCanonicalHash16, installAcpSidecar } from '../../persistence/sidecar.ts'
-import type { AcpBindingLookup, AcpBindingRecord, AcpBoundSessionBinding, AcpReconciliationCause, AcpRecoveryState, AcpSidecar } from '../../persistence/sidecar.ts'
+import type { AcpBindingLookup, AcpBindingRecord, AcpBoundSessionBinding, AcpReconciliationCause, AcpRecoveryState, AcpSidecar, AcpSidecarEntry } from '../../persistence/sidecar.ts'
+import type { AcpAuditSummaryCode } from '../../remote/service.ts'
 
 /**
  * widen-accessor：读没有类型增强声明的 ctx slot（approval/webServer 的类型增强
@@ -110,6 +111,99 @@ import type { AcpBindingLookup, AcpBindingRecord, AcpBoundSessionBinding, AcpRec
 function getCtxSlot<T>(ctx: Context, name: string): T | undefined {
   const holder = ctx as Context & { get(name: string, strict?: boolean): unknown }
   return holder.get(name) as T | undefined
+}
+
+function boundedAuditSubject(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const clean = redactSecretText(value).replace(/[\u0000-\u001f\u007f]/g, ' ').trim()
+  if (clean === '') return null
+  return clean.length > 160 ? `${clean.slice(0, 160)}…` : clean
+}
+
+/** sidecar 记录 → 结构化、本地化无关的 UI 审计行。 */
+function auditTimelineRowOf(entry: AcpSidecarEntry): {
+  readonly seq: number
+  readonly time: number
+  readonly kind: string
+  readonly category: 'recovery' | 'permission' | 'agent' | 'files' | 'config'
+  readonly summaryCode: AcpAuditSummaryCode
+  readonly subject: string | null
+  readonly status: string | null
+  readonly detail: string | null
+} {
+  const data = entry.data as unknown as Record<string, unknown>
+  const category = entry.kind === 'reconciliation' || entry.kind === 'replay-assessment' || entry.kind === 'degradation' ? 'recovery'
+    : entry.kind === 'permission' || entry.kind === 'permission-scope' ? 'permission'
+      : entry.kind === 'filesystem' || entry.kind === 'terminal' ? 'files'
+        : entry.kind === 'agent-config' ? 'config' : 'agent'
+  let summaryCode: AcpAuditSummaryCode = 'agent.event'
+  let subject: string | null = null
+  let status: string | null = null
+  switch (entry.kind) {
+    case 'binding':
+      summaryCode = 'binding.established'
+      subject = boundedAuditSubject(data['profileId'] ?? data['provider'] ?? data['agentSessionId'])
+      break
+    case 'permission':
+      summaryCode = data['phase'] === 'asked' ? 'permission.asked' : 'permission.decided'
+      if (data['phase'] === 'asked') {
+        const toolCall = data['toolCall'] as Record<string, unknown> | undefined
+        subject = boundedAuditSubject(toolCall?.['title'] ?? toolCall?.['kind'] ?? data['toolCallId'])
+      } else {
+        subject = boundedAuditSubject(data['toolCallId'])
+      }
+      status = boundedAuditSubject(data['phase'] === 'decided' ? data['outcome'] : undefined)
+      break
+    case 'permission-scope':
+      summaryCode = 'permission-scope.recorded'
+      subject = boundedAuditSubject(data['platform'])
+      status = boundedAuditSubject(data['mode'])
+      break
+    case 'agent-mode':
+      summaryCode = 'agent-mode.changed'
+      subject = boundedAuditSubject(data['modeId'])
+      status = boundedAuditSubject(data['via'])
+      break
+    case 'agent-config':
+      summaryCode = 'agent-config.changed'
+      subject = boundedAuditSubject(data['agentId'])
+      status = boundedAuditSubject(data['change'])
+      break
+    case 'reconciliation':
+      summaryCode = 'reconciliation.required'
+      subject = boundedAuditSubject(data['cause'])
+      break
+    case 'replay-assessment':
+      if (data['status'] === 'matched' || data['status'] === 'different' || data['status'] === 'overflow'
+        || data['status'] === 'not-compared' || data['status'] === 'unavailable') {
+        summaryCode = `replay.${data['status']}` as AcpAuditSummaryCode
+      } else {
+        summaryCode = 'replay.unavailable'
+      }
+      break
+    case 'degradation':
+      summaryCode = 'degradation.recorded'
+      subject = boundedAuditSubject(data['code'] ?? data['itemCount'])
+      break
+    case 'elicitation':
+      summaryCode = data['phase'] === 'requested' ? 'elicitation.requested' : 'elicitation.decided'
+      subject = boundedAuditSubject(data['mode'])
+      status = boundedAuditSubject(data['outcome'] ?? data['result'])
+      break
+    case 'filesystem':
+      summaryCode = 'filesystem.operation'
+      subject = boundedAuditSubject(data['path'])
+      status = boundedAuditSubject(data['outcome'])
+      break
+    case 'terminal':
+      summaryCode = 'terminal.operation'
+      subject = boundedAuditSubject(data['command'] ?? data['terminalId'])
+      status = boundedAuditSubject(data['outcome'])
+      break
+  }
+  const raw = JSON.stringify(entry.data, null, 2)
+  const detail = raw === undefined ? null : redactSecretText(raw).slice(0, 4_000)
+  return { seq: entry.seq, time: entry.time, kind: entry.kind, category, summaryCode, subject, status, detail }
 }
 
 /**
@@ -360,6 +454,15 @@ export default class AcpAgentLoop extends AgentLoop {
         : (() => {
             const sidecar = this.acpSidecar as AcpSidecar
             return {
+              auditTimeline: {
+                list: async (sessionId: string, afterSeq: number, limit: number) => {
+                  const rows = await sidecar.listPage(sessionId as SessionId, afterSeq, limit)
+                  return rows.map(auditTimelineRowOf)
+                },
+                hasMore: async (sessionId: string, seq: number) => {
+                  return (await sidecar.listPage(sessionId as SessionId, seq, 1)).length > 0
+                },
+              },
  // 待定模型切换事务的持久 seam（begin/commit/rollback 与快照
               // 的 modelSwitch 视图共用）
               modelSwitchStore: {
@@ -841,6 +944,7 @@ export default class AcpAgentLoop extends AgentLoop {
  // 活体权威快照到达（建立/set_config_option/set_mode/turn 收束）即刷新
       // sidecar 的 last-known option 快照（冷启动 stale 只读展示面的唯一写路径）
       recordOptionsSnapshot: (snapshot) => sidecar.writeOptionSnapshot(id, snapshot),
+      readOptionsSnapshot: () => sidecar.readOptionSnapshot(id),
       recordFileAudit: async (event) => sidecar.append(id, { kind: 'filesystem', data: event }),
     }
     driver.fileSystemHandlers = () => createAcpFileSystemHandlers({

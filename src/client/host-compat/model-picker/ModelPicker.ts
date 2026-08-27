@@ -18,6 +18,7 @@ import {
   IconChevronRightOutline14,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import { errorMessageOf } from '../../data/logic.ts'
+import { localizedDiagnostic } from '../../data/diagnostics.ts'
 import {
   acpAgentDisplayName,
   acpUnavailableMessageOf,
@@ -448,7 +449,7 @@ function Loaded({ locked, available, t, useStore, picker }: {
 
   const errorStrip = (message: string, key: string): ReactNode =>
     h('div', { key, className: css.error, role: 'alert' },
-      h('span', {}, t('error.action', { message })),
+      h('span', {}, t('error.action', { message: localizedDiagnostic(t, 'error.technical', message) })),
       h('button', { type: 'button', className: css.retry, onClick: reload }, t('action.reload')),
     )
 
@@ -526,7 +527,7 @@ function Loaded({ locked, available, t, useStore, picker }: {
     // directory browsing or selection.
     if (acpUnavailableMessage !== null) {
       children.push(h('div', { key: 'acp-unavailable', className: css.warning },
-        h('span', {}, t('acp.unavailable', { message: acpUnavailableMessage })),
+        h('span', {}, localizedDiagnostic(t, 'acp.unavailable', acpUnavailableMessage)),
       ))
     }
  // 跨 backend 行的两段式确认块——确认步显式陈述「创建全新会话 +
@@ -597,7 +598,7 @@ function Loaded({ locked, available, t, useStore, picker }: {
     }
     if (nativeError !== null) {
       children.push(h('div', { key: 'nativeError', className: css.error, role: 'alert' },
-        h('span', {}, t('native.failed', { message: nativeError })),
+        h('span', {}, t('native.failed', { message: localizedDiagnostic(t, 'error.technical', nativeError) })),
       ))
     }
     return children
@@ -694,7 +695,7 @@ function Loaded({ locked, available, t, useStore, picker }: {
           ? 'live.switchError'
           : live.errorSource === 'rebind'
             ? 'live.rebindError'
-            : 'live.error', { message: live.error })),
+            : 'live.error', { message: localizedDiagnostic(t, 'error.technical', live.error) })),
         h('button', {
           type: 'button',
           className: css.retry,

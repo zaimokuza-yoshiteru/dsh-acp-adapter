@@ -408,7 +408,7 @@ describe('turn 驱动事件序列（happy）', () => {
     expect(planMessage?.data.message.content).toEqual([
       {
         type: 'reasoning',
-        text: 'Agent 计划：\n- [completed] Inspect the request\n- [completed] Produce a reply\n- [completed] Report usage',
+          text: 'Agent plan:\n- [completed] Inspect the request\n- [completed] Produce a reply\n- [completed] Report usage',
       },
     ]);
     expect(message?.data.message.source).toMatchObject({ kind: 'model', provider: routeOf(profile), model: 'mock-model-a' });
@@ -782,7 +782,7 @@ describe('request/header change（setConfigOption 热切换）', () => {
 });
 
 describe('异常', () => {
-  it('crash-mid-turn：turn/end error ACP_CRASH + 已流 chunk 保留 + agent/error；下一 turn 全新连接重试', async () => {
+  it('crash-mid-turn：turn/end error ACP_CRASH + 已流 chunk 保留，并进入 outcome-unknown 阻断后续 prompt', async () => {
     const harness = await boot();
     const profile = mockProfile(harness.logDir, 'crash-mid-turn');
     const handle = await createAcpAgent(harness, profile, SessionId('crash-turn'));
@@ -809,15 +809,24 @@ describe('异常', () => {
     expect(errors[0]).toBeInstanceOf(AcpClientError);
     expect((errors[0] as AcpClientError).kind).toBe('crash');
     expect(agent.status).toBe('idle');
+    expect((agent as AcpAgent).recoveryState).toMatchObject({
+      kind: 'outcome-unknown',
+      interruptedTurnId: '1',
+    });
+    expect(await harness.loop.acpSidecar?.readRecoveryState(SessionId('crash-turn'))).toMatchObject({
+      kind: 'outcome-unknown',
+      interruptedTurnId: '1',
+    });
+    expect((agent as AcpAgent).continuityState.status).toBe('blocked');
 
-    // v1 边界（黑盒实测）：崩溃后连接不自动重建——后续 turn 在已死连接上快速失败，
- // 仍分类 ACP_CRASH，且不 spawn 新进程（恢复是 resume seam 的职责）。
+    // 崩溃后不自动重放 prompt。后续 turn 由持久 recovery blocker 在任何
+    // session/prompt 前拒绝，必须由用户走恢复界面处理原 binding。
     agent.followup(userText('retry after crash'));
     await agent.whenIdle();
     const reasons = turnEndReasons(agent);
     expect(reasons.map((entry) => entry.turn)).toEqual([1, 2]);
     expect(reasons[1]?.reason.kind).toBe('error');
-    expect(reasons[1]?.reason.kind === 'error' && reasons[1].reason.error.code).toBe('ACP_CRASH');
+    expect(reasons[1]?.reason.kind === 'error' && reasons[1].reason.error.code).toBe('ACP_RECOVERY_REQUIRED');
     expect(spawnedPids(profile.logPath)).toHaveLength(2); // 门内 probe + 会话进程（崩溃后不自动重建）
     expect(errors).toHaveLength(2);
   }, 20_000);

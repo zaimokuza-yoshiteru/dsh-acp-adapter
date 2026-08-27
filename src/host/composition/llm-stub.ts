@@ -179,7 +179,11 @@ function probeModels(provider: string, configOptions: AcpProbeResult['configOpti
   return models
 }
 
-/** Map a probe failure to a user-facing selector message, classified by {@link AcpErrorKind}. */
+/**
+ * Map a probe failure to a locale-neutral host diagnostic, classified by
+ * {@link AcpErrorKind}. Browser surfaces localize from `failureKind`; this
+ * English text is only the technical fallback for hosts without that UI.
+ */
 function acpProbeFailure(error: unknown, config: AcpStubAgentConfig): { kind: AcpErrorKind; error: LlmError; phase: AcpProbePhase | undefined } {
  // probe 阶段标记原样透传（健康卡 initialize/session 分层判据；未标记归 undefined）
   const phase = error instanceof AcpClientError ? error.probePhase : undefined
@@ -189,30 +193,29 @@ function acpProbeFailure(error: unknown, config: AcpStubAgentConfig): { kind: Ac
     phase,
   })
   if (error instanceof AcpClientError) {
- // 用户可见文案尾部带 correlation id，可与进程日志/sidecar 对账
-    const ref = `（错误编号 ${error.correlationId}）`
+    const ref = ` [${error.correlationId}]`
     switch (error.kind) {
       case 'spawn-failure':
         return wrap(
           error.kind,
-          `无法启动 ACP agent 命令 "${config.command}"（命令不存在或不可执行）；请在 ACP 设置面板检查该提供方的 command/args 配置${ref}`,
+          `Cannot start ACP agent command "${config.command}" (not found or not executable). Check its command and arguments in ACP settings${ref}`,
         )
       case 'auth_required': {
-        const hint = config.loginHint === undefined ? '请按该 agent 的文档完成登录' : `请运行 \`${config.loginHint}\` 完成登录`
-        return wrap(error.kind, `ACP agent "${config.command}" 需要登录：${hint}，然后在 ACP 面板点「重新检查」重探模型目录${ref}`)
+        const hint = config.loginHint === undefined ? 'sign in with the agent CLI' : `run \`${config.loginHint}\``
+        return wrap(error.kind, `ACP agent "${config.command}" requires authentication. ${hint}, then re-check it in ACP settings${ref}`)
       }
       case 'timeout':
         return wrap(
           error.kind,
-          `探测 ACP agent "${config.command}" 超时（agent 未在时限内应答 initialize/session/new）；确认该命令能正常启动后，在 ACP 面板点「重新检查」重试${ref}`,
+          `ACP agent "${config.command}" did not answer initialize/session/new before the probe timeout. Verify the command, then re-check it in ACP settings${ref}`,
         )
       case 'aborted':
  // 调用方中止（连接层 aborted kind，taxonomy user-rejected）
-        return wrap(error.kind, `探测 ACP agent "${config.command}" 已取消${ref}`)
+        return wrap(error.kind, `ACP agent probe for "${config.command}" was cancelled${ref}`)
       case 'crash': {
         const exit = error.exit
-        const fact = exit === undefined ? '退出状态未知' : `exit code ${String(exit.code ?? 'none')}, signal ${exit.signal ?? 'none'}`
-        return wrap(error.kind, `ACP agent "${config.command}" 在探测期间意外退出（${fact}）；修复后请在 ACP 面板点「重新检查」重试${ref}`)
+        const fact = exit === undefined ? 'exit status unknown' : `exit code ${String(exit.code ?? 'none')}, signal ${exit.signal ?? 'none'}`
+        return wrap(error.kind, `ACP agent "${config.command}" exited during the probe (${fact}). Fix it, then re-check it in ACP settings${ref}`)
       }
  // protocol-error（预留）：协议层（connection
       // classify）的 message 已是完整的诊断事实，透传即可。
@@ -221,7 +224,7 @@ function acpProbeFailure(error: unknown, config: AcpStubAgentConfig): { kind: Ac
     }
   }
   const message = error instanceof Error ? error.message : String(error)
-  return wrap('protocol-error', `探测 ACP agent "${config.command}" 失败：${message}`)
+  return wrap('protocol-error', `ACP agent probe for "${config.command}" failed: ${message}`)
 }
 
 /**
@@ -255,7 +258,7 @@ export class AcpStubAdapter extends LlmAdapter {
   override async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
     const config = this.options.agents().get(provider)
     if (config === undefined) {
-      throw new LlmError(`ACP 提供方 "${provider}" 已不在配置中（可能刚从设置移除）；请刷新模型目录`, 'ACP_UNKNOWN_PROVIDER')
+      throw new LlmError(`ACP provider "${provider}" is no longer configured; refresh the model catalog`, 'ACP_UNKNOWN_PROVIDER')
     }
     const key = acpProbeConfigKey(config)
     const cached = this.cache.get(provider)
@@ -284,7 +287,7 @@ export class AcpStubAdapter extends LlmAdapter {
    */
   override stream(_options: GenerateOptions): AsyncIterable<StreamChunk> {
     throw new LlmError(
-      'ACP 提供方不直接执行模型调用：请将默认模型设为该 ACP 提供方的模型后新建会话（已有会话不能中途切换到 ACP 提供方）',
+      'An ACP provider does not execute through the native model-call path. Select the ACP model for a new session instead',
       'ACP_STUB_ROUTE',
     )
   }

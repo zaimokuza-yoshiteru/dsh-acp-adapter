@@ -40,6 +40,7 @@ import {
   userText,
 } from '../../fixtures/agent-test-helpers.ts';
 import type { AgentHarness, MockProfile } from '../../fixtures/agent-test-helpers.ts';
+import type { AcpAgent } from '../../../src/domain/session/agent.ts';
 
 let suiteDir = '';
 
@@ -155,7 +156,7 @@ describe('建立时模型收敛', () => {
     expect(notes).toHaveLength(1);
     expect(notes[0]).toContain('mock-model-z');
     expect(notes[0]).toContain('mock-model-a');
-    expect(notes[0]).toContain('未能应用到 ACP agent');
+    expect(notes[0]).toContain('could not be applied to the ACP Agent');
     // 诚实面：header 记 agent 实际模型（不是 DSH 选定值）；turn 未被锁定
     const headers = eventsOf(agent, 'request/header');
     expect(headers.at(-1)?.data.header.config.model).toBe('mock-model-a');
@@ -223,6 +224,49 @@ describe('建立时模型收敛', () => {
     const snapshot = await harness.loop.acpSidecar?.readOptionSnapshot(sessionId);
     expect(snapshot?.options.find((option) => option.id === 'model')?.value).toBe('mock-model-b');
   }, 20_000);
+
+  it('resume 在首个 prompt 前恢复同一 Agent 的 mode、thinking 与其他兼容配置', async () => {
+    const harness = await boot();
+    const sessionId = SessionId('restore-agent-options');
+    const profile = mockProfile(harness.logDir, 'happy', {
+      MOCK_PRESET_SESSIONS: JSON.stringify(['mock-session-1']),
+      MOCK_THOUGHT_LEVEL: '1',
+    });
+    const first = await createAcpAgent(harness, profile, sessionId, 'mock-model-a');
+    first.agent.followup(userText('establish options'));
+    await first.agent.whenIdle();
+    const firstAgent = first.agent as AcpAgent;
+    await firstAgent.setConfigOption('mode', 'plan');
+    await firstAgent.setConfigOption('thought_level', 'low');
+    expect((await harness.loop.acpSidecar?.readOptionSnapshot(sessionId))?.options)
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: 'mode', value: 'plan' }),
+        expect.objectContaining({ id: 'thought_level', value: 'low' }),
+      ]));
+
+    const persisted = [...first.agent.session.events];
+    await first.dispose();
+    harness.persistence.seed(sessionId, persisted, { cwd: harness.logDir });
+
+    const second = await harness.loop.resume(harness.ctx, { resumeSessionId: sessionId });
+    harness.handles.push(second);
+    second.agent.followup(userText('continue with restored options'));
+    await second.agent.whenIdle();
+
+    const resumed = second.agent as AcpAgent;
+    expect(resumed.configOptions?.find((option) => option.id === 'mode')?.currentValue).toBe('plan');
+    expect(resumed.configOptions?.find((option) => option.id === 'thought_level')?.currentValue).toBe('low');
+    const log = readLog(profile.logPath);
+    const loadIndex = log.lastIndexOf('--> session/load');
+    const modeIndex = log.indexOf('set_config_option configId=mode value="plan"', loadIndex);
+    const thoughtIndex = log.indexOf('set_config_option configId=thought_level value="low"', loadIndex);
+    const promptIndex = log.indexOf('--> session/prompt', loadIndex);
+    expect(loadIndex).toBeGreaterThanOrEqual(0);
+    expect(modeIndex).toBeGreaterThan(loadIndex);
+    expect(thoughtIndex).toBeGreaterThan(modeIndex);
+    expect(promptIndex).toBeGreaterThan(thoughtIndex);
+    expect(eventsOf(second.agent, 'turn/end').at(-1)?.data.reason.kind).toBe('completed');
+  }, 25_000);
 
   it('待定切换行在场（rollback-required）→ 建立收敛让位守卫：零 set_config_option、零 prompt，turn 响亮锁定', async () => {
     const harness = await boot();

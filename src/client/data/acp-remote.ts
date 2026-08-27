@@ -31,9 +31,10 @@ import type {
   AcpElicitationAnswerRequest,
   AcpPendingElicitationView,
   AcpToolCallPresentationView,
+  AcpAuditTimelinePage,
 } from '../../contract/remote.ts'
 
-export type { AcpElicitationAnswerRequest, AcpPendingPermissionView, AcpPendingElicitationView, AcpToolCallPresentationView } from '../../contract/remote.ts'
+export type { AcpAuditSummaryCode, AcpAuditTimelineEntry, AcpElicitationAnswerRequest, AcpPendingPermissionView, AcpPendingElicitationView, AcpToolCallPresentationView } from '../../contract/remote.ts'
 
 /** Minimal `RemoteResult` face the glue consumes (message-only errors). */
 export type AcpRemoteResultLike<T> =
@@ -66,6 +67,7 @@ export interface AcpRemoteLike {
   pendingElicitations?(sessionId: string): Promise<AcpRemoteResultLike<readonly AcpPendingElicitationView[]>>
   answerElicitation?(sessionId: string, request: AcpElicitationAnswerRequest): Promise<AcpRemoteResultLike<null>>
   cancelElicitation?(sessionId: string, request: Pick<AcpElicitationAnswerRequest, 'requestId'>): Promise<AcpRemoteResultLike<null>>
+  auditTimeline?(sessionId: string, request?: { readonly afterSeq?: number; readonly limit?: number }): Promise<AcpRemoteResultLike<AcpAuditTimelinePage>>
  /** 删除确认提示的 binding 计数（该 profile 被多少个既有会话引用；纯读）。 */
   boundSessions(agentId: string): Promise<AcpRemoteResultLike<AcpBoundSessionsView>>
   /**

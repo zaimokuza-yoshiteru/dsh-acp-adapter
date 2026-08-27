@@ -397,8 +397,8 @@ describe('createAcpPermissionHandler 结局映射', () => {
     expect(req?.toolName).toBe('Run: echo hello')
     expect(req?.callId).toBe('mock-tool-perm-1')
     expect(req?.signal).toBeUndefined()
-    expect(req?.reason).toContain('工具：Run: echo hello')
-    expect(req?.reason).toContain('命令：echo hello')
+    expect(req?.reason).toContain('Tool: Run: echo hello')
+    expect(req?.reason).toContain('Command: echo hello')
     expect(req?.reason).not.toContain('/work/a.txt')
     expect(req?.reason).not.toContain(ACP_PERMISSION_NO_ALLOW_ONCE_DISCLOSURE)
     expect(decidedDataOf(audit.records[1])).toMatchObject({ selectedOptionKind: 'allow_once', decisionVia: 'native-fallback' })
@@ -439,7 +439,7 @@ describe('createAcpPermissionHandler 结局映射', () => {
     // 正常结局映射不受影响（still selected，不是 cancelled）
     expect(response).toEqual({ outcome: { outcome: 'selected', optionId: 'allow_once' } })
     expect(approval.requests).toHaveLength(1)
-    expect(approval.requests[0]?.toolName).toBe('Agent 工具请求 (mock-tool-perm-1)')
+    expect(approval.requests[0]?.toolName).toBe('Agent tool request (mock-tool-perm-1)')
     expect(approval.requests[0]?.callId).toBe('mock-tool-perm-1')
     // asked/decided 审计配对照常落盘
     expect(audit.records.map((record) => record.data.phase)).toEqual(['asked', 'decided'])
@@ -761,8 +761,8 @@ describe('createAcpPermissionHandler fail closed', () => {
 describe('buildPermissionReason', () => {
   it('reason 只保留风险与标题；命令放入插件详情而不重复常驻文本', () => {
     const reason = buildPermissionReason(PARAMS, { includeExecuteDetails: false })
-    expect(reason).toContain('工具：Run: echo hello')
-    expect(reason).not.toContain('命令：echo hello')
+    expect(reason).toContain('Tool: Run: echo hello')
+    expect(reason).not.toContain('Command: echo hello')
     expect(reason).not.toContain('/work/a.txt')
 
     const bare = buildPermissionReason({
@@ -770,7 +770,7 @@ describe('buildPermissionReason', () => {
       toolCall: { toolCallId: 'tc-1' },
       options: PERMISSION_OPTIONS,
     })
-    expect(bare).toBe('ACP Agent 请求执行一项需要额外权限的操作。')
+    expect(bare).toBe('The ACP Agent requests permission to perform a restricted operation.')
     // 四 kind 齐备 → 无可用性披露
     expect(bare).not.toContain(ACP_PERMISSION_NO_ALLOW_ONCE_DISCLOSURE)
     expect(bare).not.toContain(ACP_PERMISSION_NO_REJECT_ONCE_DISCLOSURE)
@@ -786,7 +786,7 @@ describe('buildPermissionReason', () => {
         { optionId: 'reject_once', name: 'Reject once', kind: 'reject_once' },
       ],
     })
-    expect(noAllowOnce).toContain(`注意：${ACP_PERMISSION_NO_ALLOW_ONCE_DISCLOSURE}`)
+    expect(noAllowOnce).toContain(`Note: ${ACP_PERMISSION_NO_ALLOW_ONCE_DISCLOSURE}`)
     expect(noAllowOnce).not.toContain(ACP_PERMISSION_NO_REJECT_ONCE_DISCLOSURE)
 
     // 缺 reject_once：仅披露 reject 侧
@@ -796,7 +796,7 @@ describe('buildPermissionReason', () => {
       options: [{ optionId: 'allow_once', name: 'Allow once', kind: 'allow_once' }],
     })
     expect(noRejectOnce).not.toContain(ACP_PERMISSION_NO_ALLOW_ONCE_DISCLOSURE)
-    expect(noRejectOnce).toContain(`注意：${ACP_PERMISSION_NO_REJECT_ONCE_DISCLOSURE}`)
+    expect(noRejectOnce).toContain(`Note: ${ACP_PERMISSION_NO_REJECT_ONCE_DISCLOSURE}`)
 
     // 两侧都缺（如仅 always 类）：两行披露都在
     const neitherOnce = buildPermissionReason({
@@ -821,8 +821,8 @@ describe('buildPermissionReason', () => {
       },
       options: PERMISSION_OPTIONS,
     })
-    expect(reason).toContain('工具：Big')
-    expect(reason).toContain('详情：')
+    expect(reason).toContain('Tool: Big')
+    expect(reason).toContain('Details:')
     expect(reason).not.toContain('super-secret-value')
     expect(reason.length).toBeLessThan(500)
   })
@@ -899,7 +899,7 @@ describe('buildPermissionReason', () => {
       ...PARAMS,
       toolCall: { ...PARAMS.toolCall, title: '\u0000\u0001', name: '   ' },
     })
-    expect(approval.requests[0]?.toolName).toBe('运行命令')
+    expect(approval.requests[0]?.toolName).toBe('Run command')
   })
 
   it('无配对 tool-call 时仍展示脱敏的 edit 目标；超长绝对路径只保留尾段', () => {
@@ -909,7 +909,7 @@ describe('buildPermissionReason', () => {
       toolCall: { toolCallId: 'tc-edit', kind: 'edit', rawInput: { file_path: path, token: 'do-not-show' } },
       options: PERMISSION_OPTIONS,
     })
-    expect(reason).toContain('目标：…/')
+    expect(reason).toContain('Target: …/')
     expect(reason).toContain('secret.txt')
     expect(reason).not.toContain(path)
     expect(reason).not.toContain('do-not-show')
@@ -925,16 +925,16 @@ describe('buildPermissionReason', () => {
       },
       options: PERMISSION_OPTIONS,
     })
-    expect(reason).toContain('来源：…/work/from.txt')
-    expect(reason).toContain('目标：…/work/to.txt')
+    expect(reason).toContain('Source: …/work/from.txt')
+    expect(reason).toContain('destination: …/work/to.txt')
 
     const oneSided = buildPermissionReason({
       sessionId: 's',
       toolCall: { toolCallId: 'tc-move-one', kind: 'move', rawInput: { destination: '/work/to.txt' } },
       options: PERMISSION_OPTIONS,
     })
-    expect(oneSided).toContain('目标：…/work/to.txt')
-    expect(oneSided).not.toContain('来源：')
+    expect(oneSided).toContain('Destination: …/work/to.txt')
+    expect(oneSided).not.toContain('Source:')
   })
 })
 

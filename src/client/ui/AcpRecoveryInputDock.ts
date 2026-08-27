@@ -5,6 +5,7 @@ import { createElement as h, useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Button, Modal } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { AcpRemoteLike } from '../data/acp-remote.ts'
+import { localizedDiagnostic } from '../data/diagnostics.ts'
 import type { AcpLocaleKey } from './locales.ts'
 import css from './AcpRecoveryInputDock.module.css'
 
@@ -125,13 +126,18 @@ export function AcpRecoveryInputDock(props: AcpRecoveryInputDockProps): ReactNod
     void operation().then((result: unknown) => {
       if (typeof result === 'object' && result !== null && 'ok' in result && (result as { ok?: boolean }).ok === false) {
         const message = String((result as { error?: { message?: string } }).error?.message ?? '')
-        setError(textOf(props.t, 'recoveryError', 'Recovery action failed: {message}', { message }))
+        setError(props.t === undefined
+          ? message
+          : localizedDiagnostic(props.t, 'recoveryError', message))
       } else if (typeof result === 'object' && result !== null && 'ok' in result && (result as { ok?: boolean; value?: RecoverySnapshot }).ok === true && (result as { value?: RecoverySnapshot }).value !== undefined) {
         setSnapshot((result as unknown as { value: RecoverySnapshot }).value)
       } else if (action === 'new') {
         setSnapshot(null)
       }
-    }).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason))).finally(() => setBusy(null))
+    }).catch((reason: unknown) => {
+      const message = reason instanceof Error ? reason.message : String(reason)
+      setError(props.t === undefined ? message : localizedDiagnostic(props.t, 'recoveryError', message))
+    }).finally(() => setBusy(null))
   }
 
   const switchView = snapshot.modelSwitch

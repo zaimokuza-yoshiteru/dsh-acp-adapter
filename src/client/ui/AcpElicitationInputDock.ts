@@ -4,6 +4,7 @@ import type { ReactNode } from 'react'
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { AcpElicitationAnswerRequest, AcpPendingElicitationView } from '../data/acp-remote.ts'
 import type { AcpRemoteLike } from '../data/acp-remote.ts'
+import { localizedDiagnostic } from '../data/diagnostics.ts'
 import type { AcpLocaleKey } from './locales.ts'
 import css from './AcpElicitationInputDock.module.css'
 
@@ -51,8 +52,13 @@ function Card({ sessionId, item, remote, t, onDone }: { sessionId: string; item:
       : { requestId: item.requestId, action }
     void remote.answerElicitation?.(sessionId, request).then((result) => {
       if (result === undefined || result.ok) onDone()
-      else setError(result.error.message)
-    }).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason))).finally(() => setBusy(false))
+      else setError(t === undefined
+        ? result.error.message
+        : localizedDiagnostic(t, 'elicitationRequestFailed', result.error.message))
+    }).catch((reason: unknown) => {
+      const message = reason instanceof Error ? reason.message : String(reason)
+      setError(t === undefined ? message : localizedDiagnostic(t, 'elicitationRequestFailed', message))
+    }).finally(() => setBusy(false))
   }
   const openUrl = (): void => {
     if (item.url === undefined) return

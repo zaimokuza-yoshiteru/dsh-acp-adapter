@@ -87,7 +87,11 @@ import type {
   AcpProviderHealth,
   AcpSessionContinuity,
   AcpToolCallPresentationView,
+  AcpAuditTimelinePage,
+  AcpAuditSummaryCode,
 } from '../contract/remote.ts'
+
+export type { AcpAuditSummaryCode } from '../contract/remote.ts'
 
 /** `<command> --version` 尽力而为的短超时（毫秒）。 */
 export const DEFAULT_VERSION_PROBE_TIMEOUT_MS = 3_000
@@ -453,6 +457,20 @@ export interface AcpRemoteServiceDeps {
   /** Plugin-owned pending permission broker (complete ACP option vocabulary). */
   pendingPermissions?: AcpPendingPermissionBroker
   pendingElicitations?: AcpElicitationBroker
+  /** Host-projected, bounded sidecar rows. Raw persistence payloads stay host-side. */
+  auditTimeline?: {
+    readonly list: (sessionId: string, afterSeq: number, limit: number) => Promise<readonly {
+      readonly seq: number
+      readonly time: number
+      readonly kind: string
+      readonly category: 'recovery' | 'permission' | 'agent' | 'files' | 'config'
+      readonly summaryCode: AcpAuditSummaryCode
+      readonly subject: string | null
+      readonly status: string | null
+      readonly detail: string | null
+    }[]>
+    readonly hasMore: (sessionId: string, seq: number) => Promise<boolean>
+  }
   /** Whether the DSH durable attachment service is mounted for ACP image input. */
   imageInputAvailable?: boolean
 }
@@ -557,6 +575,7 @@ interface ResolvedDeps {
   readonly snapshotFingerprint: ((sessionId: string) => Promise<string | undefined>) | null
   readonly pendingPermissions: AcpPendingPermissionBroker | null
   readonly pendingElicitations: AcpElicitationBroker | null
+  readonly auditTimeline: NonNullable<AcpRemoteServiceDeps['auditTimeline']> | null
   readonly imageInputAvailable: boolean
 }
 
@@ -619,12 +638,28 @@ export class AcpRemoteService extends TypertRemoteService {
       snapshotFingerprint: deps.snapshotFingerprint ?? null,
       pendingPermissions: deps.pendingPermissions ?? null,
       pendingElicitations: deps.pendingElicitations ?? null,
+      auditTimeline: deps.auditTimeline ?? null,
       imageInputAvailable: deps.imageInputAvailable ?? false,
     }
   }
 
  /** 在飞切换闩锁（sessionId → 在飞操作；并发点击/重复投递的进程内第一道闸）。 */
   private readonly modelSwitchInflight = new Map<string, { readonly operationId: string; readonly targetModel: string }>()
+
+  /** Read a bounded sidecar page. Raw payloads never cross the Remote boundary. */
+  @Remote
+  async auditTimeline(sessionId: string, request?: { readonly afterSeq?: number; readonly limit?: number }): Promise<AcpAuditTimelinePage> {
+    const source = this.resolved.auditTimeline
+    if (source === null) throw new Error('ACP audit history is unavailable on this host')
+    const afterSeq = request?.afterSeq ?? 0
+    const limit = request?.limit ?? 50
+    if (!Number.isSafeInteger(afterSeq) || afterSeq < 0) throw new Error('ACP audit cursor is invalid')
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error('ACP audit page size is invalid')
+    const entries = await source.list(sessionId, afterSeq, limit)
+    const lastSeq = entries.at(-1)?.seq ?? afterSeq
+    const hasMore = entries.length === limit && await source.hasMore(sessionId, lastSeq)
+    return { sessionId, entries, nextCursor: hasMore ? lastSeq : null, hasMore }
+  }
 
   /** List complete, session-scoped ACP permission requests awaiting a client answer. */
   @Remote

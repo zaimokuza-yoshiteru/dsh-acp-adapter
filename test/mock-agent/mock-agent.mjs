@@ -129,6 +129,8 @@
 //                      cwd 记为 '/mock/cwd'；modes/configOptions 按 scenario 能力照常
 //   MOCK_LIST_PAGE_SIZE session/list 分页页大小（默认 0 = 单页全量，既有行为）；>0 时
 //                      响应按 cursor（页号字符串）切片并在非末页携带 nextCursor
+//   MOCK_ADVERTISE_RESUME 置 '1' 时广告并实现 sessionCapabilities.resume；
+//                      session/resume 恢复已有会话但不发送任何历史 update
 // MOCK_LOAD_REPLAY_VARIANT session/load 回放序列变换（默认 full； 对账矩阵用）：
 //                      omit-assistant-tail（缺一条 assistant chunk）/ extra-user
 //                      （尾部多一条 user chunk）/ empty（空回放）/
@@ -217,6 +219,7 @@ const PRESET_SESSIONS = (() => {
   }
 })();
 const LIST_PAGE_SIZE = intEnv('MOCK_LIST_PAGE_SIZE', 0);
+const ADVERTISE_RESUME = process.env.MOCK_ADVERTISE_RESUME === '1';
 // never-resolve：永不响应的方法集合（RPC deadline 矩阵；默认只挂 session/new）
 const NEVER_METHODS = (() => {
   try {
@@ -864,6 +867,7 @@ async function handleInitialize(msg) {
   const sessionCapabilities = fullCaps()
     ? {
         list: {},
+        ...(ADVERTISE_RESUME ? { resume: {} } : {}),
         ...(advertisesDelete() ? { delete: {} } : {}),
         ...(advertisesClose() ? { close: {} } : {}),
         additionalDirectories: {},
@@ -971,6 +975,20 @@ function handleSessionLoad(msg) {
   }
   log(`session/load ${session.id}: replaying ${replay.length} updates (${replayKind})`);
   for (const update of replay) sendUpdate(session.id, update);
+  const result = {};
+  if (session.modes) result.modes = session.modes;
+  if (session.configOptions) result.configOptions = session.configOptions;
+  respond(msg.id, result);
+}
+
+function handleSessionResume(msg) {
+  if (!ADVERTISE_RESUME) {
+    return respondError(msg.id, -32601, 'Method not found: session/resume');
+  }
+  const session = getSession(msg);
+  if (!session) return;
+  session.closed = false;
+  log(`session/resume ${session.id}: no replay`);
   const result = {};
   if (session.modes) result.modes = session.modes;
   if (session.configOptions) result.configOptions = session.configOptions;
@@ -1376,7 +1394,7 @@ function handleSetScenario(msg) {
 }
 
 // minimal-caps 下未声明的可选方法视为未实现
-const MINIMAL_CAPS_FORBIDDEN = new Set(['session/load', 'session/list', 'session/delete', 'session/close']);
+const MINIMAL_CAPS_FORBIDDEN = new Set(['session/load', 'session/resume', 'session/list', 'session/delete', 'session/close']);
 
 function handleRequest(msg) {
   const { id, method } = msg;
@@ -1398,6 +1416,8 @@ function handleRequest(msg) {
       return handleSessionNew(msg);
     case 'session/load':
       return handleSessionLoad(msg);
+    case 'session/resume':
+      return handleSessionResume(msg);
     case 'session/list':
       return handleSessionList(msg);
     case 'session/delete':

@@ -226,6 +226,47 @@ export interface AcpHealthView {
   readonly liveSessions: readonly AcpLiveSessionContinuity[] | null
 }
 
+/** ACP 审计视图的本地化无关摘要事实；客户端按当前语言生成文案。 */
+export type AcpAuditSummaryCode =
+  | 'binding.established'
+  | 'permission.asked'
+  | 'permission.decided'
+  | 'permission-scope.recorded'
+  | 'agent-mode.changed'
+  | 'agent-config.changed'
+  | 'reconciliation.required'
+  | 'replay.matched'
+  | 'replay.different'
+  | 'replay.overflow'
+  | 'replay.not-compared'
+  | 'replay.unavailable'
+  | 'degradation.recorded'
+  | 'elicitation.requested'
+  | 'elicitation.decided'
+  | 'filesystem.operation'
+  | 'terminal.operation'
+  | 'agent.event'
+
+/** ACP 审计视图的一条有界 sidecar 记录；UI 文案由客户端 locale 生成。 */
+export interface AcpAuditTimelineEntry {
+  readonly seq: number
+  readonly time: number
+  readonly kind: string
+  readonly category: 'recovery' | 'permission' | 'agent' | 'files' | 'config'
+  readonly summaryCode: AcpAuditSummaryCode
+  readonly subject: string | null
+  readonly status: string | null
+  readonly detail: string | null
+}
+
+/** Cursor-paged ACP audit ledger. Cursor is the last returned per-session seq. */
+export interface AcpAuditTimelinePage {
+  readonly sessionId: string
+  readonly entries: readonly AcpAuditTimelineEntry[]
+  readonly nextCursor: number | null
+  readonly hasMore: boolean
+}
+
 /**
  * `boundSessions(agentId)` 的应答（删除确认提示，）：
  * 该 profile 当前被多少个既有 DSH 会话的 sidecar binding 引用——删除 profile
