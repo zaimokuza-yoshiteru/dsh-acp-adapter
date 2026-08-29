@@ -83,23 +83,16 @@ export function acpAgentDisplayName(groups: readonly PickerProviderGroup[], prov
 }
 
 /**
- * Devin's model labels already contain the product's reasoning-mode wording.
- * This is intentionally restricted to the canonical profile route: a user
- * editable display name is not a reliable runtime identity. Custom Devin
- * profiles therefore use the generic ACP three-part display until the catalog
- * exposes an explicit runtime fact.
+ * Devin 的模型名称已包含推理档位，因此只对规范的 `acp-devin` 路由省略第三段。
+ * 用户可编辑的 Agent 显示名不是可靠身份；自定义 profile 仍使用通用三段展示。
  */
-export function isDevinAcpAgent(provider: string, agentName?: string): boolean {
-  void agentName
+export function isDevinAcpAgent(provider: string): boolean {
   return provider === 'acp-devin'
 }
 
 /**
- * Build the compact model-trigger label for an ACP selection.  The effort is
- * appended only when it is a fact from the ACP model/config advertisement;
- * callers pass `undefined` when the option is absent or not yet known.  Devin
- * deliberately keeps the two-part label because its model name carries this
- * meaning already.  Native DSH labels do not use this helper.
+ * ACP 模型触发器的紧凑标签。仅在 Agent 的模型/配置广告提供真实推理强度时追加
+ * 第三段；没有该事实时调用方传 `undefined`。原生 DSH 模型不使用此函数。
  */
 export function acpModelTriggerLabel(input: {
   provider: string
@@ -108,7 +101,7 @@ export function acpModelTriggerLabel(input: {
   reasoningEffort?: string
 }): string {
   const base = `${input.agentName} · ${input.modelName}`
-  if (isDevinAcpAgent(input.provider, input.agentName)) return base
+  if (isDevinAcpAgent(input.provider)) return base
   const effort = input.reasoningEffort?.trim()
   return effort === undefined || effort === '' ? base : `${base} · ${effort}`
 }

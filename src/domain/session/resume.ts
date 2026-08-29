@@ -115,11 +115,12 @@ export { ACP_TOOL_INPUT_SUMMARY_MAX_CHARS }
 
 /**
  * 崩溃中断检测（恢复连续性规则「崩溃中断 turn」）：coordinator 加载时
- * `interruptedTurnClosers`（core/session/src/repair.ts）会给开口 turn 合成
- * `turn/end {reason:{kind:'interrupted'}}` 并落盘；ACP 会话无 step/*，合成物
- * 只有这条 turn/end。随后 Session 构造在 seed 末尾补 `session/end-seed`
- * （core/session/src/index.ts:545），故恢复出来的崩溃尾巴真实形态是
- * `[turn/end{interrupted}, session/end-seed]`——先跳过尾部 end-seed 再判。
+ * `interruptedTurnClosers`（core/session/src/repair.ts）会先补齐未完成的
+ * tool/result 与 `step/end`，再合成
+ * `turn/end {reason:{kind:'interrupted'}}` 并落盘。随后 Session 构造在 seed
+ * 末尾补 `session/end-seed`（core/session/src/index.ts:545），所以检测只依赖
+ * 最后的 interrupted turn/end：先跳过尾部 end-seed 再判，前面的修复事件不
+ * 影响结论。
  * 幂等闩锁：追加说明消息后末尾（跳过 end-seed 后）不再是该 turn/end，下次
  * resume 不会重复追加。
  * @param session - 已 prepare 的会话（resume 路径）。

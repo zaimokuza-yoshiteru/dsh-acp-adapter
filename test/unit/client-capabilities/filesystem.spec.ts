@@ -84,7 +84,9 @@ describe('ACP native filesystem handlers', () => {
     const dir = root(); const file = path.join(dir, 'a.txt'); fs.writeFileSync(file, 'old')
     const audit: Array<{ outcome: string }> = []
     const handlers = createAcpFileSystemHandlers({
-      profileId: 'codex', timeoutMs: 5, audit: (event) => { audit.push(event) },
+      // 给进入注入 rename 前的真实 lstat/read/write/chmod 留足时间；5ms 在全量
+      // 并行套件受调度抖动影响，可能在 rename 之前超时而把本用例误判成 error。
+      profileId: 'codex', timeoutMs: 1_000, audit: (event) => { audit.push(event) },
       io: { rename: async () => await new Promise<never>(() => {}) },
     })
     await expect(handlers.writeTextFile({ sessionId: 'acp-1', path: file, content: 'new' })).rejects.toThrow(/failed/)

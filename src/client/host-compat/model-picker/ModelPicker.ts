@@ -215,13 +215,11 @@ function Loaded({ locked, available, t, useStore, picker }: {
   const effectiveEffort = state.current?.reasoningEffort ?? reasoning?.defaultEffort
   const effortLabel = reasoning === undefined
     ? undefined
-      : effectiveEffort === undefined
-        ? t('effort.providerDefault')
-        : reasoning.efforts.find((level) => level.id === effectiveEffort)?.name ?? effectiveEffort
-  // Once the live ACP snapshot exists, its thought-level option is the
-  // authoritative current value. The directory/default is only a pre-live
-  // fallback; it must not overwrite a live Agent value after a user changes it
-  // in the ACP options pane.
+    : effectiveEffort === undefined
+      ? t('effort.providerDefault')
+      : reasoning.efforts.find((level) => level.id === effectiveEffort)?.name ?? effectiveEffort
+  // 实时 ACP 快照存在后，它的 thought-level 是当前值的权威来源；目录默认值只在
+  // 首个快照到达前兜底，不能覆盖用户已在 ACP 控制区修改的 Agent 实际值。
   const triggerEffortLabel = acp
     ? acpTriggerReasoningLabel(live.snapshot, effortLabel)
     : effortLabel
@@ -443,9 +441,8 @@ function Loaded({ locked, available, t, useStore, picker }: {
     : acp
       ? `${acpAgentName} · ${currentChoice.model.name}`
       : currentChoice.model.name
-  // ACP trigger uses one compact, accessible label.  Keep the provider/model
-  // fact and the advertised current effort in the same string so visual text,
-  // title and aria-label cannot drift.  Native DSH keeps its existing label.
+  // ACP 使用一个紧凑且可访问的标签，视觉文字、title 与 aria-label 共用同一事实源；
+  // 原生 DSH 模型保持原有标签。
   const triggerLabel = currentChoice === undefined
     ? modelLabel
     : acp

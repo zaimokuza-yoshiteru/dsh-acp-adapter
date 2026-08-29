@@ -776,11 +776,9 @@ export function liveValueNameOf(option: LiveConfigOption, value: string): string
 }
 
 /**
- * Resolve the value shown next to an ACP model trigger. A live snapshot is
- * authoritative, including after the user changes an option in the live pane;
- * the model directory/default is used only before the first snapshot arrives.
- * Once a live Agent explicitly reports no thought-level option, return
- * `undefined` instead of retaining a stale directory value.
+ * ACP 实时快照是当前推理强度的权威来源，包括用户在实时控制区修改后的值；仅在
+ * 尚未收到快照时使用模型目录默认值。若 Agent 已明确报告不存在 thought-level
+ * 选项，则返回 `undefined`，避免继续展示过期的目录值。
  */
 export function acpTriggerReasoningLabel(
   snapshot: LiveOptionsSnapshot | null | undefined,

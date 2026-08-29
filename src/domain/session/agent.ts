@@ -886,8 +886,11 @@ export class AcpAgent implements Agent {
   /** 在存活边界报告一次失败（agent/error），再抛出由驱动边界收敛。 */
   private throwError(error: unknown): never {
     const turn = this.phase.kind === 'running' ? this.phase.turn : this.phase.lastTurn
-    // ACP 无 step：turn 内的失败挂在翻译事件的固定 step 上，turn 外为 0
-    const step = this.phase.kind === 'running' ? ACP_STEP : 0
+    // ACP 没有原生模型 step；错误坐标使用最近的 synthetic presentation
+    // step。它只进入 agent/error 运行时/遥测通道，不伪装为 ACP 协议事实。
+    const step = this.phase.kind === 'running'
+      ? this.translator?.presentationStep ?? ACP_STEP
+      : 0
     this.dispatch.emit('agent/error', { turn, step, error })
     throw error
   }
