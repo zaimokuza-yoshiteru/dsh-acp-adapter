@@ -193,6 +193,10 @@ export class PickerService {
   private pendingNotice: string | null = null
  /** 跨 backend 新会话事务的在飞闩锁——双击/快速重复选择恰好产生一个会话。 */
   private newSessionInflight = false
+  /** One automatic reusable blank-launcher → real ACP session handoff per visit. */
+  private readonly blankDefaultHandoffInflight = new Set<string>()
+  private readonly blankDefaultHandoffAttempt = new Map<string, string>()
+  private readonly blankDefaultHandoffErrors = new Map<string, string>()
   /** One Full Access convergence command per session at a time. */
   private readonly nativeAccessInflight = new Set<string>()
   /** Composer gate while a default-ACP draft is being admitted to Full Access. */
@@ -207,6 +211,9 @@ export class PickerService {
     // 款三个触发器）。重置先清空再拉，避免显示上一个 host 世代的投影。
     const resetAll = () => {
       for (const picker of this.pickers.values()) {
+        this.blankDefaultHandoffInflight.delete(picker.sessionId)
+        this.blankDefaultHandoffAttempt.delete(picker.sessionId)
+        this.blankDefaultHandoffErrors.delete(picker.sessionId)
         this.nativeAccessPending.delete(picker.sessionId)
         this.nativeAccessErrors.delete(picker.sessionId)
         picker.directory.resetConnected()
@@ -224,6 +231,20 @@ export class PickerService {
     if (deps.onConnectionReset !== undefined) {
       this.disposers.push(deps.onConnectionReset(resetAll))
     }
+    // DSH may reuse a blank native launcher after the global default changed
+    // to ACP. Navigation is the stable signal that this launcher became active;
+    // prime it again so the verified blank state is handed to a real ACP
+    // session before the user can send the first prompt.
+    let currentSession = deps.sessions.list.getSnapshot().current
+    this.disposers.push(deps.sessions.list.subscribe(() => {
+      const next = deps.sessions.list.getSnapshot().current
+      if (next === currentSession) return
+      currentSession = next
+      if (next === undefined) return
+      this.blankDefaultHandoffAttempt.delete(next)
+      const picker = this.pickers.get(next)
+      if (picker !== undefined) this.prime(picker)
+    }))
   }
 
   /** 加载目录；活体选项只对 ACP 会话预拉（非 ACP 会话调 dshAcp options 必然 throw）。 */
@@ -243,6 +264,15 @@ export class PickerService {
         const actualProvider = probe.status === 'ok' && probe.state?.state !== 'blank'
           ? probe.state?.provider
           : picker.directory.getSnapshot().current?.provider
+        if (probe.status === 'ok'
+          && probe.state?.state === 'blank'
+          && this.deps.sessions.list.getSnapshot().current === picker.sessionId) {
+          const current = picker.directory.getSnapshot().current
+          if (current !== null && isAcpProvider(current.provider)) {
+            await this.handoffBlankDefault(picker.sessionId, current)
+            return
+          }
+        }
         if (isAcpProvider(actualProvider)) {
           await this.maintainNativeAccess(picker.sessionId, this.permissionPreset(picker.sessionId))
           // Live snapshot arrival also runs pending model-switch recovery.
@@ -292,19 +322,26 @@ export class PickerService {
         || (liveSnapshot.modelSwitch.status === 'pending' && liveSnapshot.freshness === 'live')
       )
       const nativeAccessError = this.nativeAccessErrors.get(sessionId)
+      const blankHandoffError = this.blankDefaultHandoffErrors.get(sessionId)
       const reason = state.routable === false
         ? this.deps.t('blocked.composer')
         : continuityBlocked
           ? this.deps.t('blocked.continuity')
           : switchBlocked
             ? this.deps.t('blocked.modelSwitch')
-            : nativeAccessError !== undefined
-              ? this.deps.t('native.failed', {
-                  message: localizedDiagnostic(this.deps.t, 'error.technical', nativeAccessError),
+            : blankHandoffError !== undefined
+              ? this.deps.t('blank.failed', {
+                  message: localizedDiagnostic(this.deps.t, 'error.technical', blankHandoffError),
                 })
-              : this.nativeAccessPending.has(sessionId)
-                ? this.deps.t('native.preparing')
-                : null
+              : this.blankDefaultHandoffInflight.has(sessionId)
+                ? this.deps.t('blank.preparing')
+                : nativeAccessError !== undefined
+                  ? this.deps.t('native.failed', {
+                      message: localizedDiagnostic(this.deps.t, 'error.technical', nativeAccessError),
+                    })
+                  : this.nativeAccessPending.has(sessionId)
+                    ? this.deps.t('native.preparing')
+                    : null
       conversation.blocks.set(sessionId, reason === null ? undefined : { reason })
     }
 
@@ -378,6 +415,9 @@ export class PickerService {
       active = false
       for (const unsub of unsubs) unsub()
       this.deps.conversation?.blocks.set(sessionId, undefined)
+      this.blankDefaultHandoffInflight.delete(sessionId)
+      this.blankDefaultHandoffAttempt.delete(sessionId)
+      this.blankDefaultHandoffErrors.delete(sessionId)
       this.nativeAccessPending.delete(sessionId)
       this.nativeAccessErrors.delete(sessionId)
       this.blockRefreshers.delete(sessionId)
@@ -463,6 +503,31 @@ export class PickerService {
       throw new Error(`permission switch failed: ${result.error.code}: ${result.error.message}`)
     }
     if (!result.value.matched) throw new Error('the host offers no /permission command')
+  }
+
+  /**
+   * Replace DSH's reusable native blank launcher with a session whose factory
+   * really constructed the selected ACP backend. The verified blank launcher
+   * has no Agent context to migrate, so this is automatic materialization,
+   * not a cross-backend confirmation flow.
+   */
+  private async handoffBlankDefault(sessionId: string, selection: PickerModelSelection): Promise<void> {
+    const key = `${selection.provider}\u0000${selection.model}\u0000${selection.reasoningEffort ?? ''}`
+    if (this.blankDefaultHandoffInflight.has(sessionId)
+      || this.blankDefaultHandoffAttempt.get(sessionId) === key) return
+    this.blankDefaultHandoffAttempt.set(sessionId, key)
+    this.blankDefaultHandoffInflight.add(sessionId)
+    this.blankDefaultHandoffErrors.delete(sessionId)
+    this.blockRefreshers.get(sessionId)?.()
+    try {
+      const failure = await this.useInNewSession(sessionId, selection, selection.model)
+      if (failure !== undefined) this.blankDefaultHandoffErrors.set(sessionId, failure)
+    } catch (error) {
+      this.blankDefaultHandoffErrors.set(sessionId, errorMessageOf(error))
+    } finally {
+      this.blankDefaultHandoffInflight.delete(sessionId)
+      this.blockRefreshers.get(sessionId)?.()
+    }
   }
 
   /**
@@ -810,6 +875,9 @@ export class PickerService {
     for (const dispose of this.disposers) dispose()
     this.disposers.length = 0
     this.nativeAccessInflight.clear()
+    this.blankDefaultHandoffInflight.clear()
+    this.blankDefaultHandoffAttempt.clear()
+    this.blankDefaultHandoffErrors.clear()
     this.nativeAccessPending.clear()
     this.nativeAccessErrors.clear()
     this.blockRefreshers.clear()

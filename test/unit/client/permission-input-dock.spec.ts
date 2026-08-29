@@ -104,11 +104,14 @@ describe('ACP permission input.dock surface', () => {
     expect(permissionOptionVariant('reject_always')).toBe('outline')
   })
 
-  it('known options use one localized label while preserving unknown Agent labels', () => {
-    expect(permissionOptionText(pending[0]!.options[0]!, t)).toBe('允许一次')
-    expect(permissionOptionText(pending[0]!.options[1]!, t)).toBe('始终允许')
+  it('Agent option labels stay verbatim so same-kind scopes remain distinguishable', () => {
+    expect(permissionOptionText(pending[0]!.options[0]!, t)).toBe('Allow once')
+    expect(permissionOptionText(pending[0]!.options[1]!, t)).toBe('Always allow')
+    expect(permissionOptionText({ optionId: 'prefix', name: 'Allow Commands Starting With touch', kind: 'allow_always' }, t))
+      .toBe('Allow Commands Starting With touch')
     expect(permissionOptionText({ optionId: 'ask-admin', name: 'Ask an administrator', kind: 'future_kind' }, t))
       .toBe('Ask an administrator')
+    expect(permissionOptionText({ optionId: 'empty', name: '  ', kind: 'allow_always' }, t)).toBe('始终允许')
   })
 
   it('bounded locations disclose omitted entries, including legacy count metadata', () => {

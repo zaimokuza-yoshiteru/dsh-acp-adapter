@@ -78,14 +78,17 @@ export function permissionOptionVariant(kind: string): 'primary' | 'outline' {
   return kind === 'allow_once' ? 'primary' : 'outline'
 }
 
-/** 已知 ACP 语义使用产品本地化标签；Agent 原文保留在按钮 title 中。 */
+/**
+ * Agent owns the option label and may advertise several options with the same
+ * ACP kind but different remembered scopes. Preserve that label verbatim so
+ * those choices do not collapse into one misleading localized button. The
+ * localized kind is only a fallback for a malformed/empty upstream label.
+ */
 export function permissionOptionText(
   option: AcpPendingPermissionView['options'][number],
   t: ((key: AcpLocaleKey, params?: Record<string, string | number>) => string) | undefined,
 ): string {
-  return ['allow_once', 'allow_always', 'reject_once', 'reject_always'].includes(option.kind)
-    ? optionKindLabel(option.kind, t)
-    : option.name
+  return option.name.trim() === '' ? optionKindLabel(option.kind, t) : option.name
 }
 
 export type PermissionActionResult =

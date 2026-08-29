@@ -153,6 +153,11 @@ function createHarness() {
       sessionListSnapshot = { ...sessionListSnapshot, byId: { ...sessionListSnapshot.byId, [sessionId]: row } };
       for (const listener of [...sessionListListeners]) listener();
     },
+    setCurrent(sessionId: string | undefined) {
+      const { current: _current, ...rest } = sessionListSnapshot;
+      sessionListSnapshot = sessionId === undefined ? rest : { ...rest, current: sessionId };
+      for (const listener of [...sessionListListeners]) listener();
+    },
   };
 }
 
@@ -854,6 +859,30 @@ describe('PickerService backendOf / useInNewSession / takePendingNotice', () => 
     expect(service.takePendingNotice()).toBe('cross.started:{"model":"Devin Latest"}');
     // 一次性：取走后即空
     expect(service.takePendingNotice()).toBeNull();
+  });
+
+  it('复用的 native 空白页投影出 ACP 默认时，自动创建真实 ACP 会话，首轮不会落入 native stub', async () => {
+    const h = createFlowHarness();
+    h.deps.acpRemote = {
+      ...h.deps.acpRemote,
+      backendOf: () => Promise.resolve({ ok: true as const, value: { state: 'blank' as const } }),
+    };
+    h.resolveModels({
+      current: { provider: 'acp-codex', model: 'gpt-5.6-luna' },
+      routable: true,
+      groups: [{ id: 'acp-codex', name: 'Codex · ACP', models: [{ id: 'gpt-5.6-luna', name: 'GPT-5.6-Luna' }] }],
+      failures: [],
+    });
+    h.setCurrent(SESSION_ID);
+    const service = new PickerService(h.deps);
+    service.pickerFor(SESSION_ID);
+
+    await vi.waitFor(() => { expect(h.createCalls).toHaveLength(1); });
+    expect(h.commandCalls).toEqual([
+      { sessionId: h.createCalls[0]!.sessionId, line: '/permission danger-full-access' },
+    ]);
+    expect(h.openCalls).toEqual([h.createCalls[0]!.sessionId]);
+    expect(h.blocksLog).toContainEqual({ sessionId: SESSION_ID, block: { reason: 'blank.preparing' } });
   });
 
   it('空白会话已有 native wrapper 时选择 ACP：自动创建并打开目标 DSH session，不伪装原地切换', async () => {

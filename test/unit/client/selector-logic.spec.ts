@@ -398,13 +398,13 @@ describe('backend 兼容矩阵（backendOfProvider / isSameBackendSelection / de
     expect(backendOfProvider('deepseek')).toBe('deepseek');
   });
 
-  it('blank backend：无 live wrapper 时可在原会话首次采用；已有 wrapper 只能保留原路由', () => {
+  it('blank backend：native 可留在 launcher；ACP 必须创建真实 ACP session，不能信任默认模型投影', () => {
     const blank: PickerBackendState = { state: 'blank' };
     expect(isSameBackendSelection({ provider: 'deepseek' }, blank)).toBe(true);
-    expect(isSameBackendSelection({ provider: 'acp-devin' }, blank)).toBe(true);
+    expect(isSameBackendSelection({ provider: 'acp-devin' }, blank)).toBe(false);
     expect(isSameBackendSelection({ provider: 'acp-devin' }, blank, 'deepseek')).toBe(false);
-    expect(isSameBackendSelection({ provider: 'anthropic' }, blank, 'deepseek')).toBe(false);
-    expect(isSameBackendSelection({ provider: 'acp-devin' }, blank, 'acp-devin')).toBe(true);
+    expect(isSameBackendSelection({ provider: 'anthropic' }, blank, 'deepseek')).toBe(true);
+    expect(isSameBackendSelection({ provider: 'acp-devin' }, blank, 'acp-devin')).toBe(false);
     expect(isSameBackendSelection({ provider: 'acp-other' }, blank, 'acp-devin')).toBe(false);
   });
 
