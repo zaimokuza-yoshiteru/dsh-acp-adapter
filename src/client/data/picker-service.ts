@@ -266,18 +266,32 @@ export class PickerService {
     void picker.directory.load()
       .then(async () => {
         const probe = await this.backendProbe(picker.sessionId)
-        if (probe.status === 'ok'
+        const selectedBeforeDraftReconcile = picker.directory.getSnapshot().current
+        // A draft is only a transient, uncommitted wrapper. Alpha can briefly
+        // expose one while the durable modelSelection projection already names
+        // a native provider (for example after a plugin reload). In that case
+        // the projection is the user's current choice and the draft must not
+        // widen the Session permission or overwrite the picker. Only a draft
+        // aligned with the selected ACP profile is admitted to Full Access.
+        const alignedAcpDraft = probe.status === 'ok'
           && probe.state?.state === 'draft'
           && isAcpProvider(probe.state.provider)
-          && probe.state.model !== undefined) {
-          const current = picker.directory.getSnapshot().current
-          if (current?.provider !== probe.state.provider || current.model !== probe.state.model) {
-            picker.directory.applyBackendSelection({ provider: probe.state.provider, model: probe.state.model })
+          && selectedBeforeDraftReconcile?.provider === probe.state.provider
+          ? probe.state
+          : undefined
+        if (probe.status === 'ok'
+          && alignedAcpDraft !== undefined
+          && alignedAcpDraft.model !== undefined) {
+          const current = selectedBeforeDraftReconcile
+          if (current?.provider !== alignedAcpDraft.provider || current.model !== alignedAcpDraft.model) {
+            picker.directory.applyBackendSelection({ provider: alignedAcpDraft.provider, model: alignedAcpDraft.model })
           }
         }
-        const actualProvider = probe.status === 'ok' && probe.state?.state !== 'blank'
-          ? probe.state?.provider
-          : picker.directory.getSnapshot().current?.provider
+        const actualProvider = probe.status === 'ok' && probe.state?.state === 'established'
+          ? probe.state.provider
+          : alignedAcpDraft !== undefined
+            ? alignedAcpDraft.provider
+            : picker.directory.getSnapshot().current?.provider
         if (probe.status === 'ok'
           && probe.state?.state === 'blank'
           && this.deps.sessions.list.getSnapshot().current === picker.sessionId) {

@@ -299,7 +299,7 @@ describe('PickerService pickerFor 订阅生命周期', () => {
     });
   });
 
-  it('空白页的全局 Kimi 影子不会覆盖实际 Codex wrapper 的页面选择', async () => {
+  it('原生 Kimi 会话选择压过不匹配的瞬时 Codex draft，且不会被提升为 Full Access', async () => {
     const h = createHarness();
     h.deps.acpRemote = {
       ...h.deps.acpRemote,
@@ -308,12 +308,12 @@ describe('PickerService pickerFor 订阅生命周期', () => {
         value: { state: 'draft' as const, provider: 'acp-codex', model: 'codex-mini' },
       }),
     };
-    h.setProjection({ currentValue: 'danger-full-access' });
+    h.setProjection({ currentValue: 'workspace-write' });
     h.resolveModels({
-      current: { provider: 'acp-kimi', model: 'kimi-default' },
+      current: { provider: 'kimi-coding', model: 'k3-256k' },
       routable: true,
       groups: [
-        { id: 'acp-kimi', name: 'Kimi · ACP', models: [{ id: 'kimi-default', name: 'Kimi' }] },
+        { id: 'kimi-coding', name: 'Kimi', models: [{ id: 'k3-256k', name: 'Kimi K3' }] },
         { id: 'acp-codex', name: 'Codex · ACP', models: [{ id: 'codex-mini', name: 'Codex Mini' }] },
       ],
       failures: [],
@@ -324,8 +324,9 @@ describe('PickerService pickerFor 订阅生命周期', () => {
     picker.attach(store.actions);
 
     await vi.waitFor(() => {
-      expect(store.getSnapshot().directory.current).toEqual({ provider: 'acp-codex', model: 'codex-mini' });
+      expect(store.getSnapshot().directory.current).toEqual({ provider: 'kimi-coding', model: 'k3-256k' });
     });
+    expect(h.commandCalls).toEqual([]);
   });
 
   it('draft ACP 的 Full Access 尚未收敛时阻断 composer，权限投影确认后自动放行', async () => {
