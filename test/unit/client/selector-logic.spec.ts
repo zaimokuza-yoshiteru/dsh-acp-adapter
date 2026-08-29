@@ -43,6 +43,8 @@ import {
   INITIAL_DIRECTORY_STATE,
   PROVIDER_KIND_LABELS,
   acpAgentDisplayName,
+  acpModelTriggerLabel,
+  acpTriggerReasoningLabel,
   acpContextUsageLine,
   backendOfProvider,
   currentRouteFactsOf,
@@ -1084,6 +1086,48 @@ describe('acpAgentDisplayName（「Agent 模式（{agent}）」的参数源）',
     expect(acpAgentDisplayName([], 'acp-devin')).toBe('devin');
     // 组名恰好只剩后缀 → 空串不回退展示，落兜底裸 id
     expect(acpAgentDisplayName([{ id: 'acp-x', name: ' · ACP', models: [] }], 'acp-x')).toBe('x');
+  });
+});
+
+describe('acpModelTriggerLabel（ACP 触发器显示真实推理强度）', () => {
+  it('Codex/Kimi/Claude 等非 Devin ACP 显示三段', () => {
+    expect(acpModelTriggerLabel({
+      provider: 'acp-codex',
+      agentName: 'Codex',
+      modelName: 'GPT-5.6-Luna',
+      reasoningEffort: 'High',
+    })).toBe('Codex · GPT-5.6-Luna · High');
+  });
+
+  it('Devin 省略推理强度，避免重复模型语义', () => {
+    expect(acpModelTriggerLabel({
+      provider: 'acp-devin',
+      agentName: 'Devin',
+      modelName: 'Devin Latest · High',
+      reasoningEffort: 'High',
+    })).toBe('Devin · Devin Latest · High');
+  });
+
+  it('缺少或未知推理强度时只显示 ACP/模型两段', () => {
+    expect(acpModelTriggerLabel({ provider: 'acp-kimi', agentName: 'Kimi', modelName: 'K2' }))
+      .toBe('Kimi · K2');
+    expect(acpModelTriggerLabel({ provider: 'acp-kimi', agentName: 'Kimi', modelName: 'K2', reasoningEffort: '  ' }))
+      .toBe('Kimi · K2');
+  });
+});
+
+describe('acpTriggerReasoningLabel（live thought_level 优先级）', () => {
+  it('live 当前值覆盖目录默认值，并使用 Agent 广告名称', () => {
+    expect(acpTriggerReasoningLabel(liveSnapshot, '目录默认')).toBe('Low');
+  });
+
+  it('live 明确没有 thought_level 时不保留旧目录值', () => {
+    expect(acpTriggerReasoningLabel({ ...liveSnapshot, configOptions: [modeOption] }, '目录默认')).toBeUndefined();
+  });
+
+  it('尚未收到 live 快照时才使用目录值', () => {
+    expect(acpTriggerReasoningLabel(null, '目录默认')).toBe('目录默认');
+    expect(acpTriggerReasoningLabel(null)).toBeUndefined();
   });
 });
 

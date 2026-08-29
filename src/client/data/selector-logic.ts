@@ -775,6 +775,21 @@ export function liveValueNameOf(option: LiveConfigOption, value: string): string
   return flattenLiveValues(option).find((row) => row.value === value)?.name ?? value
 }
 
+/**
+ * ACP 实时快照是当前推理强度的权威来源；仅在尚未收到快照时使用目录默认值。
+ */
+export function acpTriggerReasoningLabel(
+  snapshot: LiveOptionsSnapshot | null | undefined,
+  directoryFallback?: string,
+): string | undefined {
+  if (snapshot === null || snapshot === undefined) return directoryFallback
+  const option = snapshot.configOptions?.find((candidate) =>
+    candidate.category === 'thought_level' && candidate.type === 'select')
+  return option?.type === 'select'
+    ? liveValueNameOf(option, option.currentValue)
+    : undefined
+}
+
 // ---------- DSH 默认模型设置（跨 backend 创建与原生“选择即默认”语义） ----------
 
 /** Settings namespace carrying the default model selection for future Agents. */

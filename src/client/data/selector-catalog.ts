@@ -82,6 +82,24 @@ export function acpAgentDisplayName(groups: readonly PickerProviderGroup[], prov
   return provider.startsWith(ACP_ROUTE_PREFIX) ? provider.slice(ACP_ROUTE_PREFIX.length) : provider
 }
 
+/** Devin 的模型名称已包含推理档位，避免在触发器中重复展示。 */
+export function isDevinAcpAgent(provider: string): boolean {
+  return provider === 'acp-devin'
+}
+
+/** ACP 触发器的紧凑标签：Agent · 模型 · 当前推理强度。 */
+export function acpModelTriggerLabel(input: {
+  provider: string
+  agentName: string
+  modelName: string
+  reasoningEffort?: string
+}): string {
+  const base = `${input.agentName} · ${input.modelName}`
+  if (isDevinAcpAgent(input.provider)) return base
+  const effort = input.reasoningEffort?.trim()
+  return effort === undefined || effort === '' ? base : `${base} · ${effort}`
+}
+
 /**
  * The provider filter of the picker's filter bar includes a 'current'
  * （「当前」Tab）——只按会话 backend 的精确 provider/profile 路由过滤现有 DSH

@@ -10,19 +10,23 @@
  * and `sourceEventSeqs` citations are real seqs by construction — interleaved
  * lifecycle appends owned by AcpAgent cannot desync the bookkeeping.
  *
- * Turn mapping (PresentationSegmenter): one ACP
- * `session/prompt` = one dsh turn; NO `step/start`/`step/end` events are
- * produced. The `step` field required by the `SessionEventMap` payloads
- * carries a **synthetic presentation step** allocated per turn by
- * {@link PresentationSegmenter} — it is DSH-side presentation identity ONLY
+ * Turn mapping (PresentationSegmenter): one ACP `session/prompt` = one DSH
+ * turn. ACP does not expose model-loop step boundaries, so this adapter emits
+ * **synthetic presentation steps** around each ordered assistant/tool phase.
+ * These `step/start`/`step/end` pairs satisfy DSH's conversation lifecycle
+ * contract (settled Assistant actions, trajectory grouping and session
+ * invariants); they do not claim that ACP has native step semantics. The
+ * `step` field is allocated per turn by {@link PresentationSegmenter} and is
+ * DSH-side presentation identity ONLY
  * (upstream ui-conversation keys the assistant conversation node by
  * `turn:step` and anchors/sorts chat nodes by seq; see reference
  * ui-conversation conversation-nodes/assistant.ts + chat-snapshot-builder.ts).
  * ACP itself has no step semantics and this module does not claim otherwise.
- * Lifecycle events (`turn/start`, `user/message`, `request/header`,
- * `turn/end`) are NOT emitted here — AcpAgent owns them; this translator
- * emits only the translation outputs (`assistant/chunk`,
- * `assistant/message`, `tool/call`, `tool/result`, `request/context`).
+ * Turn-level lifecycle events (`turn/start`, `user/message`,
+ * `request/header`, `turn/end`) are NOT emitted here — AcpAgent owns them.
+ * This translator owns the synthetic `step/start`/`step/end` pairs plus the
+ * translated content (`assistant/chunk`, `assistant/message`, `tool/call`,
+ * `tool/result`, `request/context`).
  *
  * segmentation（消息展示顺序 修复——Kimi 排序缺陷：正文流式期锚在 tool 卡片
  * 上方、endTurn 落 assistant/message 后又跳到下方）：一个 turn 的展示被切成
@@ -32,12 +36,12 @@
  *   segment；**tool/call 到达前先把积累的 assistant segment flush 成
  *   `assistant/message`**（落盘 seq 先于 tool/call —— settled 锚点因此恒在
  *   tool 卡片之上，不再跳变）；
- * - 每个 tool call id 首次出现分配稳定 step，其后的 update/result 复用；
+ * - 同一并行 tool phase 的调用共享一个 step，其后的 update/result 复用；
  *   同 step 先落一个标准 assistant tool-call message 注册 DSH 的调用归属，
  *   再落独立 tool/call；否则完成态会被上游轨迹视为 orphan 并移到顶部；
  * - tool 之后的新文本开**新的** assistant segment（新 step、新
  *   `assistant/message`），绝不回写已提交的旧消息；
- * - `endTurn` 只 flush 当前开放 segment，不移动已提交消息；
+ * - `endTurn` flush 当前开放 segment 并关闭展示 step，不移动已提交消息；
  * - 不产空 assistant message（segment 无内容则 flush 无事件）。
  * 说明性 assistant 消息（resume.ts 的 notes 族，不经本翻译器）走专用
  * {@link ACP_NOTE_STEP} 泳道，不与内容 segment 共享 `turn:step` 节点身份。
@@ -144,7 +148,7 @@ export {
  * Value of the `step` field on the FIRST presentation segment a turn
  * allocates. `step` 不再是全 turn 常量：{@link PresentationSegmenter}
  * 按段分配稳定递增的 synthetic presentation step（assistant phase 与 tool
- * call id 各得一个，1 起编号、按到达序递增）。本常量是每 turn 的分配起点
+ * phase 各得一个，1 起编号、按到达序递增）。本常量是每 turn 的分配起点
  * （纯文本 turn 的全部事件因此仍是 step 1，与旧版本逐字节一致）。
  * synthetic step 只是 DSH 展示 identity，不携带 ACP step 语义（模块头）。
  */
@@ -413,7 +417,7 @@ export type TranslatorWarningCode =
   | 'end-turn-while-inactive'
   /** A second `tool_call` for an id whose first call never reached a terminal update. */
   | 'duplicate-tool-call'
-  /** Terminal `tool_call_update` for an unknown id; `tool/result` appended without `sourceEventSeqs`. */
+  /** Terminal `tool_call_update` for an unknown id; a continuation call is registered before preserving the result. */
   | 'orphan-tool-result'
   /** A `sessionUpdate` value this build does not know; ignored. */
   | 'unknown-session-update'
@@ -504,6 +508,8 @@ interface PendingToolCall {
   callSeq: number
  /** 该 call 首次出现分配的 presentation step（终态 result 复用）。 */
   step: number
+  /** 该 call 首次出现的 turn；迟到到后续 turn 时会建立新的展示归属。 */
+  turn: number
   /**
    * Latest-wins 的 content 映射：初值是 tool_call 首帧的 content 映射，任何
  * tool_call_update 帧携带非 null `content` 即覆盖（非对称工具回放：claude 的
@@ -1090,14 +1096,13 @@ function renderPlan(entries: readonly PlanEntry[]): string {
  *   （{@link PresentationSegmenter.closeAssistantSegment}）；
  * - 每个 assistant phase 经 {@link PresentationSegmenter.openAssistantSegment}
  *   分配稳定递增的 presentation step（{@link ACP_STEP}=1 起，按到达序）；
- * - 每个 tool call id 首次出现经
- *   {@link PresentationSegmenter.stepForToolCall} 分配稳定 step，之后的
- *   update/result 复用（簿记跨 turn 存活，与 pendingCalls 同生命周期——
- *   ACP 允许终态 update 迟到到后续 turn）；
+ * - 同一批并行 tool calls 经
+ *   {@link PresentationSegmenter.openToolSegment} 共享一个稳定 step；配对
+ *   update/result 从 pendingCalls 复用该 step；
  * - tool 之后的新文本必须开新 segment（close 后再 open 即得新 step），绝不
  *   回写旧/已提交消息；
- * - endTurn 只 flush 当前开放 segment（调用方 {@link TurnTranslator.endTurn}），
- *   不移动已提交消息；
+ * - endTurn flush 当前开放 segment 并关闭 synthetic step（调用方
+ *   {@link TurnTranslator.endTurn}），不移动已提交消息；
  * - synthetic step 只是 DSH 展示 identity（上游 ui-conversation 的
  *   `turn:step` 节点键与 anchorSeq 排序的输入），**不宣称 ACP 有 step 语义**，
  *   也不进任何对账 digest（resume.ts 的 digest 输入只含语义事实）。
@@ -1107,8 +1112,8 @@ export class PresentationSegmenter {
   private nextStep = ACP_STEP
   /** 当前开放 assistant segment 的 step（无开放 segment 时 undefined）。 */
   private assistantStep: number | undefined
-  /** toolCallId → 首次出现分配的 step；跨 turn 存活直到终态 release。 */
-  private readonly toolSteps = new Map<string, number>()
+  /** 当前 turn 开放的 tool phase step；并行调用共享，turn 边界复位。 */
+  private toolStep: number | undefined
   /** 当前 turn 是否已产出可见输出（已提交的 assistant segment / tool call / tool result）。 */
   private producedOutput = false
 
@@ -1116,6 +1121,7 @@ export class PresentationSegmenter {
   beginTurn(): void {
     this.nextStep = ACP_STEP
     this.assistantStep = undefined
+    this.toolStep = undefined
     this.producedOutput = false
   }
 
@@ -1124,9 +1130,17 @@ export class PresentationSegmenter {
     return this.assistantStep
   }
 
-  /** 打开（或返回）当前 assistant segment 的 step；首次打开时分配新 step。 */
-  openAssistantSegment(): number {
-    this.assistantStep ??= this.nextStep++
+  /** 当前 turn 最近分配的展示 step；尚未分配时回退起始 step。 */
+  get lastAllocatedStep(): number {
+    return this.nextStep === ACP_STEP ? ACP_STEP : this.nextStep - 1
+  }
+
+  /**
+   * 打开（或返回）当前 assistant segment。tool phase 尚未结束时复用其
+   * step；否则分配下一展示 step。
+   */
+  openAssistantSegment(existingStep?: number): number {
+    this.assistantStep ??= existingStep ?? this.nextStep++
     return this.assistantStep
   }
 
@@ -1137,18 +1151,17 @@ export class PresentationSegmenter {
     return step
   }
 
-  /** tool call id 的稳定 step：首次出现分配，之后 update/result 复用（可跨 turn）。 */
-  stepForToolCall(callId: string): number {
-    const known = this.toolSteps.get(callId)
-    if (known !== undefined) return known
-    const step = this.nextStep++
-    this.toolSteps.set(callId, step)
-    return step
+  /** 打开（或返回）当前并行 tool phase 的 step。 */
+  openToolSegment(existingStep?: number): number {
+    this.toolStep ??= existingStep ?? this.nextStep++
+    return this.toolStep
   }
 
-  /** 终态 result 落盘后释放该 tool call id 的 step 簿记。 */
-  releaseToolCall(callId: string): void {
-    this.toolSteps.delete(callId)
+  /** 当前 tool phase 已无 pending call 后关闭。 */
+  closeToolSegment(): number | undefined {
+    const step = this.toolStep
+    this.toolStep = undefined
+    return step
   }
 
   /** 记录本 turn 产出了可见输出（assistant segment 提交 / tool 事件落盘）。 */
@@ -1200,6 +1213,8 @@ export class TurnTranslator {
 
  /** 展示分段状态机（presentation step 分配与 turn 产出跟踪的唯一真源）。 */
   private readonly segmenter = new PresentationSegmenter()
+  /** 当前已落 `step/start`、尚未落 `step/end` 的 DSH 展示 step。 */
+  private openPresentationStep: number | undefined
   /** Completed blocks of the current assistant segment, in block-index order. */
   private blocks: ContentBlock[] = []
   /** The open chunk block, if any. */
@@ -1244,6 +1259,11 @@ export class TurnTranslator {
   /** Whether a `beginTurn`/`endTurn` bracket is currently open. */
   get inTurn(): boolean {
     return this.inTurnNow
+  }
+
+  /** agent/error 运行时坐标使用的最近 synthetic presentation step。 */
+  get presentationStep(): number {
+    return this.openPresentationStep ?? this.segmenter.lastAllocatedStep
   }
 
   /**
@@ -1355,13 +1375,16 @@ export class TurnTranslator {
     if (this.inTurnNow) {
       this.warn('begin-turn-while-active', `beginTurn(${turn}) while turn ${this.turnNumber} is still active; flushing it implicitly`)
       events.push(...this.flushSegment())
+      events.push(...this.closeOpenPresentationStep())
     } else if (this.hasPendingContent()) {
       events.push(...this.flushSegment())
+      events.push(...this.closeOpenPresentationStep())
     }
     this.blocks = []
     this.openBlock = undefined
     this.chunkSeqs = []
     this.nextBlockIndex = 0
+    this.openPresentationStep = undefined
     this.segmenter.beginTurn()
     this.turnNumber = turn
     this.inTurnNow = true
@@ -1527,14 +1550,15 @@ export class TurnTranslator {
    * an input here (the `turn/end` reason mapping is AcpAgent's job). Open
    * tool calls are left pending: the ACP agent owns their lifecycle, and a
    * late terminal update still resolves them in a later turn.
-   * @returns the appended events: at most one `assistant/chunk` (block-end)
-   *   plus one `assistant/message`.
+ * @returns the appended events: at most one `assistant/chunk` (block-end),
+ *   one `assistant/message`, and the matching `step/end`.
    */
   endTurn(): SessionEvent[] {
     if (!this.inTurnNow) {
       this.warn('end-turn-while-inactive', 'endTurn with no active turn; flushing any pending aggregation')
     }
     const events = this.flushSegment()
+    events.push(...this.closeOpenPresentationStep())
     this.inTurnNow = false
     return events
   }
@@ -1576,11 +1600,39 @@ export class TurnTranslator {
  * 确保当前有开放的 assistant segment（文本/plan/占位内容落盘前调用）；
    * 新开的 segment 块索引从 0 重起（上游按 `turn:step` 节点各自聚合块索引）。
    */
-  private ensureAssistantSegment(): void {
+  private ensureAssistantSegment(): SessionEvent[] {
     if (this.segmenter.assistantSegmentStep === undefined) {
-      this.segmenter.openAssistantSegment()
+      const step = this.segmenter.openAssistantSegment(this.openPresentationStep)
       this.nextBlockIndex = 0
+      return this.openPresentationStepIfNeeded(step)
     }
+    return []
+  }
+
+  /** Open one synthetic DSH presentation step before its first scoped event. */
+  private openPresentationStepIfNeeded(step: number): SessionEvent[] {
+    if (this.openPresentationStep === step) return []
+    if (this.openPresentationStep !== undefined) {
+      throw new Error(`dsh-acp translate: cannot open presentation step ${step} while step ${this.openPresentationStep} is active`)
+    }
+    this.openPresentationStep = step
+    return [this.sink.append('step/start', { turn: this.turnNumber, step })]
+  }
+
+  /** Close the current synthetic DSH presentation step, if any. */
+  private closeOpenPresentationStep(): SessionEvent[] {
+    const step = this.openPresentationStep
+    if (step === undefined) return []
+    this.openPresentationStep = undefined
+    this.segmenter.closeToolSegment()
+    return [this.sink.append('step/end', { turn: this.turnNumber, step })]
+  }
+
+  /** Whether the current open step still owns an unfinished tool call. */
+  private openStepHasPendingTool(): boolean {
+    const step = this.openPresentationStep
+    return step !== undefined && [...this.pendingCalls.values()]
+      .some(call => call.turn === this.turnNumber && call.step === step)
   }
 
   /** Close the open chunk block: emit its `block-end` and move the aggregated block to the turn's block list. */
@@ -1619,8 +1671,8 @@ export class TurnTranslator {
         keptPreviewChars: mapped.keptChars,
         truncated: mapped.truncated,
       })
-      this.ensureAssistantSegment()
       const events: SessionEvent[] = []
+      events.push(...this.ensureAssistantSegment())
       if (this.openBlock !== undefined) events.push(this.closeBlock())
       const index = this.nextBlockIndex++
       events.push(this.emitChunk({ type: 'block-start', index, blockType: kind }))
@@ -1634,7 +1686,7 @@ export class TurnTranslator {
     }
     const events: SessionEvent[] = []
     const messageKey = update.messageId ?? null
-    this.ensureAssistantSegment()
+    events.push(...this.ensureAssistantSegment())
     const open = this.openBlock
     if (open !== undefined && (open.kind !== kind || open.messageKey !== messageKey)) {
       events.push(this.closeBlock())
@@ -1659,7 +1711,8 @@ export class TurnTranslator {
     // 其落盘 seq 先于本 tool/call，上游 settled 锚点因此恒在 tool 卡片之上，
     // 不再出现「流式期在上方、endTurn 后跳到下方」的跳变。
     const events = this.flushSegment()
-    const step = this.segmenter.stepForToolCall(update.toolCallId)
+    const step = this.segmenter.openToolSegment(this.openPresentationStep)
+    events.push(...this.openPresentationStepIfNeeded(step))
     const callTitle = boundAcpToolTitle(update.title) ?? acpUnknownToolName(update.toolCallId)
     const assistantCall: ContentBlock = {
       type: 'tool-call',
@@ -1708,6 +1761,7 @@ export class TurnTranslator {
     this.pendingCalls.set(update.toolCallId, {
       callSeq: event.seq,
       step,
+      turn: this.turnNumber,
       fallback: mapToolContent(update.content, this.terminalSnapshot),
  // 非对称工具回放：终态快照以首帧 wire 事实为初值（占位首帧的
       // rawInput/locations 缺席即缺席，由后续 update 帧补齐），后续 update 覆盖。
@@ -1762,26 +1816,49 @@ export class TurnTranslator {
   /** `tool_call_update` branch; contract documented at {@link TurnTranslator.feed}. */
   private feedToolCallUpdate(update: ToolCallUpdate): SessionEvent[] {
     const status = update.status
-    const pending = this.pendingCalls.get(update.toolCallId)
+    let pending = this.pendingCalls.get(update.toolCallId)
     if (pending !== undefined) this.accumulateToolCallUpdate(pending, update)
     if (status !== 'completed' && status !== 'failed') return []
- // 终态 result 复用该 call 预订的 presentation step（tool 卡片身份跨
-    // turn 稳定——ACP 允许终态 update 迟到到后续 turn，step 簿记与 pendingCalls
-    // 同生命周期）；orphan 终态（无 pending）先 flush 当前开放文本段再分配独立
-    // step，保证回放投影在同一份分段账上，不与先于它提交的文本交错。
+    // DSH 的 tool/result 必须与当前开放 step 内的 tool/call 配对。ACP 正常会在
+    // prompt 返回前交付所有终态；若上游仍迟到到后续 turn（或只发终态帧），
+    // 先在当前 turn 建立一个明确的 continuation call，再落 result。这样既保留
+    // 结果，也不伪造跨 turn 的 DSH step 关系。
     const events: SessionEvent[] = []
-    let step: number
-    if (pending !== undefined) {
-      this.pendingCalls.delete(update.toolCallId)
-      step = pending.step
-      this.segmenter.releaseToolCall(update.toolCallId)
-    } else {
+    if (pending === undefined || pending.turn !== this.turnNumber) {
+      const previous = pending
+      if (previous === undefined) {
+        this.warn('orphan-tool-result', `terminal tool_call_update "${update.toolCallId}" had no known tool/call; registered a continuation call before preserving its result`)
+      }
+      if (previous !== undefined) this.pendingCalls.delete(update.toolCallId)
       events.push(...this.flushSegment())
-      step = this.segmenter.stepForToolCall(update.toolCallId)
-      this.segmenter.releaseToolCall(update.toolCallId)
+      const snapshot = previous?.snapshot ?? acpTerminalSnapshotFromFrame(update)
+      const continuation: ToolCall = {
+        toolCallId: update.toolCallId,
+        title: boundAcpToolTitle(snapshot.title) ?? acpUnknownToolName(update.toolCallId),
+        ...(snapshot.rawInput === undefined ? {} : { rawInput: snapshot.rawInput }),
+        ...(update.content === undefined || update.content === null ? {} : { content: update.content }),
+      }
+      events.push(...this.feedToolCall(continuation))
+      pending = this.pendingCalls.get(update.toolCallId)
+      if (pending === undefined) {
+        throw new Error('dsh-acp translate: continuation tool call was not registered')
+      }
+      if (previous !== undefined) {
+        pending.fallback = previous.fallback
+        pending.snapshot = previous.snapshot
+        pending.snapshotUpdated = previous.snapshotUpdated
+      } else {
+        pending.snapshot = snapshot
+        pending.snapshotUpdated = update.title !== undefined && update.title !== null
+          || update.kind !== undefined && update.kind !== null
+          || update.locations !== undefined && update.locations !== null
+          || update.rawInput !== undefined && update.rawInput !== null
+      }
     }
+    this.pendingCalls.delete(update.toolCallId)
+    const step = pending.step
     const mapped = update.content === undefined
-      ? pending?.fallback ?? EMPTY_TOOL_CONTENT
+      ? pending.fallback
       : mapToolContent(update.content, this.terminalSnapshot)
     if (mapped.degraded.length > 0) {
  // 如实口径：非文本/超限内容不静默丢弃，按占位/摘要落盘
@@ -1803,16 +1880,14 @@ export class TurnTranslator {
  // 非对称工具回放：终态快照 meta（配对 call 的累积快照；孤儿终态帧只有本帧
     // 事实——orphan 不入对账，meta 仅作诊断留痕）。与 mapped.meta（acpToolContent）
     // 键不相交，浅合并共存。
-    const terminalMeta = pending !== undefined
-      ? acpToolCallTerminalMetaJson(pending.snapshot, pending.snapshotUpdated)
-      : acpToolCallTerminalMetaJson(acpTerminalSnapshotFromFrame(update), true)
+    const terminalMeta = acpToolCallTerminalMetaJson(pending.snapshot, pending.snapshotUpdated)
  // 展示信封（meta.acpToolPresentation）恒落——name 恒为稳定名后，
     // 渲染器靠信封拿 title/kind/locations/content 的展示形态。title 取终态
     // 快照（latest-wins 含首帧），缺席回退 acpUnknownToolName；inputSummary
     // 是快照 rawInput 的有界折叠（acpToolInputSummary）。信封是展示通道，
     // 不进对账 digest（resume.ts dshToolResultProjectionMeta 只计
     // acpToolContent 键）；回放侧经同一代码路径产出同样信封，天然对称。
-    const snapshot = pending?.snapshot ?? acpTerminalSnapshotFromFrame(update)
+    const snapshot = pending.snapshot
     const inputSummary = snapshot.rawInput === undefined ? undefined : acpToolInputSummary(snapshot.rawInput)
     const presentation: AcpToolPresentationV1 = {
       version: 1,
@@ -1837,12 +1912,10 @@ export class TurnTranslator {
       ...(Object.keys(mergedMeta).length === 0 ? {} : { meta: mergedMeta }),
     }
     this.segmenter.noteVisibleOutput()
-    if (pending === undefined) {
-      this.warn('orphan-tool-result', `terminal tool_call_update "${update.toolCallId}" has no known tool/call in this session; appended without sourceEventSeqs`)
-      events.push(this.sink.append('tool/result', data, { surfaceOp: 'append' }))
-      return events
-    }
     events.push(this.sink.append('tool/result', data, { surfaceOp: 'append', sourceEventSeqs: [pending.callSeq] }))
+    if (!this.openStepHasPendingTool() && !this.hasPendingContent()) {
+      events.push(...this.closeOpenPresentationStep())
+    }
     return events
   }
 
@@ -1850,8 +1923,8 @@ export class TurnTranslator {
   private feedPlan(update: Plan): SessionEvent[] {
     if (update.entries.length === 0) return []
     const text = renderPlan(update.entries)
-    this.ensureAssistantSegment()
     const events: SessionEvent[] = []
+    events.push(...this.ensureAssistantSegment())
     if (this.openBlock !== undefined) events.push(this.closeBlock())
     const index = this.nextBlockIndex++
     const block: ContentBlock = { type: 'reasoning', text }
@@ -1934,6 +2007,7 @@ export class TurnTranslator {
     this.segmenter.noteVisibleOutput()
     this.blocks = []
     this.chunkSeqs = []
+    if (!this.openStepHasPendingTool()) events.push(...this.closeOpenPresentationStep())
     return events
   }
 }

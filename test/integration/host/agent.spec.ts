@@ -6,7 +6,7 @@
 //      request/header 窥测命中/未命中三路；未配置 sessionPersistence 的拒绝。
 //   2. turn 驱动：followup → 完整事件序列（turn/start → user/message{append} →
 //      request/header{initial, acp-<id>} → assistant/chunk… → assistant/message
-//      {sourceEventSeqs} → turn/end）；无 step/*；turn 从 1 递增。
+//      {sourceEventSeqs} → turn/end）；ACP 展示 phase 生成配对 step/*；turn 从 1 递增。
 //   3. 懒启动：create 后不 spawn；首个 turn 才 spawn；同会话两 turn 复用同一子进程。
 //   4. cancel：turn 中途 → session/cancel 到达 mock + turn/end aborted{user} + 已流
 //      chunk 保留；idle 时无副作用；排队中的 followup 被清理（discarded/canceled）。
@@ -175,7 +175,7 @@ describe('路由：AcpAgentLoop.createAgent / resume', () => {
     handle.agent.followup(userText('hello native'));
     await handle.agent.whenIdle();
 
-    // 原生 loop 完整跑通：step 事件存在（与 ACP 无 step 对照），turn 完成
+    // 原生 loop 完整跑通：DSH synthetic presentation step 完整配对，turn 完成
     const types = contractEventTypes(handle.agent);
     expect(types).toContain('step/start');
     expect(types).toContain('step/end');
@@ -310,7 +310,7 @@ describe('路由：AcpAgentLoop.createAgent / resume', () => {
 });
 
 describe('turn 驱动事件序列（happy）', () => {
-  it('完整 turn：契约事件序列 + 无 step/* + turn=1 + append 纪律', async () => {
+  it('完整 turn：契约事件序列 + 配对 step/* + turn=1 + append 纪律', async () => {
     const harness = await boot();
     const profile = mockProfile(harness.logDir, 'happy');
     const handle = await createAcpAgent(harness, profile, SessionId('turn-happy'));
@@ -321,20 +321,22 @@ describe('turn 驱动事件序列（happy）', () => {
 
     // 契约序列（去掉 agent/inbox/spliced 簿记）：turn/start → user/message →
  // request/header → 翻译事件（tool/call 前先 flush 文本段为
-    // assistant/message）→ 尾部 plan 段 message → turn/end；无 step/*
+    // assistant/message）→ 尾部 plan 段 message → turn/end；每个展示 phase
+    // 都由 step/start 与 step/end 包围。
     expect(contractEventTypes(agent)).toEqual([
       'turn/start',
       'user/message',
       'request/header',
+      'step/start',
       'assistant/chunk', 'assistant/chunk', // thought：block-start + reasoning-delta
       'assistant/chunk', 'assistant/chunk', 'assistant/chunk', // block-end + text block-start + delta
       'assistant/chunk', 'assistant/chunk', // text-delta ×2
-      'assistant/chunk', 'assistant/message', // 文本段收口
-      'assistant/chunk', 'assistant/message', 'tool/call', // 标准 tool-call message 注册后执行
-      'tool/result',
-      'assistant/chunk', 'assistant/chunk', 'assistant/chunk', // plan 三元组（新 segment）
+      'assistant/chunk', 'assistant/message', 'step/end', // 文本段收口
+      'step/start', 'assistant/chunk', 'assistant/message', 'tool/call', // 标准 tool-call message 注册后执行
+      'tool/result', 'step/end',
+      'step/start', 'assistant/chunk', 'assistant/chunk', 'assistant/chunk', // plan 三元组（新 segment）
       'request/context',
-      'assistant/message',
+      'assistant/message', 'step/end',
       'turn/end',
     ]);
 
@@ -358,7 +360,7 @@ describe('turn 驱动事件序列（happy）', () => {
     expect(headers[0]?.data.header.config).toEqual({ provider: routeOf(profile), model: 'mock-model-a' });
 
  // 翻译事件挂在 turn 1；step 是 presentation step（segment 1 文本段 = 1，
-    // plan 段 = 3——tool 段占了 2）；无 step/start|end
+    // plan 段 = 3——tool 段占了 2），且 lifecycle 成对闭合。
     const chunks = eventsOf(agent, 'assistant/chunk');
     expect(chunks.length).toBeGreaterThan(0);
     for (const chunk of chunks.slice(0, 8)) {
@@ -370,8 +372,8 @@ describe('turn 驱动事件序列（happy）', () => {
       expect(chunk.data.turn).toBe(1);
       expect(chunk.data.step).toBe(3);
     }
-    expect(eventsOf(agent, 'step/start')).toEqual([]);
-    expect(eventsOf(agent, 'step/end')).toEqual([]);
+    expect(eventsOf(agent, 'step/start').map(event => event.data.step)).toEqual([1, 2, 3]);
+    expect(eventsOf(agent, 'step/end').map(event => event.data.step)).toEqual([1, 2, 3]);
 
  // tool/result 引用其 tool/call（sourceEventSeqs）；：tool 段 step 2
     const toolCalls = eventsOf(agent, 'tool/call');

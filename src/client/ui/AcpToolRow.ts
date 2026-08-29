@@ -258,6 +258,6 @@ export function AcpToolRow({ callId, block, cwd, openFile, inspect, t, loadPrese
           : null,
         ...truncatedNotes,
         inspect !== undefined
-          ? h('button', { type: 'button', className: css.inspectButton, onClick: inspect }, 'Inspect')
+          ? h('button', { type: 'button', className: css.inspectButton, onClick: inspect }, t('tool.inspect'))
           : null)))
 }

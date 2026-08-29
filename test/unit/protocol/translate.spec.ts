@@ -152,6 +152,59 @@ function warningCodes(translator: TurnTranslator): string[] {
   return translator.warnings.map(w => w.code)
 }
 
+/**
+ * 镜像 DSH rc.2 session invariant 的 step 关系规则。翻译器单测不拥有
+ * turn/start/turn/end，因此按事件载荷中的 turn 分组校验：step 必须从 1
+ * 连续递增，所有 step-scoped 事件必须落在当前开放 step，tool/result 必须
+ * 引用同 step 已注册的 tool/call，且每个 turn 退出时没有遗留开放 step。
+ */
+function expectValidDshPresentationLifecycle(events: readonly SessionEvent[]): void {
+  type PresentationState = { openStep: number | undefined; nextStep: number; pendingCalls: Set<string> }
+  const states = new Map<number, PresentationState>()
+  const stateOf = (turn: number) => {
+    const existing = states.get(turn)
+    if (existing !== undefined) return existing
+    const created: PresentationState = { openStep: undefined, nextStep: 1, pendingCalls: new Set<string>() }
+    states.set(turn, created)
+    return created
+  }
+
+  for (const event of events) {
+    if (event.type === 'step/start') {
+      const state = stateOf(event.data.turn)
+      expect(state.openStep, `turn ${event.data.turn} already has an open step`).toBeUndefined()
+      expect(event.data.step, `turn ${event.data.turn} step sequence`).toBe(state.nextStep)
+      state.openStep = event.data.step
+      continue
+    }
+    if (event.type === 'step/end') {
+      const state = stateOf(event.data.turn)
+      expect(event.data.step, `turn ${event.data.turn} closes its open step`).toBe(state.openStep)
+      state.openStep = undefined
+      state.nextStep += 1
+      state.pendingCalls.clear()
+      continue
+    }
+    if (event.type !== 'assistant/chunk'
+      && event.type !== 'assistant/message'
+      && event.type !== 'tool/call'
+      && event.type !== 'tool/result') continue
+
+    const state = stateOf(event.data.turn)
+    expect(event.data.step, `${event.type} uses the open step`).toBe(state.openStep)
+    if (event.type === 'tool/call') state.pendingCalls.add(event.data.callId)
+    if (event.type === 'tool/result') {
+      const callId = event.data.message.source.callId
+      expect(state.pendingCalls.has(callId), `tool/result ${callId} has a call in the same step`).toBe(true)
+      state.pendingCalls.delete(callId)
+    }
+  }
+
+  for (const [turn, state] of states) {
+    expect(state.openStep, `turn ${turn} leaves no presentation step open`).toBeUndefined()
+  }
+}
+
 // ---------- 共享 fixtures ----------
 
 // 复刻 mock-agent.mjs happyTurnUpdates：字段逐一对应（rawOutput 等翻译器应忽略的字段；
@@ -231,21 +284,22 @@ describe('happy 全序列（mock-agent happy scenario 复刻）', () => {
 
     // 每条 session/update 翻译出的事件（feed 返回值契约："the events appended while translating it"）
     expect(perFeed.map(evts => typeNames(evts))).toEqual([
-      ['assistant/chunk', 'assistant/chunk'], // thought: block-start + reasoning-delta
+      ['step/start', 'assistant/chunk', 'assistant/chunk'], // thought: 展示 step + block-start + reasoning-delta
       ['assistant/chunk', 'assistant/chunk', 'assistant/chunk'], // thought block-end + text block-start + 'Hello'
       ['assistant/chunk'], // text-delta ', mock'
       ['assistant/chunk'], // text-delta ' world.'
  // tool_call 到达前先 flush 文本，再落标准 assistant tool-call 块与独立 tool/call
-      ['assistant/chunk', 'assistant/message', 'assistant/chunk', 'assistant/message', 'tool/call'],
-      ['tool/result'],
-      ['assistant/chunk', 'assistant/chunk', 'assistant/chunk'], // plan 三元组（新 segment，step 3）
+      ['assistant/chunk', 'assistant/message', 'step/end', 'step/start', 'assistant/chunk', 'assistant/message', 'tool/call'],
+      ['tool/result', 'step/end'],
+      ['step/start', 'assistant/chunk', 'assistant/chunk', 'assistant/chunk'], // plan 三元组（新 segment，step 3）
       ['request/context'],
     ])
-    expect(typeNames(endEvents)).toEqual(['assistant/message'])
+    expect(typeNames(endEvents)).toEqual(['assistant/message', 'step/end'])
 
  // 全量事件类型序列（assistant/message(segment 1) 先于 tool 事件落盘；
     // 尾部 plan 段在 endTurn 收口为第二条 assistant/message）
     expect(typeNames(sink.events)).toEqual([
+      'step/start',
       'assistant/chunk',
       'assistant/chunk',
       'assistant/chunk',
@@ -255,24 +309,30 @@ describe('happy 全序列（mock-agent happy scenario 复刻）', () => {
       'assistant/chunk',
       'assistant/chunk',
       'assistant/message',
+      'step/end',
+      'step/start',
       'assistant/chunk',
       'assistant/message',
       'tool/call',
       'tool/result',
+      'step/end',
+      'step/start',
       'assistant/chunk',
       'assistant/chunk',
       'assistant/chunk',
       'request/context',
       'assistant/message',
+      'step/end',
     ])
 
     // seq 从 0 连续；time 由 sink 分配
-    expect(sink.events.map(e => e.seq)).toEqual(Array.from({ length: 18 }, (_, i) => i))
+    expect(sink.events.map(e => e.seq)).toEqual(Array.from({ length: 24 }, (_, i) => i))
     expect(sink.events.every(e => typeof e.time === 'number')).toBe(true)
+    expectValidDshPresentationLifecycle(sink.events)
 
     // feed/endTurn 返回的事件就是 sink 新追加的事件（同值、同序）
-    expect(perFeed.flat()).toEqual(sink.events.slice(0, 17))
-    expect(endEvents).toEqual([at(sink.events, 17)])
+    expect(perFeed.flat()).toEqual(sink.events.slice(0, 22))
+    expect(endEvents).toEqual(sink.events.slice(22))
 
  // 所有 turn 作用域事件归属 turn 1；step 是 presentation step：
     // segment 1（thought+text，seq 0-8）= 1；tool 段（seq 9-12）= 2；plan 段（seq 13-15、17）= 3
@@ -285,7 +345,7 @@ describe('happy 全序列（mock-agent happy scenario 复刻）', () => {
     expect(turnScoped).toHaveLength(17)
     for (const e of turnScoped) {
       expect(e.data.turn).toBe(1)
-      const expectedStep = e.seq <= 8 ? 1 : e.seq <= 12 ? 2 : 3
+      const expectedStep = e.seq <= 9 ? 1 : e.seq <= 15 ? 2 : 3
       expect(e.data.step).toBe(expectedStep)
     }
 
@@ -307,7 +367,7 @@ describe('happy 全序列（mock-agent happy scenario 复刻）', () => {
     expect(msg.surfaceOp).toBe('append')
     // sourceEventSeqs 恰为本 segment 全部 assistant/chunk 的 seq（tool/call、
     // tool/result、request/context 与后续 segment 的 chunk 不在其列）
-    expect(msg.sourceEventSeqs).toEqual([0, 1, 2, 3, 4, 5, 6, 7])
+    expect(msg.sourceEventSeqs).toEqual([1, 2, 3, 4, 5, 6, 7, 8])
     expect(msg.data.turn).toBe(1)
     expect(msg.data.step).toBe(ACP_STEP) // segment 1 = 每 turn 分配起点
     expect(typeof msg.data.message.id).toBe('string')
@@ -326,11 +386,11 @@ describe('happy 全序列（mock-agent happy scenario 复刻）', () => {
     expect(toolMsg.data.message.content).toEqual([{
       type: 'tool-call', id: 'mock-tool-1', name: 'Read README.md', arguments: '{"path":"README.md"}',
     }])
-    expect(toolMsg.sourceEventSeqs).toEqual([9])
+    expect(toolMsg.sourceEventSeqs).toEqual([12])
 
     const planMsg = at(messages, 2)
     expect(planMsg.surfaceOp).toBe('append')
-    expect(planMsg.sourceEventSeqs).toEqual([13, 14, 15])
+    expect(planMsg.sourceEventSeqs).toEqual([18, 19, 20])
     expect(planMsg.data.turn).toBe(1)
     expect(planMsg.data.step).toBe(3)
     expect(planMsg.data.message.content).toEqual([
@@ -556,7 +616,7 @@ describe('tool_call / tool_call_update', () => {
     // 仅 title 在场 → meta 只带 title 键（kind/locations 缺席者不带键）
     expect(at(calls, 1).data).toEqual({
       turn: 1,
-      step: 2, // 第二个 tool call id 分配到递增的下一个 step
+      step: 1, // 同一并行 tool phase 共享 step
       callId: 'tc-2',
       name: ACP_EXTERNAL_TOOL_NAME,
       arguments: '{}',
@@ -692,7 +752,7 @@ describe('tool_call / tool_call_update', () => {
     expect(translator.warnings).toEqual([])
   })
 
-  it('orphan 终态 update 仍落盘：无 sourceEventSeqs + orphan-tool-result 警告', () => {
+  it('orphan 终态 update 仍落盘：先注册 continuation call + orphan-tool-result 警告', () => {
     const { sink, translator } = makeTranslator()
     translator.beginTurn(1)
     const fed = translator.feed(notification({
@@ -701,11 +761,13 @@ describe('tool_call / tool_call_update', () => {
       status: 'completed',
       content: [{ type: 'content', content: { type: 'text', text: 'late result' } }],
     }))
-    expect(typeNames(fed)).toEqual(['tool/result'])
+    expect(typeNames(fed)).toEqual([
+      'step/start', 'assistant/chunk', 'assistant/message', 'tool/call', 'tool/result', 'step/end',
+    ])
 
     const result = at(ofType(sink.events, 'tool/result'), 0)
     expect(result.surfaceOp).toBe('append')
-    expect('sourceEventSeqs' in result).toBe(false)
+    expect(result.sourceEventSeqs).toEqual([at(ofType(sink.events, 'tool/call'), 0).seq])
     expect(result.data.message.content).toEqual([
       {
         type: 'tool-result',
@@ -744,12 +806,12 @@ describe('tool_call / tool_call_update', () => {
     expect(at(translator.warnings, 0).message).toContain('dup')
   })
 
-  it('跨 turn 迟到的终态 update 仍 resolve：结果归属到达时的 turn，引用旧 turn 的 callSeq', () => {
+  it('跨 turn 迟到的终态 update 仍 resolve：当前 turn 注册 continuation 并引用它', () => {
     const { sink, translator } = makeTranslator()
     translator.beginTurn(1)
     translator.feed(notification({ sessionUpdate: 'tool_call', toolCallId: 'late', title: 'Late call' }))
-    // turn 1 无内容无 usage：endTurn 不合成 assistant/message
-    expect(translator.endTurn()).toEqual([])
+    // turn 1 已注册 tool call；endTurn 关闭其展示 step。
+    expect(typeNames(translator.endTurn())).toEqual(['step/end'])
 
     translator.beginTurn(2)
     translator.feed(notification({
@@ -760,18 +822,22 @@ describe('tool_call / tool_call_update', () => {
     }))
     translator.endTurn()
 
-    const call = at(ofType(sink.events, 'tool/call'), 0)
+    const calls = ofType(sink.events, 'tool/call')
+    const call = at(calls, 0)
+    const continuation = at(calls, 1)
     expect(call.data.turn).toBe(1)
+    expect(continuation.data.turn).toBe(2)
     const result = at(ofType(sink.events, 'tool/result'), 0)
     expect(result.data.turn).toBe(2)
-    expect(result.sourceEventSeqs).toEqual([call.seq])
-    // tool call 以标准 assistant tool-call message 注册，终态才不会被轨迹视为 orphan。
+    expect(result.sourceEventSeqs).toEqual([continuation.seq])
+    // 原 call 与 continuation 都以标准 assistant tool-call message 注册。
     const messages = ofType(sink.events, 'assistant/message')
-    expect(messages).toHaveLength(1)
+    expect(messages).toHaveLength(2)
     expect(messages[0]?.data.message.content).toEqual([{
       type: 'tool-call', id: 'late', name: 'Late call', arguments: '{}',
     }])
     expect(translator.warnings).toEqual([])
+    expectValidDshPresentationLifecycle(sink.events)
   })
 })
 
@@ -930,7 +996,7 @@ describe('非对称工具回放：终态快照回写（claude 0.70.0 占位首�
     translator.endTurn()
 
     const result = at(ofType(sink.events, 'tool/result'), 0)
-    expect('sourceEventSeqs' in result).toBe(false)
+    expect(result.sourceEventSeqs).toEqual([at(ofType(sink.events, 'tool/call'), 0).seq])
     expect(terminalOf(sink.events, 0)).toEqual({ title: 'Ghost title', kind: 'execute' })
     expect(warningCodes(translator)).toEqual(['orphan-tool-result'])
   })
@@ -1223,7 +1289,7 @@ describe('turn 纪律', () => {
   it('update-outside-turn：记警告仍尽力翻译（turn 0）；beginTurn 隐式 flush 且无 begin-turn-while-active', () => {
     const { translator } = makeTranslator()
     const fed = translator.feed(notification(messageChunk('early', 'm1')))
-    expect(typeNames(fed)).toEqual(['assistant/chunk', 'assistant/chunk'])
+    expect(typeNames(fed)).toEqual(['step/start', 'assistant/chunk', 'assistant/chunk'])
     for (const e of ofType(fed, 'assistant/chunk')) expect(e.data.turn).toBe(0)
     expect(warningCodes(translator)).toEqual(['update-outside-turn'])
     expect(at(translator.warnings, 0).message).toContain('agent_message_chunk')
@@ -1231,12 +1297,12 @@ describe('turn 纪律', () => {
     // beginTurn 发现 out-of-turn 聚合的遗留内容 → 按 PREVIOUS turn（0）flush，不记
     // begin-turn-while-active（当时并无活动 turn）
     const flushed = translator.beginTurn(1)
-    expect(typeNames(flushed)).toEqual(['assistant/chunk', 'assistant/message'])
+    expect(typeNames(flushed)).toEqual(['assistant/chunk', 'assistant/message', 'step/end'])
     const msg = at(ofType(flushed, 'assistant/message'), 0)
     expect(msg.data.turn).toBe(0)
     expect(msg.data.message.content).toEqual([{ type: 'text', text: 'early' }])
     // 该 turn 的全部 assistant/chunk：block-start(0) + text-delta(1) + flush 时的 block-end(2)
-    expect(msg.sourceEventSeqs).toEqual([0, 1, 2])
+    expect(msg.sourceEventSeqs).toEqual([1, 2, 3])
     expect(warningCodes(translator)).toEqual(['update-outside-turn'])
     expect(translator.turn).toBe(1)
     expect(translator.inTurn).toBe(true)
@@ -1249,7 +1315,7 @@ describe('turn 纪律', () => {
     translator.feed(notification(messageChunk('x', 'm1')))
 
     const flushed = translator.beginTurn(2)
-    expect(typeNames(flushed)).toEqual(['assistant/chunk', 'assistant/message'])
+    expect(typeNames(flushed)).toEqual(['assistant/chunk', 'assistant/message', 'step/end'])
     const flushedMsg = at(ofType(flushed, 'assistant/message'), 0)
     expect(flushedMsg.data.turn).toBe(1)
     expect(flushedMsg.data.message.content).toEqual([{ type: 'text', text: 'x' }])
@@ -1272,7 +1338,7 @@ describe('turn 纪律', () => {
     translator.feed(notification(messageChunk('x', 'm1')))
 
     const first = translator.endTurn()
-    expect(typeNames(first)).toEqual(['assistant/chunk', 'assistant/message'])
+    expect(typeNames(first)).toEqual(['assistant/chunk', 'assistant/message', 'step/end'])
     expect(translator.warnings).toEqual([])
 
     expect(translator.endTurn()).toEqual([])
@@ -1286,7 +1352,7 @@ describe('turn 纪律', () => {
     const { translator } = makeTranslator()
     translator.feed(notification(messageChunk('stray', 'm1'))) // turn 外聚合
     const events = translator.endTurn()
-    expect(typeNames(events)).toEqual(['assistant/chunk', 'assistant/message'])
+    expect(typeNames(events)).toEqual(['assistant/chunk', 'assistant/message', 'step/end'])
     const msg = at(ofType(events, 'assistant/message'), 0)
     expect(msg.data.turn).toBe(0)
     expect(msg.data.message.content).toEqual([{ type: 'text', text: 'stray' }])
@@ -1331,15 +1397,19 @@ describe('append 纪律抽样', () => {
     translator.endTurn()
 
     expect(typeNames(sink.events)).toEqual([
+      'step/start',
       'assistant/chunk',
       'assistant/chunk',
  // tool_call 到达前的 segment flush（block-end + assistant/message）
       'assistant/chunk',
       'assistant/message',
+      'step/end',
+      'step/start',
       'assistant/chunk',
       'assistant/message',
       'tool/call',
       'tool/result',
+      'step/end',
       'request/context',
     ])
     const logOnly = sink.events.filter(
@@ -1373,7 +1443,7 @@ describe('非文本内容（chunk 有界可见占位；tool result 占位/摘要
     const imageHash = createHash('sha256').update('aGVsbG8=', 'utf8').digest('hex').slice(0, ACP_TOOL_CONTENT_HASH_HEX_CHARS)
     const placeholder = `[Image placeholder] image/png, 8 wire bytes (base64), sha256:${imageHash} — v1 has no attachment seam; binary bytes are not persisted`
     // 占位是独立完整块：block-start/text-delta/block-end 三连
-    expect(placed.map(e => (e.data as { chunk: { type: string } }).chunk.type)).toEqual(['block-start', 'text-delta', 'block-end'])
+    expect(ofType(placed, 'assistant/chunk').map(e => e.data.chunk.type)).toEqual(['block-start', 'text-delta', 'block-end'])
     expect(warningCodes(translator)).toEqual(['unsupported-chunk-content'])
     expect(at(translator.warnings, 0).message).toContain('image')
 
@@ -1396,7 +1466,7 @@ describe('非文本内容（chunk 有界可见占位；tool result 占位/摘要
       content: { type: 'resource', resource: { uri: 'file:///x', mimeType: 'text/plain', text: 'x' } },
       messageId: 't1',
     }))
-    expect(placed.map(e => (e.data as { chunk: { type: string } }).chunk.type)).toEqual(['block-start', 'reasoning-delta', 'block-end'])
+    expect(ofType(placed, 'assistant/chunk').map(e => e.data.chunk.type)).toEqual(['block-start', 'reasoning-delta', 'block-end'])
     expect(warningCodes(translator)).toEqual(['unsupported-chunk-content'])
     expect(at(translator.warnings, 0).message).toContain('agent_thought_chunk')
     translator.endTurn()
@@ -1543,7 +1613,7 @@ describe('live/replay 一致性：同一纯 reducer 对同一事件流跑两遍�
  // 防呆：比对对象不是空流（turn1 16 事件（tool/call 前的 segment flush
     // 多一条 assistant/message）+ turn2 非文本 chunk 占位三连 + 孤儿 tool/result
     // 前的占位段 flush message + 孤儿 tool/result，共 5 事件）
-    expect(JSON.parse(live.events)).toHaveLength(23)
+    expect(JSON.parse(live.events)).toHaveLength(36)
     expect(JSON.parse(live.counts)).toEqual({
       'unsupported-chunk-content': 1,
       'orphan-tool-result': 1,
@@ -1964,6 +2034,7 @@ describe(' PresentationSegmenter 验收矩阵（消息展示顺序：正文与 t
     // step 按到达序单调递增：文本段 1 → tool 段 2 → 文本段 3
     expect(at(messages, 0).data.step).toBe(1)
     expect(call.data.step).toBe(2)
+    expect(translator.presentationStep).toBe(3)
     expect(result.data.step).toBe(2) // 终态复用配对 call 的 step
     expect(at(messages, 1).data.step).toBe(3)
     // 各段只引本段 chunk、各含本段文本（绝不回写已提交消息）
@@ -1978,9 +2049,9 @@ describe(' PresentationSegmenter 验收矩阵（消息展示顺序：正文与 t
     const { sink, translator } = makeTranslator()
     translator.beginTurn(1)
     translator.feed(notification(toolCallFrame('a', 'A')))
+    translator.feed(notification(toolDoneFrame('a')))
     translator.feed(notification(messageChunk('mid', 'm1')))
     translator.feed(notification(toolCallFrame('b', 'B')))
-    translator.feed(notification(toolDoneFrame('a')))
     translator.feed(notification(toolDoneFrame('b')))
     translator.endTurn()
 
@@ -1994,13 +2065,13 @@ describe(' PresentationSegmenter 验收矩阵（消息展示顺序：正文与 t
     // 文本段落在两个 tool 卡片之间
     expect(at(calls, 0).seq).toBeLessThan(at(messages, 0).seq)
     expect(at(messages, 0).seq).toBeLessThan(at(calls, 1).seq)
-    // 两个 pending 的终态 result 各自复用其 call 的 step
+    // 两个终态 result 各自复用其 call 的 step
     const results = ofType(sink.events, 'tool/result')
     expect(results.map(e => e.data.step)).toEqual([1, 3])
     expect(translator.warnings).toEqual([])
   })
 
-  it('多工具交错 text→toolA→toolB→text：step 1/2/3/4 按到达序分配', () => {
+  it('并行多工具 text→toolA→toolB→text：并行调用共享 tool phase step', () => {
     const { sink, translator } = makeTranslator()
     translator.beginTurn(1)
     translator.feed(notification(messageChunk('start.', 'm1')))
@@ -2016,15 +2087,16 @@ describe(' PresentationSegmenter 验收矩阵（消息展示顺序：正文与 t
       .filter(event => event.data.message.content.some(block => block.type !== 'tool-call'))
     expect(at(messages, 0).data.step).toBe(1)
     expect(at(calls, 0).data.step).toBe(2)
-    expect(at(calls, 1).data.step).toBe(3)
-    expect(at(messages, 1).data.step).toBe(4)
-    expect(ofType(sink.events, 'tool/result').map(e => e.data.step)).toEqual([2, 3])
+    expect(at(calls, 1).data.step).toBe(2)
+    expect(at(messages, 1).data.step).toBe(3)
+    expect(ofType(sink.events, 'tool/result').map(e => e.data.step)).toEqual([2, 2])
     expect(at(messages, 0).seq).toBeLessThan(at(calls, 0).seq)
     expect(at(calls, 1).seq).toBeLessThan(at(messages, 1).seq)
     expect(translator.warnings).toEqual([])
+    expectValidDshPresentationLifecycle(sink.events)
   })
 
-  it('迟到的终态 result（已知 pending）复用 call 的 step，且不 flush 当前开放文本段', () => {
+  it('迟到的终态 result 在当前 turn 建立 continuation step，不伪造跨 turn 关系', () => {
     const { sink, translator } = makeTranslator()
     translator.beginTurn(1)
     translator.feed(notification(toolCallFrame('late', 'Slow')))
@@ -2034,25 +2106,30 @@ describe(' PresentationSegmenter 验收矩阵（消息展示顺序：正文与 t
 
     translator.beginTurn(2)
     translator.feed(notification(messageChunk('turn two text', 'm1')))
-    // ACP 允许终态 update 迟到到后续 turn：已知 pending → 不 flush 开放段
+    // DSH 的 step 不能跨 turn；先收口当前文本，再注册 continuation call/result。
     const out = translator.feed(notification(toolDoneFrame('late', 'late body')))
-    expect(typeNames(out)).toEqual(['tool/result'])
+    expect(typeNames(out)).toEqual([
+      'assistant/chunk', 'assistant/message', 'step/end',
+      'step/start', 'assistant/chunk', 'assistant/message', 'tool/call', 'tool/result', 'step/end',
+    ])
     const result = at(ofType(sink.events, 'tool/result'), 0)
     expect(result.data.turn).toBe(2) // 结果归属到达时的 turn
-    expect(result.data.step).toBe(1) // 复用 turn 1 分配的 step（工具卡片身份稳定）
-    expect(result.sourceEventSeqs).toEqual([call.seq])
+    expect(result.data.step).toBe(2)
+    const continuation = at(ofType(sink.events, 'tool/call'), 1)
+    expect(result.sourceEventSeqs).toEqual([continuation.seq])
+    expect(continuation.data.callId).toBe(call.data.callId)
 
-    // 当前开放文本段未被扰动：endTurn 才收口
-    expect(typeNames(translator.endTurn())).toEqual(['assistant/chunk', 'assistant/message'])
+    expect(translator.endTurn()).toEqual([])
     const msg = at(ofType(sink.events, 'assistant/message').filter(
       event => event.data.message.content.some(block => block.type !== 'tool-call'),
     ), 0)
     expect(msg.data.turn).toBe(2)
     expect(msg.data.step).toBe(1) // turn 2 的首个 segment 从 1 起
     expect(msg.data.message.content).toEqual([{ type: 'text', text: 'turn two text' }])
+    expectValidDshPresentationLifecycle(sink.events)
   })
 
-  it('orphan 终态 result：先 flush 当前开放文本段再分配独立 step（不与已提交文本交错）', () => {
+  it('orphan 终态 result：先 flush 文本，再注册 continuation call/result', () => {
     const { sink, translator } = makeTranslator()
     translator.beginTurn(1)
     translator.feed(notification(messageChunk('open text', 'm1')))
@@ -2062,13 +2139,15 @@ describe(' PresentationSegmenter 验收矩阵（消息展示顺序：正文与 t
       status: 'completed',
       content: [{ type: 'content', content: { type: 'text', text: 'ghost body' } }],
     }))
-    // flush（block-end + message）先于 orphan result
-    expect(typeNames(out)).toEqual(['assistant/chunk', 'assistant/message', 'tool/result'])
+    expect(typeNames(out)).toEqual([
+      'assistant/chunk', 'assistant/message', 'step/end',
+      'step/start', 'assistant/chunk', 'assistant/message', 'tool/call', 'tool/result', 'step/end',
+    ])
     const msg = at(ofType(sink.events, 'assistant/message'), 0)
     const result = at(ofType(sink.events, 'tool/result'), 0)
     expect(msg.data.step).toBe(1)
     expect(result.data.step).toBe(2)
-    expect(result.sourceEventSeqs).toBeUndefined()
+    expect(result.sourceEventSeqs).toEqual([at(ofType(sink.events, 'tool/call'), 0).seq])
     expect(msg.seq).toBeLessThan(result.seq)
     expect(warningCodes(translator)).toEqual(['orphan-tool-result'])
   })

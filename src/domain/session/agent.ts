@@ -33,7 +33,7 @@ import type {
   InboxTarget,
 } from '@deepseek-ai/dsh-agent'
 import { Inbox, agentEvents } from '@deepseek-ai/dsh-agent'
-import { assertNever, createUserMessage, errorChain } from '@deepseek-ai/dsh-llm'
+import { assertNever, createUserMessage, errorChain, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type { LlmFailure } from '@deepseek-ai/dsh-llm'
 import { canonicalHeader, foldRequestHeader, headerEquals } from '@deepseek-ai/dsh-session'
 import type { Session, SessionId, TurnEndReason, UserMessage } from '@deepseek-ai/dsh-session'
@@ -878,8 +878,11 @@ export class AcpAgent implements Agent {
   /** 在存活边界报告一次失败（agent/error），再抛出由驱动边界收敛。 */
   private throwError(error: unknown): never {
     const turn = this.phase.kind === 'running' ? this.phase.turn : this.phase.lastTurn
-    // ACP 无 step：turn 内的失败挂在翻译事件的固定 step 上，turn 外为 0
-    const step = this.phase.kind === 'running' ? ACP_STEP : 0
+    // ACP 没有原生模型 step；错误坐标使用最近的 synthetic presentation
+    // step。它只进入 agent/error 运行时/遥测通道，不伪装为 ACP 协议事实。
+    const step = this.phase.kind === 'running'
+      ? this.translator?.presentationStep ?? ACP_STEP
+      : 0
     this.dispatch.emit('agent/error', { turn, step, error })
     throw error
   }
@@ -2351,6 +2354,12 @@ export class AcpAgent implements Agent {
     return modelOfConfigOptions(configOptions) ?? this.options.model ?? ''
   }
 
+  /** 当前 ACP thought_level：只接受 Agent 实际广告的非空 select 值。 */
+  private currentReasoningEffort(): string | undefined {
+    const configOptions = this.translator?.configOptions ?? this.pendingConfigOptions
+    return reasoningEffortOfConfigOptions(configOptions)
+  }
+
   /**
    * `request/header` 落盘（既定行为）：首个 turn 落 `{provider:'acp-<id>',
    * model:<ACP 当前模型>}`（initial；日志已有 header 的 resume 场景落 resume），
@@ -2367,10 +2376,15 @@ export class AcpAgent implements Agent {
     const model = knownModel !== '' ? knownModel
       : baseline !== undefined && baseline.config.model !== '' ? baseline.config.model
       : ACP_UNKNOWN_MODEL
-    const route = { provider: this.providerRoute, model }
+    const reasoningEffort = this.currentReasoningEffort()
+    const route = {
+      provider: this.providerRoute,
+      model,
+      ...(reasoningEffort === undefined ? {} : { reasoningEffort: ReasoningEffortId(reasoningEffort) }),
+    }
     const current = translator.route
     if (current.provider !== route.provider || current.model !== route.model) translator.setRoute(route)
-    const header = canonicalHeader({ config: { provider: route.provider, model: route.model } })
+    const header = canonicalHeader({ config: route })
     if (!this.requestHeaderLogged) {
       this.session.append('request/header', { header, reason: baseline === undefined ? 'initial' : 'resume' })
       this.requestHeaderLogged = true
@@ -2708,6 +2722,17 @@ export class AcpAgent implements Agent {
 function modelOfConfigOptions(configOptions: readonly acp.SessionConfigOption[] | undefined): string | undefined {
   const option = configOptions?.find((candidate) => candidate.category === 'model' || candidate.id === 'model')
   return option?.type === 'select' ? option.currentValue : undefined
+}
+
+/** 从 Agent 广告的 thought_level 选择项取得有效推理强度；缺失时诚实省略。 */
+function reasoningEffortOfConfigOptions(configOptions: readonly acp.SessionConfigOption[] | undefined): string | undefined {
+  const option = configOptions?.find(
+    (candidate) => candidate.category === 'thought_level'
+      || candidate.id === 'thought_level'
+      || candidate.id === 'reasoning_effort',
+  )
+  if (option?.type !== 'select' || typeof option.currentValue !== 'string' || option.currentValue.length === 0) return undefined
+  return option.currentValue
 }
 
 /**
