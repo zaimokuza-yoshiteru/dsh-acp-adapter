@@ -149,9 +149,9 @@ export function backendOfProvider(provider: string): string {
 
 /**
  * 兼容性判定：该 selection 是否与会话已锁定的 backend 同 backend。
- * blank 表示尚未建立 ACP backend；若 host 已实例化 native wrapper，调用方会通过
- * currentProvider 传入其实际路由。由于 Alpha 没有 live Agent 替换 seam，跨到另一
- * wrapper 必须自动创建新 DSH session；只有无 wrapper 或同路由才可原地采用。
+ * blank 表示宿主没有 ACP wrapper/binding。Alpha 的空白 launcher 可能把全局默认
+ * ACP 模型投影为 currentProvider，但其真实 AgentHandle 仍是 native，不能据此把
+ * ACP 选择误判为可原地采用；ACP 必须创建真实的新 DSH session。
  * established →
  * 只有同一路由的行可选（同 ACP profile 的不同模型行走 set_config_option 既有
  * 路径）；其余 = 跨 backend，picker 标记并分流到「在新会话中使用」。
@@ -159,12 +159,13 @@ export function backendOfProvider(provider: string): string {
 export function isSameBackendSelection(
   selection: Pick<PickerModelSelection, 'provider'>,
   backend: PickerBackendState,
-  currentProvider?: string | null,
+  _currentProvider?: string | null,
 ): boolean {
-  // A blank DSH session may already have a live native wrapper. The plugin has
-  // no public Alpha seam to replace that wrapper, so only the current provider
-  // is an in-place selection; a different provider must use a new DSH session.
-  if (backend.state === 'blank') return currentProvider === undefined || currentProvider === null || backendOfProvider(selection.provider) === currentProvider
+  // A blank DSH session owns no ACP wrapper. Its displayed current provider can
+  // be the live global default rather than the immutable AgentHandle identity,
+  // so it is evidence only for native-to-native selection. ACP always needs a
+  // newly materialized session whose factory actually constructs AcpAgent.
+  if (backend.state === 'blank') return !isAcpProvider(selection.provider)
   // A draft has a live ACP wrapper, but no committed semantic binding. Alpha
   // cannot replace that wrapper either: only the same ACP profile can switch
   // in place; another profile/native backend must open a new DSH session.
