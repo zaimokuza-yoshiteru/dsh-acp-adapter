@@ -257,6 +257,14 @@ export function acpRegistrationFacts(agents: Record<string, AcpAgentConfig>): Ac
  * This is deliberately not the official ACP Registry catalog. */
 export interface InstalledProfileRegistry {
   /**
+   * Resolves after the initial settings snapshot has been applied to the LLM
+   * route registry.  Session creation can race Cordis' inject callback during
+   * startup; callers must await this barrier before resolving an `acp-*` route,
+   * otherwise a configured ACP default can be mistaken for an unknown native
+   * provider and fall through to DSH's LLM stub.
+   */
+  readonly ready: Promise<void>
+  /**
    * The shared stub adapter. Route registration/replacement keeps this one
  * instance (`replace` semantics), and the health endpoint reads
    * probe snapshots / triggers refreshes through it.
@@ -403,6 +411,12 @@ export function installInstalledProfileRegistry(ctx: Context, options: Installed
   })
 
   let registration: AdapterRegistrationHandle | undefined
+  const ready = Promise.withResolvers<void>()
+  // A create/resume may already be waiting when the plugin is unloaded.  Do
+  // not leave that caller suspended forever: resolving the barrier lets the
+  // authoritative route lookup fail closed below.  `resolve` is idempotent,
+  // so normal initialization and disposal may safely race.
+  ctx.effect(() => () => ready.resolve(), '@zaimokuza/dsh-acp-adapter: release ACP route readiness waiters')
   // Facts are constructed by the sorted builder above, so their JSON is
   // canonical; a string compare replaces a deep-equal helper.
   let registeredKey = ''
@@ -460,6 +474,7 @@ export function installInstalledProfileRegistry(ctx: Context, options: Installed
     const scope = settings.register(ACP_SETTINGS_NS, acpSettingsSchema)
     agents = scope.get().agents
     onSettingsChange()
+    ready.resolve()
     scope.watch((next) => {
       // A stored change landing while the plugin unloads must not re-register
       // routes against a fiber whose resources are being released.
@@ -472,6 +487,7 @@ export function installInstalledProfileRegistry(ctx: Context, options: Installed
   })
 
   return {
+    ready: ready.promise,
     adapter,
     agents: () => new Map(Object.entries(agents)),
     resolveRoute(provider: string): AcpResolvedAgent | undefined {

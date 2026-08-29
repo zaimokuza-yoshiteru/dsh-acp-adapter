@@ -1,8 +1,8 @@
 // agent.spec.ts — 黑盒 黑盒测试：AcpAgent（src/domain/session/agent.ts）与 AcpAgentLoop 路由（src/host/factory/agent-loop.ts）。
 //
 // 覆盖（对应任务覆盖要点）：
-//   1. 路由：acp-<id> 命中 → AcpAgent；非 ACP provider / 未注册 acp- 前缀 → 父类
-//      ReactLoopAgent（类型断言 + 完整 LLM turn 对照）；resume 的显式 provider 与
+//   1. 路由：acp-<id> 命中 → AcpAgent；非 ACP provider → 父类
+//      ReactLoopAgent（类型断言 + 完整 LLM turn 对照）；未注册 ACP provider 响亮拒绝；resume 的显式 provider 与
 //      request/header 窥测命中/未命中三路；未配置 sessionPersistence 的拒绝。
 //   2. turn 驱动：followup → 完整事件序列（turn/start → user/message{append} →
 //      request/header{initial, acp-<id>} → assistant/chunk… → assistant/message
@@ -141,19 +141,19 @@ describe('路由：AcpAgentLoop.createAgent / resume', () => {
     expect(handle.agent.session.events).toEqual([]);
   });
 
-  it('createAgent：acp- 前缀但未注册的路由（acp-ghost）→ 委派父类 ReactLoopAgent', async () => {
+  it('createAgent：acp- 前缀但未注册的路由（acp-ghost）→ 响亮拒绝，不落入 native stub', async () => {
     const harness = await boot();
     // 注册表有一个别的 agent，但 acp-ghost 不在其中
     await registerAcpAgents(harness, [mockProfile(harness.logDir, 'happy')]);
-    const handle = await harness.loop.createAgent(harness.ctx, {
+    const rejected = await harness.loop.createAgent(harness.ctx, {
       sessionId: SessionId('route-ghost'),
       meta: { cwd: harness.logDir },
       agentOptions: { provider: 'acp-ghost' },
-    });
-    harness.handles.push(handle);
+    }).then(() => undefined, (error: unknown) => error);
 
-    expect(handle.agent).not.toBeInstanceOf(AcpAgent);
-    expect(handle.agent.constructor.name).toBe('ReactLoopAgent');
+    expect(rejected).toBeInstanceOf(AcpClientError);
+    expect((rejected as AcpClientError).code).toBe('ACP_PROTOCOL_ERROR');
+    expect((rejected as Error).message).toContain('acp-ghost');
   });
 
   it('createAgent：非 ACP provider → 父类 ReactLoopAgent 跑通完整 LLM turn，ACP 子进程零 spawn', async () => {
@@ -310,14 +310,37 @@ describe('路由：AcpAgentLoop.createAgent / resume', () => {
 });
 
 describe('turn 驱动事件序列（happy）', () => {
+  it('纯文本流不按 chunk checkpoint：只保留 prompt 前与 turn 收束两个边界', async () => {
+    const harness = await boot();
+    const profile = mockProfile(harness.logDir, 'text-only');
+    const handle = await createAcpAgent(harness, profile, SessionId('turn-text-only'));
+    const flushSeqs: number[] = [];
+    harness.ctx.on('session/flush', (current) => { flushSeqs.push(current.seq) });
+
+    handle.agent.followup(userText('Say hello without tools.'));
+    await handle.agent.whenIdle();
+
+    expect(flushSeqs).toHaveLength(2);
+    expect(flushSeqs[0]).toBeLessThan(flushSeqs[1] ?? 0);
+    expect(turnEndReasons(handle.agent)).toEqual([{ turn: 1, reason: { kind: 'completed' } }]);
+  }, 15_000);
+
   it('完整 turn：契约事件序列 + 无 step/* + turn=1 + append 纪律', async () => {
     const harness = await boot();
     const profile = mockProfile(harness.logDir, 'happy');
     const handle = await createAcpAgent(harness, profile, SessionId('turn-happy'));
     const agent = handle.agent;
+    const flushSeqs: number[] = [];
+    harness.ctx.on('session/flush', (current) => { flushSeqs.push(current.seq) });
 
     agent.followup(userText('Say hello to the mock world.'));
     await agent.whenIdle();
+
+    // ACP bypasses DSH's native LLM pipeline, so the adapter must still use
+    // the public SessionStore checkpoint seam: one checkpoint before the
+    // external prompt and another after the durable turn outcome.
+    expect(flushSeqs.length).toBeGreaterThanOrEqual(2);
+    expect(flushSeqs[0]).toBeLessThan(flushSeqs.at(-1) ?? 0);
 
     // 契约序列（去掉 agent/inbox/spliced 簿记）：turn/start → user/message →
  // request/header → 翻译事件（tool/call 前先 flush 文本段为
@@ -739,6 +762,37 @@ describe('request/header change（setConfigOption 热切换）', () => {
       { turn: 1, reason: { kind: 'completed' } },
       { turn: 2, reason: { kind: 'completed' } },
     ]);
+  }, 15_000);
+
+  it('ACP thought_level 写入 request/header，切换后下一轮保留最新 reasoningEffort', async () => {
+    const previousThoughtLevel = process.env.MOCK_THOUGHT_LEVEL;
+    process.env.MOCK_THOUGHT_LEVEL = '1';
+    try {
+      const harness = await boot();
+      const profile = mockProfile(harness.logDir, 'happy');
+      const handle = await createAcpAgent(harness, profile, SessionId('header-effort'));
+      const agent = handle.agent as AcpAgent;
+
+      agent.followup(userText('initial effort'));
+      await agent.whenIdle();
+      expect(eventsOf(agent, 'request/header')[0]?.data.header.config).toMatchObject({
+        provider: routeOf(profile),
+        model: 'mock-model-a',
+        reasoningEffort: 'medium',
+      });
+
+      await agent.setConfigOption('thought_level', 'low');
+      agent.followup(userText('changed effort'));
+      await agent.whenIdle();
+      expect(eventsOf(agent, 'request/header')[1]?.data.header.config).toMatchObject({
+        provider: routeOf(profile),
+        model: 'mock-model-a',
+        reasoningEffort: 'low',
+      });
+    } finally {
+      if (previousThoughtLevel === undefined) delete process.env.MOCK_THOUGHT_LEVEL;
+      else process.env.MOCK_THOUGHT_LEVEL = previousThoughtLevel;
+    }
   }, 15_000);
 
  it('running 时 setConfigOption 拒绝（竞态拒绝策略在执行点强制）', async () => {

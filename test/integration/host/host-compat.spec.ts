@@ -1,11 +1,11 @@
 // host-compat.spec.ts — host-compat 兼容岛的漂移检测（要求 3）与结构门
 // fail closed（版本地板 + seam 结构检查）。
 //
-// 上游真源：node_modules 里 @deepseek-ai/dsh-agent-loop@0.1.1-rc.2 的已构建 lib
+// 上游真源：node_modules 里 @deepseek-ai/dsh-agent-loop@0.1.2-alpha.1 的已构建 lib
 // （devDeps 精确钉版，node_modules 即上游真源；对应 reference/deepseek-harness
-// tag dsh-v0.1.1-rc.2，commit b150a551b8）。本套件钉住：
+// tag dsh-v0.1.2-alpha.1，commit cd5ef8148158）。本套件钉住：
 //   1. 版本钉：devDep 版本 === host-compat/structure-gate.ts 的 MIN_HOST_VERSION
-//      常量 === '0.1.1-rc.2'，UPSTREAM_TAG/COMMIT 常量不被改；
+//      常量 === '0.1.2-alpha.1'，UPSTREAM_TAG/COMMIT 常量不被改；
 //   2. raceAbort / raceAbortCall / assertAgentOptions（隔离项 2/3/4）：host-compat
 //      TS 源经 ts.transpileModule 脱类型后与上游 lib 同名函数体机械比较
 //      （规范化：去注释、统一引号、void 0/语句位 void、花括号/分号/空白）；
@@ -117,13 +117,13 @@ function methodNames(classText: string): string[] {
   return names
 }
 
-describe('host-compat 差异钉版（上游 dsh-v0.1.1-rc.2, commit b150a551b8）', () => {
-  it('版本钉：devDep 精确 0.1.1-rc.2 === MIN_HOST_VERSION 常量；tag/commit 常量不被改', () => {
+describe('host-compat 差异钉版（上游 dsh-v0.1.2-alpha.1, commit cd5ef8148158）', () => {
+  it('版本钉：devDep 精确 0.1.2-alpha.1 === MIN_HOST_VERSION 常量；tag/commit 常量不被改', () => {
     const upstreamManifest = JSON.parse(fs.readFileSync(UPSTREAM_PKG_JSON, 'utf8')) as { version: string }
-    expect(upstreamManifest.version).toBe('0.1.1-rc.2')
+    expect(upstreamManifest.version).toBe('0.1.2-alpha.1')
     expect(MIN_HOST_VERSION).toBe(upstreamManifest.version)
-    expect(UPSTREAM_TAG).toBe('dsh-v0.1.1-rc.2')
-    expect(UPSTREAM_COMMIT).toBe('b150a551b8')
+    expect(UPSTREAM_TAG).toBe('dsh-v0.1.2-alpha.1')
+    expect(UPSTREAM_COMMIT).toBe('cd5ef8148158')
     const manifest = JSON.parse(fs.readFileSync(new URL('../../../package.json', import.meta.url), 'utf8')) as {
       devDependencies?: Record<string, string>
     }
@@ -204,9 +204,9 @@ describe('host-compat 差异钉版（上游 dsh-v0.1.1-rc.2, commit b150a551b8�
   // package.json 解析）。vendored 自同一上游 HEAD（packages/typert/protocol/src），
   // sha256 钉死——改动必须先回 reference 仓同步上游，再更新钉值。
   it.each([
-    ['index.ts', '41915d362b5a77dc08c673390114c721dec4dbe868d83307816dfe98e72f2933'],
-    ['types.ts', 'ded3485928ffca9ba6eaee881b0281bb840bd0732e3a8f72241c4240fef16efc'],
-  ])('vendored 钉：host-compat/typert-protocol/%s 与上游 b150a551b8 逐字节一致（sha256）', (file, sha256) => {
+    ['index.ts', 'b0986800c0e7ef4104549ccd1b5a3a09022e1f900f9bb0bffa35f2daf1826e7a'],
+    ['types.ts', 'f989e7329c8b1211ec456ff5afedb0378c561176d965116f08c373a970c844ad'],
+  ])('vendored 钉：host-compat/typert-protocol/%s 与上游 dsh-v0.1.2-alpha.1 逐字节一致（sha256）', (file, sha256) => {
     const content = fs.readFileSync(new URL(`../../../src/host-compat/typert-protocol/${file}`, import.meta.url))
     expect(createHash('sha256').update(content).digest('hex')).toBe(sha256)
   })
@@ -299,14 +299,14 @@ describe('structure-gate：fail closed', () => {
     expect(() => gate.assertHostCompatible()).toThrow(/host structure gate has not settled/)
   })
 
-  it('宿主链命中 rc.2（fake loader + 表驱动 package.json 走查 + 结构齐备 mock ctx）：门开；parentURL 锚在本模块', async () => {
+  it('宿主链命中 Alpha（fake loader + 表驱动 package.json 走查 + 结构齐备 mock ctx）：门开；parentURL 锚在本模块', async () => {
     vi.resetModules()
     const gate: StructureGateModule = await import('../../../src/host-compat/structure-gate.ts')
     const loader = fakeLoaderV2(FAKE_ENTRY)
     const logger = { warn: vi.fn(), error: vi.fn() }
     await gate.initStructureGate(logger, { internal: loader.internal }, fakeSeamCtx(), {
       resolveOwn: () => { throw new Error('must not fall back') },
-      readPackageJson: readPackageJsonTable({ [FAKE_PKG_JSON]: { name: '@deepseek-ai/dsh-agent-loop', version: '0.1.1-rc.2' } }),
+      readPackageJson: readPackageJsonTable({ [FAKE_PKG_JSON]: { name: '@deepseek-ai/dsh-agent-loop', version: '0.1.2-alpha.1' } }),
     })
     expect(() => gate.assertHostCompatible()).not.toThrow()
     expect(logger.error).not.toHaveBeenCalled()
@@ -316,7 +316,7 @@ describe('structure-gate：fail closed', () => {
     expect(loader.calls[0]?.parentURL).toContain('host-compat/structure-gate.ts')
   })
 
-  it.each(['0.1.1-rc.2', '0.1.1-rc.3', '0.1.1', '0.1.2', '0.2.0'])('最低版本制：宿主 %s 接受（不因版本号更高而拒绝）', async (version) => {
+  it.each(['0.1.2-alpha.1', '0.1.2-alpha.2', '0.1.2', '0.2.0', '1.0.0'])('最低版本制：宿主 %s 接受（不因版本号更高而拒绝）', async (version) => {
     vi.resetModules()
     const gate: StructureGateModule = await import('../../../src/host-compat/structure-gate.ts')
     const loader = fakeLoaderV2(FAKE_ENTRY)
@@ -329,7 +329,7 @@ describe('structure-gate：fail closed', () => {
     expect(logger.error).not.toHaveBeenCalled()
   })
 
-  it.each(['0.1.1-rc.1', '0.1.0-rc.8', '0.1.0'])('最低版本制：宿主 %s 低于地板，门关（ACP_HOST_INCOMPATIBLE + 升级指引 + stderr 双写）', async (version) => {
+  it.each(['0.1.2-alpha.0', '0.1.1', '0.1.2-alpha'])('最低版本制：宿主 %s 低于地板，门关（ACP_HOST_INCOMPATIBLE + 升级指引 + stderr 双写）', async (version) => {
     vi.resetModules()
     const gate: StructureGateModule = await import('../../../src/host-compat/structure-gate.ts')
     const loader = fakeLoaderV2(FAKE_ENTRY)
@@ -350,15 +350,15 @@ describe('structure-gate：fail closed', () => {
     expect(failure.code).toBe('ACP_HOST_INCOMPATIBLE')
     expect(failure.message).toContain(version)
     expect(failure.message).toContain(FAKE_PKG_JSON)
-    expect(failure.message).toContain('0.1.1-rc.2')
-    expect(failure.message).toContain('dsh-v0.1.1-rc.2')
-    expect(failure.message).toContain('b150a551b8')
+    expect(failure.message).toContain('0.1.2-alpha.1')
+    expect(failure.message).toContain('dsh-v0.1.2-alpha.1')
+    expect(failure.message).toContain('cd5ef8148158')
     expect(failure.message).toContain('native routes stay available')
     const stderrText = stderr.mock.calls.map((call) => String(call[0])).join('')
     expect(stderrText).toContain('[dsh-acp structure-gate] ERROR')
   })
 
-  it('loader 缺席：自锚 createRequire 兜底命中 devDep 真源（0.1.1-rc.2），门开', async () => {
+  it('loader 缺席：自锚 createRequire 兜底命中 devDep 真源（0.1.2-alpha.1），门开', async () => {
     vi.resetModules()
     const gate: StructureGateModule = await import('../../../src/host-compat/structure-gate.ts')
     const logger = { warn: vi.fn(), error: vi.fn() }
@@ -379,7 +379,7 @@ describe('structure-gate：fail closed', () => {
       fiberState: 'active',
     }), {
       resolveOwn: () => { throw new Error('must not fall back') },
-      readPackageJson: readPackageJsonTable({ [FAKE_PKG_JSON]: { name: '@deepseek-ai/dsh-agent-loop', version: '0.1.1-rc.2' } }),
+      readPackageJson: readPackageJsonTable({ [FAKE_PKG_JSON]: { name: '@deepseek-ai/dsh-agent-loop', version: '0.1.2-alpha.1' } }),
     })
     let failure: unknown
     try { gate.assertHostCompatible() } catch (error) { failure = error }
@@ -400,7 +400,7 @@ describe('structure-gate：fail closed', () => {
     vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
     await gate.initStructureGate(logger, { internal: loader.internal }, {}, {
       resolveOwn: () => { throw new Error('must not fall back') },
-      readPackageJson: readPackageJsonTable({ [FAKE_PKG_JSON]: { name: '@deepseek-ai/dsh-agent-loop', version: '0.1.1-rc.2' } }),
+      readPackageJson: readPackageJsonTable({ [FAKE_PKG_JSON]: { name: '@deepseek-ai/dsh-agent-loop', version: '0.1.2-alpha.1' } }),
     })
     let failure: unknown
     try { gate.assertHostCompatible() } catch (error) { failure = error }
@@ -464,7 +464,7 @@ describe('structure-gate：fail closed', () => {
     // 二次 init 换「会成功」的 deps 与结构齐备 ctx：结果不翻案（进程级首次结算权威）
     await gate.initStructureGate(logger, { internal: loader.internal }, fakeSeamCtx(), {
       resolveOwn: () => { throw new Error('unused') },
-      readPackageJson: readPackageJsonTable({ [FAKE_PKG_JSON]: { name: '@deepseek-ai/dsh-agent-loop', version: '0.1.1-rc.2' } }),
+      readPackageJson: readPackageJsonTable({ [FAKE_PKG_JSON]: { name: '@deepseek-ai/dsh-agent-loop', version: '0.1.2-alpha.1' } }),
     })
     expect(() => gate.assertHostCompatible()).toThrow(gate.AcpHostIncompatibleError)
     expect(logger.error).toHaveBeenCalledTimes(1)
@@ -483,7 +483,7 @@ describe('结构门集成：门关时 ACP create/resume 响亮拒绝，native �
     const loader = fakeLoaderV2(FAKE_ENTRY)
     await gate.initStructureGate(logger, { internal: loader.internal }, fakeSeamCtx({ dropAgents: ['setFactory'] }), {
       resolveOwn: () => { throw new Error('must not fall back') },
-      readPackageJson: readPackageJsonTable({ [FAKE_PKG_JSON]: { name: '@deepseek-ai/dsh-agent-loop', version: '0.1.1-rc.2' } }),
+      readPackageJson: readPackageJsonTable({ [FAKE_PKG_JSON]: { name: '@deepseek-ai/dsh-agent-loop', version: '0.1.2-alpha.1' } }),
     })
     const helpers = await import('../../fixtures/agent-test-helpers.ts')
     const { SessionId } = await import('@deepseek-ai/dsh-session')

@@ -4,6 +4,10 @@
 
 通过 DeepSeek Harness（DSH）会话页面使用智能体，包括 Devin、Codex、Kimi 和 Claude。智能体继续负责自己的模型、工具、skills、登录状态和运行时。
 
+> `feature/0.1.2-alpha` 仅用于适配尚未发布到 npm 的 DSH
+> `dsh-v0.1.2-alpha.1` 源码，不是可安装的发布组合。本页以下安装命令仍描述
+> main 分支上已发布的 rc.7；Alpha 分支须等待上游拆分包发布后再做干净安装验收。
+
 ## 前置：安装 DSH
 
 需要 Node.js `^22.19.0 || >=24.0.0` 和 DSH `>=0.1.1-rc.2`：

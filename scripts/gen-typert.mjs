@@ -10,8 +10,8 @@
 //      WorkspaceAnalyzer hard-requires package roots under <root>/packages/.
 //   2. @deepseek-ai/dsh-typert-protocol staged AS SOURCE at
 //      packages/typert-protocol/ (vendored byte-for-byte at
-//      src/host-compat/typert-protocol from reference HEAD b150a551b8 =
-//      dsh-v0.1.1-rc.2; the npm artifact does not ship src/), with `paths`
+//      src/host-compat/typert-protocol from the Alpha reference; the npm
+//      artifact does not ship src/), with `paths`
 //      mappings in BOTH the aggregate and the package tsconfig — the npm
 //      d.ts is not recognized by isTypeMetaSymbol.
 //   3. ./typert (+ ./remote) exports/files pre-declared in package.json
@@ -135,7 +135,7 @@ function stage() {
   }
   writeJson(join(protocolRoot, 'package.json'), {
     name: '@deepseek-ai/dsh-typert-protocol',
-    version: '0.1.1-rc.2',
+    version: '0.1.2-alpha.1',
     private: true,
     type: 'module',
   });

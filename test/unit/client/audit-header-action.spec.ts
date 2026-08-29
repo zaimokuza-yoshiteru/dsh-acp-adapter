@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AcpAuditTimelineEntry } from '../../../src/contract/remote.ts'
-import { auditEntryMatchesFilter, auditHeaderVisible, auditSummaryOf } from '../../../src/client/ui/AcpAuditHeaderAction.ts'
+import { auditEntryMatchesFilter, auditHeaderVisible, auditSessionRefreshKeyOf, auditSummaryOf } from '../../../src/client/ui/AcpAuditHeaderAction.ts'
 import { en, zh } from '../../../src/client/ui/locales.ts'
 
 const entry = (partial: Partial<AcpAuditTimelineEntry>): AcpAuditTimelineEntry => ({
@@ -21,6 +21,16 @@ describe('ACP audit header utility behavior', () => {
     expect(auditHeaderVisible({ state: 'established', provider: 'openai' })).toBe(false)
     expect(auditHeaderVisible({ state: 'draft', provider: 'acp-codex' })).toBe(false)
     expect(auditHeaderVisible({ state: 'established', provider: 'acp-codex' })).toBe(true)
+  })
+
+  it('changes the backend refresh key when a blank session becomes prompt-active', () => {
+    const blank = {
+      blank: true, promptAttempted: false, awaitingFirstTurn: false,
+      running: false, openState: 'open', lastAgentError: null,
+    } as const
+    const active = { ...blank, blank: false, promptAttempted: true, awaitingFirstTurn: true, running: true }
+    expect(auditSessionRefreshKeyOf(blank)).not.toBe(auditSessionRefreshKeyOf(active))
+    expect(auditSessionRefreshKeyOf(undefined)).toBe('absent')
   })
 
   it('filters ledger rows by category without changing the paged source', () => {

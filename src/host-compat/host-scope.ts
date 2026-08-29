@@ -5,7 +5,7 @@
  * `agent-presets` 将无法识别插件创建的 scope，并拒绝挂载会话。这里从 DSH 入口沿
  * `dsh-base → dsh-agent-loop → dsh-scope` 逐级解析，确保开发与发布形态都命中宿主实例。
  *
- * 该逻辑依赖 DSH `0.1.1-rc.2` 的模块结构，受 structure gate 和契约测试保护；结构
+ * 该逻辑依赖 DSH `0.1.2-alpha.1` 的模块结构，受 structure gate 和契约测试保护；结构
  * 漂移时 ACP 路由 fail closed，不影响 native DSH。`dsh-scope` 只作为类型依赖，禁止
  * 产生静态运行时 import。
  *

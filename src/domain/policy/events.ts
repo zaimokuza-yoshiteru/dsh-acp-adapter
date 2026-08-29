@@ -13,7 +13,7 @@
  * 另有 `degradation`（{@link AcpDegradationAuditData}）：tool result 内容降级
  * （非文本项按占位/摘要落盘或截断）的事实记录，每次降级一条。
  *
- * 审计不是 DSH session event：rc.2 没有可忽略的扩展事件 seam，直接写入未知
+ * 审计不是 DSH session event：0.1.2-alpha.1 仍没有可忽略的扩展事件 seam，直接写入未知
  * 事件会干扰 live session 的事件顺序。故本模块
  * 只产出纯 payload，由 ./permissions.ts（kind `permission`）与
  * src/domain/session/agent.ts（的两个新 kind）包成 sidecar entry 经

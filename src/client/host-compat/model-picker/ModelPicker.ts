@@ -21,6 +21,8 @@ import { errorMessageOf } from '../../data/logic.ts'
 import { localizedDiagnostic } from '../../data/diagnostics.ts'
 import {
   acpAgentDisplayName,
+  acpModelTriggerLabel,
+  acpTriggerReasoningLabel,
   acpUnavailableMessageOf,
   failClosedGroupsForUnavailableProbe,
   currentRouteFactsOf,
@@ -46,7 +48,7 @@ import {
   type PickerProviderGroup,
   type ProviderFilter,
 } from '../../data/selector-logic.ts'
-import type { SnapshotSelectorHook } from '../../data/stores/engine.ts'
+import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-store'
 import type { ModelPickerState } from '../../data/stores/picker-store.ts'
 import type { LiveOptionsState } from '../../data/stores/live-options-store.ts'
 import type { AcpModelKey } from './selector-locales.ts'
@@ -208,13 +210,21 @@ function Loaded({ locked, available, t, useStore, picker }: {
       choice.selection.provider === state.current?.provider
       && choice.selection.model === state.current.model)
   const currentChoice = selectedIndex >= 0 ? choices[selectedIndex] : undefined
+  const acp = isAcpProvider(state.current?.provider)
   const reasoning = currentChoice?.model.reasoning
   const effectiveEffort = state.current?.reasoningEffort ?? reasoning?.defaultEffort
   const effortLabel = reasoning === undefined
     ? undefined
-    : effectiveEffort === undefined
-      ? t('effort.providerDefault')
-      : reasoning.efforts.find((level) => level.id === effectiveEffort)?.name ?? effectiveEffort
+      : effectiveEffort === undefined
+        ? t('effort.providerDefault')
+        : reasoning.efforts.find((level) => level.id === effectiveEffort)?.name ?? effectiveEffort
+  // Once the live ACP snapshot exists, its thought-level option is the
+  // authoritative current value. The directory/default is only a pre-live
+  // fallback; it must not overwrite a live Agent value after a user changes it
+  // in the ACP options pane.
+  const triggerEffortLabel = acp
+    ? acpTriggerReasoningLabel(live.snapshot, effortLabel)
+    : effortLabel
   const effortChoices = useMemo<readonly EffortChoice[]>(() => reasoning === undefined
     ? []
     : [
@@ -229,7 +239,6 @@ function Loaded({ locked, available, t, useStore, picker }: {
       })),
     ], [reasoning, t])
   const busy = state.status === 'selecting'
-  const acp = isAcpProvider(state.current?.provider)
   // 分区题注的 agent 显示名（目录组名剥 ` · ACP` 后缀；目录未加载兜底裸 agent
   // id——selector-logic.ts acpAgentDisplayName）。仅 ACP 面板渲染时消费。
   const acpAgentName = acp ? acpAgentDisplayName(state.groups, state.current?.provider ?? backendAccess.provider) : ''
@@ -434,11 +443,22 @@ function Loaded({ locked, available, t, useStore, picker }: {
     : acp
       ? `${acpAgentName} · ${currentChoice.model.name}`
       : currentChoice.model.name
+  // ACP trigger uses one compact, accessible label.  Keep the provider/model
+  // fact and the advertised current effort in the same string so visual text,
+  // title and aria-label cannot drift.  Native DSH keeps its existing label.
+  const triggerLabel = currentChoice === undefined
+    ? modelLabel
+    : acp
+      ? acpModelTriggerLabel({
+        provider: currentChoice.selection.provider,
+        agentName: acpAgentName,
+        modelName: currentChoice.model.name,
+        ...(triggerEffortLabel === undefined ? {} : { reasoningEffort: triggerEffortLabel }),
+      })
+      : modelLabel
   const triggerAria = currentChoice === undefined
     ? t('trigger.selectAria')
-    : effortLabel === undefined
-      ? t('trigger.aria', { model: modelLabel })
-      : t('trigger.ariaEffort', { model: modelLabel, effort: effortLabel })
+    : t('trigger.aria', { model: triggerLabel })
 
   itemRefs.current = []
   let itemIndex = 0
@@ -792,17 +812,14 @@ function Loaded({ locked, available, t, useStore, picker }: {
       'aria-haspopup': 'menu',
       'aria-expanded': open,
       'aria-controls': open ? `${menuId}-menu` : undefined,
-      title: effortLabel === undefined ? modelLabel : `${modelLabel} · ${effortLabel}`,
+      title: triggerLabel,
       disabled: locked,
       onClick: () => {
         if (open) close()
         else show()
       },
     },
-      h('span', { className: css.triggerLabel }, modelLabel),
-      effortLabel === undefined
-        ? null
-        : h('span', { className: css.triggerEffort }, effortLabel),
+      h('span', { className: css.triggerLabel }, triggerLabel),
       h(IconChevronDownOutline14, {
         size: 14,
         className: open ? `${css.chevron} ${css.chevronOpen}` : css.chevron,

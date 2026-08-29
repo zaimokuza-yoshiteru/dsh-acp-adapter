@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-// 仓外可执行的 rc.2 client bundle 校验（独立 node 直跑，零依赖）。
+// 仓外可执行的 0.1.2-alpha.1 client bundle 校验（独立 node 直跑，零依赖）。
 // 覆盖：① package.json `dsh.client` manifest 形态与 peer/dev 双列纪律
 // ② 产物存在性 ③ 产物闭包（__ModuleLoader__ 包装形态 / id == 包名 /
 // sourcemap 在场且 sources 非空）④ module requests（产物内 require 全部落在
-// rc.2 baseline ∪ dsh.client.external）⑤ 源码消费审计（ctx.get 服务读取必须有
+// Alpha baseline ∪ dsh.client.external）⑤ 源码消费审计（ctx.get 服务读取必须有
 // 模块级 inject 或显式可选登记）⑥ npm tarball 内容精确性（npm pack --dry-run）。
 // 规范出处：reference/deepseek-harness packages/client/tsdown.client.ts（preset）、
 // packages/client/web/src/platform.ts（baseline）、scripts/verify-client-packages.ts（门禁）。
@@ -17,7 +17,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const read = (rel) => readFileSync(join(root, rel), 'utf8')
 const pkg = JSON.parse(read('package.json'))
 
-/** rc.2 baseline module-table rows（platform.ts PLATFORM_MODULES + PRELOADED_CLIENT_EXTERNALS）。 */
+/** Alpha baseline module-table rows（platform.ts PLATFORM_MODULES + PRELOADED_CLIENT_EXTERNALS）。 */
 const BASELINE_MODULES = [
   'react',
   'react/jsx-runtime',
@@ -26,14 +26,13 @@ const BASELINE_MODULES = [
   '@deepseek-ai/cordis',
   '@deepseek-ai/dsh-client-ui-slots',
   '@deepseek-ai/dsh-client-ui-primitives',
-  '@deepseek-ai/dsh-client-runtime/client',
+  '@deepseek-ai/dsh-client-store',
 ]
 
 /**
  * baseline 行的 npm 包名（inject 是包名边，PLATFORM_MODULES 包由 shell 隐式播种，点名即冗余）。
- * 注意 @deepseek-ai/dsh-client-runtime 不在此列：baseline 预加载的是模块行
- * `@deepseek-ai/dsh-client-runtime/client`，而包级依赖边照常声明（官方
- * ui-settings-models 的 dsh.client.inject 先例含 dsh-client-runtime）。
+ * Alpha 的共享 store 是平台模块，由 DSH web shell 直接播种；插件无需把它放进
+ * dsh.client.inject，但如果源码需要 value import，应在 bundle 中保持为外部模块。
  */
 const BASELINE_PACKAGES = new Set([
   'react',
@@ -41,6 +40,7 @@ const BASELINE_PACKAGES = new Set([
   '@deepseek-ai/cordis',
   '@deepseek-ai/dsh-client-ui-slots',
   '@deepseek-ai/dsh-client-ui-primitives',
+  '@deepseek-ai/dsh-client-store',
 ])
 
 /**
@@ -224,7 +224,7 @@ if (existsSync(bundlePath)) {
   const allowed = new Set([...BASELINE_MODULES, ...declaredExternal])
   for (const spec of [...requested].sort()) {
     if (!allowed.has(spec)) {
-      fail(`lib/client.js: require(${JSON.stringify(spec)}) 不在 rc.2 baseline 或 dsh.client.external 内 —— module table 无法应答`)
+      fail(`lib/client.js: require(${JSON.stringify(spec)}) 不在 Alpha baseline 或 dsh.client.external 内 —— module table 无法应答`)
     }
   }
   console.log(`[verify-bundle] module requests: ${requested.size === 0 ? '(none)' : [...requested].sort().join(', ')}`)

@@ -5,7 +5,7 @@
  * 用户——版本只作下限
  * （更高版本不因版本号被拒），真实兼容性由 seam 结构检查兜底。
  *
- * 上游钉版：dsh-v0.1.1-rc.2（commit b150a551b8）。host-compat/agent-loop.ts 的
+ * 上游钉版：dsh-v0.1.2-alpha.1（commit cd5ef8148158）。host-compat/agent-loop.ts 的
  * 协议帧逐函数复制自该版本的 agent-loop 私有实现（prepare 发布顺序、resumeWith
  * load 屏障、FactoryOwnership 语义）——父类私有协议漂移没有任何编译期信号，
  * 只能靠运行时的版本地板 + 结构检查兜底。
@@ -19,7 +19,7 @@
  * 避开 exports map / tsconfig paths 对子路径的形态差异，源码启动（src 入口）、
  * 构建形态（lib 入口）、npm/pnpm 安装三形态同一条走查逻辑。
  *
- * 版本判定是最低版本制（prerelease 感知）：>= 0.1.1-rc.2 即接受（0.1.1-rc.3、
+ * 版本判定是最低版本制（prerelease 感知）：>= 0.1.2-alpha.1 即接受（后续 alpha/正式版、
  * 0.1.1、0.1.2、0.2.0 都接受；0.1.1-rc.1、0.1.0-* 拒绝），不因版本号更高而拒绝
  * （{@link compareVersions}，手写小型 semver 比较，不新增依赖）。
  *
@@ -50,11 +50,11 @@ import { esmResolve } from './host-scope.ts'
 import type { HostLoaderLike, HostScopeLogger } from './host-scope.ts'
 
 /** 宿主 dsh-agent-loop 的最低支持版本（package.json devDep 精确钉版即此版本；差异测试钉死两端一致）。 */
-export const MIN_HOST_VERSION = '0.1.1-rc.2'
+export const MIN_HOST_VERSION = '0.1.2-alpha.1'
 /** 上游对照 tag（host-compat 岛全部注释头与差异测试共用）。 */
-export const UPSTREAM_TAG = 'dsh-v0.1.1-rc.2'
+export const UPSTREAM_TAG = 'dsh-v0.1.2-alpha.1'
 /** 上游对照 commit（reference/deepseek-harness）。 */
-export const UPSTREAM_COMMIT = 'b150a551b8'
+export const UPSTREAM_COMMIT = 'cd5ef8148158'
 
 const AGENT_LOOP_PACKAGE = '@deepseek-ai/dsh-agent-loop'
 

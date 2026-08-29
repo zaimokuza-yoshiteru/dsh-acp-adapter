@@ -1,7 +1,7 @@
 /**
  * host-compat 隔离项：FiberState 数值镜像。
  *
- * 上游钉版：dsh-v0.1.1-rc.2（commit b150a551b8；vendored cordis 4.0.1），
+ * 上游钉版：dsh-v0.1.2-alpha.1（commit cd5ef8148158；vendored cordis 4.0.1），
  * 源文件 reference/deepseek-harness/vendor/cordis/src/fiber.ts:147-154：
  * `export const enum FiberState { PENDING, LOADING, ACTIVE, FAILED, DISPOSED, UNLOADING }`
  * —— const enum 编译期擦除，产物无运行时可导入对象。

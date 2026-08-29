@@ -17,8 +17,9 @@
  *
  * 数据通道：复用 live-options 的会话级通道（picker-service 按 sessionId 键控
  * 的 LiveOptionsController，它带 `subscribe`）。挂载时 backendOf
- * 判定 → 订阅 + 首拉；`useSession` 的 settled nodes 计数变化（turn/块落定，
- * usage_update 恰在那时到达）触发重拉；load 的 inflight 去重吸收重复触发。
+ * 判定 → 订阅 + 首拉；Alpha SessionSnapshot 的 `running` 从 true 收束为 false
+ * 时再拉一次，从而接住 turn 内最后的 usage_update，同时不穿透已被拆出的 Chat
+ * 私有结构；load 的 inflight 去重吸收重复触发。
  * 渲染规则与文案的纯逻辑在 selector-logic.ts `acpContextUsageLine`（测试钉
  * 在数据层——vitest 下 react 是模块加载 stub，组件渲染不被测试消费）。
  * @module @zaimokuza/dsh-acp-adapter/client/AcpContextUsage
@@ -26,9 +27,9 @@
 
 import { createElement as h, useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
+import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-store'
 import { acpContextUsageLine } from '../data/selector-logic.ts'
 import type { LiveContextUsage, PickerBackendState } from '../data/selector-logic.ts'
-import type { SnapshotSelectorHook } from '../data/stores/engine.ts'
 import type { AcpModelKey } from '../host-compat/model-picker/selector-locales.ts'
 import css from './AcpContextUsage.module.css'
 
@@ -49,16 +50,11 @@ export interface AcpContextUsageServiceLike {
   liveFor(sessionId: string): ContextUsageLiveLike
 }
 
-/** 会话快照的窄化面：只读 settled nodes 计数（落定即重拉占用）。 */
-interface ConversationNodesSnapshot {
-  chat: { legacy: { nodes: readonly unknown[] } }
-}
-
 /** Injected props of the dock entry; Partial because the renderer erases the share boundary. */
 export interface AcpContextUsageProps {
   sessionId?: string | undefined
   t?: AcpContextUsageTranslate | undefined
-  useSession?: SnapshotSelectorHook<ConversationNodesSnapshot> | undefined
+  useSession?: SnapshotSelectorHook<{ running: boolean }> | undefined
   service?: AcpContextUsageServiceLike | undefined
 }
 
@@ -71,9 +67,7 @@ export function AcpContextUsage(props: AcpContextUsageProps): ReactNode {
   const { sessionId, t, useSession, service } = props
   const [backend, setBackend] = useState<PickerBackendState | null>(null)
   const [usage, setUsage] = useState<LiveContextUsage | null>(null)
-  // settled nodes 计数：turn/块落定即变化（usage_update 恰在那时到达）→ 重拉。
-  const nodeCount = useSession?.((snapshot) => snapshot.chat.legacy.nodes.length) ?? 0
-
+  const running = useSession?.((snapshot) => snapshot.running) ?? false
   // backend 判定 + ACP 会话的活体订阅（sessionId 切换即重建）。
   useEffect(() => {
     if (service === undefined || sessionId === undefined) return
@@ -99,9 +93,10 @@ export function AcpContextUsage(props: AcpContextUsageProps): ReactNode {
     return () => { disposed = true; unsubscribe?.() }
   }, [service, sessionId])
 
-  // turn 落定后重拉活体快照（load 的 inflight 去重吸收挂载期的重复触发）。
+  // usage_update 是 turn 内状态；在 Session 从 running 收束为空闲时重拉一次，
+  // 既能刷新最终占用量，也不会为每个 assistant chunk 发 RPC。
   useEffect(() => {
-    if (service === undefined || sessionId === undefined) return
+    if (running || service === undefined || sessionId === undefined) return
     if (backend?.state !== 'established') return
     let live: ContextUsageLiveLike
     try {
@@ -110,7 +105,7 @@ export function AcpContextUsage(props: AcpContextUsageProps): ReactNode {
       return
     }
     void live.load().catch(() => undefined)
-  }, [service, sessionId, backend, nodeCount])
+  }, [service, sessionId, backend, running])
 
   if (t === undefined) return null
   const line = acpContextUsageLine(backend, usage, t)

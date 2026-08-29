@@ -15,7 +15,7 @@
  * through the publication protocol frames in `host-compat` — the
  * parent's `prepare`/`setupAndPublish`/`resumeWith` are `private` and hard-code
  * `ReactLoopAgent`, so no override point exists; the frames are verbatim twins
- * pinned against dsh-v0.1.1-rc.2 by test/host-compat.spec.ts and guarded at
+ * pinned against dsh-v0.1.2-alpha.1 by test/host-compat.spec.ts and guarded at
  * runtime by the host structure gate. Before a binding is reused, the
  * double-bind guard ({@link AcpAgentLoop.guardBindingReuse}) refuses a
  * recorded ACP session that is still bound to another ACTIVE dsh session —
@@ -35,7 +35,7 @@
  *
  * Fail closed  : the host structure gate
  * (`host-compat/structure-gate.ts`) requires the host
- * `@deepseek-ai/dsh-agent-loop` to be >= 0.1.1-rc.2 and every ACP-consumed
+ * `@deepseek-ai/dsh-agent-loop` to be >= 0.1.2-alpha.1 and every ACP-consumed
  * seam to be present. A drifted, outdated, or unresolvable host disables ACP
  * routes only — session creation rejects with an `ACP_HOST_INCOMPATIBLE`
  * error carrying the concrete failures and upgrade guidance — while native
@@ -215,7 +215,7 @@ function auditTimelineRowOf(entry: AcpSidecarEntry): {
 /**
  * 宿主 session 持久记录的轻量列表面（SessionPersistence.list 的结构窄化；
  * host-compat 岛的 AcpResumePersistence 钉版只含 inspect/prepare，本类型是路由层的
- * 本地增量，不动钉版面）。宿主 rc.2 无会话删除面（见 src/persistence/sidecar.ts
+ * 本地增量，不动钉版面）。宿主 Alpha 无插件可消费的会话删除面（见 src/persistence/sidecar.ts
  * 模块头的调研结论），故「list 列出」=「存在且未删除」。
  */
 type AcpSessionListCapable = AcpResumePersistence & {
@@ -353,7 +353,7 @@ export default class AcpAgentLoop extends AgentLoop {
  // 启动时一次性 retention 清扫（接线点 = sidecar 安装处，startup-only）。
     // 刻意不做周期 sweep：audit 行有界（队列上限 + 默认 30 天保留）且本操作幂等
     // 低开销，周期定时器的收益不抵 Cordis effect/dispose 复杂度。per-session 删除
- // 维持既定边界不接线：dsh rc.2 宿主无会话删除钩子（sidecar.ts 模块头
+ // 维持既定边界不接线：dsh Alpha 宿主无插件可消费的会话删除钩子（sidecar.ts 模块头
     // 调研结论），remove 原语保留给未来真正的删除钩子与运维手清，sidecar 行的
     // 生命周期 = harness-home 的生命周期（超龄 audit 行由本清扫收敛）。
     // retention 属非关键运维项：fire-and-forget 不阻塞插件激活，失败仅 warn
@@ -656,8 +656,26 @@ export default class AcpAgentLoop extends AgentLoop {
       ? seedProvider
       : options.agentOptions?.provider
     if (provider === undefined) return super.createAgent(ownerCtx, options)
+    // ACP routes are registered from the settings inject callback.  A fresh
+    // session can be created by the host before that callback has applied the
+    // initial settings snapshot (notably when the ACP model is the DSH global
+    // default).  Waiting for the registry barrier makes route resolution
+    // authoritative; falling through to `super` here would construct a native
+    // ReactLoopAgent and fail later through ACP_STUB_ROUTE.
+    if (provider.startsWith('acp-')) {
+      await this.installedProfileRegistry.ready
+    }
     const resolved = this.installedProfileRegistry.resolveRoute(provider)
-    if (resolved === undefined) return super.createAgent(ownerCtx, options)
+    if (resolved === undefined) {
+      if (provider.startsWith('acp-')) {
+        throw new AcpClientError(
+          'protocol-error',
+          `dsh-acp: ACP execution backend ${JSON.stringify(provider)} is not configured; restore that ACP profile or select another model`,
+          { category: 'config' },
+        )
+      }
+      return super.createAgent(ownerCtx, options)
+    }
     const agentOptions: AgentOptions = {
       ...(options.agentOptions ?? {}),
       ...(seedProvider === provider && seedHeader?.config.model === undefined ? {} : seedProvider === provider && seedHeader?.config.model !== undefined ? { model: seedHeader.config.model } : {}),
@@ -719,6 +737,13 @@ export default class AcpAgentLoop extends AgentLoop {
       ? 'backend-conflict'
       : peeked?.blocked
 
+    // Resume can run during the same startup window as createAgent.  Wait for
+    // the initial settings snapshot before treating an ACP route as missing;
+    // otherwise a valid persisted ACP session would be rejected merely because
+    // the registry inject callback has not applied its routes yet.
+    if (provider.startsWith('acp-')) {
+      await this.installedProfileRegistry.ready
+    }
     const resolved = this.installedProfileRegistry.resolveRoute(provider)
     if (resolved === undefined) {
       // 持久历史命中 ACP 但 profile 已删除/改名时，不能静默退回 native。
@@ -777,7 +802,7 @@ export default class AcpAgentLoop extends AgentLoop {
    *
    * 「活动」的启发式（跨进程/崩溃残留的判断边界，如实声明）：
    *  1. 本进程活动会话：`ctx.agents` 注册表里有活体 agent——确定冲突（最强证据）。
-   *  2. 宿主 session 持久记录：`sessionPersistence.list()` 含该 id——rc.2 无会话
+   *  2. 宿主 session 持久记录：`sessionPersistence.list()` 含该 id——Alpha 无插件可消费的会话
    *     删除面（sidecar.ts 模块头调研结论），列出即「存在且未删除」，视为活动
    *     （保守覆盖「另一会话当前未加载、随时可能被用户打开」的窗口）。
    *  3. 两者皆否 → 崩溃/清理残留（会话日志已整体清走、只剩 sidecar 残档），放行复用。

@@ -19,7 +19,7 @@
  * - the default-model settings shape mirrors `packages/core/agent-default-model`
  *   (`agent-default-model` ns: `{provider, model, reasoningEffort?}`).
  *
- * Fork provenance (upstream dsh-v0.1.1-rc.2, commit b150a551b8): the upstream
+ * Fork provenance (upstream dsh-v0.1.2-alpha.1): the upstream
  * package `packages/client/ui-model-selection/` is not published to any
  * registry, so per repo policy its pure functions are carried as a modified
  * fork. The copied surface lives in the client compatibility island
@@ -34,7 +34,7 @@
  * - fully adapter-owned (absent upstream): the filter/pinned/visibility/
  *   default-resolution family, `live-controller.ts`, and the live-options
  *   snapshot types + decoder below.
- * Host-side semantics parity (not verbatim): DSH 0.1.1-rc.2 upstream `buildModelCatalog`
+ * Host-side semantics parity (not verbatim): DSH 0.1.2-alpha.1 upstream `modelCatalog`
  * records a per-provider probe failure without sinking the whole catalog
  * (packages/host/apiproxy/src/api/sessions.ts); the adapter host composition
  * does the same. test/contracts/upstream-picker-diff.spec.ts pins all of the above —
@@ -773,6 +773,25 @@ export function withLiveOptionValue(
 export function liveValueNameOf(option: LiveConfigOption, value: string): string {
   if (option.type !== 'select') return value
   return flattenLiveValues(option).find((row) => row.value === value)?.name ?? value
+}
+
+/**
+ * Resolve the value shown next to an ACP model trigger. A live snapshot is
+ * authoritative, including after the user changes an option in the live pane;
+ * the model directory/default is used only before the first snapshot arrives.
+ * Once a live Agent explicitly reports no thought-level option, return
+ * `undefined` instead of retaining a stale directory value.
+ */
+export function acpTriggerReasoningLabel(
+  snapshot: LiveOptionsSnapshot | null | undefined,
+  directoryFallback?: string,
+): string | undefined {
+  if (snapshot === null || snapshot === undefined) return directoryFallback
+  const option = snapshot.configOptions?.find((candidate) =>
+    candidate.category === 'thought_level' && candidate.type === 'select')
+  return option?.type === 'select'
+    ? liveValueNameOf(option, option.currentValue)
+    : undefined
 }
 
 // ---------- DSH 默认模型设置（跨 backend 创建与原生“选择即默认”语义） ----------

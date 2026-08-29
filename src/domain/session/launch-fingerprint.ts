@@ -113,7 +113,7 @@ export function acpLaunchFingerprint(input: AcpLaunchFingerprintInput): AcpLaunc
     envRefs,
     executableOverride,
     nativeStateEnv: nativeStateEnvFingerprint(env),
-    // DSH rc.2 does not expose a safe, serializable MCP registry to plugins.
+    // DSH Alpha still does not expose a safe, serializable MCP registry to plugins.
     // Formal ACP sessions therefore inject no host-owned MCP definition.
     mcpFingerprint: null,
   }

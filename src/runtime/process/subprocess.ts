@@ -144,9 +144,9 @@ export const ACP_SUBPROCESS_UNAVAILABLE_MESSAGE =
   + 'refusing to spawn ACP agents on this host (native dsh routes are unaffected)'
 
 /**
- * compat 口径镜像（钉版）：上游 `@deepseek-ai/dsh-subprocess` rc.2 的
+ * compat 口径镜像（钉版）：上游 `@deepseek-ai/dsh-subprocess` 0.1.2-alpha.1 的
  * `SENSITIVE_ENV_PATTERN`（packages/subprocess/subprocess/src/index.ts:44，
- * 上游钉 dsh-v0.1.1-rc.2 / commit b150a551b8）。credential 形名不穿透 scrub
+ * 上游钉 dsh-v0.1.2-alpha.1 / commit cd5ef8148158）。credential 形名不穿透 scrub
  * 底座；显式 env 条目（合并在 scrub 之后）仍可放行——与本包白名单语义互补。
  * test/subprocess-seam.spec.ts 用 devDep 真值钉死本镜像。
  */
@@ -154,7 +154,7 @@ export const ACP_SENSITIVE_ENV_PATTERN = /KEY|PASSWORD|SECRET|TOKEN/i
 
 /**
  * compat 口径镜像（钉版）：上游 `DSH_ENV_PREFIX`（packages/subprocess/subprocess/src/types.ts:13，
- * 同钉 dsh-v0.1.1-rc.2）。scrub 对 `DSH_` 前缀大小写不敏感（Windows 环境键大小写不敏感）。
+ * 同钉 dsh-v0.1.2-alpha.1）。scrub 对 `DSH_` 前缀大小写不敏感（Windows 环境键大小写不敏感）。
  */
 export const ACP_DSH_ENV_PREFIX = 'DSH_'
 

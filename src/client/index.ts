@@ -21,14 +21,14 @@
  * the loader's module table at runtime, so it is imported here WITHOUT a
  * package.json entry and typed
  * through the ambient structural minimum in react.d.ts. The dsh client
- * services this plugin consumes (slots/locale/connection/remote/settingsScope/
+ * services this plugin consumes (slots/locale/remote/settingsScope/
  * commandUi/sessions, plus the optionally-read conversation) are narrowed
  * structurally below — the same discipline the host half applies to dsh
  * services it must not import. The narrowing is the TYPING face only;
  * the dependency edges are fully declared in package.json — `dsh.client.inject`
- * carries the provider package names (informational graph metadata, rc.2
- * semantics), each double-listed in peerDependencies + devDependencies at
- * 0.1.1-rc.2. `conversation` stays an optional ctx.get read (upstream
+ * carries the provider package names (informational graph metadata for the
+ * 0.1.2-alpha.1 Generated Remote/session surface), each double-listed in
+ * peerDependencies + devDependencies at 0.1.2-alpha.1. `conversation` stays an optional ctx.get read (upstream
  * ui-model-selection precedent: absent service only degrades the composer
  * block), with its provider @deepseek-ai/dsh-client-ui-conversation declared
  * the same way; scripts/verify-bundle.mjs pins both directions. Icons come
@@ -49,7 +49,7 @@ export type * from '../contract/remote.ts'
 import contribution from '../../lib/typert.remote-client.js'
 import type {} from '../../lib/typert.remote-client.js'
 import { AcpPanelController } from './data/controller.ts'
-import type { SettingsMutateLike, SettingsScopeLike } from './data/controller.ts'
+import type { SettingsScopeLike } from './data/controller.ts'
 import type { AcpRemoteLike } from './data/acp-remote.ts'
 import { localizedDiagnostic } from './data/diagnostics.ts'
 import { createAcpPanelStore } from './data/stores/panel-store.ts'
@@ -75,6 +75,8 @@ import {
   isAcpProvider,
 } from './data/selector-logic.ts'
 import type { ModelDirectoryState, PickerModelSelection, PickerTranslate } from './data/selector-logic.ts'
+import type { WireResult } from './data/picker-wire.ts'
+import type { SessionModelsView } from './data/selector-logic.ts'
 // 复制壳（/model popup 行 + composer seat 组件 + picker 文案）收进
 // client 侧兼容岛 host-compat/model-picker/——岛只负责 DSH row/popup/command/
 // slot 的交互适配，ACP 业务逻辑全在 data/ 业务模块（architecture.spec.ts
@@ -102,11 +104,6 @@ interface LocaleLike {
 /** Structural face of the settings-scope binder (ui-settings SettingsScopeBinder). */
 interface SettingsScopeBinderLike {
   bind<T>(spec: { namespace: string; decode?: (value: unknown) => T | undefined }): SettingsScopeLike
-}
-
-/** Structural face of the connection handle, narrowed to the settings wire the panel writes through. */
-interface ConnectionLike {
-  api: { settings: SettingsMutateLike }
 }
 
 /** Structural face of the client slots service (dsh-client-ui-slots SlotRegistry). */
@@ -137,6 +134,8 @@ interface CommandUiLike {
 /** Structural face of the sessions service (subagent guard; scope/binding ride the PickerService deps). */
 interface SessionsLike {
   subagentAddress(sessionId: string): string | undefined
+  create(input: { workspaceId?: string; cwd?: string; sessionId?: string }): Promise<string>
+  binding(sessionId: string): { session?: { projections?: { faceOf(name: string): { getSnapshot(): unknown } } } } | undefined
 }
 
 /** Structural face of the workspaces service ( cross-backend new-session workspace resolution). */
@@ -144,16 +143,87 @@ interface WorkspacesLike {
   list: {
     getSnapshot(): {
       items: readonly { workspaceId: string; sessionIds: readonly string[] }[]
-      recentWorkspaceId?: string | undefined
     }
   }
 }
 
-/** Required services (cordis fiber inject; settingsScope.bind reads connection/remote off this same fiber).
+/** The Alpha generated Remote faces used by the adapter's transport bridge. */
+interface AlphaSessionRemoteLike {
+  modelCatalog(): Promise<unknown>
+  selectModel(input: { sessionId: string; provider: string; model: string; reasoningEffort?: string }): Promise<unknown>
+}
+
+interface AlphaSettingsRemoteLike {
+  mutate(namespace: string, ops: unknown[], expectedRevision?: number): Promise<unknown>
+}
+
+function resultOf<T>(value: unknown): WireResult<T> {
+  if (typeof value === 'object' && value !== null && 'ok' in value
+    && typeof (value as { ok?: unknown }).ok === 'boolean') return value as WireResult<T>
+  return { ok: false, error: { code: 'invalid-remote-result', message: 'DSH Remote returned an invalid result' } }
+}
+
+/**
+ * Adapt Alpha's Generated Remote and domain Session service to the narrow
+ * selector transport. The bridge is intentionally structural so the client
+ * bundle can be checked against the Alpha reference workspace without taking
+ * a value dependency on packages that are not yet in the registry.
+ */
+function pickerTransportOf(
+  ctx: Context,
+  sessions: SessionsLike,
+): PickerServiceDeps['transport'] {
+  // Generated Remote namespaces are explicit Alpha services. Do not read the
+  // pre-Alpha `connection.api` wrapper or accept its nested result envelope.
+  const alphaSession = ctx.get('remote.session') as unknown as AlphaSessionRemoteLike
+  const alphaSettings = ctx.get('remote.settings') as unknown as AlphaSettingsRemoteLike
+  return {
+    settings: {
+      mutate: async (request) => ({ result: resultOf(await alphaSettings.mutate(request.ns, request.ops, request.expectedRevision)) as never }),
+    } as PickerServiceDeps['transport']['settings'],
+    sessions: {
+      models: async ({ sessionId }) => {
+        const catalog = resultOf<{
+          default: PickerModelSelection
+          routableProviders: readonly string[]
+          groups: SessionModelsView['groups']
+          failures: SessionModelsView['failures']
+        }>(await alphaSession.modelCatalog())
+        if (!catalog.ok) return { result: catalog }
+        const projected = sessions.binding(sessionId)?.session?.projections?.faceOf('modelSelection').getSnapshot()
+        const next = typeof projected === 'object' && projected !== null && 'next' in projected
+          ? (projected as { next?: PickerModelSelection | null }).next
+          : undefined
+        const current = next ?? catalog.value.default
+        return {
+          result: {
+            ok: true,
+            value: {
+              current,
+              routable: catalog.value.routableProviders.includes(current.provider),
+              groups: [...catalog.value.groups],
+              failures: [...catalog.value.failures],
+            },
+          },
+        }
+      },
+      selectModel: async (input) => ({ result: resultOf(await alphaSession.selectModel(input)) as never }),
+      create: async (input) => {
+        const sessionId = await sessions.create(input)
+        return { result: { ok: true, value: { sessionId } } }
+      },
+    },
+  }
+}
+
+/** Required services (Cordis fiber inject; settingsScope.bind and Generated Remote calls use these services).
  * 注意：`remote.dshAcp` 刻意不在其中——它是本插件 `$mount` 自提供的 namespace 服务，
  * 声明 inject 会让 fiber 等待一个只有自己启动后才存在的键（死锁）；消费侧在 mount
  * 就位后经 `ctx.get('remote.dshAcp')` 解析（见 apply 内 namespace ）。 */
-export const inject = ['slots', 'locale', 'connection', 'remote', 'settingsScope', 'commandUi', 'sessions', 'workspaces']
+export const inject = [
+  'slots', 'locale', 'remote', 'remote.session', 'remote.settings',
+  'settingsScope', 'commandUi', 'sessions', 'workspaces',
+]
 
 /**
  * Client plugin body: the `acp` settings section with its controller and copy.
@@ -163,7 +233,6 @@ export function apply(ctx: Context): void {
   const locale = ctx.get('locale') as LocaleLike
   ctx.effect(() => locale.register(NS, { zh, en }), '@zaimokuza/dsh-acp-adapter: ACP section dictionaries')
 
-  const connection = ctx.get('connection') as ConnectionLike
   const binder = ctx.get('settingsScope') as SettingsScopeBinderLike
   const scope = binder.bind<AcpSettings>({ namespace: ACP_SETTINGS_NS, decode: decodeAcpSettings })
 
@@ -211,7 +280,9 @@ export function apply(ctx: Context): void {
   const acpElicitationInputDock = createAcpElicitationInputDock(acpRemote)
   const acpAuditHeaderAction = createAcpAuditHeaderAction(acpRemote)
 
-  const controller = new AcpPanelController({ scope, settings: connection.api.settings, remote: acpRemote })
+  const sessions = ctx.get('sessions') as unknown as SessionsLike
+  const pickerTransport = pickerTransportOf(ctx, sessions)
+  const controller = new AcpPanelController({ scope, settings: pickerTransport.settings, remote: acpRemote })
   ctx.effect(() => () => { controller.dispose() }, '@zaimokuza/dsh-acp-adapter: ACP panel controller')
 
   const panelWire: AcpSectionWire = {
@@ -258,7 +329,6 @@ export function apply(ctx: Context): void {
   // 非 slot 面（命令描述、popup 行构建）读 bound translate；seat 组件读标准 locale seat。
   const t = locale.bind(PICKER_NS)
 
-  const sessions = ctx.get('sessions') as unknown as SessionsLike
   const conversation = ctx.get('conversation') as PickerServiceDeps['conversation']
  // fail-closed：pickerService 装配消费宿主服务面（remote 事件订阅等）；
   // 其失败 = 宿主结构超出已验证面。只禁用 picker 族贡献并点名（设置面板已
@@ -268,7 +338,7 @@ export function apply(ctx: Context): void {
   try {
     pickerService = new PickerService({
       sessions: ctx.get('sessions') as unknown as PickerServiceDeps['sessions'],
-      connection: connection as unknown as PickerServiceDeps['connection'],
+      transport: pickerTransport,
       remote: ctx.get('remote') as PickerServiceDeps['remote'],
       acpRemote,
       onConnectionReset: (listener) =>
@@ -279,7 +349,7 @@ export function apply(ctx: Context): void {
         .bind({ namespace: AGENT_DEFAULT_MODEL_NS, decode: decodeAgentDefaultModel }) as unknown as PickerServiceDeps['settingsScope'],
       t,
  // 跨 backend 分流的工作区解析面（公开 IWorkspaces.list 观察面；
-      // workspaces 服务由 dsh-client-runtime 提供，package.json inject 边已覆盖）。
+      // workspaces 服务由 Alpha workspace-controller 提供，package.json inject 边已覆盖）。
       workspaces: ctx.get('workspaces') as WorkspacesLike,
     })
     const service = pickerService
@@ -379,7 +449,7 @@ export function apply(ctx: Context): void {
               if (failure !== undefined) throw new Error(failure)
               return
             }
-            // A blank native wrapper cannot be replaced through DSH rc.2's
+            // A blank native wrapper cannot be replaced through the host's
             // public seam. PickerService therefore performs a transparent
             // new-session handoff for cross-wrapper selections; only an ACP
             // draft or live session with the same profile is switched in place.

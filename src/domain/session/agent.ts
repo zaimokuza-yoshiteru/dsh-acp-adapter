@@ -33,7 +33,7 @@ import type {
   InboxTarget,
 } from '@deepseek-ai/dsh-agent'
 import { Inbox, agentEvents } from '@deepseek-ai/dsh-agent'
-import { assertNever, createUserMessage, errorChain } from '@deepseek-ai/dsh-llm'
+import { assertNever, createUserMessage, errorChain, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type { LlmFailure } from '@deepseek-ai/dsh-llm'
 import { canonicalHeader, foldRequestHeader, headerEquals } from '@deepseek-ai/dsh-session'
 import type { Session, SessionId, TurnEndReason, UserMessage } from '@deepseek-ai/dsh-session'
@@ -526,6 +526,14 @@ export class AcpAgent implements Agent {
   private turnBaseSeq = 0
   /** 最近一次成功落盘的 binding 载荷（turn 收束后锚点刷新的底稿）。 */
   private currentBinding: AcpBindingData | undefined
+  /**
+   * ACP bypasses DSH's native model/tool pipeline, so it also bypasses the
+   * alpha session-checkpoint policy. Keep an ordered local flush tail for
+   * events emitted from ACP notifications; turn boundaries await the same
+   * tail before contacting the Agent or advancing the binding anchor.
+   */
+  private sessionFlushTail: Promise<void> = Promise.resolve()
+  private sessionFlushQueued = false
   /** Binding assembled during a draft session, but deliberately not durable until first prompt. */
   private pendingBinding: AcpBindingData | undefined
   private startMode: 'draft' | 'established' | undefined
@@ -980,6 +988,17 @@ export class AcpAgent implements Agent {
       await this.syncOptions(turn, signal)
       signal.throwIfAborted()
       this.logRequestHeader()
+      // Keep the lifecycle error deterministic after host disposal. The
+      // session-store checkpoint is deliberately before prompt side effects,
+      // but it must not mask the more actionable "ACP session is not started"
+      // result when the connection was already reclaimed.
+      if (this.conn === undefined || this.acpSessionId === undefined) {
+        throw new Error(`agent "${this.id}": ACP session is not started`)
+      }
+      // Alpha's checkpoint policy cannot observe ACP's direct prompt path.
+      // Make the user message, turn start, and request header durable before
+      // the external Agent can perform any side effect.
+      await this.awaitSessionFlush('ACP prompt dispatch')
       const translator = this.requireTranslator()
       translator.beginTurn(turn)
       try {
@@ -1050,6 +1069,20 @@ export class AcpAgent implements Agent {
       try {
         // 每条退出路径都已指派 turn 结局
         this.session.append('turn/end', { turn, reason: turnEnds! })
+        try {
+          await this.awaitSessionFlush('turn completion')
+        } catch (error: unknown) {
+          // Preserve the primary turn outcome. In particular, a host session
+          // can be pruned while a post-dispose turn is being closed; replacing
+          // the useful ACP "not started" error with a session-store lookup
+          // failure makes the lifecycle diagnosis misleading. A successful
+          // turn still fails closed when its completion checkpoint is absent.
+          if (turnEnds?.kind === 'error' || turnEnds?.kind === 'aborted') {
+            this.log.warn(`dsh-acp: completion checkpoint skipped after ${turnEnds.kind} turn (${errorChain(error)})`, this.logFields({ operation: 'session-flush', result: 'error' }))
+          } else {
+            throw error
+          }
+        }
       } catch (error: unknown) {
         this.throwError(error)
       }
@@ -1557,7 +1590,7 @@ export class AcpAgent implements Agent {
       this.startPromise = migration.then(() => this.startSession(signal, mode === 'established')).then(
         async (startedConnection) => {
           // A draft can be abandoned while its ACP process is still starting.
-          // rc.2 has no live-agent replacement seam, so a late completion must
+          // Alpha has no live-agent replacement seam, so a late completion must
           // be fenced and its process reclaimed instead of becoming a ghost
           // backend in the abandoned DSH session.
           if (generation !== this.startGeneration || this.lifecycle.settling) {
@@ -2195,6 +2228,56 @@ export class AcpAgent implements Agent {
     if (update.sessionUpdate === 'available_commands_update') {
       this.commandBridge?.applyAvailableCommands(update.availableCommands)
     }
+    // Persist durable tool/output observations promptly.  Do not flush every
+    // text/thought delta: ACP streams can contain thousands of those updates
+    // per turn, and making each one a disk checkpoint turns rendering into a
+    // token-level fsync loop.  The turn boundary below remains the
+    // authoritative checkpoint for ordinary assistant output.
+    if (update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update') {
+      this.scheduleSessionFlush(`acp ${update.sessionUpdate}`)
+    }
+  }
+
+  /**
+   * Dispatch the DSH session durability checkpoint through the host-owned
+   * sessions service.  Alpha's native checkpoint policy does not see ACP
+   * notifications because they bypass the native LLM/tool pipeline.
+   */
+  private async flushDshSession(reason: string): Promise<void> {
+    const context = this.loopCtx as unknown as {
+      sessions?: { flush?: (session: Session) => Promise<boolean | void> | boolean | void }
+    }
+    const sessions = context.sessions ?? getCtxSlot<{ flush?: (session: Session) => Promise<boolean | void> | boolean | void }>(this.loopCtx, 'sessions')
+    if (typeof sessions?.flush !== 'function') {
+      throw new Error(`dsh-acp: DSH session flush seam is unavailable before ${reason}`)
+    }
+    // `SessionStore.flush()` returns `false` when no persistence listener is
+    // installed.  That is a host configuration fact, not a rejected flush:
+    // the public seam still ran its scoped checkpoint, and the ACP adapter
+    // must not turn a test/headless host with an intentionally in-memory
+    // session store into a prompt failure.  A configured persistence backend
+    // still makes the same awaited call and propagates its own errors.
+    await sessions.flush(this.session)
+  }
+
+  /** Queue one ordered observation checkpoint, coalescing a burst of updates. */
+  private scheduleSessionFlush(reason: string): void {
+    if (this.sessionFlushQueued) return
+    this.sessionFlushQueued = true
+    queueMicrotask(() => {
+      this.sessionFlushQueued = false
+      this.sessionFlushTail = this.sessionFlushTail
+        .then(() => this.flushDshSession(reason))
+        .catch((error: unknown) => {
+          this.log.warn(`dsh-acp: observed ACP event checkpoint failed (${errorChain(error)})`, this.logFields({ operation: 'session-flush', result: 'error' }))
+        })
+    })
+  }
+
+  /** Await all previously scheduled checkpoints and then force one now. */
+  private async awaitSessionFlush(reason: string): Promise<void> {
+    await this.sessionFlushTail
+    await this.flushDshSession(reason)
   }
 
   /**
@@ -2351,6 +2434,12 @@ export class AcpAgent implements Agent {
     return modelOfConfigOptions(configOptions) ?? this.options.model ?? ''
   }
 
+  /** 当前 ACP thought_level：只接受 Agent 实际广告的非空 select 值。 */
+  private currentReasoningEffort(): string | undefined {
+    const configOptions = this.translator?.configOptions ?? this.pendingConfigOptions
+    return reasoningEffortOfConfigOptions(configOptions)
+  }
+
   /**
    * `request/header` 落盘（既定行为）：首个 turn 落 `{provider:'acp-<id>',
    * model:<ACP 当前模型>}`（initial；日志已有 header 的 resume 场景落 resume），
@@ -2367,10 +2456,15 @@ export class AcpAgent implements Agent {
     const model = knownModel !== '' ? knownModel
       : baseline !== undefined && baseline.config.model !== '' ? baseline.config.model
       : ACP_UNKNOWN_MODEL
-    const route = { provider: this.providerRoute, model }
+    const reasoningEffort = this.currentReasoningEffort()
+    const route = {
+      provider: this.providerRoute,
+      model,
+      ...(reasoningEffort === undefined ? {} : { reasoningEffort: ReasoningEffortId(reasoningEffort) }),
+    }
     const current = translator.route
     if (current.provider !== route.provider || current.model !== route.model) translator.setRoute(route)
-    const header = canonicalHeader({ config: { provider: route.provider, model: route.model } })
+    const header = canonicalHeader({ config: route })
     if (!this.requestHeaderLogged) {
       this.session.append('request/header', { header, reason: baseline === undefined ? 'initial' : 'resume' })
       this.requestHeaderLogged = true
@@ -2708,6 +2802,17 @@ export class AcpAgent implements Agent {
 function modelOfConfigOptions(configOptions: readonly acp.SessionConfigOption[] | undefined): string | undefined {
   const option = configOptions?.find((candidate) => candidate.category === 'model' || candidate.id === 'model')
   return option?.type === 'select' ? option.currentValue : undefined
+}
+
+/** 从 Agent 广告的 thought_level 选择项取得有效推理强度；缺失时诚实省略。 */
+function reasoningEffortOfConfigOptions(configOptions: readonly acp.SessionConfigOption[] | undefined): string | undefined {
+  const option = configOptions?.find(
+    (candidate) => candidate.category === 'thought_level'
+      || candidate.id === 'thought_level'
+      || candidate.id === 'reasoning_effort',
+  )
+  if (option?.type !== 'select' || typeof option.currentValue !== 'string' || option.currentValue.length === 0) return undefined
+  return option.currentValue
 }
 
 /**

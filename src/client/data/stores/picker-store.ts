@@ -18,8 +18,8 @@ import type {
   PickerModelSelection,
   SessionModelsView,
 } from '../selector-logic.ts'
-import { defineSnapshotStore } from './engine.ts'
-import type { ActionsDecl, BakedActions, StoreHandle } from './engine.ts'
+import { defineStore } from '@deepseek-ai/dsh-client-store'
+import type { ActionsDecl, BakedActions, StoreHandle } from '@deepseek-ai/dsh-client-store'
 import { directoryTransitions } from './directory-store.ts'
 import { initialLiveOptionsState, liveTransitions } from './live-options-store.ts'
 import type { LiveOptionsState } from './live-options-store.ts'
@@ -145,5 +145,5 @@ export type BackendAccessStoreActions = Pick<ModelPickerStoreActions, 'backendAc
  * @returns a fresh handle (one per entry — never share at module level).
  */
 export function createModelPickerStore(): StoreHandle<ModelPickerState, typeof pickerActions> {
-  return defineSnapshotStore({ init: initialPickerState, actions: pickerActions })
+  return defineStore({ init: initialPickerState, actions: pickerActions })
 }

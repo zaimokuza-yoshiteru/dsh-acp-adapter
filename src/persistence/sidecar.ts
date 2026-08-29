@@ -87,10 +87,10 @@
  * 目录 `0700`；`sidecar.sqlite` 及 `-wal`/`-shm` `0600`（打开后显式 chmod 兜底——
  * SQLite 自建的 wal/shm 不吃 umask 之外的约束，flush/checkpoint 后复 chmod）。
  *
- * fork/删除连带清理（调研结论，dsh rc.2）：宿主无会话删除钩子，不做代码
+ * fork/删除连带清理（调研结论，dsh 0.1.2-alpha.1）：宿主仍无插件可消费的会话删除钩子，不做代码
  * 接线；sidecar 行的生命周期 = harness-home 的生命周期（{@link AcpSidecar.remove}
  * 原语保留给未来真正的删除钩子与运维手清）。ACP 审计不随 DSH 官方 `/export`
- * （rc.2 无 ignorable 事件 seam，DSH 自定义审计 seam 缺失）；运维导出走 {@link AcpSidecar.exportAudit}。
+ * （Alpha 仍无 ignorable 事件 seam，DSH 自定义审计 seam 缺失）；运维导出走 {@link AcpSidecar.exportAudit}。
  *
  * stateRoot 来源：dsh 没有 per-profile 插件目录，惯例是 harness-home 全局
  * （settings-file、sessions 同在 `resolveDshHome()` 下，dev/prod 隔离靠

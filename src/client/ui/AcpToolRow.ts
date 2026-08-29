@@ -235,6 +235,15 @@ export function AcpToolRow({ callId, block, cwd, openFile, inspect, t, loadPrese
           h(DiffBlock, {
             key: diff.path,
             diffs: [{ path: diff.path, oldText: null, newText: diff.newText }],
+            labels: {
+              copy: t('tool.diff.copy'),
+              copied: t('tool.diff.copied'),
+              collapseAria: t('tool.diff.collapseAria'),
+              expandAria: (count: number) => t('tool.diff.expandAria', { count }),
+              collapse: t('tool.diff.collapse'),
+              expand: (count: number) => t('tool.diff.expand', { count }),
+              files: (count: number) => t('tool.diff.files', { count }),
+            },
             className: css.diffBody,
           })),
         model.inputText !== undefined || model.outputText !== undefined
@@ -258,6 +267,6 @@ export function AcpToolRow({ callId, block, cwd, openFile, inspect, t, loadPrese
           : null,
         ...truncatedNotes,
         inspect !== undefined
-          ? h('button', { type: 'button', className: css.inspectButton, onClick: inspect }, 'Inspect')
+          ? h('button', { type: 'button', className: css.inspectButton, onClick: inspect }, t('tool.inspect'))
           : null)))
 }

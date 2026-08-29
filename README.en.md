@@ -4,6 +4,11 @@
 
 Use Devin, Codex, Kimi, or Claude agents from the DeepSeek Harness (DSH) session UI. Each Agent remains responsible for its own model, tools, skills, login state, and runtime.
 
+> `feature/0.1.2-alpha` targets the unreleased DSH
+> `dsh-v0.1.2-alpha.1` source tree and is not an installable npm combination.
+> The commands below still document the published rc.7 on `main`; clean-install
+> validation of this branch must wait for the upstream split packages to ship.
+
 ## Prerequisite: install DSH
 
 You need Node.js `^22.19.0 || >=24.0.0` and DSH `>=0.1.1-rc.2`:

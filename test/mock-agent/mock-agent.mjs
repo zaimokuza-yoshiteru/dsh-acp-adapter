@@ -164,6 +164,7 @@ const FIXED_TIMESTAMP = '2026-01-01T00:00:00.000Z';
 
 const KNOWN_SCENARIOS = new Set([
   'happy',
+  'text-only',
   'minimal-caps',
   'rich-content',
   'mixed-turn',
@@ -424,6 +425,17 @@ function happyTurnUpdates(cwd) {
       ],
     },
     { sessionUpdate: 'usage_update', used: 1234, size: 1048576 },
+  ];
+}
+
+// Text-only stream used to prove that ACP checkpointing is not performed for
+// every assistant/thought delta. The prompt and turn boundaries still provide
+// the two mandatory durability checkpoints.
+function textOnlyTurnUpdates() {
+  return [
+    { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'thinking' }, messageId: 'text-only-thought' },
+    { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Hello' }, messageId: 'text-only-message' },
+    { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: ', world.' }, messageId: 'text-only-message' },
   ];
 }
 
@@ -1300,6 +1312,8 @@ function handlePrompt(msg) {
   }
   if (session.turn) return respondError(msg.id, -32603, 'turn already active on this session');
   switch (state.scenario) {
+    case 'text-only':
+      return void runUpdateTurn(session, msg, textOnlyTurnUpdates());
     case 'minimal-caps':
       return void runUpdateTurn(session, msg, MINIMAL_TURN_UPDATES);
     case 'rich-content':

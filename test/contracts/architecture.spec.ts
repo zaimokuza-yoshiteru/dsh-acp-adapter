@@ -16,7 +16,8 @@
 //   hostFactory      src/host/factory/**       —— AcpAgentLoop 类（装配全部 domain/infra 件）
 //   hostComposition  src/host/composition/**   —— 注册表组合、llm-stub、入口壳
 //   hostEntry        src/index.ts              —— 包入口（只允许 re-export hostComposition）
-//   clientData       src/client/data/**        —— 面板/选择器纯逻辑（仅可下行 import contract）
+//   clientData       src/client/data/**        —— 面板/选择器逻辑（仅可下行 import contract；
+//                                             store slices 可使用 Alpha 公共 dsh-client-store）
 // clientCompat src/client/host-compat/** —— client 侧兼容岛（复制壳——
 //                                             picker 的 DSH row/popup/command/slot 交互适配；
 //                                             只消费 clientData 业务模块，不放 ACP 业务逻辑）
@@ -52,7 +53,8 @@
 //   - protocol 及以下各层不得 import domain/host/remote（依赖只向下流）
 //   - client/* 的相对 import 只允许逃向 src/contract/（共享 wire 类型）；react 只允许出现在
 //     clientUi 与 clientCompat（岛承载复制壳 UI 组件）
-//   - clientData 只许同层 + contract import、零外部模块（纯逻辑模块直接 vitest 可测）
+//   - clientData 只许同层 + contract import；store slices 例外使用 Alpha 公共
+//     dsh-client-store，其余逻辑模块仍保持零外部模块、可直接 vitest 测试
 //
 // 实现：fs 直读 src/**/*.ts，正则抽静态 import/export-from 与动态 import 的
 // specifier，相对 specifier 解析回 src 相对路径定层后对照白名单。先例：
@@ -292,12 +294,13 @@ describe(' 分层架构守卫', () => {
     expect(violations.map((e) => `${e.fromFile} → ${e.toFile}`)).toEqual([]);
   });
 
-  it('clientData 除 contract 外不得 import 异层或外部模块（纯逻辑保持同层封闭）', () => {
+  it('clientData 除 contract 外不得 import 异层或非 Alpha store 外部模块', () => {
     const crossLayer = edges.filter(
       (e) => e.fromLayer === 'clientData' && e.toLayer !== 'clientData' && e.toLayer !== 'contract',
     );
     const external = nonRelative
       .filter((i) => layerOf(i.fromFile) === 'clientData')
+      .filter((i) => i.specifier !== '@deepseek-ai/dsh-client-store')
       .map((i) => `${i.fromFile} import '${i.specifier}'`);
     expect(crossLayer.map((e) => `${e.fromFile} → ${e.toFile}`)).toEqual([]);
     expect(external).toEqual([]);

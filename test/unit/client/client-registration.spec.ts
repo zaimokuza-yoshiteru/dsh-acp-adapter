@@ -24,8 +24,8 @@
 //     pickerService 装配失败只禁用 picker 族，设置面板存活（fail closed 点名）。
 
 import { describe, expect, it, vi } from 'vitest';
-import { apply } from '../../../src/client/index.ts';
-import type { StoreHandle, StoreInstance } from '../../../src/client/data/stores/engine.ts';
+import { apply, inject } from '../../../src/client/index.ts';
+import type { StoreHandle, StoreInstance } from '@deepseek-ai/dsh-client-store';
 import type { SessionModelsView } from '../../../src/client/data/selector-logic.ts';
 
 // ---------- fake ctx ----------
@@ -44,6 +44,7 @@ function createFakeCtx(options: {
   models?: SessionModelsView
   remoteReady?: boolean
   backendOf?: unknown
+  nestedRemoteResult?: boolean
 } = {}) {
   const effectDisposers: Array<{ name: string | undefined; run: () => void }> = [];
   const localeUnregisters: Array<{ ns: string; dispose: () => void }> = [];
@@ -145,6 +146,43 @@ function createFakeCtx(options: {
             // 显式打开 mounted namespace，才能真实走 backendProbe 分流。
             $mount: () => options.remoteReady === true ? Promise.resolve({}) : new Promise<never>(() => {}),
           };
+        case 'remote.session':
+          return {
+            modelCatalog: () => {
+              const result = options.models === undefined
+                ? new Promise<never>(() => {})
+                : Promise.resolve({
+                ok: true as const,
+                value: {
+                  default: options.models.current,
+                  routableProviders: options.models.routable ? [options.models.current.provider] : [],
+                  groups: options.models.groups,
+                  failures: options.models.failures,
+                },
+                });
+              return options.nestedRemoteResult === true
+                ? result.then((value) => ({ result: value }))
+                : result;
+            },
+            selectModel: (request: unknown) => {
+              selectCalls.push(request);
+              const selection = request as { provider: string; model: string; reasoningEffort?: string };
+              return Promise.resolve({
+                ok: true as const,
+                value: {
+                  selected: {
+                    provider: selection.provider,
+                    model: selection.model,
+                    ...(selection.reasoningEffort === undefined ? {} : { reasoningEffort: selection.reasoningEffort }),
+                  },
+                },
+              });
+            },
+          };
+        case 'remote.settings':
+          return {
+            mutate: () => Promise.resolve({ ok: true as const, value: {} }),
+          };
         case 'remote.dshAcp':
           return {
             health: () => Promise.resolve({ ok: true, value: {} }),
@@ -170,6 +208,7 @@ function createFakeCtx(options: {
         case 'sessions':
           return {
             subagentAddress: () => undefined,
+            create: (input: { sessionId?: string }) => Promise.resolve(input.sessionId ?? 'created-session'),
             scope: () => ({
               effect(fn: () => () => void, _name?: string) {
                 fn();
@@ -234,6 +273,12 @@ function createFakeCtx(options: {
 // ---------- 测试 ----------
 
 describe('client 入口注册形态（slot/store 纪律）', () => {
+  it('declares the Alpha Generated Remote namespaces explicitly', () => {
+    expect(inject).toContain('remote.session');
+    expect(inject).toContain('remote.settings');
+    expect(inject).not.toContain('connection');
+  });
+
   it('两个 seat 都声明独占 store 工厂（模块级零 handle）；注入工厂 attach glue', () => {
     const h = createFakeCtx();
     apply(h.ctx as never);
@@ -337,6 +382,23 @@ describe('client 入口注册形态（slot/store 纪律）', () => {
     expect(target).toBeDefined();
     await command.ui.onSelect(target!, { sessionId: 'sess-1' });
     expect(h.selectCalls).toEqual([{ sessionId: 'sess-1', provider: 'openai', model: 'gpt-mini' }]);
+  });
+
+  it('accepts only the Alpha RemoteResult envelope, not the retired nested result wrapper', async () => {
+    const h = createFakeCtx({
+      remoteReady: true,
+      nestedRemoteResult: true,
+      backendOf: Promise.resolve({ ok: false as const, error: { message: 'ACP unavailable' } }),
+      models: {
+        current: { provider: 'openai', model: 'gpt-old' },
+        routable: true,
+        groups: [{ id: 'openai', name: 'OpenAI', models: [{ id: 'gpt-old', name: 'GPT Old' }] }],
+        failures: [],
+      },
+    });
+    apply(h.ctx as never);
+    const command = h.commandEntries[0] as { ui: { options(session: { sessionId: string }): Promise<unknown[]> } };
+    await expect(command.ui.options({ sessionId: 'sess-1' })).resolves.toEqual([]);
   });
 
   it('卸载残留：全部 fiber disposer 跑完后零残留', () => {

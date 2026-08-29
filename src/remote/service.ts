@@ -1185,7 +1185,7 @@ export class AcpRemoteService extends TypertRemoteService {
     if (bound !== undefined) return { state: 'established', provider: bound }
     // A newly-created session whose default model is ACP already owns an ACP
     // wrapper. Before session/new it has no durable binding yet, but its
-    // execution-backend identity is not blank: rc.2 cannot replace that live
+    // execution-backend identity is not blank: Alpha cannot replace that live
     // wrapper in place. Report it as a provider-qualified draft so the client
     // can converge Native Agent Access and route model choices without asking
     // the user to select the same Agent a second time.

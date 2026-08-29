@@ -1,4 +1,4 @@
-# @zaimokuza/dsh-acp-adapter bundle patch layer for the DSH rc.2 host.
+# @zaimokuza/dsh-acp-adapter bundle patch layer for the DSH 0.1.2-alpha.1 host.
 # The rows below replace the stock agent loop and model-selection contributions.
 #
 # This file becomes one patch layer when the package is listed in a profile's

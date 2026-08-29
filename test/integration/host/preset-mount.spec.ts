@@ -7,7 +7,7 @@
 // unscoped context" 拒建会话。修复（方案 A，src/host-compat/host-scope.ts）后
 // AcpAgent 的作用域由宿主 dsh-scope 的 createScope 创建，mount 全链路通过。
 //
-// 调用形态来自 DSH 0.1.1-rc.2 ApiProxy（api-proxy.ts: setup 内 presets.mount(agentCtx)）。
+// 调用形态来自 DSH 0.1.2-alpha.1 Agent Presets Remote/Host seam（setup 内 presets.mount(agentCtx)）。
 // 空 composition（顶层 []）经 entryListProblem 判合法、EntryTree 不产生任何
 // 行，Entry/ctx.loader 方法面零触达——故 loader 用在场 fake 即可
 // （AgentPresets / Include 的 static inject = ['loader'] 只要求服务在场）。
@@ -23,6 +23,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import AgentPresets from '@deepseek-ai/dsh-agent-presets';
 import { scopeOf } from '@deepseek-ai/dsh-scope';
@@ -73,10 +74,12 @@ describe('宿主模块实例一致性：agent-presets mount 过宿主 scope', ()
     // AgentPresets / Include 的 static inject = ['loader']：在场即可，空
     // composition 不触达其方法面。必须先 provide 再 plugin。
     harness.ctx.provide('loader', {});
+    harness.ctx.baseUrl = pathToFileURL(`${presetRoot}${path.sep}`).href;
     await harness.ctx.plugin(AgentPresets, {
       default: 'acp-scope',
       roots: [{ path: presetRoot, trust: 'user' }],
       includeUserRoot: false,
+      includeShippedRoot: false,
     });
 
     const handle = await harness.loop.createAgent(harness.ctx, {
@@ -84,7 +87,7 @@ describe('宿主模块实例一致性：agent-presets mount 过宿主 scope', ()
       meta: { cwd: harness.logDir },
       agentOptions: { provider: routeOf(profile) },
       setup: async (agentCtx) => {
-        // DSH 0.1.1-rc.2 ApiProxy 同款调用形态：unnamed id → defaultId（settings base）。
+        // DSH Alpha 同款调用形态：unnamed id → defaultId（settings base）。
         await harness.ctx.agentPresets.mount(agentCtx);
       },
     });

@@ -5,9 +5,9 @@
  * `ReactLoopAgent` 被 exports map 挡住——composite factory 不可行，
  * `extends AgentLoop` 是唯一形态；而 `prepare`/`setupAndPublish`/`resumeWith`
  * 是 private 且硬编码 `ReactLoopAgent`，无 override 点，ACP 路由只能带一份
- * 钉版副本。dsh-v0.1.1-rc.2 的单槽 + private 硬编码形态使这份副本仍然必要。
+ * 钉版副本。dsh-v0.1.2-alpha.1 的单槽 + private 硬编码形态使这份副本仍然必要。
  *
- * 上游钉版：dsh-v0.1.1-rc.2（commit b150a551b8），
+ * 上游钉版：dsh-v0.1.2-alpha.1（commit cd5ef8148158），
  * 源文件 reference/deepseek-harness/packages/core/agent-loop/src/index.ts。
  * 副本与上游的**有意差异**（差异测试按白名单豁免，其余逐字节对齐）：
  *   1. ownership 换成本岛的 {@link AcpFactoryOwnership}（裁掉 startup-task
@@ -22,7 +22,7 @@
  *      kill 前无界 whenIdle；超时告警后继续 scope.dispose）。
  *
  * 各项注释头给出上游行号与签名摘要。漂移检测：test/host-compat.spec.ts 对照
- * node_modules 里 @deepseek-ai/dsh-agent-loop@0.1.1-rc.2 已构建 lib 机械比较；
+ * node_modules 里 @deepseek-ai/dsh-agent-loop@0.1.2-alpha.1 已构建 lib 机械比较；
  * 宿主结构门见 host-compat/structure-gate.ts（版本过低或 seam 缺失 → ACP 路由
  * fail closed）。
  *

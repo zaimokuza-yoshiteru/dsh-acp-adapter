@@ -25,7 +25,7 @@
  * `cancelled`——reference/agent-client-protocol docs/protocol/v1/
  * prompt-turn.mdx §cancellation），用户思考时间本就无界；且 dsh 把未答
  * 问题作为 durable pending 持有（浏览器断开不取消、重连 replay——宿主
- * DSH 0.1.1-rc.2 ApiProxy 应答者语义），桥侧自造超时会在 agent 已被告知 cancelled 之后
+ * DSH 0.1.2-alpha.1 Session Controller 应答者语义），桥侧自造超时会在 agent 已被告知 cancelled 之后
  * 把 dsh 侧问题留成仍可应答的僵尸。取代超时的是终局结算保证：
  * - turn/会话取消或 dispose：turn abort signal 经 `turnSignal` 透传，审批
  *   服务以 `cancelled` 结案并丢弃迟到答复，桥答 cancelled（协议 MUST 条款
@@ -62,7 +62,7 @@ import { randomUUID } from 'node:crypto'
 import { Buffer } from 'node:buffer'
 import type * as acp from '@agentclientprotocol/sdk'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { CallId } from '@deepseek-ai/dsh-llm'
+import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import type { PermissionRequestHandler } from '../../protocol/v1/types.ts'
 import { acpUnknownToolName } from '../../protocol/v1/translate.ts'
 import type { AcpToolCallPresentationSnapshot } from '../../protocol/v1/translate.ts'
@@ -142,8 +142,8 @@ export interface AcpApprovalRequest {
   readonly agent: Agent
   /** The tool the question is about (ACP `name`/`title` — presentation and audit). */
   readonly toolName: string
-  /** The exact tool call being decided — `CallId(toolCall.toolCallId)`, matching the streamed `tool/call`. */
-  readonly callId?: CallId
+  /** The exact tool call being decided, matching the streamed `tool/call`. */
+  readonly callId?: ReturnType<typeof ToolCallId>
   /** Human-readable why: tool title/kind, rawInput summary, locations, once-option availability disclosure. */
   readonly reason?: string
   /** Turn abort signal: aborting settles the question `'cancelled'`. */
@@ -777,7 +777,7 @@ export function createAcpPermissionHandler(deps: AcpPermissionBridgeDeps): Permi
           // 的 request_permission 常不带 name/title——审批 UI 不再显示字面量
           // 'unknown-tool'）；fail-closed 语义不变。
           toolName: permissionToolName(toolCall),
-          callId: CallId(toolCall.toolCallId),
+          callId: ToolCallId(toolCall.toolCallId),
           reason: buildPermissionReason({ ...params, toolCall }),
           ...(signal === undefined ? {} : { signal }),
         })

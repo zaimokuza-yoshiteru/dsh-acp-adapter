@@ -28,8 +28,8 @@ function createHarness() {
   const blocksLog: Array<{ sessionId: string; block: { reason: string } | undefined }> = [];
   const registrations: EffectRegistration[] = [];
   const projectionUnsub = vi.fn();
-  let projectionSnapshot: unknown;
-  const projectionListeners = new Set<() => void>();
+  const projectionSnapshots = new Map<string, unknown>();
+  const projectionListeners = new Map<string, Set<() => void>>();
  // sessions.list 观察面 fake（新会话确认/导航的数据源）。
   let sessionListSnapshot: { byId: Record<string, { cwd?: string } | undefined>; current?: string } = { byId: {} };
   const sessionListListeners = new Set<() => void>();
@@ -38,6 +38,7 @@ function createHarness() {
   // 目录 wire 应答可控：默认永不 resolve（prime 预拉停在 loading，测试保持纯同步），
   // 需要驱动目录转换的用例替换 modelsImpl。
   let modelsImpl: () => Promise<{ result: { ok: true; value: SessionModelsView } }> = () => NEVER;
+  let modelsCalls = 0;
 
   const deps: PickerServiceDeps = {
     sessions: {
@@ -64,12 +65,14 @@ function createHarness() {
                   return Promise.resolve({ ok: true as const, value: { matched: true } });
                 },
                 projections: {
-                  faceOf: () => ({
-                    getSnapshot: () => projectionSnapshot,
+                  faceOf: (key) => ({
+                    getSnapshot: () => projectionSnapshots.get(key),
                     subscribe(callback) {
-                      projectionListeners.add(callback);
+                      const listeners = projectionListeners.get(key) ?? new Set<() => void>();
+                      projectionListeners.set(key, listeners);
+                      listeners.add(callback);
                       return () => {
-                        projectionListeners.delete(callback);
+                        listeners.delete(callback);
                         projectionUnsub();
                       };
                     },
@@ -91,10 +94,12 @@ function createHarness() {
         openCalls.push(sessionId);
       },
     },
-    connection: {
-      api: {
+    transport: {
         sessions: {
-          models: () => modelsImpl(),
+          models: () => {
+            modelsCalls += 1;
+            return modelsImpl();
+          },
           selectModel: () => {
             throw new Error('unexpected selectModel');
           },
@@ -107,7 +112,6 @@ function createHarness() {
             throw new Error('unexpected settings.mutate');
           },
         },
-      },
     },
     remote: { $on: () => () => {} },
     acpRemote: {
@@ -141,16 +145,26 @@ function createHarness() {
     projectionUnsub,
     openCalls,
     commandCalls,
+    modelsCalls: () => modelsCalls,
     resolveModels(view: SessionModelsView) {
       modelsImpl = () => Promise.resolve({ result: { ok: true, value: view } });
     },
     setProjection(next: unknown) {
-      projectionSnapshot = next;
-      for (const listener of [...projectionListeners]) listener();
+      projectionSnapshots.set('permissions', next);
+      for (const listener of [...(projectionListeners.get('permissions') ?? [])]) listener();
+    },
+    setModelProjection(next: unknown) {
+      projectionSnapshots.set('modelSelection', next);
+      for (const listener of [...(projectionListeners.get('modelSelection') ?? [])]) listener();
     },
  /** 把一行会话发布进列表镜像（host session-added 帧的等价物）。 */
     publishSessionRow(sessionId: string, row: { cwd?: string } = {}) {
       sessionListSnapshot = { ...sessionListSnapshot, byId: { ...sessionListSnapshot.byId, [sessionId]: row } };
+      for (const listener of [...sessionListListeners]) listener();
+    },
+    setCurrent(sessionId: string | undefined) {
+      const { current: _current, ...rest } = sessionListSnapshot;
+      sessionListSnapshot = sessionId === undefined ? rest : { ...rest, current: sessionId };
       for (const listener of [...sessionListListeners]) listener();
     },
   };
@@ -208,7 +222,7 @@ describe('PickerService pickerFor 订阅生命周期', () => {
 
     // (b) 调用 effect 返回的 disposer（= fiber 卸载路径）后清理发生。
     (h.registrations[0]!.disposer as () => void)();
-    expect(h.projectionUnsub).toHaveBeenCalledTimes(1);
+    expect(h.projectionUnsub).toHaveBeenCalledTimes(2);
     expect(h.blocksLog.at(-1)).toEqual({ sessionId: SESSION_ID, block: undefined });
 
     // 两路触发源已死：projection 退订 + recompute 惰性化——此后目录转换
@@ -221,6 +235,18 @@ describe('PickerService pickerFor 订阅生命周期', () => {
     // picker 已摘除：再次 pickerFor 重建（新实例 + 第二次 effect 注册）。
     expect(service.pickerFor(SESSION_ID)).not.toBe(picker);
     expect(h.registrations).toHaveLength(2);
+  });
+
+  it('Alpha modelSelection projection 变化会重拉目录，避免 catalog 默认值长期冒充会话当前值', async () => {
+    const h = createHarness();
+    h.resolveModels(UNROUTABLE_VIEW);
+    const service = new PickerService(h.deps);
+    service.pickerFor(SESSION_ID);
+    await vi.waitFor(() => { expect(h.modelsCalls()).toBeGreaterThanOrEqual(1); });
+
+    const before = h.modelsCalls();
+    h.setModelProjection({ next: { provider: 'acp-mock', model: 'm2' } });
+    await vi.waitFor(() => { expect(h.modelsCalls()).toBeGreaterThan(before); });
   });
 
  it('ACP 权限投影降档后自动恢复 Full Access，同时披露 slice 跟随 projection', async () => {
@@ -737,7 +763,6 @@ describe('PickerService backendOf / useInNewSession / takePendingNotice', () => 
     }>;
     withWorkspaces?: boolean;
     workspaceItems?: Array<{ workspaceId: string; sessionIds: string[] }>;
-    recentWorkspaceId?: string;
     currentCwd?: string;
   } = {}) {
     const h = createHarness();
@@ -746,13 +771,13 @@ describe('PickerService backendOf / useInNewSession / takePendingNotice', () => 
     h.deps.settingsScope = {
       getSnapshot: () => ({ status: 'ready', value: undefined, revision: 7, writable: true }),
     };
-    h.deps.connection.api.settings = {
+    h.deps.transport.settings = {
       mutate: (request) => {
         mutateCalls.push(request);
         return (options.mutateImpl ?? (() => Promise.resolve({ result: { ok: true as const, value: { revision: 8 } } })))();
       },
     };
-    h.deps.connection.api.sessions.create = (input) => {
+    h.deps.transport.sessions.create = (input) => {
       createCalls.push(input);
       return (options.createImpl ?? ((request) => {
         h.publishSessionRow(request.sessionId as string);
@@ -764,7 +789,6 @@ describe('PickerService backendOf / useInNewSession / takePendingNotice', () => 
         list: {
           getSnapshot: () => ({
             items: options.workspaceItems ?? [{ workspaceId: 'ws-1', sessionIds: [SESSION_ID] }],
-            recentWorkspaceId: options.recentWorkspaceId,
           }),
         },
       };
@@ -819,15 +843,15 @@ describe('PickerService backendOf / useInNewSession / takePendingNotice', () => 
   it('成功次序：写 DSH 默认 → 公开 create → Full Access → open；目标保留为后续默认', async () => {
     const h = createFlowHarness();
     const order: string[] = [];
-    h.deps.connection.api.settings = {
+    h.deps.transport.settings = {
       mutate: (request) => {
         order.push('mutate');
         h.mutateCalls.push(request);
         return Promise.resolve({ result: { ok: true as const, value: { revision: 8 } } });
       },
     };
-    const createInner = h.deps.connection.api.sessions.create;
-    h.deps.connection.api.sessions.create = (input) => {
+    const createInner = h.deps.transport.sessions.create;
+    h.deps.transport.sessions.create = (input) => {
       order.push('create');
       return createInner(input);
     };
@@ -856,6 +880,30 @@ describe('PickerService backendOf / useInNewSession / takePendingNotice', () => 
     expect(service.takePendingNotice()).toBeNull();
   });
 
+  it('DSH 复用旧 native 空白页且当前默认是 ACP：自动创建真实 ACP 会话，不让首轮落入 ACP_STUB_ROUTE', async () => {
+    const h = createFlowHarness();
+    h.deps.acpRemote = {
+      ...h.deps.acpRemote,
+      backendOf: () => Promise.resolve({ ok: true as const, value: { state: 'blank' as const } }),
+    };
+    h.resolveModels({
+      current: { provider: 'acp-codex', model: 'gpt-5.6-luna' },
+      routable: true,
+      groups: [{ id: 'acp-codex', name: 'Codex · ACP', models: [{ id: 'gpt-5.6-luna', name: 'GPT-5.6-Luna' }] }],
+      failures: [],
+    });
+    h.setCurrent(SESSION_ID);
+    const service = new PickerService(h.deps);
+    service.pickerFor(SESSION_ID);
+
+    await vi.waitFor(() => { expect(h.createCalls).toHaveLength(1); });
+    expect(h.commandCalls).toEqual([
+      { sessionId: h.createCalls[0]!.sessionId, line: '/permission danger-full-access' },
+    ]);
+    expect(h.openCalls).toEqual([h.createCalls[0]!.sessionId]);
+    expect(h.blocksLog).toContainEqual({ sessionId: SESSION_ID, block: { reason: 'blank.preparing' } });
+  });
+
   it('空白会话已有 native wrapper 时选择 ACP：自动创建并打开目标 DSH session，不伪装原地切换', async () => {
     const h = createFlowHarness();
     const fake = createFakeRemote([]);
@@ -864,7 +912,7 @@ describe('PickerService backendOf / useInNewSession / takePendingNotice', () => 
     const selectModel = vi.fn(() => Promise.resolve({
       result: { ok: true as const, value: { selected: { provider: 'acp-devin', model: 'm' } } },
     }));
-    h.deps.connection.api.sessions.selectModel = selectModel as never;
+    h.deps.transport.sessions.selectModel = selectModel as never;
     h.resolveModels({
       current: { provider: 'deepseek', model: 'deepseek-chat' },
       routable: true,
@@ -884,12 +932,7 @@ describe('PickerService backendOf / useInNewSession / takePendingNotice', () => 
     expect(service.takePendingNotice()).toBe('cross.started:{"model":"m"}');
   });
 
-  it('工作区解析回退：当前会话无所属工作区 → recentWorkspaceId；无工作区 → 当前会话 cwd 直建；皆无 → 响亮报错', async () => {
-    // recent 回退
-    const h1 = createFlowHarness({ workspaceItems: [], recentWorkspaceId: 'ws-recent' });
-    await expect(new PickerService(h1.deps).useInNewSession(SESSION_ID, { provider: 'acp-devin', model: 'm' })).resolves.toBeUndefined();
-    expect(h1.createCalls[0]).toMatchObject({ workspaceId: 'ws-recent' });
-
+  it('工作区解析回退：无所属工作区时使用当前会话 cwd；两者皆无则响亮报错', async () => {
     // cwd 直建（未分组会话）
     const h2 = createFlowHarness({ workspaceItems: [], currentCwd: '/current/project' });
     await expect(new PickerService(h2.deps).useInNewSession(SESSION_ID, { provider: 'acp-devin', model: 'm' })).resolves.toBeUndefined();
@@ -903,7 +946,7 @@ describe('PickerService backendOf / useInNewSession / takePendingNotice', () => 
     expect(h3.createCalls).toHaveLength(0);
   });
 
-  it('settingsScope 不可写时不创建：rc.2 无 create-time 模型参数，不能证明目标 backend', async () => {
+  it('settingsScope 不可写时不创建：Alpha 无 create-time 模型参数，不能证明目标 backend', async () => {
     const h = createFlowHarness();
     h.deps.settingsScope = {
       getSnapshot: () => ({ status: 'idle', value: undefined, revision: 0, writable: false }),
@@ -942,7 +985,7 @@ describe('PickerService backendOf / useInNewSession / takePendingNotice', () => 
   it('响应丢失且行未发布 → 只用同一个 session id 重试（无重复创建），成功后 open', async () => {
     const h = createFlowHarness();
     let attempt = 0;
-    h.deps.connection.api.sessions.create = (input) => {
+    h.deps.transport.sessions.create = (input) => {
       h.createCalls.push(input);
       attempt += 1;
       if (attempt === 1) return Promise.reject(new Error('network lost'));
@@ -991,6 +1034,19 @@ describe('PickerService backendOf / useInNewSession / takePendingNotice', () => 
     });
   });
 
+  it('Alpha SessionCreateError.rpcError 业务拒绝 → 不当作传输歧义、不重试', async () => {
+    const h = createFlowHarness({
+      createImpl: () => Promise.reject(Object.assign(new Error('session create failed'), {
+        rpcError: { code: 'internal', message: 'host exploded' },
+      })),
+    });
+    const service = new PickerService(h.deps);
+    await expect(service.useInNewSession(SESSION_ID, { provider: 'acp-devin', model: 'm' }))
+      .resolves.toBe('cross.createFailedRestored:{"message":"error.technical:{\\"reference\\":\\"\\"}"}');
+    expect(h.createCalls).toHaveLength(1);
+    expect(h.openCalls).toHaveLength(0);
+  });
+
   it('workspace-attach-failed：会话已发布但未分组——打开该未分组会话 + 明确提示，绝不创建第二个', async () => {
     const h = createFlowHarness({
       createImpl: (input) => {
@@ -1007,21 +1063,38 @@ describe('PickerService backendOf / useInNewSession / takePendingNotice', () => 
     expect(service.takePendingNotice()).toBe('cross.attachFailed:{"model":"M","message":"error.technical:{\\"reference\\":\\"\\"}"}');
   });
 
-  it('create 成功但行在确认窗口内未到场 → 诚实报错（含 session id），不 open', async () => {
+  it('Alpha SessionCreateError.rpcError=workspace-attach-failed：等待镜像行后打开未分组会话', async () => {
+    const h = createFlowHarness({
+      createImpl: (input) => {
+        // Alpha throws after publishing the session, before the workspace
+        // registry refresh reaches the client.  The attach-failure branch is
+        // therefore the only create path that still needs bounded observation.
+        h.publishSessionRow(input.sessionId as string);
+        return Promise.reject(Object.assign(new Error('workspace attach failed'), {
+          rpcError: { code: 'workspace-attach-failed', message: 'registry write failed' },
+        }));
+      },
+    });
+    const service = new PickerService(h.deps);
+    await expect(service.useInNewSession(SESSION_ID, { provider: 'acp-devin', model: 'm' }, 'M')).resolves.toBeUndefined();
+    expect(h.createCalls).toHaveLength(1);
+    expect(h.openCalls).toEqual([h.createCalls[0]!.sessionId]);
+    expect(service.takePendingNotice()).toBe('cross.attachFailed:{"model":"M","message":"error.technical:{\\"reference\\":\\"\\"}"}');
+  });
+
+  it('Alpha create 成功即完成 list/binding 发布 → 不等待列表轮询，直接 open', async () => {
     const h = createFlowHarness({
       createImpl: (input) => Promise.resolve({ result: { ok: true as const, value: { sessionId: input.sessionId as string } } }),
     });
     const service = new PickerService(h.deps);
-    const failure = await service.useInNewSession(SESSION_ID, { provider: 'acp-devin', model: 'm' });
-    expect(failure).toMatch(/^cross\.confirmTimeout:/);
-    expect(failure).toContain(h.createCalls[0]!.sessionId as string);
-    expect(h.openCalls).toHaveLength(0);
+    await expect(service.useInNewSession(SESSION_ID, { provider: 'acp-devin', model: 'm' })).resolves.toBeUndefined();
+    expect(h.openCalls).toEqual([h.createCalls[0]!.sessionId]);
   });
 
   it('双击/快速重复选择：在飞闩锁下恰好产生一个会话（create 恰好一次，第二次归 cross.inflight）', async () => {
     const h = createFlowHarness();
     let release: (() => void) | undefined;
-    h.deps.connection.api.sessions.create = (input) => {
+    h.deps.transport.sessions.create = (input) => {
       h.createCalls.push(input);
       return new Promise((resolve) => {
         release = () => {
@@ -1146,7 +1219,7 @@ describe('PickerService.selectModel 统一路由（同 provider ACP → coordina
     const selectModel = vi.fn((input: { sessionId: string; provider: string; model: string }) =>
       Promise.resolve({ result: { ok: true as const, value: { selected: { provider: input.provider, model: input.model } } } }),
     );
-    h.deps.connection.api.sessions.selectModel = selectModel as never;
+    h.deps.transport.sessions.selectModel = selectModel as never;
     h.deps.acpRemote = fr.remote;
     return { ...h, beginModelSwitch, commitModelSwitch, rollbackModelSwitch, selectModel };
   }
@@ -1265,7 +1338,7 @@ describe(' 失败降级：backendProbe 三值 + native 路径免疫', () => {
     const fake = recordingRemote(() => Promise.reject(new Error('sidecar unavailable: database is locked')));
     h.deps.acpRemote = fake.remote;
     const selectCalls: unknown[] = [];
-    h.deps.connection.api.sessions.selectModel = (input) => {
+    h.deps.transport.sessions.selectModel = (input) => {
       selectCalls.push(input);
       return Promise.resolve({ result: { ok: true as const, value: { selected: { provider: input.provider, model: input.model } } } });
     };
@@ -1292,7 +1365,7 @@ describe(' 失败降级：backendProbe 三值 + native 路径免疫', () => {
     const h = createHarness();
     const fake = recordingRemote(() => Promise.resolve({ ok: true, value: { state: 'blank' } as never }));
     h.deps.acpRemote = fake.remote;
-    h.deps.connection.api.sessions.selectModel = (input) =>
+    h.deps.transport.sessions.selectModel = (input) =>
       Promise.resolve({ result: { ok: true as const, value: { selected: { provider: input.provider, model: input.model } } } });
     h.resolveModels(NATIVE_VIEW);
     const service = new PickerService(h.deps);

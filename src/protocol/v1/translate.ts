@@ -98,7 +98,7 @@ import type {
   ToolCallUpdate,
   UsageUpdate,
 } from '@agentclientprotocol/sdk'
-import { CallId, createAssistantMessage, createToolResultMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { ToolCallId, createAssistantMessage, createToolResultMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, StreamChunk, TextBlock } from '@deepseek-ai/dsh-llm'
 import type {
   JsonValue,
@@ -1401,7 +1401,7 @@ export class TurnTranslator {
    *   tool 卡片上方」，见 {@link PresentationSegmenter}），再发一个仅含
    *   tool-call block 的标准 `assistant/message`（其人类可读 name 取 ACP title，
    *   供 DSH 轨迹归属和标题展示）以及 one `tool/call`
-   *   with `{callId: CallId(toolCallId),
+   *   with `{callId: ToolCallId(toolCallId),
    *   name: ACP_EXTERNAL_TOOL_NAME, arguments: JSON.stringify(rawInput ?? {})}` ( * the unstable ACP `name` field is NOT consulted；：`name` 恒为稳定名
    *   {@link ACP_EXTERNAL_TOOL_NAME}——宿主 keyed `tool.call.toolview` 槽位
    *   按 wire tool name 分发，动态 title 无法稳定命中；首帧 wire title 有界
@@ -1663,7 +1663,7 @@ export class TurnTranslator {
     const callTitle = boundAcpToolTitle(update.title) ?? acpUnknownToolName(update.toolCallId)
     const assistantCall: ContentBlock = {
       type: 'tool-call',
-      id: CallId(update.toolCallId),
+      id: ToolCallId(update.toolCallId),
       // 轨迹使用 assistant block 的 name 展示；这里保留 ACP 的人类可读标题。
       // 独立 tool/call 仍使用稳定 wire name，以命中插件的 keyed toolview。
       name: callTitle,
@@ -1687,7 +1687,7 @@ export class TurnTranslator {
     const data: AcpToolCallEventData = {
       turn: this.turnNumber,
       step,
-      callId: CallId(update.toolCallId),
+      callId: ToolCallId(update.toolCallId),
  // name 恒为稳定名——宿主 keyed `tool.call.toolview` 槽位按 wire
       // tool name 分发（ui-tool ToolCallTree 的 entryKey），动态 title 会让
       // 渲染器永远无法稳定命中。首帧 wire title 随 meta.acpToolCall.title
@@ -1796,7 +1796,7 @@ export class TurnTranslator {
     }
     const isError = status === 'failed'
     const message = createToolResultMessage({
-      callId: CallId(update.toolCallId),
+      callId: ToolCallId(update.toolCallId),
       content: mapped.blocks,
       isError,
     })

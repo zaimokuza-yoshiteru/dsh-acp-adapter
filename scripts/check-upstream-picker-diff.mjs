@@ -33,8 +33,8 @@ const require = createRequire(path.join(REPO_ROOT, 'package.json'))
 const ts = require('typescript')
 
 const UPSTREAM_ROOT = path.join(checkout, 'packages/client/ui-model-selection')
-const UPSTREAM_TAG = 'dsh-v0.1.1-rc.2'
-const UPSTREAM_COMMIT = 'b150a551b8'
+const UPSTREAM_TAG = 'dsh-v0.1.2-alpha.1'
+const UPSTREAM_COMMIT = 'cd5ef8148158'
 
 const failures = []
 const check = (name, fn) => {
@@ -122,11 +122,11 @@ const UI_CONVERSATION_SLOTS = readFile(path.join(checkout, 'packages/client/ui-c
 const POPUP_SRC = readFile(path.join(REPO_ROOT, 'src/client/host-compat/model-picker/popup.ts'))
 const SELECTOR_LOGIC_SRC = readFile(path.join(REPO_ROOT, 'src/client/data/selector-logic.ts'))
 
-check('版本钉：上游包 version === 0.1.1-rc.2；tag/commit 常量不被改', () => {
+check('版本钉：上游包 version === 0.1.2-alpha.1；tag/commit 常量不被改', () => {
   const manifest = JSON.parse(readFile(path.join(UPSTREAM_ROOT, 'package.json')))
   assert(manifest.name === '@deepseek-ai/dsh-client-ui-model-selection', `上游包名漂移：${manifest.name}`)
-  assert(manifest.version === '0.1.1-rc.2', `上游版本漂移：${manifest.version}`)
-  assert(UPSTREAM_TAG === 'dsh-v0.1.1-rc.2' && UPSTREAM_COMMIT === 'b150a551b8', 'tag/commit 常量被改')
+  assert(manifest.version === '0.1.2-alpha.1', `上游版本漂移：${manifest.version}`)
+  assert(UPSTREAM_TAG === 'dsh-v0.1.2-alpha.1' && UPSTREAM_COMMIT === 'cd5ef8148158', 'tag/commit 常量被改')
 })
 
 check('verbatim：rowId 函数体与上游 index.ts 机械一致', () => {

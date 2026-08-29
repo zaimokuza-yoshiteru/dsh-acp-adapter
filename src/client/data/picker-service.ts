@@ -85,7 +85,7 @@ interface SessionsServiceLike {
   scope(sessionId: string): SessionScopeLike | undefined
   binding(sessionId: string): SessionBindingLike | undefined
   /**
- * 公开 `ISessions.list`（rc.2 client runtime contract/sessions.ts）的
+ * 公开 Alpha `ISessions.list`（session-controller contract）的
    * 窄化观察面——新会话确认的权威：`sessions.open` 的契约要求 id 已在列表
    * store（「unknown ids fail loud」），直接 wire create 的行经宿主
    * `host/session-added` 帧进入本镜像。
@@ -101,17 +101,28 @@ interface SessionsServiceLike {
   open(sessionId: string): void
 }
 
+/** Alpha ClientSessions.create folds Host business failures into SessionCreateError. */
+interface SessionCreateFailureLike {
+  rpcError?: { code?: unknown; message?: unknown }
+}
+
+function sessionCreateFailureOf(error: unknown): { code: string; message: string } | undefined {
+  if (typeof error !== 'object' || error === null) return undefined
+  const failure = error as SessionCreateFailureLike
+  const rpcError = failure.rpcError
+  if (typeof rpcError?.code !== 'string' || typeof rpcError.message !== 'string') return undefined
+  return { code: rpcError.code, message: rpcError.message }
+}
+
 /**
  * 宿主 workspaces 服务的窄化面（跨 backend 新会话流程的工作区解析源）。
- * `list` 是公开 `IWorkspaces.list`（rc.2 client runtime contract/workspaces.ts）
- * 的观察面：items 携带 sessionIds 成员关系（当前会话所属工作区的判定依据——
- * 与宿主 startSession 同源规则），recentWorkspaceId 是宿主推导的最近工作区。
+ * `list` 是公开 Alpha `IWorkspaces.list` 的观察面：items 携带 sessionIds
+ * 成员关系（当前会话所属工作区的判定依据）。
  */
 interface WorkspacesLike {
   list: {
     getSnapshot(): {
       items: readonly { workspaceId: string; sessionIds: readonly string[] }[]
-      recentWorkspaceId?: string | undefined
     }
   }
 }
@@ -141,7 +152,8 @@ export interface SessionPicker {
 
 export interface PickerServiceDeps {
   sessions: SessionsServiceLike
-  connection: { api: { sessions: SessionsWireLike; settings: SettingsWireLike } }
+  /** Generated Remote-backed transport; DSH Alpha no longer exposes connection.api. */
+  transport: { sessions: SessionsWireLike; settings: SettingsWireLike }
   remote: RemoteLike
  /** The mounted dshAcp remote namespace (feeds LiveOptionsController). */
   acpRemote: AcpRemoteLike
@@ -195,6 +207,10 @@ export class PickerService {
   private newSessionInflight = false
   /** One Full Access convergence command per session at a time. */
   private readonly nativeAccessInflight = new Set<string>()
+  /** One automatic blank-launcher → ACP session handoff per navigation visit. */
+  private readonly blankDefaultHandoffInflight = new Set<string>()
+  private readonly blankDefaultHandoffAttempt = new Map<string, string>()
+  private readonly blankDefaultHandoffErrors = new Map<string, string>()
   /** Composer gate while a default-ACP draft is being admitted to Full Access. */
   private readonly nativeAccessPending = new Set<string>()
   /** Last admission failure; kept visible instead of allowing a doomed prompt. */
@@ -207,6 +223,9 @@ export class PickerService {
     // 款三个触发器）。重置先清空再拉，避免显示上一个 host 世代的投影。
     const resetAll = () => {
       for (const picker of this.pickers.values()) {
+        this.blankDefaultHandoffInflight.delete(picker.sessionId)
+        this.blankDefaultHandoffAttempt.delete(picker.sessionId)
+        this.blankDefaultHandoffErrors.delete(picker.sessionId)
         this.nativeAccessPending.delete(picker.sessionId)
         this.nativeAccessErrors.delete(picker.sessionId)
         picker.directory.resetConnected()
@@ -224,6 +243,22 @@ export class PickerService {
     if (deps.onConnectionReset !== undefined) {
       this.disposers.push(deps.onConnectionReset(resetAll))
     }
+    // DSH reuses an existing blank launcher Session when the user clicks
+    // “New session”. If that launcher was created before the default changed
+    // to ACP, its live AgentHandle is still native even though Alpha's
+    // modelSelection projection now mirrors the ACP default. Re-run the
+    // admission check on each navigation visit; the handoff below creates the
+    // real ACP wrapper instead of letting the native handle hit ACP_STUB_ROUTE.
+    let currentSession = deps.sessions.list.getSnapshot().current
+    this.disposers.push(deps.sessions.list.subscribe(() => {
+      const next = deps.sessions.list.getSnapshot().current
+      if (next === currentSession) return
+      currentSession = next
+      if (next === undefined) return
+      this.blankDefaultHandoffAttempt.delete(next)
+      const picker = this.pickers.get(next)
+      if (picker !== undefined) this.prime(picker)
+    }))
   }
 
   /** 加载目录；活体选项只对 ACP 会话预拉（非 ACP 会话调 dshAcp options 必然 throw）。 */
@@ -243,6 +278,15 @@ export class PickerService {
         const actualProvider = probe.status === 'ok' && probe.state?.state !== 'blank'
           ? probe.state?.provider
           : picker.directory.getSnapshot().current?.provider
+        if (probe.status === 'ok'
+          && probe.state?.state === 'blank'
+          && this.deps.sessions.list.getSnapshot().current === picker.sessionId) {
+          const current = picker.directory.getSnapshot().current
+          if (current !== null && isAcpProvider(current.provider)) {
+            await this.handoffBlankDefault(picker.sessionId, current)
+            return
+          }
+        }
         if (isAcpProvider(actualProvider)) {
           await this.maintainNativeAccess(picker.sessionId, this.permissionPreset(picker.sessionId))
           // Live snapshot arrival also runs pending model-switch recovery.
@@ -292,12 +336,19 @@ export class PickerService {
         || (liveSnapshot.modelSwitch.status === 'pending' && liveSnapshot.freshness === 'live')
       )
       const nativeAccessError = this.nativeAccessErrors.get(sessionId)
+      const blankHandoffError = this.blankDefaultHandoffErrors.get(sessionId)
       const reason = state.routable === false
         ? this.deps.t('blocked.composer')
         : continuityBlocked
           ? this.deps.t('blocked.continuity')
           : switchBlocked
             ? this.deps.t('blocked.modelSwitch')
+            : blankHandoffError !== undefined
+              ? this.deps.t('blank.failed', {
+                  message: localizedDiagnostic(this.deps.t, 'error.technical', blankHandoffError),
+                })
+              : this.blankDefaultHandoffInflight.has(sessionId)
+                ? this.deps.t('blank.preparing')
             : nativeAccessError !== undefined
               ? this.deps.t('native.failed', {
                   message: localizedDiagnostic(this.deps.t, 'error.technical', nativeAccessError),
@@ -324,7 +375,7 @@ export class PickerService {
     }
 
     const directory = new SessionModelDirectory({
-      sessions: this.deps.connection.api.sessions,
+      sessions: this.deps.transport.sessions,
       sessionId,
       onChange: recompute,
     })
@@ -339,7 +390,7 @@ export class PickerService {
       modelSwitchInstance ??= new ModelSwitchController({
         sessionId,
         remote: this.deps.acpRemote,
-        sessions: this.deps.connection.api.sessions,
+        sessions: this.deps.transport.sessions,
         directory,
         live,
       })
@@ -355,10 +406,20 @@ export class PickerService {
     }
 
     const unsubs: Array<() => void> = []
-    const projection = this.deps.sessions
-      .binding(sessionId)
-      ?.session.projections.faceOf('permissions')
-    if (projection) unsubs.push(projection.subscribe(recompute))
+    const projections = this.deps.sessions.binding(sessionId)?.session.projections
+    const permissionsProjection = projections?.faceOf('permissions')
+    if (permissionsProjection) unsubs.push(permissionsProjection.subscribe(recompute))
+    // Alpha owns current model truth in the durable modelSelection projection.
+    // The first catalog request can race the opening projection baseline, and
+    // reconnect replaces that baseline independently of the global catalog;
+    // reload when the projection changes so a temporary catalog-default
+    // fallback cannot remain as the displayed Session selection.
+    const modelSelectionProjection = projections?.faceOf('modelSelection')
+    if (modelSelectionProjection) {
+      unsubs.push(modelSelectionProjection.subscribe(() => {
+        void directory.load().catch(() => undefined)
+      }))
+    }
     // continuity 变化（load/rebind 收敛）也要触发 recompute——composer
     // block 的第二数据源。live slice 的每次转换都同步通知（load 开始等无关
     // 转换下 publishBlock 幂等，块内容不变只是重发同值）。
@@ -378,6 +439,9 @@ export class PickerService {
       active = false
       for (const unsub of unsubs) unsub()
       this.deps.conversation?.blocks.set(sessionId, undefined)
+      this.blankDefaultHandoffInflight.delete(sessionId)
+      this.blankDefaultHandoffAttempt.delete(sessionId)
+      this.blankDefaultHandoffErrors.delete(sessionId)
       this.nativeAccessPending.delete(sessionId)
       this.nativeAccessErrors.delete(sessionId)
       this.blockRefreshers.delete(sessionId)
@@ -401,7 +465,7 @@ export class PickerService {
     const current = decodeAgentDefaultModel(snapshot.value)
     const ops = defaultModelOps(selection, current?.reasoningEffort !== undefined)
     try {
-      const response = await this.deps.connection.api.settings.mutate({
+      const response = await this.deps.transport.settings.mutate({
         ns: AGENT_DEFAULT_MODEL_NS,
         ops,
         expectedRevision: snapshot.revision,
@@ -463,6 +527,31 @@ export class PickerService {
       throw new Error(`permission switch failed: ${result.error.code}: ${result.error.message}`)
     }
     if (!result.value.matched) throw new Error('the host offers no /permission command')
+  }
+
+  /**
+   * Materialize the ACP default behind DSH's reusable blank launcher Session.
+   * The launcher owns a native AgentHandle and cannot be replaced in place;
+   * creating/opening a fresh session is the only truthful execution-backend
+   * transition available through Alpha's public client surfaces.
+   */
+  private async handoffBlankDefault(sessionId: string, selection: PickerModelSelection): Promise<void> {
+    const key = `${selection.provider}\u0000${selection.model}\u0000${selection.reasoningEffort ?? ''}`
+    if (this.blankDefaultHandoffInflight.has(sessionId)
+      || this.blankDefaultHandoffAttempt.get(sessionId) === key) return
+    this.blankDefaultHandoffAttempt.set(sessionId, key)
+    this.blankDefaultHandoffInflight.add(sessionId)
+    this.blankDefaultHandoffErrors.delete(sessionId)
+    this.blockRefreshers.get(sessionId)?.()
+    try {
+      const failure = await this.useInNewSession(sessionId, selection, selection.model)
+      if (failure !== undefined) this.blankDefaultHandoffErrors.set(sessionId, failure)
+    } catch (error) {
+      this.blankDefaultHandoffErrors.set(sessionId, errorMessageOf(error))
+    } finally {
+      this.blankDefaultHandoffInflight.delete(sessionId)
+      this.blockRefreshers.get(sessionId)?.()
+    }
   }
 
   /**
@@ -570,14 +659,14 @@ export class PickerService {
 
   /**
  * 确认后的跨 backend 新会话事务：
-   * 解析工作区（当前会话所属 workspace → 宿主 recentWorkspaceId → 当前会话
-   *    cwd 直建未分组会话）；三者皆无 → 报错请用户选择，**绝不猜测目录**；
+   * 解析工作区（当前会话所属 workspace → 当前会话 cwd 直建未分组会话）；
+   *    两者皆无 → 报错请用户选择，**绝不猜测目录**；
    * 写入目标 `agent-default-model`。DSH create wire 没有模型参数，
    *    新 Agent 只能从该官方默认选择创建；这也复制 DSH“选择即默认”语义；
    * 预生成稳定 `session-${randomUUID()}`，调公开 wire `session.create`
-   *    （connection.api.sessions.create；host 对同 id 同 cwd 幂等——
+   *    （Generated Remote session.create；host 对同 id 同 cwd 幂等——
    *    reference ensureSession 采用活体/持久会话）；
-   * 有界窗口内经公开 `sessions.list` 镜像确认行到场，再 `sessions.open`
+   * Alpha `sessions.create` 成功即保证列表与 binding 同步可寻址，再 `sessions.open`
    *    （open 契约要求 id 已入列表）；
    * 网络/响应丢失只用同一个 session id 重试（先查列表采用已发布行）；
    *    `workspace-attach-failed` = 会话已发布但未分组——打开该未分组会话并
@@ -633,7 +722,7 @@ export class PickerService {
     if (workspaces === undefined) return t('cross.unavailable')
     const workspaceSnapshot = workspaces.list.getSnapshot()
     const ownWorkspace = workspaceSnapshot.items.find((item) => item.sessionIds.includes(ticket.sessionId))
-    const workspaceId = ownWorkspace?.workspaceId ?? workspaceSnapshot.recentWorkspaceId ?? undefined
+    const workspaceId = ownWorkspace?.workspaceId
     const cwd = workspaceId === undefined
       ? this.deps.sessions.list.getSnapshot().byId[ticket.sessionId]?.cwd
       : undefined
@@ -657,7 +746,7 @@ export class PickerService {
     let lastError = ''
     for (let attempt = 0; attempt < 2 && !published; attempt += 1) {
       try {
-        const { result } = await this.deps.connection.api.sessions.create(payload)
+        const { result } = await this.deps.transport.sessions.create(payload)
         if (result.ok) {
           published = true
         } else if (result.error.code === 'workspace-attach-failed') {
@@ -671,9 +760,25 @@ export class PickerService {
           break
         }
       } catch (error) {
-        // 响应丢失：先查列表镜像——行已在即采用（只产生一个会话）；否则同 id 重试
-        lastError = errorMessageOf(error)
-        if (await this.waitForSessionRow(newSessionId, timeoutMs)) published = true
+        const businessFailure = sessionCreateFailureOf(error)
+        if (businessFailure !== undefined) {
+          lastError = businessFailure.message
+          if (businessFailure.code === 'workspace-attach-failed') {
+            // Alpha Host 已发布会话，只是 workspace attach 失败；仍可同步寻址，
+            // 打开未分组会话并把 attach 事实交给 UI 提示。
+            published = true
+            attachFailure = businessFailure.message
+          } else {
+            // SessionCreateError.rpcError 是业务拒绝，不是响应丢失，禁止重试
+            // 或把它误报成 transport ambiguity。
+            definitiveCreateFailure = true
+            break
+          }
+        } else {
+          // 响应丢失：先查列表镜像——行已在即采用（只产生一个会话）；否则同 id 重试
+          lastError = errorMessageOf(error)
+          if (await this.waitForSessionRow(newSessionId, timeoutMs)) published = true
+        }
       }
     }
     if (!published) {
@@ -697,8 +802,14 @@ export class PickerService {
       // definitive failure invites duplicate sessions on retry.
       return t('cross.createAmbiguous', { model, message: technical(lastError) })
     }
-    // Confirm the row in the bounded list mirror before opening it.
-    if (!(await this.waitForSessionRow(newSessionId, timeoutMs))) {
+    // Alpha sessions.create resolves only after list/binding publication on its
+    // normal success path.  An attach failure is different: the host has
+    // published the session but the workspace registry write failed before the
+    // client mirror was refreshed, so retain one bounded observation window
+    // before trying to open the ungrouped session.  The probe remains absent
+    // from the normal success path; polling that path adds latency and can
+    // deadlock on a stale browser list even though open() is already safe.
+    if (attachFailure !== null && !(await this.waitForSessionRow(newSessionId, timeoutMs))) {
       return t('cross.confirmTimeout', { sessionId: newSessionId })
     }
     // ACP backend 不继承受限模式：新会话入列后，在导航/首轮之前
@@ -767,7 +878,7 @@ export class PickerService {
         ]
       : defaultModelOps(previous, current?.reasoningEffort !== undefined)
     try {
-      const response = await this.deps.connection.api.settings.mutate({
+      const response = await this.deps.transport.settings.mutate({
         ns: AGENT_DEFAULT_MODEL_NS,
         ops,
         expectedRevision: appliedRevision,
@@ -812,6 +923,9 @@ export class PickerService {
     this.nativeAccessInflight.clear()
     this.nativeAccessPending.clear()
     this.nativeAccessErrors.clear()
+    this.blankDefaultHandoffInflight.clear()
+    this.blankDefaultHandoffAttempt.clear()
+    this.blankDefaultHandoffErrors.clear()
     this.blockRefreshers.clear()
   }
 }

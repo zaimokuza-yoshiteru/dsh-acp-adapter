@@ -7,7 +7,7 @@
  * beyond the shell's own contract) lives in src/client/data/* and is imported,
  * never reimplemented, here.
  *
- * Fork provenance (upstream dsh-v0.1.1-rc.2, commit b150a551b8; the upstream
+ * Fork provenance (upstream dsh-v0.1.2-alpha.1, commit cd5ef8148158; the upstream
  * package `@deepseek-ai/dsh-client-ui-model-selection` is unpublished, hence a
  * source-level fork, MIT):
  * - verbatim: `rowId`, `selectionOf` (upstream`src/client/index.ts`);
@@ -97,7 +97,7 @@ export function optionsOf(
       backend,
       directory.current.provider,
     )
-    // blank/draft handoff is automatic because rc.2 cannot replace the live
+    // blank/draft handoff is automatic because Alpha cannot replace the live
     // wrapper. Only an established backend needs an explicit confirmation.
     const explicitConfirmation = backend?.state === 'established'
     for (const model of group.models) {

@@ -4,14 +4,14 @@
 // 钉版对象：
 //   - narrowSubprocessSeam：形态判定 + spawn 调用点固定填入 pipe/pipe/pipe stdio
 //   - compat 镜像：ACP_SENSITIVE_ENV_PATTERN / ACP_DSH_ENV_PREFIX /
-//     predictScrubbedParentEnv 与 devDep @deepseek-ai/dsh-subprocess rc.2 真值对拍
+//     predictScrubbedParentEnv 与 devDep @deepseek-ai/dsh-subprocess 0.1.2-alpha.1 真值对拍
 //   - envSpecWithTombstones：白名单语义的 spawn env 组装（纯函数）
 //   - 真 spawn 白名单：污染父 env 后经 AcpAgentProcess 启动内联 agent，
 //     子进程所见恰为期望集（scrub 存活但未期望的键被 tombstone 删除、
 //     显式 credential 形条目穿透）
 //   - fail closed：spec.subprocess 缺席构造即抛 spawn-failure；seam 同步抛错 →
 //     initialize 分类 spawn-failure 且文案同格
-//   - 依赖面守卫：两包仅在 devDependencies（精确 rc.2），src/** 零值级 import
+//   - 依赖面守卫：两包仅在 devDependencies（精确 0.1.2-alpha.1），src/** 零值级 import
 //     （宿主模块实例一致性 纪律：值级 import dsh 包会让产物解析到第二实例）
 
 import fs from 'node:fs';
@@ -95,7 +95,7 @@ describe('narrowSubprocessSeam 结构化窄化', () => {
   });
 });
 
-describe('compat 镜像钉版（上游 @deepseek-ai/dsh-subprocess rc.2 真值对拍）', () => {
+describe('compat 镜像钉版（上游 @deepseek-ai/dsh-subprocess 0.1.2-alpha.1 真值对拍）', () => {
   it('ACP_SENSITIVE_ENV_PATTERN / ACP_DSH_ENV_PREFIX 与上游常量同格', () => {
     expect(ACP_SENSITIVE_ENV_PATTERN.source).toBe(SENSITIVE_ENV_PATTERN.source);
     expect(ACP_SENSITIVE_ENV_PATTERN.flags).toBe(SENSITIVE_ENV_PATTERN.flags);
@@ -230,7 +230,7 @@ describe('fail closed（spawn-failure 分类）', () => {
 });
 
 describe('依赖面守卫（宿主模块实例一致性 纪律）', () => {
-  it('package.json：两包仅在 devDependencies 且精确钉 0.1.1-rc.2；dependencies/peerDependencies 不含', () => {
+  it('package.json：两包仅在 devDependencies 且精确钉 0.1.2-alpha.1；dependencies/peerDependencies 不含', () => {
     const pkg = JSON.parse(fs.readFileSync(path.join(PKG_ROOT, 'package.json'), 'utf8')) as {
       dependencies?: Record<string, string>;
       peerDependencies?: Record<string, string>;
@@ -239,7 +239,7 @@ describe('依赖面守卫（宿主模块实例一致性 纪律）', () => {
     for (const name of ['@deepseek-ai/dsh-subprocess', '@deepseek-ai/dsh-subprocess-local']) {
       expect(pkg.dependencies?.[name]).toBeUndefined();
       expect(pkg.peerDependencies?.[name]).toBeUndefined();
-      expect(pkg.devDependencies?.[name]).toBe('0.1.1-rc.2');
+      expect(pkg.devDependencies?.[name]).toBe('0.1.2-alpha.1');
     }
   });
 

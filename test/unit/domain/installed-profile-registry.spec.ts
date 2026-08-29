@@ -176,6 +176,7 @@ function fakeHarness(): FakeHarness {
     inject: (_deps: string[], callback: (sctx: unknown) => void): void => {
       callback(scopedCtx);
     },
+    effect: (_setup: () => (() => void), _name?: string): void => {},
     llm,
     logger: {
       warn: (line: string): void => {
@@ -577,9 +578,10 @@ describe('纯函数：registration facts / probe 配置 hash', () => {
 });
 
 describe('installInstalledProfileRegistry：注册/替换调用序列', () => {
-  it('空配置 dormant：启动不注册任何路由', () => {
+  it('空配置 dormant：启动不注册任何路由，初始 settings 快照后 ready', async () => {
     const { ctx, llm } = fakeHarness();
-    installInstalledProfileRegistry(ctx);
+    const registry = installInstalledProfileRegistry(ctx);
+    await expect(registry.ready).resolves.toBeUndefined();
     expect(llm.calls).toEqual([]);
   });
 
@@ -650,8 +652,8 @@ describe('installInstalledProfileRegistry：注册/替换调用序列', () => {
     await settings.mutate([{ op: 'set', path: ['agents', 'devin'], value: { ...devinAgent } }]);
     await settings.mutate([{ op: 'set', path: ['agents', 'foo'], value: { ...fooAgent } }]);
     await settings.mutate([{ op: 'unset', path: ['agents', 'devin'] }]);
-    // 删除后该路由不再解析到任何 agent（agent-loop 的创建门/路由随之放行给
-    // 父类——provider acp-devin 已不在 LLM 注册表，上游响亮报错而非回退到他 profile）
+    // 删除后该路由不再解析到任何 agent；agent-loop 会响亮拒绝，绝不回落到
+    // native LLM stub 或其他 ACP profile。
     expect(registry.resolveRoute('acp-devin')).toBeUndefined();
     expect(registry.resolveRoute('acp-foo')).toEqual({ id: 'foo', config: fooAgent });
     // 模型目录同步失效：对已删路由的 listModels 响亮拒绝（llm-stub.spec.ts

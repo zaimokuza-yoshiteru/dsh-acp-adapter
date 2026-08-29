@@ -1,8 +1,6 @@
 // stores.spec.ts — store 引擎与四个 store 模块的行为钉。
 //
-// 引擎（data/stores/engine.ts）是 client-runtime defineStore 的本地结构化复刻
-// （真身 lib/client.js 是 window.__ModuleLoader__ 包装，node 下不可加载；本层
-// 零外部 import 纪律也禁止值级引用）。本文件把契约要点钉成可执行断言：
+// 引擎由 Alpha 公共 dsh-client-store 提供。本文件把契约要点钉成可执行断言：
 //   - init 每实例播种新鲜状态（create 两次互不串扰）
 //   - actions 烘焙：draft 参数被剥除，调用即发布
 //   - 已发布引用绝不被原地改写（draft 是克隆，旧快照保持原值）
@@ -12,7 +10,7 @@
 // selector-controller.spec.ts（驱动方式改为 glue + 真 store 实例）。
 
 import { describe, expect, it, vi } from 'vitest';
-import { defineSnapshotStore } from '../../../src/client/data/stores/engine.ts';
+import { defineStore } from '@deepseek-ai/dsh-client-store';
 import { createAcpPanelStore } from '../../../src/client/data/stores/panel-store.ts';
 import { createModelPickerStore } from '../../../src/client/data/stores/picker-store.ts';
 import { INITIAL_DIRECTORY_STATE } from '../../../src/client/data/selector-logic.ts';
@@ -20,8 +18,8 @@ import type { LiveOptionsSnapshot } from '../../../src/client/data/selector-logi
 
 // ---------- 引擎契约 ----------
 
-describe('defineSnapshotStore 引擎契约（ui-slots StoreHandle 结构化复刻）', () => {
-  const handle = defineSnapshotStore({
+describe('defineStore 公共引擎契约（Alpha dsh-client-store）', () => {
+  const handle = defineStore({
     init: () => ({ count: 0, note: 'fresh' }),
     actions: {
       bumped(draft: { count: number; note: string }, by: number): void {

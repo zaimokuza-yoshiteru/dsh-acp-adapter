@@ -1,7 +1,7 @@
 // 模型选择器兼容壳的上游漂移合同。DSH checkout 由 DSH_UPSTREAM_CHECKOUT 指定；
 // 本地也会查找仓内或相邻的 reference/deepseek-harness。固定基线为
-// dsh-v0.1.1-rc.2（commit b150a551b8）。本套件验证：
-//   1. 版本钉：上游包 package.json version === '0.1.1-rc.2'，tag/commit 常量不被改；
+// dsh-v0.1.2-alpha.1（commit cd5ef8148158）。本套件验证：
+//   1. 版本钉：上游包 package.json version === '0.1.2-alpha.1'，tag/commit 常量不被改；
 //   2. verbatim 沿用机械比对：rowId / selectionOf 函数体（上游 src/client/index.ts
 //      ↔ 岛上 popup.ts，双侧 ts.transpileModule 脱类型后 normalizeJs 归一化），
 //      INITIAL_DIRECTORY_STATE 初值对象字面量（上游 directory.ts 的
@@ -21,7 +21,7 @@
 // 族）以及 live 选项快照类型与解码。
 //
 // 语义对照（非 verbatim，钉在注释而非断言）：上游 host 端 buildModelCatalog 对单个
-// provider 探测失败只记 failures 不拖垮目录（DSH 0.1.1-rc.2
+// provider 探测失败只记 failures 不拖垮目录（DSH 0.1.2-alpha.1
 // reference/.../packages/host/apiproxy/
 // src/api/sessions.ts）；本适配器宿主 composition/llm-stub 同款语义，由
 // test/llm-stub.spec.ts 的「失败隔离」用例钉。
@@ -43,13 +43,13 @@ const checkoutCandidates = [
 const upstreamCheckout = checkoutCandidates.find((candidate) => fs.existsSync(candidate))
 if (upstreamCheckout === undefined) {
   throw new Error(
-    '找不到 DSH 上游 checkout；请设置 DSH_UPSTREAM_CHECKOUT，或把 dsh-v0.1.1-rc.2 放在 reference/deepseek-harness',
+    '找不到 DSH 上游 checkout；请设置 DSH_UPSTREAM_CHECKOUT，或把 dsh-v0.1.2-alpha.1 放在 reference/deepseek-harness',
   )
 }
 const upstreamCheckoutUrl = pathToFileURL(`${path.resolve(upstreamCheckout)}${path.sep}`)
 const UPSTREAM_ROOT = new URL('packages/client/ui-model-selection/', upstreamCheckoutUrl)
-const UPSTREAM_TAG = 'dsh-v0.1.1-rc.2'
-const UPSTREAM_COMMIT = 'b150a551b8'
+const UPSTREAM_TAG = 'dsh-v0.1.2-alpha.1'
+const UPSTREAM_COMMIT = 'cd5ef8148158'
 
 function upstreamSrc(relative: string): string {
   return fs.readFileSync(new URL(`src/client/${relative}`, UPSTREAM_ROOT), 'utf8')
@@ -131,13 +131,13 @@ function normalizeWs(text: string): string {
   return text.replace(/\s+/g, ' ').trim()
 }
 
-describe('模型选择器 fork 钉版（上游 ui-model-selection @ dsh-v0.1.1-rc.2, commit b150a551b8）', () => {
-  it('版本钉：上游包 version === 0.1.1-rc.2；tag/commit 常量不被改', () => {
+describe('模型选择器 fork 钉版（上游 ui-model-selection @ dsh-v0.1.2-alpha.1, commit cd5ef8148158）', () => {
+  it('版本钉：上游包 version === 0.1.2-alpha.1；tag/commit 常量不被改', () => {
     const manifest = JSON.parse(fs.readFileSync(new URL('package.json', UPSTREAM_ROOT), 'utf8')) as { name: string; version: string }
     expect(manifest.name).toBe('@deepseek-ai/dsh-client-ui-model-selection')
-    expect(manifest.version).toBe('0.1.1-rc.2')
-    expect(UPSTREAM_TAG).toBe('dsh-v0.1.1-rc.2')
-    expect(UPSTREAM_COMMIT).toBe('b150a551b8')
+    expect(manifest.version).toBe('0.1.2-alpha.1')
+    expect(UPSTREAM_TAG).toBe('dsh-v0.1.2-alpha.1')
+    expect(UPSTREAM_COMMIT).toBe('cd5ef8148158')
   })
 
   it('verbatim：rowId 函数体与上游 index.ts 机械一致', () => {

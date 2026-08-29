@@ -470,7 +470,7 @@ export function commandLineOf(config: { command: string; args: readonly string[]
 
 // ---------- settings scope 快照投影（controller 订阅的面片状态） ----------
 
-/** Structural face of the client settings scope's snapshot (dsh-client-runtime SettingsScopeSnapshot). */
+/** Structural face of the Alpha client settings-scope snapshot. */
 export interface AcpScopeSnapshot {
   status: 'loading' | 'ready' | 'unavailable'
   value: AcpSettings | undefined

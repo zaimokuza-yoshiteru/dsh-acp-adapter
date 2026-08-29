@@ -2,6 +2,8 @@
 import { createElement as h, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Modal } from '@deepseek-ai/dsh-client-ui-primitives'
+import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-store'
+import type { SessionSnapshot } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { AcpAuditSummaryCode, AcpAuditTimelineEntry } from '../data/acp-remote.ts'
 import type { AcpRemoteLike } from '../data/acp-remote.ts'
 import type { AcpLocaleKey } from './locales.ts'
@@ -11,6 +13,8 @@ type Translate = (key: AcpLocaleKey, params?: Record<string, string | number>) =
 
 export interface AcpAuditHeaderActionProps {
   sessionId?: string
+  /** DSH's session snapshot hook; its lifecycle changes drive backend re-checks. */
+  useSession?: SnapshotSelectorHook<SessionSnapshot>
   remote?: AcpRemoteLike
   t?: Translate
 }
@@ -21,6 +25,30 @@ type Filter = 'all' | 'recovery' | 'permission' | 'agent' | 'files' | 'config'
 
 export function auditHeaderVisible(backend: { readonly state: string; readonly provider?: string } | null | undefined): boolean {
   return backend?.state === 'established' && backend.provider?.startsWith('acp-') === true
+}
+
+/**
+ * A bounded, event-driven refresh key for the draft → established transition.
+ * The audit action must not poll the host, but it also cannot rely on
+ * `sessionId` changing when the first prompt materializes an ACP backend.
+ */
+export function auditSessionRefreshKeyOf(snapshot: {
+  readonly blank: boolean
+  readonly promptAttempted: boolean
+  readonly awaitingFirstTurn: boolean
+  readonly running: boolean
+  readonly openState: string
+  readonly lastAgentError: string | null
+} | null | undefined): string {
+  if (snapshot === null || snapshot === undefined) return 'absent'
+  return [
+    snapshot.blank,
+    snapshot.promptAttempted,
+    snapshot.awaitingFirstTurn,
+    snapshot.running,
+    snapshot.openState,
+    snapshot.lastAgentError ?? '',
+  ].join('|')
 }
 
 export function auditEntryMatchesFilter(entry: AcpAuditTimelineEntry, filter: Filter): boolean {
@@ -103,7 +131,13 @@ function timeOf(epoch: number): string {
 }
 
 export function AcpAuditHeaderAction(props: AcpAuditHeaderActionProps): ReactNode {
-  const { sessionId, remote, t } = props
+  const { sessionId, useSession, remote, t } = props
+  // Session Controller publishes this snapshot whenever the first prompt is
+  // accepted/completed. Selecting only the lifecycle fields keeps the audit
+  // check event-driven and avoids a request on every trajectory row update.
+  const sessionRefreshKey = useSession === undefined
+    ? 'absent'
+    : useSession((snapshot) => auditSessionRefreshKeyOf(snapshot))
   const [isAcp, setIsAcp] = useState(false)
   const [open, setOpen] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -116,7 +150,6 @@ export function AcpAuditHeaderAction(props: AcpAuditHeaderActionProps): ReactNod
 
   useEffect(() => {
     requestEpoch.current += 1
-    let disposed = false
     setIsAcp(false)
     setOpen(false)
     setLoading(false)
@@ -126,11 +159,16 @@ export function AcpAuditHeaderAction(props: AcpAuditHeaderActionProps): ReactNod
     setError(null)
     setFilter('all')
     if (sessionId === undefined || remote === undefined) return
+  }, [sessionId, remote])
+
+  useEffect(() => {
+    let disposed = false
+    if (sessionId === undefined || remote === undefined) return
     void remote.backendOf(sessionId).then((result) => {
       if (!disposed && result.ok && auditHeaderVisible(result.value)) setIsAcp(true)
     }).catch(() => undefined)
     return () => { disposed = true }
-  }, [sessionId, remote])
+  }, [sessionId, remote, sessionRefreshKey])
 
   const load = (reset: boolean): void => {
     if (sessionId === undefined || remote?.auditTimeline === undefined || loading) return
@@ -168,6 +206,7 @@ export function AcpAuditHeaderAction(props: AcpAuditHeaderActionProps): ReactNod
       className: css.modal ?? '',
       contentClassName: css.content ?? '',
     },
+      h('p', { className: css.boundary }, textOf(t, 'auditBoundary', 'Completed tool calls remain in the DSH trajectory. This view records ACP-specific recovery, permission and configuration decisions, plus client file and terminal activity.')),
       h('div', { className: css.filters, role: 'toolbar' }, ...labels.map(([value, key]) => h('button', {
         key: value, type: 'button', className: value === filter ? css.filterActive : css.filter,
         onClick: () => setFilter(value),

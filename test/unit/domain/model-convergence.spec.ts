@@ -243,6 +243,13 @@ describe('建立时模型收敛', () => {
         expect.objectContaining({ id: 'mode', value: 'plan' }),
         expect.objectContaining({ id: 'thought_level', value: 'low' }),
       ]));
+    // The ACP's effective thought_level is part of the next request header,
+    // so a DSH model-selection projection cannot silently fall back to an
+    // unknown effort after the live option was changed.
+    first.agent.followup(userText('check persisted effort'));
+    await first.agent.whenIdle();
+    expect((eventsOf(first.agent, 'request/header').at(-1)?.data.header.config as { reasoningEffort?: string }).reasoningEffort)
+      .toBe('low');
 
     const persisted = [...first.agent.session.events];
     await first.dispose();
@@ -256,6 +263,8 @@ describe('建立时模型收敛', () => {
     const resumed = second.agent as AcpAgent;
     expect(resumed.configOptions?.find((option) => option.id === 'mode')?.currentValue).toBe('plan');
     expect(resumed.configOptions?.find((option) => option.id === 'thought_level')?.currentValue).toBe('low');
+    expect((eventsOf(second.agent, 'request/header').at(-1)?.data.header.config as { reasoningEffort?: string }).reasoningEffort)
+      .toBe('low');
     const log = readLog(profile.logPath);
     const loadIndex = log.lastIndexOf('--> session/load');
     const modeIndex = log.indexOf('set_config_option configId=mode value="plan"', loadIndex);

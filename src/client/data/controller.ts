@@ -32,18 +32,18 @@ import type {
 import type { AcpRemoteLike } from './acp-remote.ts'
 import type { AcpPanelSnapshot, AcpPanelStoreActions, HealthState } from './stores/panel-store.ts'
 
-/** Structural face of the client settings scope (dsh-client-runtime SettingsScope narrowed to what the panel reads). */
+/** Structural face of the Alpha client settings scope, narrowed to what the panel reads. */
 export interface SettingsScopeLike {
   getSnapshot(): AcpScopeSnapshot
   subscribe(listener: () => void): () => void
 }
 
-/** One path-addressed settings edit (DSH 0.1.1-rc.2 ApiProxy `SettingsPathOpView`). */
+/** One path-addressed settings edit (Alpha Generated Remote settings operation). */
 export type AcpSettingsOp =
   | { op: 'set'; path: string[]; value: unknown }
   | { op: 'unset'; path: string[] }
 
-/** The settings wire face the panel writes through (`connection.api.settings`). */
+/** The Generated Remote settings face the panel writes through. */
 export interface SettingsMutateLike {
   mutate(request: {
     ns: string

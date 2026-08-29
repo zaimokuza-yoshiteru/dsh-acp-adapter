@@ -83,6 +83,37 @@ export function acpAgentDisplayName(groups: readonly PickerProviderGroup[], prov
 }
 
 /**
+ * Devin's model labels already contain the product's reasoning-mode wording.
+ * This is intentionally restricted to the canonical profile route: a user
+ * editable display name is not a reliable runtime identity. Custom Devin
+ * profiles therefore use the generic ACP three-part display until the catalog
+ * exposes an explicit runtime fact.
+ */
+export function isDevinAcpAgent(provider: string, agentName?: string): boolean {
+  void agentName
+  return provider === 'acp-devin'
+}
+
+/**
+ * Build the compact model-trigger label for an ACP selection.  The effort is
+ * appended only when it is a fact from the ACP model/config advertisement;
+ * callers pass `undefined` when the option is absent or not yet known.  Devin
+ * deliberately keeps the two-part label because its model name carries this
+ * meaning already.  Native DSH labels do not use this helper.
+ */
+export function acpModelTriggerLabel(input: {
+  provider: string
+  agentName: string
+  modelName: string
+  reasoningEffort?: string
+}): string {
+  const base = `${input.agentName} · ${input.modelName}`
+  if (isDevinAcpAgent(input.provider, input.agentName)) return base
+  const effort = input.reasoningEffort?.trim()
+  return effort === undefined || effort === '' ? base : `${base} · ${effort}`
+}
+
+/**
  * The provider filter of the picker's filter bar includes a 'current'
  * （「当前」Tab）——只按会话 backend 的精确 provider/profile 路由过滤现有 DSH
  * 模型目录；该 Tab 的存在性由 {@link currentTabAvailable} 决定（host
@@ -126,7 +157,7 @@ export function backendOfProvider(provider: string): string {
 /**
  * 兼容性判定：该 selection 是否与会话已锁定的 backend 同 backend。
  * blank 表示尚未建立 ACP backend；若 host 已实例化 native wrapper，调用方会通过
- * currentProvider 传入其实际路由。由于 rc.2 没有 live Agent 替换 seam，跨到另一
+ * currentProvider 传入其实际路由。由于 Alpha 没有 live Agent 替换 seam，跨到另一
  * wrapper 必须自动创建新 DSH session；只有无 wrapper 或同路由才可原地采用。
  * established →
  * 只有同一路由的行可选（同 ACP profile 的不同模型行走 set_config_option 既有
@@ -138,10 +169,10 @@ export function isSameBackendSelection(
   currentProvider?: string | null,
 ): boolean {
   // A blank DSH session may already have a live native wrapper. The plugin has
-  // no public rc.2 seam to replace that wrapper, so only the current provider
+  // no public Alpha seam to replace that wrapper, so only the current provider
   // is an in-place selection; a different provider must use a new DSH session.
   if (backend.state === 'blank') return currentProvider === undefined || currentProvider === null || backendOfProvider(selection.provider) === currentProvider
-  // A draft has a live ACP wrapper, but no committed semantic binding. rc.2
+  // A draft has a live ACP wrapper, but no committed semantic binding. Alpha
   // cannot replace that wrapper either: only the same ACP profile can switch
   // in place; another profile/native backend must open a new DSH session.
   if (backend.state === 'draft') return backend.provider === backendOfProvider(selection.provider)
