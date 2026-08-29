@@ -4,6 +4,24 @@
 
 通过 DeepSeek Harness（DSH）会话页面使用智能体，包括 Devin、Codex、Kimi 和 Claude。智能体继续负责自己的模型、工具、skills、登录状态和运行时。
 
+## 功能预览
+
+在 ACP 面板添加 Agent，并检查本地 ACP 命令是否可用：
+
+![ACP 设置页面，Codex 和 Devin 均已通过协议检查](assets/readme/acp-settings.zh-CN.png)
+
+在 DSH 会话中使用 Agent 模型、推理强度和原生工具：
+
+![Codex 在 DSH 会话中读取文件并返回结果](assets/readme/acp-session.zh-CN.png)
+
+Agent 的子 Agent 调用继续使用 DSH 的消息流展示：
+
+![Codex 子 Agent 调用在 DSH 会话中的展示](assets/readme/acp-subagent.zh-CN.png)
+
+通过 Agent 审计查看权限、恢复、文件、配置和会话连续性记录：
+
+![Agent 审计及展开后的会话连续性详情](assets/readme/acp-audit.zh-CN.png)
+
 ## 前置：安装 DSH
 
 需要 Node.js `^22.19.0 || >=24.0.0` 和 DSH `>=0.1.1-rc.2`：

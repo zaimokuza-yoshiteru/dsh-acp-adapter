@@ -138,6 +138,7 @@
     "lib/typert.remote-client.js",
     "lib/typert.remote-client.d.ts",
     "cordis.patch.yml",
+    "assets/readme/*.png",
     "README.md",
     "README.en.md",
     "LICENSE"
