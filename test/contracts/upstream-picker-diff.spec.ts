@@ -1,5 +1,6 @@
 // 模型选择器兼容壳的上游漂移合同。DSH checkout 由 DSH_UPSTREAM_CHECKOUT 指定；
-// 本地也会查找仓内或相邻的 reference/deepseek-harness。固定基线为
+// 本地优先查找明确命名的 rc.2 checkout，再兼容旧的 reference/deepseek-harness。
+// 后者可能用于跟踪更新版上游，不能抢占本门禁的固定基线。固定基线为
 // dsh-v0.1.1-rc.2（commit b150a551b8）。本套件验证：
 //   1. 版本钉：上游包 package.json version === '0.1.1-rc.2'，tag/commit 常量不被改；
 //   2. verbatim 沿用机械比对：rowId / selectionOf 函数体（上游 src/client/index.ts
@@ -37,13 +38,15 @@ import { describe, expect, it } from 'vitest'
 
 const checkoutCandidates = [
   process.env.DSH_UPSTREAM_CHECKOUT,
+  new URL('../../reference/deepseek-harness-rc2/', import.meta.url).pathname,
+  new URL('../../../reference/deepseek-harness-rc2/', import.meta.url).pathname,
   new URL('../../reference/deepseek-harness/', import.meta.url).pathname,
   new URL('../../../reference/deepseek-harness/', import.meta.url).pathname,
 ].filter((candidate): candidate is string => candidate !== undefined && candidate !== '')
 const upstreamCheckout = checkoutCandidates.find((candidate) => fs.existsSync(candidate))
 if (upstreamCheckout === undefined) {
   throw new Error(
-    '找不到 DSH 上游 checkout；请设置 DSH_UPSTREAM_CHECKOUT，或把 dsh-v0.1.1-rc.2 放在 reference/deepseek-harness',
+    '找不到 DSH 上游 checkout；请设置 DSH_UPSTREAM_CHECKOUT，或把 dsh-v0.1.1-rc.2 放在 reference/deepseek-harness-rc2',
   )
 }
 const upstreamCheckoutUrl = pathToFileURL(`${path.resolve(upstreamCheckout)}${path.sep}`)

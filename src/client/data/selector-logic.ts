@@ -784,7 +784,11 @@ export function acpTriggerReasoningLabel(
 ): string | undefined {
   if (snapshot === null || snapshot === undefined) return directoryFallback
   const option = snapshot.configOptions?.find((candidate) =>
-    candidate.category === 'thought_level' && candidate.type === 'select')
+    candidate.type === 'select' && (
+      candidate.category === 'thought_level'
+      || candidate.id === 'thought_level'
+      || candidate.id === 'reasoning_effort'
+    ))
   return option?.type === 'select'
     ? liveValueNameOf(option, option.currentValue)
     : undefined
