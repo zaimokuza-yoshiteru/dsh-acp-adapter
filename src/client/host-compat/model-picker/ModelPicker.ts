@@ -21,7 +21,6 @@ import { errorMessageOf } from '../../data/logic.ts'
 import { localizedDiagnostic } from '../../data/diagnostics.ts'
 import {
   acpAgentDisplayName,
-  acpModelTriggerLabel,
   acpTriggerReasoningLabel,
   acpUnavailableMessageOf,
   failClosedGroupsForUnavailableProbe,
@@ -35,10 +34,12 @@ import {
   flattenLiveValues,
   isAcpProvider,
   isSameBackendSelection,
+  modelTriggerPresentation,
   nativeOnlyFilterOf,
   partitionLiveOptions,
   PROVIDER_KIND_LABELS,
   providerKindOf,
+  sameModelRoute,
   type AcpBackendProbe,
   type CurrentRouteFacts,
   type LiveConfigOption,
@@ -357,11 +358,9 @@ function Loaded({ locked, available, t, useStore, picker }: {
   }
 
   const choose = (selection: PickerModelSelection): void => {
-    if (
-      state.current?.provider === selection.provider
-      && state.current.model === selection.model
-      && (state.current.reasoningEffort ?? undefined) === selection.reasoningEffort
-    ) {
+    // 与 DSH 原生 ModelSelect 一致：重选当前模型只关闭菜单。推理强度由独立
+    // 入口修改，不能因为模型行携带 defaultEffort 就把用户当前档位复位。
+    if (sameModelRoute(state.current, selection)) {
       close(true)
       return
     }
@@ -376,10 +375,13 @@ function Loaded({ locked, available, t, useStore, picker }: {
       close(true)
       return
     }
-    choose({
+    // 推理强度是同一模型上的独立选择，不能走模型行的 sameModelRoute 短路。
+    void picker.select({
       provider: state.current.provider,
       model: state.current.model,
       ...effort === undefined ? {} : { reasoningEffort: effort },
+    }).then((accepted) => {
+      if (accepted && rootRef.current !== null) close(true)
     })
   }
 
@@ -433,29 +435,24 @@ function Loaded({ locked, available, t, useStore, picker }: {
     choose(selection)
   }
 
- // ACP 触发器身份展示：ACP 模型的 seat 触发钮显示「<Agent 名> · <模型名>」——agent 名
-  // 复用 acpAgentDisplayName（组 displayName 剥 ` · ACP` 后缀的唯一来源，
-  // 不二次硬编码切割）；native 模型保持只显示模型名。
-  const modelLabel = currentChoice === undefined
-    ? t('trigger.fallback')
-    : acp
-      ? `${acpAgentName} · ${currentChoice.model.name}`
-      : currentChoice.model.name
-  // ACP 使用一个紧凑且可访问的标签，视觉文字、title 与 aria-label 共用同一事实源；
-  // 原生 DSH 模型保持原有标签。
-  const triggerLabel = currentChoice === undefined
-    ? modelLabel
-    : acp
-      ? acpModelTriggerLabel({
-        provider: currentChoice.selection.provider,
-        agentName: acpAgentName,
-        modelName: currentChoice.model.name,
-        ...(triggerEffortLabel === undefined ? {} : { reasoningEffort: triggerEffortLabel }),
-      })
-      : modelLabel
+  // 原生模型必须保持上游的「模型 · 推理强度」；ACP 在同一结构前增加 Agent 名。
+  // 两段分别渲染，让推理强度继续使用 DSH 原生 caption 色，而不是揉成一段文本。
+  const triggerPresentation = currentChoice === undefined
+    ? undefined
+    : modelTriggerPresentation({
+      provider: currentChoice.selection.provider,
+      modelName: currentChoice.model.name,
+      ...(acp ? { agentName: acpAgentName } : {}),
+      ...(triggerEffortLabel === undefined ? {} : { reasoningEffort: triggerEffortLabel }),
+    })
+  const modelLabel = triggerPresentation?.modelLabel ?? t('trigger.fallback')
+  const triggerLabel = triggerPresentation?.triggerLabel ?? modelLabel
+  const visibleEffortLabel = triggerPresentation?.reasoningEffort
   const triggerAria = currentChoice === undefined
     ? t('trigger.selectAria')
-    : t('trigger.aria', { model: triggerLabel })
+    : visibleEffortLabel === undefined
+      ? t('trigger.aria', { model: modelLabel })
+      : t('trigger.ariaEffort', { model: modelLabel, effort: visibleEffortLabel })
 
   itemRefs.current = []
   let itemIndex = 0
@@ -816,7 +813,10 @@ function Loaded({ locked, available, t, useStore, picker }: {
         else show()
       },
     },
-      h('span', { className: css.triggerLabel }, triggerLabel),
+      h('span', { className: css.triggerLabel }, modelLabel),
+      visibleEffortLabel === undefined
+        ? null
+        : h('span', { className: css.triggerEffort }, visibleEffortLabel),
       h(IconChevronDownOutline14, {
         size: 14,
         className: open ? `${css.chevron} ${css.chevronOpen}` : css.chevron,

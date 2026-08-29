@@ -41,6 +41,13 @@ export interface PickerProviderGroup {
   models: PickerCatalogModel[]
 }
 
+/** 模型选择器触发按钮的三段展示；推理强度单独返回以复用 DSH 原生弱化样式。 */
+export interface PickerTriggerPresentation {
+  modelLabel: string
+  triggerLabel: string
+  reasoningEffort?: string
+}
+
 
 /** ACP route id convention (src/domain/session/agent-config.ts `acpRouteId`): every ACP provider route carries this prefix. */
 export const ACP_ROUTE_PREFIX = 'acp-'
@@ -104,6 +111,47 @@ export function acpModelTriggerLabel(input: {
   if (isDevinAcpAgent(input.provider)) return base
   const effort = input.reasoningEffort?.trim()
   return effort === undefined || effort === '' ? base : `${base} · ${effort}`
+}
+
+/**
+ * 统一生成模型选择器触发按钮文案。
+ *
+ * 原生模型严格保留 DSH 的「模型 · 推理强度」语义；ACP 只增加 Agent 名称，
+ * Devin 因模型名已包含档位而继续省略重复的第三段。
+ */
+export function modelTriggerPresentation(input: {
+  provider: string
+  modelName: string
+  agentName?: string
+  reasoningEffort?: string
+}): PickerTriggerPresentation {
+  const effort = input.reasoningEffort?.trim()
+  const reasoningEffort = effort === undefined || effort === '' ? undefined : effort
+  if (!isAcpProvider(input.provider)) {
+    return {
+      modelLabel: input.modelName,
+      triggerLabel: reasoningEffort === undefined
+        ? input.modelName
+        : `${input.modelName} · ${reasoningEffort}`,
+      ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+    }
+  }
+  const agentName = input.agentName?.trim() || input.provider.slice(ACP_ROUTE_PREFIX.length)
+  const modelLabel = `${agentName} · ${input.modelName}`
+  const visibleEffort = isDevinAcpAgent(input.provider) ? undefined : reasoningEffort
+  return {
+    modelLabel,
+    triggerLabel: visibleEffort === undefined ? modelLabel : `${modelLabel} · ${visibleEffort}`,
+    ...(visibleEffort === undefined ? {} : { reasoningEffort: visibleEffort }),
+  }
+}
+
+/** DSH 原生的当前模型重选判定只比较路由，不把推理强度当成另一模型。 */
+export function sameModelRoute(
+  current: PickerModelSelection | null | undefined,
+  selection: PickerModelSelection,
+): boolean {
+  return current?.provider === selection.provider && current.model === selection.model
 }
 
 /**

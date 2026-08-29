@@ -10,8 +10,8 @@
 // 用法：
 //   node scripts/check-upstream-picker-diff.mjs [上游 checkout 路径]
 //   DSH_UPSTREAM_CHECKOUT=/path/to/deepseek-harness node scripts/check-upstream-picker-diff.mjs
-// 默认依次查找 <repo>/reference/deepseek-harness 与
-// <repo>/../reference/deepseek-harness；CI 应显式设置 DSH_UPSTREAM_CHECKOUT。
+// 默认优先查找明确命名的 deepseek-harness-rc2 固定基线，再兼容旧的
+// deepseek-harness 路径；CI 应显式设置 DSH_UPSTREAM_CHECKOUT。
 // 任何漂移：逐条点名并 exit 1（fail loud）。
 
 import fs from 'node:fs'
@@ -24,6 +24,8 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 const checkoutCandidates = [
   process.argv[2],
   process.env.DSH_UPSTREAM_CHECKOUT,
+  path.join(REPO_ROOT, 'reference', 'deepseek-harness-rc2'),
+  path.join(REPO_ROOT, '..', 'reference', 'deepseek-harness-rc2'),
   path.join(REPO_ROOT, 'reference', 'deepseek-harness'),
   path.join(REPO_ROOT, '..', 'reference', 'deepseek-harness'),
 ].filter((candidate) => candidate !== undefined && candidate !== '')

@@ -69,8 +69,10 @@ import {
   liveOptionSectionOf,
   liveValueNameOf,
   partitionLiveOptions,
+  modelTriggerPresentation,
   presetOfPermissionsProjection,
   providerKindOf,
+  sameModelRoute,
   filterBucketsOf,
   nativeOnlyFilterOf,
   acpUnavailableMessageOf,
@@ -1122,6 +1124,52 @@ describe('acpModelTriggerLabel（ACP 触发器显示真实推理强度）', () =
   });
 });
 
+describe('modelTriggerPresentation（原生语义不被 ACP 扩展覆盖）', () => {
+  it('原生模型保留 DSH 的模型名、独立推理强度和完整 title', () => {
+    expect(modelTriggerPresentation({
+      provider: 'kimi-coding',
+      modelName: 'Kimi K3-256K',
+      reasoningEffort: 'High',
+    })).toEqual({
+      modelLabel: 'Kimi K3-256K',
+      reasoningEffort: 'High',
+      triggerLabel: 'Kimi K3-256K · High',
+    });
+  });
+
+  it('Codex ACP 展示 Agent、模型与推理强度；Devin 避免重复档位', () => {
+    expect(modelTriggerPresentation({
+      provider: 'acp-codex',
+      agentName: 'Codex',
+      modelName: 'GPT-5.6-Luna',
+      reasoningEffort: 'Medium',
+    })).toEqual({
+      modelLabel: 'Codex · GPT-5.6-Luna',
+      reasoningEffort: 'Medium',
+      triggerLabel: 'Codex · GPT-5.6-Luna · Medium',
+    });
+    expect(modelTriggerPresentation({
+      provider: 'acp-devin',
+      agentName: 'Devin',
+      modelName: 'GPT-5.6-Luna · High',
+      reasoningEffort: 'High',
+    })).toEqual({
+      modelLabel: 'Devin · GPT-5.6-Luna · High',
+      triggerLabel: 'Devin · GPT-5.6-Luna · High',
+    });
+  });
+});
+
+describe('sameModelRoute（重选当前模型不重置推理强度）', () => {
+  it('只按 provider/model 判定同一路由，忽略模型行携带的默认 effort', () => {
+    const current = { provider: 'kimi-coding', model: 'k3-256k', reasoningEffort: 'high' };
+    expect(sameModelRoute(current, {
+      provider: 'kimi-coding', model: 'k3-256k', reasoningEffort: 'medium',
+    })).toBe(true);
+    expect(sameModelRoute(current, { provider: 'kimi-coding', model: 'k3' })).toBe(false);
+  });
+});
+
 describe('acpTriggerReasoningLabel（live thought_level 优先级）', () => {
   it('live 当前值覆盖目录默认值，并使用 Agent 广告名称', () => {
     expect(acpTriggerReasoningLabel(liveSnapshot, '目录默认')).toBe('Low')
@@ -1134,6 +1182,17 @@ describe('acpTriggerReasoningLabel（live thought_level 优先级）', () => {
   it('尚未收到 live 快照时才使用目录值', () => {
     expect(acpTriggerReasoningLabel(null, '目录默认')).toBe('目录默认')
     expect(acpTriggerReasoningLabel(null)).toBeUndefined()
+  })
+
+  it('兼容缺少 category、只使用协议约定 id 的 Agent', () => {
+    const option = {
+      type: 'select' as const,
+      id: 'reasoning_effort',
+      name: 'Reasoning effort',
+      currentValue: 'high',
+      options: [{ value: 'high', name: 'High' }],
+    };
+    expect(acpTriggerReasoningLabel({ ...liveSnapshot, configOptions: [option] })).toBe('High')
   })
 });
 

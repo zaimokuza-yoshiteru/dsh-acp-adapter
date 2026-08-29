@@ -6,8 +6,26 @@ Use Devin, Codex, Kimi, or Claude agents from the DeepSeek Harness (DSH) session
 
 > `feature/0.1.2-alpha` targets the unreleased DSH
 > `dsh-v0.1.2-alpha.1` source tree and is not an installable npm combination.
-> The commands below still document the published rc.7 on `main`; clean-install
+> The commands below still document the published release on `main`; clean-install
 > validation of this branch must wait for the upstream split packages to ship.
+
+## Preview
+
+Add Agents in the ACP panel and check that their local ACP commands are available:
+
+![ACP settings with Codex and Devin passing the protocol check](assets/readme/acp-settings.en.png)
+
+Use Agent models, reasoning effort, and native tools in a DSH session:
+
+![Codex reading a file and returning the result in a DSH session](assets/readme/acp-session.en.png)
+
+Subagent calls remain visible in the DSH message flow:
+
+![A Codex subagent call rendered in a DSH session](assets/readme/acp-subagent.en.png)
+
+Use Agent audit to inspect permissions, recovery, files, configuration, and session-continuity records:
+
+![Agent audit with expanded session-continuity details](assets/readme/acp-audit.en.png)
 
 ## Prerequisite: install DSH
 
