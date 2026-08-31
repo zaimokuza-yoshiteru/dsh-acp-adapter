@@ -897,7 +897,7 @@ class SidecarStore implements AcpSidecar {
       this.warn(`dsh-acp sidecar: failed to chmod 0700 on ${this.root} (${errorMessage(error)})`)
     }
     this.warnLegacyJsonl()
-    let db: DatabaseSync
+    let db: DatabaseSync | undefined
     try {
       db = new DatabaseSync(this.dbPath)
       db.exec('PRAGMA journal_mode = WAL')
@@ -928,9 +928,15 @@ class SidecarStore implements AcpSidecar {
         db.exec('DROP TABLE activity_journal_legacy')
       }
     } catch (error: unknown) {
+      try {
+        db?.close()
+      } catch (closeError: unknown) {
+        this.warn(`dsh-acp sidecar: failed to close ${this.dbPath} after an open failure (${errorMessage(closeError)})`)
+      }
       this.warn(`dsh-acp sidecar: failed to open ${this.dbPath} (${errorMessage(error)}); the sidecar store fails loud`)
       throw error
     }
+    if (db === undefined) throw new Error(`dsh-acp sidecar: failed to open ${this.dbPath}`)
     this.db = db
     this.stmtInsert = db.prepare('INSERT INTO audit (record_id, dsh_session_id, seq, time, kind, acp_provider_id, acp_session_id, dedupe_key, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
     this.stmtInsertIgnore = db.prepare('INSERT OR IGNORE INTO audit (record_id, dsh_session_id, seq, time, kind, acp_provider_id, acp_session_id, dedupe_key, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
