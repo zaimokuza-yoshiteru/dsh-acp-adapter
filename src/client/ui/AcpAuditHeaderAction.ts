@@ -108,6 +108,7 @@ function auditStatusOf(t: Translate | undefined, status: string): string {
     ok: 'auditStatusOk', error: 'auditStatusError', aborted: 'auditStatusAborted', timeout: 'auditStatusTimeout',
     'concurrent-change': 'auditStatusConcurrentChange', selected: 'auditStatusSelected', cancelled: 'auditStatusCancelled',
     started: 'auditStatusStarted', running: 'auditStatusRunning', exited: 'auditStatusExited', killed: 'auditStatusKilled', released: 'auditStatusReleased',
+    'output-summary': 'auditStatusOutputSummary',
     inherited: 'auditForkInherited', blank: 'auditForkBlank',
     'agent-does-not-advertise-fork': 'auditForkUnsupported',
     'parent-not-idle': 'auditForkParentNotIdle',

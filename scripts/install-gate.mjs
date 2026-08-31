@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Clean-install smoke gate for the DSH 0.1.2-alpha.2 host.
+ * Clean-install smoke gate for the DSH 0.1.2-alpha.3 host.
  *
  * The gate deliberately uses a temporary DSH_HOME and a local package tarball.
  * It does not touch the user's profile, registry, or pnpm store.  The DSH
@@ -43,7 +43,7 @@ export function usage() {
   return `Usage: node scripts/install-gate.mjs [options]
 
 Options:
-  --host-root <path>  DSH 0.1.2-alpha.2 source root (default: ../reference/deepseek-harness-alpha2)
+  --host-root <path>  DSH 0.1.2-alpha.3 source root (default: ../reference/deepseek-harness-alpha2)
   --tgz <path>        Reuse an existing plugin tarball instead of packing
   --skip-boot         Install and inspect composition, but do not bind HTTP
   -h, --help          Show this help

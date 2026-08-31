@@ -29,7 +29,7 @@ export default defineConfig({
   resolve: {
     alias: {
       // Published DSH client entries are loader-registration wrappers, not
-      // Node ESM. Tests execute the same alpha.2 implementation emitted beside
+      // Node ESM. Tests execute the same alpha.3 implementation emitted beside
       // its declarations; production keeps the public /client module-table edge.
       '@deepseek-ai/dsh-api-gateway/client': fileURLToPath(new URL(
         './node_modules/@deepseek-ai/dsh-api-gateway/lib/types/client/index.js',

@@ -70,7 +70,10 @@ export function auditTimelineRowOf(entry: AcpSidecarEntry): {
     case 'terminal':
       summaryCode = 'terminal.operation'
       subject = boundedAuditSubject(data['command'] ?? data['terminalId'])
-      status = boundedAuditSubject(data['outcome'])
+      // Reading the final output commonly follows the process exit in the same
+      // millisecond.  Showing both rows as merely “Exited” makes one lifecycle
+      // look duplicated even though the second fact is an ACP output read.
+      status = boundedAuditSubject(data['operation'] === 'output-summary' ? 'output-summary' : data['outcome'])
       break
   }
   const raw = JSON.stringify(entry.data, null, 2)

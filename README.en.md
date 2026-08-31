@@ -4,8 +4,8 @@
 
 Use Devin, Codex, Kimi, or Claude agents from the DeepSeek Harness (DSH) session UI. Each Agent remains responsible for its own model, tools, skills, login state, and runtime.
 
-This version targets DSH `0.1.2-alpha.2`. Development, CI, and release builds
-use the exact published alpha.2 packages by default; local source links remain
+This version targets DSH `0.1.2-alpha.3`. Development, CI, and release builds
+use the exact published alpha.3 packages by default; local source links remain
 an additional upstream-source compatibility lane.
 
 ## Preview
@@ -30,12 +30,12 @@ Use Agent audit to inspect permissions, recovery, files, configuration, and sess
 
 ![The Agent audit timeline for a Devin session](assets/readme/acp-audit.en.png)
 
-## Prerequisite: install DSH alpha.2
+## Prerequisite: install DSH alpha.3
 
 You need Node.js `^22.19.0 || >=24.0.0`:
 
 ```bash
-npx @deepseek-ai/dsh@0.1.2-alpha.2 web
+npx @deepseek-ai/dsh@0.1.2-alpha.3 web
 ```
 
 Plugin development installs exact published dependencies directly:
@@ -44,7 +44,7 @@ Plugin development installs exact published dependencies directly:
 pnpm install --frozen-lockfile
 ```
 
-For an additional source-level check, build `dsh-v0.1.2-alpha.2` and run
+For an additional source-level check, build `dsh-v0.1.2-alpha.3` and run
 `pnpm setup:source-reference`. This compatibility lane only changes this
 checkout's development links and never touches the DSH user directory.
 
@@ -53,8 +53,8 @@ checkout's development links and never touches the DSH user directory.
 Run this on the machine running DSH:
 
 ```bash
-npx @deepseek-ai/dsh@0.1.2-alpha.2 plugin --profile web add @zaimokuza/dsh-acp-adapter@alpha
-npx @deepseek-ai/dsh@0.1.2-alpha.2 web
+npx @deepseek-ai/dsh@0.1.2-alpha.3 plugin --profile web add @zaimokuza/dsh-acp-adapter@alpha
+npx @deepseek-ai/dsh@0.1.2-alpha.3 web
 ```
 
 Open DSH's ACP panel, select a built-in Agent template, provide any required executable configuration, and run the health check. The model picker shows models and options returned by the ACP session.

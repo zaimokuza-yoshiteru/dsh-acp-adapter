@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// 仓外可执行的 0.1.2-alpha.2 client bundle 校验（独立 node 直跑，零依赖）。
+// 仓外可执行的 0.1.2-alpha.3 client bundle 校验（独立 node 直跑，零依赖）。
 // 覆盖：① package.json `dsh.client` manifest 形态与 peer/dev 双列纪律
 // ② 产物存在性 ③ 产物闭包（__ModuleLoader__ 包装形态 / id == 包名 /
 // sourcemap 在场且 sources 非空）④ module requests（产物内 require 全部落在

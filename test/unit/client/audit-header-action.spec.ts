@@ -73,6 +73,12 @@ describe('ACP audit header utility behavior', () => {
     expect(zhText).not.toContain('filesystem.operation')
   })
 
+  it('distinguishes a terminal output read from the process exit in the visible timeline', () => {
+    const item = entry({ summaryCode: 'terminal.operation', category: 'files', subject: 'printf ok', status: 'output-summary' })
+    expect(auditSummaryOf((key) => zh[key], item)).toBe('终端操作已记录 · printf ok · 已读取输出')
+    expect(auditSummaryOf((key) => en[key], item)).toBe('Terminal operation recorded · printf ok · Output read')
+  })
+
   it('localizes session-fork outcomes and fallback reasons in both languages', () => {
     const inherited = entry({ summaryCode: 'session-fork.completed', category: 'agent', subject: 'inherited', status: null })
     const fallback = entry({ summaryCode: 'session-fork.completed', category: 'agent', subject: 'blank', status: 'seed-not-latest-semantic-boundary' })
