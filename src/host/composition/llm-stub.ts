@@ -389,6 +389,12 @@ export class AcpStubAdapter extends LlmAdapter {
       const argv = [config.command, ...config.args]
       const preparer = this.options.prepareProbe
       preparation = preparer === undefined ? undefined : await preparer({ provider, config, argv })
+      const runtimeId = descriptorOf(provider.replace(/^acp-/, ''), config)?.id
+      // Kimi and Codex both expose reasoning choices that vary by model. Capture
+      // the confirmed options from the disposable probe session so DSH does not
+      // offer a level (for example Codex Mini + Ultra) that the live session
+      // would immediately reject.
+      const probeModelConfigOptions = runtimeId === 'kimi' || runtimeId === 'codex'
       const probe = await AcpClientConnection.probe(
         preparation === undefined
           ? { argv, cwd: os.tmpdir(), env: { ...config.env }, subprocess: resolution.seam }
@@ -404,12 +410,12 @@ export class AcpStubAdapter extends LlmAdapter {
         preparation?.cwd === undefined
           ? {
               ...this.probeOptions,
-              probeModelConfigOptions: descriptorOf(provider.replace(/^acp-/, ''), config)?.id === 'kimi',
+              probeModelConfigOptions,
             }
           : {
               ...this.probeOptions,
               cwd: preparation.cwd,
-              probeModelConfigOptions: descriptorOf(provider.replace(/^acp-/, ''), config)?.id === 'kimi',
+              probeModelConfigOptions,
             },
       )
       const models = probeModels(provider, probe.configOptions)

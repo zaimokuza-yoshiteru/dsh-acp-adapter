@@ -142,7 +142,10 @@ describe('probe 模型目录与缓存', () => {
     }
   });
 
-  it('Kimi 路由保留每个模型自己确认的推理目录和默认值', async () => {
+  it.each([
+    ['Kimi', 'acp-kimi', 'kimi'],
+    ['Codex', 'acp-codex', 'codex'],
+  ] as const)('%s 路由保留每个模型自己确认的推理目录和默认值', async (_label, route, runtime) => {
     const handle = mockAgent('happy', {
       MOCK_MODEL_THOUGHT_LEVELS: JSON.stringify({
         'mock-model-a': ['high'],
@@ -150,8 +153,7 @@ describe('probe 模型目录与缓存', () => {
         'mock-model-c': ['on'],
       }),
     });
-    const route = 'acp-kimi';
-    const { adapter } = makeAdapter({ [route]: { ...handle.config, runtime: 'kimi' } });
+    const { adapter } = makeAdapter({ [route]: { ...handle.config, runtime } });
     await adapter.listModels(route);
     expect(adapter.configOptionsForModel(route, 'mock-model-a')?.find(option => option.id === 'thought_level')).toMatchObject({ currentValue: 'high' });
     expect(adapter.configOptionsForModel(route, 'mock-model-b')?.find(option => option.id === 'thought_level')).toMatchObject({ currentValue: 'low' });

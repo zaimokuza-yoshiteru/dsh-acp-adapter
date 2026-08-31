@@ -48,9 +48,20 @@ describe('alpha client contribution', () => {
         register: (value: unknown) => value,
       },
       get: () => ({}),
-    } as never
-    const dispose = await apply(ctx)
+    }
+    const uiInjects: string[][] = []
+    Object.assign(ctx, {
+      inject: (deps: readonly string[], callback: (scope: typeof ctx) => void | Promise<void>) => {
+        uiInjects.push([...deps])
+        const started = Promise.resolve(callback(ctx))
+        return Object.assign(started, {
+          dispose: async () => { lifecycle.push('ui-dispose') },
+        })
+      },
+    })
+    const dispose = await apply(ctx as never)
     expect(lifecycle).toEqual(['mount'])
+    expect(uiInjects).toEqual([[...inject, 'remote.dshAcp']])
     expect(definitions).toHaveLength(2)
     expect(injections).toHaveLength(7)
     expect(injections[0]).toMatchObject({ id: 'acp' })
@@ -67,7 +78,7 @@ describe('alpha client contribution', () => {
       expect.objectContaining({ id: 'dsh-acp-cross-backend-confirmation' }),
     ])
     await dispose()
-    expect(lifecycle).toEqual(['mount', 'dispose'])
+    expect(lifecycle).toEqual(['mount', 'ui-dispose', 'dispose'])
   })
 
   it('does not register a partial contribution when Remote mounting fails', async () => {

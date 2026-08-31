@@ -542,6 +542,13 @@ function requestProvider(event: { readonly type: string; readonly data: unknown 
   return typeof config?.provider === 'string' ? config.provider : undefined
 }
 
+function interruptedAssistantProvider(event: { readonly type: string; readonly data: unknown }): string | undefined {
+  if (event.type !== 'assistant/message' || !record(event.data) || event.data.interrupted !== true) return undefined
+  const message = record(event.data.message) ? event.data.message : undefined
+  const source = record(message?.source) ? message.source : undefined
+  return source?.kind === 'model' && typeof source.provider === 'string' ? source.provider : undefined
+}
+
 /** State-only direct-user anchor consumed by the subsequent ACP request. */
 export const acpPromptAnchorDefinition: ConversationNodeDefinition<AcpPromptAnchorState> = {
   kind: 'acp-prompt-anchor',
@@ -568,6 +575,8 @@ export function createAcpActivityDefinition(
       const payload = acpReplayPayloadOf(event)
       if (payload?.activityRequestHeaderSeq !== undefined) return { id: `request:${payload.activityRequestHeaderSeq}`, role: 'update' }
       if (payload !== undefined) return { id: `legacy:${payload.activityAnchorMessageId ?? `${payload.agentSessionId}:${payload.committedPromptOrdinal}`}`, role: 'start' }
+      const interruptedProvider = interruptedAssistantProvider(event)
+      if (interruptedProvider !== undefined && ownsRoute(interruptedProvider)) return { id: `interrupted:${event.seq}`, role: 'start' }
       const provider = requestProvider(event)
       return provider !== undefined && ownsRoute(provider) ? { id: `request:${event.seq}`, role: 'start' } : null
     },
@@ -585,7 +594,14 @@ export function createAcpActivityDefinition(
         }
       }
       const provider = requestProvider(match.event)
-      if (provider === undefined) throw new Error('acp-activity start requires an owned ACP request')
+      if (provider === undefined) {
+        const interruptedProvider = interruptedAssistantProvider(match.event)
+        const previous = reader.previous<AcpActivityState>('acp-activity')?.state
+        if (interruptedProvider === undefined || previous === undefined || previous.profileId !== interruptedProvider) {
+          throw new Error('acp-activity interrupted finalizer requires its preceding owned ACP request')
+        }
+        return { ...previous, seq: match.event.seq, location: match.location }
+      }
       const anchor = reader.previous<AcpPromptAnchorState>('acp-prompt-anchor')?.state
       return {
         ownerDshSessionId: '',

@@ -50,10 +50,10 @@ const BASELINE_PACKAGES = new Set([
  * ctx.get + undefined 守卫可选读取 conversation（缺席仅降级 composer 阻断，不影响激活），
  * 包级依赖边经 dsh.client.inject 的 @deepseek-ai/dsh-client-ui-conversation 声明。
  * `remote.dshAcp` 是本插件 `$mount` 自挂载的 Remote namespace 服务键（gateway 把它
- * 注册在 client root 的子 fiber 上）：inject 声明它会让 fiber 等待一个只有自己 apply
- * 才提供的服务（死锁），故走 ctx.get 的 reflect 通道在 mount 就位后解析（被拒工具回放不对称 修复）。
+ * 注册在 client root 的子 fiber 上）。消费 UI 必须在 mount 后通过子 fiber 显式
+ * inject；顶层 Loader inject 会提前等待，未声明的直接 property read 则会被 Cordis 拒绝。
  */
-const OPTIONAL_SERVICE_READS = new Set(['conversation', 'remote.dshAcp'])
+const OPTIONAL_SERVICE_READS = new Set(['conversation'])
 
 const failures = []
 const fail = (msg) => failures.push(msg)

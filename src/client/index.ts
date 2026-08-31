@@ -47,10 +47,7 @@ export const inject = [
 ] as const
 
 /** Register only a Conversation Definition and one keyed Chat renderer. */
-export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
-  // Mount the generated namespace before registering any renderer. A failed
-  // mount must leave no half-installed activity contribution in the client.
-  const disposeRemote = await ctx.remote.$mount(contribution)
+async function registerUi(ctx: ClientContext): Promise<void> {
   const acpRemote: AcpRemoteLike = ctx.remote.dshAcp
   const journalHub = new AcpActivityJournalHub(acpRemote, ctx.remote)
   const sessions = ctx.get('sessions') as unknown as ISessions
@@ -205,5 +202,21 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
       ownsRoute: managedRoutes.owns,
     }),
   }, AcpAgentControl))
-  return async () => { await disposeRemote() }
+}
+
+/** Mount the generated namespace before starting the fiber that consumes it. */
+export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
+  const disposeRemote = await ctx.remote.$mount(contribution)
+  const ui = ctx.inject([...inject, 'remote.dshAcp'], registerUi)
+  try {
+    await ui
+  } catch (error) {
+    await ui.dispose()
+    await disposeRemote()
+    throw error
+  }
+  return async () => {
+    await ui.dispose()
+    await disposeRemote()
+  }
 }

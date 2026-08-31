@@ -101,6 +101,45 @@ describe('ACP activity conversation node', () => {
     expect((node as { readonly anchorSeq: number } | null)?.anchorSeq).toBe(93)
   })
 
+  it('keeps cancelled tool activity visible at the interrupted assistant boundary', () => {
+    const definition = createAcpActivityDefinition(provider => provider === 'acp-devin')
+    const location = { kind: 'session' }
+    const request = {
+      event: {
+        type: 'request/header', seq: 42, time: 42,
+        data: { header: { config: { provider: 'acp-devin', model: 'deepseek-v4-flash-low' } } },
+      },
+      location,
+    } as never
+    const started = definition.start({} as never, request, { previous: () => undefined } as never)
+    const interruptedEvent = {
+      type: 'assistant/message', seq: 93, time: 93,
+      data: { interrupted: true, message: { source: { kind: 'model', provider: 'acp-devin', model: 'deepseek-v4-flash-low' } } },
+    }
+    const interrupted = {
+      event: interruptedEvent,
+      location,
+    } as never
+    expect(definition.match(interruptedEvent as never)).toEqual({ id: 'interrupted:93', role: 'start' })
+    const finalized = definition.start({} as never, interrupted, {
+      previous: (kind: string) => kind === 'acp-activity' ? { state: started } : undefined,
+    } as never)
+    const node = definition.buildViewNode!({ key: 'cancelled-activity', id: 'interrupted:93', state: finalized } as never)
+    expect((node as { readonly anchorSeq: number } | null)?.anchorSeq).toBe(93)
+    expect((node as { readonly data: { readonly promptAnchorMessageId: string } } | null)?.data.promptAnchorMessageId)
+      .toBe(started.promptAnchorMessageId)
+  })
+
+  it('does not finalize interrupted activity for a native or foreign provider', () => {
+    const definition = createAcpActivityDefinition(provider => provider === 'acp-devin')
+    const event = (provider: string) => ({
+      type: 'assistant/message', seq: 93, time: 93,
+      data: { interrupted: true, message: { source: { kind: 'model', provider } } },
+    }) as never
+    expect(definition.match(event('deepseek'))).toBeNull()
+    expect(definition.match(event('acp-third-party'))).toBeNull()
+  })
+
   it('leaves projected child pages to the native message renderers', () => {
     const definition = createAcpActivityDefinition(() => false)
     expect(definition.match({
@@ -547,6 +586,29 @@ describe('ACP activity conversation node', () => {
     handle.release()
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
     expect(disposed).toBe(1)
+  })
+
+  it('silently retries an initial binding race before the journal opens', async () => {
+    let starts = 0
+    let releaseStream: (() => void) | undefined
+    const remote = {
+      activityFollow: async function* (_sessionId: string, _request: unknown, signal: AbortSignal) {
+        starts += 1
+        if (starts === 1) throw new Error('binding is not committed yet')
+        yield { type: 'opened' as const, cursor: 0, head: 0, activities: [] }
+        await new Promise<void>((resolve) => {
+          releaseStream = resolve
+          signal.addEventListener('abort', () => resolve(), { once: true })
+        })
+      },
+    }
+    const hub = new AcpActivityJournalHub(remote as never, activityStreamFactory() as never)
+    const handle = hub.acquire('dsh-1', 'dsh-1', 'user-1', () => undefined)
+    for (let attempt = 0; attempt < 50 && starts < 2; attempt += 1) await new Promise(resolve => setTimeout(resolve, 10))
+    expect(starts).toBe(2)
+    expect(handle.error()).toBeUndefined()
+    handle.release()
+    releaseStream?.()
   })
 
   it('repairs a 2→4 gap through every page before delivering revision 4', async () => {

@@ -1275,7 +1275,15 @@ export class AcpProfileAdapter extends LlmAdapter {
           const chunk = queue.shift()
           if (chunk !== undefined) yield chunk
         }
-        if (failure !== undefined) throw failure
+        if (failure !== undefined) {
+          // Agent-loop only persists structured provider codes from LlmError.
+          // Preserve the ACP taxonomy at that host boundary instead of letting
+          // a classified AcpClientError degrade to UNKNOWN in the turn UI.
+          if (failure instanceof AcpClientError) {
+            throw new LlmError(failure.message, failure.code, { cause: failure })
+          }
+          throw failure
+        }
       } finally {
         // AgentLoop closes the iterator as soon as an aborted turn observes a
         // final ACP update. Keep return() pending until the matching prompt has

@@ -166,10 +166,13 @@ class AcpActivityRemoteJournal extends RemoteJournalStream<ActivityWindowPage, A
 type HubEntry = {
   readonly store: AcpActivityJournalStore
   readonly listenersByAnchor: Map<string, Set<() => void>>
-  readonly journal: AcpActivityRemoteJournal
+  journal?: AcpActivityRemoteJournal
+  opening?: Promise<void>
   refs: number
   error?: unknown
 }
+
+const INITIAL_OPEN_RETRY_MS = 100
 
 /** One live ACP journal per DSH session. Nodes only subscribe to projections. */
 export class AcpActivityJournalHub {
@@ -193,6 +196,7 @@ export class AcpActivityJournalHub {
     const anchorListeners = entry.listenersByAnchor.get(anchorKey) ?? new Set<() => void>()
     anchorListeners.add(listener)
     entry.listenersByAnchor.set(anchorKey, anchorListeners)
+    this.startEntry(sessionId, entry)
     let released = false
     return {
       snapshot: () => entry!.store.values(ownerDshSessionId, promptAnchorMessageId),
@@ -206,7 +210,7 @@ export class AcpActivityJournalHub {
         entry!.refs -= 1
         if (entry!.refs === 0) {
           this.entries.delete(sessionId)
-          void entry!.journal.dispose()
+          void entry!.journal?.dispose()
         }
       },
     }
@@ -215,39 +219,71 @@ export class AcpActivityJournalHub {
   private createEntry(sessionId: string): HubEntry {
     const store = new AcpActivityJournalStore()
     const listenersByAnchor = new Map<string, Set<() => void>>()
-    let entry: HubEntry
-    const notifyAll = (): void => {
-      for (const listeners of listenersByAnchor.values()) for (const notify of listeners) notify()
-    }
-    const journal = new AcpActivityRemoteJournal(
-      this.streamFactory,
-      this.remote,
-      sessionId,
-      change => {
-        if (change.type === 'append') {
-          for (const activity of change.entry.activities) store.append(activity)
-          entry.error = undefined
-          this.notifyActivities(entry, change.entry.activities)
-          return
-        }
-        if (change.type === 'prepend') return
-        const [baseline, ...tail] = change.entries
-        store.replace(baseline?.lastRevision ?? 0, baseline?.activities ?? [])
-        for (const batch of tail) for (const activity of batch.activities) store.append(activity)
-        entry.error = undefined
-        notifyAll()
-      },
-      error => { entry.error = error; notifyAll() },
-      error => { entry.error = error; notifyAll() },
-    )
-    entry = { store, listenersByAnchor, journal, refs: 0 }
+    const entry: HubEntry = { store, listenersByAnchor, refs: 0 }
     this.entries.set(sessionId, entry)
-    void journal.open({ limit: 200 }).catch(error => {
-      if (this.entries.get(sessionId) !== entry) return
-      entry.error = error
-      notifyAll()
-    })
     return entry
+  }
+
+  /**
+   * A conversation node can mount a few milliseconds before the host commits
+   * its durable ACP binding. Retry only that initial unopened window. Once an
+   * opened frame arrives, alpha.2's RemoteJournalStream remains the sole owner
+   * of carrier reconnect and gap repair.
+   */
+  private startEntry(sessionId: string, entry: HubEntry): void {
+    if (entry.opening !== undefined || entry.journal !== undefined) return
+    const notifyAll = (): void => {
+      for (const listeners of entry.listenersByAnchor.values()) for (const notify of listeners) notify()
+    }
+    entry.opening = (async () => {
+      while (this.entries.get(sessionId) === entry && entry.refs > 0) {
+        let opened = false
+        let journal: AcpActivityRemoteJournal
+        journal = new AcpActivityRemoteJournal(
+          this.streamFactory,
+          this.remote,
+          sessionId,
+          change => {
+            if (this.entries.get(sessionId) !== entry || entry.journal !== journal) return
+            opened = true
+            if (change.type === 'append') {
+              for (const activity of change.entry.activities) entry.store.append(activity)
+              entry.error = undefined
+              this.notifyActivities(entry, change.entry.activities)
+              return
+            }
+            if (change.type === 'prepend') return
+            const [baseline, ...tail] = change.entries
+            entry.store.replace(baseline?.lastRevision ?? 0, baseline?.activities ?? [])
+            for (const batch of tail) for (const activity of batch.activities) entry.store.append(activity)
+            entry.error = undefined
+            notifyAll()
+          },
+          error => {
+            if (!opened || this.entries.get(sessionId) !== entry || entry.journal !== journal) return
+            entry.error = error
+            notifyAll()
+          },
+          error => {
+            if (!opened || this.entries.get(sessionId) !== entry || entry.journal !== journal) return
+            entry.error = error
+            notifyAll()
+          },
+        )
+        entry.journal = journal
+        try {
+          await journal.open({ limit: 200 })
+          return
+        } catch {
+          if (entry.journal === journal) delete entry.journal
+          await journal.dispose()
+          if (this.entries.get(sessionId) !== entry || entry.refs === 0) return
+          await new Promise<void>(resolve => setTimeout(resolve, INITIAL_OPEN_RETRY_MS))
+        }
+      }
+    })().finally(() => {
+      if (this.entries.get(sessionId) === entry) delete entry.opening
+    })
   }
 
   private notifyActivities(entry: HubEntry, activities: readonly AcpActivityView[]): void {

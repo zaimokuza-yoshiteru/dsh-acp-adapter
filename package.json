@@ -113,6 +113,7 @@
     "@deepseek-ai/dsh-typert-protocol": "0.1.2-alpha.2"
   },
   "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": { "optional": true },
     "@deepseek-ai/dsh-api-gateway": { "optional": true },
     "@deepseek-ai/dsh-api-remotes": { "optional": true },
     "@deepseek-ai/dsh-api-session-controller": { "optional": true },

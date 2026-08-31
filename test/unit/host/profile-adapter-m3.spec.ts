@@ -3,7 +3,7 @@ import os from 'node:os'
 import fs from 'node:fs'
 import path from 'node:path'
 import type * as acp from '@agentclientprotocol/sdk'
-import { createUserMessage, markAgentLoopRequest } from '@deepseek-ai/dsh-llm'
+import { createUserMessage, LlmError, markAgentLoopRequest } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
 import { AcpProfileAdapter } from '../../../src/host/composition/profile-adapter.ts'
 import type { AcpAgentConfig } from '../../../src/domain/session/agent-config.ts'
@@ -378,7 +378,9 @@ describe('M3a binding-first ACP provider', () => {
         close: async () => undefined,
       }), sidecar)
 
-      await expect(drain(adapter.stream(request('auth-rejected', message)))).rejects.toMatchObject({ code: 'ACP_AUTH_REQUIRED' })
+      const failure = await drain(adapter.stream(request('auth-rejected', message))).catch((error: unknown) => error)
+      expect(failure).toBeInstanceOf(LlmError)
+      expect(failure).toMatchObject({ code: 'ACP_AUTH_REQUIRED' })
       await expect(sidecar.readRecoveryState('auth-rejected' as never)).resolves.toMatchObject({
         kind: 'reconnect-required',
         cause: 'auth-required',
