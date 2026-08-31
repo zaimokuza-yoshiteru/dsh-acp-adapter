@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// 仓外可执行的 0.1.2-alpha.1 client bundle 校验（独立 node 直跑，零依赖）。
+// 仓外可执行的 0.1.2-alpha.2 client bundle 校验（独立 node 直跑，零依赖）。
 // 覆盖：① package.json `dsh.client` manifest 形态与 peer/dev 双列纪律
 // ② 产物存在性 ③ 产物闭包（__ModuleLoader__ 包装形态 / id == 包名 /
 // sourcemap 在场且 sources 非空）④ module requests（产物内 require 全部落在
@@ -116,13 +116,7 @@ for (const spec of declaredExternal) {
 for (const [name, peerRange] of Object.entries(pkg.peerDependencies ?? {})) {
   const devRange = pkg.devDependencies?.[name]
   if (devRange === undefined) {
-    // DSH Alpha packages are intentionally absent from devDependencies: they
-    // are not published yet and are linked from the checked-out reference by
-    // setup:alpha-reference.  Keep this exception narrow so ordinary npm
-    // peers still obey the two-column declaration rule.
-    if (!/^>=0\.1\.2-alpha\.1(?:\s|$)/.test(peerRange)) {
-      fail(`package.json: peerDependencies.${name} (${peerRange}) 缺少 devDependencies 同名声明`)
-    }
+    fail(`package.json: peerDependencies.${name} (${peerRange}) 缺少 devDependencies 同名声明`)
   } else if (peerRange !== devRange && peerRange !== `>=${devRange}` && peerRange !== `>=${devRange} <0.2.0` && peerRange !== `>=${devRange} <5.0.0`) {
     fail(`package.json: peerDependencies.${name} is ${peerRange}; expected the exact dev pin or a >=${devRange} minimum-version range; found devDependencies ${devRange}`)
   }

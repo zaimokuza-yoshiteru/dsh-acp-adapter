@@ -8,7 +8,7 @@ const root = new URL('../..', import.meta.url)
 const pkg = JSON.parse(readFileSync(new URL('package.json', root), 'utf8'))
 
 describe('npm release contract', () => {
-  it('requires the exact version tag and publishes through the single latest channel', () => {
+  it('requires the exact version tag and keeps prereleases off latest', () => {
     const output = join(mkdtempSync(join(tmpdir(), 'dsh-acp-release-')), 'output')
     const stdout = execFileSync(
       process.execPath,
@@ -24,8 +24,8 @@ describe('npm release contract', () => {
       },
     )
 
-    expect(stdout).toContain(`v${pkg.version} -> npm latest`)
-    expect(readFileSync(output, 'utf8')).toContain('dist-tag=latest\n')
+    expect(stdout).toContain(`v${pkg.version} -> npm alpha`)
+    expect(readFileSync(output, 'utf8')).toContain('dist-tag=alpha\n')
     expect(readFileSync(output, 'utf8')).toContain(`tarball=zaimokuza-dsh-acp-adapter-${pkg.version}.tgz\n`)
   })
 
@@ -53,10 +53,11 @@ describe('npm release contract', () => {
     expect(workflow).not.toMatch(/NPM_TOKEN|NODE_AUTH_TOKEN/)
   })
 
-  it('keeps npm publishing disabled while this checkout targets unpublished Alpha DSH', () => {
+  it('publishes the tested tarball now that exact alpha.2 dependencies exist', () => {
     const workflow = readFileSync(new URL('.github/workflows/publish.yml', root), 'utf8')
-    expect(workflow).toContain('if: always()')
-    expect(workflow).toContain('npm publishing is disabled until the upstream Alpha packages are published')
-    expect(workflow).toContain('if: ${{ false }}')
+    expect(workflow).not.toContain('if: ${{ false }}')
+    expect(workflow).not.toContain('alpha-release-block')
+    expect(workflow).toContain('pnpm install --frozen-lockfile')
+    expect(workflow).toContain('pnpm typecheck && pnpm test && pnpm build')
   })
 })

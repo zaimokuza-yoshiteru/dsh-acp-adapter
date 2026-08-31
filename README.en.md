@@ -4,11 +4,9 @@
 
 Use Devin, Codex, Kimi, or Claude agents from the DeepSeek Harness (DSH) session UI. Each Agent remains responsible for its own model, tools, skills, login state, and runtime.
 
-> `feature/0.1.2-alpha` targets the unreleased DSH
-> `dsh-v0.1.2-alpha.1` source tree and is not an installable npm combination.
-> The commands below still document the published release on `main`. End users
-> cannot install this Alpha branch from npm; development and acceptance testing
-> can use the pinned Alpha source and a local tarball in an isolated DSH_HOME.
+This version targets DSH `0.1.2-alpha.2`. Development, CI, and release builds
+use the exact published alpha.2 packages by default; local source links remain
+an additional upstream-source compatibility lane.
 
 ## Preview
 
@@ -32,33 +30,31 @@ Use Agent audit to inspect permissions, recovery, files, configuration, and sess
 
 ![The Agent audit timeline for a Devin session](assets/readme/acp-audit.en.png)
 
-## Prerequisite: install DSH (published main release)
+## Prerequisite: install DSH alpha.2
 
-You need Node.js `^22.19.0 || >=24.0.0` and a currently published DSH release:
+You need Node.js `^22.19.0 || >=24.0.0`:
 
 ```bash
-npx @deepseek-ai/dsh web
+npx @deepseek-ai/dsh@0.1.2-alpha.2 web
 ```
 
-`feature/0.1.2-alpha` is not an npm-installable combination. To test this
-branch, check out and build `dsh-v0.1.2-alpha.1` locally, then run in this
-repository:
+Plugin development installs exact published dependencies directly:
 
 ```bash
 pnpm install --frozen-lockfile
-pnpm setup:alpha-reference
 ```
 
-The script only links this checkout's development packages and does not modify
-the DSH user directory; it is not a normal user installation step.
+For an additional source-level check, build `dsh-v0.1.2-alpha.2` and run
+`pnpm setup:source-reference`. This compatibility lane only changes this
+checkout's development links and never touches the DSH user directory.
 
 ## Install the plugin
 
 Run this on the machine running DSH:
 
 ```bash
-npx @deepseek-ai/dsh plugin --profile web add @zaimokuza/dsh-acp-adapter
-npx @deepseek-ai/dsh web
+npx @deepseek-ai/dsh@0.1.2-alpha.2 plugin --profile web add @zaimokuza/dsh-acp-adapter@alpha
+npx @deepseek-ai/dsh@0.1.2-alpha.2 web
 ```
 
 Open DSH's ACP panel, select a built-in Agent template, provide any required executable configuration, and run the health check. The model picker shows models and options returned by the ACP session.

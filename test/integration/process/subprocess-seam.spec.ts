@@ -8,7 +8,7 @@
 //     credential 仍作为用户 opt-in 穿透
 //   - fail closed：spec.subprocess 缺席构造即抛 spawn-failure；seam 同步抛错 →
 //     initialize 分类 spawn-failure 且文案同格
-//   - 依赖面守卫：两包仅在 devDependencies（精确 0.1.2-alpha.1），src/** 零值级 import
+//   - 依赖面守卫：两包仅在 devDependencies（精确 0.1.2-alpha.2），src/** 零值级 import
 //     （宿主模块实例一致性 纪律：值级 import dsh 包会让产物解析到第二实例）
 
 import fs from 'node:fs';
@@ -177,7 +177,7 @@ describe('fail closed（spawn-failure 分类）', () => {
 });
 
 describe('依赖面守卫（宿主模块实例一致性 纪律）', () => {
-  it('package.json：两包不写入未发布依赖；Alpha 开发通过 reference link 提供', () => {
+  it('package.json：两包只作为精确发布版开发依赖，不进入运行时依赖面', () => {
     const pkg = JSON.parse(fs.readFileSync(path.join(PKG_ROOT, 'package.json'), 'utf8')) as {
       dependencies?: Record<string, string>;
       peerDependencies?: Record<string, string>;
@@ -186,9 +186,9 @@ describe('依赖面守卫（宿主模块实例一致性 纪律）', () => {
     for (const name of ['@deepseek-ai/dsh-subprocess', '@deepseek-ai/dsh-subprocess-local']) {
       expect(pkg.dependencies?.[name]).toBeUndefined();
       expect(pkg.peerDependencies?.[name]).toBeUndefined();
-      expect(pkg.devDependencies?.[name]).toBeUndefined();
+      expect(pkg.devDependencies?.[name]).toBe('0.1.2-alpha.2');
     }
-    expect(JSON.parse(fs.readFileSync(path.join(PKG_ROOT, 'package.json'), 'utf8')).scripts['setup:alpha-reference']).toBeDefined();
+    expect(JSON.parse(fs.readFileSync(path.join(PKG_ROOT, 'package.json'), 'utf8')).scripts['setup:source-reference']).toBeDefined();
   });
 
   it('src/** 零 dsh-subprocess 值级 import（结构镜像全在 src/runtime/process/subprocess.ts）', () => {

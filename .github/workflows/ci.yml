@@ -5,66 +5,46 @@ on:
   pull_request:
   workflow_dispatch:
 
-# Alpha DSH packages are source-only and are not on npm yet. Each lane builds
-# the pinned upstream checkout first, then links its built packages into the
-# plugin development tree. No npm dist-tag or unpublished package version is
-# resolved by the plugin lockfile.
+# Exact published alpha.2 packages are the primary lane. A separate source
+# checkout proves that the optional local-link workflow remains compatible.
 jobs:
-  macos:
-    name: macOS Alpha source lane
-    runs-on: macos-15
-    env:
-      DSH_UPSTREAM_CHECKOUT: ${{ github.workspace }}/reference/deepseek-harness
+  registry:
+    name: ${{ matrix.os }} published alpha.2
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-2025]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
-      - name: Checkout DSH Alpha source
-        uses: actions/checkout@v6
-        with:
-          repository: deepseek-ai/deepseek-harness
-          ref: dsh-v0.1.2-alpha.1
-          path: reference/deepseek-harness
       - uses: actions/setup-node@v6
         with:
           node-version-file: .nvmrc
           package-manager-cache: false
       - uses: pnpm/action-setup@v4
         with:
-          version: 11.7.0
-      - name: Install DSH Alpha source
+          version: 10.7.0
+      - name: Install exact published dependencies
         run: pnpm install --frozen-lockfile
-        working-directory: reference/deepseek-harness
-      - name: Build DSH Alpha source
-        # The install gate boots the real CLI and therefore needs both the
-        # bundled CLI entrypoint and web assets, not only the library targets.
-        run: pnpm build
-        working-directory: reference/deepseek-harness
-      - name: Install plugin tooling
-        run: pnpm install --frozen-lockfile
-      - name: Link DSH Alpha packages
-        run: pnpm setup:alpha-reference
-      - name: Verify Alpha source and links
-        run: pnpm verify:alpha-reference && pnpm verify:alpha-install
       - name: Typecheck
         run: pnpm typecheck
       - name: Test
         run: pnpm test
       - name: Build and verify bundle
         run: pnpm build
-      - name: Clean-install Alpha gate with HTTP boot
-        run: node scripts/install-gate-alpha.mjs --host-root "$DSH_UPSTREAM_CHECKOUT"
 
-  windows:
-    name: Windows Alpha source lane
-    runs-on: windows-2025
+  source-compatibility:
+    name: DSH alpha.2 source compatibility
+    runs-on: ubuntu-24.04
     env:
       DSH_UPSTREAM_CHECKOUT: ${{ github.workspace }}/reference/deepseek-harness
     steps:
       - uses: actions/checkout@v6
-      - name: Checkout DSH Alpha source
+      - name: Checkout exact DSH source
         uses: actions/checkout@v6
         with:
           repository: deepseek-ai/deepseek-harness
-          ref: dsh-v0.1.2-alpha.1
+          ref: dsh-v0.1.2-alpha.2
           path: reference/deepseek-harness
       - uses: actions/setup-node@v6
         with:
@@ -72,26 +52,15 @@ jobs:
           package-manager-cache: false
       - uses: pnpm/action-setup@v4
         with:
-          version: 11.7.0
-      - name: Install DSH Alpha source
-        run: pnpm install --frozen-lockfile
-        working-directory: reference/deepseek-harness
-      - name: Build DSH Alpha source
-        # Keep the Windows lane on the same complete Alpha build contract;
-        # the skip-boot gate still needs the CLI/config-dump artifacts.
-        run: pnpm build
+          version: 10.7.0
+      - name: Build DSH source
+        run: pnpm install --frozen-lockfile && pnpm build
         working-directory: reference/deepseek-harness
       - name: Install plugin tooling
         run: pnpm install --frozen-lockfile
-      - name: Link DSH Alpha packages
-        run: pnpm setup:alpha-reference
-      - name: Verify Alpha source and links
-        run: pnpm verify:alpha-reference && pnpm verify:alpha-install
-      - name: Typecheck
-        run: pnpm typecheck
-      - name: Test
-        run: pnpm test
-      - name: Build and verify bundle
-        run: pnpm build
-      - name: Clean-install Alpha gate (boot is macOS-only until Windows web boot is verified)
-        run: node scripts/install-gate-alpha.mjs --host-root "$env:DSH_UPSTREAM_CHECKOUT" --skip-boot
+      - name: Link and verify DSH source packages
+        run: pnpm setup:source-reference && pnpm verify:source-reference && pnpm verify:source-install
+      - name: Verify source compatibility
+        run: pnpm typecheck && pnpm test && pnpm build
+      - name: Clean-install composition gate
+        run: node scripts/install-gate.mjs --host-root "$DSH_UPSTREAM_CHECKOUT" --skip-boot

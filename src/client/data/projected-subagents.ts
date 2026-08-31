@@ -17,8 +17,8 @@ export class ProjectedSubagentCatalog {
   }
 
   async refresh(): Promise<void> {
-    const result = await this.remote.projectedSubagentIds?.()
-    if (result?.ok !== true) return
+    const result = await this.remote.projectedSubagentIds()
+    if (!result.ok) return
     for (const id of result.value.sessionIds) this.ids.add(id)
   }
 }

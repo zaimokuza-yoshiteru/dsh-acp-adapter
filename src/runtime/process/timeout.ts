@@ -11,11 +11,8 @@
  * - {@link waitWithin}：限时 waitFor——窗口内 settle 回其值/其 rejection，
  *   窗口耗尽 resolve `undefined`（输家 promise 的迟到 rejection 已被 race 观察）。
  *
- * 故意不收口的一处（各有独立理由，勿“顺手”统一）：
- * - provider composition 的 raceAbort 与 dispose idle 限时闸
- * （waitMachineIdle）：vendor 岛逐行钉版上游 + 岛自给自足（架构守卫
- *   禁止 hostCompat import runtime），两处都是岛内自含实现。
- *   （旧 persistence/platform.ts 的退避 sleep 已随 SQLite 重写删除。）
+ * provider composition 的 raceAbort 与 dispose idle 闸语义不同于普通
+ * deadline，仍由会话状态机就地持有；旧 persistence 退避 sleep 已删除。
  *
  * 本包 tsconfig 用 `types: []`（不含 node 全局类型）；setTimeout/clearTimeout
  * 经 node:timers 显式导入，triple-slash reference 引入 @types/node

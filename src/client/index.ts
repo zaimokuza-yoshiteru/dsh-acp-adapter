@@ -8,6 +8,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
+import type {} from '@deepseek-ai/dsh-client-ui-session/client'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import { AcpActivityNode, acpPromptAnchorDefinition, createAcpActivityDefinition } from './ui/AcpActivityNode.ts'
@@ -50,19 +51,16 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
   // Mount the generated namespace before registering any renderer. A failed
   // mount must leave no half-installed activity contribution in the client.
   const disposeRemote = await ctx.remote.$mount(contribution)
-  const journalHub = new AcpActivityJournalHub(
-    ctx.get('remote.dshAcp') as unknown as AcpRemoteLike,
-    ctx.remote,
-  )
-  const acpRemote = ctx.get('remote.dshAcp') as unknown as AcpRemoteLike
+  const acpRemote: AcpRemoteLike = ctx.remote.dshAcp
+  const journalHub = new AcpActivityJournalHub(acpRemote, ctx.remote)
   const sessions = ctx.get('sessions') as unknown as ISessions
   const workspaces = ctx.get('workspaces') as unknown as IWorkspaces
   const settingsScope = ctx.settingsScope.bind<AcpSettings>({
     namespace: ACP_SETTINGS_NS,
     decode: decodeAcpSettings,
   })
-  const ownedRoutes = await acpRemote.ownedProviderRoutes?.().catch(() => undefined)
-  const projectedIds = await acpRemote.projectedSubagentIds?.().catch(() => undefined)
+  const ownedRoutes = await acpRemote.ownedProviderRoutes().catch(() => undefined)
+  const projectedIds = await acpRemote.projectedSubagentIds().catch(() => undefined)
   const projectedSubagents = new ProjectedSubagentCatalog(
     acpRemote,
     projectedIds?.ok === true ? projectedIds.value.sessionIds : [],

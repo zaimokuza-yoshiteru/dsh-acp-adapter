@@ -5,12 +5,10 @@
  * 另有 `degradation`（{@link AcpDegradationAuditData}）：tool result 内容降级
  * （非文本项按占位/摘要落盘或截断）的事实记录，每次降级一条。
  *
- * 审计不是 DSH session event：0.1.2-alpha.1 仍没有可忽略的扩展事件 seam，直接写入未知
- * 事件会干扰 live session 的事件顺序。故本模块
- * 只产出纯 payload，由 ./permissions.ts（kind `permission`）包成 sidecar entry 经
- * `AcpSidecar.append` 落盘（见 src/persistence/sidecar.ts 模块注释）。
- * SessionEventMap declaration merging 与 `ignorable:true` 构造器不会回归——本包
- * 不再向 session log 写任何自定义事件。
+ * Alpha.2 已支持 `ignorable` 扩展事件，但审计仍不是对话事件：把权限/文件诊断
+ * 混入 session log 会改变事件序列、历史导出和前端投影，却没有用户可见收益。
+ * 因此本模块只产出纯 payload，由 ./permissions.ts（kind `permission`）包成
+ * sidecar entry 经 `AcpSidecar.append` 落盘；不会向 session log 写自定义事件。
  *
  * 两阶段保留可追溯审计：插件 ACP UI 的 `selectedOptionKind`/`decisionVia` 记录
  * 原始选项语义；旧 DSH 双按钮 fallback 无法精确对应时仍只选择 once-kind，

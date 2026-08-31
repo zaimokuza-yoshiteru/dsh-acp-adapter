@@ -6,10 +6,10 @@ import {
   parseAuthenticatedStartupUrl,
   redactGateOutput,
   waitForAuthenticatedBootstrap,
-} from '../../scripts/install-gate-alpha.mjs'
+} from '../../scripts/install-gate.mjs'
 import { findMissingRelativeRuntimeImports } from '../../scripts/verify-runtime-closure.mjs'
 
-describe('Alpha clean-install gate contracts', () => {
+describe('DSH clean-install gate contracts', () => {
   it('parses an isolated host and tarball without touching user profile state', () => {
     expect(parseArgs(['--host-root', '../alpha', '--tgz', './adapter.tgz', '--skip-boot'])).toMatchObject({
       hostRoot: expect.stringContaining('/alpha'),

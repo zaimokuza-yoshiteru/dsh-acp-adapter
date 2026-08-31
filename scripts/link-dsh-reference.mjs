@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 /**
- * Link the locally built DSH Alpha packages into this plugin's development
- * node_modules. Alpha packages are not published to npm yet, so they must not
- * appear as file: dependencies in package.json or pnpm-lock.yaml.
+ * Link locally built DSH packages for the optional source-compatibility lane.
+ * Exact registry packages remain the default development and CI lane.
  */
 import { execFileSync } from 'node:child_process'
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync } from 'node:fs'
@@ -10,11 +9,11 @@ import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const expectedTag = 'dsh-v0.1.2-alpha.1'
-const expectedVersion = '0.1.2-alpha.1'
+const expectedTag = 'dsh-v0.1.2-alpha.2'
+const expectedVersion = '0.1.2-alpha.2'
 
 function parseArgs(argv) {
-  const result = { hostRoot: process.env.DSH_UPSTREAM_CHECKOUT || resolve(root, '..', 'reference', 'deepseek-harness'), check: false, help: false }
+  const result = { hostRoot: process.env.DSH_UPSTREAM_CHECKOUT || resolve(root, '..', 'reference', 'deepseek-harness-alpha2'), check: false, help: false }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
     if (arg === '--check') result.check = true
@@ -29,10 +28,10 @@ function parseArgs(argv) {
 }
 
 function usage() {
-  return `Usage: node scripts/link-alpha-reference.mjs [options]
+  return `Usage: node scripts/link-dsh-reference.mjs [options]
 
 Options:
-  --host-root <path>  built DSH Alpha source root (default: DSH_UPSTREAM_CHECKOUT or ../reference/deepseek-harness)
+  --host-root <path>  built DSH source root (default: DSH_UPSTREAM_CHECKOUT or ../reference/deepseek-harness-alpha2)
   --check             verify links without changing node_modules
   -h, --help          show this help`
 }
@@ -41,8 +40,8 @@ function packageNames() {
   const packageJson = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
   // Peer metadata describes the host boundary; these additional packages are
   // source/test-only imports used by gen:typert and the Alpha integration
-  // fixtures. They are deliberately kept here rather than as unpublished
-  // package.json devDependencies.
+  // fixtures. The list also keeps source-link verification explicit when a
+  // package is not part of the host peer surface.
   const sourceOnly = [
     '@deepseek-ai/dsh-agent',
     '@deepseek-ai/dsh-agent-loop',
@@ -92,7 +91,7 @@ function findPackages(hostRoot) {
 }
 
 function exactTag(hostRoot) {
-  if (!existsSync(join(hostRoot, '.git'))) throw new Error(`Alpha reference is not a git checkout: ${hostRoot}`)
+  if (!existsSync(join(hostRoot, '.git'))) throw new Error(`DSH reference is not a git checkout: ${hostRoot}`)
   try {
     return execFileSync('git', ['describe', '--tags', '--exact-match', 'HEAD'], { cwd: hostRoot, encoding: 'utf8' }).trim()
   } catch { return '' }
@@ -110,11 +109,11 @@ function main() {
   const args = parseArgs(process.argv.slice(2))
   if (args.help) { console.log(usage()); return }
   const tag = exactTag(args.hostRoot)
-  if (tag !== expectedTag) throw new Error(`Alpha reference must be checked out at ${expectedTag}; found ${tag || 'detached/unmatched HEAD'}`)
+  if (tag !== expectedTag) throw new Error(`DSH reference must be checked out at ${expectedTag}; found ${tag || 'detached/unmatched HEAD'}`)
   const packages = findPackages(args.hostRoot)
   const names = packageNames()
   const missing = names.filter(name => !packages.has(name))
-  if (missing.length > 0) throw new Error(`Alpha reference is missing packages: ${missing.join(', ')}`)
+  if (missing.length > 0) throw new Error(`DSH reference is missing packages: ${missing.join(', ')}`)
   for (const name of names) {
     const source = packages.get(name)
     const manifest = JSON.parse(readFileSync(join(source, 'package.json'), 'utf8'))
@@ -122,7 +121,7 @@ function main() {
       throw new Error(`${name} is ${manifest.version}, expected ${expectedVersion}`)
     }
     const mainFile = typeof manifest.main === 'string' ? join(source, manifest.main) : undefined
-    if (mainFile !== undefined && !existsSync(mainFile)) throw new Error(`${name} is not built: missing ${relative(source, mainFile)}; build the Alpha reference first`)
+    if (mainFile !== undefined && !existsSync(mainFile)) throw new Error(`${name} is not built: missing ${relative(source, mainFile)}; build the DSH reference first`)
     const target = destination(name)
     if (args.check) {
       if (!isSameLink(target, source)) throw new Error(`${name} is not linked to ${source}`)
@@ -134,7 +133,7 @@ function main() {
       symlinkSync(source, target, process.platform === 'win32' ? 'junction' : 'dir')
     }
   }
-  console.log(`${args.check ? 'Verified' : 'Linked'} ${names.length} DSH Alpha packages from ${args.hostRoot} (${expectedTag})`)
+  console.log(`${args.check ? 'Verified' : 'Linked'} ${names.length} DSH packages from ${args.hostRoot} (${expectedTag})`)
 }
 
 main()

@@ -159,7 +159,7 @@ describe('probe 模型目录与缓存', () => {
   });
 
   it('失败隔离：一路 probe 失败进缓存不重 spawn，另一路照常返回模型', async () => {
-    // 宿主 modelCatalog 语义（DSH 0.1.2-alpha.1 session-controller/catalog.ts 同款）：
+    // 宿主 modelCatalog 语义（DSH 0.1.2-alpha.2 session-controller/catalog.ts 同款）：
     // 单 provider 探测失败只进 failures，不拖垮整个目录。adapter 粒度钉：失败只落在
     // 自己的路由缓存里，其余路由的 probe 与结果互不传染。
     const happy = mockAgent('happy');

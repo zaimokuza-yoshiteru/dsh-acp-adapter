@@ -23,6 +23,10 @@ describe('alpha client contribution', () => {
       remote: {
         $mount: async () => { lifecycle.push('mount'); return async () => { lifecycle.push('dispose') } },
         settings: { mutate: async () => ({ ok: true, value: null }) },
+        dshAcp: {
+          ownedProviderRoutes: async () => ({ ok: true, value: { providers: [] } }),
+          projectedSubagentIds: async () => ({ ok: true, value: { sessionIds: [] } }),
+        },
       },
       uiConversation: { events: { register: (definition: unknown) => { definitions.push(definition) } } },
       locale: { register: () => undefined, bind: () => (key: string) => key },

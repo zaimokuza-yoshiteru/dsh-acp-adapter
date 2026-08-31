@@ -14,9 +14,9 @@
  *   `acperr-<UTC 紧凑时间戳>-<会话内单调序号 base36>-<随机 3 字节 hex>`，如
  *   `acperr-20260820T184752Z-c-9f3a2b`。时间戳给出与日志/sidecar 时间列的粗对账，
  *   序号+随机保证同毫秒唯一；全文 grep `acperr-` 或具体 id 即可检索。id 只挂在
- *   error 对象与日志/落盘文案后缀上（`[acperr-…]`），**不进** remote service 的
- *   抛出 message（throw → gateway 折叠成 RemoteResult 错误分支的纪律被
- *   test/integration/host/health.spec.ts 钉死）。
+ *   error 对象与日志/落盘文案后缀上（`[acperr-…]`）；remote service 不把它
+ *   拼进用户文案，而是通过 alpha.2 `RemoteError.details.correlationId` 结构化
+ *   传递（typed code/details 的契约由 integration test 钉死）。
  * - 中文文案的呈现层分工（测试钉死的协议层英文诊断 message 不动）：选择器/面板
  *   中文文案在 src/host/composition/llm-stub.ts 与 src/client/ui/locales.ts，
  *   恢复/中断说明在 provider runtime。

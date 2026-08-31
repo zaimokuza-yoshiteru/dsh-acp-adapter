@@ -4,9 +4,9 @@
  * registration whose factory resolves externals through the injected `require`
  * (loader module table, no globals). The wrapper form is verified against the reference
  * preset: reference/deepseek-harness/packages/client/tsdown.client.ts
- * (unpublished, replicated here because the package is not published).
+ * (replicated locally because the preset is not a public package export).
  *
- * Alignment with the 0.1.2-alpha.1 preset:
+ * Alignment with the 0.1.2-alpha.2 preset:
  * - The banner id IS the package.json name (the loader keys registrations by
  * package name; the package name is read live below.
  * - `sourcemap: true` — the host serves /plugins/<id>/client.js.map
@@ -124,7 +124,7 @@ export default defineConfig({
       if (VENDORED_LIBRARY.test(source)) return null // vendored library: inline, no shared identity
       if (INLINE_SAFE.test(source) || GENERATED_REMOTE.test(source)) return null // wire contribution: inline is the point
       throw new Error(
-        `client bundle purity: "${source}" is not in the 0.1.2-alpha.1 baseline externals or this package's dsh.client.external, `
+        `client bundle purity: "${source}" is not in the 0.1.2-alpha.2 baseline externals or this package's dsh.client.external, `
         + 'an inline-safe wire layer, or a generated /remote contribution — cross-plugin value imports are forbidden; '
         + 'declare a non-default module request or collaborate through cordis services '
         + '(type-only imports are erased and never reach this gate)',

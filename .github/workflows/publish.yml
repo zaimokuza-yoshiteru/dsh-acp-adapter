@@ -1,6 +1,5 @@
-# npm 发布只允许人工从版本 tag 发起。pack job 生成并验证唯一 tarball；publish job
-# 下载同一份产物并通过 npm Trusted Publishing（OIDC）发布，不接触长期 token。
-
+# npm publishing is manual/tag-driven and uses the exact tarball produced by
+# the published-package build lane. Trusted Publishing supplies OIDC.
 name: publish npm
 
 on:
@@ -18,22 +17,9 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  alpha-release-block:
-    name: Block npm publishing until DSH Alpha is published
-    if: always()
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Alpha packages are source-only
-        run: |
-          echo "This checkout targets the unpublished DSH 0.1.2 Alpha source. npm publishing is disabled until the upstream Alpha packages are published."
-          exit 1
-
   pack:
-    name: Pack and verify npm tarball
-    if: ${{ false }}
+    name: Test, pack, and verify npm tarball
     runs-on: macos-15
-    env:
-      DSH_UPSTREAM_CHECKOUT: ${{ github.workspace }}/reference/deepseek-harness
     outputs:
       dist-tag: ${{ steps.release.outputs.dist-tag }}
       tarball: ${{ steps.release.outputs.tarball }}
@@ -42,44 +28,27 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-
-      - name: Checkout DSH compatibility baseline
-        uses: actions/checkout@v6
-        with:
-          repository: deepseek-ai/deepseek-harness
-          ref: dsh-v0.1.2-alpha.1
-          path: reference/deepseek-harness
-
       - uses: actions/setup-node@v6
         with:
           node-version-file: .nvmrc
           package-manager-cache: false
-
-      - name: Set CI pnpm version
-        uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v4
         with:
           version: 10.7.0
-
-      - name: Install immutable dependencies
+      - name: Install exact published dependencies
         run: pnpm install --frozen-lockfile
-
+      - name: Verify package
+        run: pnpm typecheck && pnpm test && pnpm build
       - name: Verify release tag and version
         id: release
         run: node scripts/verify-release.mjs
-
-      - name: Create artifact directory
-        run: mkdir -p dist/npm
-
       - name: Pack exact release artifact
-        run: npm pack --pack-destination dist/npm
-
+        run: mkdir -p dist/npm && npm pack --pack-destination dist/npm
       - name: Verify expected artifact exists alone
         run: |
           test -f "dist/npm/${{ steps.release.outputs.tarball }}"
           test "$(find dist/npm -maxdepth 1 -type f -name '*.tgz' | wc -l | tr -d ' ')" = 1
-
-      - name: Upload release artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: npm-release-tarball
           path: dist/npm/${{ steps.release.outputs.tarball }}
@@ -89,25 +58,20 @@ jobs:
   publish:
     name: Publish exact tarball to npm
     needs: pack
-    if: ${{ false }}
     runs-on: ubuntu-24.04
     environment: npm-publish
     steps:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
-
       - uses: actions/setup-node@v6
         with:
           node-version-file: .nvmrc
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
-
-      - name: Download verified artifact
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           name: npm-release-tarball
           path: dist/npm
-
       - name: Publish with OIDC
         run: npm publish "dist/npm/${{ needs.pack.outputs.tarball }}" --access public --tag "${{ needs.pack.outputs.dist-tag }}"

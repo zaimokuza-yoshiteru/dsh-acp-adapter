@@ -58,7 +58,7 @@ describe('AcpPanelController targeted health checks', () => {
         health,
         backendOf: vi.fn(), boundSessions: vi.fn(),
         activityFollow: async function* () {},
-      },
+      } as never,
     })
     const store = createAcpPanelStore().create()
     controller.attach(store.actions)
@@ -100,7 +100,7 @@ describe('AcpPanelController targeted health checks', () => {
           : Promise.resolve({ ok: true as const, value: view([]) })),
         backendOf: vi.fn(), boundSessions: vi.fn(),
         activityFollow: async function* () {},
-      },
+      } as never,
     })
     const store = createAcpPanelStore().create()
     controller.attach(store.actions)

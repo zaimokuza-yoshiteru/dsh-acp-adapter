@@ -57,7 +57,7 @@ export function AcpRecoveryDock({ sessionId, useSession, useProjection, t, remot
     setOpen(false)
     setError(null)
     setRecovery(null)
-    if (!projectionIsAcp(projection, ownsRoute) || remote.recoverySnapshot === undefined) return () => { cancelled = true }
+    if (!projectionIsAcp(projection, ownsRoute)) return () => { cancelled = true }
     void remote.recoverySnapshot(sessionId).then((result) => {
       if (!cancelled && result.ok) setRecovery(result.value.kind === 'healthy' ? null : result.value)
     }).catch((reason: unknown) => {
@@ -74,8 +74,8 @@ export function AcpRecoveryDock({ sessionId, useSession, useProjection, t, remot
     setError(null)
     try {
       await action()
-      const result = remote.recoverySnapshot === undefined ? undefined : await remote.recoverySnapshot(sessionId)
-      if (result?.ok === true) setRecovery(result.value.kind === 'healthy' ? null : result.value)
+      const result = await remote.recoverySnapshot(sessionId)
+      if (result.ok) setRecovery(result.value.kind === 'healthy' ? null : result.value)
     } catch (reason: unknown) {
       setError(errorText(reason))
     } finally {
@@ -98,12 +98,10 @@ export function AcpRecoveryDock({ sessionId, useSession, useProjection, t, remot
       ...(css.details === undefined ? {} : { contentClassName: css.details }),
       footer: h('div', { className: css.actions },
         h(Button, { variant: 'outline', disabled: busy, onClick: () => { void run(async () => {
-          if (remote.retryOriginal === undefined) throw new Error('Recovery retry is unavailable on this host')
           const result = await remote.retryOriginal(sessionId)
           if (!result.ok) throw new Error(result.error.message)
         }) } }, busy ? t('recoveryBusy') : t('recoveryReconnect')),
         h(Button, { variant: 'outline', disabled: busy, onClick: () => { void run(async () => {
-          if (remote.rebindRecoveryBlank === undefined) throw new Error('Recovery blank rebind is unavailable on this host')
           const result = await remote.rebindRecoveryBlank(sessionId)
           if (!result.ok) throw new Error(result.error.message)
         }) } }, t('recoveryRebind')),

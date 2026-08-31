@@ -112,6 +112,18 @@ describe('AcpRemoteService current public surface', () => {
     await expect(instance.boundSessions('devin')).resolves.toEqual({ agentId: 'devin', count: 2 })
   })
 
+  it('preserves ACP taxonomy and diagnostics as typed RemoteError details', async () => {
+    const { instance } = service()
+    await expect(instance.backendOf('missing')).rejects.toMatchObject({
+      code: 'dsh-acp/config',
+      message: expect.stringContaining('backend facts are not wired'),
+      details: {
+        kind: 'protocol-error',
+        correlationId: expect.stringMatching(/^acperr-/),
+      },
+    })
+  })
+
   it('uses the additive agent session controls only for an established ACP binding', async () => {
     const snapshot = { sessionId: 's1', profileId: 'devin', freshness: 'live' as const, editable: true, configOptions: null, modes: null, currentModeId: null, contextUsage: null, note: null }
     const { instance } = service({

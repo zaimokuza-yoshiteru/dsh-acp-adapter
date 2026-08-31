@@ -28,7 +28,11 @@ describe('ACP audit timeline Remote', () => {
     await expect(iterator.next()).resolves.toMatchObject({ value: { type: 'opened', cursor: 2, activities: [rows[1]], head: 2 }, done: false })
     abort.abort()
     await expect(iterator.next()).resolves.toMatchObject({ done: true })
-    await expect(service.activitySnapshot('other-session')).rejects.toThrow('not authorized')
+    await expect(service.activitySnapshot('other-session')).rejects.toMatchObject({
+      code: 'dsh-acp/user-rejected',
+      message: 'ACP activity access is not authorized for this DSH session',
+      details: { kind: null, correlationId: null },
+    })
   })
 
   it('subscribes before opening and emits only durable revisions after the opening head', async () => {
@@ -147,8 +151,16 @@ describe('ACP audit timeline Remote', () => {
       ownedSessionReadGate: () => true,
       auditTimeline: { list: async () => [], hasMore: async () => false },
     })
-    await expect(service.auditTimeline('session-1', { limit: 101 })).rejects.toThrow('page size')
-    await expect(service.auditTimeline('session-1', { afterSeq: -1 })).rejects.toThrow('cursor')
+    await expect(service.auditTimeline('session-1', { limit: 101 })).rejects.toMatchObject({
+      code: 'gateway/bad-request',
+      message: 'ACP audit page size is invalid',
+      details: {},
+    })
+    await expect(service.auditTimeline('session-1', { afterSeq: -1 })).rejects.toMatchObject({
+      code: 'gateway/bad-request',
+      message: 'ACP audit cursor is invalid',
+      details: {},
+    })
   })
 
   it('拒绝未拥有的 native/unknown/超长 session，且在 list/hasMore 前拒绝', async () => {
@@ -178,7 +190,11 @@ describe('ACP audit timeline Remote', () => {
       },
       resolveLiveAgent: () => undefined,
     })
-    await expect(service.auditTimeline('session-1')).rejects.toThrow('unavailable')
+    await expect(service.auditTimeline('session-1')).rejects.toMatchObject({
+      code: 'dsh-acp/config',
+      message: 'ACP audit history is unavailable on this host',
+      details: { kind: null, correlationId: null },
+    })
   })
 })
 

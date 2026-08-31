@@ -231,7 +231,7 @@ export function AcpAuditView(props: AcpAuditViewProps): ReactNode {
   const loadingRef = useRef(false)
 
   const load = useCallback((reset: boolean): void => {
-    if (sessionId === undefined || remote?.auditTimeline === undefined || loadingRef.current) return
+    if (sessionId === undefined || remote === undefined || loadingRef.current) return
     requestEpoch.current += 1
     const epoch = requestEpoch.current
     loadingRef.current = true

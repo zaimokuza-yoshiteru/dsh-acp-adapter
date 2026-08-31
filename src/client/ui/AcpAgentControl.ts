@@ -103,7 +103,7 @@ export function AcpAgentControl({ sessionId, useProjection, useSession, t, remot
     // ACP has no bounded client subscription in this host yet: refresh on
     // open (and use the post-write response) so controls are timely without a
     // high-frequency polling loop.
-    if (!isAcp || sessionId === undefined || remote.agentSessionSnapshot === undefined) return
+    if (!isAcp || sessionId === undefined) return
     const current = epoch.value
     void remote.agentSessionSnapshot(sessionId).then(result => {
       if (current !== epoch.value || !result.ok) return
@@ -120,7 +120,7 @@ export function AcpAgentControl({ sessionId, useProjection, useSession, t, remot
     setOpen(false)
     setError(null)
     setSnapshot(null)
-    if (!isAcp || sessionId === undefined || remote.agentSessionSnapshot === undefined) return
+    if (!isAcp || sessionId === undefined) return
     void remote.agentSessionSnapshot(sessionId).then(result => {
       if (current !== epoch.value || !result.ok) return
       setSnapshot(result.value)
@@ -148,7 +148,7 @@ export function AcpAgentControl({ sessionId, useProjection, useSession, t, remot
   if (error !== null) footer.push({ type: 'label', id: 'error', text: error })
   const select = (id: string): void => {
     const item = items.find(candidate => candidate.id === id)
-    if (item === undefined || item.id === 'unavailable' || remote.setAgentSessionOption === undefined || !snapshot.editable || snapshot.freshness !== 'live' || sessionId === undefined) return
+    if (item === undefined || item.id === 'unavailable' || !snapshot.editable || snapshot.freshness !== 'live' || sessionId === undefined) return
     setBusy(true)
     setError(null)
     void remote.setAgentSessionOption(sessionId, item.write).then(result => {

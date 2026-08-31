@@ -27,6 +27,30 @@ function assistantEvent() {
   } as never
 }
 
+function activityStreamFactory(hooks: { accept?: () => void; dispose?: () => void } = {}) {
+  return {
+    $stream<Item>(options: { readonly open: (signal: AbortSignal) => AsyncIterable<Item> }) {
+      const controller = new AbortController()
+      const stream = (async function* () {
+        for await (const value of options.open(controller.signal)) {
+          yield {
+            generation: 1,
+            value,
+            signal: controller.signal,
+            accept: () => { hooks.accept?.() },
+          }
+        }
+      }())
+      return {
+        signal: controller.signal,
+        restart: () => controller.abort(),
+        [Symbol.asyncIterator]: () => stream[Symbol.asyncIterator](),
+        dispose: async () => { hooks.dispose?.(); controller.abort() },
+      }
+    },
+  }
+}
+
 describe('ACP activity conversation node', () => {
   it('only matches durable ACP replay evidence, never native assistant messages', () => {
     const definition = createAcpActivityDefinition(() => false)
@@ -510,19 +534,10 @@ describe('ACP activity conversation node', () => {
         })
       },
     }
-    const factory = {
-      $stream<Item>(options: { readonly open: (signal: AbortSignal) => AsyncIterable<Item> }) {
-        const controller = new AbortController()
-        const iterable = options.open(controller.signal)
-        const wrapped = (async function* () {
-          for await (const value of iterable) yield { value, accept: () => { accepted += 1 } }
-        }())
-        return {
-          [Symbol.asyncIterator]: () => wrapped[Symbol.asyncIterator](),
-          dispose: async () => { disposed += 1; controller.abort(); releaseStream?.() },
-        }
-      },
-    }
+    const factory = activityStreamFactory({
+      accept: () => { accepted += 1 },
+      dispose: () => { disposed += 1; releaseStream?.() },
+    })
     const hub = new AcpActivityJournalHub(remote as never, factory as never)
     const handle = hub.acquire('dsh-1', 'dsh-1', 'user-1', () => undefined)
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
@@ -545,54 +560,41 @@ describe('ACP activity conversation node', () => {
       },
       activityPage: async (_sessionId: string, request: { readonly afterRevision?: number }) => {
         pages.push(request.afterRevision ?? 0)
-        return request.afterRevision === 2
+        return request.afterRevision === 0
+          ? { ok: true as const, value: { sessionId: 'dsh-1', cursor: 0, head: 4, activities: [row(1), row(2)], nextCursor: 2, hasMore: true } }
+          : request.afterRevision === 2
           ? { ok: true as const, value: { sessionId: 'dsh-1', cursor: 2, head: 4, activities: [row(3)], nextCursor: 3, hasMore: true } }
           : { ok: true as const, value: { sessionId: 'dsh-1', cursor: 3, head: 4, activities: [row(4)], nextCursor: null, hasMore: false } }
       },
     }
-    const factory = {
-      $stream<Item>(options: { readonly open: (signal: AbortSignal) => AsyncIterable<Item> }) {
-        const controller = new AbortController()
-        const source = options.open(controller.signal)
-        const stream = (async function* () { for await (const value of source) yield { value, accept: () => undefined } }())
-        return { [Symbol.asyncIterator]: () => stream[Symbol.asyncIterator](), dispose: async () => controller.abort() }
-      },
-    }
+    const factory = activityStreamFactory()
     const hub = new AcpActivityJournalHub(remote as never, factory as never)
     const handle = hub.acquire('dsh-1', 'dsh-1', 'anchor', () => undefined)
     for (let attempt = 0; attempt < 50 && handle.snapshot().length < 4; attempt += 1) await new Promise(resolve => setTimeout(resolve, 10))
-    expect(pages).toEqual([2, 3])
+    expect(pages).toEqual([0, 2, 3])
     expect(handle.snapshot().map(activity => activity.revisionSeq)).toEqual([1, 2, 3, 4])
     handle.release()
   })
 
-  it('reopens on a non-contiguous retained page and updates the same mounted snapshot', async () => {
+  it('keeps the mounted snapshot when a repair page violates the durable revision contract', async () => {
     const row = (revisionSeq: number) => ({ dshSessionId: 'dsh-1', ownerDshSessionId: 'dsh-1', promptAnchorMessageId: 'anchor', activityId: `a-${String(revisionSeq)}`, activitySeq: revisionSeq, revisionSeq, time: revisionSeq, kind: 'tool' as const, status: 'completed' as const, presentation: `A${String(revisionSeq)}` })
     let starts = 0
     const remote = {
       activityFollow: async function* (_sessionId: string, _request: unknown, signal: AbortSignal) {
         starts += 1
-        if (starts === 1) {
-          yield { type: 'opened' as const, cursor: 2, head: 4, activities: [row(1), row(2)] }
-          yield { type: 'entry' as const, activity: row(4) }
-        } else yield { type: 'opened' as const, cursor: 4, head: 4, activities: [row(1), row(2), row(4)] }
+        yield { type: 'opened' as const, cursor: 2, head: 4, activities: [row(1), row(2)] }
+        yield { type: 'entry' as const, activity: row(4) }
         await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true }))
       },
       activityPage: async () => ({ ok: true as const, value: { sessionId: 'dsh-1', cursor: 2, head: 4, activities: [row(4)], nextCursor: null, hasMore: false } }),
     }
-    const factory = {
-      $stream<Item>(options: { readonly open: (signal: AbortSignal) => AsyncIterable<Item> }) {
-        const controller = new AbortController()
-        const source = options.open(controller.signal)
-        const stream = (async function* () { for await (const value of source) yield { value, accept: () => undefined } }())
-        return { [Symbol.asyncIterator]: () => stream[Symbol.asyncIterator](), dispose: async () => controller.abort() }
-      },
-    }
+    const factory = activityStreamFactory()
     const hub = new AcpActivityJournalHub(remote as never, factory as never)
     const handle = hub.acquire('dsh-1', 'dsh-1', 'anchor', () => undefined)
-    for (let attempt = 0; attempt < 100 && (starts < 2 || handle.snapshot().length < 3); attempt += 1) await new Promise(resolve => setTimeout(resolve, 10))
-    expect(starts).toBeGreaterThanOrEqual(2)
-    expect(handle.snapshot().map(activity => activity.revisionSeq)).toEqual([1, 2, 4])
+    for (let attempt = 0; attempt < 100 && handle.error() === undefined; attempt += 1) await new Promise(resolve => setTimeout(resolve, 10))
+    expect(starts).toBe(1)
+    expect(handle.error()).toBeInstanceOf(Error)
+    expect(handle.snapshot().map(activity => activity.revisionSeq)).toEqual([1, 2])
     handle.release()
   })
 
@@ -600,7 +602,7 @@ describe('ACP activity conversation node', () => {
     const entry = { dshSessionId: 'dsh-1', ownerDshSessionId: 'dsh-1', promptAnchorMessageId: 'anchor-a', activityId: 'a', activitySeq: 1, revisionSeq: 1, time: 1, kind: 'tool' as const, status: 'completed' as const, presentation: 'A' }
     let releaseEntry: (() => void) | undefined
     const remote = { activityFollow: async function* (_sessionId: string, _request: unknown, signal: AbortSignal) { yield { type: 'opened' as const, cursor: 0, head: 0, activities: [] }; await new Promise<void>(resolve => { releaseEntry = resolve; signal.addEventListener('abort', () => resolve(), { once: true }) }); if (signal.aborted) return; yield { type: 'entry' as const, activity: entry }; await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true })) } }
-    const factory = { $stream<Item>(options: { readonly open: (signal: AbortSignal) => AsyncIterable<Item> }) { const controller = new AbortController(); const source = options.open(controller.signal); const stream = (async function* () { for await (const value of source) yield { value, accept: () => undefined } }()); return { [Symbol.asyncIterator]: () => stream[Symbol.asyncIterator](), dispose: async () => controller.abort() } } }
+    const factory = activityStreamFactory()
     const hub = new AcpActivityJournalHub(remote as never, factory as never)
     let a = 0; let b = 0
     const first = hub.acquire('dsh-1', 'dsh-1', 'anchor-a', () => { a += 1 })
@@ -634,16 +636,7 @@ describe('ACP activity conversation node', () => {
         await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }))
       },
     }
-    const factory = {
-      $stream<Item>(options: { readonly open: (signal: AbortSignal) => AsyncIterable<Item> }) {
-        const controller = new AbortController()
-        const source = options.open(controller.signal)
-        const stream = (async function* () {
-          for await (const value of source) yield { value, accept: () => undefined }
-        }())
-        return { [Symbol.asyncIterator]: () => stream[Symbol.asyncIterator](), dispose: async () => controller.abort() }
-      },
-    }
+    const factory = activityStreamFactory()
     const hub = new AcpActivityJournalHub(remote as never, factory as never)
     const handle = hub.acquire(activityJournalSessionId(data), parent, 'user-parent-1', () => undefined)
     await new Promise<void>((resolve) => setTimeout(resolve, 0))

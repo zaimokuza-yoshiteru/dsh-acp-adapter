@@ -28,6 +28,13 @@ export default defineConfig({
   ],
   resolve: {
     alias: {
+      // Published DSH client entries are loader-registration wrappers, not
+      // Node ESM. Tests execute the same alpha.2 implementation emitted beside
+      // its declarations; production keeps the public /client module-table edge.
+      '@deepseek-ai/dsh-api-gateway/client': fileURLToPath(new URL(
+        './node_modules/@deepseek-ai/dsh-api-gateway/lib/types/client/index.js',
+        import.meta.url,
+      )),
       // react 是宿主平台模块（loader 模块表在运行时应答），本包按纪律不安装；
       // client 注册测试（client-registration.spec.ts 经 apply → 组件模块）需要
       // 两个值级 import 可解析。组件渲染从不被测试消费——stub 只满足模块加载，

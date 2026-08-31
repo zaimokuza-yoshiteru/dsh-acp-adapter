@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Clean-install smoke gate for the DSH 0.1.2-alpha host.
+ * Clean-install smoke gate for the DSH 0.1.2-alpha.2 host.
  *
  * The gate deliberately uses a temporary DSH_HOME and a local package tarball.
  * It does not touch the user's profile, registry, or pnpm store.  The DSH
@@ -22,7 +22,7 @@ const packageName = packageJson.name
 const profileName = 'web'
 
 export function parseArgs(argv) {
-  const result = { hostRoot: resolve(root, '..', 'reference', 'deepseek-harness'), tgz: undefined, skipBoot: false, help: false }
+  const result = { hostRoot: resolve(root, '..', 'reference', 'deepseek-harness-alpha2'), tgz: undefined, skipBoot: false, help: false }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
     if (arg === '--help' || arg === '-h') result.help = true
@@ -40,10 +40,10 @@ export function parseArgs(argv) {
 }
 
 export function usage() {
-  return `Usage: node scripts/install-gate-alpha.mjs [options]
+  return `Usage: node scripts/install-gate.mjs [options]
 
 Options:
-  --host-root <path>  DSH 0.1.2-alpha source root (default: ../reference/deepseek-harness)
+  --host-root <path>  DSH 0.1.2-alpha.2 source root (default: ../reference/deepseek-harness-alpha2)
   --tgz <path>        Reuse an existing plugin tarball instead of packing
   --skip-boot         Install and inspect composition, but do not bind HTTP
   -h, --help          Show this help
@@ -116,11 +116,11 @@ export async function waitForAuthenticatedBootstrap({
     if (!isAlive()) break
     await new Promise(resolveDelay => setTimeout(resolveDelay, intervalMs))
   }
-  throw new Error(`clean Alpha web boot did not become authenticated HTTP-ready${lastStatus === undefined ? '' : ` (last HTTP status ${String(lastStatus)})`}`)
+  throw new Error(`clean DSH web boot did not become authenticated HTTP-ready${lastStatus === undefined ? '' : ` (last HTTP status ${String(lastStatus)})`}`)
 }
 
 function fail(message) {
-  throw new Error(`[install-gate-alpha] ${message}`)
+  throw new Error(`[install-gate] ${message}`)
 }
 
 function run(command, args, options = {}) {
@@ -233,7 +233,7 @@ function getFreePort() {
 
 async function bootAndCheck(hostRoot, dshHome) {
   const bin = join(hostRoot, 'apps', 'cli', 'lib', 'bin.js')
-  if (!existsSync(bin)) fail(`Alpha CLI not found at ${bin}; build reference/deepseek-harness first`)
+  if (!existsSync(bin)) fail(`DSH CLI not found at ${bin}; build the source reference first`)
   const port = await getFreePort()
   const child = spawn(process.execPath, [bin, '--profile', profileName, '--port', String(port), '--no-open'], {
     cwd: root,
@@ -251,7 +251,7 @@ async function bootAndCheck(hostRoot, dshHome) {
       intervalMs: 250,
     })
     if (!result.body.includes('__DSH_BOOT__') && !result.body.includes('__ModuleLoader__')) {
-      fail('clean Alpha web boot returned 200 but no DSH client bootstrap marker')
+      fail('clean DSH web boot returned 200 but no DSH client bootstrap marker')
     }
     return { status: result.status, output: redactGateOutput(output.slice(-4000)) }
   } catch (error) {
@@ -273,8 +273,8 @@ async function main() {
     console.log(usage())
     return
   }
-  if (!existsSync(join(args.hostRoot, 'apps', 'cli', 'lib', 'bin.js'))) fail(`host root is not a built Alpha tree: ${args.hostRoot}`)
-  const tempRoot = mkdtempSync(join(os.tmpdir(), 'dsh-acp-alpha-install-'))
+  if (!existsSync(join(args.hostRoot, 'apps', 'cli', 'lib', 'bin.js'))) fail(`host root is not a built DSH tree: ${args.hostRoot}`)
+  const tempRoot = mkdtempSync(join(os.tmpdir(), 'dsh-acp-install-'))
   const dshHome = join(tempRoot, 'dsh-home')
   const evidence = join(tempRoot, 'result.json')
   let keep = false
@@ -300,12 +300,12 @@ async function main() {
     if (Object.hasOwn(profilePackage.dependencies ?? {}, packageName)) fail('profile manifest retains plugin dependency after removal')
     if (existsSync(join(dshHome, 'profiles', profileName, 'node_modules', ...packageName.split('/')))) fail('profile node_modules retains plugin after removal')
     writeFileSync(evidence, JSON.stringify({ packageName, tarball: basename(tgz), files: entries.length, boot }, null, 2) + '\n')
-    console.log(`[install-gate-alpha] OK: ${entries.length} tarball files; additive composition; removal clean${args.skipBoot ? '; boot skipped' : '; HTTP 200/client bootstrap'}`)
-    console.log(`[install-gate-alpha] evidence: ${evidence}`)
+    console.log(`[install-gate] OK: ${entries.length} tarball files; additive composition; removal clean${args.skipBoot ? '; boot skipped' : '; HTTP 200/client bootstrap'}`)
+    console.log(`[install-gate] evidence: ${evidence}`)
   } catch (error) {
     keep = true
     writeFileSync(evidence, JSON.stringify({ error: error instanceof Error ? error.message : String(error) }, null, 2) + '\n')
-    console.error(`[install-gate-alpha] evidence: ${evidence}`)
+    console.error(`[install-gate] evidence: ${evidence}`)
     throw error
   } finally {
     if (!keep && process.env.KEEP_INSTALL_GATE !== '1') rmSync(tempRoot, { recursive: true, force: true })

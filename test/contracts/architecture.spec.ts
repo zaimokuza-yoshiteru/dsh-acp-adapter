@@ -2,7 +2,6 @@
 // 钉成可执行断言，任何新增违规 import 都会在此变红。
 //
 // 层划分（src/ 下，按路径前缀归类）：
-//   hostCompat       src/host-compat/**        —— 宿主兼容岛（vendor/窄化/fail-closed，不得出岛）
 //   runtime          src/runtime/**            —— 进程/超时/stderr 等无协议语义的运行时件
 //   protocol         src/protocol/**           —— ACP 协议半（连接、翻译、命令；可依赖 runtime）
 //   domainPolicy     src/domain/policy/**      —— 审批桥、审计载荷、原生访问启动策略
@@ -30,26 +29,24 @@
 //                                             persistence 没有自己的协议依赖
 //   contract        → （零 import 叶子：wire 类型真源，host 的 remote 与 client 两半
 //                       共同下行消费；不进 HOST_LAYERS——它是共享层而非 host 私有）
-//   domainSession   → domainPolicy, domainObservability, protocol, runtime, persistence, hostCompat
+//   domainSession   → domainPolicy, domainObservability, protocol, runtime, persistence
 //   remote          → contract, protocol, runtime, domainSession, domainPolicy,
 // domainObservability（起可达 domainPolicy：health 行消费
 //                     capability-matrix 零 import 纯函数）
 //   hostComposition → domainSession, domainPolicy, domainObservability, protocol,
-//                     runtime, persistence, remote, hostCompat, contract
+//                     runtime, persistence, remote, contract
 //   hostEntry       → hostComposition
 //   clientData      → contract
 //   clientUi        → clientData, clientEntry, contract
 //   clientEntry     → contract, clientData, clientUi
 //
 // 推导出的显式禁令（白名单的必然后果，单列以便报错信息可读）：
-//   - hostCompat 不得 import 岛外任何层（vendor 岛自给自足）
 //   - runtime / protocol / domain* / persistence / contract / remote 不得 import host/*
-//     （hostCompat 是底层兼容岛而非 host 组合层，前缀同形但不在此禁令语义内）
 //   - protocol 及以下各层不得 import domain/host/remote（依赖只向下流）
 //   - client/* 的相对 import 只允许逃向 src/contract/（共享 wire 类型）；react 只允许出现在
 //     clientUi
-//   - clientData 只许同层 + contract import；store slices 例外使用 Alpha 公共
-//     dsh-client-store，其余逻辑模块仍保持零外部模块、可直接 vitest 测试
+//   - clientData 只许同层 + contract import；另显式允许 DSH 公共 store 与
+//     RemoteJournalStream 两个基础设施边
 //
 // 实现：fs 直读 src/**/*.ts，正则抽静态 import/export-from 与动态 import 的
 // specifier，相对 specifier 解析回 src 相对路径定层后对照白名单。先例：
@@ -66,7 +63,6 @@ const SRC_DIR = path.resolve(TEST_DIR, '..', '..', 'src');
 // ---------- 层归类 ----------
 
 type Layer =
-  | 'hostCompat'
   | 'runtime'
   | 'protocol'
   | 'domainPolicy'
@@ -84,7 +80,6 @@ type Layer =
 /** src 相对路径 → 层；返回 undefined 表示路径不在任何已知层（归类本身也被钉死）。 */
 function layerOf(srcRel: string): Layer | undefined {
   if (srcRel === 'index.ts') return 'hostEntry';
-  if (srcRel.startsWith('host-compat/')) return 'hostCompat';
   if (srcRel.startsWith('runtime/')) return 'runtime';
   if (srcRel.startsWith('protocol/')) return 'protocol';
   if (srcRel.startsWith('domain/policy/')) return 'domainPolicy';
@@ -104,7 +99,6 @@ function layerOf(srcRel: string): Layer | undefined {
 }
 
 const HOST_LAYERS: readonly Layer[] = [
-  'hostCompat',
   'runtime',
   'protocol',
   'domainPolicy',
@@ -118,7 +112,6 @@ const HOST_LAYERS: readonly Layer[] = [
 
 /** 跨层白名单：key 层可 import 的异层集合（同层恒允许，不入表）。 */
 const ALLOWED_CROSS_LAYER: Readonly<Record<Layer, readonly Layer[]>> = {
-  hostCompat: [],
   // Native client capabilities expose ACP handlers and durable audit payloads.
   runtime: ['protocol', 'domainPolicy', 'domainObservability'],
   protocol: ['runtime'],
@@ -131,7 +124,7 @@ const ALLOWED_CROSS_LAYER: Readonly<Record<Layer, readonly Layer[]>> = {
  // contract 是零 import 叶子：收窄 wire 类型真源，host 的 remote 与
   // client 两半共同下行消费（共享层，不进 HOST_LAYERS）。
   contract: [],
-  domainSession: ['domainPolicy', 'domainObservability', 'protocol', 'runtime', 'persistence', 'hostCompat'],
+  domainSession: ['domainPolicy', 'domainObservability', 'protocol', 'runtime', 'persistence'],
   remote: ['contract', 'protocol', 'runtime', 'domainSession', 'domainPolicy', 'domainObservability'],
   hostComposition: [
     'domainSession',
@@ -141,7 +134,6 @@ const ALLOWED_CROSS_LAYER: Readonly<Record<Layer, readonly Layer[]>> = {
     'runtime',
     'persistence',
     'remote',
-    'hostCompat',
     'contract',
   ],
   hostEntry: ['hostComposition'],
@@ -251,18 +243,10 @@ describe(' 分层架构守卫', () => {
     expect(violations, `违规跨层边：\n  ${violations.join('\n  ')}`).toEqual([]);
   });
 
-  it('hostCompat 岛自给自足：不得 import 岛外任何层', () => {
-    const violations = edges.filter((e) => e.fromLayer === 'hostCompat' && e.toLayer !== 'hostCompat');
-    expect(violations.map((e) => `${e.fromFile} → ${e.toFile}`)).toEqual([]);
-  });
-
   it('host 以下各层不得上行 import host/*', () => {
-    // hostCompat 虽以 host- 前缀命名，但它是底层兼容岛而非 host 组合层：
-    // domainSession 仅允许由新 provider composition 的窄接口消费。
     const violations = edges.filter(
       (e) =>
         e.toLayer.startsWith('host') &&
-        e.toLayer !== 'hostCompat' &&
         !e.fromLayer.startsWith('host'),
     );
     expect(violations.map((e) => `${e.fromFile} → ${e.toFile}`)).toEqual([]);
@@ -275,13 +259,13 @@ describe(' 分层架构守卫', () => {
     expect(violations.map((e) => `${e.fromFile} → ${e.toFile}`)).toEqual([]);
   });
 
-  it('clientData 除 contract 外不得 import 异层或非 Alpha store 外部模块', () => {
+  it('clientData only imports contract plus the published DSH store/journal primitives', () => {
     const crossLayer = edges.filter(
       (e) => e.fromLayer === 'clientData' && e.toLayer !== 'clientData' && e.toLayer !== 'contract',
     );
     const external = nonRelative
       .filter((i) => layerOf(i.fromFile) === 'clientData')
-      .filter((i) => i.specifier !== '@deepseek-ai/dsh-client-store')
+      .filter((i) => !['@deepseek-ai/dsh-client-store', '@deepseek-ai/dsh-api-gateway/client', '@deepseek-ai/dsh-typert-protocol'].includes(i.specifier))
       .map((i) => `${i.fromFile} import '${i.specifier}'`);
     expect(crossLayer.map((e) => `${e.fromFile} → ${e.toFile}`)).toEqual([]);
     expect(external).toEqual([]);

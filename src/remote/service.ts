@@ -20,10 +20,10 @@
  * - 活体解析用 JSON `sessionId: string` 参数 + 方法体内 `resolveLiveAgent`：
  *   标准 agent lookup 的 wire 类型外部不可命名。写路径仍只服务
  * 活体会话的 backend/recovery 事实按需读取；不会把旧 Agent 控制面重新暴露到 Remote。
- * - 错误纪律：业务失败一律 throw（message 即用户可见文案，与 HTTP 时代逐字
- *   一致）；gateway 把 throw 折叠成 `{code:'internal', message}` 的
- *   RemoteResult 错误分支（kind/HTTP status 不再过线，client 从来只消费
- *   message——parseHttpErrorMessage 同款口径）。
+ * - 错误纪律：业务失败统一映射为 `dsh-acp/*` `RemoteError`，保留稳定的
+ *   category 以及 ACP kind/correlationId；参数错误使用 Gateway 公共
+ *   `gateway/bad-request`。Gateway 将 typed code/details 原样送到 Client，
+ *   不再把可判别的 ACP 失败折叠为 `gateway/internal`。
  *
  * Subprocess seam（不变）：两个缺省实现（可执行预检 / `<command> --version`）
  * 全经宿主公共 seam `ctx.subprocess` 的解析产物（deps.subprocess 注入）——
@@ -40,11 +40,12 @@
 
 import os from 'node:os'
 import type { Context } from '@deepseek-ai/cordis'
-import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
+import { Remote, RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import type * as acp from '@agentclientprotocol/sdk'
 import { acpRouteId, ACP_AGENT_ID_PATTERN } from '../domain/session/agent-config.ts'
 import { acpProbeConfigKey, acpProbeFresh, acpVersionCompatibility, descriptorOf } from '../domain/session/agent-config.ts'
 import type { AcpAgentConfig, AcpAgentRuntimeDescriptor } from '../domain/session/agent-config.ts'
+import type { AcpErrorCategory } from '../protocol/v1/types.ts'
 import { deriveAcpAgentState } from '../domain/session/agent-state.ts'
 import type { AcpAgentStateProbeView } from '../domain/session/agent-state.ts'
 import { acpCapabilityMatrix } from '../domain/policy/capability-matrix.ts'
@@ -81,6 +82,39 @@ export type { AcpAuditSummaryCode } from '../contract/remote.ts'
 
 /** `<command> --version` 尽力而为的短超时（毫秒）。 */
 export const DEFAULT_VERSION_PROBE_TIMEOUT_MS = 3_000
+
+type AcpRemoteErrorCode = `dsh-acp/${AcpErrorCategory}`
+
+function acpRemoteError(error: AcpClientError): RemoteError<AcpRemoteErrorCode> {
+  return new RemoteError(`dsh-acp/${error.category}`, error.message, {
+    kind: error.kind,
+    correlationId: error.correlationId,
+  }, { cause: error })
+}
+
+function acpRemoteFailure(
+  category: AcpErrorCategory,
+  message: string,
+  cause?: unknown,
+): RemoteError<AcpRemoteErrorCode> {
+  return new RemoteError(`dsh-acp/${category}`, message, {
+    kind: null,
+    correlationId: null,
+  }, cause === undefined ? undefined : { cause })
+}
+
+function badRequest(message: string): RemoteError<'gateway/bad-request'> {
+  return new RemoteError('gateway/bad-request', message, {})
+}
+
+async function preserveAcpFailure<T>(operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation()
+  } catch (error) {
+    if (error instanceof AcpClientError) throw acpRemoteError(error)
+    throw error
+  }
+}
 
 // ---------- SDK → contract 收窄映射（数据最小化； strict boundary 前提） ----------
 
@@ -501,12 +535,12 @@ export class AcpRemoteService extends TypertRemoteService {
   @Remote
   async auditTimeline(sessionId: string, request?: { readonly afterSeq?: number; readonly limit?: number }): Promise<AcpAuditTimelinePage> {
     const source = this.resolved.auditTimeline
-    if (source === null) throw new Error('ACP audit history is unavailable on this host')
+    if (source === null) throw acpRemoteFailure('config', 'ACP audit history is unavailable on this host')
     await this.requireOwnedSessionRead(sessionId)
     const afterSeq = request?.afterSeq ?? 0
     const limit = request?.limit ?? 50
-    if (!Number.isSafeInteger(afterSeq) || afterSeq < 0) throw new Error('ACP audit cursor is invalid')
-    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error('ACP audit page size is invalid')
+    if (!Number.isSafeInteger(afterSeq) || afterSeq < 0) throw badRequest('ACP audit cursor is invalid')
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw badRequest('ACP audit page size is invalid')
     const entries = await source.list(sessionId, afterSeq, limit)
     const lastSeq = entries.at(-1)?.seq ?? afterSeq
     const hasMore = entries.length === limit && await source.hasMore(sessionId, lastSeq)
@@ -520,7 +554,7 @@ export class AcpRemoteService extends TypertRemoteService {
   async activitySnapshot(sessionId: string, request?: { readonly limit?: number; readonly filter?: AcpActivityFilterView }): Promise<AcpActivitySnapshotView> {
     await this.requireActivityRead(sessionId)
     const source = this.resolved.activityTimeline
-    if (source === null) throw new Error('ACP activity history is unavailable on this host')
+    if (source === null) throw acpRemoteFailure('config', 'ACP activity history is unavailable on this host')
     const limit = request?.limit ?? 100
     validateActivityReadRequest(limit, request?.filter)
     const activities = await source.snapshot(sessionId, limit, request?.filter)
@@ -531,15 +565,17 @@ export class AcpRemoteService extends TypertRemoteService {
   /** Revision-cursor page used for reconnect/gap repair. The page contains
    * every committed revision, while the snapshot contains only current rows. */
   @Remote
-  async activityPage(sessionId: string, request?: { readonly afterRevision?: number; readonly limit?: number; readonly filter?: AcpActivityFilterView }): Promise<AcpActivityPageView> {
+  async activityPage(sessionId: string, request?: { readonly afterRevision?: number; readonly limit?: number; readonly filter?: AcpActivityFilterView }, signal?: AbortSignal): Promise<AcpActivityPageView> {
+    signal?.throwIfAborted()
     await this.requireActivityRead(sessionId)
     const source = this.resolved.activityTimeline
-    if (source === null) throw new Error('ACP activity history is unavailable on this host')
+    if (source === null) throw acpRemoteFailure('config', 'ACP activity history is unavailable on this host')
     const afterRevision = request?.afterRevision ?? 0
     const limit = request?.limit ?? 100
-    if (!Number.isSafeInteger(afterRevision) || afterRevision < 0) throw new Error('ACP activity cursor is invalid')
+    if (!Number.isSafeInteger(afterRevision) || afterRevision < 0) throw badRequest('ACP activity cursor is invalid')
     validateActivityReadRequest(limit, request?.filter)
     const activities = await source.page(sessionId, afterRevision, limit, request?.filter)
+    signal?.throwIfAborted()
     const lastRevision = activities.at(-1)?.revisionSeq ?? afterRevision
     const head = await source.head(sessionId, request?.filter)
     return { sessionId, activities, head, nextCursor: activities.length === limit && lastRevision < head ? lastRevision : null, hasMore: activities.length === limit && lastRevision < head }
@@ -560,7 +596,7 @@ export class AcpRemoteService extends TypertRemoteService {
   ): AsyncIterable<AcpActivityJournalFrame> {
     await this.requireActivityRead(sessionId)
     const source = this.resolved.activityTimeline
-    if (source === null || source.subscribe === undefined) throw new Error('ACP activity live stream is unavailable on this host')
+    if (source === null || source.subscribe === undefined) throw acpRemoteFailure('config', 'ACP activity live stream is unavailable on this host')
     const limit = request?.limit ?? 100
     validateActivityReadRequest(limit, request?.filter)
     const queue: AcpActivityView[] = []
@@ -628,9 +664,9 @@ export class AcpRemoteService extends TypertRemoteService {
 
   /** Validate identity and ownership before touching either sidecar source. */
   private async requireOwnedSessionRead(sessionId: string): Promise<void> {
-    if (typeof sessionId !== 'string' || sessionId.length === 0 || sessionId.length > 256) throw new Error('ACP activity session id is invalid')
+    if (typeof sessionId !== 'string' || sessionId.length === 0 || sessionId.length > 256) throw badRequest('ACP activity session id is invalid')
     const access = this.resolved.ownedSessionReadGate
-    if (access === null || !(await access(sessionId))) throw new Error('ACP activity access is not authorized for this DSH session')
+    if (access === null || !(await access(sessionId))) throw acpRemoteFailure('user-rejected', 'ACP activity access is not authorized for this DSH session')
   }
 
   /** Exact ownership proof consumed by additive client observers. Historical
@@ -666,12 +702,12 @@ export class AcpRemoteService extends TypertRemoteService {
     const recheck = request?.recheck === true
     const targetAgentId = request?.agentId
     if (targetAgentId !== undefined) {
-      if (!recheck) throw new Error('dsh-acp: health agentId requires recheck=true')
+      if (!recheck) throw badRequest('dsh-acp: health agentId requires recheck=true')
       if (!ACP_AGENT_ID_PATTERN.test(targetAgentId)) {
-        throw new Error(`dsh-acp: invalid health agent id ${JSON.stringify(targetAgentId)}`)
+        throw badRequest(`dsh-acp: invalid health agent id ${JSON.stringify(targetAgentId)}`)
       }
       if (!allEntries.some(([id]) => id === targetAgentId)) {
-        throw new Error(`dsh-acp: unknown ACP agent ${JSON.stringify(targetAgentId)}`)
+        throw badRequest(`dsh-acp: unknown ACP agent ${JSON.stringify(targetAgentId)}`)
       }
     }
     const entries = targetAgentId === undefined
@@ -747,24 +783,24 @@ export class AcpRemoteService extends TypertRemoteService {
   @Remote
   async agentSessionSnapshot(sessionId: string): Promise<AcpAgentSessionSnapshotView> {
     const adapter = await this.agentSessionControlFor(sessionId)
-    return await adapter.agentSessionSnapshot(sessionId)
+    return await preserveAcpFailure(() => adapter.agentSessionSnapshot(sessionId))
   }
 
   @Remote
   async setAgentSessionOption(sessionId: string, request: AcpAgentSessionOptionWrite): Promise<AcpAgentSessionSnapshotView> {
     const adapter = await this.agentSessionControlFor(sessionId)
-    return await adapter.setAgentSessionOption(sessionId, request)
+    return await preserveAcpFailure(() => adapter.setAgentSessionOption(sessionId, request))
   }
 
   private async agentSessionControlFor(sessionId: string): Promise<AcpAgentSessionControlLike> {
     const provider = this.resolved.backendFacts === null
       ? undefined
       : await this.resolved.backendFacts.readBindingProvider(sessionId)
-    if (provider === undefined) throw new Error('No established ACP Agent session is available')
+    if (provider === undefined) throw acpRemoteFailure('resume-conflict', 'No established ACP Agent session is available')
     const resolver = this.resolved.agentSessionControl
-    if (resolver === null) throw new Error('ACP Agent session controls are unavailable on this host')
+    if (resolver === null) throw acpRemoteFailure('config', 'ACP Agent session controls are unavailable on this host')
     const adapter = resolver(provider)
-    if (adapter === undefined) throw new Error('No plugin-owned ACP Agent session is available')
+    if (adapter === undefined) throw acpRemoteFailure('resume-conflict', 'No plugin-owned ACP Agent session is available')
     return adapter
   }
 
@@ -792,9 +828,9 @@ export class AcpRemoteService extends TypertRemoteService {
     const provider = this.resolved.backendFacts === null
       ? undefined
       : await this.resolved.backendFacts.readBindingProvider(sessionId)
-    if (provider === undefined) throw new Error(`ACP recovery binding is unavailable for session "${sessionId}"`)
+    if (provider === undefined) throw acpRemoteFailure('resume-conflict', `ACP recovery binding is unavailable for session "${sessionId}"`)
     const adapter = this.resolved.recoveryAdapter?.(provider)
-    if (adapter === undefined) throw new Error(`ACP recovery profile is unavailable for provider "${provider}"`)
+    if (adapter === undefined) throw acpRemoteFailure('config', `ACP recovery profile is unavailable for provider "${provider}"`)
     return adapter
   }
 
@@ -802,7 +838,7 @@ export class AcpRemoteService extends TypertRemoteService {
   @Remote('retryOriginal')
   async retryOriginal(sessionId: string): Promise<AcpRecoveryView> {
     const adapter = await this.recoveryAdapterFor(sessionId)
-    await adapter.retryOriginal(sessionId)
+    await preserveAcpFailure(() => adapter.retryOriginal(sessionId))
     return await this.recoverySnapshot(sessionId)
   }
 
@@ -812,7 +848,7 @@ export class AcpRemoteService extends TypertRemoteService {
   @Remote('rebindRecoveryBlank')
   async rebindRecoveryBlank(sessionId: string): Promise<AcpRecoveryView> {
     const adapter = await this.recoveryAdapterFor(sessionId)
-    await adapter.rebindBlank(sessionId)
+    await preserveAcpFailure(() => adapter.rebindBlank(sessionId))
     return await this.recoverySnapshot(sessionId)
   }
 
@@ -820,11 +856,11 @@ export class AcpRemoteService extends TypertRemoteService {
   async backendOf(sessionId: string): Promise<AcpBackendState> {
     const facts = this.resolved.backendFacts
     if (facts === null) {
-      throw new AcpClientError(
+      throw acpRemoteError(new AcpClientError(
         'protocol-error',
         `dsh-acp: backend facts are not wired on this host; cannot determine the backend of session "${sessionId}"`,
         { category: 'config' },
-      )
+      ))
     }
     const bound = await facts.readBindingProvider(sessionId)
     if (bound !== undefined) return { state: 'established', provider: bound }
@@ -854,11 +890,11 @@ export class AcpRemoteService extends TypertRemoteService {
       // 无日志可读时活体（任意 backend，含尚未落 header 的新 native 会话）仍是
       // 存在性证据：无 header 即 blank。
       if (facts.hasLiveAgent(sessionId)) return { state: 'blank' }
-      throw new AcpClientError(
+      throw acpRemoteError(new AcpClientError(
         'protocol-error',
         `dsh-acp: cannot determine the execution backend of session "${sessionId}": the session does not exist or its log is unreadable (${error instanceof Error ? error.message : String(error)})`,
         { category: 'config' },
-      )
+      ))
     }
   }
 
@@ -871,19 +907,19 @@ export class AcpRemoteService extends TypertRemoteService {
   @Remote('boundSessions')
   async boundSessions(agentId: string): Promise<AcpBoundSessionsView> {
     if (!ACP_AGENT_ID_PATTERN.test(agentId)) {
-      throw new AcpClientError(
+      throw acpRemoteError(new AcpClientError(
         'protocol-error',
         `dsh-acp: invalid agent id ${JSON.stringify(agentId)} (must match ${String(ACP_AGENT_ID_PATTERN)})`,
         { category: 'config' },
-      )
+      ))
     }
     const facts = this.resolved.bindingFacts
     if (facts === null) {
-      throw new AcpClientError(
+      throw acpRemoteError(new AcpClientError(
         'protocol-error',
         `dsh-acp: binding facts are not wired on this host; cannot count sessions bound to "${agentId}"`,
         { category: 'config' },
-      )
+      ))
     }
     return { agentId, count: await facts.countBoundSessions(acpRouteId(agentId)) }
   }
@@ -891,11 +927,11 @@ export class AcpRemoteService extends TypertRemoteService {
 }
 
 function validateActivityReadRequest(limit: number, filter: AcpActivityFilterView | undefined): void {
-  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200) throw new Error('ACP activity page size is invalid')
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200) throw badRequest('ACP activity page size is invalid')
   if (filter === undefined) return
   for (const [key, value] of Object.entries(filter)) {
-    if (key !== 'ownerDshSessionId' && key !== 'promptAnchorMessageId') throw new Error(`ACP activity filter field is invalid: ${key}`)
-    if (value !== undefined && (typeof value !== 'string' || value.length === 0 || value.length > 256)) throw new Error('ACP activity filter value is invalid')
+    if (key !== 'ownerDshSessionId' && key !== 'promptAnchorMessageId') throw badRequest(`ACP activity filter field is invalid: ${key}`)
+    if (value !== undefined && (typeof value !== 'string' || value.length === 0 || value.length > 256)) throw badRequest('ACP activity filter value is invalid')
   }
 }
 

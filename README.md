@@ -4,10 +4,8 @@
 
 通过 DeepSeek Harness（DSH）会话页面使用智能体，包括 Devin、Codex、Kimi 和 Claude。智能体继续负责自己的模型、工具、skills、登录状态和运行时。
 
-> `feature/0.1.2-alpha` 仅用于适配尚未发布到 npm 的 DSH
-> `dsh-v0.1.2-alpha.1` 源码，不是可安装的发布组合。本页以下安装命令仍描述
-> main 分支上已发布的版本。普通用户不能从 npm 安装此 Alpha 分支；开发和验收
-> 可使用固定 Alpha 源码与本地 tarball，在隔离的 DSH_HOME 中完成安装门禁。
+当前版本适配 DSH `0.1.2-alpha.2`。开发、CI 与发布默认使用 npm 上的精确
+alpha.2 包；本地源码链接仅用于额外的上游源码兼容验证。
 
 ## 功能预览
 
@@ -31,31 +29,30 @@ Agent 的子 Agent 调用继续使用 DSH 的消息流展示：
 
 ![Devin 会话的 Agent 审计时间线](assets/readme/acp-audit.zh-CN.png)
 
-## 前置：安装 DSH（main 发布版）
+## 前置：安装 DSH alpha.2
 
-需要 Node.js `^22.19.0 || >=24.0.0` 和当前已发布的 DSH：
+需要 Node.js `^22.19.0 || >=24.0.0`：
 
 ```bash
-npx @deepseek-ai/dsh web
+npx @deepseek-ai/dsh@0.1.2-alpha.2 web
 ```
 
-`feature/0.1.2-alpha` 不能通过 npm 安装。要测试这个分支，必须先在本地
-检出并构建 `dsh-v0.1.2-alpha.1`，再在本仓库运行：
+插件开发默认直接安装精确发布依赖：
 
 ```bash
 pnpm install --frozen-lockfile
-pnpm setup:alpha-reference
 ```
 
-该脚本只链接当前仓库的开发依赖，不修改 DSH 的用户目录；它不是普通用户的安装步骤。
+如需额外验证上游源码，检出并构建 `dsh-v0.1.2-alpha.2` 后运行
+`pnpm setup:source-reference`。该兼容 lane 只改本仓库的开发链接，不修改 DSH 用户目录。
 
 ## 安装插件
 
 在运行 DSH 的机器上执行：
 
 ```bash
-npx @deepseek-ai/dsh plugin --profile web add @zaimokuza/dsh-acp-adapter
-npx @deepseek-ai/dsh web
+npx @deepseek-ai/dsh@0.1.2-alpha.2 plugin --profile web add @zaimokuza/dsh-acp-adapter@alpha
+npx @deepseek-ai/dsh@0.1.2-alpha.2 web
 ```
 
 打开 DSH 的 ACP 面板，选择内置 Agent 模板、填写必要的可执行文件配置并运行健康检查。模型选择器显示 ACP 会话实际返回的模型与选项。

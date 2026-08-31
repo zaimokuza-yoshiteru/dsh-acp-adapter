@@ -8,12 +8,10 @@
 //   1. Synthetic workspace staging at .typert/ (gitignored):
 //      tsconfig.host.json aggregate + packages/<pkg>/ real directories —
 //      WorkspaceAnalyzer hard-requires package roots under <root>/packages/.
-//   2. @deepseek-ai/dsh-typert-protocol staged AS SOURCE at
-//      packages/typert-protocol/ (vendored byte-for-byte at
-//      src/host-compat/typert-protocol from the Alpha reference; the npm
-//      artifact does not ship src/), with `paths`
-//      mappings in BOTH the aggregate and the package tsconfig — the npm
-//      d.ts is not recognized by isTypeMetaSymbol.
+//   2. @deepseek-ai/dsh-typert-protocol staged as a compact declaration facade
+//      with `paths` mappings in both analysis tsconfigs. Alpha.2 decorators
+//      support duplicate runtime copies, but the generator still identifies
+//      Typert symbols by their analysis-program declaration.
 //   3. ./typert (+ ./remote) exports/files pre-declared in package.json
 //      (validateExport reads the staged copy of the real package.json).
 //   4. Payload types exported from the non-root public subpath ./client
@@ -59,7 +57,7 @@ const PACKAGE_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const LIB_DIR = join(PACKAGE_DIR, 'lib');
 const SRC_DIR = join(PACKAGE_DIR, 'src');
 const STAGE_DIR = join(PACKAGE_DIR, '.typert');
-const VENDOR_FROM = join(PACKAGE_DIR, 'src/host-compat/typert-protocol');
+const PROTOCOL_FACADE = join(PACKAGE_DIR, 'scripts/typert-protocol-facade.d.ts');
 
 // The generator's `generate(packages)` filter and the emitted manifest.package /
 // method-id prefixes all derive from the staged package.json `name` — read the
@@ -127,15 +125,13 @@ function writeJson(path, value) {
 function stage() {
   rmSync(STAGE_DIR, { recursive: true, force: true });
 
-  // packages/typert-protocol — vendored source (spike recipe #2).
+  // packages/typert-protocol — minimal analyzer facade (spike recipe #2).
   const protocolRoot = join(STAGE_DIR, 'packages', 'typert-protocol');
   mkdirSync(join(protocolRoot, 'src'), { recursive: true });
-  for (const f of ['index.ts', 'types.ts']) {
-    cpSync(join(VENDOR_FROM, f), join(protocolRoot, 'src', f));
-  }
+  cpSync(PROTOCOL_FACADE, join(protocolRoot, 'src', 'index.d.ts'));
   writeJson(join(protocolRoot, 'package.json'), {
     name: '@deepseek-ai/dsh-typert-protocol',
-    version: '0.1.2-alpha.1',
+    version: '0.1.2-alpha.2',
     private: true,
     type: 'module',
   });
@@ -144,10 +140,7 @@ function stage() {
       ...TS_COMPILER_OPTIONS,
       composite: true,
       declaration: true,
-      rootDir: 'src',
       outDir: 'lib/types',
-      // Analysis only — allow this package's `.ts`-suffixed import specifiers.
-      allowImportingTsExtensions: true,
       emitDeclarationOnly: true,
     },
     include: ['src'],
@@ -196,8 +189,7 @@ function stage() {
       allowImportingTsExtensions: true,
       emitDeclarationOnly: true,
       paths: {
-        '@deepseek-ai/dsh-typert-protocol': ['../typert-protocol/src/index.ts'],
-        '@deepseek-ai/dsh-typert-protocol/types': ['../typert-protocol/src/types.ts'],
+        '@deepseek-ai/dsh-typert-protocol': ['../typert-protocol/src/index.d.ts'],
       },
     },
     include: ['src'],
@@ -223,8 +215,7 @@ function stage() {
       noEmit: true,
       allowImportingTsExtensions: true,
       paths: {
-        '@deepseek-ai/dsh-typert-protocol': ['packages/typert-protocol/src/index.ts'],
-        '@deepseek-ai/dsh-typert-protocol/types': ['packages/typert-protocol/src/types.ts'],
+        '@deepseek-ai/dsh-typert-protocol': ['packages/typert-protocol/src/index.d.ts'],
       },
     },
     files: [],
