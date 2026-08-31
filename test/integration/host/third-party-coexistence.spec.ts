@@ -1,4 +1,5 @@
 import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import LlmRuntime, { LlmAdapter } from '@deepseek-ai/dsh-llm'
@@ -24,7 +25,7 @@ class NativeAdapter extends LlmAdapter {
 
 describe('third-party host coexistence', () => {
   it('keeps a real llm/stream observer and native route intact after ACP registration', async () => {
-    const home = mkdtempSync(join('/tmp', 'dsh-acp-coexistence-'))
+    const home = mkdtempSync(join(tmpdir(), 'dsh-acp-coexistence-'))
     const ctx = new Context()
     const settings = {
       register: () => ({
@@ -75,6 +76,6 @@ describe('third-party host coexistence', () => {
     await fiber.dispose()
     disposeNative()
     await ctx.fiber.dispose()
-    rmSync(home, { recursive: true, force: true })
+    rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
   })
 })

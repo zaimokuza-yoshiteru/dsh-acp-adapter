@@ -327,6 +327,7 @@ describe('握手（happy / minimal-caps / no-config-options）', () => {
     await conn.loadSession('session-1', { mcpServers: [server] })
     await conn.resumeSession('session-1', { mcpServers: [server] })
     await conn.forkSession('session-1', { mcpServers: [server] })
+    await waitFor(() => conn.stderrLines().filter((line) => line.includes('mcpServers')).length === 4, 2_000)
     const lines = conn.stderrLines().filter((line) => line.includes('mcpServers'))
     expect(lines).toHaveLength(4)
     expect(lines.every((line) => line.includes('https://example.invalid/mcp'))).toBe(true)

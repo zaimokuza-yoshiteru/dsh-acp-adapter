@@ -402,6 +402,7 @@ describe('provider activity bridge', () => {
     roots.push(root)
     const sidecar = testSidecar(root)
     const failingSidecar = Object.create(sidecar) as AcpSidecar
+    sidecars.push(failingSidecar)
     failingSidecar.activityHead = async () => { throw new Error('activity head unavailable') }
     const message = user('finish')
     const sessions = new Map<string, SessionLike>([['session-4', session(message)]])

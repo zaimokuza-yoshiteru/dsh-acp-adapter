@@ -106,6 +106,7 @@ let root = ''
 let warns: string[] = []
 let clock: number
 let store: AcpSidecar
+const extraStores: AcpSidecar[] = []
 
 function dbFile(): string {
   return path.join(root, ACP_SIDECAR_DB_FILENAME)
@@ -142,6 +143,7 @@ beforeEach(() => {
 })
 
 afterEach(async () => {
+  for (const extraStore of extraStores.splice(0)) await extraStore.dispose().catch(() => undefined)
   await store.dispose().catch(() => undefined)
   fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
 })
@@ -637,6 +639,7 @@ describe('行级容错与库级 fail loud（坏行/隔离概念删除后的等�
     await store.dispose()
     fs.writeFileSync(dbFile(), 'this is not a sqlite database at all, just garbage bytes\n', 'utf8')
     const broken = createAcpSidecar({ root, warn: (message) => warns.push(message) })
+    extraStores.push(broken)
     await expect(broken.list(SessionId('sess-1'))).rejects.toThrow()
     await expect(broken.append(SessionId('sess-1'), { kind: 'binding', time: 2, data: BINDING_A })).rejects.toThrow()
     expect(warns.some((message) => message.includes('fails loud'))).toBe(true)
@@ -724,6 +727,7 @@ describe('有界审计队列 + flush（有界审计队列）', () => {
 
   it('队列满 → 丢弃新记录并 warn 计数（绝不阻塞）', async () => {
     const limited = createAcpSidecar({ root, now: () => ++clock, warn: (message) => warns.push(message), queueLimit: 4 })
+    extraStores.push(limited)
     for (let index = 0; index < 6; index += 1) {
       void limited.append(SessionId('sess-1'), { kind: 'degradation', time: index, data: { code: 'unsupported-chunk-content', items: [], keptPreviewChars: 0, truncated: false } })
     }
