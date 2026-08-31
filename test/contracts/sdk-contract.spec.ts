@@ -21,8 +21,7 @@
 // 共用同一 Connection/jsonrpc 核心，本文件的容忍性断言因此直接钉住生产代码所用路径。
 //
 // spawn/终止改经共享的真实 subprocess-local 服务（terminate 树级升级 +
-// waitForExit 整树证明）；env 由「全量继承 process.env」收敛为白名单 + tombstone
-// （envSpecWithTombstones——本套件只消费 MOCK_LOG/MOCK_SCENARIO，收缩无影响）。
+// waitForExit 整树证明）；env 由 DSH scrubbed parent 提供，测试仅追加显式 fixture 变量
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -31,7 +30,6 @@ import { Readable, Writable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import * as acp from '@agentclientprotocol/sdk';
-import { envSpecWithTombstones } from '../../src/runtime/process/subprocess.ts';
 import type { AcpSubprocessHandle, SubprocessSeam } from '../../src/runtime/process/subprocess.ts';
 import { sharedTestSubprocess } from '../fixtures/subprocess-seam-testing.ts';
 
@@ -105,8 +103,8 @@ function spawnAgent(scriptPath: string, env: Record<string, string>): AgentHandl
   const child = subprocess.spawn({
     argv: [process.execPath, scriptPath],
     cwd: logDir,
-    // 白名单语义（envSpecWithTombstones）：子进程所见恰为显式集合，不再有全量继承
-    env: envSpecWithTombstones({ MOCK_LOG: logPath, ...env }, process.env),
+    // The DSH subprocess service merges profile env into its scrubbed parent env.
+    env: { MOCK_LOG: logPath, ...env },
     graceMs: 2_000,
   });
   const { stdin, stdout, stderr } = child;

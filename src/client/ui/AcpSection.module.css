@@ -118,6 +118,9 @@
   flex-direction: column;
   gap: 8px;
 }
+.optionCard { display: flex; align-items: center; gap: 16px; justify-content: space-between; border: 1px solid var(--dsw-alias-border-l2); border-radius: 12px; padding: 12px 14px; }
+.optionCopy { display: grid; gap: 2px; color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 18px; }
+.optionCopy strong { color: var(--dsw-alias-label-primary); font-size: 14px; line-height: 22px; font-weight: 500; }
 .rowCard {
   border: 1px solid var(--dsw-alias-border-l2);
   border-radius: 12px;
@@ -221,6 +224,32 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+.advancedToggle {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 4px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font: inherit;
+  font-size: 12px;
+  line-height: 18px;
+  cursor: pointer;
+}
+.advancedToggle:hover { color: var(--dsw-alias-label-primary); }
+.advancedToggle:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--dsw-alias-border-l3);
+}
+.advancedFields {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+  padding-top: 2px;
 }
 .fieldLabel {
   font-size: 12px;

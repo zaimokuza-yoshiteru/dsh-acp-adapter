@@ -42,6 +42,7 @@ export const ACP_AGENT_RUNTIME_IDS: readonly AcpAgentRuntimeId[] = ['devin', 'co
 /** Resolved `dsh-acp` settings section. */
 export interface AcpSettings {
   agents: Record<string, AcpAgentConfig>
+  projectExternalSubagents?: boolean
 }
 
 /** Settings namespace storing the ACP agent list. */
@@ -175,7 +176,9 @@ export function decodeAcpSettings(value: unknown): AcpSettings | undefined {
     if (bound.has(runtime)) return undefined
     bound.add(runtime)
   }
-  return { agents }
+  const projection = value['projectExternalSubagents']
+  if (projection !== undefined && typeof projection !== 'boolean') return undefined
+  return { agents, ...(projection === true ? { projectExternalSubagents: true } : {}) }
 }
 
 /** Strict per-entry decode behind {@link decodeAcpSettings}; undefined on any violation. */
@@ -488,6 +491,7 @@ export interface PanelSettingsState {
   status: 'loading' | 'invalid' | 'unavailable' | 'ready'
   writable: boolean
   agents: Record<string, AcpAgentConfig>
+  projectExternalSubagents: boolean
   revision: number | undefined
 }
 
@@ -504,6 +508,7 @@ export function panelSettingsOf(snapshot: AcpScopeSnapshot): PanelSettingsState 
     status,
     writable: snapshot.writable,
     agents: snapshot.value?.agents ?? {},
+    projectExternalSubagents: snapshot.value?.projectExternalSubagents === true,
     revision: snapshot.revision,
   }
 }

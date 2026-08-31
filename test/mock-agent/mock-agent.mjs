@@ -222,6 +222,7 @@ const PRESET_SESSIONS = (() => {
 const LIST_PAGE_SIZE = intEnv('MOCK_LIST_PAGE_SIZE', 0);
 const ADVERTISE_RESUME = process.env.MOCK_ADVERTISE_RESUME === '1';
 const ADVERTISE_FORK = process.env.MOCK_ADVERTISE_FORK === '1';
+const EMIT_NATIVE_SUBAGENT = process.env.MOCK_EMIT_NATIVE_SUBAGENT === '1';
 // never-resolve：永不响应的方法集合（RPC deadline 矩阵；默认只挂 session/new）
 const NEVER_METHODS = (() => {
   try {
@@ -289,6 +290,21 @@ const hasConfigOptions = () => state.scenario !== 'minimal-caps' && state.scenar
 const hasModes = () => fullCaps() && state.scenario !== 'config-options-only';
 // thought_level 显式开关（真机 devin 无此选项；MOCK_THOUGHT_LEVEL=1 才追加）
 const THOUGHT_LEVEL = process.env.MOCK_THOUGHT_LEVEL === '1';
+const MODEL_THOUGHT_LEVELS = (() => {
+  try {
+    const parsed = JSON.parse(process.env.MOCK_MODEL_THOUGHT_LEVELS ?? '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+})();
+
+function thoughtLevelsForModel(model) {
+  const values = MODEL_THOUGHT_LEVELS[model];
+  return Array.isArray(values) && values.every((value) => typeof value === 'string' && value.length > 0)
+    ? values
+    : undefined;
+}
 // 清理矩阵的广告旋钮（真机 devin：delete 有、close 无）：
 //   no-delete 不广告 delete；cleanup-close-delete 额外广告 close。
 const advertisesDelete = () => fullCaps() && state.scenario !== 'no-delete';
@@ -338,18 +354,16 @@ function freshConfigOptions() {
       ],
     },
   ];
-  if (THOUGHT_LEVEL) {
+  const initialThoughtLevels = thoughtLevelsForModel('mock-model-a');
+  if (THOUGHT_LEVEL || initialThoughtLevels !== undefined) {
+    const levels = initialThoughtLevels ?? ['low', 'medium', 'high'];
     options.push({
       id: 'thought_level',
       name: 'Thought Level',
       category: 'thought_level',
       type: 'select',
-      currentValue: 'medium',
-      options: [
-        { value: 'low', name: 'Low' },
-        { value: 'medium', name: 'Medium' },
-        { value: 'high', name: 'High' },
-      ],
+      currentValue: levels[0],
+      options: levels.map((value) => ({ value, name: value[0].toUpperCase() + value.slice(1) })),
     });
   }
   if (state.scenario === 'exotic-options') {
@@ -874,6 +888,8 @@ async function handleInitialize(msg) {
     log(`initialize delayed ${SLOW_INIT_MS}ms (slow-response)`);
     await sleep(SLOW_INIT_MS);
   }
+  const nativeSubagentCapabilities = msg.params?.clientCapabilities?._meta?.jetbrains?.air?.capabilities;
+  log(`initialize nativeSubagentSessions=${String(Array.isArray(nativeSubagentCapabilities) && nativeSubagentCapabilities.includes('nativeSubagentSessions'))}`);
   // AgentCapabilities：happy 系全能力；minimal-caps 仅基线。
   // fixture 基线来自 Devin 3000.4.25 历史实测：{ list, delete, additionalDirectories }，无 close；
  // 清理矩阵的 scenario 旋钮（no-delete / cleanup-close-delete）改写 delete/close 两键。
@@ -1113,6 +1129,27 @@ async function runUpdateTurn(session, msg, updates) {
   }
 }
 
+async function runNativeSubagentTurn(session, msg) {
+  const childSessionId = `${session.id}-child-1`;
+  sendUpdate(session.id, {
+    sessionUpdate: 'subagent_spawned', subagentSessionId: childSessionId,
+    name: 'Research', task: 'Inspect source', capabilities: { cancel: true, close: true },
+  });
+  await sleep(STEP_DELAY_MS);
+  sendUpdate(childSessionId, {
+    sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'child result' }, messageId: 'mock-child-message-1',
+  });
+  await sleep(STEP_DELAY_MS);
+  sendUpdate(session.id, {
+    sessionUpdate: 'subagent_state_update', subagentSessionId: childSessionId, state: 'completed',
+  });
+  await sleep(STEP_DELAY_MS);
+  sendUpdate(session.id, {
+    sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'root result' }, messageId: 'mock-root-message-1',
+  });
+  respond(msg.id, { stopReason: 'end_turn' });
+}
+
 async function runPermissionTurn(session, msg) {
   const turn = {
     cancelled: false,
@@ -1311,6 +1348,7 @@ function handlePrompt(msg) {
     return respondError(msg.id, -32602, `Invalid params: session ${String(msg.params?.sessionId)} is closed`);
   }
   if (session.turn) return respondError(msg.id, -32603, 'turn already active on this session');
+  if (EMIT_NATIVE_SUBAGENT) return void runNativeSubagentTurn(session, msg);
   switch (state.scenario) {
     case 'text-only':
       return void runUpdateTurn(session, msg, textOnlyTurnUpdates());
@@ -1389,6 +1427,14 @@ function handleSetConfigOption(msg) {
     return;
   }
   option.currentValue = value;
+  if ((option.category === 'model' || configId === 'model') && typeof value === 'string') {
+    const levels = thoughtLevelsForModel(value);
+    const thought = session.configOptions?.find((candidate) => candidate.id === 'thought_level');
+    if (levels !== undefined && thought?.type === 'select') {
+      thought.currentValue = levels[0];
+      thought.options = levels.map((level) => ({ value: level, name: level[0].toUpperCase() + level.slice(1) }));
+    }
+  }
   log(`set_config_option configId=${configId} value=${JSON.stringify(value)}`);
   // 规范：回完整 configOptions 快照（切换可能连带改变其他选项）
   respond(msg.id, { configOptions: session.configOptions });

@@ -186,4 +186,72 @@ describe('ACP v1 terminal host', () => {
     expect(terminateCount).toBe(1)
     await expect(terminals.terminalOutput({ sessionId: 'stubborn', terminalId: created.terminalId })).resolves.toHaveProperty('truncated', false)
   })
+
+  it('falls back to the platform shell for a shell command sent as command with no args', async () => {
+    const calls: string[][] = []
+    const fake: SubprocessSeam = {
+      spawn: ({ argv }) => {
+        calls.push([...argv])
+        const shell = argv[0] === '/bin/sh' || argv[0] === 'cmd.exe'
+        if (!shell) {
+          const error = Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' })
+          return {
+            pid: -1,
+            stdin: new PassThrough(),
+            stdout: new PassThrough(),
+            stderr: new PassThrough(),
+            done: Promise.reject(error),
+            terminate: () => {},
+            waitForExit: async () => true,
+          }
+        }
+        return {
+          pid: 7777,
+          stdin: new PassThrough(),
+          stdout: new PassThrough(),
+          stderr: new PassThrough(),
+          done: Promise.resolve({ exitCode: 0, signal: null }),
+          terminate: () => {},
+          waitForExit: async () => true,
+        }
+      },
+      resolveExecutable: async (command) => command,
+    }
+    const terminals = createAcpTerminalHandlers({ subprocess: fake, profileId: 'shell', dshSessionId: 'dsh-shell', cwd: root, env: {} })
+    const created = await terminals.createTerminal({ sessionId: 'shell-session', command: 'uname -s' })
+    await expect(terminals.waitForExit({ sessionId: 'shell-session', terminalId: created.terminalId })).resolves.toMatchObject({ exitCode: 0 })
+    expect(calls).toEqual([['uname -s'], process.platform === 'win32' ? ['cmd.exe', '/d', '/s', '/c', 'uname -s'] : ['/bin/sh', '-c', 'uname -s']])
+    await terminals.dispose()
+  })
+
+  it('runs a real shell-style command through the shared subprocess seam', async () => {
+    const terminals = host()
+    const command = process.platform === 'win32' ? 'ver' : 'uname -s'
+    const created = await terminals.createTerminal({ sessionId: 'real-shell-session', command })
+    await expect(terminals.waitForExit({ sessionId: 'real-shell-session', terminalId: created.terminalId })).resolves.toMatchObject({ exitCode: 0 })
+    await expect(terminals.terminalOutput({ sessionId: 'real-shell-session', terminalId: created.terminalId })).resolves.toMatchObject({ output: expect.any(String) })
+    await terminals.dispose()
+  })
+
+  it('reports a rejected spawn as error instead of a running terminal', async () => {
+    const error = Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' })
+    const fake: SubprocessSeam = {
+      spawn: () => ({
+        pid: -1,
+        stdin: new PassThrough(),
+        stdout: new PassThrough(),
+        stderr: new PassThrough(),
+        done: Promise.reject(error),
+        terminate: () => {},
+        waitForExit: async () => true,
+      }),
+      resolveExecutable: async (command) => command,
+    }
+    const terminals = createAcpTerminalHandlers({ subprocess: fake, profileId: 'error', dshSessionId: 'dsh-error', cwd: root, env: {} })
+    const created = await terminals.createTerminal({ sessionId: 'error-session', command: 'missing-binary', args: ['--flag'] })
+    await expect(terminals.waitForExit({ sessionId: 'error-session', terminalId: created.terminalId })).rejects.toThrow('spawn ENOENT')
+    await expect(terminals.terminalOutput({ sessionId: 'error-session', terminalId: created.terminalId })).resolves.toMatchObject({ output: '', exitStatus: null })
+    expect(terminals.presentationSnapshot?.(created.terminalId)).toMatchObject({ state: 'error' })
+    await terminals.dispose()
+  })
 })

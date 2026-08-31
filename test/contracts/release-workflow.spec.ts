@@ -52,4 +52,11 @@ describe('npm release contract', () => {
     expect(workflow).toContain('npm publish "dist/npm/${{ needs.pack.outputs.tarball }}"')
     expect(workflow).not.toMatch(/NPM_TOKEN|NODE_AUTH_TOKEN/)
   })
+
+  it('keeps npm publishing disabled while this checkout targets unpublished Alpha DSH', () => {
+    const workflow = readFileSync(new URL('.github/workflows/publish.yml', root), 'utf8')
+    expect(workflow).toContain('if: always()')
+    expect(workflow).toContain('npm publishing is disabled until the upstream Alpha packages are published')
+    expect(workflow).toContain('if: ${{ false }}')
+  })
 })

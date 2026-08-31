@@ -3,7 +3,17 @@
 // 测试消费——stub 只需让值级 import 可解析（client-registration.spec.ts 经
 // apply → AcpSection/ModelPicker 模块加载路径）。行为断言全部落在 data/glue 层。
 
-export const createElement = () => ({})
+// Keep enough of React's element shape for UI contract tests to inspect the
+// rendered DOM tree. Hooks remain inert because these tests do not mount a
+// browser renderer.
+export const createElement = (type, props, ...children) => ({
+  $$typeof: Symbol.for('react.element'),
+  type,
+  props: {
+    ...(props ?? {}),
+    ...(children.length === 0 ? {} : { children: children.length === 1 ? children[0] : children }),
+  },
+})
 export const useState = (init) => [typeof init === 'function' ? init() : init, () => {}]
 export const useEffect = () => {}
 export const useRef = (value) => ({ current: value })

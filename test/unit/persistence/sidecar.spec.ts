@@ -33,7 +33,6 @@ import { Context } from '@deepseek-ai/cordis'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import {
   ACP_SIDECAR_AUDIT_QUEUE_LIMIT,
-  ACP_SIDECAR_CONFIG_AUDIT_ID,
   ACP_SIDECAR_DB_FILENAME,
   ACP_SIDECAR_DEFAULT_RETENTION_MS,
   ACP_SIDECAR_SCHEMA_VERSION,
@@ -52,7 +51,7 @@ import {
   type AcpSidecar,
   type AcpSidecarEnvelopeV2,
 } from '../../../src/persistence/sidecar.ts'
-import { createAgentConfigAudit, createPermissionAskedAudit, createPermissionDecidedAudit, type AcpPermissionAuditData } from '../../../src/domain/policy/events.ts'
+import { createPermissionAskedAudit, createPermissionDecidedAudit, type AcpPermissionAuditData } from '../../../src/domain/policy/events.ts'
 
 const TIME_BASE = 1_700_000_000_000
 
@@ -69,6 +68,8 @@ function bindingData(overrides: Partial<AcpBindingData> = {}): AcpBindingData {
     capabilityHash: 'a1b2c3d4e5f60708',
     configHash: '0817f6e5d4c3b2a1',
     generation: 1,
+    bindingEpoch: 1,
+    committedPromptOrdinal: 0,
     historyBaseSeq: 0,
     establishedAt: TIME_BASE,
     dshCommittedSeq: 8,
@@ -156,6 +157,33 @@ afterEach(async () => {
 })
 
 describe('createAcpSidecar 基本读写（v2 envelope 契约）', () => {
+  it('dispatch uncertainty is durable across reopen and settles idempotently', async () => {
+    await store.beginDispatch({
+      key: 'step-1', dshSessionId: 'sess-dispatch', provider: 'acp-devin', model: 'm',
+      state: 'dispatch-uncertain', createdAt: TIME_BASE,
+    })
+    await store.dispose()
+    store = createAcpSidecar({ root, now: () => TIME_BASE + 1 })
+    await expect(store.readDispatch(SessionId('sess-dispatch'), 'step-1')).resolves.toMatchObject({ state: 'dispatch-uncertain' })
+    await expect(store.beginDispatch({
+      key: 'step-1', dshSessionId: 'sess-dispatch', provider: 'acp-devin', model: 'm',
+      state: 'dispatch-uncertain', createdAt: TIME_BASE,
+    })).rejects.toThrow('ACP_RECOVERY_REQUIRED')
+    await store.settleDispatch(SessionId('sess-dispatch'), 'step-1')
+    await store.settleDispatch(SessionId('sess-dispatch'), 'step-1')
+    await expect(store.readDispatch(SessionId('sess-dispatch'), 'step-1')).resolves.toMatchObject({ state: 'settled' })
+  })
+
+  it('keeps at most one settled dispatch row per DSH session', async () => {
+    for (let index = 0; index < 100; index += 1) {
+      const key = `step-${index}`
+      await store.beginDispatch({ key, dshSessionId: 'sess-bounded', provider: 'acp-devin', model: 'm', state: 'dispatch-uncertain', createdAt: TIME_BASE + index })
+      await store.settleDispatch(SessionId('sess-bounded'), key)
+    }
+    const db = (store as unknown as { db?: { prepare(sql: string): { get(...args: unknown[]): unknown } } }).db
+    expect(db?.prepare('SELECT COUNT(*) AS n FROM dispatch_ledger WHERE dsh_session_id = ?').get('sess-bounded')).toEqual({ n: 1 })
+  })
+
   it('recovery state is durable and independent from the audit stream', async () => {
     const state: AcpRecoveryState = {
       dshSessionId: 'sess-1',
@@ -607,96 +635,6 @@ describe('permission decided 重连重放去重（/ dedupe_key）', () => {
   })
 })
 
-describe(' 分轴审计 kind（permission-scope / agent-mode）', () => {
-  it('两类新 kind 照常 append/list：envelope 字段齐、按序读回、acp 身份字段不编造', async () => {
-    await store.append(SessionId('sess-1'), {
-      kind: 'permission-scope',
-      time: 1,
-      data: { mode: 'danger-full-access', confined: null, platform: process.platform },
-    })
-    await store.append(SessionId('sess-1'), {
-      kind: 'agent-mode',
-      time: 2,
-      data: { modeId: 'accept-edits', via: 'session-setup' },
-    })
-    await store.append(SessionId('sess-1'), {
-      kind: 'permission-scope',
-      time: 3,
-      data: { mode: 'danger-full-access', confined: null, platform: process.platform },
-    })
-
-    const entries = await store.list(SessionId('sess-1'))
-    expect(entries.map((entry) => entry.kind)).toEqual(['permission-scope', 'agent-mode', 'permission-scope'])
-    expect(entries[0]?.data).toEqual({
-      mode: 'danger-full-access',
-      confined: null,
-      platform: process.platform,
-    })
-    expect(entries[1]?.data).toEqual({ modeId: 'accept-edits', via: 'session-setup' })
-    expect(entries[2]?.data).toEqual({ mode: 'danger-full-access', confined: null, platform: process.platform })
-    // envelope 齐：seq 单调、recordId 派生（h: 前缀）、dshSessionId = 行键
-    expect(entries.map((entry) => entry.seq)).toEqual([1, 2, 3])
-    for (const entry of entries) {
-      expect(entry.recordId).toMatch(/^h:/)
-      expect(entry.dshSessionId).toBe('sess-1')
-      // 新 kind 的 payload 无 acp 身份可推导（可推导才落，不编造）
-      expect(entry.acpProviderId).toBeUndefined()
-      expect(entry.acpSessionId).toBeUndefined()
-    }
-  })
-
-  it('新 kind 不参与 decided 去重；同 payload 连写撞名追加序号', async () => {
-    await store.append(SessionId('sess-1'), { kind: 'agent-mode', time: 1, data: { modeId: 'plan', via: 'set_mode' } })
-    await store.append(SessionId('sess-1'), { kind: 'agent-mode', time: 1, data: { modeId: 'plan', via: 'set_mode' } })
-    const entries = await store.list(SessionId('sess-1'))
-    expect(entries).toHaveLength(2)
-    expect(entries[1]?.recordId).toBe(`${entries[0]?.recordId ?? ''}-2`)
-  })
-})
-
-describe(' 配置审计 kind（agent-config 专档）', () => {
-  it('专档行键可写可读：append/list 往返，env 键名 diff 原样读回，envelope 字段齐', async () => {
-    const audit = createAgentConfigAudit({
-      change: 'changed',
-      agentId: 'devin',
-      changedFields: ['env', 'command'],
-      command: 'devin-next',
-      env: { added: ['NEW_FLAG'], removed: [], changed: ['DEVIN_API_KEY'] },
-    })
-    await store.append(SessionId(ACP_SIDECAR_CONFIG_AUDIT_ID), { kind: 'agent-config', time: 1, data: audit })
-    const entries = await store.list(SessionId(ACP_SIDECAR_CONFIG_AUDIT_ID))
-    expect(entries).toHaveLength(1)
-    const entry = entries[0]
-    expect(entry?.kind).toBe('agent-config')
-    // changedFields 由工厂排序固定（recordId 哈希稳定）；env 只携带键名级 diff
-    expect(entry?.data).toEqual({
-      change: 'changed',
-      agentId: 'devin',
-      changedFields: ['command', 'env'],
-      command: 'devin-next',
-      env: { added: ['NEW_FLAG'], removed: [], changed: ['DEVIN_API_KEY'] },
-    })
-    expect(entry?.dshSessionId).toBe('agent-config')
-    expect(entry?.recordId).toMatch(/^h:/)
-    expect(entry?.seq).toBe(1)
-    // 专档不落任何会话 binding：全量 binding 索引对它无感
-    expect(await store.listBindings()).toEqual([])
-  })
-
-  it('密钥纪律钉版：审计 payload 序列化后不含 env 值（只记「已变更」事实）', async () => {
-    const audit = createAgentConfigAudit({
-      change: 'changed',
-      agentId: 'devin',
-      changedFields: ['env'],
-      env: { added: [], removed: [], changed: ['DEVIN_API_KEY'] },
-    })
-    await store.append(SessionId(ACP_SIDECAR_CONFIG_AUDIT_ID), { kind: 'agent-config', data: audit })
-    const raw = await store.exportAudit({ sessionId: SessionId(ACP_SIDECAR_CONFIG_AUDIT_ID), format: 'jsonl' })
-    expect(raw).toContain('DEVIN_API_KEY')
-    expect(raw).not.toContain('sk-')
-  })
-})
-
 describe('行级容错与库级 fail loud（坏行/隔离概念删除后的等价门槛）', () => {
   it('直插 SQL 的非法 audit 行：跳过并 warn 计数；合法行照常读出', async () => {
     await store.append(SessionId('sess-1'), { kind: 'binding', time: 10, data: BINDING_A })
@@ -824,6 +762,23 @@ describe('compact = retention + VACUUM（重定义）', () => {
     await retained.compact(SessionId('sess-1'), 1_000)
     expect(await retained.list(SessionId('sess-1'))).toEqual([])
   })
+
+  it('does not expire projected-child task/result with ordinary Activity retention', async () => {
+    const now = TIME_BASE + 100_000
+    const retained = createAcpSidecar({ root, now: () => now, retentionMs: 1_000 })
+    await retained.upsertActivity({
+      dshSessionId: 'child-record', ownerDshSessionId: 'child-record',
+      promptAnchorMessageId: 'external-subagent-record', activityId: 'external-subagent-record',
+      time: now - 10_000, kind: 'delegated', status: 'completed', presentation: 'Research',
+      rawDetail: JSON.stringify({ kind: 'dsh-acp-external-subagent', task: { text: 'task' }, result: { text: 'result' } }),
+    })
+    await retained.compact(SessionId('child-record'))
+    expect(await retained.listProjectedSubagentIds()).toEqual(['child-record'])
+    expect(await retained.listProjectedSubagentActivities()).toEqual([
+      expect.objectContaining({ dshSessionId: 'child-record', status: 'completed', rawDetail: expect.stringContaining('"task"') }),
+    ])
+    expect(await retained.activitySnapshot(SessionId('child-record'))).toHaveLength(1)
+  })
 })
 
 describe('有界审计队列 + flush（有界审计队列）', () => {
@@ -887,7 +842,7 @@ describe('有界审计队列 + flush（有界审计队列）', () => {
 
   it('队列批量落库保持追加序：混合排队 kind 的 seq 单调、读回顺序与 append 序一致', async () => {
     for (let index = 0; index < 50; index += 1) {
-      await store.append(SessionId('sess-1'), { kind: 'agent-mode', time: index, data: { modeId: `mode-${String(index)}`, via: 'set_mode' } })
+      await store.append(SessionId('sess-1'), { kind: 'reconciliation', time: index, data: { cause: 'binding-missing', acpSessionId: `agent-${String(index)}` } })
     }
     const entries = await store.list(SessionId('sess-1'))
     expect(entries.map((entry) => entry.seq)).toEqual(Array.from({ length: 50 }, (_, index) => index + 1))
@@ -951,17 +906,12 @@ describe('exportAudit（插件级导出 API）', () => {
     expect(envelope.schemaVersion).toBe(ACP_SIDECAR_SCHEMA_VERSION)
   })
 
-  it('json 格式：envelope 数组；全量导出含多 session 与 agent-config 专档', async () => {
+  it('json 格式：envelope 数组；全量导出含多 session', async () => {
     await store.append(SessionId('sess-1'), { kind: 'binding', time: 1, data: BINDING_A })
     await store.append(SessionId('sess-2'), { kind: 'permission', time: 2, data: permissionData('req-1') })
-    await store.append(SessionId(ACP_SIDECAR_CONFIG_AUDIT_ID), {
-      kind: 'agent-config',
-      time: 3,
-      data: createAgentConfigAudit({ change: 'added', agentId: 'devin', changedFields: [] }),
-    })
     const parsed = JSON.parse(await store.exportAudit({ format: 'json' })) as AcpSidecarEnvelopeV2[]
-    expect(parsed.map((line) => line.dshSessionId).sort()).toEqual(['agent-config', 'sess-1', 'sess-2'])
-    expect(parsed.map((line) => line.kind).sort()).toEqual(['agent-config', 'binding', 'permission'])
+    expect(parsed.map((line) => line.dshSessionId).sort()).toEqual(['sess-1', 'sess-2'])
+    expect(parsed.map((line) => line.kind).sort()).toEqual(['binding', 'permission'])
   })
 
   it('库不存在 → 空导出（jsonl 空串 / json 空数组），不建库', async () => {
@@ -1332,5 +1282,26 @@ describe(' option 快照（acpOptionsSnapshotOf 有界标准化 + option_snapsho
     expect((await store.readOptionSnapshot(SessionId('sess-1')))?.fingerprint).toBe('fp-6')
     await store.remove(SessionId('sess-1'))
     expect(await store.readOptionSnapshot(SessionId('sess-1'))).toBeUndefined()
+  })
+
+  it('新快照可保存 Agent modes/context usage，旧快照仍按兼容形态读取', async () => {
+    const record = acpOptionsSnapshotOf([], 'code', 'fp-new', TIME_BASE, {
+      modes: { currentModeId: 'code', availableModes: [{ id: 'code', name: 'Code' }, { id: 'plan', name: 'Plan', description: 'Planning' }] },
+      contextUsage: { used: 42, size: 1000, cost: { amount: 0.3, currency: 'USD' } },
+    })
+    await store.writeOptionSnapshot(SessionId('sess-1'), record)
+    expect(await store.readOptionSnapshot(SessionId('sess-1'))).toMatchObject({ modes: record.modes, contextUsage: record.contextUsage })
+    await store.writeOptionSnapshot(SessionId('sess-2'), acpOptionsSnapshotOf([], undefined, 'fp-old', TIME_BASE))
+    const old = await store.readOptionSnapshot(SessionId('sess-2'))
+    expect(old?.modes).toBeUndefined()
+    expect(old?.contextUsage).toBeUndefined()
+
+    const zeroCapacity = acpOptionsSnapshotOf([], undefined, 'fp-zero', TIME_BASE, {
+      contextUsage: { used: 0, size: 0, cost: null },
+    })
+    await store.writeOptionSnapshot(SessionId('sess-zero'), zeroCapacity)
+    expect(await store.readOptionSnapshot(SessionId('sess-zero'))).toMatchObject({
+      contextUsage: { used: 0, size: 0, cost: null },
+    })
   })
 })

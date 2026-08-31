@@ -18,8 +18,19 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  alpha-release-block:
+    name: Block npm publishing until DSH Alpha is published
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Alpha packages are source-only
+        run: |
+          echo "This checkout targets the unpublished DSH 0.1.2 Alpha source. npm publishing is disabled until the upstream Alpha packages are published."
+          exit 1
+
   pack:
     name: Pack and verify npm tarball
+    if: ${{ false }}
     runs-on: macos-15
     env:
       DSH_UPSTREAM_CHECKOUT: ${{ github.workspace }}/reference/deepseek-harness
@@ -36,7 +47,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: deepseek-ai/deepseek-harness
-          ref: dsh-v0.1.1-rc.2
+          ref: dsh-v0.1.2-alpha.1
           path: reference/deepseek-harness
 
       - uses: actions/setup-node@v6
@@ -78,6 +89,7 @@ jobs:
   publish:
     name: Publish exact tarball to npm
     needs: pack
+    if: ${{ false }}
     runs-on: ubuntu-24.04
     environment: npm-publish
     steps:

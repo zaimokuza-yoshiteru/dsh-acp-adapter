@@ -23,19 +23,21 @@
 /// <reference types="node" />
 
 import os from 'node:os'
-import { LlmAdapter, LlmError } from '@deepseek-ai/dsh-llm'
-import type { GenerateOptions, LlmModelInfo, LlmProviderInfo, StreamChunk } from '@deepseek-ai/dsh-llm'
+import { LlmAdapter, LlmError, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
+import type { GenerateOptions, LlmModelInfo, LlmModelReasoningInfo, LlmProviderInfo, StreamChunk } from '@deepseek-ai/dsh-llm'
 import type * as acp from '@agentclientprotocol/sdk'
 import { acpProbeConfigKey, acpProbeFresh } from '../../domain/session/agent-config.ts'
 import type { AcpStubAgentConfig } from '../../domain/session/agent-config.ts'
+import { descriptorOf } from '../../domain/session/agent-config.ts'
+import { acpConfigOptionsSnapshot } from '../../domain/session/acp-config-options.ts'
 import { acpCanonicalHash16 } from '../../persistence/sidecar.ts'
 import { AcpClientConnection } from '../../protocol/v1/connection.ts'
 import { AcpClientError } from '../../protocol/v1/errors.ts'
 import type { AcpErrorKind, AcpProbeCleanup, AcpProbeOptions, AcpProbePhase, AcpProbeResult } from '../../protocol/v1/types.ts'
-import { ACP_METRIC } from '../../domain/observability/metrics.ts'
-import type { AcpMetricsLike } from '../../domain/observability/metrics.ts'
 import type { AcpSpawnPlanView } from '../../runtime/process/types.ts'
 import type { SubprocessSeamResolution } from '../../runtime/process/subprocess.ts'
+import { normalizeAcpConfigOptionKey } from '../../contract/config-options.ts'
+import { redactSecretText } from '../../domain/observability/redaction.ts'
 
 // probe 缓存键的真源下沉到 domain/session/agent-config.ts（remote/创建门
 // 消费）；本 re-export 保持稳定的 composition import 路径。
@@ -99,12 +101,6 @@ export interface AcpStubAdapterOptions {
    * 结果）。缺席时写 `process.stderr` 保底。
    */
   onWarn?: (message: string) => void
-  /**
- * 指标 sink：每次实际 probe（缓存命中不计）记一笔 `acp.probe`
-   * （labels: provider, result = ok / AcpErrorKind）；probe 内 crash 另计
-   * `acp.crash`。缺席 = 不记录。
-   */
-  metrics?: AcpMetricsLike
 }
 
 /** One cached probe outcome; failures are cached too (see {@link AcpStubAdapter.listModels}). */
@@ -143,6 +139,11 @@ export interface AcpProbeCacheEntry {
          * 此项在场即视为有目录。与 models 同为 probe 结果——进条目不进缓存键。
          */
         readonly hasModelConfigOption: boolean
+        /** Bounded session-scoped configuration snapshot used for exact model resolution. */
+        readonly configOptions: readonly acp.SessionConfigOption[] | undefined
+        /** Model-scoped snapshots for Agents such as Kimi whose reasoning
+         * catalogue changes when the selected model changes. */
+        readonly modelConfigOptions?: Readonly<Record<string, readonly acp.SessionConfigOption[]>>
       }
     | {
         readonly kind: 'error'
@@ -154,8 +155,50 @@ export interface AcpProbeCacheEntry {
 }
 
 /** Extract the `category: 'model'` select options from a probe, flattening grouped options. */
-function probeModels(provider: string, configOptions: AcpProbeResult['configOptions']): LlmModelInfo[] {
-  const option = configOptions?.find((candidate) => candidate.category === 'model')
+/** Resolve ACP thought-level metadata into DSH's adapter-owned reasoning shape. */
+export function reasoningInfoFromConfigOptions(profileId: string, config: AcpStubAgentConfig, configOptions: readonly acp.SessionConfigOption[] | undefined): LlmModelReasoningInfo | undefined {
+  if (descriptorOf(profileId, config)?.id === 'devin') return undefined
+  const option = configOptions?.find((candidate) => {
+    if (candidate.type !== 'select') return false
+    const id = candidate.id.toLowerCase().replaceAll('-', '_')
+    return normalizeAcpConfigOptionKey(candidate.category ?? '') === 'thought_level' || normalizeAcpConfigOptionKey(candidate.category ?? '') === 'reasoning_effort' || id === 'thought_level' || id === 'reasoning_effort'
+  })
+  if (option === undefined || option.type !== 'select') return undefined
+  const seen = new Set<string>()
+  const efforts = option.options.flatMap((entry) => 'options' in entry ? entry.options : [entry]).filter((entry) => {
+    if (seen.has(entry.value)) return false
+    seen.add(entry.value)
+    return entry.value.length > 0 && entry.name.length > 0
+  }).map((entry) => ({
+    id: ReasoningEffortId(entry.value),
+    name: entry.name,
+    ...(entry.description === undefined || entry.description === null ? {} : { description: entry.description }),
+  }))
+  if (efforts.length === 0) return undefined
+  const current = String(option.currentValue)
+  return { efforts, ...(efforts.some((effort) => effort.id === current) ? { defaultEffort: ReasoningEffortId(current) } : {}) }
+}
+
+/** Apply display-only disambiguation after flattening ACP model options.
+ * Identity (`id`) and the option value are never changed and names from
+ * different profiles are intentionally not compared. */
+export function disambiguateProbeModels(models: readonly LlmModelInfo[]): LlmModelInfo[] {
+  const counts = new Map<string, number>()
+  for (const model of models) counts.set(model.name, (counts.get(model.name) ?? 0) + 1)
+  return models.map((model) => {
+    if ((counts.get(model.name) ?? 0) < 2) return model
+    if (model.id !== model.name) return { ...model, name: `${model.name} · ${model.id}` }
+    const description = model.description?.split(/\r?\n/, 1)[0]?.trim()
+    if (description !== undefined && description.length > 0) {
+      const short = description.length > 80 ? `${description.slice(0, 77)}...` : description
+      return { ...model, name: `${model.name} · ${short}` }
+    }
+    return model
+  })
+}
+
+export function probeModels(provider: string, configOptions: AcpProbeResult['configOptions']): LlmModelInfo[] {
+  const option = configOptions?.find((candidate) => normalizeAcpConfigOptionKey(candidate.category ?? '') === 'model')
   if (option === undefined || option.type !== 'select') return []
   const seen = new Set<string>()
   const models: LlmModelInfo[] = []
@@ -176,7 +219,7 @@ function probeModels(provider: string, configOptions: AcpProbeResult['configOpti
       })
     }
   }
-  return models
+  return disambiguateProbeModels(models)
 }
 
 /**
@@ -184,6 +227,13 @@ function probeModels(provider: string, configOptions: AcpProbeResult['configOpti
  * {@link AcpErrorKind}. Browser surfaces localize from `failureKind`; this
  * English text is only the technical fallback for hosts without that UI.
  */
+/** Keep protocol diagnostics useful in logs/settings without leaking stderr or
+ * allowing an agent to create an unbounded ModelPicker error row. */
+export function boundedProbeDiagnostic(value: string): string {
+  const firstLine = redactSecretText(value).split(/\r?\n/, 1)[0]?.trim() ?? ''
+  return firstLine.length > 240 ? `${firstLine.slice(0, 237)}...` : firstLine
+}
+
 function acpProbeFailure(error: unknown, config: AcpStubAgentConfig): { kind: AcpErrorKind; error: LlmError; phase: AcpProbePhase | undefined } {
  // probe 阶段标记原样透传（健康卡 initialize/session 分层判据；未标记归 undefined）
   const phase = error instanceof AcpClientError ? error.probePhase : undefined
@@ -217,23 +267,25 @@ function acpProbeFailure(error: unknown, config: AcpStubAgentConfig): { kind: Ac
         const fact = exit === undefined ? 'exit status unknown' : `exit code ${String(exit.code ?? 'none')}, signal ${exit.signal ?? 'none'}`
         return wrap(error.kind, `ACP agent "${config.command}" exited during the probe (${fact}). Fix it, then re-check it in ACP settings${ref}`)
       }
- // protocol-error（预留）：协议层（connection
-      // classify）的 message 已是完整的诊断事实，透传即可。
+      // protocol-error（预留）：协议层（connection
+      // classify）的 message 只允许一个脱敏、有界首行；完整诊断留在
+      // Settings/log correlation 侧，不能进入 stock ModelPicker。
       case 'protocol-error':
-        return wrap(error.kind, `${error.message}${ref}`)
+        return wrap(error.kind, `ACP agent probe protocol error: ${boundedProbeDiagnostic(error.message) || 'invalid ACP response'}${ref}`)
     }
   }
   const message = error instanceof Error ? error.message : String(error)
-  return wrap('protocol-error', `ACP agent probe for "${config.command}" failed: ${message}`)
+  return wrap('protocol-error', `ACP agent probe for "${config.command}" failed: ${boundedProbeDiagnostic(message) || 'invalid ACP response'}`)
 }
 
 /**
- * One stub adapter for all ACP routes. `stream()` throws guidance (the route
- * exists for the prompt gate, not for model calls); `listModels` serves the
- * probe cache. Both success and failure are cached by config hash — a selector
+ * Probe helper owned by one ACP profile adapter. `stream()` throws guidance;
+ * `listModels` serves that profile's shared ModelPicker/Settings probe cache.
+ * Both success and failure are cached by config hash — a selector
  * reopen must never re-spawn the agent, and a cached failure is exactly what
- * renders the native failure row (`buildModelCatalog` catches per-provider
- * errors into `session.models.failures`).
+ * Settings/health consumes cached failure diagnostics; the profile route
+ * suppresses known ACP failures from the stock picker rather than producing
+ * persistent provider error rows.
  */
 export class AcpStubAdapter extends LlmAdapter {
   private readonly options: AcpStubAdapterOptions
@@ -306,9 +358,22 @@ export class AcpStubAdapter extends LlmAdapter {
     return this.cache.get(provider)
   }
 
+  /** Session configuration captured by the most recent successful probe. */
+  configOptions(provider: string): readonly acp.SessionConfigOption[] | undefined {
+    const entry = this.cache.get(provider)
+    return entry?.result.kind === 'ok' ? entry.result.configOptions : undefined
+  }
+
+  /** Configuration confirmed after selecting one model in the disposable
+   * probe session. Falls back to the initial session snapshot. */
+  configOptionsForModel(provider: string, model: string): readonly acp.SessionConfigOption[] | undefined {
+    const entry = this.cache.get(provider)
+    if (entry?.result.kind !== 'ok') return undefined
+    return entry.result.modelConfigOptions?.[model] ?? entry.result.configOptions
+  }
+
   private async probeAndCache(provider: string, config: AcpStubAgentConfig, key: string): Promise<readonly LlmModelInfo[]> {
  // 埋点：实际 probe 的延迟与结果（缓存命中/在飞合并不计）
-    const started = Date.now()
  // 边界：runtime preparation 的清理回调（disposable probe 根必删）——成功、失败、
     // probe 内清理失败一律经 finally 执行；cleanup 自身失败仅 warn，不翻转结果。
     let preparation: AcpProbeRuntimePreparation | undefined
@@ -337,11 +402,17 @@ export class AcpStubAdapter extends LlmAdapter {
  // 边界：disposable run 目录同时作 session/new 落点（options.cwd 提供则
         // probe 不自删——由 finally 的 preparation.cleanup 删除）。
         preparation?.cwd === undefined
-          ? this.probeOptions
-          : { ...this.probeOptions, cwd: preparation.cwd },
+          ? {
+              ...this.probeOptions,
+              probeModelConfigOptions: descriptorOf(provider.replace(/^acp-/, ''), config)?.id === 'kimi',
+            }
+          : {
+              ...this.probeOptions,
+              cwd: preparation.cwd,
+              probeModelConfigOptions: descriptorOf(provider.replace(/^acp-/, ''), config)?.id === 'kimi',
+            },
       )
       const models = probeModels(provider, probe.configOptions)
-      this.options.metrics?.observe(ACP_METRIC.probe, Date.now() - started, { provider, result: 'ok' })
       this.cache.set(provider, {
         key,
         at: Date.now(),
@@ -358,14 +429,16 @@ export class AcpStubAdapter extends LlmAdapter {
  // readiness：协商的协议版本随缓存保留（health 行展示）
           protocolVersion: probe.protocolVersion,
           // configOptions-only 目录事实（Kimi 形态），供五态派生放行。
-          hasModelConfigOption: probe.configOptions?.some((option) => option.category === 'model') ?? false,
+          hasModelConfigOption: probe.configOptions?.some((option) => normalizeAcpConfigOptionKey(option.category ?? '') === 'model') ?? false,
+          configOptions: acpConfigOptionsSnapshot(probe.configOptions),
+          ...(probe.modelConfigOptions === undefined ? {} : {
+            modelConfigOptions: Object.fromEntries(Object.entries(probe.modelConfigOptions).map(([model, options]) => [model, acpConfigOptionsSnapshot(options) ?? []])),
+          }),
         },
       })
       return models
     } catch (error: unknown) {
       const failure = acpProbeFailure(error, config)
-      this.options.metrics?.observe(ACP_METRIC.probe, Date.now() - started, { provider, result: failure.kind })
-      if (failure.kind === 'crash') this.options.metrics?.increment(ACP_METRIC.crash, { provider })
       this.cache.set(provider, {
         key,
         at: Date.now(),

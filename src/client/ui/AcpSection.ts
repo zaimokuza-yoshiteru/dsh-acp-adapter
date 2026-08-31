@@ -49,6 +49,7 @@ export interface AcpSectionWire {
   refreshAgentHealth(agentId: string): void
   saveAgent(editingId: string | undefined, draft: AgentDraft): Promise<string | undefined>
   deleteAgent(id: string): Promise<string | undefined>
+  setExternalSubagentProjection(enabled: boolean): Promise<string | undefined>
   /**
  * 删除确认提示：该 profile 的既有会话 binding 计数；undefined = 计数不可
    * 得（RPC 失败/畸形），确认块退回无计数的基础文案（不冒充 0）。
@@ -97,6 +98,7 @@ function Loaded({ t, useStore, panel }: {
   const snapshot = useStore((value) => value)
   const [editor, setEditor] = useState<EditorState | null>(null)
   const [notice, setNotice] = useState<'saved' | 'deleted' | null>(null)
+  const [projectionSaving, setProjectionSaving] = useState(false)
  // Agent 卡片折叠交互：「添加 agent」下拉的开合状态（触发钮 + 菜单；外部点击关闭）。
   const [addMenuOpen, setAddMenuOpen] = useState(false)
   const addMenuRef = useRef<HTMLDivElement | null>(null)
@@ -233,6 +235,22 @@ function Loaded({ t, useStore, panel }: {
       disabled: refreshing || checkingAnyAgent,
       onClick: () => { panel.refreshHealth(true) },
     }, t(refreshing ? 'refreshing' : 'refresh')),
+  ))
+
+  children.push(h('label', { key: 'projection', className: css.optionCard },
+    h('span', { className: css.optionCopy },
+      h('strong', null, t('subagentProjectionTitle')),
+      h('span', null, t('subagentProjectionDescription')),
+    ),
+    h('input', {
+      type: 'checkbox',
+      checked: settings.projectExternalSubagents,
+      disabled: readOnly || projectionSaving,
+      onChange: (event: { target: { checked: boolean } }) => {
+        setProjectionSaving(true)
+        void panel.setExternalSubagentProjection(event.target.checked).finally(() => { setProjectionSaving(false) })
+      },
+    }),
   ))
 
   if (ids.length === 0 && editor?.mode !== 'add') {
@@ -473,6 +491,10 @@ function AgentForm(props: {
   const [busy, setBusy] = useState(false)
   const [attempted, setAttempted] = useState(false)
   const [failure, setFailure] = useState<string | undefined>(undefined)
+  // Built-in templates work with their tested defaults. Keep implementation
+  // details out of the common path, while manual profiles open the same fields
+  // immediately because command and route identity are required there.
+  const [advancedOpen, setAdvancedOpen] = useState(() => props.initial.runtime === undefined)
   const disabled = props.readOnly || busy
   const validation = validateAgentDraft(draft, props.agents, props.editingId)
   const scope = props.editingId ?? 'new'
@@ -512,17 +534,6 @@ function AgentForm(props: {
     ),
     textField({
       t,
-      id: `dsh-acp-${scope}-id`,
-      label: t('fieldId'),
-      hint: t('fieldIdHint'),
-      error: shown(validation.id, draft.id),
-      value: draft.id,
-      disabled,
-      placeholder: 'devin',
-      onChange: (value) => { edit({ id: value }) },
-    }),
-    textField({
-      t,
       id: `dsh-acp-${scope}-name`,
       label: t('fieldName'),
       hint: t('fieldNameHint'),
@@ -532,70 +543,95 @@ function AgentForm(props: {
       placeholder: 'Devin',
       onChange: (value) => { edit({ name: value }) },
     }),
-    textField({
-      t,
-      id: `dsh-acp-${scope}-command`,
-      label: t('fieldCommand'),
-      hint: t('fieldCommandHint'),
-      error: shown(validation.command, draft.command),
-      value: draft.command,
-      disabled,
-      placeholder: 'devin',
-      onChange: (value) => { edit({ command: value }) },
-    }),
-    textField({
-      t,
-      id: `dsh-acp-${scope}-args`,
-      label: t('fieldArgs'),
-      hint: t('fieldArgsHint'),
-      value: draft.argsText,
-      disabled,
-      multiline: true,
-      placeholder: 'acp',
-      onChange: (value) => { edit({ argsText: value }) },
-    }),
-    textField({
-      t,
-      id: `dsh-acp-${scope}-env`,
-      label: t('fieldEnv'),
-      hint: t('fieldEnvHint'),
-      error: validation.env,
-      value: draft.envText,
-      disabled,
-      multiline: true,
-      placeholder: 'NO_COLOR=1',
-      onChange: (value) => { edit({ envText: value }) },
-    }),
- // 疑似 secret 的存量 env 键只展示键名 + 已配置状态，值永不进文本框；
-    // 「移除」从草稿的 maskedEnv 删键（保存后即从 settings 抹去）。
-    draft.maskedEnv === undefined ? null : h('div', { className: css.field },
-      h('span', { className: css.fieldLabel }, t('fieldEnvMasked')),
-      h('ul', { className: css.maskedEnvRows },
-        Object.keys(draft.maskedEnv).sort().map((key) =>
-          h('li', { key, className: css.maskedEnvRow },
-            h('code', { className: css.maskedEnvKey }, key),
-            h('span', { className: css.healthMuted }, t('envMaskedConfigured')),
-            h('button', {
-              type: 'button',
-              className: `${css.secondaryButton} ${css.compact}`,
-              disabled,
-              onClick: () => {
-                setDraft((previous) => dropMaskedEnvKey(previous, key))
-                setFailure(undefined)
-              },
-            }, t('envMaskedRemove')),
-          ))),
+    h('button', {
+      type: 'button',
+      className: css.advancedToggle,
+      'aria-expanded': advancedOpen,
+      onClick: () => { setAdvancedOpen(previous => !previous) },
+    },
+      h(IconChevronDownOutline14, {
+        size: 14,
+        className: advancedOpen ? `${css.chevron} ${css.chevronFlip}` : css.chevron,
+      }),
+      t('advancedSettings'),
     ),
-    textField({
-      t,
-      id: `dsh-acp-${scope}-loginHint`,
-      label: t('fieldLoginHint'),
-      hint: t('fieldLoginHintHint'),
-      value: draft.loginHint,
-      disabled,
-      placeholder: 'devin auth login',
-      onChange: (value) => { edit({ loginHint: value }) },
-    }),
+    advancedOpen ? h('div', { className: css.advancedFields },
+      textField({
+        t,
+        id: `dsh-acp-${scope}-id`,
+        label: t('fieldId'),
+        hint: t('fieldIdHint'),
+        error: shown(validation.id, draft.id),
+        value: draft.id,
+        disabled,
+        placeholder: 'devin',
+        onChange: (value) => { edit({ id: value }) },
+      }),
+      textField({
+        t,
+        id: `dsh-acp-${scope}-command`,
+        label: t('fieldCommand'),
+        hint: t('fieldCommandHint'),
+        error: shown(validation.command, draft.command),
+        value: draft.command,
+        disabled,
+        placeholder: 'devin',
+        onChange: (value) => { edit({ command: value }) },
+      }),
+      textField({
+        t,
+        id: `dsh-acp-${scope}-args`,
+        label: t('fieldArgs'),
+        hint: t('fieldArgsHint'),
+        value: draft.argsText,
+        disabled,
+        multiline: true,
+        placeholder: 'acp',
+        onChange: (value) => { edit({ argsText: value }) },
+      }),
+      textField({
+        t,
+        id: `dsh-acp-${scope}-env`,
+        label: t('fieldEnv'),
+        hint: t('fieldEnvHint'),
+        error: validation.env,
+        value: draft.envText,
+        disabled,
+        multiline: true,
+        placeholder: 'NO_COLOR=1',
+        onChange: (value) => { edit({ envText: value }) },
+      }),
+      // 疑似 secret 的存量 env 键只展示键名 + 已配置状态，值永不进文本框；
+      // 「移除」从草稿的 maskedEnv 删键（保存后即从 settings 抹去）。
+      draft.maskedEnv === undefined ? null : h('div', { className: css.field },
+        h('span', { className: css.fieldLabel }, t('fieldEnvMasked')),
+        h('ul', { className: css.maskedEnvRows },
+          Object.keys(draft.maskedEnv).sort().map((key) =>
+            h('li', { key, className: css.maskedEnvRow },
+              h('code', { className: css.maskedEnvKey }, key),
+              h('span', { className: css.healthMuted }, t('envMaskedConfigured')),
+              h('button', {
+                type: 'button',
+                className: `${css.secondaryButton} ${css.compact}`,
+                disabled,
+                onClick: () => {
+                  setDraft((previous) => dropMaskedEnvKey(previous, key))
+                  setFailure(undefined)
+                },
+              }, t('envMaskedRemove')),
+            ))),
+      ),
+      textField({
+        t,
+        id: `dsh-acp-${scope}-loginHint`,
+        label: t('fieldLoginHint'),
+        hint: t('fieldLoginHintHint'),
+        value: draft.loginHint,
+        disabled,
+        placeholder: 'devin auth login',
+        onChange: (value) => { edit({ loginHint: value }) },
+      }),
+    ) : null,
  // singleton：草稿 runtime 与存量 profile 冲突的块级错误（runtime 不是
     // 可编辑字段，错误不挂在某个输入框上）——点名已有 profile 并给「打开已有
     // 配置」出口；保存钮经 validation.config 缺席自然禁用（不自动覆盖/删除）。

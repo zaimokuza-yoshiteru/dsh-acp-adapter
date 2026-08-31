@@ -1,14 +1,13 @@
 // subprocess-seam.spec.ts — 随附测试：ctx.subprocess seam 的结构窄化、
-// env tombstone/scrub 镜像钉版、真 spawn 白名单实证、fail-closed 分类与依赖面守卫。
+// env scrub 镜像钉版、真 spawn 继承实证、fail-closed 分类与依赖面守卫。
 //
 // 钉版对象：
 //   - narrowSubprocessSeam：形态判定 + spawn 调用点固定填入 pipe/pipe/pipe stdio
 //   - compat 镜像：ACP_SENSITIVE_ENV_PATTERN / ACP_DSH_ENV_PREFIX /
 //     predictScrubbedParentEnv 与 devDep @deepseek-ai/dsh-subprocess 0.1.2-alpha.1 真值对拍
-//   - envSpecWithTombstones：白名单语义的 spawn env 组装（纯函数）
-//   - 真 spawn 白名单：污染父 env 后经 AcpAgentProcess 启动内联 agent，
-//     子进程所见恰为期望集（scrub 存活但未期望的键被 tombstone 删除、
-//     显式 credential 形条目穿透）
+//   - 真 spawn 继承：污染父 env 后经 AcpAgentProcess 启动内联 agent，
+//     DSH scrub 底座保留普通环境、删除父 credential/DSH_*，profile 显式
+//     credential 仍作为用户 opt-in 穿透
 //   - fail closed：spec.subprocess 缺席构造即抛 spawn-failure；seam 同步抛错 →
 //     initialize 分类 spawn-failure 且文案同格
 //   - 依赖面守卫：两包仅在 devDependencies（精确 0.1.2-alpha.1），src/** 零值级 import
@@ -24,7 +23,6 @@ import {
   ACP_DSH_ENV_PREFIX,
   ACP_SENSITIVE_ENV_PATTERN,
   ACP_SUBPROCESS_UNAVAILABLE_MESSAGE,
-  envSpecWithTombstones,
   narrowSubprocessSeam,
   predictScrubbedParentEnv,
 } from '../../../src/runtime/process/subprocess.ts';
@@ -122,29 +120,12 @@ describe('compat 镜像钉版（上游 @deepseek-ai/dsh-subprocess 0.1.2-alpha.1
   });
 });
 
-describe('envSpecWithTombstones 白名单 env 组装（纯函数）', () => {
-  it('scrub 存活但不在期望集的键逐个下 tombstone；期望集原样放行', () => {
-    const spec = envSpecWithTombstones({ PLAIN: '1' }, { PATH: '/bin', HTTP_PROXY: 'http://x', MY_API_KEY: 'secret', DSH_FOO: '1' });
-    expect(spec).toEqual({ PATH: undefined, HTTP_PROXY: undefined, PLAIN: '1' });
-  });
-
-  it('显式 credential 形条目穿透 scrub（刻意的 opt-in）', () => {
-    const spec = envSpecWithTombstones({ MY_API_KEY: 'explicit' }, { MY_API_KEY: 'base', HOME: '/home/x' });
-    expect(spec).toEqual({ HOME: undefined, MY_API_KEY: 'explicit' });
-  });
-
-  it('期望集覆盖 scrub 存活键时不产 tombstone', () => {
-    const spec = envSpecWithTombstones({ PATH: '/custom' }, { PATH: '/bin' });
-    expect(spec).toEqual({ PATH: '/custom' });
-  });
-});
-
-describe('真 spawn 白名单实证（AcpAgentProcess 生产路径）', () => {
-  it('子进程所见恰为期望集：白名单外键（含 scrub 存活的代理/SOCK）被 tombstone，显式 credential 形条目穿透', async () => {
+describe('真 spawn scrubbed-parent 实证（AcpAgentProcess 生产路径）', () => {
+  it('保留 scrub 后的普通父环境、删除父凭证，并允许 profile 显式 credential', async () => {
     await withPollutedEnv(
       {
-        HTTP_PROXY: 'http://127.0.0.1:9', // scrub 存活 → 必须被 tombstone
-        SSH_AUTH_SOCK: '/tmp/dsh-acp-seam-fake.sock', // scrub 存活 → tombstone
+        HTTP_PROXY: 'http://127.0.0.1:9', // 普通父环境由 DSH 保留
+        SSH_AUTH_SOCK: '/tmp/dsh-acp-seam-fake.sock', // Agent 原生登录可能依赖
         DSH_ACP_SEAM_API_KEY: 'sk-should-not-leak', // provider scrub 删除
         DSH_ACP_SEAM_MARKER: 'dsh-should-not-leak', // provider scrub 删除
       },
@@ -167,18 +148,17 @@ describe('真 spawn 白名单实证（AcpAgentProcess 生产路径）', () => {
           // 显式条目（含 credential 形名）穿透
           expect(env['EXPOSED_API_KEY']).toBe('explicit-credential-passthrough');
           expect(env['PLAIN_VAR']).toBe('plain-ok');
-          // 白名单外键一律不在（HTTP_PROXY/SSH_AUTH_SOCK 这类 scrub 存活键也被 tombstone）
-          expect(env['HTTP_PROXY']).toBeUndefined();
-          expect(env['SSH_AUTH_SOCK']).toBeUndefined();
+          // DSH scrub 后的普通父环境继续存在，保证原生 CLI 行为。
+          expect(env['HTTP_PROXY']).toBe('http://127.0.0.1:9');
+          expect(env['SSH_AUTH_SOCK']).toBe('/tmp/dsh-acp-seam-fake.sock');
           expect(env['DSH_ACP_SEAM_API_KEY']).toBeUndefined();
           expect(env['DSH_ACP_SEAM_MARKER']).toBeUndefined();
-          expect(env['PATH']).toBeUndefined();
-          // 最强钉版：子进程所见恰为期望集（唯一豁免：macOS CoreFoundation 在
-          // posix_spawn 时注入 __CF_USER_TEXT_ENCODING；win32 有 OS 级注入键，跳过）
+          expect(env['PATH']).toBe(process.env.PATH);
+          // 关键继承项与显式覆盖同时存在；其他普通父环境由 DSH 决定。
           if (process.platform === 'darwin') {
-            expect(Object.keys(env).sort()).toEqual(['EXPOSED_API_KEY', 'PLAIN_VAR', '__CF_USER_TEXT_ENCODING']);
+            expect(Object.keys(env).sort()).toEqual(expect.arrayContaining(['EXPOSED_API_KEY', 'PLAIN_VAR', 'HTTP_PROXY', 'SSH_AUTH_SOCK', 'PATH']));
           } else if (process.platform !== 'win32') {
-            expect(Object.keys(env).sort()).toEqual(['EXPOSED_API_KEY', 'PLAIN_VAR']);
+            expect(Object.keys(env).sort()).toEqual(expect.arrayContaining(['EXPOSED_API_KEY', 'PLAIN_VAR', 'HTTP_PROXY', 'SSH_AUTH_SOCK', 'PATH']));
           }
         } finally {
           fs.rmSync(outPath, { force: true });
@@ -230,7 +210,7 @@ describe('fail closed（spawn-failure 分类）', () => {
 });
 
 describe('依赖面守卫（宿主模块实例一致性 纪律）', () => {
-  it('package.json：两包仅在 devDependencies 且精确钉 0.1.2-alpha.1；dependencies/peerDependencies 不含', () => {
+  it('package.json：两包不写入未发布依赖；Alpha 开发通过 reference link 提供', () => {
     const pkg = JSON.parse(fs.readFileSync(path.join(PKG_ROOT, 'package.json'), 'utf8')) as {
       dependencies?: Record<string, string>;
       peerDependencies?: Record<string, string>;
@@ -239,8 +219,9 @@ describe('依赖面守卫（宿主模块实例一致性 纪律）', () => {
     for (const name of ['@deepseek-ai/dsh-subprocess', '@deepseek-ai/dsh-subprocess-local']) {
       expect(pkg.dependencies?.[name]).toBeUndefined();
       expect(pkg.peerDependencies?.[name]).toBeUndefined();
-      expect(pkg.devDependencies?.[name]).toBe('0.1.2-alpha.1');
+      expect(pkg.devDependencies?.[name]).toBeUndefined();
     }
+    expect(JSON.parse(fs.readFileSync(path.join(PKG_ROOT, 'package.json'), 'utf8')).scripts['setup:alpha-reference']).toBeDefined();
   });
 
   it('src/** 零 dsh-subprocess 值级 import（结构镜像全在 src/runtime/process/subprocess.ts）', () => {

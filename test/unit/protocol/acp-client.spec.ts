@@ -29,7 +29,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import * as acp from '@agentclientprotocol/sdk';
 import { AcpClientConnection, DEFAULT_INITIALIZE_TIMEOUT_MS, DEFAULT_SESSION_SETUP_TIMEOUT_MS, DEFAULT_SESSION_WRITE_TIMEOUT_MS } from '../../../src/protocol/v1/connection.ts';
 import { AcpClientError } from '../../../src/protocol/v1/errors.ts';
-import type { AcpConnectionOptions } from '../../../src/protocol/v1/types.ts';
+import type { AcpConnectionOptions, AcpSessionNotification } from '../../../src/protocol/v1/types.ts';
 import type { AcpConnectionSpec } from '../../../src/runtime/process/types.ts';
 import type { SubprocessSeam } from '../../../src/runtime/process/subprocess.ts';
 import { sharedTestSubprocess } from '../../fixtures/subprocess-seam-testing.ts';
@@ -150,6 +150,13 @@ process.stdin.on('data', (d) => {
 setInterval(() => {}, 1 << 30);
 `;
 
+// Claude ACP currently reports an expired OAuth session as -32603 instead of
+// ACP's -32000 auth_required code. Preserve the real message shape here.
+const INTERNAL_AUTH_REFUSING_AGENT = AUTH_REFUSING_AGENT.replace(
+  "code: -32000, message: 'Authentication required'",
+  "code: -32603, message: 'Internal error: Failed to authenticate: OAuth session expired and could not be refreshed'",
+);
+
 // 不吃 stdin EOF、忽略 SIGTERM：逼出 SIGKILL 级
 const SIGTERM_IGNORING_AGENT = `
 // ${SPEC_TAG}-inline-stubborn
@@ -267,11 +274,13 @@ describe('握手（happy / minimal-caps / no-config-options）', () => {
     expect(second.stderrLines().some((line) => line.includes('"content":"reconnected"'))).toBe(true)
     await second.close(); fs.rmSync(file, { force: true })
   }, 10_000)
-  it('仅在接线 elicitation handler 时广告 form/url 能力', async () => {
+  it('仅在接线 elicitation handler 时广告 form 能力，不广告 URL', async () => {
     const script = `let b=''; process.stdin.on('data', d => { b += d; let i; while ((i=b.indexOf('\\n')) >= 0) { const line=b.slice(0,i); b=b.slice(i+1); if (!line.trim()) continue; const m=JSON.parse(line); if (m.method === 'initialize') { process.stderr.write(JSON.stringify(m.params.clientCapabilities)+'\\n'); process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result:{protocolVersion:1,agentInfo:{name:'cap-test',version:'1'},agentCapabilities:{}}})+'\\n'); } } }); setInterval(()=>{}, 1<<30);`
     const withHandler = connectInline(script, { onElicitationRequest: () => ({ action: 'cancel' }) })
     await withHandler.initialize()
-    expect(withHandler.stderrLines().join('')).toContain('elicitation')
+    const advertised = withHandler.stderrLines().join('')
+    expect(advertised).toContain('"form":{}')
+    expect(advertised).not.toContain('"url"')
     await withHandler.close()
     const withoutHandler = connectInline(script)
     await withoutHandler.initialize()
@@ -309,6 +318,21 @@ describe('握手（happy / minimal-caps / no-config-options）', () => {
     expect(session.configOptions?.map((o) => o.id)).toEqual(['mode', 'model']);
   });
 
+  it('forwards caller-supplied MCP definitions to session setup without invoking authenticate', async () => {
+    const script = `let b=''; const send=(m)=>process.stdout.write(JSON.stringify(m)+'\\n'); process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const l=b.slice(0,i);b=b.slice(i+1);if(!l.trim())continue;const m=JSON.parse(l);if(m.method==='initialize')send({jsonrpc:'2.0',id:m.id,result:{protocolVersion:1,agentInfo:{name:'mcp-forward',version:'1'},agentCapabilities:{mcpCapabilities:{http:true},sessionCapabilities:{resume:{},fork:{}}}}});else if(m.method==='session/new'||m.method==='session/load'||m.method==='session/resume'||m.method==='session/fork'){process.stderr.write(JSON.stringify({method:m.method,mcpServers:m.params.mcpServers})+'\\n');send({jsonrpc:'2.0',id:m.id,result:m.method==='session/fork'?{sessionId:'child'}:{sessionId:'session-1'}})}else if(m.method==='authenticate')throw new Error('authenticate must not be called')}});setInterval(()=>{},1<<30);`
+    const conn = connectInline(script)
+    const server: acp.McpServer = { type: 'http', name: 'remote', url: 'https://example.invalid/mcp', headers: [] }
+    await conn.initialize()
+    await conn.newSession({ mcpServers: [server] })
+    await conn.loadSession('session-1', { mcpServers: [server] })
+    await conn.resumeSession('session-1', { mcpServers: [server] })
+    await conn.forkSession('session-1', { mcpServers: [server] })
+    const lines = conn.stderrLines().filter((line) => line.includes('mcpServers'))
+    expect(lines).toHaveLength(4)
+    expect(lines.every((line) => line.includes('https://example.invalid/mcp'))).toBe(true)
+    expect(lines.some((line) => line.includes('authenticate'))).toBe(false)
+  }, 10_000)
+
   it('minimal-caps：最小能力握手正常；未声明的 loadSession 分类为 protocol-error，连接仍可用', async () => {
     const { conn } = connectMock('minimal-caps');
     const init = await conn.initialize();
@@ -335,6 +359,12 @@ describe('握手（happy / minimal-caps / no-config-options）', () => {
     expect(session.modes?.currentModeId).toBe('accept-edits');
     expect(session.configOptions).toBeUndefined();
   });
+
+  it('standard ACP connections do not advertise the Claude private draft capability', async () => {
+    const { conn, logPath } = connectMock('happy')
+    await conn.initialize()
+    expect(fs.readFileSync(logPath, 'utf8')).toContain('initialize nativeSubagentSessions=false')
+  })
 });
 
 describe('prompt 流与 typed 方法', () => {
@@ -342,7 +372,7 @@ describe('prompt 流与 typed 方法', () => {
     const { conn } = connectMock('happy');
     await conn.initialize();
     const session = await conn.newSession();
-    const updates: acp.SessionNotification[] = [];
+    const updates: AcpSessionNotification[] = [];
     const resp = await conn.prompt(session.sessionId, PROMPT_BLOCKS, (n) => updates.push(n));
     expect(resp.stopReason).toBe('end_turn');
     // 通知分发可能略滞后于响应，先等齐再断言顺序
@@ -355,8 +385,25 @@ describe('prompt 流与 typed 方法', () => {
     expect(texts.join('')).toBe('Hello, mock world.');
   });
 
+  it('协商并保留 Claude native-subagent 草案通知，包括子 session 的正文', async () => {
+    const updates: AcpSessionNotification[] = [];
+    const { conn, logPath } = connectMock('happy', { env: { MOCK_EMIT_NATIVE_SUBAGENT: '1' }, conn: { enableClaudeDraftSubagents: true } });
+    await conn.initialize();
+    const session = await conn.newSession();
+    const response = await conn.prompt(session.sessionId, PROMPT_BLOCKS, notification => updates.push(notification));
+    expect(response.stopReason).toBe('end_turn');
+    await waitFor(() => updates.length === 4);
+    expect(updates.map(notification => [notification.sessionId, notification.update.sessionUpdate])).toEqual([
+      [session.sessionId, 'subagent_spawned'],
+      [`${session.sessionId}-child-1`, 'agent_message_chunk'],
+      [session.sessionId, 'subagent_state_update'],
+      [session.sessionId, 'agent_message_chunk'],
+    ]);
+    expect(fs.readFileSync(logPath, 'utf8')).toContain('initialize nativeSubagentSessions=true');
+  });
+
   it('happy：setConfigOption / setMode / listSessions / loadSession typed 方法', async () => {
-    const all: acp.SessionNotification[] = [];
+    const all: AcpSessionNotification[] = [];
     const { conn } = connectMock('happy', { conn: { onSessionUpdate: (n) => all.push(n) } });
     await conn.initialize();
     const session = await conn.newSession();
@@ -387,7 +434,7 @@ describe('prompt 流与 typed 方法', () => {
   });
 
   it('session/resume：恢复已有会话且不回放历史 update', async () => {
-    const updates: acp.SessionNotification[] = [];
+    const updates: AcpSessionNotification[] = [];
     const { conn } = connectMock('happy', {
       env: { MOCK_ADVERTISE_RESUME: '1' },
       conn: { onSessionUpdate: (notification) => updates.push(notification) },
@@ -420,7 +467,7 @@ describe('prompt 流与 typed 方法', () => {
     const { conn, logPath } = connectMock('happy', { env: { MOCK_STEP_DELAY_MS: '50' } });
     await conn.initialize();
     const session = await conn.newSession();
-    const updates: acp.SessionNotification[] = [];
+    const updates: AcpSessionNotification[] = [];
     const promptPromise = conn.prompt(session.sessionId, PROMPT_BLOCKS, (n) => updates.push(n));
     await waitFor(() => updates.length >= 2);
     await conn.cancel(session.sessionId);
@@ -454,6 +501,23 @@ describe('prompt 流与 typed 方法', () => {
     expect(resp.stopReason).toBe('end_turn');
     expect(fs.readFileSync(logPath, 'utf8')).toContain('permission outcome=selected optionId=allow_once');
   });
+
+  it('permission request 在 initialize/idle 或 wrong-session 时 fail closed，且不调用宿主审批', async () => {
+    const script = `let b='';let initId;let sessionSeq=0;let promptId;const send=(m)=>process.stdout.write(JSON.stringify(m)+'\\n');const permission=(id,sessionId)=>send({jsonrpc:'2.0',id,method:'session/request_permission',params:{sessionId,toolCall:{toolCallId:'call-'+id,title:'Run command',kind:'execute',status:'pending',rawInput:{command:'echo ok'}},options:[{optionId:'allow',name:'Allow',kind:'allow_once'}]}});process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const l=b.slice(0,i);b=b.slice(i+1);if(!l.trim())continue;const m=JSON.parse(l);if(m.method==='initialize'){initId=m.id;permission(90,'before-session')}else if(m.id===90){process.stderr.write('initialize-permission='+m.result.outcome.outcome+'\\n');send({jsonrpc:'2.0',id:initId,result:{protocolVersion:1,agentInfo:{name:'permission-owner',version:'1'},agentCapabilities:{}}})}else if(m.method==='session/new'){sessionSeq+=1;const sid='owned-session-'+sessionSeq;send({jsonrpc:'2.0',id:m.id,result:{sessionId:sid}});if(sessionSeq===1)setTimeout(()=>permission(91,sid),20)}else if(m.id===91){process.stderr.write('idle-permission='+m.result.outcome.outcome+'\\n');permission(92,'other-session')}else if(m.id===92){process.stderr.write('wrong-permission='+m.result.outcome.outcome+'\\n')}else if(m.method==='session/prompt'){promptId=m.id;permission(93,'owned-session-2')}else if(m.id===93){process.stderr.write('other-active-session-permission='+m.result.outcome.outcome+'\\n');send({jsonrpc:'2.0',id:promptId,result:{stopReason:'end_turn'}})}}});setInterval(()=>{},1<<30);`
+    const handler = vi.fn(() => ({ outcome: { outcome: 'selected' as const, optionId: 'allow' } }))
+    const conn = connectInline(script, { onPermissionRequest: handler })
+
+    await conn.initialize()
+    const first = await conn.newSession()
+    await waitFor(() => conn.stderrLines().some((line) => line.includes('wrong-permission=cancelled')), 2_000)
+    await conn.newSession()
+    await expect(conn.prompt(first.sessionId, PROMPT_BLOCKS)).resolves.toMatchObject({ stopReason: 'end_turn' })
+
+    expect(conn.stderrLines().join('\n')).toContain('initialize-permission=cancelled')
+    expect(conn.stderrLines().join('\n')).toContain('idle-permission=cancelled')
+    expect(conn.stderrLines().join('\n')).toContain('other-active-session-permission=cancelled')
+    expect(handler).not.toHaveBeenCalled()
+  }, 10_000)
 });
 
 describe('错误分类', () => {
@@ -544,6 +608,13 @@ describe('错误分类', () => {
     const acpErr = err as AcpClientError;
     expect(acpErr.kind).toBe('auth_required');
     expect(acpErr.message).toContain('requires authentication');
+  });
+
+  it('auth_required：明确的 OAuth -32603 包装错误仍归为认证失败', async () => {
+    const conn = connectInline(INTERNAL_AUTH_REFUSING_AGENT);
+    const err = await expectReject(conn.initialize());
+    expect(err).toBeInstanceOf(AcpClientError);
+    expect(err).toMatchObject({ kind: 'auth_required', code: 'ACP_AUTH_REQUIRED' });
   });
 
   it('spec 校验：空 argv 或 wrapArgv 返回空 → 构造即抛 spawn-failure', () => {
@@ -880,6 +951,27 @@ describe('probe', () => {
     expect(result.configOptions?.map((o) => o.id)).toEqual(['mode', 'model']);
     expect(result.configOptions?.find((o) => o.category === 'model')?.currentValue).toBe('mock-model-a');
     // probe 返回前已完成连接的有界拆除；进程树级事实由共享 subprocess seam 与 install-gate 验证。
+  });
+
+  it('按模型探测 Agent 确认的配置快照，不把首个模型的推理强度复制给整个目录', async () => {
+    const { spec } = probeSpec('happy', {
+      MOCK_MODEL_THOUGHT_LEVELS: JSON.stringify({
+        'mock-model-a': ['high'],
+        'mock-model-b': ['low', 'high', 'max'],
+        'mock-model-c': ['on'],
+      }),
+    });
+    const result = await AcpClientConnection.probe(spec, {
+      timeoutMs: 5000, eofGraceMs: 100, termGraceMs: 300, probeModelConfigOptions: true,
+    });
+    const thought = (model: string) => result.modelConfigOptions?.[model]?.find((option) => option.id === 'thought_level');
+    expect(thought('mock-model-a')).toMatchObject({ currentValue: 'high' });
+    const modelBThought = thought('mock-model-b');
+    expect(modelBThought).toMatchObject({ currentValue: 'low' });
+    expect(modelBThought?.type === 'select'
+      ? modelBThought.options.flatMap((entry) => 'options' in entry ? entry.options : [entry]).map((entry) => entry.value)
+      : []).toEqual(['low', 'high', 'max']);
+    expect(thought('mock-model-c')).toMatchObject({ currentValue: 'on' });
   });
 
   it('no-config-options：configOptions 为 undefined（降级信号），modes 仍在', async () => {

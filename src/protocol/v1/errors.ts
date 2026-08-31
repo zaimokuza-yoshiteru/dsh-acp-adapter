@@ -19,7 +19,7 @@
  *   test/integration/host/health.spec.ts 钉死）。
  * - 中文文案的呈现层分工（测试钉死的协议层英文诊断 message 不动）：选择器/面板
  *   中文文案在 src/host/composition/llm-stub.ts 与 src/client/ui/locales.ts，
- *   恢复/中断说明在 src/domain/session/resume.ts；各类的中文名见
+ *   恢复/中断说明在 provider runtime；各类的中文名见
  *   {@link ACP_ERROR_CATEGORY_LABELS}（日志/文档对齐用）。
  * @module @zaimokuza/dsh-acp-adapter/protocol/v1/errors
  */

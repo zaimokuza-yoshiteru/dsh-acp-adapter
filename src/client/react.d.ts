@@ -11,7 +11,7 @@
  * narrows dsh service faces it cannot import.
  *
  * Only the members this package uses are declared: `createElement`,
- * `useState`, `useEffect`, `useRef`, `useMemo`, and the `ReactNode` return
+ * `useState`, `useEffect`, `useRef`, `useMemo`, `useCallback`, and the `ReactNode` return
  * currency. The intrinsic-
  * element props bag is deliberately loose (`Record<string, unknown>`) — DOM
  * attribute checking is the part of @types/react we do not reproduce; props
@@ -60,6 +60,16 @@ declare module 'react' {
 
  /** Memoized derivation (: filtered catalog/effort rows). */
   export function useMemo<T>(factory: () => T, deps: readonly unknown[]): T
+
+  /** Stable callback identity for effects and injected UI actions. */
+  export function useCallback<T extends (...args: never[]) => unknown>(callback: T, deps: readonly unknown[]): T
+
+  /** Subscribe to an external snapshot store without duplicating UI state. */
+  export function useSyncExternalStore<T>(
+    subscribe: (listener: () => void) => () => void,
+    getSnapshot: () => T,
+    getServerSnapshot?: () => T,
+  ): T
 
   /**
    * The JSX namespace: ui-primitives' icon components declare their return as

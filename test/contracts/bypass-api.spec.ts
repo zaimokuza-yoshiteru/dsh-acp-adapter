@@ -8,9 +8,8 @@
 //   1. 零 HTTP 面：src/ 全域无 createServer / .listen( / fetch( /
 //      XMLHttpRequest，也无 node:http(s)/node:net import（剥注释后扫描，
 //      注释提及不误伤）；
-//   2. Remote 调用面钉版：src/remote/service.ts 的 @Remote 装饰器恰好是既定
-//      九条 invocation（health/options/setOption/rebindBlank/backendOf/
-//      boundSessions/beginModelSwitch/commitModelSwitch/rollbackModelSwitch）——
+//   2. Remote 调用面钉版：src/remote/service.ts 的 @Remote 装饰器只暴露当前
+//      additive health/backend/audit/activity/recovery/session-control surface——
 //      「写接口集合」即此清单，与 test/integration/host/health.spec.ts 的 typert 生成物钉版
 //      双侧对齐，新增/改名/删除必须两侧同步；
 //   3. wire 类型收窄钉版：src/contract/remote.ts（零 import 叶子，strict codec
@@ -53,20 +52,22 @@ const HTTP_SURFACE_PATTERNS: ReadonlyArray<readonly [string, RegExp]> = [
   ['node:http(s)/node:net import', /from\s+['"]node:(?:https?|net)['"]/],
 ];
 
-/** 钉版的完整 Remote invocation 集合（公开 recovery action 也属于同一 namespace）。 */
+/** 钉版的完整 Remote invocation 集合。 */
 const PINNED_REMOTE_METHODS: readonly string[] = [
+  'activityFollow',
+  'activityPage',
+  'activitySnapshot',
+  'agentSessionSnapshot',
   'auditTimeline',
   'backendOf',
-  'beginModelSwitch',
   'boundSessions',
-  'commitModelSwitch',
   'health',
-  'options',
-  'rebindBlank',
-  'reconnectOriginal',
-  'recordRecoveryAction',
-  'rollbackModelSwitch',
-  'setOption',
+  'ownedProviderRoutes',
+  'projectedSubagentIds',
+  'rebindRecoveryBlank',
+  'recoverySnapshot',
+  'retryOriginal',
+  'setAgentSessionOption',
 ];
 
 describe(' 旁路 API 消除门', () => {
@@ -82,12 +83,13 @@ describe(' 旁路 API 消除门', () => {
     expect(violations, `旁路 API 回归：\n  ${violations.join('\n  ')}`).toEqual([]);
   });
 
-  it('Remote 调用面钉版：@Remote 装饰器恰好是既定九条 invocation（无旁路增删）', () => {
+  it('Remote 调用面钉版：@Remote 装饰器只暴露当前公开面（无旁路增删）', () => {
     const text = stripComments(fs.readFileSync(path.join(SRC_DIR, 'remote', 'service.ts'), 'utf8'));
     const named = [...text.matchAll(/@Remote\(\s*['"]([^'"]+)['"]\s*\)/g)].map((m) => m[1]!);
+    const streamed = [...text.matchAll(/@Remote\(\s*\{\s*mode:\s*['"]stream['"]\s*\}\s*\)\s*\n\s*async\s+\*\s*(\w+)/g)].map((m) => m[1]!);
     // 裸 @Remote：方法名即 invocation 名（health）
     const bare = [...text.matchAll(/@Remote\s*\n\s*async\s+(\w+)/g)].map((m) => m[1]!);
-    expect([...named, ...bare].sort()).toEqual([...PINNED_REMOTE_METHODS].sort());
+    expect([...named, ...bare, ...streamed].sort()).toEqual([...PINNED_REMOTE_METHODS].sort());
   });
 
   it('wire 类型收窄钉版：contract 无 _meta/credential 形态字段、无 unknown 字段', () => {

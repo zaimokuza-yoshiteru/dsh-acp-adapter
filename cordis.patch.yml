@@ -1,5 +1,5 @@
 # @zaimokuza/dsh-acp-adapter bundle patch layer for the DSH 0.1.2-alpha.1 host.
-# The rows below replace the stock agent loop and model-selection contributions.
+# The adapter is additive; stock AgentLoop and ModelPicker remain active.
 #
 # This file becomes one patch layer when the package is listed in a profile's
 # dsh.profile.bundles (`dsh plugin --profile <name> add <path>` reconciles it
@@ -8,31 +8,7 @@
 # below address the stock rows inserted by @deepseek-ai/dsh-base and
 # @deepseek-ai/dsh-web-app.
 #
-# Legacy replacement form: the
-# vendored applyEntryPatches refuses id-targeted `name` swaps ("name mismatch
-# ... skipping" — name is the match guard), so replacement = disable the
-# original row + insert the subclass under a fresh id, restating the row's
-# whole owned `config` (a patch replaces the targeted row's entire config
-# rather than merging into it).
-
-# Row ①: replace the agent-loop row with this package's AcpAgentLoop.
-# The stock row (dsh-base cordis.patch.yml:436-439) carries
-# `config: {agents: []}`; its maxParallelToolCalls is the schema default 10
-# (core/agent-loop/src/constants.ts:6, resolveMaxParallelToolCalls at
-# core/agent-loop/src/index.ts:133-134). The insert restates both keys with
-# those exact values, so non-ACP sessions behave identically to stock.
-- id: agent-loop
-  disabled: true
-
 - insert:
-    - id: agent-loop-acp
+    - id: dsh-acp-adapter
       name: '@zaimokuza/dsh-acp-adapter'
-      config:
-        maxParallelToolCalls: 10
-        agents: []
-
-# Row ②: the enhanced ACP model picker replaces the built-in
-# model-selection UI row (dsh-web-app cordis.patch.yml:249-251, no config of
-# its own, so a plain id-targeted disable suffices).
-- id: ui-model-selection
-  disabled: true
+      config: {}

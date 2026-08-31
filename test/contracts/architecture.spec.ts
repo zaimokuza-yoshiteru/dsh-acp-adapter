@@ -12,8 +12,8 @@
 //   persistence      src/persistence/**        —— sidecar 旁路存储
 // contract src/contract/** —— dshAcp Remote 的收窄 wire 类型（
 //                                             host/client 两半共享的类型真源，零 import 叶子）
-//   remote           src/remote/**             —— dshAcp Remote service（health/options/rebindBlank）
-//   hostFactory      src/host/factory/**       —— AcpAgentLoop 类（装配全部 domain/infra 件）
+//   remote           src/remote/**             —— dshAcp additive health/audit/activity/recovery service
+//   hostComposition  src/host/composition/**  —— per-profile provider composition
 //   hostComposition  src/host/composition/**   —— 注册表组合、llm-stub、入口壳
 //   hostEntry        src/index.ts              —— 包入口（只允许 re-export hostComposition）
 //   clientData       src/client/data/**        —— 面板/选择器逻辑（仅可下行 import contract；
@@ -97,13 +97,16 @@ function layerOf(srcRel: string): Layer | undefined {
   if (srcRel.startsWith('domain/policy/')) return 'domainPolicy';
   if (srcRel.startsWith('domain/observability/')) return 'domainObservability';
   if (srcRel.startsWith('domain/session/')) return 'domainSession';
+  if (srcRel.startsWith('domain/subagent/')) return 'domainSession';
   if (srcRel.startsWith('persistence/')) return 'persistence';
   if (srcRel.startsWith('contract/')) return 'contract';
   if (srcRel.startsWith('remote/')) return 'remote';
   if (srcRel.startsWith('host/factory/')) return 'hostFactory';
   if (srcRel.startsWith('host/composition/')) return 'hostComposition';
+  if (srcRel.startsWith('host/subagent/')) return 'hostComposition';
   if (srcRel === 'client/index.ts' || srcRel.startsWith('client/react.')) return 'clientEntry';
   if (srcRel.startsWith('client/host-compat/')) return 'clientCompat';
+  if (srcRel.startsWith('client/coordinator/')) return 'clientEntry';
   if (srcRel.startsWith('client/data/')) return 'clientData';
   if (srcRel.startsWith('client/ui/')) return 'clientUi';
   return undefined;
@@ -127,14 +130,14 @@ const HOST_LAYERS: readonly Layer[] = [
 const ALLOWED_CROSS_LAYER: Readonly<Record<Layer, readonly Layer[]>> = {
   hostCompat: [],
   // Native client capabilities expose ACP handlers and durable audit payloads.
-  runtime: ['protocol', 'domainPolicy'],
+  runtime: ['protocol', 'domainPolicy', 'domainObservability'],
   protocol: ['runtime'],
   domainPolicy: ['protocol', 'runtime', 'domainObservability'],
  // domain/observability 是零 import 叶子（结构化日志包装 + 内存指标）：
   // 各层向下消费它，它自己不依赖任何层。
   domainObservability: [],
   // sidecar 的落盘条目携带 events.ts 审计 payload 类型——persistence 唯一的 sideways 边。
-  persistence: ['domainPolicy'],
+  persistence: ['domainPolicy', 'domainObservability'],
  // contract 是零 import 叶子：收窄 wire 类型真源，host 的 remote 与
   // client 两半共同下行消费（共享层，不进 HOST_LAYERS）。
   contract: [],
@@ -161,13 +164,16 @@ const ALLOWED_CROSS_LAYER: Readonly<Record<Layer, readonly Layer[]>> = {
     'persistence',
     'remote',
     'hostCompat',
+    'contract',
   ],
   hostEntry: ['hostComposition'],
   clientData: ['contract'],
  // client 侧兼容岛：复制壳只消费业务模块，不放 ACP 业务逻辑；
   // 业务模块（clientData）不得反向 import 岛（白名单没有这条边即禁令）。
   clientCompat: ['clientData'],
-  clientUi: ['clientData', 'clientCompat'],
+  // UI may consume dependency-free classification helpers from the shared
+  // contract layer; this does not grant it access to host/domain state.
+  clientUi: ['clientData', 'clientCompat', 'clientEntry', 'contract'],
   clientEntry: ['contract', 'clientData', 'clientUi', 'clientCompat'],
 };
 
@@ -277,7 +283,7 @@ describe(' 分层架构守卫', () => {
 
   it('host 以下各层不得上行 import host/*', () => {
     // hostCompat 虽以 host- 前缀命名，但它是底层兼容岛而非 host 组合层：
-    // domainSession 经白名单可达（agent.ts → host-compat/host-scope.ts），不在此禁令内。
+    // domainSession 仅允许由新 provider composition 的窄接口消费。
     const violations = edges.filter(
       (e) =>
         e.toLayer.startsWith('host') &&

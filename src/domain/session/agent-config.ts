@@ -284,10 +284,8 @@ export const ACP_BUILTIN_AGENT_TEMPLATES: readonly AcpBuiltinAgentTemplate[] = [
  * parameter so a full {@link AcpStubAgentConfig} passes without tripping
  * excess-property checks.
  *
- * env 分量是 **secret-free 键名集合**（排序后只带键名，不带值）：env 值
- * 变化不再 bust 缓存——新鲜度由 TTL 兜底（{@link acpProbeFresh}；面板「重新检查」
- * 随时可强制重探），换取键本身绝不含任何配置值（值可能是 token 类 secret，
- * 而键会进日志/诊断上下文）；env 键的增删仍然 bust。这函数同时服务 llm-stub
+ * env 分量是 **secret-free 键名 + 值 hash**（排序固定）：env 值变化必须 bust
+ * 缓存，避免凭证轮换后继续展示旧探测结果；明文值绝不进入 key。这函数同时服务 llm-stub
  * 缓存命中、五态新鲜度与创建门，三处消费同一口径。
  *
  * 自 src/host/composition/llm-stub.ts 下沉到本叶子：remote 层（health 的
@@ -296,7 +294,20 @@ export const ACP_BUILTIN_AGENT_TEMPLATES: readonly AcpBuiltinAgentTemplate[] = [
  */
 export function acpProbeConfigKey<C extends Pick<AcpStubAgentConfig, 'command' | 'args' | 'env'> & { readonly runtime?: AcpAgentId }>(config: C): string {
   const envKeys = Object.keys(config.env).sort()
-  return JSON.stringify({ command: config.command, args: config.args, envKeys, runtime: config.runtime ?? null })
+  const envHashes = Object.entries(config.env)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, value]) => [key, shortSecretHash(value)])
+  return JSON.stringify({ command: config.command, args: config.args, envKeys, envHashes, runtime: config.runtime ?? null })
+}
+
+/** Deterministic short hash for cache identity; never returns the secret itself. */
+function shortSecretHash(value: string): string {
+  let hash = 2166136261
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index)
+    hash = Math.imul(hash, 16777619)
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0')
 }
 
 /**
@@ -312,7 +323,7 @@ export const ACP_PROBE_CACHE_ERROR_TTL_MS = 30_000
  * {@link acpProbeConfigKey} 相等 **且** 未过期（按成功/失败取对应 TTL）。
  * 过期条目按「从未探测」计——llm-stub 的 listModels 命中过期条目按 miss 重
  * probe；health 五态与创建门（src/remote/service.ts、
- * src/host/factory/agent-loop.ts）把过期条目折成 saved-unverified/补 probe。
+ * host/composition/installed-profile-registry.ts）把过期条目折成 saved-unverified/补 probe。
  * 结构参数化（只要 key/at/result.kind 三键），llm-stub 缓存条目与 remote 的
  * 结构面快照都直接适配。
  */
@@ -330,126 +341,4 @@ export function acpProbeFresh(
 export interface AcpResolvedAgent {
   id: string
   config: AcpAgentConfig
-}
-
-// ---------- 配置改动 diff（审计摘要的纯函数核心） ----------
-
-/**
- * 一个 agent 条目的配置改动描述（审计摘要的真源；src/host/composition/installed-profile-registry.ts
- * 在 settings watch 里计算，再经 src/domain/policy/events.ts 包成 sidecar
- * `agent-config` 条目）。**密钥纪律** env 只携带键名级 diff，值绝不出现在
- * 本结构里（`envChanged` 只回答「这个键的值变了」，不回答「变成了什么」）。
- */
-export interface AcpAgentConfigChange {
-  readonly change: 'added' | 'removed' | 'changed'
-  readonly agentId: string
-  /** 改动涉及的字段名（排序固定输出）。 */
-  readonly changedFields: readonly string[]
-  /** command 变更（或 added 时的初始值）。 */
-  readonly command?: string
-  /** args 变更（或 added 时的初始值）。 */
-  readonly args?: readonly string[]
-  /** env 键名级 diff（值永不出现）。 */
-  readonly env?: {
-    readonly added: readonly string[]
-    readonly removed: readonly string[]
-    readonly changed: readonly string[]
-  }
-}
-
-function stringArrayEquals(left: readonly string[], right: readonly string[]): boolean {
-  return left.length === right.length && left.every((value, index) => value === right[index])
-}
-
-/** 两个 env 映射的键名级 diff（added/removed/changed 三桶，各自排序固定）。 */
-function diffEnvKeys(
-  prev: Record<string, string>,
-  next: Record<string, string>,
-): { added: string[]; removed: string[]; changed: string[] } {
-  const added: string[] = []
-  const removed: string[] = []
-  const changed: string[] = []
-  for (const key of Object.keys(next)) {
-    if (!(key in prev)) added.push(key)
-    else if (prev[key] !== next[key]) changed.push(key)
-  }
-  for (const key of Object.keys(prev)) {
-    if (!(key in next)) removed.push(key)
-  }
-  return { added: added.sort(), removed: removed.sort(), changed: changed.sort() }
-}
-
-/** 单条目 diff（added/removed/changed 三分）；无改动返回 undefined。 */
-function diffOneAgentConfig(agentId: string, prev: AcpAgentConfig | undefined, next: AcpAgentConfig | undefined): AcpAgentConfigChange | undefined {
-  if (prev === undefined && next === undefined) return undefined
-  if (prev === undefined && next !== undefined) {
-    const fields = ['name', 'command', 'args', ...(Object.keys(next.env).length > 0 ? ['env'] : []),
-      ...(next.loginHint === undefined ? [] : ['loginHint']), ...(next.runtime === undefined ? [] : ['runtime'])]
-    const env = diffEnvKeys({}, next.env)
-    return {
-      change: 'added',
-      agentId,
-      changedFields: fields.sort(),
-      command: next.command,
-      args: [...next.args],
-      ...(Object.keys(next.env).length > 0 ? { env: { added: env.added, removed: [], changed: [] } } : {}),
-    }
-  }
-  if (next === undefined && prev !== undefined) {
-    const fields = ['name', 'command', 'args', ...(Object.keys(prev.env).length > 0 ? ['env'] : []),
-      ...(prev.loginHint === undefined ? [] : ['loginHint']), ...(prev.runtime === undefined ? [] : ['runtime'])]
-    const env = diffEnvKeys(prev.env, {})
-    return {
-      change: 'removed',
-      agentId,
-      changedFields: fields.sort(),
-      ...(Object.keys(prev.env).length > 0 ? { env: { added: [], removed: env.removed, changed: [] } } : {}),
-    }
-  }
-  const current = next as AcpAgentConfig
-  const before = prev as AcpAgentConfig
-  const fields = new Set<string>()
-  let command: string | undefined
-  let args: readonly string[] | undefined
-  if (before.name !== current.name) fields.add('name')
-  if (before.command !== current.command) {
-    fields.add('command')
-    command = current.command
-  }
-  if (!stringArrayEquals(before.args, current.args)) {
-    fields.add('args')
-    args = [...current.args]
-  }
-  if ((before.loginHint ?? undefined) !== (current.loginHint ?? undefined)) fields.add('loginHint')
-  if ((before.runtime ?? undefined) !== (current.runtime ?? undefined)) fields.add('runtime')
-  const env = diffEnvKeys(before.env, current.env)
-  const envTouched = env.added.length > 0 || env.removed.length > 0 || env.changed.length > 0
-  if (envTouched) fields.add('env')
-  if (fields.size === 0) return undefined
-  return {
-    change: 'changed',
-    agentId,
-    changedFields: [...fields].sort(),
-    ...(command === undefined ? {} : { command }),
-    ...(args === undefined ? {} : { args }),
-    ...(envTouched ? { env } : {}),
-  }
-}
-
-/**
- * 全量 agents 映射 diff（settings watch 的 prev/next → 逐条目改动清单）。
- * 输出按 agentId 排序固定（审计序列可复现）。初始加载（prev = 空映射的首次
- * watch）同样产出 added 条目——调用方（registry）自行决定是否跳过首帧。
- */
-export function diffAcpAgentConfigs(
-  prev: Record<string, AcpAgentConfig>,
-  next: Record<string, AcpAgentConfig>,
-): AcpAgentConfigChange[] {
-  const ids = [...new Set([...Object.keys(prev), ...Object.keys(next)])].sort((left, right) => left.localeCompare(right))
-  const changes: AcpAgentConfigChange[] = []
-  for (const id of ids) {
-    const change = diffOneAgentConfig(id, prev[id], next[id])
-    if (change !== undefined) changes.push(change)
-  }
-  return changes
 }

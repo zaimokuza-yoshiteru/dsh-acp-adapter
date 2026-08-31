@@ -8,13 +8,21 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
-const reference = join(root, '..', 'reference', 'deepseek-harness')
+const reference = process.env.DSH_UPSTREAM_CHECKOUT ?? join(root, '..', 'reference', 'deepseek-harness')
 const expectedTag = 'dsh-v0.1.2-alpha.1'
 const requiredPackages = [
   'packages/api/session-controller/package.json',
   'packages/api/settings-controller/package.json',
   'packages/api/workspace-controller/package.json',
   'packages/client/store/package.json',
+]
+// The clean-install gate invokes the bundled CLI (not the TypeScript source)
+// and the web profile serves the frontend build. A source-only checkout is not
+// enough; fail here instead of letting a pre-existing build in a developer's
+// tree mask an incomplete CI build.
+const requiredBuildArtifacts = [
+  'apps/cli/lib/bin.js',
+  'apps/web/dist/index.html',
 ]
 
 if (!existsSync(join(reference, '.git'))) {
@@ -35,6 +43,12 @@ for (const relative of requiredPackages) {
   const packageJson = JSON.parse(readFileSync(file, 'utf8'))
   if (packageJson.version !== '0.1.2-alpha.1') {
     throw new Error(`${relative} is not 0.1.2-alpha.1`)
+  }
+}
+
+for (const relative of requiredBuildArtifacts) {
+  if (!existsSync(join(reference, relative))) {
+    throw new Error(`Alpha reference is not fully built: missing ${relative}; run pnpm build in the reference checkout first`)
   }
 }
 

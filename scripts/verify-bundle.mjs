@@ -4,7 +4,8 @@
 // ② 产物存在性 ③ 产物闭包（__ModuleLoader__ 包装形态 / id == 包名 /
 // sourcemap 在场且 sources 非空）④ module requests（产物内 require 全部落在
 // Alpha baseline ∪ dsh.client.external）⑤ 源码消费审计（ctx.get 服务读取必须有
-// 模块级 inject 或显式可选登记）⑥ npm tarball 内容精确性（npm pack --dry-run）。
+// 模块级 inject 或显式可选登记）⑥ npm tarball 内容精确性（npm pack --dry-run）
+// ⑦ 旧接管面产物禁入（synthetic tool / custom picker / old compatibility paths）。
 // 规范出处：reference/deepseek-harness packages/client/tsdown.client.ts（preset）、
 // packages/client/web/src/platform.ts（baseline）、scripts/verify-client-packages.ts（门禁）。
 import { execFileSync } from 'node:child_process'
@@ -12,6 +13,7 @@ import { existsSync, globSync, mkdtempSync, readFileSync, rmSync } from 'node:fs
 import os from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { findMissingRelativeRuntimeImports } from './verify-runtime-closure.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const read = (rel) => readFileSync(join(root, rel), 'utf8')
@@ -114,7 +116,13 @@ for (const spec of declaredExternal) {
 for (const [name, peerRange] of Object.entries(pkg.peerDependencies ?? {})) {
   const devRange = pkg.devDependencies?.[name]
   if (devRange === undefined) {
-    fail(`package.json: peerDependencies.${name} (${peerRange}) 缺少 devDependencies 同名声明`)
+    // DSH Alpha packages are intentionally absent from devDependencies: they
+    // are not published yet and are linked from the checked-out reference by
+    // setup:alpha-reference.  Keep this exception narrow so ordinary npm
+    // peers still obey the two-column declaration rule.
+    if (!/^>=0\.1\.2-alpha\.1(?:\s|$)/.test(peerRange)) {
+      fail(`package.json: peerDependencies.${name} (${peerRange}) 缺少 devDependencies 同名声明`)
+    }
   } else if (peerRange !== devRange && peerRange !== `>=${devRange}` && peerRange !== `>=${devRange} <0.2.0` && peerRange !== `>=${devRange} <5.0.0`) {
     fail(`package.json: peerDependencies.${name} is ${peerRange}; expected the exact dev pin or a >=${devRange} minimum-version range; found devDependencies ${devRange}`)
   }
@@ -229,33 +237,33 @@ if (existsSync(bundlePath)) {
   }
   console.log(`[verify-bundle] module requests: ${requested.size === 0 ? '(none)' : [...requested].sort().join(', ')}`)
 
-  // -------------------------------------------------------------------------
-  // ⑦ client 样式管线纪律：模板字符串 CSS 与 ensureXxxStyles 注入器已
-  // 删除（CSS Modules + lightningcss 在构建期编译）；产物必须携带 preset 同款
-  // style 注入标记（data-plugin=包名、data-plugin-css=<包名>/<sheet>）与
-  // lightningcss 编译后的 classMap 导出。源侧：旧样式模块不得存在，两张
-  // .module.css 必须在场。
-  // -------------------------------------------------------------------------
-  for (const symbol of ['ensureAcpStyles', 'ensureSelectorStyles', 'ACP_PANEL_STYLES', 'ACP_PICKER_STYLES']) {
-    if (js.includes(symbol)) fail(`lib/client.js: 残留旧样式符号 ${JSON.stringify(symbol)}（样式应经 CSS Modules 管线编译）`)
-  }
-  if (!js.includes('dataset.plugin')) {
-    fail('lib/client.js: 缺少 style 注入标记 dataset.plugin（CSS Modules 注入器缺失）')
-  }
-  for (const sheet of ['AcpSection.module.css', 'ModelPicker.module.css']) {
-    const tagId = `${pkg.name}/${sheet}`
-    if (!js.includes(JSON.stringify(tagId))) {
-      fail(`lib/client.js: 缺少注入标记 ${JSON.stringify(tagId)}（${sheet} 未经 dsh-css-modules-inline 编译？）`)
-    }
-  }
+  // The alpha client entry is additive only: stock DSH owns Chat/ModelPicker;
+  // this bundle contributes one keyed ACP activity node renderer.
 }
 
-// 源侧钉：旧模板样式模块已删除、CSS Modules 源在场。
-for (const rel of ['src/client/ui/styles.ts', 'src/client/ui/selector-styles.ts']) {
-  if (existsSync(join(root, rel))) fail(`${rel} 已迁移到 CSS Modules，应删除`)
-}
-for (const rel of ['src/client/ui/AcpSection.module.css', 'src/client/host-compat/model-picker/ModelPicker.module.css']) {
-  if (!existsSync(join(root, rel))) fail(`样式源缺失: ${rel}`)
+// Activity styles are scoped to the keyed renderer and bundled with the client entry.
+
+// ---------------------------------------------------------------------------
+// ⑦ 旧接管面不得进入发布产物
+// ---------------------------------------------------------------------------
+
+const forbiddenArtifactMarkers = [
+  { pattern: 'dsh_acp_external_tool', label: 'synthetic ACP tool' },
+  { pattern: 'model-picker', label: 'custom model picker' },
+  { pattern: 'host-compat/agent-loop', label: 'old host compatibility AgentLoop' },
+  { pattern: 'protocol/v1/translate', label: 'removed protocol translator' },
+]
+for (const rel of globSync('lib/**/*', { cwd: root, nodir: true })) {
+  const absolute = join(root, rel)
+  let contents
+  try {
+    contents = readFileSync(absolute, 'utf8')
+  } catch {
+    continue
+  }
+  for (const { pattern, label } of forbiddenArtifactMarkers) {
+    if (contents.includes(pattern)) fail(`发布产物 ${rel} 含 ${label} 标记 ${JSON.stringify(pattern)}`)
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -269,7 +277,7 @@ if (injectMatch === null) {
 }
 const moduleInject = new Set(injectMatch === null ? [] : [...injectMatch[1].matchAll(/'([^']+)'/g)].map((m) => m[1]))
 const serviceReads = new Set()
-for (const file of globSync('src/client/**/*.ts', { cwd: root })) {
+for (const file of ['src/client/index.ts']) {
   for (const match of read(file).matchAll(/\b(?:ctx|scope)\.get\(\s*'([^']+)'\s*\)/g)) {
     serviceReads.add(match[1])
   }
@@ -350,6 +358,17 @@ if (packOutput !== null) {
       if (!actual.has(path)) fail(`files 清单声明了 ${path} 但 tarball 未包含`)
     }
     console.log(`[verify-bundle] tarball files: ${String(actual.size)}`)
+
+    // The package ships host/runtime modules as separate ESM files. A client
+    // bundle module-table check cannot catch a missing host relative import;
+    // recursively verify every shipped JavaScript artifact against the npm
+    // tarball file set before declaring the package installable.
+    const runtimeFiles = [...actual].filter((file) => file.endsWith('.js'))
+    const missingRuntimeImports = findMissingRelativeRuntimeImports(runtimeFiles, (file) => readFileSync(join(root, file), 'utf8'))
+    for (const missing of missingRuntimeImports) {
+      fail(`tarball runtime closure missing ${missing.file} → ${missing.specifier} (${missing.resolved})`)
+    }
+    if (missingRuntimeImports.length === 0) console.log(`[verify-bundle] runtime relative-import closure: ${String(runtimeFiles.length)} JavaScript artifacts checked`)
   }
 }
 

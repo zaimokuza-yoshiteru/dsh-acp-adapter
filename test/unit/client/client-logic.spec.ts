@@ -806,7 +806,7 @@ describe('panelSettingsOf', () => {
   it('ready → ready，agents/writable/revision 透传；value 缺席时 agents 归零', () => {
     expect(
       panelSettingsOf({ status: 'ready', value: { agents: { devin: devinConfig } }, revision: 3, writable: true }),
-    ).toEqual({ status: 'ready', writable: true, agents: { devin: devinConfig }, revision: 3 });
+    ).toEqual({ status: 'ready', writable: true, agents: { devin: devinConfig }, projectExternalSubagents: false, revision: 3 });
     expect(panelSettingsOf({ status: 'ready', value: undefined, revision: 3, writable: false }).agents).toEqual({});
   });
 
@@ -815,6 +815,7 @@ describe('panelSettingsOf', () => {
       status: 'unavailable',
       writable: false,
       agents: {},
+      projectExternalSubagents: false,
       revision: undefined,
     });
     expect(panelSettingsOf({ status: 'loading', value: undefined, revision: undefined, writable: true }).status).toBe('loading');
@@ -823,6 +824,7 @@ describe('panelSettingsOf', () => {
       status: 'invalid',
       writable: false,
       agents: {},
+      projectExternalSubagents: false,
       revision: 7,
     });
   });

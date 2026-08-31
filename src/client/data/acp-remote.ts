@@ -6,7 +6,7 @@
  * `$mount` 到 `ctx.get('remote')` 后，namespace 以 cordis 服务键
  * `remote.dshAcp` 注册在独立 fiber 上（gateway 的 RemoteNamespaceService），
  * 消费侧在 mount 就位后经 `ctx.get('remote.dshAcp')` 取实例；本面是
- * controller/live-controller 消费的最小结构
+ * additive client activity/settings 消费的最小结构
  * ——错误只取 `error.message`（host 侧 throw 折叠为
  * `{code:'internal', message}` 的 RemoteResult 错误分支；kind/HTTP status
  * 不再过线，与 HTTP 时代 parseHttpErrorMessage 同款口径）。
@@ -21,25 +21,46 @@ import type {
   AcpBoundSessionsView,
   AcpHealthRequest,
   AcpHealthView,
-  AcpLiveOptionsSnapshot,
-  AcpModelSwitchBeginRequest,
-  AcpModelSwitchBeginResult,
-  AcpModelSwitchResolveRequest,
-  AcpOptionWrite,
-  AcpPendingPermissionView,
-  AcpPermissionAnswerRequest,
-  AcpElicitationAnswerRequest,
-  AcpPendingElicitationView,
-  AcpToolCallPresentationView,
   AcpAuditTimelinePage,
+  AcpActivitySnapshotView,
+  AcpActivityPageView,
+  AcpActivityJournalFrame,
+  AcpAgentSessionSnapshotView,
+  AcpAgentSessionOptionWrite,
+  AcpOwnedRoutesView,
+  AcpProjectedSubagentsView,
 } from '../../contract/remote.ts'
+import type { AcpRecoveryView } from '../../contract/remote.ts'
 
-export type { AcpAuditSummaryCode, AcpAuditTimelineEntry, AcpElicitationAnswerRequest, AcpPendingPermissionView, AcpPendingElicitationView, AcpToolCallPresentationView } from '../../contract/remote.ts'
+export type {
+  AcpActivityView,
+  AcpAuditSummaryCode,
+  AcpAuditTimelineEntry,
+  AcpRecoveryView,
+  AcpAgentSessionSnapshotView,
+  AcpAgentSessionOptionWrite,
+} from '../../contract/remote.ts'
 
 /** Minimal `RemoteResult` face the glue consumes (message-only errors). */
 export type AcpRemoteResultLike<T> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly error: { readonly message: string } }
+
+/**
+ * The Alpha Gateway stream seam consumed by the activity hub. Kept as a
+ * local client-data contract so the journal does not import generated remote
+ * types directly; the generated `ctx.remote` is structurally compatible.
+ */
+export interface AcpActivityStreamFactory {
+  $stream<Item>(options: {
+    readonly name: string
+    readonly open: (signal: AbortSignal) => AsyncIterable<Item>
+    readonly ended: (accepted: boolean) => Error
+  }): {
+    [Symbol.asyncIterator](): AsyncIterator<{ readonly value: Item; readonly accept: () => void }>
+    readonly dispose: () => Promise<void>
+  }
+}
 
 /** Narrowed face of the mounted `dshAcp` remote namespace. */
 export interface AcpRemoteLike {
@@ -49,44 +70,19 @@ export interface AcpRemoteLike {
    * 指定 provider。
    */
   health(request?: AcpHealthRequest): Promise<AcpRemoteResultLike<AcpHealthView>>
-  options(sessionId: string): Promise<AcpRemoteResultLike<AcpLiveOptionsSnapshot>>
-  setOption(
-    sessionId: string,
-    request: AcpOptionWrite,
-  ): Promise<AcpRemoteResultLike<AcpLiveOptionsSnapshot>>
+  ownedProviderRoutes?(): Promise<AcpRemoteResultLike<AcpOwnedRoutesView>>
+  projectedSubagentIds?(): Promise<AcpRemoteResultLike<AcpProjectedSubagentsView>>
  /** host 权威的会话 backend 查询（picker 跨 backend 标记/分流的数据面）。 */
   backendOf(sessionId: string): Promise<AcpRemoteResultLike<AcpBackendState>>
- /** 收尾：rebindBlank 逃生门（reconciliation-required 的可执行出路），返回复位后的选项快照。 */
-  rebindBlank(sessionId: string): Promise<AcpRemoteResultLike<AcpLiveOptionsSnapshot>>
-  reconnectOriginal?(sessionId: string): Promise<AcpRemoteResultLike<AcpLiveOptionsSnapshot>>
-  recordRecoveryAction?(sessionId: string, action: 'retry-original' | 'rebind-blank' | 'new-session'): Promise<AcpRemoteResultLike<AcpLiveOptionsSnapshot>>
-  pendingPermissions?(sessionId: string): Promise<AcpRemoteResultLike<readonly AcpPendingPermissionView[]>>
-  toolPresentation?(sessionId: string, toolCallId: string): Promise<AcpRemoteResultLike<AcpToolCallPresentationView | null>>
-  answerPermission?(sessionId: string, request: AcpPermissionAnswerRequest): Promise<AcpRemoteResultLike<null>>
-  cancelPermission?(sessionId: string, request: Pick<AcpPermissionAnswerRequest, 'requestId'>): Promise<AcpRemoteResultLike<null>>
-  pendingElicitations?(sessionId: string): Promise<AcpRemoteResultLike<readonly AcpPendingElicitationView[]>>
-  answerElicitation?(sessionId: string, request: AcpElicitationAnswerRequest): Promise<AcpRemoteResultLike<null>>
-  cancelElicitation?(sessionId: string, request: Pick<AcpElicitationAnswerRequest, 'requestId'>): Promise<AcpRemoteResultLike<null>>
+  recoverySnapshot?(sessionId: string): Promise<AcpRemoteResultLike<AcpRecoveryView>>
+  retryOriginal?(sessionId: string): Promise<AcpRemoteResultLike<AcpRecoveryView>>
+  rebindRecoveryBlank?(sessionId: string): Promise<AcpRemoteResultLike<AcpRecoveryView>>
+  agentSessionSnapshot?(sessionId: string): Promise<AcpRemoteResultLike<AcpAgentSessionSnapshotView>>
+  setAgentSessionOption?(sessionId: string, request: AcpAgentSessionOptionWrite): Promise<AcpRemoteResultLike<AcpAgentSessionSnapshotView>>
   auditTimeline?(sessionId: string, request?: { readonly afterSeq?: number; readonly limit?: number }): Promise<AcpRemoteResultLike<AcpAuditTimelinePage>>
+  activitySnapshot?(sessionId: string, request?: { readonly limit?: number }): Promise<AcpRemoteResultLike<AcpActivitySnapshotView>>
+  activityPage?(sessionId: string, request?: { readonly afterRevision?: number; readonly limit?: number }): Promise<AcpRemoteResultLike<AcpActivityPageView>>
+  activityFollow(sessionId: string, request?: { readonly limit?: number }, signal?: AbortSignal): AsyncIterable<AcpActivityJournalFrame>
  /** 删除确认提示的 binding 计数（该 profile 被多少个既有会话引用；纯读）。 */
   boundSessions(agentId: string): Promise<AcpRemoteResultLike<AcpBoundSessionsView>>
-  /**
- * 模型热切换的持久事务（同 profile 内切换的唯一写入口）。流程见
-   * src/remote/service.ts；`actualModel` 是 Agent 响应权威快照的实际模型值
-   * （DSH 侧 selectModel 必须用本值，不得用请求值）。
-   */
-  beginModelSwitch(
-    sessionId: string,
-    request: AcpModelSwitchBeginRequest,
-  ): Promise<AcpRemoteResultLike<AcpModelSwitchBeginResult>>
- /** DSH 侧接受 actualModel 后的收束步（幂等；写 committed 后清行）。 */
-  commitModelSwitch(
-    sessionId: string,
-    request: AcpModelSwitchResolveRequest,
-  ): Promise<AcpRemoteResultLike<AcpLiveOptionsSnapshot>>
- /** Agent 侧写回 previousModel 并落 agent-rolled-back；DSH 收敛后另行 commit 清行。 */
-  rollbackModelSwitch(
-    sessionId: string,
-    request: AcpModelSwitchResolveRequest,
-  ): Promise<AcpRemoteResultLike<AcpLiveOptionsSnapshot>>
 }

@@ -4,12 +4,9 @@
  * 表单值会依据协商得到的基础 schema 校验，提交值不会持久化。SDK 目前仍将
  * 这部分协议标记为不稳定，因此未知或格式错误的变体会被拒绝，不做猜测性兼容。
  */
-import { randomUUID } from 'node:crypto'
 import type * as acp from '@agentclientprotocol/sdk'
 
-export type AcpElicitationDecision =
-  | { readonly action: 'accept'; readonly content: Record<string, acp.ElicitationContentValue> }
-  | { readonly action: 'decline' | 'cancel' }
+const SENSITIVE_FIELD = /(?:password|passwd|token|secret|credential|api[\s_-]*key|authorization|private[\s_-]*key|passphrase)/i
 
 export interface AcpElicitationFieldView {
   readonly name: string
@@ -24,59 +21,6 @@ export interface AcpElicitationFieldView {
   readonly minItems?: number
   readonly maxItems?: number
   readonly format?: 'email' | 'uri' | 'date' | 'date-time'
-}
-
-export interface AcpPendingElicitationView {
-  readonly requestId: string
-  readonly sessionId: string
-  readonly acpSessionId?: string
-  readonly mode: 'form' | 'url'
-  readonly message: string
-  readonly fields: readonly AcpElicitationFieldView[]
-  readonly url?: string
-  readonly createdAt: number
-}
-
-export interface AcpPendingElicitationRequest {
-  readonly sessionId: string
-  readonly params: acp.CreateElicitationRequest
-  readonly signal?: AbortSignal
-}
-
-export interface AcpElicitationAnswer {
-  readonly requestId: string
-  readonly action: 'accept' | 'decline' | 'cancel'
-  readonly values?: readonly { readonly name: string; readonly value: string | number | boolean | readonly string[] }[]
-}
-
-export interface AcpElicitationBroker {
-  open(request: AcpPendingElicitationRequest): Promise<AcpElicitationDecision>
-  list(sessionId?: string): readonly AcpPendingElicitationView[]
-  answer(sessionId: string, answer: AcpElicitationAnswer): Promise<void>
-  cancel(sessionId: string, requestId: string): Promise<void>
-  cancelSession(sessionId: string): void
-  dispose(): void
-}
-
-export interface AcpElicitationAudit {
-  readonly phase: 'requested' | 'decided'
-  readonly requestId: string
-  readonly acpSessionId?: string
-  readonly mode: 'form' | 'url'
-  readonly fieldNames: readonly string[]
-  readonly schemaSummary: readonly { readonly name: string; readonly type: string; readonly required: boolean }[]
-  readonly result?: 'accept' | 'decline' | 'cancel'
-}
-
-const SENSITIVE_FIELD = /(?:password|passwd|token|secret|credential|api[\s_-]*key|authorization|private[\s_-]*key|passphrase)/i
-
-function requestIdOf(params: acp.CreateElicitationRequest): string {
-  if (params.mode === 'url' && 'elicitationId' in params && typeof params.elicitationId === 'string' && params.elicitationId.length > 0) return params.elicitationId
-  return `dsh-acp-elicitation-${randomUUID()}`
-}
-
-function acpSessionIdOf(params: acp.CreateElicitationRequest): string | undefined {
-  return 'sessionId' in params && typeof params.sessionId === 'string' ? params.sessionId : undefined
 }
 
 type FormSchema = {
@@ -221,7 +165,7 @@ function fieldViewOf(name: string, item: unknown, required: boolean): AcpElicita
     if (!boundedPair(item, 'minItems', 'maxItems', true) || !plain(item.items)) return undefined
     const items = item.items
     if (items.type !== undefined && items.type !== 'string') return undefined
-    const parsed = optionsOf({ enum: items.enum, oneOf: items.anyOf })
+    const parsed = optionsOf({ enum: items.enum, oneOf: items.oneOf })
     if (parsed === undefined || parsed.length === 0) return undefined
     options = parsed
   } else return undefined
@@ -275,18 +219,6 @@ function schemaOf(params: acp.CreateElicitationRequest): { fields: readonly AcpE
  * this independent of the renderable view so a declined sensitive schema is
  * still observable without exposing a value or accidentally rendering it.
  */
-function auditFieldsOf(params: acp.CreateElicitationRequest): readonly { readonly name: string; readonly type: string; readonly required: boolean }[] {
-  if (params.mode !== 'form') return []
-  const schema = formSchemaOf(params)
-  if (!plain(schema) || !plain(schema.properties)) return []
-  const required = new Set(Array.isArray(schema.required) ? schema.required.filter((value): value is string => typeof value === 'string') : [])
-  return Object.entries(schema.properties).map(([name, item]) => ({
-    name,
-    type: plain(item) && typeof item.type === 'string' ? item.type : 'unknown',
-    required: required.has(name),
-  }))
-}
-
 function validateValues(params: acp.CreateElicitationRequest, input: readonly { readonly name: string; readonly value: string | number | boolean | readonly string[] }[] | undefined): Record<string, acp.ElicitationContentValue> | undefined {
   if (params.mode !== 'form') return {}
   const schema = formSchemaOf(params)
@@ -321,7 +253,7 @@ function validateValues(params: acp.CreateElicitationRequest, input: readonly { 
       if (typeof schema.minItems === 'number' && item.value.length < schema.minItems) return undefined
       if (typeof schema.maxItems === 'number' && item.value.length > schema.maxItems) return undefined
       const items = schema.items as Record<string, unknown> | undefined
-      const allowed = items !== undefined && Array.isArray(items.enum) ? items.enum : items !== undefined && Array.isArray(items.anyOf) ? items.anyOf.map((value) => typeof value === 'object' && value !== null ? (value as Record<string, unknown>).const : undefined) : undefined
+      const allowed = items !== undefined && Array.isArray(items.enum) ? items.enum : items !== undefined && Array.isArray(items.oneOf) ? items.oneOf.map((value) => typeof value === 'object' && value !== null ? (value as Record<string, unknown>).const : undefined) : undefined
       if (allowed !== undefined && item.value.some((value) => !allowed.includes(value))) return undefined
     }
     if (typeof item.value === 'string') {
@@ -340,134 +272,96 @@ function validateValues(params: acp.CreateElicitationRequest, input: readonly { 
   return out
 }
 
-interface Entry {
-  readonly view: AcpPendingElicitationView
-  readonly params: acp.CreateElicitationRequest
-  readonly resolve: (decision: AcpElicitationDecision) => void
-  readonly signal?: AbortSignal
-  readonly abort: () => void
-  readonly timer: ReturnType<typeof setTimeout>
+/** The narrow structural face of DSH's native user-question service. */
+export interface AcpNativeUserQuestionService {
+  ask(request: {
+    readonly questions: readonly {
+      readonly id: string
+      readonly question: string
+      readonly detail?: string
+      readonly header?: string
+      readonly options?: readonly { readonly label: string; readonly description?: string }[]
+      readonly multiSelect?: boolean
+    }[]
+    readonly agent?: unknown
+    readonly signal?: AbortSignal
+  }): Promise<{
+    readonly answers: readonly { readonly id: string; readonly selected: readonly string[]; readonly custom?: string }[]
+  }>
 }
 
-export class InMemoryAcpElicitationBroker implements AcpElicitationBroker {
-  private readonly entries = new Map<string, Entry>()
-  constructor(
-    private readonly now: () => number = Date.now,
-    private readonly audit?: (sessionId: string, audit: AcpElicitationAudit) => Promise<void> | void,
-    private readonly timeoutMs = 15 * 60 * 1000,
-  ) {}
+export interface AcpNativeElicitationDeps {
+  readonly userQuestions?: AcpNativeUserQuestionService
+  readonly getAgent: () => unknown
+  readonly log?: (message: string) => void
+}
 
-  async open(request: AcpPendingElicitationRequest): Promise<AcpElicitationDecision> {
-    const id = requestIdOf(request.params)
-    const key = `${request.sessionId}\u0000${id}`
-    if (this.entries.has(key)) throw new Error(`pending ACP elicitation "${id}" is already active`)
-    const schema = schemaOf(request.params)
-    const fields = schema.fields
-    const acpSessionId = acpSessionIdOf(request.params)
-    const view: AcpPendingElicitationView = {
-      requestId: id,
-      sessionId: request.sessionId,
-      ...(acpSessionId === undefined ? {} : { acpSessionId }),
-      mode: request.params.mode === 'form' ? 'form' : 'url',
-      message: request.params.message,
-      fields,
-      ...(request.params.mode === 'url' && typeof request.params.url === 'string' ? { url: request.params.url } : {}),
-      createdAt: this.now(),
-    }
-    const summary = auditFieldsOf(request.params)
-    const auditRequested = this.audit?.(request.sessionId, { phase: 'requested', requestId: id, ...(view.acpSessionId === undefined ? {} : { acpSessionId: view.acpSessionId }), mode: view.mode, fieldNames: summary.map((field) => field.name), schemaSummary: summary })
-    if (auditRequested !== undefined) {
-      try { await Promise.resolve(auditRequested) } catch { return { action: 'cancel' } }
-    }
-    if (!schema.valid) {
-      try {
-        await Promise.resolve(this.audit?.(request.sessionId, { phase: 'decided', requestId: id, ...(view.acpSessionId === undefined ? {} : { acpSessionId: view.acpSessionId }), mode: view.mode, fieldNames: summary.map((field) => field.name), schemaSummary: summary, result: 'decline' }))
-      } catch { return { action: 'cancel' } }
-      return { action: 'decline' }
-    }
-    if (request.signal?.aborted === true) {
-      try {
-        await Promise.resolve(this.audit?.(request.sessionId, { phase: 'decided', requestId: id, ...(view.acpSessionId === undefined ? {} : { acpSessionId: view.acpSessionId }), mode: view.mode, fieldNames: fields.map((field) => field.name), schemaSummary: summary, result: 'cancel' }))
-      } catch { /* 即使审计失败，也保持取消这一安全结果。 */ }
+/**
+ * Bridge ACP form elicitation to DSH's native question waterfall. URL
+ * elicitation is deliberately declined: this plugin has no public, safe host
+ * URL-opener seam and must never open or prefetch an Agent-supplied URL.
+ */
+export function createAcpNativeElicitationHandler(
+  deps: AcpNativeElicitationDeps,
+): (params: acp.CreateElicitationRequest, signal?: AbortSignal) => Promise<acp.CreateElicitationResponse> {
+  return async (params, signal) => {
+    if (params.mode !== 'form' || deps.userQuestions === undefined) return { action: 'cancel' }
+    if (signal?.aborted === true) return { action: 'cancel' }
+    const schema = schemaOf(params)
+    if (!schema.valid || schema.fields.length === 0) return { action: 'cancel' }
+    const message = params.message.trim().length > 4_096
+      ? `${params.message.trim().slice(0, 4_096)}…`
+      : params.message.trim()
+    const questions = schema.fields.map((field, index) => {
+      // DSH's native question waterfall has no separate form-introduction slot.
+      // Put ACP's required, human-readable form message on the first question
+      // so the user sees why the Agent needs the values without repeating it on
+      // every field.
+      const detail = [index === 0 ? message : undefined, field.description]
+        .filter((value): value is string => value !== undefined && value.length > 0)
+        .join('\n\n')
+      return {
+        id: field.name,
+        question: field.title ?? field.name,
+        ...(detail.length === 0 ? {} : { detail }),
+        ...(field.title === undefined ? {} : { header: field.name }),
+        ...(field.options === undefined || field.options.length === 0
+          ? field.type === 'boolean'
+            ? { options: [{ label: 'true' }, { label: 'false' }] }
+            : {}
+          : { options: field.options.map((option) => ({ label: option.value, ...(option.title === undefined ? {} : { description: option.title }) })) }),
+        ...(field.type === 'array' ? { multiSelect: true } : {}),
+      }
+    })
+    try {
+      const agent = deps.getAgent()
+      if (agent === undefined) return { action: 'cancel' }
+      const answer = await deps.userQuestions.ask({ questions, agent, ...(signal === undefined ? {} : { signal }) })
+      if (signal?.aborted) return { action: 'cancel' }
+      const values: { name: string; value: string | number | boolean | readonly string[] }[] = []
+      for (const field of schema.fields) {
+        const item = answer.answers.find((candidate) => candidate.id === field.name)
+        if (item === undefined) continue
+        if (field.type === 'array') values.push({ name: field.name, value: [...item.selected] })
+        else if (field.type === 'boolean') {
+          const value = item.selected[0] ?? item.custom
+          if (value !== 'true' && value !== 'false') return { action: 'cancel' }
+          values.push({ name: field.name, value: value === 'true' })
+        } else if (field.type === 'number' || field.type === 'integer') {
+          const raw = item.selected[0] ?? item.custom
+          if (raw === undefined || raw.trim() === '') return { action: 'cancel' }
+          const value = Number(raw)
+          if (!Number.isFinite(value)) return { action: 'cancel' }
+          values.push({ name: field.name, value })
+        } else {
+          values.push({ name: field.name, value: item.selected[0] ?? item.custom ?? '' })
+        }
+      }
+      const content = validateValues(params, values)
+      return content === undefined ? { action: 'cancel' } : { action: 'accept', content }
+    } catch (error: unknown) {
+      deps.log?.(`dsh-acp native elicitation cancelled: ${error instanceof Error ? error.message : String(error)}`)
       return { action: 'cancel' }
     }
-    return new Promise((resolve) => {
-      const abort = (): void => { void this.cancelEntry(key) }
-      const timer = setTimeout(() => { void this.cancelEntry(key) }, Math.max(1, this.timeoutMs))
-      this.entries.set(key, { view, params: request.params, resolve, abort, timer, ...(request.signal === undefined ? {} : { signal: request.signal }) })
-      request.signal?.addEventListener('abort', abort, { once: true })
-      if (request.signal?.aborted === true) abort()
-    })
   }
-
-  list(sessionId?: string): readonly AcpPendingElicitationView[] {
-    return [...this.entries.values()].map((entry) => entry.view).filter((view) => sessionId === undefined || view.sessionId === sessionId).sort((left, right) => left.createdAt - right.createdAt)
-  }
-
-  async answer(sessionId: string, answer: AcpElicitationAnswer): Promise<void> {
-    const key = `${sessionId}\u0000${answer.requestId}`
-    const entry = this.entries.get(key)
-    if (entry === undefined) throw new Error(`pending ACP elicitation "${answer.requestId}" is not active`)
-    let decision: AcpElicitationDecision
-    if (answer.action === 'accept') {
-      const content = validateValues(entry.params, answer.values)
-      if (content === undefined) throw new Error('ACP elicitation values do not match the requested schema')
-      decision = { action: 'accept', content }
-    } else decision = { action: answer.action }
-    await Promise.resolve(this.audit?.(sessionId, { phase: 'decided', requestId: answer.requestId, ...(entry.view.acpSessionId === undefined ? {} : { acpSessionId: entry.view.acpSessionId }), mode: entry.view.mode, fieldNames: entry.view.fields.map((field) => field.name), schemaSummary: entry.view.fields.map((field) => ({ name: field.name, type: field.type, required: field.required })), result: answer.action })).catch((error: unknown) => { this.settle(key, { action: 'cancel' }); throw error })
-    this.settle(key, decision)
-  }
-
-  async cancel(sessionId: string, requestId: string): Promise<void> {
-    const key = `${sessionId}\u0000${requestId}`
-    if (!this.entries.has(key)) throw new Error(`pending ACP elicitation "${requestId}" is not active`)
-    const entry = this.entries.get(key)!
-    try {
-      await this.auditDecision(entry, 'cancel')
-    } catch (error: unknown) {
-      this.settle(key, { action: 'cancel' })
-      throw error
-    }
-    this.settle(key, { action: 'cancel' })
-  }
-
-  cancelSession(sessionId: string): void {
-    for (const [key, entry] of this.entries) if (entry.view.sessionId === sessionId) void this.cancelEntry(key)
-  }
-
-  dispose(): void {
-    for (const key of [...this.entries.keys()]) void this.cancelEntry(key)
-  }
-
-  private async auditDecision(entry: Entry, result: 'accept' | 'decline' | 'cancel'): Promise<void> {
-    await Promise.resolve(this.audit?.(entry.view.sessionId, {
-      phase: 'decided',
-      requestId: entry.view.requestId,
-      ...(entry.view.acpSessionId === undefined ? {} : { acpSessionId: entry.view.acpSessionId }),
-      mode: entry.view.mode,
-      fieldNames: entry.view.fields.map((field) => field.name),
-      schemaSummary: entry.view.fields.map((field) => ({ name: field.name, type: field.type, required: field.required })),
-      result,
-    }))
-  }
-
-  private async cancelEntry(key: string): Promise<void> {
-    const entry = this.entries.get(key)
-    if (entry === undefined) return
-    try { await this.auditDecision(entry, 'cancel') } catch { /* 审计失败时仍必须释放 Agent RPC。 */ }
-    this.settle(key, { action: 'cancel' })
-  }
-
-  private settle(key: string, decision: AcpElicitationDecision): void {
-    const entry = this.entries.get(key)
-    if (entry === undefined) return
-    this.entries.delete(key)
-    clearTimeout(entry.timer)
-    entry.signal?.removeEventListener('abort', entry.abort)
-    entry.resolve(decision)
-  }
-}
-
-export function elicitationResponseOf(decision: AcpElicitationDecision): acp.CreateElicitationResponse {
-  return decision.action === 'accept' ? { action: 'accept', content: decision.content } : { action: decision.action }
 }

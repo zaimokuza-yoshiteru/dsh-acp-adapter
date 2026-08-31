@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // 在 test/build/typecheck 前校验发布工具链。
-// engines 与 DSH rc.2 对齐（^22.19.0 || >=24.0.0，见 package.json）；
+// engines 与 DSH Alpha 对齐（^22.19.0 || >=24.0.0，见 package.json）；
 // 开发与真实 E2E 固定 .nvmrc = 24.19.0；pnpm 由调用环境提供。
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'

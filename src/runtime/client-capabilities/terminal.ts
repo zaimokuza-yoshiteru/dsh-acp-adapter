@@ -13,8 +13,7 @@
 import { randomUUID } from 'node:crypto'
 import type { Readable } from 'node:stream'
 import type * as acp from '@agentclientprotocol/sdk'
-import { envSpecWithTombstones } from '../../runtime/process/subprocess.ts'
-import type { AcpSubprocessExitFact, SubprocessSeam } from '../../runtime/process/subprocess.ts'
+import type { AcpSubprocessExitFact, AcpSubprocessHandle, SubprocessSeam } from '../../runtime/process/subprocess.ts'
 import type { AcpTerminalHandlers as AcpTerminalHandlerFace } from '../../protocol/v1/types.ts'
 import type { AcpTerminalAuditData } from '../../domain/policy/events.ts'
 
@@ -38,6 +37,7 @@ export interface AcpTerminalPresentationSnapshot {
   readonly output: string
   readonly truncated: boolean
   readonly exitStatus: acp.TerminalExitStatus | null
+  readonly state: 'running' | 'completed' | 'error'
   readonly released: boolean
 }
 
@@ -105,7 +105,7 @@ interface TerminalRecord {
   readonly command: string
   readonly args: readonly string[]
   readonly cwd: string
-  readonly handle: ReturnType<SubprocessSeam['spawn']>
+  handle: AcpSubprocessHandle
   readonly output: TerminalOutputRing
   done: Promise<AcpSubprocessExitFact | undefined>
   exit: AcpSubprocessExitFact | null
@@ -133,12 +133,36 @@ function assertArgs(args: readonly string[]): void {
   if (args.some((arg) => arg.includes('\0'))) throw new Error('terminal arguments must not contain NUL')
 }
 
+function isSpawnNotFound(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false
+  const candidate = error as { readonly code?: unknown; readonly message?: unknown }
+  return candidate.code === 'ENOENT' || (typeof candidate.message === 'string' && /(?:ENOENT|not found|cannot find)/iu.test(candidate.message))
+}
+
+/**
+ * A few ACP clients send a shell command in `command` while leaving `args`
+ * empty (for example `uname -s`). Try the structured executable first; only a
+ * launch-level ENOENT may fall back to the platform shell. An exited command
+ * (including shell exit 127) is never retried, so this cannot duplicate an
+ * already-running process or hide an agent command failure.
+ */
+function shellFallbackArgv(command: string, args: readonly string[]): readonly string[] {
+  const commandLine = [command, ...args].join(' ')
+  return process.platform === 'win32'
+    ? ['cmd.exe', '/d', '/s', '/c', commandLine]
+    : ['/bin/sh', '-c', commandLine]
+}
+
 function assertEnvName(name: string): void {
   if (name.length === 0 || name.includes('=') || /[\0\r\n]/.test(name)) throw new Error('terminal environment names must be non-empty and must not contain =, NUL, or line breaks')
 }
 
 function exitStatus(exit: AcpSubprocessExitFact | null): acp.TerminalExitStatus | null {
   return exit === null ? null : { exitCode: exit.exitCode, signal: exit.signal }
+}
+
+function terminalState(record: Pick<TerminalRecord, 'exit' | 'error'>): AcpTerminalPresentationSnapshot['state'] {
+  return record.error !== undefined ? 'error' : record.exit === null ? 'running' : 'completed'
 }
 
 function auditEvent(record: TerminalRecord, operation: AcpTerminalAuditData['operation'], outcome: AcpTerminalAuditData['outcome']): AcpTerminalAuditData {
@@ -180,6 +204,7 @@ export function createAcpTerminalHandlers(options: AcpTerminalHandlersOptions): 
       output: record.output.text(),
       truncated: record.output.truncated,
       exitStatus: exitStatus(record.exit),
+      state: terminalState(record),
     })
     pruneReleased()
   }
@@ -216,13 +241,21 @@ export function createAcpTerminalHandlers(options: AcpTerminalHandlersOptions): 
       env[variable.name] = variable.value
     }
     const output = new TerminalOutputRing(params.outputByteLimit)
-    const handle = options.subprocess.spawn({
+    const spawnSpec = {
       argv: [params.command, ...args],
       cwd,
-      env: envSpecWithTombstones(env, process.env),
+      env,
       graceMs: 2_000,
-    })
+    } as const
+    const canShellFallback = args.length === 0
     const id = `term_${randomUUID().replaceAll('-', '')}`
+    let handle: AcpSubprocessHandle
+    try {
+      handle = options.subprocess.spawn(spawnSpec)
+    } catch (error) {
+      if (!canShellFallback || !isSpawnNotFound(error)) throw error
+      handle = options.subprocess.spawn({ ...spawnSpec, argv: shellFallbackArgv(params.command, args) })
+    }
     const record = {
       id,
       acpSessionId: params.sessionId,
@@ -240,12 +273,28 @@ export function createAcpTerminalHandlers(options: AcpTerminalHandlersOptions): 
       auditTail: Promise.resolve(),
     } as TerminalRecord
     active.set(id, record)
-    attachOutput(handle.stdout, (chunk) => { record.output.append(chunk); refreshReleasedSnapshot(record) })
-    attachOutput(handle.stderr, (chunk) => { record.output.append(chunk); refreshReleasedSnapshot(record) })
-    // ACP v1 exposes no terminal stdin method. Closing stdin prevents commands
-    // that read input from remaining alive forever while the Agent only polls output.
-    try { handle.stdin?.end() } catch { /* process teardown remains authoritative */ }
-    record.done = handle.done.then((fact) => {
+    const attachHandle = (nextHandle: AcpSubprocessHandle): void => {
+      record.handle = nextHandle
+      attachOutput(nextHandle.stdout, (chunk) => { record.output.append(chunk); refreshReleasedSnapshot(record) })
+      attachOutput(nextHandle.stderr, (chunk) => { record.output.append(chunk); refreshReleasedSnapshot(record) })
+      // ACP v1 exposes no terminal stdin method. Closing stdin prevents commands
+      // that read input from remaining alive forever while the Agent only polls output.
+      try { nextHandle.stdin?.end() } catch { /* process teardown remains authoritative */ }
+    }
+    attachHandle(handle)
+    const settleProcess = async (): Promise<AcpSubprocessExitFact> => {
+      try {
+        return await handle.done
+      } catch (error) {
+        // A process that was accepted by the OS and later exits with an error
+        // must not be retried. Only the launch-level ENOENT path is eligible.
+        if (!canShellFallback || !isSpawnNotFound(error)) throw error
+        const fallback = options.subprocess.spawn({ ...spawnSpec, argv: shellFallbackArgv(params.command, args) })
+        attachHandle(fallback)
+        return await fallback.done
+      }
+    }
+    record.done = settleProcess().then((fact) => {
       record.exit = fact
       refreshReleasedSnapshot(record)
       void recordAudit(record, 'exit', 'exited')
@@ -261,7 +310,10 @@ export function createAcpTerminalHandlers(options: AcpTerminalHandlersOptions): 
 
   const terminalOutput = async (params: acp.TerminalOutputRequest): Promise<acp.TerminalOutputResponse> => {
     const record = get(params.terminalId, params.sessionId)
-    await recordAudit(record, 'output-summary', record.exit === null ? 'running' : 'exited')
+    const outcome = record.error === undefined
+      ? record.exit === null ? 'running' : 'exited'
+      : 'error'
+    await recordAudit(record, 'output-summary', outcome)
     return {
       output: record.output.text(),
       truncated: record.output.truncated,
@@ -312,6 +364,7 @@ export function createAcpTerminalHandlers(options: AcpTerminalHandlersOptions): 
         output: record.output.text(),
         truncated: record.output.truncated,
         exitStatus: exitStatus(record.exit),
+        state: terminalState(record),
         released: true,
       }
       released.set(record.id, snapshot)
@@ -376,6 +429,7 @@ export function createAcpTerminalHandlers(options: AcpTerminalHandlersOptions): 
       output: record.output.text(),
       truncated: record.output.truncated,
       exitStatus: exitStatus(record.exit),
+      state: terminalState(record),
       released: record.released,
     }
   }

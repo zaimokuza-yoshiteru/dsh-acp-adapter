@@ -10,6 +10,22 @@ export const ACP_FS_MAX_LINES = 20_000
 export const ACP_FS_MAX_LINE = 1_000_000
 export const ACP_FS_DEFAULT_TIMEOUT_MS = 30_000
 
+/** Stable, content-free reason codes for failed filesystem requests. */
+export type AcpFileAuditReason =
+  | 'invalid-path'
+  | 'not-regular-file'
+  | 'file-too-large'
+  | 'io-error'
+  | 'invalid-utf8'
+  | 'line-limit-exceeded'
+  | 'invalid-line'
+  | 'invalid-limit'
+  | 'aborted'
+  | 'timeout'
+  | 'concurrent-change'
+  | 'content-too-large'
+  | 'invalid-content'
+
 export interface AcpFileOperationAudit {
   readonly operation: 'read' | 'write'
   readonly path: string
@@ -19,6 +35,11 @@ export interface AcpFileOperationAudit {
   readonly outcome: 'ok' | 'error' | 'aborted' | 'timeout' | 'concurrent-change'
   readonly acpSessionId: string
   readonly profileId: string
+  /** Present for diagnostics on failed requests; never contains file content or OS error text. */
+  readonly reason?: AcpFileAuditReason
+  /** Original ACP read window, when supplied and representable as a safe integer. */
+  readonly line?: number
+  readonly limit?: number
 }
 
 export interface AcpFileSystemOptions {
@@ -87,17 +108,57 @@ function abortOutcome(signal: AbortSignal, timeoutSignal: AbortSignal): 'aborted
   return timeoutSignal.aborted ? 'timeout' : signal.aborted ? 'aborted' : 'aborted'
 }
 
+function safeWindowNumber(value: number | null | undefined): number | undefined {
+  return value !== null && value !== undefined && Number.isSafeInteger(value) ? value : undefined
+}
+
+function readWindowFields(params: acp.ReadTextFileRequest): { readonly line?: number; readonly limit?: number } {
+  const line = safeWindowNumber(params.line)
+  const limit = safeWindowNumber(params.limit)
+  return { ...(line === undefined ? {} : { line }), ...(limit === undefined ? {} : { limit }) }
+}
+
+function readFailureReason(error: unknown, signal: AbortSignal, timeoutSignal: AbortSignal): AcpFileAuditReason {
+  if (timeoutSignal.aborted) return 'timeout'
+  if (signal.aborted) return 'aborted'
+  const message = error instanceof Error ? error.message : String(error)
+  if (message.includes('path must')) return 'invalid-path'
+  if (message.includes('not a regular file')) return 'not-regular-file'
+  if (message.includes('exceeds') && message.includes('bytes')) return 'file-too-large'
+  if (message.includes('line limits exceeded')) return 'line-limit-exceeded'
+  if (message.includes('content is not valid UTF-8')) return 'invalid-utf8'
+  if (message.includes('line must')) return 'invalid-line'
+  if (message.includes('limit must')) return 'invalid-limit'
+  return 'io-error'
+}
+
+async function emitRead(
+  options: AcpFileSystemOptions,
+  params: acp.ReadTextFileRequest,
+  event: AcpFileOperationAudit,
+  completed = false,
+): Promise<void> {
+  const enriched = { ...event, ...readWindowFields(params) }
+  if (completed) await emitCompleted(options, enriched)
+  else await emit(options.audit, enriched)
+}
+
 function checkReadWindow(text: string, line: number | null | undefined, limit: number | null | undefined): string {
   // ACP v1 permits zero for both fields. A zero line is treated as the first
   // line (the same compatibility behavior used by the reference clients),
   // while a zero limit intentionally returns an empty window.
-  if (line !== undefined && line !== null && (!Number.isInteger(line) || line < 0)) throw new TypeError('ACP fs: line must be a non-negative integer')
-  if (limit !== undefined && limit !== null && (!Number.isInteger(limit) || limit < 0 || limit > ACP_FS_MAX_LINES)) throw new TypeError(`ACP fs: limit must be between 0 and ${String(ACP_FS_MAX_LINES)}`)
+  if (line !== undefined && line !== null && (!Number.isSafeInteger(line) || line < 0)) throw new TypeError('ACP fs: line must be a safe non-negative integer')
+  // The request window is a presentation bound, not an additional file-size
+  // limit.  Accept an oversized safe limit and clamp it to the host's maximum
+  // instead of rejecting otherwise valid files (some ACP agents use a very
+  // large sentinel/default here).
+  if (limit !== undefined && limit !== null && (!Number.isSafeInteger(limit) || limit < 0)) throw new TypeError('ACP fs: limit must be a safe non-negative integer')
   if ((line === undefined || line === null) && (limit === undefined || limit === null)) return text
   const rows = text.split('\n')
   const start = line === undefined || line === null ? 0 : Math.max(0, line - 1)
   if (limit === 0) return ''
-  return rows.slice(start, limit === undefined || limit === null ? undefined : start + limit).join('\n')
+  const boundedLimit = limit === undefined || limit === null ? undefined : Math.min(limit, ACP_FS_MAX_LINES)
+  return rows.slice(start, boundedLimit === undefined ? undefined : start + boundedLimit).join('\n')
 }
 
 async function emit(audit: ((event: AcpFileOperationAudit) => void | Promise<void>) | undefined, event: AcpFileOperationAudit): Promise<void> {
@@ -151,13 +212,13 @@ export function createAcpFileSystemHandlers(options: AcpFileSystemOptions): AcpF
       }
       if (offset !== bytes.length) bytes = bytes.subarray(0, offset)
     } catch (error: unknown) {
-      await emit(options.audit, { operation: 'read', path: target, bytes: 0, beforeHash: null, afterHash: null, outcome: requestSignal.aborted ? abortOutcome(requestSignal, timeoutSignal) : 'error', acpSessionId: params.sessionId, profileId: options.profileId })
+      await emitRead(options, params, { operation: 'read', path: target, bytes: 0, beforeHash: null, afterHash: null, outcome: requestSignal.aborted ? abortOutcome(requestSignal, timeoutSignal) : 'error', acpSessionId: params.sessionId, profileId: options.profileId, reason: readFailureReason(error, requestSignal, timeoutSignal) })
       throw new Error(`ACP fs/read_text_file failed for ${target}: ${error instanceof Error ? error.message : String(error)}`)
     } finally { await handle?.close().catch(() => {}) }
     const beforeHash = hash(bytes)
     let content: string
     try { content = decode(bytes) } catch {
-      await emit(options.audit, { operation: 'read', path: target, bytes: bytes.byteLength, beforeHash, afterHash: null, outcome: 'error', acpSessionId: params.sessionId, profileId: options.profileId })
+      await emitRead(options, params, { operation: 'read', path: target, bytes: bytes.byteLength, beforeHash, afterHash: null, outcome: 'error', acpSessionId: params.sessionId, profileId: options.profileId, reason: 'invalid-utf8' })
       throw new Error(`ACP fs/read_text_file refused ${target}: content is not valid UTF-8`)
     }
     try {
@@ -166,10 +227,10 @@ export function createAcpFileSystemHandlers(options: AcpFileSystemOptions): AcpF
         throw new Error('line limits exceeded')
       }
       const result = checkReadWindow(content, params.line, params.limit)
-      await emitCompleted(options, { operation: 'read', path: target, bytes: Buffer.byteLength(result), beforeHash, afterHash: beforeHash, outcome: 'ok', acpSessionId: params.sessionId, profileId: options.profileId })
+      await emitRead(options, params, { operation: 'read', path: target, bytes: Buffer.byteLength(result), beforeHash, afterHash: beforeHash, outcome: 'ok', acpSessionId: params.sessionId, profileId: options.profileId }, true)
       return { content: result }
     } catch (error: unknown) {
-      await emit(options.audit, { operation: 'read', path: target, bytes: bytes.byteLength, beforeHash, afterHash: null, outcome: requestSignal.aborted ? abortOutcome(requestSignal, timeoutSignal) : 'error', acpSessionId: params.sessionId, profileId: options.profileId })
+      await emitRead(options, params, { operation: 'read', path: target, bytes: bytes.byteLength, beforeHash, afterHash: null, outcome: requestSignal.aborted ? abortOutcome(requestSignal, timeoutSignal) : 'error', acpSessionId: params.sessionId, profileId: options.profileId, reason: readFailureReason(error, requestSignal, timeoutSignal) })
       const message = error instanceof Error ? error.message : String(error)
       throw new Error(`ACP fs/read_text_file refused ${target}: ${message}`)
     }

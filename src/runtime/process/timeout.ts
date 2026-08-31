@@ -14,7 +14,7 @@
  *   窗口耗尽 resolve `undefined`（输家 promise 的迟到 rejection 已被 race 观察）。
  *
  * 故意不收口的一处（各有独立理由，勿“顺手”统一）：
- * - src/host-compat/agent-loop.ts 的 raceAbort 与 dispose idle 限时闸
+ * - provider composition 的 raceAbort 与 dispose idle 限时闸
  * （waitMachineIdle）：vendor 岛逐行钉版上游 + 岛自给自足（架构守卫
  *   禁止 hostCompat import runtime），两处都是岛内自含实现。
  *   （旧 persistence/platform.ts 的退避 sleep 已随 SQLite 重写删除。）
