@@ -6,8 +6,6 @@
  * unhandled。
  *
  * 原语：
- * - {@link delay}：定时 resolve。
- * - {@link withTimeout}：Promise 限时——超预算以调用方给的错误 reject。
  * - {@link abortAfter}：deadline(ms) + AbortSignal 组合——到点 abort，
  *   `cancel()` 清定时器（正常完成路径必须调，否则定时器滞留到触发为止）。
  * - {@link waitWithin}：限时 waitFor——窗口内 settle 回其值/其 rejection，
@@ -28,25 +26,6 @@
 /// <reference types="node" />
 
 import { clearTimeout, setTimeout } from 'node:timers'
-
-export function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms)
-  })
-}
-
-/** 给一步操作套上界；超时 arm 的 rejection 已被 race 观察，不会泄漏为 unhandled。 */
-export function withTimeout<T>(operation: Promise<T>, ms: number, makeError: () => Error): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const timeout = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => {
-      reject(makeError())
-    }, ms)
-  })
-  return Promise.race([operation, timeout]).finally(() => {
-    if (timer !== undefined) clearTimeout(timer)
-  })
-}
 
 /** {@link abortAfter} 的句柄：到点触发的 signal + 手动取消（清定时器）。 */
 export interface AcpDeadline {

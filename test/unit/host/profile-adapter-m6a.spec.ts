@@ -79,7 +79,7 @@ describe('ACP M6a session configuration convergence', () => {
     const calls: Array<[string, string | boolean]> = []
     const promptCount = { value: 0 }
     const initial = [...options(), { id: 'auto_compact', name: 'Auto compact', type: 'boolean' as const, category: 'behavior', currentValue: true }]
-    const adapter = new AcpProfileAdapter('test', () => profile, seam(), () => session(), new Ledger(), undefined, undefined, () => {
+    const adapter = new AcpProfileAdapter('test', () => profile, seam(), () => session(), new Ledger(), undefined, () => {
       const runtime = runtimeFor(calls, initial, promptCount)
       Object.assign(runtime, {
         modes: { currentModeId: 'code', availableModes: [{ id: 'code', name: 'Code' }, { id: 'plan', name: 'Plan' }] },
@@ -102,7 +102,7 @@ describe('ACP M6a session configuration convergence', () => {
   it('converges model and reasoning before prompt', async () => {
     const calls: Array<[string, string | boolean]> = []
     const promptCount = { value: 0 }
-    const adapter = new AcpProfileAdapter('test', () => profile, seam(), () => session(), new Ledger(), undefined, undefined, () => runtimeFor(calls, options(), promptCount), sidecar)
+    const adapter = new AcpProfileAdapter('test', () => profile, seam(), () => session(), new Ledger(), undefined, () => runtimeFor(calls, options(), promptCount), sidecar)
     await drain(adapter.stream(request('session-a', { reasoningEffort: ReasoningEffortId('high') })))
     expect(calls).toEqual([['model', 'target-model'], ['thinking', 'high']])
     expect(promptCount.value).toBe(1)
@@ -114,7 +114,7 @@ describe('ACP M6a session configuration convergence', () => {
     const initial = options().map(option => option.type !== 'select'
       ? option
       : { ...option, currentValue: option.id === 'model' ? 'target-model' : 'high' })
-    const adapter = new AcpProfileAdapter('test', () => profile, seam(), () => session(), new Ledger(), undefined, undefined, () => runtimeFor(calls, initial, promptCount), sidecar)
+    const adapter = new AcpProfileAdapter('test', () => profile, seam(), () => session(), new Ledger(), undefined, () => runtimeFor(calls, initial, promptCount), sidecar)
     await drain(adapter.stream(request('session-b', { reasoningEffort: ReasoningEffortId('high') })))
     expect(calls).toEqual([])
     expect(promptCount.value).toBe(1)
@@ -128,7 +128,7 @@ describe('ACP M6a session configuration convergence', () => {
       : option.id === 'model'
         ? { ...option, currentValue: 'target-model', options: [{ value: 'old-model', name: 'Old' }] }
         : { ...option, currentValue: 'high', options: [{ value: 'low', name: 'Low' }] })
-    const adapter = new AcpProfileAdapter('test', () => profile, seam(), () => session(), new Ledger(), undefined, undefined, () => runtimeFor(calls, initial, promptCount), sidecar)
+    const adapter = new AcpProfileAdapter('test', () => profile, seam(), () => session(), new Ledger(), undefined, () => runtimeFor(calls, initial, promptCount), sidecar)
     await drain(adapter.stream(request('session-legacy-current', { reasoningEffort: ReasoningEffortId('high') })))
     expect(calls).toEqual([])
     expect(promptCount.value).toBe(1)
@@ -143,7 +143,7 @@ describe('ACP M6a session configuration convergence', () => {
       : option.id === 'model'
         ? { ...option, currentValue: 'target-model' }
         : { ...option, currentValue: 'on', options: [{ value: 'on', name: 'Thinking On' }] })
-    const adapter = new AcpProfileAdapter('kimi', () => kimiProfile, seam(), () => session(), new Ledger(), undefined, undefined, () => runtimeFor(calls, resumed, promptCount), sidecar)
+    const adapter = new AcpProfileAdapter('kimi', () => kimiProfile, seam(), () => session(), new Ledger(), undefined, () => runtimeFor(calls, resumed, promptCount), sidecar)
     await drain(adapter.stream(request('session-kimi-resume', { provider: 'acp-kimi', reasoningEffort: ReasoningEffortId('high') })))
     expect(calls).toEqual([])
     expect(promptCount.value).toBe(1)
@@ -157,7 +157,7 @@ describe('ACP M6a session configuration convergence', () => {
       : option.id === 'model'
         ? { ...option, currentValue: 'target-model' }
         : { ...option, currentValue: 'on', options: [{ value: 'on', name: 'Thinking On' }] })
-    const adapter = new AcpProfileAdapter('test', () => profile, seam(), () => session(), new Ledger(), undefined, undefined, () => runtimeFor(calls, resumed, promptCount), sidecar)
+    const adapter = new AcpProfileAdapter('test', () => profile, seam(), () => session(), new Ledger(), undefined, () => runtimeFor(calls, resumed, promptCount), sidecar)
     await expect(drain(adapter.stream(request('session-generic-resume', { reasoningEffort: ReasoningEffortId('high') })))).rejects.toMatchObject({ code: 'ACP_CONFIG_UNSUPPORTED' })
     expect(calls).toEqual([])
     expect(promptCount.value).toBe(0)
@@ -168,7 +168,7 @@ describe('ACP M6a session configuration convergence', () => {
     const promptCount = { value: 0 }
     const ledger = new Ledger()
     const initial = options().map(option => option.id === 'model' && option.type === 'select' ? { ...option, currentValue: 'target-model' } : option)
-    const adapter = new AcpProfileAdapter('test', () => profile, seam(), () => session(), ledger, undefined, undefined, () => runtimeFor(calls, initial, promptCount), sidecar)
+    const adapter = new AcpProfileAdapter('test', () => profile, seam(), () => session(), ledger, undefined, () => runtimeFor(calls, initial, promptCount), sidecar)
     await expect(drain(adapter.stream(request('session-c', { reasoningEffort: ReasoningEffortId('xhigh') })))).rejects.toMatchObject({ code: 'ACP_CONFIG_UNSUPPORTED' })
     expect(calls).toEqual([])
     expect(promptCount.value).toBe(0)
@@ -182,7 +182,7 @@ describe('ACP M6a session configuration convergence', () => {
     const calls: Array<[string, string | boolean]> = []
     const promptCount = { value: 0 }
     const ledger = new Ledger()
-    const adapter = new AcpProfileAdapter('test', () => profile, seam(), () => session(), ledger, undefined, undefined, () => runtimeFor(calls, options(), promptCount, behavior), sidecar)
+    const adapter = new AcpProfileAdapter('test', () => profile, seam(), () => session(), ledger, undefined, () => runtimeFor(calls, options(), promptCount, behavior), sidecar)
     await expect(drain(adapter.stream(request(`session-${_label}`, { reasoningEffort: ReasoningEffortId('high') })))).rejects.toMatchObject({ code: 'ACP_CONFIG_SYNC_FAILED' })
     expect(promptCount.value).toBe(0)
     expect(ledger.records).toEqual([])
@@ -194,7 +194,7 @@ describe('ACP M6a session configuration convergence', () => {
     const ledger = new Ledger()
     const controller = new AbortController()
     controller.abort()
-    const adapter = new AcpProfileAdapter('test', () => profile, seam(), () => session(), ledger, undefined, undefined, () => runtimeFor(calls, options(), promptCount), sidecar)
+    const adapter = new AcpProfileAdapter('test', () => profile, seam(), () => session(), ledger, undefined, () => runtimeFor(calls, options(), promptCount), sidecar)
     await expect(drain(adapter.stream(request('session-abort', { reasoningEffort: ReasoningEffortId('high'), signal: controller.signal })))).rejects.toThrow()
     expect(promptCount.value).toBe(0)
     expect(ledger.records).toEqual([])
@@ -203,7 +203,7 @@ describe('ACP M6a session configuration convergence', () => {
   it('uses the reasoning values returned after a model switch', async () => {
     const calls: Array<[string, string | boolean]> = []
     const promptCount = { value: 0 }
-    const adapter = new AcpProfileAdapter('test', () => profile, seam(), () => session(), new Ledger(), undefined, undefined, () => runtimeFor(calls, options(), promptCount, { reasoningAfterModel: ['low', 'ultra'] }), sidecar)
+    const adapter = new AcpProfileAdapter('test', () => profile, seam(), () => session(), new Ledger(), undefined, () => runtimeFor(calls, options(), promptCount, { reasoningAfterModel: ['low', 'ultra'] }), sidecar)
     await drain(adapter.stream(request('session-model-dependent', { reasoningEffort: ReasoningEffortId('ultra') })))
     expect(calls).toEqual([['model', 'target-model'], ['thinking', 'ultra']])
     expect(promptCount.value).toBe(1)
@@ -213,7 +213,7 @@ describe('ACP M6a session configuration convergence', () => {
     const calls: Array<[string, string | boolean]> = []
     const promptCount = { value: 0 }
     const ledger = new Ledger()
-    const adapter = new AcpProfileAdapter('test', () => profile, seam(), () => session(), ledger, undefined, undefined, () => runtimeFor(calls, options(), promptCount, { reasoningAfterModel: ['low', 'ultra'] }), sidecar)
+    const adapter = new AcpProfileAdapter('test', () => profile, seam(), () => session(), ledger, undefined, () => runtimeFor(calls, options(), promptCount, { reasoningAfterModel: ['low', 'ultra'] }), sidecar)
     await expect(drain(adapter.stream(request('session-rollback', { reasoningEffort: ReasoningEffortId('xhigh') })))).rejects.toMatchObject({ code: 'ACP_CONFIG_UNSUPPORTED' })
     expect(calls).toEqual([['model', 'target-model'], ['model', 'old-model']])
     expect(promptCount.value).toBe(0)
@@ -224,7 +224,7 @@ describe('ACP M6a session configuration convergence', () => {
     const calls: Array<[string, string | boolean]> = []
     const promptCount = { value: 0 }
     const ledger = new Ledger()
-    const adapter = new AcpProfileAdapter('test', () => profile, seam(), () => session(), ledger, undefined, undefined, () => runtimeFor(calls, options(), promptCount, { reasoningAfterModel: ['low', 'ultra'], failRollback: true }), sidecar)
+    const adapter = new AcpProfileAdapter('test', () => profile, seam(), () => session(), ledger, undefined, () => runtimeFor(calls, options(), promptCount, { reasoningAfterModel: ['low', 'ultra'], failRollback: true }), sidecar)
     await expect(drain(adapter.stream(request('session-rollback-failed', { reasoningEffort: ReasoningEffortId('xhigh') })))).rejects.toThrow('previous model could not be restored')
     expect(calls).toEqual([['model', 'target-model']])
     expect(promptCount.value).toBe(0)

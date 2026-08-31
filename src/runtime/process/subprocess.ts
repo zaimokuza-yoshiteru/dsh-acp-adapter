@@ -8,8 +8,7 @@
  * graceMs → SIGKILL 树级升级）、waitForExit 给整树退出证明、服务 dispose 兜底
  * 强杀全部托管进程。本模块定义本包消费的最小结构面（{@link SubprocessSeam}），
  * 采用**纯结构镜像、零 dsh 值级 import**（宿主模块实例一致性纪律：值级 import
- * dsh 包会让产物解析到第二实例；钉版锚点见
- * 各常量注释）。
+ * dsh 包会让产物解析到第二实例）。
  *
  * env 纪律：provider 的 spawn 底座是 `scrubbedParentEnv()`——去 credential
  * 形名与 DSH_*，PATH/HOME/代理变量等保留。本包
@@ -138,33 +137,3 @@ export type SubprocessSeamResolution =
 export const ACP_SUBPROCESS_UNAVAILABLE_MESSAGE =
   'the host provides no subprocess service (ctx.subprocess): the ACP adapter requires the dsh-base subprocess-local provider; '
   + 'refusing to spawn ACP agents on this host (native dsh routes are unaffected)'
-
-/**
- * compat 口径镜像（钉版）：上游 `@deepseek-ai/dsh-subprocess` 0.1.2-alpha.1 的
- * `SENSITIVE_ENV_PATTERN`（packages/subprocess/subprocess/src/index.ts:44，
- * 上游钉 dsh-v0.1.2-alpha.1 / commit cd5ef8148158）。credential 形名不穿透 scrub
- * 底座；显式 profile env 条目（合并在 scrub 之后）仍可由用户主动放行。
- * test/subprocess-seam.spec.ts 用 devDep 真值钉死本镜像。
- */
-export const ACP_SENSITIVE_ENV_PATTERN = /KEY|PASSWORD|SECRET|TOKEN/i
-
-/**
- * compat 口径镜像（钉版）：上游 `DSH_ENV_PREFIX`（packages/subprocess/subprocess/src/types.ts:13，
- * 同钉 dsh-v0.1.2-alpha.1）。scrub 对 `DSH_` 前缀大小写不敏感（Windows 环境键大小写不敏感）。
- */
-export const ACP_DSH_ENV_PREFIX = 'DSH_'
-
-/**
- * 预知 provider 的 `scrubbedParentEnv()` 结果（上游同文件 index.ts:60-66 的
- * 等价过滤，黑名单式：去 credential 形名 + 去 `DSH_` 前缀——大小写不敏感）。
- * 仅用于兼容/测试对拍，不直接作为子进程 env。
- */
-export function predictScrubbedParentEnv(source: Readonly<Record<string, string | undefined>>): Record<string, string> {
-  const env: Record<string, string> = {}
-  for (const [key, value] of Object.entries(source)) {
-    if (value !== undefined && !ACP_SENSITIVE_ENV_PATTERN.test(key) && !key.toUpperCase().startsWith(ACP_DSH_ENV_PREFIX)) {
-      env[key] = value
-    }
-  }
-  return env
-}

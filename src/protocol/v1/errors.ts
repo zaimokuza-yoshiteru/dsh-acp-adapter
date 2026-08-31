@@ -19,8 +19,7 @@
  *   test/integration/host/health.spec.ts 钉死）。
  * - 中文文案的呈现层分工（测试钉死的协议层英文诊断 message 不动）：选择器/面板
  *   中文文案在 src/host/composition/llm-stub.ts 与 src/client/ui/locales.ts，
- *   恢复/中断说明在 provider runtime；各类的中文名见
- *   {@link ACP_ERROR_CATEGORY_LABELS}（日志/文档对齐用）。
+ *   恢复/中断说明在 provider runtime。
  * @module @zaimokuza/dsh-acp-adapter/protocol/v1/errors
  */
 
@@ -53,21 +52,6 @@ export const ACP_ERROR_KIND_CATEGORY: Record<AcpErrorKind, AcpErrorCategory> = {
   aborted: 'user-rejected',
 }
 
-/** Locale-neutral taxonomy labels for logs and diagnostics. UI copy is localized client-side. */
-export const ACP_ERROR_CATEGORY_LABELS: Record<AcpErrorCategory, string> = {
-  config: 'configuration error',
-  'not-installed': 'agent not installed or not executable',
-  'auth-required': 'agent authentication required',
-  'protocol-incompatible': 'protocol incompatible',
-  timeout: 'operation timed out',
-  'agent-crash': 'agent exited unexpectedly',
-  'user-rejected': 'user rejected',
-  'resume-conflict': 'session recovery conflict',
-}
-
-/** correlation id 的形状（`acperr-<UTC 紧凑时间戳>-<base36 序号>-<6 位 hex>`）；测试与日志检索共用。 */
-export const ACP_CORRELATION_ID_PATTERN = /^acperr-\d{8}T\d{6}Z-[0-9a-z]+-[0-9a-f]{6}$/
-
 /** 进程内单调序号（同毫秒防撞；base36 编码进 id 第三段）。 */
 let correlationSeq = 0
 
@@ -80,16 +64,6 @@ export function newAcpCorrelationId(now: Date = new Date(), random: Buffer = ran
   correlationSeq = (correlationSeq + 1) % 1296
   const seq = correlationSeq.toString(36)
   return `acperr-${stamp}-${seq}-${random.toString('hex')}`
-}
-
-/** 日志/落盘文案的 correlation 后缀：沿 cause 链取最近一个带 correlation id 的错误；无则空串。 */
-export function acpErrorRef(error: unknown): string {
-  let current: unknown = error
-  while (current instanceof Error) {
-    if (current instanceof AcpClientError) return ` [${current.correlationId}]`
-    current = current.cause
-  }
-  return ''
 }
 
 export class AcpClientError extends Error {

@@ -339,12 +339,10 @@ export class AcpProfileAdapter extends LlmAdapter {
     private readonly subprocess: SubprocessSeamResolution,
     private readonly sessionOf: (sessionId: string) => SessionLike | undefined = () => undefined,
     ledgerStore: DispatchLedgerStore,
-    private readonly onAdmissionProof?: (sessionId: string, proof: CurrentStepProof) => void,
     private readonly probeFactory: (config: AcpStubAgentConfig) => ProfileGeneration['probe'] = (config) => createNativeProfileProbe(profileId, subprocess, config),
     private readonly runtimeFactory: (options: ConstructorParameters<typeof AcpSessionRuntime>[0]) => AcpProfileRuntime = (options) => new AcpSessionRuntime(options),
     private readonly sidecar?: AcpSidecar,
     private readonly attachments?: AcpAttachmentStore,
-    private readonly resolveMcpServers?: (capabilities: acp.AgentCapabilities | undefined) => readonly acp.McpServer[],
     private readonly resolveQuestions?: (dshSessionId: string) => AcpNativeQuestionBinding | undefined,
     private readonly projectExternalDelegation?: (observation: ExternalDelegationObservation, context: {
       readonly profileId: string
@@ -661,7 +659,6 @@ export class AcpProfileAdapter extends LlmAdapter {
       try {
         messages = admitCurrentStep(options, session, proof => {
           admissionProof = proof
-          self.onAdmissionProof?.(sessionKey, proof)
         })
       } catch (error: unknown) {
         if (error instanceof AcpAdmissionError) throw new LlmError(error.message, error.code)
@@ -1469,7 +1466,6 @@ export class AcpProfileAdapter extends LlmAdapter {
         env,
         ...(appendTerminalAudit === undefined ? {} : { audit: appendTerminalAudit }),
       }),
-      ...(this.resolveMcpServers === undefined ? {} : { resolveMcpServers: this.resolveMcpServers }),
       onPermissionRequest: async (params: acp.RequestPermissionRequest, signal?: AbortSignal): Promise<acp.RequestPermissionResponse> => {
         const binding = this.resolveQuestions?.(sessionId)
         if (binding === undefined) return { outcome: { outcome: 'cancelled' } }

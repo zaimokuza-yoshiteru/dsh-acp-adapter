@@ -106,13 +106,12 @@ describe('ACP activity journal', () => {
     expect((await sidecar.activitySnapshot(SessionId('session-1'))).map((row) => row.activitySeq)).toEqual([1, 2])
   })
 
-  it('survives a cold reopen and retains activity rows independently of audit rows', async () => {
+  it('survives a cold reopen', async () => {
     const { root, sidecar } = store()
     await sidecar.upsertActivity(activity('cold'))
     await sidecar.dispose()
     const reopened = createAcpSidecar({ root })
     expect((await reopened.activitySnapshot(SessionId('session-1'))).map((item) => item.activityId)).toEqual(['cold'])
-    await reopened.remove(SessionId('session-1'))
     expect(await reopened.activityHead(SessionId('session-1'))).toBe(1)
     await reopened.dispose()
   })
@@ -142,16 +141,6 @@ describe('ACP activity journal', () => {
     await reopened.dispose()
   })
 
-  it('supports explicit activity cleanup independently from session removal', async () => {
-    const { sidecar } = store()
-    await sidecar.upsertActivity(activity('keep'))
-    await sidecar.upsertActivity(activity('clear'))
-    await sidecar.clearActivity(SessionId('session-1'), 'clear')
-    expect((await sidecar.activitySnapshot(SessionId('session-1'))).map((row) => row.activityId)).toEqual(['keep'])
-    await sidecar.clearActivity(SessionId('session-1'))
-    expect(await sidecar.activitySnapshot(SessionId('session-1'))).toEqual([])
-  })
-
   it('bounds presentation and raw detail without allowing unbounded rows', async () => {
     const { sidecar } = store()
     const saved = await sidecar.upsertActivity(activity('bounded', undefined, { presentation: 'x'.repeat(10_000), rawDetail: 'y'.repeat(100_000), rawDetailRef: 'z'.repeat(1_000) }))
@@ -170,14 +159,6 @@ describe('ACP activity journal', () => {
     const plain = await sidecar.upsertActivity(activity('plain', undefined, { rawDetail: 'authorization: Bearer plain-secret-value sk-abcdefghijklmnopqrstuvwxyz123456' }))
     expect(plain.rawDetail).not.toContain('plain-secret-value')
     expect(plain.rawDetail).not.toContain('sk-abcdefghijklmnopqrstuvwxyz123456')
-  })
-
-  it('applies the sidecar retention policy to activity rows', async () => {
-    const { sidecar } = store(1_700_000_000_100)
-    await sidecar.upsertActivity(activity('old', 1_700_000_000_000))
-    await sidecar.upsertActivity(activity('new', 1_700_000_000_099))
-    await sidecar.enforceRetention({ olderThanMs: 50 })
-    expect((await sidecar.activitySnapshot(SessionId('session-1'))).map((item) => item.activityId)).toEqual(['new'])
   })
 
   it('filters snapshots, revisions, and heads by owner and prompt anchor', async () => {

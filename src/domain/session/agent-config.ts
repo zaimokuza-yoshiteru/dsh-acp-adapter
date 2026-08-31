@@ -35,16 +35,6 @@ export function acpAgentIdFromRoute(provider: string): string | undefined {
 }
 
 /**
- * Conventional config-option id of the mode selector. It is also the only key
- * for which options-sync may fall back to the ACP `set_mode` RPC when an Agent
- * exposes the legacy modes state but no mode config option. Lives in this leaf so
- * remote service (src/remote/service.ts) can share it without pulling
- * options-sync.ts (and its dsh-agent import chain) into the typert analysis
- * closure.
- */
-export const ACP_MODE_OPTION_ID = 'mode'
-
-/**
  * Per-agent configuration the stub consumes. The registry
  * (src/host/composition/installed-profile-registry.ts) stores exactly this shape per agent id in
  * the `dsh-acp` settings namespace; declared in this leaf module so neither the
@@ -288,9 +278,9 @@ export const ACP_BUILTIN_AGENT_TEMPLATES: readonly AcpBuiltinAgentTemplate[] = [
  * 缓存，避免凭证轮换后继续展示旧探测结果；明文值绝不进入 key。这函数同时服务 llm-stub
  * 缓存命中、五态新鲜度与创建门，三处消费同一口径。
  *
- * 自 src/host/composition/llm-stub.ts 下沉到本叶子：remote 层（health 的
- * 五态派生新鲜度判定）与 hostFactory 层（会话创建门）都要消费它，放 host
- * 组合层会把它们拖进 host import（分层守卫禁止）。
+ * 自 src/host/composition/llm-stub.ts 下沉到本叶子：remote 层的 health
+ * 新鲜度判定与 installed-profile registry 的会话创建门都要消费它，放 host
+ * 组合层会造成不必要的跨层依赖。
  */
 export function acpProbeConfigKey<C extends Pick<AcpStubAgentConfig, 'command' | 'args' | 'env'> & { readonly runtime?: AcpAgentId }>(config: C): string {
   const envKeys = Object.keys(config.env).sort()

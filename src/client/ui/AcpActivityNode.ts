@@ -641,4 +641,3 @@ export function createAcpActivityDefinition(
 
 /** Legacy/test-safe instance. Production supplies the profile registry's
  * ownership predicate through {@link createAcpActivityDefinition}. */
-export const acpActivityDefinition = createAcpActivityDefinition(() => false)

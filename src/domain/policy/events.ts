@@ -34,10 +34,6 @@ export const ACP_PERMISSION_AUDIT_KIND = 'permission' as const
  * 生产者是 host/composition/profile-adapter.ts 的 provider bridge（degradation 回调），
  * 接线在 src/domain/session/agent.ts（经 recordAudit seam 落 sidecar）。
  */
-export const ACP_DEGRADATION_AUDIT_KIND = 'degradation' as const
-
-/** DSH fork → ACP fork outcome, kept separate from degradation records. */
-export const ACP_SESSION_FORK_AUDIT_KIND = 'session-fork' as const
 export type AcpSessionForkOutcome = 'inherited' | 'blank'
 export type AcpSessionForkReason =
   | 'inherited'
@@ -354,14 +350,4 @@ export function createPermissionDecidedAudit(init: PermissionDecidedAuditInit): 
     ...(init.decisionVia === undefined ? {} : { decisionVia: init.decisionVia }),
     ...(init.note === undefined ? {} : { note: init.note }),
   }
-}
-
-/** Narrow audit payload to the `asked` phase. */
-export function isPermissionAskedAudit(data: AcpPermissionAuditData): data is AcpPermissionAskedAuditData {
-  return data.phase === 'asked'
-}
-
-/** Narrow audit payload to the `decided` phase. */
-export function isPermissionDecidedAudit(data: AcpPermissionAuditData): data is AcpPermissionDecidedAuditData {
-  return data.phase === 'decided'
 }

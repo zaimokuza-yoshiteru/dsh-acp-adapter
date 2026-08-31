@@ -47,8 +47,6 @@ export interface AcpSessionRuntimeOptions {
   /** Optional host capability handlers, created after the native launch environment is known. */
   readonly createFileSystemHandlers?: (context: { readonly cwd: string; readonly env: Readonly<Record<string, string>> }) => AcpFileSystemHandlers
   readonly createTerminalHandlers?: (context: { readonly cwd: string; readonly env: Readonly<Record<string, string>> }) => AcpTerminalHandlers
-  /** Trusted, already validated MCP definitions. Undefined means no injection. */
-  readonly resolveMcpServers?: (capabilities: acp.AgentCapabilities | undefined) => readonly acp.McpServer[]
   /** Replay/load notifications are staging-only; the DSH log remains authoritative. */
   readonly onSessionUpdate?: (notification: AcpSessionNotification) => void
   /** Host-owned approval bridge. The optional signal is the active prompt lifetime. */
@@ -185,25 +183,6 @@ async function completePermissionToolCall(
 }
 
 /** A bounded, detached ACP session configuration snapshot. */
-/** Validate trusted MCP definitions against the Agent's negotiated transport capabilities. */
-export function mcpServersForCapabilities(
-  servers: readonly acp.McpServer[],
-  capabilities: acp.AgentCapabilities | undefined,
-): readonly acp.McpServer[] {
-  for (const server of servers) {
-    const kind = 'type' in server ? server.type : 'stdio'
-    const supported = kind === 'http'
-      ? capabilities?.mcpCapabilities?.http === true
-      : kind === 'sse'
-        ? capabilities?.mcpCapabilities?.sse === true
-        : kind === 'acp'
-          ? capabilities?.mcpCapabilities?.acp === true
-          : true
-    if (!supported) throw new Error(`ACP_MCP_UNSUPPORTED: agent did not advertise MCP transport "${kind}"`)
-  }
-  return servers
-}
-
 /** One reusable ACP connection/session, lazily started on the first prompt. */
 export class AcpSessionRuntime {
   private connection: AcpClientConnection | undefined
@@ -287,9 +266,9 @@ export class AcpSessionRuntime {
     await this.initialize(signal)
     const connection = this.connection
     if (connection === undefined) throw new Error('ACP connection is not started')
-      const caps = connection.agentCapabilities
-    const mcpServers = this.mcpServers(caps)
-      const rpcOptions = signal === undefined ? {} : { signal }
+    const caps = connection.agentCapabilities
+    const mcpServers: readonly acp.McpServer[] = []
+    const rpcOptions = signal === undefined ? {} : { signal }
     this.replayHandler = onReplay
     try {
       if (caps?.sessionCapabilities?.resume != null) {
@@ -320,7 +299,7 @@ export class AcpSessionRuntime {
     await this.initialize(signal)
     const connection = this.connection
     if (connection === undefined) throw new Error('ACP connection is not started')
-    const mcpServers = this.mcpServers(connection.agentCapabilities)
+    const mcpServers: readonly acp.McpServer[] = []
     try {
       if (!supportsFork(connection.agentCapabilities)) throw new Error('ACP_FORK_UNSUPPORTED')
       if (expected?.protocolVersion !== undefined && connection.protocolVersion !== expected.protocolVersion) throw new Error('ACP_FORK_PRECONDITION_FAILED')
@@ -464,7 +443,7 @@ export class AcpSessionRuntime {
     const connection = this.connection
     if (connection === undefined) throw new Error('ACP connection is not started')
     try {
-      const session = await connection.newSession({ cwd: this.options.cwd, mcpServers: this.mcpServers(connection.agentCapabilities) }, signal === undefined ? {} : { signal })
+      const session = await connection.newSession({ cwd: this.options.cwd, mcpServers: [] }, signal === undefined ? {} : { signal })
       this.applySessionSnapshot(session)
       this.sessionId = session.sessionId
     } catch (error) {
@@ -589,10 +568,5 @@ export class AcpSessionRuntime {
     } finally {
       if (onAbort !== undefined) signal.removeEventListener('abort', onAbort)
     }
-  }
-
-  private mcpServers(capabilities: acp.AgentCapabilities | undefined): readonly acp.McpServer[] {
-    const servers = this.options.resolveMcpServers?.(capabilities) ?? []
-    return mcpServersForCapabilities(servers, capabilities)
   }
 }

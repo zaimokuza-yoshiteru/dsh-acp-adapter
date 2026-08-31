@@ -3,7 +3,7 @@
 // permission-bridge-child.mjs 的模式），重开库断言：
 // - 已 commit 的记录（崩溃前第一批 5 条 permission）全部仍在；
 // - 库完整性无损（quick_check ok）、无半行/撕裂态（WAL 事务原子性）；
-// - 读路径正常（list/readLatestBinding/listBindings/exportAudit）；
+// - 读路径正常（list/readLatestBinding/listBindings）；
 // - 恢复后同一库可继续 append，seq 接续不冲突。
 
 import { spawn } from 'node:child_process'
@@ -11,6 +11,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { DatabaseSync } from 'node:sqlite'
 import { describe, expect, it } from 'vitest'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { createAcpSidecar, ACP_SIDECAR_DB_FILENAME } from '../../../src/persistence/sidecar.ts'
@@ -55,9 +56,9 @@ describe('崩溃恢复（kill -9 + WAL）', () => {
 
       // 重开库：崩溃恢复路径
       const store = createAcpSidecar({ root })
-      const health = await store.health()
-      expect(health.exists).toBe(true)
-      expect(health.integrity).toBe('ok') // quick_check：无半行/撕裂态
+      const checked = new DatabaseSync(path.join(root, ACP_SIDECAR_DB_FILENAME))
+      expect(checked.prepare('PRAGMA quick_check').get()).toEqual({ quick_check: 'ok' })
+      checked.close()
 
       const entries = await store.list(SessionId('sess-crash'))
       const permissions = entries.filter((entry) => entry.kind === 'permission')
@@ -74,7 +75,6 @@ describe('崩溃恢复（kill -9 + WAL）', () => {
       // 读路径全家桶正常
       expect(await store.readLatestBinding(SessionId('sess-crash'))).toBeUndefined()
       expect(await store.listBindings()).toEqual([])
-      expect((await store.exportAudit({ sessionId: SessionId('sess-crash') })).split('\n').filter((line) => line.length > 0).length).toBe(permissions.length)
 
       // 恢复后续写：seq 从库里 MAX+1 接续，不与崩溃前记录冲突
       await store.append(SessionId('sess-crash'), {
@@ -117,7 +117,9 @@ describe('崩溃恢复（kill -9 + WAL）', () => {
       const entries = await reopened.list(SessionId('sess-1'))
       expect(entries).toHaveLength(1)
       expect(entries[0]?.data).toMatchObject({ requestId: 'req-wal' })
-      expect((await reopened.health()).integrity).toBe('ok')
+      const checked = new DatabaseSync(path.join(root, ACP_SIDECAR_DB_FILENAME))
+      expect(checked.prepare('PRAGMA quick_check').get()).toEqual({ quick_check: 'ok' })
+      checked.close()
       await reopened.dispose()
       await store.dispose() // 旧连接仍可正常关闭（WAL 已被接管/checkpoint）
     } finally {

@@ -34,35 +34,6 @@ export interface DispatchLedgerStore {
   read(dshSessionId: string, key: string): Promise<DispatchRecord | undefined>
 }
 
-/** In-memory store for isolated composition tests only; never the production default. */
-export class MemoryDispatchLedgerStore implements DispatchLedgerStore {
-  private readonly records = new Map<string, DispatchRecord>()
-
-  async begin(record: DispatchRecord): Promise<void> {
-    const index = `${record.dshSessionId}:${record.key}`
-    const existing = this.records.get(index)
-    if (existing !== undefined) throw new Error(`ACP_RECOVERY_REQUIRED: dispatch ${record.key} is ${existing.state}`)
-    for (const [candidate, value] of this.records) {
-      if (!candidate.startsWith(`${record.dshSessionId}:`)) continue
-      if (value.state === 'dispatch-uncertain') throw new Error(`ACP_RECOVERY_REQUIRED: dispatch ${value.key} is dispatch-uncertain`)
-      this.records.delete(candidate)
-    }
-    this.records.set(index, record)
-  }
-
-  async settle(dshSessionId: string, key: string): Promise<void> {
-    const index = `${dshSessionId}:${key}`
-    const existing = this.records.get(index)
-    if (existing === undefined) throw new Error(`ACP_LEDGER_MISSING: dispatch ${key} was not begun`)
-    if (existing.state === 'settled') return
-    this.records.set(index, { ...existing, state: 'settled', settledAt: Date.now() })
-  }
-
-  async read(dshSessionId: string, key: string): Promise<DispatchRecord | undefined> {
-    return this.records.get(`${dshSessionId}:${key}`)
-  }
-}
-
 /** A small adapter around the durable sidecar methods. */
 export class DispatchLedger {
   constructor(private readonly store: DispatchLedgerStore) {}

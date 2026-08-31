@@ -50,7 +50,7 @@ describe('AcpProfileAdapter generation and dispatch boundaries', () => {
     let spawns = 0
     let cacheValid = false
     const models = [{ id: 'model-a', name: 'Model A', provider: 'acp-shared' }]
-    const adapter = new AcpProfileAdapter('shared', () => current, seam(), () => undefined, new Ledger(), undefined, () => ({
+    const adapter = new AcpProfileAdapter('shared', () => current, seam(), () => undefined, new Ledger(), () => ({
       listModels: async () => {
         if (cacheValid) return models
         spawns += 1
@@ -78,8 +78,7 @@ describe('AcpProfileAdapter generation and dispatch boundaries', () => {
   it('accepts the finalized request copy delivered by the DSH LLM runtime', async () => {
     const message = user('current')
     let prompts = 0
-    const adapter = new AcpProfileAdapter('test', () => profile(), seam(), () => session(message), new Ledger(),
-      undefined, undefined, _options => ({
+    const adapter = new AcpProfileAdapter('test', () => profile(), seam(), () => session(message), new Ledger(), undefined, _options => ({
         acpSessionId: 'copied-request-session',
         start: async () => undefined,
         prompt: async () => { prompts += 1; return { stopReason: 'end_turn' } as never },
@@ -95,7 +94,6 @@ describe('AcpProfileAdapter generation and dispatch boundaries', () => {
     let current = profile('old-agent')
     const created: string[] = []
     const adapter = new AcpProfileAdapter('test', () => current, seam(), () => undefined, new Ledger(),
-      undefined,
       config => {
         created.push(config.command)
         return { listModels: async provider => [{ id: config.command, name: config.command, provider }] }
@@ -113,8 +111,7 @@ describe('AcpProfileAdapter generation and dispatch boundaries', () => {
     const current = profile()
     const ledger = new Ledger()
     const message = user('current')
-    const adapter = new AcpProfileAdapter('test', () => current, seam(), () => session(message), ledger,
-      undefined, undefined, _options => ({
+    const adapter = new AcpProfileAdapter('test', () => current, seam(), () => session(message), ledger, undefined, _options => ({
         acpSessionId: 'stream-session',
         start: async () => undefined,
         prompt: async (_content, onUpdate) => {
@@ -142,7 +139,6 @@ describe('AcpProfileAdapter generation and dispatch boundaries', () => {
     const adapter = new AcpProfileAdapter('test', () => current, seam(), () => ({ header: { cwd: '/workspace' }, events: [
       { type: 'step/start', seq: 1, data: { turn: 1, step: 0 } }, { type: 'user/message', seq: 2, data: message },
     ] }) as never, ledger,
-      undefined,
       () => ({ listModels: async () => { await gate; return [{ id: 'model-a', name: 'Old model', provider: 'acp-test' }] } }),
       options => {
         const record = { config: options.config as AcpAgentConfig, prompts: 0 }
@@ -166,8 +162,7 @@ describe('AcpProfileAdapter generation and dispatch boundaries', () => {
     const runtimes: AcpAgentConfig[] = []
     const first = user('one')
     const second = user('two')
-    const adapter = new AcpProfileAdapter('test', () => current, seam(), id => id === 'old-session' ? session(first) : session(second), ledger,
-      undefined, undefined, options => {
+    const adapter = new AcpProfileAdapter('test', () => current, seam(), id => id === 'old-session' ? session(first) : session(second), ledger, undefined, options => {
         runtimes.push(options.config as AcpAgentConfig)
         return { acpSessionId: 'test-session', start: async () => undefined, prompt: async () => ({ stopReason: 'end_turn' } as never), close: async () => undefined }
       }, durableSidecar)
@@ -186,7 +181,7 @@ describe('AcpProfileAdapter generation and dispatch boundaries', () => {
     const adapter = new AcpProfileAdapter('test', () => current, seam(), () => ({ header: { cwd: '/workspace' }, events: [
       { type: 'step/start', seq: 1, data: { turn: 1, step: 0 } },
       { type: 'user/message', seq: 2, data: message },
-    ] }), ledger, undefined, undefined, _options => ({
+    ] }), ledger, undefined, _options => ({
       acpSessionId: 'test-session',
       start: async () => undefined,
       prompt: async (_content, _onUpdate, _signal) => { prompts += 1; return { stopReason: 'end_turn' } as never },
@@ -208,7 +203,7 @@ describe('AcpProfileAdapter generation and dispatch boundaries', () => {
     const message = user('current')
     const adapter = new AcpProfileAdapter('test', () => current, seam(), () => ({ header: { cwd: '/workspace' }, events: [
       { type: 'step/start', seq: 1, data: { turn: 1, step: 0 } }, { type: 'user/message', seq: 2, data: message },
-    ] }), ledger, undefined, undefined, _options => ({
+    ] }), ledger, undefined, _options => ({
       acpSessionId: 'test-session',
       start: async () => undefined,
       prompt: async (_content, _onUpdate, _signal) => { prompts += 1; throw new Error('remote interrupted') },
@@ -226,7 +221,7 @@ describe('AcpProfileAdapter generation and dispatch boundaries', () => {
     const message = user('current')
     const adapter = new AcpProfileAdapter('test', () => current, seam(), () => ({ header: { cwd: '/workspace' }, events: [
       { type: 'step/start', seq: 1, data: { turn: 1, step: 0 } }, { type: 'user/message', seq: 2, data: message },
-    ] }), ledger, undefined, undefined, _options => ({
+    ] }), ledger, undefined, _options => ({
       acpSessionId: 'test-session',
       start: async () => undefined,
       prompt: async (_content, _onUpdate, _signal) => { prompts += 1; return { stopReason: 'end_turn' } as never },
@@ -245,8 +240,7 @@ describe('AcpProfileAdapter generation and dispatch boundaries', () => {
     const calls = { initialize: 0, start: 0, prompt: 0, close: 0 }
     const adapter = new AcpProfileAdapter('test', () => current, seam(), () => ({ header: { cwd: '/workspace' }, events: [
       { type: 'step/start', seq: 1, data: { turn: 1, step: 0 } }, { type: 'user/message', seq: 2, data: message },
-    ] }) as never, ledger,
-      undefined, undefined, _options => ({
+    ] }) as never, ledger, undefined, _options => ({
         acpSessionId: 'image-session',
         agentCapabilities: {},
         initialize: async () => { calls.initialize += 1 },

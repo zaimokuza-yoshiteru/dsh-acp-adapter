@@ -15,7 +15,6 @@ import {
 export type { AcpApprovalOutcome } from './events.ts'
 export const ACP_PERMISSION_OPTIONS_MAX = 128
 export const ACP_PERMISSION_ID_MAX_BYTES = 512
-export const RAW_INPUT_SUMMARY_MAX_CHARS = 300
 
 export interface AcpPermissionAuditRecord {
   readonly kind: typeof ACP_PERMISSION_AUDIT_KIND

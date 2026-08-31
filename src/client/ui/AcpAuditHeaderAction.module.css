@@ -229,8 +229,6 @@
 .permission { color: var(--dsw-alias-state-business-primary); background: var(--dsw-alias-state-business-tertiary); }
 .agent { color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-bg-module-platform); }
 .files { color: var(--dsw-alias-state-success-primary); background: var(--dsw-alias-state-success-tertiary); }
-.config { color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-bg-layer-2); }
-
 .summary {
   min-width: 0;
   overflow: hidden;

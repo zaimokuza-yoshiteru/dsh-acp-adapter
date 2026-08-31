@@ -41,7 +41,7 @@ import {
   acpAgentIdFromRoute,
   acpRouteId,
 } from '../../domain/session/agent-config.ts'
-import type { AcpAgentConfig, AcpAgentId, AcpBuiltinAgentTemplate, AcpResolvedAgent } from '../../domain/session/agent-config.ts'
+import type { AcpAgentConfig, AcpAgentId, AcpResolvedAgent } from '../../domain/session/agent-config.ts'
 import { createAcpLogger } from '../../domain/observability/logging.ts'
 import { acpProbeConfigKey } from './llm-stub.ts'
 import { AcpProfileAdapter } from './profile-adapter.ts'
@@ -61,9 +61,6 @@ import type { SessionPersistence } from '@deepseek-ai/dsh-session-persistence'
 import { ExternalSubagentProjector } from '../subagent/external-projector.ts'
 
 export { acpProbeConfigKey }
-
-/** Agent id → config template, e.g. the panel's "添加 Devin" button. */
-export type AcpAgentTemplate = AcpBuiltinAgentTemplate
 
 // Built-in templates and runtime descriptors live in the zero-import profile
 // data module and are re-exported here for the host composition surface.
@@ -576,10 +573,8 @@ export function installInstalledProfileRegistry(ctx: Context, options: Installed
             ledgerStore,
             undefined,
             undefined,
-            undefined,
             sidecar,
             attachments,
-            undefined,
             resolveNativeQuestions,
             sidecar === undefined ? undefined : async (observation, context) => {
               if (!projectExternalSubagents) return undefined

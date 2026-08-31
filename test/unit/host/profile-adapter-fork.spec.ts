@@ -129,7 +129,7 @@ describe('provider adapter ACP fork boundary', () => {
       const parent = makeSession(parentMessage)
       sessions.set('parent', parent)
       const parentCounts = { starts: 0, forks: 0, prompts: 0 }
-      const parentAdapter = new AcpProfileAdapter('test', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, undefined, runtimeFactory(parentCounts), sidecar)
+      const parentAdapter = new AcpProfileAdapter('test', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, runtimeFactory(parentCounts), sidecar)
       const parentChunks: unknown[] = []
       for await (const chunk of parentAdapter.stream(request('parent', parentMessage))) parentChunks.push(chunk)
       expect(parentChunks.some(chunk => typeof chunk === 'object' && chunk !== null && 'type' in chunk && chunk.type === 'finish' && 'replayState' in chunk)).toBe(true)
@@ -140,7 +140,7 @@ describe('provider adapter ACP fork boundary', () => {
       const child = childFromParent(parentWithMarker, 'parent', childMessage)
       sessions.set('child', child)
       const childCounts = { starts: 0, forks: 0, prompts: 0 }
-      const childAdapter = new AcpProfileAdapter('test', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, undefined, runtimeFactory(childCounts, async parentId => {
+      const childAdapter = new AcpProfileAdapter('test', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, runtimeFactory(childCounts, async parentId => {
         expect(parentId).toBe('agent-parent')
       }), sidecar)
       await drain(childAdapter.stream(request('child', childMessage)))
@@ -162,13 +162,13 @@ describe('provider adapter ACP fork boundary', () => {
       sessions.set('parent', makeSession(parentMessage))
       const parentCounts = { starts: 0, forks: 0, prompts: 0 }
       const parent = sessions.get('parent')!
-      await drain(new AcpProfileAdapter('test', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, undefined, runtimeFactory(parentCounts), sidecar).stream(request('parent', parentMessage)))
+      await drain(new AcpProfileAdapter('test', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, runtimeFactory(parentCounts), sidecar).stream(request('parent', parentMessage)))
       const parentWithMarker = await parentWithReplay(sidecar, 'parent', parent)
       sessions.set('parent', parentWithMarker)
       const childMessage = user('child')
       sessions.set('child', childFromParent(parentWithMarker, 'parent', childMessage))
       const childCounts = { starts: 0, forks: 0, prompts: 0 }
-      await drain(new AcpProfileAdapter('test', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, undefined, runtimeFactory(childCounts), sidecar).stream(request('child', childMessage)))
+      await drain(new AcpProfileAdapter('test', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, runtimeFactory(childCounts), sidecar).stream(request('child', childMessage)))
       expect(childCounts).toEqual({ starts: 1, forks: 0, prompts: 1 })
       expect((await sidecar.list('child' as never)).map(entry => entry.kind === 'session-fork' ? entry.data.reason : undefined)).toContain('agent-does-not-advertise-fork')
     } finally {
@@ -185,7 +185,7 @@ describe('provider adapter ACP fork boundary', () => {
       const parent = makeSession(parentMessage)
       sessions.set('parent', parent)
       const parentCounts = { starts: 0, forks: 0, prompts: 0 }
-      await drain(new AcpProfileAdapter('test', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, undefined, runtimeFactory(parentCounts), sidecar).stream(request('parent', parentMessage)))
+      await drain(new AcpProfileAdapter('test', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, runtimeFactory(parentCounts), sidecar).stream(request('parent', parentMessage)))
       const parentWithMarker = await parentWithReplay(sidecar, 'parent', parent)
       sessions.set('parent', parentWithMarker)
       const oldCut = user('child')
@@ -193,14 +193,14 @@ describe('provider adapter ACP fork boundary', () => {
       const oldChildWithTail: SessionLike = { ...oldChild, events: [...oldChild.events, { type: 'user/message', seq: 6, data: user('uncommitted') }] }
       sessions.set('old-child', oldChildWithTail)
       const oldCounts = { starts: 0, forks: 0, prompts: 0 }
-      await drain(new AcpProfileAdapter('test', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, undefined, runtimeFactory(oldCounts, async () => undefined), sidecar).stream(request('old-child', oldCut)))
+      await drain(new AcpProfileAdapter('test', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, runtimeFactory(oldCounts, async () => undefined), sidecar).stream(request('old-child', oldCut)))
       expect(oldCounts).toEqual({ starts: 1, forks: 0, prompts: 1 })
       expect((await sidecar.list('old-child' as never)).map(entry => entry.kind === 'session-fork' ? entry.data.reason : undefined)).toContain('seed-not-latest-semantic-boundary')
 
       const unknownMessage = user('unknown')
       sessions.set('unknown-child', childFromParent(parentWithMarker, 'parent', unknownMessage))
       const unknownCounts = { starts: 0, forks: 0, prompts: 0 }
-      await expect(drain(new AcpProfileAdapter('test', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, undefined, runtimeFactory(unknownCounts, async () => { throw new Error('transport closed') }), sidecar).stream(request('unknown-child', unknownMessage)))).rejects.toMatchObject({ code: 'ACP_FORK_FAILED' })
+      await expect(drain(new AcpProfileAdapter('test', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, runtimeFactory(unknownCounts, async () => { throw new Error('transport closed') }), sidecar).stream(request('unknown-child', unknownMessage)))).rejects.toMatchObject({ code: 'ACP_FORK_FAILED' })
       expect(unknownCounts).toEqual({ starts: 0, forks: 1, prompts: 0 })
       expect((await sidecar.readRecoveryState('unknown-child' as never))?.kind).toBe('outcome-unknown')
     } finally {
@@ -217,7 +217,7 @@ describe('provider adapter ACP fork boundary', () => {
       const parent = makeSession(parentMessage)
       sessions.set('parent', parent)
       const parentCounts = { starts: 0, forks: 0, prompts: 0 }
-      await drain(new AcpProfileAdapter('test', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, undefined, runtimeFactory(parentCounts), sidecar).stream(request('parent', parentMessage)))
+      await drain(new AcpProfileAdapter('test', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, runtimeFactory(parentCounts), sidecar).stream(request('parent', parentMessage)))
       const parentWithMarker = await parentWithReplay(sidecar, 'parent', parent)
       sessions.set('parent', parentWithMarker)
 
@@ -227,7 +227,7 @@ describe('provider adapter ACP fork boundary', () => {
       sessions.set('parent', { ...parentWithMarker, events: [...parentWithMarker.events, { type: 'turn/start', seq: 6, data: { turn: 2 } }] })
       sessions.set('busy', busy)
       const busyCounts = { starts: 0, forks: 0, prompts: 0 }
-      await drain(new AcpProfileAdapter('test', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, undefined, runtimeFactory(busyCounts, async () => undefined), sidecar).stream(request('busy', busyMessage)))
+      await drain(new AcpProfileAdapter('test', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, runtimeFactory(busyCounts, async () => undefined), sidecar).stream(request('busy', busyMessage)))
       expect(busyCounts).toEqual({ starts: 1, forks: 0, prompts: 1 })
       expect((await sidecar.list('busy' as never)).map(entry => entry.kind === 'session-fork' ? entry.data.reason : undefined)).toContain('parent-not-idle')
 
@@ -236,7 +236,7 @@ describe('provider adapter ACP fork boundary', () => {
       const recoveryMessage = user('recovery child')
       sessions.set('recovery', childFromParent(parentWithMarker, 'parent', recoveryMessage))
       const recoveryCounts = { starts: 0, forks: 0, prompts: 0 }
-      await drain(new AcpProfileAdapter('test', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, undefined, runtimeFactory(recoveryCounts, async () => undefined), sidecar).stream(request('recovery', recoveryMessage)))
+      await drain(new AcpProfileAdapter('test', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, runtimeFactory(recoveryCounts, async () => undefined), sidecar).stream(request('recovery', recoveryMessage)))
       expect(recoveryCounts).toEqual({ starts: 1, forks: 0, prompts: 1 })
       expect((await sidecar.list('recovery' as never)).map(entry => entry.kind === 'session-fork' ? entry.data.reason : undefined)).toContain('parent-recovery-required')
     } finally {
@@ -252,13 +252,13 @@ describe('provider adapter ACP fork boundary', () => {
       const parentMessage = user('parent')
       const parent = makeSession(parentMessage)
       sessions.set('parent', parent)
-      await drain(new AcpProfileAdapter('test', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, undefined, runtimeFactory({ starts: 0, forks: 0, prompts: 0 }), sidecar).stream(request('parent', parentMessage)))
+      await drain(new AcpProfileAdapter('test', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, runtimeFactory({ starts: 0, forks: 0, prompts: 0 }), sidecar).stream(request('parent', parentMessage)))
       const markedParent = await parentWithReplay(sidecar, 'parent', parent)
       sessions.set('parent', markedParent)
       const childMessage = user('child')
       sessions.set('child', childFromParent(markedParent, 'parent', childMessage))
       const counts = { starts: 0, forks: 0, prompts: 0 }
-      await expect(drain(new AcpProfileAdapter('test', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, undefined, runtimeFactory(counts, undefined, new Error('blank start failed')), sidecar).stream(request('child', childMessage)))).rejects.toThrow('blank start failed')
+      await expect(drain(new AcpProfileAdapter('test', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, runtimeFactory(counts, undefined, new Error('blank start failed')), sidecar).stream(request('child', childMessage)))).rejects.toThrow('blank start failed')
       expect(await sidecar.readRecoveryState('child' as never)).toBeUndefined()
     } finally {
       await sidecar.dispose()
@@ -273,7 +273,7 @@ describe('provider adapter ACP fork boundary', () => {
       const parentMessage = user('parent')
       const parent = makeSession(parentMessage)
       sessions.set('parent', parent)
-      await drain(new AcpProfileAdapter('test', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, undefined, runtimeFactory({ starts: 0, forks: 0, prompts: 0 }), sidecar).stream(request('parent', parentMessage)))
+      await drain(new AcpProfileAdapter('test', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, runtimeFactory({ starts: 0, forks: 0, prompts: 0 }), sidecar).stream(request('parent', parentMessage)))
       const markedParent = await parentWithReplay(sidecar, 'parent', parent)
       sessions.set('parent', markedParent)
       const childMessage = user('child')
@@ -283,7 +283,7 @@ describe('provider adapter ACP fork boundary', () => {
         if (state.cause === 'fork-intent') throw new Error('intent write failed')
         await sidecar.writeRecoveryState(state)
       } })
-      await expect(drain(new AcpProfileAdapter('test', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, undefined, runtimeFactory(counts, async () => undefined), broken).stream(request('child', childMessage)))).rejects.toMatchObject({ code: 'ACP_FORK_INTENT_FAILED' })
+      await expect(drain(new AcpProfileAdapter('test', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, runtimeFactory(counts, async () => undefined), broken).stream(request('child', childMessage)))).rejects.toMatchObject({ code: 'ACP_FORK_INTENT_FAILED' })
       expect(counts).toEqual({ starts: 0, forks: 0, prompts: 0 })
     } finally {
       await sidecar.dispose()
@@ -298,7 +298,7 @@ describe('provider adapter ACP fork boundary', () => {
       const parentMessage = user('parent')
       const parent = makeSession(parentMessage)
       sessions.set('parent', parent)
-      await drain(new AcpProfileAdapter('test', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, undefined, runtimeFactory({ starts: 0, forks: 0, prompts: 0 }), sidecar).stream(request('parent', parentMessage)))
+      await drain(new AcpProfileAdapter('test', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, runtimeFactory({ starts: 0, forks: 0, prompts: 0 }), sidecar).stream(request('parent', parentMessage)))
       const markedParent = await parentWithReplay(sidecar, 'parent', parent)
       sessions.set('parent', markedParent)
       const childMessage = user('child')
@@ -308,11 +308,11 @@ describe('provider adapter ACP fork boundary', () => {
         if (String(sessionId) === 'child' && entry.kind === 'binding') throw new Error('child binding write failed')
         await sidecar.append(sessionId, entry)
       } })
-      await expect(drain(new AcpProfileAdapter('test', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, undefined, runtimeFactory(counts, async () => undefined), broken).stream(request('child', childMessage)))).rejects.toMatchObject({ code: 'ACP_BINDING_PERSIST_FAILED' })
+      await expect(drain(new AcpProfileAdapter('test', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, runtimeFactory(counts, async () => undefined), broken).stream(request('child', childMessage)))).rejects.toMatchObject({ code: 'ACP_BINDING_PERSIST_FAILED' })
       expect(counts).toEqual({ starts: 0, forks: 1, prompts: 0 })
       expect((await sidecar.readRecoveryState('child' as never))?.kind).toBe('outcome-unknown')
       const retryCounts = { starts: 0, forks: 0, prompts: 0 }
-      await expect(drain(new AcpProfileAdapter('test', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, undefined, runtimeFactory(retryCounts, async () => undefined), sidecar).stream(request('child', childMessage)))).rejects.toMatchObject({ code: 'ACP_RECOVERY_REQUIRED' })
+      await expect(drain(new AcpProfileAdapter('test', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, runtimeFactory(retryCounts, async () => undefined), sidecar).stream(request('child', childMessage)))).rejects.toMatchObject({ code: 'ACP_RECOVERY_REQUIRED' })
       expect(retryCounts.forks).toBe(0)
     } finally {
       await sidecar.dispose()

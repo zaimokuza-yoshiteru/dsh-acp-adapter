@@ -37,7 +37,7 @@
 //   exotic-options     同 happy（双发），configOptions 追加三项：boolean（category
 //                      model_config）+ 未知 category（telemetry）的 select + 未知 type
 //                      （slider）——容错/分组路径用；实测官方 SDK 1.3.0 把未知 type 项
-//                      原样保留上线（不丢弃），写路径由 options-sync 以 unsupported-type 拒
+//                      原样保留上线（不丢弃），写路径以 unsupported-type 拒绝
 //   permission-flow    prompt 中途发 session/request_permission（4 个 option），按 outcome 继续，
 //                      回传的 optionId 记录到 MOCK_LOG/stderr 供断言
 //   elicitation        prompt 中途发 elicitation/create（form mode 合法请求），await
@@ -370,7 +370,7 @@ function freshConfigOptions() {
     // 容错/分组路径：boolean（已知类型）+ 未知 category（已知类型）+ 未知 type。
     // 注意 boolean 需 client 广告 session.configOptions.boolean 才合规——本 scenario
     // 刻意扮演不严格 agent；实测官方 SDK 1.3.0 不丢弃未知 type 项（原样上线，写路径
-    // 由 options-sync 以 unsupported-type 拒）。
+    // 由配置写路径以 unsupported-type 拒）。
     options.push(
       {
         id: 'auto_compact',

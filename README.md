@@ -145,7 +145,7 @@ Rename-Item "$env:USERPROFILE\.dsh\dsh-acp" "dsh-acp.backup"
 ```
 
 重启 DSH 后请创建一个全新的 DSH 会话。该目录只包含插件的 ACP binding、恢复状态、
-审计、选项快照和模型切换事务；不会删除 Agent 自己的登录、skills、MCP 或 data home。
+审计和选项快照；不会删除 Agent 自己的登录、skills、MCP 或 data home。
 旧 ACP 会话的 DSH 页面历史仍可查看，但清理 binding 后不能继续恢复。无需删除整个
 `~/.dsh/profiles/web`。
 

@@ -165,9 +165,6 @@
 .statusReady {
   color: var(--dsw-alias-state-success-primary);
 }
-.statusError {
-  color: var(--dsw-alias-state-error-primary);
-}
 .statusMuted {
   color: var(--dsw-alias-label-tertiary);
 }

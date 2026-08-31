@@ -8,7 +8,7 @@
 //   domainPolicy     src/domain/policy/**      —— 审批桥、审计载荷、原生访问启动策略
 // domainObservability src/domain/observability/** —— 结构化日志包装与内存指标
 //                                             registry（零 import 叶子，各层可向下消费）
-//   domainSession    src/domain/session/**     —— AcpAgent、resume、options-sync、agent 配置 datum
+//   domainSession    src/domain/session/**     —— ACP 会话投影与 agent 配置 datum
 //   persistence      src/persistence/**        —— sidecar 旁路存储
 // contract src/contract/** —— dshAcp Remote 的收窄 wire 类型（
 //                                             host/client 两半共享的类型真源，零 import 叶子）
@@ -18,9 +18,6 @@
 //   hostEntry        src/index.ts              —— 包入口（只允许 re-export hostComposition）
 //   clientData       src/client/data/**        —— 面板/选择器逻辑（仅可下行 import contract；
 //                                             store slices 可使用 Alpha 公共 dsh-client-store）
-// clientCompat src/client/host-compat/** —— client 侧兼容岛（复制壳——
-//                                             picker 的 DSH row/popup/command/slot 交互适配；
-//                                             只消费 clientData 业务模块，不放 ACP 业务逻辑）
 //   clientUi         src/client/ui/**          —— UI 组件与样式（可 import react + 岛的文案类型）
 //   clientEntry      src/client/index.ts       —— client 入口
 //
@@ -37,14 +34,12 @@
 //   remote          → contract, protocol, runtime, domainSession, domainPolicy,
 // domainObservability（起可达 domainPolicy：health 行消费
 //                     capability-matrix 零 import 纯函数）
-//   hostFactory     → hostComposition, domainSession, domainPolicy, domainObservability, protocol,
-//                     runtime, persistence, remote, hostCompat
-//   hostComposition → 同 hostFactory（组合根，可指向除 client/contract 外的一切）
+//   hostComposition → domainSession, domainPolicy, domainObservability, protocol,
+//                     runtime, persistence, remote, hostCompat, contract
 //   hostEntry       → hostComposition
 //   clientData      → contract
-//   clientCompat    → clientData（岛消费业务模块；业务模块不得反向 import 岛）
-//   clientUi        → clientData, clientCompat（toolview/dock 引用岛的字典键类型）
-//   clientEntry     → contract, clientData, clientUi, clientCompat
+//   clientUi        → clientData, clientEntry, contract
+//   clientEntry     → contract, clientData, clientUi
 //
 // 推导出的显式禁令（白名单的必然后果，单列以便报错信息可读）：
 //   - hostCompat 不得 import 岛外任何层（vendor 岛自给自足）
@@ -52,7 +47,7 @@
 //     （hostCompat 是底层兼容岛而非 host 组合层，前缀同形但不在此禁令语义内）
 //   - protocol 及以下各层不得 import domain/host/remote（依赖只向下流）
 //   - client/* 的相对 import 只允许逃向 src/contract/（共享 wire 类型）；react 只允许出现在
-//     clientUi 与 clientCompat（岛承载复制壳 UI 组件）
+//     clientUi
 //   - clientData 只许同层 + contract import；store slices 例外使用 Alpha 公共
 //     dsh-client-store，其余逻辑模块仍保持零外部模块、可直接 vitest 测试
 //
@@ -80,11 +75,9 @@ type Layer =
   | 'persistence'
   | 'contract'
   | 'remote'
-  | 'hostFactory'
   | 'hostComposition'
   | 'hostEntry'
   | 'clientData'
-  | 'clientCompat'
   | 'clientUi'
   | 'clientEntry';
 
@@ -101,11 +94,9 @@ function layerOf(srcRel: string): Layer | undefined {
   if (srcRel.startsWith('persistence/')) return 'persistence';
   if (srcRel.startsWith('contract/')) return 'contract';
   if (srcRel.startsWith('remote/')) return 'remote';
-  if (srcRel.startsWith('host/factory/')) return 'hostFactory';
   if (srcRel.startsWith('host/composition/')) return 'hostComposition';
   if (srcRel.startsWith('host/subagent/')) return 'hostComposition';
   if (srcRel === 'client/index.ts' || srcRel.startsWith('client/react.')) return 'clientEntry';
-  if (srcRel.startsWith('client/host-compat/')) return 'clientCompat';
   if (srcRel.startsWith('client/coordinator/')) return 'clientEntry';
   if (srcRel.startsWith('client/data/')) return 'clientData';
   if (srcRel.startsWith('client/ui/')) return 'clientUi';
@@ -121,7 +112,6 @@ const HOST_LAYERS: readonly Layer[] = [
   'domainSession',
   'persistence',
   'remote',
-  'hostFactory',
   'hostComposition',
   'hostEntry',
 ];
@@ -143,19 +133,7 @@ const ALLOWED_CROSS_LAYER: Readonly<Record<Layer, readonly Layer[]>> = {
   contract: [],
   domainSession: ['domainPolicy', 'domainObservability', 'protocol', 'runtime', 'persistence', 'hostCompat'],
   remote: ['contract', 'protocol', 'runtime', 'domainSession', 'domainPolicy', 'domainObservability'],
-  hostFactory: [
-    'hostComposition',
-    'domainSession',
-    'domainPolicy',
-    'domainObservability',
-    'protocol',
-    'runtime',
-    'persistence',
-    'remote',
-    'hostCompat',
-  ],
   hostComposition: [
-    'hostFactory',
     'domainSession',
     'domainPolicy',
     'domainObservability',
@@ -168,13 +146,10 @@ const ALLOWED_CROSS_LAYER: Readonly<Record<Layer, readonly Layer[]>> = {
   ],
   hostEntry: ['hostComposition'],
   clientData: ['contract'],
- // client 侧兼容岛：复制壳只消费业务模块，不放 ACP 业务逻辑；
-  // 业务模块（clientData）不得反向 import 岛（白名单没有这条边即禁令）。
-  clientCompat: ['clientData'],
   // UI may consume dependency-free classification helpers from the shared
   // contract layer; this does not grant it access to host/domain state.
-  clientUi: ['clientData', 'clientCompat', 'clientEntry', 'contract'],
-  clientEntry: ['contract', 'clientData', 'clientUi', 'clientCompat'],
+  clientUi: ['clientData', 'clientEntry', 'contract'],
+  clientEntry: ['contract', 'clientData', 'clientUi'],
 };
 
 // ---------- import specifier 抽取 ----------
@@ -312,12 +287,12 @@ describe(' 分层架构守卫', () => {
     expect(external).toEqual([]);
   });
 
-  it('react 只允许出现在 clientUi 与 clientCompat（兼容岛承载复制壳组件）', () => {
+  it('react 只允许出现在 clientUi', () => {
     const violations = nonRelative
       .filter((i) => i.specifier === 'react' || i.specifier.startsWith('react/'))
       .filter((i) => {
         const layer = layerOf(i.fromFile);
-        return layer !== 'clientUi' && layer !== 'clientCompat';
+        return layer !== 'clientUi';
       })
       .map((i) => `${i.fromFile} import '${i.specifier}'`);
     expect(violations).toEqual([]);

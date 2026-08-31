@@ -1,10 +1,8 @@
 // subprocess-seam.spec.ts — 随附测试：ctx.subprocess seam 的结构窄化、
-// env scrub 镜像钉版、真 spawn 继承实证、fail-closed 分类与依赖面守卫。
+// 真 spawn 环境继承实证、fail-closed 分类与依赖面守卫。
 //
 // 钉版对象：
 //   - narrowSubprocessSeam：形态判定 + spawn 调用点固定填入 pipe/pipe/pipe stdio
-//   - compat 镜像：ACP_SENSITIVE_ENV_PATTERN / ACP_DSH_ENV_PREFIX /
-//     predictScrubbedParentEnv 与 devDep @deepseek-ai/dsh-subprocess 0.1.2-alpha.1 真值对拍
 //   - 真 spawn 继承：污染父 env 后经 AcpAgentProcess 启动内联 agent，
 //     DSH scrub 底座保留普通环境、删除父 credential/DSH_*，profile 显式
 //     credential 仍作为用户 opt-in 穿透
@@ -18,13 +16,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { DSH_ENV_PREFIX, SENSITIVE_ENV_PATTERN, scrubbedParentEnv } from '@deepseek-ai/dsh-subprocess';
 import {
-  ACP_DSH_ENV_PREFIX,
-  ACP_SENSITIVE_ENV_PATTERN,
   ACP_SUBPROCESS_UNAVAILABLE_MESSAGE,
   narrowSubprocessSeam,
-  predictScrubbedParentEnv,
 } from '../../../src/runtime/process/subprocess.ts';
 import type { SubprocessSeam } from '../../../src/runtime/process/subprocess.ts';
 import { AcpAgentProcess } from '../../../src/runtime/process/agent-process.ts';
@@ -90,33 +84,6 @@ describe('narrowSubprocessSeam 结构化窄化', () => {
   it('真实服务（LocalSubprocessRuntime 实例）通过窄化', () => {
     // sharedTestSubprocess 挂载时已窄化一次；此处对原始实例再窄化证明形态吻合
     expect(narrowSubprocessSeam(subprocess)).toBeDefined();
-  });
-});
-
-describe('compat 镜像钉版（上游 @deepseek-ai/dsh-subprocess 0.1.2-alpha.1 真值对拍）', () => {
-  it('ACP_SENSITIVE_ENV_PATTERN / ACP_DSH_ENV_PREFIX 与上游常量同格', () => {
-    expect(ACP_SENSITIVE_ENV_PATTERN.source).toBe(SENSITIVE_ENV_PATTERN.source);
-    expect(ACP_SENSITIVE_ENV_PATTERN.flags).toBe(SENSITIVE_ENV_PATTERN.flags);
-    expect(ACP_DSH_ENV_PREFIX).toBe(DSH_ENV_PREFIX);
-  });
-
-  it('predictScrubbedParentEnv 与 scrubbedParentEnv() 对拍：污染后逐键一致', async () => {
-    await withPollutedEnv(
-      {
-        // scrub 存活形（非 credential、非 DSH_ 前缀）：必须进底座
-        ACP_SEAM_PROXYISH: 'survives-scrub',
-        // credential 形名：scrub 删除
-        DSH_ACP_SEAM_API_KEY: 'sk-pin',
-        DSH_ACP_SEAM_PASSWORD: 'pw-pin',
-        DSH_ACP_SEAM_TOKEN: 'tok-pin',
-        // DSH_ 前缀（含小写——上游大小写不敏感）：scrub 删除
-        DSH_ACP_SEAM_MARKER: 'dsh-pin',
-        dsh_acp_seam_lower: 'dsh-lower-pin',
-      },
-      () => {
-        expect(predictScrubbedParentEnv(process.env)).toEqual(scrubbedParentEnv());
-      },
-    );
   });
 });
 

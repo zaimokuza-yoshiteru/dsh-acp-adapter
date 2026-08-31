@@ -71,7 +71,7 @@ describe('M3a binding-first ACP provider', () => {
   it('fails closed before any ACP runtime work when the sidecar is absent', async () => {
     const records = { starts: 0, prompts: 0, restores: 0 }
     const message = user('hello')
-    const adapter = new AcpProfileAdapter('test', profile, seam(), () => session(message), new Ledger(), undefined, undefined, runtimeFactory(records))
+    const adapter = new AcpProfileAdapter('test', profile, seam(), () => session(message), new Ledger(), undefined, runtimeFactory(records))
     await expect(drain(adapter.stream(request('no-sidecar', message)))).rejects.toMatchObject({ code: 'ACP_BINDING_UNAVAILABLE' })
     await expect(adapter.rebindBlank('no-sidecar')).rejects.toMatchObject({ code: 'ACP_BINDING_UNAVAILABLE' })
     expect(records.starts).toBe(0)
@@ -87,7 +87,7 @@ describe('M3a binding-first ACP provider', () => {
       writeRecoveryState: async () => undefined,
     } as unknown as AcpSidecar
     const message = user('hello')
-    const adapter = new AcpProfileAdapter('test', profile, seam(), () => session(message), new Ledger(), undefined, undefined, runtimeFactory(records), broken)
+    const adapter = new AcpProfileAdapter('test', profile, seam(), () => session(message), new Ledger(), undefined, runtimeFactory(records), broken)
     await expect(drain(adapter.stream(request('binding-failure', message)))).rejects.toMatchObject({ code: 'ACP_BINDING_PERSIST_FAILED' })
     expect(records.starts).toBe(1)
     expect(records.prompts).toBe(0)
@@ -108,7 +108,7 @@ describe('M3a binding-first ACP provider', () => {
           return event
         },
       }
-      const adapter = new AcpProfileAdapter('test', profile, seam(), () => liveSession, ledgerFor(sidecar), undefined, undefined, runtimeFactory(records), sidecar)
+      const adapter = new AcpProfileAdapter('test', profile, seam(), () => liveSession, ledgerFor(sidecar), undefined, runtimeFactory(records), sidecar)
       await drain(adapter.stream(request('custom-permission', message)))
       expect(events.slice(0, 2)).toEqual(session(message).events)
       expect(events.slice(2)).toEqual([
@@ -134,7 +134,7 @@ describe('M3a binding-first ACP provider', () => {
       const message = user('hello')
       const continuation = user('continue')
       let events: Array<{ type: string; seq: number; data: unknown }> = [...session(message).events]
-      const initial = new AcpProfileAdapter('test', profile, seam(), () => ({ header: { cwd: os.tmpdir() }, events }), ledgerFor(sidecar), undefined, undefined, runtimeFactory(first), sidecar)
+      const initial = new AcpProfileAdapter('test', profile, seam(), () => ({ header: { cwd: os.tmpdir() }, events }), ledgerFor(sidecar), undefined, runtimeFactory(first), sidecar)
       await drain(initial.stream(request('restart-session', message)))
       expect(first.prompts).toBe(1)
       const initialBinding = await sidecar.readLatestBinding('restart-session' as never)
@@ -150,7 +150,7 @@ describe('M3a binding-first ACP provider', () => {
           return event
         },
       }
-      const restarted = new AcpProfileAdapter('test', profile, seam(), () => liveSession, ledgerFor(sidecar), undefined, undefined, runtimeFactory(second), sidecar)
+      const restarted = new AcpProfileAdapter('test', profile, seam(), () => liveSession, ledgerFor(sidecar), undefined, runtimeFactory(second), sidecar)
       await drain(restarted.stream(request('restart-session', continuation)))
       expect(second.restores).toBe(1)
       expect(second.starts).toBe(0)
@@ -172,10 +172,10 @@ describe('M3a binding-first ACP provider', () => {
     try {
       const message = user('same step')
       const first = { starts: 0, prompts: 0, restores: 0 }
-      const initial = new AcpProfileAdapter('test', profile, seam(), () => session(message), ledgerFor(sidecar), undefined, undefined, runtimeFactory(first), sidecar)
+      const initial = new AcpProfileAdapter('test', profile, seam(), () => session(message), ledgerFor(sidecar), undefined, runtimeFactory(first), sidecar)
       await drain(initial.stream(request('same-step', message)))
       const second = { starts: 0, prompts: 0, restores: 0 }
-      const restarted = new AcpProfileAdapter('test', profile, seam(), () => session(message), ledgerFor(sidecar), undefined, undefined, runtimeFactory(second), sidecar)
+      const restarted = new AcpProfileAdapter('test', profile, seam(), () => session(message), ledgerFor(sidecar), undefined, runtimeFactory(second), sidecar)
       await expect(drain(restarted.stream(request('same-step', message)))).rejects.toMatchObject({ code: 'ACP_RECOVERY_REQUIRED' })
       expect(second.restores).toBe(1)
       expect(second.prompts).toBe(0)
@@ -193,11 +193,11 @@ describe('M3a binding-first ACP provider', () => {
       const secondMessage = user('second')
       let events = session(firstMessage).events
       const first = { starts: 0, prompts: 0, restores: 0 }
-      const initial = new AcpProfileAdapter('test', profile, seam(), () => ({ header: { cwd: os.tmpdir() }, events }), ledgerFor(sidecar), undefined, undefined, runtimeFactory(first), sidecar)
+      const initial = new AcpProfileAdapter('test', profile, seam(), () => ({ header: { cwd: os.tmpdir() }, events }), ledgerFor(sidecar), undefined, runtimeFactory(first), sidecar)
       await drain(initial.stream(request('continuation', firstMessage)))
       events = [...events, { type: 'step/start', seq: 3, data: { turn: 2, step: 0 } }, { type: 'user/message', seq: 4, data: secondMessage }]
       const second = { starts: 0, prompts: 0, restores: 0 }
-      const restarted = new AcpProfileAdapter('test', profile, seam(), () => ({ header: { cwd: os.tmpdir() }, events }), ledgerFor(sidecar), undefined, undefined, runtimeFactory(second), sidecar)
+      const restarted = new AcpProfileAdapter('test', profile, seam(), () => ({ header: { cwd: os.tmpdir() }, events }), ledgerFor(sidecar), undefined, runtimeFactory(second), sidecar)
       await drain(restarted.stream(request('continuation', secondMessage)))
       expect(second.restores).toBe(1)
       expect(second.prompts).toBe(1)
@@ -214,11 +214,11 @@ describe('M3a binding-first ACP provider', () => {
       const continuation = user('continue')
       let events = session(message).events
       const first = { starts: 0, prompts: 0, restores: 0 }
-      const initial = new AcpProfileAdapter('test', profile, seam(), () => ({ header: { cwd: os.tmpdir() }, events }), ledgerFor(sidecar), undefined, undefined, runtimeFactory(first), sidecar)
+      const initial = new AcpProfileAdapter('test', profile, seam(), () => ({ header: { cwd: os.tmpdir() }, events }), ledgerFor(sidecar), undefined, runtimeFactory(first), sidecar)
       await drain(initial.stream(request('load-session', message)))
       const second = { starts: 0, prompts: 0, restores: 0 }
       events = [...events, { type: 'step/start', seq: 3, data: { turn: 2, step: 0 } }, { type: 'user/message', seq: 4, data: continuation }]
-      const loaded = new AcpProfileAdapter('test', profile, seam(), () => ({ header: { cwd: os.tmpdir() }, events }), ledgerFor(sidecar), undefined, undefined, () => ({
+      const loaded = new AcpProfileAdapter('test', profile, seam(), () => ({ header: { cwd: os.tmpdir() }, events }), ledgerFor(sidecar), undefined, () => ({
         acpSessionId: 'agent-session-1', agentInfo: { name: 'fake-agent', version: '1' }, agentCapabilities: { loadSession: true }, protocolVersion: 1,
         start: async () => { second.starts += 1 },
         restore: async (_binding, _signal, onReplay) => { second.restores += 1; onReplay?.({ update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'replayed' } } } as never); return 'loaded' },
@@ -239,10 +239,10 @@ describe('M3a binding-first ACP provider', () => {
     try {
       const first = { starts: 0, prompts: 0, restores: 0 }
       const message = user('hello')
-      const initial = new AcpProfileAdapter('test', profile, seam(), () => session(message), ledgerFor(sidecar), undefined, undefined, runtimeFactory(first), sidecar)
+      const initial = new AcpProfileAdapter('test', profile, seam(), () => session(message), ledgerFor(sidecar), undefined, runtimeFactory(first), sidecar)
       await drain(initial.stream(request('lost-session', message)))
       const second = { starts: 0, prompts: 0, restores: 0 }
-      const restarted = new AcpProfileAdapter('test', profile, seam(), () => session(message), ledgerFor(sidecar), undefined, undefined, runtimeFactory(second, new Error('session not found')), sidecar)
+      const restarted = new AcpProfileAdapter('test', profile, seam(), () => session(message), ledgerFor(sidecar), undefined, runtimeFactory(second, new Error('session not found')), sidecar)
       await expect(drain(restarted.stream(request('lost-session', message)))).rejects.toMatchObject({ code: 'ACP_SESSION_NOT_FOUND' })
       expect(second.prompts).toBe(0)
       expect((await sidecar.readRecoveryState('lost-session' as never))?.kind).toBe('session-lost')
@@ -257,7 +257,7 @@ describe('M3a binding-first ACP provider', () => {
     try {
       const records = { starts: 0, prompts: 0, restores: 0 }
       const message = user('hello')
-      const adapter = new AcpProfileAdapter('test', profile, seam(), () => session(message), ledgerFor(sidecar), undefined, undefined, () => ({
+      const adapter = new AcpProfileAdapter('test', profile, seam(), () => session(message), ledgerFor(sidecar), undefined, () => ({
         acpSessionId: 'agent-session-1', agentInfo: { name: 'fake-agent', version: '1' }, protocolVersion: 1,
         start: async () => { records.starts += 1 }, prompt: async () => { records.prompts += 1; throw new Error('transport closed') }, close: async () => undefined,
       }), sidecar)
@@ -267,7 +267,7 @@ describe('M3a binding-first ACP provider', () => {
       expect(records.prompts).toBe(1)
       await adapter.rebindBlank('unknown-outcome')
       const rebound = { starts: 0, prompts: 0, restores: 0 }
-      const blank = new AcpProfileAdapter('test', profile, seam(), () => session(message), ledgerFor(sidecar), undefined, undefined, runtimeFactory(rebound), sidecar)
+      const blank = new AcpProfileAdapter('test', profile, seam(), () => session(message), ledgerFor(sidecar), undefined, runtimeFactory(rebound), sidecar)
       await drain(blank.stream(request('unknown-outcome', message)))
       expect(rebound.prompts).toBe(1)
       const reboundBinding = await sidecar.readLatestBinding('unknown-outcome' as never)
@@ -320,9 +320,7 @@ describe('M3a binding-first ACP provider', () => {
         profile,
         seam(),
         () => ({ header: { cwd: os.tmpdir() }, events }),
-        ledgerFor(sidecar),
-        undefined,
-        undefined,
+        ledgerFor(sidecar), undefined,
         () => { factoryCalls += 1; return runtime },
         sidecar,
       )
@@ -373,7 +371,7 @@ describe('M3a binding-first ACP provider', () => {
     const { sidecar, root } = sidecarAt()
     try {
       const message = user('hello')
-      const adapter = new AcpProfileAdapter('test', profile, seam(), () => session(message), ledgerFor(sidecar), undefined, undefined, () => ({
+      const adapter = new AcpProfileAdapter('test', profile, seam(), () => session(message), ledgerFor(sidecar), undefined, () => ({
         acpSessionId: 'agent-session-1', agentInfo: { name: 'fake-agent', version: '1' }, protocolVersion: 1,
         start: async () => undefined,
         prompt: async () => { throw new AcpClientError('auth_required', 'agent login required') },
@@ -397,7 +395,7 @@ describe('M3a binding-first ACP provider', () => {
       const message = user('hello')
       let mode: 'fail' | 'restore' = 'fail'
       let prompts = 0
-      const adapter = new AcpProfileAdapter('test', profile, seam(), () => session(message), ledgerFor(sidecar), undefined, undefined, () => ({
+      const adapter = new AcpProfileAdapter('test', profile, seam(), () => session(message), ledgerFor(sidecar), undefined, () => ({
         acpSessionId: 'agent-session-1', agentInfo: { name: 'fake-agent', version: '1' }, agentCapabilities: { sessionCapabilities: { resume: {} } }, protocolVersion: 1,
         start: async () => undefined,
         restore: async () => { if (mode !== 'restore') throw new Error('not used') ; return 'resumed' },
@@ -423,7 +421,7 @@ describe('M3a binding-first ACP provider', () => {
       const message = user('hello')
       let current = profile()
       const records = { starts: 0, prompts: 0, restores: 0 }
-      const adapter = new AcpProfileAdapter('test', () => current, seam(), () => session(message), ledgerFor(sidecar), undefined, undefined, runtimeFactory(records), sidecar)
+      const adapter = new AcpProfileAdapter('test', () => current, seam(), () => session(message), ledgerFor(sidecar), undefined, runtimeFactory(records), sidecar)
       await drain(adapter.stream(request('generation-retry', message)))
       current = { ...profile(), args: ['changed'] }
       await expect(drain(adapter.stream(request('generation-retry', message)))).rejects.toMatchObject({ code: 'ACP_RECONCILIATION_REQUIRED' })
@@ -441,12 +439,12 @@ describe('M3a binding-first ACP provider', () => {
     const { sidecar, root } = sidecarAt()
     try {
       const message = user('hello')
-      const first = new AcpProfileAdapter('test', profile, seam(), () => session(message), ledgerFor(sidecar), undefined, undefined, runtimeFactory({ starts: 0, prompts: 0, restores: 0 }), sidecar)
+      const first = new AcpProfileAdapter('test', profile, seam(), () => session(message), ledgerFor(sidecar), undefined, runtimeFactory({ starts: 0, prompts: 0, restores: 0 }), sidecar)
       await drain(first.stream(request('rebind-session', message)))
       await first.rebindBlank('rebind-session')
       expect((await sidecar.readLatestBinding('rebind-session' as never))?.status).toBe('ok')
       const second = { starts: 0, prompts: 0, restores: 0 }
-      const rebound = new AcpProfileAdapter('test', profile, seam(), () => session(message), ledgerFor(sidecar), undefined, undefined, runtimeFactory(second), sidecar)
+      const rebound = new AcpProfileAdapter('test', profile, seam(), () => session(message), ledgerFor(sidecar), undefined, runtimeFactory(second), sidecar)
       await drain(rebound.stream(request('rebind-session', message)))
       expect(second.starts).toBe(1)
       expect(second.restores).toBe(0)

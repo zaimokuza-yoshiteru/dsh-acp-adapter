@@ -34,7 +34,6 @@ import {
   descriptorOf,
   type AcpAgentConfig,
 } from '../../../src/domain/session/agent-config.ts';
-import { ACP_SENSITIVE_ENV_PATTERN } from '../../../src/runtime/process/subprocess.ts';
 import {
   ACP_BUILTIN_AGENT_TEMPLATES,
   CLAUDE_ACP_TEMPLATE,
@@ -48,6 +47,8 @@ import {
   type AcpSettings,
   type AcpSettingsSchema,
 } from '../../../src/host/composition/installed-profile-registry.ts';
+
+const SENSITIVE_ENV_PATTERN = /KEY|PASSWORD|SECRET|TOKEN/i;
 
 // ---------- 内存 settings fake（对齐 dsh-settings 语义：schema 校验 + deepEqual commit 通知） ----------
 
@@ -297,7 +298,7 @@ describe('纯函数：路由 id 与模板', () => {
   it('模板 secret 纪律钉：所有一键模板不预填/持久化任何疑似 secret 键', () => {
     for (const template of ACP_BUILTIN_AGENT_TEMPLATES) {
       for (const key of Object.keys(template.env)) {
-        expect(ACP_SENSITIVE_ENV_PATTERN.test(key), `${template.id}.${key}`).toBe(false);
+        expect(SENSITIVE_ENV_PATTERN.test(key), `${template.id}.${key}`).toBe(false);
       }
       // 纪律针对 env 键值（loginHint 指引文本点名 env 键名是合法的用户指引）
       const envWire = JSON.stringify(template.env);

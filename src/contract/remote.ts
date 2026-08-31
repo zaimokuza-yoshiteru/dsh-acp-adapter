@@ -371,8 +371,6 @@ export interface AcpRecoveryView {
 }
 
 /** Explicit user decisions recorded by the recovery surface. */
-export type AcpRecoveryUserAction = 'retry-original' | 'rebind-blank' | 'new-session'
-
 /** Agent 明确提供的累计成本事实（wire 副本；amount/currency 原样透传，不换算不聚合）。 */
 export interface AcpContextUsageCostView {
   readonly amount: number

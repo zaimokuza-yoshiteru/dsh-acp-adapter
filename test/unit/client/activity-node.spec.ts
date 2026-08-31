@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { acpActivityDefinition, activityJournalSessionId, activityRowElement, createAcpActivityDefinition, visibleActivityRows } from '../../../src/client/ui/AcpActivityNode.ts'
+import { activityJournalSessionId, activityRowElement, createAcpActivityDefinition, visibleActivityRows } from '../../../src/client/ui/AcpActivityNode.ts'
 import { AcpActivityJournalStore } from '../../../src/client/data/activity-journal.ts'
 import { AcpActivityJournalHub } from '../../../src/client/data/activity-journal.ts'
 import { acpReplayPayloadOf } from '../../../src/client/data/acp-replay-payload.ts'
@@ -29,8 +29,9 @@ function assistantEvent() {
 
 describe('ACP activity conversation node', () => {
   it('only matches durable ACP replay evidence, never native assistant messages', () => {
-    expect(acpActivityDefinition.match(assistantEvent())).toEqual({ id: 'legacy:user-3', role: 'start' })
-    expect(acpActivityDefinition.match({ type: 'assistant/message', seq: 11, time: 11, data: {} } as never)).toBeNull()
+    const definition = createAcpActivityDefinition(() => false)
+    expect(definition.match(assistantEvent())).toEqual({ id: 'legacy:user-3', role: 'start' })
+    expect(definition.match({ type: 'assistant/message', seq: 11, time: 11, data: {} } as never)).toBeNull()
   })
 
   it('reads compact assistant replay envelopes without changing the rendered identity', () => {
@@ -40,7 +41,7 @@ describe('ACP activity conversation node', () => {
       data: { replayState: payload },
     }
     expect(acpReplayPayloadOf(compact)).toEqual(payload)
-    expect(acpActivityDefinition.match(compact as never)).toEqual({ id: 'legacy:user-3', role: 'start' })
+    expect(createAcpActivityDefinition(() => false).match(compact as never)).toEqual({ id: 'legacy:user-3', role: 'start' })
   })
 
   it('starts immediately for an exact managed request route and ignores another plugin route', () => {

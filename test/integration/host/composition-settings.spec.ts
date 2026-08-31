@@ -43,6 +43,7 @@ function agent(name: string, command: string): AcpAgentConfig {
 
 describe('real Cordis ACP composition settings lifecycle', () => {
   it('registers initial settings and follows later mutations through the real injected plugin', async () => {
+    expect(inject).toContain('settings')
     const ctx = new Context()
     const settings = new SettingsDocument({ agents: { codex: agent('Codex', 'codex-acp') } })
     const routeCalls: string[][] = []

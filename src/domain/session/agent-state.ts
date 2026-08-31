@@ -2,8 +2,8 @@
  * ACP agent 配置的五态状态机：把「宿主结构兼容 / 配置有效 / probe
  * 缓存」三路事实折成一个用户可行动的稳定词表。
  * 本模块是 domainSession 层的零 import 叶子——remote 层（health 行的 `state`
- * 字段，src/remote/service.ts）与 hostFactory 层（会话创建门，
- * host/composition/installed-profile-registry.ts 共同下行消费同一实现，五态语义只写一次。
+ * 字段，src/remote/service.ts）与 installed-profile registry 的会话创建门
+ * 共同下行消费同一实现，五态语义只写一次。
  *
  * 词表语义：
  * - `saved-unverified`：配置已存但从未（以当前配置）探测过——既不能说 ready

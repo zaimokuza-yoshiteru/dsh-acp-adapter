@@ -37,10 +37,6 @@
  *   dedupe_key)` 部分唯一索引）、payload（canonical JSON 文本，键序稳定）。
  * - `bindings` 最新索引表：dsh_session_id 主键 upsert（payload + envelope 分量），
  *   {@link AcpSidecar.readLatestBinding}/{@link AcpSidecar.listBindings} 只查此表。
- * - `model_switches` 待定模型切换事务表：每会话至多一行
- *   （dsh_session_id 主键 upsert），payload 为 {@link AcpPendingModelSwitch}。
- *   写路径同步 durable（fail-closed：'started' 落库先于任何 ACP RPC——写失败
- *   即拒绝切换，零副作用外泄）；崩溃恢复只读此表收敛，绝不 last-writer-wins。
  * - `option_snapshots` 冷启动 last-known 配置快照表：每会话
  *   至多一行（dsh_session_id 主键 upsert），payload 为
  *   {@link AcpOptionsSnapshotRecord}——标准化且有界（`_meta`/未知键剥离，
@@ -51,8 +47,7 @@
  * - `activity_journal` 外部 Agent 活动表：按 DSH session 隔离、以 activity_id
  *   append-only revision，activity_seq 只在首次出现时分配，revision_seq 为每次
  *   mutation 的连续游标；它是机器可读的执行活动面，和面向人的 audit envelope
- *   分开。活动行可独立分页，按同一 30 天策略清理，
- *   显式 remove 不删除活动以保留追溯证据。
+ *   分开。活动行可独立分页，并作为会话轨迹与外部子代理投影的持久事实源。
  *
  * **recordId 派生**（钉版规则不变）：permission **decided** →
  * `decided:<agentSessionId>:<toolCallId>:<requestId>`（requestId 为
@@ -82,7 +77,7 @@
  * 内存队列**（上限 {@link ACP_SIDECAR_AUDIT_QUEUE_LIMIT}，默认 1024；满 → 丢弃
  * 新记录并 warn 计数，绝不阻塞 turn），microtask 批量事务落库；
  * {@link AcpSidecar.flush} 落齐全部排队记录（生产接线：AcpAgent turn 收束与
- * dispose 前调用）。读路径（list/readLatestBinding/listBindings/exportAudit）先
+ * dispose 前调用）。读路径（list/readLatestBinding/listBindings）先
  * 落齐队列再查库——append → list 的可见性顺序与 JSONL 时代一致。队列是内存面：
  * 进程崩溃丢失未 flush 的非审批审计（可接受，设计既定）；binding/permission 不走
  * 队列，无此窗口。
@@ -92,10 +87,9 @@
  * 目录 `0700`；`sidecar.sqlite` 及 `-wal`/`-shm` `0600`（打开后显式 chmod 兜底——
  * SQLite 自建的 wal/shm 不吃 umask 之外的约束，flush/checkpoint 后复 chmod）。
  *
- * fork/删除连带清理（调研结论，dsh 0.1.2-alpha.1）：宿主仍无插件可消费的会话删除钩子，不做代码
- * 接线；sidecar 行的生命周期 = harness-home 的生命周期（{@link AcpSidecar.remove}
- * 原语保留给未来真正的删除钩子与运维手清）。ACP 审计不随 DSH 官方 `/export`
- * （Alpha 仍无 ignorable 事件 seam，DSH 自定义审计 seam 缺失）；运维导出走 {@link AcpSidecar.exportAudit}。
+ * 宿主仍无插件可消费的会话删除钩子；sidecar 行的生命周期
+ * 因此与 harness-home 一致。ACP 审计不随 DSH 官方 `/export`（Alpha 仍无
+ * ignorable 事件 seam，DSH 自定义审计 seam 缺失）。
  *
  * stateRoot 来源：dsh 没有 per-profile 插件目录，惯例是 harness-home 全局
  * （settings-file、sessions 同在 `resolveDshHome()` 下，dev/prod 隔离靠
@@ -111,8 +105,8 @@
 
 /// <reference types="node" />
 
-import { createHash, randomUUID } from 'node:crypto'
-import { chmodSync, existsSync, mkdirSync, readdirSync, statSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { chmodSync, existsSync, mkdirSync, readdirSync } from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync, type StatementSync } from 'node:sqlite'
 import type { Context } from '@deepseek-ai/cordis'
@@ -143,7 +137,7 @@ export {
 } from './options-snapshot.ts'
 export type { AcpOptionsSnapshotRecord, AcpOptionsSnapshotOption } from './options-snapshot.ts'
 
-/** sidecar 记录格式版本（envelope 的 `schemaVersion`；导出面 {@link AcpSidecar.exportAudit} 逐行重建此形态）。 */
+/** sidecar 记录格式版本（envelope 的 `schemaVersion`）。 */
 export const ACP_SIDECAR_SCHEMA_VERSION = 2 as const
 
 /** sidecar 单库文件名（`<root>/sidecar.sqlite`；WAL 旁生 `-wal`/`-shm`）。 */
@@ -159,9 +153,6 @@ export const ACP_SIDECAR_AUDIT_QUEUE_LIMIT = 1024 as const
 export const ACP_ACTIVITY_PRESENTATION_MAX = 2_048 as const
 export const ACP_ACTIVITY_RAW_MAX = 16_384 as const
 export const ACP_ACTIVITY_REF_MAX = 512 as const
-
-/** {@link AcpSidecar.compact}/{@link AcpSidecar.enforceRetention} 的默认保留期（30 天）。 */
-export const ACP_SIDECAR_DEFAULT_RETENTION_MS: number = 30 * 24 * 60 * 60 * 1000
 
 /** Durable provider dispatch state. A committed `dispatch-uncertain` row is
  * intentionally visible after a host crash; a later request must not silently
@@ -198,7 +189,7 @@ export interface AcpActivityRecord {
   readonly activitySeq: number
   /** Monotonic mutation cursor used by page/follow consumers. */
   readonly revisionSeq: number
-  /** Last durable update time, also used by sidecar retention. */
+  /** Last durable update time. */
   readonly time: number
   readonly kind: AcpActivityKind
   readonly status: AcpActivityStatus
@@ -218,69 +209,6 @@ export interface AcpActivityFilter {
 
 /** Called only after the activity revision has committed in SQLite. */
 export type AcpActivitySubscriber = (activity: AcpActivityRecord) => void
-
-// ---------- 待定模型切换事务（model_switches 表） ----------
-
-/**
- * 待定模型切换的状态机词表：
- * - `started`：已持久化、尚未确认 Agent 应用（崩溃点①：Agent 可能已应用也可能没有）；
- * - `agent-applied`：Agent 响应的权威快照已确认应用（崩溃点②：DSH 侧 selectModel
- *   与 committed 标记的状态未知）；
- * - `committed`：DSH 侧已接受（保留词表位；当前实现 committed 与清行同步连贯执行，
- *   崩溃留下的 committed 行按「已收敛」清理）；
- * - `rollback-required`：失败后回滚 Agent 侧也失败（崩溃点③/回滚失败）——双侧
- *   一致性无法自证，composer 锁定直到用户选择恢复路径。
- */
-export type AcpPendingModelSwitchState =
-  | 'started'
-  | 'agent-applied'
-  | 'agent-rolled-back'
-  | 'committed'
-  | 'rollback-required'
-
-/**
- * 待定模型切换事务记录（`model_switches` 表 payload，每会话至多一行）。
- * 同 profile 热切换的唯一写入口（ModelSwitchCoordinator）经此表跨进程崩溃
- * 恢复：恢复时比较 DSH 当前值、Agent 当前值与 previous/target，只收敛到可
- * 证明的状态；无法判定 → reconciliation-required（用户选择回滚或新会话）。
- */
-export interface AcpPendingModelSwitch {
-  /** 本次切换的唯一操作 id（uuid；重复投递幂等判定的依据）。 */
-  readonly operationId: string
-  readonly dshSessionId: string
-  /** ACP 路由 id（`acp-<id>`；binding/profile 匹配预检的事实源）。 */
-  readonly provider: string
-  /** Agent 侧 model 类 config option 的 id（回滚写回的落点）。 */
-  readonly optionId: string
-  readonly previousModel: string
-  /** 用户请求值；Agent 可能把它归一化成不同的 appliedModel。 */
-  readonly targetModel: string
-  /** Agent 响应确认的实际值；仅在成功应用后出现。 */
-  readonly appliedModel?: string
-  readonly state: AcpPendingModelSwitchState
-  /** ISO 时间串（展示/诊断；不参与判定）。 */
-  readonly createdAt: string
-}
-
-/**
- * {@link AcpSidecar.readPendingModelSwitch} 的结果：行存在且全字段语义校验通过
- * → `{status:'ok'}`；行存在但畸形 → `{status:'corrupt'}`（无法自证一致——调用方
- * 按 reconciliation-required 处理，绝不静默忽略）；无行 → `undefined`。
- */
-export type AcpPendingModelSwitchLookup =
-  | { readonly status: 'ok'; readonly record: AcpPendingModelSwitch }
-  | { readonly status: 'corrupt' }
-
-function toPendingModelSwitch(raw: unknown): AcpPendingModelSwitch | undefined {
-  if (!isPlainObject(raw)) return undefined
-  const states: readonly string[] = ['started', 'agent-applied', 'agent-rolled-back', 'committed', 'rollback-required']
-  for (const key of ['operationId', 'dshSessionId', 'provider', 'optionId', 'previousModel', 'targetModel', 'createdAt'] as const) {
-    if (typeof raw[key] !== 'string' || (raw[key] as string).length === 0) return undefined
-  }
-  if (typeof raw.state !== 'string' || !states.includes(raw.state)) return undefined
-  if ('appliedModel' in raw && (typeof raw.appliedModel !== 'string' || raw.appliedModel.length === 0)) return undefined
-  return raw as unknown as AcpPendingModelSwitch
-}
 
 /**
  * secret-free 启动指纹：profile config 的 command/args 原样 +
@@ -438,19 +366,6 @@ export interface AcpRecoveryState {
   readonly updatedAt: number
 }
 
-/** Append-only recovery transition evidence. The current row is not enough to
- * explain who/when cleared a blocker after a restart. */
-export interface AcpRecoveryTransition {
-  readonly transitionId: string
-  readonly dshSessionId: string
-  readonly time: number
-  readonly fromKind?: AcpRecoveryStateKind
-  readonly toKind: AcpRecoveryStateKind
-  readonly cause?: string
-  readonly userAction?: string
-  readonly detail?: string
-}
-
 /**
  * `reconciliation` 记录的载荷：进入 reconciliation-required 的事实。
  * `detail` 是有界、无秘密的人类可读摘要（分叉 index 与两侧截断摘要等）；
@@ -478,11 +393,9 @@ export interface AcpBoundSessionBinding {
 }
 
 /**
- * v2 envelope 形态（`audit` 表行的逻辑视图；{@link AcpSidecar.exportAudit} 的 JSONL
- * 行逐字段重建此形态——此后磁盘上是 SQLite 行而不是 JSONL 行，但对外读取/导出
- * 契约不变）。字段语义见模块注释。
+ * v2 envelope 形态（`audit` 表行的逻辑视图）。字段语义见模块注释。
  */
-export interface AcpSidecarEnvelopeV2 {
+interface AcpSidecarEnvelopeV2 {
   readonly schemaVersion: typeof ACP_SIDECAR_SCHEMA_VERSION
   readonly recordId: string
   readonly seq: number
@@ -576,63 +489,13 @@ export type AcpSidecarEntryInput = { [K in AcpSidecarKind]: { readonly kind: K; 
 /** 补齐 `time` 后的待落盘记录（envelope 分量由 store 分配）。 */
 type StampedEntry = { [K in AcpSidecarKind]: { readonly kind: K; readonly time: number; readonly data: AcpSidecarPayloadByKind[K] } }[AcpSidecarKind]
 
-/** {@link AcpSidecar.exportAudit} 的构造项。 */
-export interface AcpSidecarExportOptions {
-  /** 限定单个 dsh sessionId；缺省 = 全量导出。 */
-  readonly sessionId?: SessionId | undefined
-  /** `jsonl`（默认，每行一条 v2 envelope JSON，结尾有换行）或 `json`（envelope 数组）。 */
-  readonly format?: 'jsonl' | 'json' | undefined
-}
-
-/** {@link AcpSidecar.enforceRetention} 的构造项。 */
-export interface AcpSidecarRetentionOptions {
-  /** 限定单个 dsh sessionId；缺省 = 全库清理。 */
-  readonly sessionId?: SessionId | undefined
-  /** 保留期（毫秒）：`time < now() - olderThanMs` 的 audit 行删除。缺省取构造期 `retentionMs`。 */
-  readonly olderThanMs?: number | undefined
-}
-
-/** {@link AcpSidecar.enforceRetention} 的结果。 */
-export interface AcpSidecarRetentionResult {
-  /** 本次删除的 audit 行数。 */
-  readonly removed: number
-  /** 实际生效的超龄阈值（epoch 毫秒；`time < cutoff` 被删）。 */
-  readonly cutoff: number
-}
-
-/** {@link AcpSidecar.health} 的健康行。 */
-export interface AcpSidecarHealth {
-  /** 库文件路径（`<root>/sidecar.sqlite`）。 */
-  readonly dbPath: string
-  /** 库文件是否已创建（读路径不建库；首个 append 才建）。 */
-  readonly exists: boolean
-  /** 库主文件字节数（不存在 → 0）。 */
-  readonly dbBytes: number
-  /** WAL 文件字节数（不存在 → 0）。 */
-  readonly walBytes: number
-  /** audit 表行数（库不存在 → 0）。 */
-  readonly auditRows: number
-  /** bindings 表行数（库不存在 → 0）。 */
-  readonly bindingRows: number
-  /** `PRAGMA quick_check` 结果：`ok` / `failed` / 库未创建时 `absent`。 */
-  readonly integrity: 'ok' | 'failed' | 'absent'
-  /** 当前内存队列里待落齐的非审批审计条数。 */
-  readonly queuedEntries: number
-  /** 进程生命周期内因队列满/落库失败被丢弃的非审批审计累计条数。 */
-  readonly droppedEntries: number
-}
-
 /**
  * sidecar 存储面（的唯一审计/binding 通道；SQLite WAL 承载）。
  *
  * 接口语义门槛（JSONL 时代钉版，本实现全数保持）：非法 sessionId **同步**抛
  * TypeError（契约违例，非运行时失败），I/O 失败才走 Promise 拒绝；
- * readLatestBinding 的 ok/outdated/undefined 三态；listBindings 只计入 ok；
- * remove 幂等。
- *
- * compact 语义重定义（审计保留策略）：**retention + VACUUM**——按保留策略删除
- * 该会话超龄 audit 行后整库 VACUUM；JSONL 时代的「坏行隔离」概念删除（SQLite
- * 要么库损坏要么不损坏；库无法打开 → open 即 fail loud）。
+ * readLatestBinding 的 ok/outdated/undefined 三态；listBindings 只计入 ok。
+ * SQLite 要么库损坏要么不损坏；库无法打开时 open 即 fail loud。
  */
 export interface AcpSidecar {
   /** 存储根目录（`<dshHome>/dsh-acp`）。 */
@@ -676,8 +539,6 @@ export interface AcpSidecar {
   listProjectedSubagentActivities(): Promise<readonly AcpActivityRecord[]>
   /** Subscribe to committed revisions. The returned disposer is idempotent. */
   subscribeActivity(sessionId: SessionId, filter: AcpActivityFilter, subscriber: AcpActivitySubscriber): () => void
-  /** Explicitly remove activity rows; ordinary session removal retains them. */
-  clearActivity(sessionId: SessionId, activityId?: string): Promise<void>
   /**
  * 最新一条 binding 的判定（语义门槛）：bindings 索引行的 payload 全字段
    * 语义校验通过 → `{status:'ok', binding}`；不通过 → `{status:'outdated'}`
@@ -689,8 +550,6 @@ export interface AcpSidecar {
   readRecoveryState(sessionId: SessionId): Promise<AcpRecoveryState | undefined>
   /** Atomically replace the current recovery state for a DSH session. */
   writeRecoveryState(state: AcpRecoveryState): Promise<void>
-  /** Read append-only recovery transitions for diagnostics and audit UI. */
-  listRecoveryTransitions(sessionId: SessionId): Promise<readonly AcpRecoveryTransition[]>
   /**
  * 全量 binding 索引（双绑守卫的唯一消费点 = host composition 的
    * resume 路由）：查 bindings 表全部行，仅语义校验通过（`{status:'ok'}`）者计入
@@ -701,22 +560,6 @@ export interface AcpSidecar {
   list(sessionId: SessionId): Promise<readonly AcpSidecarEntry[]>
   /** Cursor-paged audit read. Only the requested bounded window is decoded. */
   listPage(sessionId: SessionId, afterSeq: number, limit: number): Promise<readonly AcpSidecarEntry[]>
-  /** 删除该 sessionId 的全部 sidecar 行（audit + bindings + model_switches + option_snapshots；fork/删除连带清理用）；幂等，不存在不报错。 */
-  remove(sessionId: SessionId): Promise<void>
-  /**
- * 写入（upsert）该会话的待定模型切换事务。**同步 durable、fail-closed**
-   * 落库 commit 后才 resolve；写失败 reject——'started' 行的写入先于任何 ACP RPC，
-   * 写不进 sidecar 就绝不发起切换（崩溃恢复无据的切换不允许开始）。字段校验
-   * 失败同步抛 TypeError（契约违例）。
-   */
-  writePendingModelSwitch(record: AcpPendingModelSwitch): Promise<void>
-  /**
-   * 读该会话的待定模型切换事务：无行 → `undefined`；行畸形 → `{status:'corrupt'}`
-   * （warn 一次；调用方按无法自证一致处理，绝不静默忽略）。
-   */
-  readPendingModelSwitch(sessionId: SessionId): Promise<AcpPendingModelSwitchLookup | undefined>
-  /** 清除该会话的待定模型切换行（commit/回滚成功/rebindBlank 放弃旧代际）；幂等。 */
-  clearPendingModelSwitch(sessionId: SessionId): Promise<void>
   /**
  * 写入（upsert）该会话的 last-known option 快照（输入须先经
    * {@link acpOptionsSnapshotOf} 标准化）。同步 durable；写失败 reject
@@ -726,13 +569,6 @@ export interface AcpSidecar {
   /** 读该会话的 last-known option 快照；无行/畸形 → `undefined`（畸形行 warn 一次）。 */
   readOptionSnapshot(sessionId: SessionId): Promise<AcpOptionsSnapshotRecord | undefined>
   /**
-   * retention + VACUUM：删除该 sessionId `time < now() -
-   * retentionMs` 的 audit 行，然后整库 VACUUM 压实。bindings 索引行不受
-   * retention 影响（恢复证据，随 {@link AcpSidecar.remove} 生命周期）。库不存在
-   * → no-op（不建库）。
-   */
-  compact(sessionId: SessionId, retentionMs?: number): Promise<void>
-  /**
    * 落齐非审批审计队列：排队记录批量事务落库后做一轮 WAL checkpoint
    * （PASSIVE）并复 chmod wal/shm。生产接线：AcpAgent turn 收束与 dispose 前调用；
    * 读路径内部同样先落齐。队列空 → no-op。
@@ -740,32 +576,16 @@ export interface AcpSidecar {
   flush(): Promise<void>
   /** 关闭存储：落齐队列 + WAL checkpoint（TRUNCATE）+ 关闭连接。幂等；之后的方法调用会按需重开库。 */
   dispose(): Promise<void>
-  /**
-   * 导出 ACP audit（插件级 API；ACP 审计不随 DSH 官方 export——DSH 自定义审计 seam 缺失 既定
-   * 限制，本方法是运维导出面）：按 sessionId 或全量，`jsonl`（每行一条 v2
-   * envelope）或 `json`（envelope 数组）文本。导出是只读快照（先落齐队列）。
-   */
-  exportAudit(options?: AcpSidecarExportOptions): Promise<string>
-  /**
-   * 清超龄 audit 记录（插件级 retention API；配合 {@link AcpSidecar.compact}
-   * 的 VACUUM 压实）：删除 `time < now() - olderThanMs` 的行（可按 sessionId 限定）。
-   * 只动 audit 表，不动 bindings 索引。
-   */
-  enforceRetention(options?: AcpSidecarRetentionOptions): Promise<AcpSidecarRetentionResult>
-  /** 健康行：库/WAL 大小、行计数、`quick_check` 完整性、队列水位与丢弃计数。 */
-  health(): Promise<AcpSidecarHealth>
 }
 
 /** {@link createAcpSidecar} 的构造项。 */
 export interface AcpSidecarOptions {
   /** 存储根目录（调用方负责选址；生产为 `dshHomePath('dsh-acp')`）。 */
   readonly root: string
-  /** 时钟（`time` 缺省补齐与 retention 阈值用；默认 `Date.now`，测试注入确定性）。 */
+  /** 时钟（`time` 缺省补齐用；默认 `Date.now`，测试注入确定性）。 */
   readonly now?: (() => number) | undefined
   /** 诊断出口（行级校验失败计数、队列丢弃、库打开失败等；默认 noop）。 */
   readonly warn?: ((message: string) => void) | undefined
-  /** 默认保留期（{@link AcpSidecar.compact}/{@link AcpSidecar.enforceRetention} 缺省阈值；默认 {@link ACP_SIDECAR_DEFAULT_RETENTION_MS}）。 */
-  readonly retentionMs?: number | undefined
   /** 非审批审计队列上限（默认 {@link ACP_SIDECAR_AUDIT_QUEUE_LIMIT}；测试注入小队列）。 */
   readonly queueLimit?: number | undefined
 }
@@ -920,17 +740,6 @@ interface BindingRow {
   readonly payload: string
 }
 
-interface RecoveryTransitionRow {
-  readonly transition_id: string
-  readonly dsh_session_id: string
-  readonly time: number
-  readonly from_kind: string | null
-  readonly to_kind: string
-  readonly cause: string | null
-  readonly user_action: string | null
-  readonly detail: string | null
-}
-
 interface ActivityRow {
   readonly dsh_session_id?: unknown
   readonly activity_id?: unknown
@@ -975,11 +784,6 @@ CREATE TABLE IF NOT EXISTS bindings (
   acp_session_id TEXT,
   payload TEXT NOT NULL
 ) STRICT;
-CREATE TABLE IF NOT EXISTS model_switches (
-  dsh_session_id TEXT PRIMARY KEY,
-  time INTEGER NOT NULL,
-  payload TEXT NOT NULL
-) STRICT;
 CREATE TABLE IF NOT EXISTS option_snapshots (
   dsh_session_id TEXT PRIMARY KEY,
   time INTEGER NOT NULL,
@@ -991,16 +795,6 @@ CREATE TABLE IF NOT EXISTS recovery_states (
   last_attempt_at INTEGER,
   last_user_action TEXT,
   payload TEXT NOT NULL
-) STRICT;
-CREATE TABLE IF NOT EXISTS recovery_transitions (
-  transition_id TEXT PRIMARY KEY,
-  dsh_session_id TEXT NOT NULL,
-  time INTEGER NOT NULL,
-  from_kind TEXT,
-  to_kind TEXT NOT NULL,
-  cause TEXT,
-  user_action TEXT,
-  detail TEXT
 ) STRICT;
 CREATE TABLE IF NOT EXISTS dispatch_ledger (
   dsh_session_id TEXT NOT NULL,
@@ -1038,7 +832,6 @@ class SidecarStore implements AcpSidecar {
   readonly root: string
   private readonly now: () => number
   private readonly warn: (message: string) => void
-  private readonly retentionMs: number
   private readonly queueLimit: number
   /** 懒开库（读路径不建库；首个写/显式 flush 需要落库时才建）。 */
   private db: DatabaseSync | undefined
@@ -1052,14 +845,8 @@ class SidecarStore implements AcpSidecar {
   private stmtGetBinding: StatementSync | undefined
   private stmtListBindings: StatementSync | undefined
   private stmtUpsertBinding: StatementSync | undefined
-  private stmtDeleteSession: StatementSync | undefined
-  private stmtDeleteBinding: StatementSync | undefined
-  private stmtGetModelSwitch: StatementSync | undefined
-  private stmtUpsertModelSwitch: StatementSync | undefined
-  private stmtDeleteModelSwitch: StatementSync | undefined
   private stmtGetOptionSnapshot: StatementSync | undefined
   private stmtUpsertOptionSnapshot: StatementSync | undefined
-  private stmtDeleteOptionSnapshot: StatementSync | undefined
   private stmtGetDispatch: StatementSync | undefined
   private stmtInsertDispatch: StatementSync | undefined
   private stmtSettleDispatch: StatementSync | undefined
@@ -1071,22 +858,8 @@ class SidecarStore implements AcpSidecar {
   private stmtActivityList: StatementSync | undefined
   private stmtActivityPage: StatementSync | undefined
   private stmtActivityHead: StatementSync | undefined
-  private stmtActivityClear: StatementSync | undefined
-  private stmtDeleteOverAgeActivity: StatementSync | undefined
-  private stmtDeleteOverAgeActivitySession: StatementSync | undefined
   private stmtGetRecoveryState: StatementSync | undefined
   private stmtUpsertRecoveryState: StatementSync | undefined
-  private stmtDeleteRecoveryState: StatementSync | undefined
-  private stmtInsertRecoveryTransition: StatementSync | undefined
-  private stmtListRecoveryTransitions: StatementSync | undefined
-  private stmtDeleteRecoveryTransitions: StatementSync | undefined
-  private stmtDeleteOverAge: StatementSync | undefined
-  private stmtDeleteOverAgeSession: StatementSync | undefined
-  private stmtDeleteOverAgeRecoveryTransition: StatementSync | undefined
-  private stmtDeleteOverAgeRecoveryTransitionSession: StatementSync | undefined
-  private stmtExportAll: StatementSync | undefined
-  private stmtCountAudit: StatementSync | undefined
-  private stmtCountBindings: StatementSync | undefined
   /** per-session 下一个 seq（懒种子 = 库里 MAX(seq)+1；含队列已占号）。 */
   private readonly seqCounters = new Map<string, number>()
   private queue: QueuedAudit[] = []
@@ -1103,7 +876,6 @@ class SidecarStore implements AcpSidecar {
     this.root = options.root
     this.now = options.now ?? ((): number => Date.now())
     this.warn = options.warn ?? ((): void => undefined)
-    this.retentionMs = options.retentionMs ?? ACP_SIDECAR_DEFAULT_RETENTION_MS
     this.queueLimit = options.queueLimit ?? ACP_SIDECAR_AUDIT_QUEUE_LIMIT
   }
 
@@ -1170,14 +942,8 @@ class SidecarStore implements AcpSidecar {
     this.stmtGetBinding = db.prepare('SELECT * FROM bindings WHERE dsh_session_id = ?')
     this.stmtListBindings = db.prepare('SELECT * FROM bindings ORDER BY dsh_session_id ASC')
     this.stmtUpsertBinding = db.prepare('INSERT INTO bindings (dsh_session_id, time, acp_provider_id, acp_session_id, payload) VALUES (?, ?, ?, ?, ?) ON CONFLICT(dsh_session_id) DO UPDATE SET time = excluded.time, acp_provider_id = excluded.acp_provider_id, acp_session_id = excluded.acp_session_id, payload = excluded.payload')
-    this.stmtDeleteSession = db.prepare('DELETE FROM audit WHERE dsh_session_id = ?')
-    this.stmtDeleteBinding = db.prepare('DELETE FROM bindings WHERE dsh_session_id = ?')
-    this.stmtGetModelSwitch = db.prepare('SELECT * FROM model_switches WHERE dsh_session_id = ?')
-    this.stmtUpsertModelSwitch = db.prepare('INSERT INTO model_switches (dsh_session_id, time, payload) VALUES (?, ?, ?) ON CONFLICT(dsh_session_id) DO UPDATE SET time = excluded.time, payload = excluded.payload')
-    this.stmtDeleteModelSwitch = db.prepare('DELETE FROM model_switches WHERE dsh_session_id = ?')
     this.stmtGetOptionSnapshot = db.prepare('SELECT * FROM option_snapshots WHERE dsh_session_id = ?')
     this.stmtUpsertOptionSnapshot = db.prepare('INSERT INTO option_snapshots (dsh_session_id, time, payload) VALUES (?, ?, ?) ON CONFLICT(dsh_session_id) DO UPDATE SET time = excluded.time, payload = excluded.payload')
-    this.stmtDeleteOptionSnapshot = db.prepare('DELETE FROM option_snapshots WHERE dsh_session_id = ?')
     this.stmtGetDispatch = db.prepare('SELECT * FROM dispatch_ledger WHERE dsh_session_id = ? AND dispatch_key = ?')
     this.stmtInsertDispatch = db.prepare('INSERT INTO dispatch_ledger (dsh_session_id, dispatch_key, provider, model, state, created_at, settled_at, provenance) VALUES (?, ?, ?, ?, ?, ?, NULL, ?)')
     this.stmtSettleDispatch = db.prepare('UPDATE dispatch_ledger SET state = ?, settled_at = ? WHERE dsh_session_id = ? AND dispatch_key = ? AND state = ?')
@@ -1189,24 +955,8 @@ class SidecarStore implements AcpSidecar {
     this.stmtActivityList = db.prepare('SELECT * FROM (SELECT activity_journal.*, ROW_NUMBER() OVER (PARTITION BY activity_id ORDER BY revision_seq DESC) AS latest_row FROM activity_journal WHERE dsh_session_id = ?) WHERE latest_row = 1 ORDER BY activity_seq ASC LIMIT ?')
     this.stmtActivityPage = db.prepare('SELECT * FROM activity_journal WHERE dsh_session_id = ? AND revision_seq > ? ORDER BY revision_seq ASC LIMIT ?')
     this.stmtActivityHead = db.prepare('SELECT COALESCE(MAX(revision_seq), 0) AS head FROM activity_journal WHERE dsh_session_id = ?')
-    this.stmtActivityClear = db.prepare('DELETE FROM activity_journal WHERE dsh_session_id = ? AND activity_id = ?')
     this.stmtGetRecoveryState = db.prepare('SELECT * FROM recovery_states WHERE dsh_session_id = ?')
     this.stmtUpsertRecoveryState = db.prepare('INSERT INTO recovery_states (dsh_session_id, time, last_attempt_at, last_user_action, payload) VALUES (?, ?, ?, ?, ?) ON CONFLICT(dsh_session_id) DO UPDATE SET time = excluded.time, last_attempt_at = excluded.last_attempt_at, last_user_action = excluded.last_user_action, payload = excluded.payload')
-    this.stmtDeleteRecoveryState = db.prepare('DELETE FROM recovery_states WHERE dsh_session_id = ?')
-    this.stmtInsertRecoveryTransition = db.prepare('INSERT INTO recovery_transitions (transition_id, dsh_session_id, time, from_kind, to_kind, cause, user_action, detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-    this.stmtListRecoveryTransitions = db.prepare('SELECT * FROM recovery_transitions WHERE dsh_session_id = ? ORDER BY time ASC, transition_id ASC')
-    this.stmtDeleteRecoveryTransitions = db.prepare('DELETE FROM recovery_transitions WHERE dsh_session_id = ?')
-    this.stmtDeleteOverAge = db.prepare('DELETE FROM audit WHERE time < ?')
-    this.stmtDeleteOverAgeSession = db.prepare('DELETE FROM audit WHERE dsh_session_id = ? AND time < ?')
-    this.stmtDeleteOverAgeRecoveryTransition = db.prepare('DELETE FROM recovery_transitions WHERE time < ?')
-    this.stmtDeleteOverAgeRecoveryTransitionSession = db.prepare('DELETE FROM recovery_transitions WHERE dsh_session_id = ? AND time < ?')
-    // Projected-child task/result is product data, not an ephemeral turn
-    // activity. Keep it while the durable child may still be listed.
-    this.stmtDeleteOverAgeActivity = db.prepare("DELETE FROM activity_journal WHERE time < ? AND prompt_anchor_message_id <> 'external-subagent-record'")
-    this.stmtDeleteOverAgeActivitySession = db.prepare("DELETE FROM activity_journal WHERE dsh_session_id = ? AND time < ? AND prompt_anchor_message_id <> 'external-subagent-record'")
-    this.stmtExportAll = db.prepare('SELECT * FROM audit ORDER BY dsh_session_id ASC, seq ASC')
-    this.stmtCountAudit = db.prepare('SELECT COUNT(*) AS n FROM audit')
-    this.stmtCountBindings = db.prepare('SELECT COUNT(*) AS n FROM bindings')
     try {
       chmodSync(this.dbPath, 0o600)
     } catch (error: unknown) {
@@ -1695,22 +1445,6 @@ class SidecarStore implements AcpSidecar {
     return db.prepare(`SELECT COALESCE(MAX(revision_seq), 0) AS head FROM activity_journal WHERE ${where}`).get(...params)
   }
 
-  async clearActivity(sessionId: SessionId, activityId?: string): Promise<void> {
-    assertSafeSessionId(sessionId)
-    if (activityId !== undefined && (activityId.length === 0 || activityId.length > 256)) throw new TypeError('dsh-acp activity id must be 1..256 characters')
-    const db = this.openIfExists()
-    if (db === undefined) return
-    db.exec('BEGIN IMMEDIATE')
-    try {
-      if (activityId === undefined) db.prepare('DELETE FROM activity_journal WHERE dsh_session_id = ?').run(sessionId)
-      else this.stmtActivityClear?.run(sessionId, activityId)
-      db.exec('COMMIT')
-    } catch (error) {
-      try { db.exec('ROLLBACK') } catch { /* best effort */ }
-      throw error
-    }
-  }
-
   flush(): Promise<void> {
     try {
       this.drainQueue()
@@ -1781,13 +1515,6 @@ class SidecarStore implements AcpSidecar {
     try {
       const db = this.ensureDb()
       db.exec('BEGIN IMMEDIATE')
-      const previousRow = this.stmtGetRecoveryState?.get(validated.dshSessionId) as { payload?: string } | undefined
-      let previous: AcpRecoveryState | undefined
-      if (previousRow?.payload !== undefined) {
-        try { previous = toRecoveryState(JSON.parse(previousRow.payload)) } catch { previous = undefined }
-      }
-      const transitionTime = validated.lastAttemptAt ?? validated.updatedAt
-      const transitionId = `recovery:${validated.dshSessionId}:${transitionTime}:${randomUUID()}`
       try {
         this.stmtUpsertRecoveryState?.run(
           validated.dshSessionId,
@@ -1796,43 +1523,12 @@ class SidecarStore implements AcpSidecar {
           validated.lastUserAction ?? null,
           stableStringify(validated),
         )
-        this.stmtInsertRecoveryTransition?.run(
-          transitionId,
-          validated.dshSessionId,
-          transitionTime,
-          previous?.kind ?? null,
-          validated.kind,
-          validated.cause ?? null,
-          validated.lastUserAction ?? null,
-          validated.detail ?? null,
-        )
         db.exec('COMMIT')
       } catch (error: unknown) {
         try { db.exec('ROLLBACK') } catch { /* preserve original failure */ }
         throw error
       }
       return Promise.resolve()
-    } catch (error: unknown) {
-      return Promise.reject(error instanceof Error ? error : new Error(errorMessage(error)))
-    }
-  }
-
-  listRecoveryTransitions(sessionId: SessionId): Promise<readonly AcpRecoveryTransition[]> {
-    assertSafeSessionId(sessionId)
-    try {
-      const db = this.openIfExists()
-      if (db === undefined) return Promise.resolve([])
-      const rows = (this.stmtListRecoveryTransitions?.all(sessionId) ?? []) as unknown as RecoveryTransitionRow[]
-      return Promise.resolve(rows.map((row) => ({
-        transitionId: row.transition_id,
-        dshSessionId: row.dsh_session_id,
-        time: row.time,
-        ...(row.from_kind === null ? {} : { fromKind: row.from_kind as AcpRecoveryStateKind }),
-        toKind: row.to_kind as AcpRecoveryStateKind,
-        ...(row.cause === null ? {} : { cause: row.cause }),
-        ...(row.user_action === null ? {} : { userAction: row.user_action }),
-        ...(row.detail === null ? {} : { detail: row.detail }),
-      })))
     } catch (error: unknown) {
       return Promise.reject(error instanceof Error ? error : new Error(errorMessage(error)))
     }
@@ -1905,77 +1601,6 @@ class SidecarStore implements AcpSidecar {
     }
   }
 
-  remove(sessionId: SessionId): Promise<void> {
-    assertSafeSessionId(sessionId)
-    try {
-      this.drainQueue()
-      const db = this.openIfExists()
-      if (db === undefined) return Promise.resolve()
-      this.stmtDeleteSession?.run(sessionId)
-      this.stmtDeleteBinding?.run(sessionId)
-      this.stmtDeleteModelSwitch?.run(sessionId)
-      this.stmtDeleteOptionSnapshot?.run(sessionId)
-      this.stmtDeleteRecoveryState?.run(sessionId)
-      this.stmtDeleteRecoveryTransitions?.run(sessionId)
-      this.stmtDeleteDispatch?.run(sessionId)
-      this.seqCounters.delete(sessionId)
-      return Promise.resolve()
-    } catch (error: unknown) {
-      return Promise.reject(error instanceof Error ? error : new Error(errorMessage(error)))
-    }
-  }
-
-  writePendingModelSwitch(record: AcpPendingModelSwitch): Promise<void> {
-    const validated = toPendingModelSwitch(record)
-    if (validated === undefined) {
-      throw new TypeError(`dsh-acp sidecar: malformed pending model switch record for session ${JSON.stringify(record.dshSessionId)}`)
-    }
-    assertSafeSessionId(record.dshSessionId)
-    try {
-      this.ensureDb() // fail-closed：同步 durable 落库 commit 后才 resolve
-      this.stmtUpsertModelSwitch?.run(record.dshSessionId, this.now(), stableStringify(validated))
-      return Promise.resolve()
-    } catch (error: unknown) {
-      return Promise.reject(error instanceof Error ? error : new Error(errorMessage(error)))
-    }
-  }
-
-  readPendingModelSwitch(sessionId: SessionId): Promise<AcpPendingModelSwitchLookup | undefined> {
-    assertSafeSessionId(sessionId)
-    try {
-      const db = this.openIfExists()
-      if (db === undefined) return Promise.resolve(undefined)
-      const row = this.stmtGetModelSwitch?.get(sessionId) as { payload: string } | undefined
-      if (row === undefined) return Promise.resolve(undefined)
-      let payload: unknown
-      try {
-        payload = JSON.parse(row.payload)
-      } catch {
-        payload = undefined
-      }
-      const record = toPendingModelSwitch(payload)
-      if (record === undefined || record.dshSessionId !== (sessionId as string)) {
-        this.warn(`dsh-acp sidecar: pending model switch row for session ${JSON.stringify(sessionId as string)} is malformed; the switch state is undecidable (reconciliation-required)`)
-        return Promise.resolve({ status: 'corrupt' })
-      }
-      return Promise.resolve({ status: 'ok', record })
-    } catch (error: unknown) {
-      return Promise.reject(error instanceof Error ? error : new Error(errorMessage(error)))
-    }
-  }
-
-  clearPendingModelSwitch(sessionId: SessionId): Promise<void> {
-    assertSafeSessionId(sessionId)
-    try {
-      const db = this.openIfExists()
-      if (db === undefined) return Promise.resolve()
-      this.stmtDeleteModelSwitch?.run(sessionId)
-      return Promise.resolve()
-    } catch (error: unknown) {
-      return Promise.reject(error instanceof Error ? error : new Error(errorMessage(error)))
-    }
-  }
-
   writeOptionSnapshot(sessionId: SessionId, snapshot: AcpOptionsSnapshotRecord): Promise<void> {
     assertSafeSessionId(sessionId)
     const validated = toOptionsSnapshotRecord(snapshot)
@@ -2014,127 +1639,6 @@ class SidecarStore implements AcpSidecar {
         return Promise.resolve(undefined)
       }
       return Promise.resolve(record)
-    } catch (error: unknown) {
-      return Promise.reject(error instanceof Error ? error : new Error(errorMessage(error)))
-    }
-  }
-
-  compact(sessionId: SessionId, retentionMs?: number): Promise<void> {
-    assertSafeSessionId(sessionId)
-    try {
-      this.drainQueue()
-      const db = this.openIfExists()
-      if (db === undefined) return Promise.resolve()
-      const cutoff = this.now() - (retentionMs ?? this.retentionMs)
-      const result = this.stmtDeleteOverAgeSession?.run(sessionId, cutoff)
-      const removed = Number(result?.changes ?? 0)
-      this.stmtDeleteOverAgeActivitySession?.run(sessionId, cutoff)
-      this.stmtDeleteOverAgeRecoveryTransitionSession?.run(sessionId, cutoff)
-      if (removed > 0) {
-        this.warn(`dsh-acp sidecar: retention removed ${String(removed)} audit row(s) older than ${new Date(cutoff).toISOString()} for session ${JSON.stringify(sessionId as string)}`)
-      }
-      db.exec('VACUUM')
-      // WAL 模式下 VACUUM 的压缩结果经 WAL 生效，需 checkpoint 后主库文件才收缩
-      db.exec('PRAGMA wal_checkpoint(TRUNCATE)')
-      this.chmodWalFiles()
-      try {
-        chmodSync(this.dbPath, 0o600) // VACUUM 重写主文件，权限位兜底复落
-      } catch (error: unknown) {
-        this.warn(`dsh-acp sidecar: failed to chmod 0600 on ${this.dbPath} after VACUUM (${errorMessage(error)})`)
-      }
-      return Promise.resolve()
-    } catch (error: unknown) {
-      return Promise.reject(error instanceof Error ? error : new Error(errorMessage(error)))
-    }
-  }
-
-  exportAudit(options?: AcpSidecarExportOptions): Promise<string> {
-    if (options?.sessionId !== undefined) assertSafeSessionId(options.sessionId)
-    try {
-      this.drainQueue()
-      const db = this.openIfExists()
-      const rows = db === undefined
-        ? []
-        : (options?.sessionId === undefined
-          ? (this.stmtExportAll?.all() ?? [])
-          : (this.stmtList?.all(options.sessionId) ?? [])) as unknown as AuditRow[]
-      const envelopes: AcpSidecarEnvelopeV2[] = []
-      let skipped = 0
-      for (const row of rows) {
-        const envelope = rowToEnvelope(row)
-        if (envelope === undefined) skipped += 1
-        else envelopes.push(envelope)
-      }
-      if (skipped > 0) this.warn(`dsh-acp sidecar: skipped ${String(skipped)} malformed audit row(s) during export`)
-      const text = options?.format === 'json'
-        ? JSON.stringify(envelopes, null, 2)
-        : envelopes.map((envelope) => JSON.stringify(envelope)).join('\n') + (envelopes.length === 0 ? '' : '\n')
-      return Promise.resolve(text)
-    } catch (error: unknown) {
-      return Promise.reject(error instanceof Error ? error : new Error(errorMessage(error)))
-    }
-  }
-
-  enforceRetention(options?: AcpSidecarRetentionOptions): Promise<AcpSidecarRetentionResult> {
-    if (options?.sessionId !== undefined) assertSafeSessionId(options.sessionId)
-    try {
-      this.drainQueue()
-      const db = this.openIfExists()
-      const cutoff = this.now() - (options?.olderThanMs ?? this.retentionMs)
-      if (db === undefined) return Promise.resolve({ removed: 0, cutoff })
-      const result = options?.sessionId === undefined
-        ? this.stmtDeleteOverAge?.run(cutoff)
-        : this.stmtDeleteOverAgeSession?.run(options.sessionId, cutoff)
-      const transitionResult = options?.sessionId === undefined
-        ? this.stmtDeleteOverAgeRecoveryTransition?.run(cutoff)
-        : this.stmtDeleteOverAgeRecoveryTransitionSession?.run(options.sessionId, cutoff)
-      const activityResult = options?.sessionId === undefined
-        ? this.stmtDeleteOverAgeActivity?.run(cutoff)
-        : this.stmtDeleteOverAgeActivitySession?.run(options.sessionId, cutoff)
-      const removed = Number(result?.changes ?? 0)
-      if (removed > 0) this.warn(`dsh-acp sidecar: retention removed ${String(removed)} audit row(s) older than ${new Date(cutoff).toISOString()}`)
-      // The public count remains the audit count; transition cleanup is an
-      // internal retention detail and must not change existing callers.
-      void transitionResult
-      void activityResult
-      return Promise.resolve({ removed, cutoff })
-    } catch (error: unknown) {
-      return Promise.reject(error instanceof Error ? error : new Error(errorMessage(error)))
-    }
-  }
-
-  health(): Promise<AcpSidecarHealth> {
-    try {
-      this.drainQueue()
-      const db = this.openIfExists()
-      if (db === undefined) {
-        return Promise.resolve({
-          dbPath: this.dbPath,
-          exists: false,
-          dbBytes: 0,
-          walBytes: 0,
-          auditRows: 0,
-          bindingRows: 0,
-          integrity: 'absent',
-          queuedEntries: 0,
-          droppedEntries: this.droppedEntries,
-        })
-      }
-      const quick = db.prepare('PRAGMA quick_check').get() as { quick_check?: unknown } | undefined
-      const auditRows = Number((this.stmtCountAudit?.get() as { n: number | bigint } | undefined)?.n ?? 0)
-      const bindingRows = Number((this.stmtCountBindings?.get() as { n: number | bigint } | undefined)?.n ?? 0)
-      const walPath = `${this.dbPath}-wal`
-      return Promise.resolve({
-        dbPath: this.dbPath,
-        exists: true,
-        dbBytes: statSync(this.dbPath).size,
-        walBytes: existsSync(walPath) ? statSync(walPath).size : 0,
-        auditRows,
-        bindingRows,
-        integrity: quick?.quick_check === 'ok' ? 'ok' : 'failed',
-        queuedEntries: this.queue.length,
-        droppedEntries: this.droppedEntries,
-      })
     } catch (error: unknown) {
       return Promise.reject(error instanceof Error ? error : new Error(errorMessage(error)))
     }

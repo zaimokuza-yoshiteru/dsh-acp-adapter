@@ -64,9 +64,7 @@ describe('provider activity bridge', () => {
       close: async () => undefined,
     })
     const adapter = new AcpProfileAdapter(
-      'activity', profile, seam(), id => sessions.get(id), ledgerFor(sidecar),
-      undefined, undefined, runtimeFactory as never, sidecar,
-      undefined, undefined,
+      'activity', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, runtimeFactory as never, sidecar, undefined,
       () => ({ userQuestions: {} as never, getAgent: () => stockAgent }),
     )
     for await (const _chunk of adapter.stream(request('command-session', message))) { /* drain */ }
@@ -105,8 +103,7 @@ describe('provider activity bridge', () => {
       close: async () => undefined,
     })
     const adapter = new AcpProfileAdapter(
-      'native-image', profile, seam(), id => sessions.get(id), ledgerFor(sidecar),
-      undefined, undefined, runtimeFactory, sidecar, attachments as never,
+      'native-image', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, runtimeFactory, sidecar, attachments as never,
     )
     const chunks: unknown[] = []
     for await (const chunk of adapter.stream(request('native-image-session', message))) chunks.push(chunk)
@@ -165,8 +162,7 @@ describe('provider activity bridge', () => {
       close: async () => undefined,
     })
     const adapter = new AcpProfileAdapter(
-      'nontext', profile, seam(), id => sessions.get(id), ledgerFor(sidecar),
-      undefined, undefined, runtimeFactory, sidecar, attachments as never,
+      'nontext', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, runtimeFactory, sidecar, attachments as never,
     )
     const chunks: unknown[] = []
     for await (const chunk of adapter.stream(request('nontext-session', message))) chunks.push(chunk)
@@ -210,8 +206,7 @@ describe('provider activity bridge', () => {
       close: async () => undefined,
     })
     const adapter = new AcpProfileAdapter(
-      'claude', claudeProfile, seam(), id => sessions.get(id), ledgerFor(sidecar),
-      undefined, undefined, runtimeFactory, sidecar, undefined, undefined, undefined,
+      'claude', claudeProfile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, runtimeFactory, sidecar, undefined, undefined,
       async (observation) => { projected.push(observation); return 'projected-child-session' },
     )
     const chunks: unknown[] = []
@@ -266,7 +261,7 @@ describe('provider activity bridge', () => {
         close: async () => undefined,
       }
     }
-    const adapter = new AcpProfileAdapter('activity', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, undefined, runtimeFactory, sidecar)
+    const adapter = new AcpProfileAdapter('activity', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, runtimeFactory, sidecar)
     const chunks: unknown[] = []
     for await (const chunk of adapter.stream(request('session-1', message))) chunks.push(chunk)
     const activities = await sidecar.activitySnapshot('session-1' as never)
@@ -303,7 +298,7 @@ describe('provider activity bridge', () => {
       },
       close: async () => undefined,
     })
-    const adapter = new AcpProfileAdapter('activity', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, undefined, runtimeFactory, sidecar)
+    const adapter = new AcpProfileAdapter('activity', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, runtimeFactory, sidecar)
     const chunks: unknown[] = []
     for await (const chunk of adapter.stream(request('session-2', message))) chunks.push(chunk)
     expect(chunks.some((chunk) => typeof chunk === 'object' && chunk !== null && 'type' in chunk && (chunk as { type?: unknown }).type === 'finish')).toBe(true)
@@ -331,7 +326,7 @@ describe('provider activity bridge', () => {
       },
       close: async () => undefined,
     })
-    const adapter = new AcpProfileAdapter('reasoning-only', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, undefined, runtimeFactory, sidecar)
+    const adapter = new AcpProfileAdapter('reasoning-only', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, runtimeFactory, sidecar)
     const chunks: unknown[] = []
     for await (const chunk of adapter.stream(request('session-reasoning-only', message))) chunks.push(chunk)
     expect(chunks.some((chunk) => typeof chunk === 'object' && chunk !== null && 'type' in chunk && (chunk as { type?: unknown }).type === 'reasoning-delta')).toBe(true)
@@ -358,7 +353,7 @@ describe('provider activity bridge', () => {
       },
       close: async () => undefined,
     })
-    const adapter = new AcpProfileAdapter('whitespace', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, undefined, runtimeFactory, sidecar)
+    const adapter = new AcpProfileAdapter('whitespace', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, runtimeFactory, sidecar)
     const chunks: unknown[] = []
     for await (const chunk of adapter.stream(request('session-whitespace', message))) chunks.push(chunk)
     const finish = chunks.find((chunk) => typeof chunk === 'object' && chunk !== null && 'type' in chunk && (chunk as { type?: unknown }).type === 'finish') as { reason?: { kind?: string; failure?: { code?: string } } } | undefined
@@ -383,7 +378,7 @@ describe('provider activity bridge', () => {
       },
       close: async () => undefined,
     })
-    const adapter = new AcpProfileAdapter('activity', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, undefined, runtimeFactory, sidecar)
+    const adapter = new AcpProfileAdapter('activity', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, runtimeFactory, sidecar)
     for await (const _ of adapter.stream(request('session-3', message))) { /* drain */ }
     const rows = await sidecar.activitySnapshot('session-3' as never)
     expect(rows.map((row) => [row.activityId.slice(row.activityId.indexOf(':') + 1), row.kind, row.status])).toEqual([
@@ -406,7 +401,7 @@ describe('provider activity bridge', () => {
       acpSessionId: 'agent-session-4', agentInfo: { name: 'activity-agent', version: '1' }, agentCapabilities: {}, protocolVersion: 1,
       start: async () => undefined, prompt: async () => ({ stopReason: 'end_turn' } as never), close: async () => undefined,
     })
-    const adapter = new AcpProfileAdapter('activity', profile, seam(), id => sessions.get(id), ledgerFor(failingSidecar), undefined, undefined, runtimeFactory, failingSidecar)
+    const adapter = new AcpProfileAdapter('activity', profile, seam(), id => sessions.get(id), ledgerFor(failingSidecar), undefined, runtimeFactory, failingSidecar)
     const chunks: unknown[] = []
     for await (const chunk of adapter.stream(request('session-4', message))) chunks.push(chunk)
     expect(chunks.some((chunk) => typeof chunk === 'object' && chunk !== null && 'type' in chunk && (chunk as { type?: unknown }).type === 'finish')).toBe(true)
