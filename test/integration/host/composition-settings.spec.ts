@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { PassThrough } from 'node:stream'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import { apply, inject } from '../../../src/host/composition/index.ts'
@@ -58,7 +60,7 @@ describe('real Cordis ACP composition settings lifecycle', () => {
         return dispose
       },
     }
-    const home = `/private/tmp/dsh-acp-composition-${String(Date.now())}`
+    const home = mkdtempSync(path.join(tmpdir(), 'dsh-acp-composition-'))
     ctx.provide('settings', settings)
     ctx.provide('llm', llm)
     ctx.provide('sessions', { get: () => undefined })
@@ -99,7 +101,7 @@ describe('real Cordis ACP composition settings lifecycle', () => {
       },
       readImage: async () => { throw new Error('not used by this composition test') },
     })
-    ctx.provide('dshHomePath', (...segments: string[]) => [home, ...segments].join('/'))
+    ctx.provide('dshHomePath', (...segments: string[]) => path.join(home, ...segments))
     const fiber = ctx.plugin({ name: 'composition-settings-test', inject: [...inject], apply })
     await fiber.await()
 
@@ -140,5 +142,6 @@ describe('real Cordis ACP composition settings lifecycle', () => {
     await ctx.fiber.dispose()
     await settings.replace({ agents: { codex: agent('Codex', 'codex-acp') } })
     expect(routeCalls).toHaveLength(callsAtDispose)
+    rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
   })
 })

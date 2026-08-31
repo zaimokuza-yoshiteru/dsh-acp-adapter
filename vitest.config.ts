@@ -2,6 +2,8 @@ import { fileURLToPath } from 'node:url'
 import ts from 'typescript'
 import { defineConfig } from 'vitest/config'
 
+const sourcePrefix = fileURLToPath(new URL('./src/', import.meta.url)).replaceAll('\\', '/')
+
 export default defineConfig({
   plugins: [
     {
@@ -13,7 +15,8 @@ export default defineConfig({
       // 与 lib/types 的 tsc emit 语义零漂移。enforce:'pre' 先于 vite:oxc。
       enforce: 'pre',
       transform(code, id) {
-        if (!id.startsWith(`${import.meta.dirname}/src/`) || !code.includes('@Remote')) return undefined
+        const normalizedId = id.replaceAll('\\', '/')
+        if (!normalizedId.startsWith(sourcePrefix) || !code.includes('@Remote')) return undefined
         const out = ts.transpileModule(code, {
           fileName: id,
           compilerOptions: {

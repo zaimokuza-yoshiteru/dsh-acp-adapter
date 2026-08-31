@@ -2,17 +2,19 @@ import { execFileSync } from 'node:child_process'
 import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
 const root = new URL('../..', import.meta.url)
 const pkg = JSON.parse(readFileSync(new URL('package.json', root), 'utf8'))
+const verifyRelease = fileURLToPath(new URL('scripts/verify-release.mjs', root))
 
 describe('npm release contract', () => {
   it('requires the exact version tag and keeps prereleases off latest', () => {
     const output = join(mkdtempSync(join(tmpdir(), 'dsh-acp-release-')), 'output')
     const stdout = execFileSync(
       process.execPath,
-      [new URL('scripts/verify-release.mjs', root).pathname, `v${pkg.version}`],
+      [verifyRelease, `v${pkg.version}`],
       {
         encoding: 'utf8',
         env: {
@@ -32,7 +34,7 @@ describe('npm release contract', () => {
   it('rejects a branch ref even when its name resembles the expected tag', () => {
     expect(() => execFileSync(
       process.execPath,
-      [new URL('scripts/verify-release.mjs', root).pathname],
+      [verifyRelease],
       {
         stdio: 'pipe',
         env: { ...process.env, GITHUB_REF_TYPE: 'branch', GITHUB_REF_NAME: `v${pkg.version}` },
@@ -41,7 +43,7 @@ describe('npm release contract', () => {
   })
 
   it('uses OIDC and never wires a long-lived npm token into the workflow', () => {
-    const workflow = readFileSync(new URL('.github/workflows/publish.yml', root), 'utf8')
+    const workflow = readFileSync(new URL('.github/workflows/publish.yml', root), 'utf8').replaceAll('\r\n', '\n')
     expect(workflow).toContain("tags:\n      - 'v*'")
     expect(workflow).toContain('workflow_dispatch:')
     expect(workflow).toContain('pnpm/action-setup@v4')

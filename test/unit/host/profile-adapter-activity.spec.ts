@@ -11,9 +11,17 @@ import type { SessionLike } from '../../../src/domain/session/current-step-admis
 import { createAcpSidecar, type AcpSidecar } from '../../../src/persistence/sidecar.ts'
 
 const roots: string[] = []
-afterEach(() => {
-  for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true })
+const sidecars: AcpSidecar[] = []
+afterEach(async () => {
+  for (const sidecar of sidecars.splice(0)) await sidecar.dispose().catch(() => undefined)
+  for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
 })
+
+function testSidecar(root: string): AcpSidecar {
+  const sidecar = createAcpSidecar({ root })
+  sidecars.push(sidecar)
+  return sidecar
+}
 
 const profile = (): AcpAgentConfig => ({ name: 'Activity test', command: 'agent', args: [], env: {} })
 const claudeProfile = (): AcpAgentConfig => ({ name: 'Claude', command: 'claude-agent-acp', args: [], env: {}, runtime: 'claude' })
@@ -37,7 +45,7 @@ describe('provider activity bridge', () => {
   it('ignores ACP available commands instead of registering stock slash commands', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-command-wiring-'))
     roots.push(root)
-    const sidecar = createAcpSidecar({ root })
+    const sidecar = testSidecar(root)
     const message = user('discover commands')
     const sessions = new Map<string, SessionLike>([['command-session', session(message)]])
     const register = vi.fn(() => vi.fn())
@@ -76,7 +84,7 @@ describe('provider activity bridge', () => {
   it('stores ACP assistant images as native DSH blocks without reordering content', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-native-image-'))
     roots.push(root)
-    const sidecar = createAcpSidecar({ root })
+    const sidecar = testSidecar(root)
     const message = user('show the image')
     const sessions = new Map<string, SessionLike>([['native-image-session', session(message)]])
     const imageRef = {
@@ -124,7 +132,7 @@ describe('provider activity bridge', () => {
   it('uses bounded visible fallbacks when non-text ACP output cannot be rendered', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-nontext-fallback-'))
     roots.push(root)
-    const sidecar = createAcpSidecar({ root })
+    const sidecar = testSidecar(root)
     const message = user('return resources')
     const sessions = new Map<string, SessionLike>([['nontext-session', session(message)]])
     const saveImages = vi.fn(async (_inputs: readonly { mediaType: string; data: Uint8Array }[]) => { throw new Error('image store unavailable') })
@@ -186,7 +194,7 @@ describe('provider activity bridge', () => {
   it('projects visible fallbacks for a non-text Claude native child without leaking them into the root answer', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-claude-child-'))
     roots.push(root)
-    const sidecar = createAcpSidecar({ root })
+    const sidecar = testSidecar(root)
     const message = user('delegate this work')
     const sessions = new Map<string, SessionLike>([['claude-root', session(message)]])
     const projected: unknown[] = []
@@ -237,7 +245,7 @@ describe('provider activity bridge', () => {
   it('journals ACP tool/content updates without creating DSH tool chunks', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-activity-adapter-'))
     roots.push(root)
-    const sidecar = createAcpSidecar({ root })
+    const sidecar = testSidecar(root)
     const message = user('inspect the project')
     const sessions = new Map<string, SessionLike>([['session-1', session(message)]])
     const runtimeFactory = (): AcpProfileRuntime => {
@@ -286,7 +294,7 @@ describe('provider activity bridge', () => {
   it('uses a readable fallback for unknown ACP updates and does not block the turn', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-activity-unknown-'))
     roots.push(root)
-    const sidecar = createAcpSidecar({ root })
+    const sidecar = testSidecar(root)
     const message = user('continue')
     const sessions = new Map<string, SessionLike>([['session-2', session(message)]])
     const runtimeFactory = (): AcpProfileRuntime => ({
@@ -308,7 +316,7 @@ describe('provider activity bridge', () => {
   it('fails a successful ACP turn that emitted reasoning but no visible answer', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-reasoning-only-'))
     roots.push(root)
-    const sidecar = createAcpSidecar({ root })
+    const sidecar = testSidecar(root)
     const message = user('Reply exactly RESPONSE_OK.')
     const sessions = new Map<string, SessionLike>([['session-reasoning-only', session(message)]])
     const runtimeFactory = (): AcpProfileRuntime => ({
@@ -337,7 +345,7 @@ describe('provider activity bridge', () => {
   it('does not treat whitespace-only assistant chunks as a visible answer', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-whitespace-response-'))
     roots.push(root)
-    const sidecar = createAcpSidecar({ root })
+    const sidecar = testSidecar(root)
     const message = user('Reply exactly RESPONSE_OK.')
     const sessions = new Map<string, SessionLike>([['session-whitespace', session(message)]])
     const runtimeFactory = (): AcpProfileRuntime => ({
@@ -363,7 +371,7 @@ describe('provider activity bridge', () => {
   it('ignores standard control frames and closes known children when terminal update has no content', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-activity-controls-'))
     roots.push(root)
-    const sidecar = createAcpSidecar({ root })
+    const sidecar = testSidecar(root)
     const message = user('run')
     const sessions = new Map<string, SessionLike>([['session-3', session(message)]])
     const runtimeFactory = (): AcpProfileRuntime => ({
@@ -392,7 +400,7 @@ describe('provider activity bridge', () => {
   it('does not turn an activity-head read failure into recovery or a missing finish', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-activity-head-'))
     roots.push(root)
-    const sidecar = createAcpSidecar({ root })
+    const sidecar = testSidecar(root)
     const failingSidecar = Object.create(sidecar) as AcpSidecar
     failingSidecar.activityHead = async () => { throw new Error('activity head unavailable') }
     const message = user('finish')

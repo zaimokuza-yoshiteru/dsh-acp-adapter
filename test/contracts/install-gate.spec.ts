@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { basename } from 'node:path'
 import {
   assertComposedDump,
   assertTarballEntries,
@@ -11,11 +12,11 @@ import { findMissingRelativeRuntimeImports } from '../../scripts/verify-runtime-
 
 describe('DSH clean-install gate contracts', () => {
   it('parses an isolated host and tarball without touching user profile state', () => {
-    expect(parseArgs(['--host-root', '../alpha', '--tgz', './adapter.tgz', '--skip-boot'])).toMatchObject({
-      hostRoot: expect.stringContaining('/alpha'),
-      tgz: expect.stringContaining('/adapter.tgz'),
-      skipBoot: true,
-    })
+    const parsed = parseArgs(['--host-root', '../alpha', '--tgz', './adapter.tgz', '--skip-boot'])
+    expect(basename(parsed.hostRoot)).toBe('alpha')
+    expect(parsed.tgz).toBeDefined()
+    expect(basename(parsed.tgz!)).toBe('adapter.tgz')
+    expect(parsed.skipBoot).toBe(true)
   })
 
   it('requires the stock loop/picker rows and one additive adapter row', () => {

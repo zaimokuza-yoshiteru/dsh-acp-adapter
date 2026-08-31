@@ -512,6 +512,7 @@ describe('prompt 流与 typed 方法', () => {
     await waitFor(() => conn.stderrLines().some((line) => line.includes('wrong-permission=cancelled')), 2_000)
     await conn.newSession()
     await expect(conn.prompt(first.sessionId, PROMPT_BLOCKS)).resolves.toMatchObject({ stopReason: 'end_turn' })
+    await waitFor(() => conn.stderrLines().some((line) => line.includes('other-active-session-permission=cancelled')), 2_000)
 
     expect(conn.stderrLines().join('\n')).toContain('initialize-permission=cancelled')
     expect(conn.stderrLines().join('\n')).toContain('idle-permission=cancelled')
@@ -665,8 +666,12 @@ describe('拆除梯子', () => {
     expect(Date.now() - t0).toBeGreaterThanOrEqual(150);
     const log = fs.readFileSync(logPath, 'utf8');
     expect(log).toContain('stdin EOF; staying alive until SIGTERM');
-    expect(log).toContain('SIGTERM received, exit(0)');
-    expect(conn.exited).toEqual({ code: 0, signal: null });
+    if (process.platform === 'win32') {
+      expect(conn.exited).toEqual({ code: 1, signal: null });
+    } else {
+      expect(log).toContain('SIGTERM received, exit(0)');
+      expect(conn.exited).toEqual({ code: 0, signal: null });
+    }
   });
 
   it('eof-exit 对照：stdin EOF 即退出，不触发 SIGTERM', async () => {
@@ -684,8 +689,14 @@ describe('拆除梯子', () => {
     const conn = connectInline(SIGTERM_IGNORING_AGENT, { eofGraceMs: 100, termGraceMs: 300 });
     const t0 = Date.now();
     await conn.close();
-    expect(Date.now() - t0).toBeGreaterThanOrEqual(350);
-    expect(conn.exited).toEqual({ code: null, signal: 'SIGKILL' });
+    if (process.platform === 'win32') {
+      // subprocess-local uses taskkill /T /F on Windows, so there is no
+      // catchable POSIX SIGTERM grace period to observe.
+      expect(conn.exited).toEqual({ code: 1, signal: null });
+    } else {
+      expect(Date.now() - t0).toBeGreaterThanOrEqual(350);
+      expect(conn.exited).toEqual({ code: null, signal: 'SIGKILL' });
+    }
   });
 
   it('重复 close 幂等：返回同一 Promise', async () => {

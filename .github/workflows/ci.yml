@@ -5,8 +5,9 @@ on:
   pull_request:
   workflow_dispatch:
 
-# Exact published alpha.3 packages are the primary lane. A separate source
-# checkout proves that the optional local-link workflow remains compatible.
+# Exact published alpha.3 packages are the reproducible primary lane. The
+# compatibility matrix proves the declared runtime floor and current npm alpha;
+# a separate source checkout covers the optional local-link workflow.
 jobs:
   registry:
     name: ${{ matrix.os }} published alpha.3
@@ -32,6 +33,31 @@ jobs:
         run: pnpm test
       - name: Build and verify bundle
         run: pnpm build
+
+  published-compatibility:
+    name: published DSH ${{ matrix.dsh-version }} compatibility
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        dsh-version: [0.1.2-alpha.2, alpha]
+    env:
+      DSH_COMPAT_VERSION: ${{ matrix.dsh-version }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.7.0
+      - name: Install reproducible toolchain
+        run: pnpm install --frozen-lockfile
+      - name: Select published DSH compatibility version
+        run: pnpm update --dev "@deepseek-ai/dsh-*@$DSH_COMPAT_VERSION"
+      - name: Verify published compatibility
+        run: pnpm typecheck && pnpm test && pnpm build
 
   source-compatibility:
     name: DSH alpha.3 source compatibility

@@ -109,16 +109,24 @@ for (const spec of declaredExternal) {
   }
 }
 
-// 每个 inject 包名 peerDependencies + devDependencies 双列。 版本策略：
-// dev 精确钉最低已验证版本（测试真源可复现），peer 是最低版本制范围
-// `>=<dev> <上界`（更高版本不因版本号被拒，运行时结构门兜底）；peer 与 dev
-// 精确相同也接受（cordis 等尚未 widen 的条目）。
+// 每个 inject 包名 peerDependencies + devDependencies 双列。DSH peer 对外声明
+// Alpha.2 起的前向兼容范围；dev 仍精确钉住当前 CI/dev 基线，使本地构建
+// 可复现。非 DSH peer（如 cordis）仍要求与开发依赖的精确声明一致。
+const DSH_PEER_FLOOR = '>=0.1.2-alpha.2'
+const EXACT_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/
 for (const [name, peerRange] of Object.entries(pkg.peerDependencies ?? {})) {
   const devRange = pkg.devDependencies?.[name]
   if (devRange === undefined) {
     fail(`package.json: peerDependencies.${name} (${peerRange}) 缺少 devDependencies 同名声明`)
-  } else if (peerRange !== devRange && peerRange !== `>=${devRange}` && peerRange !== `>=${devRange} <0.2.0` && peerRange !== `>=${devRange} <5.0.0`) {
-    fail(`package.json: peerDependencies.${name} is ${peerRange}; expected the exact dev pin or a >=${devRange} minimum-version range; found devDependencies ${devRange}`)
+  } else if (name.startsWith('@deepseek-ai/dsh-')) {
+    if (peerRange !== DSH_PEER_FLOOR) {
+      fail(`package.json: peerDependencies.${name} is ${peerRange}; expected ${DSH_PEER_FLOOR}`)
+    }
+    if (!EXACT_VERSION.test(devRange)) {
+      fail(`package.json: devDependencies.${name} must be an exact tested version; found ${devRange}`)
+    }
+  } else if (peerRange !== devRange) {
+    fail(`package.json: peerDependencies.${name} is ${peerRange}; expected the exact dev pin ${devRange}`)
   }
 }
 for (const name of inject) {

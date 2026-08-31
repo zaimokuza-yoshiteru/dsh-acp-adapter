@@ -143,7 +143,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   await store.dispose().catch(() => undefined)
-  fs.rmSync(root, { recursive: true, force: true })
+  fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
 })
 
 describe('createAcpSidecar 基本读写（v2 envelope 契约）', () => {
@@ -207,8 +207,13 @@ describe('createAcpSidecar 基本读写（v2 envelope 契约）', () => {
     }
     await store.writeRecoveryState(state)
     await expect(store.readRecoveryState(SessionId('sess-legacy'))).resolves.toEqual(state)
-    const columns = new DatabaseSync(dbFile()).prepare('PRAGMA table_info(recovery_states)').all() as Array<{ name: string }>
-    expect(columns.map((column) => column.name)).toEqual(expect.arrayContaining(['last_attempt_at', 'last_user_action']))
+    const inspection = new DatabaseSync(dbFile())
+    try {
+      const columns = inspection.prepare('PRAGMA table_info(recovery_states)').all() as Array<{ name: string }>
+      expect(columns.map((column) => column.name)).toEqual(expect.arrayContaining(['last_attempt_at', 'last_user_action']))
+    } finally {
+      inspection.close()
+    }
   })
   it('malformed recovery state fails loudly instead of becoming an empty/healthy read', async () => {
     await store.writeRecoveryState({ dshSessionId: 'sess-1', kind: 'outcome-unknown', updatedAt: TIME_BASE })
@@ -768,6 +773,12 @@ describe('有界审计队列 + flush（有界审计队列）', () => {
 describe('权限位（目录 0700 / 库与 wal/shm 0600）', () => {
   it('append 后 root 0700、sidecar.sqlite 0600、wal/shm 0600', async () => {
     await store.append(SessionId('sess-1'), { kind: 'binding', time: 1, data: BINDING_A })
+    if (process.platform === 'win32') {
+      // Windows ACLs are not represented by POSIX mode bits. The product
+      // contract here is that the private database is created successfully.
+      expect(fs.existsSync(dbFile())).toBe(true)
+      return
+    }
     expect(fs.statSync(root).mode & 0o777).toBe(0o700)
     expect(fs.statSync(dbFile()).mode & 0o777).toBe(0o600)
     const wal = `${dbFile()}-wal`

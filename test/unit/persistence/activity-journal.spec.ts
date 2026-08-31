@@ -3,18 +3,22 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { SessionId } from '@deepseek-ai/dsh-session'
-import { createAcpSidecar } from '../../../src/persistence/sidecar.ts'
+import { createAcpSidecar, type AcpSidecar } from '../../../src/persistence/sidecar.ts'
 import { AcpActivityJournalStore } from '../../../src/client/data/activity-journal.ts'
 
 const roots: string[] = []
+const sidecars: AcpSidecar[] = []
 afterEach(async () => {
-  for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true })
+  for (const sidecar of sidecars.splice(0)) await sidecar.dispose().catch(() => undefined)
+  for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
 })
 
 function store(now = 1_700_000_000_000) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-activity-'))
   roots.push(root)
-  return { root, sidecar: createAcpSidecar({ root, now: () => now }) }
+  const sidecar = createAcpSidecar({ root, now: () => now })
+  sidecars.push(sidecar)
+  return { root, sidecar }
 }
 
 function activity(id: string, time: number | undefined = 1_700_000_000_000, overrides: Record<string, unknown> = {}) {
@@ -44,7 +48,7 @@ describe('ACP activity journal', () => {
     // Non-strict guard: this is evidence against an accidental quadratic path,
     // not a machine-specific performance contract.
     expect(elapsedMs).toBeLessThan(15_000)
-  })
+  }, 30_000)
 
   it('assigns a durable monotonic sequence and upserts an activity in place', async () => {
     const { sidecar } = store()
