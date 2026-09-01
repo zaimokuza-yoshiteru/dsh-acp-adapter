@@ -7,16 +7,17 @@ import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
 import { AcpProfileAdapter } from '../../../src/host/composition/profile-adapter.ts'
 import type { AcpAgentConfig } from '../../../src/domain/session/agent-config.ts'
 import type { AcpProfileRuntime } from '../../../src/host/composition/profile-adapter.ts'
-import type { SessionLike } from '../../../src/domain/session/current-step-admission.ts'
+import { snapshotSessionEvents, type SessionLike } from '../../../src/domain/session/current-step-admission.ts'
 import { createAcpSidecar } from '../../../src/persistence/sidecar.ts'
 import type { AcpSidecar } from '../../../src/persistence/sidecar.ts'
 import { acpCanonicalHash16 } from '../../../src/persistence/sidecar.ts'
 
 const profile = (): AcpAgentConfig => ({ name: 'Fork test', command: 'agent', args: ['acp'], env: {} })
 const user = (text: string) => createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })
-const makeSession = (message: ReturnType<typeof user>, extra: { parentSession?: string; seedLength?: number } = {}): SessionLike => ({
-  header: { cwd: os.tmpdir(), ...extra },
-  events: [
+const makeSession = (message: ReturnType<typeof user>, extra: { parentSession?: string; inheritedEventCount?: number } = {}): SessionLike => ({
+  header: { cwd: os.tmpdir(), ...(extra.parentSession === undefined ? {} : { parentSession: extra.parentSession }) },
+  inheritedEventCount: extra.inheritedEventCount ?? 0,
+  snapshotEvents: () => [
     { type: 'step/start', seq: 1, data: { turn: 1, step: 0 } },
     { type: 'user/message', seq: 2, data: message },
   ],
@@ -88,7 +89,7 @@ async function parentWithReplay(sidecar: AcpSidecar, parentId: string, parent: S
   }
   return {
     ...parent,
-    events: [...parent.events, {
+    snapshotEvents: () => [...snapshotSessionEvents(parent), {
       type: 'assistant/message', seq: 3, data: {
         message: {
           id: `assistant-${parentId}`,
@@ -101,10 +102,11 @@ async function parentWithReplay(sidecar: AcpSidecar, parentId: string, parent: S
   }
 }
 
-function childFromParent(parent: SessionLike, parentId: string, message: ReturnType<typeof user>, seedLength = 3): SessionLike {
+function childFromParent(parent: SessionLike, parentId: string, message: ReturnType<typeof user>, inheritedEventCount = 3): SessionLike {
   return {
-    header: { cwd: os.tmpdir(), parentSession: parentId, seedLength },
-    events: [...parent.events, { type: 'step/start', seq: 4, data: { turn: 2, step: 0 } }, { type: 'user/message', seq: 5, data: message }],
+    header: { cwd: os.tmpdir(), parentSession: parentId },
+    inheritedEventCount,
+    snapshotEvents: () => [...snapshotSessionEvents(parent), { type: 'step/start', seq: 4, data: { turn: 2, step: 0 } }, { type: 'user/message', seq: 5, data: message }],
   }
 }
 
@@ -190,7 +192,10 @@ describe('provider adapter ACP fork boundary', () => {
       sessions.set('parent', parentWithMarker)
       const oldCut = user('child')
       const oldChild = childFromParent(parentWithMarker, 'parent', oldCut, 2)
-      const oldChildWithTail: SessionLike = { ...oldChild, events: [...oldChild.events, { type: 'user/message', seq: 6, data: user('uncommitted') }] }
+      const oldChildWithTail: SessionLike = {
+        ...oldChild,
+        snapshotEvents: () => [...snapshotSessionEvents(oldChild), { type: 'user/message', seq: 6, data: user('uncommitted') }],
+      }
       sessions.set('old-child', oldChildWithTail)
       const oldCounts = { starts: 0, forks: 0, prompts: 0 }
       await drain(new AcpProfileAdapter('test', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, runtimeFactory(oldCounts, async () => undefined), sidecar).stream(request('old-child', oldCut)))
@@ -223,8 +228,14 @@ describe('provider adapter ACP fork boundary', () => {
 
       const busyMessage = user('busy child')
       const busyBase = childFromParent(parentWithMarker, 'parent', busyMessage)
-      const busy: SessionLike = { ...busyBase, events: [...busyBase.events, { type: 'turn/start', seq: 6, data: { turn: 2 } }] }
-      sessions.set('parent', { ...parentWithMarker, events: [...parentWithMarker.events, { type: 'turn/start', seq: 6, data: { turn: 2 } }] })
+      const busy: SessionLike = {
+        ...busyBase,
+        snapshotEvents: () => [...snapshotSessionEvents(busyBase), { type: 'turn/start', seq: 6, data: { turn: 2 } }],
+      }
+      sessions.set('parent', {
+        ...parentWithMarker,
+        snapshotEvents: () => [...snapshotSessionEvents(parentWithMarker), { type: 'turn/start', seq: 6, data: { turn: 2 } }],
+      })
       sessions.set('busy', busy)
       const busyCounts = { starts: 0, forks: 0, prompts: 0 }
       await drain(new AcpProfileAdapter('test', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, runtimeFactory(busyCounts, async () => undefined), sidecar).stream(request('busy', busyMessage)))

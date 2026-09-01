@@ -29,10 +29,14 @@ const sidecar = {
 } as unknown as AcpSidecar
 
 const seam = (): { ok: true; seam: never } => ({ ok: true, seam: undefined as never })
-const session = () => ({ header: { cwd: '/workspace' }, events: [
-  { type: 'step/start', seq: 1, data: { turn: 1, step: 0 } },
-  { type: 'user/message', seq: 2, data: message },
-] })
+const session = () => ({
+  header: { cwd: '/workspace' },
+  inheritedEventCount: 0,
+  snapshotEvents: () => [
+    { type: 'step/start', seq: 1, data: { turn: 1, step: 0 } },
+    { type: 'user/message', seq: 2, data: message },
+  ],
+})
 
 function runtimeFor(calls: Array<[string, string | boolean]>, configOptions: NonNullable<AcpProfileRuntime['configOptions']>, promptCount: { value: number }, behavior: { throwOnSet?: boolean; confirm?: boolean; reasoningAfterModel?: string[]; failRollback?: boolean } = {}): AcpProfileRuntime {
   let currentOptions = configOptions

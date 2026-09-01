@@ -16,10 +16,16 @@ export interface SessionEventLike {
 }
 
 export interface SessionLike {
-  readonly header?: { readonly id?: string; readonly cwd?: string; readonly parentSession?: string; readonly seedLength?: number; readonly delegationDepth?: number }
-  readonly events: readonly SessionEventLike[]
+  readonly header?: { readonly id?: string; readonly cwd?: string; readonly parentSession?: string; readonly delegationDepth?: number }
+  readonly inheritedEventCount: number
+  snapshotEvents(): readonly SessionEventLike[]
   /** Host sessions expose append; pure admission fixtures may omit it. */
   append?(type: string, data: unknown): unknown
+}
+
+/** Read one stable alpha.4 Session event snapshot for the current operation. */
+export function snapshotSessionEvents(session: Pick<SessionLike, 'snapshotEvents'>): readonly SessionEventLike[] {
+  return session.snapshotEvents()
 }
 
 export interface CurrentStepProof {
@@ -94,10 +100,11 @@ export function admitCurrentStep(
   // identity does not survive to the final adapter boundary. The live session,
   // open step, and stable direct-user message ids below are the durable proof.
   if (session === undefined) throw new AcpAdmissionError('ACP_SESSION_UNAVAILABLE')
-  const step = openStep(session.events)
+  const events = snapshotSessionEvents(session)
+  const step = openStep(events)
   if (step === undefined) throw new AcpAdmissionError('ACP_NO_OPEN_STEP')
   const currentIds: string[] = []
-  for (const event of session.events) {
+  for (const event of events) {
     if (event.seq <= step.startSeq || event.type !== 'user/message' || !isRecord(event.data)) continue
     const id = idOf(event.data.id)
     if (id !== undefined && !currentIds.includes(id)) currentIds.push(id)
@@ -117,7 +124,7 @@ export function admitCurrentStep(
     acceptedMessageIds: admitted.map((message) => String(message.id)),
     anchorMessageId: String(admitted.at(-1)!.id),
     ...(() => {
-      const requestHeaderSeq = session.events
+      const requestHeaderSeq = events
         .filter(event => event.seq > step.startSeq && event.type === 'request/header')
         .at(-1)?.seq
       return requestHeaderSeq === undefined ? {} : { requestHeaderSeq }

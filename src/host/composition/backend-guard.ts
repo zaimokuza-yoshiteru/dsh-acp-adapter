@@ -62,9 +62,10 @@ export function classifyBackendTransition(input: BackendTransitionInput): Backen
 }
 
 /** Return whether semantic history exists before the current live turn. */
-export function hasPriorSemanticHistory(session: Pick<Session, 'events'>): boolean {
-  const lastTurnStart = session.events.findLastIndex(event => event.type === 'turn/start')
-  const prefix = lastTurnStart < 0 ? session.events : session.events.slice(0, lastTurnStart)
+export function hasPriorSemanticHistory(session: Pick<Session, 'snapshotEvents'>): boolean {
+  const events = session.snapshotEvents()
+  const lastTurnStart = events.findLastIndex(event => event.type === 'turn/start')
+  const prefix = lastTurnStart < 0 ? events : events.slice(0, lastTurnStart)
   return prefix.some(event => (
     event.type === 'user/message'
     || event.type === 'assistant/message'

@@ -289,6 +289,25 @@ function projectionMetadata(value: unknown): value is Record<string, unknown> {
   return typeof value.sourceToolCallId === 'string' && value.projection === 'unavailable'
 }
 
+export function completedProjectedChild(row: AcpActivityView): {
+  readonly parentSessionId: string
+  readonly childSessionId: string
+} | undefined {
+  // Projection rows are staged before the durable child exists. Refreshing on
+  // that running revision races the write, then exact-id deduplication would
+  // suppress the completed revision that can actually be listed.
+  if (row.status !== 'completed') return undefined
+  const detail = detailValue(row)
+  if (!record(detail)) return undefined
+  if (typeof detail.projectedChildSessionId === 'string') {
+    return { parentSessionId: row.ownerDshSessionId, childSessionId: detail.projectedChildSessionId }
+  }
+  if (typeof detail.childSessionId === 'string' && typeof detail.parentDshSessionId === 'string') {
+    return { parentSessionId: detail.parentDshSessionId, childSessionId: detail.childSessionId }
+  }
+  return undefined
+}
+
 /**
  * A projected child is navigation metadata for its source Tool call, not a
  * second operation in the parent transcript. Keep the source call, suppress
@@ -493,13 +512,8 @@ export function AcpActivityNode({ node, sessionId, journalHub, t, onProjectedChi
       setRows(next)
       setUnavailable(handle.error() !== undefined)
       for (const row of all) {
-        const detail = detailValue(row)
-        if (!record(detail)) continue
-        if (typeof detail.projectedChildSessionId === 'string') {
-          onProjectedChild?.(ownerSessionId, detail.projectedChildSessionId)
-        } else if (typeof detail.childSessionId === 'string' && typeof detail.parentDshSessionId === 'string') {
-          onProjectedChild?.(detail.parentDshSessionId, detail.childSessionId)
-        }
+        const projected = completedProjectedChild(row)
+        if (projected !== undefined) onProjectedChild?.(projected.parentSessionId, projected.childSessionId)
       }
     }
     const ownerSessionId = activityJournalSessionId(data, sessionId)

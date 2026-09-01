@@ -7,7 +7,7 @@
  * `remote.dshAcp` 注册在独立 fiber 上（gateway 的 RemoteNamespaceService），
  * 消费侧在 mount 就位后直接使用生成的 `ctx.remote.dshAcp` namespace。
  * 本文件只保留公共 payload re-export；方法签名和 `RemoteResult`/`RemoteError`
- * 由 alpha.3 Typert 生成物负责，避免宿主协议升级后手写面漂移。
+ * 由 alpha.4 Typert 生成物负责，避免宿主协议升级后手写面漂移。
  *
  * wire payload 类型直接复用 src/contract/remote.ts 的收窄 contract（host 侧
  * strict zod codec 已校验过线数据；本层仍喂防御性 decode 函数，双重保险）。
@@ -25,5 +25,5 @@ export type {
   AcpAgentSessionOptionWrite,
 } from '../../contract/remote.ts'
 
-/** Generated alpha.3 namespace mounted from `lib/typert.remote-client.js`. */
+/** Generated alpha.4 namespace mounted from `lib/typert.remote-client.js`. */
 export type AcpRemoteLike = TypertRemoteNamespace<'dshAcp'>

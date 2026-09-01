@@ -8,6 +8,7 @@
   padding: 0 4px 0 8px;
   border: none;
   border-radius: 24px;
+  corner-shape: round;
   outline: none;
   background: transparent;
   color: var(--dsw-alias-label-secondary);

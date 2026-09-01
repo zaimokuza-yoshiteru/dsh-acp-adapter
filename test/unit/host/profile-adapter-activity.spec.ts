@@ -28,7 +28,8 @@ const claudeProfile = (): AcpAgentConfig => ({ name: 'Claude', command: 'claude-
 const user = (text: string) => createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })
 const session = (message: ReturnType<typeof user>): SessionLike => ({
   header: { cwd: os.tmpdir() },
-  events: [{ type: 'step/start', seq: 1, data: { turn: 1, step: 0 } }, { type: 'user/message', seq: 2, data: message }],
+  inheritedEventCount: 0,
+  snapshotEvents: () => [{ type: 'step/start', seq: 1, data: { turn: 1, step: 0 } }, { type: 'user/message', seq: 2, data: message }],
 })
 const seam = (): { ok: true; seam: never } => ({ ok: true, seam: undefined as never })
 const request = (id: string, message: ReturnType<typeof user>): GenerateOptions => markAgentLoopRequest({ provider: 'acp-test', model: 'model-a', sessionId: id as never, messages: [message] })

@@ -13,7 +13,7 @@ function session(events: readonly string[], parentSession?: string, id = 'sessio
   return {
     id,
     header: parentSession === undefined ? {} : { parentSession },
-    events: events.map(type => ({ type, data: {} })),
+    snapshotEvents: () => events.map(type => ({ type, data: {} })),
   } as unknown as Session
 }
 

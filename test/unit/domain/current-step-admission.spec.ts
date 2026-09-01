@@ -16,7 +16,8 @@ describe('current-step ACP admission', () => {
     const injected = { ...user('skill'), source: { kind: 'plugin' as const, plugin: 'skill' } }
     const session = {
       header: { cwd: '/workspace' },
-      events: [
+      inheritedEventCount: 0,
+      snapshotEvents: () => [
         { type: 'user/message', seq: 0, data: old },
         { type: 'step/start', seq: 1, data: { turn: 2, step: 0 } },
         { type: 'user/message', seq: 2, data: injected },
@@ -38,7 +39,8 @@ describe('current-step ACP admission', () => {
     const message = user('current')
     expect(() => admitCurrentStep(request([message]), {
       header: { cwd: '/workspace' },
-      events: [{ type: 'user/message', seq: 0, data: message }],
+      inheritedEventCount: 0,
+      snapshotEvents: () => [{ type: 'user/message', seq: 0, data: message }],
     })).toThrowError(new AcpAdmissionError('ACP_NO_OPEN_STEP'))
   })
 
@@ -52,7 +54,8 @@ describe('current-step ACP admission', () => {
     const proofs: Array<{ projectionFiltered: boolean }> = []
     expect(admitCurrentStep(copied, {
       header: { cwd: '/workspace' },
-      events: [
+      inheritedEventCount: 0,
+      snapshotEvents: () => [
         { type: 'step/start', seq: 1, data: { turn: 1, step: 0 } },
         { type: 'user/message', seq: 2, data: message },
       ],
@@ -77,7 +80,9 @@ describe('current-step ACP admission', () => {
       { type: 'user/message', seq: 2004, data: first },
     ]
     const proofs: any[] = []
-    const admitted = admitCurrentStep(request([first, ...old, injected, second]), { header: { cwd: '/workspace' }, events }, proof => proofs.push(proof))
+    const admitted = admitCurrentStep(request([first, ...old, injected, second]), {
+      header: { cwd: '/workspace' }, inheritedEventCount: 0, snapshotEvents: () => events,
+    }, proof => proofs.push(proof))
     expect(admitted).toEqual([second, first])
     expect(proofs[0]?.projectionFiltered).toBe(true)
     expect(JSON.stringify(proofs[0])).not.toContain(String(old[0]?.id))

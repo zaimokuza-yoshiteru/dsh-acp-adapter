@@ -131,7 +131,7 @@ function stage() {
   cpSync(PROTOCOL_FACADE, join(protocolRoot, 'src', 'index.d.ts'));
   writeJson(join(protocolRoot, 'package.json'), {
     name: '@deepseek-ai/dsh-typert-protocol',
-    version: '0.1.2-alpha.3',
+    version: '0.1.2-alpha.4',
     private: true,
     type: 'module',
   });

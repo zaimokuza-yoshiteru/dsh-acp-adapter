@@ -1,4 +1,4 @@
-/** Build-only Typert facade for the alpha.3 source analyzer. Never shipped. */
+/** Build-only Typert facade for the alpha.4 source analyzer. Never shipped. */
 declare module '@deepseek-ai/dsh-typert-protocol' {
   export interface TypertLookup<Host, Wire> {
     readonly host: Host

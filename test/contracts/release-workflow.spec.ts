@@ -55,7 +55,7 @@ describe('npm release contract', () => {
     expect(workflow).not.toMatch(/NPM_TOKEN|NODE_AUTH_TOKEN/)
   })
 
-  it('publishes the tested tarball now that exact alpha.3 dependencies exist', () => {
+  it('publishes the tested tarball now that exact alpha.4 dependencies exist', () => {
     const workflow = readFileSync(new URL('.github/workflows/publish.yml', root), 'utf8')
     expect(workflow).not.toContain('if: ${{ false }}')
     expect(workflow).not.toContain('alpha-release-block')

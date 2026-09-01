@@ -23,7 +23,7 @@
   height: var(--dsh-audit-toolbar-height);
   flex: none;
   padding: 0;
-  border-bottom: 1px solid var(--dsw-alias-border-l2);
+  border-bottom: 0.5px solid var(--dsw-alias-border-l2);
   background: var(--dsw-alias-bg-layer-1);
 }
 
@@ -104,7 +104,7 @@
   gap: 4px;
   margin-left: auto;
   padding: 0 6px;
-  border: 1px solid var(--dsw-alias-border-l2);
+  border: 0.5px solid var(--dsw-alias-border-l2);
   border-radius: 4px;
   box-sizing: border-box;
   color: var(--dsw-alias-label-caption);
@@ -180,7 +180,7 @@
   height: 30px;
   min-width: 0;
   padding: 0 8px;
-  border-bottom: 1px solid var(--dsw-alias-border-l1);
+  border-bottom: 0.5px solid var(--dsw-alias-border-l1);
   box-sizing: border-box;
   overflow: hidden;
 }
@@ -255,7 +255,7 @@
   min-width: 0;
   min-height: 0;
   flex-direction: column;
-  border-left: 1px solid var(--dsw-alias-border-l2);
+  border-left: 0.5px solid var(--dsw-alias-border-l2);
   background: var(--dsw-alias-bg-layer-1);
 }
 
@@ -267,7 +267,7 @@
   justify-content: space-between;
   gap: 8px;
   padding: 0 8px 0 12px;
-  border-bottom: 1px solid var(--dsw-alias-border-l2);
+  border-bottom: 0.5px solid var(--dsw-alias-border-l2);
   box-sizing: border-box;
 }
 

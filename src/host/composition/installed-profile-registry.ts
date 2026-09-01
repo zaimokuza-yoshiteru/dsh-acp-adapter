@@ -51,7 +51,7 @@ import { installAcpSidecar } from '../../persistence/sidecar.ts'
 import type { AcpSidecar } from '../../persistence/sidecar.ts'
 import type { AcpNativeUserQuestionService } from '../../domain/policy/elicitation.ts'
 import type { AcpNativeQuestionBinding } from './profile-adapter.ts'
-import type { SessionLike } from '../../domain/session/current-step-admission.ts'
+import { snapshotSessionEvents, type SessionLike } from '../../domain/session/current-step-admission.ts'
 import type { DispatchLedgerStore } from '../../runtime/session/dispatch-ledger.ts'
 import { resolveSubprocessSeam } from './subprocess.ts'
 import { AcpRemoteService } from '../../remote/service.ts'
@@ -94,8 +94,9 @@ interface AcpSettingsProviderLike {
 }
 
 function sessionHasOpenTurn(session: SessionLike): boolean {
-  for (let index = session.events.length - 1; index >= 0; index -= 1) {
-    const type = session.events[index]?.type
+  const events = snapshotSessionEvents(session)
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const type = events[index]?.type
     if (type === 'turn/start') return true
     if (type === 'turn/end') return false
   }
@@ -452,7 +453,7 @@ export function installInstalledProfileRegistry(ctx: Context, options: Installed
         peekHeaderProvider: async (sessionId) => {
           const session = sessionStore?.get(sessionId)
           if (session === undefined) throw new Error('DSH session is not available')
-          for (const event of [...session.events].reverse()) {
+          for (const event of [...snapshotSessionEvents(session)].reverse()) {
             if (event.type !== 'request/header' || typeof event.data !== 'object' || event.data === null) continue
             const header = (event.data as { header?: unknown }).header
             if (typeof header !== 'object' || header === null) continue

@@ -1,7 +1,7 @@
 /// <reference types="node" />
 import { createHash } from 'node:crypto'
 import {
-  SESSION_FORMAT_VERSION, Session, SessionId,
+  SESSION_FORMAT_VERSION, Session, SessionId, SessionLogOffset, SessionSeq,
   type SessionEvent, type SessionHeader,
 } from '@deepseek-ai/dsh-session'
 import { snapshotSubagentDescriptor } from '@deepseek-ai/dsh-subagent'
@@ -153,19 +153,19 @@ function transcriptLog(
       }
     : undefined
   const events: readonly SessionEvent[] = [
-    { type: 'subagent/descriptor', seq: 0, time: startedAt, data: snapshotSubagentDescriptor({ mode: 'one-shot', provider: EXTERNAL_SUBAGENT_DESCRIPTOR_PROVIDER, label }) },
-    { type: 'turn/start', seq: 1, time: startedAt, data: { turn: 1, trigger: { kind: 'message', source: { kind: 'user' } } } },
-    { type: 'user/message', seq: 2, time: startedAt, data: user, surfaceOp: 'append' },
-    { type: 'step/start', seq: 3, time: startedAt, data: { turn: 1, step: 1 } },
+    { type: 'subagent/descriptor', seq: SessionSeq(0), time: startedAt, data: snapshotSubagentDescriptor({ mode: 'one-shot', provider: EXTERNAL_SUBAGENT_DESCRIPTOR_PROVIDER, label }) },
+    { type: 'turn/start', seq: SessionSeq(1), time: startedAt, data: { turn: 1, trigger: { kind: 'message', source: { kind: 'user' } } } },
+    { type: 'user/message', seq: SessionSeq(2), time: startedAt, data: user, surfaceOp: 'append' },
+    { type: 'step/start', seq: SessionSeq(3), time: startedAt, data: { turn: 1, step: 1 } },
     {
-      type: 'assistant/message', seq: 4, time: completedAt,
+      type: 'assistant/message', seq: SessionSeq(4), time: completedAt,
       data: { turn: 1, step: 1, message: assistant, ...(usage === undefined ? {} : { usage }) },
       surfaceOp: 'append',
     },
-    { type: 'step/end', seq: 5, time: completedAt, data: { turn: 1, step: 1 } },
-    { type: 'turn/end', seq: 6, time: completedAt, data: { turn: 1, reason: { kind: 'completed' } } },
+    { type: 'step/end', seq: SessionSeq(5), time: completedAt, data: { turn: 1, step: 1 } },
+    { type: 'turn/end', seq: SessionSeq(6), time: completedAt, data: { turn: 1, reason: { kind: 'completed' } } },
   ] as readonly SessionEvent[]
-  const validated = Session.fromRestore(header.id, events, header)
+  const validated = Session.fromRestore(header.id, events, header, SessionLogOffset(0))
   if (validated.deriveMessages().length !== 2) throw new Error('ACP_SUBAGENT_TRANSCRIPT_INVALID: projected task/result were not admitted')
   return { header, events }
 }
@@ -175,11 +175,11 @@ function surfaceFreeLog(header: SessionHeader, label: string, startedAt: number,
   readonly events: readonly SessionEvent[]
 } {
   const events: readonly SessionEvent[] = [
-    { type: 'subagent/descriptor', seq: 0, time: startedAt, data: snapshotSubagentDescriptor({ mode: 'one-shot', provider: EXTERNAL_SUBAGENT_DESCRIPTOR_PROVIDER, label }) },
-    { type: 'turn/start', seq: 1, time: startedAt, data: { turn: 1 } },
-    { type: 'turn/end', seq: 2, time: completedAt, data: { turn: 1, reason: { kind: 'completed' } } },
+    { type: 'subagent/descriptor', seq: SessionSeq(0), time: startedAt, data: snapshotSubagentDescriptor({ mode: 'one-shot', provider: EXTERNAL_SUBAGENT_DESCRIPTOR_PROVIDER, label }) },
+    { type: 'turn/start', seq: SessionSeq(1), time: startedAt, data: { turn: 1 } },
+    { type: 'turn/end', seq: SessionSeq(2), time: completedAt, data: { turn: 1, reason: { kind: 'completed' } } },
   ] as readonly SessionEvent[]
-  const validated = Session.fromRestore(header.id, events, header)
+  const validated = Session.fromRestore(header.id, events, header, SessionLogOffset(0))
   if (validated.deriveMessages().length !== 0) throw new Error('ACP_SUBAGENT_SURFACE_LEAK: projected record entered DSH model history')
   return { header, events }
 }
@@ -193,6 +193,7 @@ function projectionLog(context: ExternalProjectionContext, observation: External
   const label = bounded(redactSecretText(observation.label), 256)
   const header: SessionHeader = {
     version: SESSION_FORMAT_VERSION,
+    isSeeded: false,
     id: SessionId(id), createdAt: startedAt, cwd: context.parentCwd,
     parentSession: SessionId(context.parentDshSessionId), origin: 'subagent',
     delegationDepth: (context.parentDelegationDepth ?? 0) + 1,
@@ -270,8 +271,11 @@ export class ExternalSubagentProjector {
       const records = raw.content.trimEnd().split('\n').map(line => JSON.parse(line) as Record<string, unknown>)
       const [headerRecord, ...events] = records
       if (headerRecord?.type !== 'session') return false
-      const { type: _type, ...header } = headerRecord
-      return canonical(header) === canonical(expected.header) && canonical(events) === canonical(expected.events)
+      // `raw.meta` is the backend's authoritative logical parse of this exact
+      // physical header. Alpha.4 intentionally omits false/default fields
+      // (`isSeeded: false`, `delegationDepth: 0`) from the JSONL line, so a
+      // second byte-shape comparison would reject a valid normalized header.
+      return canonical(events) === canonical(expected.events)
     } catch { return false }
   }
 

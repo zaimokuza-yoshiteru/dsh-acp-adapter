@@ -9,11 +9,11 @@ import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const expectedTag = 'dsh-v0.1.2-alpha.3'
-const expectedVersion = '0.1.2-alpha.3'
+const expectedTag = 'dsh-v0.1.2-alpha.4'
+const expectedVersion = '0.1.2-alpha.4'
 
 function parseArgs(argv) {
-  const result = { hostRoot: process.env.DSH_UPSTREAM_CHECKOUT || resolve(root, '..', 'reference', 'deepseek-harness-alpha2'), check: false, help: false }
+  const result = { hostRoot: process.env.DSH_UPSTREAM_CHECKOUT || resolve(root, '..', 'reference', 'deepseek-harness'), check: false, help: false }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
     if (arg === '--check') result.check = true
@@ -31,7 +31,7 @@ function usage() {
   return `Usage: node scripts/link-dsh-reference.mjs [options]
 
 Options:
-  --host-root <path>  built DSH source root (default: DSH_UPSTREAM_CHECKOUT or ../reference/deepseek-harness-alpha2)
+  --host-root <path>  built DSH source root (default: DSH_UPSTREAM_CHECKOUT or ../reference/deepseek-harness)
   --check             verify links without changing node_modules
   -h, --help          show this help`
 }

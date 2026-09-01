@@ -20,7 +20,7 @@ import { buildAcpSpawnPlan } from '../../domain/policy/sandbox.ts'
 import { descriptorOf } from '../../domain/session/agent-config.ts'
 import { DispatchLedger } from '../../runtime/session/dispatch-ledger.ts'
 import type { DispatchLedgerStore } from '../../runtime/session/dispatch-ledger.ts'
-import { admitCurrentStep } from '../../domain/session/current-step-admission.ts'
+import { admitCurrentStep, snapshotSessionEvents } from '../../domain/session/current-step-admission.ts'
 import { AcpAdmissionError } from '../../domain/session/current-step-admission.ts'
 import type { CurrentStepProof, SessionLike } from '../../domain/session/current-step-admission.ts'
 import { ExternalDelegationNormalizer } from '../../domain/subagent/external-delegation.ts'
@@ -83,8 +83,9 @@ type AgentSessionOptionWrite =
 
 function hasOpenTurn(session: SessionLike | undefined): boolean {
   if (session === undefined) return false
-  for (let index = session.events.length - 1; index >= 0; index -= 1) {
-    const type = session.events[index]?.type
+  const events = snapshotSessionEvents(session)
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const type = events[index]?.type
     if (type === 'turn/start') return true
     if (type === 'turn/end') return false
   }
@@ -103,8 +104,9 @@ function hasOpenTurn(session: SessionLike | undefined): boolean {
 function projectNativeAgentAccess(session: SessionLike | undefined): void {
   if (session?.append === undefined) return
   const latest = (type: string, key: string): unknown => {
-    for (let index = session.events.length - 1; index >= 0; index -= 1) {
-      const event = session.events[index]
+    const events = snapshotSessionEvents(session)
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index]
       if (event?.type !== type || typeof event.data !== 'object' || event.data === null) continue
       return (event.data as Record<string, unknown>)[key]
     }
@@ -119,10 +121,10 @@ function projectNativeAgentAccess(session: SessionLike | undefined): void {
 }
 
 /** Prove the child seed ends at the parent's durable ACP binding head. */
-function isLatestForkCut(session: SessionLike | undefined, parentSessionId: string, parentBinding: AcpBindingData, currentFingerprint: unknown, seedLength: number | undefined): boolean {
-  if (session === undefined || seedLength === undefined || !Number.isInteger(seedLength) || seedLength < 0) return false
-  const seed = session.events.slice(0, seedLength)
-  if (seed.length < seedLength) return false
+function isLatestForkCut(session: SessionLike | undefined, parentSessionId: string, parentBinding: AcpBindingData, currentFingerprint: unknown): boolean {
+  if (session === undefined || !Number.isInteger(session.inheritedEventCount) || session.inheritedEventCount < 0) return false
+  const seed = snapshotSessionEvents(session).slice(0, session.inheritedEventCount)
+  if (seed.length < session.inheritedEventCount) return false
   const payload = [...seed].reverse().map(acpReplayPayloadOf).find((value) => value !== undefined)
   return payload !== undefined
     && payload.ownerDshSessionId === parentSessionId
@@ -804,7 +806,7 @@ export class AcpProfileAdapter extends LlmAdapter {
               forkReason = 'parent-binding-unavailable'
             } else if (hasOpenTurn(self.sessionOf(parentSessionId))) {
               forkReason = 'parent-not-idle'
-            } else if (!isLatestForkCut(session, parentSessionId, parentBinding, currentFingerprint, session?.header?.seedLength)) {
+            } else if (!isLatestForkCut(session, parentSessionId, parentBinding, currentFingerprint)) {
               forkReason = 'seed-not-latest-semantic-boundary'
             } else if (typeof runtime.fork !== 'function') {
               forkReason = 'agent-does-not-advertise-fork'
@@ -874,7 +876,8 @@ export class AcpProfileAdapter extends LlmAdapter {
           // created; a restart can never observe two uncommitted display-only
           // events after an otherwise healthy binding.
           projectNativeAgentAccess(session)
-          const dshHead = (session?.events ?? []).reduce((max, event) => Math.max(max, event.seq), admissionProof?.startSeq ?? 0)
+          const dshHead = (session === undefined ? [] : snapshotSessionEvents(session))
+            .reduce((max, event) => Math.max(max, event.seq), admissionProof?.startSeq ?? 0)
           const bindingData: AcpBindingData = {
           provider: options.provider,
           agentSessionId: runtime.acpSessionId ?? (() => { throw new LlmError('ACP runtime did not return a session id', 'ACP_SESSION_UNAVAILABLE') })(),
@@ -1326,7 +1329,7 @@ export class AcpProfileAdapter extends LlmAdapter {
     if (this.sidecar === undefined || session === undefined) return undefined
     const current = await this.sidecar.readLatestBinding(sessionId as never)
     if (current?.status !== 'ok') return undefined
-    const head = session.events.reduce((max, event) => Math.max(max, event.seq), current.binding.dshCommittedSeq)
+    const head = snapshotSessionEvents(session).reduce((max, event) => Math.max(max, event.seq), current.binding.dshCommittedSeq)
     const next: AcpBindingData = {
       ...current.binding,
       dshCommittedSeq: Math.max(head, current.binding.dshCommittedSeq),

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { activityJournalSessionId, activityRowElement, createAcpActivityDefinition, visibleActivityRows } from '../../../src/client/ui/AcpActivityNode.ts'
+import { activityJournalSessionId, activityRowElement, completedProjectedChild, createAcpActivityDefinition, visibleActivityRows } from '../../../src/client/ui/AcpActivityNode.ts'
 import { AcpActivityJournalStore } from '../../../src/client/data/activity-journal.ts'
 import { AcpActivityJournalHub } from '../../../src/client/data/activity-journal.ts'
 import { acpReplayPayloadOf } from '../../../src/client/data/acp-replay-payload.ts'
@@ -160,6 +160,20 @@ describe('ACP activity conversation node', () => {
     ] })
     store.apply({ type: 'entry', activity: { dshSessionId: 'dsh-1', ownerDshSessionId: 'dsh-1', promptAnchorMessageId: 'user-3', activityId: 'a', activitySeq: 1, revisionSeq: 3, time: 3, kind: 'tool', status: 'completed', presentation: 'A done' } })
     expect(store.values('dsh-1', 'user-3').map((row) => `${row.activityId}:${row.status}`)).toEqual(['a:completed', 'b:running'])
+  })
+
+  it('refreshes the native subagent catalog only after the projected child is durable', () => {
+    const row = {
+      dshSessionId: 'dsh-1', ownerDshSessionId: 'dsh-1', promptAnchorMessageId: 'user-3',
+      activityId: 'external-subagent-record', activitySeq: 1, revisionSeq: 1, time: 1,
+      kind: 'delegated' as const, status: 'running' as const, presentation: 'Helper',
+      rawDetail: JSON.stringify({ childSessionId: 'child-1', parentDshSessionId: 'dsh-1' }),
+    }
+    expect(completedProjectedChild(row)).toBeUndefined()
+    expect(completedProjectedChild({ ...row, status: 'completed', revisionSeq: 2 })).toEqual({
+      parentSessionId: 'dsh-1',
+      childSessionId: 'child-1',
+    })
   })
 
   it('updates one anchor without scanning or mutating another anchor index', () => {

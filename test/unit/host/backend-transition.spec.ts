@@ -81,7 +81,7 @@ describe('M6b backend transition classifier', () => {
 
   it('does not count the current turn user message as prior history', () => {
     const session = {
-      events: [
+      snapshotEvents: () => [
         { type: 'turn/start', data: {} },
         { type: 'user/message', data: {} },
       ],
@@ -91,7 +91,7 @@ describe('M6b backend transition classifier', () => {
 
   it('counts semantic events before the current turn as prior history', () => {
     const session = {
-      events: [
+      snapshotEvents: () => [
         { type: 'turn/start', data: {} },
         { type: 'user/message', data: {} },
         { type: 'turn/start', data: {} },

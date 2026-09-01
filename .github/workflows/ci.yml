@@ -5,12 +5,11 @@ on:
   pull_request:
   workflow_dispatch:
 
-# Exact published alpha.3 packages are the reproducible primary lane. The
-# compatibility matrix proves the declared runtime floor and current npm alpha;
-# a separate source checkout covers the optional local-link workflow.
+# Exact published alpha.4 packages are the reproducible primary lane. A
+# separate source checkout verifies the same host version through local links.
 jobs:
   registry:
-    name: ${{ matrix.os }} published alpha.3
+    name: ${{ matrix.os }} published alpha.4
     strategy:
       fail-fast: false
       matrix:
@@ -42,33 +41,8 @@ jobs:
       - name: Build and verify bundle
         run: pnpm build
 
-  published-compatibility:
-    name: published DSH ${{ matrix.dsh-version }} compatibility
-    runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        dsh-version: [0.1.2-alpha.2, alpha]
-    env:
-      DSH_COMPAT_VERSION: ${{ matrix.dsh-version }}
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
-        with:
-          node-version-file: .nvmrc
-          package-manager-cache: false
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10.7.0
-      - name: Install reproducible toolchain
-        run: pnpm install --frozen-lockfile
-      - name: Select published DSH compatibility version
-        run: pnpm update --dev "@deepseek-ai/dsh-*@$DSH_COMPAT_VERSION"
-      - name: Verify published compatibility
-        run: pnpm typecheck && pnpm test && pnpm build
-
   source-compatibility:
-    name: DSH alpha.3 source compatibility
+    name: DSH alpha.4 source compatibility
     runs-on: ubuntu-24.04
     env:
       DSH_UPSTREAM_CHECKOUT: ${{ github.workspace }}/reference/deepseek-harness
@@ -78,7 +52,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: deepseek-ai/deepseek-harness
-          ref: dsh-v0.1.2-alpha.3
+          ref: dsh-v0.1.2-alpha.4
           path: reference/deepseek-harness
       - uses: actions/setup-node@v6
         with:
@@ -88,7 +62,7 @@ jobs:
         with:
           version: 10.7.0
       - name: Build DSH source
-        run: pnpm install --frozen-lockfile && pnpm build
+        run: pnpm install --frozen-lockfile && pnpm clean && pnpm build
         working-directory: reference/deepseek-harness
       - name: Install plugin tooling
         run: pnpm install --frozen-lockfile

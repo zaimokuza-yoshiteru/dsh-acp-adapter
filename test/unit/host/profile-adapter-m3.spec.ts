@@ -17,10 +17,13 @@ import { AcpClientError } from '../../../src/protocol/v1/errors.ts'
 
 const profile = (): AcpAgentConfig => ({ name: 'Test', command: 'agent', args: ['acp'], env: {} })
 const user = (text: string) => createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })
-const session = (message: ReturnType<typeof user>) => ({ header: { cwd: os.tmpdir() }, events: [
-  { type: 'step/start', seq: 1, data: { turn: 1, step: 0 } },
-  { type: 'user/message', seq: 2, data: message },
-] })
+const session = (message: ReturnType<typeof user>) => {
+  const events = [
+    { type: 'step/start', seq: 1, data: { turn: 1, step: 0 } },
+    { type: 'user/message', seq: 2, data: message },
+  ]
+  return { header: { cwd: os.tmpdir() }, inheritedEventCount: 0, events, snapshotEvents: () => [...events] }
+}
 const request = (id: string, message: ReturnType<typeof user>): GenerateOptions => markAgentLoopRequest({ provider: 'acp-test', model: 'model-a', sessionId: id as never, messages: [message] })
 const seam = (): { ok: true; seam: never } => ({ ok: true, seam: undefined as never })
 
@@ -101,7 +104,9 @@ describe('M3a binding-first ACP provider', () => {
       const events: Array<{ type: string; seq: number; data: unknown }> = [...session(message).events]
       const liveSession = {
         header: { cwd: os.tmpdir() },
+        inheritedEventCount: 0,
         events,
+        snapshotEvents: () => [...events],
         append: (type: string, data: unknown) => {
           const event = { type, seq: events.length + 1, data }
           events.push(event)
@@ -134,7 +139,9 @@ describe('M3a binding-first ACP provider', () => {
       const message = user('hello')
       const continuation = user('continue')
       let events: Array<{ type: string; seq: number; data: unknown }> = [...session(message).events]
-      const initial = new AcpProfileAdapter('test', profile, seam(), () => ({ header: { cwd: os.tmpdir() }, events }), ledgerFor(sidecar), undefined, runtimeFactory(first), sidecar)
+      const initial = new AcpProfileAdapter('test', profile, seam(), () => ({
+        header: { cwd: os.tmpdir() }, inheritedEventCount: 0, snapshotEvents: () => [...events],
+      }), ledgerFor(sidecar), undefined, runtimeFactory(first), sidecar)
       await drain(initial.stream(request('restart-session', message)))
       expect(first.prompts).toBe(1)
       const initialBinding = await sidecar.readLatestBinding('restart-session' as never)
@@ -143,7 +150,9 @@ describe('M3a binding-first ACP provider', () => {
       events = [...events, { type: 'step/start', seq: 3, data: { turn: 2, step: 0 } }, { type: 'user/message', seq: 4, data: continuation }]
       const liveSession = {
         header: { cwd: os.tmpdir() },
+        inheritedEventCount: 0,
         events,
+        snapshotEvents: () => [...events],
         append: (type: string, data: unknown) => {
           const event = { type, seq: events.length + 1, data }
           events.push(event)
@@ -193,11 +202,15 @@ describe('M3a binding-first ACP provider', () => {
       const secondMessage = user('second')
       let events = session(firstMessage).events
       const first = { starts: 0, prompts: 0, restores: 0 }
-      const initial = new AcpProfileAdapter('test', profile, seam(), () => ({ header: { cwd: os.tmpdir() }, events }), ledgerFor(sidecar), undefined, runtimeFactory(first), sidecar)
+      const initial = new AcpProfileAdapter('test', profile, seam(), () => ({
+        header: { cwd: os.tmpdir() }, inheritedEventCount: 0, snapshotEvents: () => [...events],
+      }), ledgerFor(sidecar), undefined, runtimeFactory(first), sidecar)
       await drain(initial.stream(request('continuation', firstMessage)))
       events = [...events, { type: 'step/start', seq: 3, data: { turn: 2, step: 0 } }, { type: 'user/message', seq: 4, data: secondMessage }]
       const second = { starts: 0, prompts: 0, restores: 0 }
-      const restarted = new AcpProfileAdapter('test', profile, seam(), () => ({ header: { cwd: os.tmpdir() }, events }), ledgerFor(sidecar), undefined, runtimeFactory(second), sidecar)
+      const restarted = new AcpProfileAdapter('test', profile, seam(), () => ({
+        header: { cwd: os.tmpdir() }, inheritedEventCount: 0, snapshotEvents: () => [...events],
+      }), ledgerFor(sidecar), undefined, runtimeFactory(second), sidecar)
       await drain(restarted.stream(request('continuation', secondMessage)))
       expect(second.restores).toBe(1)
       expect(second.prompts).toBe(1)
@@ -214,11 +227,15 @@ describe('M3a binding-first ACP provider', () => {
       const continuation = user('continue')
       let events = session(message).events
       const first = { starts: 0, prompts: 0, restores: 0 }
-      const initial = new AcpProfileAdapter('test', profile, seam(), () => ({ header: { cwd: os.tmpdir() }, events }), ledgerFor(sidecar), undefined, runtimeFactory(first), sidecar)
+      const initial = new AcpProfileAdapter('test', profile, seam(), () => ({
+        header: { cwd: os.tmpdir() }, inheritedEventCount: 0, snapshotEvents: () => [...events],
+      }), ledgerFor(sidecar), undefined, runtimeFactory(first), sidecar)
       await drain(initial.stream(request('load-session', message)))
       const second = { starts: 0, prompts: 0, restores: 0 }
       events = [...events, { type: 'step/start', seq: 3, data: { turn: 2, step: 0 } }, { type: 'user/message', seq: 4, data: continuation }]
-      const loaded = new AcpProfileAdapter('test', profile, seam(), () => ({ header: { cwd: os.tmpdir() }, events }), ledgerFor(sidecar), undefined, () => ({
+      const loaded = new AcpProfileAdapter('test', profile, seam(), () => ({
+        header: { cwd: os.tmpdir() }, inheritedEventCount: 0, snapshotEvents: () => [...events],
+      }), ledgerFor(sidecar), undefined, () => ({
         acpSessionId: 'agent-session-1', agentInfo: { name: 'fake-agent', version: '1' }, agentCapabilities: { loadSession: true }, protocolVersion: 1,
         start: async () => { second.starts += 1 },
         restore: async (_binding, _signal, onReplay) => { second.restores += 1; onReplay?.({ update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'replayed' } } } as never); return 'loaded' },
@@ -319,7 +336,7 @@ describe('M3a binding-first ACP provider', () => {
         'test',
         profile,
         seam(),
-        () => ({ header: { cwd: os.tmpdir() }, events }),
+        () => ({ header: { cwd: os.tmpdir() }, inheritedEventCount: 0, snapshotEvents: () => [...events] }),
         ledgerFor(sidecar), undefined,
         () => { factoryCalls += 1; return runtime },
         sidecar,

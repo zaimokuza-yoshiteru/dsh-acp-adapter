@@ -227,7 +227,7 @@ export class AcpActivityJournalHub {
   /**
    * A conversation node can mount a few milliseconds before the host commits
    * its durable ACP binding. Retry only that initial unopened window. Once an
-   * opened frame arrives, alpha.3's RemoteJournalStream remains the sole owner
+   * opened frame arrives, alpha.4's RemoteJournalStream remains the sole owner
    * of carrier reconnect and gap repair.
    */
   private startEntry(sessionId: string, entry: HubEntry): void {

@@ -91,11 +91,14 @@ describe('external subagent projector', () => {
       }),
       create: vi.fn(async (value: Record<string, unknown>) => { meta = value; created = true }),
       append: vi.fn(async (_id: string, value: Record<string, unknown>[]) => { events = value }),
-      readRaw: vi.fn(async () => ({
-        meta,
-        filename: 'session.jsonl',
-        content: `${JSON.stringify({ type: 'session', ...meta })}\n${events.map(event => JSON.stringify(event)).join('\n')}\n`,
-      })),
+      readRaw: vi.fn(async () => {
+        const { isSeeded: _normalizedLogicalField, ...physicalHeader } = meta ?? {}
+        return {
+          meta,
+          filename: 'session.jsonl',
+          content: `${JSON.stringify({ type: 'session', ...physicalHeader })}\n${events.map(event => JSON.stringify(event)).join('\n')}\n`,
+        }
+      }),
     }
     const projector = new ExternalSubagentProjector(persistence as never, { upsertActivity: async row => row as never })
     await expect(projector.project(observation, {
