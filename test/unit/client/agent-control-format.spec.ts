@@ -3,6 +3,7 @@ import {
   agentControlFooter,
   agentControlLabel,
   agentControlMenuItems,
+  formatContextTokenCount,
   shouldRefreshAgentControlAfterRun,
 } from '../../../src/client/ui/AcpAgentControl.ts'
 import type { AcpAgentSessionSnapshotView } from '../../../src/client/data/acp-remote.ts'
@@ -19,9 +20,21 @@ describe('ACP Agent control presentation', () => {
     const value = snapshot({ contextUsage: { used: 12, size: 100, percent: 12, cost: { amount: 0.42, currency: 'USD' } } })
     expect(agentControlLabel(value)).toBe('Agent · Plan')
     expect(agentControlFooter(value, t).map(item => item.text)).toEqual([
-      'agentContextUsage:{"used":12,"size":100,"percent":12}',
+      'agentContextUsage:{"used":"0.012k","size":"0.1k","percent":12}',
       'agentSessionCost:{"amount":0.42,"currency":"USD"}',
     ])
+  })
+
+  it('formats ACP context counts with k as the minimum unit and m from one million', () => {
+    expect(formatContextTokenCount(0)).toBe('0k')
+    expect(formatContextTokenCount(12)).toBe('0.012k')
+    expect(formatContextTokenCount(999)).toBe('0.999k')
+    expect(formatContextTokenCount(1_000)).toBe('1k')
+    expect(formatContextTokenCount(14_259)).toBe('14.3k')
+    expect(formatContextTokenCount(999_999)).toBe('1000k')
+    expect(formatContextTokenCount(1_000_000)).toBe('1m')
+    expect(formatContextTokenCount(1_048_576)).toBe('1m')
+    expect(formatContextTokenCount(1_250_000)).toBe('1.3m')
   })
 
   it('marks stale last-reported state and omits cost when Agent did not report it', () => {

@@ -77,10 +77,23 @@ export function agentControlLabel(snapshot: AcpAgentSessionSnapshotView): string
   return `Agent · ${currentModeName(snapshot)}`
 }
 
+/** Compact ACP token counts without falling back to an unqualified raw count. */
+export function formatContextTokenCount(value: number): string {
+  const unit = value >= 1_000_000 ? 'm' : 'k'
+  const divisor = unit === 'm' ? 1_000_000 : 1_000
+  const scaled = value / divisor
+  // Match the host's compact context figures for ordinary K/M values while
+  // retaining enough precision below 1k to avoid displaying a non-zero count
+  // as zero. The raw count determines the unit, so rounding never promotes it.
+  const fractionDigits = scaled < 1 ? 3 : scaled < 100 ? 1 : 0
+  const factor = 10 ** fractionDigits
+  return `${String(Math.round(scaled * factor) / factor)}${unit}`
+}
+
 export function agentControlFooter(snapshot: AcpAgentSessionSnapshotView, t: Translate): readonly { readonly type: 'label'; readonly id: string; readonly text: string }[] {
   const footer: { readonly type: 'label'; readonly id: string; readonly text: string }[] = []
   if (snapshot.contextUsage !== null) {
-    footer.push({ type: 'label', id: 'context-usage', text: t('agentContextUsage', { used: snapshot.contextUsage.used, size: snapshot.contextUsage.size, percent: snapshot.contextUsage.percent }) })
+    footer.push({ type: 'label', id: 'context-usage', text: t('agentContextUsage', { used: formatContextTokenCount(snapshot.contextUsage.used), size: formatContextTokenCount(snapshot.contextUsage.size), percent: snapshot.contextUsage.percent }) })
     if (snapshot.contextUsage.cost !== null) footer.push({ type: 'label', id: 'session-cost', text: t('agentSessionCost', { amount: snapshot.contextUsage.cost.amount, currency: snapshot.contextUsage.cost.currency }) })
   }
   if (snapshot.freshness === 'stale') footer.push({ type: 'label', id: 'stale', text: t('agentStateStale') })
