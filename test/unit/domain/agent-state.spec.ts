@@ -1,9 +1,8 @@
 // agent-state.spec.ts — 随附测试：deriveAcpAgentState 五态状态机全分支矩阵。
 //
 // 被测模块（src/domain/session/agent-state.ts）是零 import 叶子，直接 vitest 可测。
-// 新鲜度判定（agent-config.ts acpProbeFresh = key 相等 + TTL）在调用方完成，
-// 本测试钉纯函数本身（判定顺序即词表优先级，逐分支钉死）与 acpProbeFresh 的
-// TTL/键边界。
+// 配置归属判定在调用方完成；本测试钉纯函数本身（判定顺序即词表优先级，
+// 逐分支钉死）与模型目录运行时缓存 acpProbeFresh 的 TTL/键边界。
 
 import { describe, expect, it } from 'vitest';
 import { deriveAcpAgentState, type AcpAgentStateInput } from '../../../src/domain/session/agent-state.ts';
@@ -31,7 +30,7 @@ describe('deriveAcpAgentState（五态）', () => {
     expect(deriveAcpAgentState({ ...BASE, configValid: false, probe: { result: { kind: 'ok', modelCount: 5, hasModelConfigOption: true } } })).toBe('unavailable');
   });
 
-  it('无新鲜 probe（undefined）→ saved-unverified（与声明与否无关）', () => {
+  it('当前配置无 probe（undefined）→ saved-unverified（与声明与否无关）', () => {
     expect(deriveAcpAgentState({ ...BASE, probe: undefined })).toBe('saved-unverified');
   });
 

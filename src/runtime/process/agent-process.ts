@@ -7,9 +7,8 @@
  *
  * - 结构化 spawn：`argv: string[]` 直达 seam（stdio 由窄化适配器固定
  *   pipe/pipe/pipe），禁止拼 shell 字符串；调用方（连接层）已在传入前解析
- *   `spawnPlan`/`wrapArgv` 插口为最终 argv/env。env 经
- *   {@link envSpecWithTombstones} 组装：期望 env 原样放行 + 对 provider scrub
- * 底座残留键下 tombstone，白名单语义与 前「env 整体替换」逐字节对齐。
+ *   `spawnPlan`/`wrapArgv` 插口为最终 argv/env。env 只包含 profile 显式覆盖，
+ *   由宿主 subprocess service 合并 scrubbed parent env。
  * - 拆除梯子：stdin EOF → `eofGraceMs`（默认 500ms）→ `terminate()`（seam 的
  *   SIGTERM → `termGraceMs`（默认 2s，即 spawn spec 的 graceMs）→ SIGKILL 树级
  *   升级；Windows 为 taskkill /T /F）→ **有界** `waitForExit()`（`exitWaitMs`，
@@ -35,7 +34,6 @@ import {
   StderrRing,
   defaultRedactStderrLine,
 } from './stderr.ts'
-import { envSpecWithTombstones } from './subprocess.ts'
 import type { AcpSubprocessHandle, SubprocessSeam } from './subprocess.ts'
 import { abortAfter, waitWithin } from './timeout.ts'
 import type { AcpProcessExit, AcpProcessOptions } from './types.ts'
@@ -116,14 +114,14 @@ export class AcpAgentProcess {
  // 结构化 spawn：argv 直达 seam，不经 shell（堵注入面； 经 spawnPlan/wrapArgv
     // 包 confine——spawnPlan 存在时其 env 整体替换 spec.env，由连接层在传入前解析）。
     // graceMs = 拆除梯子第 2 级的升级间隔（terminate 的 SIGTERM→SIGKILL 定时由 seam 持有）。
-    // env = 白名单期望集 + tombstone（压制 provider scrub 底座的非期望键，见 ./subprocess.ts）。
+    // env = profile 显式覆盖；subprocess service 负责 scrubbed parent env 底座。
     let handle: AcpSubprocessHandle | undefined
     let syncFailure: Error | undefined
     try {
       handle = args.subprocess.spawn({
         argv: args.argv,
         cwd: args.cwd,
-        env: envSpecWithTombstones(args.env, process.env),
+        env: args.env,
         graceMs: this.termGraceMs,
       })
       // seam 契约：pipe/pipe/pipe 由窄化适配器固定，流恒在场；缺场 = 实现违约，

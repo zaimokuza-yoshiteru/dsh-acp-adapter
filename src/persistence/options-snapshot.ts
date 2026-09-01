@@ -51,6 +51,17 @@ export interface AcpOptionsSnapshotRecord {
   /** 刷新时间（epoch 毫秒）。 */
   readonly updatedAt: number
   readonly fingerprint: string
+  /** Last ACP context occupancy; never mapped to DSH TokenUsage. */
+  readonly contextUsage?: {
+    readonly used: number
+    readonly size: number
+    readonly cost?: { readonly amount: number; readonly currency: string } | null
+  } | null
+  /** Complete bounded legacy mode state, when advertised by the Agent. */
+  readonly modes?: {
+    readonly currentModeId: string
+    readonly availableModes: readonly { readonly id: string; readonly name: string; readonly description?: string | null }[]
+  } | null
 }
 
 /** 截断到 {@link ACP_SNAPSHOT_FIELD_MAX}（快照字段的统一截断点）。 */
@@ -104,6 +115,7 @@ export function acpOptionsSnapshotOf(
   currentModeId: string | undefined,
   fingerprint: string,
   updatedAt: number,
+  extras?: Pick<AcpOptionsSnapshotRecord, 'contextUsage' | 'modes'>,
 ): AcpOptionsSnapshotRecord {
   const options: AcpOptionsSnapshotOption[] = []
   for (const option of configOptions ?? []) {
@@ -116,6 +128,8 @@ export function acpOptionsSnapshotOf(
     currentModeId: typeof currentModeId === 'string' ? snapshotField(currentModeId) : null,
     updatedAt,
     fingerprint,
+    ...(extras?.contextUsage === undefined ? {} : { contextUsage: extras.contextUsage }),
+    ...(extras?.modes === undefined ? {} : { modes: extras.modes }),
   })
   let record = build(options)
   while (JSON.stringify(record).length > ACP_SNAPSHOT_TOTAL_BYTES && record.options.length > 1) {
@@ -160,10 +174,36 @@ export function toOptionsSnapshotRecord(raw: unknown): AcpOptionsSnapshotRecord 
   if (raw.currentModeId !== null && typeof raw.currentModeId !== 'string') return undefined
   if (typeof raw.updatedAt !== 'number' || !Number.isFinite(raw.updatedAt)) return undefined
   if (typeof raw.fingerprint !== 'string' || raw.fingerprint.length === 0) return undefined
+  let contextUsage: AcpOptionsSnapshotRecord['contextUsage']
+  if (raw.contextUsage !== undefined && raw.contextUsage !== null) {
+    const usage = raw.contextUsage
+    if (!isPlainObject(usage) || typeof usage.used !== 'number' || typeof usage.size !== 'number' || !Number.isFinite(usage.used) || !Number.isFinite(usage.size)
+      || usage.used < 0 || usage.size < 0) return undefined
+    const rawCost = usage.cost
+    if (rawCost !== undefined && rawCost !== null && (!isPlainObject(rawCost) || typeof rawCost.amount !== 'number' || !Number.isFinite(rawCost.amount) || typeof rawCost.currency !== 'string' || rawCost.currency.length > ACP_SNAPSHOT_FIELD_MAX)) return undefined
+    contextUsage = {
+      used: usage.used,
+      size: usage.size,
+      cost: rawCost === undefined ? null : rawCost === null ? null : { amount: rawCost.amount as number, currency: rawCost.currency as string },
+    }
+  } else if (raw.contextUsage === null) contextUsage = null
+  let modes: AcpOptionsSnapshotRecord['modes']
+  if (raw.modes !== undefined && raw.modes !== null) {
+    if (!isPlainObject(raw.modes) || typeof raw.modes.currentModeId !== 'string' || !Array.isArray(raw.modes.availableModes) || raw.modes.availableModes.length > ACP_SNAPSHOT_OPTION_LIMIT) return undefined
+    const availableModes: { id: string; name: string; description?: string | null }[] = []
+    for (const rawMode of raw.modes.availableModes as unknown[]) {
+      if (!isPlainObject(rawMode) || typeof rawMode.id !== 'string' || typeof rawMode.name !== 'string' || rawMode.id.length > ACP_SNAPSHOT_FIELD_MAX || rawMode.name.length > ACP_SNAPSHOT_FIELD_MAX) return undefined
+      if (rawMode.description !== undefined && rawMode.description !== null && (typeof rawMode.description !== 'string' || rawMode.description.length > ACP_SNAPSHOT_FIELD_MAX)) return undefined
+      availableModes.push({ id: rawMode.id, name: rawMode.name, ...(rawMode.description === undefined ? {} : { description: rawMode.description as string | null }) })
+    }
+    modes = { currentModeId: raw.modes.currentModeId as string, availableModes }
+  } else if (raw.modes === null) modes = null
   return {
     options,
     currentModeId: raw.currentModeId as string | null,
     updatedAt: raw.updatedAt,
     fingerprint: raw.fingerprint,
+    ...(contextUsage === undefined ? {} : { contextUsage }),
+    ...(modes === undefined ? {} : { modes }),
   }
 }

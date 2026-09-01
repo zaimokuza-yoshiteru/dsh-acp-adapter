@@ -13,8 +13,8 @@
  */
 
 import type { AcpProviderHealth, PanelSettingsState } from '../logic.ts'
-import { defineSnapshotStore } from './engine.ts'
-import type { ActionsDecl, BakedActions, StoreHandle } from './engine.ts'
+import { defineStore } from '@deepseek-ai/dsh-client-store'
+import type { ActionsDecl, BakedActions, StoreHandle } from '@deepseek-ai/dsh-client-store'
 
 /** The panel's health state: the last good rows ride through later failures so a refresh error erases nothing. */
 export interface HealthState {
@@ -123,5 +123,5 @@ export type AcpPanelStoreActions = BakedActions<AcpPanelSnapshot, typeof panelAc
  * @returns a fresh handle (one per entry — never share at module level).
  */
 export function createAcpPanelStore(): StoreHandle<AcpPanelSnapshot, typeof panelActions> {
-  return defineSnapshotStore({ init: initialPanelState, actions: panelActions })
+  return defineStore({ init: initialPanelState, actions: panelActions })
 }

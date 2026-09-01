@@ -2,28 +2,25 @@
  * ACP agent 配置的五态状态机：把「宿主结构兼容 / 配置有效 / probe
  * 缓存」三路事实折成一个用户可行动的稳定词表。
  * 本模块是 domainSession 层的零 import 叶子——remote 层（health 行的 `state`
- * 字段，src/remote/service.ts）与 hostFactory 层（会话创建门，
- * src/host/factory/agent-loop.ts）共同下行消费同一实现，五态语义只写一次。
+ * 字段，src/remote/service.ts）与 installed-profile registry 的会话创建门
+ * 共同下行消费同一实现，五态语义只写一次。
  *
  * 词表语义：
  * - `saved-unverified`：配置已存但从未（以当前配置）探测过——既不能说 ready
  *   也不能说有故障。
- * - `ready`：新鲜 probe 成功，表示命令可启动、ACP initialize/session 探测可用。
+ * - `ready`：当前配置最后一次明确 probe 成功，表示命令可启动、ACP initialize/session 探测可用。
  *   它**不表示已登录**：模型目录与 config option 都不是凭证有效性的证据。UI
  *   只展示“协议可用”，不虚构持续登录状态；明确的 auth_required 只作为本次
  *   检查诊断和外部登录指引展示。
- * - `auth-required`：新鲜 probe 明确以 ACP `auth_required` 失败。出路 = 按
+ * - `auth-required`：当前配置最后一次 probe 明确以 ACP `auth_required` 失败。出路 = 按
  *   loginHint 在 agent 自家 CLI 登录（external-login-only，面板不发起
  *   authenticate，也不读取凭证文件）。
- * - `unavailable`：新鲜 probe 以其余 kind 失败（spawn-failure/timeout/crash/
+ * - `unavailable`：当前配置最后一次 probe 以其余 kind 失败（spawn-failure/timeout/crash/
  *   protocol-error），或配置无效。
  * - `incompatible`：宿主结构门未通过（ACP 路由整体不可用）。
  *
- * 新鲜度纪律（包含 TTL）：「新鲜」= 缓存条目的 key 与当前配置的
- * `acpProbeConfigKey(config)` 相等且未过 TTL（ok 10min / error 30s）——判定
- * 集中在 agent-config.ts `acpProbeFresh`，由**调用方**完成（health 与创建门
- * 各自先过该 helper，不匹配/过期/无条目则把 probe 传 undefined），本函数只收
- * 已按新鲜度过滤后的视图，不自行读缓存。
+ * 配置归属纪律：调用方只传 key 与当前配置一致的最后一次明确 probe；配置不
+ * 匹配或没有记录时传 undefined。本状态机不消费模型目录的运行时缓存 TTL。
  *
  * @module @zaimokuza/dsh-acp-adapter/domain/session/agent-state
  */
@@ -31,7 +28,7 @@
 /** 五态词表（wire 面经 src/contract/remote.ts 的同名字面量联合过线）。 */
 export type AcpAgentConfigState = 'saved-unverified' | 'ready' | 'auth-required' | 'unavailable' | 'incompatible'
 
-/** probe 缓存条目的最小视图（新鲜度过滤后；ok 只留目录事实，error 只留分流 kind）。 */
+/** probe 缓存条目的最小视图（当前配置过滤后；ok 只留目录事实，error 只留分流 kind）。 */
 export interface AcpAgentStateProbeView {
   readonly result:
     | {
@@ -58,7 +55,7 @@ export interface AcpAgentStateInput {
    * 问题同样是「该 agent 不可用」，出路是修配置，与 probe 故障同桶如实）。
    */
   readonly configValid: boolean
-  /** 新鲜 probe 视图；undefined = 从未探测或缓存已随配置漂移失效。 */
+  /** 当前配置最后一次 probe 视图；undefined = 从未探测或缓存已随配置漂移失效。 */
   readonly probe: AcpAgentStateProbeView | undefined
 }
 

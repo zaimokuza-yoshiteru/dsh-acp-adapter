@@ -2,24 +2,13 @@
  * ACP 审批与运行边界的 sidecar 审计载荷。
  * `asked`/`decided` 配对记录 ACP agent 的选项列表（经过有界脱敏）与最终决定。
  *
- * 本模块同时承载权限范围与 Agent mode 两条独立审计轴：
- * - `permission-scope`（{@link AcpPermissionScopeAuditData}）：每次 ACP spawn
- *   重新解析 `ctx.sandboxPolicy` 后记录 Native Agent Access 的准入事实。它不
- *   表示插件建立了操作系统安全边界，与 ACP mode 无关。
- * - `agent-mode`（{@link AcpAgentModeAuditData}）：ACP agent mode 轴——mode 的建立
- *   与每次经本插件 seam 下发的切换。这是 agent 侧行为配置，不是安全边界。
- * 两轴各自独立条目、分别落盘，不做隐式双向同步；agent 自发推送的
- * `current_mode_update` 只更新 UI 状态槽，v1 不落条目（审计记录本插件建立/下发的事实）。
  * 另有 `degradation`（{@link AcpDegradationAuditData}）：tool result 内容降级
  * （非文本项按占位/摘要落盘或截断）的事实记录，每次降级一条。
  *
- * 审计不是 DSH session event：rc.2 没有可忽略的扩展事件 seam，直接写入未知
- * 事件会干扰 live session 的事件顺序。故本模块
- * 只产出纯 payload，由 ./permissions.ts（kind `permission`）与
- * src/domain/session/agent.ts（的两个新 kind）包成 sidecar entry 经
- * `AcpSidecar.append` 落盘（见 src/persistence/sidecar.ts 模块注释）。
- * SessionEventMap declaration merging 与 `ignorable:true` 构造器不会回归——本包
- * 不再向 session log 写任何自定义事件。
+ * Alpha.2 已支持 `ignorable` 扩展事件，但审计仍不是对话事件：把权限/文件诊断
+ * 混入 session log 会改变事件序列、历史导出和前端投影，却没有用户可见收益。
+ * 因此本模块只产出纯 payload，由 ./permissions.ts（kind `permission`）包成
+ * sidecar entry 经 `AcpSidecar.append` 落盘；不会向 session log 写自定义事件。
  *
  * 两阶段保留可追溯审计：插件 ACP UI 的 `selectedOptionKind`/`decisionVia` 记录
  * 原始选项语义；旧 DSH 双按钮 fallback 无法精确对应时仍只选择 once-kind，
@@ -30,35 +19,25 @@
  */
 
 import { createHash } from 'node:crypto'
+import { redactSecretText as redactCommonSecretText } from '../observability/redaction.ts'
 import type { PermissionOption, ToolCallLocation, ToolCallUpdate } from '@agentclientprotocol/sdk'
 
 /** 审批审计 entry 在 sidecar 里的 `kind`（src/persistence/sidecar.ts entry 联合的判别值之一）。 */
 export const ACP_PERMISSION_AUDIT_KIND = 'permission' as const
 
-/** DSH 权限范围轴审计 entry 的 sidecar `kind`（每次 ACP spawn 落一条）。 */
-export const ACP_PERMISSION_SCOPE_AUDIT_KIND = 'permission-scope' as const
-
-/** ACP agent mode 轴审计 entry 的 sidecar `kind`（建立与每次下发切换各落一条）。 */
-export const ACP_AGENT_MODE_AUDIT_KIND = 'agent-mode' as const
-
-/** agent 配置改动审计 entry 的 sidecar `kind`（面板/设置文档的每次改动一条）。 */
-export const ACP_AGENT_CONFIG_AUDIT_KIND = 'agent-config' as const
-
 /**
  * tool result 内容降级审计 entry 的 sidecar `kind`：终端态 tool_call_update
  * 的 ACP 内容项无法原样呈现（diff/terminal/image/resource/未知类型按占位/摘要落盘，
  * 或超界截断）时记**一条**（不按 item 拆条）；非文本消息 chunk 占位落盘同样记一条。
- * 生产者是 src/protocol/v1/translate.ts 的 TurnTranslator（degradation 回调），
+ * 生产者是 host/composition/profile-adapter.ts 的 provider bridge（degradation 回调），
  * 接线在 src/domain/session/agent.ts（经 recordAudit seam 落 sidecar）。
  */
-export const ACP_DEGRADATION_AUDIT_KIND = 'degradation' as const
-
-/** DSH fork → ACP fork outcome, kept separate from degradation records. */
-export const ACP_SESSION_FORK_AUDIT_KIND = 'session-fork' as const
 export type AcpSessionForkOutcome = 'inherited' | 'blank'
 export type AcpSessionForkReason =
   | 'inherited'
   | 'agent-does-not-advertise-fork'
+  | 'parent-not-idle'
+  | 'parent-recovery-required'
   | 'parent-binding-unavailable'
   | 'parent-binding-mismatch'
   | 'seed-not-latest-semantic-boundary'
@@ -71,10 +50,6 @@ export interface AcpSessionForkAuditData {
   readonly parentAgentSessionId?: string
   readonly agentSessionId?: string
 }
-
-/** Structured ACP elicitation audit; submitted values and URL query strings are excluded. */
-export const ACP_ELICITATION_AUDIT_KIND = 'elicitation' as const
-export type { AcpElicitationAudit as AcpElicitationAuditData } from './elicitation.ts'
 
 /** Durable terminal lifecycle summary; command environment values are never included. */
 export interface AcpTerminalAuditData {
@@ -94,122 +69,26 @@ export interface AcpTerminalAuditData {
 }
 
 /**
- * 降级条目 payload 的类型真源在生产方 src/protocol/v1/translate.ts（架构白名单：
+ * 降级条目 payload 的类型真源在生产方 provider bridge（架构白名单：
  * protocol 层不得 import domain，domainPolicy → protocol 是许可方向，故此处
  * re-export 保持 sidecar 审计载荷在 events.ts 的可见性）。词表手工对齐说明见
  * 定义处注释。
  */
-export type { AcpDegradationAuditData, AcpDegradationCode, AcpDegradationItem } from '../../protocol/v1/translate.ts'
-
-/**
- * DSH 权限范围轴的审计快照：每次 spawn 前重新解析档位，本条目记录
- * ACP 进程采用的 Native Agent Access 事实。审批不是操作系统安全边界。
- */
-export interface AcpPermissionScopeAuditData {
-  /** spawn 时重新解析并验证过的 DSH 会话权限档位。 */
-  readonly mode: 'danger-full-access'
-  /**
-   * 产出该次 spawn 计划的平台标识（扩展字段；= `process.platform`）。
-   */
-  readonly platform: string
-  /**
-   * 恒为 `null`：插件不包装或隔离 Agent 子进程；子进程持有宿主用户可用的
-   * OS 权限，ACP 审批不是强制安全边界。
-   */
-  readonly confined: null
+export type AcpDegradationCode = 'unsupported-tool-content' | 'unsupported-chunk-content'
+export interface AcpDegradationItem {
+  readonly type: string
+  readonly reason: string
+  readonly originalSize?: number
+}
+export interface AcpDegradationAuditData {
+  readonly code: AcpDegradationCode
+  readonly toolCallId?: string
+  readonly items: readonly AcpDegradationItem[]
+  readonly keptPreviewChars: number
+  readonly truncated: boolean
 }
 
-/** ACP agent mode 轴审计快照的来源词表。 */
-export type AcpAgentModeAuditVia = 'session-setup' | 'set_config_option' | 'set_mode'
-
-/**
- * ACP agent mode 轴的审计快照：mode 是 agent 侧行为配置（Devin 的
- * Ask/Plan/Accept Edits/Bypass 等），不改变 DSH sandbox 档位；本条目只回答
- * 「该会话此刻处于哪个 mode、谁切过来的」。
- */
-export interface AcpAgentModeAuditData {
-  readonly modeId: string
-  /**
-   * 快照来源：`session-setup`（会话建立响应/种子）/ `set_config_option` /
-   * `set_mode`（均为本插件 seam 下发的切换）。agent 自发推送的
-   * `current_mode_update` 只更新 UI 状态槽，v1 不落条目。
-   */
-  readonly via: AcpAgentModeAuditVia
-}
-
-/**
- * agent 配置改动审计快照：`dsh-acp` 设置文档里一个 agent 条目的
- * 新增/移除/改动事实。落盘位置是 sidecar 的配置审计专档（伪 sessionId
- * `agent-config`，见 src/persistence/sidecar.ts），不是某个会话的文件——配置
- * 改动先于/独立于任何会话存在。
- *
- * 密钥纪律（硬约束）：env 只记**键名级** diff（added/removed/changed 的键名
- * 列表），值永不落盘——疑似 secret 的值只记「已变更」事实本身。command/args
- * 是审计要点（谁在把 spawn 命令改成什么），变更时记新值快照。
- */
-export interface AcpAgentConfigAuditData {
-  readonly change: 'added' | 'removed' | 'changed'
-  readonly agentId: string
-  /**
-   * 改动涉及的字段名（`name`/`command`/`args`/`env`/`loginHint` 的
- * 子集，排序固定； credentialReadPaths 字段已删除，不再出现）；
-   * added/removed 时为该条目的全量字段清单（removed 的 env 同样只记键名）。
-   */
-  readonly changedFields: readonly string[]
-  /** command 变更（或 added 时的初始值）快照；不涉及时缺席。 */
-  readonly command?: string
-  /** args 变更（或 added 时的初始值）快照；不涉及时缺席。 */
-  readonly args?: readonly string[]
-  /** env 键名级 diff（值永不落盘）；env 未涉及时缺席。 */
-  readonly env?: {
-    readonly added: readonly string[]
-    readonly removed: readonly string[]
-    readonly changed: readonly string[]
-  }
-}
-
-/** {@link createAgentConfigAudit} 的输入（diff 由 agent-config.ts 的纯函数产出）。 */
-export interface AgentConfigAuditInit {
-  readonly change: 'added' | 'removed' | 'changed'
-  readonly agentId: string
-  readonly changedFields: readonly string[]
-  readonly command?: string
-  readonly args?: readonly string[]
-  readonly env?: {
-    readonly added: readonly string[]
-    readonly removed: readonly string[]
-    readonly changed: readonly string[]
-  }
-}
-
-/**
- * 组装 `agent-config` 审计 payload（可选字段缺席而非 undefined；env 键名列表
- * 各自排序固定，保证 recordId 哈希稳定）。
- */
-export function createAgentConfigAudit(init: AgentConfigAuditInit): AcpAgentConfigAuditData {
-  return {
-    change: init.change,
-    agentId: init.agentId,
-    changedFields: [...init.changedFields].sort(),
-    ...(init.command === undefined ? {} : { command: init.command }),
-    ...(init.args === undefined ? {} : { args: [...init.args] }),
-    ...(init.env === undefined
-      ? {}
-      : {
-          env: {
-            added: [...init.env.added].sort(),
-            removed: [...init.env.removed].sort(),
-            changed: [...init.env.changed].sort(),
-          },
-        }),
-  }
-}
-
-/**
- * Structural mirror of dsh-user-approval's `ApprovalOutcome` (this package does
- * not depend on that package; the real `ctx.approval` service is assignable to
- * the bridge's requester interface because both sides use this closed union).
- */
+/** Legacy approval outcome retained only to decode older permission audit rows. */
 export type AcpApprovalOutcome = 'allowed-once' | 'rejected' | 'cancelled' | 'unavailable'
 
 /**
@@ -262,7 +141,7 @@ const SECRET_HEADER_PATTERN = new RegExp(`(\\b(?:authorization|proxy-authorizati
  * 必须在 raw input canonical hash 之外使用本函数，不能用脱敏值替代完整性哈希。
  */
 export function redactSecretText(value: string): string {
-  return value
+  return redactCommonSecretText(value)
     .replace(SECRET_HEADER_PATTERN, '$1<redacted>')
     .replace(SECRET_JSON_PROPERTY_PATTERN, '$1<redacted>')
     .replace(SECRET_ENV_ASSIGNMENT_PATTERN, '$1=<redacted>')
@@ -368,20 +247,17 @@ export interface AcpPermissionDecidedAuditData {
   readonly outcome: 'selected' | 'cancelled'
   /** The selected option id (present iff `outcome === 'selected'`). */
   readonly optionId?: string
-  /** The dsh approval service's own outcome, when it was consulted. */
+  /** Legacy field written by releases that consulted the DSH approval service. */
   readonly approvalOutcome?: AcpApprovalOutcome
   /** Exact option kind selected, without collapsing allow_once/allow_always. */
   readonly selectedOptionKind?: PermissionOption['kind']
-  /** Which answerer produced the decision. */
-  readonly decisionVia?: 'acp-ui' | 'native-fallback'
+  /** Which answerer produced the decision; the first two values are legacy. */
+  readonly decisionVia?: 'acp-ui' | 'native-fallback' | 'native-question' | 'native-approval'
   /**
-   * Outcome cause. Vocabulary: `user-rejected`（审批服务以 `rejected` 结案——
- * 用户点拒或 `never` 策略——且桥选中 reject 类选项回包； taxonomy
- * 预留词， 归位）, `cancelled` (user/turn abort),
-   * `approval-unavailable` (no UI answerer), `approval-error` (service threw),
- * `allow-once-unsupported` / `reject-once-unsupported`（该侧无
-   * once-kind 选项可忠实映射——含仅 always 类、完全缺失与仅未知 kind——
-   * 桥答 cancelled，绝不升格 always 类 optionId）。
+   * Current vocabulary includes `cancelled`, `question-service-unavailable`,
+   * `agent-unavailable`, `custom-option-unsupported`, `invalid-option-id` and
+   * `question-error`. Older approval bridge causes remain valid when reading
+   * legacy rows.
    */
   readonly note?: string
 }
@@ -410,7 +286,7 @@ export interface PermissionDecidedAuditInit {
   readonly optionId?: string
   readonly approvalOutcome?: AcpApprovalOutcome
   readonly selectedOptionKind?: PermissionOption['kind']
-  readonly decisionVia?: 'acp-ui' | 'native-fallback'
+  readonly decisionVia?: 'acp-ui' | 'native-fallback' | 'native-question' | 'native-approval'
   readonly note?: string
 }
 
@@ -472,14 +348,4 @@ export function createPermissionDecidedAudit(init: PermissionDecidedAuditInit): 
     ...(init.decisionVia === undefined ? {} : { decisionVia: init.decisionVia }),
     ...(init.note === undefined ? {} : { note: init.note }),
   }
-}
-
-/** Narrow audit payload to the `asked` phase. */
-export function isPermissionAskedAudit(data: AcpPermissionAuditData): data is AcpPermissionAskedAuditData {
-  return data.phase === 'asked'
-}
-
-/** Narrow audit payload to the `decided` phase. */
-export function isPermissionDecidedAudit(data: AcpPermissionAuditData): data is AcpPermissionDecidedAuditData {
-  return data.phase === 'decided'
 }

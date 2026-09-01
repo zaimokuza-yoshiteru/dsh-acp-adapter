@@ -23,6 +23,5 @@
       "@zaimokuza/dsh-acp-adapter/client": ["./src/client/index.ts"]
     }
   },
-  "include": ["src/**/*.ts"],
-  "exclude": ["src/host-compat/typert-protocol"]
+  "include": ["src/**/*.ts"]
 }

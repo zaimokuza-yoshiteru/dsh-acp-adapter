@@ -33,12 +33,15 @@ describe('public documentation contract', () => {
     expect(en).toContain('from the DeepSeek Harness (DSH) session UI')
   })
 
-  it('documents Native Agent Access and external-login-only truthfully', () => {
+  it('documents Native Agent Access and explicit credential isolation truthfully', () => {
     expect(read('README.md')).toContain('原生 Agent 访问')
     expect(read('README.md')).toContain('无法限制绕过 ACP 审批的 Agent 工具')
-    expect(read('README.md')).toContain('插件不会要求你把 token')
+    expect(read('README.md')).toContain('不会自动继承名称形似 `KEY`、`TOKEN`、`SECRET` 或 `PASSWORD`')
+    expect(read('README.md')).toContain('在 ACP profile 的“连接设置”中显式配置')
     expect(read('README.en.md')).toContain('Native Agent Access')
     expect(read('README.en.md')).toContain('cannot constrain Agent tools that bypass that flow')
+    expect(read('README.en.md')).toContain('do not automatically inherit parent environment variables')
+    expect(read('README.en.md')).toContain("ACP profile's connection settings")
   })
 
   it('keeps every local README link resolvable', () => {

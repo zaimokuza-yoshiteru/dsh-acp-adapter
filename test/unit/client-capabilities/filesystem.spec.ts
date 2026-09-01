@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { createAcpFileSystemHandlers } from '../../../src/runtime/client-capabilities/filesystem.ts'
+import { ACP_FS_MAX_LINES, createAcpFileSystemHandlers } from '../../../src/runtime/client-capabilities/filesystem.ts'
+import { createAcpSidecar } from '../../../src/persistence/sidecar.ts'
 
 function root(): string { return fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-fs-')) }
 
@@ -14,6 +15,25 @@ describe('ACP native filesystem handlers', () => {
     await expect(handlers.readTextFile({ sessionId: 'acp-1', path: file, limit: 2 })).resolves.toEqual({ content: 'a\nb' })
     await expect(handlers.readTextFile({ sessionId: 'acp-1', path: file, limit: 0 })).resolves.toEqual({ content: '' })
     expect(audit).toHaveLength(2); expect((audit[0] as { acpSessionId: string }).acpSessionId).toBe('acp-1')
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('durably records absolute-path success and I/O failure without storing file contents', async () => {
+    const dir = root()
+    const sidecar = createAcpSidecar({ root: dir })
+    const handlers = createAcpFileSystemHandlers({
+      profileId: 'devin',
+      audit: event => sidecar.append('dsh-fs-audit' as never, { kind: 'filesystem', data: event }),
+    })
+    const absolutePackage = path.join(process.cwd(), 'package.json')
+    await expect(handlers.readTextFile({ sessionId: 'acp-devin', path: absolutePackage, limit: 1 })).resolves.toHaveProperty('content')
+    const missing = path.join(dir, 'does-not-exist.json')
+    await expect(handlers.readTextFile({ sessionId: 'acp-devin', path: missing })).rejects.toThrow(/failed/)
+    const entries = await sidecar.list('dsh-fs-audit' as never)
+    expect(entries.filter(entry => entry.kind === 'filesystem')).toHaveLength(2)
+    expect(entries.every(entry => entry.kind !== 'filesystem' || entry.data.path !== absolutePackage || !('content' in entry.data))).toBe(true)
+    expect(entries.filter(entry => entry.kind === 'filesystem').map(entry => entry.data.outcome)).toEqual(['ok', 'error'])
+    await sidecar.dispose()
     fs.rmSync(dir, { recursive: true, force: true })
   })
 
@@ -47,10 +67,16 @@ describe('ACP native filesystem handlers', () => {
 
   it('audits invalid read windows instead of silently refusing them', async () => {
     const dir = root(); const file = path.join(dir, 'a.txt'); fs.writeFileSync(file, 'a\n')
-    const audit: Array<{ outcome: string }> = []
+    const audit: Array<{ outcome: string; reason?: string; line?: number; limit?: number }> = []
     const handlers = createAcpFileSystemHandlers({ profileId: 'codex', audit: (event) => { audit.push(event) } })
     await expect(handlers.readTextFile({ sessionId: 'acp-1', path: file, limit: -1 })).rejects.toThrow(/limit/)
     expect(audit.at(-1)?.outcome).toBe('error')
+    expect(audit.at(-1)?.reason).toBe('invalid-limit')
+    expect(audit.at(-1)?.limit).toBe(-1)
+    await expect(handlers.readTextFile({ sessionId: 'acp-1', path: file, line: 1, limit: ACP_FS_MAX_LINES + 1 })).resolves.toEqual({ content: 'a\n' })
+    expect(audit.at(-1)).toMatchObject({ outcome: 'ok', line: 1, limit: ACP_FS_MAX_LINES + 1 })
+    await expect(handlers.readTextFile({ sessionId: 'acp-1', path: file, limit: Number.MAX_SAFE_INTEGER + 1 })).rejects.toThrow(/safe/)
+    expect(audit.at(-1)?.reason).toBe('invalid-limit')
     fs.rmSync(dir, { recursive: true, force: true })
   })
 

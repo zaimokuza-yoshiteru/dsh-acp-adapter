@@ -1,10 +1,25 @@
 /**
- * 插件组合根（分层）：Cordis Loader 挂载的默认导出面。cordis.patch.yml
- * 生效后，patch 禁用原生 `agent-loop` 行并把本包插在新 id 下，Loader 以行配
- * 置挂载本默认导出。服务注册（ACP registry / sidecar / dshAcp Remote service）全部
- * 发生在 `AcpAgentLoop` 构造器内——类实现见 ../factory/agent-loop.ts，本模块
- * 只做组合出口，不新增行为。
- * @module @zaimokuza/dsh-acp-adapter/host/composition
+ * Additive ACP composition root. DSH owns the AgentLoop, ModelPicker, and
+ * conversation surface; this plugin contributes only ACP LLM routes and its
+ * existing settings/sidecar services through public seams.
  */
+import type { Context } from '@deepseek-ai/cordis'
+import { installInstalledProfileRegistry } from './installed-profile-registry.ts'
 
-export { default } from '../factory/agent-loop.ts'
+export const name = 'dsh-acp-adapter'
+// Wait for the host-owned seams before creating routes. This avoids freezing a
+// missing sessions/subprocess service during an early composition pass.
+// Settings is a required host seam. The ACP namespace must be registered as
+// part of the composition lifecycle; relying on a nested dynamic inject can
+// leave the route row present while the settings watcher never starts.
+// Attachment storage is required because ACP image capability is only true
+// when DSH can read its durable image references.  Waiting for this seam at
+// composition time prevents a health probe from freezing a false
+// `promptImage: unsupported` result before the host finishes booting.
+export const inject = ['llm', 'sessions', 'subprocess', 'dshHomePath', 'settings', 'attachments']
+
+export function apply(ctx: Context): void {
+  installInstalledProfileRegistry(ctx, { installRemote: true })
+}
+
+export { installInstalledProfileRegistry } from './installed-profile-registry.ts'

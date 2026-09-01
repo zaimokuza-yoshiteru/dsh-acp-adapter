@@ -8,17 +8,12 @@
  * graceMs → SIGKILL 树级升级）、waitForExit 给整树退出证明、服务 dispose 兜底
  * 强杀全部托管进程。本模块定义本包消费的最小结构面（{@link SubprocessSeam}），
  * 采用**纯结构镜像、零 dsh 值级 import**（宿主模块实例一致性纪律：值级 import
- * dsh 包会让产物解析到第二实例；钉版锚点见
- * 各常量注释）。
+ * dsh 包会让产物解析到第二实例）。
  *
- * env 纪律（保留白名单语义）：provider 的 spawn 底座是 `scrubbedParentEnv()`
- * ——黑名单式（去 credential 形名 + DSH_*），PATH/HOME/代理变量等一律穿透。本包
- * 现行语义是严格白名单（src/domain/policy/sandbox.ts 的 ACP_ENV_INHERIT_DEFAULT +
- * 显式条目），两语义之差用 tombstone 弥合：{@link envSpecWithTombstones} 对「scrub
- * 后会存在但不在期望 env」的键逐个下 `undefined`（spec.env 语义：显式 string
- * 放行、显式 undefined 删除、合并在 scrub 之后——上游 types.ts
- * SubprocessSpawnSpec.env 的文档语义）。scrub 结果经 {@link predictScrubbedParentEnv}
- * 预知（镜像上游黑名单，钉版注释见常量）。
+ * env 纪律：provider 的 spawn 底座是 `scrubbedParentEnv()`——去 credential
+ * 形名与 DSH_*，PATH/HOME/代理变量等保留。本包
+ * 现行语义是 profile 显式条目，宿主 subprocess service 将其合并到 scrubbed
+ * parent env；本包不再自制 tombstone 或第二套 allowlist。
  *
  * 本包 tsconfig 用 `types: []`；本文件需要 node stream 类型，经 triple-slash
  * reference 显式引入 @types/node（同层 agent-process.ts 同款先例）。
@@ -42,7 +37,7 @@ export interface AcpSubprocessSpawnSpec {
   /**
    * 显式环境条目（合并于 provider scrub 底座之后）：string = 放行/覆盖
    * （credential 形名也可经此显式穿透）；`undefined` = tombstone 删除一个
-   * 底座残留键。白名单场景的完整产物由 {@link envSpecWithTombstones} 组装。
+   * 底座残留键；调用方只需传 profile 显式条目。
    */
   readonly env?: Record<string, string | undefined>
   /**
@@ -142,57 +137,3 @@ export type SubprocessSeamResolution =
 export const ACP_SUBPROCESS_UNAVAILABLE_MESSAGE =
   'the host provides no subprocess service (ctx.subprocess): the ACP adapter requires the dsh-base subprocess-local provider; '
   + 'refusing to spawn ACP agents on this host (native dsh routes are unaffected)'
-
-/**
- * compat 口径镜像（钉版）：上游 `@deepseek-ai/dsh-subprocess` rc.2 的
- * `SENSITIVE_ENV_PATTERN`（packages/subprocess/subprocess/src/index.ts:44，
- * 上游钉 dsh-v0.1.1-rc.2 / commit b150a551b8）。credential 形名不穿透 scrub
- * 底座；显式 env 条目（合并在 scrub 之后）仍可放行——与本包白名单语义互补。
- * test/subprocess-seam.spec.ts 用 devDep 真值钉死本镜像。
- */
-export const ACP_SENSITIVE_ENV_PATTERN = /KEY|PASSWORD|SECRET|TOKEN/i
-
-/**
- * compat 口径镜像（钉版）：上游 `DSH_ENV_PREFIX`（packages/subprocess/subprocess/src/types.ts:13，
- * 同钉 dsh-v0.1.1-rc.2）。scrub 对 `DSH_` 前缀大小写不敏感（Windows 环境键大小写不敏感）。
- */
-export const ACP_DSH_ENV_PREFIX = 'DSH_'
-
-/**
- * 预知 provider 的 `scrubbedParentEnv()` 结果（上游同文件 index.ts:60-66 的
- * 等价过滤，黑名单式：去 credential 形名 + 去 `DSH_` 前缀——大小写不敏感）。
- * 仅用于 tombstone 计算，不直接作为子进程 env。
- */
-export function predictScrubbedParentEnv(source: Readonly<Record<string, string | undefined>>): Record<string, string> {
-  const env: Record<string, string> = {}
-  for (const [key, value] of Object.entries(source)) {
-    if (value !== undefined && !ACP_SENSITIVE_ENV_PATTERN.test(key) && !key.toUpperCase().startsWith(ACP_DSH_ENV_PREFIX)) {
-      env[key] = value
-    }
-  }
-  return env
-}
-
-/**
- * 白名单语义的 spawn env 组装：期望 env（调用方组装的全量集合）原样放行，
- * 再对「scrub 后会穿透但不在期望集合」的底座键逐个下 `undefined` tombstone。
- * 产出喂 {@link SubprocessSeam.spawn} 的 `spec.env`：显式 string 放行（含
- * credential 形显式条目——穿透 scrub 是刻意的 opt-in），tombstone 删除底座
- * 残留（HTTP_PROXY / SSH_AUTH_SOCK 等不再泄入子进程，与 前「env 整体
- * 替换」的逐字节语义对齐）。
- *
- * 键名按精确匹配计算：POSIX 环境键大小写敏感；Windows 上 provider 的合并
- * （childEnv）对显式条目做大小写不敏感去重，tombstone 对 'Path' 这类大小写
- * 变体同样生效，无需在本侧特判。
- */
-export function envSpecWithTombstones(
-  desired: Readonly<Record<string, string>>,
-  source: Readonly<Record<string, string | undefined>>,
-): Record<string, string | undefined> {
-  const spec: Record<string, string | undefined> = {}
-  for (const key of Object.keys(predictScrubbedParentEnv(source))) {
-    if (!(key in desired)) spec[key] = undefined
-  }
-  for (const [key, value] of Object.entries(desired)) spec[key] = value
-  return spec
-}

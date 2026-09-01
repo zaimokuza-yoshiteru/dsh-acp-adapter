@@ -1,10 +1,11 @@
 #!/usr/bin/env node
-// 仓外可执行的 rc.2 client bundle 校验（独立 node 直跑，零依赖）。
+// 仓外可执行的 0.1.2-alpha.3 client bundle 校验（独立 node 直跑，零依赖）。
 // 覆盖：① package.json `dsh.client` manifest 形态与 peer/dev 双列纪律
 // ② 产物存在性 ③ 产物闭包（__ModuleLoader__ 包装形态 / id == 包名 /
 // sourcemap 在场且 sources 非空）④ module requests（产物内 require 全部落在
-// rc.2 baseline ∪ dsh.client.external）⑤ 源码消费审计（ctx.get 服务读取必须有
-// 模块级 inject 或显式可选登记）⑥ npm tarball 内容精确性（npm pack --dry-run）。
+// Alpha baseline ∪ dsh.client.external）⑤ 源码消费审计（ctx.get 服务读取必须有
+// 模块级 inject 或显式可选登记）⑥ npm tarball 内容精确性（npm pack --dry-run）
+// ⑦ 旧接管面产物禁入（synthetic tool / custom picker / old compatibility paths）。
 // 规范出处：reference/deepseek-harness packages/client/tsdown.client.ts（preset）、
 // packages/client/web/src/platform.ts（baseline）、scripts/verify-client-packages.ts（门禁）。
 import { execFileSync } from 'node:child_process'
@@ -12,12 +13,13 @@ import { existsSync, globSync, mkdtempSync, readFileSync, rmSync } from 'node:fs
 import os from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { findMissingRelativeRuntimeImports } from './verify-runtime-closure.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const read = (rel) => readFileSync(join(root, rel), 'utf8')
 const pkg = JSON.parse(read('package.json'))
 
-/** rc.2 baseline module-table rows（platform.ts PLATFORM_MODULES + PRELOADED_CLIENT_EXTERNALS）。 */
+/** Alpha baseline module-table rows（platform.ts PLATFORM_MODULES + PRELOADED_CLIENT_EXTERNALS）。 */
 const BASELINE_MODULES = [
   'react',
   'react/jsx-runtime',
@@ -26,14 +28,13 @@ const BASELINE_MODULES = [
   '@deepseek-ai/cordis',
   '@deepseek-ai/dsh-client-ui-slots',
   '@deepseek-ai/dsh-client-ui-primitives',
-  '@deepseek-ai/dsh-client-runtime/client',
+  '@deepseek-ai/dsh-client-store',
 ]
 
 /**
  * baseline 行的 npm 包名（inject 是包名边，PLATFORM_MODULES 包由 shell 隐式播种，点名即冗余）。
- * 注意 @deepseek-ai/dsh-client-runtime 不在此列：baseline 预加载的是模块行
- * `@deepseek-ai/dsh-client-runtime/client`，而包级依赖边照常声明（官方
- * ui-settings-models 的 dsh.client.inject 先例含 dsh-client-runtime）。
+ * Alpha 的共享 store 是平台模块，由 DSH web shell 直接播种；插件无需把它放进
+ * dsh.client.inject，但如果源码需要 value import，应在 bundle 中保持为外部模块。
  */
 const BASELINE_PACKAGES = new Set([
   'react',
@@ -41,6 +42,7 @@ const BASELINE_PACKAGES = new Set([
   '@deepseek-ai/cordis',
   '@deepseek-ai/dsh-client-ui-slots',
   '@deepseek-ai/dsh-client-ui-primitives',
+  '@deepseek-ai/dsh-client-store',
 ])
 
 /**
@@ -48,10 +50,10 @@ const BASELINE_PACKAGES = new Set([
  * ctx.get + undefined 守卫可选读取 conversation（缺席仅降级 composer 阻断，不影响激活），
  * 包级依赖边经 dsh.client.inject 的 @deepseek-ai/dsh-client-ui-conversation 声明。
  * `remote.dshAcp` 是本插件 `$mount` 自挂载的 Remote namespace 服务键（gateway 把它
- * 注册在 client root 的子 fiber 上）：inject 声明它会让 fiber 等待一个只有自己 apply
- * 才提供的服务（死锁），故走 ctx.get 的 reflect 通道在 mount 就位后解析（被拒工具回放不对称 修复）。
+ * 注册在 client root 的子 fiber 上）。消费 UI 必须在 mount 后通过子 fiber 显式
+ * inject；顶层 Loader inject 会提前等待，未声明的直接 property read 则会被 Cordis 拒绝。
  */
-const OPTIONAL_SERVICE_READS = new Set(['conversation', 'remote.dshAcp'])
+const OPTIONAL_SERVICE_READS = new Set(['conversation'])
 
 const failures = []
 const fail = (msg) => failures.push(msg)
@@ -107,16 +109,24 @@ for (const spec of declaredExternal) {
   }
 }
 
-// 每个 inject 包名 peerDependencies + devDependencies 双列。 版本策略：
-// dev 精确钉最低已验证版本（测试真源可复现），peer 是最低版本制范围
-// `>=<dev> <上界`（更高版本不因版本号被拒，运行时结构门兜底）；peer 与 dev
-// 精确相同也接受（cordis 等尚未 widen 的条目）。
+// 每个 inject 包名 peerDependencies + devDependencies 双列。DSH peer 对外声明
+// Alpha.2 起的前向兼容范围；dev 仍精确钉住当前 CI/dev 基线，使本地构建
+// 可复现。非 DSH peer（如 cordis）仍要求与开发依赖的精确声明一致。
+const DSH_PEER_FLOOR = '>=0.1.2-alpha.2'
+const EXACT_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/
 for (const [name, peerRange] of Object.entries(pkg.peerDependencies ?? {})) {
   const devRange = pkg.devDependencies?.[name]
   if (devRange === undefined) {
     fail(`package.json: peerDependencies.${name} (${peerRange}) 缺少 devDependencies 同名声明`)
-  } else if (peerRange !== devRange && peerRange !== `>=${devRange}` && peerRange !== `>=${devRange} <0.2.0` && peerRange !== `>=${devRange} <5.0.0`) {
-    fail(`package.json: peerDependencies.${name} is ${peerRange}; expected the exact dev pin or a >=${devRange} minimum-version range; found devDependencies ${devRange}`)
+  } else if (name.startsWith('@deepseek-ai/dsh-')) {
+    if (peerRange !== DSH_PEER_FLOOR) {
+      fail(`package.json: peerDependencies.${name} is ${peerRange}; expected ${DSH_PEER_FLOOR}`)
+    }
+    if (!EXACT_VERSION.test(devRange)) {
+      fail(`package.json: devDependencies.${name} must be an exact tested version; found ${devRange}`)
+    }
+  } else if (peerRange !== devRange) {
+    fail(`package.json: peerDependencies.${name} is ${peerRange}; expected the exact dev pin ${devRange}`)
   }
 }
 for (const name of inject) {
@@ -224,38 +234,38 @@ if (existsSync(bundlePath)) {
   const allowed = new Set([...BASELINE_MODULES, ...declaredExternal])
   for (const spec of [...requested].sort()) {
     if (!allowed.has(spec)) {
-      fail(`lib/client.js: require(${JSON.stringify(spec)}) 不在 rc.2 baseline 或 dsh.client.external 内 —— module table 无法应答`)
+      fail(`lib/client.js: require(${JSON.stringify(spec)}) 不在 Alpha baseline 或 dsh.client.external 内 —— module table 无法应答`)
     }
   }
   console.log(`[verify-bundle] module requests: ${requested.size === 0 ? '(none)' : [...requested].sort().join(', ')}`)
 
-  // -------------------------------------------------------------------------
-  // ⑦ client 样式管线纪律：模板字符串 CSS 与 ensureXxxStyles 注入器已
-  // 删除（CSS Modules + lightningcss 在构建期编译）；产物必须携带 preset 同款
-  // style 注入标记（data-plugin=包名、data-plugin-css=<包名>/<sheet>）与
-  // lightningcss 编译后的 classMap 导出。源侧：旧样式模块不得存在，两张
-  // .module.css 必须在场。
-  // -------------------------------------------------------------------------
-  for (const symbol of ['ensureAcpStyles', 'ensureSelectorStyles', 'ACP_PANEL_STYLES', 'ACP_PICKER_STYLES']) {
-    if (js.includes(symbol)) fail(`lib/client.js: 残留旧样式符号 ${JSON.stringify(symbol)}（样式应经 CSS Modules 管线编译）`)
-  }
-  if (!js.includes('dataset.plugin')) {
-    fail('lib/client.js: 缺少 style 注入标记 dataset.plugin（CSS Modules 注入器缺失）')
-  }
-  for (const sheet of ['AcpSection.module.css', 'ModelPicker.module.css']) {
-    const tagId = `${pkg.name}/${sheet}`
-    if (!js.includes(JSON.stringify(tagId))) {
-      fail(`lib/client.js: 缺少注入标记 ${JSON.stringify(tagId)}（${sheet} 未经 dsh-css-modules-inline 编译？）`)
-    }
-  }
+  // The alpha client entry is additive only: stock DSH owns Chat/ModelPicker;
+  // this bundle contributes one keyed ACP activity node renderer.
 }
 
-// 源侧钉：旧模板样式模块已删除、CSS Modules 源在场。
-for (const rel of ['src/client/ui/styles.ts', 'src/client/ui/selector-styles.ts']) {
-  if (existsSync(join(root, rel))) fail(`${rel} 已迁移到 CSS Modules，应删除`)
-}
-for (const rel of ['src/client/ui/AcpSection.module.css', 'src/client/host-compat/model-picker/ModelPicker.module.css']) {
-  if (!existsSync(join(root, rel))) fail(`样式源缺失: ${rel}`)
+// Activity styles are scoped to the keyed renderer and bundled with the client entry.
+
+// ---------------------------------------------------------------------------
+// ⑦ 旧接管面不得进入发布产物
+// ---------------------------------------------------------------------------
+
+const forbiddenArtifactMarkers = [
+  { pattern: 'dsh_acp_external_tool', label: 'synthetic ACP tool' },
+  { pattern: 'model-picker', label: 'custom model picker' },
+  { pattern: 'host-compat/agent-loop', label: 'old host compatibility AgentLoop' },
+  { pattern: 'protocol/v1/translate', label: 'removed protocol translator' },
+]
+for (const rel of globSync('lib/**/*', { cwd: root, nodir: true })) {
+  const absolute = join(root, rel)
+  let contents
+  try {
+    contents = readFileSync(absolute, 'utf8')
+  } catch {
+    continue
+  }
+  for (const { pattern, label } of forbiddenArtifactMarkers) {
+    if (contents.includes(pattern)) fail(`发布产物 ${rel} 含 ${label} 标记 ${JSON.stringify(pattern)}`)
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -269,7 +279,7 @@ if (injectMatch === null) {
 }
 const moduleInject = new Set(injectMatch === null ? [] : [...injectMatch[1].matchAll(/'([^']+)'/g)].map((m) => m[1]))
 const serviceReads = new Set()
-for (const file of globSync('src/client/**/*.ts', { cwd: root })) {
+for (const file of ['src/client/index.ts']) {
   for (const match of read(file).matchAll(/\b(?:ctx|scope)\.get\(\s*'([^']+)'\s*\)/g)) {
     serviceReads.add(match[1])
   }
@@ -350,6 +360,17 @@ if (packOutput !== null) {
       if (!actual.has(path)) fail(`files 清单声明了 ${path} 但 tarball 未包含`)
     }
     console.log(`[verify-bundle] tarball files: ${String(actual.size)}`)
+
+    // The package ships host/runtime modules as separate ESM files. A client
+    // bundle module-table check cannot catch a missing host relative import;
+    // recursively verify every shipped JavaScript artifact against the npm
+    // tarball file set before declaring the package installable.
+    const runtimeFiles = [...actual].filter((file) => file.endsWith('.js'))
+    const missingRuntimeImports = findMissingRelativeRuntimeImports(runtimeFiles, (file) => readFileSync(join(root, file), 'utf8'))
+    for (const missing of missingRuntimeImports) {
+      fail(`tarball runtime closure missing ${missing.file} → ${missing.specifier} (${missing.resolved})`)
+    }
+    if (missingRuntimeImports.length === 0) console.log(`[verify-bundle] runtime relative-import closure: ${String(runtimeFiles.length)} JavaScript artifacts checked`)
   }
 }
 

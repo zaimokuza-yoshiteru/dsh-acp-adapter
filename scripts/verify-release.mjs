@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * npm 发布引用门：只允许从与 package.json 版本完全匹配的 Git tag 发布。
- * 所有版本进入 latest；同时给工作流输出唯一 tarball 文件名。
+ * 稳定版进入 latest，预发布版进入其首个 prerelease 标识对应的 dist-tag。
  */
 import { appendFileSync, readFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
@@ -39,8 +39,8 @@ if (tag !== expectedTag) {
   throw new Error(`发布 tag 必须等于 ${expectedTag}，当前值: ${tag ?? '<missing>'}`)
 }
 
-// 预发布版本同样发布到 latest：项目只维护一个用户可见的发布通道。
-const distTag = 'latest'
+const prerelease = version.match(/-([0-9A-Za-z]+)(?:[.-]|$)/)?.[1]
+const distTag = prerelease ?? 'latest'
 const tarball = `${String(pkg.name).replace(/^@/, '').replaceAll('/', '-')}-${version}.tgz`
 const output = process.env.GITHUB_OUTPUT
 if (output) {

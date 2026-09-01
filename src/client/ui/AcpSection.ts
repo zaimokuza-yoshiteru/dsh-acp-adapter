@@ -16,9 +16,14 @@
  * @module @zaimokuza/dsh-acp-adapter/client/AcpSection
  */
 
-import { createElement as h, useEffect, useRef, useState } from 'react'
+import { createElement as h, useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
-import { IconChevronDownOutline14 } from '@deepseek-ai/dsh-client-ui-primitives'
+import {
+  IconChevronDownOutline14,
+  IconPlusOutline16,
+  IconRefreshOutline16,
+  Menu,
+} from '@deepseek-ai/dsh-client-ui-primitives'
 import {
   ACP_BUILTIN_AGENT_TEMPLATES,
   draftFromAgent,
@@ -73,11 +78,6 @@ interface InputEvent {
   target: { value: string }
 }
 
-interface KeyboardEventLike {
-  key: string
-  preventDefault(): void
-}
-
 /**
  * Render the ACP section content column.
  * @param props - slot-delivered inject face.
@@ -97,23 +97,14 @@ function Loaded({ t, useStore, panel }: {
   const snapshot = useStore((value) => value)
   const [editor, setEditor] = useState<EditorState | null>(null)
   const [notice, setNotice] = useState<'saved' | 'deleted' | null>(null)
- // Agent 卡片折叠交互：「添加 agent」下拉的开合状态（触发钮 + 菜单；外部点击关闭）。
+  // The native Menu owns Escape/outside-click/portal placement; this component
+  // only owns whether the Agent template chooser is open.
   const [addMenuOpen, setAddMenuOpen] = useState(false)
-  const addMenuRef = useRef<HTMLDivElement | null>(null)
   // Health data loads when the panel first opens, never in the background:
   // each fetch runs `<command> --version` probes on the host.
   useEffect(() => {
     panel.refreshHealth()
   }, [panel])
-
-  useEffect(() => {
-    if (!addMenuOpen) return
-    const closeOutside = (event: MouseEvent): void => {
-      if (!addMenuRef.current?.contains(event.target as Node)) setAddMenuOpen(false)
-    }
-    document.addEventListener('mousedown', closeOutside)
-    return () => { document.removeEventListener('mousedown', closeOutside) }
-  }, [addMenuOpen])
 
   const closeEditor = (changed: boolean): void => {
     setEditor(null)
@@ -174,66 +165,6 @@ function Loaded({ t, useStore, panel }: {
   }
   const refreshing = snapshot.health.status === 'loading'
   const checkingAnyAgent = snapshot.health.checkingAgentIds.length > 0
-  children.push(h('div', { key: 'toolbar', className: css.toolbar },
- // Agent 卡片折叠交互：one-click 模板从平铺枚举改为「添加 agent」下拉（宿主「模型」
-    // 配置页「添加提供方」同款形态：一个触发钮 + 下拉列出全部内置模板与
-    // 手动添加）。draftFromTemplate 对列表内 id 恒有定义。
-    h('div', {
-      className: css.addMenu,
-      ref: addMenuRef,
-      onKeyDown: (event: KeyboardEventLike) => {
-        if (event.key === 'Escape' && addMenuOpen) {
-          event.preventDefault()
-          setAddMenuOpen(false)
-        }
-      },
-    },
-      h('button', {
-        type: 'button',
-        className: `${css.secondaryButton} ${css.toolbarButton}`,
-        disabled: readOnly,
-        'aria-haspopup': 'menu',
-        'aria-expanded': addMenuOpen,
-        onClick: () => { setAddMenuOpen((previous) => !previous) },
-      },
-        t('addAgent'),
-        h(IconChevronDownOutline14, {
-          size: 14,
-          className: addMenuOpen ? `${css.chevron} ${css.chevronFlip}` : css.chevron,
-        }),
-      ),
-      addMenuOpen
-        ? h('div', { className: css.addMenuList, role: 'menu', 'aria-label': t('addAgent') },
-          ...ACP_BUILTIN_AGENT_TEMPLATES.map((template) => h('button', {
-            key: `template-${template.id}`,
-            type: 'button',
-            role: 'menuitem',
-            className: css.addMenuItem,
-            onClick: () => {
-              setAddMenuOpen(false)
-              const seed = draftFromTemplate(template.id)
-              if (seed !== undefined) openAdd(seed)
-            },
-          }, t('addTemplate', { name: template.name }))),
-          h('button', {
-            type: 'button',
-            role: 'menuitem',
-            className: css.addMenuItem,
-            onClick: () => {
-              setAddMenuOpen(false)
-              openAdd(emptyDraft())
-            },
-          }, t('addCustom')),
-        )
-        : null,
-    ),
-    h('button', {
-      type: 'button',
-      className: `${css.secondaryButton} ${css.toolbarButton}`,
-      disabled: refreshing || checkingAnyAgent,
-      onClick: () => { panel.refreshHealth(true) },
-    }, t(refreshing ? 'refreshing' : 'refresh')),
-  ))
 
   if (ids.length === 0 && editor?.mode !== 'add') {
     children.push(h('p', { key: 'empty', className: css.hint }, t('emptyAgents')))
@@ -278,6 +209,55 @@ function Loaded({ t, useStore, panel }: {
       }),
     ))
   }
+
+  // Match the native Models settings footer: two equal-width dashed entry
+  // points below the rows. The template chooser itself is the host Menu
+  // primitive, so its surface and interaction stay native across themes.
+  const customAgentItemId = 'custom'
+  children.push(h('div', { key: 'actions', className: css.addActions },
+    h(Menu, {
+      open: addMenuOpen,
+      portal: true,
+      className: css.addMenu ?? '',
+      items: [
+        ...ACP_BUILTIN_AGENT_TEMPLATES.map((template) => ({
+          id: template.id,
+          label: t('addTemplate', { name: template.name }),
+        })),
+        { id: customAgentItemId, label: t('addCustom') },
+      ],
+      onClose: () => { setAddMenuOpen(false) },
+      onSelect: (id: string) => {
+        setAddMenuOpen(false)
+        if (id === customAgentItemId) {
+          openAdd(emptyDraft())
+          return
+        }
+        const seed = draftFromTemplate(id)
+        if (seed !== undefined) openAdd(seed)
+      },
+      anchor: h('button', {
+        type: 'button',
+        className: css.addButton,
+        disabled: readOnly,
+        'aria-haspopup': 'menu',
+        'aria-expanded': addMenuOpen,
+        onClick: () => { setAddMenuOpen((previous) => !previous) },
+      },
+        h(IconPlusOutline16, { size: 14 }),
+        t('addAgent'),
+      ),
+    }),
+    h('button', {
+      type: 'button',
+      className: css.addButton,
+      disabled: refreshing || checkingAnyAgent,
+      onClick: () => { panel.refreshHealth(true) },
+    },
+      h(IconRefreshOutline16, { size: 14 }),
+      t(refreshing ? 'refreshing' : 'refresh'),
+    ),
+  ))
 
   return h('div', { className: css.section }, children)
 }
@@ -473,6 +453,10 @@ function AgentForm(props: {
   const [busy, setBusy] = useState(false)
   const [attempted, setAttempted] = useState(false)
   const [failure, setFailure] = useState<string | undefined>(undefined)
+  // Built-in templates work with their tested defaults. Keep implementation
+  // details out of the common path, while manual profiles open the same fields
+  // immediately because command and route identity are required there.
+  const [advancedOpen, setAdvancedOpen] = useState(() => props.initial.runtime === undefined)
   const disabled = props.readOnly || busy
   const validation = validateAgentDraft(draft, props.agents, props.editingId)
   const scope = props.editingId ?? 'new'
@@ -512,17 +496,6 @@ function AgentForm(props: {
     ),
     textField({
       t,
-      id: `dsh-acp-${scope}-id`,
-      label: t('fieldId'),
-      hint: t('fieldIdHint'),
-      error: shown(validation.id, draft.id),
-      value: draft.id,
-      disabled,
-      placeholder: 'devin',
-      onChange: (value) => { edit({ id: value }) },
-    }),
-    textField({
-      t,
       id: `dsh-acp-${scope}-name`,
       label: t('fieldName'),
       hint: t('fieldNameHint'),
@@ -532,70 +505,95 @@ function AgentForm(props: {
       placeholder: 'Devin',
       onChange: (value) => { edit({ name: value }) },
     }),
-    textField({
-      t,
-      id: `dsh-acp-${scope}-command`,
-      label: t('fieldCommand'),
-      hint: t('fieldCommandHint'),
-      error: shown(validation.command, draft.command),
-      value: draft.command,
-      disabled,
-      placeholder: 'devin',
-      onChange: (value) => { edit({ command: value }) },
-    }),
-    textField({
-      t,
-      id: `dsh-acp-${scope}-args`,
-      label: t('fieldArgs'),
-      hint: t('fieldArgsHint'),
-      value: draft.argsText,
-      disabled,
-      multiline: true,
-      placeholder: 'acp',
-      onChange: (value) => { edit({ argsText: value }) },
-    }),
-    textField({
-      t,
-      id: `dsh-acp-${scope}-env`,
-      label: t('fieldEnv'),
-      hint: t('fieldEnvHint'),
-      error: validation.env,
-      value: draft.envText,
-      disabled,
-      multiline: true,
-      placeholder: 'NO_COLOR=1',
-      onChange: (value) => { edit({ envText: value }) },
-    }),
- // 疑似 secret 的存量 env 键只展示键名 + 已配置状态，值永不进文本框；
-    // 「移除」从草稿的 maskedEnv 删键（保存后即从 settings 抹去）。
-    draft.maskedEnv === undefined ? null : h('div', { className: css.field },
-      h('span', { className: css.fieldLabel }, t('fieldEnvMasked')),
-      h('ul', { className: css.maskedEnvRows },
-        Object.keys(draft.maskedEnv).sort().map((key) =>
-          h('li', { key, className: css.maskedEnvRow },
-            h('code', { className: css.maskedEnvKey }, key),
-            h('span', { className: css.healthMuted }, t('envMaskedConfigured')),
-            h('button', {
-              type: 'button',
-              className: `${css.secondaryButton} ${css.compact}`,
-              disabled,
-              onClick: () => {
-                setDraft((previous) => dropMaskedEnvKey(previous, key))
-                setFailure(undefined)
-              },
-            }, t('envMaskedRemove')),
-          ))),
+    h('button', {
+      type: 'button',
+      className: css.advancedToggle,
+      'aria-expanded': advancedOpen,
+      onClick: () => { setAdvancedOpen(previous => !previous) },
+    },
+      h(IconChevronDownOutline14, {
+        size: 14,
+        className: advancedOpen ? `${css.chevron} ${css.chevronFlip}` : css.chevron,
+      }),
+      t('advancedSettings'),
     ),
-    textField({
-      t,
-      id: `dsh-acp-${scope}-loginHint`,
-      label: t('fieldLoginHint'),
-      hint: t('fieldLoginHintHint'),
-      value: draft.loginHint,
-      disabled,
-      placeholder: 'devin auth login',
-      onChange: (value) => { edit({ loginHint: value }) },
-    }),
+    advancedOpen ? h('div', { className: css.advancedFields },
+      textField({
+        t,
+        id: `dsh-acp-${scope}-id`,
+        label: t('fieldId'),
+        hint: t('fieldIdHint'),
+        error: shown(validation.id, draft.id),
+        value: draft.id,
+        disabled,
+        placeholder: 'devin',
+        onChange: (value) => { edit({ id: value }) },
+      }),
+      textField({
+        t,
+        id: `dsh-acp-${scope}-command`,
+        label: t('fieldCommand'),
+        hint: t('fieldCommandHint'),
+        error: shown(validation.command, draft.command),
+        value: draft.command,
+        disabled,
+        placeholder: 'devin',
+        onChange: (value) => { edit({ command: value }) },
+      }),
+      textField({
+        t,
+        id: `dsh-acp-${scope}-args`,
+        label: t('fieldArgs'),
+        hint: t('fieldArgsHint'),
+        value: draft.argsText,
+        disabled,
+        multiline: true,
+        placeholder: 'acp',
+        onChange: (value) => { edit({ argsText: value }) },
+      }),
+      textField({
+        t,
+        id: `dsh-acp-${scope}-env`,
+        label: t('fieldEnv'),
+        hint: t('fieldEnvHint'),
+        error: validation.env,
+        value: draft.envText,
+        disabled,
+        multiline: true,
+        placeholder: 'NO_COLOR=1',
+        onChange: (value) => { edit({ envText: value }) },
+      }),
+      // 疑似 secret 的存量 env 键只展示键名 + 已配置状态，值永不进文本框；
+      // 「移除」从草稿的 maskedEnv 删键（保存后即从 settings 抹去）。
+      draft.maskedEnv === undefined ? null : h('div', { className: css.field },
+        h('span', { className: css.fieldLabel }, t('fieldEnvMasked')),
+        h('ul', { className: css.maskedEnvRows },
+          Object.keys(draft.maskedEnv).sort().map((key) =>
+            h('li', { key, className: css.maskedEnvRow },
+              h('code', { className: css.maskedEnvKey }, key),
+              h('span', { className: css.healthMuted }, t('envMaskedConfigured')),
+              h('button', {
+                type: 'button',
+                className: `${css.secondaryButton} ${css.compact}`,
+                disabled,
+                onClick: () => {
+                  setDraft((previous) => dropMaskedEnvKey(previous, key))
+                  setFailure(undefined)
+                },
+              }, t('envMaskedRemove')),
+            ))),
+      ),
+      textField({
+        t,
+        id: `dsh-acp-${scope}-loginHint`,
+        label: t('fieldLoginHint'),
+        hint: t('fieldLoginHintHint'),
+        value: draft.loginHint,
+        disabled,
+        placeholder: 'devin auth login',
+        onChange: (value) => { edit({ loginHint: value }) },
+      }),
+    ) : null,
  // singleton：草稿 runtime 与存量 profile 冲突的块级错误（runtime 不是
     // 可编辑字段，错误不挂在某个输入框上）——点名已有 profile 并给「打开已有
     // 配置」出口；保存钮经 validation.config 缺席自然禁用（不自动覆盖/删除）。

@@ -2,7 +2,7 @@
  * ACP provider registry。
  *
  * The `dsh-acp` settings namespace owns the agent list; every agent gets an LLM
- * route `acp-<id>` backed by one shared stub adapter so the prompt gate
+ * route `acp-<id>` backed by one independent ACP adapter per profile so the prompt gate
  * (`turnAgentFor`) accepts ACP selections. Settings changes
  * re-`replace` routes in place and emits `llm/adapters-updated` from the commit
  * point, so the selector refreshes without a manual event.
@@ -30,35 +30,37 @@
  */
 /// <reference types="node" />
 
-import fs from 'node:fs'
-import path from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
+import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
 import type { AdapterRegistrationHandle } from '@deepseek-ai/dsh-llm'
 import type { AcpProbeOptions } from '../../protocol/v1/types.ts'
-import { FIBER_DISPOSED, FIBER_UNLOADING } from '../../host-compat/fiber-state.ts'
 import {
   ACP_AGENT_IDS,
   ACP_AGENT_ID_PATTERN,
   ACP_SETTINGS_NS,
   acpAgentIdFromRoute,
   acpRouteId,
-  descriptorOf,
-  diffAcpAgentConfigs,
 } from '../../domain/session/agent-config.ts'
-import type { AcpAgentConfig, AcpAgentConfigChange, AcpAgentId, AcpBuiltinAgentTemplate, AcpResolvedAgent } from '../../domain/session/agent-config.ts'
+import type { AcpAgentConfig, AcpAgentId, AcpResolvedAgent } from '../../domain/session/agent-config.ts'
 import { createAcpLogger } from '../../domain/observability/logging.ts'
-import type { AcpMetricsLike } from '../../domain/observability/metrics.ts'
-import { AcpStubAdapter, acpProbeConfigKey } from './llm-stub.ts'
-import type { AcpProbeRuntimePreparer } from './llm-stub.ts'
-import { AcpSpawnPlanError, buildAcpSpawnPlan } from '../../domain/policy/sandbox.ts'
-import { acpLaunchEnvironment } from '../../domain/session/launch-fingerprint.ts'
-import { ACP_SUBPROCESS_UNAVAILABLE_MESSAGE } from '../../runtime/process/subprocess.ts'
+import { acpProbeConfigKey } from './llm-stub.ts'
+import { AcpProfileAdapter } from './profile-adapter.ts'
+import { profileLaunchIdentityHash } from '../../domain/session/launch-fingerprint.ts'
 import type { SubprocessSeamResolution } from '../../runtime/process/subprocess.ts'
+import { installAcpSidecar } from '../../persistence/sidecar.ts'
+import type { AcpSidecar } from '../../persistence/sidecar.ts'
+import type { AcpNativeUserQuestionService } from '../../domain/policy/elicitation.ts'
+import type { AcpNativeQuestionBinding } from './profile-adapter.ts'
+import type { SessionLike } from '../../domain/session/current-step-admission.ts'
+import type { DispatchLedgerStore } from '../../runtime/session/dispatch-ledger.ts'
+import { resolveSubprocessSeam } from './subprocess.ts'
+import { AcpRemoteService } from '../../remote/service.ts'
+import { auditTimelineRowOf } from './audit-row.ts'
+import { installAcpBackendGuard } from './backend-guard.ts'
+import type { SessionPersistence } from '@deepseek-ai/dsh-session-persistence'
+import { ExternalSubagentProjector } from '../subagent/external-projector.ts'
 
 export { acpProbeConfigKey }
-
-/** Agent id → config template, e.g. the panel's "添加 Devin" button. */
-export type AcpAgentTemplate = AcpBuiltinAgentTemplate
 
 // Built-in templates and runtime descriptors live in the zero-import profile
 // data module and are re-exported here for the host composition surface.
@@ -89,6 +91,32 @@ interface AcpSettingsScopeLike {
 /** Structural face of dsh-settings' `SettingsProvider` limited to what the registry uses. */
 interface AcpSettingsProviderLike {
   register(ns: string, schema: AcpSettingsSchema): AcpSettingsScopeLike
+}
+
+function sessionHasOpenTurn(session: SessionLike): boolean {
+  for (let index = session.events.length - 1; index >= 0; index -= 1) {
+    const type = session.events[index]?.type
+    if (type === 'turn/start') return true
+    if (type === 'turn/end') return false
+  }
+  return false
+}
+
+async function flushClosedParent(
+  store: { get(id: string): SessionLike | undefined; flush(session: SessionLike): Promise<boolean> },
+  sessionId: string,
+  expected: SessionLike,
+): Promise<boolean> {
+  // The adapter starts projection just before yielding the terminal chunk.
+  // Give the stock AgentLoop a bounded window to append turn/end; publishing a
+  // child against an open or replaced parent would assert lineage too early.
+  const deadline = Date.now() + 10_000
+  while (sessionHasOpenTurn(expected)) {
+    if (store.get(sessionId) !== expected || Date.now() >= deadline) return false
+    await new Promise<void>(resolve => { setTimeout(resolve, 10) })
+  }
+  if (store.get(sessionId) !== expected) return false
+  return await store.flush(expected)
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -257,11 +285,13 @@ export function acpRegistrationFacts(agents: Record<string, AcpAgentConfig>): Ac
  * This is deliberately not the official ACP Registry catalog. */
 export interface InstalledProfileRegistry {
   /**
-   * The shared stub adapter. Route registration/replacement keeps this one
- * instance (`replace` semantics), and the health endpoint reads
-   * probe snapshots / triggers refreshes through it.
+   * Resolves after the initial settings snapshot has been applied to the LLM
+   * route registry.  Session creation can race Cordis' inject callback during
+   * startup; callers must await this barrier before resolving an `acp-*` route,
+   * otherwise a configured ACP default can be mistaken for an unknown native
+   * provider and fall through to DSH's LLM stub.
    */
-  readonly adapter: AcpStubAdapter
+  readonly ready: Promise<void>
   /**
    * Current agents, keyed by agent id (detached snapshot). Writes go through
    * the settings service (`settings.update/mutate/replace` on `dsh-acp`); this
@@ -273,106 +303,17 @@ export interface InstalledProfileRegistry {
 }
 
 export interface InstalledProfileRegistryOptions {
+  /** Mount the additive dshAcp activity Remote in the provider composition.
+   * The additive provider composition mounts its own service when enabled. */
+  installRemote?: boolean
   /** Connection knobs forwarded to every probe (tests shorten the teardown ladder). */
   probeOptions?: AcpProbeOptions
   /**
- * 加载期解析的 subprocess seam（host/factory/agent-loop.ts 经
+ * 加载期解析的 subprocess seam（host composition 经
    * ./subprocess.ts 的 `resolveSubprocessSeam` 解析一次后传入；probe 经它
    * spawn）。缺席 = 未接线，probe 以 spawn-failure fail closed。
    */
   subprocess?: SubprocessSeamResolution
- /** 指标 sink：透传给 probe（acp.probe 延迟/失败）。缺席 = 不记录。 */
-  metrics?: AcpMetricsLike
-  /**
- * agent 配置改动审计摘要出口：settings watch 的每次实改动（跳过加载
-   * 首帧与卸载期）产出 added/removed/changed 清单交给本回调；生产接线把它落进
-   * sidecar 的 `agent-config` 专档。回调抛错/拒绝只 warn——审计失败不得阻断
-   * 设置同步。env 只携带键名级 diff（值永不出现）。
-   */
-  auditConfigChange?: (changes: readonly AcpAgentConfigChange[]) => void
-}
-
-/** Whether the consumer's own fiber is tearing down (not just losing the settings service). */
-function isUnloading(ctx: Context): boolean {
-  const state: number = ctx.fiber.state
-  return state === FIBER_UNLOADING || state === FIBER_DISPOSED
-}
-
-/**
- * Probe 进程的组装。健康检查必须复用 Agent 原生配置与登录状态，但不能把
- * 检查工作区与用户项目混在一起。流程：`dshHomePath('dsh-acp','probe',<agentId>)`
- * 作持久 probeBase（仅是 run 目录的容器）→ 清扫全部旧 run 子目录（上次 probe
- * 的崩溃残留；删除失败仅 warn 不阻断）→ `mkdtemp(probeBase/run-*)` 出本次的
- * disposable 根并 canonicalize → Native Agent Access spawn 计划（工作区为
- * 该 run 目录）→ 返回 runtime preparation（`cleanup` 整棵删除 run 目录，由
- * llm-stub 的 finally 调用，不依赖 agent 侧 delete 成功）。
- *
- * slot 在 probe 发起时现取（服务后挂载也生效）：`dshHomePath` 缺席 →
- * AcpSpawnPlanError 响亮进缓存。probe 不读取、复制或重定向 credential/data-home；
- * 登录失败由 Agent 返回 `auth_required`，用户按 Agent 自己的 CLI 登录。临时根
- * 仅用于 cwd 与清理，不代表正式会话的访问边界。
- */
-function createProbeRuntimePreparer(ctx: Context): AcpProbeRuntimePreparer {
-  const log = createAcpLogger(ctx.logger)
-  return async ({ provider, config, argv }) => {
-    const holder = ctx as Context & { get(name: string, strict?: boolean): unknown }
-    const dshHomePath = holder.get('dshHomePath') as ((...segments: string[]) => string) | undefined
-    const agentId = acpAgentIdFromRoute(provider) ?? provider
-    if (dshHomePath === undefined) {
-      throw new AcpSpawnPlanError(
-        'ACP_SPAWN_CONFIG',
-        `dsh-acp: cannot prepare the probe for "${provider}": the dshHomePath slot is absent, so the temporary probe root is unresolvable`,
-      )
-    }
-    const onWarn = (message: string): void => { log.warn(`dsh-acp: ${message}`, { acpProvider: provider, operation: 'spawn-plan' }) }
-    const probeBase = dshHomePath('dsh-acp', 'probe', agentId)
-    fs.mkdirSync(probeBase, { recursive: true })
-    try {
-      fs.chmodSync(probeBase, 0o700)
-    } catch {
-      /* 并发回收等竞态：权限收紧失败不阻断 probe */
-    }
- // 崩溃残留清扫（边界）：上一轮的 disposable run 目录若没被 cleanup 删掉
-    // （进程崩溃/kill），本次 probe 前整棵移除；删不动仅 warn，不阻断本次 probe。
-    for (const entry of fs.readdirSync(probeBase)) {
-      try {
-        fs.rmSync(path.join(probeBase, entry), { recursive: true, force: true })
-      } catch (error: unknown) {
-        onWarn(`failed to sweep a stale probe run directory (${error instanceof Error ? error.message : String(error)}); continuing`)
-      }
-    }
-    const descriptor = descriptorOf(agentId, config)
-    const probeRoot = fs.realpathSync.native(fs.mkdtempSync(path.join(probeBase, 'run-')))
-    const cleanupProbeRoot = (): void => {
-      try {
-        fs.rmSync(probeRoot, { recursive: true, force: true })
-      } catch (error: unknown) {
-        onWarn(`failed to remove disposable probe root after setup failure (${error instanceof Error ? error.message : String(error)})`)
-      }
-    }
-    try {
-    // Probes use the same native environment and login state as a formal
-    // session. The probe workspace is disposable, but HOME/CODEX_HOME/XDG
-    // must never be redirected or credential files mirrored by the adapter.
-    // Login failures are reported by ACP as auth_required; the plugin never
-    // reads, stores, or calls authenticate on a credential.
-    const env = await acpLaunchEnvironment({ config, descriptor, dataHomeStrategy: 'native' })
-    const plan = buildAcpSpawnPlan({
-      mode: 'danger-full-access',
-      workspaceRoot: probeRoot,
-      argv,
-      env,
-    })
-    return {
-      plan,
-      cwd: probeRoot,
-      cleanup: cleanupProbeRoot,
-    }
-    } catch (error: unknown) {
-      cleanupProbeRoot()
-      throw error
-    }
-  }
 }
 
 /**
@@ -387,40 +328,297 @@ function createProbeRuntimePreparer(ctx: Context): AcpProbeRuntimePreparer {
  * with one, an empty agents map is likewise dormant until the panel adds one.
  */
 export function installInstalledProfileRegistry(ctx: Context, options: InstalledProfileRegistryOptions = {}): InstalledProfileRegistry {
+  let disposed = false
   const log = createAcpLogger(ctx.logger)
-  let agents: Record<string, AcpAgentConfig> = {}
-  const adapter = new AcpStubAdapter({
-    agents: () => new Map(Object.entries(agents).map(([id, config]) => [acpRouteId(id), config])),
-    ...(options.probeOptions === undefined ? {} : { probeOptions: options.probeOptions }),
- // probe 的 spawn 也走宿主 subprocess seam；未接线 = fail closed（不自制回退）
-    subprocess: options.subprocess ?? { ok: false, message: ACP_SUBPROCESS_UNAVAILABLE_MESSAGE },
- // 裁决：probe 同档 confine（read-only；probe 无会话档位，取最严档）
-    prepareProbe: createProbeRuntimePreparer(ctx),
- // runtime cleanup failure is a warning and does not rewrite the probe result.
-    onWarn: (message) => { log.warn(`dsh-acp: ${message}`, { operation: 'probe', result: 'cleanup-error' }) },
- // probe 指标透传
-    ...(options.metrics === undefined ? {} : { metrics: options.metrics }),
+  const sidecar = installAcpSidecar(ctx)
+  if (sidecar !== undefined) installAcpBackendGuard(ctx, { sidecar })
+  // The additive composition has no AgentLoop constructor to hand this seam
+  // down. Resolve the host-owned service at the composition boundary instead;
+  // keeping the explicit option is useful for isolated tests and embedders.
+  const subprocess = options.subprocess ?? resolveSubprocessSeam(ctx)
+  const holder = ctx as Context & { get(name: string, strict?: boolean): unknown }
+  const sessionStore = typeof holder.get === 'function'
+    ? holder.get('sessions') as { get(id: string): SessionLike | undefined; flush(session: SessionLike): Promise<boolean> } | undefined
+    : undefined
+  let externalSubagentProjector: ExternalSubagentProjector | undefined
+  const persistenceFiber = sidecar === undefined ? undefined : ctx.inject(['sessionPersistence'], (childCtx: Context) => {
+    const persistence = (childCtx as Context & { sessionPersistence: SessionPersistence }).sessionPersistence
+    const projector = new ExternalSubagentProjector(persistence, sidecar)
+    externalSubagentProjector = projector
+    void projector.repairInterrupted().then((summary) => {
+      if (summary.repaired > 0 || summary.conflicted > 0) {
+        log.info(`dsh-acp: external subagent projection recovery completed (repaired=${summary.repaired}, conflicted=${summary.conflicted})`, {
+          operation: 'subagent-projection-repair',
+          result: summary.conflicted > 0 ? 'conflict' : 'ok',
+        })
+      }
+    }).catch((error: unknown) => {
+      log.warn(`dsh-acp: external subagent projection recovery failed: ${error instanceof Error ? error.message : String(error)}`, {
+        operation: 'subagent-projection-repair', result: 'error',
+      })
+    })
+    const effect = (childCtx as Context & { effect?: Context['effect'] }).effect
+    effect?.call(childCtx, () => () => {
+        if (externalSubagentProjector === projector) externalSubagentProjector = undefined
+      }, 'dsh-acp: release external subagent projector')
   })
+  if (persistenceFiber !== undefined) {
+    ctx.effect(() => () => {
+      persistenceFiber.dispose()
+      externalSubagentProjector = undefined
+    }, 'dsh-acp: dispose optional session persistence binding')
+  }
+  let attachments: Pick<AttachmentStore, 'readImage' | 'imageLimits' | 'saveImages'> | undefined
+  try {
+    attachments = holder.get('attachments') as Pick<AttachmentStore, 'readImage' | 'imageLimits' | 'saveImages'> | undefined
+  } catch {
+    attachments = undefined
+  }
+  // Resolve these host-owned services lazily. The provider composition can be
+  // mounted before userQuestions/agents, and a live Agent must be looked up for
+  // every interactive request so DSH remains the lifecycle and audit owner.
+  const resolveNativeQuestions = (dshSessionId: string): AcpNativeQuestionBinding | undefined => {
+    let userQuestions: AcpNativeUserQuestionService | undefined
+    let approval: import('../../domain/policy/permissions.ts').AcpNativeApprovalService | undefined
+    let agents: { get(id: string): unknown } | undefined
+    try { userQuestions = (ctx as unknown as { userQuestions?: AcpNativeUserQuestionService }).userQuestions } catch { /* optional seam */ }
+    try { agents = (ctx as unknown as { agents?: { get(id: string): unknown } }).agents } catch { /* optional seam */ }
+    try { userQuestions ??= holder.get('userQuestions') as AcpNativeUserQuestionService | undefined } catch { /* optional seam */ }
+    try { approval = holder.get('approval') as import('../../domain/policy/permissions.ts').AcpNativeApprovalService | undefined } catch { /* optional seam */ }
+    try { agents ??= holder.get('agents') as { get(id: string): unknown } | undefined } catch { /* optional seam */ }
+    if ((userQuestions === undefined && approval === undefined) || agents === undefined || agents.get(dshSessionId) === undefined) return undefined
+    return {
+      ...(userQuestions === undefined ? {} : { userQuestions }),
+      ...(approval === undefined ? {} : { approval }),
+      getAgent: () => agents?.get(dshSessionId),
+    }
+  }
+  const ledgerStore: DispatchLedgerStore = sidecar === undefined
+    ? {
+        begin: async () => { throw new Error('ACP sidecar is unavailable; durable dispatch ledger is required') },
+        settle: async () => { throw new Error('ACP sidecar is unavailable; durable dispatch ledger is required') },
+        read: async () => undefined,
+      }
+    : {
+        begin: (record) => sidecar.beginDispatch(record),
+        settle: (sessionId, key) => sidecar.settleDispatch(sessionId as Parameters<AcpSidecar['settleDispatch']>[0], key),
+        read: async (sessionId, key) => await sidecar.readDispatch(sessionId as Parameters<AcpSidecar['readDispatch']>[0], key),
+      }
+  let agents: Record<string, AcpAgentConfig> = {}
+  // Desired settings and the last successfully installed snapshot are kept
+  // separate. A partially failed registration must never make an old route's
+  // closure observe `undefined` just because the settings watcher advanced.
+  let activeAgents: Record<string, AcpAgentConfig> = {}
+  // Adapters are also the owner of provider-composition recovery verbs. Keep
+  // this map available before constructing the additive Remote service.
+  const profileAdapters = new Map<string, AcpProfileAdapter>()
+  const ownedSidecar = sidecar
+  const ownedSessionReadGate = async (sessionId: string): Promise<boolean> => {
+    // The sidecar is the authority for both audit and Activity ownership;
+    // SessionStore liveness is intentionally not accepted as a grant.
+    try { return await ownedSidecar?.hasDurableActivityOwner(sessionId as never) ?? false } catch { return false }
+  }
+  const canRegisterRemote = typeof (ctx as Context & { reflect?: { provide?: unknown } }).reflect?.provide === 'function'
+  let existingRemote: unknown
+  try { existingRemote = holder.get('dshAcp') } catch { existingRemote = undefined }
+  if (options.installRemote === true && canRegisterRemote && sidecar !== undefined && existingRemote === undefined) {
+    new AcpRemoteService(ctx, {
+      registry: {
+        // Remote health addresses a configured profile by its stable settings
+        // id (`codex`), while the LLM registry addresses the execution route
+        // as `acp-codex`. Keep those two namespaces separate; otherwise the
+        // Settings panel's targeted check is always reported as unknown.
+        agents: () => new Map(Object.entries(agents)),
+        // Health delegates to the exact adapter registered for the profile;
+        // this keeps Settings and the stock ModelPicker on one cache/key and
+        // one in-flight probe. There is deliberately no detached fallback.
+        probeCacheFor: (profileId) => profileAdapters.get(profileId),
+      },
+      // Health's executable/version facts must use the same host subprocess
+      // seam as the ACP probe.  Omitting this made a successful probe coexist
+      // with executable=false/version=null in the Settings panel.
+      subprocess,
+      // The provider composition has no Agent owner; activity methods are
+      // intentionally read-only and describe provider-owned facts only.
+      resolveLiveAgent: () => undefined,
+      // Header/audit facts are read-only host facts.  Keeping them here makes
+      // the additive provider composition useful to the stock header utility
+      // without creating a second Agent lifecycle in the provider bridge.
+      backendFacts: {
+        readBindingProvider: async (sessionId) => {
+          const lookup = await sidecar.readLatestBinding(sessionId as never).catch(() => undefined)
+          return lookup?.status === 'ok' ? lookup.binding.provider : undefined
+        },
+        peekHeaderProvider: async (sessionId) => {
+          const session = sessionStore?.get(sessionId)
+          if (session === undefined) throw new Error('DSH session is not available')
+          for (const event of [...session.events].reverse()) {
+            if (event.type !== 'request/header' || typeof event.data !== 'object' || event.data === null) continue
+            const header = (event.data as { header?: unknown }).header
+            if (typeof header !== 'object' || header === null) continue
+            const config = (header as { config?: unknown }).config
+            if (typeof config !== 'object' || config === null) continue
+            const provider = (config as { provider?: unknown }).provider
+            if (typeof provider === 'string') return provider
+          }
+          return undefined
+        },
+        hasLiveAgent: (sessionId) => sessionStore?.get(sessionId) !== undefined,
+      },
+      bindingFacts: {
+        countBoundSessions: async (provider) => {
+          const bindings = await sidecar.listBindings()
+          return bindings.filter((entry) => entry.binding.provider === provider).length
+        },
+        listBoundProviders: async () => {
+          const bindings = await sidecar.listBindings()
+          return [...new Set(bindings.map(entry => entry.binding.provider))]
+        },
+      },
+      auditTimeline: {
+        list: async (sessionId, afterSeq, limit) => {
+          const rows = await sidecar.listPage(sessionId as never, afterSeq, limit)
+          return rows.map(auditTimelineRowOf)
+        },
+        hasMore: async (sessionId, seq) => (await sidecar.listPage(sessionId as never, seq, 1)).length > 0,
+      },
+      activityTimeline: {
+        snapshot: (sessionId, limit, filter) => sidecar.activitySnapshot(sessionId as never, limit, filter),
+        page: (sessionId, afterRevision, limit, filter) => sidecar.activityPage(sessionId as never, afterRevision, limit, filter),
+        head: (sessionId, filter) => sidecar.activityHead(sessionId as never, filter),
+        subscribe: (sessionId, filter, subscriber) => sidecar.subscribeActivity(sessionId as never, filter ?? {}, subscriber),
+      },
+      ownedSessionReadGate,
+      activityAccess: ownedSessionReadGate,
+      projectedSubagentIds: () => sidecar.listProjectedSubagentIds(),
+      imageInputAvailable: attachments !== undefined,
+      recoveryStateStore: {
+        read: async (sessionId) => {
+          const state = await sidecar.readRecoveryState(sessionId as never).catch(() => undefined)
+          if (state === undefined) return undefined
+          return {
+            dshSessionId: state.dshSessionId,
+            kind: state.kind,
+            cause: state.cause ?? null,
+            detail: state.detail ?? null,
+            provider: state.provider ?? null,
+            acpSessionId: state.acpSessionId ?? null,
+            generation: state.generation ?? null,
+            interruptedTurnId: state.interruptedTurnId ?? null,
+            lastAttemptAt: state.lastAttemptAt ?? null,
+            lastUserAction: state.lastUserAction ?? null,
+            updatedAt: state.updatedAt,
+          }
+        },
+      },
+      recoveryAdapter: (provider) => {
+        const id = acpAgentIdFromRoute(provider)
+        return id === undefined ? undefined : profileAdapters.get(id)
+      },
+      agentSessionControl: (provider) => {
+        const id = acpAgentIdFromRoute(provider)
+        return id === undefined ? undefined : profileAdapters.get(id)
+      },
+    })
+  }
 
-  let registration: AdapterRegistrationHandle | undefined
+  // Each registered profile adapter owns both its model-catalog probe and the
+  // Settings health view of that probe. There is no detached fallback cache.
+  const registrations = new Map<string, AdapterRegistrationHandle>()
+  const ready = Promise.withResolvers<void>()
+  // A create/resume may already be waiting when the plugin is unloaded.  Do
+  // not leave that caller suspended forever: resolving the barrier lets the
+  // authoritative route lookup fail closed below.  `resolve` is idempotent,
+  // so normal initialization and disposal may safely race.
+  ctx.effect(() => () => ready.resolve(), '@zaimokuza/dsh-acp-adapter: release ACP route readiness waiters')
   // Facts are constructed by the sorted builder above, so their JSON is
   // canonical; a string compare replaces a deep-equal helper.
   let registeredKey = ''
-
   const ensureRegistration = (): void => {
     const facts = acpRegistrationFacts(agents)
-    const key = JSON.stringify(facts)
-    if (key === registeredKey) return
-    const routes = facts.map((fact) => fact.provider)
-    if (registration === undefined) {
-      // An empty agents map registers nothing; `replace([])` is the legal empty form.
-      if (routes.length === 0) {
-        registeredKey = key
-        return
+    // Registration facts include the selector label, while the shared launch
+    // identity additionally fences the model catalogue from command/args/env/
+    // runtime edits. Values are hashed and never enter the registration key.
+    const identities = Object.entries(agents).sort(([left], [right]) => left.localeCompare(right)).map(([id, config]) => [id, profileLaunchIdentityHash(id, config)])
+    const key = JSON.stringify({ facts, identities })
+    if (key === registeredKey) {
+      // Registration facts intentionally ignore runtime settings such as env
+      // and args. Still publish the new active snapshot so the route adapter
+      // sees the next immutable generation on its next call.
+      activeAgents = { ...agents }
+      return
+    }
+    const previousActive = activeAgents
+    const created: string[] = []
+    const touched: string[] = []
+    // Existing adapters resolve their config through this detached candidate
+    // during replace/register; restore it if any registration fails.
+    activeAgents = { ...agents }
+    try {
+      for (const id of Object.keys(agents)) {
+        const config = agents[id]
+        if (config === undefined) continue
+        let routeAdapter = profileAdapters.get(id)
+        if (routeAdapter === undefined) {
+          routeAdapter = new AcpProfileAdapter(
+            id,
+            () => activeAgents[id],
+            subprocess,
+            sessionId => sessionStore?.get(sessionId),
+            ledgerStore,
+            undefined,
+            undefined,
+            sidecar,
+            attachments,
+            resolveNativeQuestions,
+            sidecar === undefined ? undefined : async (observation, context) => {
+              const projector = externalSubagentProjector
+              if (projector === undefined) throw new Error('ACP_SUBAGENT_PERSISTENCE_UNAVAILABLE')
+              const store = sessionStore
+              if (store === undefined) throw new Error('ACP_SUBAGENT_PARENT_UNAVAILABLE')
+              const parent = store.get(context.parentDshSessionId)
+              if (parent === undefined) throw new Error('ACP_SUBAGENT_PARENT_UNAVAILABLE')
+              const result = await projector.project(observation, {
+                ...context,
+                flushParent: async () => await flushClosedParent(store, context.parentDshSessionId, parent),
+              })
+              return result?.childSessionId
+            },
+            message => log.warn(message, { operation: 'claude-draft-subagent-capability' }),
+          )
+          profileAdapters.set(id, routeAdapter)
+        }
+        const route = acpRouteId(id)
+        const handle = registrations.get(id)
+        if (handle === undefined) {
+          registrations.set(id, ctx.llm.registerAdapter([route], routeAdapter))
+          created.push(id)
+        } else {
+          touched.push(id)
+          handle.replace([route])
+        }
       }
-      registration = ctx.llm.registerAdapter(routes, adapter)
-    } else {
-      registration.replace(routes)
+    } catch (error) {
+      for (const id of created) {
+        try { registrations.get(id)?.() } catch { /* best effort rollback */ }
+        registrations.delete(id)
+        void profileAdapters.get(id)?.close().catch(() => undefined)
+        profileAdapters.delete(id)
+      }
+      activeAgents = previousActive
+      // A replace may have synchronously refreshed host metadata before a
+      // later profile collided. Re-emit the old snapshot for those routes.
+      for (const id of touched) {
+        try { registrations.get(id)?.replace([acpRouteId(id)]) } catch { /* best effort */ }
+      }
+      throw error
+    }
+    for (const [id, handle] of registrations) {
+      if (agents[id] !== undefined) continue
+      handle()
+      registrations.delete(id)
+      void profileAdapters.get(id)?.close().catch(() => undefined)
+      profileAdapters.delete(id)
     }
     registeredKey = key
   }
@@ -437,47 +635,54 @@ export function installInstalledProfileRegistry(ctx: Context, options: Installed
     }
   }
 
-  /**
- * 配置改动审计：watch 回调的 prev/next 实 diff（跳过加载首帧与卸载期），
-   * 逐条目包成 `agent-config` payload 交给接线回调。diff/组装是纯函数
-   * （agent-config.ts/events.ts），审计出口抛错只 warn（不阻断设置同步）。
-   */
-  const auditConfigChanges = (prev: Record<string, AcpAgentConfig>, next: Record<string, AcpAgentConfig>): void => {
-    if (options.auditConfigChange === undefined) return
-    const changes = diffAcpAgentConfigs(prev, next)
-    if (changes.length === 0) return
-    try {
-      options.auditConfigChange(changes)
-    } catch (error: unknown) {
-      log.warn(`dsh-acp: agent config change audit failed (${error instanceof Error ? error.message : String(error)})`, { operation: 'audit', result: 'error' })
+  // The composition, not a removed AgentLoop subclass, now owns teardown.
+  // Dispose routes first, then ACP runtimes, then the sidecar; each failure is
+  // contained so one broken profile cannot strand the remaining processes.
+  ctx.effect(() => async () => {
+    disposed = true
+    for (const handle of registrations.values()) {
+      try { handle() } catch (error) { log.warn(`dsh-acp: route disposal failed: ${String(error)}`) }
     }
-  }
+    registrations.clear()
+    const results = await Promise.allSettled([...profileAdapters.values()].map(adapter => adapter.close()))
+    for (const result of results) {
+      if (result.status === 'rejected') log.warn(`dsh-acp: profile runtime disposal failed: ${String(result.reason)}`)
+    }
+    profileAdapters.clear()
+    try { await sidecar?.dispose() } catch (error) { log.warn(`dsh-acp: sidecar disposal failed: ${String(error)}`) }
+  }, '@zaimokuza/dsh-acp-adapter: dispose ACP profile routes and sidecar')
 
-  ctx.inject(['settings', 'llm'], (sctx) => {
-    const settings = sctx.get('settings') as AcpSettingsProviderLike
-    // The namespace registration rides this inject fiber: the settings service
-    // detaching withdraws it (and its watchers) automatically.
-    const scope = settings.register(ACP_SETTINGS_NS, acpSettingsSchema)
-    agents = scope.get().agents
+  // `settings` is a required dependency of the composition root. Register the
+  // namespace synchronously in this plugin fiber instead of hiding the only
+  // route-registration path in a nested dynamic inject: the latter can leave
+  // a loaded ACP row with no watcher when the host loader composes services in
+  // separate phases. The explicit disposer keeps the watch lifetime aligned
+  // with this plugin even when the settings provider itself is replaced.
+  const settings = holder.get('settings') as AcpSettingsProviderLike | undefined
+  if (settings === undefined) {
+    throw new Error('dsh-acp: settings service is required by the ACP composition')
+  }
+  const scope = settings.register(ACP_SETTINGS_NS, acpSettingsSchema)
+  const initialSettings = scope.get()
+  agents = initialSettings.agents
+  onSettingsChange()
+  ready.resolve()
+  const unwatch = scope.watch((next) => {
+    // A stored change landing while the plugin unloads must not re-register
+    // routes against a fiber whose resources are being released.
+    if (disposed) return
+    agents = next.agents
     onSettingsChange()
-    scope.watch((next) => {
-      // A stored change landing while the plugin unloads must not re-register
-      // routes against a fiber whose resources are being released.
-      if (isUnloading(ctx)) return
-      const prev = agents
-      agents = next.agents
-      auditConfigChanges(prev, next.agents)
-      onSettingsChange()
-    })
   })
+  ctx.effect(() => () => { unwatch() }, '@zaimokuza/dsh-acp-adapter: dispose settings watch')
 
   return {
-    adapter,
+    ready: ready.promise,
     agents: () => new Map(Object.entries(agents)),
     resolveRoute(provider: string): AcpResolvedAgent | undefined {
       const id = acpAgentIdFromRoute(provider)
       if (id === undefined) return undefined
-      const config = agents[id]
+      const config = activeAgents[id]
       if (config === undefined) return undefined
  // 边界：descriptor 是内置受信数据，消费方经 descriptorOf(id, config) 现取
       // （runtime 字段优先、id 回退），不随解析结果复制一份

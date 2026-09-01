@@ -40,7 +40,7 @@ export type AcpErrorKind =
  * - `user-rejected`：用户拒绝/取消（审批拒绝以 ACP outcome `reject_*`/`cancelled`
  * 表达，非 thrown error； 调用方中止在飞 RPC 的 `aborted` kind 归本类）
  * - `resume-conflict`：恢复冲突（预留：当前恢复冲突一律降级为说明性 assistant
- * 消息——src/domain/session/resume.ts，非 thrown error； 硬冲突错误归本类）
+ * 消息——provider runtime，非 thrown error；硬冲突错误归本类）
  */
 export type AcpErrorCategory =
   | 'config'
@@ -80,8 +80,32 @@ export interface AcpClientErrorDetails {
   correlationId?: string | undefined
 }
 
+/** Claude Agent ACP's draft native-subagent lifecycle.  The published ACP SDK
+ * does not type these variants yet, but the official adapter emits them only
+ * after bilateral capability negotiation. */
+export type AcpSubagentSessionUpdate =
+  | {
+      readonly sessionUpdate: 'subagent_spawned'
+      readonly subagentSessionId: string
+      readonly name: string
+      readonly task: string
+      readonly capabilities: { readonly cancel?: boolean; readonly close?: boolean; readonly _meta?: Record<string, unknown> | null }
+      readonly _meta?: Record<string, unknown> | null
+    }
+  | {
+      readonly sessionUpdate: 'subagent_state_update'
+      readonly subagentSessionId: string
+      readonly state: 'completed' | 'failed' | 'cancelled' | 'disconnected'
+      readonly _meta?: Record<string, unknown> | null
+    }
+
+/** ACP notification plus the negotiated draft native-subagent variants. */
+export type AcpSessionNotification = Omit<acp.SessionNotification, 'update'> & {
+  readonly update: acp.SessionNotification['update'] | AcpSubagentSessionUpdate
+}
+
 /** `session/update` 通知监听器。 */
-export type SessionUpdateListener = (notification: acp.SessionNotification) => void
+export type SessionUpdateListener = (notification: AcpSessionNotification) => void
 
 /**
  * 单次 RPC 的预算与取消面（./connection.ts 各 typed 方法的末参，全可选）：
@@ -110,6 +134,10 @@ export type ElicitationRequestHandler = (
 ) => acp.CreateElicitationResponse | Promise<acp.CreateElicitationResponse>
 
 export interface AcpConnectionOptions extends AcpProcessOptions {
+  /** Enable the private Claude-only draft native-subagent SDK extension. */
+  enableClaudeDraftSubagents?: boolean
+  /** One-shot host diagnostic when an optional private SDK seam is unavailable. */
+  onCapabilityDegraded?: (message: string) => void
   /** Both handlers must be present before ACP fs capability is advertised. */
   fileSystemHandlers?: {
     readonly readTextFile: (params: acp.ReadTextFileRequest) => acp.ReadTextFileResponse | Promise<acp.ReadTextFileResponse>
@@ -179,6 +207,10 @@ export interface AcpProbeResult {
    * `config_option_update` 推送兜底（devin 实测流量顺序）。
    */
   configOptions: acp.SessionConfigOption[] | undefined
+  /** Per-model snapshots captured in the same disposable probe session.  This
+   * is opt-in because only Agents whose reasoning catalogue changes with the
+   * selected model need the extra bounded config writes. */
+  modelConfigOptions?: Readonly<Record<string, readonly acp.SessionConfigOption[]>>
   /** 拆除前抓取的脱敏 stderr 尾。 */
   stderrTail: string[]
 }
@@ -188,4 +220,7 @@ export interface AcpProbeOptions extends AcpConnectionOptions {
   cwd?: string
   /** initialize 与 session/new 各自的超时预算（默认 15s，devin 冷启动实测约 3s）。 */
   timeoutMs?: number
+  /** Capture the confirmed config snapshot after selecting each advertised
+   * model. No prompt is sent and the disposable session is deleted normally. */
+  probeModelConfigOptions?: boolean
 }

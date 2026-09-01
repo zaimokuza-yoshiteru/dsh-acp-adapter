@@ -25,7 +25,7 @@ function row(id: string, version: string): AcpProviderHealth {
 }
 
 function view(rows: readonly AcpProviderHealth[]): AcpHealthView {
-  return { providers: rows, metrics: null, liveSessions: null }
+  return { providers: rows, liveSessions: null }
 }
 
 describe('AcpPanelController targeted health checks', () => {
@@ -56,9 +56,9 @@ describe('AcpPanelController targeted health checks', () => {
       settings: { mutate: vi.fn() },
       remote: {
         health,
-        options: vi.fn(), setOption: vi.fn(), backendOf: vi.fn(), rebindBlank: vi.fn(),
-        boundSessions: vi.fn(), beginModelSwitch: vi.fn(), commitModelSwitch: vi.fn(), rollbackModelSwitch: vi.fn(),
-      },
+        backendOf: vi.fn(), boundSessions: vi.fn(),
+        activityFollow: async function* () {},
+      } as never,
     })
     const store = createAcpPanelStore().create()
     controller.attach(store.actions)
@@ -98,9 +98,9 @@ describe('AcpPanelController targeted health checks', () => {
         health: vi.fn((request?: { agentId?: string }) => request?.agentId === 'devin'
           ? Promise.resolve({ ok: false as const, error: { message: 'devin probe failed' } })
           : Promise.resolve({ ok: true as const, value: view([]) })),
-        options: vi.fn(), setOption: vi.fn(), backendOf: vi.fn(), rebindBlank: vi.fn(),
-        boundSessions: vi.fn(), beginModelSwitch: vi.fn(), commitModelSwitch: vi.fn(), rollbackModelSwitch: vi.fn(),
-      },
+        backendOf: vi.fn(), boundSessions: vi.fn(),
+        activityFollow: async function* () {},
+      } as never,
     })
     const store = createAcpPanelStore().create()
     controller.attach(store.actions)

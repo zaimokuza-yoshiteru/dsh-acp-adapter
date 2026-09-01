@@ -7,7 +7,7 @@ import { acpCanonicalHash16 } from '../../../src/persistence/sidecar.ts'
 const HOME = '/home/tester'
 
 describe('acpLaunchEnvironment（Native-first）', () => {
-  it('native 继承完整宿主环境，profile 显式值最终覆盖', async () => {
+  it('仅传递 profile 显式 env（父环境由 DSH scrubbed subprocess 提供）', async () => {
     const config: AcpStubAgentConfig = {
       name: 'Custom', command: 'custom-acp', args: [],
       env: { HTTPS_PROXY: 'http://profile-proxy', PROFILE_ONLY: 'yes' },
@@ -15,57 +15,12 @@ describe('acpLaunchEnvironment（Native-first）', () => {
     await expect(acpLaunchEnvironment({
       config,
       descriptor: undefined,
-      dataHomeStrategy: 'native',
-      source: {
-        PATH: '/usr/bin',
-        HTTPS_PROXY: 'http://host-proxy',
-        SSH_AUTH_SOCK: '/tmp/agent.sock',
-        GITHUB_TOKEN: 'available-to-trusted-native-agent',
-        OMITTED: undefined,
-      },
     })).resolves.toEqual({
-      PATH: '/usr/bin',
       HTTPS_PROXY: 'http://profile-proxy',
-      SSH_AUTH_SOCK: '/tmp/agent.sock',
-      GITHUB_TOKEN: 'available-to-trusted-native-agent',
       PROFILE_ONLY: 'yes',
     })
   })
 
-  it('protected probe 路径仍只继承最小白名单', async () => {
-    const config: AcpStubAgentConfig = { name: 'Probe', command: 'probe', args: [], env: {} }
-    await expect(acpLaunchEnvironment({
-      config,
-      descriptor: undefined,
-      dataHomeStrategy: 'protected',
-      source: { PATH: '/usr/bin', HOME, GITHUB_TOKEN: 'must-not-pass' },
-    })).resolves.toEqual({ PATH: '/usr/bin', HOME })
-  })
-
-  it('Native connection snapshot includes descriptor aliases and profile overrides exactly once', async () => {
-    const config: AcpStubAgentConfig = {
-      name: 'Claude', command: 'claude-agent-acp', args: [], runtime: 'claude',
-      env: { ANTHROPIC_BASE_URL: 'https://profile.example', PROFILE_ONLY: 'yes' },
-    }
-    const descriptor = descriptorOf('claude', config)
-    await expect(acpLaunchEnvironment({
-      config,
-      descriptor,
-      dataHomeStrategy: 'native',
-      source: {
-        PATH: '/usr/bin',
-        ANTHROPIC_API_KEY: 'secret',
-        ANTHROPIC_BASE_URL: 'https://host.example',
-        CLAUDE_CODE_EXECUTABLE: '/opt/claude',
-      },
-    })).resolves.toEqual({
-      PATH: '/usr/bin',
-      ANTHROPIC_API_KEY: 'secret',
-      ANTHROPIC_BASE_URL: 'https://profile.example',
-      CLAUDE_CODE_EXECUTABLE: '/opt/claude',
-      PROFILE_ONLY: 'yes',
-    })
-  })
 })
 
 function baseConfig(): AcpStubAgentConfig {

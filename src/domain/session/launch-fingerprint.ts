@@ -26,8 +26,8 @@
 /// <reference types="node" />
 
 import { createHash } from 'node:crypto'
-import { type AcpAgentRuntimeDescriptor, type AcpStubAgentConfig } from './agent-config.ts'
-import { ACP_NATIVE_DATA_HOME_ENV_KEYS, ACP_NATIVE_XDG_ENV_KEYS, buildAcpAgentEnv } from '../policy/sandbox.ts'
+import { descriptorOf, type AcpAgentRuntimeDescriptor, type AcpStubAgentConfig } from './agent-config.ts'
+import { ACP_NATIVE_DATA_HOME_ENV_KEYS, ACP_NATIVE_XDG_ENV_KEYS } from '../policy/sandbox.ts'
 import type { AcpLaunchFingerprint } from '../../persistence/sidecar.ts'
 
 /** {@link acpLaunchFingerprint} 的输入。 */
@@ -44,33 +44,38 @@ export interface AcpLaunchFingerprintInput {
 
 export interface AcpLaunchEnvironmentInput {
   readonly config: AcpStubAgentConfig
-  readonly descriptor: AcpAgentRuntimeDescriptor | undefined
-  readonly dataHomeStrategy: 'native' | 'protected'
-  readonly source?: Record<string, string | undefined>
+  /** Compatibility-only fields accepted from older embedders; ignored. */
+  readonly [key: string]: unknown
+}
+
+/**
+ * One secret-free identity for a configured profile.  Both route registration
+ * and the per-call runtime use this value, so descriptor/runtime/launch edits
+ * cannot drift into two different cache policies.  Environment values are
+ * hashed individually; neither this identity nor its callers retain tokens in
+ * an index, log, or sidecar record.
+ */
+export function profileLaunchIdentityHash(
+  profileId: string,
+  config: AcpStubAgentConfig,
+  env: Record<string, string | undefined> = process.env,
+): string {
+  const fingerprint = acpLaunchFingerprint({ profileId, config, descriptor: descriptorOf(profileId, config), env })
+  return createHash('sha256').update(JSON.stringify(fingerprint)).digest('hex').slice(0, 16)
 }
 
 /**
  * Reconstruct the pre-spawn environment.
  *
- * Native Agent Access intentionally matches an ordinary child process: every
- * defined variable inherited by DSH is available to the trusted local Agent.
- * This is required for Agent-owned proxies, SSH sockets, native MCP servers,
- * skills and provider configuration. Profile values are the explicit final
- * override. Protected probe/test paths retain the narrow allowlist.
+ * The subprocess host supplies the scrubbed parent environment as the spawn
+ * base.  This function therefore returns only profile-configured overrides;
+ * copying `process.env` here would turn scrubbed credentials back into an
+ * explicit opt-in. Profile values are the explicit final override and may
+ * include credential-shaped variables because that is a user configuration
+ * choice.
  */
 export async function acpLaunchEnvironment(input: AcpLaunchEnvironmentInput): Promise<Record<string, string>> {
-  const source = input.source ?? process.env
-  const env = input.dataHomeStrategy === 'native'
-    ? Object.fromEntries(Object.entries(source).filter((entry): entry is [string, string] => entry[1] !== undefined))
-    : await buildAcpAgentEnv({ source })
-  // Native Agent Access inherits the already-resolved host environment verbatim;
-  // the adapter does not copy credential values through a descriptor allowlist.
-  // An explicit executable override remains a non-secret routing choice and is
-  // inherited naturally (or supplied by the profile env below).
-  // A profile entry is an explicit user choice and therefore wins over both
-  // ambient inheritance and built-in descriptor aliases.
-  Object.assign(env, input.config.env)
-  return env
+  return { ...input.config.env }
 }
 
 const NATIVE_STATE_ENV_KEYS = ['HOME', ...ACP_NATIVE_DATA_HOME_ENV_KEYS, ...ACP_NATIVE_XDG_ENV_KEYS]
@@ -106,6 +111,9 @@ export function acpLaunchFingerprint(input: AcpLaunchFingerprintInput): AcpLaunc
     command: input.config.command,
     args: [...input.config.args],
     envKeys: Object.keys(input.config.env).sort(),
+    explicitEnv: Object.entries(input.config.env)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, value]) => ({ key, hash16: createHash('sha256').update(value).digest('hex').slice(0, 16) })),
     profileId: input.profileId,
     descriptorId: descriptor?.id ?? null,
     adapterVersion: descriptor?.versionPolicy.adapter ?? null,
@@ -113,7 +121,7 @@ export function acpLaunchFingerprint(input: AcpLaunchFingerprintInput): AcpLaunc
     envRefs,
     executableOverride,
     nativeStateEnv: nativeStateEnvFingerprint(env),
-    // DSH rc.2 does not expose a safe, serializable MCP registry to plugins.
+    // DSH Alpha still does not expose a safe, serializable MCP registry to plugins.
     // Formal ACP sessions therefore inject no host-owned MCP definition.
     mcpFingerprint: null,
   }

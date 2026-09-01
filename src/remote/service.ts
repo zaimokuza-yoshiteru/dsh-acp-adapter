@@ -2,12 +2,9 @@
  * dshAcp Remote service。
  *
  * 登录遵循 external-login-only：用户只在 Agent 自带 CLI 中登录，面板仅展示
- * 探针状态和 loginHint。模型热切换只允许通过
- * beginModelSwitch/commitModelSwitch/rollbackModelSwitch 事务执行；普通 setOption
- * 拒绝模型类写入。没有活体 Agent 时，options 返回 sidecar 中只读的 last-known
- * 快照（freshness 'stale' / editable false）。公开方法为：
- * health / options / setOption / rebindBlank / backendOf /
- * boundSessions / beginModelSwitch / commitModelSwitch / rollbackModelSwitch。
+ * 探针状态和 loginHint。ACP 会话的控制面只通过 host-owned recovery/session-control 方法暴露；模型选择、
+ * 权限和 elicitation 仍由 DSH 原生面或 host handler 处理。公开方法为 health、
+ * backendOf、boundSessions、audit/activity timeline、recovery 和 agent session controls。
  * 所有调用都走宿主 typed Remote，不保留手写 HTTP 写旁路。
  *
  * 边界形态：
@@ -22,12 +19,11 @@
  *   vars/env 键名、config option 的 `_meta` 不过线）。
  * - 活体解析用 JSON `sessionId: string` 参数 + 方法体内 `resolveLiveAgent`：
  *   标准 agent lookup 的 wire 类型外部不可命名。写路径仍只服务
- * 活体会话（无活体即抛错）； `options` 读路径在无活体时回 sidecar
- *   last-known 快照（stale 只读），不再一律抛错。
- * - 错误纪律：业务失败一律 throw（message 即用户可见文案，与 HTTP 时代逐字
- *   一致）；gateway 把 throw 折叠成 `{code:'internal', message}` 的
- *   RemoteResult 错误分支（kind/HTTP status 不再过线，client 从来只消费
- *   message——parseHttpErrorMessage 同款口径）。
+ * 活体会话的 backend/recovery 事实按需读取；不会把旧 Agent 控制面重新暴露到 Remote。
+ * - 错误纪律：业务失败统一映射为 `dsh-acp/*` `RemoteError`，保留稳定的
+ *   category 以及 ACP kind/correlationId；参数错误使用 Gateway 公共
+ *   `gateway/bad-request`。Gateway 将 typed code/details 原样送到 Client，
+ *   不再把可判别的 ACP 失败折叠为 `gateway/internal`。
  *
  * Subprocess seam（不变）：两个缺省实现（可执行预检 / `<command> --version`）
  * 全经宿主公共 seam `ctx.subprocess` 的解析产物（deps.subprocess 注入）——
@@ -44,19 +40,16 @@
 
 import os from 'node:os'
 import type { Context } from '@deepseek-ai/cordis'
-import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
+import { Remote, RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import type * as acp from '@agentclientprotocol/sdk'
 import { acpRouteId, ACP_AGENT_ID_PATTERN } from '../domain/session/agent-config.ts'
-import { acpProbeConfigKey, acpProbeFresh, acpVersionCompatibility, descriptorOf } from '../domain/session/agent-config.ts'
+import { acpProbeConfigKey, acpVersionCompatibility, descriptorOf } from '../domain/session/agent-config.ts'
 import type { AcpAgentConfig, AcpAgentRuntimeDescriptor } from '../domain/session/agent-config.ts'
-import { ACP_MODE_OPTION_ID } from '../domain/session/agent-config.ts'
+import type { AcpErrorCategory } from '../protocol/v1/types.ts'
 import { deriveAcpAgentState } from '../domain/session/agent-state.ts'
 import type { AcpAgentStateProbeView } from '../domain/session/agent-state.ts'
 import { acpCapabilityMatrix } from '../domain/policy/capability-matrix.ts'
-import type { AcpSessionContinuityState } from '../domain/session/agent.ts'
-import type { AcpMetricsSnapshot } from '../domain/observability/metrics.ts'
-import type { AcpPendingPermissionBroker } from '../domain/policy/permissions.ts'
-import type { AcpElicitationAnswer, AcpElicitationBroker } from '../domain/policy/elicitation.ts'
+import type { AcpSessionContinuityState } from '../runtime/session/continuity.ts'
 import { ACP_SUBPROCESS_UNAVAILABLE_MESSAGE } from '../runtime/process/subprocess.ts'
 import { abortAfter } from '../runtime/process/timeout.ts'
 import type { AcpSubprocessHandle, SubprocessSeam, SubprocessSeamResolution } from '../runtime/process/subprocess.ts'
@@ -66,35 +59,62 @@ import type {
   AcpBackendState,
   AcpBoundSessionsView,
   AcpCapabilityFacts,
-  AcpConfigOption,
-  AcpConfigSelectValue,
-  AcpContextUsageView,
   AcpRecoveryView,
   AcpHealthView,
   AcpHealthRequest,
-  AcpLiveOptionsSnapshot,
   AcpLiveSessionContinuity,
-  AcpModelSwitchBeginRequest,
-  AcpModelSwitchBeginResult,
-  AcpModelSwitchResolveRequest,
-  AcpModelSwitchView,
-  AcpOptionWrite,
-  AcpPendingPermissionView,
-  AcpPermissionAnswerRequest,
-  AcpElicitationAnswerRequest,
-  AcpPendingElicitationView,
   AcpProbeCleanupView,
   AcpProviderHealth,
-  AcpSessionContinuity,
-  AcpToolCallPresentationView,
   AcpAuditTimelinePage,
   AcpAuditSummaryCode,
+  AcpActivityFilterView,
+  AcpActivityPageView,
+  AcpActivitySnapshotView,
+  AcpActivityView,
+  AcpActivityJournalFrame,
+  AcpAgentSessionSnapshotView,
+  AcpAgentSessionOptionWrite,
+  AcpOwnedRoutesView,
+  AcpProjectedSubagentsView,
 } from '../contract/remote.ts'
 
 export type { AcpAuditSummaryCode } from '../contract/remote.ts'
 
 /** `<command> --version` 尽力而为的短超时（毫秒）。 */
 export const DEFAULT_VERSION_PROBE_TIMEOUT_MS = 3_000
+
+type AcpRemoteErrorCode = `dsh-acp/${AcpErrorCategory}`
+
+function acpRemoteError(error: AcpClientError): RemoteError<AcpRemoteErrorCode> {
+  return new RemoteError(`dsh-acp/${error.category}`, error.message, {
+    kind: error.kind,
+    correlationId: error.correlationId,
+  }, { cause: error })
+}
+
+function acpRemoteFailure(
+  category: AcpErrorCategory,
+  message: string,
+  cause?: unknown,
+): RemoteError<AcpRemoteErrorCode> {
+  return new RemoteError(`dsh-acp/${category}`, message, {
+    kind: null,
+    correlationId: null,
+  }, cause === undefined ? undefined : { cause })
+}
+
+function badRequest(message: string): RemoteError<'gateway/bad-request'> {
+  return new RemoteError('gateway/bad-request', message, {})
+}
+
+async function preserveAcpFailure<T>(operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation()
+  } catch (error) {
+    if (error instanceof AcpClientError) throw acpRemoteError(error)
+    throw error
+  }
+}
 
 // ---------- SDK → contract 收窄映射（数据最小化； strict boundary 前提） ----------
 
@@ -124,53 +144,6 @@ function contractAuthMethodOf(method: acp.AuthMethod): AcpAuthMethod {
     name: method.name,
     ...(method.description === undefined ? {} : { description: method.description }),
   }
-}
-
-function contractSelectValueOf(value: acp.SessionConfigSelectOption): AcpConfigSelectValue {
-  return {
-    value: value.value,
-    name: value.name,
-    ...(value.description === undefined ? {} : { description: value.description }),
-  }
-}
-
-/**
- * SessionConfigOption → 收窄判别联合（剔 `_meta`）。未知 type 归 null（协议
- * SHOULD-ignore：client 解码器本就跳过该项，host 映射丢弃同效，agent 默认值
- * 在位）——SDK 类型只承认 select/boolean，本分支兜运行时说谎的 agent。
- */
-function contractConfigOptionOf(option: acp.SessionConfigOption): AcpConfigOption | null {
-  const base = {
-    id: option.id,
-    name: option.name,
-    ...(option.description === undefined ? {} : { description: option.description }),
-    ...(option.category === undefined ? {} : { category: option.category }),
-  }
-  if (option.type === 'select') {
-    return {
-      ...base,
-      type: 'select',
-      currentValue: option.currentValue,
-      options: option.options.map((entry) => 'options' in entry
-        ? { group: entry.group, name: entry.name, options: entry.options.map(contractSelectValueOf) }
-        : contractSelectValueOf(entry)),
-    }
-  }
-  if (option.type === 'boolean') {
-    return { ...base, type: 'boolean', currentValue: option.currentValue }
-  }
-  return null
-}
-
-/** configOptions 数组收窄；agent 未提供（undefined）归 null（与快照契约的 null 词表一致）。 */
-function contractConfigOptionsOf(options: readonly acp.SessionConfigOption[] | undefined): readonly AcpConfigOption[] | null {
-  if (options === undefined) return null
-  const mapped: AcpConfigOption[] = []
-  for (const option of options) {
-    const narrowed = contractConfigOptionOf(option)
-    if (narrowed !== null) mapped.push(narrowed)
-  }
-  return mapped
 }
 
 function healthyRecoveryView(sessionId: string): AcpRecoveryView {
@@ -224,10 +197,11 @@ export interface AcpProbeCacheLike {
 
 /**
  * llm-stub 探针缓存条目的结构面（key 配置哈希 + at 时间戳 + 成功/失败分支；
- * SDK 原值，出栈前收窄）。新鲜度判定集中在 agent-config.ts
- * `acpProbeFresh`：key 与当前配置的 `acpProbeConfigKey` 相等且未过 TTL
- * （ok 10min / error 30s）才算新鲜；不新鲜/缺席按「从未探测」计入 state
- * （probe 行仍如实展示上次探测事实）。ok 分支的 cleanup/capabilityHash 是
+ * SDK 原值，出栈前收窄）。设置页只接受 key 与当前配置的
+ * `acpProbeConfigKey` 相等的最后一次明确结果；这里不套模型目录缓存 TTL，
+ * 避免把“上次检查成功”在 10 分钟后错误降成“从未探测”。模型目录仍由
+ * llm-stub 的 `acpProbeFresh` 执行 ok 10min / error 30s 的运行时缓存策略。
+ * ok 分支的 cleanup/capabilityHash 是
  * 新增——旧条目（或测试夹具）缺席时 health 行如实归 null。
  */
 export interface AcpProbeSnapshotLike {
@@ -265,15 +239,12 @@ export interface AcpProbeSnapshotLike {
 /** Registry face: agent 列表 + probe 缓存（快照/刷新）。 */
 export interface AcpHealthRegistryLike {
   agents(): ReadonlyMap<string, AcpAgentConfig>
-  readonly probeCache: AcpProbeCacheLike
+  /** Resolve the registered profile adapter that owns this route's probe cache. */
+  readonly probeCacheFor: (profileId: string) => AcpProbeCacheLike | undefined
 }
 
 /**
- * Live-agent seam consumed by the options methods。`AcpAgent`（src/domain/session/agent.ts
- * 的 status/configOptions/currentModeId/setConfigOption/setMode/continuityState/
- * rebindBlank 公开面）结构上满足本接口；集成任务提供 dsh sessionId → AcpAgent 的解析器。
- * 类型保真：setConfigOption 的 value 按协议原生类型（select=string 值 id /
- * boolean=原生 boolean）。
+ * Minimal live-agent seam used to classify a session backend and expose recovery state.
  */
 export interface AcpLiveAgentFace {
   readonly status: 'idle' | 'running'
@@ -283,16 +254,7 @@ export interface AcpLiveAgentFace {
   readonly providerRoute: string
   /** 构造该 wrapper 时采用的会话模型；draft 阶段用于覆盖 DSH 的全局默认影子。 */
   readonly selectedModel?: string | undefined
-  readonly configOptions: readonly acp.SessionConfigOption[] | undefined
-  readonly currentModeId: string | undefined
-  /** 本会话 initialize 握手的 agent capabilities 实际值（未懒启动时缺席 → 快照归 null）。 */
-  readonly agentCapabilities?: acp.AgentCapabilities | undefined
-  /**
- * 最新已知上下文占用（translator 快照直通，未收到过 usage_update 归
-   * null——诚实空缺）。wire 形状与 contract `AcpContextUsageView` 结构一致。
-   */
-  readonly contextUsage: AcpContextUsageView | null
- /** 连续性闩锁状态（直通进快照的 `continuity` 字段）。 */
+  /** Live state used only by backend/recovery read paths. */
   readonly continuityState: AcpSessionContinuityState
   readonly recoveryState?: {
     readonly dshSessionId: string
@@ -307,59 +269,22 @@ export interface AcpLiveAgentFace {
     readonly lastUserAction?: string
     readonly updatedAt: number
   }
-  /** Idempotently establish the real ACP session before the first prompt. */
-  prepare(): Promise<void>
-  setConfigOption(configId: string, value: string | boolean): Promise<void>
-  setMode(modeId: string): Promise<void>
- /** 显式放弃旧 ACP 上下文并重开全新 ACP 会话（仅 idle，错误原样传播）。 */
-  rebindBlank(): Promise<void>
-  reconnectOriginal?: () => Promise<void>
-  recordRecoveryAction?: (action: 'retry-original' | 'rebind-blank' | 'new-session') => Promise<void>
-  getToolCallPresentationSnapshot?: (toolCallId: string) => {
-    readonly title?: string
-    readonly kind?: string
-  } | undefined
 }
 
 /** Resolve a dsh session id to its live ACP agent；undefined = 无活体（调用即抛错）。 */
 export type AcpResolveLiveAgent = (sessionId: string) => AcpLiveAgentFace | undefined
 
-// ---------- 持久 seam 的结构副本（remote 层不得 import persistence——test/contracts/architecture.spec.ts） ----------
-
-/**
- * sidecar `AcpPendingModelSwitch` 的结构副本（真源与状态机注释见
- * src/persistence/sidecar.ts）。remote 层以结构面消费，生产接线 =
- * host/factory/agent-loop.ts 的 sidecar 闭包。
- */
-export interface AcpPendingModelSwitchLike {
-  readonly operationId: string
-  readonly dshSessionId: string
-  readonly provider: string
-  readonly optionId: string
-  readonly previousModel: string
-  readonly targetModel: string
-  readonly appliedModel?: string
-  readonly state: 'started' | 'agent-applied' | 'agent-rolled-back' | 'committed' | 'rollback-required'
-  readonly createdAt: string
+/** Host-owned recovery verbs for the provider composition.  This deliberately
+ * exposes no legacy Agent object or model/options surface. */
+export interface AcpRecoveryAdapterLike {
+  retryOriginal(sessionId: string): Promise<void>
+  rebindBlank(sessionId: string): Promise<void>
 }
 
-/** sidecar `AcpPendingModelSwitchLookup` 的结构副本（corrupt = 行畸形，按 reconciliation-required 处理）。 */
-export type AcpPendingModelSwitchLookupLike =
-  | { readonly status: 'ok'; readonly record: AcpPendingModelSwitchLike }
-  | { readonly status: 'corrupt' }
-
-/** sidecar `AcpOptionsSnapshotRecord` 的结构副本（冷启动 last-known 快照）。 */
-export interface AcpOptionsSnapshotLike {
-  readonly options: readonly {
-    readonly id: string
-    readonly category: string | null
-    readonly name: string
-    readonly value: string | boolean
-    readonly values: readonly string[] | null
-  }[]
-  readonly currentModeId: string | null
-  readonly updatedAt: number
-  readonly fingerprint: string
+/** New additive provider control seam. It never exposes the legacy Agent. */
+export interface AcpAgentSessionControlLike {
+  agentSessionSnapshot(sessionId: string): Promise<AcpAgentSessionSnapshotView>
+  setAgentSessionOption(sessionId: string, request: AcpAgentSessionOptionWrite): Promise<AcpAgentSessionSnapshotView>
 }
 
 export interface AcpRemoteServiceDeps {
@@ -369,8 +294,8 @@ export interface AcpRemoteServiceDeps {
   resolveLiveAgent: AcpResolveLiveAgent
   /**
  * 宿主结构门事实（；缺省恒 true）：health 行的五态 `state` 字段在
-   * 结构门未通过时归 `incompatible`。生产接线 = host/factory/agent-loop.ts 以
-   * `assertHostCompatible` 的 try/catch 组装（remote 层不得 import host-compat
+   * 结构门未通过时归 `incompatible`。生产接线由 host composition 以公开宿主
+   * 服务组装（remote 层不依赖宿主私有实现
    * ——test/contracts/architecture.spec.ts 白名单）。
    */
   hostCompatible?: () => boolean
@@ -379,7 +304,7 @@ export interface AcpRemoteServiceDeps {
   /** 版本查询；缺省经 seam 的 `<command> --version` 尽力而为（seam 缺席时恒 null）。 */
   queryVersion?: (command: string) => Promise<string | null>
   /**
- * 加载期解析的 subprocess seam（host/factory/agent-loop.ts 注入）。
+ * 加载期解析的 subprocess seam（host composition 注入）。
    * 仅驱动两个缺省实现：ok 时 checkExecutable=resolveExecutable 预检、
    * queryVersion=经 seam spawn `<command> --version`；缺席/未接线时缺省实现
    * fail closed（false / null）。显式注入的 checkExecutable/queryVersion 不受
@@ -387,21 +312,15 @@ export interface AcpRemoteServiceDeps {
    */
   subprocess?: SubprocessSeamResolution
   /**
- * 内存指标快照导出（缺省时 health 视图的顶层 `metrics` 字段为 null）。
-   * 生产接线 = host/factory/agent-loop.ts 的共享 `AcpMetricsRegistry.snapshot`。
-   * 快照只含计数/延迟聚合与低基标签（result/cause/provider），绝无
-   * id/路径/内容——与 metrics registry 的标签纪律同源。
-   */
-  metricsSnapshot?: () => AcpMetricsSnapshot
   /**
  * 活体 ACP 会话的连续性清单（health 视图 `liveSessions` 字段的数据源）。
    * 缺省 → 该字段归 null（如实区分「未接线」与「无活体会话」的空数组）。生产
-   * 接线 = host/factory/agent-loop.ts 以 `ctx.agents.list()` 过滤 AcpAgent。
+   * 接线 = host composition 过滤当前 ACP runtime。
    */
   listLiveSessions?: () => readonly { readonly sessionId: string; readonly continuity: AcpSessionContinuityState }[]
   /**
  * `backendOf` 的 backend 事实源（缺席时 backendOf 响亮拒绝——未接线
-   * 不冒充 blank）。生产接线 = host/factory/agent-loop.ts：
+   * 不冒充 blank）。生产接线 = host composition：
    * - `readBindingProvider`：sidecar 最新 binding 的 provider（ok 且语义门槛
    *   通过）；无记录/读取失败/outdated 归 undefined（binding 读取失败非权威，
    *   与 resume 的 readBindingFor 同款容错）；
@@ -417,53 +336,28 @@ export interface AcpRemoteServiceDeps {
   }
   /**
  * `boundSessions` 的 binding 计数源（删除确认提示；缺席时 boundSessions
-   * 响亮拒绝——未接线不冒充 0）。生产接线 = host/factory/agent-loop.ts 以
+   * 响亮拒绝——未接线不冒充 0）。生产接线 = host composition 以
    * sidecar.listBindings 按 provider 过滤计数（只读）。
    */
   bindingFacts?: {
     readonly countBoundSessions: (provider: string) => Promise<number>
-  }
-  /**
- * 待定模型切换的持久 seam（sidecar `model_switches` 表闭包；缺席时
-   * beginModelSwitch 响亮拒绝——无持久事务不授权切换，fail-closed）。生产接线 =
-   * host/factory/agent-loop.ts 的 sidecar 读写闭包（write 的 record 自带
-   * dshSessionId）。
-   */
-  modelSwitchStore?: {
-    readonly read: (sessionId: string) => Promise<AcpPendingModelSwitchLookupLike | undefined>
-    readonly write: (record: AcpPendingModelSwitchLike) => Promise<void>
-    readonly clear: (sessionId: string) => Promise<void>
-  }
-  /**
- * last-known option 快照的只读 seam（sidecar `option_snapshots` 表闭包）：
-   * 无活体 Agent 时 liveOptions 回 stale 快照；缺席或无快照时维持旧行为（抛
-   * 「no live ACP agent」）。写路径在 domain 的 AcpAgent（权威快照到达即刷新），
-   * 不经本服务。
-   */
-  optionSnapshotStore?: {
-    readonly read: (sessionId: string) => Promise<AcpOptionsSnapshotLike | undefined>
+    readonly listBoundProviders?: () => Promise<readonly string[]>
   }
   /** Durable recovery state used when a session is not currently live. */
   recoveryStateStore?: {
     readonly read: (sessionId: string) => Promise<AcpRecoveryView | undefined>
   }
-  /**
- * stale 快照的指纹比对源：以当前 profile 配置重组运行时指纹（与
-   * AcpAgent.optionsSnapshotFingerprint 同公式）。返回 undefined（未接线/会话
-   * 无 binding）→ fingerprintChanged 恒 false。生产接线 =
-   * host/factory/agent-loop.ts。
-   */
-  snapshotFingerprint?: (sessionId: string) => Promise<string | undefined>
-  /** Plugin-owned pending permission broker (complete ACP option vocabulary). */
-  pendingPermissions?: AcpPendingPermissionBroker
-  pendingElicitations?: AcpElicitationBroker
+  /** Resolves the ACP profile adapter named by a durable binding. */
+  recoveryAdapter?: (provider: string) => AcpRecoveryAdapterLike | undefined
+  /** Resolves only the new per-profile provider control surface. */
+  agentSessionControl?: (provider: string) => AcpAgentSessionControlLike | undefined
   /** Host-projected, bounded sidecar rows. Raw persistence payloads stay host-side. */
   auditTimeline?: {
     readonly list: (sessionId: string, afterSeq: number, limit: number) => Promise<readonly {
       readonly seq: number
       readonly time: number
       readonly kind: string
-      readonly category: 'recovery' | 'permission' | 'agent' | 'files' | 'config'
+      readonly category: 'recovery' | 'permission' | 'agent' | 'files'
       readonly summaryCode: AcpAuditSummaryCode
       readonly subject: string | null
       readonly status: string | null
@@ -471,6 +365,20 @@ export interface AcpRemoteServiceDeps {
     }[]>
     readonly hasMore: (sessionId: string, seq: number) => Promise<boolean>
   }
+  /** Host-owned ACP activity journal. All reads are bounded and session-scoped;
+   * raw sidecar handles never cross the Remote boundary. */
+  activityTimeline?: {
+    readonly snapshot: (sessionId: string, limit: number, filter?: AcpActivityFilterView) => Promise<readonly AcpActivityView[]>
+    readonly page: (sessionId: string, afterRevision: number, limit: number, filter?: AcpActivityFilterView) => Promise<readonly AcpActivityView[]>
+    readonly head: (sessionId: string, filter?: AcpActivityFilterView) => Promise<number>
+    readonly subscribe?: (sessionId: string, filter: AcpActivityFilterView | undefined, subscriber: (activity: AcpActivityView) => void) => () => void
+  }
+  /** Authorizes a client-facing activity read against the current DSH session.
+   * Missing authorization is fail-closed; it is never inferred from a string id. */
+  activityAccess?: (sessionId: string) => boolean | Promise<boolean>
+  /** Shared strict gate for audit and activity reads; production uses durable ownership only. */
+  ownedSessionReadGate?: (sessionId: string) => boolean | Promise<boolean>
+  projectedSubagentIds?: () => Promise<readonly string[]>
   /** Whether the DSH durable attachment service is mounted for ACP image input. */
   imageInputAvailable?: boolean
 }
@@ -558,53 +466,34 @@ interface ResolvedDeps {
   readonly hostCompatible: () => boolean
   readonly checkExecutable: (command: string) => Promise<boolean>
   readonly queryVersion: (command: string) => Promise<string | null>
- /** 缺省 null（host 未接线时视图如实不带指标快照）。 */
-  readonly metricsSnapshot: (() => AcpMetricsSnapshot) | null
  /** 缺省 null（host 未接线时视图如实不带活体会话连续性清单）。 */
   readonly listLiveSessions: (() => readonly { readonly sessionId: string; readonly continuity: AcpSessionContinuityState }[]) | null
  /** 缺省 null（backendOf 未接线时响亮拒绝，不冒充 blank）。 */
   readonly backendFacts: NonNullable<AcpRemoteServiceDeps['backendFacts']> | null
  /** 缺省 null（boundSessions 未接线时响亮拒绝，不冒充 0）。 */
   readonly bindingFacts: NonNullable<AcpRemoteServiceDeps['bindingFacts']> | null
- /** 缺省 null（beginModelSwitch 未接线时响亮拒绝，fail-closed）。 */
-  readonly modelSwitchStore: NonNullable<AcpRemoteServiceDeps['modelSwitchStore']> | null
- /** 缺省 null（无活体时 liveOptions 维持旧抛错行为）。 */
-  readonly optionSnapshotStore: NonNullable<AcpRemoteServiceDeps['optionSnapshotStore']> | null
   readonly recoveryStateStore: NonNullable<AcpRemoteServiceDeps['recoveryStateStore']> | null
- /** 缺省 null（fingerprintChanged 恒 false）。 */
-  readonly snapshotFingerprint: ((sessionId: string) => Promise<string | undefined>) | null
-  readonly pendingPermissions: AcpPendingPermissionBroker | null
-  readonly pendingElicitations: AcpElicitationBroker | null
+  readonly recoveryAdapter: NonNullable<AcpRemoteServiceDeps['recoveryAdapter']> | null
+  readonly agentSessionControl: NonNullable<AcpRemoteServiceDeps['agentSessionControl']> | null
   readonly auditTimeline: NonNullable<AcpRemoteServiceDeps['auditTimeline']> | null
+  readonly activityTimeline: NonNullable<AcpRemoteServiceDeps['activityTimeline']> | null
+  readonly activityAccess: NonNullable<AcpRemoteServiceDeps['activityAccess']> | null
+  readonly ownedSessionReadGate: NonNullable<AcpRemoteServiceDeps['ownedSessionReadGate']> | null
+  readonly projectedSubagentIds: NonNullable<AcpRemoteServiceDeps['projectedSubagentIds']> | null
   readonly imageInputAvailable: boolean
 }
 
 /**
  * dshAcp namespace 的 Remote service（构造即注册 cordis service，gateway 经
- * strict descriptor 找到实例并调用）。方法清单（前三条对应旧旁路路由，
- * rebindBlank 是 新增，model-switch 三方法见）：
+ * strict descriptor 找到实例并调用）。当前公开面：health/backendOf/boundSessions、
+ * audit/activity timeline、recoverySnapshot/retryOriginal/rebindRecoveryBlank、
+ * agentSessionSnapshot/setAgentSessionOption。
  * - `health()`                    ← GET /dsh-acp/health（provider 行 + 顶层
- *   metrics 快照；**密钥边界** 只回显 command/args/loginHint，
+ *   健康快照；**密钥边界** 只回显 command/args/loginHint，
  * env 永不在响应里——钉版见 test/integration/host/health.spec.ts；每行携带五态
  *   `state`，派生规则见 src/domain/session/agent-state.ts）
- * - `options(sessionId)` ← GET /dsh-acp/sessions/<id>/options（
- *   无活体时回 sidecar last-known 快照——freshness 'stale' / editable false）
- * - `setOption(sessionId, write)` ← POST …/options（路由不变：已广告的
- *   config option 一律走 setConfigOption——mode 类也不例外；setMode 只剩
- * legacy modes-only 降级），返回最新快照；** model 类选项拒收**（唯一
- *   写入口是 beginModelSwitch 的持久事务）
- * - `rebindBlank(sessionId)` ←：显式放弃旧 ACP 上下文、重开全新 ACP
- *   会话（reconciliation-required 的出路之一），返回复位后的选项快照
- * - `boundSessions(agentId)` ←：删除确认提示的 binding 计数（该
- *   profile 被多少个既有会话引用），纯读
- * - `beginModelSwitch(sessionId, request)` ←：模型热切换的持久事务
- *   （预检 → 落 `started` fail-closed → set_config_option → 读 actualModel →
- *   落 `agent-applied`；失败进回滚臂，回滚失败 → rollback-required 锁定）
- * - `commitModelSwitch(sessionId, request)` ←：DSH 侧接受后的收束
- *   （幂等；写 committed 后清行）
- * - `rollbackModelSwitch(sessionId, request)` ←：Agent 写回 previousModel
- *   并持久化 `agent-rolled-back`；client 证明 DSH 也回到 previous 后再 commit
- *   清行（幂等；无活体响亮拒绝并指明 resume/rebind 出路）
+ * - `recoverySnapshot(sessionId)` ←：读取 sidecar 的恢复闩锁，不解析旧 Agent
+ * - `retryOriginal(sessionId)` ←：恢复原 ACP binding，不重发中断 prompt
  *
  * 全部依赖注入（{@link AcpRemoteServiceDeps}）；测试直接 new 实例驱动方法，
  * 不再经过 HTTP req/res 假件。
@@ -628,95 +517,175 @@ export class AcpRemoteService extends TypertRemoteService {
       queryVersion: deps.queryVersion ?? (subprocess.ok
         ? (command: string) => acpQueryVersion(subprocess.seam, command)
         : () => Promise.resolve(null)),
-      metricsSnapshot: deps.metricsSnapshot ?? null,
       listLiveSessions: deps.listLiveSessions ?? null,
       backendFacts: deps.backendFacts ?? null,
       bindingFacts: deps.bindingFacts ?? null,
-      modelSwitchStore: deps.modelSwitchStore ?? null,
-      optionSnapshotStore: deps.optionSnapshotStore ?? null,
       recoveryStateStore: deps.recoveryStateStore ?? null,
-      snapshotFingerprint: deps.snapshotFingerprint ?? null,
-      pendingPermissions: deps.pendingPermissions ?? null,
-      pendingElicitations: deps.pendingElicitations ?? null,
+      recoveryAdapter: deps.recoveryAdapter ?? null,
+      agentSessionControl: deps.agentSessionControl ?? null,
       auditTimeline: deps.auditTimeline ?? null,
+      activityTimeline: deps.activityTimeline ?? null,
+      activityAccess: deps.activityAccess ?? null,
+      ownedSessionReadGate: deps.ownedSessionReadGate ?? deps.activityAccess ?? null,
+      projectedSubagentIds: deps.projectedSubagentIds ?? null,
       imageInputAvailable: deps.imageInputAvailable ?? false,
     }
   }
-
- /** 在飞切换闩锁（sessionId → 在飞操作；并发点击/重复投递的进程内第一道闸）。 */
-  private readonly modelSwitchInflight = new Map<string, { readonly operationId: string; readonly targetModel: string }>()
 
   /** Read a bounded sidecar page. Raw payloads never cross the Remote boundary. */
   @Remote
   async auditTimeline(sessionId: string, request?: { readonly afterSeq?: number; readonly limit?: number }): Promise<AcpAuditTimelinePage> {
     const source = this.resolved.auditTimeline
-    if (source === null) throw new Error('ACP audit history is unavailable on this host')
+    if (source === null) throw acpRemoteFailure('config', 'ACP audit history is unavailable on this host')
+    await this.requireOwnedSessionRead(sessionId)
     const afterSeq = request?.afterSeq ?? 0
     const limit = request?.limit ?? 50
-    if (!Number.isSafeInteger(afterSeq) || afterSeq < 0) throw new Error('ACP audit cursor is invalid')
-    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error('ACP audit page size is invalid')
+    if (!Number.isSafeInteger(afterSeq) || afterSeq < 0) throw badRequest('ACP audit cursor is invalid')
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw badRequest('ACP audit page size is invalid')
     const entries = await source.list(sessionId, afterSeq, limit)
     const lastSeq = entries.at(-1)?.seq ?? afterSeq
     const hasMore = entries.length === limit && await source.hasMore(sessionId, lastSeq)
     return { sessionId, entries, nextCursor: hasMore ? lastSeq : null, hasMore }
   }
 
-  /** List complete, session-scoped ACP permission requests awaiting a client answer. */
+  /** Opening snapshot for the activity panel. Authorization is deliberately
+   * separate from the sidecar query: a caller cannot turn an arbitrary string
+   * into access to another DSH session's Agent trace. */
   @Remote
-  pendingPermissions(sessionId: string): readonly AcpPendingPermissionView[] {
-    if (this.resolved.pendingPermissions === null) throw new Error('ACP permission interaction is unavailable on this host')
-    this.resolved.pendingPermissions.observe(sessionId)
-    return this.resolved.pendingPermissions.list(sessionId)
+  async activitySnapshot(sessionId: string, request?: { readonly limit?: number; readonly filter?: AcpActivityFilterView }): Promise<AcpActivitySnapshotView> {
+    await this.requireActivityRead(sessionId)
+    const source = this.resolved.activityTimeline
+    if (source === null) throw acpRemoteFailure('config', 'ACP activity history is unavailable on this host')
+    const limit = request?.limit ?? 100
+    validateActivityReadRequest(limit, request?.filter)
+    const activities = await source.snapshot(sessionId, limit, request?.filter)
+    const head = await source.head(sessionId, request?.filter)
+    return { sessionId, activities, head }
+  }
+
+  /** Revision-cursor page used for reconnect/gap repair. The page contains
+   * every committed revision, while the snapshot contains only current rows. */
+  @Remote
+  async activityPage(sessionId: string, request?: { readonly afterRevision?: number; readonly limit?: number; readonly filter?: AcpActivityFilterView }, signal?: AbortSignal): Promise<AcpActivityPageView> {
+    signal?.throwIfAborted()
+    await this.requireActivityRead(sessionId)
+    const source = this.resolved.activityTimeline
+    if (source === null) throw acpRemoteFailure('config', 'ACP activity history is unavailable on this host')
+    const afterRevision = request?.afterRevision ?? 0
+    const limit = request?.limit ?? 100
+    if (!Number.isSafeInteger(afterRevision) || afterRevision < 0) throw badRequest('ACP activity cursor is invalid')
+    validateActivityReadRequest(limit, request?.filter)
+    const activities = await source.page(sessionId, afterRevision, limit, request?.filter)
+    signal?.throwIfAborted()
+    const lastRevision = activities.at(-1)?.revisionSeq ?? afterRevision
+    const head = await source.head(sessionId, request?.filter)
+    return { sessionId, activities, head, nextCursor: activities.length === limit && lastRevision < head ? lastRevision : null, hasMore: activities.length === limit && lastRevision < head }
   }
 
   /**
-   * 补足 DSH running Tool 节点不透传 `tool/call.meta` 的展示缺口。只返回有界
-   * title/kind；工具结束后正式展示仍以持久化的 tool/result 信封为准。
+   * Snapshot-first live journal. The subscription is attached before the
+   * opening read, so a revision committed during the opening window is either
+   * present in the opening snapshot or remains queued for delivery. The
+   * opening cursor is the unfiltered session head; clients filter activities
+   * locally while retaining a contiguous reconnect cursor.
    */
-  @Remote
-  toolPresentation(sessionId: string, toolCallId: string): AcpToolCallPresentationView | null {
-    const snapshot = this.requireLiveAgent(sessionId).getToolCallPresentationSnapshot?.(toolCallId)
-    if (snapshot === undefined) return null
-    return {
-      ...(snapshot.title === undefined ? {} : { title: snapshot.title }),
-      ...(snapshot.kind === undefined ? {} : { kind: snapshot.kind }),
+  @Remote({ mode: 'stream' })
+  async *activityFollow(
+    sessionId: string,
+    request: { readonly limit?: number; readonly filter?: AcpActivityFilterView } | undefined,
+    signal: AbortSignal,
+  ): AsyncIterable<AcpActivityJournalFrame> {
+    await this.requireActivityRead(sessionId)
+    const source = this.resolved.activityTimeline
+    if (source === null || source.subscribe === undefined) throw acpRemoteFailure('config', 'ACP activity live stream is unavailable on this host')
+    const limit = request?.limit ?? 100
+    validateActivityReadRequest(limit, request?.filter)
+    const queue: AcpActivityView[] = []
+    let wake: (() => void) | undefined
+    let openingHead = 0
+    let closed = false
+    const seen = new Set<number>()
+    const unsubscribe = source.subscribe(sessionId, undefined, activity => {
+      if (closed) return
+      queue.push(activity)
+      wake?.()
+      wake = undefined
+    })
+    try {
+      // Subscribe first, then rebuild the complete current-state projection
+      // from bounded revision pages up to one fixed head.  A bounded snapshot
+      // cannot safely advance to the full head: when a session owns more rows
+      // than the opening limit, doing so permanently skips every undisclosed
+      // revision.  Folding revision pages keeps transport bounded without
+      // making the user-visible journal lossy.
+      openingHead = await source.head(sessionId, undefined)
+      const current = new Map<string, AcpActivityView>()
+      let cursor = 0
+      while (cursor < openingHead) {
+        const before = cursor
+        const page = await source.page(sessionId, cursor, limit, undefined)
+        if (page.length === 0) break
+        for (const activity of page) {
+          if (activity.revisionSeq > openingHead) break
+          current.set(activity.activityId, activity)
+          seen.add(activity.revisionSeq)
+          cursor = Math.max(cursor, activity.revisionSeq)
+        }
+        // A racing writer may make a backend page contain only revisions above
+        // the fixed opening head. No row was consumed in that case; stop the
+        // opening fold and let the already-subscribed queue deliver them.
+        if (cursor === before) break
+      }
+      const activities = [...current.values()].sort((left, right) => left.activitySeq - right.activitySeq)
+      yield { type: 'opened', cursor: openingHead, activities, head: openingHead }
+      while (!signal.aborted) {
+        while (queue.length > 0) {
+          const activity = queue.shift()!
+          if (activity.revisionSeq <= openingHead || seen.has(activity.revisionSeq)) continue
+          seen.add(activity.revisionSeq)
+          yield { type: 'entry', activity }
+        }
+        if (signal.aborted) break
+        await new Promise<void>((resolve) => {
+          wake = resolve
+          if (signal.aborted) { wake = undefined; resolve() }
+          else signal.addEventListener('abort', () => { wake = undefined; resolve() }, { once: true })
+        })
+      }
+    } finally {
+      closed = true
+      unsubscribe()
+      wake?.()
     }
   }
 
-  /** Return the exact Agent-provided optionId; no once/always compression occurs. */
-  @Remote
-  answerPermission(sessionId: string, request: AcpPermissionAnswerRequest): null {
-    if (this.resolved.pendingPermissions === null) throw new Error('ACP permission interaction is unavailable on this host')
-    this.resolved.pendingPermissions.answer(sessionId, request.requestId, request.optionId)
-    return null
+  private async requireActivityRead(sessionId: string): Promise<void> {
+    await this.requireOwnedSessionRead(sessionId)
   }
 
-  /** Explicitly cancel one pending ACP permission request. */
-  @Remote
-  cancelPermission(sessionId: string, request: { readonly requestId: string }): null {
-    if (this.resolved.pendingPermissions === null) throw new Error('ACP permission interaction is unavailable on this host')
-    this.resolved.pendingPermissions.cancel(sessionId, request.requestId)
-    return null
+  /** Validate identity and ownership before touching either sidecar source. */
+  private async requireOwnedSessionRead(sessionId: string): Promise<void> {
+    if (typeof sessionId !== 'string' || sessionId.length === 0 || sessionId.length > 256) throw badRequest('ACP activity session id is invalid')
+    const access = this.resolved.ownedSessionReadGate
+    if (access === null || !(await access(sessionId))) throw acpRemoteFailure('user-rejected', 'ACP activity access is not authorized for this DSH session')
   }
 
-  @Remote
-  pendingElicitations(sessionId: string): readonly AcpPendingElicitationView[] {
-    if (this.resolved.pendingElicitations === null) throw new Error('ACP elicitation interaction is unavailable on this host')
-    return this.resolved.pendingElicitations.list(sessionId).map((item) => item as unknown as AcpPendingElicitationView)
+  /** Exact ownership proof consumed by additive client observers. Historical
+   * routes remain owned after profile removal so old Activity still renders;
+   * an unrelated plugin merely using the `acp-` prefix is never claimed. */
+  @Remote('ownedProviderRoutes')
+  async ownedProviderRoutes(): Promise<AcpOwnedRoutesView> {
+    const configured = [...this.resolved.registry.agents().keys()]
+      .map(key => key.startsWith('acp-') ? key : acpRouteId(key))
+    const durable = this.resolved.bindingFacts?.listBoundProviders === undefined
+      ? []
+      : await this.resolved.bindingFacts.listBoundProviders()
+    return { providers: [...new Set([...configured, ...durable])].sort() }
   }
 
-  @Remote
-  answerElicitation(sessionId: string, request: AcpElicitationAnswerRequest): null {
-    if (this.resolved.pendingElicitations === null) throw new Error('ACP elicitation interaction is unavailable on this host')
-    this.resolved.pendingElicitations.answer(sessionId, request as AcpElicitationAnswer)
-    return null
-  }
-
-  @Remote
-  cancelElicitation(sessionId: string, request: { readonly requestId: string }): null {
-    if (this.resolved.pendingElicitations === null) throw new Error('ACP elicitation interaction is unavailable on this host')
-    this.resolved.pendingElicitations.cancel(sessionId, request.requestId)
-    return null
+  @Remote('projectedSubagentIds')
+  async projectedSubagentIds(): Promise<AcpProjectedSubagentsView> {
+    return { sessionIds: this.resolved.projectedSubagentIds === null ? [] : await this.resolved.projectedSubagentIds() }
   }
 
   /**
@@ -734,12 +703,12 @@ export class AcpRemoteService extends TypertRemoteService {
     const recheck = request?.recheck === true
     const targetAgentId = request?.agentId
     if (targetAgentId !== undefined) {
-      if (!recheck) throw new Error('dsh-acp: health agentId requires recheck=true')
+      if (!recheck) throw badRequest('dsh-acp: health agentId requires recheck=true')
       if (!ACP_AGENT_ID_PATTERN.test(targetAgentId)) {
-        throw new Error(`dsh-acp: invalid health agent id ${JSON.stringify(targetAgentId)}`)
+        throw badRequest(`dsh-acp: invalid health agent id ${JSON.stringify(targetAgentId)}`)
       }
       if (!allEntries.some(([id]) => id === targetAgentId)) {
-        throw new Error(`dsh-acp: unknown ACP agent ${JSON.stringify(targetAgentId)}`)
+        throw badRequest(`dsh-acp: unknown ACP agent ${JSON.stringify(targetAgentId)}`)
       }
     }
     const entries = targetAgentId === undefined
@@ -747,22 +716,41 @@ export class AcpRemoteService extends TypertRemoteService {
       : allEntries.filter(([id]) => id === targetAgentId)
     const providers: AcpProviderHealth[] = await Promise.all(
       entries.map(async ([id, config]) => {
+        // The model picker and Settings health must address the same
+        // registered profile adapter. A detached top-level stub would create
+        // a second cache and can report a different readiness result.
+        const probeCache = this.resolved.registry.probeCacheFor(id)
+        if (probeCache === undefined) {
+          return {
+            id, name: config.name, command: config.command, args: [...config.args], loginHint: config.loginHint ?? null,
+            executable: false, version: null,
+            probe: { status: 'never', at: null },
+            state: deriveAcpAgentState({ hostCompatible, configValid: true, probe: undefined }),
+          }
+        }
         if (recheck && (targetAgentId === undefined || targetAgentId === id)) {
  // 「重新检查」强制丢弃 probe cache 并重探（条文的接线路径）；重探
           // 失败不抛出——失败条目落缓存，下方照常按新鲜度产出 unavailable 行。
           const routeId = acpRouteId(id)
-          this.resolved.registry.probeCache.invalidateProbe(routeId)
-          await this.resolved.registry.probeCache.listModels(routeId).catch(() => undefined)
+          probeCache.invalidateProbe(routeId)
+          await probeCache.listModels(routeId).catch(() => undefined)
         }
+        const snapshot = probeCache.probeSnapshot(acpRouteId(id))
+        // Health is a last-explicit-check view, not the model catalogue's
+        // runtime cache. Keep a result while it still belongs to the exact
+        // saved configuration; configuration edits invalidate it by key.
+        const matchingSnapshot = snapshot?.key === acpProbeConfigKey(config) ? snapshot : undefined
+        // Opening Settings is a read-only cache view: resolving PATH is
+        // side-effect free, while `--version` is a subprocess and therefore
+        // belongs exclusively to an explicit recheck. Never make a panel
+        // mount spawn an ACP process (or a version helper).
         const executable = await this.resolved.checkExecutable(config.command)
-        // 命令不存在时跳过 --version（必败），version 归 null
-        const version = executable ? await this.resolved.queryVersion(config.command) : null
-        const snapshot = this.resolved.registry.probeCache.probeSnapshot(acpRouteId(id))
- // 新鲜度集中判定（agent-config.ts acpProbeFresh）：key 相等且未过
-        // TTL（ok 10min / error 30s）才算新鲜；不新鲜/缺席按「从未探测」计入
-        // state（probe 行仍如实展示上次探测事实）。
-        const fresh = snapshot !== undefined && acpProbeFresh(snapshot, acpProbeConfigKey(config), Date.now()) ? snapshot : undefined
-        // readiness 派生：probe 握手事实与配置状态共同决定 readiness
+        const cachedAgentVersion = matchingSnapshot?.result.kind === 'ok' && matchingSnapshot.result.agentInfo?.version !== undefined
+          ? matchingSnapshot.result.agentInfo.version
+          : null
+        const version = recheck && executable ? await this.resolved.queryVersion(config.command) : cachedAgentVersion
+        // Readiness is the last explicit outcome for this exact configuration.
+        // Runtime consumers independently re-probe after their bounded TTL.
         // 版本字段（versionPolicy/兼容状态）共用同一绑定事实。
         const descriptor = descriptorOf(id, config)
         return {
@@ -773,12 +761,12 @@ export class AcpRemoteService extends TypertRemoteService {
           loginHint: config.loginHint ?? null,
           executable,
           version,
-          probe: probeRow(snapshot, descriptor, this.resolved.imageInputAvailable),
+          probe: probeRow(matchingSnapshot, descriptor, this.resolved.imageInputAvailable),
           // registry 的 agents map 经 settings schema 校验（非法值根本写不进来），configValid 恒 true
           state: deriveAcpAgentState({
             hostCompatible,
             configValid: true,
-            probe: fresh === undefined ? undefined : probeStateView(fresh),
+            probe: matchingSnapshot === undefined ? undefined : probeStateView(matchingSnapshot),
           }),
         }
       }),
@@ -788,378 +776,34 @@ export class AcpRemoteService extends TypertRemoteService {
       : this.resolved.listLiveSessions().map((entry) => ({ sessionId: entry.sessionId, continuity: entry.continuity }))
     return {
       providers,
-      metrics: this.resolved.metricsSnapshot === null ? null : this.resolved.metricsSnapshot(),
       liveSessions,
     }
   }
 
-  /**
-   * 活体会话的 configOptions/currentModeId 快照（收窄后）；capabilities 是
- * null 词表必填键。：无活体 Agent 但 sidecar 存有界 last-known 快照时返回
-   * stale 副本（freshness 'stale'、editable false、全部控件只读）；无活体且无
-   * 快照维持旧抛错行为。
-   */
-  @Remote('options')
-  async liveOptions(sessionId: string): Promise<AcpLiveOptionsSnapshot> {
-    const agent = this.resolved.resolveLiveAgent(sessionId)
-    if (agent !== undefined) {
-      if (agent.continuityState.status === 'ok') await agent.prepare()
-      return this.liveSnapshot(sessionId, agent)
-    }
-    return this.staleSnapshot(sessionId)
+  /** Additive Agent-owned controls/context surface. It intentionally does not
+   * reuse the legacy live Agent/options service, model picker, or DSH usage. */
+  @Remote
+  async agentSessionSnapshot(sessionId: string): Promise<AcpAgentSessionSnapshotView> {
+    const adapter = await this.agentSessionControlFor(sessionId)
+    return await preserveAcpFailure(() => adapter.agentSessionSnapshot(sessionId))
   }
 
-  /**
-   * 写一个活体选项并返回最新快照。校验失败/忙/无活体一律 throw（message 与
-   * HTTP 时代逐字一致；gateway 折叠成 RemoteResult 错误分支，client 只消费
-   * message）。
-   *
- * model 类选项（category 'model' 或约定 id 'model'）一律拒收——模型
-   * 热切换的唯一写入口是 beginModelSwitch 的持久事务（setOption 旧 model 分支
-   * 已删除）；stale 快照（无活体）天然在本方法之外（requireLiveAgent 先抛）。
-   */
-  @Remote('setOption')
-  async setOption(sessionId: string, request: AcpOptionWrite): Promise<AcpLiveOptionsSnapshot> {
-    const agent = this.requireLiveAgent(sessionId)
-    const { configId, value } = request
-    if (agent.status !== 'idle') {
-      throw new Error(`agent for session "${sessionId}" is running a turn; retry when idle`)
-    }
-    const option = agent.configOptions?.find((candidate) => candidate.id === configId)
-    if (configId === 'model' || option?.category === 'model') {
-      throw new Error(
-        `config option "${configId}" is a model-class option; switch models via the model picker ` +
-        '(beginModelSwitch) so the change is journaled and rollback-safe — direct setOption writes are refused',
-      )
-    }
-    if (option === undefined) {
- // legacy 降级：agent 未镜像 mode 类 config option 但 legacy modes 状态已知
-      // ⇒ 唯一走 session/set_mode 的路径（set_mode 词汇是 string mode id）。
-      if (configId === ACP_MODE_OPTION_ID && agent.currentModeId !== undefined) {
-        if (typeof value !== 'string') {
-          throw new Error(`legacy session/set_mode takes a string mode id; got ${JSON.stringify(value)}`)
-        }
-        await agent.setMode(value)
-        return this.liveSnapshot(sessionId, agent)
-      }
-      throw new Error(`session "${sessionId}" exposes no config option "${configId}"`)
-    }
- // 类型保真校验：select 收 string 值 id 且须在可选值内；boolean 收原生
-    // boolean（不收 'true'/'false' 字符串）；未知 type 拒绝写入（协议：忽略该项，
-    // agent 默认值在位）。
-    if (option.type === 'select' && (typeof value !== 'string' || !selectValues(option).has(value))) {
-      throw new Error(`${JSON.stringify(value)} is not a selectable value of config option "${configId}"`)
-    }
-    if (option.type === 'boolean' && typeof value !== 'boolean') {
-      throw new Error(`config option "${configId}" is boolean; the value must be a JSON boolean, got ${JSON.stringify(value)}`)
-    }
-    const optionType: string = option.type
-    if (optionType !== 'select' && optionType !== 'boolean') {
-      throw new Error(`config option "${configId}" has unsupported type "${optionType}"; only select/boolean writes are defined`)
-    }
- // 路由：所有已广告的 config option 一律走 set_config_option——mode 类
-    // 也不例外（config options 已取代 session/set_mode；set_mode 只剩上面的
-    // legacy 降级）。快照整体替换由 seam 以响应为准完成。
-    //
-    // seam 竞态错误原样传播（message 保留）：预检后 turn 才开始
-    // （"only allowed while idle"）/ 会话尚未懒启动（"not started yet"）。
-    await agent.setConfigOption(configId, value)
-    return this.liveSnapshot(sessionId, agent)
+  @Remote
+  async setAgentSessionOption(sessionId: string, request: AcpAgentSessionOptionWrite): Promise<AcpAgentSessionSnapshotView> {
+    const adapter = await this.agentSessionControlFor(sessionId)
+    return await preserveAcpFailure(() => adapter.setAgentSessionOption(sessionId, request))
   }
 
-  /**
- * rebindBlank：显式放弃该会话的旧 ACP 上下文并重开全新 ACP 会话
-   * （下一个 turn 以 session/new 建立新代际；DSH 侧历史完整保留）。仅 idle
-   * 可调；错误（忙/settling/拆除失败）原样 throw。返回复位后的最新快照
-   * （continuity 应已归 ok）。
-   */
-  @Remote('rebindBlank')
-  async rebindBlank(sessionId: string): Promise<AcpLiveOptionsSnapshot> {
-    const agent = this.requireLiveAgent(sessionId)
-    await agent.rebindBlank()
-    return this.liveSnapshot(sessionId, agent)
-  }
-
-  /** Reconnect the original ACP session. This action only initialize/load/reconciles;
-   * it never creates a session or sends a prompt. */
-  @Remote('reconnectOriginal')
-  async reconnectOriginal(sessionId: string): Promise<AcpLiveOptionsSnapshot> {
-    const agent = this.requireLiveAgent(sessionId)
-    if (agent.reconnectOriginal === undefined) throw new Error(`live ACP agent for session "${sessionId}" does not support reconnectOriginal`)
-    await agent.reconnectOriginal()
-    return this.liveSnapshot(sessionId, agent)
-  }
-
-  /** Record a recovery-surface decision without changing the recovery gate. */
-  @Remote('recordRecoveryAction')
-  async recordRecoveryAction(sessionId: string, action: 'retry-original' | 'rebind-blank' | 'new-session'): Promise<AcpLiveOptionsSnapshot> {
-    if (action !== 'retry-original' && action !== 'rebind-blank' && action !== 'new-session') {
-      throw new Error(`unknown recovery action ${JSON.stringify(action)}`)
-    }
-    const agent = this.requireLiveAgent(sessionId)
-    if (agent.recordRecoveryAction === undefined) throw new Error(`live ACP agent for session "${sessionId}" does not support recovery action recording`)
-    await agent.recordRecoveryAction(action)
-    return this.liveSnapshot(sessionId, agent)
-  }
-
-  /**
- * beginModelSwitch（ModelSwitchCoordinator 的 host 侧）：同 profile 模型
-   * 热切换的唯一写入口。流程（失败语义先行）：
-   * 1. 预检——活体 + idle + model 类 select option 在场且 target 在 allowed
-   *    values 内；previous === target → 无操作直接返回（不落事务行）；
-   * 2. 持久化 `started`（**fail-closed** 行落不下即拒发，绝不先写 Agent）；
-   * 3. ACP `set_config_option`；任一失败进回滚臂：尽力写回 previousModel +
-   *    清行后原样抛出；**回滚也失败 → 持久化 `rollback-required`（composer
-   *    锁定，用户选择出路）**；
-   * 4. 成功 → 从响应替换后的权威快照读 **actualModel**（Agent 可能归一化/改写
-   *    目标值；DSH 侧 selectModel 必须用本值）→ 持久化 `agent-applied`（写失败
-   *    同样进回滚臂）→ 返回 {actualModel, snapshot}。
-   *
-   * 幂等/并发纪律：operationId 由 client 生成（uuid）；重复投递同 operationId
-   * 按行状态收敛（agent-applied/committed → 直接返回 ok；started → 读 Agent
-   * 当前值判定已应用/未应用）；不同 operationId 的在飞或待定行 → 冲突拒绝。
-   */
-  @Remote('beginModelSwitch')
-  async beginModelSwitch(sessionId: string, request: AcpModelSwitchBeginRequest): Promise<AcpModelSwitchBeginResult> {
-    if (typeof request.operationId !== 'string' || request.operationId === '') {
-      throw new Error('beginModelSwitch requires a non-empty operationId (client-generated uuid)')
-    }
-    if (typeof request.targetModel !== 'string' || request.targetModel === '') {
-      throw new Error('beginModelSwitch requires a non-empty targetModel')
-    }
-    const agent = this.requireLiveAgent(sessionId)
-    const store = this.requireModelSwitchStore()
-    const inflight = this.modelSwitchInflight.get(sessionId)
-    if (inflight !== undefined && inflight.operationId !== request.operationId) {
-      throw new Error(
-        `session "${sessionId}" already has a model switch in flight (operation ${inflight.operationId} → ` +
-        `${JSON.stringify(inflight.targetModel)}); concurrent switches are rejected`,
-      )
-    }
-    const existing = await store.read(sessionId)
-    if (existing !== undefined) {
-      if (existing.status === 'corrupt') {
-        throw new Error(
-          `session "${sessionId}" has a corrupt pending model switch record; consistency cannot be proven — ` +
-          'resume the session (send a message) to reconcile, or rebind to a fresh ACP session',
-        )
-      }
-      const record = existing.record
-      if (record.operationId !== request.operationId) {
-        throw new Error(
-          `session "${sessionId}" has a pending model switch (operation ${record.operationId}, state ${record.state}); ` +
-          'resolve or roll it back before starting another switch',
-        )
-      }
-      // 重复投递：按持久行状态收敛
-      if (record.state === 'rollback-required' || record.state === 'agent-rolled-back') {
-        throw new Error(
-          `session "${sessionId}" model switch ${record.operationId} is ${record.state}; ` +
-          'finish or resolve that transaction before retrying the switch',
-        )
-      }
-      if (record.state === 'agent-applied' || record.state === 'committed') {
-        const actualModel = record.appliedModel ?? record.targetModel
-        const live = this.currentLiveModel(agent)
-        if (live !== actualModel) {
-          throw new Error(
-            `session "${sessionId}" model switch ${record.operationId} is ${record.state}, but the agent reports ` +
-            `${JSON.stringify(live)} instead of the journaled applied model ${JSON.stringify(actualModel)}; ` +
-            'the pending record is kept for reconciliation',
-          )
-        }
-        return { actualModel, snapshot: await this.liveSnapshot(sessionId, agent) }
-      }
-      // state 'started'：Agent 是否已应用未知——以活体当前值自证
-      const live = this.currentLiveModel(agent)
-      if (live === record.targetModel) {
-        await store.write({ ...record, appliedModel: live, state: 'agent-applied' })
-        return { actualModel: record.targetModel, snapshot: await this.liveSnapshot(sessionId, agent) }
-      }
-      if (live === record.previousModel) {
-        // 明确读到 previous 才能证明 Agent 没有应用；此时清行后按拒绝抛出。
-        // 清理失败不能被描述成“已清理”：让持久层错误响亮返回并保留行。
-        await store.clear(sessionId)
-        throw new Error(
-          `model switch ${record.operationId} was persisted but never applied by the agent; ` +
-          'the pending record is cleared — retry the switch',
-        )
-      }
-      if (live === undefined) {
-        // Missing telemetry is not evidence of non-application. Preserve the
-        // started row and fail closed so a later resume can reconcile it.
-        throw new Error(
-          `session "${sessionId}" model switch ${record.operationId} is undecidable (the agent model could not be read); ` +
-          'the pending record is kept — resume the session to reconcile, or rebind',
-        )
-      }
-      throw new Error(
-        `session "${sessionId}" model switch ${record.operationId} is undecidable (agent reports ` +
-        `${JSON.stringify(live)}, neither previous nor target); the pending record is kept — ` +
-        'resume the session to reconcile, or rebind',
-      )
-    }
-    // ---- 新切换：预检 ----
-    if (agent.status !== 'idle') {
-      throw new Error(`agent for session "${sessionId}" is running a turn; retry when idle`)
-    }
-    const option = modelOptionOf(agent.configOptions)
-    if (option === undefined) {
-      throw new Error(`session "${sessionId}" exposes no model-class config option; hot model switching is not available`)
-    }
-    if (!selectValues(option).has(request.targetModel)) {
-      throw new Error(`${JSON.stringify(request.targetModel)} is not a selectable value of the model option "${option.id}"`)
-    }
-    const previousModel = option.currentValue
-    if (previousModel === request.targetModel) {
-      // 无操作：不落事务行，直接返回现状
-      return { actualModel: previousModel, snapshot: await this.liveSnapshot(sessionId, agent) }
-    }
-    const record: AcpPendingModelSwitchLike = {
-      operationId: request.operationId,
-      dshSessionId: sessionId,
-      provider: agent.providerRoute,
-      optionId: option.id,
-      previousModel,
-      targetModel: request.targetModel,
-      state: 'started',
-      createdAt: new Date().toISOString(),
-    }
-    // fail-closed：事务行落不下即拒发（绝不先写 Agent 再补账）
-    await store.write(record)
-    this.modelSwitchInflight.set(sessionId, { operationId: record.operationId, targetModel: record.targetModel })
-    try {
-      await agent.setConfigOption(option.id, request.targetModel)
-      // 读 Agent 响应替换后的权威快照里的实际模型值
-      const actualModel = this.currentLiveModel(agent)
-      if (actualModel === undefined) {
-        throw new Error('the agent response did not carry a readable model option after the switch')
-      }
-      // agent-applied 落账失败同样进回滚臂（事务完整性优先于切换成功）
-      await store.write({ ...record, appliedModel: actualModel, state: 'agent-applied' })
-      // 先释闩再组快照：返回值如实携带 pending(agent-applied) 视图而非瞬态 busy
-      this.modelSwitchInflight.delete(sessionId)
-      return { actualModel, snapshot: await this.liveSnapshot(sessionId, agent) }
-    } catch (error: unknown) {
-      // 回滚臂：尽力把 Agent 写回 previousModel
-      let rolledBack = false
-      try {
-        await agent.setConfigOption(option.id, previousModel)
-        rolledBack = true
-      } catch {
-        rolledBack = false
-      }
-      if (rolledBack) {
-        // Agent 已回到 previous，但 journal 清理仍是必要的 durable 边界。
-        // 失败时让存储错误响亮返回；保留的 started 行会继续阻断并可恢复。
-        await store.clear(sessionId)
-        throw error
-      }
-      // 回滚也失败：双侧一致性无法自证 → rollback-required（composer 锁定）
-      await store.write({ ...record, state: 'rollback-required' }).catch(() => undefined)
-      const message = error instanceof Error ? error.message : String(error)
-      throw new Error(
-        `model switch to ${JSON.stringify(request.targetModel)} failed (${message}) and the rollback to ` +
-        `${JSON.stringify(previousModel)} also failed; the session is locked (rollback-required) — ` +
-        'roll back explicitly from the model picker or rebind to a fresh ACP session',
-      )
-    } finally {
-      const held = this.modelSwitchInflight.get(sessionId)
-      if (held?.operationId === record.operationId) this.modelSwitchInflight.delete(sessionId)
-    }
-  }
-
-  /**
- * commitModelSwitch：DSH 侧 selectModel 已接受 actualModel 后的收束步。
-   * 幂等：无行（响应丢失但清行已发生）→ 直接返回快照；operationId 不匹配 /
-   * rollback-required → throw。写 `committed` 后清行（同一连贯窗口；崩溃留下的
-   * committed 行由恢复路径按「已收敛」清理）。
-   */
-  @Remote('commitModelSwitch')
-  async commitModelSwitch(sessionId: string, request: AcpModelSwitchResolveRequest): Promise<AcpLiveOptionsSnapshot> {
-    const agent = this.requireLiveAgent(sessionId)
-    const store = this.requireModelSwitchStore()
-    const existing = await store.read(sessionId)
-    if (existing === undefined) return this.liveSnapshot(sessionId, agent)
-    if (existing.status === 'corrupt') {
-      throw new Error(`session "${sessionId}" has a corrupt pending model switch record; reconciliation is required`)
-    }
-    const record = existing.record
-    if (record.operationId !== request.operationId) {
-      throw new Error(
-        `session "${sessionId}" pending model switch is operation ${record.operationId}, not ${request.operationId}`,
-      )
-    }
-    if (record.state === 'rollback-required') {
-      throw new Error(
-        `session "${sessionId}" model switch ${record.operationId} is rollback-required; commit is refused — ` +
-        'roll back or rebind',
-      )
-    }
-    const current = this.currentLiveModel(agent)
-    const expected = record.state === 'agent-rolled-back'
-      ? record.previousModel
-      : record.appliedModel ?? record.targetModel
-    if (current !== expected && !(record.state === 'started' && current === record.previousModel)) {
-      throw new Error(
-        `model switch ${record.operationId} cannot be finalized: the agent reports ${JSON.stringify(current)}, ` +
-        `expected ${JSON.stringify(expected)}`,
-      )
-    }
-    await store.write({ ...record, state: 'committed' })
-    await store.clear(sessionId)
-    return this.liveSnapshot(sessionId, agent)
-  }
-
-  /**
- * rollbackModelSwitch：把 Agent 侧写回 previousModel，并把事务推进到
-   * agent-rolled-back。此时绝不清行：client 还必须证明 DSH 侧也已回到 previous，
-   * 再调用 commitModelSwitch finalize。幂等：无行 → 直接返回快照。
-   * 无活体（冷启动）响亮拒绝并指明出路（resume 或 rebind）；回滚写失败 →
-   * 持久化 rollback-required 后抛出（composer 锁定）。
-   */
-  @Remote('rollbackModelSwitch')
-  async rollbackModelSwitch(sessionId: string, request: AcpModelSwitchResolveRequest): Promise<AcpLiveOptionsSnapshot> {
-    const agent = this.resolved.resolveLiveAgent(sessionId)
-    if (agent === undefined) {
-      throw new Error(
-        `no live ACP agent for session "${sessionId}"; resume the session (send a message) so the rollback ` +
-        'can be applied to the agent, or rebind to a fresh ACP session',
-      )
-    }
-    const store = this.requireModelSwitchStore()
-    const existing = await store.read(sessionId)
-    if (existing === undefined) return this.liveSnapshot(sessionId, agent)
-    if (existing.status === 'corrupt') {
-      throw new Error(`session "${sessionId}" has a corrupt pending model switch record; reconciliation is required`)
-    }
-    const record = existing.record
-    if (record.operationId !== request.operationId) {
-      throw new Error(
-        `session "${sessionId}" pending model switch is operation ${record.operationId}, not ${request.operationId}`,
-      )
-    }
-    if (agent.status !== 'idle') {
-      throw new Error(`agent for session "${sessionId}" is running a turn; retry the rollback when idle`)
-    }
-    if (record.state !== 'agent-rolled-back') {
-      try {
-        await agent.setConfigOption(record.optionId, record.previousModel)
-      } catch (error: unknown) {
-        await store.write({ ...record, state: 'rollback-required' }).catch(() => undefined)
-        throw error
-      }
-    }
-    const current = this.currentLiveModel(agent)
-    if (current !== record.previousModel) {
-      await store.write({ ...record, state: 'rollback-required' }).catch(() => undefined)
-      throw new Error(
-        `agent rollback for model switch ${record.operationId} was not confirmed: expected ` +
-        `${JSON.stringify(record.previousModel)}, got ${JSON.stringify(current)}`,
-      )
-    }
-    await store.write({ ...record, state: 'agent-rolled-back' })
-    return this.liveSnapshot(sessionId, agent)
+  private async agentSessionControlFor(sessionId: string): Promise<AcpAgentSessionControlLike> {
+    const provider = this.resolved.backendFacts === null
+      ? undefined
+      : await this.resolved.backendFacts.readBindingProvider(sessionId)
+    if (provider === undefined) throw acpRemoteFailure('resume-conflict', 'No established ACP Agent session is available')
+    const resolver = this.resolved.agentSessionControl
+    if (resolver === null) throw acpRemoteFailure('config', 'ACP Agent session controls are unavailable on this host')
+    const adapter = resolver(provider)
+    if (adapter === undefined) throw acpRemoteFailure('resume-conflict', 'No plugin-owned ACP Agent session is available')
+    return adapter
   }
 
   /**
@@ -1171,21 +815,60 @@ export class AcpRemoteService extends TypertRemoteService {
    * 会话不存在/日志不可读且无任何在场证据 → 响亮报错（protocol-error）：调用方
    * 手里应都是真实 session，冒充 blank 会让 picker 放行一个不可判定的会话。
    */
+  /** Read the durable recovery state without resolving a legacy live Agent. */
+  @Remote('recoverySnapshot')
+  async recoverySnapshot(sessionId: string): Promise<AcpRecoveryView> {
+    const persisted = this.resolved.recoveryStateStore === null
+      ? undefined
+      : await this.resolved.recoveryStateStore.read(sessionId)
+    if (persisted !== undefined) return persisted
+    const live = this.resolved.resolveLiveAgent(sessionId)
+    return live === undefined ? healthyRecoveryView(sessionId) : recoveryViewOf(live.recoveryState, sessionId)
+  }
+
+  private async recoveryAdapterFor(sessionId: string): Promise<AcpRecoveryAdapterLike> {
+    const provider = this.resolved.backendFacts === null
+      ? undefined
+      : await this.resolved.backendFacts.readBindingProvider(sessionId)
+    if (provider === undefined) throw acpRemoteFailure('resume-conflict', `ACP recovery binding is unavailable for session "${sessionId}"`)
+    const adapter = this.resolved.recoveryAdapter?.(provider)
+    if (adapter === undefined) throw acpRemoteFailure('config', `ACP recovery profile is unavailable for provider "${provider}"`)
+    return adapter
+  }
+
+  /** Retry the original durable Agent binding; never resends the interrupted prompt. */
+  @Remote('retryOriginal')
+  async retryOriginal(sessionId: string): Promise<AcpRecoveryView> {
+    const adapter = await this.recoveryAdapterFor(sessionId)
+    await preserveAcpFailure(() => adapter.retryOriginal(sessionId))
+    return await this.recoverySnapshot(sessionId)
+  }
+
+  /** Provider-composition blank rebind. Unlike the legacy rebindBlank method,
+   * this returns the recovery state directly and never depends on an option
+   * snapshot being present. */
+  @Remote('rebindRecoveryBlank')
+  async rebindRecoveryBlank(sessionId: string): Promise<AcpRecoveryView> {
+    const adapter = await this.recoveryAdapterFor(sessionId)
+    await preserveAcpFailure(() => adapter.rebindBlank(sessionId))
+    return await this.recoverySnapshot(sessionId)
+  }
+
   @Remote('backendOf')
   async backendOf(sessionId: string): Promise<AcpBackendState> {
     const facts = this.resolved.backendFacts
     if (facts === null) {
-      throw new AcpClientError(
+      throw acpRemoteError(new AcpClientError(
         'protocol-error',
         `dsh-acp: backend facts are not wired on this host; cannot determine the backend of session "${sessionId}"`,
         { category: 'config' },
-      )
+      ))
     }
     const bound = await facts.readBindingProvider(sessionId)
     if (bound !== undefined) return { state: 'established', provider: bound }
     // A newly-created session whose default model is ACP already owns an ACP
     // wrapper. Before session/new it has no durable binding yet, but its
-    // execution-backend identity is not blank: rc.2 cannot replace that live
+    // execution-backend identity is not blank: Alpha cannot replace that live
     // wrapper in place. Report it as a provider-qualified draft so the client
     // can converge Native Agent Access and route model choices without asking
     // the user to select the same Agent a second time.
@@ -1209,11 +892,11 @@ export class AcpRemoteService extends TypertRemoteService {
       // 无日志可读时活体（任意 backend，含尚未落 header 的新 native 会话）仍是
       // 存在性证据：无 header 即 blank。
       if (facts.hasLiveAgent(sessionId)) return { state: 'blank' }
-      throw new AcpClientError(
+      throw acpRemoteError(new AcpClientError(
         'protocol-error',
         `dsh-acp: cannot determine the execution backend of session "${sessionId}": the session does not exist or its log is unreadable (${error instanceof Error ? error.message : String(error)})`,
         { category: 'config' },
-      )
+      ))
     }
   }
 
@@ -1226,139 +909,35 @@ export class AcpRemoteService extends TypertRemoteService {
   @Remote('boundSessions')
   async boundSessions(agentId: string): Promise<AcpBoundSessionsView> {
     if (!ACP_AGENT_ID_PATTERN.test(agentId)) {
-      throw new AcpClientError(
+      throw acpRemoteError(new AcpClientError(
         'protocol-error',
         `dsh-acp: invalid agent id ${JSON.stringify(agentId)} (must match ${String(ACP_AGENT_ID_PATTERN)})`,
         { category: 'config' },
-      )
+      ))
     }
     const facts = this.resolved.bindingFacts
     if (facts === null) {
-      throw new AcpClientError(
+      throw acpRemoteError(new AcpClientError(
         'protocol-error',
         `dsh-acp: binding facts are not wired on this host; cannot count sessions bound to "${agentId}"`,
         { category: 'config' },
-      )
+      ))
     }
     return { agentId, count: await facts.countBoundSessions(acpRouteId(agentId)) }
   }
 
-  private requireLiveAgent(sessionId: string): AcpLiveAgentFace {
-    const agent = this.resolved.resolveLiveAgent(sessionId)
-    if (agent === undefined) {
-      throw new Error(`no live ACP agent for session "${sessionId}" (not an ACP session, or already disposed)`)
-    }
-    return agent
-  }
-
-  private requireModelSwitchStore(): NonNullable<AcpRemoteServiceDeps['modelSwitchStore']> {
-    const store = this.resolved.modelSwitchStore
-    if (store === null) {
-      throw new AcpClientError(
-        'protocol-error',
-        'dsh-acp: the pending model switch store is not wired on this host; hot model switching is refused (fail-closed)',
-        { category: 'config' },
-      )
-    }
-    return store
-  }
-
-  /**
- * 待定模型切换的 wire 视图：在飞闩锁（busy，瞬态）优先，其次持久行
-   * （pending/rollback-required/corrupt），无行归 idle。
-   */
-  private async modelSwitchViewOf(sessionId: string): Promise<AcpModelSwitchView> {
-    const inflight = this.modelSwitchInflight.get(sessionId)
-    if (inflight !== undefined) {
-      return { status: 'busy', operationId: inflight.operationId, targetModel: inflight.targetModel }
-    }
-    const store = this.resolved.modelSwitchStore
-    if (store === null) return { status: 'idle' }
-    const lookup = await store.read(sessionId)
-    if (lookup === undefined) return { status: 'idle' }
-    if (lookup.status === 'corrupt') return { status: 'corrupt' }
-    const record = lookup.record
-    if (record.state === 'rollback-required') {
-      return {
-        status: 'rollback-required',
-        operationId: record.operationId,
-        provider: record.provider,
-        previousModel: record.previousModel,
-        targetModel: record.targetModel,
-      }
-    }
-    return {
-      status: 'pending',
-      operationId: record.operationId,
-      state: record.state,
-      provider: record.provider,
-      optionId: record.optionId,
-      previousModel: record.previousModel,
-      targetModel: record.targetModel,
-      ...(record.appliedModel === undefined ? {} : { appliedModel: record.appliedModel }),
-      createdAt: record.createdAt,
-    }
-  }
-
-  /** 活体权威快照里的当前模型值（category 'model' 优先、约定 id 兜底；不可读归 undefined）。 */
-  private currentLiveModel(agent: AcpLiveAgentFace): string | undefined {
-    const option = modelOptionOf(agent.configOptions)
-    return option?.currentValue
-  }
-
-  private async liveSnapshot(sessionId: string, agent: AcpLiveAgentFace): Promise<AcpLiveOptionsSnapshot> {
-    const continuity: AcpSessionContinuity = agent.continuityState
-    return {
-      sessionId,
-      configOptions: contractConfigOptionsOf(agent.configOptions),
-      currentModeId: agent.currentModeId ?? null,
-      capabilities: capabilityFactsOf(agent.agentCapabilities),
-      continuity,
-      recovery: recoveryViewOf(agent.recoveryState, sessionId),
- // 上下文占用直通（used/size/percent/cost 已是收窄形状，无映射）。
-      contextUsage: agent.contextUsage,
-      freshness: 'live',
-      editable: true,
-      // live 快照的指纹即当前事实，恒 false（stale 才可能漂移）
-      fingerprintChanged: false,
-      modelSwitch: await this.modelSwitchViewOf(sessionId),
-    }
-  }
-
-  /**
- * 冷启动 stale 快照：sidecar last-known 快照的收窄副本。capabilities 归
-   * null（无握手事实）；continuity 如实归 ok——连续性闩锁是活体对账概念，
-   * 冷启动无活体可判，resume 路径自有对账门（不拿快照冒充）。
-   */
-  private async staleSnapshot(sessionId: string): Promise<AcpLiveOptionsSnapshot> {
-    const store = this.resolved.optionSnapshotStore
-    const snapshot = store === null ? undefined : await store.read(sessionId)
-    const recovery = this.resolved.recoveryStateStore === null
-      ? undefined
-      : await this.resolved.recoveryStateStore.read(sessionId)
-    if (snapshot === undefined && recovery === undefined) {
-      throw new Error(`no live ACP agent for session "${sessionId}" (not an ACP session, or already disposed)`)
-    }
-    const fingerprintSeam = this.resolved.snapshotFingerprint
-    const current = fingerprintSeam === null || snapshot === undefined ? undefined : await fingerprintSeam(sessionId)
-    return {
-      sessionId,
-      configOptions: snapshot === undefined ? null : contractConfigOptionsFromSnapshot(snapshot),
-      currentModeId: snapshot?.currentModeId ?? null,
-      capabilities: null,
-      continuity: { status: 'ok', cause: null, detail: null },
-      recovery: recovery ?? healthyRecoveryView(sessionId),
-      contextUsage: null,
-      freshness: 'stale',
-      editable: false,
-      fingerprintChanged: snapshot !== undefined && current !== undefined && current !== snapshot.fingerprint,
-      modelSwitch: await this.modelSwitchViewOf(sessionId),
-    }
-  }
-
 }
 
-/** 新鲜 probe 条目 → 五态派生的最小视图（ok 留目录事实，error 留分流 kind）。 */
+function validateActivityReadRequest(limit: number, filter: AcpActivityFilterView | undefined): void {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200) throw badRequest('ACP activity page size is invalid')
+  if (filter === undefined) return
+  for (const [key, value] of Object.entries(filter)) {
+    if (key !== 'ownerDshSessionId' && key !== 'promptAnchorMessageId') throw badRequest(`ACP activity filter field is invalid: ${key}`)
+    if (value !== undefined && (typeof value !== 'string' || value.length === 0 || value.length > 256)) throw badRequest('ACP activity filter value is invalid')
+  }
+}
+
+/** 当前配置最后一次 probe → 五态派生的最小视图（ok 留目录事实，error 留分流 kind）。 */
 function probeStateView(snapshot: AcpProbeSnapshotLike): AcpAgentStateProbeView {
   const { result } = snapshot
   return result.kind === 'ok'
@@ -1376,7 +955,8 @@ function contractCleanupOf(cleanup: { readonly close: string; readonly delete: s
   return { close, delete: del, message: cleanup.message ?? null }
 }
 
-function probeRow(snapshot: AcpProbeSnapshotLike | undefined, descriptor: AcpAgentRuntimeDescriptor | undefined, imageInputAvailable: boolean): AcpProviderHealth['probe'] {  if (snapshot === undefined) return { status: 'never', at: null }
+function probeRow(snapshot: AcpProbeSnapshotLike | undefined, descriptor: AcpAgentRuntimeDescriptor | undefined, imageInputAvailable: boolean): AcpProviderHealth['probe'] {
+  if (snapshot === undefined) return { status: 'never', at: null }
   const { result, at } = snapshot
   if (result.kind === 'ok') {
     const capabilities = capabilityFactsOf(result.agentCapabilities)
@@ -1412,47 +992,4 @@ function probeRow(snapshot: AcpProbeSnapshotLike | undefined, descriptor: AcpAge
     message: result.error.message,
     phase: result.probePhase ?? null,
   }
-}
-
-/** select 选项的可选值集合（group/flat 两种布局拍平，llm-stub probeModels 同款守卫）。 */
-function selectValues(option: acp.SessionConfigOption & { type: 'select' }): Set<string> {
-  const values = new Set<string>()
-  for (const entry of option.options) {
-    const items = 'options' in entry ? entry.options : [entry]
-    for (const item of items) values.add(item.value)
-  }
-  return values
-}
-
-/** model 类 config option 查找（category 'model' 优先、约定 id 'model' 兜底——与 agent.ts modelOfConfigOptions 同口径）。 */
-function modelOptionOf(
-  configOptions: readonly acp.SessionConfigOption[] | undefined,
-): (acp.SessionConfigOption & { type: 'select' }) | undefined {
-  const option = configOptions?.find((candidate) => candidate.category === 'model' || candidate.id === 'model')
-  return option?.type === 'select' ? option : undefined
-}
-
-/**
- * last-known 快照的有界条目 → 收窄 wire 形状。select 的拍平 values 列表
- * 重组为扁平 options 数组（name 如实以值 id 充任——标准化快照不持久化展示名，
- * UI 在 stale 态只读展示当前值即可）；values 为 null 的条目按 boolean 重建
- * （快照只持久化 select/boolean 两型，见 sidecar 的 acpOptionsSnapshotOf）。
- */
-function contractConfigOptionsFromSnapshot(snapshot: AcpOptionsSnapshotLike): readonly AcpConfigOption[] {
-  return snapshot.options.map((option) => {
-    const base = {
-      id: option.id,
-      name: option.name,
-      ...(option.category === null ? {} : { category: option.category }),
-    }
-    if (option.values !== null && typeof option.value === 'string') {
-      return {
-        ...base,
-        type: 'select' as const,
-        currentValue: option.value,
-        options: option.values.map((value) => ({ value, name: value })),
-      }
-    }
-    return { ...base, type: 'boolean' as const, currentValue: option.value === true }
-  })
 }

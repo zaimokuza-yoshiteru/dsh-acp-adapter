@@ -16,7 +16,7 @@ import type { SubprocessSeam } from './subprocess.ts'
 export interface AcpSpawnPlanView {
   /** Final argv; the process layer does not add a shell or wrapper. */
   readonly argv: readonly string[]
-  /** 完整子进程期望环境（整体替换 {@link AcpConnectionSpec.env}；spawn 时经 tombstone 压制 scrub 底座残留）。 */
+  /** Profile 显式环境覆盖；宿主会把它合并到已清理的父环境。 */
   readonly env: Record<string, string>
 }
 
@@ -30,11 +30,8 @@ export interface AcpConnectionSpec {
   /** 子进程工作目录，兼作 `session/new`/`session/load` 的默认 cwd。 */
   cwd: string
   /**
-   * 子进程期望环境全集（白名单语义）。本模块不做环境继承/合并——allowlist 与
- * credential reference 由调用方（registry / 沙箱）负责组装； 起
-   * spawn 经宿主 subprocess 服务（其底座是黑名单式 scrub），进程层对本集合之外
-   * 的底座残留键逐个下 tombstone，保证子进程所见恰为本集合（
-   * src/runtime/process/subprocess.ts 的 `envSpecWithTombstones`）。
+   * profile 显式环境条目。宿主 subprocess service 负责合并 scrubbed parent env，
+   * 因此 PATH/HOME/代理/SSH_AUTH_SOCK 与 CLI 登录 data home 保持原生语义。
    */
   env: Record<string, string>
   /**

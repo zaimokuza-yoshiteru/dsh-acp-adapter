@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AcpAuditTimelineEntry } from '../../../src/contract/remote.ts'
-import { auditEntryMatchesFilter, auditHeaderVisible, auditSummaryOf } from '../../../src/client/ui/AcpAuditHeaderAction.ts'
+import { auditEntryMatchesFilter, auditEntryMatchesQuery, auditHeaderVisible, auditProjectionIsAcp, auditSessionRefreshKeyOf, auditSummaryOf } from '../../../src/client/ui/AcpAuditHeaderAction.ts'
 import { en, zh } from '../../../src/client/ui/locales.ts'
 
 const entry = (partial: Partial<AcpAuditTimelineEntry>): AcpAuditTimelineEntry => ({
@@ -14,19 +14,52 @@ const entry = (partial: Partial<AcpAuditTimelineEntry>): AcpAuditTimelineEntry =
   detail: null,
   ...partial,
 })
+const owns = (provider: string | undefined): boolean => provider === 'acp-codex'
 
 describe('ACP audit header utility behavior', () => {
   it('is visible only for an established ACP backend', () => {
-    expect(auditHeaderVisible({ state: 'blank' })).toBe(false)
-    expect(auditHeaderVisible({ state: 'established', provider: 'openai' })).toBe(false)
-    expect(auditHeaderVisible({ state: 'draft', provider: 'acp-codex' })).toBe(false)
-    expect(auditHeaderVisible({ state: 'established', provider: 'acp-codex' })).toBe(true)
+    expect(auditHeaderVisible({ state: 'blank' }, owns)).toBe(false)
+    expect(auditHeaderVisible({ state: 'established', provider: 'openai' }, owns)).toBe(false)
+    expect(auditHeaderVisible({ state: 'draft', provider: 'acp-codex' }, owns)).toBe(false)
+    expect(auditHeaderVisible({ state: 'established', provider: 'acp-codex' }, owns)).toBe(true)
+  })
+
+  it('rejects native or incomplete model projections before any ACP lookup', () => {
+    expect(auditProjectionIsAcp({ lastUsed: { provider: 'openai', model: 'x' }, next: null }, owns)).toBe(false)
+    expect(auditProjectionIsAcp({ lastUsed: null, next: { provider: 'acp-codex', model: 'x' } }, owns)).toBe(false)
+    expect(auditProjectionIsAcp({ lastUsed: { provider: 'acp-codex', model: 'x' }, next: null }, owns)).toBe(true)
+    expect(auditProjectionIsAcp(undefined, owns)).toBe(false)
+  })
+
+  it('changes the backend refresh key when a blank session becomes prompt-active', () => {
+    const blank = {
+      blank: true, promptAttempted: false, awaitingFirstTurn: false,
+      running: false, openState: 'open', lastAgentError: null,
+    } as const
+    const active = { ...blank, blank: false, promptAttempted: true, awaitingFirstTurn: true, running: true }
+    expect(auditSessionRefreshKeyOf(blank)).not.toBe(auditSessionRefreshKeyOf(active))
+    expect(auditSessionRefreshKeyOf(undefined)).toBe('absent')
   })
 
   it('filters ledger rows by category without changing the paged source', () => {
     expect(auditEntryMatchesFilter(entry({ category: 'permission' }), 'permission')).toBe(true)
     expect(auditEntryMatchesFilter(entry({ category: 'permission' }), 'files')).toBe(false)
     expect(auditEntryMatchesFilter(entry({ category: 'permission' }), 'all')).toBe(true)
+  })
+
+  it('searches localized user-facing facts without treating raw detail JSON as primary content', () => {
+    const item = entry({
+      category: 'files',
+      summaryCode: 'terminal.operation',
+      subject: 'printf SMOKE_OK',
+      status: 'exited',
+      detail: '{"internalSecret":"not-a-search-target"}',
+    })
+    expect(auditEntryMatchesQuery((key) => zh[key], item, '终端')).toBe(true)
+    expect(auditEntryMatchesQuery((key) => en[key], item, 'printf')).toBe(true)
+    expect(auditEntryMatchesQuery((key) => en[key], item, 'exited')).toBe(true)
+    expect(auditEntryMatchesQuery((key) => en[key], item, 'internalSecret')).toBe(false)
+    expect(auditEntryMatchesQuery((key) => en[key], item, '  ')).toBe(true)
   })
 
   it('localizes structured summary facts and keeps raw summary codes out of the UI', () => {
@@ -40,13 +73,10 @@ describe('ACP audit header utility behavior', () => {
     expect(zhText).not.toContain('filesystem.operation')
   })
 
-  it('does not expose internal Native Agent access and setup enums as user copy', () => {
-    const access = entry({ summaryCode: 'permission-scope.recorded', subject: 'darwin', status: 'danger-full-access' })
-    const setup = entry({ summaryCode: 'agent-mode.changed', subject: 'default', status: 'set_config_option' })
-    expect(auditSummaryOf((key) => zh[key], access)).toContain('原生 Agent 访问')
-    expect(auditSummaryOf((key) => zh[key], access)).not.toContain('danger-full-access')
-    expect(auditSummaryOf((key) => zh[key], setup)).toContain('配置同步')
-    expect(auditSummaryOf((key) => zh[key], setup)).not.toContain('set_config_option')
+  it('distinguishes a terminal output read from the process exit in the visible timeline', () => {
+    const item = entry({ summaryCode: 'terminal.operation', category: 'files', subject: 'printf ok', status: 'output-summary' })
+    expect(auditSummaryOf((key) => zh[key], item)).toBe('终端操作已记录 · printf ok · 已读取输出')
+    expect(auditSummaryOf((key) => en[key], item)).toBe('Terminal operation recorded · printf ok · Output read')
   })
 
   it('localizes session-fork outcomes and fallback reasons in both languages', () => {

@@ -440,37 +440,16 @@ export function validateAgentDraft(
   }
 }
 
-// ---------- agents map 的 CRUD 纯操作（写路径在 controller，经 settings.mutate 落盘） ----------
+// ---------- agents map projections ----------
 
 /** Agent ids in the registry's canonical display order. */
 export function sortedAgentIds(agents: Record<string, AcpAgentConfig>): string[] {
   return Object.keys(agents).sort((left, right) => left.localeCompare(right))
 }
 
-/** The stored agents map with one entry written (add or replace). */
-export function withAgent(
-  agents: Record<string, AcpAgentConfig>,
-  id: string,
-  config: AcpAgentConfig,
-): Record<string, AcpAgentConfig> {
-  return { ...agents, [id]: config }
-}
-
-/** The stored agents map with one entry removed. */
-export function withoutAgent(agents: Record<string, AcpAgentConfig>, id: string): Record<string, AcpAgentConfig> {
-  const next = { ...agents }
-  delete next[id]
-  return next
-}
-
-/** The spawn command line as the card shows it: `command args…`. */
-export function commandLineOf(config: { command: string; args: readonly string[] }): string {
-  return [config.command, ...config.args].join(' ')
-}
-
 // ---------- settings scope 快照投影（controller 订阅的面片状态） ----------
 
-/** Structural face of the client settings scope's snapshot (dsh-client-runtime SettingsScopeSnapshot). */
+/** Structural face of the Alpha client settings-scope snapshot. */
 export interface AcpScopeSnapshot {
   status: 'loading' | 'ready' | 'unavailable'
   value: AcpSettings | undefined
@@ -600,9 +579,6 @@ export interface AcpProviderHealth {
     }
     | { status: 'error'; at: number; failureKind: string; message: string; phase: AcpProbePhase | null }
 }
-
-/** The probe failure kind that means "log in first" (src/protocol/v1/types.ts AcpErrorKind). */
-export const ACP_FAILURE_AUTH_REQUIRED = 'auth_required'
 
 /**
  * Validate a dshAcp Remote `health` view payload. Wire boundary: the whole

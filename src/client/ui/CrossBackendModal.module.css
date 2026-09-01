@@ -1,0 +1,37 @@
+.content {
+  min-width: 0;
+  max-height: min(70vh, 560px);
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+}
+
+.dialog {
+  pointer-events: auto;
+  max-width: min(560px, calc(100vw - 32px));
+}
+
+.note {
+  margin: 0;
+  white-space: pre-line;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 400;
+}
+
+.error {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--dsw-alias-label-danger);
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 400;
+}
+
+.footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  pointer-events: auto;
+}

@@ -18,9 +18,8 @@
 //     profile、editingId 豁免、generic profile 不受影响）
 //   - decodeBoundSessions：boundSessions 应答严格解码（合法往返；畸形/错型整体拒绝）
 //   - 草稿种子：emptyDraft / draftFromTemplate / draftFromAgent（含 config 校验往返）
-//   - agents map 纯操作：sortedAgentIds / withAgent 增·改 / withoutAgent 删·删缺席
-//     （均返回新对象、不改输入）
-//   - commandLineOf、panelSettingsOf 四态投影（ready/unavailable/loading/invalid）
+//   - agents map 排序：sortedAgentIds
+//   - panelSettingsOf 四态投影（ready/unavailable/loading/invalid）
 // - decodeHealthResponse：三种 probe 分支逐字段、 state 五态词表强制、
 //     畸形 body/行/probe 整体拒绝（传染）
 // - healthRowOf（按 Agent ID 匹配健康数据）
@@ -32,14 +31,12 @@ import {
   ACP_AGENT_ID_PATTERN,
   ACP_BUILTIN_AGENT_TEMPLATES,
   ACP_ENV_KEY_PATTERN,
-  ACP_FAILURE_AUTH_REQUIRED,
   ACP_SECRET_ENV_KEY_PATTERN,
   ACP_SETTINGS_NS,
   CLAUDE_ACP_TEMPLATE,
   CODEX_ACP_TEMPLATE,
   DEVIN_ACP_TEMPLATE,
   KIMI_ACP_TEMPLATE,
-  commandLineOf,
   decodeAcpSettings,
   decodeBoundSessions,
   decodeHealthResponse,
@@ -57,8 +54,6 @@ import {
   parseEnvText,
   sortedAgentIds,
   validateAgentDraft,
-  withAgent,
-  withoutAgent,
   type AcpAgentConfig,
   type AcpProviderHealth,
   type AgentDraft,
@@ -171,7 +166,6 @@ function validDraft(overrides: Partial<AgentDraft> = {}): AgentDraft {
 describe('常量：与宿主侧契约逐字对齐', () => {
   it('命名空间 / 失败分类', () => {
     expect(ACP_SETTINGS_NS).toBe('dsh-acp');
-    expect(ACP_FAILURE_AUTH_REQUIRED).toBe('auth_required');
   });
 
   it('ACP_AGENT_ID_PATTERN：小写字母开头 + 小写字母/数字/连字符', () => {
@@ -307,6 +301,7 @@ describe('decodeAcpSettings', () => {
         foo: { name: 'Foo', command: 'foo-cli' },
         bar: { name: 'Bar', command: 'bar-cli', args: null, env: null },
       },
+      projectExternalSubagents: false,
       strayTop: 1,
     });
     expect(decoded).toEqual({
@@ -758,46 +753,13 @@ describe(' env 密钥掩码（draftFromAgent / validateAgentDraft / dropMaskedEn
 
 // ---------- agents map 纯操作 ----------
 
-describe('agents map 纯操作：sortedAgentIds / withAgent / withoutAgent', () => {
+describe('agents map projection', () => {
   it('sortedAgentIds 按 localeCompare 序返回全部 id', () => {
     expect(sortedAgentIds({})).toEqual([]);
     expect(sortedAgentIds({ devin: devinConfig })).toEqual(['devin']);
     expect(sortedAgentIds({ gamma: devinConfig, alpha: devinConfig, beta: devinConfig })).toEqual(['alpha', 'beta', 'gamma']);
   });
 
-  it('withAgent 新增：返回含新条目的新 map，输入不变', () => {
-    const before = { devin: devinConfig };
-    const after = withAgent(before, 'foo', fooConfig);
-    expect(after).toEqual({ devin: devinConfig, foo: fooConfig });
-    expect(after).not.toBe(before);
-    expect(before).toEqual({ devin: devinConfig });
-  });
-
-  it('withAgent 改写：同 id 替换整条 config，其余键保留', () => {
-    const replacement: AcpAgentConfig = { name: 'Devin Pro', command: 'devin2', args: [], env: {} };
-    const after = withAgent({ devin: devinConfig, foo: fooConfig }, 'devin', replacement);
-    expect(after).toEqual({ devin: replacement, foo: fooConfig });
-    expect(after['devin']).toBe(replacement);
-  });
-
-  it('withoutAgent 删除：返回缺该键的新 map，输入不变；删缺席 id 得等值拷贝', () => {
-    const before = { devin: devinConfig, foo: fooConfig };
-    const after = withoutAgent(before, 'devin');
-    expect(after).toEqual({ foo: fooConfig });
-    expect(after).not.toBe(before);
-    expect(before).toEqual({ devin: devinConfig, foo: fooConfig });
-    const same = withoutAgent(before, 'ghost');
-    expect(same).toEqual(before);
-    expect(same).not.toBe(before);
-  });
-});
-
-describe('commandLineOf', () => {
-  it('command + args 空格拼接；无 args 仅 command', () => {
-    expect(commandLineOf({ command: 'devin', args: [] })).toBe('devin');
-    expect(commandLineOf({ command: 'devin', args: ['acp'] })).toBe('devin acp');
-    expect(commandLineOf({ command: 'foo-cli', args: ['serve', '--acp'] })).toBe('foo-cli serve --acp');
-  });
 });
 
 // ---------- settings 快照投影 ----------

@@ -9,7 +9,7 @@
  * - `acpSessionId`：ACP 侧会话 id（懒启动后才存在）
  * - `runId`：一次子进程运行的标识（`pid:<n>`；spawn 失败前缺失）
  * - `operation`：操作名（小词表，如 `initialize`/`prompt`/`cancel`/`resume`/
- *   `permission`/`registry-sync`/`binding-guard`/`options-sync`/`audit`/`teardown`…）
+ *   `permission`/`registry-sync`/`binding-guard`/`audit`/`teardown`…）
  * - `durationMs`：耗时（毫秒，整数）
  * - `result`：结果码（`ok` / ACP 错误 kind / 稳定分流词，如 `load-failed`）
  *

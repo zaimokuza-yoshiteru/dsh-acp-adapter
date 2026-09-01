@@ -4,14 +4,14 @@
  * registration whose factory resolves externals through the injected `require`
  * (loader module table, no globals). The wrapper form is verified against the reference
  * preset: reference/deepseek-harness/packages/client/tsdown.client.ts
- * (unpublished, replicated here because the package is not published).
+ * (replicated locally because the preset is not a public package export).
  *
- * Alignment with the rc.2 preset:
+ * Alignment with the 0.1.2-alpha.3 preset:
  * - The banner id IS the package.json name (the loader keys registrations by
  * package name; the package name is read live below.
  * - `sourcemap: true` — the host serves /plugins/<id>/client.js.map
  *   (packages/client/modules/src/index.ts map route).
- * - The external set is exactly the rc.2 baseline (PLATFORM_MODULES +
+ * - The external set is exactly the Alpha baseline (PLATFORM_MODULES +
  *   PRELOADED_CLIENT_EXTERNALS from packages/client/web/src/platform.ts)
  *   plus this package's own `dsh.client.external` requests; everything else
  *   inlines (alwaysBundle) so no require() lands on a row the module table
@@ -63,7 +63,7 @@ function styleInjectionModule(id: string, fileId: string, css: string, classMap:
   return source.join('\n')
 }
 
-/** rc.2 baseline module-table rows (reference/deepseek-harness packages/client/web/src/platform.ts；与 rc.8 逐行相同，已核实). */
+/** Alpha baseline module-table rows (reference/deepseek-harness packages/client/web/src/platform.ts). */
 const BASELINE_EXTERNALS = [
   // PLATFORM_MODULES
   'react',
@@ -74,7 +74,7 @@ const BASELINE_EXTERNALS = [
   '@deepseek-ai/dsh-client-ui-slots',
   '@deepseek-ai/dsh-client-ui-primitives',
   // PRELOADED_CLIENT_EXTERNALS
-  '@deepseek-ai/dsh-client-runtime/client',
+  '@deepseek-ai/dsh-client-store',
 ] as const
 
 const declaredExternals = manifest.dsh?.client?.external
@@ -124,7 +124,7 @@ export default defineConfig({
       if (VENDORED_LIBRARY.test(source)) return null // vendored library: inline, no shared identity
       if (INLINE_SAFE.test(source) || GENERATED_REMOTE.test(source)) return null // wire contribution: inline is the point
       throw new Error(
-        `client bundle purity: "${source}" is not in the rc.2 baseline externals or this package's dsh.client.external, `
+        `client bundle purity: "${source}" is not in the 0.1.2-alpha.3 baseline externals or this package's dsh.client.external, `
         + 'an inline-safe wire layer, or a generated /remote contribution — cross-plugin value imports are forbidden; '
         + 'declare a non-default module request or collaborate through cordis services '
         + '(type-only imports are erased and never reach this gate)',

@@ -4,8 +4,7 @@
  * test/contracts/architecture.spec.ts）——刻意不从 ACP SDK 取类型：SDK v1 的
  * `AuthMethod`/`SessionConfigOption` 携带 `_meta?: Record<string, unknown> | null`，
  * `unknown` 被 strict boundary 拒绝（spike 实证：本机兼容性探针），
- * 且 client 本就只消费这里的字段（src/client/data/logic.ts / selector-logic.ts
- * 的解码器口径）；host 侧负责 SDK → contract 的显式映射（src/remote/service.ts），
+ * 且 client 本就只消费这里的字段；host 侧负责 SDK → contract 的显式映射（src/remote/service.ts），
  * 映射同时是数据最小化（auth 的 vars/env 等键名不过线）。
  *
  * 形状纪律：全部字段只含 string/number/boolean/字面量联合/null/readonly 数组与
@@ -13,6 +12,25 @@
  * null 联合/z.record）。改这里的形状必须重跑 `pnpm gen:typert` 并全绿门禁。
  * @module @zaimokuza/dsh-acp-adapter/contract/remote
  */
+
+/** Stable ACP diagnostics preserved by alpha.3's typed Remote failure carrier. */
+export interface AcpRemoteErrorDetails {
+  readonly kind: string | null
+  readonly correlationId: string | null
+}
+
+declare module '@deepseek-ai/dsh-typert-protocol' {
+  interface RemoteErrorDetailsMap {
+    'dsh-acp/config': AcpRemoteErrorDetails
+    'dsh-acp/not-installed': AcpRemoteErrorDetails
+    'dsh-acp/auth-required': AcpRemoteErrorDetails
+    'dsh-acp/protocol-incompatible': AcpRemoteErrorDetails
+    'dsh-acp/timeout': AcpRemoteErrorDetails
+    'dsh-acp/agent-crash': AcpRemoteErrorDetails
+    'dsh-acp/user-rejected': AcpRemoteErrorDetails
+    'dsh-acp/resume-conflict': AcpRemoteErrorDetails
+  }
+}
 
 /** initialize 握手广告能力的展示事实（未握手/未广告归 null/false，绝不编造）。 */
 export interface AcpCapabilityFacts {
@@ -121,30 +139,6 @@ export type AcpConfigOption =
       readonly currentValue: boolean
     }
 
-/** 内存指标快照的一行计数器（name/labels 线上就是 string，host 侧字面量词表是内部纪律）。 */
-export interface AcpMetricCounterView {
-  readonly name: string
-  readonly labels: Record<string, string>
-  readonly value: number
-}
-
-/** 内存指标快照的一行延迟聚合。 */
-export interface AcpMetricTimerView {
-  readonly name: string
-  readonly labels: Record<string, string>
-  readonly count: number
-  readonly totalMs: number
-  readonly minMs: number
-  readonly maxMs: number
-}
-
-/** 内存指标快照视图（health 顶层 `metrics` 字段；低基标签，绝无 id/路径/内容）。 */
-export interface AcpMetricsSnapshotView {
-  readonly startedAt: number
-  readonly counters: readonly AcpMetricCounterView[]
-  readonly timers: readonly AcpMetricTimerView[]
-}
-
 /** probe 失败阶段（四层分层判据；镜像 src/protocol/v1/types.ts `AcpProbePhase`）。 */
 export type AcpProbePhaseView = 'initialize' | 'session'
 
@@ -218,12 +212,21 @@ export interface AcpProviderHealth {
       }
 }
 
-/** `health()` 的整包视图：provider 行 + 指标快照（未接线各归 null）。 */
+/** `health()` 的整包视图。 */
 export interface AcpHealthView {
   readonly providers: readonly AcpProviderHealth[]
-  readonly metrics: AcpMetricsSnapshotView | null
  /** 活体 ACP 会话的连续性清单（未接线/无活体会话归 null 或空数组，如实区分）。 */
   readonly liveSessions: readonly AcpLiveSessionContinuity[] | null
+}
+
+/** Exact provider routes currently configured by this plugin or durably
+ * referenced by one of its historical bindings. */
+export interface AcpOwnedRoutesView {
+  readonly providers: readonly string[]
+}
+
+export interface AcpProjectedSubagentsView {
+  readonly sessionIds: readonly string[]
 }
 
 /** ACP 审计视图的本地化无关摘要事实；客户端按当前语言生成文案。 */
@@ -231,9 +234,6 @@ export type AcpAuditSummaryCode =
   | 'binding.established'
   | 'permission.asked'
   | 'permission.decided'
-  | 'permission-scope.recorded'
-  | 'agent-mode.changed'
-  | 'agent-config.changed'
   | 'reconciliation.required'
   | 'replay.matched'
   | 'replay.different'
@@ -241,8 +241,6 @@ export type AcpAuditSummaryCode =
   | 'replay.not-compared'
   | 'replay.unavailable'
   | 'degradation.recorded'
-  | 'elicitation.requested'
-  | 'elicitation.decided'
   | 'filesystem.operation'
   | 'terminal.operation'
   | 'session-fork.completed'
@@ -253,7 +251,7 @@ export interface AcpAuditTimelineEntry {
   readonly seq: number
   readonly time: number
   readonly kind: string
-  readonly category: 'recovery' | 'permission' | 'agent' | 'files' | 'config'
+  readonly category: 'recovery' | 'permission' | 'agent' | 'files'
   readonly summaryCode: AcpAuditSummaryCode
   readonly subject: string | null
   readonly status: string | null
@@ -267,6 +265,54 @@ export interface AcpAuditTimelinePage {
   readonly nextCursor: number | null
   readonly hasMore: boolean
 }
+
+/** Host-projected ACP activity journal row. This is not a DSH tool call and
+ * never authorizes execution; it is an observable Agent activity record. */
+export type AcpActivityKindView = 'tool' | 'plan' | 'terminal' | 'diff' | 'resource' | 'delegated' | 'other'
+export type AcpActivityStatusView = 'running' | 'completed' | 'failed' | 'cancelled'
+export interface AcpActivityView {
+  readonly dshSessionId: string
+  readonly ownerDshSessionId: string
+  readonly promptAnchorMessageId: string
+  readonly activityId: string
+  readonly activitySeq: number
+  readonly revisionSeq: number
+  readonly time: number
+  readonly kind: AcpActivityKindView
+  readonly status: AcpActivityStatusView
+  readonly presentation: string
+  readonly rawDetail?: string
+  readonly rawDetailRef?: string
+}
+export interface AcpActivityFilterView {
+  readonly ownerDshSessionId?: string
+  readonly promptAnchorMessageId?: string
+}
+export interface AcpActivitySnapshotView {
+  readonly sessionId: string
+  readonly activities: readonly AcpActivityView[]
+  readonly head: number
+}
+export interface AcpActivityPageView {
+  readonly sessionId: string
+  readonly activities: readonly AcpActivityView[]
+  readonly head: number
+  readonly nextCursor: number | null
+  readonly hasMore: boolean
+}
+
+/** Opening window and durable revisions emitted by the ACP activity stream. */
+export type AcpActivityJournalFrame =
+  | {
+      readonly type: 'opened'
+      readonly cursor: number
+      readonly activities: readonly AcpActivityView[]
+      readonly head: number
+    }
+  | {
+      readonly type: 'entry'
+      readonly activity: AcpActivityView
+    }
 
 /**
  * `boundSessions(agentId)` 的应答（删除确认提示，）：
@@ -298,147 +344,6 @@ export interface AcpLiveSessionContinuity {
   readonly continuity: AcpSessionContinuity
 }
 
-/** `setOption` 的写词汇（类型保真）：select 收 string 值 id，boolean 收原生 boolean。 */
-export interface AcpOptionWrite {
-  readonly configId: string
-  readonly value: string | boolean
-}
-
-/** ACP permission choice exposed without semantic compression. */
-export interface AcpPermissionOptionView {
-  readonly optionId: string
-  readonly name: string
-  readonly kind: string
-}
-
-/** One host-owned pending ACP permission request. */
-export interface AcpPendingPermissionView {
-  readonly requestId: string
-  readonly sessionId: string
-  readonly acpSessionId: string
-  readonly toolCallId: string
-  readonly title: string
-  readonly kind: string
-  readonly reason: string
-  readonly agentId?: string
-  readonly agentName?: string
-  readonly locations?: readonly { readonly path: string; readonly displayPath?: string; readonly line?: number }[]
-  /** Total Agent locations and the number intentionally omitted from the bounded view. */
-  readonly locationCount?: number
-  readonly omittedLocationCount?: number
-  readonly inputSummary?: string
-  /** Redacted, bounded command summary for execute requests. */
-  readonly command?: string
-  readonly options: readonly AcpPermissionOptionView[]
-  readonly createdAt: number
-}
-
-/**
- * 运行中 ACP 工具的有界展示身份。DSH 的 running Tool 节点不会携带
- * `tool/call.meta`，因此插件通过会话级 Remote 只补取 title/kind；参数、输出和
- * 路径不跨这条临时展示通道。
- */
-export interface AcpToolCallPresentationView {
-  readonly title?: string
-  readonly kind?: string
-}
-
-export interface AcpPermissionAnswerRequest {
-  readonly requestId: string
-  readonly optionId: string
-}
-
-export interface AcpElicitationFieldView {
-  readonly name: string
-  readonly type: string
-  readonly title?: string | null
-  readonly description?: string | null
-  readonly required: boolean
-  readonly options?: readonly { readonly value: string; readonly title?: string | null; readonly description?: string | null }[]
-  readonly defaultValue?: string | number | boolean | readonly string[]
-  readonly minimum?: number
-  readonly maximum?: number
-  readonly minItems?: number
-  readonly maxItems?: number
-  readonly format?: 'email' | 'uri' | 'date' | 'date-time'
-}
-
-export interface AcpPendingElicitationView {
-  readonly requestId: string
-  readonly sessionId: string
-  readonly acpSessionId?: string
-  readonly mode: 'form' | 'url'
-  readonly message: string
-  readonly fields: readonly AcpElicitationFieldView[]
-  readonly url?: string
-  readonly createdAt: number
-}
-
-export type AcpElicitationValue = string | number | boolean | readonly string[]
-
-export interface AcpElicitationAnswerRequest {
-  readonly requestId: string
-  readonly action: 'accept' | 'decline' | 'cancel'
-  readonly values?: readonly { readonly name: string; readonly value: AcpElicitationValue }[]
-}
-
-// ---------- ModelSwitchCoordinator 的 wire 词汇 ----------
-
-/**
- * 待定模型切换的 wire 视图（sidecar `AcpPendingModelSwitch` 的收窄副本；见
- * src/persistence/sidecar.ts 的状态机注释）：
- * - `idle`：无待定切换；
- * - `busy`：本 host 进程内有切换正在飞（在飞闩锁；瞬态，不构成 composer 阻断）；
- * - `pending`：sidecar 留有未收束的切换行（started/agent-applied/committed）——
- *   client 恢复器按 DSH 当前值 × Agent 当前值 × previous/target 收敛；无法自证
- *   且会话为 live 时 composer 阻断，由用户选择出路；
- * - `rollback-required`：回滚臂也失败——双侧一致性无法自证，composer 锁定；
- * - `corrupt`：sidecar 行畸形（纵深防御分支；同 reconciliation-required 处理）。
- */
-export type AcpModelSwitchView =
-  | { readonly status: 'idle' }
-  | { readonly status: 'busy'; readonly operationId: string; readonly targetModel: string }
-  | {
-      readonly status: 'pending'
-      readonly operationId: string
-      readonly state: 'started' | 'agent-applied' | 'agent-rolled-back' | 'committed'
-      readonly provider: string
-      readonly optionId: string
-      readonly previousModel: string
-      readonly targetModel: string
-      readonly appliedModel?: string
-      readonly createdAt: string
-    }
-  | {
-      readonly status: 'rollback-required'
-      readonly operationId: string
-      readonly provider: string
-      readonly previousModel: string
-      readonly targetModel: string
-    }
-  | { readonly status: 'corrupt' }
-
-/** `beginModelSwitch` 的请求：operationId 由 client 生成（uuid），重复投递幂等。 */
-export interface AcpModelSwitchBeginRequest {
-  readonly operationId: string
-  readonly targetModel: string
-}
-
-/**
- * `beginModelSwitch` 的应答：`actualModel` 取自 Agent 响应权威快照的实际模型值
- * （Agent 可能归一化/改写目标值——DSH 侧 selectModel 必须用本值，不得用请求值）；
- * `snapshot` 为切换后的活体快照（freshness 'live'）。
- */
-export interface AcpModelSwitchBeginResult {
-  readonly actualModel: string
-  readonly snapshot: AcpLiveOptionsSnapshot
-}
-
-/** `commitModelSwitch` / `rollbackModelSwitch` 的请求（按 operationId 幂等）。 */
-export interface AcpModelSwitchResolveRequest {
-  readonly operationId: string
-}
-
 /**
  * `health()` 的请求：缺省/省略 = 只读缓存视图（面板打开不 spawn
  * probe）；`recheck: true` = 重新检查。`agentId` 在场时只检查并返回该
@@ -454,7 +359,7 @@ export interface AcpHealthRequest {
  * `backendOf(sessionId)` 的应答（「backend 不可变」的 host 权威查询）。
  * - `'blank'`：尚无 ACP backend 承诺——无活体 ACP agent、无 sidecar binding、日志无
  *   request/header。若 DSH 已为该会话实例化 native wrapper，`current.provider` 会
- *   暴露该事实；由于 rc.2 没有 live wrapper 替换 seam，跨到 ACP 会自动新建会话。
+ *   暴露该事实；0.1.2-alpha.3 仍没有 live wrapper 替换 seam，跨到 ACP 会自动新建会话。
  * - `'draft'`：空白会话已启动 ACP wrapper、可读取会话级配置，但首条 prompt 尚未
  *   提交 ACP binding；同一 ACP profile 可原地选模型，跨 profile/native 会自动新建会话。
  * - `'established'`：backend 已锁定；`provider` 即路由 id（`acp-<id>` 前缀 =
@@ -466,47 +371,6 @@ export type AcpBackendState =
   | { readonly state: 'blank' }
   | { readonly state: 'draft'; readonly provider: string; readonly model?: string }
   | { readonly state: 'established'; readonly provider: string }
-
-/**
- * `options()`/`setOption()` 的活体选项快照。`capabilities`/`contextUsage`
- * 是 null 词表的必填键（会话未懒启动/未握手、
- * 未收到过 usage_update 时如实归 null，不拿 probe 缓存或零值冒充活体事实）。
- *
- * 冷启动（冷启动选项快照）：无活体 Agent 但 sidecar 存有界 last-known 快照时，
- * host 返回快照副本并置 `freshness: 'stale'` + `editable: false`——全部控件
- * 只读，UI 显示「上次快照」横幅（不得显示「Agent 不支持」或通用错误条）；
- * stale 快照绝不授权热切换（coordinator 预检要求 live 可写 option）。
- * `fingerprintChanged`：stale 快照的运行时指纹与当前 profile 配置
- * 重组的指纹不一致时置 true——旧快照只作诊断，不作能力结论；live 恒 false。
- *
- * `modelSwitch`（必填键）：待定模型切换事务的 wire 视图（词表见
- * {@link AcpModelSwitchView}）；rollback-required / live-undecidable 期间
- * composer 锁定（不一致状态禁止 prompt）。
- */
-export interface AcpLiveOptionsSnapshot {
-  readonly sessionId: string
-  readonly configOptions: readonly AcpConfigOption[] | null
-  readonly currentModeId: string | null
-  readonly capabilities: AcpCapabilityFacts | null
- /** 连续性闩锁状态（rebindBlank 的响应也携带复位后的快照）。 */
-  readonly continuity: AcpSessionContinuity
-  /** Durable recovery state; healthy means prompts are allowed. */
-  readonly recovery: AcpRecoveryView
-  /**
- * 最新已知 ACP 上下文占用（独立 context 统计；domain 真源是
-   * src/protocol/v1/translate.ts `AcpContextUsageSnapshot`，host 侧直通映射）。
-   * 未收到过 `usage_update` 归 null——诚实空缺。绝不汇总进 DSH 模型成本报表。
-   */
-  readonly contextUsage: AcpContextUsageView | null
- /** 必填键：'live' = 活体 Agent 权威快照；'stale' = sidecar last-known 快照（冷启动只读）。 */
-  readonly freshness: 'live' | 'stale'
- /** 必填键：false（stale）时全部控件只读、任何写路径拒发。 */
-  readonly editable: boolean
- /** 必填键：stale 快照的运行时指纹与当前配置重组指纹不一致（只作诊断）；live 恒 false。 */
-  readonly fingerprintChanged: boolean
- /** 必填键：待定模型切换事务视图。 */
-  readonly modelSwitch: AcpModelSwitchView
-}
 
 export type AcpRecoveryKind = 'healthy' | 'reconnect-required' | 'outcome-unknown' | 'reconciliation-required' | 'session-lost' | 'local-history-damaged' | 'resumed-unverified'
 
@@ -526,8 +390,6 @@ export interface AcpRecoveryView {
 }
 
 /** Explicit user decisions recorded by the recovery surface. */
-export type AcpRecoveryUserAction = 'retry-original' | 'rebind-blank' | 'new-session'
-
 /** Agent 明确提供的累计成本事实（wire 副本；amount/currency 原样透传，不换算不聚合）。 */
 export interface AcpContextUsageCostView {
   readonly amount: number
@@ -543,12 +405,36 @@ export interface AcpContextUsageView {
   readonly cost: AcpContextUsageCostView | null
 }
 
+/** Agent-owned session controls/context facts.  This is deliberately separate
+ * from the stock model-selection surface and from DSH TokenUsage. */
+export interface AcpAgentModeView {
+  readonly id: string
+  readonly name: string
+  readonly description?: string | null
+}
+
+export interface AcpAgentSessionSnapshotView {
+  readonly sessionId: string
+  readonly profileId: string
+  readonly freshness: 'live' | 'stale'
+  readonly editable: boolean
+  readonly configOptions: readonly AcpConfigOption[] | null
+  readonly modes: readonly AcpAgentModeView[] | null
+  readonly currentModeId: string | null
+  readonly contextUsage: AcpContextUsageView | null
+  readonly note: string | null
+}
+
+export type AcpAgentSessionOptionWrite =
+  | { readonly kind: 'config'; readonly id: string; readonly value: string | boolean }
+  | { readonly kind: 'mode'; readonly id: string }
+
 /**
  * ACP agent 配置的五态词表（domain 真源与派生规则见
  * src/domain/session/agent-state.ts `deriveAcpAgentState`，本类型是它的 wire
- * 字面量副本）：saved-unverified = 已存未探测；ready = 新鲜 probe 成功且
- * （绑定的 descriptor 声明 auth refs 时）模型目录非空；auth-required = 需要登录（出路是
- * agent 自家 CLI——external-login-only， Remote 面不再有
+ * 字面量副本）：saved-unverified = 当前配置尚未探测；ready = 当前配置最后
+ * 一次明确 probe 成功；auth-required = 明确需要登录（出路是 agent 自家
+ * CLI——external-login-only， Remote 面不再有
  * authenticate）；unavailable = probe 失败/配置无效；incompatible = 宿主结构
  * 门未通过。
  */

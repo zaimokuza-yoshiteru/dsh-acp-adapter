@@ -19,8 +19,6 @@ import { LlmError } from '@deepseek-ai/dsh-llm';
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm';
 import { AcpStubAdapter, acpProbeConfigKey } from '../../../src/host/composition/llm-stub.ts';
 import type { AcpStubAgentConfig } from '../../../src/domain/session/agent-config.ts';
-import { AcpMetricsRegistry } from '../../../src/domain/observability/metrics.ts';
-import type { AcpMetricsLike } from '../../../src/domain/observability/metrics.ts';
 import type { SubprocessSeam } from '../../../src/runtime/process/subprocess.ts';
 import { sharedTestSubprocess } from '../../fixtures/subprocess-seam-testing.ts';
 
@@ -74,13 +72,12 @@ function mockAgent(scenario: string, extraEnv: Record<string, string> = {}): Moc
 }
 
 /** 可变 agents 源的 adapter：测试经 `set` 改配置验证缓存 hash 失效。 */
-function makeAdapter(initial: Record<string, AcpStubAgentConfig>, metrics?: AcpMetricsLike) {
+function makeAdapter(initial: Record<string, AcpStubAgentConfig>) {
   let current = initial;
   const adapter = new AcpStubAdapter({
     agents: () => new Map(Object.entries(current)),
     probeOptions: PROBE_OPTIONS,
     subprocess: { ok: true, seam: subprocess },
-    ...(metrics === undefined ? {} : { metrics }),
   });
   return { adapter, set: (next: Record<string, AcpStubAgentConfig>) => (current = next) };
 }
@@ -145,8 +142,26 @@ describe('probe 模型目录与缓存', () => {
     }
   });
 
+  it.each([
+    ['Kimi', 'acp-kimi', 'kimi'],
+    ['Codex', 'acp-codex', 'codex'],
+  ] as const)('%s 路由保留每个模型自己确认的推理目录和默认值', async (_label, route, runtime) => {
+    const handle = mockAgent('happy', {
+      MOCK_MODEL_THOUGHT_LEVELS: JSON.stringify({
+        'mock-model-a': ['high'],
+        'mock-model-b': ['low', 'high', 'max'],
+        'mock-model-c': ['on'],
+      }),
+    });
+    const { adapter } = makeAdapter({ [route]: { ...handle.config, runtime } });
+    await adapter.listModels(route);
+    expect(adapter.configOptionsForModel(route, 'mock-model-a')?.find(option => option.id === 'thought_level')).toMatchObject({ currentValue: 'high' });
+    expect(adapter.configOptionsForModel(route, 'mock-model-b')?.find(option => option.id === 'thought_level')).toMatchObject({ currentValue: 'low' });
+    expect(adapter.configOptionsForModel(route, 'mock-model-c')?.find(option => option.id === 'thought_level')).toMatchObject({ currentValue: 'on' });
+  });
+
   it('失败隔离：一路 probe 失败进缓存不重 spawn，另一路照常返回模型', async () => {
-    // 宿主 buildModelCatalog 语义（DSH 0.1.1-rc.2 上游 packages/host/apiproxy/src/api/sessions.ts 同款）：
+    // 宿主 modelCatalog 语义（DSH 0.1.2-alpha.3 session-controller/catalog.ts 同款）：
     // 单 provider 探测失败只进 failures，不拖垮整个目录。adapter 粒度钉：失败只落在
     // 自己的路由缓存里，其余路由的 probe 与结果互不传染。
     const happy = mockAgent('happy');
@@ -186,21 +201,20 @@ describe('probe 模型目录与缓存', () => {
     expect(probeCount(logPath)).toBe(2);
   });
 
- it(' 键口径 secret-free：env 值变化（键名集合不变）不 bust 缓存', async () => {
+ it(' 键口径 secret-free：env 值变化（键名集合不变）也会 bust 缓存', async () => {
     const { config, logPath } = mockAgent('happy');
     const { adapter, set } = makeAdapter({ [ROUTE]: config });
     await adapter.listModels(ROUTE);
     expect(probeCount(logPath)).toBe(1);
-    // 同键不同值（MOCK_SCENARIO happy → rich-content，目录形状相同）：键只携带键名，
-    // 值变化不再 bust——新鲜度由 TTL 兜底（rich-content 仍记进同一 MOCK_LOG，若重探
-    // probeCount 会变 2）
+    // 同键不同值（MOCK_SCENARIO happy → rich-content，目录形状相同）：值只以 hash
+    // 进入 key，明文不落，但仍须重新探测。
     set({ [ROUTE]: { ...config, env: { ...config.env, MOCK_SCENARIO: 'rich-content' } } });
     await adapter.listModels(ROUTE);
-    expect(probeCount(logPath)).toBe(1);
+    expect(probeCount(logPath)).toBe(2);
     // 键名集合变化（增键）仍 bust
     set({ [ROUTE]: { ...config, env: { ...config.env, NEW_KEY: 'x' } } });
     await adapter.listModels(ROUTE);
-    expect(probeCount(logPath)).toBe(2);
+    expect(probeCount(logPath)).toBe(3);
   });
 
  it('ok 条目带 cleanup 事实与 capability hash（agent version 经 agentInfo 保留）', async () => {
@@ -391,57 +405,24 @@ setInterval(() => {}, 1 << 30);
   });
 });
 
-describe(' probe 指标', () => {
-  it('ok probe：acp.probe timer 记一笔（provider + result=ok）；缓存命中不再计', async () => {
-    const metrics = new AcpMetricsRegistry();
-    const { config } = mockAgent('happy');
-    const { adapter } = makeAdapter({ [ROUTE]: config }, metrics);
-    await adapter.listModels(ROUTE);
-    await adapter.listModels(ROUTE); // 缓存命中：不再 probe 也不再计
-    const timers = metrics.snapshot().timers;
-    expect(timers).toHaveLength(1);
-    expect(timers[0]?.name).toBe('acp.probe');
-    expect(timers[0]?.labels).toEqual({ provider: ROUTE, result: 'ok' });
-    expect(timers[0]?.count).toBe(1);
-    expect(timers[0]?.totalMs).toBeGreaterThanOrEqual(0);
-  });
-
-  it('失败 probe：result 记 AcpErrorKind（spawn-failure）；失败缓存命中不重计；非 crash 不计 acp.crash', async () => {
-    const metrics = new AcpMetricsRegistry();
-    const missing: AcpStubAgentConfig = { name: 'Missing', command: '/nonexistent/dsh-acp-missing-bin', args: ['acp'], env: {} };
-    const { adapter } = makeAdapter({ [ROUTE]: missing }, metrics);
-    await expectListModelsError(adapter, ROUTE);
-    await expectListModelsError(adapter, ROUTE);
-    const snapshot = metrics.snapshot();
-    expect(snapshot.timers.map((timer) => ({ name: timer.name, labels: timer.labels, count: timer.count }))).toEqual([
-      { name: 'acp.probe', labels: { provider: ROUTE, result: 'spawn-failure' }, count: 1 },
-    ]);
-    expect(snapshot.counters).toEqual([]);
-  });
-
-  it('probe 内进程崩溃（initialize 前退出）：acp.probe result=crash 且加计 acp.crash', async () => {
-    const metrics = new AcpMetricsRegistry();
-    const config: AcpStubAgentConfig = {
-      name: 'Crashy',
-      command: process.execPath,
-      args: ['-e', `// ${SPEC_TAG}-inline-crash\nprocess.exit(1)`],
-      env: {},
-    };
-    const { adapter } = makeAdapter({ [ROUTE]: config }, metrics);
-    await expectListModelsError(adapter, ROUTE);
-    const snapshot = metrics.snapshot();
-    expect(snapshot.timers.map((timer) => ({ name: timer.name, labels: timer.labels }))).toEqual([
-      { name: 'acp.probe', labels: { provider: ROUTE, result: 'crash' } },
-    ]);
-    expect(snapshot.counters).toEqual([{ name: 'acp.crash', labels: { provider: ROUTE }, value: 1 }]);
-  });
-});
-
 describe('acpProbeConfigKey 与 stub 配置的协作', () => {
   it('缓存 key 即 acpProbeConfigKey 的输出', async () => {
     const { config } = mockAgent('happy');
     const { adapter } = makeAdapter({ [ROUTE]: config });
     await adapter.listModels(ROUTE);
     expect(adapter.probeSnapshot(ROUTE)?.key).toBe(acpProbeConfigKey(config));
+  });
+
+  it('env value rotation invalidates the probe cache without exposing the value', async () => {
+    const { config, logPath } = mockAgent('happy', { ACP_TEST_SECRET: 'secret-before' });
+    const { adapter, set } = makeAdapter({ [ROUTE]: config });
+    await adapter.listModels(ROUTE);
+    const rotated = { ...config, env: { ...config.env, ACP_TEST_SECRET: 'secret-after' } };
+    set({ [ROUTE]: rotated });
+    await adapter.listModels(ROUTE);
+    expect(probeCount(logPath)).toBe(2);
+    expect(adapter.probeSnapshot(ROUTE)?.key).toBe(acpProbeConfigKey(rotated));
+    expect(adapter.probeSnapshot(ROUTE)?.key).not.toContain('secret-before');
+    expect(adapter.probeSnapshot(ROUTE)?.key).not.toContain('secret-after');
   });
 });

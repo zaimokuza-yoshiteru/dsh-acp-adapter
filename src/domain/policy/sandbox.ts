@@ -26,11 +26,6 @@ export interface AcpSpawnPlan {
 export { AcpSpawnPlanError } from './errors.ts'
 export type { AcpSpawnPlanErrorCode } from './errors.ts'
 
-export const ACP_ENV_INHERIT_DEFAULT: readonly string[] = [
-  'PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'LC_ALL', 'LC_CTYPE',
-  'TMPDIR', 'TEMP', 'TMP', 'TERM', 'SystemRoot', 'PATHEXT', 'COMSPEC', 'USERPROFILE',
-]
-
 export const ACP_NATIVE_DATA_HOME_ENV_KEYS: readonly string[] = [
   'CODEX_HOME', 'KIMI_CODE_HOME', 'CLAUDE_CONFIG_DIR',
 ]
@@ -38,23 +33,6 @@ export const ACP_NATIVE_DATA_HOME_ENV_KEYS: readonly string[] = [
 export const ACP_NATIVE_XDG_ENV_KEYS: readonly string[] = [
   'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME',
 ]
-
-export interface AcpAgentEnvOptions {
-  readonly inherit?: readonly string[]
-  readonly entries?: Record<string, string>
-  readonly source?: Record<string, string | undefined>
-}
-
-export async function buildAcpAgentEnv(options: AcpAgentEnvOptions = {}): Promise<Record<string, string>> {
-  const source = options.source ?? process.env
-  const env: Record<string, string> = {}
-  for (const key of options.inherit ?? ACP_ENV_INHERIT_DEFAULT) {
-    const value = source[key]
-    if (value !== undefined) env[key] = value
-  }
-  for (const [key, value] of Object.entries(options.entries ?? {})) env[key] = value
-  return env
-}
 
 export interface AcpSpawnPlanOptions {
   readonly mode: AcpSandboxMode

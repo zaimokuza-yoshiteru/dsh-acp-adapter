@@ -26,6 +26,7 @@ import type { SubprocessSeamResolution } from '../../runtime/process/subprocess.
  */
 export function resolveSubprocessSeam(ctx: Context): SubprocessSeamResolution {
   const holder = ctx as Context & { get(name: string, strict?: boolean): unknown }
+  if (typeof holder.get !== 'function') return { ok: false, message: ACP_SUBPROCESS_UNAVAILABLE_MESSAGE }
   const seam = narrowSubprocessSeam(holder.get('subprocess'))
   if (seam === undefined) return { ok: false, message: ACP_SUBPROCESS_UNAVAILABLE_MESSAGE }
   return { ok: true, seam }
