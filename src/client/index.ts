@@ -84,7 +84,6 @@ async function registerUi(ctx: ClientContext): Promise<void> {
     refreshAgentHealth: (agentId) => { void panelController.refreshAgentHealth(agentId) },
     saveAgent: (editingId, draft) => panelController.saveAgent(editingId, draft),
     deleteAgent: (id) => panelController.deleteAgent(id),
-    setExternalSubagentProjection: (enabled) => panelController.setExternalSubagentProjection(enabled),
     countBoundSessions: (id) => panelController.countBoundSessions(id),
   }
   const settingsT = ctx.locale.bind('settings.acp') as AcpTranslate

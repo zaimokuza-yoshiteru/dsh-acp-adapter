@@ -69,7 +69,6 @@ export { ACP_BUILTIN_AGENT_TEMPLATES, CLAUDE_ACP_TEMPLATE, CODEX_ACP_TEMPLATE, D
 /** Resolved `dsh-acp` settings section. */
 export interface AcpSettings {
   agents: Record<string, AcpAgentConfig>
-  projectExternalSubagents?: boolean
 }
 
 /**
@@ -228,9 +227,7 @@ export const acpSettingsSchema: AcpSettingsSchema = Object.assign(
     const agents: Record<string, AcpAgentConfig> = {}
     for (const [id, raw] of Object.entries(rawAgents)) agents[id] = agentConfigOf(id, raw)
     assertSingletonRuntimes(agents)
-    const projection = value['projectExternalSubagents']
-    if (projection !== undefined && typeof projection !== 'boolean') throw new TypeError('dsh-acp settings: "projectExternalSubagents" must be boolean')
-    return { agents, ...(projection === true ? { projectExternalSubagents: true } : {}) }
+    return { agents }
   },
   {
     // Schemastery's toJSON is its own uid/refs format; this descriptor speaks
@@ -240,7 +237,6 @@ export const acpSettingsSchema: AcpSettingsSchema = Object.assign(
     toJSON: (): unknown => ({
       type: 'object',
       properties: {
-        projectExternalSubagents: { type: 'boolean', default: false },
         agents: {
           type: 'object',
           additionalProperties: {
@@ -409,7 +405,6 @@ export function installInstalledProfileRegistry(ctx: Context, options: Installed
         read: async (sessionId, key) => await sidecar.readDispatch(sessionId as Parameters<AcpSidecar['readDispatch']>[0], key),
       }
   let agents: Record<string, AcpAgentConfig> = {}
-  let projectExternalSubagents = false
   // Desired settings and the last successfully installed snapshot are kept
   // separate. A partially failed registration must never make an old route's
   // closure observe `undefined` just because the settings watcher advanced.
@@ -577,7 +572,6 @@ export function installInstalledProfileRegistry(ctx: Context, options: Installed
             attachments,
             resolveNativeQuestions,
             sidecar === undefined ? undefined : async (observation, context) => {
-              if (!projectExternalSubagents) return undefined
               const projector = externalSubagentProjector
               if (projector === undefined) throw new Error('ACP_SUBAGENT_PERSISTENCE_UNAVAILABLE')
               const store = sessionStore
@@ -671,7 +665,6 @@ export function installInstalledProfileRegistry(ctx: Context, options: Installed
   const scope = settings.register(ACP_SETTINGS_NS, acpSettingsSchema)
   const initialSettings = scope.get()
   agents = initialSettings.agents
-  projectExternalSubagents = initialSettings.projectExternalSubagents === true
   onSettingsChange()
   ready.resolve()
   const unwatch = scope.watch((next) => {
@@ -679,7 +672,6 @@ export function installInstalledProfileRegistry(ctx: Context, options: Installed
     // routes against a fiber whose resources are being released.
     if (disposed) return
     agents = next.agents
-    projectExternalSubagents = next.projectExternalSubagents === true
     onSettingsChange()
   })
   ctx.effect(() => () => { unwatch() }, '@zaimokuza/dsh-acp-adapter: dispose settings watch')

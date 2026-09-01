@@ -117,7 +117,7 @@ Native-provider tools run in DSH's AgentLoop, so Chat can show a native tool cou
 
 DSH's Stop action first sends the ACP `session/cancel` notification and waits for the active prompt to settle; after a normal cancellation, the connection and session remain reusable. The plugin terminates the Agent process and enters recovery only when the Agent still ignores cancellation after the bounded wait.
 
-The ACP panel also offers an “Add external delegations to the DSH subagent catalog” option that is off by default. When enabled, only successful delegations with provable identity, task, and result are kept as native read-only DSH sessions. Devin and Claude are currently eligible; Kimi and Codex remain visible only as the ACP activity they actually expose. The details page uses native user and assistant messages for the task and the final output or an explicitly labelled summary exposed by the Agent. It is not a continuable DSH subagent and does not invent unexposed internal work.
+The plugin automatically keeps successful external delegations with provable identity, task, and result as native read-only DSH subagent sessions. Devin and Claude are currently eligible; Kimi and Codex remain visible only as the ACP activity they actually expose. The details page uses native user and assistant messages for the task and the final output or an explicitly labelled summary exposed by the Agent. It is not a continuable DSH subagent and does not invent unexposed internal work. Delegations with incomplete evidence or a failed outcome do not create catalog records.
 
 ## Upgrade and uninstall
 

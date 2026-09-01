@@ -43,7 +43,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { Remote, RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import type * as acp from '@agentclientprotocol/sdk'
 import { acpRouteId, ACP_AGENT_ID_PATTERN } from '../domain/session/agent-config.ts'
-import { acpProbeConfigKey, acpProbeFresh, acpVersionCompatibility, descriptorOf } from '../domain/session/agent-config.ts'
+import { acpProbeConfigKey, acpVersionCompatibility, descriptorOf } from '../domain/session/agent-config.ts'
 import type { AcpAgentConfig, AcpAgentRuntimeDescriptor } from '../domain/session/agent-config.ts'
 import type { AcpErrorCategory } from '../protocol/v1/types.ts'
 import { deriveAcpAgentState } from '../domain/session/agent-state.ts'
@@ -197,10 +197,11 @@ export interface AcpProbeCacheLike {
 
 /**
  * llm-stub 探针缓存条目的结构面（key 配置哈希 + at 时间戳 + 成功/失败分支；
- * SDK 原值，出栈前收窄）。新鲜度判定集中在 agent-config.ts
- * `acpProbeFresh`：key 与当前配置的 `acpProbeConfigKey` 相等且未过 TTL
- * （ok 10min / error 30s）才算新鲜；不新鲜/缺席按「从未探测」计入 state
- * （probe 行仍如实展示上次探测事实）。ok 分支的 cleanup/capabilityHash 是
+ * SDK 原值，出栈前收窄）。设置页只接受 key 与当前配置的
+ * `acpProbeConfigKey` 相等的最后一次明确结果；这里不套模型目录缓存 TTL，
+ * 避免把“上次检查成功”在 10 分钟后错误降成“从未探测”。模型目录仍由
+ * llm-stub 的 `acpProbeFresh` 执行 ok 10min / error 30s 的运行时缓存策略。
+ * ok 分支的 cleanup/capabilityHash 是
  * 新增——旧条目（或测试夹具）缺席时 health 行如实归 null。
  */
 export interface AcpProbeSnapshotLike {
@@ -735,20 +736,21 @@ export class AcpRemoteService extends TypertRemoteService {
           await probeCache.listModels(routeId).catch(() => undefined)
         }
         const snapshot = probeCache.probeSnapshot(acpRouteId(id))
+        // Health is a last-explicit-check view, not the model catalogue's
+        // runtime cache. Keep a result while it still belongs to the exact
+        // saved configuration; configuration edits invalidate it by key.
+        const matchingSnapshot = snapshot?.key === acpProbeConfigKey(config) ? snapshot : undefined
         // Opening Settings is a read-only cache view: resolving PATH is
         // side-effect free, while `--version` is a subprocess and therefore
         // belongs exclusively to an explicit recheck. Never make a panel
         // mount spawn an ACP process (or a version helper).
         const executable = await this.resolved.checkExecutable(config.command)
-        const cachedAgentVersion = snapshot?.result.kind === 'ok' && snapshot.result.agentInfo?.version !== undefined
-          ? snapshot.result.agentInfo.version
+        const cachedAgentVersion = matchingSnapshot?.result.kind === 'ok' && matchingSnapshot.result.agentInfo?.version !== undefined
+          ? matchingSnapshot.result.agentInfo.version
           : null
         const version = recheck && executable ? await this.resolved.queryVersion(config.command) : cachedAgentVersion
- // 新鲜度集中判定（agent-config.ts acpProbeFresh）：key 相等且未过
-        // TTL（ok 10min / error 30s）才算新鲜；不新鲜/缺席按「从未探测」计入
-        // state（probe 行仍如实展示上次探测事实）。
-        const fresh = snapshot !== undefined && acpProbeFresh(snapshot, acpProbeConfigKey(config), Date.now()) ? snapshot : undefined
-        // readiness 派生：probe 握手事实与配置状态共同决定 readiness
+        // Readiness is the last explicit outcome for this exact configuration.
+        // Runtime consumers independently re-probe after their bounded TTL.
         // 版本字段（versionPolicy/兼容状态）共用同一绑定事实。
         const descriptor = descriptorOf(id, config)
         return {
@@ -759,12 +761,12 @@ export class AcpRemoteService extends TypertRemoteService {
           loginHint: config.loginHint ?? null,
           executable,
           version,
-          probe: probeRow(snapshot, descriptor, this.resolved.imageInputAvailable),
+          probe: probeRow(matchingSnapshot, descriptor, this.resolved.imageInputAvailable),
           // registry 的 agents map 经 settings schema 校验（非法值根本写不进来），configValid 恒 true
           state: deriveAcpAgentState({
             hostCompatible,
             configValid: true,
-            probe: fresh === undefined ? undefined : probeStateView(fresh),
+            probe: matchingSnapshot === undefined ? undefined : probeStateView(matchingSnapshot),
           }),
         }
       }),
@@ -935,7 +937,7 @@ function validateActivityReadRequest(limit: number, filter: AcpActivityFilterVie
   }
 }
 
-/** 新鲜 probe 条目 → 五态派生的最小视图（ok 留目录事实，error 留分流 kind）。 */
+/** 当前配置最后一次 probe → 五态派生的最小视图（ok 留目录事实，error 留分流 kind）。 */
 function probeStateView(snapshot: AcpProbeSnapshotLike): AcpAgentStateProbeView {
   const { result } = snapshot
   return result.kind === 'ok'
@@ -953,7 +955,8 @@ function contractCleanupOf(cleanup: { readonly close: string; readonly delete: s
   return { close, delete: del, message: cleanup.message ?? null }
 }
 
-function probeRow(snapshot: AcpProbeSnapshotLike | undefined, descriptor: AcpAgentRuntimeDescriptor | undefined, imageInputAvailable: boolean): AcpProviderHealth['probe'] {  if (snapshot === undefined) return { status: 'never', at: null }
+function probeRow(snapshot: AcpProbeSnapshotLike | undefined, descriptor: AcpAgentRuntimeDescriptor | undefined, imageInputAvailable: boolean): AcpProviderHealth['probe'] {
+  if (snapshot === undefined) return { status: 'never', at: null }
   const { result, at } = snapshot
   if (result.kind === 'ok') {
     const capabilities = capabilityFactsOf(result.agentCapabilities)

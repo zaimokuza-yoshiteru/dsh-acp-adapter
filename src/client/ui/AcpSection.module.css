@@ -52,56 +52,48 @@
   line-height: 18px;
   color: var(--dsw-alias-label-tertiary);
 }
-.toolbar {
+.addActions {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
-  align-items: center;
 }
-/* Agent 卡片折叠交互：「添加 agent」下拉（宿主 models 分区「添加提供方」同款形态：
-   触发钮 + 绝对定位菜单）。 */
 .addMenu {
-  position: relative;
-  display: inline-flex;
+  flex: 1 1 0;
+  min-width: 180px;
 }
-.addMenuList {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
-  z-index: 30;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 220px;
+.addButton {
   box-sizing: border-box;
-  padding: 6px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 12px;
-  background: var(--dsw-alias-bg-layer-1);
-  box-shadow: var(--dsw-shadow-lv3);
-}
-.addMenuItem {
-  display: flex;
+  display: inline-flex;
+  flex: 1 1 0;
   align-items: center;
-  width: 100%;
-  padding: 6px 10px;
-  border: none;
-  border-radius: 8px;
-  font: inherit;
-  font-size: 13px;
-  line-height: 20px;
-  text-align: left;
+  justify-content: center;
+  gap: 6px;
+  min-width: 180px;
+  height: 44px;
+  padding: 0 14px;
+  border: 1px dashed var(--dsw-alias-border-l3);
+  border-radius: 12px;
   background: transparent;
   color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 14px;
+  line-height: 22px;
   cursor: pointer;
-  white-space: nowrap;
 }
-.addMenuItem:hover:not(:disabled) {
-  background: var(--dsw-alias-interactive-bg-hover-solid);
+.addMenu .addButton {
+  width: 100%;
+  min-width: 0;
 }
-.addMenuItem:disabled {
+.addButton:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+.addButton:disabled {
   opacity: 0.4;
   cursor: default;
+}
+.addButton:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--dsw-alias-border-l3);
 }
 .chevron {
   display: inline-flex;
@@ -118,9 +110,6 @@
   flex-direction: column;
   gap: 8px;
 }
-.optionCard { display: flex; align-items: center; gap: 16px; justify-content: space-between; border: 1px solid var(--dsw-alias-border-l2); border-radius: 12px; padding: 12px 14px; }
-.optionCopy { display: grid; gap: 2px; color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 18px; }
-.optionCopy strong { color: var(--dsw-alias-label-primary); font-size: 14px; line-height: 22px; font-weight: 500; }
 .rowCard {
   border: 1px solid var(--dsw-alias-border-l2);
   border-radius: 12px;
@@ -331,10 +320,6 @@
 }
 .secondaryButton:hover:not(:disabled) {
   background: var(--dsw-alias-interactive-bg-hover-solid);
-}
-/* 顶部管理操作与下方 Agent 行内按钮共用 14px 圆角，避免同一区域出现两套按钮轮廓。 */
-.toolbarButton {
-  border-radius: 14px;
 }
 .dangerButton {
   background: transparent;

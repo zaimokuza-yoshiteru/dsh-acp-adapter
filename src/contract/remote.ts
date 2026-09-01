@@ -432,9 +432,9 @@ export type AcpAgentSessionOptionWrite =
 /**
  * ACP agent 配置的五态词表（domain 真源与派生规则见
  * src/domain/session/agent-state.ts `deriveAcpAgentState`，本类型是它的 wire
- * 字面量副本）：saved-unverified = 已存未探测；ready = 新鲜 probe 成功且
- * （绑定的 descriptor 声明 auth refs 时）模型目录非空；auth-required = 需要登录（出路是
- * agent 自家 CLI——external-login-only， Remote 面不再有
+ * 字面量副本）：saved-unverified = 当前配置尚未探测；ready = 当前配置最后
+ * 一次明确 probe 成功；auth-required = 明确需要登录（出路是 agent 自家
+ * CLI——external-login-only， Remote 面不再有
  * authenticate）；unavailable = probe 失败/配置无效；incompatible = 宿主结构
  * 门未通过。
  */

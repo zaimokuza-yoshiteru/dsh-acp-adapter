@@ -11,7 +11,7 @@ import {
   type AcpProbeSnapshotLike,
 } from '../../../src/remote/service.ts'
 import type { AcpAgentConfig } from '../../../src/domain/session/agent-config.ts'
-import { acpProbeConfigKey } from '../../../src/domain/session/agent-config.ts'
+import { ACP_PROBE_CACHE_OK_TTL_MS, acpProbeConfigKey } from '../../../src/domain/session/agent-config.ts'
 import type { AcpRecoveryView } from '../../../src/contract/remote.ts'
 import { TYPERT } from '../../../lib/typert.host.js'
 
@@ -73,6 +73,20 @@ describe('AcpRemoteService current public surface', () => {
     await expect(instance.health({ recheck: true, agentId: 'devin' })).resolves.toMatchObject({ providers: [{ id: 'devin' }] })
     expect((instance as unknown as Record<string, unknown>).authenticate).toBeUndefined()
     expect((instance as unknown as Record<string, unknown>).options).toBeUndefined()
+  })
+
+  it('keeps the last explicit result after the runtime TTL and invalidates it when configuration changes', async () => {
+    const stale = { ...PROBE, at: Date.now() - ACP_PROBE_CACHE_OK_TTL_MS - 1 }
+    const previous = service({ registry: registry({ devin: DEVIN }, { 'acp-devin': stale }) }).instance
+    await expect(previous.health()).resolves.toMatchObject({
+      providers: [{ id: 'devin', state: 'ready', version: '1.0.0', probe: { status: 'ok', at: stale.at } }],
+    })
+
+    const edited = { ...DEVIN, args: ['acp', '--different'] }
+    const changed = service({ registry: registry({ devin: edited }, { 'acp-devin': stale }) }).instance
+    await expect(changed.health()).resolves.toMatchObject({
+      providers: [{ id: 'devin', state: 'saved-unverified', version: null, probe: { status: 'never', at: null } }],
+    })
   })
 
   it('routes recovery through the bound provider adapter and keeps DSH history untouched', async () => {

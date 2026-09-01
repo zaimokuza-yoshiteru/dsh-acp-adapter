@@ -464,8 +464,8 @@ describe('acpSettingsSchema', () => {
     expect(resolved.agents['kimi']).toEqual({ name: 'Kimi', command: '/usr/local/bin/kimi', args: ['acp'], env: {} });
   });
 
-  it('未知键被剥离；已删除的 profile MCP 字段不会继续进入产品配置', () => {
-    const resolved = acpSettingsSchema({ agents: { devin: { name: 'Devin', command: 'devin', typoField: 1, mcpServers: [{ type: 'stdio' }] } }, stray: true });
+  it('未知键被剥离；已删除的 profile MCP 与外部委派开关不会继续进入产品配置', () => {
+    const resolved = acpSettingsSchema({ agents: { devin: { name: 'Devin', command: 'devin', typoField: 1, mcpServers: [{ type: 'stdio' }] } }, projectExternalSubagents: false, stray: true });
     expect(resolved).toEqual({ agents: { devin: { name: 'Devin', command: 'devin', args: [], env: {} } } });
   });
 

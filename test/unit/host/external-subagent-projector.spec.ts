@@ -15,6 +15,26 @@ const observation = {
 }
 
 describe('external subagent projector', () => {
+  it('ignores failed or evidence-incomplete delegations even when projection is automatic', async () => {
+    const persistence = {
+      inspect: vi.fn(),
+      create: vi.fn(),
+      append: vi.fn(),
+    }
+    const sidecar = { upsertActivity: vi.fn() }
+    const projector = new ExternalSubagentProjector(persistence as never, sidecar as never)
+    const context = {
+      profileId: 'claude', bindingGeneration: 1, rootAcpSessionId: 'root',
+      parentDshSessionId: 'parent', parentCwd: '/tmp', flushParent: vi.fn(async () => true),
+    }
+
+    await expect(projector.project({ ...observation, projectionEligible: false }, context)).resolves.toBeUndefined()
+    await expect(projector.project({ ...observation, status: 'failed' }, context)).resolves.toBeUndefined()
+    expect(context.flushParent).not.toHaveBeenCalled()
+    expect(persistence.create).not.toHaveBeenCalled()
+    expect(sidecar.upsertActivity).not.toHaveBeenCalled()
+  })
+
   it('publishes a native read-only task/result transcript after the parent durability barrier', async () => {
     const records = new Map<string, { meta: never; events: never[] }>()
     const order: string[] = []

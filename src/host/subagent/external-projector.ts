@@ -246,7 +246,7 @@ export interface ExternalProjectionRepairSummary {
   readonly conflicted: number
 }
 
-/** Surface-free, idempotent one-shot bridge for evidence-complete external delegations. */
+/** Surface-free, idempotent one-shot bridge for every evidence-complete external delegation. */
 export class ExternalSubagentProjector {
   constructor(
     private readonly persistence: Pick<SessionPersistence, 'create' | 'append' | 'inspect'>

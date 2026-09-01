@@ -311,9 +311,8 @@ export const ACP_PROBE_CACHE_ERROR_TTL_MS = 30_000
 /**
  * probe 缓存新鲜度判定（全仓唯一落点）：key 与当前配置的
  * {@link acpProbeConfigKey} 相等 **且** 未过期（按成功/失败取对应 TTL）。
- * 过期条目按「从未探测」计——llm-stub 的 listModels 命中过期条目按 miss 重
- * probe；health 五态与创建门（src/remote/service.ts、
- * host/composition/installed-profile-registry.ts）把过期条目折成 saved-unverified/补 probe。
+ * llm-stub 的 listModels 命中过期条目按 miss 重 probe。设置页的最后一次
+ * 明确检查状态不消费这个 TTL；它只在配置 key 改变时失效。
  * 结构参数化（只要 key/at/result.kind 三键），llm-stub 缓存条目与 remote 的
  * 结构面快照都直接适配。
  */

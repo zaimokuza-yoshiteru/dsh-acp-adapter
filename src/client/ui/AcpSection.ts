@@ -16,9 +16,14 @@
  * @module @zaimokuza/dsh-acp-adapter/client/AcpSection
  */
 
-import { createElement as h, useEffect, useRef, useState } from 'react'
+import { createElement as h, useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
-import { IconChevronDownOutline14 } from '@deepseek-ai/dsh-client-ui-primitives'
+import {
+  IconChevronDownOutline14,
+  IconPlusOutline16,
+  IconRefreshOutline16,
+  Menu,
+} from '@deepseek-ai/dsh-client-ui-primitives'
 import {
   ACP_BUILTIN_AGENT_TEMPLATES,
   draftFromAgent,
@@ -49,7 +54,6 @@ export interface AcpSectionWire {
   refreshAgentHealth(agentId: string): void
   saveAgent(editingId: string | undefined, draft: AgentDraft): Promise<string | undefined>
   deleteAgent(id: string): Promise<string | undefined>
-  setExternalSubagentProjection(enabled: boolean): Promise<string | undefined>
   /**
  * 删除确认提示：该 profile 的既有会话 binding 计数；undefined = 计数不可
    * 得（RPC 失败/畸形），确认块退回无计数的基础文案（不冒充 0）。
@@ -74,11 +78,6 @@ interface InputEvent {
   target: { value: string }
 }
 
-interface KeyboardEventLike {
-  key: string
-  preventDefault(): void
-}
-
 /**
  * Render the ACP section content column.
  * @param props - slot-delivered inject face.
@@ -98,24 +97,14 @@ function Loaded({ t, useStore, panel }: {
   const snapshot = useStore((value) => value)
   const [editor, setEditor] = useState<EditorState | null>(null)
   const [notice, setNotice] = useState<'saved' | 'deleted' | null>(null)
-  const [projectionSaving, setProjectionSaving] = useState(false)
- // Agent 卡片折叠交互：「添加 agent」下拉的开合状态（触发钮 + 菜单；外部点击关闭）。
+  // The native Menu owns Escape/outside-click/portal placement; this component
+  // only owns whether the Agent template chooser is open.
   const [addMenuOpen, setAddMenuOpen] = useState(false)
-  const addMenuRef = useRef<HTMLDivElement | null>(null)
   // Health data loads when the panel first opens, never in the background:
   // each fetch runs `<command> --version` probes on the host.
   useEffect(() => {
     panel.refreshHealth()
   }, [panel])
-
-  useEffect(() => {
-    if (!addMenuOpen) return
-    const closeOutside = (event: MouseEvent): void => {
-      if (!addMenuRef.current?.contains(event.target as Node)) setAddMenuOpen(false)
-    }
-    document.addEventListener('mousedown', closeOutside)
-    return () => { document.removeEventListener('mousedown', closeOutside) }
-  }, [addMenuOpen])
 
   const closeEditor = (changed: boolean): void => {
     setEditor(null)
@@ -176,82 +165,6 @@ function Loaded({ t, useStore, panel }: {
   }
   const refreshing = snapshot.health.status === 'loading'
   const checkingAnyAgent = snapshot.health.checkingAgentIds.length > 0
-  children.push(h('div', { key: 'toolbar', className: css.toolbar },
- // Agent 卡片折叠交互：one-click 模板从平铺枚举改为「添加 agent」下拉（宿主「模型」
-    // 配置页「添加提供方」同款形态：一个触发钮 + 下拉列出全部内置模板与
-    // 手动添加）。draftFromTemplate 对列表内 id 恒有定义。
-    h('div', {
-      className: css.addMenu,
-      ref: addMenuRef,
-      onKeyDown: (event: KeyboardEventLike) => {
-        if (event.key === 'Escape' && addMenuOpen) {
-          event.preventDefault()
-          setAddMenuOpen(false)
-        }
-      },
-    },
-      h('button', {
-        type: 'button',
-        className: `${css.secondaryButton} ${css.toolbarButton}`,
-        disabled: readOnly,
-        'aria-haspopup': 'menu',
-        'aria-expanded': addMenuOpen,
-        onClick: () => { setAddMenuOpen((previous) => !previous) },
-      },
-        t('addAgent'),
-        h(IconChevronDownOutline14, {
-          size: 14,
-          className: addMenuOpen ? `${css.chevron} ${css.chevronFlip}` : css.chevron,
-        }),
-      ),
-      addMenuOpen
-        ? h('div', { className: css.addMenuList, role: 'menu', 'aria-label': t('addAgent') },
-          ...ACP_BUILTIN_AGENT_TEMPLATES.map((template) => h('button', {
-            key: `template-${template.id}`,
-            type: 'button',
-            role: 'menuitem',
-            className: css.addMenuItem,
-            onClick: () => {
-              setAddMenuOpen(false)
-              const seed = draftFromTemplate(template.id)
-              if (seed !== undefined) openAdd(seed)
-            },
-          }, t('addTemplate', { name: template.name }))),
-          h('button', {
-            type: 'button',
-            role: 'menuitem',
-            className: css.addMenuItem,
-            onClick: () => {
-              setAddMenuOpen(false)
-              openAdd(emptyDraft())
-            },
-          }, t('addCustom')),
-        )
-        : null,
-    ),
-    h('button', {
-      type: 'button',
-      className: `${css.secondaryButton} ${css.toolbarButton}`,
-      disabled: refreshing || checkingAnyAgent,
-      onClick: () => { panel.refreshHealth(true) },
-    }, t(refreshing ? 'refreshing' : 'refresh')),
-  ))
-
-  children.push(h('label', { key: 'projection', className: css.optionCard },
-    h('span', { className: css.optionCopy },
-      h('strong', null, t('subagentProjectionTitle')),
-      h('span', null, t('subagentProjectionDescription')),
-    ),
-    h('input', {
-      type: 'checkbox',
-      checked: settings.projectExternalSubagents,
-      disabled: readOnly || projectionSaving,
-      onChange: (event: { target: { checked: boolean } }) => {
-        setProjectionSaving(true)
-        void panel.setExternalSubagentProjection(event.target.checked).finally(() => { setProjectionSaving(false) })
-      },
-    }),
-  ))
 
   if (ids.length === 0 && editor?.mode !== 'add') {
     children.push(h('p', { key: 'empty', className: css.hint }, t('emptyAgents')))
@@ -296,6 +209,55 @@ function Loaded({ t, useStore, panel }: {
       }),
     ))
   }
+
+  // Match the native Models settings footer: two equal-width dashed entry
+  // points below the rows. The template chooser itself is the host Menu
+  // primitive, so its surface and interaction stay native across themes.
+  const customAgentItemId = 'custom'
+  children.push(h('div', { key: 'actions', className: css.addActions },
+    h(Menu, {
+      open: addMenuOpen,
+      portal: true,
+      className: css.addMenu ?? '',
+      items: [
+        ...ACP_BUILTIN_AGENT_TEMPLATES.map((template) => ({
+          id: template.id,
+          label: t('addTemplate', { name: template.name }),
+        })),
+        { id: customAgentItemId, label: t('addCustom') },
+      ],
+      onClose: () => { setAddMenuOpen(false) },
+      onSelect: (id: string) => {
+        setAddMenuOpen(false)
+        if (id === customAgentItemId) {
+          openAdd(emptyDraft())
+          return
+        }
+        const seed = draftFromTemplate(id)
+        if (seed !== undefined) openAdd(seed)
+      },
+      anchor: h('button', {
+        type: 'button',
+        className: css.addButton,
+        disabled: readOnly,
+        'aria-haspopup': 'menu',
+        'aria-expanded': addMenuOpen,
+        onClick: () => { setAddMenuOpen((previous) => !previous) },
+      },
+        h(IconPlusOutline16, { size: 14 }),
+        t('addAgent'),
+      ),
+    }),
+    h('button', {
+      type: 'button',
+      className: css.addButton,
+      disabled: refreshing || checkingAnyAgent,
+      onClick: () => { panel.refreshHealth(true) },
+    },
+      h(IconRefreshOutline16, { size: 14 }),
+      t(refreshing ? 'refreshing' : 'refresh'),
+    ),
+  ))
 
   return h('div', { className: css.section }, children)
 }
