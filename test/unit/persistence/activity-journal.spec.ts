@@ -32,6 +32,7 @@ describe('ACP activity journal', () => {
   it('benchmarks 1000 current activities across 10000 durable revisions', async () => {
     const { sidecar } = store()
     const started = performance.now()
+    const marks: number[] = []
     for (let revision = 0; revision < 10_000; revision += 1) {
       const activityId = `bench:${String(revision % 1_000)}`
       await sidecar.upsertActivity(activity(activityId, 1_700_000_000_000 + revision, {
@@ -39,16 +40,20 @@ describe('ACP activity journal', () => {
         activitySeq: revision < 1_000 ? revision + 1 : undefined,
         status: revision % 10 === 9 ? 'completed' : 'running',
       }))
+      if ((revision + 1) % 1_000 === 0) marks.push(performance.now() - started)
     }
     const snapshots = await Promise.all(Array.from({ length: 5 }, (_, anchor) => sidecar.activitySnapshot(SessionId('session-1'), 200, { promptAnchorMessageId: `bench-anchor-${String(anchor)}` })))
     const elapsedMs = performance.now() - started
     console.info(`[activity-benchmark] 1000 activities / 10000 revisions: ${elapsedMs.toFixed(1)}ms`)
     expect(snapshots.flat()).toHaveLength(1_000)
     expect(await sidecar.activityHead(SessionId('session-1'))).toBe(10_000)
-    // Non-strict guard: this is evidence against an accidental quadratic path,
-    // not a machine-specific performance contract.
-    expect(elapsedMs).toBeLessThan(15_000)
-  }, 30_000)
+    // Compare equivalent update batches to catch accidental growth without
+    // turning shared-runner wall-clock time into a machine-specific contract.
+    const firstUpdateBatch = (marks[1] ?? 0) - (marks[0] ?? 0)
+    const lastUpdateBatch = (marks[9] ?? 0) - (marks[8] ?? 0)
+    expect(firstUpdateBatch).toBeGreaterThan(0)
+    expect(lastUpdateBatch).toBeLessThan(firstUpdateBatch * 5)
+  }, 45_000)
 
   it('assigns a durable monotonic sequence and upserts an activity in place', async () => {
     const { sidecar } = store()

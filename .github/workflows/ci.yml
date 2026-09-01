@@ -29,7 +29,15 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Typecheck
         run: pnpm typecheck
+      # The persistence benchmark specs intentionally exercise SQLite with
+      # 10k sequential writes. Running test files concurrently on Windows makes
+      # those independent specs contend for the shared runner's filesystem and
+      # turns the regression signal into runner-load noise.
+      - name: Test (Windows, serial files)
+        if: runner.os == 'Windows'
+        run: pnpm test --no-file-parallelism
       - name: Test
+        if: runner.os != 'Windows'
         run: pnpm test
       - name: Build and verify bundle
         run: pnpm build
