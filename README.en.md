@@ -4,9 +4,10 @@
 
 Use Devin, Codex, Kimi, or Claude agents from the DeepSeek Harness (DSH) session UI. Each Agent remains responsible for its own model, tools, skills, login state, and runtime.
 
-This version targets DSH `0.1.2-alpha.4` exactly. Development, CI, and release builds
-use the exact published alpha.4 packages by default; local source links remain
-an additional upstream-source compatibility lane.
+This version supports DSH `>=0.1.2-alpha.4 <0.1.3`. Development and release builds
+use the exact published alpha.5 packages; CI additionally verifies the minimum
+supported version and the current npm alpha, while local source links cover the
+alpha.5 upstream-source compatibility lane.
 
 ## Preview
 
@@ -30,12 +31,12 @@ Use Agent audit to inspect permissions, recovery, files, configuration, and sess
 
 ![The Agent audit timeline for a Devin session](assets/readme/acp-audit.en.png)
 
-## Prerequisite: install DSH alpha.4
+## Prerequisite: install a supported DSH version
 
 You need Node.js `^22.19.0 || >=24.0.0`:
 
 ```bash
-npx @deepseek-ai/dsh@0.1.2-alpha.4 web
+npx @deepseek-ai/dsh@0.1.2-alpha.5 web
 ```
 
 Plugin development installs exact published dependencies directly:
@@ -44,7 +45,7 @@ Plugin development installs exact published dependencies directly:
 pnpm install --frozen-lockfile
 ```
 
-For an additional source-level check, build `dsh-v0.1.2-alpha.4` and run
+For an additional source-level check, build `dsh-v0.1.2-alpha.5` and run
 `pnpm setup:source-reference`. This compatibility lane only changes this
 checkout's development links and never touches the DSH user directory.
 
@@ -53,8 +54,8 @@ checkout's development links and never touches the DSH user directory.
 Run this on the machine running DSH:
 
 ```bash
-npx @deepseek-ai/dsh@0.1.2-alpha.4 plugin --profile web add @zaimokuza/dsh-acp-adapter@alpha
-npx @deepseek-ai/dsh@0.1.2-alpha.4 web
+npx @deepseek-ai/dsh@0.1.2-alpha.5 plugin --profile web add @zaimokuza/dsh-acp-adapter@alpha
+npx @deepseek-ai/dsh@0.1.2-alpha.5 web
 ```
 
 Open DSH's ACP panel, select a built-in Agent template, provide any required executable configuration, and run the health check. The model picker shows models and options returned by the ACP session.

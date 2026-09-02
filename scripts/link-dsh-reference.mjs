@@ -9,8 +9,8 @@ import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const expectedTag = 'dsh-v0.1.2-alpha.4'
-const expectedVersion = '0.1.2-alpha.4'
+const expectedTag = 'dsh-v0.1.2-alpha.5'
+const expectedVersion = '0.1.2-alpha.5'
 
 function parseArgs(argv) {
   const result = { hostRoot: process.env.DSH_UPSTREAM_CHECKOUT || resolve(root, '..', 'reference', 'deepseek-harness'), check: false, help: false }

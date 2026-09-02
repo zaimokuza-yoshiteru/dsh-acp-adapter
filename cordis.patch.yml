@@ -1,4 +1,4 @@
-# @zaimokuza/dsh-acp-adapter bundle patch layer for the DSH 0.1.2-alpha.4 host.
+# @zaimokuza/dsh-acp-adapter bundle patch layer for the DSH 0.1.2-alpha.5 host.
 # The adapter is additive; stock AgentLoop and ModelPicker remain active.
 #
 # This file becomes one patch layer when the package is listed in a profile's

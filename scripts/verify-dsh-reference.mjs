@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const reference = process.env.DSH_UPSTREAM_CHECKOUT ?? join(root, '..', 'reference', 'deepseek-harness')
-const expectedTag = 'dsh-v0.1.2-alpha.4'
+const expectedTag = 'dsh-v0.1.2-alpha.5'
 const requiredPackages = [
   'packages/api/session-controller/package.json',
   'packages/api/settings-controller/package.json',
@@ -41,8 +41,8 @@ for (const relative of requiredPackages) {
   const file = join(reference, relative)
   if (!existsSync(file)) throw new Error(`DSH reference package is missing: ${relative}`)
   const packageJson = JSON.parse(readFileSync(file, 'utf8'))
-  if (packageJson.version !== '0.1.2-alpha.4') {
-    throw new Error(`${relative} is not 0.1.2-alpha.4`)
+  if (packageJson.version !== '0.1.2-alpha.5') {
+    throw new Error(`${relative} is not 0.1.2-alpha.5`)
   }
 }
 

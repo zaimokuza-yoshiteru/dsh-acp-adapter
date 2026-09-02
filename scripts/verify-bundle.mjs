@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// 仓外可执行的 0.1.2-alpha.4 client bundle 校验（独立 node 直跑，零依赖）。
+// 仓外可执行的 0.1.2-alpha.5 client bundle 校验（独立 node 直跑，零依赖）。
 // 覆盖：① package.json `dsh.client` manifest 形态与 peer/dev 双列纪律
 // ② 产物存在性 ③ 产物闭包（__ModuleLoader__ 包装形态 / id == 包名 /
 // sourcemap 在场且 sources 非空）④ module requests（产物内 require 全部落在
@@ -109,20 +109,21 @@ for (const spec of declaredExternal) {
   }
 }
 
-// 每个 inject 包名 peerDependencies + devDependencies 双列。Alpha.4 预发布线
-// 精确绑定宿主版本，避免 npm 接受未经回归的相邻 Alpha。
-const DSH_PEER_VERSION = '0.1.2-alpha.4'
+// 每个 inject 包名 peerDependencies + devDependencies 双列。peer 声明受支持的
+// 0.1.2 宿主线，dev 精确钉住当前回归版本；CI 另测最低版本和 npm alpha。
+const DSH_PEER_RANGE = '>=0.1.2-alpha.4 <0.1.3'
+const DSH_DEV_VERSION = '0.1.2-alpha.5'
 const EXACT_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/
 for (const [name, peerRange] of Object.entries(pkg.peerDependencies ?? {})) {
   const devRange = pkg.devDependencies?.[name]
   if (devRange === undefined) {
     fail(`package.json: peerDependencies.${name} (${peerRange}) 缺少 devDependencies 同名声明`)
   } else if (name.startsWith('@deepseek-ai/dsh-')) {
-    if (peerRange !== DSH_PEER_VERSION) {
-      fail(`package.json: peerDependencies.${name} is ${peerRange}; expected ${DSH_PEER_VERSION}`)
+    if (peerRange !== DSH_PEER_RANGE) {
+      fail(`package.json: peerDependencies.${name} is ${peerRange}; expected ${DSH_PEER_RANGE}`)
     }
-    if (!EXACT_VERSION.test(devRange)) {
-      fail(`package.json: devDependencies.${name} must be an exact tested version; found ${devRange}`)
+    if (devRange !== DSH_DEV_VERSION || !EXACT_VERSION.test(devRange)) {
+      fail(`package.json: devDependencies.${name} must be exact ${DSH_DEV_VERSION}; found ${devRange}`)
     }
   } else if (peerRange !== devRange) {
     fail(`package.json: peerDependencies.${name} is ${peerRange}; expected the exact dev pin ${devRange}`)
@@ -130,7 +131,7 @@ for (const [name, peerRange] of Object.entries(pkg.peerDependencies ?? {})) {
 }
 for (const name of inject) {
   if (pkg.peerDependencies?.[name] === undefined) {
-    fail(`package.json: dsh.client.inject ${JSON.stringify(name)} 必须出现在 peerDependencies（精确宿主版本）`)
+    fail(`package.json: dsh.client.inject ${JSON.stringify(name)} 必须出现在 peerDependencies（受支持宿主范围）`)
   }
 }
 

@@ -23,7 +23,7 @@ export interface SessionLike {
   append?(type: string, data: unknown): unknown
 }
 
-/** Read one stable alpha.4 Session event snapshot for the current operation. */
+/** Read one stable supported-DSH Session event snapshot for the current operation. */
 export function snapshotSessionEvents(session: Pick<SessionLike, 'snapshotEvents'>): readonly SessionEventLike[] {
   return session.snapshotEvents()
 }
