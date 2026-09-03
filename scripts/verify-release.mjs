@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * npm 发布引用门：只允许从与 package.json 版本完全匹配的 Git tag 发布。
- * 稳定版进入 latest，预发布版进入其首个 prerelease 标识对应的 dist-tag。
+ * 稳定版进入 latest，alpha 进入 alpha，RC 与 DSH 的 npm 渠道保持一致进入 next。
  */
 import { appendFileSync, readFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
@@ -40,7 +40,7 @@ if (tag !== expectedTag) {
 }
 
 const prerelease = version.match(/-([0-9A-Za-z]+)(?:[.-]|$)/)?.[1]
-const distTag = prerelease ?? 'latest'
+const distTag = prerelease === 'rc' ? 'next' : prerelease ?? 'latest'
 const tarball = `${String(pkg.name).replace(/^@/, '').replaceAll('/', '-')}-${version}.tgz`
 const output = process.env.GITHUB_OUTPUT
 if (output) {

@@ -5,12 +5,12 @@ on:
   pull_request:
   workflow_dispatch:
 
-# Exact published alpha.5 packages are the reproducible primary lane. The
-# compatibility matrix verifies the declared floor and current npm alpha; a
-# separate source checkout verifies alpha.5 through local links.
+# Exact published rc.1 packages are the reproducible primary lane. The
+# compatibility matrix verifies the declared floor and current npm prerelease; a
+# separate source checkout verifies rc.1 through local links.
 jobs:
   registry:
-    name: ${{ matrix.os }} published alpha.5
+    name: ${{ matrix.os }} published rc.1
     strategy:
       fail-fast: false
       matrix:
@@ -48,7 +48,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        dsh-version: [0.1.2-alpha.4, alpha]
+        dsh-version: [0.1.2-alpha.4, next]
     env:
       DSH_COMPAT_VERSION: ${{ matrix.dsh-version }}
     steps:
@@ -71,7 +71,7 @@ jobs:
         run: pnpm typecheck && pnpm test && pnpm build
 
   source-compatibility:
-    name: DSH alpha.5 source compatibility
+    name: DSH rc.1 source compatibility
     runs-on: ubuntu-24.04
     env:
       DSH_UPSTREAM_CHECKOUT: ${{ github.workspace }}/reference/deepseek-harness
@@ -81,7 +81,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: deepseek-ai/deepseek-harness
-          ref: dsh-v0.1.2-alpha.5
+          ref: dsh-v0.1.2-rc.1
           path: reference/deepseek-harness
       - uses: actions/setup-node@v6
         with:

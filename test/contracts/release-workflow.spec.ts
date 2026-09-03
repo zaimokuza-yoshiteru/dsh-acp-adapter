@@ -26,8 +26,8 @@ describe('npm release contract', () => {
       },
     )
 
-    expect(stdout).toContain(`v${pkg.version} -> npm alpha`)
-    expect(readFileSync(output, 'utf8')).toContain('dist-tag=alpha\n')
+    expect(stdout).toContain(`v${pkg.version} -> npm next`)
+    expect(readFileSync(output, 'utf8')).toContain('dist-tag=next\n')
     expect(readFileSync(output, 'utf8')).toContain(`tarball=zaimokuza-dsh-acp-adapter-${pkg.version}.tgz\n`)
   })
 
@@ -55,7 +55,7 @@ describe('npm release contract', () => {
     expect(workflow).not.toMatch(/NPM_TOKEN|NODE_AUTH_TOKEN/)
   })
 
-  it('publishes the tested tarball from the exact alpha.5 development lane', () => {
+  it('publishes the tested tarball from the exact rc.1 development lane', () => {
     const workflow = readFileSync(new URL('.github/workflows/publish.yml', root), 'utf8')
     expect(workflow).not.toContain('if: ${{ false }}')
     expect(workflow).not.toContain('alpha-release-block')
