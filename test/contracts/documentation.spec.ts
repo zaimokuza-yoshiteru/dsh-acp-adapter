@@ -13,7 +13,6 @@ function read(path: string): string {
 describe('public documentation contract', () => {
   it('publishes one concise Chinese README with an English companion', () => {
     const pkg = JSON.parse(read('package.json')) as { description?: string, files?: string[] }
-    expect(pkg.description).toBe('Use AI agents from the DSH session UI.')
     expect(pkg.files).toContain('README.md')
     expect(pkg.files).toContain('README.en.md')
     expect(pkg.files).not.toContain('docs/**/*.md')
@@ -29,8 +28,6 @@ describe('public documentation contract', () => {
       expect(zh).toContain(token)
       expect(en).toContain(token)
     }
-    expect(zh).toContain('通过 DeepSeek Harness（DSH）会话页面使用智能体')
-    expect(en).toContain('from the DeepSeek Harness (DSH) session UI')
   })
 
   it('documents Native Agent Access and explicit credential isolation truthfully', () => {

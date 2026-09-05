@@ -1,4 +1,4 @@
-// acp-client.spec.ts — 随附测试：AcpClientConnection 对 mock ACP agent 全 scenario 矩阵。
+// acp-client.spec.ts — 随附测试：AcpClientConnection 的真实 ACP 协议回归。
 //
 // 覆盖：
 //   - 握手：happy / minimal-caps / no-config-options（initialize 幂等、能力记录）
@@ -568,6 +568,19 @@ describe('错误分类', () => {
     expect(conn.exited?.code).toBe(1);
   });
 
+  it.each(['load-fail', 'config-write-fail'])('%s preserves RPC errors without poisoning a healthy connection', async scenario => {
+    const { conn } = connectMock(scenario);
+    await conn.initialize();
+    const session = await conn.newSession();
+    const operation = scenario === 'load-fail'
+      ? conn.loadSession(session.sessionId)
+      : conn.setConfigOption(session.sessionId, 'model', 'mock-model-b');
+    await expect(operation).rejects.toMatchObject({ kind: 'protocol-error' });
+    const listing = await conn.listSessions();
+    expect(listing.sessions.some(entry => entry.sessionId === session.sessionId)).toBe(true);
+    expect(conn.exited).toBeNull();
+  });
+
   it('garbage-stdout：非 JSON 行被 console.error 记录后跳过，协议流不受影响（SDK 实测行为）', async () => {
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
@@ -952,6 +965,21 @@ describe('probe', () => {
       },
     };
   };
+
+  it.each([
+    { scenario: 'cleanup-close-delete', close: 'done', delete: 'done', methods: ['initialize', 'session/new', 'session/close', 'session/delete'] },
+    { scenario: 'delete-fail', close: 'not-advertised', delete: 'failed', methods: ['initialize', 'session/new', 'session/delete'] },
+    { scenario: 'no-delete', close: 'not-advertised', delete: 'not-advertised', methods: ['initialize', 'session/new'] },
+  ])('$scenario observes advertised cleanup and preserves a successful probe', async row => {
+    const { spec } = probeSpec(row.scenario);
+    const result = await AcpClientConnection.probe(spec, { timeoutMs: 5000, eofGraceMs: 100, termGraceMs: 300 });
+    expect(result.agentInfo?.name).toBe('dsh-mock-acp-agent');
+    expect(result.cleanup).toMatchObject({ close: row.close, delete: row.delete });
+    if (row.delete === 'failed') expect(result.cleanup?.message).toContain('session/delete failed');
+    const log = fs.readFileSync(spec.env['MOCK_LOG'] as string, 'utf8');
+    const methods = log.split('\n').filter(line => line.includes('--> ')).map(line => (line.split('--> ')[1] ?? '').split(' ')[0]);
+    expect(methods).toEqual(row.methods);
+  });
 
   it('happy：独立短生命周期收集 configOptions/modes/agentInfo，结束后无进程残留', async () => {
     const { spec } = probeSpec('happy');
