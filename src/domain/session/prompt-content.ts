@@ -27,6 +27,9 @@ export function validImageLimits(limits: ImageAttachmentLimits): boolean {
 export async function toAcpPrompt(
   messages: readonly UserMessage[],
   options: {
+    /** ACP has no system role. Supply the host's current instructions as
+     * explicitly labelled request context, including an empty replacement. */
+    readonly system?: string
     readonly imageEnabled: boolean
     readonly attachments?: Pick<AttachmentStore, 'readImage' | 'imageLimits'>
     readonly signal: AbortSignal
@@ -111,6 +114,14 @@ export async function toAcpPrompt(
   }
   if (blocks.length === 0) {
     throw new AcpPromptContentError('dsh-acp: the claimed message(s) carry no supported content; nothing to send to the ACP agent')
+  }
+  if (options.system !== undefined) {
+    blocks.unshift({
+      type: 'text',
+      text: 'Current host instructions (replace earlier host instructions for this request). '
+        + 'Use only tools available in your agent; these instructions do not add tools or grant permissions.\n\n'
+        + (options.system || 'No additional host instructions.'),
+    })
   }
   return blocks
 }

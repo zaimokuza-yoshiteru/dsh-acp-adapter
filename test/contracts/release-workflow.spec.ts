@@ -10,13 +10,14 @@ const pkg = JSON.parse(readFileSync(new URL('package.json', root), 'utf8'))
 const verifyRelease = fileURLToPath(new URL('scripts/verify-release.mjs', root))
 
 describe('npm release contract', () => {
-  it('requires the exact version tag and keeps prereleases off latest', () => {
+  it('blocks a source-only adaptation from publishing with the old dependency metadata', () => {
     const output = join(mkdtempSync(join(tmpdir(), 'dsh-acp-release-')), 'output')
-    const stdout = execFileSync(
+    expect(() => execFileSync(
       process.execPath,
       [verifyRelease, `v${pkg.version}`],
       {
         encoding: 'utf8',
+        stdio: 'pipe',
         env: {
           ...process.env,
           GITHUB_OUTPUT: output,
@@ -24,11 +25,7 @@ describe('npm release contract', () => {
           GITHUB_REF_NAME: `v${pkg.version}`,
         },
       },
-    )
-
-    expect(stdout).toContain(`v${pkg.version} -> npm next`)
-    expect(readFileSync(output, 'utf8')).toContain('dist-tag=next\n')
-    expect(readFileSync(output, 'utf8')).toContain(`tarball=zaimokuza-dsh-acp-adapter-${pkg.version}.tgz\n`)
+    )).toThrow('has not passed the published-package lane')
   })
 
   it('rejects a branch ref even when its name resembles the expected tag', () => {

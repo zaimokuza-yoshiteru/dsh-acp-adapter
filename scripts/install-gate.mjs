@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Clean-install smoke gate for the DSH 0.1.2-rc.1 host.
+ * Clean-install smoke gate for the pinned DSH source target.
  *
  * The gate deliberately uses a temporary DSH_HOME and a local package tarball.
  * It does not touch the user's profile, registry, or pnpm store.  The DSH
@@ -15,6 +15,7 @@ import { createServer } from 'node:http'
 import os from 'node:os'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { DSH_SOURCE_TAG } from './dsh-target.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const packageJson = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
@@ -43,7 +44,7 @@ export function usage() {
   return `Usage: node scripts/install-gate.mjs [options]
 
 Options:
-  --host-root <path>  DSH 0.1.2-rc.1 source root (default: ../reference/deepseek-harness)
+  --host-root <path>  ${DSH_SOURCE_TAG} source root (default: ../reference/deepseek-harness)
   --tgz <path>        Reuse an existing plugin tarball instead of packing
   --skip-boot         Install and inspect composition, but do not bind HTTP
   -h, --help          Show this help

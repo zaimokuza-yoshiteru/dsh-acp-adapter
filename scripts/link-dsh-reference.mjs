@@ -7,10 +7,11 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { DSH_SOURCE_TAG, DSH_SOURCE_VERSION } from './dsh-target.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const expectedTag = 'dsh-v0.1.2-rc.1'
-const expectedVersion = '0.1.2-rc.1'
+const expectedTag = DSH_SOURCE_TAG
+const expectedVersion = DSH_SOURCE_VERSION
 
 function parseArgs(argv) {
   const result = { hostRoot: process.env.DSH_UPSTREAM_CHECKOUT || resolve(root, '..', 'reference', 'deepseek-harness'), check: false, help: false }
@@ -55,6 +56,7 @@ function packageNames() {
   ]
   return [...new Set([
     ...Object.keys(packageJson.peerDependencies ?? {}).filter(name => name.startsWith('@deepseek-ai/')),
+    ...Object.keys(packageJson.devDependencies ?? {}).filter(name => name.startsWith('@deepseek-ai/dsh-')),
     ...sourceOnly,
   ])].sort()
 }

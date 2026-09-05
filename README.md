@@ -2,11 +2,12 @@
 
 [English](README.en.md)
 
+源码适配目标为 DSH `0.1.3-alpha.1`，尚未作为 npm 兼容版本发布。开发与原生 UI 回归见仓库中的 `test/e2e/README.md`；下述安装说明对应已发布版本。
+
 通过 DeepSeek Harness（DSH）会话页面使用智能体，包括 Devin、Codex、Kimi 和 Claude。智能体继续负责自己的模型、工具、skills、登录状态和运行时。
 
-当前版本支持 DSH `>=0.1.2-alpha.4 <0.1.3`。开发与发布构建使用 npm 上的精确
-rc.1 包；CI 额外验证最低支持版本和当前 npm 预发布版，本地源码链接用于 rc.1
-上游源码兼容验证。
+已发布版本支持 DSH `>=0.1.2-alpha.4 <0.1.3`。当前源码与 CI 精确验证
+`dsh-v0.1.3-alpha.1`；完成正式 npm 安装回归后才会更新发布兼容范围。
 
 ## 功能预览
 
@@ -38,14 +39,16 @@ Agent 的子 Agent 调用继续使用 DSH 的消息流展示：
 npx @deepseek-ai/dsh@0.1.2-rc.1 web
 ```
 
-插件开发默认直接安装精确发布依赖：
+插件开发先安装锁定的工具依赖，再链接已构建的目标 DSH 源码：
 
 ```bash
 pnpm install --frozen-lockfile
+pnpm setup:source-reference
 ```
 
-如需额外验证上游源码，检出并构建 `dsh-v0.1.2-rc.1` 后运行
-`pnpm setup:source-reference`。该兼容 lane 只改本仓库的开发链接，不修改 DSH 用户目录。
+先在 `reference/deepseek-harness` 检出并构建 `dsh-v0.1.3-alpha.1`。
+源码链接只改本仓库的开发依赖，不修改 DSH 用户目录。构建插件后运行
+`pnpm test:e2e` 验证原生 UI 与 ACP 核心行为。
 
 ## 安装插件
 
@@ -106,6 +109,8 @@ claude-agent-acp --help
 未登录时优先运行 `claude`，按终端提示完成登录。若使用要求环境变量的兼容端点，请按该 Agent 的说明在 ACP profile 中显式配置所需变量。
 
 ## 原生 Agent 访问与边界
+
+DSH 继续拥有 AgentLoop、会话日志、输入栏、停止和模型选择。适配器转发当前步骤中已落盘且仍在请求投影里的用户消息、运行时上下文及插件注入消息，也支持插件触发的后续步骤；不会重发历史用户输入。宿主组装的 system prompt 随每次请求完整传递，并明确标注为当前宿主指令。ACP v1 没有 system 消息角色，所以这是上下文传递，不保证拥有外部 Agent 自身 system prompt 的优先级。指令中出现工具名不会自动创建工具或授予权限。
 
 ACP 会话自动使用“原生 Agent 访问”。输入框中的 DSH 权限显示为推导出的 `Custom`，仅用于说明权限由 Agent 自己管理；切换这个 DSH 选项不会改变 Agent 的实际权限。Agent 可以使用自己的配置、登录状态、data home、skills 和 MCP 定义。Agent 自己的模式决定其行为；插件只展示 Agent 主动通过 ACP 发出的审批请求，无法限制绕过 ACP 审批的 Agent 工具。请只连接你信任的本地 Agent。
 

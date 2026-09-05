@@ -2,12 +2,13 @@
 
 [中文](README.md)
 
+The source target is DSH `0.1.3-alpha.1`; npm compatibility has not been released. See `test/e2e/README.md` in the repository for source setup and native UI regression tests. Installation instructions below describe the published release.
+
 Use Devin, Codex, Kimi, or Claude agents from the DeepSeek Harness (DSH) session UI. Each Agent remains responsible for its own model, tools, skills, login state, and runtime.
 
-This version supports DSH `>=0.1.2-alpha.4 <0.1.3`. Development and release builds
-use the exact published rc.1 packages; CI additionally verifies the minimum
-supported version and the current npm prerelease, while local source links cover the
-rc.1 upstream-source compatibility lane.
+The published release supports DSH `>=0.1.2-alpha.4 <0.1.3`. Current source and CI
+test the exact `dsh-v0.1.3-alpha.1` tag. The release compatibility range will change
+after the published npm installation passes regression tests.
 
 ## Preview
 
@@ -39,15 +40,17 @@ You need Node.js `^22.19.0 || >=24.0.0`:
 npx @deepseek-ai/dsh@0.1.2-rc.1 web
 ```
 
-Plugin development installs exact published dependencies directly:
+Plugin development bootstraps the locked tooling, then links the built DSH target:
 
 ```bash
 pnpm install --frozen-lockfile
+pnpm setup:source-reference
 ```
 
-For an additional source-level check, build `dsh-v0.1.2-rc.1` and run
-`pnpm setup:source-reference`. This compatibility lane only changes this
-checkout's development links and never touches the DSH user directory.
+First check out and build `dsh-v0.1.3-alpha.1` in `reference/deepseek-harness`.
+Source linking only changes this checkout's development dependencies and never
+touches the DSH user directory. After building the plugin, run `pnpm test:e2e`
+to verify native UI and core ACP behavior.
 
 ## Install the plugin
 
@@ -109,6 +112,8 @@ claude-agent-acp --help
 If you are not signed in, prefer running `claude` and following its terminal prompts. When using a compatible endpoint that requires environment variables, explicitly configure the variables required by that Agent in its ACP profile.
 
 ## Native Agent Access and boundaries
+
+DSH owns the AgentLoop, session log, composer, cancellation and model picker. The adapter forwards logged inputs retained in the current step's request projection, including runtime context and plugin messages, and accepts plugin-driven follow-up steps without replaying historical user input. The assembled host system prompt is sent in full with every request as labelled current host instructions. ACP v1 has no system-message role: this carries context but cannot guarantee the precedence of the external Agent's own system prompt. Mentioning a tool does not create it or grant permission.
 
 ACP sessions automatically use Native Agent Access. The DSH permission control shows the derived `Custom` state only to indicate that the Agent owns permission management; changing that DSH control does not change the Agent's actual authority. The Agent can use its own configuration, login state, data home, skills, and MCP definitions. The Agent's own mode governs its behavior; the plugin only presents approval requests that the Agent chooses to send through ACP and cannot constrain Agent tools that bypass that flow. Connect only local Agents you trust.
 

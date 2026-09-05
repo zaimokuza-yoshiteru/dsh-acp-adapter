@@ -843,7 +843,7 @@ export class AcpClientConnection {
       if (isAuthenticationRejection(error)) {
         return new AcpClientError(
           'auth_required',
-          `ACP agent "${this.command}" requires authentication (${operation}); sign in with the agent's own tooling (see the provider login hint)`,
+          `ACP agent "${this.command}" requires authentication (${operation}); sign in with the agent's own tooling or explicitly configure its required credentials in the ACP profile Connection settings. Parent KEY/TOKEN/SECRET/PASSWORD variables are not inherited`,
           { cause: error },
         )
       }

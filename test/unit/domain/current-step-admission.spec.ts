@@ -10,7 +10,7 @@ function request(messages: GenerateOptions['messages']): GenerateOptions {
 }
 
 describe('current-step ACP admission', () => {
-  it('uses durable order and records only a bounded filtering fact for old/plugin context', () => {
+  it('preserves logged plugin context in durable order while excluding old input', () => {
     const old = user('old')
     const current = user('current')
     const injected = { ...user('skill'), source: { kind: 'plugin' as const, plugin: 'skill' } }
@@ -29,8 +29,8 @@ describe('current-step ACP admission', () => {
       anchorMessageId: string
       projectionFiltered: boolean
     }> = []
-    expect(admitCurrentStep(request([current, old, injected]), session, value => proof.push(value))).toEqual([current])
-    expect(proof[0]?.acceptedMessageIds).toEqual([String(current.id)])
+    expect(admitCurrentStep(request([current, old, injected]), session, value => proof.push(value))).toEqual([injected, current])
+    expect(proof[0]?.acceptedMessageIds).toEqual([String(injected.id), String(current.id)])
     expect(proof[0]?.anchorMessageId).toBe(String(current.id))
     expect(proof[0]?.projectionFiltered).toBe(true)
   })
@@ -83,8 +83,24 @@ describe('current-step ACP admission', () => {
     const admitted = admitCurrentStep(request([first, ...old, injected, second]), {
       header: { cwd: '/workspace' }, inheritedEventCount: 0, snapshotEvents: () => events,
     }, proof => proofs.push(proof))
-    expect(admitted).toEqual([second, first])
+    expect(admitted).toEqual([injected, second, first])
     expect(proofs[0]?.projectionFiltered).toBe(true)
     expect(JSON.stringify(proofs[0])).not.toContain(String(old[0]?.id))
+  })
+
+  it('admits plugin-only follow-up steps without replaying earlier user messages', () => {
+    const earlier = user('already dispatched')
+    const followup = createUserMessage({ content: [{ type: 'text', text: 'Verify the result' }], source: { kind: 'plugin', plugin: 'review' } })
+    const unlogged = user('not admitted by the host')
+    expect(admitCurrentStep(request([earlier, unlogged, followup]), {
+      inheritedEventCount: 0,
+      snapshotEvents: () => [
+        { type: 'step/start', seq: 1, data: { turn: 1, step: 1 } },
+        { type: 'user/message', seq: 2, data: earlier },
+        { type: 'step/end', seq: 3, data: { turn: 1, step: 1 } },
+        { type: 'step/start', seq: 4, data: { turn: 1, step: 2 } },
+        { type: 'user/message', seq: 5, data: followup },
+      ],
+    })).toEqual([followup])
   })
 })

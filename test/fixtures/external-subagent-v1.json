@@ -1,0 +1,139 @@
+{
+  "detail": {
+    "kind": "dsh-acp-external-subagent",
+    "version": 3,
+    "childSessionId": "session-legacy-child",
+    "parentDshSessionId": "parent",
+    "profileId": "claude",
+    "profileKind": "claude",
+    "task": {
+      "text": "Inspect code",
+      "source": "structured-tool-input"
+    },
+    "result": {
+      "text": "Done",
+      "source": "verbatim-child-final",
+      "completeness": "final-output"
+    },
+    "timing": {
+      "observedStartedAt": 100,
+      "observedCompletedAt": 250,
+      "source": "client-observed"
+    },
+    "evidenceDigest": "legacy-fixture",
+    "projectionHeader": {
+      "version": 1,
+      "isSeeded": false,
+      "id": "session-legacy-child",
+      "createdAt": 100,
+      "cwd": "/tmp",
+      "parentSession": "parent",
+      "origin": "subagent",
+      "delegationDepth": 1
+    },
+    "projectionLabel": "Code inspection",
+    "projectionStartedAt": 100,
+    "projectionCompletedAt": 250,
+    "projectionDigest": "7441da11a3af6e4084f23e7733437880e6452d845a941dc3ac42a9753cad0cb3"
+  },
+  "events": [
+    {
+      "type": "subagent/descriptor",
+      "seq": 0,
+      "time": 100,
+      "data": {
+        "mode": "one-shot",
+        "provider": "dsh-acp-adapter",
+        "label": "Code inspection",
+        "version": 3
+      }
+    },
+    {
+      "type": "turn/start",
+      "seq": 1,
+      "time": 100,
+      "data": {
+        "turn": 1,
+        "trigger": {
+          "kind": "message",
+          "source": {
+            "kind": "user"
+          }
+        }
+      }
+    },
+    {
+      "type": "user/message",
+      "seq": 2,
+      "time": 100,
+      "data": {
+        "id": "session-legacy-child:external-task",
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "Inspect code"
+          }
+        ],
+        "source": {
+          "kind": "user"
+        }
+      },
+      "surfaceOp": "append"
+    },
+    {
+      "type": "step/start",
+      "seq": 3,
+      "time": 100,
+      "data": {
+        "turn": 1,
+        "step": 1
+      }
+    },
+    {
+      "type": "assistant/message",
+      "seq": 4,
+      "time": 250,
+      "data": {
+        "turn": 1,
+        "step": 1,
+        "message": {
+          "id": "session-legacy-child:external-result",
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Done"
+            }
+          ],
+          "source": {
+            "kind": "model",
+            "provider": "dsh-acp-adapter",
+            "model": "claude-external-subagent"
+          }
+        }
+      },
+      "surfaceOp": "append"
+    },
+    {
+      "type": "step/end",
+      "seq": 5,
+      "time": 250,
+      "data": {
+        "turn": 1,
+        "step": 1
+      }
+    },
+    {
+      "type": "turn/end",
+      "seq": 6,
+      "time": 250,
+      "data": {
+        "turn": 1,
+        "reason": {
+          "kind": "completed"
+        }
+      }
+    }
+  ]
+}

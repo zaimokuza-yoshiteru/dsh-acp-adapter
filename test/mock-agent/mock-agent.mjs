@@ -157,12 +157,14 @@
 //                      无记录（如 MOCK_PRESET_SESSIONS 预置会话）回退 LOAD_REPLAY 固定
 //                      夹具（含 MOCK_LOAD_REPLAY_VARIANT 变换），旧用例行为不变。
 import readline from 'node:readline';
+import { regressionTurn } from './regression-turn.mjs';
 import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
 
 const FIXED_TIMESTAMP = '2026-01-01T00:00:00.000Z';
 
 const KNOWN_SCENARIOS = new Set([
+  'regression',
   'happy',
   'text-only',
   'minimal-caps',
@@ -1350,6 +1352,8 @@ function handlePrompt(msg) {
   if (session.turn) return respondError(msg.id, -32603, 'turn already active on this session');
   if (EMIT_NATIVE_SUBAGENT) return void runNativeSubagentTurn(session, msg);
   switch (state.scenario) {
+    case 'regression':
+      return void regressionTurn(session, msg, { sendUpdate, sendAgentRequest, respond, log });
     case 'text-only':
       return void runUpdateTurn(session, msg, textOnlyTurnUpdates());
     case 'minimal-caps':

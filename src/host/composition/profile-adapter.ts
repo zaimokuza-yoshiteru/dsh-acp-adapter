@@ -657,7 +657,7 @@ export class AcpProfileAdapter extends LlmAdapter {
       const durableSidecar = self.sidecar
       const session = self.sessionOf(sessionKey)
       let admissionProof: CurrentStepProof | undefined
-      let messages: readonly import('@deepseek-ai/dsh-llm').Message[]
+      let messages: readonly import('@deepseek-ai/dsh-llm').UserMessage[]
       try {
         messages = admitCurrentStep(options, session, proof => {
           admissionProof = proof
@@ -692,7 +692,8 @@ export class AcpProfileAdapter extends LlmAdapter {
         // create session/new, and doing it before fork/restore both duplicates
         // setup and makes a fork look like a blank session.
         if (runtime.initialize !== undefined) await runtime.initialize(options.signal)
-        const prompt = await toAcpPrompt(messages as never, {
+        const prompt = await toAcpPrompt(messages, {
+          system: options.system ?? '',
           imageEnabled: runtime.agentCapabilities?.promptCapabilities?.image === true,
           ...(self.attachments === undefined ? {} : { attachments: self.attachments }),
           signal: options.signal ?? new AbortController().signal,

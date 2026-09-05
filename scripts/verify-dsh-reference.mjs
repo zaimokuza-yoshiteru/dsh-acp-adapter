@@ -5,11 +5,12 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { DSH_SOURCE_TAG, DSH_SOURCE_VERSION } from './dsh-target.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const reference = process.env.DSH_UPSTREAM_CHECKOUT ?? join(root, '..', 'reference', 'deepseek-harness')
-const expectedTag = 'dsh-v0.1.2-rc.1'
+const expectedTag = DSH_SOURCE_TAG
 const requiredPackages = [
   'packages/api/session-controller/package.json',
   'packages/api/settings-controller/package.json',
@@ -41,8 +42,8 @@ for (const relative of requiredPackages) {
   const file = join(reference, relative)
   if (!existsSync(file)) throw new Error(`DSH reference package is missing: ${relative}`)
   const packageJson = JSON.parse(readFileSync(file, 'utf8'))
-  if (packageJson.version !== '0.1.2-rc.1') {
-    throw new Error(`${relative} is not 0.1.2-rc.1`)
+  if (packageJson.version !== DSH_SOURCE_VERSION) {
+    throw new Error(`${relative} is not ${DSH_SOURCE_VERSION}`)
   }
 }
 
@@ -52,5 +53,8 @@ for (const relative of requiredBuildArtifacts) {
   }
 }
 
+const llm = await import(pathToFileURL(join(reference, 'packages/llm/llm/lib/index.js')).href)
+if (typeof llm.AssistantStreamAccumulator !== 'function') {
+  throw new Error('DSH reference has stale pre-v2 runtime artifacts; rebuild the exact source tag')
+}
 console.log(`DSH source reference verified: ${expectedTag}`)
-console.log('Registry packages are the default lane; this checkout is the source-compatibility lane.')

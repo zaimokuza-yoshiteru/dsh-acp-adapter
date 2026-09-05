@@ -6,8 +6,10 @@ import {
 } from '@deepseek-ai/dsh-session'
 import { snapshotSubagentDescriptor } from '@deepseek-ai/dsh-subagent'
 import type { AssistantMessage, UserMessage } from '@deepseek-ai/dsh-llm'
+import { AssistantStreamAccumulator } from '@deepseek-ai/dsh-llm'
 import { MessageId } from '@deepseek-ai/dsh-llm/brand'
-import type { SessionPersistence } from '@deepseek-ai/dsh-session-persistence'
+import { SessionAlreadyExistsError, SessionPersistenceNotFoundError } from '@deepseek-ai/dsh-session-persistence'
+import type { SessionHandle, SessionPersistence } from '@deepseek-ai/dsh-session-persistence'
 import type { AcpActivityRecord, AcpSidecar } from '../../persistence/sidecar.ts'
 import type { ExternalDelegationObservation } from '../../domain/subagent/external-delegation.ts'
 import { redactSecretText } from '../../domain/observability/redaction.ts'
@@ -32,7 +34,7 @@ export interface ExternalProjectionResult {
 
 interface ProjectedDetail {
   readonly kind: 'dsh-acp-external-subagent'
-  readonly version: 2 | 3
+  readonly version: 2 | 3 | 4
   readonly childSessionId: string
   readonly parentDshSessionId: string
   readonly profileId: string
@@ -100,7 +102,7 @@ function recordDetail(
     timing: observation.timing,
   }
   return {
-    kind: 'dsh-acp-external-subagent', version: 3,
+    kind: 'dsh-acp-external-subagent', version: 4,
     childSessionId, parentDshSessionId: context.parentDshSessionId,
     profileId: context.profileId, profileKind: observation.profileKind,
     task: { ...observation.task, text: bounded(observation.task.text) },
@@ -123,6 +125,7 @@ function transcriptLog(
   startedAt: number,
   completedAt: number,
   detail: Pick<ProjectedDetail, 'profileKind' | 'task' | 'result' | 'model' | 'usage'>,
+  streamMode: 'current' | 'legacy' = 'current',
 ): { readonly header: SessionHeader; readonly events: readonly SessionEvent[] } {
   const user: UserMessage = {
     id: MessageId(`${header.id}:external-task`),
@@ -152,6 +155,14 @@ function transcriptLog(
         ...(detail.usage.cacheWriteTokens === undefined ? {} : { cacheWriteTokens: detail.usage.cacheWriteTokens }),
       }
     : undefined
+  // This is a projection of the reported result, not a reconstructed external
+  // token timeline. All synthetic chunks use the result observation time.
+  const stream = new AssistantStreamAccumulator()
+  stream.push({ time: completedAt, chunk: { type: 'block-start', index: 0, blockType: 'text' } })
+  stream.push({ time: completedAt, chunk: { type: 'text-delta', index: 0, text: reported } })
+  stream.push({ time: completedAt, chunk: { type: 'block-end', index: 0, block: { type: 'text', text: reported } } })
+  if (usage !== undefined) stream.push({ time: completedAt, chunk: { type: 'usage', usage } })
+  stream.push({ time: completedAt, chunk: { type: 'finish', reason: { kind: 'stop' } } })
   const events: readonly SessionEvent[] = [
     { type: 'subagent/descriptor', seq: SessionSeq(0), time: startedAt, data: snapshotSubagentDescriptor({ mode: 'one-shot', provider: EXTERNAL_SUBAGENT_DESCRIPTOR_PROVIDER, label }) },
     { type: 'turn/start', seq: SessionSeq(1), time: startedAt, data: { turn: 1, trigger: { kind: 'message', source: { kind: 'user' } } } },
@@ -159,12 +170,18 @@ function transcriptLog(
     { type: 'step/start', seq: SessionSeq(3), time: startedAt, data: { turn: 1, step: 1 } },
     {
       type: 'assistant/message', seq: SessionSeq(4), time: completedAt,
-      data: { turn: 1, step: 1, message: assistant, ...(usage === undefined ? {} : { usage }) },
+      data: {
+        turn: 1, step: 1, message: assistant, ...(usage === undefined ? {} : { usage }),
+        ...(streamMode === 'legacy' ? {} : { stream: stream.snapshot() }),
+      },
       surfaceOp: 'append',
     },
     { type: 'step/end', seq: SessionSeq(5), time: completedAt, data: { turn: 1, step: 1 } },
     { type: 'turn/end', seq: SessionSeq(6), time: completedAt, data: { turn: 1, reason: { kind: 'completed' } } },
   ] as readonly SessionEvent[]
+  // Legacy bytes are reconstructed only to verify the saved sidecar digest.
+  // DSH's adjacent v1-to-v2 migration gives chunkless messages an empty stream.
+  if (streamMode === 'legacy') return { header, events }
   const validated = Session.fromRestore(header.id, events, header, SessionLogOffset(0))
   if (validated.deriveMessages().length !== 2) throw new Error('ACP_SUBAGENT_TRANSCRIPT_INVALID: projected task/result were not admitted')
   return { header, events }
@@ -179,6 +196,7 @@ function surfaceFreeLog(header: SessionHeader, label: string, startedAt: number,
     { type: 'turn/start', seq: SessionSeq(1), time: startedAt, data: { turn: 1 } },
     { type: 'turn/end', seq: SessionSeq(2), time: completedAt, data: { turn: 1, reason: { kind: 'completed' } } },
   ] as readonly SessionEvent[]
+  if (header.version !== SESSION_FORMAT_VERSION) return { header, events }
   const validated = Session.fromRestore(header.id, events, header, SessionLogOffset(0))
   if (validated.deriveMessages().length !== 0) throw new Error('ACP_SUBAGENT_SURFACE_LEAK: projected record entered DSH model history')
   return { header, events }
@@ -208,7 +226,15 @@ function projectionLog(context: ExternalProjectionContext, observation: External
 }
 
 function sameProjection(existing: { readonly meta: SessionHeader; readonly events: readonly SessionEvent[] }, expected: { readonly header: SessionHeader; readonly events: readonly SessionEvent[] }): boolean {
-  return canonical(existing.meta) === canonical(expected.header) && canonical(existing.events) === canonical(expected.events)
+  if (canonical(existing.meta) !== canonical(expected.header)) return false
+  // A released v1 projection migrated by DSH has no observed token stream.
+  // Admit it only when every other field equals this exact task/result log.
+  const events = existing.events.map((event, index) => {
+    const target = expected.events[index]
+    if (event.type !== 'assistant/message' || target?.type !== 'assistant/message' || event.data.stream.length !== 0) return event
+    return { ...event, data: { ...event.data, stream: target.data.stream } }
+  })
+  return canonical(events) === canonical(expected.events)
 }
 
 function object(value: unknown): value is Record<string, unknown> {
@@ -219,7 +245,7 @@ function storedProjection(row: AcpActivityRecord): { readonly detail: ProjectedD
   if (row.rawDetail === undefined) return undefined
   let value: unknown
   try { value = JSON.parse(row.rawDetail) } catch { return undefined }
-  if (!object(value) || value.kind !== 'dsh-acp-external-subagent' || (value.version !== 2 && value.version !== 3) || value.childSessionId !== row.dshSessionId) return undefined
+  if (!object(value) || value.kind !== 'dsh-acp-external-subagent' || (value.version !== 2 && value.version !== 3 && value.version !== 4) || value.childSessionId !== row.dshSessionId) return undefined
   if (!object(value.projectionHeader) || typeof value.projectionLabel !== 'string'
     || typeof value.projectionStartedAt !== 'number' || typeof value.projectionCompletedAt !== 'number'
     || typeof value.projectionDigest !== 'string') return undefined
@@ -235,9 +261,19 @@ function storedProjection(row: AcpActivityRecord): { readonly detail: ProjectedD
           result: value.result as ProjectedDetail['result'],
           ...(object(value.model) ? { model: value.model as unknown as NonNullable<ProjectedDetail['model']> } : {}),
           ...(object(value.usage) ? { usage: value.usage as unknown as NonNullable<ProjectedDetail['usage']> } : {}),
-        })
+        }, value.version === 3 ? 'legacy' : 'current')
   } catch { return undefined }
   if (value.projectionDigest !== digest(expected)) return undefined
+  if (value.version !== 4) {
+    if (Number(header.version) !== 1) return undefined
+    expected = {
+      header: { ...header, version: SESSION_FORMAT_VERSION },
+      events: expected.events.map(event => event.type === 'assistant/message'
+        ? { ...event, data: { ...event.data, stream: [] } }
+        : event),
+    }
+    try { Session.fromRestore(header.id, expected.events, expected.header, SessionLogOffset(0)) } catch { return undefined }
+  }
   return { detail: value as unknown as ProjectedDetail, expected }
 }
 
@@ -247,74 +283,47 @@ export interface ExternalProjectionRepairSummary {
   readonly conflicted: number
 }
 
-/** Surface-free, idempotent one-shot bridge for every evidence-complete external delegation. */
+/** Idempotent read-only transcript projection for evidence-complete external delegations. */
 export class ExternalSubagentProjector {
   constructor(
-    private readonly persistence: Pick<SessionPersistence, 'create' | 'append' | 'inspect'>
-      & Partial<Pick<SessionPersistence, 'readRaw'>>,
+    private readonly persistence: Pick<SessionPersistence, 'create' | 'open'>,
     private readonly sidecar: Pick<AcpSidecar, 'upsertActivity'> & Partial<Pick<AcpSidecar, 'listProjectedSubagentActivities'>>,
   ) {}
 
   private async inspect(id: string): Promise<{ readonly meta: SessionHeader; readonly events: readonly SessionEvent[] } | undefined> {
-    try { return await this.persistence.inspect(SessionId(id)) } catch { return undefined }
-  }
-
-  /** JSONL may materialize the exact batch before an immediately borrowed
-   * prepared view observes its new revision. The backend's decoded raw seam is
-   * authoritative for this narrow write-after-read race. */
-  private async rawMatches(expected: ReturnType<typeof projectionLog>): Promise<boolean> {
-    if (this.persistence.readRaw === undefined) return false
-    let raw: Awaited<ReturnType<SessionPersistence['readRaw']>>
-    try { raw = await this.persistence.readRaw(expected.header.id) } catch { return false }
-    if (raw === undefined || canonical(raw.meta) !== canonical(expected.header)) return false
-    try {
-      const records = raw.content.trimEnd().split('\n').map(line => JSON.parse(line) as Record<string, unknown>)
-      const [headerRecord, ...events] = records
-      if (headerRecord?.type !== 'session') return false
-      // `raw.meta` is the backend's authoritative logical parse of this exact
-      // physical header. Alpha.4 intentionally omits false/default fields
-      // (`isSeeded: false`, `delegationDepth: 0`) from the JSONL line, so a
-      // second byte-shape comparison would reject a valid normalized header.
-      return canonical(events) === canonical(expected.events)
-    } catch { return false }
+    let handle: SessionHandle
+    try { handle = await this.persistence.open(SessionId(id), 'read') } catch (error) {
+      if (error instanceof SessionPersistenceNotFoundError) return undefined
+      throw error
+    }
+    try { return { meta: handle.header, events: await handle.read() } } finally { await handle.close() }
   }
 
   private async commit(expected: ReturnType<typeof projectionLog>): Promise<boolean> {
-    const id = expected.header.id as string
-    const existing = await this.inspect(id)
-    if (existing !== undefined) {
-      if (!sameProjection(existing, expected) && !(await this.rawMatches(expected))) {
-        throw new Error(`ACP_SUBAGENT_PROJECTION_CONFLICT: ${id}`)
+    let handle: SessionHandle
+    let created = false
+    try {
+      handle = await this.persistence.create(expected.header)
+      created = true
+    } catch (error) {
+      if (!(error instanceof SessionAlreadyExistsError)) throw error
+      handle = await this.persistence.open(expected.header.id, 'write')
+    }
+    try {
+      const events = await handle.read()
+      const prefix = { header: expected.header, events: expected.events.slice(0, events.length) }
+      if (events.length > expected.events.length || !sameProjection({ meta: handle.header, events }, prefix)) {
+        throw new Error(`ACP_SUBAGENT_PROJECTION_CONFLICT: ${expected.header.id}`)
       }
-      return false
+      const remaining = expected.events.slice(events.length)
+      if (remaining.length > 0) await handle.append(remaining)
+      // Read visibility does not imply crash durability. Publish the sidecar
+      // completion only after this barrier and the writer's teardown succeed.
+      await handle.flush()
+      return created || remaining.length > 0
+    } finally {
+      await handle.close()
     }
-
-    try { await this.persistence.create(expected.header) } catch {
-      const raced = await this.inspect(id)
-      if (raced !== undefined) {
-        if (!sameProjection(raced, expected)) throw new Error(`ACP_SUBAGENT_PROJECTION_CONFLICT: ${id}`)
-        return false
-      }
-      // A lazy create admission may already exist without a materialized
-      // artifact. Continue with the exact first batch; append is the durable
-      // identity check and will fail closed for every other condition.
-    }
-
-    let appendFailure: unknown
-    try { await this.persistence.append(expected.header.id, expected.events) } catch (error) { appendFailure = error }
-    let committed = await this.inspect(id)
-    if (committed === undefined && appendFailure !== undefined) {
-      // If append failed after create admission but before durability, retrying
-      // the same complete first batch is safe. A committed first attempt rejects
-      // the duplicate by seq and the following inspection proves the result.
-      try { await this.persistence.append(expected.header.id, expected.events) } catch { /* inspect below is authoritative */ }
-      committed = await this.inspect(id)
-    }
-    if (committed === undefined) throw appendFailure instanceof Error ? appendFailure : new Error(`ACP_SUBAGENT_PROJECTION_MISSING: ${id}`)
-    if (!sameProjection(committed, expected) && !(await this.rawMatches(expected))) {
-      throw new Error(`ACP_SUBAGENT_PROJECTION_CONFLICT: ${id}`)
-    }
-    return true
   }
 
   private async setProjectionStatus(row: AcpActivityRecord, status: 'completed' | 'failed'): Promise<void> {
