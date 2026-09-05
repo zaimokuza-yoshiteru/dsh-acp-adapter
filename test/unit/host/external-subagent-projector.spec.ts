@@ -15,6 +15,7 @@ function handleStorage(records = new Map<string, { meta: never; events: never[] 
     append: async (events: never[]) => { order.push('append'); records.get(id)!.events.push(...events) },
     flush: async () => { order.push('child-flush') },
     close: async () => { order.push(`${access}-close`) },
+    [Symbol.asyncDispose]: async () => { order.push(`${access}-close`) },
   })
   return {
     open: vi.fn(async (id: string, access: 'read' | 'write') => {
@@ -107,13 +108,18 @@ describe('external subagent projector', () => {
     expect(assembler.usage).toEqual(event.data.usage)
   })
 
-  it('does not publish completion when flush fails, and releases the write handle', async () => {
+  it.each(['flush', 'dispose'])('does not publish completion when %s fails', async stage => {
     const order: string[] = []
     const storage = handleStorage(undefined, order)
     const create = storage.create.getMockImplementation()!
     storage.create.mockImplementation(async header => {
       const handle = await create(header)
-      return { ...handle, flush: async () => { throw new Error('disk unavailable') } }
+      return {
+        ...handle,
+        ...(stage === 'flush'
+          ? { flush: async () => { throw new Error('disk unavailable') } }
+          : { [Symbol.asyncDispose]: async () => { await handle[Symbol.asyncDispose](); throw new Error('disk unavailable') } }),
+      }
     })
     const statuses: string[] = []
     const projector = new ExternalSubagentProjector(storage as never, { upsertActivity: async row => { statuses.push(row.status); return row as never } })
@@ -139,7 +145,9 @@ describe('external subagent projector', () => {
       listProjectedSubagentActivities: async () => [row] as never,
     })
     await expect(projector.repairInterrupted()).resolves.toEqual({ committed: 1, repaired: length === 7 ? 0 : 1, conflicted: 0 })
-    expect(records.get(row.dshSessionId)!.events).toHaveLength(7)
+    expect(records.get(row.dshSessionId)!.events).toEqual(fixture.events.map((event: { type: string; data: object }) =>
+      event.type === 'assistant/message' ? { ...event, data: { ...event.data, stream: [] } } : event))
+    expect(JSON.parse(row.rawDetail)).toEqual(fixture.detail)
     await expect(projector.repairInterrupted()).resolves.toEqual({ committed: 1, repaired: 0, conflicted: 0 })
   })
 

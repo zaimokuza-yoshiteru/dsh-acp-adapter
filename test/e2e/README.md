@@ -35,7 +35,7 @@ pnpm test:e2e
 
 `DSH_UPSTREAM_CHECKOUT` 可指定其他源码目录。`pnpm test:e2e -t 'claude'` 可只运行一种协议夹具。默认使用 Playwright Chromium；`DSH_E2E_BROWSER_CHANNEL=chrome` 可使用本机已安装 Chrome。`DSH_E2E_NODE` 可指定宿主支持的另一份 Node 运行时，但原生依赖必须针对该 Node ABI 构建。插件构建与常规测试仍遵循 `.nvmrc`。
 
-测试使用临时工作区和独立 DSH_HOME，结束后销毁浏览器、Agent 进程与测试目录。失败截图写入 gitignored `.local/e2e-failures/`。断言使用原生组件的数据标记及可访问名称，不依赖 CSS 哈希、整页像素截图或真实模型措辞；默认不重试失败测试。
+测试使用临时工作区和独立 DSH_HOME，结束后销毁浏览器、Agent 进程与测试目录。失败截图写入 gitignored `.local/e2e-failures/`。断言使用原生组件的数据标记及可访问名称，不依赖 CSS 哈希、整页像素截图或真实模型措辞；默认不重试失败测试。浏览器回归期间不要并行运行 build、pack 或默认安装检查：prepack 会清理并重建共享的 `lib` 目录；应按顺序执行，或向安装检查传入已生成的 tarball。
 
 ## 真实 Agent 冒烟
 
@@ -51,6 +51,6 @@ DSH_E2E_LIVE=1 pnpm test:e2e -t 'live ACP smoke'
 
 ## 版本迁移的补充验证
 
-`test/unit/host/external-subagent-projector.spec.ts` 覆盖写句柄释放、flush 失败、前缀续写、重复投影、旧 sidecar 摘要和 v1 chunkless 消息迁移。新投影的 stream 使用上游 accumulator，时间表示结果被观察到的时间，不补造外部 Agent 的 token 时间线。旧记录保持 DSH 相邻迁移产生的空 stream，不重写既有历史。
+`test/unit/host/external-subagent-projector.spec.ts` 覆盖写句柄释放、flush 失败、前缀续写、重复投影、旧 sidecar 摘要和 v1 chunkless 消息迁移。新投影的 stream 使用上游 accumulator，时间表示结果被观察到的时间，不补造外部 Agent 的 token 时间线。旧记录保留空 stream，不重写既有历史。旧 sidecar 的 `turn/start.trigger` 不属于上游 v1 相邻迁移器接受的字段，因而保留摘要校验后的专用恢复路径；测试检查整个事件列表和 sidecar 内容不变。写句柄使用原生异步释放，flush 或释放失败均不能发布完成状态。退出宽限为零时仍在下一次定时器触发后终止等待，不使用宿主 deadline 的零值（禁用超时）语义。
 
 ACP v1 没有 system 消息角色，宿主指令以有标注的请求上下文传递；无法强制改变外部 Agent 的指令优先级。DSH 的原生工具执行 hooks、技能加载工具和 MCP 执行不会自动进入外部 Agent：ACP 没有通用的宿主工具执行回调，工具活动通知也不是执行请求。测试证明日志化的上下文扩展到达 ACP、原生 provider 的工具扩展仍有效，不承诺不存在的执行桥接。

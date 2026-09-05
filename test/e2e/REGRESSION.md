@@ -9,14 +9,22 @@
 - 会话流、输入栏、审批、模型选择及子代理只读详情继续使用原生组件；外部工具活动归一化为原生 Terminal、Read、Diff 展示，不制造 DSH 工具执行。
 - 认证错误同时提示检查 Agent 登录和 ACP 连接设置，避免把仅依赖父进程令牌的认证失败误导为必须重新登录。
 
+## 原生能力复用与精简
+
+后续精简删除了本地 `abortAfter` 和 `AcpDeadline`，退出等待与版本探针改用 `dsh-timeout.deadline()` 及同步资源释放；读写 SessionHandle 改用 `await using`，继续保证 flush 和写句柄释放均成功后才发布投影完成状态。生产源码净减少 55 行（含注释），新增一个直接宿主依赖；未新增迁移包或放宽发布范围。
+
+退出宽限为零时，ACP 仍在下一次定时器触发后结束等待；上游 deadline 的零值会禁用超时，因此适配处保留最小的数值转换。新增真实子进程的零宽限和正宽限退出测试，补充写句柄释放失败不得发布完成状态的回归；删除已交由上游维护的两个 deadline 原语测试。
+
+试接 `sessionFormatV1ToV2.migrate()` 时，既有 sidecar 夹具因 `turn/start 1 data has unexpected member "trigger"` 被上游拒绝。这些插件历史记录不能直接当作上游规范化的 v1 artifact 迁移。最终保留旧 sidecar 摘要校验后的专用恢复路径，断言恢复后所有事件（包括 trigger）与原 sidecar 均保持原有内容，仅补入预期的空 stream。
+
 ## 最终验证结果
 
 | 检查 | 结果 |
 | --- | --- |
 | `pnpm typecheck` | 通过 |
-| `pnpm test --no-file-parallelism` | 55 个文件、579 项通过 |
+| `pnpm test --no-file-parallelism` | 55 个文件、580 项通过 |
 | `pnpm build` | 通过；132 个打包文件、49 个运行时 JS 文件依赖闭包通过 |
-| 完整浏览器回归 | 2 个文件、44 项通过，109.38 秒 |
+| 完整浏览器回归 | 2 个文件、44 项通过，91.59 秒 |
 | 本地 tarball 离线安装、真实 Web 启动和卸载 | 通过；原生组件装配、HTTP 200、客户端启动及卸载清理通过 |
 | `git diff --check` | 通过 |
 

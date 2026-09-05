@@ -48,7 +48,8 @@ pnpm setup:source-reference
 
 先在 `reference/deepseek-harness` 检出并构建 `dsh-v0.1.3-alpha.1`。
 源码链接只改本仓库的开发依赖，不修改 DSH 用户目录。构建插件后运行
-`pnpm test:e2e` 验证原生 UI 与 ACP 核心行为。
+`pnpm test:e2e` 验证原生 UI 与 ACP 核心行为。退出与版本探针使用宿主
+`dsh-timeout`；SessionHandle 使用原生异步释放，flush 成功且写句柄释放后才发布投影完成状态。
 
 ## 安装插件
 

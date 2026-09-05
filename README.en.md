@@ -50,7 +50,9 @@ pnpm setup:source-reference
 First check out and build `dsh-v0.1.3-alpha.1` in `reference/deepseek-harness`.
 Source linking only changes this checkout's development dependencies and never
 touches the DSH user directory. After building the plugin, run `pnpm test:e2e`
-to verify native UI and core ACP behavior.
+to verify native UI and core ACP behavior. Exit and version probes use the host
+`dsh-timeout` library. SessionHandles use native async disposal; projections are
+marked complete only after flush and writer disposal succeed.
 
 ## Install the plugin
 

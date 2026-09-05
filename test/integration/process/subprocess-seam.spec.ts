@@ -21,6 +21,7 @@ import {
   narrowSubprocessSeam,
 } from '../../../src/runtime/process/subprocess.ts';
 import type { SubprocessSeam } from '../../../src/runtime/process/subprocess.ts';
+import { waitWithin } from '../../../src/runtime/process/timeout.ts';
 import { AcpAgentProcess } from '../../../src/runtime/process/agent-process.ts';
 import { AcpClientConnection } from '../../../src/protocol/v1/connection.ts';
 import { AcpClientError } from '../../../src/protocol/v1/errors.ts';
@@ -132,6 +133,23 @@ describe('真 spawn scrubbed-parent 实证（AcpAgentProcess 生产路径）', (
         }
       },
     );
+  });
+});
+
+describe('ACP process exit deadline', () => {
+  it.each([0, 20])('closes an EOF-ignoring child with %s ms grace', async eofGraceMs => {
+    const proc = new AcpAgentProcess({
+      argv: [process.execPath, '-e', 'setInterval(() => {}, 1000); process.stdout.write("ready")'],
+      cwd: os.tmpdir(), env: {}, subprocess,
+    }, { eofGraceMs, termGraceMs: 100 });
+    try {
+      await expect(waitWithin(new Promise<boolean>(resolve => proc.stdout.once('data', () => resolve(true))), 2000)).resolves.toBe(true);
+      await expect(waitWithin(proc.close().then(() => true), 2000)).resolves.toBe(true);
+      expect(proc.exited).not.toBeNull();
+    } finally {
+      // A failed bounded wait still terminates this test's child.
+      if (proc.exited === null && proc.pid !== undefined) process.kill(proc.pid);
+    }
   });
 });
 

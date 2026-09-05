@@ -296,7 +296,8 @@ export class ExternalSubagentProjector {
       if (error instanceof SessionPersistenceNotFoundError) return undefined
       throw error
     }
-    try { return { meta: handle.header, events: await handle.read() } } finally { await handle.close() }
+    await using reader = handle
+    return { meta: reader.header, events: await reader.read() }
   }
 
   private async commit(expected: ReturnType<typeof projectionLog>): Promise<boolean> {
@@ -309,21 +310,18 @@ export class ExternalSubagentProjector {
       if (!(error instanceof SessionAlreadyExistsError)) throw error
       handle = await this.persistence.open(expected.header.id, 'write')
     }
-    try {
-      const events = await handle.read()
-      const prefix = { header: expected.header, events: expected.events.slice(0, events.length) }
-      if (events.length > expected.events.length || !sameProjection({ meta: handle.header, events }, prefix)) {
-        throw new Error(`ACP_SUBAGENT_PROJECTION_CONFLICT: ${expected.header.id}`)
-      }
-      const remaining = expected.events.slice(events.length)
-      if (remaining.length > 0) await handle.append(remaining)
-      // Read visibility does not imply crash durability. Publish the sidecar
-      // completion only after this barrier and the writer's teardown succeed.
-      await handle.flush()
-      return created || remaining.length > 0
-    } finally {
-      await handle.close()
+    await using writer = handle
+    const events = await writer.read()
+    const prefix = { header: expected.header, events: expected.events.slice(0, events.length) }
+    if (events.length > expected.events.length || !sameProjection({ meta: writer.header, events }, prefix)) {
+      throw new Error(`ACP_SUBAGENT_PROJECTION_CONFLICT: ${expected.header.id}`)
     }
+    const remaining = expected.events.slice(events.length)
+    if (remaining.length > 0) await writer.append(remaining)
+    // Read visibility does not imply crash durability. Publish the sidecar
+    // completion only after this barrier and the writer's teardown succeed.
+    await writer.flush()
+    return created || remaining.length > 0
   }
 
   private async setProjectionStatus(row: AcpActivityRecord, status: 'completed' | 'failed'): Promise<void> {

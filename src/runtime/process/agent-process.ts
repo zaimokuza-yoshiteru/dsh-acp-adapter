@@ -35,7 +35,8 @@ import {
   defaultRedactStderrLine,
 } from './stderr.ts'
 import type { AcpSubprocessHandle, SubprocessSeam } from './subprocess.ts'
-import { abortAfter, waitWithin } from './timeout.ts'
+import { deadline } from '@deepseek-ai/dsh-timeout'
+import { waitWithin } from './timeout.ts'
 import type { AcpProcessExit, AcpProcessOptions } from './types.ts'
 
 /** 拆除梯子第 1 级缺省：stdin EOF 后的等待窗口（毫秒）。 */
@@ -292,12 +293,9 @@ export class AcpAgentProcess {
 
   /** 限时整树退出等待（subagent-acp run.ts 的 treeExitsWithin 模板）：窗口耗尽返回 false。 */
   private async treeExitsWithin(handle: AcpSubprocessHandle, ms: number): Promise<boolean> {
-    const deadline = abortAfter(ms)
-    try {
-      return await handle.waitForExit(deadline.signal)
-    } finally {
-      deadline.cancel()
-    }
+    // ACP zero grace means the next timer tick; DSH zero disables the timer.
+    using budget = deadline(undefined, Math.max(1, ms), 'ACP_PROCESS_EXIT_TIMEOUT')
+    return await handle.waitForExit(budget.signal)
   }
 
   private ingestStderr(chunk: string): void {

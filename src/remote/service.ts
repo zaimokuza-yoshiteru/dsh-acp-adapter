@@ -51,7 +51,7 @@ import type { AcpAgentStateProbeView } from '../domain/session/agent-state.ts'
 import { acpCapabilityMatrix } from '../domain/policy/capability-matrix.ts'
 import type { AcpSessionContinuityState } from '../runtime/session/continuity.ts'
 import { ACP_SUBPROCESS_UNAVAILABLE_MESSAGE } from '../runtime/process/subprocess.ts'
-import { abortAfter } from '../runtime/process/timeout.ts'
+import { deadline } from '@deepseek-ai/dsh-timeout'
 import type { AcpSubprocessHandle, SubprocessSeam, SubprocessSeamResolution } from '../runtime/process/subprocess.ts'
 import { AcpClientError } from '../protocol/v1/errors.ts'
 import type {
@@ -429,22 +429,18 @@ async function acpQueryVersion(
   } catch {
     // 对端抢跑退出不阻塞读取
   }
-  const deadline = abortAfter(timeoutMs)
-  try {
-    // waitForExit（整树）与 done（close 结算，含 spawn 级失败）先到先赢
-    const gone = await Promise.race([handle.waitForExit(deadline.signal), done.then(() => true)])
-    if (!gone) {
-      // 超时：terminate（SIGTERM → graceMs → SIGKILL；Windows taskkill /T /F）后无界等整树死绝
-      handle.terminate()
-      await handle.waitForExit()
-      await done
-      return null
-    }
+  using budget = deadline(undefined, timeoutMs, 'ACP_VERSION_PROBE_TIMEOUT')
+  // waitForExit（整树）与 done（close 结算，含 spawn 级失败）先到先赢
+  const gone = await Promise.race([handle.waitForExit(budget.signal), done.then(() => true)])
+  if (!gone) {
+    // 超时：terminate（SIGTERM → graceMs → SIGKILL；Windows taskkill /T /F）后无界等整树死绝
+    handle.terminate()
+    await handle.waitForExit()
     await done
-    return firstLine(out) ?? firstLine(err)
-  } finally {
-    deadline.cancel()
+    return null
   }
+  await done
+  return firstLine(out) ?? firstLine(err)
 }
 
 /** 版本探针 terminate 的 SIGTERM → SIGKILL 升级间隔（毫秒）：探针求快死，不用会话级的 2s。 */
