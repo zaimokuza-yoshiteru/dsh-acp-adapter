@@ -41,7 +41,7 @@ if (tag !== expectedTag) {
 }
 
 if (pkg.devDependencies?.['@deepseek-ai/dsh-llm'] !== DSH_SOURCE_VERSION) {
-  throw new Error(`Release target ${DSH_SOURCE_VERSION} has not passed the published-package lane; finish the npm dependency and peer-range migration before publishing`)
+  throw new Error(`Release target ${DSH_SOURCE_VERSION} has not passed the published-package lane; finish the published development dependency migration before publishing`)
 }
 
 const prerelease = version.match(/-([0-9A-Za-z]+)(?:[.-]|$)/)?.[1]
