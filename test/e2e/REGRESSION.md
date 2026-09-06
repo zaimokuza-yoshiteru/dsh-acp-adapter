@@ -67,3 +67,49 @@ ACP v1 没有 system 消息角色，因此宿主指令作为请求上下文传�
 本轮 `pnpm typecheck`、55 个文件的 585 项常规测试（32.47 秒）、构建和打包依赖闭包检查通过。固定夹具浏览器回归 40 项通过（62.60 秒），4 项真实 Agent 冒烟按默认配置跳过。`git diff --check` 通过；代码净减少 760 行（含注释，不含本报告）。
 
 本轮未重新运行真实模型冒烟和 tarball 安装启动；上文 44 项完整浏览器及安装结果属于前一轮原生能力精简验收，不能计作本轮新增验证。
+
+
+## 2026-09-06：依赖面核查与修正
+
+重新查询 npm registry，`@deepseek-ai/dsh`、`@deepseek-ai/dsh-llm`、`@deepseek-ai/dsh-session` 的 `0.1.3-alpha.1` 均返回 404。此前“开发依赖声明 rc.1，运行前替换为 alpha.1 源码”的方案会让清单与实际环境不一致，本轮已完整移除旧版引导依赖。
+
+- 28 个宿主开发依赖改为显式 `link:../reference/deepseek-harness/...`，覆盖直接使用的 DSH 模块、Cordis、React 和生成/测试工具。运行 typecheck、test、build 前验证目标 tag、每个包的名称/版本、构建入口及实际链接；`setup:source-reference` 支持指定其他上游目录。
+- 移除 31 个间接或未直接使用的开发依赖声明。上游源码自己的锁文件仍负责这些模块的传递依赖；插件锁文件从 3,825 行缩至 1,374 行，干净安装后的插件 pnpm store 没有 `@deepseek-ai/*` 包副本。
+- 补齐实际运行时使用的 `dsh-client-store` 和 React 的可选 peer。所有 DSH peer 与 `engines.dsh` 一致；宿主模块不得进入普通/可选运行依赖。运行依赖仍只有精确版本的 ACP SDK 和 Zod。
+- 五个开发工具固定到原锁文件已经使用的精确版本，未趁本轮升级工具。Typert 分析 facade 的版本改用共享目标常量。React、Playwright 及浏览器 scaffold 的宿主提供方式已核对，Playwright 继续由 E2E 配置显式解析到目标源码的 Web 工作区。
+- 删除不再消费的旧原生包构建配置，将关闭 peer 自动安装的设置统一放入 `pnpm-workspace.yaml`，移除令 npm 报未知设置的 `.npmrc`。
+- CI 使用与声明一致的同级目录布局，先构建目标源码再安装插件；发布工作流先检查资格，再安装依赖。发布检查拒绝所有本地开发链接和未统一到目标版本的 DSH 开发依赖，不能只改一个 llm 版本便绕过检查。
+
+| 本轮验证 | 结果 |
+| --- | --- |
+| 全新 node_modules + frozen lockfile 安装 | 通过；初次离线缺少缓存，补齐锁定包后成功 |
+| 源码链接检查、类型检查 | 通过 |
+| 常规测试 | 55 个文件、585 项通过，33.22 秒 |
+| 构建、打包闭包检查 | 132 个打包文件、49 个运行时 JS 文件通过 |
+| 固定夹具浏览器回归 | 40 项通过，59.18 秒；4 项真实模型冒烟未重复运行 |
+| 当前 tarball 的独立 npm / pnpm 用户安装 | 两者均只安装插件、ACP SDK、Zod；没有 DSH、React 或开发工具下载 |
+| DSH 临时 profile 安装、Web 启动、卸载 | 通过；HTTP 200、客户端启动及卸载清理正常 |
+| 插件锁文件 pnpm audit | 已知漏洞 0；上游扫描结果见下文 |
+
+此次提交仍是源码适配，尚不能作为正式 npm 版本发布。开发环境需先构建准确标签的上游源码；待目标 npm 产物可用并通过安装验收后，才能把开发获取方式迁移到精确 npm 版本并开启发布。上游跟踪文件保持干净。CI 三平台配置已同步，但本轮实际执行环境仍是 macOS。
+
+
+### 上游依赖的审计边界
+
+本轮也对准确标签的上游整个工作区执行了只读审计。完整锁文件结果为 46 条（高 21、中 22、低 3）；`pnpm audit --prod` 为 31 条（高 16、中 14、低 1），没有 critical。这里是整个 DSH monorepo 的生产依赖集合，包含其他 provider、MCP、站点等包，不等同于 ACP 插件有 31 个可触发漏洞。该扫描没有执行漏洞利用或完整可达性分析。
+
+已核对的路径包括 CLI / app-boot → `js-yaml@4.2.0`，以及 MCP client / pi-ai → MCP SDK → AJV → `fast-uri@3.1.3`。这些属于上游锁定版本，不是插件普通安装新增的包。修复需要上游升级，或另行维护并回归一个明确的 patched host；本轮未改写目标标签的源码或锁文件，也未用插件 overrides 替换宿主的模块实例。
+
+| 上游生产依赖 | 扫描版本 | 公告及严重程度 |
+| --- | --- | --- |
+| `@hono/node-server` | 1.19.14 | [moderate](https://github.com/advisories/GHSA-frvp-7c67-39w9) |
+| `brace-expansion` | 5.0.6 | [high](https://github.com/advisories/GHSA-3jxr-9vmj-r5cp)、[high](https://github.com/advisories/GHSA-mh99-v99m-4gvg)、[high](https://github.com/advisories/GHSA-rgw5-rvv9-x895) |
+| `fast-uri` | 3.1.3 | [high](https://github.com/advisories/GHSA-v2hh-gcrm-f6hx)、[high](https://github.com/advisories/GHSA-7p8r-x3mc-p8w7)、[high](https://github.com/advisories/GHSA-5jgf-p345-68v8)、[high](https://github.com/advisories/GHSA-f65p-4m7j-42xc)、[high](https://github.com/advisories/GHSA-fph4-wmhf-6fwf)、[high](https://github.com/advisories/GHSA-jqff-g426-hqxp) |
+| `hono` | 4.12.29 | [moderate](https://github.com/advisories/GHSA-8j4g-w8fx-2239)、[moderate](https://github.com/advisories/GHSA-f23p-vx2j-j53r)、[low](https://github.com/advisories/GHSA-79qm-7rj5-m7r9)、[moderate](https://github.com/advisories/GHSA-54fx-42gc-7vw4) |
+| `ip-address` | 10.2.0 | [high](https://github.com/advisories/GHSA-mwp4-54f8-5fhr)、[moderate](https://github.com/advisories/GHSA-4xrf-jv44-h6hh)、[moderate](https://github.com/advisories/GHSA-22jq-vg5j-6vgg) |
+| `js-yaml` | 4.2.0 | [high](https://github.com/advisories/GHSA-52cp-r559-cp3m)、[high](https://github.com/advisories/GHSA-5p4m-2wfm-xmqj) |
+| `nanoid` | 3.3.12 | [high](https://github.com/advisories/GHSA-28wg-ghj8-5hjv)、[high](https://github.com/advisories/GHSA-2v37-7h3g-55p8) |
+| `postcss` | 8.5.15 | [moderate](https://github.com/advisories/GHSA-fxqj-rqcc-2cmp)、[high](https://github.com/advisories/GHSA-r28c-9q8g-f849) |
+| `protobufjs` | 7.6.4 | [moderate](https://github.com/advisories/GHSA-j3f2-48v5-ccww) |
+| `qs` | 6.15.3 | [moderate](https://github.com/advisories/GHSA-x5fp-wj9c-mxmx)、[moderate](https://github.com/advisories/GHSA-4mjr-xmp4-gh2g) |
+| `undici` | 7.28.0 | [moderate](https://github.com/advisories/GHSA-8xcm-r25x-g524)、[high](https://github.com/advisories/GHSA-4cwx-7wf7-3272)、[moderate](https://github.com/advisories/GHSA-m8rv-5g2x-5cg5)、[moderate](https://github.com/advisories/GHSA-jr45-8vmc-qm54)、[moderate](https://github.com/advisories/GHSA-v3r7-h72x-cjcm) |

@@ -14,7 +14,7 @@ import os from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { findMissingRelativeRuntimeImports } from './verify-runtime-closure.mjs'
-import { DSH_COMPAT_RANGE } from './dsh-target.mjs'
+import { DSH_COMPAT_RANGE, DSH_SOURCE_LINK_PREFIX } from './dsh-target.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const read = (rel) => readFileSync(join(root, rel), 'utf8')
@@ -110,29 +110,32 @@ for (const spec of declaredExternal) {
   }
 }
 
-// engines.dsh 与所有 DSH peer 共同声明源码适配范围。dev 暂为工具引导版本；
-// CI 会链接准确的目标源码，发布门继续阻止未经 npm 安装验收的开发依赖发布。
+// Host compatibility is separate from development acquisition. This branch uses
+// explicit source links until the exact target has passed npm installation.
 if (pkg.engines?.dsh !== DSH_COMPAT_RANGE) {
   fail(`package.json: engines.dsh must be ${DSH_COMPAT_RANGE}; found ${pkg.engines?.dsh}`)
 }
-const DSH_DEV_VERSION = '0.1.2-rc.1'
-const EXACT_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/
 for (const [name, peerRange] of Object.entries(pkg.peerDependencies ?? {})) {
   if (pkg.peerDependenciesMeta?.[name]?.optional !== true) {
     fail(`package.json: peerDependenciesMeta.${name}.optional must be true; host modules must not be auto-installed`)
   }
-  const devRange = pkg.devDependencies?.[name]
-  if (devRange === undefined) {
-    fail(`package.json: peerDependencies.${name} (${peerRange}) 缺少 devDependencies 同名声明`)
-  } else if (name.startsWith('@deepseek-ai/dsh-')) {
-    if (peerRange !== DSH_COMPAT_RANGE) {
-      fail(`package.json: peerDependencies.${name} is ${peerRange}; expected ${DSH_COMPAT_RANGE}`)
-    }
-    if (devRange !== DSH_DEV_VERSION || !EXACT_VERSION.test(devRange)) {
-      fail(`package.json: devDependencies.${name} must be exact ${DSH_DEV_VERSION}; found ${devRange}`)
-    }
-  } else if (peerRange !== devRange) {
-    fail(`package.json: peerDependencies.${name} is ${peerRange}; expected the exact dev pin ${devRange}`)
+  if (name.startsWith('@deepseek-ai/dsh-') && peerRange !== DSH_COMPAT_RANGE) {
+    fail(`package.json: peerDependencies.${name} is ${peerRange}; expected ${DSH_COMPAT_RANGE}`)
+  }
+  if (!pkg.devDependencies?.[name]?.startsWith(DSH_SOURCE_LINK_PREFIX)) {
+    fail(`package.json: devDependencies.${name} must declare the target source link`)
+  }
+}
+for (const section of ['dependencies', 'optionalDependencies']) {
+  for (const name of Object.keys(pkg[section] ?? {})) {
+    if (name.startsWith('@deepseek-ai/') || name === 'react') fail(`package.json: host module ${name} must not be in ${section}`)
+  }
+}
+for (const [name, version] of Object.entries(pkg.devDependencies ?? {})) {
+  if (name.startsWith('@deepseek-ai/') || name === 'react') {
+    if (!version.startsWith(DSH_SOURCE_LINK_PREFIX)) fail(`package.json: devDependencies.${name} must use the target source`)
+  } else if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) {
+    fail(`package.json: devDependencies.${name} must pin an exact tool version; found ${version}`)
   }
 }
 for (const name of inject) {

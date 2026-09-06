@@ -5,8 +5,8 @@ on:
   pull_request:
   workflow_dispatch:
 
-# The alpha.1 CLI is not on npm yet. The locked registry dependencies bootstrap
-# the compiler; every DSH dependency is then replaced with the exact source tag.
+# The alpha.1 CLI has not passed npm installation. Old registry host dependencies
+# are no longer used: host development dependencies explicitly link to the source tag.
 # Restore a published-package lane only after that artifact passes this suite.
 jobs:
   source-compatibility:
@@ -16,10 +16,15 @@ jobs:
       matrix:
         os: [ubuntu-24.04, macos-15, windows-2025]
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: dsh-acp-adapter
     env:
       DSH_UPSTREAM_CHECKOUT: ${{ github.workspace }}/reference/deepseek-harness
     steps:
       - uses: actions/checkout@v6
+        with:
+          path: dsh-acp-adapter
       - name: Checkout exact DSH source
         uses: actions/checkout@v6
         with:
@@ -28,15 +33,16 @@ jobs:
           path: reference/deepseek-harness
       - uses: actions/setup-node@v6
         with:
-          node-version-file: .nvmrc
+          node-version-file: dsh-acp-adapter/.nvmrc
           package-manager-cache: false
       - uses: pnpm/action-setup@v4
         with:
           version: 10.7.0
+          package_json_file: dsh-acp-adapter/package.json
       - name: Build DSH source
         run: pnpm install --frozen-lockfile && pnpm clean && pnpm build
         working-directory: reference/deepseek-harness
-      - name: Install plugin tooling
+      - name: Install pinned tools and declared source links
         run: pnpm install --frozen-lockfile
       - name: Link and verify DSH source packages
         run: pnpm setup:source-reference && pnpm verify:source-reference && pnpm verify:source-install
@@ -44,7 +50,7 @@ jobs:
         run: pnpm typecheck && pnpm test --no-file-parallelism && pnpm build
       - name: Install Chromium
         if: runner.os == 'Linux'
-        run: pnpm --dir reference/deepseek-harness/apps/web exec playwright install --with-deps chromium
+        run: pnpm --dir ../reference/deepseek-harness/apps/web exec playwright install --with-deps chromium
       - name: Native UI parity (keyless ACP protocol fixtures)
         if: runner.os == 'Linux'
         run: pnpm test:e2e

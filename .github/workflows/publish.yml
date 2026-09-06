@@ -35,13 +35,13 @@ jobs:
       - uses: pnpm/action-setup@v4
         with:
           version: 10.7.0
+      - name: Verify release tag and version
+        id: release
+        run: node scripts/verify-release.mjs
       - name: Install exact published dependencies
         run: pnpm install --frozen-lockfile
       - name: Verify package
         run: pnpm typecheck && pnpm test && pnpm build
-      - name: Verify release tag and version
-        id: release
-        run: node scripts/verify-release.mjs
       - name: Pack exact release artifact
         run: mkdir -p dist/npm && npm pack --pack-destination dist/npm
       - name: Verify expected artifact exists alone

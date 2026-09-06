@@ -10,7 +10,7 @@ const pkg = JSON.parse(readFileSync(new URL('package.json', root), 'utf8'))
 const verifyRelease = fileURLToPath(new URL('scripts/verify-release.mjs', root))
 
 describe('npm release contract', () => {
-  it('blocks a source-only adaptation from publishing with the old dependency metadata', () => {
+  it('blocks a source-only adaptation from publishing with the source dependency metadata', () => {
     const output = join(mkdtempSync(join(tmpdir(), 'dsh-acp-release-')), 'output')
     expect(() => execFileSync(
       process.execPath,
@@ -52,11 +52,12 @@ describe('npm release contract', () => {
     expect(workflow).not.toMatch(/NPM_TOKEN|NODE_AUTH_TOKEN/)
   })
 
-  it('publishes the tested tarball from the exact rc.1 development lane', () => {
+  it('checks release eligibility before installing development dependencies', () => {
     const workflow = readFileSync(new URL('.github/workflows/publish.yml', root), 'utf8')
     expect(workflow).not.toContain('if: ${{ false }}')
     expect(workflow).not.toContain('alpha-release-block')
     expect(workflow).toContain('pnpm install --frozen-lockfile')
     expect(workflow).toContain('pnpm typecheck && pnpm test && pnpm build')
+    expect(workflow.indexOf('node scripts/verify-release.mjs')).toBeLessThan(workflow.indexOf('pnpm install --frozen-lockfile'))
   })
 })

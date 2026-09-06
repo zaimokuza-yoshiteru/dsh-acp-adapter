@@ -1,7 +1,5 @@
-allowBuilds:
-  # 三个原生件的 postinstall 一律跳过——dsh-subprocess-local 随包发布
-  # prebuilt 二进制（装配实测不经 build script 即可用，PTP/koffi 路径本包不消费），
-  # node-pty 的 spawnTerminal 路径本包同样不消费。显式 false 让 install 退出码归 0。
-  '@deepseek-ai/dsh-subprocess-local': false
-  koffi: false
-  node-pty: false
+packages:
+  - .
+
+# Host modules are provided by the exact source checkout during development.
+autoInstallPeers: false

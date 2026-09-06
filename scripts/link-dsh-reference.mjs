@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 /**
- * Link locally built DSH packages for the optional source-compatibility lane.
- * Exact registry packages remain the default development and CI lane.
+ * Resolve the declared source development dependencies against the exact DSH tag.
+ * The linked checkout owns its dependency tree; no older npm host is installed.
  */
 import { execFileSync } from 'node:child_process'
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { DSH_SOURCE_TAG, DSH_SOURCE_VERSION } from './dsh-target.mjs'
+import { DSH_SOURCE_TAG, DSH_SOURCE_VERSION, DSH_SOURCE_LINK_PREFIX } from './dsh-target.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const expectedTag = DSH_SOURCE_TAG
@@ -37,61 +37,6 @@ Options:
   -h, --help          show this help`
 }
 
-function packageNames() {
-  const packageJson = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
-  // Peer metadata describes the host boundary; these additional packages are
-  // source/test-only imports used by gen:typert and the Alpha integration
-  // fixtures. The list also keeps source-link verification explicit when a
-  // package is not part of the host peer surface.
-  const sourceOnly = [
-    '@deepseek-ai/dsh-agent',
-    '@deepseek-ai/dsh-agent-loop',
-    '@deepseek-ai/dsh-api-settings-controller',
-    '@deepseek-ai/dsh-client-store',
-    '@deepseek-ai/dsh-client-ui-model-selection',
-    '@deepseek-ai/dsh-client-ui-primitives',
-    '@deepseek-ai/dsh-subprocess',
-    '@deepseek-ai/dsh-subprocess-local',
-    '@deepseek-ai/dsh-typert-generator',
-  ]
-  return [...new Set([
-    ...Object.keys(packageJson.peerDependencies ?? {}).filter(name => name.startsWith('@deepseek-ai/')),
-    ...Object.keys(packageJson.devDependencies ?? {}).filter(name => name.startsWith('@deepseek-ai/dsh-')),
-    ...sourceOnly,
-  ])].sort()
-}
-
-function findPackages(hostRoot) {
-  const found = new Map()
-  const visited = new Set()
-  const visit = directory => {
-    let real
-    try { real = resolve(directory) } catch { return }
-    if (visited.has(real)) return
-    visited.add(real)
-    let entries
-    try { entries = readdirSync(directory, { withFileTypes: true }) } catch { return }
-    for (const entry of entries) {
-      if (entry.name === '.git' || entry.name === 'node_modules' || entry.name === '.pnpm') continue
-      const child = join(directory, entry.name)
-      if (entry.isDirectory()) {
-        const packageFile = join(child, 'package.json')
-        if (existsSync(packageFile)) {
-          let manifest
-          try { manifest = JSON.parse(readFileSync(packageFile, 'utf8')) } catch { manifest = undefined }
-          if (typeof manifest?.name === 'string' && manifest.name.startsWith('@deepseek-ai/')) {
-            if (found.has(manifest.name)) throw new Error(`duplicate DSH package ${manifest.name}: ${found.get(manifest.name)} and ${child}`)
-            found.set(manifest.name, child)
-          }
-        }
-        visit(child)
-      }
-    }
-  }
-  visit(hostRoot)
-  return found
-}
-
 function exactTag(hostRoot) {
   if (!existsSync(join(hostRoot, '.git'))) throw new Error(`DSH reference is not a git checkout: ${hostRoot}`)
   try {
@@ -112,15 +57,19 @@ function main() {
   if (args.help) { console.log(usage()); return }
   const tag = exactTag(args.hostRoot)
   if (tag !== expectedTag) throw new Error(`DSH reference must be checked out at ${expectedTag}; found ${tag || 'detached/unmatched HEAD'}`)
-  const packages = findPackages(args.hostRoot)
-  const names = packageNames()
-  const missing = names.filter(name => !packages.has(name))
-  if (missing.length > 0) throw new Error(`DSH reference is missing packages: ${missing.join(', ')}`)
-  for (const name of names) {
-    const source = packages.get(name)
+  const packageJson = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+  const entries = Object.entries(packageJson.devDependencies ?? {})
+    .filter(([name, spec]) => name.startsWith('@deepseek-ai/') || spec.startsWith('link:'))
+  for (const [name, spec] of entries) {
+    if (!spec.startsWith(DSH_SOURCE_LINK_PREFIX)) {
+      throw new Error(`${name} must declare its target DSH source with ${DSH_SOURCE_LINK_PREFIX}; found ${spec}`)
+    }
+    const source = resolve(args.hostRoot, spec.slice(DSH_SOURCE_LINK_PREFIX.length))
     const manifest = JSON.parse(readFileSync(join(source, 'package.json'), 'utf8'))
-    if (manifest.version !== expectedVersion && name !== '@deepseek-ai/cordis') {
-      throw new Error(`${name} is ${manifest.version}, expected ${expectedVersion}`)
+    if (manifest.name !== name) throw new Error(`${spec} resolves to ${manifest.name}, expected ${name}`)
+    const version = name.startsWith('@deepseek-ai/dsh-') ? expectedVersion : packageJson.peerDependencies?.[name]
+    if (manifest.version !== version) {
+      throw new Error(`${name} is ${manifest.version}, expected ${version}`)
     }
     const mainFile = typeof manifest.main === 'string' ? join(source, manifest.main) : undefined
     if (mainFile !== undefined && !existsSync(mainFile)) throw new Error(`${name} is not built: missing ${relative(source, mainFile)}; build the DSH reference first`)
@@ -135,7 +84,7 @@ function main() {
       symlinkSync(source, target, process.platform === 'win32' ? 'junction' : 'dir')
     }
   }
-  console.log(`${args.check ? 'Verified' : 'Linked'} ${names.length} DSH packages from ${args.hostRoot} (${expectedTag})`)
+  console.log(`${args.check ? 'Verified' : 'Linked'} ${entries.length} host development packages from ${args.hostRoot} (${expectedTag})`)
 }
 
 main()

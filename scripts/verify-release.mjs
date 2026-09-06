@@ -40,7 +40,9 @@ if (tag !== expectedTag) {
   throw new Error(`发布 tag 必须等于 ${expectedTag}，当前值: ${tag ?? '<missing>'}`)
 }
 
-if (pkg.devDependencies?.['@deepseek-ai/dsh-llm'] !== DSH_SOURCE_VERSION) {
+const hostDevDependencies = Object.entries(pkg.devDependencies ?? {}).filter(([name]) => name.startsWith('@deepseek-ai/dsh-'))
+if (hostDevDependencies.length === 0 || hostDevDependencies.some(([, version]) => version !== DSH_SOURCE_VERSION)
+  || Object.values(pkg.devDependencies ?? {}).some(version => /^(?:link:|file:|workspace:)/.test(version))) {
   throw new Error(`Release target ${DSH_SOURCE_VERSION} has not passed the published-package lane; finish the published development dependency migration before publishing`)
 }
 

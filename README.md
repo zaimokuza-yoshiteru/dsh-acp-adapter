@@ -2,7 +2,7 @@
 
 [English](README.en.md)
 
-源码适配目标为 DSH `0.1.3-alpha.1`，尚未作为 npm 兼容版本发布。开发与原生 UI 回归见仓库中的 `test/e2e/README.md`；下述安装说明对应已发布版本。
+> 当前分支适配 DSH `0.1.3-alpha.1`，开发依赖使用准确标签的源码链接；该版本的 npm 安装尚待验收。下方 npm 命令对应已发布的 `0.1.2-rc.1.1` 插件及其 `0.1.2-rc.1` 宿主，不适用于安装本分支。源码开发和回归流程见仓库中的 `test/e2e/README.md`。
 
 通过 DeepSeek Harness（DSH）会话页面使用智能体，包括 Devin、Codex、Kimi 和 Claude。智能体继续负责自己的模型、工具、skills、登录状态和运行时。
 

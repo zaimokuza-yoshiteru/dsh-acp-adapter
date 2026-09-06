@@ -18,7 +18,7 @@
 
 ## 运行
 
-当前源码适配目标是 `dsh-v0.1.3-alpha.1`。该 CLI 的 npm 产物尚待安装验收，所以锁文件里的 rc.1 依赖仅用于引导工具安装；运行前必须把所有 DSH 开发依赖链接到准确版本的已构建源码。npm 发布检查会阻止使用旧依赖元数据发布本次源码适配。
+当前源码适配目标是 `dsh-v0.1.3-alpha.1`。宿主开发依赖通过 `link:../reference/deepseek-harness/...` 明确引用目标源码，不再安装旧版 DSH npm 包。默认目录布局为同级 `dsh-acp-adapter/` 与 `reference/deepseek-harness/`；先构建宿主，再在插件目录执行冻结锁文件安装。`setup:source-reference` 可根据 `DSH_UPSTREAM_CHECKOUT` 重定位链接，检查会验证目标标签、包名、版本和构建产物。npm 发布检查在安装前拒绝尚未迁移到已验收 npm 版本的源码依赖。
 
 ```sh
 # reference/deepseek-harness 必须检出 dsh-v0.1.3-alpha.1

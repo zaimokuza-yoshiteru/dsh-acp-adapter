@@ -2,7 +2,7 @@
 
 [中文](README.md)
 
-The source target is DSH `0.1.3-alpha.1`; npm compatibility has not been released. See `test/e2e/README.md` in the repository for source setup and native UI regression tests. Installation instructions below describe the published release.
+> This branch targets DSH `0.1.3-alpha.1` through development links to the exact source tag; npm installation of that target is pending acceptance. The npm commands below describe the published `0.1.2-rc.1.1` plugin and its `0.1.2-rc.1` host, not this branch. See `test/e2e/README.md` in the repository for source development and regression steps.
 
 Use Devin, Codex, Kimi, or Claude agents from the DeepSeek Harness (DSH) session UI. Each Agent remains responsible for its own model, tools, skills, login state, and runtime.
 

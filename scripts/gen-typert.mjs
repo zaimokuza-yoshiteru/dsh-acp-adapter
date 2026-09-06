@@ -50,6 +50,7 @@ import {
 } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { DSH_SOURCE_VERSION } from './dsh-target.mjs';
 import { WorkspaceTypertGenerator } from '@deepseek-ai/dsh-typert-generator';
 
 const checkMode = process.argv.includes('--check');
@@ -131,7 +132,7 @@ function stage() {
   cpSync(PROTOCOL_FACADE, join(protocolRoot, 'src', 'index.d.ts'));
   writeJson(join(protocolRoot, 'package.json'), {
     name: '@deepseek-ai/dsh-typert-protocol',
-    version: '0.1.2-rc.1',
+    version: DSH_SOURCE_VERSION,
     private: true,
     type: 'module',
   });
