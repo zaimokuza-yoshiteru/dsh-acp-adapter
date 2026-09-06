@@ -129,10 +129,14 @@ The plugin automatically keeps successful external delegations with provable ide
 
 ## Upgrade and uninstall
 
+Use the same pinned DSH version to install, start, update, and remove the plugin. The examples retain `0.1.2-rc.1` from the installation steps; replace it consistently if using another verified compatible version. `npx` and `pnpm dlx` resolve the requested DSH package and download it when needed; omitting its version or using `@latest` or `@next` does not pin the host. For pnpm, replace `npx` below with `pnpm dlx`. If a fixed DSH version is already installed, you can run `dsh plugin ...` directly.
+
+The plugin declares DSH compatibility through optional `peerDependencies`, with those modules supplied by the host. Its regular runtime dependencies do not include DSH. Changing the plugin's compatibility range cannot control the host version selected by `npx` / `pnpm dlx` before DSH starts.
+
 Upgrade an installed plugin with:
 
 ```bash
-npx @deepseek-ai/dsh plugin --profile web update @zaimokuza/dsh-acp-adapter
+npx @deepseek-ai/dsh@0.1.2-rc.1 plugin --profile web update @zaimokuza/dsh-acp-adapter
 ```
 
 ### Prerelease data compatibility
@@ -164,7 +168,7 @@ delete the whole `~/.dsh/profiles/web` directory.
 Uninstall:
 
 ```bash
-npx @deepseek-ai/dsh plugin --profile web remove @zaimokuza/dsh-acp-adapter
+npx @deepseek-ai/dsh@0.1.2-rc.1 plugin --profile web remove @zaimokuza/dsh-acp-adapter
 ```
 
 ## Short troubleshooting

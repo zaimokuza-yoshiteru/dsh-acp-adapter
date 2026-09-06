@@ -125,10 +125,14 @@ ACP 会话自动使用“原生 Agent 访问”。输入框中的 DSH 权限显�
 
 ## 升级与卸载
 
+安装、启动、更新和卸载插件时，请使用同一固定版本的 DSH。下例沿用安装步骤的 `0.1.2-rc.1`；若使用其他已验证的兼容版本，请统一替换。`npx` 和 `pnpm dlx` 会先解析并在需要时下载命令指定的 DSH，省略版本或使用 `@latest`、`@next` 都不能固定宿主版本。使用 pnpm 时可将下例的 `npx` 替换为 `pnpm dlx`；若已安装固定版本的 DSH，也可直接运行 `dsh plugin ...`。
+
+插件通过可选 `peerDependencies` 声明 DSH 兼容范围，由宿主提供这些模块；它的普通运行依赖不包含 DSH。修改插件的兼容范围无法控制 `npx` / `pnpm dlx` 在运行宿主之前选择的版本。
+
 升级已安装的插件：
 
 ```bash
-npx @deepseek-ai/dsh plugin --profile web update @zaimokuza/dsh-acp-adapter
+npx @deepseek-ai/dsh@0.1.2-rc.1 plugin --profile web update @zaimokuza/dsh-acp-adapter
 ```
 
 ### 预发布版本的数据兼容
@@ -156,7 +160,7 @@ Rename-Item "$env:USERPROFILE\.dsh\dsh-acp" "dsh-acp.backup"
 卸载：
 
 ```bash
-npx @deepseek-ai/dsh plugin --profile web remove @zaimokuza/dsh-acp-adapter
+npx @deepseek-ai/dsh@0.1.2-rc.1 plugin --profile web remove @zaimokuza/dsh-acp-adapter
 ```
 
 ## 最短故障排查
