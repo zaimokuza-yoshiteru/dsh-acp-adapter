@@ -751,6 +751,9 @@ describe('拆除梯子', () => {
 
   it('SIGTERM 不退出 → SIGKILL 兜底', async () => {
     const conn = connectInline(SIGTERM_IGNORING_AGENT, { eofGraceMs: 100, termGraceMs: 300 });
+    // Exercise escalation after the target installs its signal handler, not
+    // cancellation racing the host runner's asynchronous launch.
+    await waitFor(() => conn.stderrLines().includes('stubborn ready'));
     const t0 = Date.now();
     await conn.close();
     if (process.platform === 'win32') {
@@ -759,8 +762,10 @@ describe('拆除梯子', () => {
       expect(conn.exited).toEqual({ code: 1, signal: null });
     } else {
       expect(Date.now() - t0).toBeGreaterThanOrEqual(350);
+      expect(conn.stderrLines()).toContain('ignored SIGTERM');
       expect(conn.exited).toEqual({ code: null, signal: 'SIGKILL' });
     }
+    await expectStopped(conn);
   });
 
   it('重复 close 幂等：返回同一 Promise', async () => {
