@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, readFileSync } from 'node:fs'
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -10,9 +10,11 @@ const pkg = JSON.parse(readFileSync(new URL('package.json', root), 'utf8'))
 const verifyRelease = fileURLToPath(new URL('scripts/verify-release.mjs', root))
 
 describe('npm release contract', () => {
-  it('blocks a source-only adaptation from publishing with the source dependency metadata', () => {
-    const output = join(mkdtempSync(join(tmpdir(), 'dsh-acp-release-')), 'output')
-    expect(() => execFileSync(
+  it('routes the exact alpha release to the alpha dist-tag', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'dsh-acp-release-'))
+    const output = join(directory, 'output')
+    try {
+      execFileSync(
       process.execPath,
       [verifyRelease, `v${pkg.version}`],
       {
@@ -25,7 +27,22 @@ describe('npm release contract', () => {
           GITHUB_REF_NAME: `v${pkg.version}`,
         },
       },
-    )).toThrow('has not passed the published-package lane')
+      )
+      expect(readFileSync(output, 'utf8')).toContain('dist-tag=alpha\n')
+      expect(readFileSync(output, 'utf8')).toContain(`tarball=zaimokuza-dsh-acp-adapter-${pkg.version}.tgz`)
+    } finally { rmSync(directory, { recursive: true, force: true }) }
+  })
+
+  it('still blocks local source dependencies from publishing', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'dsh-acp-source-release-'))
+    try {
+      mkdirSync(join(directory, 'scripts'))
+      for (const file of ['verify-release.mjs', 'dsh-target.mjs']) cpSync(new URL(`scripts/${file}`, root), join(directory, 'scripts', file))
+      writeFileSync(join(directory, 'package.json'), JSON.stringify({ ...pkg, devDependencies: { ...pkg.devDependencies, '@deepseek-ai/dsh-llm': 'link:../source' } }))
+      expect(() => execFileSync(process.execPath, [join(directory, 'scripts/verify-release.mjs'), `v${pkg.version}`], {
+        stdio: 'pipe', env: { ...process.env, GITHUB_REF_TYPE: 'tag' },
+      })).toThrow('has not passed the published-package lane')
+    } finally { rmSync(directory, { recursive: true, force: true }) }
   })
 
   it('rejects a branch ref even when its name resembles the expected tag', () => {

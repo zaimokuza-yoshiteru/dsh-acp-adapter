@@ -2,14 +2,11 @@
 
 [中文](README.md)
 
-> This branch targets DSH `0.1.3-alpha.2` through development links to the exact source tag; npm installation of that target is pending acceptance. The npm commands below describe the published `0.1.2-rc.1.1` plugin and its `0.1.2-rc.1` host, not this branch. See `test/e2e/README.md` in the repository for source development and regression steps.
+> Version `0.1.3-alpha.1` supports DSH `0.1.3-alpha.2` and uses the npm `alpha` channel. Pin the host version when installing and running.
 
 Use Devin, Codex, Kimi, or Claude agents from the DeepSeek Harness (DSH) session UI. Each Agent remains responsible for its own model, tools, skills, login state, and runtime.
 
-The published release supports DSH `>=0.1.2-alpha.4 <0.1.3`. Current source and CI
-test the exact `dsh-v0.1.3-alpha.2` tag; the source manifest's `engines.dsh` and
-optional DSH peers require that exact version too. Published npm artifacts still
-need separate acceptance; later alpha versions are not implicitly supported.
+`engines.dsh` and all optional DSH peers require exactly `0.1.3-alpha.2`. Development uses exact published npm packages; plugin consumers do not install those development dependencies.
 
 ## Preview
 
@@ -38,20 +35,16 @@ Use Agent audit to inspect permissions, recovery, files, configuration, and sess
 You need Node.js `^22.19.0 || >=24.0.0`:
 
 ```bash
-npx @deepseek-ai/dsh@0.1.2-rc.1 web
+npx @deepseek-ai/dsh@0.1.3-alpha.2 web
 ```
 
-Plugin development bootstraps the locked tooling, then links the built DSH target:
+Plugin development installs the locked npm dependencies:
 
 ```bash
 pnpm install --frozen-lockfile
-pnpm setup:source-reference
 ```
 
-First check out and build `dsh-v0.1.3-alpha.2` in `reference/deepseek-harness`.
-Source linking only changes this checkout's development dependencies and never
-touches the DSH user directory. After building the plugin, run `pnpm test:e2e`
-to verify native UI and core ACP behavior. Process and version-probe cleanup follow
+Typecheck, tests and builds use npm packages without an upstream checkout. Browser E2E additionally uses the exact source scaffold: build `dsh-v0.1.3-alpha.2` in `reference/deepseek-harness`, then run `pnpm test:e2e` to verify native UI and core ACP behavior. Process and version-probe cleanup follow
 the host subprocess contract with native deadlines bounding exit observation.
 SessionHandles use native async disposal; projections are
 marked complete only after flush and writer disposal succeed.
@@ -61,8 +54,8 @@ marked complete only after flush and writer disposal succeed.
 Run this on the machine running DSH:
 
 ```bash
-npx @deepseek-ai/dsh@0.1.2-rc.1 plugin --profile web add @zaimokuza/dsh-acp-adapter@next
-npx @deepseek-ai/dsh@0.1.2-rc.1 web
+npx @deepseek-ai/dsh@0.1.3-alpha.2 plugin --profile web add @zaimokuza/dsh-acp-adapter@alpha
+npx @deepseek-ai/dsh@0.1.3-alpha.2 web
 ```
 
 Open DSH's ACP panel, select a built-in Agent template, provide any required executable configuration, and run the health check. The model picker shows models and options returned by the ACP session.
@@ -131,14 +124,14 @@ The plugin automatically keeps successful external delegations with provable ide
 
 ## Upgrade and uninstall
 
-Use the same pinned DSH version to install, start, update, and remove the plugin. The examples retain `0.1.2-rc.1` from the installation steps; replace it consistently if using another verified compatible version. `npx` and `pnpm dlx` resolve the requested DSH package and download it when needed; omitting its version or using `@latest` or `@next` does not pin the host. For pnpm, replace `npx` below with `pnpm dlx`. If a fixed DSH version is already installed, you can run `dsh plugin ...` directly.
+Use the same pinned DSH version to install, start, update, and remove the plugin. The examples retain `0.1.3-alpha.2` from the installation steps; replace it consistently if using another verified compatible version. `npx` and `pnpm dlx` resolve the requested DSH package and download it when needed; omitting its version or using `@latest` or `@next` does not pin the host. For pnpm, replace `npx` below with `pnpm dlx`. If a fixed DSH version is already installed, you can run `dsh plugin ...` directly.
 
 The plugin declares DSH compatibility through optional `peerDependencies`, with those modules supplied by the host. Its regular runtime dependencies do not include DSH. Changing the plugin's compatibility range cannot control the host version selected by `npx` / `pnpm dlx` before DSH starts.
 
 Upgrade an installed plugin with:
 
 ```bash
-npx @deepseek-ai/dsh@0.1.2-rc.1 plugin --profile web update @zaimokuza/dsh-acp-adapter
+npx @deepseek-ai/dsh@0.1.3-alpha.2 plugin --profile web update @zaimokuza/dsh-acp-adapter
 ```
 
 ### Prerelease data compatibility
@@ -170,7 +163,7 @@ delete the whole `~/.dsh/profiles/web` directory.
 Uninstall:
 
 ```bash
-npx @deepseek-ai/dsh@0.1.2-rc.1 plugin --profile web remove @zaimokuza/dsh-acp-adapter
+npx @deepseek-ai/dsh@0.1.3-alpha.2 plugin --profile web remove @zaimokuza/dsh-acp-adapter
 ```
 
 ## Short troubleshooting

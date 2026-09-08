@@ -21,14 +21,13 @@
 
 ## 运行
 
-当前源码适配目标是 `dsh-v0.1.3-alpha.2`。宿主开发依赖通过 `link:../reference/deepseek-harness/...` 明确引用目标源码，不再安装旧版 DSH npm 包。默认目录布局为同级 `dsh-acp-adapter/` 与 `reference/deepseek-harness/`；先构建宿主，再在插件目录执行冻结锁文件安装。`setup:source-reference` 可根据 `DSH_UPSTREAM_CHECKOUT` 重定位链接，检查会验证目标标签、包名、版本和构建产物。npm 发布检查在安装前拒绝尚未迁移到已验收 npm 版本的源码依赖。
+宿主目标为 `0.1.3-alpha.2`。常规开发、构建和发布直接使用锁定的 npm 依赖；浏览器 E2E 单独复用准确源码标签的 Web scaffold，默认布局仍为同级 `dsh-acp-adapter/` 与 `reference/deepseek-harness/`。`DSH_UPSTREAM_CHECKOUT` 仅定位 scaffold，不会替换 npm 依赖或改写 node_modules。正式 npm 宿主安装检查使用开发依赖中的 CLI 和临时 DSH_HOME：`node scripts/install-gate.mjs --tgz <本地插件包>`。
 
 ```sh
 # reference/deepseek-harness 必须检出 dsh-v0.1.3-alpha.2
 pnpm --dir ../reference/deepseek-harness install --frozen-lockfile
 pnpm --dir ../reference/deepseek-harness build
 pnpm install --frozen-lockfile
-pnpm setup:source-reference
 pnpm typecheck
 pnpm test
 pnpm build

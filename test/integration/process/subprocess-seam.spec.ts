@@ -203,7 +203,7 @@ describe('fail closed（spawn-failure 分类）', () => {
 });
 
 describe('依赖面守卫（宿主模块实例一致性 纪律）', () => {
-  it('package.json：两包只作为目标源码开发依赖，不进入运行时依赖面', () => {
+  it('package.json：两包只作为精确 npm 开发依赖，不进入运行时依赖面', () => {
     const pkg = JSON.parse(fs.readFileSync(path.join(PKG_ROOT, 'package.json'), 'utf8')) as {
       dependencies?: Record<string, string>;
       peerDependencies?: Record<string, string>;
@@ -214,9 +214,9 @@ describe('依赖面守卫（宿主模块实例一致性 纪律）', () => {
       expect(pkg.dependencies?.[name]).toBeUndefined();
       expect(pkg.peerDependencies?.[name]).toBeUndefined();
       const version = pkg.devDependencies?.[name]
-      expect(version).toMatch(/^link:\.\.\/reference\/deepseek-harness\/packages\/subprocess\//)
+      expect(version).toBe('0.1.3-alpha.2')
     }
-    expect(JSON.parse(fs.readFileSync(path.join(PKG_ROOT, 'package.json'), 'utf8')).scripts['setup:source-reference']).toBeDefined();
+    expect(JSON.parse(fs.readFileSync(path.join(PKG_ROOT, 'package.json'), 'utf8')).scripts['verify:dev-install']).toBeDefined();
   });
 
   it('src/** 零 dsh-subprocess 值级 import（结构镜像全在 src/runtime/process/subprocess.ts）', () => {

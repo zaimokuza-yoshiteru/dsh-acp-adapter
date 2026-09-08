@@ -14,7 +14,7 @@ import os from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { findMissingRelativeRuntimeImports } from './verify-runtime-closure.mjs'
-import { DSH_COMPAT_RANGE, DSH_SOURCE_LINK_PREFIX } from './dsh-target.mjs'
+import { DSH_COMPAT_RANGE, DSH_SOURCE_VERSION } from './dsh-target.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const read = (rel) => readFileSync(join(root, rel), 'utf8')
@@ -110,8 +110,7 @@ for (const spec of declaredExternal) {
   }
 }
 
-// Host compatibility is separate from development acquisition. This branch uses
-// explicit source links until the exact target has passed npm installation.
+// Host compatibility is separate from exact published development dependencies.
 if (pkg.engines?.dsh !== DSH_COMPAT_RANGE) {
   fail(`package.json: engines.dsh must be ${DSH_COMPAT_RANGE}; found ${pkg.engines?.dsh}`)
 }
@@ -122,8 +121,8 @@ for (const [name, peerRange] of Object.entries(pkg.peerDependencies ?? {})) {
   if (name.startsWith('@deepseek-ai/dsh-') && peerRange !== DSH_COMPAT_RANGE) {
     fail(`package.json: peerDependencies.${name} is ${peerRange}; expected ${DSH_COMPAT_RANGE}`)
   }
-  if (!pkg.devDependencies?.[name]?.startsWith(DSH_SOURCE_LINK_PREFIX)) {
-    fail(`package.json: devDependencies.${name} must declare the target source link`)
+  if (pkg.devDependencies?.[name] !== peerRange) {
+    fail(`package.json: devDependencies.${name} must match its exact peer version`)
   }
 }
 for (const section of ['dependencies', 'optionalDependencies']) {
@@ -132,9 +131,8 @@ for (const section of ['dependencies', 'optionalDependencies']) {
   }
 }
 for (const [name, version] of Object.entries(pkg.devDependencies ?? {})) {
-  if (name.startsWith('@deepseek-ai/') || name === 'react') {
-    if (!version.startsWith(DSH_SOURCE_LINK_PREFIX)) fail(`package.json: devDependencies.${name} must use the target source`)
-  } else if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) {
+  if ((name.startsWith('@deepseek-ai/dsh-') || name === '@deepseek-ai/dsh') && version !== DSH_SOURCE_VERSION) fail(`package.json: devDependencies.${name} must be ${DSH_SOURCE_VERSION}`)
+  if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) {
     fail(`package.json: devDependencies.${name} must pin an exact tool version; found ${version}`)
   }
 }

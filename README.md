@@ -2,12 +2,11 @@
 
 [English](README.en.md)
 
-> 当前分支适配 DSH `0.1.3-alpha.2`，开发依赖使用准确标签的源码链接；该版本的 npm 安装尚待验收。下方 npm 命令对应已发布的 `0.1.2-rc.1.1` 插件及其 `0.1.2-rc.1` 宿主，不适用于安装本分支。源码开发和回归流程见仓库中的 `test/e2e/README.md`。
+> 本版为 `0.1.3-alpha.1`，兼容 DSH `0.1.3-alpha.2`，发布到 npm `alpha` 渠道。安装和运行时请固定宿主版本。
 
 通过 DeepSeek Harness（DSH）会话页面使用智能体，包括 Devin、Codex、Kimi 和 Claude。智能体继续负责自己的模型、工具、skills、登录状态和运行时。
 
-已发布版本支持 DSH `>=0.1.2-alpha.4 <0.1.3`。当前源码与 CI 精确验证
-`dsh-v0.1.3-alpha.2`，源码清单中的 `engines.dsh` 与可选 DSH peers 也精确限定此版本。发布 npm 产物仍需单独验收，不提前声明兼容后续 alpha。
+`engines.dsh` 与全部可选 DSH peers 精确限定 `0.1.3-alpha.2`。开发依赖使用已发布的精确 npm 版本，用户安装插件不会引入这些开发依赖。
 
 ## 功能预览
 
@@ -36,27 +35,24 @@ Agent 的子 Agent 调用继续使用 DSH 的消息流展示：
 需要 Node.js `^22.19.0 || >=24.0.0`：
 
 ```bash
-npx @deepseek-ai/dsh@0.1.2-rc.1 web
+npx @deepseek-ai/dsh@0.1.3-alpha.2 web
 ```
 
-插件开发先安装锁定的工具依赖，再链接已构建的目标 DSH 源码：
+插件开发直接安装锁定的 npm 依赖：
 
 ```bash
 pnpm install --frozen-lockfile
-pnpm setup:source-reference
 ```
 
-先在 `reference/deepseek-harness` 检出并构建 `dsh-v0.1.3-alpha.2`。
-源码链接只改本仓库的开发依赖，不修改 DSH 用户目录。构建插件后运行
-`pnpm test:e2e` 验证原生 UI 与 ACP 核心行为。进程退出与版本探针沿宿主 subprocess 契约统一清理，并通过原生 deadline 限制退出观察时间；SessionHandle 使用原生异步释放，flush 成功且写句柄释放后才发布投影完成状态。
+常规类型检查、测试和构建无需上游源码。浏览器 E2E 额外使用准确标签的上游 scaffold；构建 `reference/deepseek-harness` 的 `dsh-v0.1.3-alpha.2` 后，运行 `pnpm test:e2e` 验证原生 UI 与 ACP 核心行为。进程退出与版本探针沿宿主 subprocess 契约统一清理，并通过原生 deadline 限制退出观察时间；SessionHandle 使用原生异步释放，flush 成功且写句柄释放后才发布投影完成状态。
 
 ## 安装插件
 
 在运行 DSH 的机器上执行：
 
 ```bash
-npx @deepseek-ai/dsh@0.1.2-rc.1 plugin --profile web add @zaimokuza/dsh-acp-adapter@next
-npx @deepseek-ai/dsh@0.1.2-rc.1 web
+npx @deepseek-ai/dsh@0.1.3-alpha.2 plugin --profile web add @zaimokuza/dsh-acp-adapter@alpha
+npx @deepseek-ai/dsh@0.1.3-alpha.2 web
 ```
 
 打开 DSH 的 ACP 面板，选择内置 Agent 模板、填写必要的可执行文件配置并运行健康检查。模型选择器显示 ACP 会话实际返回的模型与选项。
@@ -124,14 +120,14 @@ ACP 会话自动使用“原生 Agent 访问”。输入框中的 DSH 权限显�
 
 ## 升级与卸载
 
-安装、启动、更新和卸载插件时，请使用同一固定版本的 DSH。下例沿用安装步骤的 `0.1.2-rc.1`；若使用其他已验证的兼容版本，请统一替换。`npx` 和 `pnpm dlx` 会先解析并在需要时下载命令指定的 DSH，省略版本或使用 `@latest`、`@next` 都不能固定宿主版本。使用 pnpm 时可将下例的 `npx` 替换为 `pnpm dlx`；若已安装固定版本的 DSH，也可直接运行 `dsh plugin ...`。
+安装、启动、更新和卸载插件时，请使用同一固定版本的 DSH。下例沿用安装步骤的 `0.1.3-alpha.2`；若使用其他已验证的兼容版本，请统一替换。`npx` 和 `pnpm dlx` 会先解析并在需要时下载命令指定的 DSH，省略版本或使用 `@latest`、`@next` 都不能固定宿主版本。使用 pnpm 时可将下例的 `npx` 替换为 `pnpm dlx`；若已安装固定版本的 DSH，也可直接运行 `dsh plugin ...`。
 
 插件通过可选 `peerDependencies` 声明 DSH 兼容范围，由宿主提供这些模块；它的普通运行依赖不包含 DSH。修改插件的兼容范围无法控制 `npx` / `pnpm dlx` 在运行宿主之前选择的版本。
 
 升级已安装的插件：
 
 ```bash
-npx @deepseek-ai/dsh@0.1.2-rc.1 plugin --profile web update @zaimokuza/dsh-acp-adapter
+npx @deepseek-ai/dsh@0.1.3-alpha.2 plugin --profile web update @zaimokuza/dsh-acp-adapter
 ```
 
 ### 预发布版本的数据兼容
@@ -159,7 +155,7 @@ Rename-Item "$env:USERPROFILE\.dsh\dsh-acp" "dsh-acp.backup"
 卸载：
 
 ```bash
-npx @deepseek-ai/dsh@0.1.2-rc.1 plugin --profile web remove @zaimokuza/dsh-acp-adapter
+npx @deepseek-ai/dsh@0.1.3-alpha.2 plugin --profile web remove @zaimokuza/dsh-acp-adapter
 ```
 
 ## 最短故障排查

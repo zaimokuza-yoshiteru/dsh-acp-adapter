@@ -1,5 +1,13 @@
 packages:
   - .
 
-# Host modules are provided by the exact source checkout during development.
-autoInstallPeers: false
+# Published DSH packages require their own peers for Node-based development tests.
+# This workspace setting is not shipped; the adapter's host peers remain optional.
+autoInstallPeers: true
+
+onlyBuiltDependencies:
+  - esbuild
+  - koffi
+  - fs-ext
+  - node-pty
+  - '@deepseek-ai/dsh-subprocess-local'
