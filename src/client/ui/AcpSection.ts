@@ -23,6 +23,7 @@ import {
   IconPlusOutline16,
   IconRefreshOutline16,
   Menu,
+  Tag,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import {
   ACP_BUILTIN_AGENT_TEMPLATES,
@@ -307,19 +308,14 @@ function AgentCard(props: {
   const statusText = state === undefined
     ? t('stateSavedUnverified')
     : stateText(t, state)
-  const statusTone = state === 'ready'
-    ? css.statusReady
-    : css.statusMuted
+  const statusTone = state === 'ready' ? 'success' : 'neutral'
   const diagnostic = healthDiagnostic(t, config.command, healthRow, checkError)
 
   const children: ReactNode[] = [
     h('div', { key: 'head', className: css.rowHead },
       h('span', { className: css.rowIdentity },
         h('span', { className: css.rowName }, config.name),
-        h('span', { className: `${css.statusBadge} ${statusTone}` },
-          h('span', { className: css.statusDot, 'aria-hidden': true }),
-          statusText,
-        ),
+        h(Tag, { tone: statusTone }, statusText),
       ),
       h('span', { className: css.rowActions },
         h('button', {

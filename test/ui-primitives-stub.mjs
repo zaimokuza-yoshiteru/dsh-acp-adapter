@@ -13,3 +13,5 @@ export const Button = () => ({})
 export const Menu = () => ({})
 export const Modal = () => ({})
 export const Tooltip = () => ({})
+
+export const Tag = () => ({})

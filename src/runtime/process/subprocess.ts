@@ -4,11 +4,8 @@
  * dsh 通过宿主服务 `ctx.subprocess` 管理子进程（Service Definition
  * `@deepseek-ai/dsh-subprocess`，本地实现 `@deepseek-ai/dsh-subprocess-local`，
  * dsh-base 默认装配）：spawn 全显式 spec、terminate 是唯一的终止动词
- * （POSIX detached 进程组负 pgid 信号 / Windows taskkill /T /F，SIGTERM →
- * graceMs → SIGKILL 树级升级）、waitForExit 给整树退出证明、服务 dispose 兜底
- * 强杀全部托管进程。本模块定义本包消费的最小结构面（{@link SubprocessSeam}），
- * 采用**纯结构镜像、零 dsh 值级 import**（宿主模块实例一致性纪律：值级 import
- * dsh 包会让产物解析到第二实例）。
+ * 。terminate 和 waitForExit 面向同一 provider 托管范围，平台限制由宿主定义。
+ * 本模块只消费必要的结构面，不加载第二份宿主服务。
  *
  * env 纪律：provider 的 spawn 底座是 `scrubbedParentEnv()`——去 credential
  * 形名与 DSH_*，PATH/HOME/代理变量等保留。本包
@@ -41,8 +38,7 @@ export interface AcpSubprocessSpawnSpec {
    */
   readonly env?: Record<string, string | undefined>
   /**
-   * terminate 的升级间隔（毫秒）：SIGTERM 后等待该时长再 SIGKILL（Windows
-   * 由 taskkill /T /F 立即强杀）。必须是正有限值（上游校验，违规同步抛错）。
+   * provider 终止过程的宽限（毫秒），必须是正有限值。
    */
   readonly graceMs: number
   /** abort 信号：触发即对该进程树启动 terminate 升级（调用方持有 deadline 与分类）。 */
@@ -57,26 +53,21 @@ export interface AcpSubprocessExitFact {
   readonly signal: string | null
 }
 
-/**
- * 一条活体子进程句柄（上游 `SubprocessHandle` 的消费侧子集）。terminate 树级
- * 作用且幂等（树已死 = no-op）；waitForExit 观察整树存活（SIGTERM 陷阱的孙进程
- * 也不会漏网）；服务 dispose 对全部托管进程 terminate + await，并在 Node exit
- * 阶段同步强杀残留——「不留孤儿」的宿主级兜底。
+/** Host-owned managed range. Command identity stays private to the provider.
+ * done reports command outcome; waitForExit separately proves range quiescence.
  */
 export interface AcpSubprocessHandle {
-  /** 进程 pid（树根）；spawn 级失败为 -1。 */
-  readonly pid: number
   /** 子进程 stdin（pipe 模式恒在场；缺场即实现违约，按 spawn 失败处理）。 */
   readonly stdin: Writable | undefined
   /** 子进程 stdout（pipe 模式恒在场）。 */
   readonly stdout: Readable | undefined
   /** 子进程 stderr（pipe 模式恒在场）。 */
   readonly stderr: Readable | undefined
-  /** 进程 close 时以退出事实 resolve；仅 spawn 级失败 reject。 */
+  /** 命令退出事实；启动或 provider 故障均可 reject。 */
   readonly done: Promise<AcpSubprocessExitFact>
-  /** 启动 SIGTERM → graceMs → SIGKILL 树级升级（唯一的终止动词；幂等）。 */
+  /** 请求 provider 终止其托管范围；幂等，平台语义由宿主提供。 */
   terminate(): void
-  /** 等待整树退出；signal 先断则返回 false。树退出返回 true。 */
+  /** 托管范围清空返回 true，中止返回 false；无法观察范围时 reject。 */
   waitForExit(signal?: AbortSignal): Promise<boolean>
 }
 
@@ -137,3 +128,11 @@ export type SubprocessSeamResolution =
 export const ACP_SUBPROCESS_UNAVAILABLE_MESSAGE =
   'the host provides no subprocess service (ctx.subprocess): the ACP adapter requires the dsh-base subprocess-local provider; '
   + 'refusing to spawn ACP agents on this host (native dsh routes are unaffected)'
+
+/** Distinguish OS launch failures from provider observation/I/O errors. */
+export function isSubprocessLaunchFailure(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false
+  const { code, syscall } = error as { code?: unknown; syscall?: unknown }
+  return typeof code === 'string' && ['ENOENT', 'EACCES', 'ENOEXEC'].includes(code)
+    && typeof syscall === 'string' && (syscall.startsWith('spawn ') || syscall === 'execve')
+}

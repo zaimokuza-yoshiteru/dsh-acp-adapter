@@ -51,6 +51,8 @@ describe('real Cordis ACP composition settings lifecycle', () => {
     const routeCalls: string[][] = []
     const executableChecks: string[] = []
     const spawnedArgv: string[][] = []
+    let failVersionProvider = false
+    let versionTerminations = 0
     const handles = new Map<string, { (): void; replace(routes: string[]): void }>()
     const llm = {
       registerAdapter(routes: string[]) {
@@ -74,18 +76,21 @@ describe('real Cordis ACP composition settings lifecycle', () => {
       },
       spawn: (spec: { argv: readonly string[] }) => {
         spawnedArgv.push([...spec.argv])
+        const isVersion = spec.argv.includes('--version')
+        const failThis = failVersionProvider && isVersion
+        let terminated = false
         const stdin = new PassThrough()
         const stdout = new PassThrough()
         const stderr = new PassThrough()
-        queueMicrotask(() => stdout.end('codex-acp 1.6.2\n'))
+        queueMicrotask(() => stdout.end(isVersion ? 'codex-acp 1.6.2\n' : ''))
         return {
-          pid: 1,
+
           stdin,
           stdout,
           stderr,
-          done: Promise.resolve({ exitCode: 0, signal: null }),
-          terminate: () => undefined,
-          waitForExit: async () => true,
+          done: failThis ? Promise.reject(new Error('provider unavailable')) : Promise.resolve({ exitCode: 0, signal: null }),
+          terminate: () => { terminated = true; versionTerminations += Number(isVersion) },
+          waitForExit: async () => { if (failThis && !terminated) throw new Error('cannot observe'); return true },
         }
       },
     }
@@ -117,6 +122,10 @@ describe('real Cordis ACP composition settings lifecycle', () => {
     expect(spawnedArgv).not.toContainEqual(['codex-acp', '--version'])
     await expect(remote.health({ recheck: true, agentId: 'codex' })).resolves.toMatchObject({ providers: [{ id: 'codex', version: 'codex-acp 1.6.2' }] })
     expect(spawnedArgv).toContainEqual(['codex-acp', '--version'])
+    failVersionProvider = true
+    await expect(remote.health({ recheck: true, agentId: 'codex' })).resolves.toMatchObject({ providers: [{ id: 'codex', version: null }] })
+    expect(versionTerminations).toBe(1)
+    failVersionProvider = false
 
     // The parent SessionStore is intentionally empty in this fixture. A
     // persisted activity owner must still be readable after a cold reload;

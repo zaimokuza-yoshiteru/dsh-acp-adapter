@@ -2,12 +2,12 @@
 
 [English](README.en.md)
 
-> 当前分支适配 DSH `0.1.3-alpha.1`，开发依赖使用准确标签的源码链接；该版本的 npm 安装尚待验收。下方 npm 命令对应已发布的 `0.1.2-rc.1.1` 插件及其 `0.1.2-rc.1` 宿主，不适用于安装本分支。源码开发和回归流程见仓库中的 `test/e2e/README.md`。
+> 当前分支适配 DSH `0.1.3-alpha.2`，开发依赖使用准确标签的源码链接；该版本的 npm 安装尚待验收。下方 npm 命令对应已发布的 `0.1.2-rc.1.1` 插件及其 `0.1.2-rc.1` 宿主，不适用于安装本分支。源码开发和回归流程见仓库中的 `test/e2e/README.md`。
 
 通过 DeepSeek Harness（DSH）会话页面使用智能体，包括 Devin、Codex、Kimi 和 Claude。智能体继续负责自己的模型、工具、skills、登录状态和运行时。
 
 已发布版本支持 DSH `>=0.1.2-alpha.4 <0.1.3`。当前源码与 CI 精确验证
-`dsh-v0.1.3-alpha.1`；完成正式 npm 安装回归后才会更新发布兼容范围。
+`dsh-v0.1.3-alpha.2`，源码清单中的 `engines.dsh` 与可选 DSH peers 也精确限定此版本。发布 npm 产物仍需单独验收，不提前声明兼容后续 alpha。
 
 ## 功能预览
 
@@ -46,10 +46,9 @@ pnpm install --frozen-lockfile
 pnpm setup:source-reference
 ```
 
-先在 `reference/deepseek-harness` 检出并构建 `dsh-v0.1.3-alpha.1`。
+先在 `reference/deepseek-harness` 检出并构建 `dsh-v0.1.3-alpha.2`。
 源码链接只改本仓库的开发依赖，不修改 DSH 用户目录。构建插件后运行
-`pnpm test:e2e` 验证原生 UI 与 ACP 核心行为。退出与版本探针使用宿主
-`dsh-timeout`；SessionHandle 使用原生异步释放，flush 成功且写句柄释放后才发布投影完成状态。
+`pnpm test:e2e` 验证原生 UI 与 ACP 核心行为。进程退出与版本探针沿宿主 subprocess 契约统一清理，并通过原生 deadline 限制退出观察时间；SessionHandle 使用原生异步释放，flush 成功且写句柄释放后才发布投影完成状态。
 
 ## 安装插件
 

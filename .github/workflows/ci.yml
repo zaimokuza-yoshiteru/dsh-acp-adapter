@@ -5,12 +5,12 @@ on:
   pull_request:
   workflow_dispatch:
 
-# The alpha.1 CLI has not passed npm installation. Old registry host dependencies
+# The alpha.2 CLI has not passed npm installation. Old registry host dependencies
 # are no longer used: host development dependencies explicitly link to the source tag.
 # Restore a published-package lane only after that artifact passes this suite.
 jobs:
   source-compatibility:
-    name: DSH alpha.1 source (${{ matrix.os }})
+    name: DSH alpha.2 source (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
@@ -29,7 +29,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: deepseek-ai/deepseek-harness
-          ref: dsh-v0.1.3-alpha.1
+          ref: dsh-v0.1.3-alpha.2
           path: reference/deepseek-harness
       - uses: actions/setup-node@v6
         with:

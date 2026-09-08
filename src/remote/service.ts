@@ -51,7 +51,8 @@ import type { AcpAgentStateProbeView } from '../domain/session/agent-state.ts'
 import { acpCapabilityMatrix } from '../domain/policy/capability-matrix.ts'
 import type { AcpSessionContinuityState } from '../runtime/session/continuity.ts'
 import { ACP_SUBPROCESS_UNAVAILABLE_MESSAGE } from '../runtime/process/subprocess.ts'
-import { deadline } from '@deepseek-ai/dsh-timeout'
+import { waitWithin } from '../runtime/process/timeout.ts'
+import { stopSubprocess } from '../runtime/process/cleanup.ts'
 import type { AcpSubprocessHandle, SubprocessSeam, SubprocessSeamResolution } from '../runtime/process/subprocess.ts'
 import { AcpClientError } from '../protocol/v1/errors.ts'
 import type {
@@ -407,13 +408,14 @@ async function acpQueryVersion(
   } catch {
     return null
   }
+  const done = handle.done.catch((): null => null)
   const { stdin, stdout, stderr } = handle
   if (stdin === undefined || stdout === undefined || stderr === undefined) {
     // pipe/pipe/pipe 由窄化适配器固定；缺场 = 实现违约，收回进程按失败处理
-    handle.terminate()
+    await stopSubprocess(handle, { eofGraceMs: 0, exitWaitMs: VERSION_PROBE_TERM_GRACE_MS * 2 })
     return null
   }
-  const done = handle.done.catch((): null => null)
+  stdin.on('error', () => {})
   let out = ''
   let err = ''
   stdout.setEncoding('utf8')
@@ -429,18 +431,9 @@ async function acpQueryVersion(
   } catch {
     // 对端抢跑退出不阻塞读取
   }
-  using budget = deadline(undefined, timeoutMs, 'ACP_VERSION_PROBE_TIMEOUT')
-  // waitForExit（整树）与 done（close 结算，含 spawn 级失败）先到先赢
-  const gone = await Promise.race([handle.waitForExit(budget.signal), done.then(() => true)])
-  if (!gone) {
-    // 超时：terminate（SIGTERM → graceMs → SIGKILL；Windows taskkill /T /F）后无界等整树死绝
-    handle.terminate()
-    await handle.waitForExit()
-    await done
-    return null
-  }
-  await done
-  return firstLine(out) ?? firstLine(err)
+  const outcome = await waitWithin(done, timeoutMs)
+  const gone = await stopSubprocess(handle, { eofGraceMs: 0, exitWaitMs: VERSION_PROBE_TERM_GRACE_MS * 2 })
+  return !gone || outcome === undefined || outcome === null ? null : firstLine(out) ?? firstLine(err)
 }
 
 /** 版本探针 terminate 的 SIGTERM → SIGKILL 升级间隔（毫秒）：探针求快死，不用会话级的 2s。 */

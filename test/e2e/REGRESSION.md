@@ -113,3 +113,44 @@ ACP v1 没有 system 消息角色，因此宿主指令作为请求上下文传�
 | `protobufjs` | 7.6.4 | [moderate](https://github.com/advisories/GHSA-j3f2-48v5-ccww) |
 | `qs` | 6.15.3 | [moderate](https://github.com/advisories/GHSA-x5fp-wj9c-mxmx)、[moderate](https://github.com/advisories/GHSA-4mjr-xmp4-gh2g) |
 | `undici` | 7.28.0 | [moderate](https://github.com/advisories/GHSA-8xcm-r25x-g524)、[high](https://github.com/advisories/GHSA-4cwx-7wf7-3272)、[moderate](https://github.com/advisories/GHSA-m8rv-5g2x-5cg5)、[moderate](https://github.com/advisories/GHSA-jr45-8vmc-qm54)、[moderate](https://github.com/advisories/GHSA-v3r7-h72x-cjcm) |
+
+## 2026-09-08：DSH 0.1.3-alpha.2 适配与回归
+
+本轮目标为 `dsh-v0.1.3-alpha.2` / `82a5fd61a7`，reference 保持干净。`engines.dsh`、全部可选 DSH peers、开发目标和 CI 标签统一到精确版本 `0.1.3-alpha.2`，不隐式接纳后续 alpha。开发依赖继续链接准确标签源码，插件运行依赖仍只有 ACP SDK 和 Zod。
+
+### 实现
+
+- 外部子代理投影消费新的 `{ events, eventState }` 读取结果；自行构造的恢复事件显式声明 `detached`。持久化替身采用真实 `SessionHandle` 类型，分别覆盖独立与深冻结共享事件。当前投影必须逐项匹配预期 stream，损坏的空 stream、文本或 usage 被拒绝；旧 sidecar 的专用迁移仍可恢复。
+- ACP 连接、版本探针和 terminal release 共用有界进程清理。移除普通句柄 PID 假设，命令结果与 provider 托管范围退出分别观察；即使命令已结束、provider 失败或首次观察抛错，仍尝试终止并确认范围退出。无法确认时不报告 terminal 已释放，允许重试。
+- provider 故障会打断正在等待的 RPC，归为 crash 并清理。只有明确 OS 启动 ENOENT 才能触发无参数 shell 命令回退；读取 provider 文件失败不能重放命令，清理期间取消也不能再启动回退。
+- 设置页的 Agent 状态和活动审计分类交给原生 `Tag`，删除 47 行自定义徽标/分类配色 CSS。布尔配置已经使用原生 `Menu`，本轮没有为了使用新 `Switch` 而改变交互结构。
+
+### 用户体验与边界
+
+| 宿主能力 | 用户可感知的变化 | 本轮证据或边界 |
+| --- | --- | --- |
+| 会话性能 | 长历史恢复、持续追加时减少重复事件复制、冻结和历史处理，降低宿主等待与内存压力 | ACP 主会话继续走原生 loop / persistence / projection；未运行长会话性能基准，不声明具体提速比例 |
+| Web 重连 | 网络短断后自动重连并恢复会话订阅；宿主恢复较慢时持续重试，仍可手动立即重连 | 四种协议夹具均验证断网→联网后历史保留、不重复 prompt、可继续发送；Agent 进程真正崩溃仍走显式恢复流程 |
+| 滚动 | 连续输出、布局变高或变矮时维持贴底阅读；上游还修正了真实向上滚动与布局引发滚动的归因 | 四种夹具均验证长回答末尾及缩小窗口后的可见性；不在插件增加第二套滚动控制 |
+| 队列 Sending | 服务端尚未确认时明确显示正在发送，并禁止编辑、删除、Steer，避免对未确认消息重复操作 | 四种夹具均阻塞请求检查三个按钮禁用；确认后删除排队消息，证明它没有被发往 ACP |
+| 原生 Tag / Switch | 状态与分类标签使用宿主统一尺寸、色彩和主题；未来真正的布尔表单可复用原生开关及其可访问语义 | Tag 已落地；Switch 是可复用组件能力，本次未新增开关或改变审批策略 |
+| 可继续子代理 | 宿主管理的 continuable 子会话可追加任务、排队/编辑/删除、Steer 和停止当前轮次 | 外部投影仅保存已观察到的任务与结果，没有实际可路由的 continuation handle，因此继续提供原生只读详情。不能只把标记改成 continuable 就显示控制按钮 |
+
+### 本轮最终结果
+
+| 检查 | 结果 |
+| --- | --- |
+| 源码引用保护、类型检查 | 通过，28 个宿主开发包链接到目标源码 |
+| 单元 / 集成 / 协议测试 | 56 个文件、599 项通过，32.60 秒 |
+| 构建与打包闭包检查 | 通过；134 个打包文件、50 个运行时 JS 文件 |
+| 固定夹具完整浏览器回归 | 52 项通过，78.33 秒；新增重连、滚动、Sending 共 12 项 |
+| 真实 Agent 浏览器冒烟 | 4 项通过，80.35 秒；与固定夹具分开运行，合计 56 项不同浏览器用例 |
+| 本地 tarball / 源码宿主安装启动卸载 | 通过；独立 DSH_HOME、原生装配、HTTP 200、客户端 bootstrap、卸载清理 |
+| 独立 npm / pnpm 消费者安装 | 两者均只安装插件、ACP SDK、Zod，没有 DSH、React 或开发工具 |
+| `git diff --check` | 通过 |
+
+真实冒烟使用 `haiku`、`gpt-5.4-mini`、`gpt-5-4-mini-low`、`kimi-code/kimi-for-coding`。Claude 按此前授权向临时 profile 显式传递现有 `ANTHROPIC_AUTH_TOKEN`，本轮无认证或协议故障。四种真实 Agent 均确认宿主指令标记到达模型、回答保存为原生 stream、浏览器刷新后恢复；工具、审批、队列等完整行为由确定性夹具验收，不扩大真实冒烟结论。
+
+实际验证平台是 macOS；类型检查、常规测试和插件构建使用 Node 24.19.0，Web / 浏览器 / 安装启动使用 Node 22.19.0 与已安装 Chrome，以匹配本地 fs-ext ABI。未实际运行 Linux / Windows CI 或长会话性能基准，也未重新做上游全依赖漏洞扫描。
+
+这仍是源码适配提交，插件清单版本尚为 `0.1.2-rc.1.1`，未发布或推送。alpha.2 CLI 的 npm 版本存在，但本轮宿主验收使用准确标签的源码构建；独立 npm/pnpm 插件安装不等于已通过正式 npm 宿主装配。发布前仍需迁移开发获取方式、调整插件发布版本并通过现有发布门禁。

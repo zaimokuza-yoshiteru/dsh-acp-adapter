@@ -1,3 +1,5 @@
+import { isSubprocessLaunchFailure } from '../process/subprocess.ts'
+import { stopSubprocess } from '../process/cleanup.ts'
 /**
  * ACP v1 client terminal capability.
  *
@@ -134,9 +136,7 @@ function assertArgs(args: readonly string[]): void {
 }
 
 function isSpawnNotFound(error: unknown): boolean {
-  if (typeof error !== 'object' || error === null) return false
-  const candidate = error as { readonly code?: unknown; readonly message?: unknown }
-  return candidate.code === 'ENOENT' || (typeof candidate.message === 'string' && /(?:ENOENT|not found|cannot find)/iu.test(candidate.message))
+  return isSubprocessLaunchFailure(error) && (error as { code: string }).code === 'ENOENT'
 }
 
 /**
@@ -289,6 +289,8 @@ export function createAcpTerminalHandlers(options: AcpTerminalHandlersOptions): 
         // A process that was accepted by the OS and later exits with an error
         // must not be retried. Only the launch-level ENOENT path is eligible.
         if (!canShellFallback || !isSpawnNotFound(error)) throw error
+        if (!await stopSubprocess(handle, { eofGraceMs: 0, exitWaitMs: releaseWaitMs })) throw error
+        if (record.released || record.killRequested || disposed) throw error
         const fallback = options.subprocess.spawn({ ...spawnSpec, argv: shellFallbackArgv(params.command, args) })
         attachHandle(fallback)
         return await fallback.done
@@ -331,7 +333,7 @@ export function createAcpTerminalHandlers(options: AcpTerminalHandlersOptions): 
 
   const killTerminal = async (params: acp.KillTerminalRequest): Promise<acp.KillTerminalResponse> => {
     const record = get(params.terminalId, params.sessionId)
-    if (record.exit === null && !record.killRequested) {
+    if (!record.killRequested) {
       record.killRequested = true
       record.handle.terminate()
       await recordAudit(record, 'kill', 'killed')
@@ -343,16 +345,12 @@ export function createAcpTerminalHandlers(options: AcpTerminalHandlersOptions): 
     if (record.released) return true
     if (record.releasePromise !== undefined) return await record.releasePromise
     record.releasePromise = (async () => {
-      if (record.exit === null) {
-        record.killRequested = true
-        record.handle.terminate()
-        const deadline = signal ?? AbortSignal.timeout(releaseWaitMs)
-        const exited = await record.handle.waitForExit(deadline).catch(() => false)
-        if (!exited && record.exit === null) {
-          await recordAudit(record, 'release', 'timeout')
-          delete record.releasePromise
-          return false
-        }
+      record.killRequested = true
+      const exited = await stopSubprocess(record.handle, { eofGraceMs: 0, exitWaitMs: releaseWaitMs, signal })
+      if (!exited) {
+        await recordAudit(record, 'release', 'timeout')
+        delete record.releasePromise
+        return false
       }
       record.released = true
       record.releasedAt = Date.now()

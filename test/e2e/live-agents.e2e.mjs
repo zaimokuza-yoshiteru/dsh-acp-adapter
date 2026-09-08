@@ -52,7 +52,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE !== '1')('live ACP smoke', () => {
       const id = await settled
       const handle = await host.ctx.sessionPersistence.open(id, 'read')
       try {
-        const log = await handle.read()
+        const log = (await handle.read()).events
         settlement = log.findLast(event => event.type === 'turn/end').data.reason
         expect(settlement).toMatchObject({ kind: 'completed' })
         const assistant = log.findLast(event => event.type === 'assistant/message')

@@ -1,6 +1,6 @@
 /**
  * ACP 协议连接（自 acp-client.ts 切出的协议半；进程半——spawn、stdio 泵、
- * stderr 环、拆除梯子、pid 管理——见 src/runtime/process/agent-process.ts）：
+ * stderr 环、拆除梯子、托管范围清理——见 src/runtime/process/agent-process.ts）：
  * `client()` app、v1 initialize 协商、typed 会话方法 RPC、能力记录、probe、
  * 错误六分类。
  *
@@ -32,13 +32,11 @@
  *   close()，此后所有 RPC 立即以 protocol-error 拒绝复用。prompt 的正常取消
  *   梯子（cancel 后 prompt 正常 settle）不 poison——只有 promise 被放弃才 poison。
  * - 拆除梯子由进程半持有：stdin EOF → `eofGraceMs`（默认 500ms）→ seam 的
- *   `terminate()`（SIGTERM → `termGraceMs`（默认 2s）→ SIGKILL 树级升级；
- *   Windows 为 taskkill /T /F）→ **有界** `waitForExit()`（`exitWaitMs`，默认
- *   10s——SIGKILL 后仍不退出是内核级异常，响亮告警后 resolve，不挂死 shutdown）。
+ *   provider terminate → 有界 waitForExit；不能证明托管范围退出时报告告警。
  * Devin 不响应 stdin EOF，EOF 仅作礼貌窗口。
  * - 错误分类（{@link AcpErrorKind}）：spawn-failure / auth_required / timeout /
  * protocol-error / crash。spawn-failure
- * 的判定来源：seam spawn 同步抛错 / handle `pid === -1` 后 `done`
+ * 的判定来源：seam spawn 同步抛错 / 明确 OS 启动错误的 `done`
  * reject（ENOENT 等）。每个错误另携带 taxonomy 分类
  *   （`AcpErrorCategory`，本构造点的 spec/seam 类失败覆盖为 `config`）与
  *   correlation id，见 ./errors.ts 模块头注释。
@@ -313,11 +311,6 @@ export class AcpClientConnection {
     this.conn = this.buildClientApp().connect(stream)
   }
 
-  /** 子进程 pid；spawn 失败（ENOENT 等）时为 undefined。 */
-  get pid(): number | undefined {
-    return this.process.pid
-  }
-
   /** 退出事实；进程仍在运行（或 spawn 失败从未存在）时为 null。 */
   get exited(): AcpProcessExit | null {
     return this.process.exited
@@ -495,10 +488,7 @@ export class AcpClientConnection {
 
   /**
    * 拆除梯子（进程半持有：stdin EOF → `eofGraceMs` → seam `terminate()`（SIGTERM →
-   * `termGraceMs` → SIGKILL 树级升级；Windows taskkill /T /F）→ **有界**
-   * `waitForExit()`（`exitWaitMs`，默认 10s；超时响亮告警后 resolve——SIGKILL 后
-   * 仍不退出是内核级异常，不能为此挂死 DSH shutdown））。幂等：重复调用返回同一
-   * Promise。spawn 失败/已退出时立即返回。
+   * provider 托管范围终止）→ 有界 waitForExit；不能确认退出时报告告警。
    */
   close(): Promise<void> {
     // Stop host-side FS work before tearing down stdio. Otherwise a slow disk
@@ -631,7 +621,7 @@ export class AcpClientConnection {
             },
             clientInfo: this.clientInfo,
           }),
-          this.process.spawnFailureArm,
+          this.process.failureArm,
         ]),
         options.signal,
         timeoutMs,
@@ -741,7 +731,7 @@ export class AcpClientConnection {
     this.assertInitialized(operation)
     this.assertNotAborted(operation, options.signal)
     try {
-      return await this.raceBudget(operation, call(this.conn.agent), options.signal, options.timeoutMs ?? defaultTimeoutMs)
+      return await this.raceBudget(operation, Promise.race([call(this.conn.agent), this.process.failureArm]), options.signal, options.timeoutMs ?? defaultTimeoutMs)
     } catch (error: unknown) {
       // raceBudget 的放弃臂产物（AcpClientError）由 classify 原样透传
       throw await this.classify(error, operation)
@@ -836,8 +826,12 @@ export class AcpClientConnection {
   /** 把任意 thrown 值分类为结构化错误；已是 AcpClientError 的原样透传。 */
   private async classify(error: unknown, operation: string): Promise<Error> {
     if (error instanceof AcpClientError) return error
-    if (this.process.spawnFailure !== undefined) {
+    if (this.negotiated === undefined && this.process.spawnFailure !== undefined) {
       return new AcpClientError('spawn-failure', this.spawnFailureMessage(), { cause: this.process.spawnFailure })
+    }
+    if (this.process.failure !== undefined) {
+      void this.close().catch(() => {})
+      return new AcpClientError('crash', `ACP subprocess provider failed during ${operation}; managed-range cleanup is required`, { cause: this.process.failure })
     }
     if (error instanceof acp.RequestError) {
       if (isAuthenticationRejection(error)) {

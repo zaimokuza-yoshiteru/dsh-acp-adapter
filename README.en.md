@@ -2,13 +2,14 @@
 
 [中文](README.md)
 
-> This branch targets DSH `0.1.3-alpha.1` through development links to the exact source tag; npm installation of that target is pending acceptance. The npm commands below describe the published `0.1.2-rc.1.1` plugin and its `0.1.2-rc.1` host, not this branch. See `test/e2e/README.md` in the repository for source development and regression steps.
+> This branch targets DSH `0.1.3-alpha.2` through development links to the exact source tag; npm installation of that target is pending acceptance. The npm commands below describe the published `0.1.2-rc.1.1` plugin and its `0.1.2-rc.1` host, not this branch. See `test/e2e/README.md` in the repository for source development and regression steps.
 
 Use Devin, Codex, Kimi, or Claude agents from the DeepSeek Harness (DSH) session UI. Each Agent remains responsible for its own model, tools, skills, login state, and runtime.
 
 The published release supports DSH `>=0.1.2-alpha.4 <0.1.3`. Current source and CI
-test the exact `dsh-v0.1.3-alpha.1` tag. The release compatibility range will change
-after the published npm installation passes regression tests.
+test the exact `dsh-v0.1.3-alpha.2` tag; the source manifest's `engines.dsh` and
+optional DSH peers require that exact version too. Published npm artifacts still
+need separate acceptance; later alpha versions are not implicitly supported.
 
 ## Preview
 
@@ -47,11 +48,12 @@ pnpm install --frozen-lockfile
 pnpm setup:source-reference
 ```
 
-First check out and build `dsh-v0.1.3-alpha.1` in `reference/deepseek-harness`.
+First check out and build `dsh-v0.1.3-alpha.2` in `reference/deepseek-harness`.
 Source linking only changes this checkout's development dependencies and never
 touches the DSH user directory. After building the plugin, run `pnpm test:e2e`
-to verify native UI and core ACP behavior. Exit and version probes use the host
-`dsh-timeout` library. SessionHandles use native async disposal; projections are
+to verify native UI and core ACP behavior. Process and version-probe cleanup follow
+the host subprocess contract with native deadlines bounding exit observation.
+SessionHandles use native async disposal; projections are
 marked complete only after flush and writer disposal succeed.
 
 ## Install the plugin

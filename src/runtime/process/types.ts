@@ -58,16 +58,16 @@ export interface AcpProcessExit {
 export interface AcpProcessOptions {
   /** 拆除梯子第 1 级：stdin EOF 后的等待窗口（默认见 ./agent-process.ts 的 DEFAULT_EOF_GRACE_MS）。 */
   eofGraceMs?: number
-  /** 拆除梯子第 2 级：terminate 的 SIGTERM → SIGKILL 升级间隔，即 spawn spec 的 graceMs（默认见 ./agent-process.ts 的 DEFAULT_TERM_GRACE_MS）。 */
+  /** 拆除梯子第 2 级：provider 终止宽限，即 spawn spec 的 graceMs（默认见 ./agent-process.ts 的 DEFAULT_TERM_GRACE_MS）。 */
   termGraceMs?: number
   /**
- * 拆除梯子末级：terminate 之后等待整树退出证明的上限（默认见
-   * ./agent-process.ts 的 DEFAULT_EXIT_WAIT_MS）。超时 = 内核级异常：经
+   * 拆除梯子末级：terminate 之后等待托管范围退出证明的上限（默认见
+   * ./agent-process.ts 的 DEFAULT_EXIT_WAIT_MS）。无法确认退出时，经
    * {@link onProcessWarn} 响亮告警后 resolve，不为退出证明挂死 shutdown。
    */
   exitWaitMs?: number
   /**
- * 进程半的告警通道（waitForExit 超预算等内核级异常）；缺省落
+   * 进程半的告警通道（waitForExit 超预算或 provider 观察失败）；缺省落
    * console.error。宿主侧（AcpAgent/probe）应接结构化 logger。
    */
   onProcessWarn?: (message: string) => void

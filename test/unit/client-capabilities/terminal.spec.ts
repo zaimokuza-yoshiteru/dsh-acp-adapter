@@ -108,7 +108,7 @@ describe('ACP v1 terminal host', () => {
     const fake: SubprocessSeam = {
       spawn: () => {
         const handle: AcpSubprocessHandle = {
-          pid: 7000 + handles.length,
+
           stdin: new PassThrough(),
           stdout: new PassThrough(),
           stderr: new PassThrough(),
@@ -146,7 +146,7 @@ describe('ACP v1 terminal host', () => {
     let terminateCount = 0
     const fake: SubprocessSeam = {
       spawn: () => ({
-        pid: 8800,
+
         stdin: new PassThrough(),
         stdout: new PassThrough(),
         stderr: new PassThrough(),
@@ -168,7 +168,7 @@ describe('ACP v1 terminal host', () => {
     let terminateCount = 0
     const neverDone = new Promise<never>(() => {})
     const handle: AcpSubprocessHandle = {
-      pid: 9911,
+
       stdin: new PassThrough(),
       stdout: new PassThrough(),
       stderr: new PassThrough(),
@@ -187,6 +187,30 @@ describe('ACP v1 terminal host', () => {
     await expect(terminals.terminalOutput({ sessionId: 'stubborn', terminalId: created.terminalId })).resolves.toHaveProperty('truncated', false)
   })
 
+  it('does not release a settled command while its provider cannot prove range exit', async () => {
+    let observable = false
+    let terminations = 0
+    const fake: SubprocessSeam = {
+      spawn: () => ({
+        stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
+        done: Promise.resolve({ exitCode: 0, signal: null }),
+        terminate: () => { terminations += 1 },
+        waitForExit: async () => { if (!observable) throw new Error('provider unavailable'); return true },
+      }),
+      resolveExecutable: async command => command,
+    }
+    const terminals = createAcpTerminalHandlers({ subprocess: fake, profileId: 'range', dshSessionId: 'dsh-range', cwd: root, env: {}, releaseWaitMs: 5 })
+    const created = await terminals.createTerminal({ sessionId: 'range-session', command: 'fixture', args: ['--fixture'] })
+    await terminals.waitForExit({ sessionId: 'range-session', terminalId: created.terminalId })
+    await expect(terminals.releaseTerminal({ sessionId: 'range-session', terminalId: created.terminalId })).rejects.toThrow('retry release')
+    expect(terminations).toBe(1)
+    expect(terminals.presentationSnapshot?.(created.terminalId)?.released).toBe(false)
+    observable = true
+    await expect(terminals.releaseTerminal({ sessionId: 'range-session', terminalId: created.terminalId })).resolves.toEqual({})
+    expect(terminals.presentationSnapshot?.(created.terminalId)?.released).toBe(true)
+    await terminals.dispose()
+  })
+
   it('falls back to the platform shell for a shell command sent as command with no args', async () => {
     const calls: string[][] = []
     const fake: SubprocessSeam = {
@@ -194,9 +218,9 @@ describe('ACP v1 terminal host', () => {
         calls.push([...argv])
         const shell = argv[0] === '/bin/sh' || argv[0] === 'cmd.exe'
         if (!shell) {
-          const error = Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' })
+          const error = Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT', syscall: 'spawn missing-binary' })
           return {
-            pid: -1,
+
             stdin: new PassThrough(),
             stdout: new PassThrough(),
             stderr: new PassThrough(),
@@ -206,7 +230,7 @@ describe('ACP v1 terminal host', () => {
           }
         }
         return {
-          pid: 7777,
+
           stdin: new PassThrough(),
           stdout: new PassThrough(),
           stderr: new PassThrough(),
@@ -224,6 +248,47 @@ describe('ACP v1 terminal host', () => {
     await terminals.dispose()
   })
 
+  it('never replays a command for a provider file-not-found error', async () => {
+    let spawns = 0
+    const error = Object.assign(new Error('provider state file not found: ENOENT'), { code: 'ENOENT', syscall: 'open' })
+    const terminals = createAcpTerminalHandlers({
+      profileId: 'provider-error', dshSessionId: 'dsh-provider-error', cwd: root, env: {},
+      subprocess: { resolveExecutable: async command => command, spawn: () => {
+        spawns += 1
+        return { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), done: Promise.reject(error), terminate() {}, waitForExit: async () => true }
+      } },
+    })
+    const created = await terminals.createTerminal({ sessionId: 'provider-error', command: 'echo important' })
+    await expect(terminals.waitForExit({ sessionId: 'provider-error', terminalId: created.terminalId })).rejects.toBe(error)
+    expect(spawns).toBe(1)
+    await terminals.dispose()
+  })
+
+  it('does not start a shell fallback after cancellation during launch cleanup', async () => {
+    let spawns = 0
+    const observing = Promise.withResolvers<void>()
+    const exited = Promise.withResolvers<boolean>()
+    const error = Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT', syscall: 'spawn missing-binary' })
+    const terminals = createAcpTerminalHandlers({
+      profileId: 'cancel-launch', dshSessionId: 'dsh-cancel-launch', cwd: root, env: {},
+      subprocess: { resolveExecutable: async command => command, spawn: () => {
+        spawns += 1
+        return {
+          stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
+          done: Promise.reject(error), terminate() {},
+          waitForExit: async () => { observing.resolve(); return exited.promise },
+        }
+      } },
+    })
+    const created = await terminals.createTerminal({ sessionId: 'cancel-launch', command: 'echo important' })
+    await observing.promise
+    await terminals.killTerminal({ sessionId: 'cancel-launch', terminalId: created.terminalId })
+    exited.resolve(true)
+    await expect(terminals.waitForExit({ sessionId: 'cancel-launch', terminalId: created.terminalId })).rejects.toBe(error)
+    expect(spawns).toBe(1)
+    await terminals.dispose()
+  })
+
   it('runs a real shell-style command through the shared subprocess seam', async () => {
     const terminals = host()
     const command = process.platform === 'win32' ? 'ver' : 'uname -s'
@@ -234,10 +299,10 @@ describe('ACP v1 terminal host', () => {
   })
 
   it('reports a rejected spawn as error instead of a running terminal', async () => {
-    const error = Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' })
+    const error = Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT', syscall: 'spawn missing-binary' })
     const fake: SubprocessSeam = {
       spawn: () => ({
-        pid: -1,
+
         stdin: new PassThrough(),
         stdout: new PassThrough(),
         stderr: new PassThrough(),

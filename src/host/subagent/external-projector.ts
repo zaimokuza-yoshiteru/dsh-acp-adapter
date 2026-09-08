@@ -182,7 +182,7 @@ function transcriptLog(
   // Legacy bytes are reconstructed only to verify the saved sidecar digest.
   // DSH's adjacent v1-to-v2 migration gives chunkless messages an empty stream.
   if (streamMode === 'legacy') return { header, events }
-  const validated = Session.fromRestore(header.id, events, header, SessionLogOffset(0))
+  const validated = Session.fromRestore(header.id, events, header, SessionLogOffset(0), 'detached')
   if (validated.deriveMessages().length !== 2) throw new Error('ACP_SUBAGENT_TRANSCRIPT_INVALID: projected task/result were not admitted')
   return { header, events }
 }
@@ -197,7 +197,7 @@ function surfaceFreeLog(header: SessionHeader, label: string, startedAt: number,
     { type: 'turn/end', seq: SessionSeq(2), time: completedAt, data: { turn: 1, reason: { kind: 'completed' } } },
   ] as readonly SessionEvent[]
   if (header.version !== SESSION_FORMAT_VERSION) return { header, events }
-  const validated = Session.fromRestore(header.id, events, header, SessionLogOffset(0))
+  const validated = Session.fromRestore(header.id, events, header, SessionLogOffset(0), 'detached')
   if (validated.deriveMessages().length !== 0) throw new Error('ACP_SUBAGENT_SURFACE_LEAK: projected record entered DSH model history')
   return { header, events }
 }
@@ -227,14 +227,9 @@ function projectionLog(context: ExternalProjectionContext, observation: External
 
 function sameProjection(existing: { readonly meta: SessionHeader; readonly events: readonly SessionEvent[] }, expected: { readonly header: SessionHeader; readonly events: readonly SessionEvent[] }): boolean {
   if (canonical(existing.meta) !== canonical(expected.header)) return false
-  // A released v1 projection migrated by DSH has no observed token stream.
-  // Admit it only when every other field equals this exact task/result log.
-  const events = existing.events.map((event, index) => {
-    const target = expected.events[index]
-    if (event.type !== 'assistant/message' || target?.type !== 'assistant/message' || event.data.stream.length !== 0) return event
-    return { ...event, data: { ...event.data, stream: target.data.stream } }
-  })
-  return canonical(events) === canonical(expected.events)
+  // Legacy sidecars construct their own expected empty stream in storedProjection.
+  // Current projections must match exactly, including their durable stream.
+  return canonical(existing.events) === canonical(expected.events)
 }
 
 function object(value: unknown): value is Record<string, unknown> {
@@ -272,7 +267,7 @@ function storedProjection(row: AcpActivityRecord): { readonly detail: ProjectedD
         ? { ...event, data: { ...event.data, stream: [] } }
         : event),
     }
-    try { Session.fromRestore(header.id, expected.events, expected.header, SessionLogOffset(0)) } catch { return undefined }
+    try { Session.fromRestore(header.id, expected.events, expected.header, SessionLogOffset(0), 'detached') } catch { return undefined }
   }
   return { detail: value as unknown as ProjectedDetail, expected }
 }
@@ -297,7 +292,7 @@ export class ExternalSubagentProjector {
       throw error
     }
     await using reader = handle
-    return { meta: reader.header, events: await reader.read() }
+    return { meta: reader.header, events: (await reader.read()).events }
   }
 
   private async commit(expected: ReturnType<typeof projectionLog>): Promise<boolean> {
@@ -311,7 +306,7 @@ export class ExternalSubagentProjector {
       handle = await this.persistence.open(expected.header.id, 'write')
     }
     await using writer = handle
-    const events = await writer.read()
+    const { events } = await writer.read()
     const prefix = { header: expected.header, events: expected.events.slice(0, events.length) }
     if (events.length > expected.events.length || !sameProjection({ meta: writer.header, events }, prefix)) {
       throw new Error(`ACP_SUBAGENT_PROJECTION_CONFLICT: ${expected.header.id}`)

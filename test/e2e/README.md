@@ -2,7 +2,7 @@
 
 这组 E2E 的验收对象是 DSH 与 ACP 之间的产品行为：执行者可以不同，输入、消息、审批及详情仍应复用宿主公开能力。测试启动目标版本的完整 Loader 装配、真实 ACP 子进程和浏览器，浏览器加载构建后的插件与 DSH UI。它不使用现有单元测试的 React 或 UI primitive stub。
 
-同一组断言在 Claude、Codex、Devin、Kimi 四种协议夹具下运行，共 40 项。夹具只是可控的协议输入，不代表真实 Agent 或具体模型已经通过验收；真实 Agent 的升级仍需要少量单独冒烟。模型文案、推理质量和回答风格不作为固定夹具的通过条件。
+同一组断言在 Claude、Codex、Devin、Kimi 四种协议夹具下运行，共 52 项。夹具只是可控的协议输入，不代表真实 Agent 或具体模型已经通过验收；真实 Agent 的升级仍需要少量单独冒烟。模型文案、推理质量和回答风格不作为固定夹具的通过条件。
 
 | 场景 | 必须保持的行为 |
 | --- | --- |
@@ -10,6 +10,9 @@
 | 宿主扩展 | system prompt、动态上下文与 pre-step 插件输入真正到达 ACP；插件触发的后续步骤正常运行；旧用户输入不重复发送；卸载插件后不再携带其指令 |
 | 图片与文件活动 | assistant 图片经原生附件存储后可刷新显示；Read / Diff 使用原生组件；活动不会制造 DSH 工具调用 |
 | 故障恢复 | Agent 崩溃后提示恢复，刷新保留历史；明确放弃远端上下文后才能建立新绑定并继续 |
+| Web 重连 | 浏览器断网后恢复连接，无需手动刷新；历史仍在，不重复发送 ACP prompt，下一条消息可正常执行 |
+| 滚动 | 长回答连续输出后、窗口缩小时，回答末尾保持在原生会话滚动区域内 |
+| 排队消息 | 请求在途时显示 Sending，禁止编辑、删除和 Steer；服务端接收后才允许删除，删除后不会送到 ACP |
 | 审批允许 / 拒绝 | 原生审批或问题卡显示操作；选择映射回原始 optionId；拒绝不产生文件副作用；不扩大授权范围 |
 | 停止后继续 | 原生停止按钮发送 ACP cancel；当前轮次结束；下一轮仍能执行 |
 | 模型切换 | 原生 picker 的选择传到 ACP session 配置；后续请求使用新模型 |
@@ -18,10 +21,10 @@
 
 ## 运行
 
-当前源码适配目标是 `dsh-v0.1.3-alpha.1`。宿主开发依赖通过 `link:../reference/deepseek-harness/...` 明确引用目标源码，不再安装旧版 DSH npm 包。默认目录布局为同级 `dsh-acp-adapter/` 与 `reference/deepseek-harness/`；先构建宿主，再在插件目录执行冻结锁文件安装。`setup:source-reference` 可根据 `DSH_UPSTREAM_CHECKOUT` 重定位链接，检查会验证目标标签、包名、版本和构建产物。npm 发布检查在安装前拒绝尚未迁移到已验收 npm 版本的源码依赖。
+当前源码适配目标是 `dsh-v0.1.3-alpha.2`。宿主开发依赖通过 `link:../reference/deepseek-harness/...` 明确引用目标源码，不再安装旧版 DSH npm 包。默认目录布局为同级 `dsh-acp-adapter/` 与 `reference/deepseek-harness/`；先构建宿主，再在插件目录执行冻结锁文件安装。`setup:source-reference` 可根据 `DSH_UPSTREAM_CHECKOUT` 重定位链接，检查会验证目标标签、包名、版本和构建产物。npm 发布检查在安装前拒绝尚未迁移到已验收 npm 版本的源码依赖。
 
 ```sh
-# reference/deepseek-harness 必须检出 dsh-v0.1.3-alpha.1
+# reference/deepseek-harness 必须检出 dsh-v0.1.3-alpha.2
 pnpm --dir ../reference/deepseek-harness install --frozen-lockfile
 pnpm --dir ../reference/deepseek-harness build
 pnpm install --frozen-lockfile
@@ -50,6 +53,8 @@ DSH_E2E_LIVE=1 pnpm test:e2e -t 'live ACP smoke'
 若 Agent 仅通过父进程环境中的密钥认证，需要显式指定要放入临时 ACP profile 的环境变量名，例如 `DSH_E2E_LIVE_CLAUDE_ENV_KEYS=ANTHROPIC_AUTH_TOKEN`。测试只读取列出的变量，值不写入测试结果；临时 profile 随宿主清理。生产环境仍需在该 Agent 的连接设置中显式配置凭据，不会自动继承父进程密钥。模型目录能够返回不等于生成请求已经完成认证。
 
 ## 版本迁移的补充验证
+
+alpha.2 的 persistence 替身使用真实 `SessionHandle` 类型，分别覆盖 `detached` 与 `shared-frozen` 读取结果。新投影的空 stream、内容或 usage 不匹配必须报冲突；不会因恢复接口放宽验证而放过损坏记录。进程测试通过宿主句柄确认托管范围退出；命令已结束或 provider 观察失败仍需清理。版本探针失败返回空版本，terminal 清理无法确认时允许重试；只有明确的启动 ENOENT 才可回退到 shell，取消后不再启动回退命令。
 
 `test/unit/host/external-subagent-projector.spec.ts` 覆盖写句柄释放、flush 失败、前缀续写、重复投影、旧 sidecar 摘要和 v1 chunkless 消息迁移。新投影的 stream 使用上游 accumulator，时间表示结果被观察到的时间，不补造外部 Agent 的 token 时间线。旧记录保留空 stream，不重写既有历史。旧 sidecar 的 `turn/start.trigger` 不属于上游 v1 相邻迁移器接受的字段，因而保留摘要校验后的专用恢复路径；测试检查整个事件列表和 sidecar 内容不变。写句柄使用原生异步释放，flush 或释放失败均不能发布完成状态。退出宽限为零时仍在下一次定时器触发后终止等待，不使用宿主 deadline 的零值（禁用超时）语义。
 

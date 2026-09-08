@@ -16,6 +16,12 @@ export async function regressionTurn(session, msg, { sendUpdate, sendAgentReques
     if (prompt.includes('E2E_CRASH')) process.exit(49)
     if (prompt.includes('E2E_RECOVERED')) {
       say('E2E_RECOVERED_DONE')
+    } else if (prompt.includes('E2E_SCROLL')) {
+      for (let i = 0; i < 60; i++) {
+        say(`Paragraph ${i}: deterministic streaming content for native scrolling.\n\n`)
+        await new Promise(resolve => setTimeout(resolve, 10))
+      }
+      say('E2E_SCROLL_END')
     } else if (prompt.includes('E2E_RICH')) {
       sendUpdate(session.id, { sessionUpdate: 'tool_call', toolCallId: 'read-1', title: 'Read fixture file', kind: 'read', status: 'completed', rawInput: { path: 'fixture.txt' }, rawOutput: '1\tE2E_READ_LINE\n' })
       sendUpdate(session.id, { sessionUpdate: 'tool_call', toolCallId: 'edit-1', title: 'Edit fixture file', kind: 'edit', status: 'completed', content: [{ type: 'diff', path: 'fixture.txt', oldText: 'E2E_OLD_LINE\n', newText: 'E2E_NEW_LINE\n' }] })

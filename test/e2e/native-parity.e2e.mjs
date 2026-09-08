@@ -122,7 +122,7 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
     expect(observed).toContain(provider)
     const handle = await host.ctx.sessionPersistence.open(id, 'read')
     let log
-    try { log = await handle.read() } finally { await handle.close() }
+    try { log = (await handle.read()).events } finally { await handle.close() }
     const assistant = log.find(event => event.type === 'assistant/message')
     expect(assistant.data.stream.length).toBeGreaterThan(0)
     expect(log.filter(event => event.type === 'tool/call')).toHaveLength(0)
@@ -137,6 +137,23 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
     await activity.getByText('echo E2E_TOOL_OUTPUT', { exact: true }).first().click()
     await activity.locator('[data-terminal]').getByText('E2E_TOOL_OUTPUT', { exact: true }).first().waitFor()
     expect(await page.locator('[data-composer-input][contenteditable="true"]').count()).toBe(1)
+  })
+
+  it('keeps the streamed answer tail visible through native viewport resizing', async () => {
+    const { settled } = await send('E2E_SCROLL')
+    await settled
+    const tail = page.getByText('E2E_SCROLL_END', { exact: true })
+    await tail.waitFor()
+    const tailVisible = () => tail.evaluate(element => {
+      const scroll = element.closest('[data-conversation-scroll]')
+      if (!scroll) return false
+      const bounds = element.getBoundingClientRect()
+      const viewport = scroll.getBoundingClientRect()
+      return bounds.top >= viewport.top && bounds.bottom <= viewport.bottom
+    })
+    await expect.poll(tailVisible).toBe(true)
+    await page.setViewportSize({ width: 900, height: 500 })
+    await expect.poll(tailVisible).toBe(true)
   })
 
   it('delivers host instructions, runtime context and plugin-only next steps through the native loop', async () => {
@@ -178,7 +195,7 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
       await page.getByText('E2E_CONTEXT_B_DONE', { exact: true }).waitFor()
       const handle = await host.ctx.sessionPersistence.open(id, 'read')
       try {
-        const log = await handle.read()
+        const log = (await handle.read()).events
         expect(JSON.stringify(log.filter(event => event.type === 'request/header'))).toContain('E2E_SYSTEM_B')
         expect(JSON.stringify(log.filter(event => event.type === 'user/message'))).toContain('E2E_RUNTIME_B')
       } finally { await handle.close() }
@@ -199,7 +216,7 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
     await page.reload()
     const handle = await host.ctx.sessionPersistence.open(id, 'read')
     try {
-      const log = await handle.read()
+      const log = (await handle.read()).events
       expect(log.find(event => event.type === 'assistant/message').data.message.content.some(block => block.type === 'image')).toBe(true)
       expect(log.some(event => event.type === 'tool/call')).toBe(false)
     } finally { await handle.close() }
@@ -250,6 +267,53 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
     const next = await send('E2E_MESSAGE')
     await next.settled
     await page.getByText('E2E_DONE mock-model-a', { exact: true }).waitFor()
+  })
+
+  it('recovers the native connection without reloading or duplicating ACP history', async () => {
+    const first = await send('E2E_MESSAGE')
+    await first.settled
+    const priorPrompts = readFileSync(agentLog, 'utf8').split('regression prompt=').length
+    try {
+      await page.context().setOffline(true)
+      await page.getByRole('button', { name: 'Disconnected, reconnect now', exact: true }).waitFor()
+    } finally { await page.context().setOffline(false) }
+    await page.getByRole('button', { name: /Disconnected, reconnect now|Reconnecting automatically, reconnect now/ }).waitFor({ state: 'hidden' })
+    await page.getByText('E2E_DONE mock-model-a', { exact: true }).waitFor()
+    expect(readFileSync(agentLog, 'utf8').split('regression prompt=').length).toBe(priorPrompts)
+    const next = await send('E2E_MESSAGE')
+    await next.settled
+    expect(await page.getByText('E2E_DONE mock-model-a', { exact: true }).count()).toBe(2)
+    expect(readFileSync(agentLog, 'utf8').split('regression prompt=').length).toBe(priorPrompts + 1)
+  })
+
+  it('shows Sending and blocks queue actions until the host accepts the message', async () => {
+    const active = await send('E2E_STOP')
+    await page.getByText('E2E_RUNNING', { exact: true }).waitFor()
+    const received = Promise.withResolvers()
+    const release = Promise.withResolvers()
+    await page.route('**/api/session/prompt', async route => {
+      received.resolve()
+      await release.promise
+      await route.continue()
+    }, { times: 1 })
+    try {
+      const input = page.locator('[data-composer-input]').first()
+      await writeComposerDraft(page, input, 'E2E_QUEUED')
+      await input.press('Enter')
+      await received.promise
+      const pending = page.locator('[data-queue-dock] [data-submission-echo]')
+      await pending.getByRole('status').waitFor()
+      expect(await pending.getByRole('status').textContent()).toBe('Sending…')
+      expect(await pending.getByRole('button').count()).toBe(3)
+      expect(await pending.getByRole('button').evaluateAll(buttons => buttons.every(button => button.disabled))).toBe(true)
+    } finally { release.resolve() }
+    const remove = page.getByRole('button', { name: 'Remove queued message', exact: true })
+    await expect.poll(() => remove.isEnabled()).toBe(true)
+    await remove.click()
+    await page.locator('[data-queue-dock]').waitFor({ state: 'hidden' })
+    await page.getByRole('button', { name: 'Stop generating', exact: true }).click()
+    await active.settled
+    expect(readFileSync(agentLog, 'utf8').split('regression prompt=').at(-1)).not.toContain('E2E_QUEUED')
   })
 
   it('changes models using the native picker and converges the external session selection', async () => {

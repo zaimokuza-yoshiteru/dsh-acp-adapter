@@ -1,3 +1,5 @@
+import type { SubprocessHandle } from '@deepseek-ai/dsh-subprocess'
+import type { AcpSubprocessHandle } from '../../../src/runtime/process/subprocess.ts'
 // subprocess-seam.spec.ts — 随附测试：ctx.subprocess seam 的结构窄化、
 // 真 spawn 环境继承实证、fail-closed 分类与依赖面守卫。
 //
@@ -15,7 +17,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, expectTypeOf, it } from 'vitest';
 import {
   ACP_SUBPROCESS_UNAVAILABLE_MESSAGE,
   narrowSubprocessSeam,
@@ -137,10 +139,15 @@ describe('真 spawn scrubbed-parent 实证（AcpAgentProcess 生产路径）', (
 });
 
 describe('ACP process exit deadline', () => {
+  it('keeps the consumed handle compatible with the upstream public contract', () => {
+    expectTypeOf<SubprocessHandle>().toExtend<AcpSubprocessHandle>()
+  })
   it.each([0, 20])('closes an EOF-ignoring child with %s ms grace', async eofGraceMs => {
+    let handle: AcpSubprocessHandle | undefined
+    const tracked = { ...subprocess, spawn(spec: Parameters<SubprocessSeam['spawn']>[0]) { handle = subprocess.spawn(spec); return handle } }
     const proc = new AcpAgentProcess({
       argv: [process.execPath, '-e', 'setInterval(() => {}, 1000); process.stdout.write("ready")'],
-      cwd: os.tmpdir(), env: {}, subprocess,
+      cwd: os.tmpdir(), env: {}, subprocess: tracked,
     }, { eofGraceMs, termGraceMs: 100 });
     try {
       await expect(waitWithin(new Promise<boolean>(resolve => proc.stdout.once('data', () => resolve(true))), 2000)).resolves.toBe(true);
@@ -148,7 +155,8 @@ describe('ACP process exit deadline', () => {
       expect(proc.exited).not.toBeNull();
     } finally {
       // A failed bounded wait still terminates this test's child.
-      if (proc.exited === null && proc.pid !== undefined) process.kill(proc.pid);
+      handle?.terminate();
+      await expect(handle!.waitForExit(AbortSignal.timeout(2000))).resolves.toBe(true);
     }
   });
 });

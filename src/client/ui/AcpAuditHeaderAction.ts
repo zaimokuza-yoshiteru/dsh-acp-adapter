@@ -4,8 +4,8 @@ import type { ReactNode } from 'react'
 import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-store'
 import type { SessionSnapshot, UseProjection } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { ConvViewProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
-import { IconSearchOutline16, JsonTree } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { JsonTreeLabels } from '@deepseek-ai/dsh-client-ui-primitives'
+import { IconSearchOutline16, JsonTree, Tag } from '@deepseek-ai/dsh-client-ui-primitives'
+import type { JsonTreeLabels, TagTone } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { AcpAuditSummaryCode, AcpAuditTimelineEntry } from '../data/acp-remote.ts'
 import type { AcpRemoteLike } from '../data/acp-remote.ts'
 import type { AcpLocaleKey } from './locales.ts'
@@ -130,14 +130,11 @@ function categoryLabel(t: Translate | undefined, category: AcpAuditTimelineEntry
   return textOf(t, key[category], category)
 }
 
-function categoryClass(category: AcpAuditTimelineEntry['category']): string {
-  const className: Record<AcpAuditTimelineEntry['category'], string> = {
-    recovery: css.recovery ?? '',
-    permission: css.permission ?? '',
-    agent: css.agent ?? '',
-    files: css.files ?? '',
+function categoryTone(category: AcpAuditTimelineEntry['category']): TagTone {
+  const tones: Record<AcpAuditTimelineEntry['category'], TagTone> = {
+    recovery: 'warning', permission: 'info', agent: 'neutral', files: 'success',
   }
-  return className[category]
+  return tones[category]
 }
 
 function textOf(t: Translate | undefined, key: AcpLocaleKey, fallback: string): string {
@@ -340,7 +337,7 @@ export function AcpAuditView(props: AcpAuditViewProps): ReactNode {
             h('td', { className: css.event },
               h('div', { className: css.eventInner },
                 h('div', { className: css.kindSlot },
-                  h('span', { className: `${css.kindTag} ${categoryClass(entry.category)}` }, categoryLabel(t, entry.category)),
+                  h(Tag, { tone: categoryTone(entry.category) }, categoryLabel(t, entry.category)),
                 ),
               ),
             ),
@@ -358,7 +355,7 @@ export function AcpAuditView(props: AcpAuditViewProps): ReactNode {
       selected === null ? null : h('aside', { className: css.details, 'aria-label': textOf(t, 'auditDetails', 'Event details') },
         h('div', { className: css.detailsHeader },
           h('div', { className: css.detailsTitle },
-            h('span', { className: `${css.kindTag} ${categoryClass(selected.category)}` }, categoryLabel(t, selected.category)),
+            h(Tag, { tone: categoryTone(selected.category) }, categoryLabel(t, selected.category)),
             h('span', { className: css.detailsLocation }, `#${String(selected.seq)}`),
           ),
           h('button', { type: 'button', className: css.close, 'aria-label': textOf(t, 'auditClose', 'Close'), onClick: () => setSelectedSeq(null) }, '×'),
