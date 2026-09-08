@@ -67,6 +67,7 @@ describe('ACP v1 terminal host', () => {
       outputByteLimit: 128,
     })
     await expect(terminals.terminalOutput({ sessionId: 'other', terminalId: created.terminalId })).rejects.toThrow('different ACP session')
+    await expect.poll(async () => (await terminals.terminalOutput({ sessionId: 'owner', terminalId: created.terminalId })).output, { timeout: 5000 }).toContain('tick')
     await terminals.killTerminal({ sessionId: 'owner', terminalId: created.terminalId })
     const exit = await terminals.waitForExit({ sessionId: 'owner', terminalId: created.terminalId })
     expect(exit.exitCode !== null || exit.signal !== null).toBe(true)

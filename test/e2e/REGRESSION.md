@@ -169,3 +169,5 @@ DSH 发布包通过自己的必需 peers 引用部分宿主模块，因此开发
 - 独立 npm / pnpm 用户安装均只产生插件、ACP SDK、Zod 三个包，没有额外安装 DSH、React 或开发工具。
 
 本机仍使用 Node 24.19.0 进行开发检查和构建，Node 22.19.0 运行与本机 fs-ext ABI 匹配的 Web/安装回归。CI 分为三平台 npm 兼容性与 Linux 源码 scaffold 浏览器回归；源码只用于复用测试设施，不再代替发布依赖。
+
+远端首轮 macOS npm CI 全部通过。Linux 发现 stdout 关闭早于 bootstrap 的启动错误，已将退出结果收集移到错误分类之前，并补充延迟 ENOENT 的确定性测试；终端“终止运行中进程”测试改为先观察 tick，避免把启动前取消误当作运行后终止。Windows 2025 runner 已使用 VS 18，而 pnpm 10 的 node-gyp 无法识别，改用 VS 2022 的 Windows 2022 runner，保留 Windows 验证。修复后的本机类型检查和 3 个相关套件的 99 项测试通过；跨平台结果以该修复提交的 CI 为准。

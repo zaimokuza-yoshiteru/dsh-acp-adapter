@@ -25,6 +25,7 @@ import type { AcpSubprocessHandle } from '../../../src/runtime/process/subproces
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import * as acp from '@agentclientprotocol/sdk';
@@ -654,6 +655,24 @@ describe('错误分类', () => {
     await expect(prompt).rejects.toMatchObject({ kind: 'crash', cause: error });
     await conn.close();
     await expectStopped(conn);
+  });
+
+  it('preserves a delayed OS launch failure when stdout closes first', async () => {
+    const done = Promise.withResolvers<never>();
+    const stdout = new PassThrough();
+    const error = Object.assign(new Error('execve ENOENT'), { code: 'ENOENT', syscall: 'execve' });
+    const conn = new AcpClientConnection({
+      argv: ['missing'], cwd: logDir, env: {},
+      subprocess: {
+        resolveExecutable: async command => command,
+        spawn: () => ({ stdin: new PassThrough(), stdout, stderr: new PassThrough(), done: done.promise, terminate() {}, waitForExit: async () => true }),
+      },
+    }, { initializeTimeoutMs: 2000, eofGraceMs: 0 });
+    const initialized = conn.initialize();
+    stdout.end();
+    const timer = setTimeout(() => done.reject(error), 25);
+    try { await expect(initialized).rejects.toMatchObject({ kind: 'spawn-failure', cause: error }); }
+    finally { clearTimeout(timer); done.reject(error); await conn.close(); }
   });
 
   it('auth_required：明确的 OAuth -32603 包装错误仍归为认证失败', async () => {

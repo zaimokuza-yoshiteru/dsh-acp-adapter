@@ -826,6 +826,10 @@ export class AcpClientConnection {
   /** 把任意 thrown 值分类为结构化错误；已是 AcpClientError 的原样透传。 */
   private async classify(error: unknown, operation: string): Promise<Error> {
     if (error instanceof AcpClientError) return error
+    // Linux can close stdout before publishing its bootstrap's launch error.
+    // Harvest the outcome before deciding whether this was startup or a crash.
+    const closed = !this.process.isClosing && (this.process.exited !== null || isConnectionClosedError(error))
+    const exit = closed ? await this.process.harvestExit() : undefined
     if (this.negotiated === undefined && this.process.spawnFailure !== undefined) {
       return new AcpClientError('spawn-failure', this.spawnFailureMessage(), { cause: this.process.spawnFailure })
     }
@@ -847,8 +851,7 @@ export class AcpClientConnection {
         { cause: error },
       )
     }
-    if (!this.process.isClosing && (this.process.exited !== null || isConnectionClosedError(error))) {
-      const exit = await this.process.harvestExit()
+    if (closed) {
       const stderrTail = this.process.stderrLines().slice(-5)
       return new AcpClientError('crash', this.crashMessage(operation, exit, stderrTail), { exit, stderrTail, cause: error })
     }
