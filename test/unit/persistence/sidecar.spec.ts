@@ -47,6 +47,8 @@ import {
   type AcpSidecar,
 } from '../../../src/persistence/sidecar.ts'
 import { createPermissionAskedAudit, createPermissionDecidedAudit, type AcpPermissionAuditData } from '../../../src/domain/policy/events.ts'
+import { auditTimelineRowOf } from '../../../src/host/composition/audit-row.ts'
+import { matchesDiagnosticView } from '../../../src/contract/diagnostics.ts'
 
 const TIME_BASE = 1_700_000_000_000
 
@@ -149,6 +151,42 @@ afterEach(async () => {
 })
 
 describe('createAcpSidecar 基本读写（v2 envelope 契约）', () => {
+  it('reopens pre-diagnostics SQLite facts without rewriting payloads or blocking a valid binding', async () => {
+    const id = SessionId('sess-before-diagnostics')
+    await store.append(id, { kind: 'binding', data: BINDING_A })
+    const binding = await store.readLatestBinding(id)
+    const healthy: AcpRecoveryState = { dshSessionId: id, kind: 'healthy', provider: 'acp-devin', updatedAt: TIME_BASE }
+    await store.writeRecoveryState(healthy)
+    await store.dispose()
+    const legacy = rawDb()
+    const facts = [
+      ['replay-assessment', { status: 'not-compared', detail: '0 staged updates' }],
+      ['permission', { phase: 'decided', outcome: 'selected', optionId: 'custom-option' }],
+      ['terminal', { operation: 'kill', outcome: 'killed', terminalId: 'old-term' }],
+      ['terminal', { operation: 'exit', outcome: 'exited', terminalId: 'old-term', exitCode: null, signal: 'SIGTERM' }],
+      ['filesystem', { operation: 'write', outcome: 'error', path: '/old/path' }],
+    ] as const
+    let before: unknown
+    try {
+      const insert = legacy.prepare('INSERT INTO audit (record_id, dsh_session_id, seq, time, kind, payload) VALUES (?, ?, ?, ?, ?, ?)')
+      facts.forEach(([kind, data], index) => insert.run(`old-${index}`, id, index + 2, TIME_BASE, kind, JSON.stringify(data)))
+      before = legacy.prepare('SELECT record_id, payload FROM audit ORDER BY seq').all()
+    } finally { legacy.close() }
+    store = createAcpSidecar({ root })
+    const rows = (await store.list(id)).map(auditTimelineRowOf)
+    expect(rows).toHaveLength(6)
+    expect(rows.filter(row => matchesDiagnosticView(row, 'technical')).map(row => row.kind)).toEqual(['binding', 'replay-assessment'])
+    expect(rows.find(row => row.kind === 'permission')?.status).toBe('selected')
+    expect(rows.find(row => row.status === 'stop-requested')?.severity).toBe('info')
+    expect(rows.find(row => row.status === 'exit-unverified')?.severity).toBe('warning')
+    expect(rows.find(row => row.kind === 'filesystem')?.severity).toBe('error')
+    await expect(store.readLatestBinding(id)).resolves.toEqual(binding)
+    await expect(store.readRecoveryState(id)).resolves.toEqual(healthy)
+    const inspection = rawDb()
+    try { expect(inspection.prepare('SELECT record_id, payload FROM audit ORDER BY seq').all()).toEqual(before) }
+    finally { inspection.close() }
+  })
+
   it('dispatch uncertainty is durable across reopen and settles idempotently', async () => {
     await store.beginDispatch({
       key: 'step-1', dshSessionId: 'sess-dispatch', provider: 'acp-devin', model: 'm',

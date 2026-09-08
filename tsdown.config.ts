@@ -35,6 +35,7 @@ import { defineConfig } from 'tsdown'
 
 const manifest = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as {
   name: string
+  version: string
   dsh?: { client?: { external?: unknown } }
 }
 
@@ -112,6 +113,7 @@ export default defineConfig({
     alwaysBundle: (specifier) => !externals.has(specifier),
   },
   define: {
+    __DSH_ACP_ADAPTER_VERSION__: JSON.stringify(manifest.version),
     'process.env.NODE_ENV': JSON.stringify(nodeEnv),
     'import.meta.env.MODE': JSON.stringify(nodeEnv),
     'import.meta.env': JSON.stringify({ MODE: nodeEnv }),

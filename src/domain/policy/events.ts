@@ -66,6 +66,8 @@ export interface AcpTerminalAuditData {
   readonly outcome: 'started' | 'running' | 'exited' | 'killed' | 'released' | 'timeout' | 'error'
   readonly exitCode?: number | null
   readonly signal?: string | null
+  /** Recorded cancellation intent; a requested stop is not a command failure. */
+  readonly terminationRequested?: boolean
 }
 
 /**

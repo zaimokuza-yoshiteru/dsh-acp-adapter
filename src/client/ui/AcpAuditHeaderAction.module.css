@@ -284,6 +284,7 @@
 }
 
 .detailsSummary {
+  flex: none;
   margin: 0;
   padding: 12px 14px 6px;
   color: var(--dsw-alias-label-primary);
@@ -292,6 +293,7 @@
 }
 
 .overview {
+  flex: none;
   margin: 0;
   padding: 0 0 8px;
   font: var(--dsw-font-xs-13);
@@ -314,7 +316,17 @@
   white-space: nowrap;
 }
 
-.jsonPayload { flex: 1; min-height: 0; }
+/* JsonTree has no wrapping option in alpha.2. Keep its native interaction
+   and copy actions, adapting only geometry inside this audit payload. The
+   details body owns vertical scrolling, so the tree needs no nested scroller. */
+.jsonPayload.jsonPayload { flex: none; min-width: 0; overflow: visible; }
+.jsonPayload > div:first-child,
+.jsonPayload [role='tree'] {
+  width: 100%;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 
 .detailPayload {
   box-sizing: border-box;
@@ -341,6 +353,8 @@
 .noDetails { color: var(--dsw-alias-label-tertiary); }
 .end { text-align: center; }
 .error { color: var(--dsw-alias-state-error-primary); overflow-wrap: anywhere; }
+.currentIssue { margin: 12px; padding: 12px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 6px; font: var(--dsw-font-xs-13); }
+.currentIssue p { margin: 8px 0; }
 .noDetails { margin: 0; }
 
 @media (max-width: 720px) {

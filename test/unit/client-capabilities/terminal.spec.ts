@@ -321,3 +321,82 @@ describe('ACP v1 terminal host', () => {
     await terminals.dispose()
   })
 })
+
+describe('ACP terminal native job lifecycle', () => {
+  it('checks job admission before spawning a process', async () => {
+    let spawned = false
+    const terminals = createAcpTerminalHandlers({
+      subprocess: { ...subprocess, spawn: () => { spawned = true; throw new Error('unexpected spawn') } },
+      profileId: 'devin', dshSessionId: 'owner', cwd: root, env: {},
+      startJob: () => { throw new Error('job limit reached') },
+    })
+    await expect(terminals.createTerminal({ sessionId: 'acp', command: process.execPath, args: ['-e', 'process.exit(0)'] })).rejects.toThrow('job limit reached')
+    expect(spawned).toBe(false)
+    await terminals.dispose()
+  })
+
+  it('keeps the job running until the managed range exits and leaves output readable to ACP', async () => {
+    let finishCommand!: (fact: { exitCode: number; signal: null }) => void
+    let finishRange!: (value: boolean) => void
+    const commandDone = new Promise<{ exitCode: number; signal: null }>(resolve => { finishCommand = resolve })
+    const rangeDone = new Promise<boolean>(resolve => { finishRange = resolve })
+    const stdout = new PassThrough()
+    const handle: AcpSubprocessHandle = { stdin: new PassThrough(), stdout, stderr: new PassThrough(), done: commandDone, waitForExit: () => rangeDone, terminate() {} }
+    let hooks!: import('../../../src/runtime/client-capabilities/terminal-job.ts').AcpTerminalJobHooks
+    const terminals = createAcpTerminalHandlers({
+      subprocess: { ...subprocess, spawn: () => handle },
+      profileId: 'devin', dshSessionId: 'owner', cwd: root, env: {},
+      startJob: (_label, run) => { hooks = run(); return { cancel: () => hooks.cancel() } },
+    })
+    const { terminalId } = await terminals.createTerminal({ sessionId: 'acp', command: 'fixture', args: ['structured'] })
+    let settled = false
+    void hooks.done.then(() => { settled = true })
+    stdout.write('retained ACP output')
+    finishCommand({ exitCode: 0, signal: null })
+    await terminals.waitForExit({ sessionId: 'acp', terminalId })
+    expect(settled).toBe(false)
+    finishRange(true)
+    await expect(hooks.done).resolves.toMatchObject({ status: 'completed', output: 'retained ACP output' })
+    expect((await terminals.terminalOutput({ sessionId: 'acp', terminalId })).output).toBe('retained ACP output')
+    await terminals.dispose()
+  })
+
+  it('cancels a still-live managed range after its main command already exited', async () => {
+    let finishRange!: (value: boolean) => void
+    const rangeDone = new Promise<boolean>(resolve => { finishRange = resolve })
+    let terminated = false
+    const handle: AcpSubprocessHandle = {
+      stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
+      done: Promise.resolve({ exitCode: 0, signal: null }), waitForExit: () => rangeDone,
+      terminate() { terminated = true; finishRange(true) },
+    }
+    let hooks!: import('../../../src/runtime/client-capabilities/terminal-job.ts').AcpTerminalJobHooks
+    const terminals = createAcpTerminalHandlers({
+      subprocess: { ...subprocess, spawn: () => handle },
+      profileId: 'devin', dshSessionId: 'owner', cwd: root, env: {},
+      startJob: (_label, run) => { hooks = run(); return { cancel: () => hooks.cancel() } },
+    })
+    const { terminalId } = await terminals.createTerminal({ sessionId: 'acp', command: 'fixture', args: ['structured'] })
+    await terminals.waitForExit({ sessionId: 'acp', terminalId })
+    terminals.cancelSession?.('acp')
+    await expect(hooks.done).resolves.toMatchObject({ status: 'killed' })
+    expect(terminated).toBe(true)
+    await terminals.dispose()
+  })
+
+  it('cleans up terminals when the native owner cancels and preserves the killed result on release', async () => {
+    let hooks!: import('../../../src/runtime/client-capabilities/terminal-job.ts').AcpTerminalJobHooks
+    const terminals = createAcpTerminalHandlers({
+      subprocess, profileId: 'devin', dshSessionId: 'owner', cwd: root, env: {},
+      startJob: (_label, run) => { hooks = run(); return { cancel: () => hooks.cancel() } },
+    })
+    try {
+      const { terminalId } = await terminals.createTerminal({ sessionId: 'acp', command: process.execPath, args: ['-e', 'console.log("ready");setInterval(()=>{},1000)'] })
+      await expect.poll(async () => (await terminals.terminalOutput({ sessionId: 'acp', terminalId })).output).toContain('ready')
+      hooks.cancel()
+      await expect(hooks.done).resolves.toMatchObject({ status: 'killed' })
+      await terminals.releaseTerminal({ sessionId: 'acp', terminalId })
+      await expect(hooks.done).resolves.toMatchObject({ status: 'killed' })
+    } finally { await terminals.dispose() }
+  })
+})

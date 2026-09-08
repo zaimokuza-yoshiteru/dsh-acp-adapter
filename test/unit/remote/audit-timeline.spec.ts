@@ -1,8 +1,30 @@
 import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { AcpRemoteService } from '../../../src/remote/service.ts'
+import type { AcpAuditTimelineEntry } from '../../../src/contract/remote.ts'
 
 describe('ACP audit timeline Remote', () => {
+  it('finds errors beyond routine pages and resumes bounded scans without losing rows', async () => {
+    const rows: AcpAuditTimelineEntry[] = Array.from({ length: 1204 }, (_, index) => ({
+      seq: index + 1, time: 1, kind: 'replay-assessment', severity: 'info', category: 'recovery',
+      summaryCode: 'replay.not-compared', subject: null, status: null, detail: null,
+    }))
+    rows[1201] = { ...rows[1201]!, kind: 'filesystem', severity: 'error', category: 'files', summaryCode: 'filesystem.read' }
+    rows[1203] = { ...rows[1203]!, kind: 'terminal', severity: 'error', category: 'files', summaryCode: 'terminal.operation' }
+    const service = new AcpRemoteService(new Context(), {
+      registry: { agents: () => new Map(), probeCacheFor: () => undefined }, resolveLiveAgent: () => undefined,
+      ownedSessionReadGate: () => true,
+      auditTimeline: {
+        list: async (_id, after, limit) => rows.filter(row => row.seq > after).slice(0, limit),
+        hasMore: async (_id, after) => rows.some(row => row.seq > after),
+      },
+    })
+    expect(await service.auditTimeline('session', { view: 'issues', limit: 1 })).toMatchObject({ entries: [], nextCursor: 1000, hasMore: true })
+    expect(await service.auditTimeline('session', { view: 'issues', afterSeq: 1000, limit: 1 })).toMatchObject({ entries: [{ seq: 1202 }], nextCursor: 1202, hasMore: true })
+    expect(await service.auditTimeline('session', { view: 'issues', afterSeq: 1202, limit: 1 })).toMatchObject({ entries: [{ seq: 1204 }], nextCursor: null, hasMore: false })
+    expect((await service.auditTimeline('session', { view: 'technical', limit: 2 })).entries.map(row => row.seq)).toEqual([1, 2])
+    expect((await service.auditTimeline('session', { view: 'operations', afterSeq: 1000 })).entries.map(row => row.seq)).toEqual([1202, 1204])
+  })
   it('provides authorized snapshot/page/follow activity views with revision cursors', async () => {
     const rows = [
       { dshSessionId: 'session-1', ownerDshSessionId: 'session-1', promptAnchorMessageId: 'user-1', activityId: 'tool-1', activitySeq: 1, revisionSeq: 1, time: 1, kind: 'tool' as const, status: 'running' as const, presentation: 'Read' },
@@ -107,9 +129,9 @@ describe('ACP audit timeline Remote', () => {
 
   it('returns a bounded cursor page without exposing raw persistence payloads', async () => {
     const rows = [
-      { seq: 1, time: 100, kind: 'binding', category: 'agent' as const, summaryCode: 'binding.established' as const, subject: 'codex', status: null, detail: null },
-      { seq: 2, time: 200, kind: 'permission', category: 'permission' as const, summaryCode: 'permission.decided' as const, subject: 'call-1', status: 'selected', detail: '{"optionId":"allow_once"}' },
-      { seq: 3, time: 300, kind: 'filesystem', category: 'files' as const, summaryCode: 'filesystem.operation' as const, subject: '/tmp/file', status: 'ok', detail: '{"path":"/tmp/file"}' },
+      { seq: 1, time: 100, kind: 'binding', severity: 'info' as const, category: 'agent' as const, summaryCode: 'binding.established' as const, subject: 'codex', status: null, detail: null },
+      { seq: 2, time: 200, kind: 'permission', severity: 'info' as const, category: 'permission' as const, summaryCode: 'permission.decided' as const, subject: 'call-1', status: 'selected', detail: '{"optionId":"allow_once"}' },
+      { seq: 3, time: 300, kind: 'filesystem', severity: 'info' as const, category: 'files' as const, summaryCode: 'filesystem.operation' as const, subject: '/tmp/file', status: 'ok', detail: '{"path":"/tmp/file"}' },
     ]
     const service = new AcpRemoteService(new Context(), {
       registry: {

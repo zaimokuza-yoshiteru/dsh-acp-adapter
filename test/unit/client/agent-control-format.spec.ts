@@ -18,11 +18,23 @@ const snapshot = (overrides: Partial<AcpAgentSessionSnapshotView> = {}): AcpAgen
 describe('ACP Agent control presentation', () => {
   it('shows Agent mode separately from DSH permissions and context/cumulative cost', () => {
     const value = snapshot({ contextUsage: { used: 12, size: 100, percent: 12, cost: { amount: 0.42, currency: 'USD' } } })
-    expect(agentControlLabel(value)).toBe('Agent · Plan')
+    expect(agentControlLabel(value, t)).toBe('Agent · Plan')
     expect(agentControlFooter(value, t).map(item => item.text)).toEqual([
       'agentContextUsage:{"used":"0.012k","size":"0.1k","percent":12}',
       'agentSessionCost:{"amount":0.42,"currency":"USD"}',
     ])
+  })
+
+  it('localizes adapter-owned boolean and fallback labels while preserving Agent names', () => {
+    for (const dictionary of [zh, en]) {
+      const translate = (key: keyof typeof zh) => dictionary[key]
+      const value = snapshot({ modes: [], currentModeId: null, configOptions: [
+        { type: 'boolean', id: 'flag', name: 'Agent supplied label', currentValue: true },
+      ] })
+      expect(agentControlLabel(value, translate)).toBe(`Agent · ${dictionary.agentControlDefault}`)
+      expect(agentControlMenuItems(value, translate)[0]?.label).toBe(`Agent supplied label: ${dictionary.agentControlOn}`)
+      expect(agentControlMenuItems({ ...value, configOptions: [{ type: 'boolean', id: 'flag', name: 'Agent supplied label', currentValue: false }] }, translate)[0]?.label).toBe(`Agent supplied label: ${dictionary.agentControlOff}`)
+    }
   })
 
   it('formats ACP context counts with k as the minimum unit and m from one million', () => {

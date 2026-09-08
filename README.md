@@ -1,36 +1,36 @@
-# @zaimokuza/dsh-acp-adapter
+# ACP adapter
 
 [English](README.en.md)
 
-> 本版为 `0.1.3-alpha.1`，兼容 DSH `0.1.3-alpha.2`，发布到 npm `alpha` 渠道。安装和运行时请固定宿主版本。
+在 DSH 会话页面使用 **Claude · Codex · Devin · Kimi**。
 
-通过 DeepSeek Harness（DSH）会话页面使用智能体，包括 Devin、Codex、Kimi 和 Claude。智能体继续负责自己的模型、工具、skills、登录状态和运行时。
+> **0.1.3-alpha.2** · 兼容 **DSH 0.1.3-alpha.2**
 
-`engines.dsh` 与全部可选 DSH peers 精确限定 `0.1.3-alpha.2`。开发依赖使用已发布的精确 npm 版本，用户安装插件不会引入这些开发依赖。
+## <img src="assets/readme/icon-preview.svg" width="24" height="24" alt="" /> 功能预览
 
-## 功能预览
+以下截图在干净 DSH 实例中，通过 **Devin · SWE-1.7 Medium** 实际操作生成。
 
-在 ACP 面板添加 Agent，并检查本地 ACP 命令是否可用：
+添加 Agent、检查连接，并查看插件版本：
 
-![ACP 设置页面，Devin、Codex、Kimi 和 Claude 均已通过协议检查](assets/readme/acp-settings.zh-CN.png)
+![ACP adapter 设置、插件版本与 Devin 连接](assets/readme/acp-settings.zh-CN.png)
 
-在 DSH 会话中使用 Agent 模型、推理强度和原生工具：
+在 DSH 会话中使用 Agent 模型、推理强度和原生工具展示组件：
 
-![Devin 在 DSH 会话中使用原生终端和文件展示](assets/readme/acp-session.zh-CN.png)
+![Devin 使用 SWE-1.7 Medium 实际修改文件](assets/readme/acp-session.zh-CN.png)
 
-ACP 审批复用 DSH 原生问题卡；完整命令可多行查看并复制，不会在批准前截断：
+ACP 审批复用 DSH 原生审批卡，批准前可查看完整命令：
 
-![Devin 的 ACP 命令审批在 DSH 原生问题卡中完整显示](assets/readme/acp-permission.zh-CN.png)
+![ACP 命令在 DSH 原生审批卡中完整显示](assets/readme/acp-permission.zh-CN.png)
 
-Agent 的子 Agent 调用继续使用 DSH 的消息流展示：
+子代理的真实检查结果通过 DSH 原生只读详情展示：
 
-![Devin 子 Agent 调用及只读记录在 DSH 会话中的展示](assets/readme/acp-subagent.zh-CN.png)
+![ACP 子代理的原生只读详情](assets/readme/acp-subagent.zh-CN.png)
 
-通过 Agent 审计查看权限、恢复、文件、配置和会话连续性记录：
+“ACP 诊断”查看异常、操作与技术记录；点开详情查看已记录的原因，搜索范围为已加载记录。
 
-![Devin 会话的 Agent 审计时间线](assets/readme/acp-audit.zh-CN.png)
+![ACP 诊断的操作记录与详情](assets/readme/acp-diagnostics.zh-CN.png)
 
-## 前置：安装受支持的 DSH
+## <img src="assets/readme/icon-setup.svg" width="24" height="24" alt="" /> 前置：安装受支持的 DSH
 
 需要 Node.js `^22.19.0 || >=24.0.0`：
 
@@ -44,120 +44,54 @@ npx @deepseek-ai/dsh@0.1.3-alpha.2 web
 pnpm install --frozen-lockfile
 ```
 
-常规类型检查、测试和构建无需上游源码。浏览器 E2E 额外使用准确标签的上游 scaffold；构建 `reference/deepseek-harness` 的 `dsh-v0.1.3-alpha.2` 后，运行 `pnpm test:e2e` 验证原生 UI 与 ACP 核心行为。进程退出与版本探针沿宿主 subprocess 契约统一清理，并通过原生 deadline 限制退出观察时间；SessionHandle 使用原生异步释放，flush 成功且写句柄释放后才发布投影完成状态。
+常规开发无需上游源码；浏览器回归的准备步骤见 [E2E 指南](test/e2e/README.md)。
 
-## 安装插件
+## <img src="assets/readme/icon-start.svg" width="24" height="24" alt="" /> 三步接入
 
-在运行 DSH 的机器上执行：
+**1. 安装 Agent，并在终端登录。**
+
+| Agent | ACP 命令 | 终端登录 |
+| --- | --- | --- |
+| Claude | `claude-agent-acp` | `claude` |
+| Codex | `codex-acp` | `codex login`¹ |
+| Devin | `devin acp` | `devin auth login` |
+| Kimi | `kimi acp` | `kimi login` |
+
+¹ 使用 ChatGPT 登录需另装 Codex CLI。
+
+**2. 安装插件。** 以下命令安装 npm 已发布的 `alpha` 版本。
 
 ```bash
 npx @deepseek-ai/dsh@0.1.3-alpha.2 plugin --profile web add @zaimokuza/dsh-acp-adapter@alpha
-npx @deepseek-ai/dsh@0.1.3-alpha.2 web
 ```
 
-打开 DSH 的 ACP 面板，选择内置 Agent 模板、填写必要的可执行文件配置并运行健康检查。模型选择器显示 ACP 会话实际返回的模型与选项。
+**3. 打开「设置 → ACP adapter」**，添加模板、检查连接，再在新会话中选择 Agent 模型。
 
-## 安装并登录 Agent
+需要 API key 时，在 **连接设置 → 环境变量** 中显式配置；不会自动继承父进程的密钥。
 
-优先在 Agent 自己的终端安装并登录，再在 ACP 面板执行检查。出于隔离考虑，ACP 子进程不会自动继承名称形似 `KEY`、`TOKEN`、`SECRET` 或 `PASSWORD` 的父进程环境变量；仅当 Agent 没有自己的登录/凭据存储时，才在 ACP profile 的“连接设置”中显式配置它要求的环境变量。密钥值在设置界面中会被遮盖，但仍由用户自行管理。
+## <img src="assets/readme/icon-connect.svg" width="24" height="24" alt="" /> 如何配合
 
-### Devin
+![DSH 管理会话与界面；适配器传递上下文、归一化活动；Agent 负责模型、工具和权限。子代理详情只读，后台任务不跨 DSH 重启恢复。](assets/readme/acp-overview.zh-CN.svg)
 
-```bash
-devin --version
-devin auth login
-devin auth status
-devin acp --help
-```
+## <img src="assets/readme/icon-update.svg" width="24" height="24" alt="" /> 更新与卸载
 
-### Codex
-
-`codex-acp` 是 ACP 可执行文件，并已包含兼容的 Codex 运行时。使用 ChatGPT
-账号登录时，需要另行安装 Codex CLI 并执行 `codex login`。如果必须使用 API key，
-请在 ACP profile 中显式配置 Codex 支持的环境变量；仅在启动 DSH 前 export
-`CODEX_API_KEY` 或 `OPENAI_API_KEY` 不会绕过子进程的凭据隔离。插件不会代替
-Agent 调用 ACP `authenticate`。
+沿用启动 DSH 时的 `DSH_HOME` 和 profile。`npx` 可替换为 `pnpm dlx`，宿主版本保持固定。
 
 ```bash
-codex-acp --version
-codex-acp --help
-# 仅在使用 ChatGPT 账号登录且已安装 Codex CLI 时：
-codex login
-```
-
-### Kimi
-
-```bash
-kimi --version
-kimi login
-kimi doctor
-kimi acp --help
-```
-
-### Claude
-
-```bash
-claude --version
-claude-agent-acp --version
-claude-agent-acp --help
-```
-
-未登录时优先运行 `claude`，按终端提示完成登录。若使用要求环境变量的兼容端点，请按该 Agent 的说明在 ACP profile 中显式配置所需变量。
-
-## 原生 Agent 访问与边界
-
-DSH 继续拥有 AgentLoop、会话日志、输入栏、停止和模型选择。适配器转发当前步骤中已落盘且仍在请求投影里的用户消息、运行时上下文及插件注入消息，也支持插件触发的后续步骤；不会重发历史用户输入。宿主组装的 system prompt 随每次请求完整传递，并明确标注为当前宿主指令。ACP v1 没有 system 消息角色，所以这是上下文传递，不保证拥有外部 Agent 自身 system prompt 的优先级。指令中出现工具名不会自动创建工具或授予权限。
-
-ACP 会话自动使用“原生 Agent 访问”。输入框中的 DSH 权限显示为推导出的 `Custom`，仅用于说明权限由 Agent 自己管理；切换这个 DSH 选项不会改变 Agent 的实际权限。Agent 可以使用自己的配置、登录状态、data home、skills 和 MCP 定义。Agent 自己的模式决定其行为；插件只展示 Agent 主动通过 ACP 发出的审批请求，无法限制绕过 ACP 审批的 Agent 工具。请只连接你信任的本地 Agent。
-
-插件不会把 DSH 的 MCP 注入 Agent，也不会读取 DSH 私有配置或要求重复填写 MCP JSON。Agent 已配置的原生 MCP 和 skills 不受影响。当已有历史的会话跨原生 provider 与 ACP Agent 切换时，DSH 会明确要求新建会话，历史不会隐式迁移；原生 provider 内部的模型切换保持 DSH 原有行为，不会被 ACP 会话接管。
-
-原生 provider 的工具由 DSH AgentLoop 执行，因此 Chat 可显示原生工具计数，Trajectory 也能列出每次工具调用。ACP Agent 在自己的进程内执行工具：插件不会伪造 `tool/call` 让 DSH 再执行一次，但会把 ACP 活动归一化后交给 DSH 公共的 Terminal、Read、Diff 等组件。宿主的通用 ToolRow 没有作为公共组件开放，ACP 外层行因此复制它的规格，而不是创建 Agent 专属样式。DSH Trajectory 仍只记录 DSH 实际发出的 provider 请求，ACP 的协议证据保留在 Agent 审计中。
-
-点击 DSH 的 Stop 会先发送 ACP `session/cancel` 通知并等待当前 prompt 结束；正常取消后连接和会话保持可复用。只有 Agent 在有界等待后仍忽略取消时，插件才终止该 Agent 进程并进入恢复流程。
-
-插件会自动把身份、任务和结果均可证明的成功外部委派保存为 DSH 原生只读子代理会话；目前 Devin 和 Claude 可进入该目录，Kimi 与 Codex 仍只按实际 ACP 活动展示。详情页使用原生用户消息与 assistant 消息展示 Agent 已提供的任务、最终输出或明确标注的摘要；它不是可继续对话的 DSH 子 Agent，也不会补造外部 Agent 未通过 ACP 暴露的内部轨迹。证据不足或失败的委派不会创建目录记录。
-
-## 升级与卸载
-
-安装、启动、更新和卸载插件时，请使用同一固定版本的 DSH。下例沿用安装步骤的 `0.1.3-alpha.2`；若使用其他已验证的兼容版本，请统一替换。`npx` 和 `pnpm dlx` 会先解析并在需要时下载命令指定的 DSH，省略版本或使用 `@latest`、`@next` 都不能固定宿主版本。使用 pnpm 时可将下例的 `npx` 替换为 `pnpm dlx`；若已安装固定版本的 DSH，也可直接运行 `dsh plugin ...`。
-
-插件通过可选 `peerDependencies` 声明 DSH 兼容范围，由宿主提供这些模块；它的普通运行依赖不包含 DSH。修改插件的兼容范围无法控制 `npx` / `pnpm dlx` 在运行宿主之前选择的版本。
-
-升级已安装的插件：
-
-```bash
+# 更新
 npx @deepseek-ai/dsh@0.1.3-alpha.2 plugin --profile web update @zaimokuza/dsh-acp-adapter
-```
-
-### 预发布版本的数据兼容
-
-`0.1.0` 正式版之前不保证 ACP sidecar 数据跨版本兼容。如果升级后旧会话提示
-“ACP 会话需要恢复”或 `profile-changed`，请先停止 DSH，再备份并重建插件私有数据：
-
-macOS / Linux：
-
-```bash
-mv "$HOME/.dsh/dsh-acp" "$HOME/.dsh/dsh-acp.backup"
-```
-
-Windows PowerShell：
-
-```powershell
-Rename-Item "$env:USERPROFILE\.dsh\dsh-acp" "dsh-acp.backup"
-```
-
-重启 DSH 后请创建一个全新的 DSH 会话。该目录只包含插件的 ACP binding、恢复状态、
-审计和选项快照；不会删除 Agent 自己的登录、skills、MCP 或 data home。
-旧 ACP 会话的 DSH 页面历史仍可查看，但清理 binding 后不能继续恢复。无需删除整个
-`~/.dsh/profiles/web`。
-
-卸载：
-
-```bash
+# 卸载
 npx @deepseek-ai/dsh@0.1.3-alpha.2 plugin --profile web remove @zaimokuza/dsh-acp-adapter
 ```
 
-## 最短故障排查
+**本次更新无需清理数据。** 保留现有 SQLite 绑定与历史；当前轮次结束后重启 DSH、刷新页面，从设置标题旁确认加载版本。极早期仅有 JSONL 的开发版除外，见[兼容记录](test/e2e/REGRESSION.md#2026-09-08双语文档与旧数据兼容核查)。
 
-在 DSH ACP 面板重新运行健康检查；确认对应 Agent 的 `--version`、`--help` 或健康命令成功，并确认 ACP 可执行文件位于 DSH 进程继承的 `PATH` 中。登录状态改变后先在 Agent CLI 完成登录，再点“重新检查”。
+## <img src="assets/readme/icon-help.svg" width="24" height="24" alt="" /> 遇到问题
+
+| 现象 | 先检查 |
+| --- | --- |
+| 命令无法启动 | 核对可执行文件路径，尝试填写绝对路径。 |
+| 登录或认证失败 | 在 Agent CLI 登录，检查已配置的环境变量。 |
+| 会话需要恢复 | 按输入栏提示与 **ACP 诊断** 处理，不要清空本地数据。 |
+
+仍有问题时，在 [Issue](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/issues) 附上错误编号、插件/DSH 版本和相关宿主日志片段；分享前移除密钥。

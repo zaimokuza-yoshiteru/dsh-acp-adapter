@@ -30,6 +30,7 @@
  */
 /// <reference types="node" />
 
+import { resolveTerminalJobs } from './terminal-jobs.ts'
 import type { Context } from '@deepseek-ai/cordis'
 import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
 import type { AdapterRegistrationHandle } from '@deepseek-ai/dsh-llm'
@@ -586,6 +587,7 @@ export function installInstalledProfileRegistry(ctx: Context, options: Installed
               return result?.childSessionId
             },
             message => log.warn(message, { operation: 'claude-draft-subagent-capability' }),
+            sessionId => resolveTerminalJobs(ctx, sessionId),
           )
           profileAdapters.set(id, routeAdapter)
         }

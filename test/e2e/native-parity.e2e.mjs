@@ -5,6 +5,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { createUserMessage, LlmAdapter } from '@deepseek-ai/dsh-llm'
 import { connectFreshWorkspace, newEnglishPage, writeComposerDraft } from '#host-support'
 import { launchAdapterWorld, root } from './scaffold.mjs'
+import { createAcpSidecar } from '../../src/persistence/sidecar.ts'
 
 const profiles = ['claude', 'codex', 'devin', 'kimi']
 
@@ -84,7 +85,18 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
     } finally { await page?.close() }
   })
   afterAll(async () => {
-    try { await browser?.close() } finally { await host?.close() }
+    const pending = new Set(['browser', 'host'])
+    const diagnostic = setTimeout(() => console.error(`E2E teardown pending: ${profile} ${[...pending].join(', ')}`), 10_000)
+    try {
+      // A slow browser shutdown must not postpone releasing Agent processes.
+      // Both independent cleanup failures remain test failures.
+      const results = await Promise.allSettled([
+        Promise.resolve().then(() => browser?.close()).finally(() => pending.delete('browser')),
+        Promise.resolve().then(() => host?.close()).finally(() => pending.delete('host')),
+      ])
+      const failures = results.filter(result => result.status === 'rejected').map(result => result.reason)
+      if (failures.length > 0) throw new AggregateError(failures, 'ACP browser regression cleanup failed')
+    } finally { clearTimeout(diagnostic) }
   })
 
   async function send(prompt, { expectError = false } = {}) {
@@ -113,6 +125,153 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
       await panel.getByRole('button', { name: allow ? 'Allow once' : 'Reject', exact: true }).click()
     }
   }
+
+  it('keeps the audit ledger and wrapped details in the native trajectory viewport', async () => {
+    page.setDefaultTimeout(10_000)
+    const { settled } = await send('E2E_JOB_OTHER')
+    const id = await settled
+    // Seed a long, real audit journal without spending dozens of model turns.
+    const sidecar = createAcpSidecar({ root: host.ctx.dshHomePath('dsh-acp') })
+    try {
+      for (let index = 0; index < 80; index += 1) {
+        await sidecar.append(id, { kind: 'degradation', data: {
+          code: 'unsupported-tool-content', toolCallId: `audit-layout-${index}`,
+          items: Array.from({ length: 18 }, (_, item) => ({ type: `item-${item}`, reason: 'long-unbroken-value-'.repeat(5) })),
+          keptPreviewChars: 0, truncated: false,
+        } })
+      }
+      await sidecar.flush()
+    } finally { await sidecar.dispose() }
+
+    await page.getByText('Trajectory', { exact: true }).click()
+    const nativeBounds = await page.locator('[data-conversation-composer-overlay]').boundingBox()
+    await page.getByText('ACP Diagnostics', { exact: true }).click()
+    const audit = page.getByRole('region', { name: 'ACP Diagnostics', exact: true })
+    await audit.waitFor()
+    const toolbar = audit.getByRole('toolbar')
+    const toolbarTop = (await toolbar.boundingBox()).y
+    const scroll = audit.locator('[data-audit-scroll]')
+    await audit.getByRole('button', { name: 'Load more', exact: true }).click()
+    await audit.getByText('All records in this view are shown', { exact: true }).waitFor()
+    const bounds = await audit.boundingBox()
+    expect(Math.abs(bounds.y - nativeBounds.y)).toBeLessThan(2)
+    expect(Math.abs(bounds.height - nativeBounds.height)).toBeLessThan(2)
+    expect(await page.locator('[data-width-handle]:visible').count()).toBe(0)
+
+    await scroll.evaluate(element => { element.scrollTop = element.scrollHeight })
+    await scroll.hover()
+    await page.mouse.wheel(0, 1000)
+    expect(Math.abs((await toolbar.boundingBox()).y - toolbarTop)).toBeLessThan(2)
+    await audit.locator('tbody tr').last().click()
+    const details = audit.getByRole('complementary')
+    await details.waitFor()
+    const close = details.getByRole('button', { name: 'Close', exact: true })
+    expect((await close.boundingBox()).y).toBeGreaterThanOrEqual(toolbarTop)
+    expect((await close.boundingBox()).y).toBeLessThan(toolbarTop + 80)
+    const tree = details.getByRole('tree', { name: 'Diagnostic record JSON', exact: true })
+    // Long collapsed previews and expanded nested strings both stay in bounds.
+    const checkWidth = async () => {
+      for (const locator of [audit, details, tree, tree.locator('xpath=..'), tree.locator('xpath=../..')]) {
+        expect(await locator.evaluate(element => element.scrollWidth - element.clientWidth)).toBeLessThanOrEqual(1)
+      }
+    }
+    await checkWidth()
+    await tree.getByRole('button', { name: 'Expand node', exact: true }).first().click()
+    await tree.getByRole('button', { name: 'Expand node', exact: true }).first().click()
+    await checkWidth()
+    const detailScroll = details.locator('[data-audit-detail-scroll]')
+    await detailScroll.evaluate(element => { element.scrollTop = element.scrollHeight })
+    expect(await detailScroll.evaluate(element => element.scrollTop)).toBeGreaterThan(0)
+    await audit.locator('tbody tr').nth(78).click()
+    await expect.poll(() => detailScroll.evaluate(element => element.scrollTop)).toBe(0)
+    await close.click()
+    await page.setViewportSize({ width: 680, height: 720 })
+    await audit.locator('tbody tr').last().click()
+    await details.waitFor()
+    await checkWidth()
+    expect((await close.boundingBox()).y).toBeLessThan(200)
+    await close.click()
+    await page.setViewportSize({ width: 1680, height: 1000 })
+    await page.getByText('Chat', { exact: true }).click()
+    await expect.poll(() => page.locator('[data-width-handle]:visible').count()).toBe(2)
+  })
+
+  it('defaults diagnostics to recorded issues and keeps operations, technical facts and recovery state distinct', async () => {
+    page.setDefaultTimeout(10_000)
+    const { settled } = await send('E2E_JOB_OTHER')
+    const id = await settled
+    await page.getByText('ACP Diagnostics', { exact: true }).click()
+    const panel = page.getByRole('region', { name: 'ACP Diagnostics', exact: true })
+    await panel.getByText('No recorded ACP issues.', { exact: true }).waitFor()
+    expect(await panel.locator('tbody tr').count()).toBe(0)
+    const sidecar = createAcpSidecar({ root: host.ctx.dshHomePath('dsh-acp') })
+    try {
+      for (let index = 0; index < 150; index += 1) {
+        await sidecar.append(id, { kind: 'replay-assessment', data: { status: 'not-compared', detail: '0 staged updates' } })
+      }
+      await sidecar.append(id, { kind: 'filesystem', data: { operation: 'read', path: '/missing-diagnostic-fixture', bytes: 0, beforeHash: null, afterHash: null, outcome: 'error', reason: 'not-found', acpSessionId: 'fixture', profileId: profile } })
+      for (const option of ['allow_once', 'reject_once']) {
+        await sidecar.append(id, { kind: 'permission', data: { phase: 'decided', requestId: option, agentSessionId: 'fixture', toolCallId: option, outcome: 'selected', optionId: option, selectedOptionKind: option } })
+      }
+      await sidecar.flush()
+      await panel.getByRole('button', { name: 'Refresh', exact: true }).click()
+      await expect.poll(() => panel.locator('tbody tr').count()).toBe(1)
+      await panel.locator('tbody tr').click()
+      const details = panel.getByRole('complementary')
+      await details.getByText('not-found', { exact: true }).waitFor()
+      await panel.getByRole('searchbox', { name: 'Search loaded records', exact: true }).fill('not-found')
+      expect(await panel.locator('tbody tr').count()).toBe(1)
+      await panel.getByRole('button', { name: 'Operations', exact: true }).click()
+      await expect.poll(() => panel.locator('tbody tr').count()).toBe(3)
+      expect(await panel.innerText()).toContain('Allowed this operation')
+      expect(await panel.innerText()).toContain('Rejected this operation')
+      await panel.getByRole('button', { name: 'Technical records', exact: true }).click()
+      await expect.poll(() => panel.locator('tbody tr').count()).toBe(50)
+      expect(await panel.innerText()).toContain('Session continuity record')
+      expect(await panel.innerText()).not.toContain('History replay was not compared')
+      await panel.getByRole('button', { name: 'Load more', exact: true }).click()
+      await expect.poll(() => panel.locator('tbody tr').count()).toBe(100)
+      await panel.getByRole('button', { name: 'Issues', exact: true }).click()
+      await expect.poll(() => panel.locator('tbody tr').count()).toBe(1)
+      await sidecar.writeRecoveryState({ dshSessionId: id, kind: 'reconnect-required', cause: 'auth-required', detail: 'E2E_RECORDED_RECOVERY_CAUSE', provider, updatedAt: Date.now() })
+      await panel.getByRole('button', { name: 'Refresh', exact: true }).click()
+      await panel.getByText('Recovery status at last refresh', { exact: true }).waitFor()
+      await panel.getByRole('status').locator('summary').click()
+      await panel.getByText('E2E_RECORDED_RECOVERY_CAUSE', { exact: true }).waitFor()
+      expect(await panel.locator('tbody tr').count()).toBe(1)
+      await sidecar.writeRecoveryState({ dshSessionId: id, kind: 'healthy', provider, updatedAt: Date.now() })
+      await panel.getByRole('button', { name: 'Refresh', exact: true }).click()
+      await panel.getByText('Recovery status at last refresh', { exact: true }).waitFor({ state: 'hidden' })
+      expect(await panel.locator('tbody tr').count()).toBe(1)
+      // Change the real host language, including the plugin's settings label.
+      await page.getByRole('button', { name: 'Settings', exact: true }).click()
+      const settings = page.getByRole('dialog', { name: 'Settings', exact: true })
+      await settings.getByRole('button', { name: 'General', exact: true }).click()
+      await settings.getByRole('button', { name: 'English', exact: true }).click()
+      await page.getByRole('menuitem', { name: '中文', exact: true }).click()
+      const chineseSettings = page.getByRole('dialog', { name: '设置', exact: true })
+      await chineseSettings.getByRole('button', { name: 'ACP adapter', exact: true }).click()
+      const version = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version
+      await chineseSettings.getByText(`v${version}`, { exact: true }).waitFor()
+      await chineseSettings.getByRole('button', { name: '关闭', exact: true }).click()
+      const chinesePanel = page.getByRole('region', { name: 'ACP 诊断', exact: true })
+      await chinesePanel.getByRole('button', { name: '异常', exact: true }).waitFor()
+      await chinesePanel.getByText('已显示当前分类全部记录', { exact: true }).waitFor()
+      expect(await chinesePanel.locator('tbody').innerText()).toContain('读取文件')
+      await chinesePanel.getByRole('button', { name: '操作记录', exact: true }).click()
+      await chinesePanel.getByText('权限决定已记录 · allow_once · 已允许本次操作', { exact: true }).waitFor()
+      expect(await chinesePanel.innerText()).toContain('已拒绝本次操作')
+      await sidecar.append(id, { kind: 'terminal', data: { operation: 'exit', terminalId: 'legacy-term', dshSessionId: id, profileId: profile, acpSessionId: 'fixture', command: 'legacy command', argCount: 0, cwd: '/', outputBytes: 0, truncated: false, outcome: 'exited', exitCode: null, signal: 'SIGTERM' } })
+      await sidecar.flush()
+      await chinesePanel.getByRole('button', { name: '异常', exact: true }).click()
+      await expect.poll(() => chinesePanel.locator('tbody tr').count()).toBe(2)
+      await chinesePanel.locator('tbody tr').filter({ hasText: '退出原因待确认' }).click()
+      await chinesePanel.getByText('此旧记录包含非零退出码或退出信号，但未记录是否主动终止；不能据此确定是操作取消还是进程故障。', { exact: true }).waitFor()
+    } finally {
+      await sidecar.dispose()
+      await host.ctx.settings.replace('locale', { preference: 'en' })
+    }
+  })
 
   it('uses the native composer, attachment history, assistant stream and tool presentation across reload', async () => {
     await page.locator('input[type="file"]').setInputFiles({ name: 'parity.txt', mimeType: 'text/plain', buffer: Buffer.from('E2E_UPLOAD_BYTES') })

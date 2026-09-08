@@ -55,6 +55,7 @@ import { waitWithin } from '../runtime/process/timeout.ts'
 import { stopSubprocess } from '../runtime/process/cleanup.ts'
 import type { AcpSubprocessHandle, SubprocessSeam, SubprocessSeamResolution } from '../runtime/process/subprocess.ts'
 import { AcpClientError } from '../protocol/v1/errors.ts'
+import { matchesDiagnosticView } from '../contract/diagnostics.ts'
 import type {
   AcpAuthMethod,
   AcpBackendState,
@@ -67,7 +68,8 @@ import type {
   AcpProbeCleanupView,
   AcpProviderHealth,
   AcpAuditTimelinePage,
-  AcpAuditSummaryCode,
+  AcpAuditTimelineEntry,
+  AcpDiagnosticView,
   AcpActivityFilterView,
   AcpActivityPageView,
   AcpActivitySnapshotView,
@@ -354,16 +356,7 @@ export interface AcpRemoteServiceDeps {
   agentSessionControl?: (provider: string) => AcpAgentSessionControlLike | undefined
   /** Host-projected, bounded sidecar rows. Raw persistence payloads stay host-side. */
   auditTimeline?: {
-    readonly list: (sessionId: string, afterSeq: number, limit: number) => Promise<readonly {
-      readonly seq: number
-      readonly time: number
-      readonly kind: string
-      readonly category: 'recovery' | 'permission' | 'agent' | 'files'
-      readonly summaryCode: AcpAuditSummaryCode
-      readonly subject: string | null
-      readonly status: string | null
-      readonly detail: string | null
-    }[]>
+    readonly list: (sessionId: string, afterSeq: number, limit: number) => Promise<readonly AcpAuditTimelineEntry[]>
     readonly hasMore: (sessionId: string, seq: number) => Promise<boolean>
   }
   /** Host-owned ACP activity journal. All reads are bounded and session-scoped;
@@ -523,7 +516,7 @@ export class AcpRemoteService extends TypertRemoteService {
 
   /** Read a bounded sidecar page. Raw payloads never cross the Remote boundary. */
   @Remote
-  async auditTimeline(sessionId: string, request?: { readonly afterSeq?: number; readonly limit?: number }): Promise<AcpAuditTimelinePage> {
+  async auditTimeline(sessionId: string, request?: { readonly afterSeq?: number; readonly limit?: number; readonly view?: AcpDiagnosticView }): Promise<AcpAuditTimelinePage> {
     const source = this.resolved.auditTimeline
     if (source === null) throw acpRemoteFailure('config', 'ACP audit history is unavailable on this host')
     await this.requireOwnedSessionRead(sessionId)
@@ -531,6 +524,28 @@ export class AcpRemoteService extends TypertRemoteService {
     const limit = request?.limit ?? 50
     if (!Number.isSafeInteger(afterSeq) || afterSeq < 0) throw badRequest('ACP audit cursor is invalid')
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw badRequest('ACP audit page size is invalid')
+    const view = request?.view
+    if (view !== undefined && !['issues', 'operations', 'technical'].includes(view)) throw badRequest('ACP diagnostic view is invalid')
+    if (view !== undefined) {
+      // Filter on the host so routine checkpoints cannot hide a later error.
+      // Bound each request; the cursor tracks scanned facts, even on empty pages.
+      const entries: AcpAuditTimelineEntry[] = []
+      let scannedSeq = afterSeq
+      let scanned = 0
+      let hasMore = true
+      while (entries.length < limit && scanned < 1000 && hasMore) {
+        const page = await source.list(sessionId, scannedSeq, 100)
+        if (page.length === 0) { hasMore = false; break }
+        for (const entry of page) {
+          scannedSeq = entry.seq
+          scanned += 1
+          if (matchesDiagnosticView(entry, view)) entries.push(entry)
+          if (entries.length === limit) break
+        }
+        hasMore = await source.hasMore(sessionId, scannedSeq)
+      }
+      return { sessionId, entries, nextCursor: hasMore ? scannedSeq : null, hasMore }
+    }
     const entries = await source.list(sessionId, afterSeq, limit)
     const lastSeq = entries.at(-1)?.seq ?? afterSeq
     const hasMore = entries.length === limit && await source.hasMore(sessionId, lastSeq)

@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import type { AcpAuditTimelineEntry } from '../../../src/contract/remote.ts'
-import { auditEntryMatchesFilter, auditEntryMatchesQuery, auditHeaderVisible, auditProjectionIsAcp, auditSessionRefreshKeyOf, auditSummaryOf } from '../../../src/client/ui/AcpAuditHeaderAction.ts'
+import { auditEntryMatchesFilter, auditEntryMatchesQuery, auditHeaderVisible, auditProjectionIsAcp, auditSessionRefreshKeyOf, auditSummaryOf, auditRecordedCause } from '../../../src/client/ui/AcpAuditHeaderAction.ts'
 import { en, zh } from '../../../src/client/ui/locales.ts'
 
 const entry = (partial: Partial<AcpAuditTimelineEntry>): AcpAuditTimelineEntry => ({
   seq: 1,
   time: 1,
   kind: 'permission',
+  severity: 'info',
   category: 'permission',
   summaryCode: 'permission.decided',
   subject: null,
@@ -17,6 +18,15 @@ const entry = (partial: Partial<AcpAuditTimelineEntry>): AcpAuditTimelineEntry =
 const owns = (provider: string | undefined): boolean => provider === 'acp-codex'
 
 describe('ACP audit header utility behavior', () => {
+  it('searches explicit recorded causes and does not fabricate missing or truncated causes', () => {
+    const missing = entry({ detail: '{"outcome":"error"}', severity: 'error' })
+    expect(auditRecordedCause(missing)).toBeNull()
+    const recorded = entry({ detail: '{"reason":"not-found"}', severity: 'error' })
+    expect(auditRecordedCause(recorded)).toBe('not-found')
+    expect(auditEntryMatchesQuery(key => en[key], recorded, 'not-found')).toBe(true)
+    expect(auditRecordedCause(entry({ detail: '{"reason":"unfinished' }))).toBeNull()
+    expect(auditRecordedCause(entry({ detail: '{"items":[{"reason":"cursor unavailable"},{"reason":"cursor unavailable"}]}' }))).toBe('cursor unavailable')
+  })
   it('is visible only for an established ACP backend', () => {
     expect(auditHeaderVisible({ state: 'blank' }, owns)).toBe(false)
     expect(auditHeaderVisible({ state: 'established', provider: 'openai' }, owns)).toBe(false)
@@ -41,10 +51,10 @@ describe('ACP audit header utility behavior', () => {
     expect(auditSessionRefreshKeyOf(undefined)).toBe('absent')
   })
 
-  it('filters ledger rows by category without changing the paged source', () => {
-    expect(auditEntryMatchesFilter(entry({ category: 'permission' }), 'permission')).toBe(true)
-    expect(auditEntryMatchesFilter(entry({ category: 'permission' }), 'files')).toBe(false)
-    expect(auditEntryMatchesFilter(entry({ category: 'permission' }), 'all')).toBe(true)
+  it('separates issues, operations and quiet technical records', () => {
+    expect(auditEntryMatchesFilter(entry({ category: 'permission' }), 'operations')).toBe(true)
+    expect(auditEntryMatchesFilter(entry({ category: 'permission' }), 'issues')).toBe(false)
+    expect(auditEntryMatchesFilter(entry({ severity: 'error' }), 'issues')).toBe(true)
   })
 
   it('searches localized user-facing facts without treating raw detail JSON as primary content', () => {
@@ -62,6 +72,11 @@ describe('ACP audit header utility behavior', () => {
     expect(auditEntryMatchesQuery((key) => en[key], item, '  ')).toBe(true)
   })
 
+  it('shows explicit permission and recovery causes stored under their original fields', () => {
+    expect(auditRecordedCause(entry({ detail: '{"note":"question-service-unavailable"}' }))).toBe('question-service-unavailable')
+    expect(auditRecordedCause(entry({ detail: '{"reason":"","cause":"auth-required"}' }))).toBe('auth-required')
+  })
+
   it('localizes structured summary facts and keeps raw summary codes out of the UI', () => {
     const item = entry({ summaryCode: 'filesystem.operation', subject: '/tmp/file', status: 'ok' })
     const zhText = auditSummaryOf((key) => zh[key], item)
@@ -71,6 +86,10 @@ describe('ACP audit header utility behavior', () => {
     expect(zhText).toContain('/tmp/file · 成功')
     expect(enText).toContain('/tmp/file · Succeeded')
     expect(zhText).not.toContain('filesystem.operation')
+  })
+
+  it('does not translate Agent identifiers that happen to match status codes', () => {
+    expect(auditSummaryOf(key => zh[key], entry({ summaryCode: 'permission.decided', subject: 'allow_once', status: 'allow_once' }))).toBe('权限决定已记录 · allow_once · 已允许本次操作')
   })
 
   it('distinguishes a terminal output read from the process exit in the visible timeline', () => {

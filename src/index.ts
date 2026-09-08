@@ -6,5 +6,4 @@
  * @module @zaimokuza/dsh-acp-adapter
  */
 
-export { name, inject, apply } from './host/composition/index.ts'
 export * from './host/composition/index.ts'

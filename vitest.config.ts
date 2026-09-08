@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import ts from 'typescript'
 import { defineConfig } from 'vitest/config'
@@ -5,6 +6,9 @@ import { defineConfig } from 'vitest/config'
 const sourcePrefix = fileURLToPath(new URL('./src/', import.meta.url)).replaceAll('\\', '/')
 
 export default defineConfig({
+  define: {
+    __DSH_ACP_ADAPTER_VERSION__: JSON.stringify(JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version),
+  },
   plugins: [
     {
       name: 'dsh-acp-tc39-decorators',

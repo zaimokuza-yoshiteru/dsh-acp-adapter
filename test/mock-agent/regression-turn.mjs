@@ -14,7 +14,27 @@ export async function regressionTurn(session, msg, { sendUpdate, sendAgentReques
   const say = text => sendUpdate(session.id, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } })
   try {
     if (prompt.includes('E2E_CRASH')) process.exit(49)
-    if (prompt.includes('E2E_RECOVERED')) {
+    if (prompt.includes('E2E_JOB_START')) {
+      const stopFile = `${session.cwd}/job-stop-${Date.now()}`
+      const readyFile = `${stopFile}.ready`
+      const immediate = prompt.includes('E2E_JOB_START_IMMEDIATE')
+      const script = `const fs=require('node:fs'); fs.writeFileSync(${JSON.stringify(readyFile)},'ready'); console.log('E2E_JOB_TICK'); ${immediate ? 'process.exit(0)' : `setInterval(()=>{if(fs.existsSync(${JSON.stringify(stopFile)})) process.exit(Number(fs.readFileSync(${JSON.stringify(stopFile)},'utf8')));},25)`}`
+      const created = await sendAgentRequest('terminal/create', { sessionId: session.id, command: process.execPath, args: ['-e', script], cwd: session.cwd })
+      session.backgroundTerminal = created.terminalId
+      log(`regression job=${JSON.stringify({ terminalId: created.terminalId, stopFile, readyFile })}`)
+      if (immediate) await sendAgentRequest('terminal/wait_for_exit', { sessionId: session.id, terminalId: created.terminalId })
+      say('E2E_JOB_STARTED')
+    } else if (prompt.includes('E2E_JOB_STOP')) {
+      await sendAgentRequest('terminal/kill', { sessionId: session.id, terminalId: session.backgroundTerminal })
+      await sendAgentRequest('terminal/wait_for_exit', { sessionId: session.id, terminalId: session.backgroundTerminal })
+      say('E2E_JOB_STOPPED')
+    } else if (prompt.includes('E2E_JOB_READ')) {
+      const output = await sendAgentRequest('terminal/output', { sessionId: session.id, terminalId: session.backgroundTerminal })
+      say(`E2E_JOB_OUTPUT ${JSON.stringify(output)}`)
+      await sendAgentRequest('terminal/release', { sessionId: session.id, terminalId: session.backgroundTerminal })
+    } else if (prompt.includes('E2E_JOB_OTHER')) {
+      say('E2E_JOB_OTHER_DONE')
+    } else if (prompt.includes('E2E_RECOVERED')) {
       say('E2E_RECOVERED_DONE')
     } else if (prompt.includes('E2E_SCROLL')) {
       for (let i = 0; i < 60; i++) {
