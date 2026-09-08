@@ -282,7 +282,8 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
     expect(readFileSync(agentLog, 'utf8').split('regression prompt=').length).toBe(priorPrompts)
     const next = await send('E2E_MESSAGE')
     await next.settled
-    expect(await page.getByText('E2E_DONE mock-model-a', { exact: true }).count()).toBe(2)
+    // Host settlement precedes delivery of the final stream update to the UI.
+    await expect.poll(() => page.getByText('E2E_DONE mock-model-a', { exact: true }).count()).toBe(2)
     expect(readFileSync(agentLog, 'utf8').split('regression prompt=').length).toBe(priorPrompts + 1)
   })
 

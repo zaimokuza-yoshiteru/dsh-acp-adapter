@@ -171,3 +171,5 @@ DSH 发布包通过自己的必需 peers 引用部分宿主模块，因此开发
 本机仍使用 Node 24.19.0 进行开发检查和构建，Node 22.19.0 运行与本机 fs-ext ABI 匹配的 Web/安装回归。CI 分为三平台 npm 兼容性与 Linux 源码 scaffold 浏览器回归；源码只用于复用测试设施，不再代替发布依赖。
 
 远端首轮 macOS npm CI 全部通过。Linux 发现 stdout 关闭早于 bootstrap 的启动错误，已将退出结果收集移到错误分类之前，并补充延迟 ENOENT 的确定性测试；终端“终止运行中进程”测试改为先观察 tick，避免把启动前取消误当作运行后终止。Windows 2025 runner 已使用 VS 18，而 pnpm 10 的 node-gyp 无法识别，改用 VS 2022 的 Windows 2022 runner，保留 Windows 验证。修复后的本机类型检查和 3 个相关套件的 99 项测试通过；跨平台结果以该修复提交的 CI 为准。
+
+`23cea7d` 的 Linux、macOS、Windows npm CI 已全部通过。浏览器重连用例发现宿主 settlement 早于客户端最后一次渲染，消息数量断言改为等待 DOM 更新后检查；仍要求恰好两条消息且 ACP prompt 无重复。四种协议夹具的定向重连回归通过（15.49 秒），没有添加整例重试或删除原断言。
