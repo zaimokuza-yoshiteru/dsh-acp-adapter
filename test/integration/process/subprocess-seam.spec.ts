@@ -1,3 +1,5 @@
+import type { SubprocessHandle } from '@deepseek-ai/dsh-subprocess'
+import type { AcpSubprocessHandle } from '../../../src/runtime/process/subprocess.ts'
 // subprocess-seam.spec.ts — 随附测试：ctx.subprocess seam 的结构窄化、
 // 真 spawn 环境继承实证、fail-closed 分类与依赖面守卫。
 //
@@ -15,12 +17,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, expectTypeOf, it } from 'vitest';
 import {
   ACP_SUBPROCESS_UNAVAILABLE_MESSAGE,
   narrowSubprocessSeam,
 } from '../../../src/runtime/process/subprocess.ts';
 import type { SubprocessSeam } from '../../../src/runtime/process/subprocess.ts';
+import { waitWithin } from '../../../src/runtime/process/timeout.ts';
 import { AcpAgentProcess } from '../../../src/runtime/process/agent-process.ts';
 import { AcpClientConnection } from '../../../src/protocol/v1/connection.ts';
 import { AcpClientError } from '../../../src/protocol/v1/errors.ts';
@@ -135,6 +138,29 @@ describe('真 spawn scrubbed-parent 实证（AcpAgentProcess 生产路径）', (
   });
 });
 
+describe('ACP process exit deadline', () => {
+  it('keeps the consumed handle compatible with the upstream public contract', () => {
+    expectTypeOf<SubprocessHandle>().toExtend<AcpSubprocessHandle>()
+  })
+  it.each([0, 20])('closes an EOF-ignoring child with %s ms grace', async eofGraceMs => {
+    let handle: AcpSubprocessHandle | undefined
+    const tracked = { ...subprocess, spawn(spec: Parameters<SubprocessSeam['spawn']>[0]) { handle = subprocess.spawn(spec); return handle } }
+    const proc = new AcpAgentProcess({
+      argv: [process.execPath, '-e', 'setInterval(() => {}, 1000); process.stdout.write("ready")'],
+      cwd: os.tmpdir(), env: {}, subprocess: tracked,
+    }, { eofGraceMs, termGraceMs: 100 });
+    try {
+      await expect(waitWithin(new Promise<boolean>(resolve => proc.stdout.once('data', () => resolve(true))), 2000)).resolves.toBe(true);
+      await expect(waitWithin(proc.close().then(() => true), 2000)).resolves.toBe(true);
+      expect(proc.exited).not.toBeNull();
+    } finally {
+      // A failed bounded wait still terminates this test's child.
+      handle?.terminate();
+      await expect(handle!.waitForExit(AbortSignal.timeout(2000))).resolves.toBe(true);
+    }
+  });
+});
+
 describe('fail closed（spawn-failure 分类）', () => {
   it('spec.subprocess 缺席（运行时裸 spec）→ 构造即抛 spawn-failure + 统一诊断文案', () => {
     const bare = { argv: [process.execPath, '-e', ''], cwd: os.tmpdir(), env: {} } as unknown as AcpConnectionSpec;
@@ -177,23 +203,20 @@ describe('fail closed（spawn-failure 分类）', () => {
 });
 
 describe('依赖面守卫（宿主模块实例一致性 纪律）', () => {
-  it('package.json：两包只作为精确发布版开发依赖，不进入运行时依赖面', () => {
+  it('package.json：两包只作为精确 npm 开发依赖，不进入运行时依赖面', () => {
     const pkg = JSON.parse(fs.readFileSync(path.join(PKG_ROOT, 'package.json'), 'utf8')) as {
       dependencies?: Record<string, string>;
       peerDependencies?: Record<string, string>;
       devDependencies?: Record<string, string>;
     };
     const names = ['@deepseek-ai/dsh-subprocess', '@deepseek-ai/dsh-subprocess-local']
-    const versions: string[] = []
     for (const name of names) {
       expect(pkg.dependencies?.[name]).toBeUndefined();
       expect(pkg.peerDependencies?.[name]).toBeUndefined();
       const version = pkg.devDependencies?.[name]
-      expect(version).toMatch(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/)
-      versions.push(version!)
+      expect(version).toBe('0.1.3-alpha.2')
     }
-    expect(new Set(versions).size).toBe(1)
-    expect(JSON.parse(fs.readFileSync(path.join(PKG_ROOT, 'package.json'), 'utf8')).scripts['setup:source-reference']).toBeDefined();
+    expect(JSON.parse(fs.readFileSync(path.join(PKG_ROOT, 'package.json'), 'utf8')).scripts['verify:dev-install']).toBeDefined();
   });
 
   it('src/** 零 dsh-subprocess 值级 import（结构镜像全在 src/runtime/process/subprocess.ts）', () => {

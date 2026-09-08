@@ -14,6 +14,24 @@ const limits = {
 const text = (value: string) => createUserMessage({ content: [{ type: 'text', text: value }], source: { kind: 'user' } })
 
 describe('prompt content conversion', () => {
+  it('carries complete host instructions and logged plugin input without advertising executable tools', async () => {
+    const context = createUserMessage({ content: [{ type: 'text', text: 'Current project guidance' }], source: { kind: 'plugin', plugin: 'guidance' } })
+    const result = await toAcpPrompt([context, text('Continue')], {
+      system: 'Apply the repository conventions.\nKeep the full instruction text.',
+      imageEnabled: false,
+      signal: new AbortController().signal,
+    })
+    expect(result).toEqual([
+      { type: 'text', text: expect.stringContaining('Apply the repository conventions.\nKeep the full instruction text.') },
+      { type: 'text', text: 'Current project guidance' },
+      { type: 'text', text: 'Continue' },
+    ])
+    expect(result[0]).toMatchObject({ text: expect.stringContaining('do not add tools or grant permissions') })
+    const cleared = await toAcpPrompt([text('Continue')], { system: '', imageEnabled: false, signal: new AbortController().signal })
+    expect(cleared[0]).toMatchObject({ text: expect.stringContaining('No additional host instructions.') })
+    await expect(toAcpPrompt([], { system: 'Instructions alone cannot trigger a dispatch', imageEnabled: false, signal: new AbortController().signal })).rejects.toThrow('no supported content')
+  })
+
   it('preserves text ordering and reads durable images into ACP blocks', async () => {
     const image = { attachmentId: 'att-1' as never, mediaType: 'image/png' as const, bytes: 3, width: 1, height: 1 }
     const readImage = vi.fn().mockResolvedValue({ ref: image, data: Uint8Array.of(1, 2, 3) })

@@ -1,7 +1,7 @@
 // subprocess-seam-testing.ts — 测试基础设施：真实 subprocess-local 服务的挂载与共享。
 //
 // 取舍：测试消费真实 @deepseek-ai/dsh-subprocess-local 服务（devDep），不是手写假
-// seam——pid 死亡/整树停稳/SIGTERM→SIGKILL 升级等断言打的是生产同款实现，且装配
+// seam——退出事实与 provider 托管范围清空的断言使用生产同款实现，且装配
 // 代价实测很低（new Context + ctx.plugin 一次；prebuilt 原生件无需 build script）。
 //
 // 共享单例：LocalSubprocessRuntime 挂进程级 'exit' 监听（宿主退出阶段同步强杀托管

@@ -23,6 +23,7 @@ import {
   IconPlusOutline16,
   IconRefreshOutline16,
   Menu,
+  Tag,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import {
   ACP_BUILTIN_AGENT_TEMPLATES,
@@ -40,6 +41,9 @@ import type { AcpAgentConfig, AcpProviderHealth, AgentDraft, DraftError } from '
 import type { AcpLocaleKey } from './locales.ts'
 import type { AcpPanelSnapshot, HealthState } from '../data/stores/panel-store.ts'
 import css from './AcpSection.module.css'
+
+/** Replaced by the client build with this package's manifest version. */
+declare const __DSH_ACP_ADAPTER_VERSION__: string
 
 /** The section's translate seat (slot renderer binds it from the entry's `locale` declaration). */
 export type AcpTranslate = (key: AcpLocaleKey, params?: Record<string, string | number>) => string
@@ -131,7 +135,10 @@ function Loaded({ t, useStore, panel }: {
 
   const settings = snapshot.settings
   const children: ReactNode[] = [
-    h('h2', { key: 'title', className: css.title }, t('title')),
+    h('h2', { key: 'title', className: css.title },
+      t('title'),
+      h(Tag, { tone: 'neutral' }, `v${__DSH_ACP_ADAPTER_VERSION__}`),
+    ),
     h('p', { key: 'intro', className: css.intro }, t('intro')),
   ]
 
@@ -307,19 +314,14 @@ function AgentCard(props: {
   const statusText = state === undefined
     ? t('stateSavedUnverified')
     : stateText(t, state)
-  const statusTone = state === 'ready'
-    ? css.statusReady
-    : css.statusMuted
+  const statusTone = state === 'ready' ? 'success' : 'neutral'
   const diagnostic = healthDiagnostic(t, config.command, healthRow, checkError)
 
   const children: ReactNode[] = [
     h('div', { key: 'head', className: css.rowHead },
       h('span', { className: css.rowIdentity },
         h('span', { className: css.rowName }, config.name),
-        h('span', { className: `${css.statusBadge} ${statusTone}` },
-          h('span', { className: css.statusDot, 'aria-hidden': true }),
-          statusText,
-        ),
+        h(Tag, { tone: statusTone }, statusText),
       ),
       h('span', { className: css.rowActions },
         h('button', {

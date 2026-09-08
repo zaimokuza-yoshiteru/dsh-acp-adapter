@@ -34,6 +34,7 @@ import { redactSecretText } from '../../domain/observability/redaction.ts'
 import { AcpPromptContentError, toAcpPrompt } from '../../domain/session/prompt-content.ts'
 import { createAcpFileSystemHandlers } from '../../runtime/client-capabilities/filesystem.ts'
 import { createAcpTerminalHandlers } from '../../runtime/client-capabilities/terminal.ts'
+import type { AcpTerminalJobStarter } from '../../runtime/client-capabilities/terminal-job.ts'
 import { createAcpNativePermissionHandler, type AcpNativeApprovalService } from '../../domain/policy/permissions.ts'
 import type { AcpPermissionAuditChannel } from '../../domain/policy/permissions.ts'
 import { createAcpNativeElicitationHandler } from '../../domain/policy/elicitation.ts'
@@ -355,6 +356,7 @@ export class AcpProfileAdapter extends LlmAdapter {
       readonly parentDelegationDepth?: number
     }) => Promise<string | undefined>,
     private readonly log?: (message: string) => void,
+    private readonly terminalJobs?: (sessionId: string) => AcpTerminalJobStarter | undefined,
   ) {
     super()
     this.ledger = new DispatchLedger(ledgerStore)
@@ -657,7 +659,7 @@ export class AcpProfileAdapter extends LlmAdapter {
       const durableSidecar = self.sidecar
       const session = self.sessionOf(sessionKey)
       let admissionProof: CurrentStepProof | undefined
-      let messages: readonly import('@deepseek-ai/dsh-llm').Message[]
+      let messages: readonly import('@deepseek-ai/dsh-llm').UserMessage[]
       try {
         messages = admitCurrentStep(options, session, proof => {
           admissionProof = proof
@@ -692,7 +694,8 @@ export class AcpProfileAdapter extends LlmAdapter {
         // create session/new, and doing it before fork/restore both duplicates
         // setup and makes a fork look like a blank session.
         if (runtime.initialize !== undefined) await runtime.initialize(options.signal)
-        const prompt = await toAcpPrompt(messages as never, {
+        const prompt = await toAcpPrompt(messages, {
+          system: options.system ?? '',
           imageEnabled: runtime.agentCapabilities?.promptCapabilities?.image === true,
           ...(self.attachments === undefined ? {} : { attachments: self.attachments }),
           signal: options.signal ?? new AbortController().signal,
@@ -1475,6 +1478,7 @@ export class AcpProfileAdapter extends LlmAdapter {
         dshSessionId: sessionId,
         cwd: launchCwd,
         env,
+        ...(this.terminalJobs === undefined ? {} : { startJob: this.terminalJobs(sessionId) }),
         ...(appendTerminalAudit === undefined ? {} : { audit: appendTerminalAudit }),
       }),
       onPermissionRequest: async (params: acp.RequestPermissionRequest, signal?: AbortSignal): Promise<acp.RequestPermissionResponse> => {

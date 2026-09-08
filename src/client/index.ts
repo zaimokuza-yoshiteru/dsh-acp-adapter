@@ -135,7 +135,7 @@ async function registerUi(ctx: ClientContext): Promise<void> {
     }
   })
   // Alpha 的 view roster 暂无 per-session selector。保留一个不渲染 UI
-  // 的会话门，只在当前会话已经建立 ACP binding 时贡献 Agent 审计 Tab；
+  // 的会话门，只在当前会话已经建立 ACP binding 时贡献 ACP 诊断 Tab；
   // 原生模型会话因此保持 DSH 自带的 Tab 集合。
   ctx.slots.inject('conversation.session.header.utilities', () => ctx.slots.register({
     name: 'conversation.session.header.utilities',

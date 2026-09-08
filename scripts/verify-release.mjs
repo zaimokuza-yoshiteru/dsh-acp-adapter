@@ -7,6 +7,7 @@ import { appendFileSync, readFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { DSH_SOURCE_VERSION } from './dsh-target.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
@@ -37,6 +38,12 @@ if (refType !== undefined && refType !== 'tag') {
 const expectedTag = `v${version}`
 if (tag !== expectedTag) {
   throw new Error(`发布 tag 必须等于 ${expectedTag}，当前值: ${tag ?? '<missing>'}`)
+}
+
+const hostDevDependencies = Object.entries(pkg.devDependencies ?? {}).filter(([name]) => name.startsWith('@deepseek-ai/dsh-') || name === '@deepseek-ai/dsh')
+if (hostDevDependencies.length === 0 || hostDevDependencies.some(([, version]) => version !== DSH_SOURCE_VERSION)
+  || Object.values(pkg.devDependencies ?? {}).some(version => /^(?:link:|file:|workspace:)/.test(version))) {
+  throw new Error(`Release target ${DSH_SOURCE_VERSION} has not passed the published-package lane; finish the published development dependency migration before publishing`)
 }
 
 const prerelease = version.match(/-([0-9A-Za-z]+)(?:[.-]|$)/)?.[1]

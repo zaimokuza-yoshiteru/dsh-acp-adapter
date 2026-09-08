@@ -1,9 +1,5 @@
-// timeout.spec.ts — 统一 deadline/abort 原语套件：
-// src/runtime/process/timeout.ts 的 abortAfter / waitWithin。
-// 全量真实定时器（小毫秒值），不用 fake timers（本仓测试惯例）。
-
 import { describe, expect, it } from 'vitest';
-import { abortAfter, waitWithin } from '../../../src/runtime/process/timeout.ts';
+import { waitWithin } from '../../../src/runtime/process/timeout.ts';
 
 const delay = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -15,28 +11,6 @@ function pendingUntil(signal: AbortSignal): Promise<never> {
     }, { once: true });
   });
 }
-
-describe('abortAfter（deadline + AbortSignal 组合）', () => {
-  it('到点触发 abort；cancel 后到点不再触发', async () => {
-    const fired = abortAfter(20);
-    expect(fired.signal.aborted).toBe(false);
-    await delay(40);
-    expect(fired.signal.aborted).toBe(true);
-
-    const cancelled = abortAfter(20);
-    cancelled.cancel();
-    await delay(40);
-    expect(cancelled.signal.aborted).toBe(false);
-  });
-
-  it('cancel 幂等', () => {
-    const deadline = abortAfter(1000);
-    deadline.cancel();
-    expect(() => {
-      deadline.cancel();
-    }).not.toThrow();
-  });
-});
 
 describe('waitWithin（限时 waitFor）', () => {
   it('窗口内 settle：传递值', async () => {

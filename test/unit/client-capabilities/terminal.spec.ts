@@ -67,6 +67,7 @@ describe('ACP v1 terminal host', () => {
       outputByteLimit: 128,
     })
     await expect(terminals.terminalOutput({ sessionId: 'other', terminalId: created.terminalId })).rejects.toThrow('different ACP session')
+    await expect.poll(async () => (await terminals.terminalOutput({ sessionId: 'owner', terminalId: created.terminalId })).output, { timeout: 5000 }).toContain('tick')
     await terminals.killTerminal({ sessionId: 'owner', terminalId: created.terminalId })
     const exit = await terminals.waitForExit({ sessionId: 'owner', terminalId: created.terminalId })
     expect(exit.exitCode !== null || exit.signal !== null).toBe(true)
@@ -108,7 +109,7 @@ describe('ACP v1 terminal host', () => {
     const fake: SubprocessSeam = {
       spawn: () => {
         const handle: AcpSubprocessHandle = {
-          pid: 7000 + handles.length,
+
           stdin: new PassThrough(),
           stdout: new PassThrough(),
           stderr: new PassThrough(),
@@ -146,7 +147,7 @@ describe('ACP v1 terminal host', () => {
     let terminateCount = 0
     const fake: SubprocessSeam = {
       spawn: () => ({
-        pid: 8800,
+
         stdin: new PassThrough(),
         stdout: new PassThrough(),
         stderr: new PassThrough(),
@@ -168,7 +169,7 @@ describe('ACP v1 terminal host', () => {
     let terminateCount = 0
     const neverDone = new Promise<never>(() => {})
     const handle: AcpSubprocessHandle = {
-      pid: 9911,
+
       stdin: new PassThrough(),
       stdout: new PassThrough(),
       stderr: new PassThrough(),
@@ -187,6 +188,30 @@ describe('ACP v1 terminal host', () => {
     await expect(terminals.terminalOutput({ sessionId: 'stubborn', terminalId: created.terminalId })).resolves.toHaveProperty('truncated', false)
   })
 
+  it('does not release a settled command while its provider cannot prove range exit', async () => {
+    let observable = false
+    let terminations = 0
+    const fake: SubprocessSeam = {
+      spawn: () => ({
+        stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
+        done: Promise.resolve({ exitCode: 0, signal: null }),
+        terminate: () => { terminations += 1 },
+        waitForExit: async () => { if (!observable) throw new Error('provider unavailable'); return true },
+      }),
+      resolveExecutable: async command => command,
+    }
+    const terminals = createAcpTerminalHandlers({ subprocess: fake, profileId: 'range', dshSessionId: 'dsh-range', cwd: root, env: {}, releaseWaitMs: 5 })
+    const created = await terminals.createTerminal({ sessionId: 'range-session', command: 'fixture', args: ['--fixture'] })
+    await terminals.waitForExit({ sessionId: 'range-session', terminalId: created.terminalId })
+    await expect(terminals.releaseTerminal({ sessionId: 'range-session', terminalId: created.terminalId })).rejects.toThrow('retry release')
+    expect(terminations).toBe(1)
+    expect(terminals.presentationSnapshot?.(created.terminalId)?.released).toBe(false)
+    observable = true
+    await expect(terminals.releaseTerminal({ sessionId: 'range-session', terminalId: created.terminalId })).resolves.toEqual({})
+    expect(terminals.presentationSnapshot?.(created.terminalId)?.released).toBe(true)
+    await terminals.dispose()
+  })
+
   it('falls back to the platform shell for a shell command sent as command with no args', async () => {
     const calls: string[][] = []
     const fake: SubprocessSeam = {
@@ -194,9 +219,9 @@ describe('ACP v1 terminal host', () => {
         calls.push([...argv])
         const shell = argv[0] === '/bin/sh' || argv[0] === 'cmd.exe'
         if (!shell) {
-          const error = Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' })
+          const error = Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT', syscall: 'spawn missing-binary' })
           return {
-            pid: -1,
+
             stdin: new PassThrough(),
             stdout: new PassThrough(),
             stderr: new PassThrough(),
@@ -206,7 +231,7 @@ describe('ACP v1 terminal host', () => {
           }
         }
         return {
-          pid: 7777,
+
           stdin: new PassThrough(),
           stdout: new PassThrough(),
           stderr: new PassThrough(),
@@ -224,6 +249,47 @@ describe('ACP v1 terminal host', () => {
     await terminals.dispose()
   })
 
+  it('never replays a command for a provider file-not-found error', async () => {
+    let spawns = 0
+    const error = Object.assign(new Error('provider state file not found: ENOENT'), { code: 'ENOENT', syscall: 'open' })
+    const terminals = createAcpTerminalHandlers({
+      profileId: 'provider-error', dshSessionId: 'dsh-provider-error', cwd: root, env: {},
+      subprocess: { resolveExecutable: async command => command, spawn: () => {
+        spawns += 1
+        return { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), done: Promise.reject(error), terminate() {}, waitForExit: async () => true }
+      } },
+    })
+    const created = await terminals.createTerminal({ sessionId: 'provider-error', command: 'echo important' })
+    await expect(terminals.waitForExit({ sessionId: 'provider-error', terminalId: created.terminalId })).rejects.toBe(error)
+    expect(spawns).toBe(1)
+    await terminals.dispose()
+  })
+
+  it('does not start a shell fallback after cancellation during launch cleanup', async () => {
+    let spawns = 0
+    const observing = Promise.withResolvers<void>()
+    const exited = Promise.withResolvers<boolean>()
+    const error = Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT', syscall: 'spawn missing-binary' })
+    const terminals = createAcpTerminalHandlers({
+      profileId: 'cancel-launch', dshSessionId: 'dsh-cancel-launch', cwd: root, env: {},
+      subprocess: { resolveExecutable: async command => command, spawn: () => {
+        spawns += 1
+        return {
+          stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
+          done: Promise.reject(error), terminate() {},
+          waitForExit: async () => { observing.resolve(); return exited.promise },
+        }
+      } },
+    })
+    const created = await terminals.createTerminal({ sessionId: 'cancel-launch', command: 'echo important' })
+    await observing.promise
+    await terminals.killTerminal({ sessionId: 'cancel-launch', terminalId: created.terminalId })
+    exited.resolve(true)
+    await expect(terminals.waitForExit({ sessionId: 'cancel-launch', terminalId: created.terminalId })).rejects.toBe(error)
+    expect(spawns).toBe(1)
+    await terminals.dispose()
+  })
+
   it('runs a real shell-style command through the shared subprocess seam', async () => {
     const terminals = host()
     const command = process.platform === 'win32' ? 'ver' : 'uname -s'
@@ -234,10 +300,10 @@ describe('ACP v1 terminal host', () => {
   })
 
   it('reports a rejected spawn as error instead of a running terminal', async () => {
-    const error = Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' })
+    const error = Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT', syscall: 'spawn missing-binary' })
     const fake: SubprocessSeam = {
       spawn: () => ({
-        pid: -1,
+
         stdin: new PassThrough(),
         stdout: new PassThrough(),
         stderr: new PassThrough(),
@@ -253,5 +319,84 @@ describe('ACP v1 terminal host', () => {
     await expect(terminals.terminalOutput({ sessionId: 'error-session', terminalId: created.terminalId })).resolves.toMatchObject({ output: '', exitStatus: null })
     expect(terminals.presentationSnapshot?.(created.terminalId)).toMatchObject({ state: 'error' })
     await terminals.dispose()
+  })
+})
+
+describe('ACP terminal native job lifecycle', () => {
+  it('checks job admission before spawning a process', async () => {
+    let spawned = false
+    const terminals = createAcpTerminalHandlers({
+      subprocess: { ...subprocess, spawn: () => { spawned = true; throw new Error('unexpected spawn') } },
+      profileId: 'devin', dshSessionId: 'owner', cwd: root, env: {},
+      startJob: () => { throw new Error('job limit reached') },
+    })
+    await expect(terminals.createTerminal({ sessionId: 'acp', command: process.execPath, args: ['-e', 'process.exit(0)'] })).rejects.toThrow('job limit reached')
+    expect(spawned).toBe(false)
+    await terminals.dispose()
+  })
+
+  it('keeps the job running until the managed range exits and leaves output readable to ACP', async () => {
+    let finishCommand!: (fact: { exitCode: number; signal: null }) => void
+    let finishRange!: (value: boolean) => void
+    const commandDone = new Promise<{ exitCode: number; signal: null }>(resolve => { finishCommand = resolve })
+    const rangeDone = new Promise<boolean>(resolve => { finishRange = resolve })
+    const stdout = new PassThrough()
+    const handle: AcpSubprocessHandle = { stdin: new PassThrough(), stdout, stderr: new PassThrough(), done: commandDone, waitForExit: () => rangeDone, terminate() {} }
+    let hooks!: import('../../../src/runtime/client-capabilities/terminal-job.ts').AcpTerminalJobHooks
+    const terminals = createAcpTerminalHandlers({
+      subprocess: { ...subprocess, spawn: () => handle },
+      profileId: 'devin', dshSessionId: 'owner', cwd: root, env: {},
+      startJob: (_label, run) => { hooks = run(); return { cancel: () => hooks.cancel() } },
+    })
+    const { terminalId } = await terminals.createTerminal({ sessionId: 'acp', command: 'fixture', args: ['structured'] })
+    let settled = false
+    void hooks.done.then(() => { settled = true })
+    stdout.write('retained ACP output')
+    finishCommand({ exitCode: 0, signal: null })
+    await terminals.waitForExit({ sessionId: 'acp', terminalId })
+    expect(settled).toBe(false)
+    finishRange(true)
+    await expect(hooks.done).resolves.toMatchObject({ status: 'completed', output: 'retained ACP output' })
+    expect((await terminals.terminalOutput({ sessionId: 'acp', terminalId })).output).toBe('retained ACP output')
+    await terminals.dispose()
+  })
+
+  it('cancels a still-live managed range after its main command already exited', async () => {
+    let finishRange!: (value: boolean) => void
+    const rangeDone = new Promise<boolean>(resolve => { finishRange = resolve })
+    let terminated = false
+    const handle: AcpSubprocessHandle = {
+      stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
+      done: Promise.resolve({ exitCode: 0, signal: null }), waitForExit: () => rangeDone,
+      terminate() { terminated = true; finishRange(true) },
+    }
+    let hooks!: import('../../../src/runtime/client-capabilities/terminal-job.ts').AcpTerminalJobHooks
+    const terminals = createAcpTerminalHandlers({
+      subprocess: { ...subprocess, spawn: () => handle },
+      profileId: 'devin', dshSessionId: 'owner', cwd: root, env: {},
+      startJob: (_label, run) => { hooks = run(); return { cancel: () => hooks.cancel() } },
+    })
+    const { terminalId } = await terminals.createTerminal({ sessionId: 'acp', command: 'fixture', args: ['structured'] })
+    await terminals.waitForExit({ sessionId: 'acp', terminalId })
+    terminals.cancelSession?.('acp')
+    await expect(hooks.done).resolves.toMatchObject({ status: 'killed' })
+    expect(terminated).toBe(true)
+    await terminals.dispose()
+  })
+
+  it('cleans up terminals when the native owner cancels and preserves the killed result on release', async () => {
+    let hooks!: import('../../../src/runtime/client-capabilities/terminal-job.ts').AcpTerminalJobHooks
+    const terminals = createAcpTerminalHandlers({
+      subprocess, profileId: 'devin', dshSessionId: 'owner', cwd: root, env: {},
+      startJob: (_label, run) => { hooks = run(); return { cancel: () => hooks.cancel() } },
+    })
+    try {
+      const { terminalId } = await terminals.createTerminal({ sessionId: 'acp', command: process.execPath, args: ['-e', 'console.log("ready");setInterval(()=>{},1000)'] })
+      await expect.poll(async () => (await terminals.terminalOutput({ sessionId: 'acp', terminalId })).output).toContain('ready')
+      hooks.cancel()
+      await expect(hooks.done).resolves.toMatchObject({ status: 'killed' })
+      await terminals.releaseTerminal({ sessionId: 'acp', terminalId })
+      await expect(hooks.done).resolves.toMatchObject({ status: 'killed' })
+    } finally { await terminals.dispose() }
   })
 })

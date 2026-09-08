@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, readFileSync } from 'node:fs'
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -10,13 +10,16 @@ const pkg = JSON.parse(readFileSync(new URL('package.json', root), 'utf8'))
 const verifyRelease = fileURLToPath(new URL('scripts/verify-release.mjs', root))
 
 describe('npm release contract', () => {
-  it('requires the exact version tag and keeps prereleases off latest', () => {
-    const output = join(mkdtempSync(join(tmpdir(), 'dsh-acp-release-')), 'output')
-    const stdout = execFileSync(
+  it('routes the exact alpha release to the alpha dist-tag', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'dsh-acp-release-'))
+    const output = join(directory, 'output')
+    try {
+      execFileSync(
       process.execPath,
       [verifyRelease, `v${pkg.version}`],
       {
         encoding: 'utf8',
+        stdio: 'pipe',
         env: {
           ...process.env,
           GITHUB_OUTPUT: output,
@@ -24,11 +27,22 @@ describe('npm release contract', () => {
           GITHUB_REF_NAME: `v${pkg.version}`,
         },
       },
-    )
+      )
+      expect(readFileSync(output, 'utf8')).toContain('dist-tag=alpha\n')
+      expect(readFileSync(output, 'utf8')).toContain(`tarball=zaimokuza-dsh-acp-adapter-${pkg.version}.tgz`)
+    } finally { rmSync(directory, { recursive: true, force: true }) }
+  })
 
-    expect(stdout).toContain(`v${pkg.version} -> npm next`)
-    expect(readFileSync(output, 'utf8')).toContain('dist-tag=next\n')
-    expect(readFileSync(output, 'utf8')).toContain(`tarball=zaimokuza-dsh-acp-adapter-${pkg.version}.tgz\n`)
+  it('still blocks local source dependencies from publishing', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'dsh-acp-source-release-'))
+    try {
+      mkdirSync(join(directory, 'scripts'))
+      for (const file of ['verify-release.mjs', 'dsh-target.mjs']) cpSync(new URL(`scripts/${file}`, root), join(directory, 'scripts', file))
+      writeFileSync(join(directory, 'package.json'), JSON.stringify({ ...pkg, devDependencies: { ...pkg.devDependencies, '@deepseek-ai/dsh-llm': 'link:../source' } }))
+      expect(() => execFileSync(process.execPath, [join(directory, 'scripts/verify-release.mjs'), `v${pkg.version}`], {
+        stdio: 'pipe', env: { ...process.env, GITHUB_REF_TYPE: 'tag' },
+      })).toThrow('has not passed the published-package lane')
+    } finally { rmSync(directory, { recursive: true, force: true }) }
   })
 
   it('rejects a branch ref even when its name resembles the expected tag', () => {
@@ -55,11 +69,12 @@ describe('npm release contract', () => {
     expect(workflow).not.toMatch(/NPM_TOKEN|NODE_AUTH_TOKEN/)
   })
 
-  it('publishes the tested tarball from the exact rc.1 development lane', () => {
+  it('checks release eligibility before installing development dependencies', () => {
     const workflow = readFileSync(new URL('.github/workflows/publish.yml', root), 'utf8')
     expect(workflow).not.toContain('if: ${{ false }}')
     expect(workflow).not.toContain('alpha-release-block')
     expect(workflow).toContain('pnpm install --frozen-lockfile')
     expect(workflow).toContain('pnpm typecheck && pnpm test && pnpm build')
+    expect(workflow.indexOf('node scripts/verify-release.mjs')).toBeLessThan(workflow.indexOf('pnpm install --frozen-lockfile'))
   })
 })

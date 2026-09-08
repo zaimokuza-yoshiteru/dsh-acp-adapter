@@ -3,7 +3,35 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { ExternalSubagentProjector } from '../../../src/host/subagent/external-projector.ts'
+import { SessionAlreadyExistsError, SessionPersistenceNotFoundError } from '@deepseek-ai/dsh-session-persistence'
+import type { SessionHandle, SessionHandleReadResult } from '@deepseek-ai/dsh-session-persistence'
+import { SessionId, SessionLogOffset, snapshotSessionEvent } from '@deepseek-ai/dsh-session'
+import type { SessionHeader, SessionEvent, SessionSeedEventState } from '@deepseek-ai/dsh-session'
 import { createAcpSidecar } from '../../../src/persistence/sidecar.ts'
+import { BlockAssembler, expandAssistantStream } from '@deepseek-ai/dsh-llm'
+
+function handleStorage(records = new Map<string, { meta: SessionHeader; events: SessionEvent[] }>(), order: string[] = [], eventState: SessionSeedEventState = 'detached') {
+  const handle = (id: string, access: 'read' | 'write'): SessionHandle => ({
+    id: SessionId(id), header: records.get(id)!.meta, access, inheritedEventCount: SessionLogOffset(0),
+    read: async (): Promise<SessionHandleReadResult> => ({ eventState, events: eventState === 'detached' ? structuredClone(records.get(id)!.events) : [...records.get(id)!.events] }),
+    append: async (events: readonly SessionEvent[]) => { order.push('append'); records.get(id)!.events.push(...events.map(event => snapshotSessionEvent(event))) },
+    flush: async () => { order.push('child-flush') },
+    close: async () => { order.push(`${access}-close`) },
+    [Symbol.asyncDispose]: async () => { order.push(`${access}-close`) },
+  })
+  return {
+    open: vi.fn(async (id: string, access: 'read' | 'write') => {
+      if (!records.has(id)) throw new SessionPersistenceNotFoundError(SessionId(id))
+      return handle(id, access)
+    }),
+    create: vi.fn(async (meta: SessionHeader) => {
+      const id = (meta as { id: string }).id
+      if (records.has(id)) throw new SessionAlreadyExistsError(SessionId(id))
+      order.push('create'); records.set(id, { meta, events: [] })
+      return handle(id, 'write')
+    }),
+  }
+}
 
 const observation = {
   profileKind: 'claude', vendorDelegationKey: 'child-1', vendorChildId: 'child-1', label: 'Code inspection',
@@ -16,13 +44,9 @@ const observation = {
 
 describe('external subagent projector', () => {
   it('ignores failed or evidence-incomplete delegations even when projection is automatic', async () => {
-    const persistence = {
-      inspect: vi.fn(),
-      create: vi.fn(),
-      append: vi.fn(),
-    }
+    const persistence = handleStorage()
     const sidecar = { upsertActivity: vi.fn() }
-    const projector = new ExternalSubagentProjector(persistence as never, sidecar as never)
+    const projector = new ExternalSubagentProjector(persistence, sidecar as never)
     const context = {
       profileId: 'claude', bindingGeneration: 1, rootAcpSessionId: 'root',
       parentDshSessionId: 'parent', parentCwd: '/tmp', flushParent: vi.fn(async () => true),
@@ -35,20 +59,12 @@ describe('external subagent projector', () => {
     expect(sidecar.upsertActivity).not.toHaveBeenCalled()
   })
 
-  it('publishes a native read-only task/result transcript after the parent durability barrier', async () => {
-    const records = new Map<string, { meta: never; events: never[] }>()
+  it.each(['detached', 'shared-frozen'] as const)('publishes a native transcript after the parent barrier with %s events', async eventState => {
+    const records = new Map<string, { meta: SessionHeader; events: SessionEvent[] }>()
     const order: string[] = []
-    const persistence = {
-      inspect: vi.fn(async (id: string) => {
-        const value = records.get(id)
-        if (value === undefined) throw new Error('not found')
-        return value
-      }),
-      create: vi.fn(async (meta: never) => { order.push('create'); records.set((meta as { id: string }).id, { meta, events: [] }) }),
-      append: vi.fn(async (id: string, events: never[]) => { order.push('append'); records.get(id)!.events = events }),
-    }
+    const persistence = handleStorage(records, order, eventState)
     const activities: Array<{ status: string; rawDetail?: string }> = []
-    const projector = new ExternalSubagentProjector(persistence as never, {
+    const projector = new ExternalSubagentProjector(persistence, {
       upsertActivity: vi.fn(async (row) => { activities.push(row); return row as never }),
     })
     const result = await projector.project(observation, {
@@ -56,7 +72,7 @@ describe('external subagent projector', () => {
       parentDshSessionId: 'session-parent', parentCwd: '/tmp',
       flushParent: async () => { order.push('flush'); return true },
     })
-    expect(order).toEqual(['flush', 'create', 'append'])
+    expect(order).toEqual(['flush', 'create', 'append', 'child-flush', 'write-close'])
     expect(result?.childSessionId).toMatch(/^session-dsh-acp-/)
     const stored = records.get(result!.childSessionId)!
     expect(stored.events.map(event => (event as { type: string }).type)).toEqual(['subagent/descriptor', 'turn/start', 'user/message', 'step/start', 'assistant/message', 'step/end', 'turn/end'])
@@ -66,13 +82,9 @@ describe('external subagent projector', () => {
   })
 
   it('is idempotent for the same evidence and rejects when the parent has no durability seam', async () => {
-    const records = new Map<string, { meta: never; events: never[] }>()
-    const persistence = {
-      inspect: async (id: string) => { const row = records.get(id); if (row === undefined) throw new Error('not found'); return row },
-      create: async (meta: never) => { records.set((meta as { id: string }).id, { meta, events: [] }) },
-      append: async (id: string, events: never[]) => { records.get(id)!.events = events },
-    }
-    const projector = new ExternalSubagentProjector(persistence as never, { upsertActivity: async row => row as never })
+    const records = new Map<string, { meta: SessionHeader; events: SessionEvent[] }>()
+    const persistence = handleStorage(records)
+    const projector = new ExternalSubagentProjector(persistence, { upsertActivity: async row => row as never })
     const context = { profileId: 'claude', bindingGeneration: 1, rootAcpSessionId: 'root', parentDshSessionId: 'parent', parentCwd: '/tmp', flushParent: async () => true }
     const first = await projector.project(observation, context)
     const second = await projector.project(observation, context)
@@ -80,36 +92,86 @@ describe('external subagent projector', () => {
     await expect(projector.project(observation, { ...context, rootAcpSessionId: 'other', flushParent: async () => false })).rejects.toThrow('PARENT_NOT_DURABLE')
   })
 
-  it('accepts an exact decoded raw log when the immediate inspection still exposes a stale prepared view', async () => {
-    let meta: Record<string, unknown> | undefined
-    let events: Record<string, unknown>[] = []
-    let created = false
-    const persistence = {
-      inspect: vi.fn(async () => {
-        if (!created || meta === undefined) throw new Error('not found')
-        return { meta, events: [] }
-      }),
-      create: vi.fn(async (value: Record<string, unknown>) => { meta = value; created = true }),
-      append: vi.fn(async (_id: string, value: Record<string, unknown>[]) => { events = value }),
-      readRaw: vi.fn(async () => {
-        const { isSeeded: _normalizedLogicalField, ...physicalHeader } = meta ?? {}
-        return {
-          meta,
-          filename: 'session.jsonl',
-          content: `${JSON.stringify({ type: 'session', ...physicalHeader })}\n${events.map(event => JSON.stringify(event)).join('\n')}\n`,
-        }
-      }),
+  it('persists a stream whose content and usage reproduce the reported result', async () => {
+    const records = new Map<string, { meta: SessionHeader; events: SessionEvent[] }>()
+    const projector = new ExternalSubagentProjector(handleStorage(records), { upsertActivity: async row => row as never })
+    const result = await projector.project({ ...observation, usage: { inputTokens: 10, outputTokens: 3, source: 'agent-structured-live' } }, {
+      profileId: 'claude', bindingGeneration: 1, rootAcpSessionId: 'root', parentDshSessionId: 'parent', parentCwd: '/tmp', flushParent: async () => true,
+    })
+    const events = records.get(result!.childSessionId)!.events as import('@deepseek-ai/dsh-session').SessionEvent[]
+    const event = events.find(event => event.type === 'assistant/message')!
+    if (event.type !== 'assistant/message') throw new Error('missing assistant settlement')
+    const assembler = new BlockAssembler()
+    for (const { chunk, time } of expandAssistantStream(event.data.stream)) {
+      expect(time).toBe(250)
+      assembler.push(chunk)
     }
-    const projector = new ExternalSubagentProjector(persistence as never, { upsertActivity: async row => row as never })
+    expect(assembler.blocks()).toEqual(event.data.message.content)
+    expect(assembler.usage).toEqual(event.data.usage)
+  })
+
+  it.each(['missing stream', 'mismatched stream', 'mismatched usage'])('rejects a stored current projection with %s', async corruption => {
+    const records = new Map<string, { meta: SessionHeader; events: SessionEvent[] }>()
+    const projector = new ExternalSubagentProjector(handleStorage(records), { upsertActivity: async row => row as never })
+    const context = { profileId: 'claude', bindingGeneration: 1, rootAcpSessionId: 'root', parentDshSessionId: 'parent', parentCwd: '/tmp', flushParent: async () => true }
+    const result = await projector.project(observation, context)
+    const record = records.get(result!.childSessionId)!
+    const corrupted = structuredClone(record.events)
+    const event = corrupted.find(event => event.type === 'assistant/message')!
+    if (event.type !== 'assistant/message') throw new Error('missing settlement')
+    if (corruption === 'missing stream') event.data.stream = []
+    else if (corruption === 'mismatched stream') event.data.stream = [{ type: 'chunk', time: 250, chunk: { type: 'text-delta', index: 0, text: 'foreign content' } }]
+    else event.data.usage = { inputTokens: 100, outputTokens: 200 }
+    record.events = corrupted
+    await expect(projector.project(observation, context)).rejects.toThrow('PROJECTION_CONFLICT')
+    expect(record.events).toEqual(corrupted)
+  })
+
+  it.each(['flush', 'dispose'])('does not publish completion when %s fails', async stage => {
+    const order: string[] = []
+    const storage = handleStorage(undefined, order)
+    const create = storage.create.getMockImplementation()!
+    storage.create.mockImplementation(async header => {
+      const handle = await create(header)
+      return {
+        ...handle,
+        ...(stage === 'flush'
+          ? { flush: async () => { throw new Error('disk unavailable') } }
+          : { [Symbol.asyncDispose]: async () => { await handle[Symbol.asyncDispose](); throw new Error('disk unavailable') } }),
+      }
+    })
+    const statuses: string[] = []
+    const projector = new ExternalSubagentProjector(storage, { upsertActivity: async row => { statuses.push(row.status); return row as never } })
     await expect(projector.project(observation, {
-      profileId: 'claude', bindingGeneration: 1, rootAcpSessionId: 'raw-race',
-      parentDshSessionId: 'parent', parentCwd: '/tmp', flushParent: async () => true,
-    })).resolves.toMatchObject({ created: true })
-    expect(persistence.readRaw).toHaveBeenCalledOnce()
+      profileId: 'claude', bindingGeneration: 1, rootAcpSessionId: 'root', parentDshSessionId: 'parent', parentCwd: '/tmp', flushParent: async () => true,
+    })).rejects.toThrow('disk unavailable')
+    expect(statuses).toEqual(['running', 'failed'])
+    expect(order.at(-1)).toBe('write-close')
+  })
+
+  it.each([0, 4, 7])('recovers an interrupted released-v1 projection with %s existing events', async length => {
+    const fixture = JSON.parse(fs.readFileSync(new URL('../../fixtures/external-subagent-v1.json', import.meta.url), 'utf8'))
+    const records = new Map<string, { meta: SessionHeader; events: SessionEvent[] }>()
+    records.set('parent', { meta: { id: 'parent', cwd: '/tmp' } as never, events: [] })
+    if (length > 0) records.set(fixture.detail.childSessionId, {
+      meta: { ...fixture.detail.projectionHeader, version: 2 } as never,
+      events: fixture.events.slice(0, length).map((event: { type: string; data: object }) => event.type === 'assistant/message'
+        ? { ...event, data: { ...event.data, stream: [] } } : event),
+    })
+    const row = { dshSessionId: fixture.detail.childSessionId, rawDetail: JSON.stringify(fixture.detail) }
+    const projector = new ExternalSubagentProjector(handleStorage(records), {
+      upsertActivity: async row => row as never,
+      listProjectedSubagentActivities: async () => [row] as never,
+    })
+    await expect(projector.repairInterrupted()).resolves.toEqual({ committed: 1, repaired: length === 7 ? 0 : 1, conflicted: 0 })
+    expect(records.get(row.dshSessionId)!.events).toEqual(fixture.events.map((event: { type: string; data: object }) =>
+      event.type === 'assistant/message' ? { ...event, data: { ...event.data, stream: [] } } : event))
+    expect(JSON.parse(row.rawDetail)).toEqual(fixture.detail)
+    await expect(projector.repairInterrupted()).resolves.toEqual({ committed: 1, repaired: 0, conflicted: 0 })
   })
 
   it('repairs a staged transaction from its canonical payload and fails closed on a conflicting child', async () => {
-    const records = new Map<string, { meta: never; events: never[] }>()
+    const records = new Map<string, { meta: SessionHeader; events: SessionEvent[] }>()
     records.set('parent', { meta: { id: 'parent', cwd: '/tmp' } as never, events: [] })
     const activities = new Map<string, Record<string, unknown>>()
     const sidecar = {
@@ -121,16 +183,8 @@ describe('external subagent projector', () => {
       }),
       listProjectedSubagentActivities: vi.fn(async () => [...activities.values()] as never),
     }
-    const persistence = {
-      inspect: vi.fn(async (id: string) => {
-        const value = records.get(id)
-        if (value === undefined) throw new Error('not found')
-        return value
-      }),
-      create: vi.fn(async (meta: never) => { records.set((meta as { id: string }).id, { meta, events: [] }) }),
-      append: vi.fn(async (id: string, events: never[]) => { records.get(id)!.events = events }),
-    }
-    const projector = new ExternalSubagentProjector(persistence as never, sidecar as never)
+    const persistence = handleStorage(records)
+    const projector = new ExternalSubagentProjector(persistence, sidecar as never)
     const context = {
       profileId: 'claude', bindingGeneration: 1, rootAcpSessionId: 'root',
       parentDshSessionId: 'parent', parentCwd: '/tmp', flushParent: async () => false,
@@ -140,7 +194,7 @@ describe('external subagent projector', () => {
     const [staged] = [...activities.values()]
     expect(staged?.status).toBe('failed')
     const stagedDetail = JSON.parse(staged?.rawDetail as string) as { version: number; projectionHeader: { parentSession: string }; projectionLabel: string; projectionDigest: string }
-    expect(stagedDetail.version).toBe(3)
+    expect(stagedDetail.version).toBe(4)
     expect(stagedDetail.projectionHeader.parentSession).toBe('parent')
     expect(stagedDetail.projectionLabel).toBe('Code inspection')
     expect(stagedDetail.projectionDigest).toMatch(/^[a-f0-9]{64}$/)
@@ -156,15 +210,11 @@ describe('external subagent projector', () => {
   it('keeps the repair payload valid after real Activity redaction and long Agent text', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-projection-'))
     const sidecar = createAcpSidecar({ root })
-    const records = new Map<string, { meta: never; events: never[] }>()
+    const records = new Map<string, { meta: SessionHeader; events: SessionEvent[] }>()
     records.set('parent', { meta: { id: 'parent', cwd: '/tmp' } as never, events: [] })
-    const persistence = {
-      inspect: async (id: string) => { const row = records.get(id); if (row === undefined) throw new Error('not found'); return row },
-      create: async (meta: never) => { records.set((meta as { id: string }).id, { meta, events: [] }) },
-      append: async (id: string, events: never[]) => { records.get(id)!.events = events },
-    }
+    const persistence = handleStorage(records)
     try {
-      const projector = new ExternalSubagentProjector(persistence as never, sidecar)
+      const projector = new ExternalSubagentProjector(persistence, sidecar)
       const result = await projector.project({
         ...observation,
         label: 'Inspect token=sk-1234567890abcdefghijklmnop',

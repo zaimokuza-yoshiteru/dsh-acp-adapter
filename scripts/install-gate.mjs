@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 /**
- * Clean-install smoke gate for the DSH 0.1.2-rc.1 host.
+ * Clean-install smoke gate for the exact published DSH host (or source reference).
  *
  * The gate deliberately uses a temporary DSH_HOME and a local package tarball.
  * It does not touch the user's profile, registry, or pnpm store.  The DSH
- * profile's normal module fallback resolves the host bundles from the checked
- * out Alpha source tree; plugin dependencies are installed with pnpm --offline
+ * profile's normal module fallback resolves the host bundles from the supplied
+ * installation; plugin dependencies are installed with pnpm --offline
  * so a missing local cache is reported instead of silently downloading.
  */
 
@@ -15,6 +15,7 @@ import { createServer } from 'node:http'
 import os from 'node:os'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { DSH_SOURCE_TAG } from './dsh-target.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const packageJson = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
@@ -22,7 +23,7 @@ const packageName = packageJson.name
 const profileName = 'web'
 
 export function parseArgs(argv) {
-  const result = { hostRoot: resolve(root, '..', 'reference', 'deepseek-harness'), tgz: undefined, skipBoot: false, help: false }
+  const result = { hostRoot: resolve(root, 'node_modules', '@deepseek-ai', 'dsh'), tgz: undefined, skipBoot: false, help: false }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
     if (arg === '--help' || arg === '-h') result.help = true
@@ -43,7 +44,7 @@ export function usage() {
   return `Usage: node scripts/install-gate.mjs [options]
 
 Options:
-  --host-root <path>  DSH 0.1.2-rc.1 source root (default: ../reference/deepseek-harness)
+  --host-root <path>  installed DSH package or source root (default: node_modules/@deepseek-ai/dsh)
   --tgz <path>        Reuse an existing plugin tarball instead of packing
   --skip-boot         Install and inspect composition, but do not bind HTTP
   -h, --help          Show this help
@@ -153,7 +154,7 @@ function packLocalTarball(tempRoot) {
  * still declares normal npm dependencies; for this local gate we seed those
  * two runtime packages from this checkout and add pnpm overrides in the
  * temporary profile only.  DSH's own bundles continue to resolve through its
- * built-source module fallback.
+ * normal installed-module fallback.
  */
 function seedLocalDependencies(hostRoot, dshHome, env) {
   const dependencies = Object.keys(packageJson.dependencies ?? {})
@@ -163,7 +164,7 @@ function seedLocalDependencies(hostRoot, dshHome, env) {
     if (!existsSync(join(candidate, 'package.json'))) fail(`local runtime dependency is unavailable: ${candidate}`)
     return candidate
   })
-  const bin = join(hostRoot, 'apps', 'cli', 'lib', 'bin.js')
+  const bin = hostCli(hostRoot)
   run(process.execPath, [bin, 'plugin', '--profile', profileName, 'add', ...localPaths, '--save-exact', '--ignore-scripts', '--offline'], { env, timeout: 120_000 })
   const manifestPath = join(dshHome, 'profiles', profileName, 'package.json')
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
@@ -232,7 +233,7 @@ function getFreePort() {
 }
 
 async function bootAndCheck(hostRoot, dshHome) {
-  const bin = join(hostRoot, 'apps', 'cli', 'lib', 'bin.js')
+  const bin = hostCli(hostRoot)
   if (!existsSync(bin)) fail(`DSH CLI not found at ${bin}; build the source reference first`)
   const port = await getFreePort()
   const child = spawn(process.execPath, [bin, '--profile', profileName, '--port', String(port), '--no-open'], {
@@ -267,13 +268,19 @@ async function bootAndCheck(hostRoot, dshHome) {
   }
 }
 
+function hostCli(hostRoot) {
+  const manifest = JSON.parse(readFileSync(join(hostRoot, 'package.json'), 'utf8'))
+  if (manifest.version !== DSH_SOURCE_TAG.slice(5)) fail('host version does not match the accepted DSH tag')
+  return manifest.name === '@deepseek-ai/dsh' ? join(hostRoot, 'lib', 'bin.js') : join(hostRoot, 'apps', 'cli', 'lib', 'bin.js')
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2))
   if (args.help) {
     console.log(usage())
     return
   }
-  if (!existsSync(join(args.hostRoot, 'apps', 'cli', 'lib', 'bin.js'))) fail(`host root is not a built DSH tree: ${args.hostRoot}`)
+  if (!existsSync(hostCli(args.hostRoot))) fail(`host root is not a built DSH tree: ${args.hostRoot}`)
   const tempRoot = mkdtempSync(join(os.tmpdir(), 'dsh-acp-install-'))
   const dshHome = join(tempRoot, 'dsh-home')
   const evidence = join(tempRoot, 'result.json')
@@ -288,13 +295,13 @@ async function main() {
     // clean gate deterministic while leaving the host installation/fallback
     // path exactly as DSH defines it.
     seedLocalDependencies(args.hostRoot, dshHome, env)
-    run(process.execPath, [join(args.hostRoot, 'apps', 'cli', 'lib', 'bin.js'), 'plugin', '--profile', profileName, 'add', tgz, '--save-exact', '--ignore-scripts', '--offline'], { env, timeout: 120_000 })
-    const dump = run(process.execPath, [join(args.hostRoot, 'apps', 'cli', 'lib', 'bin.js'), '--profile', profileName, '--dump-config'], { env, timeout: 30_000 }).stdout
+    run(process.execPath, [hostCli(args.hostRoot), 'plugin', '--profile', profileName, 'add', tgz, '--save-exact', '--ignore-scripts', '--offline'], { env, timeout: 120_000 })
+    const dump = run(process.execPath, [hostCli(args.hostRoot), '--profile', profileName, '--dump-config'], { env, timeout: 30_000 }).stdout
     assertComposedDump(dump)
     let boot = { skipped: true }
     if (!args.skipBoot) boot = await bootAndCheck(args.hostRoot, dshHome)
-    run(process.execPath, [join(args.hostRoot, 'apps', 'cli', 'lib', 'bin.js'), 'plugin', '--profile', profileName, 'remove', packageName], { env, timeout: 120_000 })
-    const afterRemove = run(process.execPath, [join(args.hostRoot, 'apps', 'cli', 'lib', 'bin.js'), '--profile', profileName, '--dump-config'], { env, timeout: 30_000 }).stdout
+    run(process.execPath, [hostCli(args.hostRoot), 'plugin', '--profile', profileName, 'remove', packageName], { env, timeout: 120_000 })
+    const afterRemove = run(process.execPath, [hostCli(args.hostRoot), '--profile', profileName, '--dump-config'], { env, timeout: 30_000 }).stdout
     if (rowBlocks(afterRemove).some(block => block.includes(`id: dsh-acp-adapter`))) fail('plugin row remains after removal')
     const profilePackage = JSON.parse(readFileSync(join(dshHome, 'profiles', profileName, 'package.json'), 'utf8'))
     if (Object.hasOwn(profilePackage.dependencies ?? {}, packageName)) fail('profile manifest retains plugin dependency after removal')

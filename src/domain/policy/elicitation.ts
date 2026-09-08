@@ -187,13 +187,6 @@ function fieldViewOf(name: string, item: unknown, required: boolean): AcpElicita
 }
 
 function schemaOf(params: acp.CreateElicitationRequest): { fields: readonly AcpElicitationFieldView[]; valid: boolean } {
-  if (params.mode !== 'form') {
-    if (params.mode !== 'url' || typeof params.url !== 'string') return { fields: [], valid: false }
-    try {
-      const url = new URL(params.url)
-      return { fields: [], valid: (url.protocol === 'http:' || url.protocol === 'https:') && url.username === '' && url.password === '' }
-    } catch { return { fields: [], valid: false } }
-  }
   const schema = formSchemaOf(params)
   if (!plain(schema) || (schema.type !== undefined && schema.type !== 'object')) return { fields: [], valid: false }
   const rawProperties = schema.properties
@@ -220,7 +213,6 @@ function schemaOf(params: acp.CreateElicitationRequest): { fields: readonly AcpE
  * still observable without exposing a value or accidentally rendering it.
  */
 function validateValues(params: acp.CreateElicitationRequest, input: readonly { readonly name: string; readonly value: string | number | boolean | readonly string[] }[] | undefined): Record<string, acp.ElicitationContentValue> | undefined {
-  if (params.mode !== 'form') return {}
   const schema = formSchemaOf(params)
   if (!plain(schema)) return undefined
   const rawProperties = schema.properties

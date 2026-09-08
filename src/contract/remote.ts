@@ -242,6 +242,8 @@ export type AcpAuditSummaryCode =
   | 'replay.unavailable'
   | 'degradation.recorded'
   | 'filesystem.operation'
+  | 'filesystem.read'
+  | 'filesystem.write'
   | 'terminal.operation'
   | 'session-fork.completed'
   | 'agent.event'
@@ -251,6 +253,7 @@ export interface AcpAuditTimelineEntry {
   readonly seq: number
   readonly time: number
   readonly kind: string
+  readonly severity: 'info' | 'warning' | 'error'
   readonly category: 'recovery' | 'permission' | 'agent' | 'files'
   readonly summaryCode: AcpAuditSummaryCode
   readonly subject: string | null
@@ -258,7 +261,9 @@ export interface AcpAuditTimelineEntry {
   readonly detail: string | null
 }
 
-/** Cursor-paged ACP audit ledger. Cursor is the last returned per-session seq. */
+export type AcpDiagnosticView = 'issues' | 'operations' | 'technical'
+
+/** Cursor-paged ACP audit ledger. Cursor is the last scanned per-session seq, including filtered-out records. */
 export interface AcpAuditTimelinePage {
   readonly sessionId: string
   readonly entries: readonly AcpAuditTimelineEntry[]

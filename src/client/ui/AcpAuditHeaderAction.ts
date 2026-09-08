@@ -1,19 +1,22 @@
-/** ACP 审计的会话视图与条件注册门。 */
+/** ACP 诊断的会话视图与条件注册门。 */
 import { createElement as h, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-store'
 import type { SessionSnapshot, UseProjection } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { ConvViewProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
-import { IconSearchOutline16, JsonTree } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { JsonTreeLabels } from '@deepseek-ai/dsh-client-ui-primitives'
+import { IconSearchOutline16, JsonTree, Tag } from '@deepseek-ai/dsh-client-ui-primitives'
+import type { JsonTreeLabels, TagTone } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { AcpAuditSummaryCode, AcpAuditTimelineEntry } from '../data/acp-remote.ts'
 import type { AcpRemoteLike } from '../data/acp-remote.ts'
 import type { AcpLocaleKey } from './locales.ts'
 import type { OwnsAcpRoute } from '../coordinator/cross-backend-coordinator.ts'
+import type { AcpDiagnosticView, AcpRecoveryView } from '../../contract/remote.ts'
+import { matchesDiagnosticView } from '../../contract/diagnostics.ts'
+import { recoveryText } from './AcpRecoveryDock.ts'
 import css from './AcpAuditHeaderAction.module.css'
 
 type Translate = (key: AcpLocaleKey, params?: Record<string, string | number>) => string
-type Filter = 'all' | 'recovery' | 'permission' | 'agent' | 'files'
+type Filter = AcpDiagnosticView
 
 export interface AcpAuditVisibilityGateProps {
   sessionId?: string
@@ -61,7 +64,7 @@ export function auditSessionRefreshKeyOf(snapshot: {
 }
 
 export function auditEntryMatchesFilter(entry: AcpAuditTimelineEntry, filter: Filter): boolean {
-  return filter === 'all' || entry.category === filter
+  return matchesDiagnosticView(entry, filter)
 }
 
 /** Search only user-meaningful audit facts; compact raw JSON stays in details. */
@@ -73,7 +76,27 @@ export function auditEntryMatchesQuery(t: Translate | undefined, entry: AcpAudit
     auditSummaryOf(t, entry),
     entry.subject ?? '',
     entry.status ?? '',
+    auditRecordedCause(entry) ?? '',
   ].some(value => value.toLocaleLowerCase().includes(normalized))
+}
+
+/** Display only explicit recorded reasons, never infer a cause from an outcome. */
+export function auditRecordedCause(entry: AcpAuditTimelineEntry): string | null {
+  if (entry.detail === null) return null
+  try {
+    const value = JSON.parse(entry.detail) as { reason?: unknown; detail?: unknown; cause?: unknown; note?: unknown; items?: unknown } | null
+    const reason = [value?.reason, value?.detail, value?.cause, value?.note]
+      .find((candidate): candidate is string => typeof candidate === 'string' && candidate.trim() !== '')
+    if (reason !== undefined) return reason
+    if (Array.isArray(value?.items)) {
+      const reasons = value.items.flatMap((item: unknown) => {
+        if (typeof item !== 'object' || item === null || !('reason' in item)) return []
+        return typeof item.reason === 'string' && item.reason.trim() !== '' ? [item.reason] : []
+      })
+      return reasons.length === 0 ? null : [...new Set(reasons)].join('\n')
+    }
+    return null
+  } catch { return null }
 }
 
 const summaryKeys: Record<AcpAuditSummaryCode, AcpLocaleKey> = {
@@ -88,6 +111,8 @@ const summaryKeys: Record<AcpAuditSummaryCode, AcpLocaleKey> = {
   'replay.unavailable': 'auditSummaryReplayUnavailable',
   'degradation.recorded': 'auditSummaryDegradation',
   'filesystem.operation': 'auditSummaryFilesystem',
+  'filesystem.read': 'auditSummaryRead',
+  'filesystem.write': 'auditSummaryWrite',
   'terminal.operation': 'auditSummaryTerminal',
   'session-fork.completed': 'auditSummarySessionFork',
   'agent.event': 'auditSummaryAgentEvent',
@@ -95,7 +120,8 @@ const summaryKeys: Record<AcpAuditSummaryCode, AcpLocaleKey> = {
 
 export function auditSummaryOf(t: Translate | undefined, entry: AcpAuditTimelineEntry): string {
   const base = textOf(t, summaryKeys[entry.summaryCode], 'Agent event recorded')
-  const subject = entry.subject === null ? null : auditStatusOf(t, entry.subject)
+  const subject = entry.subject !== null && entry.summaryCode === 'session-fork.completed'
+    ? auditStatusOf(t, entry.subject) : entry.subject
   const status = entry.status === null ? null : auditStatusOf(t, entry.status)
   return [base, subject, status].filter((value): value is string => value !== null && value !== '').join(' · ')
 }
@@ -109,6 +135,10 @@ function auditStatusOf(t: Translate | undefined, status: string): string {
     'concurrent-change': 'auditStatusConcurrentChange', selected: 'auditStatusSelected', cancelled: 'auditStatusCancelled',
     started: 'auditStatusStarted', running: 'auditStatusRunning', exited: 'auditStatusExited', killed: 'auditStatusKilled', released: 'auditStatusReleased',
     'output-summary': 'auditStatusOutputSummary',
+    'stop-requested': 'auditStatusStopRequested',
+    'exit-unverified': 'auditStatusExitUnverified',
+    allow_once: 'auditAllowOnce', allow_always: 'auditAllowAlways',
+    reject_once: 'auditRejectOnce', reject_always: 'auditRejectAlways',
     inherited: 'auditForkInherited', blank: 'auditForkBlank',
     'agent-does-not-advertise-fork': 'auditForkUnsupported',
     'parent-not-idle': 'auditForkParentNotIdle',
@@ -130,14 +160,8 @@ function categoryLabel(t: Translate | undefined, category: AcpAuditTimelineEntry
   return textOf(t, key[category], category)
 }
 
-function categoryClass(category: AcpAuditTimelineEntry['category']): string {
-  const className: Record<AcpAuditTimelineEntry['category'], string> = {
-    recovery: css.recovery ?? '',
-    permission: css.permission ?? '',
-    agent: css.agent ?? '',
-    files: css.files ?? '',
-  }
-  return className[category]
+function entryTone(entry: AcpAuditTimelineEntry): TagTone {
+  return entry.severity === 'info' ? 'neutral' : entry.severity === 'error' ? 'danger' : 'warning'
 }
 
 function textOf(t: Translate | undefined, key: AcpLocaleKey, fallback: string): string {
@@ -178,7 +202,7 @@ function auditJsonTreeLabels(t: Translate | undefined): JsonTreeLabels {
 }
 
 /**
- * 只负责决定当前会话是否应拥有 Agent 审计 Tab；自身不渲染按钮。
+ * 只负责决定当前会话是否应拥有 ACP 诊断 Tab；自身不渲染按钮。
  * `conversation.view` 目前没有 per-session selector，因此使用当前会话
  * header 的标准投影动态挂载，避免原生会话被插件增加无意义的 Tab。
  */
@@ -225,10 +249,13 @@ export function AcpAuditView(props: AcpAuditViewProps): ReactNode {
   const [cursor, setCursor] = useState<number | null>(0)
   const [hasMore, setHasMore] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [filter, setFilter] = useState<Filter>('all')
+  const [filter, setFilter] = useState<Filter>('issues')
+  const [recovery, setRecovery] = useState<AcpRecoveryView | null>(null)
+  const [recoveryUnavailable, setRecoveryUnavailable] = useState(false)
   const [query, setQuery] = useState('')
   const [selectedSeq, setSelectedSeq] = useState<number | null>(null)
   const requestEpoch = useRef(0)
+  const recoveryEpoch = useRef(0)
   const loadingRef = useRef(false)
 
   const load = useCallback((reset: boolean): void => {
@@ -239,24 +266,36 @@ export function AcpAuditView(props: AcpAuditViewProps): ReactNode {
     setLoading(true)
     setError(null)
     const afterSeq = reset ? 0 : cursor ?? 0
-    void remote.auditTimeline(sessionId, { afterSeq, limit: 50 }).then((result) => {
+    if (reset) {
+      const statusEpoch = ++recoveryEpoch.current
+      void remote.recoverySnapshot(sessionId).then(result => {
+        if (statusEpoch !== recoveryEpoch.current) return
+        setRecoveryUnavailable(!result.ok)
+        setRecovery(result.ok && result.value.kind !== 'healthy' ? result.value : null)
+      }).catch(() => {
+        if (statusEpoch === recoveryEpoch.current) { setRecoveryUnavailable(true); setRecovery(null) }
+      })
+    }
+    void remote.auditTimeline(sessionId, { afterSeq, limit: 50, view: filter }).then((result) => {
       if (epoch !== requestEpoch.current) return
       if (!result.ok) {
-        setError(textOf(t, 'auditUnavailable', 'Agent audit records are unavailable on this host.'))
+        setError(textOf(t, 'auditUnavailable', 'Could not read or refresh ACP diagnostic records.'))
         return
       }
       setEntries(previous => reset ? result.value.entries : [...previous, ...result.value.entries])
       setCursor(result.value.nextCursor)
       setHasMore(result.value.hasMore)
     }).catch(() => {
-      if (epoch === requestEpoch.current) setError(textOf(t, 'auditUnavailable', 'Agent audit records are unavailable on this host.'))
+      if (epoch === requestEpoch.current) setError(textOf(t, 'auditUnavailable', 'Could not read or refresh ACP diagnostic records.'))
     }).finally(() => {
       if (epoch === requestEpoch.current) {
         loadingRef.current = false
         setLoading(false)
       }
     })
-  }, [sessionId, remote, cursor, t])
+  }, [sessionId, remote, cursor, t, filter])
+
+  useEffect(() => { setFilter('issues') }, [sessionId])
 
   useEffect(() => {
     requestEpoch.current += 1
@@ -265,24 +304,26 @@ export function AcpAuditView(props: AcpAuditViewProps): ReactNode {
     setCursor(0)
     setHasMore(false)
     setError(null)
-    setFilter('all')
+    setRecovery(null)
+    setRecoveryUnavailable(false)
     setQuery('')
     setSelectedSeq(null)
     load(true)
-    return () => { requestEpoch.current += 1 }
+    return () => { requestEpoch.current += 1; recoveryEpoch.current += 1 }
     // `load` changes with paging state; reset belongs only to a new binding.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, remote])
+  }, [sessionId, remote, filter])
 
   const visible = useMemo(() => entries.filter(entry =>
     auditEntryMatchesFilter(entry, filter) && auditEntryMatchesQuery(t, entry, query)), [entries, filter, query, t])
   const selected = useMemo(() => entries.find(entry => entry.seq === selectedSeq) ?? null, [entries, selectedSeq])
   const labels: readonly [Filter, AcpLocaleKey][] = [
-    ['all', 'auditAll'], ['recovery', 'auditFilterRecovery'], ['permission', 'auditFilterPermission'],
-    ['agent', 'auditFilterAgent'], ['files', 'auditFilterFiles'],
+    ['issues', 'auditIssues'], ['operations', 'auditOperations'], ['technical', 'auditTechnical'],
   ]
-  return h('section', { className: css.root, 'aria-label': textOf(t, 'auditTitle', 'Agent audit') },
-    h('div', { className: css.toolbar, role: 'toolbar', 'aria-label': textOf(t, 'auditTitle', 'Agent audit') },
+  // Use the same host-owned composer geometry and independent scrollers as
+  // TrajectoryView, including suppression of the chat width-drag handles.
+  return h('section', { className: css.root, 'data-conversation-composer-overlay': '', 'aria-label': textOf(t, 'auditTitle', 'ACP Diagnostics') },
+    h('div', { className: css.toolbar, role: 'toolbar', 'aria-label': textOf(t, 'auditTitle', 'ACP Diagnostics') },
       h('div', { className: css.toolbarInner },
         h('div', { className: css.filters },
           ...labels.map(([value, key]) => h('button', {
@@ -303,7 +344,7 @@ export function AcpAuditView(props: AcpAuditViewProps): ReactNode {
               className: css.searchInput,
               value: query,
               placeholder: textOf(t, 'auditSearchPlaceholder', 'Search'),
-              'aria-label': textOf(t, 'auditSearch', 'Search audit'),
+              'aria-label': textOf(t, 'auditSearch', 'Search loaded records'),
               onChange: (event: { currentTarget: { value: string } }) => setQuery(event.currentTarget.value),
             }),
           ),
@@ -312,12 +353,27 @@ export function AcpAuditView(props: AcpAuditViewProps): ReactNode {
     ),
     h('div', { className: css.split },
       h('div', { className: css.tablePane, 'data-audit-scroll': true },
-        loading && entries.length === 0 ? h('p', { className: css.muted }, textOf(t, 'auditLoading', 'Loading audit records…')) : null,
+        h('p', { className: css.muted }, textOf(t, 'auditScope', 'Only information recorded by the ACP adapter is shown.')),
+        recoveryUnavailable ? h('p', { className: css.error, role: 'alert' }, textOf(t, 'auditRecoveryUnavailable', 'Current recovery status could not be read.')) : null,
+        recovery === null ? null : h('div', { className: css.currentIssue, role: 'status' },
+          h('strong', null, textOf(t, 'auditCurrentState', 'Recovery status at last refresh')),
+          h('p', null, recoveryText(key => textOf(t, key, recovery.kind), recovery)),
+          h('p', null, textOf(t, 'auditRecoveryAction', 'Use the recovery notice beside the composer to choose the next step.')),
+          h('details', null,
+            h('summary', null, textOf(t, 'auditTechnical', 'Technical records')),
+            h('pre', { className: css.detailPayload }, recovery.detail ?? recovery.cause ?? textOf(t, 'auditNoCause', 'No specific cause was recorded.')),
+          ),
+        ),
+        loading && entries.length === 0 ? h('p', { className: css.muted }, textOf(t, 'auditLoading', 'Loading diagnostic records…')) : null,
         error === null ? null : h('p', { className: css.error, role: 'alert' }, error),
         !loading && error === null && visible.length === 0
-          ? h('p', { className: css.muted }, entries.length === 0 ? textOf(t, 'auditEmpty', 'No Agent-specific audit records yet.') : textOf(t, 'auditNoMatch', 'No records match this filter.'))
+          ? h('p', { className: css.muted }, query.trim() !== ''
+            ? textOf(t, 'auditNoMatch', 'No matching loaded records.')
+            : hasMore ? textOf(t, 'auditScanMore', 'No matching records in the checked range; more records remain.')
+              : filter === 'issues' ? textOf(t, 'auditNoIssues', 'No recorded ACP issues.')
+                : textOf(t, 'auditEmpty', 'No records in this view.'))
           : null,
-        h('table', { className: css.table, 'aria-label': textOf(t, 'auditTimeline', 'Agent audit timeline') },
+        h('table', { className: css.table, 'aria-label': textOf(t, 'auditTimeline', 'ACP diagnostic records') },
           h('colgroup', null,
             h('col', { className: css.eventColumn }),
             h('col', { className: css.contentColumn }),
@@ -340,7 +396,7 @@ export function AcpAuditView(props: AcpAuditViewProps): ReactNode {
             h('td', { className: css.event },
               h('div', { className: css.eventInner },
                 h('div', { className: css.kindSlot },
-                  h('span', { className: `${css.kindTag} ${categoryClass(entry.category)}` }, categoryLabel(t, entry.category)),
+                  h(Tag, { tone: entryTone(entry) }, categoryLabel(t, entry.category)),
                 ),
               ),
             ),
@@ -353,18 +409,25 @@ export function AcpAuditView(props: AcpAuditViewProps): ReactNode {
           })),
         ),
         hasMore ? h('button', { type: 'button', className: css.more, disabled: loading, onClick: () => load(false) }, textOf(t, 'auditLoadMore', 'Load more')) : null,
-        !hasMore && entries.length > 0 ? h('p', { className: css.end }, textOf(t, 'auditPageEnd', 'All records are shown')) : null,
+        !hasMore && entries.length > 0 ? h('p', { className: css.end }, textOf(t, 'auditPageEnd', 'All records in this view are shown')) : null,
       ),
       selected === null ? null : h('aside', { className: css.details, 'aria-label': textOf(t, 'auditDetails', 'Event details') },
         h('div', { className: css.detailsHeader },
           h('div', { className: css.detailsTitle },
-            h('span', { className: `${css.kindTag} ${categoryClass(selected.category)}` }, categoryLabel(t, selected.category)),
+            h(Tag, { tone: entryTone(selected) }, categoryLabel(t, selected.category)),
             h('span', { className: css.detailsLocation }, `#${String(selected.seq)}`),
           ),
           h('button', { type: 'button', className: css.close, 'aria-label': textOf(t, 'auditClose', 'Close'), onClick: () => setSelectedSeq(null) }, '×'),
         ),
-        h('div', { className: css.detailsBody },
+        h('div', { key: selected.seq, className: css.detailsBody, 'data-audit-detail-scroll': true },
           h('p', { className: css.detailsSummary }, auditSummaryOf(t, selected)),
+          selected.severity !== 'info' ? h('p', { className: css.detailsSummary },
+            auditRecordedCause(selected) ?? textOf(t, 'auditNoCause', 'No specific cause was recorded.'),
+          ) : null,
+          selected.status === 'exit-unverified'
+            ? h('p', { className: css.detailsSummary }, textOf(t, 'auditLegacyExitExplanation', 'Termination intent was not recorded; cancellation and process failure cannot be distinguished.')) : null,
+          selected.summaryCode === 'replay.not-compared'
+            ? h('p', { className: css.detailsSummary }, textOf(t, 'auditReplayExplanation', 'This record does not distinguish connection reuse from restoration.')) : null,
           h('dl', { className: css.overview },
             h('div', null, h('dt', null, textOf(t, 'auditTime', 'Time')), h('dd', null, timeOf(selected.time))),
             h('div', null, h('dt', null, textOf(t, 'auditSequence', 'Sequence')), h('dd', null, String(selected.seq))),
@@ -376,7 +439,7 @@ export function AcpAuditView(props: AcpAuditViewProps): ReactNode {
               return detail.kind === 'json'
                 ? h(JsonTree, {
                   data: detail.value,
-                  label: textOf(t, 'auditDetailJson', 'Audit record JSON'),
+                  label: textOf(t, 'auditDetailJson', 'Diagnostic record JSON'),
                   className: css.jsonPayload,
                   labels: auditJsonTreeLabels(t),
                   expandTopLevel: true,

@@ -1,4 +1,5 @@
-// acp-client.spec.ts — 随附测试：AcpClientConnection 对 mock ACP agent 全 scenario 矩阵。
+import type { AcpSubprocessHandle } from '../../../src/runtime/process/subprocess.ts'
+// acp-client.spec.ts — 随附测试：AcpClientConnection 的真实 ACP 协议回归。
 //
 // 覆盖：
 //   - 握手：happy / minimal-caps / no-config-options（initialize 幂等、能力记录）
@@ -18,12 +19,13 @@
 //     权限分离钉（probe 全程只发 initialize/session/new，绝不触发 authenticate）
 //
 // 孤儿进程防线：本文件所有 spawn 的 argv 都带 SPEC_TAG（含本 worker pid），
-// afterEach 兜底 close 全部连接，afterAll 逐 pid 断言已死 + `ps` 全量扫描 SPEC_TAG。
+// afterEach 兜底 close 全部连接，afterAll 对每条真实 handle 断言托管范围已清空。
 // 内联 node -e agent 的脚本体内嵌 SPEC_TAG 注释，同样可被 ps 扫描命中。
 
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import * as acp from '@agentclientprotocol/sdk';
@@ -72,24 +74,23 @@ async function expectReject(promise: Promise<unknown>): Promise<unknown> {
   throw new Error('expected promise to reject, but it resolved');
 }
 
-function isDead(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return false;
-  } catch {
-    return true;
-  }
+async function expectStopped(conn: AcpClientConnection): Promise<void> {
+  const handle = handlesByConnection.get(conn)
+  expect(handle).toBeDefined()
+  await expect(handle!.waitForExit(AbortSignal.timeout(3000))).resolves.toBe(true)
 }
 
 let logDir = '';
 let subprocess: SubprocessSeam;
 let spawnSeq = 0;
 const liveConns = new Set<AcpClientConnection>();
-const spawnedPids = new Set<number>();
+const spawnedHandles = new Set<AcpSubprocessHandle>();
+const handlesByConnection = new WeakMap<AcpClientConnection, AcpSubprocessHandle>();
+let latestHandle: AcpSubprocessHandle | undefined;
 
 function track(conn: AcpClientConnection): AcpClientConnection {
   liveConns.add(conn);
-  if (conn.pid !== undefined) spawnedPids.add(conn.pid);
+  if (latestHandle !== undefined) handlesByConnection.set(conn, latestHandle);
   return conn;
 }
 
@@ -208,7 +209,14 @@ process.stdin.on('data', (d) => {
 beforeAll(async () => {
   logDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-client-spec-'));
  // 全部 spawn 走共享的真实 subprocess-local 服务（模块级单例，文件级一次性 dispose）
-  subprocess = (await sharedTestSubprocess()).seam;
+  const real = (await sharedTestSubprocess()).seam;
+  subprocess = { ...real, spawn(spec) {
+    latestHandle = undefined;
+    const handle = real.spawn(spec);
+    latestHandle = handle;
+    spawnedHandles.add(handle);
+    return handle;
+  } };
 });
 
 afterEach(async () => {
@@ -220,10 +228,9 @@ afterEach(async () => {
 });
 
 afterAll(async () => {
-  for (const pid of spawnedPids) {
-    await waitFor(() => isDead(pid), 3000).catch(() => {});
+  for (const handle of spawnedHandles) {
+    await expect(handle.waitForExit(AbortSignal.timeout(3000))).resolves.toBe(true);
   }
-  expect([...spawnedPids].filter((pid) => !isDead(pid))).toEqual([]);
   fs.rmSync(logDir, { recursive: true, force: true });
 });
 
@@ -534,9 +541,7 @@ describe('错误分类', () => {
     expect(acpErr.kind).toBe('timeout');
     expect(acpErr.message).toContain('150ms');
     expect(conn.isClosed).toBe(true);
-    const pid = conn.pid;
-    expect(pid).toBeDefined();
-    if (pid !== undefined) await waitFor(() => isDead(pid));
+    await expectStopped(conn);
   });
 
   it('crash-mid-turn：prompt 以 crash 分类 reject（exit code 1），已流出 chunk 不丢', async () => {
@@ -566,6 +571,19 @@ describe('错误分类', () => {
     // 已死进程的 close 立即返回
     await conn.close();
     expect(conn.exited?.code).toBe(1);
+  });
+
+  it.each(['load-fail', 'config-write-fail'])('%s preserves RPC errors without poisoning a healthy connection', async scenario => {
+    const { conn } = connectMock(scenario);
+    await conn.initialize();
+    const session = await conn.newSession();
+    const operation = scenario === 'load-fail'
+      ? conn.loadSession(session.sessionId)
+      : conn.setConfigOption(session.sessionId, 'model', 'mock-model-b');
+    await expect(operation).rejects.toMatchObject({ kind: 'protocol-error' });
+    const listing = await conn.listSessions();
+    expect(listing.sessions.some(entry => entry.sessionId === session.sessionId)).toBe(true);
+    expect(conn.exited).toBeNull();
   });
 
   it('garbage-stdout：非 JSON 行被 console.error 记录后跳过，协议流不受影响（SDK 实测行为）', async () => {
@@ -599,7 +617,6 @@ describe('错误分类', () => {
     expect(acpErr.kind).toBe('spawn-failure');
     expect(acpErr.message).toContain('/nonexistent/dsh-acp-missing-bin');
     expect(acpErr.message).toContain('ENOENT');
-    expect(conn.pid).toBeUndefined();
     await expect(conn.close()).resolves.toBeUndefined();
   });
 
@@ -610,6 +627,52 @@ describe('错误分类', () => {
     const acpErr = err as AcpClientError;
     expect(acpErr.kind).toBe('auth_required');
     expect(acpErr.message).toContain('requires authentication');
+  });
+
+  it('provider failure interrupts an active RPC as a crash and cleans up the managed range', async () => {
+    const failure = Promise.withResolvers<never>();
+    const conn = track(new AcpClientConnection({
+      argv: [process.execPath, MOCK_AGENT_PATH], cwd: logDir,
+      env: { MOCK_SCENARIO: 'never-resolve', MOCK_NEVER_METHODS: '["session/prompt"]' },
+      subprocess: {
+        resolveExecutable: (...args) => subprocess.resolveExecutable(...args),
+        spawn: spec => {
+          const handle = subprocess.spawn(spec);
+          return {
+            stdin: handle.stdin, stdout: handle.stdout, stderr: handle.stderr,
+            done: Promise.race([handle.done, failure.promise]),
+            terminate: () => handle.terminate(),
+            waitForExit: signal => handle.waitForExit(signal),
+          };
+        },
+      },
+    }, { eofGraceMs: 0, termGraceMs: 100, exitWaitMs: 2000 }));
+    await conn.initialize();
+    const session = await conn.newSession();
+    const prompt = conn.prompt(session.sessionId, PROMPT_BLOCKS, undefined, { timeoutMs: 3000 });
+    const error = Object.assign(new Error('provider state file disappeared'), { code: 'ENOENT', syscall: 'open' });
+    failure.reject(error);
+    await expect(prompt).rejects.toMatchObject({ kind: 'crash', cause: error });
+    await conn.close();
+    await expectStopped(conn);
+  });
+
+  it('preserves a delayed OS launch failure when stdout closes first', async () => {
+    const done = Promise.withResolvers<never>();
+    const stdout = new PassThrough();
+    const error = Object.assign(new Error('execve ENOENT'), { code: 'ENOENT', syscall: 'execve' });
+    const conn = new AcpClientConnection({
+      argv: ['missing'], cwd: logDir, env: {},
+      subprocess: {
+        resolveExecutable: async command => command,
+        spawn: () => ({ stdin: new PassThrough(), stdout, stderr: new PassThrough(), done: done.promise, terminate() {}, waitForExit: async () => true }),
+      },
+    }, { initializeTimeoutMs: 2000, eofGraceMs: 0 });
+    const initialized = conn.initialize();
+    stdout.end();
+    const timer = setTimeout(() => done.reject(error), 25);
+    try { await expect(initialized).rejects.toMatchObject({ kind: 'spawn-failure', cause: error }); }
+    finally { clearTimeout(timer); done.reject(error); await conn.close(); }
   });
 
   it('auth_required：明确的 OAuth -32603 包装错误仍归为认证失败', async () => {
@@ -688,6 +751,9 @@ describe('拆除梯子', () => {
 
   it('SIGTERM 不退出 → SIGKILL 兜底', async () => {
     const conn = connectInline(SIGTERM_IGNORING_AGENT, { eofGraceMs: 100, termGraceMs: 300 });
+    // Exercise escalation after the target installs its signal handler, not
+    // cancellation racing the host runner's asynchronous launch.
+    await waitFor(() => conn.stderrLines().includes('stubborn ready'));
     const t0 = Date.now();
     await conn.close();
     if (process.platform === 'win32') {
@@ -696,8 +762,10 @@ describe('拆除梯子', () => {
       expect(conn.exited).toEqual({ code: 1, signal: null });
     } else {
       expect(Date.now() - t0).toBeGreaterThanOrEqual(350);
+      expect(conn.stderrLines()).toContain('ignored SIGTERM');
       expect(conn.exited).toEqual({ code: null, signal: 'SIGKILL' });
     }
+    await expectStopped(conn);
   });
 
   it('重复 close 幂等：返回同一 Promise', async () => {
@@ -707,8 +775,7 @@ describe('拆除梯子', () => {
     const p2 = conn.close();
     expect(p1).toBe(p2);
     await Promise.all([p1, p2]);
-    const pid = conn.pid;
-    if (pid !== undefined) await waitFor(() => isDead(pid));
+    await expectStopped(conn);
   });
 
   it('close 后的调用被拒绝', async () => {
@@ -746,8 +813,7 @@ describe(' 全 RPC deadline 与 connection poison（never-resolve 矩阵）', ()
     expect(acpErr.kind).toBe('protocol-error');
     expect(acpErr.message).toContain('poisoned');
     expect(acpErr.message).toContain(op);
-    const pid = conn.pid;
-    if (pid !== undefined) await waitFor(() => isDead(pid));
+    await expectStopped(conn);
   }
 
   it('预算常量钉版：initialize 15s / 会话建立类（new/load/resume/list）30s / 会话写类（set-option/set-mode）15s', () => {
@@ -820,9 +886,7 @@ describe(' 全 RPC deadline 与 connection poison（never-resolve 矩阵）', ()
     const error = await expectReject(conn.initialize());
     expectTimeoutKind(error, 'initialize');
     expect(conn.isClosed).toBe(true);
-    const pid = conn.pid;
-    expect(pid).toBeDefined();
-    if (pid !== undefined) await waitFor(() => isDead(pid));
+    await expectStopped(conn);
   });
 });
 
@@ -843,8 +907,7 @@ describe(' abort 语义', () => {
     expect(acpErr.category).toBe('user-rejected');
     expect(acpErr.message).toContain('session/list');
     expect(conn.poisonedBy).toBe('session/list');
-    const pid = conn.pid;
-    if (pid !== undefined) await waitFor(() => isDead(pid));
+    await expectStopped(conn);
   });
 
   it('进场前已中止：不发帧直接拒（aborted），连接不 poison、仍可继续用', async () => {
@@ -952,6 +1015,21 @@ describe('probe', () => {
       },
     };
   };
+
+  it.each([
+    { scenario: 'cleanup-close-delete', close: 'done', delete: 'done', methods: ['initialize', 'session/new', 'session/close', 'session/delete'] },
+    { scenario: 'delete-fail', close: 'not-advertised', delete: 'failed', methods: ['initialize', 'session/new', 'session/delete'] },
+    { scenario: 'no-delete', close: 'not-advertised', delete: 'not-advertised', methods: ['initialize', 'session/new'] },
+  ])('$scenario observes advertised cleanup and preserves a successful probe', async row => {
+    const { spec } = probeSpec(row.scenario);
+    const result = await AcpClientConnection.probe(spec, { timeoutMs: 5000, eofGraceMs: 100, termGraceMs: 300 });
+    expect(result.agentInfo?.name).toBe('dsh-mock-acp-agent');
+    expect(result.cleanup).toMatchObject({ close: row.close, delete: row.delete });
+    if (row.delete === 'failed') expect(result.cleanup?.message).toContain('session/delete failed');
+    const log = fs.readFileSync(spec.env['MOCK_LOG'] as string, 'utf8');
+    const methods = log.split('\n').filter(line => line.includes('--> ')).map(line => (line.split('--> ')[1] ?? '').split(' ')[0]);
+    expect(methods).toEqual(row.methods);
+  });
 
   it('happy：独立短生命周期收集 configOptions/modes/agentInfo，结束后无进程残留', async () => {
     const { spec } = probeSpec('happy');

@@ -27,7 +27,7 @@ export function projectionIsAcp(value: unknown, ownsRoute: OwnsAcpRoute): boolea
   return ownsRoute(providerOf(record.lastUsed)) || ownsRoute(providerOf(record.next))
 }
 
-function recoveryText(t: Translate, recovery: AcpRecoveryView): string {
+export function recoveryText(t: Translate, recovery: AcpRecoveryView): string {
   const key: Record<AcpRecoveryView['kind'], AcpLocaleKey> = {
     healthy: 'recoveryGeneric',
     'reconnect-required': 'recoveryReconnectRequired',

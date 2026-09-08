@@ -27,11 +27,6 @@ export function snapshotIsAcp(value: unknown, ownsRoute: OwnsAcpRoute): boolean 
   return ownsRoute(providerOf(current))
 }
 
-function optionLabel(option: NonNullable<AcpAgentSessionSnapshotView['configOptions']>[number]): string {
-  if (option.type === 'boolean') return `${option.name}: ${option.currentValue ? 'On' : 'Off'}`
-  return `${option.name}: ${option.currentValue}`
-}
-
 function isModeConfigOption(option: NonNullable<AcpAgentSessionSnapshotView['configOptions']>[number]): boolean {
   const id = option.id.trim().toLowerCase().replaceAll('-', '_')
   const category = option.category?.trim().toLowerCase().replaceAll('-', '_') ?? ''
@@ -53,7 +48,7 @@ export function agentControlMenuItems(snapshot: AcpAgentSessionSnapshotView, t: 
     // Model and reasoning remain exclusively in DSH's native ModelPicker.
     if (isAcpModelOrReasoningOption(option)) continue
     if (option.type === 'boolean') {
-      items.push({ id: `config:${option.id}`, label: optionLabel(option), write: { kind: 'config', id: option.id, value: !option.currentValue }, disabled })
+      items.push({ id: `config:${option.id}`, label: `${option.name}: ${t(option.currentValue ? 'agentControlOn' : 'agentControlOff')}`, write: { kind: 'config', id: option.id, value: !option.currentValue }, disabled })
       continue
     }
     for (const value of option.options) {
@@ -69,12 +64,12 @@ export function shouldRefreshAgentControlAfterRun(previous: boolean, current: bo
   return previous && !current
 }
 
-function currentModeName(snapshot: AcpAgentSessionSnapshotView): string {
-  return snapshot.modes?.find(mode => mode.id === snapshot.currentModeId)?.name ?? snapshot.currentModeId ?? 'Native'
+function currentModeName(snapshot: AcpAgentSessionSnapshotView, t: Translate): string {
+  return snapshot.modes?.find(mode => mode.id === snapshot.currentModeId)?.name ?? snapshot.currentModeId ?? t('agentControlDefault')
 }
 
-export function agentControlLabel(snapshot: AcpAgentSessionSnapshotView): string {
-  return `Agent · ${currentModeName(snapshot)}`
+export function agentControlLabel(snapshot: AcpAgentSessionSnapshotView, t: Translate): string {
+  return `Agent · ${currentModeName(snapshot, t)}`
 }
 
 /** Compact ACP token counts without falling back to an unqualified raw count. */
@@ -155,7 +150,7 @@ export function AcpAgentControl({ sessionId, useProjection, useSession, t, remot
   }, [isAcp, remote, running, sessionId, t])
 
   if (!isAcp || snapshot === null) return null
-  const label = agentControlLabel(snapshot)
+  const label = agentControlLabel(snapshot, t)
   const items = agentControlMenuItems(snapshot, t)
   const footer = [...agentControlFooter(snapshot, t)]
   if (error !== null) footer.push({ type: 'label', id: 'error', text: error })

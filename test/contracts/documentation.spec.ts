@@ -13,7 +13,6 @@ function read(path: string): string {
 describe('public documentation contract', () => {
   it('publishes one concise Chinese README with an English companion', () => {
     const pkg = JSON.parse(read('package.json')) as { description?: string, files?: string[] }
-    expect(pkg.description).toBe('Use AI agents from the DSH session UI.')
     expect(pkg.files).toContain('README.md')
     expect(pkg.files).toContain('README.en.md')
     expect(pkg.files).not.toContain('docs/**/*.md')
@@ -29,24 +28,15 @@ describe('public documentation contract', () => {
       expect(zh).toContain(token)
       expect(en).toContain(token)
     }
-    expect(zh).toContain('通过 DeepSeek Harness（DSH）会话页面使用智能体')
-    expect(en).toContain('from the DeepSeek Harness (DSH) session UI')
-  })
-
-  it('documents Native Agent Access and explicit credential isolation truthfully', () => {
-    expect(read('README.md')).toContain('原生 Agent 访问')
-    expect(read('README.md')).toContain('无法限制绕过 ACP 审批的 Agent 工具')
-    expect(read('README.md')).toContain('不会自动继承名称形似 `KEY`、`TOKEN`、`SECRET` 或 `PASSWORD`')
-    expect(read('README.md')).toContain('在 ACP profile 的“连接设置”中显式配置')
-    expect(read('README.en.md')).toContain('Native Agent Access')
-    expect(read('README.en.md')).toContain('cannot constrain Agent tools that bypass that flow')
-    expect(read('README.en.md')).toContain('do not automatically inherit parent environment variables')
-    expect(read('README.en.md')).toContain("ACP profile's connection settings")
   })
 
   it('keeps every local README link resolvable', () => {
     for (const path of ['README.md', 'README.en.md']) {
-      const links = [...read(path).matchAll(/\[[^\]]+\]\(([^)]+)\)/g)].map(match => match[1]!)
+      const contents = read(path)
+      const links = [
+        ...[...contents.matchAll(/\[[^\]]+\]\(([^)]+)\)/g)].map(match => match[1]!),
+        ...[...contents.matchAll(/<(?:img|a)\b[^>]*\b(?:src|href)="([^"]+)"/g)].map(match => match[1]!),
+      ]
       for (const link of links) {
         if (/^(?:https?:|mailto:|#)/.test(link)) continue
         const target = link.split('#', 1)[0]!

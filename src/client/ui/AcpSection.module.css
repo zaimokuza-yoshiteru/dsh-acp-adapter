@@ -17,6 +17,10 @@
   color: var(--dsw-alias-label-primary);
 }
 .title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
   margin: 0;
   font-size: 16px;
   line-height: 24px;
@@ -135,28 +139,6 @@
   font-size: 14px;
   line-height: 22px;
   font-weight: 500;
-}
-.statusBadge {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  min-width: 0;
-  font-size: 12px;
-  line-height: 18px;
-}
-.statusDot {
-  flex: none;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  corner-shape: round;
-  background: currentColor;
-}
-.statusReady {
-  color: var(--dsw-alias-state-success-primary);
-}
-.statusMuted {
-  color: var(--dsw-alias-label-tertiary);
 }
 .rowActions {
   display: inline-flex;
