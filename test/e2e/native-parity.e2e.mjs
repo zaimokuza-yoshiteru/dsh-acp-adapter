@@ -126,6 +126,40 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
     }
   }
 
+  it('edits settings through native inputs and buttons with validation, cancel and persisted save', async () => {
+    const openSettings = async () => {
+      await page.getByRole('button', { name: 'Settings', exact: true }).click()
+      const dialog = page.getByRole('dialog', { name: 'Settings', exact: true })
+      await dialog.getByRole('button', { name: 'ACP adapter', exact: true }).click()
+      return dialog
+    }
+    let dialog = await openSettings()
+    await dialog.getByRole('button', { name: 'Edit', exact: true }).click()
+    const name = dialog.getByLabel('Display name', { exact: true })
+    expect(await name.inputValue()).toBe(`Fixture ${profile}`)
+    await name.fill('Unsaved name')
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
+    await dialog.getByRole('button', { name: 'Edit', exact: true }).click()
+    expect(await name.inputValue()).toBe(`Fixture ${profile}`)
+    await name.fill('')
+    expect(await dialog.getByRole('button', { name: 'Save', exact: true }).isDisabled()).toBe(true)
+    await name.fill(`Updated ${profile}`)
+    const evidence = join(root, '.local/e2e-settings')
+    mkdirSync(evidence, { recursive: true })
+    await page.screenshot({ path: join(evidence, `${profile}.png`), fullPage: true })
+    await dialog.getByRole('button', { name: 'Save', exact: true }).click()
+    await dialog.getByText('Saved.', { exact: true }).waitFor()
+    await dialog.getByRole('button', { name: 'Close', exact: true }).click()
+    await page.reload()
+    dialog = await openSettings()
+    await dialog.getByText(`Updated ${profile}`, { exact: true }).waitFor()
+    await dialog.getByRole('button', { name: 'Edit', exact: true }).click()
+    await dialog.getByLabel('Display name', { exact: true }).fill(`Fixture ${profile}`)
+    await dialog.getByRole('button', { name: 'Save', exact: true }).click()
+    await dialog.getByText('Saved.', { exact: true }).waitFor()
+    await dialog.getByRole('button', { name: 'Close', exact: true }).click()
+  })
+
   it('keeps the audit ledger and wrapped details in the native trajectory viewport', async () => {
     page.setDefaultTimeout(10_000)
     const { settled } = await send('E2E_JOB_OTHER')

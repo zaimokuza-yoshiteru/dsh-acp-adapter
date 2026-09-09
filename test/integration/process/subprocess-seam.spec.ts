@@ -214,7 +214,7 @@ describe('依赖面守卫（宿主模块实例一致性 纪律）', () => {
       expect(pkg.dependencies?.[name]).toBeUndefined();
       expect(pkg.peerDependencies?.[name]).toBeUndefined();
       const version = pkg.devDependencies?.[name]
-      expect(version).toBe('0.1.5-alpha.1')
+      expect(version).toBe('0.1.5-alpha.2')
     }
     expect(JSON.parse(fs.readFileSync(path.join(PKG_ROOT, 'package.json'), 'utf8')).scripts['verify:dev-install']).toBeDefined();
   });

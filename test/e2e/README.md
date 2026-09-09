@@ -2,10 +2,11 @@
 
 这组 E2E 的验收对象是 DSH 与 ACP 之间的产品行为：执行者可以不同，输入、消息、审批及详情仍应复用宿主公开能力。测试启动目标版本的完整 Loader 装配、真实 ACP 子进程和浏览器，浏览器加载构建后的插件与 DSH UI。它不使用现有单元测试的 React 或 UI primitive stub。
 
-同一组断言在 Claude、Codex、Devin、Kimi 四种协议夹具下运行，共 64 项。夹具只是可控的协议输入，不代表真实 Agent 或具体模型已经通过验收；真实 Agent 的升级仍需要少量单独冒烟。模型文案、推理质量和回答风格不作为固定夹具的通过条件。
+同一组断言在 Claude、Codex、Devin、Kimi 四种协议夹具下运行，共 68 项。夹具只是可控的协议输入，不代表真实 Agent 或具体模型已经通过验收；真实 Agent 的升级仍需要少量单独冒烟。模型文案、推理质量和回答风格不作为固定夹具的通过条件。
 
 | 场景 | 必须保持的行为 |
 | --- | --- |
+| 设置编辑 | 原生 Input / Button；空名称禁止保存；取消不改变配置；保存后刷新保留 |
 | 文件、消息与恢复 | 原生输入栏上传；ACP 收到文件文本句柄；主会话以 Session V3 保存 stream；刷新后消息、附件、原生 TerminalBlock 可见 |
 | 宿主扩展 | system prompt、动态上下文与 pre-step 插件输入真正到达 ACP；插件触发的后续步骤正常运行；旧用户输入不重复发送；卸载插件后不再携带其指令 |
 | 图片与文件活动 | assistant 图片经原生附件存储后可刷新显示；Read / Diff 使用原生组件，文件名支持键盘打开原生侧栏预览；活动不会制造 DSH 工具调用 |
@@ -24,10 +25,10 @@
 
 ## 运行
 
-宿主目标为 `0.1.5-alpha.1`。常规开发、构建和发布直接使用锁定的 npm 依赖；浏览器 E2E 单独复用准确源码标签的 Web scaffold，默认布局仍为同级 `dsh-acp-adapter/` 与 `reference/deepseek-harness/`。`DSH_UPSTREAM_CHECKOUT` 仅定位 scaffold，不会替换 npm 依赖或改写 node_modules。正式 npm 宿主安装检查使用开发依赖中的 CLI 和临时 DSH_HOME：`node scripts/install-gate.mjs --tgz <本地插件包>`。
+宿主目标为 `0.1.5-alpha.2`。常规开发、构建和发布直接使用锁定的 npm 依赖；浏览器 E2E 单独复用准确源码标签的 Web scaffold，默认布局仍为同级 `dsh-acp-adapter/` 与 `reference/deepseek-harness/`。`DSH_UPSTREAM_CHECKOUT` 仅定位 scaffold，不会替换 npm 依赖或改写 node_modules。正式 npm 宿主安装检查使用开发依赖中的 CLI 和临时 DSH_HOME：`node scripts/install-gate.mjs --tgz <本地插件包>`。
 
 ```sh
-# reference/deepseek-harness 必须检出 dsh-v0.1.5-alpha.1
+# reference/deepseek-harness 必须检出 dsh-v0.1.5-alpha.2
 # 在各自目录使用 packageManager 指定的 pnpm（宿主 11.7.0，插件 10.7.0）
 (cd ../reference/deepseek-harness && corepack pnpm install --frozen-lockfile && npm run build:native-system && npm run build:lib:host && npm run build:lib:client && npm --prefix apps/web run build)
 pnpm install --frozen-lockfile
@@ -41,6 +42,8 @@ pnpm test:e2e
 `DSH_UPSTREAM_CHECKOUT` 可指定其他源码目录。`pnpm test:e2e -t 'claude'` 可只运行一种协议夹具。默认使用 Playwright Chromium；`DSH_E2E_BROWSER_CHANNEL=chrome` 可使用本机已安装 Chrome。`DSH_E2E_NODE` 可指定宿主支持的另一份 Node 运行时，但原生依赖必须针对该 Node ABI 构建。插件构建与常规测试仍遵循 `.nvmrc`。
 
 测试使用临时工作区和独立 DSH_HOME，结束后销毁浏览器、Agent 进程与测试目录。失败截图写入 gitignored `.local/e2e-failures/`。断言使用原生组件的数据标记及可访问名称，不依赖 CSS 哈希、整页像素截图或真实模型措辞；默认不重试失败测试。浏览器回归期间不要并行运行 build、pack 或默认安装检查：prepack 会清理并重建共享的 `lib` 目录；应按顺序执行，或向安装检查传入已生成的 tarball。
+
+alpha.2 的 `dsh-client-store` Node 入口仍引用 `zustand`、`immer`，但上游只将它们声明为开发依赖。本项目暂时精确声明这两项 devDependencies，供普通 Node 测试加载真实 Store；浏览器继续使用宿主模块表，插件运行时 dependencies 不增加。上游修复 Node 入口依赖闭包后可移除该补偿。
 
 ## 真实 Agent 冒烟
 

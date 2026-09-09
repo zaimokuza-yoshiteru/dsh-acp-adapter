@@ -4,7 +4,7 @@ import type { ReactNode } from 'react'
 import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-store'
 import type { SessionSnapshot, UseProjection } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { ConvViewProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
-import { IconSearchOutline16, JsonTree, Tag } from '@deepseek-ai/dsh-client-ui-primitives'
+import { IconSearchOutline16, Input, JsonTree, Tag } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { JsonTreeLabels, TagTone } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { AcpAuditSummaryCode, AcpAuditTimelineEntry } from '../data/acp-remote.ts'
 import type { AcpRemoteLike } from '../data/acp-remote.ts'
@@ -337,17 +337,15 @@ export function AcpAuditView(props: AcpAuditViewProps): ReactNode {
         h('div', { className: css.toolbarEnd },
           h('button', { type: 'button', className: css.refresh, disabled: loading, onClick: () => load(true) },
             textOf(t, loading ? 'auditLoadingShort' : 'auditRefresh', loading ? 'Loading…' : 'Refresh')),
-          h('label', { className: css.search },
-            h(IconSearchOutline16, { size: 11, className: css.searchIcon }),
-            h('input', {
-              type: 'search',
-              className: css.searchInput,
-              value: query,
-              placeholder: textOf(t, 'auditSearchPlaceholder', 'Search'),
-              'aria-label': textOf(t, 'auditSearch', 'Search loaded records'),
-              onChange: (event: { currentTarget: { value: string } }) => setQuery(event.currentTarget.value),
-            }),
-          ),
+          h(Input, {
+            icon: h(IconSearchOutline16, { size: 16 }),
+            type: 'search',
+            className: css.search,
+            value: query,
+            placeholder: textOf(t, 'auditSearchPlaceholder', 'Search'),
+            'aria-label': textOf(t, 'auditSearch', 'Search loaded records'),
+            onChange: (event: { currentTarget: { value: string } }) => setQuery(event.currentTarget.value),
+          }),
         ),
       ),
     ),

@@ -4,7 +4,7 @@
 
 Use **Claude · Codex · Devin · Kimi** from the DSH session UI.
 
-> **0.1.5-alpha.1** · Requires **DSH 0.1.5-alpha.1**
+> **0.1.5-alpha.2** · Requires **DSH 0.1.5-alpha.2**
 
 ## <img src="assets/readme/icon-preview.svg" width="24" height="24" alt="" /> Preview
 
@@ -35,7 +35,7 @@ ACP Diagnostics groups issues, operations, and technical records. Open a record 
 You need Node.js `^22.19.0 || >=24.0.0`:
 
 ```bash
-npx @deepseek-ai/dsh@0.1.5-alpha.1 web
+npx @deepseek-ai/dsh@0.1.5-alpha.2 web
 ```
 
 Plugin development installs the locked npm dependencies:
@@ -62,7 +62,7 @@ Regular development needs no upstream checkout. See the [E2E guide](test/e2e/REA
 **2. Install the plugin.** This command installs the published npm `alpha` version.
 
 ```bash
-npx @deepseek-ai/dsh@0.1.5-alpha.1 plugin --profile web add @zaimokuza/dsh-acp-adapter@alpha
+npx @deepseek-ai/dsh@0.1.5-alpha.2 plugin --profile web add @zaimokuza/dsh-acp-adapter@alpha
 ```
 
 **3. Open Settings → ACP adapter**, add a template, check the connection, then choose an Agent model in a new session.
@@ -79,9 +79,9 @@ Use the same `DSH_HOME` and profile as when starting DSH. You can replace `npx` 
 
 ```bash
 # Update
-npx @deepseek-ai/dsh@0.1.5-alpha.1 plugin --profile web update @zaimokuza/dsh-acp-adapter
+npx @deepseek-ai/dsh@0.1.5-alpha.2 plugin --profile web update @zaimokuza/dsh-acp-adapter
 # Remove
-npx @deepseek-ai/dsh@0.1.5-alpha.1 plugin --profile web remove @zaimokuza/dsh-acp-adapter
+npx @deepseek-ai/dsh@0.1.5-alpha.2 plugin --profile web remove @zaimokuza/dsh-acp-adapter
 ```
 
 **Keep local data when upgrading.** DSH migrates main sessions; the adapter does not migrate legacy subagent projections that the host rejects. Restart DSH after the current turn, then refresh the page; check the loaded version beside the settings title.
