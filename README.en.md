@@ -4,7 +4,7 @@
 
 Use **Claude · Codex · Devin · Kimi** from the DSH session UI.
 
-> **0.1.3-alpha.2** · Requires **DSH 0.1.3-alpha.2**
+> **0.1.5-alpha.1** · Requires **DSH 0.1.5-alpha.1**
 
 ## <img src="assets/readme/icon-preview.svg" width="24" height="24" alt="" /> Preview
 
@@ -35,7 +35,7 @@ ACP Diagnostics groups issues, operations, and technical records. Open a record 
 You need Node.js `^22.19.0 || >=24.0.0`:
 
 ```bash
-npx @deepseek-ai/dsh@0.1.3-alpha.2 web
+npx @deepseek-ai/dsh@0.1.5-alpha.1 web
 ```
 
 Plugin development installs the locked npm dependencies:
@@ -62,7 +62,7 @@ Regular development needs no upstream checkout. See the [E2E guide](test/e2e/REA
 **2. Install the plugin.** This command installs the published npm `alpha` version.
 
 ```bash
-npx @deepseek-ai/dsh@0.1.3-alpha.2 plugin --profile web add @zaimokuza/dsh-acp-adapter@alpha
+npx @deepseek-ai/dsh@0.1.5-alpha.1 plugin --profile web add @zaimokuza/dsh-acp-adapter@alpha
 ```
 
 **3. Open Settings → ACP adapter**, add a template, check the connection, then choose an Agent model in a new session.
@@ -79,12 +79,12 @@ Use the same `DSH_HOME` and profile as when starting DSH. You can replace `npx` 
 
 ```bash
 # Update
-npx @deepseek-ai/dsh@0.1.3-alpha.2 plugin --profile web update @zaimokuza/dsh-acp-adapter
+npx @deepseek-ai/dsh@0.1.5-alpha.1 plugin --profile web update @zaimokuza/dsh-acp-adapter
 # Remove
-npx @deepseek-ai/dsh@0.1.3-alpha.2 plugin --profile web remove @zaimokuza/dsh-acp-adapter
+npx @deepseek-ai/dsh@0.1.5-alpha.1 plugin --profile web remove @zaimokuza/dsh-acp-adapter
 ```
 
-**This update needs no data reset.** Existing SQLite bindings and history remain. Restart DSH after the current turn, then refresh the page; check the loaded version beside the settings title. Very early JSONL-only development data is excluded—see [compatibility notes](test/e2e/REGRESSION.md#2026-09-08双语文档与旧数据兼容核查).
+**Keep local data when upgrading.** DSH migrates main sessions; the adapter does not migrate legacy subagent projections that the host rejects. Restart DSH after the current turn, then refresh the page; check the loaded version beside the settings title.
 
 ## <img src="assets/readme/icon-help.svg" width="24" height="24" alt="" /> If something goes wrong
 
@@ -92,6 +92,7 @@ npx @deepseek-ai/dsh@0.1.3-alpha.2 plugin --profile web remove @zaimokuza/dsh-ac
 | --- | --- |
 | Command will not start | Verify the executable path; try its absolute path. |
 | Login or authentication fails | Sign in through the Agent CLI; check its configured environment variables. |
+| Older subagent details cannot open after upgrading | Follow DSH’s supported history formats. Unsupported projections are not migrated; original files and ACP records are retained. |
 | Session needs recovery | Follow the composer notice and **ACP Diagnostics**. Do not clear local data. |
 
 Still stuck? Include the error reference, plugin/DSH versions and relevant host log excerpt in an [issue](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/issues). Remove secrets before sharing logs.

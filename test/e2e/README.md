@@ -6,9 +6,9 @@
 
 | 场景 | 必须保持的行为 |
 | --- | --- |
-| 文件、消息与恢复 | 原生输入栏上传；ACP 收到文件文本句柄；主会话保存 v2 stream；刷新后消息、附件、原生 TerminalBlock 可见 |
+| 文件、消息与恢复 | 原生输入栏上传；ACP 收到文件文本句柄；主会话以 Session V3 保存 stream；刷新后消息、附件、原生 TerminalBlock 可见 |
 | 宿主扩展 | system prompt、动态上下文与 pre-step 插件输入真正到达 ACP；插件触发的后续步骤正常运行；旧用户输入不重复发送；卸载插件后不再携带其指令 |
-| 图片与文件活动 | assistant 图片经原生附件存储后可刷新显示；Read / Diff 使用原生组件；活动不会制造 DSH 工具调用 |
+| 图片与文件活动 | assistant 图片经原生附件存储后可刷新显示；Read / Diff 使用原生组件，文件名支持键盘打开原生侧栏预览；活动不会制造 DSH 工具调用 |
 | 故障恢复 | Agent 崩溃后提示恢复，刷新保留历史；明确放弃远端上下文后才能建立新绑定并继续 |
 | Web 重连 | 浏览器断网后恢复连接，无需手动刷新；历史仍在，不重复发送 ACP prompt，下一条消息可正常执行 |
 | 滚动 | 长回答连续输出后、窗口缩小时，回答末尾保持在原生会话滚动区域内 |
@@ -24,12 +24,12 @@
 
 ## 运行
 
-宿主目标为 `0.1.3-alpha.2`。常规开发、构建和发布直接使用锁定的 npm 依赖；浏览器 E2E 单独复用准确源码标签的 Web scaffold，默认布局仍为同级 `dsh-acp-adapter/` 与 `reference/deepseek-harness/`。`DSH_UPSTREAM_CHECKOUT` 仅定位 scaffold，不会替换 npm 依赖或改写 node_modules。正式 npm 宿主安装检查使用开发依赖中的 CLI 和临时 DSH_HOME：`node scripts/install-gate.mjs --tgz <本地插件包>`。
+宿主目标为 `0.1.5-alpha.1`。常规开发、构建和发布直接使用锁定的 npm 依赖；浏览器 E2E 单独复用准确源码标签的 Web scaffold，默认布局仍为同级 `dsh-acp-adapter/` 与 `reference/deepseek-harness/`。`DSH_UPSTREAM_CHECKOUT` 仅定位 scaffold，不会替换 npm 依赖或改写 node_modules。正式 npm 宿主安装检查使用开发依赖中的 CLI 和临时 DSH_HOME：`node scripts/install-gate.mjs --tgz <本地插件包>`。
 
 ```sh
-# reference/deepseek-harness 必须检出 dsh-v0.1.3-alpha.2
-pnpm --dir ../reference/deepseek-harness install --frozen-lockfile
-pnpm --dir ../reference/deepseek-harness build
+# reference/deepseek-harness 必须检出 dsh-v0.1.5-alpha.1
+# 在各自目录使用 packageManager 指定的 pnpm（宿主 11.7.0，插件 10.7.0）
+(cd ../reference/deepseek-harness && corepack pnpm install --frozen-lockfile && npm run build:native-system && npm run build:lib:host && npm run build:lib:client && npm --prefix apps/web run build)
 pnpm install --frozen-lockfile
 pnpm typecheck
 pnpm test
@@ -56,8 +56,10 @@ DSH_E2E_LIVE=1 pnpm test:e2e -t 'live ACP smoke'
 
 ## 版本迁移的补充验证
 
-alpha.2 的 persistence 替身使用真实 `SessionHandle` 类型，分别覆盖 `detached` 与 `shared-frozen` 读取结果。新投影的空 stream、内容或 usage 不匹配必须报冲突；不会因恢复接口放宽验证而放过损坏记录。进程测试通过宿主句柄确认托管范围退出；命令已结束或 provider 观察失败仍需清理。版本探针失败返回空版本，terminal 清理无法确认时允许重试；只有明确的启动 ENOENT 才可回退到 shell，取消后不再启动回退命令。
+Persistence 替身使用真实 `SessionHandle` 类型，分别覆盖 `detached` 与 `shared-frozen` 读取结果。新投影的空 stream、内容或 usage 不匹配必须报冲突；不会因恢复接口放宽验证而放过损坏记录。进程测试通过宿主句柄确认托管范围退出；命令已结束或 provider 观察失败仍需清理。版本探针失败返回空版本，terminal 清理无法确认时允许重试；只有明确的启动 ENOENT 才可回退到 shell，取消后不再启动回退命令。
 
-`test/unit/host/external-subagent-projector.spec.ts` 覆盖写句柄释放、flush 失败、前缀续写、重复投影、旧 sidecar 摘要和 v1 chunkless 消息迁移。新投影的 stream 使用上游 accumulator，时间表示结果被观察到的时间，不补造外部 Agent 的 token 时间线。旧记录保留空 stream，不重写既有历史。旧 sidecar 的 `turn/start.trigger` 不属于上游 v1 相邻迁移器接受的字段，因而保留摘要校验后的专用恢复路径；测试检查整个事件列表和 sidecar 内容不变。写句柄使用原生异步释放，flush 或释放失败均不能发布完成状态。退出宽限为零时仍在下一次定时器触发后终止等待，不使用宿主 deadline 的零值（禁用超时）语义。
+`test/unit/host/external-subagent-projector.spec.ts` 覆盖写句柄释放、flush 失败、前缀续写和重复投影。新投影直接写入 V3，stream 使用上游 accumulator；时间表示结果被观察到的时间，不补造外部 Agent 的 token 时间线。宿主拒绝的旧 V1/V2 投影不做专用迁移；夹具验证原日志与 sidecar 不被修改，也不阻塞新投影。写句柄使用原生异步释放，flush 或释放失败均不能发布完成状态。退出宽限为零时仍在下一次定时器触发后终止等待，不使用宿主 deadline 的零值（禁用超时）语义。
+
+活动归属使用稳定的 ACP 会话/轮次标识和原生 Step data，不再依赖迁移前的事件序号。系统指令覆盖从历史首条 system message 读取、A → B 更新和清空；ACP 不声明它无法原样支持的 in-history system 更新能力。
 
 ACP v1 没有 system 消息角色，宿主指令以有标注的请求上下文传递；无法强制改变外部 Agent 的指令优先级。DSH 的原生工具执行 hooks、技能加载工具和 MCP 执行不会自动进入外部 Agent：ACP 没有通用的宿主工具执行回调，工具活动通知也不是执行请求。测试证明日志化的上下文扩展到达 ACP、原生 provider 的工具扩展仍有效，不承诺不存在的执行桥接。

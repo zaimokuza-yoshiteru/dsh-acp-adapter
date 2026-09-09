@@ -82,6 +82,20 @@
   corner-shape: round;
   background: var(--dsw-alias-label-caption);
 }
+/* ToolRow's file opener is private; keep its small link affordance while the
+   public openFile callback owns Sidebar routing and file access. */
+.fileLink {
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  color: var(--dsw-alias-label-secondary);
+  text-decoration: underline dotted;
+  text-decoration-color: var(--dsw-alias-label-tertiary);
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.fileLink:hover { color: var(--dsw-alias-label-primary); text-decoration-color: currentColor; }
 .ioCard {
   display: flex;
   flex-direction: column;

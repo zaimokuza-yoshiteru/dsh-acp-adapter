@@ -355,7 +355,7 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
       const handle = await host.ctx.sessionPersistence.open(id, 'read')
       try {
         const log = (await handle.read()).events
-        expect(JSON.stringify(log.filter(event => event.type === 'request/header'))).toContain('E2E_SYSTEM_B')
+        expect(JSON.stringify(log.filter(event => event.type === 'system/message'))).toContain('E2E_SYSTEM_B')
         expect(JSON.stringify(log.filter(event => event.type === 'user/message'))).toContain('E2E_RUNTIME_B')
       } finally { await handle.close() }
       await page.reload()
@@ -369,6 +369,7 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
   })
 
   it('renders assistant images, file reads and edits using native components after reload', async () => {
+    writeFileSync(join(workspace, 'fixture.txt'), 'E2E_SIDEBAR_FILE\n')
     const { settled } = await send('E2E_RICH')
     const id = await settled
     await page.getByText('E2E_RICH_DONE', { exact: true }).waitFor()
@@ -383,10 +384,15 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
     await picture.first().waitFor()
     await expect.poll(() => picture.first().evaluate(img => img.complete && img.naturalWidth > 0)).toBe(true)
     const activity = page.locator('[data-acp-activity]')
+    await expect.poll(() => activity.count()).toBe(1)
     await activity.getByRole('button', { name: /^Read.*fixture\.txt/ }).click()
     await activity.locator('[data-read]').getByText('E2E_READ_LINE', { exact: true }).first().waitFor()
     await activity.getByRole('button', { name: /^Edited.*fixture\.txt/ }).click()
     await activity.locator('[data-diff]').getByText('E2E_NEW_LINE', { exact: true }).first().waitFor()
+    await activity.locator('[data-acp-file]').first().press('Enter')
+    const preview = page.locator('[data-rightbar-col] [data-textpreview-state="text"]')
+    await preview.waitFor()
+    await expect.poll(() => preview.locator('[data-textpreview-line="1"]').textContent()).toBe('E2E_SIDEBAR_FILE\n')
   })
 
   it('preserves visible history after a crash and requires explicit recovery before continuing', async () => {
@@ -493,6 +499,16 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
     const supported = profile === 'claude' || profile === 'devin'
     await expect.poll(async () => (await host.ctx.sessionPersistence.list()).filter(item => item.header.origin === 'subagent').length).toBe(supported ? 1 : 0)
     if (!supported) return
+    const child = (await host.ctx.sessionPersistence.list()).find(item => item.header.origin === 'subagent')
+    const handle = await host.ctx.sessionPersistence.open(child.header.id, 'read')
+    try {
+      const log = await handle.read()
+      expect(handle.header.version).toBe(3)
+      expect(log.events.map(event => event.type)).toEqual([
+        'subagent/descriptor', 'turn/start', 'step/start', 'user/message',
+        'assistant/message', 'step/end', 'turn/end',
+      ])
+    } finally { await handle.close() }
     await page.getByRole('button', { name: '1 subagent', exact: true }).press('ArrowDown')
     await page.getByRole('treeitem', { name: /^Inspect fixture/ }).click()
     await page.getByText('E2E_CHILD_RESULT', { exact: profile === 'claude' }).waitFor()

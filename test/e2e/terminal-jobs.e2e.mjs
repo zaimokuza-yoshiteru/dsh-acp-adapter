@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { chromium } from 'playwright'
 import { describe, expect, it, vi } from 'vitest'
@@ -7,6 +7,13 @@ import { launchAdapterWorld, root } from './scaffold.mjs'
 
 // All Agent profiles use the same real ACP terminal requests and native UI.
 // File-controlled processes make completion independent of model speed.
+function finishFixture(path, code) {
+  // Publish the code atomically: the child must not read the transient empty
+  // file between open/truncate and write (Number('') would exit with zero).
+  writeFileSync(`${path}.pending`, String(code))
+  renameSync(`${path}.pending`, path)
+}
+
 describe.each(['claude', 'codex', 'devin', 'kimi'])('native terminal jobs: %s', profile => {
   it('shows running jobs across reload, isolates owners, and settles without extra model turns', async () => {
     const host = await launchAdapterWorld()
@@ -75,7 +82,7 @@ describe.each(['claude', 'codex', 'devin', 'kimi'])('native terminal jobs: %s', 
       try {
         await page.context().setOffline(true)
         await page.getByRole('button', { name: 'Disconnected, reconnect now', exact: true }).waitFor()
-        writeFileSync(fixture.stopFile, '0')
+        finishFixture(fixture.stopFile, 0)
         await expect.poll(() => host.ctx.jobs.get(first.id, owner).status).toBe('completed')
       } finally { await page.context().setOffline(false) }
       await page.getByRole('button', { name: /Disconnected, reconnect now|Reconnecting automatically, reconnect now/ }).waitFor({ state: 'hidden' })
@@ -95,7 +102,7 @@ describe.each(['claude', 'codex', 'devin', 'kimi'])('native terminal jobs: %s', 
       const failed = jobs().at(-1)
       const failFixture = latestFixture()
       await expect.poll(() => existsSync(failFixture.readyFile)).toBe(true)
-      writeFileSync(failFixture.stopFile, '7')
+      finishFixture(failFixture.stopFile, 7)
       await expect.poll(() => host.ctx.jobs.get(failed.id, owner).status).toBe('failed')
       expect(host.ctx.jobs.get(failed.id, owner).detail).toContain('7')
       expect(host.ctx.jobs.get(failed.id, owner).reported).toBe(true)
@@ -135,7 +142,7 @@ describe.each(['claude', 'codex', 'devin', 'kimi'])('native terminal jobs: %s', 
       if (page) {
         const dir = join(root, '.local/e2e-failures')
         mkdirSync(dir, { recursive: true })
-        writeFileSync(join(dir, `jobs-${profile}.json`), JSON.stringify({ errors, body: await page.locator('body').innerText() }, null, 2))
+        writeFileSync(join(dir, `jobs-${profile}.json`), JSON.stringify({ errors, body: await page.locator('body').innerText(), agent: existsSync(agentLog) ? readFileSync(agentLog, 'utf8') : '' }, null, 2))
         await page.screenshot({ path: join(dir, `jobs-${profile}.png`), fullPage: true })
       }
       throw error

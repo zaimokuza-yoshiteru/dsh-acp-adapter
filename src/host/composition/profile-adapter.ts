@@ -31,6 +31,7 @@ import type { AcpActivityKind, AcpActivityStatus, AcpBindingData, AcpFileSystemA
 import type { AcpSessionForkReason, AcpTerminalAuditData } from '../../domain/policy/events.ts'
 import { acpReplayPayloadOf } from '../../domain/session/acp-replay-payload.ts'
 import { redactSecretText } from '../../domain/observability/redaction.ts'
+import { hostSystemPrompt } from '../../domain/session/host-system-prompt.ts'
 import { AcpPromptContentError, toAcpPrompt } from '../../domain/session/prompt-content.ts'
 import { createAcpFileSystemHandlers } from '../../runtime/client-capabilities/filesystem.ts'
 import { createAcpTerminalHandlers } from '../../runtime/client-capabilities/terminal.ts'
@@ -695,7 +696,7 @@ export class AcpProfileAdapter extends LlmAdapter {
         // setup and makes a fork look like a blank session.
         if (runtime.initialize !== undefined) await runtime.initialize(options.signal)
         const prompt = await toAcpPrompt(messages, {
-          system: options.system ?? '',
+          system: hostSystemPrompt(options),
           imageEnabled: runtime.agentCapabilities?.promptCapabilities?.image === true,
           ...(self.attachments === undefined ? {} : { attachments: self.attachments }),
           signal: options.signal ?? new AbortController().signal,
@@ -1208,7 +1209,6 @@ export class AcpProfileAdapter extends LlmAdapter {
                 committedPromptOrdinal: committedBinding.committedPromptOrdinal ?? 0,
                 committedActivitySeq,
                 ...(admissionProof?.anchorMessageId === undefined ? {} : { activityAnchorMessageId: admissionProof.anchorMessageId }),
-                ...(admissionProof?.requestHeaderSeq === undefined ? {} : { activityRequestHeaderSeq: admissionProof.requestHeaderSeq }),
               }
           const responseFinish = finishReason(String(response.stopReason))
           // ACP deliberately separates private reasoning from the visible

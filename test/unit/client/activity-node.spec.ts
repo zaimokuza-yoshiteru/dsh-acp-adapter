@@ -54,7 +54,7 @@ function activityStreamFactory(hooks: { accept?: () => void; dispose?: () => voi
 describe('ACP activity conversation node', () => {
   it('only matches durable ACP replay evidence, never native assistant messages', () => {
     const definition = createAcpActivityDefinition(() => false)
-    expect(definition.match(assistantEvent())).toEqual({ id: 'legacy:user-3', role: 'start' })
+    expect(definition.match(assistantEvent())).toEqual({ id: 'answer:["dsh-1","codex",1,1,"acp-1",3]', role: 'start' })
     expect(definition.match({ type: 'assistant/message', seq: 11, time: 11, data: {} } as never)).toBeNull()
   })
 
@@ -65,7 +65,23 @@ describe('ACP activity conversation node', () => {
       data: { replayState: payload },
     }
     expect(acpReplayPayloadOf(compact)).toEqual(payload)
-    expect(createAcpActivityDefinition(() => false).match(compact as never)).toEqual({ id: 'legacy:user-3', role: 'start' })
+    expect(createAcpActivityDefinition(() => false).match(compact as never)).toEqual({ id: 'answer:["dsh-1","codex",1,1,"acp-1",3]', role: 'start' })
+  })
+
+  it('settles by stable identity even when migration shifts the old request sequence', () => {
+    const definition = createAcpActivityDefinition(() => true)
+    const old = assistantEvent() as unknown as { data: { message: { source: { replayState: { response: typeof payload & { activityRequestHeaderSeq?: number } } } } } }
+    old.data.message.source.replayState.response = { ...payload, activityRequestHeaderSeq: 42 }
+    expect(definition.match(old as never)).toEqual(definition.match(assistantEvent()))
+    const location = { kind: 'step', turn: { turn: 1 }, step: { step: 1, data: { get: (key: string) => key === 'acp-activity' } } }
+    const state = definition.start({} as never, { event: old, location } as never, { previous: () => undefined })
+    expect(definition.buildLocationData!({ state } as never, 'step', null)).toEqual({ kind: 'step', turn: 1, step: 1, key: definition.kind, value: true })
+    expect(definition.buildViewNode!({ state } as never)).toMatchObject({ data: { settled: true } })
+    const live = definition.start({} as never, { event: { type: 'request/header', seq: 44, data: { header: { config: { provider: 'acp-codex' } } } }, location } as never, { previous: () => undefined })
+    // The native Step store notifies the live renderer; the assembler does not
+    // rebuild unrelated nodes when another context publishes Location data.
+    expect(definition.buildViewNode!({ state: live } as never)).toMatchObject({ visibility: 'visible' })
+    expect(definition.buildViewNode!({ state: live } as never)?.data).not.toHaveProperty('settled')
   })
 
   it('starts immediately for an exact managed request route and ignores another plugin route', () => {
@@ -90,13 +106,13 @@ describe('ACP activity conversation node', () => {
       },
       location,
     } as never, { previous: () => undefined } as never)
-    const finalized = definition.update({ state: started } as never, {
+    const finalized = definition.start({} as never, {
       event: {
         type: 'assistant/message', seq: 93, time: 93,
         data: { message: { source: { replayState: { response: { ...payload, activityRequestHeaderSeq: 42 } } } } },
       },
       location,
-    } as never)
+    } as never, { previous: () => ({ state: started }) } as never)
     const node = definition.buildViewNode!({ key: 'activity', id: 'request:42', state: finalized } as never)
     expect((node as { readonly anchorSeq: number } | null)?.anchorSeq).toBe(93)
   })
