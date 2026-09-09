@@ -67,7 +67,7 @@ type ActivityNodeProps = {
   readonly journalHub: AcpActivityJournalHub
   readonly onProjectedChild?: (parentSessionId: string, childSessionId: string) => void
   readonly onOpenProjectedChild?: (childSessionId: string) => void
-} & Pick<import('@deepseek-ai/dsh-client-ui-chat/client').ChatNodeOwnerProps, 'cwd' | 'openFile'>
+} & Pick<import('@deepseek-ai/dsh-client-ui-chat/client').ChatNodeOwnerProps, 'openFile'>
 
 /**
  * Activity is owned by the DSH session that committed the ACP replay payload.

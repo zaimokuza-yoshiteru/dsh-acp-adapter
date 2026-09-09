@@ -42,11 +42,8 @@ export default defineConfig({
         './node_modules/@deepseek-ai/dsh-api-gateway/lib/types/client/index.js',
         import.meta.url,
       )),
-      // react 是宿主平台模块（loader 模块表在运行时应答），本包按纪律不安装；
-      // client 注册测试（client-registration.spec.ts 经 apply → 组件模块）需要
-      // 两个值级 import 可解析。组件渲染从不被测试消费——stub 只满足模块加载，
-      // 行为断言全部落在 data/glue 层。ui-primitives 同理（baseline 行，其真实
-      // lib 会 import react/jsx-runtime，node 下不可解析）。
+      // React 与 UI primitives 由宿主模块表提供。普通测试使用元素树替身；
+      // 真实渲染、effects 和交互由加载已构建插件的浏览器 E2E 验证。
       '@deepseek-ai/dsh-client-ui-primitives': fileURLToPath(
         new URL('./test/ui-primitives-stub.mjs', import.meta.url),
       ),
@@ -54,9 +51,6 @@ export default defineConfig({
     },
   },
   test: {
-    // Mock ACP server contract suites are included by this pattern; an empty
-    // contract directory remains valid and must still pass.
     include: ['test/**/*.spec.ts'],
-    passWithNoTests: true,
   },
 })

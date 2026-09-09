@@ -50,7 +50,9 @@ pnpm test:e2e
 DSH_E2E_LIVE=1 pnpm test:e2e -t 'live ACP smoke'
 ```
 
-测试优先选择实际目录中的 Haiku、Mini 等较小模型，每个 Agent 在独立临时工作区接收一条无工具请求，验证宿主指令中的标记到达模型、原生消息落盘及刷新恢复。`DSH_E2E_LIVE_PROFILES=claude` 可限定 Agent；结果和实际模型目录写入 gitignored `.local/e2e-live/`。它会向 Agent 已配置的模型服务发送测试指令、宿主指令与临时工作区元数据；不会把项目文件作为输入。登录或网络失败会使已选择的测试失败，不会伪装成通过。
+测试从实际目录选择预设的小模型：Claude Haiku、Codex Mini / Spark、Devin SWE-1.7 Medium / Mini Low / Flash、Kimi Coding。没有匹配项就失败，不回退到默认模型；可用 `DSH_E2E_LIVE_<PROFILE>_MODEL` 指定精确 ID，例如 `DSH_E2E_LIVE_DEVIN_MODEL=swe-1-7-medium`。模型别名仍使用该 Agent 已配置的服务路由。
+
+每个 Agent 在独立临时工作区的同一会话接收两条无工具请求；第二轮更新宿主指令中的随机标记，验证新指令到达模型、原生 stream 落盘，以及每轮刷新恢复。`DSH_E2E_LIVE_PROFILES=claude` 可限定 Agent；结果、实际模型目录和成功截图写入 gitignored `.local/e2e-live/`。测试会向配置的模型服务发送测试指令、宿主指令与临时工作区元数据，不把项目文件作为输入。登录或网络失败会使测试失败。这组真实连接冒烟不代替上面的工具、审批和 jobs 协议回归。
 
 若 Agent 仅通过父进程环境中的密钥认证，需要显式指定要放入临时 ACP profile 的环境变量名，例如 `DSH_E2E_LIVE_CLAUDE_ENV_KEYS=ANTHROPIC_AUTH_TOKEN`。测试只读取列出的变量，值不写入测试结果；临时 profile 随宿主清理。生产环境仍需在该 Agent 的连接设置中显式配置凭据，不会自动继承父进程密钥。模型目录能够返回不等于生成请求已经完成认证。
 
