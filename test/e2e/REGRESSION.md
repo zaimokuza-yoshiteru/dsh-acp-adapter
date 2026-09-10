@@ -393,3 +393,5 @@ alpha.2 的 `dsh-client-store` Node 入口保留 zustand / immer 的 bare import
 真实双模型演示初次被断言拦截：切换后的模型仅返回新 token 和结果，没有调用工具创建第二组任务。保留失败证据，将下一次请求明确为独立新任务后完整重跑通过；未增加自动重试或放宽任务断言，单次模型不执行工具不能算成功。最初多行测试指令曾被浏览器输入辅助函数按 Enter 提交，现统一为单行再输入，避免拆成多个用户回合。
 
 最终 Chrome 演示完成业务断言并写入 passed 证据，保留实例等待用户查看，因此保留模式的 Vitest 进程尚未退出。共享任务四 Agent 证据在 gitignored `.local/rc2-real-teams/`；最终双模型、真实审批及截图在 `.local/e2e-live-teams/`，失败演示证据另存 `.local/rc2-review-first-attempt/`。云端 CI 和 npm 发布结果以同一提交及版本标签的 Actions 为准。
+
+首次云端 CI 暴露两项测试基础设施问题：Linux / macOS 的离线安装门禁缺少 MCP SDK 间接依赖的缓存元数据；Windows 的 200 ms 超时测试在子进程来得及写启动日志前终止，导致日志计数为零。安装门禁已删除本地依赖覆盖，改为使用临时 pnpm store 按真实发布依赖联网安装，安装、启动、卸载在本地重新通过。超时用例改为观察真实宿主 spawn 调用次数，仍严格检查两次调用仅启动一个进程以及原有超时错误，保留真实 subprocess 服务和原有期限。

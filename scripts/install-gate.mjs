@@ -3,10 +3,10 @@
  * Clean-install smoke gate for the exact published DSH host (or source reference).
  *
  * The gate deliberately uses a temporary DSH_HOME and a local package tarball.
- * It does not touch the user's profile, registry, or pnpm store.  The DSH
+ * It does not touch the user's profile or registry configuration. The DSH
  * profile's normal module fallback resolves the host bundles from the supplied
- * installation; plugin dependencies are installed with pnpm --offline
- * so a missing local cache is reported instead of silently downloading.
+ * installation. Plugin dependencies use their published manifest without local
+ * overrides, with a temporary pnpm store so a warm checkout cannot mask omissions.
  */
 
 import { spawn, spawnSync } from 'node:child_process'
@@ -49,7 +49,7 @@ Options:
   --skip-boot         Install and inspect composition, but do not bind HTTP
   -h, --help          Show this help
 
-The install uses a temporary DSH_HOME and pnpm --offline.`
+The install uses a temporary DSH_HOME and pnpm store; registry access is required.`
 }
 
 /**
@@ -147,30 +147,6 @@ function packLocalTarball(tempRoot) {
   const candidates = readdirSync(tempRoot).filter(name => name.endsWith('.tgz') && !before.has(name))
   if (candidates.length !== 1) fail(`expected one packed tarball, found ${candidates.join(', ') || '(none)'}`)
   return join(tempRoot, candidates[0])
-}
-
-/**
- * Make the offline gate independent of a registry cache.  A published plugin
- * still declares normal npm dependencies; for this local gate we seed those
- * two runtime packages from this checkout and add pnpm overrides in the
- * temporary profile only.  DSH's own bundles continue to resolve through its
- * normal installed-module fallback.
- */
-function seedLocalDependencies(hostRoot, dshHome, env) {
-  const dependencies = Object.keys(packageJson.dependencies ?? {})
-  if (dependencies.length === 0) return
-  const localPaths = dependencies.map(name => {
-    const candidate = join(root, 'node_modules', ...name.split('/'))
-    if (!existsSync(join(candidate, 'package.json'))) fail(`local runtime dependency is unavailable: ${candidate}`)
-    return candidate
-  })
-  const bin = hostCli(hostRoot)
-  run(process.execPath, [bin, 'plugin', '--profile', profileName, 'add', ...localPaths, '--save-exact', '--ignore-scripts', '--offline'], { env, timeout: 120_000 })
-  const manifestPath = join(dshHome, 'profiles', profileName, 'package.json')
-  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
-  const overrides = Object.fromEntries(dependencies.map(name => [name, `file:${join(root, 'node_modules', ...name.split('/'))}`]))
-  manifest.pnpm = { ...(manifest.pnpm ?? {}), overrides: { ...(manifest.pnpm?.overrides ?? {}), ...overrides } }
-  writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n')
 }
 
 function tarEntries(tgz) {
@@ -290,12 +266,8 @@ async function main() {
     if (!existsSync(tgz)) fail(`tarball does not exist: ${tgz}`)
     const entries = tarEntries(tgz)
     assertTarballEntries(entries)
-    const env = { DSH_HOME: dshHome, DSH_TELEMETRY_DISABLED: '1', NO_COLOR: '1' }
-    // Seed only the plugin's local runtime dependencies.  This keeps the
-    // clean gate deterministic while leaving the host installation/fallback
-    // path exactly as DSH defines it.
-    seedLocalDependencies(args.hostRoot, dshHome, env)
-    run(process.execPath, [hostCli(args.hostRoot), 'plugin', '--profile', profileName, 'add', tgz, '--save-exact', '--ignore-scripts', '--offline'], { env, timeout: 120_000 })
+    const env = { DSH_HOME: dshHome, DSH_TELEMETRY_DISABLED: '1', NO_COLOR: '1', npm_config_store_dir: join(tempRoot, 'pnpm-store') }
+    run(process.execPath, [hostCli(args.hostRoot), 'plugin', '--profile', profileName, 'add', tgz, '--save-exact', '--ignore-scripts'], { env, timeout: 120_000 })
     const dump = run(process.execPath, [hostCli(args.hostRoot), '--profile', profileName, '--dump-config'], { env, timeout: 30_000 }).stdout
     assertComposedDump(dump)
     let boot = { skipped: true }
