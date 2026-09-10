@@ -7,7 +7,7 @@ on:
 
 jobs:
   published-compatibility:
-    name: DSH 0.1.5 alpha npm (${{ matrix.os }})
+    name: DSH npm compatibility (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
@@ -47,10 +47,13 @@ jobs:
       - uses: actions/checkout@v6
         with:
           path: dsh-acp-adapter
+      - name: Resolve exact DSH source tag
+        id: dsh-target
+        run: node --input-type=module -e 'import { appendFileSync } from "node:fs"; import { DSH_SOURCE_TAG } from "./scripts/dsh-target.mjs"; appendFileSync(process.env.GITHUB_OUTPUT, `tag=${DSH_SOURCE_TAG}\n`)'
       - uses: actions/checkout@v6
         with:
           repository: deepseek-ai/deepseek-harness
-          ref: dsh-v0.1.5-alpha.2
+          ref: ${{ steps.dsh-target.outputs.tag }}
           path: reference/deepseek-harness
       - uses: actions/setup-node@v6
         with:

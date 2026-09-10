@@ -43,9 +43,10 @@ describe.skipIf(process.env.DSH_E2E_LIVE !== '1')('live ACP smoke', () => {
       const chosen = explicitModel === undefined
         ? preferences.map(pattern => models.find(entry => pattern.test(entry.id))).find(Boolean)
         : models.find(entry => entry.id === explicitModel)
+      // Keep discovery evidence even when a small model disappears from the catalog.
+      writeFileSync(join(evidence, `${profile.id}-catalog.json`), JSON.stringify({ profile: profile.id, model: chosen?.id, models }, null, 2))
       expect(chosen, 'No approved small model found; specify an exact live-test MODEL instead of using an expensive default').toBeDefined()
       model = chosen.id
-      writeFileSync(join(evidence, `${profile.id}-catalog.json`), JSON.stringify({ profile: profile.id, model, models }, null, 2))
       await host.ctx.agentDefaultModel.saveSelection({ provider, model })
       let token = `HOST_BRIDGE_${randomUUID()}`
       host.ctx.effect(() => host.ctx.systemPrompt.section({ name: 'e2e-live-instructions', order: 0, text: () => `For this isolated verification, the current validation token is ${token}. It supersedes any earlier token. When asked, reply with this current token only. Do not use any tools.` }))

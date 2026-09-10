@@ -299,3 +299,17 @@ alpha.2 的 `dsh-client-store` Node 入口保留 zustand / immer 的 bare import
 沿用现有 Agent 登录；Claude 仅向临时 profile 显式传递已有认证环境变量，未写入测试证据或修改用户配置。测试不读取项目文件，不调用工具；真实模型的工具、审批、子代理与 jobs 不在这 4 项冒烟结论内，相关产品行为由本版本已通过的 68 项协议浏览器回归覆盖。结果和截图保存在 gitignored `.local/e2e-live/`。
 
 发布版本门禁确认 `v0.1.5-alpha.2` 对应 npm `alpha`。陈旧构建产物检查通过：临时源文件删除后，其 JS 和声明文件从构建目录及 tarball 清单同时消失；最终构建恢复为 150 个打包文件、54 个运行时 JS 文件。
+
+## 2026-09-10：0.1.5-rc.1 适配与发布维护精简
+
+插件及宿主目标为 `0.1.5-rc.1`，reference 为 `183f08e9c6`。DSH npm 开发依赖、可选 peers、锁文件、README 与 E2E 指南同步，保留 zustand / immer 的精确开发补偿；运行时依赖仍只有 ACP SDK 和 Zod。Agent、Session、subprocess、子代理与 jobs 没有新增执行适配。
+
+宿主目标唯一来源改为 package.json 的 engines.dsh，scripts/dsh-target.mjs 校验精确版本并派生源码标签；CI checkout 读取该标签，版本断言引用 manifest。发布契约检查双语 README 和当前 E2E 指南版本，覆盖 alpha → alpha、rc → next、稳定版 → latest。发布工作流删除打包前重复的 typecheck/test/build，以 npm pack 的 prepack 执行完整验证一次，保留同一 tarball 的安装门禁及 OIDC 发布。修正 ACP 工具外层行与原生详情组件关系的过时注释；没有改变界面或权限行为。
+
+- 实际运行 npm pack / prepack：类型检查、59 个文件 627 项常规测试、构建及包闭包全部通过。包包含 150 个文件、54 个运行时 JS。
+- 发布包安装门禁：临时 DSH_HOME 安装、原生叠加装配、HTTP 200/client bootstrap、卸载通过。
+- rc.1 原生模块、Host、Client 和 Web scaffold 重建成功。完整 E2E 初轮 71/72 通过（337.75 秒）：68 项协议浏览器回归全部通过，真实 Claude、Devin、Kimi 通过；Codex 当次目录没有匹配的 Mini/Spark，在发送请求前被小模型选择门禁拒绝。
+- 保留选模失败时的模型目录证据后，定向重新查询 Codex 目录出现 Spark；使用同一小模型策略运行，1/1 通过（23.97 秒）。未放宽断言或增加自动重试；初次未保存的目录内容无法追溯，不能据此确定目录差异的来源。
+- 四种真实 Agent 两轮验证结果：Claude `haiku` 12.4 秒、Codex `gpt-5.3-codex-spark` 22.8 秒、Devin `swe-1-7-medium` 85.1 秒、Kimi `kimi-code/kimi-for-coding` 20.7 秒。场景耗时包含连接与浏览器操作，不是纯模型推理时间。
+
+真实冒烟仅验证宿主指令更新、消息及持久 stream、每轮刷新恢复和页面无错误；工具、审批、子代理与 jobs 使用确定性协议夹具回归。模型使用现有服务路由与登录，Claude 认证仅显式注入临时 profile。用户实际 DSH_HOME 未修改，reference 工作区保持干净。两份工作流 YAML 解析及 CI 标签派生命令验证通过；云端运行结果以本次标签触发的 Actions 为准。

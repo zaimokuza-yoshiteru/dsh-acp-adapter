@@ -436,8 +436,8 @@ function ActivityRow(props: { readonly row: AcpActivityView; readonly t: Activit
   return activityRowElement({ ...props, open, onToggle: () => { setOpen(value => !value) } })
 }
 
-/** Native GenericToolCard is intentionally not public; this is its minimal
- * visual contract for ACP tool names without a registered keyed Tool view. */
+/** ACP tool activity shell. DSH keeps GenericToolCard private; recognized
+ * payloads use native detail blocks, with a compact IO fallback for the rest. */
 function fallbackToolRowElement({ row, t, openFile, open, onToggle }: {
   readonly row: AcpActivityView
   readonly t: ActivityNodeProps['t']

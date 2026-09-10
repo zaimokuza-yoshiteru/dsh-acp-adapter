@@ -40,9 +40,8 @@ jobs:
         run: node scripts/verify-release.mjs
       - name: Install exact published dependencies
         run: pnpm install --frozen-lockfile
-      - name: Verify package
-        run: pnpm typecheck && pnpm test && pnpm build
-      - name: Pack exact release artifact
+      # npm pack runs prepack: typecheck, tests, build and bundle verification once.
+      - name: Test and pack exact release artifact
         run: mkdir -p dist/npm && npm pack --pack-destination dist/npm
       - name: Verify expected artifact exists alone
         run: |

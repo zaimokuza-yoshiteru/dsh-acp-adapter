@@ -55,9 +55,9 @@
   font-size: var(--dsh-content-font-size-secondary, 13px);
 }
 
-/* Generic fallback mirrors DSH ToolRow because ui-tool intentionally keeps
-   GenericToolCard private. Known bash/read/edit/write/search/web/todo calls do
-   not use these rules; they render the actual host components. */
+/* Tool activity rows use this small outer shell because DSH keeps ToolRow
+   and GenericToolCard private. Recognized diff, terminal and read details
+   inside the row render native components; other payloads use the IO card. */
 .toolFallback { min-width: 0; }
 .toolBody { min-width: 0; margin-left: 4px; }
 .toolTitle { font-weight: 400; }
