@@ -32,6 +32,7 @@
 
 import { resolveTerminalJobs } from './terminal-jobs.ts'
 import type { Context } from '@deepseek-ai/cordis'
+import { createTeamBridge, teamBridgeKey } from '../teams/bridge.ts'
 import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
 import type { AdapterRegistrationHandle } from '@deepseek-ai/dsh-llm'
 import type { AcpProbeOptions } from '../../protocol/v1/types.ts'
@@ -588,6 +589,8 @@ export function installInstalledProfileRegistry(ctx: Context, options: Installed
             },
             message => log.warn(message, { operation: 'claude-draft-subagent-capability' }),
             sessionId => resolveTerminalJobs(ctx, sessionId),
+            (sessionId, capabilities, wireProfile) => createTeamBridge(ctx, sessionId, capabilities, wireProfile),
+            sessionId => teamBridgeKey(ctx, sessionId),
           )
           profileAdapters.set(id, routeAdapter)
         }

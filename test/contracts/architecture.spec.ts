@@ -91,6 +91,7 @@ function layerOf(srcRel: string): Layer | undefined {
   if (srcRel.startsWith('remote/')) return 'remote';
   if (srcRel.startsWith('host/composition/')) return 'hostComposition';
   if (srcRel.startsWith('host/subagent/')) return 'hostComposition';
+  if (srcRel.startsWith('host/teams/')) return 'hostComposition';
   if (srcRel === 'client/index.ts' || srcRel.startsWith('client/react.')) return 'clientEntry';
   if (srcRel.startsWith('client/coordinator/')) return 'clientEntry';
   if (srcRel.startsWith('client/data/')) return 'clientData';

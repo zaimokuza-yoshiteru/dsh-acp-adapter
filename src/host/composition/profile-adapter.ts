@@ -16,6 +16,7 @@ import { AcpSessionRuntime } from '../../runtime/session/session-runtime.ts'
 import type { AcpRuntimeContextUsage } from '../../runtime/session/session-runtime.ts'
 import type { AcpRuntimeLaunch } from '../../runtime/session/session-runtime.ts'
 import { acpLaunchEnvironment, acpLaunchFingerprint, profileLaunchIdentityHash } from '../../domain/session/launch-fingerprint.ts'
+import { prepareDevinTeamConfig } from '../teams/devin-config.ts'
 import { buildAcpSpawnPlan } from '../../domain/policy/sandbox.ts'
 import { descriptorOf } from '../../domain/session/agent-config.ts'
 import { DispatchLedger } from '../../runtime/session/dispatch-ledger.ts'
@@ -358,6 +359,8 @@ export class AcpProfileAdapter extends LlmAdapter {
     }) => Promise<string | undefined>,
     private readonly log?: (message: string) => void,
     private readonly terminalJobs?: (sessionId: string) => AcpTerminalJobStarter | undefined,
+    private readonly createMcpLease?: (sessionId: string, capabilities: acp.AgentCapabilities | undefined, wireProfile?: string) => Promise<import('../../runtime/session/mcp-lease.ts').AcpMcpLease | undefined>,
+    private readonly mcpKey?: (sessionId: string) => unknown,
   ) {
     super()
     this.ledger = new DispatchLedger(ledgerStore)
@@ -1452,6 +1455,8 @@ export class AcpProfileAdapter extends LlmAdapter {
     return {
       profileId: this.profileId,
       enableClaudeDraftSubagents: descriptorOf(this.profileId, profile)?.id === 'claude',
+      ...(this.mcpKey === undefined ? {} : { mcpKey: () => this.mcpKey!(sessionId) }),
+      ...(this.createMcpLease === undefined ? {} : { createMcpLease: (capabilities: acp.AgentCapabilities | undefined) => this.createMcpLease!(sessionId, capabilities, descriptorOf(this.profileId, profile)?.id) }),
       ...(this.log === undefined ? {} : {
         onCapabilityDegraded: (message: string): void => {
           if (this.claudeDraftDegradationReported) return
@@ -1464,9 +1469,23 @@ export class AcpProfileAdapter extends LlmAdapter {
       cwd,
       prepareLaunch: async (config, launchCwd): Promise<AcpRuntimeLaunch> => {
         const resolved = config as AcpStubAgentConfig
-        const env = await acpLaunchEnvironment({ config: resolved })
-        const plan = buildAcpSpawnPlan({ mode: 'danger-full-access', workspaceRoot: launchCwd, argv: [resolved.command, ...resolved.args], env })
-        return { argv: plan.argv, env: plan.env, spawnPlan: plan }
+        let env = await acpLaunchEnvironment({ config: resolved })
+        let mcpLease
+        if (descriptorOf(this.profileId, profile)?.id === 'devin') {
+          const lease = await this.createMcpLease?.(sessionId, { mcpCapabilities: { http: true } }, 'devin')
+          if (lease !== undefined) {
+            const prepared = await prepareDevinTeamConfig(env, lease)
+            env = prepared.env
+            mcpLease = prepared.lease
+          }
+        }
+        try {
+          const plan = buildAcpSpawnPlan({ mode: 'danger-full-access', workspaceRoot: launchCwd, argv: [resolved.command, ...resolved.args], env })
+          return { argv: plan.argv, env: plan.env, spawnPlan: plan, ...(mcpLease === undefined ? {} : { mcpLease }) }
+        } catch (error) {
+          await mcpLease?.close()
+          throw error
+        }
       },
       createFileSystemHandlers: () => createAcpFileSystemHandlers({
         profileId: this.profileId,

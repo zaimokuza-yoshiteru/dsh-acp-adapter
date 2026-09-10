@@ -53,7 +53,8 @@ describe('alpha client contribution', () => {
     Object.assign(ctx, {
       inject: (deps: readonly string[], callback: (scope: typeof ctx) => void | Promise<void>) => {
         uiInjects.push([...deps])
-        const started = Promise.resolve(callback(ctx))
+        // An optional native Teams profile is absent in this baseline assembly.
+        const started = deps.includes('remote.agentTeams') ? Promise.resolve() : Promise.resolve(callback(ctx))
         return Object.assign(started, {
           dispose: async () => { lifecycle.push('ui-dispose') },
         })
@@ -61,7 +62,7 @@ describe('alpha client contribution', () => {
     })
     const dispose = await apply(ctx as never)
     expect(lifecycle).toEqual(['mount'])
-    expect(uiInjects).toEqual([[...inject, 'remote.dshAcp']])
+    expect(uiInjects).toEqual([[...inject, 'remote.dshAcp'], ['remote.agentTeams', 'uiSession']])
     expect(definitions).toHaveLength(2)
     expect(injections).toHaveLength(7)
     expect(injections[0]).toMatchObject({ id: 'acp' })

@@ -1,7 +1,9 @@
 // Keyless product scenarios. Profiles vary wire representations, never assertions.
 import fs from 'node:fs'
+import { teamTurn } from './team-turn.mjs'
 
 export async function regressionTurn(session, msg, { sendUpdate, sendAgentRequest, respond, log }) {
+  if (await teamTurn(session, msg, { sendUpdate, sendAgentRequest, respond, log })) return
   const prompt = msg.params.prompt.filter(block => block.type === 'text').map(block => block.text).join('\n')
   const profile = process.env.MOCK_PROFILE
   const model = session.configOptions.find(option => option.id === 'model')?.currentValue

@@ -1,13 +1,14 @@
 // bypass-api.spec.ts — 「插件旁路 API」的可执行回归门。
 //
-// 由消除满足：插件不拥有任何 HTTP/网络服务面——全部宿主交互只经 typert
+// 浏览器业务 API 只经 Typert；唯一网络例外是会话绑定的 Teams MCP transport。
+// 其 loopback、Origin、随机能力地址、工具白名单和生命周期由 team-bridge.spec.ts 验证。
+// 全部浏览器宿主交互只经 typert
 // typed Remote（strict descriptor 预生成，gateway 经 /api 信任围栏派发，承担
 // loopback/same-origin/CSRF 防线）； webServer 旁路路由已删除。本套件把
 // 这条结构性事实钉成可执行断言，任何旁路面回归都会在此变红：
 //
-//   1. 零 HTTP 面：src/ 全域无 createServer / .listen( / fetch( /
-//      XMLHttpRequest，也无 node:http(s)/node:net import（剥注释后扫描，
-//      注释提及不误伤）；
+//   1. 仅 Teams MCP 可创建回环监听；其他模块无 HTTP 旁路，
+//      浏览器业务仍不使用 fetch / XMLHttpRequest（剥注释后扫描）；
 //   2. Remote 调用面钉版：src/remote/service.ts 的 @Remote 装饰器只暴露当前
 //      additive health/backend/audit/activity/recovery/session-control surface——
 //      「写接口集合」即此清单，与 test/integration/host/health.spec.ts 的 typert 生成物钉版
@@ -71,7 +72,7 @@ const PINNED_REMOTE_METHODS: readonly string[] = [
 ];
 
 describe(' 旁路 API 消除门', () => {
-  it('src/ 全域无 HTTP/网络服务面原语（插件零 HTTP surface，fetch 也不过线）', () => {
+  it('only the session-owned Teams MCP transport may create a network listener', () => {
     const violations: string[] = [];
     for (const abs of walkTsFiles(SRC_DIR)) {
       const rel = path.relative(SRC_DIR, abs).split(path.sep).join('/');
@@ -80,7 +81,11 @@ describe(' 旁路 API 消除门', () => {
         if (pattern.test(text)) violations.push(`${rel}: ${label}`);
       }
     }
-    expect(violations, `旁路 API 回归：\n  ${violations.join('\n  ')}`).toEqual([]);
+    expect(violations, `旁路 API 回归：\n  ${violations.join('\n  ')}`).toEqual([
+      'host/teams/bridge.ts: createServer',
+      'host/teams/bridge.ts: .listen(',
+      'host/teams/bridge.ts: node:http(s)/node:net import',
+    ]);
   });
 
   it('Remote 调用面钉版：@Remote 装饰器只暴露当前公开面（无旁路增删）', () => {

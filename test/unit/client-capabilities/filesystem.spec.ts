@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -86,24 +86,36 @@ describe('ACP native filesystem handlers', () => {
     const timeoutAudits: Array<{ outcome: string }> = []
     let blocked = true
     let release = () => {}
+    let entered = () => {}
+    const reading = new Promise<void>(resolve => { entered = resolve })
+    const deadline = new AbortController()
+    // Exercise the request deadline deterministically; real disk I/O is not a 10 ms benchmark.
+    const timeout = vi.spyOn(AbortSignal, 'timeout')
+      .mockReturnValueOnce(deadline.signal)
+      .mockReturnValueOnce(new AbortController().signal)
     const handlers = createAcpFileSystemHandlers({
       profileId: 'codex', timeoutMs: 10,
       audit: (event) => { timeoutAudits.push(event) },
-      io: { beforeRead: async () => blocked ? await new Promise<void>((resolve) => { release = resolve }) : undefined },
+      io: { beforeRead: async () => blocked ? await new Promise<void>((resolve) => { release = resolve; entered() }) : undefined },
     })
-    await expect(handlers.readTextFile({ sessionId: 'acp-1', path: file })).rejects.toThrow(/failed|aborted/)
-    expect(timeoutAudits.at(-1)?.outcome).toBe('timeout')
-    blocked = false; release()
-    await expect(handlers.readTextFile({ sessionId: 'acp-1', path: file })).resolves.toEqual({ content: 'old' })
-    const writeHandlers = createAcpFileSystemHandlers({
-      profileId: 'codex',
-      audit: async () => { throw new Error('audit store unavailable') },
-      onAuditError: (error) => { auditErrors.push(error) },
-    })
-    await expect(writeHandlers.writeTextFile({ sessionId: 'acp-1', path: file, content: 'new' })).resolves.toEqual({})
-    expect(fs.readFileSync(file, 'utf8')).toBe('new')
-    expect(auditErrors).toHaveLength(1)
-    fs.rmSync(dir, { recursive: true, force: true })
+    try {
+      const failed = expect(handlers.readTextFile({ sessionId: 'acp-1', path: file })).rejects.toThrow(/failed|aborted/)
+      await reading
+      expect(timeout).toHaveBeenCalledWith(10)
+      deadline.abort(new DOMException('Deadline expired', 'TimeoutError'))
+      await failed
+      expect(timeoutAudits.at(-1)?.outcome).toBe('timeout')
+      blocked = false; release()
+      await expect(handlers.readTextFile({ sessionId: 'acp-1', path: file })).resolves.toEqual({ content: 'old' })
+      const writeHandlers = createAcpFileSystemHandlers({
+        profileId: 'codex',
+        audit: async () => { throw new Error('audit store unavailable') },
+        onAuditError: (error) => { auditErrors.push(error) },
+      })
+      await expect(writeHandlers.writeTextFile({ sessionId: 'acp-1', path: file, content: 'new' })).resolves.toEqual({})
+      expect(fs.readFileSync(file, 'utf8')).toBe('new')
+      expect(auditErrors).toHaveLength(1)
+    } finally { release(); timeout.mockRestore(); fs.rmSync(dir, { recursive: true, force: true }) }
   })
 
   it('bounds a hanging rename and removes its temporary file', async () => {

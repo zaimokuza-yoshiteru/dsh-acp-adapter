@@ -71,7 +71,9 @@ npx @deepseek-ai/dsh@0.1.5-rc.1 plugin --profile web add @zaimokuza/dsh-acp-adap
 
 ## <img src="assets/readme/icon-connect.svg" width="24" height="24" alt="" /> 如何配合
 
-![DSH 管理会话与界面；适配器传递上下文、归一化活动；Agent 负责模型、工具和权限。子代理详情只读，后台任务不跨 DSH 重启恢复。](assets/readme/acp-overview.zh-CN.svg)
+![DSH 管理会话与界面；适配器传递上下文、归一化活动；Agent 负责模型、工具和权限。外部子代理投影只读，后台任务不跨 DSH 重启恢复。](assets/readme/acp-overview.zh-CN.svg)
+
+**实验性 Agent Teams：** 跟随 DSH 的 Teams profile 启用，复用原生团队面板；成员从创建时的主会话继承 Agent、模型与推理配置。主会话切换模型后，新成员使用新模型，已有成员保持原模型；团队内使用同一 ACP Agent。仅支持新建上下文，成员的待处理请求可从主会话进入原生审批。团队协调免额外审批，普通操作的审批保持原样；成员消息在 DSH 步骤边界送达。
 
 ## <img src="assets/readme/icon-update.svg" width="24" height="24" alt="" /> 更新与卸载
 

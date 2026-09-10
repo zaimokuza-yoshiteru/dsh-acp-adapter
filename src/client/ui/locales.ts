@@ -7,6 +7,9 @@
  */
 
 const zh = {
+  teamApprovalEntry: '{name} · 待处理请求',
+  teamApprovalLoadFailed: '暂时无法读取团队待处理请求。',
+  teamApprovalOpenFailed: '无法打开成员会话，请从原生团队面板重试。',
   title: 'ACP adapter',
   intro: '添加并管理通过 ACP 接入 DSH 会话页面的智能体。',
   settingsLoading: '正在读取设置…',
@@ -239,6 +242,9 @@ const zh = {
 export type AcpLocaleKey = keyof typeof zh
 
 const en: Record<AcpLocaleKey, string> = {
+  teamApprovalEntry: '{name} · Pending request',
+  teamApprovalLoadFailed: 'Team pending requests are temporarily unavailable.',
+  teamApprovalOpenFailed: 'Could not open the member session. Retry from the native Team panel.',
   title: 'ACP adapter',
   intro: 'Add and manage agents available from the DSH session UI through ACP.',
   settingsLoading: 'Loading settings…',

@@ -71,7 +71,9 @@ If the Agent needs an API key, add it explicitly under **Connection settings →
 
 ## <img src="assets/readme/icon-connect.svg" width="24" height="24" alt="" /> How it fits together
 
-![DSH owns sessions and UI; the adapter passes context and normalizes activity; the Agent owns models, tools and permissions. Subagent details are read-only, and jobs do not survive a DSH restart.](assets/readme/acp-overview.en.svg)
+![DSH owns sessions and UI; the adapter passes context and normalizes activity; the Agent owns models, tools and permissions. External subagent projections are read-only, and jobs do not survive a DSH restart.](assets/readme/acp-overview.en.svg)
+
+**Experimental Agent Teams:** Follows DSH’s Teams profiles and uses its native Team panel. Members inherit the Lead’s Agent, model and reasoning settings at creation, with fresh context only. Switching the Lead’s model affects future members; existing members retain theirs. A team uses one ACP Agent. Open member requests from the Lead to answer the original native approval. Team coordination adds no approval prompts; ordinary permissions remain unchanged. Messages arrive at DSH step boundaries.
 
 ## <img src="assets/readme/icon-update.svg" width="24" height="24" alt="" /> Update or remove
 

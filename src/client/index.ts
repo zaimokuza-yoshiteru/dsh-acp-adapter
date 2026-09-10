@@ -17,6 +17,9 @@ import { CrossBackendCoordinator } from './coordinator/cross-backend-coordinator
 import { CrossBackendModal } from './ui/CrossBackendModal.ts'
 import { AcpRecoveryDock } from './ui/AcpRecoveryDock.ts'
 import { AcpAgentControl } from './ui/AcpAgentControl.ts'
+import { AcpTeamApprovals } from './ui/AcpTeamApprovals.ts'
+import type { AcpTeamApprovalActions } from './ui/AcpTeamApprovals.ts'
+import type {} from '@deepseek-ai/dsh-experimental-agent-team/remote'
 import { resolveCrossBackendLocation } from './data/cross-backend-controller.ts'
 import { AcpPanelController } from './data/controller.ts'
 import { ManagedAcpRouteCatalog } from './data/managed-routes.ts'
@@ -164,6 +167,27 @@ async function registerUi(ctx: ClientContext): Promise<void> {
     }),
   }, AcpActivityNode))
   const coordinator = new CrossBackendCoordinator(ctx, managedRoutes.owns)
+  // Only the user's native Teams Web profile mounts this Remote namespace.
+  ctx.inject(['remote.agentTeams', 'uiSession'], (teamCtx) => {
+    const actions: AcpTeamApprovalActions = {
+      pending: teamCtx.uiSession.pendingInteractions,
+      ownsRoute: managedRoutes.owns,
+      async loadMembers(sessionId) {
+        const result = await teamCtx.remote.agentTeams.view(sessionId)
+        if (!result.ok) throw new Error(result.error.message)
+        return result.value.members
+      },
+      async openMember(parentSessionId, childSessionId) {
+        await sessions.refreshSubagents(parentSessionId)
+        if (sessions.list.getSnapshot().current !== parentSessionId) return
+        sessions.openSubagent({ parentSessionId, childSessionId, mode: 'continuable' })
+      },
+    }
+    teamCtx.slots.inject('conversation.session.header.utilities', () => teamCtx.slots.register({
+      name: 'conversation.session.header.utilities', id: 'acp-team-approvals', order: 95,
+      locale: 'acpActivity', inject: () => actions,
+    }, AcpTeamApprovals))
+  })
   ctx.effect(() => coordinator.start(), 'dsh-acp: model transition coordinator')
   ctx.slots.inject('shell.overlay', () => ctx.slots.register({
     name: 'shell.overlay',
