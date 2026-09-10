@@ -11,7 +11,6 @@ export interface AcpReplayPayloadV1 {
   readonly committedPromptOrdinal: number
   readonly committedActivitySeq: number
   readonly activityAnchorMessageId?: string
-  readonly activityRequestHeaderSeq?: number
 }
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -28,7 +27,6 @@ export function acpReplayPayloadOf(event: { readonly type: string; readonly data
   if (typeof response.ownerDshSessionId !== 'string' || typeof response.profileId !== 'string'
     || typeof response.profileGeneration !== 'number' || typeof response.agentSessionId !== 'string'
     || typeof response.bindingEpoch !== 'number' || typeof response.launchFingerprint !== 'string'
-    || typeof response.committedPromptOrdinal !== 'number' || typeof response.committedActivitySeq !== 'number'
-    || (response.activityRequestHeaderSeq !== undefined && typeof response.activityRequestHeaderSeq !== 'number')) return undefined
+    || typeof response.committedPromptOrdinal !== 'number' || typeof response.committedActivitySeq !== 'number') return undefined
   return response as unknown as AcpReplayPayloadV1
 }

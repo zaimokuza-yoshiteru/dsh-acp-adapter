@@ -1,4 +1,4 @@
-import { createElement as h, useEffect, useState } from 'react'
+import { createElement as h, useEffect, useState, useSyncExternalStore } from 'react'
 import type { ReactNode } from 'react'
 import type {
   ConversationNodeDefinition,
@@ -25,6 +25,10 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
   }
 }
 
+declare module '@deepseek-ai/dsh-client-ui-conversation/client' {
+  interface ConversationStepDataMap { 'acp-activity': boolean }
+}
+
 declare module '@deepseek-ai/dsh-client-ui-chat/client' {
   interface ChatNodeDataMap {
     'acp-activity': AcpActivityNodeData
@@ -32,6 +36,7 @@ declare module '@deepseek-ai/dsh-client-ui-chat/client' {
 }
 
 export interface AcpActivityNodeData {
+  readonly settled?: true
   readonly ownerDshSessionId: string
   readonly promptAnchorMessageId: string
   readonly profileId: string
@@ -62,7 +67,7 @@ type ActivityNodeProps = {
   readonly journalHub: AcpActivityJournalHub
   readonly onProjectedChild?: (parentSessionId: string, childSessionId: string) => void
   readonly onOpenProjectedChild?: (childSessionId: string) => void
-} & Pick<import('@deepseek-ai/dsh-client-ui-chat/client').ChatNodeOwnerProps, 'cwd' | 'openFile'>
+} & Pick<import('@deepseek-ai/dsh-client-ui-chat/client').ChatNodeOwnerProps, 'openFile'>
 
 /**
  * Activity is owned by the DSH session that committed the ACP replay payload.
@@ -423,19 +428,20 @@ export function activityRowElement({ row, t, onOpenProjectedChild, open = false,
   }, body)
 }
 
-function ActivityRow(props: { readonly row: AcpActivityView; readonly t: ActivityNodeProps['t']; readonly onOpenProjectedChild?: (childSessionId: string) => void }): ReactNode {
+function ActivityRow(props: { readonly row: AcpActivityView; readonly t: ActivityNodeProps['t']; readonly openFile: ActivityNodeProps['openFile']; readonly onOpenProjectedChild?: (childSessionId: string) => void }): ReactNode {
   const [open, setOpen] = useState(false)
   if (props.row.kind === 'tool' || props.row.kind === 'plan') {
-    return fallbackToolRowElement({ row: props.row, t: props.t, open, onToggle: () => { setOpen(value => !value) } })
+    return fallbackToolRowElement({ row: props.row, t: props.t, openFile: props.openFile, open, onToggle: () => { setOpen(value => !value) } })
   }
   return activityRowElement({ ...props, open, onToggle: () => { setOpen(value => !value) } })
 }
 
-/** Native GenericToolCard is intentionally not public; this is its minimal
- * visual contract for ACP tool names without a registered keyed Tool view. */
-function fallbackToolRowElement({ row, t, open, onToggle }: {
+/** ACP tool activity shell. DSH keeps GenericToolCard private; recognized
+ * payloads use native detail blocks, with a compact IO fallback for the rest. */
+function fallbackToolRowElement({ row, t, openFile, open, onToggle }: {
   readonly row: AcpActivityView
   readonly t: ActivityNodeProps['t']
+  readonly openFile: ActivityNodeProps['openFile']
   readonly open: boolean
   readonly onToggle: () => void
 }): ReactNode {
@@ -467,6 +473,8 @@ function fallbackToolRowElement({ row, t, open, onToggle }: {
   const summary = delegated && record(input) && typeof input.title === 'string'
     ? input.title
     : terminal?.command ?? read?.label ?? inputPath ?? diffs[0]?.path ?? row.presentation
+  const paths = [...new Set(diffs.map(diff => diff.path))]
+  const filePath = read?.label ?? (paths.length === 1 ? paths[0] : undefined)
   const icon = row.status === 'failed'
     ? h(StateDot, { state: 'error' })
     : row.status === 'cancelled' ? h(StateDot, { state: 'warning' }) : h(IconApiOutline14, { size: 14 })
@@ -481,7 +489,13 @@ function fallbackToolRowElement({ row, t, open, onToggle }: {
     expandOnRowClick: true,
     keepContentWhenOpen: true,
     onToggle,
-    collapsedContent: h('span', { className: css.toolSummary }, summary),
+    collapsedContent: h('span', { className: css.toolSummary },
+      filePath === undefined || row.status === 'failed' ? summary : h('button', {
+        type: 'button', className: css.fileLink, 'data-acp-file': true,
+        onClick: (event: { stopPropagation(): void }) => { event.stopPropagation(); openFile(filePath) },
+        onKeyDown: (event: { key: string; stopPropagation(): void }) => { if (event.key === 'Enter' || event.key === ' ') event.stopPropagation() },
+      }, summary),
+    ),
   }, h('div', { className: css.toolBody },
     diffs.length === 0 ? null : h(DiffBlock, { diffs, labels: diffLabels(t), className: css.nativeBlock }),
     terminal === undefined ? null : h(TerminalBlock, { ...terminal, labels: terminalLabels(t), className: css.nativeBlock }),
@@ -500,8 +514,19 @@ function fallbackToolRowElement({ row, t, open, onToggle }: {
   ))
 }
 
+const UNSETTLED_SOURCE = { getSnapshot: () => undefined, subscribe: () => () => {} }
+
+/** Subscribe to native Step facts: a final marker retires the live journal view. */
+export function AcpActivityNode(props: ActivityNodeProps): ReactNode {
+  const location = props.node.location
+  const source = location.kind === 'step' ? location.step.data.source('acp-activity') : UNSETTLED_SOURCE
+  const settled = useSyncExternalStore(source.subscribe, source.getSnapshot)
+  if (props.node.data.settled !== true && settled === true) return null
+  return h(AcpActivityContent, props)
+}
+
 /** Additive ACP activity renderer. Agent-provided presentation is never translated. */
-export function AcpActivityNode({ node, sessionId, journalHub, t, onProjectedChild, onOpenProjectedChild }: ActivityNodeProps): ReactNode {
+function AcpActivityContent({ node, sessionId, journalHub, t, openFile, onProjectedChild, onOpenProjectedChild }: ActivityNodeProps): ReactNode {
   const [rows, setRows] = useState<readonly AcpActivityView[]>([])
   const [unavailable, setUnavailable] = useState(false)
   const data = node.data
@@ -525,7 +550,7 @@ export function AcpActivityNode({ node, sessionId, journalHub, t, onProjectedChi
   if (rows.length === 0 && !unavailable) return null
   return h('section', { className: css.flow, 'data-acp-activity': true },
     ...rows.map(row => h(ActivityRow, {
-      key: `${row.activityId}:${row.activitySeq}`, row, t,
+      key: `${row.activityId}:${row.activitySeq}`, row, t, openFile,
       ...(onOpenProjectedChild === undefined ? {} : { onOpenProjectedChild }),
     })),
     unavailable ? h('div', { className: css.unavailable },
@@ -576,7 +601,8 @@ export const acpPromptAnchorDefinition: ConversationNodeDefinition<AcpPromptAnch
 
 /**
  * Owned request/header evidence creates the node before the Agent starts.
- * The durable assistant replay marker later enriches that same node. Native
+ * A durable assistant marker publishes the settled node; native Step data
+ * retires its live placeholder without retaining event-number references. Native
  * turns and ACP routes owned by another plugin create no node or subscription.
  */
 export function createAcpActivityDefinition(
@@ -587,8 +613,12 @@ export function createAcpActivityDefinition(
     target: 'chat',
     match: event => {
       const payload = acpReplayPayloadOf(event)
-      if (payload?.activityRequestHeaderSeq !== undefined) return { id: `request:${payload.activityRequestHeaderSeq}`, role: 'update' }
-      if (payload !== undefined) return { id: `legacy:${payload.activityAnchorMessageId ?? `${payload.agentSessionId}:${payload.committedPromptOrdinal}`}`, role: 'start' }
+      // Session migrations renumber events but preserve opaque replay state.
+      // Settle from stable ACP identity, never a saved request/header seq.
+      if (payload !== undefined) return {
+        id: `answer:${JSON.stringify([payload.ownerDshSessionId, payload.profileId, payload.profileGeneration, payload.bindingEpoch, payload.agentSessionId, payload.committedPromptOrdinal])}`,
+        role: 'start',
+      }
       const interruptedProvider = interruptedAssistantProvider(event)
       if (interruptedProvider !== undefined && ownsRoute(interruptedProvider)) return { id: `interrupted:${event.seq}`, role: 'start' }
       const provider = requestProvider(event)
@@ -598,6 +628,7 @@ export function createAcpActivityDefinition(
       const payload = payloadOf(match)
       if (payload !== undefined) {
         return {
+          settled: true,
           ownerDshSessionId: payload.ownerDshSessionId,
           promptAnchorMessageId: payload.activityAnchorMessageId ?? `prompt:${payload.committedPromptOrdinal}`,
           profileId: payload.profileId,
@@ -614,7 +645,7 @@ export function createAcpActivityDefinition(
         if (interruptedProvider === undefined || previous === undefined || previous.profileId !== interruptedProvider) {
           throw new Error('acp-activity interrupted finalizer requires its preceding owned ACP request')
         }
-        return { ...previous, seq: match.event.seq, location: match.location }
+        return { ...previous, settled: true, seq: match.event.seq, location: match.location }
       }
       const anchor = reader.previous<AcpPromptAnchorState>('acp-prompt-anchor')?.state
       return {
@@ -627,21 +658,11 @@ export function createAcpActivityDefinition(
         location: match.location,
       }
     },
-    update: (context, match) => {
-      const payload = payloadOf(match)
-      return payload === undefined ? context.state : {
-        ...context.state,
-        // Once the durable answer exists, place Activity at that boundary.
-        // Chat folds only nodes before answerAnchorSeq; using the marker's
-        // exact sequence keeps ACP work visible without impersonating native
-        // tool/call events or replacing the stock process-summary renderer.
-        seq: match.event.seq,
-        ownerDshSessionId: payload.ownerDshSessionId,
-        promptAnchorMessageId: payload.activityAnchorMessageId ?? context.state.promptAnchorMessageId,
-        profileId: payload.profileId,
-        agentSessionId: payload.agentSessionId,
-        committedActivitySeq: payload.committedActivitySeq,
-      }
+    update: context => context.state,
+    buildLocationData: (context, scope) => {
+      const state = context.state
+      if (scope !== 'step' || state?.settled !== true || state.location.kind !== 'step') return null
+      return { kind: 'step', turn: state.location.turn.turn, step: state.location.step.step, key: 'acp-activity', value: true }
     },
     buildViewNode: (context): ActivityNode | null => {
     if (context.state === undefined) return null
@@ -658,6 +679,7 @@ export function createAcpActivityDefinition(
       location: context.state.location,
       visibility: 'visible',
       data: {
+        ...(context.state.settled === true ? { settled: true } : {}),
         ownerDshSessionId: context.state.ownerDshSessionId,
         promptAnchorMessageId: context.state.promptAnchorMessageId,
         profileId: context.state.profileId,

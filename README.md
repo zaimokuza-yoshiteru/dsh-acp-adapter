@@ -4,7 +4,7 @@
 
 在 DSH 会话页面使用 **Claude · Codex · Devin · Kimi**。
 
-> **0.1.3-alpha.2** · 兼容 **DSH 0.1.3-alpha.2**
+> **0.1.5-rc.1** · 兼容 **DSH 0.1.5-rc.1**
 
 ## <img src="assets/readme/icon-preview.svg" width="24" height="24" alt="" /> 功能预览
 
@@ -35,7 +35,7 @@ ACP 审批复用 DSH 原生审批卡，批准前可查看完整命令：
 需要 Node.js `^22.19.0 || >=24.0.0`：
 
 ```bash
-npx @deepseek-ai/dsh@0.1.3-alpha.2 web
+npx @deepseek-ai/dsh@0.1.5-rc.1 web
 ```
 
 插件开发直接安装锁定的 npm 依赖：
@@ -59,10 +59,10 @@ pnpm install --frozen-lockfile
 
 ¹ 使用 ChatGPT 登录需另装 Codex CLI。
 
-**2. 安装插件。** 以下命令安装 npm 已发布的 `alpha` 版本。
+**2. 安装插件。** 以下命令安装 npm 已发布的 `next` 版本。
 
 ```bash
-npx @deepseek-ai/dsh@0.1.3-alpha.2 plugin --profile web add @zaimokuza/dsh-acp-adapter@alpha
+npx @deepseek-ai/dsh@0.1.5-rc.1 plugin --profile web add @zaimokuza/dsh-acp-adapter@next
 ```
 
 **3. 打开「设置 → ACP adapter」**，添加模板、检查连接，再在新会话中选择 Agent 模型。
@@ -79,12 +79,12 @@ npx @deepseek-ai/dsh@0.1.3-alpha.2 plugin --profile web add @zaimokuza/dsh-acp-a
 
 ```bash
 # 更新
-npx @deepseek-ai/dsh@0.1.3-alpha.2 plugin --profile web update @zaimokuza/dsh-acp-adapter
+npx @deepseek-ai/dsh@0.1.5-rc.1 plugin --profile web update @zaimokuza/dsh-acp-adapter
 # 卸载
-npx @deepseek-ai/dsh@0.1.3-alpha.2 plugin --profile web remove @zaimokuza/dsh-acp-adapter
+npx @deepseek-ai/dsh@0.1.5-rc.1 plugin --profile web remove @zaimokuza/dsh-acp-adapter
 ```
 
-**本次更新无需清理数据。** 保留现有 SQLite 绑定与历史；当前轮次结束后重启 DSH、刷新页面，从设置标题旁确认加载版本。极早期仅有 JSONL 的开发版除外，见[兼容记录](test/e2e/REGRESSION.md#2026-09-08双语文档与旧数据兼容核查)。
+**升级时保留本地数据。** 主会话迁移由 DSH 负责；宿主不支持的旧子代理投影不额外迁移。当前轮次结束后重启 DSH、刷新页面，从设置标题旁确认加载版本。
 
 ## <img src="assets/readme/icon-help.svg" width="24" height="24" alt="" /> 遇到问题
 
@@ -92,6 +92,7 @@ npx @deepseek-ai/dsh@0.1.3-alpha.2 plugin --profile web remove @zaimokuza/dsh-ac
 | --- | --- |
 | 命令无法启动 | 核对可执行文件路径，尝试填写绝对路径。 |
 | 登录或认证失败 | 在 Agent CLI 登录，检查已配置的环境变量。 |
+| 升级后旧子代理无法打开 | 遵循 DSH 的历史格式支持范围；不额外迁移旧投影，原文件与 ACP 记录保留。 |
 | 会话需要恢复 | 按输入栏提示与 **ACP 诊断** 处理，不要清空本地数据。 |
 
 仍有问题时，在 [Issue](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/issues) 附上错误编号、插件/DSH 版本和相关宿主日志片段；分享前移除密钥。

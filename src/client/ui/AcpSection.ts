@@ -19,6 +19,8 @@
 import { createElement as h, useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import {
+  Button,
+  Input,
   IconChevronDownOutline14,
   IconPlusOutline16,
   IconRefreshOutline16,
@@ -324,20 +326,21 @@ function AgentCard(props: {
         h(Tag, { tone: statusTone }, statusText),
       ),
       h('span', { className: css.rowActions },
-        h('button', {
-          type: 'button',
-          className: `${css.secondaryButton} ${css.compact}`,
+        h(Button, {
+          variant: 'outline',
+          size: 'sm',
           disabled: checking,
           onClick: () => { panel.refreshAgentHealth(id) },
         }, t(checking ? 'refreshing' : 'refresh')),
-        h('button', {
-          type: 'button',
-          className: `${css.secondaryButton} ${css.compact}`,
+        h(Button, {
+          variant: 'outline',
+          size: 'sm',
           onClick: props.onEdit,
         }, t('edit')),
-        h('button', {
-          type: 'button',
-          className: `${css.dangerButton} ${css.compact}`,
+        h(Button, {
+          variant: 'ghost',
+          size: 'sm',
+          className: css.dangerButton,
           disabled: props.readOnly || deleting,
           onClick: () => {
             setFailure(undefined)
@@ -373,15 +376,14 @@ function AgentCard(props: {
         ? null
         : h('p', { className: css.deleteText }, t('removeConfirmBound', { count: boundCount })),
       failure === undefined ? null : h('p', { className: css.error }, failure),
-      h('button', {
-        type: 'button',
+      h(Button, {
+        variant: 'ghost',
         className: css.dangerButton,
         disabled: deleting,
         onClick: confirmDelete,
       }, t(deleting ? 'removing' : 'remove')),
-      h('button', {
-        type: 'button',
-        className: css.secondaryButton,
+      h(Button, {
+        variant: 'outline',
         disabled: deleting,
         onClick: () => { setConfirming(false) },
       }, t('cancel')),
@@ -574,9 +576,9 @@ function AgentForm(props: {
             h('li', { key, className: css.maskedEnvRow },
               h('code', { className: css.maskedEnvKey }, key),
               h('span', { className: css.healthMuted }, t('envMaskedConfigured')),
-              h('button', {
-                type: 'button',
-                className: `${css.secondaryButton} ${css.compact}`,
+              h(Button, {
+                variant: 'outline',
+                size: 'sm',
                 disabled,
                 onClick: () => {
                   setDraft((previous) => dropMaskedEnvKey(previous, key))
@@ -601,23 +603,20 @@ function AgentForm(props: {
     // 配置」出口；保存钮经 validation.config 缺席自然禁用（不自动覆盖/删除）。
     validation.runtime === undefined ? null : h('div', { className: css.field },
       h('p', { className: css.error, role: 'alert' }, t(validation.runtime.key, validation.runtime.params)),
-      h('button', {
-        type: 'button',
-        className: css.secondaryButton,
+      h(Button, {
+        variant: 'outline',
         onClick: () => { props.onOpenAgent(String(validation.runtime?.params?.['id'] ?? '')) },
       }, t('openExisting')),
     ),
     failure === undefined ? null : h('p', { className: css.error }, failure),
     h('div', { className: css.editorActions },
-      h('button', {
-        type: 'button',
-        className: css.secondaryButton,
+      h(Button, {
+        variant: 'outline',
         disabled: busy,
         onClick: () => { props.onClose(false) },
       }, t('cancel')),
-      h('button', {
-        type: 'button',
-        className: css.primaryButton,
+      h(Button, {
+        variant: 'primary',
         disabled: disabled || validation.config === undefined,
         onClick: save,
       }, t(busy ? 'saving' : 'save')),
@@ -650,7 +649,7 @@ function textField(props: {
       ...(invalid ? { 'aria-invalid': true } : {}),
       onChange: (event: InputEvent) => { props.onChange(event.target.value) },
     })
-    : h('input', {
+    : h(Input, {
       id: props.id,
       className: invalid ? `${css.input} ${css.inputInvalid}` : css.input,
       type: 'text',

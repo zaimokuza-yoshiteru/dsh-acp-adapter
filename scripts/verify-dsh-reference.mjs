@@ -57,4 +57,8 @@ const llm = await import(pathToFileURL(join(reference, 'packages/llm/llm/lib/ind
 if (typeof llm.AssistantStreamAccumulator !== 'function') {
   throw new Error('DSH reference has stale pre-v2 runtime artifacts; rebuild the exact source tag')
 }
+const session = await import(pathToFileURL(join(reference, 'packages/core/session/lib/index.js')).href)
+if (session.SESSION_FORMAT_VERSION !== 3) {
+  throw new Error('DSH reference has stale pre-v3 Session artifacts; rebuild the exact source tag')
+}
 console.log(`DSH source reference verified: ${expectedTag}`)

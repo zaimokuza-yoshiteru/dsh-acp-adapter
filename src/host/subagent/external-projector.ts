@@ -34,7 +34,7 @@ export interface ExternalProjectionResult {
 
 interface ProjectedDetail {
   readonly kind: 'dsh-acp-external-subagent'
-  readonly version: 2 | 3 | 4
+  readonly version: 5
   readonly childSessionId: string
   readonly parentDshSessionId: string
   readonly profileId: string
@@ -102,7 +102,7 @@ function recordDetail(
     timing: observation.timing,
   }
   return {
-    kind: 'dsh-acp-external-subagent', version: 4,
+    kind: 'dsh-acp-external-subagent', version: 5,
     childSessionId, parentDshSessionId: context.parentDshSessionId,
     profileId: context.profileId, profileKind: observation.profileKind,
     task: { ...observation.task, text: bounded(observation.task.text) },
@@ -125,7 +125,6 @@ function transcriptLog(
   startedAt: number,
   completedAt: number,
   detail: Pick<ProjectedDetail, 'profileKind' | 'task' | 'result' | 'model' | 'usage'>,
-  streamMode: 'current' | 'legacy' = 'current',
 ): { readonly header: SessionHeader; readonly events: readonly SessionEvent[] } {
   const user: UserMessage = {
     id: MessageId(`${header.id}:external-task`),
@@ -165,40 +164,22 @@ function transcriptLog(
   stream.push({ time: completedAt, chunk: { type: 'finish', reason: { kind: 'stop' } } })
   const events: readonly SessionEvent[] = [
     { type: 'subagent/descriptor', seq: SessionSeq(0), time: startedAt, data: snapshotSubagentDescriptor({ mode: 'one-shot', provider: EXTERNAL_SUBAGENT_DESCRIPTOR_PROVIDER, label }) },
-    { type: 'turn/start', seq: SessionSeq(1), time: startedAt, data: { turn: 1, trigger: { kind: 'message', source: { kind: 'user' } } } },
-    { type: 'user/message', seq: SessionSeq(2), time: startedAt, data: user, surfaceOp: 'append' },
-    { type: 'step/start', seq: SessionSeq(3), time: startedAt, data: { turn: 1, step: 1 } },
+    { type: 'turn/start', seq: SessionSeq(1), time: startedAt, data: { turn: 1 } },
+    { type: 'step/start', seq: SessionSeq(2), time: startedAt, data: { turn: 1, step: 1 } },
+    { type: 'user/message', seq: SessionSeq(3), time: startedAt, data: user, surfaceOp: 'append' },
     {
       type: 'assistant/message', seq: SessionSeq(4), time: completedAt,
       data: {
         turn: 1, step: 1, message: assistant, ...(usage === undefined ? {} : { usage }),
-        ...(streamMode === 'legacy' ? {} : { stream: stream.snapshot() }),
+        stream: [...stream.snapshot()],
       },
       surfaceOp: 'append',
     },
     { type: 'step/end', seq: SessionSeq(5), time: completedAt, data: { turn: 1, step: 1 } },
     { type: 'turn/end', seq: SessionSeq(6), time: completedAt, data: { turn: 1, reason: { kind: 'completed' } } },
-  ] as readonly SessionEvent[]
-  // Legacy bytes are reconstructed only to verify the saved sidecar digest.
-  // DSH's adjacent v1-to-v2 migration gives chunkless messages an empty stream.
-  if (streamMode === 'legacy') return { header, events }
+  ]
   const validated = Session.fromRestore(header.id, events, header, SessionLogOffset(0), 'detached')
   if (validated.deriveMessages().length !== 2) throw new Error('ACP_SUBAGENT_TRANSCRIPT_INVALID: projected task/result were not admitted')
-  return { header, events }
-}
-
-function surfaceFreeLog(header: SessionHeader, label: string, startedAt: number, completedAt: number): {
-  readonly header: SessionHeader
-  readonly events: readonly SessionEvent[]
-} {
-  const events: readonly SessionEvent[] = [
-    { type: 'subagent/descriptor', seq: SessionSeq(0), time: startedAt, data: snapshotSubagentDescriptor({ mode: 'one-shot', provider: EXTERNAL_SUBAGENT_DESCRIPTOR_PROVIDER, label }) },
-    { type: 'turn/start', seq: SessionSeq(1), time: startedAt, data: { turn: 1 } },
-    { type: 'turn/end', seq: SessionSeq(2), time: completedAt, data: { turn: 1, reason: { kind: 'completed' } } },
-  ] as readonly SessionEvent[]
-  if (header.version !== SESSION_FORMAT_VERSION) return { header, events }
-  const validated = Session.fromRestore(header.id, events, header, SessionLogOffset(0), 'detached')
-  if (validated.deriveMessages().length !== 0) throw new Error('ACP_SUBAGENT_SURFACE_LEAK: projected record entered DSH model history')
   return { header, events }
 }
 
@@ -227,8 +208,7 @@ function projectionLog(context: ExternalProjectionContext, observation: External
 
 function sameProjection(existing: { readonly meta: SessionHeader; readonly events: readonly SessionEvent[] }, expected: { readonly header: SessionHeader; readonly events: readonly SessionEvent[] }): boolean {
   if (canonical(existing.meta) !== canonical(expected.header)) return false
-  // Legacy sidecars construct their own expected empty stream in storedProjection.
-  // Current projections must match exactly, including their durable stream.
+  // The complete current projection must match, including the durable stream.
   return canonical(existing.events) === canonical(expected.events)
 }
 
@@ -240,35 +220,23 @@ function storedProjection(row: AcpActivityRecord): { readonly detail: ProjectedD
   if (row.rawDetail === undefined) return undefined
   let value: unknown
   try { value = JSON.parse(row.rawDetail) } catch { return undefined }
-  if (!object(value) || value.kind !== 'dsh-acp-external-subagent' || (value.version !== 2 && value.version !== 3 && value.version !== 4) || value.childSessionId !== row.dshSessionId) return undefined
+  if (!object(value) || value.kind !== 'dsh-acp-external-subagent' || value.version !== 5 || value.childSessionId !== row.dshSessionId) return undefined
   if (!object(value.projectionHeader) || typeof value.projectionLabel !== 'string'
     || typeof value.projectionStartedAt !== 'number' || typeof value.projectionCompletedAt !== 'number'
     || typeof value.projectionDigest !== 'string') return undefined
   const header = value.projectionHeader as unknown as SessionHeader
-  if (header.id !== row.dshSessionId || header.parentSession !== value.parentDshSessionId) return undefined
-  let expected: ReturnType<typeof surfaceFreeLog>
+  if (header.version !== SESSION_FORMAT_VERSION || header.id !== row.dshSessionId || header.parentSession !== value.parentDshSessionId) return undefined
+  let expected: ReturnType<typeof transcriptLog>
   try {
-    expected = value.version === 2
-      ? surfaceFreeLog(header, value.projectionLabel, value.projectionStartedAt, value.projectionCompletedAt)
-      : transcriptLog(header, value.projectionLabel, value.projectionStartedAt, value.projectionCompletedAt, {
-          profileKind: String(value.profileKind),
-          task: value.task as ProjectedDetail['task'],
-          result: value.result as ProjectedDetail['result'],
-          ...(object(value.model) ? { model: value.model as unknown as NonNullable<ProjectedDetail['model']> } : {}),
-          ...(object(value.usage) ? { usage: value.usage as unknown as NonNullable<ProjectedDetail['usage']> } : {}),
-        }, value.version === 3 ? 'legacy' : 'current')
+    expected = transcriptLog(header, value.projectionLabel, value.projectionStartedAt, value.projectionCompletedAt, {
+      profileKind: String(value.profileKind),
+      task: value.task as ProjectedDetail['task'],
+      result: value.result as ProjectedDetail['result'],
+      ...(object(value.model) ? { model: value.model as unknown as NonNullable<ProjectedDetail['model']> } : {}),
+      ...(object(value.usage) ? { usage: value.usage as unknown as NonNullable<ProjectedDetail['usage']> } : {}),
+    })
   } catch { return undefined }
   if (value.projectionDigest !== digest(expected)) return undefined
-  if (value.version !== 4) {
-    if (Number(header.version) !== 1) return undefined
-    expected = {
-      header: { ...header, version: SESSION_FORMAT_VERSION },
-      events: expected.events.map(event => event.type === 'assistant/message'
-        ? { ...event, data: { ...event.data, stream: [] } }
-        : event),
-    }
-    try { Session.fromRestore(header.id, expected.events, expected.header, SessionLogOffset(0), 'detached') } catch { return undefined }
-  }
   return { detail: value as unknown as ProjectedDetail, expected }
 }
 
@@ -343,8 +311,9 @@ export class ExternalSubagentProjector {
     for (const row of rows) {
       const stored = storedProjection(row)
       if (stored === undefined) {
-        // Version-1 records predate a canonical repair payload. They remain
-        // readable but are never guessed back into a DSH child log.
+        // Historical projections follow the host migration policy. Never
+        // rewrite unsupported generations or synthesize missing history.
+        // Their source records remain untouched for diagnostics.
         continue
       }
       try {

@@ -1,0 +1,191 @@
+{
+  "detail": {
+    "kind": "dsh-acp-external-subagent",
+    "version": 4,
+    "childSessionId": "session-dsh-acp-cbc1c1eaa593246e194dd1863613ed5c",
+    "parentDshSessionId": "assessment-parent",
+    "profileId": "claude",
+    "profileKind": "claude",
+    "task": {
+      "text": "Compute 1+1",
+      "source": "structured-tool-input"
+    },
+    "result": {
+      "text": "2",
+      "source": "verbatim-child-final",
+      "completeness": "final-output"
+    },
+    "timing": {
+      "observedStartedAt": 100,
+      "observedCompletedAt": 250,
+      "source": "client-observed"
+    },
+    "evidenceDigest": "973f3733eb7864bcf11ae902ee44b3f306835e823a405803f3603882e7f32ff9",
+    "projectionHeader": {
+      "version": 2,
+      "isSeeded": false,
+      "id": "session-dsh-acp-cbc1c1eaa593246e194dd1863613ed5c",
+      "createdAt": 100,
+      "cwd": "/tmp",
+      "parentSession": "assessment-parent",
+      "origin": "subagent",
+      "delegationDepth": 1
+    },
+    "projectionLabel": "Assessment child",
+    "projectionStartedAt": 100,
+    "projectionCompletedAt": 250,
+    "projectionDigest": "8936492184b5b80cd1953fcedcae06ed7e9eecad5b981ace5ef50ab8d0f1ca0f"
+  },
+  "header": {
+    "version": 2,
+    "isSeeded": false,
+    "id": "session-dsh-acp-cbc1c1eaa593246e194dd1863613ed5c",
+    "createdAt": 100,
+    "cwd": "/tmp",
+    "parentSession": "assessment-parent",
+    "origin": "subagent",
+    "delegationDepth": 1
+  },
+  "events": [
+    {
+      "type": "subagent/descriptor",
+      "seq": 0,
+      "time": 100,
+      "data": {
+        "version": 3,
+        "mode": "one-shot",
+        "provider": "dsh-acp-adapter",
+        "label": "Assessment child"
+      }
+    },
+    {
+      "type": "turn/start",
+      "seq": 1,
+      "time": 100,
+      "data": {
+        "turn": 1,
+        "trigger": {
+          "kind": "message",
+          "source": {
+            "kind": "user"
+          }
+        }
+      }
+    },
+    {
+      "type": "user/message",
+      "seq": 2,
+      "time": 100,
+      "data": {
+        "id": "session-dsh-acp-cbc1c1eaa593246e194dd1863613ed5c:external-task",
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "Compute 1+1"
+          }
+        ],
+        "source": {
+          "kind": "user"
+        }
+      },
+      "surfaceOp": "append"
+    },
+    {
+      "type": "step/start",
+      "seq": 3,
+      "time": 100,
+      "data": {
+        "turn": 1,
+        "step": 1
+      }
+    },
+    {
+      "type": "assistant/message",
+      "seq": 4,
+      "time": 250,
+      "data": {
+        "turn": 1,
+        "step": 1,
+        "message": {
+          "id": "session-dsh-acp-cbc1c1eaa593246e194dd1863613ed5c:external-result",
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "2"
+            }
+          ],
+          "source": {
+            "kind": "model",
+            "provider": "dsh-acp-adapter",
+            "model": "claude-external-subagent"
+          }
+        },
+        "stream": [
+          {
+            "type": "chunk",
+            "time": 250,
+            "chunk": {
+              "type": "block-start",
+              "index": 0,
+              "blockType": "text"
+            }
+          },
+          {
+            "type": "text-chunks",
+            "time0": 250,
+            "index": 0,
+            "dt": [],
+            "texts": [
+              "2"
+            ]
+          },
+          {
+            "type": "chunk",
+            "time": 250,
+            "chunk": {
+              "type": "block-end",
+              "index": 0,
+              "block": {
+                "type": "text",
+                "text": "2"
+              }
+            }
+          },
+          {
+            "type": "chunk",
+            "time": 250,
+            "chunk": {
+              "type": "finish",
+              "reason": {
+                "kind": "stop"
+              }
+            }
+          }
+        ]
+      },
+      "surfaceOp": "append"
+    },
+    {
+      "type": "step/end",
+      "seq": 5,
+      "time": 250,
+      "data": {
+        "turn": 1,
+        "step": 1
+      }
+    },
+    {
+      "type": "turn/end",
+      "seq": 6,
+      "time": 250,
+      "data": {
+        "turn": 1,
+        "reason": {
+          "kind": "completed"
+        }
+      }
+    }
+  ]
+}

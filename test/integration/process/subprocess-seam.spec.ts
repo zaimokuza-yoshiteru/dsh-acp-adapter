@@ -205,6 +205,7 @@ describe('fail closed（spawn-failure 分类）', () => {
 describe('依赖面守卫（宿主模块实例一致性 纪律）', () => {
   it('package.json：两包只作为精确 npm 开发依赖，不进入运行时依赖面', () => {
     const pkg = JSON.parse(fs.readFileSync(path.join(PKG_ROOT, 'package.json'), 'utf8')) as {
+      engines: { dsh: string };
       dependencies?: Record<string, string>;
       peerDependencies?: Record<string, string>;
       devDependencies?: Record<string, string>;
@@ -214,7 +215,7 @@ describe('依赖面守卫（宿主模块实例一致性 纪律）', () => {
       expect(pkg.dependencies?.[name]).toBeUndefined();
       expect(pkg.peerDependencies?.[name]).toBeUndefined();
       const version = pkg.devDependencies?.[name]
-      expect(version).toBe('0.1.3-alpha.2')
+      expect(version).toBe(pkg.engines.dsh)
     }
     expect(JSON.parse(fs.readFileSync(path.join(PKG_ROOT, 'package.json'), 'utf8')).scripts['verify:dev-install']).toBeDefined();
   });

@@ -36,9 +36,6 @@ export interface CurrentStepProof {
   readonly endSeq: number | null
   readonly acceptedMessageIds: readonly string[]
   readonly anchorMessageId: string
-  /** Request header that opened this exact model dispatch, when already
-   * present in the live log at adapter admission time. */
-  readonly requestHeaderSeq?: number
   /** Whether the request projection contained anything other than the logged
    * inputs admitted for this step. This is a bounded diagnostic fact; the
    * live event-log check above remains the actual admission boundary. */
@@ -124,12 +121,6 @@ export function admitCurrentStep(
     endSeq: step.endSeq,
     acceptedMessageIds: admitted.map((message) => String(message.id)),
     anchorMessageId: String((admitted.findLast(message => message.source.kind === 'user') ?? admitted.at(-1)!).id),
-    ...(() => {
-      const requestHeaderSeq = events
-        .filter(event => event.seq > step.startSeq && event.type === 'request/header')
-        .at(-1)?.seq
-      return requestHeaderSeq === undefined ? {} : { requestHeaderSeq }
-    })(),
     projectionFiltered: options.messages.length !== admitted.length,
   }
   onProof?.(proof)

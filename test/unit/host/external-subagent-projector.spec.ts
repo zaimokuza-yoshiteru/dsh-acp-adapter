@@ -75,7 +75,7 @@ describe('external subagent projector', () => {
     expect(order).toEqual(['flush', 'create', 'append', 'child-flush', 'write-close'])
     expect(result?.childSessionId).toMatch(/^session-dsh-acp-/)
     const stored = records.get(result!.childSessionId)!
-    expect(stored.events.map(event => (event as { type: string }).type)).toEqual(['subagent/descriptor', 'turn/start', 'user/message', 'step/start', 'assistant/message', 'step/end', 'turn/end'])
+    expect(stored.events.map(event => (event as { type: string }).type)).toEqual(['subagent/descriptor', 'turn/start', 'step/start', 'user/message', 'assistant/message', 'step/end', 'turn/end'])
     expect(JSON.stringify(stored.events)).toContain('Inspect code')
     expect(JSON.stringify(stored.events)).toContain('Done')
     expect(activities.map(row => row.status)).toEqual(['running', 'completed'])
@@ -149,25 +149,21 @@ describe('external subagent projector', () => {
     expect(order.at(-1)).toBe('write-close')
   })
 
-  it.each([0, 4, 7])('recovers an interrupted released-v1 projection with %s existing events', async length => {
-    const fixture = JSON.parse(fs.readFileSync(new URL('../../fixtures/external-subagent-v1.json', import.meta.url), 'utf8'))
-    const records = new Map<string, { meta: SessionHeader; events: SessionEvent[] }>()
-    records.set('parent', { meta: { id: 'parent', cwd: '/tmp' } as never, events: [] })
-    if (length > 0) records.set(fixture.detail.childSessionId, {
-      meta: { ...fixture.detail.projectionHeader, version: 2 } as never,
-      events: fixture.events.slice(0, length).map((event: { type: string; data: object }) => event.type === 'assistant/message'
-        ? { ...event, data: { ...event.data, stream: [] } } : event),
-    })
+  it.each(['external-subagent-v1.json', 'external-subagent-v2.json'])('leaves unsupported historical evidence untouched: %s', async filename => {
+    const fixture = JSON.parse(fs.readFileSync(new URL(`../../fixtures/${filename}`, import.meta.url), 'utf8'))
     const row = { dshSessionId: fixture.detail.childSessionId, rawDetail: JSON.stringify(fixture.detail) }
-    const projector = new ExternalSubagentProjector(handleStorage(records), {
-      upsertActivity: async row => row as never,
+    const original = structuredClone(row)
+    const storage = handleStorage()
+    const update = vi.fn(async row => row)
+    const projector = new ExternalSubagentProjector(storage, {
+      upsertActivity: update,
       listProjectedSubagentActivities: async () => [row] as never,
     })
-    await expect(projector.repairInterrupted()).resolves.toEqual({ committed: 1, repaired: length === 7 ? 0 : 1, conflicted: 0 })
-    expect(records.get(row.dshSessionId)!.events).toEqual(fixture.events.map((event: { type: string; data: object }) =>
-      event.type === 'assistant/message' ? { ...event, data: { ...event.data, stream: [] } } : event))
-    expect(JSON.parse(row.rawDetail)).toEqual(fixture.detail)
-    await expect(projector.repairInterrupted()).resolves.toEqual({ committed: 1, repaired: 0, conflicted: 0 })
+    await expect(projector.repairInterrupted()).resolves.toEqual({ committed: 0, repaired: 0, conflicted: 0 })
+    expect(row).toEqual(original)
+    expect(storage.create).not.toHaveBeenCalled()
+    expect(storage.open).not.toHaveBeenCalled()
+    expect(update).not.toHaveBeenCalled()
   })
 
   it('repairs a staged transaction from its canonical payload and fails closed on a conflicting child', async () => {
@@ -194,7 +190,7 @@ describe('external subagent projector', () => {
     const [staged] = [...activities.values()]
     expect(staged?.status).toBe('failed')
     const stagedDetail = JSON.parse(staged?.rawDetail as string) as { version: number; projectionHeader: { parentSession: string }; projectionLabel: string; projectionDigest: string }
-    expect(stagedDetail.version).toBe(4)
+    expect(stagedDetail.version).toBe(5)
     expect(stagedDetail.projectionHeader.parentSession).toBe('parent')
     expect(stagedDetail.projectionLabel).toBe('Code inspection')
     expect(stagedDetail.projectionDigest).toMatch(/^[a-f0-9]{64}$/)

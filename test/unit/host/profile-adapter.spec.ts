@@ -79,6 +79,21 @@ describe('AcpProfileAdapter generation and dispatch boundaries', () => {
     expect(spawns).toBe(2)
   })
 
+  it('forwards the V3 host system message while admitting only the current input', async () => {
+    const message = user('current')
+    const sent: unknown[] = []
+    const adapter = new AcpProfileAdapter('test', () => profile(), seam(), () => session(message), new Ledger(), undefined, () => ({
+      acpSessionId: 'system-request', start: async () => undefined,
+      prompt: async prompt => { sent.push(prompt); return { stopReason: 'end_turn' } as never },
+      close: async () => undefined,
+    }), durableSidecar)
+    const system = { ...user('HOST_SYSTEM_A'), role: 'system' as const, source: { kind: 'plugin' as const, plugin: 'host' } }
+    for await (const chunk of adapter.stream(request('system-request', [system, user('old history'), message]))) { void chunk }
+    expect(JSON.stringify(sent)).toContain('HOST_SYSTEM_A')
+    expect(JSON.stringify(sent)).toContain('current')
+    expect(JSON.stringify(sent)).not.toContain('old history')
+  })
+
   it('accepts the finalized request copy delivered by the DSH LLM runtime', async () => {
     const message = user('current')
     let prompts = 0
