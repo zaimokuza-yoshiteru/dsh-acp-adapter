@@ -4,7 +4,7 @@
 
 在 DSH 会话页面使用 **Claude · Codex · Devin · Kimi**。
 
-> **0.1.5-rc.1** · 兼容 **DSH 0.1.5-rc.1**
+> **0.1.5-rc.2.1** · 兼容 **DSH 0.1.5-rc.2**
 
 ## <img src="assets/readme/icon-preview.svg" width="24" height="24" alt="" /> 功能预览
 
@@ -35,7 +35,7 @@ ACP 审批复用 DSH 原生审批卡，批准前可查看完整命令：
 需要 Node.js `^22.19.0 || >=24.0.0`：
 
 ```bash
-npx @deepseek-ai/dsh@0.1.5-rc.1 web
+npx @deepseek-ai/dsh@0.1.5-rc.2 web
 ```
 
 插件开发直接安装锁定的 npm 依赖：
@@ -62,7 +62,7 @@ pnpm install --frozen-lockfile
 **2. 安装插件。** 以下命令安装 npm 已发布的 `next` 版本。
 
 ```bash
-npx @deepseek-ai/dsh@0.1.5-rc.1 plugin --profile web add @zaimokuza/dsh-acp-adapter@next
+npx @deepseek-ai/dsh@0.1.5-rc.2 plugin --profile web add @zaimokuza/dsh-acp-adapter@next
 ```
 
 **3. 打开「设置 → ACP adapter」**，添加模板、检查连接，再在新会话中选择 Agent 模型。
@@ -73,7 +73,7 @@ npx @deepseek-ai/dsh@0.1.5-rc.1 plugin --profile web add @zaimokuza/dsh-acp-adap
 
 ![DSH 管理会话与界面；适配器传递上下文、归一化活动；Agent 负责模型、工具和权限。外部子代理投影只读，后台任务不跨 DSH 重启恢复。](assets/readme/acp-overview.zh-CN.svg)
 
-**实验性 Agent Teams：** 跟随 DSH 的 Teams profile 启用，复用原生团队面板；成员从创建时的主会话继承 Agent、模型与推理配置。主会话切换模型后，新成员使用新模型，已有成员保持原模型；团队内使用同一 ACP Agent。仅支持新建上下文，成员的待处理请求可从主会话进入原生审批。团队协调免额外审批，普通操作的审批保持原样；成员消息在 DSH 步骤边界送达。
+**实验性 Agent Teams：** 跟随 DSH 的 Teams profile 启用，复用原生团队面板；成员从创建时的主会话继承 Agent、模型与推理配置。主会话切换模型后，新成员使用新模型，已有成员保持原模型；团队内使用同一 ACP Agent。仅支持新建上下文，共享任务使用原生任务板；成员待处理请求集中显示在输入框上方，点击进入原生审批。团队协调免额外审批，普通操作的审批保持原样；成员消息在 DSH 步骤边界送达。
 
 ## <img src="assets/readme/icon-update.svg" width="24" height="24" alt="" /> 更新与卸载
 
@@ -81,9 +81,9 @@ npx @deepseek-ai/dsh@0.1.5-rc.1 plugin --profile web add @zaimokuza/dsh-acp-adap
 
 ```bash
 # 更新
-npx @deepseek-ai/dsh@0.1.5-rc.1 plugin --profile web update @zaimokuza/dsh-acp-adapter
+npx @deepseek-ai/dsh@0.1.5-rc.2 plugin --profile web update @zaimokuza/dsh-acp-adapter
 # 卸载
-npx @deepseek-ai/dsh@0.1.5-rc.1 plugin --profile web remove @zaimokuza/dsh-acp-adapter
+npx @deepseek-ai/dsh@0.1.5-rc.2 plugin --profile web remove @zaimokuza/dsh-acp-adapter
 ```
 
 **升级时保留本地数据。** 主会话迁移由 DSH 负责；宿主不支持的旧子代理投影不额外迁移。当前轮次结束后重启 DSH、刷新页面，从设置标题旁确认加载版本。

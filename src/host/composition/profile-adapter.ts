@@ -1,6 +1,8 @@
 /** ACP profile as an ordinary DSH LLM provider route. */
 /// <reference types="node" />
 
+import { projectNativeAgentAccess } from './native-agent-access.ts'
+
 import fs from 'node:fs'
 import path from 'node:path'
 import type * as acp from '@agentclientprotocol/sdk'
@@ -93,34 +95,6 @@ function hasOpenTurn(session: SessionLike | undefined): boolean {
     if (type === 'turn/end') return false
   }
   return false
-}
-
-/**
- * Project ACP's Native Agent Access through DSH's stock permission selector.
- *
- * The Agent process is intentionally unconfined by DSH, while ACP may still
- * ask the user for individual approvals.  That combination does not match a
- * stock DSH preset, so the native projection renders its existing `Custom`
- * value.  These events belong only to the already-established ACP session;
- * native sessions never pass through this adapter.
- */
-function projectNativeAgentAccess(session: SessionLike | undefined): void {
-  if (session?.append === undefined) return
-  const latest = (type: string, key: string): unknown => {
-    const events = snapshotSessionEvents(session)
-    for (let index = events.length - 1; index >= 0; index -= 1) {
-      const event = events[index]
-      if (event?.type !== type || typeof event.data !== 'object' || event.data === null) continue
-      return (event.data as Record<string, unknown>)[key]
-    }
-    return undefined
-  }
-  if (latest('sandbox/mode', 'mode') !== 'danger-full-access') {
-    session.append('sandbox/mode', { mode: 'danger-full-access', source: 'dsh-acp-native-agent-access' })
-  }
-  if (latest('approval/policy', 'policy') !== 'ask') {
-    session.append('approval/policy', { policy: 'ask', source: 'dsh-acp-native-agent-access' })
-  }
 }
 
 /** Prove the child seed ends at the parent's durable ACP binding head. */

@@ -117,8 +117,8 @@ describe('M3a binding-first ACP provider', () => {
       await drain(adapter.stream(request('custom-permission', message)))
       expect(events.slice(0, 2)).toEqual(session(message).events)
       expect(events.slice(2)).toEqual([
-        { type: 'sandbox/mode', seq: 3, data: { mode: 'danger-full-access', source: 'dsh-acp-native-agent-access' } },
-        { type: 'approval/policy', seq: 4, data: { policy: 'ask', source: 'dsh-acp-native-agent-access' } },
+        { type: 'sandbox/mode', seq: 3, data: { mode: 'danger-full-access' } },
+        { type: 'approval/policy', seq: 4, data: { policy: 'ask' } },
       ])
       const binding = await sidecar.readLatestBinding('custom-permission' as never)
       expect(binding?.status === 'ok' ? binding.binding.dshCommittedSeq : undefined).toBe(4)
@@ -165,10 +165,10 @@ describe('M3a binding-first ACP provider', () => {
       expect(second.starts).toBe(0)
       expect(second.prompts).toBe(1)
       expect(events.filter(event => event.type === 'sandbox/mode')).toEqual([
-        { type: 'sandbox/mode', seq: 5, data: { mode: 'danger-full-access', source: 'dsh-acp-native-agent-access' } },
+        { type: 'sandbox/mode', seq: 5, data: { mode: 'danger-full-access' } },
       ])
       expect(events.filter(event => event.type === 'approval/policy')).toEqual([
-        { type: 'approval/policy', seq: 6, data: { policy: 'ask', source: 'dsh-acp-native-agent-access' } },
+        { type: 'approval/policy', seq: 6, data: { policy: 'ask' } },
       ])
     } finally {
       await sidecar.dispose()

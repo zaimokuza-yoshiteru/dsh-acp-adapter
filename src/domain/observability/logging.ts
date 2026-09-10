@@ -58,7 +58,7 @@ function sanitizeFieldValue(value: string): string {
  * 把字段格式化成稳定序后缀：` [dshSessionId=… operation=…]`；无字段（或全部
  * 缺失）时为空串。durationMs 取整渲染。
  */
-export function formatAcpLogFields(fields: AcpLogFields | undefined): string {
+function formatAcpLogFields(fields: AcpLogFields | undefined): string {
   if (fields === undefined) return ''
   const parts: string[] = []
   for (const key of FIELD_ORDER) {

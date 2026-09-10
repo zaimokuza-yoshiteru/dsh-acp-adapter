@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { chromium } from 'playwright'
@@ -40,6 +40,12 @@ describe.each([['claude', false], ['devin', true], ['codex', true], ['kimi', fal
       expect(lead).toBeDefined()
       await vi.waitFor(() => expect(host.ctx.agentTeams.listMembers(lead)).toHaveLength(2))
       const member = host.ctx.agentTeams.listMembers(lead).find(member => member.role === 'teammate')
+      await vi.waitFor(() => {
+        const initial = events.find(event => event.sessionId === member.id && event.type === 'user/message' && event.data.source?.form === 'snapshot')
+        expect(JSON.stringify(initial)).toContain('Approval policy: ask.')
+        expect(JSON.stringify(initial)).not.toContain('Approval prompts are disabled in this session')
+        expect(JSON.stringify(initial)).not.toContain('operations that require approval are rejected automatically')
+      })
       const child = host.ctx.agents.get(member.id)
       expect(child.options).toMatchObject({ provider, model: 'mock-model-a' })
       expect(child.session.header.cwd).toBe(lead.session.header.cwd)
@@ -91,7 +97,7 @@ describe.each([['claude', false], ['devin', true], ['codex', true], ['kimi', fal
     } catch (error) {
       const directory = join(root, '.local/e2e-failures')
       mkdirSync(directory, { recursive: true })
-      writeFileSync(join(directory, `teams-${profile}-${decision}.json`), JSON.stringify({ error: String(error), errors, events, body: await page?.locator('body').innerText(), log: log ? readFileSync(log, 'utf8') : '' }, null, 2))
+      writeFileSync(join(directory, `teams-${profile}-${decision}.json`), JSON.stringify({ error: String(error), errors, events, body: await page?.locator('body').innerText(), log: log && existsSync(log) ? readFileSync(log, 'utf8') : '' }, null, 2))
       if (page) await page.screenshot({ path: join(directory, `teams-${profile}-${decision}.png`), fullPage: true })
       throw error
     } finally {

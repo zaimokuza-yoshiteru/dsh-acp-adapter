@@ -164,6 +164,7 @@ interface FakeHarness {
  /** ctx.logger.warn 收到的行（结构化后缀钉版用）。 */
   warnings: string[];
   errors: unknown[];
+  listeners: Map<string, (...args: any[]) => any>;
 }
 
 function fakeHarness(options: { failOnRoute?: string } = {}): FakeHarness {
@@ -171,10 +172,15 @@ function fakeHarness(options: { failOnRoute?: string } = {}): FakeHarness {
   const settings = new FakeSettingsProvider();
   const warnings: string[] = [];
   const errors: unknown[] = [];
+  const listeners = new Map<string, (...args: any[]) => any>();
   const scopedCtx = {
     get: (name: string): unknown => (name === 'settings' ? settings : undefined),
   };
   const ctx = {
+    on: (name: string, listener: (...args: any[]) => any) => {
+      listeners.set(name, listener);
+      return () => listeners.delete(name);
+    },
     get: (name: string): unknown => name === 'settings' ? settings : undefined,
     inject: (_deps: string[], callback: (sctx: unknown) => void): void => {
       callback(scopedCtx);
@@ -191,7 +197,7 @@ function fakeHarness(options: { failOnRoute?: string } = {}): FakeHarness {
     },
     fiber: { state: 2 }, // FiberState.ACTIVE
   };
-  return { ctx: ctx as unknown as Context, llm, settings, warnings, errors };
+  return { ctx: ctx as unknown as Context, llm, settings, warnings, errors, listeners };
 }
 
 const devinAgent: AcpAgentConfig = {
@@ -581,6 +587,58 @@ describe('纯函数：registration facts / probe 配置 hash', () => {
 });
 
 describe('installInstalledProfileRegistry：注册/替换调用序列', () => {
+  it('projects access at creation only for currently registered ACP routes, including resumed members', async () => {
+    const { ctx, settings, listeners } = fakeHarness();
+    installInstalledProfileRegistry(ctx);
+    await settings.replace({ agents: { devin: devinAgent } });
+    const created = listeners.get('agent/created')!;
+    const session = () => {
+      const events: Array<{ type: string; data: unknown }> = [
+        { type: 'approval/policy', data: { policy: 'never', source: 'delegation' } },
+      ];
+      return { events, snapshotEvents: () => [...events], append: (type: string, data: unknown) => events.push({ type, data }) };
+    };
+    const acp = session();
+    created({ agent: { options: { provider: 'acp-devin' }, session: acp } });
+    expect(acp.events.at(-1)).toEqual({ type: 'approval/policy', data: { policy: 'ask' } });
+    const size = acp.events.length;
+    created({ agent: { options: { provider: 'acp-devin' }, session: acp } });
+    expect(acp.events).toHaveLength(size);
+    for (const provider of ['deepseek', 'acp-unknown', undefined]) {
+      const untouched = session();
+      created({ agent: { options: { provider }, session: untouched } });
+      expect(untouched.events).toHaveLength(1);
+    }
+    await settings.replace({ agents: {} });
+    const removed = session();
+    created({ agent: { options: { provider: 'acp-devin' }, session: removed } });
+    expect(removed.events).toHaveLength(1);
+  });
+
+  it('replaces only ACP delegation context after downstream assembly, leaving native policy and other plugins intact', async () => {
+    const { ctx, settings, listeners } = fakeHarness();
+    installInstalledProfileRegistry(ctx);
+    await settings.replace({ agents: { devin: devinAgent } });
+    const assemble = listeners.get('system-prompt/assemble')!;
+    const original = { sections: [], contexts: [
+      { name: 'subagent:delegation', text: 'native fixed delegation' },
+      { name: 'approval:policy', text: 'ask' },
+      { name: 'other-plugin', text: 'preserved contribution' },
+    ], tools: [], variables: {} };
+    const next = async () => original;
+    for (const provider of ['deepseek', 'acp-unknown', undefined]) {
+      expect(await assemble({}, { agent: { options: { provider } } }, next)).toBe(original);
+    }
+    const result = await assemble({}, { agent: { options: { provider: 'acp-devin' } } }, next);
+    expect(result.contexts[0].text).toContain('request permission through your normal tools');
+    expect(result.contexts.slice(1)).toEqual(original.contexts.slice(1));
+    expect(original.contexts[0]!.text).toBe('native fixed delegation');
+    expect(result.sections).toBe(original.sections);
+    expect(result.tools).toBe(original.tools);
+    const suppressed = { ...original, contexts: [] };
+    expect((await assemble({}, { agent: { options: { provider: 'acp-devin' } } }, async () => suppressed)).contexts).toEqual([]);
+  });
+
   it('空配置 dormant：启动不注册任何路由，初始 settings 快照后 ready', async () => {
     const { ctx, llm } = fakeHarness();
     const registry = installInstalledProfileRegistry(ctx);

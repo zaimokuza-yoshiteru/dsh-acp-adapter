@@ -12,6 +12,9 @@ class NativeTeamControl extends LlmAdapter {
   providerRetryPolicy() { return { mode: 'normal', maxRetries: 0, retryableCodes: [], initialDelayMs: 0, maxDelayMs: 0, jitterRatio: 0 } }
   async *stream(options) {
     expect(options.tools.some(tool => tool.name === 'spawn_teammate')).toBe(true)
+    if (options.messages.some(message => JSON.stringify(message.content).includes('Calculate 1+1'))) {
+      expect(JSON.stringify(options.messages)).toContain('Approval prompts are disabled in this session')
+    }
     const text = `NATIVE_TEAM_DONE ${options.model}`
     yield { type: 'block-start', index: 0, blockType: 'text' }
     yield { type: 'text-delta', index: 0, text }
@@ -64,6 +67,10 @@ it('keeps one ACP Agent across multiple models, isolates approvals and prevents 
     await page.getByLabel('Fixture devin · ACP', { exact: true }).getByRole('menuitemradio', { name: 'Mock Model B', exact: true }).click()
     await page.getByRole('button', { name: /^Select model, current Mock Model B/ }).waitFor()
     expect(await page.getByRole('dialog').count()).toBe(0)
+    const pendingCard = page.locator('[data-acp-team-approvals]')
+    await pendingCard.getByRole('button', { name: 'Collapse', exact: true }).click()
+    expect(await pendingCard.getByRole('button', { name: 'calculator · Pending request', exact: true }).count()).toBe(0)
+    // A waiting child must not disable the lead, and ordinary messages must not approve it.
     await send('E2E_TEAM_SECOND')
     await page.getByText('E2E_TEAM_SECOND_READY', { exact: true }).waitFor()
     const childBId = host.ctx.agentTeams.listMembers(lead).find(member => member.name === 'calculator-b').id
@@ -71,6 +78,27 @@ it('keeps one ACP Agent across multiple models, isolates approvals and prevents 
     expect(host.ctx.agents.get(childAId).options).toMatchObject({ provider: 'acp-devin', model: 'mock-model-a' })
     await page.getByRole('button', { name: 'calculator · Pending request', exact: true }).waitFor()
     await page.getByRole('button', { name: 'calculator-b · Pending request', exact: true }).waitFor()
+    expect(await pendingCard.locator('[data-team-pending-member]').count()).toBe(2)
+    expect(await pendingCard.getByRole('button', { name: 'Collapse', exact: true }).getAttribute('aria-expanded')).toBe('true')
+    expect(events.filter(event => event.type === 'approval/decided')).toHaveLength(0)
+    const cardBox = await pendingCard.boundingBox()
+    const composerBox = await page.locator('[data-composer-input]').first().boundingBox()
+    expect(cardBox.y + cardBox.height).toBeLessThanOrEqual(composerBox.y + 1)
+    await page.reload()
+    await pendingCard.getByRole('button', { name: 'calculator-b · Pending request', exact: true }).waitFor()
+    expect(await pendingCard.locator('[data-team-pending-member]').count()).toBe(2)
+    await host.ctx.settings.replace('locale', { preference: 'zh' })
+    await pendingCard.getByText('需要你处理 · 2 位成员', { exact: true }).waitFor()
+    expect(await pendingCard.getByText('等待审批', { exact: true }).count()).toBe(2)
+    await page.setViewportSize({ width: 680, height: 720 })
+    const narrow = await pendingCard.boundingBox()
+    expect(narrow.x).toBeGreaterThanOrEqual(0)
+    expect(narrow.x + narrow.width).toBeLessThanOrEqual(680)
+    expect(await pendingCard.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true)
+    await pendingCard.getByRole('button', { name: '收起', exact: true }).click()
+    await pendingCard.getByRole('button', { name: '展开', exact: true }).click()
+    await page.setViewportSize({ width: 1680, height: 1000 })
+    await host.ctx.settings.replace('locale', { preference: 'en' })
     for (const name of ['calculator-b', 'calculator']) {
       await page.getByRole('button', { name: `${name} · Pending request`, exact: true }).click()
       await page.locator('[data-approval-key]').waitFor()
@@ -85,6 +113,7 @@ it('keeps one ACP Agent across multiple models, isolates approvals and prevents 
         expect(events.some(event => event.sessionId === childAId && event.type === 'turn/end')).toBe(false)
       }
     }
+    await vi.waitFor(async () => expect(await pendingCard.count()).toBe(0))
     await vi.waitFor(() => expect(host.ctx.agentTeams.listMembers(lead).every(member => ['idle', 'inactive'].includes(member.status))).toBe(true), { timeout: 30_000 })
     // Cold resume A after the Lead changed to B: A must keep its own configuration.
     const before = events.filter(event => event.sessionId === childAId && event.type === 'request/header').length
@@ -130,8 +159,11 @@ it('keeps one ACP Agent across multiple models, isolates approvals and prevents 
 
 it('preserves native Teams model inheritance and switching with the ACP plugin installed', async () => {
   const { host, browser, page, send } = await setup(true, true)
-  const headers = []
-  host.ctx.on('session/event', (session, event) => { if (event.type === 'request/header') headers.push({ id: session.id, config: event.data.header.config }) })
+  const headers = [], settled = []
+  host.ctx.on('session/event', (session, event) => {
+    if (event.type === 'request/header') headers.push({ id: session.id, config: event.data.header.config })
+    if (event.type === 'turn/end') settled.push({ id: session.id, reason: event.data.reason })
+  })
   try {
     await send('native baseline')
     await page.getByText('NATIVE_TEAM_DONE native-a', { exact: true }).first().waitFor()
@@ -146,6 +178,9 @@ it('preserves native Teams model inheritance and switching with the ACP plugin i
     await page.getByText('NATIVE_TEAM_DONE native-b', { exact: true }).first().waitFor()
     const second = await spawn('native-second')
     await vi.waitFor(() => expect(headers.some(item => item.id === second.member.id && item.config.model === 'native-b')).toBe(true), { timeout: 20_000 })
+    await vi.waitFor(() => {
+      for (const id of [first.member.id, second.member.id]) expect(settled.find(item => item.id === id)?.reason).toMatchObject({ kind: 'completed' })
+    }, { timeout: 20_000 })
     expect(headers.filter(item => item.id === first.member.id).every(item => item.config.model === 'native-a')).toBe(true)
     expect(await page.getByRole('dialog').count()).toBe(0)
     expect(await page.locator('[data-team-action]').isVisible()).toBe(true)

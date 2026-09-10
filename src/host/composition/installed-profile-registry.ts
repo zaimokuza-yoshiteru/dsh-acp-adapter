@@ -46,6 +46,7 @@ import {
 import type { AcpAgentConfig, AcpAgentId, AcpResolvedAgent } from '../../domain/session/agent-config.ts'
 import { createAcpLogger } from '../../domain/observability/logging.ts'
 import { acpProbeConfigKey } from './llm-stub.ts'
+import { installNativeAgentAccess } from './native-agent-access.ts'
 import { AcpProfileAdapter } from './profile-adapter.ts'
 import { profileLaunchIdentityHash } from '../../domain/session/launch-fingerprint.ts'
 import type { SubprocessSeamResolution } from '../../runtime/process/subprocess.ts'
@@ -628,6 +629,11 @@ export function installInstalledProfileRegistry(ctx: Context, options: Installed
     }
     registeredKey = key
   }
+
+  installNativeAgentAccess(ctx, provider => {
+    const profileId = acpAgentIdFromRoute(provider ?? '')
+    return profileId !== undefined && registrations.has(profileId)
+  })
 
   const onSettingsChange = (): void => {
     // llm-pi-ai precedent: a refused swap (route owned by another adapter

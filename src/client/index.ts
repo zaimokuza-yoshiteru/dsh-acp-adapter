@@ -183,8 +183,8 @@ async function registerUi(ctx: ClientContext): Promise<void> {
         sessions.openSubagent({ parentSessionId, childSessionId, mode: 'continuable' })
       },
     }
-    teamCtx.slots.inject('conversation.session.header.utilities', () => teamCtx.slots.register({
-      name: 'conversation.session.header.utilities', id: 'acp-team-approvals', order: 95,
+    teamCtx.slots.inject('conversation.input.dock', () => teamCtx.slots.register({
+      name: 'conversation.input.dock', id: 'acp-team-approvals', order: 95,
       locale: 'acpActivity', inject: () => actions,
     }, AcpTeamApprovals))
   })

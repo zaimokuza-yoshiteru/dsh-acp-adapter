@@ -15,7 +15,7 @@ import { LocalSubprocessRuntime } from '@deepseek-ai/dsh-subprocess-local';
 import { narrowSubprocessSeam } from '../../src/runtime/process/subprocess.ts';
 import type { SubprocessSeam } from '../../src/runtime/process/subprocess.ts';
 
-export interface TestSubprocess {
+interface TestSubprocess {
   /** 结构化窄化后的消费面（AcpConnectionSpec.subprocess / adapter options 传它）。 */
   readonly seam: SubprocessSeam;
   /** 原始服务实例（harness 的 `ctx.provide('subprocess', raw)` 用）。 */
@@ -25,7 +25,7 @@ export interface TestSubprocess {
 }
 
 /** 挂载一次真实 subprocess-local 服务（该 Context 仅作服务载体，不参与被测组装）。 */
-export async function mountTestSubprocess(): Promise<TestSubprocess> {
+async function mountTestSubprocess(): Promise<TestSubprocess> {
   const ctx = new Context();
   await ctx.plugin(LocalSubprocessRuntime);
   const holder = ctx as Context & { get(name: string): unknown };

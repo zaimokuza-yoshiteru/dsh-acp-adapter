@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { connectFreshWorkspace, newEnglishPage, writeComposerDraft } from '#host-support'
 import { launchAdapterWorld, root } from './scaffold.mjs'
 import { verifyLiveTeam } from './live-teams.mjs'
+import { verifyLiveTeamApproval } from './live-team-approval.mjs'
 
 const profiles = [
   { id: 'claude', command: 'claude-agent-acp', args: [] },
@@ -20,7 +21,7 @@ const teams = process.env.DSH_E2E_LIVE_TEAMS === '1'
 
 // Explicitly opt in: these use the user's Agent login and may consume credits.
 describe.skipIf(process.env.DSH_E2E_LIVE !== '1')('live ACP smoke', () => {
-  it.each(profiles.filter(profile => selected === undefined || selected.includes(profile.id)))('$id preserves host guidance and renders a real response', async profile => {
+  it.each(profiles.filter(profile => selected === undefined || selected.includes(profile.id)))(teams ? '$id completes native shared tasks and member messaging' : '$id preserves host guidance and renders a real response', async profile => {
     let host, browser, browserServer, page, model, settlement
     const replies = []
     const errors = []
@@ -81,6 +82,10 @@ describe.skipIf(process.env.DSH_E2E_LIVE !== '1')('live ACP smoke', () => {
           teamEvidence.secondRun = {}
           await verifyLiveTeam({ host, page, provider, model: second.id, evidence: teamEvidence.secondRun, memberName: 'checker', expectedMembers: 3 })
         }
+        if (process.env.DSH_E2E_LIVE_TEAMS_APPROVAL === '1') {
+          teamEvidence.approval = { directory: evidence }
+          await verifyLiveTeamApproval({ host, page, provider, evidence: teamEvidence.approval })
+        }
         expect(errors).toEqual([])
         await page.screenshot({ path: join(evidence, `${profile.id}.png`), fullPage: true })
         writeFileSync(join(evidence, `${profile.id}.json`), JSON.stringify({ status: 'passed', profile: profile.id, model, durationMs: Date.now() - started, ...teamEvidence }, null, 2))
@@ -114,7 +119,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE !== '1')('live ACP smoke', () => {
       await page.screenshot({ path: join(evidence, `${profile.id}.png`), fullPage: true })
       writeFileSync(join(evidence, `${profile.id}.json`), JSON.stringify({ status: 'passed', profile: profile.id, model, durationMs: Date.now() - started, replies }, null, 2))
     } catch (error) {
-      writeFileSync(join(evidence, `${profile.id}.json`), JSON.stringify({ status: 'failed', profile: profile.id, model, settlement, replies, ...teamEvidence, body: await page?.locator('body').innerText(), durationMs: Date.now() - started, error: error instanceof Error ? error.message : String(error) }, null, 2))
+      writeFileSync(join(evidence, `${profile.id}.json`), JSON.stringify({ status: 'failed', profile: profile.id, model, settlement, replies, ...teamEvidence, body: await page?.locator('body').innerText(), durationMs: Date.now() - started, error: error instanceof Error ? error.message : String(error), stack: error instanceof Error ? error.stack : undefined }, null, 2))
       throw error
     } finally {
       if (retain && host && page) {
@@ -127,5 +132,5 @@ describe.skipIf(process.env.DSH_E2E_LIVE !== '1')('live ACP smoke', () => {
       }
       try { await browser?.close(); await browserServer?.close() } finally { await host?.close() }
     }
-  }, retain ? 0 : 300_000)
+  }, retain ? 0 : teams ? 600_000 : 300_000)
 })

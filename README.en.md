@@ -4,7 +4,7 @@
 
 Use **Claude · Codex · Devin · Kimi** from the DSH session UI.
 
-> **0.1.5-rc.1** · Requires **DSH 0.1.5-rc.1**
+> **0.1.5-rc.2.1** · Requires **DSH 0.1.5-rc.2**
 
 ## <img src="assets/readme/icon-preview.svg" width="24" height="24" alt="" /> Preview
 
@@ -35,7 +35,7 @@ ACP Diagnostics groups issues, operations, and technical records. Open a record 
 You need Node.js `^22.19.0 || >=24.0.0`:
 
 ```bash
-npx @deepseek-ai/dsh@0.1.5-rc.1 web
+npx @deepseek-ai/dsh@0.1.5-rc.2 web
 ```
 
 Plugin development installs the locked npm dependencies:
@@ -62,7 +62,7 @@ Regular development needs no upstream checkout. See the [E2E guide](test/e2e/REA
 **2. Install the plugin.** This command installs the published npm `next` version.
 
 ```bash
-npx @deepseek-ai/dsh@0.1.5-rc.1 plugin --profile web add @zaimokuza/dsh-acp-adapter@next
+npx @deepseek-ai/dsh@0.1.5-rc.2 plugin --profile web add @zaimokuza/dsh-acp-adapter@next
 ```
 
 **3. Open Settings → ACP adapter**, add a template, check the connection, then choose an Agent model in a new session.
@@ -73,7 +73,7 @@ If the Agent needs an API key, add it explicitly under **Connection settings →
 
 ![DSH owns sessions and UI; the adapter passes context and normalizes activity; the Agent owns models, tools and permissions. External subagent projections are read-only, and jobs do not survive a DSH restart.](assets/readme/acp-overview.en.svg)
 
-**Experimental Agent Teams:** Follows DSH’s Teams profiles and uses its native Team panel. Members inherit the Lead’s Agent, model and reasoning settings at creation, with fresh context only. Switching the Lead’s model affects future members; existing members retain theirs. A team uses one ACP Agent. Open member requests from the Lead to answer the original native approval. Team coordination adds no approval prompts; ordinary permissions remain unchanged. Messages arrive at DSH step boundaries.
+**Experimental Agent Teams:** Follows DSH’s Teams profiles and uses its native Team panel. Members inherit the Lead’s Agent, model and reasoning settings at creation, with fresh context only. Switching the Lead’s model affects future members; existing members retain theirs. A team uses one ACP Agent. Shared tasks use the native task board. Pending member requests appear above the input; open one to answer the original native approval. Team coordination adds no approval prompts; ordinary permissions remain unchanged. Messages arrive at DSH step boundaries.
 
 ## <img src="assets/readme/icon-update.svg" width="24" height="24" alt="" /> Update or remove
 
@@ -81,9 +81,9 @@ Use the same `DSH_HOME` and profile as when starting DSH. You can replace `npx` 
 
 ```bash
 # Update
-npx @deepseek-ai/dsh@0.1.5-rc.1 plugin --profile web update @zaimokuza/dsh-acp-adapter
+npx @deepseek-ai/dsh@0.1.5-rc.2 plugin --profile web update @zaimokuza/dsh-acp-adapter
 # Remove
-npx @deepseek-ai/dsh@0.1.5-rc.1 plugin --profile web remove @zaimokuza/dsh-acp-adapter
+npx @deepseek-ai/dsh@0.1.5-rc.2 plugin --profile web remove @zaimokuza/dsh-acp-adapter
 ```
 
 **Keep local data when upgrading.** DSH migrates main sessions; the adapter does not migrate legacy subagent projections that the host rejects. Restart DSH after the current turn, then refresh the page; check the loaded version beside the settings title.

@@ -242,7 +242,7 @@ export function AcpAuditVisibilityGate(props: AcpAuditVisibilityGateProps): Reac
 }
 
 /** 与轨迹同级的全高会话视图；筛选和详情均在页面内完成。 */
-export function AcpAuditView(props: AcpAuditViewProps): ReactNode {
+function AcpAuditView(props: AcpAuditViewProps): ReactNode {
   const { sessionId, remote, t } = props
   const [loading, setLoading] = useState(false)
   const [entries, setEntries] = useState<readonly AcpAuditTimelineEntry[]>([])

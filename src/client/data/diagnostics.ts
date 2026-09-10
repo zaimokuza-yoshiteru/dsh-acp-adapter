@@ -7,14 +7,14 @@ export type DiagnosticTranslate<K extends string> = (
 ) => string
 
 /** Stable references are safe to retain while locale-specific host prose is not. */
-export function diagnosticReference(message: string | undefined): string | undefined {
+function diagnosticReference(message: string | undefined): string | undefined {
   if (message === undefined) return undefined
   return message.match(/acperr-\d{8}T\d{6}Z-[0-9a-z]+-[0-9a-f]{6,16}\b/i)?.[0]
     ?? message.match(/\bACP_[A-Z0-9_]+\b/)?.[0]
 }
 
 /** Render an optional diagnostic reference as a locale-neutral suffix. */
-export function diagnosticReferenceSuffix(message: string | undefined): string {
+function diagnosticReferenceSuffix(message: string | undefined): string {
   const reference = diagnosticReference(message)
   return reference === undefined ? '' : ` (${reference})`
 }

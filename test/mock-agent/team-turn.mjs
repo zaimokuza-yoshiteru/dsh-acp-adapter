@@ -10,6 +10,7 @@ export async function teamTurn(session, msg, { sendUpdate, sendAgentRequest, res
   const say = text => { log(text); sendUpdate(session.id, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } }) }
   let ordinal = 0
   try {
+    if (/\bE2E_TEAM_(?:MEMBER|CONTINUE)\b/.test(prompt) && /Approval prompts are disabled in this session|operations that require approval are rejected automatically/.test(prompt)) throw new Error('Member first prompt incorrectly disables approval')
     if (!server) throw new Error('No Teams MCP server provided')
     const transport = server.type === 'http' ? new StreamableHTTPClientTransport(new URL(server.url))
       : new StdioClientTransport({ command: server.command, args: server.args, env: Object.fromEntries(server.env.map(item => [item.name, item.value])), stderr: 'pipe' })

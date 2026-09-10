@@ -7,6 +7,14 @@
  */
 
 const zh = {
+  teamPendingTitle: '需要你处理 · {count} 位成员',
+  teamPendingHint: '待审批的操作已暂停。你仍可与主会话交流；发送消息不会批准这些请求。',
+  teamPendingCollapse: '收起',
+  teamPendingExpand: '展开',
+  teamPendingApproval: '等待审批',
+  teamPendingQuestion: '等待回答',
+  teamPendingOther: '等待处理',
+  teamPendingOpen: '查看请求',
   teamApprovalEntry: '{name} · 待处理请求',
   teamApprovalLoadFailed: '暂时无法读取团队待处理请求。',
   teamApprovalOpenFailed: '无法打开成员会话，请从原生团队面板重试。',
@@ -242,6 +250,14 @@ const zh = {
 export type AcpLocaleKey = keyof typeof zh
 
 const en: Record<AcpLocaleKey, string> = {
+  teamPendingTitle: 'Members needing your attention · {count}',
+  teamPendingHint: 'Operations awaiting approval are paused. You can still talk to the lead; sending a message does not approve these requests.',
+  teamPendingCollapse: 'Collapse',
+  teamPendingExpand: 'Expand',
+  teamPendingApproval: 'Awaiting approval',
+  teamPendingQuestion: 'Awaiting answer',
+  teamPendingOther: 'Pending request',
+  teamPendingOpen: 'View request',
   teamApprovalEntry: '{name} · Pending request',
   teamApprovalLoadFailed: 'Team pending requests are temporarily unavailable.',
   teamApprovalOpenFailed: 'Could not open the member session. Retry from the native Team panel.',
