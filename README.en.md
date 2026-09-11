@@ -30,10 +30,11 @@ ACP Diagnostics groups issues, operations, and technical records. Open a record 
 
 ## <img src="assets/readme/icon-setup.svg" width="24" height="24" alt="" /> Prerequisite: install a supported DSH version
 
-You need Node.js `^22.19.0 || >=24.0.0`:
+See `version` and `engines` in [package.json](package.json) for versions and runtime requirements. Read the compatible DSH version from the npm `next` package:
 
 ```bash
-npx @deepseek-ai/dsh@0.1.5-rc.2 web
+DSH_VERSION="$(npm view @zaimokuza/dsh-acp-adapter@next engines.dsh)"
+npx "@deepseek-ai/dsh@$DSH_VERSION" web
 ```
 
 Plugin development installs the locked npm dependencies:
@@ -60,7 +61,7 @@ Regular development needs no upstream checkout. See the [E2E guide](test/e2e/REA
 **2. Install the plugin.** This command installs the published npm `next` version.
 
 ```bash
-npx @deepseek-ai/dsh@0.1.5-rc.2 plugin --profile web add @zaimokuza/dsh-acp-adapter@next
+npx "@deepseek-ai/dsh@$DSH_VERSION" plugin --profile web add @zaimokuza/dsh-acp-adapter@next
 ```
 
 **3. Open Settings → ACP adapter**, add a template, check the connection, then choose an Agent model in a new session.
@@ -79,9 +80,9 @@ Use the same `DSH_HOME` and profile as when starting DSH. You can replace `npx` 
 
 ```bash
 # Update
-npx @deepseek-ai/dsh@0.1.5-rc.2 plugin --profile web update @zaimokuza/dsh-acp-adapter
+npx "@deepseek-ai/dsh@$DSH_VERSION" plugin --profile web update @zaimokuza/dsh-acp-adapter
 # Remove
-npx @deepseek-ai/dsh@0.1.5-rc.2 plugin --profile web remove @zaimokuza/dsh-acp-adapter
+npx "@deepseek-ai/dsh@$DSH_VERSION" plugin --profile web remove @zaimokuza/dsh-acp-adapter
 ```
 
 **Keep local data when upgrading.** DSH migrates main sessions; the adapter does not migrate legacy subagent projections that the host rejects. Restart DSH after the current turn, then refresh the page; check the loaded version beside the settings title.

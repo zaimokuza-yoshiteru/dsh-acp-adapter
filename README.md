@@ -30,10 +30,11 @@ ACP 审批复用 DSH 原生审批卡，批准前可查看完整命令：
 
 ## <img src="assets/readme/icon-setup.svg" width="24" height="24" alt="" /> 前置：安装受支持的 DSH
 
-需要 Node.js `^22.19.0 || >=24.0.0`：
+版本与运行要求以 [package.json](package.json) 的 `version`、`engines` 为准。以下从 npm `next` 包读取兼容的 DSH 版本：
 
 ```bash
-npx @deepseek-ai/dsh@0.1.5-rc.2 web
+DSH_VERSION="$(npm view @zaimokuza/dsh-acp-adapter@next engines.dsh)"
+npx "@deepseek-ai/dsh@$DSH_VERSION" web
 ```
 
 插件开发直接安装锁定的 npm 依赖：
@@ -60,7 +61,7 @@ pnpm install --frozen-lockfile
 **2. 安装插件。** 以下命令安装 npm 已发布的 `next` 版本。
 
 ```bash
-npx @deepseek-ai/dsh@0.1.5-rc.2 plugin --profile web add @zaimokuza/dsh-acp-adapter@next
+npx "@deepseek-ai/dsh@$DSH_VERSION" plugin --profile web add @zaimokuza/dsh-acp-adapter@next
 ```
 
 **3. 打开「设置 → ACP adapter」**，添加模板、检查连接，再在新会话中选择 Agent 模型。
@@ -79,9 +80,9 @@ npx @deepseek-ai/dsh@0.1.5-rc.2 plugin --profile web add @zaimokuza/dsh-acp-adap
 
 ```bash
 # 更新
-npx @deepseek-ai/dsh@0.1.5-rc.2 plugin --profile web update @zaimokuza/dsh-acp-adapter
+npx "@deepseek-ai/dsh@$DSH_VERSION" plugin --profile web update @zaimokuza/dsh-acp-adapter
 # 卸载
-npx @deepseek-ai/dsh@0.1.5-rc.2 plugin --profile web remove @zaimokuza/dsh-acp-adapter
+npx "@deepseek-ai/dsh@$DSH_VERSION" plugin --profile web remove @zaimokuza/dsh-acp-adapter
 ```
 
 **升级时保留本地数据。** 主会话迁移由 DSH 负责；宿主不支持的旧子代理投影不额外迁移。当前轮次结束后重启 DSH、刷新页面，从设置标题旁确认加载版本。
