@@ -534,15 +534,21 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
     await expect.poll(async () => (await host.ctx.sessionPersistence.list()).filter(item => item.header.origin === 'subagent').length).toBe(supported ? 1 : 0)
     if (!supported) return
     const child = (await host.ctx.sessionPersistence.list()).find(item => item.header.origin === 'subagent')
-    const handle = await host.ctx.sessionPersistence.open(child.header.id, 'read')
-    try {
-      const log = await handle.read()
-      expect(handle.header.version).toBe(3)
-      expect(log.events.map(event => event.type)).toEqual([
+    // Persistence publishes the header at create(), before the asynchronous
+    // projection appends its body. Directory presence is not a completion barrier.
+    await expect.poll(async () => {
+      const handle = await host.ctx.sessionPersistence.open(child.header.id, 'read')
+      try {
+        const log = await handle.read()
+        return { version: handle.header.version, events: log.events.map(event => event.type) }
+      } finally { await handle.close() }
+    }, { timeout: 10000 }).toEqual({
+      version: 3,
+      events: [
         'subagent/descriptor', 'turn/start', 'step/start', 'user/message',
         'assistant/message', 'step/end', 'turn/end',
-      ])
-    } finally { await handle.close() }
+      ],
+    })
     await page.getByRole('button', { name: '1 subagent', exact: true }).press('ArrowDown')
     await page.getByRole('treeitem', { name: /^Inspect fixture/ }).click()
     await page.getByText('E2E_CHILD_RESULT', { exact: profile === 'claude' }).waitFor()

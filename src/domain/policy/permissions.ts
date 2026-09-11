@@ -151,7 +151,7 @@ export function createAcpNativePermissionHandler(deps: AcpNativePermissionBridge
     if (agent === undefined) return decide({ outcome: 'cancelled', note: 'agent-unavailable' })
     const allowOnce = params.options.find(option => option.kind === 'allow_once')
     const reject = params.options.find(option => option.kind === 'reject_once')
-      ?? params.options.find(option => option.kind === 'reject_always')
+
     if (deps.approval !== undefined && allowOnce !== undefined) {
       try {
         const outcome = await deps.approval.request({

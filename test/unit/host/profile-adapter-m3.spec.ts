@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import os from 'node:os'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -11,7 +11,7 @@ import type { AcpProfileRuntime } from '../../../src/host/composition/profile-ad
 import { createAcpSidecar } from '../../../src/persistence/sidecar.ts'
 import type { AcpSidecar } from '../../../src/persistence/sidecar.ts'
 import type { DispatchLedgerStore, DispatchRecord } from '../../../src/runtime/session/dispatch-ledger.ts'
-import { profileLaunchIdentityHash } from '../../../src/domain/session/launch-fingerprint.ts'
+import { profileLaunchIdentityHash, acpLaunchFingerprint } from '../../../src/domain/session/launch-fingerprint.ts'
 import { acpCanonicalHash16 } from '../../../src/persistence/sidecar.ts'
 import { AcpClientError } from '../../../src/protocol/v1/errors.ts'
 
@@ -474,4 +474,154 @@ describe('M3a binding-first ACP provider', () => {
       fs.rmSync(root, { recursive: true, force: true })
     }
   })
+})
+
+
+describe('runtime failure and host disposal ownership', () => {
+  it.each(['recovery', 'outdated', 'read-error'])('closes initialized runtimes on %s gates and removes their cache entry', async gate => {
+    const initialize = vi.fn(async () => {}), close = vi.fn(async () => {})
+    const prompt = vi.fn(async () => ({ stopReason: 'end_turn' as const }))
+    const factory = vi.fn(() => ({ initialize, close, prompt, start: async () => {} }))
+    const sidecar = {
+      readRecoveryState: async () => {
+        if (gate === 'read-error') throw new Error('read failed')
+        return gate === 'recovery' ? { kind: 'reconnect-required' } : undefined
+      },
+      readLatestBinding: async () => gate === 'outdated' ? { status: 'outdated' } : undefined,
+      writeRecoveryState: async () => {},
+    } as unknown as AcpSidecar
+    const message = user('hello')
+    const subject = new AcpProfileAdapter('test', profile, seam(), () => session(message), new Ledger(), undefined, factory, sidecar)
+    for (let i = 0; i < 2; i++) await expect(drain(subject.stream(request('gate', message)))).rejects.toThrow()
+    expect(factory).toHaveBeenCalledTimes(2)
+    expect(initialize).toHaveBeenCalledTimes(2)
+    expect(close).toHaveBeenCalledTimes(2)
+    expect(prompt).not.toHaveBeenCalled()
+    await subject.close()
+    expect(close).toHaveBeenCalledTimes(2)
+  })
+
+  it.each(['HOME', 'CODEX_HOME', 'XDG_CONFIG_HOME', 'legacy'])('blocks incompatible %s environment identity after restart without rewriting old bindings', async key => {
+    const { sidecar, root } = sidecarAt()
+    const message = user('first')
+    const initial = new AcpProfileAdapter('test', profile, seam(), () => session(message), ledgerFor(sidecar), undefined, runtimeFactory({ starts: 0, prompts: 0, restores: 0 }), sidecar)
+    let restarted: AcpProfileAdapter | undefined
+    try {
+      vi.stubEnv(key === 'legacy' ? 'HOME' : key, '/test/home-a')
+      await drain(initial.stream(request('drift', message)))
+      await initial.close()
+      const lookup = await sidecar.readLatestBinding('drift' as never)
+      if (lookup?.status !== 'ok') throw new Error('missing binding')
+      expect(lookup.binding.launchFingerprint).toEqual(acpLaunchFingerprint({ profileId: 'test', config: profile(), descriptor: undefined }))
+      if (key === 'legacy') {
+        // Old releases fingerprinted only explicit config.env, losing inherited HOME.
+        await sidecar.append('drift' as never, { kind: 'binding', data: {
+          ...lookup.binding,
+          launchFingerprint: acpLaunchFingerprint({ profileId: 'test', config: profile(), descriptor: undefined, env: {} }),
+        } })
+      } else vi.stubEnv(key, '/test/home-b')
+      const saved = await sidecar.readLatestBinding('drift' as never)
+      const next = user('continue'), records = { starts: 0, prompts: 0, restores: 0 }
+      const close = vi.fn(async () => {})
+      const factory = () => ({ ...runtimeFactory(records)({}), initialize: async () => {}, close })
+      restarted = new AcpProfileAdapter('test', profile, seam(), () => session(next), ledgerFor(sidecar), undefined, factory, sidecar)
+      await expect(drain(restarted.stream(request('drift', next)))).rejects.toMatchObject({ code: 'ACP_RECONCILIATION_REQUIRED' })
+      expect(records).toEqual({ starts: 0, prompts: 0, restores: 0 })
+      expect(close).toHaveBeenCalledOnce()
+      expect((await sidecar.readRecoveryState('drift' as never))?.cause).toBe('profile-changed')
+      expect(await sidecar.readLatestBinding('drift' as never)).toEqual(saved)
+    } finally {
+      vi.unstubAllEnvs(); await initial.close(); await restarted?.close(); await sidecar.dispose()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps normal turns and unrelated jobs live, releasing only the disposed session incarnation', async () => {
+    const { sidecar, root } = sidecarAt()
+    const message = user('first')
+    let current = { ...session(message), id: 'owned' }
+    const other = { ...session(message), id: 'other' }
+    const closes: Array<ReturnType<typeof vi.fn>> = []
+    const records = { starts: 0, prompts: 0, restores: 0 }
+    const factory = () => { const close = vi.fn(async () => {}); closes.push(close); return { ...runtimeFactory(records)({}), close } }
+    const subject = new AcpProfileAdapter('test', profile, seam(), id => id === 'owned' ? current : other, ledgerFor(sidecar), undefined, factory, sidecar)
+    try {
+      await drain(subject.stream(request('owned', message)))
+      const next = user('second')
+      current.events.push({ type: 'step/start', seq: 3, data: { turn: 2, step: 0 } }, { type: 'user/message', seq: 4, data: next })
+      await drain(subject.stream(request('owned', next)))
+      await drain(subject.stream(request('other', message)))
+      expect(closes).toHaveLength(2)
+      expect(closes.every(close => close.mock.calls.length === 0)).toBe(true)
+      const old = current
+      await subject.disposeSession(old)
+      expect(closes[0]).toHaveBeenCalledOnce()
+      expect(closes[1]).not.toHaveBeenCalled()
+      const resumed = user('resumed')
+      current = { ...session(resumed), id: 'owned' }
+      await drain(subject.stream(request('owned', resumed)))
+      await subject.disposeSession(old)
+      expect(closes[2]).not.toHaveBeenCalled()
+      await subject.disposeSession(current)
+      expect(closes[2]).toHaveBeenCalledOnce()
+      expect((await sidecar.readLatestBinding('owned' as never))?.status).toBe('ok')
+    } finally { await subject.close(); await sidecar.dispose(); fs.rmSync(root, { recursive: true, force: true }) }
+  })
+})
+
+
+it('does not resurrect an explicitly retried runtime after its host session is disposed', async () => {
+  const { sidecar, root } = sidecarAt()
+  const message = user('original'), live = { ...session(message), id: 'retry-disposed' }
+  const records = { starts: 0, prompts: 0, restores: 0 }
+  const initial = new AcpProfileAdapter('test', profile, seam(), () => live, ledgerFor(sidecar), undefined, runtimeFactory(records), sidecar)
+  const entered = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>()
+  const close = vi.fn(async () => {})
+  const subject = new AcpProfileAdapter('test', profile, seam(), () => live, ledgerFor(sidecar), undefined, () => ({
+    ...runtimeFactory(records)({}), close, restore: async () => { entered.resolve(); await finish.promise; return 'resumed' },
+  }), sidecar)
+  try {
+    await drain(initial.stream(request(live.id, message)))
+    await initial.close()
+    const retry = subject.retryOriginal(live.id)
+    const rejected = expect(retry).rejects.toThrow('disposed during recovery')
+    await entered.promise
+    await subject.disposeSession(live)
+    expect(close).toHaveBeenCalledOnce()
+    finish.resolve()
+    await rejected
+    await subject.close()
+    expect(close).toHaveBeenCalledOnce()
+    expect((await sidecar.readLatestBinding(live.id as never))?.status).toBe('ok')
+  } finally { finish.resolve(); await initial.close(); await subject.close(); await sidecar.dispose(); fs.rmSync(root, { recursive: true, force: true }) }
+})
+
+it('does not evict a replacement runtime when an older initialization fails late', async () => {
+  const { sidecar, root } = sidecarAt()
+  const first = user('first'), second = user('second')
+  let live = { ...session(first), id: 'same-id' }
+  const entered = Promise.withResolvers<void>(), fail = Promise.withResolvers<void>()
+  const oldClose = vi.fn(async () => {}), newClose = vi.fn(async () => {})
+  let created = 0
+  const records = { starts: 0, prompts: 0, restores: 0 }
+  const subject = new AcpProfileAdapter('test', profile, seam(), () => live, ledgerFor(sidecar), undefined, () => ({
+    ...runtimeFactory(records)({}),
+    ...(created++ === 0 ? {
+      initialize: async () => { entered.resolve(); await fail.promise; throw new Error('old initialization failed') }, close: oldClose,
+    } : { initialize: async () => {}, close: newClose }),
+  }), sidecar)
+  try {
+    const pending = drain(subject.stream(request(live.id, first)))
+    const rejected = expect(pending).rejects.toThrow('old initialization failed')
+    await entered.promise
+    await subject.disposeSession(live)
+    live = { ...session(second), id: live.id }
+    await drain(subject.stream(request(live.id, second)))
+    fail.resolve()
+    await rejected
+    expect(oldClose).toHaveBeenCalledOnce()
+    expect(newClose).not.toHaveBeenCalled()
+    await subject.disposeSession(live)
+    expect(newClose).toHaveBeenCalledOnce()
+  } finally { fail.resolve(); await subject.close(); await sidecar.dispose(); fs.rmSync(root, { recursive: true, force: true }) }
 })

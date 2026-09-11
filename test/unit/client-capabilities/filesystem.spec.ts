@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import fs from 'node:fs'
+import { createHash } from 'node:crypto'
+import { Readable } from 'node:stream'
 import os from 'node:os'
 import path from 'node:path'
 import { ACP_FS_MAX_LINES, createAcpFileSystemHandlers } from '../../../src/runtime/client-capabilities/filesystem.ts'
@@ -133,4 +135,56 @@ describe('ACP native filesystem handlers', () => {
     expect(fs.readdirSync(dir).filter((entry) => entry.includes('.dsh-acp-'))).toEqual([])
     fs.rmSync(dir, { recursive: true, force: true })
   })
+})
+
+
+it('streams oversized old files while retaining exact hashes and atomic replacement', async () => {
+  const dir = root(), file = path.join(dir, 'large.txt')
+  const old = Buffer.alloc(256 * 1024, 'x')
+  fs.writeFileSync(file, old)
+  const audit: Array<{ beforeHash: string | null; afterHash: string | null }> = []
+  const fullRead = vi.spyOn(fs.promises, 'readFile')
+  const handlers = createAcpFileSystemHandlers({ profileId: 'test', maxBytes: 16, audit: event => { audit.push(event) } })
+  try {
+    await handlers.writeTextFile({ sessionId: 's', path: file, content: 'small' })
+    expect(fullRead).not.toHaveBeenCalled()
+    expect(fs.readFileSync(file, 'utf8')).toBe('small')
+    const digest = (data: Buffer | string) => createHash('sha256').update(data).digest('hex')
+    expect(audit.at(-1)).toMatchObject({ beforeHash: digest(old), afterHash: digest('small') })
+  } finally { fullRead.mockRestore(); handlers.dispose(); fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
+it('retains concurrent-edit detection during streamed old-file hashing', async () => {
+  const dir = root(), file = path.join(dir, 'file.txt')
+  fs.writeFileSync(file, 'original')
+  const handlers = createAcpFileSystemHandlers({ profileId: 'test', io: {
+    writeFile: async (...args) => { await fs.promises.writeFile(...args); fs.writeFileSync(file, 'other edit') },
+  } })
+  try {
+    await expect(handlers.writeTextFile({ sessionId: 's', path: file, content: 'replacement' })).rejects.toThrow('concurrent file change')
+    expect(fs.readFileSync(file, 'utf8')).toBe('other edit')
+    expect(fs.readdirSync(dir)).toEqual(['file.txt'])
+  } finally { handlers.dispose(); fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
+it.each([1, 2])('aborts and closes old-file hash stream %i without replacing the target', async pass => {
+  const dir = root(), file = path.join(dir, 'file.txt'); fs.writeFileSync(file, 'original')
+  const controller = new AbortController()
+  const audits: Array<{ outcome: string }> = []
+  const original = fs.createReadStream
+  let count = 0
+  let stalled: Readable | undefined
+  const spy = vi.spyOn(fs, 'createReadStream').mockImplementation((...args) => {
+    if (++count !== pass) return original(...args)
+    stalled = new Readable({ read() { controller.abort() }, signal: controller.signal })
+    return stalled as fs.ReadStream
+  })
+  const handlers = createAcpFileSystemHandlers({ profileId: 'test', signal: controller.signal, audit: event => { audits.push(event) } })
+  try {
+    await expect(handlers.writeTextFile({ sessionId: 's', path: file, content: 'replacement' })).rejects.toThrow(/abort/i)
+    expect(stalled?.destroyed).toBe(true)
+    expect(fs.readFileSync(file, 'utf8')).toBe('original')
+    expect(fs.readdirSync(dir)).toEqual(['file.txt'])
+    expect(audits.at(-1)?.outcome).toBe('aborted')
+  } finally { spy.mockRestore(); handlers.dispose(); fs.rmSync(dir, { recursive: true, force: true }) }
 })

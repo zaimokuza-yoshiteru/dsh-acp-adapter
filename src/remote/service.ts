@@ -76,6 +76,7 @@ import type {
   AcpActivityView,
   AcpActivityJournalFrame,
   AcpAgentSessionSnapshotView,
+  AcpAgentSessionFrame,
   AcpAgentSessionOptionWrite,
   AcpOwnedRoutesView,
   AcpProjectedSubagentsView,
@@ -354,6 +355,11 @@ export interface AcpRemoteServiceDeps {
   recoveryAdapter?: (provider: string) => AcpRecoveryAdapterLike | undefined
   /** Resolves only the new per-profile provider control surface. */
   agentSessionControl?: (provider: string) => AcpAgentSessionControlLike | undefined
+  /** A real host session may subscribe before its first ACP binding exists. */
+  agentSessionChanges?: {
+    readonly canRead: (sessionId: string) => boolean | Promise<boolean>
+    readonly subscribe: (sessionId: string, changed: () => void) => () => void
+  }
   /** Host-projected, bounded sidecar rows. Raw persistence payloads stay host-side. */
   auditTimeline?: {
     readonly list: (sessionId: string, afterSeq: number, limit: number) => Promise<readonly AcpAuditTimelineEntry[]>
@@ -457,6 +463,7 @@ interface ResolvedDeps {
   readonly recoveryStateStore: NonNullable<AcpRemoteServiceDeps['recoveryStateStore']> | null
   readonly recoveryAdapter: NonNullable<AcpRemoteServiceDeps['recoveryAdapter']> | null
   readonly agentSessionControl: NonNullable<AcpRemoteServiceDeps['agentSessionControl']> | null
+  readonly agentSessionChanges: NonNullable<AcpRemoteServiceDeps['agentSessionChanges']> | null
   readonly auditTimeline: NonNullable<AcpRemoteServiceDeps['auditTimeline']> | null
   readonly activityTimeline: NonNullable<AcpRemoteServiceDeps['activityTimeline']> | null
   readonly activityAccess: NonNullable<AcpRemoteServiceDeps['activityAccess']> | null
@@ -505,6 +512,7 @@ export class AcpRemoteService extends TypertRemoteService {
       recoveryStateStore: deps.recoveryStateStore ?? null,
       recoveryAdapter: deps.recoveryAdapter ?? null,
       agentSessionControl: deps.agentSessionControl ?? null,
+      agentSessionChanges: deps.agentSessionChanges ?? null,
       auditTimeline: deps.auditTimeline ?? null,
       activityTimeline: deps.activityTimeline ?? null,
       activityAccess: deps.activityAccess ?? null,
@@ -790,6 +798,45 @@ export class AcpRemoteService extends TypertRemoteService {
   async agentSessionSnapshot(sessionId: string): Promise<AcpAgentSessionSnapshotView> {
     const adapter = await this.agentSessionControlFor(sessionId)
     return await preserveAcpFailure(() => adapter.agentSessionSnapshot(sessionId))
+  }
+
+  /** Subscribe before reading: creation or a config notification cannot fall into the opening gap. */
+  @Remote({ mode: 'stream' })
+  async *agentSessionFollow(sessionId: string, signal: AbortSignal): AsyncIterable<AcpAgentSessionFrame> {
+    const changes = this.resolved.agentSessionChanges
+    const facts = this.resolved.backendFacts
+    const resolver = this.resolved.agentSessionControl
+    if (changes === null || facts === null || resolver === null) throw acpRemoteFailure('config', 'ACP Agent session stream is unavailable')
+    if (sessionId.length === 0 || sessionId.length > 256 || !(await changes.canRead(sessionId))) {
+      throw acpRemoteFailure('user-rejected', 'ACP Agent session access is not authorized')
+    }
+    let dirty = true
+    let wake: (() => void) | undefined
+    const notify = (): void => { dirty = true; wake?.() }
+    const unsubscribe = changes.subscribe(sessionId, notify)
+    signal.addEventListener('abort', notify, { once: true })
+    let previous: string | undefined
+    try {
+      while (!signal.aborted) {
+        if (!dirty) await new Promise<void>(resolve => { wake = resolve })
+        wake = undefined
+        if (signal.aborted) break
+        dirty = false
+        const provider = await facts.readBindingProvider(sessionId)
+        // No binding is a normal pending state. Never infer or create a runtime from a UI read.
+        const adapter = provider === undefined ? undefined : resolver(provider)
+        if (provider !== undefined && adapter === undefined) throw acpRemoteFailure('config', 'The ACP Agent profile is unavailable')
+        const snapshot = adapter === undefined ? null : await preserveAcpFailure(() => adapter.agentSessionSnapshot(sessionId))
+        if (signal.aborted) break
+        const key = JSON.stringify(snapshot)
+        if (key === previous) continue
+        yield { type: previous === undefined ? 'opened' : 'changed', snapshot }
+        previous = key
+      }
+    } finally {
+      unsubscribe()
+      signal.removeEventListener('abort', notify)
+    }
   }
 
   @Remote

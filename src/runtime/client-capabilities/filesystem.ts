@@ -112,6 +112,20 @@ function safeWindowNumber(value: number | null | undefined): number | undefined 
   return value !== null && value !== undefined && Number.isSafeInteger(value) ? value : undefined
 }
 
+/** Hash old content without retaining file-sized buffers; cancellation closes the stream. */
+async function hashFile(target: string, signal: AbortSignal): Promise<string> {
+  signal.throwIfAborted()
+  const stream = fs.createReadStream(target, { highWaterMark: 64 * 1024, signal })
+  try {
+    const digest = createHash('sha256')
+    for await (const chunk of stream) digest.update(chunk as Buffer)
+    signal.throwIfAborted()
+    return digest.digest('hex')
+  } finally {
+    stream.destroy()
+  }
+}
+
 function readWindowFields(params: acp.ReadTextFileRequest): { readonly line?: number; readonly limit?: number } {
   const line = safeWindowNumber(params.line)
   const limit = safeWindowNumber(params.limit)
@@ -255,27 +269,26 @@ export function createAcpFileSystemHandlers(options: AcpFileSystemOptions): AcpF
     }
     const parent = path.dirname(target)
     let mode = 0o600
-    let before: Buffer | undefined
+    let beforeHash: string | null = null
     try {
       const stat = await fs.promises.lstat(target)
       if (stat.isSymbolicLink()) throw new Error('symlink targets are not replaceable')
       if (!stat.isFile()) throw new Error('target is not a regular file')
       mode = stat.mode & 0o7777
-      before = await abortable(fs.promises.readFile(target), requestSignal)
+      beforeHash = await hashFile(target, requestSignal)
     } catch (error: unknown) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-        await emit(options.audit, { operation: 'write', path: target, bytes: bytes.byteLength, beforeHash: before === undefined ? null : hash(before), afterHash: null, outcome: 'error', acpSessionId: params.sessionId, profileId: options.profileId })
+        await emit(options.audit, { operation: 'write', path: target, bytes: bytes.byteLength, beforeHash, afterHash: null, outcome: requestSignal.aborted ? abortOutcome(requestSignal, timeoutSignal) : 'error', acpSessionId: params.sessionId, profileId: options.profileId })
         throw new Error(`ACP fs/write_text_file failed for ${target}: ${error instanceof Error ? error.message : String(error)}`)
       }
     }
-    const beforeHash = before === undefined ? null : hash(before)
     const temp = path.join(parent, `.dsh-acp-${path.basename(target)}-${randomUUID()}.tmp`)
     try {
       await abortable(writeFile(temp, bytes, { flag: 'wx', mode }), requestSignal)
       await abortable(fs.promises.chmod(temp, mode), requestSignal)
-      if (before !== undefined) {
-        const current = await abortable(fs.promises.readFile(target), requestSignal)
-        if (hash(current) !== beforeHash) throw new Error('concurrent file change')
+      if (beforeHash !== null) {
+        const currentHash = await hashFile(target, requestSignal)
+        if (currentHash !== beforeHash) throw new Error('concurrent file change')
       }
       assertNotAborted(requestSignal)
       await abortable(rename(temp, target), requestSignal)

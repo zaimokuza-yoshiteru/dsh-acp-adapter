@@ -58,6 +58,7 @@ const PINNED_REMOTE_METHODS: readonly string[] = [
   'activityFollow',
   'activityPage',
   'activitySnapshot',
+  'agentSessionFollow',
   'agentSessionSnapshot',
   'auditTimeline',
   'backendOf',

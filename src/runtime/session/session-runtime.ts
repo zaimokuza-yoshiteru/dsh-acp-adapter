@@ -471,7 +471,17 @@ export class AcpSessionRuntime {
 
   private async createConnection(signal?: AbortSignal): Promise<void> {
     signal?.throwIfAborted()
+    // Teardown can arrive while prepareLaunch/initialize is still pending.
+    // Own its cancellation before awaiting either, so a disposed session cannot
+    // publish a newly initialized child after close() has returned.
+    const connectionAbort = new AbortController()
+    this.connectionAbort = connectionAbort
+    const setupSignal = signal === undefined ? connectionAbort.signal : AbortSignal.any([signal, connectionAbort.signal])
     const launch = await this.options.prepareLaunch(this.options.config, this.options.cwd)
+    if (setupSignal.aborted) {
+      await launch.mcpLease?.close().catch(() => undefined)
+      setupSignal.throwIfAborted()
+    }
     this.launch = launch
     this.mcpLease = launch.mcpLease
     const spec: AcpConnectionSpec = {
@@ -483,7 +493,6 @@ export class AcpSessionRuntime {
     }
     const fileSystemHandlers = this.options.createFileSystemHandlers?.({ cwd: this.options.cwd, env: launch.env })
     const terminalHandlers = this.options.createTerminalHandlers?.({ cwd: this.options.cwd, env: launch.env })
-    const connectionAbort = new AbortController()
     const connection = new AcpClientConnection(spec, {
       ...(this.options.enableClaudeDraftSubagents === true ? { enableClaudeDraftSubagents: true } : {}),
       ...(this.options.onCapabilityDegraded === undefined ? {} : { onCapabilityDegraded: this.options.onCapabilityDegraded }),
@@ -509,9 +518,10 @@ export class AcpSessionRuntime {
       },
     })
     try {
-      await connection.initialize(signal === undefined ? {} : { signal })
+      await connection.initialize({ signal: setupSignal })
       this.mcpKey = this.options.mcpKey?.()
       this.mcpLease ??= await this.options.createMcpLease?.(connection.agentCapabilities)
+      setupSignal.throwIfAborted()
       this.connection = connection
       this.connectionAbort = connectionAbort
     } catch (error) {

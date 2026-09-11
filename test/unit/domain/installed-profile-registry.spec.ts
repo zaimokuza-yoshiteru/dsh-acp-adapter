@@ -587,31 +587,32 @@ describe('纯函数：registration facts / probe 配置 hash', () => {
 });
 
 describe('installInstalledProfileRegistry：注册/替换调用序列', () => {
-  it('projects access at creation only for currently registered ACP routes, including resumed members', async () => {
+  it('projects access on claimed input only for currently registered ACP routes, including resumed members', async () => {
     const { ctx, settings, listeners } = fakeHarness();
     installInstalledProfileRegistry(ctx);
     await settings.replace({ agents: { devin: devinAgent } });
-    const created = listeners.get('agent/created')!;
+    expect(listeners.has('agent/created')).toBe(false);
+    const claimed = listeners.get('agent/inbox/claimed')!;
     const session = () => {
       const events: Array<{ type: string; data: unknown }> = [
         { type: 'approval/policy', data: { policy: 'never', source: 'delegation' } },
       ];
-      return { events, snapshotEvents: () => [...events], append: (type: string, data: unknown) => events.push({ type, data }) };
+      return { header: { origin: 'subagent' }, requestHeader: () => undefined, events, snapshotEvents: () => [...events], append: (type: string, data: unknown) => events.push({ type, data }) };
     };
     const acp = session();
-    created({ agent: { options: { provider: 'acp-devin' }, session: acp } });
+    claimed({ agent: { options: { provider: 'acp-devin' }, session: acp } });
     expect(acp.events.at(-1)).toEqual({ type: 'approval/policy', data: { policy: 'ask' } });
     const size = acp.events.length;
-    created({ agent: { options: { provider: 'acp-devin' }, session: acp } });
+    claimed({ agent: { options: { provider: 'acp-devin' }, session: acp } });
     expect(acp.events).toHaveLength(size);
     for (const provider of ['deepseek', 'acp-unknown', undefined]) {
       const untouched = session();
-      created({ agent: { options: { provider }, session: untouched } });
+      claimed({ agent: { options: { provider }, session: untouched } });
       expect(untouched.events).toHaveLength(1);
     }
     await settings.replace({ agents: {} });
     const removed = session();
-    created({ agent: { options: { provider: 'acp-devin' }, session: removed } });
+    claimed({ agent: { options: { provider: 'acp-devin' }, session: removed } });
     expect(removed.events).toHaveLength(1);
   });
 
@@ -625,17 +626,18 @@ describe('installInstalledProfileRegistry：注册/替换调用序列', () => {
       { name: 'approval:policy', text: 'ask' },
       { name: 'other-plugin', text: 'preserved contribution' },
     ], tools: [], variables: {} };
-    const next = async () => original;
     for (const provider of ['deepseek', 'acp-unknown', undefined]) {
-      expect(await assemble({}, { agent: { options: { provider } } }, next)).toBe(original);
+      const downstream = { ...original, variables: { provider } };
+      // A stale ACP constructor must not rewrite the selected native model's contexts.
+      expect(await assemble({}, { agent: { options: { provider: 'acp-devin' } } }, async () => downstream)).toBe(downstream);
     }
-    const result = await assemble({}, { agent: { options: { provider: 'acp-devin' } } }, next);
+    const result = await assemble({}, { agent: { options: { provider: 'deepseek' } } }, async () => ({ ...original, variables: { provider: 'acp-devin' } }));
     expect(result.contexts[0].text).toContain('request permission through your normal tools');
     expect(result.contexts.slice(1)).toEqual(original.contexts.slice(1));
     expect(original.contexts[0]!.text).toBe('native fixed delegation');
     expect(result.sections).toBe(original.sections);
     expect(result.tools).toBe(original.tools);
-    const suppressed = { ...original, contexts: [] };
+    const suppressed = { ...original, variables: { provider: 'acp-devin' }, contexts: [] };
     expect((await assemble({}, { agent: { options: { provider: 'acp-devin' } } }, async () => suppressed)).contexts).toEqual([]);
   });
 
@@ -808,3 +810,18 @@ describe('acpVersionCompatibility（readiness 的纯函数核心）', () => {
     expect(acpVersionCompatibility(byId('claude'), '0.69.0')).toBe('drifted');
   });
 });
+
+
+it('forwards actual host session disposal to all ACP adapters', async () => {
+  const { ctx, settings, listeners, llm } = fakeHarness()
+  installInstalledProfileRegistry(ctx)
+  await settings.replace({ agents: { devin: { ...DEVIN_ACP_TEMPLATE }, codex: { ...CODEX_ACP_TEMPLATE } } })
+  const closed: unknown[] = []
+  for (const value of llm.adapters) {
+    const adapter = value as { disposeSession(session: unknown): Promise<void> }
+    adapter.disposeSession = async session => { closed.push(session) }
+  }
+  const session = { id: 'disposed-session' }
+  await listeners.get('session/disposed')!(session)
+  expect(closed).toEqual([session, session])
+})

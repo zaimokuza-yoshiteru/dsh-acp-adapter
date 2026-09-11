@@ -33,6 +33,7 @@ import type { AcpSettings } from './data/logic.ts'
 import { AcpAuditVisibilityGate, createAcpAuditView } from './ui/AcpAuditHeaderAction.ts'
 import { en, zh } from './ui/locales.ts'
 import type { AcpRemoteLike } from './data/acp-remote.ts'
+import type { RemoteStreamFactory } from '@deepseek-ai/dsh-api-gateway/client'
 import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { IWorkspaces } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import contribution from '../../lib/typert.remote-client.js'
@@ -220,8 +221,9 @@ async function registerUi(ctx: ClientContext): Promise<void> {
     id: 'dsh-acp-agent-control',
     order: 80,
     locale: 'acpActivity',
-    inject: (): { readonly remote: AcpRemoteLike; readonly ownsRoute: typeof managedRoutes.owns } => ({
+    inject: (): { readonly remote: AcpRemoteLike; readonly streamFactory: RemoteStreamFactory; readonly ownsRoute: typeof managedRoutes.owns } => ({
       remote: acpRemote,
+      streamFactory: ctx.remote,
       ownsRoute: managedRoutes.owns,
     }),
   }, AcpAgentControl))
@@ -243,3 +245,6 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
     await disposeRemote()
   }
 }
+
+// Public payload types referenced by the generated ./remote declarations.
+export type * from '../contract/remote.ts'

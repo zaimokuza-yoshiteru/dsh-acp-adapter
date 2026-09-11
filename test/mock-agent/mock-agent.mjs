@@ -350,7 +350,7 @@ function handleSessionNew(msg) {
   session.mcpServers = sessionMcpServers(msg);
   // 对齐 devin 实测流量（research/probe-output.log L55-58 先于 session/new 响应）：
   // 先主动推厂商扩展通知 + config_option_update + current_mode_update 快照，再回响应
-  if (fullCaps()) {
+  if (fullCaps() && !process.env.MOCK_CONTROLS_DELIVERY) {
     sendFrame({ jsonrpc: '2.0', method: '_cognition.ai/mcp/serversChanged', params: {} });
     if (session.configOptions) {
       sendUpdate(session.id, { sessionUpdate: 'config_option_update', configOptions: session.configOptions });
@@ -360,8 +360,12 @@ function handleSessionNew(msg) {
     }
   }
   const result = { sessionId: session.id };
-  if (session.modes) result.modes = session.modes;
-  if (session.configOptions) result.configOptions = session.configOptions;
+  if (process.env.MOCK_CONTROLS_DELIVERY === 'deferred') {
+    result.configOptions = session.configOptions.filter(option => option.category === 'model');
+  } else {
+    if (session.modes) result.modes = session.modes;
+    if (session.configOptions) result.configOptions = session.configOptions;
+  }
   respond(msg.id, result);
 }
 

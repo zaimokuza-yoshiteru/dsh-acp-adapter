@@ -4,8 +4,6 @@
 
 在 DSH 会话页面使用 **Claude · Codex · Devin · Kimi**。
 
-> **0.1.5-rc.2.1** · 兼容 **DSH 0.1.5-rc.2**
-
 ## <img src="assets/readme/icon-preview.svg" width="24" height="24" alt="" /> 功能预览
 
 以下截图在干净 DSH 实例中，通过 **Devin · SWE-1.7 Medium** 实际操作生成。

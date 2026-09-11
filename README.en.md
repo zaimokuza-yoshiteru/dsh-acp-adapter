@@ -4,8 +4,6 @@
 
 Use **Claude · Codex · Devin · Kimi** from the DSH session UI.
 
-> **0.1.5-rc.2.1** · Requires **DSH 0.1.5-rc.2**
-
 ## <img src="assets/readme/icon-preview.svg" width="24" height="24" alt="" /> Preview
 
 Screenshots show real **Devin · SWE-1.7 Medium** operations in a clean DSH instance.

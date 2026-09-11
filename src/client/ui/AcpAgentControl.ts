@@ -1,4 +1,4 @@
-import { createElement as h, useEffect, useMemo, useRef, useState } from 'react'
+import { createElement as h, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { IconChevronDownOutline14, Menu, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
@@ -7,10 +7,13 @@ import type { OwnsAcpRoute } from '../coordinator/cross-backend-coordinator.ts'
 import type { AcpLocaleKey } from './locales.ts'
 import { isAcpModelOrReasoningOption } from '../../contract/config-options.ts'
 import css from './AcpAgentControl.module.css'
+import type { RemoteStreamFactory } from '@deepseek-ai/dsh-api-gateway/client'
+import { agentSessionStream } from '../data/agent-session-stream.ts'
 
 type Translate = (key: AcpLocaleKey, params?: Record<string, unknown>) => string
 type AgentControlProps = PropsRuntime<'conversation.input.left'> & PropsLocale<'acpActivity'> & {
   readonly remote: AcpRemoteLike
+  readonly streamFactory: RemoteStreamFactory
   readonly ownsRoute: OwnsAcpRoute
 }
 
@@ -60,11 +63,12 @@ export function agentControlMenuItems(snapshot: AcpAgentSessionSnapshotView, t: 
   return items
 }
 
-export function shouldRefreshAgentControlAfterRun(previous: boolean, current: boolean): boolean {
-  return previous && !current
-}
-
 function currentModeName(snapshot: AcpAgentSessionSnapshotView, t: Translate): string {
+  const mode = snapshot.configOptions?.find(isModeConfigOption)
+  if (mode?.type === 'select') {
+    const values = mode.options.flatMap(entry => 'options' in entry ? entry.options : [entry])
+    return values.find(value => value.value === mode.currentValue)?.name ?? mode.currentValue
+  }
   return snapshot.modes?.find(mode => mode.id === snapshot.currentModeId)?.name ?? snapshot.currentModeId ?? t('agentControlDefault')
 }
 
@@ -96,7 +100,7 @@ export function agentControlFooter(snapshot: AcpAgentSessionSnapshotView, t: Tra
 }
 
 /** Small ACP-only control in DSH's native input-left extension point. */
-export function AcpAgentControl({ sessionId, useProjection, useSession, t, remote, ownsRoute }: AgentControlProps): ReactNode {
+export function AcpAgentControl({ sessionId, useProjection, useSession, t, remote, streamFactory, ownsRoute }: AgentControlProps): ReactNode {
   const projection = useProjection('modelSelection')
   const running = useSession(state => state.running)
   const isAcp = snapshotIsAcp(projection, ownsRoute)
@@ -105,64 +109,57 @@ export function AcpAgentControl({ sessionId, useProjection, useSession, t, remot
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const epoch = useMemo(() => ({ value: 0 }), [])
-  const refreshState = useRef<{ readonly sessionId: string | undefined; readonly isAcp: boolean; readonly running: boolean }>({ sessionId: undefined, isAcp: false, running })
-
-  const loadSnapshot = (): void => {
-    // ACP has no bounded client subscription in this host yet: refresh on
-    // open (and use the post-write response) so controls are timely without a
-    // high-frequency polling loop.
-    if (!isAcp || sessionId === undefined) return
-    const current = epoch.value
-    void remote.agentSessionSnapshot(sessionId).then(result => {
-      if (current !== epoch.value || !result.ok) return
-      setSnapshot(result.value)
-      setError(null)
-    }).catch(() => {
-      if (current === epoch.value) setError(t('agentControlUnavailable'))
-    })
-  }
+  const [retry, setRetry] = useState(0)
 
   useEffect(() => {
-    epoch.value += 1
-    const current = epoch.value
+    const current = ++epoch.value
     setOpen(false)
+    setBusy(false)
     setError(null)
     setSnapshot(null)
     if (!isAcp || sessionId === undefined) return
-    void remote.agentSessionSnapshot(sessionId).then(result => {
-      if (current !== epoch.value || !result.ok) return
-      setSnapshot(result.value)
-    }).catch(() => {
-      if (current === epoch.value) setError(t('agentControlUnavailable'))
+    const stream = agentSessionStream(remote, streamFactory, sessionId, value => {
+      if (current !== epoch.value) return
+      setSnapshot(value)
+      setError(null)
+    }, () => {
+      if (current !== epoch.value) return
+      setSnapshot(value => value === null ? null : { ...value, editable: false, freshness: 'stale' })
+      setError(t('agentControlUnavailable'))
     })
-  }, [epoch, isAcp, remote, sessionId, t])
+    stream.start()
+    return () => {
+      ++epoch.value
+      void stream.dispose()
+    }
+  }, [epoch, isAcp, remote, streamFactory, sessionId, t, retry])
 
-  useEffect(() => {
-    const previous = refreshState.current
-    const scopeChanged = previous.sessionId !== sessionId || previous.isAcp !== isAcp
-    refreshState.current = { sessionId, isAcp, running }
-    if (scopeChanged || !shouldRefreshAgentControlAfterRun(previous.running, running)) return
-    // A blank ACP launcher has no binding/runtime snapshot yet. The first
-    // completed run establishes it; the host's session lifecycle is already a
-    // bounded push signal, so refresh once here instead of polling or requiring
-    // a reload.
-    loadSnapshot()
-  }, [isAcp, remote, running, sessionId, t])
-
-  if (!isAcp || snapshot === null) return null
+  if (!isAcp || (snapshot !== null && snapshot.sessionId !== sessionId)) return null
+  if (snapshot === null) return error === null ? null : h('button', {
+    type: 'button', className: css.trigger,
+    onClick: () => setRetry(value => value + 1),
+    title: t('agentControlRetry'),
+  }, error)
+  // The native running projection also locks the small interval before ACP prompt begins.
+  const visibleSnapshot = running ? { ...snapshot, editable: false } : snapshot
   const label = agentControlLabel(snapshot, t)
-  const items = agentControlMenuItems(snapshot, t)
+  const items = agentControlMenuItems(visibleSnapshot, t)
   const footer = [...agentControlFooter(snapshot, t)]
   if (error !== null) footer.push({ type: 'label', id: 'error', text: error })
+  if (items.length === 0 && footer.length === 0) return null
   const select = (id: string): void => {
     const item = items.find(candidate => candidate.id === id)
-    if (item === undefined || item.id === 'unavailable' || !snapshot.editable || snapshot.freshness !== 'live' || sessionId === undefined) return
+    if (item === undefined || item.id === 'unavailable' || !visibleSnapshot.editable || snapshot.freshness !== 'live' || sessionId === undefined) return
+    const current = epoch.value
     setBusy(true)
     setError(null)
     void remote.setAgentSessionOption(sessionId, item.write).then(result => {
-      if (result.ok) setSnapshot(result.value)
-      else setError(result.error.message)
-    }).catch(reason => setError(reason instanceof Error ? reason.message : String(reason))).finally(() => setBusy(false))
+      if (current !== epoch.value) return
+      // The subscription owns snapshots, so a late write response cannot roll back a newer notification.
+      if (!result.ok) setError(result.error.message)
+    }).catch(reason => {
+      if (current === epoch.value) setError(reason instanceof Error ? reason.message : String(reason))
+    }).finally(() => { if (current === epoch.value) setBusy(false) })
   }
   const description = t('agentControlTooltip')
   return h(Menu, {
@@ -175,7 +172,7 @@ export function AcpAgentControl({ sessionId, useProjection, useSession, t, remot
     onClose: () => setOpen(false),
     anchor: h(Tooltip, { label: description, children: h('button', {
       type: 'button', className: css.trigger, disabled: busy, 'aria-expanded': open,
-      onClick: () => { if (!open) loadSnapshot(); setOpen(value => !value) },
+      onClick: () => { if (error !== null) setRetry(value => value + 1); setOpen(value => !value) },
     },
     h('span', { className: css.triggerLabel }, label),
     h(IconChevronDownOutline14, { className: `${css.chevron}${open ? ` ${css.chevronOpen}` : ''}` }),

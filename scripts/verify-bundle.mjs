@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// 仓外可执行的 DSH client bundle 校验（独立 node 直跑，零依赖）。
+// DSH bundle 与发布声明校验（Node 直跑，使用项目锁定的 TypeScript）。
 // 覆盖：① package.json `dsh.client` manifest 形态与 peer/dev 双列纪律
 // ② 产物存在性 ③ 产物闭包（__ModuleLoader__ 包装形态 / id == 包名 /
 // sourcemap 在场且 sources 非空）④ module requests（产物内 require 全部落在
@@ -9,6 +9,7 @@
 // 规范出处：reference/deepseek-harness packages/client/tsdown.client.ts（preset）、
 // packages/client/web/src/platform.ts（baseline）、scripts/verify-client-packages.ts（门禁）。
 import { execFileSync } from 'node:child_process'
+import ts from 'typescript'
 import { existsSync, globSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import os from 'node:os'
 import { dirname, join } from 'node:path'
@@ -379,6 +380,23 @@ if (packOutput !== null) {
     }
     if (missingRuntimeImports.length === 0) console.log(`[verify-bundle] runtime relative-import closure: ${String(runtimeFiles.length)} JavaScript artifacts checked`)
   }
+}
+
+// Validate the shipped public entry, without source paths or skipLibCheck.
+// The generator's staging entry alone cannot prove the package exports its payloads.
+{
+  const program = ts.createProgram([join(root, pkg.exports['./remote'].types)], {
+    noEmit: true, strict: true, skipLibCheck: false, types: [],
+    module: ts.ModuleKind.NodeNext, target: ts.ScriptTarget.ES2024,
+  })
+  const diagnostics = ts.getPreEmitDiagnostics(program)
+  if (diagnostics.length > 0) {
+    fail(`public remote declarations fail strict consumer checking:\n${ts.formatDiagnosticsWithColorAndContext(diagnostics, {
+      getCurrentDirectory: () => root,
+      getCanonicalFileName: file => file,
+      getNewLine: () => '\n',
+    })}`)
+  } else console.log('[verify-bundle] public remote declarations: strict consumer passed')
 }
 
 // ---------------------------------------------------------------------------
