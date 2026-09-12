@@ -1,6 +1,6 @@
 /**
  * launch fingerprint 的组装真源（resume 预检②的 blocking 指纹）。
- * 由 ./agent.ts 的 startSession 在每次会话建立/续接时计算一次，写入 binding
+ * 由 profile adapter 在每次会话建立/续接时计算一次，写入 binding
  * 并与既有 binding 做 canonical 哈希预检（`acpCanonicalHash16` 双侧不等即
  * 'profile-changed' 阻断——旧形状指纹的 binding 缺新键，哈希天然不等，
  * 无需第二套「版本过期」机制）。
@@ -10,8 +10,7 @@
  * - `profileId`/`descriptorId`：profile 身份与 descriptor 绑定。
  * - `adapterVersion`/`wrappedCliVersion`：descriptor versionPolicy 的**声明值**
  * （钉版）；实际安装版本无可靠探测面，声明值变即指纹变。
- * - `envRefs`：descriptor 白名单 env 引用的**存在性**（`{key,present}`，按
- *   targetName 排序）——值绝不入指纹。
+ * - `envRefs`：保留为 null，不接管 Agent 凭证。
  * - `executableOverride`：高级 CLI override env 的 `{name,present}` 或 null。
  * - `nativeStateEnv`：Agent 原生状态目录相关环境键的存在性与路径 hash；
  *   HOME/CODEX_HOME/XDG 等变化会阻止把旧 Agent 上下文交给新运行环境。
@@ -38,7 +37,7 @@ export interface AcpLaunchFingerprintInput {
   readonly config: AcpStubAgentConfig
   /** 解析出的 descriptor（普通 profile 为 undefined）。 */
   readonly descriptor: AcpAgentRuntimeDescriptor | undefined
-  /** envRef/override 存在性判定的取值面；缺省 `process.env`（参数化供测试注入）。 */
+  /** Stable parent environment; profile overrides are applied before hashing. Defaults to process.env. */
   readonly env?: Record<string, string | undefined>
 }
 
@@ -94,7 +93,10 @@ function nativeStateEnvFingerprint(env: Readonly<Record<string, string | undefin
  * 输出（所有列表排序固定），canonical 哈希因此稳定。
  */
 export function acpLaunchFingerprint(input: AcpLaunchFingerprintInput): AcpLaunchFingerprint {
-  const env = input.env ?? process.env
+  // This is identity input only, never subprocess env overrides. The selected
+  // state/override keys survive DSH parent scrubbing; explicit profile values
+  // win just as they do at spawn. Ephemeral Teams launch overlays stay excluded.
+  const env = { ...(input.env ?? process.env), ...input.config.env }
   const descriptor = input.descriptor
   // Credential/environment references are intentionally not modeled by the
   // adapter. Native Agent Access inherits the process snapshot; old bindings
@@ -121,8 +123,7 @@ export function acpLaunchFingerprint(input: AcpLaunchFingerprintInput): AcpLaunc
     envRefs,
     executableOverride,
     nativeStateEnv: nativeStateEnvFingerprint(env),
-    // DSH Alpha still does not expose a safe, serializable MCP registry to plugins.
-    // Formal ACP sessions therefore inject no host-owned MCP definition.
+    // Ephemeral Teams capabilities are runtime-owned and must not enter durable restore identity.
     mcpFingerprint: null,
   }
 }

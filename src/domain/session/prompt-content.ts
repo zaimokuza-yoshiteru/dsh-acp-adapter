@@ -73,6 +73,9 @@ export async function toAcpPrompt(
   let actualTotal = 0
   for (const message of messages) {
     for (const block of message.content) {
+      // Native settlement notices embed the child's whole assistant output. ACP has no
+      // reasoning input block; keep the closing answer without promoting private thoughts to text.
+      if (message.source.kind === 'subagent-settled' && block.type === 'reasoning') continue
       if (block.type === 'text') {
         blocks.push({ type: 'text', text: block.text })
         continue

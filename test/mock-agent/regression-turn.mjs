@@ -1,7 +1,9 @@
 // Keyless product scenarios. Profiles vary wire representations, never assertions.
 import fs from 'node:fs'
+import { teamTurn } from './team-turn.mjs'
 
 export async function regressionTurn(session, msg, { sendUpdate, sendAgentRequest, respond, log }) {
+  if (await teamTurn(session, msg, { sendUpdate, sendAgentRequest, respond, log })) return
   const prompt = msg.params.prompt.filter(block => block.type === 'text').map(block => block.text).join('\n')
   const profile = process.env.MOCK_PROFILE
   const model = session.configOptions.find(option => option.id === 'model')?.currentValue
@@ -47,6 +49,20 @@ export async function regressionTurn(session, msg, { sendUpdate, sendAgentReques
       sendUpdate(session.id, { sessionUpdate: 'tool_call', toolCallId: 'edit-1', title: 'Edit fixture file', kind: 'edit', status: 'completed', content: [{ type: 'diff', path: 'fixture.txt', oldText: 'E2E_OLD_LINE\n', newText: 'E2E_NEW_LINE\n' }] })
       sendUpdate(session.id, { sessionUpdate: 'agent_message_chunk', content: { type: 'image', mimeType: 'image/png', data: 'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAAEklEQVQImWMImHYnYNodBggFAC8WBwlf8b0ZAAAAAElFTkSuQmCC' } })
       say('E2E_RICH_DONE')
+    } else if (prompt.includes('E2E_CONTROLS_WAIT')) {
+      say('E2E_CONTROLS_RUNNING')
+      while (!session.turn.cancelled && !fs.existsSync(process.env.MOCK_CONTROLS_READY_FILE)) {
+        await Promise.race([cancelled, new Promise(resolve => setTimeout(resolve, 25))])
+      }
+      if (!session.turn.cancelled) {
+        session.configOptions.find(option => option.id === 'mode').currentValue = 'plan'
+        session.modes.currentModeId = 'plan'
+        sendUpdate(session.id, { sessionUpdate: 'config_option_update', configOptions: session.configOptions })
+        sendUpdate(session.id, { sessionUpdate: 'current_mode_update', currentModeId: 'plan' })
+        say('E2E_CONTROLS_UPDATED')
+        await cancelled
+      }
+      return respond(msg.id, { stopReason: 'cancelled' })
     } else if (prompt.includes('E2E_STOP')) {
       say('E2E_RUNNING')
       await cancelled

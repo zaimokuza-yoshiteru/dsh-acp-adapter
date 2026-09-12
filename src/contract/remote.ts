@@ -430,6 +430,11 @@ export interface AcpAgentSessionSnapshotView {
   readonly note: string | null
 }
 
+/** Current controls, not a durable event log. Each connection opens with a fresh baseline. */
+export type AcpAgentSessionFrame =
+  | { readonly type: 'opened'; readonly snapshot: AcpAgentSessionSnapshotView | null }
+  | { readonly type: 'changed'; readonly snapshot: AcpAgentSessionSnapshotView | null }
+
 export type AcpAgentSessionOptionWrite =
   | { readonly kind: 'config'; readonly id: string; readonly value: string | boolean }
   | { readonly kind: 'mode'; readonly id: string }

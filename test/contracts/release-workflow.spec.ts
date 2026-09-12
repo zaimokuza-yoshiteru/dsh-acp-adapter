@@ -96,19 +96,7 @@ describe('npm release contract', () => {
     expect(workflow).toContain('needs: pack')
   })
 
-  it('keeps current documentation and CI aligned with the manifest host target', () => {
-    const hostVersion = pkg.engines.dsh
-    for (const name of ['README.md', 'README.en.md']) {
-      const doc = readFileSync(new URL(name, root), 'utf8')
-      expect(doc).toContain(`**${pkg.version}**`)
-      expect(doc).toContain(`**DSH ${hostVersion}**`)
-      const versions = [...doc.matchAll(/@deepseek-ai\/dsh@([^\s`]+)/g)].map(match => match[1])
-      expect(versions.length).toBeGreaterThan(0)
-      expect(new Set(versions)).toEqual(new Set([hostVersion]))
-    }
-    const guide = readFileSync(new URL('test/e2e/README.md', root), 'utf8')
-    expect(guide).toContain(`宿主目标为 \`${hostVersion}\``)
-    expect([...guide.matchAll(/dsh-v([0-9A-Za-z.-]+)/g)].map(match => match[1])).toEqual([hostVersion])
+  it('derives the CI host checkout from the manifest instead of a second version declaration', () => {
     const workflow = readFileSync(new URL('.github/workflows/ci.yml', root), 'utf8')
     expect(workflow).toContain('ref: ${{ steps.dsh-target.outputs.tag }}')
     expect(workflow).toContain('import { DSH_SOURCE_TAG } from "./scripts/dsh-target.mjs"')

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { descriptorOf } from '../../../src/domain/session/agent-config.ts'
 import type { AcpStubAgentConfig } from '../../../src/domain/session/agent-config.ts'
-import { acpLaunchEnvironment, acpLaunchFingerprint } from '../../../src/domain/session/launch-fingerprint.ts'
+import { acpLaunchEnvironment, acpLaunchFingerprint, profileLaunchIdentityHash } from '../../../src/domain/session/launch-fingerprint.ts'
 import { acpCanonicalHash16 } from '../../../src/persistence/sidecar.ts'
 
 const HOME = '/home/tester'
@@ -96,5 +96,26 @@ describe('acpLaunchFingerprint（Native 会话连续性）', () => {
       wrappedCliVersion: null, envRefs: null, executableOverride: null,
     })
     expect(acpCanonicalHash16(fp)).not.toBe(acpCanonicalHash16({ command: 'plain-acp', args: ['--x'], envKeys: [] }))
+  })
+})
+
+
+describe('effective launch environment identity', () => {
+  it.each(['HOME', 'CODEX_HOME', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME', 'XDG_DATA_HOME'])('tracks inherited %s in both fingerprints', key => {
+    const config = baseConfig()
+    const first = { [key]: '/first' }, second = { [key]: '/second' }
+    const fingerprint = (env: Record<string, string>) => acpLaunchFingerprint({ ...baseInput(), config, env })
+    expect(fingerprint(first)).not.toEqual(fingerprint(second))
+    expect(profileLaunchIdentityHash('codex', config, first)).not.toBe(profileLaunchIdentityHash('codex', config, second))
+  })
+
+  it('uses explicit state and executable overrides consistently, without forwarding parent secrets', async () => {
+    const config: AcpStubAgentConfig = { name: 'Claude', command: 'claude-agent-acp', args: [], runtime: 'claude', env: { HOME: '/fixed', CLAUDE_CODE_EXECUTABLE: '/fixed/claude' } }
+    const input = { profileId: 'claude', config, descriptor: descriptorOf('claude', config) }
+    const first = { HOME: '/old', TOKEN: 'secret' }, second = { HOME: '/new' }
+    expect(acpLaunchFingerprint({ ...input, env: first })).toEqual(acpLaunchFingerprint({ ...input, env: second }))
+    expect(profileLaunchIdentityHash('claude', config, first)).toBe(profileLaunchIdentityHash('claude', config, second))
+    expect(acpLaunchFingerprint({ ...input, env: {} }).executableOverride?.present).toBe(true)
+    expect(await acpLaunchEnvironment({ config })).toEqual(config.env)
   })
 })

@@ -32,6 +32,7 @@
 
 import { resolveTerminalJobs } from './terminal-jobs.ts'
 import type { Context } from '@deepseek-ai/cordis'
+import { createTeamBridge, teamBridgeKey } from '../teams/bridge.ts'
 import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
 import type { AdapterRegistrationHandle } from '@deepseek-ai/dsh-llm'
 import type { AcpProbeOptions } from '../../protocol/v1/types.ts'
@@ -45,6 +46,7 @@ import {
 import type { AcpAgentConfig, AcpAgentId, AcpResolvedAgent } from '../../domain/session/agent-config.ts'
 import { createAcpLogger } from '../../domain/observability/logging.ts'
 import { acpProbeConfigKey } from './llm-stub.ts'
+import { installNativeAgentAccess } from './native-agent-access.ts'
 import { AcpProfileAdapter } from './profile-adapter.ts'
 import { profileLaunchIdentityHash } from '../../domain/session/launch-fingerprint.ts'
 import type { SubprocessSeamResolution } from '../../runtime/process/subprocess.ts'
@@ -414,6 +416,15 @@ export function installInstalledProfileRegistry(ctx: Context, options: Installed
   // Adapters are also the owner of provider-composition recovery verbs. Keep
   // this map available before constructing the additive Remote service.
   const profileAdapters = new Map<string, AcpProfileAdapter>()
+  const controlSubscribers = new Map<string, Set<() => void>>()
+  const controlsChanged = (sessionId: string): void => {
+    for (const notify of controlSubscribers.get(sessionId) ?? []) notify()
+  }
+  // A turn finishing or a browser leaving the conversation does not dispose
+  // the host session. Its actual teardown releases ACP processes and jobs.
+  ctx.on('session/disposed', async (session) => {
+    await Promise.all([...profileAdapters.values()].map(adapter => adapter.disposeSession(session)))
+  })
   const ownedSidecar = sidecar
   const ownedSessionReadGate = async (sessionId: string): Promise<boolean> => {
     // The sidecar is the authority for both audit and Activity ownership;
@@ -517,6 +528,18 @@ export function installInstalledProfileRegistry(ctx: Context, options: Installed
         const id = acpAgentIdFromRoute(provider)
         return id === undefined ? undefined : profileAdapters.get(id)
       },
+      agentSessionChanges: {
+        canRead: async sessionId => sessionStore?.get(sessionId) !== undefined || await ownedSessionReadGate(sessionId),
+        subscribe: (sessionId, changed) => {
+          const subscribers = controlSubscribers.get(sessionId) ?? new Set<() => void>()
+          controlSubscribers.set(sessionId, subscribers)
+          subscribers.add(changed)
+          return () => {
+            subscribers.delete(changed)
+            if (subscribers.size === 0) controlSubscribers.delete(sessionId)
+          }
+        },
+      },
       agentSessionControl: (provider) => {
         const id = acpAgentIdFromRoute(provider)
         return id === undefined ? undefined : profileAdapters.get(id)
@@ -588,6 +611,9 @@ export function installInstalledProfileRegistry(ctx: Context, options: Installed
             },
             message => log.warn(message, { operation: 'claude-draft-subagent-capability' }),
             sessionId => resolveTerminalJobs(ctx, sessionId),
+            (sessionId, capabilities, wireProfile) => createTeamBridge(ctx, sessionId, capabilities, wireProfile),
+            sessionId => teamBridgeKey(ctx, sessionId),
+            controlsChanged,
           )
           profileAdapters.set(id, routeAdapter)
         }
@@ -625,6 +651,11 @@ export function installInstalledProfileRegistry(ctx: Context, options: Installed
     }
     registeredKey = key
   }
+
+  installNativeAgentAccess(ctx, provider => {
+    const profileId = acpAgentIdFromRoute(provider ?? '')
+    return profileId !== undefined && registrations.has(profileId)
+  })
 
   const onSettingsChange = (): void => {
     // llm-pi-ai precedent: a refused swap (route owned by another adapter

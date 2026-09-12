@@ -2,7 +2,7 @@
 
 这组 E2E 的验收对象是 DSH 与 ACP 之间的产品行为：执行者可以不同，输入、消息、审批及详情仍应复用宿主公开能力。测试启动目标版本的完整 Loader 装配、真实 ACP 子进程和浏览器，浏览器加载构建后的插件与 DSH UI。它不使用现有单元测试的 React 或 UI primitive stub。
 
-同一组断言在 Claude、Codex、Devin、Kimi 四种协议夹具下运行，共 68 项。夹具只是可控的协议输入，不代表真实 Agent 或具体模型已经通过验收；真实 Agent 的升级仍需要少量单独冒烟。模型文案、推理质量和回答风格不作为固定夹具的通过条件。
+基础 68 项用例在 Claude、Codex、Devin、Kimi 四种协议夹具下运行；另有 15 项 Teams 专项：四种协议的允许／拒绝／中断共 12 项，加上开关关闭、ACP 多模型与跨 Agent 边界、原生对照 3 项。另有 8 项 Agent 选项订阅用例，覆盖首轮就绪、延迟选项、运行中只读、重连及会话隔离；4 项宿主权限隔离用例覆盖新建会话、模型选择与首轮执行。夹具只是可控的协议输入，不代表真实 Agent 或具体模型已经通过验收；真实 Agent 的升级仍需要少量单独冒烟。模型文案、推理质量和回答风格不作为固定夹具的通过条件。
 
 | 场景 | 必须保持的行为 |
 | --- | --- |
@@ -11,24 +11,38 @@
 | 宿主扩展 | system prompt、动态上下文与 pre-step 插件输入真正到达 ACP；插件触发的后续步骤正常运行；旧用户输入不重复发送；卸载插件后不再携带其指令 |
 | 图片与文件活动 | assistant 图片经原生附件存储后可刷新显示；Read / Diff 使用原生组件，文件名支持键盘打开原生侧栏预览；活动不会制造 DSH 工具调用 |
 | 故障恢复 | Agent 崩溃后提示恢复，刷新保留历史；明确放弃远端上下文后才能建立新绑定并继续 |
+| Agent 选项 | 创建响应或后续通知提供选项后立即显示；回答期间可查看但不能修改，停止后解锁；重连取最新状态，新会话不继承旧菜单 |
 | Web 重连 | 浏览器断网后恢复连接，无需手动刷新；历史仍在，不重复发送 ACP prompt，下一条消息可正常执行 |
 | 滚动 | 长回答连续输出后、窗口缩小时，回答末尾保持在原生会话滚动区域内 |
 | 排队消息 | 请求在途时显示 Sending，禁止编辑、删除和 Steer；服务端接收后才允许删除，删除后不会送到 ACP |
 | 审批允许 / 拒绝 | 原生审批或问题卡显示操作；选择映射回原始 optionId；拒绝不产生文件副作用；不扩大授权范围 |
 | 停止后继续 | 原生停止按钮发送 ACP cancel；当前轮次结束；下一轮仍能执行 |
 | 模型切换 | 原生 picker 的选择传到 ACP session 配置；后续请求使用新模型 |
+| 权限隔离 | 空会话保留原生默认权限；选模型不改写用户权限（含 Custom）；真正执行 ACP 前才应用审批策略；原生历史被拒绝切换到 ACP 时不改变权限；ACP 会话不污染新会话默认值 |
 | 子代理 | Claude / Devin 有完整证据时显示原生只读详情并可刷新；Codex / Kimi 的无证据活动不制造子会话 |
 | 后台任务 | ACP 创建真实进程并显示原生 jobs 列表；刷新和离线期间完成后的重连；会话隔离；成功、失败、原生 registry 取消和 ACP 取消；父轮次内提前完成也不追加模型请求；ACP 仍可读取输出 |
 | 诊断布局 | 注入 80 条真实审计记录并分页加载；可视高度与原生轨迹一致；底部滚动不移走工具栏；诊断页隐藏对话宽度拖动条；切换详情重置内部滚动；长 JSON 折叠与展开均换行；窄窗口详情可见 |
 | 诊断分类 | 默认排除正常检查点和未比较回放；超过首批原始记录的错误仍可见；原因可搜索；允许与拒绝文案明确；技术记录分页；当前恢复状态与历史错误独立展示；通过原生设置切换中文，验证设置版本、诊断分类和审批文案；旧终端缺少终止意图时保持未知原因 |
 | 原生 provider 对照 | ACP 已注册时原生 provider 正常执行；原生工具经过 pre/post hooks，修改后的结果真正回到模型请求；不误发 ACP prompt |
+| Agent Teams | 实际调用原生 Teams 工具；同 Agent 多模型、创建时继承模型、旧成员冷恢复保留原模型；原生名册、任务面板、输入框上方多成员待处理卡、折叠与新增请求展开、刷新恢复、中英文与窄屏；首轮及冷恢复审批策略；协调免额外审批、成员普通操作保留审批；成员消息和后续唤醒；任务 CRUD、依赖与版本冲突；跨 Agent 新会话和直接 API 拒绝 |
+
+Teams 专项：`pnpm test:e2e test/e2e/agent-teams.e2e.mjs test/e2e/teams-boundaries.e2e.mjs`。真实 Teams 冒烟沿用已授权的 Agent 登录与便宜模型选择，额外设置 `DSH_E2E_LIVE=1 DSH_E2E_LIVE_TEAMS=1`，运行 `test/e2e/live-agents.e2e.mjs`；可以用 `DSH_E2E_LIVE_PROFILES=devin` 限定单个 Agent。真实断言必须观察到宿主创建成员、传递消息和完成有依赖的两项共享任务：成员领取并完成计算，Lead 领取并完成复核；任务负责人和原生面板也必须一致。模型口头声称成功不能通过。
+
+真实双模型检查增加 `DSH_E2E_LIVE_TEAMS_MULTIMODEL=1 DSH_E2E_LIVE_PROFILES=devin`，分别使用 SWE-1.7 Medium 与 GPT-5.4 Mini Low 创建成员。`DSH_E2E_RETAIN=1 DSH_E2E_BROWSER_CHANNEL=chrome` 打开并保留随窗口大小自适应的本机 Chrome；该模式要求只选一个 Agent，完成断言后暂停测试退出，不能作为 CI 完成信号。实例地址、重新打开所需的 `authenticatedUrl` 与专属停止文件写入仅当前用户可读写的 `.local/e2e-live-teams/review-instance.json`；其中登录链接仅供本地查看，不要分享。需要关闭时创建其中的 `stopFile`，才会清理对应宿主和浏览器。
+
+`DSH_E2E_LIVE_TEAMS_APPROVAL=1` 额外创建一个真实新成员，验证首次系统提示词为 `ask`、写文件前主会话出现待处理卡、原生允许一次之后才产生临时文件。建议限定 `DSH_E2E_LIVE_PROFILES=devin`，与双模型检查一起运行。
+
+已知宿主显示限制：rc.2 的 Teams 名单对休眠成员回退使用 Lead 的初始 `Agent.options.model`，主会话标签也可能滞后。多模型执行应以成员持久化的 `request/header` 为准；不要为使断言通过而把名单标签当作实际调用模型。本插件不复制原生面板或修改宿主的展示数据。原生完成通知会复制子会话的 reasoning block，但 ContextBody 尚不能渲染它，因此该通知中可能出现 Unknown content；成员详情的原生推理展示不受影响。
+
+Teams 只在原生 profile 提供服务与九个成员工具时接入；调用仍经过 DSH ToolRuntime 的 hooks 和校验。HTTP/stdio 服务、临时能力地址随会话生命周期撤销。Devin 当前不把 ACP `mcpServers` 暴露到模型工具目录，因此单独使用临时原生 MCP 配置，保留已有 MCP 服务以及原生设置、权限的保存路径，关闭后移除。Codex 通过关联工具调用的 MCP 审批表单选择仅本次允许；Kimi 只接受当前连接的完整工具标题。这些兼容处理均不放行普通表单或其他工具。
 
 ## 运行
 
-宿主目标为 `0.1.5-rc.1`。常规开发、构建和发布直接使用锁定的 npm 依赖；浏览器 E2E 单独复用准确源码标签的 Web scaffold，默认布局仍为同级 `dsh-acp-adapter/` 与 `reference/deepseek-harness/`。`DSH_UPSTREAM_CHECKOUT` 仅定位 scaffold，不会替换 npm 依赖或改写 node_modules。正式 npm 宿主安装检查使用开发依赖中的 CLI 和临时 DSH_HOME：`node scripts/install-gate.mjs --tgz <本地插件包>`。
+宿主目标读取 `package.json` 的 `engines.dsh`。常规开发、构建和发布直接使用锁定的 npm 依赖；浏览器 E2E 单独复用准确源码标签的 Web scaffold，默认布局仍为同级 `dsh-acp-adapter/` 与 `reference/deepseek-harness/`。`DSH_UPSTREAM_CHECKOUT` 仅定位 scaffold，不会替换 npm 依赖或改写 node_modules。正式 npm 宿主安装检查使用开发依赖中的 CLI 和临时 DSH_HOME：`node scripts/install-gate.mjs --tgz <本地插件包>`。
 
 ```sh
-# reference/deepseek-harness 必须检出 dsh-v0.1.5-rc.1
+# reference/deepseek-harness 必须检出以下命令输出的标签
+node --input-type=module -e 'import { DSH_SOURCE_TAG } from "./scripts/dsh-target.mjs"; console.log(DSH_SOURCE_TAG)'
 # 在各自目录使用 packageManager 指定的 pnpm（宿主 11.7.0，插件 10.7.0）
 (cd ../reference/deepseek-harness && corepack pnpm install --frozen-lockfile && npm run build:native-system && npm run build:lib:host && npm run build:lib:client && npm --prefix apps/web run build)
 pnpm install --frozen-lockfile
@@ -43,9 +57,9 @@ pnpm test:e2e
 
 测试使用临时工作区和独立 DSH_HOME，结束后销毁浏览器、Agent 进程与测试目录。失败截图写入 gitignored `.local/e2e-failures/`。断言使用原生组件的数据标记及可访问名称，不依赖 CSS 哈希、整页像素截图或真实模型措辞；默认不重试失败测试。浏览器回归期间不要并行运行 build、pack 或默认安装检查：prepack 会清理并重建共享的 `lib` 目录；应按顺序执行，或向安装检查传入已生成的 tarball。
 
-rc.1 的 `dsh-client-store` Node 入口仍引用 `zustand`、`immer`，但上游只将它们声明为开发依赖。本项目暂时精确声明这两项 devDependencies，供普通 Node 测试加载真实 Store；浏览器继续使用宿主模块表，插件运行时 dependencies 不增加。上游修复 Node 入口依赖闭包后可移除该补偿。
+rc.2 的 `dsh-client-store` Node 入口仍引用 `zustand`、`immer`，但上游只将它们声明为开发依赖。本项目暂时精确声明这两项 devDependencies，供普通 Node 测试加载真实 Store；浏览器继续使用宿主模块表，插件运行时 dependencies 不增加。上游修复 Node 入口依赖闭包后可移除该补偿。
 
-宿主目标以 `package.json` 的 `engines.dsh` 为准，开发脚本和 CI 源码标签从这里读取；依赖声明、双语 README 与本指南通过一致性检查。发布时 `npm pack` 的 prepack 完整执行类型检查、测试和构建，再由安装门禁验证同一个 tarball。
+宿主目标以 `package.json` 的 `engines.dsh` 为准，开发脚本和 CI 源码标签从这里读取；依赖声明通过一致性检查，文档不再重复声明当前版本。发布时 `npm pack` 的 prepack 完整执行类型检查、测试和构建，再由安装门禁验证同一个 tarball。
 
 ## 真实 Agent 冒烟
 
@@ -69,4 +83,4 @@ Persistence 替身使用真实 `SessionHandle` 类型，分别覆盖 `detached` 
 
 活动归属使用稳定的 ACP 会话/轮次标识和原生 Step data，不再依赖迁移前的事件序号。系统指令覆盖从历史首条 system message 读取、A → B 更新和清空；ACP 不声明它无法原样支持的 in-history system 更新能力。
 
-ACP v1 没有 system 消息角色，宿主指令以有标注的请求上下文传递；无法强制改变外部 Agent 的指令优先级。DSH 的原生工具执行 hooks、技能加载工具和 MCP 执行不会自动进入外部 Agent：ACP 没有通用的宿主工具执行回调，工具活动通知也不是执行请求。测试证明日志化的上下文扩展到达 ACP、原生 provider 的工具扩展仍有效，不承诺不存在的执行桥接。
+ACP v1 没有 system 消息角色，宿主指令以有标注的请求上下文传递；无法强制改变外部 Agent 的指令优先级。外部 Agent 自己执行的工具、技能加载和 MCP 不会自动进入 DSH 的工具 hooks，工具活动通知也不是执行请求。Teams 是明确限定的执行桥：只暴露九个原生成员工具，通过真实 ToolRuntime 执行，不能据此推导其他 Agent 工具也经过宿主管线。

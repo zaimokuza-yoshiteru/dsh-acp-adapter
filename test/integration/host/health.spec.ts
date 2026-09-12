@@ -150,7 +150,7 @@ describe('AcpRemoteService current public surface', () => {
   it('generated descriptors contain only the current invocation set', () => {
     const ids = (TYPERT as { invocations: Array<{ id: string }> }).invocations.map(({ id }) => id.split('/').at(-1))
     expect(ids).toEqual([
-      'activityFollow', 'activityPage', 'activitySnapshot', 'agentSessionSnapshot', 'auditTimeline',
+      'activityFollow', 'activityPage', 'activitySnapshot', 'agentSessionFollow', 'agentSessionSnapshot', 'auditTimeline',
       'backendOf', 'boundSessions', 'health', 'ownedProviderRoutes', 'projectedSubagentIds', 'rebindRecoveryBlank', 'recoverySnapshot', 'retryOriginal',
       'setAgentSessionOption',
     ])

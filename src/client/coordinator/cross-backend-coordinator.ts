@@ -32,7 +32,7 @@ export interface CrossBackendCoordinatorSnapshot {
 
 export type OwnsAcpRoute = (provider: string | undefined) => boolean
 
-export function isAcpRoute(provider: string | undefined, ownsRoute: OwnsAcpRoute): boolean {
+function isAcpRoute(provider: string | undefined, ownsRoute: OwnsAcpRoute): boolean {
   return provider !== undefined && ownsRoute(provider)
 }
 

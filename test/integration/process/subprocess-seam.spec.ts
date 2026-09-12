@@ -17,7 +17,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { beforeAll, describe, expect, expectTypeOf, it } from 'vitest';
+import { beforeAll, describe, expect, expectTypeOf, it, vi } from 'vitest';
 import {
   ACP_SUBPROCESS_UNAVAILABLE_MESSAGE,
   narrowSubprocessSeam,
@@ -112,8 +112,13 @@ describe('真 spawn scrubbed-parent 实证（AcpAgentProcess 生产路径）', (
             },
             { eofGraceMs: 200, termGraceMs: 300 },
           );
-          await proc.close();
-          expect(proc.exited).toEqual({ code: 0, signal: null });
+          // This test checks environment inheritance, not the startup/termination race.
+          // Let the one-shot child finish its write before entering the short cleanup ladder.
+          try {
+            await vi.waitFor(() => expect(proc.exited).toEqual({ code: 0, signal: null }), { timeout: 5000 });
+          } finally {
+            await proc.close();
+          }
           const env = JSON.parse(fs.readFileSync(outPath, 'utf8')) as Record<string, string>;
           // 显式条目（含 credential 形名）穿透
           expect(env['EXPOSED_API_KEY']).toBe('explicit-credential-passthrough');

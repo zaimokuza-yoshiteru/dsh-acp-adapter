@@ -389,17 +389,20 @@ setInterval(() => {}, 1 << 30);
   });
 
   it('超时：message 含超时指引；失败缓存使第二次调用不再 spawn', async () => {
-    const { config, logPath } = mockAgent('slow-response', { MOCK_SLOW_INIT_MS: '1500' });
+    const { config } = mockAgent('slow-response', { MOCK_SLOW_INIT_MS: '1500' });
+    // Count the real host spawn, not a child log write that Windows startup
+    // may not reach before this deliberately short probe deadline.
+    const spawn = vi.fn(subprocess.spawn.bind(subprocess));
     const adapter = new AcpStubAdapter({
       agents: () => new Map(Object.entries({ [ROUTE]: config })),
       probeOptions: { timeoutMs: 200, eofGraceMs: 100, termGraceMs: 300 },
-      subprocess: { ok: true, seam: subprocess },
+      subprocess: { ok: true, seam: { ...subprocess, spawn } },
     });
     const error = (await expectListModelsError(adapter, ROUTE)) as LlmError;
     expect(error.code).toBe('ACP_PROBE_FAILED');
     expect(error.message).toContain('probe timeout');
     await expectListModelsError(adapter, ROUTE);
-    expect(probeCount(logPath)).toBe(1);
+    expect(spawn).toHaveBeenCalledTimes(1);
     const snapshot = adapter.probeSnapshot(ROUTE);
     if (snapshot?.result.kind === 'error') expect(snapshot.result.failureKind).toBe('timeout');
   });

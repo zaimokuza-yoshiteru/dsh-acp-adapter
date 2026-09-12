@@ -93,3 +93,20 @@ describe('native ACP permission bridge', () => {
     expect(question?.detail).not.toContain('…')
   })
 })
+
+
+it.each([
+  { rejectKind: 'reject_once' as const, expected: { outcome: 'selected', optionId: 'r' } },
+  { rejectKind: 'reject_always' as const, expected: { outcome: 'cancelled' } },
+])('never upgrades a native one-time rejection to $rejectKind', async ({ rejectKind, expected }) => {
+  const ask = vi.fn<AcpNativeUserQuestionService['ask']>()
+  const records: AcpPermissionAuditRecord[] = []
+  const handler = createAcpNativePermissionHandler({
+    approval: { request: async () => 'rejected' }, userQuestions: { ask }, getAgent: () => ({}),
+    audit: { append: async record => { records.push(record) } },
+  })
+  await expect(handler(params([option('a', 'Allow once', 'allow_once'), option('r', 'Reject', rejectKind)])))
+    .resolves.toEqual({ outcome: expected })
+  expect(ask).not.toHaveBeenCalled()
+  expect(records.at(-1)?.data).not.toMatchObject({ selectedOptionKind: 'reject_always' })
+})

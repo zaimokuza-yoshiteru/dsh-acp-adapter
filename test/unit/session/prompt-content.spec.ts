@@ -14,6 +14,15 @@ const limits = {
 const text = (value: string) => createUserMessage({ content: [{ type: 'text', text: value }], source: { kind: 'user' } })
 
 describe('prompt content conversion', () => {
+  it('forwards the native child closing answer without turning its reasoning into prompt text', async () => {
+    const message = createUserMessage({ source: { kind: 'subagent-settled', form: 'notice', senderSessionId: 'child' as never, summary: 'Child finished' }, content: [
+      { type: 'text', text: 'Child finished' }, { type: 'reasoning', text: 'private thoughts' }, { type: 'text', text: '2' },
+    ] })
+    expect(await toAcpPrompt([message], { imageEnabled: false, signal: new AbortController().signal })).toEqual([
+      { type: 'text', text: 'Child finished' }, { type: 'text', text: '2' },
+    ])
+    await expect(toAcpPrompt([{ ...message, source: { kind: 'user' } }], { imageEnabled: false, signal: new AbortController().signal })).rejects.toThrow('reasoning')
+  })
   it('carries complete host instructions and logged plugin input without advertising executable tools', async () => {
     const context = createUserMessage({ content: [{ type: 'text', text: 'Current project guidance' }], source: { kind: 'plugin', plugin: 'guidance' } })
     const result = await toAcpPrompt([context, text('Continue')], {

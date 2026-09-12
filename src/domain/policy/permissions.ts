@@ -105,7 +105,7 @@ function permissionQuestionDetail(tool: acp.RequestPermissionRequest['toolCall']
   return command === undefined ? undefined : `Command:\n\n${markdownCodeBlock(visibleCommand(command))}`
 }
 export interface AcpPermissionReasonOptions { readonly includeExecuteDetails?: boolean }
-export function buildPermissionReason(params: acp.RequestPermissionRequest, options: AcpPermissionReasonOptions = {}): string {
+function buildPermissionReason(params: acp.RequestPermissionRequest, options: AcpPermissionReasonOptions = {}): string {
   const labels: Record<string, string> = { execute: 'run a command', edit: 'edit files', delete: 'delete files', move: 'move files', read: 'read restricted content', fetch: 'access a restricted external resource' }
   const kind = params.toolCall.kind ?? ''
   const lines = [`The ACP Agent requests permission to ${labels[kind] ?? 'perform a restricted operation'}.`]
@@ -151,7 +151,7 @@ export function createAcpNativePermissionHandler(deps: AcpNativePermissionBridge
     if (agent === undefined) return decide({ outcome: 'cancelled', note: 'agent-unavailable' })
     const allowOnce = params.options.find(option => option.kind === 'allow_once')
     const reject = params.options.find(option => option.kind === 'reject_once')
-      ?? params.options.find(option => option.kind === 'reject_always')
+
     if (deps.approval !== undefined && allowOnce !== undefined) {
       try {
         const outcome = await deps.approval.request({

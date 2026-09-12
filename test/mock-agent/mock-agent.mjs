@@ -318,7 +318,7 @@ async function handleInitialize(msg) {
     ? {
         loadSession: true,
         promptCapabilities: { image: true, audio: false, embeddedContext: true },
-        mcpCapabilities: { http: false, sse: false },
+        mcpCapabilities: { http: process.env.MOCK_MCP_HTTP === '1', sse: false },
         sessionCapabilities,
         auth: {},
       }
@@ -337,11 +337,20 @@ async function handleInitialize(msg) {
   });
 }
 
+function sessionMcpServers(msg) {
+  if (process.env.MOCK_PROFILE === 'devin' && process.env.XDG_CONFIG_HOME?.includes('dsh-acp-team-')) {
+    const config = JSON.parse(fs.readFileSync(`${process.env.XDG_CONFIG_HOME}/devin/mcp_config.json`, 'utf8'));
+    return Object.entries(config.mcpServers).filter(([name]) => name.startsWith('dshteam_')).map(([name, server]) => ({ name, type: 'http', url: server.url, headers: [] }));
+  }
+  return msg.params?.mcpServers ?? [];
+}
+
 function handleSessionNew(msg) {
   const session = createSession(`mock-session-${++state.sessionSeq}`, msg.params?.cwd ?? '/mock/cwd');
+  session.mcpServers = sessionMcpServers(msg);
   // 对齐 devin 实测流量（research/probe-output.log L55-58 先于 session/new 响应）：
   // 先主动推厂商扩展通知 + config_option_update + current_mode_update 快照，再回响应
-  if (fullCaps()) {
+  if (fullCaps() && !process.env.MOCK_CONTROLS_DELIVERY) {
     sendFrame({ jsonrpc: '2.0', method: '_cognition.ai/mcp/serversChanged', params: {} });
     if (session.configOptions) {
       sendUpdate(session.id, { sessionUpdate: 'config_option_update', configOptions: session.configOptions });
@@ -351,8 +360,12 @@ function handleSessionNew(msg) {
     }
   }
   const result = { sessionId: session.id };
-  if (session.modes) result.modes = session.modes;
-  if (session.configOptions) result.configOptions = session.configOptions;
+  if (process.env.MOCK_CONTROLS_DELIVERY === 'deferred') {
+    result.configOptions = session.configOptions.filter(option => option.category === 'model');
+  } else {
+    if (session.modes) result.modes = session.modes;
+    if (session.configOptions) result.configOptions = session.configOptions;
+  }
   respond(msg.id, result);
 }
 
@@ -366,6 +379,7 @@ function handleSessionLoad(msg) {
     return respondError(msg.id, -32603, 'mock: session/load failed (load-fail scenario)');
   }
   const session = state.sessions.get(sessionId) ?? createSession(sessionId, msg.params?.cwd ?? '/mock/cwd');
+  session.mcpServers = sessionMcpServers(msg);
   const replay = session.recordedHistory?.length > 0 ? session.recordedHistory : LOAD_REPLAY;
   log(`session/load ${session.id}: replaying ${replay.length} updates`);
   for (const update of replay) sendUpdate(session.id, update);
@@ -382,6 +396,7 @@ function handleSessionResume(msg) {
   const session = getSession(msg);
   if (!session) return;
   session.closed = false;
+  session.mcpServers = sessionMcpServers(msg);
   log(`session/resume ${session.id}: no replay`);
   const result = {};
   if (session.modes) result.modes = session.modes;

@@ -7,6 +7,17 @@
  */
 
 const zh = {
+  teamPendingTitle: '需要你处理 · {count} 位成员',
+  teamPendingHint: '待审批的操作已暂停。你仍可与主会话交流；发送消息不会批准这些请求。',
+  teamPendingCollapse: '收起',
+  teamPendingExpand: '展开',
+  teamPendingApproval: '等待审批',
+  teamPendingQuestion: '等待回答',
+  teamPendingOther: '等待处理',
+  teamPendingOpen: '查看请求',
+  teamApprovalEntry: '{name} · 待处理请求',
+  teamApprovalLoadFailed: '暂时无法读取团队待处理请求。',
+  teamApprovalOpenFailed: '无法打开成员会话，请从原生团队面板重试。',
   title: 'ACP adapter',
   intro: '添加并管理通过 ACP 接入 DSH 会话页面的智能体。',
   settingsLoading: '正在读取设置…',
@@ -90,6 +101,7 @@ const zh = {
   agentControlOff: '关闭',
   agentControlDefault: '默认',
   agentControlUnavailable: 'Agent 控制当前不可用',
+  agentControlRetry: '点击重新连接 Agent 选项',
   agentControlTooltip: 'ACP 工具权限由 Agent 管理；DSH 的“原生 Agent 访问”模式仅作说明，不会控制 ACP 工具。',
   agentContextUsage: '上下文：{used} / {size}（{percent}%）',
   agentSessionCost: 'Agent 会话累计成本：{amount} {currency}',
@@ -239,6 +251,17 @@ const zh = {
 export type AcpLocaleKey = keyof typeof zh
 
 const en: Record<AcpLocaleKey, string> = {
+  teamPendingTitle: 'Members needing your attention · {count}',
+  teamPendingHint: 'Operations awaiting approval are paused. You can still talk to the lead; sending a message does not approve these requests.',
+  teamPendingCollapse: 'Collapse',
+  teamPendingExpand: 'Expand',
+  teamPendingApproval: 'Awaiting approval',
+  teamPendingQuestion: 'Awaiting answer',
+  teamPendingOther: 'Pending request',
+  teamPendingOpen: 'View request',
+  teamApprovalEntry: '{name} · Pending request',
+  teamApprovalLoadFailed: 'Team pending requests are temporarily unavailable.',
+  teamApprovalOpenFailed: 'Could not open the member session. Retry from the native Team panel.',
   title: 'ACP adapter',
   intro: 'Add and manage agents available from the DSH session UI through ACP.',
   settingsLoading: 'Loading settings…',
@@ -322,6 +345,7 @@ const en: Record<AcpLocaleKey, string> = {
   agentControlOff: 'Off',
   agentControlDefault: 'Default',
   agentControlUnavailable: 'Agent controls are unavailable',
+  agentControlRetry: 'Click to reconnect Agent controls',
   agentControlTooltip: "ACP tool permissions are managed by the Agent; DSH's Native Agent Access mode is informational and does not control ACP tools.",
   agentContextUsage: 'Context: {used} / {size} ({percent}%)',
   agentSessionCost: 'Agent-reported cumulative session cost: {amount} {currency}',

@@ -408,7 +408,7 @@ function AgentCard(props: {
 }
 
 /** Localize product-owned probe failures from stable facts; never render host prose verbatim. */
-export function healthDiagnostic(
+function healthDiagnostic(
   t: AcpTranslate,
   command: string,
   health: AcpProviderHealth | undefined,

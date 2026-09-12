@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1160" height="470" viewBox="0 0 1160 470" role="img" aria-labelledby="title description" lang="zh-CN">
   <title id="title">执行各有归属，展示保持一致</title>
-  <desc id="description">DSH 管理会话与原生界面，ACP adapter 传递上下文并归一化活动，Agent 执行模型和工具。权限由 Agent 管理，子代理详情只读，后台任务不跨宿主重启恢复。</desc>
+  <desc id="description">DSH 管理会话与原生界面，ACP adapter 传递上下文并归一化活动，Agent 执行模型和工具。权限由 Agent 管理，外部子代理投影只读，后台任务不跨宿主重启恢复。</desc>
   <style>
     text { fill:#29333b; font-family:'Kaiti SC','STKaiti','KaiTi','Chalkboard','Comic Sans MS',sans-serif; }
     .title { font-size:29px; font-weight:600; }
@@ -59,7 +59,7 @@
 <path d="M10 0 Q154 -3 310 0" fill="none" stroke="#c3c8bd" stroke-width="2" stroke-linecap="round"/>
 <circle cx="15" cy="30" r="10" fill="#f7e7b5"/>
 <path d="M10 29 l4 5 l8 -11" class="pencil"/>
-<text x="39" y="37" class="heading" style="font-size:23px">子代理</text>
+<text x="39" y="37" class="heading" style="font-size:23px">外部子代理</text>
 <text x="9" y="77" class="note">Claude / Devin：证据完整时</text>
 <text x="9" y="107" class="note">原生只读详情 · 无法续聊</text>
 </g>
