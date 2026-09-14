@@ -117,6 +117,7 @@ function sidecarProxy(sidecar: AcpSidecar, overrides: {
   return {
     append: overrides.append ?? sidecar.append.bind(sidecar),
     readLatestBinding: sidecar.readLatestBinding.bind(sidecar),
+    readModeIntent: async () => undefined,
     readRecoveryState: sidecar.readRecoveryState.bind(sidecar),
     writeRecoveryState: overrides.writeRecoveryState ?? sidecar.writeRecoveryState.bind(sidecar),
   } as unknown as AcpSidecar

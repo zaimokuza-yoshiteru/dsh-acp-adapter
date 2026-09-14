@@ -98,3 +98,11 @@ describe('ACP probe diagnostics', () => {
     expect(value.length).toBeLessThanOrEqual(240)
   })
 })
+
+
+it('preserves late catalog model choices and rejects oversized authority snapshots instead of truncating them', () => {
+  const option = (count: number) => ({ id: 'model', name: 'Model', type: 'select' as const, currentValue: 'model-0', options: Array.from({ length: count }, (_, i) => ({ value: `model-${i}`, name: `Model ${i}` })) })
+  const snapshot = acpConfigOptionsSnapshot([option(385)])
+  expect(snapshot?.[0]).toMatchObject({ options: expect.arrayContaining([{ value: 'model-339', name: 'Model 339' }]) })
+  expect(() => acpConfigOptionsSnapshot([option(4097)])).toThrow('selectable-value limit')
+})

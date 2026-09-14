@@ -250,6 +250,15 @@ export interface AcpBindingAgentInfo {
   readonly version?: string
 }
 
+/** A user-selected mode belongs to one exact ACP binding, never a replacement session. */
+export interface AcpModeIntent {
+  readonly bindingKey: string
+  readonly modeId: string
+}
+export function modeIntentBindingKey(binding: AcpBindingData): string {
+  return stableStringify([binding.provider, binding.agentSessionId, binding.generation, binding.bindingEpoch, binding.launchFingerprint])
+}
+
 /**
  * ACP binding：dsh sessionId → ACP 侧会话的绑定事实（resume 路由 marker-first 的
  * 依据）。`provider` 是路由 id（`acp-<id>`），`agentSessionId` 喂给 `session/load`。
@@ -566,6 +575,10 @@ export interface AcpSidecar {
    * （调用方按「last-known 展示面」纪律降级为 warn，不翻转主链路）。
    */
   writeOptionSnapshot(sessionId: SessionId, snapshot: AcpOptionsSnapshotRecord): Promise<void>
+  /** Pending user selection, scoped to an exact ACP binding. */
+  readModeIntent(sessionId: SessionId): Promise<AcpModeIntent | undefined>
+  writeModeIntent(sessionId: SessionId, intent: AcpModeIntent): Promise<void>
+  clearModeIntent(sessionId: SessionId, intent: AcpModeIntent): Promise<void>
   /** 读该会话的 last-known option 快照；无行/畸形 → `undefined`（畸形行 warn 一次）。 */
   readOptionSnapshot(sessionId: SessionId): Promise<AcpOptionsSnapshotRecord | undefined>
   /**
@@ -783,6 +796,11 @@ CREATE TABLE IF NOT EXISTS bindings (
   acp_provider_id TEXT,
   acp_session_id TEXT,
   payload TEXT NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS mode_intents (
+  dsh_session_id TEXT PRIMARY KEY,
+  binding_key TEXT NOT NULL,
+  mode_id TEXT NOT NULL
 ) STRICT;
 CREATE TABLE IF NOT EXISTS option_snapshots (
   dsh_session_id TEXT PRIMARY KEY,
@@ -1605,6 +1623,23 @@ class SidecarStore implements AcpSidecar {
     } catch (error: unknown) {
       return Promise.reject(error instanceof Error ? error : new Error(errorMessage(error)))
     }
+  }
+
+  async readModeIntent(sessionId: SessionId): Promise<AcpModeIntent | undefined> {
+    assertSafeSessionId(sessionId)
+    const row = this.openIfExists()?.prepare('SELECT binding_key, mode_id FROM mode_intents WHERE dsh_session_id = ?').get(sessionId) as { binding_key: string; mode_id: string } | undefined
+    return row === undefined ? undefined : { bindingKey: row.binding_key, modeId: row.mode_id }
+  }
+
+  async writeModeIntent(sessionId: SessionId, intent: AcpModeIntent): Promise<void> {
+    assertSafeSessionId(sessionId)
+    if (!intent.modeId || intent.modeId.length > 128 || !intent.bindingKey || intent.bindingKey.length > 8192) throw new TypeError('Invalid ACP mode intent')
+    this.ensureDb().prepare('INSERT INTO mode_intents VALUES (?, ?, ?) ON CONFLICT(dsh_session_id) DO UPDATE SET binding_key=excluded.binding_key, mode_id=excluded.mode_id').run(sessionId, intent.bindingKey, intent.modeId)
+  }
+
+  async clearModeIntent(sessionId: SessionId, intent: AcpModeIntent): Promise<void> {
+    assertSafeSessionId(sessionId)
+    this.openIfExists()?.prepare('DELETE FROM mode_intents WHERE dsh_session_id = ? AND binding_key = ? AND mode_id = ?').run(sessionId, intent.bindingKey, intent.modeId)
   }
 
   writeOptionSnapshot(sessionId: SessionId, snapshot: AcpOptionsSnapshotRecord): Promise<void> {

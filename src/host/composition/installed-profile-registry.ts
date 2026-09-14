@@ -44,6 +44,7 @@ import {
   acpRouteId,
 } from '../../domain/session/agent-config.ts'
 import type { AcpAgentConfig, AcpAgentId, AcpResolvedAgent } from '../../domain/session/agent-config.ts'
+import { createTeamManagement } from '../teams/management.ts'
 import { createAcpLogger } from '../../domain/observability/logging.ts'
 import { acpProbeConfigKey } from './llm-stub.ts'
 import { installNativeAgentAccess } from './native-agent-access.ts'
@@ -446,6 +447,9 @@ export function installInstalledProfileRegistry(ctx: Context, options: Installed
         // this keeps Settings and the stock ModelPicker on one cache/key and
         // one in-flight probe. There is deliberately no detached fallback.
         probeCacheFor: (profileId) => profileAdapters.get(profileId),
+        modelsChanged: (profileIds) => {
+          for (const id of profileIds) registrations.get(id)?.replace([acpRouteId(id)])
+        },
       },
       // Health's executable/version facts must use the same host subprocess
       // seam as the ACP probe.  Omitting this made a successful probe coexist
@@ -454,6 +458,10 @@ export function installInstalledProfileRegistry(ctx: Context, options: Installed
       // The provider composition has no Agent owner; activity methods are
       // intentionally read-only and describe provider-owned facts only.
       resolveLiveAgent: () => undefined,
+      teamManagement: createTeamManagement(ctx, provider => [...profileAdapters.keys()].some(id => acpRouteId(id) === provider), async id => {
+        const lookup = await sidecar.readLatestBinding(id as never)
+        return lookup?.status === 'ok' ? lookup.binding.provider : undefined
+      }),
       // Header/audit facts are read-only host facts.  Keeping them here makes
       // the additive provider composition useful to the stock header utility
       // without creating a second Agent lifecycle in the provider bridge.

@@ -43,6 +43,7 @@ function seam(): { ok: true; seam: never } {
 const durableSidecar = {
   append: async () => undefined,
   readLatestBinding: async () => undefined,
+  readModeIntent: async () => undefined,
   readRecoveryState: async () => undefined,
   writeRecoveryState: async () => undefined,
 } as unknown as AcpSidecar

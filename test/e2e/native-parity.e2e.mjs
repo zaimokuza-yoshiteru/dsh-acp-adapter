@@ -580,6 +580,8 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
       const { settled } = await send('E2E_NATIVE')
       await settled
       await page.getByText('E2E_NATIVE_DONE', { exact: true }).waitFor()
+      expect(await page.locator('[data-acp-team-management]').count()).toBe(0)
+      expect(await page.getByRole('button', { name: /^Agent ·/ }).count()).toBe(0)
       expect(observed).toContain('native-control')
       expect(calls).toEqual(['pre', 'post'])
       expect(promptCount()).toBe(before)

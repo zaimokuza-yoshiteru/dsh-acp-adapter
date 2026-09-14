@@ -1,0 +1,189 @@
+import { LlmAdapter } from '@deepseek-ai/dsh-llm'
+import { join } from 'node:path'
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { chromium } from 'playwright'
+import { it, expect, vi } from 'vitest'
+import { connectFreshWorkspace, newEnglishPage, writeComposerDraft } from '#host-support'
+import { launchAdapterWorld, root } from './scaffold.mjs'
+
+it('shows per-profile mode menus with dormant mode persistence and approval protection and preserves Lead approval layout', async () => {
+  const host = await launchAdapterWorld({ teams: true })
+  let browser, page
+  const events = [], errors = []
+  host.ctx.on('session/event', (session, event) => events.push({ sessionId: session.id, ...event }))
+  const retain = process.env.DSH_E2E_RETAIN_MANAGEMENT === '1'
+  try {
+    await host.ctx.settings.replace('dsh-acp', { agents: { devin: { name: 'ACP demo', command: process.execPath,
+      args: [join(root, 'test/mock-agent/mock-agent.mjs')], env: { MOCK_SCENARIO: 'regression', MOCK_PROFILE: 'devin', MOCK_MCP_HTTP: '1' } } } })
+    await vi.waitFor(() => expect(host.ctx.llm.listProviders().some(p => p.id === 'acp-devin')).toBe(true))
+    await host.ctx.agentDefaultModel.saveSelection({ provider: 'acp-devin', model: 'mock-model-a' })
+    browser = await chromium.launch({ channel: process.env.DSH_E2E_BROWSER_CHANNEL, headless: !retain, ...(retain ? { args: ['--window-size=1440,1000'] } : {}) })
+    page = retain ? await browser.newPage({ viewport: null, locale: 'en-US', timezoneId: 'Asia/Shanghai' }) : await newEnglishPage(browser)
+    page.on('pageerror', e => errors.push(e.message))
+    await page.goto(host.authenticatedUrl)
+    await connectFreshWorkspace(page, host.workspaceCwd)
+    const send = async text => { await writeComposerDraft(page, page.locator('[data-composer-input]').first(), text); await page.getByRole('button', { name: 'Send message', exact: true }).click() }
+    await send('E2E_TEAM_START')
+    await page.getByText('E2E_TEAM_READY', { exact: true }).waitFor()
+    const lead = host.ctx.agents.list().find(a => host.ctx.agentTeams.tryMembership(a)?.role === 'lead')
+    const childId = host.ctx.agentTeams.listMembers(lead).find(m => m.role === 'teammate').id
+    const url = page.url()
+    const panel = page.locator('[data-acp-team-management]')
+    await panel.getByRole('button', { name: 'Manage members · 1', exact: true }).click()
+    const row = panel.locator('[data-acp-managed-member="calculator"]')
+    await row.getByText('mock-model-a', { exact: true }).waitFor()
+    expect(await row.getByRole('textbox').count()).toBe(0)
+    expect(await row.getByRole('button', { name: 'Interrupt turn', exact: true }).count()).toBe(0)
+    await row.getByRole('button', { name: /^Agent ·/ }).click()
+    const modeMenu = page.getByRole('menu')
+    await modeMenu.getByRole('menuitem', { name: /Mode: Plan/i }).waitFor()
+    for (const item of await modeMenu.getByRole('menuitem').all()) expect(await item.isDisabled()).toBe(true)
+    expect(await modeMenu.innerText()).not.toMatch(/Model:|Reasoning:/)
+    await page.keyboard.press('Escape')
+    await expect.poll(() => page.getByRole('menu').count()).toBe(0)
+    expect(await panel.getByRole('dialog').count()).toBe(1)
+    const group = panel.locator('[data-acp-mode-group="devin"]')
+    expect(await panel.locator('[data-acp-mode-group]').count()).toBe(1)
+    await group.getByRole('button', { name: 'Change modes together', exact: true }).click()
+    await modeMenu.getByRole('menuitem', { name: /Mode: Plan/i }).waitFor()
+    for (const item of await modeMenu.getByRole('menuitem').all()) expect(await item.isDisabled()).toBe(true)
+    await page.keyboard.press('Escape')
+    await panel.getByRole('button', { name: 'Close member management', exact: true }).click()
+    await expect(host.ctx.dshAcp.setTeamMemberMode(lead.id, childId, 'plan')).rejects.toThrow()
+    await page.locator('[data-acp-team-approvals]').getByRole('button', { name: 'Allow once', exact: true }).click()
+    await expect.poll(async () => (await host.ctx.dshAcp.agentSessionSnapshot(childId)).freshness, { timeout: 15000 }).toBe('stale')
+    await expect(host.ctx.dshAcp.setAgentSessionOption(childId, { kind: 'config', id: 'mode', value: 'plan' })).rejects.toThrow()
+    expect(page.url()).toBe(url)
+    await page.reload()
+    await panel.getByRole('button', { name: 'Manage members · 1', exact: true }).click()
+    await row.getByText('mock-model-a', { exact: true }).waitFor()
+    await row.getByRole('button', { name: /^Agent ·/ }).click()
+    await modeMenu.getByRole('menuitem', { name: /Mode: plan/i }).waitFor()
+    await modeMenu.getByRole('menuitem', { name: /Mode: plan/i }).click()
+    await row.locator('[data-member-pending-mode]').getByText(/plan/i).waitFor()
+    const original = await host.ctx.dshAcp.agentSessionSnapshot(childId)
+    expect(original.pendingModeId).toBe('plan')
+    await row.getByRole('button', { name: 'Agent · Plan', exact: true }).click()
+    expect(await modeMenu.getByRole('menuitem', { name: 'Session Mode: Plan', exact: true }).locator('svg').count()).toBe(1)
+    expect(await modeMenu.getByRole('menuitem', { name: 'Session Mode: Code', exact: true }).locator('svg').count()).toBe(0)
+    await page.keyboard.press('Escape')
+    const styleOf = button => button.evaluate(el => { const css = getComputedStyle(el); return { font: css.fontFamily, size: css.fontSize, border: css.borderWidth, radius: css.borderRadius, height: css.height } })
+    expect(await styleOf(row.getByRole('button', { name: /^Agent ·/ }))).toEqual(await styleOf(page.getByRole('button', { name: /^Agent ·/ }).last()))
+    mkdirSync(join(root, '.local/team-management'), { recursive: true })
+    await page.screenshot({ path: join(root, '.local/team-management/mode-pending.en.png') })
+    await group.getByRole('button', { name: 'Change modes together', exact: true }).click()
+    await modeMenu.getByRole('menuitem', { name: /Mode: ask/i }).click()
+    await row.locator('[data-member-pending-mode]').getByText(/ask/i).waitFor()
+    await row.getByRole('button', { name: 'Agent · Ask', exact: true }).waitFor()
+    await page.reload()
+    await panel.getByRole('button', { name: 'Manage members · 1', exact: true }).click()
+    await row.locator('[data-member-pending-mode]').getByText(/ask/i).waitFor()
+    await row.getByRole('button', { name: 'Agent · Ask', exact: true }).waitFor()
+    await panel.getByRole('button', { name: 'Close member management', exact: true }).click()
+    await send('E2E_TEAM_WAKE')
+    await page.getByText('E2E_TEAM_WOKEN', { exact: true }).waitFor()
+    await expect.poll(() => events.some(event => event.sessionId === childId && event.type === 'assistant/message' && JSON.stringify(event).includes('E2E_TEAM_MEMBER_MODE ask')), { timeout: 15000 }).toBe(true)
+    await panel.getByRole('button', { name: 'Manage members · 1', exact: true }).click()
+    await row.getByRole('button', { name: 'Agent · Ask', exact: true }).waitFor()
+    expect(await row.locator('[data-member-pending-mode]').count()).toBe(0)
+    if (!retain) await page.setViewportSize({ width: 680, height: 900 })
+    expect(await panel.getByRole('dialog').evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true)
+    await page.keyboard.press('Escape')
+    await expect.poll(() => panel.getByRole('dialog').count()).toBe(0)
+    if (!retain) await page.setViewportSize({ width: 1440, height: 719 })
+    await page.getByRole('button', { name: 'New session', exact: true }).last().click()
+    await send('演示成员管理与集中审批 E2E_TEAM_DEMO')
+    await page.getByText('团队演示已就绪。', { exact: false }).waitFor()
+    const demoLead = host.ctx.agents.list().find(a => a.id !== lead.id && host.ctx.agentTeams.tryMembership(a)?.role === 'lead')
+    await panel.getByRole('button', { name: 'Manage members · 2', exact: true }).click()
+    await host.ctx.settings.replace('locale', { preference: 'zh' })
+    await panel.getByRole('button', { name: '成员管理 · 2', exact: true }).waitFor()
+    const approvals = page.locator('[data-acp-team-approvals]')
+    await approvals.getByText('需要你处理 · 2 位成员', { exact: true }).waitFor()
+    const triggerBox = await panel.getByRole('button', { name: '成员管理 · 2', exact: true }).boundingBox()
+    expect(triggerBox.y).toBeLessThan(100)
+    expect(triggerBox.x).toBeGreaterThan((await page.evaluate(() => innerWidth)) / 2)
+    const popupBox = await panel.getByRole('dialog').boundingBox()
+    expect(popupBox.x).toBeGreaterThanOrEqual(0)
+    expect(popupBox.x + popupBox.width).toBeLessThanOrEqual(await page.evaluate(() => innerWidth))
+    // Member cards contain only mode controls, with one batch entry for this ACP profile.
+    expect(await panel.getByRole('textbox').count()).toBe(0)
+    expect(await panel.getByRole('button', { name: '批量调整模式', exact: true }).count()).toBe(1)
+    await panel.getByRole('button', { name: '关闭成员管理', exact: true }).click()
+    const allowAll = await approvals.getByRole('button', { name: '全部允许', exact: true }).boundingBox()
+    const collapse = await approvals.getByRole('button', { name: '收起', exact: true }).boundingBox()
+    expect(allowAll.x).toBeLessThan(collapse.x)
+    expect(Math.abs(allowAll.y - collapse.y)).toBeLessThan(12)
+    const first = approvals.locator('[data-team-pending-member]').first()
+    const detail = first.locator('[data-team-approval-reason]')
+    const one = await first.getByRole('button', { name: '允许一次', exact: true }).boundingBox()
+    expect((await detail.boundingBox()).y).toBeGreaterThanOrEqual(one.y + one.height)
+    const font = await detail.evaluate(el => ({ size: getComputedStyle(el).fontSize, line: getComputedStyle(el).lineHeight, family: getComputedStyle(el).fontFamily, parentFamily: getComputedStyle(el.parentElement).fontFamily }))
+    expect(font).toMatchObject({ size: '15px', line: '24px' })
+    expect(font.family).toBe(font.parentFamily)
+    await panel.getByRole('button', { name: '成员管理 · 2', exact: true }).click()
+    await expect.poll(() => panel.getByRole('button', { name: /^Agent ·/ }).count()).toBe(2)
+    expect(errors).toEqual([])
+    if (!retain) {
+      await panel.getByRole('button', { name: '关闭成员管理', exact: true }).click()
+      await approvals.getByRole('button', { name: '全部拒绝', exact: true }).click()
+      const demoMembers = host.ctx.agentTeams.listMembers(demoLead).filter(m => m.role === 'teammate')
+      await expect(host.ctx.dshAcp.setTeamMemberMode(lead.id, demoMembers[0].id, 'plan')).rejects.toThrow()
+      await expect(host.ctx.dshAcp.setTeamMemberMode(demoLead.id, demoLead.id, 'plan')).rejects.toThrow()
+      await expect.poll(async () => Promise.all(demoMembers.map(async m => (await host.ctx.dshAcp.agentSessionSnapshot(m.id)).freshness))).toEqual(['stale', 'stale'])
+      await panel.getByRole('button', { name: '成员管理 · 2', exact: true }).click()
+      await panel.getByRole('button', { name: '批量调整模式', exact: true }).click()
+      await modeMenu.getByRole('menuitem', { name: /Mode: plan/i }).click()
+      await expect.poll(() => panel.locator('[data-member-pending-mode]').count()).toBe(2)
+      expect(await panel.getByRole('status').innerText()).toContain('已保存 2 个')
+      await expect.poll(() => panel.getByRole('button', { name: 'Agent · Plan', exact: true }).count()).toBe(2)
+      await page.screenshot({ path: join(root, '.local/team-management/mode-pending.zh.png') })
+      // With native Teams still installed, a fresh native-model session owns neither ACP control.
+      class NativeFixture extends LlmAdapter {
+        providerInfo(id) { return { id, name: 'Native fixture' } }
+        async listModels(provider) { return [{ provider, id: 'native-model', name: 'Native Model' }] }
+        async *stream() {
+          yield { type: 'block-start', index: 0, blockType: 'text' }
+          yield { type: 'text-delta', index: 0, text: 'E2E_NATIVE_MODE_ONLY' }
+          yield { type: 'block-end', index: 0, block: { type: 'text', text: 'E2E_NATIVE_MODE_ONLY' } }
+          yield { type: 'finish', reason: { kind: 'stop' } }
+        }
+      }
+      host.ctx.effect(() => host.ctx.llm.registerAdapter(['native-mode-control'], new NativeFixture()))
+      await host.ctx.settings.replace('locale', { preference: 'en' })
+      await host.ctx.agentDefaultModel.saveSelection({ provider: 'native-mode-control', model: 'native-model' })
+      await page.getByRole('button', { name: 'New session', exact: true }).last().click()
+      await page.getByText('Into the Unknown', { exact: true }).waitFor()
+      await send('Check native controls')
+      await page.getByText('E2E_NATIVE_MODE_ONLY', { exact: true }).waitFor()
+      expect(await panel.count()).toBe(0)
+      expect(await page.getByRole('button', { name: /^Agent ·/ }).count()).toBe(0)
+      expect(await page.getByRole('button', { name: 'Agent Team', exact: true }).count()).toBeGreaterThan(0)
+
+    }
+    if (retain) {
+      await panel.getByRole('button', { name: '关闭成员管理', exact: true }).click()
+      await approvals.getByRole('button', { name: '拒绝', exact: true }).first().click()
+      const demoChild = host.ctx.agentTeams.listMembers(demoLead).find(m => m.name === 'analyst')
+      await expect.poll(async () => (await host.ctx.dshAcp.agentSessionSnapshot(demoChild.id)).freshness).toBe('stale')
+      await panel.getByRole('button', { name: '成员管理 · 2', exact: true }).click()
+      await panel.locator('[data-acp-managed-member="analyst"]').getByRole('button', { name: /^Agent ·/ }).click()
+      await modeMenu.getByRole('menuitem', { name: /Mode: smart/i }).click()
+      await panel.locator('[data-member-pending-mode]').getByText(/smart/i).waitFor()
+      await panel.getByRole('button', { name: 'Agent · Smart', exact: true }).waitFor()
+      const modeButtons = await panel.getByRole('button', { name: /^Agent ·/ }).all()
+      const boxes = await Promise.all(modeButtons.map(button => button.boundingBox()))
+      expect(Math.abs(boxes[0].y - boxes[1].y)).toBeLessThan(2)
+      mkdirSync(join(root, '.local/team-management'), { recursive: true })
+      writeFileSync(join(root, '.local/team-management/instance.json'), JSON.stringify({ url: page.url(), leadId: demoLead.id, workspace: host.workspaceCwd, pid: process.pid }, null, 2))
+      await panel.getByRole('button', { name: 'Agent · Smart', exact: true }).click()
+      expect(await modeMenu.getByRole('menuitem', { name: 'Session Mode: Smart', exact: true }).locator('svg').count()).toBe(1)
+      await page.screenshot({ path: join(root, '.local/team-management/preview.png') })
+      console.log('TEAM_MANAGEMENT_READY', page.url())
+      await new Promise(resolve => process.once('SIGTERM', resolve))
+    }
+  } catch (error) {
+    if (page) { mkdirSync(join(root, '.local/e2e-failures'), { recursive: true }); await page.screenshot({ path: join(root, '.local/e2e-failures/team-management.png') }); writeFileSync(join(root, '.local/e2e-failures/team-management.json'), JSON.stringify(events, null, 2)) }
+    throw error
+  } finally { await browser?.close(); await host.close() }
+}, process.env.DSH_E2E_RETAIN_MANAGEMENT === '1' ? 86400000 : 90000)

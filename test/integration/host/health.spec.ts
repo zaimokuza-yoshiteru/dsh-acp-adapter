@@ -2,7 +2,7 @@
 // Legacy options, permission/elicitation brokers, and model-switch endpoints
 // are intentionally not part of the public Remote contract anymore.
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import {
   AcpRemoteService,
@@ -73,6 +73,21 @@ describe('AcpRemoteService current public surface', () => {
     await expect(instance.health({ recheck: true, agentId: 'devin' })).resolves.toMatchObject({ providers: [{ id: 'devin' }] })
     expect((instance as unknown as Record<string, unknown>).authenticate).toBeUndefined()
     expect((instance as unknown as Record<string, unknown>).options).toBeUndefined()
+  })
+
+  it('publishes rechecked models only after the probe settles, including failures; read-only health does not refresh', async () => {
+    const changed = vi.fn()
+    const probe = vi.fn(async () => { expect(changed).not.toHaveBeenCalled(); throw new Error('offline') })
+    const { instance } = service({ registry: {
+      agents: () => new Map([['devin', DEVIN]]),
+      probeCacheFor: () => ({ invalidateProbe: () => {}, listModels: probe, probeSnapshot: () => undefined }),
+      modelsChanged: changed,
+    } })
+    await instance.health()
+    expect(changed).not.toHaveBeenCalled()
+    await instance.health({ recheck: true, agentId: 'devin' })
+    expect(probe).toHaveBeenCalledOnce()
+    expect(changed).toHaveBeenCalledExactlyOnceWith(['devin'])
   })
 
   it('keeps the last explicit result after the runtime TTL and invalidates it when configuration changes', async () => {
@@ -152,7 +167,7 @@ describe('AcpRemoteService current public surface', () => {
     expect(ids).toEqual([
       'activityFollow', 'activityPage', 'activitySnapshot', 'agentSessionFollow', 'agentSessionSnapshot', 'auditTimeline',
       'backendOf', 'boundSessions', 'health', 'ownedProviderRoutes', 'projectedSubagentIds', 'rebindRecoveryBlank', 'recoverySnapshot', 'retryOriginal',
-      'setAgentSessionOption',
+      'setAgentSessionOption', 'setTeamMemberMode', 'teamMembers',
     ])
   })
 })

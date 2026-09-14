@@ -1,17 +1,23 @@
 .card {
-  margin: 0 12px 8px;
-  border: 1px solid var(--dsw-alias-state-warn-secondary);
-  border-radius: 12px;
-  background: var(--dsw-specific-input-major);
-  color: var(--dsw-alias-label-primary);
-  overflow: hidden;
+  box-sizing: border-box;
+  width: min(var(--dsh-chat-content-width, 960px), calc(100% - 24px));
+  min-width: 0; margin: 0 auto 8px;
+  border: 1px solid var(--dsw-alias-state-warn-secondary); border-radius: 20px;
+  background: var(--dsw-specific-input-major); color: var(--dsw-alias-label-primary);
+  box-shadow: var(--dsw-shadow-lv2); overflow: hidden;
+  --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);
+  --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);
 }
-.header { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: var(--dsw-alias-state-warn-tertiary); }
-.header strong { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 10px 16px; background: var(--dsw-alias-state-warn-tertiary); font-size: 13px; line-height: 18px; }
+.header strong { flex: 1; min-width: 100px; overflow-wrap: anywhere; }
 .icon { display: grid; place-items: center; width: 18px; height: 18px; border: 1px solid currentColor; border-radius: 50%; color: var(--dsw-alias-state-warn-primary); }
-.body { padding: 0 12px 10px; }
-.hint, .status { color: var(--dsw-alias-label-secondary); font-size: 12px; }
-.members { list-style: none; margin: 0; padding: 0; max-height: min(240px, 30vh); overflow-y: auto; }
-.member { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 0; }
-.name { flex: 1; min-width: 80px; overflow-wrap: anywhere; }
-.error { margin: 8px 12px; color: var(--dsw-alias-state-error-primary); }
+.body { box-sizing: border-box; padding: 0 16px 12px; max-height: min(360px, 40dvh); overflow-y: auto; }
+.hint, .status { color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 18px; }
+.members { list-style: none; margin: 0; padding: 0; }
+.member { min-width: 0; padding: 12px 0; border-top: 0.5px solid var(--dsw-alias-border-l1); }
+.memberHeader { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 6px; }
+.name { flex: 1; min-width: 80px; overflow-wrap: anywhere; font-size: 15px; font-weight: 500; line-height: 24px; }
+.actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
+.error { margin: 8px 16px; color: var(--dsw-alias-state-error-primary); }
+/* Match the native ApprovalPanel headline. Only actual tool details use code fonts upstream. */
+.reason { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; color: var(--dsw-alias-label-primary); font-family: inherit; font-size: 15px; font-weight: 500; line-height: 24px; }

@@ -421,6 +421,8 @@ export interface AcpAgentModeView {
 export interface AcpAgentSessionSnapshotView {
   readonly sessionId: string
   readonly profileId: string
+  readonly modeWritable?: boolean
+  readonly pendingModeId?: string | null
   readonly freshness: 'live' | 'stale'
   readonly editable: boolean
   readonly configOptions: readonly AcpConfigOption[] | null
@@ -449,3 +451,13 @@ export type AcpAgentSessionOptionWrite =
  * 门未通过。
  */
 export type AcpAgentConfigState = 'saved-unverified' | 'ready' | 'auth-required' | 'unavailable' | 'incompatible'
+
+/** ACP team management facts; unknown model state is explicit, never inherited from the Lead. */
+export interface AcpTeamMemberView {
+  readonly profileId: string | null
+  readonly sessionId: string
+  readonly name: string
+  readonly status: 'running' | 'idle' | 'inactive' | 'provisioning' | 'failed'
+  readonly model: string | null
+  readonly description: string | null
+}

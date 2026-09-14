@@ -86,6 +86,7 @@ describe('M3a binding-first ACP provider', () => {
     const broken = {
       append: async () => { throw new Error('sidecar unavailable') },
       readLatestBinding: async () => undefined,
+      readModeIntent: async () => undefined,
       readRecoveryState: async () => undefined,
       writeRecoveryState: async () => undefined,
     } as unknown as AcpSidecar
@@ -483,6 +484,7 @@ describe('runtime failure and host disposal ownership', () => {
     const prompt = vi.fn(async () => ({ stopReason: 'end_turn' as const }))
     const factory = vi.fn(() => ({ initialize, close, prompt, start: async () => {} }))
     const sidecar = {
+      readModeIntent: async () => undefined,
       readRecoveryState: async () => {
         if (gate === 'read-error') throw new Error('read failed')
         return gate === 'recovery' ? { kind: 'reconnect-required' } : undefined
@@ -624,4 +626,58 @@ it('does not evict a replacement runtime when an older initialization fails late
     await subject.disposeSession(live)
     expect(newClose).toHaveBeenCalledOnce()
   } finally { fail.resolve(); await subject.close(); await sidecar.dispose(); fs.rmSync(root, { recursive: true, force: true }) }
+})
+
+describe('durable Team member modes', () => {
+  it.each(['confirmed', 'unsupported', 'unconfirmed', 'rebound'] as const)('restores the exact binding before applying a %s mode, before any prompt', async outcome => {
+    const { root, sidecar } = sidecarAt()
+    const calls: string[] = []
+    let advertised = true
+    const factory = (): AcpProfileRuntime => {
+      let mode = 'code'
+      return {
+        acpSessionId: 'agent-session-1', agentInfo: { name: 'fake', version: '1' }, protocolVersion: 1,
+        agentCapabilities: { sessionCapabilities: { resume: {} } },
+        get modes() { return { currentModeId: mode, availableModes: [{ id: 'code', name: 'Code' }, ...(advertised ? [{ id: 'plan', name: 'Plan' }] : [])] } },
+        get currentModeId() { return mode },
+        start: async () => { calls.push('new') },
+        restore: async binding => { calls.push(`restore:${binding.agentSessionId}`); return 'resumed' },
+        setMode: async value => { calls.push(`mode:${value}`); if (outcome !== 'unconfirmed') mode = value },
+        prompt: async () => { calls.push(`prompt:${mode}`); return { stopReason: 'end_turn' } as never },
+        close: async () => { calls.push('close') },
+      }
+    }
+    let message = user('first')
+    let events = [...session(message).events]
+    const create = () => new AcpProfileAdapter('test', profile, seam(), () => ({ header: { cwd: os.tmpdir() }, inheritedEventCount: 0, snapshotEvents: () => events }), ledgerFor(sidecar), undefined, factory, sidecar)
+    let adapter = create()
+    try {
+      await drain(adapter.stream(request('member-mode', message)))
+      await adapter.close()
+      const before = [...calls]
+      expect(await adapter.setTeamMemberMode('member-mode', 'plan')).toMatchObject({ freshness: 'stale', pendingModeId: 'plan', modeWritable: true })
+      expect(calls).toEqual(before) // Saving never spawns or sends a task.
+      await sidecar.dispose() // Reopen the actual SQLite file, not an in-memory preference.
+      adapter = create()
+      expect(await adapter.agentSessionSnapshot('member-mode')).toMatchObject({ pendingModeId: 'plan' })
+      if (outcome === 'unsupported') advertised = false
+      if (outcome === 'rebound') {
+        const original = await sidecar.readModeIntent('member-mode' as never)
+        await sidecar.writeModeIntent('member-mode' as never, { ...original!, bindingKey: 'different-binding' })
+      }
+      calls.length = 0
+      message = user('next')
+      events = [...events, { type: 'step/start', seq: 3, data: { turn: 2, step: 0 } }, { type: 'user/message', seq: 4, data: message }]
+      const run = drain(adapter.stream(request('member-mode', message)))
+      if (outcome === 'unsupported' || outcome === 'unconfirmed') {
+        await expect(run).rejects.toMatchObject({ code: outcome === 'unsupported' ? 'ACP_CONFIG_UNSUPPORTED' : 'ACP_CONFIG_SYNC_FAILED' })
+        expect(calls.some(call => call.startsWith('prompt:'))).toBe(false)
+        expect((await sidecar.readModeIntent('member-mode' as never))?.modeId).toBe('plan')
+      } else {
+        await run
+        expect(calls).toEqual(outcome === 'confirmed' ? ['restore:agent-session-1', 'mode:plan', 'prompt:plan'] : ['restore:agent-session-1', 'prompt:code'])
+        expect(await sidecar.readModeIntent('member-mode' as never)).toBeUndefined()
+      }
+    } finally { await adapter.close(); await sidecar.dispose(); fs.rmSync(root, { recursive: true, force: true }) }
+  })
 })

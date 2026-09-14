@@ -295,6 +295,10 @@ function getSession(msg) {
 
 // ---------- 方法处理 ----------
 async function handleInitialize(msg) {
+  if (process.env.MOCK_UNAVAILABLE_FILE && fs.existsSync(process.env.MOCK_UNAVAILABLE_FILE)) {
+    respondError(msg.id, -32000, 'E2E_AGENT_TEMPORARILY_UNAVAILABLE');
+    return;
+  }
   if (state.scenario === 'slow-response') {
     log(`initialize delayed ${SLOW_INIT_MS}ms (slow-response)`);
     await sleep(SLOW_INIT_MS);

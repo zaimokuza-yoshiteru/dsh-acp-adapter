@@ -55,6 +55,15 @@ export async function teamTurn(session, msg, { sendUpdate, sendAgentRequest, res
     if (/\bE2E_TEAM_INTERRUPT\b/.test(prompt)) {
       await call('interrupt_agent', { target: 'calculator' })
       say('E2E_TEAM_INTERRUPTED')
+    } else if (prompt.includes('E2E_TEAM_DEMO')) {
+      const task = await call('team_task_create', { subject: '整理需求', description: '梳理成员管理和集中审批的验收要点' })
+      await call('team_task_create', { subject: '复核方案', description: '等待需求整理完成，再检查边界', blocked_by: [task.id] })
+      await call('spawn_teammate', { name: 'analyst', description: '整理需求与验收要点', prompt: 'E2E_TEAM_MEMBER calculate 1+1', context: 'fresh' })
+      await call('spawn_teammate', { name: 'reviewer', description: '检查实现与审批边界', prompt: 'E2E_TEAM_MEMBER calculate 1+1', context: 'fresh' })
+      say('团队演示已就绪。两个成员的审批可在下方直接处理；点击右上角人员图标，可查看成员模式，并按 ACP 类型批量调整成员模式；休眠成员下次运行生效。共享任务在原生 Agent Team 面板中。此实例使用本地测试 Agent。')
+    } else if (prompt.includes('E2E_TEAM_EIGHT')) {
+      for (let index = 1; index <= 8; index++) await call('spawn_teammate', { name: `worker-${index}`, description: 'Batch approval member', prompt: `E2E_TEAM_MEMBER calculate 1+1${index === 1 ? ' E2E_TEAM_FOLLOWUP_PERMISSION' : ''}`, context: 'fresh' })
+      say('E2E_TEAM_EIGHT_READY')
     } else if (prompt.includes('E2E_TEAM_SECOND')) {
       await call('spawn_teammate', { name: 'calculator-b', description: 'Model B member', prompt: 'E2E_TEAM_MEMBER calculate 1+1', context: 'fresh' })
       say('E2E_TEAM_SECOND_READY')
@@ -64,6 +73,7 @@ export async function teamTurn(session, msg, { sendUpdate, sendAgentRequest, res
     } else if (prompt.includes('E2E_TEAM_REPLY')) {
       say('E2E_TEAM_LEAD_RECEIVED')
     } else if (/\bE2E_TEAM_CONTINUE\b/.test(prompt)) {
+      say(`E2E_TEAM_MEMBER_MODE ${session.configOptions.find(option => option.id === 'mode')?.currentValue}`)
       await call('send_message', { target: 'lead', message: 'E2E_TEAM_REPLY continued' })
       say('E2E_TEAM_MEMBER_CONTINUED')
     } else if (/\bE2E_TEAM_MEMBER\b/.test(prompt)) {
@@ -72,6 +82,13 @@ export async function teamTurn(session, msg, { sendUpdate, sendAgentRequest, res
       const response = await sendAgentRequest('session/request_permission', { sessionId: session.id,
         toolCall: { toolCallId: 'member-shell', name: 'bash', title: 'Run member command', kind: 'execute', rawInput: { command: 'echo E2E_TEAM_PERMISSION' } },
         options: [{ optionId: 'allow', kind: 'allow_once', name: 'Allow once' }, { optionId: 'deny', kind: 'reject_once', name: 'Reject' }] })
+      if (prompt.includes('E2E_TEAM_FOLLOWUP_PERMISSION')) {
+        const answer = await sendAgentRequest('session/request_permission', { sessionId: session.id,
+          toolCall: { toolCallId: 'member-late-shell', name: 'bash', title: 'Run next member command', kind: 'execute', rawInput: { command: 'echo E2E_TEAM_LATE_PERMISSION' } },
+          options: [{ optionId: 'allow', kind: 'allow_once', name: 'Allow once' }, { optionId: 'deny', kind: 'reject_once', name: 'Reject' }] })
+        if (answer.outcome?.optionId !== 'deny') throw new Error(`Unexpected late permission: ${JSON.stringify(answer)}`)
+        say('E2E_TEAM_LATE_DENIED')
+      }
       if (response.outcome?.optionId !== 'allow') {
         say(response.outcome?.outcome === 'cancelled' ? 'E2E_TEAM_MEMBER_CANCELLED' : 'E2E_TEAM_MEMBER_DENIED')
         return true

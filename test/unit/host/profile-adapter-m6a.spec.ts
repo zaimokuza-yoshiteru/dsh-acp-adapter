@@ -24,6 +24,7 @@ class Ledger implements DispatchLedgerStore {
 const sidecar = {
   append: async () => undefined,
   readLatestBinding: async () => undefined,
+  readModeIntent: async () => undefined,
   readRecoveryState: async () => undefined,
   writeRecoveryState: async () => undefined,
 } as unknown as AcpSidecar

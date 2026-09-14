@@ -57,6 +57,7 @@ import type { AcpSubprocessHandle, SubprocessSeam, SubprocessSeamResolution } fr
 import { AcpClientError } from '../protocol/v1/errors.ts'
 import { matchesDiagnosticView } from '../contract/diagnostics.ts'
 import type {
+  AcpTeamMemberView,
   AcpAuthMethod,
   AcpBackendState,
   AcpBoundSessionsView,
@@ -245,6 +246,8 @@ export interface AcpHealthRegistryLike {
   agents(): ReadonlyMap<string, AcpAgentConfig>
   /** Resolve the registered profile adapter that owns this route's probe cache. */
   readonly probeCacheFor: (profileId: string) => AcpProbeCacheLike | undefined
+  /** Publish settled explicit checks through the native model registry. */
+  readonly modelsChanged?: (profileIds: readonly string[]) => void
 }
 
 /**
@@ -287,11 +290,16 @@ export interface AcpRecoveryAdapterLike {
 
 /** New additive provider control seam. It never exposes the legacy Agent. */
 export interface AcpAgentSessionControlLike {
+  setTeamMemberMode?(sessionId: string, modeId: string): Promise<AcpAgentSessionSnapshotView>
   agentSessionSnapshot(sessionId: string): Promise<AcpAgentSessionSnapshotView>
   setAgentSessionOption(sessionId: string, request: AcpAgentSessionOptionWrite): Promise<AcpAgentSessionSnapshotView>
 }
 
 export interface AcpRemoteServiceDeps {
+  teamManagement?: {
+    members(lead: string): Promise<readonly AcpTeamMemberView[]>
+  }
+
   /** Registry：agent 列表 + probe 缓存（快照/刷新）。 */
   registry: AcpHealthRegistryLike
  /** 活体 agent 解析器（接线提供真实实现）。 */
@@ -449,6 +457,8 @@ function firstLine(text: string): string | null {
 // ---------- Remote service ----------
 
 interface ResolvedDeps {
+  readonly teamManagement: AcpRemoteServiceDeps['teamManagement']
+
   readonly registry: AcpHealthRegistryLike
   readonly resolveLiveAgent: AcpResolveLiveAgent
   readonly hostCompatible: () => boolean
@@ -496,6 +506,7 @@ export class AcpRemoteService extends TypertRemoteService {
     const subprocess = deps.subprocess ?? { ok: false as const, message: ACP_SUBPROCESS_UNAVAILABLE_MESSAGE }
     this.resolved = {
       registry: deps.registry,
+      teamManagement: deps.teamManagement,
       resolveLiveAgent: deps.resolveLiveAgent,
  // host 未接线结构门事实时按兼容处理（纯模块单测路径；生产恒注入）
       hostCompatible: deps.hostCompatible ?? (() => true),
@@ -682,6 +693,25 @@ export class AcpRemoteService extends TypertRemoteService {
     if (access === null || !(await access(sessionId))) throw acpRemoteFailure('user-rejected', 'ACP activity access is not authorized for this DSH session')
   }
 
+  @Remote
+  async teamMembers(lead: string): Promise<readonly AcpTeamMemberView[]> {
+    await this.requireOwnedSessionRead(lead)
+    if (this.resolved.teamManagement === undefined) throw badRequest('ACP Teams is unavailable')
+    return await this.resolved.teamManagement.members(lead)
+  }
+
+  @Remote
+  async setTeamMemberMode(lead: string, sessionId: string, modeId: string): Promise<AcpAgentSessionSnapshotView> {
+    const members = await this.teamMembers(lead)
+    const member = members.find(member => member.sessionId === sessionId)
+    if (member?.profileId === null || member === undefined || (member.status !== 'idle' && member.status !== 'inactive')) throw badRequest('The ACP member must be idle or dormant')
+    if (typeof modeId !== 'string' || !modeId || modeId.length > 128) throw badRequest('Invalid member mode')
+    await this.requireOwnedSessionRead(sessionId)
+    const adapter = await this.agentSessionControlFor(sessionId)
+    if (!adapter.setTeamMemberMode) throw badRequest('Member modes are unavailable')
+    return await preserveAcpFailure(() => adapter.setTeamMemberMode!(sessionId, modeId))
+  }
+
   /** Exact ownership proof consumed by additive client observers. Historical
    * routes remain owned after profile removal so old Activity still renders;
    * an unrelated plugin merely using the `acp-` prefix is never claimed. */
@@ -783,6 +813,7 @@ export class AcpRemoteService extends TypertRemoteService {
         }
       }),
     )
+    if (recheck) this.resolved.registry.modelsChanged?.(entries.map(([id]) => id))
     const liveSessions: AcpLiveSessionContinuity[] | null = this.resolved.listLiveSessions === null
       ? null
       : this.resolved.listLiveSessions().map((entry) => ({ sessionId: entry.sessionId, continuity: entry.continuity }))

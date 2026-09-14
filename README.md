@@ -72,7 +72,7 @@ npx "@deepseek-ai/dsh@$DSH_VERSION" plugin --profile web add @zaimokuza/dsh-acp-
 
 ![DSH 管理会话与界面；适配器传递上下文、归一化活动；Agent 负责模型、工具和权限。外部子代理投影只读，后台任务不跨 DSH 重启恢复。](assets/readme/acp-overview.zh-CN.svg)
 
-**实验性 Agent Teams：** 跟随 DSH 的 Teams profile 启用，复用原生团队面板；成员从创建时的主会话继承 Agent、模型与推理配置。主会话切换模型后，新成员使用新模型，已有成员保持原模型；团队内使用同一 ACP Agent。仅支持新建上下文，共享任务使用原生任务板；成员待处理请求集中显示在输入框上方，点击进入原生审批。团队协调免额外审批，普通操作的审批保持原样；成员消息在 DSH 步骤边界送达。
+**实验性 Agent Teams：** 跟随 DSH 的 Teams profile 启用，复用原生团队面板；成员从创建时的主会话继承 Agent、模型与推理配置。主会话切换模型后，新成员使用新模型，已有成员保持原模型；团队内使用同一 ACP Agent。仅支持新建上下文，共享任务使用原生任务板；主会话可直接处理成员审批，当前普通审批支持全部允许／拒绝，允许仅限本次。主会话右上角可查看成员状态与模型，单独或按 ACP 类型批量调整成员的 Agent 模式；休眠成员的设置在下次运行前应用。团队协调免额外审批，普通操作的审批保持原样；成员消息在 DSH 步骤边界送达。
 
 ## <img src="assets/readme/icon-update.svg" width="24" height="24" alt="" /> 更新与卸载
 
