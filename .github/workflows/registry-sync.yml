@@ -1,0 +1,55 @@
+# Daily snapshot sync for the committed ACP registry catalog
+name: registry sync
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: registry-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Verify and commit registry snapshot
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: true
+
+      - name: Fetch latest registry.json
+        run: |
+          mkdir -p assets/registry
+          curl --fail --silent --show-error --location \
+            --retry 3 --retry-delay 5 \
+            -o assets/registry/registry.json \
+            https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json
+
+      - name: Resolve executables sidecar
+        run: node scripts/enrich-registry-executables.mjs
+
+      - name: Verify sidecar matches registry
+        run: node scripts/verify-registry-snapshot.mjs
+
+      - name: Commit when the snapshot changed
+        id: commit
+        run: |
+          git config user.name "registry-sync[bot]"
+          git config user.email "registry-sync[bot]@users.noreply.github.com"
+          if git diff --quiet -- assets/registry/registry.json assets/registry/executables.json; then
+            echo "registry: snapshot unchanged, nothing to commit"
+            exit 0
+          fi
+
+          COUNT=$(node -e 'const r=require("./assets/registry/registry.json");process.stdout.write(String(r.agents.length))')
+          EXECS=$(node -e 'const e=require("./assets/registry/executables.json");process.stdout.write(String(Object.keys(e.entries).length))')
+          git add assets/registry/registry.json
+          git add assets/registry/executables.json
+          git commit -m "registry: sync snapshot (${COUNT} agents, ${EXECS}/${COUNT} executables, $(date -u +%Y-%m-%dT%H:%M:%SZ))"
+          git push origin HEAD:"${{ github.event.repository.default_branch }}"

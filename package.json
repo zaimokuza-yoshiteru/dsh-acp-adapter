@@ -316,6 +316,7 @@
     "cordis.patch.yml",
     "assets/readme/*.png",
     "assets/readme/*.svg",
+    "assets/registry/*.json",
     "README.md",
     "README.en.md",
     "LICENSE"

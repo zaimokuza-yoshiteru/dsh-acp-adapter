@@ -1,0 +1,273 @@
+{
+  "generatedAt": "2026-09-15T09:02:32.224Z",
+  "entries": {
+    "agoragentic-acp": {
+      "version": "1.3.0",
+      "command": "agoragentic-mcp",
+      "args": [
+        "--acp"
+      ]
+    },
+    "amp-acp": {
+      "version": "0.9.0",
+      "command": "amp-acp",
+      "args": []
+    },
+    "antigravity-acp": {
+      "version": "1.1.1",
+      "command": "agy_acp_server.par",
+      "args": []
+    },
+    "auggie": {
+      "version": "0.36.0",
+      "command": "auggie",
+      "args": [
+        "--acp"
+      ]
+    },
+    "autohand": {
+      "version": "0.2.1",
+      "command": "autohand-acp",
+      "args": []
+    },
+    "claude-acp": {
+      "version": "0.77.0",
+      "command": "claude-agent-acp",
+      "args": []
+    },
+    "cline": {
+      "version": "3.0.61",
+      "command": "cline",
+      "args": [
+        "--acp"
+      ]
+    },
+    "codebuddy-code": {
+      "version": "2.150.0",
+      "command": "codebuddy-code",
+      "args": [
+        "--acp"
+      ]
+    },
+    "codex-acp": {
+      "version": "1.11.0",
+      "command": "codex-acp",
+      "args": []
+    },
+    "cortex-code": {
+      "version": "1.0.73",
+      "command": "cortex",
+      "args": [
+        "acp",
+        "serve"
+      ]
+    },
+    "corust-agent": {
+      "version": "0.6.0",
+      "command": "corust-agent-acp",
+      "args": []
+    },
+    "crow-cli": {
+      "version": "0.1.24",
+      "command": "crow-cli",
+      "args": [
+        "acp"
+      ]
+    },
+    "cursor": {
+      "version": "2026.09.10",
+      "command": "cursor-agent",
+      "args": [
+        "acp"
+      ]
+    },
+    "deepagents": {
+      "version": "0.1.7",
+      "command": "deepagents-acp",
+      "args": []
+    },
+    "devin": {
+      "version": "3000.10.21",
+      "command": "devin",
+      "args": [
+        "acp"
+      ]
+    },
+    "dimcode": {
+      "version": "0.5.2",
+      "command": "dimcode",
+      "args": [
+        "acp"
+      ]
+    },
+    "dirac": {
+      "version": "0.5.12",
+      "command": "dirac",
+      "args": [
+        "--acp"
+      ]
+    },
+    "factory-droid": {
+      "version": "0.218.1",
+      "command": "droid",
+      "args": [
+        "exec",
+        "--output-format",
+        "acp-daemon"
+      ]
+    },
+    "fast-agent": {
+      "version": "0.10.1",
+      "command": "fast-agent-acp",
+      "args": []
+    },
+    "gemini": {
+      "version": "0.59.0",
+      "command": "gemini",
+      "args": [
+        "--acp"
+      ]
+    },
+    "github-copilot-cli": {
+      "version": "1.0.83",
+      "command": "copilot",
+      "args": [
+        "--acp"
+      ]
+    },
+    "glm-acp-agent": {
+      "version": "1.8.0",
+      "command": "glm-acp-agent",
+      "args": []
+    },
+    "goose": {
+      "version": "1.50.0",
+      "command": "goose",
+      "args": [
+        "acp"
+      ]
+    },
+    "grok-build": {
+      "version": "1.0.30",
+      "command": "grok",
+      "args": [
+        "agent",
+        "stdio"
+      ]
+    },
+    "harn": {
+      "version": "0.10.135",
+      "command": "harn",
+      "args": [
+        "serve",
+        "acp"
+      ]
+    },
+    "junie": {
+      "version": "3218.3.0",
+      "command": "junie",
+      "args": [
+        "--acp=true"
+      ]
+    },
+    "kilo": {
+      "version": "7.6.2",
+      "command": "kilo",
+      "args": [
+        "acp"
+      ]
+    },
+    "kimchi": {
+      "version": "1.1.18",
+      "command": "kimchi",
+      "args": [
+        "--mode",
+        "acp"
+      ]
+    },
+    "kimi": {
+      "version": "1.50.0",
+      "command": "kimi",
+      "args": [
+        "acp"
+      ]
+    },
+    "minimax-code": {
+      "version": "0.2.7",
+      "command": "mcode",
+      "args": [
+        "acp"
+      ]
+    },
+    "minion-code": {
+      "version": "0.1.44",
+      "command": "minion-code",
+      "args": []
+    },
+    "mistral-vibe": {
+      "version": "2.24.1",
+      "command": "vibe-acp",
+      "args": []
+    },
+    "nova": {
+      "version": "1.1.38",
+      "command": "nova",
+      "args": [
+        "acp"
+      ]
+    },
+    "opencode": {
+      "version": "1.18.30",
+      "command": "opencode",
+      "args": [
+        "acp"
+      ]
+    },
+    "pi-acp": {
+      "version": "0.0.33",
+      "command": "pi-acp",
+      "args": []
+    },
+    "poolside": {
+      "version": "1.0.16",
+      "command": "pool-darwin-arm64",
+      "args": [
+        "acp"
+      ]
+    },
+    "qoder": {
+      "version": "0.2.14",
+      "command": "qodercli",
+      "args": [
+        "--acp"
+      ]
+    },
+    "qwen-code": {
+      "version": "0.23.3",
+      "command": "qwen",
+      "args": [
+        "--acp",
+        "--experimental-skills"
+      ]
+    },
+    "sigit": {
+      "version": "1.5.8",
+      "command": "sigit",
+      "args": []
+    },
+    "stakpak": {
+      "version": "0.3.88",
+      "command": "stakpak",
+      "args": [
+        "acp"
+      ]
+    },
+    "vtcode": {
+      "version": "0.96.14",
+      "command": "vtcode",
+      "args": [
+        "acp"
+      ]
+    }
+  }
+}
