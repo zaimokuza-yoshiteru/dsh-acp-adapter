@@ -73,16 +73,6 @@ export type AcpAgentId = 'devin' | 'codex' | 'kimi' | 'claude'
 export const ACP_AGENT_IDS: readonly AcpAgentId[] = ['devin', 'codex', 'kimi', 'claude']
 
 /**
- * 版本策略（边界）：已实证验收的钉版。字段缺席 = 不钉（devin 是既有 agent，
- * 现状不校验版本；kimi 的 ACP 面由 kimi CLI 自身承载，`acp` 是其子命令，
- * 故钉在 `wrappedCli`）。
- */
-export interface AcpAgentVersionPolicy {
-  readonly adapter?: string
-  readonly wrappedCli?: string
-}
-
-/**
  * Agent runtime descriptor：一个 ACP backend 的完整数据面声明。
  * 内置受信数据——普通 profile 不能经 settings 构造宿主 path/env ref，只能经
  * `runtime` 字段或 id 回退**绑定**到这里的某一条。
@@ -93,16 +83,16 @@ export interface AcpAgentVersionPolicy {
  * connection teardown (best effort).
  * descriptor 的 command 必须是 PATH 上的
  * 已安装可执行名（用户自行安装明确版本），**绝不** `npx -y <pkg>@latest` 之类
- * 每次 spawn 下载代码的形态；钉版见各条 `versionPolicy`。
+ * 每次 spawn 下载代码的形态；上游版本参考已移交 registry 快照
+ * （assets/registry，见 client/data/catalog.ts）。
  */
 export interface AcpAgentRuntimeDescriptor {
   readonly id: AcpAgentId
   readonly command: string
   readonly args: readonly string[]
- /** 高级 CLI override env 键（边界：进 launch fingerprint 并跑独立兼容测试）。 */
+  /** 高级 CLI override env 键（边界：进 launch fingerprint 并跑独立兼容测试）。 */
   readonly executableOverrideEnv?: string
-  readonly versionPolicy: AcpAgentVersionPolicy
- /** probe 清理策略（边界）：临时 ACP session 尽力 close/delete，随后拆连接并清理临时 cwd。 */
+  /** probe 清理策略（边界）：临时 ACP session 尽力 close/delete，随后拆连接并清理临时 cwd。 */
   /** auth 失效时展示的登录指引（external-login-only：登录只发生在 agent 自家 CLI/env）。 */
   readonly loginHint?: string
 }
@@ -116,23 +106,18 @@ export const ACP_AGENT_RUNTIME_DESCRIPTORS: readonly AcpAgentRuntimeDescriptor[]
     id: 'devin',
     command: 'devin',
     args: ['acp'],
-    // devin 不钉版本（既有 agent，现状无版本校验面）。
-    versionPolicy: {},
     loginHint: 'devin auth login',
   },
   {
     id: 'codex',
     command: 'codex-acp',
     args: [],
-    versionPolicy: { adapter: '1.6.2' },
     loginHint: 'codex login',
   },
   {
     id: 'kimi',
     command: 'kimi',
     args: ['acp'],
-    // kimi 的 ACP 面是 kimi CLI 的 `acp` 子命令，adapter 即 wrapped CLI 本身。
-    versionPolicy: { wrappedCli: '0.36.1' },
     loginHint: 'kimi login',
   },
   {
@@ -140,7 +125,6 @@ export const ACP_AGENT_RUNTIME_DESCRIPTORS: readonly AcpAgentRuntimeDescriptor[]
     command: 'claude-agent-acp',
     args: [],
     executableOverrideEnv: 'CLAUDE_CODE_EXECUTABLE',
-    versionPolicy: { adapter: '0.70.0' },
     loginHint: 'claude',
   },
 ]
@@ -156,115 +140,43 @@ export function descriptorOf(agentId: string, config?: { readonly runtime?: AcpA
 }
 
 /**
- * 兼容状态词表（readiness 展示）：'pinned' = 握手版本等于 descriptor 钉版；
- * 'drifted' = 不等（不阻断，如实展示——钉版是验收事实，不是运行门）；'unpinned' =
- * descriptor 无钉版（devin：既有 agent，现状不校验版本）。
+ * 兼容状态词表（readiness 展示）：'current' = 握手版本与 registry 快照的
+ * 上游版本一致；'outdated' = 不一致（不阻断，如实展示——registry 版本是
+ * 目录参考，不是运行门）；'unknown' = 快照无该 agent 的版本事实。
  */
-export type AcpVersionCompatibility = 'pinned' | 'drifted' | 'unpinned'
+export type AcpVersionCompatibility = 'current' | 'outdated' | 'unknown'
+
+/**
+ * 内置 runtime 绑定 → registry agent id（descriptor id 与 registry id 不同名时
+ * 的映射：codex → codex-acp、claude → claude-acp；devin/kimi 同名直查）。
+ */
+export const RUNTIME_REGISTRY_IDS: Readonly<Record<AcpAgentId, string>> = {
+  devin: 'devin',
+  codex: 'codex-acp',
+  kimi: 'kimi',
+  claude: 'claude-acp',
+}
 
 /**
  * 版本兼容状态派生（readiness 的纯函数核心；remote 层 probeRow 消费）：
- * 无 descriptor（普通 profile）或对端握手未给出版本 → null（无从判定，诚实
- * 空缺）；descriptor 无钉版 → 'unpinned'；否则握手 `agentInfo.version`（trim 后）
- * 与钉版（adapter 优先——kimi 的 ACP 面由 wrapped CLI 自身承载，钉在
- * wrappedCli）精确比对：等 → 'pinned'，不等 → 'drifted'。
+ * 无版本参考（普通 profile，或快照无该 agent 的 version 事实）或对端握手
+ * 未给出版本 → null / 'unknown'（无从判定，诚实空缺）；否则握手
+ * `agentInfo.version`（trim 后）与 registry 参考版本精确比对：等 →
+ * 'current'，不等 → 'outdated'。
  */
 export function acpVersionCompatibility(
-  descriptor: AcpAgentRuntimeDescriptor | undefined,
+  referenceVersion: string | null | undefined,
   agentVersion: string | null | undefined,
 ): AcpVersionCompatibility | null {
-  if (descriptor === undefined) return null
+  if (referenceVersion === undefined || referenceVersion === null || referenceVersion === '') return null
   if (agentVersion === undefined || agentVersion === null) return null
-  const pin = descriptor.versionPolicy.adapter ?? descriptor.versionPolicy.wrappedCli
-  if (pin === undefined) return 'unpinned'
-  return agentVersion.trim() === pin ? 'pinned' : 'drifted'
+  return agentVersion.trim() === referenceVersion ? 'current' : 'outdated'
 }
 
-// ---------- 内置一键模板（模板只留 settings 部分，数据面归 descriptor） ----------
-
-/**
- * 内置一键模板的形状：完整 settings 配置 + 模板注册的 agent id。
- * host-only 的 auth 路径/环境声明不再挂在模板上——它们收进
- * {@link ACP_AGENT_RUNTIME_DESCRIPTORS}（内置受信数据，按 `runtime` 字段或
- * agent id 回退绑定，见 {@link descriptorOf}）；用户不可经 settings 声明任意
- * 路径映射（防「把任意宿主文件铺进沙箱」的自由面）。
- */
-export interface AcpBuiltinAgentTemplate extends AcpStubAgentConfig {
-  /** 模板注册的 agent id（一键添加预填值，用户可改；descriptor 按 `runtime`/最终 id 绑定）。 */
-  readonly id: string
-}
-
-/**
- * Built-in one-click template for the ACP panel (consumes it)。认证由用户在
- * Agent 自己的 CLI 中完成；探针只反映该 CLI 当前登录状态，不读取或复制凭证。
- */
-export const DEVIN_ACP_TEMPLATE: AcpBuiltinAgentTemplate = {
-  id: 'devin',
-  name: 'Devin',
-  command: 'devin',
-  args: ['acp'],
-  env: {},
-  loginHint: 'devin auth login',
-  // Bind the template to its trusted runtime descriptor; profile ids remain editable.
-  runtime: 'devin',
-}
-
-/**
- * 通用 Claude 预设：不假设推理提供方——Claude CLI 实际路由到
- * Anthropic 订阅或其他 env-backed 网关属于下游配置，不是本插件的模型身份
- * 判断范围；env 不预填。backend 身份即 `acp-claude`（用户可改 id，
- * runtime 绑定不变）。
- */
-export const CLAUDE_ACP_TEMPLATE: AcpBuiltinAgentTemplate = {
-  id: 'claude',
-  name: 'Claude',
-  command: 'claude-agent-acp',
-  args: [],
-  env: {},
-  loginHint: 'claude',
-  runtime: 'claude',
-}
-
-/**
- * Codex 预设：command 即 descriptor 钉版的 `codex-acp`（versionPolicy
- * adapter 1.6.2），env 不预填；认证完全由用户的 Codex CLI 登录状态提供。
- */
-export const CODEX_ACP_TEMPLATE: AcpBuiltinAgentTemplate = {
-  id: 'codex',
-  name: 'Codex',
-  command: 'codex-acp',
-  args: [],
-  env: {},
-  loginHint: 'codex login',
-  runtime: 'codex',
-}
-
-/**
- * Kimi 预设：command 即 descriptor 钉版的 `kimi` + `acp` 子命令
- * （versionPolicy wrappedCli 0.36.1），env 不预填；认证完全由用户的 Kimi CLI
- * 登录状态提供。loginHint 使用 Kimi CLI 自己的 `kimi login` 流程，
- * 插件不接管登录凭证。
- */
-export const KIMI_ACP_TEMPLATE: AcpBuiltinAgentTemplate = {
-  id: 'kimi',
-  name: 'Kimi',
-  command: 'kimi',
-  args: ['acp'],
-  env: {},
-  loginHint: 'kimi login',
-  runtime: 'kimi',
-}
-
-/**
- * 全部内置模板。模板只声明可执行文件、参数和受信 runtime descriptor；实际可用性
- * 仍由用户本机的 CLI 登录状态、版本和 ACP probe 决定。
- */
-export const ACP_BUILTIN_AGENT_TEMPLATES: readonly AcpBuiltinAgentTemplate[] = [
-  DEVIN_ACP_TEMPLATE,
-  CLAUDE_ACP_TEMPLATE,
-  CODEX_ACP_TEMPLATE,
-  KIMI_ACP_TEMPLATE,
-]
+// ---------- probe 缓存键（launch 影响面） ----------
+// （内置一键模板已随 catalog 化移除：add-menu 目录与预填由
+// src/client/data/catalog.ts 从 registry 快照合成，runtime 绑定仍经
+// ACP_AGENT_RUNTIME_DESCRIPTORS 受信闭集，见 descriptorOf。）
 
 /**
  * Stable serialization of the probe-affecting config (command + args + env **键名

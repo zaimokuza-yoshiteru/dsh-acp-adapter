@@ -8,8 +8,7 @@
  * 分量清单（全部 secret-free）：
  * - `command`/`args`/`envKeys`： 既有分量（profile config 原文 + 排序键名）。
  * - `profileId`/`descriptorId`：profile 身份与 descriptor 绑定。
- * - `adapterVersion`/`wrappedCliVersion`：descriptor versionPolicy 的**声明值**
- * （钉版）；实际安装版本无可靠探测面，声明值变即指纹变。
+ * - `adapterVersion`/`wrappedCliVersion`：恒 null。
  * - `envRefs`：保留为 null，不接管 Agent 凭证。
  * - `executableOverride`：高级 CLI override env 的 `{name,present}` 或 null。
  * - `nativeStateEnv`：Agent 原生状态目录相关环境键的存在性与路径 hash；
@@ -118,8 +117,10 @@ export function acpLaunchFingerprint(input: AcpLaunchFingerprintInput): AcpLaunc
       .map(([key, value]) => ({ key, hash16: createHash('sha256').update(value).digest('hex').slice(0, 16) })),
     profileId: input.profileId,
     descriptorId: descriptor?.id ?? null,
-    adapterVersion: descriptor?.versionPolicy.adapter ?? null,
-    wrappedCliVersion: descriptor?.versionPolicy.wrappedCli ?? null,
+    // descriptor 钉版已随 versionPolicy 移除：上游版本参考移交 registry 快照
+    // （client/data/catalog.ts）；字段保留（null）以维持旧 binding 的全形状比对。
+    adapterVersion: null,
+    wrappedCliVersion: null,
     envRefs,
     executableOverride,
     nativeStateEnv: nativeStateEnvFingerprint(env),

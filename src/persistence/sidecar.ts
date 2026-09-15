@@ -238,7 +238,7 @@ export interface AcpLaunchFingerprint {
   readonly profileId?: string | null
  /** 边界：descriptor 绑定 id（无 descriptor 记 null）。 */
   readonly descriptorId?: string | null
- /** 边界：descriptor versionPolicy 的声明钉版（不钉记 null）。 */
+ /** 边界：历史 descriptor 钉版字段（versionPolicy 已移除，新指纹恒 null；保留以兼容旧 binding 形状）。 */
   readonly adapterVersion?: string | null
   readonly wrappedCliVersion?: string | null
  /** 边界：envRef 存在性（`{key,present}`，按 key 排序；无 descriptor 记 null）。 */

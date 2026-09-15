@@ -68,9 +68,10 @@ import { ExternalSubagentProjector } from '../subagent/external-projector.ts'
 
 export { acpProbeConfigKey }
 
-// Built-in templates and runtime descriptors live in the zero-import profile
-// data module and are re-exported here for the host composition surface.
-export { ACP_BUILTIN_AGENT_TEMPLATES, CLAUDE_ACP_TEMPLATE, CODEX_ACP_TEMPLATE, DEVIN_ACP_TEMPLATE, KIMI_ACP_TEMPLATE } from '../../domain/session/agent-config.ts'
+// Runtime descriptors live in the zero-import profile data module and are
+// re-exported here for the host composition surface. (Built-in one-click
+// templates were removed with the catalog: the add-menu now renders
+// src/client/data/catalog.ts entries synthesized from the registry snapshot.)
 
 /** Resolved `dsh-acp` settings section. */
 export interface AcpSettings {

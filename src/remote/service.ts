@@ -43,8 +43,9 @@ import type { Context } from '@deepseek-ai/cordis'
 import { Remote, RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import type * as acp from '@agentclientprotocol/sdk'
 import { acpRouteId, ACP_AGENT_ID_PATTERN } from '../domain/session/agent-config.ts'
-import { acpProbeConfigKey, acpVersionCompatibility, descriptorOf } from '../domain/session/agent-config.ts'
-import type { AcpAgentConfig, AcpAgentRuntimeDescriptor } from '../domain/session/agent-config.ts'
+import { acpProbeConfigKey, acpVersionCompatibility, descriptorOf, RUNTIME_REGISTRY_IDS } from '../domain/session/agent-config.ts'
+import { registryVersionOf } from '../domain/session/registry-versions.ts'
+import type { AcpAgentConfig } from '../domain/session/agent-config.ts'
 import type { AcpErrorCategory } from '../protocol/v1/types.ts'
 import { deriveAcpAgentState } from '../domain/session/agent-state.ts'
 import type { AcpAgentStateProbeView } from '../domain/session/agent-state.ts'
@@ -815,8 +816,10 @@ export class AcpRemoteService extends TypertRemoteService {
         const version = recheck && executable ? await this.resolved.queryVersion(config.command) : cachedAgentVersion
         // Readiness is the last explicit outcome for this exact configuration.
         // Runtime consumers independently re-probe after their bounded TTL.
-        // 版本字段（versionPolicy/兼容状态）共用同一绑定事实。
+        // 版本参考共用同一绑定事实：runtime 绑定 → RUNTIME_REGISTRY_IDS → 快照
+        // version；普通 profile 按 agent id 直查。
         const descriptor = descriptorOf(id, config)
+        const referenceVersion = registryVersionOf(descriptor === undefined ? id : RUNTIME_REGISTRY_IDS[descriptor.id])
         return {
           id,
           name: config.name,
@@ -825,7 +828,7 @@ export class AcpRemoteService extends TypertRemoteService {
           loginHint: config.loginHint ?? null,
           executable,
           version,
-          probe: probeRow(matchingSnapshot, descriptor, this.resolved.imageInputAvailable),
+          probe: probeRow(matchingSnapshot, referenceVersion, this.resolved.imageInputAvailable),
           // registry 的 agents map 经 settings schema 校验（非法值根本写不进来），configValid 恒 true
           state: deriveAcpAgentState({
             hostCompatible,
@@ -1059,7 +1062,7 @@ function contractCleanupOf(cleanup: { readonly close: string; readonly delete: s
   return { close, delete: del, message: cleanup.message ?? null }
 }
 
-function probeRow(snapshot: AcpProbeSnapshotLike | undefined, descriptor: AcpAgentRuntimeDescriptor | undefined, imageInputAvailable: boolean): AcpProviderHealth['probe'] {
+function probeRow(snapshot: AcpProbeSnapshotLike | undefined, referenceVersion: string | undefined, imageInputAvailable: boolean): AcpProviderHealth['probe'] {
   if (snapshot === undefined) return { status: 'never', at: null }
   const { result, at } = snapshot
   if (result.kind === 'ok') {
@@ -1075,13 +1078,10 @@ function probeRow(snapshot: AcpProbeSnapshotLike | undefined, descriptor: AcpAge
       capabilities,
       cleanup: contractCleanupOf(result.cleanup),
       capabilityHash: result.capabilityHash ?? null,
- // readiness：协议版本 / 钉版 / 兼容状态（兼容状态由 agent-config.ts
-      // 纯函数派生，比对握手 agentInfo.version 与 descriptor versionPolicy）
+ // readiness：协议版本 / 兼容状态（兼容状态由 agent-config.ts
+      // 纯函数派生，比对握手 agentInfo.version 与 registry 快照版本参考）
       protocolVersion: result.protocolVersion ?? null,
-      versionPolicy: descriptor === undefined
-        ? null
-        : { adapter: descriptor.versionPolicy.adapter ?? null, wrappedCli: descriptor.versionPolicy.wrappedCli ?? null },
-      versionCompatibility: acpVersionCompatibility(descriptor, result.agentInfo?.version),
+      versionCompatibility: acpVersionCompatibility(referenceVersion, result.agentInfo?.version),
  // 端到端能力矩阵（广告 × adapter path；纯函数
       // 直通，形状与 contract `AcpCapabilityMatrixRow` 结构一致，无映射）
       matrix: acpCapabilityMatrix(capabilities, {
