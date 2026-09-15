@@ -69,6 +69,11 @@ jobs:
       - name: Install Chromium
         working-directory: reference/deepseek-harness
         run: pnpm --dir apps/web exec playwright install --with-deps chromium
+      - name: Install native terminal sandbox
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          bwrap --ro-bind / / --dev /dev --proc /proc -- true
       - uses: pnpm/action-setup@v4
         with:
           version: 10.7.0
