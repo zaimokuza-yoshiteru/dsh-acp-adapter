@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
 import { createTeamManagement } from '../../../src/host/teams/management.ts'
 
@@ -27,9 +27,30 @@ describe('Lead member management', () => {
     child.session.requestHeader = () => ({ config: { model: 'other', provider: 'native' } })
     expect(await service.members('lead')).toMatchObject([{ profileId: null }, { profileId: 'devin' }])
   })
-  it('rejects member-as-lead, inactive lead and native-provider lead', async () => {
+  it('rejects member-as-lead, unbound sessions and native-provider lead', async () => {
     await expect(fixture().service.members('child')).rejects.toThrow('LEAD_UNAVAILABLE')
-    await expect(fixture().service.members('missing')).rejects.toThrow('LEAD_UNAVAILABLE')
+    await expect(fixture().service.members('missing')).rejects.toThrow('LEAD_REQUIRED')
     await expect(fixture('native').service.members('lead')).rejects.toThrow('LEAD_REQUIRED')
+  })
+  it('activates a bound dormant Lead through the host without prompting or using the member as authority', async () => {
+    const { lead, rows, teams } = fixture()
+    let active = false
+    const resolveAgent = vi.fn(async () => { active = true; return { agent: lead } })
+    const ctx = { get: (key: string) => key === 'agents' ? { get: (id: string) => active && id === 'lead' ? lead : undefined }
+      : key === 'agentTeams' ? teams : key === 'sessionController' ? { resolveAgent } : undefined } as unknown as Context
+    const service = createTeamManagement(ctx, provider => provider === 'acp-devin', async () => 'acp-devin')
+    expect(await service.members('lead')).toHaveLength(rows.length - 1)
+    expect(resolveAgent).toHaveBeenCalledExactlyOnceWith('lead')
+    await service.members('lead')
+    expect(resolveAgent).toHaveBeenCalledTimes(1)
+  })
+  it('does not activate an unowned cold session and preserves host activation errors', async () => {
+    const resolveAgent = vi.fn(async () => ({ error: new Error('session/not-found') }))
+    const ctx = { get: (key: string) => key === 'agentTeams' ? {} : key === 'sessionController' ? { resolveAgent } : undefined } as unknown as Context
+    const create = (provider: string | undefined) => createTeamManagement(ctx, value => value === 'acp-devin', async () => provider)
+    await expect(create('native').members('lead')).rejects.toThrow('LEAD_REQUIRED')
+    await expect(create(undefined).members('lead')).rejects.toThrow('LEAD_REQUIRED')
+    expect(resolveAgent).not.toHaveBeenCalled()
+    await expect(create('acp-devin').members('lead')).rejects.toThrow('session/not-found')
   })
 })

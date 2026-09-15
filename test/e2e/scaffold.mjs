@@ -20,7 +20,9 @@ export async function launchAdapterWorld({ teams = false, teamMembers } = {}) {
       const layers = ['agent-team-profile', 'agent-team-web-profile'].map(name => join(upstream, 'packages/experimental', name))
       extraOverlayPath = join(install, 'teams.patch.yml')
       writeFileSync(extraOverlayPath, [join(root, 'cordis.patch.yml'), ...layers.map(path => join(path, 'cordis.patch.yml'))].map(path => readFileSync(path, 'utf8')).join('\n') + (teamMembers === undefined ? '' : `\n- id: agent-team\n  config:\n    maxMembers: ${teamMembers}\n`))
-      extraInstallAnchors.push(...layers.map(path => join(path, 'package.json')))
+      // Resolve native Teams from the selected host before the adapter's pinned
+      // development dependencies, which may carry a different generated RPC ABI.
+      extraInstallAnchors.unshift(...layers.map(path => join(path, 'package.json')))
     }
     const host = await launchWebScaffold({ extraOverlayPath, extraInstallAnchors })
     return { ...host, async close() {

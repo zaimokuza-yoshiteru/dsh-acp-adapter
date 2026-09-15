@@ -20,6 +20,13 @@ it.each(['claude', 'codex', 'devin', 'kimi'])('preserves %s reasoning, message a
     page.on('pageerror', error => errors.push(error.message))
     await page.goto(host.authenticatedUrl)
     await connectFreshWorkspace(page, host.workspaceCwd)
+    // An older interrupted answer must not break a later history rebuild.
+    await writeComposerDraft(page, page.locator('[data-composer-input]').first(), 'E2E_STOP')
+    const stopped = host.whenTurnSettled(30_000)
+    await page.getByRole('button', { name: 'Send message', exact: true }).click()
+    await page.getByText('E2E_RUNNING', { exact: true }).waitFor()
+    await page.getByRole('button', { name: 'Stop generating', exact: true }).click()
+    await stopped
     await writeComposerDraft(page, page.locator('[data-composer-input]').first(), '模拟计数器项目 E2E_STREAM_SEGMENTS')
     const settled = host.whenTurnSettled(30_000)
     await page.getByRole('button', { name: 'Send message', exact: true }).click()
@@ -30,7 +37,7 @@ it.each(['claude', 'codex', 'devin', 'kimi'])('preserves %s reasoning, message a
       ['reasoning', '再检查按钮事件。'], ['text', '按钮交互已完成。'],
       ['text', '检查结果正常。'], ['text', '演示结束。'],
     ].map(([type, text]) => ({ type, text }))
-    expect(events.find(event => event.sessionId === sessionId && event.type === 'assistant/message').data.message.content).toEqual(expected)
+    expect(events.findLast(event => event.sessionId === sessionId && event.type === 'assistant/message').data.message.content).toEqual(expected)
     for (const reload of [false, true]) {
       if (reload) await page.reload()
       const answers = []

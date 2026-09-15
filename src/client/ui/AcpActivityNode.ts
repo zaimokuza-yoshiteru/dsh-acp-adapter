@@ -641,17 +641,22 @@ export function createAcpActivityDefinition(
           location: match.location,
         }
       }
-      const provider = requestProvider(match.event)
-      if (provider === undefined) {
-        const interruptedProvider = interruptedAssistantProvider(match.event)
-        const previous = reader.previous<AcpActivityState>('acp-activity')?.state
-        if (interruptedProvider === undefined || previous === undefined || previous.profileId !== interruptedProvider) {
-          throw new Error('acp-activity interrupted finalizer requires its preceding owned ACP request')
-        }
-        return { ...previous, settled: true, seq: match.event.seq, location: match.location }
-      }
+      const interruptedProvider = interruptedAssistantProvider(match.event)
+      const provider = requestProvider(match.event) ?? interruptedProvider
+      if (provider === undefined) throw new Error('acp-activity requires a matched ACP request or interrupted answer')
       const anchor = reader.previous<AcpPromptAnchorState>('acp-prompt-anchor')?.state
+      if (interruptedProvider !== undefined) {
+        const previous = reader.previous<AcpActivityState>('acp-activity')?.state
+        if (previous !== undefined && previous.settled !== true && previous.profileId === interruptedProvider
+          && (anchor === undefined || previous.promptAnchorMessageId === anchor.messageId)) {
+          return { ...previous, settled: true, seq: match.event.seq, location: match.location }
+        }
+        // History can contain the interrupted answer before its request context
+        // is available. Anchor to this prompt, never a prior completed answer;
+        // reader dependencies replay this node when earlier contexts arrive.
+      }
       return {
+        ...(interruptedProvider === undefined ? {} : { settled: true as const }),
         ownerDshSessionId: '',
         promptAnchorMessageId: anchor?.messageId ?? `request:${match.event.seq}`,
         profileId: provider,

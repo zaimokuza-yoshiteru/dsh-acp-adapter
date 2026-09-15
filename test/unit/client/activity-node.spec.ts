@@ -156,6 +156,23 @@ describe('ACP activity conversation node', () => {
     expect(definition.match(event('acp-third-party'))).toBeNull()
   })
 
+  it.each([undefined, { settled: true, profileId: 'devin', promptAnchorMessageId: 'old-prompt' },
+    { profileId: 'acp-devin', promptAnchorMessageId: 'old-prompt' }])(
+    'replays an interrupted answer without borrowing an earlier prompt: %j', previous => {
+      const definition = createAcpActivityDefinition(provider => provider === 'acp-devin')
+      const match = { event: { type: 'assistant/message', seq: 93,
+        data: { interrupted: true, message: { source: { kind: 'model', provider: 'acp-devin' } } } },
+        location: { kind: 'session' } }
+      const state = definition.start({} as never, match as never, {
+        previous: (kind: string) => kind === 'acp-prompt-anchor'
+          ? { state: { messageId: 'cancelled-prompt' } }
+          : previous === undefined ? undefined : { state: previous },
+      } as never)
+      expect(state).toMatchObject({ settled: true, profileId: 'acp-devin',
+        promptAnchorMessageId: 'cancelled-prompt', committedActivitySeq: 0, seq: 93 })
+    },
+  )
+
   it('leaves projected child pages to the native message renderers', () => {
     const definition = createAcpActivityDefinition(() => false)
     expect(definition.match({

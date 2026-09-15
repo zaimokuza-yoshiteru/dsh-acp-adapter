@@ -16,8 +16,19 @@ export function createTeamManagement(ctx: Context, owns: (provider: string) => b
     if (provider === undefined || !owns(provider)) throw new Error('ACP_TEAM_LEAD_REQUIRED')
     return { teams, agent, provider }
   }
+  const resolveLead = async (id: string) => {
+    if (ctx.get('agentTeams') !== undefined && ctx.get('agents', false)?.get(id as never) === undefined) {
+      const provider = await readBindingProvider(id)
+      if (provider === undefined || !owns(provider)) throw new Error('ACP_TEAM_LEAD_REQUIRED')
+      // Historical reads need not activate the Lead. Reuse the host's deduplicated
+      // activation without submitting a prompt or starting the ACP runtime.
+      const result = await ctx.get('sessionController')?.resolveAgent(id as never)
+      if (result !== undefined && 'error' in result) throw result.error
+    }
+    return resolve(id)
+  }
   const resolveMember = async (leadId: string, memberId: string) => {
-    const { teams, agent, provider } = resolve(leadId)
+    const { teams, agent, provider } = await resolveLead(leadId)
     const member = teams.listMembers(agent).find(row => row.id === memberId && row.role === 'teammate')
     if (member === undefined || await readBindingProvider(memberId) !== provider) throw new Error('ACP_TEAM_MEMBER_REQUIRED')
     return { member, provider }
@@ -32,7 +43,7 @@ export function createTeamManagement(ctx: Context, owns: (provider: string) => b
   }
   return {
     async members(id) {
-      const { teams, agent } = resolve(id)
+      const { teams, agent } = await resolveLead(id)
       return await Promise.all(teams.listMembers(agent).filter(row => row.role === 'teammate').map(async row => {
         const child = ctx.get('agents', false)?.get(row.id)
         const session = child?.session ?? ctx.get('sessions')?.get(row.id)
