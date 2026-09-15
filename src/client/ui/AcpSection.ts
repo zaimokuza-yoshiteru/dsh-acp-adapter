@@ -28,9 +28,8 @@ import {
   Tag,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import {
-  ACP_BUILTIN_AGENT_TEMPLATES,
   draftFromAgent,
-  draftFromTemplate,
+  draftFromCatalogEntry,
   dropMaskedEnvKey,
   emptyDraft,
   errorMessageOf,
@@ -39,6 +38,8 @@ import {
   validateAgentDraft,
 } from '../data/logic.ts'
 import { localizedDiagnostic } from '../data/diagnostics.ts'
+import { ACP_CATALOG_ENTRIES } from '../data/catalog.ts'
+import { catalogEntryOf } from '../data/catalog.ts'
 import type { AcpAgentConfig, AcpProviderHealth, AgentDraft, DraftError } from '../data/logic.ts'
 import type { AcpLocaleKey } from './locales.ts'
 import type { AcpPanelSnapshot, HealthState } from '../data/stores/panel-store.ts'
@@ -229,9 +230,9 @@ function Loaded({ t, useStore, panel }: {
       portal: true,
       className: css.addMenu ?? '',
       items: [
-        ...ACP_BUILTIN_AGENT_TEMPLATES.map((template) => ({
-          id: template.id,
-          label: t('addTemplate', { name: template.name }),
+        ...ACP_CATALOG_ENTRIES.map((entry) => ({
+          id: entry.id,
+          label: entry.version === undefined ? entry.name : `${entry.name} · ${entry.version}`,
         })),
         { id: customAgentItemId, label: t('addCustom') },
       ],
@@ -242,7 +243,7 @@ function Loaded({ t, useStore, panel }: {
           openAdd(emptyDraft())
           return
         }
-        const seed = draftFromTemplate(id)
+        const seed = draftFromCatalogEntry(id)
         if (seed !== undefined) openAdd(seed)
       },
       anchor: h('button', {
@@ -494,10 +495,15 @@ function AgentForm(props: {
   const shown = (error: DraftError | undefined, value: string): DraftError | undefined =>
     error !== undefined && (attempted || value.trim() !== '') ? error : undefined
 
+  // catalog 播种条目的安装指引（来自 registry 分发事实；纯展示，不自动安装）
+  const seededEntry = props.editingId === undefined ? catalogEntryOf(draft.id) : undefined
+
   return h('div', { className: css.editor },
     h('div', { className: css.editorHeader },
       h('span', { className: css.editorTitle }, t(props.editingId === undefined ? 'editorTitleAdd' : 'editorTitleEdit')),
     ),
+    props.editingId === undefined && seededEntry !== undefined ? h('p', { key: 'install-hint', className: css.hint },
+      t('catalogInstallHint', { hint: seededEntry.installHint })) : null,
     textField({
       t,
       id: `dsh-acp-${scope}-name`,
