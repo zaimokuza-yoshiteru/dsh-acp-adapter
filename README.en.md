@@ -49,6 +49,8 @@ Regular development needs no upstream checkout. See the [E2E guide](test/e2e/REA
 
 **1. Install and sign in to your Agent.**
 
+The agent catalog comes from the [official ACP registry](https://agentclientprotocol.com) (synced into the plugin daily by CI — currently 41 agents, all preconfigured). The common four:
+
 | Agent | ACP command | Terminal login |
 | --- | --- | --- |
 | Claude | `claude-agent-acp` | `claude` |
@@ -58,13 +60,15 @@ Regular development needs no upstream checkout. See the [E2E guide](test/e2e/REA
 
 ¹ ChatGPT sign-in requires the separate Codex CLI.
 
+Install commands for the remaining agents appear in the Settings → "Add agent" menu (each entry ships with an install hint and a prefilled command/args).
+
 **2. Install the plugin.** This command installs the published npm `alpha` version.
 
 ```bash
 npx "@deepseek-ai/dsh@$DSH_VERSION" plugin --profile web add @zaimokuza/dsh-acp-adapter@alpha
 ```
 
-**3. Open Settings → ACP adapter**, add a template, check the connection, then choose an Agent model in a new session.
+**3. Open Settings → ACP adapter**, add an agent from the catalog (command and arguments are prefilled and editable), check the connection, then choose an Agent model in a new session.
 
 If the Agent needs an API key, add it explicitly under **Connection settings → Environment**; parent-process secrets are not inherited automatically.
 

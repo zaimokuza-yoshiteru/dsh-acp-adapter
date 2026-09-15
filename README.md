@@ -49,6 +49,8 @@ pnpm install --frozen-lockfile
 
 **1. 安装 Agent，并在终端登录。**
 
+agent 目录来自 [ACP 官方 registry](https://agentclientprotocol.com)（CI 每日同步进插件，当前 41 个，均开箱即用）。常用四家：
+
 | Agent | ACP 命令 | 终端登录 |
 | --- | --- | --- |
 | Claude | `claude-agent-acp` | `claude` |
@@ -58,13 +60,15 @@ pnpm install --frozen-lockfile
 
 ¹ 使用 ChatGPT 登录需另装 Codex CLI。
 
+其余 agent 的安装命令见设置面板「添加 agent」菜单（每条自带安装指引与 command/args 预填）。
+
 **2. 安装插件。** 以下命令安装 npm 已发布的 `alpha` 版本。
 
 ```bash
 npx "@deepseek-ai/dsh@$DSH_VERSION" plugin --profile web add @zaimokuza/dsh-acp-adapter@alpha
 ```
 
-**3. 打开「设置 → ACP adapter」**，添加模板、检查连接，再在新会话中选择 Agent 模型。
+**3. 打开「设置 → ACP adapter」**，从目录添加 agent（命令与参数已预填，可改），检查连接，再在新会话中选择 Agent 模型。
 
 需要 API key 时，在 **连接设置 → 环境变量** 中显式配置；不会自动继承父进程的密钥。
 
