@@ -1046,41 +1046,36 @@ export class AcpProfileAdapter extends LlmAdapter {
         let done = false
         let failure: unknown
         let visibleContentEmitted = false
-        // DSH block indices are global within one assistant message. ACP sends
-        // thought, visible text, and native images as different update kinds.
-        // Text/reasoning keep their index while contiguous; an image or fallback
-        // closes that logical segment so later text receives a later index.
+        // Only contiguous content belongs to the same native block. Never
+        // return to an older text/reasoning index after another segment.
         let nextContentIndex = 0
-        let textContentIndex: number | undefined
-        let reasoningContentIndex: number | undefined
-        const contentIndex = (kind: 'text' | 'reasoning'): number => {
-          const current = kind === 'text' ? textContentIndex : reasoningContentIndex
-          if (current !== undefined) return current
-          const allocated = nextContentIndex
-          nextContentIndex += 1
-          if (kind === 'text') textContentIndex = allocated
-          else reasoningContentIndex = allocated
-          return allocated
+        let contentSegment: { kind: 'text' | 'reasoning'; index: number; messageId?: string } | undefined
+        const breakContent = (): void => { contentSegment = undefined }
+        const contentIndex = (kind: 'text' | 'reasoning', messageId?: string | null): number => {
+          if (contentSegment?.kind !== kind || (messageId != null && contentSegment.messageId !== undefined && messageId !== contentSegment.messageId)) {
+            contentSegment = { kind, index: nextContentIndex++ }
+          }
+          if (messageId != null) contentSegment.messageId = messageId
+          return contentSegment.index
         }
         const pushChunk = (chunk: StreamChunk): void => {
           queue.push(chunk)
           wake?.(); wake = undefined
         }
         const pushNonTextFallback = (content: AcpNonTextContent): void => {
-          textContentIndex = undefined
-          reasoningContentIndex = undefined
+          breakContent()
           pushChunk({ type: 'text-delta', index: contentIndex('text'), text: `\n\n${nonTextContentFallback(content)}\n\n` })
           visibleContentEmitted = true
           // Keep the fallback as its own block in ACP content order.
-          textContentIndex = undefined
+          breakContent()
         }
-        const emitAgentContent = async (content: acp.ContentBlock): Promise<void> => {
+        const emitAgentContent = async (content: acp.ContentBlock, messageId?: string | null): Promise<void> => {
           if (content.type === 'text') {
             // DSH treats whitespace-only assistant content as non-visible. Keep
             // the same terminal-response rule here so formatting whitespace
             // cannot mask ACP_NO_VISIBLE_RESPONSE.
             if (content.text.trim().length > 0) visibleContentEmitted = true
-            pushChunk({ type: 'text-delta', index: contentIndex('text'), text: content.text })
+            pushChunk({ type: 'text-delta', index: contentIndex('text', messageId), text: content.text })
             return
           }
           if (content.type === 'image' && self.attachments?.saveImages !== undefined) {
@@ -1090,8 +1085,7 @@ export class AcpProfileAdapter extends LlmAdapter {
                 data: content.data,
               }])
               if (attachment === undefined) throw new Error('attachment store returned no image reference')
-              textContentIndex = undefined
-              reasoningContentIndex = undefined
+              breakContent()
               const index = nextContentIndex
               nextContentIndex += 1
               pushChunk({ type: 'block-start', index, blockType: 'image' })
@@ -1112,6 +1106,7 @@ export class AcpProfileAdapter extends LlmAdapter {
         const scheduleContent = (task: () => void | Promise<void>): void => {
           contentDeliveryTail = contentDeliveryTail.then(async () => { await task() })
         }
+        const toolContentBoundaries = new Map<string, boolean>()
         const onUpdate = (notification: AcpSessionNotification): void => {
           const update = notification.update
           const delegation = delegationNormalizer.acceptNotification(notification, Date.now())
@@ -1137,6 +1132,14 @@ export class AcpProfileAdapter extends LlmAdapter {
               ...(update.content === undefined ? {} : { content: update.content }),
             }
             toolCall = toolCallReducer.apply(patch)
+            const terminal = isTerminalActivityStatus(activityStatus(toolCall.status))
+            const previousTerminal = toolContentBoundaries.get(toolId)
+            if (previousTerminal === undefined || (terminal && !previousTerminal)) {
+              // Serialize boundaries with image admission and text delivery;
+              // progress-only tool patches must not split individual tokens.
+              scheduleContent(breakContent)
+            }
+            toolContentBoundaries.set(toolId, terminal)
           }
           const normalized = activitiesForNotification(
             notification,
@@ -1163,11 +1166,11 @@ export class AcpProfileAdapter extends LlmAdapter {
           }
           for (const activity of normalized) scheduleActivity(activity)
           if (update.sessionUpdate === 'agent_message_chunk') {
-            scheduleContent(async () => { await emitAgentContent(update.content) })
+            scheduleContent(async () => { await emitAgentContent(update.content, update.messageId) })
           } else if (update.sessionUpdate === 'agent_thought_chunk' && update.content.type === 'text') {
             const thought = update.content.text
             scheduleContent(() => {
-              pushChunk({ type: 'reasoning-delta', index: contentIndex('reasoning'), text: thought })
+              pushChunk({ type: 'reasoning-delta', index: contentIndex('reasoning', update.messageId), text: thought })
             })
           }
         }

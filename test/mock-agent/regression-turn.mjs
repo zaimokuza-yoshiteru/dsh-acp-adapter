@@ -16,7 +16,21 @@ export async function regressionTurn(session, msg, { sendUpdate, sendAgentReques
   const say = text => sendUpdate(session.id, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } })
   try {
     if (prompt.includes('E2E_CRASH')) process.exit(49)
-    if (prompt.includes('E2E_JOB_START')) {
+    if (prompt.includes('E2E_STREAM_SEGMENTS')) {
+      const emit = async (kind, text, messageId) => {
+        sendUpdate(session.id, { sessionUpdate: kind, content: { type: 'text', text }, ...(messageId ? { messageId } : {}) })
+        await new Promise(resolve => setTimeout(resolve, 200))
+      }
+      await emit('agent_thought_chunk', '先规划计数器页面。')
+      await emit('agent_message_chunk', '页面骨架', 'answer-1')
+      await emit('agent_message_chunk', '已完成。', 'answer-1')
+      await emit('agent_thought_chunk', '再检查按钮事件。')
+      await emit('agent_message_chunk', '按钮交互已完成。', 'answer-2')
+      sendUpdate(session.id, { sessionUpdate: 'tool_call', toolCallId: 'segment-check', title: '模拟检查计数器', kind: 'read', status: 'in_progress' })
+      sendUpdate(session.id, { sessionUpdate: 'tool_call_update', toolCallId: 'segment-check', status: 'completed' })
+      await emit('agent_message_chunk', '检查结果正常。', 'answer-3')
+      await emit('agent_message_chunk', '演示结束。', 'answer-4')
+    } else if (prompt.includes('E2E_JOB_START')) {
       const stopFile = `${session.cwd}/job-stop-${Date.now()}`
       const readyFile = `${stopFile}.ready`
       const immediate = prompt.includes('E2E_JOB_START_IMMEDIATE')

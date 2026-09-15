@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createUserMessage, markAgentLoopRequest } from '@deepseek-ai/dsh-llm'
+import { BlockAssembler, createUserMessage, markAgentLoopRequest } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
 import { Context } from '@deepseek-ai/cordis'
 import { AcpProfileAdapter } from '../../../src/host/composition/profile-adapter.ts'
@@ -147,6 +147,31 @@ describe('AcpProfileAdapter generation and dispatch boundaries', () => {
       { type: 'reasoning-delta', index: 0, text: 'private reasoning' },
       { type: 'text-delta', index: 1, text: 'visible answer' },
     ]))
+  })
+
+  const textChunk = (text: string, messageId?: string) => ({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text }, ...(messageId ? { messageId } : {}) })
+  const thoughtChunk = (text: string) => ({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text } })
+  const toolChunk = (status: string, initial = false) => ({ sessionUpdate: initial ? 'tool_call' : 'tool_call_update', toolCallId: 'tool-1', title: 'Check project', kind: 'read', status })
+  it.each([
+    { name: 'alternating reasoning and answers', updates: [thoughtChunk('R1'), textChunk('A1'), thoughtChunk('R2'), textChunk('A2')], expected: [['reasoning', 'R1'], ['text', 'A1'], ['reasoning', 'R2'], ['text', 'A2']] },
+    { name: 'same-message tokens and changed message IDs', updates: [textChunk('Hel', 'a'), textChunk('lo', 'a'), textChunk('Next', 'b')], expected: [['text', 'Hello'], ['text', 'Next']] },
+    { name: 'optional IDs without invented boundaries', updates: [textChunk('H'), textChunk('e', 'a'), textChunk('l'), textChunk('lo', 'a')], expected: [['text', 'Hello']] },
+    { name: 'tool invocation between replies', updates: [textChunk('Before'), toolChunk('in_progress', true), textChunk('After')], expected: [['text', 'Before'], ['text', 'After']] },
+    { name: 'tool completion but not progress or repeated completion', updates: [toolChunk('in_progress', true), textChunk('Hel'), toolChunk('in_progress'), textChunk('lo'), toolChunk('completed'), textChunk('Do'), toolChunk('completed'), textChunk('ne')], expected: [['text', 'Hello'], ['text', 'Done']] },
+    { name: 'non-content metadata between tokens', updates: [textChunk('Hel'), { sessionUpdate: 'current_mode_update', currentModeId: 'code' }, textChunk('lo')], expected: [['text', 'Hello']] },
+    { name: 'cancelled partial segments', updates: [thoughtChunk('R1'), textChunk('A1'), thoughtChunk('R2'), textChunk('A2')], expected: [['reasoning', 'R1'], ['text', 'A1'], ['reasoning', 'R2'], ['text', 'A2']], stop: 'cancelled' },
+  ])('preserves native content boundaries: $name', async ({ updates, expected, stop }) => {
+    const message = user('Build a small project')
+    const adapter = new AcpProfileAdapter('test', () => profile(), seam(), () => session(message), new Ledger(), undefined, () => ({
+      acpSessionId: 'stream-session', start: async () => undefined, close: async () => undefined,
+      prompt: async (_content, onUpdate) => {
+        for (const update of updates) onUpdate({ sessionId: 'stream-session', update } as never)
+        return { stopReason: stop ?? 'end_turn' } as never
+      },
+    }), durableSidecar)
+    const assembler = new BlockAssembler()
+    for await (const chunk of adapter.stream(request('stream-session', [message]))) assembler.push(chunk)
+    expect(assembler.blocks()).toEqual(expected.map(([type, text]) => ({ type, text })))
   })
 
   it('prepareCall keeps metadata and dispatch on one immutable generation', async () => {
