@@ -987,14 +987,17 @@ export class AcpProfileAdapter extends LlmAdapter {
         // one prompt projection.  Never carry a partially observed call into a
         // later DSH turn, even if an Agent reuses its id.
         const toolCallReducer = new AcpToolCallReducer(dispatchKey)
+        const activityPositions = new Map<string, number>()
         const scheduleActivity = (activity: NormalizedActivity): void => {
           if (typeof durableSidecar.upsertActivity !== 'function') return
           currentActivities.set(activity.activityId, activity)
           const fallbackAnchor = admissionProof?.anchorMessageId ?? `prompt:${dispatchKey}`
           const stableActivityId = `${fallbackAnchor}:${activity.activityId}`
+          const position = activityPositions.get(activity.activityId)
           activityWriteTail = activityWriteTail.then(async () => {
             try {
               await durableSidecar.upsertActivity({
+                ...(position === undefined ? {} : { contentIndex: position }),
                 dshSessionId: sessionKey,
                 ownerDshSessionId: sessionKey,
                 promptAnchorMessageId: fallbackAnchor,
@@ -1138,12 +1141,23 @@ export class AcpProfileAdapter extends LlmAdapter {
             for (const [index, previous] of previousChildren) {
               const next = nextChildren.get(index)
               if ((next === undefined || next.activityId !== previous.activityId) && !isTerminalActivityStatus(previous.status)) {
-                scheduleActivity({ ...previous, status: isTerminalActivityStatus(status) ? status : 'completed' })
+                scheduleContent(() => scheduleActivity({ ...previous, status: isTerminalActivityStatus(status) ? status : 'completed' }))
               }
             }
             toolChildren.set(toolId, nextChildren)
           }
-          for (const activity of normalized) scheduleActivity(activity)
+          scheduleContent(() => {
+            for (const activity of normalized) {
+              if (!activityPositions.has(activity.activityId)) {
+                // A tool's detail rows are nested under its original call;
+                // late output must not split an unrelated streaming sentence.
+                const parentPosition = isToolUpdate ? activityPositions.get(`tool:${toolId}`) : undefined
+                if (parentPosition === undefined) breakContent()
+                activityPositions.set(activity.activityId, parentPosition ?? nextContentIndex)
+              }
+              scheduleActivity(activity)
+            }
+          })
           if (update.sessionUpdate === 'agent_message_chunk') {
             scheduleContent(async () => { await emitAgentContent(update.content, update.messageId) })
           } else if (update.sessionUpdate === 'agent_thought_chunk' && update.content.type === 'text') {

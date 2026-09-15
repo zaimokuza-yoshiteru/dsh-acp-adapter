@@ -76,7 +76,7 @@ it('persists teammate model selection, applies it on wake, and protects Team bou
     await expect.poll(() => row.locator('[data-member-model-notice]').textContent()).toBe('')
     const beforeModelNotice = await row.boundingBox()
     const beforeModeButton = await row.getByRole('button', { name: /^Agent ·/ }).boundingBox()
-    expect((await row.locator('[data-member-model-notice]').boundingBox()).height).toBe(18)
+    expect((await row.locator('[data-member-model-notice]').boundingBox()).height).toBe(13)
     await modelButton.click()
     expect(await row.getByRole('searchbox').count()).toBe(0)
     await modelMenu.getByRole('menuitem', { name: 'Mock Model B', exact: true }).click()

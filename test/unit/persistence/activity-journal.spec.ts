@@ -29,6 +29,21 @@ function activity(id: string, time: number | undefined = 1_700_000_000_000, over
 }
 
 describe('ACP activity journal', () => {
+  it('preserves the first content boundary through patches, reopening, and legacy rows', async () => {
+    const { root, sidecar } = store()
+    await sidecar.upsertActivity(activity('tool:ordered', undefined, { contentIndex: 2 }))
+    await sidecar.upsertActivity(activity('tool:ordered', undefined, { contentIndex: 9, status: 'completed' }))
+    await sidecar.upsertActivity(activity('tool:legacy'))
+    await sidecar.upsertActivity(activity('tool:legacy', undefined, { contentIndex: 3, status: 'completed' }))
+    await sidecar.dispose()
+    const reopened = createAcpSidecar({ root })
+    sidecars.push(reopened)
+    const rows = await reopened.activitySnapshot(SessionId('session-1'), 20)
+    expect(rows.find(row => row.activityId === 'tool:ordered')?.contentIndex).toBe(2)
+    expect(rows.find(row => row.activityId === 'tool:legacy')).not.toHaveProperty('contentIndex')
+    await expect(reopened.upsertActivity(activity('bad', undefined, { contentIndex: -1 }))).rejects.toThrow('content index')
+  })
+
   it('benchmarks 1000 current activities across 10000 durable revisions', async () => {
     const { sidecar } = store()
     const started = performance.now()

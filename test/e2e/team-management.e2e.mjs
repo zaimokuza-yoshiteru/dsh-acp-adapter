@@ -59,7 +59,7 @@ it('shows per-profile mode menus with dormant mode persistence and approval prot
     await panel.getByRole('button', { name: 'Manage members · 1', exact: true }).click()
     await row.getByText('mock-model-a', { exact: true }).waitFor()
     const beforeModeNotice = await row.boundingBox()
-    expect((await row.locator('[data-member-mode-notice]').boundingBox()).height).toBe(18)
+    expect((await row.locator('[data-member-mode-notice]').boundingBox()).height).toBe(13)
     await row.getByRole('button', { name: /^Agent ·/ }).click()
     await modeMenu.getByRole('menuitem', { name: /Mode: plan/i }).waitFor()
     await modeMenu.getByRole('menuitem', { name: /Mode: plan/i }).click()

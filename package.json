@@ -1,6 +1,6 @@
 {
   "name": "@zaimokuza/dsh-acp-adapter",
-  "version": "0.1.6-alpha.1.2",
+  "version": "0.1.6-alpha.1.3",
   "description": "Use AI agents from the DSH session UI.",
   "keywords": [
     "dsh",

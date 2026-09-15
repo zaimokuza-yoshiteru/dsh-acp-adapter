@@ -137,7 +137,7 @@ function ModeGroup({ lead, profileId, members, t, remote, streamFactory, onMenuO
       return h('article', { key: member.sessionId, className: css.member, 'data-acp-managed-member': member.name },
         h('div', { className: css.memberHeader }, h(StateDot, { state: member.status === 'running' ? 'ongoing' : member.status === 'failed' ? 'error' : 'done' }),
           h('strong', null, member.name), h('span', { className: css.hint }, t(`teamStatus${member.status}`))),
-        member.description ? h('p', { className: css.memberDescription }, member.description) : null,
+        member.description ? h('p', { className: css.memberDescription, title: member.description }, member.description) : null,
         h('div', { className: css.settings },
           h('div', { className: css.settingRow },
             h('span', { className: css.settingLabel }, t('teamModelLabel')),

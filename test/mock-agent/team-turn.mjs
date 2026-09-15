@@ -55,6 +55,12 @@ export async function teamTurn(session, msg, { sendUpdate, sendAgentRequest, res
     if (/\bE2E_TEAM_INTERRUPT\b/.test(prompt)) {
       await call('interrupt_agent', { target: 'calculator' })
       say('E2E_TEAM_INTERRUPTED')
+    } else if (prompt.includes('E2E_TEAM_LAYOUT')) {
+      for (const [name, description] of [
+        ['worker-deepseek-harness', 'Owner worker for reference/deepseek-harness (DSH agent harness, TypeScript monorepo). Review native message rendering and plugin compatibility.'],
+        ['worker-deer-flow', 'Owner worker for reference/deer-flow (Python LangGraph + Node frontend). Review streaming, tools and approval boundaries.'],
+      ]) await call('spawn_teammate', { name, description, prompt: 'E2E_TEAM_MEMBER calculate 1+1', context: 'fresh' })
+      say('E2E_TEAM_LAYOUT_READY')
     } else if (prompt.includes('E2E_TEAM_DEMO')) {
       const task = await call('team_task_create', { subject: '整理需求', description: '梳理成员管理和集中审批的验收要点' })
       await call('team_task_create', { subject: '复核方案', description: '等待需求整理完成，再检查边界', blocked_by: [task.id] })

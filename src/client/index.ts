@@ -1,4 +1,4 @@
-/** Additive browser contribution for the ACP activity journal. */
+/** Native browser integration for ACP sessions and activity. */
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-api-remotes/client'
 import type {} from '@deepseek-ai/dsh-api-session-controller/client'
@@ -11,7 +11,8 @@ import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '@deepseek-ai/dsh-client-ui-session/client'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
-import { AcpActivityNode, acpPromptAnchorDefinition, createAcpActivityDefinition } from './ui/AcpActivityNode.ts'
+import { AcpActivityNode, acpPromptAnchorDefinition, createAcpActivityDefinition, createAcpLiveActivityDefinition } from './ui/AcpActivityNode.ts'
+import { installAcpAssistantStream } from './ui/AcpAssistantStream.ts'
 import { AcpActivityJournalHub } from './data/activity-journal.ts'
 import { CrossBackendCoordinator } from './coordinator/cross-backend-coordinator.ts'
 import { CrossBackendModal } from './ui/CrossBackendModal.ts'
@@ -94,6 +95,7 @@ async function registerUi(ctx: ClientContext): Promise<void> {
     countBoundSessions: (id) => panelController.countBoundSessions(id),
   }
   const settingsT = ctx.locale.bind('settings.acp') as AcpTranslate
+  ctx.uiConversation.events.register(createAcpLiveActivityDefinition(managedRoutes.owns))
   ctx.uiConversation.events.register(acpPromptAnchorDefinition)
   ctx.uiConversation.events.register(createAcpActivityDefinition(managedRoutes.owns))
   ctx.effect(() => ctx.locale.register('acpActivity', { zh, en }), 'dsh-acp: activity dictionaries')
@@ -154,17 +156,25 @@ async function registerUi(ctx: ClientContext): Promise<void> {
           onVisibilityChange: (sessionId, visible) => { setAuditViewVisible(sessionId, visible) },
     }),
   }, AcpAuditVisibilityGate))
+  const hasInlineRenderer = installAcpAssistantStream(ctx, {
+    journalHub, t: ctx.locale.bind('acpActivity'), jsonStringWrapping,
+    onProjectedChild: (parentSessionId, childSessionId) => {
+      if (projectedSubagents.add(childSessionId)) void sessions.refreshSubagents(parentSessionId as never)
+    },
+    onOpenProjectedChild: childSessionId => { sessions.open(childSessionId as never) },
+  })
   ctx.slots.inject('conversation.chat.node', () => ctx.slots.register({
     name: 'conversation.chat.node',
     key: 'acp-activity',
     locale: 'acpActivity',
     inject: (): {
       readonly journalHub: AcpActivityJournalHub
+      readonly hasInlineRenderer: () => boolean
       readonly onProjectedChild: (parentSessionId: string, childSessionId: string) => void
       readonly onOpenProjectedChild: (childSessionId: string) => void
       readonly jsonStringWrapping: AcpJsonStringWrapping
     } => ({
-      journalHub,
+      journalHub, hasInlineRenderer,
       onProjectedChild: (parentSessionId, childSessionId) => {
         if (projectedSubagents.add(childSessionId)) void sessions.refreshSubagents(parentSessionId as never)
       },

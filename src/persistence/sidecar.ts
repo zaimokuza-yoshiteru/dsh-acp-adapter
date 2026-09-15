@@ -184,6 +184,8 @@ export interface AcpDispatchRecord {
 export type AcpActivityKind = 'tool' | 'plan' | 'terminal' | 'diff' | 'resource' | 'delegated' | 'other'
 export type AcpActivityStatus = 'running' | 'completed' | 'failed' | 'cancelled'
 export interface AcpActivityRecord {
+  /** First-seen insertion boundary in the native assistant content; absent on legacy records. */
+  readonly contentIndex?: number
   readonly dshSessionId: string
   readonly ownerDshSessionId: string
   readonly promptAnchorMessageId: string
@@ -770,6 +772,7 @@ interface BindingRow {
 }
 
 interface ActivityRow {
+  readonly content_index?: unknown
   readonly dsh_session_id?: unknown
   readonly activity_id?: unknown
   readonly owner_dsh_session_id?: unknown
@@ -968,6 +971,8 @@ class SidecarStore implements AcpSidecar {
           SELECT dsh_session_id, activity_id, owner_dsh_session_id, prompt_anchor_message_id, activity_seq, ${revision}, ${time}, kind, status, presentation, raw_detail, raw_detail_ref FROM activity_journal_legacy`)
         db.exec('DROP TABLE activity_journal_legacy')
       }
+      const activityColumns = new Set((db.prepare('PRAGMA table_info(activity_journal)').all() as Array<{ name?: string }>).map(row => row.name))
+      if (!activityColumns.has('content_index')) db.exec('ALTER TABLE activity_journal ADD COLUMN content_index INTEGER')
     } catch (error: unknown) {
       try {
         db?.close()
@@ -997,7 +1002,7 @@ class SidecarStore implements AcpSidecar {
     this.stmtClearDispatch = db.prepare('DELETE FROM dispatch_ledger WHERE dsh_session_id = ? AND dispatch_key = ?')
     this.stmtDeleteDispatch = db.prepare('DELETE FROM dispatch_ledger WHERE dsh_session_id = ?')
     this.stmtActivityGet = db.prepare('SELECT * FROM activity_journal WHERE dsh_session_id = ? AND activity_id = ? ORDER BY revision_seq DESC LIMIT 1')
-    this.stmtActivityInsert = db.prepare('INSERT INTO activity_journal (dsh_session_id, activity_id, owner_dsh_session_id, prompt_anchor_message_id, activity_seq, revision_seq, time, kind, status, presentation, raw_detail, raw_detail_ref) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    this.stmtActivityInsert = db.prepare('INSERT INTO activity_journal (dsh_session_id, activity_id, owner_dsh_session_id, prompt_anchor_message_id, activity_seq, revision_seq, time, kind, status, presentation, raw_detail, raw_detail_ref, content_index) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
     this.stmtActivityUpdate = this.stmtActivityInsert
     this.stmtActivityList = db.prepare('SELECT * FROM (SELECT activity_journal.*, ROW_NUMBER() OVER (PARTITION BY activity_id ORDER BY revision_seq DESC) AS latest_row FROM activity_journal WHERE dsh_session_id = ?) WHERE latest_row = 1 ORDER BY activity_seq ASC LIMIT ?')
     this.stmtActivityPage = db.prepare('SELECT * FROM activity_journal WHERE dsh_session_id = ? AND revision_seq > ? ORDER BY revision_seq ASC LIMIT ?')
@@ -1322,6 +1327,7 @@ class SidecarStore implements AcpSidecar {
     if (record.activityId.length === 0 || record.activityId.length > 256) throw new TypeError('dsh-acp activity id must be 1..256 characters')
     if (record.promptAnchorMessageId.length === 0 || record.promptAnchorMessageId.length > 256) throw new TypeError('dsh-acp activity anchor must be 1..256 characters')
     if (!Number.isSafeInteger(record.time) || record.time < 0) throw new TypeError('dsh-acp activity time must be a non-negative safe integer')
+    if (record.contentIndex !== undefined && (!Number.isSafeInteger(record.contentIndex) || record.contentIndex < 0)) throw new TypeError('dsh-acp activity content index must be a non-negative safe integer')
     const presentation = boundedActivityText(record.presentation, ACP_ACTIVITY_PRESENTATION_MAX) ?? ''
     if (presentation.length === 0) throw new TypeError('dsh-acp activity presentation must not be empty')
     const rawDetail = boundedActivityText(redactActivityDetail(record.rawDetail), ACP_ACTIVITY_RAW_MAX)
@@ -1349,6 +1355,7 @@ class SidecarStore implements AcpSidecar {
           presentation,
           rawDetail ?? null,
           rawDetailRef ?? null,
+          current.contentIndex ?? null,
         )
         db.exec('COMMIT')
         const committed = { ...current, revisionSeq, time: record.time, status: record.status, presentation, ...(rawDetail === undefined ? {} : { rawDetail }), ...(rawDetailRef === undefined ? {} : { rawDetailRef }) }
@@ -1359,9 +1366,9 @@ class SidecarStore implements AcpSidecar {
       const revisionHead = Number((this.stmtActivityHead?.get(record.dshSessionId) as { head?: number | bigint } | undefined)?.head ?? 0)
       const activitySeq = firstSeenHead + 1
       const revisionSeq = revisionHead + 1
-      this.stmtActivityInsert?.run(record.dshSessionId, record.activityId, record.ownerDshSessionId, record.promptAnchorMessageId, activitySeq, revisionSeq, record.time, record.kind, record.status, presentation, rawDetail ?? null, rawDetailRef ?? null)
+      this.stmtActivityInsert?.run(record.dshSessionId, record.activityId, record.ownerDshSessionId, record.promptAnchorMessageId, activitySeq, revisionSeq, record.time, record.kind, record.status, presentation, rawDetail ?? null, rawDetailRef ?? null, record.contentIndex ?? null)
       db.exec('COMMIT')
-      const committed = { dshSessionId: record.dshSessionId, ownerDshSessionId: record.ownerDshSessionId, promptAnchorMessageId: record.promptAnchorMessageId, activityId: record.activityId, activitySeq, revisionSeq, time: record.time, kind: record.kind, status: record.status, presentation, ...(rawDetail === undefined ? {} : { rawDetail }), ...(rawDetailRef === undefined ? {} : { rawDetailRef }) }
+      const committed = { ...(record.contentIndex === undefined ? {} : { contentIndex: record.contentIndex }), dshSessionId: record.dshSessionId, ownerDshSessionId: record.ownerDshSessionId, promptAnchorMessageId: record.promptAnchorMessageId, activityId: record.activityId, activitySeq, revisionSeq, time: record.time, kind: record.kind, status: record.status, presentation, ...(rawDetail === undefined ? {} : { rawDetail }), ...(rawDetailRef === undefined ? {} : { rawDetailRef }) }
       this.notifyActivitySubscribers(committed)
       return committed
     } catch (error) {
@@ -1846,6 +1853,7 @@ function rowToActivity(row: ActivityRow): AcpActivityRecord | undefined {
     ownerDshSessionId: row.owner_dsh_session_id,
     promptAnchorMessageId: row.prompt_anchor_message_id,
     activityId: row.activity_id,
+    ...(typeof row.content_index === 'number' && Number.isSafeInteger(row.content_index) && row.content_index >= 0 ? { contentIndex: row.content_index } : {}),
     activitySeq: row.activity_seq,
     revisionSeq: row.revision_seq,
     time: row.time,

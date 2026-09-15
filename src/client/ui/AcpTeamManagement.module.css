@@ -14,23 +14,23 @@
 .toolbar { margin-bottom: 10px; min-height: 28px; }
 .toolbar strong { flex: 1; }
 .iconButton { width: 26px; height: 26px; padding: 4px; }
-.roster { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
-.member { display: flex; flex-direction: column; min-width: 0; padding: 10px; border: 0.5px solid var(--dsw-alias-border-l1); border-radius: 8px; gap: 4px; }
+.roster { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.member { display: flex; flex-direction: column; min-width: 0; min-height: 220px; box-sizing: border-box; padding: 14px 12px; border: 0.5px solid var(--dsw-alias-border-l1); border-radius: 8px; gap: 10px; }
 .memberHeader { flex-wrap: wrap; }
 .memberHeader strong { font-size: 13px; font-weight: 500; overflow-wrap: anywhere; }
 .memberHeader .hint { margin: 0; }
 .hint { color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 18px; overflow-wrap: anywhere; margin: 6px 0; }
-.memberDescription { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; min-height: 32px; color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 16px; overflow-wrap: anywhere; margin: 2px 0 4px; }
-.settings { display: grid; gap: 4px; margin-top: auto; }
+.memberDescription { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; min-height: 48px; color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 16px; overflow-wrap: anywhere; margin: 0 0 8px; }
+.settings { display: grid; gap: 0; margin-top: auto; }
 .settingRow { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 8px; min-width: 0; min-height: 28px; }
 .settingLabel { padding-top: 5px; color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 18px; }
 .settingValue { display: flex; justify-content: flex-end; min-width: 0; }
 .modelControl, .modeControl { display: flex; flex-direction: column; align-items: flex-end; min-width: 0; width: 100%; }
 .modelControl button, .modeControl button { max-width: 100%; }
-/* A permanent line below each 28px selector prevents pending/error messages
+/* A compact permanent line below each 28px selector prevents pending/error messages
    from moving controls, sibling cards, or the panel anchored above them. */
 .settingNotice, .groupNotice { box-sizing: border-box; height: 18px; min-height: 18px; width: 100%; color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 18px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.settingNotice { text-align: right; }
+.settingNotice { text-align: right; height: 13px; min-height: 13px; font-size: 10px; line-height: 13px; }
 .settingNotice > span { display: block; overflow: hidden; text-overflow: ellipsis; }
 .noticeError { color: var(--dsw-alias-state-error-primary); }
 .groupNotice { margin-top: 6px; }

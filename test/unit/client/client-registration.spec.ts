@@ -40,6 +40,8 @@ describe('alpha client contribution', () => {
       workspaces: {},
       effect: (fn: () => unknown) => { void fn() },
       slots: {
+        subscribe: () => () => {},
+        entriesOfSlot: () => [],
         inject: (name: string, factory: () => unknown) => {
           const entry = factory()
           injections.push(entry)
@@ -63,17 +65,18 @@ describe('alpha client contribution', () => {
     const dispose = await apply(ctx as never)
     expect(lifecycle).toEqual(['mount'])
     expect(uiInjects).toEqual([[...inject, 'remote.dshAcp'], ['remote.agentTeams', 'uiSession']])
-    expect(definitions).toHaveLength(2)
-    expect(injections).toHaveLength(7)
+    expect(definitions).toHaveLength(3)
+    expect(injections).toHaveLength(8)
     expect(injections[0]).toMatchObject({ id: 'acp' })
     // The view injection installs a dynamic registrar rather than a global
     // tab; native sessions must keep the stock view roster.
     expect(injections[1]).toBeTypeOf('function')
     expect(injections[2]).toMatchObject({ id: 'dsh-acp-audit-visibility' })
-    expect(injections[3]).toMatchObject({ key: 'acp-activity' })
-    expect(injections[4]).toMatchObject({ id: 'dsh-acp-cross-backend-confirmation' })
-    expect(injections[5]).toMatchObject({ id: 'dsh-acp-recovery' })
-    expect(injections[6]).toMatchObject({ id: 'dsh-acp-agent-control' })
+    expect(injections[3]).toBeTypeOf('function')
+    expect(injections[4]).toMatchObject({ key: 'acp-activity' })
+    expect(injections[5]).toMatchObject({ id: 'dsh-acp-cross-backend-confirmation' })
+    expect(injections[6]).toMatchObject({ id: 'dsh-acp-recovery' })
+    expect(injections[7]).toMatchObject({ id: 'dsh-acp-agent-control' })
     expect(slotEntries.get('shell.overlay')).toEqual([
       { name: 'shell.overlay', id: 'third-party-overlay' },
       expect.objectContaining({ id: 'dsh-acp-cross-backend-confirmation' }),

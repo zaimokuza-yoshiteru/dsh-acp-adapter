@@ -276,6 +276,7 @@ export interface AcpAuditTimelinePage {
 export type AcpActivityKindView = 'tool' | 'plan' | 'terminal' | 'diff' | 'resource' | 'delegated' | 'other'
 export type AcpActivityStatusView = 'running' | 'completed' | 'failed' | 'cancelled'
 export interface AcpActivityView {
+  readonly contentIndex?: number
   readonly dshSessionId: string
   readonly ownerDshSessionId: string
   readonly promptAnchorMessageId: string

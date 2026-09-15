@@ -107,7 +107,9 @@ describe('provider activity bridge', () => {
       prompt: async (_content, onUpdate) => {
         onUpdate({ sessionId: 'agent-native-image', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'before' } } } as never)
         onUpdate({ sessionId: 'agent-native-image', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'image', mimeType: 'image/png', data: 'AQ==' } } } as never)
+        onUpdate({ sessionId: 'agent-native-image', update: { sessionUpdate: 'tool_call', toolCallId: 'image-check', title: 'Inspect image', kind: 'read', status: 'in_progress' } } as never)
         onUpdate({ sessionId: 'agent-native-image', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'after' } } } as never)
+        onUpdate({ sessionId: 'agent-native-image', update: { sessionUpdate: 'tool_call_update', toolCallId: 'image-check', status: 'completed' } } as never)
         return { stopReason: 'end_turn' } as never
       },
       close: async () => undefined,
@@ -125,6 +127,8 @@ describe('provider activity bridge', () => {
     ]))
     expect(chunks.map(chunk => (chunk as { type?: string }).type).slice(0, 4)).toEqual(['text-delta', 'block-start', 'block-end', 'text-delta'])
     const saved = saveImages.mock.calls[0]?.[0]?.[0] as { mediaType?: string; data?: Uint8Array } | undefined
+    const activities = await sidecar.activitySnapshot('native-image-session' as never, 20)
+    expect(activities.find(row => row.activityId.endsWith(':tool:image-check'))?.contentIndex).toBe(2)
     expect(saved?.mediaType).toBe('image/png')
     expect(Array.from(saved?.data ?? [])).toEqual([1])
     const finish = chunks.find(chunk => (chunk as { type?: string }).type === 'finish') as { reason?: { kind?: string } } | undefined
@@ -259,7 +263,10 @@ describe('provider activity bridge', () => {
         protocolVersion: 1,
         start: async () => undefined,
         prompt: async (_content, onUpdate) => {
-          onUpdate({ sessionId: sessionId as never, update: { sessionUpdate: 'tool_call', toolCallId: 'tool-1', title: 'Read project', name: 'read_file', kind: 'read', status: 'in_progress', rawInput: { path: '/tmp/project', apiKey: 'secret-value' }, locations: [{ path: '/tmp/project/app.ts', line: 1 }], content: [{ type: 'diff', path: '/tmp/project/app.ts', oldText: 'a', newText: 'b' }] } } as never)
+          onUpdate({ sessionId: sessionId as never, update: { sessionUpdate: 'tool_call', toolCallId: 'tool-1', title: 'Read project', name: 'read_file', kind: 'read', status: 'in_progress', rawInput: { path: '/tmp/project', apiKey: 'secret-value' }, locations: [{ path: '/tmp/project/app.ts', line: 1 }] } } as never)
+          onUpdate({ sessionId: sessionId as never, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'work' } } } as never)
+          onUpdate({ sessionId: sessionId as never, update: { sessionUpdate: 'tool_call_update', toolCallId: 'tool-1', content: [{ type: 'diff', path: '/tmp/project/app.ts', oldText: 'a', newText: 'b' }] } } as never)
+          onUpdate({ sessionId: sessionId as never, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'ing' } } } as never)
           // ACP tool_call_update is a sparse patch.  In particular name:null
           // leaves the existing name unchanged and omitted content/locations
           // must survive the terminal frame.
@@ -279,6 +286,12 @@ describe('provider activity bridge', () => {
       ['tool:tool-1', 'tool', 'completed'],
       ['tool:tool-1:0:diff', 'diff', 'completed'],
     ])
+    expect(chunks.filter(chunk => (chunk as { type: string }).type === 'text-delta')).toEqual([
+      { type: 'text-delta', index: 0, text: 'work' },
+      { type: 'text-delta', index: 0, text: 'ing' },
+      { type: 'text-delta', index: 1, text: 'done' },
+    ])
+    expect(activities.map(activity => activity.contentIndex)).toEqual([0, 0])
     expect(activities[0]?.activitySeq).toBe(1)
     expect(activities[1]?.activitySeq).toBe(2)
     expect(activities[0]?.rawDetail).not.toContain('secret-value')
@@ -290,7 +303,36 @@ describe('provider activity bridge', () => {
     expect(activities[0]?.rawDetail).toContain('"content"')
     expect(chunks.filter((chunk) => typeof chunk === 'object' && chunk !== null && 'type' in chunk && (chunk as { type?: unknown }).type === 'tool-call').length).toBe(0)
     const finish = chunks.find((chunk) => typeof chunk === 'object' && chunk !== null && 'type' in chunk && (chunk as { type?: unknown }).type === 'finish') as { replayState?: { response?: { committedActivitySeq?: number } } } | undefined
-    expect(finish?.replayState?.response?.committedActivitySeq).toBe(4)
+    expect(finish?.replayState?.response?.committedActivitySeq).toBe(5)
+  })
+
+  it('settles replaced tool details after their queued first update', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-detail-order-'))
+    roots.push(root)
+    const sidecar = testSidecar(root)
+    const message = user('inspect replacements')
+    const sessions = new Map<string, SessionLike>([['session-details', session(message)]])
+    const runtimeFactory = (): AcpProfileRuntime => ({
+      acpSessionId: 'agent-details', agentInfo: { name: 'activity-agent', version: '1' }, agentCapabilities: {}, protocolVersion: 1,
+      start: async () => undefined,
+      prompt: async (_content, onUpdate) => {
+        const update = (value: unknown) => onUpdate({ sessionId: 'agent-details', update: value } as never)
+        update({ sessionUpdate: 'tool_call', toolCallId: 'replace', title: 'Edit then read', kind: 'edit', status: 'in_progress',
+          content: [{ type: 'diff', path: 'file.txt', oldText: 'before', newText: 'after' }] })
+        update({ sessionUpdate: 'tool_call_update', toolCallId: 'replace', status: 'completed', content: [] })
+        update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'done' } })
+        return { stopReason: 'end_turn' } as never
+      },
+      close: async () => undefined,
+    })
+    const adapter = new AcpProfileAdapter('activity', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, runtimeFactory, sidecar)
+    for await (const _chunk of adapter.stream(request('session-details', message))) { /* consume */ }
+    const rows = await sidecar.activitySnapshot('session-details' as never)
+    expect(rows.map(row => [row.kind, row.status, row.contentIndex])).toEqual([
+      ['tool', 'completed', 0], ['diff', 'completed', 0],
+    ])
+    expect(rows[0]!.activitySeq).toBeLessThan(rows[1]!.activitySeq)
+    expect(rows[1]!.revisionSeq).toBeGreaterThan(rows[1]!.activitySeq)
   })
 
   it('uses a readable fallback for unknown ACP updates and does not block the turn', async () => {

@@ -75,7 +75,8 @@ describe('ACP activity conversation node', () => {
     expect(definition.match(old as never)).toEqual(definition.match(assistantEvent()))
     const location = { kind: 'step', turn: { turn: 1 }, step: { step: 1, data: { get: (key: string) => key === 'acp-activity' } } }
     const state = definition.start({} as never, { event: old, location } as never, { previous: () => undefined })
-    expect(definition.buildLocationData!({ state } as never, 'step', null)).toEqual({ kind: 'step', turn: 1, step: 1, key: definition.kind, value: true })
+    const { seq: _seq, location: _location, ...data } = state
+    expect(definition.buildLocationData!({ state } as never, 'step', null)).toEqual({ kind: 'step', turn: 1, step: 1, key: definition.kind, value: data })
     expect(definition.buildViewNode!({ state } as never)).toMatchObject({ data: { settled: true } })
     const live = definition.start({} as never, { event: { type: 'request/header', seq: 44, data: { header: { config: { provider: 'acp-codex' } } } }, location } as never, { previous: () => undefined })
     // The native Step store notifies the live renderer; the assembler does not
