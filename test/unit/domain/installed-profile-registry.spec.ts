@@ -2,9 +2,8 @@ import { withSessionFacts } from '../../support/session-facts.ts'
 // installed-profile-registry.spec.ts — settings schema/纯函数核心 + 注册/替换调用序列。
 //
 // 覆盖：
-//   - 纯函数：acpRouteId / acpAgentIdFromRoute / 内置一键模板（DEVIN_ACP_TEMPLATE +
-//      claude 预设 +  codex 预设 +  kimi 预设逐字段钉版、
-//     secret 纪律钉、schema 往返）/ acpRegistrationFacts（排序归一）/
+//   - 纯函数：acpRouteId / acpAgentIdFromRoute / 内置模板移除守护（catalog 化）/
+//     acpRegistrationFacts（排序归一）/
 //     acpProbeConfigKey（env 键序无关、name/loginHint 不参与、
 //     runtime 参与——descriptor 绑定变化必须重探）
 // - runtime descriptor：四条内置 descriptor 数据面钉版、descriptorOf 绑定解析
@@ -35,12 +34,8 @@ import {
   descriptorOf,
   type AcpAgentConfig,
 } from '../../../src/domain/session/agent-config.ts';
+import * as agentConfigModule from '../../../src/domain/session/agent-config.ts';
 import {
-  ACP_BUILTIN_AGENT_TEMPLATES,
-  CLAUDE_ACP_TEMPLATE,
-  CODEX_ACP_TEMPLATE,
-  DEVIN_ACP_TEMPLATE,
-  KIMI_ACP_TEMPLATE,
   acpProbeConfigKey,
   acpRegistrationFacts,
   acpSettingsSchema,
@@ -48,8 +43,6 @@ import {
   type AcpSettings,
   type AcpSettingsSchema,
 } from '../../../src/host/composition/installed-profile-registry.ts';
-
-const SENSITIVE_ENV_PATTERN = /KEY|PASSWORD|SECRET|TOKEN/i;
 
 // ---------- 内存 settings fake（对齐 dsh-settings 语义：schema 校验 + deepEqual commit 通知） ----------
 
@@ -206,11 +199,11 @@ function fakeHarness(options: { failOnRoute?: string } = {}): FakeHarness {
 }
 
 const devinAgent: AcpAgentConfig = {
-  name: DEVIN_ACP_TEMPLATE.name,
-  command: DEVIN_ACP_TEMPLATE.command,
-  args: [...DEVIN_ACP_TEMPLATE.args],
+  name: 'Devin',
+  command: 'devin',
+  args: ['acp'],
   env: {},
-  ...(DEVIN_ACP_TEMPLATE.loginHint === undefined ? {} : { loginHint: DEVIN_ACP_TEMPLATE.loginHint }),
+  loginHint: 'devin auth login',
 };
 
 const fooAgent: AcpAgentConfig = {
@@ -230,107 +223,25 @@ describe('纯函数：路由 id 与模板', () => {
     expect(acpAgentIdFromRoute('acp-x_y')).toBeUndefined();
   });
 
- it('DEVIN_ACP_TEMPLATE 是面板"添加 Devin"按钮的一键模板（既定行为； 起显式 runtime=devin）', () => {
-    expect(DEVIN_ACP_TEMPLATE).toEqual({
-      id: 'devin',
-      name: 'Devin',
-      command: 'devin',
-      args: ['acp'],
-      env: {},
-      loginHint: 'devin auth login',
- // （内置 runtime 唯一性）：四个内置模板全部显式声明稳定 runtime（不再靠 id 回退）
-      runtime: 'devin',
- // 边界：auth 数据面收进 runtime descriptor，模板只留 settings 部分
-    });
-    // 模板的用户可配置部分必须过自己的 schema
-    const { id, ...templateValue } = DEVIN_ACP_TEMPLATE;
-    expect(id).toBe('devin');
-    const roundTripped = acpSettingsSchema({ agents: { [id]: { ...templateValue } } });
-    // devinAgent 夹具不带 runtime（手写配置走 id 回退）；模板值多了显式绑定
-    expect(roundTripped.agents['devin']).toEqual({ ...devinAgent, runtime: 'devin' });
+ it('内置一键模板已移除：catalog 化后 add-menu 由 registry 快照合成（见 client/data/catalog.ts）', () => {
+    // 模板删除的守护断言：agent-config 不再导出任何模板符号（catalog 条目的
+    // runtime/command/args/loginHint 由 client 侧 RUNTIME_OVERRIDES 钉版，见
+    // client-logic.spec.ts；host 侧保留的受信闭集只有 descriptor）。
+    expect(Object.keys(agentConfigModule)).not.toContain('ACP_BUILTIN_AGENT_TEMPLATES');
+    expect(Object.keys(agentConfigModule)).not.toContain('DEVIN_ACP_TEMPLATE');
   });
 
-  it('ACP_BUILTIN_AGENT_TEMPLATES 钉版：devin + claude 预设 + codex 预设 + kimi 预设，settings 部分均过自己的 schema', () => {
-    expect(ACP_BUILTIN_AGENT_TEMPLATES.map((template) => template.id)).toEqual(['devin', 'claude', 'codex', 'kimi']);
-    for (const template of ACP_BUILTIN_AGENT_TEMPLATES) {
-      const { id, ...templateValue } = template;
-      const roundTripped = acpSettingsSchema({ agents: { [id]: { ...templateValue } } });
-      expect(roundTripped.agents[id], id).toEqual(templateValue);
-    }
-  });
-
-  it('CLAUDE_ACP_TEMPLATE 逐字段钉版：runtime=claude、不假设推理提供方（env 空）', () => {
-    expect(CLAUDE_ACP_TEMPLATE).toEqual({
-      id: 'claude',
-      name: 'Claude',
-      command: 'claude-agent-acp',
-      args: [],
-      env: {},
-      loginHint: 'claude',
-      runtime: 'claude',
-      // 不假设推理提供方：下游路由不属于本插件的模型身份范围
-    });
-  });
-
-  it('CODEX_ACP_TEMPLATE 逐字段钉版：runtime=codex，env 空、无 secret 预填', () => {
-    expect(CODEX_ACP_TEMPLATE).toEqual({
-      id: 'codex',
-      name: 'Codex',
-      command: 'codex-acp',
-      args: [],
-      env: {},
-      loginHint: 'codex login',
-      runtime: 'codex',
-    });
-    // 模板的用户可配置部分必须过自己的 schema
-    const { id, ...templateValue } = CODEX_ACP_TEMPLATE;
-    const roundTripped = acpSettingsSchema({ agents: { [id]: { ...templateValue } } });
-    expect(roundTripped.agents['codex']).toEqual(templateValue);
-  });
-
-  it('KIMI_ACP_TEMPLATE 逐字段钉版：runtime=kimi，env 空、无 secret 预填', () => {
-    expect(KIMI_ACP_TEMPLATE).toEqual({
-      id: 'kimi',
-      name: 'Kimi',
-      command: 'kimi',
-      args: ['acp'],
-      env: {},
-      // 依据：本机无 prompt 探针——kimi-code 0.36.1
-      // 的 authMethods 只有 login 一路（command `kimi` args ['login'] 的设备码流程）
-      loginHint: 'kimi login',
-      runtime: 'kimi',
-    });
-    // 模板的用户可配置部分必须过自己的 schema
-    const { id, ...templateValue } = KIMI_ACP_TEMPLATE;
-    const roundTripped = acpSettingsSchema({ agents: { [id]: { ...templateValue } } });
-    expect(roundTripped.agents['kimi']).toEqual(templateValue);
-  });
-
-  it('模板 secret 纪律钉：所有一键模板不预填/持久化任何疑似 secret 键', () => {
-    for (const template of ACP_BUILTIN_AGENT_TEMPLATES) {
-      for (const key of Object.keys(template.env)) {
-        expect(SENSITIVE_ENV_PATTERN.test(key), `${template.id}.${key}`).toBe(false);
-      }
-      // 纪律针对 env 键值（loginHint 指引文本点名 env 键名是合法的用户指引）
-      const envWire = JSON.stringify(template.env);
-      expect(envWire).not.toContain('ANTHROPIC_AUTH_TOKEN');
-      expect(envWire).not.toContain('ANTHROPIC_API_KEY');
-    }
-  });
-
- it(' 模板清洁钉：npm 分发的模板与 descriptor 不打包用户路径/用户名/凭据', () => {
-    // devin/claude/codex/kimi 模板 env 为空；
-    // Descriptor/template data is static and must not embed the build user's home.
-    expect(DEVIN_ACP_TEMPLATE.env).toEqual({});
-    expect(CLAUDE_ACP_TEMPLATE.env).toEqual({});
-    expect(CODEX_ACP_TEMPLATE.env).toEqual({});
-    expect(KIMI_ACP_TEMPLATE.env).toEqual({});
-    // 模板与 descriptor 都是静态字面量——构建机/用户的 home 与登录名绝不能被烘进 npm 包
-    const wire = JSON.stringify({ templates: ACP_BUILTIN_AGENT_TEMPLATES, descriptors: ACP_AGENT_RUNTIME_DESCRIPTORS });
+  it('descriptor 清洁钉：npm 分发的 descriptor 不打包用户路径/用户名/凭据', () => {
+    // Descriptor data is static and must not embed the build user's home.
+    // descriptor 是静态字面量——构建机/用户的 home 与登录名绝不能被烘进 npm 包
+    const wire = JSON.stringify({ descriptors: ACP_AGENT_RUNTIME_DESCRIPTORS });
     expect(wire).not.toContain(os.homedir());
     for (const user of [process.env.USER, process.env.USERNAME]) {
       if (user !== undefined && user !== '') expect(wire).not.toContain(user);
     }
+    // secret 纪律：loginHint 是指引文本，不含任何凭据值
+    expect(wire).not.toContain('ANTHROPIC_AUTH_TOKEN');
+    expect(wire).not.toContain('ANTHROPIC_API_KEY');
   });
 });
 
@@ -342,21 +253,18 @@ describe('runtime descriptor（数据面钉版 + 绑定解析）', () => {
         id: 'devin',
         command: 'devin',
         args: ['acp'],
-        versionPolicy: {},
         loginHint: 'devin auth login',
       },
       {
         id: 'codex',
         command: 'codex-acp',
         args: [],
-        versionPolicy: { adapter: '1.6.2' },
         loginHint: 'codex login',
       },
       {
         id: 'kimi',
         command: 'kimi',
         args: ['acp'],
-        versionPolicy: { wrappedCli: '0.36.1' },
         loginHint: 'kimi login',
       },
       {
@@ -364,7 +272,6 @@ describe('runtime descriptor（数据面钉版 + 绑定解析）', () => {
         command: 'claude-agent-acp',
         args: [],
         executableOverrideEnv: 'CLAUDE_CODE_EXECUTABLE',
-        versionPolicy: { adapter: '0.70.0' },
         loginHint: 'claude',
       },
     ]);
@@ -383,39 +290,41 @@ describe('runtime descriptor（数据面钉版 + 绑定解析）', () => {
     expect(descriptorOf('ghost')).toBeUndefined();
   });
 
-  it('：codex 模板与 claude 模板共存——各自解析到自己的 descriptor，profile id（backend 身份）独立', () => {
-    // 模板经 schema 入 settings（模板 id 即 profile id 预填值）
-    const { id: codexId, ...codexValue } = CODEX_ACP_TEMPLATE;
-    const { id: claudeId, ...claudeValue } = CLAUDE_ACP_TEMPLATE;
-    const resolved = acpSettingsSchema({ agents: { [codexId]: { ...codexValue }, [claudeId]: { ...claudeValue } } });
+  it('：codex 与 claude 配置共存——各自解析到自己的 descriptor，profile id（backend 身份）独立', () => {
+    // 手写配置经 schema 入 settings（catalog 预填的等价形状；runtime 显式绑定）
+    const resolved = acpSettingsSchema({ agents: {
+      'codex': { name: 'Codex', command: 'codex-acp', args: [], env: {}, loginHint: 'codex login', runtime: 'codex' },
+      'claude-acp': { name: 'Claude Agent', command: 'claude-agent-acp', args: [], env: {}, loginHint: 'claude', runtime: 'claude' },
+    } });
     // runtime 字段绑定 descriptor（codex ↔ codex、claude ↔ claude），profile id 独立
-    // acp-codex 与 acp-claude 是不同 backend。
+    // acp-codex 与 acp-claude-acp 是不同 backend。
     expect(descriptorOf('codex', resolved.agents['codex'])?.id).toBe('codex');
-    expect(descriptorOf('claude', resolved.agents['claude'])?.id).toBe('claude');
+    expect(descriptorOf('claude-acp', resolved.agents['claude-acp'])?.id).toBe('claude');
     expect(acpRouteId('codex')).toBe('acp-codex');
     // 用户改 id 后 runtime 绑定不漂移
     expect(descriptorOf('my-codex', { runtime: 'codex' })?.id).toBe('codex');
     // 两 profile 的 probe 缓存键独立（command/env 键集合不同），互不串扰
     expect(acpProbeConfigKey(resolved.agents['codex'] as AcpAgentConfig))
-      .not.toBe(acpProbeConfigKey(resolved.agents['claude'] as AcpAgentConfig));
+      .not.toBe(acpProbeConfigKey(resolved.agents['claude-acp'] as AcpAgentConfig));
   });
 
-  it('：kimi 模板与 codex/claude 模板共存——各自解析到自己的 descriptor，profile id（backend 身份）独立', () => {
-    // 模板经 schema 入 settings（模板 id 即 profile id 预填值）
-    const { id: kimiId, ...kimiValue } = KIMI_ACP_TEMPLATE;
-    const { id: codexId, ...codexValue } = CODEX_ACP_TEMPLATE;
-    const { id: claudeId, ...claudeValue } = CLAUDE_ACP_TEMPLATE;
-    const resolved = acpSettingsSchema({ agents: { [kimiId]: { ...kimiValue }, [codexId]: { ...codexValue }, [claudeId]: { ...claudeValue } } });
+  it('：kimi 与 codex/claude 配置共存——各自解析到自己的 descriptor，profile id（backend 身份）独立', () => {
+    // 手写配置经 schema 入 settings（catalog 预填的等价形状；runtime 显式绑定）
+    const resolved = acpSettingsSchema({ agents: {
+      'kimi': { name: 'Kimi CLI', command: 'kimi', args: ['acp'], env: {}, loginHint: 'kimi login', runtime: 'kimi' },
+      'codex': { name: 'Codex', command: 'codex-acp', args: [], env: {}, loginHint: 'codex login', runtime: 'codex' },
+      'claude-acp': { name: 'Claude Agent', command: 'claude-agent-acp', args: [], env: {}, loginHint: 'claude', runtime: 'claude' },
+    } });
     // runtime 字段绑定 descriptor（kimi ↔ kimi、codex ↔ codex、claude ↔ claude），profile id 独立
-    // acp-kimi、acp-codex 与 acp-claude 是不同 backend。
+    // acp-kimi、acp-codex 与 acp-claude-acp 是不同 backend。
     expect(descriptorOf('kimi', resolved.agents['kimi'])?.id).toBe('kimi');
     expect(descriptorOf('codex', resolved.agents['codex'])?.id).toBe('codex');
-    expect(descriptorOf('claude', resolved.agents['claude'])?.id).toBe('claude');
+    expect(descriptorOf('claude-acp', resolved.agents['claude-acp'])?.id).toBe('claude');
     expect(acpRouteId('kimi')).toBe('acp-kimi');
     // 用户改 id 后 runtime 绑定不漂移
     expect(descriptorOf('my-kimi', { runtime: 'kimi' })?.id).toBe('kimi');
     // 三个 profile 的 probe 缓存键各自独立（command/args/env 键集合不同），互不串扰
-    const keys = [resolved.agents['kimi'], resolved.agents['codex'], resolved.agents['claude']].map((config) => acpProbeConfigKey(config as AcpAgentConfig));
+    const keys = [resolved.agents['kimi'], resolved.agents['codex'], resolved.agents['claude-acp']].map((config) => acpProbeConfigKey(config as AcpAgentConfig));
     expect(new Set(keys).size).toBe(3);
   });
 
@@ -818,29 +727,19 @@ describe('installInstalledProfileRegistry：注册/替换调用序列', () => {
 // ---------- 边界：版本兼容状态派生（readiness 钉版比对） ----------
 
 describe('acpVersionCompatibility（readiness 的纯函数核心）', () => {
-  const byId = (id: string) => {
-    const descriptor = ACP_AGENT_RUNTIME_DESCRIPTORS.find((candidate) => candidate.id === id);
-    if (descriptor === undefined) throw new Error(`fixture: no runtime descriptor ${id}`);
-    return descriptor;
-  };
-
-  it('无 descriptor / 无握手版本 → null（诚实空缺）；无钉版（devin）→ unpinned', () => {
+  it('无版本参考 / 无握手版本 → null（诚实空缺）；空串参考同 null', () => {
     expect(acpVersionCompatibility(undefined, '1.2.3')).toBeNull();
-    expect(acpVersionCompatibility(byId('codex'), undefined)).toBeNull();
-    expect(acpVersionCompatibility(byId('codex'), null)).toBeNull();
-    expect(acpVersionCompatibility(byId('devin'), '1.2.3')).toBe('unpinned');
+    expect(acpVersionCompatibility(null, '1.2.3')).toBeNull();
+    expect(acpVersionCompatibility('', '1.2.3')).toBeNull();
+    expect(acpVersionCompatibility('1.11.0', undefined)).toBeNull();
+    expect(acpVersionCompatibility('1.11.0', null)).toBeNull();
   });
 
-  it('钉版精确比对（trim 后）：等 → pinned，不等 → drifted；kimi 的钉在 wrappedCli', () => {
-    expect(acpVersionCompatibility(byId('codex'), '1.6.2')).toBe('pinned');
-    expect(acpVersionCompatibility(byId('codex'), ' 1.6.2 ')).toBe('pinned');
-    expect(acpVersionCompatibility(byId('codex'), '1.6.3')).toBe('drifted');
-    // kimi 的 ACP 面由 wrapped CLI 自身承载，钉在 wrappedCli
-    expect(acpVersionCompatibility(byId('kimi'), '0.36.1')).toBe('pinned');
-    expect(acpVersionCompatibility(byId('kimi'), '0.36.0')).toBe('drifted');
-    // claude 钉 adapter
-    expect(acpVersionCompatibility(byId('claude'), '0.70.0')).toBe('pinned');
-    expect(acpVersionCompatibility(byId('claude'), '0.69.0')).toBe('drifted');
+  it('registry 版本参考精确比对（trim 后）：等 → current，不等 → outdated', () => {
+    expect(acpVersionCompatibility('1.11.0', '1.11.0')).toBe('current');
+    expect(acpVersionCompatibility('1.11.0', ' 1.11.0 ')).toBe('current');
+    expect(acpVersionCompatibility('1.11.0', '1.11.1')).toBe('outdated');
+    expect(acpVersionCompatibility('0.77.0', '0.76.0')).toBe('outdated');
   });
 });
 
@@ -848,7 +747,10 @@ describe('acpVersionCompatibility（readiness 的纯函数核心）', () => {
 it('forwards actual host session disposal to all ACP adapters', async () => {
   const { ctx, settings, listeners, llm } = fakeHarness()
   installInstalledProfileRegistry(ctx)
-  await settings.replace({ agents: { devin: { ...DEVIN_ACP_TEMPLATE }, codex: { ...CODEX_ACP_TEMPLATE } } })
+  await settings.replace({ agents: {
+    devin: { name: 'Devin', command: 'devin', args: ['acp'], env: {}, loginHint: 'devin auth login', runtime: 'devin' },
+    codex: { name: 'Codex', command: 'codex-acp', args: [], env: {}, loginHint: 'codex login', runtime: 'codex' },
+  } })
   const closed: unknown[] = []
   for (const value of llm.adapters) {
     const adapter = value as { disposeSession(session: unknown): Promise<void> }
