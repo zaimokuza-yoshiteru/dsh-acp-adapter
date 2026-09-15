@@ -1,5 +1,6 @@
+import { withSessionFacts } from '../../support/session-facts.ts'
 import { describe, expect, it } from 'vitest'
-import { classifyBackendTransition, hasPriorSemanticHistory } from '../../../src/host/composition/backend-guard.ts'
+import { classifyBackendTransition } from '../../../src/host/composition/backend-guard.ts'
 import type { BackendTransitionInput, ModelSelectionValue } from '../../../src/host/composition/backend-guard.ts'
 
 const native = (provider = 'openai', model = 'model-a'): ModelSelectionValue => ({ provider, model })
@@ -80,24 +81,24 @@ describe('M6b backend transition classifier', () => {
   })
 
   it('does not count the current turn user message as prior history', () => {
-    const session = {
+    const session = withSessionFacts({
       snapshotEvents: () => [
         { type: 'turn/start', data: {} },
         { type: 'user/message', data: {} },
       ],
-    }
-    expect(hasPriorSemanticHistory(session as never)).toBe(false)
+    })
+    expect(session.facts.priorSemanticHistory).toBe(false)
   })
 
   it('counts semantic events before the current turn as prior history', () => {
-    const session = {
+    const session = withSessionFacts({
       snapshotEvents: () => [
         { type: 'turn/start', data: {} },
         { type: 'user/message', data: {} },
         { type: 'turn/start', data: {} },
         { type: 'user/message', data: {} },
       ],
-    }
-    expect(hasPriorSemanticHistory(session as never)).toBe(true)
+    })
+    expect(session.facts.priorSemanticHistory).toBe(true)
   })
 })

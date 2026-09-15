@@ -10,8 +10,10 @@ import {
   Button, DiffBlock, DisclosureRow, IconApiOutline14, JsonTree, ReadBlock, StateDot, TerminalBlock,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type {
-  DiffHunk, JsonTreeLabels, ReadBlockLabels, ReadBlockProps, StateDotState, TerminalBlockLabels, TerminalBlockProps,
+  DiffHunk, ReadBlockLabels, ReadBlockProps, StateDotState, TerminalBlockLabels, TerminalBlockProps,
 } from '@deepseek-ai/dsh-client-ui-primitives'
+import type { AcpJsonStringWrapping } from './json-tree.ts'
+import { acpJsonTreeLabels } from './json-tree.ts'
 import type { AcpActivityView } from '../data/acp-remote.ts'
 import { acpReplayPayloadOf, type AcpReplayPayloadV1 } from '../data/acp-replay-payload.ts'
 import { AcpActivityJournalHub } from '../data/activity-journal.ts'
@@ -67,6 +69,7 @@ type ActivityNodeProps = {
   readonly journalHub: AcpActivityJournalHub
   readonly onProjectedChild?: (parentSessionId: string, childSessionId: string) => void
   readonly onOpenProjectedChild?: (childSessionId: string) => void
+  readonly jsonStringWrapping?: AcpJsonStringWrapping
 } & Pick<import('@deepseek-ai/dsh-client-ui-chat/client').ChatNodeOwnerProps, 'openFile'>
 
 /**
@@ -163,15 +166,6 @@ function terminalDetail(row: AcpActivityView, value: unknown): TerminalDetail | 
       ? { signal: value.signal }
       : typeof rawOutput?.signal === 'string' ? { signal: rawOutput.signal } : {}),
     running: row.status === 'running',
-  }
-}
-
-function detailLabels(t: ActivityNodeProps['t']): JsonTreeLabels {
-  return {
-    copyValue: t('auditCopyValue'), copyJson: t('auditCopyJson'), copyPath: t('auditCopyPath'),
-    copyPrettyJson: t('auditCopyPrettyJson'), copyCompactJson: t('auditCopyCompactJson'),
-    copied: t('auditCopied'), copyFailed: t('auditCopyFailed'), collapseNode: t('auditCollapseNode'),
-    expandNode: t('auditExpandNode'), copyButtonTitle: (action: string) => t('auditCopyOptions', { action }),
   }
 }
 
@@ -364,10 +358,11 @@ function contentText(value: unknown): string {
 }
 
 /** Compact summary with explicitly read-only, sidecar-redacted details. */
-export function activityRowElement({ row, t, onOpenProjectedChild, open = false, onToggle = () => undefined }: {
+export function activityRowElement({ row, t, onOpenProjectedChild, jsonStringWrapping, open = false, onToggle = () => undefined }: {
   readonly row: AcpActivityView
   readonly t: ActivityNodeProps['t']
   readonly onOpenProjectedChild?: (childSessionId: string) => void
+  readonly jsonStringWrapping?: AcpJsonStringWrapping
   readonly open?: boolean
   readonly onToggle?: () => void
 }): ReactNode {
@@ -407,7 +402,14 @@ export function activityRowElement({ row, t, onOpenProjectedChild, open = false,
     terminal === undefined ? null : h(TerminalBlock, { ...terminal, labels: terminalLabels(t), className: css.nativeBlock }),
     read === undefined ? null : h(ReadBlock, { ...read, labels: readLabels(t), className: css.nativeBlock }),
     !showRawDetail ? null : typeof detail === 'object' && detail !== null
-      ? h(JsonTree, { data: detail, label: t(`activity.kind.${row.kind}` as AcpLocaleKey), labels: detailLabels(t), expandTopLevel: true, className: css.json })
+      ? h(JsonTree, {
+        data: detail,
+        label: t(`activity.kind.${row.kind}` as AcpLocaleKey),
+        labels: acpJsonTreeLabels(t),
+        ...(jsonStringWrapping === undefined ? {} : { stringWrapping: { ...jsonStringWrapping, label: t('auditWrapLines') } }),
+        expandTopLevel: true,
+        className: css.json,
+      })
       : h('pre', { className: css.raw }, String(detail)),
   )
   return h(DisclosureRow, {
@@ -428,7 +430,7 @@ export function activityRowElement({ row, t, onOpenProjectedChild, open = false,
   }, body)
 }
 
-function ActivityRow(props: { readonly row: AcpActivityView; readonly t: ActivityNodeProps['t']; readonly openFile: ActivityNodeProps['openFile']; readonly onOpenProjectedChild?: (childSessionId: string) => void }): ReactNode {
+function ActivityRow(props: { readonly row: AcpActivityView; readonly t: ActivityNodeProps['t']; readonly openFile: ActivityNodeProps['openFile']; readonly onOpenProjectedChild?: (childSessionId: string) => void; readonly jsonStringWrapping?: AcpJsonStringWrapping }): ReactNode {
   const [open, setOpen] = useState(false)
   if (props.row.kind === 'tool' || props.row.kind === 'plan') {
     return fallbackToolRowElement({ row: props.row, t: props.t, openFile: props.openFile, open, onToggle: () => { setOpen(value => !value) } })
@@ -526,7 +528,7 @@ export function AcpActivityNode(props: ActivityNodeProps): ReactNode {
 }
 
 /** Additive ACP activity renderer. Agent-provided presentation is never translated. */
-function AcpActivityContent({ node, sessionId, journalHub, t, openFile, onProjectedChild, onOpenProjectedChild }: ActivityNodeProps): ReactNode {
+function AcpActivityContent({ node, sessionId, journalHub, t, openFile, onProjectedChild, onOpenProjectedChild, jsonStringWrapping }: ActivityNodeProps): ReactNode {
   const [rows, setRows] = useState<readonly AcpActivityView[]>([])
   const [unavailable, setUnavailable] = useState(false)
   const data = node.data
@@ -551,6 +553,7 @@ function AcpActivityContent({ node, sessionId, journalHub, t, openFile, onProjec
   return h('section', { className: css.flow, 'data-acp-activity': true },
     ...rows.map(row => h(ActivityRow, {
       key: `${row.activityId}:${row.activitySeq}`, row, t, openFile,
+      ...(jsonStringWrapping === undefined ? {} : { jsonStringWrapping }),
       ...(onOpenProjectedChild === undefined ? {} : { onOpenProjectedChild }),
     })),
     unavailable ? h('div', { className: css.unavailable },

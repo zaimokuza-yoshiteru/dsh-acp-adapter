@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
+import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import { apply, inject } from '../../../src/host/composition/index.ts'
 import { acpSettingsSchema } from '../../../src/host/composition/installed-profile-registry.ts'
 import type { AcpSettings } from '../../../src/host/composition/installed-profile-registry.ts'
@@ -47,6 +48,9 @@ describe('real Cordis ACP composition settings lifecycle', () => {
   it('registers initial settings and follows later mutations through the real injected plugin', async () => {
     expect(inject).toContain('settings')
     const ctx = new Context()
+    await ctx.plugin(SessionProjectionRegistry)
+    // This registry-only fixture never dispatches an ACP AgentLoop turn.
+    ctx.provide('permissionPresets', {})
     const settings = new SettingsDocument({ agents: { codex: agent('Codex', 'codex-acp') } })
     const routeCalls: string[][] = []
     const executableChecks: string[] = []

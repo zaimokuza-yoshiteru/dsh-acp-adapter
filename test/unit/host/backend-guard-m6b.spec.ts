@@ -1,3 +1,4 @@
+import { withSessionFacts } from '../../support/session-facts.ts'
 import { describe, expect, it, vi } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
 import type { LlmCallConfig } from '@deepseek-ai/dsh-llm'
@@ -10,11 +11,11 @@ type RequestListener = (payload: unknown, next: () => Promise<LlmCallConfig>) =>
 const config = (provider: string, model = 'model-a'): LlmCallConfig => ({ provider, model })
 
 function session(events: readonly string[], parentSession?: string, id = 'session-test'): Session {
-  return {
+  return withSessionFacts({
     id,
     header: parentSession === undefined ? {} : { parentSession },
     snapshotEvents: () => events.map(type => ({ type, data: {} })),
-  } as unknown as Session
+  }) as unknown as Session
 }
 
 function sidecar(binding: AcpBindingLookup | undefined, writes: unknown[] = []): AcpSidecar {
@@ -29,7 +30,7 @@ function install(selection: unknown, acpSidecar: AcpSidecar): { listener: Reques
   const reads = vi.fn(() => selection)
   const context = {
     inject: (_keys: readonly string[], callback: (ctx: unknown) => void) => callback({
-      sessionProjections: { stateOf: reads },
+      sessionProjections: { stateOf: (session: { facts: unknown }, key: string) => key === 'acpExecution' ? session.facts : reads() },
       on: (_event: string, handler: RequestListener) => { listener = handler; return () => undefined },
     }),
   }

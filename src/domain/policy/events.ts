@@ -5,7 +5,7 @@
  * 另有 `degradation`（{@link AcpDegradationAuditData}）：tool result 内容降级
  * （非文本项按占位/摘要落盘或截断）的事实记录，每次降级一条。
  *
- * Alpha.2 已支持 `ignorable` 扩展事件，但审计仍不是对话事件：把权限/文件诊断
+ * 当前事件 contract 支持 `ignorable` 扩展事件，但审计仍不是对话事件：把权限/文件诊断
  * 混入 session log 会改变事件序列、历史导出和前端投影，却没有用户可见收益。
  * 因此本模块只产出纯 payload，由 ./permissions.ts（kind `permission`）包成
  * sidecar entry 经 `AcpSidecar.append` 落盘；不会向 session log 写自定义事件。

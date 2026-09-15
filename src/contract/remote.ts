@@ -364,7 +364,7 @@ export interface AcpHealthRequest {
  * `backendOf(sessionId)` 的应答（「backend 不可变」的 host 权威查询）。
  * - `'blank'`：尚无 ACP backend 承诺——无活体 ACP agent、无 sidecar binding、日志无
  *   request/header。若 DSH 已为该会话实例化 native wrapper，`current.provider` 会
- *   暴露该事实；0.1.2-rc.1 仍没有 live wrapper 替换 seam，跨到 ACP 会自动新建会话。
+ *   暴露该事实；当前 host 没有 live wrapper 替换 seam，跨到 ACP 会自动新建会话。
  * - `'draft'`：空白会话已启动 ACP wrapper、可读取会话级配置，但首条 prompt 尚未
  *   提交 ACP binding；同一 ACP profile 可原地选模型，跨 profile/native 会自动新建会话。
  * - `'established'`：backend 已锁定；`provider` 即路由 id（`acp-<id>` 前缀 =
@@ -459,5 +459,15 @@ export interface AcpTeamMemberView {
   readonly name: string
   readonly status: 'running' | 'idle' | 'inactive' | 'provisioning' | 'failed'
   readonly model: string | null
+  readonly pendingModel?: string | null
+  readonly modelWritable?: boolean
   readonly description: string | null
+}
+
+/** Model choices belong to one member's existing ACP profile. */
+export interface AcpTeamMemberModelsView {
+  readonly currentModel: string | null
+  readonly pendingModel: string | null
+  readonly models: readonly { readonly id: string; readonly name: string }[]
+  readonly writable: boolean
 }

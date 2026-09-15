@@ -1,5 +1,5 @@
-import { createElement as h, useEffect, useMemo, useState } from 'react'
-import type { ReactNode } from 'react'
+import { createElement as h, useEffect, useRef, useState } from 'react'
+import type { ButtonHTMLAttributes, ReactNode } from 'react'
 import { IconChevronDownOutline14, Menu, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { AcpRemoteLike, AcpAgentSessionSnapshotView, AcpAgentSessionOptionWrite } from '../data/acp-remote.ts'
@@ -9,6 +9,7 @@ import { isAcpModelOrReasoningOption } from '../../contract/config-options.ts'
 import css from './AcpAgentControl.module.css'
 import type { RemoteStreamFactory } from '@deepseek-ai/dsh-api-gateway/client'
 import { agentSessionStream } from '../data/agent-session-stream.ts'
+import { teamModeLabel } from '../../contract/session-modes.ts'
 
 type Translate = (key: AcpLocaleKey, params?: Record<string, unknown>) => string
 type AgentControlProps = PropsRuntime<'conversation.input.left'> & PropsLocale<'acpActivity'> & {
@@ -63,17 +64,8 @@ export function agentControlMenuItems(snapshot: AcpAgentSessionSnapshotView, t: 
   return items
 }
 
-function currentModeName(snapshot: AcpAgentSessionSnapshotView, t: Translate): string {
-  const mode = snapshot.configOptions?.find(isModeConfigOption)
-  if (mode?.type === 'select') {
-    const values = mode.options.flatMap(entry => 'options' in entry ? entry.options : [entry])
-    return values.find(value => value.value === mode.currentValue)?.name ?? mode.currentValue
-  }
-  return snapshot.modes?.find(mode => mode.id === snapshot.currentModeId)?.name ?? snapshot.currentModeId ?? t('agentControlDefault')
-}
-
 export function agentControlLabel(snapshot: AcpAgentSessionSnapshotView, t: Translate): string {
-  return `Agent · ${currentModeName(snapshot, t)}`
+  return `Agent · ${teamModeLabel(snapshot, t('agentControlDefault'))}`
 }
 
 /** Compact ACP token counts without falling back to an unqualified raw count. */
@@ -108,28 +100,28 @@ export function AcpAgentControl({ sessionId, useProjection, useSession, t, remot
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const epoch = useMemo(() => ({ value: 0 }), [])
+  const epoch = useRef(0)
   const [retry, setRetry] = useState(0)
 
   useEffect(() => {
-    const current = ++epoch.value
+    const current = ++epoch.current
     setOpen(false)
     setBusy(false)
     setError(null)
     setSnapshot(null)
     if (!isAcp || sessionId === undefined) return
     const stream = agentSessionStream(remote, streamFactory, sessionId, value => {
-      if (current !== epoch.value) return
+      if (current !== epoch.current) return
       setSnapshot(value)
       setError(null)
     }, () => {
-      if (current !== epoch.value) return
+      if (current !== epoch.current) return
       setSnapshot(value => value === null ? null : { ...value, editable: false, freshness: 'stale' })
       setError(t('agentControlUnavailable'))
     })
     stream.start()
     return () => {
-      ++epoch.value
+      ++epoch.current
       void stream.dispose()
     }
   }, [epoch, isAcp, remote, streamFactory, sessionId, t, retry])
@@ -150,16 +142,16 @@ export function AcpAgentControl({ sessionId, useProjection, useSession, t, remot
   const select = (id: string): void => {
     const item = items.find(candidate => candidate.id === id)
     if (item === undefined || item.id === 'unavailable' || !visibleSnapshot.editable || snapshot.freshness !== 'live' || sessionId === undefined) return
-    const current = epoch.value
+    const current = epoch.current
     setBusy(true)
     setError(null)
     void remote.setAgentSessionOption(sessionId, item.write).then(result => {
-      if (current !== epoch.value) return
+      if (current !== epoch.current) return
       // The subscription owns snapshots, so a late write response cannot roll back a newer notification.
       if (!result.ok) setError(result.error.message)
     }).catch(reason => {
-      if (current === epoch.value) setError(reason instanceof Error ? reason.message : String(reason))
-    }).finally(() => { if (current === epoch.value) setBusy(false) })
+      if (current === epoch.current) setError(reason instanceof Error ? reason.message : String(reason))
+    }).finally(() => { if (current === epoch.current) setBusy(false) })
   }
   const description = t('agentControlTooltip')
   return h(Menu, {
@@ -170,7 +162,7 @@ export function AcpAgentControl({ sessionId, useProjection, useSession, t, remot
     items,
     onSelect: select,
     onClose: () => setOpen(false),
-    anchor: h(Tooltip, { label: description, children: h('button', {
+    anchor: h(Tooltip, { label: description, children: h<ButtonHTMLAttributes<HTMLButtonElement>>('button', {
       type: 'button', className: css.trigger, disabled: busy, 'aria-expanded': open,
       onClick: () => { if (error !== null) setRetry(value => value + 1); setOpen(value => !value) },
     },

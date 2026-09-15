@@ -6,12 +6,12 @@
  * preset: reference/deepseek-harness/packages/client/tsdown.client.ts
  * (replicated locally because the preset is not a public package export).
  *
- * Alignment with the 0.1.3-alpha.1 preset:
+ * Alignment with the checked-in DSH web platform snapshot:
  * - The banner id IS the package.json name (the loader keys registrations by
  * package name; the package name is read live below.
  * - `sourcemap: true` — the host serves /plugins/<id>/client.js.map
  *   (packages/client/modules/src/index.ts map route).
- * - The external set is exactly the Alpha baseline (PLATFORM_MODULES +
+ * - The external set is exactly the platform snapshot (PLATFORM_MODULES +
  *   PRELOADED_CLIENT_EXTERNALS from packages/client/web/src/platform.ts)
  *   plus this package's own `dsh.client.external` requests; everything else
  *   inlines (alwaysBundle) so no require() lands on a row the module table
@@ -32,6 +32,7 @@ import { readFile } from 'node:fs/promises'
 import { basename, dirname, resolve as resolvePath } from 'node:path'
 import { transform } from 'lightningcss'
 import { defineConfig } from 'tsdown'
+import { PLATFORM_EXTERNALS } from './scripts/dsh-platform-snapshot.mjs'
 
 const manifest = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as {
   name: string
@@ -64,23 +65,9 @@ function styleInjectionModule(id: string, fileId: string, css: string, classMap:
   return source.join('\n')
 }
 
-/** Alpha baseline module-table rows (reference/deepseek-harness packages/client/web/src/platform.ts). */
-const BASELINE_EXTERNALS = [
-  // PLATFORM_MODULES
-  'react',
-  'react/jsx-runtime',
-  'react-dom',
-  'react-dom/client',
-  '@deepseek-ai/cordis',
-  '@deepseek-ai/dsh-client-ui-slots',
-  '@deepseek-ai/dsh-client-ui-primitives',
-  // PRELOADED_CLIENT_EXTERNALS
-  '@deepseek-ai/dsh-client-store',
-] as const
-
 const declaredExternals = manifest.dsh?.client?.external
 const externals = new Set<string>([
-  ...BASELINE_EXTERNALS,
+  ...PLATFORM_EXTERNALS,
   ...(Array.isArray(declaredExternals) ? declaredExternals.filter((e): e is string => typeof e === 'string') : []),
 ])
 
@@ -126,7 +113,7 @@ export default defineConfig({
       if (VENDORED_LIBRARY.test(source)) return null // vendored library: inline, no shared identity
       if (INLINE_SAFE.test(source) || GENERATED_REMOTE.test(source)) return null // wire contribution: inline is the point
       throw new Error(
-        `client bundle purity: "${source}" is not in the 0.1.3-alpha.1 baseline externals or this package's dsh.client.external, `
+        `client bundle purity: "${source}" is not in the DSH platform snapshot or this package's dsh.client.external, `
         + 'an inline-safe wire layer, or a generated /remote contribution — cross-plugin value imports are forbidden; '
         + 'declare a non-default module request or collaborate through cordis services '
         + '(type-only imports are erased and never reach this gate)',

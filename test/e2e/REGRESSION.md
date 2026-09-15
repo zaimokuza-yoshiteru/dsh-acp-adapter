@@ -481,3 +481,53 @@ Claude Haiku（隔离 profile 显式凭据复测）、Codex Spark、Devin SWE-1.
 Chrome 全量：106 项通过；默认跳过的 4 项真实连接另行执行。Claude Haiku、Devin SWE-1.7 Medium、Kimi Coding 通过；Codex 首次因目录不再提供 Mini/Spark 被便宜模型选择保护拦截，未发起生成请求，显式选择目录中的 `gpt-5.6-luna` 后两轮及刷新回归通过。真实 Devin Teams 使用 SWE-1.7 Medium 与 GPT-5.4 Mini Low，验证双模型成员、共享任务与依赖、消息以及成员审批，通过。没有将模型目录变化计为产品回归成功，也没有跳过后续复测。
 
 本地证据归档：gitignored `.local/release-rc.2.5/`。版本通过匹配 Git tag 的正式工作流发布到 npm `next`，兼容声明仍由 `package.json` 维护。
+
+
+## 2026-09-15：DSH 0.1.6-alpha.1 兼容核实与终端冲突修复
+
+reference 为 `dsh-v0.1.6-alpha.1`（`0a15e36e7f82`），工作区保持干净。插件开发依赖、可选 peer 和 `engines.dsh` 同步锁定已发布 npm 版本；插件版本仍为 `0.1.5-rc.2.5`，本轮不发布。原生权限组件、ACP 输入栏入口和 Teams 原生任务面板保留，不进行全历史扫描等大范围重构。
+
+确认的兼容问题：会话已打开较窄权限的浏览器终端时，宿主拒绝 ACP 的 sandbox 模式投影。`agent/inbox/claimed` 是通知事件，监听器抛错无法阻止执行；原先会继续创建 ACP runtime、写入请求历史，随后再报错，下一次重试被缺失 binding 的恢复保护拦截。现在仍在 claim 时投影权限，确保首轮上下文准确，但把失败交给可等待的 `agent/pre-step` 关口拒绝。终端冲突提供 `ACP_BROWSER_TERMINALS_OPEN` 和关闭当前会话终端后重试的提示；不静默关闭终端，不改变原权限，不放宽 backend/recovery guard。
+
+新增完整宿主用例验证：首次冲突不写入 request/header、不发 ACP prompt，关闭终端后同会话可重试；已有 ACP 会话保持策略时可使用浏览器终端。另一项验证 profile 更新因路由占用被拒绝后保留原目录标签及可继续的会话，修正配置后重新生效，移除后目录无残留。Teams bridge 的服务撤销和工具身份更换仍由现有 lease 测试覆盖；未发现需要依赖 Loader 整体回滚的新适配。
+
+Chrome 全量首次结果为 102 通过、5 失败、4 项真实连接跳过。四个失败来自原生 JSON 树压缩折叠预览，旧数据不再产生滚动；改为展开更多既有节点后，四种协议的诊断布局全部通过，没有改产品样式。附件测试改用原生加号菜单与 File 选择器，四种协议通过。另一次失败是宿主 LocalTerminalHandle 收尾报告 surviving pid，该 PID 随后已不存在；独立完整终端复测通过，保留原失败记录，不忽略 close 错误或加自动重试。新增 profile 热更新用例通过。当前 108 项协议回归已分批覆盖通过，不声称全量单次运行无失败。
+
+此次使用独立临时宿主、真实 ACP 夹具子进程、原生 PTY 和本机 Chrome；未调用真实模型，未做桌面打包或 SSH 工作区回归。终端错误码由单元测试验证；源码 scaffold 与已安装插件可能加载不同 LlmError 类，因此端到端验证用户可见错误、持久化状态和后续行为。没有修改本地数据格式或增加迁移步骤。
+
+证据：本机 `/tmp/dsh-016-full-e2e.log`、`/tmp/dsh-016-audit-final.log`、`/tmp/dsh-016-ui-recheck.log`、`/tmp/dsh-016-terminal-final.log`、`/tmp/dsh-016-profile-e2e.log`。后续原生复用与同步历史读取迁移单独评估。
+
+## 2026-09-15：原生复用与技术债清理
+
+按 UI、运行时、构建依赖三个模块由 GPT-5.6 Luna 核查，主线程审查最终取舍。生产历史扫描替换为宿主 SessionProjectionRegistry 驱动的增量执行事实，权限、请求头与水位读取原生状态。checkpoint 仅保存执行索引和精简 replay marker，不保留未知 response 字段。诊断与活动共用原生 JSON 换行和双语标签；React 改用官方开发类型，删除重复平台清单及仅测试调用的 journal 包装。边界见 [原生复用说明](../../docs/native-reuse.md)。
+
+完整浏览器回归发现并修复了迁移中的对象身份问题：runtime owner 曾记录读取封装，导致原始 Session 的销毁通知不能释放 ACP runtime。现显式保留原始对象身份，正常执行与 retryOriginal 使用相同规则；原始对象／封装对象、同 ID 新实例隔离与恢复中的销毁竞态均有回归。没有通过改变 live/stale 语义或放宽恢复保护掩盖问题。
+
+最终类型检查、构建、严格公开类型消费和打包闭包通过。常规测试最终全量为 700 通过、1 项连续子进程探测超过默认 5 秒；该用例增加至 15 秒有界预算后，整个 23 项目录探测套件通过，701 项已全部覆盖通过。四种协议的诊断换行用例最初字符串不足以触发原生展开按钮；调整夹具后，中英文按钮、偏好、滚动与窄屏布局全部通过。
+
+真实 Devin SWE-1.7 Medium 通过两轮宿主提示词更新、对话和刷新恢复；本轮未再次执行其他三种真实模型或真实 Teams。独立演示使用本地模拟 ACP Agent，包含交替思考／回答、诊断长字符串、两个待审批成员与原生共享任务，保留在 Chrome。没有迁移 Sidecar schema、清理用户数据、提交或发布。
+
+最终完整 Chrome 单次运行：108 项通过，4 项真实连接默认跳过；Devin 真实测试另行执行并通过。成员审批后的休眠、延迟模式应用、刷新与批量调整、原生入口边界均通过。未执行桌面打包或 SSH 工作区回归。证据：本机 `/tmp/dsh-debt-e2e-final.log`、`/tmp/dsh-debt-tests-final.log`、`/tmp/dsh-debt-probe-final.log`、`/tmp/dsh-debt-live-devin.log`；演示配置与截图位于 gitignored `.local/tech-debt-preview/`。
+
+## 2026-09-15：成员独立模型选择
+
+ACP 主会话的成员管理新增同 profile 原生模型下拉，保留按 profile 批量调整模式；原生主会话及子会话不增加这一入口。模型选择保存到原 ACP binding，下次请求通过公开 `installModelSelection` 与 `resolveCallConfig` 生效，休眠后继续保留。不会修改 Lead、其他成员或全局默认；运行中、待审批、未知模型和非本团队成员均拒绝写入。
+
+最终常规回归 70 文件、711 项通过（搜索功能及对应测试已删除）；类型检查、构建、严格公开类型消费和打包闭包通过。新增 Chrome 用例实际操作模型菜单，验证当前 A／待生效 B、刷新、连续两次冷唤醒的 ACP 配置与原生请求头均为 B，以及新成员仍继承 Lead 的 A。成员管理、团队审批和 Teams 边界共 7 项相关 E2E 通过。常规全量最初发现两份公开接口清单未更新，以及新测试夹具缺少 llm；修正后完整重跑通过。
+
+本轮不新增真实模型调用；此前技术债清理的完整 108 项 Chrome 回归与 Devin 实测结果仍见上一节，未将其计作本次新功能的真实验证。独立预览使用本地模拟 Agent，包含休眠成员的 B 模型待生效与另一位成员的待审批状态，中英文截图和启动信息位于 gitignored `.local/member-model-preview/`。分支为 `feature/0.1.6.alpha`，未提交、推送或发布。
+
+成员面板经界面验收后改为名称／状态、职责、两行模型／模式设置；删除搜索框、重复模型文字及常驻上报行。待生效提示只在有未应用选择时出现；模型和模式按钮复用同一原生样式，两张卡片的设置行保持对齐。
+
+最终证据：`/tmp/dsh-member-design-final-tests.log`（711 项）、`/tmp/dsh-member-redesign-e2e.log`（最终布局的两项操作回归）、`/tmp/dsh-member-model-e2e-2.log`（模型／审批／Teams 边界），以及 `.local/member-model-preview/panel.zh.png`。最后统一提示行预留高度并用独立 Chrome 实例确认行对齐。
+
+
+### 0.1.6-alpha.1.1 发布验收
+
+模型和模式各预留固定 18px 提示位，批量操作反馈也预留一行；下拉框显示待生效选项，提示统一为“下次请求生效；当前：原值”，英文为 “Applies next request; current: …”。提示和错误使用同一位置，长文本区域内省略、悬停显示全文。中英文专项 E2E 检查模式与模型的实际选择、刷新恢复，以及提示出现前后卡片和相邻控件的坐标不变；native/ACP 入口隔离和原生按钮样式对照通过。
+
+最终 prepack 通过：70 个测试文件、711 项常规测试，类型检查、构建、严格公共类型消费、tarball 闭包均通过。最终 tarball 通过精确 npm DSH 宿主的干净安装、移除、HTTP 200 和客户端 bootstrap。真实 Codex Luna、Devin SWE-1.7 Medium、Kimi Coding 两轮与刷新通过；Claude Haiku 返回 OAuth 会话过期且无法刷新，本轮未完成真实 Claude 验证，需用户重新登录后复测。真实 Devin Teams 双模型、共享任务与依赖、成员消息和主会话审批通过。
+
+早期并行只读核查误调用无 help 分支的 stale-build 脚本，重建被忽略的 lib 导致若干回归导入失败；中断后产物不完整。恢复并固定最终构建后重测，不将这些受干扰结果计为产品通过证据。发布证据保存在 gitignored `.local/release-0.1.6-alpha.1.1/`，临时预览和旧 dist 产物不进入提交。
+
+最终完整 Chrome 回归：13 文件、109 项通过；默认跳过的 4 项真实连接已按上面的真实验证结果单独记录。成员模型与模式的两项专项另外通过。

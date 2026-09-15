@@ -9,8 +9,8 @@
 //      tsconfig.host.json aggregate + packages/<pkg>/ real directories —
 //      WorkspaceAnalyzer hard-requires package roots under <root>/packages/.
 //   2. @deepseek-ai/dsh-typert-protocol staged as a compact declaration facade
-//      with `paths` mappings in both analysis tsconfigs. Alpha.2 decorators
-//      support duplicate runtime copies, but the generator still identifies
+//      with `paths` mappings in both analysis tsconfigs. The target Typert
+//      release supports duplicate runtime copies, but the generator still identifies
 //      Typert symbols by their analysis-program declaration.
 //   3. ./typert (+ ./remote) exports/files pre-declared in package.json
 //      (validateExport reads the staged copy of the real package.json).

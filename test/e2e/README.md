@@ -2,7 +2,7 @@
 
 这组 E2E 的验收对象是 DSH 与 ACP 之间的产品行为：执行者可以不同，输入、消息、审批及详情仍应复用宿主公开能力。测试启动目标版本的完整 Loader 装配、真实 ACP 子进程和浏览器，浏览器加载构建后的插件与 DSH UI。它不使用现有单元测试的 React 或 UI primitive stub。
 
-基础 68 项用例在 Claude、Codex、Devin、Kimi 四种协议夹具下运行；另有 15 项 Teams 专项：四种协议的允许／拒绝／中断共 12 项，加上开关关闭、ACP 多模型与跨 Agent 边界、原生对照 3 项。另有 8 项 Agent 选项订阅用例，覆盖首轮就绪、延迟选项、运行中只读、重连及会话隔离；4 项宿主权限隔离用例覆盖新建会话、模型选择与首轮执行。另有 4 项模型目录恢复、2 项八成员集中审批用例，以及 1 项主会话成员管理用例，另有 4 项消息分段用例，共 106 项。夹具只是可控的协议输入，不代表真实 Agent 或具体模型已经通过验收；真实 Agent 的升级仍需要少量单独冒烟。模型文案、推理质量和回答风格不作为固定夹具的通过条件。
+基础 68 项用例在 Claude、Codex、Devin、Kimi 四种协议夹具下运行；另有 15 项 Teams 专项：四种协议的允许／拒绝／中断共 12 项，加上开关关闭、ACP 多模型与跨 Agent 边界、原生对照 3 项。另有 8 项 Agent 选项订阅用例，覆盖首轮就绪、延迟选项、运行中只读、重连及会话隔离；4 项宿主权限隔离用例覆盖新建会话、模型选择与首轮执行。另有 4 项模型目录恢复、2 项八成员集中审批用例，以及 1 项主会话成员管理用例，另有 4 项消息分段用例，再加原生终端权限冲突及 profile 更新失败后的修复、移除 2 项，加上 1 项成员独立模型选择，共 109 项。夹具只是可控的协议输入，不代表真实 Agent 或具体模型已经通过验收；真实 Agent 的升级仍需要少量单独冒烟。模型文案、推理质量和回答风格不作为固定夹具的通过条件。
 
 | 场景 | 必须保持的行为 |
 | --- | --- |
@@ -19,23 +19,25 @@
 | 审批允许 / 拒绝 | 原生审批或问题卡显示操作；选择映射回原始 optionId；拒绝不产生文件副作用；不扩大授权范围 |
 | 停止后继续 | 原生停止按钮发送 ACP cancel；当前轮次结束；下一轮仍能执行 |
 | 模型切换 | 原生 picker 的选择传到 ACP session 配置；后续请求使用新模型 |
+| 原生终端冲突 | 已打开浏览器终端时首次 ACP 执行明确失败；终端与权限保留，不写入请求历史、不发送 ACP prompt；关闭终端后同会话重试成功；已建立 ACP 会话可继续使用终端 |
+| 配置热更新 | 路由注册冲突保留原有目录、标签与可继续的 ACP 会话；修正配置后重新生效；移除 profile 后目录不残留路由 |
 | 权限隔离 | 空会话保留原生默认权限；选模型不改写用户权限（含 Custom）；真正执行 ACP 前才应用审批策略；原生历史被拒绝切换到 ACP 时不改变权限；ACP 会话不污染新会话默认值 |
 | 子代理 | Claude / Devin 有完整证据时显示原生只读详情并可刷新；Codex / Kimi 的无证据活动不制造子会话 |
 | 后台任务 | ACP 创建真实进程并显示原生 jobs 列表；刷新和离线期间完成后的重连；会话隔离；成功、失败、原生 registry 取消和 ACP 取消；父轮次内提前完成也不追加模型请求；ACP 仍可读取输出 |
 | 诊断布局 | 注入 80 条真实审计记录并分页加载；可视高度与原生轨迹一致；底部滚动不移走工具栏；诊断页隐藏对话宽度拖动条；切换详情重置内部滚动；长 JSON 折叠与展开均换行；窄窗口详情可见 |
 | 诊断分类 | 默认排除正常检查点和未比较回放；超过首批原始记录的错误仍可见；原因可搜索；允许与拒绝文案明确；技术记录分页；当前恢复状态与历史错误独立展示；通过原生设置切换中文，验证设置版本、诊断分类和审批文案；旧终端缺少终止意图时保持未知原因 |
 | 原生 provider 对照 | ACP 已注册时原生 provider 正常执行；原生工具经过 pre/post hooks，修改后的结果真正回到模型请求；不误发 ACP prompt |
-| Agent Teams | 实际调用原生 Teams 工具；同 Agent 多模型、创建时继承模型、旧成员冷恢复保留原模型；原生名册、任务面板、输入框上方多成员待处理卡、折叠与新增请求展开、刷新恢复、中英文与窄屏；首轮及冷恢复审批策略；协调免额外审批、成员普通操作保留审批；成员消息和后续唤醒；成员状态与真实模型、按 ACP 类型分组的模式菜单与批量入口、运行中只读、休眠成员保存模式、恢复前应用与刷新恢复；任务 CRUD、依赖与版本冲突；跨 Agent 新会话和直接 API 拒绝 |
+| Agent Teams | 实际调用原生 Teams 工具；同 Agent 多模型、创建时继承模型、旧成员冷恢复保留原模型；原生名册、任务面板、输入框上方多成员待处理卡、折叠与新增请求展开、刷新恢复、中英文与窄屏；首轮及冷恢复审批策略；协调免额外审批、成员普通操作保留审批；成员消息和后续唤醒；成员独立模型下拉、当前／待生效模型、刷新与两次冷唤醒的实际请求头、Lead 与全局默认隔离；成员状态与真实模型、按 ACP 类型分组的模式菜单与批量入口、运行中只读、休眠成员保存模式、恢复前应用与刷新恢复；任务 CRUD、依赖与版本冲突；跨 Agent 新会话和直接 API 拒绝 |
 | 主会话集中审批 | 八个子会话的逐项与批量允许／拒绝；刷新后继续审批、批量后新审批保持待处理、中英文、窄屏；始终留在 Lead，决定写入各自子会话，新请求不被批量允许 |
 | 模型目录恢复 | 四种协议检查失败保留原生失败项；断网重连后再次检查，已打开的模型菜单更新，无须切换模型；原会话历史不变且可继续对话 |
 
-Teams 专项：`pnpm test:e2e test/e2e/agent-teams.e2e.mjs test/e2e/teams-boundaries.e2e.mjs test/e2e/team-approvals.e2e.mjs test/e2e/team-management.e2e.mjs`。真实 Teams 冒烟沿用已授权的 Agent 登录与便宜模型选择，额外设置 `DSH_E2E_LIVE=1 DSH_E2E_LIVE_TEAMS=1`，运行 `test/e2e/live-agents.e2e.mjs`；可以用 `DSH_E2E_LIVE_PROFILES=devin` 限定单个 Agent。真实断言必须观察到宿主创建成员、传递消息和完成有依赖的两项共享任务：成员领取并完成计算，Lead 领取并完成复核；任务负责人和原生面板也必须一致。模型口头声称成功不能通过。
+Teams 专项：`pnpm test:e2e test/e2e/agent-teams.e2e.mjs test/e2e/teams-boundaries.e2e.mjs test/e2e/team-approvals.e2e.mjs test/e2e/team-management.e2e.mjs test/e2e/team-model-selection.e2e.mjs`。真实 Teams 冒烟沿用已授权的 Agent 登录与便宜模型选择，额外设置 `DSH_E2E_LIVE=1 DSH_E2E_LIVE_TEAMS=1`，运行 `test/e2e/live-agents.e2e.mjs`；可以用 `DSH_E2E_LIVE_PROFILES=devin` 限定单个 Agent。真实断言必须观察到宿主创建成员、传递消息和完成有依赖的两项共享任务：成员领取并完成计算，Lead 领取并完成复核；任务负责人和原生面板也必须一致。模型口头声称成功不能通过。
 
 真实双模型检查增加 `DSH_E2E_LIVE_TEAMS_MULTIMODEL=1 DSH_E2E_LIVE_PROFILES=devin`，分别使用 SWE-1.7 Medium 与 GPT-5.4 Mini Low 创建成员。`DSH_E2E_RETAIN=1 DSH_E2E_BROWSER_CHANNEL=chrome` 打开并保留随窗口大小自适应的本机 Chrome；该模式要求只选一个 Agent，完成断言后暂停测试退出，不能作为 CI 完成信号。实例地址、重新打开所需的 `authenticatedUrl` 与专属停止文件写入仅当前用户可读写的 `.local/e2e-live-teams/review-instance.json`；其中登录链接仅供本地查看，不要分享。需要关闭时创建其中的 `stopFile`，才会清理对应宿主和浏览器。
 
 `DSH_E2E_LIVE_TEAMS_APPROVAL=1` 额外创建一个真实新成员，验证首次系统提示词为 `ask`、写文件前主会话出现待处理卡、原生允许一次之后才产生临时文件。建议限定 `DSH_E2E_LIVE_PROFILES=devin`，与双模型检查一起运行。
 
-已知宿主显示限制：rc.2 的 Teams 名单对休眠成员回退使用 Lead 的初始 `Agent.options.model`，主会话标签也可能滞后。多模型执行应以成员持久化的 `request/header` 为准；不要为使断言通过而把名单标签当作实际调用模型。本插件不复制原生面板或修改宿主的展示数据。原生完成通知会复制子会话的 reasoning block，但 ContextBody 尚不能渲染它，因此该通知中可能出现 Unknown content；成员详情的原生推理展示不受影响。
+已知宿主显示限制：当前宿主的 Teams 名单对休眠成员回退使用 Lead 的初始 `Agent.options.model`，主会话标签也可能滞后。多模型执行应以成员持久化的 `request/header` 为准；不要为使断言通过而把名单标签当作实际调用模型。本插件不复制原生面板或修改宿主的展示数据。原生完成通知会复制子会话的 reasoning block，但 ContextBody 尚不能渲染它，因此该通知中可能出现 Unknown content；成员详情的原生推理展示不受影响。
 
 集中审批调用宿主原有 pending approval 的一次性回答接口。通用提问／表单不参与批量操作；目标宿主的 `userQuestions.ask()` 会以 `DELEGATED_CALLER` 拒绝由另一个存活 Agent 管理的子会话。本插件不绕过该限制，也不把表单自动视为普通审批。
 
@@ -62,7 +64,7 @@ pnpm test:e2e
 
 测试使用临时工作区和独立 DSH_HOME，结束后销毁浏览器、Agent 进程与测试目录。失败截图写入 gitignored `.local/e2e-failures/`。断言使用原生组件的数据标记及可访问名称，不依赖 CSS 哈希、整页像素截图或真实模型措辞；默认不重试失败测试。浏览器回归期间不要并行运行 build、pack 或默认安装检查：prepack 会清理并重建共享的 `lib` 目录；应按顺序执行，或向安装检查传入已生成的 tarball。
 
-rc.2 的 `dsh-client-store` Node 入口仍引用 `zustand`、`immer`，但上游只将它们声明为开发依赖。本项目暂时精确声明这两项 devDependencies，供普通 Node 测试加载真实 Store；浏览器继续使用宿主模块表，插件运行时 dependencies 不增加。上游修复 Node 入口依赖闭包后可移除该补偿。
+当前验证版本的 `dsh-client-store` Node 入口仍引用 `zustand`、`immer`，但上游只将它们声明为开发依赖。本项目暂时精确声明这两项 devDependencies，供普通 Node 测试加载真实 Store；浏览器继续使用宿主模块表，插件运行时 dependencies 不增加。上游修复 Node 入口依赖闭包后可移除该补偿。
 
 宿主目标以 `package.json` 的 `engines.dsh` 为准，开发脚本和 CI 源码标签从这里读取；依赖声明通过一致性检查，文档不再重复声明当前版本。发布时 `npm pack` 的 prepack 完整执行类型检查、测试和构建，再由安装门禁验证同一个 tarball。
 

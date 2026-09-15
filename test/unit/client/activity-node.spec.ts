@@ -170,11 +170,11 @@ describe('ACP activity conversation node', () => {
 
   it('keeps activity order stable while replacing a running row in place', () => {
     const store = new AcpActivityJournalStore()
-    store.apply({ type: 'opened', cursor: 2, head: 2, activities: [
+    store.replace(2, [
       { dshSessionId: 'dsh-1', ownerDshSessionId: 'dsh-1', promptAnchorMessageId: 'user-3', activityId: 'b', activitySeq: 2, revisionSeq: 2, time: 2, kind: 'tool', status: 'running', presentation: 'B' },
       { dshSessionId: 'dsh-1', ownerDshSessionId: 'dsh-1', promptAnchorMessageId: 'user-3', activityId: 'a', activitySeq: 1, revisionSeq: 1, time: 1, kind: 'tool', status: 'running', presentation: 'A' },
-    ] })
-    store.apply({ type: 'entry', activity: { dshSessionId: 'dsh-1', ownerDshSessionId: 'dsh-1', promptAnchorMessageId: 'user-3', activityId: 'a', activitySeq: 1, revisionSeq: 3, time: 3, kind: 'tool', status: 'completed', presentation: 'A done' } })
+    ])
+    store.append({ dshSessionId: 'dsh-1', ownerDshSessionId: 'dsh-1', promptAnchorMessageId: 'user-3', activityId: 'a', activitySeq: 1, revisionSeq: 3, time: 3, kind: 'tool', status: 'completed', presentation: 'A done' })
     expect(store.values('dsh-1', 'user-3').map((row) => `${row.activityId}:${row.status}`)).toEqual(['a:completed', 'b:running'])
   })
 
@@ -199,10 +199,10 @@ describe('ACP activity conversation node', () => {
       activityId: id, activitySeq: 1, revisionSeq, time: revisionSeq, kind: 'tool' as const,
       status: 'running' as const, presentation: id,
     })
-    store.apply({ type: 'opened', cursor: 2, head: 2, activities: [row('anchor-a', 'a', 1), row('anchor-b', 'b', 2)] })
+    store.replace(2, [row('anchor-a', 'a', 1), row('anchor-b', 'b', 2)])
     const indexes = store as unknown as { readonly rowsByAnchor: Map<string, Map<string, unknown>> }
     const bIndex = indexes.rowsByAnchor.get('dsh-1\u0000anchor-b')
-    store.apply({ type: 'entry', activity: { ...row('anchor-a', 'a', 3), status: 'completed' } })
+    store.append({ ...row('anchor-a', 'a', 3), status: 'completed' })
     expect(indexes.rowsByAnchor.get('dsh-1\u0000anchor-b')).toBe(bIndex)
     expect(store.values('dsh-1', 'anchor-b').map(item => item.activityId)).toEqual(['b'])
   })

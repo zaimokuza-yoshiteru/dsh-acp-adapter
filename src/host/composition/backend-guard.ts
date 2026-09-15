@@ -7,8 +7,8 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { LlmError } from '@deepseek-ai/dsh-llm'
 import type { LlmCallConfig } from '@deepseek-ai/dsh-llm'
-import type { Session } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-projection'
+import { readSessionFacts } from './session-facts.ts'
 import type { AcpSidecar, AcpBindingLookup } from '../../persistence/sidecar.ts'
 import { acpAgentIdFromRoute } from '../../domain/session/agent-config.ts'
 
@@ -61,20 +61,6 @@ export function classifyBackendTransition(input: BackendTransitionInput): Backen
   return input.bindingProfileId === nextProfile ? 'allow-same-acp' : 'recovery-conflict'
 }
 
-/** Return whether semantic history exists before the current live turn. */
-export function hasPriorSemanticHistory(session: Pick<Session, 'snapshotEvents'>): boolean {
-  const events = session.snapshotEvents()
-  const lastTurnStart = events.findLastIndex(event => event.type === 'turn/start')
-  const prefix = lastTurnStart < 0 ? events : events.slice(0, lastTurnStart)
-  return prefix.some(event => (
-    event.type === 'user/message'
-    || event.type === 'assistant/message'
-    || event.type === 'tool/call'
-    || event.type === 'tool/result'
-    || event.type === 'request/header'
-  ))
-}
-
 export interface AcpBackendGuardOptions {
   readonly sidecar: AcpSidecar
 }
@@ -116,7 +102,7 @@ export function installAcpBackendGuard(ctx: Context, options: AcpBackendGuardOpt
       const session = payload.agent.session
       const projection = projectionCtx.sessionProjections.stateOf(session, 'modelSelection')
       const targetProfile = acpAgentIdFromRoute(resolved.provider)
-      const priorHistory = hasPriorSemanticHistory(session)
+      const priorHistory = readSessionFacts(projectionCtx, session).priorSemanticHistory
       if (projection === undefined) {
         if (targetProfile === undefined || !priorHistory) return resolved
         throw transitionError('ACP_BACKEND_RECOVERY_REQUIRED', 'DSH model-selection state is unavailable; ACP cannot safely adopt this session')

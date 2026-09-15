@@ -1,3 +1,4 @@
+import { withSessionFacts } from '../../support/session-facts.ts'
 // installed-profile-registry.spec.ts — settings schema/纯函数核心 + 注册/替换调用序列。
 //
 // 覆盖：
@@ -23,7 +24,7 @@
 //
 // 纯内存测试：不 spawn 进程（probe 行为在 llm-stub.spec.ts 用真 mock 覆盖）。
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import os from 'node:os';
 import type { Context } from '@deepseek-ai/cordis';
 import {
@@ -187,6 +188,10 @@ function fakeHarness(options: { failOnRoute?: string } = {}): FakeHarness {
     },
     effect: (_setup: () => (() => void), _name?: string): void => {},
     llm,
+    sessionProjections: {
+      register: () => () => {},
+      stateOf: (session: { facts: unknown; permissions: unknown }, key: string) => key === 'acpExecution' ? session.facts : key === 'permissions' ? session.permissions : undefined,
+    },
     logger: {
       warn: (line: string): void => {
         warnings.push(line);
@@ -597,7 +602,7 @@ describe('installInstalledProfileRegistry：注册/替换调用序列', () => {
       const events: Array<{ type: string; data: unknown }> = [
         { type: 'approval/policy', data: { policy: 'never', source: 'delegation' } },
       ];
-      return { header: { origin: 'subagent' }, requestHeader: () => undefined, events, snapshotEvents: () => [...events], append: (type: string, data: unknown) => events.push({ type, data }) };
+      return withSessionFacts({ header: { origin: 'subagent' }, requestHeader: () => undefined, events, snapshotEvents: () => [...events], append: (type: string, data: unknown) => events.push({ type, data }) });
     };
     const acp = session();
     claimed({ agent: { options: { provider: 'acp-devin' }, session: acp } });
@@ -614,6 +619,34 @@ describe('installInstalledProfileRegistry：注册/替换调用序列', () => {
     const removed = session();
     claimed({ agent: { options: { provider: 'acp-devin' }, session: removed } });
     expect(removed.events).toHaveLength(1);
+  });
+
+  it('defers an access veto to the awaited pre-step gate and allows a later retry', async () => {
+    const { ctx, settings, listeners } = fakeHarness();
+    installInstalledProfileRegistry(ctx);
+    await settings.replace({ agents: { devin: devinAgent } });
+    const claimed = listeners.get('agent/inbox/claimed')!;
+    const preStep = listeners.get('agent/pre-step')!;
+    let blocked = true;
+    const events: Array<{ type: string; data: unknown }> = [];
+    const session = withSessionFacts({
+      header: { origin: 'subagent' }, requestHeader: () => undefined,
+      snapshotEvents: () => [...events],
+      append: (type: string, data: unknown) => {
+        if (blocked) throw new Error('Close browser terminals before changing the Session sandbox mode');
+        events.push({ type, data });
+      },
+    });
+    const payload = { agent: { options: { provider: 'acp-devin' }, session } };
+    const next = vi.fn(async () => ({ kind: 'enter' }));
+    expect(() => claimed(payload)).not.toThrow();
+    await expect(preStep(payload, next)).rejects.toMatchObject({ code: 'ACP_BROWSER_TERMINALS_OPEN' });
+    expect(next).not.toHaveBeenCalled();
+    expect(events).toEqual([]);
+    blocked = false;
+    claimed(payload);
+    await expect(preStep(payload, next)).resolves.toEqual({ kind: 'enter' });
+    expect(events.at(-1)).toEqual({ type: 'approval/policy', data: { policy: 'ask' } });
   });
 
   it('replaces only ACP delegation context after downstream assembly, leaving native policy and other plugins intact', async () => {

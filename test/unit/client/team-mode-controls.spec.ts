@@ -1,5 +1,6 @@
 import { expect, it, vi } from 'vitest'
 import { applyTeamMode, teamModeChoices } from '../../../src/client/ui/team-mode-controls.ts'
+import { teamModeLabel } from '../../../src/contract/session-modes.ts'
 import type { AcpAgentSessionSnapshotView, AcpTeamMemberView } from '../../../src/client/data/acp-remote.ts'
 const snapshot = (patch: Partial<AcpAgentSessionSnapshotView> = {}): AcpAgentSessionSnapshotView => ({ sessionId: 'a', profileId: 'devin', freshness: 'live', editable: true, configOptions: null, modes: [{ id: 'code', name: 'Code' }, { id: 'plan', name: 'Plan' }], currentModeId: 'code', contextUsage: null, note: null, ...patch })
 const member = (sessionId: string, patch: Partial<AcpTeamMemberView> = {}): AcpTeamMemberView => ({ sessionId, profileId: 'devin', name: sessionId, status: 'idle', model: null, description: null, ...patch })
@@ -9,6 +10,12 @@ it('limits the menu to canonical modes, without model, reasoning or unrelated se
     { id: 'custom-mode', category: 'mode', type: 'select', name: 'Session Mode', currentValue: 'code', options: [{ value: 'plan', name: 'Plan' }] },
   ] }))
   expect(choices).toEqual([{ id: 'plan', name: 'Plan', label: 'Session Mode: Plan', current: false, write: { kind: 'config', id: 'custom-mode', value: 'plan' } }])
+})
+it('labels pending modes first while preserving confirmed values outside the advertised roster', () => {
+  expect(teamModeLabel(snapshot({ pendingModeId: 'plan' }), 'Unknown')).toBe('Plan')
+  expect(teamModeLabel(snapshot({ pendingModeId: 'removed' }), 'Unknown')).toBe('Code')
+  expect(teamModeLabel(snapshot({ currentModeId: 'confirmed', modes: [] }), 'Unknown')).toBe('confirmed')
+  expect(teamModeLabel(snapshot({ configOptions: [{ id: 'mode', type: 'select', name: 'Mode', currentValue: 'confirmed', options: [] }], modes: null, currentModeId: null }), 'Unknown')).toBe('confirmed')
 })
 it('changes captured compatible members once and never includes other profiles or late arrivals', async () => {
   const write = vi.fn(async () => {})

@@ -25,7 +25,7 @@ import { buildAcpSpawnPlan } from '../../domain/policy/sandbox.ts'
 import { descriptorOf } from '../../domain/session/agent-config.ts'
 import { DispatchLedger } from '../../runtime/session/dispatch-ledger.ts'
 import type { DispatchLedgerStore } from '../../runtime/session/dispatch-ledger.ts'
-import { admitCurrentStep, snapshotSessionEvents } from '../../domain/session/current-step-admission.ts'
+import { admitCurrentStep } from '../../domain/session/current-step-admission.ts'
 import { AcpAdmissionError } from '../../domain/session/current-step-admission.ts'
 import type { CurrentStepProof, SessionLike } from '../../domain/session/current-step-admission.ts'
 import { ExternalDelegationNormalizer } from '../../domain/subagent/external-delegation.ts'
@@ -34,7 +34,6 @@ import { acpCanonicalHash16 } from '../../persistence/sidecar.ts'
 import { acpOptionsSnapshotOf } from '../../persistence/options-snapshot.ts'
 import type { AcpActivityKind, AcpActivityStatus, AcpBindingData, AcpFileSystemAuditData, AcpRecoveryState, AcpSidecar } from '../../persistence/sidecar.ts'
 import type { AcpSessionForkReason, AcpTerminalAuditData } from '../../domain/policy/events.ts'
-import { acpReplayPayloadOf } from '../../domain/session/acp-replay-payload.ts'
 import { redactSecretText } from '../../domain/observability/redaction.ts'
 import { hostSystemPrompt } from '../../domain/session/host-system-prompt.ts'
 import { AcpPromptContentError, toAcpPrompt } from '../../domain/session/prompt-content.ts'
@@ -90,23 +89,10 @@ type AgentSessionOptionWrite =
   | { readonly kind: 'config'; readonly id: string; readonly value: string | boolean }
   | { readonly kind: 'mode'; readonly id: string }
 
-function hasOpenTurn(session: SessionLike | undefined): boolean {
-  if (session === undefined) return false
-  const events = snapshotSessionEvents(session)
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const type = events[index]?.type
-    if (type === 'turn/start') return true
-    if (type === 'turn/end') return false
-  }
-  return false
-}
-
 /** Prove the child seed ends at the parent's durable ACP binding head. */
 function isLatestForkCut(session: SessionLike | undefined, parentSessionId: string, parentBinding: AcpBindingData, currentFingerprint: unknown): boolean {
-  if (session === undefined || !Number.isInteger(session.inheritedEventCount) || session.inheritedEventCount < 0) return false
-  const seed = snapshotSessionEvents(session).slice(0, session.inheritedEventCount)
-  if (seed.length < session.inheritedEventCount) return false
-  const payload = [...seed].reverse().map(acpReplayPayloadOf).find((value) => value !== undefined)
+  if (session === undefined || session.facts.inheritedRemaining !== 0) return false
+  const payload = session.facts.forkReplay ?? undefined
   return payload !== undefined
     && payload.ownerDshSessionId === parentSessionId
     && payload.profileId === parentBinding.profileId
@@ -651,13 +637,7 @@ export class AcpProfileAdapter extends LlmAdapter {
       }
     }
     if (!modelChanged && options.reasoningEffort === undefined) return
-    if (modelChanged) {
-      try {
-        await applyOption(modelOption, options.model)
-      } catch (error) {
-        throw error
-      }
-    }
+    if (modelChanged) await applyOption(modelOption, options.model)
     if (options.reasoningEffort === undefined) return
     // A model change can change the available reasoning values. Always inspect
     // the confirmed response snapshot rather than the pre-change object.
@@ -725,7 +705,7 @@ export class AcpProfileAdapter extends LlmAdapter {
       }
       const runtime = self.runtimes.get(runtimeKey) ?? self.runtimeFactory(self.runtimeOptionsFor(sessionKey, profile, session?.header?.cwd ?? (() => { throw new LlmError('ACP requires the DSH session working directory', 'ACP_SESSION_CWD_UNAVAILABLE') })()))
       self.runtimes.set(runtimeKey, runtime)
-      if (session !== undefined) self.runtimeOwners.set(runtime, session)
+      if (session !== undefined) self.runtimeOwners.set(runtime, session.identity ?? session)
       try {
         let validatedPrompt: acp.ContentBlock[]
         // Capability negotiation is deliberately before session/new, restore,
@@ -848,7 +828,7 @@ export class AcpProfileAdapter extends LlmAdapter {
                 forkReason = 'parent-recovery-required'
               } else if (self.sessionOf(parentSessionId) === undefined) {
                 forkReason = 'parent-binding-unavailable'
-              } else if (hasOpenTurn(self.sessionOf(parentSessionId))) {
+              } else if (self.sessionOf(parentSessionId)?.facts.turnOpen === true) {
                 forkReason = 'parent-not-idle'
               } else if (!isLatestForkCut(session, parentSessionId, parentBinding, currentFingerprint)) {
                 forkReason = 'seed-not-latest-semantic-boundary'
@@ -917,8 +897,7 @@ export class AcpProfileAdapter extends LlmAdapter {
             // created; a restart can never observe two uncommitted display-only
             // events after an otherwise healthy binding.
             projectNativeAgentAccess(session)
-            const dshHead = (session === undefined ? [] : snapshotSessionEvents(session))
-              .reduce((max, event) => Math.max(max, event.seq), admissionProof?.startSeq ?? 0)
+            const dshHead = Math.max((session?.seq ?? 0) - 1, admissionProof?.startSeq ?? 0)
             const bindingData: AcpBindingData = {
             provider: options.provider,
             agentSessionId: runtime.acpSessionId ?? (() => { throw new LlmError('ACP runtime did not return a session id', 'ACP_SESSION_UNAVAILABLE') })(),
@@ -1376,7 +1355,7 @@ export class AcpProfileAdapter extends LlmAdapter {
     if (this.sidecar === undefined || session === undefined) return undefined
     const current = await this.sidecar.readLatestBinding(sessionId as never)
     if (current?.status !== 'ok') return undefined
-    const head = snapshotSessionEvents(session).reduce((max, event) => Math.max(max, event.seq), current.binding.dshCommittedSeq)
+    const head = Math.max(session.seq - 1, current.binding.dshCommittedSeq)
     const next: AcpBindingData = {
       ...current.binding,
       dshCommittedSeq: Math.max(head, current.binding.dshCommittedSeq),
@@ -1428,7 +1407,7 @@ export class AcpProfileAdapter extends LlmAdapter {
     const runtimeKey = `${sessionId}:${generation.id}`
     const runtime = this.runtimeFactory(this.runtimeOptionsFor(sessionId, profile, cwd))
     this.runtimes.set(runtimeKey, runtime)
-    this.runtimeOwners.set(runtime, session)
+    this.runtimeOwners.set(runtime, session.identity ?? session)
     try {
       if (typeof runtime.restore !== 'function') throw new Error('ACP runtime cannot restore the original session')
       await runtime.restore(binding)

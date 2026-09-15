@@ -14,3 +14,15 @@ export function teamModeChoices(snapshot: AcpAgentSessionSnapshotView) {
     write: { kind: 'mode', id: mode.id } as AcpAgentSessionOptionWrite }))
 }
 
+/** Display the effective ACP mode, including an uncommitted next-run choice. */
+export function teamModeLabel(snapshot: AcpAgentSessionSnapshotView, fallback: string): string {
+  const choices = teamModeChoices(snapshot)
+  const selected = (snapshot.pendingModeId === undefined || snapshot.pendingModeId === null
+    ? undefined
+    : choices.find(choice => choice.id === snapshot.pendingModeId))
+    ?? choices.find(choice => choice.current)
+  if (selected !== undefined) return selected.name
+  const modeOption = snapshot.configOptions?.find(option => normalizeAcpConfigOptionKey(option.id) === 'mode' || normalizeAcpConfigOptionKey(option.category ?? '') === 'mode')
+  if (modeOption?.type === 'select' && modeOption.currentValue !== '') return modeOption.currentValue
+  return snapshot.currentModeId ?? fallback
+}

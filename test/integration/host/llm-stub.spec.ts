@@ -215,7 +215,9 @@ describe('probe 模型目录与缓存', () => {
     set({ [ROUTE]: { ...config, env: { ...config.env, NEW_KEY: 'x' } } });
     await adapter.listModels(ROUTE);
     expect(probeCount(logPath)).toBe(3);
-  });
+  // Three sequential real child-process probes include startup and teardown.
+  // Keep a bounded budget that also works alongside the browser regression.
+  }, 15_000);
 
  it('ok 条目带 cleanup 事实与 capability hash（agent version 经 agentInfo 保留）', async () => {
     const { config } = mockAgent('happy');

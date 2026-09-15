@@ -1,3 +1,4 @@
+import { withSessionFacts } from '../../support/session-facts.ts'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -26,11 +27,11 @@ function testSidecar(root: string): AcpSidecar {
 const profile = (): AcpAgentConfig => ({ name: 'Activity test', command: 'agent', args: [], env: {} })
 const claudeProfile = (): AcpAgentConfig => ({ name: 'Claude', command: 'claude-agent-acp', args: [], env: {}, runtime: 'claude' })
 const user = (text: string) => createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })
-const session = (message: ReturnType<typeof user>): SessionLike => ({
+const session = (message: ReturnType<typeof user>): SessionLike => (withSessionFacts({
   header: { cwd: os.tmpdir() },
   inheritedEventCount: 0,
   snapshotEvents: () => [{ type: 'step/start', seq: 1, data: { turn: 1, step: 0 } }, { type: 'user/message', seq: 2, data: message }],
-})
+}))
 const seam = (): { ok: true; seam: never } => ({ ok: true, seam: undefined as never })
 const request = (id: string, message: ReturnType<typeof user>): GenerateOptions => markAgentLoopRequest({ provider: 'acp-test', model: 'model-a', sessionId: id as never, messages: [message] })
 

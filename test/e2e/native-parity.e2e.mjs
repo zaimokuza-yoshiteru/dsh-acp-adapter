@@ -170,7 +170,7 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
       for (let index = 0; index < 80; index += 1) {
         await sidecar.append(id, { kind: 'degradation', data: {
           code: 'unsupported-tool-content', toolCallId: `audit-layout-${index}`,
-          items: Array.from({ length: 18 }, (_, item) => ({ type: `item-${item}`, reason: 'long-unbroken-value-'.repeat(5) })),
+          items: Array.from({ length: 18 }, (_, item) => ({ type: `item-${item}`, reason: 'long-unbroken-value-'.repeat(item === 0 ? 40 : 5) })),
           keptPreviewChars: 0, truncated: false,
         } })
       }
@@ -213,11 +213,41 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
     await tree.getByRole('button', { name: 'Expand node', exact: true }).first().click()
     await tree.getByRole('button', { name: 'Expand node', exact: true }).first().click()
     await checkWidth()
+    // Compact native object previews no longer make this payload overflow.
+    // Open more real entries to exercise scrolling without exceeding the
+    // diagnostic payload limit (which intentionally falls back to text).
+    for (let index = 0; index < 8; index += 1) {
+      await tree.getByRole('button', { name: 'Expand node', exact: true }).first().click()
+    }
+    await checkWidth()
+    const firstWrapLines = tree.getByRole('button', { name: 'Wrap lines', exact: true }).first()
+    await expect.poll(() => firstWrapLines.getAttribute('aria-pressed')).toBe('true')
+    await firstWrapLines.click()
+    await expect.poll(() => firstWrapLines.getAttribute('aria-pressed')).toBe('false')
+
+    // A newly opened inspector samples the registration-scoped preference.
+    await audit.locator('tbody tr').nth(78).click()
+    const secondTree = details.getByRole('tree', { name: 'Diagnostic record JSON', exact: true })
+    for (let index = 0; index < 10; index += 1) {
+      await secondTree.getByRole('button', { name: 'Expand node', exact: true }).first().click()
+    }
+    const secondWrapLines = secondTree.getByRole('button', { name: 'Wrap lines', exact: true }).first()
+    await expect.poll(() => secondWrapLines.getAttribute('aria-pressed')).toBe('false')
+    await secondWrapLines.click()
+    await expect.poll(() => secondWrapLines.getAttribute('aria-pressed')).toBe('true')
+
     const detailScroll = details.locator('[data-audit-detail-scroll]')
     await detailScroll.evaluate(element => { element.scrollTop = element.scrollHeight })
     expect(await detailScroll.evaluate(element => element.scrollTop)).toBeGreaterThan(0)
-    await audit.locator('tbody tr').nth(78).click()
+    await audit.locator('tbody tr').nth(79).click()
     await expect.poll(() => detailScroll.evaluate(element => element.scrollTop)).toBe(0)
+    for (let index = 0; index < 10 && await tree.getByRole('button', { name: 'Wrap lines', exact: true }).count() === 0; index += 1) {
+      await tree.getByRole('button', { name: 'Expand node', exact: true }).first().click()
+    }
+    await host.ctx.settings.replace('locale', { preference: 'zh' })
+    const chineseWrap = page.getByRole('button', { name: '自动换行', exact: true }).first()
+    await expect.poll(() => chineseWrap.getAttribute('aria-pressed')).toBe('true')
+    await host.ctx.settings.replace('locale', { preference: 'en' })
     await close.click()
     await page.setViewportSize({ width: 680, height: 720 })
     await audit.locator('tbody tr').last().click()
@@ -308,7 +338,10 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
   })
 
   it('uses the native composer, attachment history, assistant stream and tool presentation across reload', async () => {
-    await page.locator('input[type="file"]').setInputFiles({ name: 'parity.txt', mimeType: 'text/plain', buffer: Buffer.from('E2E_UPLOAD_BYTES') })
+    await page.getByRole('button', { name: 'Add files or run commands', exact: true }).click()
+    const fileChooser = page.waitForEvent('filechooser')
+    await page.getByRole('option', { name: 'File', exact: true }).click()
+    await (await fileChooser).setFiles({ name: 'parity.txt', mimeType: 'text/plain', buffer: Buffer.from('E2E_UPLOAD_BYTES') })
     const { settled } = await send('E2E_MESSAGE')
     const id = await settled
     await page.getByText('E2E_DONE mock-model-a', { exact: true }).waitFor()

@@ -1,3 +1,4 @@
+import { withSessionFacts } from '../../support/session-facts.ts'
 import { describe, expect, it } from 'vitest'
 import { markAgentLoopRequest, createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
@@ -14,7 +15,7 @@ describe('current-step ACP admission', () => {
     const old = user('old')
     const current = user('current')
     const injected = { ...user('skill'), source: { kind: 'plugin' as const, plugin: 'skill' } }
-    const session = {
+    const session = withSessionFacts({
       header: { cwd: '/workspace' },
       inheritedEventCount: 0,
       snapshotEvents: () => [
@@ -23,7 +24,7 @@ describe('current-step ACP admission', () => {
         { type: 'user/message', seq: 2, data: injected },
         { type: 'user/message', seq: 3, data: current },
       ],
-    }
+    })
     const proof: Array<{
       acceptedMessageIds: readonly string[]
       anchorMessageId: string
@@ -37,11 +38,11 @@ describe('current-step ACP admission', () => {
 
   it('fails closed when no step is open', () => {
     const message = user('current')
-    expect(() => admitCurrentStep(request([message]), {
+    expect(() => admitCurrentStep(request([message]), withSessionFacts({
       header: { cwd: '/workspace' },
       inheritedEventCount: 0,
       snapshotEvents: () => [{ type: 'user/message', seq: 0, data: message }],
-    })).toThrowError(new AcpAdmissionError('ACP_NO_OPEN_STEP'))
+    }))).toThrowError(new AcpAdmissionError('ACP_NO_OPEN_STEP'))
   })
 
   it('admits a copied request after DSH finalizes adapter options', () => {
@@ -52,14 +53,14 @@ describe('current-step ACP admission', () => {
     // session/message evidence rather than process-local object identity.
     const copied: GenerateOptions = { ...original, messages: [...original.messages] }
     const proofs: Array<{ projectionFiltered: boolean }> = []
-    expect(admitCurrentStep(copied, {
+    expect(admitCurrentStep(copied, withSessionFacts({
       header: { cwd: '/workspace' },
       inheritedEventCount: 0,
       snapshotEvents: () => [
         { type: 'step/start', seq: 1, data: { turn: 1, step: 0 } },
         { type: 'user/message', seq: 2, data: message },
       ],
-    }, proof => proofs.push(proof))).toEqual([message])
+    }), proof => proofs.push(proof))).toEqual([message])
     expect(proofs[0]?.projectionFiltered).toBe(false)
   })
 
@@ -80,9 +81,9 @@ describe('current-step ACP admission', () => {
       { type: 'user/message', seq: 2004, data: first },
     ]
     const proofs: any[] = []
-    const admitted = admitCurrentStep(request([first, ...old, injected, second]), {
+    const admitted = admitCurrentStep(request([first, ...old, injected, second]), withSessionFacts({
       header: { cwd: '/workspace' }, inheritedEventCount: 0, snapshotEvents: () => events,
-    }, proof => proofs.push(proof))
+    }), proof => proofs.push(proof))
     expect(admitted).toEqual([injected, second, first])
     expect(proofs[0]?.projectionFiltered).toBe(true)
     expect(JSON.stringify(proofs[0])).not.toContain(String(old[0]?.id))
@@ -92,7 +93,7 @@ describe('current-step ACP admission', () => {
     const earlier = user('already dispatched')
     const followup = createUserMessage({ content: [{ type: 'text', text: 'Verify the result' }], source: { kind: 'plugin', plugin: 'review' } })
     const unlogged = user('not admitted by the host')
-    expect(admitCurrentStep(request([earlier, unlogged, followup]), {
+    expect(admitCurrentStep(request([earlier, unlogged, followup]), withSessionFacts({
       inheritedEventCount: 0,
       snapshotEvents: () => [
         { type: 'step/start', seq: 1, data: { turn: 1, step: 1 } },
@@ -101,6 +102,6 @@ describe('current-step ACP admission', () => {
         { type: 'step/start', seq: 4, data: { turn: 1, step: 2 } },
         { type: 'user/message', seq: 5, data: followup },
       ],
-    })).toEqual([followup])
+    }))).toEqual([followup])
   })
 })

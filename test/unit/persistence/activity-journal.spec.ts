@@ -205,16 +205,16 @@ describe('ACP client activity journal cursor', () => {
 
   it('keeps opening state and applies contiguous reconnect revisions', () => {
     const store = new AcpActivityJournalStore()
-    store.apply({ type: 'opened', cursor: 2, head: 2, activities: [row(2, 'tool-1', 'running')] })
-    store.applyPage([row(3, 'tool-1', 'completed')], 3)
+    store.replace(2, [row(2, 'tool-1', 'running')])
+    store.append(row(3, 'tool-1', 'completed'))
     expect(store.head).toBe(3)
     expect(store.values('session-1', 'user-1')[0]?.status).toBe('completed')
   })
 
   it('rejects a filtered/non-contiguous page so the caller must repair from its cursor', () => {
     const store = new AcpActivityJournalStore()
-    store.apply({ type: 'opened', cursor: 2, head: 2, activities: [] })
-    expect(() => store.apply({ type: 'entry', activity: row(4) })).toThrow('journal gap')
+    store.replace(2, [])
+    expect(() => store.append(row(4))).toThrow('journal gap')
   })
 })
 

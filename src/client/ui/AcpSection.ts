@@ -651,7 +651,7 @@ function textField(props: {
     })
     : h(Input, {
       id: props.id,
-      className: invalid ? `${css.input} ${css.inputInvalid}` : css.input,
+      className: invalid ? `${css.input} ${css.inputInvalid}` : css.input!,
       type: 'text',
       value: props.value,
       disabled: props.disabled,

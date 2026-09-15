@@ -285,17 +285,9 @@
   white-space: nowrap;
 }
 
-/* JsonTree has no wrapping option in alpha.2. Keep its native interaction
-   and copy actions, adapting only geometry inside this audit payload. The
-   details body owns vertical scrolling, so the tree needs no nested scroller. */
+/* Keep the native JsonTree interaction and copy actions; the details body owns
+   vertical scrolling, so the tree needs no nested scroller. */
 .jsonPayload.jsonPayload { flex: none; min-width: 0; overflow: visible; }
-.jsonPayload > div:first-child,
-.jsonPayload [role='tree'] {
-  width: 100%;
-  min-width: 0;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
 
 .detailPayload {
   box-sizing: border-box;

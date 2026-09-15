@@ -1,3 +1,4 @@
+import { withSessionFacts } from '../../support/session-facts.ts'
 import { describe, expect, it, vi } from 'vitest'
 import os from 'node:os'
 import fs from 'node:fs'
@@ -22,7 +23,7 @@ const session = (message: ReturnType<typeof user>) => {
     { type: 'step/start', seq: 1, data: { turn: 1, step: 0 } },
     { type: 'user/message', seq: 2, data: message },
   ]
-  return { header: { cwd: os.tmpdir() }, inheritedEventCount: 0, events, snapshotEvents: () => [...events] }
+  return withSessionFacts({ header: { cwd: os.tmpdir() }, inheritedEventCount: 0, events, snapshotEvents: () => [...events] })
 }
 const request = (id: string, message: ReturnType<typeof user>): GenerateOptions => markAgentLoopRequest({ provider: 'acp-test', model: 'model-a', sessionId: id as never, messages: [message] })
 const seam = (): { ok: true; seam: never } => ({ ok: true, seam: undefined as never })
@@ -103,7 +104,7 @@ describe('M3a binding-first ACP provider', () => {
       const records = { starts: 0, prompts: 0, restores: 0 }
       const message = user('hello')
       const events: Array<{ type: string; seq: number; data: unknown }> = [...session(message).events]
-      const liveSession = {
+      const liveSession = withSessionFacts({
         header: { cwd: os.tmpdir() },
         inheritedEventCount: 0,
         events,
@@ -113,7 +114,7 @@ describe('M3a binding-first ACP provider', () => {
           events.push(event)
           return event
         },
-      }
+      })
       const adapter = new AcpProfileAdapter('test', profile, seam(), () => liveSession, ledgerFor(sidecar), undefined, runtimeFactory(records), sidecar)
       await drain(adapter.stream(request('custom-permission', message)))
       expect(events.slice(0, 2)).toEqual(session(message).events)
@@ -140,16 +141,16 @@ describe('M3a binding-first ACP provider', () => {
       const message = user('hello')
       const continuation = user('continue')
       let events: Array<{ type: string; seq: number; data: unknown }> = [...session(message).events]
-      const initial = new AcpProfileAdapter('test', profile, seam(), () => ({
+      const initial = new AcpProfileAdapter('test', profile, seam(), () => (withSessionFacts({
         header: { cwd: os.tmpdir() }, inheritedEventCount: 0, snapshotEvents: () => [...events],
-      }), ledgerFor(sidecar), undefined, runtimeFactory(first), sidecar)
+      })), ledgerFor(sidecar), undefined, runtimeFactory(first), sidecar)
       await drain(initial.stream(request('restart-session', message)))
       expect(first.prompts).toBe(1)
       const initialBinding = await sidecar.readLatestBinding('restart-session' as never)
       expect(initialBinding?.status === 'ok' ? initialBinding.binding.dshCommittedSeq : undefined).toBe(2)
       const second = { starts: 0, prompts: 0, restores: 0 }
       events = [...events, { type: 'step/start', seq: 3, data: { turn: 2, step: 0 } }, { type: 'user/message', seq: 4, data: continuation }]
-      const liveSession = {
+      const liveSession = withSessionFacts({
         header: { cwd: os.tmpdir() },
         inheritedEventCount: 0,
         events,
@@ -159,7 +160,7 @@ describe('M3a binding-first ACP provider', () => {
           events.push(event)
           return event
         },
-      }
+      })
       const restarted = new AcpProfileAdapter('test', profile, seam(), () => liveSession, ledgerFor(sidecar), undefined, runtimeFactory(second), sidecar)
       await drain(restarted.stream(request('restart-session', continuation)))
       expect(second.restores).toBe(1)
@@ -203,15 +204,15 @@ describe('M3a binding-first ACP provider', () => {
       const secondMessage = user('second')
       let events = session(firstMessage).events
       const first = { starts: 0, prompts: 0, restores: 0 }
-      const initial = new AcpProfileAdapter('test', profile, seam(), () => ({
+      const initial = new AcpProfileAdapter('test', profile, seam(), () => (withSessionFacts({
         header: { cwd: os.tmpdir() }, inheritedEventCount: 0, snapshotEvents: () => [...events],
-      }), ledgerFor(sidecar), undefined, runtimeFactory(first), sidecar)
+      })), ledgerFor(sidecar), undefined, runtimeFactory(first), sidecar)
       await drain(initial.stream(request('continuation', firstMessage)))
       events = [...events, { type: 'step/start', seq: 3, data: { turn: 2, step: 0 } }, { type: 'user/message', seq: 4, data: secondMessage }]
       const second = { starts: 0, prompts: 0, restores: 0 }
-      const restarted = new AcpProfileAdapter('test', profile, seam(), () => ({
+      const restarted = new AcpProfileAdapter('test', profile, seam(), () => (withSessionFacts({
         header: { cwd: os.tmpdir() }, inheritedEventCount: 0, snapshotEvents: () => [...events],
-      }), ledgerFor(sidecar), undefined, runtimeFactory(second), sidecar)
+      })), ledgerFor(sidecar), undefined, runtimeFactory(second), sidecar)
       await drain(restarted.stream(request('continuation', secondMessage)))
       expect(second.restores).toBe(1)
       expect(second.prompts).toBe(1)
@@ -228,15 +229,15 @@ describe('M3a binding-first ACP provider', () => {
       const continuation = user('continue')
       let events = session(message).events
       const first = { starts: 0, prompts: 0, restores: 0 }
-      const initial = new AcpProfileAdapter('test', profile, seam(), () => ({
+      const initial = new AcpProfileAdapter('test', profile, seam(), () => (withSessionFacts({
         header: { cwd: os.tmpdir() }, inheritedEventCount: 0, snapshotEvents: () => [...events],
-      }), ledgerFor(sidecar), undefined, runtimeFactory(first), sidecar)
+      })), ledgerFor(sidecar), undefined, runtimeFactory(first), sidecar)
       await drain(initial.stream(request('load-session', message)))
       const second = { starts: 0, prompts: 0, restores: 0 }
       events = [...events, { type: 'step/start', seq: 3, data: { turn: 2, step: 0 } }, { type: 'user/message', seq: 4, data: continuation }]
-      const loaded = new AcpProfileAdapter('test', profile, seam(), () => ({
+      const loaded = new AcpProfileAdapter('test', profile, seam(), () => (withSessionFacts({
         header: { cwd: os.tmpdir() }, inheritedEventCount: 0, snapshotEvents: () => [...events],
-      }), ledgerFor(sidecar), undefined, () => ({
+      })), ledgerFor(sidecar), undefined, () => ({
         acpSessionId: 'agent-session-1', agentInfo: { name: 'fake-agent', version: '1' }, agentCapabilities: { loadSession: true }, protocolVersion: 1,
         start: async () => { second.starts += 1 },
         restore: async (_binding, _signal, onReplay) => { second.restores += 1; onReplay?.({ update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'replayed' } } } as never); return 'loaded' },
@@ -337,7 +338,7 @@ describe('M3a binding-first ACP provider', () => {
         'test',
         profile,
         seam(),
-        () => ({ header: { cwd: os.tmpdir() }, inheritedEventCount: 0, snapshotEvents: () => [...events] }),
+        () => (withSessionFacts({ header: { cwd: os.tmpdir() }, inheritedEventCount: 0, snapshotEvents: () => [...events] })),
         ledgerFor(sidecar), undefined,
         () => { factoryCalls += 1; return runtime },
         sidecar,
@@ -538,15 +539,19 @@ describe('runtime failure and host disposal ownership', () => {
     }
   })
 
-  it('keeps normal turns and unrelated jobs live, releasing only the disposed session incarnation', async () => {
+  it.each([false, true])('keeps normal turns and unrelated jobs live, releasing only the disposed session incarnation (read facade: %s)', async wrapped => {
     const { sidecar, root } = sidecarAt()
     const message = user('first')
-    let current = { ...session(message), id: 'owned' }
-    const other = { ...session(message), id: 'other' }
+    let current = withSessionFacts({ ...session(message), id: 'owned' })
+    const other = withSessionFacts({ ...session(message), id: 'other' })
     const closes: Array<ReturnType<typeof vi.fn>> = []
     const records = { starts: 0, prompts: 0, restores: 0 }
     const factory = () => { const close = vi.fn(async () => {}); closes.push(close); return { ...runtimeFactory(records)({}), close } }
-    const subject = new AcpProfileAdapter('test', profile, seam(), id => id === 'owned' ? current : other, ledgerFor(sidecar), undefined, factory, sidecar)
+    const readSession = (id: string) => {
+      const raw = id === 'owned' ? current : other
+      return wrapped ? Object.assign(Object.create(raw), { identity: raw }) : raw
+    }
+    const subject = new AcpProfileAdapter('test', profile, seam(), readSession, ledgerFor(sidecar), undefined, factory, sidecar)
     try {
       await drain(subject.stream(request('owned', message)))
       const next = user('second')
@@ -560,7 +565,7 @@ describe('runtime failure and host disposal ownership', () => {
       expect(closes[0]).toHaveBeenCalledOnce()
       expect(closes[1]).not.toHaveBeenCalled()
       const resumed = user('resumed')
-      current = { ...session(resumed), id: 'owned' }
+      current = withSessionFacts({ ...session(resumed), id: 'owned' })
       await drain(subject.stream(request('owned', resumed)))
       await subject.disposeSession(old)
       expect(closes[2]).not.toHaveBeenCalled()
@@ -574,12 +579,12 @@ describe('runtime failure and host disposal ownership', () => {
 
 it('does not resurrect an explicitly retried runtime after its host session is disposed', async () => {
   const { sidecar, root } = sidecarAt()
-  const message = user('original'), live = { ...session(message), id: 'retry-disposed' }
+  const message = user('original'), live = withSessionFacts({ ...session(message), id: 'retry-disposed' })
   const records = { starts: 0, prompts: 0, restores: 0 }
   const initial = new AcpProfileAdapter('test', profile, seam(), () => live, ledgerFor(sidecar), undefined, runtimeFactory(records), sidecar)
   const entered = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>()
   const close = vi.fn(async () => {})
-  const subject = new AcpProfileAdapter('test', profile, seam(), () => live, ledgerFor(sidecar), undefined, () => ({
+  const subject = new AcpProfileAdapter('test', profile, seam(), () => Object.assign(Object.create(live), { identity: live }), ledgerFor(sidecar), undefined, () => ({
     ...runtimeFactory(records)({}), close, restore: async () => { entered.resolve(); await finish.promise; return 'resumed' },
   }), sidecar)
   try {
@@ -601,7 +606,7 @@ it('does not resurrect an explicitly retried runtime after its host session is d
 it('does not evict a replacement runtime when an older initialization fails late', async () => {
   const { sidecar, root } = sidecarAt()
   const first = user('first'), second = user('second')
-  let live = { ...session(first), id: 'same-id' }
+  let live = withSessionFacts({ ...session(first), id: 'same-id' })
   const entered = Promise.withResolvers<void>(), fail = Promise.withResolvers<void>()
   const oldClose = vi.fn(async () => {}), newClose = vi.fn(async () => {})
   let created = 0
@@ -617,7 +622,7 @@ it('does not evict a replacement runtime when an older initialization fails late
     const rejected = expect(pending).rejects.toThrow('old initialization failed')
     await entered.promise
     await subject.disposeSession(live)
-    live = { ...session(second), id: live.id }
+    live = withSessionFacts({ ...session(second), id: live.id })
     await drain(subject.stream(request(live.id, second)))
     fail.resolve()
     await rejected
@@ -649,7 +654,7 @@ describe('durable Team member modes', () => {
     }
     let message = user('first')
     let events = [...session(message).events]
-    const create = () => new AcpProfileAdapter('test', profile, seam(), () => ({ header: { cwd: os.tmpdir() }, inheritedEventCount: 0, snapshotEvents: () => events }), ledgerFor(sidecar), undefined, factory, sidecar)
+    const create = () => new AcpProfileAdapter('test', profile, seam(), () => (withSessionFacts({ header: { cwd: os.tmpdir() }, inheritedEventCount: 0, snapshotEvents: () => events })), ledgerFor(sidecar), undefined, factory, sidecar)
     let adapter = create()
     try {
       await drain(adapter.stream(request('member-mode', message)))

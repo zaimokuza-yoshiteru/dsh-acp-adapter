@@ -1,3 +1,4 @@
+import { withSessionFacts } from '../../support/session-facts.ts'
 import { describe, expect, it } from 'vitest'
 import { BlockAssembler, createUserMessage, markAgentLoopRequest } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
@@ -12,14 +13,14 @@ import type { AcpSidecar } from '../../../src/persistence/sidecar.ts'
 const profile = (command = 'agent', env: Record<string, string> = {}): AcpAgentConfig => ({ name: 'Test', command, args: ['acp'], env })
 const user = (text: string) => createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })
 const request = (sessionId: string, messages: GenerateOptions['messages']) => markAgentLoopRequest({ provider: 'acp-test', model: 'model-a', sessionId: sessionId as never, messages })
-const session = (message: ReturnType<typeof user>, seq = 2) => ({
+const session = (message: ReturnType<typeof user>, seq = 2) => (withSessionFacts({
   header: { cwd: '/workspace' },
   inheritedEventCount: 0,
   snapshotEvents: () => [
     { type: 'step/start', seq: 1, data: { turn: 1, step: 0 } },
     { type: 'user/message', seq, data: message },
   ],
-})
+}))
 
 class Ledger implements DispatchLedgerStore {
   records: DispatchRecord[] = []
@@ -181,9 +182,9 @@ describe('AcpProfileAdapter generation and dispatch boundaries', () => {
     const ledger = new Ledger()
     const runtimes: Array<{ config: AcpAgentConfig; prompts: number }> = []
     const message = user('hello')
-    const adapter = new AcpProfileAdapter('test', () => current, seam(), () => ({ header: { cwd: '/workspace' }, inheritedEventCount: 0, snapshotEvents: () => [
+    const adapter = new AcpProfileAdapter('test', () => current, seam(), () => (withSessionFacts({ header: { cwd: '/workspace' }, inheritedEventCount: 0, snapshotEvents: () => [
       { type: 'step/start', seq: 1, data: { turn: 1, step: 0 } }, { type: 'user/message', seq: 2, data: message },
-    ] }) as never, ledger,
+    ] })) as never, ledger,
       () => ({ listModels: async () => { await gate; return [{ id: 'model-a', name: 'Old model', provider: 'acp-test' }] } }),
       options => {
         const record = { config: options.config as AcpAgentConfig, prompts: 0 }
@@ -223,10 +224,10 @@ describe('AcpProfileAdapter generation and dispatch boundaries', () => {
     const ledger = new Ledger()
     let prompts = 0
     const message = user('current')
-    const adapter = new AcpProfileAdapter('test', () => current, seam(), () => ({ header: { cwd: '/workspace' }, inheritedEventCount: 0, snapshotEvents: () => [
+    const adapter = new AcpProfileAdapter('test', () => current, seam(), () => (withSessionFacts({ header: { cwd: '/workspace' }, inheritedEventCount: 0, snapshotEvents: () => [
       { type: 'step/start', seq: 1, data: { turn: 1, step: 0 } },
       { type: 'user/message', seq: 2, data: message },
-    ] }), ledger, undefined, _options => ({
+    ] })), ledger, undefined, _options => ({
       acpSessionId: 'test-session',
       start: async () => undefined,
       prompt: async (_content, _onUpdate, _signal) => { prompts += 1; return { stopReason: 'end_turn' } as never },
@@ -246,9 +247,9 @@ describe('AcpProfileAdapter generation and dispatch boundaries', () => {
     const ledger = new Ledger()
     let prompts = 0
     const message = user('current')
-    const adapter = new AcpProfileAdapter('test', () => current, seam(), () => ({ header: { cwd: '/workspace' }, inheritedEventCount: 0, snapshotEvents: () => [
+    const adapter = new AcpProfileAdapter('test', () => current, seam(), () => (withSessionFacts({ header: { cwd: '/workspace' }, inheritedEventCount: 0, snapshotEvents: () => [
       { type: 'step/start', seq: 1, data: { turn: 1, step: 0 } }, { type: 'user/message', seq: 2, data: message },
-    ] }), ledger, undefined, _options => ({
+    ] })), ledger, undefined, _options => ({
       acpSessionId: 'test-session',
       start: async () => undefined,
       prompt: async (_content, _onUpdate, _signal) => { prompts += 1; throw new Error('remote interrupted') },
@@ -264,9 +265,9 @@ describe('AcpProfileAdapter generation and dispatch boundaries', () => {
     const ledger = new Ledger()
     let prompts = 0
     const message = user('current')
-    const adapter = new AcpProfileAdapter('test', () => current, seam(), () => ({ header: { cwd: '/workspace' }, inheritedEventCount: 0, snapshotEvents: () => [
+    const adapter = new AcpProfileAdapter('test', () => current, seam(), () => (withSessionFacts({ header: { cwd: '/workspace' }, inheritedEventCount: 0, snapshotEvents: () => [
       { type: 'step/start', seq: 1, data: { turn: 1, step: 0 } }, { type: 'user/message', seq: 2, data: message },
-    ] }), ledger, undefined, _options => ({
+    ] })), ledger, undefined, _options => ({
       acpSessionId: 'test-session',
       start: async () => undefined,
       prompt: async (_content, _onUpdate, _signal) => { prompts += 1; return { stopReason: 'end_turn' } as never },
@@ -283,9 +284,9 @@ describe('AcpProfileAdapter generation and dispatch boundaries', () => {
     const image = { attachmentId: 'image-1' as never, mediaType: 'image/png' as const, bytes: 3, width: 1, height: 1 }
     const message = createUserMessage({ content: [{ type: 'image', attachment: image }], source: { kind: 'user' } })
     const calls = { initialize: 0, start: 0, prompt: 0, close: 0 }
-    const adapter = new AcpProfileAdapter('test', () => current, seam(), () => ({ header: { cwd: '/workspace' }, inheritedEventCount: 0, snapshotEvents: () => [
+    const adapter = new AcpProfileAdapter('test', () => current, seam(), () => (withSessionFacts({ header: { cwd: '/workspace' }, inheritedEventCount: 0, snapshotEvents: () => [
       { type: 'step/start', seq: 1, data: { turn: 1, step: 0 } }, { type: 'user/message', seq: 2, data: message },
-    ] }) as never, ledger, undefined, _options => ({
+    ] })) as never, ledger, undefined, _options => ({
         acpSessionId: 'image-session',
         agentCapabilities: {},
         initialize: async () => { calls.initialize += 1 },

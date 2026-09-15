@@ -167,7 +167,7 @@ describe('AcpRemoteService current public surface', () => {
     expect(ids).toEqual([
       'activityFollow', 'activityPage', 'activitySnapshot', 'agentSessionFollow', 'agentSessionSnapshot', 'auditTimeline',
       'backendOf', 'boundSessions', 'health', 'ownedProviderRoutes', 'projectedSubagentIds', 'rebindRecoveryBlank', 'recoverySnapshot', 'retryOriginal',
-      'setAgentSessionOption', 'setTeamMemberMode', 'teamMembers',
+      'setAgentSessionOption', 'setTeamMemberMode', 'setTeamMemberModel', 'teamMemberModels', 'teamMembers',
     ])
   })
 })

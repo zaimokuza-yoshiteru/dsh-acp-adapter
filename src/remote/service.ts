@@ -58,6 +58,7 @@ import { AcpClientError } from '../protocol/v1/errors.ts'
 import { matchesDiagnosticView } from '../contract/diagnostics.ts'
 import type {
   AcpTeamMemberView,
+  AcpTeamMemberModelsView,
   AcpAuthMethod,
   AcpBackendState,
   AcpBoundSessionsView,
@@ -298,6 +299,8 @@ export interface AcpAgentSessionControlLike {
 export interface AcpRemoteServiceDeps {
   teamManagement?: {
     members(lead: string): Promise<readonly AcpTeamMemberView[]>
+    models?(lead: string, member: string): Promise<AcpTeamMemberModelsView>
+    selectModel?(lead: string, member: string, model: string): Promise<AcpTeamMemberModelsView>
   }
 
   /** Registry：agent 列表 + probe 缓存（快照/刷新）。 */
@@ -698,6 +701,25 @@ export class AcpRemoteService extends TypertRemoteService {
     await this.requireOwnedSessionRead(lead)
     if (this.resolved.teamManagement === undefined) throw badRequest('ACP Teams is unavailable')
     return await this.resolved.teamManagement.members(lead)
+  }
+
+  @Remote
+  async teamMemberModels(lead: string, sessionId: string): Promise<AcpTeamMemberModelsView> {
+    await this.teamMembers(lead)
+    await this.requireOwnedSessionRead(sessionId)
+    const management = this.resolved.teamManagement
+    if (!management?.models) throw badRequest('Member models are unavailable')
+    return await preserveAcpFailure(() => management.models!(lead, sessionId))
+  }
+
+  @Remote
+  async setTeamMemberModel(lead: string, sessionId: string, model: string): Promise<AcpTeamMemberModelsView> {
+    await this.teamMembers(lead)
+    await this.requireOwnedSessionRead(sessionId)
+    if (typeof model !== 'string' || !model || model.length > 512) throw badRequest('Invalid member model')
+    const management = this.resolved.teamManagement
+    if (!management?.selectModel) throw badRequest('Member models are unavailable')
+    return await preserveAcpFailure(() => management.selectModel!(lead, sessionId, model))
   }
 
   @Remote

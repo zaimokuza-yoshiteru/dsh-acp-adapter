@@ -7,9 +7,11 @@ import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { AcpRemoteLike, AcpTeamMemberView, AcpAgentSessionSnapshotView } from '../data/acp-remote.ts'
 import type { OwnsAcpRoute } from '../coordinator/cross-backend-coordinator.ts'
 import { agentSessionStream } from '../data/agent-session-stream.ts'
-import { agentControlLabel, agentControlFooter, snapshotIsAcp } from './AcpAgentControl.ts'
+import { snapshotIsAcp } from './AcpAgentControl.ts'
 import { normalizeAcpConfigOptionKey } from '../../contract/config-options.ts'
 import { applyTeamMode, teamModeChoices } from './team-mode-controls.ts'
+import { teamModeLabel } from '../../contract/session-modes.ts'
+import { TeamMemberModelControl } from './TeamMemberModelControl.ts'
 import css from './AcpTeamManagement.module.css'
 import agentControlCss from './AcpAgentControl.module.css'
 
@@ -123,27 +125,36 @@ function ModeGroup({ lead, profileId, members, t, remote, streamFactory, onMenuO
         items: batchChoices.map(choice => ({ id: choice.id, label: choice.label, disabled: busy || !members.some(member => editable(member) && choices(member).some(item => item.id === choice.id && !item.current)) })),
         onSelect: (id: string) => { void change(members.map(member => member.sessionId), id) },
         anchor: h(Button, { variant: 'ghost', disabled: batchChoices.length === 0 || profileId === null || busy, onClick: () => setMenu(menu === 'batch' ? null : 'batch') }, t('teamBatchMode')) })),
-    h('p', { className: css.hint }, t('teamModeHint')),
     h('div', { className: css.roster }, ...members.map(member => {
       const snapshot = snapshots[member.sessionId]
       const modeChoices = choices(member)
       const selectedMode = modeChoices.find(choice => choice.current)
+      const modeNotice = snapshot?.pendingModeId
+        ? t('teamModePending', { mode: teamModeLabel({ ...snapshot, pendingModeId: null }, t('teamModeUnknown')) })
+        : null
       const reported = snapshot?.configOptions?.find(option => normalizeAcpConfigOptionKey(option.id) === 'model' || normalizeAcpConfigOptionKey(option.category ?? '') === 'model')
       const model = member.model ?? (reported?.type === 'select' ? reported.currentValue : null)
       return h('article', { key: member.sessionId, className: css.member, 'data-acp-managed-member': member.name },
         h('div', { className: css.memberHeader }, h(StateDot, { state: member.status === 'running' ? 'ongoing' : member.status === 'failed' ? 'error' : 'done' }),
           h('strong', null, member.name), h('span', { className: css.hint }, t(`teamStatus${member.status}`))),
-        h('p', { className: css.model }, model ?? t('teamModelUnknown')),
-        member.description ? h('p', { className: css.hint }, member.description) : null,
-        snapshot?.pendingModeId ? h('p', { className: css.hint, 'data-member-pending-mode': '' }, t('teamModePending', { mode: modeChoices.find(choice => choice.id === snapshot.pendingModeId)?.label ?? snapshot.pendingModeId })) : null,
-        snapshot ? h('p', { className: css.hint }, agentControlFooter(snapshot, t).map(item => item.text).join(' · ')) : null,
-        h('div', { className: css.footer }, h(Menu, { portal: true, autoFocus: true, open: menu === member.sessionId, side: 'bottom', align: 'end', onClose: () => setMenu(null),
-          items: modeChoices.map(choice => ({ id: choice.id, label: choice.label, disabled: busy || !editable(member) })),
-          selectedId: selectedMode?.id,
-          onSelect: (id: string) => { void change([member.sessionId], id) },
-          anchor: h('button', { type: 'button', className: agentControlCss.trigger, disabled: !snapshot || modeChoices.length === 0 || busy, 'aria-expanded': menu === member.sessionId, 'aria-haspopup': 'menu', onClick: () => setMenu(menu === member.sessionId ? null : member.sessionId) },
-            h('span', { className: agentControlCss.triggerLabel }, selectedMode ? `Agent · ${selectedMode.name}` : snapshot ? agentControlLabel(snapshot, t) : t('teamModeUnknown')),
-            h(IconChevronDownOutline14, { className: `${agentControlCss.chevron}${menu === member.sessionId ? ` ${agentControlCss.chevronOpen}` : ''}` })) })))
+        member.description ? h('p', { className: css.memberDescription }, member.description) : null,
+        h('div', { className: css.settings },
+          h('div', { className: css.settingRow },
+            h('span', { className: css.settingLabel }, t('teamModelLabel')),
+            h('div', { className: css.settingValue },
+              h(TeamMemberModelControl, { lead, member, initialModel: model, remote, t, isCurrent, onMenuOpen }))),
+          h('div', { className: css.settingRow },
+            h('span', { className: css.settingLabel }, t('teamModeLabel')),
+            h('div', { className: css.settingValue },
+              h('div', { className: css.modeControl },
+                h(Menu, { portal: true, autoFocus: true, open: menu === member.sessionId, side: 'bottom', align: 'end', onClose: () => setMenu(null),
+                  items: modeChoices.map(choice => ({ id: choice.id, label: choice.label, disabled: busy || !editable(member) })),
+                  selectedId: selectedMode?.id,
+                  onSelect: (id: string) => { void change([member.sessionId], id) },
+                  anchor: h('button', { type: 'button', className: agentControlCss.trigger, disabled: !snapshot || modeChoices.length === 0 || busy, 'aria-expanded': menu === member.sessionId, 'aria-haspopup': 'menu', onClick: () => setMenu(menu === member.sessionId ? null : member.sessionId) },
+                    h('span', { className: agentControlCss.triggerLabel }, snapshot ? `Agent · ${teamModeLabel(snapshot, t('teamModeUnknown'))}` : t('teamModeUnknown')),
+                    h(IconChevronDownOutline14, { className: `${agentControlCss.chevron}${menu === member.sessionId ? ` ${agentControlCss.chevronOpen}` : ''}` })) }),
+                h('div', { className: css.settingNotice, 'data-member-mode-notice': '', role: 'status' }, modeNotice ? h('span', { title: modeNotice, 'data-member-pending-mode': '' }, modeNotice) : null))))))
     })),
-    feedback ? h('p', { role: 'status', className: css.hint }, feedback) : null)
+    h('div', { role: 'status', className: css.groupNotice, title: feedback }, feedback))
 }

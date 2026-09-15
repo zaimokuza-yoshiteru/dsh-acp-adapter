@@ -44,6 +44,9 @@
  *   一次性无界 `configSnapshot`（该字段已删除，单一事实副本只在此表）。
  *   活体权威快照到达即刷新（建立/set_config_option/set_mode/turn 收束变更）；
  *   写失败仅 warn（last-known 是展示/参考面，不是提交面）。
+ * - `member_model_selections` teammate 模型选择表：每个 DSH session 至多一行，
+ *   记录最近选择及其 binding key；binding 变化由调用方决定是否重新解释，sidecar
+ *   不主动清除该配置。
  * - `activity_journal` 外部 Agent 活动表：按 DSH session 隔离、以 activity_id
  *   append-only revision，activity_seq 只在首次出现时分配，revision_seq 为每次
  *   mutation 的连续游标；它是机器可读的执行活动面，和面向人的 audit envelope
@@ -255,6 +258,16 @@ export interface AcpModeIntent {
   readonly bindingKey: string
   readonly modeId: string
 }
+
+/** A member's selected model stays binding-scoped and is retained after application. */
+export interface AcpMemberModelSelection {
+  readonly bindingKey: string
+  readonly model: string
+}
+
+const ACP_MEMBER_MODEL_MAX = 512
+const ACP_MEMBER_BINDING_KEY_MAX = 8192
+
 export function modeIntentBindingKey(binding: AcpBindingData): string {
   return stableStringify([binding.provider, binding.agentSessionId, binding.generation, binding.bindingEpoch, binding.launchFingerprint])
 }
@@ -579,6 +592,9 @@ export interface AcpSidecar {
   readModeIntent(sessionId: SessionId): Promise<AcpModeIntent | undefined>
   writeModeIntent(sessionId: SessionId, intent: AcpModeIntent): Promise<void>
   clearModeIntent(sessionId: SessionId, intent: AcpModeIntent): Promise<void>
+  /** Persist the latest selected model for a teammate binding. */
+  readMemberModelSelection(sessionId: SessionId): Promise<AcpMemberModelSelection | undefined>
+  writeMemberModelSelection(sessionId: SessionId, selection: AcpMemberModelSelection): Promise<void>
   /** 读该会话的 last-known option 快照；无行/畸形 → `undefined`（畸形行 warn 一次）。 */
   readOptionSnapshot(sessionId: SessionId): Promise<AcpOptionsSnapshotRecord | undefined>
   /**
@@ -802,6 +818,11 @@ CREATE TABLE IF NOT EXISTS mode_intents (
   binding_key TEXT NOT NULL,
   mode_id TEXT NOT NULL
 ) STRICT;
+CREATE TABLE IF NOT EXISTS member_model_selections (
+  dsh_session_id TEXT PRIMARY KEY,
+  binding_key TEXT NOT NULL,
+  model_id TEXT NOT NULL
+) STRICT;
 CREATE TABLE IF NOT EXISTS option_snapshots (
   dsh_session_id TEXT PRIMARY KEY,
   time INTEGER NOT NULL,
@@ -878,6 +899,8 @@ class SidecarStore implements AcpSidecar {
   private stmtActivityHead: StatementSync | undefined
   private stmtGetRecoveryState: StatementSync | undefined
   private stmtUpsertRecoveryState: StatementSync | undefined
+  private stmtGetMemberModelSelection: StatementSync | undefined
+  private stmtUpsertMemberModelSelection: StatementSync | undefined
   /** per-session 下一个 seq（懒种子 = 库里 MAX(seq)+1；含队列已占号）。 */
   private readonly seqCounters = new Map<string, number>()
   private queue: QueuedAudit[] = []
@@ -981,6 +1004,8 @@ class SidecarStore implements AcpSidecar {
     this.stmtActivityHead = db.prepare('SELECT COALESCE(MAX(revision_seq), 0) AS head FROM activity_journal WHERE dsh_session_id = ?')
     this.stmtGetRecoveryState = db.prepare('SELECT * FROM recovery_states WHERE dsh_session_id = ?')
     this.stmtUpsertRecoveryState = db.prepare('INSERT INTO recovery_states (dsh_session_id, time, last_attempt_at, last_user_action, payload) VALUES (?, ?, ?, ?, ?) ON CONFLICT(dsh_session_id) DO UPDATE SET time = excluded.time, last_attempt_at = excluded.last_attempt_at, last_user_action = excluded.last_user_action, payload = excluded.payload')
+    this.stmtGetMemberModelSelection = db.prepare('SELECT binding_key, model_id FROM member_model_selections WHERE dsh_session_id = ?')
+    this.stmtUpsertMemberModelSelection = db.prepare('INSERT INTO member_model_selections (dsh_session_id, binding_key, model_id) VALUES (?, ?, ?) ON CONFLICT(dsh_session_id) DO UPDATE SET binding_key = excluded.binding_key, model_id = excluded.model_id')
     try {
       chmodSync(this.dbPath, 0o600)
     } catch (error: unknown) {
@@ -1640,6 +1665,29 @@ class SidecarStore implements AcpSidecar {
   async clearModeIntent(sessionId: SessionId, intent: AcpModeIntent): Promise<void> {
     assertSafeSessionId(sessionId)
     this.openIfExists()?.prepare('DELETE FROM mode_intents WHERE dsh_session_id = ? AND binding_key = ? AND mode_id = ?').run(sessionId, intent.bindingKey, intent.modeId)
+  }
+
+  async readMemberModelSelection(sessionId: SessionId): Promise<AcpMemberModelSelection | undefined> {
+    assertSafeSessionId(sessionId)
+    const row = this.openIfExists() === undefined ? undefined : this.stmtGetMemberModelSelection?.get(sessionId) as { binding_key?: unknown; model_id?: unknown } | undefined
+    if (row === undefined) return undefined
+    if (typeof row.binding_key !== 'string' || row.binding_key.length === 0 || row.binding_key.length > ACP_MEMBER_BINDING_KEY_MAX
+      || typeof row.model_id !== 'string' || row.model_id.length === 0 || row.model_id.length > ACP_MEMBER_MODEL_MAX) {
+      this.warn(`dsh-acp sidecar: malformed member model selection row for session ${JSON.stringify(sessionId as string)}; ignoring it`)
+      return undefined
+    }
+    return { bindingKey: row.binding_key, model: row.model_id }
+  }
+
+  async writeMemberModelSelection(sessionId: SessionId, selection: AcpMemberModelSelection): Promise<void> {
+    assertSafeSessionId(sessionId)
+    if (!isPlainObject(selection)
+      || typeof selection.bindingKey !== 'string' || selection.bindingKey.length === 0 || selection.bindingKey.length > ACP_MEMBER_BINDING_KEY_MAX
+      || typeof selection.model !== 'string' || selection.model.length === 0 || selection.model.length > ACP_MEMBER_MODEL_MAX) {
+      throw new TypeError('Invalid ACP member model selection')
+    }
+    this.ensureDb()
+    this.stmtUpsertMemberModelSelection?.run(sessionId, selection.bindingKey, selection.model)
   }
 
   writeOptionSnapshot(sessionId: SessionId, snapshot: AcpOptionsSnapshotRecord): Promise<void> {

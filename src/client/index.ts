@@ -32,6 +32,7 @@ import type { AcpSectionWire, AcpTranslate } from './ui/AcpSection.ts'
 import { ACP_SETTINGS_NS, decodeAcpSettings } from './data/logic.ts'
 import type { AcpSettings } from './data/logic.ts'
 import { AcpAuditVisibilityGate, createAcpAuditView } from './ui/AcpAuditHeaderAction.ts'
+import { createAcpJsonStringWrapping, type AcpJsonStringWrapping } from './ui/json-tree.ts'
 import { en, zh } from './ui/locales.ts'
 import type { AcpRemoteLike } from './data/acp-remote.ts'
 import type { RemoteStreamFactory } from '@deepseek-ai/dsh-api-gateway/client'
@@ -84,6 +85,7 @@ async function registerUi(ctx: ClientContext): Promise<void> {
     },
     remote: acpRemote,
   })
+  const jsonStringWrapping = createAcpJsonStringWrapping()
   const panelWire: AcpSectionWire = {
     refreshHealth: (recheck) => { void panelController.refreshHealth(recheck) },
     refreshAgentHealth: (agentId) => { void panelController.refreshAgentHealth(agentId) },
@@ -131,8 +133,8 @@ async function registerUi(ctx: ClientContext): Promise<void> {
         order: 20,
         label: () => settingsT('auditOpen'),
         locale: 'acpActivity',
-        inject: (): { readonly remote: AcpRemoteLike } => ({ remote: acpRemote }),
-      }, createAcpAuditView(acpRemote))
+        inject: () => ({ remote: acpRemote }),
+      }, createAcpAuditView(acpRemote, jsonStringWrapping))
     }
     return () => {
       setAuditViewVisible = () => undefined
@@ -160,12 +162,14 @@ async function registerUi(ctx: ClientContext): Promise<void> {
       readonly journalHub: AcpActivityJournalHub
       readonly onProjectedChild: (parentSessionId: string, childSessionId: string) => void
       readonly onOpenProjectedChild: (childSessionId: string) => void
+      readonly jsonStringWrapping: AcpJsonStringWrapping
     } => ({
       journalHub,
       onProjectedChild: (parentSessionId, childSessionId) => {
         if (projectedSubagents.add(childSessionId)) void sessions.refreshSubagents(parentSessionId as never)
       },
       onOpenProjectedChild: (childSessionId) => { sessions.open(childSessionId as never) },
+      jsonStringWrapping,
     }),
   }, AcpActivityNode))
   const coordinator = new CrossBackendCoordinator(ctx, managedRoutes.owns)

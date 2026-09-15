@@ -4,8 +4,8 @@ import type { ReactNode } from 'react'
 import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-store'
 import type { SessionSnapshot, UseProjection } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { ConvViewProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
-import { IconSearchOutline16, Input, JsonTree, Tag } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { JsonTreeLabels, TagTone } from '@deepseek-ai/dsh-client-ui-primitives'
+import { IconCloseOutline16, IconSearchOutline16, Input, JsonTree, Tag } from '@deepseek-ai/dsh-client-ui-primitives'
+import type { TagTone } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { AcpAuditSummaryCode, AcpAuditTimelineEntry } from '../data/acp-remote.ts'
 import type { AcpRemoteLike } from '../data/acp-remote.ts'
 import type { AcpLocaleKey } from './locales.ts'
@@ -14,6 +14,7 @@ import type { AcpDiagnosticView, AcpRecoveryView } from '../../contract/remote.t
 import { matchesDiagnosticView } from '../../contract/diagnostics.ts'
 import { recoveryText } from './AcpRecoveryDock.ts'
 import css from './AcpAuditHeaderAction.module.css'
+import { acpJsonTreeLabels, type AcpJsonStringWrapping } from './json-tree.ts'
 
 type Translate = (key: AcpLocaleKey, params?: Record<string, string | number>) => string
 type Filter = AcpDiagnosticView
@@ -30,6 +31,7 @@ export interface AcpAuditVisibilityGateProps {
 export interface AcpAuditViewProps extends ConvViewProps {
   remote?: AcpRemoteLike
   t?: Translate
+  jsonStringWrapping?: AcpJsonStringWrapping
 }
 
 export function auditHeaderVisible(backend: { readonly state: string; readonly provider?: string } | null | undefined, ownsRoute: OwnsAcpRoute): boolean {
@@ -186,21 +188,6 @@ function auditDetailOf(detail: string): AuditDetail {
   return { kind: 'text', value: detail }
 }
 
-function auditJsonTreeLabels(t: Translate | undefined): JsonTreeLabels {
-  return {
-    copyValue: textOf(t, 'auditCopyValue', 'Copy value'),
-    copyJson: textOf(t, 'auditCopyJson', 'Copy JSON'),
-    copyPath: textOf(t, 'auditCopyPath', 'Copy path'),
-    copyPrettyJson: textOf(t, 'auditCopyPrettyJson', 'Copy formatted JSON'),
-    copyCompactJson: textOf(t, 'auditCopyCompactJson', 'Copy compact JSON'),
-    copied: textOf(t, 'auditCopied', 'Copied'),
-    copyFailed: textOf(t, 'auditCopyFailed', 'Copy failed'),
-    collapseNode: textOf(t, 'auditCollapseNode', 'Collapse node'),
-    expandNode: textOf(t, 'auditExpandNode', 'Expand node'),
-    copyButtonTitle: action => textOf(t, 'auditCopyOptions', `Copy options: ${action}`).replace('{action}', action),
-  }
-}
-
 /**
  * 只负责决定当前会话是否应拥有 ACP 诊断 Tab；自身不渲染按钮。
  * `conversation.view` 目前没有 per-session selector，因此使用当前会话
@@ -243,7 +230,7 @@ export function AcpAuditVisibilityGate(props: AcpAuditVisibilityGateProps): Reac
 
 /** 与轨迹同级的全高会话视图；筛选和详情均在页面内完成。 */
 function AcpAuditView(props: AcpAuditViewProps): ReactNode {
-  const { sessionId, remote, t } = props
+  const { sessionId, remote, t, jsonStringWrapping } = props
   const [loading, setLoading] = useState(false)
   const [entries, setEntries] = useState<readonly AcpAuditTimelineEntry[]>([])
   const [cursor, setCursor] = useState<number | null>(0)
@@ -340,7 +327,7 @@ function AcpAuditView(props: AcpAuditViewProps): ReactNode {
           h(Input, {
             icon: h(IconSearchOutline16, { size: 16 }),
             type: 'search',
-            className: css.search,
+            className: css.search!,
             value: query,
             placeholder: textOf(t, 'auditSearchPlaceholder', 'Search'),
             'aria-label': textOf(t, 'auditSearch', 'Search loaded records'),
@@ -415,7 +402,7 @@ function AcpAuditView(props: AcpAuditViewProps): ReactNode {
             h(Tag, { tone: entryTone(selected) }, categoryLabel(t, selected.category)),
             h('span', { className: css.detailsLocation }, `#${String(selected.seq)}`),
           ),
-          h('button', { type: 'button', className: css.close, 'aria-label': textOf(t, 'auditClose', 'Close'), onClick: () => setSelectedSeq(null) }, '×'),
+          h('button', { type: 'button', className: css.close, 'aria-label': textOf(t, 'auditClose', 'Close'), onClick: () => setSelectedSeq(null) }, h(IconCloseOutline16, { size: 14 })),
         ),
         h('div', { key: selected.seq, className: css.detailsBody, 'data-audit-detail-scroll': true },
           h('p', { className: css.detailsSummary }, auditSummaryOf(t, selected)),
@@ -439,7 +426,8 @@ function AcpAuditView(props: AcpAuditViewProps): ReactNode {
                   data: detail.value,
                   label: textOf(t, 'auditDetailJson', 'Diagnostic record JSON'),
                   className: css.jsonPayload,
-                  labels: auditJsonTreeLabels(t),
+                  labels: acpJsonTreeLabels(t),
+                  ...(jsonStringWrapping === undefined ? {} : { stringWrapping: { ...jsonStringWrapping, label: textOf(t, 'auditWrapLines', 'Wrap lines') } }),
                   expandTopLevel: true,
                 })
                 : h('pre', { className: css.detailPayload }, detail.value)
@@ -450,6 +438,6 @@ function AcpAuditView(props: AcpAuditViewProps): ReactNode {
   )
 }
 
-export function createAcpAuditView(remote: AcpRemoteLike): (props: AcpAuditViewProps) => ReactNode {
-  return props => h(AcpAuditView, { ...props, remote })
+export function createAcpAuditView(remote: AcpRemoteLike, jsonStringWrapping?: AcpJsonStringWrapping): (props: AcpAuditViewProps) => ReactNode {
+  return props => h(AcpAuditView, { ...props, remote, ...(jsonStringWrapping === undefined ? {} : { jsonStringWrapping }) })
 }
