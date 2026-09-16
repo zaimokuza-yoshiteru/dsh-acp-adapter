@@ -1,6 +1,7 @@
 /** ACP profile as an ordinary DSH LLM provider route. */
 /// <reference types="node" />
 
+import { activityPresentation, type AcpActivityPresentation } from '../../domain/policy/activity-presentation.ts'
 import { modeIntentBindingKey } from '../../persistence/sidecar.ts'
 import { teamModeChoices } from '../../contract/session-modes.ts'
 import { projectNativeAgentAccess } from './native-agent-access.ts'
@@ -24,6 +25,7 @@ import { prepareDevinTeamConfig } from '../teams/devin-config.ts'
 import { buildAcpSpawnPlan } from '../../domain/policy/sandbox.ts'
 import { descriptorOf } from '../../domain/session/agent-config.ts'
 import { DispatchLedger } from '../../runtime/session/dispatch-ledger.ts'
+import { StreamHandoff } from './stream-handoff.ts'
 import type { DispatchLedgerStore } from '../../runtime/session/dispatch-ledger.ts'
 import { admitCurrentStep } from '../../domain/session/current-step-admission.ts'
 import { AcpAdmissionError } from '../../domain/session/current-step-admission.ts'
@@ -173,6 +175,7 @@ function isTerminalActivityStatus(value: AcpActivityStatus): boolean {
 }
 
 interface NormalizedActivity {
+  readonly display?: AcpActivityPresentation
   readonly activityId: string
   readonly kind: AcpActivityKind
   readonly status: AcpActivityStatus
@@ -185,7 +188,8 @@ function normalizeActivityContent(parentId: string, content: unknown, status: Ac
   const item = content as { type?: unknown; path?: unknown; terminalId?: unknown }
   if (item.type === 'diff') {
     const name = typeof item.path === 'string' ? path.basename(item.path) : 'file'
-    return { activityId: `${parentId}:diff`, kind: 'diff', status, presentation: `File change · ${name}`, rawDetail: activityRawDetail(content) }
+    const display = activityPresentation(content, 'diff')
+    return { activityId: `${parentId}:diff`, kind: 'diff', status, presentation: `File change · ${name}`, rawDetail: activityRawDetail(content), ...(display === undefined ? {} : { display }) }
   }
   if (item.type === 'terminal') return { activityId: `${parentId}:terminal`, kind: 'terminal', status, presentation: 'Terminal activity', rawDetail: activityRawDetail(content) }
   if (item.type === 'resource' || item.type === 'resource_link' || item.type === 'image' || item.type === 'audio') return { activityId: `${parentId}:resource`, kind: 'resource', status, presentation: 'Agent resource', rawDetail: activityRawDetail(content) }
@@ -202,7 +206,8 @@ function activitiesForNotification(notification: AcpSessionNotification, fallbac
       ? toolCall.title
       : typeof toolCall?.name === 'string' && toolCall.name.length > 0 ? toolCall.name : 'Agent tool activity'
     const detail = toolCall ?? update
-    const result: NormalizedActivity[] = [{ activityId: `tool:${toolId}`, kind: 'tool', status, presentation: title, rawDetail: activityRawDetail({ toolKind: detail.kind, toolName: detail.name, rawInput: detail.rawInput, rawOutput: detail.rawOutput, locations: detail.locations, content: detail.content }) }]
+    const display = activityPresentation({ toolKind: detail.kind, rawInput: detail.rawInput, content: detail.content }, 'tool')
+    const result: NormalizedActivity[] = [{ ...(display === undefined ? {} : { display }), activityId: `tool:${toolId}`, kind: 'tool', status, presentation: title, rawDetail: activityRawDetail({ toolKind: detail.kind, toolName: detail.name, rawInput: detail.rawInput, rawOutput: detail.rawOutput, locations: detail.locations, content: detail.content }) }]
     if (Array.isArray(detail.content)) {
       for (const [index, content] of detail.content.entries()) {
         const normalized = normalizeActivityContent(`tool:${toolId}:${String(index)}`, content, status)
@@ -215,12 +220,13 @@ function activitiesForNotification(notification: AcpSessionNotification, fallbac
     const entries = type === 'plan' && Array.isArray(update.entries) ? update.entries : undefined
     const plan = type === 'plan_update' ? update.plan : entries
     const planId = isPlainRecord(update._meta) && typeof update._meta.activityId === 'string' ? update._meta.activityId : 'session'
-    const complete = Array.isArray(entries) && entries.length > 0 && entries.every((entry) => isPlainRecord(entry) && entry.status === 'completed')
-    return [{ activityId: `plan:${planId}`, kind: 'plan', status: complete ? 'completed' : 'running', presentation: 'Agent plan', rawDetail: activityRawDetail(plan) }]
+    const display = activityPresentation(plan, 'plan')
+    const complete = display?.plan !== undefined && display.plan.every(entry => entry.status === 'completed')
+    return [{ activityId: `plan:${planId}`, kind: 'plan', status: complete ? 'completed' : 'running', presentation: 'Agent plan', rawDetail: activityRawDetail(plan), ...(display === undefined ? {} : { display }) }]
   }
   if (type === 'plan_removed') {
     const planId = typeof update.planId === 'string' ? update.planId : 'session'
-    return [{ activityId: `plan:${planId}`, kind: 'plan', status: 'completed', presentation: 'Agent plan', rawDetail: activityRawDetail(update) }]
+    return [{ activityId: `plan:${planId}`, kind: 'plan', status: 'completed', presentation: 'Agent plan', display: { plan: [] }, rawDetail: activityRawDetail(update) }]
   }
   if (type === 'delegated' || type === 'subagent') return [{ activityId: `delegated:${typeof update.activityId === 'string' ? update.activityId : fallbackId}`, kind: 'delegated', status: activityStatus(update.status), presentation: 'Delegated Agent activity', rawDetail: activityRawDetail(update) }]
   if (type === 'subagent_spawned') return [{
@@ -247,7 +253,7 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 function snapshotProfile(profile: AcpStubAgentConfig | undefined): AcpStubAgentConfig | undefined {
   return profile === undefined
     ? undefined
-    : { ...profile, args: [...profile.args], env: { ...profile.env } }
+    : { ...profile, args: [...profile.args], env: { ...profile.env }, ...(profile.hostTools === undefined ? {} : { hostTools: [...profile.hostTools] }) }
 }
 
 interface ProfileGeneration {
@@ -280,6 +286,8 @@ export interface AcpProfileRuntime {
   readonly modes?: acp.SessionModeState | undefined
   readonly contextUsage?: AcpRuntimeContextUsage | undefined
   readonly isBusy?: boolean
+  readonly canSteer?: boolean
+  steer?(content: acp.ContentBlock[]): Promise<'injected' | 'promptRequired'>
   /** ACP session-scoped writes. Implementations must confirm the resulting snapshot. */
   setConfigOption?(configId: string, value: string | boolean, signal?: AbortSignal): Promise<void>
   setMode?(modeId: string, signal?: AbortSignal): Promise<void>
@@ -302,6 +310,7 @@ export class AcpProfileAdapter extends LlmAdapter {
   private readonly nextGenerations = new Map<string, number>()
   private claudeDraftDegradationReported = false
   private readonly ledger: DispatchLedger
+  private readonly handoffs = new Map<string, { stream: StreamHandoff; generation: ProfileGeneration | undefined; options: GenerateOptions; off?: () => void }>()
 
   constructor(
     readonly profileId: string,
@@ -671,6 +680,82 @@ export class AcpProfileAdapter extends LlmAdapter {
   private streamWithGeneration(options: GenerateOptions, generation: ProfileGeneration | undefined): AsyncIterable<StreamChunk> {
     const self = this
     return (async function* (): AsyncGenerator<StreamChunk> {
+      if (options.purpose !== undefined) throw new LlmError('ACP does not execute auxiliary title or compaction requests', 'ACP_AUXILIARY_CALL')
+      const key = String(options.sessionId ?? '')
+      const carry: StreamChunk[] = []
+      let owner = self.handoffs.get(key)
+      if (owner?.stream.closing) {
+        await owner.stream.drain()
+        owner.off?.()
+        if (self.handoffs.get(key) === owner) self.handoffs.delete(key)
+        owner = undefined
+      }
+      if (owner !== undefined) {
+        if (!owner.stream.suspended) throw new LlmError('ACP stream is already active', 'ACP_PROMPT_ALREADY_ACTIVE')
+        const compatible = owner.generation === generation && owner.options.provider === options.provider
+          && owner.options.model === options.model && owner.options.reasoningEffort === options.reasoningEffort
+          && owner.options.signal?.aborted !== true && options.signal?.aborted !== true && options.purpose === undefined
+        let resumed = false
+        try { resumed = compatible && await owner.stream.resume?.(options) === true }
+        catch (error) {
+          await self.sidecar?.writeRecoveryState({ dshSessionId: key, kind: 'outcome-unknown', cause: 'load-failed', detail: 'ACP steering acceptance could not be confirmed; inspect the Agent session before retrying', provider: options.provider, updatedAt: Date.now() })
+          await owner.stream.drain().catch(() => undefined)
+          owner.off?.(); self.handoffs.delete(key)
+          throw new LlmError(error instanceof Error ? error.message : String(error), 'ACP_STEERING_FAILED', { cause: error })
+        }
+        if (!resumed) {
+          await owner.stream.drain()
+          carry.push(...owner.stream.takeRemainder())
+          owner.off?.(); self.handoffs.delete(key); owner = undefined
+        }
+      }
+      if (owner === undefined) {
+        const stream = new StreamHandoff()
+        owner = { stream, generation, options }
+        const indices = new Map<number, number>()
+        for (const chunk of carry) {
+          if (chunk.type === 'finish') {
+            // Cancellation is expected when replacing an idle/changed route.
+            // Provider failures and limits must never become a successful retry.
+            if (chunk.reason.kind === 'stop' || chunk.reason.kind === 'aborted') continue
+            yield chunk
+            return
+          }
+          if ('index' in chunk) {
+            if (!indices.has(chunk.index)) indices.set(chunk.index, indices.size)
+            yield { ...chunk, index: indices.get(chunk.index)! }
+          } else yield chunk
+        }
+        stream.attach(self.executionStream(options, generation, stream, indices.size))
+        self.handoffs.set(key, owner)
+        const captured = owner
+        const cleanup = async (): Promise<void> => {
+          if (self.handoffs.get(key) !== captured || !stream.suspended) return
+          try { await stream.drain() } finally {
+            captured.off?.()
+            if (self.handoffs.get(key) === captured) self.handoffs.delete(key)
+          }
+        }
+        const view = self.sessionOf(key)
+        const offEnd = view?.watchTurnEnd?.(() => {
+          void cleanup().catch(error => self.log?.(`ACP suspended stream cleanup: ${String(error)}`))
+        })
+        const offRoute = view?.watchRouteChange?.(options.provider, cleanup)
+        owner.off = () => { offEnd?.(); offRoute?.() }
+      }
+      try { yield* owner.stream.segment() }
+      finally {
+        if (!owner.stream.suspended) {
+          owner.off?.()
+          if (self.handoffs.get(key) === owner) self.handoffs.delete(key)
+        }
+      }
+    })()
+  }
+
+  private executionStream(options: GenerateOptions, generation: ProfileGeneration | undefined, handoff: StreamHandoff, contentOffset = 0): AsyncIterable<StreamChunk> {
+    const self = this
+    return (async function* (): AsyncGenerator<StreamChunk> {
       if (options.purpose !== undefined) {
         throw new LlmError('ACP does not execute auxiliary title or compaction requests', 'ACP_AUXILIARY_CALL')
       }
@@ -988,12 +1073,21 @@ export class AcpProfileAdapter extends LlmAdapter {
         // later DSH turn, even if an Agent reuses its id.
         const toolCallReducer = new AcpToolCallReducer(dispatchKey)
         const activityPositions = new Map<string, number>()
+        let currentAnchor = admissionProof?.anchorMessageId ?? `prompt:${dispatchKey}`
+        let activityIndexOffset = 0
+        const activityOwners = new Map<string, { anchor: string; offset: number }>()
         const scheduleActivity = (activity: NormalizedActivity): void => {
           if (typeof durableSidecar.upsertActivity !== 'function') return
           currentActivities.set(activity.activityId, activity)
-          const fallbackAnchor = admissionProof?.anchorMessageId ?? `prompt:${dispatchKey}`
+          let activityOwner = activityOwners.get(activity.activityId)
+          if (activityOwner === undefined) {
+            activityOwner = { anchor: currentAnchor, offset: activityIndexOffset }
+            activityOwners.set(activity.activityId, activityOwner)
+          }
+          const fallbackAnchor = activityOwner.anchor
           const stableActivityId = `${fallbackAnchor}:${activity.activityId}`
-          const position = activityPositions.get(activity.activityId)
+          const rawPosition = activityPositions.get(activity.activityId)
+          const position = rawPosition === undefined ? undefined : Math.max(0, rawPosition - activityOwner.offset)
           activityWriteTail = activityWriteTail.then(async () => {
             try {
               await durableSidecar.upsertActivity({
@@ -1007,6 +1101,7 @@ export class AcpProfileAdapter extends LlmAdapter {
                 activityId: stableActivityId,
                 time: Date.now(),
                 kind: activity.kind,
+                ...(activity.display === undefined ? {} : { display: activity.display }),
                 status: activity.status,
                 presentation: activity.presentation,
                 ...(activity.rawDetail === undefined ? {} : { rawDetail: activity.rawDetail }),
@@ -1021,7 +1116,7 @@ export class AcpProfileAdapter extends LlmAdapter {
         }
         const settleRunningActivities = (status: 'completed' | 'failed' | 'cancelled'): void => {
           for (const activity of currentActivities.values()) {
-            if (!isTerminalActivityStatus(activity.status)) scheduleActivity({ ...activity, status })
+            if (activity.kind !== 'plan' && !isTerminalActivityStatus(activity.status)) scheduleActivity({ ...activity, status })
           }
         }
         let wake: (() => void) | undefined
@@ -1030,7 +1125,7 @@ export class AcpProfileAdapter extends LlmAdapter {
         let visibleContentEmitted = false
         // Only contiguous content belongs to the same native block. Never
         // return to an older text/reasoning index after another segment.
-        let nextContentIndex = 0
+        let nextContentIndex = contentOffset
         let contentSegment: { kind: 'text' | 'reasoning'; index: number; messageId?: string } | undefined
         const breakContent = (): void => { contentSegment = undefined }
         const contentIndex = (kind: 'text' | 'reasoning', messageId?: string | null): number => {
@@ -1147,7 +1242,11 @@ export class AcpProfileAdapter extends LlmAdapter {
             toolChildren.set(toolId, nextChildren)
           }
           scheduleContent(() => {
+            const plan = normalized.find(activity => activity.kind === 'plan')?.display?.plan
+            if (plan !== undefined) session?.publishPlan?.(plan)
             for (const activity of normalized) {
+              const parentOwner = isToolUpdate ? activityOwners.get(`tool:${toolId}`) : undefined
+              if (!activityOwners.has(activity.activityId) && parentOwner !== undefined) activityOwners.set(activity.activityId, parentOwner)
               if (!activityPositions.has(activity.activityId)) {
                 // A tool's detail rows are nested under its original call;
                 // late output must not split an unrelated streaming sentence.
@@ -1167,9 +1266,59 @@ export class AcpProfileAdapter extends LlmAdapter {
             })
           }
         }
-        const promptResult = runtime.prompt(prompt, onUpdate, options.signal)
+        // Interrupt only the ACP execution. The native turn remains alive and
+        // owns the queued message, its pre-step hooks, and its eventual commit.
+        // No second prompt may cross the wire before the first one settles.
+        const inputAbort = new AbortController()
+        const promptSignal = options.signal === undefined ? inputAbort.signal : AbortSignal.any([options.signal, inputAbort.signal])
+        let interruptedForInput = false
+        let remoteSettled = false
+        handoff.cancel = () => inputAbort.abort(new Error('ACP stream consumer ended'))
+        const watchInput = (): (() => void) | undefined => session?.watchSteering?.(() => {
+          if (remoteSettled || promptSignal.aborted) return
+          if (runtime.canSteer === true && runtime.steer !== undefined) { handoff.request(); return }
+          interruptedForInput = true
+          inputAbort.abort(new Error('ACP interrupted for pending DSH input'))
+        })
+        let stopWatchingInput = watchInput()
+        handoff.resume = async nextOptions => {
+          let nextProof: CurrentStepProof | undefined
+          const nextMessages = admitCurrentStep(nextOptions, session, proof => { nextProof = proof })
+          if (nextProof?.turn !== admissionProof?.turn) return false
+          const nextPrompt = await toAcpPrompt(nextMessages, {
+            system: hostSystemPrompt(nextOptions), imageEnabled: runtime.agentCapabilities?.promptCapabilities?.image === true,
+            ...(self.attachments === undefined ? {} : { attachments: self.attachments }), signal: promptSignal,
+          })
+          if (nextPrompt.length === 0) throw new AcpPromptContentError('Steering input contains no supported content')
+          if (remoteSettled || runtime.canSteer !== true || runtime.steer === undefined) return false
+          // Finish notifications already admitted before the steering request.
+          // Agents may emit new tools before acknowledging injection, so the
+          // request boundary, rather than its response, owns their projection.
+          await contentDeliveryTail
+          if (remoteSettled) return false
+          const previousAnchor = currentAnchor
+          const previousOffset = activityIndexOffset
+          currentAnchor = nextProof!.anchorMessageId
+          // A pending pull may contain the old segment's final text. It will
+          // occupy a block in the next native reply before the injected output.
+          activityIndexOffset = Math.min(nextContentIndex, handoff.pendingIndex ?? nextContentIndex,
+            ...queue.flatMap(chunk => 'index' in chunk ? [chunk.index] : []))
+          breakContent()
+          const result = await runtime.steer(nextPrompt)
+          if (result !== 'injected') {
+            currentAnchor = previousAnchor
+            activityIndexOffset = previousOffset
+            return false
+          }
+          // A racing later insertion gets its own native admission boundary.
+          stopWatchingInput?.(); stopWatchingInput = watchInput()
+          return true
+        }
+        const promptResult = runtime.prompt(prompt, onUpdate, promptSignal)
         self.controlsChanged?.(sessionKey)
         const prompting = promptResult.then(async (response: acp.PromptResponse) => {
+          remoteSettled = true
+          stopWatchingInput?.()
           try {
             await contentDeliveryTail
             settleRunningActivities(response.stopReason === 'cancelled' ? 'cancelled' : 'completed')
@@ -1244,14 +1393,15 @@ export class AcpProfileAdapter extends LlmAdapter {
                   committedActivitySeq,
                   ...(admissionProof?.anchorMessageId === undefined ? {} : { activityAnchorMessageId: admissionProof.anchorMessageId }),
                 }
-            const responseFinish = finishReason(String(response.stopReason))
+            const responseFinish = interruptedForInput && options.signal?.aborted !== true
+              ? { kind: 'stop' as const } : finishReason(String(response.stopReason))
             // ACP deliberately separates private reasoning from the visible
             // assistant answer.  A successful turn that only emitted
             // agent_thought_chunk is therefore not a usable DSH answer.  Do not
             // promote reasoning to text (or guess a trailing sentence); surface
             // a stable provider error so DSH does not present an apparently
             // successful, answer-less turn.
-            const finalReason = responseFinish.kind === 'stop' && !visibleContentEmitted
+            const finalReason = responseFinish.kind === 'stop' && !visibleContentEmitted && !interruptedForInput
               ? { kind: 'error' as const, failure: { code: 'ACP_NO_VISIBLE_RESPONSE', message: 'ACP agent completed without a visible response' } }
               : responseFinish
             // Start the projection transaction before publishing finish so its
@@ -1282,6 +1432,8 @@ export class AcpProfileAdapter extends LlmAdapter {
             wake?.(); wake = undefined
           }
         }, async (error: unknown) => {
+          remoteSettled = true
+          stopWatchingInput?.()
           await contentDeliveryTail.catch(() => undefined)
           settleRunningActivities(options.signal?.aborted === true ? 'cancelled' : 'failed')
           await activityWriteTail
@@ -1323,6 +1475,7 @@ export class AcpProfileAdapter extends LlmAdapter {
             throw failure
           }
         } finally {
+          stopWatchingInput?.()
           // AgentLoop closes the iterator as soon as an aborted turn observes a
           // final ACP update. Keep return() pending until the matching prompt has
           // confirmed cancellation and its dispatch record is durably settled;
@@ -1451,11 +1604,14 @@ export class AcpProfileAdapter extends LlmAdapter {
   }
 
   close(): Promise<void> {
+    const handoffs = [...this.handoffs.values()]
+    for (const owner of handoffs) { owner.off?.(); owner.stream.cancel?.() }
+    this.handoffs.clear()
     const keys = [...this.runtimes.keys()]
     const closing = [...this.runtimes.values()].map((runtime) => runtime.close())
     this.runtimes.clear()
     for (const key of keys) this.controlsChanged?.(key.slice(0, key.lastIndexOf(':')))
-    return Promise.all(closing).then(() => undefined)
+    return Promise.all([...closing, ...handoffs.filter(owner => owner.stream.suspended).map(owner => owner.stream.drain())]).then(() => undefined)
   }
 
   private async releaseRuntime(key: string, runtime: AcpProfileRuntime): Promise<void> {
@@ -1473,6 +1629,16 @@ export class AcpProfileAdapter extends LlmAdapter {
 
   private async closeSessionRuntime(sessionId: string, owner?: object): Promise<void> {
     const keys = [...this.runtimes.keys()].filter(key => key.startsWith(`${sessionId}:`))
+    const handoff = this.handoffs.get(sessionId)
+    if (handoff !== undefined && (owner === undefined || keys.some(key => {
+      const runtime = this.runtimes.get(key)
+      return runtime !== undefined && this.runtimeOwners.get(runtime) === owner
+    }))) {
+      handoff.off?.(); handoff.stream.cancel?.(); this.handoffs.delete(sessionId)
+      // An active consumer owns its outstanding pull, including late setup
+      // failure. Only abandoned suspended segments need a replacement consumer.
+      if (handoff.stream.suspended) void handoff.stream.drain().catch(error => this.log?.(`ACP disposed stream cleanup: ${String(error)}`))
+    }
     await Promise.all(keys.map(async key => {
       const runtime = this.runtimes.get(key)
       if (runtime === undefined || (owner !== undefined && this.runtimeOwners.get(runtime) !== owner)) return

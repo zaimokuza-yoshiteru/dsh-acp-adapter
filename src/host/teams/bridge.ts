@@ -10,37 +10,55 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import type { AcpMcpLease } from '../../runtime/session/mcp-lease.ts'
+import { toolContent } from './tool-content.ts'
 
 const TEAM_TOOLS = [
   'spawn_teammate', 'send_message', 'list_agents', 'wait_agent', 'interrupt_agent',
   'team_task_create', 'team_task_list', 'team_task_get', 'team_task_update',
 ] as const
+const isTeamTool = (name: string): boolean => (TEAM_TOOLS as readonly string[]).includes(name)
+const identities = new WeakMap<object, number>()
+let nextIdentity = 0
+function identity(value: object): number {
+  let id = identities.get(value)
+  if (id === undefined) { id = ++nextIdentity; identities.set(value, id) }
+  return id
+}
 
-/** Changes when the optional host feature or its scoped tool owner changes. */
-export function teamBridgeKey(ctx: Context, sessionId: string): unknown {
+function bridgeDefinitions(ctx: Context, sessionId: string, hostTools: readonly string[]) {
   const teams = ctx.get('agentTeams')
   const agent = ctx.get('agents', false)?.get(sessionId as never)
-  if (teams === undefined || agent === undefined || teams.tryMembership(agent) === undefined) return undefined
   const tools = ctx.get('tools', false)
-  if (tools === undefined || TEAM_TOOLS.some(name => tools.get(name, agent) === undefined)) return undefined
-  return tools.get('spawn_teammate', agent)
+  if (agent === undefined || tools === undefined) {
+    if (hostTools.length) throw new Error('ACP_HOST_TOOLS_UNAVAILABLE: native tool runtime is unavailable')
+    return undefined
+  }
+  const hasTeams = teams !== undefined && teams.tryMembership(agent) !== undefined
+    && TEAM_TOOLS.every(name => tools.get(name, agent) !== undefined)
+  const definitions = new Map<string, ToolDefinition>()
+  if (hasTeams) for (const name of TEAM_TOOLS) definitions.set(name, tools.get(name, agent)!)
+  for (const name of hostTools) {
+    const definition = tools.get(name, agent)
+    if (definition === undefined || (isTeamTool(name) && !hasTeams)) throw new Error(`ACP_HOST_TOOL_UNAVAILABLE: ${name}`)
+    definitions.set(name, definition)
+  }
+  return definitions.size === 0 ? undefined : { agent, tools, teams, hasTeams, definitions }
+}
+
+/** Changes when the optional host feature or its scoped tool owner changes. */
+export function teamBridgeKey(ctx: Context, sessionId: string, hostTools: readonly string[] = []): unknown {
+  const bridge = bridgeDefinitions(ctx, sessionId, hostTools)
+  return bridge === undefined ? undefined : JSON.stringify([identity(bridge.agent), ...[...bridge.definitions].map(([name, definition]) => [name, identity(definition)])])
 }
 
 /** Optional host lookup: loading the adapter never enables Teams itself. */
 export async function createTeamBridge(
-  ctx: Context, sessionId: string, capabilities: acp.AgentCapabilities | undefined, wireProfile?: string,
+  ctx: Context, sessionId: string, capabilities: acp.AgentCapabilities | undefined, wireProfile?: string, hostTools: readonly string[] = [],
 ): Promise<AcpMcpLease | undefined> {
-  const teams = ctx.get('agentTeams')
   const agents = ctx.get('agents', false)
-  const tools = ctx.get('tools', false)
-  const agent = agents?.get(sessionId as never)
-  if (teams === undefined || agents === undefined || tools === undefined || agent === undefined || teams.tryMembership(agent) === undefined) return undefined
-  const definitions = new Map<string, ToolDefinition>()
-  for (const name of TEAM_TOOLS) {
-    const definition = tools.get(name, agent)
-    if (definition === undefined) return undefined
-    definitions.set(name, definition)
-  }
+  const bridge = bridgeDefinitions(ctx, sessionId, hostTools)
+  if (bridge === undefined || agents === undefined) return undefined
+  const { tools, agent, teams, hasTeams, definitions } = bridge
   const lifetime = new AbortController()
   let prompt: AbortSignal | undefined
   const nonce = randomBytes(8).toString('hex')
@@ -59,8 +77,9 @@ export async function createTeamBridge(
     return [...names].find(([tool]) => name === tool || name === `mcp__${serverName}__${tool}`)?.[1]
   }
   // Cordis returns a caller-context proxy for each service lookup, so proxy identity is not service identity.
-  const live = (): boolean => !lifetime.signal.aborted && ctx.get('agentTeams') !== undefined
-    && agents.get(sessionId as never) === agent && teams.tryMembership(agent) !== undefined
+  const live = (): boolean => !lifetime.signal.aborted
+    && agents.get(sessionId as never) === agent
+    && (!hasTeams || (ctx.get('agentTeams') !== undefined && teams?.tryMembership(agent) !== undefined))
     && [...definitions].every(([name, definition]) => tools.get(name, agent) === definition)
   const sessions = new Set<Server>()
   const calls = new Set<Promise<unknown>>()
@@ -70,9 +89,9 @@ export async function createTeamBridge(
       response.writeHead(403).end()
       return
     }
-    const server = new Server({ name: 'DSH Agent Teams', version: '1.0.0' }, {
+    const server = new Server({ name: 'DSH tools', version: '1.0.0' }, {
       capabilities: { tools: {} },
-      instructions: 'Use these tools for DSH Agent Teams when the user explicitly requests a team. Members share the workspace. Only fresh context is supported by this ACP bridge. Use the exact tool names from tools/list.',
+      instructions: 'These are explicitly enabled native DSH tools. Use the exact tool names from tools/list. Team tools require an explicit user request for a team; members share the workspace and only fresh context is supported.',
     })
     sessions.add(server)
     server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -101,7 +120,8 @@ export async function createTeamBridge(
           signal: AbortSignal.any([lifetime.signal, prompt, extra.signal]),
         })
         for (const context of result.additionalContexts ?? []) agent.steer(context)
-        const content = result.content.filter(block => block.type === 'text')
+        const content = await toolContent(result.content, AbortSignal.any([lifetime.signal, prompt, extra.signal]), capabilities?.promptCapabilities?.image === true, ctx.get('attachments', false))
+        if (result.concludesTurn === true) content.push({ type: 'text', text: 'This DSH tool requests the end of the current turn. Finish this ACP response now without further tool calls.' })
         // Do not steal or duplicate inbox messages. Only the native loop claims them.
         if (agent.inbox.nextStep.length > 0) content.push({ type: 'text', text: 'DSH has queued input for your next step. End this ACP response now with a brief progress update, without a final answer; DSH will deliver the pending input and continue the turn.' })
         return { content, isError: result.isError }
@@ -140,7 +160,7 @@ export async function createTeamBridge(
   const listeners: Array<() => unknown> = []
   const lease: AcpMcpLease = {
     signal: lifetime.signal,
-    instructions: `Current DSH Teams connection: MCP server ${serverName}. Discover its tools and use their exact names. This replaces earlier Teams connection names. Each teammate has its own server and tool names; do not instruct a teammate to use your connection names. Create teams only when explicitly requested. Pending DSH messages are delivered after you end the current response; give a brief progress update when asked to yield.`,
+    instructions: `Current DSH tools connection: MCP server ${serverName}. Discover its tools and use their exact names. This replaces earlier DSH connection names. Each teammate has its own server and tool names; do not instruct a teammate to use your connection names. Create teams only when explicitly requested. Pending DSH messages are delivered after you end the current response; give a brief progress update when asked to yield.`,
     servers,
     beginPrompt(signal) { prompt = signal; presented.clear() },
     endPrompt() { prompt = undefined; presented.clear() },
@@ -153,7 +173,8 @@ export async function createTeamBridge(
     },
     permission(request) {
       if (!live() || prompt === undefined || prompt.aborted) return undefined
-      if (definitionOf(request.toolCall) === undefined) return undefined
+      const definition = definitionOf(request.toolCall)
+      if (definition === undefined || !isTeamTool(definition.name)) return undefined
       const allow = request.options.find(option => option.kind === 'allow_once')
       return allow === undefined ? undefined : { outcome: { outcome: 'selected', optionId: allow.optionId } }
     },
@@ -165,6 +186,7 @@ export async function createTeamBridge(
         || toolCall._meta?.is_mcp_tool_call !== true) return undefined
       const input = toolCall.rawInput as { server?: unknown; tool?: unknown } | undefined
       if (input?.server !== serverName || typeof input.tool !== 'string' || !names.has(input.tool)) return undefined
+      if (!isTeamTool(names.get(input.tool)!.name)) return undefined
       // Codex may add the persistence selector to an otherwise empty tool-approval form.
       // Never answer unrelated fields or grant persistent permission.
       const properties = form.requestedSchema?.properties
@@ -194,6 +216,6 @@ export async function createTeamBridge(
     },
   }
   listeners.push(ctx.on('agent/disposed', ({ agent: disposed }) => { if (disposed === agent) void lease.close() }))
-  listeners.push(ctx.on('internal/service', name => { if (name === 'agentTeams' && !live()) void lease.close() }))
+  listeners.push(ctx.on('internal/service', name => { if (['agentTeams', 'agents', 'tools'].includes(name) && !live()) void lease.close() }))
   return lease
 }

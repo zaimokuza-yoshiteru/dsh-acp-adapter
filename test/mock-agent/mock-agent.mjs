@@ -335,6 +335,7 @@ async function handleInitialize(msg) {
       };
   respond(msg.id, {
     protocolVersion: 1,
+    ...(process.env.MOCK_STEERING === 'atomic' ? { _meta: { steering: { supported: true, idleBehavior: 'promptRequired' } } } : {}),
     agentCapabilities,
     authMethods: [],
     agentInfo: { name: 'dsh-mock-acp-agent', title: 'DSH Mock ACP Agent', version: '1.0.0' },
@@ -753,6 +754,13 @@ function handleRequest(msg) {
     return respondError(id, -32601, `Method not found: ${method}`);
   }
   switch (method) {
+    case '_session/steering': {
+      if (process.env.MOCK_STEERING !== 'atomic') return respondError(id, -32601, 'Method not found');
+      const session = state.sessions.get(msg.params?.sessionId);
+      if (!session?.turn?.steer) return respond(id, { outcome: 'promptRequired' });
+      session.turn.steer(msg.params.prompt);
+      return respond(id, { outcome: 'injected' });
+    }
     case 'initialize':
       return void handleInitialize(msg);
     case 'authenticate':

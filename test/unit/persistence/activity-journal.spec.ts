@@ -29,6 +29,27 @@ function activity(id: string, time: number | undefined = 1_700_000_000_000, over
 }
 
 describe('ACP activity journal', () => {
+  it('keeps full display content beyond audit limits after reopening', async () => {
+    const { root, sidecar } = store()
+    const text = 'same line\n'.repeat(6000)
+    const display = { diffs: [{ path: '/workspace/a.ts', oldText: text + 'old', newText: text + 'new' }] }
+    await sidecar.upsertActivity({ ...activity('diff:full'), kind: 'diff', display, rawDetail: 'x'.repeat(20000) })
+    await sidecar.dispose()
+    const reopened = createAcpSidecar({ root })
+    sidecars.push(reopened)
+    const [row] = await reopened.activitySnapshot(SessionId('session-1'))
+    expect(row!.display).toEqual(display)
+    expect(row!.rawDetail!.length).toBeLessThan(20000)
+  })
+
+  it('omits an oversized display atomically and lets plan updates reopen completed plans', async () => {
+    const { sidecar } = store()
+    const huge = 'x'.repeat(2 * 1024 * 1024)
+    const row = await sidecar.upsertActivity({ ...activity('diff:huge'), display: { diffs: [{ path: 'a', oldText: null, newText: huge }] } })
+    expect(row.display).toEqual({ unavailable: 'too-large' })
+    await sidecar.upsertActivity({ ...activity('plan'), kind: 'plan', status: 'completed' })
+    await expect(sidecar.upsertActivity({ ...activity('plan'), kind: 'plan', status: 'running' })).resolves.toMatchObject({ status: 'running' })
+  })
   it('preserves the first content boundary through patches, reopening, and legacy rows', async () => {
     const { root, sidecar } = store()
     await sidecar.upsertActivity(activity('tool:ordered', undefined, { contentIndex: 2 }))

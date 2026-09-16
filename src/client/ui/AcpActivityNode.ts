@@ -1,3 +1,4 @@
+import { activityDiffsOf } from '../../contract/activity-diffs.ts'
 import { createElement as h, useEffect, useState, useSyncExternalStore } from 'react'
 import type { ReactNode } from 'react'
 import type {
@@ -177,28 +178,11 @@ function dotState(status: AcpActivityView['status']): StateDotState {
   return 'error'
 }
 
-function diffHunks(value: unknown): DiffHunk[] {
-  const candidates = record(value) && Array.isArray(value.content) ? value.content : [value]
-  const result: DiffHunk[] = []
-  for (const candidate of candidates) {
-    if (!record(candidate) || candidate.type !== 'diff' || typeof candidate.path !== 'string' || typeof candidate.newText !== 'string') continue
-    result.push({
-      path: candidate.path,
-      oldText: typeof candidate.oldText === 'string' ? candidate.oldText : null,
-      newText: candidate.newText,
-    })
-  }
-  // Kimi's write tool reports the complete new file in rawInput instead of an
-  // ACP diff content block. DiffBlock accepts null oldText for a create or
-  // overwrite; every byte the Agent exposed for the new side remains visible.
-  if (result.length === 0 && record(value) && value.toolKind === 'edit' && record(value.rawInput)) {
-    const path = typeof value.rawInput.path === 'string'
-      ? value.rawInput.path
-      : typeof value.rawInput.file_path === 'string' ? value.rawInput.file_path : undefined
-    const newText = typeof value.rawInput.content === 'string' ? value.rawInput.content : undefined
-    if (path !== undefined && path.trim() !== '' && newText !== undefined) result.push({ path, oldText: null, newText })
-  }
-  return result
+/** Legacy audit rows may be incomplete; never compare their truncated file sides. */
+function activityDiffs(row: AcpActivityView, detail: unknown): DiffHunk[] {
+  if (row.display !== undefined) return [...(row.display.diffs ?? [])]
+  if (/\[truncated\]|\[nested value omitted\]|\[redacted\]/.test(row.rawDetail ?? '')) return []
+  return activityDiffsOf(detail)
 }
 
 type ReadDetail = Pick<ReadBlockProps, 'label' | 'lines' | 'totalLines' | 'lang'>
@@ -372,7 +356,7 @@ export function activityRowElement({ row, t, onOpenProjectedChild, jsonStringWra
   const projectedChildSessionId = record(detail) && typeof detail.projectedChildSessionId === 'string'
     ? detail.projectedChildSessionId
     : undefined
-  const diffs = diffHunks(detail)
+  const diffs = activityDiffs(row, detail)
   const terminal = terminalDetail(row, detail)
   const read = readDetail(detail)
   const showRawDetail = hasMeaningfulDetail(detail)
@@ -382,8 +366,9 @@ export function activityRowElement({ row, t, onOpenProjectedChild, jsonStringWra
     && terminal === undefined
     && read === undefined
   const expandable = external !== undefined || projectedChildSessionId !== undefined || showRawDetail || diffs.length > 0
-    || terminal !== undefined || read !== undefined
+    || terminal !== undefined || read !== undefined || row.display?.unavailable !== undefined
   const body = h('div', { className: css.body },
+    row.display?.unavailable === undefined ? null : h('p', null, t(row.display?.unavailable === 'invalid' ? 'activity.detailInvalid' : 'activity.detailTooLarge')),
     external === undefined ? null : h('div', { className: css.externalRecord },
       h('div', { className: css.externalSection },
         h('span', { className: css.externalLabel }, t('subagent.task')),
@@ -433,10 +418,26 @@ export function activityRowElement({ row, t, onOpenProjectedChild, jsonStringWra
 
 export function ActivityRow(props: { readonly row: AcpActivityView; readonly t: ActivityNodeProps['t']; readonly openFile: ActivityNodeProps['openFile']; readonly onOpenProjectedChild?: (childSessionId: string) => void; readonly jsonStringWrapping?: AcpJsonStringWrapping }): ReactNode {
   const [open, setOpen] = useState(false)
-  if (props.row.kind === 'tool' || props.row.kind === 'plan') {
+  if (props.row.kind === 'plan') return planRowElement(props.row, props.t, open, () => { setOpen(value => !value) })
+  if (props.row.kind === 'tool') {
     return fallbackToolRowElement({ row: props.row, t: props.t, openFile: props.openFile, open, onToggle: () => { setOpen(value => !value) } })
   }
   return activityRowElement({ ...props, open, onToggle: () => { setOpen(value => !value) } })
+}
+
+/** Historical ACP plan snapshot. The current plan is also projected into DSH's native todo dock. */
+function planRowElement(row: AcpActivityView, t: ActivityNodeProps['t'], open: boolean, onToggle: () => void): ReactNode {
+  const legacy = detailValue(row)
+  const entries = row.display !== undefined ? row.display.plan ?? [] : (Array.isArray(legacy) ? legacy.filter((item): item is { content: string; status: string } =>
+    record(item) && typeof item.content === 'string' && ['pending', 'in_progress', 'completed'].includes(String(item.status))) : [])
+  return h(DisclosureRow, { title: t('activity.tool.plan'), icon: h(StateDot, { state: dotState(row.status) }), expandable: entries.length > 0 || row.display?.unavailable !== undefined, open, onToggle },
+    row.display?.unavailable !== undefined ? h('p', null, t(row.display?.unavailable === 'invalid' ? 'activity.detailInvalid' : 'activity.detailTooLarge')) :
+      h('ul', null, ...entries.map((entry, index) => h('li', { key: index },
+        h(StateDot, { state: entry.status === 'completed' ? 'done' : entry.status === 'in_progress' ? 'ongoing' : 'idle' }),
+        entry.content,
+        h('span', null, ` · ${t(entry.status === 'completed' ? 'activity.status.completed' : entry.status === 'in_progress' ? 'activity.status.running' : 'activity.status.pending')}`),
+      ))),
+  )
 }
 
 /** ACP tool activity shell. DSH keeps GenericToolCard private; recognized
@@ -450,7 +451,7 @@ function fallbackToolRowElement({ row, t, openFile, open, onToggle }: {
 }): ReactNode {
   const value = detailValue(row)
   const detail = record(value) ? value : {}
-  const diffs = diffHunks(value)
+  const diffs = activityDiffs(row, value)
   const terminal = terminalDetail(row, value)
   const read = readDetail(value)
   const input = detail.rawInput
@@ -500,6 +501,7 @@ function fallbackToolRowElement({ row, t, openFile, open, onToggle }: {
       }, summary),
     ),
   }, h('div', { className: css.toolBody },
+    row.display?.unavailable === undefined ? null : h('p', null, t(row.display?.unavailable === 'invalid' ? 'activity.detailInvalid' : 'activity.detailTooLarge')),
     diffs.length === 0 ? null : h(DiffBlock, { diffs, labels: diffLabels(t), className: css.nativeBlock }),
     terminal === undefined ? null : h(TerminalBlock, { ...terminal, labels: terminalLabels(t), className: css.nativeBlock }),
     read === undefined ? null : h(ReadBlock, { ...read, labels: readLabels(t), className: css.nativeBlock }),

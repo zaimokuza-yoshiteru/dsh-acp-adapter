@@ -108,6 +108,7 @@
 
 /// <reference types="node" />
 
+import { activityPresentationSchema, boundedActivityPresentation, type AcpActivityPresentation } from '../domain/policy/activity-presentation.ts'
 import { createHash } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, readdirSync } from 'node:fs'
 import path from 'node:path'
@@ -184,6 +185,7 @@ export interface AcpDispatchRecord {
 export type AcpActivityKind = 'tool' | 'plan' | 'terminal' | 'diff' | 'resource' | 'delegated' | 'other'
 export type AcpActivityStatus = 'running' | 'completed' | 'failed' | 'cancelled'
 export interface AcpActivityRecord {
+  readonly display?: AcpActivityPresentation
   /** First-seen insertion boundary in the native assistant content; absent on legacy records. */
   readonly contentIndex?: number
   readonly dshSessionId: string
@@ -772,6 +774,7 @@ interface BindingRow {
 }
 
 interface ActivityRow {
+  readonly display_detail?: unknown
   readonly content_index?: unknown
   readonly dsh_session_id?: unknown
   readonly activity_id?: unknown
@@ -972,6 +975,7 @@ class SidecarStore implements AcpSidecar {
         db.exec('DROP TABLE activity_journal_legacy')
       }
       const activityColumns = new Set((db.prepare('PRAGMA table_info(activity_journal)').all() as Array<{ name?: string }>).map(row => row.name))
+      if (!activityColumns.has('display_detail')) db.exec('ALTER TABLE activity_journal ADD COLUMN display_detail TEXT')
       if (!activityColumns.has('content_index')) db.exec('ALTER TABLE activity_journal ADD COLUMN content_index INTEGER')
     } catch (error: unknown) {
       try {
@@ -1002,7 +1006,7 @@ class SidecarStore implements AcpSidecar {
     this.stmtClearDispatch = db.prepare('DELETE FROM dispatch_ledger WHERE dsh_session_id = ? AND dispatch_key = ?')
     this.stmtDeleteDispatch = db.prepare('DELETE FROM dispatch_ledger WHERE dsh_session_id = ?')
     this.stmtActivityGet = db.prepare('SELECT * FROM activity_journal WHERE dsh_session_id = ? AND activity_id = ? ORDER BY revision_seq DESC LIMIT 1')
-    this.stmtActivityInsert = db.prepare('INSERT INTO activity_journal (dsh_session_id, activity_id, owner_dsh_session_id, prompt_anchor_message_id, activity_seq, revision_seq, time, kind, status, presentation, raw_detail, raw_detail_ref, content_index) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    this.stmtActivityInsert = db.prepare('INSERT INTO activity_journal (dsh_session_id, activity_id, owner_dsh_session_id, prompt_anchor_message_id, activity_seq, revision_seq, time, kind, status, presentation, raw_detail, raw_detail_ref, content_index, display_detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
     this.stmtActivityUpdate = this.stmtActivityInsert
     this.stmtActivityList = db.prepare('SELECT * FROM (SELECT activity_journal.*, ROW_NUMBER() OVER (PARTITION BY activity_id ORDER BY revision_seq DESC) AS latest_row FROM activity_journal WHERE dsh_session_id = ?) WHERE latest_row = 1 ORDER BY activity_seq ASC LIMIT ?')
     this.stmtActivityPage = db.prepare('SELECT * FROM activity_journal WHERE dsh_session_id = ? AND revision_seq > ? ORDER BY revision_seq ASC LIMIT ?')
@@ -1330,6 +1334,7 @@ class SidecarStore implements AcpSidecar {
     if (record.contentIndex !== undefined && (!Number.isSafeInteger(record.contentIndex) || record.contentIndex < 0)) throw new TypeError('dsh-acp activity content index must be a non-negative safe integer')
     const presentation = boundedActivityText(record.presentation, ACP_ACTIVITY_PRESENTATION_MAX) ?? ''
     if (presentation.length === 0) throw new TypeError('dsh-acp activity presentation must not be empty')
+    const display = record.display === undefined ? undefined : boundedActivityPresentation(activityPresentationSchema.parse(record.display))
     const rawDetail = boundedActivityText(redactActivityDetail(record.rawDetail), ACP_ACTIVITY_RAW_MAX)
     const rawDetailRef = boundedActivityText(record.rawDetailRef, ACP_ACTIVITY_REF_MAX)
     const db = this.ensureDb()
@@ -1340,7 +1345,7 @@ class SidecarStore implements AcpSidecar {
         const current = rowToActivity(existing)
         if (current === undefined) throw new Error(`ACP_ACTIVITY_CORRUPT: activity ${record.activityId} is malformed`)
         if (record.ownerDshSessionId !== current.ownerDshSessionId || record.promptAnchorMessageId !== current.promptAnchorMessageId || record.kind !== current.kind) throw new Error(`ACP_ACTIVITY_IMMUTABLE: activity ${record.activityId} owner, anchor, and kind cannot change`)
-        if (isTerminalActivityStatus(current.status) && record.status === 'running') throw new Error(`ACP_ACTIVITY_STATE: terminal activity ${record.activityId} cannot return to running`)
+        if (record.kind !== 'plan' && isTerminalActivityStatus(current.status) && record.status === 'running') throw new Error(`ACP_ACTIVITY_STATE: terminal activity ${record.activityId} cannot return to running`)
         const revisionSeq = Number((this.stmtActivityHead?.get(record.dshSessionId) as { head?: number | bigint } | undefined)?.head ?? 0) + 1
         this.stmtActivityUpdate?.run(
           record.dshSessionId,
@@ -1356,9 +1361,11 @@ class SidecarStore implements AcpSidecar {
           rawDetail ?? null,
           rawDetailRef ?? null,
           current.contentIndex ?? null,
+          display === undefined ? null : JSON.stringify(display),
         )
         db.exec('COMMIT')
-        const committed = { ...current, revisionSeq, time: record.time, status: record.status, presentation, ...(rawDetail === undefined ? {} : { rawDetail }), ...(rawDetailRef === undefined ? {} : { rawDetailRef }) }
+        const { display: _previousDisplay, ...previous } = current
+        const committed = { ...previous, ...(display === undefined ? {} : { display }), revisionSeq, time: record.time, status: record.status, presentation, ...(rawDetail === undefined ? {} : { rawDetail }), ...(rawDetailRef === undefined ? {} : { rawDetailRef }) }
         this.notifyActivitySubscribers(committed)
         return committed
       }
@@ -1366,9 +1373,9 @@ class SidecarStore implements AcpSidecar {
       const revisionHead = Number((this.stmtActivityHead?.get(record.dshSessionId) as { head?: number | bigint } | undefined)?.head ?? 0)
       const activitySeq = firstSeenHead + 1
       const revisionSeq = revisionHead + 1
-      this.stmtActivityInsert?.run(record.dshSessionId, record.activityId, record.ownerDshSessionId, record.promptAnchorMessageId, activitySeq, revisionSeq, record.time, record.kind, record.status, presentation, rawDetail ?? null, rawDetailRef ?? null, record.contentIndex ?? null)
+      this.stmtActivityInsert?.run(record.dshSessionId, record.activityId, record.ownerDshSessionId, record.promptAnchorMessageId, activitySeq, revisionSeq, record.time, record.kind, record.status, presentation, rawDetail ?? null, rawDetailRef ?? null, record.contentIndex ?? null, display === undefined ? null : JSON.stringify(display))
       db.exec('COMMIT')
-      const committed = { ...(record.contentIndex === undefined ? {} : { contentIndex: record.contentIndex }), dshSessionId: record.dshSessionId, ownerDshSessionId: record.ownerDshSessionId, promptAnchorMessageId: record.promptAnchorMessageId, activityId: record.activityId, activitySeq, revisionSeq, time: record.time, kind: record.kind, status: record.status, presentation, ...(rawDetail === undefined ? {} : { rawDetail }), ...(rawDetailRef === undefined ? {} : { rawDetailRef }) }
+      const committed = { ...(display === undefined ? {} : { display }), ...(record.contentIndex === undefined ? {} : { contentIndex: record.contentIndex }), dshSessionId: record.dshSessionId, ownerDshSessionId: record.ownerDshSessionId, promptAnchorMessageId: record.promptAnchorMessageId, activityId: record.activityId, activitySeq, revisionSeq, time: record.time, kind: record.kind, status: record.status, presentation, ...(rawDetail === undefined ? {} : { rawDetail }), ...(rawDetailRef === undefined ? {} : { rawDetailRef }) }
       this.notifyActivitySubscribers(committed)
       return committed
     } catch (error) {
@@ -1844,11 +1851,19 @@ function redactActivityDetail(value: string | undefined): string | undefined {
   }
 }
 
+/** Ignore unavailable/corrupt presentation data without interpreting truncated audit text as complete files. */
+function readActivityDisplay(value: unknown): { display?: AcpActivityPresentation } {
+  if (typeof value !== 'string') return {}
+  try { return { display: boundedActivityPresentation(activityPresentationSchema.parse(JSON.parse(value))) } }
+  catch { return { display: { unavailable: 'invalid' } } }
+}
+
 function rowToActivity(row: ActivityRow): AcpActivityRecord | undefined {
   if (typeof row.dsh_session_id !== 'string' || typeof row.activity_id !== 'string' || typeof row.owner_dsh_session_id !== 'string' || typeof row.prompt_anchor_message_id !== 'string' || typeof row.activity_seq !== 'number' || !Number.isSafeInteger(row.activity_seq) || row.activity_seq < 1 || typeof row.revision_seq !== 'number' || !Number.isSafeInteger(row.revision_seq) || row.revision_seq < 1 || typeof row.time !== 'number' || !Number.isSafeInteger(row.time) || row.time < 0 || !isActivityKind(row.kind) || !isActivityStatus(row.status) || typeof row.presentation !== 'string') return undefined
   if (row.raw_detail !== null && row.raw_detail !== undefined && typeof row.raw_detail !== 'string') return undefined
   if (row.raw_detail_ref !== null && row.raw_detail_ref !== undefined && typeof row.raw_detail_ref !== 'string') return undefined
   return {
+    ...readActivityDisplay(row.display_detail),
     dshSessionId: row.dsh_session_id,
     ownerDshSessionId: row.owner_dsh_session_id,
     promptAnchorMessageId: row.prompt_anchor_message_id,

@@ -601,3 +601,45 @@ ACP 主会话的成员管理新增同 profile 原生模型下拉，保留按 pro
 早期并行只读核查误调用无 help 分支的 stale-build 脚本，重建被忽略的 lib 导致若干回归导入失败；中断后产物不完整。恢复并固定最终构建后重测，不将这些受干扰结果计为产品通过证据。发布证据保存在 gitignored `.local/release-0.1.6-alpha.1.1/`，临时预览和旧 dist 产物不进入提交。
 
 最终完整 Chrome 回归：13 文件、109 项通过；默认跳过的 4 项真实连接已按上面的真实验证结果单独记录。成员模型与模式的两项专项另外通过。
+
+## 2026-09-16：完整 Diff、原生计划与显式 DSH 工具桥
+
+先以隔离探针复现了长 Diff 尾部丢失、计划内容不能展开、prompt 结束把未完成计划标成完成。修复把完整展示数据与截断审计数据分离，投影到原生 DiffBlock／TodoDock；新增 SQLite 列保留旧数据，超限整项提示不可用。回归覆盖文件尾部真实变化、刷新与重开数据库、计划未完成／显式清空，以及旧截断数据不再伪装完整 Diff。
+
+`hostTools` 默认为空；通过连接设置选择已安装的 DSH 工具。原生工具执行前／后钩子、Agent 审批、作用域撤销、未知工具拒绝、配置编辑与会话指纹均有验证。普通工具不继承 Teams 审批特例，外部 Agent 的权限与上下文仍由 Agent 管理。工具桥的额外 MCP 成本、重叠工具、loop 控制限制和更改名单需新建会话已写入原生复用说明。
+
+验证：74 文件／739 项全量 Vitest 通过；随后新增的 tool-content.spec.ts 3 项独立通过。类型检查与生产构建通过（包括严格公共类型消费与 tarball 导入闭包）。使用现有 Chrome 执行 native-parity.e2e.mjs 的两个专项，在 Claude、Codex、Devin、Kimi 四种协议夹具下共 8 项通过：真实 MCP 调用经过原生钩子且等待 Agent 审批；完整 Diff 和未完成原生计划在刷新后保留。没有把协议夹具结果当成真实 Agent 插话测试结果。
+
+最初浏览器运行被沙箱监听限制阻挡；获准运行后发现 Playwright 自带浏览器缺失，改用 `DSH_E2E_BROWSER_CHANNEL=chrome`，未下载安装浏览器。Agent 插话的官方资料、已装版本差异与真实验证边界见 [运行中输入能力核查](../../docs/agent-input-capabilities.md)。本次未发布软件包，也未修改 DSH reference 的源码或 checkout。
+
+## 2026-09-16：0.1.6-alpha.1.4 插话与最终发布候选
+
+插话复用 DSH inbox、pre-step、配置与消息持久化；默认 cancel、排空及审批收尾后在同一 Agent 会话续发。声明原子 idle 保护的 ACP 连接通过原生下一 step 准入后注入，不另建模型循环或接管 Agent 权限。专项回归覆盖 pre-step 重写仅发送一次、待审批时插话、拒绝准入后的取消与下一轮恢复，以及原生队列按钮和刷新。边界测试补充了完整图片块交接、旧 prompt 在准入期间结束的尾部、长度上限保留、steering ack 前的新工具归属及旧工具的后续 diff 归属。
+
+最终候选的验证结果：
+
+| 验证 | 结果与范围 |
+| --- | --- |
+| prepack | 76 个文件、749 项通过；类型、构建、公共声明、69 个运行时 JS 导入闭包、188 个 tarball 文件通过 |
+| 完整 Chrome | 单次 14 文件、134 项通过，4 项真实登录测试默认跳过；557.02 秒 |
+| 真实 Electron 产品 | macOS arm64 Desktop 0.1.6-alpha.1.2，在全新隔离配置安装最终插件包；22 项通过，Agent 使用协议夹具 |
+| 桌面源码测试 | 41 文件、232 项通过、1 项平台条件跳过 |
+| 干净安装 | 精确 npm DSH 宿主、临时 profile/store；插件增量装配、HTTP 200、客户端 bootstrap、移除通过 |
+| 真实两轮对话 | Codex GPT-5.5、Kimi Coding、Devin Gemini 3.8 Flash Medium：各两轮宿主指令、同会话及刷新通过 |
+| 真实运行中插话 | 上述三个 Agent：首段真实生成后发送插话，一个原生 turn／两个 step／两条用户输入、追加回复与刷新通过；3 项共 93.45 秒 |
+| Claude 真实连接 | 初次测试漏传 token，触发旧 OAuth 错误；按用户本机 DeepSeek 路由重跑，两轮回复、刷新与运行中插话均通过；haiku 别名对应 deepseek-v4-flash |
+
+完整 Web 前一轮的唯一失败来自 Teams fixture 在取消期间把结束的 elicitation 误记为额外审批失败。夹具现在记录自身 turn 的取消状态，仍保留对真实审批错误的断言；最终完整重跑通过。桌面脚本修正新建会话菜单的挂载等待、原生计划展开状态、重启忙碌重试及 Teams 投影加载等待，未放宽产品 idle 保护。22 项结果由最终候选的一次完整运行前 21 项和最后一项定向重跑合并；同一 tarball，无产品代码更换。控制台只排除刷新流中断及明确重启时间窗中的瞬态连接错误，恢复后的 health、配置状态和 Teams 界面均重新确认。
+
+证据保存在 gitignored `.local/release-0.1.6-alpha.1.4/`：`pack.log`、`web-final.log`、`verify-final.log`、`install-final.log`、`live.log`、`live-steering.log` 和 `checksums.json`。安装门禁成功后自动清理临时目录，以保留的日志为准。真实 Agent 的结构化结果分别在 `.local/e2e-live/` 与 `.local/e2e-live-steering/`。桌面最终结果和截图在相邻桌面仓库 `.local/desktop-regression-20260916/`，包含 `candidate.json`、`product-results.json`、`product-final.log` 和 `restart-final.log`。
+
+已准备 tarball 与桌面 version/integrity 补丁，未提交、打 tag、推送或发布。现有桌面 ZIP 仍内置旧版插件，不能当作新安装包交付；发布新 npm 版本后还需应用补丁、重新打包和验收。Windows、Intel Mac、SSH 工作区不在本机通过声明内；真实 Claude 经 DeepSeek 已在下面的补验中通过。具体发布和回退步骤见 [部署准备](../../docs/release-readiness.md)。
+
+English: the final candidate passed 749 standard tests, 134 Web fixture checks, 22 Electron product checks, and clean installation/removal. Real Codex, Kimi, and Devin passed conversations and steering; Claude ACP subsequently passed through the user's DeepSeek route after correcting the test's missing explicit authentication environment. Publication and a newly bundled desktop installer are pending.
+
+
+### Claude DeepSeek 配置复核与结论更正
+
+本机 `.zshrc` 配置 `ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic`、`ANTHROPIC_AUTH_TOKEN` 和模型映射；`~/.claude/settings.json` 只含主题和模型别名。之前的测试没有设置 `DSH_E2E_LIVE_CLAUDE_ENV_KEYS`，临时 profile 的 `env` 为空。实际调用上游 `scrubbedParentEnv()` 确认地址和模型映射保留，但名称含 TOKEN 的认证变量被过滤。随后 SDK 使用保存的旧 OAuth，得到已过期错误。之前把这一结果解释为用户必须重新登录 Claude，是测试配置与结论归因错误，不是 DeepSeek 认证失败。
+
+在临时 profile 中明确传入本机现有路由变量后，最终候选保持不变：两轮宿主指令／刷新测试通过（18.30 秒），开始生成后的插话测试通过（20.22 秒），一个 native turn／两个 step／两条持久化输入和追加回复均被确认。`haiku` 别名对应 `deepseek-v4-flash`。没有修改全局配置、打印密钥或放宽子进程过滤。证据为 `.local/release-0.1.6-alpha.1.4/claude-auth-diagnosis.json`、`live-claude-deepseek.log`、`live-steering-claude-deepseek.log`，以及两个 live 目录中已更新的 Claude 结构化结果。

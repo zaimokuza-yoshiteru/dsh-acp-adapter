@@ -231,6 +231,13 @@ export class AcpSessionRuntime {
   /** ACP context occupancy/cumulative cost; intentionally not DSH TokenUsage. */
   get contextUsage(): AcpRuntimeContextUsage | undefined { return this.usageSnapshot }
   get isBusy(): boolean { return this.promptClaimed }
+  private pendingQuestions = 0
+  get canSteer(): boolean { return this.connection?.supportsSteering === true && this.pendingQuestions === 0 }
+
+  async steer(content: acp.ContentBlock[]): Promise<'injected' | 'promptRequired'> {
+    if (!this.canSteer || !this.promptActive || this.sessionId === undefined) return 'promptRequired'
+    return await this.connection!.steer(this.sessionId, content)
+  }
 
   async start(signal?: AbortSignal): Promise<void> {
     await this.initialize(signal)
@@ -499,7 +506,10 @@ export class AcpSessionRuntime {
       ...(fileSystemHandlers === undefined ? {} : { fileSystemHandlers }),
       ...(terminalHandlers === undefined ? {} : { terminalHandlers }),
       ...(this.options.onPermissionRequest === undefined ? {} : {
-        onPermissionRequest: (params: acp.RequestPermissionRequest): Promise<acp.RequestPermissionResponse> => this.handlePermissionRequest(params),
+        onPermissionRequest: async (params: acp.RequestPermissionRequest): Promise<acp.RequestPermissionResponse> => {
+          this.pendingQuestions += 1
+          try { return await this.handlePermissionRequest(params) } finally { this.pendingQuestions -= 1 }
+        },
       }),
       ...(this.options.onElicitationRequest === undefined ? {} : {
         onElicitationRequest: async (params: acp.CreateElicitationRequest): Promise<acp.CreateElicitationResponse> => {
@@ -508,7 +518,9 @@ export class AcpSessionRuntime {
           const scope = params as { sessionId?: unknown; toolCallId?: unknown }
           const toolCall = scope.sessionId !== this.sessionId || typeof scope.toolCallId !== 'string'
             ? undefined : this.promptToolSnapshots?.get(scope.toolCallId)
-          return this.mcpLease?.elicitation?.(params, toolCall) ?? await this.options.onElicitationRequest!(params, signal)
+          this.pendingQuestions += 1
+          try { return await (this.mcpLease?.elicitation?.(params, toolCall) ?? this.options.onElicitationRequest!(params, signal)) }
+          finally { this.pendingQuestions -= 1 }
         },
       }),
       onSessionUpdate: (notification) => {

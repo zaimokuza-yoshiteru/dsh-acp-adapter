@@ -48,6 +48,8 @@ export interface AcpStubAgentConfig {
   args: readonly string[]
   /** Agent environment from settings; native sessions preserve these values. */
   env: Record<string, string>
+  /** Explicit native DSH tools exposed over MCP; absent means no additional tools. */
+  hostTools?: readonly string[]
   /** Login guidance shown when a probe fails with auth_required. */
   loginHint?: string
   /**
