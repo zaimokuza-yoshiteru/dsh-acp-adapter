@@ -71,6 +71,8 @@ pnpm test:e2e
 
 宿主目标以 `package.json` 的 `engines.dsh` 为准，开发脚本和 CI 源码标签从这里读取；依赖声明通过一致性检查，文档不再重复声明当前版本。发布时 `npm pack` 的 prepack 完整执行类型检查、测试和构建，再由安装门禁验证同一个 tarball。
 
+模式菜单回归会采集浏览器 trace，成功时丢弃，失败时与截图、页面文字、执行阶段和控制台错误一起保存在 `.local/e2e-failures/`。CI 自动上传该目录，保留 7 天；可用 Playwright `show-trace <文件.trace.zip>` 查看。此采集仅用于无密钥协议夹具；trace 含临时宿主的页面和网络数据，分享前仍需检查。
+
 ## 真实 Agent 冒烟
 
 真实连接默认跳过，不在 CI 中运行。明确授权使用现有 Agent 登录和模型额度后，可执行：
