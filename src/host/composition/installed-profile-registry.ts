@@ -1,3 +1,4 @@
+import { validHostTools } from '../../contract/host-tools.ts'
 /**
  * ACP provider registry。
  *
@@ -164,6 +165,10 @@ function agentConfigOf(id: string, raw: unknown): AcpAgentConfig {
     throw new TypeError(`dsh-acp settings: agents.${id}.env must be a map of string values`)
   }
   const loginHint = raw['loginHint']
+  const hostTools = raw['hostTools']
+  if (hostTools !== undefined && !validHostTools(hostTools)) {
+    throw new TypeError(`dsh-acp settings: agents.${id}.hostTools must contain unique tool names`)
+  }
   if (loginHint !== undefined && typeof loginHint !== 'string') {
     throw new TypeError(`dsh-acp settings: agents.${id}.loginHint must be a string`)
   }
@@ -180,6 +185,7 @@ function agentConfigOf(id: string, raw: unknown): AcpAgentConfig {
     command,
     args: [...args] as string[],
     env: { ...env } as Record<string, string>,
+    ...(hostTools === undefined ? {} : { hostTools: [...hostTools] as string[] }),
     ...(loginHint === undefined ? {} : { loginHint }),
     ...(runtime === undefined ? {} : { runtime: runtime as AcpAgentId }),
   }
@@ -247,6 +253,7 @@ export const acpSettingsSchema: AcpSettingsSchema = Object.assign(
               },
               args: { type: 'array', items: { type: 'string' }, default: [] },
               env: { type: 'object', additionalProperties: { type: 'string' }, default: {} },
+              hostTools: { type: 'array', items: { type: 'string', pattern: '^[A-Za-z0-9_.-]+$' }, uniqueItems: true },
               loginHint: { type: 'string' },
               runtime: { enum: [...ACP_AGENT_IDS] },
             },
@@ -603,8 +610,8 @@ export function installInstalledProfileRegistry(ctx: Context, options: Installed
             },
             message => log.warn(message, { operation: 'claude-draft-subagent-capability' }),
             sessionId => resolveTerminalJobs(ctx, sessionId),
-            (sessionId, capabilities, wireProfile) => createTeamBridge(ctx, sessionId, capabilities, wireProfile),
-            sessionId => teamBridgeKey(ctx, sessionId),
+            (sessionId, capabilities, wireProfile) => createTeamBridge(ctx, sessionId, capabilities, wireProfile, activeAgents[id]?.hostTools),
+            sessionId => teamBridgeKey(ctx, sessionId, activeAgents[id]?.hostTools),
             controlsChanged,
           )
           profileAdapters.set(id, routeAdapter)

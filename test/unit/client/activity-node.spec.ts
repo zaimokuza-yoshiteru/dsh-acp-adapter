@@ -52,6 +52,15 @@ function activityStreamFactory(hooks: { accept?: () => void; dispose?: () => voi
 }
 
 describe('ACP activity conversation node', () => {
+  it('does not compare file sides from truncated legacy audit records', () => {
+    const rendered = JSON.stringify(activityRowElement({
+      row: { dshSessionId: 's', ownerDshSessionId: 's', promptAnchorMessageId: 'u', activityId: 'diff',
+        activitySeq: 1, revisionSeq: 1, time: 1, kind: 'diff', status: 'completed', presentation: 'File change',
+        rawDetail: JSON.stringify({ type: 'diff', path: 'a', oldText: 'prefix… [truncated]', newText: 'prefix… [truncated]' }),
+      }, t: key => key, open: true,
+    }))
+    expect(rendered).not.toContain('"diffs"')
+  })
   it('only matches durable ACP replay evidence, never native assistant messages', () => {
     const definition = createAcpActivityDefinition(() => false)
     expect(definition.match(assistantEvent())).toEqual({ id: 'answer:["dsh-1","codex",1,1,"acp-1",3]', role: 'start' })

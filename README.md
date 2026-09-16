@@ -30,10 +30,10 @@ ACP 审批复用 DSH 原生审批卡，批准前可查看完整命令：
 
 ## <img src="assets/readme/icon-setup.svg" width="24" height="24" alt="" /> 前置：安装受支持的 DSH
 
-版本与运行要求以 [package.json](package.json) 的 `version`、`engines` 为准。以下从 npm `next` 包读取兼容的 DSH 版本：
+版本与运行要求以 [package.json](package.json) 的 `version`、`engines` 为准。以下从 npm `alpha` 包读取兼容的 DSH 版本：
 
 ```bash
-DSH_VERSION="$(npm view @zaimokuza/dsh-acp-adapter@next engines.dsh)"
+DSH_VERSION="$(npm view @zaimokuza/dsh-acp-adapter@alpha engines.dsh)"
 npx "@deepseek-ai/dsh@$DSH_VERSION" web
 ```
 
@@ -58,10 +58,10 @@ pnpm install --frozen-lockfile
 
 ¹ 使用 ChatGPT 登录需另装 Codex CLI。
 
-**2. 安装插件。** 以下命令安装 npm 已发布的 `next` 版本。
+**2. 安装插件。** 以下命令安装 npm 已发布的 `alpha` 版本。
 
 ```bash
-npx "@deepseek-ai/dsh@$DSH_VERSION" plugin --profile web add @zaimokuza/dsh-acp-adapter@next
+npx "@deepseek-ai/dsh@$DSH_VERSION" plugin --profile web add @zaimokuza/dsh-acp-adapter@alpha
 ```
 
 **3. 打开「设置 → ACP adapter」**，添加模板、检查连接，再在新会话中选择 Agent 模型。
@@ -73,6 +73,8 @@ npx "@deepseek-ai/dsh@$DSH_VERSION" plugin --profile web add @zaimokuza/dsh-acp-
 ![DSH 管理会话与界面；适配器传递上下文、归一化活动；Agent 负责模型、工具和权限。外部子代理投影只读，后台任务不跨 DSH 重启恢复。](assets/readme/acp-overview.zh-CN.svg)
 
 **实验性 Agent Teams：** 跟随 DSH 的 Teams profile 启用，复用原生团队面板；成员从创建时的主会话继承 Agent、模型与推理配置。主会话切换模型后，新成员使用新模型，已有成员保持原模型；团队内使用同一 ACP Agent。仅支持新建上下文，共享任务使用原生任务板；主会话可直接处理成员审批，当前普通审批支持全部允许／拒绝，允许仅限本次。主会话右上角可查看成员状态与模型，单独或按 ACP 类型批量调整成员的 Agent 模式；休眠成员的设置在下次运行前应用。团队协调免额外审批，普通操作的审批保持原样；成员消息在 DSH 步骤边界送达。
+
+**可选 DSH 插件工具：** 在 Agent 连接设置的「DSH 插件工具」中每行填入一个已安装的工具名，或配置 `hostTools: ["工具名"]`。仅选中的工具会通过 MCP 提供给 Agent，并经过 DSH 原生工具执行链；默认不增加工具。普通工具保留 Agent 审批，DSH 工具自身的执行规则仍生效。避免选入与 Agent 自带能力重复的工具；名单改变后请新建会话。工具桥不等于完整接管 Agent loop，具体边界见 [原生复用说明](docs/native-reuse.md)。
 
 ## <img src="assets/readme/icon-update.svg" width="24" height="24" alt="" /> 更新与卸载
 
@@ -97,3 +99,5 @@ npx "@deepseek-ai/dsh@$DSH_VERSION" plugin --profile web remove @zaimokuza/dsh-a
 | 会话需要恢复 | 按输入栏提示与 **ACP 诊断** 处理，不要清空本地数据。 |
 
 仍有问题时，在 [Issue](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/issues) 附上错误编号、插件/DSH 版本和相关宿主日志片段；分享前移除密钥。
+
+运行中按 Enter 会排队；使用队列的插话操作可发送到当前执行。插件优先使用 Agent 声明的安全原生注入能力，否则取消当前执行，等其收尾后在同一 Agent 会话续发。Kimi 无需新增 SDK。取消超时不会盲目重发，权限与上下文仍由 Agent 管理。详见[插话能力与限制](docs/agent-input-capabilities.md)。

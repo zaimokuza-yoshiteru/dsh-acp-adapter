@@ -462,6 +462,65 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
     await expect.poll(() => preview.locator('[data-textpreview-line="1"]').textContent()).toBe('E2E_SIDEBAR_FILE\n')
   })
 
+  it('executes selected DSH plugin tools with native hooks and Agent approval', async () => {
+    const original = { name: `Fixture ${profile}`, command: process.execPath,
+      args: [join(root, 'test/mock-agent/mock-agent.mjs')],
+      env: { MOCK_SCENARIO: 'regression', MOCK_PROFILE: profile, MOCK_LOG: agentLog } }
+    const calls = []
+    const disposePre = host.ctx.on('tools/pre-execute', async (exec, next) => {
+      if (exec.name === 'e2e_fixture') calls.push('pre')
+      return await next()
+    })
+    const disposePost = host.ctx.on('tools/post-execute', async (exec, result, next) => {
+      const decision = await next()
+      if (exec.name !== 'e2e_fixture') return decision
+      calls.push('post')
+      expect(JSON.stringify(result)).toContain('E2E_NATIVE_BODY')
+      return { kind: 'accept', content: [{ type: 'text', text: 'E2E_HOST_POST' }] }
+    })
+    try {
+      await host.ctx.settings.replace('dsh-acp', { agents: { [profile]: { ...original, hostTools: ['e2e_fixture'] } } })
+      await page.reload()
+      const { settled } = await send('E2E_HOST_TOOLS')
+      const panel = page.locator('[data-question-key], [data-approval-key]')
+      await panel.waitFor()
+      expect(calls).toEqual([])
+      if (await panel.getAttribute('data-question-key') !== null) {
+        await panel.getByRole('radio', { name: 'Allow this operation', exact: true }).click()
+        await panel.getByRole('button', { name: /Submit|Send/ }).click()
+      } else await panel.getByRole('button', { name: 'Allow once', exact: true }).click()
+      await settled
+      await page.getByText('E2E_HOST_TOOLS_DONE', { exact: true }).waitFor()
+      expect(calls).toEqual(['pre', 'post'])
+    } finally {
+      disposePre(); disposePost()
+      await host.ctx.settings.replace('dsh-acp', { agents: { [profile]: original } })
+    }
+  })
+
+  it('preserves full native diffs and an unfinished native plan after reload', async () => {
+    const { settled } = await send('E2E_NATIVE_PLAN_DIFF')
+    const id = await settled
+    for (let round = 0; round < 2; round++) {
+      if (round) await page.reload()
+      await page.getByText('E2E_NATIVE_PLAN_DIFF_DONE', { exact: true }).waitFor()
+      const dock = page.getByTestId('todo-panel')
+      await dock.getByRole('button').click()
+      await dock.getByText('E2E_PLAN_REMAINS', { exact: true }).waitFor()
+      const activity = page.locator('[data-acp-activity]')
+      await activity.getByRole('button', { name: /^Edited.*full\.txt/ }).click()
+      await activity.locator('[data-diff]').getByText('E2E_NEW_TAIL', { exact: true }).first().waitFor()
+      const current = host.ctx.agents.get(id)
+      expect(host.ctx.sessionProjections.stateOf(current.session, 'todos')).toEqual([{ content: 'E2E_PLAN_REMAINS', status: 'in_progress' }])
+    }
+    const handle = await host.ctx.sessionPersistence.open(id, 'read')
+    try {
+      const log = (await handle.read()).events
+      expect(log.filter(event => event.type === 'todo/write').at(-1).data.todos[0].status).toBe('in_progress')
+      expect(log.some(event => event.type === 'tool/call')).toBe(false)
+    } finally { await handle.close() }
+  })
+
   it('preserves visible history after a crash and requires explicit recovery before continuing', async () => {
     const first = await send('E2E_MESSAGE')
     await first.settled
@@ -499,6 +558,82 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
     const next = await send('E2E_MESSAGE')
     await next.settled
     await page.getByText('E2E_DONE mock-model-a', { exact: true }).waitFor()
+  })
+
+  for (const atomic of [false, true]) it(`steers through native admission with ${atomic ? 'atomic injection' : 'cancel and drain'}`, async () => {
+    const previous = host.ctx.settings.get('dsh-acp')
+    const configs = previous.agents
+    await host.ctx.settings.replace('dsh-acp', { ...previous, agents: { ...configs, [profile]: {
+      ...configs[profile], env: { ...configs[profile].env, MOCK_STEERING: atomic ? 'atomic' : '' },
+    } } })
+    const off = host.ctx.on('agent/pre-step', async (_payload, next) => {
+      const decision = await next()
+      if (decision.kind === 'reject') return decision
+      return { ...decision, messages: decision.messages.map(message => ({ ...message,
+        content: message.content.map(block => block.type === 'text' ? { ...block, text: block.text.replace('E2E_INPUT_RAW', 'E2E_INPUT_REWRITTEN') } : block),
+      })) }
+    })
+    const offset = existsSync(agentLog) ? readFileSync(agentLog, 'utf8').length : 0
+    try {
+      const { settled } = await send('E2E_STEERING_HOLD')
+      await page.getByText('E2E_STEERING_RUNNING', { exact: true }).waitFor()
+      const input = page.locator('[data-composer-input]').first()
+      await writeComposerDraft(page, input, 'E2E_INPUT_RAW')
+      await input.press('Enter')
+      const queued = page.getByRole('listitem').filter({ hasText: 'E2E_INPUT_RAW' })
+      await queued.getByRole('button', { name: 'Steer queued message' }).click()
+      const id = await settled
+      await page.getByText(atomic ? 'E2E_STEER_DONE' : 'E2E_DONE mock-model-a', { exact: true }).waitFor()
+      const log = readFileSync(agentLog, 'utf8').slice(offset)
+      expect(log).toContain('E2E_INPUT_REWRITTEN')
+      expect(log).not.toContain('E2E_INPUT_RAW')
+      expect(log.split('regression prompt=').length - 1).toBe(atomic ? 1 : 2)
+      expect(log.includes('session/cancel')).toBe(!atomic)
+      const inputs = events.filter(event => event.id === id && event.type === 'user/message' && JSON.stringify(event.data).includes('E2E_INPUT_REWRITTEN'))
+      expect(inputs).toHaveLength(1)
+      expect(events.filter(event => event.id === id && event.type === 'step/start')).toHaveLength(2)
+      await page.reload()
+      await page.getByText(atomic ? 'E2E_STEER_DONE' : 'E2E_DONE mock-model-a', { exact: true }).waitFor()
+      await page.getByRole('button', { name: '1 message', exact: true }).click()
+      await page.getByText(/E2E_STEERING_RUNNING/).waitFor()
+    } finally { off(); await host.ctx.settings.replace('dsh-acp', previous) }
+  })
+
+  it('clears the old Agent approval before delivering steering in the same session', async () => {
+    const { settled } = await send('E2E_PERMISSION')
+    await page.locator('[data-question-key], [data-approval-key]').waitFor()
+    const first = events.findLast(event => event.type === 'user/message' && JSON.stringify(event.data).includes('E2E_PERMISSION'))
+    const agent = host.ctx.agents.get(first.id)
+    agent.steer(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'E2E_RECOVERED' }] }))
+    await settled
+    await page.locator('[data-question-key], [data-approval-key]').waitFor({ state: 'hidden' })
+    await page.getByText('E2E_RECOVERED_DONE', { exact: true }).waitFor()
+    expect(existsSync(join(workspace, 'approval-marker.txt'))).toBe(false)
+  })
+
+  it('drains a suspended native injection when pre-step rejects the new input', async () => {
+    const previous = host.ctx.settings.get('dsh-acp')
+    await host.ctx.settings.replace('dsh-acp', { ...previous, agents: { ...previous.agents, [profile]: {
+      ...previous.agents[profile], env: { ...previous.agents[profile].env, MOCK_STEERING: 'atomic' },
+    } } })
+    const off = host.ctx.on('agent/pre-step', async (payload, next) => {
+      if (payload.messages.some(message => JSON.stringify(message.content).includes('E2E_REJECT_INPUT'))) return { kind: 'reject' }
+      return await next()
+    })
+    const offset = existsSync(agentLog) ? readFileSync(agentLog, 'utf8').length : 0
+    try {
+      const { settled } = await send('E2E_STEERING_HOLD')
+      await page.getByText('E2E_STEERING_RUNNING', { exact: true }).waitFor()
+      const first = events.findLast(event => event.type === 'user/message' && JSON.stringify(event.data).includes('E2E_STEERING_HOLD'))
+      host.ctx.agents.get(first.id).steer(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'E2E_REJECT_INPUT' }] }))
+      await settled
+      await expect.poll(() => readFileSync(agentLog, 'utf8').slice(offset)).toContain('steering-cancelled')
+      expect(readFileSync(agentLog, 'utf8').slice(offset)).not.toContain('regression steer=')
+      // The abandoned execution must settle its ledger before a subsequent turn.
+      const next = await send('E2E_RECOVERED')
+      await next.settled
+      await page.getByText('E2E_RECOVERED_DONE', { exact: true }).waitFor()
+    } finally { off(); await host.ctx.settings.replace('dsh-acp', previous) }
   })
 
   it('recovers the native connection without reloading or duplicating ACP history', async () => {

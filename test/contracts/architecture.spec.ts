@@ -22,7 +22,7 @@
 //
 // 允许的跨层边（白名单；同层 import 恒允许）：
 //   protocol        → runtime
-//   domainPolicy    → protocol, runtime, domainObservability
+//   domainPolicy    → protocol, runtime, domainObservability, contract
 //   domainObservability → （零 import 叶子；observability 内部同层互连恒允许）
 //   persistence     → domainPolicy          ← 唯一 sideways 边：sidecar 落盘条目携带
 //                                             events.ts 的审计 payload 类型（sidecar 持久化规则），
@@ -116,7 +116,8 @@ const ALLOWED_CROSS_LAYER: Readonly<Record<Layer, readonly Layer[]>> = {
   // Native client capabilities expose ACP handlers and durable audit payloads.
   runtime: ['protocol', 'domainPolicy', 'domainObservability'],
   protocol: ['runtime'],
-  domainPolicy: ['protocol', 'runtime', 'domainObservability'],
+  // Pure presentation parsing is shared with the client in the dependency-free contract layer.
+  domainPolicy: ['protocol', 'runtime', 'domainObservability', 'contract'],
  // domain/observability 是零 import 叶子（结构化日志包装 + 内存指标）：
   // 各层向下消费它，它自己不依赖任何层。
   domainObservability: [],

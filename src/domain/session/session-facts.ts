@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import type { AcpActivityPresentation } from '../policy/activity-presentation.ts'
 import { acpReplayPayloadOf, acpReplayPayloadSchema } from './acp-replay-payload.ts'
 
 export interface SessionEventLike {
@@ -55,6 +56,13 @@ export function applySessionFact(previous: SessionFacts, event: SessionEventLike
 
 /** Live read face backed by native Session and projection services, not a log copy. */
 export interface SessionLike {
+  /** Observe pending next-step user input without claiming or copying the inbox. */
+  watchSteering?(listener: () => void): () => void
+  /** Release a suspended execution if native admission ends its owning turn. */
+  watchTurnEnd?(listener: () => void): () => void
+  watchRouteChange?(provider: string, listener: () => Promise<void>): () => void
+  /** Publish an observed Agent plan through the optional native todo projection. */
+  publishPlan?(plan: NonNullable<AcpActivityPresentation['plan']>): void
   /** Original host object used to match disposal, even when this read face is recreated. */
   readonly identity?: object
   readonly header?: { readonly id?: string; readonly cwd?: string; readonly parentSession?: string; readonly delegationDepth?: number }

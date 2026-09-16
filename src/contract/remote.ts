@@ -276,6 +276,12 @@ export interface AcpAuditTimelinePage {
 export type AcpActivityKindView = 'tool' | 'plan' | 'terminal' | 'diff' | 'resource' | 'delegated' | 'other'
 export type AcpActivityStatusView = 'running' | 'completed' | 'failed' | 'cancelled'
 export interface AcpActivityView {
+  /** Complete, normalized display fields. Independent from bounded raw diagnostics. */
+  readonly display?: {
+    readonly diffs?: readonly { readonly path: string; readonly oldText: string | null; readonly newText: string }[] | undefined
+    readonly plan?: readonly { readonly content: string; readonly status: 'pending' | 'in_progress' | 'completed' }[] | undefined
+    readonly unavailable?: 'too-large' | 'invalid' | undefined
+  }
   readonly contentIndex?: number
   readonly dshSessionId: string
   readonly ownerDshSessionId: string

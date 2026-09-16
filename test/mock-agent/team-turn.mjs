@@ -6,6 +6,8 @@ export async function teamTurn(session, msg, { sendUpdate, sendAgentRequest, res
   const prompt = msg.params.prompt.filter(block => block.type === 'text').map(block => block.text).join('\n')
   if (!prompt.includes('E2E_TEAM_')) return false
   const client = new Client({ name: 'acp-team-fixture', version: '1' })
+  const turn = { cancelled: false, cancel() { this.cancelled = true } }
+  session.turn = turn
   const server = session.mcpServers?.[0]
   const say = text => { log(text); sendUpdate(session.id, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } }) }
   let ordinal = 0
@@ -122,12 +124,15 @@ export async function teamTurn(session, msg, { sendUpdate, sendAgentRequest, res
       say('E2E_TEAM_NOTICE_RECEIVED')
     }
   } catch (error) {
-    log(`team failed ${error.stack}`)
-    say(`E2E_TEAM_ERROR ${error.message}`)
+    if (turn.cancelled) log('team cancelled')
+    else {
+      log(`team failed ${error.stack}`)
+      say(`E2E_TEAM_ERROR ${error.message}`)
+    }
   } finally {
     await client.close()
-    respond(msg.id, { stopReason: 'end_turn' })
-    session.turn = null
+    respond(msg.id, { stopReason: turn.cancelled ? 'cancelled' : 'end_turn' })
+    if (session.turn === turn) session.turn = null
   }
   return true
 }
