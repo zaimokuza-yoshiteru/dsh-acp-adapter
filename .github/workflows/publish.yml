@@ -10,7 +10,6 @@ on:
 
 permissions:
   contents: read
-  id-token: write
 
 concurrency:
   group: npm-publish
@@ -61,6 +60,9 @@ jobs:
     needs: pack
     runs-on: ubuntu-24.04
     environment: npm-publish
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v6
         with:
