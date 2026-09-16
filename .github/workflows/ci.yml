@@ -91,3 +91,12 @@ jobs:
         run: pnpm install --frozen-lockfile && pnpm build
       - name: Native UI parity (keyless ACP protocol fixtures)
         run: pnpm test:e2e
+      - name: Upload native UI failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-ui-failures-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dsh-acp-adapter/.local/e2e-failures/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7

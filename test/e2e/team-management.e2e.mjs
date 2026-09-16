@@ -22,7 +22,17 @@ it('shows per-profile mode menus with dormant mode persistence and approval prot
     page.on('pageerror', e => errors.push(e.message))
     await page.goto(host.authenticatedUrl)
     await connectFreshWorkspace(page, host.workspaceCwd)
-    const send = async text => { await writeComposerDraft(page, page.locator('[data-composer-input]').first(), text); await page.getByRole('button', { name: 'Send message', exact: true }).click() }
+    const send = async text => {
+      const input = page.locator('[data-composer-input]').first()
+      // Clear through the native editor first, then commit Unicode text as an
+      // input event. keyboard.type() mixes insertText for CJK with key events
+      // for ASCII and can outrun Lexical's select-all selection update.
+      await writeComposerDraft(page, input, '')
+      await input.press('End')
+      await page.keyboard.insertText(text)
+      await expect.poll(() => input.innerText()).toBe(text)
+      await page.getByRole('button', { name: 'Send message', exact: true }).click()
+    }
     await send('E2E_TEAM_START')
     await page.getByText('E2E_TEAM_READY', { exact: true }).waitFor()
     const lead = host.ctx.agents.list().find(a => host.ctx.agentTeams.tryMembership(a)?.role === 'lead')
@@ -98,9 +108,16 @@ it('shows per-profile mode menus with dormant mode persistence and approval prot
     await expect.poll(() => panel.getByRole('dialog').count()).toBe(0)
     if (!retain) await page.setViewportSize({ width: 1440, height: 719 })
     await page.getByRole('button', { name: 'New session', exact: true }).last().click()
+    // Navigation replaces the old composer asynchronously. Do not type into
+    // that editor just before it is unmounted and loses the new draft.
+    await page.getByText('E2E_TEAM_WOKEN', { exact: true }).waitFor({ state: 'detached' })
+    await page.locator('[data-composer-input][contenteditable="true"][data-placeholder="Describe what you want to build, / commands, @ files or sessions"]').waitFor()
     await send('演示成员管理与集中审批 E2E_TEAM_DEMO')
     await page.getByText('团队演示已就绪。', { exact: false }).waitFor()
     const demoLead = host.ctx.agents.list().find(a => a.id !== lead.id && host.ctx.agentTeams.tryMembership(a)?.role === 'lead')
+    expect(events.filter(event => event.type === 'user/message'
+      && event.data.content.some(block => block.type === 'text' && block.text === '演示成员管理与集中审批 E2E_TEAM_DEMO'))
+      .map(event => event.sessionId)).toEqual([demoLead.id])
     await panel.getByRole('button', { name: 'Manage members · 2', exact: true }).click()
     await host.ctx.settings.replace('locale', { preference: 'zh' })
     await panel.getByRole('button', { name: '成员管理 · 2', exact: true }).waitFor()
