@@ -76,6 +76,8 @@ If the Agent needs an API key, add it explicitly under **Connection settings →
 
 **Optional DSH plugin tools:** In the Agent Connection settings, enter one installed tool name per line under “DSH plugin tools”, or set `hostTools: ["tool_name"]`. Only selected tools are exposed over MCP and run through the native DSH tool pipeline. No additional tools are enabled by default. Ordinary tools retain Agent approval, and each DSH tool keeps its own execution rules. Avoid duplicating the Agent’s built-in tools, and start a new session after changing the list. This does not replace the Agent loop; see [native reuse boundaries](docs/native-reuse.md).
 
+During execution, Enter queues a message; use the queue’s steering action to deliver it to the active task. The adapter uses negotiated atomic steering when available. Otherwise it cancels the current execution, waits for it to settle, and sends the input in the same Agent session. Kimi requires no additional SDK. Cancellation timeouts do not trigger an automatic resend; the Agent retains permission and context ownership. See [input capabilities and limitations](docs/agent-input-capabilities.en.md).
+
 ## <img src="assets/readme/icon-update.svg" width="24" height="24" alt="" /> Update or remove
 
 Use the same `DSH_HOME` and profile as when starting DSH. You can replace `npx` with `pnpm dlx`; keep the host version pinned.
@@ -99,5 +101,3 @@ npx "@deepseek-ai/dsh@$DSH_VERSION" plugin --profile web remove @zaimokuza/dsh-a
 | Session needs recovery | Follow the composer notice and **ACP Diagnostics**. Do not clear local data. |
 
 Still stuck? Include the error reference, plugin/DSH versions and relevant host log excerpt in an [issue](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/issues). Remove secrets before sharing logs.
-
-During execution, Enter queues a message; use the queue’s steering action to deliver it to the active task. The adapter uses negotiated atomic steering when available. Otherwise it cancels the current execution, waits for it to settle, and sends the input in the same Agent session. Kimi requires no additional SDK. Cancellation timeouts do not trigger an automatic resend; the Agent retains permission and context ownership. See [input capabilities and limitations](docs/agent-input-capabilities.en.md).
