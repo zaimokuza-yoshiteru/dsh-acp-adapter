@@ -37,6 +37,7 @@ describe('native DSH non-interference contract', () => {
     const home = mkdtempSync(`${tmpdir()}/dsh-acp-native-`)
     const settings = { register: () => ({ get: () => ({ agents: { devin: { name: 'Devin', command: 'devin', args: ['acp'], env: {} } } }), watch: () => () => undefined }) }
     const context = {
+      sessionProjections: { register: () => () => undefined },
       get: (name: string) => name === 'settings' ? settings : name === 'dshHomePath' ? ((...segments: string[]) => [home, ...segments].join('/')) : undefined,
       inject: (_deps: string[], callback: (ctx: unknown) => void) => callback({ get: context.get, on: context.on }),
       on: () => () => undefined,

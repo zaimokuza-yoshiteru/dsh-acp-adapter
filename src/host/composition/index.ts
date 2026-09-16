@@ -16,7 +16,8 @@ export const name = 'dsh-acp-adapter'
 // when DSH can read its durable image references.  Waiting for this seam at
 // composition time prevents a health probe from freezing a false
 // `promptImage: unsupported` result before the host finishes booting.
-export const inject = ['llm', 'sessions', 'subprocess', 'dshHomePath', 'settings', 'attachments']
+// Permission facts are read from the host preset projection before ACP dispatch.
+export const inject = ['llm', 'sessions', 'subprocess', 'dshHomePath', 'settings', 'attachments', 'sessionProjections', 'permissionPresets']
 
 export function apply(ctx: Context): void {
   installInstalledProfileRegistry(ctx, { installRemote: true })

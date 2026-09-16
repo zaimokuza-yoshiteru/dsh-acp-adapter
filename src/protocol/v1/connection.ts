@@ -336,6 +336,21 @@ export class AcpClientConnection {
     return this.negotiated?.agentCapabilities
   }
 
+  /** Only an advertised atomic idle refusal can safely share the original prompt response. */
+  get supportsSteering(): boolean {
+    const steering = this.negotiated?._meta?.steering
+    return record(steering) && steering.supported === true && steering.idleBehavior === 'promptRequired'
+  }
+
+  async steer(sessionId: string, prompt: acp.ContentBlock[]): Promise<'injected' | 'promptRequired'> {
+    if (!this.supportsSteering) return 'promptRequired'
+    const result: unknown = await this.rpc('_session/steering', agent => agent.request('_session/steering', { sessionId, prompt }), {}, DEFAULT_SESSION_WRITE_TIMEOUT_MS)
+    if (record(result) && (result.outcome === 'injected' || result.outcome === 'promptRequired')) return result.outcome
+    // A detached new turn or unknown acceptance must never trigger a resend.
+    await this.close()
+    throw new Error('ACP_STEERING_OUTCOME_UNKNOWN')
+  }
+
   /** initialize 协商出的 ACP 协议版本（未协商时为 undefined；binding 预检比对用）。 */
   get protocolVersion(): number | undefined {
     return this.negotiated?.protocolVersion

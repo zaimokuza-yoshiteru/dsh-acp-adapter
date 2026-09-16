@@ -69,6 +69,20 @@ jobs:
       - name: Install Chromium
         working-directory: reference/deepseek-harness
         run: pnpm --dir apps/web exec playwright install --with-deps chromium
+      - name: Install native terminal sandbox
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          # Ubuntu 24.04 restricts unprivileged user namespaces. Permit only
+          # the sandbox launcher; keep the global AppArmor restriction enabled.
+          sudo tee /etc/apparmor.d/dsh-ci-bwrap > /dev/null <<'PROFILE'
+          abi <abi/4.0>,
+          profile dsh-ci-bwrap /usr/bin/bwrap flags=(unconfined) {
+            userns,
+          }
+          PROFILE
+          sudo apparmor_parser -r /etc/apparmor.d/dsh-ci-bwrap
+          bwrap --ro-bind / / --dev /dev --proc /proc -- true
       - uses: pnpm/action-setup@v4
         with:
           version: 10.7.0

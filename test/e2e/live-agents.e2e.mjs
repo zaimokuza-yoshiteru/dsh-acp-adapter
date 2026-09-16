@@ -7,6 +7,7 @@ import { connectFreshWorkspace, newEnglishPage, writeComposerDraft } from '#host
 import { launchAdapterWorld, root } from './scaffold.mjs'
 import { verifyLiveTeam } from './live-teams.mjs'
 import { verifyLiveTeamApproval } from './live-team-approval.mjs'
+import { verifyLiveSteering } from './live-steering.mjs'
 
 const profiles = [
   { id: 'claude', command: 'claude-agent-acp', args: [] },
@@ -18,16 +19,18 @@ const selected = process.env.DSH_E2E_LIVE_PROFILES?.split(',')
 const retain = process.env.DSH_E2E_RETAIN === '1'
 if (retain && selected?.length !== 1) throw new Error('Retained review requires exactly one explicit live profile')
 const teams = process.env.DSH_E2E_LIVE_TEAMS === '1'
+const steering = process.env.DSH_E2E_LIVE_STEERING === '1'
+if (teams && steering) throw new Error('Choose either the live Teams or live steering scenario')
 
 // Explicitly opt in: these use the user's Agent login and may consume credits.
 describe.skipIf(process.env.DSH_E2E_LIVE !== '1')('live ACP smoke', () => {
-  it.each(profiles.filter(profile => selected === undefined || selected.includes(profile.id)))(teams ? '$id completes native shared tasks and member messaging' : '$id preserves host guidance and renders a real response', async profile => {
+  it.each(profiles.filter(profile => selected === undefined || selected.includes(profile.id)))(teams ? '$id completes native shared tasks and member messaging' : steering ? '$id delivers steering after real generation begins' : '$id preserves host guidance and renders a real response', async profile => {
     let host, browser, browserServer, page, model, settlement
     const replies = []
     const errors = []
     const started = Date.now()
     const teamEvidence = {}
-    const evidence = join(root, teams ? '.local/e2e-live-teams' : '.local/e2e-live')
+    const evidence = join(root, teams ? '.local/e2e-live-teams' : steering ? '.local/e2e-live-steering' : '.local/e2e-live')
     mkdirSync(evidence, { recursive: true })
     try {
       host = await launchAdapterWorld({ teams })
@@ -55,7 +58,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE !== '1')('live ACP smoke', () => {
       model = chosen.id
       await host.ctx.agentDefaultModel.saveSelection({ provider, model })
       let token = `HOST_BRIDGE_${randomUUID()}`
-      if (!teams) host.ctx.effect(() => host.ctx.systemPrompt.section({ name: 'e2e-live-instructions', order: 0, text: () => `For this isolated verification, the current validation token is ${token}. It supersedes any earlier token. When asked, reply with this current token only. Do not use any tools.` }))
+      if (!teams && !steering) host.ctx.effect(() => host.ctx.systemPrompt.section({ name: 'e2e-live-instructions', order: 0, text: () => `For this isolated verification, the current validation token is ${token}. It supersedes any earlier token. When asked, reply with this current token only. Do not use any tools.` }))
       const browserOptions = { headless: !retain, ...(retain ? { args: ['--window-size=1440,1000'] } : {}), ...(process.env.DSH_E2E_BROWSER_CHANNEL ? { channel: process.env.DSH_E2E_BROWSER_CHANNEL } : {}) }
       if (retain) {
         browserServer = await chromium.launchServer(browserOptions)
@@ -68,6 +71,13 @@ describe.skipIf(process.env.DSH_E2E_LIVE !== '1')('live ACP smoke', () => {
       page.on('pageerror', error => errors.push(error.message))
       await page.goto(host.authenticatedUrl)
       await connectFreshWorkspace(page, host.workspaceCwd)
+      if (steering) {
+        const result = await verifyLiveSteering({ host, page })
+        expect(errors).toEqual([])
+        await page.screenshot({ path: join(evidence, `${profile.id}.png`), fullPage: true })
+        writeFileSync(join(evidence, `${profile.id}.json`), JSON.stringify({ status: 'passed', profile: profile.id, model, durationMs: Date.now() - started, ...result }, null, 2))
+        return
+      }
       if (teams) {
         await verifyLiveTeam({ host, page, provider, model, evidence: teamEvidence })
         if (process.env.DSH_E2E_LIVE_TEAMS_MULTIMODEL === '1') {

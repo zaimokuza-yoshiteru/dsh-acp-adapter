@@ -52,6 +52,15 @@ function activityStreamFactory(hooks: { accept?: () => void; dispose?: () => voi
 }
 
 describe('ACP activity conversation node', () => {
+  it('does not compare file sides from truncated legacy audit records', () => {
+    const rendered = JSON.stringify(activityRowElement({
+      row: { dshSessionId: 's', ownerDshSessionId: 's', promptAnchorMessageId: 'u', activityId: 'diff',
+        activitySeq: 1, revisionSeq: 1, time: 1, kind: 'diff', status: 'completed', presentation: 'File change',
+        rawDetail: JSON.stringify({ type: 'diff', path: 'a', oldText: 'prefix… [truncated]', newText: 'prefix… [truncated]' }),
+      }, t: key => key, open: true,
+    }))
+    expect(rendered).not.toContain('"diffs"')
+  })
   it('only matches durable ACP replay evidence, never native assistant messages', () => {
     const definition = createAcpActivityDefinition(() => false)
     expect(definition.match(assistantEvent())).toEqual({ id: 'answer:["dsh-1","codex",1,1,"acp-1",3]', role: 'start' })
@@ -75,7 +84,8 @@ describe('ACP activity conversation node', () => {
     expect(definition.match(old as never)).toEqual(definition.match(assistantEvent()))
     const location = { kind: 'step', turn: { turn: 1 }, step: { step: 1, data: { get: (key: string) => key === 'acp-activity' } } }
     const state = definition.start({} as never, { event: old, location } as never, { previous: () => undefined })
-    expect(definition.buildLocationData!({ state } as never, 'step', null)).toEqual({ kind: 'step', turn: 1, step: 1, key: definition.kind, value: true })
+    const { seq: _seq, location: _location, ...data } = state
+    expect(definition.buildLocationData!({ state } as never, 'step', null)).toEqual({ kind: 'step', turn: 1, step: 1, key: definition.kind, value: data })
     expect(definition.buildViewNode!({ state } as never)).toMatchObject({ data: { settled: true } })
     const live = definition.start({} as never, { event: { type: 'request/header', seq: 44, data: { header: { config: { provider: 'acp-codex' } } } }, location } as never, { previous: () => undefined })
     // The native Step store notifies the live renderer; the assembler does not
@@ -156,6 +166,23 @@ describe('ACP activity conversation node', () => {
     expect(definition.match(event('acp-third-party'))).toBeNull()
   })
 
+  it.each([undefined, { settled: true, profileId: 'devin', promptAnchorMessageId: 'old-prompt' },
+    { profileId: 'acp-devin', promptAnchorMessageId: 'old-prompt' }])(
+    'replays an interrupted answer without borrowing an earlier prompt: %j', previous => {
+      const definition = createAcpActivityDefinition(provider => provider === 'acp-devin')
+      const match = { event: { type: 'assistant/message', seq: 93,
+        data: { interrupted: true, message: { source: { kind: 'model', provider: 'acp-devin' } } } },
+        location: { kind: 'session' } }
+      const state = definition.start({} as never, match as never, {
+        previous: (kind: string) => kind === 'acp-prompt-anchor'
+          ? { state: { messageId: 'cancelled-prompt' } }
+          : previous === undefined ? undefined : { state: previous },
+      } as never)
+      expect(state).toMatchObject({ settled: true, profileId: 'acp-devin',
+        promptAnchorMessageId: 'cancelled-prompt', committedActivitySeq: 0, seq: 93 })
+    },
+  )
+
   it('leaves projected child pages to the native message renderers', () => {
     const definition = createAcpActivityDefinition(() => false)
     expect(definition.match({
@@ -170,11 +197,11 @@ describe('ACP activity conversation node', () => {
 
   it('keeps activity order stable while replacing a running row in place', () => {
     const store = new AcpActivityJournalStore()
-    store.apply({ type: 'opened', cursor: 2, head: 2, activities: [
+    store.replace(2, [
       { dshSessionId: 'dsh-1', ownerDshSessionId: 'dsh-1', promptAnchorMessageId: 'user-3', activityId: 'b', activitySeq: 2, revisionSeq: 2, time: 2, kind: 'tool', status: 'running', presentation: 'B' },
       { dshSessionId: 'dsh-1', ownerDshSessionId: 'dsh-1', promptAnchorMessageId: 'user-3', activityId: 'a', activitySeq: 1, revisionSeq: 1, time: 1, kind: 'tool', status: 'running', presentation: 'A' },
-    ] })
-    store.apply({ type: 'entry', activity: { dshSessionId: 'dsh-1', ownerDshSessionId: 'dsh-1', promptAnchorMessageId: 'user-3', activityId: 'a', activitySeq: 1, revisionSeq: 3, time: 3, kind: 'tool', status: 'completed', presentation: 'A done' } })
+    ])
+    store.append({ dshSessionId: 'dsh-1', ownerDshSessionId: 'dsh-1', promptAnchorMessageId: 'user-3', activityId: 'a', activitySeq: 1, revisionSeq: 3, time: 3, kind: 'tool', status: 'completed', presentation: 'A done' })
     expect(store.values('dsh-1', 'user-3').map((row) => `${row.activityId}:${row.status}`)).toEqual(['a:completed', 'b:running'])
   })
 
@@ -199,10 +226,10 @@ describe('ACP activity conversation node', () => {
       activityId: id, activitySeq: 1, revisionSeq, time: revisionSeq, kind: 'tool' as const,
       status: 'running' as const, presentation: id,
     })
-    store.apply({ type: 'opened', cursor: 2, head: 2, activities: [row('anchor-a', 'a', 1), row('anchor-b', 'b', 2)] })
+    store.replace(2, [row('anchor-a', 'a', 1), row('anchor-b', 'b', 2)])
     const indexes = store as unknown as { readonly rowsByAnchor: Map<string, Map<string, unknown>> }
     const bIndex = indexes.rowsByAnchor.get('dsh-1\u0000anchor-b')
-    store.apply({ type: 'entry', activity: { ...row('anchor-a', 'a', 3), status: 'completed' } })
+    store.append({ ...row('anchor-a', 'a', 3), status: 'completed' })
     expect(indexes.rowsByAnchor.get('dsh-1\u0000anchor-b')).toBe(bIndex)
     expect(store.values('dsh-1', 'anchor-b').map(item => item.activityId)).toEqual(['b'])
   })

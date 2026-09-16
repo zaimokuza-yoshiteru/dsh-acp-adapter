@@ -567,6 +567,17 @@ function AgentForm(props: {
         placeholder: 'NO_COLOR=1',
         onChange: (value) => { edit({ envText: value }) },
       }),
+      textField({
+        t,
+        id: `dsh-acp-${scope}-host-tools`,
+        label: t('fieldHostTools'),
+        hint: t('fieldHostToolsHint'),
+        error: validation.hostTools,
+        value: draft.hostToolsText ?? '',
+        disabled,
+        multiline: true,
+        onChange: value => { edit({ hostToolsText: value }) },
+      }),
       // 疑似 secret 的存量 env 键只展示键名 + 已配置状态，值永不进文本框；
       // 「移除」从草稿的 maskedEnv 删键（保存后即从 settings 抹去）。
       draft.maskedEnv === undefined ? null : h('div', { className: css.field },
@@ -651,7 +662,7 @@ function textField(props: {
     })
     : h(Input, {
       id: props.id,
-      className: invalid ? `${css.input} ${css.inputInvalid}` : css.input,
+      className: invalid ? `${css.input} ${css.inputInvalid}` : css.input!,
       type: 'text',
       value: props.value,
       disabled: props.disabled,

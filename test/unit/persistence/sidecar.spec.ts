@@ -1069,3 +1069,26 @@ describe(' option 快照（acpOptionsSnapshotOf 有界标准化 + option_snapsho
     })
   })
 })
+
+describe('pending member mode storage', () => {
+  it('adds storage to an existing database without clearing old options, and does not clear a newer selection', async () => {
+    const id = SessionId('mode-migration')
+    const snapshot = acpOptionsSnapshotOf([], 'code', 'fp-1', TIME_BASE)
+    await store.writeOptionSnapshot(id, snapshot)
+    await store.dispose()
+    const old = rawDb()
+    old.exec('DROP TABLE mode_intents')
+    old.close()
+    expect(await store.readModeIntent(id)).toBeUndefined()
+    expect(await store.readOptionSnapshot(id)).toEqual(snapshot)
+    const earlier = { bindingKey: 'original', modeId: 'plan' }
+    const latest = { bindingKey: 'original', modeId: 'ask' }
+    await store.writeModeIntent(id, earlier)
+    await store.writeModeIntent(id, latest)
+    await store.clearModeIntent(id, earlier)
+    await store.dispose()
+    expect(await store.readModeIntent(id)).toEqual(latest)
+    await store.clearModeIntent(id, latest)
+    expect(await store.readModeIntent(id)).toBeUndefined()
+  })
+})

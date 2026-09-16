@@ -3,7 +3,7 @@
 // 覆盖：① package.json `dsh.client` manifest 形态与 peer/dev 双列纪律
 // ② 产物存在性 ③ 产物闭包（__ModuleLoader__ 包装形态 / id == 包名 /
 // sourcemap 在场且 sources 非空）④ module requests（产物内 require 全部落在
-// Alpha baseline ∪ dsh.client.external）⑤ 源码消费审计（ctx.get 服务读取必须有
+// platform snapshot ∪ dsh.client.external）⑤ 源码消费审计（ctx.get 服务读取必须有
 // 模块级 inject 或显式可选登记）⑥ npm tarball 内容精确性（npm pack --dry-run）
 // ⑦ 旧接管面产物禁入（synthetic tool / custom picker / old compatibility paths）。
 // 规范出处：reference/deepseek-harness packages/client/tsdown.client.ts（preset）、
@@ -14,6 +14,7 @@ import { existsSync, globSync, mkdtempSync, readFileSync, rmSync } from 'node:fs
 import os from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { PLATFORM_EXTERNALS, PLATFORM_PACKAGES } from './dsh-platform-snapshot.mjs'
 import { findMissingRelativeRuntimeImports } from './verify-runtime-closure.mjs'
 import { DSH_COMPAT_RANGE, DSH_SOURCE_VERSION } from './dsh-target.mjs'
 
@@ -21,31 +22,15 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const read = (rel) => readFileSync(join(root, rel), 'utf8')
 const pkg = JSON.parse(read('package.json'))
 
-/** Alpha baseline module-table rows（platform.ts PLATFORM_MODULES + PRELOADED_CLIENT_EXTERNALS）。 */
-const BASELINE_MODULES = [
-  'react',
-  'react/jsx-runtime',
-  'react-dom',
-  'react-dom/client',
-  '@deepseek-ai/cordis',
-  '@deepseek-ai/dsh-client-ui-slots',
-  '@deepseek-ai/dsh-client-ui-primitives',
-  '@deepseek-ai/dsh-client-store',
-]
+/** Checked-in DSH web platform rows (PLATFORM_MODULES + PRELOADED_CLIENT_EXTERNALS). */
+const BASELINE_MODULES = PLATFORM_EXTERNALS
 
 /**
  * baseline 行的 npm 包名（inject 是包名边，PLATFORM_MODULES 包由 shell 隐式播种，点名即冗余）。
  * Alpha 的共享 store 是平台模块，由 DSH web shell 直接播种；插件无需把它放进
  * dsh.client.inject，但如果源码需要 value import，应在 bundle 中保持为外部模块。
  */
-const BASELINE_PACKAGES = new Set([
-  'react',
-  'react-dom',
-  '@deepseek-ai/cordis',
-  '@deepseek-ai/dsh-client-ui-slots',
-  '@deepseek-ai/dsh-client-ui-primitives',
-  '@deepseek-ai/dsh-client-store',
-])
+const BASELINE_PACKAGES = PLATFORM_PACKAGES
 
 /**
  * 可选 cordis 服务读取登记：上游同位插件（ui-model-selection service.ts:88）以
@@ -242,7 +227,7 @@ if (existsSync(bundlePath)) {
   const allowed = new Set([...BASELINE_MODULES, ...declaredExternal])
   for (const spec of [...requested].sort()) {
     if (!allowed.has(spec)) {
-      fail(`lib/client.js: require(${JSON.stringify(spec)}) 不在 Alpha baseline 或 dsh.client.external 内 —— module table 无法应答`)
+      fail(`lib/client.js: require(${JSON.stringify(spec)}) 不在 DSH platform snapshot 或 dsh.client.external 内 —— module table 无法应答`)
     }
   }
   console.log(`[verify-bundle] module requests: ${requested.size === 0 ? '(none)' : [...requested].sort().join(', ')}`)

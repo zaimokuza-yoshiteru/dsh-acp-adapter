@@ -124,6 +124,7 @@ export function acpLaunchFingerprint(input: AcpLaunchFingerprintInput): AcpLaunc
     executableOverride,
     nativeStateEnv: nativeStateEnvFingerprint(env),
     // Ephemeral Teams capabilities are runtime-owned and must not enter durable restore identity.
-    mcpFingerprint: null,
+    mcpFingerprint: !input.config.hostTools?.length ? null
+      : createHash('sha256').update(JSON.stringify([...input.config.hostTools].sort())).digest('hex').slice(0, 16),
   }
 }

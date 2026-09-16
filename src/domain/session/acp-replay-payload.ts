@@ -1,17 +1,20 @@
-/** Small opaque marker carried by a DSH assistant ReplayEnvelope. */
-export interface AcpReplayPayloadV1 {
-  readonly kind: 'dsh-acp'
-  readonly version: 1
-  readonly ownerDshSessionId: string
-  readonly profileId: string
-  readonly profileGeneration: number
-  readonly agentSessionId: string
-  readonly bindingEpoch: number
-  readonly launchFingerprint: string
-  readonly committedPromptOrdinal: number
-  readonly committedActivitySeq: number
-  readonly activityAnchorMessageId?: string
-}
+import { z } from 'zod'
+
+/** Small opaque marker carried by a DSH assistant ReplayEnvelope. Unknown response fields are not retained. */
+export const acpReplayPayloadSchema = z.object({
+  kind: z.literal('dsh-acp'),
+  version: z.literal(1),
+  ownerDshSessionId: z.string(),
+  profileId: z.string(),
+  profileGeneration: z.number(),
+  agentSessionId: z.string(),
+  bindingEpoch: z.number(),
+  launchFingerprint: z.string(),
+  committedPromptOrdinal: z.number(),
+  committedActivitySeq: z.number(),
+  activityAnchorMessageId: z.string().optional(),
+})
+export type AcpReplayPayloadV1 = z.infer<typeof acpReplayPayloadSchema>
 
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -23,10 +26,6 @@ export function acpReplayPayloadOf(event: { readonly type: string; readonly data
   const message = record(event.data.message) ? event.data.message : event.data
   const source = record(message.source) ? message.source : undefined
   const response = record(source?.replayState) ? source.replayState.response : undefined
-  if (!record(response) || response.kind !== 'dsh-acp' || response.version !== 1) return undefined
-  if (typeof response.ownerDshSessionId !== 'string' || typeof response.profileId !== 'string'
-    || typeof response.profileGeneration !== 'number' || typeof response.agentSessionId !== 'string'
-    || typeof response.bindingEpoch !== 'number' || typeof response.launchFingerprint !== 'string'
-    || typeof response.committedPromptOrdinal !== 'number' || typeof response.committedActivitySeq !== 'number') return undefined
-  return response as unknown as AcpReplayPayloadV1
+  const parsed = acpReplayPayloadSchema.safeParse(response)
+  return parsed.success ? parsed.data : undefined
 }

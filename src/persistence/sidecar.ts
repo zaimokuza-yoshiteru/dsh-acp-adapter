@@ -44,6 +44,9 @@
  *   一次性无界 `configSnapshot`（该字段已删除，单一事实副本只在此表）。
  *   活体权威快照到达即刷新（建立/set_config_option/set_mode/turn 收束变更）；
  *   写失败仅 warn（last-known 是展示/参考面，不是提交面）。
+ * - `member_model_selections` teammate 模型选择表：每个 DSH session 至多一行，
+ *   记录最近选择及其 binding key；binding 变化由调用方决定是否重新解释，sidecar
+ *   不主动清除该配置。
  * - `activity_journal` 外部 Agent 活动表：按 DSH session 隔离、以 activity_id
  *   append-only revision，activity_seq 只在首次出现时分配，revision_seq 为每次
  *   mutation 的连续游标；它是机器可读的执行活动面，和面向人的 audit envelope
@@ -105,6 +108,7 @@
 
 /// <reference types="node" />
 
+import { activityPresentationSchema, boundedActivityPresentation, type AcpActivityPresentation } from '../domain/policy/activity-presentation.ts'
 import { createHash } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, readdirSync } from 'node:fs'
 import path from 'node:path'
@@ -181,6 +185,9 @@ export interface AcpDispatchRecord {
 export type AcpActivityKind = 'tool' | 'plan' | 'terminal' | 'diff' | 'resource' | 'delegated' | 'other'
 export type AcpActivityStatus = 'running' | 'completed' | 'failed' | 'cancelled'
 export interface AcpActivityRecord {
+  readonly display?: AcpActivityPresentation
+  /** First-seen insertion boundary in the native assistant content; absent on legacy records. */
+  readonly contentIndex?: number
   readonly dshSessionId: string
   readonly ownerDshSessionId: string
   readonly promptAnchorMessageId: string
@@ -248,6 +255,25 @@ export interface AcpLaunchFingerprint {
 export interface AcpBindingAgentInfo {
   readonly name?: string
   readonly version?: string
+}
+
+/** A user-selected mode belongs to one exact ACP binding, never a replacement session. */
+export interface AcpModeIntent {
+  readonly bindingKey: string
+  readonly modeId: string
+}
+
+/** A member's selected model stays binding-scoped and is retained after application. */
+export interface AcpMemberModelSelection {
+  readonly bindingKey: string
+  readonly model: string
+}
+
+const ACP_MEMBER_MODEL_MAX = 512
+const ACP_MEMBER_BINDING_KEY_MAX = 8192
+
+export function modeIntentBindingKey(binding: AcpBindingData): string {
+  return stableStringify([binding.provider, binding.agentSessionId, binding.generation, binding.bindingEpoch, binding.launchFingerprint])
 }
 
 /**
@@ -566,6 +592,13 @@ export interface AcpSidecar {
    * （调用方按「last-known 展示面」纪律降级为 warn，不翻转主链路）。
    */
   writeOptionSnapshot(sessionId: SessionId, snapshot: AcpOptionsSnapshotRecord): Promise<void>
+  /** Pending user selection, scoped to an exact ACP binding. */
+  readModeIntent(sessionId: SessionId): Promise<AcpModeIntent | undefined>
+  writeModeIntent(sessionId: SessionId, intent: AcpModeIntent): Promise<void>
+  clearModeIntent(sessionId: SessionId, intent: AcpModeIntent): Promise<void>
+  /** Persist the latest selected model for a teammate binding. */
+  readMemberModelSelection(sessionId: SessionId): Promise<AcpMemberModelSelection | undefined>
+  writeMemberModelSelection(sessionId: SessionId, selection: AcpMemberModelSelection): Promise<void>
   /** 读该会话的 last-known option 快照；无行/畸形 → `undefined`（畸形行 warn 一次）。 */
   readOptionSnapshot(sessionId: SessionId): Promise<AcpOptionsSnapshotRecord | undefined>
   /**
@@ -741,6 +774,8 @@ interface BindingRow {
 }
 
 interface ActivityRow {
+  readonly display_detail?: unknown
+  readonly content_index?: unknown
   readonly dsh_session_id?: unknown
   readonly activity_id?: unknown
   readonly owner_dsh_session_id?: unknown
@@ -783,6 +818,16 @@ CREATE TABLE IF NOT EXISTS bindings (
   acp_provider_id TEXT,
   acp_session_id TEXT,
   payload TEXT NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS mode_intents (
+  dsh_session_id TEXT PRIMARY KEY,
+  binding_key TEXT NOT NULL,
+  mode_id TEXT NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS member_model_selections (
+  dsh_session_id TEXT PRIMARY KEY,
+  binding_key TEXT NOT NULL,
+  model_id TEXT NOT NULL
 ) STRICT;
 CREATE TABLE IF NOT EXISTS option_snapshots (
   dsh_session_id TEXT PRIMARY KEY,
@@ -860,6 +905,8 @@ class SidecarStore implements AcpSidecar {
   private stmtActivityHead: StatementSync | undefined
   private stmtGetRecoveryState: StatementSync | undefined
   private stmtUpsertRecoveryState: StatementSync | undefined
+  private stmtGetMemberModelSelection: StatementSync | undefined
+  private stmtUpsertMemberModelSelection: StatementSync | undefined
   /** per-session 下一个 seq（懒种子 = 库里 MAX(seq)+1；含队列已占号）。 */
   private readonly seqCounters = new Map<string, number>()
   private queue: QueuedAudit[] = []
@@ -927,6 +974,9 @@ class SidecarStore implements AcpSidecar {
           SELECT dsh_session_id, activity_id, owner_dsh_session_id, prompt_anchor_message_id, activity_seq, ${revision}, ${time}, kind, status, presentation, raw_detail, raw_detail_ref FROM activity_journal_legacy`)
         db.exec('DROP TABLE activity_journal_legacy')
       }
+      const activityColumns = new Set((db.prepare('PRAGMA table_info(activity_journal)').all() as Array<{ name?: string }>).map(row => row.name))
+      if (!activityColumns.has('display_detail')) db.exec('ALTER TABLE activity_journal ADD COLUMN display_detail TEXT')
+      if (!activityColumns.has('content_index')) db.exec('ALTER TABLE activity_journal ADD COLUMN content_index INTEGER')
     } catch (error: unknown) {
       try {
         db?.close()
@@ -956,13 +1006,15 @@ class SidecarStore implements AcpSidecar {
     this.stmtClearDispatch = db.prepare('DELETE FROM dispatch_ledger WHERE dsh_session_id = ? AND dispatch_key = ?')
     this.stmtDeleteDispatch = db.prepare('DELETE FROM dispatch_ledger WHERE dsh_session_id = ?')
     this.stmtActivityGet = db.prepare('SELECT * FROM activity_journal WHERE dsh_session_id = ? AND activity_id = ? ORDER BY revision_seq DESC LIMIT 1')
-    this.stmtActivityInsert = db.prepare('INSERT INTO activity_journal (dsh_session_id, activity_id, owner_dsh_session_id, prompt_anchor_message_id, activity_seq, revision_seq, time, kind, status, presentation, raw_detail, raw_detail_ref) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    this.stmtActivityInsert = db.prepare('INSERT INTO activity_journal (dsh_session_id, activity_id, owner_dsh_session_id, prompt_anchor_message_id, activity_seq, revision_seq, time, kind, status, presentation, raw_detail, raw_detail_ref, content_index, display_detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
     this.stmtActivityUpdate = this.stmtActivityInsert
     this.stmtActivityList = db.prepare('SELECT * FROM (SELECT activity_journal.*, ROW_NUMBER() OVER (PARTITION BY activity_id ORDER BY revision_seq DESC) AS latest_row FROM activity_journal WHERE dsh_session_id = ?) WHERE latest_row = 1 ORDER BY activity_seq ASC LIMIT ?')
     this.stmtActivityPage = db.prepare('SELECT * FROM activity_journal WHERE dsh_session_id = ? AND revision_seq > ? ORDER BY revision_seq ASC LIMIT ?')
     this.stmtActivityHead = db.prepare('SELECT COALESCE(MAX(revision_seq), 0) AS head FROM activity_journal WHERE dsh_session_id = ?')
     this.stmtGetRecoveryState = db.prepare('SELECT * FROM recovery_states WHERE dsh_session_id = ?')
     this.stmtUpsertRecoveryState = db.prepare('INSERT INTO recovery_states (dsh_session_id, time, last_attempt_at, last_user_action, payload) VALUES (?, ?, ?, ?, ?) ON CONFLICT(dsh_session_id) DO UPDATE SET time = excluded.time, last_attempt_at = excluded.last_attempt_at, last_user_action = excluded.last_user_action, payload = excluded.payload')
+    this.stmtGetMemberModelSelection = db.prepare('SELECT binding_key, model_id FROM member_model_selections WHERE dsh_session_id = ?')
+    this.stmtUpsertMemberModelSelection = db.prepare('INSERT INTO member_model_selections (dsh_session_id, binding_key, model_id) VALUES (?, ?, ?) ON CONFLICT(dsh_session_id) DO UPDATE SET binding_key = excluded.binding_key, model_id = excluded.model_id')
     try {
       chmodSync(this.dbPath, 0o600)
     } catch (error: unknown) {
@@ -1279,8 +1331,10 @@ class SidecarStore implements AcpSidecar {
     if (record.activityId.length === 0 || record.activityId.length > 256) throw new TypeError('dsh-acp activity id must be 1..256 characters')
     if (record.promptAnchorMessageId.length === 0 || record.promptAnchorMessageId.length > 256) throw new TypeError('dsh-acp activity anchor must be 1..256 characters')
     if (!Number.isSafeInteger(record.time) || record.time < 0) throw new TypeError('dsh-acp activity time must be a non-negative safe integer')
+    if (record.contentIndex !== undefined && (!Number.isSafeInteger(record.contentIndex) || record.contentIndex < 0)) throw new TypeError('dsh-acp activity content index must be a non-negative safe integer')
     const presentation = boundedActivityText(record.presentation, ACP_ACTIVITY_PRESENTATION_MAX) ?? ''
     if (presentation.length === 0) throw new TypeError('dsh-acp activity presentation must not be empty')
+    const display = record.display === undefined ? undefined : boundedActivityPresentation(activityPresentationSchema.parse(record.display))
     const rawDetail = boundedActivityText(redactActivityDetail(record.rawDetail), ACP_ACTIVITY_RAW_MAX)
     const rawDetailRef = boundedActivityText(record.rawDetailRef, ACP_ACTIVITY_REF_MAX)
     const db = this.ensureDb()
@@ -1291,7 +1345,7 @@ class SidecarStore implements AcpSidecar {
         const current = rowToActivity(existing)
         if (current === undefined) throw new Error(`ACP_ACTIVITY_CORRUPT: activity ${record.activityId} is malformed`)
         if (record.ownerDshSessionId !== current.ownerDshSessionId || record.promptAnchorMessageId !== current.promptAnchorMessageId || record.kind !== current.kind) throw new Error(`ACP_ACTIVITY_IMMUTABLE: activity ${record.activityId} owner, anchor, and kind cannot change`)
-        if (isTerminalActivityStatus(current.status) && record.status === 'running') throw new Error(`ACP_ACTIVITY_STATE: terminal activity ${record.activityId} cannot return to running`)
+        if (record.kind !== 'plan' && isTerminalActivityStatus(current.status) && record.status === 'running') throw new Error(`ACP_ACTIVITY_STATE: terminal activity ${record.activityId} cannot return to running`)
         const revisionSeq = Number((this.stmtActivityHead?.get(record.dshSessionId) as { head?: number | bigint } | undefined)?.head ?? 0) + 1
         this.stmtActivityUpdate?.run(
           record.dshSessionId,
@@ -1306,9 +1360,12 @@ class SidecarStore implements AcpSidecar {
           presentation,
           rawDetail ?? null,
           rawDetailRef ?? null,
+          current.contentIndex ?? null,
+          display === undefined ? null : JSON.stringify(display),
         )
         db.exec('COMMIT')
-        const committed = { ...current, revisionSeq, time: record.time, status: record.status, presentation, ...(rawDetail === undefined ? {} : { rawDetail }), ...(rawDetailRef === undefined ? {} : { rawDetailRef }) }
+        const { display: _previousDisplay, ...previous } = current
+        const committed = { ...previous, ...(display === undefined ? {} : { display }), revisionSeq, time: record.time, status: record.status, presentation, ...(rawDetail === undefined ? {} : { rawDetail }), ...(rawDetailRef === undefined ? {} : { rawDetailRef }) }
         this.notifyActivitySubscribers(committed)
         return committed
       }
@@ -1316,9 +1373,9 @@ class SidecarStore implements AcpSidecar {
       const revisionHead = Number((this.stmtActivityHead?.get(record.dshSessionId) as { head?: number | bigint } | undefined)?.head ?? 0)
       const activitySeq = firstSeenHead + 1
       const revisionSeq = revisionHead + 1
-      this.stmtActivityInsert?.run(record.dshSessionId, record.activityId, record.ownerDshSessionId, record.promptAnchorMessageId, activitySeq, revisionSeq, record.time, record.kind, record.status, presentation, rawDetail ?? null, rawDetailRef ?? null)
+      this.stmtActivityInsert?.run(record.dshSessionId, record.activityId, record.ownerDshSessionId, record.promptAnchorMessageId, activitySeq, revisionSeq, record.time, record.kind, record.status, presentation, rawDetail ?? null, rawDetailRef ?? null, record.contentIndex ?? null, display === undefined ? null : JSON.stringify(display))
       db.exec('COMMIT')
-      const committed = { dshSessionId: record.dshSessionId, ownerDshSessionId: record.ownerDshSessionId, promptAnchorMessageId: record.promptAnchorMessageId, activityId: record.activityId, activitySeq, revisionSeq, time: record.time, kind: record.kind, status: record.status, presentation, ...(rawDetail === undefined ? {} : { rawDetail }), ...(rawDetailRef === undefined ? {} : { rawDetailRef }) }
+      const committed = { ...(display === undefined ? {} : { display }), ...(record.contentIndex === undefined ? {} : { contentIndex: record.contentIndex }), dshSessionId: record.dshSessionId, ownerDshSessionId: record.ownerDshSessionId, promptAnchorMessageId: record.promptAnchorMessageId, activityId: record.activityId, activitySeq, revisionSeq, time: record.time, kind: record.kind, status: record.status, presentation, ...(rawDetail === undefined ? {} : { rawDetail }), ...(rawDetailRef === undefined ? {} : { rawDetailRef }) }
       this.notifyActivitySubscribers(committed)
       return committed
     } catch (error) {
@@ -1607,6 +1664,46 @@ class SidecarStore implements AcpSidecar {
     }
   }
 
+  async readModeIntent(sessionId: SessionId): Promise<AcpModeIntent | undefined> {
+    assertSafeSessionId(sessionId)
+    const row = this.openIfExists()?.prepare('SELECT binding_key, mode_id FROM mode_intents WHERE dsh_session_id = ?').get(sessionId) as { binding_key: string; mode_id: string } | undefined
+    return row === undefined ? undefined : { bindingKey: row.binding_key, modeId: row.mode_id }
+  }
+
+  async writeModeIntent(sessionId: SessionId, intent: AcpModeIntent): Promise<void> {
+    assertSafeSessionId(sessionId)
+    if (!intent.modeId || intent.modeId.length > 128 || !intent.bindingKey || intent.bindingKey.length > 8192) throw new TypeError('Invalid ACP mode intent')
+    this.ensureDb().prepare('INSERT INTO mode_intents VALUES (?, ?, ?) ON CONFLICT(dsh_session_id) DO UPDATE SET binding_key=excluded.binding_key, mode_id=excluded.mode_id').run(sessionId, intent.bindingKey, intent.modeId)
+  }
+
+  async clearModeIntent(sessionId: SessionId, intent: AcpModeIntent): Promise<void> {
+    assertSafeSessionId(sessionId)
+    this.openIfExists()?.prepare('DELETE FROM mode_intents WHERE dsh_session_id = ? AND binding_key = ? AND mode_id = ?').run(sessionId, intent.bindingKey, intent.modeId)
+  }
+
+  async readMemberModelSelection(sessionId: SessionId): Promise<AcpMemberModelSelection | undefined> {
+    assertSafeSessionId(sessionId)
+    const row = this.openIfExists() === undefined ? undefined : this.stmtGetMemberModelSelection?.get(sessionId) as { binding_key?: unknown; model_id?: unknown } | undefined
+    if (row === undefined) return undefined
+    if (typeof row.binding_key !== 'string' || row.binding_key.length === 0 || row.binding_key.length > ACP_MEMBER_BINDING_KEY_MAX
+      || typeof row.model_id !== 'string' || row.model_id.length === 0 || row.model_id.length > ACP_MEMBER_MODEL_MAX) {
+      this.warn(`dsh-acp sidecar: malformed member model selection row for session ${JSON.stringify(sessionId as string)}; ignoring it`)
+      return undefined
+    }
+    return { bindingKey: row.binding_key, model: row.model_id }
+  }
+
+  async writeMemberModelSelection(sessionId: SessionId, selection: AcpMemberModelSelection): Promise<void> {
+    assertSafeSessionId(sessionId)
+    if (!isPlainObject(selection)
+      || typeof selection.bindingKey !== 'string' || selection.bindingKey.length === 0 || selection.bindingKey.length > ACP_MEMBER_BINDING_KEY_MAX
+      || typeof selection.model !== 'string' || selection.model.length === 0 || selection.model.length > ACP_MEMBER_MODEL_MAX) {
+      throw new TypeError('Invalid ACP member model selection')
+    }
+    this.ensureDb()
+    this.stmtUpsertMemberModelSelection?.run(sessionId, selection.bindingKey, selection.model)
+  }
+
   writeOptionSnapshot(sessionId: SessionId, snapshot: AcpOptionsSnapshotRecord): Promise<void> {
     assertSafeSessionId(sessionId)
     const validated = toOptionsSnapshotRecord(snapshot)
@@ -1754,15 +1851,24 @@ function redactActivityDetail(value: string | undefined): string | undefined {
   }
 }
 
+/** Ignore unavailable/corrupt presentation data without interpreting truncated audit text as complete files. */
+function readActivityDisplay(value: unknown): { display?: AcpActivityPresentation } {
+  if (typeof value !== 'string') return {}
+  try { return { display: boundedActivityPresentation(activityPresentationSchema.parse(JSON.parse(value))) } }
+  catch { return { display: { unavailable: 'invalid' } } }
+}
+
 function rowToActivity(row: ActivityRow): AcpActivityRecord | undefined {
   if (typeof row.dsh_session_id !== 'string' || typeof row.activity_id !== 'string' || typeof row.owner_dsh_session_id !== 'string' || typeof row.prompt_anchor_message_id !== 'string' || typeof row.activity_seq !== 'number' || !Number.isSafeInteger(row.activity_seq) || row.activity_seq < 1 || typeof row.revision_seq !== 'number' || !Number.isSafeInteger(row.revision_seq) || row.revision_seq < 1 || typeof row.time !== 'number' || !Number.isSafeInteger(row.time) || row.time < 0 || !isActivityKind(row.kind) || !isActivityStatus(row.status) || typeof row.presentation !== 'string') return undefined
   if (row.raw_detail !== null && row.raw_detail !== undefined && typeof row.raw_detail !== 'string') return undefined
   if (row.raw_detail_ref !== null && row.raw_detail_ref !== undefined && typeof row.raw_detail_ref !== 'string') return undefined
   return {
+    ...readActivityDisplay(row.display_detail),
     dshSessionId: row.dsh_session_id,
     ownerDshSessionId: row.owner_dsh_session_id,
     promptAnchorMessageId: row.prompt_anchor_message_id,
     activityId: row.activity_id,
+    ...(typeof row.content_index === 'number' && Number.isSafeInteger(row.content_index) && row.content_index >= 0 ? { contentIndex: row.content_index } : {}),
     activitySeq: row.activity_seq,
     revisionSeq: row.revision_seq,
     time: row.time,

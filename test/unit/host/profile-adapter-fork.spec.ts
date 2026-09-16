@@ -1,3 +1,4 @@
+import { withSessionFacts } from '../../support/session-facts.ts'
 import { describe, expect, it } from 'vitest'
 import os from 'node:os'
 import fs from 'node:fs'
@@ -7,21 +8,23 @@ import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
 import { AcpProfileAdapter } from '../../../src/host/composition/profile-adapter.ts'
 import type { AcpAgentConfig } from '../../../src/domain/session/agent-config.ts'
 import type { AcpProfileRuntime } from '../../../src/host/composition/profile-adapter.ts'
-import { snapshotSessionEvents, type SessionLike } from '../../../src/domain/session/current-step-admission.ts'
+import type { SessionLike, SessionEventLike } from '../../../src/domain/session/current-step-admission.ts'
 import { createAcpSidecar } from '../../../src/persistence/sidecar.ts'
 import type { AcpSidecar } from '../../../src/persistence/sidecar.ts'
 import { acpCanonicalHash16 } from '../../../src/persistence/sidecar.ts'
 
+type FixtureSession = SessionLike & { snapshotEvents(): readonly SessionEventLike[] }
+
 const profile = (): AcpAgentConfig => ({ name: 'Fork test', command: 'agent', args: ['acp'], env: {} })
 const user = (text: string) => createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })
-const makeSession = (message: ReturnType<typeof user>, extra: { parentSession?: string; inheritedEventCount?: number } = {}): SessionLike => ({
+const makeSession = (message: ReturnType<typeof user>, extra: { parentSession?: string; inheritedEventCount?: number } = {}) => (withSessionFacts({
   header: { cwd: os.tmpdir(), ...(extra.parentSession === undefined ? {} : { parentSession: extra.parentSession }) },
   inheritedEventCount: extra.inheritedEventCount ?? 0,
   snapshotEvents: () => [
     { type: 'step/start', seq: 1, data: { turn: 1, step: 0 } },
     { type: 'user/message', seq: 2, data: message },
   ],
-})
+}))
 const request = (id: string, message: ReturnType<typeof user>): GenerateOptions => markAgentLoopRequest({
   provider: 'acp-test', model: 'model-a', sessionId: id as never, messages: [message],
 })
@@ -71,7 +74,7 @@ async function harness() {
   return { root, sidecar }
 }
 
-async function parentWithReplay(sidecar: AcpSidecar, parentId: string, parent: SessionLike): Promise<SessionLike> {
+async function parentWithReplay(sidecar: AcpSidecar, parentId: string, parent: FixtureSession): Promise<FixtureSession> {
   const lookup = await sidecar.readLatestBinding(parentId as never)
   if (lookup?.status !== 'ok') throw new Error('parent binding was not created')
   const binding = lookup.binding
@@ -87,9 +90,9 @@ async function parentWithReplay(sidecar: AcpSidecar, parentId: string, parent: S
     committedPromptOrdinal: binding.committedPromptOrdinal ?? 1,
     committedActivitySeq: 0,
   }
-  return {
+  return withSessionFacts({
     ...parent,
-    snapshotEvents: () => [...snapshotSessionEvents(parent), {
+    snapshotEvents: () => [...parent.snapshotEvents(), {
       type: 'assistant/message', seq: 3, data: {
         message: {
           id: `assistant-${parentId}`,
@@ -99,15 +102,15 @@ async function parentWithReplay(sidecar: AcpSidecar, parentId: string, parent: S
         },
       },
     }],
-  }
+  })
 }
 
-function childFromParent(parent: SessionLike, parentId: string, message: ReturnType<typeof user>, inheritedEventCount = 3): SessionLike {
-  return {
+function childFromParent(parent: FixtureSession, parentId: string, message: ReturnType<typeof user>, inheritedEventCount = 3): FixtureSession {
+  return withSessionFacts({
     header: { cwd: os.tmpdir(), parentSession: parentId },
     inheritedEventCount,
-    snapshotEvents: () => [...snapshotSessionEvents(parent), { type: 'step/start', seq: 4, data: { turn: 2, step: 0 } }, { type: 'user/message', seq: 5, data: message }],
-  }
+    snapshotEvents: () => [...parent.snapshotEvents(), { type: 'step/start', seq: 4, data: { turn: 2, step: 0 } }, { type: 'user/message', seq: 5, data: message }],
+  })
 }
 
 function sidecarProxy(sidecar: AcpSidecar, overrides: {
@@ -117,6 +120,7 @@ function sidecarProxy(sidecar: AcpSidecar, overrides: {
   return {
     append: overrides.append ?? sidecar.append.bind(sidecar),
     readLatestBinding: sidecar.readLatestBinding.bind(sidecar),
+    readModeIntent: async () => undefined,
     readRecoveryState: sidecar.readRecoveryState.bind(sidecar),
     writeRecoveryState: overrides.writeRecoveryState ?? sidecar.writeRecoveryState.bind(sidecar),
   } as unknown as AcpSidecar
@@ -126,7 +130,7 @@ describe('provider adapter ACP fork boundary', () => {
   it('uses ACP fork only at first dispatch and gives the child an independent binding', async () => {
     const { root, sidecar } = await harness()
     try {
-      const sessions = new Map<string, SessionLike>()
+      const sessions = new Map<string, FixtureSession>()
       const parentMessage = user('parent')
       const parent = makeSession(parentMessage)
       sessions.set('parent', parent)
@@ -159,7 +163,7 @@ describe('provider adapter ACP fork boundary', () => {
   it('falls back to a blank ACP session when fork capability is unavailable', async () => {
     const { root, sidecar } = await harness()
     try {
-      const sessions = new Map<string, SessionLike>()
+      const sessions = new Map<string, FixtureSession>()
       const parentMessage = user('parent')
       sessions.set('parent', makeSession(parentMessage))
       const parentCounts = { starts: 0, forks: 0, prompts: 0 }
@@ -182,7 +186,7 @@ describe('provider adapter ACP fork boundary', () => {
   it('uses blank fallback for an old cut and blocks an uncertain fork RPC', async () => {
     const { root, sidecar } = await harness()
     try {
-      const sessions = new Map<string, SessionLike>()
+      const sessions = new Map<string, FixtureSession>()
       const parentMessage = user('parent')
       const parent = makeSession(parentMessage)
       sessions.set('parent', parent)
@@ -192,10 +196,10 @@ describe('provider adapter ACP fork boundary', () => {
       sessions.set('parent', parentWithMarker)
       const oldCut = user('child')
       const oldChild = childFromParent(parentWithMarker, 'parent', oldCut, 2)
-      const oldChildWithTail: SessionLike = {
+      const oldChildWithTail: FixtureSession = withSessionFacts({
         ...oldChild,
-        snapshotEvents: () => [...snapshotSessionEvents(oldChild), { type: 'user/message', seq: 6, data: user('uncommitted') }],
-      }
+        snapshotEvents: () => [...oldChild.snapshotEvents(), { type: 'user/message', seq: 6, data: user('uncommitted') }],
+      })
       sessions.set('old-child', oldChildWithTail)
       const oldCounts = { starts: 0, forks: 0, prompts: 0 }
       await drain(new AcpProfileAdapter('test', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, runtimeFactory(oldCounts, async () => undefined), sidecar).stream(request('old-child', oldCut)))
@@ -217,7 +221,7 @@ describe('provider adapter ACP fork boundary', () => {
   it('uses blank fallback when the parent is busy or already requires recovery', async () => {
     const { root, sidecar } = await harness()
     try {
-      const sessions = new Map<string, SessionLike>()
+      const sessions = new Map<string, FixtureSession>()
       const parentMessage = user('parent')
       const parent = makeSession(parentMessage)
       sessions.set('parent', parent)
@@ -228,14 +232,14 @@ describe('provider adapter ACP fork boundary', () => {
 
       const busyMessage = user('busy child')
       const busyBase = childFromParent(parentWithMarker, 'parent', busyMessage)
-      const busy: SessionLike = {
+      const busy: FixtureSession = withSessionFacts({
         ...busyBase,
-        snapshotEvents: () => [...snapshotSessionEvents(busyBase), { type: 'turn/start', seq: 6, data: { turn: 2 } }],
-      }
-      sessions.set('parent', {
-        ...parentWithMarker,
-        snapshotEvents: () => [...snapshotSessionEvents(parentWithMarker), { type: 'turn/start', seq: 6, data: { turn: 2 } }],
+        snapshotEvents: () => [...busyBase.snapshotEvents(), { type: 'turn/start', seq: 6, data: { turn: 2 } }],
       })
+      sessions.set('parent', withSessionFacts({
+        ...parentWithMarker,
+        snapshotEvents: () => [...parentWithMarker.snapshotEvents(), { type: 'turn/start', seq: 6, data: { turn: 2 } }],
+      }))
       sessions.set('busy', busy)
       const busyCounts = { starts: 0, forks: 0, prompts: 0 }
       await drain(new AcpProfileAdapter('test', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, runtimeFactory(busyCounts, async () => undefined), sidecar).stream(request('busy', busyMessage)))
@@ -259,7 +263,7 @@ describe('provider adapter ACP fork boundary', () => {
   it('does not leave a false recovery gate when capability fallback cannot start a blank session', async () => {
     const { root, sidecar } = await harness()
     try {
-      const sessions = new Map<string, SessionLike>()
+      const sessions = new Map<string, FixtureSession>()
       const parentMessage = user('parent')
       const parent = makeSession(parentMessage)
       sessions.set('parent', parent)
@@ -280,7 +284,7 @@ describe('provider adapter ACP fork boundary', () => {
   it('does not issue fork RPC when durable fork intent cannot be persisted', async () => {
     const { root, sidecar } = await harness()
     try {
-      const sessions = new Map<string, SessionLike>()
+      const sessions = new Map<string, FixtureSession>()
       const parentMessage = user('parent')
       const parent = makeSession(parentMessage)
       sessions.set('parent', parent)
@@ -305,7 +309,7 @@ describe('provider adapter ACP fork boundary', () => {
   it('keeps outcome-unknown after remote fork succeeds but child binding persistence fails', async () => {
     const { root, sidecar } = await harness()
     try {
-      const sessions = new Map<string, SessionLike>()
+      const sessions = new Map<string, FixtureSession>()
       const parentMessage = user('parent')
       const parent = makeSession(parentMessage)
       sessions.set('parent', parent)

@@ -1,6 +1,9 @@
 /** ACP profile as an ordinary DSH LLM provider route. */
 /// <reference types="node" />
 
+import { activityPresentation, type AcpActivityPresentation } from '../../domain/policy/activity-presentation.ts'
+import { modeIntentBindingKey } from '../../persistence/sidecar.ts'
+import { teamModeChoices } from '../../contract/session-modes.ts'
 import { projectNativeAgentAccess } from './native-agent-access.ts'
 
 import fs from 'node:fs'
@@ -22,8 +25,9 @@ import { prepareDevinTeamConfig } from '../teams/devin-config.ts'
 import { buildAcpSpawnPlan } from '../../domain/policy/sandbox.ts'
 import { descriptorOf } from '../../domain/session/agent-config.ts'
 import { DispatchLedger } from '../../runtime/session/dispatch-ledger.ts'
+import { StreamHandoff } from './stream-handoff.ts'
 import type { DispatchLedgerStore } from '../../runtime/session/dispatch-ledger.ts'
-import { admitCurrentStep, snapshotSessionEvents } from '../../domain/session/current-step-admission.ts'
+import { admitCurrentStep } from '../../domain/session/current-step-admission.ts'
 import { AcpAdmissionError } from '../../domain/session/current-step-admission.ts'
 import type { CurrentStepProof, SessionLike } from '../../domain/session/current-step-admission.ts'
 import { ExternalDelegationNormalizer } from '../../domain/subagent/external-delegation.ts'
@@ -32,7 +36,6 @@ import { acpCanonicalHash16 } from '../../persistence/sidecar.ts'
 import { acpOptionsSnapshotOf } from '../../persistence/options-snapshot.ts'
 import type { AcpActivityKind, AcpActivityStatus, AcpBindingData, AcpFileSystemAuditData, AcpRecoveryState, AcpSidecar } from '../../persistence/sidecar.ts'
 import type { AcpSessionForkReason, AcpTerminalAuditData } from '../../domain/policy/events.ts'
-import { acpReplayPayloadOf } from '../../domain/session/acp-replay-payload.ts'
 import { redactSecretText } from '../../domain/observability/redaction.ts'
 import { hostSystemPrompt } from '../../domain/session/host-system-prompt.ts'
 import { AcpPromptContentError, toAcpPrompt } from '../../domain/session/prompt-content.ts'
@@ -74,6 +77,8 @@ type AgentSessionConfigOptionView = {
 interface AgentSessionSnapshotView {
   readonly sessionId: string
   readonly profileId: string
+  readonly modeWritable?: boolean
+  readonly pendingModeId?: string | null
   readonly freshness: 'live' | 'stale'
   readonly editable: boolean
   readonly configOptions: readonly AgentSessionConfigOptionView[] | null
@@ -86,23 +91,10 @@ type AgentSessionOptionWrite =
   | { readonly kind: 'config'; readonly id: string; readonly value: string | boolean }
   | { readonly kind: 'mode'; readonly id: string }
 
-function hasOpenTurn(session: SessionLike | undefined): boolean {
-  if (session === undefined) return false
-  const events = snapshotSessionEvents(session)
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const type = events[index]?.type
-    if (type === 'turn/start') return true
-    if (type === 'turn/end') return false
-  }
-  return false
-}
-
 /** Prove the child seed ends at the parent's durable ACP binding head. */
 function isLatestForkCut(session: SessionLike | undefined, parentSessionId: string, parentBinding: AcpBindingData, currentFingerprint: unknown): boolean {
-  if (session === undefined || !Number.isInteger(session.inheritedEventCount) || session.inheritedEventCount < 0) return false
-  const seed = snapshotSessionEvents(session).slice(0, session.inheritedEventCount)
-  if (seed.length < session.inheritedEventCount) return false
-  const payload = [...seed].reverse().map(acpReplayPayloadOf).find((value) => value !== undefined)
+  if (session === undefined || session.facts.inheritedRemaining !== 0) return false
+  const payload = session.facts.forkReplay ?? undefined
   return payload !== undefined
     && payload.ownerDshSessionId === parentSessionId
     && payload.profileId === parentBinding.profileId
@@ -183,6 +175,7 @@ function isTerminalActivityStatus(value: AcpActivityStatus): boolean {
 }
 
 interface NormalizedActivity {
+  readonly display?: AcpActivityPresentation
   readonly activityId: string
   readonly kind: AcpActivityKind
   readonly status: AcpActivityStatus
@@ -195,7 +188,8 @@ function normalizeActivityContent(parentId: string, content: unknown, status: Ac
   const item = content as { type?: unknown; path?: unknown; terminalId?: unknown }
   if (item.type === 'diff') {
     const name = typeof item.path === 'string' ? path.basename(item.path) : 'file'
-    return { activityId: `${parentId}:diff`, kind: 'diff', status, presentation: `File change · ${name}`, rawDetail: activityRawDetail(content) }
+    const display = activityPresentation(content, 'diff')
+    return { activityId: `${parentId}:diff`, kind: 'diff', status, presentation: `File change · ${name}`, rawDetail: activityRawDetail(content), ...(display === undefined ? {} : { display }) }
   }
   if (item.type === 'terminal') return { activityId: `${parentId}:terminal`, kind: 'terminal', status, presentation: 'Terminal activity', rawDetail: activityRawDetail(content) }
   if (item.type === 'resource' || item.type === 'resource_link' || item.type === 'image' || item.type === 'audio') return { activityId: `${parentId}:resource`, kind: 'resource', status, presentation: 'Agent resource', rawDetail: activityRawDetail(content) }
@@ -212,7 +206,8 @@ function activitiesForNotification(notification: AcpSessionNotification, fallbac
       ? toolCall.title
       : typeof toolCall?.name === 'string' && toolCall.name.length > 0 ? toolCall.name : 'Agent tool activity'
     const detail = toolCall ?? update
-    const result: NormalizedActivity[] = [{ activityId: `tool:${toolId}`, kind: 'tool', status, presentation: title, rawDetail: activityRawDetail({ toolKind: detail.kind, toolName: detail.name, rawInput: detail.rawInput, rawOutput: detail.rawOutput, locations: detail.locations, content: detail.content }) }]
+    const display = activityPresentation({ toolKind: detail.kind, rawInput: detail.rawInput, content: detail.content }, 'tool')
+    const result: NormalizedActivity[] = [{ ...(display === undefined ? {} : { display }), activityId: `tool:${toolId}`, kind: 'tool', status, presentation: title, rawDetail: activityRawDetail({ toolKind: detail.kind, toolName: detail.name, rawInput: detail.rawInput, rawOutput: detail.rawOutput, locations: detail.locations, content: detail.content }) }]
     if (Array.isArray(detail.content)) {
       for (const [index, content] of detail.content.entries()) {
         const normalized = normalizeActivityContent(`tool:${toolId}:${String(index)}`, content, status)
@@ -225,12 +220,13 @@ function activitiesForNotification(notification: AcpSessionNotification, fallbac
     const entries = type === 'plan' && Array.isArray(update.entries) ? update.entries : undefined
     const plan = type === 'plan_update' ? update.plan : entries
     const planId = isPlainRecord(update._meta) && typeof update._meta.activityId === 'string' ? update._meta.activityId : 'session'
-    const complete = Array.isArray(entries) && entries.length > 0 && entries.every((entry) => isPlainRecord(entry) && entry.status === 'completed')
-    return [{ activityId: `plan:${planId}`, kind: 'plan', status: complete ? 'completed' : 'running', presentation: 'Agent plan', rawDetail: activityRawDetail(plan) }]
+    const display = activityPresentation(plan, 'plan')
+    const complete = display?.plan !== undefined && display.plan.every(entry => entry.status === 'completed')
+    return [{ activityId: `plan:${planId}`, kind: 'plan', status: complete ? 'completed' : 'running', presentation: 'Agent plan', rawDetail: activityRawDetail(plan), ...(display === undefined ? {} : { display }) }]
   }
   if (type === 'plan_removed') {
     const planId = typeof update.planId === 'string' ? update.planId : 'session'
-    return [{ activityId: `plan:${planId}`, kind: 'plan', status: 'completed', presentation: 'Agent plan', rawDetail: activityRawDetail(update) }]
+    return [{ activityId: `plan:${planId}`, kind: 'plan', status: 'completed', presentation: 'Agent plan', display: { plan: [] }, rawDetail: activityRawDetail(update) }]
   }
   if (type === 'delegated' || type === 'subagent') return [{ activityId: `delegated:${typeof update.activityId === 'string' ? update.activityId : fallbackId}`, kind: 'delegated', status: activityStatus(update.status), presentation: 'Delegated Agent activity', rawDetail: activityRawDetail(update) }]
   if (type === 'subagent_spawned') return [{
@@ -257,7 +253,7 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 function snapshotProfile(profile: AcpStubAgentConfig | undefined): AcpStubAgentConfig | undefined {
   return profile === undefined
     ? undefined
-    : { ...profile, args: [...profile.args], env: { ...profile.env } }
+    : { ...profile, args: [...profile.args], env: { ...profile.env }, ...(profile.hostTools === undefined ? {} : { hostTools: [...profile.hostTools] }) }
 }
 
 interface ProfileGeneration {
@@ -290,6 +286,8 @@ export interface AcpProfileRuntime {
   readonly modes?: acp.SessionModeState | undefined
   readonly contextUsage?: AcpRuntimeContextUsage | undefined
   readonly isBusy?: boolean
+  readonly canSteer?: boolean
+  steer?(content: acp.ContentBlock[]): Promise<'injected' | 'promptRequired'>
   /** ACP session-scoped writes. Implementations must confirm the resulting snapshot. */
   setConfigOption?(configId: string, value: string | boolean, signal?: AbortSignal): Promise<void>
   setMode?(modeId: string, signal?: AbortSignal): Promise<void>
@@ -312,6 +310,7 @@ export class AcpProfileAdapter extends LlmAdapter {
   private readonly nextGenerations = new Map<string, number>()
   private claudeDraftDegradationReported = false
   private readonly ledger: DispatchLedger
+  private readonly handoffs = new Map<string, { stream: StreamHandoff; generation: ProfileGeneration | undefined; options: GenerateOptions; off?: () => void }>()
 
   constructor(
     readonly profileId: string,
@@ -352,16 +351,9 @@ export class AcpProfileAdapter extends LlmAdapter {
   override async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
     const generation = this.currentProbeGeneration()
     if (generation === undefined) return []
-    try {
-      return await generation.probe.listModels(provider)
-    } catch (error) {
-      // The stock picker has no useful place for a second, persistent ACP
-      // protocol-error row. Health/Settings owns the bounded diagnostic; a
-      // failed ACP catalogue simply contributes no selectable models. Native
-      // provider adapters never pass through this composition path.
-      if (error instanceof LlmError && error.code === 'ACP_PROBE_FAILED') return []
-      throw error
-    }
+    // Preserve provider-local failures for the native catalog's error row.
+    // An empty success hides the route and can remain cached after recovery.
+    return await generation.probe.listModels(provider)
   }
 
   /** The profile adapter is the single probe cache owner for both ModelPicker and health. */
@@ -441,6 +433,64 @@ export class AcpProfileAdapter extends LlmAdapter {
 
   /** Narrow session-scoped control/read surface for the additive Agent dock. */
   async agentSessionSnapshot(sessionId: string): Promise<AgentSessionSnapshotView> {
+    const snapshot = await this.readAgentSessionSnapshot(sessionId)
+    const binding = await this.sidecar?.readLatestBinding(sessionId as never)
+    const intent = await this.sidecar?.readModeIntent(sessionId as never)
+    const profile = this.readConfig()
+    const recovery = await this.sidecar?.readRecoveryState(sessionId as never)
+    const compatible = binding?.status === 'ok' && binding.binding.provider === `acp-${this.profileId}`
+      && profile !== undefined && acpCanonicalHash16(binding.binding.launchFingerprint) === acpCanonicalHash16(await this.launchFingerprint(profile))
+      && (recovery === undefined || recovery.kind === 'healthy')
+    const pending = compatible && intent?.bindingKey === modeIntentBindingKey(binding.binding) ? intent.modeId : null
+    return { ...snapshot, modeWritable: compatible && (snapshot.freshness === 'stale' || snapshot.editable),
+      pendingModeId: pending !== null && !teamModeChoices(snapshot).some(choice => choice.id === pending && choice.current && snapshot.freshness === 'live') ? pending : null }
+  }
+
+  /** Mode changes for dormant members are durable settings; they never create a session or send a prompt. */
+  async setTeamMemberMode(sessionId: string, modeId: string): Promise<AgentSessionSnapshotView> {
+    const snapshot = await this.agentSessionSnapshot(sessionId)
+    const choice = teamModeChoices(snapshot).find(choice => choice.id === modeId)
+    if (!snapshot.modeWritable || choice === undefined || this.sidecar === undefined) throw new LlmError('This member mode cannot be changed', 'ACP_SESSION_OPTIONS_READ_ONLY')
+    const binding = await this.sidecar.readLatestBinding(sessionId as never)
+    if (binding?.status !== 'ok') throw new LlmError('The original ACP binding is unavailable', 'ACP_BINDING_UNAVAILABLE')
+    const currentRuntime = this.runtimeForSession(sessionId)
+    if (currentRuntime?.isBusy || (snapshot.freshness === 'stale' && currentRuntime !== undefined)) throw new LlmError('Member started running; retry after it settles', 'ACP_SESSION_OPTIONS_READ_ONLY')
+    const intent = { bindingKey: modeIntentBindingKey(binding.binding), modeId }
+    // Save before contacting the Agent: a disconnected write remains visible and is retried before the next prompt.
+    await this.sidecar.writeModeIntent(sessionId as never, intent)
+    try {
+      if (snapshot.freshness === 'live' && currentRuntime && !currentRuntime.isBusy) await this.applyMemberMode(sessionId, currentRuntime)
+    } finally { this.controlsChanged?.(sessionId) }
+    return await this.agentSessionSnapshot(sessionId)
+  }
+
+  private async applyMemberMode(sessionId: string, runtime: AcpProfileRuntime): Promise<void> {
+    const intent = await this.sidecar?.readModeIntent(sessionId as never)
+    if (intent === undefined) return
+    const binding = await this.sidecar?.readLatestBinding(sessionId as never)
+    if (binding?.status !== 'ok' || intent.bindingKey !== modeIntentBindingKey(binding.binding)) {
+      await this.sidecar?.clearModeIntent(sessionId as never, intent)
+      return
+    }
+    const choice = teamModeChoices(this.liveAgentSessionSnapshot(sessionId, runtime)).find(choice => choice.id === intent.modeId)
+    if (choice === undefined) throw new LlmError('The saved member mode is no longer supported; choose another mode before continuing', 'ACP_CONFIG_UNSUPPORTED')
+    if (!choice.current) {
+      if (choice.write.kind === 'mode') {
+        if (!runtime.setMode) throw new LlmError('Agent mode control is unavailable', 'ACP_CONFIG_UNSUPPORTED')
+        await runtime.setMode(choice.write.id)
+      } else {
+        if (!runtime.setConfigOption) throw new LlmError('Agent mode control is unavailable', 'ACP_CONFIG_UNSUPPORTED')
+        await runtime.setConfigOption(choice.write.id, choice.write.value)
+      }
+      if (!teamModeChoices(this.liveAgentSessionSnapshot(sessionId, runtime)).some(choice => choice.id === intent.modeId && choice.current)) throw new LlmError('Agent did not confirm the saved member mode', 'ACP_CONFIG_SYNC_FAILED')
+    }
+    await this.persistRuntimeSnapshot(sessionId, runtime)
+    // Consume only the confirmed choice. A later user selection must survive this completion.
+    await this.sidecar?.clearModeIntent(sessionId as never, intent)
+    this.controlsChanged?.(sessionId)
+  }
+
+  private async readAgentSessionSnapshot(sessionId: string): Promise<AgentSessionSnapshotView> {
     const runtime = this.runtimeForSession(sessionId)
     if (runtime !== undefined) return this.liveAgentSessionSnapshot(sessionId, runtime)
     if (this.sidecar === undefined) throw new LlmError('ACP sidecar is unavailable', 'ACP_BINDING_UNAVAILABLE')
@@ -450,7 +500,7 @@ export class AcpProfileAdapter extends LlmAdapter {
     if (snapshot === undefined) throw new LlmError('No last-known Agent session controls are available', 'ACP_SESSION_OPTIONS_UNAVAILABLE')
     const configOptions = snapshot.options.map(option => option.values === null
       ? { type: 'boolean' as const, id: option.id, name: option.name, ...(option.category === null ? {} : { category: option.category }), currentValue: typeof option.value === 'boolean' ? option.value : false }
-      : { type: 'select' as const, id: option.id, name: option.name, ...(option.category === null ? {} : { category: option.category }), currentValue: typeof option.value === 'string' ? option.value : '', options: option.values.map(value => ({ value, name: value })) })
+      : { type: 'select' as const, id: option.id, name: option.name, ...(option.category === null ? {} : { category: option.category }), currentValue: typeof option.value === 'string' ? option.value : '', options: option.values.map(value => ({ value, name: (normalizeAcpConfigOptionKey(option.id) === 'mode' || normalizeAcpConfigOptionKey(option.category ?? '') === 'mode' ? snapshot.modes?.availableModes.find(mode => mode.id === value)?.name : undefined) ?? value })) })
     return {
       sessionId,
       profileId: this.profileId,
@@ -484,6 +534,10 @@ export class AcpProfileAdapter extends LlmAdapter {
       if (option.type === 'boolean' && typeof request.value !== 'boolean') throw new LlmError(`Agent option "${request.id}" expects a boolean`, 'ACP_CONFIG_UNSUPPORTED')
       if (runtime.setConfigOption === undefined) throw new LlmError('This Agent does not expose session controls', 'ACP_CONFIG_UNSUPPORTED')
       await runtime.setConfigOption(request.id, request.value)
+    }
+    if (request.kind === 'mode' || runtime.configOptions?.some(option => option.id === request.id && (normalizeAcpConfigOptionKey(option.id) === 'mode' || normalizeAcpConfigOptionKey(option.category ?? '') === 'mode'))) {
+      const intent = await this.sidecar?.readModeIntent(sessionId as never)
+      if (intent !== undefined) await this.sidecar?.clearModeIntent(sessionId as never, intent)
     }
     await this.persistRuntimeSnapshot(sessionId, runtime)
     return this.liveAgentSessionSnapshot(sessionId, runtime)
@@ -592,13 +646,7 @@ export class AcpProfileAdapter extends LlmAdapter {
       }
     }
     if (!modelChanged && options.reasoningEffort === undefined) return
-    if (modelChanged) {
-      try {
-        await applyOption(modelOption, options.model)
-      } catch (error) {
-        throw error
-      }
-    }
+    if (modelChanged) await applyOption(modelOption, options.model)
     if (options.reasoningEffort === undefined) return
     // A model change can change the available reasoning values. Always inspect
     // the confirmed response snapshot rather than the pre-change object.
@@ -630,6 +678,82 @@ export class AcpProfileAdapter extends LlmAdapter {
   }
 
   private streamWithGeneration(options: GenerateOptions, generation: ProfileGeneration | undefined): AsyncIterable<StreamChunk> {
+    const self = this
+    return (async function* (): AsyncGenerator<StreamChunk> {
+      if (options.purpose !== undefined) throw new LlmError('ACP does not execute auxiliary title or compaction requests', 'ACP_AUXILIARY_CALL')
+      const key = String(options.sessionId ?? '')
+      const carry: StreamChunk[] = []
+      let owner = self.handoffs.get(key)
+      if (owner?.stream.closing) {
+        await owner.stream.drain()
+        owner.off?.()
+        if (self.handoffs.get(key) === owner) self.handoffs.delete(key)
+        owner = undefined
+      }
+      if (owner !== undefined) {
+        if (!owner.stream.suspended) throw new LlmError('ACP stream is already active', 'ACP_PROMPT_ALREADY_ACTIVE')
+        const compatible = owner.generation === generation && owner.options.provider === options.provider
+          && owner.options.model === options.model && owner.options.reasoningEffort === options.reasoningEffort
+          && owner.options.signal?.aborted !== true && options.signal?.aborted !== true && options.purpose === undefined
+        let resumed = false
+        try { resumed = compatible && await owner.stream.resume?.(options) === true }
+        catch (error) {
+          await self.sidecar?.writeRecoveryState({ dshSessionId: key, kind: 'outcome-unknown', cause: 'load-failed', detail: 'ACP steering acceptance could not be confirmed; inspect the Agent session before retrying', provider: options.provider, updatedAt: Date.now() })
+          await owner.stream.drain().catch(() => undefined)
+          owner.off?.(); self.handoffs.delete(key)
+          throw new LlmError(error instanceof Error ? error.message : String(error), 'ACP_STEERING_FAILED', { cause: error })
+        }
+        if (!resumed) {
+          await owner.stream.drain()
+          carry.push(...owner.stream.takeRemainder())
+          owner.off?.(); self.handoffs.delete(key); owner = undefined
+        }
+      }
+      if (owner === undefined) {
+        const stream = new StreamHandoff()
+        owner = { stream, generation, options }
+        const indices = new Map<number, number>()
+        for (const chunk of carry) {
+          if (chunk.type === 'finish') {
+            // Cancellation is expected when replacing an idle/changed route.
+            // Provider failures and limits must never become a successful retry.
+            if (chunk.reason.kind === 'stop' || chunk.reason.kind === 'aborted') continue
+            yield chunk
+            return
+          }
+          if ('index' in chunk) {
+            if (!indices.has(chunk.index)) indices.set(chunk.index, indices.size)
+            yield { ...chunk, index: indices.get(chunk.index)! }
+          } else yield chunk
+        }
+        stream.attach(self.executionStream(options, generation, stream, indices.size))
+        self.handoffs.set(key, owner)
+        const captured = owner
+        const cleanup = async (): Promise<void> => {
+          if (self.handoffs.get(key) !== captured || !stream.suspended) return
+          try { await stream.drain() } finally {
+            captured.off?.()
+            if (self.handoffs.get(key) === captured) self.handoffs.delete(key)
+          }
+        }
+        const view = self.sessionOf(key)
+        const offEnd = view?.watchTurnEnd?.(() => {
+          void cleanup().catch(error => self.log?.(`ACP suspended stream cleanup: ${String(error)}`))
+        })
+        const offRoute = view?.watchRouteChange?.(options.provider, cleanup)
+        owner.off = () => { offEnd?.(); offRoute?.() }
+      }
+      try { yield* owner.stream.segment() }
+      finally {
+        if (!owner.stream.suspended) {
+          owner.off?.()
+          if (self.handoffs.get(key) === owner) self.handoffs.delete(key)
+        }
+      }
+    })()
+  }
+
+  private executionStream(options: GenerateOptions, generation: ProfileGeneration | undefined, handoff: StreamHandoff, contentOffset = 0): AsyncIterable<StreamChunk> {
     const self = this
     return (async function* (): AsyncGenerator<StreamChunk> {
       if (options.purpose !== undefined) {
@@ -666,7 +790,7 @@ export class AcpProfileAdapter extends LlmAdapter {
       }
       const runtime = self.runtimes.get(runtimeKey) ?? self.runtimeFactory(self.runtimeOptionsFor(sessionKey, profile, session?.header?.cwd ?? (() => { throw new LlmError('ACP requires the DSH session working directory', 'ACP_SESSION_CWD_UNAVAILABLE') })()))
       self.runtimes.set(runtimeKey, runtime)
-      if (session !== undefined) self.runtimeOwners.set(runtime, session)
+      if (session !== undefined) self.runtimeOwners.set(runtime, session.identity ?? session)
       try {
         let validatedPrompt: acp.ContentBlock[]
         // Capability negotiation is deliberately before session/new, restore,
@@ -789,7 +913,7 @@ export class AcpProfileAdapter extends LlmAdapter {
                 forkReason = 'parent-recovery-required'
               } else if (self.sessionOf(parentSessionId) === undefined) {
                 forkReason = 'parent-binding-unavailable'
-              } else if (hasOpenTurn(self.sessionOf(parentSessionId))) {
+              } else if (self.sessionOf(parentSessionId)?.facts.turnOpen === true) {
                 forkReason = 'parent-not-idle'
               } else if (!isLatestForkCut(session, parentSessionId, parentBinding, currentFingerprint)) {
                 forkReason = 'seed-not-latest-semantic-boundary'
@@ -858,8 +982,7 @@ export class AcpProfileAdapter extends LlmAdapter {
             // created; a restart can never observe two uncommitted display-only
             // events after an otherwise healthy binding.
             projectNativeAgentAccess(session)
-            const dshHead = (session === undefined ? [] : snapshotSessionEvents(session))
-              .reduce((max, event) => Math.max(max, event.seq), admissionProof?.startSeq ?? 0)
+            const dshHead = Math.max((session?.seq ?? 0) - 1, admissionProof?.startSeq ?? 0)
             const bindingData: AcpBindingData = {
             provider: options.provider,
             agentSessionId: runtime.acpSessionId ?? (() => { throw new LlmError('ACP runtime did not return a session id', 'ACP_SESSION_UNAVAILABLE') })(),
@@ -910,6 +1033,7 @@ export class AcpProfileAdapter extends LlmAdapter {
         // zero prompt, never a silent request with a different model/effort.
         try {
           await self.convergeConfig(runtime, options)
+          await self.applyMemberMode(sessionKey, runtime)
           await self.persistRuntimeSnapshot(sessionKey, runtime)
         } catch (error: unknown) {
           await self.releaseRuntime(runtimeKey, runtime)
@@ -948,14 +1072,26 @@ export class AcpProfileAdapter extends LlmAdapter {
         // one prompt projection.  Never carry a partially observed call into a
         // later DSH turn, even if an Agent reuses its id.
         const toolCallReducer = new AcpToolCallReducer(dispatchKey)
+        const activityPositions = new Map<string, number>()
+        let currentAnchor = admissionProof?.anchorMessageId ?? `prompt:${dispatchKey}`
+        let activityIndexOffset = 0
+        const activityOwners = new Map<string, { anchor: string; offset: number }>()
         const scheduleActivity = (activity: NormalizedActivity): void => {
           if (typeof durableSidecar.upsertActivity !== 'function') return
           currentActivities.set(activity.activityId, activity)
-          const fallbackAnchor = admissionProof?.anchorMessageId ?? `prompt:${dispatchKey}`
+          let activityOwner = activityOwners.get(activity.activityId)
+          if (activityOwner === undefined) {
+            activityOwner = { anchor: currentAnchor, offset: activityIndexOffset }
+            activityOwners.set(activity.activityId, activityOwner)
+          }
+          const fallbackAnchor = activityOwner.anchor
           const stableActivityId = `${fallbackAnchor}:${activity.activityId}`
+          const rawPosition = activityPositions.get(activity.activityId)
+          const position = rawPosition === undefined ? undefined : Math.max(0, rawPosition - activityOwner.offset)
           activityWriteTail = activityWriteTail.then(async () => {
             try {
               await durableSidecar.upsertActivity({
+                ...(position === undefined ? {} : { contentIndex: position }),
                 dshSessionId: sessionKey,
                 ownerDshSessionId: sessionKey,
                 promptAnchorMessageId: fallbackAnchor,
@@ -965,6 +1101,7 @@ export class AcpProfileAdapter extends LlmAdapter {
                 activityId: stableActivityId,
                 time: Date.now(),
                 kind: activity.kind,
+                ...(activity.display === undefined ? {} : { display: activity.display }),
                 status: activity.status,
                 presentation: activity.presentation,
                 ...(activity.rawDetail === undefined ? {} : { rawDetail: activity.rawDetail }),
@@ -979,48 +1116,43 @@ export class AcpProfileAdapter extends LlmAdapter {
         }
         const settleRunningActivities = (status: 'completed' | 'failed' | 'cancelled'): void => {
           for (const activity of currentActivities.values()) {
-            if (!isTerminalActivityStatus(activity.status)) scheduleActivity({ ...activity, status })
+            if (activity.kind !== 'plan' && !isTerminalActivityStatus(activity.status)) scheduleActivity({ ...activity, status })
           }
         }
         let wake: (() => void) | undefined
         let done = false
         let failure: unknown
         let visibleContentEmitted = false
-        // DSH block indices are global within one assistant message. ACP sends
-        // thought, visible text, and native images as different update kinds.
-        // Text/reasoning keep their index while contiguous; an image or fallback
-        // closes that logical segment so later text receives a later index.
-        let nextContentIndex = 0
-        let textContentIndex: number | undefined
-        let reasoningContentIndex: number | undefined
-        const contentIndex = (kind: 'text' | 'reasoning'): number => {
-          const current = kind === 'text' ? textContentIndex : reasoningContentIndex
-          if (current !== undefined) return current
-          const allocated = nextContentIndex
-          nextContentIndex += 1
-          if (kind === 'text') textContentIndex = allocated
-          else reasoningContentIndex = allocated
-          return allocated
+        // Only contiguous content belongs to the same native block. Never
+        // return to an older text/reasoning index after another segment.
+        let nextContentIndex = contentOffset
+        let contentSegment: { kind: 'text' | 'reasoning'; index: number; messageId?: string } | undefined
+        const breakContent = (): void => { contentSegment = undefined }
+        const contentIndex = (kind: 'text' | 'reasoning', messageId?: string | null): number => {
+          if (contentSegment?.kind !== kind || (messageId != null && contentSegment.messageId !== undefined && messageId !== contentSegment.messageId)) {
+            contentSegment = { kind, index: nextContentIndex++ }
+          }
+          if (messageId != null) contentSegment.messageId = messageId
+          return contentSegment.index
         }
         const pushChunk = (chunk: StreamChunk): void => {
           queue.push(chunk)
           wake?.(); wake = undefined
         }
         const pushNonTextFallback = (content: AcpNonTextContent): void => {
-          textContentIndex = undefined
-          reasoningContentIndex = undefined
+          breakContent()
           pushChunk({ type: 'text-delta', index: contentIndex('text'), text: `\n\n${nonTextContentFallback(content)}\n\n` })
           visibleContentEmitted = true
           // Keep the fallback as its own block in ACP content order.
-          textContentIndex = undefined
+          breakContent()
         }
-        const emitAgentContent = async (content: acp.ContentBlock): Promise<void> => {
+        const emitAgentContent = async (content: acp.ContentBlock, messageId?: string | null): Promise<void> => {
           if (content.type === 'text') {
             // DSH treats whitespace-only assistant content as non-visible. Keep
             // the same terminal-response rule here so formatting whitespace
             // cannot mask ACP_NO_VISIBLE_RESPONSE.
             if (content.text.trim().length > 0) visibleContentEmitted = true
-            pushChunk({ type: 'text-delta', index: contentIndex('text'), text: content.text })
+            pushChunk({ type: 'text-delta', index: contentIndex('text', messageId), text: content.text })
             return
           }
           if (content.type === 'image' && self.attachments?.saveImages !== undefined) {
@@ -1030,8 +1162,7 @@ export class AcpProfileAdapter extends LlmAdapter {
                 data: content.data,
               }])
               if (attachment === undefined) throw new Error('attachment store returned no image reference')
-              textContentIndex = undefined
-              reasoningContentIndex = undefined
+              breakContent()
               const index = nextContentIndex
               nextContentIndex += 1
               pushChunk({ type: 'block-start', index, blockType: 'image' })
@@ -1052,6 +1183,7 @@ export class AcpProfileAdapter extends LlmAdapter {
         const scheduleContent = (task: () => void | Promise<void>): void => {
           contentDeliveryTail = contentDeliveryTail.then(async () => { await task() })
         }
+        const toolContentBoundaries = new Map<string, boolean>()
         const onUpdate = (notification: AcpSessionNotification): void => {
           const update = notification.update
           const delegation = delegationNormalizer.acceptNotification(notification, Date.now())
@@ -1077,6 +1209,14 @@ export class AcpProfileAdapter extends LlmAdapter {
               ...(update.content === undefined ? {} : { content: update.content }),
             }
             toolCall = toolCallReducer.apply(patch)
+            const terminal = isTerminalActivityStatus(activityStatus(toolCall.status))
+            const previousTerminal = toolContentBoundaries.get(toolId)
+            if (previousTerminal === undefined || (terminal && !previousTerminal)) {
+              // Serialize boundaries with image admission and text delivery;
+              // progress-only tool patches must not split individual tokens.
+              scheduleContent(breakContent)
+            }
+            toolContentBoundaries.set(toolId, terminal)
           }
           const normalized = activitiesForNotification(
             notification,
@@ -1096,24 +1236,89 @@ export class AcpProfileAdapter extends LlmAdapter {
             for (const [index, previous] of previousChildren) {
               const next = nextChildren.get(index)
               if ((next === undefined || next.activityId !== previous.activityId) && !isTerminalActivityStatus(previous.status)) {
-                scheduleActivity({ ...previous, status: isTerminalActivityStatus(status) ? status : 'completed' })
+                scheduleContent(() => scheduleActivity({ ...previous, status: isTerminalActivityStatus(status) ? status : 'completed' }))
               }
             }
             toolChildren.set(toolId, nextChildren)
           }
-          for (const activity of normalized) scheduleActivity(activity)
+          scheduleContent(() => {
+            const plan = normalized.find(activity => activity.kind === 'plan')?.display?.plan
+            if (plan !== undefined) session?.publishPlan?.(plan)
+            for (const activity of normalized) {
+              const parentOwner = isToolUpdate ? activityOwners.get(`tool:${toolId}`) : undefined
+              if (!activityOwners.has(activity.activityId) && parentOwner !== undefined) activityOwners.set(activity.activityId, parentOwner)
+              if (!activityPositions.has(activity.activityId)) {
+                // A tool's detail rows are nested under its original call;
+                // late output must not split an unrelated streaming sentence.
+                const parentPosition = isToolUpdate ? activityPositions.get(`tool:${toolId}`) : undefined
+                if (parentPosition === undefined) breakContent()
+                activityPositions.set(activity.activityId, parentPosition ?? nextContentIndex)
+              }
+              scheduleActivity(activity)
+            }
+          })
           if (update.sessionUpdate === 'agent_message_chunk') {
-            scheduleContent(async () => { await emitAgentContent(update.content) })
+            scheduleContent(async () => { await emitAgentContent(update.content, update.messageId) })
           } else if (update.sessionUpdate === 'agent_thought_chunk' && update.content.type === 'text') {
             const thought = update.content.text
             scheduleContent(() => {
-              pushChunk({ type: 'reasoning-delta', index: contentIndex('reasoning'), text: thought })
+              pushChunk({ type: 'reasoning-delta', index: contentIndex('reasoning', update.messageId), text: thought })
             })
           }
         }
-        const promptResult = runtime.prompt(prompt, onUpdate, options.signal)
+        // Interrupt only the ACP execution. The native turn remains alive and
+        // owns the queued message, its pre-step hooks, and its eventual commit.
+        // No second prompt may cross the wire before the first one settles.
+        const inputAbort = new AbortController()
+        const promptSignal = options.signal === undefined ? inputAbort.signal : AbortSignal.any([options.signal, inputAbort.signal])
+        let interruptedForInput = false
+        let remoteSettled = false
+        handoff.cancel = () => inputAbort.abort(new Error('ACP stream consumer ended'))
+        const watchInput = (): (() => void) | undefined => session?.watchSteering?.(() => {
+          if (remoteSettled || promptSignal.aborted) return
+          if (runtime.canSteer === true && runtime.steer !== undefined) { handoff.request(); return }
+          interruptedForInput = true
+          inputAbort.abort(new Error('ACP interrupted for pending DSH input'))
+        })
+        let stopWatchingInput = watchInput()
+        handoff.resume = async nextOptions => {
+          let nextProof: CurrentStepProof | undefined
+          const nextMessages = admitCurrentStep(nextOptions, session, proof => { nextProof = proof })
+          if (nextProof?.turn !== admissionProof?.turn) return false
+          const nextPrompt = await toAcpPrompt(nextMessages, {
+            system: hostSystemPrompt(nextOptions), imageEnabled: runtime.agentCapabilities?.promptCapabilities?.image === true,
+            ...(self.attachments === undefined ? {} : { attachments: self.attachments }), signal: promptSignal,
+          })
+          if (nextPrompt.length === 0) throw new AcpPromptContentError('Steering input contains no supported content')
+          if (remoteSettled || runtime.canSteer !== true || runtime.steer === undefined) return false
+          // Finish notifications already admitted before the steering request.
+          // Agents may emit new tools before acknowledging injection, so the
+          // request boundary, rather than its response, owns their projection.
+          await contentDeliveryTail
+          if (remoteSettled) return false
+          const previousAnchor = currentAnchor
+          const previousOffset = activityIndexOffset
+          currentAnchor = nextProof!.anchorMessageId
+          // A pending pull may contain the old segment's final text. It will
+          // occupy a block in the next native reply before the injected output.
+          activityIndexOffset = Math.min(nextContentIndex, handoff.pendingIndex ?? nextContentIndex,
+            ...queue.flatMap(chunk => 'index' in chunk ? [chunk.index] : []))
+          breakContent()
+          const result = await runtime.steer(nextPrompt)
+          if (result !== 'injected') {
+            currentAnchor = previousAnchor
+            activityIndexOffset = previousOffset
+            return false
+          }
+          // A racing later insertion gets its own native admission boundary.
+          stopWatchingInput?.(); stopWatchingInput = watchInput()
+          return true
+        }
+        const promptResult = runtime.prompt(prompt, onUpdate, promptSignal)
         self.controlsChanged?.(sessionKey)
         const prompting = promptResult.then(async (response: acp.PromptResponse) => {
+          remoteSettled = true
+          stopWatchingInput?.()
           try {
             await contentDeliveryTail
             settleRunningActivities(response.stopReason === 'cancelled' ? 'cancelled' : 'completed')
@@ -1188,14 +1393,15 @@ export class AcpProfileAdapter extends LlmAdapter {
                   committedActivitySeq,
                   ...(admissionProof?.anchorMessageId === undefined ? {} : { activityAnchorMessageId: admissionProof.anchorMessageId }),
                 }
-            const responseFinish = finishReason(String(response.stopReason))
+            const responseFinish = interruptedForInput && options.signal?.aborted !== true
+              ? { kind: 'stop' as const } : finishReason(String(response.stopReason))
             // ACP deliberately separates private reasoning from the visible
             // assistant answer.  A successful turn that only emitted
             // agent_thought_chunk is therefore not a usable DSH answer.  Do not
             // promote reasoning to text (or guess a trailing sentence); surface
             // a stable provider error so DSH does not present an apparently
             // successful, answer-less turn.
-            const finalReason = responseFinish.kind === 'stop' && !visibleContentEmitted
+            const finalReason = responseFinish.kind === 'stop' && !visibleContentEmitted && !interruptedForInput
               ? { kind: 'error' as const, failure: { code: 'ACP_NO_VISIBLE_RESPONSE', message: 'ACP agent completed without a visible response' } }
               : responseFinish
             // Start the projection transaction before publishing finish so its
@@ -1226,6 +1432,8 @@ export class AcpProfileAdapter extends LlmAdapter {
             wake?.(); wake = undefined
           }
         }, async (error: unknown) => {
+          remoteSettled = true
+          stopWatchingInput?.()
           await contentDeliveryTail.catch(() => undefined)
           settleRunningActivities(options.signal?.aborted === true ? 'cancelled' : 'failed')
           await activityWriteTail
@@ -1267,6 +1475,7 @@ export class AcpProfileAdapter extends LlmAdapter {
             throw failure
           }
         } finally {
+          stopWatchingInput?.()
           // AgentLoop closes the iterator as soon as an aborted turn observes a
           // final ACP update. Keep return() pending until the matching prompt has
           // confirmed cancellation and its dispatch record is durably settled;
@@ -1313,7 +1522,7 @@ export class AcpProfileAdapter extends LlmAdapter {
     if (this.sidecar === undefined || session === undefined) return undefined
     const current = await this.sidecar.readLatestBinding(sessionId as never)
     if (current?.status !== 'ok') return undefined
-    const head = snapshotSessionEvents(session).reduce((max, event) => Math.max(max, event.seq), current.binding.dshCommittedSeq)
+    const head = Math.max(session.seq - 1, current.binding.dshCommittedSeq)
     const next: AcpBindingData = {
       ...current.binding,
       dshCommittedSeq: Math.max(head, current.binding.dshCommittedSeq),
@@ -1365,7 +1574,7 @@ export class AcpProfileAdapter extends LlmAdapter {
     const runtimeKey = `${sessionId}:${generation.id}`
     const runtime = this.runtimeFactory(this.runtimeOptionsFor(sessionId, profile, cwd))
     this.runtimes.set(runtimeKey, runtime)
-    this.runtimeOwners.set(runtime, session)
+    this.runtimeOwners.set(runtime, session.identity ?? session)
     try {
       if (typeof runtime.restore !== 'function') throw new Error('ACP runtime cannot restore the original session')
       await runtime.restore(binding)
@@ -1395,11 +1604,14 @@ export class AcpProfileAdapter extends LlmAdapter {
   }
 
   close(): Promise<void> {
+    const handoffs = [...this.handoffs.values()]
+    for (const owner of handoffs) { owner.off?.(); owner.stream.cancel?.() }
+    this.handoffs.clear()
     const keys = [...this.runtimes.keys()]
     const closing = [...this.runtimes.values()].map((runtime) => runtime.close())
     this.runtimes.clear()
     for (const key of keys) this.controlsChanged?.(key.slice(0, key.lastIndexOf(':')))
-    return Promise.all(closing).then(() => undefined)
+    return Promise.all([...closing, ...handoffs.filter(owner => owner.stream.suspended).map(owner => owner.stream.drain())]).then(() => undefined)
   }
 
   private async releaseRuntime(key: string, runtime: AcpProfileRuntime): Promise<void> {
@@ -1417,6 +1629,16 @@ export class AcpProfileAdapter extends LlmAdapter {
 
   private async closeSessionRuntime(sessionId: string, owner?: object): Promise<void> {
     const keys = [...this.runtimes.keys()].filter(key => key.startsWith(`${sessionId}:`))
+    const handoff = this.handoffs.get(sessionId)
+    if (handoff !== undefined && (owner === undefined || keys.some(key => {
+      const runtime = this.runtimes.get(key)
+      return runtime !== undefined && this.runtimeOwners.get(runtime) === owner
+    }))) {
+      handoff.off?.(); handoff.stream.cancel?.(); this.handoffs.delete(sessionId)
+      // An active consumer owns its outstanding pull, including late setup
+      // failure. Only abandoned suspended segments need a replacement consumer.
+      if (handoff.stream.suspended) void handoff.stream.drain().catch(error => this.log?.(`ACP disposed stream cleanup: ${String(error)}`))
+    }
     await Promise.all(keys.map(async key => {
       const runtime = this.runtimes.get(key)
       if (runtime === undefined || (owner !== undefined && this.runtimeOwners.get(runtime) !== owner)) return

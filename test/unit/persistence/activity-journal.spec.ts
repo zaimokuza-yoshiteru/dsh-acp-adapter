@@ -29,6 +29,42 @@ function activity(id: string, time: number | undefined = 1_700_000_000_000, over
 }
 
 describe('ACP activity journal', () => {
+  it('keeps full display content beyond audit limits after reopening', async () => {
+    const { root, sidecar } = store()
+    const text = 'same line\n'.repeat(6000)
+    const display = { diffs: [{ path: '/workspace/a.ts', oldText: text + 'old', newText: text + 'new' }] }
+    await sidecar.upsertActivity({ ...activity('diff:full'), kind: 'diff', display, rawDetail: 'x'.repeat(20000) })
+    await sidecar.dispose()
+    const reopened = createAcpSidecar({ root })
+    sidecars.push(reopened)
+    const [row] = await reopened.activitySnapshot(SessionId('session-1'))
+    expect(row!.display).toEqual(display)
+    expect(row!.rawDetail!.length).toBeLessThan(20000)
+  })
+
+  it('omits an oversized display atomically and lets plan updates reopen completed plans', async () => {
+    const { sidecar } = store()
+    const huge = 'x'.repeat(2 * 1024 * 1024)
+    const row = await sidecar.upsertActivity({ ...activity('diff:huge'), display: { diffs: [{ path: 'a', oldText: null, newText: huge }] } })
+    expect(row.display).toEqual({ unavailable: 'too-large' })
+    await sidecar.upsertActivity({ ...activity('plan'), kind: 'plan', status: 'completed' })
+    await expect(sidecar.upsertActivity({ ...activity('plan'), kind: 'plan', status: 'running' })).resolves.toMatchObject({ status: 'running' })
+  })
+  it('preserves the first content boundary through patches, reopening, and legacy rows', async () => {
+    const { root, sidecar } = store()
+    await sidecar.upsertActivity(activity('tool:ordered', undefined, { contentIndex: 2 }))
+    await sidecar.upsertActivity(activity('tool:ordered', undefined, { contentIndex: 9, status: 'completed' }))
+    await sidecar.upsertActivity(activity('tool:legacy'))
+    await sidecar.upsertActivity(activity('tool:legacy', undefined, { contentIndex: 3, status: 'completed' }))
+    await sidecar.dispose()
+    const reopened = createAcpSidecar({ root })
+    sidecars.push(reopened)
+    const rows = await reopened.activitySnapshot(SessionId('session-1'), 20)
+    expect(rows.find(row => row.activityId === 'tool:ordered')?.contentIndex).toBe(2)
+    expect(rows.find(row => row.activityId === 'tool:legacy')).not.toHaveProperty('contentIndex')
+    await expect(reopened.upsertActivity(activity('bad', undefined, { contentIndex: -1 }))).rejects.toThrow('content index')
+  })
+
   it('benchmarks 1000 current activities across 10000 durable revisions', async () => {
     const { sidecar } = store()
     const started = performance.now()
@@ -205,16 +241,16 @@ describe('ACP client activity journal cursor', () => {
 
   it('keeps opening state and applies contiguous reconnect revisions', () => {
     const store = new AcpActivityJournalStore()
-    store.apply({ type: 'opened', cursor: 2, head: 2, activities: [row(2, 'tool-1', 'running')] })
-    store.applyPage([row(3, 'tool-1', 'completed')], 3)
+    store.replace(2, [row(2, 'tool-1', 'running')])
+    store.append(row(3, 'tool-1', 'completed'))
     expect(store.head).toBe(3)
     expect(store.values('session-1', 'user-1')[0]?.status).toBe('completed')
   })
 
   it('rejects a filtered/non-contiguous page so the caller must repair from its cursor', () => {
     const store = new AcpActivityJournalStore()
-    store.apply({ type: 'opened', cursor: 2, head: 2, activities: [] })
-    expect(() => store.apply({ type: 'entry', activity: row(4) })).toThrow('journal gap')
+    store.replace(2, [])
+    expect(() => store.append(row(4))).toThrow('journal gap')
   })
 })
 

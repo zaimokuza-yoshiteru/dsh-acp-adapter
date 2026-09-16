@@ -1,9 +1,11 @@
 // Keyless product scenarios. Profiles vary wire representations, never assertions.
 import fs from 'node:fs'
 import { teamTurn } from './team-turn.mjs'
+import { hostToolsTurn } from './host-tools-turn.mjs'
 
 export async function regressionTurn(session, msg, { sendUpdate, sendAgentRequest, respond, log }) {
   if (await teamTurn(session, msg, { sendUpdate, sendAgentRequest, respond, log })) return
+  if (await hostToolsTurn(session, msg, { sendUpdate, sendAgentRequest, respond })) return
   const prompt = msg.params.prompt.filter(block => block.type === 'text').map(block => block.text).join('\n')
   const profile = process.env.MOCK_PROFILE
   const model = session.configOptions.find(option => option.id === 'model')?.currentValue
@@ -15,8 +17,56 @@ export async function regressionTurn(session, msg, { sendUpdate, sendAgentReques
   session.turn = { cancelled: false, cancel() { this.cancelled = true; release() } }
   const say = text => sendUpdate(session.id, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } })
   try {
+    if (prompt.includes('E2E_STEERING_HOLD')) {
+      let receive
+      const steered = new Promise(resolve => { receive = resolve })
+      session.turn.steer = blocks => {
+        const text = blocks.filter(block => block.type === 'text').map(block => block.text).join('\n')
+        log(`regression steer=${JSON.stringify(text)} session=${session.id}`)
+        receive(text)
+      }
+      say('E2E_STEERING_RUNNING')
+      const input = await Promise.race([steered, cancelled.then(() => null)])
+      if (input === null) {
+        log(`regression steering-cancelled session=${session.id}`)
+        // Verify the adapter drains late updates before starting the next prompt.
+        await new Promise(resolve => setTimeout(resolve, 50))
+        say('E2E_OLD_TURN_DRAINED')
+        return respond(msg.id, { stopReason: 'cancelled' })
+      }
+      await new Promise(resolve => setTimeout(resolve, 50))
+      say(input.includes('E2E_INPUT_REWRITTEN') ? 'E2E_STEER_DONE' : 'E2E_STEER_WRONG_INPUT')
+      return respond(msg.id, { stopReason: 'end_turn' })
+    }
+    if (prompt.includes('E2E_NATIVE_PLAN_DIFF')) {
+      const prefix = 'unchanged line\n'.repeat(6000)
+      sendUpdate(session.id, { sessionUpdate: 'plan', entries: [{ content: 'E2E_PLAN_REMAINS', status: 'in_progress', priority: 'high' }] })
+      sendUpdate(session.id, { sessionUpdate: 'tool_call', toolCallId: 'long-edit', title: 'Edit full.txt', kind: 'edit', status: 'completed',
+        content: [{ type: 'diff', path: 'full.txt', oldText: prefix + 'E2E_OLD_TAIL\n', newText: prefix + 'E2E_NEW_TAIL\n' }] })
+      say('E2E_NATIVE_PLAN_DIFF_DONE')
+      return respond(msg.id, { stopReason: 'end_turn' })
+    }
     if (prompt.includes('E2E_CRASH')) process.exit(49)
-    if (prompt.includes('E2E_JOB_START')) {
+    if (prompt.includes('E2E_STREAM_SEGMENTS')) {
+      const emit = async (kind, text, messageId) => {
+        sendUpdate(session.id, { sessionUpdate: kind, content: { type: 'text', text }, ...(messageId ? { messageId } : {}) })
+        await new Promise(resolve => setTimeout(resolve, 200))
+      }
+      sendUpdate(session.id, { sessionUpdate: 'tool_call', toolCallId: 'segment-setup', title: '准备计数器工作区', kind: 'execute', status: 'in_progress' })
+      await emit('agent_thought_chunk', '先规划计数器页面。')
+      await emit('agent_message_chunk', '页面骨架', 'answer-1')
+      await emit('agent_message_chunk', '已完成。', 'answer-1')
+      sendUpdate(session.id, { sessionUpdate: 'tool_call', toolCallId: 'segment-plan', title: '读取按钮计划', kind: 'read', status: 'completed' })
+      await emit('agent_thought_chunk', '再检查按钮事件。')
+      await emit('agent_message_chunk', '按钮交互已完成。', 'answer-2')
+      sendUpdate(session.id, { sessionUpdate: 'tool_call', toolCallId: 'segment-check', title: '模拟检查计数器', kind: 'read', status: 'in_progress' })
+      sendUpdate(session.id, { sessionUpdate: 'tool_call_update', toolCallId: 'segment-check', status: 'completed' })
+      await emit('agent_message_chunk', '检查结果正常。', 'answer-3')
+      await emit('agent_message_chunk', '演示结束。', 'answer-4')
+      sendUpdate(session.id, { sessionUpdate: 'tool_call', toolCallId: 'segment-tail', title: '保存检查结果', kind: 'edit', status: 'completed' })
+      sendUpdate(session.id, { sessionUpdate: 'tool_call_update', toolCallId: 'segment-setup', status: 'completed' })
+      if (prompt.includes('CANCEL')) { await cancelled; return respond(msg.id, { stopReason: 'cancelled' }) }
+    } else if (prompt.includes('E2E_JOB_START')) {
       const stopFile = `${session.cwd}/job-stop-${Date.now()}`
       const readyFile = `${stopFile}.ready`
       const immediate = prompt.includes('E2E_JOB_START_IMMEDIATE')

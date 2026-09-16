@@ -1,3 +1,8 @@
+/* Match native AssistantMarkdown's 16px content rhythm; adjacent tool rows
+   retain the compact activity spacing. Native renderers still own all content. */
+.assistantFlow { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.inlineActivities { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+
 .flow {
   display: flex;
   flex-direction: column;

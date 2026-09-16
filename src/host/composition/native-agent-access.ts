@@ -5,7 +5,9 @@ import type {} from '@deepseek-ai/dsh-user-approval'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-api-session-controller'
 import type { Session } from '@deepseek-ai/dsh-session'
-import { snapshotSessionEvents, type SessionLike } from '../../domain/session/current-step-admission.ts'
+import { LlmError } from '@deepseek-ai/dsh-llm'
+import type { SessionLike } from '../../domain/session/session-facts.ts'
+import { acpSessionView } from './session-facts.ts'
 
 /**
  * Project ACP's Native Agent Access through DSH's stock permission selector.
@@ -16,21 +18,24 @@ import { snapshotSessionEvents, type SessionLike } from '../../domain/session/cu
  * value.  These are real session policy overrides, not just UI labels. Apply them
  * only to ACP execution; an empty launcher must retain its native permissions.
  */
-export function projectNativeAgentAccess(session: SessionLike | Session | undefined): void {
+export function projectNativeAgentAccess(session: SessionLike | undefined): void {
   if (session?.append === undefined) return
-  const latest = (type: string, key: string): unknown => {
-    const events = snapshotSessionEvents(session)
-    for (let index = events.length - 1; index >= 0; index -= 1) {
-      const event = events[index]
-      if (event?.type !== type || typeof event.data !== 'object' || event.data === null) continue
-      return (event.data as Record<string, unknown>)[key]
+  if (session.permissions.sandbox !== 'danger-full-access') {
+    try {
+      session.append('sandbox/mode', { mode: 'danger-full-access' })
+    } catch (cause: unknown) {
+      // The host vetoes sandbox changes while a browser terminal is retained,
+      // including a pending allocation. Keep that veto authoritative: never
+      // close a user's terminal or proceed with mismatched ACP access facts.
+      if (!(cause instanceof Error) || cause.message !== 'Close browser terminals before changing the Session sandbox mode') throw cause
+      throw new LlmError(
+        'ACP requires different session access settings. Close this session\'s browser terminals, then send your message again. No prompt was sent to the Agent.',
+        'ACP_BROWSER_TERMINALS_OPEN',
+        { cause },
+      )
     }
-    return undefined
   }
-  if (latest('sandbox/mode', 'mode') !== 'danger-full-access') {
-    session.append('sandbox/mode', { mode: 'danger-full-access' })
-  }
-  if (latest('approval/policy', 'policy') !== 'ask') {
+  if (session.permissions.approval !== 'ask') {
     session.append('approval/policy', { policy: 'ask' })
   }
 }
@@ -49,12 +54,30 @@ function accessProvider(ctx: Context, agent: Agent): string | undefined {
 
 /** Apply ACP policy only when input is claimed, before native policy contexts are rendered. */
 export function installNativeAgentAccess(ctx: Context, ownsRoute: (provider: string | undefined) => boolean): void {
+  const accessFailures = new WeakMap<Session, unknown>()
   ctx.on('agent/inbox/claimed', ({ agent }) => {
     const previous = agent.session.requestHeader()?.config.provider
     // A native transcript cannot become ACP in-place. Its later backend guard
     // will reject that transition; do not alter its permissions on the way there.
     if (previous !== undefined && !ownsRoute(previous)) return
-    if (ownsRoute(accessProvider(ctx, agent))) projectNativeAgentAccess(agent.session)
+    if (!ownsRoute(accessProvider(ctx, agent))) return
+    try {
+      projectNativeAgentAccess(acpSessionView(ctx, agent.session))
+      accessFailures.delete(agent.session)
+    } catch (error: unknown) {
+      // claimed is a notification: throwing here cannot veto the turn. Keep
+      // policy projection before prompt assembly, but reject at the awaited
+      // pre-step boundary before any transcript or ACP request is committed.
+      accessFailures.set(agent.session, error)
+    }
+  })
+  ctx.on('agent/pre-step', async ({ agent }, next) => {
+    if (accessFailures.has(agent.session)) {
+      const error = accessFailures.get(agent.session)
+      accessFailures.delete(agent.session)
+      throw error
+    }
+    return await next()
   })
   ctx.on('system-prompt/assemble', async (_assembly, _context, next) => {
     const assembly = await next()

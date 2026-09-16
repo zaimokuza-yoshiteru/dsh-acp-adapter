@@ -2,6 +2,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
+import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import LlmRuntime, { LlmAdapter } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
 import { describe, expect, it } from 'vitest'
@@ -27,6 +28,9 @@ describe('third-party host coexistence', () => {
   it('keeps a real llm/stream observer and native route intact after ACP registration', async () => {
     const home = mkdtempSync(join(tmpdir(), 'dsh-acp-coexistence-'))
     const ctx = new Context()
+    await ctx.plugin(SessionProjectionRegistry)
+    // This registry-only fixture never dispatches an ACP AgentLoop turn.
+    ctx.provide('permissionPresets', {})
     const settings = {
       register: () => ({
         get: () => ({ agents: { codex: { name: 'Codex', command: 'codex-acp', args: [], env: {} } } }),

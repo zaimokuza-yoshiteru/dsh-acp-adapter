@@ -1,3 +1,4 @@
+import { validHostTools } from '../../contract/host-tools.ts'
 /**
  * ACP provider registry。
  *
@@ -44,6 +45,7 @@ import {
   acpRouteId,
 } from '../../domain/session/agent-config.ts'
 import type { AcpAgentConfig, AcpAgentId, AcpResolvedAgent } from '../../domain/session/agent-config.ts'
+import { createTeamManagement } from '../teams/management.ts'
 import { createAcpLogger } from '../../domain/observability/logging.ts'
 import { acpProbeConfigKey } from './llm-stub.ts'
 import { installNativeAgentAccess } from './native-agent-access.ts'
@@ -54,7 +56,8 @@ import { installAcpSidecar } from '../../persistence/sidecar.ts'
 import type { AcpSidecar } from '../../persistence/sidecar.ts'
 import type { AcpNativeUserQuestionService } from '../../domain/policy/elicitation.ts'
 import type { AcpNativeQuestionBinding } from './profile-adapter.ts'
-import { snapshotSessionEvents, type SessionLike } from '../../domain/session/current-step-admission.ts'
+import type { Session } from '@deepseek-ai/dsh-session'
+import { acpExecutionProjection, acpSessionView, readSessionFacts } from './session-facts.ts'
 import type { DispatchLedgerStore } from '../../runtime/session/dispatch-ledger.ts'
 import { resolveSubprocessSeam } from './subprocess.ts'
 import { AcpRemoteService } from '../../remote/service.ts'
@@ -96,26 +99,17 @@ interface AcpSettingsProviderLike {
   register(ns: string, schema: AcpSettingsSchema): AcpSettingsScopeLike
 }
 
-function sessionHasOpenTurn(session: SessionLike): boolean {
-  const events = snapshotSessionEvents(session)
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const type = events[index]?.type
-    if (type === 'turn/start') return true
-    if (type === 'turn/end') return false
-  }
-  return false
-}
-
 async function flushClosedParent(
-  store: { get(id: string): SessionLike | undefined; flush(session: SessionLike): Promise<boolean> },
+  store: { get(id: string): Session | undefined; flush(session: Session): Promise<boolean> },
   sessionId: string,
-  expected: SessionLike,
+  expected: Session,
+  isOpen: () => boolean,
 ): Promise<boolean> {
   // The adapter starts projection just before yielding the terminal chunk.
   // Give the stock AgentLoop a bounded window to append turn/end; publishing a
   // child against an open or replaced parent would assert lineage too early.
   const deadline = Date.now() + 10_000
-  while (sessionHasOpenTurn(expected)) {
+  while (isOpen()) {
     if (store.get(sessionId) !== expected || Date.now() >= deadline) return false
     await new Promise<void>(resolve => { setTimeout(resolve, 10) })
   }
@@ -171,6 +165,10 @@ function agentConfigOf(id: string, raw: unknown): AcpAgentConfig {
     throw new TypeError(`dsh-acp settings: agents.${id}.env must be a map of string values`)
   }
   const loginHint = raw['loginHint']
+  const hostTools = raw['hostTools']
+  if (hostTools !== undefined && !validHostTools(hostTools)) {
+    throw new TypeError(`dsh-acp settings: agents.${id}.hostTools must contain unique tool names`)
+  }
   if (loginHint !== undefined && typeof loginHint !== 'string') {
     throw new TypeError(`dsh-acp settings: agents.${id}.loginHint must be a string`)
   }
@@ -187,6 +185,7 @@ function agentConfigOf(id: string, raw: unknown): AcpAgentConfig {
     command,
     args: [...args] as string[],
     env: { ...env } as Record<string, string>,
+    ...(hostTools === undefined ? {} : { hostTools: [...hostTools] as string[] }),
     ...(loginHint === undefined ? {} : { loginHint }),
     ...(runtime === undefined ? {} : { runtime: runtime as AcpAgentId }),
   }
@@ -254,6 +253,7 @@ export const acpSettingsSchema: AcpSettingsSchema = Object.assign(
               },
               args: { type: 'array', items: { type: 'string' }, default: [] },
               env: { type: 'object', additionalProperties: { type: 'string' }, default: {} },
+              hostTools: { type: 'array', items: { type: 'string', pattern: '^[A-Za-z0-9_.-]+$' }, uniqueItems: true },
               loginHint: { type: 'string' },
               runtime: { enum: [...ACP_AGENT_IDS] },
             },
@@ -332,6 +332,7 @@ export interface InstalledProfileRegistryOptions {
  * with one, an empty agents map is likewise dormant until the panel adds one.
  */
 export function installInstalledProfileRegistry(ctx: Context, options: InstalledProfileRegistryOptions = {}): InstalledProfileRegistry {
+  ctx.sessionProjections.register(acpExecutionProjection)
   let disposed = false
   const log = createAcpLogger(ctx.logger)
   const sidecar = installAcpSidecar(ctx)
@@ -342,7 +343,7 @@ export function installInstalledProfileRegistry(ctx: Context, options: Installed
   const subprocess = options.subprocess ?? resolveSubprocessSeam(ctx)
   const holder = ctx as Context & { get(name: string, strict?: boolean): unknown }
   const sessionStore = typeof holder.get === 'function'
-    ? holder.get('sessions') as { get(id: string): SessionLike | undefined; flush(session: SessionLike): Promise<boolean> } | undefined
+    ? holder.get('sessions') as { get(id: string): Session | undefined; flush(session: Session): Promise<boolean> } | undefined
     : undefined
   let externalSubagentProjector: ExternalSubagentProjector | undefined
   const persistenceFiber = sidecar === undefined ? undefined : ctx.inject(['sessionPersistence'], (childCtx: Context) => {
@@ -446,6 +447,9 @@ export function installInstalledProfileRegistry(ctx: Context, options: Installed
         // this keeps Settings and the stock ModelPicker on one cache/key and
         // one in-flight probe. There is deliberately no detached fallback.
         probeCacheFor: (profileId) => profileAdapters.get(profileId),
+        modelsChanged: (profileIds) => {
+          for (const id of profileIds) registrations.get(id)?.replace([acpRouteId(id)])
+        },
       },
       // Health's executable/version facts must use the same host subprocess
       // seam as the ACP probe.  Omitting this made a successful probe coexist
@@ -454,6 +458,10 @@ export function installInstalledProfileRegistry(ctx: Context, options: Installed
       // The provider composition has no Agent owner; activity methods are
       // intentionally read-only and describe provider-owned facts only.
       resolveLiveAgent: () => undefined,
+      teamManagement: createTeamManagement(ctx, provider => [...profileAdapters.keys()].some(id => acpRouteId(id) === provider), async id => {
+        const lookup = await sidecar.readLatestBinding(id as never)
+        return lookup?.status === 'ok' ? lookup.binding.provider : undefined
+      }, { sidecar, adapterFor: provider => profileAdapters.get(provider.slice(4)) }),
       // Header/audit facts are read-only host facts.  Keeping them here makes
       // the additive provider composition useful to the stock header utility
       // without creating a second Agent lifecycle in the provider bridge.
@@ -465,16 +473,7 @@ export function installInstalledProfileRegistry(ctx: Context, options: Installed
         peekHeaderProvider: async (sessionId) => {
           const session = sessionStore?.get(sessionId)
           if (session === undefined) throw new Error('DSH session is not available')
-          for (const event of [...snapshotSessionEvents(session)].reverse()) {
-            if (event.type !== 'request/header' || typeof event.data !== 'object' || event.data === null) continue
-            const header = (event.data as { header?: unknown }).header
-            if (typeof header !== 'object' || header === null) continue
-            const config = (header as { config?: unknown }).config
-            if (typeof config !== 'object' || config === null) continue
-            const provider = (config as { provider?: unknown }).provider
-            if (typeof provider === 'string') return provider
-          }
-          return undefined
+          return session.requestHeader()?.config.provider
         },
         hasLiveAgent: (sessionId) => sessionStore?.get(sessionId) !== undefined,
       },
@@ -589,7 +588,7 @@ export function installInstalledProfileRegistry(ctx: Context, options: Installed
             id,
             () => activeAgents[id],
             subprocess,
-            sessionId => sessionStore?.get(sessionId),
+            sessionId => acpSessionView(ctx, sessionStore?.get(sessionId)),
             ledgerStore,
             undefined,
             undefined,
@@ -605,14 +604,14 @@ export function installInstalledProfileRegistry(ctx: Context, options: Installed
               if (parent === undefined) throw new Error('ACP_SUBAGENT_PARENT_UNAVAILABLE')
               const result = await projector.project(observation, {
                 ...context,
-                flushParent: async () => await flushClosedParent(store, context.parentDshSessionId, parent),
+                flushParent: async () => await flushClosedParent(store, context.parentDshSessionId, parent, () => readSessionFacts(ctx, parent).turnOpen),
               })
               return result?.childSessionId
             },
             message => log.warn(message, { operation: 'claude-draft-subagent-capability' }),
             sessionId => resolveTerminalJobs(ctx, sessionId),
-            (sessionId, capabilities, wireProfile) => createTeamBridge(ctx, sessionId, capabilities, wireProfile),
-            sessionId => teamBridgeKey(ctx, sessionId),
+            (sessionId, capabilities, wireProfile) => createTeamBridge(ctx, sessionId, capabilities, wireProfile, activeAgents[id]?.hostTools),
+            sessionId => teamBridgeKey(ctx, sessionId, activeAgents[id]?.hostTools),
             controlsChanged,
           )
           profileAdapters.set(id, routeAdapter)

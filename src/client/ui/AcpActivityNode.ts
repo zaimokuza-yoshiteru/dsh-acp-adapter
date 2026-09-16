@@ -1,3 +1,4 @@
+import { activityDiffsOf } from '../../contract/activity-diffs.ts'
 import { createElement as h, useEffect, useState, useSyncExternalStore } from 'react'
 import type { ReactNode } from 'react'
 import type {
@@ -10,8 +11,10 @@ import {
   Button, DiffBlock, DisclosureRow, IconApiOutline14, JsonTree, ReadBlock, StateDot, TerminalBlock,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type {
-  DiffHunk, JsonTreeLabels, ReadBlockLabels, ReadBlockProps, StateDotState, TerminalBlockLabels, TerminalBlockProps,
+  DiffHunk, ReadBlockLabels, ReadBlockProps, StateDotState, TerminalBlockLabels, TerminalBlockProps,
 } from '@deepseek-ai/dsh-client-ui-primitives'
+import type { AcpJsonStringWrapping } from './json-tree.ts'
+import { acpJsonTreeLabels } from './json-tree.ts'
 import type { AcpActivityView } from '../data/acp-remote.ts'
 import { acpReplayPayloadOf, type AcpReplayPayloadV1 } from '../data/acp-replay-payload.ts'
 import { AcpActivityJournalHub } from '../data/activity-journal.ts'
@@ -26,7 +29,7 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 }
 
 declare module '@deepseek-ai/dsh-client-ui-conversation/client' {
-  interface ConversationStepDataMap { 'acp-activity': boolean }
+  interface ConversationStepDataMap { 'acp-activity': AcpActivityNodeData; 'acp-activity-live': AcpActivityNodeData }
 }
 
 declare module '@deepseek-ai/dsh-client-ui-chat/client' {
@@ -60,13 +63,15 @@ type ActivityNode = ChatConversationViewNode & {
   readonly data: AcpActivityNodeData
 }
 
-type ActivityNodeProps = {
+export type ActivityNodeProps = {
   readonly node: ActivityNode
   readonly sessionId: string
   readonly t: (key: AcpLocaleKey, params?: Record<string, string | number>) => string
   readonly journalHub: AcpActivityJournalHub
   readonly onProjectedChild?: (parentSessionId: string, childSessionId: string) => void
   readonly onOpenProjectedChild?: (childSessionId: string) => void
+  readonly jsonStringWrapping?: AcpJsonStringWrapping
+  readonly hasInlineRenderer?: () => boolean
 } & Pick<import('@deepseek-ai/dsh-client-ui-chat/client').ChatNodeOwnerProps, 'openFile'>
 
 /**
@@ -166,15 +171,6 @@ function terminalDetail(row: AcpActivityView, value: unknown): TerminalDetail | 
   }
 }
 
-function detailLabels(t: ActivityNodeProps['t']): JsonTreeLabels {
-  return {
-    copyValue: t('auditCopyValue'), copyJson: t('auditCopyJson'), copyPath: t('auditCopyPath'),
-    copyPrettyJson: t('auditCopyPrettyJson'), copyCompactJson: t('auditCopyCompactJson'),
-    copied: t('auditCopied'), copyFailed: t('auditCopyFailed'), collapseNode: t('auditCollapseNode'),
-    expandNode: t('auditExpandNode'), copyButtonTitle: (action: string) => t('auditCopyOptions', { action }),
-  }
-}
-
 function dotState(status: AcpActivityView['status']): StateDotState {
   if (status === 'running') return 'ongoing'
   if (status === 'completed') return 'done'
@@ -182,28 +178,11 @@ function dotState(status: AcpActivityView['status']): StateDotState {
   return 'error'
 }
 
-function diffHunks(value: unknown): DiffHunk[] {
-  const candidates = record(value) && Array.isArray(value.content) ? value.content : [value]
-  const result: DiffHunk[] = []
-  for (const candidate of candidates) {
-    if (!record(candidate) || candidate.type !== 'diff' || typeof candidate.path !== 'string' || typeof candidate.newText !== 'string') continue
-    result.push({
-      path: candidate.path,
-      oldText: typeof candidate.oldText === 'string' ? candidate.oldText : null,
-      newText: candidate.newText,
-    })
-  }
-  // Kimi's write tool reports the complete new file in rawInput instead of an
-  // ACP diff content block. DiffBlock accepts null oldText for a create or
-  // overwrite; every byte the Agent exposed for the new side remains visible.
-  if (result.length === 0 && record(value) && value.toolKind === 'edit' && record(value.rawInput)) {
-    const path = typeof value.rawInput.path === 'string'
-      ? value.rawInput.path
-      : typeof value.rawInput.file_path === 'string' ? value.rawInput.file_path : undefined
-    const newText = typeof value.rawInput.content === 'string' ? value.rawInput.content : undefined
-    if (path !== undefined && path.trim() !== '' && newText !== undefined) result.push({ path, oldText: null, newText })
-  }
-  return result
+/** Legacy audit rows may be incomplete; never compare their truncated file sides. */
+function activityDiffs(row: AcpActivityView, detail: unknown): DiffHunk[] {
+  if (row.display !== undefined) return [...(row.display.diffs ?? [])]
+  if (/\[truncated\]|\[nested value omitted\]|\[redacted\]/.test(row.rawDetail ?? '')) return []
+  return activityDiffsOf(detail)
 }
 
 type ReadDetail = Pick<ReadBlockProps, 'label' | 'lines' | 'totalLines' | 'lang'>
@@ -364,10 +343,11 @@ function contentText(value: unknown): string {
 }
 
 /** Compact summary with explicitly read-only, sidecar-redacted details. */
-export function activityRowElement({ row, t, onOpenProjectedChild, open = false, onToggle = () => undefined }: {
+export function activityRowElement({ row, t, onOpenProjectedChild, jsonStringWrapping, open = false, onToggle = () => undefined }: {
   readonly row: AcpActivityView
   readonly t: ActivityNodeProps['t']
   readonly onOpenProjectedChild?: (childSessionId: string) => void
+  readonly jsonStringWrapping?: AcpJsonStringWrapping
   readonly open?: boolean
   readonly onToggle?: () => void
 }): ReactNode {
@@ -376,7 +356,7 @@ export function activityRowElement({ row, t, onOpenProjectedChild, open = false,
   const projectedChildSessionId = record(detail) && typeof detail.projectedChildSessionId === 'string'
     ? detail.projectedChildSessionId
     : undefined
-  const diffs = diffHunks(detail)
+  const diffs = activityDiffs(row, detail)
   const terminal = terminalDetail(row, detail)
   const read = readDetail(detail)
   const showRawDetail = hasMeaningfulDetail(detail)
@@ -386,8 +366,9 @@ export function activityRowElement({ row, t, onOpenProjectedChild, open = false,
     && terminal === undefined
     && read === undefined
   const expandable = external !== undefined || projectedChildSessionId !== undefined || showRawDetail || diffs.length > 0
-    || terminal !== undefined || read !== undefined
+    || terminal !== undefined || read !== undefined || row.display?.unavailable !== undefined
   const body = h('div', { className: css.body },
+    row.display?.unavailable === undefined ? null : h('p', null, t(row.display?.unavailable === 'invalid' ? 'activity.detailInvalid' : 'activity.detailTooLarge')),
     external === undefined ? null : h('div', { className: css.externalRecord },
       h('div', { className: css.externalSection },
         h('span', { className: css.externalLabel }, t('subagent.task')),
@@ -407,7 +388,14 @@ export function activityRowElement({ row, t, onOpenProjectedChild, open = false,
     terminal === undefined ? null : h(TerminalBlock, { ...terminal, labels: terminalLabels(t), className: css.nativeBlock }),
     read === undefined ? null : h(ReadBlock, { ...read, labels: readLabels(t), className: css.nativeBlock }),
     !showRawDetail ? null : typeof detail === 'object' && detail !== null
-      ? h(JsonTree, { data: detail, label: t(`activity.kind.${row.kind}` as AcpLocaleKey), labels: detailLabels(t), expandTopLevel: true, className: css.json })
+      ? h(JsonTree, {
+        data: detail,
+        label: t(`activity.kind.${row.kind}` as AcpLocaleKey),
+        labels: acpJsonTreeLabels(t),
+        ...(jsonStringWrapping === undefined ? {} : { stringWrapping: { ...jsonStringWrapping, label: t('auditWrapLines') } }),
+        expandTopLevel: true,
+        className: css.json,
+      })
       : h('pre', { className: css.raw }, String(detail)),
   )
   return h(DisclosureRow, {
@@ -428,12 +416,28 @@ export function activityRowElement({ row, t, onOpenProjectedChild, open = false,
   }, body)
 }
 
-function ActivityRow(props: { readonly row: AcpActivityView; readonly t: ActivityNodeProps['t']; readonly openFile: ActivityNodeProps['openFile']; readonly onOpenProjectedChild?: (childSessionId: string) => void }): ReactNode {
+export function ActivityRow(props: { readonly row: AcpActivityView; readonly t: ActivityNodeProps['t']; readonly openFile: ActivityNodeProps['openFile']; readonly onOpenProjectedChild?: (childSessionId: string) => void; readonly jsonStringWrapping?: AcpJsonStringWrapping }): ReactNode {
   const [open, setOpen] = useState(false)
-  if (props.row.kind === 'tool' || props.row.kind === 'plan') {
+  if (props.row.kind === 'plan') return planRowElement(props.row, props.t, open, () => { setOpen(value => !value) })
+  if (props.row.kind === 'tool') {
     return fallbackToolRowElement({ row: props.row, t: props.t, openFile: props.openFile, open, onToggle: () => { setOpen(value => !value) } })
   }
   return activityRowElement({ ...props, open, onToggle: () => { setOpen(value => !value) } })
+}
+
+/** Historical ACP plan snapshot. The current plan is also projected into DSH's native todo dock. */
+function planRowElement(row: AcpActivityView, t: ActivityNodeProps['t'], open: boolean, onToggle: () => void): ReactNode {
+  const legacy = detailValue(row)
+  const entries = row.display !== undefined ? row.display.plan ?? [] : (Array.isArray(legacy) ? legacy.filter((item): item is { content: string; status: string } =>
+    record(item) && typeof item.content === 'string' && ['pending', 'in_progress', 'completed'].includes(String(item.status))) : [])
+  return h(DisclosureRow, { title: t('activity.tool.plan'), icon: h(StateDot, { state: dotState(row.status) }), expandable: entries.length > 0 || row.display?.unavailable !== undefined, open, onToggle },
+    row.display?.unavailable !== undefined ? h('p', null, t(row.display?.unavailable === 'invalid' ? 'activity.detailInvalid' : 'activity.detailTooLarge')) :
+      h('ul', null, ...entries.map((entry, index) => h('li', { key: index },
+        h(StateDot, { state: entry.status === 'completed' ? 'done' : entry.status === 'in_progress' ? 'ongoing' : 'idle' }),
+        entry.content,
+        h('span', null, ` · ${t(entry.status === 'completed' ? 'activity.status.completed' : entry.status === 'in_progress' ? 'activity.status.running' : 'activity.status.pending')}`),
+      ))),
+  )
 }
 
 /** ACP tool activity shell. DSH keeps GenericToolCard private; recognized
@@ -447,7 +451,7 @@ function fallbackToolRowElement({ row, t, openFile, open, onToggle }: {
 }): ReactNode {
   const value = detailValue(row)
   const detail = record(value) ? value : {}
-  const diffs = diffHunks(value)
+  const diffs = activityDiffs(row, value)
   const terminal = terminalDetail(row, value)
   const read = readDetail(value)
   const input = detail.rawInput
@@ -497,6 +501,7 @@ function fallbackToolRowElement({ row, t, openFile, open, onToggle }: {
       }, summary),
     ),
   }, h('div', { className: css.toolBody },
+    row.display?.unavailable === undefined ? null : h('p', null, t(row.display?.unavailable === 'invalid' ? 'activity.detailInvalid' : 'activity.detailTooLarge')),
     diffs.length === 0 ? null : h(DiffBlock, { diffs, labels: diffLabels(t), className: css.nativeBlock }),
     terminal === undefined ? null : h(TerminalBlock, { ...terminal, labels: terminalLabels(t), className: css.nativeBlock }),
     read === undefined ? null : h(ReadBlock, { ...read, labels: readLabels(t), className: css.nativeBlock }),
@@ -521,12 +526,16 @@ export function AcpActivityNode(props: ActivityNodeProps): ReactNode {
   const location = props.node.location
   const source = location.kind === 'step' ? location.step.data.source('acp-activity') : UNSETTLED_SOURCE
   const settled = useSyncExternalStore(source.subscribe, source.getSnapshot)
-  if (props.node.data.settled !== true && settled === true) return null
-  return h(AcpActivityContent, props)
+  const assistantSource = location.kind === 'step' ? location.step.data.source('assistant-step') : UNSETTLED_SOURCE
+  const assistant = useSyncExternalStore(assistantSource.subscribe, assistantSource.getSnapshot)
+  if (props.node.data.settled !== true && settled !== undefined) return null
+  const emptyFinal = assistant !== undefined && assistant.blocks.length === 0 && assistant.status !== 'running'
+  const inlineBlockCount = props.hasInlineRenderer?.() === true && !emptyFinal ? (assistant?.blocks.length ?? 0) : undefined
+  return h(AcpActivityContent, { ...props, ...(inlineBlockCount === undefined ? {} : { inlineBlockCount }) })
 }
 
 /** Additive ACP activity renderer. Agent-provided presentation is never translated. */
-function AcpActivityContent({ node, sessionId, journalHub, t, openFile, onProjectedChild, onOpenProjectedChild }: ActivityNodeProps): ReactNode {
+export function AcpActivityContent({ node, sessionId, journalHub, t, openFile, onProjectedChild, onOpenProjectedChild, jsonStringWrapping, renderRows, inlineBlockCount }: ActivityNodeProps & { inlineBlockCount?: number; renderRows?: (rows: readonly AcpActivityView[], unavailable: boolean) => ReactNode }): ReactNode {
   const [rows, setRows] = useState<readonly AcpActivityView[]>([])
   const [unavailable, setUnavailable] = useState(false)
   const data = node.data
@@ -547,10 +556,16 @@ function AcpActivityContent({ node, sessionId, journalHub, t, openFile, onProjec
     return handle.release
   }, [data.ownerDshSessionId, data.promptAnchorMessageId, sessionId, journalHub, onProjectedChild])
 
-  if (rows.length === 0 && !unavailable) return null
+  if (renderRows !== undefined) return renderRows(rows, unavailable)
+  // Wait for preceding native chunks instead of briefly moving a future tool
+  // above the answer. Tool-only turns (boundary zero) still render here.
+  const additiveRows = rows.filter(row => inlineBlockCount === undefined || row.contentIndex === undefined
+    || (inlineBlockCount === 0 && row.contentIndex === 0))
+  if (additiveRows.length === 0 && !unavailable) return null
   return h('section', { className: css.flow, 'data-acp-activity': true },
-    ...rows.map(row => h(ActivityRow, {
+    ...additiveRows.map(row => h(ActivityRow, {
       key: `${row.activityId}:${row.activitySeq}`, row, t, openFile,
+      ...(jsonStringWrapping === undefined ? {} : { jsonStringWrapping }),
       ...(onOpenProjectedChild === undefined ? {} : { onOpenProjectedChild }),
     })),
     unavailable ? h('div', { className: css.unavailable },
@@ -586,6 +601,17 @@ function interruptedAssistantProvider(event: { readonly type: string; readonly d
   const message = record(event.data.message) ? event.data.message : undefined
   const source = record(message?.source) ? message.source : undefined
   return source?.kind === 'model' && typeof source.provider === 'string' ? source.provider : undefined
+}
+
+function activityNodeData(state: AcpActivityState): AcpActivityNodeData {
+  return {
+    ...(state.settled === true ? { settled: true } : {}),
+    ownerDshSessionId: state.ownerDshSessionId,
+    promptAnchorMessageId: state.promptAnchorMessageId,
+    profileId: state.profileId,
+    agentSessionId: state.agentSessionId,
+    committedActivitySeq: state.committedActivitySeq,
+  }
 }
 
 /** State-only direct-user anchor consumed by the subsequent ACP request. */
@@ -638,17 +664,22 @@ export function createAcpActivityDefinition(
           location: match.location,
         }
       }
-      const provider = requestProvider(match.event)
-      if (provider === undefined) {
-        const interruptedProvider = interruptedAssistantProvider(match.event)
-        const previous = reader.previous<AcpActivityState>('acp-activity')?.state
-        if (interruptedProvider === undefined || previous === undefined || previous.profileId !== interruptedProvider) {
-          throw new Error('acp-activity interrupted finalizer requires its preceding owned ACP request')
-        }
-        return { ...previous, settled: true, seq: match.event.seq, location: match.location }
-      }
+      const interruptedProvider = interruptedAssistantProvider(match.event)
+      const provider = requestProvider(match.event) ?? interruptedProvider
+      if (provider === undefined) throw new Error('acp-activity requires a matched ACP request or interrupted answer')
       const anchor = reader.previous<AcpPromptAnchorState>('acp-prompt-anchor')?.state
+      if (interruptedProvider !== undefined) {
+        const previous = reader.previous<AcpActivityState>('acp-activity')?.state
+        if (previous !== undefined && previous.settled !== true && previous.profileId === interruptedProvider
+          && (anchor === undefined || previous.promptAnchorMessageId === anchor.messageId)) {
+          return { ...previous, settled: true, seq: match.event.seq, location: match.location }
+        }
+        // History can contain the interrupted answer before its request context
+        // is available. Anchor to this prompt, never a prior completed answer;
+        // reader dependencies replay this node when earlier contexts arrive.
+      }
       return {
+        ...(interruptedProvider === undefined ? {} : { settled: true as const }),
         ownerDshSessionId: '',
         promptAnchorMessageId: anchor?.messageId ?? `request:${match.event.seq}`,
         profileId: provider,
@@ -662,7 +693,7 @@ export function createAcpActivityDefinition(
     buildLocationData: (context, scope) => {
       const state = context.state
       if (scope !== 'step' || state?.settled !== true || state.location.kind !== 'step') return null
-      return { kind: 'step', turn: state.location.turn.turn, step: state.location.step.step, key: 'acp-activity', value: true }
+      return { kind: 'step', turn: state.location.turn.turn, step: state.location.step.step, key: 'acp-activity', value: activityNodeData(state) }
     },
     buildViewNode: (context): ActivityNode | null => {
     if (context.state === undefined) return null
@@ -678,18 +709,24 @@ export function createAcpActivityDefinition(
       anchorSeq: context.state.seq,
       location: context.state.location,
       visibility: 'visible',
-      data: {
-        ...(context.state.settled === true ? { settled: true } : {}),
-        ownerDshSessionId: context.state.ownerDshSessionId,
-        promptAnchorMessageId: context.state.promptAnchorMessageId,
-        profileId: context.state.profileId,
-        agentSessionId: context.state.agentSessionId,
-        committedActivitySeq: context.state.committedActivitySeq,
-      },
+      data: activityNodeData(context.state),
     }
     },
   }
 }
 
-/** Legacy/test-safe instance. Production supplies the profile registry's
- * ownership predicate through {@link createAcpActivityDefinition}. */
+/** Own the live Step fact separately from the settled activity projection. */
+export function createAcpLiveActivityDefinition(ownsRoute: OwnsAcpRoute): ConversationNodeDefinition<AcpActivityState> {
+  const activity = createAcpActivityDefinition(ownsRoute)
+  return {
+    kind: 'acp-activity-live',
+    match: event => event.type === 'request/header' ? activity.match(event) : null,
+    start: activity.start,
+    update: activity.update,
+    buildLocationData: (context, scope) => {
+      const state = context.state
+      if (scope !== 'step' || state === undefined || state.location.kind !== 'step') return null
+      return { kind: 'step', turn: state.location.turn.turn, step: state.location.step.step, key: 'acp-activity-live', value: activityNodeData(state) }
+    },
+  }
+}

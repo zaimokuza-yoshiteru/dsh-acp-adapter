@@ -9,8 +9,8 @@
 //      tsconfig.host.json aggregate + packages/<pkg>/ real directories —
 //      WorkspaceAnalyzer hard-requires package roots under <root>/packages/.
 //   2. @deepseek-ai/dsh-typert-protocol staged as a compact declaration facade
-//      with `paths` mappings in both analysis tsconfigs. Alpha.2 decorators
-//      support duplicate runtime copies, but the generator still identifies
+//      with `paths` mappings in both analysis tsconfigs. The target Typert
+//      release supports duplicate runtime copies, but the generator still identifies
 //      Typert symbols by their analysis-program declaration.
 //   3. ./typert (+ ./remote) exports/files pre-declared in package.json
 //      (validateExport reads the staged copy of the real package.json).
@@ -52,6 +52,7 @@ import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DSH_SOURCE_VERSION } from './dsh-target.mjs';
 import { WorkspaceTypertGenerator } from '@deepseek-ai/dsh-typert-generator';
+import { withCodecFactories } from './typert-codec-compat.mjs';
 
 const checkMode = process.argv.includes('--check');
 const PACKAGE_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -239,9 +240,9 @@ function main() {
   }
 
   const emitted = {
-    'typert.host.js': artifact.js,
+    'typert.host.js': withCodecFactories(artifact.js),
     'typert.host.d.ts': artifact.dts,
-    'typert.remote-client.js': artifact.remote.js,
+    'typert.remote-client.js': withCodecFactories(artifact.remote.js),
     'typert.remote-client.d.ts': artifact.remote.dts,
     'typert.remote-client.d.ts.map': artifact.remote.dtsMap,
   };

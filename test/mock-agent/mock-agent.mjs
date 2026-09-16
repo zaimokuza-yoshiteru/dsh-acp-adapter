@@ -295,6 +295,10 @@ function getSession(msg) {
 
 // ---------- 方法处理 ----------
 async function handleInitialize(msg) {
+  if (process.env.MOCK_UNAVAILABLE_FILE && fs.existsSync(process.env.MOCK_UNAVAILABLE_FILE)) {
+    respondError(msg.id, -32000, 'E2E_AGENT_TEMPORARILY_UNAVAILABLE');
+    return;
+  }
   if (state.scenario === 'slow-response') {
     log(`initialize delayed ${SLOW_INIT_MS}ms (slow-response)`);
     await sleep(SLOW_INIT_MS);
@@ -331,6 +335,7 @@ async function handleInitialize(msg) {
       };
   respond(msg.id, {
     protocolVersion: 1,
+    ...(process.env.MOCK_STEERING === 'atomic' ? { _meta: { steering: { supported: true, idleBehavior: 'promptRequired' } } } : {}),
     agentCapabilities,
     authMethods: [],
     agentInfo: { name: 'dsh-mock-acp-agent', title: 'DSH Mock ACP Agent', version: '1.0.0' },
@@ -749,6 +754,13 @@ function handleRequest(msg) {
     return respondError(id, -32601, `Method not found: ${method}`);
   }
   switch (method) {
+    case '_session/steering': {
+      if (process.env.MOCK_STEERING !== 'atomic') return respondError(id, -32601, 'Method not found');
+      const session = state.sessions.get(msg.params?.sessionId);
+      if (!session?.turn?.steer) return respond(id, { outcome: 'promptRequired' });
+      session.turn.steer(msg.params.prompt);
+      return respond(id, { outcome: 'injected' });
+    }
     case 'initialize':
       return void handleInitialize(msg);
     case 'authenticate':

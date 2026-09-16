@@ -4,7 +4,7 @@ import {
   type RemoteJournalFrame,
   type RemoteStreamFactory,
 } from '@deepseek-ai/dsh-api-gateway/client'
-import type { AcpActivityJournalFrame, AcpActivityView } from '../../contract/remote.ts'
+import type { AcpActivityView } from '../../contract/remote.ts'
 import type { AcpRemoteLike } from './acp-remote.ts'
 
 /** Client-side projection of the unfiltered, contiguous host journal. */
@@ -14,16 +14,6 @@ export class AcpActivityJournalStore {
   private cursor = 0
 
   get head(): number { return this.cursor }
-
-  apply(frame: AcpActivityJournalFrame): void {
-    if (frame.type === 'opened') this.replace(frame.cursor, frame.activities)
-    else this.append(frame.activity)
-  }
-
-  applyPage(activities: readonly AcpActivityView[], head?: number): void {
-    for (const activity of activities) this.append(activity)
-    if (head !== undefined && head < this.cursor) throw new Error('ACP activity journal head regressed')
-  }
 
   replace(head: number, activities: readonly AcpActivityView[]): void {
     this.rows.clear()
@@ -79,8 +69,8 @@ function snapshotBatch(head: number, activities: readonly AcpActivityView[]): re
 }
 
 /**
- * Alpha.2 owns reconnect and gap repair. One current-state snapshot covers all
- * revisions through its head; live batches still cover exactly one revision.
+ * The host owns reconnect and gap repair. One current-state snapshot covers
+ * all revisions through its head; live batches still cover exactly one revision.
  */
 class AcpActivityRemoteJournal extends RemoteJournalStream<ActivityWindowPage, ActivityBatch, number, ActivityRequest> {
   constructor(

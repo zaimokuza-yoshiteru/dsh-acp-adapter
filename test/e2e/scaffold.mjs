@@ -7,7 +7,7 @@ import { launchWebScaffold } from '#host-scaffold'
 export const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 
 /** Install the built adapter through the real Loader's package dependency closure. */
-export async function launchAdapterWorld({ teams = false } = {}) {
+export async function launchAdapterWorld({ teams = false, teamMembers } = {}) {
   const install = mkdtempSync(join(tmpdir(), 'dsh-acp-e2e-install-'))
   try {
     writeFileSync(join(install, 'package.json'), JSON.stringify({ name: 'acp-e2e-profile', dependencies: { '@zaimokuza/dsh-acp-adapter': '*' } }))
@@ -19,8 +19,10 @@ export async function launchAdapterWorld({ teams = false } = {}) {
       const upstream = process.env.DSH_UPSTREAM_CHECKOUT ?? resolve(root, '../reference/deepseek-harness')
       const layers = ['agent-team-profile', 'agent-team-web-profile'].map(name => join(upstream, 'packages/experimental', name))
       extraOverlayPath = join(install, 'teams.patch.yml')
-      writeFileSync(extraOverlayPath, [join(root, 'cordis.patch.yml'), ...layers.map(path => join(path, 'cordis.patch.yml'))].map(path => readFileSync(path, 'utf8')).join('\n'))
-      extraInstallAnchors.push(...layers.map(path => join(path, 'package.json')))
+      writeFileSync(extraOverlayPath, [join(root, 'cordis.patch.yml'), ...layers.map(path => join(path, 'cordis.patch.yml'))].map(path => readFileSync(path, 'utf8')).join('\n') + (teamMembers === undefined ? '' : `\n- id: agent-team\n  config:\n    maxMembers: ${teamMembers}\n`))
+      // Resolve native Teams from the selected host before the adapter's pinned
+      // development dependencies, which may carry a different generated RPC ABI.
+      extraInstallAnchors.unshift(...layers.map(path => join(path, 'package.json')))
     }
     const host = await launchWebScaffold({ extraOverlayPath, extraInstallAnchors })
     return { ...host, async close() {
