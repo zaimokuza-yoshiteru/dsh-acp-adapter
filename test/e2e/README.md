@@ -2,9 +2,7 @@
 
 这组 E2E 的验收对象是 DSH 与 ACP 之间的产品行为：执行者可以不同，输入、消息、审批及详情仍应复用宿主公开能力。测试启动目标版本的完整 Loader 装配、真实 ACP 子进程和浏览器，浏览器加载构建后的插件与 DSH UI。它不使用现有单元测试的 React 或 UI primitive stub。
 
-产品矩阵覆盖 Claude、Codex、Devin、Kimi 四种协议夹具，并包含 Teams、宿主权限隔离、模型目录、成员管理与运行中输入专项。实际项数以回归记录及测试输出为准。夹具只是可控的协议输入，不代表真实 Agent 或具体模型已经通过验收；真实 Agent 的升级仍需独立冒烟。
-
-真实运行中插话使用 `DSH_E2E_LIVE=1 DSH_E2E_LIVE_STEERING=1`，可用 `DSH_E2E_LIVE_PROFILES=codex,kimi,devin` 选择已登录的 Agent；模型仍通过对应的 `DSH_E2E_LIVE_<PROFILE>_MODEL` 指定。该专项先等待真实首段输出，再经原生 `agent.steer` 插话，验证一个 turn、两个 step、两条持久化输入与刷新后的追加回复。它不操作文件或工具。普通两轮宿主指令测试、Teams 测试与插话测试分别记录，不能互相替代。
+产品矩阵覆盖 Claude、Codex、Devin、Kimi 四种协议夹具，并包含 Teams、宿主权限隔离、模型目录、成员管理与运行中输入专项。每次运行的结果以对应 PR／CI 与测试输出为准。夹具只是可控的协议输入，不代表真实 Agent 或具体模型已经通过验收；真实 Agent 的升级仍需独立冒烟。
 
 | 场景 | 必须保持的行为 |
 | --- | --- |
@@ -85,7 +83,11 @@ DSH_E2E_LIVE=1 pnpm test:e2e -t 'live ACP smoke'
 
 每个 Agent 在独立临时工作区的同一会话接收两条无工具请求；第二轮更新宿主指令中的随机标记，验证新指令到达模型、原生 stream 落盘，以及每轮刷新恢复。`DSH_E2E_LIVE_PROFILES=claude` 可限定 Agent；结果、实际模型目录和成功截图写入 gitignored `.local/e2e-live/`。测试会向配置的模型服务发送测试指令、宿主指令与临时工作区元数据，不把项目文件作为输入。登录或网络失败会使测试失败。这组真实连接冒烟不代替上面的工具、审批和 jobs 协议回归。
 
-若 Agent 仅通过父进程环境中的密钥认证，需要显式指定要放入临时 ACP profile 的环境变量名，例如 `DSH_E2E_LIVE_CLAUDE_ENV_KEYS=ANTHROPIC_AUTH_TOKEN`。测试只读取列出的变量，值不写入测试结果；临时 profile 随宿主清理。生产环境仍需在该 Agent 的连接设置中显式配置凭据，不会自动继承父进程密钥。模型目录能够返回不等于生成请求已经完成认证。 对 Claude 的第三方服务配置，应同时核对 `ANTHROPIC_BASE_URL`、`ANTHROPIC_AUTH_TOKEN` 和模型映射；例如本机 `haiku` 可以映射到 DeepSeek，不能根据目录别名断言实际供应商。若 shell 有 token 而测试没有列入 `ENV_KEYS`，可能只继承服务地址却丢失认证，继而出现与预期路由无关的旧 OAuth 报错。
+若 Agent 通过环境变量认证，需要显式指定要放入临时 ACP profile 的变量名，例如 `DSH_E2E_LIVE_CLAUDE_ENV_KEYS=ANTHROPIC_AUTH_TOKEN`。测试只读取列出的变量，值不写入测试结果；临时 profile 随宿主清理。生产环境同样需要在连接设置中显式配置凭据，父进程密钥不会自动继承。
+
+Claude 使用 DeepSeek 等第三方服务时，应同时核对 `ANTHROPIC_BASE_URL`、认证变量及模型映射，并通过 `DSH_E2E_LIVE_CLAUDE_ENV_KEYS` 传入所需配置。模型目录可返回不代表生成已认证，模型别名也不能证明实际供应商。遇到意外 OAuth 报错时，先检查临时 profile 的有效路由和认证配置，再判断是否需要登录。
+
+真实运行中插话使用 `DSH_E2E_LIVE=1 DSH_E2E_LIVE_STEERING=1`，可用 `DSH_E2E_LIVE_PROFILES=codex,kimi,devin` 选择已登录的 Agent；模型仍通过对应的 `DSH_E2E_LIVE_<PROFILE>_MODEL` 指定。该专项先等待真实首段输出，再经原生 `agent.steer` 插话，验证一个 turn、两个 step、两条持久化输入与刷新后的追加回复。它不操作文件或工具。普通两轮宿主指令测试、Teams 测试与插话测试分别记录，不能互相替代。
 
 ## 版本迁移的补充验证
 

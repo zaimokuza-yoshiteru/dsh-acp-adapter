@@ -76,6 +76,8 @@ npx "@deepseek-ai/dsh@$DSH_VERSION" plugin --profile web add @zaimokuza/dsh-acp-
 
 **可选 DSH 插件工具：** 在 Agent 连接设置的「DSH 插件工具」中每行填入一个已安装的工具名，或配置 `hostTools: ["工具名"]`。仅选中的工具会通过 MCP 提供给 Agent，并经过 DSH 原生工具执行链；默认不增加工具。普通工具保留 Agent 审批，DSH 工具自身的执行规则仍生效。避免选入与 Agent 自带能力重复的工具；名单改变后请新建会话。工具桥不等于完整接管 Agent loop，具体边界见 [原生复用说明](docs/native-reuse.md)。
 
+运行中按 Enter 会排队；使用队列的插话操作可发送到当前执行。插件优先使用 Agent 声明的安全原生注入能力，否则取消当前执行，等其收尾后在同一 Agent 会话续发。Kimi 无需新增 SDK。取消超时不会盲目重发，权限与上下文仍由 Agent 管理。详见[插话能力与限制](docs/agent-input-capabilities.md)。
+
 ## <img src="assets/readme/icon-update.svg" width="24" height="24" alt="" /> 更新与卸载
 
 沿用启动 DSH 时的 `DSH_HOME` 和 profile。`npx` 可替换为 `pnpm dlx`，宿主版本保持固定。
@@ -99,5 +101,3 @@ npx "@deepseek-ai/dsh@$DSH_VERSION" plugin --profile web remove @zaimokuza/dsh-a
 | 会话需要恢复 | 按输入栏提示与 **ACP 诊断** 处理，不要清空本地数据。 |
 
 仍有问题时，在 [Issue](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/issues) 附上错误编号、插件/DSH 版本和相关宿主日志片段；分享前移除密钥。
-
-运行中按 Enter 会排队；使用队列的插话操作可发送到当前执行。插件优先使用 Agent 声明的安全原生注入能力，否则取消当前执行，等其收尾后在同一 Agent 会话续发。Kimi 无需新增 SDK。取消超时不会盲目重发，权限与上下文仍由 Agent 管理。详见[插话能力与限制](docs/agent-input-capabilities.md)。
