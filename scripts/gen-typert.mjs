@@ -50,12 +50,17 @@ import {
 } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { validateSnapshot } from './registry-snapshot.mjs';
 import { DSH_SOURCE_VERSION } from './dsh-target.mjs';
 import { WorkspaceTypertGenerator } from '@deepseek-ai/dsh-typert-generator';
 import { withCodecFactories } from './typert-codec-compat.mjs';
 
 const checkMode = process.argv.includes('--check');
 const PACKAGE_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+validateSnapshot(
+  JSON.parse(readFileSync(join(PACKAGE_DIR, 'assets/registry/registry.json'), 'utf8')),
+  JSON.parse(readFileSync(join(PACKAGE_DIR, 'assets/registry/executables.json'), 'utf8')),
+);
 const LIB_DIR = join(PACKAGE_DIR, 'lib');
 const SRC_DIR = join(PACKAGE_DIR, 'src');
 const STAGE_DIR = join(PACKAGE_DIR, '.typert');

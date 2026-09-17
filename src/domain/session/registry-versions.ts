@@ -14,8 +14,6 @@ import executablesJson from '../../../assets/registry/executables.json' with { t
 
 interface ExecutableEntry {
   readonly version: string
-  readonly command: string
-  readonly args: readonly string[]
 }
 
 const executableEntries = (executablesJson as { readonly entries: { readonly [id: string]: ExecutableEntry } }).entries

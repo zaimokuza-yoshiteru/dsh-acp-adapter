@@ -197,7 +197,7 @@ export function draftFromCatalogEntry(entryId: string): AgentDraft | undefined {
     name: entry.name,
     command: entry.command,
     argsText: formatArgsText(entry.args),
-    envText: '',
+    envText: formatEnvText(entry.env),
     loginHint: entry.runtime === undefined ? '' : RUNTIME_LOGIN_HINTS[entry.runtime],
     ...(entry.runtime === undefined ? {} : { runtime: entry.runtime }),
   }

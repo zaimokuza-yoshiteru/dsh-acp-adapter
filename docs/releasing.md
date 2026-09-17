@@ -20,6 +20,18 @@ npm view '@zaimokuza/dsh-acp-adapter@<version>' version dist.integrity dist.tarb
 
 本地 pnpm 与 CI npm 打包可能因 manifest 元数据而产生不同校验值；发布和下游清单必须以实际发布产物为准。
 
+## 更新 Agent 目录
+
+目录快照随插件版本发布，运行时不联网刷新。手动运行 [registry sync 工作流](../.github/workflows/registry-sync.yml) 会生成 `registry-snapshot-for-review` artifact；将其中两个 JSON 放回 `assets/registry/` 后，通过普通分支和 PR 审阅。工作流只读仓库，不直接提交或推送默认分支。也可在本地替换 `registry.json` 后运行：
+
+```sh
+node scripts/enrich-registry-executables.mjs
+node scripts/verify-registry-snapshot.mjs
+pnpm typecheck && pnpm test && pnpm build
+```
+
+同步按选定分发的精确包版本解析命令，保留参数和环境变量。无法确定 Agent 主机平台的二进制条目显式标为手动配置；意外的网络/解析失败、缺失条目或不匹配的 sidecar 均使检查失败，不生成可发布的不完整快照。PR 的常规检查也验证这两个文件。审阅版本、安装指引、参数和环境变量变化后，再合并并按正常流程发布。
+
 ## 桌面内置版本
 
 需要更新桌面安装包时，先确认适配器精确版本可从 npm 获取，再更新桌面项目的版本与 registry integrity 清单，使用桌面项目锁定的工具链打包并验收新产物。仅发布适配器不会更新已有桌面 ZIP；某个平台通过也不代表其他平台已验收。

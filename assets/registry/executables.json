@@ -1,273 +1,387 @@
 {
-  "generatedAt": "2026-09-15T09:02:32.224Z",
   "entries": {
     "agoragentic-acp": {
       "version": "1.3.0",
+      "kind": "npx",
       "command": "agoragentic-mcp",
       "args": [
         "--acp"
-      ]
+      ],
+      "env": {}
     },
     "amp-acp": {
       "version": "0.9.0",
-      "command": "amp-acp",
-      "args": []
+      "kind": "binary",
+      "manualReason": "host-platform-required",
+      "command": "",
+      "args": [],
+      "env": {}
     },
     "antigravity-acp": {
       "version": "1.1.1",
-      "command": "agy_acp_server.par",
-      "args": []
+      "kind": "binary",
+      "manualReason": "host-platform-required",
+      "command": "",
+      "args": [],
+      "env": {}
     },
     "auggie": {
       "version": "0.36.0",
+      "kind": "npx",
       "command": "auggie",
       "args": [
         "--acp"
-      ]
+      ],
+      "env": {
+        "AUGMENT_DISABLE_AUTO_UPDATE": "1"
+      }
     },
     "autohand": {
       "version": "0.2.1",
+      "kind": "npx",
       "command": "autohand-acp",
-      "args": []
+      "args": [],
+      "env": {}
     },
     "claude-acp": {
       "version": "0.77.0",
+      "kind": "npx",
       "command": "claude-agent-acp",
-      "args": []
+      "args": [],
+      "env": {}
     },
     "cline": {
       "version": "3.0.61",
+      "kind": "npx",
       "command": "cline",
       "args": [
         "--acp"
-      ]
+      ],
+      "env": {}
     },
     "codebuddy-code": {
       "version": "2.150.0",
+      "kind": "npx",
       "command": "codebuddy-code",
       "args": [
         "--acp"
-      ]
+      ],
+      "env": {}
     },
     "codex-acp": {
       "version": "1.11.0",
+      "kind": "npx",
       "command": "codex-acp",
-      "args": []
+      "args": [],
+      "env": {}
     },
     "cortex-code": {
       "version": "1.0.73",
-      "command": "cortex",
+      "kind": "binary",
+      "manualReason": "host-platform-required",
+      "command": "",
       "args": [
         "acp",
         "serve"
-      ]
+      ],
+      "env": {}
     },
     "corust-agent": {
       "version": "0.6.0",
-      "command": "corust-agent-acp",
-      "args": []
+      "kind": "binary",
+      "manualReason": "host-platform-required",
+      "command": "",
+      "args": [],
+      "env": {}
     },
     "crow-cli": {
       "version": "0.1.24",
-      "command": "crow-cli",
+      "kind": "binary",
+      "manualReason": "host-platform-required",
+      "command": "",
       "args": [
         "acp"
-      ]
+      ],
+      "env": {}
     },
     "cursor": {
       "version": "2026.09.10",
-      "command": "cursor-agent",
+      "kind": "binary",
+      "manualReason": "host-platform-required",
+      "command": "",
       "args": [
         "acp"
-      ]
+      ],
+      "env": {}
     },
     "deepagents": {
       "version": "0.1.7",
+      "kind": "npx",
       "command": "deepagents-acp",
-      "args": []
+      "args": [],
+      "env": {}
     },
     "devin": {
       "version": "3000.10.21",
-      "command": "devin",
+      "kind": "binary",
+      "manualReason": "host-platform-required",
+      "command": "",
       "args": [
         "acp"
-      ]
+      ],
+      "env": {}
     },
     "dimcode": {
       "version": "0.5.2",
+      "kind": "npx",
       "command": "dimcode",
       "args": [
         "acp"
-      ]
+      ],
+      "env": {}
     },
     "dirac": {
       "version": "0.5.12",
+      "kind": "npx",
       "command": "dirac",
       "args": [
         "--acp"
-      ]
+      ],
+      "env": {}
     },
     "factory-droid": {
       "version": "0.218.1",
+      "kind": "npx",
       "command": "droid",
       "args": [
         "exec",
         "--output-format",
         "acp-daemon"
-      ]
+      ],
+      "env": {
+        "DROID_DISABLE_AUTO_UPDATE": "true",
+        "FACTORY_DROID_AUTO_UPDATE_ENABLED": "false"
+      }
     },
     "fast-agent": {
       "version": "0.10.1",
+      "kind": "uvx",
       "command": "fast-agent-acp",
-      "args": []
+      "args": [
+        "-x"
+      ],
+      "env": {
+        "FAST_AGENT_MODEL": "codexplan"
+      }
     },
     "gemini": {
       "version": "0.59.0",
+      "kind": "npx",
       "command": "gemini",
       "args": [
         "--acp"
-      ]
+      ],
+      "env": {}
     },
     "github-copilot-cli": {
       "version": "1.0.83",
+      "kind": "npx",
       "command": "copilot",
       "args": [
         "--acp"
-      ]
+      ],
+      "env": {}
     },
     "glm-acp-agent": {
       "version": "1.8.0",
+      "kind": "npx",
       "command": "glm-acp-agent",
-      "args": []
+      "args": [],
+      "env": {}
     },
     "goose": {
       "version": "1.50.0",
-      "command": "goose",
+      "kind": "binary",
+      "manualReason": "host-platform-required",
+      "command": "",
       "args": [
         "acp"
-      ]
+      ],
+      "env": {}
     },
     "grok-build": {
       "version": "1.0.30",
+      "kind": "npx",
       "command": "grok",
       "args": [
         "agent",
         "stdio"
-      ]
+      ],
+      "env": {}
     },
     "harn": {
       "version": "0.10.135",
-      "command": "harn",
+      "kind": "binary",
+      "manualReason": "host-platform-required",
+      "command": "",
       "args": [
         "serve",
         "acp"
-      ]
+      ],
+      "env": {}
     },
     "junie": {
       "version": "3218.3.0",
-      "command": "junie",
+      "kind": "binary",
+      "manualReason": "host-platform-required",
+      "command": "",
       "args": [
         "--acp=true"
-      ]
+      ],
+      "env": {}
     },
     "kilo": {
       "version": "7.6.2",
-      "command": "kilo",
+      "kind": "binary",
+      "manualReason": "host-platform-required",
+      "command": "",
       "args": [
         "acp"
-      ]
+      ],
+      "env": {}
     },
     "kimchi": {
       "version": "1.1.18",
-      "command": "kimchi",
+      "kind": "binary",
+      "manualReason": "host-platform-required",
+      "command": "",
       "args": [
         "--mode",
         "acp"
-      ]
+      ],
+      "env": {}
     },
     "kimi": {
       "version": "1.50.0",
-      "command": "kimi",
+      "kind": "binary",
+      "manualReason": "host-platform-required",
+      "command": "",
       "args": [
         "acp"
-      ]
+      ],
+      "env": {}
     },
     "minimax-code": {
       "version": "0.2.7",
+      "kind": "npx",
       "command": "mcode",
       "args": [
         "acp"
-      ]
+      ],
+      "env": {}
     },
     "minion-code": {
       "version": "0.1.44",
+      "kind": "uvx",
       "command": "minion-code",
-      "args": []
+      "args": [
+        "acp"
+      ],
+      "env": {}
     },
     "mistral-vibe": {
       "version": "2.24.1",
-      "command": "vibe-acp",
-      "args": []
+      "kind": "binary",
+      "manualReason": "host-platform-required",
+      "command": "",
+      "args": [],
+      "env": {}
     },
     "nova": {
       "version": "1.1.38",
+      "kind": "npx",
       "command": "nova",
       "args": [
         "acp"
-      ]
+      ],
+      "env": {}
     },
     "opencode": {
       "version": "1.18.30",
-      "command": "opencode",
+      "kind": "binary",
+      "manualReason": "host-platform-required",
+      "command": "",
       "args": [
         "acp"
-      ]
+      ],
+      "env": {}
     },
     "pi-acp": {
       "version": "0.0.33",
+      "kind": "npx",
       "command": "pi-acp",
-      "args": []
+      "args": [],
+      "env": {}
     },
     "poolside": {
       "version": "1.0.16",
-      "command": "pool-darwin-arm64",
+      "kind": "binary",
+      "manualReason": "host-platform-required",
+      "command": "",
       "args": [
         "acp"
-      ]
+      ],
+      "env": {}
     },
     "qoder": {
       "version": "0.2.14",
+      "kind": "npx",
       "command": "qodercli",
       "args": [
         "--acp"
-      ]
+      ],
+      "env": {}
     },
     "qwen-code": {
       "version": "0.23.3",
+      "kind": "npx",
       "command": "qwen",
       "args": [
         "--acp",
         "--experimental-skills"
-      ]
+      ],
+      "env": {}
     },
     "sigit": {
       "version": "1.5.8",
-      "command": "sigit",
-      "args": []
+      "kind": "binary",
+      "manualReason": "host-platform-required",
+      "command": "",
+      "args": [],
+      "env": {}
     },
     "stakpak": {
       "version": "0.3.88",
-      "command": "stakpak",
+      "kind": "binary",
+      "manualReason": "host-platform-required",
+      "command": "",
       "args": [
         "acp"
-      ]
+      ],
+      "env": {}
     },
     "vtcode": {
       "version": "0.96.14",
-      "command": "vtcode",
+      "kind": "binary",
+      "manualReason": "host-platform-required",
+      "command": "",
       "args": [
         "acp"
-      ]
+      ],
+      "env": {
+        "VT_ACP_ENABLED": "1",
+        "VT_ACP_ZED_ENABLED": "1"
+      }
     }
   }
 }

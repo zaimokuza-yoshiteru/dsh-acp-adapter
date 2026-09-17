@@ -1,55 +1,38 @@
-# Daily snapshot sync for the committed ACP registry catalog
+# Prepare a reviewable snapshot. Maintainers apply the artifact on a branch and
+# open a normal PR, whose checks use the same gates as every other code change.
 name: registry sync
 
 on:
-  schedule:
-    - cron: '17 3 * * *'
   workflow_dispatch:
 
 permissions:
-  contents: write
-
-concurrency:
-  group: registry-sync
-  cancel-in-progress: false
+  contents: read
 
 jobs:
   sync:
-    name: Verify and commit registry snapshot
+    name: Prepare registry snapshot for review
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ github.event.repository.default_branch }}
-          persist-credentials: true
-
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
       - name: Fetch latest registry.json
         run: |
-          mkdir -p assets/registry
           curl --fail --silent --show-error --location \
             --retry 3 --retry-delay 5 \
             -o assets/registry/registry.json \
             https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json
-
-      - name: Resolve executables sidecar
-        run: node scripts/enrich-registry-executables.mjs
-
-      - name: Verify sidecar matches registry
-        run: node scripts/verify-registry-snapshot.mjs
-
-      - name: Commit when the snapshot changed
-        id: commit
+      - name: Resolve and verify the complete snapshot
         run: |
-          git config user.name "registry-sync[bot]"
-          git config user.email "registry-sync[bot]@users.noreply.github.com"
-          if git diff --quiet -- assets/registry/registry.json assets/registry/executables.json; then
-            echo "registry: snapshot unchanged, nothing to commit"
-            exit 0
-          fi
-
-          COUNT=$(node -e 'const r=require("./assets/registry/registry.json");process.stdout.write(String(r.agents.length))')
-          EXECS=$(node -e 'const e=require("./assets/registry/executables.json");process.stdout.write(String(Object.keys(e.entries).length))')
-          git add assets/registry/registry.json
-          git add assets/registry/executables.json
-          git commit -m "registry: sync snapshot (${COUNT} agents, ${EXECS}/${COUNT} executables, $(date -u +%Y-%m-%dT%H:%M:%SZ))"
-          git push origin HEAD:"${{ github.event.repository.default_branch }}"
+          node scripts/enrich-registry-executables.mjs
+          node scripts/verify-registry-snapshot.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: registry-snapshot-for-review
+          path: assets/registry/*.json
+          if-no-files-found: error
+          retention-days: 7

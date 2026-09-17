@@ -52,6 +52,7 @@ import {
   type AcpProviderHealth,
   type AgentDraft,
 } from '../../../src/client/data/logic.ts';
+import registrySnapshot from '../../../assets/registry/registry.json' with { type: 'json' };
 import { ACP_CATALOG_ENTRIES, catalogEntryOf } from '../../../src/client/data/catalog.ts';
 
 // ---------- 夹具 ----------
@@ -190,6 +191,8 @@ describe('常量：与宿主侧契约逐字对齐', () => {
       version: devin?.version,
       description: devin?.description,
       installHint: devin?.installHint,
+      env: {},
+      requiresCommand: false,
       command: 'devin',
       args: ['acp'],
       runtime: 'devin',
@@ -203,17 +206,34 @@ describe('常量：与宿主侧契约逐字对齐', () => {
 
   it('ACP_CATALOG_ENTRIES 钉版：override 四条排前（devin/codex-acp/kimi/claude-acp），其余按 registry 顺序', () => {
     expect(ACP_CATALOG_ENTRIES.slice(0, 4).map((entry) => entry.id)).toEqual(['devin', 'codex-acp', 'kimi', 'claude-acp']);
-    expect(ACP_CATALOG_ENTRIES.length).toBe(41);
+    expect(new Set(ACP_CATALOG_ENTRIES.map(entry => entry.id))).toEqual(new Set(registrySnapshot.agents.map(agent => agent.id)));
     // 条目 id 即 profile id 预填值，均合法
     for (const entry of ACP_CATALOG_ENTRIES) {
       expect(ACP_AGENT_ID_PATTERN.test(entry.id), entry.id).toBe(true);
       const draft = draftFromCatalogEntry(entry.id);
       expect(draft, entry.id).toBeDefined();
       if (draft === undefined) continue;
+      if (entry.requiresCommand) {
+        expect(draft.command).toBe('');
+        expect(validateAgentDraft(draft, {}, undefined).config).toBeUndefined();
+        continue;
+      }
       const { config } = validateAgentDraft(draft, {}, undefined);
       expect(config, entry.id).toBeDefined();
       expect(decodeAcpSettings({ agents: { [entry.id]: config } }), entry.id).not.toBeUndefined();
     }
+  });
+
+  it('seeds distribution args/env only for new profiles and leaves platform commands manual', () => {
+    expect(draftFromCatalogEntry('minion-code')?.argsText).toBe('acp');
+    expect(draftFromCatalogEntry('fast-agent')).toMatchObject({ argsText: '-x', envText: 'FAST_AGENT_MODEL=codexplan' });
+    expect(draftFromCatalogEntry('vtcode')).toMatchObject({ command: '', argsText: 'acp', envText: 'VT_ACP_ENABLED=1\nVT_ACP_ZED_ENABLED=1' });
+    expect(catalogEntryOf('poolside')).toMatchObject({ command: '', requiresCommand: true });
+    expect(catalogEntryOf('vtcode')?.installHint).toMatch(/^https:/);
+    const custom = { name: 'My fast agent', command: '/opt/my-agent', args: ['--custom'], env: { FAST_AGENT_MODEL: 'my-model' } };
+    const edited = draftFromAgent('fast-agent', custom);
+    expect(edited).toMatchObject({ command: '/opt/my-agent', argsText: '--custom', envText: 'FAST_AGENT_MODEL=my-model' });
+    expect(validateAgentDraft(edited, { 'fast-agent': custom }, 'fast-agent').config).toEqual(custom);
   });
 
   it('claude-acp 条目逐字段钉版：runtime=claude、不假设推理提供方（无 env 预填面）', () => {

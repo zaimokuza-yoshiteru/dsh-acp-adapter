@@ -49,7 +49,7 @@ pnpm install --frozen-lockfile
 
 **1. 安装 Agent，并在终端登录。**
 
-agent 目录来自 [ACP 官方 registry](https://agentclientprotocol.com)（CI 每日同步进插件，当前 41 个，均开箱即用）。常用四家：
+Agent 目录来自随插件发布的 [ACP 官方 registry](https://agentclientprotocol.com) 快照，提供安装指引与配置预填；列入目录不代表已经逐个验证。常用四家：
 
 | Agent | ACP 命令 | 终端登录 |
 | --- | --- | --- |
@@ -60,7 +60,7 @@ agent 目录来自 [ACP 官方 registry](https://agentclientprotocol.com)（CI �
 
 ¹ 使用 ChatGPT 登录需另装 Codex CLI。
 
-其余 agent 的安装命令见设置面板「添加 agent」菜单（每条自带安装指引与 command/args 预填）。
+在设置面板「添加 agent」中选择条目后可查看安装指引。npm/Python 条目预填已安装程序的命令、参数和环境变量；其他二进制条目需要按 Agent 所在主机的平台安装并填写命令路径，通用参数和环境变量仍会预填。插件不会自动下载或安装 Agent。
 
 **2. 安装插件。** 以下命令安装 npm 已发布的 `alpha` 版本。
 
@@ -68,9 +68,11 @@ agent 目录来自 [ACP 官方 registry](https://agentclientprotocol.com)（CI �
 npx "@deepseek-ai/dsh@$DSH_VERSION" plugin --profile web add @zaimokuza/dsh-acp-adapter@alpha
 ```
 
-**3. 打开「设置 → ACP adapter」**，从目录添加 agent（命令与参数已预填，可改），检查连接，再在新会话中选择 Agent 模型。
+**3. 打开「设置 → ACP adapter」**，从目录添加 Agent，核对或补全连接设置，检查连接，再在新会话中选择 Agent 模型。
 
-需要 API key 时，在 **连接设置 → 环境变量** 中显式配置；不会自动继承父进程的密钥。
+需要 API key 时，在 **连接设置 → 环境变量** 中显式配置；不会自动继承父进程的密钥。目录预填只影响新增配置，更新插件不会覆盖已有配置。
+
+目录版本仅用于参考，不阻断会话。升级后，旧绑定中已退役的版本参考字段不参与启动配置比较；命令、参数、环境、状态目录和工具配置的变化仍会触发恢复检查。
 
 ## <img src="assets/readme/icon-connect.svg" width="24" height="24" alt="" /> 如何配合
 

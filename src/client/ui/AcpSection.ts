@@ -504,6 +504,7 @@ function AgentForm(props: {
     ),
     props.editingId === undefined && seededEntry !== undefined ? h('p', { key: 'install-hint', className: css.hint },
       t('catalogInstallHint', { hint: seededEntry.installHint })) : null,
+    seededEntry?.requiresCommand ? h('p', { className: css.hint }, t('catalogManualCommand')) : null,
     textField({
       t,
       id: `dsh-acp-${scope}-name`,

@@ -49,7 +49,7 @@ Regular development needs no upstream checkout. See the [E2E guide](test/e2e/REA
 
 **1. Install and sign in to your Agent.**
 
-The agent catalog comes from the [official ACP registry](https://agentclientprotocol.com) (synced into the plugin daily by CI — currently 41 agents, all preconfigured). The common four:
+The agent catalog uses a snapshot of the [official ACP registry](https://agentclientprotocol.com) shipped with the plugin. It provides install guidance and configuration presets; inclusion does not mean each Agent has been verified. The common four:
 
 | Agent | ACP command | Terminal login |
 | --- | --- | --- |
@@ -60,7 +60,7 @@ The agent catalog comes from the [official ACP registry](https://agentclientprot
 
 ¹ ChatGPT sign-in requires the separate Codex CLI.
 
-Install commands for the remaining agents appear in the Settings → "Add agent" menu (each entry ships with an install hint and a prefilled command/args).
+Select an entry under Settings → "Add agent" to see install guidance. npm/Python entries prefill the installed executable, arguments, and environment. Other binary entries require installation for the Agent host platform and a manually entered command path; shared arguments and environment are still prefilled. The plugin does not download or install Agents automatically.
 
 **2. Install the plugin.** This command installs the published npm `alpha` version.
 
@@ -68,9 +68,11 @@ Install commands for the remaining agents appear in the Settings → "Add agent"
 npx "@deepseek-ai/dsh@$DSH_VERSION" plugin --profile web add @zaimokuza/dsh-acp-adapter@alpha
 ```
 
-**3. Open Settings → ACP adapter**, add an agent from the catalog (command and arguments are prefilled and editable), check the connection, then choose an Agent model in a new session.
+**3. Open Settings → ACP adapter**, add an Agent from the catalog and review or complete its connection settings, check the connection, then choose an Agent model in a new session.
 
-If the Agent needs an API key, add it explicitly under **Connection settings → Environment**; parent-process secrets are not inherited automatically.
+If the Agent needs an API key, add it explicitly under **Connection settings → Environment**; parent-process secrets are not inherited automatically. Catalog defaults apply only to new configurations; plugin updates do not overwrite saved settings.
+
+Catalog versions are advisory and do not block sessions. After upgrading, retired version-reference fields in saved bindings are excluded from launch comparisons; changes to commands, arguments, environment, state directories, and tools still trigger recovery checks.
 
 ## <img src="assets/readme/icon-connect.svg" width="24" height="24" alt="" /> How it fits together
 

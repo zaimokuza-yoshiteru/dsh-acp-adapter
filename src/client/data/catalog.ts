@@ -1,15 +1,4 @@
-/**
- * ACP agent catalog (client-side view of the committed registry snapshot).
- *
- * 数据源是 CI daily 同步进仓库的纯数据快照（assets/registry/*.json，见
- * scripts/enrich-registry-executables.mjs 与 .github/workflows/registry-sync.yml）：
- * registry.json 给目录与上游版本，executables.json sidecar 给「用户本机
- * PATH 可执行名 + 参数」的预填。构建期内嵌（resolveJsonModule 值导入），
- * 零运行时网络——这与 settings 面板的手写字面量副本（如 ACP_AGENT_RUNTIME_IDS）
- * 同形态：纯数据、无 host 代码依赖、browser 安全；边界 5（client 禁 import
- * host 模块）不受影响。快照新鲜度以发版为界（评审结论：在线新鲜度不重要）。
- * @module @zaimokuza/dsh-acp-adapter/client/catalog
- */
+/** Build-time registry catalog. No runtime network or host-platform assumptions. */
 
 import registryJson from '../../../assets/registry/registry.json' with { type: 'json' }
 import executablesJson from '../../../assets/registry/executables.json' with { type: 'json' }
@@ -25,11 +14,14 @@ interface RegistryAgent {
   readonly distribution?: {
     readonly npx?: { readonly package?: string | undefined; readonly args?: readonly string[] | undefined } | undefined
     readonly uvx?: { readonly package?: string | undefined; readonly args?: readonly string[] | undefined } | undefined
-    readonly binary?: { readonly [platform: string]: { readonly cmd?: string | undefined; readonly args?: readonly string[] | undefined } | undefined } | undefined
+    readonly binary?: { readonly [platform: string]: { readonly archive?: string | undefined; readonly cmd?: string | undefined; readonly args?: readonly string[] | undefined } | undefined } | undefined
   } | undefined
 }
 
 interface ExecutableEntry {
+  readonly kind: string
+  readonly manualReason?: string
+  readonly env: Readonly<Record<string, string>>
   readonly version: string
   readonly command: string
   readonly args: readonly string[]
@@ -46,20 +38,19 @@ const executableEntries = (executablesJson as { readonly entries: { readonly [id
 /**
  * 四个内置 runtime 的 catalog 覆盖：registry 条目只有目录数据，runtime
  * 绑定（host 侧 executableOverrideEnv 等受信事实）不进 registry——这里
- * 按各 CLI 本机探针的字面量钉住 command/args/loginHint（键为 registry
+ * 按各 CLI 本机探针的字面量钉住 command/args（键为 registry
  * agent id）。与 host 侧 descriptor 的逐字段一致性由
  * test/unit/client/client-logic.spec.ts 钉版（id+version 与 sidecar 对齐）。
  */
 const RUNTIME_OVERRIDES: Readonly<Record<'devin' | 'codex-acp' | 'kimi' | 'claude-acp', {
   readonly command: string
   readonly args: readonly string[]
-  readonly loginHint: string
   readonly runtime: 'devin' | 'codex' | 'kimi' | 'claude'
 }>> = {
-  devin: { command: 'devin', args: ['acp'], loginHint: 'devin auth login', runtime: 'devin' },
-  'codex-acp': { command: 'codex-acp', args: [], loginHint: 'codex login', runtime: 'codex' },
-  kimi: { command: 'kimi', args: ['acp'], loginHint: 'kimi login', runtime: 'kimi' },
-  'claude-acp': { command: 'claude-agent-acp', args: [], loginHint: 'claude', runtime: 'claude' },
+  devin: { command: 'devin', args: ['acp'], runtime: 'devin' },
+  'codex-acp': { command: 'codex-acp', args: [], runtime: 'codex' },
+  kimi: { command: 'kimi', args: ['acp'], runtime: 'kimi' },
+  'claude-acp': { command: 'claude-agent-acp', args: [], runtime: 'claude' },
 }
 
 /** override 条目排在目录最前（一键区优先展示内置 runtime 四条）。 */
@@ -88,22 +79,26 @@ export interface AcpCatalogEntry {
    * 四条 override；真源 host 侧 ACP_AGENT_RUNTIME_DESCRIPTORS——普通条目无
    * runtime，无任何宿主 path/env ref）。
    */
+  readonly env: Readonly<Record<string, string>>
+  readonly requiresCommand: boolean
   readonly runtime?: 'devin' | 'codex' | 'kimi' | 'claude'
 }
 
 /** npx/uvx 分发的安装指引（spawn 姿态不变：只做展示，不自动安装）。 */
 function installHintOf(agent: RegistryAgent): string {
   const distribution = agent.distribution
+  // Match the same distribution selected by the sidecar generator.
+  if (distribution?.binary !== undefined) {
+    return agent.website ?? Object.entries(distribution.binary)
+      .map(([platform, entry]) => `${platform}: ${entry?.archive ?? ''}`).join('\n')
+  }
   if (distribution?.npx !== undefined) return `npm install -g ${distribution.npx.package ?? agent.id}`
   if (distribution?.uvx !== undefined) return `uv tool install ${distribution.uvx.package ?? agent.id}`
-  const binary = distribution?.binary
-  const anyPlatform = binary === undefined ? undefined : Object.values(binary).find((entry) => entry?.cmd !== undefined)
-  if (anyPlatform?.cmd !== undefined) return anyPlatform.cmd
   return agent.website ?? agent.id
 }
 
 /**
- * 全量 catalog（41 条）：override 四条排前，其余按 registry 顺序。合成是
+ * 全量 catalog：override 四条排前，其余按 registry 顺序。合成是
  * 纯数据变换，模块加载时执行一次。
  */
 export const ACP_CATALOG_ENTRIES: readonly AcpCatalogEntry[] = synthesize()
@@ -123,6 +118,8 @@ function synthesize(): AcpCatalogEntry[] {
       installHint: installHintOf(agent),
       command,
       args: [...args],
+      env: { ...executable?.env },
+      requiresCommand: command === '',
       ...(override?.runtime === undefined ? {} : { runtime: override.runtime }),
     })
   }
