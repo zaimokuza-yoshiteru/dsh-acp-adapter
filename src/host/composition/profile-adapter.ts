@@ -300,6 +300,7 @@ export interface AcpNativeQuestionBinding {
   readonly userQuestions?: AcpNativeUserQuestionService
   readonly approval?: AcpNativeApprovalService
   readonly getAgent: () => unknown
+  readonly locale?: string
 }
 
 /** One independent adapter and runtime per configured ACP profile. */
@@ -1691,6 +1692,7 @@ export class AcpProfileAdapter extends LlmAdapter {
           ...(binding.userQuestions === undefined ? {} : { userQuestions: binding.userQuestions }),
           ...(binding.approval === undefined ? {} : { approval: binding.approval }),
           getAgent: binding.getAgent,
+          ...(binding.locale === undefined ? {} : { locale: binding.locale }),
           ...(audit === undefined ? {} : { audit }),
         })(params, signal)
       },

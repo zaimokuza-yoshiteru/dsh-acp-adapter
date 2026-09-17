@@ -11,6 +11,35 @@ function bridge(answer: string | undefined, custom?: string): { handler: ReturnT
 }
 
 describe('native ACP permission bridge', () => {
+  it.each(['zh', 'zh-CN'])('localizes native approval in %s without translating the command', async locale => {
+    const approval = { request: vi.fn(async () => 'allowed-once' as const) }
+    const handler = createAcpNativePermissionHandler({ approval, locale, getAgent: () => ({}) })
+    await handler(params([option('exact-id', 'Allow', 'allow_once')]))
+    expect(approval.request).toHaveBeenCalledWith(expect.objectContaining({
+      reason: 'ACP Agent 请求执行命令的权限。\n工具: Run command\n命令: echo hello',
+    }))
+  })
+
+  it('localizes question details and disambiguation while retaining Agent labels and option ids', async () => {
+    const ask = vi.fn<AcpNativeUserQuestionService['ask']>(async ({ questions }) => ({
+      answers: [{ id: questions[0]!.id, selected: ['Same · 选项 2'] }],
+    }))
+    const handler = createAcpNativePermissionHandler({ userQuestions: { ask }, locale: 'zh', getAgent: () => ({}) })
+    await expect(handler(params([option('a', 'Same', 'allow_always'), option('r', 'Same', 'reject_once')]))).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'r' } })
+    expect(ask.mock.calls[0]?.[0].questions[0]).toMatchObject({
+      question: 'ACP Agent 请求执行命令的权限。\n工具: Run command',
+      detail: '命令:\n\n```\necho hello\n```',
+      options: [{ label: 'Same · 选项 1' }, { label: 'Same · 选项 2' }],
+    })
+  })
+
+  it('makes missing command details explicit on the native approval card', async () => {
+    const approval = { request: vi.fn(async () => 'rejected' as const) }
+    const handler = createAcpNativePermissionHandler({ approval, getAgent: () => ({}) })
+    await handler({ ...params([option('a', 'Allow', 'allow_once')]), toolCall: { toolCallId: 'unknown', kind: 'execute' } })
+    expect(approval.request).toHaveBeenCalledWith(expect.objectContaining({ reason: expect.stringContaining('could not be matched to this request') }))
+  })
+
   it('uses the native approval card for allow-once/reject decisions and keeps the complete command', async () => {
     const approval = { request: vi.fn(async () => 'allowed-once' as const) }
     const ask = vi.fn<AcpNativeUserQuestionService['ask']>()

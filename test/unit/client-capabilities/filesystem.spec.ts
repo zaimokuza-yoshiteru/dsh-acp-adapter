@@ -171,6 +171,42 @@ it('retains concurrent-edit detection during streamed old-file hashing', async (
   } finally { handlers.dispose(); fs.rmSync(dir, { recursive: true, force: true }) }
 })
 
+it('preserves a file created by another writer while preparing a new file', async () => {
+  const dir = root(), file = path.join(dir, 'file.txt')
+  const audit: Array<{ outcome: string }> = []
+  const handlers = createAcpFileSystemHandlers({ profileId: 'test', audit: event => { audit.push(event) }, io: {
+    writeFile: async (...args) => { await fs.promises.writeFile(...args); fs.writeFileSync(file, 'other writer', { flag: 'wx' }) },
+  } })
+  try {
+    await expect(handlers.writeTextFile({ sessionId: 's', path: file, content: 'replacement' })).rejects.toThrow('concurrent file change')
+    expect(fs.readFileSync(file, 'utf8')).toBe('other writer')
+    expect(fs.readdirSync(dir)).toEqual(['file.txt'])
+    expect(audit).toMatchObject([{ outcome: 'concurrent-change' }])
+  } finally { handlers.dispose(); fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
+it('allows only one of two simultaneous new-file writes to commit', async () => {
+  const dir = root(), file = path.join(dir, 'file.txt')
+  let waiting = 0
+  let release = () => {}
+  const ready = new Promise<void>(resolve => { release = resolve })
+  const handlers = createAcpFileSystemHandlers({ profileId: 'test', io: {
+    writeFile: async (...args) => {
+      await fs.promises.writeFile(...args)
+      if (++waiting === 2) release()
+      await ready
+    },
+  } })
+  try {
+    const contents = ['first writer', 'second writer']
+    const results = await Promise.allSettled(contents.map(content => handlers.writeTextFile({ sessionId: 's', path: file, content })))
+    expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1)
+    expect(results.find(result => result.status === 'rejected')).toMatchObject({ reason: new Error(`ACP fs/write_text_file failed for ${file}: concurrent file change`) })
+    expect(fs.readFileSync(file, 'utf8')).toBe(contents[results.findIndex(result => result.status === 'fulfilled')])
+    expect(fs.readdirSync(dir)).toEqual(['file.txt'])
+  } finally { handlers.dispose(); fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
 it.each([1, 2])('aborts and closes old-file hash stream %i without replacing the target', async pass => {
   const dir = root(), file = path.join(dir, 'file.txt'); fs.writeFileSync(file, 'original')
   const controller = new AbortController()

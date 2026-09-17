@@ -394,10 +394,20 @@ export function installInstalledProfileRegistry(ctx: Context, options: Installed
     try { approval = holder.get('approval') as import('../../domain/policy/permissions.ts').AcpNativeApprovalService | undefined } catch { /* optional seam */ }
     try { agents ??= holder.get('agents') as { get(id: string): unknown } | undefined } catch { /* optional seam */ }
     if ((userQuestions === undefined && approval === undefined) || agents === undefined || agents.get(dshSessionId) === undefined) return undefined
+    // Read the native locale preference for every request so language changes
+    // take effect without restarting the ACP session. Browser detection alone
+    // is not a host setting; absent preferences use the English fallback.
+    let locale: string | undefined
+    try {
+      const settings = holder.get('settings') as Pick<import('@deepseek-ai/dsh-settings').SettingsProvider, 'get'> | undefined
+      const value = settings?.get('locale')
+      if (isPlainObject(value) && typeof value.preference === 'string') locale = value.preference
+    } catch { /* optional locale preference */ }
     return {
       ...(userQuestions === undefined ? {} : { userQuestions }),
       ...(approval === undefined ? {} : { approval }),
       getAgent: () => agents?.get(dshSessionId),
+      ...(locale === undefined ? {} : { locale }),
     }
   }
   const ledgerStore: DispatchLedgerStore = sidecar === undefined

@@ -102,7 +102,7 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
   async function send(prompt, { expectError = false } = {}) {
     const input = page.locator('[data-composer-input]').first()
     await writeComposerDraft(page, input, prompt)
-    const button = page.getByRole('button', { name: 'Send message', exact: true })
+    const button = page.getByRole('button', { name: /^(Send message|发送消息)$/ })
     await expect.poll(() => button.isEnabled()).toBe(true)
     const settled = host.whenTurnSettled(30_000).then(id => {
       const end = events.findLast(event => event.id === id && event.type === 'turn/end')
@@ -122,7 +122,7 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
       await panel.getByRole('radio', { name: allow ? 'Allow this operation' : 'Reject this operation', exact: true }).click()
       await panel.getByRole('button', { name: /Submit|Send/, exact: false }).click()
     } else {
-      await panel.getByRole('button', { name: allow ? 'Allow once' : 'Reject', exact: true }).click()
+      await panel.getByRole('button', { name: allow ? /^(Allow once|允许一次)$/ : /^(Reject|拒绝)$/ }).click()
     }
   }
 
@@ -555,14 +555,20 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
   })
 
   it.each([false, true])('maps native permission decisions without changing their scope: allow=%s', async allow => {
-    const { settled } = await send('E2E_PERMISSION')
-    expect(existsSync(join(workspace, 'approval-marker.txt'))).toBe(false)
-    await decide(allow)
-    await settled
-    await page.getByText(allow ? 'E2E_APPROVED' : 'E2E_DENIED', { exact: true }).waitFor()
-    expect(existsSync(join(workspace, 'approval-marker.txt'))).toBe(allow)
-    expect(readFileSync(agentLog, 'utf8')).toContain(`"optionId":"${allow ? 'permit-single' : 'deny-single'}"`)
-    expect(await page.locator('[data-question-key], [data-approval-key]').count()).toBe(0)
+    await host.ctx.settings.replace('locale', { preference: allow ? 'zh' : 'en' })
+    try {
+      const { settled } = await send('E2E_PERMISSION')
+      expect(existsSync(join(workspace, 'approval-marker.txt'))).toBe(false)
+      const panel = page.locator('[data-approval-key]')
+      await panel.waitFor()
+      expect(await panel.innerText()).toContain(allow ? 'ACP Agent 请求执行命令的权限。' : 'The ACP Agent requests permission to run a command.')
+      await decide(allow)
+      await settled
+      await page.getByText(allow ? 'E2E_APPROVED' : 'E2E_DENIED', { exact: true }).waitFor()
+      expect(existsSync(join(workspace, 'approval-marker.txt'))).toBe(allow)
+      expect(readFileSync(agentLog, 'utf8')).toContain(`"optionId":"${allow ? 'permit-single' : 'deny-single'}"`)
+      expect(await page.locator('[data-question-key], [data-approval-key]').count()).toBe(0)
+    } finally { await host.ctx.settings.replace('locale', { preference: 'en' }) }
   })
 
   it('stops the external turn through the native stop control and accepts the next turn', async () => {

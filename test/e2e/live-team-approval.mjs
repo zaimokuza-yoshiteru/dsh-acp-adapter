@@ -35,15 +35,20 @@ export async function verifyLiveTeamApproval({ host, page, provider, evidence })
     expect(JSON.stringify(firstPrompt)).not.toContain('operations that require approval are rejected automatically')
   } finally { await handle.close() }
   await page.screenshot({ path: join(evidence.directory, 'pending-approval.png'), fullPage: true })
-  await card.getByRole('button', { name: 'permission-review · Pending request', exact: true }).click()
-  const approval = page.locator('[data-approval-key]')
-  await approval.waitFor()
-  expect(await approval.innerText()).toContain(fileName)
-  await approval.getByRole('button', { name: 'Allow once', exact: true }).click()
+  // Approve from the Lead itself: opening the member would only verify the
+  // ordinary child-session approval card, not the Teams forwarding path.
+  const leadUrl = page.url()
+  const pendingMember = card.locator('[data-team-pending-member="permission-review"]')
+  expect(await pendingMember.locator('[data-team-approval-reason]').innerText()).toContain(fileName)
+  await pendingMember.getByRole('button', { name: 'Allow once', exact: true }).click()
+  await vi.waitFor(() => expect(events.filter(event => event.type === 'approval/decided')).toHaveLength(1))
+  expect(events.find(event => event.type === 'approval/decided')).toMatchObject({ sessionId: member.id, data: { outcome: 'allowed-once' } })
+  expect(page.url()).toBe(leadUrl)
   await vi.waitFor(() => expect(existsSync(destination)).toBe(true), { timeout: 60_000 })
   expect(readFileSync(destination, 'utf8').trim()).toBe(token)
   await vi.waitFor(() => expect(host.ctx.agentTeams.listMembers(lead).every(member => ['idle', 'inactive'].includes(member.status))).toBe(true), { timeout: 120_000, interval: 500 })
-  await page.locator('header nav').getByRole('button').first().click()
   await vi.waitFor(async () => expect(await card.count()).toBe(0))
+  expect(page.url()).toBe(leadUrl)
+  evidence.approvedFromLead = true
   await page.locator('[data-team-action]').getByRole('button', { name: /Agent Team/ }).click()
 }
