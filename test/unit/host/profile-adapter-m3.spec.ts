@@ -274,7 +274,7 @@ describe('M3a binding-first ACP provider', () => {
       await drain(loaded.stream(request('load-session', continuation)))
       expect(second.restores).toBe(1)
       const audit = await sidecar.list('load-session' as never)
-      expect(audit.some(entry => entry.kind === 'replay-assessment' && entry.data.status === 'not-compared')).toBe(true)
+      expect(audit.some(entry => entry.kind === 'replay-assessment' && entry.data.status === 'not-compared' && entry.data.method === 'loaded')).toBe(true)
     } finally {
       await sidecar.dispose()
       fs.rmSync(root, { recursive: true, force: true })
@@ -543,12 +543,12 @@ describe('runtime failure and host disposal ownership', () => {
       await initial.close()
       const lookup = await sidecar.readLatestBinding('drift' as never)
       if (lookup?.status !== 'ok') throw new Error('missing binding')
-      expect(lookup.binding.launchFingerprint).toEqual(acpLaunchFingerprint({ profileId: 'test', config: profile(), descriptor: undefined }))
+      expect(lookup.binding.launchFingerprint).toEqual(acpLaunchFingerprint({ profileId: 'test', config: profile() }))
       if (key === 'legacy') {
         // Old releases fingerprinted only explicit config.env, losing inherited HOME.
         await sidecar.append('drift' as never, { kind: 'binding', data: {
           ...lookup.binding,
-          launchFingerprint: acpLaunchFingerprint({ profileId: 'test', config: profile(), descriptor: undefined, env: {} }),
+          launchFingerprint: acpLaunchFingerprint({ profileId: 'test', config: profile(), env: {} }),
         } })
       } else vi.stubEnv(key, '/test/home-b')
       const saved = await sidecar.readLatestBinding('drift' as never)

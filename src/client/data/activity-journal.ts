@@ -174,6 +174,26 @@ export class AcpActivityJournalHub {
     private readonly streamFactory: RemoteStreamFactory,
   ) {}
 
+  /** In-flight deduplication only; full details live with the expanded component. */
+  private readonly detailRequests = new Map<string, Promise<AcpActivityView>>()
+
+  detail(row: AcpActivityView): Promise<AcpActivityView> {
+    const key = JSON.stringify([row.dshSessionId, row.ownerDshSessionId, row.activityId, row.revisionSeq])
+    const pending = this.detailRequests.get(key)
+    if (pending !== undefined) return pending
+    const request = this.remote.activityDetail(row.dshSessionId, {
+      activityId: row.activityId, revisionSeq: row.revisionSeq, ownerDshSessionId: row.ownerDshSessionId,
+    }).then(result => {
+      if (!result.ok) throw result.error
+      const detail = result.value
+      if (detail.dshSessionId !== row.dshSessionId || detail.ownerDshSessionId !== row.ownerDshSessionId
+        || detail.activityId !== row.activityId || detail.revisionSeq !== row.revisionSeq) throw new Error('ACP activity detail identity mismatch')
+      return detail
+    }).finally(() => { this.detailRequests.delete(key) })
+    this.detailRequests.set(key, request)
+    return request
+  }
+
   acquire(sessionId: string, ownerDshSessionId: string, promptAnchorMessageId: string, listener: () => void): {
     readonly snapshot: () => readonly AcpActivityView[]
     readonly error: () => unknown

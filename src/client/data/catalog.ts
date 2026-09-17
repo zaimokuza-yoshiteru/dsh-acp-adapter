@@ -1,5 +1,6 @@
 /** Build-time registry catalog. No runtime network or host-platform assumptions. */
 
+import { runtimeForCatalogId, type AcpAgentId } from '../../contract/agent-config.ts'
 import registryJson from '../../../assets/registry/registry.json' with { type: 'json' }
 import executablesJson from '../../../assets/registry/executables.json' with { type: 'json' }
 
@@ -9,7 +10,6 @@ interface RegistryAgent {
   readonly id: string
   readonly name: string
   readonly version?: string | undefined
-  readonly description?: string | undefined
   readonly website?: string | undefined
   readonly distribution?: {
     readonly npx?: { readonly package?: string | undefined; readonly args?: readonly string[] | undefined } | undefined
@@ -33,30 +33,18 @@ const registryAgents = (registryJson as { readonly agents: readonly RegistryAgen
 /** executables.json sidecar 的 entries（agent id → PATH 可执行名预填）。 */
 const executableEntries = (executablesJson as { readonly entries: { readonly [id: string]: ExecutableEntry } }).entries
 
-// ---------- 内置 runtime 覆盖（受信闭集的字面量副本；真源 host 侧 ACP_AGENT_RUNTIME_DESCRIPTORS） ----------
-
-/**
- * 四个内置 runtime 的 catalog 覆盖：registry 条目只有目录数据，runtime
- * 绑定（host 侧 executableOverrideEnv 等受信事实）不进 registry——这里
- * 按各 CLI 本机探针的字面量钉住 command/args（键为 registry
- * agent id）。与 host 侧 descriptor 的逐字段一致性由
- * test/unit/client/client-logic.spec.ts 钉版（id+version 与 sidecar 对齐）。
- */
-const RUNTIME_OVERRIDES: Readonly<Record<'devin' | 'codex-acp' | 'kimi' | 'claude-acp', {
-  readonly command: string
-  readonly args: readonly string[]
-  readonly runtime: 'devin' | 'codex' | 'kimi' | 'claude'
-}>> = {
-  devin: { command: 'devin', args: ['acp'], runtime: 'devin' },
-  'codex-acp': { command: 'codex-acp', args: [], runtime: 'codex' },
-  kimi: { command: 'kimi', args: ['acp'], runtime: 'kimi' },
-  'claude-acp': { command: 'claude-agent-acp', args: [], runtime: 'claude' },
+/** Display guidance absent from the registry, not launch configuration. */
+const LOGIN_HINTS: Readonly<Record<AcpAgentId, string>> = {
+  devin: 'devin auth login', codex: 'codex login', kimi: 'kimi login', claude: 'claude',
 }
 
+/** Known installed CLI names for binary distributions; never archive paths. */
+const INSTALLED_BINARY_COMMANDS: Readonly<Record<string, string>> = { devin: 'devin', kimi: 'kimi' }
+
 /** Curated adapter regression/live-smoke coverage, not certification of registry versions.
- * Keep this explicit: adding a runtime override does not establish verification.
+ * Keep this explicit: adding a runtime binding does not establish verification.
  */
-const VERIFIED_ADAPTER_IDS: readonly ('devin' | 'codex-acp' | 'kimi' | 'claude-acp')[] = ['devin', 'codex-acp', 'kimi', 'claude-acp']
+const VERIFIED_ADAPTER_IDS: readonly string[] = ['devin', 'codex-acp', 'kimi', 'claude-acp']
 
 // ---------- catalog 合成 ----------
 
@@ -68,8 +56,6 @@ export interface AcpCatalogEntry {
   readonly name: string
   /** Registry-published upstream version (sidecar double-checked; undefined when neither has it). */
   readonly version: string | undefined
-  /** One-line directory description (menu rows do not render it; kept for future detail views). */
-  readonly description: string | undefined
   /** Install guidance derived from the registry distribution (npx/uvx/binary facts). */
   readonly installHint: string
   /** PATH executable name prefill; empty when the snapshot lacks this agent (manual entry remains). */
@@ -80,12 +66,9 @@ export interface AcpCatalogEntry {
   readonly args: readonly string[]
   readonly env: Readonly<Record<string, string>>
   readonly requiresCommand: boolean
-  /**
-   * Built-in runtime binding seeded into the draft (devin/codex/kimi/claude-acp
-   * 四条 override；真源 host 侧 ACP_AGENT_RUNTIME_DESCRIPTORS——普通条目无
-   * runtime，无任何宿主 path/env ref）。
-   */
-  readonly runtime?: 'devin' | 'codex' | 'kimi' | 'claude'
+  /** Specialized runtime identity seeded only when adding this catalog entry. */
+  readonly runtime?: AcpAgentId
+  readonly loginHint?: string
 }
 
 /** npx/uvx 分发的安装指引（spawn 姿态不变：只做展示，不自动安装）。 */
@@ -102,35 +85,36 @@ function installHintOf(agent: RegistryAgent): string {
 }
 
 /**
- * 全量 catalog：override 四条排前，其余按 registry 顺序。合成是
+ * 全量 catalog：已验证适配条目排前，其余按 registry 顺序。合成是
  * 纯数据变换，模块加载时执行一次。
  */
-export const ACP_CATALOG_ENTRIES: readonly AcpCatalogEntry[] = synthesize()
+export const ACP_CATALOG_ENTRIES: readonly AcpCatalogEntry[] = buildCatalogEntries(registryAgents, executableEntries)
 
-function synthesize(): AcpCatalogEntry[] {
+export function buildCatalogEntries(registryAgents: readonly RegistryAgent[], executableEntries: Readonly<Record<string, ExecutableEntry>>): AcpCatalogEntry[] {
   const entries: AcpCatalogEntry[] = []
   for (const agent of registryAgents) {
     const executable = executableEntries[agent.id]
-    const override = RUNTIME_OVERRIDES[agent.id as keyof typeof RUNTIME_OVERRIDES]
-    const command = override?.command ?? executable?.command ?? ''
-    const args = override?.args ?? executable?.args ?? []
+    const runtime = runtimeForCatalogId(agent.id)
+    const command = executable?.kind === 'binary'
+      ? INSTALLED_BINARY_COMMANDS[agent.id] ?? executable.command
+      : executable?.command ?? ''
+    const args = executable?.args ?? []
     entries.push({
       id: agent.id,
       name: agent.name,
       version: executable?.version ?? agent.version,
-      description: agent.description,
       installHint: installHintOf(agent),
       command,
-      verification: VERIFIED_ADAPTER_IDS.includes(agent.id as keyof typeof RUNTIME_OVERRIDES) ? 'adapter-tested' : 'unverified',
+      verification: VERIFIED_ADAPTER_IDS.includes(agent.id) ? 'adapter-tested' : 'unverified',
       args: [...args],
       env: { ...executable?.env },
       requiresCommand: command === '',
-      ...(override?.runtime === undefined ? {} : { runtime: override.runtime }),
+      ...(runtime === undefined ? {} : { runtime, loginHint: LOGIN_HINTS[runtime] }),
     })
   }
   entries.sort((left, right) => {
-    const leftRank = VERIFIED_ADAPTER_IDS.indexOf(left.id as keyof typeof RUNTIME_OVERRIDES)
-    const rightRank = VERIFIED_ADAPTER_IDS.indexOf(right.id as keyof typeof RUNTIME_OVERRIDES)
+    const leftRank = VERIFIED_ADAPTER_IDS.indexOf(left.id)
+    const rightRank = VERIFIED_ADAPTER_IDS.indexOf(right.id)
     return (leftRank < 0 ? VERIFIED_ADAPTER_IDS.length : leftRank) - (rightRank < 0 ? VERIFIED_ADAPTER_IDS.length : rightRank)
   })
   return entries

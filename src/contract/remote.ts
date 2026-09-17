@@ -188,9 +188,9 @@ export interface AcpProviderHealth {
  * 兼容状态（agent-config.ts `acpVersionCompatibility` 直通，比对握手
  * agentInfo.version 与 registry 快照的上游版本）：无版本参考或握手无
  * 版本 → null；快照无该 agent 版本 → 'unknown'；握手版本等于参考 →
- * 'current'；不等 → 'outdated'（不阻断，仅如实展示）。
+ * 'current'；不等 → 'different'（不阻断，仅如实展示）。
  */
-        readonly versionCompatibility: 'current' | 'outdated' | 'unknown' | null
+        readonly versionCompatibility: 'current' | 'different' | 'unknown' | null
         /**
  * 端到端能力矩阵：host 侧由 capabilities（广告事实）
          * × adapter path 计算（src/domain/policy/
@@ -235,6 +235,9 @@ export type AcpAuditSummaryCode =
   | 'replay.different'
   | 'replay.overflow'
   | 'replay.not-compared'
+  | 'restore.reused'
+  | 'restore.resumed'
+  | 'restore.loaded'
   | 'replay.unavailable'
   | 'degradation.recorded'
   | 'filesystem.operation'
@@ -272,6 +275,10 @@ export interface AcpAuditTimelinePage {
 export type AcpActivityKindView = 'tool' | 'plan' | 'terminal' | 'diff' | 'resource' | 'delegated' | 'other'
 export type AcpActivityStatusView = 'running' | 'completed' | 'failed' | 'cancelled'
 export interface AcpActivityView {
+  /** Large detail is fetched on expansion, at this exact revision. */
+  readonly detailDeferred?: boolean
+  /** Small file metadata for a stable collapsed tool summary. No file contents. */
+  readonly detailPaths?: readonly string[]
   /** Complete, normalized display fields. Independent from bounded raw diagnostics. */
   readonly display?: {
     readonly diffs?: readonly { readonly path: string; readonly oldText: string | null; readonly newText: string }[] | undefined

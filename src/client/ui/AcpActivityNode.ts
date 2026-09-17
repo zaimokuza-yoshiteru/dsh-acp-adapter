@@ -416,13 +416,40 @@ export function activityRowElement({ row, t, onOpenProjectedChild, jsonStringWra
   }, body)
 }
 
-export function ActivityRow(props: { readonly row: AcpActivityView; readonly t: ActivityNodeProps['t']; readonly openFile: ActivityNodeProps['openFile']; readonly onOpenProjectedChild?: (childSessionId: string) => void; readonly jsonStringWrapping?: AcpJsonStringWrapping }): ReactNode {
+export function ActivityRow(props: { readonly row: AcpActivityView; readonly journalHub?: AcpActivityJournalHub; readonly t: ActivityNodeProps['t']; readonly openFile: ActivityNodeProps['openFile']; readonly onOpenProjectedChild?: (childSessionId: string) => void; readonly jsonStringWrapping?: AcpJsonStringWrapping }): ReactNode {
   const [open, setOpen] = useState(false)
-  if (props.row.kind === 'plan') return planRowElement(props.row, props.t, open, () => { setOpen(value => !value) })
-  if (props.row.kind === 'tool') {
-    return fallbackToolRowElement({ row: props.row, t: props.t, openFile: props.openFile, open, onToggle: () => { setOpen(value => !value) } })
+  const [loaded, setLoaded] = useState<AcpActivityView | undefined>(undefined)
+  const [failed, setFailed] = useState(false)
+  const [attempt, setAttempt] = useState(0)
+  const row = props.row
+  const current = loaded?.revisionSeq === row.revisionSeq && loaded.activityId === row.activityId
+    && loaded.dshSessionId === row.dshSessionId && loaded.ownerDshSessionId === row.ownerDshSessionId ? loaded : undefined
+  useEffect(() => {
+    if (!open || row.detailDeferred !== true || current !== undefined) return
+    let active = true
+    setFailed(false)
+    if (props.journalHub === undefined) { setFailed(true); return }
+    void props.journalHub.detail(row).then(detail => { if (active) setLoaded(detail) }, () => { if (active) setFailed(true) })
+    return () => { active = false }
+  }, [open, row.dshSessionId, row.ownerDshSessionId, row.activityId, row.revisionSeq, row.detailDeferred, props.journalHub, current, attempt])
+  const toggle = (): void => { setOpen(value => !value) }
+  if (row.detailDeferred === true && current === undefined) {
+    const pendingDetail = open ? h('div', { className: css.body, role: 'status' },
+      props.t(failed ? 'activity.detailLoadFailed' : 'activity.detailLoading'),
+      failed ? h(Button, { variant: 'outline', size: 'sm', onClick: () => { setAttempt(value => value + 1) } }, props.t('activity.detailRetry')) : null,
+    ) : null
+    if (row.kind === 'tool') return fallbackToolRowElement({ row, t: props.t, openFile: props.openFile, open, onToggle: toggle, pendingDetail })
+    return h(DisclosureRow, {
+      className: css.row, title: row.kind === 'plan' ? props.t('activity.tool.plan') : row.presentation,
+      icon: h(StateDot, { state: dotState(row.status) }), open, expandable: true, expandOnRowClick: true, onToggle: toggle,
+    }, pendingDetail)
   }
-  return activityRowElement({ ...props, open, onToggle: () => { setOpen(value => !value) } })
+  const full = current ?? row
+  if (full.kind === 'plan') return planRowElement(full, props.t, open, toggle)
+  if (full.kind === 'tool') {
+    return fallbackToolRowElement({ row: full, t: props.t, openFile: props.openFile, open, onToggle: toggle })
+  }
+  return activityRowElement({ ...props, row: full, open, onToggle: toggle })
 }
 
 /** Historical ACP plan snapshot. The current plan is also projected into DSH's native todo dock. */
@@ -442,7 +469,8 @@ function planRowElement(row: AcpActivityView, t: ActivityNodeProps['t'], open: b
 
 /** ACP tool activity shell. DSH keeps GenericToolCard private; recognized
  * payloads use native detail blocks, with a compact IO fallback for the rest. */
-function fallbackToolRowElement({ row, t, openFile, open, onToggle }: {
+function fallbackToolRowElement({ row, t, openFile, open, onToggle, pendingDetail }: {
+  readonly pendingDetail?: ReactNode
   readonly row: AcpActivityView
   readonly t: ActivityNodeProps['t']
   readonly openFile: ActivityNodeProps['openFile']
@@ -451,7 +479,7 @@ function fallbackToolRowElement({ row, t, openFile, open, onToggle }: {
 }): ReactNode {
   const value = detailValue(row)
   const detail = record(value) ? value : {}
-  const diffs = activityDiffs(row, value)
+  const diffs = pendingDetail !== undefined ? [] : activityDiffs(row, value)
   const terminal = terminalDetail(row, value)
   const read = readDetail(value)
   const input = detail.rawInput
@@ -465,8 +493,8 @@ function fallbackToolRowElement({ row, t, openFile, open, onToggle }: {
     : undefined
   const hasInput = !delegated && hasMeaningfulDetail(input)
   const hasOutput = !delegated && hasMeaningfulDetail(output)
-  const expandable = diffs.length > 0 || terminal !== undefined || read !== undefined || hasInput || hasOutput
-  const kind = typeof detail.toolKind === 'string' ? detail.toolKind : row.kind
+  const expandable = pendingDetail !== undefined || diffs.length > 0 || terminal !== undefined || read !== undefined || hasInput || hasOutput
+  const kind = typeof detail.toolKind === 'string' ? detail.toolKind : (row.detailPaths?.length ?? 0) > 0 ? 'edit' : row.kind
   const title = kind === 'execute' ? t('activity.tool.execute')
     : kind === 'read' ? t('activity.tool.read')
       : kind === 'edit' ? t('activity.tool.edit')
@@ -476,8 +504,9 @@ function fallbackToolRowElement({ row, t, openFile, open, onToggle }: {
               : t('activity.toolTitle')
   const summary = delegated && record(input) && typeof input.title === 'string'
     ? input.title
-    : terminal?.command ?? read?.label ?? inputPath ?? diffs[0]?.path ?? row.presentation
+    : terminal?.command ?? read?.label ?? inputPath ?? diffs[0]?.path ?? row.detailPaths?.[0] ?? row.presentation
   const paths = [...new Set(diffs.map(diff => diff.path))]
+  if (paths.length === 0) paths.push(...row.detailPaths ?? [])
   const filePath = read?.label ?? (paths.length === 1 ? paths[0] : undefined)
   const icon = row.status === 'failed'
     ? h(StateDot, { state: 'error' })
@@ -500,7 +529,7 @@ function fallbackToolRowElement({ row, t, openFile, open, onToggle }: {
         onKeyDown: (event: { key: string; stopPropagation(): void }) => { if (event.key === 'Enter' || event.key === ' ') event.stopPropagation() },
       }, summary),
     ),
-  }, h('div', { className: css.toolBody },
+  }, pendingDetail !== undefined ? pendingDetail : h('div', { className: css.toolBody },
     row.display?.unavailable === undefined ? null : h('p', null, t(row.display?.unavailable === 'invalid' ? 'activity.detailInvalid' : 'activity.detailTooLarge')),
     diffs.length === 0 ? null : h(DiffBlock, { diffs, labels: diffLabels(t), className: css.nativeBlock }),
     terminal === undefined ? null : h(TerminalBlock, { ...terminal, labels: terminalLabels(t), className: css.nativeBlock }),
@@ -564,7 +593,7 @@ export function AcpActivityContent({ node, sessionId, journalHub, t, openFile, o
   if (additiveRows.length === 0 && !unavailable) return null
   return h('section', { className: css.flow, 'data-acp-activity': true },
     ...additiveRows.map(row => h(ActivityRow, {
-      key: `${row.activityId}:${row.activitySeq}`, row, t, openFile,
+      key: `${row.activityId}:${row.activitySeq}`, row, t, openFile, journalHub,
       ...(jsonStringWrapping === undefined ? {} : { jsonStringWrapping }),
       ...(onOpenProjectedChild === undefined ? {} : { onOpenProjectedChild }),
     })),

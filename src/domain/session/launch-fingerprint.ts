@@ -6,7 +6,7 @@
  *
  * 分量清单（全部 secret-free）：
  * - `command`/`args`/`envKeys`： 既有分量（profile config 原文 + 排序键名）。
- * - `profileId`/`descriptorId`：profile 身份与 descriptor 绑定。
+ * - `profileId`/`descriptorId`：profile 身份与 runtime 绑定（保留旧字段名）。
  * - `adapterVersion`/`wrappedCliVersion`：恒 null。
  * - `envRefs`：保留为 null，不接管 Agent 凭证。
  * - `executableOverride`：高级 CLI override env 的 `{name,present}` 或 null。
@@ -23,7 +23,8 @@
 /// <reference types="node" />
 
 import { createHash } from 'node:crypto'
-import { descriptorOf, type AcpAgentRuntimeDescriptor, type AcpStubAgentConfig } from './agent-config.ts'
+import { effectiveRuntimeOf, type AcpStubAgentConfig } from './agent-config.ts'
+import { executableOverrideEnvFor } from './agent-compatibility.ts'
 import { ACP_NATIVE_DATA_HOME_ENV_KEYS, ACP_NATIVE_XDG_ENV_KEYS } from '../policy/sandbox.ts'
 import { acpCanonicalHash16, type AcpLaunchFingerprint } from '../../persistence/sidecar.ts'
 
@@ -33,8 +34,6 @@ export interface AcpLaunchFingerprintInput {
   readonly profileId: string
   /** 该 profile 的当前配置。 */
   readonly config: AcpStubAgentConfig
-  /** 解析出的 descriptor（普通 profile 为 undefined）。 */
-  readonly descriptor: AcpAgentRuntimeDescriptor | undefined
   /** Stable parent environment; profile overrides are applied before hashing. Defaults to process.env. */
   readonly env?: Record<string, string | undefined>
 }
@@ -47,7 +46,7 @@ export interface AcpLaunchEnvironmentInput {
 
 /**
  * One secret-free identity for a configured profile.  Both route registration
- * and the per-call runtime use this value, so descriptor/runtime/launch edits
+ * and the per-call runtime use this value, so runtime/launch edits
  * cannot drift into two different cache policies.  Environment values are
  * hashed individually; neither this identity nor its callers retain tokens in
  * an index, log, or sidecar record.
@@ -57,7 +56,7 @@ export function profileLaunchIdentityHash(
   config: AcpStubAgentConfig,
   env: Record<string, string | undefined> = process.env,
 ): string {
-  const fingerprint = acpLaunchFingerprint({ profileId, config, descriptor: descriptorOf(profileId, config), env })
+  const fingerprint = acpLaunchFingerprint({ profileId, config, env })
   return createHash('sha256').update(JSON.stringify(fingerprint)).digest('hex').slice(0, 16)
 }
 
@@ -95,17 +94,18 @@ export function acpLaunchFingerprint(input: AcpLaunchFingerprintInput): AcpLaunc
   // state/override keys survive DSH parent scrubbing; explicit profile values
   // win just as they do at spawn. Ephemeral Teams launch overlays stay excluded.
   const env = { ...(input.env ?? process.env), ...input.config.env }
-  const descriptor = input.descriptor
+  const runtime = effectiveRuntimeOf(input.profileId, input.config)
+  const overrideEnv = executableOverrideEnvFor(runtime)
   // Credential/environment references are intentionally not modeled by the
   // adapter. Native Agent Access inherits the process snapshot; old bindings
   // may still carry the nullable field for migration compatibility.
   const envRefs = null
   const executableOverride =
-    descriptor?.executableOverrideEnv === undefined
+    overrideEnv === undefined
       ? null
       : {
-          name: descriptor.executableOverrideEnv,
-          present: env[descriptor.executableOverrideEnv] !== undefined && env[descriptor.executableOverrideEnv] !== '',
+          name: overrideEnv,
+          present: env[overrideEnv] !== undefined && env[overrideEnv] !== '',
         }
   return {
     command: input.config.command,
@@ -115,7 +115,8 @@ export function acpLaunchFingerprint(input: AcpLaunchFingerprintInput): AcpLaunc
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([key, value]) => ({ key, hash16: createHash('sha256').update(value).digest('hex').slice(0, 16) })),
     profileId: input.profileId,
-    descriptorId: descriptor?.id ?? null,
+    // Preserve the persisted field name and values for existing bindings.
+    descriptorId: runtime ?? null,
     // descriptor 钉版已随 versionPolicy 移除：上游版本参考移交 registry 快照
     // （client/data/catalog.ts）；旧值只在兼容比较时归一化，原 binding 不改写。
     adapterVersion: null,

@@ -31,6 +31,7 @@ import {
   ACP_AGENT_ID_PATTERN,
   ACP_ENV_KEY_PATTERN,
   ACP_SETTINGS_NS,
+  agentLoginHint,
   decodeAcpSettings,
   decodeBoundSessions,
   decodeHealthResponse,
@@ -183,17 +184,17 @@ describe('常量：与宿主侧契约逐字对齐', () => {
     }
   });
 
- it('catalog 条目与内置 runtime descriptor 对齐：devin 逐字段（边界：auth 数据面收进 runtime descriptor，不进面板副本；runtime 显式绑定），且自身过得了 decodeAcpSettings', () => {
+ it('catalog installation defaults retain login guidance and explicit runtime binding', () => {
     const devin = catalogEntryOf('devin');
     expect(devin).toEqual({
       id: 'devin',
       name: 'Devin',
       version: devin?.version,
-      description: devin?.description,
       installHint: devin?.installHint,
       env: {},
       requiresCommand: false,
       verification: 'adapter-tested',
+      loginHint: 'devin auth login',
       command: 'devin',
       args: ['acp'],
       runtime: 'devin',
@@ -202,7 +203,7 @@ describe('常量：与宿主侧契约逐字对齐', () => {
     const draft = draftFromCatalogEntry('devin');
     expect(draft).toBeDefined();
     expect(decodeAcpSettings({ agents: { devin: validateAgentDraft(draft as AgentDraft, {}, undefined).config } }))
-      .toEqual({ agents: { devin: { ...devinConfig, runtime: 'devin' } } });
+      .toEqual({ agents: { devin: { ...devinConfig, runtime: 'devin', catalogId: 'devin' } } });
   });
 
   it('ACP_CATALOG_ENTRIES 钉版：override 四条排前（devin/codex-acp/kimi/claude-acp），其余按 registry 顺序', () => {
@@ -234,7 +235,7 @@ describe('常量：与宿主侧契约逐字对齐', () => {
     const custom = { name: 'My fast agent', command: '/opt/my-agent', args: ['--custom'], env: { FAST_AGENT_MODEL: 'my-model' } };
     const edited = draftFromAgent('fast-agent', custom);
     expect(edited).toMatchObject({ command: '/opt/my-agent', argsText: '--custom', envText: 'FAST_AGENT_MODEL=my-model' });
-    expect(validateAgentDraft(edited, { 'fast-agent': custom }, 'fast-agent').config).toEqual(custom);
+    expect(validateAgentDraft(edited, { 'fast-agent': custom }, 'fast-agent').config).toEqual({ ...custom, catalogId: 'fast-agent' });
   });
 
   it('claude-acp 条目逐字段钉版：runtime=claude、不假设推理提供方（无 env 预填面）', () => {
@@ -268,7 +269,7 @@ describe('常量：与宿主侧契约逐字对齐', () => {
   });
 
   it('catalog 预填纪律钉：全部条目的 command/args 无 shell 元字符（spawn 姿态写入闸口径），不含疑似 secret 值', () => {
-    // 预填 command 与 host 侧 ACP_COMMAND_FORBIDDEN_PATTERN 写入闸同口径：
+    // Catalog presets use bare PATH executable names; user-entered paths may contain spaces.
     // 纯 PATH 可执行名（无空白/管道/重定向/引号），绝不 npx -y 下载式形态。
     const forbidden = /[\s|&;<>()$`"'\\]/;
     for (const entry of ACP_CATALOG_ENTRIES) {
@@ -539,7 +540,7 @@ describe('validateAgentDraft', () => {
  it(' singleton：草稿生效 runtime 撞存量 profile → runtime 错误点名已有 profile，config 缺席', () => {
     // 显式 runtime 相撞（草稿带模板播种的 runtime）
     const seeded = { ...validDraft({ id: 'devin2' }), runtime: 'devin' as const };
-    const conflict = validateAgentDraft(seeded, { devin: { ...devinConfig, runtime: 'devin' } }, undefined);
+    const conflict = validateAgentDraft(seeded, { devin: { ...devinConfig, runtime: 'devin', catalogId: 'devin' } }, undefined);
     expect(conflict.runtime).toEqual({
       key: 'errorRuntimeTaken',
       params: { runtime: 'devin', id: 'devin', name: 'Devin' },
@@ -571,7 +572,7 @@ describe('validateAgentDraft', () => {
     expect(validateAgentDraft(generic, { bar: fooConfig }, undefined).config).not.toBeUndefined();
   });
 
-  it('effectiveRuntimeOf：显式 runtime 优先，内置 id 回退，generic 归 undefined（与 host descriptorOf 同口径）', () => {
+  it('effectiveRuntimeOf：显式 runtime 优先，内置 id 回退，generic 归 undefined（与 host 共用规则）', () => {
     expect(effectiveRuntimeOf('foo', { runtime: 'codex' })).toBe('codex');
     expect(effectiveRuntimeOf('kimi', {})).toBe('kimi');
     expect(effectiveRuntimeOf('foo', {})).toBeUndefined();
@@ -583,6 +584,15 @@ describe('validateAgentDraft', () => {
     expect(validateAgentDraft(validDraft({ command: '' }), {}, undefined).command).toEqual({ key: 'errorCommandRequired' });
     expect(validateAgentDraft(validDraft({ command: '\t' }), {}, undefined).command).toEqual({ key: 'errorCommandRequired' });
   });
+
+  it.each([String.raw`C:\Program Files\Agent Tools\agent.exe`, String.raw`\\server\Agent Tools\agent.exe`, '/Users/Test User/Agent Tools/agent'])(
+    'preserves executable paths in edited and saved drafts: %s', command => {
+      const original = { name: 'Custom Agent', command, args: ['acp'], env: {} };
+      const draft = draftFromAgent('custom', original);
+      expect(draft.command).toBe(command);
+      expect(validateAgentDraft(draft, { custom: original }, 'custom').config).toEqual(original);
+    },
+  );
 
  it('env 两分支映射：key/duplicate → locale key + 行号 params（credential 分支已删）', () => {
     expect(validateAgentDraft(validDraft({ envText: '1A=x' }), {}, undefined).env).toEqual({
@@ -628,6 +638,14 @@ describe('validateAgentDraft', () => {
 // ---------- 草稿种子 ----------
 
 describe('草稿种子：emptyDraft / draftFromCatalogEntry / draftFromAgent', () => {
+  it('derives display-only login guidance without changing saved custom hints or runtime identity', () => {
+    expect(agentLoginHint('custom-codex', { catalogId: 'codex-acp' })).toBe('codex login');
+    expect(agentLoginHint('claude', {})).toBe('claude');
+    expect(agentLoginHint('custom', { runtime: 'kimi', loginHint: 'company-login' })).toBe('company-login');
+    expect(agentLoginHint('unknown', {})).toBeUndefined();
+    const config = { ...fooConfig, loginHint: 'company-login', hostTools: ['company_tool'] };
+    expect(validateAgentDraft(draftFromAgent('foo', config), { foo: config }, 'foo').config).toEqual(config);
+  });
   it('emptyDraft 全空串', () => {
     expect(emptyDraft()).toEqual({ id: '', name: '', command: '', argsText: '', envText: '', loginHint: '' });
   });
@@ -635,6 +653,7 @@ describe('草稿种子：emptyDraft / draftFromCatalogEntry / draftFromAgent', (
   it('draftFromCatalogEntry 按条目 id 播种：内置 runtime 四条各回其编辑态', () => {
     expect(draftFromCatalogEntry('devin')).toEqual({
       id: 'devin',
+      catalogId: 'devin',
       name: 'Devin',
       command: 'devin',
       argsText: 'acp',
@@ -643,7 +662,7 @@ describe('草稿种子：emptyDraft / draftFromCatalogEntry / draftFromAgent', (
       runtime: 'devin',
     });
     expect(validateAgentDraft(draftFromCatalogEntry('devin') as AgentDraft, {}, undefined).config)
-      .toEqual({ ...devinConfig, runtime: 'devin' });
+      .toEqual({ ...devinConfig, runtime: 'devin', catalogId: 'devin' });
 
     // claude-acp 通用预设：env 空（不假设推理提供方）
     const claudeDraft = draftFromCatalogEntry('claude-acp');
@@ -661,6 +680,7 @@ describe('草稿种子：emptyDraft / draftFromCatalogEntry / draftFromAgent', (
     const codexDraft = draftFromCatalogEntry('codex-acp');
     expect(codexDraft).toEqual({
       id: 'codex-acp',
+      catalogId: 'codex-acp',
       name: 'Codex',
       command: 'codex-acp',
       argsText: '',
@@ -669,12 +689,13 @@ describe('草稿种子：emptyDraft / draftFromCatalogEntry / draftFromAgent', (
       runtime: 'codex',
     });
     expect(validateAgentDraft(codexDraft as AgentDraft, {}, undefined).config)
-      .toEqual({ name: 'Codex', command: 'codex-acp', args: [], env: {}, loginHint: 'codex login', runtime: 'codex' });
+      .toEqual({ name: 'Codex', command: 'codex-acp', args: [], env: {}, loginHint: 'codex login', runtime: 'codex', catalogId: 'codex-acp' });
 
     // kimi 预设：env 空，runtime 绑定随草稿过站
     const kimiDraft = draftFromCatalogEntry('kimi');
     expect(kimiDraft).toEqual({
       id: 'kimi',
+      catalogId: 'kimi',
       name: 'Kimi CLI',
       command: 'kimi',
       argsText: 'acp',
@@ -683,7 +704,7 @@ describe('草稿种子：emptyDraft / draftFromCatalogEntry / draftFromAgent', (
       runtime: 'kimi',
     });
     expect(validateAgentDraft(kimiDraft as AgentDraft, {}, undefined).config)
-      .toEqual({ name: 'Kimi CLI', command: 'kimi', args: ['acp'], env: {}, loginHint: 'kimi login', runtime: 'kimi' });
+      .toEqual({ name: 'Kimi CLI', command: 'kimi', args: ['acp'], env: {}, loginHint: 'kimi login', runtime: 'kimi', catalogId: 'kimi' });
 
     // 未知条目 id → undefined（菜单只从 catalog 列表渲染，正常不可达）
     expect(draftFromCatalogEntry('no-such-entry')).toBeUndefined();
@@ -696,6 +717,7 @@ describe('草稿种子：emptyDraft / draftFromCatalogEntry / draftFromAgent', (
     const draft = draftFromCatalogEntry(entry.id);
     expect(draft).toEqual({
       id: entry.id,
+      catalogId: entry.id,
       name: entry.name,
       command: entry.command,
       argsText: entry.args.join('\n'),
@@ -848,7 +870,7 @@ describe('decodeHealthResponse', () => {
     const probe = okRow.probe;
     if (probe.status !== 'ok') throw new Error('fixture: okRow.probe must be the ok branch');
     // 合法：versionCompatibility 三态 + null；protocolVersion number|null
-    for (const versionCompatibility of ['current', 'outdated', 'unknown', null] as const) {
+    for (const versionCompatibility of ['current', 'different', 'unknown', null] as const) {
       const row = { ...okRow, probe: { ...probe, protocolVersion: 1, versionCompatibility } };
       expect(decodeHealthResponse({ providers: [row] }), String(versionCompatibility)).toEqual([row]);
     }
@@ -1012,3 +1034,20 @@ describe('错误文本整形：errorMessageOf', () => {
     expect(errorMessageOf({ a: 1 })).toBe('[object Object]');
   });
 });
+
+describe('catalog identity survives profile customization', () => {
+  it('preserves generic catalog identity through changing ID, client decode and editing', () => {
+    const draft = draftFromCatalogEntry('fast-agent')!
+    const config = validateAgentDraft({ ...draft, id: 'my-fast', name: 'My fast' }, {}, undefined).config!
+    expect(config.catalogId).toBe('fast-agent')
+    expect(config.runtime).toBeUndefined()
+    const saved = decodeAcpSettings({ agents: { 'my-fast': config } })!.agents['my-fast']!
+    expect(validateAgentDraft(draftFromAgent('my-fast', saved), { 'my-fast': saved }, 'my-fast').config).toEqual(config)
+  })
+  it('keeps unknown catalog IDs without granting a runtime and rejects malformed identity', () => {
+    const config: AcpAgentConfig = { name: 'Custom', command: 'custom', args: [], env: {}, catalogId: 'future-agent' }
+    expect(draftFromAgent('my-custom', config).catalogId).toBe('future-agent')
+    expect(effectiveRuntimeOf('my-custom', config)).toBeUndefined()
+    expect(decodeAcpSettings({ agents: { custom: { ...config, catalogId: '../codex' } } })).toBeUndefined()
+  })
+})

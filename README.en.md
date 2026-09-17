@@ -49,7 +49,7 @@ Regular development needs no upstream checkout. See the [E2E guide](test/e2e/REA
 
 **1. Install and sign in to your Agent.**
 
-The agent catalog uses a snapshot of the [official ACP registry](https://agentclientprotocol.com) shipped with the plugin. It provides install guidance and configuration presets; inclusion does not mean each Agent has been verified. The menu separates verified adapters from unverified catalog entries; verification does not cover every listed version or platform. The common four:
+The agent catalog uses a snapshot of the [official ACP registry](https://agentclientprotocol.com) shipped with the plugin. It provides install guidance and configuration presets; inclusion does not mean each Agent has been verified. The menu separates verified adapters from unverified catalog entries; verification does not cover every listed version or platform. Search by name, ID, or description. The common four:
 
 | Agent | ACP command | Terminal login |
 | --- | --- | --- |
@@ -70,9 +70,13 @@ npx "@deepseek-ai/dsh@$DSH_VERSION" plugin --profile web add @zaimokuza/dsh-acp-
 
 **3. Open Settings → ACP adapter**, add an Agent from the catalog and review or complete its connection settings, check the connection, then choose an Agent model in a new session.
 
-If the Agent needs an API key, add it explicitly under **Connection settings → Environment**; parent-process secrets are not inherited automatically. Catalog defaults apply only to new configurations; plugin updates do not overwrite saved settings.
+Executable paths may contain spaces, for example `C:\Program Files\Agent Tools\agent.exe`. Enter the path directly without surrounding quotes; put startup arguments in the separate arguments field.
 
-Catalog versions are advisory and do not block sessions. After upgrading, retired version-reference fields in saved bindings are excluded from launch comparisons; changes to commands, arguments, environment, state directories, and tools still trigger recovery checks.
+On Windows, Devin's Teams/DSH tool integration first tries file symlinks. On a permission error, it tries hard links for regular files. Hard links require the original configuration and temporary directory to be on the same volume; failure is reported without automatically copying or synchronizing settings. Directories use junctions, and the team MCP file remains separate. Hard links share in-place writes, but replacing either file can separate the paths, so Devin's specific save behavior still needs verification.
+
+If the Agent needs an API key, add it explicitly under **Advanced options → Environment** in the Agent editor; parent-process secrets are not inherited automatically. Advanced options start collapsed and show a count of configured values. Catalog defaults apply only to new configurations; plugin updates do not overwrite saved settings. Login guidance appears automatically without an editable field; it never runs commands or changes Agent authentication. Existing custom guidance is preserved.
+
+Catalog versions are advisory. A difference from the snapshot does not mean the Agent is outdated and does not block sessions. Catalog profiles retain a separate `catalogId`, keeping version and install guidance associated even after customizing the profile ID. After upgrading, retired version-reference fields in saved bindings are excluded from launch comparisons; changes to commands, arguments, environment, state directories, and tools still trigger recovery checks.
 
 ## <img src="assets/readme/icon-connect.svg" width="24" height="24" alt="" /> How it fits together
 
@@ -80,7 +84,7 @@ Catalog versions are advisory and do not block sessions. After upgrading, retire
 
 **Experimental Agent Teams:** Follows DSH’s Teams profiles and uses its native Team panel. Members inherit the Lead’s Agent, model and reasoning settings at creation, with fresh context only. Switching the Lead’s model affects future members; existing members retain theirs. A team uses one ACP Agent. Shared tasks use the native task board. Answer member approvals from the Lead; allow or reject all current ordinary approvals, with permission granted once only. The member icon at the top right shows status and models. Change Agent modes individually or in batches grouped by ACP profile; idle members apply changes immediately, while dormant members apply saved modes before their next run. Team coordination adds no approval prompts; ordinary permissions remain unchanged. Messages arrive at DSH step boundaries.
 
-**Optional DSH plugin tools:** In the Agent Connection settings, enter one installed tool name per line under “DSH plugin tools”, or set `hostTools: ["tool_name"]`. Only selected tools are exposed over MCP and run through the native DSH tool pipeline. No additional tools are enabled by default. Ordinary tools retain Agent approval, and each DSH tool keeps its own execution rules. Avoid duplicating the Agent’s built-in tools, and start a new session after changing the list. This does not replace the Agent loop; see [native reuse boundaries](docs/native-reuse.md).
+**Optional DSH plugin tools:** In the Agent editor, enter one installed tool name per line under “Advanced options → DSH plugin tools”, or set `hostTools: ["tool_name"]`. Only selected tools are exposed over MCP and run through the native DSH tool pipeline. No additional tools are enabled by default. Ordinary tools retain Agent approval, and each DSH tool keeps its own execution rules. Avoid duplicating the Agent’s built-in tools, and start a new session after changing the list. This does not replace the Agent loop; see [native reuse boundaries](docs/native-reuse.md).
 
 During execution, Enter queues a message; use the queue’s steering action to deliver it to the active task. The adapter uses negotiated atomic steering when available. Otherwise it cancels the current execution, waits for it to settle, and sends the input in the same Agent session. Kimi requires no additional SDK. Cancellation timeouts do not trigger an automatic resend; the Agent retains permission and context ownership. See [input capabilities and limitations](docs/agent-input-capabilities.en.md).
 

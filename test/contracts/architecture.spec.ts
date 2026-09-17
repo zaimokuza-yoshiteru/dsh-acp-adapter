@@ -126,7 +126,7 @@ const ALLOWED_CROSS_LAYER: Readonly<Record<Layer, readonly Layer[]>> = {
  // contract 是零 import 叶子：收窄 wire 类型真源，host 的 remote 与
   // client 两半共同下行消费（共享层，不进 HOST_LAYERS）。
   contract: [],
-  domainSession: ['domainPolicy', 'domainObservability', 'protocol', 'runtime', 'persistence'],
+  domainSession: ['domainPolicy', 'domainObservability', 'protocol', 'runtime', 'persistence', 'contract'],
   remote: ['contract', 'protocol', 'runtime', 'domainSession', 'domainPolicy', 'domainObservability'],
   hostComposition: [
     'domainSession',

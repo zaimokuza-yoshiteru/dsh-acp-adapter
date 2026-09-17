@@ -22,6 +22,7 @@ jobs:
           package-manager-cache: false
       - name: Fetch latest registry.json
         run: |
+          node scripts/check-ci-user.mjs
           curl --fail --silent --show-error --location \
             --retry 3 --retry-delay 5 \
             -o assets/registry/registry.json \

@@ -52,6 +52,9 @@ export function auditTimelineRowOf(entry: AcpSidecarEntry): AcpAuditTimelineEntr
         || data['status'] === 'not-compared' || data['status'] === 'unavailable') {
         summaryCode = `replay.${data['status']}` as AcpAuditSummaryCode
       } else summaryCode = 'replay.unavailable'
+      if (data['status'] === 'not-compared' && (data['method'] === 'reused' || data['method'] === 'resumed' || data['method'] === 'loaded')) {
+        summaryCode = `restore.${data['method']}`
+      }
       break
     case 'degradation':
       severity = 'warning'

@@ -236,12 +236,12 @@ export interface AcpLaunchFingerprint {
   readonly explicitEnv?: readonly { readonly key: string; readonly hash16: string }[]
  /** 边界：注册表 profile id。 */
   readonly profileId?: string | null
- /** 边界：descriptor 绑定 id（无 descriptor 记 null）。 */
+ /** 历史字段名：存储 runtime 绑定 id；普通 profile 记 null，重构不改写旧绑定。 */
   readonly descriptorId?: string | null
  /** 边界：历史 descriptor 钉版字段（versionPolicy 已移除，新指纹恒 null；保留以兼容旧 binding 形状）。 */
   readonly adapterVersion?: string | null
   readonly wrappedCliVersion?: string | null
- /** 边界：envRef 存在性（`{key,present}`，按 key 排序；无 descriptor 记 null）。 */
+ /** 历史凭证引用字段；当前实现恒为 null，不接管 Agent 凭证。 */
   readonly envRefs?: readonly { readonly key: string; readonly present: boolean }[] | null
  /** 边界：executable override env 的 `{name,present}`（无声明记 null）。 */
   readonly executableOverride?: { readonly name: string; readonly present: boolean } | null
@@ -406,6 +406,8 @@ export interface AcpReconciliationData {
 
 /** Non-blocking result of comparing a session/load replay with DSH-visible history. */
 export interface AcpReplayAssessmentData {
+  /** Absent on historical records whose restore mechanism was not recorded. */
+  readonly method?: 'reused' | 'resumed' | 'loaded'
   readonly status: 'matched' | 'different' | 'overflow' | 'not-compared' | 'unavailable'
   readonly detail?: string
   readonly acpSessionId?: string

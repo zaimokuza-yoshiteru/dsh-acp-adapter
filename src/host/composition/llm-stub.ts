@@ -28,7 +28,8 @@ import type { GenerateOptions, LlmModelInfo, LlmModelReasoningInfo, LlmProviderI
 import type * as acp from '@agentclientprotocol/sdk'
 import { acpProbeConfigKey, acpProbeFresh } from '../../domain/session/agent-config.ts'
 import type { AcpStubAgentConfig } from '../../domain/session/agent-config.ts'
-import { descriptorOf } from '../../domain/session/agent-config.ts'
+import { effectiveRuntimeOf } from '../../contract/agent-config.ts'
+import { exposesReasoningControl, modelProbeOptions } from '../../domain/session/agent-compatibility.ts'
 import { acpConfigOptionsSnapshot } from '../../domain/session/acp-config-options.ts'
 import { acpCanonicalHash16 } from '../../persistence/sidecar.ts'
 import { AcpClientConnection } from '../../protocol/v1/connection.ts'
@@ -157,7 +158,7 @@ export interface AcpProbeCacheEntry {
 /** Extract the `category: 'model'` select options from a probe, flattening grouped options. */
 /** Resolve ACP thought-level metadata into DSH's adapter-owned reasoning shape. */
 export function reasoningInfoFromConfigOptions(profileId: string, config: AcpStubAgentConfig, configOptions: readonly acp.SessionConfigOption[] | undefined): LlmModelReasoningInfo | undefined {
-  if (descriptorOf(profileId, config)?.id === 'devin') return undefined
+  if (!exposesReasoningControl(effectiveRuntimeOf(profileId, config))) return undefined
   const option = configOptions?.find((candidate) => {
     if (candidate.type !== 'select') return false
     const id = candidate.id.toLowerCase().replaceAll('-', '_')
@@ -389,12 +390,12 @@ export class AcpStubAdapter extends LlmAdapter {
       const argv = [config.command, ...config.args]
       const preparer = this.options.prepareProbe
       preparation = preparer === undefined ? undefined : await preparer({ provider, config, argv })
-      const runtimeId = descriptorOf(provider.replace(/^acp-/, ''), config)?.id
+      const runtimeId = effectiveRuntimeOf(provider.replace(/^acp-/, ''), config)
       // Kimi and Codex both expose reasoning choices that vary by model. Capture
       // the confirmed options from the disposable probe session so DSH does not
       // offer a level (for example Codex Mini + Ultra) that the live session
       // would immediately reject.
-      const probeModelConfigOptions = runtimeId === 'kimi' || runtimeId === 'codex'
+      const { probeModelConfigOptions } = modelProbeOptions(runtimeId)
       const probe = await AcpClientConnection.probe(
         preparation === undefined
           ? { argv, cwd: os.tmpdir(), env: { ...config.env }, subprocess: resolution.seam }
