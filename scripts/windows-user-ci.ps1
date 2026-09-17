@@ -14,6 +14,8 @@ $env:TMP = $env:TEMP
 $env:NPM_CONFIG_CACHE = Join-Path $AuditRoot 'npm-cache'
 $env:NPM_CONFIG_USERCONFIG = Join-Path $AuditRoot '.npmrc'
 $env:PNPM_HOME = Join-Path $AuditRoot 'pnpm-home'
+# Report locally; the bootstrap account forwards it to the runner-owned summary.
+$env:GITHUB_STEP_SUMMARY = Join-Path $AuditRoot 'summary.md'
 $manager = Join-Path $AuditRoot 'package-manager'
 $env:PATH = (Join-Path $AuditRoot 'node') + ';' + (Join-Path $manager 'node_modules\.bin') + ';' + $env:PATH
 New-Item -ItemType Directory -Force $env:TEMP, $env:PNPM_HOME | Out-Null

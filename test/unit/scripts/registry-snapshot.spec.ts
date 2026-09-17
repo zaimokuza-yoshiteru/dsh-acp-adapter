@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync } from 'no
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
+import { pathToFileURL } from 'node:url'
 
 const registry = JSON.parse(readFileSync('assets/registry/registry.json', 'utf8'))
 const sidecar = JSON.parse(readFileSync('assets/registry/executables.json', 'utf8'))
@@ -42,8 +43,12 @@ describe('registry snapshot gates', () => {
     writeFileSync(join(dir, 'executables.json'), 'previous-snapshot')
     const manifest = fault === 'missing-version' ? { versions: {} } : { versions: { '1.0.0': { bin: { first: 'a.js', second: 'b.js' } } } }
     writeFileSync(join(dir, 'fetch.mjs'), fault === 'network' ? 'globalThis.fetch = async () => { throw new Error("fixture network failure") }' : `globalThis.fetch = async () => new Response(${JSON.stringify(JSON.stringify(manifest))})`)
-    const result = spawnSync(process.execPath, ['--import', join(dir, 'fetch.mjs'), 'scripts/enrich-registry-executables.mjs', '--file', join(dir, 'registry.json'), '--out', join(dir, 'executables.json')], { encoding: 'utf8' })
+    const result = spawnSync(process.execPath, ['--import', pathToFileURL(join(dir, 'fetch.mjs')).href, 'scripts/enrich-registry-executables.mjs', '--file', join(dir, 'registry.json'), '--out', join(dir, 'executables.json')], { encoding: 'utf8' })
     expect(result.status).not.toBe(0)
+    const expectedError = fault === 'network' ? 'fixture network failure'
+      : fault === 'invalid-registry' ? 'invalid registry header/agents'
+        : 'no unambiguous executable resolved'
+    expect(result.stderr).toContain(expectedError)
     expect(readFileSync(join(dir, 'executables.json'), 'utf8')).toBe('previous-snapshot')
   }))
 
@@ -52,7 +57,7 @@ describe('registry snapshot gates', () => {
     json(dir, 'registry.json', { version: '1', agents: [agent] })
     const manifest = { 'dist-tags': { latest: '2.0.0' }, versions: { '1.0.0': { bin: { 'old-correct': 'old.js' } }, '2.0.0': { bin: { 'new-wrong': 'new.js' } } } }
     writeFileSync(join(dir, 'fetch.mjs'), `globalThis.fetch = async () => new Response(${JSON.stringify(JSON.stringify(manifest))})`)
-    const result = spawnSync(process.execPath, ['--import', join(dir, 'fetch.mjs'), resolve('scripts/enrich-registry-executables.mjs'), '--file', join(dir, 'registry.json'), '--out', join(dir, 'executables.json')], { encoding: 'utf8' })
+    const result = spawnSync(process.execPath, ['--import', pathToFileURL(join(dir, 'fetch.mjs')).href, resolve('scripts/enrich-registry-executables.mjs'), '--file', join(dir, 'registry.json'), '--out', join(dir, 'executables.json')], { encoding: 'utf8' })
     expect(result.status, result.stderr).toBe(0)
     expect(existsSync(join(dir, 'executables.json'))).toBe(true)
     expect(JSON.parse(readFileSync(join(dir, 'executables.json'), 'utf8')).entries.example).toMatchObject({ command: 'old-correct', args: ['acp'], env: { MODEL: 'explicit' } })

@@ -37,6 +37,10 @@ try {
   $child.WaitForExit()
   Get-Content $stdout
   Get-Content $stderr
+  $summary = Join-Path $auditRoot 'summary.md'
+  if ($env:GITHUB_STEP_SUMMARY -and (Test-Path $summary)) {
+    Get-Content -Raw $summary | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+  }
   if ($child.ExitCode -ne 0) { throw "Ordinary-user CI failed: $($child.ExitCode)" }
 } finally {
   if ($null -eq $previousDeveloperMode) {
