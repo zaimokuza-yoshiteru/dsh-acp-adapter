@@ -141,7 +141,7 @@ describe('session-owned native Teams MCP bridge', () => {
     expect(second.lease.signal.aborted).toBe(true)
     expect(second.listeners.size).toBe(0)
   })
-  it('recognizes Kimi’s exact qualified title only on its descriptor and current capability', async () => {
+  it('recognizes Kimi’s exact qualified title only on its runtime and current capability', async () => {
     const { lease, server, name, permission } = await setup('kimi')
     lease.beginPrompt(new AbortController().signal)
     expect(lease.permission({ ...permission(), toolCall: { toolCallId: 'kimi', title: `mcp__${server.name}__${name}` } })?.outcome).toEqual({ outcome: 'selected', optionId: 'yes' })

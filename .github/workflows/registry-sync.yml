@@ -1,0 +1,39 @@
+# Prepare a reviewable snapshot. Maintainers apply the artifact on a branch and
+# open a normal PR, whose checks use the same gates as every other code change.
+name: registry sync
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    name: Prepare registry snapshot for review
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - name: Fetch latest registry.json
+        run: |
+          node scripts/check-ci-user.mjs
+          curl --fail --silent --show-error --location \
+            --retry 3 --retry-delay 5 \
+            -o assets/registry/registry.json \
+            https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json
+      - name: Resolve and verify the complete snapshot
+        run: |
+          node scripts/enrich-registry-executables.mjs
+          node scripts/verify-registry-snapshot.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: registry-snapshot-for-review
+          path: assets/registry/*.json
+          if-no-files-found: error
+          retention-days: 7

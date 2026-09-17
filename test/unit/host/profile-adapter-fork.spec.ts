@@ -127,7 +127,7 @@ function sidecarProxy(sidecar: AcpSidecar, overrides: {
 }
 
 describe('provider adapter ACP fork boundary', () => {
-  it('uses ACP fork only at first dispatch and gives the child an independent binding', async () => {
+  it.each([false, true])('uses ACP fork only at first dispatch and gives the child an independent binding (legacy registry references: %s)', async legacy => {
     const { root, sidecar } = await harness()
     try {
       const sessions = new Map<string, FixtureSession>()
@@ -139,6 +139,13 @@ describe('provider adapter ACP fork boundary', () => {
       const parentChunks: unknown[] = []
       for await (const chunk of parentAdapter.stream(request('parent', parentMessage))) parentChunks.push(chunk)
       expect(parentChunks.some(chunk => typeof chunk === 'object' && chunk !== null && 'type' in chunk && chunk.type === 'finish' && 'replayState' in chunk)).toBe(true)
+      if (legacy) {
+        const saved = await sidecar.readLatestBinding('parent' as never)
+        if (saved?.status !== 'ok') throw new Error('missing binding')
+        await sidecar.append('parent' as never, { kind: 'binding', data: {
+          ...saved.binding, launchFingerprint: { ...saved.binding.launchFingerprint, adapterVersion: '1.6.2' },
+        } })
+      }
       const parentWithMarker = await parentWithReplay(sidecar, 'parent', parent)
       sessions.set('parent', parentWithMarker)
 

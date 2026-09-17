@@ -44,7 +44,11 @@ describe('ACP native filesystem handlers', () => {
     const handlers = createAcpFileSystemHandlers({ profileId: 'codex' })
     await handlers.writeTextFile({ sessionId: 'acp-1', path: file, content: 'one' }); const mode = fs.statSync(file).mode & 0o777
     await handlers.writeTextFile({ sessionId: 'acp-1', path: file, content: 'two' }); expect(fs.readFileSync(file, 'utf8')).toBe('two'); expect(fs.statSync(file).mode & 0o777).toBe(mode)
-    const other = path.join(dir, 'other.txt'); fs.writeFileSync(other, 'safe'); fs.symlinkSync(other, link)
+    const otherDirectory = path.join(dir, 'other'); fs.mkdirSync(otherDirectory)
+    const other = path.join(otherDirectory, 'other.txt'); fs.writeFileSync(other, 'safe')
+    // Windows ordinary users can create a directory junction, not necessarily
+    // a file symlink. Both must hit the same lstat link-replacement guard.
+    fs.symlinkSync(process.platform === 'win32' ? otherDirectory : other, link, process.platform === 'win32' ? 'junction' : 'file')
     await expect(handlers.writeTextFile({ sessionId: 'acp-1', path: link, content: 'bad' })).rejects.toThrow(/symlink/)
     expect(fs.readFileSync(other, 'utf8')).toBe('safe'); fs.rmSync(dir, { recursive: true, force: true })
   })

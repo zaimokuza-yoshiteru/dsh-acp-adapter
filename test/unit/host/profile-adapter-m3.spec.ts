@@ -134,6 +134,34 @@ describe('M3a binding-first ACP provider', () => {
     }
   })
 
+  it.each([
+    ['codex', '1.6.2', null], ['claude', '0.70.0', null], ['kimi', null, '0.36.1'],
+  ] as const)('restores a saved %s binding across the registry upgrade without creating a blank session', async (runtime, adapterVersion, wrappedCliVersion) => {
+    const { sidecar, root } = sidecarAt()
+    const config = () => ({ ...profile(), runtime })
+    const message = user('first')
+    const initial = new AcpProfileAdapter('test', config, seam(), () => session(message), ledgerFor(sidecar), undefined, runtimeFactory({ starts: 0, prompts: 0, restores: 0 }), sidecar)
+    let restarted: AcpProfileAdapter | undefined
+    try {
+      await drain(initial.stream(request('upgrade', message)))
+      await initial.close()
+      const saved = await sidecar.readLatestBinding('upgrade' as never)
+      if (saved?.status !== 'ok') throw new Error('missing binding')
+      const legacy = { ...saved.binding, launchFingerprint: { ...saved.binding.launchFingerprint, adapterVersion, wrappedCliVersion } }
+      await sidecar.append('upgrade' as never, { kind: 'binding', data: legacy })
+      const next = user('continue'), records = { starts: 0, prompts: 0, restores: 0 }
+      const restore = vi.fn(async (binding: typeof legacy) => { records.restores++; expect(binding.agentSessionId).toBe(legacy.agentSessionId); return 'resumed' as const })
+      restarted = new AcpProfileAdapter('test', config, seam(), () => session(next), ledgerFor(sidecar), undefined, () => ({ ...runtimeFactory(records)({}), restore }), sidecar)
+      await drain(restarted.stream(request('upgrade', next)))
+      expect(records).toEqual({ starts: 0, prompts: 1, restores: 1 })
+      const after = await sidecar.readLatestBinding('upgrade' as never)
+      expect(after?.status === 'ok' && after.binding.launchFingerprint).toEqual(legacy.launchFingerprint)
+    } finally {
+      await initial.close(); await restarted?.close(); await sidecar.dispose()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('restores the bound session after a restart without replay comparison', async () => {
     const { sidecar, root } = sidecarAt()
     try {
@@ -246,7 +274,7 @@ describe('M3a binding-first ACP provider', () => {
       await drain(loaded.stream(request('load-session', continuation)))
       expect(second.restores).toBe(1)
       const audit = await sidecar.list('load-session' as never)
-      expect(audit.some(entry => entry.kind === 'replay-assessment' && entry.data.status === 'not-compared')).toBe(true)
+      expect(audit.some(entry => entry.kind === 'replay-assessment' && entry.data.status === 'not-compared' && entry.data.method === 'loaded')).toBe(true)
     } finally {
       await sidecar.dispose()
       fs.rmSync(root, { recursive: true, force: true })
@@ -515,12 +543,12 @@ describe('runtime failure and host disposal ownership', () => {
       await initial.close()
       const lookup = await sidecar.readLatestBinding('drift' as never)
       if (lookup?.status !== 'ok') throw new Error('missing binding')
-      expect(lookup.binding.launchFingerprint).toEqual(acpLaunchFingerprint({ profileId: 'test', config: profile(), descriptor: undefined }))
+      expect(lookup.binding.launchFingerprint).toEqual(acpLaunchFingerprint({ profileId: 'test', config: profile() }))
       if (key === 'legacy') {
         // Old releases fingerprinted only explicit config.env, losing inherited HOME.
         await sidecar.append('drift' as never, { kind: 'binding', data: {
           ...lookup.binding,
-          launchFingerprint: acpLaunchFingerprint({ profileId: 'test', config: profile(), descriptor: undefined, env: {} }),
+          launchFingerprint: acpLaunchFingerprint({ profileId: 'test', config: profile(), env: {} }),
         } })
       } else vi.stubEnv(key, '/test/home-b')
       const saved = await sidecar.readLatestBinding('drift' as never)

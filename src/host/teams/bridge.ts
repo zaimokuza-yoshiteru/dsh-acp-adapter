@@ -70,7 +70,7 @@ export async function createTeamBridge(
   const definitionOf = (call: acp.ToolCallUpdate): ToolDefinition | undefined => {
     const input = call.rawInput as { server?: unknown; tool?: unknown } | undefined
     if (wireProfile === 'codex' && call._meta?.is_mcp_tool_call === true && input?.server === serverName && typeof input.tool === 'string') return names.get(input.tool)
-    // Kimi uses the full qualified tool name as title; this mapping is descriptor-bound.
+    // Kimi uses the full qualified tool name as title; this mapping is runtime-bound.
     const meta = call._meta?.claudeCode as { toolName?: unknown } | undefined
     const name = call.name ?? meta?.toolName ?? call._meta?.['cognition.ai/toolName'] ?? (wireProfile === 'kimi' ? call.title : undefined)
     if (typeof name !== 'string') return undefined

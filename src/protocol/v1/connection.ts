@@ -19,7 +19,7 @@
  *   （fail closed，不自制 child_process 回退）。
  * - 客户端能力固定最小化：只有 read/write 两个 FS handler 均已接线时才广告 fs；terminal
  *   只有完整 terminal host 接线时广告；MCP 与 form elicitation 在 host/client seam 完整接线时按协商事实广告（URL elicitation 未实现，永不广告）。
- *   `session/update` 在连接边界保留标准 v1 事件；仅 descriptor 明确开启
+ *   `session/update` 在连接边界保留标准 v1 事件；仅宿主 runtime 明确开启
  *   Claude draft 扩展时，才额外接收/验证 native-subagent 草案事件。
  * - 全 RPC deadline：initialize/new/load/resume/list/set_config_option/
  * set_mode 各带预算常量（下方 `DEFAULT_*_TIMEOUT_MS`）， 增 close/delete

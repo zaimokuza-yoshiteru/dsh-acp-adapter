@@ -42,7 +42,7 @@ export interface AcpSessionRuntimeOptions {
   readonly mcpKey?: () => unknown
   readonly createMcpLease?: (capabilities: acp.AgentCapabilities | undefined) => Promise<AcpMcpLease | undefined>
   readonly profileId: string
-  /** Explicit descriptor-derived gate for Claude's private draft extension. */
+  /** Explicit runtime-bound gate for Claude's private draft extension. */
   readonly enableClaudeDraftSubagents?: boolean
   readonly config: AcpRuntimeConfig
   readonly subprocess: SubprocessSeam
@@ -272,10 +272,10 @@ export class AcpSessionRuntime {
     binding: AcpRuntimeBindingRef,
     signal?: AbortSignal,
     onReplay?: (notification: AcpSessionNotification) => void,
-  ): Promise<'resumed' | 'loaded'> {
+  ): Promise<'reused' | 'resumed' | 'loaded'> {
     if (this.sessionId !== undefined) {
       if (this.sessionId !== binding.agentSessionId) throw new Error('ACP binding session id does not match the active runtime')
-      return 'resumed'
+      return 'reused'
     }
     await this.initialize(signal)
     const connection = this.connection

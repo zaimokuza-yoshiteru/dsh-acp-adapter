@@ -1,0 +1,108 @@
+[
+  {
+    "input": {
+      "profileId": "devin",
+      "config": {
+        "name": "devin",
+        "command": "agent-cli",
+        "args": [
+          "acp"
+        ],
+        "env": {}
+      },
+      "env": {}
+    },
+    "expectedHash": "82c81b1786df771e"
+  },
+  {
+    "input": {
+      "profileId": "codex",
+      "config": {
+        "name": "codex",
+        "command": "agent-cli",
+        "args": [
+          "acp"
+        ],
+        "env": {}
+      },
+      "env": {}
+    },
+    "expectedHash": "165e873405862cbf"
+  },
+  {
+    "input": {
+      "profileId": "kimi",
+      "config": {
+        "name": "kimi",
+        "command": "agent-cli",
+        "args": [
+          "acp"
+        ],
+        "env": {}
+      },
+      "env": {}
+    },
+    "expectedHash": "069e7f83faf8fbb5"
+  },
+  {
+    "input": {
+      "profileId": "claude",
+      "config": {
+        "name": "claude",
+        "command": "agent-cli",
+        "args": [
+          "acp"
+        ],
+        "env": {}
+      },
+      "env": {}
+    },
+    "expectedHash": "3ced9c9f48cbd4a4"
+  },
+  {
+    "input": {
+      "profileId": "custom",
+      "config": {
+        "name": "Bound Claude",
+        "command": "agent-cli",
+        "args": [],
+        "env": {
+          "CLAUDE_CODE_EXECUTABLE": "/opt/agent"
+        },
+        "runtime": "claude"
+      },
+      "env": {}
+    },
+    "expectedHash": "12abd2b732bd4014"
+  },
+  {
+    "input": {
+      "profileId": "devin",
+      "config": {
+        "name": "Explicit Kimi",
+        "command": "agent-cli",
+        "args": [],
+        "env": {},
+        "runtime": "kimi"
+      },
+      "env": {}
+    },
+    "expectedHash": "659de16512c9d05e"
+  },
+  {
+    "input": {
+      "profileId": "custom",
+      "config": {
+        "name": "Catalog metadata only",
+        "command": "agent-cli",
+        "args": [],
+        "env": {},
+        "catalogId": "claude-acp"
+      },
+      "env": {
+        "CLAUDE_CODE_EXECUTABLE": "/opt/ignored"
+      }
+    },
+    "expectedHash": "97451aa193e71135"
+  }
+]

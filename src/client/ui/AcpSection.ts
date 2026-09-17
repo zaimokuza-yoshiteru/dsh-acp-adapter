@@ -1,3 +1,4 @@
+import { catalogIdOf } from '../../contract/agent-config.ts'
 /**
  * The ACP settings section component tree.
  *
@@ -28,9 +29,9 @@ import {
   Tag,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import {
-  ACP_BUILTIN_AGENT_TEMPLATES,
+  agentLoginHint,
   draftFromAgent,
-  draftFromTemplate,
+  draftFromCatalogEntry,
   dropMaskedEnvKey,
   emptyDraft,
   errorMessageOf,
@@ -39,6 +40,7 @@ import {
   validateAgentDraft,
 } from '../data/logic.ts'
 import { localizedDiagnostic } from '../data/diagnostics.ts'
+import { ACP_CATALOG_ENTRIES, catalogEntryOf, type AcpCatalogEntry } from '../data/catalog.ts'
 import type { AcpAgentConfig, AcpProviderHealth, AgentDraft, DraftError } from '../data/logic.ts'
 import type { AcpLocaleKey } from './locales.ts'
 import type { AcpPanelSnapshot, HealthState } from '../data/stores/panel-store.ts'
@@ -103,11 +105,9 @@ function Loaded({ t, useStore, panel }: {
   const snapshot = useStore((value) => value)
   const [editor, setEditor] = useState<EditorState | null>(null)
   const [notice, setNotice] = useState<'saved' | 'deleted' | null>(null)
-  // The native Menu owns Escape/outside-click/portal placement; this component
-  // only owns whether the Agent template chooser is open.
+  // Delegate placement, scrolling, focus and keyboard interaction to the native Menu.
   const [addMenuOpen, setAddMenuOpen] = useState(false)
-  // Health data loads when the panel first opens, never in the background:
-  // each fetch runs `<command> --version` probes on the host.
+  // Opening the panel reads saved health facts; only an explicit recheck probes.
   useEffect(() => {
     panel.refreshHealth()
   }, [panel])
@@ -223,17 +223,32 @@ function Loaded({ t, useStore, panel }: {
   // points below the rows. The template chooser itself is the host Menu
   // primitive, so its surface and interaction stay native across themes.
   const customAgentItemId = 'custom'
+  const verified = ACP_CATALOG_ENTRIES.filter(entry => entry.verification === 'adapter-tested')
+  const unverified = ACP_CATALOG_ENTRIES.filter(entry => entry.verification === 'unverified')
+  const catalogItem = (entry: AcpCatalogEntry) => ({
+    id: entry.id,
+    label: h('span', { className: css.catalogEntry, title: entry.name },
+      h('span', { className: css.catalogName }, entry.name),
+      entry.version === undefined ? null : h('span', { className: css.catalogVersion }, ` · ${entry.version}`),
+    ),
+  })
   children.push(h('div', { key: 'actions', className: css.addActions },
     h(Menu, {
       open: addMenuOpen,
       portal: true,
+      dense: true,
+      autoFocus: true,
       className: css.addMenu ?? '',
       items: [
-        ...ACP_BUILTIN_AGENT_TEMPLATES.map((template) => ({
-          id: template.id,
-          label: t('addTemplate', { name: template.name }),
-        })),
-        { id: customAgentItemId, label: t('addCustom') },
+        ...(verified.length === 0 ? [] : [{ type: 'label' as const, id: 'verified-label', text: t('catalogVerified', { count: verified.length }) }]),
+        ...verified.map(catalogItem),
+        ...(verified.length === 0 || unverified.length === 0 ? [] : [{ type: 'separator' as const, id: 'verification-divider' }]),
+        ...(unverified.length === 0 ? [] : [{ type: 'label' as const, id: 'unverified-label', text: t('catalogUnverified', { count: unverified.length }) }]),
+        ...unverified.map(catalogItem),
+      ],
+      footer: [
+        { type: 'label', id: 'verification-scope', text: t('catalogVerificationScope') },
+        { id: customAgentItemId, label: h('span', { className: css.catalogEntry }, t('addCustom')) },
       ],
       onClose: () => { setAddMenuOpen(false) },
       onSelect: (id: string) => {
@@ -242,7 +257,7 @@ function Loaded({ t, useStore, panel }: {
           openAdd(emptyDraft())
           return
         }
-        const seed = draftFromTemplate(id)
+        const seed = draftFromCatalogEntry(id)
         if (seed !== undefined) openAdd(seed)
       },
       anchor: h('button', {
@@ -354,13 +369,20 @@ function AgentCard(props: {
     ),
   ]
 
+  if (healthRow?.probe.status === 'ok' && healthRow.probe.versionCompatibility === 'different') {
+    const reference = catalogEntryOf(catalogIdOf(id, config))?.version
+    children.push(h('p', { key: 'version-reference', className: css.hint }, t('catalogVersionDifferent', {
+      actual: healthRow.probe.agentInfo?.version ?? healthRow.version ?? '—', reference: reference ?? '—',
+    })))
+  }
   if (diagnostic !== undefined) {
     children.push(h('p', { key: 'diagnostic', className: css.error, role: 'alert' },
       diagnostic))
   }
-  if (state === 'auth-required' && config.loginHint !== undefined) {
+  if (state === 'auth-required') {
+    const hint = agentLoginHint(id, config)
     children.push(h('p', { key: 'login-hint', className: css.hint },
-      t('loginInstruction', { hint: config.loginHint })))
+      hint === undefined ? t('loginGenericInstruction') : t('loginInstruction', { hint })))
   }
   if (state === 'incompatible') {
     children.push(h('p', { key: 'incompatible-hint', className: css.hint },
@@ -461,6 +483,7 @@ function AgentForm(props: {
   // details out of the common path, while manual profiles open the same fields
   // immediately because command and route identity are required there.
   const [advancedOpen, setAdvancedOpen] = useState(() => props.initial.runtime === undefined)
+  const [optionsOpen, setOptionsOpen] = useState(false)
   const disabled = props.readOnly || busy
   const validation = validateAgentDraft(draft, props.agents, props.editingId)
   const scope = props.editingId ?? 'new'
@@ -494,10 +517,19 @@ function AgentForm(props: {
   const shown = (error: DraftError | undefined, value: string): DraftError | undefined =>
     error !== undefined && (attempted || value.trim() !== '') ? error : undefined
 
+  // catalog 播种条目的安装指引（来自 registry 分发事实；纯展示，不自动安装）
+  const seededEntry = props.editingId === undefined ? catalogEntryOf(draft.catalogId ?? draft.id) : undefined
+  const loginHint = agentLoginHint(draft.id, draft)
+  const envCount = draft.envText.split('\n').filter(line => line.trim()).length + Object.keys(draft.maskedEnv ?? {}).length
+  const toolCount = (draft.hostToolsText ?? '').split('\n').filter(line => line.trim()).length
+
   return h('div', { className: css.editor },
     h('div', { className: css.editorHeader },
       h('span', { className: css.editorTitle }, t(props.editingId === undefined ? 'editorTitleAdd' : 'editorTitleEdit')),
     ),
+    props.editingId === undefined && seededEntry !== undefined ? h('p', { key: 'install-hint', className: css.hint },
+      t('catalogInstallHint', { hint: seededEntry.installHint })) : null,
+    seededEntry?.requiresCommand ? h('p', { className: css.hint }, t('catalogManualCommand')) : null,
     textField({
       t,
       id: `dsh-acp-${scope}-name`,
@@ -555,6 +587,25 @@ function AgentForm(props: {
         placeholder: 'acp',
         onChange: (value) => { edit({ argsText: value }) },
       }),
+      h('p', { className: css.hint }, loginHint === undefined
+        ? t('loginGenericInstruction') : t('loginSetupInstruction', { hint: loginHint })),
+    ) : null,
+    h('button', {
+      type: 'button',
+      className: css.advancedToggle,
+      'aria-expanded': optionsOpen,
+      onClick: () => { setOptionsOpen(previous => !previous) },
+    },
+      h(IconChevronDownOutline14, {
+        size: 14,
+        className: optionsOpen ? `${css.chevron} ${css.chevronFlip}` : css.chevron,
+      }),
+      t('advancedOptions'),
+    ),
+    envCount + toolCount === 0 ? null : h('p', { className: css.hint },
+      t('advancedOptionsConfigured', { envCount, toolCount })),
+    optionsOpen ? h('div', { className: css.advancedFields },
+      h('p', { className: css.hint }, t('advancedOptionsHint')),
       textField({
         t,
         id: `dsh-acp-${scope}-env`,
@@ -598,16 +649,6 @@ function AgentForm(props: {
               }, t('envMaskedRemove')),
             ))),
       ),
-      textField({
-        t,
-        id: `dsh-acp-${scope}-loginHint`,
-        label: t('fieldLoginHint'),
-        hint: t('fieldLoginHintHint'),
-        value: draft.loginHint,
-        disabled,
-        placeholder: 'devin auth login',
-        onChange: (value) => { edit({ loginHint: value }) },
-      }),
     ) : null,
  // singleton：草稿 runtime 与存量 profile 冲突的块级错误（runtime 不是
     // 可编辑字段，错误不挂在某个输入框上）——点名已有 profile 并给「打开已有

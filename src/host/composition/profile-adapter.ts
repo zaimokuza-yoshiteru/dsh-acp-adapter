@@ -19,11 +19,11 @@ import type { AcpStubAgentConfig } from '../../domain/session/agent-config.ts'
 import type { SubprocessSeamResolution } from '../../runtime/process/subprocess.ts'
 import { AcpSessionRuntime } from '../../runtime/session/session-runtime.ts'
 import type { AcpRuntimeContextUsage } from '../../runtime/session/session-runtime.ts'
-import type { AcpRuntimeLaunch } from '../../runtime/session/session-runtime.ts'
-import { acpLaunchEnvironment, acpLaunchFingerprint, profileLaunchIdentityHash } from '../../domain/session/launch-fingerprint.ts'
-import { prepareDevinTeamConfig } from '../teams/devin-config.ts'
+import { acpLaunchEnvironment, acpLaunchFingerprint, acpLaunchFingerprintsCompatible, profileLaunchIdentityHash } from '../../domain/session/launch-fingerprint.ts'
+import { prepareAgentLaunch } from './agent-launch.ts'
 import { buildAcpSpawnPlan } from '../../domain/policy/sandbox.ts'
-import { descriptorOf } from '../../domain/session/agent-config.ts'
+import { effectiveRuntimeOf } from '../../contract/agent-config.ts'
+import { reasoningRequestIsCurrent, sessionProtocolExtensions } from '../../domain/session/agent-compatibility.ts'
 import { DispatchLedger } from '../../runtime/session/dispatch-ledger.ts'
 import { StreamHandoff } from './stream-handoff.ts'
 import type { DispatchLedgerStore } from '../../runtime/session/dispatch-ledger.ts'
@@ -92,7 +92,7 @@ type AgentSessionOptionWrite =
   | { readonly kind: 'mode'; readonly id: string }
 
 /** Prove the child seed ends at the parent's durable ACP binding head. */
-function isLatestForkCut(session: SessionLike | undefined, parentSessionId: string, parentBinding: AcpBindingData, currentFingerprint: unknown): boolean {
+function isLatestForkCut(session: SessionLike | undefined, parentSessionId: string, parentBinding: AcpBindingData): boolean {
   if (session === undefined || session.facts.inheritedRemaining !== 0) return false
   const payload = session.facts.forkReplay ?? undefined
   return payload !== undefined
@@ -101,7 +101,7 @@ function isLatestForkCut(session: SessionLike | undefined, parentSessionId: stri
     && payload.profileGeneration === parentBinding.generation
     && payload.agentSessionId === parentBinding.agentSessionId
     && payload.bindingEpoch === parentBinding.bindingEpoch
-    && payload.launchFingerprint === acpCanonicalHash16(currentFingerprint)
+    && payload.launchFingerprint === acpCanonicalHash16(parentBinding.launchFingerprint)
     && payload.committedPromptOrdinal === parentBinding.committedPromptOrdinal
 }
 
@@ -275,7 +275,7 @@ export interface AcpProfileRuntime {
   /** Fork a parent ACP session; absent means the Agent cannot fork. */
   fork?(parentSessionId: string, signal?: AbortSignal, expected?: { readonly agent?: AcpBindingData['agent']; readonly protocolVersion?: number }, beforeDispatch?: () => Promise<void>): Promise<acp.ForkSessionResponse>
   /** Restore an existing binding; absent implementations fail closed. */
-  restore?(binding: Pick<AcpBindingData, 'agentSessionId'>, signal?: AbortSignal, onReplay?: (notification: AcpSessionNotification) => void): Promise<'resumed' | 'loaded'>
+  restore?(binding: Pick<AcpBindingData, 'agentSessionId'>, signal?: AbortSignal, onReplay?: (notification: AcpSessionNotification) => void): Promise<'reused' | 'resumed' | 'loaded'>
   readonly acpSessionId?: string | undefined
   readonly agentInfo?: acp.Implementation | null | undefined
   readonly agentCapabilities?: acp.AgentCapabilities | undefined
@@ -439,7 +439,7 @@ export class AcpProfileAdapter extends LlmAdapter {
     const profile = this.readConfig()
     const recovery = await this.sidecar?.readRecoveryState(sessionId as never)
     const compatible = binding?.status === 'ok' && binding.binding.provider === `acp-${this.profileId}`
-      && profile !== undefined && acpCanonicalHash16(binding.binding.launchFingerprint) === acpCanonicalHash16(await this.launchFingerprint(profile))
+      && profile !== undefined && acpLaunchFingerprintsCompatible(binding.binding.launchFingerprint, await this.launchFingerprint(profile))
       && (recovery === undefined || recovery.kind === 'healthy')
     const pending = compatible && intent?.bindingKey === modeIntentBindingKey(binding.binding) ? intent.modeId : null
     return { ...snapshot, modeWritable: compatible && (snapshot.freshness === 'stale' || snapshot.editable),
@@ -593,27 +593,6 @@ export class AcpProfileAdapter extends LlmAdapter {
   }
 
   /**
-   * Match one DSH reasoning request against the live Agent option.
-   *
-   * Kimi Code 0.39.1 advertises `high` on session/new, but the same durable
-   * session resumes with the collapsed value `on` as its only selectable
-   * thinking state. Sending the stale catalog value back would violate ACP's
-   * live option contract, while rejecting it makes every restarted Kimi
-   * session unusable. Keep this compatibility rule explicit and profile-bound:
-   * it applies only when `high` has disappeared and the Agent itself confirms
-   * `on`; all other unknown value drift remains fail-closed.
-   */
-  private reasoningRequestIsCurrent(option: Extract<acp.SessionConfigOption, { type: 'select' }>, requested: string): boolean {
-    if (option.currentValue === requested) return true
-    const values = this.selectValues(option)
-    return descriptorOf(this.profileId, this.readConfig())?.id === 'kimi'
-      && requested === 'high'
-      && option.currentValue === 'on'
-      && values.has('on')
-      && !values.has('high')
-  }
-
-  /**
    * Align the stock DSH request with the live ACP session before the durable
    * dispatch WAL. This is intentionally a narrow session-scoped adapter seam:
    * it never changes native routes or DSH permission presets.
@@ -655,10 +634,10 @@ export class AcpProfileAdapter extends LlmAdapter {
     const reasoningOption = this.findSelectOption(confirmedSnapshot, 'reasoning')
     try {
       const requestedReasoning = String(options.reasoningEffort)
-      if (reasoningOption === undefined || (!this.reasoningRequestIsCurrent(reasoningOption, requestedReasoning) && !this.selectValues(reasoningOption).has(requestedReasoning))) {
+      if (reasoningOption === undefined || (!reasoningRequestIsCurrent(effectiveRuntimeOf(this.profileId, this.readConfig()), reasoningOption, requestedReasoning) && !this.selectValues(reasoningOption).has(requestedReasoning))) {
         throw new LlmError(`ACP session does not allow reasoning effort "${String(options.reasoningEffort)}"`, 'ACP_CONFIG_UNSUPPORTED')
       }
-      if (!this.reasoningRequestIsCurrent(reasoningOption, requestedReasoning)) {
+      if (!reasoningRequestIsCurrent(effectiveRuntimeOf(this.profileId, this.readConfig()), reasoningOption, requestedReasoning)) {
         await applyOption(reasoningOption, requestedReasoning)
       }
     } catch (error) {
@@ -854,7 +833,7 @@ export class AcpProfileAdapter extends LlmAdapter {
           if (binding.canonicalCwd !== canonicalCwd) {
             await self.blockRecovery(sessionKey, { kind: 'reconciliation-required', cause: 'cwd-changed', detail: `The session working directory changed from ${binding.canonicalCwd} to ${canonicalCwd}` }, binding)
           }
-          if (acpCanonicalHash16(binding.launchFingerprint) !== acpCanonicalHash16(currentFingerprint)) {
+          if (!acpLaunchFingerprintsCompatible(binding.launchFingerprint, currentFingerprint)) {
             await self.blockRecovery(sessionKey, { kind: 'reconciliation-required', cause: 'profile-changed', detail: 'The ACP launch configuration no longer matches the saved session binding' }, binding)
           }
           if (typeof runtime.restore !== 'function') {
@@ -863,7 +842,7 @@ export class AcpProfileAdapter extends LlmAdapter {
           let replayUpdates = 0
           let replayChars = 0
           try {
-            await runtime.restore!(binding, options.signal, (notification) => {
+            const method = await runtime.restore!(binding, options.signal, (notification) => {
               replayUpdates += 1
               const update = notification.update
               if (update.sessionUpdate === 'agent_message_chunk' && update.content.type === 'text') replayChars += update.content.text.length
@@ -873,7 +852,7 @@ export class AcpProfileAdapter extends LlmAdapter {
             // or appended over, DSH history; a provider may project it differently.
             await self.sidecar?.append(sessionKey as never, {
               kind: 'replay-assessment',
-              data: { status: 'not-compared', detail: `ACP session restore completed (${String(replayUpdates)} staged updates, ${String(replayChars)} text characters)`, acpSessionId: binding.agentSessionId, generation: binding.generation },
+              data: { status: 'not-compared', method, detail: `ACP session ${method} (${String(replayUpdates)} staged updates, ${String(replayChars)} text characters)`, acpSessionId: binding.agentSessionId, generation: binding.generation },
             })
           } catch (error: unknown) {
             await self.releaseRuntime(runtimeKey, runtime)
@@ -905,7 +884,7 @@ export class AcpProfileAdapter extends LlmAdapter {
             } else if (parentBinding.provider !== options.provider || parentBinding.profileId !== self.profileId) {
               forkReason = 'parent-binding-mismatch'
             } else if (parentBinding.canonicalCwd !== canonicalCwd
-              || acpCanonicalHash16(parentBinding.launchFingerprint) !== acpCanonicalHash16(currentFingerprint)) {
+              || !acpLaunchFingerprintsCompatible(parentBinding.launchFingerprint, currentFingerprint)) {
               forkReason = 'parent-binding-mismatch'
             } else {
               const parentRecovery = await self.sidecar.readRecoveryState(parentSessionId as never)
@@ -915,7 +894,7 @@ export class AcpProfileAdapter extends LlmAdapter {
                 forkReason = 'parent-binding-unavailable'
               } else if (self.sessionOf(parentSessionId)?.facts.turnOpen === true) {
                 forkReason = 'parent-not-idle'
-              } else if (!isLatestForkCut(session, parentSessionId, parentBinding, currentFingerprint)) {
+              } else if (!isLatestForkCut(session, parentSessionId, parentBinding)) {
                 forkReason = 'seed-not-latest-semantic-boundary'
               } else if (typeof runtime.fork !== 'function') {
                 forkReason = 'agent-does-not-advertise-fork'
@@ -1065,7 +1044,7 @@ export class AcpProfileAdapter extends LlmAdapter {
         let activityWriteTail = Promise.resolve()
         const currentActivities = new Map<string, NormalizedActivity>()
         const externalDelegations: ExternalDelegationObservation[] = []
-        const profileKind = descriptorOf(self.profileId, profile)?.id ?? self.profileId
+        const profileKind = effectiveRuntimeOf(self.profileId, profile) ?? self.profileId
         const delegationNormalizer = new ExternalDelegationNormalizer(profileKind)
         const toolChildren = new Map<string, Map<number, NormalizedActivity>>()
         // Tool ids are session-scoped, while sparse patch state belongs to this
@@ -1497,8 +1476,7 @@ export class AcpProfileAdapter extends LlmAdapter {
   }
 
   private async launchFingerprint(profile: AcpStubAgentConfig) {
-    const descriptor = descriptorOf(this.profileId, profile)
-    return acpLaunchFingerprint({ profileId: this.profileId, config: profile, descriptor })
+    return acpLaunchFingerprint({ profileId: this.profileId, config: profile })
   }
 
   private async blockRecovery(sessionId: string, state: Omit<AcpRecoveryState, 'dshSessionId' | 'updatedAt'>, binding?: { readonly provider?: string; readonly agentSessionId?: string; readonly generation?: number }, errorCode = 'ACP_RECONCILIATION_REQUIRED'): Promise<never> {
@@ -1563,7 +1541,7 @@ export class AcpProfileAdapter extends LlmAdapter {
     if (profile === undefined || session === undefined) throw new LlmError('The original ACP profile or DSH session is unavailable', 'ACP_RECONCILIATION_REQUIRED')
     const cwd = this.canonicalCwd(session.header?.cwd)
     const fingerprint = await this.launchFingerprint(profile)
-    if (binding.canonicalCwd !== cwd || acpCanonicalHash16(binding.launchFingerprint) !== acpCanonicalHash16(fingerprint)) {
+    if (binding.canonicalCwd !== cwd || !acpLaunchFingerprintsCompatible(binding.launchFingerprint, fingerprint)) {
       throw new LlmError('The original ACP profile and working directory must be restored before retry', 'ACP_RECONCILIATION_REQUIRED')
     }
     if (!this.subprocess.ok) throw new LlmError(this.subprocess.message, 'ACP_SPAWN_FAILURE')
@@ -1654,6 +1632,7 @@ export class AcpProfileAdapter extends LlmAdapter {
   ): ConstructorParameters<typeof AcpSessionRuntime>[0] {
     if (!this.subprocess.ok) throw new LlmError(this.subprocess.message, 'ACP_SPAWN_FAILURE')
     const processSeam = this.subprocess.seam
+    const runtime = effectiveRuntimeOf(this.profileId, profile)
     // ACP client-capability operations are external side effects too.  Keep
     // their bounded, secret-free summaries in the existing sidecar so the
     // audit view can distinguish "handler was never entered" from a handler
@@ -1672,9 +1651,9 @@ export class AcpProfileAdapter extends LlmAdapter {
       }
     return {
       profileId: this.profileId,
-      enableClaudeDraftSubagents: descriptorOf(this.profileId, profile)?.id === 'claude',
+      ...sessionProtocolExtensions(runtime),
       ...(this.mcpKey === undefined ? {} : { mcpKey: () => this.mcpKey!(sessionId) }),
-      ...(this.createMcpLease === undefined ? {} : { createMcpLease: (capabilities: acp.AgentCapabilities | undefined) => this.createMcpLease!(sessionId, capabilities, descriptorOf(this.profileId, profile)?.id) }),
+      ...(this.createMcpLease === undefined ? {} : { createMcpLease: (capabilities: acp.AgentCapabilities | undefined) => this.createMcpLease!(sessionId, capabilities, runtime) }),
       ...(this.log === undefined ? {} : {
         onCapabilityDegraded: (message: string): void => {
           if (this.claudeDraftDegradationReported) return
@@ -1685,26 +1664,10 @@ export class AcpProfileAdapter extends LlmAdapter {
       config: profile,
       subprocess: processSeam,
       cwd,
-      prepareLaunch: async (config, launchCwd): Promise<AcpRuntimeLaunch> => {
-        const resolved = config as AcpStubAgentConfig
-        let env = await acpLaunchEnvironment({ config: resolved })
-        let mcpLease
-        if (descriptorOf(this.profileId, profile)?.id === 'devin') {
-          const lease = await this.createMcpLease?.(sessionId, { mcpCapabilities: { http: true } }, 'devin')
-          if (lease !== undefined) {
-            const prepared = await prepareDevinTeamConfig(env, lease)
-            env = prepared.env
-            mcpLease = prepared.lease
-          }
-        }
-        try {
-          const plan = buildAcpSpawnPlan({ mode: 'danger-full-access', workspaceRoot: launchCwd, argv: [resolved.command, ...resolved.args], env })
-          return { argv: plan.argv, env: plan.env, spawnPlan: plan, ...(mcpLease === undefined ? {} : { mcpLease }) }
-        } catch (error) {
-          await mcpLease?.close()
-          throw error
-        }
-      },
+      prepareLaunch: (config, launchCwd) => prepareAgentLaunch(
+        runtime, config as AcpStubAgentConfig, launchCwd,
+        this.createMcpLease === undefined ? undefined : capabilities => this.createMcpLease!(sessionId, capabilities, runtime),
+      ),
       createFileSystemHandlers: () => createAcpFileSystemHandlers({
         profileId: this.profileId,
         ...(appendFileAudit === undefined ? {} : { audit: appendFileAudit }),

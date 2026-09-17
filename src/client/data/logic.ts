@@ -4,56 +4,26 @@ import { validHostTools } from '../../contract/host-tools.ts'
  *
  * No DOM, fetch, or React imports: every export here is directly
  * vitest-testable without jsdom ( drives this module). The wire and
- * settings shapes are CLIENT-SIDE COPIES of the host-half contracts
+ * profile identities use the shared browser-safe contract. Other decoders validate the host contracts
  * (src/host/composition/installed-profile-registry.ts, src/contract/remote.ts, and ACP schema v1 for AuthMethod) — the
  * client bundle must not import host modules: they target Node, and a value
  * import would be inlined into the browser bundle.
  * @module @zaimokuza/dsh-acp-adapter/client/logic
  */
 
-// ---------- settings shape（镜像 src/host/composition/installed-profile-registry.ts；禁止 import host src） ----------
+import { catalogEntryOf } from './catalog.ts'
 
-/** One ACP agent's stored configuration (the `dsh-acp` settings per-id value). */
-export interface AcpAgentConfig {
-  /** Display name. */
-  name: string
-  /** Executable probed per catalog refresh. */
-  command: string
-  /** Structured argv tail. */
-  args: readonly string[]
- /** Env entries (literal values only; 不再有 `$credential:` 引用语法). */
-  env: Record<string, string>
-  hostTools?: readonly string[]
-  /** Login guidance shown with the agent's auth row. */
-  loginHint?: string
-  /**
- * 显式 runtime descriptor 绑定（边界；真源 src/domain/session/agent-config.ts
-   * 的 `runtime` 字段）。面板编辑器不暴露本字段（高级设置，经 settings 文档
-   * 手写）；解码收下它、编辑存量 agent 时原样过站（见 {@link AgentDraft.runtime}），
-   * 避免面板保存静默解除绑定。
-   */
-  runtime?: AcpAgentRuntimeId
-}
+// Shared profile shape and runtime binding rules; no imports of host implementations.
 
-/** runtime descriptor 绑定词表（镜像 host 侧 `AcpAgentId`；边界）。 */
-export type AcpAgentRuntimeId = 'devin' | 'codex' | 'kimi' | 'claude'
-
-/** 全部合法 runtime 绑定值（decode 校验用；与 host 侧 `ACP_AGENT_IDS` 同序）。 */
-export const ACP_AGENT_RUNTIME_IDS: readonly AcpAgentRuntimeId[] = ['devin', 'codex', 'kimi', 'claude']
+import { ACP_AGENT_IDS as ACP_AGENT_RUNTIME_IDS, ACP_AGENT_ID_PATTERN, effectiveRuntimeOf, catalogIdOf } from '../../contract/agent-config.ts'
+import type { AcpAgentConfig, AcpAgentId as AcpAgentRuntimeId } from '../../contract/agent-config.ts'
+export { ACP_AGENT_IDS as ACP_AGENT_RUNTIME_IDS, ACP_AGENT_ID_PATTERN, ACP_SETTINGS_NS, effectiveRuntimeOf } from '../../contract/agent-config.ts'
+export type { AcpAgentConfig, AcpAgentId as AcpAgentRuntimeId } from '../../contract/agent-config.ts'
 
 /** Resolved `dsh-acp` settings section. */
 export interface AcpSettings {
   agents: Record<string, AcpAgentConfig>
 }
-
-/** Settings namespace storing the ACP agent list. */
-export const ACP_SETTINGS_NS = 'dsh-acp'
-
-/**
- * Agent ids double as settings path segments, health-endpoint URL segments,
- * and route id suffixes — kept to the settings-namespace alphabet on purpose.
- */
-export const ACP_AGENT_ID_PATTERN = /^[a-z][a-z0-9-]*$/
 
 /** Env var name: POSIX shell identifier. */
 export const ACP_ENV_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/
@@ -66,80 +36,6 @@ export const ACP_ENV_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/
  * 挂回，除非用户在文本框里同名重填或在掩码行上点移除）。
  */
 export const ACP_SECRET_ENV_KEY_PATTERN = /KEY|PASSWORD|SECRET|TOKEN/i
-
-/**
- * One-click template for the "添加 Devin" button. Client-side copy of the host
- * template's SETTINGS portion（真源 src/domain/session/agent-config.ts
- * DEVIN_ACP_TEMPLATE；client 半禁止 import host 模块）。认证数据面
- * （opaque/env refs）收进 host 侧 runtime descriptor（内置受信数据，按
- * `runtime`/agent id 绑定、不进 settings 文档），本副本不携带。
- */
-export const DEVIN_ACP_TEMPLATE: AcpAgentConfig & { id: string } = {
-  id: 'devin',
-  name: 'Devin',
-  command: 'devin',
-  args: ['acp'],
-  env: {},
-  loginHint: 'devin auth login',
- // （内置 runtime 唯一性）：显式 runtime 绑定（与其余三个内置模板同形态，不再靠 id 回退）
-  runtime: 'devin',
-}
-
-/**
- * 通用 Claude 预设的 client 侧副本（真源 host 侧 CLAUDE_ACP_TEMPLATE）。
- * 不假设推理提供方（下游路由不属于本插件的模型身份范围），env 不预填。
- */
-export const CLAUDE_ACP_TEMPLATE: AcpAgentConfig & { id: string } = {
-  id: 'claude',
-  name: 'Claude',
-  command: 'claude-agent-acp',
-  args: [],
-  env: {},
-  loginHint: 'claude',
-  runtime: 'claude',
-}
-
-/**
- * Codex 预设的 client 侧副本（真源 host 侧 CODEX_ACP_TEMPLATE，逐字段
- * 钉版见 client-logic.spec.ts）。env 空；认证由 Codex CLI 自己管理。
- * `runtime: 'codex'` 显式绑定 descriptor。
- */
-export const CODEX_ACP_TEMPLATE: AcpAgentConfig & { id: string } = {
-  id: 'codex',
-  name: 'Codex',
-  command: 'codex-acp',
-  args: [],
-  env: {},
-  loginHint: 'codex login',
-  runtime: 'codex',
-}
-
-/**
- * Kimi 预设的 client 侧副本（真源 host 侧 KIMI_ACP_TEMPLATE，逐字段
- * 钉版见 client-logic.spec.ts）。env 空；认证由 Kimi CLI 自己管理。
- * `runtime: 'kimi'` 显式绑定 descriptor。
- */
-export const KIMI_ACP_TEMPLATE: AcpAgentConfig & { id: string } = {
-  id: 'kimi',
-  name: 'Kimi',
-  command: 'kimi',
-  args: ['acp'],
-  env: {},
-  loginHint: 'kimi login',
-  runtime: 'kimi',
-}
-
-/**
- * 面板 one-click 区的模板列表（现状：devin + claude 预设 + codex 预设 +
- * kimi 预设；client 侧副本，真源 host 侧 ACP_BUILTIN_AGENT_TEMPLATES）。AcpSection
- * 按此列表渲染模板按钮，每个按钮以模板 id 调 {@link draftFromTemplate} 播种编辑器。
- */
-export const ACP_BUILTIN_AGENT_TEMPLATES: readonly (AcpAgentConfig & { id: string })[] = [
-  DEVIN_ACP_TEMPLATE,
-  CLAUDE_ACP_TEMPLATE,
-  CODEX_ACP_TEMPLATE,
-  KIMI_ACP_TEMPLATE,
-]
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
@@ -197,6 +93,8 @@ function decodeAgentConfig(id: string, raw: unknown): AcpAgentConfig | undefined
   if (hostTools !== undefined && !validHostTools(hostTools)) return undefined
   if (loginHint !== undefined && typeof loginHint !== 'string') return undefined
  // 边界：runtime 绑定只收四个合法值，其余整体拒绝（镜像 host schema 的 reject 语义）
+  const catalogId = raw['catalogId']
+  if (catalogId !== undefined && (typeof catalogId !== 'string' || !ACP_AGENT_ID_PATTERN.test(catalogId))) return undefined
   const runtime = raw['runtime']
   if (runtime !== undefined && !ACP_AGENT_RUNTIME_IDS.includes(runtime as AcpAgentRuntimeId)) return undefined
   return {
@@ -207,6 +105,7 @@ function decodeAgentConfig(id: string, raw: unknown): AcpAgentConfig | undefined
     ...(hostTools === undefined ? {} : { hostTools: [...hostTools] as string[] }),
     ...(loginHint === undefined ? {} : { loginHint }),
     ...(runtime === undefined ? {} : { runtime: runtime as AcpAgentRuntimeId }),
+    ...(catalogId === undefined ? {} : { catalogId }),
   }
 }
 
@@ -233,11 +132,12 @@ export interface AgentDraft {
    */
   maskedEnv?: Record<string, string>
   /**
- * 存量 agent 的 runtime descriptor 绑定（边界）原样过站：编辑器不暴露本
-   * 字段，但保存时必须挂回——否则面板保存会静默解除 descriptor 绑定。
+ * 存量 agent 的 runtime 绑定（边界）原样过站：编辑器不暴露本
+   * 字段，但保存时必须挂回——否则面板保存会静默解除 runtime 绑定。
    * 仅「编辑存量 agent 且其配置带 runtime」路径携带本字段。
    */
   runtime?: AcpAgentRuntimeId
+  catalogId?: string
 }
 
 /** A blank draft for the manual-add flow. */
@@ -245,15 +145,29 @@ export function emptyDraft(): AgentDraft {
   return { id: '', name: '', command: '', argsText: '', envText: '', loginHint: '' }
 }
 
+/** Display-only guidance: preserve saved hints and fall back to catalog metadata. */
+export function agentLoginHint(id: string, config: Pick<AcpAgentConfig, 'runtime' | 'catalogId' | 'loginHint'>): string | undefined {
+  return config.loginHint?.trim() || catalogEntryOf(catalogIdOf(id, config))?.loginHint
+}
+
 /**
- * Seed the editor from a one-click template by id（按模板 id：
- * one-click 区对 {@link ACP_BUILTIN_AGENT_TEMPLATES} 逐模板渲染按钮）。未知 id
- * 返回 undefined——模板按钮只从列表渲染，正常不可达；调用方据此不打开编辑器。
+ * Seed the editor from a catalog entry（add-menu 按 {@link ACP_CATALOG_ENTRIES}
+ * 逐条渲染；catalog 条目来自 data/catalog.ts，见该模块头注释）。未知 id
+ * 返回 undefined——菜单只从列表渲染，正常不可达；调用方据此不打开编辑器。
  */
-export function draftFromTemplate(templateId: string): AgentDraft | undefined {
-  const template = ACP_BUILTIN_AGENT_TEMPLATES.find((candidate) => candidate.id === templateId)
-  if (template === undefined) return undefined
-  return draftFromAgent(template.id, template)
+export function draftFromCatalogEntry(entryId: string): AgentDraft | undefined {
+  const entry = catalogEntryOf(entryId)
+  if (entry === undefined) return undefined
+  return {
+    id: entry.id,
+    name: entry.name,
+    command: entry.command,
+    argsText: formatArgsText(entry.args),
+    envText: formatEnvText(entry.env),
+    loginHint: entry.loginHint ?? '',
+    catalogId: entry.id,
+    ...(entry.runtime === undefined ? {} : { runtime: entry.runtime }),
+  }
 }
 
 /** Seed the editor from a stored agent (the row's 编辑 button)。 */
@@ -268,6 +182,7 @@ export function draftFromAgent(id: string, config: AcpAgentConfig): AgentDraft {
   return {
     id,
     name: config.name,
+    ...(config.catalogId === undefined && (effectiveRuntimeOf(id, config) !== undefined || catalogEntryOf(id) === undefined) ? {} : { catalogId: catalogIdOf(id, config) }),
     command: config.command,
     argsText: formatArgsText(config.args),
     ...(config.hostTools === undefined ? {} : { hostToolsText: config.hostTools.join('\n') }),
@@ -374,15 +289,6 @@ export interface DraftValidation {
 }
 
 /**
- * profile 的生效 runtime 绑定（镜像 host 侧 descriptorOf 的口径——显式
- * `runtime` 字段优先，缺席时 agent id 恰为内置 runtime id 则按 id 回退命中；
- * 两者都不命中 = generic profile，无 runtime 身份、多实例不受 singleton 约束）。
- */
-export function effectiveRuntimeOf(id: string, config: { readonly runtime?: AcpAgentRuntimeId }): AcpAgentRuntimeId | undefined {
-  return config.runtime ?? (ACP_AGENT_RUNTIME_IDS.includes(id as AcpAgentRuntimeId) ? (id as AcpAgentRuntimeId) : undefined)
-}
-
-/**
  * Validate a staged draft against the host schema's rules plus id uniqueness
  * and the built-in runtime singleton (：同一内置 runtime 至多一个 profile，
  * client 侧先检——host schema 的同款跨条目拒绝兜底绕过 UI 的直写）。
@@ -424,7 +330,7 @@ export function validateAgentDraft(
   }
  // singleton：草稿的生效 runtime（显式 runtime 优先、内置 id 回退）与任一
   // 其他存量 profile 的生效 runtime 相撞即拒绝，错误点名已有 profile。
-  const draftRuntime = draft.runtime ?? (ACP_AGENT_RUNTIME_IDS.includes(id as AcpAgentRuntimeId) ? (id as AcpAgentRuntimeId) : undefined)
+  const draftRuntime = effectiveRuntimeOf(id, draft)
   if (draftRuntime !== undefined) {
     for (const [existingId, existing] of Object.entries(agents)) {
       if (existingId === editingId) continue
@@ -450,6 +356,7 @@ export function validateAgentDraft(
       ...(loginHint === '' ? {} : { loginHint }),
  // 边界：存量 agent 的 runtime 绑定原样挂回（编辑器不暴露，保存不得静默解除）
       ...(draft.runtime === undefined ? {} : { runtime: draft.runtime }),
+      ...(draft.catalogId === undefined ? {} : { catalogId: draft.catalogId }),
     },
   }
 }
@@ -580,14 +487,12 @@ export interface AcpProviderHealth {
       capabilities: AcpCapabilityFacts | null
  /** probe 会话清理事实（delete 未广告/失败 = 降级，面板须如实展示）。 */
       cleanup: AcpProbeCleanup | null
- /** initialize 握手能力的 sha256-16 指纹（旧条目缺席归 null）。 */
+  /** initialize 握手能力的 sha256-16 指纹（旧条目缺席归 null）。 */
       capabilityHash: string | null
- /** 协商的 ACP 协议版本（readiness；旧缓存条目/握手未给出归 null）。 */
+  /** 协商的 ACP 协议版本（readiness；旧缓存条目/握手未给出归 null）。 */
       protocolVersion: number | null
- /** 绑定 descriptor 的钉版（边界；无 descriptor 的普通 profile 归 null）。 */
-      versionPolicy: { adapter: string | null; wrappedCli: string | null } | null
- /** 兼容状态（边界；无 descriptor/握手无版本归 null，无钉版 'unpinned'）。 */
-      versionCompatibility: 'pinned' | 'drifted' | 'unpinned' | null
+  /** 兼容状态（边界；无版本参考/握手无版本归 null，快照无版本 'unknown'）。 */
+      versionCompatibility: 'current' | 'different' | 'unknown' | null
  /** 端到端能力矩阵（host 计算的交集结论，UI 只展示它，不直译 capabilities 布尔）。 */
       matrix: readonly AcpCapabilityMatrixRow[]
     }
@@ -650,10 +555,8 @@ function decodeProbeRow(raw: unknown): AcpProviderHealth['probe'] | undefined {
  // readiness 三键（probe-ok 必填；null 词表/词表外值整行拒绝）
     const protocolVersion = raw['protocolVersion']
     if (!(protocolVersion === null || typeof protocolVersion === 'number')) return undefined
-    const versionPolicy = decodeVersionPolicy(raw['versionPolicy'])
-    if (versionPolicy === undefined) return undefined
     const versionCompatibility = raw['versionCompatibility']
-    if (!(versionCompatibility === null || versionCompatibility === 'pinned' || versionCompatibility === 'drifted' || versionCompatibility === 'unpinned')) return undefined
+    if (!(versionCompatibility === null || versionCompatibility === 'current' || versionCompatibility === 'different' || versionCompatibility === 'unknown')) return undefined
     const matrix = decodeCapabilityMatrix(raw['matrix'])
     if (matrix === undefined) return undefined
     return {
@@ -666,7 +569,6 @@ function decodeProbeRow(raw: unknown): AcpProviderHealth['probe'] | undefined {
       cleanup,
       capabilityHash,
       protocolVersion,
-      versionPolicy,
       versionCompatibility,
       matrix,
     }
@@ -689,17 +591,6 @@ function decodeAgentInfo(raw: unknown): { name: string; version: string } | null
   const { name, version } = raw as Record<string, unknown>
   if (typeof name !== 'string' || typeof version !== 'string') return undefined
   return { name, version }
-}
-
-/** versionPolicy 字段（边界）：null 或 adapter/wrappedCli 双 null 词表成员齐备；其余形态整行拒绝。 */
-function decodeVersionPolicy(raw: unknown): { adapter: string | null; wrappedCli: string | null } | null | undefined {
-  if (raw === null) return null
-  if (!isPlainObject(raw)) return undefined
-  const adapter = raw['adapter']
-  const wrappedCli = raw['wrappedCli']
-  if (!(adapter === null || typeof adapter === 'string')) return undefined
-  if (!(wrappedCli === null || typeof wrappedCli === 'string')) return undefined
-  return { adapter, wrappedCli }
 }
 
 /** capabilities 字段：null 或九键全 boolean 的事实对象（其余键剥离）。 */

@@ -499,8 +499,14 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
   })
 
   it('preserves full native diffs and an unfinished native plan after reload', async () => {
+    const details = vi.spyOn(host.ctx.dshAcp, 'activityDetail')
+    details.mockRejectedValueOnce(new Error('test: detail temporarily unavailable'))
+    try {
     const { settled } = await send('E2E_NATIVE_PLAN_DIFF')
     const id = await settled
+    expect(details).not.toHaveBeenCalled()
+    const summary = await host.ctx.dshAcp.activitySnapshot(id)
+    expect(summary.activities.some(row => row.detailDeferred && row.display === undefined)).toBe(true)
     for (let round = 0; round < 2; round++) {
       if (round) await page.reload()
       await page.getByText('E2E_NATIVE_PLAN_DIFF_DONE', { exact: true }).waitFor()
@@ -509,7 +515,15 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
       await dock.getByText('E2E_PLAN_REMAINS', { exact: true }).waitFor()
       const activity = page.locator('[data-acp-activity]')
       await activity.getByRole('button', { name: /^Edited.*full\.txt/ }).click()
+      if (round === 0) {
+        await activity.getByRole('status').filter({ hasText: 'Could not load details. Your conversation is unaffected.' }).waitFor()
+        await activity.getByRole('button', { name: 'Retry', exact: true }).click()
+      }
       await activity.locator('[data-diff]').getByText('E2E_NEW_TAIL', { exact: true }).first().waitFor()
+      if (process.env.DSH_E2E_SCREENSHOTS && round === 1) {
+        mkdirSync(process.env.DSH_E2E_SCREENSHOTS, { recursive: true })
+        await page.screenshot({ path: join(process.env.DSH_E2E_SCREENSHOTS, `${profile}-native-plan-diff.png`) })
+      }
       const current = host.ctx.agents.get(id)
       expect(host.ctx.sessionProjections.stateOf(current.session, 'todos')).toEqual([{ content: 'E2E_PLAN_REMAINS', status: 'in_progress' }])
     }
@@ -519,6 +533,8 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
       expect(log.filter(event => event.type === 'todo/write').at(-1).data.todos[0].status).toBe('in_progress')
       expect(log.some(event => event.type === 'tool/call')).toBe(false)
     } finally { await handle.close() }
+    expect(details).toHaveBeenCalledTimes(3)
+    } finally { details.mockRestore() }
   })
 
   it('preserves visible history after a crash and requires explicit recovery before continuing', async () => {

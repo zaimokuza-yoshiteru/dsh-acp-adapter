@@ -126,7 +126,7 @@ const ALLOWED_CROSS_LAYER: Readonly<Record<Layer, readonly Layer[]>> = {
  // contract 是零 import 叶子：收窄 wire 类型真源，host 的 remote 与
   // client 两半共同下行消费（共享层，不进 HOST_LAYERS）。
   contract: [],
-  domainSession: ['domainPolicy', 'domainObservability', 'protocol', 'runtime', 'persistence'],
+  domainSession: ['domainPolicy', 'domainObservability', 'protocol', 'runtime', 'persistence', 'contract'],
   remote: ['contract', 'protocol', 'runtime', 'domainSession', 'domainPolicy', 'domainObservability'],
   hostComposition: [
     'domainSession',
@@ -156,6 +156,12 @@ const ALLOWED_CROSS_LAYER: Readonly<Record<Layer, readonly Layer[]>> = {
  */
 const ALLOWED_SRC_ESCAPES: Readonly<Record<string, readonly string[]>> = {
   'client/index.ts': ['../../lib/typert.remote-client.js'],
+  // catalog 数据内嵌边：纯数据 JSON（CI 快照，无 host 代码依赖），只许 client
+  // 数据模块引用——见 src/client/data/catalog.ts 头注释。
+  'client/data/catalog.ts': ['../../../assets/registry/registry.json', '../../../assets/registry/executables.json'],
+  // host 半的版本参考边：同一份快照 sidecar（纯数据），domain 零依赖叶子内嵌
+  // ——见 src/domain/session/registry-versions.ts 头注释。
+  'domain/session/registry-versions.ts': ['../../../assets/registry/executables.json'],
 };
 
 const IMPORT_FROM_RE = /(?:import|export)\s[^'"]*?from\s+['"]([^'"]+)['"]/g;

@@ -21,13 +21,24 @@ jobs:
           node-version-file: .nvmrc
           package-manager-cache: false
       - uses: pnpm/action-setup@v4
+        if: runner.os != 'Windows'
         with:
           version: 10.7.0
+      - name: Verify ordinary Unix user
+        if: runner.os != 'Windows'
+        run: node scripts/check-ci-user.mjs
       - name: Install exact published dependencies
+        if: runner.os != 'Windows'
         run: pnpm install --frozen-lockfile
       - name: Verify npm compatibility
+        if: runner.os != 'Windows'
         run: pnpm typecheck && pnpm test --no-file-parallelism && pnpm build
+      - name: Install, verify and pack as an ordinary Windows user
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/run-windows-user-ci.ps1
       - name: Pack verified artifact
+        if: runner.os != 'Windows'
         id: artifact
         shell: bash
         run: echo "tarball=$(npm pack --ignore-scripts --silent)" >> "$GITHUB_OUTPUT"
@@ -63,6 +74,8 @@ jobs:
         with:
           version: 11.7.0
           package_json_file: reference/deepseek-harness/package.json
+      - name: Verify ordinary Unix user
+        run: node scripts/check-ci-user.mjs
       - name: Build exact host scaffold
         working-directory: reference/deepseek-harness
         run: pnpm install --frozen-lockfile && npm run build:native-system && npm run build:lib:host && npm run build:lib:client && npm --prefix apps/web run build
