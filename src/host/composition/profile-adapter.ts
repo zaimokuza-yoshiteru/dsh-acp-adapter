@@ -20,7 +20,7 @@ import type { SubprocessSeamResolution } from '../../runtime/process/subprocess.
 import { AcpSessionRuntime } from '../../runtime/session/session-runtime.ts'
 import type { AcpRuntimeContextUsage } from '../../runtime/session/session-runtime.ts'
 import type { AcpRuntimeLaunch } from '../../runtime/session/session-runtime.ts'
-import { acpLaunchEnvironment, acpLaunchFingerprint, profileLaunchIdentityHash } from '../../domain/session/launch-fingerprint.ts'
+import { acpLaunchEnvironment, acpLaunchFingerprint, acpLaunchFingerprintsCompatible, profileLaunchIdentityHash } from '../../domain/session/launch-fingerprint.ts'
 import { prepareDevinTeamConfig } from '../teams/devin-config.ts'
 import { buildAcpSpawnPlan } from '../../domain/policy/sandbox.ts'
 import { descriptorOf } from '../../domain/session/agent-config.ts'
@@ -92,7 +92,7 @@ type AgentSessionOptionWrite =
   | { readonly kind: 'mode'; readonly id: string }
 
 /** Prove the child seed ends at the parent's durable ACP binding head. */
-function isLatestForkCut(session: SessionLike | undefined, parentSessionId: string, parentBinding: AcpBindingData, currentFingerprint: unknown): boolean {
+function isLatestForkCut(session: SessionLike | undefined, parentSessionId: string, parentBinding: AcpBindingData): boolean {
   if (session === undefined || session.facts.inheritedRemaining !== 0) return false
   const payload = session.facts.forkReplay ?? undefined
   return payload !== undefined
@@ -101,7 +101,7 @@ function isLatestForkCut(session: SessionLike | undefined, parentSessionId: stri
     && payload.profileGeneration === parentBinding.generation
     && payload.agentSessionId === parentBinding.agentSessionId
     && payload.bindingEpoch === parentBinding.bindingEpoch
-    && payload.launchFingerprint === acpCanonicalHash16(currentFingerprint)
+    && payload.launchFingerprint === acpCanonicalHash16(parentBinding.launchFingerprint)
     && payload.committedPromptOrdinal === parentBinding.committedPromptOrdinal
 }
 
@@ -439,7 +439,7 @@ export class AcpProfileAdapter extends LlmAdapter {
     const profile = this.readConfig()
     const recovery = await this.sidecar?.readRecoveryState(sessionId as never)
     const compatible = binding?.status === 'ok' && binding.binding.provider === `acp-${this.profileId}`
-      && profile !== undefined && acpCanonicalHash16(binding.binding.launchFingerprint) === acpCanonicalHash16(await this.launchFingerprint(profile))
+      && profile !== undefined && acpLaunchFingerprintsCompatible(binding.binding.launchFingerprint, await this.launchFingerprint(profile))
       && (recovery === undefined || recovery.kind === 'healthy')
     const pending = compatible && intent?.bindingKey === modeIntentBindingKey(binding.binding) ? intent.modeId : null
     return { ...snapshot, modeWritable: compatible && (snapshot.freshness === 'stale' || snapshot.editable),
@@ -854,7 +854,7 @@ export class AcpProfileAdapter extends LlmAdapter {
           if (binding.canonicalCwd !== canonicalCwd) {
             await self.blockRecovery(sessionKey, { kind: 'reconciliation-required', cause: 'cwd-changed', detail: `The session working directory changed from ${binding.canonicalCwd} to ${canonicalCwd}` }, binding)
           }
-          if (acpCanonicalHash16(binding.launchFingerprint) !== acpCanonicalHash16(currentFingerprint)) {
+          if (!acpLaunchFingerprintsCompatible(binding.launchFingerprint, currentFingerprint)) {
             await self.blockRecovery(sessionKey, { kind: 'reconciliation-required', cause: 'profile-changed', detail: 'The ACP launch configuration no longer matches the saved session binding' }, binding)
           }
           if (typeof runtime.restore !== 'function') {
@@ -905,7 +905,7 @@ export class AcpProfileAdapter extends LlmAdapter {
             } else if (parentBinding.provider !== options.provider || parentBinding.profileId !== self.profileId) {
               forkReason = 'parent-binding-mismatch'
             } else if (parentBinding.canonicalCwd !== canonicalCwd
-              || acpCanonicalHash16(parentBinding.launchFingerprint) !== acpCanonicalHash16(currentFingerprint)) {
+              || !acpLaunchFingerprintsCompatible(parentBinding.launchFingerprint, currentFingerprint)) {
               forkReason = 'parent-binding-mismatch'
             } else {
               const parentRecovery = await self.sidecar.readRecoveryState(parentSessionId as never)
@@ -915,7 +915,7 @@ export class AcpProfileAdapter extends LlmAdapter {
                 forkReason = 'parent-binding-unavailable'
               } else if (self.sessionOf(parentSessionId)?.facts.turnOpen === true) {
                 forkReason = 'parent-not-idle'
-              } else if (!isLatestForkCut(session, parentSessionId, parentBinding, currentFingerprint)) {
+              } else if (!isLatestForkCut(session, parentSessionId, parentBinding)) {
                 forkReason = 'seed-not-latest-semantic-boundary'
               } else if (typeof runtime.fork !== 'function') {
                 forkReason = 'agent-does-not-advertise-fork'
@@ -1563,7 +1563,7 @@ export class AcpProfileAdapter extends LlmAdapter {
     if (profile === undefined || session === undefined) throw new LlmError('The original ACP profile or DSH session is unavailable', 'ACP_RECONCILIATION_REQUIRED')
     const cwd = this.canonicalCwd(session.header?.cwd)
     const fingerprint = await this.launchFingerprint(profile)
-    if (binding.canonicalCwd !== cwd || acpCanonicalHash16(binding.launchFingerprint) !== acpCanonicalHash16(fingerprint)) {
+    if (binding.canonicalCwd !== cwd || !acpLaunchFingerprintsCompatible(binding.launchFingerprint, fingerprint)) {
       throw new LlmError('The original ACP profile and working directory must be restored before retry', 'ACP_RECONCILIATION_REQUIRED')
     }
     if (!this.subprocess.ok) throw new LlmError(this.subprocess.message, 'ACP_SPAWN_FAILURE')

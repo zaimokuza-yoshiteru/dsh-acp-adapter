@@ -1,9 +1,8 @@
 /**
  * launch fingerprint 的组装真源（resume 预检②的 blocking 指纹）。
  * 由 profile adapter 在每次会话建立/续接时计算一次，写入 binding
- * 并与既有 binding 做 canonical 哈希预检（`acpCanonicalHash16` 双侧不等即
- * 'profile-changed' 阻断——旧形状指纹的 binding 缺新键，哈希天然不等，
- * 无需第二套「版本过期」机制）。
+ * 并与既有 binding 做 canonical 哈希预检；只忽略已移除的目录版本参考字段，
+ * 其他启动身份变化仍以 'profile-changed' 阻断。
  *
  * 分量清单（全部 secret-free）：
  * - `command`/`args`/`envKeys`： 既有分量（profile config 原文 + 排序键名）。
@@ -26,7 +25,7 @@
 import { createHash } from 'node:crypto'
 import { descriptorOf, type AcpAgentRuntimeDescriptor, type AcpStubAgentConfig } from './agent-config.ts'
 import { ACP_NATIVE_DATA_HOME_ENV_KEYS, ACP_NATIVE_XDG_ENV_KEYS } from '../policy/sandbox.ts'
-import type { AcpLaunchFingerprint } from '../../persistence/sidecar.ts'
+import { acpCanonicalHash16, type AcpLaunchFingerprint } from '../../persistence/sidecar.ts'
 
 /** {@link acpLaunchFingerprint} 的输入。 */
 export interface AcpLaunchFingerprintInput {
@@ -118,7 +117,7 @@ export function acpLaunchFingerprint(input: AcpLaunchFingerprintInput): AcpLaunc
     profileId: input.profileId,
     descriptorId: descriptor?.id ?? null,
     // descriptor 钉版已随 versionPolicy 移除：上游版本参考移交 registry 快照
-    // （client/data/catalog.ts）；字段保留（null）以维持旧 binding 的全形状比对。
+    // （client/data/catalog.ts）；旧值只在兼容比较时归一化，原 binding 不改写。
     adapterVersion: null,
     wrappedCliVersion: null,
     envRefs,
@@ -128,4 +127,13 @@ export function acpLaunchFingerprint(input: AcpLaunchFingerprintInput): AcpLaunc
     mcpFingerprint: !input.config.hostTools?.length ? null
       : createHash('sha256').update(JSON.stringify([...input.config.hostTools].sort())).digest('hex').slice(0, 16),
   }
+}
+
+/** Ignore retired catalog reference versions, retaining every execution identity field.
+ * Saved bindings are never rewritten: fork evidence and mode intents still refer
+ * to the exact persisted record. This does not relax runtime Agent identity checks.
+ */
+export function acpLaunchFingerprintsCompatible(saved: AcpLaunchFingerprint, current: AcpLaunchFingerprint): boolean {
+  const normalize = (value: AcpLaunchFingerprint) => ({ ...value, adapterVersion: null, wrappedCliVersion: null })
+  return acpCanonicalHash16(normalize(saved)) === acpCanonicalHash16(normalize(current))
 }

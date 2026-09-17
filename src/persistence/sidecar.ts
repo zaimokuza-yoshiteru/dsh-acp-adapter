@@ -220,12 +220,12 @@ export type AcpActivitySubscriber = (activity: AcpActivityRecord) => void
 /**
  * secret-free 启动指纹：profile config 的 command/args 原样 +
  * **排序后的环境变量键名**（`envKeys` 绝不含值）。
- * 恢复预检时与当前 profile config 重组的指纹逐字段比较，不一致即 'profile-changed'。
+ * 恢复预检忽略历史目录版本参考字段，其余身份与当前配置不一致即 'profile-changed'。
  *
  * binding 中的扩展分量（组装真源：
  * src/domain/session/launch-fingerprint.ts）一律 **optional** 缺席 = 旧版本写出的
  * 指纹，不靠 readLatestBinding 判 outdated，而靠 canonical 哈希预检（新代码恒写出
- * 全部新键——N/A 记 null（canonical JSON 保留 null 键），旧 binding 缺键 → 哈希
+ * 全部新键——N/A 记 null（canonical JSON 保留 null 键），除历史版本参考外，旧 binding 缺键 → 哈希
  * 不等 → 既有 'profile-changed' 阻断）。字段在场时 readLatestBinding 只做形态校验。
  */
 export interface AcpLaunchFingerprint {
@@ -247,7 +247,7 @@ export interface AcpLaunchFingerprint {
   readonly executableOverride?: { readonly name: string; readonly present: boolean } | null
   /** Native final state-location env shape: fixed keys, presence, and value hashes only. */
   readonly nativeStateEnv?: readonly { readonly key: string; readonly present: boolean; readonly hash16?: string }[] | null
-  /** Legacy continuity slot; formal sessions write null because profile MCP injection was removed. */
+  /** Sorted explicit host tool selection hash; null when no host tools are exposed. */
   readonly mcpFingerprint?: string | null
 }
 

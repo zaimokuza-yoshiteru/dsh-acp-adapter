@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { descriptorOf } from '../../../src/domain/session/agent-config.ts'
 import type { AcpStubAgentConfig } from '../../../src/domain/session/agent-config.ts'
-import { acpLaunchEnvironment, acpLaunchFingerprint, profileLaunchIdentityHash } from '../../../src/domain/session/launch-fingerprint.ts'
+import { acpLaunchEnvironment, acpLaunchFingerprint, acpLaunchFingerprintsCompatible, profileLaunchIdentityHash } from '../../../src/domain/session/launch-fingerprint.ts'
 import { acpCanonicalHash16 } from '../../../src/persistence/sidecar.ts'
 
 const HOME = '/home/tester'
@@ -117,5 +117,23 @@ describe('effective launch environment identity', () => {
     expect(profileLaunchIdentityHash('claude', config, first)).toBe(profileLaunchIdentityHash('claude', config, second))
     expect(acpLaunchFingerprint({ ...input, env: {} }).executableOverride?.present).toBe(true)
     expect(await acpLaunchEnvironment({ config })).toEqual(config.env)
+  })
+})
+
+describe('registry reference upgrade continuity', () => {
+  it('ignores only retired reference versions, retaining all other identity fields', () => {
+    const current = acpLaunchFingerprint(baseInput())
+    const old = { ...current, adapterVersion: '1.6.2', wrappedCliVersion: '0.36.1' }
+    expect(acpCanonicalHash16(old)).not.toBe(acpCanonicalHash16(current))
+    expect(acpLaunchFingerprintsCompatible(old, current)).toBe(true)
+    for (const changed of [
+      { command: 'other' }, { args: ['--other'] }, { profileId: 'renamed' },
+      { descriptorId: 'claude' }, { explicitEnv: [] }, { nativeStateEnv: [] },
+      { envRefs: [{ key: 'KEY', present: true }] }, { executableOverride: { name: 'OVERRIDE', present: true } },
+      { mcpFingerprint: 'changed-tools' },
+    ]) expect(acpLaunchFingerprintsCompatible(old, { ...current, ...changed }), JSON.stringify(changed)).toBe(false)
+    const { nativeStateEnv: _, ...incomplete } = current
+    expect(acpLaunchFingerprintsCompatible(incomplete, current)).toBe(false)
+    expect(old.adapterVersion).toBe('1.6.2')
   })
 })

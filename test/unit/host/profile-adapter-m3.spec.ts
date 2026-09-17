@@ -134,6 +134,34 @@ describe('M3a binding-first ACP provider', () => {
     }
   })
 
+  it.each([
+    ['codex', '1.6.2', null], ['claude', '0.70.0', null], ['kimi', null, '0.36.1'],
+  ] as const)('restores a saved %s binding across the registry upgrade without creating a blank session', async (runtime, adapterVersion, wrappedCliVersion) => {
+    const { sidecar, root } = sidecarAt()
+    const config = () => ({ ...profile(), runtime })
+    const message = user('first')
+    const initial = new AcpProfileAdapter('test', config, seam(), () => session(message), ledgerFor(sidecar), undefined, runtimeFactory({ starts: 0, prompts: 0, restores: 0 }), sidecar)
+    let restarted: AcpProfileAdapter | undefined
+    try {
+      await drain(initial.stream(request('upgrade', message)))
+      await initial.close()
+      const saved = await sidecar.readLatestBinding('upgrade' as never)
+      if (saved?.status !== 'ok') throw new Error('missing binding')
+      const legacy = { ...saved.binding, launchFingerprint: { ...saved.binding.launchFingerprint, adapterVersion, wrappedCliVersion } }
+      await sidecar.append('upgrade' as never, { kind: 'binding', data: legacy })
+      const next = user('continue'), records = { starts: 0, prompts: 0, restores: 0 }
+      const restore = vi.fn(async (binding: typeof legacy) => { records.restores++; expect(binding.agentSessionId).toBe(legacy.agentSessionId); return 'resumed' as const })
+      restarted = new AcpProfileAdapter('test', config, seam(), () => session(next), ledgerFor(sidecar), undefined, () => ({ ...runtimeFactory(records)({}), restore }), sidecar)
+      await drain(restarted.stream(request('upgrade', next)))
+      expect(records).toEqual({ starts: 0, prompts: 1, restores: 1 })
+      const after = await sidecar.readLatestBinding('upgrade' as never)
+      expect(after?.status === 'ok' && after.binding.launchFingerprint).toEqual(legacy.launchFingerprint)
+    } finally {
+      await initial.close(); await restarted?.close(); await sidecar.dispose()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('restores the bound session after a restart without replay comparison', async () => {
     const { sidecar, root } = sidecarAt()
     try {
