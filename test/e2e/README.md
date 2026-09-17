@@ -39,7 +39,7 @@ Teams 专项：`pnpm test:e2e test/e2e/agent-teams.e2e.mjs test/e2e/teams-bounda
 
 真实双模型检查增加 `DSH_E2E_LIVE_TEAMS_MULTIMODEL=1 DSH_E2E_LIVE_PROFILES=devin`，分别使用 SWE-1.7 Medium 与 GPT-5.4 Mini Low 创建成员。`DSH_E2E_RETAIN=1 DSH_E2E_BROWSER_CHANNEL=chrome` 打开并保留随窗口大小自适应的本机 Chrome；该模式要求只选一个 Agent，完成断言后暂停测试退出，不能作为 CI 完成信号。实例地址、重新打开所需的 `authenticatedUrl` 与专属停止文件写入仅当前用户可读写的 `.local/e2e-live-teams/review-instance.json`；其中登录链接仅供本地查看，不要分享。需要关闭时创建其中的 `stopFile`，才会清理对应宿主和浏览器。
 
-`DSH_E2E_LIVE_TEAMS_APPROVAL=1` 额外创建一个真实新成员，验证首次系统提示词为 `ask`、写文件前主会话出现待处理卡、原生允许一次之后才产生临时文件。建议限定 `DSH_E2E_LIVE_PROFILES=devin`，与双模型检查一起运行。
+`DSH_E2E_LIVE_TEAMS_APPROVAL=1` 额外创建一个真实新成员，验证首次系统提示词为 `ask`、写文件前主会话出现待处理卡。测试直接在主会话的成员卡上点击“允许一次”，确认决定归属子会话，批准后才产生临时文件，且页面始终停留在主会话。建议限定 `DSH_E2E_LIVE_PROFILES=devin`；模型不可用时，通过 `DSH_E2E_LIVE_DEVIN_MODEL` 指定当前目录中的精确 ID。
 
 已知宿主显示限制：当前宿主的 Teams 名单对休眠成员回退使用 Lead 的初始 `Agent.options.model`，主会话标签也可能滞后。多模型执行应以成员持久化的 `request/header` 为准；不要为使断言通过而把名单标签当作实际调用模型。本插件不复制原生面板或修改宿主的展示数据。原生完成通知会复制子会话的 reasoning block，但 ContextBody 尚不能渲染它，因此该通知中可能出现 Unknown content；成员详情的原生推理展示不受影响。
 

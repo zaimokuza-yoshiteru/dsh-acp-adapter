@@ -159,15 +159,9 @@ function permissionPriorSnapshot(
       return candidate
     }
   }
-  // Some Kimi builds use unrelated opaque ids on the permission request.  A
-  // unique live execute snapshot whose content already contains a complete
-  // command is still an unambiguous protocol-local correlation.  Never choose
-  // when two commands are concurrently eligible.
-  const eligible = [...(snapshots?.values() ?? [])].filter(snapshot => {
-    if (request.kind !== undefined && snapshot.kind !== undefined && request.kind !== snapshot.kind) return false
-    return snapshot.kind === 'execute' && executeInputFromContent(snapshot.content) !== undefined
-  })
-  return eligible.length === 1 ? eligible[0] : undefined
+  // A sole candidate can belong to an earlier operation, including a completed
+  // one. Without a matching identity, keep the request's own details only.
+  return undefined
 }
 
 const ACP_PERMISSION_INPUT_GRACE_MS = 1_500
