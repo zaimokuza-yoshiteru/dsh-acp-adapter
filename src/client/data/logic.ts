@@ -1,4 +1,3 @@
-import { validHostTools } from '../../contract/host-tools.ts'
 /**
  * Pure logic for the ACP settings panel (release contract , ).
  *
@@ -89,8 +88,6 @@ function decodeAgentConfig(id: string, raw: unknown): AcpAgentConfig | undefined
   const env = raw['env'] ?? {}
   if (!isPlainObject(env) || !Object.values(env).every((value) => typeof value === 'string')) return undefined
   const loginHint = raw['loginHint']
-  const hostTools = raw['hostTools']
-  if (hostTools !== undefined && !validHostTools(hostTools)) return undefined
   if (loginHint !== undefined && typeof loginHint !== 'string') return undefined
  // 边界：runtime 绑定只收四个合法值，其余整体拒绝（镜像 host schema 的 reject 语义）
   const catalogId = raw['catalogId']
@@ -102,7 +99,6 @@ function decodeAgentConfig(id: string, raw: unknown): AcpAgentConfig | undefined
     command,
     args: [...args] as string[],
     env: { ...env } as Record<string, string>,
-    ...(hostTools === undefined ? {} : { hostTools: [...hostTools] as string[] }),
     ...(loginHint === undefined ? {} : { loginHint }),
     ...(runtime === undefined ? {} : { runtime: runtime as AcpAgentRuntimeId }),
     ...(catalogId === undefined ? {} : { catalogId }),
@@ -119,7 +115,6 @@ export interface AgentDraft {
   /** One argument per line. */
   argsText: string
   /** One explicitly enabled DSH tool name per line. */
-  hostToolsText?: string
   /** One `KEY=VALUE` per line（疑似 secret 的键不进文本框——见 `maskedEnv`）。 */
   envText: string
   loginHint: string
@@ -185,7 +180,6 @@ export function draftFromAgent(id: string, config: AcpAgentConfig): AgentDraft {
     ...(config.catalogId === undefined && (effectiveRuntimeOf(id, config) !== undefined || catalogEntryOf(id) === undefined) ? {} : { catalogId: catalogIdOf(id, config) }),
     command: config.command,
     argsText: formatArgsText(config.args),
-    ...(config.hostTools === undefined ? {} : { hostToolsText: config.hostTools.join('\n') }),
     envText: formatEnvText(visibleEnv),
     loginHint: config.loginHint ?? '',
     ...(Object.keys(maskedEnv).length === 0 ? {} : { maskedEnv }),
@@ -262,7 +256,6 @@ export type DraftErrorKey =
   | 'errorCommandRequired'
   | 'errorEnvKey'
   | 'errorEnvDuplicate'
-  | 'errorHostTools'
   | 'errorRuntimeTaken'
 
 /** One validation failure: locale key plus template params (e.g. the env line number). */
@@ -277,7 +270,6 @@ export interface DraftValidation {
   readonly name?: DraftError
   readonly command?: DraftError
   readonly env?: DraftError
-  readonly hostTools?: DraftError
   /**
  * （内置 runtime 唯一性）内置 runtime singleton 冲突：草稿的生效 runtime 已被另一个
    * 存量 profile 绑定。params 携带 `{runtime, id, name}` 点名已有 profile——
@@ -313,7 +305,6 @@ export function validateAgentDraft(
     name?: DraftError
     command?: DraftError
     env?: DraftError
-    hostTools?: DraftError
     runtime?: DraftError
   } = {}
   if (id === '') validation.id = { key: 'errorIdRequired' }
@@ -322,8 +313,6 @@ export function validateAgentDraft(
   if (name === '') validation.name = { key: 'errorNameRequired' }
   if (command === '') validation.command = { key: 'errorCommandRequired' }
   const parsedEnv = parseEnvText(draft.envText)
-  const hostTools = (draft.hostToolsText ?? '').split('\n').map(name => name.trim()).filter(Boolean)
-  if (!validHostTools(hostTools)) validation.hostTools = { key: 'errorHostTools' }
   if (!parsedEnv.ok) {
     const key: DraftErrorKey = parsedEnv.failure.reason === 'key' ? 'errorEnvKey' : 'errorEnvDuplicate'
     validation.env = { key, params: { line: parsedEnv.failure.line } }
@@ -341,7 +330,7 @@ export function validateAgentDraft(
   }
   if (validation.id !== undefined || validation.name !== undefined
     || validation.command !== undefined || validation.env !== undefined
-    || validation.runtime !== undefined || validation.hostTools !== undefined || !parsedEnv.ok) {
+    || validation.runtime !== undefined || !parsedEnv.ok) {
     return validation
   }
   return {
@@ -350,7 +339,6 @@ export function validateAgentDraft(
       name,
       command,
       args: parseArgsText(draft.argsText),
-      ...(hostTools.length === 0 ? {} : { hostTools }),
  // 掩码键原样合回（用户同名重填的显式行优先 = 轮换值）
       env: { ...draft.maskedEnv, ...parsedEnv.env },
       ...(loginHint === '' ? {} : { loginHint }),

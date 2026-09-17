@@ -40,7 +40,7 @@ describe('native ACP form elicitation bridge (M5c)', () => {
         return { answers: [
           { id: 'name', selected: [], custom: 'release-1' },
           { id: 'channel', selected: ['stable'] },
-          { id: 'enabled', selected: ['true'] },
+          { id: 'enabled', selected: ['Yes'] },
           { id: 'ratio', selected: [], custom: '1.5' },
           { id: 'count', selected: [], custom: '2' },
           { id: 'tags', selected: ['one', 'two'] },
@@ -116,4 +116,45 @@ describe('native ACP form elicitation bridge (M5c)', () => {
     expect(second).toEqual({ action: 'accept', content: { value: 'second' } })
     expect(service.ask).toHaveBeenCalledTimes(2)
   })
+  it.each(['zh-CN', 'en'])('normalizes Codex scope labels in %s and returns the exact selected scope', async locale => {
+    const params = { ...form({ persist: { type: 'string', title: 'Approval scope', oneOf: [
+      { const: 'once', title: 'Allow once' }, { const: 'session', title: 'Allow for this session' }, { const: 'always', title: "Allow and don't ask again" },
+    ] } }), _meta: { codex_approval_kind: 'mcp_tool_call' } }
+    for (const [index, scope] of ['once', 'session', 'always'].entries()) {
+      const handler = createAcpNativeElicitationHandler({ locale, hostToolName: 'glob', getAgent: () => ({}), userQuestions: {
+        ask: async ({ questions }) => {
+          expect(questions[0]?.header).toBeUndefined()
+          expect(questions[0]?.question).toBe(locale === 'en' ? 'Approval scope' : '授权范围')
+          expect(questions[0]?.detail).toContain('glob')
+          expect(questions[0]?.options?.map(option => option.label)).not.toContain('persist')
+          return { answers: [{ id: 'persist', selected: [questions[0]!.options![index]!.label] }] }
+        },
+      } })
+      expect(await handler(params)).toEqual({ action: 'accept', content: { persist: scope } })
+    }
+  })
+
+  it('preserves titled options/descriptions, disambiguates collisions and maps arrays back to values', async () => {
+    const oneOf = [{ const: 'a', title: 'Same', description: 'First' }, { const: 'b', title: 'Same' }, { const: 'c', title: 'Same (a)' }]
+    const handler = createAcpNativeElicitationHandler({ getAgent: () => ({}), userQuestions: {
+      ask: async ({ questions }) => {
+        const options = questions[0]!.options!
+        expect(new Set(options.map(option => option.label)).size).toBe(3)
+        expect(options[0]?.description).toBe('First')
+        return { answers: [{ id: 'choices', selected: [options[0]!.label, options[2]!.label] }] }
+      },
+    } })
+    expect(await handler(form({ choices: { type: 'array', title: 'Choose', items: { type: 'string', oneOf } } })))
+      .toEqual({ action: 'accept', content: { choices: ['a', 'c'] } })
+  })
+
+  it.each([
+    { selected: [], custom: 'always' }, { selected: ['always'] }, { selected: ['Allow once', 'Always allow'] },
+  ])('does not guess enum values from free text or ambiguous selections: %j', async answer => {
+    const handler = createAcpNativeElicitationHandler({ getAgent: () => ({}), userQuestions: {
+      ask: async () => ({ answers: [{ id: 'persist', ...answer }] }),
+    } })
+    expect(await handler(form({ persist: { type: 'string', oneOf: [{ const: 'once', title: 'Allow once' }, { const: 'always', title: 'Always allow' }] } }))).toEqual({ action: 'cancel' })
+  })
+
 })

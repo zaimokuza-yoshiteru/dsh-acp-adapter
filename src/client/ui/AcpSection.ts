@@ -521,7 +521,6 @@ function AgentForm(props: {
   const seededEntry = props.editingId === undefined ? catalogEntryOf(draft.catalogId ?? draft.id) : undefined
   const loginHint = agentLoginHint(draft.id, draft)
   const envCount = draft.envText.split('\n').filter(line => line.trim()).length + Object.keys(draft.maskedEnv ?? {}).length
-  const toolCount = (draft.hostToolsText ?? '').split('\n').filter(line => line.trim()).length
 
   return h('div', { className: css.editor },
     h('div', { className: css.editorHeader },
@@ -602,8 +601,8 @@ function AgentForm(props: {
       }),
       t('advancedOptions'),
     ),
-    envCount + toolCount === 0 ? null : h('p', { className: css.hint },
-      t('advancedOptionsConfigured', { envCount, toolCount })),
+    envCount === 0 ? null : h('p', { className: css.hint },
+      t('advancedOptionsConfigured', { envCount })),
     optionsOpen ? h('div', { className: css.advancedFields },
       h('p', { className: css.hint }, t('advancedOptionsHint')),
       textField({
@@ -617,17 +616,6 @@ function AgentForm(props: {
         multiline: true,
         placeholder: 'NO_COLOR=1',
         onChange: (value) => { edit({ envText: value }) },
-      }),
-      textField({
-        t,
-        id: `dsh-acp-${scope}-host-tools`,
-        label: t('fieldHostTools'),
-        hint: t('fieldHostToolsHint'),
-        error: validation.hostTools,
-        value: draft.hostToolsText ?? '',
-        disabled,
-        multiline: true,
-        onChange: value => { edit({ hostToolsText: value }) },
       }),
       // 疑似 secret 的存量 env 键只展示键名 + 已配置状态，值永不进文本框；
       // 「移除」从草稿的 maskedEnv 删键（保存后即从 settings 抹去）。

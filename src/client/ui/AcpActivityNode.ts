@@ -1,14 +1,15 @@
+import type { PropsRenderFactories } from '@deepseek-ai/dsh-client-ui-slots'
 import { activityDiffsOf } from '../../contract/activity-diffs.ts'
-import { createElement as h, useEffect, useState, useSyncExternalStore } from 'react'
+import { createElement as h, Fragment, useEffect, useState, useSyncExternalStore, useMemo, useCallback } from 'react'
 import type { ReactNode } from 'react'
 import type {
   ConversationNodeDefinition,
   ConversationMatch,
   ConversationLocation,
 } from '@deepseek-ai/dsh-client-ui-conversation/client'
-import type { ChatConversationViewNode } from '@deepseek-ai/dsh-client-ui-chat/client'
+import type { ToolCallBlock, ChatNodeViewProps, ChatConversationViewNode } from '@deepseek-ai/dsh-client-ui-chat/client'
 import {
-  Button, DiffBlock, DisclosureRow, IconApiOutline14, JsonTree, ReadBlock, StateDot, TerminalBlock,
+  Button, DiffBlock, DisclosureRow, Modal, JsonTree, ReadBlock, StateDot, TerminalBlock,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type {
   DiffHunk, ReadBlockLabels, ReadBlockProps, StateDotState, TerminalBlockLabels, TerminalBlockProps,
@@ -19,6 +20,7 @@ import type { AcpActivityView } from '../data/acp-remote.ts'
 import { acpReplayPayloadOf, type AcpReplayPayloadV1 } from '../data/acp-replay-payload.ts'
 import { AcpActivityJournalHub } from '../data/activity-journal.ts'
 import css from './AcpActivityNode.module.css'
+import { nativeOwner, type NativeToolOwner } from './native-tool-renderer.ts'
 import type { AcpLocaleKey } from './locales.ts'
 import type { OwnsAcpRoute } from '../coordinator/cross-backend-coordinator.ts'
 
@@ -69,9 +71,10 @@ export type ActivityNodeProps = {
   readonly t: (key: AcpLocaleKey, params?: Record<string, string | number>) => string
   readonly journalHub: AcpActivityJournalHub
   readonly onProjectedChild?: (parentSessionId: string, childSessionId: string) => void
-  readonly onOpenProjectedChild?: (childSessionId: string) => void
+  readonly onOpenProjectedChild?: (parentSessionId: string, childSessionId: string) => void
   readonly jsonStringWrapping?: AcpJsonStringWrapping
   readonly hasInlineRenderer?: () => boolean
+  readonly renderTool?: (row: AcpActivityView) => ReactNode
 } & Pick<import('@deepseek-ai/dsh-client-ui-chat/client').ChatNodeOwnerProps, 'openFile'>
 
 /**
@@ -237,6 +240,7 @@ function terminalLabels(t: ActivityNodeProps['t']): TerminalBlockLabels {
   return {
     signal: signal => t('activity.terminal.signal', { signal }),
     exitCode: code => t('activity.terminal.exitCode', { code }),
+    noExitCode: t('activity.terminal.noExitCode'),
     running: t('activity.status.running'),
     failed: t('activity.status.failed'),
     done: t('activity.status.completed'),
@@ -292,19 +296,23 @@ export function completedProjectedChild(row: AcpActivityView): {
   return undefined
 }
 
+export type ActivityPresentationRow = AcpActivityView & {
+  readonly projectedChild?: { readonly parentSessionId: string; readonly childSessionId: string }
+}
+
 /**
  * A projected child is navigation metadata for its source Tool call, not a
  * second operation in the parent transcript. Keep the source call, suppress
  * the link-only sidecar row, and suppress the content children already folded
  * into the source call. This leaves exactly one visible row per ACP Tool call.
  */
-export function visibleActivityRows(rows: readonly AcpActivityView[]): readonly AcpActivityView[] {
+export function visibleActivityRows(rows: readonly AcpActivityView[]): readonly ActivityPresentationRow[] {
   const projectionRows = rows.filter(row => projectionMetadata(detailValue(row)))
   const delegationWindows = projectionRows.flatMap((projectionRow) => {
     const detail = detailValue(projectionRow)
-    if (!projectionMetadata(detail)) return []
+    if (!projectionMetadata(detail) || typeof detail.sourceToolCallId !== 'string') return []
     const root = rows.find(row => row.kind === 'tool'
-      && row.activityId.endsWith(`:tool:${detail.sourceToolCallId as string}`))
+      && (row.activityId === `tool:${detail.sourceToolCallId}` || row.activityId.endsWith(`:tool:${detail.sourceToolCallId}`)))
     return root === undefined ? [] : [{ root, projectionRow }]
   })
   // ACP tool content is a child asset of its tool call, not another operation.
@@ -328,6 +336,10 @@ export function visibleActivityRows(rows: readonly AcpActivityView[]): readonly 
       && row.activitySeq < projectionRow.activitySeq)) return false
     if ([...visibleToolRoots].some(root => row.activityId.startsWith(`${root}:`))) return false
     return true
+  }).map(row => {
+    const projection = delegationWindows.find(window => window.root === row)?.projectionRow
+    const projectedChild = projection === undefined ? undefined : completedProjectedChild(projection)
+    return projectedChild === undefined ? row : { ...row, projectedChild }
   })
 }
 
@@ -346,7 +358,7 @@ function contentText(value: unknown): string {
 export function activityRowElement({ row, t, onOpenProjectedChild, jsonStringWrapping, open = false, onToggle = () => undefined }: {
   readonly row: AcpActivityView
   readonly t: ActivityNodeProps['t']
-  readonly onOpenProjectedChild?: (childSessionId: string) => void
+  readonly onOpenProjectedChild?: (parentSessionId: string, childSessionId: string) => void
   readonly jsonStringWrapping?: AcpJsonStringWrapping
   readonly open?: boolean
   readonly onToggle?: () => void
@@ -382,7 +394,7 @@ export function activityRowElement({ row, t, onOpenProjectedChild, jsonStringWra
     ),
     projectedChildSessionId === undefined || onOpenProjectedChild === undefined ? null : h(Button, {
       variant: 'outline', size: 'sm', className: css.openRecord,
-      onClick: () => { onOpenProjectedChild(projectedChildSessionId) },
+      onClick: () => { onOpenProjectedChild(row.ownerDshSessionId, projectedChildSessionId) },
     }, t('subagent.openRecord')),
     diffs.length === 0 ? null : h(DiffBlock, { diffs, labels: diffLabels(t), className: css.nativeBlock }),
     terminal === undefined ? null : h(TerminalBlock, { ...terminal, labels: terminalLabels(t), className: css.nativeBlock }),
@@ -416,12 +428,16 @@ export function activityRowElement({ row, t, onOpenProjectedChild, jsonStringWra
   }, body)
 }
 
-export function ActivityRow(props: { readonly row: AcpActivityView; readonly journalHub?: AcpActivityJournalHub; readonly t: ActivityNodeProps['t']; readonly openFile: ActivityNodeProps['openFile']; readonly onOpenProjectedChild?: (childSessionId: string) => void; readonly jsonStringWrapping?: AcpJsonStringWrapping }): ReactNode {
+export function ActivityRow(props: { readonly row: ActivityPresentationRow; readonly journalHub?: AcpActivityJournalHub; readonly t: ActivityNodeProps['t']; readonly openFile: ActivityNodeProps['openFile']; readonly onOpenProjectedChild?: (parentSessionId: string, childSessionId: string) => void; readonly jsonStringWrapping?: AcpJsonStringWrapping; readonly renderTool?: (row: AcpActivityView) => ReactNode }): ReactNode {
   const [open, setOpen] = useState(false)
   const [loaded, setLoaded] = useState<AcpActivityView | undefined>(undefined)
   const [failed, setFailed] = useState(false)
   const [attempt, setAttempt] = useState(0)
   const row = props.row
+  const child = row.projectedChild
+  const onOpenChild = props.onOpenProjectedChild
+  const openChild = child !== undefined && onOpenChild !== undefined
+    ? () => onOpenChild(child.parentSessionId, child.childSessionId) : undefined
   const current = loaded?.revisionSeq === row.revisionSeq && loaded.activityId === row.activityId
     && loaded.dshSessionId === row.dshSessionId && loaded.ownerDshSessionId === row.ownerDshSessionId ? loaded : undefined
   useEffect(() => {
@@ -438,7 +454,13 @@ export function ActivityRow(props: { readonly row: AcpActivityView; readonly jou
       props.t(failed ? 'activity.detailLoadFailed' : 'activity.detailLoading'),
       failed ? h(Button, { variant: 'outline', size: 'sm', onClick: () => { setAttempt(value => value + 1) } }, props.t('activity.detailRetry')) : null,
     ) : null
-    if (row.kind === 'tool') return fallbackToolRowElement({ row, t: props.t, openFile: props.openFile, open, onToggle: toggle, pendingDetail })
+    if (row.kind === 'tool') return h('div', { onClickCapture: () => setOpen(true) },
+      props.renderTool?.({ ...row, rawDetail: JSON.stringify({
+        ...(row.detailPaths?.[0] === undefined ? {} : { toolName: 'edit', rawInput: { file_path: row.detailPaths[0] } }),
+        rawOutput: props.t(failed ? 'activity.detailLoadFailed' : 'activity.detailLoading'),
+      }) }),
+      failed ? h(Button, { variant: 'outline', size: 'sm', onClick: () => { setAttempt(value => value + 1) } }, props.t('activity.detailRetry')) : null,
+    )
     return h(DisclosureRow, {
       className: css.row, title: row.kind === 'plan' ? props.t('activity.tool.plan') : row.presentation,
       icon: h(StateDot, { state: dotState(row.status) }), open, expandable: true, expandOnRowClick: true, onToggle: toggle,
@@ -446,9 +468,11 @@ export function ActivityRow(props: { readonly row: AcpActivityView; readonly jou
   }
   const full = current ?? row
   if (full.kind === 'plan') return planRowElement(full, props.t, open, toggle)
-  if (full.kind === 'tool') {
-    return fallbackToolRowElement({ row: full, t: props.t, openFile: props.openFile, open, onToggle: toggle })
-  }
+  if (full.kind === 'tool') return h('div', null,
+    props.renderTool?.(full),
+    openChild === undefined ? null : h(Button, { variant: 'outline', size: 'sm', className: css.openRecord, onClick: openChild }, props.t('subagent.openRecord')),
+    full.display?.unavailable === undefined ? null : h('p', { role: 'status' }, props.t(full.display.unavailable === 'invalid' ? 'activity.detailInvalid' : 'activity.detailTooLarge')),
+  )
   return activityRowElement({ ...props, row: full, open, onToggle: toggle })
 }
 
@@ -467,91 +491,10 @@ function planRowElement(row: AcpActivityView, t: ActivityNodeProps['t'], open: b
   )
 }
 
-/** ACP tool activity shell. DSH keeps GenericToolCard private; recognized
- * payloads use native detail blocks, with a compact IO fallback for the rest. */
-function fallbackToolRowElement({ row, t, openFile, open, onToggle, pendingDetail }: {
-  readonly pendingDetail?: ReactNode
-  readonly row: AcpActivityView
-  readonly t: ActivityNodeProps['t']
-  readonly openFile: ActivityNodeProps['openFile']
-  readonly open: boolean
-  readonly onToggle: () => void
-}): ReactNode {
-  const value = detailValue(row)
-  const detail = record(value) ? value : {}
-  const diffs = pendingDetail !== undefined ? [] : activityDiffs(row, value)
-  const terminal = terminalDetail(row, value)
-  const read = readDetail(value)
-  const input = detail.rawInput
-  const output = detail.rawOutput ?? detail.content
-  const delegationProfile = record(input) && typeof input.profile === 'string' && input.profile.startsWith('subagent_')
-    ? input.profile.slice('subagent_'.length)
-    : undefined
-  const delegated = delegationProfile !== undefined
-  const inputPath = record(input)
-    ? typeof input.file_path === 'string' ? input.file_path : typeof input.path === 'string' ? input.path : undefined
-    : undefined
-  const hasInput = !delegated && hasMeaningfulDetail(input)
-  const hasOutput = !delegated && hasMeaningfulDetail(output)
-  const expandable = pendingDetail !== undefined || diffs.length > 0 || terminal !== undefined || read !== undefined || hasInput || hasOutput
-  const kind = typeof detail.toolKind === 'string' ? detail.toolKind : (row.detailPaths?.length ?? 0) > 0 ? 'edit' : row.kind
-  const title = kind === 'execute' ? t('activity.tool.execute')
-    : kind === 'read' ? t('activity.tool.read')
-      : kind === 'edit' ? t('activity.tool.edit')
-        : kind === 'search' ? t('activity.tool.search')
-          : kind === 'fetch' ? t('activity.tool.fetch')
-            : kind === 'plan' ? t('activity.tool.plan')
-              : t('activity.toolTitle')
-  const summary = delegated && record(input) && typeof input.title === 'string'
-    ? input.title
-    : terminal?.command ?? read?.label ?? inputPath ?? diffs[0]?.path ?? row.detailPaths?.[0] ?? row.presentation
-  const paths = [...new Set(diffs.map(diff => diff.path))]
-  if (paths.length === 0) paths.push(...row.detailPaths ?? [])
-  const filePath = read?.label ?? (paths.length === 1 ? paths[0] : undefined)
-  const icon = row.status === 'failed'
-    ? h(StateDot, { state: 'error' })
-    : row.status === 'cancelled' ? h(StateDot, { state: 'warning' }) : h(IconApiOutline14, { size: 14 })
-  return h(DisclosureRow, {
-    className: css.toolFallback,
-    rowClassName: css.rowSummary,
-    titleClassName: css.toolTitle,
-    icon,
-    title,
-    open: open && expandable,
-    expandable,
-    expandOnRowClick: true,
-    keepContentWhenOpen: true,
-    onToggle,
-    collapsedContent: h('span', { className: css.toolSummary },
-      filePath === undefined || row.status === 'failed' ? summary : h('button', {
-        type: 'button', className: css.fileLink, 'data-acp-file': true,
-        onClick: (event: { stopPropagation(): void }) => { event.stopPropagation(); openFile(filePath) },
-        onKeyDown: (event: { key: string; stopPropagation(): void }) => { if (event.key === 'Enter' || event.key === ' ') event.stopPropagation() },
-      }, summary),
-    ),
-  }, pendingDetail !== undefined ? pendingDetail : h('div', { className: css.toolBody },
-    row.display?.unavailable === undefined ? null : h('p', null, t(row.display?.unavailable === 'invalid' ? 'activity.detailInvalid' : 'activity.detailTooLarge')),
-    diffs.length === 0 ? null : h(DiffBlock, { diffs, labels: diffLabels(t), className: css.nativeBlock }),
-    terminal === undefined ? null : h(TerminalBlock, { ...terminal, labels: terminalLabels(t), className: css.nativeBlock }),
-    read === undefined ? null : h(ReadBlock, { ...read, labels: readLabels(t), className: css.nativeBlock }),
-    diffs.length > 0 || terminal !== undefined || read !== undefined ? null : h('div', { className: css.ioCard },
-      !hasInput ? null : h('div', { className: css.ioSection },
-        h('span', { className: css.ioLabel }, t('activity.input')),
-        h('pre', { className: css.ioText }, typeof input === 'string' ? input : json(input)),
-      ),
-      !hasInput || !hasOutput ? null : h('div', { className: css.ioDivider }),
-      !hasOutput ? null : h('div', { className: css.ioSection },
-        h('span', { className: css.ioLabel }, t('activity.output')),
-        h('pre', { className: css.ioText }, contentText(output)),
-      ),
-    ),
-  ))
-}
-
 const UNSETTLED_SOURCE = { getSnapshot: () => undefined, subscribe: () => () => {} }
 
 /** Subscribe to native Step facts: a final marker retires the live journal view. */
-export function AcpActivityNode(props: ActivityNodeProps): ReactNode {
+export function AcpActivityNode(props: ActivityNodeProps & Omit<ChatNodeViewProps<'acp-activity'>, 't'> & PropsRenderFactories): ReactNode {
   const location = props.node.location
   const source = location.kind === 'step' ? location.step.data.source('acp-activity') : UNSETTLED_SOURCE
   const settled = useSyncExternalStore(source.subscribe, source.getSnapshot)
@@ -559,13 +502,13 @@ export function AcpActivityNode(props: ActivityNodeProps): ReactNode {
   const assistant = useSyncExternalStore(assistantSource.subscribe, assistantSource.getSnapshot)
   if (props.node.data.settled !== true && settled !== undefined) return null
   const emptyFinal = assistant !== undefined && assistant.blocks.length === 0 && assistant.status !== 'running'
-  const inlineBlockCount = props.hasInlineRenderer?.() === true && !emptyFinal ? (assistant?.blocks.length ?? 0) : undefined
-  return h(AcpActivityContent, { ...props, ...(inlineBlockCount === undefined ? {} : { inlineBlockCount }) })
+  const inlineBlockCount = props.hasInlineRenderer?.() === true && assistant !== undefined && !emptyFinal ? assistant.blocks.length : undefined
+  return h(AcpActivityContent, { ...props, renderTool: row => renderNativeActivityTool(props, row, props.t), ...(inlineBlockCount === undefined ? {} : { inlineBlockCount }) })
 }
 
 /** Additive ACP activity renderer. Agent-provided presentation is never translated. */
-export function AcpActivityContent({ node, sessionId, journalHub, t, openFile, onProjectedChild, onOpenProjectedChild, jsonStringWrapping, renderRows, inlineBlockCount }: ActivityNodeProps & { inlineBlockCount?: number; renderRows?: (rows: readonly AcpActivityView[], unavailable: boolean) => ReactNode }): ReactNode {
-  const [rows, setRows] = useState<readonly AcpActivityView[]>([])
+export function AcpActivityContent({ node, sessionId, journalHub, t, openFile, onProjectedChild, onOpenProjectedChild, jsonStringWrapping, renderRows, inlineBlockCount, renderTool }: ActivityNodeProps & { inlineBlockCount?: number; renderRows?: (rows: readonly ActivityPresentationRow[], unavailable: boolean) => ReactNode }): ReactNode {
+  const [rows, setRows] = useState<readonly ActivityPresentationRow[]>([])
   const [unavailable, setUnavailable] = useState(false)
   const data = node.data
   useEffect(() => {
@@ -588,12 +531,11 @@ export function AcpActivityContent({ node, sessionId, journalHub, t, openFile, o
   if (renderRows !== undefined) return renderRows(rows, unavailable)
   // Wait for preceding native chunks instead of briefly moving a future tool
   // above the answer. Tool-only turns (boundary zero) still render here.
-  const additiveRows = rows.filter(row => inlineBlockCount === undefined || row.contentIndex === undefined
-    || (inlineBlockCount === 0 && row.contentIndex === 0))
+  const additiveRows = rows.filter(row => inlineBlockCount === undefined || row.contentIndex === undefined)
   if (additiveRows.length === 0 && !unavailable) return null
   return h('section', { className: css.flow, 'data-acp-activity': true },
     ...additiveRows.map(row => h(ActivityRow, {
-      key: `${row.activityId}:${row.activitySeq}`, row, t, openFile, journalHub,
+      key: `${row.activityId}:${row.activitySeq}`, row, t, openFile, journalHub, ...(renderTool === undefined ? {} : { renderTool }),
       ...(jsonStringWrapping === undefined ? {} : { jsonStringWrapping }),
       ...(onOpenProjectedChild === undefined ? {} : { onOpenProjectedChild }),
     })),
@@ -758,4 +700,88 @@ export function createAcpLiveActivityDefinition(ownsRoute: OwnsAcpRoute): Conver
       return { kind: 'step', turn: state.location.turn.turn, step: state.location.step.step, key: 'acp-activity-live', value: activityNodeData(state) }
     },
   }
+}
+
+/** Presentation-only normalization. These blocks never enter the agent loop,
+ * session event log, model context, tool execution or permission system. */
+export function nativeActivityToolBlock(row: AcpActivityView): ToolCallBlock {
+  const value = detailValue(row)
+  const detail = record(value) ? value : {}
+  const raw = detail.rawInput
+  const mcp = record(raw) && typeof raw.tool === 'string' && record(raw.arguments)
+  let input: unknown = mcp ? raw.arguments : raw
+  let name = typeof detail.toolName === 'string' ? detail.toolName : row.presentation
+  if (mcp) name = String(raw.tool)
+  name = name.replace(/^mcp__.+?__/, '').replace(/^[a-f0-9]{8,}_/, '')
+  const command = record(input) ? input.command ?? input.cmd : undefined
+  const terminal = terminalDetail(row, value)
+  const read = readDetail(value)
+  const diffs = activityDiffs(row, value)
+  const file = record(input) ? input.file_path ?? input.path : undefined
+  let meta: unknown
+  if (typeof command === 'string' && (!mcp || /^(bash|pwsh|exec_command|shell)$/i.test(name))) {
+    name = /^(pwsh|powershell)$/i.test(name) ? 'pwsh' : 'bash'
+    input = { ...(record(input) ? input : {}), command,
+      ...(terminal?.cwd === undefined ? {} : { workdir: terminal.cwd }),
+      // Native shell results with unknown exit status use the generic body;
+      // do not fabricate a successful exit just to obtain a terminal card.
+      ...(terminal?.exitCode === undefined && terminal?.signal === undefined ? {} : { description: row.presentation }),
+    }
+  } else if (diffs.length > 0) {
+    name = diffs.every(diff => diff.oldText === null) ? 'write' : 'edit'
+    const first = diffs[0]!
+    input = { ...(record(input) ? input : {}), file_path: first.path,
+      ...(name === 'write' ? { content: first.newText } : { old_string: first.oldText ?? '', new_string: first.newText }) }
+    meta = { diffs }
+  } else if (read !== undefined || (detail.toolKind === 'read' && typeof file === 'string' && record(input) && input.pattern === undefined && input.query === undefined)) {
+    name = 'read'; input = { ...(record(input) ? input : {}), file_path: file ?? read?.label }
+    // Without a file total, an offset window cannot satisfy native Read's
+    // whole-file contract. Keep its original output in the native IO card.
+    if (read !== undefined && read.lines[0]?.number === 1) meta = { path: read.label, offset: read.lines[0]?.number ?? 1, lines: read.lines, totalLines: read.totalLines, lang: read.lang }
+  }
+  const callId = `acp:${row.ownerDshSessionId}:${row.promptAnchorMessageId}:${row.activityId}`
+  const argsRaw = input === undefined ? '{}' : typeof input === 'string' ? input : JSON.stringify(input)
+  if (row.status === 'running') return { callId, name, argsRaw, turn: 0, step: 0, time: row.time, subCalls: [] }
+  let output = contentText(detail.rawOutput ?? detail.content)
+  if (name === 'read' && read !== undefined && meta !== undefined) {
+    output = `<path>${read.label}</path>\n<type>file</type>\n<content>\n${output}\n</content>`
+  }
+  if ((name === 'bash' || name === 'pwsh') && terminal !== undefined) {
+    output = terminal.output ?? output
+    if (terminal.signal !== undefined) output += `\n[killed by signal: ${terminal.signal}]`
+    else if (terminal.exitCode !== undefined) output += `\n[exit code: ${terminal.exitCode}]`
+  }
+  return { kind: 'tool-result', callId, seq: row.activitySeq, time: row.time, callTime: null,
+    call: { name, argsRaw }, content: output === '' ? [] : [{ type: 'text', text: output }],
+    isError: row.status === 'failed' || row.status === 'cancelled', subCalls: [],
+    ...(row.status === 'cancelled' ? { error: { name: 'Interrupted', code: 'interrupted' } } : {}),
+    ...(meta === undefined ? {} : { meta }),
+  }
+}
+
+export function renderNativeActivityTool(props: Omit<ChatNodeViewProps, 't'> & PropsRenderFactories, row: AcpActivityView, t: ActivityNodeProps['t']): ReactNode {
+  return h(NativeActivityTool, { owner: props, row, t })
+}
+
+function NativeActivityTool({ owner, row, t }: {
+  owner: Omit<ChatNodeViewProps, 't'> & PropsRenderFactories; row: AcpActivityView; t: ActivityNodeProps['t'];
+}): ReactNode {
+  const [inspecting, setInspecting] = useState(false)
+  const block = useMemo(() => nativeActivityToolBlock(row), [row])
+  const inspectCall = useCallback(() => setInspecting(true), [])
+  const props: NativeToolOwner = {
+    ...nativeOwner(owner),
+    // ACP calls are sidecar facts, so the native event-log inspector cannot
+    // resolve their IDs. Inspect the recorded ACP payload in a native Modal.
+    inspectCall,
+    node: { ...owner.node, kind: 'tool-call', data: { root: block } },
+  }
+  return h(Fragment, null,
+    owner.renderFactorySlot('acp.native-tool', props),
+    inspecting ? h(Modal, { open: true, onClose: () => setInspecting(false), title: row.presentation,
+      closeLabel: t('auditClose'), ...(css.inspection === undefined ? {} : { contentClassName: css.inspection }) },
+      row.detailDeferred === true ? h('p', { role: 'status' }, t('activity.detailLoading'))
+        : h(JsonTree, { data: { activity: detailValue(row) }, label: t('auditDetails'), labels: acpJsonTreeLabels(t), expandTopLevel: true }),
+    ) : null,
+  )
 }

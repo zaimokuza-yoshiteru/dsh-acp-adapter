@@ -8,17 +8,25 @@ import { createTeamBridge, teamBridgeKey } from '../../../src/host/teams/bridge.
 const cleanup: Array<() => Promise<unknown>> = []
 afterEach(async () => { await Promise.allSettled(cleanup.splice(0).reverse().map(close => close())) })
 
-async function setup(wireProfile?: string, hostTools: readonly string[] = [], hasTeams = true) {
+async function setup(wireProfile?: string, registeredTools: readonly string[] = [], hasTeams = true) {
   const agent = { id: 'lead', inbox: { nextStep: [] }, steer: vi.fn() }
-  const definitions = new Map<string, unknown>()
+  const names = [...registeredTools, ...(hasTeams ? [
+    'spawn_teammate', 'send_message', 'list_agents', 'wait_agent', 'interrupt_agent',
+    'team_task_create', 'team_task_list', 'team_task_get', 'team_task_update',
+  ] : [])]
+  const definitions = new Map<string, any>(names.map(name => [name, {
+    name, description: name, parameters: { type: 'object', properties: {} },
+  }]))
+  const hidden = new Set<string>()
   const execute = vi.fn(async (input) => ({ content: [{ type: 'text', text: input.name }], isError: false }))
   const services: Record<string, unknown> = {
     agentTeams: { tryMembership: () => ({ role: 'lead' }) },
     agents: { get: (id: string) => id === 'lead' ? agent : undefined },
-    tools: { get: (name: string) => {
-      if (!definitions.has(name)) definitions.set(name, { name, description: name, parameters: { type: 'object', properties: {} } })
-      return definitions.get(name)
-    }, execute },
+    tools: {
+      schemas: (scope: unknown) => scope === agent ? [...definitions.values()].filter(definition => !hidden.has(definition.name)) : [],
+      get: (name: string, scope: unknown) => scope === agent && !hidden.has(name) ? definitions.get(name) : undefined,
+      execute,
+    },
   }
   const listeners = new Map<string, (...args: any[]) => void>()
   if (!hasTeams) delete services.agentTeams
@@ -26,7 +34,7 @@ async function setup(wireProfile?: string, hostTools: readonly string[] = [], ha
     listeners.set(name, listener)
     return () => listeners.delete(name)
   } } as unknown as Context
-  const lease = (await createTeamBridge(ctx, 'lead', { mcpCapabilities: { http: true } }, wireProfile, hostTools))!
+  const lease = (await createTeamBridge(ctx, 'lead', { mcpCapabilities: { http: true } }, wireProfile))!
   cleanup.push(() => lease.close())
   const server = lease.servers[0]!
   if (!('url' in server)) throw new Error('Expected HTTP')
@@ -39,11 +47,11 @@ async function setup(wireProfile?: string, hostTools: readonly string[] = [], ha
     sessionId: 'acp', toolCall: { toolCallId: 'permission', ...(toolName === undefined ? {} : { name: toolName }) },
     options: [{ optionId: 'yes', kind: 'allow_once', name: 'Allow once' }],
   })
-  return { ctx, services, execute, definitions, agent, lease, server, client, tools, name, permission, listeners }
+  return { ctx, services, execute, definitions, agent, lease, server, client, tools, name, permission, listeners, hidden }
 }
 
 describe('session-owned native Teams MCP bridge', () => {
-  it('bridges only selected plugin tools without Teams and leaves their Agent approval intact', async () => {
+  it('automatically discovers scoped plugin tools without Teams and leaves their Agent approval intact', async () => {
     const { ctx, client, lease, name, permission, tools, execute, definitions } = await setup(undefined, ['project_lookup'], false)
     expect(tools).toHaveLength(1)
     expect(name).toMatch(/_project_lookup$/)
@@ -52,30 +60,55 @@ describe('session-owned native Teams MCP bridge', () => {
     await client.callTool({ name, arguments: { query: 'test' } })
     expect(execute).toHaveBeenCalledWith(expect.objectContaining({ name: 'project_lookup', arguments: { query: 'test' } }))
     expect((await client.callTool({ name: 'bash' })).isError).toBe(true)
-    const key = teamBridgeKey(ctx, 'lead', ['project_lookup'])
-    expect(teamBridgeKey(ctx, 'lead', ['project_lookup'])).toBe(key)
+    const key = teamBridgeKey(ctx, 'lead')
+    expect(teamBridgeKey(ctx, 'lead')).toBe(key)
     definitions.set('project_lookup', { name: 'project_lookup' })
-    expect(teamBridgeKey(ctx, 'lead', ['project_lookup'])).not.toBe(key)
+    expect(teamBridgeKey(ctx, 'lead')).not.toBe(key)
     await expect(client.callTool({ name })).rejects.toThrow()
   })
-  it('fails explicitly when a selected tool is missing instead of silently disabling the bridge', async () => {
-    const fixture = await setup()
-    fixture.definitions.set('missing', undefined)
-    await expect(createTeamBridge(fixture.ctx, 'lead', {}, undefined, ['missing'])).rejects.toThrow('ACP_HOST_TOOL_UNAVAILABLE: missing')
+  it('discovers added tools on reconnection and revokes a removed or restricted capability', async () => {
+    const { ctx, lease, client, name, hidden, definitions, listeners } = await setup(undefined, ['present'], false)
+    const before = teamBridgeKey(ctx, 'lead')
+    definitions.set('new_plugin', { name: 'new_plugin', description: 'New plugin', parameters: { type: 'object' } })
+    expect(teamBridgeKey(ctx, 'lead')).not.toBe(before)
+    // New tools join the next connection; the current advertised capability stays stable.
+    expect((await client.listTools()).tools).toHaveLength(1)
+    const next = (await createTeamBridge(ctx, 'lead', { mcpCapabilities: { http: true } }))!
+    cleanup.push(() => next.close())
+    const nextServer = next.servers[0]!
+    if (!('url' in nextServer)) throw new Error('Expected HTTP')
+    const nextClient = new Client({ name: 'next', version: '1' })
+    await nextClient.connect(new StreamableHTTPClientTransport(new URL(nextServer.url)) as Parameters<Client['connect']>[0])
+    cleanup.push(() => nextClient.close())
+    expect((await nextClient.listTools()).tools.map(tool => tool.name.replace(/^[^_]+_/, ''))).toEqual(['new_plugin', 'present'])
+    hidden.add('present')
+    listeners.get('tools/change')!()
+    expect(next.signal.aborted).toBe(true)
+    lease.beginPrompt(new AbortController().signal)
+    await expect(client.callTool({ name })).rejects.toThrow()
   })
-  it('does not auto-answer Codex approvals for selected non-Team tools', async () => {
+
+  it('does not expose global tools hidden from this agent or team tools to non-members', async () => {
+    const { ctx, definitions, hidden, services } = await setup(undefined, ['present', 'spawn_teammate'], false)
+    hidden.add('present')
+    expect(await createTeamBridge(ctx, 'lead', {})).toBeUndefined()
+    expect(definitions.has('present')).toBe(true)
+    expect((services.tools as { schemas(scope?: unknown): unknown[] }).schemas()).toEqual([])
+  })
+
+  it('does not auto-answer Codex approvals for automatically exposed non-Team tools', async () => {
     const { lease, name, server } = await setup('codex', ['project_lookup'], false)
     lease.beginPrompt(new AbortController().signal)
     const call = { toolCallId: 'custom', rawInput: { server: server.name, tool: name }, _meta: { is_mcp_tool_call: true } }
     expect(lease.elicitation!({ sessionId: 'acp', mode: 'form', message: 'Approve', toolCallId: 'custom', requestedSchema: { type: 'object', properties: {} }, _meta: { codex_approval_kind: 'mcp_tool_call' } } as CreateElicitationRequest, call)).toBeUndefined()
   })
-  it('stays absent when Teams is disabled or the session is not a member', async () => {
+  it('stays absent without a tool runtime or a live session', async () => {
     const ctx = { get: () => undefined } as unknown as Context
     expect(await createTeamBridge(ctx, 'lead', {})).toBeUndefined()
     const fixture = await setup()
     expect(await createTeamBridge(fixture.ctx, 'another', {})).toBeUndefined()
   })
-  it('exports nine upstream schemas, dispatches exact identity, and rejects fork and non-Team tools', async () => {
+  it('exports nine upstream schemas, dispatches exact identity, and rejects fork and unadvertised tool names', async () => {
     const { lease, client, tools, name, execute, agent } = await setup()
     expect(tools).toHaveLength(9)
     expect((await client.callTool({ name })).isError).toBe(true)
@@ -161,4 +194,22 @@ describe('session-owned native Teams MCP bridge', () => {
     lease.endPrompt()
     expect(lease.elicitation!(request, toolCall)).toBeUndefined()
   })
+  it('presents a verified host tool name without granting approval or losing extra request context', async () => {
+    const { lease, name, server, definitions } = await setup('codex', ['glob'], false)
+    const call = { toolCallId: 'display', rawInput: { server: server.name, tool: name }, _meta: { is_mcp_tool_call: true } }
+    const request: CreateElicitationRequest = { sessionId: 'acp', toolCallId: 'display', mode: 'form',
+      message: `Allow the ${server.name} MCP server to run tool "${name}"?`, _meta: { codex_approval_kind: 'mcp_tool_call' },
+      requestedSchema: { type: 'object', properties: { persist: { type: 'string', enum: ['once', 'session', 'always'] } } } }
+    expect(lease.elicitationToolName!(request, call)).toBeUndefined()
+    lease.beginPrompt(new AbortController().signal)
+    expect(lease.elicitationToolName!(request, call)).toBe('glob')
+    expect(lease.elicitation!(request, call)).toBeUndefined()
+    expect(lease.elicitationToolName!({ ...request, message: request.message + ' Additional scope!' }, call)).toBeUndefined()
+    expect(lease.elicitationToolName!(request, { ...call, toolCallId: 'other' })).toBeUndefined()
+    expect(lease.elicitationToolName!(request, { ...call, rawInput: { server: 'other', tool: name } })).toBeUndefined()
+    expect(lease.elicitationToolName!({ ...request, _meta: {} }, call)).toBeUndefined()
+    definitions.delete('glob')
+    expect(lease.elicitationToolName!(request, call)).toBeUndefined()
+  })
+
 })

@@ -48,6 +48,7 @@
   transform: rotate(180deg);
 }
 
+
 /* ApprovalPanel owns the native card and intentionally accepts a free-form
    reason. Preserve its line breaks so the complete ACP command remains
    inspectable and selectable without introducing a second approval UI. */
@@ -55,4 +56,40 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   user-select: text;
+}
+
+.settingRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+}
+.settingName, .currentValue {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settingName { flex: 1; }
+.currentValue { max-width: 50%; color: var(--dsw-alias-label-caption); }
+.settingRow > svg { flex-shrink: 0; }
+/* Scope the portal to our own content, preserving native menu styling. */
+:global([role='menu']):has(.menuContent) { width: min(348px, 65vw); }
+.menuAnchor { display: inline-flex; min-width: 0; max-width: 100%; }
+.choice { display: flex; flex-direction: column; white-space: normal; }
+.choiceDescription { font-size: 12px; color: var(--dsw-alias-label-caption); }
+
+/* DSH alpha.2 keeps the native question card/body unpadded; its detail
+   block still has a 2px inset. Match the native heading's section inset.
+   The options block has a role, so a question without detail is untouched.
+   Use the host's DOM hooks, not generated class names. Remove when upstream
+   fixes QuestionComposer.module.css. Applies consistently to native questions
+   while this adapter is loaded, regardless of the execution owner. */
+:global([data-question-key] [data-question-scroll] > div:first-child:not([role])) {
+  margin: 8px 24px;
+}
+
+@media (max-width: 720px) {
+  :global([data-question-key] [data-question-scroll] > div:first-child:not([role])) {
+    margin-inline: 18px;
+  }
 }

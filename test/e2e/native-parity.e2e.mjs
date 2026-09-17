@@ -99,6 +99,12 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
     } finally { clearTimeout(diagnostic) }
   })
 
+  async function expandProcess() {
+    const control = page.locator('[data-turn-process-tool-calls]').filter({ hasText: /tool call/ }).last()
+    await control.waitFor()
+    if (await control.getAttribute('aria-expanded') === 'false') await control.click()
+  }
+
   async function send(prompt, { expectError = false } = {}) {
     const input = page.locator('[data-composer-input]').first()
     await writeComposerDraft(page, input, prompt)
@@ -358,6 +364,7 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
     await page.reload()
     await page.getByText('E2E_DONE mock-model-a', { exact: true }).waitFor()
     await page.getByText('parity.txt', { exact: true }).first().waitFor()
+    await expandProcess()
     const activity = page.locator('[data-acp-activity]')
     await activity.waitFor()
     await activity.getByText('echo E2E_TOOL_OUTPUT', { exact: true }).first().click()
@@ -447,54 +454,115 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
       expect(log.find(event => event.type === 'assistant/message').data.message.content.some(block => block.type === 'image')).toBe(true)
       expect(log.some(event => event.type === 'tool/call')).toBe(false)
     } finally { await handle.close() }
+    await expandProcess()
     const picture = page.locator('[data-variant] img')
     await picture.first().waitFor()
     await expect.poll(() => picture.first().evaluate(img => img.complete && img.naturalWidth > 0)).toBe(true)
+    await expandProcess()
     const activity = page.locator('[data-acp-activity]')
     await expect.poll(() => activity.count()).toBe(1)
     await activity.getByRole('button', { name: /^Read.*fixture\.txt/ }).click()
     await activity.locator('[data-read]').getByText('E2E_READ_LINE', { exact: true }).first().waitFor()
-    await activity.getByRole('button', { name: /^Edited.*fixture\.txt/ }).click()
+    await activity.getByRole('button', { name: /^Edit.*fixture\.txt/ }).click()
     await activity.locator('[data-diff]').getByText('E2E_NEW_LINE', { exact: true }).first().waitFor()
-    await activity.locator('[data-acp-file]').first().press('Enter')
+    await activity.locator('[data-tool=read]').getByRole('button', { name: 'fixture.txt', exact: true }).press('Enter')
     const preview = page.locator('[data-rightbar-col] [data-textpreview-state="text"]')
     await preview.waitFor()
     await expect.poll(() => preview.locator('[data-textpreview-line="1"]').textContent()).toBe('E2E_SIDEBAR_FILE\n')
   })
 
-  it('executes selected DSH plugin tools with native hooks and Agent approval', async () => {
-    const original = { name: `Fixture ${profile}`, command: process.execPath,
-      args: [join(root, 'test/mock-agent/mock-agent.mjs')],
-      env: { MOCK_SCENARIO: 'regression', MOCK_PROFILE: profile, MOCK_LOG: agentLog } }
+  it('automatically discovers a newly installed DSH tool in an existing session with native hooks and Agent approval', async () => {
+    const first = await send('E2E_MESSAGE')
+    await first.settled
+    const disposeTool = host.ctx.tools.register({
+      name: 'e2e_late_fixture', description: 'Newly installed tool', parameters: { type: 'object', properties: {} },
+      output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
+      execute: async () => 'E2E_NATIVE_BODY',
+    })
     const calls = []
     const disposePre = host.ctx.on('tools/pre-execute', async (exec, next) => {
-      if (exec.name === 'e2e_fixture') calls.push('pre')
+      if (exec.name === 'e2e_late_fixture') calls.push('pre')
       return await next()
     })
     const disposePost = host.ctx.on('tools/post-execute', async (exec, result, next) => {
       const decision = await next()
-      if (exec.name !== 'e2e_fixture') return decision
+      if (exec.name !== 'e2e_late_fixture') return decision
       calls.push('post')
       expect(JSON.stringify(result)).toContain('E2E_NATIVE_BODY')
       return { kind: 'accept', content: [{ type: 'text', text: 'E2E_HOST_POST' }] }
     })
     try {
-      await host.ctx.settings.replace('dsh-acp', { agents: { [profile]: { ...original, hostTools: ['e2e_fixture'] } } })
-      await page.reload()
-      const { settled } = await send('E2E_HOST_TOOLS')
+      const { settled } = await send('E2E_HOST_TOOLS_LATE')
       const panel = page.locator('[data-question-key], [data-approval-key]')
       await panel.waitFor()
       expect(calls).toEqual([])
       if (await panel.getAttribute('data-question-key') !== null) {
-        await panel.getByRole('radio', { name: 'Allow this operation', exact: true }).click()
+        if (profile === 'codex') {
+          const text = await panel.innerText()
+          expect(text).toContain('DSH tool "e2e_late_fixture"')
+          expect(text).not.toMatch(/dshteam_|persist/)
+        }
+        await panel.getByRole('radio', { name: profile === 'codex' ? 'Allow for this session' : 'Allow this operation', exact: true }).click()
         await panel.getByRole('button', { name: /Submit|Send/ }).click()
       } else await panel.getByRole('button', { name: 'Allow once', exact: true }).click()
       await settled
       await page.getByText('E2E_HOST_TOOLS_DONE', { exact: true }).waitFor()
       expect(calls).toEqual(['pre', 'post'])
     } finally {
-      disposePre(); disposePost()
-      await host.ctx.settings.replace('dsh-acp', { agents: { [profile]: original } })
+      disposePre(); disposePost(); disposeTool()
+    }
+  })
+
+  it('presents ACP outputs through the native delivery card and preview, including after reload', async () => {
+    writeFileSync(join(workspace, 'delivery.txt'), 'NATIVE_ACP_DELIVERY_CONTENT\n')
+    const { settled } = await send('E2E_PRESENT')
+    const approval = page.locator('[data-question-key], [data-approval-key]')
+    await approval.waitFor()
+    if (await approval.getAttribute('data-question-key') !== null) {
+      if (profile === 'codex') {
+        const text = await approval.innerText()
+        expect(text).toContain('DSH tool "present"')
+        mkdirSync(join(root, '.local/ui-review'), { recursive: true })
+        const originalViewport = page.viewportSize()
+        for (const theme of ['light', 'dark']) {
+          await host.ctx.settings.replace('ui-theme', { preference: theme })
+          await expect.poll(() => page.evaluate(() => document.documentElement.style.colorScheme)).toBe(theme)
+          for (const width of [1680, 680]) {
+            await page.setViewportSize({ width, height: 1000 })
+            const card = approval.locator('section')
+            const heading = card.getByRole('heading', { name: 'Approval scope', exact: true })
+            const detail = card.locator('[data-question-scroll] > div:first-child:not([role])')
+            const cardBox = await card.boundingBox()
+            const headingBox = await heading.boundingBox()
+            const detailBox = await detail.boundingBox()
+            // Measure rendered geometry, not the CSS rule: detail must align
+            // with the native heading and keep equal space on the right.
+            expect(Math.abs(detailBox.x - headingBox.x)).toBeLessThan(1)
+            const inset = detailBox.x - cardBox.x
+            expect(inset).toBeGreaterThanOrEqual(width > 720 ? 24 : 18)
+            expect(Math.abs(cardBox.x + cardBox.width - detailBox.x - detailBox.width - inset)).toBeLessThan(1)
+            expect(detailBox.y).toBeGreaterThanOrEqual(headingBox.y + headingBox.height + 8)
+            expect(await card.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true)
+            await approval.screenshot({ path: join(root, `.local/ui-review/codex-approval-${theme}-${width}.png`), animations: 'disabled' })
+          }
+        }
+        await page.setViewportSize(originalViewport)
+        await host.ctx.settings.replace('ui-theme', { preference: 'light' })
+        await expect.poll(() => page.evaluate(() => document.documentElement.style.colorScheme)).toBe('light')
+        await approval.screenshot({ path: join(root, '.local/ui-review/codex-approval.png') })
+        expect(text).not.toMatch(/dshteam_|persist/)
+      }
+      await approval.getByRole('radio', { name: profile === 'codex' ? "Always allow, don't ask again" : 'Allow this operation', exact: true }).click()
+      await approval.getByRole('button', { name: /Submit|Send/ }).click()
+    } else await approval.getByRole('button', { name: 'Allow once', exact: true }).click()
+    const id = await settled
+    expect(events.filter(event => event.id === id && event.type === 'deliverables/presented')).toHaveLength(1)
+    for (let round = 0; round < 2; round++) {
+      if (round) await page.reload()
+      const card = page.locator('[data-presented-file]').filter({ hasText: 'delivery.txt' })
+      await card.waitFor()
+      await card.getByRole('button').first().click()
+      await page.locator('[data-rightbar-col]').getByText('NATIVE_ACP_DELIVERY_CONTENT', { exact: false }).waitFor()
     }
   })
 
@@ -513,10 +581,11 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
       const dock = page.getByTestId('todo-panel')
       await dock.getByRole('button').click()
       await dock.getByText('E2E_PLAN_REMAINS', { exact: true }).waitFor()
-      const activity = page.locator('[data-acp-activity]')
-      await activity.getByRole('button', { name: /^Edited.*full\.txt/ }).click()
+      await expandProcess()
+    const activity = page.locator('[data-acp-activity]')
+      await activity.getByRole('button', { name: /^Edit.*full\.txt/ }).click()
       if (round === 0) {
-        await activity.getByRole('status').filter({ hasText: 'Could not load details. Your conversation is unaffected.' }).waitFor()
+        await activity.getByText('Could not load details. Your conversation is unaffected.', { exact: true }).waitFor()
         await activity.getByRole('button', { name: 'Retry', exact: true }).click()
       }
       await activity.locator('[data-diff]').getByText('E2E_NEW_TAIL', { exact: true }).first().waitFor()
@@ -739,14 +808,17 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
         'assistant/message', 'step/end', 'turn/end',
       ],
     })
-    await page.getByRole('button', { name: '1 subagent', exact: true }).press('ArrowDown')
-    await page.getByRole('treeitem', { name: /^Inspect fixture/ }).click()
-    await page.getByText('E2E_CHILD_RESULT', { exact: profile === 'claude' }).waitFor()
-    await page.getByText('One-shot subagent record', { exact: true }).waitFor()
-    expect(await page.locator('[data-composer-input][contenteditable="true"]:visible').count()).toBe(0)
-    await page.reload()
-    await page.getByText('E2E_CHILD_RESULT', { exact: profile === 'claude' }).waitFor()
-    await page.getByText('One-shot subagent record', { exact: true }).waitFor()
+    await expandProcess()
+    await page.getByRole('button', { name: 'Open read-only record', exact: true }).first().click()
+    const sidebar = page.locator('[data-sidebar-chat]')
+    for (let round = 0; round < 2; round++) {
+      if (round) await page.reload()
+      await sidebar.getByText('E2E_CHILD_RESULT', { exact: profile === 'claude' }).waitFor()
+      await sidebar.getByText('One-shot subagent record', { exact: true }).waitFor()
+      expect(await sidebar.locator('[data-composer-input][contenteditable="true"]:visible').count()).toBe(0)
+      expect(await page.locator('[data-composer-input][contenteditable="true"]:visible').count()).toBe(1)
+      await page.getByRole('tab', { name: 'ACP Diagnostics', exact: true }).waitFor()
+    }
   })
 
   it('keeps a native provider usable beside ACP without dispatching another ACP prompt', async () => {
@@ -771,7 +843,7 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
       await settled
       await page.getByText('E2E_NATIVE_DONE', { exact: true }).waitFor()
       expect(await page.locator('[data-acp-team-management]').count()).toBe(0)
-      expect(await page.getByRole('button', { name: /^Agent ·/ }).count()).toBe(0)
+      expect(await page.getByRole('button', { name: /^Session ·/ }).count()).toBe(0)
       expect(observed).toContain('native-control')
       expect(calls).toEqual(['pre', 'post'])
       expect(promptCount()).toBe(before)

@@ -1,6 +1,6 @@
 import { createElement as h, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import { Button, Menu, StateDot, IconChevronDownOutline14, IconCloseOutline16, IconRefreshOutline14, useAnchoredPosition, useDismissOnOutsidePointer } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, StateDot, IconCloseOutline16, IconRefreshOutline14, useAnchoredPosition, useDismissOnOutsidePointer } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { RemoteStreamFactory } from '@deepseek-ai/dsh-api-gateway/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
@@ -8,18 +8,21 @@ import type { AcpRemoteLike, AcpTeamMemberView, AcpAgentSessionSnapshotView } fr
 import type { OwnsAcpRoute } from '../coordinator/cross-backend-coordinator.ts'
 import { agentSessionStream } from '../data/agent-session-stream.ts'
 import { snapshotIsAcp } from './AcpAgentControl.ts'
+import { AgentSessionMenu } from './AgentSessionMenu.ts'
+import { agentControlLabel, type AgentControlGroup } from './agent-session-controls.ts'
 import { normalizeAcpConfigOptionKey } from '../../contract/config-options.ts'
-import { applyTeamMode, teamModeChoices } from './team-mode-controls.ts'
+import { applyTeamMode, teamModeChoices, teamSessionMenuGroups } from './team-mode-controls.ts'
 import { teamModeLabel } from '../../contract/session-modes.ts'
 import { TeamMemberModelControl } from './TeamMemberModelControl.ts'
+import { interruptTeam } from './team-interrupt.ts'
 import css from './AcpTeamManagement.module.css'
-import agentControlCss from './AcpAgentControl.module.css'
 
 type Copy = PropsLocale<'acpActivity'>['t']
 type Actions = {
   remote: AcpRemoteLike
   streamFactory: RemoteStreamFactory
   isCurrent(sessionId: SessionId): boolean
+  interruptMember(lead: SessionId, member: SessionId): Promise<void>
   ownsRoute: OwnsAcpRoute
 }
 export function AcpTeamManagement({ sessionId, useSession, useProjection, t, ...actions }: PropsRuntime<'conversation.session.header.utilities'> & PropsLocale<'acpActivity'> & Actions): ReactNode {
@@ -45,6 +48,38 @@ export function AcpTeamManagement({ sessionId, useSession, useProjection, t, ...
   const [refresh, setRefresh] = useState(0)
   const [view, setView] = useState<{ id: string; members: readonly AcpTeamMemberView[] } | null>(null)
   const [error, setError] = useState(false)
+  const [interrupting, setInterrupting] = useState(false)
+  const [interruptFeedback, setInterruptFeedback] = useState('')
+  const interruptLock = useRef(false)
+  const activeSession = useRef<SessionId | null>(sessionId)
+  useEffect(() => {
+    activeSession.current = sessionId
+    setInterruptFeedback('')
+    return () => { activeSession.current = null }
+  }, [sessionId])
+  const interruptAll = async (): Promise<void> => {
+    if (interruptLock.current || view?.id !== sessionId) return
+    interruptLock.current = true
+    setInterrupting(true); setInterruptFeedback('')
+    const current = () => activeSession.current === sessionId && actions.isCurrent(sessionId)
+    try {
+      const result = await interruptTeam({
+        lead: sessionId, targets: view.members.map(member => member.sessionId), isCurrent: current,
+        members: async () => {
+          const result = await actions.remote.teamMembers(sessionId)
+          if (!result.ok) throw new Error(result.error.message)
+          return result.value
+        },
+        interrupt: id => actions.interruptMember(sessionId, id as SessionId),
+      })
+      if (current()) setInterruptFeedback(t('teamInterruptResult', result))
+    } catch {
+      if (current()) setInterruptFeedback(t('teamInterruptFailed'))
+    } finally {
+      interruptLock.current = false
+      if (activeSession.current !== null) { setInterrupting(false); setRefresh(n => n + 1) }
+    }
+  }
   useEffect(() => { setOpen(false); setView(null); setError(false) }, [sessionId])
   useEffect(() => {
     if (!enabled) return
@@ -76,10 +111,15 @@ export function AcpTeamManagement({ sessionId, useSession, useProjection, t, ...
         h(Button, { variant: 'ghost', className: css.iconButton, 'aria-label': t('teamRefresh'), onClick: () => setRefresh(n => n + 1) }, h(IconRefreshOutline14)),
         h(Button, { variant: 'ghost', className: css.iconButton, 'aria-label': t('teamManageClose'), onClick: () => { setOpen(false); rootRef.current?.querySelector('button')?.focus() } }, h(IconCloseOutline16))),
       error ? h('p', { role: 'status', className: css.hint }, t('teamManageError')) : null,
-      ...[...groups].map(([profileId, members]) => h(ModeGroup, { key: `${sessionId}:${profileId}`, lead: sessionId, profileId, members, t, onMenuOpen: setMenuOpen, ...actions }))) : null)
+      ...[...groups].map(([profileId, members], index) => h(ModeGroup, { key: `${sessionId}:${profileId}`, lead: sessionId, profileId, members, t, onMenuOpen: setMenuOpen,
+        interruptAction: index === 0 ? h(Button, { variant: 'ghost', className: css.batchButton,
+          disabled: interrupting || !view.members.some(member => member.status === 'running'),
+          title: t('teamInterruptHint'), onClick: () => { void interruptAll() } }, t(interrupting ? 'teamInterrupting' : 'teamInterruptAll')) : null,
+        ...actions })),
+      interruptFeedback ? h('p', { role: 'status', className: css.hint }, interruptFeedback) : null) : null)
 }
 
-function ModeGroup({ lead, profileId, members, t, remote, streamFactory, onMenuOpen, isCurrent }: { lead: SessionId; profileId: string | null; members: readonly AcpTeamMemberView[]; t: Copy; onMenuOpen(value: boolean): void } & Actions): ReactNode {
+function ModeGroup({ lead, profileId, members, t, remote, streamFactory, onMenuOpen, isCurrent, interruptAction }: { interruptAction: ReactNode; lead: SessionId; profileId: string | null; members: readonly AcpTeamMemberView[]; t: Copy; onMenuOpen(value: boolean): void } & Actions): ReactNode {
   const [snapshots, setSnapshots] = useState<Record<string, AcpAgentSessionSnapshotView | null>>({})
   const [menu, setMenu] = useState<string | null>(null)
   useEffect(() => { onMenuOpen(menu !== null); return () => onMenuOpen(false) }, [menu, onMenuOpen])
@@ -119,16 +159,27 @@ function ModeGroup({ lead, profileId, members, t, remote, streamFactory, onMenuO
       if (alive.current) setFeedback(t('teamModeResult', result))
     } finally { locked.current = false; if (alive.current) setBusy(false) }
   }
+  const currentLabels = new Set(members.map(member => snapshots[member.sessionId]
+    ? teamModeLabel(snapshots[member.sessionId]!, t('teamModeUnknown')) : t('teamModeUnknown')))
+  const batchGroup: AgentControlGroup = {
+    kind: 'mode', id: 'mode', name: t('agentControlMode'),
+    current: currentLabels.size === 1 ? [...currentLabels][0]! : t('agentControlMixed'),
+    choices: batchChoices.map(choice => ({ id: choice.id, label: choice.name, write: choice.write,
+      current: members.every(member => choices(member).some(item => item.id === choice.id && item.current)),
+      disabled: busy || !members.some(member => editable(member) && choices(member).some(item => item.id === choice.id && !item.current)),
+    })),
+  }
   return h('section', { 'data-acp-mode-group': profileId ?? 'unknown' },
     h('div', { className: css.groupHeader }, h('strong', null, profileId ?? t('teamProfileUnknown')),
-      h(Menu, { portal: true, autoFocus: true, open: menu === 'batch', side: 'bottom', align: 'end', onClose: () => setMenu(null),
-        items: batchChoices.map(choice => ({ id: choice.id, label: choice.label, disabled: busy || !members.some(member => editable(member) && choices(member).some(item => item.id === choice.id && !item.current)) })),
-        onSelect: (id: string) => { void change(members.map(member => member.sessionId), id) },
-        anchor: h(Button, { variant: 'ghost', disabled: batchChoices.length === 0 || profileId === null || busy, onClick: () => setMenu(menu === 'batch' ? null : 'batch') }, t('teamBatchMode')) })),
+      h('div', { className: css.batchActions }, interruptAction, h(AgentSessionMenu, {
+        groups: [batchGroup], label: t('teamBatchMode'), t,
+        open: menu === 'batch', side: 'bottom', align: 'end',
+        disabled: batchChoices.length === 0 || profileId === null || busy,
+        onOpenChange: value => setMenu(value ? 'batch' : null),
+        onSelect: choice => { void change(members.map(member => member.sessionId), choice.write.kind === 'mode' ? choice.write.id : String(choice.write.value)) },
+      }))),
     h('div', { className: css.roster }, ...members.map(member => {
       const snapshot = snapshots[member.sessionId]
-      const modeChoices = choices(member)
-      const selectedMode = modeChoices.find(choice => choice.current)
       const modeNotice = snapshot?.pendingModeId
         ? t('teamModePending', { mode: teamModeLabel({ ...snapshot, pendingModeId: null }, t('teamModeUnknown')) })
         : null
@@ -147,13 +198,14 @@ function ModeGroup({ lead, profileId, members, t, remote, streamFactory, onMenuO
             h('span', { className: css.settingLabel }, t('teamModeLabel')),
             h('div', { className: css.settingValue },
               h('div', { className: css.modeControl },
-                h(Menu, { portal: true, autoFocus: true, open: menu === member.sessionId, side: 'bottom', align: 'end', onClose: () => setMenu(null),
-                  items: modeChoices.map(choice => ({ id: choice.id, label: choice.label, disabled: busy || !editable(member) })),
-                  selectedId: selectedMode?.id,
-                  onSelect: (id: string) => { void change([member.sessionId], id) },
-                  anchor: h('button', { type: 'button', className: agentControlCss.trigger, disabled: !snapshot || modeChoices.length === 0 || busy, 'aria-expanded': menu === member.sessionId, 'aria-haspopup': 'menu', onClick: () => setMenu(menu === member.sessionId ? null : member.sessionId) },
-                    h('span', { className: agentControlCss.triggerLabel }, snapshot ? `Agent · ${teamModeLabel(snapshot, t('teamModeUnknown'))}` : t('teamModeUnknown')),
-                    h(IconChevronDownOutline14, { className: `${agentControlCss.chevron}${menu === member.sessionId ? ` ${agentControlCss.chevronOpen}` : ''}` })) }),
+                h(AgentSessionMenu, {
+                  groups: snapshot ? teamSessionMenuGroups(snapshot, t, !busy && editable(member) === true) : [],
+                  label: snapshot ? agentControlLabel(snapshot, t) : t('teamModeUnknown'), t,
+                  open: menu === member.sessionId, side: 'bottom', align: 'end',
+                  disabled: !snapshot || choices(member).length === 0 || busy,
+                  onOpenChange: value => setMenu(value ? member.sessionId : null),
+                  onSelect: choice => { void change([member.sessionId], choice.write.kind === 'mode' ? choice.write.id : String(choice.write.value)) },
+                }),
                 h('div', { className: css.settingNotice, 'data-member-mode-notice': '', role: 'status' }, modeNotice ? h('span', { title: modeNotice, 'data-member-pending-mode': '' }, modeNotice) : null))))))
     })),
     h('div', { role: 'status', className: css.groupNotice, title: feedback }, feedback))

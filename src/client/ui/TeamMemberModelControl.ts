@@ -37,7 +37,8 @@ function modelName(models: readonly Model[], id: string | null | undefined): str
   return models.find(model => model.id === id)?.name ?? id
 }
 
-/** Lazy, per-member model picker. The catalog is fetched only on first open. */
+/** Resolve display names when the member card mounts, so the trigger, menu
+ * and pending notice use the same catalog even before the first click. */
 export function TeamMemberModelControl({ lead, member, initialModel, remote, t, isCurrent, onMenuOpen }: Props): ReactNode {
   const [open, setOpen] = useState(false)
   const [view, setView] = useState<ModelView | null>(null)
@@ -48,7 +49,7 @@ export function TeamMemberModelControl({ lead, member, initialModel, remote, t, 
   const factsRevision = useRef(0)
   const mutationSeq = useRef(0)
   const alive = useRef(true)
-  const modelsLoaded = useRef(false)
+  const [catalogRetry, setCatalogRetry] = useState(0)
   const writeInFlight = useRef(false)
   const latestMember = useRef(member)
   latestMember.current = member
@@ -73,7 +74,6 @@ export function TeamMemberModelControl({ lead, member, initialModel, remote, t, 
     setSaving(false)
     writeInFlight.current = false
     ++factsRevision.current
-    modelsLoaded.current = false
   }, [lead, member.sessionId])
   useEffect(() => {
     ++factsRevision.current
@@ -81,29 +81,29 @@ export function TeamMemberModelControl({ lead, member, initialModel, remote, t, 
   }, [member.model, member.pendingModel, memberFacts.modelWritable])
   useEffect(() => { onMenuOpen(open); return () => onMenuOpen(false) }, [open, onMenuOpen])
 
-  const load = async (): Promise<void> => {
-    if (modelsLoaded.current || loading) return
+  useEffect(() => {
+    if (member.profileId === null) return
+    let disposed = false
     const currentEpoch = epoch.current
     const currentFactsRevision = factsRevision.current
     setLoading(true)
     setError(null)
-    try {
-      const result = await remote.teamMemberModels(lead, member.sessionId)
-      if (!alive.current || currentEpoch !== epoch.current || !isCurrent(lead)) return
+    void remote.teamMemberModels(lead, member.sessionId).then(result => {
+      if (disposed || !alive.current || currentEpoch !== epoch.current || !isCurrent(lead)) return
       if (!result.ok) { setError(result.error.message); return }
       setView(currentFactsRevision === factsRevision.current ? result.value : reconcileMemberModelView(result.value, latestMember.current))
-      modelsLoaded.current = true
-    } catch (reason) {
-      if (alive.current && currentEpoch === epoch.current) setError(reason instanceof Error ? reason.message : String(reason))
-    } finally {
-      if (alive.current && currentEpoch === epoch.current) setLoading(false)
-    }
-  }
+    }).catch(reason => {
+      if (!disposed && alive.current && currentEpoch === epoch.current) setError(reason instanceof Error ? reason.message : String(reason))
+    }).finally(() => {
+      if (!disposed && alive.current && currentEpoch === epoch.current) setLoading(false)
+    })
+    return () => { disposed = true }
+  }, [lead, member.sessionId, member.profileId, remote, isCurrent, catalogRetry])
 
   const toggle = (): void => {
     if (open) { setOpen(false); return }
     setOpen(true)
-    void load()
+    if (view === null && error !== null && !loading) setCatalogRetry(value => value + 1)
   }
 
   const models = view?.models ?? []

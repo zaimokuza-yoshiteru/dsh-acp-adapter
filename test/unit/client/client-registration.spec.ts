@@ -5,7 +5,7 @@ describe('alpha client contribution', () => {
   it('declares the additive settings, audit, and conversation seams', () => {
     expect(inject).toEqual([
       'uiConversation', 'slots', 'locale', 'remote',
-      'sessions', 'workspaces', 'settingsScope', 'remote.settings', 'remote.session',
+      'sessions', 'workspaces', 'uiWorkspace', 'sidebarRight', 'settingsScope', 'remote.settings', 'remote.session',
     ])
   })
 
@@ -42,12 +42,14 @@ describe('alpha client contribution', () => {
       slots: {
         subscribe: () => () => {},
         entriesOfSlot: () => [],
+        entries: () => [],
         inject: (name: string, factory: () => unknown) => {
           const entry = factory()
           injections.push(entry)
           slotEntries.set(name, [...(slotEntries.get(name) ?? []), entry])
         },
         register: (value: unknown) => value,
+        registerFactory: () => () => {},
       },
       get: () => ({}),
     }
@@ -64,19 +66,21 @@ describe('alpha client contribution', () => {
     })
     const dispose = await apply(ctx as never)
     expect(lifecycle).toEqual(['mount'])
-    expect(uiInjects).toEqual([[...inject, 'remote.dshAcp'], ['remote.agentTeams', 'uiSession']])
+    expect(uiInjects).toEqual([[...inject, 'remote.dshAcp'], ['remote.agentTeams', 'remote.subagents', 'uiSession']])
     expect(definitions).toHaveLength(3)
-    expect(injections).toHaveLength(8)
+    expect(injections).toHaveLength(10)
     expect(injections[0]).toMatchObject({ id: 'acp' })
     // The view injection installs a dynamic registrar rather than a global
     // tab; native sessions must keep the stock view roster.
     expect(injections[1]).toBeTypeOf('function')
     expect(injections[2]).toMatchObject({ id: 'dsh-acp-audit-visibility' })
     expect(injections[3]).toBeTypeOf('function')
-    expect(injections[4]).toMatchObject({ key: 'acp-activity' })
-    expect(injections[5]).toMatchObject({ id: 'dsh-acp-cross-backend-confirmation' })
-    expect(injections[6]).toMatchObject({ id: 'dsh-acp-recovery' })
-    expect(injections[7]).toMatchObject({ id: 'dsh-acp-agent-control' })
+    expect(injections[4]).toBeTypeOf('function')
+    expect(injections[5]).toBeTypeOf('function')
+    expect(injections[6]).toMatchObject({ key: 'acp-activity' })
+    expect(injections[7]).toMatchObject({ id: 'dsh-acp-cross-backend-confirmation' })
+    expect(injections[8]).toMatchObject({ id: 'dsh-acp-recovery' })
+    expect(injections[9]).toMatchObject({ id: 'dsh-acp-agent-control' })
     expect(slotEntries.get('shell.overlay')).toEqual([
       { name: 'shell.overlay', id: 'third-party-overlay' },
       expect.objectContaining({ id: 'dsh-acp-cross-backend-confirmation' }),

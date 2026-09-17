@@ -59,11 +59,15 @@ describe.each([['claude', false], ['devin', true], ['codex', true], ['kimi', fal
       if (profile === 'devin' && decision === 'allow') await verifyTaskBoard(action, host, lead)
       await action.getByRole('button', { name: /Agent Team/ }).click()
       await page.getByRole('button', { name: 'calculator · Pending request', exact: true }).click()
-      const approval = page.locator('[data-approval-key]')
+      const sidebar = page.locator('[data-sidebar-chat]')
+      await sidebar.waitFor()
+      await page.locator('[data-acp-team-approvals]').waitFor()
+      const approval = sidebar.locator('[data-approval-key]')
       await approval.waitFor()
       expect(await approval.innerText()).toContain('echo E2E_TEAM_PERMISSION')
       // Native addressed children expose no model-switch control or /model entry.
-      expect(await page.getByRole('button', { name: /Select model/ }).count()).toBe(0)
+      expect(await sidebar.getByRole('button', { name: /Select model/ }).count()).toBe(0)
+      expect(await page.locator('[data-composer-input]').count()).toBeGreaterThanOrEqual(2)
       if (decision === 'deny') {
         await approval.getByRole('button', { name: 'Reject', exact: true }).click()
         await page.getByText('E2E_TEAM_MEMBER_DENIED', { exact: true }).waitFor()

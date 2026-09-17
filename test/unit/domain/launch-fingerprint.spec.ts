@@ -118,7 +118,7 @@ describe('effective launch environment identity', () => {
 })
 
 describe('registry reference upgrade continuity', () => {
-  it('ignores only retired reference versions, retaining all other identity fields', () => {
+  it('ignores retired reference versions, retaining execution identity fields', () => {
     const current = acpLaunchFingerprint(baseInput())
     const old = { ...current, adapterVersion: '1.6.2', wrappedCliVersion: '0.36.1' }
     expect(acpCanonicalHash16(old)).not.toBe(acpCanonicalHash16(current))
@@ -127,7 +127,6 @@ describe('registry reference upgrade continuity', () => {
       { command: 'other' }, { args: ['--other'] }, { profileId: 'renamed' },
       { descriptorId: 'claude' }, { explicitEnv: [] }, { nativeStateEnv: [] },
       { envRefs: [{ key: 'KEY', present: true }] }, { executableOverride: { name: 'OVERRIDE', present: true } },
-      { mcpFingerprint: 'changed-tools' },
     ]) expect(acpLaunchFingerprintsCompatible(old, { ...current, ...changed }), JSON.stringify(changed)).toBe(false)
     const { nativeStateEnv: _, ...incomplete } = current
     expect(acpLaunchFingerprintsCompatible(incomplete, current)).toBe(false)
