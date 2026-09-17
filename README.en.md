@@ -49,7 +49,7 @@ Regular development needs no upstream checkout. See the [E2E guide](test/e2e/REA
 
 **1. Install and sign in to your Agent.**
 
-The agent catalog uses a snapshot of the [official ACP registry](https://agentclientprotocol.com) shipped with the plugin. It provides install guidance and configuration presets; inclusion does not mean each Agent has been verified. The common four:
+The agent catalog uses a snapshot of the [official ACP registry](https://agentclientprotocol.com) shipped with the plugin. It provides install guidance and configuration presets; inclusion does not mean each Agent has been verified. The menu separates verified adapters from unverified catalog entries; verification does not cover every listed version or platform. The common four:
 
 | Agent | ACP command | Terminal login |
 | --- | --- | --- |

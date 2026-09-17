@@ -53,8 +53,10 @@ const RUNTIME_OVERRIDES: Readonly<Record<'devin' | 'codex-acp' | 'kimi' | 'claud
   'claude-acp': { command: 'claude-agent-acp', args: [], runtime: 'claude' },
 }
 
-/** override 条目排在目录最前（一键区优先展示内置 runtime 四条）。 */
-const OVERRIDE_ORDER: readonly ('devin' | 'codex-acp' | 'kimi' | 'claude-acp')[] = ['devin', 'codex-acp', 'kimi', 'claude-acp']
+/** Curated adapter regression/live-smoke coverage, not certification of registry versions.
+ * Keep this explicit: adding a runtime override does not establish verification.
+ */
+const VERIFIED_ADAPTER_IDS: readonly ('devin' | 'codex-acp' | 'kimi' | 'claude-acp')[] = ['devin', 'codex-acp', 'kimi', 'claude-acp']
 
 // ---------- catalog 合成 ----------
 
@@ -72,15 +74,17 @@ export interface AcpCatalogEntry {
   readonly installHint: string
   /** PATH executable name prefill; empty when the snapshot lacks this agent (manual entry remains). */
   readonly command: string
+  /** Adapter verification scope is independent of the advertised registry version. */
+  readonly verification: 'adapter-tested' | 'unverified'
   /** Prepend argv prefill (empty when unknown). */
   readonly args: readonly string[]
+  readonly env: Readonly<Record<string, string>>
+  readonly requiresCommand: boolean
   /**
    * Built-in runtime binding seeded into the draft (devin/codex/kimi/claude-acp
    * 四条 override；真源 host 侧 ACP_AGENT_RUNTIME_DESCRIPTORS——普通条目无
    * runtime，无任何宿主 path/env ref）。
    */
-  readonly env: Readonly<Record<string, string>>
-  readonly requiresCommand: boolean
   readonly runtime?: 'devin' | 'codex' | 'kimi' | 'claude'
 }
 
@@ -117,6 +121,7 @@ function synthesize(): AcpCatalogEntry[] {
       description: agent.description,
       installHint: installHintOf(agent),
       command,
+      verification: VERIFIED_ADAPTER_IDS.includes(agent.id as keyof typeof RUNTIME_OVERRIDES) ? 'adapter-tested' : 'unverified',
       args: [...args],
       env: { ...executable?.env },
       requiresCommand: command === '',
@@ -124,9 +129,9 @@ function synthesize(): AcpCatalogEntry[] {
     })
   }
   entries.sort((left, right) => {
-    const leftRank = OVERRIDE_ORDER.indexOf(left.id as keyof typeof RUNTIME_OVERRIDES)
-    const rightRank = OVERRIDE_ORDER.indexOf(right.id as keyof typeof RUNTIME_OVERRIDES)
-    return (leftRank < 0 ? OVERRIDE_ORDER.length : leftRank) - (rightRank < 0 ? OVERRIDE_ORDER.length : rightRank)
+    const leftRank = VERIFIED_ADAPTER_IDS.indexOf(left.id as keyof typeof RUNTIME_OVERRIDES)
+    const rightRank = VERIFIED_ADAPTER_IDS.indexOf(right.id as keyof typeof RUNTIME_OVERRIDES)
+    return (leftRank < 0 ? VERIFIED_ADAPTER_IDS.length : leftRank) - (rightRank < 0 ? VERIFIED_ADAPTER_IDS.length : rightRank)
   })
   return entries
 }

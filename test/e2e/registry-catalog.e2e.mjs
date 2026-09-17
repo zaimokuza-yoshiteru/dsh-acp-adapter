@@ -18,6 +18,33 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
     await page.getByRole('button', { name: 'Settings', exact: true }).click()
     const dialog = page.getByRole('dialog', { name: 'Settings', exact: true })
     await dialog.getByRole('button', { name: 'ACP adapter', exact: true }).click()
+    await dialog.getByRole('button', { name: 'Add agent', exact: true }).click()
+    const menu = page.getByRole('menu')
+    await menu.getByText('Verified adapters · 4', { exact: true }).waitFor()
+    await menu.getByText(/^Catalog entries · Unverified ·/).waitFor()
+    const items = await menu.getByRole('menuitem').allTextContents()
+    expect(items.slice(0, 4).map(text => text.split(' · ')[0])).toEqual(['Devin', 'Codex', 'Kimi CLI', 'Claude Agent'])
+    for (const viewport of [{ width: 1680, height: 1000 }, { width: 900, height: 600 }]) {
+      await page.setViewportSize(viewport)
+      await expect.poll(async () => {
+        const bounds = await menu.boundingBox()
+        return bounds !== null && bounds.height <= Math.min(420, viewport.height * 0.65) + 1 && bounds.y >= 0 && bounds.y + bounds.height <= viewport.height
+      }).toBe(true)
+      // Native keyboard navigation reaches the pinned custom entry
+      // without treating group headings as menu items.
+      await menu.getByRole('menuitem').first().focus()
+      await page.keyboard.press('End')
+      expect(await menu.getByRole('menuitem').last().evaluate(node => node === document.activeElement)).toBe(true)
+      expect(await menu.getByRole('menuitem').last().isVisible()).toBe(true)
+    }
+    mkdirSync(join(root, '.local/registry-ui'), { recursive: true })
+    await page.screenshot({ path: join(root, '.local/registry-ui/grouped-menu-small.png'), fullPage: true })
+    await page.keyboard.press('Escape')
+    // The pinned host Settings dialog also handles document-level Escape.
+    await dialog.waitFor({ state: 'hidden' })
+    await page.getByRole('button', { name: 'Settings', exact: true }).click()
+    await dialog.getByRole('button', { name: 'ACP adapter', exact: true }).click()
+    await page.setViewportSize({ width: 1680, height: 1000 })
     const select = async name => {
       await dialog.getByRole('button', { name: 'Add agent', exact: true }).click()
       await page.getByRole('menuitem', { name }).click()
@@ -54,6 +81,8 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
     const zh = page.getByRole('dialog', { name: '设置', exact: true })
     await zh.getByRole('button', { name: 'ACP adapter', exact: true }).click()
     await zh.getByRole('button', { name: '添加 agent', exact: true }).click()
+    await page.getByRole('menu').getByText('已验证适配 · 4', { exact: true }).waitFor()
+    await page.getByRole('menu').getByText(/^目录收录 · 未验证 ·/).waitFor()
     await page.getByRole('menuitem', { name: /^VT Code ·/ }).click()
     await zh.getByText(/请按 Agent 所在主机的平台安装二进制/).waitFor()
     expect(await zh.getByLabel('环境变量', { exact: true }).inputValue()).toContain('VT_ACP_ENABLED=1')

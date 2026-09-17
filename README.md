@@ -49,7 +49,7 @@ pnpm install --frozen-lockfile
 
 **1. 安装 Agent，并在终端登录。**
 
-Agent 目录来自随插件发布的 [ACP 官方 registry](https://agentclientprotocol.com) 快照，提供安装指引与配置预填；列入目录不代表已经逐个验证。常用四家：
+Agent 目录来自随插件发布的 [ACP 官方 registry](https://agentclientprotocol.com) 快照，提供安装指引与配置预填；列入目录不代表已经逐个验证。菜单区分「已验证适配」和「目录收录 · 未验证」；验证范围不覆盖每个目录版本或平台。常用四家：
 
 | Agent | ACP 命令 | 终端登录 |
 | --- | --- | --- |

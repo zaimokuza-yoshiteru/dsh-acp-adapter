@@ -193,6 +193,7 @@ describe('常量：与宿主侧契约逐字对齐', () => {
       installHint: devin?.installHint,
       env: {},
       requiresCommand: false,
+      verification: 'adapter-tested',
       command: 'devin',
       args: ['acp'],
       runtime: 'devin',

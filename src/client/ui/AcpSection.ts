@@ -38,8 +38,7 @@ import {
   validateAgentDraft,
 } from '../data/logic.ts'
 import { localizedDiagnostic } from '../data/diagnostics.ts'
-import { ACP_CATALOG_ENTRIES } from '../data/catalog.ts'
-import { catalogEntryOf } from '../data/catalog.ts'
+import { ACP_CATALOG_ENTRIES, catalogEntryOf, type AcpCatalogEntry } from '../data/catalog.ts'
 import type { AcpAgentConfig, AcpProviderHealth, AgentDraft, DraftError } from '../data/logic.ts'
 import type { AcpLocaleKey } from './locales.ts'
 import type { AcpPanelSnapshot, HealthState } from '../data/stores/panel-store.ts'
@@ -224,16 +223,31 @@ function Loaded({ t, useStore, panel }: {
   // points below the rows. The template chooser itself is the host Menu
   // primitive, so its surface and interaction stay native across themes.
   const customAgentItemId = 'custom'
+  const verified = ACP_CATALOG_ENTRIES.filter(entry => entry.verification === 'adapter-tested')
+  const unverified = ACP_CATALOG_ENTRIES.filter(entry => entry.verification === 'unverified')
+  const catalogItem = (entry: AcpCatalogEntry) => ({
+    id: entry.id,
+    label: h('span', { className: css.catalogEntry, title: entry.name },
+      h('span', { className: css.catalogName }, entry.name),
+      entry.version === undefined ? null : h('span', { className: css.catalogVersion }, ` · ${entry.version}`),
+    ),
+  })
   children.push(h('div', { key: 'actions', className: css.addActions },
     h(Menu, {
       open: addMenuOpen,
       portal: true,
+      dense: true,
+      autoFocus: true,
       className: css.addMenu ?? '',
       items: [
-        ...ACP_CATALOG_ENTRIES.map((entry) => ({
-          id: entry.id,
-          label: entry.version === undefined ? entry.name : `${entry.name} · ${entry.version}`,
-        })),
+        { type: 'label', id: 'verified-label', text: t('catalogVerified', { count: verified.length }) },
+        ...verified.map(catalogItem),
+        { type: 'separator', id: 'verification-divider' },
+        { type: 'label', id: 'unverified-label', text: t('catalogUnverified', { count: unverified.length }) },
+        ...unverified.map(catalogItem),
+      ],
+      footer: [
+        { type: 'label', id: 'verification-scope', text: t('catalogVerificationScope') },
         { id: customAgentItemId, label: t('addCustom') },
       ],
       onClose: () => { setAddMenuOpen(false) },
