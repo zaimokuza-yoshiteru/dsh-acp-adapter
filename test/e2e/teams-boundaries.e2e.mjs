@@ -99,15 +99,22 @@ it('keeps one ACP Agent across multiple models, isolates approvals and prevents 
     await pendingCard.getByRole('button', { name: '展开', exact: true }).click()
     await page.setViewportSize({ width: 1680, height: 1000 })
     await host.ctx.settings.replace('locale', { preference: 'en' })
+    const leadUrl = page.url()
     for (const name of ['calculator-b', 'calculator']) {
       await page.getByRole('button', { name: `${name} · Pending request`, exact: true }).click()
-      await page.locator('[data-approval-key]').waitFor()
-      expect(await page.getByRole('button', { name: /^Select model/ }).count()).toBe(0)
+      // The native sidebar can keep both children visible in separate panes.
+      // Resolve the member's own conversation, including after approval settles.
+      const description = name === 'calculator' ? 'Compute fixture' : 'Model B member'
+      const memberTab = page.getByRole('tab', { selected: true }).filter({ has: page.getByText(description, { exact: true }) })
+      const sidebar = page.locator('[data-dockkit-pane]').filter({ has: memberTab }).locator('[data-sidebar-chat]:visible')
+      await sidebar.locator('[data-approval-key]').waitFor()
+      expect(await sidebar.getByRole('button', { name: /^Select model/ }).count()).toBe(0)
+      expect(page.url()).toBe(leadUrl)
       const id = name === 'calculator' ? childAId : childBId
-      await page.locator('[data-approval-key]').getByRole('button', { name: 'Allow once', exact: true }).click()
-      await page.getByText('E2E_TEAM_MEMBER_DONE', { exact: true }).waitFor()
+      await sidebar.locator('[data-approval-key]').getByRole('button', { name: 'Allow once', exact: true }).click()
+      await sidebar.getByText('E2E_TEAM_MEMBER_DONE', { exact: true }).waitFor()
       await vi.waitFor(() => expect(events.some(event => event.sessionId === id && event.type === 'turn/end')).toBe(true), { timeout: 20_000 })
-      await page.locator('header nav').getByRole('button', { name: 'E2E_TEAM_START', exact: true }).click()
+      expect(page.url()).toBe(leadUrl)
       if (name === 'calculator-b') {
         await page.getByRole('button', { name: 'calculator · Pending request', exact: true }).waitFor()
         expect(events.some(event => event.sessionId === childAId && event.type === 'turn/end')).toBe(false)

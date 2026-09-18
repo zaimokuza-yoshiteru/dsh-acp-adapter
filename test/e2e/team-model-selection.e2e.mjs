@@ -67,6 +67,10 @@ it('persists teammate model selection, applies it on wake, and protects Team bou
     await row.getByRole('status').filter({ hasText: /mock[ -]model[ -]a/i }).waitFor()
     const modelButton = row.getByRole('button', { name: 'Choose a model for calculator', exact: true })
     await modelButton.waitFor()
+    // IDs stay lower-case on the wire; all visible labels use catalog names,
+    // including before the picker has ever been opened.
+    await expect.poll(() => modelButton.textContent()).toBe('Mock Model B')
+    expect(await row.locator('[data-member-model-notice]').textContent()).toBe('Applies next request; current: Mock Model A')
     await modelButton.click()
     const modelMenu = page.getByRole('menu')
     await modelMenu.getByRole('menuitem', { name: 'Mock Model A', exact: true }).waitFor()
@@ -74,22 +78,30 @@ it('persists teammate model selection, applies it on wake, and protects Team bou
     await modelMenu.getByRole('menuitem', { name: 'Mock Model A', exact: true }).click()
     await expect.poll(() => host.ctx.dshAcp.teamMemberModels(lead.id, child.id)).toMatchObject({ pendingModel: null })
     await expect.poll(() => row.locator('[data-member-model-notice]').textContent()).toBe('')
+    expect(await modelButton.textContent()).toBe('Mock Model A')
     const beforeModelNotice = await row.boundingBox()
-    const beforeModeButton = await row.getByRole('button', { name: /^Agent ·/ }).boundingBox()
+    const beforeModeButton = await row.getByRole('button', { name: /^(?:Session|会话) ·/ }).boundingBox()
     expect((await row.locator('[data-member-model-notice]').boundingBox()).height).toBe(13)
     await modelButton.click()
     expect(await row.getByRole('searchbox').count()).toBe(0)
     await modelMenu.getByRole('menuitem', { name: 'Mock Model B', exact: true }).click()
     await row.getByRole('status').filter({ hasText: /mock[ -]model[ -]a/i }).waitFor()
     expect(await row.boundingBox()).toEqual(beforeModelNotice)
-    expect(await row.getByRole('button', { name: /^Agent ·/ }).boundingBox()).toEqual(beforeModeButton)
+    expect(await row.getByRole('button', { name: /^(?:Session|会话) ·/ }).boundingBox()).toEqual(beforeModeButton)
+    await panel.getByRole('button', { name: 'Close member management', exact: true }).click()
+
+    // Closing and reopening remounts the card. Display names must not revert
+    // to IDs or depend on a previous click of the model selector.
+    await panel.getByRole('button', { name: 'Manage members · 1', exact: true }).click()
+    await expect.poll(() => modelButton.textContent()).toBe('Mock Model B')
     await panel.getByRole('button', { name: 'Close member management', exact: true }).click()
 
     // A transport reload restores current A plus pending B from the sidecar.
     await page.reload()
     await panel.getByRole('button', { name: 'Manage members · 1', exact: true }).click()
     await row.getByRole('status').filter({ hasText: /mock[ -]model[ -]a/i }).waitFor()
-    await panel.locator('[data-acp-managed-member="calculator"]').getByRole('status').filter({ hasText: /mock[ -]model[ -]a/i }).waitFor()
+    await expect.poll(() => modelButton.textContent()).toBe('Mock Model B')
+    expect(await row.locator('[data-member-model-notice]').textContent()).toBe('Applies next request; current: Mock Model A')
     await panel.getByRole('button', { name: 'Close member management', exact: true }).click()
 
     // team-turn logs configOptions.model for each request. This is the request

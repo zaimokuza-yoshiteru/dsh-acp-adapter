@@ -375,6 +375,8 @@ if (packOutput !== null) {
   const program = ts.createProgram([join(root, pkg.exports['./remote'].types)], {
     noEmit: true, strict: true, skipLibCheck: false, types: [],
     module: ts.ModuleKind.NodeNext, target: ts.ScriptTarget.ES2024,
+    // alpha.2 Typert ownership and Session references expose Disposable.
+    lib: ['lib.es2024.d.ts', 'lib.dom.d.ts', 'lib.esnext.disposable.d.ts'],
   })
   const diagnostics = ts.getPreEmitDiagnostics(program)
   if (diagnostics.length > 0) {

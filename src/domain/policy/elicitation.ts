@@ -285,7 +285,21 @@ export interface AcpNativeUserQuestionService {
 export interface AcpNativeElicitationDeps {
   readonly userQuestions?: AcpNativeUserQuestionService
   readonly getAgent: () => unknown
+  readonly locale?: string
+  /** Supplied only by the live host bridge after exact request/call correlation. */
+  readonly hostToolName?: string
   readonly log?: (message: string) => void
+}
+
+/** DSH returns labels, so every displayed choice must map unambiguously to its wire value. */
+function displayOptions(options: NonNullable<AcpElicitationFieldView['options']>) {
+  const titles = options.map(option => option.title?.trim() || option.value)
+  let labels = titles.map((title, index) => titles.indexOf(title) === titles.lastIndexOf(title)
+    ? title : `${title} (${options[index]!.value})`)
+  // A supplied title can itself collide with a disambiguated title. Number the
+  // entire set in that rare case rather than guessing which value was chosen.
+  if (new Set(labels).size !== labels.length) labels = labels.map((label, index) => `${index + 1}. ${label}`)
+  return options.map((option, index) => ({ ...option, label: labels[index]! }))
 }
 
 /**
@@ -304,24 +318,33 @@ export function createAcpNativeElicitationHandler(
     const message = params.message.trim().length > 4_096
       ? `${params.message.trim().slice(0, 4_096)}…`
       : params.message.trim()
-    const questions = schema.fields.map((field, index) => {
-      // DSH's native question waterfall has no separate form-introduction slot.
-      // Put ACP's required, human-readable form message on the first question
-      // so the user sees why the Agent needs the values without repeating it on
-      // every field.
-      const detail = [index === 0 ? message : undefined, field.description]
-        .filter((value): value is string => value !== undefined && value.length > 0)
-        .join('\n\n')
+    const zh = deps.locale?.toLowerCase().startsWith('zh') === true
+    const scopeTitles: Record<string, string> = zh
+      ? { once: '仅允许一次', session: '在本次会话中允许', always: '始终允许，不再询问' }
+      : { once: 'Allow once', session: 'Allow for this session', always: "Always allow, don't ask again" }
+    const fields = schema.fields.map(field => {
+      const scope = params._meta?.codex_approval_kind === 'mcp_tool_call' && field.name === 'persist'
+        && field.type === 'string' && (field.options?.length ?? 0) > 0
+        && field.options!.every(option => Object.hasOwn(scopeTitles, option.value))
+      const options = displayOptions(field.options?.map(option => scope
+        ? { ...option, title: scopeTitles[option.value]! } : option)
+        ?? (field.type === 'boolean' ? [{ value: 'true', title: zh ? '是' : 'Yes' }, { value: 'false', title: zh ? '否' : 'No' }] : []))
+      return { ...field, question: scope ? (zh ? '授权范围' : 'Approval scope') : field.title?.trim() || field.name, options }
+    })
+    const questions = fields.map((field, index) => {
+      // Only a verified, exact Codex bridge message is replaced. Other agents'
+      // explanations remain intact, including any additional approval context.
+      const introduction = deps.hostToolName === undefined ? message
+        : zh ? `允许 Agent 调用 DSH 工具“${deps.hostToolName}”吗？` : `Allow the Agent to use the DSH tool "${deps.hostToolName}"?`
+      const detail = [index === 0 ? introduction : undefined, field.description]
+        .filter((value): value is string => value !== undefined && value.length > 0).join('\n\n')
       return {
         id: field.name,
-        question: field.title ?? field.name,
+        question: field.question,
         ...(detail.length === 0 ? {} : { detail }),
-        ...(field.title === undefined ? {} : { header: field.name }),
-        ...(field.options === undefined || field.options.length === 0
-          ? field.type === 'boolean'
-            ? { options: [{ label: 'true' }, { label: 'false' }] }
-            : {}
-          : { options: field.options.map((option) => ({ label: option.value, ...(option.title === undefined ? {} : { description: option.title }) })) }),
+        ...(field.options.length === 0 ? {} : { options: field.options.map(option => ({
+          label: option.label, ...(option.description === undefined ? {} : { description: option.description }),
+        })) }),
         ...(field.type === 'array' ? { multiSelect: true } : {}),
       }
     })
@@ -331,22 +354,27 @@ export function createAcpNativeElicitationHandler(
       const answer = await deps.userQuestions.ask({ questions, agent, ...(signal === undefined ? {} : { signal }) })
       if (signal?.aborted) return { action: 'cancel' }
       const values: { name: string; value: string | number | boolean | readonly string[] }[] = []
-      for (const field of schema.fields) {
+      for (const field of fields) {
         const item = answer.answers.find((candidate) => candidate.id === field.name)
         if (item === undefined) continue
-        if (field.type === 'array') values.push({ name: field.name, value: [...item.selected] })
+        // Enum answers must be explicit displayed choices; never interpret free
+        // text as a permission scope or guess from a protocol identifier.
+        if (field.options.length > 0 && (item.custom?.trim() || item.selected.some(label => !field.options.some(option => option.label === label)))) return { action: 'cancel' }
+        if (field.type !== 'array' && item.selected.length > 1) return { action: 'cancel' }
+        const selected = item.selected.map(label => field.options.find(option => option.label === label)?.value ?? label)
+        if (field.type === 'array') values.push({ name: field.name, value: selected })
         else if (field.type === 'boolean') {
-          const value = item.selected[0] ?? item.custom
+          const value = selected[0] ?? item.custom
           if (value !== 'true' && value !== 'false') return { action: 'cancel' }
           values.push({ name: field.name, value: value === 'true' })
         } else if (field.type === 'number' || field.type === 'integer') {
-          const raw = item.selected[0] ?? item.custom
+          const raw = selected[0] ?? item.custom
           if (raw === undefined || raw.trim() === '') return { action: 'cancel' }
           const value = Number(raw)
           if (!Number.isFinite(value)) return { action: 'cancel' }
           values.push({ name: field.name, value })
         } else {
-          values.push({ name: field.name, value: item.selected[0] ?? item.custom ?? '' })
+          values.push({ name: field.name, value: selected[0] ?? item.custom ?? '' })
         }
       }
       const content = validateValues(params, values)

@@ -10,7 +10,7 @@ describe('Team approval settlement', () => {
   it('captures only current members; replacements, cancelled requests and later arrivals are untouched', async () => {
     const calls: string[] = []
     const first = approval('one'), replaced = approval('two'), cancelled = approval('three'), otherTeam = approval('other')
-    const current = new Map([first, approval('two'), approval('late'), otherTeam].map(p => [p.sessionId, p]))
+    const current = new Map([first, approval('two'), approval('late'), otherTeam].map(p => [p.sessionId, { running: false, pendingInteraction: p, completionUnread: false }]))
     const requests = [first, replaced, cancelled, otherTeam].map(pending => ({ pending, answer: async () => { calls.push(pending.key) } }))
     expect(await answerTeamRequests(requests, () => current, new Set(['one', 'two', 'three', 'late'].map(sid)), () => true, new Set())).toBe(0)
     expect(calls).toEqual(['one'])
@@ -21,7 +21,7 @@ describe('Team approval settlement', () => {
     let release!: () => void
     let calls = 0
     const one = approval('one'), two = approval('two')
-    const current = new Map([one, two].map(p => [p.sessionId, p]))
+    const current = new Map([one, two].map(p => [p.sessionId, { running: false, pendingInteraction: p, completionUnread: false }]))
     const inFlight = new Set<TeamApproval>()
     const requests = [
       { pending: one, answer: async () => { calls++; await new Promise<void>(resolve => { release = resolve }) } },
@@ -39,5 +39,18 @@ describe('Team approval settlement', () => {
     const question = { key: 'q', sessionId: sid('q'), kind: 'question', questions: [], answer: async () => {}, cancel: async () => {} }
     expect(teamApproval(question)).toBeUndefined()
     expect(teamApproval({ key: 'x', sessionId: sid('x'), kind: 'approval' })).toBeUndefined()
+  })
+
+  it('compares the pending request, allowing status-only changes and skipping a settled carrier', async () => {
+    let calls = 0
+    const pending = approval('one')
+    const status = new Map([[pending.sessionId, { running: true, pendingInteraction: pending as TeamApproval | undefined, completionUnread: false }]])
+    const requests = [{ pending, answer: async () => { calls++ } }]
+    status.set(pending.sessionId, { running: false, pendingInteraction: pending, completionUnread: true })
+    await answerTeamRequests(requests, () => status, new Set(status.keys()), () => true, new Set())
+    expect(calls).toBe(1)
+    status.set(pending.sessionId, { running: false, pendingInteraction: undefined, completionUnread: true })
+    await answerTeamRequests(requests, () => status, new Set(status.keys()), () => true, new Set())
+    expect(calls).toBe(1)
   })
 })

@@ -9,6 +9,7 @@ export interface AcpMcpLease {
   endPrompt(): void
   permission(request: acp.RequestPermissionRequest): acp.RequestPermissionResponse | undefined
   elicitation?(request: acp.CreateElicitationRequest, toolCall: acp.ToolCallUpdate | undefined): acp.CreateElicitationResponse | undefined
+  elicitationToolName?(request: acp.CreateElicitationRequest, toolCall: acp.ToolCallUpdate | undefined): string | undefined
   presentTool?(toolCall: acp.ToolCallUpdate): acp.ToolCallUpdate
   close(): Promise<void>
 }

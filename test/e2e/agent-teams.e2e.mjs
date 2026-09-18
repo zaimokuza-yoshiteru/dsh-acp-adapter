@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { chromium } from 'playwright'
-import { connectFreshWorkspace, newEnglishPage, writeComposerDraft } from '#host-support'
+import { connectFreshWorkspace, newEnglishPage, writeComposerDraft, expandOwningTurnProcess } from '#host-support'
 import { launchAdapterWorld, root } from './scaffold.mjs'
 
 describe.each([['claude', false], ['devin', true], ['codex', true], ['kimi', false]])('native Teams over ACP: %s, HTTP=%s', (profile, http) => {
@@ -34,7 +34,10 @@ describe.each([['claude', false], ['devin', true], ['codex', true], ['kimi', fal
       }
       await send('E2E_TEAM_START: explicitly create an Agent Team to compute 1+1')
       await page.getByText('E2E_TEAM_READY', { exact: true }).waitFor({ timeout: 30_000 })
-      await page.getByText('spawn_teammate', { exact: true }).first().waitFor()
+      const spawn = page.locator('[data-tool="spawn_teammate"]').first()
+      await spawn.waitFor({ state: 'attached' })
+      await expandOwningTurnProcess(page, spawn)
+      await spawn.waitFor()
       expect(await page.locator('body').innerText()).not.toMatch(/mcp__dshteam_[a-f0-9]+__/)
       const lead = host.ctx.agents.list().find(agent => host.ctx.agentTeams.tryMembership(agent)?.role === 'lead')
       expect(lead).toBeDefined()
@@ -59,11 +62,15 @@ describe.each([['claude', false], ['devin', true], ['codex', true], ['kimi', fal
       if (profile === 'devin' && decision === 'allow') await verifyTaskBoard(action, host, lead)
       await action.getByRole('button', { name: /Agent Team/ }).click()
       await page.getByRole('button', { name: 'calculator · Pending request', exact: true }).click()
-      const approval = page.locator('[data-approval-key]')
+      const sidebar = page.locator('[data-sidebar-chat]')
+      await sidebar.waitFor()
+      await page.locator('[data-acp-team-approvals]').waitFor()
+      const approval = sidebar.locator('[data-approval-key]')
       await approval.waitFor()
       expect(await approval.innerText()).toContain('echo E2E_TEAM_PERMISSION')
       // Native addressed children expose no model-switch control or /model entry.
-      expect(await page.getByRole('button', { name: /Select model/ }).count()).toBe(0)
+      expect(await sidebar.getByRole('button', { name: /Select model/ }).count()).toBe(0)
+      expect(await page.locator('[data-composer-input]').count()).toBeGreaterThanOrEqual(2)
       if (decision === 'deny') {
         await approval.getByRole('button', { name: 'Reject', exact: true }).click()
         await page.getByText('E2E_TEAM_MEMBER_DENIED', { exact: true }).waitFor()

@@ -253,7 +253,7 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 function snapshotProfile(profile: AcpStubAgentConfig | undefined): AcpStubAgentConfig | undefined {
   return profile === undefined
     ? undefined
-    : { ...profile, args: [...profile.args], env: { ...profile.env }, ...(profile.hostTools === undefined ? {} : { hostTools: [...profile.hostTools] }) }
+    : { ...profile, args: [...profile.args], env: { ...profile.env } }
 }
 
 interface ProfileGeneration {
@@ -1696,10 +1696,14 @@ export class AcpProfileAdapter extends LlmAdapter {
           ...(audit === undefined ? {} : { audit }),
         })(params, signal)
       },
-      onElicitationRequest: async (params: acp.CreateElicitationRequest, signal?: AbortSignal): Promise<acp.CreateElicitationResponse> => {
+      onElicitationRequest: async (params: acp.CreateElicitationRequest, signal?: AbortSignal, hostToolName?: string): Promise<acp.CreateElicitationResponse> => {
         const binding = this.resolveQuestions?.(sessionId)
         if (binding?.userQuestions === undefined) return { action: 'cancel' }
-        return await createAcpNativeElicitationHandler({ userQuestions: binding.userQuestions, getAgent: binding.getAgent })(params, signal)
+        return await createAcpNativeElicitationHandler({
+          userQuestions: binding.userQuestions, getAgent: binding.getAgent,
+          ...(binding.locale === undefined ? {} : { locale: binding.locale }),
+          ...(hostToolName === undefined ? {} : { hostToolName }),
+        })(params, signal)
       },
       onSessionUpdate: (notification): void => {
         const kind = notification.update.sessionUpdate

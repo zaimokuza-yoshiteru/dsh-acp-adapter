@@ -5,7 +5,6 @@ import type {} from '@deepseek-ai/dsh-user-approval'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-api-session-controller'
 import type { Session } from '@deepseek-ai/dsh-session'
-import { LlmError } from '@deepseek-ai/dsh-llm'
 import type { SessionLike } from '../../domain/session/session-facts.ts'
 import { acpSessionView } from './session-facts.ts'
 
@@ -21,19 +20,7 @@ import { acpSessionView } from './session-facts.ts'
 export function projectNativeAgentAccess(session: SessionLike | undefined): void {
   if (session?.append === undefined) return
   if (session.permissions.sandbox !== 'danger-full-access') {
-    try {
-      session.append('sandbox/mode', { mode: 'danger-full-access' })
-    } catch (cause: unknown) {
-      // The host vetoes sandbox changes while a browser terminal is retained,
-      // including a pending allocation. Keep that veto authoritative: never
-      // close a user's terminal or proceed with mismatched ACP access facts.
-      if (!(cause instanceof Error) || cause.message !== 'Close browser terminals before changing the Session sandbox mode') throw cause
-      throw new LlmError(
-        'ACP requires different session access settings. Close this session\'s browser terminals, then send your message again. No prompt was sent to the Agent.',
-        'ACP_BROWSER_TERMINALS_OPEN',
-        { cause },
-      )
-    }
+    session.append('sandbox/mode', { mode: 'danger-full-access' })
   }
   if (session.permissions.approval !== 'ask') {
     session.append('approval/policy', { policy: 'ask' })

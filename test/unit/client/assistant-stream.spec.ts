@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
 import type { AcpActivityView } from '../../../src/client/data/acp-remote.ts'
-import { activityBoundaries, installAcpAssistantStream } from '../../../src/client/ui/AcpAssistantStream.ts'
+import { activityBoundaries, finalAnswerStart, installAcpAssistantStream } from '../../../src/client/ui/AcpAssistantStream.ts'
 
 describe('native assistant renderer composition', () => {
   it('keeps legacy and not-yet-delivered activity out of the inline boundaries', () => {
@@ -9,6 +9,13 @@ describe('native assistant renderer composition', () => {
       { activityId: 'future', contentIndex: 3 }, { activityId: 'head', contentIndex: 0 }] as AcpActivityView[]
     expect([...activityBoundaries(rows, 2)]).toEqual([[2, [rows[1]]], [0, [rows[3]]]])
     expect([...activityBoundaries(rows, 2, true)]).toEqual([[2, [rows[1], rows[2]]], [0, [rows[3]]]])
+  })
+
+  it('keeps all trailing answer paragraphs and images visible when folding the process', () => {
+    const blocks = [{ kind: 'reasoning', text: 'think' }, { kind: 'text', text: 'progress' },
+      { kind: 'text', text: 'answer paragraph one' }, { kind: 'text', text: 'answer paragraph two' }] as never
+    expect(finalAnswerStart(blocks, new Map([[2, []], [4, []]]))).toBe(2)
+    expect(finalAnswerStart(blocks, new Map())).toBe(1)
   })
 
   it('waits for the native renderer and declines renderers with private dependencies', () => {
@@ -20,7 +27,7 @@ describe('native assistant renderer composition', () => {
       entries = [{ options, component }]
       notify()
     })
-    const ctx = { slots: {
+    const ctx = { settingsScope: { bind: () => ({ subscribe: () => () => {}, getSnapshot: () => ({}) }) }, slots: {
       inject: (_name: string, factory: () => () => void) => { cleanup = factory() },
       subscribe: (_name: string, listener: () => void) => { notify = listener; return unsubscribe },
       entriesOfSlot: () => entries,

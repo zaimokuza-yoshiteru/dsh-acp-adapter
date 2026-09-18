@@ -26,7 +26,7 @@
 .settingLabel { padding-top: 5px; color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 18px; }
 .settingValue { display: flex; justify-content: flex-end; min-width: 0; }
 .modelControl, .modeControl { display: flex; flex-direction: column; align-items: flex-end; min-width: 0; width: 100%; }
-.modelControl button, .modeControl button { max-width: 100%; }
+.modelControl button, .modeControl button { max-width: 100%; font-size: 12px; line-height: 18px; font-weight: 400; }
 /* A compact permanent line below each 28px selector prevents pending/error messages
    from moving controls, sibling cards, or the panel anchored above them. */
 .settingNotice, .groupNotice { box-sizing: border-box; height: 18px; min-height: 18px; width: 100%; color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 18px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -35,4 +35,8 @@
 .noticeError { color: var(--dsw-alias-state-error-primary); }
 .groupNotice { margin-top: 6px; }
 @media (max-width: 480px) { .roster { grid-template-columns: minmax(0, 1fr); } }
-.groupHeader { margin-top: 10px; justify-content: space-between; font-size: 13px; }
+.groupHeader { padding-block: 12px; justify-content: space-between; flex-wrap: wrap; font-size: 13px; }
+.groupHeader > strong { min-width: 0; overflow-wrap: anywhere; }
+.batchActions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 4px; margin-left: auto; }
+.batchActions button { height: 24px; min-height: 24px; padding: 0 6px; font-size: 12px; line-height: 18px; font-weight: 400; }
+.batchButton { color: var(--dsw-alias-label-secondary); }

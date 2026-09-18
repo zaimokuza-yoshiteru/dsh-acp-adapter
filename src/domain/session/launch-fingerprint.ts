@@ -124,17 +124,16 @@ export function acpLaunchFingerprint(input: AcpLaunchFingerprintInput): AcpLaunc
     envRefs,
     executableOverride,
     nativeStateEnv: nativeStateEnvFingerprint(env),
-    // Ephemeral Teams capabilities are runtime-owned and must not enter durable restore identity.
-    mcpFingerprint: !input.config.hostTools?.length ? null
-      : createHash('sha256').update(JSON.stringify([...input.config.hostTools].sort())).digest('hex').slice(0, 16),
+    // Native tool discovery is session-scoped; the live MCP key owns reconnection.
+    mcpFingerprint: null,
   }
 }
 
-/** Ignore retired catalog reference versions, retaining every execution identity field.
+/** Ignore retired catalog versions and manual tool lists, retaining execution identity.
  * Saved bindings are never rewritten: fork evidence and mode intents still refer
  * to the exact persisted record. This does not relax runtime Agent identity checks.
  */
 export function acpLaunchFingerprintsCompatible(saved: AcpLaunchFingerprint, current: AcpLaunchFingerprint): boolean {
-  const normalize = (value: AcpLaunchFingerprint) => ({ ...value, adapterVersion: null, wrappedCliVersion: null })
+  const normalize = (value: AcpLaunchFingerprint) => ({ ...value, adapterVersion: null, wrappedCliVersion: null, mcpFingerprint: null })
   return acpCanonicalHash16(normalize(saved)) === acpCanonicalHash16(normalize(current))
 }

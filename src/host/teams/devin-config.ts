@@ -68,6 +68,7 @@ export async function prepareDevinTeamConfig(env: Record<string, string>, lease:
         servers: [],
         beginPrompt: signal => lease.beginPrompt(signal), endPrompt: () => lease.endPrompt(), permission: request => lease.permission(request),
         elicitation: (request, toolCall) => lease.elicitation?.(request, toolCall),
+        elicitationToolName: (request, toolCall) => lease.elicitationToolName?.(request, toolCall),
         presentTool: call => lease.presentTool?.(call) ?? call,
         close() { return closing ??= lease.close().finally(remove) },
       },

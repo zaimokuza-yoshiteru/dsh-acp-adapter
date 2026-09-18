@@ -32,16 +32,14 @@ function fixture(options: {
     next: { provider: 'native', model: 'model-a' },
   })
   const list = observable({
-    current: sessionId,
     byId: { [sessionId]: {
       id: sessionId,
       blank: options.row?.blank ?? false,
       cwd: options.row?.cwd === null ? undefined : options.row?.cwd ?? '/tmp',
     } },
   })
-  const sessionBinding = (id: string) => id === sessionId
-    ? { session: { projections: { faceOf: () => projection } } }
-    : undefined
+  const bindings = new Map([[sessionId, { session: { projections: { faceOf: () => projection } } }]])
+  const sessionBinding = (id: string) => bindings.get(id)
   const sessions = {
     list,
     binding: sessionBinding,
@@ -55,6 +53,7 @@ function fixture(options: {
   }
   const modelDirectories = vi.fn(() => { throw new Error('modelDirectories must not be read') })
   const ctx = {
+    uiWorkspace: { openSession: sessions.open },
     get(name: string) {
       if (name === 'sessions') return sessions
       if (name === 'modelDirectories') return { directoryFor: modelDirectories }
@@ -63,7 +62,7 @@ function fixture(options: {
     },
     remote,
   } as never
-  return { ctx, remote, modelDirectories, sessions, list, projection, coordinator: new CrossBackendCoordinator(ctx, owns) }
+  return { ctx, remote, modelDirectories, sessions, bindings, list, projection, coordinator: new CrossBackendCoordinator(ctx, owns) }
 }
 
 describe('cross-backend coordinator', () => {
@@ -137,7 +136,6 @@ describe('cross-backend coordinator', () => {
       sessionId: 'session-1', provider: 'native', model: 'old',
     })
     f.list.set({
-      current: 'session-2',
       byId: { 'session-2': { id: 'session-2', blank: true, cwd: '/tmp' } },
     })
     expect(f.coordinator.getSnapshot().pending?.ticket.sourceSessionId).toBe('session-1')
@@ -181,6 +179,42 @@ describe('cross-backend coordinator', () => {
     await settle()
     expect(f.coordinator.getSnapshot().pending?.error).toBe('rollback failed')
     expect(selectModel).toHaveBeenCalledTimes(1)
+    stop()
+  })
+
+  it('observes a retained sidebar independently and queues simultaneous decisions without mixing their sources', async () => {
+    const f = fixture()
+    const child = observable({ lastUsed: { provider: 'native', model: 'child-old' }, next: { provider: 'native', model: 'child-old' } })
+    f.bindings.set('child', { session: { projections: { faceOf: () => child } } })
+    f.list.set({ byId: { ...f.list.getSnapshot().byId, child: { id: 'child', blank: false, cwd: '/child' } } })
+    const stop = f.coordinator.start()
+    child.set({ lastUsed: { provider: 'native', model: 'child-old' }, next: { provider: 'acp-devin', model: 'child-new' } })
+    f.projection.set({ lastUsed: { provider: 'native', model: 'model-a' }, next: { provider: 'acp-codex', model: 'parent-new' } })
+    await settle()
+    expect(f.remote.session.selectModel).toHaveBeenCalledWith({ sessionId: 'child', provider: 'native', model: 'child-old' })
+    expect(f.remote.session.selectModel).toHaveBeenCalledWith({ sessionId: 'session-1', provider: 'native', model: 'model-a' })
+    expect(f.coordinator.getSnapshot().pending?.ticket.sourceSessionId).toBe('child')
+    await f.coordinator.cancel()
+    expect(f.coordinator.getSnapshot().pending?.ticket.sourceSessionId).toBe('session-1')
+    await f.coordinator.confirm()
+    expect(f.sessions.open).toHaveBeenCalledTimes(1)
+    expect(f.coordinator.getSnapshot().pending).toBeNull()
+    stop()
+  })
+
+  it('does not reopen a released sidebar or publish a late decision from its old binding', async () => {
+    const f = fixture()
+    let restore!: (value: { ok: boolean }) => void
+    f.remote.session.selectModel.mockImplementationOnce(() => new Promise(resolve => { restore = resolve }))
+    const stop = f.coordinator.start()
+    f.projection.set({ lastUsed: { provider: 'native', model: 'model-a' }, next: { provider: 'acp-codex', model: 'new' } })
+    f.bindings.clear()
+    f.list.set({ ...f.list.getSnapshot() })
+    restore({ ok: true })
+    await settle()
+    expect(f.coordinator.getSnapshot().pending).toBeNull()
+    f.projection.set({ lastUsed: { provider: 'native', model: 'model-a' }, next: { provider: 'acp-devin', model: 'another' } })
+    expect(f.remote.session.selectModel).toHaveBeenCalledTimes(1)
     stop()
   })
 })

@@ -1,6 +1,6 @@
 // Deterministic ACP protocol fixture. Scenarios are selected by MOCK_SCENARIO
 // (default happy); regression delegates product flows to regression-turn.mjs.
-// Optional test inputs: MOCK_LOG, MOCK_STEP_DELAY_MS, MOCK_SLOW_INIT_MS,
+// Optional test inputs: MOCK_LOG, MOCK_STEP_DELAY_MS, MOCK_SLOW_INIT_MS, MOCK_SESSION_NEW_DELAY_MS,
 // MOCK_ADVERTISE_RESUME, MOCK_ADVERTISE_FORK, MOCK_EMIT_NATIVE_SUBAGENT,
 // MOCK_NEVER_METHODS, and MOCK_MODEL_THOUGHT_LEVELS.
 import readline from 'node:readline';
@@ -350,7 +350,9 @@ function sessionMcpServers(msg) {
   return msg.params?.mcpServers ?? [];
 }
 
-function handleSessionNew(msg) {
+async function handleSessionNew(msg) {
+  const delay = intEnv('MOCK_SESSION_NEW_DELAY_MS', 0);
+  if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay));
   const session = createSession(`mock-session-${++state.sessionSeq}`, msg.params?.cwd ?? '/mock/cwd');
   session.mcpServers = sessionMcpServers(msg);
   // 对齐 devin 实测流量（research/probe-output.log L55-58 先于 session/new 响应）：

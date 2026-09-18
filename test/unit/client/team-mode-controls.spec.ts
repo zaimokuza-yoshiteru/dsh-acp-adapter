@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest'
-import { applyTeamMode, teamModeChoices } from '../../../src/client/ui/team-mode-controls.ts'
+import { applyTeamMode, teamModeChoices, teamSessionMenuGroups } from '../../../src/client/ui/team-mode-controls.ts'
 import { teamModeLabel } from '../../../src/contract/session-modes.ts'
 import type { AcpAgentSessionSnapshotView, AcpTeamMemberView } from '../../../src/client/data/acp-remote.ts'
 const snapshot = (patch: Partial<AcpAgentSessionSnapshotView> = {}): AcpAgentSessionSnapshotView => ({ sessionId: 'a', profileId: 'devin', freshness: 'live', editable: true, configOptions: null, modes: [{ id: 'code', name: 'Code' }, { id: 'plan', name: 'Plan' }], currentModeId: 'code', contextUsage: null, note: null, ...patch })
@@ -54,4 +54,24 @@ it('saves dormant member modes and allows replacing a pending mode with the last
     snapshot: async () => snapshot({ freshness: 'stale', editable: false, modeWritable: true, pendingModeId: 'plan' }), write })
   expect(result).toEqual({ applied: 1, skipped: 0, failed: 0 })
   expect(write).toHaveBeenCalledWith('sleeping', { kind: 'mode', id: 'code' })
+})
+
+it('shares mode presentation with main sessions, excluding other controls and preserving pending selections', () => {
+  const value = snapshot({ editable: false, freshness: 'stale', pendingModeId: 'plan', configOptions: [
+    { id: 'mode', name: 'Session Mode', type: 'select', currentValue: 'code', options: [
+      { value: 'code', name: 'Code' }, { value: 'plan', name: 'Plan', description: 'Plan before acting' },
+    ] },
+    { id: 'fast', name: 'Fast mode', type: 'boolean', currentValue: true },
+    { id: 'model', name: 'Model', type: 'select', currentValue: 'm', options: [{ value: 'm', name: 'Model' }] },
+  ] })
+  const readOnly = teamSessionMenuGroups(value, key => key, false)
+  expect(readOnly).toHaveLength(1)
+  expect(readOnly[0]).toMatchObject({ name: 'Session Mode', current: 'Plan' })
+  expect(readOnly[0]?.choices).toMatchObject([
+    { label: 'Code', current: false, disabled: true },
+    { label: 'Plan', description: 'Plan before acting', current: true, disabled: true },
+  ])
+  const writable = teamSessionMenuGroups(value, key => key, true)
+  expect(writable[0]?.choices.map(choice => ({ ...choice, disabled: true }))).toEqual(readOnly[0]?.choices)
+  expect(writable[0]?.choices.every(choice => !choice.disabled)).toBe(true)
 })

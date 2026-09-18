@@ -1,13 +1,12 @@
-/* Match native AssistantMarkdown's 16px content rhythm; adjacent tool rows
-   retain the compact activity spacing. Native renderers still own all content. */
-.assistantFlow { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
-.inlineActivities { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+/* Native Chat and AssistantMarkdown share the same 16px flow rhythm. */
+.assistantFlow { display: flex; flex-direction: column; min-width: 0; }
+.assistantFlow > :not([hidden]):not(:empty) ~ :not([hidden]):not(:empty) { margin-top: var(--dsh-chat-flow-gap, 16px); }
+.inlineActivities { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 
 .flow {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  margin: 4px 0;
+  gap: 16px;
   min-width: 0;
 }
 
@@ -60,73 +59,5 @@
   font-size: var(--dsh-content-font-size-secondary, 13px);
 }
 
-/* Tool activity rows use this small outer shell because DSH keeps ToolRow
-   and GenericToolCard private. Recognized diff, terminal and read details
-   inside the row render native components; other payloads use the IO card. */
-.toolFallback { min-width: 0; }
-.toolBody { min-width: 0; margin-left: 4px; }
-.toolTitle { font-weight: 400; }
-.toolSummary {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  margin-left: 8px;
-  color: var(--dsw-alias-label-tertiary);
-  font-size: var(--dsh-content-font-size-secondary, 13px);
-  line-height: calc(24px + var(--dsh-content-font-delta, 0px));
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.toolSummary::before {
-  content: '';
-  display: inline-block;
-  width: 2px;
-  height: 2px;
-  margin: 0 8px 3px 0;
-  border-radius: 1px;
-  corner-shape: round;
-  background: var(--dsw-alias-label-caption);
-}
-/* ToolRow's file opener is private; keep its small link affordance while the
-   public openFile callback owns Sidebar routing and file access. */
-.fileLink {
-  padding: 0;
-  border: none;
-  background: none;
-  font: inherit;
-  color: var(--dsw-alias-label-secondary);
-  text-decoration: underline dotted;
-  text-decoration-color: var(--dsw-alias-label-tertiary);
-  text-underline-offset: 3px;
-  cursor: pointer;
-}
-.fileLink:hover { color: var(--dsw-alias-label-primary); text-decoration-color: currentColor; }
-.ioCard {
-  display: flex;
-  flex-direction: column;
-  margin: 4px 0 4px 4px;
-  overflow: hidden;
-  border: 0.5px solid var(--dsw-alias-border-l1);
-  border-radius: 12px;
-  background: var(--dsw-alias-markdown-code-block);
-  font: var(--dsw-font-markdown-code-block-small);
-}
-.ioSection {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  column-gap: 14px;
-  align-items: baseline;
-  max-height: 150px;
-  overflow-y: auto;
-  padding: 12px 16px;
-}
-.ioLabel { color: var(--dsw-alias-label-caption); }
-.ioText {
-  min-width: 0;
-  margin: 0;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  color: var(--dsw-alias-label-secondary);
-  font: inherit;
-}
-.ioDivider { height: 1px; background: var(--dsw-alias-border-l2); }
+
+.inspection { padding: 16px 24px; overflow: auto; }

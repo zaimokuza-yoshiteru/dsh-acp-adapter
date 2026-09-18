@@ -2,9 +2,9 @@ import { describe, expect, it } from 'vitest'
 import {
   agentControlFooter,
   agentControlLabel,
-  agentControlMenuItems,
+  agentControlMenuGroups,
   formatContextTokenCount,
-} from '../../../src/client/ui/AcpAgentControl.ts'
+} from '../../../src/client/ui/agent-session-controls.ts'
 import type { AcpAgentSessionSnapshotView } from '../../../src/client/data/acp-remote.ts'
 import { en, zh } from '../../../src/client/ui/locales.ts'
 
@@ -21,13 +21,13 @@ describe('ACP Agent control presentation', () => {
       configOptions: [{ id: 'mode', name: 'Mode', type: 'select' as const, currentValue: 'plan', options: [{ value: 'plan', name: 'Plan' }] }],
       modes: null, currentModeId: null, contextUsage: null, note: null,
     }
-    expect(agentControlLabel(value, key => key)).toBe('Agent · Plan')
-    expect(agentControlLabel({ ...value, modes: [{ id: 'code', name: 'Code' }], currentModeId: 'code' }, key => key)).toBe('Agent · Plan')
+    expect(agentControlLabel(value, key => key)).toBe('agentControlTitle · Plan')
+    expect(agentControlLabel({ ...value, modes: [{ id: 'code', name: 'Code' }], currentModeId: 'code' }, key => key)).toBe('agentControlTitle · Plan')
   })
 
   it('shows Agent mode separately from DSH permissions and context/cumulative cost', () => {
     const value = snapshot({ contextUsage: { used: 12, size: 100, percent: 12, cost: { amount: 0.42, currency: 'USD' } } })
-    expect(agentControlLabel(value, t)).toBe('Agent · Plan')
+    expect(agentControlLabel(value, t)).toBe('agentControlTitle:{} · Plan')
     expect(agentControlFooter(value, t).map(item => item.text)).toEqual([
       'agentContextUsage:{"used":"0.012k","size":"0.1k","percent":12}',
       'agentSessionCost:{"amount":0.42,"currency":"USD"}',
@@ -40,9 +40,9 @@ describe('ACP Agent control presentation', () => {
       const value = snapshot({ modes: [], currentModeId: null, configOptions: [
         { type: 'boolean', id: 'flag', name: 'Agent supplied label', currentValue: true },
       ] })
-      expect(agentControlLabel(value, translate)).toBe(`Agent · ${dictionary.agentControlDefault}`)
-      expect(agentControlMenuItems(value, translate)[0]?.label).toBe(`Agent supplied label: ${dictionary.agentControlOn}`)
-      expect(agentControlMenuItems({ ...value, configOptions: [{ type: 'boolean', id: 'flag', name: 'Agent supplied label', currentValue: false }] }, translate)[0]?.label).toBe(`Agent supplied label: ${dictionary.agentControlOff}`)
+      expect(agentControlLabel(value, translate)).toBe(`${dictionary.agentControlTitle} · ${dictionary.agentControlDefault}`)
+      expect(agentControlMenuGroups(value, translate)[0]).toMatchObject({ name: 'Agent supplied label', current: dictionary.agentControlOn })
+      expect(agentControlMenuGroups({ ...value, configOptions: [{ type: 'boolean', id: 'flag', name: 'Agent supplied label', currentValue: false }] }, translate)[0]).toMatchObject({ name: 'Agent supplied label', current: dictionary.agentControlOff })
     }
   })
 
@@ -72,7 +72,7 @@ describe('ACP Agent control presentation', () => {
         options: [{ value: 'accept-edits', name: 'Code' }, { value: 'ask', name: 'Ask' }],
       }],
     })
-    expect(agentControlMenuItems(value, t).map(item => item.id)).toEqual([
+    expect(agentControlMenuGroups(value, t).flatMap(group => group.choices.map(item => item.id))).toEqual([
       'config:mode:accept-edits',
       'config:mode:ask',
     ])
@@ -83,13 +83,24 @@ describe('ACP Agent control presentation', () => {
       modes: [{ id: 'plan', name: 'Plan' }, { id: 'ask', name: 'Ask' }],
       configOptions: [],
     })
-    expect(agentControlMenuItems(value, t).map(item => item.id)).toEqual(['mode:plan', 'mode:ask'])
+    expect(agentControlMenuGroups(value, t).flatMap(group => group.choices.map(item => item.id))).toEqual(['mode:plan', 'mode:ask'])
   })
 
 
 
-  it('states that native access is informational and does not control ACP tools', () => {
-    expect(zh.agentControlTooltip).toBe('ACP 工具权限由 Agent 管理；DSH 的“原生 Agent 访问”模式仅作说明，不会控制 ACP 工具。')
-    expect(en.agentControlTooltip).toBe("ACP tool permissions are managed by the Agent; DSH's Native Agent Access mode is informational and does not control ACP tools.")
+  it('keeps independent settings grouped, selected and read-only when stale', () => {
+    const groups = agentControlMenuGroups(snapshot({ freshness: 'stale', configOptions: [
+      { id: 'model', name: 'Model', type: 'select', currentValue: 'm', options: [{ value: 'm', name: 'Model' }] },
+      { id: 'collaboration', name: 'Collaboration mode', type: 'select', currentValue: 'plan', options: [
+        { group: 'work', name: 'Work modes', options: [{ value: 'plan', name: 'Plan', description: 'Plan before acting' }] },
+      ] },
+      { id: 'fast', name: 'Fast mode', type: 'boolean', currentValue: false },
+    ] }), key => en[key])
+    expect(groups.map(group => group.name)).toEqual(['Mode', 'Collaboration mode', 'Fast mode'])
+    expect(groups[1]?.choices[0]).toMatchObject({ current: true, disabled: true, group: 'Work modes', description: 'Plan before acting' })
+    expect(groups[2]?.choices).toMatchObject([
+      { label: 'Off', current: true, write: { kind: 'config', id: 'fast', value: false } },
+      { label: 'On', current: false, write: { kind: 'config', id: 'fast', value: true } },
+    ])
   })
 })

@@ -56,7 +56,7 @@ export interface AcpSessionRuntimeOptions {
   /** Host-owned approval bridge. The optional signal is the active prompt lifetime. */
   readonly onPermissionRequest?: (params: acp.RequestPermissionRequest, signal?: AbortSignal) => Promise<acp.RequestPermissionResponse>
   /** Host-owned form elicitation bridge; URL elicitation is intentionally not advertised. */
-  readonly onElicitationRequest?: (params: acp.CreateElicitationRequest, signal?: AbortSignal) => Promise<acp.CreateElicitationResponse>
+  readonly onElicitationRequest?: (params: acp.CreateElicitationRequest, signal?: AbortSignal, hostToolName?: string) => Promise<acp.CreateElicitationResponse>
   /** One-shot diagnostic for optional private capability degradation. */
   readonly onCapabilityDegraded?: (message: string) => void
   /** Grace period after `session/cancel` before the Agent process is closed. */
@@ -513,7 +513,7 @@ export class AcpSessionRuntime {
           const toolCall = scope.sessionId !== this.sessionId || typeof scope.toolCallId !== 'string'
             ? undefined : this.promptToolSnapshots?.get(scope.toolCallId)
           this.pendingQuestions += 1
-          try { return await (this.mcpLease?.elicitation?.(params, toolCall) ?? this.options.onElicitationRequest!(params, signal)) }
+          try { return await (this.mcpLease?.elicitation?.(params, toolCall) ?? this.options.onElicitationRequest!(params, signal, this.mcpLease?.elicitationToolName?.(params, toolCall))) }
           finally { this.pendingQuestions -= 1 }
         },
       }),

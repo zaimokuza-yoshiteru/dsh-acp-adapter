@@ -32,14 +32,21 @@ describe.each(['kimi', 'devin', 'codex', 'claude'])('Agent controls: %s', profil
       page.setDefaultTimeout(10000)
       await page.goto(host.authenticatedUrl)
       await connectFreshWorkspace(page, host.workspaceCwd)
-      const controls = () => page.getByRole('button', { name: /^Agent ·/ })
+      const controls = () => page.getByRole('button', { name: /^Session ·/ })
       const stop = page.getByRole('button', { name: 'Stop generating', exact: true })
-      const ask = page.getByRole('menuitem', { name: 'Session Mode: Ask', exact: true })
+      const ask = page.getByRole('menuitem', { name: /^Ask(?:\s|$)/ })
       const openControls = async () => {
         await expect.poll(() => controls().getAttribute('aria-expanded')).toBe('false')
         await controls().click()
         await expect.poll(() => controls().getAttribute('aria-expanded')).toBe('true')
+        if (profile === 'codex' && delivery === 'response') {
+          const directory = join(root, '.local/ui-review')
+          mkdirSync(directory, { recursive: true })
+          await page.screenshot({ path: join(directory, 'session-settings.png') })
+        }
+        await page.getByRole('menuitem', { name: /^Session Mode/ }).click()
         await ask.waitFor()
+        if (profile === 'codex' && delivery === 'response') await page.screenshot({ path: join(root, '.local/ui-review/session-options.png') })
       }
       const send = async text => {
         await writeComposerDraft(page, page.locator('[data-composer-input]').first(), text)
@@ -86,7 +93,12 @@ describe.each(['kimi', 'devin', 'codex', 'claude'])('Agent controls: %s', profil
       phase = 'stopped options'
       await openControls()
       await expect.poll(() => ask.isDisabled()).toBe(false)
+      await page.getByRole('menuitem', { name: 'Back to session settings', exact: true }).click()
+      await expect.poll(() => ask.count()).toBe(0)
+      await page.getByRole('menuitem', { name: /^Session Mode/ }).click()
       await ask.click()
+      await ask.waitFor({ state: 'hidden' })
+      await expect.poll(() => controls().getAttribute('aria-expanded')).toBe('false')
       await expect.poll(() => controls().innerText()).toMatch(/ask/i)
       // A blank conversation cannot inherit the previous session's options.
       phase = 'new session'

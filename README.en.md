@@ -4,6 +4,8 @@
 
 Use **Claude · Codex · Devin · Kimi** from the DSH session UI.
 
+This version supports DSH `0.1.6-alpha.2` only. ACP members and subagent records open in the native sidebar while the main conversation stays in place. Team member requests can still be approved from the main conversation.
+
 ## <img src="assets/readme/icon-preview.svg" width="24" height="24" alt="" /> Preview
 
 Screenshots show real **Devin · SWE-1.7 Medium** operations in a clean DSH instance.
@@ -84,7 +86,7 @@ Catalog versions are advisory. A difference from the snapshot does not mean the 
 
 **Experimental Agent Teams:** Follows DSH’s Teams profiles and uses its native Team panel. Members inherit the Lead’s Agent, model and reasoning settings at creation, with fresh context only. Switching the Lead’s model affects future members; existing members retain theirs. A team uses one ACP Agent. Shared tasks use the native task board. Answer member approvals from the Lead; allow or reject all current ordinary approvals, with permission granted once only. The member icon at the top right shows status and models. Change Agent modes individually or in batches grouped by ACP profile; idle members apply changes immediately, while dormant members apply saved modes before their next run. Team coordination adds no approval prompts; ordinary permissions remain unchanged. Messages arrive at DSH step boundaries.
 
-**Optional DSH plugin tools:** In the Agent editor, enter one installed tool name per line under “Advanced options → DSH plugin tools”, or set `hostTools: ["tool_name"]`. Only selected tools are exposed over MCP and run through the native DSH tool pipeline. No additional tools are enabled by default. Ordinary tools retain Agent approval, and each DSH tool keeps its own execution rules. Avoid duplicating the Agent’s built-in tools, and start a new session after changing the list. This does not replace the Agent loop; see [native reuse boundaries](docs/native-reuse.en.md).
+**Automatic DSH plugin tools:** Native tools visible to the current session are automatically exposed over MCP, without a manual tool list or Teams. For example, when the Host provides `present`, the Agent can use native file delivery and previews. Calls use the native tool pipeline and retain Agent approval and each tool's rules. The retired `hostTools` setting is ignored and removed when saving in the editor. See [native reuse boundaries](docs/native-reuse.en.md).
 
 During execution, Enter queues a message; use the queue’s steering action to deliver it to the active task. The adapter uses negotiated atomic steering when available. Otherwise it cancels the current execution, waits for it to settle, and sends the input in the same Agent session. Kimi requires no additional SDK. Cancellation timeouts do not trigger an automatic resend; the Agent retains permission and context ownership. See [input capabilities and limitations](docs/agent-input-capabilities.en.md).
 

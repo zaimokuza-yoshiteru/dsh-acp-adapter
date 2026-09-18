@@ -1,17 +1,14 @@
 import { createElement as h, useEffect, useRef, useState } from 'react'
-import type { ButtonHTMLAttributes, ReactNode } from 'react'
-import { IconChevronDownOutline14, Menu, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
+import type { ReactNode } from 'react'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import type { AcpRemoteLike, AcpAgentSessionSnapshotView, AcpAgentSessionOptionWrite } from '../data/acp-remote.ts'
+import type { AcpRemoteLike, AcpAgentSessionSnapshotView } from '../data/acp-remote.ts'
 import type { OwnsAcpRoute } from '../coordinator/cross-backend-coordinator.ts'
-import type { AcpLocaleKey } from './locales.ts'
-import { isAcpModelOrReasoningOption } from '../../contract/config-options.ts'
 import css from './AcpAgentControl.module.css'
+import { AgentSessionMenu } from './AgentSessionMenu.ts'
+import { agentControlMenuGroups, agentControlLabel, agentControlFooter, type AgentControlChoice } from './agent-session-controls.ts'
 import type { RemoteStreamFactory } from '@deepseek-ai/dsh-api-gateway/client'
 import { agentSessionStream } from '../data/agent-session-stream.ts'
-import { teamModeLabel } from '../../contract/session-modes.ts'
 
-type Translate = (key: AcpLocaleKey, params?: Record<string, unknown>) => string
 type AgentControlProps = PropsRuntime<'conversation.input.left'> & PropsLocale<'acpActivity'> & {
   readonly remote: AcpRemoteLike
   readonly streamFactory: RemoteStreamFactory
@@ -29,66 +26,6 @@ export function snapshotIsAcp(value: unknown, ownsRoute: OwnsAcpRoute): boolean 
   const selection = value as { readonly lastUsed?: unknown; readonly next?: unknown }
   const current = selection.next === undefined ? selection.lastUsed : selection.next
   return ownsRoute(providerOf(current))
-}
-
-function isModeConfigOption(option: NonNullable<AcpAgentSessionSnapshotView['configOptions']>[number]): boolean {
-  const id = option.id.trim().toLowerCase().replaceAll('-', '_')
-  const category = option.category?.trim().toLowerCase().replaceAll('-', '_') ?? ''
-  return id === 'mode' || category === 'mode'
-}
-
-export function agentControlMenuItems(snapshot: AcpAgentSessionSnapshotView, t: Translate): { readonly id: string; readonly label: ReactNode; readonly write: AcpAgentSessionOptionWrite; readonly disabled?: boolean }[] {
-  const items: { id: string; label: ReactNode; write: AcpAgentSessionOptionWrite; disabled?: boolean }[] = []
-  const disabled = !snapshot.editable || snapshot.freshness !== 'live'
-  // ACP's config option is the canonical write path. Agents such as Devin
-  // advertise the same mode roster through both transition-era surfaces; use
-  // legacy set_mode only when no mode config option exists.
-  if (!(snapshot.configOptions ?? []).some(isModeConfigOption)) {
-    for (const mode of snapshot.modes ?? []) {
-      items.push({ id: `mode:${mode.id}`, label: mode.name, write: { kind: 'mode', id: mode.id }, disabled })
-    }
-  }
-  for (const option of snapshot.configOptions ?? []) {
-    // Model and reasoning remain exclusively in DSH's native ModelPicker.
-    if (isAcpModelOrReasoningOption(option)) continue
-    if (option.type === 'boolean') {
-      items.push({ id: `config:${option.id}`, label: `${option.name}: ${t(option.currentValue ? 'agentControlOn' : 'agentControlOff')}`, write: { kind: 'config', id: option.id, value: !option.currentValue }, disabled })
-      continue
-    }
-    for (const value of option.options) {
-      if ('value' in value) items.push({ id: `config:${option.id}:${value.value}`, label: `${option.name}: ${value.name}`, write: { kind: 'config', id: option.id, value: value.value }, disabled })
-      else for (const child of value.options) items.push({ id: `config:${option.id}:${child.value}`, label: `${option.name}: ${child.name}`, write: { kind: 'config', id: option.id, value: child.value }, disabled })
-    }
-  }
-  if (items.length === 0 && snapshot.note !== null) items.push({ id: 'unavailable', label: t('agentControlUnavailable'), write: { kind: 'mode', id: '' }, disabled: true })
-  return items
-}
-
-export function agentControlLabel(snapshot: AcpAgentSessionSnapshotView, t: Translate): string {
-  return `Agent · ${teamModeLabel(snapshot, t('agentControlDefault'))}`
-}
-
-/** Compact ACP token counts without falling back to an unqualified raw count. */
-export function formatContextTokenCount(value: number): string {
-  const unit = value >= 1_000_000 ? 'm' : 'k'
-  const divisor = unit === 'm' ? 1_000_000 : 1_000
-  const scaled = value / divisor
-  // Match the host's compact context figures for ordinary K/M values while
-  // retaining enough precision below 1k to avoid displaying a non-zero count
-  // as zero. The raw count determines the unit, so rounding never promotes it.
-  const fractionDigits = scaled < 1 ? 3 : scaled < 100 ? 1 : 0
-  const factor = 10 ** fractionDigits
-  return `${String(Math.round(scaled * factor) / factor)}${unit}`
-}
-
-export function agentControlFooter(snapshot: AcpAgentSessionSnapshotView, t: Translate): readonly { readonly type: 'label'; readonly id: string; readonly text: string }[] {
-  const footer: { readonly type: 'label'; readonly id: string; readonly text: string }[] = []
-  if (snapshot.contextUsage !== null) {
-    footer.push({ type: 'label', id: 'context-usage', text: t('agentContextUsage', { used: formatContextTokenCount(snapshot.contextUsage.used), size: formatContextTokenCount(snapshot.contextUsage.size), percent: snapshot.contextUsage.percent }) })
-    if (snapshot.contextUsage.cost !== null) footer.push({ type: 'label', id: 'session-cost', text: t('agentSessionCost', { amount: snapshot.contextUsage.cost.amount, currency: snapshot.contextUsage.cost.currency }) })
-  }
-  if (snapshot.freshness === 'stale') footer.push({ type: 'label', id: 'stale', text: t('agentStateStale') })
-  return footer
 }
 
 /** Small ACP-only control in DSH's native input-left extension point. */
@@ -135,14 +72,14 @@ export function AcpAgentControl({ sessionId, useProjection, useSession, t, remot
   // The native running projection also locks the small interval before ACP prompt begins.
   const visibleSnapshot = running ? { ...snapshot, editable: false } : snapshot
   const label = agentControlLabel(snapshot, t)
-  const items = agentControlMenuItems(visibleSnapshot, t)
+  const groups = agentControlMenuGroups(visibleSnapshot, t)
   const footer = [...agentControlFooter(snapshot, t)]
   if (error !== null) footer.push({ type: 'label', id: 'error', text: error })
-  if (items.length === 0 && footer.length === 0) return null
-  const select = (id: string): void => {
-    const item = items.find(candidate => candidate.id === id)
-    if (item === undefined || item.id === 'unavailable' || !visibleSnapshot.editable || snapshot.freshness !== 'live' || sessionId === undefined) return
+  if (groups.length === 0 && footer.length === 0 && snapshot.note === null) return null
+  const select = (item: AgentControlChoice): void => {
+    if (!visibleSnapshot.editable || snapshot.freshness !== 'live' || sessionId === undefined) return
     const current = epoch.current
+    setOpen(false)
     setBusy(true)
     setError(null)
     void remote.setAgentSessionOption(sessionId, item.write).then(result => {
@@ -153,22 +90,9 @@ export function AcpAgentControl({ sessionId, useProjection, useSession, t, remot
       if (current === epoch.current) setError(reason instanceof Error ? reason.message : String(reason))
     }).finally(() => { if (current === epoch.current) setBusy(false) })
   }
-  const description = t('agentControlTooltip')
-  return h(Menu, {
-    open,
-    // This control shares DSH's bottom input row; match the native permission
-    // selector and open upward so every Agent option remains reachable.
-    side: 'top',
-    items,
+  return h(AgentSessionMenu, {
+    groups, footer, label, t, open, disabled: busy, side: 'top',
+    onOpenChange: value => { if (value && error !== null) setRetry(current => current + 1); setOpen(value) },
     onSelect: select,
-    onClose: () => setOpen(false),
-    anchor: h(Tooltip, { label: description, children: h<ButtonHTMLAttributes<HTMLButtonElement>>('button', {
-      type: 'button', className: css.trigger, disabled: busy, 'aria-expanded': open,
-      onClick: () => { if (error !== null) setRetry(value => value + 1); setOpen(value => !value) },
-    },
-    h('span', { className: css.triggerLabel }, label),
-    h(IconChevronDownOutline14, { className: `${css.chevron}${open ? ` ${css.chevronOpen}` : ''}` }),
-    ) }),
-    ...(footer.length === 0 ? {} : { footer }),
   })
 }

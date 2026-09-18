@@ -643,7 +643,7 @@ describe('草稿种子：emptyDraft / draftFromCatalogEntry / draftFromAgent', (
     expect(agentLoginHint('claude', {})).toBe('claude');
     expect(agentLoginHint('custom', { runtime: 'kimi', loginHint: 'company-login' })).toBe('company-login');
     expect(agentLoginHint('unknown', {})).toBeUndefined();
-    const config = { ...fooConfig, loginHint: 'company-login', hostTools: ['company_tool'] };
+    const config = { ...fooConfig, loginHint: 'company-login' };
     expect(validateAgentDraft(draftFromAgent('foo', config), { foo: config }, 'foo').config).toEqual(config);
   });
   it('emptyDraft 全空串', () => {
