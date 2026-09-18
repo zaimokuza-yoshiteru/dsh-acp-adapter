@@ -10,7 +10,7 @@ import type { SubprocessSeam } from '../../../src/runtime/process/subprocess.ts'
 import { sharedTestSubprocess } from '../../fixtures/subprocess-seam-testing.ts'
 
 const TEST_DIR = path.dirname(fileURLToPath(import.meta.url))
-const MOCK_AGENT_PATH = path.join(TEST_DIR, '..', '..', 'mock-agent', 'mock-agent.mjs')
+const MOCK_AGENT_PATH = path.join(TEST_DIR, '..', '..', 'mock-agent', 'mock-agent.ts')
 const PROMPT: acp.ContentBlock[] = [{ type: 'text', text: 'Keep working until cancelled.' }]
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))

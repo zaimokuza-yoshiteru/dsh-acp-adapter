@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // unknown-notify-agent.mjs — 最小 ACP agent fixture（零依赖纯 Node ESM）。
 //
-// 用途：mock-agent.mjs 的固定 scenario 不含"未知厂商通知"，而约束禁止改 mock 本体，
+// 用途：mock-agent.ts 的固定 scenario 不含"未知厂商通知"，而约束禁止改 mock 本体，
 // 故用本 fixture 补 的 `_vendor/foo` 容忍性用例：
 //   - session/new 响应前先推一条 `_vendor/foo` 通知（对齐 devin 的 `_cognition.ai/*` 习惯）
 //   - session/prompt turn 中途再推一条 `_vendor/foo`

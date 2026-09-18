@@ -7,8 +7,8 @@ import {
   parseAuthenticatedStartupUrl,
   redactGateOutput,
   waitForAuthenticatedBootstrap,
-} from '../../scripts/install-gate.mjs'
-import { findMissingRelativeRuntimeImports } from '../../scripts/verify-runtime-closure.mjs'
+} from '../../scripts/install-gate.ts'
+import { findMissingRelativeRuntimeImports } from '../../scripts/verify-runtime-closure.ts'
 
 describe('DSH clean-install gate contracts', () => {
   it('parses an isolated host and tarball without touching user profile state', () => {

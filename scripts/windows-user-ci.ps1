@@ -26,5 +26,5 @@ pnpm install --frozen-lockfile --store-dir (Join-Path $AuditRoot 'pnpm-store')
 pnpm typecheck
 pnpm test --no-file-parallelism
 pnpm build
-node scripts/check-windows-mcp-links.mjs lib/host/teams/devin-config.js
+node scripts/check-windows-mcp-links.ts lib/host/teams/devin-config.js
 npm pack --ignore-scripts
