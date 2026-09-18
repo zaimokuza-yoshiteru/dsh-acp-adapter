@@ -102,4 +102,20 @@ describe('npm release contract', () => {
     expect(workflow).toContain('import { DSH_SOURCE_TAG } from "./scripts/dsh-target.mjs"')
     expect(workflow).not.toMatch(/ref: dsh-v/)
   })
+
+  it('freezes optional Registry inputs before packing and keeps issue reporting outside the publish dependency', () => {
+    const workflow = readFileSync(new URL('.github/workflows/publish.yml', root), 'utf8')
+    expect(workflow).toContain('node scripts/sync-release-registry.mjs --reuse')
+    expect(workflow.indexOf('node scripts/sync-release-registry.mjs')).toBeLessThan(workflow.indexOf('npm pack --pack-destination'))
+    expect(workflow).toContain("item.name === 'release-registry-snapshot'")
+    expect(workflow).toContain("if: steps.registry-checkpoint.outputs.result == 'true'")
+    const notification = workflow.split('  registry-notification:')[1]!.split('  publish:')[0]!
+    expect(notification).toContain("if: always() && needs.pack.outputs.registry-status == 'fallback'")
+    expect(notification).toContain('continue-on-error: true')
+    expect(notification).toContain('issues: write')
+    const publish = workflow.split('  publish:')[1]!
+    expect(publish).toContain('needs: pack')
+    expect(publish).not.toContain('registry-notification')
+    expect(publish).not.toContain('issues: write')
+  })
 })
