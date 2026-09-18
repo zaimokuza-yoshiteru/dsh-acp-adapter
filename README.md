@@ -45,13 +45,15 @@ npx "@deepseek-ai/dsh@$DSH_VERSION" web
 pnpm install --frozen-lockfile
 ```
 
+`pnpm typecheck` 同时检查源码、测试和开发脚本。复杂脚本及测试使用 TypeScript；少量启动脚本和加载器夹具保留 JavaScript，`lib/` 中的 JavaScript 是构建产物。
+
 常规开发无需上游源码；浏览器回归的准备步骤见 [E2E 指南](test/e2e/README.md)。
 
 ## <img src="assets/readme/icon-start.svg" width="24" height="24" alt="" /> 三步接入
 
 **1. 安装 Agent，并在终端登录。**
 
-Agent 目录来自随插件发布的 [ACP 官方 registry](https://agentclientprotocol.com) 快照，提供安装指引与配置预填；列入目录不代表已经逐个验证。菜单区分「已验证适配」和「目录收录 · 未验证」；验证范围不覆盖每个目录版本或平台。常用四家：
+Agent 目录来自随插件发布的 [ACP 官方 registry](https://agentclientprotocol.com) 快照，提供安装指引与配置预填。发布时自动尝试更新目录；同步或校验失败则沿用仓库中已验证的快照，不阻塞发布，详情记录在发布工作流摘要和 issue 中。运行时不联网刷新目录。列入目录不代表已经逐个验证。菜单区分「已验证适配」和「目录收录 · 未验证」；验证范围不覆盖每个目录版本或平台。常用四家：
 
 | Agent | ACP 命令 | 终端登录 |
 | --- | --- | --- |

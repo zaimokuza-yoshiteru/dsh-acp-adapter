@@ -19,8 +19,7 @@ export default {
     playwright: createRequire(resolve(host, 'apps/web/package.json')).resolve('playwright'),
   } },
   test: {
-    setupFiles: process.env.DSH_E2E_ELECTRON ? [resolve(root, 'test/e2e/electron-setup.mjs')] : [],
-    include: ['test/e2e/**/*.e2e.mjs'],
+    include: ['test/e2e/**/*.e2e.ts'],
     execArgv: vitestExecArgv,
     fileParallelism: false,
     testTimeout: 90_000,

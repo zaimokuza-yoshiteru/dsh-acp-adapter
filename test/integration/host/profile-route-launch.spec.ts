@@ -9,7 +9,7 @@ import type { AcpAgentConfig } from '../../../src/domain/session/agent-config.ts
 import type { SubprocessSeam } from '../../../src/runtime/process/subprocess.ts'
 import { sharedTestSubprocess } from '../../fixtures/subprocess-seam-testing.ts'
 
-const MOCK_AGENT_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'mock-agent', 'mock-agent.mjs')
+const MOCK_AGENT_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'mock-agent', 'mock-agent.ts')
 
 describe('ACP profile route launch contract', () => {
   it('saves and launches an executable path containing spaces and shell punctuation without shell parsing', async () => {

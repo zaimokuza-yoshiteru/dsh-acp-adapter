@@ -38,7 +38,7 @@ import { sharedTestSubprocess } from '../../fixtures/subprocess-seam-testing.ts'
 import { createAcpTerminalHandlers } from '../../../src/runtime/client-capabilities/terminal.ts';
 
 const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
-const MOCK_AGENT_PATH = path.join(TEST_DIR, '..', '..', 'mock-agent', 'mock-agent.mjs');
+const MOCK_AGENT_PATH = path.join(TEST_DIR, '..', '..', 'mock-agent', 'mock-agent.ts');
 const SPEC_TAG = `--dsh-acp-client-spec-${process.pid}`;
 
 const PROMPT_BLOCKS: acp.ContentBlock[] = [{ type: 'text', text: 'Say hello to the mock world.' }];

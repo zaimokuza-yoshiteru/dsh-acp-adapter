@@ -45,13 +45,15 @@ Plugin development installs the locked npm dependencies:
 pnpm install --frozen-lockfile
 ```
 
+`pnpm typecheck` checks source, tests, and development scripts. Complex scripts and tests use TypeScript; a few launchers and loader fixtures remain JavaScript. JavaScript under `lib/` is generated build output.
+
 Regular development needs no upstream checkout. See the [E2E guide](test/e2e/README.md) for browser regression setup.
 
 ## <img src="assets/readme/icon-start.svg" width="24" height="24" alt="" /> Connect in three steps
 
 **1. Install and sign in to your Agent.**
 
-The agent catalog uses a snapshot of the [official ACP registry](https://agentclientprotocol.com) shipped with the plugin. It provides install guidance and configuration presets; inclusion does not mean each Agent has been verified. The menu separates verified adapters from unverified catalog entries; verification does not cover every listed version or platform. The common four:
+The agent catalog uses a snapshot of the [official ACP registry](https://agentclientprotocol.com) shipped with the plugin. It provides install guidance and configuration presets. Each release attempts a refresh; if synchronization or validation fails, publishing continues with the validated snapshot committed in the repository, with details in the workflow summary and a tracking issue. The catalog does not refresh over the network at runtime. Inclusion does not mean each Agent has been verified. The menu separates verified adapters from unverified catalog entries; verification does not cover every listed version or platform. The common four:
 
 | Agent | ACP command | Terminal login |
 | --- | --- | --- |

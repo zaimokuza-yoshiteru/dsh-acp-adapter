@@ -1,5 +1,5 @@
-# npm publishing is manual/tag-driven and uses the exact tarball produced by
-# the published-package build lane. Trusted Publishing supplies OIDC.
+# npm publishing is manual/tag-driven. Freeze the optional Registry refresh,
+# then test and publish the same tarball. Trusted Publishing supplies OIDC.
 name: publish npm
 
 on:
@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: npm-publish
@@ -22,6 +23,7 @@ jobs:
     outputs:
       dist-tag: ${{ steps.release.outputs.dist-tag }}
       tarball: ${{ steps.release.outputs.tarball }}
+      registry-status: ${{ steps.registry.outputs.status }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -36,9 +38,38 @@ jobs:
           version: 10.7.0
       - name: Verify release tag and version
         id: release
-        run: node scripts/verify-release.mjs
+        run: node scripts/verify-release.ts
       - name: Verify ordinary Unix user
         run: node scripts/check-ci-user.mjs
+      - name: Find frozen Registry input from an earlier attempt
+        id: registry-checkpoint
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
+              ...context.repo, run_id: context.runId, per_page: 100,
+            })
+            const checkpoint = artifacts.find(item => item.name === 'release-registry-snapshot')
+            if (checkpoint?.expired) throw new Error('Frozen Registry artifact expired; start a new workflow run')
+            return Boolean(checkpoint)
+      - name: Restore frozen Registry input
+        if: steps.registry-checkpoint.outputs.result == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: release-registry-snapshot
+          path: .local/registry-release
+      - name: Refresh Registry or retain validated fallback
+        id: registry
+        run: node scripts/sync-release-registry.ts --reuse
+      - name: Freeze Registry input and change summary
+        if: steps.registry-checkpoint.outputs.result != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-registry-snapshot
+          path: .local/registry-release/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 90
       - name: Install exact published dependencies
         run: pnpm install --frozen-lockfile
       # npm pack runs prepack: typecheck, tests, build and bundle verification once.
@@ -49,13 +80,40 @@ jobs:
           test -f "dist/npm/${{ steps.release.outputs.tarball }}"
           test "$(find dist/npm -maxdepth 1 -type f -name '*.tgz' | wc -l | tr -d ' ')" = 1
       - name: Verify tarball against the published DSH host
-        run: node scripts/install-gate.mjs --tgz "dist/npm/${{ steps.release.outputs.tarball }}"
+        run: node scripts/install-gate.ts --tgz "dist/npm/${{ steps.release.outputs.tarball }}"
       - uses: actions/upload-artifact@v4
         with:
           name: npm-release-tarball
           path: dist/npm/${{ steps.release.outputs.tarball }}
           if-no-files-found: error
           retention-days: 7
+
+  registry-notification:
+    name: Report Registry fallback without blocking deployment
+    needs: pack
+    if: always() && needs.pack.outputs.registry-status == 'fallback'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    continue-on-error: true
+    concurrency:
+      group: registry-fallback-issue
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-registry-snapshot
+          path: .local/registry-release
+      - uses: actions/github-script@v8
+        with:
+          script: |
+            await require('./scripts/report-registry-sync.cjs')({ github, context, core })
 
   publish:
     name: Publish exact tarball to npm
