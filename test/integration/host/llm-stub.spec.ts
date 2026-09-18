@@ -3,7 +3,7 @@
 // probe 指标（acp.probe timer 的 ok/AcpErrorKind 标签、缓存命中不计、probe
 // 内 crash 加计 acp.crash）。
 //
-// probe 一律打真 mock agent（node test/mock-agent/mock-agent.mjs，MOCK_SCENARIO
+// probe 一律打真 mock agent（node test/mock-agent/mock-agent.ts，MOCK_SCENARIO
 // happy|minimal-caps|slow-response）或不存在命令；auth_required 用内联 node -e
 // agent（mock 无此 scenario，沿用 acp-client.spec.ts 先例）。
 //
@@ -23,7 +23,7 @@ import type { SubprocessSeam } from '../../../src/runtime/process/subprocess.ts'
 import { sharedTestSubprocess } from '../../fixtures/subprocess-seam-testing.ts';
 
 const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
-const MOCK_AGENT_PATH = path.join(TEST_DIR, '..', '..', 'mock-agent', 'mock-agent.mjs');
+const MOCK_AGENT_PATH = path.join(TEST_DIR, '..', '..', 'mock-agent', 'mock-agent.ts');
 const SPEC_TAG = `--dsh-acp-stub-spec-${process.pid}`;
 
 const ROUTE = 'acp-test';

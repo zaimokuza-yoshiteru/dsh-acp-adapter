@@ -38,7 +38,7 @@ function fixture() {
         return new Response(JSON.stringify({versions:{'1.0.0':{bin},'2.0.0':{bin}}}))
       }
     `)
-    return spawnSync(process.execPath, ['--import', pathToFileURL(mock).href, resolve('scripts/sync-release-registry.mjs'), '--reuse', '--directory', target, '--evidence', evidence], {
+    return spawnSync(process.execPath, ['--import', pathToFileURL(mock).href, resolve('scripts/sync-release-registry.ts'), '--reuse', '--directory', target, '--evidence', evidence], {
       encoding: 'utf8', env: { ...process.env, GITHUB_SHA: sha, GITHUB_OUTPUT: join(directory, 'output'), GITHUB_STEP_SUMMARY: join(directory, 'summary') },
     })
   }

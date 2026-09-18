@@ -6,7 +6,7 @@
  * entries[agentId].version 即「该 registry agent 的上游版本事实」。host 半
  * 不 import client 模块（client bundle 目标 browser），这里独立内嵌同一份
  * 纯数据——两层消费同一快照文件，一致性由 CI 的
- * scripts/verify-registry-snapshot.mjs 钉死。
+ * scripts/verify-registry-snapshot.ts 钉死。
  * @module @zaimokuza/dsh-acp-adapter/domain/session/registry-versions
  */
 

@@ -32,7 +32,7 @@ import { readFile } from 'node:fs/promises'
 import { basename, dirname, resolve as resolvePath } from 'node:path'
 import { transform } from 'lightningcss'
 import { defineConfig } from 'tsdown'
-import { PLATFORM_EXTERNALS } from './scripts/dsh-platform-snapshot.mjs'
+import { PLATFORM_EXTERNALS } from './scripts/dsh-platform-snapshot.ts'
 
 const manifest = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as {
   name: string

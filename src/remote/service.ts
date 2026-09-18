@@ -10,7 +10,7 @@
  * 边界形态：
  * - `AcpRemoteService extends TypertRemoteService`（`super(ctx, 'dshAcp')`），方法
  *   以 `@Remote` 标注；strict descriptor/zod codec 由构建期
- *   `scripts/gen-typert.mjs` 生成（lib/typert.host.{js,d.ts} +
+ *   `scripts/gen-typert.ts` 生成（lib/typert.host.{js,d.ts} +
  *   lib/typert.remote-client.{js,d.ts}），host 侧经 typert-loader 自动注册进
  *   `ctx.typert`，client 侧 `ctx.remote.$mount(contribution)` 挂载。
  * - wire 类型全部来自 src/contract/remote.ts 的收窄 contract（SDK v1 类型的

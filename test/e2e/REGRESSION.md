@@ -256,7 +256,7 @@ DSH 发布包通过自己的必需 peers 引用部分宿主模块，因此开发
 
 ACP `terminal/*` 创建的真实进程注册到宿主 `jobs`，由原生会话控制流和后台任务列表展示，未增加独立客户端状态或自定义任务列表。注册必须绑定现存的所属 Agent，并在启动进程前完成准入检查；宿主不提供 jobs 服务时保留原有终端路径。任务结束同时确认命令结果及 subprocess 托管范围退出，ACP 和宿主取消操作使用同一个终端句柄。结果发布前通过公开 `jobs.wait` 领取完成通知，避免原生 tool-jobs 再触发模型轮次；ACP 输出仍可读取。
 
-`terminal-jobs.e2e.mjs` 在 Claude、Codex、Devin、Kimi 四种协议夹具下运行同一组断言，使用真实子进程与原生浏览器界面。覆盖运行状态、刷新、离线期间完成后的重连、跨会话不可见及取消拒绝、退出码 0 / 7、宿主 registry 取消、ACP 取消、输出保留，以及终端在父 prompt 结束前完成时没有额外模型步骤。退出由临时文件控制，不依赖模型速度或生成文案。宿主列表当前没有输出或停止按钮，原生取消测试调用真实 registry，并不声称验证了不存在的 UI 控件。
+`terminal-jobs.e2e.ts` 在 Claude、Codex、Devin、Kimi 四种协议夹具下运行同一组断言，使用真实子进程与原生浏览器界面。覆盖运行状态、刷新、离线期间完成后的重连、跨会话不可见及取消拒绝、退出码 0 / 7、宿主 registry 取消、ACP 取消、输出保留，以及终端在父 prompt 结束前完成时没有额外模型步骤。退出由临时文件控制，不依赖模型速度或生成文案。宿主列表当前没有输出或停止按钮，原生取消测试调用真实 registry，并不声称验证了不存在的 UI 控件。
 
 - 类型检查、构建、清单和打包闭包检查通过；新增的宿主开发依赖和可选 peers 精确固定为 `0.1.3-alpha.2`。
 - 56 个单元 / 集成测试文件、605 项通过（14.43 秒），包括先准入后启动、等待托管范围退出、主命令已结束时仍可取消范围和取消后释放。
@@ -382,7 +382,7 @@ alpha.2 的 `dsh-client-store` Node 入口保留 zustand / immer 的 bare import
 
 插件及宿主目标为 `0.1.5-rc.1`，reference 为 `183f08e9c6`。DSH npm 开发依赖、可选 peers、锁文件、README 与 E2E 指南同步，保留 zustand / immer 的精确开发补偿；运行时依赖仍只有 ACP SDK 和 Zod。Agent、Session、subprocess、子代理与 jobs 没有新增执行适配。
 
-宿主目标唯一来源改为 package.json 的 engines.dsh，scripts/dsh-target.mjs 校验精确版本并派生源码标签；CI checkout 读取该标签，版本断言引用 manifest。发布契约检查双语 README 和当前 E2E 指南版本，覆盖 alpha → alpha、rc → next、稳定版 → latest。发布工作流删除打包前重复的 typecheck/test/build，以 npm pack 的 prepack 执行完整验证一次，保留同一 tarball 的安装门禁及 OIDC 发布。修正 ACP 工具外层行与原生详情组件关系的过时注释；没有改变界面或权限行为。
+宿主目标唯一来源改为 package.json 的 engines.dsh，scripts/dsh-target.ts 校验精确版本并派生源码标签；CI checkout 读取该标签，版本断言引用 manifest。发布契约检查双语 README 和当前 E2E 指南版本，覆盖 alpha → alpha、rc → next、稳定版 → latest。发布工作流删除打包前重复的 typecheck/test/build，以 npm pack 的 prepack 执行完整验证一次，保留同一 tarball 的安装门禁及 OIDC 发布。修正 ACP 工具外层行与原生详情组件关系的过时注释；没有改变界面或权限行为。
 
 - 实际运行 npm pack / prepack：类型检查、59 个文件 627 项常规测试、构建及包闭包全部通过。包包含 150 个文件、54 个运行时 JS。
 - 发布包安装门禁：临时 DSH_HOME 安装、原生叠加装配、HTTP 200/client bootstrap、卸载通过。

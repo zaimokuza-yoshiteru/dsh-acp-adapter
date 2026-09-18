@@ -31,7 +31,7 @@ npm view '@zaimokuza/dsh-acp-adapter@<version>' version dist.integrity dist.tarb
 需要更新仓库中的回退基线时，手动运行 [registry sync 工作流](../.github/workflows/registry-sync.yml)，从 `registry-snapshot-for-review` artifact 查看 `report.json` / `summary.md`。同步成功后，将其中两个 JSON 放回 `assets/registry/`，通过普通分支和 PR 更新；不要把 `fallback` 结果当作新目录。工作流不会直接推送默认分支。也可在本地执行同一套同步逻辑：
 
 ```sh
-node scripts/sync-release-registry.mjs
+node scripts/sync-release-registry.ts
 pnpm typecheck && pnpm test && pnpm build
 ```
 

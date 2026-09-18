@@ -27,7 +27,7 @@ import type { AcpSubprocessHandle, SubprocessSeam } from '../../src/runtime/proc
 import { sharedTestSubprocess } from '../fixtures/subprocess-seam-testing.ts';
 
 const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
-const MOCK_AGENT_PATH = path.join(TEST_DIR, '..', 'mock-agent', 'mock-agent.mjs');
+const MOCK_AGENT_PATH = path.join(TEST_DIR, '..', 'mock-agent', 'mock-agent.ts');
 const VENDOR_FIXTURE_PATH = path.join(TEST_DIR, '..', 'fixtures', 'unknown-notify-agent.mjs');
 
 const INIT_PARAMS: acp.InitializeRequest = {

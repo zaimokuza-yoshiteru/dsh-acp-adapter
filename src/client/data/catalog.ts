@@ -4,7 +4,7 @@ import { runtimeForCatalogId, type AcpAgentId } from '../../contract/agent-confi
 import registryJson from '../../../assets/registry/registry.json' with { type: 'json' }
 import executablesJson from '../../../assets/registry/executables.json' with { type: 'json' }
 
-// ---------- 快照形状（数据由 CI 生成并经 verify-registry-snapshot.mjs 校验后提交） ----------
+// ---------- 快照形状（数据由 CI 生成并经 verify-registry-snapshot.ts 校验后提交） ----------
 
 interface RegistryAgent {
   readonly id: string

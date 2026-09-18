@@ -24,7 +24,7 @@ jobs:
         id: registry
         run: |
           node scripts/check-ci-user.mjs
-          node scripts/sync-release-registry.mjs
+          node scripts/sync-release-registry.ts
       - uses: actions/upload-artifact@v4
         with:
           name: registry-snapshot-for-review

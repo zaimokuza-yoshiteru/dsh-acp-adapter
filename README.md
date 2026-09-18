@@ -45,6 +45,8 @@ npx "@deepseek-ai/dsh@$DSH_VERSION" web
 pnpm install --frozen-lockfile
 ```
 
+`pnpm typecheck` 同时检查源码、测试和开发脚本。复杂脚本及测试使用 TypeScript；少量启动脚本和加载器夹具保留 JavaScript，`lib/` 中的 JavaScript 是构建产物。
+
 常规开发无需上游源码；浏览器回归的准备步骤见 [E2E 指南](test/e2e/README.md)。
 
 ## <img src="assets/readme/icon-start.svg" width="24" height="24" alt="" /> 三步接入

@@ -45,6 +45,8 @@ Plugin development installs the locked npm dependencies:
 pnpm install --frozen-lockfile
 ```
 
+`pnpm typecheck` checks source, tests, and development scripts. Complex scripts and tests use TypeScript; a few launchers and loader fixtures remain JavaScript. JavaScript under `lib/` is generated build output.
+
 Regular development needs no upstream checkout. See the [E2E guide](test/e2e/README.md) for browser regression setup.
 
 ## <img src="assets/readme/icon-start.svg" width="24" height="24" alt="" /> Connect in three steps
