@@ -2,6 +2,8 @@
 
 [中文](README.md)
 
+[Changelog](CHANGELOG.md) · [Releases and installation details](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases)
+
 Use **Claude · Codex · Devin · Kimi** from the DSH session UI.
 
 This version supports DSH `0.1.6-alpha.2` only. ACP members and subagent records open in the native sidebar while the main conversation stays in place. Team member requests can still be approved from the main conversation.

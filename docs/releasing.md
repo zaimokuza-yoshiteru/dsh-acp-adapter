@@ -1,6 +1,6 @@
 # 发布与回退
 
-本指南描述适配器的发布流程。功能与兼容边界见 [原生复用说明](native-reuse.md)，验证方法见 [E2E 指南](../test/e2e/README.md)。每次发布的结果记录在对应 PR 和 CI 中；本地日志、配置、会话及候选包留在 gitignored `.local/`。
+本指南描述适配器的发布流程。功能与兼容边界见 [原生复用说明](native-reuse.md)，验证方法见 [E2E 指南](../test/e2e/README.md)。用户更新说明见 [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) 与 [中英文更新记录](../CHANGELOG.md)，验证证据记录在对应 PR 和 CI 中；本地日志、配置、会话及候选包留在 gitignored `.local/`。
 
 ## 仅修改文档
 
@@ -11,7 +11,7 @@
 1. 在 PR 中完成代码、版本及必要文档的审阅，明确 Web、桌面协议夹具与真实 Agent 的验证范围。受保护分支必须通过所需检查后合并。
 2. 从合并后的目标提交创建与 `package.json` 版本完全一致的 `v<version>` 标签并推送。不要重新使用已发布的版本或移动发布标签。
 3. 标签触发 [publish npm 工作流](../.github/workflows/publish.yml)。工作流校验版本与官方 DSH 依赖，尝试同步并冻结 Registry 快照，再执行测试、构建、`npm pack` 和干净安装门禁；`npm-publish` 环境批准后通过 OIDC 发布同一份 CI tarball。手动运行也必须选择对应标签。Registry 同步失败不增加审批，也不阻塞发布；已有发布环境保护保持不变。
-4. 核对工作流成功、注册表中的精确版本和 `dist.integrity`，确认与 CI tarball 一致。发布通道由版本推导：alpha 使用 `alpha`，RC 使用 `next`，稳定版使用 `latest`。
+4. npm 成功后，独立的 `github-release` job 自动核对精确版本与 CI tarball 的 SHA-512，再创建对应 GitHub Release，无需额外人工确认。发布通道由版本推导：alpha 使用 `alpha`，RC 使用 `next`，稳定版使用 `latest`；GitHub 预发行标记由版本推导，创建 Release 不修改 npm 通道。
 
 ```sh
 # 发布后查询；将 <version> 替换为本次精确版本
@@ -19,6 +19,23 @@ npm view '@zaimokuza/dsh-acp-adapter@<version>' version dist.integrity dist.tarb
 ```
 
 本地 pnpm 与 CI npm 打包可能因 manifest 元数据而产生不同校验值；发布和下游清单必须以实际发布产物为准。
+
+## GitHub Release 与历史补录
+
+Release 自动包含 npm 实际发布时间、兼容声明、精确安装方式、包校验值和变更链接。中文、英文功能摘要维护在 `CHANGELOG.md` 的 `## <version>` 条目中，按发布标签读取，不单独维护另一份 Release 文案。没有该版本摘要时自动列出原始提交标题，不声称这些标题已翻译或经过用户影响分析；这不会新增发布审批。对比基线选择 npm 发布时间早于当前版本的最近一个已发布标签，跳过失败标签，也不使用 GitHub 补录时间排序。仓库历史有 squash 合并，因此上一次发行不一定是当前标签的 Git 祖先；跨分支发布时，完整对比可能包含分支差异。
+
+GitHub Release 创建失败会使工作流显示失败，但已发布的 npm 包不回滚。使用 Actions 的 **Re-run failed jobs** 只重试失败的说明发布 job；不要重跑整个发布流程，否则会再次尝试发布不可覆盖的 npm 版本。重复运行说明脚本会保留已有 Release 的文案，不覆盖人工编辑。历史补录和该脚本均不设置 GitHub Latest 标记。
+
+历史补录在当前分支运行脚本，并显式提供已有标签和更新记录。先默认生成 `.local/releases/<tag>.md`，需要写入 GitHub 时加 `--write`：
+
+```sh
+node scripts/github-release.ts --tag v0.1.6-alpha.2.0 --backfill --changelog CHANGELOG.md
+node scripts/github-release.ts --tag v0.1.6-alpha.2.0 --backfill --changelog CHANGELOG.md --write
+```
+
+`--backfill` 用于旧 CI artifact 已不可用的历史补录：仍核对本地/远程标签、标签中的包身份、npm 版本和发布时间，以及可用时的 `gitHead`，但不能证明历史 CI tarball 的字节一致性。普通发布必须提供 `--tarball <CI tarball>`。脚本不会创建或移动标签，也不会调用 `npm publish`；npm 上不存在的版本不能创建发行。`v0.1.5-rc.2.2` 因文档兼容范围测试失败未发布，修复已随 `v0.1.5-rc.2.3` 发出。
+
+Release 说明生成和补录使用 Node 与已登录的 `gh`，无需安装项目依赖。生成的说明同时保存在 CI artifact 中（90 天）。
 
 ## 更新 Agent 目录
 

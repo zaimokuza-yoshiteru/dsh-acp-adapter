@@ -2,6 +2,8 @@
 
 [English](README.en.md)
 
+[更新记录](CHANGELOG.md) · [版本发布与安装信息](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases)
+
 在 DSH 会话页面使用 **Claude · Codex · Devin · Kimi**。
 
 本版本仅支持 DSH `0.1.6-alpha.2`。点击 ACP 成员或子会话会在原生侧栏打开，保留主会话；Teams 成员的请求仍可直接在主会话审批。

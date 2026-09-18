@@ -140,3 +140,36 @@ jobs:
         run: |
           node scripts/check-ci-user.mjs
           npm publish "dist/npm/${{ needs.pack.outputs.tarball }}" --access public --tag "${{ needs.pack.outputs.dist-tag }}"
+
+  github-release:
+    name: Verify npm publication and create GitHub Release
+    needs: [pack, publish]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm-release-tarball
+          path: dist/npm
+      - name: Publish release notes for the verified package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/github-release.ts --tarball "dist/npm/${{ needs.pack.outputs.tarball }}" --write
+      - name: Preserve generated release notes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: github-release-notes
+          path: .local/releases/*.md
+          if-no-files-found: ignore
+          retention-days: 90
