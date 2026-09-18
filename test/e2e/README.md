@@ -23,7 +23,7 @@
 | 审批允许 / 拒绝 | 原生审批或问题卡显示操作；选择映射回原始 optionId；拒绝不产生文件副作用；不扩大授权范围 |
 | 停止后继续 | 原生停止按钮发送 ACP cancel；当前轮次结束；下一轮仍能执行 |
 | 模型切换 | 原生 picker 的选择传到 ACP session 配置；后续请求使用新模型 |
-| 原生终端冲突 | 已打开浏览器终端时首次 ACP 执行明确失败；终端与权限保留，不写入请求历史、不发送 ACP prompt；关闭终端后同会话重试成功；已建立 ACP 会话可继续使用终端 |
+| 原生用户终端 | alpha.2 用户终端独立于 Agent 权限；已打开终端时首次 ACP 执行正常，策略投影不关闭或替换终端，后续请求不重复修改策略 |
 | 配置热更新 | 路由注册冲突保留原有目录、标签与可继续的 ACP 会话；修正配置后重新生效；移除 profile 后目录不残留路由 |
 | 权限隔离 | 空会话保留原生默认权限；选模型不改写用户权限（含 Custom）；真正执行 ACP 前才应用审批策略；原生历史被拒绝切换到 ACP 时不改变权限；ACP 会话不污染新会话默认值 |
 | 子代理 | Claude / Devin 有完整证据时显示原生只读详情并可刷新；Codex / Kimi 的无证据活动不制造子会话 |
@@ -67,6 +67,8 @@ pnpm test:e2e
 ```
 
 `DSH_UPSTREAM_CHECKOUT` 可指定其他源码目录。`pnpm test:e2e -t 'claude'` 可只运行一种协议夹具。默认使用 Playwright Chromium；`DSH_E2E_BROWSER_CHANNEL=chrome` 可使用本机已安装 Chrome。`DSH_E2E_NODE` 可指定宿主支持的另一份 Node 运行时，但原生依赖必须针对该 Node ABI 构建。插件构建与常规测试仍遵循 `.nvmrc`。
+
+`DSH_E2E_ELECTRON=/绝对路径/Electron pnpm test:e2e` 将同一组场景运行在真实 Electron 窗口中，使用独立临时用户目录，以及与桌面端一致的 sandbox、contextIsolation 和禁用 nodeIntegration 设置。它覆盖适配器在 Electron 中的渲染、交互和宿主通信，不替代桌面仓库对打包、preload、专有协议、升级和跨平台成品的测试；不支持保留窗口模式。
 
 测试使用临时工作区和独立 DSH_HOME，结束后销毁浏览器、Agent 进程与测试目录。失败截图写入 gitignored `.local/e2e-failures/`。断言使用原生组件的数据标记及可访问名称，不依赖 CSS 哈希、整页像素截图或真实模型措辞；默认不重试失败测试。浏览器回归期间不要并行运行 build、pack 或默认安装检查：prepack 会清理并重建共享的 `lib` 目录；应按顺序执行，或向安装检查传入已生成的 tarball。
 

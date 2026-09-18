@@ -14,7 +14,7 @@ it('shows per-profile mode menus with dormant mode persistence and approval prot
   const retain = process.env.DSH_E2E_RETAIN_MANAGEMENT === '1'
   try {
     await host.ctx.settings.replace('dsh-acp', { agents: { devin: { name: 'ACP demo', command: process.execPath,
-      args: [join(root, 'test/mock-agent/mock-agent.mjs')], env: { MOCK_SCENARIO: 'regression', MOCK_PROFILE: 'devin', MOCK_MCP_HTTP: '1' } } } })
+      args: [join(root, 'test/mock-agent/mock-agent.mjs')], env: { MOCK_SCENARIO: 'regression', MOCK_PROFILE: 'devin', MOCK_MCP_HTTP: '1', MOCK_SESSION_NEW_DELAY_MS: '5000' } } } })
     await vi.waitFor(() => expect(host.ctx.llm.listProviders().some(p => p.id === 'acp-devin')).toBe(true))
     await host.ctx.agentDefaultModel.saveSelection({ provider: 'acp-devin', model: 'mock-model-a' })
     browser = await chromium.launch({ channel: process.env.DSH_E2E_BROWSER_CHANNEL, headless: !retain, ...(retain ? { args: ['--window-size=1440,1000'] } : {}) })
@@ -45,7 +45,12 @@ it('shows per-profile mode menus with dormant mode persistence and approval prot
     const enterMode = async () => { await modeMenu.getByRole('menuitem', { name: /^(?:Session Mode|Mode|模式)(?:\s|$)/ }).click() }
     await panel.getByRole('button', { name: 'Manage members · 1', exact: true }).click()
     const row = panel.locator('[data-acp-managed-member="calculator"]')
+    // Open while native membership exists but session/new has not completed.
+    // The catalog must load automatically once the child's binding is ready.
+    await row.waitFor()
+    expect(await row.getByRole('button', { name: 'Choose a model for calculator', exact: true }).isDisabled()).toBe(true)
     await row.getByText('Mock Model A', { exact: true }).waitFor()
+    expect(await row.innerText()).not.toContain('not authorized')
     expect(await row.getByText('Mock Model A', { exact: true }).count()).toBe(1)
     expect(await row.getByRole('textbox').count()).toBe(0)
     expect(await row.getByRole('button', { name: 'Interrupt turn', exact: true }).count()).toBe(0)

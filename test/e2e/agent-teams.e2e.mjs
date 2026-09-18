@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { chromium } from 'playwright'
-import { connectFreshWorkspace, newEnglishPage, writeComposerDraft } from '#host-support'
+import { connectFreshWorkspace, newEnglishPage, writeComposerDraft, expandOwningTurnProcess } from '#host-support'
 import { launchAdapterWorld, root } from './scaffold.mjs'
 
 describe.each([['claude', false], ['devin', true], ['codex', true], ['kimi', false]])('native Teams over ACP: %s, HTTP=%s', (profile, http) => {
@@ -34,7 +34,10 @@ describe.each([['claude', false], ['devin', true], ['codex', true], ['kimi', fal
       }
       await send('E2E_TEAM_START: explicitly create an Agent Team to compute 1+1')
       await page.getByText('E2E_TEAM_READY', { exact: true }).waitFor({ timeout: 30_000 })
-      await page.getByText('spawn_teammate', { exact: true }).first().waitFor()
+      const spawn = page.locator('[data-tool="spawn_teammate"]').first()
+      await spawn.waitFor({ state: 'attached' })
+      await expandOwningTurnProcess(page, spawn)
+      await spawn.waitFor()
       expect(await page.locator('body').innerText()).not.toMatch(/mcp__dshteam_[a-f0-9]+__/)
       const lead = host.ctx.agents.list().find(agent => host.ctx.agentTeams.tryMembership(agent)?.role === 'lead')
       expect(lead).toBeDefined()

@@ -506,14 +506,14 @@ describe('installInstalledProfileRegistry：注册/替换调用序列', () => {
       header: { origin: 'subagent' }, requestHeader: () => undefined,
       snapshotEvents: () => [...events],
       append: (type: string, data: unknown) => {
-        if (blocked) throw new Error('Close browser terminals before changing the Session sandbox mode');
+        if (blocked) throw new Error('Session policy write failed');
         events.push({ type, data });
       },
     });
     const payload = { agent: { options: { provider: 'acp-devin' }, session } };
     const next = vi.fn(async () => ({ kind: 'enter' }));
     expect(() => claimed(payload)).not.toThrow();
-    await expect(preStep(payload, next)).rejects.toMatchObject({ code: 'ACP_BROWSER_TERMINALS_OPEN' });
+    await expect(preStep(payload, next)).rejects.toThrow('Session policy write failed');
     expect(next).not.toHaveBeenCalled();
     expect(events).toEqual([]);
     blocked = false;

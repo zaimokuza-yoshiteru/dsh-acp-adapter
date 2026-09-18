@@ -532,16 +532,24 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
             const card = approval.locator('section')
             const heading = card.getByRole('heading', { name: 'Approval scope', exact: true })
             const detail = card.locator('[data-question-scroll] > div:first-child:not([role])')
-            const cardBox = await card.boundingBox()
-            const headingBox = await heading.boundingBox()
-            const detailBox = await detail.boundingBox()
-            // Measure rendered geometry, not the CSS rule: detail must align
-            // with the native heading and keep equal space on the right.
-            expect(Math.abs(detailBox.x - headingBox.x)).toBeLessThan(1)
-            const inset = detailBox.x - cardBox.x
-            expect(inset).toBeGreaterThanOrEqual(width > 720 ? 24 : 18)
-            expect(Math.abs(cardBox.x + cardBox.width - detailBox.x - detailBox.width - inset)).toBeLessThan(1)
-            expect(detailBox.y).toBeGreaterThanOrEqual(headingBox.y + headingBox.height + 8)
+            // Read all rectangles in one frame, then wait for responsive layout
+            // to settle; separate protocol calls can straddle a resize frame.
+            const headingElement = await heading.elementHandle()
+            const detailElement = await detail.elementHandle()
+            await expect.poll(() => card.evaluate((element, { heading, detail, width }) => {
+              const cardBox = element.getBoundingClientRect()
+              const headingBox = heading.getBoundingClientRect()
+              const detailBox = detail.getBoundingClientRect()
+              const inset = detailBox.x - cardBox.x
+              return {
+                aligned: Math.abs(detailBox.x - headingBox.x) < 1,
+                inset: inset >= (width > 720 ? 24 : 18),
+                symmetric: Math.abs(cardBox.right - detailBox.right - inset) < 1,
+                belowHeading: detailBox.y >= headingBox.bottom + 8,
+              }
+            }, { heading: headingElement, detail: detailElement, width })).toEqual({ aligned: true, inset: true, symmetric: true, belowHeading: true })
+            await headingElement.dispose()
+            await detailElement.dispose()
             expect(await card.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true)
             await approval.screenshot({ path: join(root, `.local/ui-review/codex-approval-${theme}-${width}.png`), animations: 'disabled' })
           }
@@ -685,7 +693,7 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
       expect(events.filter(event => event.id === id && event.type === 'step/start')).toHaveLength(2)
       await page.reload()
       await page.getByText(atomic ? 'E2E_STEER_DONE' : 'E2E_DONE mock-model-a', { exact: true }).waitFor()
-      await page.getByRole('button', { name: '1 message', exact: true }).click()
+      await page.getByRole('button', { name: /^(?:\d+ tool calls? · )?1 message$/ }).click()
       await page.getByText(/E2E_STEERING_RUNNING/).waitFor()
     } finally { off(); await host.ctx.settings.replace('dsh-acp', previous) }
   })

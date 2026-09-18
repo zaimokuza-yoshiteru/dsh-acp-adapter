@@ -193,7 +193,7 @@ function ModeGroup({ lead, profileId, members, t, remote, streamFactory, onMenuO
           h('div', { className: css.settingRow },
             h('span', { className: css.settingLabel }, t('teamModelLabel')),
             h('div', { className: css.settingValue },
-              h(TeamMemberModelControl, { lead, member, initialModel: model, remote, t, isCurrent, onMenuOpen }))),
+              h(TeamMemberModelControl, { lead, member, initialModel: model, sessionReady: snapshot != null && snapshot.profileId === member.profileId, remote, t, isCurrent, onMenuOpen }))),
           h('div', { className: css.settingRow },
             h('span', { className: css.settingLabel }, t('teamModeLabel')),
             h('div', { className: css.settingValue },

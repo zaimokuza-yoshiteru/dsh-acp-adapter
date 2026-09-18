@@ -15,6 +15,7 @@ type Props = {
   readonly lead: SessionId
   readonly member: AcpTeamMemberView
   readonly initialModel: string | null
+  readonly sessionReady: boolean
   readonly remote: AcpRemoteLike
   readonly t: Copy
   readonly isCurrent: (sessionId: SessionId) => boolean
@@ -39,7 +40,7 @@ function modelName(models: readonly Model[], id: string | null | undefined): str
 
 /** Resolve display names when the member card mounts, so the trigger, menu
  * and pending notice use the same catalog even before the first click. */
-export function TeamMemberModelControl({ lead, member, initialModel, remote, t, isCurrent, onMenuOpen }: Props): ReactNode {
+export function TeamMemberModelControl({ lead, member, initialModel, sessionReady, remote, t, isCurrent, onMenuOpen }: Props): ReactNode {
   const [open, setOpen] = useState(false)
   const [view, setView] = useState<ModelView | null>(null)
   const [loading, setLoading] = useState(false)
@@ -82,7 +83,9 @@ export function TeamMemberModelControl({ lead, member, initialModel, remote, t, 
   useEffect(() => { onMenuOpen(open); return () => onMenuOpen(false) }, [open, onMenuOpen])
 
   useEffect(() => {
-    if (member.profileId === null) return
+    // Native team membership precedes the child's durable ACP binding. The
+    // session stream tells us when ownership-checked catalog reads are ready.
+    if (member.profileId === null || !sessionReady) return
     let disposed = false
     const currentEpoch = epoch.current
     const currentFactsRevision = factsRevision.current
@@ -98,7 +101,7 @@ export function TeamMemberModelControl({ lead, member, initialModel, remote, t, 
       if (!disposed && alive.current && currentEpoch === epoch.current) setLoading(false)
     })
     return () => { disposed = true }
-  }, [lead, member.sessionId, member.profileId, remote, isCurrent, catalogRetry])
+  }, [lead, member.sessionId, member.profileId, sessionReady, remote, isCurrent, catalogRetry])
 
   const toggle = (): void => {
     if (open) { setOpen(false); return }
@@ -114,7 +117,7 @@ export function TeamMemberModelControl({ lead, member, initialModel, remote, t, 
       : models.length === 0
         ? [{ id: '__empty__', label: t('teamModelEmpty'), disabled: true }]
         : models.map(model => ({ id: model.id, label: model.name, disabled: !canWrite }))
-  const disabled = member.profileId === null
+  const disabled = member.profileId === null || !sessionReady
   const selectedLabel = modelName(view?.models ?? [], selectedModel) ?? selectedModel ?? t('teamModelUnknown')
   const currentLabel = modelName(view?.models ?? [], currentModel) ?? currentModel ?? t('teamModelUnknown')
 
