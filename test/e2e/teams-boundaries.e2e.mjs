@@ -102,7 +102,11 @@ it('keeps one ACP Agent across multiple models, isolates approvals and prevents 
     const leadUrl = page.url()
     for (const name of ['calculator-b', 'calculator']) {
       await page.getByRole('button', { name: `${name} · Pending request`, exact: true }).click()
-      const sidebar = page.locator('[data-sidebar-chat]:visible')
+      // The native sidebar can keep both children visible in separate panes.
+      // Resolve the member's own conversation, including after approval settles.
+      const description = name === 'calculator' ? 'Compute fixture' : 'Model B member'
+      const memberTab = page.getByRole('tab', { selected: true }).filter({ has: page.getByText(description, { exact: true }) })
+      const sidebar = page.locator('[data-dockkit-pane]').filter({ has: memberTab }).locator('[data-sidebar-chat]:visible')
       await sidebar.locator('[data-approval-key]').waitFor()
       expect(await sidebar.getByRole('button', { name: /^Select model/ }).count()).toBe(0)
       expect(page.url()).toBe(leadUrl)
