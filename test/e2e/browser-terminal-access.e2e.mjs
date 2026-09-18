@@ -4,8 +4,12 @@ import { join } from 'node:path'
 import { expect, it, vi } from 'vitest'
 import { launchAdapterWorld, root } from './scaffold.mjs'
 
-it('keeps native terminals and permissions intact when the first ACP prompt needs a sandbox change, then permits retry after close', async () => {
-  const host = await launchAdapterWorld()
+it('keeps user terminals running when the first ACP prompt projects Agent permissions', async () => {
+  // Exercise a real PTY without running the developer's shell startup scripts,
+  // which may keep spawning unrelated processes while the test closes it.
+  const host = await launchAdapterWorld({ terminalShell: process.platform === 'win32'
+    ? { path: 'cmd.exe', name: 'Test shell', args: ['/D', '/Q'] }
+    : { path: '/bin/sh', name: 'Test shell', args: ['-i'] } })
   try {
     const log = join(host.workspaceCwd, 'terminal-access-agent.log')
     await host.ctx.settings.replace('dsh-acp', { agents: { devin: {
@@ -21,7 +25,7 @@ it('keeps native terminals and permissions intact when the first ACP prompt need
     const agent = resolved.agent
     const session = agent.session
     const policyEvents = () => session.snapshotEvents().filter(event => ['permission/preset', 'sandbox/mode', 'approval/policy'].includes(event.type))
-    const before = policyEvents()
+    expect(host.ctx.permissionPresets.current(session)).toBe('workspace-write')
     const terminal = await host.ctx.terminalController.create(agent, { id: randomUUID(), cols: 80, rows: 24 }, new AbortController().signal)
     const prompt = async () => {
       const turn = session.snapshotEvents().filter(event => event.type === 'turn/end').length
@@ -30,16 +34,13 @@ it('keeps native terminals and permissions intact when the first ACP prompt need
       const reason = session.snapshotEvents().findLast(event => event.type === 'turn/end').data.reason
       return reason
     }
-    // The source scaffold and installed plugin can load distinct LlmError
-    // classes; verify the user-visible failure here, the code in the unit test.
-    expect(await prompt()).toMatchObject({ kind: 'error', error: {
-      message: expect.stringContaining("Close this session's browser terminals, then send your message again"),
-    } })
-    expect(policyEvents()).toEqual(before)
+    // Alpha.2 user terminals have independent system-user permissions. Changing
+    // Agent policy must neither block its prompt nor replace the user's shell.
+    expect(await prompt()).toMatchObject({ kind: 'completed' })
     expect(host.ctx.terminalController.list(sessionId)).toEqual([terminal])
-    expect(host.ctx.permissionPresets.current(session)).toBe('workspace-write')
-    expect(existsSync(log) ? readFileSync(log, 'utf8') : '').not.toContain('--> session/prompt')
-    expect(session.snapshotEvents().some(event => event.type === 'request/header')).toBe(false)
+    expect(host.ctx.permissionPresets.current(session)).toBe('custom')
+    expect(existsSync(log) ? readFileSync(log, 'utf8') : '').toContain('--> session/prompt')
+    expect(session.snapshotEvents().some(event => event.type === 'request/header')).toBe(true)
     await host.ctx.terminalController.close(agent, terminal.id)
     expect(await prompt()).toMatchObject({ kind: 'completed' })
     expect(host.ctx.permissionPresets.current(session)).toBe('custom')

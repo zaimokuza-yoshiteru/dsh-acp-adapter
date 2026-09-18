@@ -165,9 +165,22 @@ describe('AcpRemoteService current public surface', () => {
   it('generated descriptors contain only the current invocation set', () => {
     const ids = (TYPERT as { invocations: Array<{ id: string }> }).invocations.map(({ id }) => id.split('/').at(-1))
     expect(ids).toEqual([
-      'activityFollow', 'activityPage', 'activitySnapshot', 'agentSessionFollow', 'agentSessionSnapshot', 'auditTimeline',
+      'activityDetail', 'activityFollow', 'activityPage', 'activitySnapshot', 'agentSessionFollow', 'agentSessionSnapshot', 'auditTimeline',
       'backendOf', 'boundSessions', 'health', 'ownedProviderRoutes', 'projectedSubagentIds', 'rebindRecoveryBlank', 'recoverySnapshot', 'retryOriginal',
       'setAgentSessionOption', 'setTeamMemberMode', 'setTeamMemberModel', 'teamMemberModels', 'teamMembers',
     ])
   })
+})
+
+it('looks up reference versions by catalog identity after customizing the profile ID', async () => {
+  const { registryVersionOf } = await import('../../../src/domain/session/registry-versions.ts')
+  const config: AcpAgentConfig = { name: 'My agent', command: 'custom-agent', args: [], env: {}, catalogId: 'fast-agent' }
+  const version = registryVersionOf('fast-agent')!
+  const probe: AcpProbeSnapshotLike = {
+    key: acpProbeConfigKey(config), at: Date.now(), result: { kind: 'ok', models: [], agentInfo: { name: 'custom', version } },
+  }
+  const { instance } = service({ registry: registry({ custom: config }, { 'acp-custom': probe }) })
+  expect((await instance.health()).providers[0]?.probe).toMatchObject({ versionCompatibility: 'current' })
+  const changed = service({ registry: registry({ custom: { ...config, catalogId: 'not-in-snapshot' } }, { 'acp-custom': probe }) }).instance
+  expect((await changed.health()).providers[0]?.probe).toMatchObject({ versionCompatibility: null })
 })

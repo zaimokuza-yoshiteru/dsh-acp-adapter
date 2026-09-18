@@ -6,13 +6,14 @@
 
 | 场景 | 必须保持的行为 |
 | --- | --- |
+| Agent 目录 | 已验证／未验证分组、窗口内高度、手动入口及原生菜单键盘选择；添加入口不显示额外搜索框；自定义 ID 后目录身份与安装信息保留，中英文均可用 |
 | 设置编辑 | 原生 Input / Button；空名称禁止保存；取消不改变配置；保存后刷新保留 |
 | 文件、消息与恢复 | 原生输入栏上传；ACP 收到文件文本句柄；主会话以 Session V3 保存 stream；刷新后消息、附件、原生 TerminalBlock 可见 |
-| 消息分段 | 思考与回答交替、同消息 token 拼接、不同 messageId 及工具边界；实时与刷新后均保留独立段落 |
+| 消息分段 | 思考与回答交替、思考开头空行、不同 messageId 和工具边界；实时、停止及刷新后顺序一致；原生 Bash/工具调用及参数摘要、去重计数、折叠保留完整结尾回答、普通/紧凑设置、浏览器查找展开 |
 | 宿主扩展 | system prompt、动态上下文与 pre-step 插件输入真正到达 ACP；插件触发的后续步骤正常运行；旧用户输入不重复发送；卸载插件后不再携带其指令 |
 | 图片与文件活动 | assistant 图片经原生附件存储后可刷新显示；Read / Diff 使用原生组件，文件名支持键盘打开原生侧栏预览；活动不会制造 DSH 工具调用 |
 | 运行中插话 | 原生队列入口；取消并排空旧执行或原子注入；pre-step 重写实际到达 Agent；输入仅记录一次，刷新保留前后输出 |
-| 完整 Diff 与计划 | 文件尾部改动在原生 DiffBlock 可见；未完成计划进入原生 TodoDock，完成 prompt 不伪造完成状态 |
+| 完整 Diff 与计划 | 大详情折叠时不请求正文；展开读取准确修订，失败可重试；文件尾部改动在原生 DiffBlock 可见，刷新后仍完整；未完成计划进入原生 TodoDock，完成 prompt 不伪造完成状态 |
 | 插件工具桥 | 明确选择的工具经原生前后 hooks 执行，Agent 审批仍需用户确认 |
 | 故障恢复 | Agent 崩溃后提示恢复，刷新保留历史；明确放弃远端上下文后才能建立新绑定并继续 |
 | Agent 选项 | 创建响应或后续通知提供选项后立即显示；回答期间可查看但不能修改，停止后解锁；重连取最新状态，新会话不继承旧菜单 |
@@ -22,10 +23,12 @@
 | 审批允许 / 拒绝 | 原生审批或问题卡显示操作；选择映射回原始 optionId；拒绝不产生文件副作用；不扩大授权范围 |
 | 停止后继续 | 原生停止按钮发送 ACP cancel；当前轮次结束；下一轮仍能执行 |
 | 模型切换 | 原生 picker 的选择传到 ACP session 配置；后续请求使用新模型 |
-| 原生终端冲突 | 已打开浏览器终端时首次 ACP 执行明确失败；终端与权限保留，不写入请求历史、不发送 ACP prompt；关闭终端后同会话重试成功；已建立 ACP 会话可继续使用终端 |
+| 原生用户终端 | alpha.2 用户终端独立于 Agent 权限；已打开终端时首次 ACP 执行正常，策略投影不关闭或替换终端，后续请求不重复修改策略 |
 | 配置热更新 | 路由注册冲突保留原有目录、标签与可继续的 ACP 会话；修正配置后重新生效；移除 profile 后目录不残留路由 |
 | 权限隔离 | 空会话保留原生默认权限；选模型不改写用户权限（含 Custom）；真正执行 ACP 前才应用审批策略；原生历史被拒绝切换到 ACP 时不改变权限；ACP 会话不污染新会话默认值 |
 | 子代理 | Claude / Devin 有完整证据时显示原生只读详情并可刷新；Codex / Kimi 的无证据活动不制造子会话 |
+| 原生文件交付 | 四种协议无需工具配置，通过 MCP 自动发现并调用原生 `present`；执行 hooks、文件卡片与预览保持原生行为 |
+| 插件生命周期 | 通过原生插件管理器在空闲与执行中禁用、重新启用；路由与客户端贡献回收并恢复，后续会话可用 |
 | 后台任务 | ACP 创建真实进程并显示原生 jobs 列表；刷新和离线期间完成后的重连；会话隔离；成功、失败、原生 registry 取消和 ACP 取消；父轮次内提前完成也不追加模型请求；ACP 仍可读取输出 |
 | 诊断布局 | 注入 80 条真实审计记录并分页加载；可视高度与原生轨迹一致；底部滚动不移走工具栏；诊断页隐藏对话宽度拖动条；切换详情重置内部滚动；长 JSON 折叠与展开均换行；窄窗口详情可见 |
 | 诊断分类 | 默认排除正常检查点和未比较回放；超过首批原始记录的错误仍可见；原因可搜索；允许与拒绝文案明确；技术记录分页；当前恢复状态与历史错误独立展示；通过原生设置切换中文，验证设置版本、诊断分类和审批文案；旧终端缺少终止意图时保持未知原因 |
@@ -38,7 +41,7 @@ Teams 专项：`pnpm test:e2e test/e2e/agent-teams.e2e.mjs test/e2e/teams-bounda
 
 真实双模型检查增加 `DSH_E2E_LIVE_TEAMS_MULTIMODEL=1 DSH_E2E_LIVE_PROFILES=devin`，分别使用 SWE-1.7 Medium 与 GPT-5.4 Mini Low 创建成员。`DSH_E2E_RETAIN=1 DSH_E2E_BROWSER_CHANNEL=chrome` 打开并保留随窗口大小自适应的本机 Chrome；该模式要求只选一个 Agent，完成断言后暂停测试退出，不能作为 CI 完成信号。实例地址、重新打开所需的 `authenticatedUrl` 与专属停止文件写入仅当前用户可读写的 `.local/e2e-live-teams/review-instance.json`；其中登录链接仅供本地查看，不要分享。需要关闭时创建其中的 `stopFile`，才会清理对应宿主和浏览器。
 
-`DSH_E2E_LIVE_TEAMS_APPROVAL=1` 额外创建一个真实新成员，验证首次系统提示词为 `ask`、写文件前主会话出现待处理卡、原生允许一次之后才产生临时文件。建议限定 `DSH_E2E_LIVE_PROFILES=devin`，与双模型检查一起运行。
+`DSH_E2E_LIVE_TEAMS_APPROVAL=1` 额外创建一个真实新成员，验证首次系统提示词为 `ask`、写文件前主会话出现待处理卡。测试直接在主会话的成员卡上点击“允许一次”，确认决定归属子会话，批准后才产生临时文件，且页面始终停留在主会话。建议限定 `DSH_E2E_LIVE_PROFILES=devin`；模型不可用时，通过 `DSH_E2E_LIVE_DEVIN_MODEL` 指定当前目录中的精确 ID。
 
 已知宿主显示限制：当前宿主的 Teams 名单对休眠成员回退使用 Lead 的初始 `Agent.options.model`，主会话标签也可能滞后。多模型执行应以成员持久化的 `request/header` 为准；不要为使断言通过而把名单标签当作实际调用模型。本插件不复制原生面板或修改宿主的展示数据。原生完成通知会复制子会话的 reasoning block，但 ContextBody 尚不能渲染它，因此该通知中可能出现 Unknown content；成员详情的原生推理展示不受影响。
 
@@ -65,11 +68,17 @@ pnpm test:e2e
 
 `DSH_UPSTREAM_CHECKOUT` 可指定其他源码目录。`pnpm test:e2e -t 'claude'` 可只运行一种协议夹具。默认使用 Playwright Chromium；`DSH_E2E_BROWSER_CHANNEL=chrome` 可使用本机已安装 Chrome。`DSH_E2E_NODE` 可指定宿主支持的另一份 Node 运行时，但原生依赖必须针对该 Node ABI 构建。插件构建与常规测试仍遵循 `.nvmrc`。
 
+`DSH_E2E_ELECTRON=/绝对路径/Electron pnpm test:e2e` 将同一组场景运行在真实 Electron 窗口中，使用独立临时用户目录，以及与桌面端一致的 sandbox、contextIsolation 和禁用 nodeIntegration 设置。它覆盖适配器在 Electron 中的渲染、交互和宿主通信，不替代桌面仓库对打包、preload、专有协议、升级和跨平台成品的测试；不支持保留窗口模式。
+
 测试使用临时工作区和独立 DSH_HOME，结束后销毁浏览器、Agent 进程与测试目录。失败截图写入 gitignored `.local/e2e-failures/`。断言使用原生组件的数据标记及可访问名称，不依赖 CSS 哈希、整页像素截图或真实模型措辞；默认不重试失败测试。浏览器回归期间不要并行运行 build、pack 或默认安装检查：prepack 会清理并重建共享的 `lib` 目录；应按顺序执行，或向安装检查传入已生成的 tarball。
 
 当前验证版本的 `dsh-client-store` Node 入口仍引用 `zustand`、`immer`，但上游只将它们声明为开发依赖。本项目暂时精确声明这两项 devDependencies，供普通 Node 测试加载真实 Store；浏览器继续使用宿主模块表，插件运行时 dependencies 不增加。上游修复 Node 入口依赖闭包后可移除该补偿。
 
 宿主目标以 `package.json` 的 `engines.dsh` 为准，开发脚本和 CI 源码标签从这里读取；依赖声明通过一致性检查，文档不再重复声明当前版本。发布时 `npm pack` 的 prepack 完整执行类型检查、测试和构建，再由安装门禁验证同一个 tarball。
+
+CI 的产品命令以普通用户运行。Windows hosted runner 默认是管理员，因此 `run-windows-user-ci.ps1` 只用管理员身份准备独立普通账号和目录权限，关闭开发者模式后，将依赖安装、类型检查、全部测试、构建、MCP 文件链接检查和打包交给该账号；Node、pnpm 和缓存也独立。链接检查先确认真实文件软链接被权限拒绝，再验证硬链接回退、目录 junction、MCP 隔离与清理。Linux/macOS 工作流检查实际 UID 非 root；浏览器依赖和系统沙箱准备仍可使用 sudo。Windows 完整宿主安装/启动门禁仍是未覆盖项，不能将链接检查当成完整桌面回归。
+
+模式菜单回归会采集浏览器 trace，成功时丢弃，失败时与截图、页面文字、执行阶段和控制台错误一起保存在 `.local/e2e-failures/`。CI 自动上传该目录，保留 7 天；可用 Playwright `show-trace <文件.trace.zip>` 查看。此采集仅用于无密钥协议夹具；trace 含临时宿主的页面和网络数据，分享前仍需检查。
 
 ## 真实 Agent 冒烟
 
@@ -97,4 +106,6 @@ Persistence 替身使用真实 `SessionHandle` 类型，分别覆盖 `detached` 
 
 活动归属使用稳定的 ACP 会话/轮次标识和原生 Step data，不再依赖迁移前的事件序号。系统指令覆盖从历史首条 system message 读取、A → B 更新和清空；ACP 不声明它无法原样支持的 in-history system 更新能力。
 
-ACP v1 没有 system 消息角色，宿主指令以有标注的请求上下文传递；无法强制改变外部 Agent 的指令优先级。外部 Agent 自己执行的工具、技能加载和 MCP 不会自动进入 DSH 的工具 hooks，工具活动通知也不是执行请求。DSH 工具桥按 profile 的 hostTools 精确名单暴露插件工具；启用 Teams 时另提供九个原生成员工具。桥接工具通过真实 ToolRuntime 和 hooks 执行，但 Agent 自己执行的其他工具不因此经过宿主管线。
+ACP v1 没有 system 消息角色，宿主指令以有标注的请求上下文传递；无法强制改变外部 Agent 的指令优先级。外部 Agent 自己执行的工具、技能加载和 MCP 不会自动进入 DSH 的工具 hooks，工具活动通知也不是执行请求。DSH 工具桥自动发现当前会话作用域中的原生工具，无需配置工具名单；Teams 工具仍要求原生成员身份。桥接工具通过真实 ToolRuntime 和 hooks 执行，但 Agent 自己执行的其他工具不因此经过宿主管线。
+
+真实主信息流专项：`DSH_E2E_LIVE_STREAM=1 DSH_E2E_LIVE_CODEX_MODEL=<已选择的模型> pnpm test:e2e live-main-stream`。在隔离工作区让真实 Codex ACP 执行一次 `printf`，验证原生 Bash、调用计数、结果详情及刷新恢复；不读写用户文件。需要本机已有登录，会消耗该 Agent 的用量，默认跳过。

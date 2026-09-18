@@ -25,38 +25,35 @@ function identity(value: object): number {
   return id
 }
 
-function bridgeDefinitions(ctx: Context, sessionId: string, hostTools: readonly string[]) {
+function bridgeDefinitions(ctx: Context, sessionId: string) {
   const teams = ctx.get('agentTeams')
   const agent = ctx.get('agents', false)?.get(sessionId as never)
   const tools = ctx.get('tools', false)
-  if (agent === undefined || tools === undefined) {
-    if (hostTools.length) throw new Error('ACP_HOST_TOOLS_UNAVAILABLE: native tool runtime is unavailable')
-    return undefined
-  }
+  if (agent === undefined || tools === undefined) return undefined
   const hasTeams = teams !== undefined && teams.tryMembership(agent) !== undefined
-    && TEAM_TOOLS.every(name => tools.get(name, agent) !== undefined)
   const definitions = new Map<string, ToolDefinition>()
-  if (hasTeams) for (const name of TEAM_TOOLS) definitions.set(name, tools.get(name, agent)!)
-  for (const name of hostTools) {
-    const definition = tools.get(name, agent)
-    if (definition === undefined || (isTeamTool(name) && !hasTeams)) throw new Error(`ACP_HOST_TOOL_UNAVAILABLE: ${name}`)
-    definitions.set(name, definition)
+  // Use the same scoped registry as native execution. No independent tool list:
+  // plugin registration, scoped shadows and restrictions remain owned by DSH.
+  for (const schema of tools.schemas(agent).sort((left, right) => left.name.localeCompare(right.name))) {
+    if (isTeamTool(schema.name) && !hasTeams) continue
+    const definition = tools.get(schema.name, agent)
+    if (definition !== undefined) definitions.set(schema.name, definition)
   }
   return definitions.size === 0 ? undefined : { agent, tools, teams, hasTeams, definitions }
 }
 
 /** Changes when the optional host feature or its scoped tool owner changes. */
-export function teamBridgeKey(ctx: Context, sessionId: string, hostTools: readonly string[] = []): unknown {
-  const bridge = bridgeDefinitions(ctx, sessionId, hostTools)
+export function teamBridgeKey(ctx: Context, sessionId: string): unknown {
+  const bridge = bridgeDefinitions(ctx, sessionId)
   return bridge === undefined ? undefined : JSON.stringify([identity(bridge.agent), ...[...bridge.definitions].map(([name, definition]) => [name, identity(definition)])])
 }
 
-/** Optional host lookup: loading the adapter never enables Teams itself. */
+/** Discover native session tools without enabling any host plugin or Teams service. */
 export async function createTeamBridge(
-  ctx: Context, sessionId: string, capabilities: acp.AgentCapabilities | undefined, wireProfile?: string, hostTools: readonly string[] = [],
+  ctx: Context, sessionId: string, capabilities: acp.AgentCapabilities | undefined, wireProfile?: string,
 ): Promise<AcpMcpLease | undefined> {
   const agents = ctx.get('agents', false)
-  const bridge = bridgeDefinitions(ctx, sessionId, hostTools)
+  const bridge = bridgeDefinitions(ctx, sessionId)
   if (bridge === undefined || agents === undefined) return undefined
   const { tools, agent, teams, hasTeams, definitions } = bridge
   const lifetime = new AbortController()
@@ -70,7 +67,7 @@ export async function createTeamBridge(
   const definitionOf = (call: acp.ToolCallUpdate): ToolDefinition | undefined => {
     const input = call.rawInput as { server?: unknown; tool?: unknown } | undefined
     if (wireProfile === 'codex' && call._meta?.is_mcp_tool_call === true && input?.server === serverName && typeof input.tool === 'string') return names.get(input.tool)
-    // Kimi uses the full qualified tool name as title; this mapping is descriptor-bound.
+    // Kimi uses the full qualified tool name as title; this mapping is runtime-bound.
     const meta = call._meta?.claudeCode as { toolName?: unknown } | undefined
     const name = call.name ?? meta?.toolName ?? call._meta?.['cognition.ai/toolName'] ?? (wireProfile === 'kimi' ? call.title : undefined)
     if (typeof name !== 'string') return undefined
@@ -91,7 +88,7 @@ export async function createTeamBridge(
     }
     const server = new Server({ name: 'DSH tools', version: '1.0.0' }, {
       capabilities: { tools: {} },
-      instructions: 'These are explicitly enabled native DSH tools. Use the exact tool names from tools/list. Team tools require an explicit user request for a team; members share the workspace and only fresh context is supported.',
+      instructions: 'These are native DSH tools available to this session. Use the exact tool names from tools/list. Team tools require an explicit user request for a team; members share the workspace and only fresh context is supported.',
     })
     sessions.add(server)
     server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -178,6 +175,19 @@ export async function createTeamBridge(
       const allow = request.options.find(option => option.kind === 'allow_once')
       return allow === undefined ? undefined : { outcome: { outcome: 'selected', optionId: allow.optionId } }
     },
+    elicitationToolName(request, toolCall) {
+      const form = request as { toolCallId?: unknown }
+      if (wireProfile !== 'codex' || !live() || prompt === undefined || prompt.aborted
+        || request.mode !== 'form' || request._meta?.codex_approval_kind !== 'mcp_tool_call'
+        || toolCall === undefined || form.toolCallId !== toolCall.toolCallId
+        || toolCall._meta?.is_mcp_tool_call !== true) return undefined
+      const input = toolCall.rawInput as { server?: unknown; tool?: unknown } | undefined
+      if (input?.server !== serverName || typeof input.tool !== 'string') return undefined
+      // Presentation only: don't rewrite arbitrary messages or infer authority
+      // by stripping a prefix. Preserve additional context from other requests.
+      if (request.message !== `Allow the ${serverName} MCP server to run tool "${input.tool}"?`) return undefined
+      return names.get(input.tool)?.name
+    },
     elicitation(request, toolCall) {
       const form = request as { toolCallId?: unknown; requestedSchema?: { properties?: Record<string, unknown>; required?: unknown[] } }
       if (wireProfile !== 'codex' || !live() || prompt === undefined || prompt.aborted
@@ -203,7 +213,7 @@ export async function createTeamBridge(
     },
     close() {
       closing ??= (async () => {
-        lifetime.abort(new Error('ACP Teams connection closed'))
+        lifetime.abort(new Error('ACP DSH tools connection closed'))
         for (const dispose of listeners.splice(0)) dispose()
         prompt = undefined
         presented.clear()
@@ -215,6 +225,7 @@ export async function createTeamBridge(
       return closing
     },
   }
+  listeners.push(ctx.on('tools/change', () => { if (!live()) void lease.close() }))
   listeners.push(ctx.on('agent/disposed', ({ agent: disposed }) => { if (disposed === agent) void lease.close() }))
   listeners.push(ctx.on('internal/service', name => { if (['agentTeams', 'agents', 'tools'].includes(name) && !live()) void lease.close() }))
   return lease

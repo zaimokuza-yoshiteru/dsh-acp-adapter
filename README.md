@@ -4,6 +4,8 @@
 
 在 DSH 会话页面使用 **Claude · Codex · Devin · Kimi**。
 
+本版本仅支持 DSH `0.1.6-alpha.2`。点击 ACP 成员或子会话会在原生侧栏打开，保留主会话；Teams 成员的请求仍可直接在主会话审批。
+
 ## <img src="assets/readme/icon-preview.svg" width="24" height="24" alt="" /> 功能预览
 
 以下截图在干净 DSH 实例中，通过 **Devin · SWE-1.7 Medium** 实际操作生成。
@@ -49,6 +51,8 @@ pnpm install --frozen-lockfile
 
 **1. 安装 Agent，并在终端登录。**
 
+Agent 目录来自随插件发布的 [ACP 官方 registry](https://agentclientprotocol.com) 快照，提供安装指引与配置预填；列入目录不代表已经逐个验证。菜单区分「已验证适配」和「目录收录 · 未验证」；验证范围不覆盖每个目录版本或平台。常用四家：
+
 | Agent | ACP 命令 | 终端登录 |
 | --- | --- | --- |
 | Claude | `claude-agent-acp` | `claude` |
@@ -58,15 +62,23 @@ pnpm install --frozen-lockfile
 
 ¹ 使用 ChatGPT 登录需另装 Codex CLI。
 
+在设置面板「添加 agent」中选择条目后可查看安装指引。npm/Python 条目预填已安装程序的命令、参数和环境变量；其他二进制条目需要按 Agent 所在主机的平台安装并填写命令路径，通用参数和环境变量仍会预填。插件不会自动下载或安装 Agent。
+
 **2. 安装插件。** 以下命令安装 npm 已发布的 `alpha` 版本。
 
 ```bash
 npx "@deepseek-ai/dsh@$DSH_VERSION" plugin --profile web add @zaimokuza/dsh-acp-adapter@alpha
 ```
 
-**3. 打开「设置 → ACP adapter」**，添加模板、检查连接，再在新会话中选择 Agent 模型。
+**3. 打开「设置 → ACP adapter」**，从目录添加 Agent，核对或补全连接设置，检查连接，再在新会话中选择 Agent 模型。
 
-需要 API key 时，在 **连接设置 → 环境变量** 中显式配置；不会自动继承父进程的密钥。
+可执行文件路径可以包含空格，例如 `C:\Program Files\Agent Tools\agent.exe`。直接填写路径，不加外层引号；启动参数单独填写在「参数」中。
+
+Windows 下 Devin 的团队/DSH 工具接入会先尝试文件软链接；若返回权限错误，则对普通文件尝试硬链接。硬链接要求原配置与临时目录位于同一卷，失败时会报错，不会自动复制或回写配置。目录使用 junction，团队 MCP 文件保持独立。硬链接共享直接写入的内容；任一侧替换整个文件时可能分离，因此仍需验证 Devin 的具体保存行为。
+
+需要 API key 时，在 Agent 编辑页的 **高级选项 → 环境变量** 中显式配置；不会自动继承父进程的密钥。高级选项默认收起，已配置项会显示数量。目录预填只影响新增配置，更新插件不会覆盖已有配置。登录指引自动展示，无需填写，也不会执行登录命令或更改 Agent 认证配置；已有自定义指引仍会保留。
+
+目录版本仅用于参考，不同只表示与快照不一致，不代表过旧，也不阻断会话。目录配置保留独立的 `catalogId`，自定义配置 ID 后仍可关联版本与安装提示。升级后，旧绑定中已退役的版本参考字段不参与启动配置比较；命令、参数、环境、状态目录和工具配置的变化仍会触发恢复检查。
 
 ## <img src="assets/readme/icon-connect.svg" width="24" height="24" alt="" /> 如何配合
 
@@ -74,7 +86,7 @@ npx "@deepseek-ai/dsh@$DSH_VERSION" plugin --profile web add @zaimokuza/dsh-acp-
 
 **实验性 Agent Teams：** 跟随 DSH 的 Teams profile 启用，复用原生团队面板；成员从创建时的主会话继承 Agent、模型与推理配置。主会话切换模型后，新成员使用新模型，已有成员保持原模型；团队内使用同一 ACP Agent。仅支持新建上下文，共享任务使用原生任务板；主会话可直接处理成员审批，当前普通审批支持全部允许／拒绝，允许仅限本次。主会话右上角可查看成员状态与模型，单独或按 ACP 类型批量调整成员的 Agent 模式；休眠成员的设置在下次运行前应用。团队协调免额外审批，普通操作的审批保持原样；成员消息在 DSH 步骤边界送达。
 
-**可选 DSH 插件工具：** 在 Agent 连接设置的「DSH 插件工具」中每行填入一个已安装的工具名，或配置 `hostTools: ["工具名"]`。仅选中的工具会通过 MCP 提供给 Agent，并经过 DSH 原生工具执行链；默认不增加工具。普通工具保留 Agent 审批，DSH 工具自身的执行规则仍生效。避免选入与 Agent 自带能力重复的工具；名单改变后请新建会话。工具桥不等于完整接管 Agent loop，具体边界见 [原生复用说明](docs/native-reuse.md)。
+**DSH 插件工具自动接入：** 当前会话可见的原生工具会自动通过 MCP 提供给 Agent，无需手填工具名，也不需要开启 Teams。例如，宿主提供 `present` 时可直接使用原生文件交付与预览。调用经过原生工具执行链，保留 Agent 审批和工具自身规则。旧 `hostTools` 配置不再生效，编辑保存后移除。工具桥的能力边界见 [原生复用说明](docs/native-reuse.md)。
 
 运行中按 Enter 会排队；使用队列的插话操作可发送到当前执行。插件优先使用 Agent 声明的安全原生注入能力，否则取消当前执行，等其收尾后在同一 Agent 会话续发。Kimi 无需新增 SDK。取消超时不会盲目重发，权限与上下文仍由 Agent 管理。详见[插话能力与限制](docs/agent-input-capabilities.md)。
 

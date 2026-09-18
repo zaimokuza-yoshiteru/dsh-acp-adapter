@@ -1,4 +1,3 @@
-import { validHostTools } from '../../contract/host-tools.ts'
 /**
  * ACP provider registry。
  *
@@ -32,6 +31,7 @@ import { validHostTools } from '../../contract/host-tools.ts'
 /// <reference types="node" />
 
 import { resolveTerminalJobs } from './terminal-jobs.ts'
+import { posix, win32 } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { createTeamBridge, teamBridgeKey } from '../teams/bridge.ts'
 import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
@@ -43,6 +43,7 @@ import {
   ACP_SETTINGS_NS,
   acpAgentIdFromRoute,
   acpRouteId,
+  effectiveRuntimeOf,
 } from '../../domain/session/agent-config.ts'
 import type { AcpAgentConfig, AcpAgentId, AcpResolvedAgent } from '../../domain/session/agent-config.ts'
 import { createTeamManagement } from '../teams/management.ts'
@@ -67,10 +68,6 @@ import type { SessionPersistence } from '@deepseek-ai/dsh-session-persistence'
 import { ExternalSubagentProjector } from '../subagent/external-projector.ts'
 
 export { acpProbeConfigKey }
-
-// Built-in templates and runtime descriptors live in the zero-import profile
-// data module and are re-exported here for the host composition surface.
-export { ACP_BUILTIN_AGENT_TEMPLATES, CLAUDE_ACP_TEMPLATE, CODEX_ACP_TEMPLATE, DEVIN_ACP_TEMPLATE, KIMI_ACP_TEMPLATE } from '../../domain/session/agent-config.ts'
 
 /** Resolved `dsh-acp` settings section. */
 export interface AcpSettings {
@@ -123,13 +120,15 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return proto === Object.prototype || proto === null
 }
 
-/**
- * command 校验（「profile 可使用绝对 command 路径，不允许 shell
- * 字符串」）：拒一切空白与 shell 元字符（| & ; < > $ ` " ' \）——spawn 是
- * argv 数组无 shell，这些字符只会制造注定失败的怪命令名。绝对路径（含 `/`）
- * 合法。
+/** Paths are passed literally as argv[0], including spaces and shell punctuation.
+ * Recognize both platforms because the client and Agent host may differ.
+ * Bare commands still reject likely pasted command lines; arguments belong in args.
  */
-const ACP_COMMAND_FORBIDDEN_PATTERN = /[\s|&;<>()$`"'\\]/
+function validExecutableCommand(command: string): boolean {
+  if (/[\u0000-\u001f\u007f]/.test(command)) return false
+  if (posix.isAbsolute(command) || win32.isAbsolute(command) || /^\.{1,2}[\\/]/.test(command)) return true
+  return !/[\s|&;<>()$`"']/.test(command)
+}
 
 /** Validate one agent entry; unknown keys are dropped (schemastery strip semantics). */
 function agentConfigOf(id: string, raw: unknown): AcpAgentConfig {
@@ -147,13 +146,9 @@ function agentConfigOf(id: string, raw: unknown): AcpAgentConfig {
   if (typeof command !== 'string' || command.length === 0) {
     throw new TypeError(`dsh-acp settings: agents.${id}.command must be a non-empty string`)
   }
- // 边界：command 是 **单个可执行名或绝对路径**，不是 shell 字符串——spawn 全链
-  // argv 数组直达 subprocess seam（不经 shell，注入面在协议连接层钉死），空格/
-  // shell 元字符不会产生分词或展开，只会变成一个注定 ENOENT 的怪文件名；这里
-  // 响亮拒绝，把配置错误暴露在写入时而不是首 turn。
-  if (ACP_COMMAND_FORBIDDEN_PATTERN.test(command)) {
+  if (!validExecutableCommand(command)) {
     throw new TypeError(
-      `dsh-acp settings: agents.${id}.command must be a single executable name or an absolute path (no whitespace or shell metacharacters — spawn is an argv array without a shell); put arguments in "args"`,
+      `dsh-acp settings: agents.${id}.command must be an executable name or path without control characters; enter paths directly without surrounding quotes and put arguments in "args"`,
     )
   }
   const args = raw['args'] ?? []
@@ -165,19 +160,19 @@ function agentConfigOf(id: string, raw: unknown): AcpAgentConfig {
     throw new TypeError(`dsh-acp settings: agents.${id}.env must be a map of string values`)
   }
   const loginHint = raw['loginHint']
-  const hostTools = raw['hostTools']
-  if (hostTools !== undefined && !validHostTools(hostTools)) {
-    throw new TypeError(`dsh-acp settings: agents.${id}.hostTools must contain unique tool names`)
-  }
   if (loginHint !== undefined && typeof loginHint !== 'string') {
     throw new TypeError(`dsh-acp settings: agents.${id}.loginHint must be a string`)
   }
- // 边界：runtime 是 descriptor 绑定，只收四个合法值——非法值拒绝写入
-  // （普通 profile 不允许拼出宿主 path/env ref，也不允许指向不存在的 descriptor）
+ // 边界：runtime 是专有行为绑定，只收四个合法值——非法值拒绝写入
+  // （普通 profile 不允许拼出宿主 path/env ref，也不允许指定未知的 runtime）
+  const catalogId = raw['catalogId']
+  if (catalogId !== undefined && (typeof catalogId !== 'string' || !ACP_AGENT_ID_PATTERN.test(catalogId))) {
+    throw new TypeError(`dsh-acp settings: agents.${id}.catalogId must be a registry identifier`)
+  }
   const runtime = raw['runtime']
   if (runtime !== undefined && !ACP_AGENT_IDS.includes(runtime as AcpAgentId)) {
     throw new TypeError(
-      `dsh-acp settings: agents.${id}.runtime must be one of ${ACP_AGENT_IDS.map((value) => JSON.stringify(value)).join(', ')} (it binds the profile to a built-in runtime descriptor)`,
+      `dsh-acp settings: agents.${id}.runtime must be one of ${ACP_AGENT_IDS.map((value) => JSON.stringify(value)).join(', ')} (it binds the profile to a specialized runtime)`,
     )
   }
   return {
@@ -185,16 +180,16 @@ function agentConfigOf(id: string, raw: unknown): AcpAgentConfig {
     command,
     args: [...args] as string[],
     env: { ...env } as Record<string, string>,
-    ...(hostTools === undefined ? {} : { hostTools: [...hostTools] as string[] }),
     ...(loginHint === undefined ? {} : { loginHint }),
     ...(runtime === undefined ? {} : { runtime: runtime as AcpAgentId }),
+    ...(catalogId === undefined ? {} : { catalogId }),
   }
 }
 
 /**
  * （ 内置 runtime 唯一性）内置 runtime singleton 的跨条目校验：每个内置 runtime
  * （devin/codex/kimi/claude）至多一个 profile。生效绑定 = 显式 `runtime`
- * 字段优先，缺席时按 agent id 回退（与 descriptorOf 同口径）。重复的
+ * 字段优先，缺席时按 agent id 回退（与 effectiveRuntimeOf 同口径）。重复的
  * 内置 runtime 会让安装检查、模型目录与会话恢复无法稳定指向唯一配置，
  * 因此必须拒绝。
  * 无 runtime 身份的 generic profile 不受限（多实例靠稳定 profile id 区分）。
@@ -204,7 +199,7 @@ function agentConfigOf(id: string, raw: unknown): AcpAgentConfig {
 function assertSingletonRuntimes(agents: Record<string, AcpAgentConfig>): void {
   const bound = new Map<AcpAgentId, string>()
   for (const [id, config] of Object.entries(agents)) {
-    const runtime = config.runtime ?? (ACP_AGENT_IDS.includes(id as AcpAgentId) ? (id as AcpAgentId) : undefined)
+    const runtime = effectiveRuntimeOf(id, config)
     if (runtime === undefined) continue
     const existing = bound.get(runtime)
     if (existing !== undefined) {
@@ -253,8 +248,8 @@ export const acpSettingsSchema: AcpSettingsSchema = Object.assign(
               },
               args: { type: 'array', items: { type: 'string' }, default: [] },
               env: { type: 'object', additionalProperties: { type: 'string' }, default: {} },
-              hostTools: { type: 'array', items: { type: 'string', pattern: '^[A-Za-z0-9_.-]+$' }, uniqueItems: true },
               loginHint: { type: 'string' },
+              catalogId: { type: 'string', pattern: ACP_AGENT_ID_PATTERN.source },
               runtime: { enum: [...ACP_AGENT_IDS] },
             },
             required: ['name', 'command'],
@@ -392,10 +387,20 @@ export function installInstalledProfileRegistry(ctx: Context, options: Installed
     try { approval = holder.get('approval') as import('../../domain/policy/permissions.ts').AcpNativeApprovalService | undefined } catch { /* optional seam */ }
     try { agents ??= holder.get('agents') as { get(id: string): unknown } | undefined } catch { /* optional seam */ }
     if ((userQuestions === undefined && approval === undefined) || agents === undefined || agents.get(dshSessionId) === undefined) return undefined
+    // Read the native locale preference for every request so language changes
+    // take effect without restarting the ACP session. Browser detection alone
+    // is not a host setting; absent preferences use the English fallback.
+    let locale: string | undefined
+    try {
+      const settings = holder.get('settings') as Pick<import('@deepseek-ai/dsh-settings').SettingsProvider, 'get'> | undefined
+      const value = settings?.get('locale')
+      if (isPlainObject(value) && typeof value.preference === 'string') locale = value.preference
+    } catch { /* optional locale preference */ }
     return {
       ...(userQuestions === undefined ? {} : { userQuestions }),
       ...(approval === undefined ? {} : { approval }),
       getAgent: () => agents?.get(dshSessionId),
+      ...(locale === undefined ? {} : { locale }),
     }
   }
   const ledgerStore: DispatchLedgerStore = sidecar === undefined
@@ -610,8 +615,8 @@ export function installInstalledProfileRegistry(ctx: Context, options: Installed
             },
             message => log.warn(message, { operation: 'claude-draft-subagent-capability' }),
             sessionId => resolveTerminalJobs(ctx, sessionId),
-            (sessionId, capabilities, wireProfile) => createTeamBridge(ctx, sessionId, capabilities, wireProfile, activeAgents[id]?.hostTools),
-            sessionId => teamBridgeKey(ctx, sessionId, activeAgents[id]?.hostTools),
+            (sessionId, capabilities, wireProfile) => createTeamBridge(ctx, sessionId, capabilities, wireProfile),
+            sessionId => teamBridgeKey(ctx, sessionId),
             controlsChanged,
           )
           profileAdapters.set(id, routeAdapter)
@@ -717,7 +722,7 @@ export function installInstalledProfileRegistry(ctx: Context, options: Installed
       if (id === undefined) return undefined
       const config = activeAgents[id]
       if (config === undefined) return undefined
- // 边界：descriptor 是内置受信数据，消费方经 descriptorOf(id, config) 现取
+ // 运行时身份由消费方经 effectiveRuntimeOf(id, config) 解析
       // （runtime 字段优先、id 回退），不随解析结果复制一份
       return { id, config }
     },

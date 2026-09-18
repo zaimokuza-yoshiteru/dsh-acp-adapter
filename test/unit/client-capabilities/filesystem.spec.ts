@@ -44,7 +44,11 @@ describe('ACP native filesystem handlers', () => {
     const handlers = createAcpFileSystemHandlers({ profileId: 'codex' })
     await handlers.writeTextFile({ sessionId: 'acp-1', path: file, content: 'one' }); const mode = fs.statSync(file).mode & 0o777
     await handlers.writeTextFile({ sessionId: 'acp-1', path: file, content: 'two' }); expect(fs.readFileSync(file, 'utf8')).toBe('two'); expect(fs.statSync(file).mode & 0o777).toBe(mode)
-    const other = path.join(dir, 'other.txt'); fs.writeFileSync(other, 'safe'); fs.symlinkSync(other, link)
+    const otherDirectory = path.join(dir, 'other'); fs.mkdirSync(otherDirectory)
+    const other = path.join(otherDirectory, 'other.txt'); fs.writeFileSync(other, 'safe')
+    // Windows ordinary users can create a directory junction, not necessarily
+    // a file symlink. Both must hit the same lstat link-replacement guard.
+    fs.symlinkSync(process.platform === 'win32' ? otherDirectory : other, link, process.platform === 'win32' ? 'junction' : 'file')
     await expect(handlers.writeTextFile({ sessionId: 'acp-1', path: link, content: 'bad' })).rejects.toThrow(/symlink/)
     expect(fs.readFileSync(other, 'utf8')).toBe('safe'); fs.rmSync(dir, { recursive: true, force: true })
   })
@@ -163,6 +167,42 @@ it('retains concurrent-edit detection during streamed old-file hashing', async (
   try {
     await expect(handlers.writeTextFile({ sessionId: 's', path: file, content: 'replacement' })).rejects.toThrow('concurrent file change')
     expect(fs.readFileSync(file, 'utf8')).toBe('other edit')
+    expect(fs.readdirSync(dir)).toEqual(['file.txt'])
+  } finally { handlers.dispose(); fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
+it('preserves a file created by another writer while preparing a new file', async () => {
+  const dir = root(), file = path.join(dir, 'file.txt')
+  const audit: Array<{ outcome: string }> = []
+  const handlers = createAcpFileSystemHandlers({ profileId: 'test', audit: event => { audit.push(event) }, io: {
+    writeFile: async (...args) => { await fs.promises.writeFile(...args); fs.writeFileSync(file, 'other writer', { flag: 'wx' }) },
+  } })
+  try {
+    await expect(handlers.writeTextFile({ sessionId: 's', path: file, content: 'replacement' })).rejects.toThrow('concurrent file change')
+    expect(fs.readFileSync(file, 'utf8')).toBe('other writer')
+    expect(fs.readdirSync(dir)).toEqual(['file.txt'])
+    expect(audit).toMatchObject([{ outcome: 'concurrent-change' }])
+  } finally { handlers.dispose(); fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
+it('allows only one of two simultaneous new-file writes to commit', async () => {
+  const dir = root(), file = path.join(dir, 'file.txt')
+  let waiting = 0
+  let release = () => {}
+  const ready = new Promise<void>(resolve => { release = resolve })
+  const handlers = createAcpFileSystemHandlers({ profileId: 'test', io: {
+    writeFile: async (...args) => {
+      await fs.promises.writeFile(...args)
+      if (++waiting === 2) release()
+      await ready
+    },
+  } })
+  try {
+    const contents = ['first writer', 'second writer']
+    const results = await Promise.allSettled(contents.map(content => handlers.writeTextFile({ sessionId: 's', path: file, content })))
+    expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1)
+    expect(results.find(result => result.status === 'rejected')).toMatchObject({ reason: new Error(`ACP fs/write_text_file failed for ${file}: concurrent file change`) })
+    expect(fs.readFileSync(file, 'utf8')).toBe(contents[results.findIndex(result => result.status === 'fulfilled')])
     expect(fs.readdirSync(dir)).toEqual(['file.txt'])
   } finally { handlers.dispose(); fs.rmSync(dir, { recursive: true, force: true }) }
 })

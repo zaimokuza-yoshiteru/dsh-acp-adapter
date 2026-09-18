@@ -42,7 +42,7 @@ export interface AcpSessionRuntimeOptions {
   readonly mcpKey?: () => unknown
   readonly createMcpLease?: (capabilities: acp.AgentCapabilities | undefined) => Promise<AcpMcpLease | undefined>
   readonly profileId: string
-  /** Explicit descriptor-derived gate for Claude's private draft extension. */
+  /** Explicit runtime-bound gate for Claude's private draft extension. */
   readonly enableClaudeDraftSubagents?: boolean
   readonly config: AcpRuntimeConfig
   readonly subprocess: SubprocessSeam
@@ -56,7 +56,7 @@ export interface AcpSessionRuntimeOptions {
   /** Host-owned approval bridge. The optional signal is the active prompt lifetime. */
   readonly onPermissionRequest?: (params: acp.RequestPermissionRequest, signal?: AbortSignal) => Promise<acp.RequestPermissionResponse>
   /** Host-owned form elicitation bridge; URL elicitation is intentionally not advertised. */
-  readonly onElicitationRequest?: (params: acp.CreateElicitationRequest, signal?: AbortSignal) => Promise<acp.CreateElicitationResponse>
+  readonly onElicitationRequest?: (params: acp.CreateElicitationRequest, signal?: AbortSignal, hostToolName?: string) => Promise<acp.CreateElicitationResponse>
   /** One-shot diagnostic for optional private capability degradation. */
   readonly onCapabilityDegraded?: (message: string) => void
   /** Grace period after `session/cancel` before the Agent process is closed. */
@@ -159,15 +159,9 @@ function permissionPriorSnapshot(
       return candidate
     }
   }
-  // Some Kimi builds use unrelated opaque ids on the permission request.  A
-  // unique live execute snapshot whose content already contains a complete
-  // command is still an unambiguous protocol-local correlation.  Never choose
-  // when two commands are concurrently eligible.
-  const eligible = [...(snapshots?.values() ?? [])].filter(snapshot => {
-    if (request.kind !== undefined && snapshot.kind !== undefined && request.kind !== snapshot.kind) return false
-    return snapshot.kind === 'execute' && executeInputFromContent(snapshot.content) !== undefined
-  })
-  return eligible.length === 1 ? eligible[0] : undefined
+  // A sole candidate can belong to an earlier operation, including a completed
+  // one. Without a matching identity, keep the request's own details only.
+  return undefined
 }
 
 const ACP_PERMISSION_INPUT_GRACE_MS = 1_500
@@ -272,10 +266,10 @@ export class AcpSessionRuntime {
     binding: AcpRuntimeBindingRef,
     signal?: AbortSignal,
     onReplay?: (notification: AcpSessionNotification) => void,
-  ): Promise<'resumed' | 'loaded'> {
+  ): Promise<'reused' | 'resumed' | 'loaded'> {
     if (this.sessionId !== undefined) {
       if (this.sessionId !== binding.agentSessionId) throw new Error('ACP binding session id does not match the active runtime')
-      return 'resumed'
+      return 'reused'
     }
     await this.initialize(signal)
     const connection = this.connection
@@ -519,7 +513,7 @@ export class AcpSessionRuntime {
           const toolCall = scope.sessionId !== this.sessionId || typeof scope.toolCallId !== 'string'
             ? undefined : this.promptToolSnapshots?.get(scope.toolCallId)
           this.pendingQuestions += 1
-          try { return await (this.mcpLease?.elicitation?.(params, toolCall) ?? this.options.onElicitationRequest!(params, signal)) }
+          try { return await (this.mcpLease?.elicitation?.(params, toolCall) ?? this.options.onElicitationRequest!(params, signal, this.mcpLease?.elicitationToolName?.(params, toolCall))) }
           finally { this.pendingQuestions -= 1 }
         },
       }),

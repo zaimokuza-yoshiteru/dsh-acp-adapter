@@ -37,6 +37,8 @@ jobs:
       - name: Verify release tag and version
         id: release
         run: node scripts/verify-release.mjs
+      - name: Verify ordinary Unix user
+        run: node scripts/check-ci-user.mjs
       - name: Install exact published dependencies
         run: pnpm install --frozen-lockfile
       # npm pack runs prepack: typecheck, tests, build and bundle verification once.
@@ -77,4 +79,6 @@ jobs:
           name: npm-release-tarball
           path: dist/npm
       - name: Publish with OIDC
-        run: npm publish "dist/npm/${{ needs.pack.outputs.tarball }}" --access public --tag "${{ needs.pack.outputs.dist-tag }}"
+        run: |
+          node scripts/check-ci-user.mjs
+          npm publish "dist/npm/${{ needs.pack.outputs.tarball }}" --access public --tag "${{ needs.pack.outputs.dist-tag }}"

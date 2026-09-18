@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { link, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AcpMcpLease } from '../../runtime/session/mcp-lease.ts'
@@ -10,7 +10,24 @@ async function linkEntries(source: string, target: string, except: string): Prom
     throw error
   }
   for (const entry of entries) {
-    if (entry.name !== except) await symlink(join(source, entry.name), join(target, entry.name), entry.isDirectory() ? 'junction' : 'file')
+    if (entry.name === except) continue
+    const from = join(source, entry.name)
+    const to = join(target, entry.name)
+    try {
+      await symlink(from, to, entry.isDirectory() ? 'junction' : 'file')
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      // Windows may deny file symlinks to ordinary users. Preserve shared file
+      // contents without copying; directories and existing links keep their semantics.
+      if (process.platform !== 'win32' || !entry.isFile() || (code !== 'EPERM' && code !== 'EACCES')) throw error
+      try { await link(from, to) } catch (linkError) {
+        const failure = new Error(
+          `Devin MCP configuration: file symlink was denied (${code}) and hard-link fallback failed (${(linkError as NodeJS.ErrnoException).code ?? 'unknown'}). Hard links require the configuration and temporary directory to be on the same volume.`,
+          { cause: linkError },
+        )
+        throw Object.assign(failure, { code: (linkError as NodeJS.ErrnoException).code })
+      }
+    }
   }
 }
 
@@ -51,6 +68,7 @@ export async function prepareDevinTeamConfig(env: Record<string, string>, lease:
         servers: [],
         beginPrompt: signal => lease.beginPrompt(signal), endPrompt: () => lease.endPrompt(), permission: request => lease.permission(request),
         elicitation: (request, toolCall) => lease.elicitation?.(request, toolCall),
+        elicitationToolName: (request, toolCall) => lease.elicitationToolName?.(request, toolCall),
         presentTool: call => lease.presentTool?.(call) ?? call,
         close() { return closing ??= lease.close().finally(remove) },
       },

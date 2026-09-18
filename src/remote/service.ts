@@ -43,8 +43,9 @@ import type { Context } from '@deepseek-ai/cordis'
 import { Remote, RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import type * as acp from '@agentclientprotocol/sdk'
 import { acpRouteId, ACP_AGENT_ID_PATTERN } from '../domain/session/agent-config.ts'
-import { acpProbeConfigKey, acpVersionCompatibility, descriptorOf } from '../domain/session/agent-config.ts'
-import type { AcpAgentConfig, AcpAgentRuntimeDescriptor } from '../domain/session/agent-config.ts'
+import { acpProbeConfigKey, acpVersionCompatibility, catalogIdOf } from '../domain/session/agent-config.ts'
+import { registryVersionOf } from '../domain/session/registry-versions.ts'
+import type { AcpAgentConfig } from '../domain/session/agent-config.ts'
 import type { AcpErrorCategory } from '../protocol/v1/types.ts'
 import { deriveAcpAgentState } from '../domain/session/agent-state.ts'
 import type { AcpAgentStateProbeView } from '../domain/session/agent-state.ts'
@@ -586,7 +587,23 @@ export class AcpRemoteService extends TypertRemoteService {
     validateActivityReadRequest(limit, request?.filter)
     const activities = await source.snapshot(sessionId, limit, request?.filter)
     const head = await source.head(sessionId, request?.filter)
-    return { sessionId, activities, head }
+    return { sessionId, activities: activities.map(activitySummary), head }
+  }
+
+  /** Exact immutable revision; use the same ownership gate as journal reads. */
+  @Remote
+  async activityDetail(sessionId: string, request: { readonly activityId: string; readonly revisionSeq: number; readonly ownerDshSessionId: string }, signal?: AbortSignal): Promise<AcpActivityView> {
+    signal?.throwIfAborted()
+    await this.requireActivityRead(sessionId)
+    const source = this.resolved.activityTimeline
+    if (source === null) throw acpRemoteFailure('config', 'ACP activity history is unavailable on this host')
+    if (!Number.isSafeInteger(request.revisionSeq) || request.revisionSeq < 1 || !request.activityId || !request.ownerDshSessionId) throw badRequest('ACP activity detail identity is invalid')
+    const [row] = await source.page(sessionId, request.revisionSeq - 1, 1)
+    signal?.throwIfAborted()
+    if (row === undefined || row.dshSessionId !== sessionId || row.revisionSeq !== request.revisionSeq || row.activityId !== request.activityId || row.ownerDshSessionId !== request.ownerDshSessionId) {
+      throw badRequest('ACP activity detail revision is unavailable')
+    }
+    return row
   }
 
   /** Revision-cursor page used for reconnect/gap repair. The page contains
@@ -605,7 +622,7 @@ export class AcpRemoteService extends TypertRemoteService {
     signal?.throwIfAborted()
     const lastRevision = activities.at(-1)?.revisionSeq ?? afterRevision
     const head = await source.head(sessionId, request?.filter)
-    return { sessionId, activities, head, nextCursor: activities.length === limit && lastRevision < head ? lastRevision : null, hasMore: activities.length === limit && lastRevision < head }
+    return { sessionId, activities: activities.map(activitySummary), head, nextCursor: activities.length === limit && lastRevision < head ? lastRevision : null, hasMore: activities.length === limit && lastRevision < head }
   }
 
   /**
@@ -633,7 +650,7 @@ export class AcpRemoteService extends TypertRemoteService {
     const seen = new Set<number>()
     const unsubscribe = source.subscribe(sessionId, undefined, activity => {
       if (closed) return
-      queue.push(activity)
+      queue.push(activitySummary(activity))
       wake?.()
       wake = undefined
     })
@@ -653,7 +670,7 @@ export class AcpRemoteService extends TypertRemoteService {
         if (page.length === 0) break
         for (const activity of page) {
           if (activity.revisionSeq > openingHead) break
-          current.set(activity.activityId, activity)
+          current.set(activity.activityId, activitySummary(activity))
           seen.add(activity.revisionSeq)
           cursor = Math.max(cursor, activity.revisionSeq)
         }
@@ -815,8 +832,9 @@ export class AcpRemoteService extends TypertRemoteService {
         const version = recheck && executable ? await this.resolved.queryVersion(config.command) : cachedAgentVersion
         // Readiness is the last explicit outcome for this exact configuration.
         // Runtime consumers independently re-probe after their bounded TTL.
-        // 版本字段（versionPolicy/兼容状态）共用同一绑定事实。
-        const descriptor = descriptorOf(id, config)
+        // 版本参考共用同一绑定事实：runtime 绑定 → catalogIdOf → 快照
+        // version；普通 profile 按 agent id 直查。
+        const referenceVersion = registryVersionOf(catalogIdOf(id, config))
         return {
           id,
           name: config.name,
@@ -825,7 +843,7 @@ export class AcpRemoteService extends TypertRemoteService {
           loginHint: config.loginHint ?? null,
           executable,
           version,
-          probe: probeRow(matchingSnapshot, descriptor, this.resolved.imageInputAvailable),
+          probe: probeRow(matchingSnapshot, referenceVersion, this.resolved.imageInputAvailable),
           // registry 的 agents map 经 settings schema 校验（非法值根本写不进来），configValid 恒 true
           state: deriveAcpAgentState({
             hostCompatible,
@@ -1059,7 +1077,7 @@ function contractCleanupOf(cleanup: { readonly close: string; readonly delete: s
   return { close, delete: del, message: cleanup.message ?? null }
 }
 
-function probeRow(snapshot: AcpProbeSnapshotLike | undefined, descriptor: AcpAgentRuntimeDescriptor | undefined, imageInputAvailable: boolean): AcpProviderHealth['probe'] {
+function probeRow(snapshot: AcpProbeSnapshotLike | undefined, referenceVersion: string | undefined, imageInputAvailable: boolean): AcpProviderHealth['probe'] {
   if (snapshot === undefined) return { status: 'never', at: null }
   const { result, at } = snapshot
   if (result.kind === 'ok') {
@@ -1075,13 +1093,10 @@ function probeRow(snapshot: AcpProbeSnapshotLike | undefined, descriptor: AcpAge
       capabilities,
       cleanup: contractCleanupOf(result.cleanup),
       capabilityHash: result.capabilityHash ?? null,
- // readiness：协议版本 / 钉版 / 兼容状态（兼容状态由 agent-config.ts
-      // 纯函数派生，比对握手 agentInfo.version 与 descriptor versionPolicy）
+ // readiness：协议版本 / 兼容状态（兼容状态由 agent-config.ts
+      // 纯函数派生，比对握手 agentInfo.version 与 registry 快照版本参考）
       protocolVersion: result.protocolVersion ?? null,
-      versionPolicy: descriptor === undefined
-        ? null
-        : { adapter: descriptor.versionPolicy.adapter ?? null, wrappedCli: descriptor.versionPolicy.wrappedCli ?? null },
-      versionCompatibility: acpVersionCompatibility(descriptor, result.agentInfo?.version),
+      versionCompatibility: acpVersionCompatibility(referenceVersion, result.agentInfo?.version),
  // 端到端能力矩阵（广告 × adapter path；纯函数
       // 直通，形状与 contract `AcpCapabilityMatrixRow` 结构一致，无映射）
       matrix: acpCapabilityMatrix(capabilities, {
@@ -1095,5 +1110,20 @@ function probeRow(snapshot: AcpProbeSnapshotLike | undefined, descriptor: AcpAge
     failureKind: result.failureKind,
     message: result.error.message,
     phase: result.probePhase ?? null,
+  }
+}
+
+/** Bound the ordinary journal payload without mistaking truncated diagnostics for full display data. */
+function activitySummary(row: AcpActivityView): AcpActivityView {
+  const displaySize = JSON.stringify(row.display ?? {}).length
+  const rawSize = row.rawDetail?.length ?? 0
+  if (displaySize + rawSize <= 16_384) return row
+  const { display: _display, rawDetail: _rawDetail, ...summary } = row
+  return {
+    ...summary,
+    // Small diagnostic metadata keeps tool summaries and projection links available.
+    ...(rawSize <= 16_384 && row.rawDetail !== undefined ? { rawDetail: row.rawDetail } : {}),
+    detailDeferred: true,
+    ...(row.display?.diffs === undefined ? {} : { detailPaths: [...new Set(row.display.diffs.map(diff => diff.path))] }),
   }
 }

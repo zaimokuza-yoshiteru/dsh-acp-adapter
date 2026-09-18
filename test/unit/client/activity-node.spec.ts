@@ -535,6 +535,7 @@ describe('ACP activity conversation node', () => {
       },
     ])
     expect(rows.map(row => row.activityId)).toEqual(['tool:call-1'])
+    expect(rows[0]?.projectedChild).toEqual({ parentSessionId: 'parent', childSessionId: 'child-1' })
   })
 
   it('collapses the prompt-anchored tool ids written by the production sidecar', () => {
@@ -551,6 +552,23 @@ describe('ACP activity conversation node', () => {
       },
     ])
     expect(rows.map(row => row.activityId)).toEqual(['user-1:tool:call-1'])
+    expect(rows[0]?.projectedChild).toEqual({ parentSessionId: 'parent', childSessionId: 'child-1' })
+  })
+
+  it.each(['running', 'failed'] as const)('does not link a %s child projection before durable completion', status => {
+    const base = {
+      dshSessionId: 'parent', ownerDshSessionId: 'parent', promptAnchorMessageId: 'user-1',
+      revisionSeq: 1, time: 1, status: 'completed' as const,
+    }
+    const rows = visibleActivityRows([
+      { ...base, activityId: 'user-1:tool:call-1', activitySeq: 1, kind: 'tool', presentation: 'Research' },
+      {
+        ...base, activityId: 'user-1:delegated-record:child-1', activitySeq: 2, kind: 'delegated', presentation: 'Research', status,
+        rawDetail: JSON.stringify({ projectedChildSessionId: 'child-1', sourceToolCallId: 'call-1' }),
+      },
+    ])
+    expect(rows.map(row => row.activityId)).toEqual(['user-1:tool:call-1'])
+    expect(rows[0]?.projectedChild).toBeUndefined()
   })
 
   it('keeps one delegation row while suppressing interleaved child tools and failed projection metadata', () => {

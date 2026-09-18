@@ -50,12 +50,16 @@ import {
 } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { validateSnapshot } from './registry-snapshot.mjs';
 import { DSH_SOURCE_VERSION } from './dsh-target.mjs';
 import { WorkspaceTypertGenerator } from '@deepseek-ai/dsh-typert-generator';
-import { withCodecFactories } from './typert-codec-compat.mjs';
 
 const checkMode = process.argv.includes('--check');
 const PACKAGE_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+validateSnapshot(
+  JSON.parse(readFileSync(join(PACKAGE_DIR, 'assets/registry/registry.json'), 'utf8')),
+  JSON.parse(readFileSync(join(PACKAGE_DIR, 'assets/registry/executables.json'), 'utf8')),
+);
 const LIB_DIR = join(PACKAGE_DIR, 'lib');
 const SRC_DIR = join(PACKAGE_DIR, 'src');
 const STAGE_DIR = join(PACKAGE_DIR, '.typert');
@@ -77,12 +81,16 @@ const DYNAMIC_IMPORT_RE = /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
 
 /**
  * Transitive relative-import closure of `entries` under src/, matching the
- * import regexes in test/contracts/architecture.spec.ts. Escape-hatch imports that
- * leave src/ (../../lib/… in client/index.ts) and unresolved extensions
- * (./x.module.css, covered by the ambient d.ts) are skipped.
+ * import regexes in test/contracts/architecture.spec.ts. Escape-hatch imports
+ * that leave src/ (../../lib/… in client/index.ts) and unresolved extensions
+ * (./x.module.css, covered by the ambient d.ts) are skipped — except JSON
+ * data imports (assets/registry snapshots), which resolve outside src/ but
+ * inside the package and must be staged alongside their importer (collected
+ * in `dataImports`).
  */
 function relativeImportClosure(entries) {
   const seen = new Set();
+  const dataImports = new Set();
   const queue = [...entries];
   while (queue.length > 0) {
     const rel = queue.pop();
@@ -97,13 +105,16 @@ function relativeImportClosure(entries) {
         const spec = match[1];
         if (!spec.startsWith('.')) continue;
         let target = join(dirname(rel), spec);
-        if (target.startsWith('..')) continue; // escapes src/ — not staged
+        if (target.startsWith('..')) {
+          if (target.endsWith('.json')) dataImports.add(join('src', target));
+          continue;
+        }
         if (!/\.[cm]?[tj]s$/.test(target)) target += '.ts';
         if (!seen.has(target)) queue.push(target);
       }
     }
   }
-  return [...seen].filter((rel) => existsSync(join(SRC_DIR, rel)));
+  return { sources: [...seen].filter((rel) => existsSync(join(SRC_DIR, rel))), dataImports: [...dataImports] };
 }
 
 /** Shared compilerOptions, mirroring the spike workspace tsconfigs. */
@@ -196,10 +207,21 @@ function stage() {
     },
     include: ['src'],
   });
-  for (const rel of relativeImportClosure(ENTRY_POINTS)) {
+  const { sources, dataImports } = relativeImportClosure(ENTRY_POINTS);
+  for (const rel of sources) {
     const dest = join(staged, 'src', rel.split('/').join(sep));
     mkdirSync(dirname(dest), { recursive: true });
     cpSync(join(SRC_DIR, rel), dest);
+  }
+  // Package-relative JSON data imports (assets/registry snapshots): staged at
+  // the same package-relative path so the analyzer's module resolution finds
+  // them exactly where the importer expects.
+  for (const rel of dataImports) {
+    const source = resolve(PACKAGE_DIR, rel);
+    if (!existsSync(source)) continue;
+    const dest = join(staged, rel.split('/').join(sep));
+    mkdirSync(dirname(dest), { recursive: true });
+    cpSync(source, dest);
   }
   // Synthetic './client' entry: the publicRemoteType home (recipe #4). Mirrors
   // the `export type *` line of the real src/client/index.ts (see header).
@@ -240,9 +262,9 @@ function main() {
   }
 
   const emitted = {
-    'typert.host.js': withCodecFactories(artifact.js),
+    'typert.host.js': artifact.js,
     'typert.host.d.ts': artifact.dts,
-    'typert.remote-client.js': withCodecFactories(artifact.remote.js),
+    'typert.remote-client.js': artifact.remote.js,
     'typert.remote-client.d.ts': artifact.remote.dts,
     'typert.remote-client.d.ts.map': artifact.remote.dtsMap,
   };

@@ -29,19 +29,14 @@
 import { describe, expect, it } from 'vitest';
 import {
   ACP_AGENT_ID_PATTERN,
-  ACP_BUILTIN_AGENT_TEMPLATES,
   ACP_ENV_KEY_PATTERN,
-  ACP_SECRET_ENV_KEY_PATTERN,
   ACP_SETTINGS_NS,
-  CLAUDE_ACP_TEMPLATE,
-  CODEX_ACP_TEMPLATE,
-  DEVIN_ACP_TEMPLATE,
-  KIMI_ACP_TEMPLATE,
+  agentLoginHint,
   decodeAcpSettings,
   decodeBoundSessions,
   decodeHealthResponse,
   draftFromAgent,
-  draftFromTemplate,
+  draftFromCatalogEntry,
   dropMaskedEnvKey,
   effectiveRuntimeOf,
   emptyDraft,
@@ -58,6 +53,8 @@ import {
   type AcpProviderHealth,
   type AgentDraft,
 } from '../../../src/client/data/logic.ts';
+import registrySnapshot from '../../../assets/registry/registry.json' with { type: 'json' };
+import { ACP_CATALOG_ENTRIES, catalogEntryOf } from '../../../src/client/data/catalog.ts';
 
 // ---------- 夹具 ----------
 
@@ -119,8 +116,7 @@ const okRow: AcpProviderHealth = {
     cleanup: okCleanup,
     capabilityHash: '0123456789abcdef',
     protocolVersion: 1,
-    versionPolicy: { adapter: null, wrappedCli: null },
-    versionCompatibility: 'unpinned',
+    versionCompatibility: 'current',
     matrix: okMatrix,
   },
 };
@@ -188,78 +184,99 @@ describe('常量：与宿主侧契约逐字对齐', () => {
     }
   });
 
- it('DEVIN_ACP_TEMPLATE 逐字段对齐宿主模板（边界：auth 数据面收进 runtime descriptor，不进面板副本；：runtime 显式绑定），且自身过得了 decodeAcpSettings', () => {
-    expect(DEVIN_ACP_TEMPLATE).toEqual({
+ it('catalog installation defaults retain login guidance and explicit runtime binding', () => {
+    const devin = catalogEntryOf('devin');
+    expect(devin).toEqual({
       id: 'devin',
       name: 'Devin',
+      version: devin?.version,
+      installHint: devin?.installHint,
+      env: {},
+      requiresCommand: false,
+      verification: 'adapter-tested',
+      loginHint: 'devin auth login',
       command: 'devin',
       args: ['acp'],
-      env: {},
-      loginHint: 'devin auth login',
       runtime: 'devin',
     });
-    expect(ACP_AGENT_ID_PATTERN.test(DEVIN_ACP_TEMPLATE.id)).toBe(true);
-    const { id, ...value } = DEVIN_ACP_TEMPLATE;
-    expect(decodeAcpSettings({ agents: { [id]: value } })).toEqual({ agents: { devin: { ...devinConfig, runtime: 'devin' } } });
+    expect(ACP_AGENT_ID_PATTERN.test(devin?.id ?? '')).toBe(true);
+    const draft = draftFromCatalogEntry('devin');
+    expect(draft).toBeDefined();
+    expect(decodeAcpSettings({ agents: { devin: validateAgentDraft(draft as AgentDraft, {}, undefined).config } }))
+      .toEqual({ agents: { devin: { ...devinConfig, runtime: 'devin', catalogId: 'devin' } } });
   });
 
-  it('ACP_BUILTIN_AGENT_TEMPLATES 一键模板列表钉版（devin + claude 预设 + codex 预设 + kimi 预设）', () => {
-    expect(ACP_BUILTIN_AGENT_TEMPLATES.map((template) => template.id)).toEqual(['devin', 'claude', 'codex', 'kimi']);
-    // 模板 id 即 profile id 预填值，均合法
-    for (const template of ACP_BUILTIN_AGENT_TEMPLATES) {
-      expect(ACP_AGENT_ID_PATTERN.test(template.id), template.id).toBe(true);
-      const { id, ...value } = template;
-      expect(decodeAcpSettings({ agents: { [id]: value } }), template.id).not.toBeUndefined();
+  it('ACP_CATALOG_ENTRIES 钉版：override 四条排前（devin/codex-acp/kimi/claude-acp），其余按 registry 顺序', () => {
+    expect(ACP_CATALOG_ENTRIES.slice(0, 4).map((entry) => entry.id)).toEqual(['devin', 'codex-acp', 'kimi', 'claude-acp']);
+    expect(new Set(ACP_CATALOG_ENTRIES.map(entry => entry.id))).toEqual(new Set(registrySnapshot.agents.map(agent => agent.id)));
+    // 条目 id 即 profile id 预填值，均合法
+    for (const entry of ACP_CATALOG_ENTRIES) {
+      expect(ACP_AGENT_ID_PATTERN.test(entry.id), entry.id).toBe(true);
+      const draft = draftFromCatalogEntry(entry.id);
+      expect(draft, entry.id).toBeDefined();
+      if (draft === undefined) continue;
+      if (entry.requiresCommand) {
+        expect(draft.command).toBe('');
+        expect(validateAgentDraft(draft, {}, undefined).config).toBeUndefined();
+        continue;
+      }
+      const { config } = validateAgentDraft(draft, {}, undefined);
+      expect(config, entry.id).toBeDefined();
+      expect(decodeAcpSettings({ agents: { [entry.id]: config } }), entry.id).not.toBeUndefined();
     }
   });
 
-  it('CLAUDE_ACP_TEMPLATE 逐字段钉版：runtime=claude、不假设推理提供方（env 空）', () => {
-    expect(CLAUDE_ACP_TEMPLATE).toEqual({
-      id: 'claude',
-      name: 'Claude',
+  it('seeds distribution args/env only for new profiles and leaves platform commands manual', () => {
+    expect(draftFromCatalogEntry('minion-code')?.argsText).toBe('acp');
+    expect(draftFromCatalogEntry('fast-agent')).toMatchObject({ argsText: '-x', envText: 'FAST_AGENT_MODEL=codexplan' });
+    expect(draftFromCatalogEntry('vtcode')).toMatchObject({ command: '', argsText: 'acp', envText: 'VT_ACP_ENABLED=1\nVT_ACP_ZED_ENABLED=1' });
+    expect(catalogEntryOf('poolside')).toMatchObject({ command: '', requiresCommand: true });
+    expect(catalogEntryOf('vtcode')?.installHint).toMatch(/^https:/);
+    const custom = { name: 'My fast agent', command: '/opt/my-agent', args: ['--custom'], env: { FAST_AGENT_MODEL: 'my-model' } };
+    const edited = draftFromAgent('fast-agent', custom);
+    expect(edited).toMatchObject({ command: '/opt/my-agent', argsText: '--custom', envText: 'FAST_AGENT_MODEL=my-model' });
+    expect(validateAgentDraft(edited, { 'fast-agent': custom }, 'fast-agent').config).toEqual({ ...custom, catalogId: 'fast-agent' });
+  });
+
+  it('claude-acp 条目逐字段钉版：runtime=claude、不假设推理提供方（无 env 预填面）', () => {
+    expect(catalogEntryOf('claude-acp')).toMatchObject({
+      id: 'claude-acp',
+      name: 'Claude Agent',
       command: 'claude-agent-acp',
       args: [],
-      env: {},
-      loginHint: 'claude',
       runtime: 'claude',
     });
   });
 
-  it('CODEX_ACP_TEMPLATE 逐字段钉版（与 host 侧真源对齐）：runtime=codex、env 空', () => {
-    expect(CODEX_ACP_TEMPLATE).toEqual({
-      id: 'codex',
+  it('codex-acp 条目逐字段钉版（与 host 侧真源对齐）：runtime=codex', () => {
+    expect(catalogEntryOf('codex-acp')).toMatchObject({
+      id: 'codex-acp',
       name: 'Codex',
       command: 'codex-acp',
       args: [],
-      env: {},
-      loginHint: 'codex login',
       runtime: 'codex',
     });
   });
 
-  it('KIMI_ACP_TEMPLATE 逐字段钉版（与 host 侧真源对齐）：runtime=kimi、env 空', () => {
-    expect(KIMI_ACP_TEMPLATE).toEqual({
+  it('kimi 条目逐字段钉版（与 host 侧真源对齐）：runtime=kimi、command 为 kimi CLI 的 acp 子命令', () => {
+    expect(catalogEntryOf('kimi')).toMatchObject({
       id: 'kimi',
-      name: 'Kimi',
+      name: 'Kimi CLI',
       command: 'kimi',
       args: ['acp'],
-      env: {},
-      loginHint: 'kimi login',
       runtime: 'kimi',
     });
   });
 
-  it('模板 secret 纪律钉：所有一键模板的 env 不含疑似 secret 键，绝不预填 token', () => {
-    // ANTHROPIC_AUTH_TOKEN/ANTHROPIC_API_KEY 只经 host 侧 descriptor envRefs 从
-    // DSH 进程环境注入；模板（会持久化进 settings 文档）不得出现疑似 secret 键。
-    for (const template of ACP_BUILTIN_AGENT_TEMPLATES) {
-      for (const key of Object.keys(template.env)) {
-        expect(ACP_SECRET_ENV_KEY_PATTERN.test(key), `${template.id}.${key}`).toBe(false);
-      }
-      // 纪律针对 env 键值（loginHint 指引文本点名 env 键名是合法的用户指引）
-      const envWire = JSON.stringify(template.env);
-      expect(envWire).not.toContain('ANTHROPIC_AUTH_TOKEN');
-      expect(envWire).not.toContain('ANTHROPIC_API_KEY');
+  it('catalog 预填纪律钉：全部条目的 command/args 无 shell 元字符（spawn 姿态写入闸口径），不含疑似 secret 值', () => {
+    // Catalog presets use bare PATH executable names; user-entered paths may contain spaces.
+    // 纯 PATH 可执行名（无空白/管道/重定向/引号），绝不 npx -y 下载式形态。
+    const forbidden = /[\s|&;<>()$`"'\\]/;
+    for (const entry of ACP_CATALOG_ENTRIES) {
+      expect(forbidden.test(entry.command), `${entry.id}: ${entry.command}`).toBe(false);
+      expect(entry.command.startsWith('npx') || entry.command.startsWith('uvx'), entry.id).toBe(false);
+      expect(JSON.stringify(entry.args), entry.id).not.toContain('ANTHROPIC_AUTH_TOKEN');
+      expect(JSON.stringify(entry.args), entry.id).not.toContain('ANTHROPIC_API_KEY');
     }
   });
 });
@@ -523,7 +540,7 @@ describe('validateAgentDraft', () => {
  it(' singleton：草稿生效 runtime 撞存量 profile → runtime 错误点名已有 profile，config 缺席', () => {
     // 显式 runtime 相撞（草稿带模板播种的 runtime）
     const seeded = { ...validDraft({ id: 'devin2' }), runtime: 'devin' as const };
-    const conflict = validateAgentDraft(seeded, { devin: { ...devinConfig, runtime: 'devin' } }, undefined);
+    const conflict = validateAgentDraft(seeded, { devin: { ...devinConfig, runtime: 'devin', catalogId: 'devin' } }, undefined);
     expect(conflict.runtime).toEqual({
       key: 'errorRuntimeTaken',
       params: { runtime: 'devin', id: 'devin', name: 'Devin' },
@@ -555,7 +572,7 @@ describe('validateAgentDraft', () => {
     expect(validateAgentDraft(generic, { bar: fooConfig }, undefined).config).not.toBeUndefined();
   });
 
-  it('effectiveRuntimeOf：显式 runtime 优先，内置 id 回退，generic 归 undefined（与 host descriptorOf 同口径）', () => {
+  it('effectiveRuntimeOf：显式 runtime 优先，内置 id 回退，generic 归 undefined（与 host 共用规则）', () => {
     expect(effectiveRuntimeOf('foo', { runtime: 'codex' })).toBe('codex');
     expect(effectiveRuntimeOf('kimi', {})).toBe('kimi');
     expect(effectiveRuntimeOf('foo', {})).toBeUndefined();
@@ -567,6 +584,15 @@ describe('validateAgentDraft', () => {
     expect(validateAgentDraft(validDraft({ command: '' }), {}, undefined).command).toEqual({ key: 'errorCommandRequired' });
     expect(validateAgentDraft(validDraft({ command: '\t' }), {}, undefined).command).toEqual({ key: 'errorCommandRequired' });
   });
+
+  it.each([String.raw`C:\Program Files\Agent Tools\agent.exe`, String.raw`\\server\Agent Tools\agent.exe`, '/Users/Test User/Agent Tools/agent'])(
+    'preserves executable paths in edited and saved drafts: %s', command => {
+      const original = { name: 'Custom Agent', command, args: ['acp'], env: {} };
+      const draft = draftFromAgent('custom', original);
+      expect(draft.command).toBe(command);
+      expect(validateAgentDraft(draft, { custom: original }, 'custom').config).toEqual(original);
+    },
+  );
 
  it('env 两分支映射：key/duplicate → locale key + 行号 params（credential 分支已删）', () => {
     expect(validateAgentDraft(validDraft({ envText: '1A=x' }), {}, undefined).env).toEqual({
@@ -611,14 +637,23 @@ describe('validateAgentDraft', () => {
 
 // ---------- 草稿种子 ----------
 
-describe('草稿种子：emptyDraft / draftFromTemplate / draftFromAgent', () => {
+describe('草稿种子：emptyDraft / draftFromCatalogEntry / draftFromAgent', () => {
+  it('derives display-only login guidance without changing saved custom hints or runtime identity', () => {
+    expect(agentLoginHint('custom-codex', { catalogId: 'codex-acp' })).toBe('codex login');
+    expect(agentLoginHint('claude', {})).toBe('claude');
+    expect(agentLoginHint('custom', { runtime: 'kimi', loginHint: 'company-login' })).toBe('company-login');
+    expect(agentLoginHint('unknown', {})).toBeUndefined();
+    const config = { ...fooConfig, loginHint: 'company-login' };
+    expect(validateAgentDraft(draftFromAgent('foo', config), { foo: config }, 'foo').config).toEqual(config);
+  });
   it('emptyDraft 全空串', () => {
     expect(emptyDraft()).toEqual({ id: '', name: '', command: '', argsText: '', envText: '', loginHint: '' });
   });
 
-  it('draftFromTemplate 按模板 id 播种：devin / claude / codex / kimi 各回其编辑态', () => {
-    expect(draftFromTemplate('devin')).toEqual({
+  it('draftFromCatalogEntry 按条目 id 播种：内置 runtime 四条各回其编辑态', () => {
+    expect(draftFromCatalogEntry('devin')).toEqual({
       id: 'devin',
+      catalogId: 'devin',
       name: 'Devin',
       command: 'devin',
       argsText: 'acp',
@@ -626,25 +661,26 @@ describe('草稿种子：emptyDraft / draftFromTemplate / draftFromAgent', () =>
       loginHint: 'devin auth login',
       runtime: 'devin',
     });
-    const { id: _dvId, ...devinValue } = DEVIN_ACP_TEMPLATE;
-    expect(validateAgentDraft(draftFromTemplate('devin') as AgentDraft, {}, undefined).config).toEqual(devinValue);
+    expect(validateAgentDraft(draftFromCatalogEntry('devin') as AgentDraft, {}, undefined).config)
+      .toEqual({ ...devinConfig, runtime: 'devin', catalogId: 'devin' });
 
-    // claude 通用预设：env 空（不假设推理提供方）
-    const claudeDraft = draftFromTemplate('claude');
-    expect(claudeDraft).toEqual({
-      id: 'claude',
-      name: 'Claude',
+    // claude-acp 通用预设：env 空（不假设推理提供方）
+    const claudeDraft = draftFromCatalogEntry('claude-acp');
+    expect(claudeDraft).toMatchObject({
+      id: 'claude-acp',
+      name: 'Claude Agent',
       command: 'claude-agent-acp',
       argsText: '',
       envText: '',
-      loginHint: CLAUDE_ACP_TEMPLATE.loginHint,
+      loginHint: 'claude',
       runtime: 'claude',
     });
 
-    // codex 预设：env 空，runtime 绑定随草稿过站
-    const codexDraft = draftFromTemplate('codex');
+    // codex-acp 预设：env 空，runtime 绑定随草稿过站
+    const codexDraft = draftFromCatalogEntry('codex-acp');
     expect(codexDraft).toEqual({
-      id: 'codex',
+      id: 'codex-acp',
+      catalogId: 'codex-acp',
       name: 'Codex',
       command: 'codex-acp',
       argsText: '',
@@ -652,25 +688,43 @@ describe('草稿种子：emptyDraft / draftFromTemplate / draftFromAgent', () =>
       loginHint: 'codex login',
       runtime: 'codex',
     });
-    const { id: _cxId, ...codexValue } = CODEX_ACP_TEMPLATE;
-    expect(validateAgentDraft(codexDraft as AgentDraft, {}, undefined).config).toEqual(codexValue);
+    expect(validateAgentDraft(codexDraft as AgentDraft, {}, undefined).config)
+      .toEqual({ name: 'Codex', command: 'codex-acp', args: [], env: {}, loginHint: 'codex login', runtime: 'codex', catalogId: 'codex-acp' });
 
     // kimi 预设：env 空，runtime 绑定随草稿过站
-    const kimiDraft = draftFromTemplate('kimi');
+    const kimiDraft = draftFromCatalogEntry('kimi');
     expect(kimiDraft).toEqual({
       id: 'kimi',
-      name: 'Kimi',
+      catalogId: 'kimi',
+      name: 'Kimi CLI',
       command: 'kimi',
       argsText: 'acp',
       envText: '',
       loginHint: 'kimi login',
       runtime: 'kimi',
     });
-    const { id: _kmId, ...kimiValue } = KIMI_ACP_TEMPLATE;
-    expect(validateAgentDraft(kimiDraft as AgentDraft, {}, undefined).config).toEqual(kimiValue);
+    expect(validateAgentDraft(kimiDraft as AgentDraft, {}, undefined).config)
+      .toEqual({ name: 'Kimi CLI', command: 'kimi', args: ['acp'], env: {}, loginHint: 'kimi login', runtime: 'kimi', catalogId: 'kimi' });
 
-    // 未知模板 id → undefined（按钮只从模板列表渲染，正常不可达）
-    expect(draftFromTemplate('no-such-template')).toBeUndefined();
+    // 未知条目 id → undefined（菜单只从 catalog 列表渲染，正常不可达）
+    expect(draftFromCatalogEntry('no-such-entry')).toBeUndefined();
+  });
+
+  it('draftFromCatalogEntry 普通条目：sidecar 预填 command/args、无 runtime、无 loginHint', () => {
+    const entry = ACP_CATALOG_ENTRIES.find((candidate) => candidate.runtime === undefined);
+    expect(entry).toBeDefined();
+    if (entry === undefined) return;
+    const draft = draftFromCatalogEntry(entry.id);
+    expect(draft).toEqual({
+      id: entry.id,
+      catalogId: entry.id,
+      name: entry.name,
+      command: entry.command,
+      argsText: entry.args.join('\n'),
+      envText: '',
+      loginHint: '',
+    });
+    expect('runtime' in (draft ?? {})).toBe(false);
   });
 
   it('draftFromAgent：args/env 渲染成逐行文本，loginHint 缺席补空串', () => {
@@ -801,33 +855,31 @@ describe('decodeHealthResponse', () => {
   });
 
   it('authMethods：null（宿主未透传）与空数组均合法；description 可缺/为 null', () => {
-    const withNull = { ...okRow, probe: { status: 'ok', at: 1, modelCount: 0, authMethods: null, agentInfo: null, capabilities: null, cleanup: null, capabilityHash: null, protocolVersion: null, versionPolicy: null, versionCompatibility: null, matrix: okMatrix } };
-    const withEmpty = { ...okRow, probe: { status: 'ok', at: 1, modelCount: 0, authMethods: [], agentInfo: null, capabilities: null, cleanup: null, capabilityHash: null, protocolVersion: null, versionPolicy: null, versionCompatibility: null, matrix: okMatrix } };
+    const withNull = { ...okRow, probe: { status: 'ok', at: 1, modelCount: 0, authMethods: null, agentInfo: null, capabilities: null, cleanup: null, capabilityHash: null, protocolVersion: null, versionCompatibility: null, matrix: okMatrix } };
+    const withEmpty = { ...okRow, probe: { status: 'ok', at: 1, modelCount: 0, authMethods: [], agentInfo: null, capabilities: null, cleanup: null, capabilityHash: null, protocolVersion: null, versionCompatibility: null, matrix: okMatrix } };
     const withDesc = {
       ...okRow,
-      probe: { status: 'ok', at: 1, modelCount: 1, authMethods: [{ id: 'oauth', name: 'OAuth', description: null }], agentInfo: null, capabilities: null, cleanup: null, capabilityHash: null, protocolVersion: null, versionPolicy: null, versionCompatibility: null, matrix: okMatrix },
+      probe: { status: 'ok', at: 1, modelCount: 1, authMethods: [{ id: 'oauth', name: 'OAuth', description: null }], agentInfo: null, capabilities: null, cleanup: null, capabilityHash: null, protocolVersion: null, versionCompatibility: null, matrix: okMatrix },
     };
     expect(decodeHealthResponse({ providers: [withNull] })).toEqual([withNull]);
     expect(decodeHealthResponse({ providers: [withEmpty] })).toEqual([withEmpty]);
     expect(decodeHealthResponse({ providers: [withDesc] })).toEqual([withDesc]);
   });
 
- it('readiness 三键：null 词表与三态合法值解出；词表外/畸形整行拒', () => {
+ it('readiness 两键：null 词表与三态合法值解出；词表外/畸形整行拒', () => {
     const probe = okRow.probe;
     if (probe.status !== 'ok') throw new Error('fixture: okRow.probe must be the ok branch');
-    // 合法：versionCompatibility 三态 + null；versionPolicy 双 null 词表或带值；protocolVersion number|null
-    for (const versionCompatibility of ['pinned', 'drifted', 'unpinned', null] as const) {
-      const row = { ...okRow, probe: { ...probe, protocolVersion: 1, versionPolicy: { adapter: '1.6.2', wrappedCli: null }, versionCompatibility } };
+    // 合法：versionCompatibility 三态 + null；protocolVersion number|null
+    for (const versionCompatibility of ['current', 'different', 'unknown', null] as const) {
+      const row = { ...okRow, probe: { ...probe, protocolVersion: 1, versionCompatibility } };
       expect(decodeHealthResponse({ providers: [row] }), String(versionCompatibility)).toEqual([row]);
     }
-    const nullTriple = { ...okRow, probe: { ...probe, protocolVersion: null, versionPolicy: null, versionCompatibility: null } };
-    expect(decodeHealthResponse({ providers: [nullTriple] })).toEqual([nullTriple]);
+    const nullPair = { ...okRow, probe: { ...probe, protocolVersion: null, versionCompatibility: null } };
+    expect(decodeHealthResponse({ providers: [nullPair] })).toEqual([nullPair]);
     // 词表外/畸形：strict codec 边界整行拒绝
     for (const patch of [
       { protocolVersion: '1' },
-      { versionPolicy: { adapter: 1, wrappedCli: null } },
-      { versionPolicy: 'none' },
-      { versionCompatibility: 'unknown' },
+      { versionCompatibility: 'pinned' },
       { versionCompatibility: 42 },
     ]) {
       const row = { ...okRow, probe: { ...probe, ...patch } };
@@ -982,3 +1034,20 @@ describe('错误文本整形：errorMessageOf', () => {
     expect(errorMessageOf({ a: 1 })).toBe('[object Object]');
   });
 });
+
+describe('catalog identity survives profile customization', () => {
+  it('preserves generic catalog identity through changing ID, client decode and editing', () => {
+    const draft = draftFromCatalogEntry('fast-agent')!
+    const config = validateAgentDraft({ ...draft, id: 'my-fast', name: 'My fast' }, {}, undefined).config!
+    expect(config.catalogId).toBe('fast-agent')
+    expect(config.runtime).toBeUndefined()
+    const saved = decodeAcpSettings({ agents: { 'my-fast': config } })!.agents['my-fast']!
+    expect(validateAgentDraft(draftFromAgent('my-fast', saved), { 'my-fast': saved }, 'my-fast').config).toEqual(config)
+  })
+  it('keeps unknown catalog IDs without granting a runtime and rejects malformed identity', () => {
+    const config: AcpAgentConfig = { name: 'Custom', command: 'custom', args: [], env: {}, catalogId: 'future-agent' }
+    expect(draftFromAgent('my-custom', config).catalogId).toBe('future-agent')
+    expect(effectiveRuntimeOf('my-custom', config)).toBeUndefined()
+    expect(decodeAcpSettings({ agents: { custom: { ...config, catalogId: '../codex' } } })).toBeUndefined()
+  })
+})

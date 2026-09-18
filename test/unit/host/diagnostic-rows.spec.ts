@@ -49,3 +49,10 @@ describe('ACP diagnostic facts', () => {
     expect(row({ kind: 'terminal', data: { ...base, operation: 'exit', outcome: 'exited', exitCode: null, signal: 'SIGTERM', terminationRequested: true } }).severity).toBe('info')
   })
 })
+
+it.each(['reused', 'resumed', 'loaded'] as const)('identifies %s without guessing from a zero replay count', method => {
+  const value = row({ kind: 'replay-assessment', data: { status: 'not-compared', method, detail: '0 staged updates' } })
+  expect(value.summaryCode).toBe(`restore.${method}`)
+  expect(value.severity).toBe('info')
+  expect(matchesDiagnosticView(value, 'issues')).toBe(false)
+})

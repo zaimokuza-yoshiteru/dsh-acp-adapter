@@ -3,6 +3,7 @@ import { createElement as h, useCallback, useEffect, useMemo, useRef, useState }
 import type { ReactNode } from 'react'
 import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-store'
 import type { SessionSnapshot, UseProjection } from '@deepseek-ai/dsh-api-session-controller/client'
+import type { UseSessionRetainInfo } from '@deepseek-ai/dsh-client-ui-session/client'
 import type { ConvViewProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { IconCloseOutline16, IconSearchOutline16, Input, JsonTree, Tag } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { TagTone } from '@deepseek-ai/dsh-client-ui-primitives'
@@ -22,6 +23,7 @@ type Filter = AcpDiagnosticView
 export interface AcpAuditVisibilityGateProps {
   sessionId?: string
   useSession?: SnapshotSelectorHook<SessionSnapshot>
+  useSessionRetainInfo: UseSessionRetainInfo
   useProjection: UseProjection
   remote?: AcpRemoteLike
   ownsRoute: OwnsAcpRoute
@@ -110,6 +112,9 @@ const summaryKeys: Record<AcpAuditSummaryCode, AcpLocaleKey> = {
   'replay.different': 'auditSummaryReplayDifferent',
   'replay.overflow': 'auditSummaryReplayOverflow',
   'replay.not-compared': 'auditSummaryReplayNotCompared',
+  'restore.reused': 'auditSummaryRestoreReused',
+  'restore.resumed': 'auditSummaryRestoreResumed',
+  'restore.loaded': 'auditSummaryRestoreLoaded',
   'replay.unavailable': 'auditSummaryReplayUnavailable',
   'degradation.recorded': 'auditSummaryDegradation',
   'filesystem.operation': 'auditSummaryFilesystem',
@@ -189,18 +194,19 @@ function auditDetailOf(detail: string): AuditDetail {
 }
 
 /**
- * 只负责决定当前会话是否应拥有 ACP 诊断 Tab；自身不渲染按钮。
- * `conversation.view` 目前没有 per-session selector，因此使用当前会话
- * header 的标准投影动态挂载，避免原生会话被插件增加无意义的 Tab。
+ * 只由 mainView 决定 ACP 诊断 Tab；侧栏引用不能夺取或撤销主区域入口。
+ * `conversation.view` 仍是全局 roster，以主区域的标准投影决定可见性，
+ * 避免原生会话被插件增加无意义的 Tab。
  */
 export function AcpAuditVisibilityGate(props: AcpAuditVisibilityGateProps): ReactNode {
-  const { sessionId, useSession, useProjection, remote, onVisibilityChange, ownsRoute } = props
+  const { sessionId, useSession, useSessionRetainInfo, useProjection, remote, onVisibilityChange, ownsRoute } = props
+  const mainView = useSessionRetainInfo(value => (value?.retainedBy.mainView ?? 0) > 0)
   const sessionRefreshKey = useSession === undefined
     ? 'absent'
     : useSession(snapshot => auditSessionRefreshKeyOf(snapshot))
   const projectionSelection = useProjection('modelSelection')
   const [verifiedSessionId, setVerifiedSessionId] = useState<string | undefined>(undefined)
-  const projectedAcp = sessionId !== undefined && auditProjectionIsAcp(projectionSelection, ownsRoute)
+  const projectedAcp = mainView && sessionId !== undefined && auditProjectionIsAcp(projectionSelection, ownsRoute)
   // Verification belongs to one session. A navigation therefore hides the
   // tab synchronously instead of briefly carrying the previous ACP result
   // into a native session while `backendOf` is still in flight.

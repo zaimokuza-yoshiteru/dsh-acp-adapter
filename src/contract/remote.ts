@@ -182,19 +182,15 @@ export interface AcpProviderHealth {
         /**
  * readiness：initialize 协商的 ACP 协议版本（probe 缓存条目早于
          * 本特性/握手未给出时归 null，不编造）。
-         */
+ */
         readonly protocolVersion: number | null
         /**
- * readiness：绑定 descriptor 声明的钉版（versionPolicy 原值收窄；
-         * 字段缺席归 null 成员）。无 descriptor 的普通 profile 整体归 null。
-         */
-        readonly versionPolicy: { readonly adapter: string | null; readonly wrappedCli: string | null } | null
-        /**
- * 兼容状态（agent-config.ts `acpVersionCompatibility` 直通）：无
-         * descriptor 或握手无版本 → null；descriptor 无钉版 → 'unpinned'；握手
-         * 版本等于钉版 → 'pinned'；不等 → 'drifted'（不阻断，仅如实展示）。
-         */
-        readonly versionCompatibility: 'pinned' | 'drifted' | 'unpinned' | null
+ * 兼容状态（agent-config.ts `acpVersionCompatibility` 直通，比对握手
+ * agentInfo.version 与 registry 快照的上游版本）：无版本参考或握手无
+ * 版本 → null；快照无该 agent 版本 → 'unknown'；握手版本等于参考 →
+ * 'current'；不等 → 'different'（不阻断，仅如实展示）。
+ */
+        readonly versionCompatibility: 'current' | 'different' | 'unknown' | null
         /**
  * 端到端能力矩阵：host 侧由 capabilities（广告事实）
          * × adapter path 计算（src/domain/policy/
@@ -239,6 +235,9 @@ export type AcpAuditSummaryCode =
   | 'replay.different'
   | 'replay.overflow'
   | 'replay.not-compared'
+  | 'restore.reused'
+  | 'restore.resumed'
+  | 'restore.loaded'
   | 'replay.unavailable'
   | 'degradation.recorded'
   | 'filesystem.operation'
@@ -276,6 +275,10 @@ export interface AcpAuditTimelinePage {
 export type AcpActivityKindView = 'tool' | 'plan' | 'terminal' | 'diff' | 'resource' | 'delegated' | 'other'
 export type AcpActivityStatusView = 'running' | 'completed' | 'failed' | 'cancelled'
 export interface AcpActivityView {
+  /** Large detail is fetched on expansion, at this exact revision. */
+  readonly detailDeferred?: boolean
+  /** Small file metadata for a stable collapsed tool summary. No file contents. */
+  readonly detailPaths?: readonly string[]
   /** Complete, normalized display fields. Independent from bounded raw diagnostics. */
   readonly display?: {
     readonly diffs?: readonly { readonly path: string; readonly oldText: string | null; readonly newText: string }[] | undefined

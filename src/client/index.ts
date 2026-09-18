@@ -9,9 +9,13 @@ import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '@deepseek-ai/dsh-client-ui-session/client'
+import type {} from '@deepseek-ai/dsh-client-ui-workspace/client'
+import type {} from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
+import { isMainSession, openSubagentAside } from './coordinator/native-session-navigation.ts'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import { AcpActivityNode, acpPromptAnchorDefinition, createAcpActivityDefinition, createAcpLiveActivityDefinition } from './ui/AcpActivityNode.ts'
+import { installNativeToolRenderer } from './ui/native-tool-renderer.ts'
 import { installAcpAssistantStream } from './ui/AcpAssistantStream.ts'
 import { AcpActivityJournalHub } from './data/activity-journal.ts'
 import { CrossBackendCoordinator } from './coordinator/cross-backend-coordinator.ts'
@@ -38,6 +42,7 @@ import { en, zh } from './ui/locales.ts'
 import type { AcpRemoteLike } from './data/acp-remote.ts'
 import type { RemoteStreamFactory } from '@deepseek-ai/dsh-api-gateway/client'
 import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
+import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { IWorkspaces } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import contribution from '../../lib/typert.remote-client.js'
 
@@ -50,7 +55,7 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 
 export const inject = [
   'uiConversation', 'slots', 'locale', 'remote',
-  'sessions', 'workspaces', 'settingsScope', 'remote.settings', 'remote.session',
+  'sessions', 'workspaces', 'uiWorkspace', 'sidebarRight', 'settingsScope', 'remote.settings', 'remote.session',
 ] as const
 
 /** Register only a Conversation Definition and one keyed Chat renderer. */
@@ -59,6 +64,11 @@ async function registerUi(ctx: ClientContext): Promise<void> {
   const journalHub = new AcpActivityJournalHub(acpRemote, ctx.remote)
   const sessions = ctx.get('sessions') as unknown as ISessions
   const workspaces = ctx.get('workspaces') as unknown as IWorkspaces
+  const openProjectedChild = (parentSessionId: string, childSessionId: string): void => {
+    openSubagentAside(ctx.sidebarRight, {
+      parentSessionId: parentSessionId as SessionId, childSessionId: childSessionId as SessionId, mode: 'one-shot',
+    })
+  }
   const settingsScope = ctx.settingsScope.bind<AcpSettings>({
     namespace: ACP_SETTINGS_NS,
     decode: decodeAcpSettings,
@@ -144,7 +154,7 @@ async function registerUi(ctx: ClientContext): Promise<void> {
     }
   })
   // Alpha 的 view roster 暂无 per-session selector。保留一个不渲染 UI
-  // 的会话门，只在当前会话已经建立 ACP binding 时贡献 ACP 诊断 Tab；
+  // 的主区域会话门，只在 mainView 已建立 ACP binding 时贡献诊断 Tab；
   // 原生模型会话因此保持 DSH 自带的 Tab 集合。
   ctx.slots.inject('conversation.session.header.utilities', () => ctx.slots.register({
     name: 'conversation.session.header.utilities',
@@ -156,12 +166,13 @@ async function registerUi(ctx: ClientContext): Promise<void> {
           onVisibilityChange: (sessionId, visible) => { setAuditViewVisible(sessionId, visible) },
     }),
   }, AcpAuditVisibilityGate))
+  installNativeToolRenderer(ctx)
   const hasInlineRenderer = installAcpAssistantStream(ctx, {
     journalHub, t: ctx.locale.bind('acpActivity'), jsonStringWrapping,
     onProjectedChild: (parentSessionId, childSessionId) => {
       if (projectedSubagents.add(childSessionId)) void sessions.refreshSubagents(parentSessionId as never)
     },
-    onOpenProjectedChild: childSessionId => { sessions.open(childSessionId as never) },
+    onOpenProjectedChild: openProjectedChild,
   })
   ctx.slots.inject('conversation.chat.node', () => ctx.slots.register({
     name: 'conversation.chat.node',
@@ -171,23 +182,23 @@ async function registerUi(ctx: ClientContext): Promise<void> {
       readonly journalHub: AcpActivityJournalHub
       readonly hasInlineRenderer: () => boolean
       readonly onProjectedChild: (parentSessionId: string, childSessionId: string) => void
-      readonly onOpenProjectedChild: (childSessionId: string) => void
+      readonly onOpenProjectedChild: (parentSessionId: string, childSessionId: string) => void
       readonly jsonStringWrapping: AcpJsonStringWrapping
     } => ({
       journalHub, hasInlineRenderer,
       onProjectedChild: (parentSessionId, childSessionId) => {
         if (projectedSubagents.add(childSessionId)) void sessions.refreshSubagents(parentSessionId as never)
       },
-      onOpenProjectedChild: (childSessionId) => { sessions.open(childSessionId as never) },
+      onOpenProjectedChild: openProjectedChild,
       jsonStringWrapping,
     }),
   }, AcpActivityNode))
   const coordinator = new CrossBackendCoordinator(ctx, managedRoutes.owns)
   // Only the user's native Teams Web profile mounts this Remote namespace.
-  ctx.inject(['remote.agentTeams', 'uiSession'], (teamCtx) => {
+  ctx.inject(['remote.agentTeams', 'remote.subagents', 'uiSession'], (teamCtx) => {
     const actions: AcpTeamApprovalActions = {
-      pending: teamCtx.uiSession.pendingInteractions,
-      isCurrent: sessionId => sessions.list.getSnapshot().current === sessionId,
+      status: teamCtx.uiSession.sessionStatus,
+      isCurrent: sessionId => isMainSession(sessions, sessionId),
       ownsRoute: managedRoutes.owns,
       async loadMembers(sessionId) {
         const result = await teamCtx.remote.agentTeams.view(sessionId)
@@ -196,13 +207,18 @@ async function registerUi(ctx: ClientContext): Promise<void> {
       },
       async openMember(parentSessionId, childSessionId) {
         await sessions.refreshSubagents(parentSessionId)
-        if (sessions.list.getSnapshot().current !== parentSessionId) return
-        sessions.openSubagent({ parentSessionId, childSessionId, mode: 'continuable' })
+        if (!isMainSession(sessions, parentSessionId)) return
+        openSubagentAside(ctx.sidebarRight, { parentSessionId, childSessionId, mode: 'continuable' })
       },
     }
     teamCtx.slots.inject('conversation.session.header.utilities', () => teamCtx.slots.register({
       name: 'conversation.session.header.utilities', id: 'acp-team-management', order: 94,
-      locale: 'acpActivity', inject: () => ({ remote: ctx.remote.dshAcp, streamFactory: ctx.remote, ownsRoute: managedRoutes.owns, isCurrent: actions.isCurrent }),
+      locale: 'acpActivity', inject: () => ({ remote: ctx.remote.dshAcp, streamFactory: ctx.remote, ownsRoute: managedRoutes.owns, isCurrent: actions.isCurrent,
+        async interruptMember(lead: SessionId, member: SessionId) {
+          const result = await teamCtx.remote.subagents.interruptByParent(member, lead, 'continuable')
+          if (!result.ok) throw new Error(result.error.message)
+        },
+      }),
     }, AcpTeamManagement))
     teamCtx.slots.inject('conversation.input.dock', () => teamCtx.slots.register({
       name: 'conversation.input.dock', id: 'acp-team-approvals', order: 95,
@@ -232,7 +248,7 @@ async function registerUi(ctx: ClientContext): Promise<void> {
           ...(location.cwd === undefined ? {} : { cwd: location.cwd }),
           ...(location.workspaceId === undefined ? {} : { workspaceId: location.workspaceId as never }),
         })
-        sessions.open(child)
+        ctx.uiWorkspace.openSession(child)
       },
     }),
   }, AcpRecoveryDock))

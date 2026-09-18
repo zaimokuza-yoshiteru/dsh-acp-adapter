@@ -7,7 +7,7 @@ import { launchWebScaffold } from '#host-scaffold'
 export const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 
 /** Install the built adapter through the real Loader's package dependency closure. */
-export async function launchAdapterWorld({ teams = false, teamMembers } = {}) {
+export async function launchAdapterWorld({ teams = false, teamMembers, terminalShell } = {}) {
   const install = mkdtempSync(join(tmpdir(), 'dsh-acp-e2e-install-'))
   try {
     writeFileSync(join(install, 'package.json'), JSON.stringify({ name: 'acp-e2e-profile', dependencies: { '@zaimokuza/dsh-acp-adapter': '*' } }))
@@ -23,6 +23,11 @@ export async function launchAdapterWorld({ teams = false, teamMembers } = {}) {
       // Resolve native Teams from the selected host before the adapter's pinned
       // development dependencies, which may carry a different generated RPC ABI.
       extraInstallAnchors.unshift(...layers.map(path => join(path, 'package.json')))
+    }
+    if (terminalShell !== undefined) {
+      const source = readFileSync(extraOverlayPath, 'utf8')
+      extraOverlayPath = join(install, 'terminal.patch.yml')
+      writeFileSync(extraOverlayPath, `${source}\n- id: terminal-controller\n  config:\n    shell: ${JSON.stringify(terminalShell)}\n`)
     }
     const host = await launchWebScaffold({ extraOverlayPath, extraInstallAnchors })
     return { ...host, async close() {

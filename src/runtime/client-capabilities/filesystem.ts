@@ -291,7 +291,19 @@ export function createAcpFileSystemHandlers(options: AcpFileSystemOptions): AcpF
         if (currentHash !== beforeHash) throw new Error('concurrent file change')
       }
       assertNotAborted(requestSignal)
-      await abortable(rename(temp, target), requestSignal)
+      if (beforeHash === null) {
+        // Publish the complete file without replacing a path created since
+        // lstat. Another existence check before rename would still race.
+        try { await abortable(fs.promises.link(temp, target), requestSignal) }
+        catch (error: unknown) {
+          if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new Error('concurrent file change')
+          throw error
+        }
+        // The target is committed; cleanup failure must not invite a retry.
+        await fs.promises.rm(temp, { force: true }).catch(() => {})
+      } else {
+        await abortable(rename(temp, target), requestSignal)
+      }
       await emitCompleted(options, { operation: 'write', path: target, bytes: bytes.byteLength, beforeHash, afterHash: hash(bytes), outcome: 'ok', acpSessionId: params.sessionId, profileId: options.profileId })
       return {}
     } catch (error: unknown) {

@@ -55,7 +55,7 @@ const HTTP_SURFACE_PATTERNS: ReadonlyArray<readonly [string, RegExp]> = [
 
 /** 钉版的完整 Remote invocation 集合。 */
 const PINNED_REMOTE_METHODS: readonly string[] = [
-  'activityFollow',
+  'activityDetail', 'activityFollow',
   'activityPage',
   'activitySnapshot',
   'agentSessionFollow',

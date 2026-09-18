@@ -1,6 +1,20 @@
 import type { AcpAgentSessionSnapshotView, AcpAgentSessionOptionWrite, AcpTeamMemberView } from '../data/acp-remote.ts'
+import { agentControlMenuGroups, type AgentControlGroup, type AgentControlTranslate } from './agent-session-controls.ts'
 import { teamModeChoices } from '../../contract/session-modes.ts'
 export { teamModeChoices } from '../../contract/session-modes.ts'
+
+/** Same normalized menu as the composer, narrowed to canonical member modes.
+ * Dormant modes can be writable even when the reported snapshot is stale.
+ * That permission is supplied by the owning team, never inferred by the view.
+ */
+export function teamSessionMenuGroups(snapshot: AcpAgentSessionSnapshotView, t: AgentControlTranslate, writable: boolean): AgentControlGroup[] {
+  const modes = teamModeChoices(snapshot)
+  return agentControlMenuGroups(snapshot, t).filter(group => group.kind === 'mode').map(group => ({
+    ...group,
+    choices: group.choices.filter(choice => modes.some(mode => mode.write.kind === choice.write.kind && mode.write.id === choice.write.id))
+      .map(choice => ({ ...choice, disabled: !writable })),
+  })).filter(group => group.choices.length > 0)
+}
 
 /** A click captures its targets; later members and other profiles never join the batch. */
 export async function applyTeamMode(input: {

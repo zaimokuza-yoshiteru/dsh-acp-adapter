@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { Buffer } from 'node:buffer'
 import type * as acp from '@agentclientprotocol/sdk'
 import type { AcpNativeUserQuestionService } from './elicitation.ts'
+import { permissionCopy, type PermissionCopy } from './permission-copy.ts'
 import {
   ACP_PERMISSION_AUDIT_KIND,
   createPermissionAskedAudit,
@@ -29,6 +30,7 @@ export interface AcpNativePermissionBridgeDeps {
   readonly userQuestions?: AcpNativeUserQuestionService
   readonly approval?: AcpNativeApprovalService
   readonly getAgent: () => unknown
+  readonly locale?: string
   readonly log?: (message: string) => void
   readonly audit?: AcpPermissionAuditChannel
   readonly now?: () => number
@@ -85,41 +87,40 @@ function firstString(record: Record<string, unknown> | undefined, keys: readonly
   }
   return undefined
 }
-function permissionDetail(tool: acp.RequestPermissionRequest['toolCall']): string | undefined {
+function permissionDetail(tool: acp.RequestPermissionRequest['toolCall'], copy: PermissionCopy): string | undefined {
   const record = recordValue(tool.rawInput)
   if (tool.kind === 'execute') {
     const command = commandOf(tool)
-    return command === undefined ? undefined : `Command: ${visibleCommand(command)}`
+    return command === undefined ? copy.unknownCommand : `${copy.command}: ${visibleCommand(command)}`
   }
   if (tool.kind === 'read' || tool.kind === 'edit' || tool.kind === 'delete' || tool.kind === 'move') {
     const path = firstString(record, ['file_path', 'filePath', 'path', 'target', 'source', 'destination']) ?? tool.locations?.find((location) => typeof location.path === 'string')?.path
-    return path === undefined ? undefined : `Target: ${safeText(path, 160)}`
+    return path === undefined ? undefined : `${copy.target}: ${safeText(path, 160)}`
   }
   if (tool.rawInput === undefined) return undefined
   const summary = summarizeRawInputForAudit(tool.rawInput).summary
-  return summary === '{}' ? undefined : `Details: ${safeText(summary)}`
+  return summary === '{}' ? undefined : `${copy.details}: ${safeText(summary)}`
 }
-function permissionQuestionDetail(tool: acp.RequestPermissionRequest['toolCall']): string | undefined {
+function permissionQuestionDetail(tool: acp.RequestPermissionRequest['toolCall'], copy: PermissionCopy): string | undefined {
   if (tool.kind !== 'execute') return undefined
   const command = commandOf(tool)
-  return command === undefined ? undefined : `Command:\n\n${markdownCodeBlock(visibleCommand(command))}`
+  return command === undefined ? copy.unknownCommand : `${copy.command}:\n\n${markdownCodeBlock(visibleCommand(command))}`
 }
 export interface AcpPermissionReasonOptions { readonly includeExecuteDetails?: boolean }
-function buildPermissionReason(params: acp.RequestPermissionRequest, options: AcpPermissionReasonOptions = {}): string {
-  const labels: Record<string, string> = { execute: 'run a command', edit: 'edit files', delete: 'delete files', move: 'move files', read: 'read restricted content', fetch: 'access a restricted external resource' }
+function buildPermissionReason(params: acp.RequestPermissionRequest, copy: PermissionCopy, options: AcpPermissionReasonOptions = {}): string {
   const kind = params.toolCall.kind ?? ''
-  const lines = [`The ACP Agent requests permission to ${labels[kind] ?? 'perform a restricted operation'}.`]
+  const lines = [copy.request(copy.actions[kind] ?? copy.restrictedOperation)]
   const title = params.toolCall.title ?? params.toolCall.name
-  if (typeof title === 'string' && title.trim() !== '') lines.push(`Tool: ${safeText(title)}`)
-  const detail = permissionDetail(params.toolCall)
+  if (typeof title === 'string' && title.trim() !== '') lines.push(`${copy.tool}: ${safeText(title)}`)
+  const detail = permissionDetail(params.toolCall, copy)
   if (detail !== undefined && (kind !== 'execute' || options.includeExecuteDetails !== false)) lines.push(detail)
   return lines.join('\n')
 }
 function requestId(): string { return `dsh-acp-permission-${randomUUID()}` }
 
 /** Render names as user-facing text while keeping the response map exact. */
-function optionLabels(options: readonly acp.PermissionOption[]): readonly string[] {
-  const names = options.map((option) => safeText(option.name, 120) || 'Agent option')
+function optionLabels(options: readonly acp.PermissionOption[], copy: PermissionCopy): readonly string[] {
+  const names = options.map((option) => safeText(option.name, 120) || copy.agentOption)
   const counts = new Map<string, number>()
   for (const name of names) counts.set(name, (counts.get(name) ?? 0) + 1)
   const seen = new Map<string, number>()
@@ -127,11 +128,12 @@ function optionLabels(options: readonly acp.PermissionOption[]): readonly string
     if (counts.get(name) === 1) return name
     const ordinal = (seen.get(name) ?? 0) + 1
     seen.set(name, ordinal)
-    return `${name} · option ${String(ordinal)}`
+    return `${name} · ${copy.option(ordinal)}`
   })
 }
 
 export function createAcpNativePermissionHandler(deps: AcpNativePermissionBridgeDeps): (params: acp.RequestPermissionRequest, signal?: AbortSignal) => Promise<acp.RequestPermissionResponse> {
+  const copy = permissionCopy(deps.locale)
   return async (params, signal) => {
     const id = requestId()
     try { assertBounds(params.toolCall.toolCallId, params.options) } catch (error: unknown) { deps.log?.(`dsh-acp native permission rejected by bounds: ${errorMessage(error)}`); return cancelled() }
@@ -156,8 +158,8 @@ export function createAcpNativePermissionHandler(deps: AcpNativePermissionBridge
       try {
         const outcome = await deps.approval.request({
           agent,
-          toolName: params.toolCall.name ?? params.toolCall.kind ?? 'ACP tool',
-          reason: buildPermissionReason(params),
+          toolName: params.toolCall.name ?? params.toolCall.kind ?? copy.acpTool,
+          reason: buildPermissionReason(params, copy),
           ...(signal === undefined ? {} : { signal }),
         })
         if (outcome === 'allowed-once') return decide({ outcome: 'selected', optionId: allowOnce.optionId, selectedOptionKind: allowOnce.kind }, 'native-approval')
@@ -172,10 +174,10 @@ export function createAcpNativePermissionHandler(deps: AcpNativePermissionBridge
     }
     if (deps.userQuestions === undefined) return decide({ outcome: 'cancelled', note: 'question-service-unavailable' })
     const questionId = `acp-permission:${id}`
-    const renderedLabels = optionLabels(params.options)
+    const renderedLabels = optionLabels(params.options, copy)
     const labels = new Map(renderedLabels.map((label, index) => [label, params.options[index]!]))
     try {
-      const detail = permissionQuestionDetail(params.toolCall)
+      const detail = permissionQuestionDetail(params.toolCall, copy)
       const answer = await deps.userQuestions.ask({
         agent,
         questions: [{
@@ -183,7 +185,7 @@ export function createAcpNativePermissionHandler(deps: AcpNativePermissionBridge
           // Keep the header compact and put the exact command in the native
           // card's scrollable Markdown detail area, which preserves line
           // breaks and does not require a second custom permission UI.
-          question: buildPermissionReason(params, { includeExecuteDetails: false }),
+          question: buildPermissionReason(params, copy, { includeExecuteDetails: false }),
           ...(detail === undefined ? {} : { detail }),
           options: renderedLabels.map((label) => ({ label })),
         }],

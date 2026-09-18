@@ -25,6 +25,7 @@ afterEach(async () => {
 function createRuntime(
   onPermissionRequest: (params: acp.RequestPermissionRequest) => Promise<acp.RequestPermissionResponse>,
   mode: 'raw-input' | 'content-json' | 'content-json-prefixed' | 'content-json-unrelated' | 'content-json-late' = 'raw-input',
+  previousStatus: 'in_progress' | 'completed' = 'in_progress',
 ): AcpSessionRuntime {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-runtime-permission-snapshot-'))
   roots.push(root)
@@ -36,7 +37,7 @@ function createRuntime(
     : mode === 'content-json-unrelated' ? 'permission-only-id' : 'shared-call'
   const permissionKind = mode === 'raw-input' ? '' : `,kind:'execute'`
   const updateSessionId = 'permission-snapshot-session'
-  const updates = `send({jsonrpc:'2.0',method:'session/update',params:{sessionId:'${updateSessionId}',update:{sessionUpdate:'tool_call',toolCallId:'shared-call',title:'Run visible command',name:'terminal',kind:'execute',status:'pending',${initialInput}locations:[{path:'/tmp/snapshot'}]}}});send({jsonrpc:'2.0',method:'session/update',params:{sessionId:'${updateSessionId}',update:{sessionUpdate:'tool_call_update',toolCallId:'shared-call',title:null,status:'in_progress',rawOutput:{phase:'awaiting-permission'}}}});`
+  const updates = `send({jsonrpc:'2.0',method:'session/update',params:{sessionId:'${updateSessionId}',update:{sessionUpdate:'tool_call',toolCallId:'shared-call',title:'Run visible command',name:'terminal',kind:'execute',status:'pending',${initialInput}locations:[{path:'/tmp/snapshot'}]}}});send({jsonrpc:'2.0',method:'session/update',params:{sessionId:'${updateSessionId}',update:{sessionUpdate:'tool_call_update',toolCallId:'shared-call',title:null,status:'${previousStatus}',rawOutput:{phase:'awaiting-permission'}}}});`
   const firstPrompt = mode === 'content-json-late'
     ? `permission(permissionId);setTimeout(()=>{${updates}},40);`
     : `${updates}permission(permissionId);`
@@ -110,19 +111,19 @@ describe('AcpSessionRuntime prompt-scoped permission snapshots', () => {
     })
   })
 
-  it('uses one unique complete execute snapshot when Kimi permission ids are unrelated', async () => {
+  it.each(['in_progress', 'completed'] as const)('does not borrow an unrelated command from a sole %s snapshot', async status => {
     const requests: acp.RequestPermissionRequest[] = []
     const runtime = createRuntime(async (params) => {
       requests.push(structuredClone(params))
       return { outcome: { outcome: 'selected', optionId: 'allow' } }
-    }, 'content-json-unrelated')
+    }, 'content-json-unrelated', status)
 
     await expect(runtime.prompt(PROMPT, () => undefined)).resolves.toMatchObject({ stopReason: 'end_turn' })
 
-    expect(requests[0]?.toolCall).toMatchObject({
+    expect(requests[0]?.toolCall).toEqual({
       toolCallId: 'permission-only-id',
-      title: 'Run visible command',
-      rawInput: { command: 'printf SNAPSHOT_OK' },
+      kind: 'execute',
+      content: [{ type: 'content', content: { type: 'text', text: 'Requesting approval to run the visible command' } }],
     })
   })
 
