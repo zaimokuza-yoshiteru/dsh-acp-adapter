@@ -37,5 +37,5 @@ Expand-Archive -Path $devinZip -DestinationPath $devinRoot
 $devinExe = @(Get-ChildItem $devinRoot -Recurse -Filter devin.exe)
 if ($devinExe.Count -ne 1) { throw 'Expected one Devin executable' }
 & $devinExe[0].FullName version
-node scripts/check-devin-mcp.ts $devinExe[0].FullName
+node scripts/check-devin-mcp.ts $devinExe[0].FullName ([Environment]::GetFolderPath('ApplicationData'))
 npm pack --ignore-scripts
