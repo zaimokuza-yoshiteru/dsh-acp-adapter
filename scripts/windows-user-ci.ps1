@@ -27,4 +27,14 @@ pnpm typecheck
 pnpm test --no-file-parallelism
 pnpm build
 node scripts/check-windows-mcp-links.ts lib/host/teams/devin-config.js
+# Test the actual consumer, not only that our overlay file exists. No login/model calls.
+$devinVersion = '3000.10.31'
+$devinZip = Join-Path $AuditRoot 'devin.zip'
+Invoke-WebRequest -Uri "https://static.devin.ai/cli/$devinVersion/devin-$devinVersion-x86_64-pc-windows.zip" -OutFile $devinZip
+if ((Get-FileHash -Algorithm SHA256 $devinZip).Hash.ToLowerInvariant() -ne '2752bc02ca6ff5fa55031d5dac6a6886e5bcca9e37edeb05fde635a240ced89f') { throw 'Devin archive integrity mismatch' }
+$devinRoot = Join-Path $AuditRoot 'devin'
+Expand-Archive -Path $devinZip -DestinationPath $devinRoot
+$devinExe = @(Get-ChildItem $devinRoot -Recurse -Filter devin.exe)
+if ($devinExe.Count -ne 1) { throw 'Expected one Devin executable' }
+node scripts/check-devin-mcp.ts $devinExe[0].FullName
 npm pack --ignore-scripts
