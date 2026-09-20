@@ -30,6 +30,27 @@ jobs:
       - name: Install exact published dependencies
         if: runner.os != 'Windows'
         run: pnpm install --frozen-lockfile
+      - name: Real Devin MCP config discovery (macOS, no credentials)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Same release and probe as Windows. Never install into the runner's profile.
+          devin_version=3000.10.31
+          case "$(uname -m)" in
+            arm64) devin_platform=aarch64-apple-darwin; devin_sha=051dfcf29e0f5cb5f0a07c7579dc97255fee7f02ce4c6feacc7d4065ce76b5bd ;;
+            x86_64) devin_platform=x86_64-apple-darwin; devin_sha=ca450a13a7e2d83a2c6e641c0f80842826f944cad3ca93ba892a7ade3948555a ;;
+            *) exit 1 ;;
+          esac
+          devin_root="$(mktemp -d "$RUNNER_TEMP/devin-mcp.XXXXXX")"
+          trap 'rm -rf "$devin_root"' EXIT
+          curl --fail --location --silent --show-error --retry 3 "https://static.devin.ai/cli/$devin_version/devin-$devin_version-$devin_platform.tar.gz" -o "$devin_root/devin.tar.gz"
+          echo "$devin_sha  $devin_root/devin.tar.gz" | shasum -a 256 --check
+          tar -xzf "$devin_root/devin.tar.gz" -C "$devin_root"
+          devin_exe="$(rg --files "$devin_root" | rg '/devin$')"
+          test -x "$devin_exe"
+          "$devin_exe" version
+          node scripts/check-devin-mcp.ts "$devin_exe"
       - name: Verify npm compatibility
         if: runner.os != 'Windows'
         run: pnpm typecheck && pnpm test --no-file-parallelism && pnpm build

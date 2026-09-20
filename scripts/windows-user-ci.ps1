@@ -36,5 +36,6 @@ $devinRoot = Join-Path $AuditRoot 'devin'
 Expand-Archive -Path $devinZip -DestinationPath $devinRoot
 $devinExe = @(Get-ChildItem $devinRoot -Recurse -Filter devin.exe)
 if ($devinExe.Count -ne 1) { throw 'Expected one Devin executable' }
+& $devinExe[0].FullName version
 node scripts/check-devin-mcp.ts $devinExe[0].FullName
 npm pack --ignore-scripts
