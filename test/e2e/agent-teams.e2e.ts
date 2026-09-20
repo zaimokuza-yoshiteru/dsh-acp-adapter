@@ -29,7 +29,7 @@ describe.each([['claude', false], ['devin', true], ['codex', true], ['kimi', fal
       const provider = `acp-${profile}`
       await host.ctx.settings.replace('dsh-acp', { agents: { [profile]: {
         name: `Fixture ${profile}`, command: process.execPath, args: [join(root, 'test/mock-agent/mock-agent.ts')],
-        env: { MOCK_SCENARIO: 'regression', MOCK_PROFILE: profile, MOCK_MCP_HTTP: http ? '1' : '0', MOCK_LOG: log },
+        env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: profile, MOCK_MCP_HTTP: http ? '1' : '0', MOCK_LOG: log },
       } } })
       await vi.waitFor(() => expect(host.ctx.llm.listProviders().some(item => item.id === provider)).toBe(true))
       await host.ctx.agentDefaultModel.saveSelection({ provider, model: 'mock-model-a' })

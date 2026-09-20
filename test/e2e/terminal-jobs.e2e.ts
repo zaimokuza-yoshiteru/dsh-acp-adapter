@@ -31,7 +31,7 @@ describe.each(['claude', 'codex', 'devin', 'kimi'])('native terminal jobs: %s', 
       await host.ctx.settings.replace('dsh-acp', { agents: { [profile]: {
         name: `Fixture ${profile}`, command: process.execPath,
         args: [join(root, 'test/mock-agent/mock-agent.ts')],
-        env: { MOCK_SCENARIO: 'regression', MOCK_PROFILE: profile, MOCK_LOG: agentLog },
+        env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: profile, MOCK_LOG: agentLog },
       } } })
       await vi.waitFor(() => expect(host.ctx.llm.listProviders().some(item => item.id === provider)).toBe(true))
       await host.ctx.agentDefaultModel.saveSelection({ provider, model: 'mock-model-a' })

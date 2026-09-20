@@ -15,7 +15,7 @@ it('unloads and remounts ACP through the native plugin manager without restartin
   try {
     await host.ctx.settings.replace('dsh-acp', { agents: { devin: {
       name: 'Lifecycle fixture', command: process.execPath, args: [join(root, 'test/mock-agent/mock-agent.ts')],
-      env: { MOCK_SCENARIO: 'regression', MOCK_PROFILE: 'devin' },
+      env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: 'devin' },
     } } })
     const routed = () => host.ctx.llm.listProviders().some(row => row.id === 'acp-devin')
     await vi.waitFor(() => expect(routed()).toBe(true))

@@ -17,7 +17,7 @@ it('keeps user terminals running when the first ACP prompt projects Agent permis
     const log = join(host.workspaceCwd, 'terminal-access-agent.log')
     await host.ctx.settings.replace('dsh-acp', { agents: { devin: {
       name: 'Devin', command: process.execPath, args: [join(root, 'test/mock-agent/mock-agent.ts')],
-      env: { MOCK_SCENARIO: 'regression', MOCK_PROFILE: 'devin', MOCK_LOG: log },
+      env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: 'devin', MOCK_LOG: log },
     } } })
     await vi.waitFor(() => expect(host.ctx.llm.listProviders().some(item => item.id === 'acp-devin')).toBe(true))
     await host.ctx.settings.replace('permission', { defaultPreset: 'workspace-write' })

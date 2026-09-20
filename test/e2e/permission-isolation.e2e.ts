@@ -29,7 +29,7 @@ describe.each(['kimi', 'devin', 'codex', 'claude'])('permission isolation: %s', 
       host.ctx.effect(() => host.ctx.llm.registerAdapter(['native-permission'], native))
       await host.ctx.settings.replace('dsh-acp', { agents: { [profile]: {
         name: profile, command: process.execPath, args: [join(root, 'test/mock-agent/mock-agent.ts')],
-        env: { MOCK_SCENARIO: 'regression', MOCK_PROFILE: profile },
+        env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: profile },
       } } })
       const acp = { provider: `acp-${profile}`, model: 'mock-model-a' }
       const model = { provider: 'native-permission', model: 'a' }

@@ -1,3 +1,4 @@
+param([switch]$Live)
 # CI bootstrap only. All package commands run in the unprivileged child account.
 $ErrorActionPreference = 'Stop'
 $auditUser = 'dsh-acp-ci'
@@ -32,6 +33,7 @@ try {
   $stdout = Join-Path $auditRoot 'stdout.log'
   $stderr = Join-Path $auditRoot 'stderr.log'
   $arguments = '-NoLogo -NoProfile -NonInteractive -File "' + (Join-Path $workspace 'scripts/windows-user-ci.ps1') + '" -AuditRoot "' + $auditRoot + '"'
+  if ($Live) { $arguments += ' -Live' }
   $child = Start-Process -FilePath (Get-Command pwsh).Source -ArgumentList $arguments -WorkingDirectory $workspace -Credential $credentials -LoadUserProfile -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
   if (!$child.WaitForExit(1800000)) { $child.Kill(); throw 'Ordinary-user CI timed out' }
   $child.WaitForExit()

@@ -7,6 +7,22 @@ import type { MockSession, MockRequest, MockTurn, MockConfigOption, PromptMessag
 import readline from 'node:readline';
 import { regressionTurn } from './regression-turn.ts';
 import fs from 'node:fs';
+import { join } from 'node:path';
+
+// Native CLI registration fixture; real executable coverage lives in check-devin-mcp/live.
+const mcpIndex = process.argv.indexOf('mcp');
+if (mcpIndex >= 0) {
+  const file = join(process.env.HOME ?? process.cwd(), '.mock-devin-mcp.json');
+  const action = process.argv[mcpIndex + 1];
+  if (action === 'get') {
+    if (!fs.existsSync(file)) { console.error("Error: Server 'dsh' not found"); process.exit(1); }
+    const args = JSON.parse(fs.readFileSync(file, 'utf8')) as string[];
+    console.log(`Server: dsh\n    Command: ${args.join(' ')}`);
+  } else if (action === 'add') {
+    fs.writeFileSync(file, JSON.stringify(process.argv.slice(process.argv.indexOf('--') + 1)));
+  } else process.exit(1);
+  process.exit(0);
+}
 
 const FIXED_TIMESTAMP = '2026-01-01T00:00:00.000Z';
 
@@ -345,9 +361,8 @@ async function handleInitialize(msg: MockRequest) {
 }
 
 function sessionMcpServers(msg: MockRequest): NonNullable<MockSession['mcpServers']> {
-  if (process.env.MOCK_PROFILE === 'devin' && process.env.XDG_CONFIG_HOME?.includes('dsh-acp-team-')) {
-    const config = JSON.parse(fs.readFileSync(`${process.env.XDG_CONFIG_HOME}/devin/mcp_config.json`, 'utf8')) as { mcpServers: Record<string, { url: string }> };
-    return Object.entries(config.mcpServers).filter(([name]) => name.startsWith('dshteam_')).map(([name, server]) => ({ name, type: 'http', url: server.url, headers: [] }));
+  if (process.env.MOCK_PROFILE === 'devin' && process.env.DSH_ACP_TEAM_MCP_URL) {
+    return [{ name: 'dsh', type: 'http', url: process.env.DSH_ACP_TEAM_MCP_URL, headers: [] }];
   }
   return msg.params?.mcpServers ?? [];
 }

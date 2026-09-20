@@ -80,7 +80,16 @@ const GENERATED_REMOTE = /^@deepseek-ai\/dsh-[a-z0-9]+(?:-[a-z0-9]+)*\/remote$/
 
 const nodeEnv = process.env.NODE_ENV ?? 'production'
 
-export default defineConfig({
+export default defineConfig([{
+  entry: { 'dsh-mcp-launcher': 'src/runtime/session/team-mcp-stdio.ts' },
+  outDir: 'lib/runtime/session',
+  format: 'esm',
+  platform: 'node',
+  dts: false,
+  clean: false,
+  deps: { alwaysBundle: [/./] },
+  outputOptions: { entryFileNames: '[name].mjs', inlineDynamicImports: true },
+}, {
   entry: { client: 'src/client/index.ts' },
   // The browser bundle lands next to the host half (single lib/ artifact dir);
   // clean stays off so the tsc-emitted host output survives.
@@ -156,4 +165,4 @@ export default defineConfig({
     footer: 'return module.exports; } });',
     intro: 'var module = { exports: {} }; var exports = module.exports;',
   },
-})
+}])
