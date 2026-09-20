@@ -14,7 +14,7 @@ it('keeps long teammate cards and reserved notices aligned in both languages and
   try {
     await host.ctx.settings.replace('dsh-acp', { agents: { devin: {
       name: 'Layout fixture', command: process.execPath, args: [join(root, 'test/mock-agent/mock-agent.ts')],
-      env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: 'devin', MOCK_MCP_HTTP: '1' },
+      env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: 'devin', MOCK_MCP_HTTP: '1', MOCK_SESSION_NEW_DELAY_MS: '2500' },
     } } })
     await vi.waitFor(() => expect(host.ctx.llm.listProviders().some(p => p.id === 'acp-devin')).toBe(true))
     await host.ctx.agentDefaultModel.saveSelection({ provider: 'acp-devin', model: 'mock-model-a' })
@@ -26,7 +26,8 @@ it('keeps long teammate cards and reserved notices aligned in both languages and
     await page.getByRole('button', { name: 'Send message', exact: true }).click()
     await page.getByText('E2E_TEAM_LAYOUT_READY', { exact: true }).waitFor()
     const approvals = page.locator('[data-acp-team-approvals]')
-    await expect.poll(() => approvals.locator('[data-team-pending-member]').count()).toBe(2)
+    // The lead's marker only confirms spawn requests. Each child still has its own ACP startup.
+    await expect.poll(() => approvals.locator('[data-team-pending-member]').count(), { timeout: 30_000 }).toBe(2)
     await approvals.getByRole('button', { name: 'Reject all', exact: true }).click()
     const lead = required(host.ctx.agents.list().find(a => host.ctx.agentTeams.tryMembership(a)?.role === 'lead'))
     const members = host.ctx.agentTeams.listMembers(lead).filter(m => m.role === 'teammate')
