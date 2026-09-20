@@ -361,7 +361,7 @@ if (packOutput !== null) {
     // tarball file set before declaring the package installable.
     // JSON data files (assets/registry snapshots) participate as import
     // targets even though they are never scanned for their own imports.
-    const runtimeFiles = [...actual].filter((file) => file.endsWith('.js') || file.endsWith('.json'))
+    const runtimeFiles = [...actual].filter((file) => file.endsWith('.js') || file.endsWith('.mjs') || file.endsWith('.json'))
     const missingRuntimeImports = findMissingRelativeRuntimeImports(runtimeFiles, (file) => readFileSync(join(root, file), 'utf8'))
     for (const missing of missingRuntimeImports) {
       fail(`tarball runtime closure missing ${missing.file} → ${missing.specifier} (${missing.resolved})`)

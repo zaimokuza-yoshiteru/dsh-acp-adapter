@@ -1,6 +1,9 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { spawn } from 'node:child_process'
+import { once } from 'node:events'
+import { setTimeout as delay } from 'node:timers/promises'
 import { PassThrough } from 'node:stream'
 import { afterEach, expect, it, vi } from 'vitest'
 import { prepareDevinMcp } from '../../../src/host/teams/devin-config.ts'
@@ -82,4 +85,25 @@ it('updates its Node executable after an installation changes, retaining one ent
   setEntry(`Server: dsh\n    Command: /old/node ${join(home, '.dsh/acp/mcp/dsh-mcp-launcher.mjs')}\n`)
   await prepareDevinMcp(options)
   expect(argv.filter(args => args.includes('add'))).toHaveLength(1)
+})
+
+it('waits for another process and recovers its registration lock after a crash', async () => {
+  const { options, argv, home } = await setup()
+  const directory = join(home, '.dsh/acp/mcp')
+  await mkdir(directory, { recursive: true })
+  const child = spawn(process.execPath, ['--input-type=module', '-e',
+    "import { DatabaseSync } from 'node:sqlite'; const db = new DatabaseSync(process.argv[1]); db.exec('BEGIN IMMEDIATE'); process.stdout.write('ready'); setInterval(() => {}, 1000)",
+    join(directory, 'registration.sqlite')], { stdio: ['ignore', 'pipe', 'ignore'] })
+  const closed = once(child, 'close')
+  try {
+    await once(child.stdout!, 'data')
+    const pending = prepareDevinMcp(options)
+    await delay(150)
+    expect(argv).toHaveLength(0)
+    child.kill('SIGKILL')
+    await closed
+    const prepared = await pending
+    expect(argv.filter(args => args.includes('add'))).toHaveLength(1)
+    await prepared.lease.close()
+  } finally { child.kill('SIGKILL'); await closed }
 })

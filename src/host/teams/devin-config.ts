@@ -1,8 +1,9 @@
 /** Register one native Devin MCP entry. Session capabilities live only in child environments. */
-import { mkdir, readFile, writeFile, rename, rm, stat } from 'node:fs/promises'
+import { mkdir, readFile, writeFile, rename, rm } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { DatabaseSync } from 'node:sqlite'
 import { randomUUID } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
 import type { AcpSubprocessHandle, SubprocessSeam } from '../../runtime/process/subprocess.ts'
@@ -21,36 +22,27 @@ interface DevinMcpOptions {
   lease: AcpMcpLease
 }
 
-/** Serialize our native CLI writes across sessions and DSH processes. A crashed owner is recoverable. */
-async function lock(directory: string): Promise<() => Promise<void>> {
+/** OS-released SQLite transaction lock: serialized across processes, with no stale pid/lock cleanup race. */
+async function lock(directory: string, signal: AbortSignal): Promise<() => void> {
   await mkdir(directory, { recursive: true, mode: 0o700 })
-  const path = join(directory, 'registration.lock')
+  const database = new DatabaseSync(join(directory, 'registration.sqlite'))
+  database.exec('PRAGMA busy_timeout = 0')
   const deadline = Date.now() + 35_000
-  while (true) {
-    try {
-      await mkdir(path)
-      await writeFile(join(path, 'pid'), String(process.pid))
-      return async () => { await rm(path, { recursive: true, force: true }) }
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+  try {
+    while (true) {
+      signal.throwIfAborted()
       try {
-        const pid = Number(await readFile(join(path, 'pid'), 'utf8'))
-        if (Number.isSafeInteger(pid) && pid > 0) {
-          try { process.kill(pid, 0) } catch (error) {
-            if ((error as NodeJS.ErrnoException).code === 'ESRCH') { await rm(path, { recursive: true, force: true }); continue }
-          }
-        }
+        database.exec('BEGIN IMMEDIATE')
+        return () => { try { database.exec('COMMIT') } finally { database.close() } }
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-        // A crash can leave the directory before its pid file is written.
-        const info = await stat(path).catch(() => undefined)
-        if (info === undefined) continue
-        if (Date.now() - info.mtimeMs > 60_000) { await rm(path, { recursive: true, force: true }); continue }
+        const code = (error as { errcode?: number }).errcode
+        if (code !== 5 && code !== 6) throw error
+        if (Date.now() >= deadline) throw new Error('DSH MCP registration is busy; retry after the other Devin launch finishes')
+        // Do not synchronously wait: the owner may be another session in this process.
+        await delay(100, undefined, { signal })
       }
-      if (Date.now() >= deadline) throw new Error('DSH MCP registration is busy; retry after the other Devin launch finishes')
-      await delay(100)
     }
-  }
+  } catch (error) { database.close(); throw error }
 }
 
 export async function prepareDevinMcp({ subprocess, command, args, cwd, env, lease }: DevinMcpOptions): Promise<{ env: Record<string, string>; lease: AcpMcpLease }> {
@@ -60,7 +52,7 @@ export async function prepareDevinMcp({ subprocess, command, args, cwd, env, lea
     // A stable, dependency-free launcher survives plugin upgrades. It is inert outside a DSH launch.
     const directory = join(env.HOME ?? homedir(), '.dsh', 'acp', 'mcp')
     const launcher = join(directory, 'dsh-mcp-launcher.mjs')
-    const release = await lock(directory)
+    const release = await lock(directory, lease.signal)
     try {
       const bytes = await readFile(fileURLToPath(new URL('../../../lib/runtime/session/dsh-mcp-launcher.mjs', import.meta.url)))
       const existing = await readFile(launcher).catch((error: NodeJS.ErrnoException) => { if (error.code !== 'ENOENT') throw error; return undefined })
