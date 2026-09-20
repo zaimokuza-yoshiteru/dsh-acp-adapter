@@ -47,7 +47,7 @@ jobs:
           curl --fail --location --silent --show-error --retry 3 "https://static.devin.ai/cli/$devin_version/devin-$devin_version-$devin_platform.tar.gz" -o "$devin_root/devin.tar.gz"
           echo "$devin_sha  $devin_root/devin.tar.gz" | shasum -a 256 --check
           tar -xzf "$devin_root/devin.tar.gz" -C "$devin_root"
-          devin_exe="$(rg --files "$devin_root" | rg '/devin$')"
+          devin_exe="$(find "$devin_root" -type f -name devin)"
           test -x "$devin_exe"
           "$devin_exe" version
           node scripts/check-devin-mcp.ts "$devin_exe"
