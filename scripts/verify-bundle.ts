@@ -162,6 +162,7 @@ if (typeof zodRange !== 'string' || !/^\d+\.\d+\.\d+$/.test(zodRange)) {
 // ---------------------------------------------------------------------------
 
 const REQUIRED_ARTIFACTS = [
+  'lib/runtime/session/dsh-mcp-launcher.mjs',
   'lib/index.js',
   'lib/client.js',
   'lib/client.js.map',

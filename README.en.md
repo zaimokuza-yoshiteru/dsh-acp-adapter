@@ -78,7 +78,7 @@ npx "@deepseek-ai/dsh@$DSH_VERSION" plugin --profile web add @zaimokuza/dsh-acp-
 
 Executable paths may contain spaces, for example `C:\Program Files\Agent Tools\agent.exe`. Enter the path directly without surrounding quotes; put startup arguments in the separate arguments field.
 
-On Windows, Devin's Teams/DSH tool integration first tries file symlinks. On a permission error, it tries hard links for regular files. Hard links require the original configuration and temporary directory to be on the same volume; failure is reported without automatically copying or synchronizing settings. Directories use junctions, and the team MCP file remains separate. Hard links share in-place writes, but replacing either file can separate the paths, so Devin's specific save behavior still needs verification.
+When Devin first connects to DSH tools, the adapter uses native `devin mcp add` to register one user-level MCP entry named `dsh`. Sessions share this entry and connect to their own tool bridge through process environments; session addresses never enter the shared configuration. No symlinks or hard links are needed. Outside DSH, the entry exposes no tools. Restart an already running Devin to discover the initial registration. An unrelated existing `dsh` entry produces an error rather than being overwritten.
 
 If the Agent needs an API key, add it explicitly under **Advanced options → Environment** in the Agent editor; parent-process secrets are not inherited automatically. Advanced options start collapsed and show a count of configured values. Catalog defaults apply only to new configurations; plugin updates do not overwrite saved settings. Login guidance appears automatically without an editable field; it never runs commands or changes Agent authentication. Existing custom guidance is preserved.
 
@@ -106,6 +106,8 @@ npx "@deepseek-ai/dsh@$DSH_VERSION" plugin --profile web remove @zaimokuza/dsh-a
 ```
 
 **Keep local data when upgrading.** DSH migrates main sessions; the adapter does not migrate legacy subagent projections that the host rejects. Restart DSH after the current turn, then refresh the page; check the loaded version beside the settings title.
+
+After removing the adapter, run `devin mcp remove --scope user dsh` to remove its MCP entry.
 
 ## <img src="assets/readme/icon-help.svg" width="24" height="24" alt="" /> If something goes wrong
 

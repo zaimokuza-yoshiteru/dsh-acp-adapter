@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][string]$AuditRoot)
+param([Parameter(Mandatory=$true)][string]$AuditRoot, [switch]$Live)
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -21,13 +21,14 @@ $env:PATH = (Join-Path $AuditRoot 'node') + ';' + (Join-Path $manager 'node_modu
 New-Item -ItemType Directory -Force $env:TEMP, $env:PNPM_HOME | Out-Null
 Set-Content -Path $env:NPM_CONFIG_USERCONFIG -Value ''
 git config --global --add safe.directory (Get-Location).Path
+if (!$Live) {
 npm install --prefix $manager --ignore-scripts --no-audit --no-fund pnpm@10.7.0
 pnpm install --frozen-lockfile --store-dir (Join-Path $AuditRoot 'pnpm-store')
 pnpm typecheck
 pnpm test --no-file-parallelism
 pnpm build
-node scripts/check-windows-mcp-links.ts lib/host/teams/devin-config.js
-# Test the actual consumer, not only that our overlay file exists. No login/model calls.
+}
+# Test the actual consumer, not only that our registration succeeds. No login/model calls.
 $devinVersion = '3000.10.31'
 $devinZip = Join-Path $AuditRoot 'devin.zip'
 Invoke-WebRequest -Uri "https://static.devin.ai/cli/$devinVersion/devin-$devinVersion-x86_64-pc-windows.zip" -OutFile $devinZip
@@ -38,4 +39,9 @@ $devinExe = @(Get-ChildItem $devinRoot -Recurse -Filter devin.exe)
 if ($devinExe.Count -ne 1) { throw 'Expected one Devin executable' }
 & $devinExe[0].FullName version
 node scripts/check-devin-mcp.ts $devinExe[0].FullName ([Environment]::GetFolderPath('ApplicationData'))
-npm pack --ignore-scripts
+if ($Live) {
+  if (!$env:WINDSURF_API_KEY) { throw 'Missing DEVIN_CLI_TOKEN Secret in ordinary-user process' }
+  node scripts/check-devin-live.ts $devinExe[0].FullName
+} else {
+  npm pack --ignore-scripts
+}

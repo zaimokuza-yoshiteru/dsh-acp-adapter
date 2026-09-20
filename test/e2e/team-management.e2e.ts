@@ -21,7 +21,7 @@ it('shows per-profile mode menus with dormant mode persistence and approval prot
   const retain = process.env.DSH_E2E_RETAIN_MANAGEMENT === '1'
   try {
     await host.ctx.settings.replace('dsh-acp', { agents: { devin: { name: 'ACP demo', command: process.execPath,
-      args: [join(root, 'test/mock-agent/mock-agent.ts')], env: { MOCK_SCENARIO: 'regression', MOCK_PROFILE: 'devin', MOCK_MCP_HTTP: '1', MOCK_SESSION_NEW_DELAY_MS: '5000' } } } })
+      args: [join(root, 'test/mock-agent/mock-agent.ts')], env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: 'devin', MOCK_MCP_HTTP: '1', MOCK_SESSION_NEW_DELAY_MS: '5000' } } } })
     await vi.waitFor(() => expect(host.ctx.llm.listProviders().some(p => p.id === 'acp-devin')).toBe(true))
     await host.ctx.agentDefaultModel.saveSelection({ provider: 'acp-devin', model: 'mock-model-a' })
     browser = await launchBrowser({ channel: process.env.DSH_E2E_BROWSER_CHANNEL, headless: !retain, ...(retain ? { args: ['--window-size=1440,1000'] } : {}) })

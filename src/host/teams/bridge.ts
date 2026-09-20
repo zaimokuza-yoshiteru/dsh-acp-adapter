@@ -59,7 +59,7 @@ export async function createTeamBridge(
   const lifetime = new AbortController()
   let prompt: AbortSignal | undefined
   const nonce = randomBytes(8).toString('hex')
-  const serverName = `dshteam_${nonce}`
+  const serverName = wireProfile === 'devin' ? 'dsh' : `dshteam_${nonce}`
   const path = `/${randomBytes(32).toString('hex')}`
   // Names are connection-specific capabilities, not a global name-based approval bypass.
   const names = new Map([...definitions].map(([name, definition]) => [`${nonce}_${name}`, definition]))
@@ -152,12 +152,12 @@ export async function createTeamBridge(
     ? [{ type: 'http', name: serverName, url, headers: [] }]
     : [{ name: serverName, command: process.execPath,
         args: [fileURLToPath(new URL('../../runtime/session/team-mcp-stdio.js', import.meta.url))],
-        env: [{ name: 'DSH_ACP_TEAM_MCP_URL', value: url }] }]
+        env: [{ name: 'DSH_ACP_TEAM_MCP_URL', value: url }, { name: 'ELECTRON_RUN_AS_NODE', value: '1' }] }]
   let closing: Promise<void> | undefined
   const listeners: Array<() => unknown> = []
   const lease: AcpMcpLease = {
     signal: lifetime.signal,
-    instructions: `Current DSH tools connection: MCP server ${serverName}. Discover its tools and use their exact names. This replaces earlier DSH connection names. Each teammate has its own server and tool names; do not instruct a teammate to use your connection names. Create teams only when explicitly requested. Pending DSH messages are delivered after you end the current response; give a brief progress update when asked to yield.`,
+    instructions: `Current DSH tools connection: MCP server ${serverName}. Discover its tools and use their exact names. This replaces earlier DSH connection names. Each teammate has its own connection and tool names; do not instruct a teammate to use your connection names. Create teams only when explicitly requested. Pending DSH messages are delivered after you end the current response; give a brief progress update when asked to yield.`,
     servers,
     beginPrompt(signal) { prompt = signal; presented.clear() },
     endPrompt() { prompt = undefined; presented.clear() },

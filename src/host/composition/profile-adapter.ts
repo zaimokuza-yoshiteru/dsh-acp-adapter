@@ -1666,7 +1666,7 @@ export class AcpProfileAdapter extends LlmAdapter {
       subprocess: processSeam,
       cwd,
       prepareLaunch: (config, launchCwd) => prepareAgentLaunch(
-        runtime, config as AcpStubAgentConfig, launchCwd,
+        runtime, config as AcpStubAgentConfig, launchCwd, processSeam,
         this.createMcpLease === undefined ? undefined : capabilities => this.createMcpLease!(sessionId, capabilities, runtime),
       ),
       createFileSystemHandlers: () => createAcpFileSystemHandlers({

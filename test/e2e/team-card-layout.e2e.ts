@@ -14,7 +14,7 @@ it('keeps long teammate cards and reserved notices aligned in both languages and
   try {
     await host.ctx.settings.replace('dsh-acp', { agents: { devin: {
       name: 'Layout fixture', command: process.execPath, args: [join(root, 'test/mock-agent/mock-agent.ts')],
-      env: { MOCK_SCENARIO: 'regression', MOCK_PROFILE: 'devin', MOCK_MCP_HTTP: '1' },
+      env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: 'devin', MOCK_MCP_HTTP: '1' },
     } } })
     await vi.waitFor(() => expect(host.ctx.llm.listProviders().some(p => p.id === 'acp-devin')).toBe(true))
     await host.ctx.agentDefaultModel.saveSelection({ provider: 'acp-devin', model: 'mock-model-a' })

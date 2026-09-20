@@ -61,7 +61,7 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
     await host.ctx.settings.replace('dsh-acp', { agents: { [profile]: {
       name: `Fixture ${profile}`, command: process.execPath,
       args: [join(root, 'test/mock-agent/mock-agent.ts')],
-      env: { MOCK_SCENARIO: 'regression', MOCK_PROFILE: profile, MOCK_LOG: agentLog },
+      env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: profile, MOCK_LOG: agentLog },
     } } })
     await vi.waitFor(() => expect(host.ctx.llm.listProviders().some(item => item.id === provider)).toBe(true))
     host.ctx.effect(() => host.ctx.llm.registerAdapter(['native-control'], new NativeControl()))

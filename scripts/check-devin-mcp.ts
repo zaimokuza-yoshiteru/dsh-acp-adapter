@@ -8,12 +8,15 @@ import { dirname, join, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 import { promisify } from 'node:util'
 import { fileURLToPath } from 'node:url'
-import { prepareDevinTeamConfig } from '../src/host/teams/devin-config.ts'
+import { Context } from '@deepseek-ai/cordis'
+import LocalSubprocess from '@deepseek-ai/dsh-subprocess-local'
+import { narrowSubprocessSeam } from '../src/runtime/process/subprocess.ts'
+import { prepareDevinMcp } from '../src/host/teams/devin-config.ts'
 
 const executable = process.argv[2]
 assert.ok(executable, 'Pass the real Devin executable path')
 const root = await mkdtemp(join(tmpdir(), 'dsh-real-devin-'))
-let prepared: Awaited<ReturnType<typeof prepareDevinTeamConfig>> | undefined
+let prepared: Awaited<ReturnType<typeof prepareDevinMcp>> | undefined
 let nativeFile: string | undefined
 let originalNativeFile: Buffer | undefined
 let nativeFileWritten = false
@@ -126,27 +129,30 @@ try {
   assert.equal(removed[nativeServer].url, 'http://127.0.0.1:43210/native-config-probe', 'mcp remove must preserve other servers')
   console.log(JSON.stringify({ check: 'native-mcp-cli', platform: process.platform, httpAdd: true, stdioAdd: true, visibleInFreshAcp: true, remove: true, existingServerPreserved: true }))
   console.log('PASS: native mcp add/remove and ACP discovery for HTTP and stdio entries')
-  prepared = await prepareDevinTeamConfig(sourceEnv, {
-    signal: new AbortController().signal,
-    servers: [{ type: 'http', name: 'dshteam_discovery_test', url: 'http://127.0.0.1:43210/test', headers: [] }],
-    beginPrompt() {}, endPrompt() {}, permission: () => undefined, async close() {},
-  })
-  const result = await inspectMcp({ ...process.env, ...prepared.env })
-  const expected = join(prepared.env.XDG_CONFIG_HOME!, 'devin', 'mcp_config.json')
-  console.log(JSON.stringify({
-    platform: process.platform, arch: process.arch,
-    sourceConfigHome: source,
-    baseline: baseline._meta?.mcpConfigPath,
-    overlayConfigHome: prepared.env.XDG_CONFIG_HOME,
-    expected, discovered: result._meta?.mcpConfigPath,
-    nativeServerVisible: result.mcpListing.includes(nativeServer),
-    injectedServerVisible: result.mcpListing.includes('dshteam_discovery_test'),
-    scope: 'ACP initialize + session/new + built-in /mcp; no authentication, model request, or MCP tool call',
-  }))
-  assert.ok(result._meta?.mcpConfigPath, 'Real Devin must report its MCP config path')
-  assert.equal(resolve(result._meta?.mcpConfigPath ?? ''), resolve(expected), 'Real Devin must load the injected MCP file')
-  assert.ok(result.mcpListing.includes('dshteam_discovery_test'), 'ACP /mcp must list the server injected into the overlay')
-  console.log('PASS: real Devin ACP reads the isolated MCP config contents')
+  const ctx = new Context()
+  await ctx.plugin(LocalSubprocess)
+  try {
+    prepared = await prepareDevinMcp({
+      command: executable, args: ['acp'], cwd: root,
+      subprocess: narrowSubprocessSeam(ctx.subprocess)!,
+      env: { ...(process.platform === 'win32' ? {} : sourceEnv), HOME: root },
+      lease: {
+        signal: new AbortController().signal,
+        servers: [{ type: 'http', name: 'dsh', url: 'http://127.0.0.1:43210/test', headers: [] }],
+        beginPrompt() {}, endPrompt() {}, permission: () => undefined, async close() {},
+      },
+    })
+    const config = JSON.parse(await readFile(nativeFile, 'utf8'))
+    assert.equal(config.mcpServers.dsh.command, process.execPath)
+    assert.ok(config.mcpServers[nativeServer], 'Registration must preserve existing servers')
+    assert.ok(!JSON.stringify(config).includes('/test'), 'Session endpoint must not be persisted')
+    assert.equal(prepared.env.DSH_ACP_TEAM_MCP_URL, 'http://127.0.0.1:43210/test')
+    const result = await inspectMcp({ ...process.env, ...prepared.env })
+    assert.equal(resolve(result._meta?.mcpConfigPath ?? ''), resolve(nativeFile))
+    assert.ok(result.mcpListing.includes('dsh'), 'Real Devin must discover the fixed DSH entry')
+    console.log('PASS: production registration, native discovery, preserved user servers and private session routing')
+  } finally { await ctx.fiber.dispose() }
+
 } finally {
   await prepared?.lease.close()
   if (nativeFileWritten && nativeFile !== undefined) {

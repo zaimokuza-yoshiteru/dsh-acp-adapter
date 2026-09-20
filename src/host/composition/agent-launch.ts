@@ -1,16 +1,18 @@
-/** Prepare a native Agent process, including the optional Devin pre-launch MCP overlay. */
+/** Prepare a native Agent process, including the optional Devin native MCP registration. */
 import type * as acp from '@agentclientprotocol/sdk'
 import type { AcpAgentId, AcpStubAgentConfig } from '../../contract/agent-config.ts'
 import { acpLaunchEnvironment } from '../../domain/session/launch-fingerprint.ts'
 import { buildAcpSpawnPlan } from '../../domain/policy/sandbox.ts'
 import type { AcpRuntimeLaunch } from '../../runtime/session/session-runtime.ts'
+import type { SubprocessSeam } from '../../runtime/process/subprocess.ts'
 import type { AcpMcpLease } from '../../runtime/session/mcp-lease.ts'
-import { prepareDevinTeamConfig } from '../teams/devin-config.ts'
+import { prepareDevinMcp } from '../teams/devin-config.ts'
 
 export async function prepareAgentLaunch(
   runtime: AcpAgentId | undefined,
   config: AcpStubAgentConfig,
   cwd: string,
+  subprocess: SubprocessSeam,
   createMcpLease: ((capabilities: acp.AgentCapabilities) => Promise<AcpMcpLease | undefined>) | undefined,
 ): Promise<AcpRuntimeLaunch> {
   let env = await acpLaunchEnvironment({ config })
@@ -19,7 +21,7 @@ export async function prepareAgentLaunch(
   if (runtime === 'devin') {
     const lease = await createMcpLease?.({ mcpCapabilities: { http: true } })
     if (lease !== undefined) {
-      const prepared = await prepareDevinTeamConfig(env, lease)
+      const prepared = await prepareDevinMcp({ subprocess, command: config.command, args: config.args, cwd, env, lease })
       env = prepared.env
       mcpLease = prepared.lease
     }

@@ -30,6 +30,9 @@ jobs:
       - name: Install exact published dependencies
         if: runner.os != 'Windows'
         run: pnpm install --frozen-lockfile
+      - name: Verify npm compatibility
+        if: runner.os != 'Windows'
+        run: pnpm typecheck && pnpm test --no-file-parallelism && pnpm build
       - name: Real Devin MCP config discovery (macOS, no credentials)
         if: runner.os == 'macOS'
         shell: bash
@@ -51,9 +54,6 @@ jobs:
           test -x "$devin_exe"
           "$devin_exe" version
           node scripts/check-devin-mcp.ts "$devin_exe"
-      - name: Verify npm compatibility
-        if: runner.os != 'Windows'
-        run: pnpm typecheck && pnpm test --no-file-parallelism && pnpm build
       - name: Install, verify and pack as an ordinary Windows user
         if: runner.os == 'Windows'
         shell: pwsh

@@ -1,127 +1,85 @@
-import { link, lstat, mkdtemp, mkdir, readFile, rm, writeFile, stat } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { PassThrough } from 'node:stream'
 import { afterEach, expect, it, vi } from 'vitest'
-import { prepareDevinTeamConfig } from '../../../src/host/teams/devin-config.ts'
+import { prepareDevinMcp } from '../../../src/host/teams/devin-config.ts'
+import type { SubprocessSeam } from '../../../src/runtime/process/subprocess.ts'
 
-const failures = vi.hoisted(() => ({ symlink: '', link: '', type: 'file', roots: [] as string[] }))
-vi.mock('node:fs/promises', async importOriginal => {
-  const fs = await importOriginal<typeof import('node:fs/promises')>()
-  return { ...fs,
-    mkdtemp: async (...args: Parameters<typeof fs.mkdtemp>) => {
-      const root = await fs.mkdtemp(...args)
-      if (String(args[0]).includes('dsh-acp-team-')) failures.roots.push(String(root))
-      return root
-    },
-    symlink: async (...args: Parameters<typeof fs.symlink>) => {
-      if (failures.symlink && args[2] === failures.type) throw Object.assign(new Error('symlink denied'), { code: failures.symlink })
-      return fs.symlink(...args)
-    },
-    link: vi.fn(async (...args: Parameters<typeof fs.link>) => {
-      if (failures.link) throw Object.assign(new Error('hard link denied'), { code: failures.link })
-      return fs.link(...args)
-    }),
-  }
+vi.mock('node:fs/promises', async original => {
+  const fs = await original<typeof import('node:fs/promises')>()
+  return { ...fs, readFile: (...args: Parameters<typeof fs.readFile>) => String(args[0]).replaceAll('\\', '/').includes('/lib/runtime/session/dsh-mcp-launcher.mjs')
+    ? Promise.resolve(Buffer.from('// bundled launcher fixture')) : fs.readFile(...args) }
 })
-afterEach(() => { failures.symlink = ''; failures.link = ''; failures.type = 'file'; failures.roots.length = 0; vi.clearAllMocks() })
+const roots: string[] = []
+afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }) })
 
-async function withPlatform(platform: string, action: () => Promise<void>): Promise<void> {
-  const original = Object.getOwnPropertyDescriptor(process, 'platform')!
-  Object.defineProperty(process, 'platform', { ...original, value: platform })
-  try { await action() } finally { Object.defineProperty(process, 'platform', original) }
-}
-
-async function fixture() {
-  const source = await mkdtemp(join(tmpdir(), 'devin-config-test-'))
-  await mkdir(join(source, 'devin'))
-  await writeFile(join(source, 'devin/config.json'), '{"permissions":{}}')
-  await writeFile(join(source, 'devin/mcp_config.json'), '{"mcpServers":{"user":{"command":"user-tool"}}}')
+async function setup() {
+  const home = await mkdtemp(join(tmpdir(), 'devin-registration-')); roots.push(home)
+  let entry: string | undefined
+  const argv: string[][] = []
+  const subprocess: SubprocessSeam = {
+    resolveExecutable: async command => command,
+    spawn(spec) {
+      argv.push([...spec.argv])
+      const stdout = new PassThrough(), stderr = new PassThrough(), stdin = new PassThrough()
+      const done = new Promise<{ exitCode: number; signal: null }>(resolve => setTimeout(() => {
+        let exitCode = 0
+        if (spec.argv.includes('get')) {
+          if (entry === undefined) { stderr.write("Error: Server 'dsh' not found"); exitCode = 1 }
+          else stdout.write(entry)
+        } else {
+          entry = `Server: dsh\n    Command: ${spec.argv.slice(spec.argv.indexOf('--') + 1).join(' ')}\n`
+        }
+        stdout.end(); stderr.end(); resolve({ exitCode, signal: null })
+      }, 5))
+      return { stdin, stdout, stderr, done, terminate() {}, waitForExit: async () => { await done; return true } }
+    },
+  }
   const lease = {
     signal: new AbortController().signal,
-    servers: [{ name: 'team', type: 'http' as const, url: 'http://127.0.0.1:1234/private', headers: [] }],
-    beginPrompt() {}, endPrompt() {}, permission: () => undefined, close: vi.fn(async () => {}),
+    servers: [{ name: 'dsh', type: 'http' as const, url: 'http://127.0.0.1:1234/private', headers: [] }],
+    instructions: 'Tools belong to this session',
+    beginPrompt: vi.fn(), endPrompt: vi.fn(), permission: vi.fn(), presentTool: vi.fn(),
+    close: vi.fn(async () => {}),
   }
-  return { source, lease }
+  const options = { subprocess, command: 'devin', args: ['acp'], cwd: home, env: { HOME: home }, lease }
+  return { home, argv, lease, options, setEntry: (value: string) => { entry = value } }
 }
 
-it.each(['EPERM', 'EACCES'])('falls back to a shared file hard link on Windows %s, keeping MCP isolated', async code => {
-  const { source, lease } = await fixture()
-  let prepared: Awaited<ReturnType<typeof prepareDevinTeamConfig>> | undefined
-  try {
-    failures.symlink = code
-    await withPlatform('win32', async () => {
-      prepared = await prepareDevinTeamConfig({ XDG_CONFIG_HOME: source }, lease)
-    })
-    const original = join(source, 'devin/config.json')
-    const linked = join(prepared!.env.XDG_CONFIG_HOME!, 'devin/config.json')
-    expect((await lstat(linked)).isSymbolicLink()).toBe(false)
-    expect((await stat(original)).nlink).toBe(2)
-    await writeFile(linked, '{"permissions":{"saved":true}}')
-    expect(await readFile(original, 'utf8')).toBe('{"permissions":{"saved":true}}')
-    expect(JSON.parse(await readFile(join(source, 'devin/mcp_config.json'), 'utf8')).mcpServers).not.toHaveProperty('team')
-    expect(JSON.parse(await readFile(join(prepared!.env.XDG_CONFIG_HOME!, 'devin/mcp_config.json'), 'utf8')).mcpServers).toHaveProperty('team')
-    expect(link).toHaveBeenCalledTimes(1)
-    await prepared!.lease.close()
-    expect((await stat(original)).nlink).toBe(1)
-    expect(await readFile(original, 'utf8')).toBe('{"permissions":{"saved":true}}')
-    expect(lease.close).toHaveBeenCalledOnce()
-  } finally { await prepared?.lease.close(); await rm(source, { recursive: true, force: true }) }
+it('registers one persistent entry and keeps session endpoint out of native config and CLI argv', async () => {
+  const { options, argv, lease, home } = await setup()
+  const prepared = await prepareDevinMcp(options)
+  expect(argv.find(args => args.includes('add'))).toEqual(['devin', 'mcp', 'add', '--scope', 'user', '-e', 'ELECTRON_RUN_AS_NODE=1', 'dsh', '--', process.execPath, join(home, '.dsh/acp/mcp/dsh-mcp-launcher.mjs')])
+  expect(JSON.stringify(argv)).not.toContain('/private')
+  expect(prepared.env).toEqual({ HOME: home, DSH_ACP_TEAM_MCP_URL: lease.servers[0]!.url })
+  expect(prepared.lease.servers).toEqual([])
+  expect(prepared.lease.beginPrompt).toBe(lease.beginPrompt)
+  expect(prepared.lease.permission).toBe(lease.permission)
+  expect(prepared.lease.presentTool).toBe(lease.presentTool)
+  await prepared.lease.close(); await prepared.lease.close()
+  expect(lease.close).toHaveBeenCalledOnce()
+  expect(await readFile(join(home, '.dsh/acp/mcp/dsh-mcp-launcher.mjs'), 'utf8')).toContain('launcher')
 })
 
-it.each(['EXDEV', 'EACCES'])('reports hard-link failure %s and cleans the failed preparation without copying', async code => {
-  const { source, lease } = await fixture()
-  try {
-    failures.symlink = 'EPERM'; failures.link = code
-    await withPlatform('win32', async () => {
-      await expect(prepareDevinTeamConfig({ XDG_CONFIG_HOME: source }, lease)).rejects.toMatchObject({ code, message: expect.stringContaining('hard-link fallback failed') })
-    })
-    expect(lease.close).toHaveBeenCalledOnce()
-    await expect(stat(failures.roots.at(-1)!)).rejects.toMatchObject({ code: 'ENOENT' })
-    expect(await readFile(join(source, 'devin/config.json'), 'utf8')).toBe('{"permissions":{}}')
-  } finally { await rm(source, { recursive: true, force: true }) }
+it('serializes concurrent sessions without adding ten entries or mixing their endpoints', async () => {
+  const { options, argv } = await setup()
+  const sessions = await Promise.all(Array.from({ length: 10 }, (_, index) => prepareDevinMcp({ ...options, lease: { ...options.lease, servers: [{ ...options.lease.servers[0]!, url: `http://127.0.0.1:1234/session-${index}` }] } })))
+  expect(argv.filter(args => args.includes('add'))).toHaveLength(1)
+  expect(new Set(sessions.map(item => item.env.DSH_ACP_TEAM_MCP_URL)).size).toBe(10)
 })
 
-it.each([
-  ['darwin', 'EPERM', 'file'],
-  ['win32', 'EIO', 'file'],
-  ['win32', 'EPERM', 'junction'],
-])('does not fallback for platform=%s error=%s type=%s', async (platform, code, type) => {
-  const { source, lease } = await fixture()
-  try {
-    if (type === 'junction') await mkdir(join(source, 'sibling'))
-    failures.symlink = code; failures.type = type
-    await withPlatform(platform!, async () => {
-      await expect(prepareDevinTeamConfig({ XDG_CONFIG_HOME: source }, lease)).rejects.toMatchObject({ code })
-    })
-    expect(link).not.toHaveBeenCalled()
-    expect(lease.close).toHaveBeenCalledOnce()
-  } finally { await rm(source, { recursive: true, force: true }) }
+it('does not overwrite an unrelated dsh server and closes a failed lease', async () => {
+  const { options, argv, lease, setEntry } = await setup()
+  setEntry('Server: dsh\n    URL: https://example.org/mcp\n')
+  await expect(prepareDevinMcp(options)).rejects.toThrow('unrelated MCP server')
+  expect(argv.some(args => args.includes('add'))).toBe(false)
+  expect(lease.close).toHaveBeenCalledOnce()
 })
 
-it('isolates the Team endpoint, preserves existing MCP tools and native settings writes, and removes only the overlay', async () => {
-  const source = await mkdtemp(join(tmpdir(), 'devin-config-test-'))
-  const close = vi.fn(async () => {})
-  let prepared
-  try {
-    await mkdir(join(source, 'devin'))
-    await writeFile(join(source, 'devin/config.json'), '{"permissions":{}}')
-    const original = JSON.stringify({ mcpServers: { user: { command: 'user-tool' } }, other: true })
-    await writeFile(join(source, 'devin/mcp_config.json'), original)
-    prepared = await prepareDevinTeamConfig({ XDG_CONFIG_HOME: source }, {
-      signal: new AbortController().signal,
-      servers: [{ name: 'team', type: 'http', url: 'http://127.0.0.1:1234/private', headers: [] }],
-      beginPrompt() {}, endPrompt() {}, permission: () => undefined, close,
-    })
-    const root = prepared.env.XDG_CONFIG_HOME!
-    expect(JSON.parse(await readFile(join(root, 'devin/mcp_config.json'), 'utf8'))).toMatchObject({ other: true, mcpServers: { user: { command: 'user-tool' }, team: { url: 'http://127.0.0.1:1234/private' } } })
-    expect(await readFile(join(source, 'devin/mcp_config.json'), 'utf8')).toBe(original)
-    await writeFile(join(root, 'devin/config.json'), '{"permissions":{"saved":true}}')
-    expect(JSON.parse(await readFile(join(source, 'devin/config.json'), 'utf8'))).toEqual({ permissions: { saved: true } })
-    expect(prepared.lease.servers).toEqual([])
-    await prepared.lease.close()
-    await prepared.lease.close()
-    expect(close).toHaveBeenCalledTimes(1)
-    await expect(stat(root)).rejects.toMatchObject({ code: 'ENOENT' })
-    expect(await readFile(join(source, 'devin/mcp_config.json'), 'utf8')).toBe(original)
-  } finally { await prepared?.lease.close(); await rm(source, { recursive: true, force: true }) }
+it('updates its Node executable after an installation changes, retaining one entry', async () => {
+  const { options, argv, home, setEntry } = await setup()
+  setEntry(`Server: dsh\n    Command: /old/node ${join(home, '.dsh/acp/mcp/dsh-mcp-launcher.mjs')}\n`)
+  await prepareDevinMcp(options)
+  expect(argv.filter(args => args.includes('add'))).toHaveLength(1)
 })

@@ -323,6 +323,7 @@
     "lib/types/**/*.d.ts",
     "lib/host/**/*.js",
     "lib/runtime/**/*.js",
+    "lib/runtime/**/*.mjs",
     "lib/protocol/**/*.js",
     "lib/contract/**/*.js",
     "lib/domain/**/*.js",

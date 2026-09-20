@@ -78,7 +78,7 @@ npx "@deepseek-ai/dsh@$DSH_VERSION" plugin --profile web add @zaimokuza/dsh-acp-
 
 可执行文件路径可以包含空格，例如 `C:\Program Files\Agent Tools\agent.exe`。直接填写路径，不加外层引号；启动参数单独填写在「参数」中。
 
-Windows 下 Devin 的团队/DSH 工具接入会先尝试文件软链接；若返回权限错误，则对普通文件尝试硬链接。硬链接要求原配置与临时目录位于同一卷，失败时会报错，不会自动复制或回写配置。目录使用 junction，团队 MCP 文件保持独立。硬链接共享直接写入的内容；任一侧替换整个文件时可能分离，因此仍需验证 Devin 的具体保存行为。
+Devin 首次连接 DSH 工具时，会通过原生 `devin mcp add` 自动注册一个名为 `dsh` 的用户级 MCP 入口。多个会话共用这一条配置，各自通过进程环境连接自己的工具桥，不会把会话地址写入配置，也不再需要软链接或硬链接。独立启动 Devin 时，该入口不提供工具；已运行的 Devin 需要重新启动才能发现首次注册的入口。如果已有其他同名 MCP，适配器会报错，不会覆盖它。
 
 需要 API key 时，在 Agent 编辑页的 **高级选项 → 环境变量** 中显式配置；不会自动继承父进程的密钥。高级选项默认收起，已配置项会显示数量。目录预填只影响新增配置，更新插件不会覆盖已有配置。登录指引自动展示，无需填写，也不会执行登录命令或更改 Agent 认证配置；已有自定义指引仍会保留。
 
@@ -106,6 +106,8 @@ npx "@deepseek-ai/dsh@$DSH_VERSION" plugin --profile web remove @zaimokuza/dsh-a
 ```
 
 **升级时保留本地数据。** 主会话迁移由 DSH 负责；宿主不支持的旧子代理投影不额外迁移。当前轮次结束后重启 DSH、刷新页面，从设置标题旁确认加载版本。
+
+不再使用适配器后，可执行 `devin mcp remove --scope user dsh` 移除其入口。
 
 ## <img src="assets/readme/icon-help.svg" width="24" height="24" alt="" /> 遇到问题
 

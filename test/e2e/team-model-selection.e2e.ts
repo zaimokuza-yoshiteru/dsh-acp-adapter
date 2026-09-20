@@ -21,7 +21,7 @@ it('persists teammate model selection, applies it on wake, and protects Team bou
     await host.ctx.settings.replace('dsh-acp', { agents: { devin: {
       name: 'ACP model fixture', command: process.execPath,
       args: [join(root, 'test/mock-agent/mock-agent.ts')],
-      env: { MOCK_SCENARIO: 'regression', MOCK_PROFILE: 'devin', MOCK_MCP_HTTP: '1', MOCK_LOG: log },
+      env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: 'devin', MOCK_MCP_HTTP: '1', MOCK_LOG: log },
     } } })
     await vi.waitFor(() => expect(host.ctx.llm.listProviders().some(provider => provider.id === 'acp-devin')).toBe(true))
     await host.ctx.agentDefaultModel.saveSelection({ provider: 'acp-devin', model: 'mock-model-a' })
