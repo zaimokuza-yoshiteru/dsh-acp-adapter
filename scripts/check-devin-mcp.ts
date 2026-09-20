@@ -1,11 +1,13 @@
 /** Verify real Devin config contents via ACP's built-in /mcp command. No login or model call. */
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
-import { spawn } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises'
 import { tmpdir, userInfo } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
+import { promisify } from 'node:util'
+import { fileURLToPath } from 'node:url'
 import { prepareDevinTeamConfig } from '../src/host/teams/devin-config.ts'
 
 const executable = process.argv[2]
@@ -92,11 +94,38 @@ try {
     [nativeServer]: { url: 'http://127.0.0.1:43210/native-config-probe', transport: 'http' },
   } }), { mode: 0o600 })
   nativeFileWritten = true
-  const baseline = await inspectMcp(process.platform === 'win32' ? process.env : { ...process.env, ...sourceEnv })
+  const nativeEnv = process.platform === 'win32' ? process.env : { ...process.env, ...sourceEnv }
+  const baseline = await inspectMcp(nativeEnv)
   assert.equal(resolve(baseline._meta?.mcpConfigPath ?? ''), resolve(nativeFile), 'Devin must report the documented native MCP file')
   assert.ok(baseline.mcpListing.includes(nativeServer), 'ACP /mcp must list the server written to the documented native file')
   console.log(JSON.stringify({ check: 'native-config-content', platform: process.platform, file: nativeFile, serverVisibleInAcp: true }))
   console.log('PASS: ACP /mcp reads the server from the documented native MCP config')
+  // Let Devin itself locate and update its native config, including the fixed
+  // stdio entry proposed for Windows. This does not start the MCP launcher.
+  const runMcp = async (...args: string[]) => await promisify(execFile)(executable!, ['mcp', ...args], {
+    cwd: root, env: nativeEnv, timeout: 30_000,
+  })
+  const httpName = `http_probe_${randomUUID().replaceAll('-', '')}`
+  const stdioName = `stdio_probe_${randomUUID().replaceAll('-', '')}`
+  const launcher = fileURLToPath(new URL('../src/runtime/session/team-mcp-stdio.ts', import.meta.url))
+  await runMcp('add', '--scope', 'user', httpName, 'http://127.0.0.1:43210/add-command-probe')
+  await runMcp('add', '--scope', 'user', stdioName, '--', process.execPath, launcher)
+  const added = JSON.parse(await readFile(nativeFile, 'utf8')).mcpServers
+  assert.equal(added[httpName].url, 'http://127.0.0.1:43210/add-command-probe')
+  assert.equal(added[stdioName].command, process.execPath)
+  assert.deepEqual(added[stdioName].args, [launcher])
+  assert.equal(added[nativeServer].url, 'http://127.0.0.1:43210/native-config-probe', 'mcp add must preserve existing servers')
+  const addedInspection = await inspectMcp(nativeEnv)
+  assert.ok(addedInspection.mcpListing.includes(httpName), 'ACP must discover the HTTP server registered by mcp add')
+  assert.ok(addedInspection.mcpListing.includes(stdioName), 'ACP must discover the stdio server registered by mcp add')
+  await runMcp('remove', '--scope', 'user', httpName)
+  await runMcp('remove', '--scope', 'user', stdioName)
+  const removed = JSON.parse(await readFile(nativeFile, 'utf8')).mcpServers
+  assert.equal(removed[httpName], undefined)
+  assert.equal(removed[stdioName], undefined)
+  assert.equal(removed[nativeServer].url, 'http://127.0.0.1:43210/native-config-probe', 'mcp remove must preserve other servers')
+  console.log(JSON.stringify({ check: 'native-mcp-cli', platform: process.platform, httpAdd: true, stdioAdd: true, visibleInFreshAcp: true, remove: true, existingServerPreserved: true }))
+  console.log('PASS: native mcp add/remove and ACP discovery for HTTP and stdio entries')
   prepared = await prepareDevinTeamConfig(sourceEnv, {
     signal: new AbortController().signal,
     servers: [{ type: 'http', name: 'dshteam_discovery_test', url: 'http://127.0.0.1:43210/test', headers: [] }],
