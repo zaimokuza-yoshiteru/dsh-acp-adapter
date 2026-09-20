@@ -140,6 +140,18 @@ describe('session-owned native Teams MCP bridge', () => {
     lease.endPrompt()
     expect(lease.permission(permission(name))).toBeUndefined()
   })
+  it('shares the Devin server name but never another session’s tool capabilities or approvals', async () => {
+    const one = await setup('devin')
+    const two = await setup('devin')
+    expect(one.server.name).toBe('dsh')
+    expect(two.server.name).toBe('dsh')
+    expect(one.name).not.toBe(two.name)
+    one.lease.beginPrompt(new AbortController().signal)
+    two.lease.beginPrompt(new AbortController().signal)
+    expect(one.lease.permission(one.permission(`mcp__dsh__${one.name}`))?.outcome.outcome).toBe('selected')
+    expect(two.lease.permission(one.permission(`mcp__dsh__${one.name}`))).toBeUndefined()
+    expect((await two.client.callTool({ name: one.name })).isError).toBe(true)
+  })
   it('rejects hostile origins and capabilities after feature removal or tool replacement', async () => {
     const { lease, server, definitions, name, client, services } = await setup()
     lease.beginPrompt(new AbortController().signal)

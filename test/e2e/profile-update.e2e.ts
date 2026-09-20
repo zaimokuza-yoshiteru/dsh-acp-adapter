@@ -11,7 +11,7 @@ it('keeps working ACP routes after a refused profile update and supports repair 
   try {
     const config = {
       name: 'Original Devin', command: process.execPath, args: [join(root, 'test/mock-agent/mock-agent.ts')],
-      env: { MOCK_SCENARIO: 'regression', MOCK_PROFILE: 'devin' },
+      env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: 'devin' },
     }
     await host.ctx.settings.replace('dsh-acp', { agents: { devin: config } })
     const provider = () => host.ctx.llm.listProviders().find(item => item.id === 'acp-devin')

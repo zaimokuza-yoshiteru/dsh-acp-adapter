@@ -15,7 +15,7 @@ it.each(['claude', 'codex', 'devin', 'kimi'])('preserves %s reasoning, message a
   host.ctx.on('session/event', (session, event) => events.push({ sessionId: session.id, ...event }))
   try {
     await host.ctx.settings.replace('dsh-acp', { agents: { [profile]: { name: profile, command: process.execPath,
-      args: [join(root, 'test/mock-agent/mock-agent.ts')], env: { MOCK_SCENARIO: 'regression', MOCK_PROFILE: profile } } } })
+      args: [join(root, 'test/mock-agent/mock-agent.ts')], env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: profile } } } })
     const provider = `acp-${profile}`
     await vi.waitFor(() => expect(host.ctx.llm.listProviders().some(p => p.id === provider)).toBe(true))
     await host.ctx.agentDefaultModel.saveSelection({ provider, model: 'mock-model-a' })

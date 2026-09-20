@@ -1,0 +1,64 @@
+name: Real Devin integration
+
+on:
+  push:
+    branches: [feature/ZAI-43, feature/0.1.6.alpha, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: devin-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  real-devin:
+    if: github.repository == 'zaimokuza-yoshiteru/dsh-acp-adapter' && contains(fromJSON('["refs/heads/feature/ZAI-43", "refs/heads/feature/0.1.6.alpha", "refs/heads/main"]'), github.ref)
+    environment: devin-e2e
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-2022]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 10.7.0
+      - name: Build trusted checkout without credentials
+        run: pnpm install --frozen-lockfile && pnpm build
+      - name: Install pinned Devin (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$(uname -m)" in
+            arm64) platform=aarch64-apple-darwin; sha=051dfcf29e0f5cb5f0a07c7579dc97255fee7f02ce4c6feacc7d4065ce76b5bd ;;
+            x86_64) platform=x86_64-apple-darwin; sha=ca450a13a7e2d83a2c6e641c0f80842826f944cad3ca93ba892a7ade3948555a ;;
+            *) exit 1 ;;
+          esac
+          mkdir "$RUNNER_TEMP/devin-real"
+          curl --fail --location --silent --show-error --retry 3 "https://static.devin.ai/cli/3000.10.31/devin-3000.10.31-$platform.tar.gz" -o "$RUNNER_TEMP/devin-real/archive.tar.gz"
+          echo "$sha  $RUNNER_TEMP/devin-real/archive.tar.gz" | shasum -a 256 --check
+          tar -xzf "$RUNNER_TEMP/devin-real/archive.tar.gz" -C "$RUNNER_TEMP/devin-real"
+          echo "DEVIN_TEST_EXE=$(find "$RUNNER_TEMP/devin-real" -type f -name devin)" >> "$GITHUB_ENV"
+      - name: Authenticated native DSH Teams (macOS)
+        if: runner.os == 'macOS'
+        env:
+          WINDSURF_API_KEY: ${{ secrets.DEVIN_CLI_TOKEN }}
+        run: node scripts/check-devin-live.ts "$DEVIN_TEST_EXE"
+      - name: Authenticated native DSH Teams (ordinary Windows user)
+        if: runner.os == 'Windows'
+        env:
+          WINDSURF_API_KEY: ${{ secrets.DEVIN_CLI_TOKEN }}
+        shell: pwsh
+        run: ./scripts/run-windows-user-ci.ps1 -Live
+      # Never upload transcripts, profile directories, native CLI logs or credentials.

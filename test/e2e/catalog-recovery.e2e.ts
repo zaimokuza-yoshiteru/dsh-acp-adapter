@@ -17,7 +17,7 @@ describe.each(['devin', 'kimi', 'claude', 'codex'])('catalog recovery: %s', prof
       const provider = `acp-${profile}`
       await host.ctx.settings.replace('dsh-acp', { agents: { [profile]: {
         name: `Fixture ${profile}`, command: process.execPath, args: [join(root, 'test/mock-agent/mock-agent.ts')],
-        env: { MOCK_SCENARIO: 'regression', MOCK_PROFILE: profile, MOCK_UNAVAILABLE_FILE: unavailable },
+        env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: profile, MOCK_UNAVAILABLE_FILE: unavailable },
       } } })
       await vi.waitFor(() => expect(host.ctx.llm.listProviders().some(p => p.id === provider)).toBe(true))
       await host.ctx.agentDefaultModel.saveSelection({ provider, model: 'mock-model-a' })

@@ -21,7 +21,7 @@ describe.each(['kimi', 'devin', 'codex', 'claude'])('Agent controls: %s', profil
     try {
       await host.ctx.settings.replace('dsh-acp', { agents: { [profile]: {
         name: `Fixture ${profile}`, command: process.execPath, args: [join(root, 'test/mock-agent/mock-agent.ts')],
-        env: { MOCK_SCENARIO: 'regression', MOCK_PROFILE: profile, MOCK_CONTROLS_DELIVERY: delivery, MOCK_CONTROLS_READY_FILE: readyFile },
+        env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: profile, MOCK_CONTROLS_DELIVERY: delivery, MOCK_CONTROLS_READY_FILE: readyFile },
       } } })
       await vi.waitFor(() => expect(host.ctx.llm.listProviders().some(p => p.id === provider)).toBe(true))
       await host.ctx.agentDefaultModel.saveSelection({ provider, model: 'mock-model-a' })
