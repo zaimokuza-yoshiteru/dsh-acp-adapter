@@ -73,7 +73,6 @@ export type ActivityNodeProps = {
   readonly onProjectedChild?: (parentSessionId: string, childSessionId: string) => void
   readonly onOpenProjectedChild?: (parentSessionId: string, childSessionId: string) => void
   readonly jsonStringWrapping?: AcpJsonStringWrapping
-  readonly hasInlineRenderer?: () => boolean
   readonly renderTool?: (row: AcpActivityView) => ReactNode
 } & Pick<import('@deepseek-ai/dsh-client-ui-chat/client').ChatNodeOwnerProps, 'openFile'>
 
@@ -498,16 +497,12 @@ export function AcpActivityNode(props: ActivityNodeProps & Omit<ChatNodeViewProp
   const location = props.node.location
   const source = location.kind === 'step' ? location.step.data.source('acp-activity') : UNSETTLED_SOURCE
   const settled = useSyncExternalStore(source.subscribe, source.getSnapshot)
-  const assistantSource = location.kind === 'step' ? location.step.data.source('assistant-step') : UNSETTLED_SOURCE
-  const assistant = useSyncExternalStore(assistantSource.subscribe, assistantSource.getSnapshot)
   if (props.node.data.settled !== true && settled !== undefined) return null
-  const emptyFinal = assistant !== undefined && assistant.blocks.length === 0 && assistant.status !== 'running'
-  const inlineBlockCount = props.hasInlineRenderer?.() === true && assistant !== undefined && !emptyFinal ? assistant.blocks.length : undefined
-  return h(AcpActivityContent, { ...props, renderTool: row => renderNativeActivityTool(props, row, props.t), ...(inlineBlockCount === undefined ? {} : { inlineBlockCount }) })
+  return h(AcpActivityContent, { ...props, renderTool: row => renderNativeActivityTool(props, row, props.t) })
 }
 
 /** Additive ACP activity renderer. Agent-provided presentation is never translated. */
-export function AcpActivityContent({ node, sessionId, journalHub, t, openFile, onProjectedChild, onOpenProjectedChild, jsonStringWrapping, renderRows, inlineBlockCount, renderTool }: ActivityNodeProps & { inlineBlockCount?: number; renderRows?: (rows: readonly ActivityPresentationRow[], unavailable: boolean) => ReactNode }): ReactNode {
+export function AcpActivityContent({ node, sessionId, journalHub, t, openFile, onProjectedChild, onOpenProjectedChild, jsonStringWrapping, renderTool }: ActivityNodeProps): ReactNode {
   const [rows, setRows] = useState<readonly ActivityPresentationRow[]>([])
   const [unavailable, setUnavailable] = useState(false)
   const data = node.data
@@ -528,13 +523,9 @@ export function AcpActivityContent({ node, sessionId, journalHub, t, openFile, o
     return handle.release
   }, [data.ownerDshSessionId, data.promptAnchorMessageId, sessionId, journalHub, onProjectedChild])
 
-  if (renderRows !== undefined) return renderRows(rows, unavailable)
-  // Wait for preceding native chunks instead of briefly moving a future tool
-  // above the answer. Tool-only turns (boundary zero) still render here.
-  const additiveRows = rows.filter(row => inlineBlockCount === undefined || row.contentIndex === undefined)
-  if (additiveRows.length === 0 && !unavailable) return null
+  if (rows.length === 0 && !unavailable) return null
   return h('section', { className: css.flow, 'data-acp-activity': true },
-    ...additiveRows.map(row => h(ActivityRow, {
+    ...rows.map(row => h(ActivityRow, {
       key: `${row.activityId}:${row.activitySeq}`, row, t, openFile, journalHub, ...(renderTool === undefined ? {} : { renderTool }),
       ...(jsonStringWrapping === undefined ? {} : { jsonStringWrapping }),
       ...(onOpenProjectedChild === undefined ? {} : { onOpenProjectedChild }),
@@ -673,10 +664,8 @@ export function createAcpActivityDefinition(
       kind: 'acp-activity',
       id: context.id,
       target: 'chat',
-      // The finalized marker sequence is the native process window's exclusive
-      // end boundary. Equal anchoring remains adjacent to the answer but keeps
-      // this additive kind out of the stock "Thought" disclosure, whose fixed
-      // summary has no contribution slot for third-party activity counts.
+      // The native Chat adapter expands this marker into activity nodes once
+      // its journal is available. Keep its durable position for fallback UI.
       anchorSeq: context.state.seq,
       location: context.state.location,
       visibility: 'visible',

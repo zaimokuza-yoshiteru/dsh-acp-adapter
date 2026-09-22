@@ -6,11 +6,13 @@
 
 Use **Claude · Codex · Devin · Kimi** from the DSH session UI.
 
-This version supports DSH `0.1.6-alpha.2` only. ACP members and subagent records open in the native sidebar while the main conversation stays in place. Team member requests can still be approved from the main conversation.
+This version supports DSH `0.1.7-alpha.1` only. ACP members and subagent records open in the native sidebar while the main conversation stays in place. Team member requests can still be approved from the main conversation.
+
+On upgrade, existing Agent configuration is imported automatically from the old settings file into the current DSH profile. An Agent list already set in that profile, including an empty list, is preserved. The transcript uses DSH’s native compact, detailed, and expanded modes for tools, reasoning, and process groups.
 
 ## <img src="assets/readme/icon-preview.svg" width="24" height="24" alt="" /> Preview
 
-Screenshots show real **Devin · SWE-1.7 Medium** operations in a clean DSH instance.
+Screenshots show real **Devin · SWE-1.7 Medium** operations from an earlier release; the current layout follows the native DSH UI.
 
 Add an Agent, check its connection, and see the plugin version:
 
@@ -88,7 +90,7 @@ Catalog versions are advisory. A difference from the snapshot does not mean the 
 
 ![DSH owns sessions and UI; the adapter passes context and normalizes activity; the Agent owns models, tools and permissions. External subagent projections are read-only, and jobs do not survive a DSH restart.](assets/readme/acp-overview.en.svg)
 
-**Experimental Agent Teams:** Follows DSH’s Teams profiles and uses its native Team panel. Members inherit the Lead’s Agent, model and reasoning settings at creation, with fresh context only. Switching the Lead’s model affects future members; existing members retain theirs. A team uses one ACP Agent. Shared tasks use the native task board. Answer member approvals from the Lead; allow or reject all current ordinary approvals, with permission granted once only. The member icon at the top right shows status and models. Change Agent modes individually or in batches grouped by ACP profile; idle members apply changes immediately, while dormant members apply saved modes before their next run. Team coordination adds no approval prompts; ordinary permissions remain unchanged. Messages arrive at DSH step boundaries.
+**Experimental Agent Teams:** Follows DSH’s Teams profiles and uses its native Team panel. Members inherit the Lead’s Agent, model and reasoning settings at creation, with fresh context only. Switching the Lead’s model affects future members; existing members retain theirs. A team uses one ACP Agent. Shared tasks use the native task board. Answer member approvals from the Lead; allow or reject all current ordinary approvals, with permission granted once only. The member icon at the top right shows status and models. Change Agent modes individually or in batches grouped by ACP profile; dormant members apply saved modes before their next run. Team coordination adds no approval prompts; ordinary permissions remain unchanged. Messages arrive at DSH step boundaries.
 
 **Automatic DSH plugin tools:** Native tools visible to the current session are automatically exposed over MCP, without a manual tool list or Teams. For example, when the Host provides `present`, the Agent can use native file delivery and previews. Calls use the native tool pipeline and retain Agent approval and each tool's rules. The retired `hostTools` setting is ignored and removed when saving in the editor. See [native reuse boundaries](docs/native-reuse.en.md).
 
@@ -105,7 +107,7 @@ npx "@deepseek-ai/dsh@$DSH_VERSION" plugin --profile web update @zaimokuza/dsh-a
 npx "@deepseek-ai/dsh@$DSH_VERSION" plugin --profile web remove @zaimokuza/dsh-acp-adapter
 ```
 
-**Keep local data when upgrading.** DSH migrates main sessions; the adapter does not migrate legacy subagent projections that the host rejects. Restart DSH after the current turn, then refresh the page; check the loaded version beside the settings title.
+**Keep local data when upgrading.** DSH migrates main sessions; authenticated V3 subagent projections use the host migration codec. Unsupported formats and missing data are not reconstructed. Restart DSH after the current turn, then refresh the page; check the loaded version beside the settings title.
 
 After removing the adapter, run `devin mcp remove --scope user dsh` to remove its MCP entry.
 

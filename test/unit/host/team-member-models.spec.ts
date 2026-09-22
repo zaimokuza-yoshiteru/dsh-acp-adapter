@@ -158,7 +158,7 @@ describe('createMemberModels()', () => {
     const ctx = new Context()
     contexts.push(ctx)
     const leadSession = session()
-    const member = { id: 'member-1', role: 'teammate', status: 'idle', name: 'Member', options: { provider: 'acp-demo' }, session: session(), ctx: new Context() }
+    const member = { id: 'member-1', role: 'teammate', status: 'inactive', name: 'Member', options: { provider: 'acp-demo' }, session: session(), ctx: new Context() }
     const lead = { id: 'lead-1', options: { provider: 'acp-demo' }, session: leadSession, ctx: new Context() }
     contexts.push(member.ctx, lead.ctx)
     const agents = {

@@ -4,6 +4,28 @@
 
 User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for publication dates, exact installation instructions, and checksums. Historical entries were reconstructed from tag diffs; npm packages were not republished.
 
+## 0.1.7-alpha.1.0
+
+### 中文
+
+- 升级到 DSH `0.1.7-alpha.1`；宿主与插件需要同时升级。
+- Agent 配置使用原生插件设置表单，自动导入旧配置且保留当前配置中的 Agent 列表。
+- ACP 主会话流使用原生过程分组和紧凑、详细、展开模式，沿用宿主的工具分类、思考展示、折叠及间距。
+- 外部子会话记录进入原生子会话目录；恢复旧记录时使用宿主的 V3 → V4 迁移。
+- 对齐新版 Teams 成员状态、后台任务所有权及菜单接口。
+- 修复成员管理弹层缺少原生背景模糊导致的内容穿透；识别 Devin 的完整 MCP 工具标签，让合法团队协调请求自动处理，Bash 审批展示完整命令。
+- 修复会话选项提示在成员面板中偏移并产生横向滚动条的问题。
+
+### English
+
+- Targets DSH `0.1.7-alpha.1`; upgrade the host and plugin together.
+- Uses native plugin configuration forms, importing legacy Agent settings while preserving an Agent list already configured in the current profile.
+- Uses native process grouping and compact, detailed, and expanded transcript modes, including the host’s tool classification, reasoning display, disclosure controls, and spacing.
+- Publishes external subagent records to the native child catalog and uses the host’s V3 → V4 migration when restoring old records.
+- Adapts to updated Teams member states, background-job ownership, and menu APIs.
+- Fixes text showing through the member-management popup by applying native backdrop styling. Recognizes Devin's exact MCP tool labels for team coordination and shows full commands in Bash approvals.
+- Fixes misplaced session-option tooltips and the horizontal scrolling they caused inside member panels.
+
 ## 0.1.6-alpha.2.0
 
 ### 中文

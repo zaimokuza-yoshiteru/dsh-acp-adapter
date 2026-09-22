@@ -19,7 +19,7 @@ describe.each(['kimi', 'devin', 'codex', 'claude'])('Agent controls: %s', profil
     const readyFile = join(host.workspaceCwd, 'controls-ready')
     const provider = `acp-${profile}`
     try {
-      await host.ctx.settings.replace('dsh-acp', { agents: { [profile]: {
+      await host.ctx.settings.replace('dsh-acp-adapter', { agents: { [profile]: {
         name: `Fixture ${profile}`, command: process.execPath, args: [join(root, 'test/mock-agent/mock-agent.ts')],
         env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: profile, MOCK_CONTROLS_DELIVERY: delivery, MOCK_CONTROLS_READY_FILE: readyFile },
       } } })

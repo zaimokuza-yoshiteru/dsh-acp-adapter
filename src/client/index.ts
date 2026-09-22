@@ -34,7 +34,7 @@ import { createAcpPanelStore } from './data/stores/panel-store.ts'
 import type { AcpPanelStoreActions } from './data/stores/panel-store.ts'
 import { AcpSection } from './ui/AcpSection.ts'
 import type { AcpSectionWire, AcpTranslate } from './ui/AcpSection.ts'
-import { ACP_SETTINGS_NS, decodeAcpSettings } from './data/logic.ts'
+import { ACP_SETTINGS_NS } from './data/logic.ts'
 import type { AcpSettings } from './data/logic.ts'
 import { AcpAuditVisibilityGate, createAcpAuditView } from './ui/AcpAuditHeaderAction.ts'
 import { createAcpJsonStringWrapping, type AcpJsonStringWrapping } from './ui/json-tree.ts'
@@ -55,10 +55,10 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 
 export const inject = [
   'uiConversation', 'slots', 'locale', 'remote',
-  'sessions', 'workspaces', 'uiWorkspace', 'sidebarRight', 'settingsScope', 'remote.settings', 'remote.session',
+  'sessions', 'workspaces', 'uiWorkspace', 'sidebarRight', 'configForms', 'remote.settings', 'remote.session',
 ] as const
 
-/** Register only a Conversation Definition and one keyed Chat renderer. */
+/** Normalize ACP presentation facts and compose the registered native UI. */
 async function registerUi(ctx: ClientContext): Promise<void> {
   const acpRemote: AcpRemoteLike = ctx.remote.dshAcp
   const journalHub = new AcpActivityJournalHub(acpRemote, ctx.remote)
@@ -69,10 +69,7 @@ async function registerUi(ctx: ClientContext): Promise<void> {
       parentSessionId: parentSessionId as SessionId, childSessionId: childSessionId as SessionId, mode: 'one-shot',
     })
   }
-  const settingsScope = ctx.settingsScope.bind<AcpSettings>({
-    namespace: ACP_SETTINGS_NS,
-    decode: decodeAcpSettings,
-  })
+  const settingsScope = ctx.configForms.get<AcpSettings>(ACP_SETTINGS_NS)
   const ownedRoutes = await acpRemote.ownedProviderRoutes().catch(() => undefined)
   const projectedIds = await acpRemote.projectedSubagentIds().catch(() => undefined)
   const projectedSubagents = new ProjectedSubagentCatalog(
@@ -85,15 +82,8 @@ async function registerUi(ctx: ClientContext): Promise<void> {
   )
   const panelController = new AcpPanelController({
     scope: settingsScope,
-    settings: {
-      mutate: async (request) => ({
-        result: await ctx.remote.settings.mutate(
-          request.ns,
-          request.ops as never,
-          request.expectedRevision,
-        ),
-      }),
-    },
+    mutate: (ops, revision) => settingsScope.mutate(ops, revision),
+    refusedMessage: () => ctx.locale.bind('settings.acp')('settingsWriteRefused'),
     remote: acpRemote,
   })
   const jsonStringWrapping = createAcpJsonStringWrapping()
@@ -167,10 +157,10 @@ async function registerUi(ctx: ClientContext): Promise<void> {
     }),
   }, AcpAuditVisibilityGate))
   installNativeToolRenderer(ctx)
-  const hasInlineRenderer = installAcpAssistantStream(ctx, {
+  installAcpAssistantStream(ctx, {
     journalHub, t: ctx.locale.bind('acpActivity'), jsonStringWrapping,
-    onProjectedChild: (parentSessionId, childSessionId) => {
-      if (projectedSubagents.add(childSessionId)) void sessions.refreshSubagents(parentSessionId as never)
+    onProjectedChild: (_parentSessionId, childSessionId) => {
+      projectedSubagents.add(childSessionId)
     },
     onOpenProjectedChild: openProjectedChild,
   })
@@ -180,14 +170,13 @@ async function registerUi(ctx: ClientContext): Promise<void> {
     locale: 'acpActivity',
     inject: (): {
       readonly journalHub: AcpActivityJournalHub
-      readonly hasInlineRenderer: () => boolean
       readonly onProjectedChild: (parentSessionId: string, childSessionId: string) => void
       readonly onOpenProjectedChild: (parentSessionId: string, childSessionId: string) => void
       readonly jsonStringWrapping: AcpJsonStringWrapping
     } => ({
-      journalHub, hasInlineRenderer,
-      onProjectedChild: (parentSessionId, childSessionId) => {
-        if (projectedSubagents.add(childSessionId)) void sessions.refreshSubagents(parentSessionId as never)
+      journalHub,
+      onProjectedChild: (_parentSessionId, childSessionId) => {
+        projectedSubagents.add(childSessionId)
       },
       onOpenProjectedChild: openProjectedChild,
       jsonStringWrapping,
@@ -206,7 +195,6 @@ async function registerUi(ctx: ClientContext): Promise<void> {
         return result.value.members
       },
       async openMember(parentSessionId, childSessionId) {
-        await sessions.refreshSubagents(parentSessionId)
         if (!isMainSession(sessions, parentSessionId)) return
         openSubagentAside(ctx.sidebarRight, { parentSessionId, childSessionId, mode: 'continuable' })
       },

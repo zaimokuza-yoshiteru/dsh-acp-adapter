@@ -5,6 +5,7 @@
   width: min(560px, calc(100vw - 32px)); max-height: min(680px, calc(100dvh - 120px));
   padding: 10px; overflow: auto; border-radius: 12px;
   background: var(--dsw-specific-menu); color: var(--dsw-alias-label-primary);
+  backdrop-filter: var(--dsw-menu-backdrop-filter);
   --dsw-elevation-stroke-color: var(--dsw-alias-border-l1);
   box-shadow: var(--dsw-elevation-prominent);
   --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);

@@ -15,7 +15,7 @@ describe.each(['devin', 'kimi', 'claude', 'codex'])('catalog recovery: %s', prof
     const unavailable = join(host.workspaceCwd, 'agent-unavailable')
     try {
       const provider = `acp-${profile}`
-      await host.ctx.settings.replace('dsh-acp', { agents: { [profile]: {
+      await host.ctx.settings.replace('dsh-acp-adapter', { agents: { [profile]: {
         name: `Fixture ${profile}`, command: process.execPath, args: [join(root, 'test/mock-agent/mock-agent.ts')],
         env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: profile, MOCK_UNAVAILABLE_FILE: unavailable },
       } } })

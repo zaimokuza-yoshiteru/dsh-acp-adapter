@@ -17,6 +17,9 @@ type Watcher = (next: AcpSettings, previous: AcpSettings) => void | Promise<void
 class SettingsDocument {
   private value: unknown
   private readonly watchers = new Set<Watcher>()
+  onChange: () => void = () => {}
+  readonly config = { agents: { get: () => acpSettingsSchema(this.value).agents } }
+  configure() { return () => {} }
 
   constructor(initial: unknown) {
     this.value = initial
@@ -36,6 +39,7 @@ class SettingsDocument {
     const previous = acpSettingsSchema(this.value)
     const resolved = acpSettingsSchema(next)
     this.value = next
+    this.onChange()
     await Promise.all([...this.watchers].map(watcher => watcher(resolved, previous)))
   }
 }
@@ -46,7 +50,7 @@ function agent(name: string, command: string): AcpAgentConfig {
 
 describe('real Cordis ACP composition settings lifecycle', () => {
   it('registers initial settings and follows later mutations through the real injected plugin', async () => {
-    expect(inject).toContain('settings')
+    expect(inject).not.toContain('settings')
     const ctx = new Context()
     await ctx.plugin(SessionProjectionRegistry)
     // This registry-only fixture never dispatches an ACP AgentLoop turn.
@@ -111,7 +115,10 @@ describe('real Cordis ACP composition settings lifecycle', () => {
       readImage: async () => { throw new Error('not used by this composition test') },
     })
     ctx.provide('dshHomePath', (...segments: string[]) => path.join(home, ...segments))
-    const fiber = ctx.plugin({ name: 'composition-settings-test', inject: [...inject], apply })
+    const fiber = ctx.plugin({ name: 'composition-settings-test', inject: [...inject], apply: (scope: Context) => {
+      settings.onChange = () => scope.emit('loader/volatile-update', [])
+      apply(scope, settings.config)
+    } })
     await fiber.await()
 
     expect(routeCalls).toEqual([['acp-codex']])

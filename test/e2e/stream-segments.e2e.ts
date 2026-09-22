@@ -14,7 +14,7 @@ it.each(['claude', 'codex', 'devin', 'kimi'])('preserves %s reasoning, message a
   const events: ObservedEvent[] = [], errors: string[] = []
   host.ctx.on('session/event', (session, event) => events.push({ sessionId: session.id, ...event }))
   try {
-    await host.ctx.settings.replace('dsh-acp', { agents: { [profile]: { name: profile, command: process.execPath,
+    await host.ctx.settings.replace('dsh-acp-adapter', { agents: { [profile]: { name: profile, command: process.execPath,
       args: [join(root, 'test/mock-agent/mock-agent.ts')], env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: profile } } } })
     const provider = `acp-${profile}`
     await vi.waitFor(() => expect(host.ctx.llm.listProviders().some(p => p.id === provider)).toBe(true))
@@ -49,15 +49,24 @@ it.each(['claude', 'codex', 'devin', 'kimi'])('preserves %s reasoning, message a
         await process.waitFor()
         if (await process.getAttribute('aria-expanded') === 'false') await process.click()
       }
+      // 0.1.7 owns a second, per-process disclosure inside each Turn.
+      for (const button of await page.locator('[data-step-process] > div > button').all()) {
+        if (await button.isVisible() && await button.getAttribute('aria-expanded') === 'false') await button.click()
+      }
+      for (const row of await page.locator('[data-variant="think"]').all()) {
+        if (await row.isVisible() && await row.getAttribute('data-expanded') === null) await row.getByRole('button').first().click()
+      }
       expect(errors).toEqual([])
       const tool = (id: string) => page.locator(`[data-chat-call-id$=":tool:${id}"]`)
-      const text = (value: string) => page.getByText(value, { exact: true }).last()
+      const text = (value: string) => page.getByText(value, { exact: true }).filter({ visible: true }).last()
       const ordered = [
         tool('segment-setup'), text('先规划计数器页面。'), text('页面骨架已完成。'),
         tool('segment-plan'), text('再检查按钮事件。'), text('按钮交互已完成。'),
         tool('segment-check'), text('检查结果正常。'), text('演示结束。'), tool('segment-tail'),
       ]
       for (const item of ordered) await item.waitFor()
+      // Reasoning rows have their own native disclosure too.
+      for (const item of [text('先规划计数器页面。'), text('再检查按钮事件。')]) expect(await item.innerText()).not.toBe('')
       await expect.poll(async () => {
         const elements = await Promise.all(ordered.map(item => item.elementHandle()))
         return page.evaluate(nodes => {
@@ -68,8 +77,8 @@ it.each(['claude', 'codex', 'devin', 'kimi'])('preserves %s reasoning, message a
       }).toBe(true)
       for (const id of ['segment-setup', 'segment-plan', 'segment-check', 'segment-tail']) expect(await tool(id).count()).toBe(1)
       expect(await tool('segment-setup').locator('[data-sample=bash]').count()).toBe(1)
-      expect(await tool('segment-check').locator('[data-variant=others]').count()).toBe(1)
-      expect(await tool('segment-check').innerText()).toContain('Tool call')
+      expect(await tool('segment-check').locator('[data-tool=send_message]').count()).toBe(1)
+      expect(await tool('segment-check').innerText()).toContain('Send message')
       expect(await tool('segment-check').innerText()).toContain('send_message · repo-codex')
     }
 
@@ -92,19 +101,22 @@ it.each(['claude', 'codex', 'devin', 'kimi'])('preserves %s reasoning, message a
     await control.focus()
     await control.press('Enter')
     expect(await control.getAttribute('aria-expanded')).toBe('false')
-    await page.locator('[data-acp-activity][hidden="until-found"]').first().evaluate(element => element.dispatchEvent(new Event('beforematch')))
+    await page.locator('[data-step-process][hidden="until-found"]').last().evaluate(element => element.dispatchEvent(new Event('beforematch')))
     await expect.poll(() => control.getAttribute('aria-expanded')).toBe('true')
-    expect(await page.locator('[data-acp-activity]').first().evaluate(element => getComputedStyle(element).gap)).toBe('16px')
+    expect(await page.locator('[data-step-process-content]').count()).toBeGreaterThan(0)
+    expect(await page.getByRole('tab', { name: 'Chat', exact: true }).count()).toBe(1)
+    await verifyOrder()
     if (profile === 'codex') {
       await host.ctx.settings.replace('locale', { preference: 'zh' })
-      await page.getByRole('button', { name: '4 次工具调用', exact: true }).waitFor()
-      expect(await page.locator('[data-tool=send_message]').innerText()).toContain('工具调用')
+      await page.locator('[data-tool=send_message]').getByText('发送消息', { exact: true }).waitFor()
+      expect(await page.locator('[data-tool=send_message]').innerText()).toContain('发送消息')
       await host.ctx.settings.replace('locale', { preference: 'en' })
-      await page.getByRole('button', { name: '4 tool calls', exact: true }).waitFor()
+      await page.locator('[data-tool=send_message]').getByText('Send message', { exact: true }).waitFor()
     }
-    await host.ctx.settings.replace('ui-chat', { transcriptView: 'normal' })
-    await page.locator('[data-turn-process-tool-calls="4"]').waitFor({ state: 'hidden' })
-    await verifyOrder(true)
+    for (const mode of ['detailed', 'expanded']) {
+      await host.ctx.settings.replace('ui-chat', { transcriptView: mode })
+      await verifyOrder()
+    }
     await host.ctx.settings.replace('ui-chat', { transcriptView: 'compact' })
     if (profile === 'devin') {
       const dir = join(root, '.local/message-order-review')
@@ -119,7 +131,7 @@ it.each(['claude', 'codex', 'devin', 'kimi'])('preserves %s reasoning, message a
     const cancelledTurn = host.whenTurnSettled(30_000)
     void cancelledTurn.catch(() => {}) // Keep assertion failures from leaving an unhandled listener timeout.
     await page.getByRole('button', { name: 'Send message', exact: true }).click()
-    await page.getByText('保存检查结果', { exact: false }).last().waitFor()
+    await page.locator('[data-chat-call-id$=":tool:segment-tail"]').waitFor({ state: 'attached' })
     await verifyOrder(true)
     if (profile === 'devin') await page.screenshot({ path: join(root, '.local/message-order-review/stream.live.png'), fullPage: true })
     await page.getByRole('button', { name: 'Stop generating', exact: true }).click()
@@ -127,7 +139,8 @@ it.each(['claude', 'codex', 'devin', 'kimi'])('preserves %s reasoning, message a
     await verifyOrder()
     await page.reload()
     await verifyOrder()
-    expect(await page.getByText('Stopped', { exact: true }).count()).toBe(1)
+    expect(await page.locator('[data-chat-flow-kind=assistant-step]').getByText('Stopped', { exact: true }).count()).toBe(1)
+    expect(await page.getByRole('button', { name: 'Stopped', exact: true }).count()).toBe(1)
     expect(errors).toEqual([])
   } catch (error) {
     const page = browser?.contexts()[0]?.pages()[0]

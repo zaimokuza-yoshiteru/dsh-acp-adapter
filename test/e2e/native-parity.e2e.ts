@@ -1,3 +1,4 @@
+import type {} from '../support/message-source.ts'
 import type { AcpAgentConfig } from '../../src/contract/agent-config.ts'
 import type { ToolCallBlock } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
@@ -25,7 +26,7 @@ class NativeControl extends LlmAdapter {
   async listModels(provider: string) { return [{ provider, id: 'native-model', name: 'Native Model' }] }
   providerRetryPolicy(): ReturnType<LlmAdapter['providerRetryPolicy']> { return { mode: 'normal', maxRetries: 0, retryableCodes: [], initialDelayMs: 0, maxDelayMs: 0, jitterRatio: 0 } }
   async *stream(options: Parameters<LlmAdapter['stream']>[0]): ReturnType<LlmAdapter['stream']> {
-    const results = options.messages.filter(message => message.source.kind === 'tool')
+    const results = options.messages.filter(message => message.source?.kind === 'tool')
     if (results.length === 0) {
       expect((options.tools ?? []).some(tool => tool.name === 'e2e_fixture')).toBe(true)
       const block: ToolCallBlock = { type: 'tool-call', id: 'e2e-native-call' as ToolCallBlock['id'], name: 'e2e_fixture', arguments: '{}' }
@@ -58,7 +59,7 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
   beforeAll(async () => {
     host = await launchAdapterWorld()
     agentLog = join(host.workspaceCwd, 'fixture-agent.log')
-    await host.ctx.settings.replace('dsh-acp', { agents: { [profile]: {
+    await host.ctx.settings.replace('dsh-acp-adapter', { agents: { [profile]: {
       name: `Fixture ${profile}`, command: process.execPath,
       args: [join(root, 'test/mock-agent/mock-agent.ts')],
       env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: profile, MOCK_LOG: agentLog },
@@ -115,9 +116,12 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
   })
 
   async function expandProcess() {
-    const control = page.locator('[data-turn-process-tool-calls]').filter({ hasText: /tool call/ }).last()
+    const control = page.locator('[data-turn-process-tool-calls]').last()
     await control.waitFor()
     if (await control.getAttribute('aria-expanded') === 'false') await control.click()
+    for (const button of await page.locator('[data-step-process] > div > button').all()) {
+      if (await button.isVisible() && await button.getAttribute('aria-expanded') === 'false') await button.click()
+    }
   }
 
   async function send(prompt: string, { expectError = false } = {}) {
@@ -380,8 +384,8 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
     await page.getByText('E2E_DONE mock-model-a', { exact: true }).waitFor()
     await page.getByText('parity.txt', { exact: true }).first().waitFor()
     await expandProcess()
-    const activity = page.locator('[data-acp-activity]')
-    await activity.waitFor()
+      const activity = page.locator('[data-chat-call-id^="acp:"]')
+    await activity.first().waitFor()
     await activity.getByText('echo E2E_TOOL_OUTPUT', { exact: true }).first().click()
     await activity.locator('[data-terminal]').getByText('E2E_TOOL_OUTPUT', { exact: true }).first().waitFor()
     expect(await page.locator('[data-composer-input][contenteditable="true"]').count()).toBe(1)
@@ -417,14 +421,14 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
           const decision = await next()
           if (decision.kind !== 'enter' || !JSON.stringify(messages).includes('E2E_CONTEXT_')) return decision
           return { ...decision, messages: [...decision.messages, createUserMessage({
-            source: { kind: 'plugin', plugin: 'e2e-host-contributions' },
+            source: { kind: 'test-plugin', plugin: 'e2e-host-contributions' },
             content: [{ type: 'text', text: 'E2E_PLUGIN_INPUT' }],
           })] }
         })
         ctx.on('agent/turn-stopping', ({ agent }) => {
           if (followupSent || !JSON.stringify(agent.session.snapshotEvents()).includes('E2E_CONTEXT_A')) return
           followupSent = true
-          agent.send(createUserMessage({ source: { kind: 'plugin', plugin: 'e2e-host-contributions' }, content: [{ type: 'text', text: 'E2E_PLUGIN_FOLLOWUP' }] }), 'next-step', false)
+          agent.send(createUserMessage({ source: { kind: 'test-plugin', plugin: 'e2e-host-contributions' }, content: [{ type: 'text', text: 'E2E_PLUGIN_FOLLOWUP' }] }), 'next-step', false)
         })
       },
     })
@@ -474,8 +478,8 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
     await picture.first().waitFor()
     await expect.poll(() => picture.first().evaluate(img => img instanceof HTMLImageElement && img.complete && img.naturalWidth > 0)).toBe(true)
     await expandProcess()
-    const activity = page.locator('[data-acp-activity]')
-    await expect.poll(() => activity.count()).toBe(1)
+    const activity = page.locator('[data-chat-call-id^="acp:"]')
+    await expect.poll(() => activity.count()).toBeGreaterThan(0)
     await activity.getByRole('button', { name: /^Read.*fixture\.txt/ }).click()
     await activity.locator('[data-read]').getByText('E2E_READ_LINE', { exact: true }).first().waitFor()
     await activity.getByRole('button', { name: /^Edit.*fixture\.txt/ }).click()
@@ -589,6 +593,20 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
     }
   })
 
+  it.skipIf(profile !== 'devin')('shows the full Bash command for a Devin MCP label and still requires approval', async () => {
+    const { settled } = await send('E2E_HOST_BASH')
+    const approval = page.locator('[data-approval-key]')
+    await approval.waitFor()
+    const text = await approval.innerText()
+    expect(text).toContain('printf E2E_DSH_BASH_OK')
+    expect(text).toContain('bash')
+    expect(text).not.toMatch(/Calling |[a-f0-9]{16}_bash|"description"/)
+    expect(events.filter(event => event.type === 'approval/asked').at(-1)?.data.toolName).toBe('bash')
+    await approval.getByRole('button', { name: 'Allow once', exact: true }).click()
+    await settled
+    await page.getByText('E2E_HOST_TOOLS_DONE', { exact: true }).waitFor()
+  })
+
   it('preserves full native diffs and an unfinished native plan after reload', async () => {
     const details = vi.spyOn((host.ctx.get('dshAcp') as AcpRemoteService), 'activityDetail')
     details.mockRejectedValueOnce(new Error('test: detail temporarily unavailable'))
@@ -605,11 +623,12 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
       await dock.getByRole('button').click()
       await dock.getByText('E2E_PLAN_REMAINS', { exact: true }).waitFor()
       await expandProcess()
-    const activity = page.locator('[data-acp-activity]')
+    const activity = page.locator('[data-chat-call-id^="acp:"]')
       await activity.getByRole('button', { name: /^Edit.*full\.txt/ }).click()
       if (round === 0) {
         await activity.getByText('Could not load details. Your conversation is unaffected.', { exact: true }).waitFor()
-        await activity.getByRole('button', { name: 'Retry', exact: true }).click()
+        // The sidecar loader owns retry alongside the native tool component.
+        await activity.locator('..').getByRole('button', { name: 'Retry', exact: true }).click()
       }
       await activity.locator('[data-diff]').getByText('E2E_NEW_TAIL', { exact: true }).first().waitFor()
       if (process.env.DSH_E2E_SCREENSHOTS && round === 1) {
@@ -675,9 +694,9 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
   })
 
   for (const atomic of [false, true]) it(`steers through native admission with ${atomic ? 'atomic injection' : 'cancel and drain'}`, async () => {
-    const previous = (host.ctx.settings.get('dsh-acp') as { agents: Record<string, AcpAgentConfig> })
+    const previous = (host.ctx.settings.describe().find(row => row.ns === 'dsh-acp-adapter')?.value as { agents: Record<string, AcpAgentConfig> })
     const configs = previous.agents
-    await host.ctx.settings.replace('dsh-acp', { ...previous, agents: { ...configs, [profile]: {
+    await host.ctx.settings.replace('dsh-acp-adapter', { ...previous, agents: { ...configs, [profile]: {
       ...configs[profile], env: { ...configs[profile].env, MOCK_STEERING: atomic ? 'atomic' : '' },
     } } })
     const off = host.ctx.on('agent/pre-step', async (_payload, next) => {
@@ -710,7 +729,7 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
       await page.getByText(atomic ? 'E2E_STEER_DONE' : 'E2E_DONE mock-model-a', { exact: true }).waitFor()
       await page.getByRole('button', { name: /^(?:\d+ tool calls? · )?1 message$/ }).click()
       await page.getByText(/E2E_STEERING_RUNNING/).waitFor()
-    } finally { off(); await host.ctx.settings.replace('dsh-acp', previous) }
+    } finally { off(); await host.ctx.settings.replace('dsh-acp-adapter', previous) }
   })
 
   it('clears the old Agent approval before delivering steering in the same session', async () => {
@@ -726,8 +745,8 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
   })
 
   it('drains a suspended native injection when pre-step rejects the new input', async () => {
-    const previous = (host.ctx.settings.get('dsh-acp') as { agents: Record<string, AcpAgentConfig> })
-    await host.ctx.settings.replace('dsh-acp', { ...previous, agents: { ...previous.agents, [profile]: {
+    const previous = (host.ctx.settings.describe().find(row => row.ns === 'dsh-acp-adapter')?.value as { agents: Record<string, AcpAgentConfig> })
+    await host.ctx.settings.replace('dsh-acp-adapter', { ...previous, agents: { ...previous.agents, [profile]: {
       ...previous.agents[profile], env: { ...previous.agents[profile].env, MOCK_STEERING: 'atomic' },
     } } })
     const off = host.ctx.on('agent/pre-step', async (payload, next) => {
@@ -747,7 +766,7 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
       const next = await send('E2E_RECOVERED')
       await next.settled
       await page.getByText('E2E_RECOVERED_DONE', { exact: true }).waitFor()
-    } finally { off(); await host.ctx.settings.replace('dsh-acp', previous) }
+    } finally { off(); await host.ctx.settings.replace('dsh-acp-adapter', previous) }
   })
 
   it('recovers the native connection without reloading or duplicating ACP history', async () => {
@@ -825,12 +844,14 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
         return { version: handle.header.version, events: log.events.map(event => event.type) }
       } finally { await handle.close() }
     }, { timeout: 10000 }).toEqual({
-      version: 3,
+      version: 4,
       events: [
         'subagent/descriptor', 'turn/start', 'step/start', 'user/message',
         'assistant/message', 'step/end', 'turn/end',
       ],
     })
+    const parent = required(host.ctx.sessions.get(child.header.parentSession!))
+    await expect.poll(() => host.ctx.sessionProjections.snapshot(parent, ['subagentCatalog']).values.subagentCatalog).toEqual(expect.arrayContaining([expect.objectContaining({ id: child.header.id })]))
     await expandProcess()
     await page.getByRole('button', { name: 'Open read-only record', exact: true }).first().click()
     const sidebar = page.locator('[data-sidebar-chat]')

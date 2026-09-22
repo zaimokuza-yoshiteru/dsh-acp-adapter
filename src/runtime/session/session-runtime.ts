@@ -598,7 +598,9 @@ export class AcpSessionRuntime {
     }
     const coordination = this.mcpLease?.permission(request)
     if (coordination !== undefined) return coordination
-    const pending = handler(request, signal)
+    // Resolve coordination against the original wire identity first; normalize
+    // only the request shown by the native approval surface.
+    const pending = handler({ ...request, toolCall: this.mcpLease?.presentTool?.(request.toolCall) ?? request.toolCall }, signal)
     if (signal === undefined) return await pending
     let onAbort: (() => void) | undefined
     const aborted = new Promise<acp.RequestPermissionResponse>((resolve) => {

@@ -5,7 +5,7 @@ import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-store'
 import type { SessionSnapshot, UseProjection } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { UseSessionRetainInfo } from '@deepseek-ai/dsh-client-ui-session/client'
 import type { ConvViewProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
-import { IconCloseOutline16, IconSearchOutline16, Input, JsonTree, Tag } from '@deepseek-ai/dsh-client-ui-primitives'
+import { IconCloseOutlineMedium, IconSearchOutlineMedium, Input, JsonTree, Tag } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { TagTone } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { AcpAuditSummaryCode, AcpAuditTimelineEntry } from '../data/acp-remote.ts'
 import type { AcpRemoteLike } from '../data/acp-remote.ts'
@@ -331,7 +331,7 @@ function AcpAuditView(props: AcpAuditViewProps): ReactNode {
           h('button', { type: 'button', className: css.refresh, disabled: loading, onClick: () => load(true) },
             textOf(t, loading ? 'auditLoadingShort' : 'auditRefresh', loading ? 'Loading…' : 'Refresh')),
           h(Input, {
-            icon: h(IconSearchOutline16, { size: 16 }),
+            icon: h(IconSearchOutlineMedium, { size: 16 }),
             type: 'search',
             className: css.search!,
             value: query,
@@ -408,7 +408,7 @@ function AcpAuditView(props: AcpAuditViewProps): ReactNode {
             h(Tag, { tone: entryTone(selected) }, categoryLabel(t, selected.category)),
             h('span', { className: css.detailsLocation }, `#${String(selected.seq)}`),
           ),
-          h('button', { type: 'button', className: css.close, 'aria-label': textOf(t, 'auditClose', 'Close'), onClick: () => setSelectedSeq(null) }, h(IconCloseOutline16, { size: 14 })),
+          h('button', { type: 'button', className: css.close, 'aria-label': textOf(t, 'auditClose', 'Close'), onClick: () => setSelectedSeq(null) }, h(IconCloseOutlineMedium, { size: 14 })),
         ),
         h('div', { key: selected.seq, className: css.detailsBody, 'data-audit-detail-scroll': true },
           h('p', { className: css.detailsSummary }, auditSummaryOf(t, selected)),

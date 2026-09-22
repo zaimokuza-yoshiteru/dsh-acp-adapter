@@ -29,7 +29,7 @@ export async function teamTurn(session: MockSession, msg: PromptMessage, { sendU
       const profile = process.env.MOCK_PROFILE
       const toolCall = { toolCallId, title: shortName, kind: 'other', status: 'pending', rawInput: args,
         ...(profile === 'claude' ? { _meta: { claudeCode: { toolName: name } } }
-          : profile === 'devin' ? { _meta: { 'cognition.ai/toolName': name } }
+          : profile === 'devin' ? { title: `Calling ${tool.name} from ${server.name}` }
             : profile === 'kimi' ? { title: name }
               : { title: `mcp.${server.name}.${tool.name}`, _meta: { is_mcp_tool_call: true }, rawInput: { server: server.name, tool: tool.name, arguments: args } }) }
       sendUpdate(session.id, { sessionUpdate: 'tool_call', ...toolCall })

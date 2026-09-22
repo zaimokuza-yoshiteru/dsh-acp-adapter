@@ -4,6 +4,8 @@ import {
   SESSION_FORMAT_VERSION, Session, SessionId, SessionLogOffset, SessionSeq,
   type SessionEvent, type SessionHeader,
 } from '@deepseek-ai/dsh-session'
+import { createSessionFormatCatalogWithChildren } from '@deepseek-ai/dsh-session-format-catalog'
+import { releasedV3SessionFormatCodec } from '@deepseek-ai/dsh-session-format-v3-to-v4'
 import { snapshotSubagentDescriptor } from '@deepseek-ai/dsh-subagent'
 import type { AssistantMessage, UserMessage } from '@deepseek-ai/dsh-llm'
 import { AssistantStreamAccumulator } from '@deepseek-ai/dsh-llm'
@@ -178,8 +180,10 @@ function transcriptLog(
     { type: 'step/end', seq: SessionSeq(5), time: completedAt, data: { turn: 1, step: 1 } },
     { type: 'turn/end', seq: SessionSeq(6), time: completedAt, data: { turn: 1, reason: { kind: 'completed' } } },
   ]
-  const validated = Session.fromRestore(header.id, events, header, SessionLogOffset(0), 'detached')
-  if (validated.deriveMessages().length !== 2) throw new Error('ACP_SUBAGENT_TRANSCRIPT_INVALID: projected task/result were not admitted')
+  if (header.version === SESSION_FORMAT_VERSION) {
+    const validated = Session.fromRestore(header.id, events, header, SessionLogOffset(0), 'detached')
+    if (validated.deriveMessages().length !== 2) throw new Error('ACP_SUBAGENT_TRANSCRIPT_INVALID: projected task/result were not admitted')
+  }
   return { header, events }
 }
 
@@ -225,7 +229,7 @@ function storedProjection(row: AcpActivityRecord): { readonly detail: ProjectedD
     || typeof value.projectionStartedAt !== 'number' || typeof value.projectionCompletedAt !== 'number'
     || typeof value.projectionDigest !== 'string') return undefined
   const header = value.projectionHeader as unknown as SessionHeader
-  if (header.version !== SESSION_FORMAT_VERSION || header.id !== row.dshSessionId || header.parentSession !== value.parentDshSessionId) return undefined
+  if (![3, SESSION_FORMAT_VERSION].includes(header.version) || header.id !== row.dshSessionId || header.parentSession !== value.parentDshSessionId) return undefined
   let expected: ReturnType<typeof transcriptLog>
   try {
     expected = transcriptLog(header, value.projectionLabel, value.projectionStartedAt, value.projectionCompletedAt, {
@@ -237,6 +241,18 @@ function storedProjection(row: AcpActivityRecord): { readonly detail: ProjectedD
     })
   } catch { return undefined }
   if (value.projectionDigest !== digest(expected)) return undefined
+  // Authenticate the original transaction before using the host's released
+  // migration catalog. Never "upgrade" durable data by changing only its version.
+  if (Number(header.version) === 3) {
+    try {
+      // The authenticated seven-event read-only transcript cannot own children.
+      const codec = releasedV3SessionFormatCodec
+      const restore = createSessionFormatCatalogWithChildren([]).createRestore(codec.encodeHeader(header as unknown as Parameters<typeof codec.encodeHeader>[0], 0), { recovery: 'strict', validation: 'current' })
+      for (const event of expected.events) restore.decodeRow(codec.encodeEvent(event as unknown as Parameters<typeof codec.encodeEvent>[0]))
+      const migrated = restore.finish()
+      expected = { header: migrated.header as unknown as SessionHeader, events: migrated.events as unknown as readonly SessionEvent[] }
+    } catch { return undefined }
+  }
   return { detail: value as unknown as ProjectedDetail, expected }
 }
 
@@ -251,6 +267,7 @@ export class ExternalSubagentProjector {
   constructor(
     private readonly persistence: Pick<SessionPersistence, 'create' | 'open'>,
     private readonly sidecar: Pick<AcpSidecar, 'upsertActivity'> & Partial<Pick<AcpSidecar, 'listProjectedSubagentActivities'>>,
+    private readonly publishChild?: (header: SessionHeader, label: string) => Promise<void>,
   ) {}
 
   private async inspect(id: string): Promise<{ readonly meta: SessionHeader; readonly events: readonly SessionEvent[] } | undefined> {
@@ -322,6 +339,7 @@ export class ExternalSubagentProjector {
           throw new Error(`ACP_SUBAGENT_PARENT_NOT_DURABLE: ${stored.detail.parentDshSessionId}`)
         }
         const created = await this.commit(stored.expected)
+        await this.publishChild?.(stored.expected.header, stored.detail.projectionLabel)
         await this.setProjectionStatus(row, 'completed')
         committed += 1
         if (created) repaired += 1
@@ -355,6 +373,7 @@ export class ExternalSubagentProjector {
     try {
       if (!(await context.flushParent())) throw new Error('ACP_SUBAGENT_PARENT_NOT_DURABLE')
       const created = await this.commit(expected)
+      await this.publishChild?.(expected.header, detail.projectionLabel)
       await this.setProjectionStatus(staged, 'completed')
       return { childSessionId: id, created }
     } catch (error) {

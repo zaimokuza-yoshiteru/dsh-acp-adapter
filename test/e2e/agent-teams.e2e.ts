@@ -27,7 +27,7 @@ describe.each([['claude', false], ['devin', true], ['codex', true], ['kimi', fal
       host.ctx.on('tools/result', (execution, result) => { executions.push({ name: execution.name, isError: result.isError }) })
       log = join(host.workspaceCwd, 'teams-agent.log')
       const provider = `acp-${profile}`
-      await host.ctx.settings.replace('dsh-acp', { agents: { [profile]: {
+      await host.ctx.settings.replace('dsh-acp-adapter', { agents: { [profile]: {
         name: `Fixture ${profile}`, command: process.execPath, args: [join(root, 'test/mock-agent/mock-agent.ts')],
         env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: profile, MOCK_MCP_HTTP: http ? '1' : '0', MOCK_LOG: log },
       } } })
@@ -67,9 +67,10 @@ describe.each([['claude', false], ['devin', true], ['codex', true], ['kimi', fal
       await page.getByRole('button', { name: 'calculator · Pending request', exact: true }).waitFor({ timeout: 20_000 })
       const action = page.locator('[data-team-action]')
       await action.getByRole('button', { name: /Agent Team/ }).click()
-      await action.getByText('Compute fixture', { exact: true }).first().waitFor()
-      await action.getByText('calculator', { exact: true }).first().waitFor()
-      if (profile === 'devin' && decision === 'allow') await verifyTaskBoard(action, host, lead)
+      const panel = page.getByRole('dialog', { name: 'Agent Team', exact: true })
+      await panel.getByText('Compute fixture', { exact: true }).first().waitFor()
+      await panel.getByText('calculator', { exact: true }).first().waitFor()
+      if (profile === 'devin' && decision === 'allow') await verifyTaskBoard(panel, host, lead)
       await action.getByRole('button', { name: /Agent Team/ }).click()
       await page.getByRole('button', { name: 'calculator · Pending request', exact: true }).click()
       const sidebar = page.locator('[data-sidebar-chat]')
@@ -124,29 +125,20 @@ describe.each([['claude', false], ['devin', true], ['codex', true], ['kimi', fal
   }, 120_000)
 })
 
-/** Native task UI + a concurrent host write exercise the actual Remote/CAS path. */
-async function verifyTaskBoard(action: Locator, host: AdapterWorld, lead: Agent) {
+/** 0.1.7's native task panel is read-only; host-owned updates appear on refresh. */
+async function verifyTaskBoard(panel: Locator, host: AdapterWorld, lead: Agent) {
   const task = required(host.ctx.agentTeams.listTasks(lead).find(task => task.subject === 'Compute fixture'))
+  expect(await panel.getByRole('button', { name: 'Complete', exact: true }).count()).toBe(0)
   await host.ctx.agentTeams.updateTask(lead, { taskId: task.id, expectedRevision: task.revision, action: 'edit', description: 'Concurrent update' })
-  await action.locator('article').filter({ hasText: 'Compute fixture' }).getByRole('button', { name: 'Complete', exact: true }).click()
-  await action.getByRole('alert').filter({ hasText: 'Task state changed' }).waitFor()
-  const first = action.locator('article').filter({ hasText: 'Compute fixture' })
-  await first.getByRole('button', { name: 'Complete', exact: true }).click()
-  await first.getByText('Completed', { exact: true }).waitFor()
-  await action.locator('article').filter({ hasText: 'Blocked fixture' }).getByText('Ready', { exact: true }).waitFor()
-  await first.getByRole('button', { name: 'Reopen', exact: true }).click()
-  await first.getByText('Pending', { exact: true }).waitFor()
-  await action.getByRole('button', { name: 'New task', exact: true }).click()
-  await action.getByPlaceholder('Task subject', { exact: true }).fill('Review task')
-  await action.getByPlaceholder('Task description', { exact: true }).fill('Created in the native panel')
-  await action.getByRole('button', { name: 'Save', exact: true }).click()
-  const created = action.locator('article').filter({ hasText: 'Review task' })
-  await created.getByRole('button', { name: 'Edit', exact: true }).click()
-  await action.getByPlaceholder('Task description', { exact: true }).fill('Edited in the native panel')
-  await action.getByRole('button', { name: 'Save', exact: true }).click()
-  await created.getByText('Edited in the native panel', { exact: true }).waitFor()
-  await created.getByRole('combobox').selectOption('calculator')
-  await vi.waitFor(() => expect(required(host.ctx.agentTeams.listTasks(lead).find(task => task.subject === 'Review task')).ownerName).toBe('calculator'))
-  await created.getByRole('button', { name: 'Delete', exact: true }).click()
-  await vi.waitFor(() => expect(host.ctx.agentTeams.listTasks(lead).some(task => task.subject === 'Review task')).toBe(false))
+  await expect(host.ctx.agentTeams.updateTask(lead, { taskId: task.id, expectedRevision: task.revision, action: 'complete' })).rejects.toThrow()
+  await panel.getByRole('button', { name: 'Refresh Team', exact: true }).click()
+  await panel.getByText('Concurrent update', { exact: true }).waitFor()
+  const current = () => required(host.ctx.agentTeams.listTasks(lead).find(item => item.id === task.id))
+  await host.ctx.agentTeams.updateTask(lead, { taskId: task.id, expectedRevision: current().revision, action: 'complete' })
+  await panel.getByRole('button', { name: 'Refresh Team', exact: true }).click()
+  await panel.locator('article').filter({ hasText: 'Compute fixture' }).getByText('Completed', { exact: true }).waitFor()
+  await panel.locator('article').filter({ hasText: 'Blocked fixture' }).getByText('Ready', { exact: true }).waitFor()
+  await host.ctx.agentTeams.updateTask(lead, { taskId: task.id, expectedRevision: current().revision, action: 'reopen' })
+  await panel.getByRole('button', { name: 'Refresh Team', exact: true }).click()
+  await panel.locator('article').filter({ hasText: 'Compute fixture' }).getByText('Pending', { exact: true }).waitFor()
 }

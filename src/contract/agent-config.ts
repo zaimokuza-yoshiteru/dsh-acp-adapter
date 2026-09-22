@@ -5,7 +5,7 @@
  * 'dsh-acp'）：改名会让既有用户的 settings 文档静默失联。sidecar 根目录同理
  * （src/persistence/sidecar.ts 的 dshHomePath('dsh-acp')）。
  */
-export const ACP_SETTINGS_NS = 'dsh-acp'
+export const ACP_SETTINGS_NS = 'dsh-acp-adapter'
 
 /** LLM route id prefix; agent `<id>` routes as `acp-<id>`. */
 export const ACP_ROUTE_PREFIX = 'acp-'

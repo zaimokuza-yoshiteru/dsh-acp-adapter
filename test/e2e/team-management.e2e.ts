@@ -20,7 +20,7 @@ it('shows per-profile mode menus with dormant mode persistence and approval prot
   host.ctx.on('session/event', (session, event) => events.push({ sessionId: session.id, ...event }))
   const retain = process.env.DSH_E2E_RETAIN_MANAGEMENT === '1'
   try {
-    await host.ctx.settings.replace('dsh-acp', { agents: { devin: { name: 'ACP demo', command: process.execPath,
+    await host.ctx.settings.replace('dsh-acp-adapter', { agents: { devin: { name: 'ACP demo', command: process.execPath,
       args: [join(root, 'test/mock-agent/mock-agent.ts')], env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: 'devin', MOCK_MCP_HTTP: '1', MOCK_SESSION_NEW_DELAY_MS: '5000' } } } })
     await vi.waitFor(() => expect(host.ctx.llm.listProviders().some(p => p.id === 'acp-devin')).toBe(true))
     await host.ctx.agentDefaultModel.saveSelection({ provider: 'acp-devin', model: 'mock-model-a' })
@@ -45,7 +45,7 @@ it('shows per-profile mode menus with dormant mode persistence and approval prot
     const lead = required(host.ctx.agents.list().find(a => host.ctx.agentTeams.tryMembership(a)?.role === 'lead'))
     const childId = required(host.ctx.agentTeams.listMembers(lead).find(m => m.role === 'teammate')).id
     const url = page.url()
-    const panel = page.locator('[data-acp-team-management]')
+    const panel = page.locator('[data-acp-team-management], [data-acp-team-panel]')
     const modeMenu = page.getByRole('menu')
     const evidence = join(root, '.local/shared-session-menu')
     mkdirSync(evidence, { recursive: true })
@@ -69,7 +69,7 @@ it('shows per-profile mode menus with dormant mode persistence and approval prot
     await modeMenu.screenshot({ path: join(evidence, 'member-readonly.png') })
     await page.keyboard.press('Escape')
     await expect.poll(() => page.getByRole('menu').count()).toBe(0)
-    expect(await panel.getByRole('dialog').count()).toBe(1)
+    expect(await page.locator('[data-acp-team-panel]').count()).toBe(1)
     const group = panel.locator('[data-acp-mode-group="devin"]')
     expect(await panel.locator('[data-acp-mode-group]').count()).toBe(1)
     await group.getByRole('button', { name: 'Change modes together', exact: true }).click()
@@ -97,7 +97,7 @@ it('shows per-profile mode menus with dormant mode persistence and approval prot
     const original = await (host.ctx.get('dshAcp') as AcpRemoteService).agentSessionSnapshot(childId)
     expect(original.pendingModeId).toBe('plan')
     expect(await modeMenu.count()).toBe(0)
-    expect(await panel.getByRole('dialog').count()).toBe(1)
+    expect(await page.locator('[data-acp-team-panel]').count()).toBe(1)
     await row.getByRole('button', { name: /^(?:Session|会话) · Plan$/ }).click()
     await modeMenu.screenshot({ path: join(evidence, 'member-settings.png') })
     await enterMode()
@@ -133,9 +133,9 @@ it('shows per-profile mode menus with dormant mode persistence and approval prot
     await row.getByRole('button', { name: /^(?:Session|会话) · Ask$/ }).waitFor()
     expect(await row.locator('[data-member-pending-mode]').count()).toBe(0)
     if (!retain) await page.setViewportSize({ width: 680, height: 900 })
-    expect(await panel.getByRole('dialog').evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true)
+    expect(await page.locator('[data-acp-team-panel]').evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true)
     await page.keyboard.press('Escape')
-    await expect.poll(() => panel.getByRole('dialog').count()).toBe(0)
+    await expect.poll(() => page.locator('[data-acp-team-panel]').count()).toBe(0)
     if (!retain) await page.setViewportSize({ width: 1440, height: 719 })
     await page.getByRole('button', { name: 'New session', exact: true }).last().click()
     // Navigation replaces the old composer asynchronously. Do not type into
@@ -161,7 +161,7 @@ it('shows per-profile mode menus with dormant mode persistence and approval prot
     const triggerBox = required(await panel.getByRole('button', { name: '成员管理 · 2', exact: true }).boundingBox())
     expect(triggerBox.y).toBeLessThan(100)
     expect(triggerBox.x).toBeGreaterThan((await page.evaluate(() => innerWidth)) / 2)
-    const popupBox = required(await panel.getByRole('dialog').boundingBox())
+    const popupBox = required(await page.locator('[data-acp-team-panel]').boundingBox())
     expect(popupBox.x).toBeGreaterThanOrEqual(0)
     expect(popupBox.x + popupBox.width).toBeLessThanOrEqual(await page.evaluate(() => innerWidth))
     // Member cards contain only mode controls, with one batch entry for this ACP profile.

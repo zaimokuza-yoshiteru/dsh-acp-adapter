@@ -267,13 +267,13 @@ describe(' 分层架构守卫', () => {
     expect(violations.map((e) => `${e.fromFile} → ${e.toFile}`)).toEqual([]);
   });
 
-  it('clientData only imports contract plus the published DSH store/journal primitives', () => {
+  it('clientData only imports contract and published DSH data contracts', () => {
     const crossLayer = edges.filter(
       (e) => e.fromLayer === 'clientData' && e.toLayer !== 'clientData' && e.toLayer !== 'contract',
     );
     const external = nonRelative
       .filter((i) => layerOf(i.fromFile) === 'clientData')
-      .filter((i) => !['@deepseek-ai/dsh-client-store', '@deepseek-ai/dsh-api-gateway/client', '@deepseek-ai/dsh-typert-protocol'].includes(i.specifier))
+      .filter((i) => !['@deepseek-ai/dsh-client-store', '@deepseek-ai/dsh-api-gateway/client', '@deepseek-ai/dsh-typert-protocol', '@deepseek-ai/dsh-settings/types'].includes(i.specifier))
       .map((i) => `${i.fromFile} import '${i.specifier}'`);
     expect(crossLayer.map((e) => `${e.fromFile} → ${e.toFile}`)).toEqual([]);
     expect(external).toEqual([]);

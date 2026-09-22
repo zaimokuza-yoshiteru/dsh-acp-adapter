@@ -39,7 +39,7 @@ export function createTeamManagement(ctx: Context, owns: (provider: string) => b
     const catalog = await models.catalog(provider)
     const facts = await models.facts(id, provider)
     const { member } = await resolveMember(lead, id)
-    return { ...facts, models: catalog, writable: facts.writable && (member.status === 'idle' || member.status === 'inactive') }
+    return { ...facts, models: catalog, writable: facts.writable && (member.status === 'inactive') }
   }
   return {
     async members(id) {
@@ -53,7 +53,7 @@ export function createTeamManagement(ctx: Context, owns: (provider: string) => b
         return { profileId: provider !== undefined && owns(provider) ? provider.slice(4) : null, sessionId: row.id, name: row.name, status: row.status, description: row.description ?? null,
           model: facts?.currentModel ?? session?.requestHeader()?.config.model ?? child?.options.model ?? null,
           pendingModel: facts?.pendingModel ?? null,
-          modelWritable: facts?.writable === true && (row.status === 'idle' || row.status === 'inactive') }
+          modelWritable: facts?.writable === true && (row.status === 'inactive') }
       }))
     },
     models: memberModels,
@@ -61,11 +61,11 @@ export function createTeamManagement(ctx: Context, owns: (provider: string) => b
       const view = await memberModels(lead, id)
       if (!view.writable || !view.models.some(item => item.id === model)) throw new Error('ACP_TEAM_MODEL_READ_ONLY_OR_UNAVAILABLE')
       const { provider, member } = await resolveMember(lead, id)
-      if (member.status !== 'idle' && member.status !== 'inactive') throw new Error('ACP_TEAM_MEMBER_BUSY')
+      if (member.status !== 'inactive') throw new Error('ACP_TEAM_MEMBER_BUSY')
       await models!.save(id, provider, model, () => {
         const owner = resolve(lead)
         const current = owner.teams.listMembers(owner.agent).find(row => row.id === id && row.role === 'teammate')
-        if (owner.provider !== provider || current === undefined || (current.status !== 'idle' && current.status !== 'inactive')
+        if (owner.provider !== provider || current === undefined || (current.status !== 'inactive')
           || ctx.get('agents', false)?.get(id as never)?.status === 'running') throw new Error('ACP_TEAM_MEMBER_BUSY')
       })
       return await memberModels(lead, id)

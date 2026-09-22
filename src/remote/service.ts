@@ -743,7 +743,7 @@ export class AcpRemoteService extends TypertRemoteService {
   async setTeamMemberMode(lead: string, sessionId: string, modeId: string): Promise<AcpAgentSessionSnapshotView> {
     const members = await this.teamMembers(lead)
     const member = members.find(member => member.sessionId === sessionId)
-    if (member?.profileId === null || member === undefined || (member.status !== 'idle' && member.status !== 'inactive')) throw badRequest('The ACP member must be idle or dormant')
+    if (member?.profileId === null || member === undefined || member.status !== 'inactive') throw badRequest('The ACP member must be inactive')
     if (typeof modeId !== 'string' || !modeId || modeId.length > 128) throw badRequest('Invalid member mode')
     await this.requireOwnedSessionRead(sessionId)
     const adapter = await this.agentSessionControlFor(sessionId)

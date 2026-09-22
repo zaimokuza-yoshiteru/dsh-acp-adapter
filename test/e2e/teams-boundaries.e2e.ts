@@ -29,7 +29,7 @@ class NativeTeamControl extends LlmAdapter {
 async function setup(teams: boolean, native = false) {
   const host = await launchAdapterWorld({ teams })
   const profile = (id: string) => ({ name: `Fixture ${id}`, command: process.execPath, args: [join(root, 'test/mock-agent/mock-agent.ts')], env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: id, MOCK_MCP_HTTP: '1' } })
-  await host.ctx.settings.replace('dsh-acp', { agents: { devin: profile('devin'), codex: profile('codex') } })
+  await host.ctx.settings.replace('dsh-acp-adapter', { agents: { devin: profile('devin'), codex: profile('codex') } })
   await vi.waitFor(() => expect(host.ctx.llm.listProviders().some(item => item.id === 'acp-devin')).toBe(true))
   if (native) host.ctx.effect(() => host.ctx.llm.registerAdapter(['native-control'], new NativeTeamControl()))
   await host.ctx.agentDefaultModel.saveSelection(native ? { provider: 'native-control', model: 'native-a' } : { provider: 'acp-devin', model: 'mock-model-a' })

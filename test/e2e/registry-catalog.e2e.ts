@@ -86,7 +86,7 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
     await dialog.getByLabel('Environment', { exact: true }).fill('FAST_AGENT_MODEL=my-choice\nMOCK_SCENARIO=regression')
     await dialog.getByRole('button', { name: 'Save', exact: true }).click()
     await dialog.getByText('Saved.', { exact: true }).waitFor()
-    const saved = (host.ctx.settings.get('dsh-acp') as { agents: Record<string, AcpAgentConfig> }).agents['my-fast']
+    const saved = (host.ctx.settings.describe().find(row => row.ns === 'dsh-acp-adapter')?.value as { agents: Record<string, AcpAgentConfig> }).agents['my-fast']
     expect(saved.runtime).toBeUndefined()
     expect(saved.catalogId).toBe('fast-agent')
     expect(saved.env.FAST_AGENT_MODEL).toBe('my-choice')

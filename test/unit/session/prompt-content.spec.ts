@@ -24,7 +24,7 @@ describe('prompt content conversion', () => {
     await expect(toAcpPrompt([{ ...message, source: { kind: 'user' } }], { imageEnabled: false, signal: new AbortController().signal })).rejects.toThrow('reasoning')
   })
   it('carries complete host instructions and logged plugin input without advertising executable tools', async () => {
-    const context = createUserMessage({ content: [{ type: 'text', text: 'Current project guidance' }], source: { kind: 'plugin', plugin: 'guidance' } })
+    const context = createUserMessage({ content: [{ type: 'text', text: 'Current project guidance' }], source: { kind: 'test-plugin', plugin: 'guidance' } })
     const result = await toAcpPrompt([context, text('Continue')], {
       system: 'Apply the repository conventions.\nKeep the full instruction text.',
       imageEnabled: false,

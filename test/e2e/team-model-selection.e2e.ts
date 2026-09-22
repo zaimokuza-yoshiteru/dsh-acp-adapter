@@ -18,7 +18,7 @@ it('persists teammate model selection, applies it on wake, and protects Team bou
   const events: ObservedEvent[] = []
   host.ctx.on('session/event', (session, event) => events.push({ sessionId: session.id, ...event }))
   try {
-    await host.ctx.settings.replace('dsh-acp', { agents: { devin: {
+    await host.ctx.settings.replace('dsh-acp-adapter', { agents: { devin: {
       name: 'ACP model fixture', command: process.execPath,
       args: [join(root, 'test/mock-agent/mock-agent.ts')],
       env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: 'devin', MOCK_MCP_HTTP: '1', MOCK_LOG: log },
@@ -67,7 +67,7 @@ it('persists teammate model selection, applies it on wake, and protects Team bou
       { id: 'mock-model-b', name: 'Mock Model B' },
     ]))
 
-    const panel = page.locator('[data-acp-team-management]')
+    const panel = page.locator('[data-acp-team-management], [data-acp-team-panel]')
     await panel.getByRole('button', { name: 'Manage members · 1', exact: true }).click()
     const row = panel.locator('[data-acp-managed-member="calculator"]')
     await row.getByRole('status').filter({ hasText: /mock[ -]model[ -]a/i }).waitFor()

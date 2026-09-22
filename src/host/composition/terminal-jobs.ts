@@ -1,5 +1,5 @@
 import type { Context } from '@deepseek-ai/cordis'
-import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { JobRegistry } from '@deepseek-ai/dsh-jobs'
 import type { AcpTerminalJobStarter } from '../../runtime/client-capabilities/terminal-job.ts'
 
@@ -13,9 +13,7 @@ export function resolveTerminalJobs(ctx: Context, sessionId: string): AcpTermina
   const jobs = holder.get('jobs') as JobRegistry | undefined
   if (jobs === undefined) return undefined
   return (label, run) => {
-    const agents = holder.get('agents') as { get(id: string): Agent | undefined } | undefined
-    const owner = agents?.get(sessionId)
-    if (owner === undefined) throw new Error('ACP terminal job requires a live owning DSH agent')
+    const owner = sessionId as SessionId
     let id!: ReturnType<JobRegistry['start']>
     id = jobs.start({ kind: 'acp-terminal', label, owner, run: () => {
       const producer = run()

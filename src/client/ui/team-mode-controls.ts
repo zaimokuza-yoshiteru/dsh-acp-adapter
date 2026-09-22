@@ -29,7 +29,7 @@ export async function applyTeamMode(input: {
     try {
       if (!input.isCurrent()) { result.skipped++; continue }
       const member = (await input.members()).find(member => member.sessionId === id && member.profileId === input.profileId)
-      if (member?.status !== 'idle' && member?.status !== 'inactive') { result.skipped++; continue }
+      if (member?.status !== 'inactive') { result.skipped++; continue }
       const snapshot = await input.snapshot(id)
       const choice = teamModeChoices(snapshot).find(choice => choice.id === input.mode)
       const writable = (snapshot.editable && snapshot.freshness === 'live') || snapshot.modeWritable === true

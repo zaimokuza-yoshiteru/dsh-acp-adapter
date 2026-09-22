@@ -28,7 +28,7 @@ describe.each(['claude', 'codex', 'devin', 'kimi'])('native terminal jobs: %s', 
     const provider = `acp-${profile}`
     const agentLog = join(host.workspaceCwd, 'jobs-agent.log')
     try {
-      await host.ctx.settings.replace('dsh-acp', { agents: { [profile]: {
+      await host.ctx.settings.replace('dsh-acp-adapter', { agents: { [profile]: {
         name: `Fixture ${profile}`, command: process.execPath,
         args: [join(root, 'test/mock-agent/mock-agent.ts')],
         env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: profile, MOCK_LOG: agentLog },
@@ -52,14 +52,14 @@ describe.each(['claude', 'codex', 'devin', 'kimi'])('native terminal jobs: %s', 
         return id
       }
       const id = await send(page, 'E2E_JOB_START')
-      const owner = host.ctx.agents.get(id)
+      const owner = id
       const jobs = () => host.ctx.jobs.list(owner).filter(job => job.kind === 'acp-terminal')
       const latestFixture = () => JSON.parse(required(readFileSync(agentLog, 'utf8').split('\n').filter(line => line.includes('regression job=')).at(-1)).split('regression job=')[1])
       await expect.poll(() => jobs().length).toBe(1)
       const first = jobs()[0]
       const fixture = latestFixture()
       await expect.poll(() => existsSync(fixture.readyFile)).toBe(true)
-      expect(first.ownerSession).toBe(id)
+      expect(first.owner).toBe(id)
       const running = page.getByRole('button', { name: '1 background job running', exact: true })
       await running.waitFor()
       await running.click()
@@ -77,8 +77,8 @@ describe.each(['claude', 'codex', 'devin', 'kimi'])('native terminal jobs: %s', 
         await otherPage.getByRole('button', { name: 'New session', exact: true }).last().click()
         const otherId = await send(otherPage, 'E2E_JOB_OTHER')
         expect(otherId).not.toBe(id)
-        expect(host.ctx.jobs.list(host.ctx.agents.get(otherId))).toEqual([])
-        expect(() => host.ctx.jobs.kill(first.id, host.ctx.agents.get(otherId))).toThrow()
+        expect(host.ctx.jobs.list(otherId)).toEqual([])
+        expect(() => host.ctx.jobs.kill(first.id, otherId)).toThrow()
         expect(await otherPage.getByRole('button', { name: /background job/ }).count()).toBe(0)
       } finally { await otherPage.close() }
 
@@ -92,7 +92,6 @@ describe.each(['claude', 'codex', 'devin', 'kimi'])('native terminal jobs: %s', 
       } finally { await page.context().setOffline(false) }
       await page.getByRole('button', { name: /Disconnected, reconnect now|Reconnecting automatically, reconnect now/ }).waitFor({ state: 'hidden' })
       await page.getByRole('button', { name: '1 background job', exact: true }).waitFor()
-      expect(host.ctx.jobs.get(first.id, owner).reported).toBe(true)
       expect(jobs().map(job => job.id)).toEqual([first.id])
       await page.reload()
       await page.getByRole('button', { name: '1 background job', exact: true }).click()
@@ -110,7 +109,6 @@ describe.each(['claude', 'codex', 'devin', 'kimi'])('native terminal jobs: %s', 
       finishFixture(failFixture.stopFile, 7)
       await expect.poll(() => host.ctx.jobs.get(failed.id, owner).status).toBe('failed')
       expect(host.ctx.jobs.get(failed.id, owner).detail).toContain('7')
-      expect(host.ctx.jobs.get(failed.id, owner).reported).toBe(true)
       await send(page, 'E2E_JOB_READ')
 
       // Native cancellation operates on the same terminal still owned by ACP.
@@ -135,11 +133,10 @@ describe.each(['claude', 'codex', 'devin', 'kimi'])('native terminal jobs: %s', 
       await send(page, 'E2E_JOB_START_IMMEDIATE')
       const immediate = required(jobs().at(-1))
       await expect.poll(() => host.ctx.jobs.get(immediate.id, owner).status).toBe('completed')
-      expect(host.ctx.jobs.get(immediate.id, owner).reported).toBe(true)
       await send(page, 'E2E_JOB_READ')
       await page.reload()
       await page.getByRole('button', { name: '5 background jobs', exact: true }).click()
-      expect(await list.locator('li').count()).toBe(5)
+      expect(await list.locator('li').filter({ hasText: 'acp-terminal' }).count()).toBe(5)
       expect(await list.innerText()).toContain('signal:')
       expect(observed).toHaveLength(sent)
       expect(errors).toEqual([])

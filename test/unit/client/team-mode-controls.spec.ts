@@ -3,7 +3,7 @@ import { applyTeamMode, teamModeChoices, teamSessionMenuGroups } from '../../../
 import { teamModeLabel } from '../../../src/contract/session-modes.ts'
 import type { AcpAgentSessionSnapshotView, AcpTeamMemberView } from '../../../src/client/data/acp-remote.ts'
 const snapshot = (patch: Partial<AcpAgentSessionSnapshotView> = {}): AcpAgentSessionSnapshotView => ({ sessionId: 'a', profileId: 'devin', freshness: 'live', editable: true, configOptions: null, modes: [{ id: 'code', name: 'Code' }, { id: 'plan', name: 'Plan' }], currentModeId: 'code', contextUsage: null, note: null, ...patch })
-const member = (sessionId: string, patch: Partial<AcpTeamMemberView> = {}): AcpTeamMemberView => ({ sessionId, profileId: 'devin', name: sessionId, status: 'idle', model: null, description: null, ...patch })
+const member = (sessionId: string, patch: Partial<AcpTeamMemberView> = {}): AcpTeamMemberView => ({ sessionId, profileId: 'devin', name: sessionId, status: 'inactive', model: null, description: null, ...patch })
 it('limits the menu to canonical modes, without model, reasoning or unrelated settings', () => {
   const choices = teamModeChoices(snapshot({ configOptions: [
     { id: 'model', type: 'select', name: 'Model', currentValue: 'm', options: [{ value: 'm', name: 'Model' }] },

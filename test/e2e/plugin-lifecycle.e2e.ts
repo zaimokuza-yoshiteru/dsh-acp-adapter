@@ -13,7 +13,7 @@ it('unloads and remounts ACP through the native plugin manager without restartin
   let browser!: TestBrowser
   const errors: string[] = []
   try {
-    await host.ctx.settings.replace('dsh-acp', { agents: { devin: {
+    await host.ctx.settings.replace('dsh-acp-adapter', { agents: { devin: {
       name: 'Lifecycle fixture', command: process.execPath, args: [join(root, 'test/mock-agent/mock-agent.ts')],
       env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: 'devin' },
     } } })
