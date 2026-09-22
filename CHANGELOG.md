@@ -4,6 +4,16 @@
 
 User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for publication dates, exact installation instructions, and checksums. Historical entries were reconstructed from tag diffs; npm packages were not republished.
 
+## 0.1.7-alpha.1.1
+
+### 中文
+
+- 修复已有 Devin MCP 入口命令正确、但缺失或错误配置 `ELECTRON_RUN_AS_NODE` 时，桌面端无法正常启动工具桥的问题。每次连接通过 Devin 原生命令刷新同一个 DSH 入口，不增加会话条目，也不覆盖其他 MCP 服务。
+
+### English
+
+- Repairs existing Devin MCP entries with a matching command but missing or incorrect `ELECTRON_RUN_AS_NODE`, which could prevent the desktop tool bridge from starting. Each connection refreshes the same DSH entry through Devin's native CLI, preserving other MCP servers without adding per-session entries.
+
 ## 0.1.7-alpha.1.0
 
 ### 中文
