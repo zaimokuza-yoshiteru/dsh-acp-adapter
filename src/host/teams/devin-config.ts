@@ -99,9 +99,10 @@ export async function prepareDevinMcp({ subprocess, command, args, cwd, env, lea
           throw new Error('Devin already has an unrelated MCP server named dsh; rename that entry before connecting DSH')
         }
       }
-      if (current === undefined || !current.stdout.split('\n').some(line => line.trim() === expected)) {
-        await cli(['add', '--scope', 'user', '-e', 'ELECTRON_RUN_AS_NODE=1', DEVIN_MCP_NAME, '--', process.execPath, launcher])
-      }
+      // `mcp get` redacts environment values, so an identical command cannot prove
+      // Electron Node mode is enabled. Reapply our owned entry through Devin's CLI;
+      // this replaces the same server, preserves other servers and repairs missing/wrong env.
+      await cli(['add', '--scope', 'user', '-e', 'ELECTRON_RUN_AS_NODE=1', DEVIN_MCP_NAME, '--', process.execPath, launcher])
       lease.signal.throwIfAborted()
     } finally { await release() }
     let closing: Promise<void> | undefined

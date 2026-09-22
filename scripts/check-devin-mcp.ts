@@ -132,18 +132,20 @@ try {
   const ctx = new Context()
   await ctx.plugin(LocalSubprocess)
   try {
-    prepared = await prepareDevinMcp({
+    const options = {
       command: executable, args: ['acp'], cwd: root,
       subprocess: narrowSubprocessSeam(ctx.subprocess)!,
       env: { ...(process.platform === 'win32' ? {} : sourceEnv), HOME: root },
       lease: {
         signal: new AbortController().signal,
-        servers: [{ type: 'http', name: 'dsh', url: 'http://127.0.0.1:43210/test', headers: [] }],
+        servers: [{ type: 'http' as const, name: 'dsh', url: 'http://127.0.0.1:43210/test', headers: [] }],
         beginPrompt() {}, endPrompt() {}, permission: () => undefined, async close() {},
       },
-    })
+    }
+    prepared = await prepareDevinMcp(options)
     const config = JSON.parse(await readFile(nativeFile, 'utf8'))
     assert.equal(config.mcpServers.dsh.command, process.execPath)
+    assert.equal(config.mcpServers.dsh.env.ELECTRON_RUN_AS_NODE, '1')
     assert.ok(config.mcpServers[nativeServer], 'Registration must preserve existing servers')
     assert.ok(!JSON.stringify(config).includes('/test'), 'Session endpoint must not be persisted')
     assert.equal(prepared.env.DSH_ACP_TEAM_MCP_URL, 'http://127.0.0.1:43210/test')
@@ -151,6 +153,22 @@ try {
     assert.equal(resolve(result._meta?.mcpConfigPath ?? ''), resolve(nativeFile))
     assert.ok(result.mcpListing.includes('dsh'), 'Real Devin must discover the fixed DSH entry')
     console.log('PASS: production registration, native discovery, preserved user servers and private session routing')
+    // Real `mcp get` redacts values; both missing and incorrect env must be repaired
+    // even when the executable and launcher are already correct.
+    for (const environment of [{}, { ELECTRON_RUN_AS_NODE: '0' }]) {
+      const before = JSON.parse(await readFile(nativeFile, 'utf8'))
+      before.mcpServers.dsh.env = environment
+      await writeFile(nativeFile, JSON.stringify(before), { mode: 0o600 })
+      await prepared.lease.close()
+      prepared = await prepareDevinMcp(options)
+      const repaired = JSON.parse(await readFile(nativeFile, 'utf8'))
+      assert.equal(repaired.mcpServers.dsh.env.ELECTRON_RUN_AS_NODE, '1')
+      assert.deepEqual(repaired.mcpServers.dsh.args, config.mcpServers.dsh.args)
+      assert.equal(repaired.mcpServers.dsh.command, process.execPath)
+      assert.deepEqual(Object.keys(repaired.mcpServers).sort(), Object.keys(before.mcpServers).sort())
+      assert.deepEqual(repaired.mcpServers[nativeServer], before.mcpServers[nativeServer])
+    }
+    console.log('PASS: matching-command registration repairs missing/wrong Electron Node mode without adding servers')
   } finally { await ctx.fiber.dispose() }
 
 } finally {
