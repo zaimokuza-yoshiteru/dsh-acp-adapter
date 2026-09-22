@@ -49,12 +49,18 @@ it.each(['claude', 'codex', 'devin', 'kimi'])('preserves %s reasoning, message a
         await process.waitFor()
         if (await process.getAttribute('aria-expanded') === 'false') await process.click()
       }
-      // 0.1.7 owns a second, per-process disclosure inside each Turn.
+      // Revealing a Turn updates the process headers asynchronously. A one-shot
+      // isVisible() can skip the first header before React removes outer hiding.
+      // Completed groups (all modes) and live compact groups have visible headers.
       for (const button of await page.locator('[data-step-process] > div > button').all()) {
-        if (await button.isVisible() && await button.getAttribute('aria-expanded') === 'false') await button.click()
+        await button.waitFor({ state: 'visible' })
+        if (await button.getAttribute('aria-expanded') === 'false') await button.click()
+        await expect.poll(() => button.getAttribute('aria-expanded')).toBe('true')
       }
       for (const row of await page.locator('[data-variant="think"]').all()) {
-        if (await row.isVisible() && await row.getAttribute('data-expanded') === null) await row.getByRole('button').first().click()
+        await row.waitFor({ state: 'visible' })
+        if (await row.getAttribute('data-expanded') === null) await row.getByRole('button').first().click()
+        await expect.poll(() => row.getAttribute('data-expanded')).toBe('true')
       }
       expect(errors).toEqual([])
       const tool = (id: string) => page.locator(`[data-chat-call-id$=":tool:${id}"]`)
@@ -101,7 +107,13 @@ it.each(['claude', 'codex', 'devin', 'kimi'])('preserves %s reasoning, message a
     await control.focus()
     await control.press('Enter')
     expect(await control.getAttribute('aria-expanded')).toBe('false')
-    await page.locator('[data-step-process][hidden="until-found"]').last().evaluate(element => element.dispatchEvent(new Event('beforematch')))
+    // Native collapse resets each inner disclosure in an effect. Let that reset
+    // settle before simulating browser Find, otherwise it can close a group
+    // after the next reveal has already clicked its still-open header.
+    const hiddenGroups = page.locator('[data-step-process][hidden="until-found"]')
+    await hiddenGroups.first().waitFor({ state: 'attached' })
+    await expect.poll(() => hiddenGroups.locator(':scope > div > button[aria-expanded="true"]').count()).toBe(0)
+    await hiddenGroups.last().evaluate(element => element.dispatchEvent(new Event('beforematch')))
     await expect.poll(() => control.getAttribute('aria-expanded')).toBe('true')
     expect(await page.locator('[data-step-process-content]').count()).toBeGreaterThan(0)
     expect(await page.getByRole('tab', { name: 'Chat', exact: true }).count()).toBe(1)

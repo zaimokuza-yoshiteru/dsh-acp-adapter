@@ -120,7 +120,9 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
     await control.waitFor()
     if (await control.getAttribute('aria-expanded') === 'false') await control.click()
     for (const button of await page.locator('[data-step-process] > div > button').all()) {
-      if (await button.isVisible() && await button.getAttribute('aria-expanded') === 'false') await button.click()
+      await button.waitFor({ state: 'visible' })
+      if (await button.getAttribute('aria-expanded') === 'false') await button.click()
+      await expect.poll(() => button.getAttribute('aria-expanded')).toBe('true')
     }
   }
 
@@ -727,7 +729,7 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
       expect(events.filter(event => event.type === 'step/start').filter(event => event.sessionId === id)).toHaveLength(2)
       await page.reload()
       await page.getByText(atomic ? 'E2E_STEER_DONE' : 'E2E_DONE mock-model-a', { exact: true }).waitFor()
-      await page.getByRole('button', { name: /^(?:\d+ tool calls? · )?1 message$/ }).click()
+      await expandProcess()
       await page.getByText(/E2E_STEERING_RUNNING/).waitFor()
     } finally { off(); await host.ctx.settings.replace('dsh-acp-adapter', previous) }
   })
