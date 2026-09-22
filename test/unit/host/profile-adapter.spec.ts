@@ -89,7 +89,7 @@ describe('AcpProfileAdapter generation and dispatch boundaries', () => {
       prompt: async prompt => { sent.push(prompt); return { stopReason: 'end_turn' } as never },
       close: async () => undefined,
     }), durableSidecar)
-    const system = { ...user('HOST_SYSTEM_A'), role: 'system' as const, source: { kind: 'plugin' as const, plugin: 'host' } }
+    const system = { ...user('HOST_SYSTEM_A'), role: 'system' as const, source: { kind: 'system-prompt' as const } }
     for await (const chunk of adapter.stream(request('system-request', [system, user('old history'), message]))) { void chunk }
     expect(JSON.stringify(sent)).toContain('HOST_SYSTEM_A')
     expect(JSON.stringify(sent)).toContain('current')

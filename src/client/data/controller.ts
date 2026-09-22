@@ -17,7 +17,6 @@
  */
 
 import {
-  ACP_SETTINGS_NS,
   decodeBoundSessions,
   decodeHealthResponse,
   errorMessageOf,
@@ -39,24 +38,14 @@ export interface SettingsScopeLike {
 }
 
 /** One path-addressed settings edit (Alpha Generated Remote settings operation). */
-export type AcpSettingsOp =
-  | { op: 'set'; path: string[]; value: unknown }
-  | { op: 'unset'; path: string[] }
-
-/** The Generated Remote settings face the panel writes through. */
-export interface SettingsMutateLike {
-  mutate(request: {
-    ns: string
-    ops: AcpSettingsOp[]
-    expectedRevision?: number
-  }): Promise<{ result: { ok: true; value: unknown } | { ok: false; error: { message: string } } }>
-}
+export type AcpSettingsOp = import('@deepseek-ai/dsh-settings/types').SettingsPathOpView
 
 export interface AcpPanelControllerDeps {
-  /** The bound `dsh-acp` settings scope (read side; writes go through `settings`). */
+  /** The native plugin configuration form, including its revision and write capability. */
   scope: SettingsScopeLike
   /** Settings wire face (write side: path-addressed mutate with revision fencing). */
-  settings: SettingsMutateLike
+  mutate(ops: AcpSettingsOp[], expectedRevision?: number): Promise<boolean>
+  refusedMessage: () => string
  /** The mounted dshAcp remote namespace; see ./acp-remote.ts. */
   remote: AcpRemoteLike
 }
@@ -70,11 +59,13 @@ export class AcpPanelController {
   private sink: AcpPanelStoreActions | null = null
   private readonly unsubscribeScope: () => void
   private readonly remote: AcpRemoteLike
-  private readonly settingsWire: SettingsMutateLike
+  private readonly write: AcpPanelControllerDeps['mutate']
+  private readonly refusedMessage: () => string
 
   constructor(deps: AcpPanelControllerDeps) {
     this.scopeSnapshot = deps.scope.getSnapshot()
-    this.settingsWire = deps.settings
+    this.write = deps.mutate
+    this.refusedMessage = deps.refusedMessage
     this.remote = deps.remote
     this.unsubscribeScope = deps.scope.subscribe(() => {
       this.scopeSnapshot = deps.scope.getSnapshot()
@@ -199,8 +190,8 @@ export class AcpPanelController {
     }
     const id = draft.id.trim()
     const ops: AcpSettingsOp[] = editingId !== undefined && editingId !== id
-      ? [{ op: 'unset', path: ['agents', editingId] }, { op: 'set', path: ['agents', id], value: validation.config }]
-      : [{ op: 'set', path: ['agents', id], value: validation.config }]
+      ? [{ op: 'unset', path: ['agents', editingId] }, { op: 'set', path: ['agents', id], value: { ...validation.config, args: [...validation.config.args] } }]
+      : [{ op: 'set', path: ['agents', id], value: { ...validation.config, args: [...validation.config.args] } }]
     return this.mutate(ops)
   }
 
@@ -233,12 +224,7 @@ export class AcpPanelController {
   private async mutate(ops: AcpSettingsOp[]): Promise<string | undefined> {
     const revision = this.scopeSnapshot.revision
     try {
-      const response = await this.settingsWire.mutate({
-        ns: ACP_SETTINGS_NS,
-        ops,
-        ...(revision === undefined ? {} : { expectedRevision: revision }),
-      })
-      return response.result.ok ? undefined : response.result.error.message
+      return await this.write(ops, revision) ? undefined : this.refusedMessage()
     } catch (error: unknown) {
       return errorMessageOf(error)
     }

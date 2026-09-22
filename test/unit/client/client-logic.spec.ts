@@ -161,7 +161,7 @@ function validDraft(overrides: Partial<AgentDraft> = {}): AgentDraft {
 
 describe('常量：与宿主侧契约逐字对齐', () => {
   it('命名空间 / 失败分类', () => {
-    expect(ACP_SETTINGS_NS).toBe('dsh-acp');
+    expect(ACP_SETTINGS_NS).toBe('dsh-acp-adapter');
   });
 
   it('ACP_AGENT_ID_PATTERN：小写字母开头 + 小写字母/数字/连字符', () => {

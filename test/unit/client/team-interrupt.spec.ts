@@ -10,7 +10,7 @@ it('interrupts all captured running teammates across profiles, excluding the lea
   const interrupt = vi.fn(async () => {})
   const result = await interruptTeam({
     lead: 'lead', targets: ['lead', 'a', 'a', 'b', 'native', 'idle', 'gone'], isCurrent: () => true,
-    members: async () => [member('lead'), member('a'), member('b', { profileId: 'codex' }), member('native', { profileId: null }), member('idle', { status: 'idle' }), member('late')],
+    members: async () => [member('lead'), member('a'), member('b', { profileId: 'codex' }), member('native', { profileId: null }), member('idle', { status: 'inactive' }), member('late')],
     interrupt,
   })
   expect(interrupt.mock.calls).toEqual([['a'], ['b'], ['native']])

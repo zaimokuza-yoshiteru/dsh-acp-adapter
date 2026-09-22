@@ -1,6 +1,7 @@
 import { createElement as h, useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import type { ReactNode } from 'react'
-import { Button, StateDot, IconCloseOutline16, IconRefreshOutline14, useAnchoredPosition, useDismissOnOutsidePointer } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, StateDot, IconCloseOutlineMedium, IconRefreshOutlineMedium, useAnchoredPosition, useDismissOnOutsidePointer } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { RemoteStreamFactory } from '@deepseek-ai/dsh-api-gateway/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
@@ -33,7 +34,7 @@ export function AcpTeamManagement({ sessionId, useSession, useProjection, t, ...
   const rootRef = useRef<HTMLDivElement | null>(null)
   const panelRef = useRef<HTMLDivElement | null>(null)
   const [menuOpen, setMenuOpen] = useState(false)
-  useDismissOnOutsidePointer(rootRef, open && !menuOpen, setOpen)
+  useDismissOnOutsidePointer(rootRef, open && !menuOpen, setOpen, panelRef)
   const position = useAnchoredPosition({ open, anchorRef: rootRef, panelRef, gap: 6, margin: 16 })
   useEffect(() => {
     if (!open) return
@@ -106,17 +107,17 @@ export function AcpTeamManagement({ sessionId, useSession, useProjection, t, ...
       'aria-haspopup': 'dialog', 'aria-expanded': open, onClick: () => setOpen(!open) },
       h('svg', { width: 20, height: 20, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.6, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true },
         h('circle', { cx: 9, cy: 8, r: 3 }), h('path', { d: 'M3 20v-2a6 6 0 0 1 12 0v2M16 5a3 3 0 0 1 0 6M18 14a5 5 0 0 1 3 4v2' }))),
-    open ? h('div', { className: css.panel, ref: panelRef, style: position ?? { visibility: 'hidden' }, role: 'dialog', 'aria-label': t('teamManage') },
+    open ? createPortal(h('div', { className: css.panel, ref: panelRef, style: position ?? { visibility: 'hidden' }, role: 'dialog', 'aria-label': t('teamManage'), 'data-acp-team-panel': '' },
       h('div', { className: css.toolbar }, h('strong', null, t('teamManage')),
-        h(Button, { variant: 'ghost', className: css.iconButton, 'aria-label': t('teamRefresh'), onClick: () => setRefresh(n => n + 1) }, h(IconRefreshOutline14)),
-        h(Button, { variant: 'ghost', className: css.iconButton, 'aria-label': t('teamManageClose'), onClick: () => { setOpen(false); rootRef.current?.querySelector('button')?.focus() } }, h(IconCloseOutline16))),
+        h(Button, { variant: 'ghost', className: css.iconButton, 'aria-label': t('teamRefresh'), onClick: () => setRefresh(n => n + 1) }, h(IconRefreshOutlineMedium)),
+        h(Button, { variant: 'ghost', className: css.iconButton, 'aria-label': t('teamManageClose'), onClick: () => { setOpen(false); rootRef.current?.querySelector('button')?.focus() } }, h(IconCloseOutlineMedium))),
       error ? h('p', { role: 'status', className: css.hint }, t('teamManageError')) : null,
       ...[...groups].map(([profileId, members], index) => h(ModeGroup, { key: `${sessionId}:${profileId}`, lead: sessionId, profileId, members, t, onMenuOpen: setMenuOpen,
         interruptAction: index === 0 ? h(Button, { variant: 'ghost', className: css.batchButton,
           disabled: interrupting || !view.members.some(member => member.status === 'running'),
           title: t('teamInterruptHint'), onClick: () => { void interruptAll() } }, t(interrupting ? 'teamInterrupting' : 'teamInterruptAll')) : null,
         ...actions })),
-      interruptFeedback ? h('p', { role: 'status', className: css.hint }, interruptFeedback) : null) : null)
+      interruptFeedback ? h('p', { role: 'status', className: css.hint }, interruptFeedback) : null), document.body) : null)
 }
 
 function ModeGroup({ lead, profileId, members, t, remote, streamFactory, onMenuOpen, isCurrent, interruptAction }: { interruptAction: ReactNode; lead: SessionId; profileId: string | null; members: readonly AcpTeamMemberView[]; t: Copy; onMenuOpen(value: boolean): void } & Actions): ReactNode {
@@ -140,7 +141,7 @@ function ModeGroup({ lead, profileId, members, t, remote, streamFactory, onMenuO
     streams.forEach(stream => stream.start())
     return () => { disposed = true; streams.forEach(stream => { void stream.dispose() }) }
   }, [ids, remote, streamFactory])
-  const editable = (member: AcpTeamMemberView) => (member.status === 'idle' || member.status === 'inactive') && snapshots[member.sessionId]?.profileId === profileId && snapshots[member.sessionId]?.modeWritable
+  const editable = (member: AcpTeamMemberView) => member.status === 'inactive' && snapshots[member.sessionId]?.profileId === profileId && snapshots[member.sessionId]?.modeWritable
   const choices = (member: AcpTeamMemberView) => { const snapshot = snapshots[member.sessionId]; return snapshot ? teamModeChoices(snapshot).map(choice => ({ ...choice, current: snapshot.pendingModeId ? snapshot.pendingModeId === choice.id : choice.current })) : [] }
   const batchChoices = [...new Map(members.flatMap(member => choices(member)).map(choice => [choice.id, choice])).values()]
   const change = async (targets: readonly string[], mode: string): Promise<void> => {

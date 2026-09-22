@@ -14,7 +14,7 @@ describe('current-step ACP admission', () => {
   it('preserves logged plugin context in durable order while excluding old input', () => {
     const old = user('old')
     const current = user('current')
-    const injected = { ...user('skill'), source: { kind: 'plugin' as const, plugin: 'skill' } }
+    const injected = { ...user('skill'), source: { kind: 'test-plugin' as const, plugin: 'skill' } }
     const session = withSessionFacts({
       header: { cwd: '/workspace' },
       inheritedEventCount: 0,
@@ -70,7 +70,7 @@ describe('current-step ACP admission', () => {
 
   it('keeps proof bounded for long history', () => {
     const old = Array.from({ length: 1000 }, (_, index) => user(`old-${index}`))
-    const injected = { ...user('skill'), source: { kind: 'plugin' as const, plugin: 'skill' } }
+    const injected = { ...user('skill'), source: { kind: 'test-plugin' as const, plugin: 'skill' } }
     const first = user('first')
     const second = user('second')
     const events = [
@@ -91,7 +91,7 @@ describe('current-step ACP admission', () => {
 
   it('admits plugin-only follow-up steps without replaying earlier user messages', () => {
     const earlier = user('already dispatched')
-    const followup = createUserMessage({ content: [{ type: 'text', text: 'Verify the result' }], source: { kind: 'plugin', plugin: 'review' } })
+    const followup = createUserMessage({ content: [{ type: 'text', text: 'Verify the result' }], source: { kind: 'test-plugin', plugin: 'review' } })
     const unlogged = user('not admitted by the host')
     expect(admitCurrentStep(request([earlier, unlogged, followup]), withSessionFacts({
       inheritedEventCount: 0,

@@ -4,20 +4,19 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { ChatNodeViewProps, ChatNodeOwnerProps, ChatConversationViewNode } from '@deepseek-ai/dsh-client-ui-chat/client'
 import type { StoredEntry } from '@deepseek-ai/dsh-client-ui-slots'
 
-type NativeOwner = ChatNodeOwnerProps & { node: ChatConversationViewNode }
+type NativeOwner = ChatNodeOwnerProps & Pick<ChatNodeViewProps, 'useDisclosure'> & { node: ChatConversationViewNode }
 export type NativeToolOwner = NativeOwner & { node: ChatNodeViewProps<'tool-call'>['node'] }
 export function nativeOwner(props: NativeOwner): NativeOwner {
-  const { cwd, openFile, openSkill, inspectCall, forkAt, loadImage, renderMessageImages, fileMentions, turnProcess, node } = props
-  return { cwd, openFile, openSkill, inspectCall, forkAt, loadImage, renderMessageImages, fileMentions, turnProcess, node }
+  const { useDisclosure, groupPart, cwd, openFile, openSkill, inspectCall, forkAt, loadImage, renderMessageImages, fileMentions, turnProcess, node } = props
+  return { useDisclosure, ...(groupPart === undefined ? {} : { groupPart }), cwd, openFile, openSkill, inspectCall, forkAt, loadImage, renderMessageImages, fileMentions, turnProcess, node }
 }
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface SlotFactoryMap {
     'acp.native-tool': { scope: 'session'; props: NativeToolOwner }
-    'acp.native-process': { scope: 'session'; props: NativeOwner & { node: ChatNodeViewProps<'turn-process'>['node'] } }
   }
 }
 
-type EntryProps = Record<string, unknown> & {
+export type EntryProps = Record<string, unknown> & {
   renderSlot?: (key: string, owner: unknown, options?: unknown) => ReactNode
   renderSlotChain?: (key: string, owner: unknown, options?: unknown) => ReactNode
 }
@@ -26,33 +25,34 @@ type EntryProps = Record<string, unknown> & {
 type Registration = Record<string, unknown>
 type Register = (options: Registration, component: ComponentType<EntryProps>) => () => void
 
-/** Reuse the registered native Tool tree including its injected hooks, stores,
- * locale and third-party child renderers. Factories cannot redeclare an existing
- * slot, so give this presentation-only occurrence its own declaration names.
- * No component, classifier, CSS, execution event or approval is copied.
- */
-export function installNativeToolRenderer(ctx: Context): void {
+let generation = 0
+
+/** Compose a registered native component with its complete injection and child tree. */
+export function mountNativeEntry(ctx: Context, entry: StoredEntry, destination: string, options: {
+  factory?: boolean
+  registration?: Record<string, unknown>
+  wrap?: (Native: ComponentType<EntryProps>, props: EntryProps) => ReactNode
+} = {}): () => void {
   const register = ctx.slots.register.bind(ctx.slots) as unknown as Register
   const factory = ctx.slots.registerFactory.bind(ctx.slots) as unknown as Register
   const sourceEntries = (name: string) => ctx.slots.entriesOfSlot(name as never)
-  let generation = 0
   const mount = (entry: StoredEntry, destination: string, root: boolean): (() => void) => {
     const aliases = new Map(Object.keys(entry.children ?? {}).map(key => [key, `acp.native.${++generation}.${key}`]))
     const Native = entry.component as ComponentType<EntryProps>
-    const Component = (props: EntryProps): ReactNode => h(Native, {
+    const Component = (props: EntryProps): ReactNode => (root && options.wrap !== undefined ? options.wrap : (component: ComponentType<EntryProps>, value: EntryProps) => h(component, value))(Native, {
       ...props,
       ...(props.renderSlot === undefined ? {} : { renderSlot: (key: string, owner: unknown, options?: unknown) => props.renderSlot!(aliases.get(key) ?? key, owner, options) }),
       ...(props.renderSlotChain === undefined ? {} : { renderSlotChain: (key: string, owner: unknown, options?: unknown) => props.renderSlotChain!(aliases.get(key) ?? key, owner, options) }),
     })
-    const options = {
+    const registration = {
       name: destination,
-      ...(root ? { scope: 'session' } : { ...entry.options, ...(entry.select === undefined ? {} : { select: entry.select }) }),
+      ...(root && options.factory ? { scope: 'session' } : { ...entry.options, ...(entry.select === undefined ? {} : { select: entry.select }) }),
       ...(entry.inject === undefined ? {} : { inject: entry.inject }),
       ...(entry.store === undefined ? {} : { store: entry.store }),
       ...(entry.locale === undefined ? {} : { locale: entry.locale }),
       ...(entry.children === undefined ? {} : { children: Object.fromEntries(Object.entries(entry.children).map(([key, spec]) => [aliases.get(key)!, spec])) }),
     }
-    const dispose = (root ? factory : register)(options, Component)
+    const dispose = (root && options.factory ? factory : register)({ ...registration, ...(root ? options.registration : {}) }, Component)
     const children = [...aliases].map(([source, target]) => {
       const mounted = new Map<StoredEntry, () => void>()
       const sync = () => {
@@ -66,15 +66,24 @@ export function installNativeToolRenderer(ctx: Context): void {
     })
     return () => { children.forEach(release => release()); dispose() }
   }
-  for (const [key, name] of [['tool-call', 'acp.native-tool'], ['turn-process', 'acp.native-process']] as const) ctx.slots.inject('conversation.chat.node', () => {
+  return mount(entry, destination, true)
+}
+
+/** Reuse the registered native Tool tree including its injected hooks, stores,
+ * locale and third-party child renderers. Factories cannot redeclare an existing
+ * slot, so give this presentation-only occurrence its own declaration names.
+ * No component, classifier, CSS, execution event or approval is copied.
+ */
+export function installNativeToolRenderer(ctx: Context): void {
+  ctx.slots.inject('conversation.chat.node', () => {
     let current: StoredEntry | undefined
     let release: (() => void) | undefined
     const sync = () => {
-      const entries = key === 'turn-process' ? ctx.slots.entries('conversation.chat.node') : sourceEntries('conversation.chat.node')
-      const next = entries.find(entry => entry.options.key === key && entry.registrant !== 'acp-process-owner')
+      const entries = ctx.slots.entries('conversation.chat.node')
+      const next = entries.find(entry => entry.options.key === 'tool-call' && entry.registrant !== 'acp-chat-normalization')
       if (next === current) return
       release?.(); release = undefined; current = next
-      if (next !== undefined) release = mount(next, name, true)
+      if (next !== undefined) release = mountNativeEntry(ctx, next, 'acp.native-tool', { factory: true })
     }
     const unsubscribe = ctx.slots.subscribe('conversation.chat.node', sync)
     sync()

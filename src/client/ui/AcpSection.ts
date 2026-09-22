@@ -22,9 +22,9 @@ import type { ReactNode } from 'react'
 import {
   Button,
   Input,
-  IconChevronDownOutline14,
-  IconPlusOutline16,
-  IconRefreshOutline16,
+  IconChevronDownOutlineMedium,
+  IconPlusOutlineMedium,
+  IconRefreshOutlineMedium,
   Menu,
   Tag,
 } from '@deepseek-ai/dsh-client-ui-primitives'
@@ -268,7 +268,7 @@ function Loaded({ t, useStore, panel }: {
         'aria-expanded': addMenuOpen,
         onClick: () => { setAddMenuOpen((previous) => !previous) },
       },
-        h(IconPlusOutline16, { size: 14 }),
+        h(IconPlusOutlineMedium, { size: 14 }),
         t('addAgent'),
       ),
     }),
@@ -278,7 +278,7 @@ function Loaded({ t, useStore, panel }: {
       disabled: refreshing || checkingAnyAgent,
       onClick: () => { panel.refreshHealth(true) },
     },
-      h(IconRefreshOutline16, { size: 14 }),
+      h(IconRefreshOutlineMedium, { size: 14 }),
       t(refreshing ? 'refreshing' : 'refresh'),
     ),
   ))
@@ -546,7 +546,7 @@ function AgentForm(props: {
       'aria-expanded': advancedOpen,
       onClick: () => { setAdvancedOpen(previous => !previous) },
     },
-      h(IconChevronDownOutline14, {
+      h(IconChevronDownOutlineMedium, {
         size: 14,
         className: advancedOpen ? `${css.chevron} ${css.chevronFlip}` : css.chevron,
       }),
@@ -595,7 +595,7 @@ function AgentForm(props: {
       'aria-expanded': optionsOpen,
       onClick: () => { setOptionsOpen(previous => !previous) },
     },
-      h(IconChevronDownOutline14, {
+      h(IconChevronDownOutlineMedium, {
         size: 14,
         className: optionsOpen ? `${css.chevron} ${css.chevronFlip}` : css.chevron,
       }),

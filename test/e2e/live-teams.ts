@@ -38,7 +38,7 @@ Wait for its message. Get/list the shared tasks, confirm the compute task is com
   expect(child.session.header.cwd).toBe(lead.session.header.cwd)
   await vi.waitFor(() => {
     expect(messages.some(event => event.type === 'team/message/queued' && JSON.stringify(event.data).includes(token))).toBe(true)
-    expect(host.ctx.agentTeams.listMembers(lead).every(member => member.status === 'idle' || member.status === 'inactive')).toBe(true)
+    expect(host.ctx.agentTeams.listMembers(lead).every(member => member.status === 'inactive')).toBe(true)
   }, { timeout: 180_000, interval: 500 })
   expect(executions.some(item => item.name === 'send_message' && item.sessionId === child.id && !item.isError)).toBe(true)
   await vi.waitFor(() => {

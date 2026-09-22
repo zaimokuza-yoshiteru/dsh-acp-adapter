@@ -18,7 +18,7 @@ it.each(['allow', 'reject'])('handles eight member approvals from the Lead: %s, 
   const log = join(host.workspaceCwd, 'team-approvals.log')
   host.ctx.on('session/event', (session, event) => events.push({ sessionId: session.id, ...event }))
   try {
-    await host.ctx.settings.replace('dsh-acp', { agents: { devin: {
+    await host.ctx.settings.replace('dsh-acp-adapter', { agents: { devin: {
       name: 'Fixture devin', command: process.execPath, args: [join(root, 'test/mock-agent/mock-agent.ts')],
       env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: 'devin', MOCK_MCP_HTTP: '1', MOCK_LOG: log },
     } } })

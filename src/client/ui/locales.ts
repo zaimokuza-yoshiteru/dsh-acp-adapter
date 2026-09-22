@@ -7,6 +7,7 @@
  */
 
 const zh = {
+  settingsWriteRefused: '配置保存未被接受，已重新加载最新配置，请检查后重试。',
   teamManage: '成员管理',
   teamBatchMode: '批量调整模式',
   teamInterruptAll: '中断所有会话',
@@ -29,7 +30,6 @@ const zh = {
   teamModelEmpty: '暂无可选模型。',
   teamMemberModelPending: '下次请求生效；当前：{model}',
   teamStatusrunning: '运行中',
-  teamStatusidle: '空闲',
   teamStatusinactive: '休眠',
   teamStatusprovisioning: '创建中',
   teamStatusfailed: '失败',
@@ -300,6 +300,7 @@ const zh = {
 export type AcpLocaleKey = keyof typeof zh
 
 const en: Record<AcpLocaleKey, string> = {
+  settingsWriteRefused: 'The configuration change was refused. Latest values have been reloaded; review them and retry.',
   teamManage: 'Manage members',
   teamBatchMode: 'Change modes together',
   teamInterruptAll: 'Interrupt all sessions',
@@ -322,7 +323,6 @@ const en: Record<AcpLocaleKey, string> = {
   teamModelEmpty: 'No models available.',
   teamMemberModelPending: 'Applies next request; current: {model}',
   teamStatusrunning: 'Running',
-  teamStatusidle: 'Idle',
   teamStatusinactive: 'Dormant',
   teamStatusprovisioning: 'Starting',
   teamStatusfailed: 'Failed',

@@ -6,11 +6,13 @@
 
 在 DSH 会话页面使用 **Claude · Codex · Devin · Kimi**。
 
-本版本仅支持 DSH `0.1.6-alpha.2`。点击 ACP 成员或子会话会在原生侧栏打开，保留主会话；Teams 成员的请求仍可直接在主会话审批。
+本版本仅支持 DSH `0.1.7-alpha.1`。点击 ACP 成员或子会话会在原生侧栏打开，保留主会话；Teams 成员的请求仍可直接在主会话审批。
+
+升级后，已有 Agent 配置会从旧设置文件自动导入当前 DSH 配置；当前配置中已设置的 Agent 列表（包括空列表）会保留。主会话过程使用 DSH 原生的紧凑、详细和展开模式，工具、思考和过程分组随宿主设置切换。
 
 ## <img src="assets/readme/icon-preview.svg" width="24" height="24" alt="" /> 功能预览
 
-以下截图在干净 DSH 实例中，通过 **Devin · SWE-1.7 Medium** 实际操作生成。
+以下截图来自此前版本中 **Devin · SWE-1.7 Medium** 的真实操作；当前版本的布局以 DSH 原生界面为准。
 
 添加 Agent、检查连接，并查看插件版本：
 
@@ -105,7 +107,7 @@ npx "@deepseek-ai/dsh@$DSH_VERSION" plugin --profile web update @zaimokuza/dsh-a
 npx "@deepseek-ai/dsh@$DSH_VERSION" plugin --profile web remove @zaimokuza/dsh-acp-adapter
 ```
 
-**升级时保留本地数据。** 主会话迁移由 DSH 负责；宿主不支持的旧子代理投影不额外迁移。当前轮次结束后重启 DSH、刷新页面，从设置标题旁确认加载版本。
+**升级时保留本地数据。** 主会话迁移由 DSH 负责；可验证的 V3 子代理投影通过宿主迁移器恢复；不支持的格式和缺失的数据不会补造。当前轮次结束后重启 DSH、刷新页面，从设置标题旁确认加载版本。
 
 不再使用适配器后，可执行 `devin mcp remove --scope user dsh` 移除其入口。
 

@@ -7,8 +7,8 @@ function fixture(provider = 'acp-devin') {
   const lead = { id: 'lead', session: session('lead-current'), options: { provider, model: 'lead-old' } }
   const child = { id: 'child', session: session('child-current'), options: { provider, model: 'child-old' } }
   const rows = [
-    { id: 'lead', name: 'lead', role: 'lead', provider, status: 'idle' },
-    { id: 'child', name: 'worker', role: 'teammate', provider: 'agent', status: 'idle', model: 'wrong-native-fallback' },
+    { id: 'lead', name: 'lead', role: 'lead', provider, status: 'inactive' },
+    { id: 'child', name: 'worker', role: 'teammate', provider: 'agent', status: 'inactive', model: 'wrong-native-fallback' },
     { id: 'cold', name: 'cold', role: 'teammate', provider: 'agent', status: 'inactive', model: 'wrong-lead-fallback' },
   ]
   const agents = { get: (id: string) => id === 'lead' ? lead : id === 'child' ? child : undefined }

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -201,6 +202,42 @@ describe('external subagent projector', () => {
     records.set(staged!.dshSessionId as string, { meta: { id: staged!.dshSessionId, cwd: '/different' } as never, events: [] })
     await expect(projector.repairInterrupted()).resolves.toEqual({ committed: 0, repaired: 0, conflicted: 1 })
     expect(activities.get(staged!.dshSessionId as string)?.status).toBe('failed')
+  })
+
+  it('migrates authenticated V3 sidecar transactions through the released catalog and publishes discovery after commit', async () => {
+    const records = new Map<string, { meta: SessionHeader; events: SessionEvent[] }>()
+    records.set('parent', { meta: { id: 'parent', cwd: '/tmp' } as never, events: [] })
+    let row: Record<string, unknown> | undefined
+    const sidecar = {
+      upsertActivity: async (value: Record<string, unknown>) => { row = value; return value as never },
+      listProjectedSubagentActivities: async () => row === undefined ? [] : [row] as never,
+    }
+    const projector = new ExternalSubagentProjector(handleStorage(records), sidecar)
+    const result = await projector.project(observation, {
+      profileId: 'claude', bindingGeneration: 1, rootAcpSessionId: 'root', parentDshSessionId: 'parent', parentCwd: '/tmp', flushParent: async () => true,
+    })
+    const detail = JSON.parse(row!.rawDetail as string)
+    detail.projectionHeader.version = 3
+    const original = { header: detail.projectionHeader, events: records.get(result!.childSessionId)!.events }
+    const canonical = (value: unknown): string => Array.isArray(value) ? `[${value.map(canonical).join(',')}]`
+      : value !== null && typeof value === 'object'
+        ? `{${Object.entries(value).filter(([, item]) => item !== undefined).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`).join(',')}}`
+        : JSON.stringify(value)
+    detail.projectionDigest = createHash('sha256').update(canonical(original)).digest('hex')
+    row = { ...row, rawDetail: JSON.stringify(detail) }
+    records.delete(result!.childSessionId)
+    const publish = vi.fn(async (header: SessionHeader, label: string) => {
+      expect(records.get(header.id)?.events).toHaveLength(7)
+      expect(header.version).toBe(4)
+      expect(label).toBe('Code inspection')
+    })
+    const repair = new ExternalSubagentProjector(handleStorage(records), sidecar, publish)
+    expect(await repair.repairInterrupted()).toEqual({ committed: 1, repaired: 1, conflicted: 0 })
+    expect(publish).toHaveBeenCalledOnce()
+    expect(await repair.repairInterrupted()).toEqual({ committed: 1, repaired: 0, conflicted: 0 })
+    detail.projectionDigest = 'tampered'
+    row = { ...row, rawDetail: JSON.stringify(detail) }
+    expect(await repair.repairInterrupted()).toEqual({ committed: 0, repaired: 0, conflicted: 0 })
   })
 
   it('keeps the repair payload valid after real Activity redaction and long Agent text', async () => {

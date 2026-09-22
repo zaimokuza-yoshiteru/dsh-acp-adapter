@@ -15,7 +15,7 @@ it('keeps user terminals running when the first ACP prompt projects Agent permis
     : { path: '/bin/sh', name: 'Test shell', args: ['-i'] } })
   try {
     const log = join(host.workspaceCwd, 'terminal-access-agent.log')
-    await host.ctx.settings.replace('dsh-acp', { agents: { devin: {
+    await host.ctx.settings.replace('dsh-acp-adapter', { agents: { devin: {
       name: 'Devin', command: process.execPath, args: [join(root, 'test/mock-agent/mock-agent.ts')],
       env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: 'devin', MOCK_LOG: log },
     } } })

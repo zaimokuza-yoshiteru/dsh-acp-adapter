@@ -1,6 +1,6 @@
 import { createElement as h, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import { IconChevronDownOutline14, Menu } from '@deepseek-ai/dsh-client-ui-primitives'
+import { IconChevronDownOutlineMedium, Menu } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { AcpRemoteLike, AcpTeamMemberModelsView, AcpTeamMemberView } from '../data/acp-remote.ts'
@@ -56,7 +56,7 @@ export function TeamMemberModelControl({ lead, member, initialModel, sessionRead
   latestMember.current = member
 
   const memberFacts = member
-  const canWrite = !saving && (member.status === 'idle' || member.status === 'inactive')
+  const canWrite = !saving && member.status === 'inactive'
     && (memberFacts.modelWritable ?? view?.writable ?? false)
   const pendingModel = view === null ? member.pendingModel ?? null : view.pendingModel
   const currentModel = view?.currentModel ?? initialModel ?? member.model
@@ -176,7 +176,7 @@ export function TeamMemberModelControl({ lead, member, initialModel, sessionRead
         onClick: toggle,
       },
       h('span', { className: agentControlCss.triggerLabel }, selectedLabel),
-      h(IconChevronDownOutline14, { className: `${agentControlCss.chevron}${open ? ` ${agentControlCss.chevronOpen}` : ''}` })),
+      h(IconChevronDownOutlineMedium, { className: `${agentControlCss.chevron}${open ? ` ${agentControlCss.chevronOpen}` : ''}` })),
     }),
     h('div', { className: css.settingNotice, 'data-member-model-notice': '', role: 'status' },
       error !== null

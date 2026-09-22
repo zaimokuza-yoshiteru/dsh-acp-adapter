@@ -6,6 +6,7 @@ import type * as acp from '@agentclientprotocol/sdk'
 import { AcpSessionRuntime } from '../../../src/runtime/session/session-runtime.ts'
 import type { SubprocessSeam } from '../../../src/runtime/process/subprocess.ts'
 import { sharedTestSubprocess } from '../../fixtures/subprocess-seam-testing.ts'
+import type { AcpMcpLease } from '../../../src/runtime/session/mcp-lease.ts'
 
 const PROMPT: acp.ContentBlock[] = [{ type: 'text', text: 'permission snapshot test' }]
 
@@ -26,6 +27,7 @@ function createRuntime(
   onPermissionRequest: (params: acp.RequestPermissionRequest) => Promise<acp.RequestPermissionResponse>,
   mode: 'raw-input' | 'content-json' | 'content-json-prefixed' | 'content-json-unrelated' | 'content-json-late' = 'raw-input',
   previousStatus: 'in_progress' | 'completed' = 'in_progress',
+  mcpLease?: AcpMcpLease,
 ): AcpSessionRuntime {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-runtime-permission-snapshot-'))
   roots.push(root)
@@ -50,7 +52,7 @@ function createRuntime(
     config: { command: process.execPath, args: argv.slice(1), env },
     subprocess,
     cwd: root,
-    prepareLaunch: async () => ({ argv, env, spawnPlan: { argv, env } }),
+    prepareLaunch: async () => ({ argv, env, spawnPlan: { argv, env }, ...(mcpLease === undefined ? {} : { mcpLease }) }),
     onPermissionRequest,
   })
   runtimes.push(runtime)
@@ -58,6 +60,22 @@ function createRuntime(
 }
 
 describe('AcpSessionRuntime prompt-scoped permission snapshots', () => {
+  it('checks wire identity before presenting a normalized native approval without changing arguments', async () => {
+    const checked: acp.ToolCallUpdate[] = [], shown: acp.ToolCallUpdate[] = []
+    const runtime = createRuntime(async request => {
+      shown.push(request.toolCall)
+      return { outcome: { outcome: 'selected', optionId: 'allow' } }
+    }, 'raw-input', 'in_progress', {
+      signal: new AbortController().signal, servers: [], beginPrompt() {}, endPrompt() {},
+      permission(request) { checked.push(request.toolCall); return undefined },
+      presentTool(call) { return { ...call, title: 'bash', name: 'bash', kind: 'execute' } },
+      async close() {},
+    })
+    await runtime.prompt(PROMPT, () => undefined)
+    expect(checked[0]).toMatchObject({ name: 'terminal', title: 'Run visible command', rawInput: { command: 'printf SNAPSHOT_OK' } })
+    expect(shown[0]).toMatchObject({ name: 'bash', title: 'bash', kind: 'execute', rawInput: { command: 'printf SNAPSHOT_OK' } })
+    expect(shown[0]?.toolCallId).toBe(checked[0]?.toolCallId)
+  })
   it('enriches an id-only permission from sparse current-prompt updates without leaking into the next prompt', async () => {
     const requests: acp.RequestPermissionRequest[] = []
     const runtime = createRuntime(async (params) => {

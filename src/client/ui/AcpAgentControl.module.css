@@ -73,7 +73,7 @@
 .currentValue { max-width: 50%; color: var(--dsw-alias-label-caption); }
 .settingRow > svg { flex-shrink: 0; }
 /* Scope the portal to our own content, preserving native menu styling. */
-:global([role='menu']):has(.menuContent) { width: min(348px, 65vw); }
+.menuList { width: min(348px, 65vw); }
 .menuAnchor { display: inline-flex; min-width: 0; max-width: 100%; }
 .choice { display: flex; flex-direction: column; white-space: normal; }
 .choiceDescription { font-size: 12px; color: var(--dsw-alias-label-caption); }

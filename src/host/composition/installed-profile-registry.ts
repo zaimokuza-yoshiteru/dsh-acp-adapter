@@ -1,51 +1,17 @@
-/**
- * ACP provider registry。
- *
- * The `dsh-acp` settings namespace owns the agent list; every agent gets an LLM
- * route `acp-<id>` backed by one independent ACP adapter per profile so the prompt gate
- * (`turnAgentFor`) accepts ACP selections. Settings changes
- * re-`replace` routes in place and emits `llm/adapters-updated` from the commit
- * point, so the selector refreshes without a manual event.
- *
- * 不向 DSH configurable provider directory 注册 ACP 管理项：Settings → Models
- * 页不显示 ACP 配置，profile 的
- * create/edit/delete 只在 ACP 面板（`settings.section` entry）进行；adapter
- * route 注册保留（全局模型 picker 经它发现 ACP 模型）。
- *
- * Layering: the pure core (route id derivation, registration facts,
- * probe config hash, settings schema) is exported for unit tests;
- * every `ctx`/`ctx.llm` side effect lives in {@link installInstalledProfileRegistry}.
- *
- * Settings access follows the `installSettingsSection` precedent
- * (`packages/core/agent-default-model`, `packages/llm/llm-pi-ai`) but inlines
- * it: this package must not take a runtime dependency on dsh-settings
- * (execution-plan dependency rule), so the scope is narrowed structurally via
- * `ctx.get('settings')` and the schema is a plain callable with `toJSON`
- * (the two members `SettingsProvider.register` actually invokes).
- *
- * 分层：路由 id 约定与 per-agent 配置 datum 下沉到
- * src/domain/session/agent-config.ts（零 import 叶子），本模块只做 host 侧
- * 组合——settings ns 注册、路由同步与 probe runtime preparation 编排。
- * @module @zaimokuza/dsh-acp-adapter/host/composition/installed-profile-registry
- */
+/** Live ACP routes derived from native volatile plugin configuration. */
 /// <reference types="node" />
 
 import { resolveTerminalJobs } from './terminal-jobs.ts'
-import { posix, win32 } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { createTeamBridge, teamBridgeKey } from '../teams/bridge.ts'
 import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
 import type { AdapterRegistrationHandle } from '@deepseek-ai/dsh-llm'
 import type { AcpProbeOptions } from '../../protocol/v1/types.ts'
 import {
-  ACP_AGENT_IDS,
-  ACP_AGENT_ID_PATTERN,
-  ACP_SETTINGS_NS,
   acpAgentIdFromRoute,
   acpRouteId,
-  effectiveRuntimeOf,
 } from '../../domain/session/agent-config.ts'
-import type { AcpAgentConfig, AcpAgentId, AcpResolvedAgent } from '../../domain/session/agent-config.ts'
+import type { AcpAgentConfig, AcpResolvedAgent } from '../../domain/session/agent-config.ts'
 import { createTeamManagement } from '../teams/management.ts'
 import { createAcpLogger } from '../../domain/observability/logging.ts'
 import { acpProbeConfigKey } from './llm-stub.ts'
@@ -65,36 +31,14 @@ import { AcpRemoteService } from '../../remote/service.ts'
 import { auditTimelineRowOf } from './audit-row.ts'
 import { installAcpBackendGuard } from './backend-guard.ts'
 import type { SessionPersistence } from '@deepseek-ai/dsh-session-persistence'
+import { installExternalChildCatalog } from '../subagent/catalog-publication.ts'
 import { ExternalSubagentProjector } from '../subagent/external-projector.ts'
 
 export { acpProbeConfigKey }
 
-/** Resolved `dsh-acp` settings section. */
-export interface AcpSettings {
-  agents: Record<string, AcpAgentConfig>
-}
-
-/**
- * The shape `SettingsProvider.register` is invoked with. dsh-settings types its
- * schema as schemastery `z<T>`, but at runtime it only calls the schema as a
- * function (validation + defaults) and reads `toJSON()` for descriptors — both
- * supplied here without a schemastery dependency.
- */
-export interface AcpSettingsSchema {
-  (value: unknown): AcpSettings
-  toJSON(): unknown
-}
-
-/** Structural face of dsh-settings' `SettingsScope<AcpSettings>` (see module doc). */
-interface AcpSettingsScopeLike {
-  get(): AcpSettings
-  watch(callback: (next: AcpSettings, prev: AcpSettings) => void | Promise<void>): () => void
-}
-
-/** Structural face of dsh-settings' `SettingsProvider` limited to what the registry uses. */
-interface AcpSettingsProviderLike {
-  register(ns: string, schema: AcpSettingsSchema): AcpSettingsScopeLike
-}
+export { acpSettingsSchema } from './config.ts'
+export type { AcpSettings, AcpSettingsSchema } from './config.ts'
+import type { Config } from './config.ts'
 
 async function flushClosedParent(
   store: { get(id: string): Session | undefined; flush(session: Session): Promise<boolean> },
@@ -113,153 +57,6 @@ async function flushClosedParent(
   if (store.get(sessionId) !== expected) return false
   return await store.flush(expected)
 }
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
-  const proto: unknown = Object.getPrototypeOf(value)
-  return proto === Object.prototype || proto === null
-}
-
-/** Paths are passed literally as argv[0], including spaces and shell punctuation.
- * Recognize both platforms because the client and Agent host may differ.
- * Bare commands still reject likely pasted command lines; arguments belong in args.
- */
-function validExecutableCommand(command: string): boolean {
-  if (/[\u0000-\u001f\u007f]/.test(command)) return false
-  if (posix.isAbsolute(command) || win32.isAbsolute(command) || /^\.{1,2}[\\/]/.test(command)) return true
-  return !/[\s|&;<>()$`"']/.test(command)
-}
-
-/** Validate one agent entry; unknown keys are dropped (schemastery strip semantics). */
-function agentConfigOf(id: string, raw: unknown): AcpAgentConfig {
-  if (!ACP_AGENT_ID_PATTERN.test(id)) {
-    throw new TypeError(
-      `dsh-acp settings: agent id "${id}" must match ${String(ACP_AGENT_ID_PATTERN)} (it becomes LLM route "${acpRouteId(id)}")`,
-    )
-  }
-  if (!isPlainObject(raw)) throw new TypeError(`dsh-acp settings: agents.${id} must be an object`)
-  const name = raw['name']
-  if (typeof name !== 'string' || name.length === 0) {
-    throw new TypeError(`dsh-acp settings: agents.${id}.name must be a non-empty string`)
-  }
-  const command = raw['command']
-  if (typeof command !== 'string' || command.length === 0) {
-    throw new TypeError(`dsh-acp settings: agents.${id}.command must be a non-empty string`)
-  }
-  if (!validExecutableCommand(command)) {
-    throw new TypeError(
-      `dsh-acp settings: agents.${id}.command must be an executable name or path without control characters; enter paths directly without surrounding quotes and put arguments in "args"`,
-    )
-  }
-  const args = raw['args'] ?? []
-  if (!Array.isArray(args) || !args.every((arg) => typeof arg === 'string')) {
-    throw new TypeError(`dsh-acp settings: agents.${id}.args must be an array of strings`)
-  }
-  const env = raw['env'] ?? {}
-  if (!isPlainObject(env) || !Object.values(env).every((value) => typeof value === 'string')) {
-    throw new TypeError(`dsh-acp settings: agents.${id}.env must be a map of string values`)
-  }
-  const loginHint = raw['loginHint']
-  if (loginHint !== undefined && typeof loginHint !== 'string') {
-    throw new TypeError(`dsh-acp settings: agents.${id}.loginHint must be a string`)
-  }
- // 边界：runtime 是专有行为绑定，只收四个合法值——非法值拒绝写入
-  // （普通 profile 不允许拼出宿主 path/env ref，也不允许指定未知的 runtime）
-  const catalogId = raw['catalogId']
-  if (catalogId !== undefined && (typeof catalogId !== 'string' || !ACP_AGENT_ID_PATTERN.test(catalogId))) {
-    throw new TypeError(`dsh-acp settings: agents.${id}.catalogId must be a registry identifier`)
-  }
-  const runtime = raw['runtime']
-  if (runtime !== undefined && !ACP_AGENT_IDS.includes(runtime as AcpAgentId)) {
-    throw new TypeError(
-      `dsh-acp settings: agents.${id}.runtime must be one of ${ACP_AGENT_IDS.map((value) => JSON.stringify(value)).join(', ')} (it binds the profile to a specialized runtime)`,
-    )
-  }
-  return {
-    name,
-    command,
-    args: [...args] as string[],
-    env: { ...env } as Record<string, string>,
-    ...(loginHint === undefined ? {} : { loginHint }),
-    ...(runtime === undefined ? {} : { runtime: runtime as AcpAgentId }),
-    ...(catalogId === undefined ? {} : { catalogId }),
-  }
-}
-
-/**
- * （ 内置 runtime 唯一性）内置 runtime singleton 的跨条目校验：每个内置 runtime
- * （devin/codex/kimi/claude）至多一个 profile。生效绑定 = 显式 `runtime`
- * 字段优先，缺席时按 agent id 回退（与 effectiveRuntimeOf 同口径）。重复的
- * 内置 runtime 会让安装检查、模型目录与会话恢复无法稳定指向唯一配置，
- * 因此必须拒绝。
- * 无 runtime 身份的 generic profile 不受限（多实例靠稳定 profile id 区分）。
- * 错误点名已有 profile（id + 显示名），不自动覆盖/删除——绕过 UI 直写
- * settings 同样被本闸拒绝。
- */
-function assertSingletonRuntimes(agents: Record<string, AcpAgentConfig>): void {
-  const bound = new Map<AcpAgentId, string>()
-  for (const [id, config] of Object.entries(agents)) {
-    const runtime = effectiveRuntimeOf(id, config)
-    if (runtime === undefined) continue
-    const existing = bound.get(runtime)
-    if (existing !== undefined) {
-      throw new TypeError(
-        `dsh-acp settings: agents.${id} duplicates the built-in runtime "${runtime}" already bound by agents.${existing} ("${agents[existing]?.name ?? existing}"); a built-in runtime is a singleton — edit the existing profile instead`,
-      )
-    }
-    bound.set(runtime, id)
-  }
-}
-
-/**
- * Validating resolver for the `dsh-acp` namespace: an absent section resolves
- * to zero agents; an invalid one throws, which is how the settings service
- * refuses the write (or keeps the last good value on an external edit).
- */
-export const acpSettingsSchema: AcpSettingsSchema = Object.assign(
-  (value: unknown): AcpSettings => {
-    if (value === undefined) return { agents: {} }
-    if (!isPlainObject(value)) throw new TypeError('dsh-acp settings: the section must be an object with an "agents" map')
-    const rawAgents = value['agents'] ?? {}
-    if (!isPlainObject(rawAgents)) throw new TypeError('dsh-acp settings: "agents" must be a map of agent id → config')
-    const agents: Record<string, AcpAgentConfig> = {}
-    for (const [id, raw] of Object.entries(rawAgents)) agents[id] = agentConfigOf(id, raw)
-    assertSingletonRuntimes(agents)
-    return { agents }
-  },
-  {
-    // Schemastery's toJSON is its own uid/refs format; this descriptor speaks
- // plain JSON Schema instead. The ACP panel is a custom
-    // settings.section and never renders a schema-driven form, so the
-    // descriptor is informational for generic settings surfaces only.
-    toJSON: (): unknown => ({
-      type: 'object',
-      properties: {
-        agents: {
-          type: 'object',
-          additionalProperties: {
-            type: 'object',
-            properties: {
-              name: { type: 'string', minLength: 1 },
-              command: {
-                type: 'string',
-                minLength: 1,
-                description: 'Executable name or absolute path. Shell metacharacters are rejected; put arguments in args.',
-              },
-              args: { type: 'array', items: { type: 'string' }, default: [] },
-              env: { type: 'object', additionalProperties: { type: 'string' }, default: {} },
-              loginHint: { type: 'string' },
-              catalogId: { type: 'string', pattern: ACP_AGENT_ID_PATTERN.source },
-              runtime: { enum: [...ACP_AGENT_IDS] },
-            },
-            required: ['name', 'command'],
-          },
-          default: {},
-        },
-      },
-    }),
-  },
-)
 
 /** What the registry hands to `registerAdapter`/`replace`: route id plus the display name the selector shows. */
 export interface AcpRegistrationFact {
@@ -315,18 +112,8 @@ export interface InstalledProfileRegistryOptions {
   subprocess?: SubprocessSeamResolution
 }
 
-/**
- * Install the ACP registry: register the `dsh-acp` settings namespace and keep
- * `acp-<id>` routes in sync with it (：不再有 configurable-provider
- * directory 同步——ACP 不进 Settings → Models 管理页）. Route effects bind
- * to the OUTER `ctx` fiber (llm-pi-ai precedent): the settings service
- * detaching (provider reload) falls back to zero agents via `replace([])`
- * instead of withdrawing the registration, and plugin unload disposes both.
- *
- * Without a settings service the plugin stays dormant (nothing registers);
- * with one, an empty agents map is likewise dormant until the panel adds one.
- */
-export function installInstalledProfileRegistry(ctx: Context, options: InstalledProfileRegistryOptions = {}): InstalledProfileRegistry {
+/** Keep ACP routes synchronized with Loader-owned volatile Agent configuration. */
+export function installInstalledProfileRegistry(ctx: Context, config: Config, options: InstalledProfileRegistryOptions = {}): InstalledProfileRegistry {
   ctx.sessionProjections.register(acpExecutionProjection)
   let disposed = false
   const log = createAcpLogger(ctx.logger)
@@ -340,10 +127,11 @@ export function installInstalledProfileRegistry(ctx: Context, options: Installed
   const sessionStore = typeof holder.get === 'function'
     ? holder.get('sessions') as { get(id: string): Session | undefined; flush(session: Session): Promise<boolean> } | undefined
     : undefined
+  const publishExternalChild = sessionStore === undefined ? undefined : installExternalChildCatalog(ctx, sessionStore)
   let externalSubagentProjector: ExternalSubagentProjector | undefined
   const persistenceFiber = sidecar === undefined ? undefined : ctx.inject(['sessionPersistence'], (childCtx: Context) => {
     const persistence = (childCtx as Context & { sessionPersistence: SessionPersistence }).sessionPersistence
-    const projector = new ExternalSubagentProjector(persistence, sidecar)
+    const projector = new ExternalSubagentProjector(persistence, sidecar, publishExternalChild)
     externalSubagentProjector = projector
     void projector.repairInterrupted().then((summary) => {
       if (summary.repaired > 0 || summary.conflicted > 0) {
@@ -392,9 +180,9 @@ export function installInstalledProfileRegistry(ctx: Context, options: Installed
     // is not a host setting; absent preferences use the English fallback.
     let locale: string | undefined
     try {
-      const settings = holder.get('settings') as Pick<import('@deepseek-ai/dsh-settings').SettingsProvider, 'get'> | undefined
-      const value = settings?.get('locale')
-      if (isPlainObject(value) && typeof value.preference === 'string') locale = value.preference
+      const settings = holder.get('settings') as Pick<import('@deepseek-ai/dsh-settings').SettingsForms, 'describe'> | undefined
+      const value = settings?.describe().find(row => row.ns === 'locale')?.value
+      if (value !== null && typeof value === 'object' && 'preference' in value && typeof value.preference === 'string') locale = value.preference
     } catch { /* optional locale preference */ }
     return {
       ...(userQuestions === undefined ? {} : { userQuestions }),
@@ -690,29 +478,14 @@ export function installInstalledProfileRegistry(ctx: Context, options: Installed
     try { await sidecar?.dispose() } catch (error) { log.warn(`dsh-acp: sidecar disposal failed: ${String(error)}`) }
   }, '@zaimokuza/dsh-acp-adapter: dispose ACP profile routes and sidecar')
 
-  // `settings` is a required dependency of the composition root. Register the
-  // namespace synchronously in this plugin fiber instead of hiding the only
-  // route-registration path in a nested dynamic inject: the latter can leave
-  // a loaded ACP row with no watcher when the host loader composes services in
-  // separate phases. The explicit disposer keeps the watch lifetime aligned
-  // with this plugin even when the settings provider itself is replaced.
-  const settings = holder.get('settings') as AcpSettingsProviderLike | undefined
-  if (settings === undefined) {
-    throw new Error('dsh-acp: settings service is required by the ACP composition')
-  }
-  const scope = settings.register(ACP_SETTINGS_NS, acpSettingsSchema)
-  const initialSettings = scope.get()
-  agents = initialSettings.agents
-  onSettingsChange()
-  ready.resolve()
-  const unwatch = scope.watch((next) => {
-    // A stored change landing while the plugin unloads must not re-register
-    // routes against a fiber whose resources are being released.
+  const refreshConfig = (): void => {
     if (disposed) return
-    agents = next.agents
+    agents = structuredClone(config.agents.get())
     onSettingsChange()
-  })
-  ctx.effect(() => () => { unwatch() }, '@zaimokuza/dsh-acp-adapter: dispose settings watch')
+  }
+  refreshConfig()
+  ready.resolve()
+  ctx.on('loader/volatile-update', refreshConfig)
 
   return {
     ready: ready.promise,

@@ -51,7 +51,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE !== '1')('live ACP smoke', () => {
         if (process.env[key] === undefined) throw new Error(`Explicit live-test environment variable is absent: ${key}`)
         return [key, process.env[key]]
       }))
-      await host.ctx.settings.replace('dsh-acp', { agents: { [profile.id]: { name: profile.id, command: profile.command, args: profile.args, env } } })
+      await host.ctx.settings.replace('dsh-acp-adapter', { agents: { [profile.id]: { name: profile.id, command: profile.command, args: profile.args, env } } })
       await vi.waitFor(() => expect(host.ctx.llm.listProviders().some(entry => entry.id === provider)).toBe(true))
       const models = await host.ctx.llm.listModels(provider)
       expect(models.length, 'Agent must return an authenticated model catalog').toBeGreaterThan(0)

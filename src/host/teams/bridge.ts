@@ -69,7 +69,12 @@ export async function createTeamBridge(
     if (wireProfile === 'codex' && call._meta?.is_mcp_tool_call === true && input?.server === serverName && typeof input.tool === 'string') return names.get(input.tool)
     // Kimi uses the full qualified tool name as title; this mapping is runtime-bound.
     const meta = call._meta?.claudeCode as { toolName?: unknown } | undefined
-    const name = call.name ?? meta?.toolName ?? call._meta?.['cognition.ai/toolName'] ?? (wireProfile === 'kimi' ? call.title : undefined)
+    // Devin can omit structured identity and emit only its exact MCP label.
+    // Match the entire capability name: never strip model-generated arguments
+    // or accept a bare tool suffix as authority for automatic coordination.
+    const devinName = wireProfile === 'devin' && typeof call.title === 'string'
+      ? /^(?:Calling|Called) ([a-zA-Z0-9_]+) from dsh$/.exec(call.title)?.[1] : undefined
+    const name = call.name ?? meta?.toolName ?? call._meta?.['cognition.ai/toolName'] ?? devinName ?? (wireProfile === 'kimi' ? call.title : undefined)
     if (typeof name !== 'string') return undefined
     return [...names].find(([tool]) => name === tool || name === `mcp__${serverName}__${tool}`)?.[1]
   }
@@ -166,7 +171,8 @@ export async function createTeamBridge(
       if (name === undefined) return call
       presented.set(call.toolCallId, name)
       // Same tool title as the native host. Transport capability names stay out of the conversation row.
-      return { ...call, title: name }
+      return { ...call, title: name, name,
+        ...(name === 'bash' ? { kind: 'execute' as const } : {}) }
     },
     permission(request) {
       if (!live() || prompt === undefined || prompt.aborted) return undefined

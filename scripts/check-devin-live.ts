@@ -63,7 +63,7 @@ try {
     { id: 'sandbox-policy', config: { mode: 'danger-full-access', workspaceRoot: workspace } },
   ]))
   const profile = loadProfileDirectory('devin-e2e', profileDir, installAnchor)
-  host = await runProfile({ environment: loadLayeredEnv('devin-e2e'), profile: 'devin-e2e', resolvedProfile: { profile, installAnchor }, patchFiles: [], args: [], resolutionMode: 'runtime' })
+  host = await runProfile({ environment: loadLayeredEnv('devin-e2e'), profile: 'devin-e2e', resolvedProfile: { profile, installAnchor }, patchFiles: [], args: [] })
   console.log('PASS: published DSH AgentLoop and Teams host booted')
   const ctx = host.ctx
   const env = {
@@ -73,7 +73,7 @@ try {
     XDG_DATA_HOME: join(root, 'native-data'),
     XDG_CACHE_HOME: join(root, 'native-cache'),
   }
-  await ctx.settings.replace('dsh-acp', { agents: { devin: { name: 'Devin CI', command: executable, args: ['acp'], env } } })
+  await ctx.settings.replace('dsh-acp-adapter', { agents: { devin: { name: 'Devin CI', command: executable, args: ['acp'], env } } })
   await wait(() => ctx.llm.listProviders().some(p => p.id === 'acp-devin'), 'provider registration')
   console.log('PASS: ACP provider registered')
   const models = await ctx.llm.listModels('acp-devin')
@@ -110,7 +110,7 @@ try {
     assert.equal(created.get(member.id), 'acp-devin', 'Native DSH must create a real ACP teammate')
     await wait(() => executions.some(e => e.sessionId === member.id && e.name === 'send_message' && e.success), `teammate ${index} real call`)
     await wait(() => received.some(m => m.senderId === member.id && m.targetId === lead.id && m.text.includes(marker)), `team ${index} exact delivery`)
-    await wait(() => ctx.agentTeams.listMembers(lead).every(m => m.status === 'idle' || m.status === 'inactive'), `team ${index} idle`)
+    await wait(() => ctx.agentTeams.listMembers(lead).every(m => m.status === 'inactive'), `team ${index} idle`)
     assert.ok(!received.some(m => m.senderId === member.id && m.targetId !== lead.id), 'Teammate must not send to another lead')
   }
   assert.notEqual(ctx.agentTeams.listMembers(leads[0]!.handle.agent)[1]!.id, ctx.agentTeams.listMembers(leads[1]!.handle.agent)[1]!.id)

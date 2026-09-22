@@ -1,187 +1,148 @@
-import { createElement as h, useState, useSyncExternalStore, useRef, useLayoutEffect, useEffect } from 'react'
-import type { PropsRenderFactories } from '@deepseek-ai/dsh-client-ui-slots'
+import { createElement as h, useEffect, useMemo, useState } from 'react'
 import type { ComponentType, ReactNode } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
-import type { ChatNodeViewProps, AssistantBlock } from '@deepseek-ai/dsh-client-ui-chat/client'
-import { AcpActivityContent, ActivityRow, renderNativeActivityTool } from './AcpActivityNode.ts'
-import type { ActivityNodeProps, AcpActivityNodeData, ActivityPresentationRow } from './AcpActivityNode.ts'
-import { nativeOwner } from './native-tool-renderer.ts'
-import css from './AcpActivityNode.module.css'
+import type { StoredEntry, PropsRenderFactories } from '@deepseek-ai/dsh-client-ui-slots'
+import type { ChatSnapshot, ChatViewSlotProps, ChatNodeViewProps, ChatConversationViewNode } from '@deepseek-ai/dsh-client-ui-chat/client'
+import type { ConversationGroupDefinition, ConversationViewDefinition, ConversationGroupData, GroupSnapshot, GroupKey } from '@deepseek-ai/dsh-client-ui-conversation/client'
+import { ActivityRow, completedProjectedChild, visibleActivityRows, activityJournalSessionId, renderNativeActivityTool } from './AcpActivityNode.ts'
+import type { ActivityNodeProps, ActivityPresentationRow } from './AcpActivityNode.ts'
+import { mountNativeEntry, type EntryProps } from './native-tool-renderer.ts'
+import { activityData, activityWindowKey, normalizeAcpChatNodes, type ActivityWindow } from './acp-chat-normalization.ts'
+export { activityBoundaries, finalAnswerStart } from './acp-chat-normalization.ts'
 
-type NativeProps = ChatNodeViewProps<'assistant-step'> & PropsRenderFactories
-type Dependencies = Pick<ActivityNodeProps, 'journalHub' | 't' | 'onProjectedChild' | 'onOpenProjectedChild' | 'jsonStringWrapping'> & {
-  transcript: { subscribe(listener: () => void): () => void; getSnapshot(): { value?: { transcriptView?: string } | undefined } }
+type Dependencies = Pick<ActivityNodeProps, 'journalHub' | 't' | 'onProjectedChild' | 'onOpenProjectedChild' | 'jsonStringWrapping'>
+type NativeChatProps = ChatViewSlotProps & PropsRenderFactories
+
+declare module '@deepseek-ai/dsh-client-ui-chat/client' {
+  interface ChatNodeDataMap { 'acp-inline-activity': ActivityPresentationRow }
 }
-const EMPTY = { subscribe: () => () => {}, getSnapshot: (): AcpActivityNodeData | undefined => undefined }
 
-/** Keep each activity at its first content boundary, irrespective of later patches. */
-export function activityBoundaries(rows: readonly ActivityPresentationRow[], count: number, settled = false): Map<number, ActivityPresentationRow[]> {
-  const boundaries = new Map<number, ActivityPresentationRow[]>()
-  for (const row of rows) {
-    if (row.contentIndex === undefined || (!settled && row.contentIndex > count)) continue
-    // A cancelled native partial can end before the last queued ACP content.
-    const index = Math.min(row.contentIndex, count)
-    const group = boundaries.get(index) ?? []
-    group.push(row)
-    boundaries.set(index, group)
+/** The registry owns the algorithms. This adapter only feeds them normalized inputs. */
+export function buildAcpChatView(view: ConversationViewDefinition, group: ConversationGroupDefinition | undefined,
+  original: ChatSnapshot, windows: ReadonlyMap<string, ActivityWindow>) {
+  const builder = (view as ConversationViewDefinition<ChatConversationViewNode, ChatSnapshot>).create()
+  const chat = builder.replace({ nodes: normalizeAcpChatNodes(original.nodes.values(), windows), timeline: original.timeline })
+  const input = builder.groupInput?.()
+  const state = group !== undefined && input !== undefined ? group.update({ state: group.create() }, input) : undefined
+  const update = state === undefined ? undefined : group?.buildGroups({ state })
+  const snapshots = new Map<GroupKey, GroupSnapshot<ConversationGroupData<'chat'>>>()
+  if (update !== undefined && update !== null) {
+    for (const snapshot of update.groups.kind === 'replace' ? update.groups.snapshots : update.groups.upserts) {
+      snapshots.set(snapshot.key, snapshot as GroupSnapshot<ConversationGroupData<'chat'>>)
+    }
   }
-  return boundaries
-}
-
-/** Keep the complete trailing answer (including adjacent text/image blocks).
- * Tool updates after the answer do not turn its last paragraph into the only
- * visible content. Reasoning and intervening activities end the answer group.
- */
-export function finalAnswerStart(blocks: readonly AssistantBlock[], boundaries: ReadonlyMap<number, unknown>): number {
-  let start = blocks.findLastIndex(block => block.kind === 'text' && block.text.trim() !== '' || block.kind === 'image')
-  if (start < 0) return blocks.length
-  while (start > 0 && !boundaries.has(start)) {
-    const previous = blocks[start - 1]!
-    if (previous.kind !== 'text' && previous.kind !== 'image') break
-    start--
+  const grouped = update?.entries === undefined ? undefined : {
+    entries: update.entries,
+    groupSource: (key: GroupKey) => ({ getSnapshot: () => snapshots.get(key), subscribe: () => () => {} }),
   }
-  return start
+  return { chat, grouped, snapshots }
 }
 
-/** Native Chat uses HTML hidden-until-found so browser search can reveal a
- * collapsed process. Our interleaving containers retain that behavior too.
- */
-function ProcessPart({ hidden, reveal, children, ...attributes }: {
-  hidden: boolean; reveal(): void; children?: ReactNode; className?: string | undefined; 'data-acp-activity'?: boolean;
+function NormalizedChat({ Native, props, ctx, dependencies }: {
+  Native: ComponentType<EntryProps>; props: NativeChatProps; ctx: Context; dependencies: Dependencies
 }): ReactNode {
-  const ref = useRef<HTMLDivElement>(null)
-  useLayoutEffect(() => {
-    const element = ref.current
-    if (element === null) return
-    if (hidden && element.contains(element.ownerDocument.activeElement)) { reveal(); return }
-    if (hidden) element.setAttribute('hidden', 'until-found')
-    else element.removeAttribute('hidden')
-  }, [hidden, reveal])
-  useEffect(() => {
-    const element = ref.current
-    element?.addEventListener('beforematch', reveal)
-    return () => element?.removeEventListener('beforematch', reveal)
-  }, [reveal])
-  return h('div', { ...attributes, ref }, children)
-}
-
-/** Compose the registered native renderer, without copying Markdown/reasoning/image UI. */
-function useOrderedAssistant(props: NativeProps, Native: ComponentType<NativeProps>, dependencies: Dependencies): ReactNode {
-  const location = props.node.location
-  const settledSource = location.kind === 'step' ? location.step.data.source('acp-activity') : EMPTY
-  const liveSource = location.kind === 'step' ? location.step.data.source('acp-activity-live') : EMPTY
-  const settled = useSyncExternalStore(settledSource.subscribe, settledSource.getSnapshot)
-  const live = useSyncExternalStore(liveSource.subscribe, liveSource.getSnapshot)
-  const data = settled ?? live
-  if (data === undefined) return h(Native, props)
-  return h(AcpActivityContent, {
-    ...dependencies,
-    sessionId: props.sessionId,
-    openFile: props.openFile,
-    node: { ...props.node, kind: 'acp-activity', data },
-    renderRows: (rows, unavailable) => h(OrderedFlow, { props, Native, dependencies, rows, unavailable }),
-  })
-}
-
-function OrderedFlow({ props, Native, dependencies, rows, unavailable }: {
-  props: NativeProps; Native: ComponentType<NativeProps>; dependencies: Dependencies;
-  rows: readonly ActivityPresentationRow[]; unavailable: boolean;
-}): ReactNode {
-  const [localOpen, setLocalOpen] = useState(false)
-  const settings = useSyncExternalStore(dependencies.transcript.subscribe, dependencies.transcript.getSnapshot)
-  // A leading formatting newline must not become the native first-line summary.
-  // This is a presentation copy; the persisted reasoning and audit stay intact.
-  const blocks = props.node.data.blocks.map(block => block.kind === 'reasoning'
-    ? { ...block, text: block.text.replace(/^\s*\n/, '') } : block)
-  const settled = props.node.data.status !== 'running'
-  const boundaries = activityBoundaries(rows, blocks.length, settled)
-  const count = rows.filter(row => row.kind === 'tool' && row.contentIndex !== undefined).length
-  const nativeProcess = props.turnProcess
-  const lastStep = nativeProcess?.spec.answerStep
-  const ownsProcess = lastStep == null || lastStep === props.node.data.step
-  const foldable = settled && settings.value?.transcriptView !== 'normal'
-    && (count > 0 || nativeProcess?.foldable === true) && ownsProcess && !unavailable
-  const open = !foldable || (nativeProcess?.foldable ? nativeProcess.open : localOpen)
-  const setOpen = nativeProcess?.foldable ? nativeProcess.setOpen : setLocalOpen
-  const answerStart = finalAnswerStart(blocks, boundaries)
-  const location = props.node.location
-  const turn = location.kind === 'step' || location.kind === 'turn' ? location.turn.turn : props.node.data.turn
-  const spec = { turn, controlAnchorSeq: props.node.anchorSeq, processStartSeq: props.node.anchorSeq,
-    answerAnchorSeq: props.node.anchorSeq, answerStep: props.node.data.step, inlineReasoning: false,
-    messageCount: nativeProcess?.spec.messageCount ?? 0, subagentCount: nativeProcess?.spec.subagentCount ?? 0,
-    toolCallCount: count + (nativeProcess?.spec.toolCallCount ?? 0),
-  }
-  const output: ReactNode[] = []
-  if (foldable) output.push(props.renderFactorySlot('acp.native-process', {
-    ...nativeOwner(props), node: { ...props.node, kind: 'turn-process', data: spec },
-    turnProcess: { spec, foldable, open, setOpen },
+  const original = props.useChat(value => value)
+  const conversation = props.useConversation(value => value)
+  const [windows, setWindows] = useState<ReadonlyMap<string, ActivityWindow>>(new Map())
+  const anchors = new Map(original.nodes.values().flatMap(node => {
+    const data = activityData(node)
+    return data === undefined ? [] : [[activityWindowKey(data), data] as const]
   }))
-  const content = (index: number, group: AssistantBlock[]): ReactNode => h(Native, {
-    ...props, key: `content:${index}`,
-    // ACP interleaving owns the inline visibility; avoid a second native fold.
-    turnProcess: undefined,
-    node: { ...props.node, data: { ...props.node.data, blocks: group,
-      status: index + group.length === blocks.length && props.node.data.status === 'running' ? 'running' : 'settled',
-    } },
-  })
-  for (let index = 0; index <= blocks.length; index++) {
-    const activities = boundaries.get(index)
-    if (activities !== undefined) output.push(h(ProcessPart, {
-      key: `activities:${index}`, hidden: !open, reveal: () => setOpen(true), className: css.inlineActivities, 'data-acp-activity': true,
-    }, ...activities.map(row => h(ActivityRow, {
-      ...dependencies, key: row.activityId, row, openFile: props.openFile,
-      renderTool: full => renderNativeActivityTool(props, full, dependencies.t),
-    }))))
-    const block = blocks[index]
-    if (block !== undefined) {
-      const start = index
-      const group = [block]
-      // Keep native consecutive-image galleries intact across boundaries.
-      while (block.kind === 'image' && blocks[index + 1]?.kind === 'image' && !boundaries.has(index + 1)) group.push(blocks[++index]!)
-      output.push(h(ProcessPart, { key: `segment:${start}`, hidden: !open && start < answerStart, reveal: () => setOpen(true) }, content(start, group)))
-    }
-  }
-  if (props.node.data.status === 'interrupted' || blocks.length === 0 && props.node.data.status === 'running') {
-    output.push(h(Native, { ...props, key: 'status', turnProcess: undefined, node: { ...props.node, data: { ...props.node.data, blocks: [] } } }))
-  }
-  if (unavailable) output.push(h('div', { key: 'unavailable', role: 'status' }, dependencies.t('activity.unavailable')))
-  return h('div', { className: css.assistantFlow }, ...output)
+  const signature = JSON.stringify([...anchors].map(([key, data]) => [key, data.ownerDshSessionId, data.promptAnchorMessageId]))
+  useEffect(() => {
+    let disposed = false
+    const releases = [...anchors].map(([key, data]) => {
+      const owner = activityJournalSessionId(data, props.sessionId)
+      const publish = (): void => {
+        if (disposed) return
+        const rows = handle.snapshot()
+        setWindows(current => new Map(current).set(key, { rows: visibleActivityRows(rows), unavailable: handle.error() !== undefined }))
+        for (const row of rows) {
+          const child = completedProjectedChild(row)
+          if (child !== undefined) dependencies.onProjectedChild?.(child.parentSessionId, child.childSessionId)
+        }
+      }
+      const handle = dependencies.journalHub.acquire(owner, owner, data.promptAnchorMessageId, publish)
+      publish()
+      return handle.release
+    })
+    return () => { disposed = true; releases.forEach(release => release()) }
+  }, [signature, props.sessionId, dependencies])
+  const view = ctx.uiConversation.views.entries().find(value => value.target === 'chat')
+  const group = ctx.uiConversation.groups.forTarget('chat')
+  const normalized = useMemo(() => view === undefined ? undefined
+    : buildAcpChatView(view, group, original, windows), [view, group, original, conversation, windows, signature])
+  if (normalized === undefined) return h(Native, { ...props, key: 'unavailable' } as unknown as EntryProps)
+  const { chat, grouped, snapshots } = normalized
+  // Hooks are selector-compatible pure readers here. Their owning Chat wrapper
+  // subscribes to the native snapshot and sidecar and republishes them together.
+  const normalizedConversation = { ...conversation, views: { ...conversation.views,
+    get: (target: string) => target === 'chat' ? chat : conversation.views.get(target as 'chat'),
+    grouped: (target: string) => target === 'chat' ? grouped : conversation.views.grouped(target),
+  } }
+  return h(Native, { ...props,
+    useChat: (selector: (snapshot: ChatSnapshot) => unknown) => selector(chat),
+    useConversation: (selector: (snapshot: typeof normalizedConversation) => unknown) => selector(normalizedConversation),
+    useChatNode: (key: string, selector?: (node: ChatConversationViewNode | undefined) => unknown) => selector === undefined ? chat.nodes.get(key) : selector(chat.nodes.get(key)),
+    useChatNodeProcess: (key: string, selector?: (value: unknown) => unknown) => {
+      const value = chat.nodes.processSource(key).getSnapshot()
+      return selector === undefined ? value : selector(value)
+    },
+    useChatGroup: (key: string, selector?: (value: unknown) => unknown) => {
+      const value = snapshots.get(key as GroupKey)
+      return selector === undefined ? value : selector(value)
+    },
+  } as unknown as EntryProps)
 }
 
-/** A keyed wrapper delegates every unowned/legacy message to the existing renderer. */
-export function installAcpAssistantStream(ctx: Context, options: Omit<Dependencies, 'transcript'>): () => boolean {
-  const scope = ctx.settingsScope.bind<{ transcriptView?: string }>({ namespace: 'ui-chat' })
-  const dependencies: Dependencies = { ...options, transcript: {
-    subscribe: listener => scope.subscribe(listener), getSnapshot: () => scope.getSnapshot(),
-  } }
-  let installed = false
-  let wrapper: ComponentType<NativeProps> | undefined
-  ctx.slots.inject('conversation.chat.node', () => {
-    const install = (): void => {
-      if (installed) return
-      const native = ctx.slots.entriesOfSlot('conversation.chat.node').find(entry => entry.options.key === 'assistant-step')
-      // Do not bypass a renderer's private dependency injection or child slots.
-      if (native === undefined || native.inject !== undefined || native.children !== undefined || native.locale !== 'chat'
-        || (native.options.priority ?? 0) !== 0) return
-      const Native = native.component as ComponentType<NativeProps>
-      installed = true
-      wrapper = (props: NativeProps) => useOrderedAssistant(props, Native, dependencies)
-      ctx.slots.register({ name: 'conversation.chat.node', key: 'assistant-step', locale: 'chat', priority: -1 }, wrapper)
-      const process = ctx.slots.entriesOfSlot('conversation.chat.node').find(entry => entry.options.key === 'turn-process' && (entry.options.priority ?? 0) === 0)
-      if (process !== undefined && process.inject === undefined && process.children === undefined) {
-        const Process = process.component as ComponentType<ChatNodeViewProps<'turn-process'>>
-        ctx.slots.register({ name: 'conversation.chat.node', key: 'turn-process', registrant: 'acp-process-owner', locale: 'chat', priority: -1 }, (processProps: ChatNodeViewProps<'turn-process'>) => {
-          const location = processProps.node.location
-          const turn = location.kind === 'step' || location.kind === 'turn' ? location.turn : undefined
-          const inline = ctx.slots.entriesOfSlot('conversation.chat.node').some(entry => entry.options.key === 'assistant-step' && entry.component === wrapper)
-          const acp = inline && turn?.steps.some(step => step.data.get('acp-activity') !== undefined || step.data.get('acp-activity-live') !== undefined)
-          return acp ? null : h(Process, processProps)
-        })
-      }
+/** Shadow a native entry through the public slot API, preserving its full tree. */
+function composeSlot(ctx: Context, name: string, select: (entry: StoredEntry) => boolean,
+  wrap: (Native: ComponentType<EntryProps>, props: EntryProps) => ReactNode): void {
+  ctx.slots.inject(name as never, () => {
+    let current: StoredEntry | undefined
+    let release: (() => void) | undefined
+    const sync = (): void => {
+      const next = ctx.slots.entries(name as never).find(entry => entry.registrant !== 'acp-chat-normalization' && select(entry))
+      if (next === current) return
+      const oldRelease = release
+      release = undefined
+      current = next
+      oldRelease?.()
+      if (next !== undefined) release = mountNativeEntry(ctx, next, name, {
+        registration: { priority: (next.options.priority ?? 0) - 1, registrant: 'acp-chat-normalization' }, wrap,
+      })
     }
-    const unsubscribe = ctx.slots.subscribe('conversation.chat.node', install)
-    install()
-    return () => { unsubscribe(); installed = false }
+    const unsubscribe = ctx.slots.subscribe(name as never, sync)
+    sync()
+    return () => { unsubscribe(); release?.() }
   })
-  return () => installed && ctx.slots.entriesOfSlot('conversation.chat.node').some(entry => entry.options.key === 'assistant-step' && entry.component === wrapper)
+}
+
+/** Native 0.1.7 lists raw registrations for tabs, whereas rendering selects winners by id. */
+export function uniqueViewTabs<T extends { id: string }>(tabs: readonly T[]): readonly T[] {
+  const unique = tabs.filter((tab, index) => tabs.findIndex(value => value.id === tab.id) === index)
+  return unique.length === tabs.length ? tabs : unique
+}
+
+export function installAcpAssistantStream(ctx: Context, dependencies: Dependencies): void {
+  composeSlot(ctx, 'conversation.view', entry => entry.options.id === 'chat', (Native, props) =>
+    h(NormalizedChat, { Native, props: props as unknown as NativeChatProps, ctx, dependencies }))
+  composeSlot(ctx, 'conversation.session.header', () => true, (Native, props) => {
+    const useViews = props.useConversationViews as (selector: (tabs: readonly { id: string }[]) => unknown, equal?: (left: unknown, right: unknown) => boolean) => unknown
+    return h(Native, { ...props, useConversationViews: (selector: (tabs: readonly { id: string }[]) => unknown, equal?: (left: unknown, right: unknown) => boolean) =>
+      useViews(tabs => selector(uniqueViewTabs(tabs)), equal) })
+  })
+  // Native tool nodes still use the native Tool tree. Only their sidecar detail
+  // loader/inspector and external-child navigation belong to ACP.
+  composeSlot(ctx, 'conversation.chat.node', entry => entry.options.key === 'tool-call', (Native, props) => {
+    const owner = props as unknown as ChatNodeViewProps<'tool-call'> & PropsRenderFactories
+    const row = (owner.node.data as { acpActivity?: ActivityPresentationRow }).acpActivity
+    return row === undefined ? h(Native, props) : h(ActivityRow, { ...dependencies, row, openFile: owner.openFile,
+      renderTool: full => renderNativeActivityTool(owner, full, dependencies.t) })
+  })
+  ctx.slots.inject('conversation.chat.node', () => ctx.slots.register({
+    name: 'conversation.chat.node', key: 'acp-inline-activity', locale: 'acpActivity',
+  }, (props: Omit<ChatNodeViewProps<'acp-inline-activity'>, 't'>) => h(ActivityRow, { ...dependencies, row: props.node.data, openFile: props.openFile })))
+  // Standalone ACP markers remain the fallback for unavailable journals or turns
+  // with no assistant message. They must not suppress their own activity rows.
 }

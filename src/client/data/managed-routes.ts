@@ -9,6 +9,7 @@ export class ManagedAcpRouteCatalog {
 
   constructor(private readonly scope: SettingsScopeLike, durableRoutes: Iterable<string> = []) {
     this.durableRoutes = new Set(durableRoutes)
+    this.routes = new Set(this.durableRoutes)
     this.refresh()
     this.unsubscribe = scope.subscribe(() => { this.refresh() })
   }

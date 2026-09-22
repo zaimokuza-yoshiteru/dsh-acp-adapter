@@ -3,7 +3,7 @@ import { reconcileMemberModelView } from '../../../src/client/ui/TeamMemberModel
 import type { AcpTeamMemberView } from '../../../src/client/data/acp-remote.ts'
 
 const member = (patch: Partial<AcpTeamMemberView> & { modelWritable?: boolean } = {}): AcpTeamMemberView & { modelWritable?: boolean } => ({
-  profileId: 'devin', sessionId: 'member-1', name: 'Member 1', status: 'idle', model: 'model-a', description: null, ...patch,
+  profileId: 'devin', sessionId: 'member-1', name: 'Member 1', status: 'inactive', model: 'model-a', description: null, ...patch,
 })
 
 it('keeps the cached catalog while replacing current, pending and writable facts from roster polling', () => {

@@ -152,6 +152,30 @@ describe('session-owned native Teams MCP bridge', () => {
     expect(two.lease.permission(one.permission(`mcp__dsh__${one.name}`))).toBeUndefined()
     expect((await two.client.callTool({ name: one.name })).isError).toBe(true)
   })
+  it('recognizes exact Devin MCP labels but never repairs malformed tool names into approval authority', async () => {
+    const { lease, tools, permission, client, execute } = await setup('devin', ['bash'])
+    lease.beginPrompt(new AbortController().signal)
+    const wait = tools.find(tool => tool.name.endsWith('_wait_agent'))!.name
+    const shell = tools.find(tool => tool.name.endsWith('_bash'))!.name
+    const request = (title: string) => ({ ...permission(), toolCall: { toolCallId: title, title } })
+    expect(lease.permission(request(`Calling ${wait} from dsh`))?.outcome).toEqual({ outcome: 'selected', optionId: 'yes' })
+    expect(lease.permission(request(`Calling ${shell} from dsh`))).toBeUndefined()
+    const raw = { toolCallId: 'bash', title: `Calling ${shell} from dsh`, rawInput: { command: 'sleep 20', description: 'Wait for teammates' } }
+    expect(lease.presentTool!(raw)).toEqual({ ...raw, title: 'bash', name: 'bash', kind: 'execute' })
+    expect(raw.title).toContain(shell)
+    const malformed = `${wait}<arg_key>arguments</arg_key><arg_value>{"timeout_ms": 60000}`
+    expect(lease.permission(request(`Calling ${malformed} from dsh`))).toBeUndefined()
+    expect((await client.callTool({ name: malformed, arguments: {} })).isError).toBe(true)
+    expect(execute).not.toHaveBeenCalled()
+    for (const title of [`Calling wait_agent from dsh`, `Calling ${wait} from other`, `Calling ${wait} from dsh\nextra`]) {
+      expect(lease.permission(request(title))).toBeUndefined()
+    }
+    const other = await setup('devin')
+    other.lease.beginPrompt(new AbortController().signal)
+    expect(other.lease.permission(request(`Calling ${wait} from dsh`))).toBeUndefined()
+    lease.endPrompt()
+    expect(lease.permission(request(`Calling ${wait} from dsh`))).toBeUndefined()
+  })
   it('rejects hostile origins and capabilities after feature removal or tool replacement', async () => {
     const { lease, server, definitions, name, client, services } = await setup()
     lease.beginPrompt(new AbortController().signal)

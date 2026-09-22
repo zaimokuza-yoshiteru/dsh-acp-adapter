@@ -13,7 +13,7 @@ it.skipIf(process.env.DSH_E2E_LIVE_STREAM !== '1')('renders a real Codex shell c
   let browser!: TestBrowser
   const errors: string[] = []
   try {
-    await host.ctx.settings.replace('dsh-acp', { agents: { codex: { name: 'Codex', command: 'codex-acp', args: [] } } })
+    await host.ctx.settings.replace('dsh-acp-adapter', { agents: { codex: { name: 'Codex', command: 'codex-acp', args: [] } } })
     await vi.waitFor(() => expect(host.ctx.llm.listProviders().some(p => p.id === 'acp-codex')).toBe(true))
     const model = required(process.env.DSH_E2E_LIVE_CODEX_MODEL, 'Choose an explicit live model')
     expect(model, 'Choose an explicit live model').toBeTruthy()
@@ -35,6 +35,9 @@ it.skipIf(process.env.DSH_E2E_LIVE_STREAM !== '1')('renders a real Codex shell c
       const counter = page.locator('[data-turn-process-tool-calls="1"]')
       await counter.waitFor()
       if (await counter.getAttribute('aria-expanded') === 'false') await counter.click()
+      for (const group of await page.locator('[data-step-process] > div > button').all()) {
+        if (await group.isVisible() && await group.getAttribute('aria-expanded') === 'false') await group.click()
+      }
       const call = page.locator('[data-chat-call-id^="acp:"]')
       const tool = call.locator('[data-variant="bash"]')
       await tool.waitFor()

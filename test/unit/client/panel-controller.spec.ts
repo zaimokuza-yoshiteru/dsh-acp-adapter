@@ -53,7 +53,7 @@ describe('AcpPanelController targeted health checks', () => {
     }
     const controller = new AcpPanelController({
       scope,
-      settings: { mutate: vi.fn() },
+      mutate: vi.fn(), refusedMessage: () => 'refused',
       remote: {
         health,
         backendOf: vi.fn(), boundSessions: vi.fn(),
@@ -93,7 +93,7 @@ describe('AcpPanelController targeted health checks', () => {
     }
     const controller = new AcpPanelController({
       scope,
-      settings: { mutate: vi.fn() },
+      mutate: vi.fn(), refusedMessage: () => 'refused',
       remote: {
         health: vi.fn((request?: { agentId?: string }) => request?.agentId === 'devin'
           ? Promise.resolve({ ok: false as const, error: { message: 'devin probe failed' } })

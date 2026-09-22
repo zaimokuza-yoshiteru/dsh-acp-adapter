@@ -1,3 +1,4 @@
+import { Config } from '../../src/host/composition/config.ts'
 import { readFileSync } from 'node:fs'
 import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -39,7 +40,7 @@ describe('native DSH non-interference contract', () => {
     const context = {
       sessionProjections: { register: () => () => undefined },
       get: (name: string) => name === 'settings' ? settings : name === 'dshHomePath' ? ((...segments: string[]) => [home, ...segments].join('/')) : undefined,
-      inject: (_deps: string[], callback: (ctx: unknown) => void) => callback({ get: context.get, on: context.on }),
+      inject: (deps: string[], callback: (ctx: unknown) => void) => { if (!deps.includes('settings') && !deps.includes('configEditor')) callback({ get: context.get, on: context.on }) },
       on: () => () => undefined,
       effect: () => undefined,
       llm: {
@@ -52,7 +53,7 @@ describe('native DSH non-interference contract', () => {
       fiber: { state: 2 },
     }
     context.llm.registerAdapter(['native-a', 'native-b'], native)
-    apply(context as never)
+    apply(context as never, Config({ agents: { devin: { name: 'Devin', command: 'devin', args: ['acp'] } } }))
     const sidecarBeforeNative = existsSync(`${home}/dsh-acp/sidecar.sqlite`)
     const dispatch = async (provider: string, model = 'm') => {
       const adapter = routes.get(provider)

@@ -27,7 +27,7 @@ describe.each(['kimi', 'devin', 'codex', 'claude'])('permission isolation: %s', 
     try {
       const native = new NativeControl()
       host.ctx.effect(() => host.ctx.llm.registerAdapter(['native-permission'], native))
-      await host.ctx.settings.replace('dsh-acp', { agents: { [profile]: {
+      await host.ctx.settings.replace('dsh-acp-adapter', { agents: { [profile]: {
         name: profile, command: process.execPath, args: [join(root, 'test/mock-agent/mock-agent.ts')],
         env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: profile },
       } } })

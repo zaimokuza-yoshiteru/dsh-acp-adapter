@@ -1,3 +1,4 @@
+import { Config } from '../../../src/host/composition/config.ts'
 import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -66,7 +67,7 @@ describe('third-party host coexistence', () => {
     })
     const native = new NativeAdapter()
     const disposeNative = ctx.llm.registerAdapter(['native'], native)
-    const fiber = ctx.plugin({ name: 'third-party-acp-coexistence', inject: [...inject], apply })
+    const fiber = ctx.plugin({ name: 'third-party-acp-coexistence', inject: [...inject], Config, apply }, { agents: { codex: { name: 'Codex', command: 'codex-acp', args: [], env: {} } } })
     await fiber.await()
 
     const chunks: StreamChunk[] = []
