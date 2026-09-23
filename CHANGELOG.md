@@ -16,6 +16,7 @@ User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/
 - 普通审批直接展示操作事实，页面状态和按钮由原生界面本地化；工具桥权限判断新增脱敏诊断，可复制所选记录及版本。自动审批范围不变。
 
 - 修复 Codex 成员的 DSH 工具授权表单被宿主取消的问题：已验证且提供“仅本次”的请求可转为成员原生审批，在主会话处理，不授予长期权限。
+- Devin 对当前 DSH 连接发出不存在的工具名时，直接拒绝并记录诊断，避免无效调用卡在人工审批。不会修补或执行错误请求；Agent 可重新发出正确调用。
 
 ### English
 
@@ -25,6 +26,7 @@ User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/
 - Ordinary approvals show operation facts, with native localized states and buttons. Redacted bridge permission checks and versioned diagnostic copying improve troubleshooting without broadening automatic approval.
 
 - Fixes cancelled Codex member approvals for verified DSH tools. Scope-only forms offering once can use the member’s native approval, handled from the lead without granting persistent permission.
+- Rejects and diagnoses invalid tool names belonging to the current Devin DSH connection instead of blocking on user approval. Malformed requests are never repaired or executed; the Agent can issue a corrected call.
 
 ## 0.1.7-alpha.1.1
 

@@ -99,7 +99,23 @@ export async function createTeamBridge(
     if (!live()) return { ...facts, reason: 'inactive-connection' }
     if (prompt === undefined || prompt.aborted) return { ...facts, reason: 'inactive-prompt' }
     const definition = definitionOf(call)
-    if (definition === undefined) return { ...facts, reason: 'identity-unmatched' }
+    if (definition === undefined) {
+      // Devin may put serialized argument markup inside mcp_call_tool.tool_name.
+      // A name scoped to this connection but absent from tools/list cannot run,
+      // regardless of user approval. Reject it for the Agent to correct instead
+      // of presenting an approval card. Never repair the name or recover args.
+      const devinName = wireProfile === 'devin'
+        ? call.name ?? meta?.toolName ?? call._meta?.['cognition.ai/toolName']
+          ?? (typeof call.title === 'string' ? /^(?:Calling|Called) (.+) from dsh$/.exec(call.title)?.[1] : undefined)
+        : undefined
+      if (typeof devinName === 'string'
+        && (devinName.startsWith(`${nonce}_`) || devinName.startsWith(`mcp__${serverName}__${nonce}_`))) {
+        const reject = request.options.find(option => option.kind === 'reject_once')
+        return { ...facts, reason: 'invalid-tool-name', response: { outcome: reject === undefined
+          ? { outcome: 'cancelled' } : { outcome: 'selected', optionId: reject.optionId } } }
+      }
+      return { ...facts, reason: 'identity-unmatched' }
+    }
     const identified = { ...facts, toolName: definition.name }
     if (!isTeamTool(definition.name)) return { ...identified, reason: 'not-coordination' }
     const allow = request.options.find(option => option.kind === 'allow_once')

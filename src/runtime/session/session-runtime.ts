@@ -612,9 +612,9 @@ export class AcpSessionRuntime {
       catch { return cancelled() }
     }
     if (isAborted(signal) || lease !== this.mcpLease) return cancelled()
-    const coordination = lease?.permission(request)
-    if (coordination !== undefined) return coordination
-    // Resolve coordination against the original wire identity first; normalize
+    const bridgeDecision = lease?.permission(request)
+    if (bridgeDecision !== undefined) return bridgeDecision
+    // Resolve bridge decisions against the original wire identity first; normalize
     // only the request shown by the native approval surface.
     const pending = handler({ ...request, toolCall: this.mcpLease?.presentTool?.(request.toolCall) ?? request.toolCall }, signal)
     if (signal === undefined) return await pending

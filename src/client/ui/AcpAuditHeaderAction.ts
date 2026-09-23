@@ -142,6 +142,7 @@ function auditStatusOf(t: Translate | undefined, status: string): string {
     'inactive-connection': 'auditBridgeInactive',
     'inactive-prompt': 'auditPromptInactive',
     'identity-unmatched': 'auditIdentityUnmatched',
+    'invalid-tool-name': 'auditInvalidToolName',
     'not-coordination': 'auditNotCoordination',
     'allow-once-unavailable': 'auditAllowOnceMissing',
     'danger-full-access': 'auditStatusNativeAccess',

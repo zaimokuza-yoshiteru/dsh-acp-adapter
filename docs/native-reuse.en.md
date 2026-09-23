@@ -53,6 +53,8 @@ The bridge automatically discovers native tools in the current DSH session scope
 
 The bridge adds an MCP call. Agent-provided tools and equivalent DSH tools may coexist; only calls through DSH tools enter the host pipeline. It does not repeat the external Agent's shell, file or model execution, and it cannot restore every DSH model-loop extension point. Plugins requiring native model calls, PTC-specific call identities or loop control still need separate adaptation. `concludesTurn` is forwarded as a request; the external Agent decides how to respond, so forced termination is not guaranteed. Native image results pass through attachment services and size validation. File attachments currently carry native file descriptions; without execution-environment path mapping they are explicitly marked unreadable. Unrepresentable output is reported rather than silently dropped. The Agent continues to own its permissions and context management.
 
+When a Devin request carries the current DSH connection's capability prefix but names a tool absent from its advertised catalog, the adapter rejects it and records `invalid-tool-name` instead of asking the user to approve an unexecutable call. The Agent may retry with a correct request; retries remain Agent-owned. The adapter does not strip argument fragments from names, invent arguments, or execute malformed calls. Requests from other connections, unidentified requests, and valid ordinary tools retain their normal approval flow.
+
 For verification and reproduction, see the [E2E guide](../test/e2e/README.md) (Chinese); for publishing, see the [release guide](releasing.md) (Chinese).
 
 ## Sessions and presentation

@@ -63,6 +63,21 @@ function createRuntime(
 }
 
 describe('AcpSessionRuntime prompt-scoped permission snapshots', () => {
+  it('audits a bridge rejection without opening a native user approval', async () => {
+    let nativeRequests = 0
+    const records: unknown[] = []
+    const response: acp.RequestPermissionResponse = { outcome: { outcome: 'cancelled' } }
+    const lease: AcpMcpLease = {
+      signal: new AbortController().signal, servers: [], beginPrompt() {}, endPrompt() {}, async close() {},
+      inspectPermission: () => ({ reason: 'invalid-tool-name', identitySource: 'devin-meta', response }),
+      permission: () => response,
+    }
+    const runtime = createRuntime(async () => { nativeRequests++; return response }, 'raw-input', 'in_progress', lease,
+      async (check, request) => { records.push(createPermissionCheckAudit(check, request.sessionId, request.toolCall.toolCallId)) })
+    await runtime.prompt(PROMPT, () => undefined)
+    expect(nativeRequests).toBe(0)
+    expect(records[0]).toMatchObject({ phase: 'bridge', reason: 'invalid-tool-name', identitySource: 'devin-meta' })
+  })
   it('audits automatic permission without saving the capability response, and fails closed when audit fails', async () => {
     for (const auditFails of [false, true]) {
       const records: unknown[] = []
