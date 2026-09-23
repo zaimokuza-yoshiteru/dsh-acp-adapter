@@ -288,6 +288,8 @@ export interface AcpNativeElicitationDeps {
   readonly locale?: string
   /** Supplied only by the live host bridge after exact request/call correlation. */
   readonly hostToolName?: string
+  /** Native child approval for an exactly correlated DSH tool; never answers arbitrary forms. */
+  readonly approveDelegatedOnce?: (signal?: AbortSignal) => Promise<boolean>
   readonly log?: (message: string) => void
 }
 
@@ -380,6 +382,25 @@ export function createAcpNativeElicitationHandler(
       const content = validateValues(params, values)
       return content === undefined ? { action: 'cancel' } : { action: 'accept', content }
     } catch (error: unknown) {
+      // Native questions intentionally reject owned children. Preserve that
+      // boundary for questions, but a verified tool-approval scope can use the
+      // native approval service, which supports the original child ownership.
+      const once = validateValues(params, [{ name: 'persist', value: 'once' }])
+      if (plain(error) || error instanceof Error) {
+        const code = (error as { code?: unknown }).code
+        if (code === 'DELEGATED_CALLER' && !signal?.aborted
+          && deps.hostToolName !== undefined && deps.approveDelegatedOnce !== undefined
+          && params._meta?.codex_approval_kind === 'mcp_tool_call'
+          && schema.fields.length === 1 && schema.fields[0]?.name === 'persist'
+          && schema.fields[0].type === 'string'
+          && schema.fields[0].options?.some(option => option.value === 'once')
+          && once !== undefined) {
+          try {
+            const allowed = await deps.approveDelegatedOnce(signal)
+            return allowed && !signal?.aborted ? { action: 'accept', content: once } : { action: 'cancel' }
+          } catch { return { action: 'cancel' } }
+        }
+      }
       deps.log?.(`dsh-acp native elicitation cancelled: ${error instanceof Error ? error.message : String(error)}`)
       return { action: 'cancel' }
     }

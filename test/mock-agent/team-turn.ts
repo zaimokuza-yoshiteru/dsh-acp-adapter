@@ -93,13 +93,28 @@ export async function teamTurn(session: MockSession, msg: PromptMessage, { sendU
     } else if (/\bE2E_TEAM_MEMBER\b/.test(prompt)) {
       await call('spawn_teammate', { name: 'nested', description: 'Denied nested spawn', prompt: 'do nothing' }, 'only the Team Lead')
       sendUpdate(session.id, { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'Private fixture reasoning' } })
-      const response = await sendAgentRequest('session/request_permission', { sessionId: session.id,
-        toolCall: { toolCallId: 'member-shell', name: 'bash', title: 'Run member command', kind: 'execute', rawInput: { command: 'echo E2E_TEAM_PERMISSION' } },
-        options: [{ optionId: 'allow', kind: 'allow_once', name: 'Allow once' }, { optionId: 'deny', kind: 'reject_once', name: 'Reject' }] })
-      if (prompt.includes('E2E_TEAM_FOLLOWUP_PERMISSION')) {
-        const answer = await sendAgentRequest('session/request_permission', { sessionId: session.id,
-          toolCall: { toolCallId: 'member-late-shell', name: 'bash', title: 'Run next member command', kind: 'execute', rawInput: { command: 'echo E2E_TEAM_LATE_PERMISSION' } },
+      const requestMemberPermission = async (toolCallId: string, command: string) => {
+        if (process.env.MOCK_PROFILE === 'codex') {
+          const tool = tools.find(tool => tool.name.endsWith('_bash'))
+          if (!tool) throw new Error('No native bash tool for member approval')
+          sendUpdate(session.id, { sessionUpdate: 'tool_call', toolCallId, title: 'Run member command', kind: 'execute', status: 'pending',
+            _meta: { is_mcp_tool_call: true }, rawInput: { server: server.name, tool: tool.name, arguments: { command } } })
+          const answer = await sendAgentRequest('elicitation/create', { sessionId: session.id, toolCallId,
+            mode: 'form', message: `Allow the ${server.name} MCP server to run tool "${tool.name}"?`,
+            _meta: { codex_approval_kind: 'mcp_tool_call' }, requestedSchema: { type: 'object', properties: {
+              persist: { type: 'string', enum: ['once', 'session', 'always'] },
+            }, required: ['persist'] } })
+          if (answer.action === 'accept' && answer.content?.persist !== 'once') throw new Error('Member approval exceeded once')
+          log(`member elicitation ${JSON.stringify(answer)}`)
+          return { outcome: { outcome: 'selected', optionId: answer.action === 'accept' ? 'allow' : 'deny' } }
+        }
+        return sendAgentRequest('session/request_permission', { sessionId: session.id,
+          toolCall: { toolCallId, name: 'bash', title: 'Run member command', kind: 'execute', rawInput: { command } },
           options: [{ optionId: 'allow', kind: 'allow_once', name: 'Allow once' }, { optionId: 'deny', kind: 'reject_once', name: 'Reject' }] })
+      }
+      const response = await requestMemberPermission('member-shell', 'echo E2E_TEAM_PERMISSION')
+      if (prompt.includes('E2E_TEAM_FOLLOWUP_PERMISSION')) {
+        const answer = await requestMemberPermission('member-late-shell', 'echo E2E_TEAM_LATE_PERMISSION')
         if (answer.outcome?.optionId !== 'deny') throw new Error(`Unexpected late permission: ${JSON.stringify(answer)}`)
         say('E2E_TEAM_LATE_DENIED')
       }

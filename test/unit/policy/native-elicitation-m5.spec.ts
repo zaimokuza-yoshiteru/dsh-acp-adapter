@@ -157,4 +157,37 @@ describe('native ACP form elicitation bridge (M5c)', () => {
     expect(await handler(form({ persist: { type: 'string', oneOf: [{ const: 'once', title: 'Allow once' }, { const: 'always', title: 'Always allow' }] } }))).toEqual({ action: 'cancel' })
   })
 
+  it.each([true, false])('uses a child-owned native approval only after delegated rejection (allowed=%s)', async allowed => {
+    const controller = new AbortController()
+    const approveDelegatedOnce = vi.fn(async (signal?: AbortSignal) => { expect(signal).toBe(controller.signal); return allowed })
+    const handler = createAcpNativeElicitationHandler({ getAgent: () => ({}), hostToolName: 'bash', approveDelegatedOnce,
+      userQuestions: { ask: async () => { throw Object.assign(new Error('owned child'), { code: 'DELEGATED_CALLER' }) } },
+    })
+    const params = { ...form({ persist: { type: 'string', enum: ['once', 'session', 'always'] } }),
+      _meta: { codex_approval_kind: 'mcp_tool_call' } }
+    expect(await handler(params, controller.signal)).toEqual(allowed ? { action: 'accept', content: { persist: 'once' } } : { action: 'cancel' })
+    expect(approveDelegatedOnce).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(['unverified', 'ordinary-form', 'extra-field', 'persistent-only', 'other-error', 'aborted', 'approval-error', 'late-abort'])('fails closed for delegated approval: %s', async scenario => {
+    const controller = new AbortController()
+    const approveDelegatedOnce = vi.fn(async () => {
+      if (scenario === 'approval-error') throw new Error('offline')
+      if (scenario === 'late-abort') controller.abort()
+      return true
+    })
+    const handler = createAcpNativeElicitationHandler({ getAgent: () => ({}),
+      ...(scenario === 'unverified' ? {} : { hostToolName: 'bash' }), approveDelegatedOnce,
+      userQuestions: { ask: async () => {
+        if (scenario === 'aborted') controller.abort()
+        throw Object.assign(new Error('question rejected'), { code: scenario === 'other-error' ? 'NO_PROVIDER' : 'DELEGATED_CALLER' })
+      } },
+    })
+    const params = { ...form({ persist: { type: 'string', enum: scenario === 'persistent-only' ? ['session', 'always'] : ['once', 'always'] },
+      ...(scenario === 'extra-field' ? { note: { type: 'string' } } : {}) }),
+      ...(scenario === 'ordinary-form' ? {} : { _meta: { codex_approval_kind: 'mcp_tool_call' } }) }
+    expect(await handler(params, controller.signal)).toEqual({ action: 'cancel' })
+    expect(approveDelegatedOnce).toHaveBeenCalledTimes(['approval-error', 'late-abort'].includes(scenario) ? 1 : 0)
+  })
+
 })

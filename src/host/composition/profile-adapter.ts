@@ -1651,6 +1651,20 @@ export class AcpProfileAdapter extends LlmAdapter {
       : async (event: AcpTerminalAuditData): Promise<void> => {
         try { await this.sidecar!.append(sessionId as never, { kind: 'terminal', data: event }) } catch { /* best effort after external process */ }
       }
+    const handlePermission = async (params: acp.RequestPermissionRequest, signal?: AbortSignal): Promise<acp.RequestPermissionResponse> => {
+      const binding = this.resolveQuestions?.(sessionId)
+      if (binding === undefined) return { outcome: { outcome: 'cancelled' } }
+      const audit: AcpPermissionAuditChannel | undefined = this.sidecar === undefined
+        ? undefined
+        : { append: record => this.sidecar!.append(sessionId as never, record) }
+      return await createAcpNativePermissionHandler({
+        ...(binding.userQuestions === undefined ? {} : { userQuestions: binding.userQuestions }),
+        ...(binding.approval === undefined ? {} : { approval: binding.approval }),
+        getAgent: binding.getAgent,
+        ...(binding.locale === undefined ? {} : { locale: binding.locale }),
+        ...(audit === undefined ? {} : { audit }),
+      })(params, signal)
+    }
     return {
       profileId: this.profileId,
       ...sessionProtocolExtensions(runtime),
@@ -1683,31 +1697,34 @@ export class AcpProfileAdapter extends LlmAdapter {
         ...(this.terminalJobs === undefined ? {} : { startJob: this.terminalJobs(sessionId) }),
         ...(appendTerminalAudit === undefined ? {} : { audit: appendTerminalAudit }),
       }),
-      onPermissionRequest: async (params: acp.RequestPermissionRequest, signal?: AbortSignal): Promise<acp.RequestPermissionResponse> => {
-        const binding = this.resolveQuestions?.(sessionId)
-        if (binding === undefined) return { outcome: { outcome: 'cancelled' } }
-        const audit: AcpPermissionAuditChannel | undefined = this.sidecar === undefined
-          ? undefined
-          : { append: record => this.sidecar!.append(sessionId as never, record) }
-        return await createAcpNativePermissionHandler({
-          ...(binding.userQuestions === undefined ? {} : { userQuestions: binding.userQuestions }),
-          ...(binding.approval === undefined ? {} : { approval: binding.approval }),
-          getAgent: binding.getAgent,
-          ...(binding.locale === undefined ? {} : { locale: binding.locale }),
-          ...(audit === undefined ? {} : { audit }),
-        })(params, signal)
-      },
+      onPermissionRequest: handlePermission,
       onPermissionCheck: async (check, request) => {
         await this.sidecar?.append(sessionId as never, { kind: 'permission', time: Date.now(),
           data: createPermissionCheckAudit(check, request.sessionId, request.toolCall.toolCallId) })
       },
-      onElicitationRequest: async (params: acp.CreateElicitationRequest, signal?: AbortSignal, hostToolName?: string): Promise<acp.CreateElicitationResponse> => {
+      onElicitationRequest: async (params: acp.CreateElicitationRequest, signal?: AbortSignal, hostToolName?: string, hostToolCall?: acp.ToolCallUpdate): Promise<acp.CreateElicitationResponse> => {
         const binding = this.resolveQuestions?.(sessionId)
         if (binding?.userQuestions === undefined) return { action: 'cancel' }
         return await createAcpNativeElicitationHandler({
           userQuestions: binding.userQuestions, getAgent: binding.getAgent,
           ...(binding.locale === undefined ? {} : { locale: binding.locale }),
           ...(hostToolName === undefined ? {} : { hostToolName }),
+          ...(hostToolName === undefined || hostToolCall === undefined || binding.approval === undefined ? {} : {
+            approveDelegatedOnce: async (approvalSignal?: AbortSignal): Promise<boolean> => {
+              const scope = params as { sessionId?: unknown }
+              if (typeof scope.sessionId !== 'string') return false
+              const raw = hostToolCall.rawInput as { arguments?: unknown } | undefined
+              const response = await handlePermission({
+                sessionId: scope.sessionId,
+                toolCall: { ...hostToolCall, name: hostToolName, title: hostToolName,
+                  ...(hostToolName === 'bash' ? { kind: 'execute' as const } : {}),
+                  rawInput: raw?.arguments ?? hostToolCall.rawInput },
+                options: [{ optionId: 'once', kind: 'allow_once', name: 'Allow once' },
+                  { optionId: 'reject', kind: 'reject_once', name: 'Reject' }],
+              }, approvalSignal)
+              return response.outcome.outcome === 'selected' && response.outcome.optionId === 'once'
+            },
+          }),
         })(params, signal)
       },
       onSessionUpdate: (notification): void => {
