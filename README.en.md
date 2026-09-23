@@ -6,7 +6,7 @@
 
 Use **Claude · Codex · Devin · Kimi** from the DSH session UI.
 
-This version supports DSH `0.1.7-alpha.1` only. ACP members and subagent records open in the native sidebar while the main conversation stays in place. Team member requests can still be approved from the main conversation.
+This version supports DSH `0.1.7-alpha.2` only. ACP members and subagent records open in the native sidebar while the main conversation stays in place. Team member requests can still be approved from the main conversation.
 
 On upgrade, existing Agent configuration is imported automatically from the old settings file into the current DSH profile. An Agent list already set in that profile, including an empty list, is preserved. The transcript uses DSH’s native compact, detailed, and expanded modes for tools, reasoning, and process groups.
 
@@ -80,7 +80,7 @@ npx "@deepseek-ai/dsh@$DSH_VERSION" plugin --profile web add @zaimokuza/dsh-acp-
 
 Executable paths may contain spaces, for example `C:\Program Files\Agent Tools\agent.exe`. Enter the path directly without surrounding quotes; put startup arguments in the separate arguments field.
 
-When Devin first connects to DSH tools, the adapter uses native `devin mcp add` to register one user-level MCP entry named `dsh`. Sessions share this entry and connect to their own tool bridge through process environments; session addresses never enter the shared configuration. No symlinks or hard links are needed. Outside DSH, the entry exposes no tools. Restart an already running Devin to discover the initial registration. An unrelated existing `dsh` entry produces an error rather than being overwritten.
+When Devin connects to DSH tools, the adapter uses native `devin mcp add` to register or refresh the same user-level MCP entry named `dsh`, ensuring the launch command and `ELECTRON_RUN_AS_NODE=1` are configured correctly. Sessions share this entry and connect to their own tool bridge through process environments; session addresses never enter the shared configuration. No symlinks or hard links are needed. Outside DSH, the entry exposes no tools. Restart an already running Devin to discover the initial registration. An unrelated existing `dsh` entry produces an error rather than being overwritten.
 
 If the Agent needs an API key, add it explicitly under **Advanced options → Environment** in the Agent editor; parent-process secrets are not inherited automatically. Advanced options start collapsed and show a count of configured values. Catalog defaults apply only to new configurations; plugin updates do not overwrite saved settings. Login guidance appears automatically without an editable field; it never runs commands or changes Agent authentication. Existing custom guidance is preserved.
 
@@ -91,6 +91,8 @@ Catalog versions are advisory. A difference from the snapshot does not mean the 
 ![DSH owns sessions and UI; the adapter passes context and normalizes activity; the Agent owns models, tools and permissions. External subagent projections are read-only, and jobs do not survive a DSH restart.](assets/readme/acp-overview.en.svg)
 
 **Experimental Agent Teams:** Follows DSH’s Teams profiles and uses its native Team panel. Members inherit the Lead’s Agent, model and reasoning settings at creation, with fresh context only. Switching the Lead’s model affects future members; existing members retain theirs. A team uses one ACP Agent. Shared tasks use the native task board. Answer member approvals from the Lead; allow or reject all current ordinary approvals, with permission granted once only. The member icon at the top right shows status and models. Change Agent modes individually or in batches grouped by ACP profile; dormant members apply saved modes before their next run. Team coordination adds no approval prompts; ordinary permissions remain unchanged. Messages arrive at DSH step boundaries.
+
+Click a member name in member management to open its native sidebar conversation. Settings remain inspectable while running, with read-only reasons in the menu. Batch changes include expandable per-member results. If recovery status cannot be read, retry beside the composer.
 
 **Automatic DSH plugin tools:** Native tools visible to the current session are automatically exposed over MCP, without a manual tool list or Teams. For example, when the Host provides `present`, the Agent can use native file delivery and previews. Calls use the native tool pipeline and retain Agent approval and each tool's rules. The retired `hostTools` setting is ignored and removed when saving in the editor. See [native reuse boundaries](docs/native-reuse.en.md).
 
@@ -121,3 +123,5 @@ After removing the adapter, run `devin mcp remove --scope user dsh` to remove it
 | Session needs recovery | Follow the composer notice and **ACP Diagnostics**. Do not clear local data. |
 
 Still stuck? Include the error reference, plugin/DSH versions and relevant host log excerpt in an [issue](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/issues). Remove secrets before sharing logs.
+
+The Operations view in ACP Diagnostics records automatic tool-bridge permission checks and handoff reasons. Select a record to copy its redacted details and plugin version for remote troubleshooting; bridge credentials are excluded. Native approval headings and buttons follow the page language, while operation names and arguments retain the Agent’s text. Generic question cards and missing-command notices use the explicit host language preference.

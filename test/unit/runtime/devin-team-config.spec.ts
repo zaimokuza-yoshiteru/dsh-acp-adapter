@@ -32,7 +32,7 @@ async function setup() {
           if (entry === undefined) { stderr.write("Error: Server 'dsh' not found"); exitCode = 1 }
           else stdout.write(entry)
         } else {
-          entry = `Server: dsh\n    Command: ${spec.argv.slice(spec.argv.indexOf('--') + 1).join(' ')}\n`
+          entry = `Server: dsh\n    Command: ${spec.argv.slice(spec.argv.indexOf('--') + 1).join(' ')}\n    Env: ELECTRON_RUN_AS_NODE=<redacted>\n`
         }
         stdout.end(); stderr.end(); resolve({ exitCode, signal: null })
       }, 5))
@@ -65,11 +65,22 @@ it('registers one persistent entry and keeps session endpoint out of native conf
   expect(await readFile(join(home, '.dsh/acp/mcp/dsh-mcp-launcher.mjs'), 'utf8')).toContain('launcher')
 })
 
-it('serializes concurrent sessions without adding ten entries or mixing their endpoints', async () => {
+it('serializes concurrent sessions updating the same entry without mixing their endpoints', async () => {
   const { options, argv } = await setup()
   const sessions = await Promise.all(Array.from({ length: 10 }, (_, index) => prepareDevinMcp({ ...options, lease: { ...options.lease, servers: [{ ...options.lease.servers[0]!, url: `http://127.0.0.1:1234/session-${index}` }] } })))
-  expect(argv.filter(args => args.includes('add'))).toHaveLength(1)
+  const registrations = argv.filter(args => args.includes('add'))
+  expect(registrations).toHaveLength(10)
+  expect(new Set(registrations.map(args => JSON.stringify(args))).size).toBe(1)
   expect(new Set(sessions.map(item => item.env.DSH_ACP_TEAM_MCP_URL)).size).toBe(10)
+})
+
+it.each(['', '    Env: ELECTRON_RUN_AS_NODE=<redacted>\n'])('reapplies Node mode when the command already matches and env is absent or redacted (%j)', async envOutput => {
+  const { options, argv, home, setEntry } = await setup()
+  setEntry(`Server: dsh\n    Command: ${process.execPath} ${join(home, '.dsh/acp/mcp/dsh-mcp-launcher.mjs')}\n${envOutput}`)
+  await prepareDevinMcp(options)
+  const registrations = argv.filter(args => args.includes('add'))
+  expect(registrations).toHaveLength(1)
+  expect(registrations[0]).toContain('ELECTRON_RUN_AS_NODE=1')
 })
 
 it('does not overwrite an unrelated dsh server and closes a failed lease', async () => {

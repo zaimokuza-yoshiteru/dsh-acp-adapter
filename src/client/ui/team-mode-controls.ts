@@ -16,6 +16,9 @@ export function teamSessionMenuGroups(snapshot: AcpAgentSessionSnapshotView, t: 
   })).filter(group => group.choices.length > 0)
 }
 
+export type TeamModeReason = 'Applied' | 'Inactive' | 'Missing' | 'Stale' | 'Unsupported' | 'Selected' | 'Changed' | 'Failed'
+export interface TeamModeResult { readonly sessionId: string; readonly reason: TeamModeReason }
+
 /** A click captures its targets; later members and other profiles never join the batch. */
 export async function applyTeamMode(input: {
   targets: readonly string[]; profileId: string; mode: string
@@ -23,21 +26,28 @@ export async function applyTeamMode(input: {
   members(): Promise<readonly AcpTeamMemberView[]>
   snapshot(id: string): Promise<AcpAgentSessionSnapshotView>
   write(id: string, value: AcpAgentSessionOptionWrite): Promise<unknown>
-}): Promise<{ applied: number; skipped: number; failed: number }> {
-  const result = { applied: 0, skipped: 0, failed: 0 }
+}): Promise<{ applied: number; skipped: number; failed: number; members: TeamModeResult[] }> {
+  const result = { applied: 0, skipped: 0, failed: 0, members: [] as TeamModeResult[] }
+  const skip = (sessionId: string, reason: TeamModeReason): void => { result.skipped++; result.members.push({ sessionId, reason }) }
   for (const id of new Set(input.targets)) {
     try {
-      if (!input.isCurrent()) { result.skipped++; continue }
+      if (!input.isCurrent()) { skip(id, 'Changed'); continue }
       const member = (await input.members()).find(member => member.sessionId === id && member.profileId === input.profileId)
-      if (member?.status !== 'inactive') { result.skipped++; continue }
+      if (member === undefined) { skip(id, 'Missing'); continue }
+      if (member.status !== 'inactive') { skip(id, 'Inactive'); continue }
       const snapshot = await input.snapshot(id)
       const choice = teamModeChoices(snapshot).find(choice => choice.id === input.mode)
       const writable = (snapshot.editable && snapshot.freshness === 'live') || snapshot.modeWritable === true
       const selected = snapshot.pendingModeId ?? (choice?.current ? choice.id : null)
-      if (!input.isCurrent() || snapshot.profileId !== input.profileId || !writable || choice === undefined || selected === input.mode) { result.skipped++; continue }
+      if (!input.isCurrent()) { skip(id, 'Changed'); continue }
+      if (snapshot.profileId !== input.profileId) { skip(id, 'Missing'); continue }
+      if (!writable) { skip(id, 'Stale'); continue }
+      if (choice === undefined) { skip(id, 'Unsupported'); continue }
+      if (selected === input.mode) { skip(id, 'Selected'); continue }
       await input.write(id, choice.write)
       result.applied++
-    } catch { result.failed++ }
+      result.members.push({ sessionId: id, reason: 'Applied' })
+    } catch { result.failed++; result.members.push({ sessionId: id, reason: 'Failed' }) }
   }
   return result
 }

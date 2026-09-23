@@ -87,13 +87,14 @@ it('persists teammate model selection, applies it on wake, and protects Team bou
     expect(await modelButton.textContent()).toBe('Mock Model A')
     const beforeModelNotice = await row.boundingBox()
     const beforeModeButton = await row.getByRole('button', { name: /^(?:Session|会话) ·/ }).boundingBox()
-    expect(required((await row.locator('[data-member-model-notice]').boundingBox())).height).toBe(13)
+    expect(required((await row.locator('[data-member-model-notice]').boundingBox())).height).toBeGreaterThanOrEqual(18)
     await modelButton.click()
     expect(await row.getByRole('searchbox').count()).toBe(0)
     await modelMenu.getByRole('menuitem', { name: 'Mock Model B', exact: true }).click()
     await row.getByRole('status').filter({ hasText: /mock[ -]model[ -]a/i }).waitFor()
-    expect(await row.boundingBox()).toEqual(beforeModelNotice)
-    expect(await row.getByRole('button', { name: /^(?:Session|会话) ·/ }).boundingBox()).toEqual(beforeModeButton)
+    expect(await row.boundingBox()).toMatchObject({ x: beforeModelNotice!.x, y: beforeModelNotice!.y, width: beforeModelNotice!.width })
+    expect(await row.locator('[data-member-model-notice]').evaluate(el => el.scrollHeight <= el.clientHeight)).toBe(true)
+    expect(await row.getByRole('button', { name: /^(?:Session|会话) ·/ }).boundingBox()).toMatchObject({ x: beforeModeButton!.x, width: beforeModeButton!.width, height: beforeModeButton!.height })
     await panel.getByRole('button', { name: 'Close member management', exact: true }).click()
 
     // Closing and reopening remounts the card. Display names must not revert

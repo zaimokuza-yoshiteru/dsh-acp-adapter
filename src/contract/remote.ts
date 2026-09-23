@@ -229,6 +229,7 @@ export interface AcpProjectedSubagentsView {
 export type AcpAuditSummaryCode =
   | 'binding.established'
   | 'permission.asked'
+  | 'permission.bridge'
   | 'permission.decided'
   | 'reconciliation.required'
   | 'replay.matched'

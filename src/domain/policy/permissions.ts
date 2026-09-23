@@ -107,6 +107,15 @@ function permissionQuestionDetail(tool: acp.RequestPermissionRequest['toolCall']
   return command === undefined ? copy.unknownCommand : `${copy.command}:\n\n${markdownCodeBlock(visibleCommand(command))}`
 }
 export interface AcpPermissionReasonOptions { readonly includeExecuteDetails?: boolean }
+/** Native approval owns localized chrome. Only Agent-supplied operation facts cross to its reason field. */
+export function nativePermissionReason(tool: acp.RequestPermissionRequest['toolCall'], copy: PermissionCopy): string {
+  const title = tool.title ?? tool.name ?? tool.kind ?? 'ACP'
+  const command = tool.kind === 'execute' ? commandOf(tool) : undefined
+  const detail = command ?? (tool.rawInput === undefined ? undefined
+    : typeof tool.rawInput === 'string' ? tool.rawInput : JSON.stringify(tool.rawInput, null, 2))
+  return [safeText(title), detail === undefined ? undefined : visibleCommand(detail),
+    tool.kind === 'execute' && command === undefined ? copy.unknownCommand : undefined].filter(value => value !== undefined).join('\n')
+}
 function buildPermissionReason(params: acp.RequestPermissionRequest, copy: PermissionCopy, options: AcpPermissionReasonOptions = {}): string {
   const kind = params.toolCall.kind ?? ''
   const lines = [copy.request(copy.actions[kind] ?? copy.restrictedOperation)]
@@ -159,7 +168,7 @@ export function createAcpNativePermissionHandler(deps: AcpNativePermissionBridge
         const outcome = await deps.approval.request({
           agent,
           toolName: params.toolCall.name ?? params.toolCall.kind ?? copy.acpTool,
-          reason: buildPermissionReason(params, copy),
+          reason: nativePermissionReason(params.toolCall, copy),
           ...(signal === undefined ? {} : { signal }),
         })
         if (outcome === 'allowed-once') return decide({ outcome: 'selected', optionId: allowOnce.optionId, selectedOptionKind: allowOnce.kind }, 'native-approval')

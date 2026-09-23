@@ -9,7 +9,7 @@ import { expect, it, vi } from 'vitest'
 import { connectFreshWorkspace, writeComposerDraft } from '#host-support'
 import { launchAdapterWorld, root } from './scaffold.ts'
 
-it.each(['allow', 'reject'])('handles eight member approvals from the Lead: %s, then leaves a later request pending', async decision => {
+it.each(['devin', 'codex'].flatMap(profile => ['allow', 'reject'].map(decision => ({ profile, decision }))))('handles eight $profile member approvals from the Lead: $decision, then leaves a later request pending', async ({ profile, decision }) => {
   // Native default includes the Lead in its 8-member limit. This test opts into 9.
   const host = await launchAdapterWorld({ teams: true, teamMembers: 9 })
   let browser!: TestBrowser
@@ -18,12 +18,12 @@ it.each(['allow', 'reject'])('handles eight member approvals from the Lead: %s, 
   const log = join(host.workspaceCwd, 'team-approvals.log')
   host.ctx.on('session/event', (session, event) => events.push({ sessionId: session.id, ...event }))
   try {
-    await host.ctx.settings.replace('dsh-acp-adapter', { agents: { devin: {
-      name: 'Fixture devin', command: process.execPath, args: [join(root, 'test/mock-agent/mock-agent.ts')],
-      env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: 'devin', MOCK_MCP_HTTP: '1', MOCK_LOG: log },
+    await host.ctx.settings.replace('dsh-acp-adapter', { agents: { [profile]: {
+      name: `Fixture ${profile}`, command: process.execPath, args: [join(root, 'test/mock-agent/mock-agent.ts')],
+      env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: profile, MOCK_MCP_HTTP: '1', MOCK_LOG: log },
     } } })
-    await vi.waitFor(() => expect(host.ctx.llm.listProviders().some(p => p.id === 'acp-devin')).toBe(true))
-    await host.ctx.agentDefaultModel.saveSelection({ provider: 'acp-devin', model: 'mock-model-a' })
+    await vi.waitFor(() => expect(host.ctx.llm.listProviders().some(p => p.id === `acp-${profile}`)).toBe(true))
+    await host.ctx.agentDefaultModel.saveSelection({ provider: `acp-${profile}`, model: 'mock-model-a' })
     browser = await launchBrowser({ headless: true, channel: process.env.DSH_E2E_BROWSER_CHANNEL })
     page = await newEnglishPage(browser)
     page.on('pageerror', error => errors.push(error.message))
@@ -38,7 +38,7 @@ it.each(['allow', 'reject'])('handles eight member approvals from the Lead: %s, 
     await expect.poll(() => card.locator('[data-team-pending-member]').count(), { timeout: 30000 }).toBe(8)
     const url = page.url()
     mkdirSync(join(root, '.local/team-approvals'), { recursive: true })
-    await page.screenshot({ path: join(root, `.local/team-approvals/eight-${decision}.png`) })
+    await page.screenshot({ path: join(root, `.local/team-approvals/eight-${profile}-${decision}.png`) })
     expect(await card.innerText()).toContain('echo E2E_TEAM_PERMISSION')
     const outcome = decision === 'allow' ? 'allowed-once' : 'rejected'
     // One inline action plus the batch proves both paths without opening a member.
@@ -69,10 +69,10 @@ it.each(['allow', 'reject'])('handles eight member approvals from the Lead: %s, 
   } catch (error) {
     if (page) {
       mkdirSync(join(root, '.local/e2e-failures'), { recursive: true })
-      await page.screenshot({ path: join(root, `.local/e2e-failures/team-batch-${decision}.png`), fullPage: true })
-      writeFileSync(join(root, `.local/e2e-failures/team-batch-${decision}.log`), readFileSync(log, 'utf8'))
-      writeFileSync(join(root, `.local/e2e-failures/team-batch-${decision}.json`), JSON.stringify(events, null, 2))
-      writeFileSync(join(root, `.local/e2e-failures/team-batch-${decision}.errors.json`), JSON.stringify(errors))
+      await page.screenshot({ path: join(root, `.local/e2e-failures/team-batch-${profile}-${decision}.png`), fullPage: true })
+      writeFileSync(join(root, `.local/e2e-failures/team-batch-${profile}-${decision}.log`), readFileSync(log, 'utf8'))
+      writeFileSync(join(root, `.local/e2e-failures/team-batch-${profile}-${decision}.json`), JSON.stringify(events, null, 2))
+      writeFileSync(join(root, `.local/e2e-failures/team-batch-${profile}-${decision}.errors.json`), JSON.stringify(errors))
     }
     throw error
   } finally { await browser?.close(); await host.close() }

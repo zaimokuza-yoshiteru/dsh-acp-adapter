@@ -19,6 +19,7 @@
  */
 
 import { createHash } from 'node:crypto'
+import type { AcpPermissionCheck } from './permission-check.ts'
 import { redactSecretText as redactCommonSecretText } from '../observability/redaction.ts'
 import type { PermissionOption, ToolCallLocation, ToolCallUpdate } from '@agentclientprotocol/sdk'
 
@@ -265,7 +266,24 @@ export interface AcpPermissionDecidedAuditData {
 }
 
 /** The permission audit payload union (discriminant: `phase`). */
-export type AcpPermissionAuditData = AcpPermissionAskedAuditData | AcpPermissionDecidedAuditData
+export type AcpPermissionAuditData = AcpPermissionAskedAuditData | AcpPermissionDecidedAuditData | AcpPermissionCheckAuditData
+
+export interface AcpPermissionCheckAuditData extends AcpPermissionCheck {
+  readonly phase: 'bridge'
+  readonly agentSessionId: string
+  readonly toolCallId: string
+}
+
+/** Copy only diagnostic facts; the inspected response can contain a capability option ID. */
+export function createPermissionCheckAudit(check: AcpPermissionCheck, agentSessionId: string, toolCallId: string): AcpPermissionCheckAuditData {
+  return { phase: 'bridge', reason: check.reason,
+    agentSessionId: boundedAuditText(agentSessionId), toolCallId: boundedAuditText(toolCallId),
+    ...(check.toolName === undefined ? {} : { toolName: boundedAuditText(check.toolName) }),
+    ...(check.identitySource === undefined ? {} : { identitySource: check.identitySource }),
+    ...(check.structuredIdentityPresent === undefined ? {} : { structuredIdentityPresent: check.structuredIdentityPresent }),
+    ...(check.titleMatchesCurrentTool === undefined ? {} : { titleMatchesCurrentTool: check.titleMatchesCurrentTool }),
+  }
+}
 
 /** Inputs for {@link createPermissionAskedAudit}. */
 export interface PermissionAskedAuditInit {

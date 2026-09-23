@@ -4,6 +4,14 @@ on:
   push:
     branches: [feature/ZAI-43, feature/0.1.6.alpha, main]
   workflow_dispatch:
+    inputs:
+      devin_version:
+        description: Pinned Devin release to verify
+        type: choice
+        default: '3000.10.31'
+        options: ['3000.10.31', '3000.3.27']
+
+run-name: Real Devin ${{ inputs.devin_version || '3000.10.31' }} (${{ github.ref_name }})
 
 permissions:
   contents: read
@@ -16,6 +24,8 @@ jobs:
   real-devin:
     if: github.repository == 'zaimokuza-yoshiteru/dsh-acp-adapter' && contains(fromJSON('["refs/heads/feature/ZAI-43", "refs/heads/feature/0.1.6.alpha", "refs/heads/main"]'), github.ref)
     environment: devin-e2e
+    env:
+      DEVIN_TEST_VERSION: ${{ inputs.devin_version || '3000.10.31' }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -40,16 +50,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          case "$(uname -m)" in
-            arm64) platform=aarch64-apple-darwin; sha=051dfcf29e0f5cb5f0a07c7579dc97255fee7f02ce4c6feacc7d4065ce76b5bd ;;
-            x86_64) platform=x86_64-apple-darwin; sha=ca450a13a7e2d83a2c6e641c0f80842826f944cad3ca93ba892a7ade3948555a ;;
+          case "$DEVIN_TEST_VERSION/$(uname -m)" in
+            3000.10.31/arm64) platform=aarch64-apple-darwin; sha=051dfcf29e0f5cb5f0a07c7579dc97255fee7f02ce4c6feacc7d4065ce76b5bd ;;
+            3000.10.31/x86_64) platform=x86_64-apple-darwin; sha=ca450a13a7e2d83a2c6e641c0f80842826f944cad3ca93ba892a7ade3948555a ;;
+            3000.3.27/arm64) platform=aarch64-apple-darwin; sha=ec047ea396d53fc370c1c7c6de211637585cf99a5c5cd5dcdbf7e4c7f2a20626 ;;
+            3000.3.27/x86_64) platform=x86_64-apple-darwin; sha=2d67b0c3aeee4fa98d022ce13925573d6c18f2666927fef79672c1abc1aff729 ;;
             *) exit 1 ;;
           esac
           mkdir "$RUNNER_TEMP/devin-real"
-          curl --fail --location --silent --show-error --retry 3 "https://static.devin.ai/cli/3000.10.31/devin-3000.10.31-$platform.tar.gz" -o "$RUNNER_TEMP/devin-real/archive.tar.gz"
+          curl --fail --location --silent --show-error --retry 3 "https://static.devin.ai/cli/$DEVIN_TEST_VERSION/devin-$DEVIN_TEST_VERSION-$platform.tar.gz" -o "$RUNNER_TEMP/devin-real/archive.tar.gz"
           echo "$sha  $RUNNER_TEMP/devin-real/archive.tar.gz" | shasum -a 256 --check
           tar -xzf "$RUNNER_TEMP/devin-real/archive.tar.gz" -C "$RUNNER_TEMP/devin-real"
-          echo "DEVIN_TEST_EXE=$(find "$RUNNER_TEMP/devin-real" -type f -name devin)" >> "$GITHUB_ENV"
+          devin_exe="$(find "$RUNNER_TEMP/devin-real" -type f -name devin)"
+          "$devin_exe" version | grep -F "devin $DEVIN_TEST_VERSION ("
+          echo "DEVIN_TEST_EXE=$devin_exe" >> "$GITHUB_ENV"
+          node scripts/check-devin-mcp.ts "$devin_exe"
       - name: Authenticated native DSH Teams (macOS)
         if: runner.os == 'macOS'
         env:
