@@ -10,6 +10,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import type { AcpMcpLease } from '../../runtime/session/mcp-lease.ts'
+import type { AcpPermissionCheck } from '../../domain/policy/permission-check.ts'
 import { toolContent } from './tool-content.ts'
 
 const TEAM_TOOLS = [
@@ -83,6 +84,28 @@ export async function createTeamBridge(
     && agents.get(sessionId as never) === agent
     && (!hasTeams || (ctx.get('agentTeams') !== undefined && teams?.tryMembership(agent) !== undefined))
     && [...definitions].every(([name, definition]) => tools.get(name, agent) === definition)
+  const inspectPermission: NonNullable<AcpMcpLease['inspectPermission']> = request => {
+    const call = request.toolCall
+    const meta = call._meta?.claudeCode as { toolName?: unknown } | undefined
+    const input = call.rawInput as { server?: unknown; tool?: unknown } | undefined
+    const source: AcpPermissionCheck['identitySource'] = wireProfile === 'codex' && call._meta?.is_mcp_tool_call === true && input?.server === serverName && typeof input.tool === 'string' ? 'codex-input'
+      : call.name != null ? 'name' : meta?.toolName != null ? 'claude-meta'
+        : call._meta?.['cognition.ai/toolName'] != null ? 'devin-meta' : wireProfile === 'devin' ? 'devin-title' : wireProfile === 'kimi' ? 'kimi-title' : undefined
+    const titleName = wireProfile === 'devin' && typeof call.title === 'string'
+      ? /^(?:Calling|Called) ([a-zA-Z0-9_]+) from dsh$/.exec(call.title)?.[1] : undefined
+    const facts: Omit<AcpPermissionCheck, 'reason'> = { ...(source === undefined ? {} : { identitySource: source }),
+      structuredIdentityPresent: call.name != null || meta?.toolName != null || call._meta?.['cognition.ai/toolName'] != null || source === 'codex-input',
+      titleMatchesCurrentTool: titleName !== undefined && names.has(titleName) }
+    if (!live()) return { ...facts, reason: 'inactive-connection' }
+    if (prompt === undefined || prompt.aborted) return { ...facts, reason: 'inactive-prompt' }
+    const definition = definitionOf(call)
+    if (definition === undefined) return { ...facts, reason: 'identity-unmatched' }
+    const identified = { ...facts, toolName: definition.name }
+    if (!isTeamTool(definition.name)) return { ...identified, reason: 'not-coordination' }
+    const allow = request.options.find(option => option.kind === 'allow_once')
+    return allow === undefined ? { ...identified, reason: 'allow-once-unavailable' }
+      : { ...identified, reason: 'auto-approved', response: { outcome: { outcome: 'selected', optionId: allow.optionId } } }
+  }
   const sessions = new Set<Server>()
   const calls = new Set<Promise<unknown>>()
   const http = createServer((request, response) => {
@@ -174,13 +197,8 @@ export async function createTeamBridge(
       return { ...call, title: name, name,
         ...(name === 'bash' ? { kind: 'execute' as const } : {}) }
     },
-    permission(request) {
-      if (!live() || prompt === undefined || prompt.aborted) return undefined
-      const definition = definitionOf(request.toolCall)
-      if (definition === undefined || !isTeamTool(definition.name)) return undefined
-      const allow = request.options.find(option => option.kind === 'allow_once')
-      return allow === undefined ? undefined : { outcome: { outcome: 'selected', optionId: allow.optionId } }
-    },
+    inspectPermission,
+    permission(request) { return inspectPermission(request).response },
     elicitationToolName(request, toolCall) {
       const form = request as { toolCallId?: unknown }
       if (wireProfile !== 'codex' || !live() || prompt === undefined || prompt.aborted

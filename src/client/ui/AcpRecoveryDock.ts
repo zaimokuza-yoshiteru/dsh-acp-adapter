@@ -1,4 +1,4 @@
-import { createElement as h, useEffect, useState } from 'react'
+import { createElement as h, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import { Button, Modal } from '@deepseek-ai/dsh-client-ui-primitives'
@@ -51,35 +51,55 @@ export function AcpRecoveryDock({ sessionId, useSession, useProjection, t, remot
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [unavailable, setUnavailable] = useState(false)
+  const [retry, setRetry] = useState(0)
+  const epoch = useRef(0)
+  const activeSession = useRef(sessionId)
+  activeSession.current = sessionId
 
   useEffect(() => {
     let cancelled = false
+    ++epoch.current
     setOpen(false)
+    setBusy(false)
     setError(null)
+    setUnavailable(false)
     setRecovery(null)
     if (!projectionIsAcp(projection, ownsRoute)) return () => { cancelled = true }
     void remote.recoverySnapshot(sessionId).then((result) => {
-      if (!cancelled && result.ok) setRecovery(result.value.kind === 'healthy' ? null : result.value)
-    }).catch((reason: unknown) => {
-      if (!cancelled) setError(errorText(reason))
+      if (cancelled) return
+      setUnavailable(!result.ok)
+      if (result.ok) setRecovery(result.value.kind === 'healthy' ? null : result.value)
+    }).catch(() => {
+      if (!cancelled) setUnavailable(true)
     })
-    return () => { cancelled = true }
-  }, [lifecycleKey, ownsRoute, projection, remote, sessionId])
+    return () => { cancelled = true; ++epoch.current }
+  }, [lifecycleKey, ownsRoute, projection, remote, sessionId, retry])
 
-  if (recovery === null || !projectionIsAcp(projection, ownsRoute)) return null
+  if (!projectionIsAcp(projection, ownsRoute)) return null
+  if (unavailable) return h('div', { className: css.dock, role: 'status' },
+    h('div', { className: css.summary },
+      h('span', { className: css.summaryText }, t('recoveryUnavailable')),
+      h(Button, { variant: 'outline', onClick: () => setRetry(value => value + 1) }, t('activity.detailRetry'))))
+  if (recovery === null) return null
 
   const run = async (action: () => Promise<unknown>): Promise<void> => {
     if (busy) return
+    const generation = epoch.current
+    const active = () => generation === epoch.current && activeSession.current === sessionId
     setBusy(true)
     setError(null)
     try {
       await action()
+      if (!active()) return
       const result = await remote.recoverySnapshot(sessionId)
+      if (!active()) return
+      setUnavailable(!result.ok)
       if (result.ok) setRecovery(result.value.kind === 'healthy' ? null : result.value)
     } catch (reason: unknown) {
-      setError(errorText(reason))
+      if (active()) setError(errorText(reason))
     } finally {
-      setBusy(false)
+      if (active()) setBusy(false)
     }
   }
 

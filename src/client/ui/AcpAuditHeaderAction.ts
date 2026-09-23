@@ -5,7 +5,7 @@ import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-store'
 import type { SessionSnapshot, UseProjection } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { UseSessionRetainInfo } from '@deepseek-ai/dsh-client-ui-session/client'
 import type { ConvViewProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
-import { IconCloseOutlineMedium, IconSearchOutlineMedium, Input, JsonTree, Tag } from '@deepseek-ai/dsh-client-ui-primitives'
+import { IconCloseOutlineMedium, IconSearchOutlineMedium, Input, JsonTree, Tag, Button, writeClipboard } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { TagTone } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { AcpAuditSummaryCode, AcpAuditTimelineEntry } from '../data/acp-remote.ts'
 import type { AcpRemoteLike } from '../data/acp-remote.ts'
@@ -16,6 +16,7 @@ import { matchesDiagnosticView } from '../../contract/diagnostics.ts'
 import { recoveryText } from './AcpRecoveryDock.ts'
 import css from './AcpAuditHeaderAction.module.css'
 import { acpJsonTreeLabels, type AcpJsonStringWrapping } from './json-tree.ts'
+declare const __DSH_ACP_ADAPTER_VERSION__: string
 
 type Translate = (key: AcpLocaleKey, params?: Record<string, string | number>) => string
 type Filter = AcpDiagnosticView
@@ -106,6 +107,7 @@ export function auditRecordedCause(entry: AcpAuditTimelineEntry): string | null 
 const summaryKeys: Record<AcpAuditSummaryCode, AcpLocaleKey> = {
   'binding.established': 'auditSummaryBinding',
   'permission.asked': 'auditSummaryPermissionAsked',
+  'permission.bridge': 'auditSummaryPermissionBridge',
   'permission.decided': 'auditSummaryPermissionDecided',
   'reconciliation.required': 'auditSummaryReconciliation',
   'replay.matched': 'auditSummaryReplayMatched',
@@ -135,6 +137,13 @@ export function auditSummaryOf(t: Translate | undefined, entry: AcpAuditTimeline
 
 function auditStatusOf(t: Translate | undefined, status: string): string {
   const key: Partial<Record<string, AcpLocaleKey>> = {
+    'auto-approved': 'auditAutoApproved',
+    'bridge-unavailable': 'auditBridgeUnavailable',
+    'inactive-connection': 'auditBridgeInactive',
+    'inactive-prompt': 'auditPromptInactive',
+    'identity-unmatched': 'auditIdentityUnmatched',
+    'not-coordination': 'auditNotCoordination',
+    'allow-once-unavailable': 'auditAllowOnceMissing',
     'danger-full-access': 'auditStatusNativeAccess',
     set_config_option: 'auditStatusConfigSync',
     'session-setup': 'auditStatusSessionSetup',
@@ -246,6 +255,8 @@ function AcpAuditView(props: AcpAuditViewProps): ReactNode {
   const [recovery, setRecovery] = useState<AcpRecoveryView | null>(null)
   const [recoveryUnavailable, setRecoveryUnavailable] = useState(false)
   const [query, setQuery] = useState('')
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
+  const copyEpoch = useRef(0)
   const [selectedSeq, setSelectedSeq] = useState<number | null>(null)
   const requestEpoch = useRef(0)
   const recoveryEpoch = useRef(0)
@@ -310,6 +321,19 @@ function AcpAuditView(props: AcpAuditViewProps): ReactNode {
   const visible = useMemo(() => entries.filter(entry =>
     auditEntryMatchesFilter(entry, filter) && auditEntryMatchesQuery(t, entry, query)), [entries, filter, query, t])
   const selected = useMemo(() => entries.find(entry => entry.seq === selectedSeq) ?? null, [entries, selectedSeq])
+  useEffect(() => {
+    ++copyEpoch.current
+    setCopyState('idle')
+    return () => { ++copyEpoch.current }
+  }, [sessionId, selectedSeq])
+  const copySelected = async (): Promise<void> => {
+    if (selected === null) return
+    const generation = copyEpoch.current
+    try {
+      const copied = await writeClipboard(JSON.stringify({ adapterVersion: __DSH_ACP_ADAPTER_VERSION__, sessionId, record: selected }, null, 2))
+      if (generation === copyEpoch.current) setCopyState(copied ? 'copied' : 'failed')
+    } catch { if (generation === copyEpoch.current) setCopyState('failed') }
+  }
   const labels: readonly [Filter, AcpLocaleKey][] = [
     ['issues', 'auditIssues'], ['operations', 'auditOperations'], ['technical', 'auditTechnical'],
   ]
@@ -407,6 +431,8 @@ function AcpAuditView(props: AcpAuditViewProps): ReactNode {
           h('div', { className: css.detailsTitle },
             h(Tag, { tone: entryTone(selected) }, categoryLabel(t, selected.category)),
             h('span', { className: css.detailsLocation }, `#${String(selected.seq)}`),
+            h(Button, { variant: 'ghost', onClick: () => { void copySelected() } }, textOf(t, copyState === 'copied' ? 'auditCopied' : 'auditCopy', 'Copy selected record')),
+            copyState === 'failed' ? h('span', { role: 'status' }, textOf(t, 'auditCopyFailed', 'Copy failed')) : null,
           ),
           h('button', { type: 'button', className: css.close, 'aria-label': textOf(t, 'auditClose', 'Close'), onClick: () => setSelectedSeq(null) }, h(IconCloseOutlineMedium, { size: 14 })),
         ),

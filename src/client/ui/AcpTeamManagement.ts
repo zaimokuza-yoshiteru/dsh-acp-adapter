@@ -1,8 +1,9 @@
-import { createElement as h, useEffect, useRef, useState } from 'react'
+import { createElement as h, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { createPortal } from 'react-dom'
 import type { ReactNode } from 'react'
 import { Button, StateDot, IconCloseOutlineMedium, IconRefreshOutlineMedium, useAnchoredPosition, useDismissOnOutsidePointer } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+import type { HostObservable, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+import type { SessionStatusSnapshot } from '@deepseek-ai/dsh-client-ui-session/client'
 import type { RemoteStreamFactory } from '@deepseek-ai/dsh-api-gateway/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { AcpRemoteLike, AcpTeamMemberView, AcpAgentSessionSnapshotView } from '../data/acp-remote.ts'
@@ -12,7 +13,7 @@ import { snapshotIsAcp } from './AcpAgentControl.ts'
 import { AgentSessionMenu } from './AgentSessionMenu.ts'
 import { agentControlLabel, type AgentControlGroup } from './agent-session-controls.ts'
 import { normalizeAcpConfigOptionKey } from '../../contract/config-options.ts'
-import { applyTeamMode, teamModeChoices, teamSessionMenuGroups } from './team-mode-controls.ts'
+import { applyTeamMode, teamModeChoices, teamSessionMenuGroups, type TeamModeResult } from './team-mode-controls.ts'
 import { teamModeLabel } from '../../contract/session-modes.ts'
 import { TeamMemberModelControl } from './TeamMemberModelControl.ts'
 import { interruptTeam } from './team-interrupt.ts'
@@ -25,10 +26,14 @@ type Actions = {
   isCurrent(sessionId: SessionId): boolean
   interruptMember(lead: SessionId, member: SessionId): Promise<void>
   ownsRoute: OwnsAcpRoute
+  status: HostObservable<SessionStatusSnapshot>
+  openMember(parent: SessionId, child: SessionId): Promise<void>
 }
 export function AcpTeamManagement({ sessionId, useSession, useProjection, t, ...actions }: PropsRuntime<'conversation.session.header.utilities'> & PropsLocale<'acpActivity'> & Actions): ReactNode {
   const child = useSession(state => state.subagent?.address?.parentSessionId !== undefined)
   const running = useSession(state => state.running)
+  const rosterRevision = useSyncExternalStore(actions.status.subscribe, () =>
+    JSON.stringify([...actions.status.getSnapshot()].map(([id, state]) => [id, state.running, state.pendingInteraction?.key])))
   const enabled = !child && snapshotIsAcp(useProjection('modelSelection'), actions.ownsRoute)
   const [open, setOpen] = useState(false)
   const rootRef = useRef<HTMLDivElement | null>(null)
@@ -38,13 +43,14 @@ export function AcpTeamManagement({ sessionId, useSession, useProjection, t, ...
   const position = useAnchoredPosition({ open, anchorRef: rootRef, panelRef, gap: 6, margin: 16 })
   useEffect(() => {
     if (!open) return
+    const frame = requestAnimationFrame(() => panelRef.current?.querySelector('button')?.focus())
     const escape = (event: KeyboardEvent): void => {
       if (event.key !== 'Escape' || event.defaultPrevented || document.querySelector('[role=menu]')) return
       setOpen(false)
       rootRef.current?.querySelector('button')?.focus()
     }
     document.addEventListener('keydown', escape, true)
-    return () => document.removeEventListener('keydown', escape, true)
+    return () => { cancelAnimationFrame(frame); document.removeEventListener('keydown', escape, true) }
   }, [open])
   const [refresh, setRefresh] = useState(0)
   const [view, setView] = useState<{ id: string; members: readonly AcpTeamMemberView[] } | null>(null)
@@ -99,11 +105,13 @@ export function AcpTeamManagement({ sessionId, useSession, useProjection, t, ...
     void load()
     const timer = open ? setInterval(() => { void load() }, 2500) : undefined
     return () => { cancelled = true; if (timer !== undefined) clearInterval(timer) }
-  }, [sessionId, enabled, open, running, refresh, actions.remote])
-  if (!enabled || view?.id !== sessionId || view.members.length === 0) return null
-  const groups = Map.groupBy(view.members, member => member.profileId)
+  }, [sessionId, enabled, open, running, rosterRevision, refresh, actions.remote])
+  if (!enabled || (!error && (view?.id !== sessionId || view.members.length === 0))) return null
+  const members = view?.id === sessionId ? view.members : []
+  const canInterrupt = members.some(member => member.status === 'running')
+  const groups = Map.groupBy(members, member => member.profileId)
   return h('div', { className: css.root, ref: rootRef, 'data-acp-team-management': '' },
-    h(Button, { variant: 'ghost', className: css.trigger, 'aria-label': `${t('teamManage')} · ${view.members.length}`, title: t('teamManage'),
+    h(Button, { variant: 'ghost', className: css.trigger, 'aria-label': `${t('teamManage')} · ${members.length}`, title: t('teamManage'),
       'aria-haspopup': 'dialog', 'aria-expanded': open, onClick: () => setOpen(!open) },
       h('svg', { width: 20, height: 20, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.6, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true },
         h('circle', { cx: 9, cy: 8, r: 3 }), h('path', { d: 'M3 20v-2a6 6 0 0 1 12 0v2M16 5a3 3 0 0 1 0 6M18 14a5 5 0 0 1 3 4v2' }))),
@@ -114,13 +122,13 @@ export function AcpTeamManagement({ sessionId, useSession, useProjection, t, ...
       error ? h('p', { role: 'status', className: css.hint }, t('teamManageError')) : null,
       ...[...groups].map(([profileId, members], index) => h(ModeGroup, { key: `${sessionId}:${profileId}`, lead: sessionId, profileId, members, t, onMenuOpen: setMenuOpen,
         interruptAction: index === 0 ? h(Button, { variant: 'ghost', className: css.batchButton,
-          disabled: interrupting || !view.members.some(member => member.status === 'running'),
+          disabled: interrupting || !canInterrupt,
           title: t('teamInterruptHint'), onClick: () => { void interruptAll() } }, t(interrupting ? 'teamInterrupting' : 'teamInterruptAll')) : null,
         ...actions })),
       interruptFeedback ? h('p', { role: 'status', className: css.hint }, interruptFeedback) : null), document.body) : null)
 }
 
-function ModeGroup({ lead, profileId, members, t, remote, streamFactory, onMenuOpen, isCurrent, interruptAction }: { interruptAction: ReactNode; lead: SessionId; profileId: string | null; members: readonly AcpTeamMemberView[]; t: Copy; onMenuOpen(value: boolean): void } & Actions): ReactNode {
+function ModeGroup({ lead, profileId, members, t, remote, streamFactory, onMenuOpen, isCurrent, interruptAction, openMember }: { interruptAction: ReactNode; lead: SessionId; profileId: string | null; members: readonly AcpTeamMemberView[]; t: Copy; onMenuOpen(value: boolean): void } & Actions): ReactNode {
   const [snapshots, setSnapshots] = useState<Record<string, AcpAgentSessionSnapshotView | null>>({})
   const [menu, setMenu] = useState<string | null>(null)
   useEffect(() => { onMenuOpen(menu !== null); return () => onMenuOpen(false) }, [menu, onMenuOpen])
@@ -128,6 +136,7 @@ function ModeGroup({ lead, profileId, members, t, remote, streamFactory, onMenuO
   const locked = useRef(false)
   const alive = useRef(true)
   const [feedback, setFeedback] = useState('')
+  const [results, setResults] = useState<readonly TeamModeResult[]>([])
   const ids = members.map(member => member.sessionId).join('|')
   useEffect(() => {
     alive.current = true
@@ -146,7 +155,7 @@ function ModeGroup({ lead, profileId, members, t, remote, streamFactory, onMenuO
   const batchChoices = [...new Map(members.flatMap(member => choices(member)).map(choice => [choice.id, choice])).values()]
   const change = async (targets: readonly string[], mode: string): Promise<void> => {
     if (locked.current || profileId === null) return
-    locked.current = true; setBusy(true); setMenu(null); setFeedback('')
+    locked.current = true; setBusy(true); setMenu(null); setFeedback(''); setResults([])
     const unwrap = <T,>(result: { ok: true; value: T } | { ok: false; error: { message: string } }): T => {
       if (!result.ok) throw new Error(result.error.message)
       return result.value
@@ -157,7 +166,7 @@ function ModeGroup({ lead, profileId, members, t, remote, streamFactory, onMenuO
         snapshot: async id => unwrap(await remote.agentSessionSnapshot(id)),
         write: async (id, value) => { const snapshot = unwrap(await remote.setTeamMemberMode(lead, id, value.kind === 'mode' ? value.id : String(value.value))); if (alive.current) setSnapshots(old => ({ ...old, [id]: snapshot })) },
       })
-      if (alive.current) setFeedback(t('teamModeResult', result))
+      if (alive.current) { setFeedback(t('teamModeResult', result)); setResults(result.members) }
     } finally { locked.current = false; if (alive.current) setBusy(false) }
   }
   const currentLabels = new Set(members.map(member => snapshots[member.sessionId]
@@ -188,7 +197,9 @@ function ModeGroup({ lead, profileId, members, t, remote, streamFactory, onMenuO
       const model = member.model ?? (reported?.type === 'select' ? reported.currentValue : null)
       return h('article', { key: member.sessionId, className: css.member, 'data-acp-managed-member': member.name },
         h('div', { className: css.memberHeader }, h(StateDot, { state: member.status === 'running' ? 'ongoing' : member.status === 'failed' ? 'error' : 'done' }),
-          h('strong', null, member.name), h('span', { className: css.hint }, t(`teamStatus${member.status}`))),
+          h(Button, { variant: 'ghost', className: css.memberName, 'aria-label': t('teamMemberOpen', { name: member.name }),
+            onClick: () => { void openMember(lead, member.sessionId as SessionId).catch(() => { if (alive.current) setFeedback(t('teamApprovalOpenFailed')) }) } }, member.name),
+          h('span', { className: css.hint }, t(`teamStatus${member.status}`))),
         member.description ? h('p', { className: css.memberDescription, title: member.description }, member.description) : null,
         h('div', { className: css.settings },
           h('div', { className: css.settingRow },
@@ -201,6 +212,7 @@ function ModeGroup({ lead, profileId, members, t, remote, streamFactory, onMenuO
               h('div', { className: css.modeControl },
                 h(AgentSessionMenu, {
                   groups: snapshot ? teamSessionMenuGroups(snapshot, t, !busy && editable(member) === true) : [],
+                  ...(!editable(member) ? { footer: [{ type: 'label' as const, id: 'read-only', text: t(member.status === 'running' ? 'agentControlRunning' : 'agentControlReadOnly') }] } : {}),
                   label: snapshot ? agentControlLabel(snapshot, t) : t('teamModeUnknown'), t,
                   open: menu === member.sessionId, side: 'bottom', align: 'end',
                   disabled: !snapshot || choices(member).length === 0 || busy,
@@ -209,5 +221,8 @@ function ModeGroup({ lead, profileId, members, t, remote, streamFactory, onMenuO
                 }),
                 h('div', { className: css.settingNotice, 'data-member-mode-notice': '', role: 'status' }, modeNotice ? h('span', { title: modeNotice, 'data-member-pending-mode': '' }, modeNotice) : null))))))
     })),
-    h('div', { role: 'status', className: css.groupNotice, title: feedback }, feedback))
+    h('div', { role: 'status', className: css.groupNotice }, feedback),
+    results.length === 0 ? null : h('details', { className: css.resultDetails }, h('summary', null, t('teamResultDetails')),
+      h('ul', null, ...results.map(result => h('li', { key: result.sessionId },
+        `${members.find(member => member.sessionId === result.sessionId)?.name ?? result.sessionId}: ${t(`teamResult${result.reason}`)}`)))))
 }

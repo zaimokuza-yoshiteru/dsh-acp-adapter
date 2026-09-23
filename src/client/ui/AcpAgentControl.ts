@@ -74,8 +74,10 @@ export function AcpAgentControl({ sessionId, useProjection, useSession, t, remot
   const label = agentControlLabel(snapshot, t)
   const groups = agentControlMenuGroups(visibleSnapshot, t)
   const footer = [...agentControlFooter(snapshot, t)]
+  // A read-only explanation must not create an empty menu before controls arrive.
+  if (groups.length === 0 && footer.length === 0 && snapshot.note === null && error === null) return null
+  if (running || (!snapshot.editable && snapshot.freshness === 'live')) footer.push({ type: 'label', id: 'read-only', text: t(running ? 'agentControlRunning' : 'agentControlReadOnly') })
   if (error !== null) footer.push({ type: 'label', id: 'error', text: error })
-  if (groups.length === 0 && footer.length === 0 && snapshot.note === null) return null
   const select = (item: AgentControlChoice): void => {
     if (!visibleSnapshot.editable || snapshot.freshness !== 'live' || sessionId === undefined) return
     const current = epoch.current

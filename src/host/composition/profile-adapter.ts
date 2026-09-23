@@ -43,6 +43,7 @@ import { createAcpFileSystemHandlers } from '../../runtime/client-capabilities/f
 import { createAcpTerminalHandlers } from '../../runtime/client-capabilities/terminal.ts'
 import type { AcpTerminalJobStarter } from '../../runtime/client-capabilities/terminal-job.ts'
 import { createAcpNativePermissionHandler, type AcpNativeApprovalService } from '../../domain/policy/permissions.ts'
+import { createPermissionCheckAudit } from '../../domain/policy/events.ts'
 import type { AcpPermissionAuditChannel } from '../../domain/policy/permissions.ts'
 import { createAcpNativeElicitationHandler } from '../../domain/policy/elicitation.ts'
 import type { AcpNativeUserQuestionService } from '../../domain/policy/elicitation.ts'
@@ -1695,6 +1696,10 @@ export class AcpProfileAdapter extends LlmAdapter {
           ...(binding.locale === undefined ? {} : { locale: binding.locale }),
           ...(audit === undefined ? {} : { audit }),
         })(params, signal)
+      },
+      onPermissionCheck: async (check, request) => {
+        await this.sidecar?.append(sessionId as never, { kind: 'permission', time: Date.now(),
+          data: createPermissionCheckAudit(check, request.sessionId, request.toolCall.toolCallId) })
       },
       onElicitationRequest: async (params: acp.CreateElicitationRequest, signal?: AbortSignal, hostToolName?: string): Promise<acp.CreateElicitationResponse> => {
         const binding = this.resolveQuestions?.(sessionId)

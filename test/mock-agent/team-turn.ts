@@ -8,7 +8,9 @@ export async function teamTurn(session: MockSession, msg: PromptMessage, { sendU
   const prompt = msg.params.prompt.filter(block => block.type === 'text').map(block => block.text).join('\n')
   if (!prompt.includes('E2E_TEAM_')) return false
   const client = new Client({ name: 'acp-team-fixture', version: '1' })
-  const turn = { cancelled: false, cancel() { this.cancelled = true } }
+  let finishHold = () => {}
+  const held = new Promise<void>(resolve => { finishHold = resolve })
+  const turn = { cancelled: false, cancel() { this.cancelled = true; finishHold() } }
   session.turn = turn
   const server = session.mcpServers?.[0]
   const say = (text: string) => { log(text); sendUpdate(session.id, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } }) }
@@ -108,6 +110,7 @@ export async function teamTurn(session: MockSession, msg: PromptMessage, { sendU
       await call('send_message', { target: 'lead', message: 'E2E_TEAM_REPLY result=2' })
       say('E2E_TEAM_MEMBER_DONE')
     } else if (prompt.includes('E2E_TEAM_START')) {
+      if (prompt.includes('E2E_TEAM_START_HOLD')) await new Promise(resolve => setTimeout(resolve, 1000))
       if (roster.length !== 1) throw new Error('Expected fresh team')
       const wait = await call('wait_agent', { timeout_ms: 10_000 })
       if (!wait.noProgress) throw new Error('Native wait must not poll without an active peer')
@@ -124,6 +127,7 @@ export async function teamTurn(session: MockSession, msg: PromptMessage, { sendU
       }
       await call('spawn_teammate', { name: 'calculator', description: 'Compute fixture', prompt: 'E2E_TEAM_MEMBER calculate 1+1', context: 'fresh' })
       say('E2E_TEAM_READY')
+      if (prompt.includes('E2E_TEAM_START_HOLD')) await held
     } else {
       say('E2E_TEAM_NOTICE_RECEIVED')
     }

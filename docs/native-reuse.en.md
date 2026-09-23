@@ -24,7 +24,7 @@ Incomplete tool facts use native generic details, including commands without exi
 
 ## Data compatibility and display costs
 
-Approval commands come only from the request itself or updates correlated by tool-call ID. When correlation is unavailable, the card explicitly reports missing details instead of borrowing another call's command. Adapter-generated approval text follows DSH's saved Chinese or English language preference. Without a saved preference it uses English, because the host cannot read browser language detection. Generic forms display Agent-provided titles and option names; commands remain unchanged. Codex tool approval scopes use localized labels and still return the exact once, session or persistent scope. Since the native approval card cannot represent the latter two, these requests use native questions without collapsing permission scopes. The current DSH bridge displays a native tool name only after verifying its identity; other requests retain their original context.
+Approval commands come only from the request itself or updates correlated by tool-call ID. When correlation is unavailable, the card explicitly reports missing details instead of borrowing another call's command. Ordinary approvals carry only Agent-supplied operation titles, commands and arguments; the native UI localizes waiting states and buttons. Missing-command warnings and adapter text in generic questions still follow DSH's saved language preference, falling back to English when unset because the host cannot read each browser's detected language. Generic forms display Agent-provided titles and option names; commands remain unchanged. Codex tool approval scopes use localized labels and still return the exact once, session or persistent scope. Since the native approval card cannot represent the latter two, these requests use native questions without collapsing permission scopes. The current DSH bridge displays a native tool name only after verifying its identity; other requests retain their original context.
 
 The input row keeps an independent session-settings entry. Its first level shows each setting and current value; the second shows choices, descriptions and selection state, then closes on selection. Modes and other options come from the current Agent. Models and reasoning remain in the native model selector, while context usage and cost stay in the menu footer. The input row, individual member modes and batch modes share one menu component. Teams supply only mode choices and retain their separate model control. Read-only state disables writes; dormant members can still save modes for their next request, using the same presentation.
 
@@ -42,6 +42,9 @@ Catalog defaults and host runtime behavior are maintained separately with a shar
 
 Recovery diagnostics distinguish reuse of the current connection, actual `session/resume` and actual `session/load`. Older records remain unknown rather than inferring a method from zero replay events. Replay remains diagnostic and does not replace visible DSH history.
 
+
+Each bridge check for ACP `session/request_permission` records the canonical tool name, identity source and reason for not handling it automatically, excluding capability names, bridge addresses and permission option IDs. The record describes the check at that moment; connection and prompt validity are checked again before answering. An eligible check does not mean the tool executed successfully. The Operations view in ACP Diagnostics can copy the selected record with the adapter version.
+
 ## DSH tool bridge
 
 When the Host provides `present` to the current session, the Agent receives it automatically for local document, spreadsheet or other file deliveries. No extra ACP configuration is needed. Files must be accessible through the Session filesystem. Calls produce DSH's native file cards and previews without a separate ACP file UI. Mentioning a path alone does not produce a delivery card; previews open the current source file rather than a saved content snapshot.
@@ -54,7 +57,7 @@ For verification and reproduction, see the [E2E guide](../test/e2e/README.md) (C
 
 ## Sessions and presentation
 
-This version supports DSH `0.1.7-alpha.1` only. Main-area navigation uses `uiWorkspace`; members and external subagent records use the native `subagentchat` resource sidebar. DSH owns references, history loading and restoration. External projections remain read-only, while Team members retain native continuation rules. Model transitions are observed for each open Session. Only the main conversation controls the Diagnostics tab, preventing sidebar sessions from competing for the global entry.
+This version supports DSH `0.1.7-alpha.2` only. Main-area navigation uses `uiWorkspace`; members and external subagent records use the native `subagentchat` resource sidebar. DSH owns references, history loading and restoration. External projections remain read-only, while Team members retain native continuation rules. Model transitions are observed for each open Session. Only the main conversation controls the Diagnostics tab, preventing sidebar sessions from competing for the global entry.
 
 Main-conversation approvals read the original member requests from native `sessionStatus.pendingInteraction`. Batch actions still validate membership and request identity individually; later arrivals are not added to a captured batch.
 

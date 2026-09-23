@@ -160,6 +160,13 @@ describe('session-owned native Teams MCP bridge', () => {
     const request = (title: string) => ({ ...permission(), toolCall: { toolCallId: title, title } })
     expect(lease.permission(request(`Calling ${wait} from dsh`))?.outcome).toEqual({ outcome: 'selected', optionId: 'yes' })
     expect(lease.permission(request(`Calling ${shell} from dsh`))).toBeUndefined()
+    expect(lease.inspectPermission!(request(`Calling ${wait} from dsh`))).toMatchObject({ reason: 'auto-approved', toolName: 'wait_agent', identitySource: 'devin-title' })
+    expect(lease.inspectPermission!(request(`Calling ${shell} from dsh`))).toMatchObject({ reason: 'not-coordination', toolName: 'bash' })
+    const masked: RequestPermissionRequest = request(`Calling ${wait} from dsh`)
+    masked.toolCall.name = 'unmatched-structured-name'
+    expect(lease.inspectPermission!(masked)).toMatchObject({ reason: 'identity-unmatched', identitySource: 'name', structuredIdentityPresent: true, titleMatchesCurrentTool: true })
+    expect(lease.permission(masked)).toBeUndefined()
+    expect(lease.inspectPermission!({ ...request(`Calling ${wait} from dsh`), options: [] })).toMatchObject({ reason: 'allow-once-unavailable' })
     const raw = { toolCallId: 'bash', title: `Calling ${shell} from dsh`, rawInput: { command: 'sleep 20', description: 'Wait for teammates' } }
     expect(lease.presentTool!(raw)).toEqual({ ...raw, title: 'bash', name: 'bash', kind: 'execute' })
     expect(raw.title).toContain(shell)

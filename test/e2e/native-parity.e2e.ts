@@ -226,6 +226,22 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
     await audit.locator('tbody tr').last().click()
     const details = audit.getByRole('complementary')
     await details.waitFor()
+    // Capture the clipboard boundary without overwriting the developer's clipboard.
+    const copiedRecord = await page.evaluate(async () => {
+      let text = ''
+      const original = navigator.clipboard.writeText
+      navigator.clipboard.writeText = async value => { text = value }
+      try {
+        const button = [...document.querySelectorAll('button')].find(item => item.textContent === 'Copy selected record')
+        if (!button) throw new Error('Diagnostic copy action missing')
+        button.click()
+        await new Promise(resolve => setTimeout(resolve, 0))
+        return JSON.parse(text) as { adapterVersion: string; sessionId: string; record: { seq: number; detail: string } }
+      } finally { navigator.clipboard.writeText = original }
+    })
+    expect(copiedRecord.adapterVersion).toMatch(/^0\.1\.7-alpha\.2\./)
+    expect(copiedRecord.sessionId).toBe(id)
+    expect(copiedRecord.record.detail).toContain('audit-layout-79')
     const close = details.getByRole('button', { name: 'Close', exact: true })
     expect(required((await close.boundingBox())).y).toBeGreaterThanOrEqual(toolbarTop)
     expect(required((await close.boundingBox())).y).toBeLessThan(toolbarTop + 80)
@@ -486,6 +502,22 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
     await activity.locator('[data-read]').getByText('E2E_READ_LINE', { exact: true }).first().waitFor()
     await activity.getByRole('button', { name: /^Edit.*fixture\.txt/ }).click()
     await activity.locator('[data-diff]').getByText('E2E_NEW_LINE', { exact: true }).first().waitFor()
+    for (const [locale, theme, label] of [['en', 'light', 'Wrap lines'], ['zh', 'dark', '自动换行']]) {
+      await host.ctx.settings.replace('locale', { preference: locale })
+      await host.ctx.settings.replace('ui-theme', { preference: theme })
+      await expect.poll(() => page.evaluate(() => document.documentElement.style.colorScheme)).toBe(theme)
+      for (const selector of ['[data-read]', '[data-diff]']) {
+        const card = activity.locator(selector)
+        const wrap = card.getByRole('button', { name: label, exact: true }).first()
+        const previous = await wrap.getAttribute('aria-pressed')
+        await wrap.click()
+        await expect.poll(() => wrap.getAttribute('aria-pressed')).toBe(previous === 'true' ? 'false' : 'true')
+        await wrap.click()
+        await expect.poll(() => wrap.getAttribute('aria-pressed')).toBe(previous)
+      }
+    }
+    await host.ctx.settings.replace('locale', { preference: 'en' })
+    await host.ctx.settings.replace('ui-theme', { preference: 'light' })
     await activity.locator('[data-tool=read]').getByRole('button', { name: 'fixture.txt', exact: true }).press('Enter')
     const preview = page.locator('[data-rightbar-col] [data-textpreview-state="text"]')
     await preview.waitFor()
@@ -658,6 +690,13 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
     await page.getByRole('button', { name: 'Resolve recovery issue', exact: true }).waitFor()
     await page.reload()
     await page.getByText('E2E_DONE mock-model-a', { exact: true }).waitFor()
+    const service = host.ctx.get('dshAcp') as AcpRemoteService
+    const failedRead = vi.spyOn(service, 'recoverySnapshot').mockRejectedValue(new Error('E2E_RECOVERY_UNAVAILABLE'))
+    try {
+      await page.reload()
+      await page.getByText('Recovery status could not be read. Please retry.', { exact: true }).waitFor()
+    } finally { failedRead.mockRestore() }
+    await page.getByRole('button', { name: 'Retry', exact: true }).click()
     await page.getByRole('button', { name: 'Resolve recovery issue', exact: true }).click()
     await page.getByRole('button', { name: 'Abandon context and continue', exact: true }).click()
     const next = await send('E2E_RECOVERED')
@@ -674,7 +713,8 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
       expect(existsSync(join(workspace, 'approval-marker.txt'))).toBe(false)
       const panel = page.locator('[data-approval-key]')
       await panel.waitFor()
-      expect(await panel.innerText()).toContain(allow ? 'ACP Agent 请求执行命令的权限。' : 'The ACP Agent requests permission to run a command.')
+      expect(await panel.innerText()).not.toContain('The ACP Agent requests permission')
+      expect(await panel.innerText()).not.toContain('ACP Agent 请求')
       await decide(allow)
       await settled
       await page.getByText(allow ? 'E2E_APPROVED' : 'E2E_DENIED', { exact: true }).waitFor()

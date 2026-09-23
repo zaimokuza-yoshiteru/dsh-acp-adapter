@@ -202,6 +202,7 @@ async function registerUi(ctx: ClientContext): Promise<void> {
     teamCtx.slots.inject('conversation.session.header.utilities', () => teamCtx.slots.register({
       name: 'conversation.session.header.utilities', id: 'acp-team-management', order: 94,
       locale: 'acpActivity', inject: () => ({ remote: ctx.remote.dshAcp, streamFactory: ctx.remote, ownsRoute: managedRoutes.owns, isCurrent: actions.isCurrent,
+        status: actions.status, openMember: actions.openMember,
         async interruptMember(lead: SessionId, member: SessionId) {
           const result = await teamCtx.remote.subagents.interruptByParent(member, lead, 'continuable')
           if (!result.ok) throw new Error(result.error.message)
