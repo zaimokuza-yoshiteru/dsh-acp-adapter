@@ -654,7 +654,9 @@ describe('ACP activity conversation node', () => {
     })
     const hub = new AcpActivityJournalHub(remote as never, factory as never)
     const handle = hub.acquire('dsh-1', 'dsh-1', 'user-1', () => undefined)
+    expect(handle.ready()).toBe(false)
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    expect(handle.ready()).toBe(true)
     expect(starts).toBe(1)
     expect(requestLimit).toBe(200)
     expect(accepted).toBe(1)
@@ -663,7 +665,21 @@ describe('ACP activity conversation node', () => {
     expect(disposed).toBe(1)
   })
 
-  it('silently retries an initial binding race before the journal opens', async () => {
+  it('exposes an initial journal failure instead of reporting an empty successful window', async () => {
+    const failure = new Error('activity service unavailable')
+    let notifications = 0
+    const remote = { activityFollow: async function* () { throw failure } }
+    const hub = new AcpActivityJournalHub(remote as never, activityStreamFactory() as never)
+    const handle = hub.acquire('dsh-1', 'dsh-1', 'user-1', () => { notifications += 1 })
+    try {
+      await new Promise(resolve => setTimeout(resolve, 10))
+      expect(handle.error()).toBe(failure)
+      expect(handle.ready()).toBe(false)
+      expect(notifications).toBeGreaterThan(0)
+    } finally { handle.release() }
+  })
+
+  it('retries an initial binding race and clears the error when the journal opens', async () => {
     let starts = 0
     let releaseStream: (() => void) | undefined
     const remote = {
@@ -682,6 +698,7 @@ describe('ACP activity conversation node', () => {
     for (let attempt = 0; attempt < 50 && starts < 2; attempt += 1) await new Promise(resolve => setTimeout(resolve, 10))
     expect(starts).toBe(2)
     expect(handle.error()).toBeUndefined()
+    expect(handle.ready()).toBe(true)
     handle.release()
     releaseStream?.()
   })

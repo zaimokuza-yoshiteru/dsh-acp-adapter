@@ -55,6 +55,25 @@ const validBinding = (profileId: string): AcpBindingLookup => ({
 })
 
 describe('M6b additive ACP backend guard', () => {
+  it('continues a headless ACP session using its native committed request header', async () => {
+    const acpSidecar = sidecar(validBinding('codex'))
+    const { listener } = install(undefined, acpSidecar)
+    const headless = Object.assign(session(['turn/start', 'assistant/message', 'turn/end', 'turn/start']), {
+      requestHeader: () => ({ config: config('acp-codex') }),
+    })
+    await expect(listener({ agent: { session: headless } }, async () => config('acp-codex'))).resolves.toEqual(config('acp-codex'))
+    expect(acpSidecar.readLatestBinding).toHaveBeenCalledOnce()
+  })
+
+  it('does not let headless fallback adopt native history or bypass a missing binding', async () => {
+    for (const previous of [config('native'), config('acp-codex'), undefined]) {
+      const { listener } = install(undefined, sidecar(undefined))
+      const headless = Object.assign(session(['turn/start', 'assistant/message', 'turn/end', 'turn/start']), {
+        requestHeader: () => previous === undefined ? undefined : { config: previous },
+      })
+      await expect(listener({ agent: { session: headless } }, async () => config('acp-codex'))).rejects.toThrow()
+    }
+  })
   it('leaves native same-model, model-change, provider-change, and residual-binding paths untouched', async () => {
     for (const next of [config('native-a'), config('native-a', 'model-b'), config('native-b'), config('native-c')]) {
       const writes: unknown[] = []

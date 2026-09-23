@@ -24,7 +24,7 @@ export async function teamTurn(session: MockSession, msg: PromptMessage, { sendU
     await client.connect(transport)
     const tools = (await client.listTools()).tools
     const call = async (shortName: string, args: Record<string, unknown> = {}, expectedError?: string) => {
-      const tool = tools.find(tool => tool.name.endsWith(`_${shortName}`))
+      const tool = tools.find(tool => tool.name === shortName)
       if (!tool) throw new Error(`Missing ${shortName}`)
       const toolCallId = `team-${++ordinal}`
       const name = `mcp__${server.name}__${tool.name}`
@@ -95,7 +95,7 @@ export async function teamTurn(session: MockSession, msg: PromptMessage, { sendU
       sendUpdate(session.id, { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'Private fixture reasoning' } })
       const requestMemberPermission = async (toolCallId: string, command: string) => {
         if (process.env.MOCK_PROFILE === 'codex') {
-          const tool = tools.find(tool => tool.name.endsWith('_bash'))
+          const tool = tools.find(tool => tool.name === 'bash')
           if (!tool) throw new Error('No native bash tool for member approval')
           sendUpdate(session.id, { sessionUpdate: 'tool_call', toolCallId, title: 'Run member command', kind: 'execute', status: 'pending',
             _meta: { is_mcp_tool_call: true }, rawInput: { server: server.name, tool: tool.name, arguments: { command } } })

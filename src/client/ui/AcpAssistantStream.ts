@@ -56,7 +56,7 @@ function NormalizedChat({ Native, props, ctx, dependencies }: {
       const publish = (): void => {
         if (disposed) return
         const rows = handle.snapshot()
-        setWindows(current => new Map(current).set(key, { rows: visibleActivityRows(rows), unavailable: handle.error() !== undefined }))
+        setWindows(current => new Map(current).set(key, { rows: visibleActivityRows(rows), unavailable: !handle.ready() || handle.error() !== undefined }))
         for (const row of rows) {
           const child = completedProjectedChild(row)
           if (child !== undefined) dependencies.onProjectedChild?.(child.parentSessionId, child.childSessionId)

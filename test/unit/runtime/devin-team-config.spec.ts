@@ -20,6 +20,7 @@ afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { rec
 async function setup() {
   const home = await mkdtemp(join(tmpdir(), 'devin-registration-')); roots.push(home)
   let entry: string | undefined
+  let effectiveOverride: string | undefined
   const argv: string[][] = []
   const subprocess: SubprocessSeam = {
     resolveExecutable: async command => command,
@@ -30,7 +31,7 @@ async function setup() {
         let exitCode = 0
         if (spec.argv.includes('get')) {
           if (entry === undefined) { stderr.write("Error: Server 'dsh' not found"); exitCode = 1 }
-          else stdout.write(entry)
+          else stdout.write(effectiveOverride ?? entry)
         } else {
           entry = `Server: dsh\n    Command: ${spec.argv.slice(spec.argv.indexOf('--') + 1).join(' ')}\n    Env: ELECTRON_RUN_AS_NODE=<redacted>\n`
         }
@@ -47,8 +48,22 @@ async function setup() {
     close: vi.fn(async () => {}),
   }
   const options = { subprocess, command: 'devin', args: ['acp'], cwd: home, env: { HOME: home }, lease }
-  return { home, argv, lease, options, setEntry: (value: string) => { entry = value } }
+  return { home, argv, lease, options, setEntry: (value: string) => { entry = value },
+    overrideAfterWrite: (value: string) => { effectiveOverride = value } }
 }
+
+it('refuses a higher-priority effective server after user-scope registration', async () => {
+  const { options, lease, overrideAfterWrite } = await setup()
+  overrideAfterWrite('Server: dsh\n    Command: other-server\n')
+  await expect(prepareDevinMcp(options)).rejects.toThrow('effective dsh MCP entry conflicts')
+  expect(lease.close).toHaveBeenCalledOnce()
+})
+
+it('refuses an effective entry that hardcodes another connection address', async () => {
+  const { options, home, overrideAfterWrite } = await setup()
+  overrideAfterWrite(`Server: dsh\n    Command: ${process.execPath} ${join(home, '.dsh/acp/mcp/dsh-mcp-launcher.mjs')}\n    Env: DSH_ACP_TEAM_MCP_URL=<redacted>\n`)
+  await expect(prepareDevinMcp(options)).rejects.toThrow('effective dsh MCP entry conflicts')
+})
 
 it('registers one persistent entry and keeps session endpoint out of native config and CLI argv', async () => {
   const { options, argv, lease, home } = await setup()

@@ -159,6 +159,7 @@ type HubEntry = {
   journal?: AcpActivityRemoteJournal
   opening?: Promise<void>
   refs: number
+  ready: boolean
   error?: unknown
 }
 
@@ -196,6 +197,7 @@ export class AcpActivityJournalHub {
 
   acquire(sessionId: string, ownerDshSessionId: string, promptAnchorMessageId: string, listener: () => void): {
     readonly snapshot: () => readonly AcpActivityView[]
+    readonly ready: () => boolean
     readonly error: () => unknown
     readonly release: () => void
   } {
@@ -210,6 +212,7 @@ export class AcpActivityJournalHub {
     let released = false
     return {
       snapshot: () => entry!.store.values(ownerDshSessionId, promptAnchorMessageId),
+      ready: () => entry!.ready,
       error: () => entry!.error,
       release: () => {
         if (released) return
@@ -229,7 +232,7 @@ export class AcpActivityJournalHub {
   private createEntry(sessionId: string): HubEntry {
     const store = new AcpActivityJournalStore()
     const listenersByAnchor = new Map<string, Set<() => void>>()
-    const entry: HubEntry = { store, listenersByAnchor, refs: 0 }
+    const entry: HubEntry = { store, listenersByAnchor, refs: 0, ready: false }
     this.entries.set(sessionId, entry)
     return entry
   }
@@ -266,6 +269,7 @@ export class AcpActivityJournalHub {
             const [baseline, ...tail] = change.entries
             entry.store.replace(baseline?.lastRevision ?? 0, baseline?.activities ?? [])
             for (const batch of tail) for (const activity of batch.activities) entry.store.append(activity)
+            entry.ready = true
             entry.error = undefined
             notifyAll()
           },
@@ -284,10 +288,12 @@ export class AcpActivityJournalHub {
         try {
           await journal.open({ limit: 200 })
           return
-        } catch {
+        } catch (error) {
           if (entry.journal === journal) delete entry.journal
           await journal.dispose()
           if (this.entries.get(sessionId) !== entry || entry.refs === 0) return
+          entry.error = error
+          notifyAll()
           await new Promise<void>(resolve => setTimeout(resolve, INITIAL_OPEN_RETRY_MS))
         }
       }

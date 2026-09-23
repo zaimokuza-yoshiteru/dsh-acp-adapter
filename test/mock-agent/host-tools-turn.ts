@@ -15,7 +15,7 @@ export async function hostToolsTurn(session: MockSession, msg: PromptMessage, { 
     await client.connect(server.type === 'http' ? new StreamableHTTPClientTransport(new URL(server.url))
       : new StdioClientTransport({ command: server.command, args: server.args, env: Object.fromEntries(server.env.map(item => [item.name, item.value])), stderr: 'pipe' }))
     const tools = (await client.listTools()).tools
-    const tool = tools.find(tool => tool.name.endsWith(shell ? '_bash' : present ? '_present' : prompt.includes('E2E_HOST_TOOLS_LATE') ? '_e2e_late_fixture' : '_e2e_fixture'))
+    const tool = tools.find(tool => tool.name === (shell ? 'bash' : present ? 'present' : prompt.includes('E2E_HOST_TOOLS_LATE') ? 'e2e_late_fixture' : 'e2e_fixture'))
     if (!tool) throw new Error('Native DSH tool was not discovered automatically')
     const codex = process.env.MOCK_PROFILE === 'codex'
     const shellArgs = { command: 'printf E2E_DSH_BASH_OK', description: 'Verify native command approval' }
