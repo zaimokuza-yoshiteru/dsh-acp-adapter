@@ -49,7 +49,7 @@ Teams 专项：`pnpm test:e2e test/e2e/agent-teams.e2e.ts test/e2e/teams-boundar
 
 集中审批调用宿主原有 pending approval 的一次性回答接口。通用提问／表单不参与批量操作；目标宿主的 `userQuestions.ask()` 会以 `DELEGATED_CALLER` 拒绝由另一个存活 Agent 管理的子会话。普通问题仍保留该限制。只有当前 DSH 工具身份核实、表单仅包含 persist 且提供 once 的 Codex 子会话请求，才转为子会话持有的原生一次性审批；需要用户明确允许，不授予 session/always，也不回答额外字段。
 
-Teams 只在原生 profile 提供服务与九个成员工具时接入；调用仍经过 DSH ToolRuntime 的 hooks 和校验。HTTP/stdio 服务、临时能力地址随会话生命周期撤销。Devin 当前不把 ACP `mcpServers` 暴露到模型工具目录，因此通过 `devin mcp add` 注册固定的用户级 `dsh` stdio 入口。每个进程通过环境变量绑定独立会话能力，退出后能力撤销，用户级入口保留；无需文件链接。Codex 通过关联工具调用的 MCP 审批表单选择仅本次允许；Kimi 只接受当前连接的完整工具标题。这些兼容处理均不放行普通表单或其他工具。
+Teams 只在原生 profile 提供服务与九个成员工具时接入；调用仍经过 DSH ToolRuntime 的 hooks 和校验。HTTP/stdio 服务、临时能力地址随会话生命周期撤销。为兼容包括 `3000.3.27` 在内的 Devin 版本，适配器通过 `devin mcp add` 注册固定的用户级 `dsh` stdio 入口。每个进程通过环境变量绑定独立会话能力，退出后能力撤销，用户级入口保留；无需文件链接。Codex 通过关联工具调用的 MCP 审批表单选择仅本次允许；Kimi 只接受当前连接的完整工具标题。这些兼容处理均不放行普通表单或其他工具。
 
 ## 运行
 

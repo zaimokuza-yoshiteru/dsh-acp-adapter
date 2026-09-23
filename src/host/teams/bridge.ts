@@ -62,22 +62,39 @@ export async function createTeamBridge(
   const nonce = randomBytes(8).toString('hex')
   const serverName = wireProfile === 'devin' ? 'dsh' : `dshteam_${nonce}`
   const path = `/${randomBytes(32).toString('hex')}`
-  // Names are connection-specific capabilities, not a global name-based approval bypass.
-  const names = new Map([...definitions].map(([name, definition]) => [`${nonce}_${name}`, definition]))
+  // The connection owns caller identity. Keep native tool names intact so
+  // upstream prompts, descriptions and plugin instructions share one contract.
+  const names = definitions
   const presented = new Map<string, string>()
-  const definitionOf = (call: acp.ToolCallUpdate): ToolDefinition | undefined => {
+  const identityOf = (call: acp.ToolCallUpdate): { tool?: string; source?: AcpPermissionCheck['identitySource'] } => {
+    const qualified = (value: unknown): string | undefined => typeof value === 'string' && value.startsWith(`mcp__${serverName}__`)
+      ? value.slice(`mcp__${serverName}__`.length) : undefined
     const input = call.rawInput as { server?: unknown; tool?: unknown } | undefined
-    if (wireProfile === 'codex' && call._meta?.is_mcp_tool_call === true && input?.server === serverName && typeof input.tool === 'string') return names.get(input.tool)
-    // Kimi uses the full qualified tool name as title; this mapping is runtime-bound.
     const meta = call._meta?.claudeCode as { toolName?: unknown } | undefined
-    // Devin can omit structured identity and emit only its exact MCP label.
-    // Match the entire capability name: never strip model-generated arguments
-    // or accept a bare tool suffix as authority for automatic coordination.
-    const devinName = wireProfile === 'devin' && typeof call.title === 'string'
-      ? /^(?:Calling|Called) ([a-zA-Z0-9_]+) from dsh$/.exec(call.title)?.[1] : undefined
-    const name = call.name ?? meta?.toolName ?? call._meta?.['cognition.ai/toolName'] ?? devinName ?? (wireProfile === 'kimi' ? call.title : undefined)
-    if (typeof name !== 'string') return undefined
-    return [...names].find(([tool]) => name === tool || name === `mcp__${serverName}__${tool}`)?.[1]
+    const candidates: Array<{ tool: string | undefined; source: AcpPermissionCheck['identitySource'] }> = []
+    if (wireProfile === 'codex' && call._meta?.is_mcp_tool_call === true) candidates.push({
+      tool: input?.server === serverName && typeof input.tool === 'string' ? input.tool : undefined, source: 'codex-input',
+    })
+    if (meta?.toolName != null) candidates.push({ tool: qualified(meta.toolName), source: 'claude-meta' })
+    if (call._meta?.['cognition.ai/toolName'] != null) candidates.push({ tool: qualified(call._meta['cognition.ai/toolName']), source: 'devin-meta' })
+    if (typeof call.name === 'string' && call.name.startsWith('mcp__')) candidates.push({ tool: qualified(call.name), source: 'name' })
+    // Only runtime-specific, complete labels identify a server. A bare native
+    // name or a tool-like substring in arbitrary prose never grants approval.
+    if (candidates.length === 0 && call.name == null) {
+      if (wireProfile === 'devin' && typeof call.title === 'string') {
+        const match = /^(?:Calling|Called) (.+) from dsh$/.exec(call.title)
+        if (match?.[0] === call.title) candidates.push({ tool: match[1], source: 'devin-title' })
+      } else if (wireProfile === 'kimi') candidates.push({ tool: qualified(call.title), source: 'kimi-title' })
+    }
+    const first = candidates[0]
+    if (first === undefined) return call.name == null ? {} : { source: 'name' }
+    if (first.tool === undefined || candidates.some(candidate => candidate.tool !== first.tool)
+      || (call.name != null && call.name !== first.tool && qualified(call.name) !== first.tool)) return { source: first.source }
+    return { tool: first.tool, source: first.source }
+  }
+  const definitionOf = (call: acp.ToolCallUpdate): ToolDefinition | undefined => {
+    const tool = identityOf(call).tool
+    return tool === undefined ? undefined : names.get(tool)
   }
   // Cordis returns a caller-context proxy for each service lookup, so proxy identity is not service identity.
   const live = (): boolean => !lifetime.signal.aborted
@@ -86,11 +103,9 @@ export async function createTeamBridge(
     && [...definitions].every(([name, definition]) => tools.get(name, agent) === definition)
   const inspectPermission: NonNullable<AcpMcpLease['inspectPermission']> = request => {
     const call = request.toolCall
+    const identity = identityOf(call)
     const meta = call._meta?.claudeCode as { toolName?: unknown } | undefined
-    const input = call.rawInput as { server?: unknown; tool?: unknown } | undefined
-    const source: AcpPermissionCheck['identitySource'] = wireProfile === 'codex' && call._meta?.is_mcp_tool_call === true && input?.server === serverName && typeof input.tool === 'string' ? 'codex-input'
-      : call.name != null ? 'name' : meta?.toolName != null ? 'claude-meta'
-        : call._meta?.['cognition.ai/toolName'] != null ? 'devin-meta' : wireProfile === 'devin' ? 'devin-title' : wireProfile === 'kimi' ? 'kimi-title' : undefined
+    const source = identity.source
     const titleName = wireProfile === 'devin' && typeof call.title === 'string'
       ? /^(?:Calling|Called) ([a-zA-Z0-9_]+) from dsh$/.exec(call.title)?.[1] : undefined
     const facts: Omit<AcpPermissionCheck, 'reason'> = { ...(source === undefined ? {} : { identitySource: source }),
@@ -100,16 +115,10 @@ export async function createTeamBridge(
     if (prompt === undefined || prompt.aborted) return { ...facts, reason: 'inactive-prompt' }
     const definition = definitionOf(call)
     if (definition === undefined) {
-      // Devin may put serialized argument markup inside mcp_call_tool.tool_name.
-      // A name scoped to this connection but absent from tools/list cannot run,
-      // regardless of user approval. Reject it for the Agent to correct instead
-      // of presenting an approval card. Never repair the name or recover args.
-      const devinName = wireProfile === 'devin'
-        ? call.name ?? meta?.toolName ?? call._meta?.['cognition.ai/toolName']
-          ?? (typeof call.title === 'string' ? /^(?:Calling|Called) (.+) from dsh$/.exec(call.title)?.[1] : undefined)
-        : undefined
-      if (typeof devinName === 'string'
-        && (devinName.startsWith(`${nonce}_`) || devinName.startsWith(`mcp__${serverName}__${nonce}_`))) {
+      // An identified call to our own server with an unknown name cannot
+      // execute, even after approval. Do not ask a user to repair a protocol
+      // error, and never strip markup or guess arguments to make it runnable.
+      if (identity.tool !== undefined) {
         const reject = request.options.find(option => option.kind === 'reject_once')
         return { ...facts, reason: 'invalid-tool-name', response: { outcome: reject === undefined
           ? { outcome: 'cancelled' } : { outcome: 'selected', optionId: reject.optionId } } }
@@ -201,7 +210,7 @@ export async function createTeamBridge(
   const listeners: Array<() => unknown> = []
   const lease: AcpMcpLease = {
     signal: lifetime.signal,
-    instructions: `Current DSH tools connection: MCP server ${serverName}. Discover its tools and use their exact names. This replaces earlier DSH connection names. Each teammate has its own connection and tool names; do not instruct a teammate to use your connection names. Create teams only when explicitly requested. Pending DSH messages are delivered after you end the current response; give a brief progress update when asked to yield.`,
+    instructions: `Current DSH tools connection: MCP server ${serverName}. It exposes native DSH tool names. Discover the tools for their parameter schemas. Each session has its own connection and caller identity. Do not copy a connection address or server identity to another session.${hasTeams ? " Team target names resolve within the caller’s Team. Create teams only when explicitly requested." : ""} Pending DSH messages are delivered after you end the current response; give a brief progress update when asked to yield.`,
     servers,
     beginPrompt(signal) { prompt = signal; presented.clear() },
     endPrompt() { prompt = undefined; presented.clear() },

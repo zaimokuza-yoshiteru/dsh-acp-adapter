@@ -192,6 +192,7 @@ export class AcpSessionRuntime {
   private starting: Promise<void> | undefined
   private launch: AcpRuntimeLaunch | undefined
   private replayHandler: ((notification: AcpSessionNotification) => void) | undefined
+  private restoringSessionId: string | undefined
   private connectionAbort: AbortController | undefined
   private promptAbort: AbortController | undefined
   private promptSignal: AbortSignal | undefined
@@ -280,6 +281,7 @@ export class AcpSessionRuntime {
     const mcpServers = this.mcpLease?.servers ?? []
     const rpcOptions = signal === undefined ? {} : { signal }
     this.replayHandler = onReplay
+    this.restoringSessionId = binding.agentSessionId
     try {
       if (caps?.sessionCapabilities?.resume != null) {
         const response = await connection.resumeSession(binding.agentSessionId, { cwd: this.options.cwd, mcpServers }, rpcOptions)
@@ -296,6 +298,7 @@ export class AcpSessionRuntime {
       return 'loaded'
     } finally {
       this.replayHandler = undefined
+      this.restoringSessionId = undefined
     }
   }
 
@@ -340,15 +343,21 @@ export class AcpSessionRuntime {
   ): Promise<acp.PromptResponse> {
     if (this.promptClaimed) throw new Error('ACP_PROMPT_ALREADY_ACTIVE')
     this.promptClaimed = true
+    const promptAbort = new AbortController()
+    this.promptAbort = promptAbort
+    const setupSignal = signal === undefined ? promptAbort.signal : AbortSignal.any([signal, promptAbort.signal])
     try {
       // A turn cancelled before dispatch has no remote outcome to reconcile.
       if (isAborted(signal)) return { stopReason: 'cancelled' }
-      await this.start(signal)
+      // Claim the prompt first, preventing further UI writes, then finish any
+      // already admitted setting changes before sending this turn.
+      await this.configWrite
+      if (setupSignal.aborted) return { stopReason: 'cancelled' }
+      await this.start(setupSignal)
       const connection = this.connection
       const sessionId = this.sessionId
       if (connection === undefined || sessionId === undefined) throw new Error('ACP session is not started')
       if (isAborted(signal)) return { stopReason: 'cancelled' }
-      const promptAbort = new AbortController()
       const promptToolSnapshots = new Map<string, acp.ToolCallUpdate>()
       this.promptToolSnapshots?.clear()
       this.promptToolSnapshots = promptToolSnapshots
@@ -406,6 +415,8 @@ export class AcpSessionRuntime {
         }
       }
     } finally {
+      promptAbort.abort(new Error('ACP prompt lifetime ended'))
+      if (this.promptAbort === promptAbort) this.promptAbort = undefined
       this.promptClaimed = false
     }
   }
@@ -413,12 +424,14 @@ export class AcpSessionRuntime {
   /** Set one ACP option for this runtime's session; writes are serialized and never cross sessions. */
   async setConfigOption(configId: string, value: string | boolean, signal?: AbortSignal): Promise<void> {
     if (this.promptClaimed) throw new Error('ACP_CONFIG_CHANGE_DURING_PROMPT')
+    const connection = this.connection
+    const sessionId = this.sessionId
+    if (connection === undefined || sessionId === undefined) throw new Error('ACP session is not started')
     const run = this.configWrite.then(async () => {
       signal?.throwIfAborted()
-      const connection = this.connection
-      const sessionId = this.sessionId
-      if (connection === undefined || sessionId === undefined) throw new Error('ACP session is not started')
+      if (connection !== this.connection || sessionId !== this.sessionId) throw new Error('ACP configuration connection changed')
       const response = await connection.setConfigOption(sessionId, configId, value, signal === undefined ? {} : { signal })
+      if (connection !== this.connection || sessionId !== this.sessionId) throw new Error('ACP configuration connection changed')
       this.configSnapshot = acpConfigOptionsSnapshot(response.configOptions)
     })
     this.configWrite = run.catch(() => undefined)
@@ -428,12 +441,14 @@ export class AcpSessionRuntime {
   /** Set a legacy ACP mode for this runtime's session. */
   async setMode(modeId: string, signal?: AbortSignal): Promise<void> {
     if (this.promptClaimed) throw new Error('ACP_CONFIG_CHANGE_DURING_PROMPT')
+    const connection = this.connection
+    const sessionId = this.sessionId
+    if (connection === undefined || sessionId === undefined) throw new Error('ACP session is not started')
     const run = this.configWrite.then(async () => {
       signal?.throwIfAborted()
-      const connection = this.connection
-      const sessionId = this.sessionId
-      if (connection === undefined || sessionId === undefined) throw new Error('ACP session is not started')
+      if (connection !== this.connection || sessionId !== this.sessionId) throw new Error('ACP configuration connection changed')
       await connection.setMode(sessionId, modeId, signal === undefined ? {} : { signal })
+      if (connection !== this.connection || sessionId !== this.sessionId) throw new Error('ACP configuration connection changed')
       this.currentMode = modeId
     })
     this.configWrite = run.catch(() => undefined)
@@ -526,6 +541,7 @@ export class AcpSessionRuntime {
         },
       }),
       onSessionUpdate: (notification) => {
+        if (connectionAbort.signal.aborted) return
         this.applyUpdate(notification)
         this.replayHandler?.(notification)
         this.options.onSessionUpdate?.(notification)
@@ -556,6 +572,10 @@ export class AcpSessionRuntime {
   }
 
   private applyUpdate(notification: AcpSessionNotification): void {
+    // Claude's negotiated child-session updates share this connection. They
+    // are forwarded to the external-subagent projector, but never own the
+    // parent's model, mode, usage or permission snapshots.
+    if (notification.sessionId !== (this.sessionId ?? this.restoringSessionId)) return
     const update = notification.update
     if (
       this.promptActive

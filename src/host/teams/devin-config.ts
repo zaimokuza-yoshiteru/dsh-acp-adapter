@@ -103,6 +103,14 @@ export async function prepareDevinMcp({ subprocess, command, args, cwd, env, lea
       // Electron Node mode is enabled. Reapply our owned entry through Devin's CLI;
       // this replaces the same server, preserves other servers and repairs missing/wrong env.
       await cli(['add', '--scope', 'user', '-e', 'ELECTRON_RUN_AS_NODE=1', DEVIN_MCP_NAME, '--', process.execPath, launcher])
+      // Verify the effective entry, not merely that writing the user scope
+      // succeeded. A higher-priority entry must not redirect a trusted server
+      // identity or replace the per-process endpoint with a saved address.
+      const effective = await cli(['get', DEVIN_MCP_NAME])
+      if (effective === undefined || !effective.stdout.split('\n').some(line => line.trim() === expected)
+        || /\bDSH_ACP_TEAM_MCP_URL\s*=/.test(effective.stdout)) {
+        throw new Error('Devin effective dsh MCP entry conflicts with this session bridge; check project-level MCP overrides')
+      }
       lease.signal.throwIfAborted()
     } finally { await release() }
     let closing: Promise<void> | undefined

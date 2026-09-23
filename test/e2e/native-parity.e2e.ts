@@ -863,6 +863,10 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
     await page.getByRole('button', { name: /^Select model/ }).click()
     await page.getByRole('menuitem', { name: /^Model/ }).click()
     await page.getByRole('menuitemradio', { name: 'Mock Model B', exact: true }).click()
+    // Selection is an asynchronous native RPC. Its completion closes the menu
+    // and restores focus; typing before that boundary races focus restoration.
+    const picker = page.getByRole('button', { name: /^Select model, current Mock Model B/ })
+    await expect.poll(() => picker.getAttribute('aria-expanded')).toBe('false')
     const { settled } = await send('E2E_MESSAGE')
     await settled
     await page.getByText('E2E_DONE mock-model-b', { exact: true }).waitFor()

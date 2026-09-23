@@ -103,11 +103,10 @@ export function installAcpBackendGuard(ctx: Context, options: AcpBackendGuardOpt
       const projection = projectionCtx.sessionProjections.stateOf(session, 'modelSelection')
       const targetProfile = acpAgentIdFromRoute(resolved.provider)
       const priorHistory = readSessionFacts(projectionCtx, session).priorSemanticHistory
-      if (projection === undefined) {
-        if (targetProfile === undefined || !priorHistory) return resolved
-        throw transitionError('ACP_BACKEND_RECOVERY_REQUIRED', 'DSH model-selection state is unavailable; ACP cannot safely adopt this session')
-      }
-      const previous = projection.lastUsed
+      // The API controller contributes modelSelection for interactive hosts.
+      // Headless AgentLoop hosts retain the same committed route in the native
+      // Session request header. Do not require an API/UI plugin to continue ACP.
+      const previous = projection === undefined ? session.requestHeader()?.config ?? null : projection.lastUsed
       if (targetProfile === undefined && (previous === null || acpAgentIdFromRoute(previous.provider) === undefined)) return resolved
       const previousProfile = acpAgentIdFromRoute(previous?.provider ?? '')
       const baseInput = {
