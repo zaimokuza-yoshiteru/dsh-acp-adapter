@@ -68,7 +68,8 @@ Wait for its message. Get/list the shared tasks, confirm the compute task is com
     }, { timeout: 90_000, interval: 500 })
   } finally { await handle.close() }
   await page.locator('[data-team-action]').getByRole('button', { name: /Agent Team/ }).click()
-  await page.locator('[data-team-action]').getByText(memberName, { exact: true }).first().waitFor()
-  await page.locator('[data-team-action]').getByText(`Compute ${token}`, { exact: true }).waitFor()
-  await page.locator('[data-team-action]').getByText(`Review ${token}`, { exact: true }).waitFor()
+  const panel = page.getByRole('dialog', { name: 'Agent Team', exact: true })
+  await panel.getByText(memberName, { exact: true }).first().waitFor()
+  await panel.getByText(`Compute ${token}`, { exact: true }).waitFor()
+  await panel.getByText(`Review ${token}`, { exact: true }).waitFor()
 }
