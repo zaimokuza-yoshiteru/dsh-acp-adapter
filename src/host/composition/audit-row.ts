@@ -28,6 +28,12 @@ export function auditTimelineRowOf(entry: AcpSidecarEntry): AcpAuditTimelineEntr
       subject = boundedAuditSubject(data['profileId'] ?? data['provider'] ?? data['agentSessionId'])
       break
     case 'permission': {
+      if (data['phase'] === 'bridge') {
+        summaryCode = 'permission.bridge'
+        subject = boundedAuditSubject(data['toolName'] ?? data['toolCallId'])
+        status = boundedAuditSubject(data['reason'])
+        break
+      }
       summaryCode = data['phase'] === 'asked' ? 'permission.asked' : 'permission.decided'
       if (data['phase'] === 'asked') {
         const toolCall = data['toolCall'] as Record<string, unknown> | undefined

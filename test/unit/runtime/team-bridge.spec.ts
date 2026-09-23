@@ -160,11 +160,18 @@ describe('session-owned native Teams MCP bridge', () => {
     const request = (title: string) => ({ ...permission(), toolCall: { toolCallId: title, title } })
     expect(lease.permission(request(`Calling ${wait} from dsh`))?.outcome).toEqual({ outcome: 'selected', optionId: 'yes' })
     expect(lease.permission(request(`Calling ${shell} from dsh`))).toBeUndefined()
+    expect(lease.inspectPermission!(request(`Calling ${wait} from dsh`))).toMatchObject({ reason: 'auto-approved', toolName: 'wait_agent', identitySource: 'devin-title' })
+    expect(lease.inspectPermission!(request(`Calling ${shell} from dsh`))).toMatchObject({ reason: 'not-coordination', toolName: 'bash' })
+    const masked: RequestPermissionRequest = request(`Calling ${wait} from dsh`)
+    masked.toolCall.name = 'unmatched-structured-name'
+    expect(lease.inspectPermission!(masked)).toMatchObject({ reason: 'identity-unmatched', identitySource: 'name', structuredIdentityPresent: true, titleMatchesCurrentTool: true })
+    expect(lease.permission(masked)).toBeUndefined()
+    expect(lease.inspectPermission!({ ...request(`Calling ${wait} from dsh`), options: [] })).toMatchObject({ reason: 'allow-once-unavailable' })
     const raw = { toolCallId: 'bash', title: `Calling ${shell} from dsh`, rawInput: { command: 'sleep 20', description: 'Wait for teammates' } }
     expect(lease.presentTool!(raw)).toEqual({ ...raw, title: 'bash', name: 'bash', kind: 'execute' })
     expect(raw.title).toContain(shell)
     const malformed = `${wait}<arg_key>arguments</arg_key><arg_value>{"timeout_ms": 60000}`
-    expect(lease.permission(request(`Calling ${malformed} from dsh`))).toBeUndefined()
+    expect(lease.permission(request(`Calling ${malformed} from dsh`))).toEqual({ outcome: { outcome: 'cancelled' } })
     expect((await client.callTool({ name: malformed, arguments: {} })).isError).toBe(true)
     expect(execute).not.toHaveBeenCalled()
     for (const title of [`Calling wait_agent from dsh`, `Calling ${wait} from other`, `Calling ${wait} from dsh\nextra`]) {
@@ -175,6 +182,44 @@ describe('session-owned native Teams MCP bridge', () => {
     expect(other.lease.permission(request(`Calling ${wait} from dsh`))).toBeUndefined()
     lease.endPrompt()
     expect(lease.permission(request(`Calling ${wait} from dsh`))).toBeUndefined()
+  })
+  it('rejects invalid Devin names owned by this connection without executing or repairing them', async () => {
+    const { lease, tools, permission, execute } = await setup('devin', ['bash'])
+    lease.beginPrompt(new AbortController().signal)
+    const wait = tools.find(tool => tool.name.endsWith('_wait_agent'))!.name
+    const malformed = `${wait}<arg_key>arguments</arg_key><arg_value>{"timeout_ms":60000}`
+    const options: RequestPermissionRequest['options'] = [
+      { optionId: 'persist-reject', kind: 'reject_always', name: 'Reject always' },
+      { optionId: 'no', kind: 'reject_once', name: 'Reject once' },
+      ...permission().options,
+    ]
+    for (const toolCall of [
+      { toolCallId: 'meta', _meta: { 'cognition.ai/toolName': `mcp__dsh__${malformed}` }, rawInput: {} },
+      { toolCallId: 'name', name: malformed },
+      { toolCallId: 'title', title: `Calling ${malformed} from dsh` },
+      { toolCallId: 'unknown', name: wait.replace(/wait_agent$/, 'nonexistent') },
+    ]) {
+      const request = { ...permission(), toolCall, options }
+      expect(lease.inspectPermission!(request)).toMatchObject({ reason: 'invalid-tool-name' })
+      expect(lease.permission(request)).toEqual({ outcome: { outcome: 'selected', optionId: 'no' } })
+      expect(lease.permission({ ...request, options: [options[0]!, options[2]!] })).toEqual({ outcome: { outcome: 'cancelled' } })
+    }
+    expect(execute).not.toHaveBeenCalled()
+    expect(lease.permission({ ...permission(wait), options })).toEqual({ outcome: { outcome: 'selected', optionId: 'yes' } })
+    expect(lease.permission(permission(tools.find(tool => tool.name.endsWith('_bash'))!.name))).toBeUndefined()
+  })
+  it('does not classify another connection or conflicting structured identity as its own invalid tool', async () => {
+    const one = await setup('devin'), two = await setup('devin'), generic = await setup()
+    for (const item of [one, two, generic]) item.lease.beginPrompt(new AbortController().signal)
+    const invalid = `${one.name}<arg_key>arguments</arg_key>`
+    expect(two.lease.permission(one.permission(invalid))).toBeUndefined()
+    expect(one.lease.permission(one.permission(`mcp__other__${invalid}`))).toBeUndefined()
+    expect(one.lease.permission({ ...one.permission('unknown'), toolCall: {
+      toolCallId: 'conflict', name: 'unknown', title: `Calling ${invalid} from dsh`,
+    } })).toBeUndefined()
+    expect(generic.lease.permission(generic.permission(`${generic.name}<arg_key>`))).toBeUndefined()
+    one.lease.endPrompt()
+    expect(one.lease.permission(one.permission(invalid))).toBeUndefined()
   })
   it('rejects hostile origins and capabilities after feature removal or tool replacement', async () => {
     const { lease, server, definitions, name, client, services } = await setup()

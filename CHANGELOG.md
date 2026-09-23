@@ -4,6 +4,30 @@
 
 User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for publication dates, exact installation instructions, and checksums. Historical entries were reconstructed from tag diffs; npm packages were not republished.
 
+## 0.1.7-alpha.2.0
+
+2026-09-23
+
+### 中文
+
+- 适配 DSH `0.1.7-alpha.2`，宿主与插件需要同时升级；Read/Diff 继续使用新版原生代码卡和中英文工具栏。
+- 团队成员创建后及时出现管理入口；读取成员或恢复状态失败时可重试。点击成员名在原生侧栏打开，保留主会话。
+- 会话设置说明运行中只读的原因；成员待生效提示可换行并保持设置行对齐，批量模式操作可查看各成员结果。
+- 普通审批直接展示操作事实，页面状态和按钮由原生界面本地化；工具桥权限判断新增脱敏诊断，可复制所选记录及版本。自动审批范围不变。
+
+- 修复 Codex 成员的 DSH 工具授权表单被宿主取消的问题：已验证且提供“仅本次”的请求可转为成员原生审批，在主会话处理，不授予长期权限。
+- Devin 对当前 DSH 连接发出不存在的工具名时，直接拒绝并记录诊断，避免无效调用卡在人工审批。不会修补或执行错误请求；Agent 可重新发出正确调用。
+
+### English
+
+- Targets DSH `0.1.7-alpha.2`; upgrade the host and plugin together. Read/Diff use the updated native code cards and bilingual toolbar labels.
+- Member controls appear as teammates are created. Failed roster and recovery reads can be retried. Member names open the native sidebar while preserving the main conversation.
+- Session controls explain why settings are read-only during execution. Pending member settings wrap without clipping and stay aligned; batch mode results identify each member's outcome.
+- Ordinary approvals show operation facts, with native localized states and buttons. Redacted bridge permission checks and versioned diagnostic copying improve troubleshooting without broadening automatic approval.
+
+- Fixes cancelled Codex member approvals for verified DSH tools. Scope-only forms offering once can use the member’s native approval, handled from the lead without granting persistent permission.
+- Rejects and diagnoses invalid tool names belonging to the current Devin DSH connection instead of blocking on user approval. Malformed requests are never repaired or executed; the Agent can issue a corrected call.
+
 ## 0.1.7-alpha.1.1
 
 ### 中文

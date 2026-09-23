@@ -11,12 +11,12 @@ function bridge(answer: string | undefined, custom?: string): { handler: ReturnT
 }
 
 describe('native ACP permission bridge', () => {
-  it.each(['zh', 'zh-CN'])('localizes native approval in %s without translating the command', async locale => {
+  it.each([undefined, 'en', 'zh', 'zh-CN'])('leaves native approval chrome to the client for locale %s', async locale => {
     const approval = { request: vi.fn(async () => 'allowed-once' as const) }
-    const handler = createAcpNativePermissionHandler({ approval, locale, getAgent: () => ({}) })
+    const handler = createAcpNativePermissionHandler({ approval, ...(locale === undefined ? {} : { locale }), getAgent: () => ({}) })
     await handler(params([option('exact-id', 'Allow', 'allow_once')]))
     expect(approval.request).toHaveBeenCalledWith(expect.objectContaining({
-      reason: 'ACP Agent 请求执行命令的权限。\n工具: Run command\n命令: echo hello',
+      reason: 'Run command\necho hello',
     }))
   })
 

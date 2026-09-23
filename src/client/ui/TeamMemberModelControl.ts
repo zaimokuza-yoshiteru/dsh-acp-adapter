@@ -164,6 +164,7 @@ export function TeamMemberModelControl({ lead, member, initialModel, sessionRead
       align: 'end',
       onClose: () => setOpen(false),
       items,
+      ...(!canWrite && !saving ? { footer: [{ type: 'label' as const, id: 'read-only', text: t(member.status === 'running' ? 'agentControlRunning' : 'agentControlReadOnly') }] } : {}),
       selectedId: selectedModel ?? undefined,
       onSelect: choose,
       anchor: h('button', {

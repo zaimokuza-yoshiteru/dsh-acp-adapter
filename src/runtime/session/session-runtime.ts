@@ -17,6 +17,7 @@ import { acpConfigOptionsSnapshot } from '../../protocol/v1/config-options.ts'
 import type { AcpSessionNotification } from '../../protocol/v1/types.ts'
 import { waitWithin } from '../process/timeout.ts'
 import type { AcpMcpLease } from './mcp-lease.ts'
+import type { AcpPermissionCheck } from '../../domain/policy/permission-check.ts'
 /** Deliberately protocol-local: runtime restoration does not own persistence. */
 export interface AcpRuntimeBindingRef { readonly agentSessionId: string }
 export interface AcpRuntimeConfig {
@@ -55,8 +56,9 @@ export interface AcpSessionRuntimeOptions {
   readonly onSessionUpdate?: (notification: AcpSessionNotification) => void
   /** Host-owned approval bridge. The optional signal is the active prompt lifetime. */
   readonly onPermissionRequest?: (params: acp.RequestPermissionRequest, signal?: AbortSignal) => Promise<acp.RequestPermissionResponse>
+  readonly onPermissionCheck?: (check: AcpPermissionCheck, request: acp.RequestPermissionRequest) => Promise<void>
   /** Host-owned form elicitation bridge; URL elicitation is intentionally not advertised. */
-  readonly onElicitationRequest?: (params: acp.CreateElicitationRequest, signal?: AbortSignal, hostToolName?: string) => Promise<acp.CreateElicitationResponse>
+  readonly onElicitationRequest?: (params: acp.CreateElicitationRequest, signal?: AbortSignal, hostToolName?: string, hostToolCall?: acp.ToolCallUpdate) => Promise<acp.CreateElicitationResponse>
   /** One-shot diagnostic for optional private capability degradation. */
   readonly onCapabilityDegraded?: (message: string) => void
   /** Grace period after `session/cancel` before the Agent process is closed. */
@@ -513,7 +515,13 @@ export class AcpSessionRuntime {
           const toolCall = scope.sessionId !== this.sessionId || typeof scope.toolCallId !== 'string'
             ? undefined : this.promptToolSnapshots?.get(scope.toolCallId)
           this.pendingQuestions += 1
-          try { return await (this.mcpLease?.elicitation?.(params, toolCall) ?? this.options.onElicitationRequest!(params, signal, this.mcpLease?.elicitationToolName?.(params, toolCall))) }
+          try {
+            const automatic = this.mcpLease?.elicitation?.(params, toolCall)
+            if (automatic !== undefined) return automatic
+            const hostToolName = this.mcpLease?.elicitationToolName?.(params, toolCall)
+            return await this.options.onElicitationRequest!(params, signal, hostToolName,
+              hostToolName === undefined ? undefined : toolCall)
+          }
           finally { this.pendingQuestions -= 1 }
         },
       }),
@@ -596,9 +604,17 @@ export class AcpSessionRuntime {
       ...params,
       toolCall: await completePermissionToolCall(this.promptToolSnapshots, params.toolCall, signal),
     }
-    const coordination = this.mcpLease?.permission(request)
-    if (coordination !== undefined) return coordination
-    // Resolve coordination against the original wire identity first; normalize
+    const lease = this.mcpLease
+    const inspected = lease?.inspectPermission?.(request)
+    if (this.options.onPermissionCheck !== undefined) {
+      // Audit stores only the bounded decision facts, never capability names or addresses.
+      try { await this.options.onPermissionCheck(inspected ?? { reason: 'bridge-unavailable' }, request) }
+      catch { return cancelled() }
+    }
+    if (isAborted(signal) || lease !== this.mcpLease) return cancelled()
+    const bridgeDecision = lease?.permission(request)
+    if (bridgeDecision !== undefined) return bridgeDecision
+    // Resolve bridge decisions against the original wire identity first; normalize
     // only the request shown by the native approval surface.
     const pending = handler({ ...request, toolCall: this.mcpLease?.presentTool?.(request.toolCall) ?? request.toolCall }, signal)
     if (signal === undefined) return await pending

@@ -3,9 +3,10 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeAll, describe, expect, it } from 'vitest'
 import type * as acp from '@agentclientprotocol/sdk'
-import { AcpSessionRuntime } from '../../../src/runtime/session/session-runtime.ts'
+import { AcpSessionRuntime, type AcpSessionRuntimeOptions } from '../../../src/runtime/session/session-runtime.ts'
 import type { SubprocessSeam } from '../../../src/runtime/process/subprocess.ts'
 import { sharedTestSubprocess } from '../../fixtures/subprocess-seam-testing.ts'
+import { createPermissionCheckAudit } from '../../../src/domain/policy/events.ts'
 import type { AcpMcpLease } from '../../../src/runtime/session/mcp-lease.ts'
 
 const PROMPT: acp.ContentBlock[] = [{ type: 'text', text: 'permission snapshot test' }]
@@ -28,6 +29,7 @@ function createRuntime(
   mode: 'raw-input' | 'content-json' | 'content-json-prefixed' | 'content-json-unrelated' | 'content-json-late' = 'raw-input',
   previousStatus: 'in_progress' | 'completed' = 'in_progress',
   mcpLease?: AcpMcpLease,
+  onPermissionCheck?: AcpSessionRuntimeOptions['onPermissionCheck'],
 ): AcpSessionRuntime {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-runtime-permission-snapshot-'))
   roots.push(root)
@@ -54,12 +56,52 @@ function createRuntime(
     cwd: root,
     prepareLaunch: async () => ({ argv, env, spawnPlan: { argv, env }, ...(mcpLease === undefined ? {} : { mcpLease }) }),
     onPermissionRequest,
+    ...(onPermissionCheck === undefined ? {} : { onPermissionCheck }),
   })
   runtimes.push(runtime)
   return runtime
 }
 
 describe('AcpSessionRuntime prompt-scoped permission snapshots', () => {
+  it('audits a bridge rejection without opening a native user approval', async () => {
+    let nativeRequests = 0
+    const records: unknown[] = []
+    const response: acp.RequestPermissionResponse = { outcome: { outcome: 'cancelled' } }
+    const lease: AcpMcpLease = {
+      signal: new AbortController().signal, servers: [], beginPrompt() {}, endPrompt() {}, async close() {},
+      inspectPermission: () => ({ reason: 'invalid-tool-name', identitySource: 'devin-meta', response }),
+      permission: () => response,
+    }
+    const runtime = createRuntime(async () => { nativeRequests++; return response }, 'raw-input', 'in_progress', lease,
+      async (check, request) => { records.push(createPermissionCheckAudit(check, request.sessionId, request.toolCall.toolCallId)) })
+    await runtime.prompt(PROMPT, () => undefined)
+    expect(nativeRequests).toBe(0)
+    expect(records[0]).toMatchObject({ phase: 'bridge', reason: 'invalid-tool-name', identitySource: 'devin-meta' })
+  })
+  it('audits automatic permission without saving the capability response, and fails closed when audit fails', async () => {
+    for (const auditFails of [false, true]) {
+      const records: unknown[] = []
+      let answers = 0, nativeRequests = 0
+      const response: acp.RequestPermissionResponse = { outcome: { outcome: 'selected', optionId: 'CAPABILITY_SECRET' } }
+      const lease: AcpMcpLease = {
+        signal: new AbortController().signal, servers: [], beginPrompt() {}, endPrompt() {}, async close() {},
+        inspectPermission: () => ({ reason: 'auto-approved', toolName: 'send_message', response }),
+        permission: () => { answers++; return response },
+      }
+      const runtime = createRuntime(async () => { nativeRequests++; return response }, 'raw-input', 'in_progress', lease,
+        async (check, request) => {
+          if (auditFails) throw new Error('audit unavailable')
+          records.push(createPermissionCheckAudit(check, request.sessionId, request.toolCall.toolCallId))
+        })
+      await runtime.prompt(PROMPT, () => undefined)
+      expect(nativeRequests).toBe(0)
+      expect(answers).toBe(auditFails ? 0 : 1)
+      expect(records).toHaveLength(auditFails ? 0 : 1)
+      expect(JSON.stringify(records)).not.toContain('CAPABILITY_SECRET')
+      if (!auditFails) expect(records[0]).toMatchObject({ phase: 'bridge', reason: 'auto-approved', toolName: 'send_message', toolCallId: 'shared-call' })
+    }
+  })
+
   it('checks wire identity before presenting a normalized native approval without changing arguments', async () => {
     const checked: acp.ToolCallUpdate[] = [], shown: acp.ToolCallUpdate[] = []
     const runtime = createRuntime(async request => {

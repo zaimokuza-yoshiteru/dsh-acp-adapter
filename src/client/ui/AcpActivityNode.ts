@@ -225,13 +225,15 @@ function readDetail(value: unknown): ReadDetail | undefined {
 
 function diffLabels(t: ActivityNodeProps['t']) {
   return {
+    codeLabel: t('activity.code'),
+    wrapLabel: t('activity.wrap'),
+    unwrapLabel: t('activity.unwrap'),
     copy: t('activity.copy'),
     copied: t('activity.copied'),
     collapseAria: t('activity.collapse'),
     expandAria: (hidden: number) => t('activity.expandCount', { count: hidden }),
     collapse: t('activity.collapse'),
     expand: (hidden: number) => t('activity.expandCount', { count: hidden }),
-    files: (count: number) => t('activity.files', { count }),
   }
 }
 
@@ -255,6 +257,9 @@ function terminalLabels(t: ActivityNodeProps['t']): TerminalBlockLabels {
 
 function readLabels(t: ActivityNodeProps['t']): ReadBlockLabels {
   return {
+    codeLabel: t('activity.code'),
+    wrapLabel: t('activity.wrap'),
+    unwrapLabel: t('activity.unwrap'),
     window: (shown, total) => t('activity.read.window', { shown, total }),
     copy: t('activity.copy'),
     copied: t('activity.copied'),

@@ -8,7 +8,9 @@ export async function teamTurn(session: MockSession, msg: PromptMessage, { sendU
   const prompt = msg.params.prompt.filter(block => block.type === 'text').map(block => block.text).join('\n')
   if (!prompt.includes('E2E_TEAM_')) return false
   const client = new Client({ name: 'acp-team-fixture', version: '1' })
-  const turn = { cancelled: false, cancel() { this.cancelled = true } }
+  let finishHold = () => {}
+  const held = new Promise<void>(resolve => { finishHold = resolve })
+  const turn = { cancelled: false, cancel() { this.cancelled = true; finishHold() } }
   session.turn = turn
   const server = session.mcpServers?.[0]
   const say = (text: string) => { log(text); sendUpdate(session.id, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } }) }
@@ -91,13 +93,28 @@ export async function teamTurn(session: MockSession, msg: PromptMessage, { sendU
     } else if (/\bE2E_TEAM_MEMBER\b/.test(prompt)) {
       await call('spawn_teammate', { name: 'nested', description: 'Denied nested spawn', prompt: 'do nothing' }, 'only the Team Lead')
       sendUpdate(session.id, { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'Private fixture reasoning' } })
-      const response = await sendAgentRequest('session/request_permission', { sessionId: session.id,
-        toolCall: { toolCallId: 'member-shell', name: 'bash', title: 'Run member command', kind: 'execute', rawInput: { command: 'echo E2E_TEAM_PERMISSION' } },
-        options: [{ optionId: 'allow', kind: 'allow_once', name: 'Allow once' }, { optionId: 'deny', kind: 'reject_once', name: 'Reject' }] })
-      if (prompt.includes('E2E_TEAM_FOLLOWUP_PERMISSION')) {
-        const answer = await sendAgentRequest('session/request_permission', { sessionId: session.id,
-          toolCall: { toolCallId: 'member-late-shell', name: 'bash', title: 'Run next member command', kind: 'execute', rawInput: { command: 'echo E2E_TEAM_LATE_PERMISSION' } },
+      const requestMemberPermission = async (toolCallId: string, command: string) => {
+        if (process.env.MOCK_PROFILE === 'codex') {
+          const tool = tools.find(tool => tool.name.endsWith('_bash'))
+          if (!tool) throw new Error('No native bash tool for member approval')
+          sendUpdate(session.id, { sessionUpdate: 'tool_call', toolCallId, title: 'Run member command', kind: 'execute', status: 'pending',
+            _meta: { is_mcp_tool_call: true }, rawInput: { server: server.name, tool: tool.name, arguments: { command } } })
+          const answer = await sendAgentRequest('elicitation/create', { sessionId: session.id, toolCallId,
+            mode: 'form', message: `Allow the ${server.name} MCP server to run tool "${tool.name}"?`,
+            _meta: { codex_approval_kind: 'mcp_tool_call' }, requestedSchema: { type: 'object', properties: {
+              persist: { type: 'string', enum: ['once', 'session', 'always'] },
+            }, required: ['persist'] } })
+          if (answer.action === 'accept' && answer.content?.persist !== 'once') throw new Error('Member approval exceeded once')
+          log(`member elicitation ${JSON.stringify(answer)}`)
+          return { outcome: { outcome: 'selected', optionId: answer.action === 'accept' ? 'allow' : 'deny' } }
+        }
+        return sendAgentRequest('session/request_permission', { sessionId: session.id,
+          toolCall: { toolCallId, name: 'bash', title: 'Run member command', kind: 'execute', rawInput: { command } },
           options: [{ optionId: 'allow', kind: 'allow_once', name: 'Allow once' }, { optionId: 'deny', kind: 'reject_once', name: 'Reject' }] })
+      }
+      const response = await requestMemberPermission('member-shell', 'echo E2E_TEAM_PERMISSION')
+      if (prompt.includes('E2E_TEAM_FOLLOWUP_PERMISSION')) {
+        const answer = await requestMemberPermission('member-late-shell', 'echo E2E_TEAM_LATE_PERMISSION')
         if (answer.outcome?.optionId !== 'deny') throw new Error(`Unexpected late permission: ${JSON.stringify(answer)}`)
         say('E2E_TEAM_LATE_DENIED')
       }
@@ -108,6 +125,7 @@ export async function teamTurn(session: MockSession, msg: PromptMessage, { sendU
       await call('send_message', { target: 'lead', message: 'E2E_TEAM_REPLY result=2' })
       say('E2E_TEAM_MEMBER_DONE')
     } else if (prompt.includes('E2E_TEAM_START')) {
+      if (prompt.includes('E2E_TEAM_START_HOLD')) await new Promise(resolve => setTimeout(resolve, 1000))
       if (roster.length !== 1) throw new Error('Expected fresh team')
       const wait = await call('wait_agent', { timeout_ms: 10_000 })
       if (!wait.noProgress) throw new Error('Native wait must not poll without an active peer')
@@ -124,6 +142,7 @@ export async function teamTurn(session: MockSession, msg: PromptMessage, { sendU
       }
       await call('spawn_teammate', { name: 'calculator', description: 'Compute fixture', prompt: 'E2E_TEAM_MEMBER calculate 1+1', context: 'fresh' })
       say('E2E_TEAM_READY')
+      if (prompt.includes('E2E_TEAM_START_HOLD')) await held
     } else {
       say('E2E_TEAM_NOTICE_RECEIVED')
     }

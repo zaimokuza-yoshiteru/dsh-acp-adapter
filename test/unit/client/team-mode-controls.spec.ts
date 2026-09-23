@@ -22,7 +22,7 @@ it('changes captured compatible members once and never includes other profiles o
   const result = await applyTeamMode({ targets: ['a', 'a', 'other', 'running', 'gone'], profileId: 'devin', mode: 'plan', isCurrent: () => true,
     members: async () => [member('a'), member('other', { profileId: 'kimi' }), member('running', { status: 'running' }), member('late')],
     snapshot: async () => snapshot(), write })
-  expect(result).toEqual({ applied: 1, skipped: 3, failed: 0 })
+  expect(result).toMatchObject({ applied: 1, skipped: 3, failed: 0 })
   expect(write).toHaveBeenCalledExactlyOnceWith('a', { kind: 'mode', id: 'plan' })
 })
 it('skips stale, busy, unsupported and already selected modes; isolates individual failures', async () => {
@@ -30,20 +30,23 @@ it('skips stale, busy, unsupported and already selected modes; isolates individu
   const write = vi.fn(async (id: string) => { if (id === 'failed') throw new Error('protocol disconnected') })
   const result = await applyTeamMode({ targets: ids, profileId: 'devin', mode: 'plan', isCurrent: () => true,
     members: async () => ids.map(id => member(id)), snapshot: async id => snapshot(id === 'stale' ? { freshness: 'stale' } : id === 'busy' ? { editable: false } : id === 'unsupported' ? { modes: [] } : id === 'same' ? { currentModeId: 'plan' } : {}), write })
-  expect(result).toEqual({ applied: 1, skipped: 4, failed: 1 })
+  expect(result).toMatchObject({ applied: 1, skipped: 4, failed: 1 })
+  expect(result.members.map(item => [item.sessionId, item.reason])).toEqual([
+    ['stale', 'Stale'], ['busy', 'Stale'], ['unsupported', 'Unsupported'], ['same', 'Selected'], ['failed', 'Failed'], ['ok', 'Applied'],
+  ])
   expect(write).toHaveBeenLastCalledWith('ok', { kind: 'mode', id: 'plan' })
 })
 it('revalidates before every write and stops when the active conversation changes', async () => {
   let active = true
   const write = vi.fn(async () => { active = false })
   expect(await applyTeamMode({ targets: ['a', 'b'], profileId: 'devin', mode: 'plan', isCurrent: () => active,
-    members: async () => [member('a'), member('b')], snapshot: async () => snapshot(), write })).toEqual({ applied: 1, skipped: 1, failed: 0 })
+    members: async () => [member('a'), member('b')], snapshot: async () => snapshot(), write })).toMatchObject({ applied: 1, skipped: 1, failed: 0 })
   expect(write).toHaveBeenCalledTimes(1)
 })
 it('rejects a profile change while a snapshot request is in flight', async () => {
   const write = vi.fn()
   expect(await applyTeamMode({ targets: ['a'], profileId: 'devin', mode: 'plan', isCurrent: () => true,
-    members: async () => [member('a')], snapshot: async () => snapshot({ profileId: 'kimi' }), write })).toEqual({ applied: 0, skipped: 1, failed: 0 })
+    members: async () => [member('a')], snapshot: async () => snapshot({ profileId: 'kimi' }), write })).toMatchObject({ applied: 0, skipped: 1, failed: 0 })
   expect(write).not.toHaveBeenCalled()
 })
 
@@ -52,7 +55,7 @@ it('saves dormant member modes and allows replacing a pending mode with the last
   const result = await applyTeamMode({ targets: ['sleeping'], profileId: 'devin', mode: 'code', isCurrent: () => true,
     members: async () => [member('sleeping', { status: 'inactive' })],
     snapshot: async () => snapshot({ freshness: 'stale', editable: false, modeWritable: true, pendingModeId: 'plan' }), write })
-  expect(result).toEqual({ applied: 1, skipped: 0, failed: 0 })
+  expect(result).toMatchObject({ applied: 1, skipped: 0, failed: 0 })
   expect(write).toHaveBeenCalledWith('sleeping', { kind: 'mode', id: 'code' })
 })
 

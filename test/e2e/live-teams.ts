@@ -21,7 +21,7 @@ export async function verifyLiveTeam({ host, page, provider, model, evidence, me
     if (event.type === 'assistant/message') messages.push({ sessionId: session.id, type: event.type, text: event.data.message.content.filter(block => block.type === 'text').map(block => block.text).join('') })
   })
   Object.assign(evidence, { token, executions, messages })
-  const prompt = `Start a NEW independent Agent Teams task now. Earlier completed tasks and teammates do not satisfy this request: create the new tasks and the new teammate named below. Do the actual MCP tool calls before answering; a calculation or token-only reply is not completion. This is explicitly authorized in an empty temporary workspace. Use ONLY the DSH Agent Teams MCP server (dshteam_*); do not use your own subagent tools, shell, web or files. Use the exposed MCP tool names from tools/list.
+  const prompt = `Start a NEW independent Agent Teams task now. Earlier completed tasks and teammates do not satisfy this request: create the new tasks and the new teammate named below. Do the actual MCP tool calls before answering; a calculation or token-only reply is not completion. This is explicitly authorized in an empty temporary workspace. Use ONLY the current DSH tools MCP connection identified in the latest host instructions; do not use your own subagent tools, shell, web or files. Discover and use the exact tool names from tools/list. Each teammate must discover its own connection's tool names; never pass your connection names to it.
 Create a shared task with subject "Compute ${token}" and a second task "Review ${token}" blocked_by the compute task. Create exactly one fresh DSH teammate named ${memberName}. Give it the compute task ID and ask it to get the task, claim it with its current revision, calculate 1+1, get the latest revision and complete the task, then use DSH send_message to send the lead the result and token ${token}, and end its response.
 Wait for its message. Get/list the shared tasks, confirm the compute task is completed and the review task unblocked, claim and complete the review task yourself using current revisions. Reply with the token and result. Do not claim or complete the member's compute task yourself. If a tool says DSH has pending input, end the current response with a brief progress update so DSH can deliver the message; the host will continue automatically. Do not resend accepted messages. Stop after both tasks are completed.`.replaceAll('\n', ' ')
   await writeComposerDraft(page, page.locator('[data-composer-input]').first(), prompt)
@@ -68,7 +68,8 @@ Wait for its message. Get/list the shared tasks, confirm the compute task is com
     }, { timeout: 90_000, interval: 500 })
   } finally { await handle.close() }
   await page.locator('[data-team-action]').getByRole('button', { name: /Agent Team/ }).click()
-  await page.locator('[data-team-action]').getByText(memberName, { exact: true }).first().waitFor()
-  await page.locator('[data-team-action]').getByText(`Compute ${token}`, { exact: true }).waitFor()
-  await page.locator('[data-team-action]').getByText(`Review ${token}`, { exact: true }).waitFor()
+  const panel = page.getByRole('dialog', { name: 'Agent Team', exact: true })
+  await panel.getByText(memberName, { exact: true }).first().waitFor()
+  await panel.getByText(`Compute ${token}`, { exact: true }).waitFor()
+  await panel.getByText(`Review ${token}`, { exact: true }).waitFor()
 }
