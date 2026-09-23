@@ -4,6 +4,28 @@
 
 User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for publication dates, exact installation instructions, and checksums. Historical entries were reconstructed from tag diffs; npm packages were not republished.
 
+## 0.1.7-alpha.2.1
+
+2026-09-23
+
+### 中文
+
+- DSH 工具桥保留原生工具名，修复 Agent 按原生指令调用工具时名称不匹配的问题。不同团队的同名成员仍按各自连接和团队隔离；普通工具审批范围不变。
+- 修复无界面宿主第二轮 ACP 续聊被错误阻止的问题。
+- 外部子会话的配置、模式和用量不再覆盖主会话；切换模式或选项后立即发送，会先完成已接纳的配置写入。关闭等待中的会话不会重新启动 Agent。
+- 活动流首次加载失败时保留回退展示并提示不可用，避免把尚未加载的数据当成空记录。
+- Devin 注册 MCP 后核验实际生效的入口，明确报告覆盖冲突，避免连接错误的工具桥。
+- 继续支持 DSH `0.1.7-alpha.2`，无需清理会话数据。更新后重启宿主并刷新页面；桌面内置版本需随新的桌面安装包更新。
+
+### English
+
+- Preserves native DSH tool names so Agent calls match native instructions. Identically named members remain isolated by their connections and Teams; ordinary tool approval scope is unchanged.
+- Fixes incorrectly blocked second-turn ACP continuations in headless hosts.
+- Prevents external child configuration, mode and usage updates from overwriting the parent. Sending immediately after changing a setting waits for admitted writes; closing a waiting session does not restart the Agent.
+- Retains fallback presentation and reports unavailable activity when the initial stream load fails, instead of treating unloaded data as empty records.
+- Checks Devin's effective MCP entry after registration and reports conflicting overrides instead of connecting to the wrong tool bridge.
+- Continues to support DSH `0.1.7-alpha.2`; no session-data cleanup is needed. Restart the host and refresh the page after updating. Bundled desktop versions require an updated desktop package.
+
 ## 0.1.7-alpha.2.0
 
 2026-09-23
