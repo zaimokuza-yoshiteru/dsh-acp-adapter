@@ -45,7 +45,10 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
     mkdirSync(join(root, '.local/registry-ui'), { recursive: true })
     await page.screenshot({ path: join(root, '.local/registry-ui/grouped-menu-small.png'), fullPage: true })
     await page.keyboard.press('Escape')
-    // The pinned host Settings dialog also handles document-level Escape.
+    // Escape first closes the foreground catalog menu; a second Escape closes Settings.
+    await menu.waitFor({ state: 'hidden' })
+    await dialog.waitFor({ state: 'visible' })
+    await page.keyboard.press('Escape')
     await dialog.waitFor({ state: 'hidden' })
     await page.getByRole('button', { name: 'Settings', exact: true }).click()
     await dialog.getByRole('button', { name: 'ACP adapter', exact: true }).click()
