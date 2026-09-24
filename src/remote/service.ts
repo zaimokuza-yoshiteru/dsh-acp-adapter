@@ -383,6 +383,7 @@ export interface AcpRemoteServiceDeps {
     readonly snapshot: (sessionId: string, limit: number, filter?: AcpActivityFilterView) => Promise<readonly AcpActivityView[]>
     readonly page: (sessionId: string, afterRevision: number, limit: number, filter?: AcpActivityFilterView) => Promise<readonly AcpActivityView[]>
     readonly head: (sessionId: string, filter?: AcpActivityFilterView) => Promise<number>
+    /** Delivers each committed revision at most once and in ascending revision order. */
     readonly subscribe?: (sessionId: string, filter: AcpActivityFilterView | undefined, subscriber: (activity: AcpActivityView) => void) => () => void
   }
   /** Authorizes a client-facing activity read against the current DSH session.
@@ -647,14 +648,27 @@ export class AcpRemoteService extends TypertRemoteService {
     let wake: (() => void) | undefined
     let openingHead = 0
     let closed = false
-    const seen = new Set<number>()
-    const unsubscribe = source.subscribe(sessionId, undefined, activity => {
-      if (closed) return
-      queue.push(activitySummary(activity))
-      wake?.()
+    // The production sidecar commits each revision under one synchronous
+    // transaction and notifies subscribers immediately after commit. Those
+    // notifications therefore arrive once, in strictly increasing revision
+    // order. A high-water mark handles duplicate/stale delivery without
+    // retaining every revision for the lifetime of this stream.
+    let lastDeliveredRevision = 0
+    const wakeWaiter = () => {
+      const resolve = wake
       wake = undefined
-    })
+      resolve?.()
+    }
+    const onAbort = () => wakeWaiter()
+    let unsubscribe: (() => void) | undefined
     try {
+      if (signal.aborted) return
+      signal.addEventListener('abort', onAbort)
+      unsubscribe = source.subscribe(sessionId, undefined, activity => {
+        if (closed) return
+        queue.push(activitySummary(activity))
+        wakeWaiter()
+      })
       // Subscribe first, then rebuild the complete current-state projection
       // from bounded revision pages up to one fixed head.  A bounded snapshot
       // cannot safely advance to the full head: when a session owns more rows
@@ -662,16 +676,18 @@ export class AcpRemoteService extends TypertRemoteService {
       // revision.  Folding revision pages keeps transport bounded without
       // making the user-visible journal lossy.
       openingHead = await source.head(sessionId, undefined)
+      if (signal.aborted) return
+      lastDeliveredRevision = openingHead
       const current = new Map<string, AcpActivityView>()
       let cursor = 0
       while (cursor < openingHead) {
         const before = cursor
         const page = await source.page(sessionId, cursor, limit, undefined)
+        if (signal.aborted) return
         if (page.length === 0) break
         for (const activity of page) {
           if (activity.revisionSeq > openingHead) break
           current.set(activity.activityId, activitySummary(activity))
-          seen.add(activity.revisionSeq)
           cursor = Math.max(cursor, activity.revisionSeq)
         }
         // A racing writer may make a backend page contain only revisions above
@@ -684,21 +700,24 @@ export class AcpRemoteService extends TypertRemoteService {
       while (!signal.aborted) {
         while (queue.length > 0) {
           const activity = queue.shift()!
-          if (activity.revisionSeq <= openingHead || seen.has(activity.revisionSeq)) continue
-          seen.add(activity.revisionSeq)
+          if (activity.revisionSeq <= lastDeliveredRevision) continue
+          lastDeliveredRevision = activity.revisionSeq
           yield { type: 'entry', activity }
         }
         if (signal.aborted) break
         await new Promise<void>((resolve) => {
           wake = resolve
-          if (signal.aborted) { wake = undefined; resolve() }
-          else signal.addEventListener('abort', () => { wake = undefined; resolve() }, { once: true })
+          if (signal.aborted) wakeWaiter()
         })
       }
     } finally {
       closed = true
-      unsubscribe()
-      wake?.()
+      signal.removeEventListener('abort', onAbort)
+      try {
+        unsubscribe?.()
+      } finally {
+        wakeWaiter()
+      }
     }
   }
 

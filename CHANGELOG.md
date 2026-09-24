@@ -4,6 +4,22 @@
 
 User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for publication dates, exact installation instructions, and checksums. Historical entries were reconstructed from tag diffs; npm packages were not republished.
 
+## Unreleased
+
+### 中文
+
+- 适配 DSH `0.1.7-rc.1` 的插件兼容检查与原生工具展示契约，宿主与插件需一同升级。
+- 团队成员与审批读取原生共享投影，保留成员自己的请求身份与一次性授权范围。
+- 跟随原生紧凑、标准、详细、完全展开四档过程展示；旧展示偏好由宿主迁移。
+- 修复长期活动流累积取消监听器的问题，关闭和失败时释放订阅。
+
+### English
+
+- Targets DSH `0.1.7-rc.1` plugin admission and native tool presentation contracts; upgrade the host and plugin together.
+- Reads team membership and approvals through native shared projections while preserving member-owned requests and once-only permission scope.
+- Follows native compact, standard, detailed and verbose work-detail modes; the host migrates existing preferences.
+- Fixes cancellation-listener accumulation in long-lived activity streams and releases subscriptions on close or failure.
+
 ## 0.1.7-alpha.2.1
 
 2026-09-23

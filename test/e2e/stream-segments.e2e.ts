@@ -125,9 +125,15 @@ it.each(['claude', 'codex', 'devin', 'kimi'])('preserves %s reasoning, message a
       await host.ctx.settings.replace('locale', { preference: 'en' })
       await page.locator('[data-tool=send_message]').getByText('Send message', { exact: true }).waitFor()
     }
-    for (const mode of ['detailed', 'expanded']) {
+    for (const mode of ['compact', 'standard', 'detailed', 'verbose', 'normal', 'expanded']) {
       await host.ctx.settings.replace('ui-chat', { transcriptView: mode })
       await verifyOrder()
+      if (mode === 'verbose') {
+        expect(await control.isDisabled()).toBe(true)
+        expect(await control.getAttribute('aria-expanded')).toBe('true')
+      } else {
+        expect(await control.isDisabled()).toBe(false)
+      }
     }
     await host.ctx.settings.replace('ui-chat', { transcriptView: 'compact' })
     if (profile === 'devin') {

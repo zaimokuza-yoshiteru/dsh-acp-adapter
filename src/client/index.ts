@@ -25,7 +25,6 @@ import { AcpAgentControl } from './ui/AcpAgentControl.ts'
 import { AcpTeamManagement } from './ui/AcpTeamManagement.ts'
 import { AcpTeamApprovals } from './ui/AcpTeamApprovals.ts'
 import type { AcpTeamApprovalActions } from './ui/AcpTeamApprovals.ts'
-import type {} from '@deepseek-ai/dsh-experimental-agent-team/remote'
 import { resolveCrossBackendLocation } from './data/cross-backend-controller.ts'
 import { AcpPanelController } from './data/controller.ts'
 import { ManagedAcpRouteCatalog } from './data/managed-routes.ts'
@@ -143,9 +142,8 @@ async function registerUi(ctx: ClientContext): Promise<void> {
       disposeView?.()
     }
   })
-  // Alpha 的 view roster 暂无 per-session selector。保留一个不渲染 UI
-  // 的主区域会话门，只在 mainView 已建立 ACP binding 时贡献诊断 Tab；
-  // 原生模型会话因此保持 DSH 自带的 Tab 集合。
+  // Keep the non-rendering session gate so only bound ACP sessions contribute
+  // the diagnostic tab; ordinary model sessions retain the native tab set.
   ctx.slots.inject('conversation.session.header.utilities', () => ctx.slots.register({
     name: 'conversation.session.header.utilities',
     id: 'dsh-acp-audit-visibility',
@@ -183,16 +181,17 @@ async function registerUi(ctx: ClientContext): Promise<void> {
     }),
   }, AcpActivityNode))
   const coordinator = new CrossBackendCoordinator(ctx, managedRoutes.owns)
-  // Only the user's native Teams Web profile mounts this Remote namespace.
-  ctx.inject(['remote.agentTeams', 'remote.subagents', 'uiSession'], (teamCtx) => {
+  // RC publishes team identity through the shared Session projection. The ACP
+  // Remote remains responsible for ACP-specific metadata and authorized writes.
+  ctx.inject(['remote.subagents', 'uiSession'], (teamCtx) => {
     const actions: AcpTeamApprovalActions = {
       status: teamCtx.uiSession.sessionStatus,
       isCurrent: sessionId => isMainSession(sessions, sessionId),
       ownsRoute: managedRoutes.owns,
       async loadMembers(sessionId) {
-        const result = await teamCtx.remote.agentTeams.view(sessionId)
+        const result = await acpRemote.teamMembers(sessionId)
         if (!result.ok) throw new Error(result.error.message)
-        return result.value.members
+        return result.value
       },
       async openMember(parentSessionId, childSessionId) {
         if (!isMainSession(sessions, parentSessionId)) return
@@ -201,7 +200,7 @@ async function registerUi(ctx: ClientContext): Promise<void> {
     }
     teamCtx.slots.inject('conversation.session.header.utilities', () => teamCtx.slots.register({
       name: 'conversation.session.header.utilities', id: 'acp-team-management', order: 94,
-      locale: 'acpActivity', inject: () => ({ remote: ctx.remote.dshAcp, streamFactory: ctx.remote, ownsRoute: managedRoutes.owns, isCurrent: actions.isCurrent,
+      locale: 'acpActivity', inject: () => ({ remote: ctx.remote.dshAcp, streamFactory: ctx.remote, loadMembers: actions.loadMembers, ownsRoute: managedRoutes.owns, isCurrent: actions.isCurrent,
         status: actions.status, openMember: actions.openMember,
         async interruptMember(lead: SessionId, member: SessionId) {
           const result = await teamCtx.remote.subagents.interruptByParent(member, lead, 'continuable')

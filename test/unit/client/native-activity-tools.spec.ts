@@ -37,6 +37,7 @@ describe('ACP presentation normalization into native tool blocks', () => {
   })
 
   it('keeps running, failed and interrupted states distinct and IDs unique across prompts', () => {
+    expect(normalize({}, { status: 'running' })).toMatchObject({ phase: 'start' })
     expect(normalize({}, { status: 'running' })).not.toHaveProperty('kind')
     expect(normalize({}, { status: 'failed' })).toMatchObject({ isError: true })
     expect(normalize({}, { status: 'cancelled' })).toMatchObject({ isError: true, error: { code: 'interrupted' } })

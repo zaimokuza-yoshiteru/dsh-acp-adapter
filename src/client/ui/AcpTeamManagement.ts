@@ -6,6 +6,7 @@ import type { HostObservable, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh
 import type { SessionStatusSnapshot } from '@deepseek-ai/dsh-client-ui-session/client'
 import type { RemoteStreamFactory } from '@deepseek-ai/dsh-api-gateway/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
+import type { TeamMemberPhase, TeamProjection } from '@deepseek-ai/dsh-experimental-agent-team/client'
 import type { AcpRemoteLike, AcpTeamMemberView, AcpAgentSessionSnapshotView } from '../data/acp-remote.ts'
 import type { OwnsAcpRoute } from '../coordinator/cross-backend-coordinator.ts'
 import { agentSessionStream } from '../data/agent-session-stream.ts'
@@ -17,6 +18,7 @@ import { applyTeamMode, teamModeChoices, teamSessionMenuGroups, type TeamModeRes
 import { teamModeLabel } from '../../contract/session-modes.ts'
 import { TeamMemberModelControl } from './TeamMemberModelControl.ts'
 import { interruptTeam } from './team-interrupt.ts'
+import { projectionRevision, teamRoster } from './team-projection.ts'
 import css from './AcpTeamManagement.module.css'
 
 type Copy = PropsLocale<'acpActivity'>['t']
@@ -27,13 +29,31 @@ type Actions = {
   interruptMember(lead: SessionId, member: SessionId): Promise<void>
   ownsRoute: OwnsAcpRoute
   status: HostObservable<SessionStatusSnapshot>
+  loadMembers(sessionId: SessionId): Promise<readonly AcpTeamMemberView[]>
   openMember(parent: SessionId, child: SessionId): Promise<void>
 }
-export function AcpTeamManagement({ sessionId, useSession, useProjection, t, ...actions }: PropsRuntime<'conversation.session.header.utilities'> & PropsLocale<'acpActivity'> & Actions): ReactNode {
+type ManagedMember = AcpTeamMemberView & { readonly phase: TeamMemberPhase; readonly runtimeKnown: boolean }
+export function AcpTeamManagement({ sessionId, useSession, useSessions, useProjection, t, ...actions }: PropsRuntime<'conversation.session.header.utilities'> & PropsLocale<'acpActivity'> & Actions): ReactNode {
   const child = useSession(state => state.subagent?.address?.parentSessionId !== undefined)
-  const running = useSession(state => state.running)
-  const rosterRevision = useSyncExternalStore(actions.status.subscribe, () =>
-    JSON.stringify([...actions.status.getSnapshot()].map(([id, state]) => [id, state.running, state.pendingInteraction?.key])))
+  const team = useProjection('agentTeam') as TeamProjection | undefined
+  const sessionOpening = useSession(state => state.openState === 'loading')
+  const sessionsLoading = useSessions(state => state.phase === 'pending')
+  const roster = teamRoster(team, sessionOpening || sessionsLoading)
+  const revision = projectionRevision(team)
+  const runtimeFacts = useSessions(state => JSON.stringify((roster.kind === 'ready' ? roster.members : []).map(member => [
+    member.id, state.byId[member.id]?.running,
+    state.projectionsBySession[member.id]?.values.modelSelection?.next,
+  ])))
+  const runtimeById = new Map<string, boolean | undefined>(
+    (JSON.parse(runtimeFacts) as [string, boolean | null, unknown][]).map(([id, running]) => [
+      id, typeof running === 'boolean' ? running : undefined,
+    ]),
+  )
+  const statusSnapshot = useSyncExternalStore(actions.status.subscribe, actions.status.getSnapshot)
+  const runtimeRevision = JSON.stringify([
+    runtimeFacts,
+    ...(roster.kind === 'ready' ? roster.members.map(member => [member.id, statusSnapshot.get(member.id)?.running]) : []),
+  ])
   const enabled = !child && snapshotIsAcp(useProjection('modelSelection'), actions.ownsRoute)
   const [open, setOpen] = useState(false)
   const rootRef = useRef<HTMLDivElement | null>(null)
@@ -53,8 +73,9 @@ export function AcpTeamManagement({ sessionId, useSession, useProjection, t, ...
     return () => { cancelAnimationFrame(frame); document.removeEventListener('keydown', escape, true) }
   }, [open])
   const [refresh, setRefresh] = useState(0)
-  const [view, setView] = useState<{ id: string; members: readonly AcpTeamMemberView[] } | null>(null)
+  const [view, setView] = useState<{ id: string; revision: string; runtimeRevision: string; members: readonly AcpTeamMemberView[] } | null>(null)
   const [error, setError] = useState(false)
+  const [metadataLoading, setMetadataLoading] = useState(false)
   const [interrupting, setInterrupting] = useState(false)
   const [interruptFeedback, setInterruptFeedback] = useState('')
   const interruptLock = useRef(false)
@@ -65,13 +86,13 @@ export function AcpTeamManagement({ sessionId, useSession, useProjection, t, ...
     return () => { activeSession.current = null }
   }, [sessionId])
   const interruptAll = async (): Promise<void> => {
-    if (interruptLock.current || view?.id !== sessionId) return
+    if (interruptLock.current || view?.id !== sessionId || view.revision !== revision || roster.kind !== 'ready') return
     interruptLock.current = true
     setInterrupting(true); setInterruptFeedback('')
     const current = () => activeSession.current === sessionId && actions.isCurrent(sessionId)
     try {
       const result = await interruptTeam({
-        lead: sessionId, targets: view.members.map(member => member.sessionId), isCurrent: current,
+        lead: sessionId, targets: members.filter(member => member.status === 'running' && member.runtimeKnown).map(member => member.sessionId), isCurrent: current,
         members: async () => {
           const result = await actions.remote.teamMembers(sessionId)
           if (!result.ok) throw new Error(result.error.message)
@@ -87,28 +108,37 @@ export function AcpTeamManagement({ sessionId, useSession, useProjection, t, ...
       if (activeSession.current !== null) { setInterrupting(false); setRefresh(n => n + 1) }
     }
   }
-  useEffect(() => { setOpen(false); setView(null); setError(false) }, [sessionId])
+  useEffect(() => { setOpen(false); setView(null); setError(false); setMetadataLoading(false) }, [sessionId])
   useEffect(() => {
-    if (!enabled) return
-    let cancelled = false, loading = false
-    const load = async (): Promise<void> => {
-      if (loading) return
-      loading = true
-      try {
-        const result = await actions.remote.teamMembers(sessionId)
-        if (cancelled) return
-        if (result.ok) { setView({ id: sessionId, members: result.value }); setError(false) }
-        else setError(true)
-      } catch { if (!cancelled) setError(true) }
-      finally { loading = false }
+    let cancelled = false
+    setError(false)
+    if (!enabled || !open || roster.kind !== 'ready') { setMetadataLoading(false); return () => { cancelled = true } }
+    setMetadataLoading(true)
+    void actions.loadMembers(sessionId).then(value => {
+      if (!cancelled) { setView({ id: sessionId, revision, runtimeRevision, members: value }); setError(false) }
+    }).catch(() => { if (!cancelled) setError(true) }).finally(() => { if (!cancelled) setMetadataLoading(false) })
+    return () => { cancelled = true }
+  }, [sessionId, enabled, open, revision, runtimeRevision, roster.kind, refresh, actions.loadMembers])
+  if (!enabled || roster.kind === 'empty' || roster.kind === 'loading' || roster.kind === 'unavailable') return null
+  const metadata = view?.id === sessionId && view.revision === revision ? view.members : []
+  const metadataById = new Map(metadata.map(member => [member.sessionId, member]))
+  const members: ManagedMember[] = roster.kind === 'ready' ? roster.members.map(projected => {
+    const facts = metadataById.get(projected.id)
+    const summaryRunning = runtimeById.get(projected.id)
+    const live = statusSnapshot.get(projected.id)?.running
+    const running = live ?? summaryRunning
+    const status: AcpTeamMemberView['status'] = projected.phase === 'failed' || projected.phase === 'provisioning'
+      ? projected.phase : running === true ? 'running' : 'inactive'
+    return {
+      profileId: facts?.profileId ?? null, sessionId: projected.id, name: projected.name, status,
+      model: facts?.model ?? null,
+      ...(facts?.pendingModel === undefined ? {} : { pendingModel: facts.pendingModel }),
+      ...(facts?.modelWritable === undefined ? {} : { modelWritable: facts.modelWritable }),
+      description: facts?.description ?? null, phase: projected.phase, runtimeKnown: running !== undefined,
     }
-    void load()
-    const timer = open ? setInterval(() => { void load() }, 2500) : undefined
-    return () => { cancelled = true; if (timer !== undefined) clearInterval(timer) }
-  }, [sessionId, enabled, open, running, rosterRevision, refresh, actions.remote])
-  if (!enabled || (!error && (view?.id !== sessionId || view.members.length === 0))) return null
-  const members = view?.id === sessionId ? view.members : []
-  const canInterrupt = members.some(member => member.status === 'running')
+  }) : []
+  const metadataReady = view?.id === sessionId && view.revision === revision && view.runtimeRevision === runtimeRevision
+  const canInterrupt = members.some(member => member.status === 'running' && member.runtimeKnown)
   const groups = Map.groupBy(members, member => member.profileId)
   return h('div', { className: css.root, ref: rootRef, 'data-acp-team-management': '' },
     h(Button, { variant: 'ghost', className: css.trigger, 'aria-label': `${t('teamManage')} · ${members.length}`, title: t('teamManage'),
@@ -119,16 +149,18 @@ export function AcpTeamManagement({ sessionId, useSession, useProjection, t, ...
       h('div', { className: css.toolbar }, h('strong', null, t('teamManage')),
         h(Button, { variant: 'ghost', className: css.iconButton, 'aria-label': t('teamRefresh'), onClick: () => setRefresh(n => n + 1) }, h(IconRefreshOutlineMedium)),
         h(Button, { variant: 'ghost', className: css.iconButton, 'aria-label': t('teamManageClose'), onClick: () => { setOpen(false); rootRef.current?.querySelector('button')?.focus() } }, h(IconCloseOutlineMedium))),
+      roster.kind === 'failed' ? h('p', { role: 'status', className: css.hint }, t('teamProjectionFailed')) : null,
+      metadataLoading ? h('p', { role: 'status', className: css.hint }, t('teamMetadataLoading')) : null,
       error ? h('p', { role: 'status', className: css.hint }, t('teamManageError')) : null,
-      ...[...groups].map(([profileId, members], index) => h(ModeGroup, { key: `${sessionId}:${profileId}`, lead: sessionId, profileId, members, t, onMenuOpen: setMenuOpen,
+      ...[...groups].map(([profileId, members], index) => h(ModeGroup, { key: `${sessionId}:${profileId}`, lead: sessionId, profileId, members, metadataCurrent: metadataReady, t, onMenuOpen: setMenuOpen,
         interruptAction: index === 0 ? h(Button, { variant: 'ghost', className: css.batchButton,
-          disabled: interrupting || !canInterrupt,
+          disabled: interrupting || !canInterrupt || !metadataReady || roster.kind !== 'ready',
           title: t('teamInterruptHint'), onClick: () => { void interruptAll() } }, t(interrupting ? 'teamInterrupting' : 'teamInterruptAll')) : null,
         ...actions })),
       interruptFeedback ? h('p', { role: 'status', className: css.hint }, interruptFeedback) : null), document.body) : null)
 }
 
-function ModeGroup({ lead, profileId, members, t, remote, streamFactory, onMenuOpen, isCurrent, interruptAction, openMember }: { interruptAction: ReactNode; lead: SessionId; profileId: string | null; members: readonly AcpTeamMemberView[]; t: Copy; onMenuOpen(value: boolean): void } & Actions): ReactNode {
+function ModeGroup({ lead, profileId, members, metadataCurrent, t, remote, streamFactory, onMenuOpen, isCurrent, interruptAction, openMember }: { interruptAction: ReactNode; lead: SessionId; profileId: string | null; members: readonly ManagedMember[]; metadataCurrent: boolean; t: Copy; onMenuOpen(value: boolean): void } & Actions): ReactNode {
   const [snapshots, setSnapshots] = useState<Record<string, AcpAgentSessionSnapshotView | null>>({})
   const [menu, setMenu] = useState<string | null>(null)
   useEffect(() => { onMenuOpen(menu !== null); return () => onMenuOpen(false) }, [menu, onMenuOpen])
@@ -150,11 +182,11 @@ function ModeGroup({ lead, profileId, members, t, remote, streamFactory, onMenuO
     streams.forEach(stream => stream.start())
     return () => { disposed = true; streams.forEach(stream => { void stream.dispose() }) }
   }, [ids, remote, streamFactory])
-  const editable = (member: AcpTeamMemberView) => member.status === 'inactive' && snapshots[member.sessionId]?.profileId === profileId && snapshots[member.sessionId]?.modeWritable
+  const editable = (member: ManagedMember) => metadataCurrent && member.status === 'inactive' && member.runtimeKnown && snapshots[member.sessionId]?.profileId === profileId && snapshots[member.sessionId]?.modeWritable
   const choices = (member: AcpTeamMemberView) => { const snapshot = snapshots[member.sessionId]; return snapshot ? teamModeChoices(snapshot).map(choice => ({ ...choice, current: snapshot.pendingModeId ? snapshot.pendingModeId === choice.id : choice.current })) : [] }
   const batchChoices = [...new Map(members.flatMap(member => choices(member)).map(choice => [choice.id, choice])).values()]
   const change = async (targets: readonly string[], mode: string): Promise<void> => {
-    if (locked.current || profileId === null) return
+    if (locked.current || profileId === null || !metadataCurrent) return
     locked.current = true; setBusy(true); setMenu(null); setFeedback(''); setResults([])
     const unwrap = <T,>(result: { ok: true; value: T } | { ok: false; error: { message: string } }): T => {
       if (!result.ok) throw new Error(result.error.message)
@@ -196,16 +228,16 @@ function ModeGroup({ lead, profileId, members, t, remote, streamFactory, onMenuO
       const reported = snapshot?.configOptions?.find(option => normalizeAcpConfigOptionKey(option.id) === 'model' || normalizeAcpConfigOptionKey(option.category ?? '') === 'model')
       const model = member.model ?? (reported?.type === 'select' ? reported.currentValue : null)
       return h('article', { key: member.sessionId, className: css.member, 'data-acp-managed-member': member.name },
-        h('div', { className: css.memberHeader }, h(StateDot, { state: member.status === 'running' ? 'ongoing' : member.status === 'failed' ? 'error' : 'done' }),
+        h('div', { className: css.memberHeader }, h(StateDot, { state: member.status === 'running' ? 'ongoing' : member.status === 'failed' ? 'error' : member.status === 'provisioning' ? 'ongoing' : member.runtimeKnown ? 'done' : 'idle' }),
           h(Button, { variant: 'ghost', className: css.memberName, 'aria-label': t('teamMemberOpen', { name: member.name }),
             onClick: () => { void openMember(lead, member.sessionId as SessionId).catch(() => { if (alive.current) setFeedback(t('teamApprovalOpenFailed')) }) } }, member.name),
-          h('span', { className: css.hint }, t(`teamStatus${member.status}`))),
+          h('span', { className: css.hint }, t(member.phase === 'failed' ? 'teamStatusfailed' : member.phase === 'provisioning' ? 'teamStatusprovisioning' : member.runtimeKnown ? `teamStatus${member.status}` : 'teamStatusunknown'))),
         member.description ? h('p', { className: css.memberDescription, title: member.description }, member.description) : null,
         h('div', { className: css.settings },
           h('div', { className: css.settingRow },
             h('span', { className: css.settingLabel }, t('teamModelLabel')),
             h('div', { className: css.settingValue },
-              h(TeamMemberModelControl, { lead, member, initialModel: model, sessionReady: snapshot != null && snapshot.profileId === member.profileId, remote, t, isCurrent, onMenuOpen }))),
+              h(TeamMemberModelControl, { lead, member, initialModel: model, sessionReady: metadataCurrent && member.runtimeKnown && snapshot != null && snapshot.profileId === member.profileId, remote, t, isCurrent, onMenuOpen }))),
           h('div', { className: css.settingRow },
             h('span', { className: css.settingLabel }, t('teamModeLabel')),
             h('div', { className: css.settingValue },

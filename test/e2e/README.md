@@ -45,7 +45,7 @@ Teams 专项：`pnpm test:e2e test/e2e/agent-teams.e2e.ts test/e2e/teams-boundar
 
 `DSH_E2E_LIVE_TEAMS_APPROVAL=1` 额外创建一个真实新成员，验证首次系统提示词为 `ask`、写文件前主会话出现待处理卡。测试直接在主会话的成员卡上点击“允许一次”，确认决定归属子会话，批准后才产生临时文件，且页面始终停留在主会话。建议限定 `DSH_E2E_LIVE_PROFILES=devin`；模型不可用时，通过 `DSH_E2E_LIVE_DEVIN_MODEL` 指定当前目录中的精确 ID。
 
-已知宿主显示限制：当前宿主的 Teams 名单对休眠成员回退使用 Lead 的初始 `Agent.options.model`，主会话标签也可能滞后。多模型执行应以成员持久化的 `request/header` 为准；不要为使断言通过而把名单标签当作实际调用模型。本插件不复制原生面板或修改宿主的展示数据。原生完成通知会复制子会话的 reasoning block，但 ContextBody 尚不能渲染它，因此该通知中可能出现 Unknown content；成员详情的原生推理展示不受影响。
+RC 的原生 Teams 名单从成员的 `modelSelection.next` 显示下次选择；这与已经执行的模型不同。多模型执行以成员持久化的 `request/header` 为准，ACP 管理控件区分当前与待生效模型。本插件不复制原生面板或修改宿主展示数据。原生完成通知中的 reasoning 展示与成员详情分别验证。
 
 集中审批调用宿主原有 pending approval 的一次性回答接口。通用提问／表单不参与批量操作；目标宿主的 `userQuestions.ask()` 会以 `DELEGATED_CALLER` 拒绝由另一个存活 Agent 管理的子会话。普通问题仍保留该限制。只有当前 DSH 工具身份核实、表单仅包含 persist 且提供 once 的 Codex 子会话请求，才转为子会话持有的原生一次性审批；需要用户明确允许，不授予 session/always，也不回答额外字段。
 

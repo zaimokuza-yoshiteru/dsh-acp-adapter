@@ -56,7 +56,7 @@ export function TeamMemberModelControl({ lead, member, initialModel, sessionRead
   latestMember.current = member
 
   const memberFacts = member
-  const canWrite = !saving && member.status === 'inactive'
+  const canWrite = sessionReady && !saving && member.status === 'inactive'
     && (memberFacts.modelWritable ?? view?.writable ?? false)
   const pendingModel = view === null ? member.pendingModel ?? null : view.pendingModel
   const currentModel = view?.currentModel ?? initialModel ?? member.model

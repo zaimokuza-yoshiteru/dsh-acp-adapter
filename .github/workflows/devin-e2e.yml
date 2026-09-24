@@ -22,7 +22,7 @@ concurrency:
 
 jobs:
   real-devin:
-    if: github.repository == 'zaimokuza-yoshiteru/dsh-acp-adapter' && contains(fromJSON('["refs/heads/feature/ZAI-43", "refs/heads/feature/0.1.6.alpha", "refs/heads/main"]'), github.ref)
+    if: github.repository == 'zaimokuza-yoshiteru/dsh-acp-adapter'
     environment: devin-e2e
     env:
       DEVIN_TEST_VERSION: ${{ inputs.devin_version || '3000.10.31' }}
