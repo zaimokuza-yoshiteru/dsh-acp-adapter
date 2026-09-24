@@ -735,7 +735,7 @@ export function nativeActivityToolBlock(row: AcpActivityView): ToolCallBlock {
   }
   const callId = `acp:${row.ownerDshSessionId}:${row.promptAnchorMessageId}:${row.activityId}`
   const argsRaw = input === undefined ? '{}' : typeof input === 'string' ? input : JSON.stringify(input)
-  if (row.status === 'running') return { callId, name, argsRaw, turn: 0, step: 0, time: row.time, subCalls: [] }
+  if (row.status === 'running') return { callId, name, phase: 'start', argsRaw, turn: 0, step: 0, time: row.time, subCalls: [] }
   let output = contentText(detail.rawOutput ?? detail.content)
   if (name === 'read' && read !== undefined && meta !== undefined) {
     output = `<path>${read.label}</path>\n<type>file</type>\n<content>\n${output}\n</content>`

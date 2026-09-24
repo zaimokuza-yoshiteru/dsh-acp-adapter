@@ -239,7 +239,7 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
         return JSON.parse(text) as { adapterVersion: string; sessionId: string; record: { seq: number; detail: string } }
       } finally { navigator.clipboard.writeText = original }
     })
-    expect(copiedRecord.adapterVersion).toMatch(/^0\.1\.7-alpha\.2\./)
+    expect(copiedRecord.adapterVersion).toBe(JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version)
     expect(copiedRecord.sessionId).toBe(id)
     expect(copiedRecord.record.detail).toContain('audit-layout-79')
     const close = details.getByRole('button', { name: 'Close', exact: true })

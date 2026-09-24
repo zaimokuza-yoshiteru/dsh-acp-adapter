@@ -61,6 +61,11 @@ const zh = {
   teamStatusprovisioning: '创建中',
   teamStatusfailed: '失败',
   teamManageError: '无法读取成员状态，请刷新重试。',
+  teamMetadataLoading: '正在读取 ACP 成员设置…',
+  teamProjectionLoading: '正在读取团队成员…',
+  teamProjectionUnavailable: '团队成员投影暂不可用。',
+  teamProjectionFailed: '团队记录读取失败，成员操作已停用。',
+  teamStatusunknown: '运行状态暂不可用',
 
   teamAllowOnce: '允许一次',
   teamReject: '拒绝',
@@ -381,6 +386,11 @@ const en: Record<AcpLocaleKey, string> = {
   teamStatusprovisioning: 'Starting',
   teamStatusfailed: 'Failed',
   teamManageError: 'Cannot read member state. Refresh to retry.',
+  teamMetadataLoading: 'Loading ACP member settings…',
+  teamProjectionLoading: 'Loading team members…',
+  teamProjectionUnavailable: 'The team member projection is unavailable.',
+  teamProjectionFailed: 'Team records could not be read. Member actions are disabled.',
+  teamStatusunknown: 'Runtime status unavailable',
 
   teamAllowOnce: 'Allow once',
   teamReject: 'Reject',

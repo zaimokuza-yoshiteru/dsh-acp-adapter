@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { apply, inject } from '../../../src/client/index.ts'
 
-describe('alpha client contribution', () => {
+describe('client contribution', () => {
   it('declares the additive settings, audit, and conversation seams', () => {
     expect(inject).toEqual([
       'uiConversation', 'slots', 'locale', 'remote',
@@ -28,6 +28,7 @@ describe('alpha client contribution', () => {
           projectedSubagentIds: async () => ({ ok: true, value: { sessionIds: [] } }),
         },
       },
+      uiSession: { sessionStatus: { getSnapshot: () => new Map(), subscribe: () => () => {} } },
       uiConversation: { events: { register: (definition: unknown) => { definitions.push(definition) } } },
       locale: { register: () => undefined, bind: () => (key: string) => key },
       configForms: {
@@ -57,8 +58,8 @@ describe('alpha client contribution', () => {
     Object.assign(ctx, {
       inject: (deps: readonly string[], callback: (scope: typeof ctx) => void | Promise<void>) => {
         uiInjects.push([...deps])
-        // An optional native Teams profile is absent in this baseline assembly.
-        const started = deps.includes('remote.agentTeams') ? Promise.resolve() : Promise.resolve(callback(ctx))
+        // The RC assembly intentionally has no deleted Remote agentTeams namespace.
+        const started = Promise.resolve(callback(ctx))
         return Object.assign(started, {
           dispose: async () => { lifecycle.push('ui-dispose') },
         })
@@ -66,7 +67,7 @@ describe('alpha client contribution', () => {
     })
     const dispose = await apply(ctx as never)
     expect(lifecycle).toEqual(['mount'])
-    expect(uiInjects).toEqual([[...inject, 'remote.dshAcp'], ['remote.agentTeams', 'remote.subagents', 'uiSession']])
+    expect(uiInjects).toEqual([[...inject, 'remote.dshAcp'], ['remote.subagents', 'uiSession']])
     expect(definitions).toHaveLength(3)
     expect(injections).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'acp' }),
