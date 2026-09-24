@@ -36,10 +36,10 @@ ACP Diagnostics groups issues, operations, and technical records. Open a record 
 
 ## <img src="assets/readme/icon-setup.svg" width="24" height="24" alt="" /> Prerequisite: install a supported DSH version
 
-See `version` and `engines` in [package.json](package.json) for versions and runtime requirements. Read the compatible DSH version from the npm `alpha` package:
+See `version` and `engines` in [package.json](package.json) for versions and runtime requirements. Read the compatible DSH version from the npm `next` package:
 
 ```bash
-DSH_VERSION="$(npm view @zaimokuza/dsh-acp-adapter@alpha engines.dsh)"
+DSH_VERSION="$(npm view @zaimokuza/dsh-acp-adapter@next engines.dsh)"
 npx "@deepseek-ai/dsh@$DSH_VERSION" web
 ```
 
@@ -70,10 +70,10 @@ The agent catalog uses a snapshot of the [official ACP registry](https://agentcl
 
 Select an entry under Settings → "Add agent" to see install guidance. npm/Python entries prefill the installed executable, arguments, and environment. Other binary entries require installation for the Agent host platform and a manually entered command path; shared arguments and environment are still prefilled. The plugin does not download or install Agents automatically.
 
-**2. Install the plugin.** This command installs the published npm `alpha` version.
+**2. Install the plugin.** This command installs the published npm `next` version.
 
 ```bash
-npx "@deepseek-ai/dsh@$DSH_VERSION" plugin --profile web add @zaimokuza/dsh-acp-adapter@alpha
+npx "@deepseek-ai/dsh@$DSH_VERSION" plugin --profile web add @zaimokuza/dsh-acp-adapter@next
 ```
 
 **3. Open Settings → ACP adapter**, add an Agent from the catalog and review or complete its connection settings, check the connection, then choose an Agent model in a new session.

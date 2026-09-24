@@ -36,10 +36,10 @@ ACP 审批复用 DSH 原生审批卡，批准前可查看完整命令：
 
 ## <img src="assets/readme/icon-setup.svg" width="24" height="24" alt="" /> 前置：安装受支持的 DSH
 
-版本与运行要求以 [package.json](package.json) 的 `version`、`engines` 为准。以下从 npm `alpha` 包读取兼容的 DSH 版本：
+版本与运行要求以 [package.json](package.json) 的 `version`、`engines` 为准。以下从 npm `next` 包读取兼容的 DSH 版本：
 
 ```bash
-DSH_VERSION="$(npm view @zaimokuza/dsh-acp-adapter@alpha engines.dsh)"
+DSH_VERSION="$(npm view @zaimokuza/dsh-acp-adapter@next engines.dsh)"
 npx "@deepseek-ai/dsh@$DSH_VERSION" web
 ```
 
@@ -70,10 +70,10 @@ Agent 目录来自随插件发布的 [ACP 官方 registry](https://agentclientpr
 
 在设置面板「添加 agent」中选择条目后可查看安装指引。npm/Python 条目预填已安装程序的命令、参数和环境变量；其他二进制条目需要按 Agent 所在主机的平台安装并填写命令路径，通用参数和环境变量仍会预填。插件不会自动下载或安装 Agent。
 
-**2. 安装插件。** 以下命令安装 npm 已发布的 `alpha` 版本。
+**2. 安装插件。** 以下命令安装 npm 已发布的 `next` 版本。
 
 ```bash
-npx "@deepseek-ai/dsh@$DSH_VERSION" plugin --profile web add @zaimokuza/dsh-acp-adapter@alpha
+npx "@deepseek-ai/dsh@$DSH_VERSION" plugin --profile web add @zaimokuza/dsh-acp-adapter@next
 ```
 
 **3. 打开「设置 → ACP adapter」**，从目录添加 Agent，核对或补全连接设置，检查连接，再在新会话中选择 Agent 模型。
