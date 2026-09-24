@@ -49,10 +49,9 @@ it.each(['claude', 'codex', 'devin', 'kimi'])('preserves %s reasoning, message a
         await process.waitFor()
         if (await process.getAttribute('aria-expanded') === 'false') await process.click()
       }
-      // Revealing a Turn updates the process headers asynchronously. A one-shot
-      // isVisible() can skip the first header before React removes outer hiding.
-      // Completed groups (all modes) and live compact groups have visible headers.
-      for (const button of await page.locator('[data-step-process] > div > button').all()) {
+      // RC verbose mode expands group content without displaying its header.
+      // In grouped modes, wait for outer hiding to clear before opening each group.
+      for (const button of await page.locator('[data-step-process]:not([data-group-expanded-mode]) > div > button').all()) {
         await button.waitFor({ state: 'visible' })
         if (await button.getAttribute('aria-expanded') === 'false') await button.click()
         await expect.poll(() => button.getAttribute('aria-expanded')).toBe('true')
@@ -85,7 +84,7 @@ it.each(['claude', 'codex', 'devin', 'kimi'])('preserves %s reasoning, message a
       expect(await tool('segment-setup').locator('[data-sample=bash]').count()).toBe(1)
       expect(await tool('segment-check').locator('[data-tool=send_message]').count()).toBe(1)
       expect(await tool('segment-check').innerText()).toContain('Send message')
-      expect(await tool('segment-check').innerText()).toContain('send_message · repo-codex')
+      expect(await tool('segment-check').getByText('repo-codex', { exact: true }).isVisible()).toBe(true)
     }
 
     for (const reload of [false, true]) {

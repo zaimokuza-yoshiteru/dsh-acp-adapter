@@ -37,7 +37,7 @@
 | 主会话集中审批 | Devin 普通权限请求与 Codex 已验证工具授权表单：八个子会话的逐项与批量允许／拒绝；刷新后继续审批、批量后新审批保持待处理、中英文、窄屏；始终留在 Lead，决定写入各自子会话，新请求不被批量允许 |
 | 模型目录恢复 | 四种协议检查失败保留原生失败项；断网重连后再次检查，已打开的模型菜单更新，无须切换模型；原会话历史不变且可继续对话 |
 
-`product-controls.e2e.ts` 验证首次成员读取失败后的重试、主会话仍运行时新增成员入口、键盘焦点和点击成员名打开原生侧栏；保留主会话地址。团队设置提示允许换行，不能以固定卡片高度断言要求截断文案。
+`product-controls.e2e.ts` 验证无成员时隐藏入口、ACP 元数据读取失败时保留原生名册与重试、主会话仍运行时新增成员入口、键盘焦点和点击成员名打开原生侧栏；保留主会话地址。团队设置提示允许换行，不能以固定卡片高度断言要求截断文案。
 
 Teams 专项：`pnpm test:e2e test/e2e/agent-teams.e2e.ts test/e2e/teams-boundaries.e2e.ts test/e2e/team-approvals.e2e.ts test/e2e/team-management.e2e.ts test/e2e/team-model-selection.e2e.ts`。真实 Teams 冒烟沿用已授权的 Agent 登录与便宜模型选择，额外设置 `DSH_E2E_LIVE=1 DSH_E2E_LIVE_TEAMS=1`，运行 `test/e2e/live-agents.e2e.ts`；可以用 `DSH_E2E_LIVE_PROFILES=devin` 限定单个 Agent。真实断言必须观察到宿主创建成员、传递消息和完成有依赖的两项共享任务：成员领取并完成计算，Lead 领取并完成复核；任务负责人和原生面板也必须一致。模型口头声称成功不能通过。
 

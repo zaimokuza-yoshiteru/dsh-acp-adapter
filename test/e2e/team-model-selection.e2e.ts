@@ -134,6 +134,32 @@ it('persists teammate model selection, applies it on wake, and protects Team bou
     const sibling = required(host.ctx.agentTeams.listMembers(lead).find(member => member.name === 'calculator-b'))
     await expect.poll(() => events.filter(event => event.type === 'request/header').findLast(event => event.sessionId === sibling.id)?.data.header.config.model).toBe('mock-model-a')
     expect((await (host.ctx.get('dshAcp') as AcpRemoteService).teamMemberModels(lead.id, child.id)).currentModel).toBe('mock-model-b')
+
+    // Keep the ACP controls mounted across a member turn. The live status
+    // transition refreshes metadata, while current and next model facts stay
+    // distinct until the pending choice is consumed.
+    const management = page.locator('[data-acp-team-management], [data-acp-team-panel]')
+    await management.getByRole('button', { name: 'Manage members · 2', exact: true }).click()
+    await modelButton.click()
+    await page.getByRole('menu').getByRole('menuitem', { name: 'Mock Model A', exact: true }).click()
+    expect(await row.locator('[data-member-model-notice]').textContent()).toBe('Applies next request; current: Mock Model B')
+    const countModelA = () => (readFileSync(log, 'utf8').match(/team model=mock-model-a/g) ?? []).length
+    const secondACount = countModelA()
+    await host.ctx.agentTeams.sendMessage(lead, {
+      target: 'calculator', content: [{ type: 'text', text: 'E2E_TEAM_CONTINUE' }], signal: new AbortController().signal,
+    })
+    await expect.poll(countModelA, { timeout: 30000 }).toBeGreaterThan(secondACount)
+    await expect.poll(() => host.ctx.agentTeams.listMembers(lead).find(member => member.id === child.id)?.status, { timeout: 30000 })
+      .toSatisfy(status => status === 'idle' || status === 'inactive')
+    await expect.poll(() => (host.ctx.get('dshAcp') as AcpRemoteService).teamMemberModels(lead.id, child.id), { timeout: 30000 })
+      .toMatchObject({ currentModel: 'mock-model-a', pendingModel: null, writable: true })
+    await expect.poll(() => modelButton.textContent(), { timeout: 30000 }).toBe('Mock Model A')
+    await expect.poll(() => row.locator('[data-member-model-notice]').textContent(), { timeout: 30000 }).toBe('')
+    await expect.poll(() => modelButton.isEnabled(), { timeout: 30000 }).toBe(true)
+    await modelButton.click()
+    await expect(page.getByRole('menu').getByRole('menuitem', { name: 'Mock Model B', exact: true }).isEnabled()).resolves.toBe(true)
+    await page.keyboard.press('Escape')
+    await management.getByRole('button', { name: 'Close member management', exact: true }).click()
   } finally {
     await browser?.close()
     await host.close()

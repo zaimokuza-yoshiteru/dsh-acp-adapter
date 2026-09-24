@@ -6,7 +6,7 @@ import { launchBrowser, newEnglishPage } from './browser.ts'
 import type { TestBrowser } from './browser.ts'
 import type { AcpRemoteService } from '../../src/remote/service.js'
 
-it('refreshes member controls during a running lead, retries roster failures and opens the native sidebar', async () => {
+it('refreshes member controls during a running lead, retries metadata failures and opens the native sidebar', async () => {
   const host = await launchAdapterWorld({ teams: true })
   let browser: TestBrowser | undefined
   try {
@@ -25,15 +25,8 @@ it('refreshes member controls during a running lead, retries roster failures and
     await writeComposerDraft(page, page.locator('[data-composer-input]').first(), 'E2E_MESSAGE')
     await page.getByRole('button', { name: 'Send message', exact: true }).click()
     await initialTurn
-    const service = host.ctx.get('dshAcp') as AcpRemoteService
-    const failedRoster = vi.spyOn(service, 'teamMembers').mockRejectedValue(new Error('E2E_ROSTER_UNAVAILABLE'))
-    try {
-      await page.reload()
-      await page.getByRole('button', { name: 'Manage members · 0', exact: true }).click()
-      await page.getByText('Cannot read member state. Refresh to retry.', { exact: true }).waitFor()
-    } finally { failedRoster.mockRestore() }
-    await page.getByRole('dialog', { name: 'Manage members', exact: true }).getByRole('button', { name: 'Refresh', exact: true }).click()
     await expect.poll(() => page.locator('[data-acp-team-management]').count()).toBe(0)
+    const service = host.ctx.get('dshAcp') as AcpRemoteService
     const input = page.locator('[data-composer-input]').first()
     await writeComposerDraft(page, input, 'E2E_TEAM_START_HOLD')
     await page.getByRole('button', { name: 'Send message', exact: true }).click()
@@ -43,9 +36,18 @@ it('refreshes member controls during a running lead, retries roster failures and
     await trigger.waitFor()
     // The held lead cannot finish on its own. The control must update before it stops.
     const url = page.url()
+    const failedMetadata = vi.spyOn(service, 'teamMembers').mockRejectedValue(new Error('E2E_METADATA_UNAVAILABLE'))
     await trigger.focus()
     await page.keyboard.press('Enter')
     const panel = page.getByRole('dialog', { name: 'Manage members', exact: true })
+    try {
+      await panel.getByText('Cannot read member state. Refresh to retry.', { exact: true }).waitFor()
+      // ACP metadata failure must not erase the native projected member.
+      expect(await panel.locator('[data-acp-managed-member="calculator"]').count()).toBe(1)
+    } finally { failedMetadata.mockRestore() }
+    await panel.getByRole('button', { name: 'Refresh', exact: true }).click()
+    await panel.locator('[data-acp-mode-group="devin"]').waitFor()
+    await panel.getByText('Cannot read member state. Refresh to retry.', { exact: true }).waitFor({ state: 'detached' })
     await expect.poll(() => panel.evaluate(element => element.contains(document.activeElement))).toBe(true)
     await panel.getByRole('button', { name: 'Open calculator’s session', exact: true }).click()
     await page.locator('[data-sidebar-chat]').waitFor()
