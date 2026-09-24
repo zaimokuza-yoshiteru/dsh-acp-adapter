@@ -4,6 +4,20 @@
 
 User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for publication dates, exact installation instructions, and checksums. Historical entries were reconstructed from tag diffs; npm packages were not republished.
 
+## 0.1.7-rc.2.0
+
+2026-09-25
+
+### 中文
+
+- 适配 DSH `0.1.7-rc.2` 的插件兼容检查；宿主与插件需一同升级。
+- 保留原生模型目录恢复、会话专属 MCP 工具桥、外部子会话目录与 Teams 成员审批归属。
+
+### English
+
+- Targets the DSH `0.1.7-rc.2` plugin compatibility check; upgrade the host and plugin together.
+- Retains native model-catalog recovery, session-scoped MCP tools, external subagent discovery, and teammate-owned approvals.
+
 ## 0.1.7-rc.1.0
 
 2026-09-24
