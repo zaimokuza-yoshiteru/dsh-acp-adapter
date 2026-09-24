@@ -126,6 +126,13 @@ it.each(['claude', 'codex', 'devin', 'kimi'])('preserves %s reasoning, message a
     }
     for (const mode of ['compact', 'standard', 'detailed', 'verbose', 'normal', 'expanded']) {
       await host.ctx.settings.replace('ui-chat', { transcriptView: mode })
+      // The host write completes before the browser receives its settings push.
+      // Wait for the rendered policy before enumerating headers: entering
+      // verbose removes the old grouped locators while leaving their content.
+      const ungrouped = mode === 'verbose'
+      await expect.poll(() => control.isDisabled(), { timeout: 5_000 }).toBe(ungrouped)
+      await expect.poll(() => page.locator('[data-step-process]').evaluateAll((groups, expected) =>
+        groups.length > 0 && groups.every(group => group.hasAttribute('data-group-expanded-mode') === expected), ungrouped), { timeout: 5_000 }).toBe(true)
       await verifyOrder()
       if (mode === 'verbose') {
         expect(await control.isDisabled()).toBe(true)
