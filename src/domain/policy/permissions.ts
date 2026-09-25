@@ -133,12 +133,15 @@ function optionLabels(options: readonly acp.PermissionOption[], copy: Permission
   const counts = new Map<string, number>()
   for (const name of names) counts.set(name, (counts.get(name) ?? 0) + 1)
   const seen = new Map<string, number>()
-  return names.map((name) => {
+  const labels = names.map((name) => {
     if (counts.get(name) === 1) return name
     const ordinal = (seen.get(name) ?? 0) + 1
     seen.set(name, ordinal)
     return `${name} · ${copy.option(ordinal)}`
   })
+  // An Agent name can equal another option's generated disambiguator. Prefix
+  // the complete set on collision so every response still maps to one option.
+  return new Set(labels).size === labels.length ? labels : labels.map((label, index) => `${index + 1}. ${label}`)
 }
 
 export function createAcpNativePermissionHandler(deps: AcpNativePermissionBridgeDeps): (params: acp.RequestPermissionRequest, signal?: AbortSignal) => Promise<acp.RequestPermissionResponse> {

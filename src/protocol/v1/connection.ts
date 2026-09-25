@@ -845,6 +845,12 @@ export class AcpClientConnection {
     // Harvest the outcome before deciding whether this was startup or a crash.
     const closed = !this.process.isClosing && (this.process.exited !== null || isConnectionClosedError(error))
     const exit = closed ? await this.process.harvestExit() : undefined
+    if (closed) {
+      // A broken protocol stream is unusable even when the OS process remains
+      // alive and has not settled handle.done. Mark it closed and reclaim the
+      // managed range so owners cannot mistake it for a reusable connection.
+      void this.close().catch(() => {})
+    }
     if (this.negotiated === undefined && this.process.spawnFailure !== undefined) {
       return new AcpClientError('spawn-failure', this.spawnFailureMessage(), { cause: this.process.spawnFailure })
     }

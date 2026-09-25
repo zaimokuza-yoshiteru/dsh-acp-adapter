@@ -112,6 +112,7 @@ describe('AcpRemoteService current public surface', () => {
     }
     const actions: string[] = []
     const { instance } = service({
+      ownedSessionReadGate: async () => true,
       backendFacts: {
         readBindingProvider: async () => 'acp-devin',
         peekHeaderProvider: async () => 'acp-devin',
@@ -130,6 +131,7 @@ describe('AcpRemoteService current public surface', () => {
 
   it('keeps native host facts separate from ACP binding counts', async () => {
     const { instance } = service({
+      ownedSessionReadGate: async () => true,
       backendFacts: {
         readBindingProvider: async () => undefined,
         peekHeaderProvider: async () => undefined,
@@ -155,11 +157,60 @@ describe('AcpRemoteService current public surface', () => {
 
   it('uses the additive agent session controls only for an established ACP binding', async () => {
     const snapshot = { sessionId: 's1', profileId: 'devin', freshness: 'live' as const, editable: true, configOptions: null, modes: null, currentModeId: null, contextUsage: null, note: null }
+    const setOption = vi.fn(async () => snapshot)
     const { instance } = service({
+      ownedSessionReadGate: async () => true,
       backendFacts: { readBindingProvider: async () => 'acp-devin', peekHeaderProvider: async () => 'acp-devin', hasLiveAgent: () => true },
-      agentSessionControl: () => ({ agentSessionSnapshot: async () => snapshot, setAgentSessionOption: async () => snapshot }),
+      agentSessionControl: () => ({ agentSessionSnapshot: async () => snapshot, setAgentSessionOption: setOption }),
     })
     await expect(instance.agentSessionSnapshot('s1')).resolves.toEqual(snapshot)
+    await expect(instance.setAgentSessionOption('s1', { kind: 'config', id: 'compact', value: false })).resolves.toEqual(snapshot)
+    expect(setOption).toHaveBeenCalledExactlyOnceWith('s1', { kind: 'config', id: 'compact', value: false })
+  })
+
+  it('guards ACP-only snapshots and recovery mutations before reading or changing an unowned session', async () => {
+    const controlSnapshot = vi.fn(async () => ({ sessionId: 'foreign', profileId: 'devin', freshness: 'live' as const, editable: true, configOptions: null, modes: null, currentModeId: null, contextUsage: null, note: null }))
+    const setOption = vi.fn(async () => controlSnapshot())
+    const readRecovery = vi.fn(async () => ({
+      dshSessionId: 'foreign', kind: 'outcome-unknown' as const, cause: 'transport-closed', detail: 'sensitive recovery detail',
+      provider: 'acp-devin', acpSessionId: 'agent-secret', generation: 1, interruptedTurnId: null,
+      lastAttemptAt: 1, lastUserAction: null, updatedAt: 1,
+    }))
+    const recoveryAction = vi.fn(async () => {})
+    const readBinding = vi.fn(async () => 'acp-devin')
+    const readLiveAgent = vi.fn(() => undefined)
+    const { instance } = service({
+      ownedSessionReadGate: async () => false,
+      backendFacts: { readBindingProvider: readBinding, peekHeaderProvider: async () => undefined, hasLiveAgent: () => false },
+      resolveLiveAgent: readLiveAgent,
+      agentSessionControl: () => ({ agentSessionSnapshot: controlSnapshot, setAgentSessionOption: setOption }),
+      recoveryStateStore: { read: readRecovery },
+      recoveryAdapter: () => ({ retryOriginal: recoveryAction, rebindBlank: recoveryAction }),
+    })
+
+    await expect(instance.agentSessionSnapshot('foreign')).rejects.toMatchObject({ code: 'dsh-acp/user-rejected' })
+    await expect(instance.setAgentSessionOption('foreign', { kind: 'config', id: 'compact', value: false })).rejects.toMatchObject({ code: 'dsh-acp/user-rejected' })
+    await expect(instance.recoverySnapshot('foreign')).resolves.toMatchObject({ dshSessionId: 'foreign', kind: 'healthy', provider: null, detail: null })
+    await expect(instance.retryOriginal('foreign')).rejects.toMatchObject({ code: 'dsh-acp/user-rejected' })
+    await expect(instance.rebindRecoveryBlank('foreign')).rejects.toMatchObject({ code: 'dsh-acp/user-rejected' })
+    expect(controlSnapshot).not.toHaveBeenCalled()
+    expect(setOption).not.toHaveBeenCalled()
+    expect(readRecovery).not.toHaveBeenCalled()
+    expect(readLiveAgent).not.toHaveBeenCalled()
+    expect(recoveryAction).not.toHaveBeenCalled()
+    expect(readBinding).not.toHaveBeenCalled()
+
+    // backendOf is also the native/blank backend query used before ACP model
+    // selection, so a native session without an ACP durable owner stays valid.
+    await expect(instance.backendOf('foreign')).resolves.toEqual({ state: 'established', provider: 'acp-devin' })
+    expect(readBinding).toHaveBeenCalledOnce()
+
+    const { instance: unavailableGate } = service({
+      ownedSessionReadGate: async () => { throw new Error('sidecar unavailable') },
+      recoveryStateStore: { read: readRecovery },
+    })
+    await expect(unavailableGate.recoverySnapshot('session')).rejects.toThrow('sidecar unavailable')
+    expect(readRecovery).not.toHaveBeenCalled()
   })
 
   it('generated descriptors contain only the current invocation set', () => {

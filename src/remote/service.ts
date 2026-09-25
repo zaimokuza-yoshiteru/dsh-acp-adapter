@@ -481,7 +481,6 @@ interface ResolvedDeps {
   readonly agentSessionChanges: NonNullable<AcpRemoteServiceDeps['agentSessionChanges']> | null
   readonly auditTimeline: NonNullable<AcpRemoteServiceDeps['auditTimeline']> | null
   readonly activityTimeline: NonNullable<AcpRemoteServiceDeps['activityTimeline']> | null
-  readonly activityAccess: NonNullable<AcpRemoteServiceDeps['activityAccess']> | null
   readonly ownedSessionReadGate: NonNullable<AcpRemoteServiceDeps['ownedSessionReadGate']> | null
   readonly projectedSubagentIds: NonNullable<AcpRemoteServiceDeps['projectedSubagentIds']> | null
   readonly imageInputAvailable: boolean
@@ -531,7 +530,6 @@ export class AcpRemoteService extends TypertRemoteService {
       agentSessionChanges: deps.agentSessionChanges ?? null,
       auditTimeline: deps.auditTimeline ?? null,
       activityTimeline: deps.activityTimeline ?? null,
-      activityAccess: deps.activityAccess ?? null,
       ownedSessionReadGate: deps.ownedSessionReadGate ?? deps.activityAccess ?? null,
       projectedSubagentIds: deps.projectedSubagentIds ?? null,
       imageInputAvailable: deps.imageInputAvailable ?? false,
@@ -543,7 +541,7 @@ export class AcpRemoteService extends TypertRemoteService {
   async auditTimeline(sessionId: string, request?: { readonly afterSeq?: number; readonly limit?: number; readonly view?: AcpDiagnosticView }): Promise<AcpAuditTimelinePage> {
     const source = this.resolved.auditTimeline
     if (source === null) throw acpRemoteFailure('config', 'ACP audit history is unavailable on this host')
-    await this.requireOwnedSessionRead(sessionId)
+    await this.requireOwnedSessionAccess(sessionId)
     const afterSeq = request?.afterSeq ?? 0
     const limit = request?.limit ?? 50
     if (!Number.isSafeInteger(afterSeq) || afterSeq < 0) throw badRequest('ACP audit cursor is invalid')
@@ -722,19 +720,23 @@ export class AcpRemoteService extends TypertRemoteService {
   }
 
   private async requireActivityRead(sessionId: string): Promise<void> {
-    await this.requireOwnedSessionRead(sessionId)
+    await this.requireOwnedSessionAccess(sessionId)
   }
 
   /** Validate identity and ownership before touching either sidecar source. */
-  private async requireOwnedSessionRead(sessionId: string): Promise<void> {
+  private async requireOwnedSessionAccess(sessionId: string): Promise<void> {
+    if (!(await this.hasOwnedSessionAccess(sessionId))) throw acpRemoteFailure('user-rejected', 'ACP activity access is not authorized for this DSH session')
+  }
+
+  private async hasOwnedSessionAccess(sessionId: string): Promise<boolean> {
     if (typeof sessionId !== 'string' || sessionId.length === 0 || sessionId.length > 256) throw badRequest('ACP activity session id is invalid')
     const access = this.resolved.ownedSessionReadGate
-    if (access === null || !(await access(sessionId))) throw acpRemoteFailure('user-rejected', 'ACP activity access is not authorized for this DSH session')
+    return access !== null && await access(sessionId)
   }
 
   @Remote
   async teamMembers(lead: string): Promise<readonly AcpTeamMemberView[]> {
-    await this.requireOwnedSessionRead(lead)
+    await this.requireOwnedSessionAccess(lead)
     if (this.resolved.teamManagement === undefined) throw badRequest('ACP Teams is unavailable')
     return await this.resolved.teamManagement.members(lead)
   }
@@ -742,7 +744,7 @@ export class AcpRemoteService extends TypertRemoteService {
   @Remote
   async teamMemberModels(lead: string, sessionId: string): Promise<AcpTeamMemberModelsView> {
     await this.teamMembers(lead)
-    await this.requireOwnedSessionRead(sessionId)
+    await this.requireOwnedSessionAccess(sessionId)
     const management = this.resolved.teamManagement
     if (!management?.models) throw badRequest('Member models are unavailable')
     return await preserveAcpFailure(() => management.models!(lead, sessionId))
@@ -751,7 +753,7 @@ export class AcpRemoteService extends TypertRemoteService {
   @Remote
   async setTeamMemberModel(lead: string, sessionId: string, model: string): Promise<AcpTeamMemberModelsView> {
     await this.teamMembers(lead)
-    await this.requireOwnedSessionRead(sessionId)
+    await this.requireOwnedSessionAccess(sessionId)
     if (typeof model !== 'string' || !model || model.length > 512) throw badRequest('Invalid member model')
     const management = this.resolved.teamManagement
     if (!management?.selectModel) throw badRequest('Member models are unavailable')
@@ -764,7 +766,7 @@ export class AcpRemoteService extends TypertRemoteService {
     const member = members.find(member => member.sessionId === sessionId)
     if (member?.profileId === null || member === undefined || member.status !== 'inactive') throw badRequest('The ACP member must be inactive')
     if (typeof modeId !== 'string' || !modeId || modeId.length > 128) throw badRequest('Invalid member mode')
-    await this.requireOwnedSessionRead(sessionId)
+    await this.requireOwnedSessionAccess(sessionId)
     const adapter = await this.agentSessionControlFor(sessionId)
     if (!adapter.setTeamMemberMode) throw badRequest('Member modes are unavailable')
     return await preserveAcpFailure(() => adapter.setTeamMemberMode!(sessionId, modeId))
@@ -886,6 +888,7 @@ export class AcpRemoteService extends TypertRemoteService {
    * reuse the legacy live Agent/options service, model picker, or DSH usage. */
   @Remote
   async agentSessionSnapshot(sessionId: string): Promise<AcpAgentSessionSnapshotView> {
+    await this.requireOwnedSessionAccess(sessionId)
     const adapter = await this.agentSessionControlFor(sessionId)
     return await preserveAcpFailure(() => adapter.agentSessionSnapshot(sessionId))
   }
@@ -897,6 +900,9 @@ export class AcpRemoteService extends TypertRemoteService {
     const facts = this.resolved.backendFacts
     const resolver = this.resolved.agentSessionControl
     if (changes === null || facts === null || resolver === null) throw acpRemoteFailure('config', 'ACP Agent session stream is unavailable')
+    // Unlike the durable sidecar gate used by ACP-only controls, the stream
+    // permits a live session before its first ACP binding so the client can
+    // wait for the initial binding and receive a null baseline.
     if (sessionId.length === 0 || sessionId.length > 256 || !(await changes.canRead(sessionId))) {
       throw acpRemoteFailure('user-rejected', 'ACP Agent session access is not authorized')
     }
@@ -931,6 +937,7 @@ export class AcpRemoteService extends TypertRemoteService {
 
   @Remote
   async setAgentSessionOption(sessionId: string, request: AcpAgentSessionOptionWrite): Promise<AcpAgentSessionSnapshotView> {
+    await this.requireOwnedSessionAccess(sessionId)
     const adapter = await this.agentSessionControlFor(sessionId)
     return await preserveAcpFailure(() => adapter.setAgentSessionOption(sessionId, request))
   }
@@ -959,6 +966,10 @@ export class AcpRemoteService extends TypertRemoteService {
   /** Read the durable recovery state without resolving a legacy live Agent. */
   @Remote('recoverySnapshot')
   async recoverySnapshot(sessionId: string): Promise<AcpRecoveryView> {
+    // First-use ACP sessions can be projected before session/new writes a
+    // durable binding. Return an empty healthy view in that case without
+    // reading potentially sensitive recovery records for an unowned ID.
+    if (!(await this.hasOwnedSessionAccess(sessionId))) return healthyRecoveryView(sessionId)
     const persisted = this.resolved.recoveryStateStore === null
       ? undefined
       : await this.resolved.recoveryStateStore.read(sessionId)
@@ -980,6 +991,7 @@ export class AcpRemoteService extends TypertRemoteService {
   /** Retry the original durable Agent binding; never resends the interrupted prompt. */
   @Remote('retryOriginal')
   async retryOriginal(sessionId: string): Promise<AcpRecoveryView> {
+    await this.requireOwnedSessionAccess(sessionId)
     const adapter = await this.recoveryAdapterFor(sessionId)
     await preserveAcpFailure(() => adapter.retryOriginal(sessionId))
     return await this.recoverySnapshot(sessionId)
@@ -990,6 +1002,7 @@ export class AcpRemoteService extends TypertRemoteService {
    * snapshot being present. */
   @Remote('rebindRecoveryBlank')
   async rebindRecoveryBlank(sessionId: string): Promise<AcpRecoveryView> {
+    await this.requireOwnedSessionAccess(sessionId)
     const adapter = await this.recoveryAdapterFor(sessionId)
     await preserveAcpFailure(() => adapter.rebindBlank(sessionId))
     return await this.recoverySnapshot(sessionId)
@@ -997,6 +1010,8 @@ export class AcpRemoteService extends TypertRemoteService {
 
   @Remote('backendOf')
   async backendOf(sessionId: string): Promise<AcpBackendState> {
+    // This query intentionally includes native/blank sessions so the model
+    // picker can decide whether an ACP switch must create a new DSH session.
     const facts = this.resolved.backendFacts
     if (facts === null) {
       throw acpRemoteError(new AcpClientError(

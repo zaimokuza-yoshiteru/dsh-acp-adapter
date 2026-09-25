@@ -45,7 +45,7 @@ export function TeamMemberModelControl({ lead, member, initialModel, sessionRead
   const [view, setView] = useState<ModelView | null>(null)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<'load' | 'save' | null>(null)
   const epoch = useRef(0)
   const factsRevision = useRef(0)
   const mutationSeq = useRef(0)
@@ -93,10 +93,10 @@ export function TeamMemberModelControl({ lead, member, initialModel, sessionRead
     setError(null)
     void remote.teamMemberModels(lead, member.sessionId).then(result => {
       if (disposed || !alive.current || currentEpoch !== epoch.current || !isCurrent(lead)) return
-      if (!result.ok) { setError(result.error.message); return }
+      if (!result.ok) { setError('load'); return }
       setView(currentFactsRevision === factsRevision.current ? result.value : reconcileMemberModelView(result.value, latestMember.current))
-    }).catch(reason => {
-      if (!disposed && alive.current && currentEpoch === epoch.current) setError(reason instanceof Error ? reason.message : String(reason))
+    }).catch(() => {
+      if (!disposed && alive.current && currentEpoch === epoch.current) setError('load')
     }).finally(() => {
       if (!disposed && alive.current && currentEpoch === epoch.current) setLoading(false)
     })
@@ -138,14 +138,14 @@ export function TeamMemberModelControl({ lead, member, initialModel, sessionRead
       if (!alive.current || currentEpoch !== epoch.current || currentFactsRevision !== factsRevision.current || currentMutation !== mutationSeq.current || !isCurrent(lead)) return
       if (!result.ok) {
         setView(previousView => previousView === null ? previousView : { ...previousView, pendingModel: previous })
-        setError(result.error.message)
+        setError('save')
         return
       }
       setView(result.value)
-    }).catch(reason => {
+    }).catch(() => {
       if (alive.current && currentEpoch === epoch.current && currentFactsRevision === factsRevision.current && currentMutation === mutationSeq.current) {
         setView(previousView => previousView === null ? previousView : { ...previousView, pendingModel: previous })
-        setError(reason instanceof Error ? reason.message : String(reason))
+        setError('save')
       }
     }).finally(() => {
       if (alive.current && currentEpoch === epoch.current) {
@@ -181,7 +181,7 @@ export function TeamMemberModelControl({ lead, member, initialModel, sessionRead
     }),
     h('div', { className: css.settingNotice, 'data-member-model-notice': '', role: 'status' },
       error !== null
-        ? h('span', { className: css.noticeError, title: error }, error)
+        ? h('span', { className: css.noticeError }, t(error === 'load' ? 'teamModelLoadFailed' : 'teamModelSaveFailed'))
         : pendingModel === null || pendingModel === currentModel ? null
           : h('span', { title: t('teamMemberModelPending', { model: currentLabel }) }, t('teamMemberModelPending', { model: currentLabel }))),
   )

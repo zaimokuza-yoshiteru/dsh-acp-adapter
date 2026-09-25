@@ -106,6 +106,44 @@ describe('native ACP permission bridge', () => {
     expect(long.ask.mock.calls[0]?.[0].questions[0]?.options?.[0]?.label.length).toBeLessThan(130)
   })
 
+  it.each(['en', 'zh'] as const)('keeps adversarial disambiguated labels unique and maps them exactly (%s)', async locale => {
+    const suffix = locale === 'zh' ? '选项' : 'option'
+    const options = [
+      option('allow-first', 'Run', 'allow_once'),
+      option('reject-second', 'Run', 'reject_once'),
+      option('allow-always-third', `Run · ${suffix} 1`, 'allow_always'),
+      option('reject-always-fourth', `Run · ${suffix} 2`, 'reject_always'),
+      option('allow-fifth', `Run · ${suffix} 1 · ${suffix} 3`, 'allow_once'),
+    ]
+    let labels: string[] = []
+    let selectedIndex = 0
+    const ask = vi.fn<AcpNativeUserQuestionService['ask']>(async ({ questions }) => {
+      labels = questions[0]!.options!.map(entry => entry.label)
+      const index = selectedIndex++
+      return { answers: [{ id: questions[0]!.id, selected: [labels[index]!] }] }
+    })
+    const handler = createAcpNativePermissionHandler({ userQuestions: { ask }, getAgent: () => ({}), locale })
+    for (const candidate of options) {
+      await expect(handler(params(options))).resolves.toEqual({ outcome: { outcome: 'selected', optionId: candidate.optionId } })
+    }
+    expect(new Set(labels).size).toBe(options.length)
+    expect(labels).toEqual(locale === 'zh'
+      ? ['1. Run · 选项 1', '2. Run · 选项 2', '3. Run · 选项 1', '4. Run · 选项 2', '5. Run · 选项 1 · 选项 3']
+      : ['1. Run · option 1', '2. Run · option 2', '3. Run · option 1', '4. Run · option 2', '5. Run · option 1 · option 3'])
+  })
+
+  it('cancels invalid, multiple, or custom answers even when labels collide before disambiguation', async () => {
+    const options = [option('first', 'Run', 'allow_once'), option('second', 'Run', 'reject_once'), option('collision', 'Run · option 1', 'allow_always')]
+    for (const selected of [['forged label'], ['Run · option 1', 'Run · option 2']]) {
+      const ask = vi.fn<AcpNativeUserQuestionService['ask']>(async ({ questions }) => ({ answers: [{ id: questions[0]!.id, selected }] }))
+      const handler = createAcpNativePermissionHandler({ userQuestions: { ask }, getAgent: () => ({}) })
+      await expect(handler(params(options))).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
+    }
+    const custom = vi.fn<AcpNativeUserQuestionService['ask']>(async ({ questions }) => ({ answers: [{ id: questions[0]!.id, selected: ['Run · option 1'], custom: 'Allow' }] }))
+    await expect(createAcpNativePermissionHandler({ userQuestions: { ask: custom }, getAgent: () => ({}) })(params(options)))
+      .resolves.toEqual({ outcome: { outcome: 'cancelled' } })
+  })
+
   it('shows the complete command in the native multi-line detail without executing controls', async () => {
     const command = `printf '${'x'.repeat(600)}'\nprintf 'Authorization: Bearer visible-to-approver'\u001b[31m`
     const { handler, ask } = bridge('Allow once')

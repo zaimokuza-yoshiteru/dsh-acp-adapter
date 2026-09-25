@@ -14,7 +14,7 @@ import { catalogEntryOf } from './catalog.ts'
 
 // Shared profile shape and runtime binding rules; no imports of host implementations.
 
-import { ACP_AGENT_IDS as ACP_AGENT_RUNTIME_IDS, ACP_AGENT_ID_PATTERN, effectiveRuntimeOf, catalogIdOf } from '../../contract/agent-config.ts'
+import { ACP_AGENT_ID_PATTERN, effectiveRuntimeOf, catalogIdOf } from '../../contract/agent-config.ts'
 import type { AcpAgentConfig, AcpAgentId as AcpAgentRuntimeId } from '../../contract/agent-config.ts'
 export { ACP_AGENT_IDS as ACP_AGENT_RUNTIME_IDS, ACP_AGENT_ID_PATTERN, ACP_SETTINGS_NS, effectiveRuntimeOf } from '../../contract/agent-config.ts'
 export type { AcpAgentConfig, AcpAgentId as AcpAgentRuntimeId } from '../../contract/agent-config.ts'
@@ -42,69 +42,6 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return proto === Object.prototype || proto === null
 }
 
-/**
- * Validating decoder for the settings scope's `decode` hook, mirroring the
- * host schema's strip semantics (src/host/composition/installed-profile-registry.ts `acpSettingsSchema`): an
- * absent section resolves to zero agents; anything invalid resolves the whole
- * section to undefined, which the panel renders as the invalid-config state
- * rather than silently editing a partial view.
- * @param value - the raw namespace value riding the settings wire.
- * @returns the decoded section, or undefined when it fails validation.
- */
-export function decodeAcpSettings(value: unknown): AcpSettings | undefined {
-  if (value === undefined) return { agents: {} }
-  if (!isPlainObject(value)) return undefined
-  const rawAgents = value['agents'] ?? {}
-  if (!isPlainObject(rawAgents)) return undefined
-  const agents: Record<string, AcpAgentConfig> = {}
-  for (const [id, raw] of Object.entries(rawAgents)) {
-    const config = decodeAgentConfig(id, raw)
-    if (config === undefined) return undefined
-    agents[id] = config
-  }
- // singleton 镜像（host schema 的跨条目拒绝同款口径）：同一内置 runtime
-  // 被两个 profile 生效绑定（显式 runtime 或 id 回退）= 整 section 非法，
-  // 面板按 invalid 拒绝编辑（不静默编辑宿主会拒写的文档）。
-  const bound = new Set<string>()
-  for (const [id, config] of Object.entries(agents)) {
-    const runtime = effectiveRuntimeOf(id, config)
-    if (runtime === undefined) continue
-    if (bound.has(runtime)) return undefined
-    bound.add(runtime)
-  }
-  return { agents }
-}
-
-/** Strict per-entry decode behind {@link decodeAcpSettings}; undefined on any violation. */
-function decodeAgentConfig(id: string, raw: unknown): AcpAgentConfig | undefined {
-  if (!ACP_AGENT_ID_PATTERN.test(id)) return undefined
-  if (!isPlainObject(raw)) return undefined
-  const name = raw['name']
-  if (typeof name !== 'string' || name.length === 0) return undefined
-  const command = raw['command']
-  if (typeof command !== 'string' || command.length === 0) return undefined
-  const args = raw['args'] ?? []
-  if (!Array.isArray(args) || !args.every((arg) => typeof arg === 'string')) return undefined
-  const env = raw['env'] ?? {}
-  if (!isPlainObject(env) || !Object.values(env).every((value) => typeof value === 'string')) return undefined
-  const loginHint = raw['loginHint']
-  if (loginHint !== undefined && typeof loginHint !== 'string') return undefined
- // 边界：runtime 绑定只收四个合法值，其余整体拒绝（镜像 host schema 的 reject 语义）
-  const catalogId = raw['catalogId']
-  if (catalogId !== undefined && (typeof catalogId !== 'string' || !ACP_AGENT_ID_PATTERN.test(catalogId))) return undefined
-  const runtime = raw['runtime']
-  if (runtime !== undefined && !ACP_AGENT_RUNTIME_IDS.includes(runtime as AcpAgentRuntimeId)) return undefined
-  return {
-    name,
-    command,
-    args: [...args] as string[],
-    env: { ...env } as Record<string, string>,
-    ...(loginHint === undefined ? {} : { loginHint }),
-    ...(runtime === undefined ? {} : { runtime: runtime as AcpAgentRuntimeId }),
-    ...(catalogId === undefined ? {} : { catalogId }),
-  }
-}
-
 // ---------- 编辑器草稿（staged text，保存时才解析成配置；card-form.ts 先例） ----------
 
 /** The agent editor's staged text: what is on screen is exactly what a save parses. */
@@ -114,7 +51,6 @@ export interface AgentDraft {
   command: string
   /** One argument per line. */
   argsText: string
-  /** One explicitly enabled DSH tool name per line. */
   /** One `KEY=VALUE` per line（疑似 secret 的键不进文本框——见 `maskedEnv`）。 */
   envText: string
   loginHint: string

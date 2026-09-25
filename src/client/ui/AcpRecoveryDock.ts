@@ -40,17 +40,13 @@ export function recoveryText(t: Translate, recovery: AcpRecoveryView): string {
   return t(key[recovery.kind])
 }
 
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
-}
-
 export function AcpRecoveryDock({ sessionId, useSession, useProjection, t, remote, createNewSession, ownsRoute }: RecoveryDockProps): ReactNode {
   const lifecycleKey = useSession((snapshot) => [snapshot.openState, snapshot.running, snapshot.promptAttempted, snapshot.lastAgentError ?? ''].join('|'))
   const projection = useProjection('modelSelection')
   const [recovery, setRecovery] = useState<AcpRecoveryView | null>(null)
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState(false)
   const [unavailable, setUnavailable] = useState(false)
   const [retry, setRetry] = useState(0)
   const epoch = useRef(0)
@@ -62,7 +58,7 @@ export function AcpRecoveryDock({ sessionId, useSession, useProjection, t, remot
     ++epoch.current
     setOpen(false)
     setBusy(false)
-    setError(null)
+    setError(false)
     setUnavailable(false)
     setRecovery(null)
     if (!projectionIsAcp(projection, ownsRoute)) return () => { cancelled = true }
@@ -88,7 +84,7 @@ export function AcpRecoveryDock({ sessionId, useSession, useProjection, t, remot
     const generation = epoch.current
     const active = () => generation === epoch.current && activeSession.current === sessionId
     setBusy(true)
-    setError(null)
+    setError(false)
     try {
       await action()
       if (!active()) return
@@ -96,8 +92,8 @@ export function AcpRecoveryDock({ sessionId, useSession, useProjection, t, remot
       if (!active()) return
       setUnavailable(!result.ok)
       if (result.ok) setRecovery(result.value.kind === 'healthy' ? null : result.value)
-    } catch (reason: unknown) {
-      if (active()) setError(errorText(reason))
+    } catch {
+      if (active()) setError(true)
     } finally {
       if (active()) setBusy(false)
     }
@@ -132,7 +128,7 @@ export function AcpRecoveryDock({ sessionId, useSession, useProjection, t, remot
       h('p', null, t('recoveryHistoryPreserved')),
       h('p', null, `${t('recoveryIssueCode')}: ${recovery.kind}`),
       detail === '' ? null : h('pre', { className: css.raw }, detail),
-      error === null ? null : h('p', { className: css.error, role: 'alert' }, error),
+      error ? h('p', { className: css.error, role: 'alert' }, t('recoveryActionFailed')) : null,
     ),
   )
 }
