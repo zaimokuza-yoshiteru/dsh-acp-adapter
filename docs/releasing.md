@@ -9,9 +9,10 @@
 ## 发布适配器
 
 1. 在 PR 中完成代码、版本及必要文档的审阅，明确 Web、桌面协议夹具与真实 Agent 的验证范围。受保护分支必须通过所需检查后合并。
-2. 从合并后的目标提交创建与 `package.json` 版本完全一致的 `v<version>` 标签并推送。不要重新使用已发布的版本或移动发布标签。
-3. 标签触发 [publish npm 工作流](../.github/workflows/publish.yml)。工作流校验版本与官方 DSH 依赖，尝试同步并冻结 Registry 快照，再执行测试、构建、`npm pack` 和干净安装门禁；`npm-publish` 环境批准后通过 OIDC 发布同一份 CI tarball。手动运行也必须选择对应标签。Registry 同步失败不增加审批，也不阻塞发布；已有发布环境保护保持不变。
-4. npm 成功后，独立的 `github-release` job 自动核对精确版本与 CI tarball 的 SHA-512，再创建对应 GitHub Release，无需额外人工确认。发布通道由版本推导：alpha 使用 `alpha`，RC 使用 `next`，稳定版使用 `latest`；GitHub 预发行标记由版本推导，创建 Release 不修改 npm 通道。
+2. 涉及 ACP、Teams 或连接链路的版本，须在待发布的确切提交上通过独立 Real Devin integration 的 macOS 与普通 Windows 验证；可对候选分支手动触发 workflow。普通 CI、原生夹具和旧提交结果不能替代。合并到 main 后若该 workflow 出现新失败，查清原因前不要打发布标签。
+3. 从合并后的目标提交创建与 `package.json` 版本完全一致的 `v<version>` 标签并推送。不要重新使用已发布的版本或移动发布标签。
+4. 标签触发 [publish npm 工作流](../.github/workflows/publish.yml)。工作流校验版本与官方 DSH 依赖，尝试同步并冻结 Registry 快照，再执行测试、构建、`npm pack` 和干净安装门禁；`npm-publish` 环境批准后通过 OIDC 发布同一份 CI tarball。手动运行也必须选择对应标签。Registry 同步失败不增加审批，也不阻塞发布；已有发布环境保护保持不变。
+5. npm 成功后，独立的 `github-release` job 自动核对精确版本与 CI tarball 的 SHA-512，再创建对应 GitHub Release，无需额外人工确认。发布通道由版本推导：alpha 使用 `alpha`，RC 使用 `next`，稳定版使用 `latest`；GitHub 预发行标记由版本推导，创建 Release 不修改 npm 通道。
 
 ```sh
 # 发布后查询；将 <version> 替换为本次精确版本
