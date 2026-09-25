@@ -250,13 +250,17 @@ export function createAcpTerminalHandlers(options: AcpTerminalHandlersOptions): 
   const jobDone = async (record: TerminalRecord): AcpTerminalJobHooks['done'] => {
     const fact = await record.done
     let cleanupError: string | undefined
+    let exited = false
     try {
-      if (!await record.handle.waitForExit()) throw new Error('terminal range exit was not confirmed')
+      // Command completion is separate from managed-range quiescence. Always
+      // use the provider's bounded cleanup ladder: a detached child can keep
+      // waitForExit pending after the main command has already settled.
+      exited = await stopSubprocess(record.handle, { eofGraceMs: 0, exitWaitMs: releaseWaitMs })
     } catch (error) {
-      const cleaned = await stopSubprocess(record.handle, { eofGraceMs: 0, exitWaitMs: releaseWaitMs })
-      cleanupError = cleaned ? String(error) : `${String(error)}; terminal cleanup remains unconfirmed`
+      cleanupError = `terminal cleanup failed: ${String(error)}; managed-range exit remains unconfirmed`
     }
-    const failure = record.error?.message ?? cleanupError
+    if (!exited && cleanupError === undefined) cleanupError = 'terminal managed-range exit was not confirmed; cleanup remains unconfirmed'
+    const failure = [record.error?.message, cleanupError].filter((detail): detail is string => detail !== undefined).join('; ') || undefined
     return {
       status: failure !== undefined ? 'failed' : record.killRequested ? 'killed' : fact?.exitCode === 0 ? 'completed' : 'failed',
       detail: failure ?? (fact?.signal ? `signal: ${fact.signal}` : `exit code: ${String(fact?.exitCode ?? 'unknown')}`),

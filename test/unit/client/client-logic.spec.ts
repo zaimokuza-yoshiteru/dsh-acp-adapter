@@ -7,8 +7,6 @@
 //
 // 覆盖：
 //   - 常量：命名空间 / id·env 键两类正则 / DEVIN_ACP_TEMPLATE 逐字段 / 健康与失败分类常量
-//   - decodeAcpSettings：缺席 → 零 agents；非法整体 → undefined；逐条校验失败传染
-//     整个 section；args/env 默认值补齐、loginHint 保留、未知键剥离、防御性拷贝
 //   - parseArgsText/formatArgsText：逐行 trim、空行丢弃、行内空白保留、往返归一
 //   - parseEnvText/formatEnvText：KEY=VALUE 首个 '=' 切分、key trim + 标识符校验、
 // 重复 key、行号 1-based、往返； $credential: 形状值一律字面值（无引用分支）
@@ -32,7 +30,6 @@ import {
   ACP_ENV_KEY_PATTERN,
   ACP_SETTINGS_NS,
   agentLoginHint,
-  decodeAcpSettings,
   decodeBoundSessions,
   decodeHealthResponse,
   draftFromAgent,
@@ -202,8 +199,8 @@ describe('常量：与宿主侧契约逐字对齐', () => {
     expect(ACP_AGENT_ID_PATTERN.test(devin?.id ?? '')).toBe(true);
     const draft = draftFromCatalogEntry('devin');
     expect(draft).toBeDefined();
-    expect(decodeAcpSettings({ agents: { devin: validateAgentDraft(draft as AgentDraft, {}, undefined).config } }))
-      .toEqual({ agents: { devin: { ...devinConfig, runtime: 'devin', catalogId: 'devin' } } });
+    expect(validateAgentDraft(draft as AgentDraft, {}, undefined).config)
+      .toEqual({ ...devinConfig, runtime: 'devin', catalogId: 'devin' });
   });
 
   it('ACP_CATALOG_ENTRIES 钉版：override 四条排前（devin/codex-acp/kimi/claude-acp），其余按 registry 顺序', () => {
@@ -222,7 +219,7 @@ describe('常量：与宿主侧契约逐字对齐', () => {
       }
       const { config } = validateAgentDraft(draft, {}, undefined);
       expect(config, entry.id).toBeDefined();
-      expect(decodeAcpSettings({ agents: { [entry.id]: config } }), entry.id).not.toBeUndefined();
+      expect(config, entry.id).toMatchObject({ name: expect.any(String), command: expect.any(String) });
     }
   });
 
@@ -278,144 +275,6 @@ describe('常量：与宿主侧契约逐字对齐', () => {
       expect(JSON.stringify(entry.args), entry.id).not.toContain('ANTHROPIC_AUTH_TOKEN');
       expect(JSON.stringify(entry.args), entry.id).not.toContain('ANTHROPIC_API_KEY');
     }
-  });
-});
-
-// ---------- settings 解码 ----------
-
-describe('decodeAcpSettings', () => {
-  it('缺席/空 section 解析为零 agents', () => {
-    expect(decodeAcpSettings(undefined)).toEqual({ agents: {} });
-    expect(decodeAcpSettings({})).toEqual({ agents: {} });
-    expect(decodeAcpSettings({ agents: {} })).toEqual({ agents: {} });
-    // 宿主 schema 同款 ?? 默认：agents 为 null/undefined 按缺席处理
-    expect(decodeAcpSettings({ agents: null })).toEqual({ agents: {} });
-    expect(decodeAcpSettings({ agents: undefined })).toEqual({ agents: {} });
-  });
-
-  it('非法整体拒绝为 undefined', () => {
-    for (const bad of [null, 'nope', 42, true, [], ['devin']]) {
-      expect(decodeAcpSettings(bad), JSON.stringify(bad)).toBeUndefined();
-    }
-    expect(decodeAcpSettings({ agents: [] })).toBeUndefined();
-    expect(decodeAcpSettings({ agents: 'x' })).toBeUndefined();
-    expect(decodeAcpSettings({ agents: 1 })).toBeUndefined();
-  });
-
- it('解码合法条目：args/env 缺席补默认，已删除的凭证路径与 profile MCP 字段按未知键剥离', () => {
-    const decoded = decodeAcpSettings({
-      agents: {
-        devin: {
-          name: 'Devin',
-          command: 'devin',
-          args: ['acp'],
-          env: { A: '1' },
-          loginHint: 'devin auth login',
-          credentialReadPaths: ['~/.local/share/devin/credentials.toml'],
-          mcpServers: [{ type: 'stdio', name: 'legacy' }],
-          stray: true,
-        },
-        foo: { name: 'Foo', command: 'foo-cli' },
-        bar: { name: 'Bar', command: 'bar-cli', args: null, env: null },
-      },
-      projectExternalSubagents: false,
-      strayTop: 1,
-    });
-    expect(decoded).toEqual({
-      agents: {
-        devin: {
-          name: 'Devin',
-          command: 'devin',
-          args: ['acp'],
-          env: { A: '1' },
-          loginHint: 'devin auth login',
-        },
-        foo: { name: 'Foo', command: 'foo-cli', args: [], env: {} },
-        bar: { name: 'Bar', command: 'bar-cli', args: [], env: {} },
-      },
-    });
-  });
-
- it('边界：runtime 绑定解码——四个合法值保留，非法值/非 string 整体拒绝', () => {
-    for (const runtime of ['devin', 'codex', 'kimi', 'claude'] as const) {
-      expect(decodeAcpSettings({ agents: { my: { name: 'M', command: 'm', runtime } } })).toEqual({
-        agents: { my: { name: 'M', command: 'm', args: [], env: {}, runtime } },
-      });
-    }
-    for (const bad of ['gpt', '', 'DEVIN', 42, null, true]) {
-      expect(decodeAcpSettings({ agents: { my: { name: 'M', command: 'm', runtime: bad } } }), JSON.stringify(bad)).toBeUndefined();
-    }
-  });
-
- it(' singleton 镜像：同一内置 runtime 被两个 profile 生效绑定（显式或 id 回退）→ 整 section 拒绝为 undefined', () => {
-    // 显式 runtime 相撞
-    expect(
-      decodeAcpSettings({
-        agents: {
-          alpha: { name: 'A', command: 'a', runtime: 'codex' },
-          beta: { name: 'B', command: 'b', runtime: 'codex' },
-        },
-      }),
-    ).toBeUndefined();
-    // 显式与 id 回退相撞（beta 无 runtime 但 id 恰为内置 runtime id）
-    expect(
-      decodeAcpSettings({
-        agents: {
-          alpha: { name: 'A', command: 'a', runtime: 'kimi' },
-          kimi: { name: 'K', command: 'kimi' },
-        },
-      }),
-    ).toBeUndefined();
-    // 各自一个 runtime 的四内置共存合法；generic profile（无 runtime 且非内置 id）不受约束
-    expect(
-      decodeAcpSettings({
-        agents: {
-          devin: { name: 'D', command: 'devin' },
-          claude: { name: 'C', command: 'claude-agent-acp', runtime: 'claude' },
-          codex: { name: 'X', command: 'codex-acp' },
-          kimi2: { name: 'K2', command: 'kimi', runtime: 'kimi' },
-          foo: { name: 'F', command: 'foo-cli' },
-          bar: { name: 'B', command: 'bar-cli' },
-        },
-      }),
-    ).not.toBeUndefined();
-  });
-
-  it('逐条校验失败传染整个 section（任意一条非法 → undefined）', () => {
-    const good = { name: 'D', command: 'devin' };
-    const badAgents: Array<[string, unknown]> = [
-      ['坏 id（大写）', { Devin: good }],
-      ['坏 id（前导连字符）', { '-devin': good }],
-      ['坏 id（下划线）', { de_vin: good }],
-      ['空 id', { '': good }],
-      ['条目非 object', { devin: 'x' }],
-      ['条目为数组', { devin: [] }],
-      ['缺 name', { devin: { command: 'devin' } }],
-      ['空 name', { devin: { name: '', command: 'devin' } }],
-      ['name 非 string', { devin: { name: 42, command: 'devin' } }],
-      ['缺 command', { devin: { name: 'D' } }],
-      ['空 command', { devin: { name: 'D', command: '' } }],
-      ['args 非数组', { devin: { ...good, args: 'acp' } }],
-      ['args 元素非 string', { devin: { ...good, args: ['acp', 1] } }],
-      ['env 非 object', { devin: { ...good, env: [] } }],
-      ['env 值非 string', { devin: { ...good, env: { A: 1 } } }],
-      ['loginHint 为 null', { devin: { ...good, loginHint: null } }],
-      ['loginHint 非 string', { devin: { ...good, loginHint: 42 } }],
-    ];
-    for (const [label, agents] of badAgents) {
-      expect(decodeAcpSettings({ agents }), label).toBeUndefined();
-    }
-    // 合法条目与非法条目并存同样整体拒绝
-    expect(decodeAcpSettings({ agents: { devin: good, Broken: good } })).toBeUndefined();
-  });
-
-  it('解码产物是防御性拷贝（改输入不影响产物）', () => {
-    const args = ['acp'];
-    const env: Record<string, string> = { A: '1' };
-    const decoded = decodeAcpSettings({ agents: { devin: { name: 'D', command: 'devin', args, env } } });
-    args.push('--mutated');
-    env['B'] = '2';
-    expect(decoded?.agents['devin']).toEqual({ name: 'D', command: 'devin', args: ['acp'], env: { A: '1' } });
   });
 });
 
@@ -1036,18 +895,16 @@ describe('错误文本整形：errorMessageOf', () => {
 });
 
 describe('catalog identity survives profile customization', () => {
-  it('preserves generic catalog identity through changing ID, client decode and editing', () => {
+  it('preserves generic catalog identity through changing ID and editing', () => {
     const draft = draftFromCatalogEntry('fast-agent')!
     const config = validateAgentDraft({ ...draft, id: 'my-fast', name: 'My fast' }, {}, undefined).config!
     expect(config.catalogId).toBe('fast-agent')
     expect(config.runtime).toBeUndefined()
-    const saved = decodeAcpSettings({ agents: { 'my-fast': config } })!.agents['my-fast']!
-    expect(validateAgentDraft(draftFromAgent('my-fast', saved), { 'my-fast': saved }, 'my-fast').config).toEqual(config)
+    expect(validateAgentDraft(draftFromAgent('my-fast', config), { 'my-fast': config }, 'my-fast').config).toEqual(config)
   })
-  it('keeps unknown catalog IDs without granting a runtime and rejects malformed identity', () => {
+  it('keeps unknown catalog IDs without granting a runtime', () => {
     const config: AcpAgentConfig = { name: 'Custom', command: 'custom', args: [], env: {}, catalogId: 'future-agent' }
     expect(draftFromAgent('my-custom', config).catalogId).toBe('future-agent')
     expect(effectiveRuntimeOf('my-custom', config)).toBeUndefined()
-    expect(decodeAcpSettings({ agents: { custom: { ...config, catalogId: '../codex' } } })).toBeUndefined()
   })
 })

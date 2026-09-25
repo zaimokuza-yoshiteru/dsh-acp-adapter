@@ -73,6 +73,18 @@ function bounded(value: string, limit = 4_000): string {
   return value.length <= limit ? value : `${value.slice(0, limit)}… [truncated]`
 }
 
+/** Canonicalize persisted/display text before both projection and digesting.
+ * Sidecar Activity redaction must not mutate an authenticated projection later. */
+function safeObservation(observation: ExternalDelegationObservation): ExternalDelegationObservation {
+  return {
+    ...observation,
+    label: bounded(redactSecretText(observation.label), 256),
+    task: { ...observation.task, text: bounded(redactSecretText(observation.task.text)) },
+    result: { ...observation.result, text: bounded(redactSecretText(observation.result.text)) },
+    ...(observation.model === undefined ? {} : { model: { ...observation.model, id: redactSecretText(observation.model.id) } }),
+  }
+}
+
 function childId(context: ExternalProjectionContext, observation: ExternalDelegationObservation): string {
   const key = {
     profileId: context.profileId,
@@ -220,6 +232,18 @@ function object(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+/** Recognize only the current authenticated envelope when it cannot be rebuilt. */
+function isCurrentProjectionEnvelope(row: AcpActivityRecord): boolean {
+  if (row.rawDetail === undefined) return false
+  try {
+    const value: unknown = JSON.parse(row.rawDetail)
+    return object(value) && value.kind === 'dsh-acp-external-subagent'
+      && value.version === 5 && value.childSessionId === row.dshSessionId
+      && object(value.projectionHeader)
+      && (value.projectionHeader.version === 3 || value.projectionHeader.version === SESSION_FORMAT_VERSION)
+  } catch { return false }
+}
+
 function storedProjection(row: AcpActivityRecord): { readonly detail: ProjectedDetail; readonly expected: ReturnType<typeof projectionLog> } | undefined {
   if (row.rawDetail === undefined) return undefined
   let value: unknown
@@ -330,7 +354,12 @@ export class ExternalSubagentProjector {
       if (stored === undefined) {
         // Historical projections follow the host migration policy. Never
         // rewrite unsupported generations or synthesize missing history.
-        // Their source records remain untouched for diagnostics.
+        // A current v5 running envelope that fails authentication is a conflict,
+        // not an interrupted transaction to retry forever; keep its raw evidence.
+        if (row.status === 'running' && isCurrentProjectionEnvelope(row)) {
+          conflicted += 1
+          await this.setProjectionStatus(row, 'failed').catch(() => undefined)
+        }
         continue
       }
       try {
@@ -354,8 +383,9 @@ export class ExternalSubagentProjector {
   async project(observation: ExternalDelegationObservation, context: ExternalProjectionContext): Promise<ExternalProjectionResult | undefined> {
     if (!observation.projectionEligible || observation.status !== 'completed') return undefined
     const id = childId(context, observation)
-    const expected = projectionLog(context, observation, id)
-    const detail = recordDetail(id, context, observation, expected)
+    const safe = safeObservation(observation)
+    const expected = projectionLog(context, safe, id)
+    const detail = recordDetail(id, context, safe, expected)
 
     // Stage the complete canonical transaction first. If the process crashes
     // at any later boundary, startup repair can converge without reconstructing
@@ -364,7 +394,7 @@ export class ExternalSubagentProjector {
       dshSessionId: id, ownerDshSessionId: id,
       promptAnchorMessageId: EXTERNAL_SUBAGENT_ACTIVITY_ANCHOR,
       activityId: 'external-subagent-record', time: Date.now(), kind: 'delegated', status: 'running',
-      presentation: observation.label,
+      presentation: safe.label,
       rawDetail: JSON.stringify(detail),
     })
 

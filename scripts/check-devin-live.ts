@@ -7,6 +7,7 @@ import { tmpdir, userInfo } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
+import { safeLiveDiagnostic } from './live-diagnostics.ts'
 import { initProfile, loadProfileDirectory, loadLayeredEnv } from '@deepseek-ai/dsh-app-boot'
 import { runProfile } from '@deepseek-ai/dsh/profile-boot'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
@@ -39,14 +40,14 @@ const created = new Map<string, string>()
 const roles = new Map<string, string>()
 const completedTurns = new Map<string, number>()
 const completedTurnIds = new Map<string, Set<number>>()
-const failures: string[] = []
+const failures: Array<{ actor: string; diagnostic: ReturnType<typeof safeLiveDiagnostic> }> = []
 // The CI job also installs/builds before this script; keep the live check
 // bounded so host shutdown and CI cleanup fit inside the job's 20 minute cap.
 const overallDeadline = Date.now() + 12 * 60_000
 const wait = async (condition: () => boolean, label: string) => {
   const deadline = Math.min(Date.now() + 300_000, overallDeadline)
   while (!condition()) {
-    assert.equal(failures.length, 0, failures.join('; '))
+    assert.equal(failures.length, 0, JSON.stringify(failures))
     if (Date.now() > deadline) throw new Error(`Timeout: ${label}; completed tools: ${JSON.stringify(executions.map(e => ({ name: e.name, success: e.success })))}`)
     await delay(250)
   }
@@ -137,7 +138,7 @@ try {
     if (event.type === 'turn/end') {
       const actor = roles.get(_session.id) ?? 'member'
       const reason = event.data.reason
-      if (reason.kind === 'error') failures.push(`${actor}: turn failed (${reason.error.code ?? 'unclassified'})`)
+      if (reason.kind === 'error') failures.push({ actor, diagnostic: safeLiveDiagnostic(reason.error) })
       else if (reason.kind === 'completed') {
         completedTurns.set(_session.id, (completedTurns.get(_session.id) ?? 0) + 1)
         const turns = completedTurnIds.get(_session.id) ?? new Set<number>()
@@ -203,7 +204,7 @@ try {
     const member = ctx.agentTeams.listMembers(lead).find(candidate => candidate.role === 'teammate')!
     assert.ok(!received.some(message => message.senderId === member.id && message.targetId !== lead.id), `Teammate ${index} must not message another Team`)
   }
-  assert.equal(failures.length, 0, failures.join('; '))
+  assert.equal(failures.length, 0, JSON.stringify(failures))
   assert.notEqual(ctx.agentTeams.listMembers(leads[0]!.handle.agent)[1]!.id, ctx.agentTeams.listMembers(leads[1]!.handle.agent)[1]!.id)
   console.log(JSON.stringify({ check: 'real-devin-dsh-teams', platform: process.platform, leads: 2, teammates: 2, successfulTools: executions.filter(e => e.success).length, result: 'PASS' }))
   for (const { handle } of leads) await handle.dispose()

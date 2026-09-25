@@ -59,8 +59,8 @@
  * 撞名追加 `-2/-3…` 序号。
  *
  * **decided 去重**（幂等语义不变）：待写 decided 的去重键已存在 → 跳过写入并
- * 正常 resolve（`INSERT OR IGNORE` + 影响行数兜底，先 SELECT 预检避免无谓消耗
- * seq）。只对 decided 去重：同 requestId 的 asked 重放是真实事件，审计如实各落
+ * 正常 resolve（`BEGIN IMMEDIATE` + 精确 dedupe 冲突处理；先 SELECT 预检避免
+ * 无谓消耗 seq）。只对 decided 去重：同 requestId 的 asked 重放是真实事件，审计如实各落
  * 一条；键缺任一分量的 decided 不参与去重（宁多落一条也不丢审计）。
  *
  * **binding 语义门槛（不变）** envelope 落库 ≠ binding 可用。
@@ -127,7 +127,7 @@ import {
   toOptionsSnapshotRecord,
 } from './options-snapshot.ts'
 import type { AcpOptionsSnapshotRecord } from './options-snapshot.ts'
-import { redactSecretText } from '../domain/observability/redaction.ts'
+import { isSensitiveActivityField, redactSecretText } from '../domain/observability/redaction.ts'
 
 // Compatibility facade: snapshot callers keep importing from sidecar while the
 // bounded codec stays an independent persistence concern.
@@ -991,7 +991,7 @@ class SidecarStore implements AcpSidecar {
     if (db === undefined) throw new Error(`dsh-acp sidecar: failed to open ${this.dbPath}`)
     this.db = db
     this.stmtInsert = db.prepare('INSERT INTO audit (record_id, dsh_session_id, seq, time, kind, acp_provider_id, acp_session_id, dedupe_key, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    this.stmtInsertIgnore = db.prepare('INSERT OR IGNORE INTO audit (record_id, dsh_session_id, seq, time, kind, acp_provider_id, acp_session_id, dedupe_key, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    this.stmtInsertIgnore = db.prepare('INSERT INTO audit (record_id, dsh_session_id, seq, time, kind, acp_provider_id, acp_session_id, dedupe_key, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (dsh_session_id, dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING')
     this.stmtMaxSeq = db.prepare('SELECT MAX(seq) AS max_seq FROM audit WHERE dsh_session_id = ?')
     this.stmtHasRecordId = db.prepare('SELECT 1 AS x FROM audit WHERE dsh_session_id = ? AND record_id = ?')
     this.stmtHasDedupe = db.prepare('SELECT 1 AS x FROM audit WHERE dsh_session_id = ? AND dedupe_key = ?')
@@ -1074,6 +1074,16 @@ class SidecarStore implements AcpSidecar {
     return next
   }
 
+  /** Permission writes serialize through SQLite and account for local queued seq reservations. */
+  private nextPermissionSeq(sessionId: string): number {
+    const row = this.stmtMaxSeq?.get(sessionId) as { max_seq: number | null } | undefined
+    const databaseNext = (row?.max_seq ?? 0) + 1
+    const localNext = this.seqCounters.get(sessionId)
+    const next = Math.max(databaseNext, localNext ?? databaseNext)
+    this.seqCounters.set(sessionId, next + 1)
+    return next
+  }
+
   /**
    * 同步落库（binding/permission 专用路径）：decided 先去重预检（已存在 → 跳过并
  * 正常返回， 幂等语义）；非 decided 的 recordId 撞名追加 -2/-3… 序号（先查
@@ -1084,12 +1094,29 @@ class SidecarStore implements AcpSidecar {
     const ids = deriveAcpIds(entry.kind, entry.data)
     const dedupeKey = decidedDedupeKeyOf(entry.kind, entry.data)
     const payload = stableStringify(entry.data)
-    if (dedupeKey !== undefined) {
-      if (this.stmtHasDedupe?.get(sessionId, dedupeKey) !== undefined) return // 重连重放：已存在即跳过
-      const seq = this.nextSeq(sessionId)
-      const result = this.stmtInsertIgnore?.run(dedupeKey, sessionId, seq, entry.time, entry.kind, ids.acpProviderId ?? null, ids.acpSessionId ?? null, dedupeKey, payload)
-      // 并发臂兜底（跨进程同键竞写）：IGNORE 生效 = 另一进程先落，同样按跳过处理
-      if (result !== undefined && Number(result.changes) === 0) return
+    if (entry.kind === 'permission') {
+      // Approval audit is low volume. Serialize dedupe inspection and durable
+      // sequence allocation so a stale per-connection counter cannot drop a
+      // distinct decision through an unrelated UNIQUE(seq) conflict.
+      db.exec('BEGIN IMMEDIATE')
+      try {
+        if (dedupeKey !== undefined && this.stmtHasDedupe?.get(sessionId, dedupeKey) !== undefined) {
+          db.exec('COMMIT')
+          return // 重连重放：已存在即跳过
+        }
+        const seq = this.nextPermissionSeq(sessionId)
+        const recordId = dedupeKey ?? this.nextAuditIdentityWithSeq(sessionId, entry, seq).recordId
+        const result = dedupeKey === undefined
+          ? this.stmtInsert?.run(recordId, sessionId, seq, entry.time, entry.kind, ids.acpProviderId ?? null, ids.acpSessionId ?? null, null, payload)
+          : this.stmtInsertIgnore?.run(recordId, sessionId, seq, entry.time, entry.kind, ids.acpProviderId ?? null, ids.acpSessionId ?? null, dedupeKey, payload)
+        // This targeted conflict can only mean the exact decided dedupe index.
+        if (result !== undefined && Number(result.changes) === 0) { db.exec('COMMIT'); return }
+        db.exec('COMMIT')
+      } catch (error) {
+        try { db.exec('ROLLBACK') } catch { /* preserve original */ }
+        // Keep the local reservation after rollback; a queued non-approval audit may own an earlier seq.
+        throw error
+      }
       return
     }
     if (entry.kind === 'binding') {
@@ -1118,6 +1145,10 @@ class SidecarStore implements AcpSidecar {
   /** 为一条非去重审计分配 seq 与无碰撞 record id。 */
   private nextAuditIdentity(sessionId: string, entry: StampedEntry): { seq: number; recordId: string } {
     const seq = this.nextSeq(sessionId)
+    return this.nextAuditIdentityWithSeq(sessionId, entry, seq)
+  }
+
+  private nextAuditIdentityWithSeq(sessionId: string, entry: StampedEntry, seq: number): { seq: number; recordId: string } {
     const base = contentRecordIdBase(entry.kind, entry.time, entry.data)
     let recordId = base
     for (let suffix = 2; ; suffix += 1) {
@@ -1842,7 +1873,7 @@ function redactActivityDetail(value: string | undefined): string | undefined {
       if (typeof item === 'string') return redactSecretText(item)
       if (isPlainObject(item)) {
         const output: Record<string, unknown> = {}
-        for (const [key, entry] of Object.entries(item).slice(0, 128)) output[key] = /(?:token|secret|password|authorization|api[_-]?key|cookie|credential)/i.test(key) ? '[redacted]' : redact(entry, depth + 1)
+        for (const [key, entry] of Object.entries(item).slice(0, 128)) output[key] = isSensitiveActivityField(key, entry) ? '[redacted]' : redact(entry, depth + 1)
         return output
       }
       return item

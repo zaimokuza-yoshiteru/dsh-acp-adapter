@@ -63,7 +63,7 @@ For verification and reproduction, see the [E2E guide](../test/e2e/README.md) (C
 
 ## Sessions and presentation
 
-This version supports DSH `0.1.7-rc.1` only. Main-area navigation uses `uiWorkspace`; members and external subagent records use the native `subagentchat` resource sidebar. DSH owns references, history loading and restoration. External projections remain read-only, while Team members retain native continuation rules. Model transitions are observed for each open Session. Only the main conversation controls the Diagnostics tab, preventing sidebar sessions from competing for the global entry.
+This version supports DSH `0.1.7-rc.2` only. Main-area navigation uses `uiWorkspace`; members and external subagent records use the native `subagentchat` resource sidebar. DSH owns references, history loading and restoration. External projections remain read-only, while Team members retain native continuation rules. Model transitions are observed for each open Session. Only the main conversation controls the Diagnostics tab, preventing sidebar sessions from competing for the global entry.
 
 Main-conversation approvals read the original member requests from native `sessionStatus.pendingInteraction`. Batch actions still validate membership and request identity individually; later arrivals are not added to a captured batch.
 

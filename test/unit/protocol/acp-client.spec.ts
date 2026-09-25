@@ -675,6 +675,49 @@ describe('错误分类', () => {
     finally { clearTimeout(timer); done.reject(error); await conn.close(); }
   });
 
+  it('marks and terminates a live process whose ACP output stream disconnects', async () => {
+    const stdout = new PassThrough()
+    const stdin = new PassThrough()
+    const sessionRequested = Promise.withResolvers<void>()
+    let input = ''
+    let terminated = 0
+    stdin.on('data', chunk => {
+      input += String(chunk)
+      let newline: number
+      while ((newline = input.indexOf('\n')) >= 0) {
+        const frame = JSON.parse(input.slice(0, newline)) as { id: number; method: string }
+        input = input.slice(newline + 1)
+        if (frame.method === 'initialize') {
+          stdout.write(JSON.stringify({ jsonrpc: '2.0', id: frame.id, result: {
+            protocolVersion: 1, agentInfo: { name: 'disconnecting', version: '1' }, agentCapabilities: {},
+          } }) + '\n')
+        } else if (frame.method === 'session/new') {
+          sessionRequested.resolve()
+          stdout.end()
+        }
+      }
+    })
+    const conn = new AcpClientConnection({
+      argv: ['fixture'], cwd: logDir, env: {},
+      subprocess: {
+        resolveExecutable: async command => command,
+        spawn: () => ({
+          stdin, stdout, stderr: new PassThrough(),
+          done: new Promise<never>(() => {}),
+          terminate: () => { terminated += 1 },
+          waitForExit: async () => false,
+        }),
+      },
+    }, { eofGraceMs: 0, exitWaitMs: 20 })
+    await conn.initialize()
+    const pending = conn.newSession()
+    await sessionRequested.promise
+    await expect(pending).rejects.toMatchObject({ kind: 'crash' })
+    expect(conn.isClosed).toBe(true)
+    await conn.close()
+    expect(terminated).toBe(1)
+  }, 5_000)
+
   it('auth_required：明确的 OAuth -32603 包装错误仍归为认证失败', async () => {
     const conn = connectInline(INTERNAL_AUTH_REFUSING_AGENT);
     const err = await expectReject(conn.initialize());

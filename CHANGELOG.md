@@ -4,6 +4,26 @@
 
 User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for publication dates, exact installation instructions, and checksums. Historical entries were reconstructed from tag diffs; npm packages were not republished.
 
+## 0.1.7-rc.2.0
+
+2026-09-25
+
+### 中文
+
+- 适配 DSH `0.1.7-rc.2` 的插件兼容检查；宿主与插件需一同升级。
+- 审批选项名称碰撞时仍能对应到正确选项；ACP 设置与恢复操作仅作用于本适配器管理的会话，首次使用仍可正常进入。
+- 加强活动记录、子会话内容和诊断日志中的敏感值脱敏，并发审计保留不同审批结果、去重重复决定。修复用量统计和文本脱敏导致子会话崩溃恢复失效的问题；已丢失的历史内容不会自动重建。
+- 终端退出会进行有界清理，已断开的 ACP 连接不再作为可复用连接。取消超时或执行结果未知时，需由用户显式处理恢复；不会自动重放命令。
+- 恢复操作和团队成员模型设置失败时显示本地化提示。
+
+### English
+
+- Targets the DSH `0.1.7-rc.2` plugin compatibility check; upgrade the host and plugin together.
+- Approval labels remain mapped to the exact option when names collide. ACP settings and recovery apply only to sessions managed by this adapter; first use remains available.
+- Improves secret redaction in activity, subagent content, and diagnostic logs. Concurrent audit writes preserve distinct approval decisions and deduplicate repeated ones. Fixes usage accounting and text redaction that could prevent subagent crash recovery; lost historical content is not rebuilt automatically.
+- Terminal shutdown uses bounded cleanup, and closed ACP connections are no longer treated as reusable. After a cancellation timeout or an unknown execution outcome, recovery requires explicit user handling; commands are not replayed automatically.
+- Recovery and teammate model-setting failures use localized messages.
+
 ## 0.1.7-rc.1.0
 
 2026-09-24

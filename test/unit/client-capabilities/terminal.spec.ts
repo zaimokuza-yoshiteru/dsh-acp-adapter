@@ -384,6 +384,47 @@ describe('ACP terminal native job lifecycle', () => {
     await terminals.dispose()
   })
 
+  it('settles a native job within the cleanup budget when range observation never settles', async () => {
+    const neverExits = new Promise<boolean>(() => {})
+    let rangeExited = false
+    const handle: AcpSubprocessHandle = {
+      stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
+      done: Promise.resolve({ exitCode: 0, signal: null }),
+      waitForExit: async () => rangeExited ? true : await neverExits,
+      terminate() {},
+    }
+    let hooks!: import('../../../src/runtime/client-capabilities/terminal-job.ts').AcpTerminalJobHooks
+    let activeJobs = 0
+    const terminals = createAcpTerminalHandlers({
+      subprocess: { ...subprocess, spawn: () => handle },
+      profileId: 'devin', dshSessionId: 'owner', cwd: root, env: {}, releaseWaitMs: 20,
+      startJob: (_label, run) => {
+        hooks = run()
+        activeJobs += 1
+        void hooks.done.finally(() => { activeJobs -= 1 })
+        return { cancel: () => hooks.cancel() }
+      },
+    })
+    const { terminalId } = await terminals.createTerminal({ sessionId: 'acp', command: 'fixture' })
+
+    const started = Date.now()
+    await expect(hooks.done).resolves.toMatchObject({
+      status: 'failed',
+      detail: expect.stringContaining('cleanup remains unconfirmed'),
+    })
+    expect(Date.now() - started).toBeLessThan(500)
+    await Promise.resolve()
+    expect(activeJobs).toBe(0)
+    // The job registry slot settles, but the ACP terminal ID remains usable
+    // until a later release can prove the provider-owned range is gone.
+    await expect(terminals.terminalOutput({ sessionId: 'acp', terminalId })).resolves.toHaveProperty('output')
+    await expect(terminals.releaseTerminal({ sessionId: 'acp', terminalId })).rejects.toThrow('retry release')
+    rangeExited = true
+    await expect(terminals.releaseTerminal({ sessionId: 'acp', terminalId })).resolves.toEqual({})
+    expect(terminals.presentationSnapshot?.(terminalId)).toMatchObject({ released: true })
+    await terminals.dispose()
+  })
+
   it('cleans up terminals when the native owner cancels and preserves the killed result on release', async () => {
     let hooks!: import('../../../src/runtime/client-capabilities/terminal-job.ts').AcpTerminalJobHooks
     const terminals = createAcpTerminalHandlers({

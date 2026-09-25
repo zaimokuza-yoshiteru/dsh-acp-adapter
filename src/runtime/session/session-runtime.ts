@@ -249,7 +249,7 @@ export class AcpSessionRuntime {
 
   /** Initialize and negotiate capabilities without creating session/new. */
   async initialize(signal?: AbortSignal): Promise<void> {
-    if (this.connection !== undefined && (this.mcpLease?.signal.aborted === true || this.mcpKey !== this.options.mcpKey?.())) await this.close()
+    if (this.connection !== undefined && (this.connection.isClosed || this.mcpLease?.signal.aborted === true || this.mcpKey !== this.options.mcpKey?.())) await this.close()
     if (this.connection !== undefined) return
     this.starting ??= this.createConnection(signal)
     try {
@@ -270,6 +270,11 @@ export class AcpSessionRuntime {
     signal?: AbortSignal,
     onReplay?: (notification: AcpSessionNotification) => void,
   ): Promise<'reused' | 'resumed' | 'loaded'> {
+    // A closed transport cannot own a reusable in-memory session, even if the
+    // remote session id is still cached. Clear local state before deciding
+    // whether this binding can be reused; the caller's durable recovery guard
+    // remains responsible for authorizing a resume after an unknown outcome.
+    if (this.connection?.isClosed === true) await this.close()
     if (this.sessionId !== undefined) {
       if (this.sessionId !== binding.agentSessionId) throw new Error('ACP binding session id does not match the active runtime')
       return 'reused'

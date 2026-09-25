@@ -651,6 +651,42 @@ describe('permission decided 重连重放去重（/ dedupe_key）', () => {
     expect(await readEnvelopes('sess-1')).toHaveLength(1)
     expect(await readEnvelopes('sess-2')).toHaveLength(1)
   })
+
+  it('双 Sidecar 连接的 stale seq 不吞 distinct decided，重放仍只持久化一次', async () => {
+    const second = createAcpSidecar({ root })
+    extraStores.push(second)
+    // 第二个连接把本地 next seq 缓存为 2。
+    await second.append(SessionId('sess-shared'), { kind: 'permission', time: 1, data: permissionData('asked-second') })
+    // 首个连接占用 seq=2；第二连接随后写 decided 时必须重新读取 DB head。
+    await store.append(SessionId('sess-shared'), { kind: 'permission', time: 2, data: permissionData('asked-first') })
+    await second.append(SessionId('sess-shared'), { kind: 'permission', time: 3, data: decidedData('decision-1') })
+    expect((await readEnvelopes('sess-shared')).some(entry => {
+      if (entry.kind !== 'permission') return false
+      const payload = entry.payload as AcpPermissionAuditData
+      return payload.phase === 'decided' && payload.requestId === 'decision-1'
+    })).toBe(true)
+    // 不同连接的相同决定是幂等重放；另一个决定照常落库。
+    await store.append(SessionId('sess-shared'), { kind: 'permission', time: 4, data: decidedData('decision-1') })
+    await store.append(SessionId('sess-shared'), { kind: 'permission', time: 5, data: decidedData('decision-2') })
+
+    const entries = (await readEnvelopes('sess-shared')).filter(entry => entry.kind === 'permission')
+    expect(entries.map(entry => entry.seq)).toEqual([1, 2, 3, 4])
+    expect(entries.flatMap(entry => {
+      const payload = entry.payload as AcpPermissionAuditData
+      return payload.phase === 'decided' ? [payload.requestId] : []
+    })).toEqual(['decision-1', 'decision-2'])
+  })
+
+  it('permission 序号分配保留同连接 pending audit 的 reservation', async () => {
+    await store.append(SessionId('sess-queued'), { kind: 'binding', time: 1, data: BINDING_A })
+    await store.append(SessionId('sess-queued'), { kind: 'reconciliation', time: 2, data: { cause: 'binding-missing' } })
+    await store.append(SessionId('sess-queued'), { kind: 'permission', time: 3, data: decidedData('queued-mix') })
+    await store.flush()
+
+    const rows = await readEnvelopes('sess-queued')
+    expect(rows.map(row => row.seq)).toEqual([1, 2, 3])
+    expect(rows.map(row => row.kind)).toEqual(['binding', 'reconciliation', 'permission'])
+  })
 })
 
 describe('行级容错与库级 fail loud（坏行/隔离概念删除后的等价门槛）', () => {

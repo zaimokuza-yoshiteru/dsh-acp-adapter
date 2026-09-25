@@ -36,7 +36,7 @@ import { acpCanonicalHash16 } from '../../persistence/sidecar.ts'
 import { acpOptionsSnapshotOf } from '../../persistence/options-snapshot.ts'
 import type { AcpActivityKind, AcpActivityStatus, AcpBindingData, AcpFileSystemAuditData, AcpRecoveryState, AcpSidecar } from '../../persistence/sidecar.ts'
 import type { AcpSessionForkReason, AcpTerminalAuditData } from '../../domain/policy/events.ts'
-import { redactSecretText } from '../../domain/observability/redaction.ts'
+import { isSensitiveActivityField, redactSecretText } from '../../domain/observability/redaction.ts'
 import { hostSystemPrompt } from '../../domain/session/host-system-prompt.ts'
 import { AcpPromptContentError, toAcpPrompt } from '../../domain/session/prompt-content.ts'
 import { createAcpFileSystemHandlers } from '../../runtime/client-capabilities/filesystem.ts'
@@ -152,7 +152,7 @@ function redactActivityValue(value: unknown, depth = 0): unknown {
   if (value !== null && typeof value === 'object') {
     const result: Record<string, unknown> = {}
     for (const [key, item] of Object.entries(value).slice(0, 128)) {
-      result[key] = redactSecretText(key).toLowerCase() !== key.toLowerCase() || /(?:token|secret|password|authorization|api[_-]?key|cookie|credential)/i.test(key) ? '[redacted]' : redactActivityValue(item, depth + 1)
+      result[key] = redactSecretText(key).toLowerCase() !== key.toLowerCase() || isSensitiveActivityField(key, item) ? '[redacted]' : redactActivityValue(item, depth + 1)
     }
     return result
   }

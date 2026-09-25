@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { ExternalSubagentProjector } from '../../../src/host/subagent/external-projector.ts'
+import { EXTERNAL_SUBAGENT_ACTIVITY_ANCHOR, ExternalSubagentProjector } from '../../../src/host/subagent/external-projector.ts'
 import { SessionAlreadyExistsError, SessionPersistenceNotFoundError } from '@deepseek-ai/dsh-session-persistence'
 import type { SessionHandle, SessionHandleReadResult } from '@deepseek-ai/dsh-session-persistence'
 import { SessionId, SessionLogOffset, snapshotSessionEvent } from '@deepseek-ai/dsh-session'
@@ -260,9 +260,76 @@ describe('external subagent projector', () => {
       const [stored] = await sidecar.listProjectedSubagentActivities()
       expect(stored?.rawDetail?.length).toBeLessThan(16_384)
       expect(() => JSON.parse(stored!.rawDetail!)).not.toThrow()
-      expect(JSON.parse(stored!.rawDetail!)).toMatchObject({ projectionLabel: 'Inspect token=<redacted-token>' })
-      expect(records.get(result!.childSessionId)?.events[0]).toMatchObject({ data: { label: 'Inspect token=<redacted-token>' } })
+      expect(JSON.parse(stored!.rawDetail!)).toMatchObject({ projectionLabel: 'Inspect token=<redacted>' })
+      expect(records.get(result!.childSessionId)?.events[0]).toMatchObject({ data: { label: 'Inspect token=<redacted>' } })
       await expect(projector.repairInterrupted()).resolves.toEqual({ committed: 1, repaired: 0, conflicted: 0 })
+    } finally {
+      await sidecar.dispose()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('redacts text before digesting and restores numeric usage after a real sidecar close/reopen', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-projection-reopen-'))
+    let sidecar = createAcpSidecar({ root })
+    const records = new Map<string, { meta: SessionHeader; events: SessionEvent[] }>()
+    records.set('parent', { meta: { id: 'parent', cwd: '/tmp' } as never, events: [] })
+    const persistence = handleStorage(records)
+    persistence.create.mockRejectedValueOnce(new Error('simulated projection commit failure'))
+    const context = {
+      profileId: 'claude', bindingGeneration: 1, rootAcpSessionId: 'root',
+      parentDshSessionId: 'parent', parentCwd: '/tmp', flushParent: async () => true,
+    }
+    const input = {
+      ...observation,
+      label: 'Inspect token=label-secret',
+      task: { ...observation.task, text: 'Read apiKey=task-secret' },
+      result: { ...observation.result, text: 'Bearer result-secret-value' },
+      model: { id: 'provider/apiKey=model-secret', source: 'agent-structured-live' as const },
+      usage: { inputTokens: 17, outputTokens: 4, cacheReadTokens: 8, totalTokens: 21, source: 'agent-structured-live' as const },
+    }
+    try {
+      const first = new ExternalSubagentProjector(persistence, sidecar)
+      await expect(first.project(input, context)).rejects.toThrow('simulated projection commit failure')
+      const [staged] = await sidecar.listProjectedSubagentActivities()
+      const stagedDetail = JSON.parse(staged!.rawDetail!) as { task: { text: string }; result: { text: string }; model: { id: string }; usage: Record<string, unknown>; projectionLabel: string }
+      expect(stagedDetail.task.text).toBe('Read apiKey=<redacted>')
+      expect(stagedDetail.result.text).toBe('Bearer <redacted>')
+      expect(stagedDetail.projectionLabel).toBe('Inspect token=<redacted>')
+      expect(stagedDetail.model.id).toBe('provider/apiKey=<redacted>')
+      expect(stagedDetail.usage).toMatchObject({ inputTokens: 17, outputTokens: 4, cacheReadTokens: 8, totalTokens: 21 })
+
+      await sidecar.dispose()
+      sidecar = createAcpSidecar({ root })
+      const reopened = new ExternalSubagentProjector(persistence, sidecar)
+      await expect(reopened.repairInterrupted()).resolves.toEqual({ committed: 1, repaired: 1, conflicted: 0 })
+      const [restored] = await sidecar.listProjectedSubagentActivities()
+      expect(restored?.status).toBe('completed')
+      const child = records.get(restored!.dshSessionId)!
+      const assistant = child.events.find(event => event.type === 'assistant/message')
+      expect(assistant?.type === 'assistant/message' ? assistant.data.usage : undefined).toMatchObject({ inputTokens: 17, outputTokens: 4 })
+      expect(assistant?.type === 'assistant/message' ? assistant.data.message.source : undefined).toMatchObject({ model: 'provider/apiKey=<redacted>' })
+      expect(JSON.stringify(child.events)).not.toContain('task-secret')
+      expect(JSON.stringify(child.events)).not.toContain('result-secret-value')
+
+      const brokenChildId = 'session-dsh-acp-broken-v5'
+      const broken = { ...stagedDetail, childSessionId: brokenChildId, projectionHeader: { ...JSON.parse(staged!.rawDetail!).projectionHeader, id: brokenChildId }, usage: { ...stagedDetail.usage, inputTokens: '[redacted]' } }
+      const unsupportedChildId = 'session-dsh-acp-unsupported-header'
+      const unsupported = { ...broken, childSessionId: unsupportedChildId, projectionHeader: { ...broken.projectionHeader, id: unsupportedChildId, version: 999 } }
+      const activity = (dshSessionId: string, detail: unknown) => ({
+        dshSessionId, ownerDshSessionId: dshSessionId,
+        promptAnchorMessageId: EXTERNAL_SUBAGENT_ACTIVITY_ANCHOR,
+        activityId: 'external-subagent-record', time: 300, kind: 'delegated' as const,
+        status: 'running' as const, presentation: 'test', rawDetail: JSON.stringify(detail),
+      })
+      await sidecar.upsertActivity(activity(brokenChildId, broken))
+      await sidecar.upsertActivity(activity(unsupportedChildId, unsupported))
+      await expect(reopened.repairInterrupted()).resolves.toEqual({ committed: 1, repaired: 0, conflicted: 1 })
+      const afterRepair = await sidecar.listProjectedSubagentActivities()
+      expect(afterRepair.find(row => row.dshSessionId === brokenChildId)?.status).toBe('failed')
+      expect(afterRepair.find(row => row.dshSessionId === unsupportedChildId)?.status).toBe('running')
+      expect(JSON.parse(afterRepair.find(row => row.dshSessionId === brokenChildId)!.rawDetail!)).toMatchObject({ childSessionId: brokenChildId })
+      await expect(reopened.repairInterrupted()).resolves.toEqual({ committed: 1, repaired: 0, conflicted: 0 })
     } finally {
       await sidecar.dispose()
       fs.rmSync(root, { recursive: true, force: true })

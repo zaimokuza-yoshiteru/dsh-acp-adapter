@@ -139,6 +139,57 @@ describe('AcpSessionRuntime prompt cancellation', () => {
     expect(log).toContain('cancel-stuck: session/cancel received')
   }, 10_000)
 
+  it('restores the same bound session after cancel escalation closes its cached connection', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-runtime-cancel-restore-'))
+    roots.push(cwd)
+    const logPath = path.join(cwd, 'agent.log')
+    const source = `
+      let input = '';
+      const send = value => process.stdout.write(JSON.stringify(value) + '\\n');
+      const log = value => require('node:fs').appendFileSync(${JSON.stringify(logPath)}, value + '\\n');
+      log('started');
+      process.stdin.on('data', chunk => {
+        input += String(chunk);
+        let newline;
+        while ((newline = input.indexOf('\\n')) >= 0) {
+          const request = JSON.parse(input.slice(0, newline)); input = input.slice(newline + 1);
+          if (request.method === 'initialize') send({ jsonrpc: '2.0', id: request.id, result: { protocolVersion: 1, agentCapabilities: { sessionCapabilities: { resume: {} } } } });
+          else if (request.method === 'session/new') { log('session/new'); send({ jsonrpc: '2.0', id: request.id, result: { sessionId: 'saved-session' } }); }
+          else if (request.method === 'session/prompt') { send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'saved-session', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'started' }, messageId: 'cancel-test' } } }); log('prompt'); }
+          else if (request.method === 'session/cancel') log('cancel');
+          else if (request.method === 'session/resume') { log('session/resume'); send({ jsonrpc: '2.0', id: request.id, result: { sessionId: 'saved-session' } }); }
+        }
+      });
+      setInterval(() => {}, 1 << 30);
+    `
+    const argv = [process.execPath, '-e', source]
+    const env: Record<string, string> = {}
+    const runtime = new AcpSessionRuntime({
+      profileId: 'cancel-restore',
+      config: { command: process.execPath, args: argv.slice(1), env },
+      subprocess,
+      cwd,
+      prepareLaunch: async () => ({ argv, env, spawnPlan: { argv, env } }),
+      cancelGraceMs: 25,
+    })
+    runtimes.push(runtime)
+    const controller = new AbortController()
+    let updates = 0
+    const pending = runtime.prompt(PROMPT, () => { updates += 1 }, controller.signal)
+    await waitFor(() => updates > 0)
+    controller.abort(new Error('user stopped'))
+    await expect(pending).rejects.toBeInstanceOf(Error)
+
+    // This explicit binding restore is the runtime's normal recovery API. It
+    // must discard the closed transport and resume the durable id, never make
+    // an unrelated new ACP session.
+    await expect(runtime.restore({ agentSessionId: 'saved-session' })).resolves.toBe('resumed')
+    const log = fs.readFileSync(logPath, 'utf8')
+    expect(log).toContain('cancel\n')
+    expect(log).toContain('session/resume')
+    expect(log.match(/session\/new/g)).toHaveLength(1)
+  }, 10_000)
+
   it('returns a pending permission RPC as cancelled even when the host question ignores abort', async () => {
     let permissionSignal: AbortSignal | undefined
     const permissionStarted = Promise.withResolvers<void>()
