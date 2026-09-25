@@ -7,7 +7,7 @@ import { tmpdir, userInfo } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
-import { safeLiveDiagnostic } from './live-diagnostics.ts'
+import { readLiveActivitySummary, safeLiveDiagnostic, safeSpawnDiagnostic } from './live-diagnostics.ts'
 import { initProfile, loadProfileDirectory, loadLayeredEnv } from '@deepseek-ai/dsh-app-boot'
 import { runProfile } from '@deepseek-ai/dsh/profile-boot'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
@@ -40,6 +40,8 @@ const created = new Map<string, string>()
 const roles = new Map<string, string>()
 const completedTurns = new Map<string, number>()
 const completedTurnIds = new Map<string, Set<number>>()
+const assistantMessageCounts = new Map<string, number>()
+const hostToolResultCounts = new Map<string, number>()
 const failures: Array<{ actor: string; diagnostic: ReturnType<typeof safeLiveDiagnostic> }> = []
 // The CI job also installs/builds before this script; keep the live check
 // bounded so host shutdown and CI cleanup fit inside the job's 20 minute cap.
@@ -106,9 +108,14 @@ try {
   })
   ctx.on('tools/result', (execution, result) => {
     if (execution.agent?.options.provider === 'acp-devin') {
+      const marker = expectedReplyMarkers.get(execution.agent.id)?.values().next().value
+      const spawn = execution.name === 'spawn_teammate' ? safeSpawnDiagnostic(execution.arguments, marker) : undefined
+      const errorCode = result.isError ? safeLiveDiagnostic(result.error).toolCode : undefined
+      hostToolResultCounts.set(execution.agent.id, (hostToolResultCounts.get(execution.agent.id) ?? 0) + 1)
       executions.push({ name: execution.name, sessionId: execution.agent.id, success: !result.isError })
       console.log(JSON.stringify({ actor: roles.get(execution.agent.id) ?? 'member', session: execution.agent.id,
-        tool: execution.name, success: !result.isError }))
+        tool: execution.name, success: !result.isError,
+        ...(errorCode === undefined ? {} : { errorCode }), ...(spawn === undefined ? {} : { spawn }) }))
     }
   })
   ctx.on('session/event', (_session, event) => {
@@ -121,6 +128,7 @@ try {
       receipts.set(event.data.source.messageId, { sessionId: _session.id, seq: event.seq })
     }
     if (event.type === 'assistant/message' && event.data.interrupted !== true) {
+      assistantMessageCounts.set(_session.id, (assistantMessageCounts.get(_session.id) ?? 0) + 1)
       const text = event.data.message.content.filter(c => c.type === 'text').map(c => c.text).join('')
       for (const marker of expectedReplyMarkers.get(_session.id) ?? []) {
         if (!text.includes(marker)) continue
@@ -145,7 +153,13 @@ try {
         turns.add(event.data.turn)
         completedTurnIds.set(_session.id, turns)
       }
-      console.log(JSON.stringify({ actor, session: _session.id, event: 'turn/end', reason: reason.kind }))
+      console.log(JSON.stringify({ actor, session: _session.id, event: 'turn/end', reason: reason.kind,
+        ...(actor.startsWith('member-') ? {
+          assistantMessages: assistantMessageCounts.get(_session.id) ?? 0,
+          hostToolResults: hostToolResultCounts.get(_session.id) ?? 0,
+        } : {}) }))
+      assistantMessageCounts.delete(_session.id)
+      hostToolResultCounts.delete(_session.id)
     }
   })
   // Two independent leads exercise a single shared native MCP entry concurrently.
@@ -214,6 +228,15 @@ try {
   console.error(message.replaceAll(token, '<redacted>'))
   process.exitCode = 1
 } finally {
+  for (const [sessionId, actor] of roles) {
+    try {
+      console.log(JSON.stringify({ check: 'real-devin-activity-diagnostic', source: 'persistent-acp-projection', actor,
+        activity: readLiveActivitySummary(join(home, 'dsh-acp', 'sidecar.sqlite'), sessionId) }))
+    } catch (diagnosticError) {
+      // Best-effort diagnostics must not replace the original test result.
+      void diagnosticError
+    }
+  }
   await host?.shutdown.shutdown(process.exitCode === 1 ? 1 : 0)
   process.chdir(originalCwd)
   await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
