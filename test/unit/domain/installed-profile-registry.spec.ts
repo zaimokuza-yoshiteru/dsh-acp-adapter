@@ -86,7 +86,10 @@ class FakeSettingsProvider {
   private section: Record<string, unknown> = {};
   private schema: AcpSettingsSchema = acpSettingsSchema;
   onChange: () => void = () => {}
-  readonly config = { agents: { get: () => acpSettingsSchema(this.section).agents } };
+  readonly config = {
+    agents: { get: () => acpSettingsSchema(this.section).agents },
+    searchableModelPicker: { get: () => acpSettingsSchema(this.section).searchableModelPicker },
+  };
   private watchers: WatchCallback[] = [];
 
   register(_ns: string, schema: AcpSettingsSchema) {
@@ -301,9 +304,12 @@ describe('runtime 身份与配置兼容', () => {
 
 describe('acpSettingsSchema', () => {
   it('空/缺省 section 解析为零 agents', () => {
-    expect(acpSettingsSchema(undefined)).toEqual({ agents: {} });
-    expect(acpSettingsSchema({})).toEqual({ agents: {} });
-    expect(acpSettingsSchema({ agents: {} })).toEqual({ agents: {} });
+    expect(acpSettingsSchema(undefined)).toEqual({ agents: {}, searchableModelPicker: false });
+    expect(acpSettingsSchema({})).toEqual({ agents: {}, searchableModelPicker: false });
+    expect(acpSettingsSchema({ agents: {} })).toEqual({ agents: {}, searchableModelPicker: false });
+    expect(acpSettingsSchema({ agents: {}, searchableModelPicker: true }).searchableModelPicker).toBe(true);
+    expect(() => acpSettingsSchema({ agents: {}, searchableModelPicker: 'yes' })).toThrow(/must be a boolean/);
+    expect(() => acpSettingsSchema({ agents: {}, searchableModelPicker: null })).toThrow(/must be a boolean/);
   });
 
   it('解析合法 agents 并补默认值（args/env），保留 loginHint', () => {
@@ -353,7 +359,7 @@ describe('acpSettingsSchema', () => {
 
   it('未知键被剥离；已删除的 profile MCP 与外部委派开关不会继续进入产品配置', () => {
     const resolved = acpSettingsSchema({ agents: { devin: { name: 'Devin', command: 'devin', typoField: 1, mcpServers: [{ type: 'stdio' }] } }, projectExternalSubagents: false, stray: true });
-    expect(resolved).toEqual({ agents: { devin: { name: 'Devin', command: 'devin', args: [], env: {} } } });
+    expect(resolved).toEqual({ agents: { devin: { name: 'Devin', command: 'devin', args: [], env: {} } }, searchableModelPicker: false });
   });
 
   it('非法输入逐一拒绝', () => {
@@ -387,6 +393,9 @@ describe('acpSettingsSchema', () => {
     expect(Object.isFrozen(config.agents.get())).toBe(true)
     expect(() => Config({ agents: { custom: { name: 'Custom' } } })).toThrow()
     expect(Config.dict?.agents?.meta.volatile).toBe(true)
+    expect(Config.dict?.searchableModelPicker?.meta.volatile).toBe(true)
+    expect(Config({ agents: {} }).searchableModelPicker.get()).toBe(false)
+    expect(Config({ agents: {}, searchableModelPicker: true }).searchableModelPicker.get()).toBe(true)
   });
 
  it(' singleton：同一内置 runtime 的第二个 profile 被拒绝，错误点名已有 profile', () => {
@@ -567,6 +576,16 @@ describe('installInstalledProfileRegistry：注册/替换调用序列', () => {
     expect(llm.calls).toEqual(['registerAdapter:acp-devin']);
     expect(llm.adapters).toHaveLength(1);
     expect(llm.adapters[0]).toBeDefined();
+  });
+
+  it('模型选择器开关的 settings 更新不重新注册 ACP providers', async () => {
+    const { ctx, llm, settings } = fakeHarness();
+    installInstalledProfileRegistry(ctx, settings.config);
+    await settings.mutate([{ op: 'set', path: ['agents', 'devin'], value: { ...devinAgent } }]);
+    llm.calls.length = 0;
+    await settings.mutate([{ op: 'set', path: ['searchableModelPicker'], value: true }]);
+    expect(llm.calls).toEqual([]);
+    expect(llm.adapters).toHaveLength(1);
   });
 
   it('增删 agent 维持每 profile 的独立注册并回收删除项', async () => {

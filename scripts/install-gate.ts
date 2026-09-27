@@ -176,7 +176,9 @@ function tarEntries(tgz: string) {
 }
 
 export function assertTarballEntries(entries: readonly string[]) {
-  const forbidden = [/^(?:experiments|test|scripts)\//i, /(?:release-evidence|evidence)/i, /(?:host-compat|model-picker)/i]
+  // The searchable selector is an opt-in occupant of DSH's public model seat.
+  // The existing host-compat path ban still rejects the retired picker implementation.
+  const forbidden = [/^(?:experiments|test|scripts)\//i, /(?:release-evidence|evidence)/i, /host-compat/i]
   for (const entry of entries) {
     if (forbidden.some(pattern => pattern.test(entry))) fail(`tarball contains forbidden development/legacy path: ${entry}`)
   }

@@ -1,5 +1,6 @@
 # @zaimokuza/dsh-acp-adapter bundle patch layer for the supported DSH host.
-# The adapter is additive; stock AgentLoop and ModelPicker remain active.
+# The adapter is additive; the native AgentLoop and ModelPicker remain the default.
+# A settings opt-in enables the searchable model picker enhancement.
 #
 # This file becomes one patch layer when the package is listed in a profile's
 # dsh.profile.bundles (`dsh plugin --profile <name> add <path>` reconciles it

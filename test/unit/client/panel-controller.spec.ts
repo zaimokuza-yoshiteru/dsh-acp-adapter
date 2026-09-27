@@ -29,6 +29,36 @@ function view(rows: readonly AcpProviderHealth[]): AcpHealthView {
 }
 
 describe('AcpPanelController targeted health checks', () => {
+  it('persists the picker preference at its own path using the current settings revision', async () => {
+    const mutate = vi.fn(async () => true)
+    const controller = new AcpPanelController({
+      scope: {
+        getSnapshot: () => ({ status: 'ready', writable: true, revision: 12, value: { agents: {} } }),
+        subscribe: () => () => {},
+      },
+      mutate, refusedMessage: () => 'refused',
+      remote: { health: vi.fn(), backendOf: vi.fn(), boundSessions: vi.fn(), activityFollow: async function* () {} } as never,
+    })
+    await expect(controller.setSearchableModelPicker(true)).resolves.toBeUndefined()
+    expect(mutate).toHaveBeenCalledWith([{ op: 'set', path: ['searchableModelPicker'], value: true }], 12)
+    controller.dispose()
+  })
+
+  it('surfaces the existing settings revision refusal for a stale picker write', async () => {
+    const mutate = vi.fn(async () => false)
+    const controller = new AcpPanelController({
+      scope: {
+        getSnapshot: () => ({ status: 'ready', writable: true, revision: 13, value: { agents: {} } }),
+        subscribe: () => () => {},
+      },
+      mutate, refusedMessage: () => 'settings changed; reload and retry',
+      remote: { health: vi.fn(), backendOf: vi.fn(), boundSessions: vi.fn(), activityFollow: async function* () {} } as never,
+    })
+    await expect(controller.setSearchableModelPicker(true)).resolves.toBe('settings changed; reload and retry')
+    expect(mutate).toHaveBeenCalledWith([{ op: 'set', path: ['searchableModelPicker'], value: true }], 13)
+    controller.dispose()
+  })
+
   it('allows different agents concurrently, deduplicates the same agent, and merges only its row', async () => {
     const devin = deferred<{ ok: true; value: AcpHealthView }>()
     const kimi = deferred<{ ok: true; value: AcpHealthView }>()

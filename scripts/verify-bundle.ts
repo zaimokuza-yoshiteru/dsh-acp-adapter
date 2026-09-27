@@ -5,7 +5,7 @@
 // sourcemap 在场且 sources 非空）④ module requests（产物内 require 全部落在
 // platform snapshot ∪ dsh.client.external）⑤ 源码消费审计（ctx.get 服务读取必须有
 // 模块级 inject 或显式可选登记）⑥ npm tarball 内容精确性（npm pack --dry-run）
-// ⑦ 旧接管面产物禁入（synthetic tool / custom picker / old compatibility paths）。
+// ⑦ 旧接管面产物禁入（synthetic tool / legacy picker / old compatibility paths）。
 // 规范出处：reference/deepseek-harness packages/client/tsdown.client.ts（preset）、
 // packages/client/web/src/platform.ts（baseline）、scripts/verify-client-packages.ts（门禁）。
 import { execFileSync } from 'node:child_process'
@@ -233,8 +233,8 @@ if (existsSync(bundlePath)) {
   }
   console.log(`[verify-bundle] module requests: ${requested.size === 0 ? '(none)' : [...requested].sort().join(', ')}`)
 
-  // The alpha client entry is additive only: stock DSH owns Chat/ModelPicker;
-  // this bundle contributes one keyed ACP activity node renderer.
+  // DSH owns the model catalog and native seat. ACP may shadow that seat only
+  // through the settings-gated public slot and must dispose the shadow on opt-out.
 }
 
 // Activity styles are scoped to the keyed renderer and bundled with the client entry.
@@ -245,7 +245,7 @@ if (existsSync(bundlePath)) {
 
 const forbiddenArtifactMarkers = [
   { pattern: 'dsh_acp_external_tool', label: 'synthetic ACP tool' },
-  { pattern: 'model-picker', label: 'custom model picker' },
+  { pattern: 'host-compat/model-picker', label: 'legacy host model picker implementation' },
   { pattern: 'host-compat/agent-loop', label: 'old host compatibility AgentLoop' },
   { pattern: 'protocol/v1/translate', label: 'removed protocol translator' },
 ]

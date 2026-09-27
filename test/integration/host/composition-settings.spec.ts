@@ -18,7 +18,10 @@ class SettingsDocument {
   private value: unknown
   private readonly watchers = new Set<Watcher>()
   onChange: () => void = () => {}
-  readonly config = { agents: { get: () => acpSettingsSchema(this.value).agents } }
+  readonly config = {
+    agents: { get: () => acpSettingsSchema(this.value).agents },
+    searchableModelPicker: { get: () => acpSettingsSchema(this.value).searchableModelPicker },
+  }
   configure() { return () => {} }
 
   constructor(initial: unknown) {

@@ -17,6 +17,7 @@ describe('client contribution', () => {
     // the existing entry.
     const slotEntries = new Map<string, unknown[]>([
       ['shell.overlay', [{ name: 'shell.overlay', id: 'third-party-overlay' }]],
+      ['conversation.input.model', [{ name: 'conversation.input.model', priority: 0, id: 'native-model-selector' }]],
     ])
     const lifecycle: string[] = []
     const ctx = {
@@ -59,7 +60,9 @@ describe('client contribution', () => {
       inject: (deps: readonly string[], callback: (scope: typeof ctx) => void | Promise<void>) => {
         uiInjects.push([...deps])
         // The RC assembly intentionally has no deleted Remote agentTeams namespace.
-        const started = Promise.resolve(callback(ctx))
+        // Model directory is optional: the shell's original composer occupant
+        // remains registered if the host does not provide that service.
+        const started = deps.includes('modelDirectories') ? Promise.resolve() : Promise.resolve(callback(ctx))
         return Object.assign(started, {
           dispose: async () => { lifecycle.push('ui-dispose') },
         })
@@ -67,7 +70,11 @@ describe('client contribution', () => {
     })
     const dispose = await apply(ctx as never)
     expect(lifecycle).toEqual(['mount'])
-    expect(uiInjects).toEqual([[...inject, 'remote.dshAcp'], ['remote.subagents', 'uiSession']])
+    expect(uiInjects).toEqual([
+      [...inject, 'remote.dshAcp'],
+      ['slots', 'modelDirectories'],
+      ['remote.subagents', 'uiSession'],
+    ])
     expect(definitions).toHaveLength(3)
     expect(injections).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'acp' }),
@@ -78,6 +85,9 @@ describe('client contribution', () => {
     expect(slotEntries.get('shell.overlay')).toEqual([
       { name: 'shell.overlay', id: 'third-party-overlay' },
       expect.objectContaining({ id: 'dsh-acp-cross-backend-confirmation' }),
+    ])
+    expect(slotEntries.get('conversation.input.model')).toEqual([
+      { name: 'conversation.input.model', priority: 0, id: 'native-model-selector' },
     ])
     await dispose()
     expect(lifecycle).toEqual(['mount', 'ui-dispose', 'dispose'])

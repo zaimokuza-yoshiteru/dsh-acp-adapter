@@ -205,6 +205,11 @@ export class AcpPanelController {
     return this.mutate([{ op: 'unset', path: ['agents', id] }])
   }
 
+  /** Persist the opt-in picker enhancement through the same revision fence as agent settings. */
+  async setSearchableModelPicker(enabled: boolean): Promise<string | undefined> {
+    return this.mutate([{ op: 'set', path: ['searchableModelPicker'], value: enabled }])
+  }
+
   /**
  * 删除确认提示：该 profile 的既有会话 binding 计数（dshAcp/boundSessions）。
    * RPC 失败/载荷畸形/应答张冠李戴一律归 undefined——计数是确认的增强提示

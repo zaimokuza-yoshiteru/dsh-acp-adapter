@@ -1,4 +1,4 @@
-import { Config } from '../../src/host/composition/config.ts'
+import { Config, acpSettingsSchema } from '../../src/host/composition/config.ts'
 import { readFileSync } from 'node:fs'
 import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -10,16 +10,16 @@ import { apply } from '../../src/host/composition/index.ts'
 const root = new URL('../../', import.meta.url)
 const patch = readFileSync(new URL('cordis.patch.yml', root), 'utf8')
 const client = readFileSync(new URL('src/client/index.ts', root), 'utf8')
-const activeClient = client
 
 describe('native DSH non-interference contract', () => {
-  it('does not disable or replace stock AgentLoop/ModelPicker rows', () => {
+  it('keeps native AgentLoop/ModelPicker rows enabled and defaults the opt-in replacement off', () => {
     expect(patch).not.toMatch(/id:\s+agent-loop[\s\S]*disabled:\s*true/)
     expect(patch).not.toMatch(/id:\s+ui-model-selection[\s\S]*disabled:\s*true/)
     expect(patch).not.toContain('agent-loop-acp')
     expect(patch).not.toContain('ui-model-selection')
-    expect(activeClient).not.toContain("register({ name: 'model'")
-    expect(activeClient).not.toContain('conversation.input.model')
+    expect(client).not.toContain("register({ name: 'model'")
+    expect(acpSettingsSchema(undefined).searchableModelPicker).toBe(false)
+    expect(acpSettingsSchema({ agents: {} }).searchableModelPicker).toBe(false)
   })
 
   it('keeps native A→A and A→B dispatch independent after ACP composition is installed', async () => {

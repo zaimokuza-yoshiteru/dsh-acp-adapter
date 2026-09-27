@@ -62,6 +62,7 @@ export interface AcpSectionWire {
   refreshAgentHealth(agentId: string): void
   saveAgent(editingId: string | undefined, draft: AgentDraft): Promise<string | undefined>
   deleteAgent(id: string): Promise<string | undefined>
+  setSearchableModelPicker(enabled: boolean): Promise<string | undefined>
   /**
  * 删除确认提示：该 profile 的既有会话 binding 计数；undefined = 计数不可
    * 得（RPC 失败/畸形），确认块退回无计数的基础文案（不冒充 0）。
@@ -85,6 +86,9 @@ type EditorState =
 interface InputEvent {
   target: { value: string }
 }
+interface CheckboxEvent {
+  currentTarget: { checked: boolean }
+}
 
 /**
  * Render the ACP section content column.
@@ -105,6 +109,8 @@ function Loaded({ t, useStore, panel }: {
   const snapshot = useStore((value) => value)
   const [editor, setEditor] = useState<EditorState | null>(null)
   const [notice, setNotice] = useState<'saved' | 'deleted' | null>(null)
+  const [pickerSaving, setPickerSaving] = useState(false)
+  const [pickerSaveFailed, setPickerSaveFailed] = useState(false)
   // Delegate placement, scrolling, focus and keyboard interaction to the native Menu.
   const [addMenuOpen, setAddMenuOpen] = useState(false)
   // Opening the panel reads saved health facts; only an explicit recheck probes.
@@ -159,7 +165,34 @@ function Loaded({ t, useStore, panel }: {
   const agents = settings.agents
   const ids = sortedAgentIds(agents)
 
+  const onSearchablePickerChange = async (event: CheckboxEvent): Promise<void> => {
+    setPickerSaving(true)
+    setPickerSaveFailed(false)
+    try {
+      const error = await panel.setSearchableModelPicker(event.currentTarget.checked)
+      if (error !== undefined) setPickerSaveFailed(true)
+    } catch {
+      setPickerSaveFailed(true)
+    } finally {
+      setPickerSaving(false)
+    }
+  }
+
   if (readOnly) children.push(h('p', { key: 'ro', className: css.notice }, t('readOnly')))
+  children.push(h('section', { key: 'picker-setting', className: css.pickerSetting },
+    h('label', { className: css.pickerSettingLabel },
+      h('input', {
+        type: 'checkbox',
+        checked: settings.searchableModelPicker,
+        disabled: readOnly || pickerSaving,
+        onChange: onSearchablePickerChange,
+        'aria-describedby': 'dsh-acp-searchable-picker-description',
+      }),
+      h('span', null, t('searchableModelPicker')),
+    ),
+    h('p', { id: 'dsh-acp-searchable-picker-description', className: css.hint }, t('searchableModelPickerHint')),
+    pickerSaveFailed ? h('p', { className: css.error, role: 'alert' }, t('searchableModelPickerSaveFailed')) : null,
+  ))
   if (notice !== null) {
     children.push(h('p', {
       key: 'notice', className: css.saved, role: 'status', 'aria-live': 'polite',
