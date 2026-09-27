@@ -1,7 +1,7 @@
 /** Copy used only by the opt-in searchable composer model seat. */
 export const zh = {
   trigger: '模型',
-  search: '搜索模型名称、ID 或服务商',
+  search: '搜索模型名称、ID 或提供商',
   model: '模型',
   effort: '推理等级',
   providerAccount: 'DeepSeek 账号',

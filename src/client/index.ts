@@ -8,6 +8,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
+import type {} from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
 import type {} from '@deepseek-ai/dsh-client-ui-session/client'
 import type {} from '@deepseek-ai/dsh-client-ui-workspace/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
@@ -107,11 +108,9 @@ async function registerUi(ctx: ClientContext): Promise<void> {
   ctx.effect(() => ctx.locale.register('acpModelPicker', { zh: modelPickerZh, en: modelPickerEn }), 'dsh-acp: searchable model picker dictionaries')
   ctx.effect(() => () => { panelController.dispose() }, 'dsh-acp: settings controller')
   ctx.effect(() => () => { managedRoutes.dispose() }, 'dsh-acp: managed route catalogue')
-  ctx.slots.inject('settings.section', () => ctx.slots.register({
-    name: 'settings.section',
-    id: 'acp',
-    order: 900,
-    label: () => settingsT('title'),
+  ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register({
+    name: 'plugins.bundle.config',
+    key: '@zaimokuza/dsh-acp-adapter',
     locale: 'settings.acp',
     store: createAcpPanelStore,
     inject: (actions: AcpPanelStoreActions) => {

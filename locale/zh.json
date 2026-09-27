@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "ACP adapter",
+    "description": "添加并管理通过 ACP 接入 DSH 会话页面的智能体。"
+  }
+}

@@ -1,5 +1,5 @@
 /**
- * The ACP settings panel's store seat: the `settings.section`
+ * The ACP configuration page's store seat: the `plugins.bundle.config`
  * registration declares `store: createAcpPanelStore` (exclusive factory — the
  * framework mints the handle per entry; nothing module-level), and the glue
  * controller publishes through the baked actions it receives at attach time.

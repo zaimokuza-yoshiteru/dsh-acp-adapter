@@ -1,6 +1,6 @@
 import { catalogIdOf } from '../../contract/agent-config.ts'
 /**
- * The ACP settings section component tree.
+ * The ACP plugin detail panel component tree.
  *
  * Thin presentation only: every decision (validation, parsing, health/login
  * derivation, CRUD semantics) lives in logic.ts, and every side effect
@@ -17,7 +17,7 @@ import { catalogIdOf } from '../../contract/agent-config.ts'
  * @module @zaimokuza/dsh-acp-adapter/client/AcpSection
  */
 
-import { createElement as h, useEffect, useState } from 'react'
+import { createElement as h, useCallback, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import {
   Button,
@@ -45,9 +45,6 @@ import type { AcpAgentConfig, AcpProviderHealth, AgentDraft, DraftError } from '
 import type { AcpLocaleKey } from './locales.ts'
 import type { AcpPanelSnapshot, HealthState } from '../data/stores/panel-store.ts'
 import css from './AcpSection.module.css'
-
-/** Replaced by the client build with this package's manifest version. */
-declare const __DSH_ACP_ADAPTER_VERSION__: string
 
 /** The section's translate seat (slot renderer binds it from the entry's `locale` declaration). */
 export type AcpTranslate = (key: AcpLocaleKey, params?: Record<string, string | number>) => string
@@ -113,6 +110,35 @@ function Loaded({ t, useStore, panel }: {
   const [pickerSaveFailed, setPickerSaveFailed] = useState(false)
   // Delegate placement, scrolling, focus and keyboard interaction to the native Menu.
   const [addMenuOpen, setAddMenuOpen] = useState(false)
+  const [addMenuSide, setAddMenuSide] = useState<'bottom' | 'top'>('bottom')
+  const addMenuSideRef = useRef<'bottom' | 'top'>('bottom')
+  const addButtonRef = useRef<HTMLButtonElement | null>(null)
+  const getCatalogAnchorRect = useCallback((): DOMRect | null => {
+    const button = addButtonRef.current
+    if (button === null) return null
+    const rect = button.getBoundingClientRect()
+    const list = css.catalogMenu === undefined
+      ? null
+      : document.getElementsByClassName(css.catalogMenu).item(0) as HTMLElement | null
+    const topClearanceValue = getComputedStyle(document.documentElement).getPropertyValue('--dsh-frame-top-clearance')
+    const topClearance = Math.max(12, Number.parseFloat(topClearanceValue) || 12)
+    const below = Math.max(0, window.innerHeight - rect.bottom - 16)
+    const above = Math.max(0, rect.top - topClearance - 4)
+    // Prefer the lower half of the viewport for the menu; anchors with more
+    // usable room above open upward. Long catalogs still scroll within either side.
+    const nextSide = below >= above ? 'bottom' : 'top'
+    const width = `${rect.width}px`
+    const height = `${nextSide === 'bottom' ? below : above}px`
+    if (list !== null) {
+      if (list.style.getPropertyValue('--acp-catalog-menu-width') !== width) list.style.setProperty('--acp-catalog-menu-width', width)
+      if (list.style.getPropertyValue('--acp-catalog-menu-max-height') !== height) list.style.setProperty('--acp-catalog-menu-max-height', height)
+    }
+    if (addMenuSideRef.current !== nextSide) {
+      addMenuSideRef.current = nextSide
+      setAddMenuSide(nextSide)
+    }
+    return rect
+  }, [])
   // Opening the panel reads saved health facts; only an explicit recheck probes.
   useEffect(() => {
     panel.refreshHealth()
@@ -142,13 +168,7 @@ function Loaded({ t, useStore, panel }: {
   }
 
   const settings = snapshot.settings
-  const children: ReactNode[] = [
-    h('h2', { key: 'title', className: css.title },
-      t('title'),
-      h(Tag, { tone: 'neutral' }, `v${__DSH_ACP_ADAPTER_VERSION__}`),
-    ),
-    h('p', { key: 'intro', className: css.intro }, t('intro')),
-  ]
+  const children: ReactNode[] = []
 
   if (settings.status !== 'ready') {
     const key = settings.status === 'loading'
@@ -158,12 +178,13 @@ function Loaded({ t, useStore, panel }: {
         : 'settingsInvalid'
     const cls = settings.status === 'invalid' ? css.error : css.hint
     children.push(h('p', { key: 'status', className: cls }, t(key)))
-    return h('div', { className: css.section }, children)
+    return h('div', { className: css.section, 'data-dsh-acp-panel': '' }, children)
   }
 
   const readOnly = !settings.writable
   const agents = settings.agents
   const ids = sortedAgentIds(agents)
+  children.push(h('h2', { key: 'agents-title', className: css.sectionTitle }, t('agentConfiguration')))
 
   const onSearchablePickerChange = async (event: CheckboxEvent): Promise<void> => {
     setPickerSaving(true)
@@ -179,20 +200,6 @@ function Loaded({ t, useStore, panel }: {
   }
 
   if (readOnly) children.push(h('p', { key: 'ro', className: css.notice }, t('readOnly')))
-  children.push(h('section', { key: 'picker-setting', className: css.pickerSetting },
-    h('label', { className: css.pickerSettingLabel },
-      h('input', {
-        type: 'checkbox',
-        checked: settings.searchableModelPicker,
-        disabled: readOnly || pickerSaving,
-        onChange: onSearchablePickerChange,
-        'aria-describedby': 'dsh-acp-searchable-picker-description',
-      }),
-      h('span', null, t('searchableModelPicker')),
-    ),
-    h('p', { id: 'dsh-acp-searchable-picker-description', className: css.hint }, t('searchableModelPickerHint')),
-    pickerSaveFailed ? h('p', { className: css.error, role: 'alert' }, t('searchableModelPickerSaveFailed')) : null,
-  ))
   if (notice !== null) {
     children.push(h('p', {
       key: 'notice', className: css.saved, role: 'status', 'aria-live': 'polite',
@@ -272,6 +279,9 @@ function Loaded({ t, useStore, panel }: {
       dense: true,
       autoFocus: true,
       className: css.addMenu ?? '',
+      listClassName: css.catalogMenu ?? '',
+      side: addMenuSide,
+      getAnchorRect: getCatalogAnchorRect,
       items: [
         ...(verified.length === 0 ? [] : [{ type: 'label' as const, id: 'verified-label', text: t('catalogVerified', { count: verified.length }) }]),
         ...verified.map(catalogItem),
@@ -296,6 +306,7 @@ function Loaded({ t, useStore, panel }: {
       anchor: h('button', {
         type: 'button',
         className: css.addButton,
+        ref: addButtonRef,
         disabled: readOnly,
         'aria-haspopup': 'menu',
         'aria-expanded': addMenuOpen,
@@ -316,7 +327,25 @@ function Loaded({ t, useStore, panel }: {
     ),
   ))
 
-  return h('div', { className: css.section }, children)
+  children.push(h('section', { key: 'preferences', className: css.preferences, 'aria-labelledby': 'dsh-acp-preferences-title' },
+    h('h2', { id: 'dsh-acp-preferences-title', className: css.preferencesTitle }, t('interfacePreferences')),
+    h('div', { className: css.pickerSetting },
+      h('label', { className: css.pickerSettingLabel },
+        h('input', {
+          type: 'checkbox',
+          checked: settings.searchableModelPicker,
+          disabled: readOnly || pickerSaving,
+          onChange: onSearchablePickerChange,
+          'aria-describedby': 'dsh-acp-searchable-picker-description',
+        }),
+        h('span', null, t('searchableModelPicker')),
+      ),
+      h('p', { id: 'dsh-acp-searchable-picker-description', className: css.hint }, t('searchableModelPickerHint')),
+      pickerSaveFailed ? h('p', { className: css.error, role: 'alert' }, t('searchableModelPickerSaveFailed')) : null,
+    ),
+  ))
+
+  return h('div', { className: css.section, 'data-dsh-acp-panel': '' }, children)
 }
 
 /** 一个已配置 Agent：默认只展示名称、可操作状态和管理动作。 */
@@ -459,7 +488,7 @@ function AgentCard(props: {
     }))
   }
 
-  return h('li', { className: css.rowCard }, children)
+  return h('li', { className: css.rowCard, 'data-dsh-acp-agent': props.id }, children)
 }
 
 /** Localize product-owned probe failures from stable facts; never render host prose verbatim. */

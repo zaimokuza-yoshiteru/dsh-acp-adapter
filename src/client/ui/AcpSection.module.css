@@ -13,24 +13,33 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
-  max-width: 720px;
+  width: 100%;
+  min-width: 0;
   color: var(--dsw-alias-label-primary);
 }
-.title {
+.sectionTitle {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
   margin: 0;
-  font-size: 16px;
-  line-height: 24px;
+  font-size: 14px;
+  line-height: 20px;
   font-weight: 500;
 }
-.intro {
+.preferences {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding-top: 16px;
+  border-top: 0.5px solid var(--dsw-alias-border-l2);
+}
+.preferencesTitle {
   margin: 0;
   font-size: 14px;
-  line-height: 22px;
-  color: var(--dsw-alias-label-tertiary);
+  line-height: 20px;
+  font-weight: 500;
 }
 .notice {
   margin: 0;
@@ -59,20 +68,20 @@
 .addActions {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 8px;
+  min-width: 0;
 }
 .addMenu {
   flex: 1 1 0;
   min-width: 180px;
 }
-/* The native Menu owns scrolling, placement, focus and footer behavior.
-   Its portal has no surface-class prop; scope this size rule to our own labels,
-   using the public menu role rather than upstream generated class names. */
-:global([role="menu"]):has(.catalogEntry) {
-  width: min(340px, calc(100vw - 24px));
+/* The native Menu owns material, keyboard interaction, and its pinned footer.
+   Its public listClassName hook scopes sizing to this catalog card in portal mode. */
+.catalogMenu {
+  width: min(var(--acp-catalog-menu-width, 180px), calc(100vw - 24px));
   min-width: 0;
   max-width: calc(100vw - 24px);
-  max-height: min(420px, 65dvh);
+  max-height: var(--acp-catalog-menu-max-height, calc(100vh - 24px));
 }
 .catalogEntry {
   display: flex;
@@ -99,9 +108,9 @@
   align-items: center;
   justify-content: center;
   gap: 6px;
-  min-width: 180px;
-  height: 44px;
-  padding: 0 14px;
+  min-width: min(180px, 100%);
+  height: 40px;
+  padding: 0 12px;
   border: 1px dashed var(--dsw-alias-border-l3);
   border-radius: 12px;
   background: transparent;
@@ -163,6 +172,8 @@
   min-width: 0;
 }
 .rowName {
+  min-width: 0;
+  overflow-wrap: anywhere;
   font-size: 14px;
   line-height: 22px;
   font-weight: 500;

@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "ACP adapter",
+    "description": "Add and manage agents available from the DSH session UI through ACP."
+  }
+}

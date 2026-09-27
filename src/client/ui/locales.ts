@@ -1,7 +1,7 @@
 /**
- * Copy dictionaries for the ACP settings section. Precedent:
+ * Copy dictionaries for the ACP plugin detail panel. Precedent:
  * ui-settings-models/src/client/locales.ts — one flat template-string map per
- * locale, keyed by a union type the section's `t` seat is narrowed to.
+ * locale, keyed by a union type the panel's `t` seat is narrowed to.
  *
  * 用户可见文案保持简短；协议和产品边界由 README 维护。
  */
@@ -85,14 +85,14 @@ const zh = {
   teamApprovalEntry: '{name} · 待处理请求',
   teamApprovalLoadFailed: '暂时无法读取团队待处理请求。',
   teamApprovalOpenFailed: '无法打开成员会话，请从原生团队面板重试。',
-  title: 'ACP adapter',
-  intro: '添加并管理通过 ACP 接入 DSH 会话页面的智能体。',
+  agentConfiguration: 'Agent 配置',
+  interfacePreferences: '界面偏好',
   searchableModelPicker: '可搜索模型选择器',
   searchableModelPickerHint: '开启后可按模型名称、ID 或提供商搜索；关闭后恢复 DSH 原生选择器。',
   searchableModelPickerSaveFailed: '无法保存模型选择器设置，请重试。',
   settingsLoading: '正在读取设置…',
   settingsUnavailable: '当前环境不提供设置服务，ACP 面板不可用。',
-  settingsInvalid: 'dsh-acp 设置内容无效，请检查配置文件后重试；面板已按无效配置拒绝编辑。',
+  settingsInvalid: 'dsh-acp-adapter 配置无效，请检查配置文件后重试；面板已拒绝编辑无效配置。',
   readOnly: '当前设置文档为只读，无法保存修改。',
   healthUnreachable: '无法访问 dsh-acp 主机端点（插件 host 半可能未加载）：健康信息不可用，配置编辑不受影响。',
   emptyAgents: '还没有配置任何 ACP agent。',
@@ -413,14 +413,14 @@ const en: Record<AcpLocaleKey, string> = {
   teamApprovalEntry: '{name} · Pending request',
   teamApprovalLoadFailed: 'Team pending requests are temporarily unavailable.',
   teamApprovalOpenFailed: 'Could not open the member session. Retry from the native Team panel.',
-  title: 'ACP adapter',
-  intro: 'Add and manage agents available from the DSH session UI through ACP.',
+  agentConfiguration: 'Agent configuration',
+  interfacePreferences: 'Interface preferences',
   searchableModelPicker: 'Searchable model picker',
   searchableModelPickerHint: 'Search by model name, ID, or provider when enabled; turn off to restore the native DSH selector.',
   searchableModelPickerSaveFailed: 'Could not save the model picker setting. Please retry.',
   settingsLoading: 'Loading settings…',
   settingsUnavailable: 'No settings service in this environment; the ACP panel is unavailable.',
-  settingsInvalid: 'The dsh-acp settings section is invalid. Fix the config file and retry; the panel refuses to edit an invalid document.',
+  settingsInvalid: 'The dsh-acp-adapter configuration is invalid. Fix the config file and retry; the panel refuses to edit an invalid document.',
   readOnly: 'The settings document is read-only; changes cannot be saved.',
   healthUnreachable: 'The dsh-acp host endpoints are unreachable (the plugin host half may not be loaded): health data is unavailable, configuration editing is unaffected.',
   emptyAgents: 'No ACP agents configured yet.',

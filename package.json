@@ -1,7 +1,8 @@
 {
   "name": "@zaimokuza/dsh-acp-adapter",
-  "version": "0.1.7-rc.2.0",
+  "version": "0.1.7-rc.2.1",
   "description": "Use AI agents from the DSH session UI.",
+  "icon": "./icon.svg",
   "keywords": [
     "dsh",
     "dsh-plugin",
@@ -44,7 +45,8 @@
       "types": "./lib/typert.remote-client.d.ts",
       "default": "./lib/typert.remote-client.js"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
   },
   "dsh": {
     "bundle": {
@@ -135,7 +137,8 @@
     "@deepseek-ai/dsh-session-format-catalog": "0.1.7-rc.2",
     "@deepseek-ai/dsh-session-format-v3-to-v4": "0.1.7-rc.2",
     "@deepseek-ai/schemastery": "3.18.4",
-    "react-dom": "18.3.1"
+    "react-dom": "18.3.1",
+    "@deepseek-ai/dsh-client-ui-plugin-manager": "0.1.7-rc.2"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/cordis": {
@@ -260,6 +263,9 @@
     },
     "react-dom": {
       "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-plugin-manager": {
+      "optional": true
     }
   },
   "devDependencies": {
@@ -343,9 +349,11 @@
     "@deepseek-ai/schemastery": "3.18.4",
     "react-dom": "18.3.1",
     "@types/react-dom": "18.3.1",
-    "@deepseek-ai/cordis-plugin-group": "1.0.4"
+    "@deepseek-ai/cordis-plugin-group": "1.0.4",
+    "@deepseek-ai/dsh-client-ui-plugin-manager": "0.1.7-rc.2"
   },
   "files": [
+    "icon.svg",
     "lib/index.js",
     "lib/client.js",
     "lib/client.js.map",
@@ -368,7 +376,8 @@
     "assets/registry/*.json",
     "README.md",
     "README.en.md",
-    "LICENSE"
+    "LICENSE",
+    "locale/*.json"
   ],
   "packageManager": "pnpm@10.7.0"
 }

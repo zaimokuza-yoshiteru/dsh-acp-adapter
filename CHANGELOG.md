@@ -4,6 +4,24 @@
 
 User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for publication dates, exact installation instructions, and checksums. Historical entries were reconstructed from tag diffs; npm packages were not republished.
 
+## 0.1.7-rc.2.1
+
+2026-09-27
+
+### 中文
+
+- 可搜索模型选择器默认关闭；开启后可按模型名称、ID 或提供商搜索，关闭后恢复 DSH 原生选择器。
+- ACP 配置入口迁至原生插件详情页，保留已有配置与设置。
+- 目录菜单根据按钮位置与可用空间调整宽度、展开方向和高度，便于添加 Agent。
+- 采用「互联」插件图标，并补齐插件面板与模型选择器的中英文文案。
+
+### English
+
+- The searchable model picker is off by default. Turn it on to search by model name, ID, or provider; turn it off to restore the native DSH picker.
+- Moved ACP configuration into the native plugin detail page while preserving existing configuration and settings.
+- The Agent catalog menu adapts its width, opening direction, and height to the trigger button and available space.
+- Added a “Link” plugin icon and completed the plugin panel and model picker copy in Chinese and English.
+
 ## 0.1.7-rc.2.0
 
 2026-09-25

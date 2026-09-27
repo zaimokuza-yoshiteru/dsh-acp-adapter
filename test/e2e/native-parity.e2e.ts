@@ -17,6 +17,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { createUserMessage, LlmAdapter } from '@deepseek-ai/dsh-llm'
 import { connectFreshWorkspace, writeComposerDraft } from '#host-support'
 import { launchAdapterWorld, root } from './scaffold.ts'
+import { backToPluginList, openAcpPluginDetail, returnToConversation } from './plugin-panel.helpers.ts'
 import { createAcpSidecar } from '../../src/persistence/sidecar.ts'
 
 const profiles = ['claude', 'codex', 'devin', 'kimi']
@@ -153,38 +154,34 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
     }
   }
 
-  it('edits settings through native inputs and buttons with validation, cancel and persisted save', async () => {
-    const openSettings = async () => {
-      await page.getByRole('button', { name: 'Settings', exact: true }).click()
-      const dialog = page.getByRole('dialog', { name: 'Settings', exact: true })
-      await dialog.getByRole('button', { name: 'ACP adapter', exact: true }).click()
-      return dialog
-    }
-    let dialog = await openSettings()
-    await dialog.getByRole('button', { name: 'Edit', exact: true }).click()
-    const name = dialog.getByLabel('Display name', { exact: true })
+  it('edits ACP configuration through the native bundle detail with validation, cancel and persisted save', async () => {
+    let detail = await openAcpPluginDetail(page)
+    await detail.getByRole('button', { name: 'Edit', exact: true }).click()
+    const name = detail.getByLabel('Display name', { exact: true })
     expect(await name.inputValue()).toBe(`Fixture ${profile}`)
     await name.fill('Unsaved name')
-    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
-    await dialog.getByRole('button', { name: 'Edit', exact: true }).click()
+    await detail.getByRole('button', { name: 'Cancel', exact: true }).click()
+    await detail.getByRole('button', { name: 'Edit', exact: true }).click()
     expect(await name.inputValue()).toBe(`Fixture ${profile}`)
     await name.fill('')
-    expect(await dialog.getByRole('button', { name: 'Save', exact: true }).isDisabled()).toBe(true)
+    expect(await detail.getByRole('button', { name: 'Save', exact: true }).isDisabled()).toBe(true)
     await name.fill(`Updated ${profile}`)
     const evidence = join(root, '.local/e2e-settings')
     mkdirSync(evidence, { recursive: true })
     await page.screenshot({ path: join(evidence, `${profile}.png`), fullPage: true })
-    await dialog.getByRole('button', { name: 'Save', exact: true }).click()
-    await dialog.getByText('Saved.', { exact: true }).waitFor()
-    await dialog.getByRole('button', { name: 'Close', exact: true }).click()
+    await detail.getByRole('button', { name: 'Save', exact: true }).click()
+    await detail.getByText('Saved.', { exact: true }).waitFor()
+    await backToPluginList(detail)
+    await returnToConversation(page)
     await page.reload()
-    dialog = await openSettings()
-    await dialog.getByText(`Updated ${profile}`, { exact: true }).waitFor()
-    await dialog.getByRole('button', { name: 'Edit', exact: true }).click()
-    await dialog.getByLabel('Display name', { exact: true }).fill(`Fixture ${profile}`)
-    await dialog.getByRole('button', { name: 'Save', exact: true }).click()
-    await dialog.getByText('Saved.', { exact: true }).waitFor()
-    await dialog.getByRole('button', { name: 'Close', exact: true }).click()
+    detail = await openAcpPluginDetail(page)
+    await detail.getByText(`Updated ${profile}`, { exact: true }).waitFor()
+    await detail.getByRole('button', { name: 'Edit', exact: true }).click()
+    await detail.getByLabel('Display name', { exact: true }).fill(`Fixture ${profile}`)
+    await detail.getByRole('button', { name: 'Save', exact: true }).click()
+    await detail.getByText('Saved.', { exact: true }).waitFor()
+    await backToPluginList(detail)
+    await returnToConversation(page)
   })
 
   it('keeps the audit ledger and wrapped details in the native trajectory viewport', async () => {
@@ -356,11 +353,12 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
       await settings.getByRole('button', { name: 'General', exact: true }).click()
       await settings.getByRole('button', { name: 'English', exact: true }).click()
       await page.getByRole('menuitem', { name: '中文', exact: true }).click()
-      const chineseSettings = page.getByRole('dialog', { name: '设置', exact: true })
-      await chineseSettings.getByRole('button', { name: 'ACP adapter', exact: true }).click()
+      await page.getByRole('dialog', { name: '设置', exact: true }).getByRole('button', { name: '关闭', exact: true }).click()
+      const detail = await openAcpPluginDetail(page, 'zh')
       const version = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version
-      await chineseSettings.getByText(`v${version}`, { exact: true }).waitFor()
-      await chineseSettings.getByRole('button', { name: '关闭', exact: true }).click()
+      await detail.getByText(`v${version}`, { exact: true }).waitFor()
+      await backToPluginList(detail, 'zh')
+      await returnToConversation(page)
       const chinesePanel = page.getByRole('region', { name: 'ACP 诊断', exact: true })
       await chinesePanel.getByRole('button', { name: '异常', exact: true }).waitFor()
       await chinesePanel.getByText('已显示当前分类全部记录', { exact: true }).waitFor()

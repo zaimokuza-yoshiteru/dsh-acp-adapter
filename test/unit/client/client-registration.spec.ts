@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { apply, inject } from '../../../src/client/index.ts'
 
 describe('client contribution', () => {
-  it('declares the additive settings, audit, and conversation seams', () => {
+  it('declares the plugin detail, audit, and conversation seams', () => {
     expect(inject).toEqual([
       'uiConversation', 'slots', 'locale', 'remote',
       'sessions', 'workspaces', 'uiWorkspace', 'sidebarRight', 'configForms', 'remote.settings', 'remote.session',
@@ -77,11 +77,12 @@ describe('client contribution', () => {
     ])
     expect(definitions).toHaveLength(3)
     expect(injections).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'acp' }),
+      expect.objectContaining({ name: 'plugins.bundle.config', key: '@zaimokuza/dsh-acp-adapter' }),
       expect.objectContaining({ key: 'acp-activity' }),
       expect.objectContaining({ key: 'acp-inline-activity' }),
       expect.objectContaining({ id: 'dsh-acp-agent-control' }),
     ]))
+    expect(injections).not.toContainEqual(expect.objectContaining({ name: 'settings.section' }))
     expect(slotEntries.get('shell.overlay')).toEqual([
       { name: 'shell.overlay', id: 'third-party-overlay' },
       expect.objectContaining({ id: 'dsh-acp-cross-backend-confirmation' }),

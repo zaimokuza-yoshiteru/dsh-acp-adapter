@@ -14,9 +14,7 @@
 
 以下截图来自此前版本中 **Devin · SWE-1.7 Medium** 的真实操作；当前版本的布局以 DSH 原生界面为准。
 
-添加 Agent、检查连接，并查看插件版本：
-
-![ACP adapter 设置、插件版本与 Devin 连接](assets/readme/acp-settings.zh-CN.png)
+在原生 **插件 → ACP adapter** 详情页添加 Agent、检查连接并管理配置。插件名称与版本由 DSH 原生详情页显示。
 
 在 DSH 会话中使用 Agent 模型、推理强度和原生工具展示组件：
 
@@ -68,7 +66,7 @@ Agent 目录来自随插件发布的 [ACP 官方 registry](https://agentclientpr
 
 ¹ 使用 ChatGPT 登录需另装 Codex CLI。
 
-在设置面板「添加 agent」中选择条目后可查看安装指引。npm/Python 条目预填已安装程序的命令、参数和环境变量；其他二进制条目需要按 Agent 所在主机的平台安装并填写命令路径，通用参数和环境变量仍会预填。插件不会自动下载或安装 Agent。
+在 **插件 → ACP adapter** 详情页选择「添加 agent」中的条目后可查看安装指引。npm/Python 条目预填已安装程序的命令、参数和环境变量；其他二进制条目需要按 Agent 所在主机的平台安装并填写命令路径，通用参数和环境变量仍会预填。插件不会自动下载或安装 Agent。
 
 **2. 安装插件。** 以下命令安装 npm 已发布的 `next` 版本。
 
@@ -76,7 +74,9 @@ Agent 目录来自随插件发布的 [ACP 官方 registry](https://agentclientpr
 npx "@deepseek-ai/dsh@$DSH_VERSION" plugin --profile web add @zaimokuza/dsh-acp-adapter@next
 ```
 
-**3. 打开「设置 → ACP adapter」**，从目录添加 Agent，核对或补全连接设置，检查连接，再在新会话中选择 Agent 模型。
+**3. 打开原生「插件 → ACP adapter」详情页**，从目录添加 Agent，核对或补全连接设置，检查连接，再在新会话中选择 Agent 模型。
+
+可搜索模型选择器默认关闭。需要搜索时，在详情页的「界面偏好」中开启，即可按模型名称、ID 或提供商搜索；关闭后会恢复 DSH 原生模型选择器。
 
 可执行文件路径可以包含空格，例如 `C:\Program Files\Agent Tools\agent.exe`。直接填写路径，不加外层引号；启动参数单独填写在「参数」中。
 
@@ -109,7 +109,7 @@ npx "@deepseek-ai/dsh@$DSH_VERSION" plugin --profile web update @zaimokuza/dsh-a
 npx "@deepseek-ai/dsh@$DSH_VERSION" plugin --profile web remove @zaimokuza/dsh-acp-adapter
 ```
 
-**升级时保留本地数据。** 主会话迁移由 DSH 负责；可验证的 V3 子代理投影通过宿主迁移器恢复；不支持的格式和缺失的数据不会补造。当前轮次结束后重启 DSH、刷新页面，从设置标题旁确认加载版本。
+**升级时保留本地数据。** 主会话迁移由 DSH 负责；可验证的 V3 子代理投影通过宿主迁移器恢复；不支持的格式和缺失的数据不会补造。当前轮次结束后重启 DSH、刷新页面，在原生「插件 → ACP adapter」详情页标题中确认加载的插件版本。
 
 不再使用适配器后，可执行 `devin mcp remove --scope user dsh` 移除其入口。
 

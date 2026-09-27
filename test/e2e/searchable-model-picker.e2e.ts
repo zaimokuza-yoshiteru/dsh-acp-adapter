@@ -8,6 +8,7 @@ import { launchBrowser, newEnglishPage } from './browser.ts'
 import type { TestBrowser } from './browser.ts'
 import type { Page } from 'playwright'
 import { launchAdapterWorld, root } from './scaffold.ts'
+import { backToPluginList, openAcpPluginDetail, returnToConversation } from './plugin-panel.helpers.ts'
 
 const pickerSelector = '[data-acp-searchable-model-picker]'
 const nativeProvider = 'native-picker'
@@ -84,7 +85,7 @@ it('opts into searchable model selection and restores the native picker when dis
       await page.getByRole('button', { name: 'Send message', exact: true }).click()
       return await settled
     }
-    await send('E2E_MESSAGE')
+    const sessionId = await send('E2E_MESSAGE')
     await page.getByText('E2E_DONE mock-model-a', { exact: true }).waitFor()
     await page.getByRole('button', { name: /^Select model/ }).waitFor()
 
@@ -97,25 +98,20 @@ it('opts into searchable model selection and restores the native picker when dis
     await page.keyboard.press('Escape')
     await page.keyboard.press('Escape')
 
-    const openSettings = async () => {
-      await page.getByRole('button', { name: 'Settings', exact: true }).click()
-      const settings = page.getByRole('dialog', { name: 'Settings', exact: true })
-      await settings.getByRole('button', { name: 'ACP adapter', exact: true }).click()
-      return settings
-    }
-    phase = 'settings default off'
-    const settings = await openSettings()
+    phase = 'plugin detail default off'
+    const settings = await openAcpPluginDetail(page)
     const toggle = settings.getByRole('checkbox', { name: 'Searchable model picker', exact: true })
     expect(await toggle.isChecked()).toBe(false)
-    await page.screenshot({ path: join(evidence, 'off-settings.png'), fullPage: true })
+    await page.screenshot({ path: join(evidence, 'off-plugin-detail.png'), fullPage: true })
     await toggle.click()
     await expect.poll(() => toggle.isChecked()).toBe(true)
     await expect.poll(() => {
       const section = host.ctx.settings.describe().find(row => row.ns === 'dsh-acp-adapter')?.value as { searchableModelPicker?: boolean } | undefined
       return section?.searchableModelPicker
     }).toBe(true)
+    await backToPluginList(settings)
+    await returnToConversation(page, sessionId)
     await expect.poll(() => page.locator(pickerSelector).count()).toBe(1)
-    await settings.getByRole('button', { name: 'Close', exact: true }).click()
 
     phase = 'search and selection'
     const picker = page.locator(pickerSelector)
@@ -198,8 +194,22 @@ it('opts into searchable model selection and restores the native picker when dis
     await expect.poll(() => reloadedTrigger.getAttribute('aria-label')).toBe('Native Model')
     await expect.poll(() => reloadedTrigger.getAttribute('title')).toMatch(/High/)
 
-    phase = 'settings disable'
-    const updatedSettings = await openSettings()
+    phase = 'Chinese model picker copy'
+    await host.ctx.settings.replace('locale', { preference: 'zh' })
+    await page.reload()
+    await page.locator(pickerSelector).getByRole('button').click()
+    const chineseDialog = page.getByRole('dialog', { name: '模型', exact: true })
+    const chineseSearch = chineseDialog.getByRole('searchbox', { name: '搜索模型名称、ID 或提供商', exact: true })
+    await chineseSearch.fill('no-such-model-or-provider')
+    await chineseDialog.getByText('没有匹配的模型。', { exact: true }).waitFor()
+    await chineseDialog.getByRole('button', { name: '推理等级', exact: true }).waitFor()
+    await page.screenshot({ path: join(evidence, 'search-zh.png'), fullPage: true })
+    await page.keyboard.press('Escape')
+    await host.ctx.settings.replace('locale', { preference: 'en' })
+    await page.reload()
+
+    phase = 'plugin detail disable'
+    const updatedSettings = await openAcpPluginDetail(page)
     const updatedToggle = updatedSettings.getByRole('checkbox', { name: 'Searchable model picker', exact: true })
     expect(await updatedToggle.isChecked()).toBe(true)
     await updatedToggle.click()
@@ -208,8 +218,8 @@ it('opts into searchable model selection and restores the native picker when dis
       const section = host.ctx.settings.describe().find(row => row.ns === 'dsh-acp-adapter')?.value as { searchableModelPicker?: boolean } | undefined
       return section?.searchableModelPicker
     }).toBe(false)
-    await page.locator(pickerSelector).waitFor({ state: 'detached' })
-    await updatedSettings.getByRole('button', { name: 'Close', exact: true }).click()
+    await backToPluginList(updatedSettings)
+    await returnToConversation(page, nativeSession)
 
     // Confirm this is the stock DSH UI again and that its model rows still select.
     const restoredTrigger = page.getByRole('button', { name: /^Select model, current Native Model, reasoning effort High$/ })

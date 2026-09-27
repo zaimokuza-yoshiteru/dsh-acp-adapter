@@ -1,9 +1,9 @@
 /** Browser-safe profile contract and identity rules. */
 /**
  * Settings namespace storing the ACP agent list.
- * 数据命名空间，**不随 npm 包名改**（改名 @zaimokuza/dsh-acp-adapter 时有意保持
- * 'dsh-acp'）：改名会让既有用户的 settings 文档静默失联。sidecar 根目录同理
- * （src/persistence/sidecar.ts 的 dshHomePath('dsh-acp')）。
+ * 当前设置区段与包名一致。旧 `dsh-acp` settings 由
+ * `src/host/composition/legacy-settings.ts` 导入；sidecar 根目录仍使用
+ * `src/persistence/sidecar.ts` 中的 `dshHomePath('dsh-acp')`。
  */
 export const ACP_SETTINGS_NS = 'dsh-acp-adapter'
 
@@ -31,7 +31,7 @@ export function acpAgentIdFromRoute(provider: string): string | undefined {
 /**
  * Per-agent configuration the stub consumes. The registry
  * (src/host/composition/installed-profile-registry.ts) stores exactly this shape per agent id in
- * the `dsh-acp` settings namespace; declared in this leaf module so neither the
+ * the `dsh-acp-adapter` settings namespace; declared in this leaf module so neither the
  * adapter nor its consumers import the registry for the datum.
  */
 export interface AcpStubAgentConfig {
@@ -52,7 +52,7 @@ export interface AcpStubAgentConfig {
   catalogId?: string
 }
 
-/** One ACP agent's stored configuration (the `dsh-acp` settings per-id value). */
+/** One ACP agent's stored configuration (the `dsh-acp-adapter` settings per-id value). */
 export type AcpAgentConfig = AcpStubAgentConfig
 
 // Runtime identities are shared; their trusted execution behavior stays host-side.

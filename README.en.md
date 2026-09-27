@@ -14,9 +14,7 @@ On upgrade, existing Agent configuration is imported automatically from the old 
 
 Screenshots show real **Devin · SWE-1.7 Medium** operations from an earlier release; the current layout follows the native DSH UI.
 
-Add an Agent, check its connection, and see the plugin version:
-
-![ACP adapter settings, plugin version, and Devin connection](assets/readme/acp-settings.en.png)
+Open the native **Plugins → ACP adapter** detail page to add Agents, check connections, and manage configuration. DSH displays the plugin name and version in its native detail header.
 
 Use Agent models, reasoning effort, and native tool presentation in a DSH session:
 
@@ -68,7 +66,7 @@ The agent catalog uses a snapshot of the [official ACP registry](https://agentcl
 
 ¹ ChatGPT sign-in requires the separate Codex CLI.
 
-Select an entry under Settings → "Add agent" to see install guidance. npm/Python entries prefill the installed executable, arguments, and environment. Other binary entries require installation for the Agent host platform and a manually entered command path; shared arguments and environment are still prefilled. The plugin does not download or install Agents automatically.
+Select an entry under **Plugins → ACP adapter → Add agent** to see install guidance. npm/Python entries prefill the installed executable, arguments, and environment. Other binary entries require installation for the Agent host platform and a manually entered command path; shared arguments and environment are still prefilled. The plugin does not download or install Agents automatically.
 
 **2. Install the plugin.** This command installs the published npm `next` version.
 
@@ -76,7 +74,9 @@ Select an entry under Settings → "Add agent" to see install guidance. npm/Pyth
 npx "@deepseek-ai/dsh@$DSH_VERSION" plugin --profile web add @zaimokuza/dsh-acp-adapter@next
 ```
 
-**3. Open Settings → ACP adapter**, add an Agent from the catalog and review or complete its connection settings, check the connection, then choose an Agent model in a new session.
+**3. Open the native Plugins → ACP adapter detail page**, add an Agent from the catalog and review or complete its connection settings, check the connection, then choose an Agent model in a new session.
+
+The searchable model picker is off by default. To search by model name, ID, or provider, turn it on under **Interface preferences** on the detail page. Turning it off restores the native DSH model picker.
 
 Executable paths may contain spaces, for example `C:\Program Files\Agent Tools\agent.exe`. Enter the path directly without surrounding quotes; put startup arguments in the separate arguments field.
 
@@ -109,7 +109,7 @@ npx "@deepseek-ai/dsh@$DSH_VERSION" plugin --profile web update @zaimokuza/dsh-a
 npx "@deepseek-ai/dsh@$DSH_VERSION" plugin --profile web remove @zaimokuza/dsh-acp-adapter
 ```
 
-**Keep local data when upgrading.** DSH migrates main sessions; authenticated V3 subagent projections use the host migration codec. Unsupported formats and missing data are not reconstructed. Restart DSH after the current turn, then refresh the page; check the loaded version beside the settings title.
+**Keep local data when upgrading.** DSH migrates main sessions; authenticated V3 subagent projections use the host migration codec. Unsupported formats and missing data are not reconstructed. Restart DSH after the current turn, then refresh the page; check the loaded plugin version in the native Plugins → ACP adapter detail header.
 
 After removing the adapter, run `devin mcp remove --scope user dsh` to remove its MCP entry.
 
