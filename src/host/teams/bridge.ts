@@ -59,6 +59,8 @@ export async function createTeamBridge(
   const { tools, agent, teams, hasTeams, definitions } = bridge
   const lifetime = new AbortController()
   let prompt: AbortSignal | undefined
+  let promptGeneration = 0
+  let onTeamReport: (() => void) | undefined
   const nonce = randomBytes(8).toString('hex')
   const serverName = wireProfile === 'devin' ? 'dsh' : `dshteam_${nonce}`
   const path = `/${randomBytes(32).toString('hex')}`
@@ -165,12 +167,29 @@ export async function createTeamBridge(
         const args = request.params.arguments ?? {}
         if (definition.name === 'spawn_teammate' && Object.keys(args).some(key => !['name', 'description', 'prompt', 'context'].includes(key))) throw new Error('ACP_TEAM_ROUTE_OVERRIDE_UNSUPPORTED: teammates inherit the lead Agent and model')
         if (definition.name === 'spawn_teammate' && args.context !== undefined && args.context !== 'fresh') throw new Error('ACP_TEAM_FORK_UNSUPPORTED: use fresh context')
+        const membership = definition.name === 'send_message' ? teams?.tryMembership(agent) : undefined
+        const membershipRole = membership?.role
+        const membershipId = membership?.id
+        const membershipRoot = membership?.root
+        const executedPrompt = prompt
+        const executedGeneration = promptGeneration
         const result = await tools.execute({
           callId: `acp-team-${randomUUID()}` as never, name: definition.name, arguments: args, agent,
-          signal: AbortSignal.any([lifetime.signal, prompt, extra.signal]),
+          signal: AbortSignal.any([lifetime.signal, executedPrompt, extra.signal]),
         })
         for (const context of result.additionalContexts ?? []) agent.steer(context)
-        const content = await toolContent(result.content, AbortSignal.any([lifetime.signal, prompt, extra.signal]), capabilities?.promptCapabilities?.image === true, ctx.get('attachments', false))
+        const content = await toolContent(result.content, AbortSignal.any([lifetime.signal, executedPrompt, extra.signal]), capabilities?.promptCapabilities?.image === true, ctx.get('attachments', false))
+        const currentMembership = teams?.tryMembership(agent)
+        if (definition.name === 'send_message' && args.target === 'lead'
+          && typeof args.message === 'string' && args.message.trim().length > 0
+          && result.isError !== true && membershipRole === 'teammate'
+          && currentMembership?.role === 'teammate'
+          && currentMembership.id === membershipId && currentMembership.root === membershipRoot
+          && executedPrompt !== undefined && !executedPrompt.aborted
+          && !extra.signal.aborted
+          && prompt === executedPrompt && promptGeneration === executedGeneration && live()) {
+          onTeamReport?.()
+        }
         if (result.concludesTurn === true) content.push({ type: 'text', text: 'This DSH tool requests the end of the current turn. Finish this ACP response now without further tool calls.' })
         // Do not steal or duplicate inbox messages. Only the native loop claims them.
         if (agent.inbox.nextStep.length > 0) content.push({ type: 'text', text: 'DSH has queued input for your next step. End this ACP response now with a brief progress update, without a final answer; DSH will deliver the pending input and continue the turn.' })
@@ -212,8 +231,8 @@ export async function createTeamBridge(
     signal: lifetime.signal,
     instructions: `Current DSH tools connection: MCP server ${serverName}. It exposes native DSH tool names. Discover the tools for their parameter schemas. Each session has its own connection and caller identity. Do not copy a connection address or server identity to another session.${hasTeams ? " Team target names resolve within the caller’s Team. Create teams only when explicitly requested." : ""} Pending DSH messages are delivered after you end the current response; give a brief progress update when asked to yield.`,
     servers,
-    beginPrompt(signal) { prompt = signal; presented.clear() },
-    endPrompt() { prompt = undefined; presented.clear() },
+    beginPrompt(signal, reportCallback) { prompt = signal; onTeamReport = reportCallback; promptGeneration++; presented.clear() },
+    endPrompt() { prompt = undefined; onTeamReport = undefined; promptGeneration++; presented.clear() },
     presentTool(call) {
       const name = definitionOf(call)?.name ?? presented.get(call.toolCallId)
       if (name === undefined) return call

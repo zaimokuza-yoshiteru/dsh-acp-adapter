@@ -345,6 +345,7 @@ export class AcpSessionRuntime {
     content: acp.ContentBlock[],
     onUpdate: (notification: AcpSessionNotification) => void,
     signal?: AbortSignal,
+    onTeamReport?: () => void,
   ): Promise<acp.PromptResponse> {
     if (this.promptClaimed) throw new Error('ACP_PROMPT_ALREADY_ACTIVE')
     this.promptClaimed = true
@@ -369,7 +370,7 @@ export class AcpSessionRuntime {
       this.promptActive = true
       this.promptAbort = promptAbort
       this.promptSignal = signal
-      this.mcpLease?.beginPrompt(this.permissionSignal() ?? promptAbort.signal)
+      this.mcpLease?.beginPrompt(this.permissionSignal() ?? promptAbort.signal, onTeamReport)
       // Do not pass the turn signal into the RPC budget layer: abandoning an
       // in-flight JSON-RPC request poisons the connection. ACP cancellation is a
       // protocol notification followed by a bounded wait for this same prompt.

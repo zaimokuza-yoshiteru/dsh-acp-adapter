@@ -8,7 +8,7 @@ import { createTeamBridge, teamBridgeKey } from '../../../src/host/teams/bridge.
 const cleanup: Array<() => Promise<unknown>> = []
 afterEach(async () => { await Promise.allSettled(cleanup.splice(0).reverse().map(close => close())) })
 
-async function setup(wireProfile?: string, registeredTools: readonly string[] = [], hasTeams = true) {
+async function setup(wireProfile?: string, registeredTools: readonly string[] = [], hasTeams = true, role: 'lead' | 'teammate' = 'lead') {
   const agent = { id: 'lead', inbox: { nextStep: [] }, steer: vi.fn() }
   const names = [...registeredTools, ...(hasTeams ? [
     'spawn_teammate', 'send_message', 'list_agents', 'wait_agent', 'interrupt_agent',
@@ -18,9 +18,10 @@ async function setup(wireProfile?: string, registeredTools: readonly string[] = 
     name, description: name, parameters: { type: 'object', properties: {} },
   }]))
   const hidden = new Set<string>()
+  const membership = { current: { role, id: 'member-1', root: agent } }
   const execute = vi.fn(async (input) => ({ content: [{ type: 'text', text: input.name }], isError: false }))
   const services: Record<string, unknown> = {
-    agentTeams: { tryMembership: () => ({ role: 'lead' }) },
+    agentTeams: { tryMembership: () => membership.current },
     agents: { get: (id: string) => id === 'lead' ? agent : undefined },
     tools: {
       schemas: (scope: unknown) => scope === agent ? [...definitions.values()].filter(definition => !hidden.has(definition.name)) : [],
@@ -47,7 +48,7 @@ async function setup(wireProfile?: string, registeredTools: readonly string[] = 
     sessionId: 'acp', toolCall: { toolCallId: 'permission', ...(toolName === undefined ? {} : { name: toolName.startsWith('mcp__') ? toolName : `mcp__${server.name}__${toolName}` }) },
     options: [{ optionId: 'yes', kind: 'allow_once', name: 'Allow once' }],
   })
-  return { ctx, services, execute, definitions, agent, lease, server, client, tools, name, permission, listeners, hidden }
+  return { ctx, services, execute, definitions, agent, lease, server, client, tools, name, permission, listeners, hidden, membership }
 }
 
 describe('session-owned native Teams MCP bridge', () => {
@@ -156,6 +157,52 @@ describe('session-owned native Teams MCP bridge', () => {
     await one.lease.close()
     expect(one.lease.permission(one.permission('send_message'))).toBeUndefined()
     expect((await two.client.callTool({name:'send_message',arguments:{target:'lead',message:'still alive'}})).isError).toBe(false)
+  })
+  it('reports only a successful nonempty teammate message to its own lead during the same prompt', async () => {
+    const { lease, client, execute } = await setup('devin', [], true, 'teammate')
+    const report = vi.fn()
+    lease.beginPrompt(new AbortController().signal, report)
+    await client.callTool({ name: 'send_message', arguments: { target: 'lead', message: 'Done' } })
+    expect(report).toHaveBeenCalledTimes(1)
+    await client.callTool({ name: 'send_message', arguments: { target: 'peer', message: 'Done' } })
+    await client.callTool({ name: 'send_message', arguments: { target: 'lead', message: '   ' } })
+    execute.mockResolvedValueOnce({ content: [{ type: 'text', text: 'failed' }], isError: true })
+    await client.callTool({ name: 'send_message', arguments: { target: 'lead', message: 'Not queued' } })
+    expect(report).toHaveBeenCalledTimes(1)
+
+    const lead = await setup('devin')
+    const leadReport = vi.fn()
+    lead.lease.beginPrompt(new AbortController().signal, leadReport)
+    await lead.client.callTool({ name: 'send_message', arguments: { target: 'lead', message: 'Done' } })
+    expect(leadReport).not.toHaveBeenCalled()
+
+    const changing = await setup('devin', [], true, 'teammate')
+    const changingReport = vi.fn()
+    changing.lease.beginPrompt(new AbortController().signal, changingReport)
+    changing.execute.mockImplementationOnce(async () => {
+      changing.membership.current.role = 'lead'
+      return { content: [{ type: 'text', text: 'queued' }], isError: false }
+    })
+    await changing.client.callTool({ name: 'send_message', arguments: { target: 'lead', message: 'Done' } })
+    expect(changingReport).not.toHaveBeenCalled()
+
+    let release!: (result: { content: Array<{ type: 'text'; text: string }>; isError: boolean }) => void
+    let started!: () => void
+    const executionStarted = new Promise<void>(resolve => { started = resolve })
+    execute.mockImplementationOnce(() => new Promise(resolve => { release = resolve; started() }))
+    const prompt = new AbortController()
+    const oldPromptReport = vi.fn()
+    lease.endPrompt()
+    lease.beginPrompt(prompt.signal, oldPromptReport)
+    const late = client.callTool({ name: 'send_message', arguments: { target: 'lead', message: 'Late completion' } })
+    await executionStarted
+    lease.endPrompt()
+    const nextReport = vi.fn()
+    lease.beginPrompt(prompt.signal, nextReport)
+    release({ content: [{ type: 'text', text: 'queued' }], isError: false })
+    await late.catch(() => undefined)
+    expect(oldPromptReport).not.toHaveBeenCalled()
+    expect(nextReport).not.toHaveBeenCalled()
   })
   it('recognizes exact Devin MCP labels but never repairs malformed tool names into approval authority', async () => {
     const { lease, tools, permission, client, execute } = await setup('devin', ['bash'])

@@ -292,7 +292,7 @@ export interface AcpProfileRuntime {
   /** ACP session-scoped writes. Implementations must confirm the resulting snapshot. */
   setConfigOption?(configId: string, value: string | boolean, signal?: AbortSignal): Promise<void>
   setMode?(modeId: string, signal?: AbortSignal): Promise<void>
-  prompt(content: acp.ContentBlock[], onUpdate: (notification: AcpSessionNotification) => void, signal?: AbortSignal): Promise<acp.PromptResponse>
+  prompt(content: acp.ContentBlock[], onUpdate: (notification: AcpSessionNotification) => void, signal?: AbortSignal, onTeamReport?: () => void): Promise<acp.PromptResponse>
   close(): Promise<void>
 }
 
@@ -1254,6 +1254,8 @@ export class AcpProfileAdapter extends LlmAdapter {
         const promptSignal = options.signal === undefined ? inputAbort.signal : AbortSignal.any([options.signal, inputAbort.signal])
         let interruptedForInput = false
         let remoteSettled = false
+        let teammateReportEligible = true
+        let teammateReportConfirmed = false
         handoff.cancel = () => inputAbort.abort(new Error('ACP stream consumer ended'))
         const watchInput = (): (() => void) | undefined => session?.watchSteering?.(() => {
           if (remoteSettled || promptSignal.aborted) return
@@ -1285,6 +1287,10 @@ export class AcpProfileAdapter extends LlmAdapter {
           activityIndexOffset = Math.min(nextContentIndex, handoff.pendingIndex ?? nextContentIndex,
             ...queue.flatMap(chunk => 'index' in chunk ? [chunk.index] : []))
           breakContent()
+          // Once a newer admitted request is about to enter this prompt, any
+          // earlier report (including an outstanding tool call) is stale.
+          teammateReportEligible = false
+          teammateReportConfirmed = false
           const result = await runtime.steer(nextPrompt)
           if (result !== 'injected') {
             currentAnchor = previousAnchor
@@ -1295,7 +1301,11 @@ export class AcpProfileAdapter extends LlmAdapter {
           stopWatchingInput?.(); stopWatchingInput = watchInput()
           return true
         }
-        const promptResult = runtime.prompt(prompt, onUpdate, promptSignal)
+        // This callback is host-owned evidence from a completed native send_message.
+        // Steering a newly admitted request disables the evidence for this prompt.
+        const promptResult = runtime.prompt(prompt, onUpdate, promptSignal, () => {
+          if (teammateReportEligible) teammateReportConfirmed = true
+        })
         self.controlsChanged?.(sessionKey)
         const prompting = promptResult.then(async (response: acp.PromptResponse) => {
           remoteSettled = true
@@ -1382,7 +1392,9 @@ export class AcpProfileAdapter extends LlmAdapter {
             // promote reasoning to text (or guess a trailing sentence); surface
             // a stable provider error so DSH does not present an apparently
             // successful, answer-less turn.
-            const finalReason = responseFinish.kind === 'stop' && !visibleContentEmitted && !interruptedForInput
+            const hasCompletedReport = response.stopReason === 'end_turn' && teammateReportConfirmed
+              && !promptSignal.aborted && options.signal?.aborted !== true
+            const finalReason = responseFinish.kind === 'stop' && !visibleContentEmitted && !interruptedForInput && !hasCompletedReport
               ? { kind: 'error' as const, failure: { code: 'ACP_NO_VISIBLE_RESPONSE', message: 'ACP agent completed without a visible response' } }
               : responseFinish
             // Start the projection transaction before publishing finish so its

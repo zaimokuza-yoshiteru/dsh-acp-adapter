@@ -4,6 +4,18 @@
 
 User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for publication dates, exact installation instructions, and checksums. Historical entries were reconstructed from tag diffs; npm packages were not republished.
 
+## 0.1.7-rc.2.3
+
+2026-09-27
+
+### 中文
+
+- ACP 团队成员通过 DSH Teams 向 Lead 成功发送非空消息后，即使不输出可见文本，也会正常结束当前响应；普通无回复、纯推理、失败、取消及后续新请求仍保留原有处理。此问题由 Windows 实际运行发现。
+
+### English
+
+- An ACP Team member that successfully sends a nonempty DSH Teams message to its Lead may finish without visible text. Ordinary empty replies, reasoning-only output, failures, cancellation, and later admitted requests keep their existing handling. Windows live runs exposed this issue.
+
 ## 0.1.7-rc.2.2
 
 2026-09-27

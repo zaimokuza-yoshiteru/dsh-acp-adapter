@@ -6,7 +6,8 @@ export interface AcpMcpLease {
   readonly signal: AbortSignal
   readonly instructions?: string
   readonly servers: readonly acp.McpServer[]
-  beginPrompt(signal: AbortSignal): void
+  /** Host-only evidence callback for a successful native teammate report in this prompt. */
+  beginPrompt(signal: AbortSignal, onTeamReport?: () => void): void
   endPrompt(): void
   permission(request: acp.RequestPermissionRequest): acp.RequestPermissionResponse | undefined
   inspectPermission?(request: acp.RequestPermissionRequest): AcpPermissionCheck & { readonly response?: acp.RequestPermissionResponse }

@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import type * as acp from '@agentclientprotocol/sdk'
 import { AcpSessionRuntime, type AcpSessionRuntimeOptions } from '../../../src/runtime/session/session-runtime.ts'
 import type { SubprocessSeam } from '../../../src/runtime/process/subprocess.ts'
@@ -63,6 +63,23 @@ function createRuntime(
 }
 
 describe('AcpSessionRuntime prompt-scoped permission snapshots', () => {
+  it('passes host report evidence only into each active lease prompt and ends that lease prompt', async () => {
+    const received: Array<(() => void) | undefined> = []
+    let active: (() => void) | undefined
+    const lease: AcpMcpLease = {
+      signal: new AbortController().signal, servers: [],
+      beginPrompt(_signal, onTeamReport) { active = onTeamReport; received.push(onTeamReport) },
+      endPrompt() { active = undefined }, async close() {}, permission: () => undefined,
+    }
+    const runtime = createRuntime(async () => ({ outcome: { outcome: 'cancelled' } }), 'raw-input', 'in_progress', lease)
+    const first = vi.fn(), second = vi.fn()
+    await runtime.prompt(PROMPT, () => undefined, undefined, first)
+    expect(received[0]).toBe(first)
+    expect(active).toBeUndefined()
+    await runtime.prompt(PROMPT, () => undefined, undefined, second)
+    expect(received[1]).toBe(second)
+    expect(active).toBeUndefined()
+  })
   it('audits a bridge rejection without opening a native user approval', async () => {
     let nativeRequests = 0
     const records: unknown[] = []
