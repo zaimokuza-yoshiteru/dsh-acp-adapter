@@ -4,6 +4,18 @@
 
 User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for publication dates, exact installation instructions, and checksums. Historical entries were reconstructed from tag diffs; npm packages were not republished.
 
+## 0.1.7-rc.2.2
+
+2026-09-27
+
+### 中文
+
+- 维护更新：集中定义 ACP Agent 五态词表，并补充健康状态 codec 与活动回放读取的回归覆盖；运行和 wire 行为保持不变。
+
+### English
+
+- Maintenance update: centralizes the five ACP agent states and adds regression coverage for health codecs and activity replay parsing. Runtime and wire behavior are unchanged.
+
 ## 0.1.7-rc.2.1
 
 2026-09-27

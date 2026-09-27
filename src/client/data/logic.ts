@@ -16,8 +16,11 @@ import { catalogEntryOf } from './catalog.ts'
 
 import { ACP_AGENT_ID_PATTERN, effectiveRuntimeOf, catalogIdOf } from '../../contract/agent-config.ts'
 import type { AcpAgentConfig, AcpAgentId as AcpAgentRuntimeId } from '../../contract/agent-config.ts'
+import { ACP_AGENT_CONFIG_STATES } from '../../contract/remote.ts'
+import type { AcpAgentConfigState } from '../../contract/remote.ts'
 export { ACP_AGENT_IDS as ACP_AGENT_RUNTIME_IDS, ACP_AGENT_ID_PATTERN, ACP_SETTINGS_NS, effectiveRuntimeOf } from '../../contract/agent-config.ts'
 export type { AcpAgentConfig, AcpAgentId as AcpAgentRuntimeId } from '../../contract/agent-config.ts'
+export type { AcpAgentConfigState } from '../../contract/remote.ts'
 
 /** Resolved `dsh-acp-adapter` settings section. */
 export interface AcpSettings {
@@ -387,12 +390,6 @@ export interface AcpCapabilityMatrixRow {
 /** probe 失败阶段（四层分层判据；镜像 src/protocol/v1/types.ts `AcpProbePhase`）。 */
 export type AcpProbePhase = 'initialize' | 'session'
 
-/**
- * ACP agent 配置的五态词表（client 侧字面量副本——真源
- * src/domain/session/agent-state.ts / wire 面 src/contract/remote.ts）。
- */
-export type AcpAgentConfigState = 'saved-unverified' | 'ready' | 'auth-required' | 'unavailable' | 'incompatible'
-
 /** One provider row of the dshAcp Remote `health` view (src/contract/remote.ts). */
 export interface AcpProviderHealth {
   id: string
@@ -445,8 +442,6 @@ export function decodeHealthResponse(body: unknown): readonly AcpProviderHealth[
   return rows
 }
 
-const ACP_AGENT_STATES: readonly AcpAgentConfigState[] = ['saved-unverified', 'ready', 'auth-required', 'unavailable', 'incompatible']
-
 function decodeHealthRow(raw: unknown): AcpProviderHealth | undefined {
   if (!isPlainObject(raw)) return undefined
   const { id, name, command, args, loginHint, executable, version, state, probe } = raw as Record<string, unknown>
@@ -456,7 +451,7 @@ function decodeHealthRow(raw: unknown): AcpProviderHealth | undefined {
   if (typeof executable !== 'boolean') return undefined
   if (!(typeof version === 'string' || version === null)) return undefined
  // 五态：词表外一律整行拒绝（health 响应整体失格，与 decodeHealthResponse 口径一致）
-  if (typeof state !== 'string' || !ACP_AGENT_STATES.includes(state as AcpAgentConfigState)) return undefined
+  if (typeof state !== 'string' || !(ACP_AGENT_CONFIG_STATES as readonly string[]).includes(state)) return undefined
   const probeRow = decodeProbeRow(probe)
   if (probeRow === undefined) return undefined
   return { id, name, command, args: args as string[], loginHint, executable, version, state: state as AcpAgentConfigState, probe: probeRow }

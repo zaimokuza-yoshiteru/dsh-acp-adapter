@@ -46,6 +46,15 @@ describe('generated RPC codecs from the alpha.2 factory generator', () => {
         expect(() => output.parse({ state: 'established' })).toThrow()
         expect(() => output.parse({ state: 'unknown' })).toThrow()
       }
+      const health = descriptors.find((d) => d.method === 'health')!
+      const result = health.result.create()
+      const states = ['saved-unverified', 'ready', 'auth-required', 'unavailable', 'incompatible']
+      const base = { id: 'codex', name: 'Codex', command: 'codex', args: [], loginHint: null, executable: true, version: null,
+        probe: { status: 'never', at: null } }
+      for (const state of states) {
+        expect(result.parse({ providers: [{ ...base, state }], liveSessions: null })).toMatchObject({ providers: [{ state }] })
+      }
+      expect(() => result.parse({ providers: [{ ...base, state: 'unknown' }], liveSessions: null })).toThrow()
     })
   }
 

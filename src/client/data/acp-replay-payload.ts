@@ -26,11 +26,9 @@ function record(value: unknown): value is Record<string, unknown> {
 export function acpReplayPayloadOf(event: { readonly type: string; readonly data: unknown }): AcpReplayPayloadV1 | undefined {
   if (event.type !== 'assistant/message' || !record(event.data)) return undefined
   const message = record(event.data.message) ? event.data.message : event.data
-  // Alpha DSH normally stores the envelope at message.source.replayState.
-  // Keep the reader tolerant of the two equivalent compact-history shapes
-  // emitted by older/third-party session serializers: message.replayState and
-  // data.replayState.  These are still read-only replay evidence; no provider
-  // specific event is synthesized for the conversation assembler.
+  // Production DSH stores the envelope at message.source.replayState. Keep the
+  // existing fallback precedence for compact history; the other shapes are
+  // compatibility paths, not confirmed serializer output.
   const source = record(message.source) ? message.source : undefined
   const replayState = record(source?.replayState)
     ? source.replayState

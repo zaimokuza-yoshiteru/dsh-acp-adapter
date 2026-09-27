@@ -452,16 +452,9 @@ export type AcpAgentSessionOptionWrite =
   | { readonly kind: 'config'; readonly id: string; readonly value: string | boolean }
   | { readonly kind: 'mode'; readonly id: string }
 
-/**
- * ACP agent 配置的五态词表（domain 真源与派生规则见
- * src/domain/session/agent-state.ts `deriveAcpAgentState`，本类型是它的 wire
- * 字面量副本）：saved-unverified = 当前配置尚未探测；ready = 当前配置最后
- * 一次明确 probe 成功；auth-required = 明确需要登录（出路是 agent 自家
- * CLI——external-login-only， Remote 面不再有
- * authenticate）；unavailable = probe 失败/配置无效；incompatible = 宿主结构
- * 门未通过。
- */
-export type AcpAgentConfigState = 'saved-unverified' | 'ready' | 'auth-required' | 'unavailable' | 'incompatible'
+/** ACP agent 配置的五态 wire 词表；消费层从此 client-safe contract 派生。 */
+export const ACP_AGENT_CONFIG_STATES = ['saved-unverified', 'ready', 'auth-required', 'unavailable', 'incompatible'] as const
+export type AcpAgentConfigState = (typeof ACP_AGENT_CONFIG_STATES)[number]
 
 /** ACP team management facts; unknown model state is explicit, never inherited from the Lead. */
 export interface AcpTeamMemberView {

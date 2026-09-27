@@ -1,7 +1,7 @@
 /**
  * ACP agent 配置的五态状态机：把「宿主结构兼容 / 配置有效 / probe
  * 缓存」三路事实折成一个用户可行动的稳定词表。
- * 本模块是 domainSession 层的零 import 叶子——remote 层（health 行的 `state`
+ * 本模块不引入运行时依赖——remote 层（health 行的 `state`
  * 字段，src/remote/service.ts）与 installed-profile registry 的会话创建门
  * 共同下行消费同一实现，五态语义只写一次。
  *
@@ -25,8 +25,8 @@
  * @module @zaimokuza/dsh-acp-adapter/domain/session/agent-state
  */
 
-/** 五态词表（wire 面经 src/contract/remote.ts 的同名字面量联合过线）。 */
-export type AcpAgentConfigState = 'saved-unverified' | 'ready' | 'auth-required' | 'unavailable' | 'incompatible'
+import type { AcpAgentConfigState } from '../../contract/remote.ts'
+export type { AcpAgentConfigState } from '../../contract/remote.ts'
 
 /** probe 缓存条目的最小视图（当前配置过滤后；ok 只留目录事实，error 只留分流 kind）。 */
 export interface AcpAgentStateProbeView {

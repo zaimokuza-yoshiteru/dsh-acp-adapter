@@ -67,7 +67,7 @@ describe('ACP activity conversation node', () => {
     expect(definition.match({ type: 'assistant/message', seq: 11, time: 11, data: {} } as never)).toBeNull()
   })
 
-  it('reads compact assistant replay envelopes without changing the rendered identity', () => {
+  it('reads compact outer-data replay payloads without changing the rendered identity', () => {
     const compact = {
       type: 'assistant/message',
       seq: 12,
@@ -75,6 +75,44 @@ describe('ACP activity conversation node', () => {
     }
     expect(acpReplayPayloadOf(compact)).toEqual(payload)
     expect(createAcpActivityDefinition(() => false).match(compact as never)).toEqual({ id: 'answer:["dsh-1","codex",1,1,"acp-1",3]', role: 'start' })
+  })
+
+  it('reads message-level replay envelopes without changing the rendered identity', () => {
+    const compact = { type: 'assistant/message', data: { message: { replayState: { response: payload } } } }
+    expect(acpReplayPayloadOf(compact)).toEqual(payload)
+    expect(createAcpActivityDefinition(() => false).match(compact as never)).toEqual({ id: 'answer:["dsh-1","codex",1,1,"acp-1",3]', role: 'start' })
+  })
+
+  it('reaches the outer-data fallback with an explicit message object', () => {
+    const compact = { type: 'assistant/message', data: { message: {}, replayState: { response: payload } } }
+    expect(acpReplayPayloadOf(compact)).toEqual(payload)
+    expect(createAcpActivityDefinition(() => false).match(compact as never)).toEqual({ id: 'answer:["dsh-1","codex",1,1,"acp-1",3]', role: 'start' })
+  })
+
+  it('keeps replay shape precedence and accepts direct replay-state payloads', () => {
+    const lowerPriority = { ...payload, profileId: 'fallback' }
+    expect(acpReplayPayloadOf({
+      type: 'assistant/message',
+      data: { replayState: lowerPriority, message: { replayState: payload } },
+    })).toEqual(payload)
+    expect(acpReplayPayloadOf({
+      type: 'assistant/message',
+      data: { message: { source: { replayState: payload }, replayState: lowerPriority }, replayState: lowerPriority },
+    })).toEqual(payload)
+    expect(acpReplayPayloadOf({
+      type: 'assistant/message',
+      data: { message: { source: { replayState: { response: { ...payload, kind: 'invalid' } } }, replayState: payload } },
+    })).toBeUndefined()
+  })
+
+  it('rejects invalid event type, marker version, kind, and required field types', () => {
+    expect(acpReplayPayloadOf({ type: 'user/message', data: { message: { source: { replayState: { response: payload } } } } })).toBeUndefined()
+    expect(acpReplayPayloadOf({ type: 'assistant/message', data: { message: { source: { replayState: { response: { ...payload, version: 2 } } } } } })).toBeUndefined()
+    expect(acpReplayPayloadOf({ type: 'assistant/message', data: { message: { source: { replayState: { response: { ...payload, kind: 'other' } } } } } })).toBeUndefined()
+    expect(acpReplayPayloadOf({ type: 'assistant/message', data: { message: { source: { replayState: { response: { ...payload, bindingEpoch: '1' } } } } } })).toBeUndefined()
+    expect(acpReplayPayloadOf({ type: 'assistant/message', data: { message: { source: { replayState: { response: { ...payload, profileId: 3 } } } } } })).toBeUndefined()
+    const { ownerDshSessionId: _owner, ...missing } = payload
+    expect(acpReplayPayloadOf({ type: 'assistant/message', data: { message: { source: { replayState: { response: missing } } } } })).toBeUndefined()
   })
 
   it('settles by stable identity even when migration shifts the old request sequence', () => {
