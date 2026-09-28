@@ -81,6 +81,9 @@ import type {
   AcpAgentSessionSnapshotView,
   AcpAgentSessionFrame,
   AcpAgentSessionOptionWrite,
+  AcpToolApprovalPolicySnapshot,
+  AcpToolApprovalPolicyFrame,
+  AcpToolApprovalPolicyWrite,
   AcpOwnedRoutesView,
   AcpProjectedSubagentsView,
 } from '../contract/remote.ts'
@@ -367,6 +370,14 @@ export interface AcpRemoteServiceDeps {
   recoveryAdapter?: (provider: string) => AcpRecoveryAdapterLike | undefined
   /** Resolves only the new per-profile provider control surface. */
   agentSessionControl?: (provider: string) => AcpAgentSessionControlLike | undefined
+  toolApprovalPolicy?: {
+    readonly read: (sessionId: string) => Promise<AcpToolApprovalPolicySnapshot>
+    readonly write: (sessionId: string, policy: 'auto' | 'ask') => Promise<AcpToolApprovalPolicySnapshot>
+  }
+  toolApprovalPolicyChanges?: {
+    readonly subscribe: (changed: () => void) => () => void
+    readonly notify: () => void
+  }
   /** A real host session may subscribe before its first ACP binding exists. */
   agentSessionChanges?: {
     readonly canRead: (sessionId: string) => boolean | Promise<boolean>
@@ -479,6 +490,8 @@ interface ResolvedDeps {
   readonly recoveryAdapter: NonNullable<AcpRemoteServiceDeps['recoveryAdapter']> | null
   readonly agentSessionControl: NonNullable<AcpRemoteServiceDeps['agentSessionControl']> | null
   readonly agentSessionChanges: NonNullable<AcpRemoteServiceDeps['agentSessionChanges']> | null
+  readonly toolApprovalPolicy: NonNullable<AcpRemoteServiceDeps['toolApprovalPolicy']> | null
+  readonly toolApprovalPolicyChanges: NonNullable<AcpRemoteServiceDeps['toolApprovalPolicyChanges']> | null
   readonly auditTimeline: NonNullable<AcpRemoteServiceDeps['auditTimeline']> | null
   readonly activityTimeline: NonNullable<AcpRemoteServiceDeps['activityTimeline']> | null
   readonly ownedSessionReadGate: NonNullable<AcpRemoteServiceDeps['ownedSessionReadGate']> | null
@@ -528,6 +541,8 @@ export class AcpRemoteService extends TypertRemoteService {
       recoveryAdapter: deps.recoveryAdapter ?? null,
       agentSessionControl: deps.agentSessionControl ?? null,
       agentSessionChanges: deps.agentSessionChanges ?? null,
+      toolApprovalPolicy: deps.toolApprovalPolicy ?? null,
+      toolApprovalPolicyChanges: deps.toolApprovalPolicyChanges ?? null,
       auditTimeline: deps.auditTimeline ?? null,
       activityTimeline: deps.activityTimeline ?? null,
       ownedSessionReadGate: deps.ownedSessionReadGate ?? deps.activityAccess ?? null,
@@ -940,6 +955,64 @@ export class AcpRemoteService extends TypertRemoteService {
     await this.requireOwnedSessionAccess(sessionId)
     const adapter = await this.agentSessionControlFor(sessionId)
     return await preserveAcpFailure(() => adapter.setAgentSessionOption(sessionId, request))
+  }
+
+  @Remote
+  async toolApprovalPolicy(sessionId: string): Promise<AcpToolApprovalPolicySnapshot> {
+    await this.requirePolicySessionAccess(sessionId)
+    const store = this.resolved.toolApprovalPolicy
+    if (store === null) throw acpRemoteFailure('config', 'DSH tool approval controls are unavailable')
+    return await store.read(sessionId)
+  }
+
+  @Remote
+  async setToolApprovalPolicy(sessionId: string, request: AcpToolApprovalPolicyWrite): Promise<AcpToolApprovalPolicySnapshot> {
+    await this.requirePolicySessionAccess(sessionId)
+    if (request === null || typeof request !== 'object' || (request.policy !== 'auto' && request.policy !== 'ask')) throw badRequest('Invalid DSH tool approval policy')
+    const store = this.resolved.toolApprovalPolicy
+    if (store === null) throw acpRemoteFailure('config', 'DSH tool approval controls are unavailable')
+    const snapshot = await store.write(sessionId, request.policy)
+    this.resolved.toolApprovalPolicyChanges?.notify()
+    return snapshot
+  }
+
+  @Remote({ mode: 'stream' })
+  async *toolApprovalPolicyFollow(sessionId: string, signal: AbortSignal): AsyncIterable<AcpToolApprovalPolicyFrame> {
+    await this.requirePolicySessionAccess(sessionId)
+    const store = this.resolved.toolApprovalPolicy
+    const changes = this.resolved.toolApprovalPolicyChanges
+    if (store === null || changes === null) throw acpRemoteFailure('config', 'DSH tool approval stream is unavailable')
+    let dirty = true
+    let wake: (() => void) | undefined
+    const notify = (): void => { dirty = true; wake?.() }
+    const unsubscribe = changes.subscribe(notify)
+    signal.addEventListener('abort', notify, { once: true })
+    let previous: string | undefined
+    try {
+      while (!signal.aborted) {
+        if (!dirty) await new Promise<void>(resolve => { wake = resolve })
+        wake = undefined
+        if (signal.aborted) break
+        dirty = false
+        await this.requirePolicySessionAccess(sessionId)
+        const snapshot = await store.read(sessionId)
+        if (signal.aborted) break
+        const key = JSON.stringify(snapshot)
+        if (key === previous) continue
+        yield { type: previous === undefined ? 'opened' : 'changed', snapshot }
+        previous = key
+      }
+    } finally {
+      unsubscribe()
+      signal.removeEventListener('abort', notify)
+    }
+  }
+
+  private async requirePolicySessionAccess(sessionId: string): Promise<void> {
+    const changes = this.resolved.agentSessionChanges
+    if (typeof sessionId !== 'string' || sessionId.length === 0 || sessionId.length > 256 || changes === null || !(await changes.canRead(sessionId))) {
+      throw acpRemoteFailure('user-rejected', 'DSH tool approval access is not authorized')
+    }
   }
 
   private async agentSessionControlFor(sessionId: string): Promise<AcpAgentSessionControlLike> {

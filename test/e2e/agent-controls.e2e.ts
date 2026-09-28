@@ -4,6 +4,7 @@ import type { Page } from 'playwright'
 import { join } from 'node:path'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { describe, it, expect, vi } from 'vitest'
+import type { AcpRemoteService } from '../../src/remote/service.js'
 import { connectFreshWorkspace, writeComposerDraft } from '#host-support'
 import { launchAdapterWorld, root } from './scaffold.ts'
 
@@ -19,12 +20,34 @@ describe.each(['kimi', 'devin', 'codex', 'claude'])('Agent controls: %s', profil
     const readyFile = join(host.workspaceCwd, 'controls-ready')
     const provider = `acp-${profile}`
     try {
-      await host.ctx.settings.replace('dsh-acp-adapter', { agents: { [profile]: {
+      const agentSettings = { agents: { [profile]: {
         name: `Fixture ${profile}`, command: process.execPath, args: [join(root, 'test/mock-agent/mock-agent.ts')],
         env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: profile, MOCK_CONTROLS_DELIVERY: delivery, MOCK_CONTROLS_READY_FILE: readyFile },
-      } } })
+      } } }
+      await host.ctx.settings.replace('dsh-acp-adapter', { ...agentSettings, toolApprovalDefault: 'auto' })
       await vi.waitFor(() => expect(host.ctx.llm.listProviders().some(p => p.id === provider)).toBe(true))
       await host.ctx.agentDefaultModel.saveSelection({ provider, model: 'mock-model-a' })
+      let failInitialPolicyRead = profile === 'codex' && delivery === 'response'
+      let failNextPolicyWrite = false
+      if (profile === 'codex' && delivery === 'response') {
+        const service = host.ctx.get('dshAcp') as AcpRemoteService
+        const follow = service.toolApprovalPolicyFollow.bind(service)
+        vi.spyOn(service, 'toolApprovalPolicyFollow').mockImplementation(async function* (sessionId, signal) {
+          if (failInitialPolicyRead) {
+            failInitialPolicyRead = false
+            throw new Error('test policy read failure')
+          }
+          yield* follow(sessionId, signal)
+        })
+        const write = service.setToolApprovalPolicy.bind(service)
+        vi.spyOn(service, 'setToolApprovalPolicy').mockImplementation(async (sessionId, request) => {
+          if (failNextPolicyWrite) {
+            failNextPolicyWrite = false
+            throw new Error('test policy write failure')
+          }
+          return await write(sessionId, request)
+        })
+      }
       browser = await launchBrowser({ headless: true, ...(process.env.DSH_E2E_BROWSER_CHANNEL ? { channel: process.env.DSH_E2E_BROWSER_CHANNEL } : {}) })
       page = await newEnglishPage(browser)
       await page.context().tracing.start({ screenshots: true, snapshots: true, sources: true })
@@ -35,7 +58,78 @@ describe.each(['kimi', 'devin', 'codex', 'claude'])('Agent controls: %s', profil
       page.setDefaultTimeout(10000)
       await page.goto(host.authenticatedUrl)
       await connectFreshWorkspace(page, host.workspaceCwd)
+      // DSH policy exists in the host-owned menu before an ACP prompt creates
+      // Agent configOptions or a live ACP controls snapshot.
+      if (profile === 'codex' && delivery === 'response') {
+        const retryPolicyRead = page.getByRole('button', { name: 'Could not read DSH tool approval settings. Please retry.', exact: true })
+        await retryPolicyRead.waitFor()
+        const directory = join(root, '.local/ui-review')
+        mkdirSync(directory, { recursive: true })
+        await page.screenshot({ path: join(directory, 'tool-approval-read-error.png') })
+        await page.setViewportSize({ width: 420, height: 900 })
+        await page.screenshot({ path: join(directory, 'tool-approval-read-error-narrow.png') })
+        await page.setViewportSize({ width: 1280, height: 900 })
+        await retryPolicyRead.click()
+      }
+      const policyMenu = page.getByRole('button', { name: 'DSH tool approval', exact: true })
+      await policyMenu.waitFor()
+      await policyMenu.click()
+      await page.getByRole('menuitem', { name: /^DSH tool approval/ }).click()
+      const autoPolicy = page.getByRole('menuitem', { name: /^Auto approve/ })
+      await autoPolicy.waitFor()
+      expect(await autoPolicy.locator('svg').count()).toBe(1)
+      // A policy read initializes this session's value. Changing the plugin
+      // default afterward must leave the open session on its saved Auto value.
+      await host.ctx.settings.replace('dsh-acp-adapter', { ...agentSettings, toolApprovalDefault: 'ask' })
+      await policyMenu.waitFor()
+      await policyMenu.click()
+      await page.getByRole('menuitem', { name: /^DSH tool approval/ }).click()
+      await expect.poll(() => page.getByRole('menuitem', { name: /^Auto approve/ }).locator('svg').count()).toBe(1)
+      if (profile === 'codex' && delivery === 'response') {
+        const directory = join(root, '.local/ui-review')
+        mkdirSync(directory, { recursive: true })
+        await page.screenshot({ path: join(directory, 'tool-approval-before-prompt.png') })
+      }
+      await autoPolicy.click()
+      await expect.poll(() => policyMenu.getAttribute('aria-expanded')).toBe('false')
+      await policyMenu.click()
+      await page.getByRole('menuitem', { name: /^DSH tool approval/ }).click()
+      await expect.poll(() => page.getByRole('menuitem', { name: /^Ask each time/ }).count()).toBe(1)
+      if (profile === 'codex' && delivery === 'response') {
+        const directory = join(root, '.local/ui-review')
+        await page.screenshot({ path: join(directory, 'tool-approval-session-override.png') })
+      }
+      await page.getByRole('menuitem', { name: /^Ask each time/ }).click()
+      if (profile === 'codex' && delivery === 'response') {
+        await policyMenu.click()
+        await page.getByRole('menuitem', { name: /^DSH tool approval/ }).click()
+        failNextPolicyWrite = true
+        await page.getByRole('menuitem', { name: /^Auto approve/ }).click()
+        await page.getByRole('button', { name: 'DSH tool approval', exact: true }).waitFor()
+        await page.getByRole('button', { name: 'DSH tool approval', exact: true }).click()
+        await page.getByRole('menuitem', { name: /^DSH tool approval/ }).click()
+        await page.getByText('Could not save the DSH tool approval setting. Please retry.', { exact: true }).waitFor()
+        const directory = join(root, '.local/ui-review')
+        await page.screenshot({ path: join(directory, 'tool-approval-write-error.png') })
+        await page.setViewportSize({ width: 420, height: 900 })
+        await page.screenshot({ path: join(directory, 'tool-approval-write-error-narrow.png') })
+        await page.setViewportSize({ width: 1280, height: 900 })
+        expect(await page.getByRole('menuitem', { name: /^Ask each time/ }).locator('svg').count()).toBe(1)
+        await page.getByRole('menuitem', { name: /^Auto approve/ }).click()
+        await policyMenu.click()
+        await page.getByRole('menuitem', { name: /^DSH tool approval/ }).click()
+        await expect.poll(() => page.getByRole('menuitem', { name: /^Auto approve/ }).locator('svg').count()).toBe(1)
+        await page.getByRole('menuitem', { name: /^Ask each time/ }).click()
+      }
+      await policyMenu.click()
+      const policyGroup = page.getByRole('menuitem', { name: /^DSH tool approval/ })
+      await expect.poll(() => policyGroup.innerText()).toContain('Ask each time')
+      await policyGroup.click()
+      await expect.poll(() => page.getByRole('menuitem', { name: /^Ask each time/ }).locator('svg').count()).toBe(1)
+      await page.keyboard.press('Escape')
       const controls = () => page.getByRole('button', { name: /^Session ·/ })
+      expect(await controls().count()).toBe(0)
+      await policyMenu.waitFor()
       const stop = page.getByRole('button', { name: 'Stop generating', exact: true })
       const ask = page.getByRole('menuitem', { name: /^Ask(?:\s|$)/ })
       const openControls = async () => {
@@ -63,7 +157,13 @@ describe.each(['kimi', 'devin', 'codex', 'claude'])('Agent controls: %s', profil
         await controls().waitFor()
         expect(await controls().innerText()).toContain('Code')
       } else {
-        expect(await controls().count()).toBe(0)
+        // A deferred Agent may provide a read-only Default snapshot first;
+        // the host policy must still be present before its option snapshot.
+        await controls().waitFor()
+        await controls().click()
+        await page.getByRole('menuitem', { name: /^DSH tool approval/ }).waitFor()
+        expect(await page.getByRole('menuitem', { name: /^Session Mode/ }).count()).toBe(0)
+        await page.keyboard.press('Escape')
       }
       writeFileSync(readyFile, 'ready')
       await page.getByText('E2E_CONTROLS_UPDATED', { exact: false }).waitFor()
@@ -103,10 +203,26 @@ describe.each(['kimi', 'devin', 'codex', 'claude'])('Agent controls: %s', profil
       await ask.waitFor({ state: 'hidden' })
       await expect.poll(() => controls().getAttribute('aria-expanded')).toBe('false')
       await expect.poll(() => controls().innerText()).toMatch(/ask/i)
+      await controls().click()
+      await page.getByRole('menuitem', { name: /^DSH tool approval/ }).click()
+      await page.getByRole('menuitem', { name: /^Auto approve/ }).click()
+      // Agent mode remains Ask while the independent DSH tool policy becomes Auto.
+      await expect.poll(() => controls().innerText()).toMatch(/ask/i)
+      await controls().click()
+      await page.getByRole('menuitem', { name: /^DSH tool approval/ }).click()
+      await expect.poll(() => page.getByRole('menuitem', { name: /^Auto approve/ }).locator('svg').count()).toBe(1)
+      await page.keyboard.press('Escape')
       // A blank conversation cannot inherit the previous session's options.
       phase = 'new session'
       await page.getByRole('button', { name: 'New session', exact: true }).last().click()
       await expect.poll(() => controls().count()).toBe(0)
+      await policyMenu.waitFor()
+      await policyMenu.click()
+      await page.getByRole('menuitem', { name: /^DSH tool approval/ }).click()
+      const newSessionAsk = page.getByRole('menuitem', { name: /^Ask each time/ })
+      await newSessionAsk.waitFor()
+      await expect.poll(() => newSessionAsk.locator('svg').count()).toBe(1)
+      await page.keyboard.press('Escape')
       const next = host.whenTurnSettled(30000)
       await send('E2E_MESSAGE')
       await next

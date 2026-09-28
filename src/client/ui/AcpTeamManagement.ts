@@ -218,7 +218,7 @@ function ModeGroup({ lead, profileId, members, metadataCurrent, t, remote, strea
         open: menu === 'batch', side: 'bottom', align: 'end',
         disabled: batchChoices.length === 0 || profileId === null || busy,
         onOpenChange: value => setMenu(value ? 'batch' : null),
-        onSelect: choice => { void change(members.map(member => member.sessionId), choice.write.kind === 'mode' ? choice.write.id : String(choice.write.value)) },
+        onSelect: choice => { if (choice.write.kind !== 'tool-approval-policy') void change(members.map(member => member.sessionId), choice.write.kind === 'mode' ? choice.write.id : String(choice.write.value)) },
       }))),
     h('div', { className: css.roster }, ...members.map(member => {
       const snapshot = snapshots[member.sessionId]
@@ -249,7 +249,7 @@ function ModeGroup({ lead, profileId, members, metadataCurrent, t, remote, strea
                   open: menu === member.sessionId, side: 'bottom', align: 'end',
                   disabled: !snapshot || choices(member).length === 0 || busy,
                   onOpenChange: value => setMenu(value ? member.sessionId : null),
-                  onSelect: choice => { void change([member.sessionId], choice.write.kind === 'mode' ? choice.write.id : String(choice.write.value)) },
+                  onSelect: choice => { if (choice.write.kind !== 'tool-approval-policy') void change([member.sessionId], choice.write.kind === 'mode' ? choice.write.id : String(choice.write.value)) },
                 }),
                 h('div', { className: css.settingNotice, 'data-member-mode-notice': '', role: 'status' }, modeNotice ? h('span', { title: modeNotice, 'data-member-pending-mode': '' }, modeNotice) : null))))))
     })),

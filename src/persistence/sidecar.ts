@@ -601,6 +601,10 @@ export interface AcpSidecar {
   /** Persist the latest selected model for a teammate binding. */
   readMemberModelSelection(sessionId: SessionId): Promise<AcpMemberModelSelection | undefined>
   writeMemberModelSelection(sessionId: SessionId, selection: AcpMemberModelSelection): Promise<void>
+  /** Read or durably initialize the session's host-owned DSH tool approval policy. */
+  readToolApprovalPolicy(sessionId: SessionId, initialize?: 'auto' | 'ask'): Promise<'auto' | 'ask' | undefined>
+  /** Persist a session-scoped override. */
+  writeToolApprovalPolicy(sessionId: SessionId, policy: 'auto' | 'ask'): Promise<void>
   /** 读该会话的 last-known option 快照；无行/畸形 → `undefined`（畸形行 warn 一次）。 */
   readOptionSnapshot(sessionId: SessionId): Promise<AcpOptionsSnapshotRecord | undefined>
   /**
@@ -830,6 +834,10 @@ CREATE TABLE IF NOT EXISTS member_model_selections (
   dsh_session_id TEXT PRIMARY KEY,
   binding_key TEXT NOT NULL,
   model_id TEXT NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS tool_approval_policies (
+  dsh_session_id TEXT PRIMARY KEY,
+  policy TEXT NOT NULL CHECK (policy IN ('auto', 'ask'))
 ) STRICT;
 CREATE TABLE IF NOT EXISTS option_snapshots (
   dsh_session_id TEXT PRIMARY KEY,
@@ -1735,6 +1743,27 @@ class SidecarStore implements AcpSidecar {
     }
     this.ensureDb()
     this.stmtUpsertMemberModelSelection?.run(sessionId, selection.bindingKey, selection.model)
+  }
+
+  async readToolApprovalPolicy(sessionId: SessionId, initialize?: 'auto' | 'ask'): Promise<'auto' | 'ask' | undefined> {
+    assertSafeSessionId(sessionId)
+    if (initialize !== undefined && initialize !== 'auto' && initialize !== 'ask') throw new TypeError('Invalid ACP tool approval policy')
+    const db = initialize === undefined ? this.openIfExists() : this.ensureDb()
+    if (db === undefined) return undefined
+    if (initialize !== undefined) db.prepare('INSERT INTO tool_approval_policies (dsh_session_id, policy) VALUES (?, ?) ON CONFLICT(dsh_session_id) DO NOTHING').run(sessionId, initialize)
+    const row = db.prepare('SELECT policy FROM tool_approval_policies WHERE dsh_session_id = ?').get(sessionId) as { policy?: unknown } | undefined
+    if (row === undefined) return undefined
+    if (row.policy !== 'auto' && row.policy !== 'ask') {
+      this.warn(`dsh-acp sidecar: invalid tool approval policy for session ${JSON.stringify(sessionId as string)}; refusing to choose a policy`)
+      throw new Error('ACP_TOOL_APPROVAL_POLICY_INVALID')
+    }
+    return row.policy
+  }
+
+  async writeToolApprovalPolicy(sessionId: SessionId, policy: 'auto' | 'ask'): Promise<void> {
+    assertSafeSessionId(sessionId)
+    if (policy !== 'auto' && policy !== 'ask') throw new TypeError('Invalid ACP tool approval policy')
+    this.ensureDb().prepare('INSERT INTO tool_approval_policies (dsh_session_id, policy) VALUES (?, ?) ON CONFLICT(dsh_session_id) DO UPDATE SET policy = excluded.policy').run(sessionId, policy)
   }
 
   writeOptionSnapshot(sessionId: SessionId, snapshot: AcpOptionsSnapshotRecord): Promise<void> {

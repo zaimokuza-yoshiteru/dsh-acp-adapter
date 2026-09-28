@@ -69,7 +69,8 @@ const PINNED_REMOTE_METHODS: readonly string[] = [
   'rebindRecoveryBlank',
   'recoverySnapshot',
   'retryOriginal',
-  'setAgentSessionOption', 'setTeamMemberMode', 'setTeamMemberModel', 'teamMemberModels', 'teamMembers',
+  'setAgentSessionOption', 'setTeamMemberMode', 'setTeamMemberModel', 'setToolApprovalPolicy', 'teamMemberModels', 'teamMembers',
+  'toolApprovalPolicy', 'toolApprovalPolicyFollow',
 ];
 
 describe(' 旁路 API 消除门', () => {

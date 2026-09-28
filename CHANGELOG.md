@@ -11,10 +11,12 @@ User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/
 ### 中文
 
 - 可搜索模型选择器的字体、行高、行间距、勾选图标和展开箭头对齐 DSH 原生选择器；保留模型搜索、推理等级切换、选择行为，以及关闭后恢复原生选择器的设置。
+- 新增 DSH 工具审批策略，可按会话选择自动批准或使用原生逐项审批；新会话默认自动批准，插件详情页可更改默认值。团队成员实时继承 Lead 策略，现有待审批请求继续手动处理。
 
 ### English
 
 - Aligns the searchable model picker’s typography, row spacing, check icon, and expanded chevron with the native DSH picker while preserving model search, reasoning-effort tabs, selection behavior, and the setting that restores the native picker when disabled.
+- Adds a per-session policy for DSH tool requests: auto approve or use native approval for each request. New sessions default to auto approve, with a configurable plugin default. Team members follow the Lead’s current policy; existing pending approvals stay manual.
 
 ## 0.1.7-rc.2.3
 

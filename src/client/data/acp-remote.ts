@@ -25,6 +25,8 @@ export type {
   AcpRecoveryView,
   AcpAgentSessionSnapshotView,
   AcpAgentSessionOptionWrite,
+  AcpToolApprovalPolicySnapshot,
+  AcpToolApprovalPolicyWrite,
 } from '../../contract/remote.ts'
 
 /** Generated DSH namespace mounted from `lib/typert.remote-client.js`. */

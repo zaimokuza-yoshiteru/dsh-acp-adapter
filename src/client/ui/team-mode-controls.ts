@@ -11,7 +11,8 @@ export function teamSessionMenuGroups(snapshot: AcpAgentSessionSnapshotView, t: 
   const modes = teamModeChoices(snapshot)
   return agentControlMenuGroups(snapshot, t).filter(group => group.kind === 'mode').map(group => ({
     ...group,
-    choices: group.choices.filter(choice => modes.some(mode => mode.write.kind === choice.write.kind && mode.write.id === choice.write.id))
+    choices: group.choices.filter(choice => choice.write.kind !== 'tool-approval-policy'
+      && modes.some(mode => mode.write.kind === choice.write.kind && mode.write.id === choice.write.id))
       .map(choice => ({ ...choice, disabled: !writable })),
   })).filter(group => group.choices.length > 0)
 }

@@ -681,8 +681,9 @@ describe('panelSettingsOf', () => {
   it('ready → ready，agents/writable/revision 透传；value 缺席时 agents 归零', () => {
     expect(
       panelSettingsOf({ status: 'ready', value: { agents: { devin: devinConfig } }, revision: 3, writable: true }),
-    ).toEqual({ status: 'ready', writable: true, agents: { devin: devinConfig }, searchableModelPicker: false, revision: 3 });
+    ).toEqual({ status: 'ready', writable: true, agents: { devin: devinConfig }, searchableModelPicker: false, toolApprovalDefault: 'auto', revision: 3 });
     expect(panelSettingsOf({ status: 'ready', value: { agents: {}, searchableModelPicker: true }, revision: 4, writable: true }).searchableModelPicker).toBe(true);
+    expect(panelSettingsOf({ status: 'ready', value: { agents: {}, toolApprovalDefault: 'ask' }, revision: 4, writable: true }).toolApprovalDefault).toBe('ask');
     expect(panelSettingsOf({ status: 'ready', value: undefined, revision: 3, writable: false }).agents).toEqual({});
     expect(panelSettingsOf({ status: 'ready', value: undefined, revision: 3, writable: false }).searchableModelPicker).toBe(false);
   });
@@ -693,6 +694,7 @@ describe('panelSettingsOf', () => {
       writable: false,
       agents: {},
       searchableModelPicker: false,
+      toolApprovalDefault: 'auto',
       revision: undefined,
     });
     expect(panelSettingsOf({ status: 'loading', value: undefined, revision: undefined, writable: true }).status).toBe('loading');
@@ -702,6 +704,7 @@ describe('panelSettingsOf', () => {
       writable: false,
       agents: {},
       searchableModelPicker: false,
+      toolApprovalDefault: 'auto',
       revision: 7,
     });
   });

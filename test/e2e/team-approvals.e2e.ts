@@ -4,10 +4,11 @@ import { launchBrowser, newEnglishPage } from './browser.ts'
 import type { ObservedEvent } from './types.ts'
 import type { Page } from 'playwright'
 import { join } from 'node:path'
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { expect, it, vi } from 'vitest'
 import { connectFreshWorkspace, writeComposerDraft } from '#host-support'
 import { launchAdapterWorld, root } from './scaffold.ts'
+import type { AcpRemoteService } from '../../src/remote/service.js'
 
 it.each(['devin', 'codex'].flatMap(profile => ['allow', 'reject'].map(decision => ({ profile, decision }))))('handles eight $profile member approvals from the Lead: $decision, then leaves a later request pending', async ({ profile, decision }) => {
   // Native default includes the Lead in its 8-member limit. This test opts into 9.
@@ -16,11 +17,13 @@ it.each(['devin', 'codex'].flatMap(profile => ['allow', 'reject'].map(decision =
   let page!: Page
   const events: ObservedEvent[] = [], errors: string[] = []
   const log = join(host.workspaceCwd, 'team-approvals.log')
+  const policyGate = join(host.workspaceCwd, 'team-approval-policy-ready')
   host.ctx.on('session/event', (session, event) => events.push({ sessionId: session.id, ...event }))
   try {
-    await host.ctx.settings.replace('dsh-acp-adapter', { agents: { [profile]: {
+    await host.ctx.settings.replace('dsh-acp-adapter', { toolApprovalDefault: 'auto', agents: { [profile]: {
       name: `Fixture ${profile}`, command: process.execPath, args: [join(root, 'test/mock-agent/mock-agent.ts')],
-      env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: profile, MOCK_MCP_HTTP: '1', MOCK_LOG: log },
+      env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: profile, MOCK_MCP_HTTP: '1', MOCK_LOG: log,
+        MOCK_TEAM_PERMISSION_GATE: policyGate },
     } } })
     await vi.waitFor(() => expect(host.ctx.llm.listProviders().some(p => p.id === `acp-${profile}`)).toBe(true))
     await host.ctx.agentDefaultModel.saveSelection({ provider: `acp-${profile}`, model: 'mock-model-a' })
@@ -33,6 +36,9 @@ it.each(['devin', 'codex'].flatMap(profile => ['allow', 'reject'].map(decision =
     await page.getByRole('button', { name: 'Send message', exact: true }).click()
     await page.getByText('E2E_TEAM_EIGHT_READY', { exact: true }).waitFor({ timeout: 60000 })
     const lead = required(host.ctx.agents.list().find(agent => host.ctx.agentTeams.tryMembership(agent)?.role === 'lead'))
+    await vi.waitFor(() => expect(readdirSync(host.workspaceCwd).filter(name => name.startsWith('team-approval-policy-ready.') && name.endsWith('.ready'))).toHaveLength(8), { timeout: 30000 })
+    await (host.ctx.get('dshAcp') as AcpRemoteService).setToolApprovalPolicy(lead.id, { policy: 'ask' })
+    writeFileSync(policyGate, 'ready')
     expect(lead).toBeDefined()
     const card = page.locator('[data-acp-team-approvals]')
     await expect.poll(() => card.locator('[data-team-pending-member]').count(), { timeout: 30000 }).toBe(8)

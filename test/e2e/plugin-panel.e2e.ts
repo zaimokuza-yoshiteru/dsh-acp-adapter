@@ -14,7 +14,7 @@ it('hosts ACP configuration on the native bundle detail page', async () => {
   const errors: string[] = []
   mkdirSync(evidence, { recursive: true })
   try {
-    await host.ctx.settings.replace('dsh-acp-adapter', { agents: { devin: {
+    await host.ctx.settings.replace('dsh-acp-adapter', { toolApprovalDefault: 'auto', agents: { devin: {
       name: 'Panel-fixture-with-a-very-long-unbroken-agent-display-name-to-check-natural-wrapping-and-horizontal-overflow',
       command: process.execPath,
       args: [join(root, 'test/mock-agent/mock-agent.ts')],
@@ -48,6 +48,13 @@ it('hosts ACP configuration on the native bundle detail page', async () => {
     expect(await detail.getByText(`v${version}`, { exact: true }).count()).toBe(1)
     expect(await panel.getByText(`v${version}`, { exact: true }).count()).toBe(0)
     await panel.getByRole('heading', { name: 'Interface preferences', exact: true }).waitFor()
+    await panel.getByRole('heading', { name: 'Default DSH tool approval', exact: true }).waitFor()
+    const approvalDefault = panel.getByRole('button', { name: 'Default DSH tool approval', exact: true })
+    await expect.poll(() => approvalDefault.innerText()).toContain('Auto approve')
+    await approvalDefault.click()
+    await page.getByRole('menuitem', { name: 'Ask each time', exact: true }).click()
+    await expect.poll(() => approvalDefault.innerText()).toContain('Ask each time')
+    expect((host.ctx.settings.describe().find(row => row.ns === 'dsh-acp-adapter')?.value as { toolApprovalDefault?: string }).toolApprovalDefault).toBe('ask')
     await page.screenshot({ path: join(evidence, 'light.png'), fullPage: true, animations: 'disabled' })
 
     const card = panel.locator('[data-dsh-acp-agent="devin"]')
@@ -87,7 +94,7 @@ it('hosts ACP configuration on the native bundle detail page', async () => {
     await page.screenshot({ path: join(evidence, 'narrow.png'), fullPage: true, animations: 'disabled' })
     expect(await panel.getByRole('checkbox', { name: 'Searchable model picker', exact: true }).isVisible()).toBe(true)
 
-    await host.ctx.settings.replace('dsh-acp-adapter', { agents: { devin: {
+    await host.ctx.settings.replace('dsh-acp-adapter', { toolApprovalDefault: 'ask', agents: { devin: {
       name: '面板预览 Agent', command: process.execPath,
       args: [join(root, 'test/mock-agent/mock-agent.ts')],
       env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: 'devin' },
@@ -99,6 +106,8 @@ it('hosts ACP configuration on the native bundle detail page', async () => {
     const chinesePanel = chineseDetail.locator('[data-dsh-acp-panel]')
     await chinesePanel.getByRole('heading', { name: 'Agent 配置', exact: true }).waitFor()
     await chinesePanel.getByRole('heading', { name: '界面偏好', exact: true }).waitFor()
+    await chinesePanel.getByRole('heading', { name: 'DSH 工具默认审批', exact: true }).waitFor()
+    await chinesePanel.getByRole('button', { name: 'DSH 工具默认审批', exact: true }).getByText('逐项询问', { exact: true }).waitFor()
     await chinesePanel.getByRole('checkbox', { name: '可搜索模型选择器', exact: true }).waitFor()
     await chineseDetail.locator('p').getByText('添加并管理通过 ACP 接入 DSH 会话页面的智能体。', { exact: true }).waitFor()
     expect(await chineseDetail.locator('img').first().getAttribute('src')).toBe(iconSource)

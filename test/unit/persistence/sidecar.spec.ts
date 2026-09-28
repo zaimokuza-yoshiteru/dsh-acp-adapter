@@ -151,6 +151,20 @@ afterEach(async () => {
 })
 
 describe('createAcpSidecar 基本读写（v2 envelope 契约）', () => {
+  it('durably initializes a tool approval policy once and keeps session overrides isolated', async () => {
+    const lead = SessionId('approval-policy-lead')
+    const member = SessionId('approval-policy-member')
+    expect(await store.readToolApprovalPolicy(lead)).toBeUndefined()
+    expect(await store.readToolApprovalPolicy(lead, 'auto')).toBe('auto')
+    expect(await store.readToolApprovalPolicy(lead, 'ask')).toBe('auto')
+    await store.writeToolApprovalPolicy(lead, 'ask')
+    expect(await store.readToolApprovalPolicy(lead, 'auto')).toBe('ask')
+    expect(await store.readToolApprovalPolicy(member, 'auto')).toBe('auto')
+    await store.dispose()
+    store = createAcpSidecar({ root })
+    expect(await store.readToolApprovalPolicy(lead)).toBe('ask')
+    expect(await store.readToolApprovalPolicy(member)).toBe('auto')
+  })
   it('reopens pre-diagnostics SQLite facts without rewriting payloads or blocking a valid binding', async () => {
     const id = SessionId('sess-before-diagnostics')
     await store.append(id, { kind: 'binding', data: BINDING_A })

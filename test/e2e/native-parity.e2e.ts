@@ -60,7 +60,7 @@ describe.each(profiles)('native product parity: %s protocol fixture', profile =>
   beforeAll(async () => {
     host = await launchAdapterWorld()
     agentLog = join(host.workspaceCwd, 'fixture-agent.log')
-    await host.ctx.settings.replace('dsh-acp-adapter', { agents: { [profile]: {
+    await host.ctx.settings.replace('dsh-acp-adapter', { toolApprovalDefault: 'ask', agents: { [profile]: {
       name: `Fixture ${profile}`, command: process.execPath,
       args: [join(root, 'test/mock-agent/mock-agent.ts')],
       env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: profile, MOCK_LOG: agentLog },

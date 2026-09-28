@@ -27,6 +27,8 @@ export interface AcpSettings {
   agents: Record<string, AcpAgentConfig>
   /** Optional so older serialized settings snapshots and fixtures remain valid. */
   searchableModelPicker?: boolean
+  /** Default policy snapshotted by newly initialized ACP sessions. */
+  toolApprovalDefault?: 'auto' | 'ask'
 }
 
 /** Env var name: POSIX shell identifier. */
@@ -318,6 +320,7 @@ export interface PanelSettingsState {
   writable: boolean
   agents: Record<string, AcpAgentConfig>
   searchableModelPicker: boolean
+  toolApprovalDefault: 'auto' | 'ask'
   revision: number | undefined
 }
 
@@ -335,6 +338,7 @@ export function panelSettingsOf(snapshot: AcpScopeSnapshot): PanelSettingsState 
     writable: snapshot.writable,
     agents: snapshot.value?.agents ?? {},
     searchableModelPicker: snapshot.value?.searchableModelPicker ?? false,
+    toolApprovalDefault: snapshot.value?.toolApprovalDefault ?? 'auto',
     revision: snapshot.revision,
   }
 }

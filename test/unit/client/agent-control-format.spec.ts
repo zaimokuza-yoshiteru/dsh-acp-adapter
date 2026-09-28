@@ -4,8 +4,10 @@ import {
   agentControlLabel,
   agentControlMenuGroups,
   formatContextTokenCount,
+  toolApprovalPolicyGroup,
 } from '../../../src/client/ui/agent-session-controls.ts'
 import type { AcpAgentSessionSnapshotView } from '../../../src/client/data/acp-remote.ts'
+import type { ToolApprovalPolicySnapshot } from '../../../src/client/data/tool-approval-policy-stream.ts'
 import { en, zh } from '../../../src/client/ui/locales.ts'
 
 const t = (key: string, params?: Record<string, unknown>): string => `${key}:${JSON.stringify(params ?? {})}`
@@ -15,6 +17,18 @@ const snapshot = (overrides: Partial<AcpAgentSessionSnapshotView> = {}): AcpAgen
 })
 
 describe('ACP Agent control presentation', () => {
+  it('presents session approval policy in both locales and keeps inherited Lead policy read-only', () => {
+    const policy: ToolApprovalPolicySnapshot = { sessionId: 's', policy: 'auto', source: 'lead', editable: false }
+    for (const dictionary of [zh, en]) {
+      const group = toolApprovalPolicyGroup(policy, key => dictionary[key])
+      expect(group).toMatchObject({ kind: 'policy', id: 'tool-approval-policy', current: dictionary.toolApprovalAuto, description: dictionary.toolApprovalInherited })
+      expect(group.choices).toMatchObject([
+        { current: true, disabled: true, write: { kind: 'tool-approval-policy', policy: 'auto' } },
+        { current: false, disabled: true, write: { kind: 'tool-approval-policy', policy: 'ask' } },
+      ])
+    }
+  })
+
   it('labels config-only modes and prefers canonical config updates over a legacy mode snapshot', () => {
     const value = {
       sessionId: 's', profileId: 'kimi', freshness: 'live' as const, editable: false,

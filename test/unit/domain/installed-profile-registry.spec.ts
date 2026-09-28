@@ -89,6 +89,7 @@ class FakeSettingsProvider {
   readonly config = {
     agents: { get: () => acpSettingsSchema(this.section).agents },
     searchableModelPicker: { get: () => acpSettingsSchema(this.section).searchableModelPicker },
+    toolApprovalDefault: { get: () => acpSettingsSchema(this.section).toolApprovalDefault },
   };
   private watchers: WatchCallback[] = [];
 
@@ -304,9 +305,9 @@ describe('runtime 身份与配置兼容', () => {
 
 describe('acpSettingsSchema', () => {
   it('空/缺省 section 解析为零 agents', () => {
-    expect(acpSettingsSchema(undefined)).toEqual({ agents: {}, searchableModelPicker: false });
-    expect(acpSettingsSchema({})).toEqual({ agents: {}, searchableModelPicker: false });
-    expect(acpSettingsSchema({ agents: {} })).toEqual({ agents: {}, searchableModelPicker: false });
+    expect(acpSettingsSchema(undefined)).toEqual({ agents: {}, searchableModelPicker: false, toolApprovalDefault: 'auto' });
+    expect(acpSettingsSchema({})).toEqual({ agents: {}, searchableModelPicker: false, toolApprovalDefault: 'auto' });
+    expect(acpSettingsSchema({ agents: {} })).toEqual({ agents: {}, searchableModelPicker: false, toolApprovalDefault: 'auto' });
     expect(acpSettingsSchema({ agents: {}, searchableModelPicker: true }).searchableModelPicker).toBe(true);
     expect(() => acpSettingsSchema({ agents: {}, searchableModelPicker: 'yes' })).toThrow(/must be a boolean/);
     expect(() => acpSettingsSchema({ agents: {}, searchableModelPicker: null })).toThrow(/must be a boolean/);
@@ -359,7 +360,7 @@ describe('acpSettingsSchema', () => {
 
   it('未知键被剥离；已删除的 profile MCP 与外部委派开关不会继续进入产品配置', () => {
     const resolved = acpSettingsSchema({ agents: { devin: { name: 'Devin', command: 'devin', typoField: 1, mcpServers: [{ type: 'stdio' }] } }, projectExternalSubagents: false, stray: true });
-    expect(resolved).toEqual({ agents: { devin: { name: 'Devin', command: 'devin', args: [], env: {} } }, searchableModelPicker: false });
+    expect(resolved).toEqual({ agents: { devin: { name: 'Devin', command: 'devin', args: [], env: {} } }, searchableModelPicker: false, toolApprovalDefault: 'auto' });
   });
 
   it('非法输入逐一拒绝', () => {
@@ -553,7 +554,7 @@ describe('installInstalledProfileRegistry：注册/替换调用序列', () => {
       expect(await assemble({}, { agent: { options: { provider: 'acp-devin' } } }, async () => downstream)).toBe(downstream);
     }
     const result = await assemble({}, { agent: { options: { provider: 'deepseek' } } }, async () => ({ ...original, variables: { provider: 'acp-devin' } }));
-    expect(result.contexts[0].text).toContain('request permission through your normal tools');
+    expect(result.contexts[0].text).toContain('wait for the host decision before proceeding');
     expect(result.contexts.slice(1)).toEqual(original.contexts.slice(1));
     expect(original.contexts[0]!.text).toBe('native fixed delegation');
     expect(result.sections).toBe(original.sections);

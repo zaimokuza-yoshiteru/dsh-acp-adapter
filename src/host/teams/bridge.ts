@@ -1,4 +1,5 @@
 import { randomBytes, randomUUID } from 'node:crypto'
+import { Buffer } from 'node:buffer'
 import { createServer } from 'node:http'
 import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
@@ -11,6 +12,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import type { AcpMcpLease } from '../../runtime/session/mcp-lease.ts'
 import type { AcpPermissionCheck } from '../../domain/policy/permission-check.ts'
+import { ACP_PERMISSION_ID_MAX_BYTES, ACP_PERMISSION_OPTIONS_MAX } from '../../domain/policy/permissions.ts'
 import { toolContent } from './tool-content.ts'
 
 const TEAM_TOOLS = [
@@ -52,11 +54,13 @@ export function teamBridgeKey(ctx: Context, sessionId: string): unknown {
 /** Discover native session tools without enabling any host plugin or Teams service. */
 export async function createTeamBridge(
   ctx: Context, sessionId: string, capabilities: acp.AgentCapabilities | undefined, wireProfile?: string,
+  resolveApprovalPolicy?: () => Promise<'auto' | 'ask'>, onPolicyContextChange?: () => void,
 ): Promise<AcpMcpLease | undefined> {
   const agents = ctx.get('agents', false)
   const bridge = bridgeDefinitions(ctx, sessionId)
   if (bridge === undefined || agents === undefined) return undefined
   const { tools, agent, teams, hasTeams, definitions } = bridge
+  const initialMembership = hasTeams ? teams?.tryMembership(agent) : undefined
   const lifetime = new AbortController()
   let prompt: AbortSignal | undefined
   let promptGeneration = 0
@@ -68,6 +72,7 @@ export async function createTeamBridge(
   // upstream prompts, descriptions and plugin instructions share one contract.
   const names = definitions
   const presented = new Map<string, string>()
+  const permissionFences = new WeakMap<object, { generation: number; prompt: AbortSignal }>()
   const identityOf = (call: acp.ToolCallUpdate): { tool?: string; source?: AcpPermissionCheck['identitySource'] } => {
     const qualified = (value: unknown): string | undefined => typeof value === 'string' && value.startsWith(`mcp__${serverName}__`)
       ? value.slice(`mcp__${serverName}__`.length) : undefined
@@ -98,12 +103,24 @@ export async function createTeamBridge(
     const tool = identityOf(call).tool
     return tool === undefined ? undefined : names.get(tool)
   }
+  // Freeze a durable session default before the first prompt. Failure stays
+  // fail-closed in each permission resolver below.
+  if (resolveApprovalPolicy !== undefined) await resolveApprovalPolicy().catch(() => undefined)
   // Cordis returns a caller-context proxy for each service lookup, so proxy identity is not service identity.
   const live = (): boolean => !lifetime.signal.aborted
     && agents.get(sessionId as never) === agent
-    && (!hasTeams || (ctx.get('agentTeams') !== undefined && teams?.tryMembership(agent) !== undefined))
+    && (!hasTeams || (() => {
+      const current = ctx.get('agentTeams') === undefined ? undefined : teams?.tryMembership(agent)
+      if (current === undefined || initialMembership === undefined
+        || current.id !== initialMembership.id || current.root !== initialMembership.root || current.role !== initialMembership.role) return false
+      const root = initialMembership.root
+      const lead = teams?.tryMembership(root)
+      return agents.get(root.id as never) === root && lead?.role === 'lead' && lead.root === root && lead.id === initialMembership.id
+    })())
     && [...definitions].every(([name, definition]) => tools.get(name, agent) === definition)
-  const inspectPermission: NonNullable<AcpMcpLease['inspectPermission']> = request => {
+  const inspectPermission: NonNullable<AcpMcpLease['inspectPermission']> = async request => {
+    const capturedPrompt = prompt
+    const capturedGeneration = promptGeneration
     const call = request.toolCall
     const identity = identityOf(call)
     const meta = call._meta?.claudeCode as { toolName?: unknown } | undefined
@@ -114,7 +131,7 @@ export async function createTeamBridge(
       structuredIdentityPresent: call.name != null || meta?.toolName != null || call._meta?.['cognition.ai/toolName'] != null || source === 'codex-input',
       titleMatchesCurrentTool: titleName !== undefined && names.has(titleName) }
     if (!live()) return { ...facts, reason: 'inactive-connection' }
-    if (prompt === undefined || prompt.aborted) return { ...facts, reason: 'inactive-prompt' }
+    if (capturedPrompt === undefined || capturedPrompt.aborted) return { ...facts, reason: 'inactive-prompt' }
     const definition = definitionOf(call)
     if (definition === undefined) {
       // An identified call to our own server with an unknown name cannot
@@ -128,10 +145,24 @@ export async function createTeamBridge(
       return { ...facts, reason: 'identity-unmatched' }
     }
     const identified = { ...facts, toolName: definition.name }
-    if (!isTeamTool(definition.name)) return { ...identified, reason: 'not-coordination' }
-    const allow = request.options.find(option => option.kind === 'allow_once')
+    const policy = resolveApprovalPolicy === undefined ? 'ask' : await resolveApprovalPolicy().catch(() => undefined)
+    if (prompt !== capturedPrompt || promptGeneration !== capturedGeneration || capturedPrompt.aborted || !live()) return { ...identified, reason: 'inactive-prompt' }
+    // Policy reads fail closed. A cancelled response prevents the Agent from
+    // treating an unavailable host policy as permission to proceed.
+    if (policy === undefined) {
+      return { ...identified, reason: 'policy-unavailable', response: { outcome: { outcome: 'cancelled' } } }
+    }
+    if (policy !== 'auto') return { ...identified, reason: 'approval-required' }
+    if (!live() || prompt !== capturedPrompt || promptGeneration !== capturedGeneration || capturedPrompt.aborted) return { ...identified, reason: 'inactive-prompt' }
+    const allows = request.options.filter(option => option.kind === 'allow_once')
+    const ids = request.options.map(option => option.optionId)
+    const boundedOptions = request.options.length <= ACP_PERMISSION_OPTIONS_MAX
+      && Buffer.byteLength(request.toolCall.toolCallId, 'utf8') <= ACP_PERMISSION_ID_MAX_BYTES
+      && ids.every(id => typeof id === 'string' && id.length > 0 && Buffer.byteLength(id, 'utf8') <= ACP_PERMISSION_ID_MAX_BYTES)
+    const allow = boundedOptions && allows.length === 1 && new Set(ids).size === ids.length ? allows[0] : undefined
     return allow === undefined ? { ...identified, reason: 'allow-once-unavailable' }
-      : { ...identified, reason: 'auto-approved', response: { outcome: { outcome: 'selected', optionId: allow.optionId } } }
+      : (permissionFences.set(request, { generation: capturedGeneration, prompt: capturedPrompt }),
+        { ...identified, reason: 'auto-approved', response: { outcome: { outcome: 'selected', optionId: allow.optionId } } })
   }
   const sessions = new Set<Server>()
   const calls = new Set<Promise<unknown>>()
@@ -177,6 +208,7 @@ export async function createTeamBridge(
           callId: `acp-team-${randomUUID()}` as never, name: definition.name, arguments: args, agent,
           signal: AbortSignal.any([lifetime.signal, executedPrompt, extra.signal]),
         })
+        onPolicyContextChange?.()
         for (const context of result.additionalContexts ?? []) agent.steer(context)
         const content = await toolContent(result.content, AbortSignal.any([lifetime.signal, executedPrompt, extra.signal]), capabilities?.promptCapabilities?.image === true, ctx.get('attachments', false))
         const currentMembership = teams?.tryMembership(agent)
@@ -242,7 +274,13 @@ export async function createTeamBridge(
         ...(name === 'bash' ? { kind: 'execute' as const } : {}) }
     },
     inspectPermission,
-    permission(request) { return inspectPermission(request).response },
+    validatePermissionDecision(request) {
+      const fence = permissionFences.get(request)
+      if (fence === undefined || !live() || prompt !== fence.prompt || promptGeneration !== fence.generation || fence.prompt.aborted) return false
+      const definition = definitionOf(request.toolCall)
+      return definition !== undefined && names.get(definition.name) === definition && tools.get(definition.name, agent) === definition
+    },
+    async permission(request) { return (await inspectPermission(request)).response },
     elicitationToolName(request, toolCall) {
       const form = request as { toolCallId?: unknown }
       if (wireProfile !== 'codex' || !live() || prompt === undefined || prompt.aborted
@@ -256,7 +294,7 @@ export async function createTeamBridge(
       if (request.message !== `Allow the ${serverName} MCP server to run tool "${input.tool}"?`) return undefined
       return names.get(input.tool)?.name
     },
-    elicitation(request, toolCall) {
+    async elicitation(request, toolCall) {
       const form = request as { toolCallId?: unknown; requestedSchema?: { properties?: Record<string, unknown>; required?: unknown[] } }
       if (wireProfile !== 'codex' || !live() || prompt === undefined || prompt.aborted
         || request.mode !== 'form' || request._meta?.codex_approval_kind !== 'mcp_tool_call'
@@ -264,7 +302,11 @@ export async function createTeamBridge(
         || toolCall._meta?.is_mcp_tool_call !== true) return undefined
       const input = toolCall.rawInput as { server?: unknown; tool?: unknown } | undefined
       if (input?.server !== serverName || typeof input.tool !== 'string' || !names.has(input.tool)) return undefined
-      if (!isTeamTool(names.get(input.tool)!.name)) return undefined
+      const capturedPrompt = prompt
+      const capturedGeneration = promptGeneration
+      const policy = resolveApprovalPolicy === undefined ? 'ask' : await resolveApprovalPolicy().catch(() => undefined)
+      if (policy !== 'auto' || capturedPrompt === undefined || capturedPrompt.aborted
+        || prompt !== capturedPrompt || promptGeneration !== capturedGeneration || !live()) return undefined
       // Codex may add the persistence selector to an otherwise empty tool-approval form.
       // Never answer unrelated fields or grant persistent permission.
       const properties = form.requestedSchema?.properties

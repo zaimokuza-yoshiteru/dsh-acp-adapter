@@ -10,6 +10,7 @@ import { acpSettingsSchema } from '../../../src/host/composition/installed-profi
 import type { AcpSettings } from '../../../src/host/composition/installed-profile-registry.ts'
 import type { AcpAgentConfig } from '../../../src/domain/session/agent-config.ts'
 import { createAcpSidecar } from '../../../src/persistence/sidecar.ts'
+import type { AcpBindingData } from '../../../src/persistence/sidecar.ts'
 
 type Watcher = (next: AcpSettings, previous: AcpSettings) => void | Promise<void>
 
@@ -21,6 +22,7 @@ class SettingsDocument {
   readonly config = {
     agents: { get: () => acpSettingsSchema(this.value).agents },
     searchableModelPicker: { get: () => acpSettingsSchema(this.value).searchableModelPicker },
+    toolApprovalDefault: { get: () => acpSettingsSchema(this.value).toolApprovalDefault },
   }
   configure() { return () => {} }
 
@@ -76,7 +78,24 @@ describe('real Cordis ACP composition settings lifecycle', () => {
     const home = mkdtempSync(path.join(tmpdir(), 'dsh-acp-composition-'))
     ctx.provide('settings', settings)
     ctx.provide('llm', llm)
-    ctx.provide('sessions', { get: () => undefined })
+    const liveSessions = new Map<string, { header: { origin?: string; parentSession?: string }; facts: unknown; permissions: unknown; requestHeader?: () => { config: { provider: string } } }>()
+    ctx.provide('sessions', { get: (id: string) => liveSessions.get(id) })
+    const liveAgents = new Map<string, { id: string; options: { provider: string } }>()
+    const memberships = new Map<object, { id: string; role: 'lead' | 'teammate'; root: object }>()
+    const agentResolutionCalls: string[] = []
+    ctx.provide('agents', { get: (id: string) => liveAgents.get(id), list: () => [...liveAgents.values()] })
+    ctx.provide('sessionController', { resolveAgent: async (id: string) => {
+      agentResolutionCalls.push(id)
+      return liveSessions.get(id)?.header.origin === 'subagent'
+        ? { error: new Error('subagent sessions are not activatable') }
+        : { agent: liveAgents.get(id) }
+    } })
+    ctx.provide('agentTeams', {
+      tryMembership: (agent: object) => memberships.get(agent),
+      listMembers: (lead: object) => [...memberships.entries()]
+        .filter(([, membership]) => membership.role === 'teammate' && membership.root === lead)
+        .map(([agent]) => ({ id: (agent as { id: string }).id, role: 'teammate' as const })),
+    })
     // Use the actual host subprocess seam shape.  The health service and the
     // ACP probe must share this seam; otherwise a successful probe can still
     // be reported as executable=false/version=null by the Remote constructor.
@@ -128,6 +147,8 @@ describe('real Cordis ACP composition settings lifecycle', () => {
     const remote = ctx.get('dshAcp' as never) as unknown as {
       health(request?: unknown): Promise<{ providers: Array<{ id: string }> }>
       activitySnapshot(sessionId: string, request?: unknown): Promise<unknown>
+      toolApprovalPolicy(sessionId: string): Promise<{ policy: 'auto' | 'ask'; source: string; editable: boolean }>
+      setToolApprovalPolicy(sessionId: string, request: { policy: 'auto' | 'ask' }): Promise<unknown>
     }
     // Opening Settings is cache-only: it may resolve executable presence but
     // must not spawn either an ACP probe or a `--version` helper.
@@ -146,15 +167,83 @@ describe('real Cordis ACP composition settings lifecycle', () => {
     // arbitrary sessions without either live or durable ownership remain
     // denied by the composition's activityAccess gate.
     const persisted = createAcpSidecar({ root: path.join(home, 'dsh-acp') })
+    const seedAcpBinding = async (sessionId: string): Promise<void> => {
+      const binding: AcpBindingData = {
+        provider: 'acp-codex', agentSessionId: `agent-${sessionId}`, profileId: 'codex', canonicalCwd: '/tmp/work',
+        launchFingerprint: { command: 'codex-acp', args: ['acp'], envKeys: [] },
+        agent: { name: 'Codex', version: '1.6.2' }, protocolVersion: 1,
+        capabilityHash: 'a1b2c3d4e5f60708', configHash: '0817f6e5d4c3b2a1', generation: 1,
+        bindingEpoch: 1, committedPromptOrdinal: 0, historyBaseSeq: 0, establishedAt: Date.now(), dshCommittedSeq: 0,
+      }
+      await persisted.append(sessionId as never, { kind: 'binding', data: binding })
+    }
     await persisted.upsertActivity({
       dshSessionId: 'cold-parent', ownerDshSessionId: 'cold-parent', promptAnchorMessageId: 'cold-user',
       activityId: 'cold-tool', time: 1, kind: 'tool', status: 'completed', presentation: 'Ran pwd',
     })
-    await persisted.dispose()
     await expect(remote.activitySnapshot('cold-parent', { filter: { ownerDshSessionId: 'cold-parent', promptAnchorMessageId: 'cold-user' } })).resolves.toMatchObject({
       activities: [{ activityId: 'cold-tool', presentation: 'Ran pwd' }],
     })
     await expect(remote.activitySnapshot('unrelated-session')).rejects.toThrow('not authorized')
+    await seedAcpBinding('policy-no-session')
+    await expect(remote.toolApprovalPolicy('policy-no-session')).rejects.toThrow('ACP_TOOL_APPROVAL_SESSION_UNAVAILABLE')
+    await expect(persisted.readToolApprovalPolicy('policy-no-session' as never)).resolves.toBeUndefined()
+
+    // Exercise the production composition resolver against real sidecar rows,
+    // session ownership, and live Team membership (not a bridge callback stub).
+    const addSession = (id: string, parentSession?: string): void => {
+      liveSessions.set(id, { header: { ...(parentSession === undefined ? { origin: 'native' } : { parentSession }) }, facts: {}, permissions: {}, requestHeader: () => ({ config: { provider: 'acp-codex' } }) })
+      liveAgents.set(id, { id, options: { provider: 'acp-codex' } })
+    }
+    addSession('policy-root')
+    await seedAcpBinding('policy-root')
+    await expect(remote.toolApprovalPolicy('policy-root')).resolves.toMatchObject({ policy: 'auto', source: 'session', editable: true })
+    expect(agentResolutionCalls).not.toContain('policy-root')
+    await settings.replace({ agents: { codex: agent('Codex', 'codex-acp') }, toolApprovalDefault: 'ask' })
+    // First ACP admission snapshots the default; a later global change cannot
+    // rewrite an already initialized session.
+    await expect(remote.toolApprovalPolicy('policy-root')).resolves.toMatchObject({ policy: 'auto' })
+    addSession('policy-new-root')
+    await expect(remote.toolApprovalPolicy('policy-new-root')).resolves.toMatchObject({ policy: 'ask' })
+    await remote.setToolApprovalPolicy('policy-root', { policy: 'ask' })
+
+    const lead = liveAgents.get('policy-root')!
+    const teammate = liveAgents.get('policy-member') ?? { id: 'policy-member', options: { provider: 'acp-codex' } }
+    liveAgents.set(teammate.id, teammate)
+    liveSessions.set(teammate.id, { header: { origin: 'subagent', parentSession: lead.id }, facts: {}, permissions: {}, requestHeader: () => ({ config: { provider: 'acp-codex' } }) })
+    await seedAcpBinding(teammate.id)
+    const teamId = 'policy-team'
+    memberships.set(lead, { id: teamId, role: 'lead', root: lead })
+    memberships.set(teammate, { id: teamId, role: 'teammate', root: lead })
+    await expect(remote.toolApprovalPolicy(teammate.id)).resolves.toMatchObject({ policy: 'ask', source: 'lead', editable: false })
+
+    // An ordinary fork of that teammate is independent, initialized from the
+    // parent's effective Lead policy rather than the plugin default.
+    addSession('policy-fork', teammate.id)
+    await expect(remote.toolApprovalPolicy('policy-fork')).resolves.toMatchObject({ policy: 'ask', source: 'session', editable: true })
+    // A cold ordinary fork can initialize through its dormant teammate parent,
+    // whose current Lead roster remains authoritative.
+    liveAgents.delete(teammate.id)
+    await expect(remote.toolApprovalPolicy(teammate.id)).resolves.toMatchObject({ policy: 'ask', source: 'lead', editable: false })
+    addSession('policy-fork-dormant-parent', teammate.id)
+    await expect(remote.toolApprovalPolicy('policy-fork-dormant-parent')).resolves.toMatchObject({ policy: 'ask', source: 'session', editable: true })
+    // A subagent with no verified Lead roster must fail closed without creating
+    // an independent row from the global default.
+    memberships.delete(teammate)
+    await expect(remote.toolApprovalPolicy(teammate.id)).rejects.toThrow('ACP_TOOL_APPROVAL_LEAD_UNAVAILABLE')
+    await expect(persisted.readToolApprovalPolicy(teammate.id as never)).resolves.toBeUndefined()
+    memberships.set(teammate, { id: teamId, role: 'teammate', root: lead })
+    memberships.set(lead, { id: teamId, role: 'lead', root: lead })
+    // The teammate follows the Lead; the ordinary fork keeps its copied value.
+    await remote.setToolApprovalPolicy('policy-root', { policy: 'auto' })
+    await expect(remote.toolApprovalPolicy(teammate.id)).resolves.toMatchObject({ policy: 'auto', source: 'lead', editable: false })
+    await expect(remote.toolApprovalPolicy('policy-fork')).resolves.toMatchObject({ policy: 'ask', source: 'session', editable: true })
+    await expect(remote.toolApprovalPolicy('policy-fork-dormant-parent')).resolves.toMatchObject({ policy: 'ask', source: 'session', editable: true })
+    await expect(remote.toolApprovalPolicy(teammate.id)).resolves.toMatchObject({ policy: 'auto', source: 'lead', editable: false })
+    liveSessions.delete(teammate.id)
+    liveAgents.delete('policy-fork')
+    await expect(remote.toolApprovalPolicy('policy-fork')).resolves.toMatchObject({ policy: 'ask', source: 'session', editable: true })
+    await expect(remote.toolApprovalPolicy('policy-fork-dormant-parent')).resolves.toMatchObject({ policy: 'ask', source: 'session', editable: true })
 
     await settings.replace({ agents: { devin: agent('Devin', 'devin') } })
     expect(routeCalls).toContainEqual(['acp-codex'])
@@ -163,6 +252,7 @@ describe('real Cordis ACP composition settings lifecycle', () => {
     await expect(remote.health({ recheck: true, agentId: 'devin' })).resolves.toMatchObject({ providers: [{ id: 'devin' }] })
     const callsAtDispose = routeCalls.length
     await ctx.fiber.dispose()
+    await persisted.dispose()
     await settings.replace({ agents: { codex: agent('Codex', 'codex-acp') } })
     expect(routeCalls).toHaveLength(callsAtDispose)
     rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })

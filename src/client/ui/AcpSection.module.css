@@ -135,6 +135,28 @@
   outline: none;
   box-shadow: 0 0 0 2px var(--dsw-alias-border-l3);
 }
+.approvalButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  box-sizing: border-box;
+  width: min(100%, 360px);
+  min-height: 40px;
+  padding: 8px 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 10px;
+  background: var(--dsw-alias-bg-primary);
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 14px;
+  line-height: 22px;
+  text-align: left;
+  cursor: pointer;
+}
+.approvalButton:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); }
+.approvalButton:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--dsw-alias-border-l3); }
+.approvalButton:disabled { opacity: 0.5; cursor: default; }
 .chevron {
   display: inline-flex;
   transition: transform 0.15s ease;

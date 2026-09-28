@@ -211,6 +211,97 @@ export function installInstalledProfileRegistry(ctx: Context, config: Config, op
   // this map available before constructing the additive Remote service.
   const profileAdapters = new Map<string, AcpProfileAdapter>()
   const controlSubscribers = new Map<string, Set<() => void>>()
+  const policySubscribers = new Set<() => void>()
+  const notifyPolicySubscribers = (): void => { for (const notify of policySubscribers) notify() }
+  ctx.on('agent/disposed', notifyPolicySubscribers)
+  const readToolApprovalPolicy = async (sessionId: string, ancestry = new Set<string>()): Promise<import('../../contract/remote.ts').AcpToolApprovalPolicySnapshot> => {
+    if (ancestry.has(sessionId)) throw new Error('ACP_TOOL_APPROVAL_PARENT_CYCLE')
+    const currentAncestry = new Set(ancestry).add(sessionId)
+    if (sidecar === undefined) throw new Error('ACP_TOOL_APPROVAL_POLICY_UNAVAILABLE')
+    const session = sessionStore?.get(sessionId)
+    if (session === undefined) throw new Error('ACP_TOOL_APPROVAL_SESSION_UNAVAILABLE')
+    const lookup = await sidecar.readLatestBinding(sessionId as never).catch(() => undefined)
+    const projection = session === undefined ? undefined : ctx.sessionProjections.stateOf(session, 'modelSelection')
+    const selectedProvider = projection?.pending?.provider ?? projection?.lastUsed?.provider
+    const liveAgent = ctx.get('agents', false)?.get(sessionId as never)
+    const headerProvider = session?.requestHeader?.()?.config.provider
+    const defaultProvider = session?.header.origin === 'subagent' ? undefined : ctx.get('agentDefaultModel')?.currentSelection().provider
+    const provider = lookup?.status === 'ok' ? lookup.binding.provider : selectedProvider ?? headerProvider ?? liveAgent?.options.provider ?? defaultProvider
+    const providerId = provider === undefined ? undefined : acpAgentIdFromRoute(provider)
+    if (providerId === undefined || !profileAdapters.has(providerId)) throw new Error('ACP_TOOL_APPROVAL_SESSION_NOT_ACP')
+    // Reading this host-owned preference must not activate the Agent runtime.
+    // Live membership is used when present; dormant subagents are classified
+    // through the exact parent Lead roster below.
+    const agent = liveAgent
+    const teams = ctx.get('agentTeams', false)
+    const membership = agent === undefined ? undefined : teams?.tryMembership(agent)
+    // DSH-owned subagent sessions are not activatable through the native
+    // SessionController. A dormant teammate can only inherit through a live
+    // Lead whose authoritative roster still contains this exact child id.
+    if (session?.header.origin === 'subagent' && membership === undefined) {
+      const parentId = session.header.parentSession
+      if (parentId === undefined || teams === undefined) throw new Error('ACP_TOOL_APPROVAL_LEAD_UNAVAILABLE')
+      const parentSession = sessionStore?.get(parentId)
+      let leadAgent = ctx.get('agents', false)?.get(parentId as never)
+      if (leadAgent === undefined && parentSession !== undefined && parentSession.header.origin !== 'subagent') {
+        const activated = await ctx.get('sessionController', false)?.resolveAgent(parentId as never)
+        if (activated !== undefined && 'error' in activated) throw activated.error
+        leadAgent = ctx.get('agents', false)?.get(parentId as never)
+      }
+      if (leadAgent === undefined) throw new Error('ACP_TOOL_APPROVAL_LEAD_UNAVAILABLE')
+      const leadMembership = teams.tryMembership(leadAgent)
+      if (leadMembership?.role !== 'lead' || leadMembership.root !== leadAgent
+        || !teams.listMembers(leadAgent).some(row => row.id === sessionId && row.role === 'teammate')) {
+        throw new Error('ACP_TOOL_APPROVAL_LEAD_UNAVAILABLE')
+      }
+      const policy = await sidecar.readToolApprovalPolicy(leadAgent.id as never, config.toolApprovalDefault.get())
+      if (policy === undefined) throw new Error('ACP_TOOL_APPROVAL_POLICY_UNAVAILABLE')
+      const currentLead = teams.tryMembership(leadAgent)
+      if (ctx.get('agents', false)?.get(leadAgent.id as never) !== leadAgent
+        || currentLead?.role !== 'lead' || currentLead.root !== leadAgent || currentLead.id !== leadMembership.id
+        || !teams.listMembers(leadAgent).some(row => row.id === sessionId && row.role === 'teammate')) {
+        throw new Error('ACP_TOOL_APPROVAL_LEAD_CHANGED')
+      }
+      return { sessionId, policy, source: 'lead', editable: false }
+    }
+    let policySessionId = sessionId
+    let source: 'session' | 'lead' = 'session'
+    if (session !== undefined && session.header.origin !== 'subagent'
+      && membership?.role !== 'teammate' && session.header.parentSession !== undefined) {
+      const savedForkPolicy = await sidecar.readToolApprovalPolicy(sessionId as never)
+      if (savedForkPolicy !== undefined) return { sessionId, policy: savedForkPolicy, source: 'session', editable: true }
+      // Ordinary forks take one durable snapshot from a verified ACP parent.
+      // The parent id never becomes live authority after this copy.
+      const parentId = session.header.parentSession
+      // Resolve the parent's effective policy through the same path used at
+      // runtime. This handles a parent that is itself a (possibly dormant)
+      // teammate by following its verified Lead roster.
+      const inherited = await readToolApprovalPolicy(parentId, currentAncestry)
+      const policy = await sidecar.readToolApprovalPolicy(sessionId as never, inherited.policy)
+      if (policy === undefined) throw new Error('ACP_TOOL_APPROVAL_POLICY_UNAVAILABLE')
+      return { sessionId, policy, source: 'session', editable: true }
+    }
+    if (membership !== undefined) {
+      const root = membership.root
+      const leadMembership = teams?.tryMembership(root)
+      if (ctx.get('agents', false)?.get(root.id as never) !== root || leadMembership?.role !== 'lead'
+        || leadMembership.root !== root || leadMembership.id !== membership.id) throw new Error('ACP_TOOL_APPROVAL_LEAD_UNAVAILABLE')
+      if (membership.role === 'teammate') { policySessionId = root.id; source = 'lead' }
+      else if (membership.role !== 'lead') throw new Error('ACP_TOOL_APPROVAL_MEMBERSHIP_INVALID')
+    }
+    const policy = await sidecar.readToolApprovalPolicy(policySessionId as never, config.toolApprovalDefault.get())
+    if (policy === undefined) throw new Error('ACP_TOOL_APPROVAL_POLICY_UNAVAILABLE')
+    if (source === 'lead') {
+      if (agent === undefined || membership === undefined) throw new Error('ACP_TOOL_APPROVAL_LEAD_CHANGED')
+      const current = teams?.tryMembership(agent)
+      const root = membership.root
+      const leadMembership = teams?.tryMembership(root)
+      if (current?.role !== 'teammate' || current.id !== membership.id || current.root !== root
+        || leadMembership?.role !== 'lead' || leadMembership.root !== root || leadMembership.id !== current.id
+        || ctx.get('agents', false)?.get(root.id as never) !== root) throw new Error('ACP_TOOL_APPROVAL_LEAD_CHANGED')
+    }
+    return { sessionId, policy, source, editable: source === 'session' }
+  }
   const controlsChanged = (sessionId: string): void => {
     for (const notify of controlSubscribers.get(sessionId) ?? []) notify()
   }
@@ -332,6 +423,21 @@ export function installInstalledProfileRegistry(ctx: Context, config: Config, op
           }
         },
       },
+      toolApprovalPolicy: {
+        read: readToolApprovalPolicy,
+        write: async (sessionId, policy) => {
+          const current = await readToolApprovalPolicy(sessionId)
+          if (!current.editable) throw new Error('ACP_TOOL_APPROVAL_POLICY_INHERITED')
+          const confirmed = await readToolApprovalPolicy(sessionId)
+          if (!confirmed.editable || confirmed.source !== current.source) throw new Error('ACP_TOOL_APPROVAL_POLICY_OWNER_CHANGED')
+          await sidecar.writeToolApprovalPolicy(sessionId as never, policy)
+          return await readToolApprovalPolicy(sessionId)
+        },
+      },
+      toolApprovalPolicyChanges: {
+        subscribe: changed => { policySubscribers.add(changed); return () => { policySubscribers.delete(changed) } },
+        notify: notifyPolicySubscribers,
+      },
       agentSessionControl: (provider) => {
         const id = acpAgentIdFromRoute(provider)
         return id === undefined ? undefined : profileAdapters.get(id)
@@ -403,7 +509,8 @@ export function installInstalledProfileRegistry(ctx: Context, config: Config, op
             },
             message => log.warn(message, { operation: 'claude-draft-subagent-capability' }),
             sessionId => resolveTerminalJobs(ctx, sessionId),
-            (sessionId, capabilities, wireProfile) => createTeamBridge(ctx, sessionId, capabilities, wireProfile),
+            (sessionId, capabilities, wireProfile) => createTeamBridge(ctx, sessionId, capabilities, wireProfile,
+              async () => (await readToolApprovalPolicy(sessionId)).policy, notifyPolicySubscribers),
             sessionId => teamBridgeKey(ctx, sessionId),
             controlsChanged,
           )

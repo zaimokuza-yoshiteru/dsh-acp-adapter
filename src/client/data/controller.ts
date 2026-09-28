@@ -210,6 +210,12 @@ export class AcpPanelController {
     return this.mutate([{ op: 'set', path: ['searchableModelPicker'], value: enabled }])
   }
 
+  /** Persist the default approval behavior for DSH native tools in new sessions. */
+  async setToolApprovalDefault(policy: 'auto' | 'ask'): Promise<string | undefined> {
+    if (policy !== 'auto' && policy !== 'ask') throw new TypeError('Invalid DSH tool approval policy')
+    return this.mutate([{ op: 'set', path: ['toolApprovalDefault'], value: policy }])
+  }
+
   /**
  * 删除确认提示：该 profile 的既有会话 binding 计数（dshAcp/boundSessions）。
    * RPC 失败/载荷畸形/应答张冠李戴一律归 undefined——计数是确认的增强提示

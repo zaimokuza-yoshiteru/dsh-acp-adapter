@@ -537,7 +537,25 @@ export class AcpSessionRuntime {
             ? undefined : this.promptToolSnapshots?.get(scope.toolCallId)
           this.pendingQuestions += 1
           try {
-            const automatic = this.mcpLease?.elicitation?.(params, toolCall)
+            const lease = this.mcpLease
+            const automaticPromise = Promise.resolve(lease?.elicitation?.(params, toolCall))
+            let automatic: acp.CreateElicitationResponse | undefined
+            if (signal === undefined) automatic = await automaticPromise
+            else {
+              const abortToken = Symbol('abort')
+              let onAbort: (() => void) | undefined
+              const aborted = new Promise<typeof abortToken>(resolve => {
+                onAbort = () => resolve(abortToken)
+                if (isAborted(signal)) onAbort()
+                else signal.addEventListener('abort', onAbort, { once: true })
+              })
+              try {
+                const result = await Promise.race([automaticPromise, aborted])
+                if (result === abortToken) return { action: 'cancel' }
+                automatic = result
+              } finally { if (onAbort !== undefined) signal.removeEventListener('abort', onAbort) }
+            }
+            if (isAborted(signal) || lease !== this.mcpLease || lease?.signal.aborted) return { action: 'cancel' }
             if (automatic !== undefined) return automatic
             const hostToolName = this.mcpLease?.elicitationToolName?.(params, toolCall)
             return await this.options.onElicitationRequest!(params, signal, hostToolName,
@@ -631,14 +649,33 @@ export class AcpSessionRuntime {
       toolCall: await completePermissionToolCall(this.promptToolSnapshots, params.toolCall, signal),
     }
     const lease = this.mcpLease
-    const inspected = lease?.inspectPermission?.(request)
+    const inspectPromise = Promise.resolve(lease?.inspectPermission?.(request))
+    let inspected: Awaited<typeof inspectPromise>
+    if (signal === undefined) inspected = await inspectPromise
+    else {
+      const abortToken = Symbol('permission-abort')
+      let onAbort: (() => void) | undefined
+      const aborted = new Promise<typeof abortToken>(resolve => {
+        onAbort = () => resolve(abortToken)
+        if (isAborted(signal)) onAbort()
+        else signal.addEventListener('abort', onAbort, { once: true })
+      })
+      try {
+        const result = await Promise.race([inspectPromise, aborted])
+        if (result === abortToken) return cancelled()
+        inspected = result
+      } finally { if (onAbort !== undefined) signal.removeEventListener('abort', onAbort) }
+    }
     if (this.options.onPermissionCheck !== undefined) {
       // Audit stores only the bounded decision facts, never capability names or addresses.
       try { await this.options.onPermissionCheck(inspected ?? { reason: 'bridge-unavailable' }, request) }
       catch { return cancelled() }
     }
-    if (isAborted(signal) || lease !== this.mcpLease) return cancelled()
-    const bridgeDecision = lease?.permission(request)
+    if (isAborted(signal) || lease !== this.mcpLease || lease?.signal.aborted
+      || (inspected?.reason === 'auto-approved' && lease?.validatePermissionDecision?.(request) === false)) return cancelled()
+    // Use the very policy resolution that was audited above. Re-reading here
+    // could turn an audited Ask into an automatic approval (or the reverse).
+    const bridgeDecision = inspected === undefined ? await lease?.permission(request) : inspected.response
     if (bridgeDecision !== undefined) return bridgeDecision
     // Resolve bridge decisions against the original wire identity first; normalize
     // only the request shown by the native approval surface.

@@ -97,6 +97,7 @@ async function registerUi(ctx: ClientContext): Promise<void> {
     saveAgent: (editingId, draft) => panelController.saveAgent(editingId, draft),
     deleteAgent: (id) => panelController.deleteAgent(id),
     setSearchableModelPicker: (enabled) => panelController.setSearchableModelPicker(enabled),
+    setToolApprovalDefault: (policy) => panelController.setToolApprovalDefault(policy),
     countBoundSessions: (id) => panelController.countBoundSessions(id),
   }
   const settingsT = ctx.locale.bind('settings.acp') as AcpTranslate
@@ -256,10 +257,24 @@ async function registerUi(ctx: ClientContext): Promise<void> {
     id: 'dsh-acp-agent-control',
     order: 80,
     locale: 'acpActivity',
-    inject: (): { readonly remote: AcpRemoteLike; readonly streamFactory: RemoteStreamFactory; readonly ownsRoute: typeof managedRoutes.owns } => ({
+    inject: (): { readonly remote: AcpRemoteLike; readonly streamFactory: RemoteStreamFactory; readonly ownsRoute: typeof managedRoutes.owns; readonly getDefaultProvider: () => Promise<string | undefined>; readonly watchDefaultProvider: (changed: () => void) => () => void } => ({
       remote: acpRemote,
       streamFactory: ctx.remote,
       ownsRoute: managedRoutes.owns,
+      getDefaultProvider: async () => {
+        const result = await ctx.remote.session.modelCatalog()
+        return result.ok ? result.value.default.provider : undefined
+      },
+      watchDefaultProvider: changed => {
+        const disposers = [
+          ctx.remote.$on('settings/document-updated', changed),
+          ctx.remote.$on('llm/adapters-updated', changed),
+          ctx.remote.$on('credentials/record-updated', changed),
+          ctx.remote.$on('credentials/reference-updated', changed),
+          ctx.on('connection/reset', changed),
+        ]
+        return () => { for (const dispose of disposers) dispose() }
+      },
     }),
   }, AcpAgentControl))
 }

@@ -452,6 +452,17 @@ export type AcpAgentSessionOptionWrite =
   | { readonly kind: 'config'; readonly id: string; readonly value: string | boolean }
   | { readonly kind: 'mode'; readonly id: string }
 
+export interface AcpToolApprovalPolicySnapshot {
+  readonly sessionId: string
+  readonly policy: 'auto' | 'ask'
+  readonly source: 'session' | 'lead'
+  readonly editable: boolean
+}
+export type AcpToolApprovalPolicyFrame =
+  | { readonly type: 'opened'; readonly snapshot: AcpToolApprovalPolicySnapshot }
+  | { readonly type: 'changed'; readonly snapshot: AcpToolApprovalPolicySnapshot }
+export interface AcpToolApprovalPolicyWrite { readonly policy: 'auto' | 'ask' }
+
 /** ACP agent 配置的五态 wire 词表；消费层从此 client-safe contract 派生。 */
 export const ACP_AGENT_CONFIG_STATES = ['saved-unverified', 'ready', 'auth-required', 'unavailable', 'incompatible'] as const
 export type AcpAgentConfigState = (typeof ACP_AGENT_CONFIG_STATES)[number]

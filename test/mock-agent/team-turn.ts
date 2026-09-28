@@ -1,5 +1,6 @@
 import { CallToolResultSchema } from '@modelcontextprotocol/sdk/types.js'
 import type { MockSession, PromptMessage, MockPeer } from './types.ts'
+import { existsSync, writeFileSync } from 'node:fs'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
@@ -7,13 +8,28 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 export async function teamTurn(session: MockSession, msg: PromptMessage, { sendUpdate, sendAgentRequest, respond, log }: MockPeer) {
   const prompt = msg.params.prompt.filter(block => block.type === 'text').map(block => block.text).join('\n')
   if (!prompt.includes('E2E_TEAM_')) return false
-  const client = new Client({ name: 'acp-team-fixture', version: '1' })
   let finishHold = () => {}
   const held = new Promise<void>(resolve => { finishHold = resolve })
   const turn = { cancelled: false, cancel() { this.cancelled = true; finishHold() } }
   session.turn = turn
-  const server = session.mcpServers?.[0]
+  const permissionGate = process.env.MOCK_TEAM_PERMISSION_GATE
+  const policyGate = process.env.MOCK_TEAM_POLICY_GATE
+  const approvalGate = permissionGate ?? policyGate
   const say = (text: string) => { log(text); sendUpdate(session.id, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } }) }
+  // A real child-settled notice asks only for acknowledgement. Permission-
+  // gated approval fixtures must not invent a roster lookup to handle it, and
+  // a coalesced actionable fixture prompt must continue through normal tools.
+  const actionableTeamPrompt = /\bE2E_TEAM_(?:START(?:_HOLD)?|LAYOUT|DEMO|EIGHT|SECOND|WAKE|CONTINUE|REPLY|INTERRUPT|MEMBER)\b/.test(prompt)
+  const settledNotice = permissionGate !== undefined && !actionableTeamPrompt
+    && /Background subagent [a-z0-9-]+ finished and will do no further work unless you send it more\.\nIts closing message:\nE2E_TEAM_(?:MEMBER_(?:DONE|DENIED|CANCELLED)|LATE_DENIED)\b/i.test(prompt)
+  if (settledNotice) {
+    say('E2E_TEAM_NOTICE_RECEIVED')
+    respond(msg.id, { stopReason: 'end_turn' })
+    if (session.turn === turn) session.turn = null
+    return true
+  }
+  const client = new Client({ name: 'acp-team-fixture', version: '1' })
+  const server = session.mcpServers?.[0]
   let ordinal = 0
   try {
     if (/\bE2E_TEAM_(?:MEMBER|CONTINUE)\b/.test(prompt) && /Approval prompts are disabled in this session|operations that require approval are rejected automatically/.test(prompt)) throw new Error('Member first prompt incorrectly disables approval')
@@ -92,6 +108,16 @@ export async function teamTurn(session: MockSession, msg: PromptMessage, { sendU
       say('E2E_TEAM_MEMBER_CONTINUED')
     } else if (/\bE2E_TEAM_MEMBER\b/.test(prompt)) {
       await call('spawn_teammate', { name: 'nested', description: 'Denied nested spawn', prompt: 'do nothing' }, 'only the Team Lead')
+      if (approvalGate !== undefined) {
+        // Manual-approval E2E fixtures let the Lead switch policy after all
+        // coordination setup has completed, before this ordinary MCP request.
+        const safeSessionId = session.id.replace(/[^a-z0-9_-]/gi, '_')
+        // Mock ACP session ids restart per child process, so include the pid
+        // to keep readiness barriers distinct across teammates.
+        writeFileSync(`${approvalGate}.${process.pid}.${safeSessionId}.ready`, 'ready')
+        while (!turn.cancelled && !existsSync(approvalGate)) await new Promise(resolve => setTimeout(resolve, 20))
+        if (turn.cancelled) return true
+      }
       sendUpdate(session.id, { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'Private fixture reasoning' } })
       const requestMemberPermission = async (toolCallId: string, command: string) => {
         if (process.env.MOCK_PROFILE === 'codex') {
@@ -121,6 +147,14 @@ export async function teamTurn(session: MockSession, msg: PromptMessage, { sendU
       if (response.outcome?.optionId !== 'allow') {
         say(response.outcome?.outcome === 'cancelled' ? 'E2E_TEAM_MEMBER_CANCELLED' : 'E2E_TEAM_MEMBER_DENIED')
         return true
+      }
+      if (permissionGate !== undefined) {
+        say('E2E_TEAM_MEMBER_DONE')
+        return true
+      }
+      if (policyGate !== undefined) {
+        while (!turn.cancelled && !existsSync(`${policyGate}.continue`)) await new Promise(resolve => setTimeout(resolve, 20))
+        if (turn.cancelled) return true
       }
       await call('send_message', { target: 'lead', message: 'E2E_TEAM_REPLY result=2' })
       say('E2E_TEAM_MEMBER_DONE')

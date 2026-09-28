@@ -5,8 +5,9 @@ import type { TestBrowser } from './browser.ts'
 import { launchBrowser, newEnglishPage } from './browser.ts'
 import type { ObservedEvent } from './types.ts'
 import type { AdapterWorld } from './scaffold.ts'
+import type { AcpRemoteService } from '../../src/remote/service.js'
 import type { Page } from 'playwright'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { connectFreshWorkspace, writeComposerDraft, expandOwningTurnProcess } from '#host-support'
@@ -26,10 +27,11 @@ describe.each([['claude', false], ['devin', true], ['codex', true], ['kimi', fal
       host.ctx.on('session/event', (session, event) => { events.push({ sessionId: session.id, ...event }) })
       host.ctx.on('tools/result', (execution, result) => { executions.push({ name: execution.name, isError: result.isError }) })
       log = join(host.workspaceCwd, 'teams-agent.log')
+      const policyGate = join(host.workspaceCwd, 'teams-policy-ready')
       const provider = `acp-${profile}`
-      await host.ctx.settings.replace('dsh-acp-adapter', { agents: { [profile]: {
+      await host.ctx.settings.replace('dsh-acp-adapter', { toolApprovalDefault: 'auto', agents: { [profile]: {
         name: `Fixture ${profile}`, command: process.execPath, args: [join(root, 'test/mock-agent/mock-agent.ts')],
-        env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: profile, MOCK_MCP_HTTP: http ? '1' : '0', MOCK_LOG: log },
+        env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: profile, MOCK_MCP_HTTP: http ? '1' : '0', MOCK_LOG: log, MOCK_TEAM_POLICY_GATE: policyGate },
       } } })
       await vi.waitFor(() => expect(host.ctx.llm.listProviders().some(item => item.id === provider)).toBe(true))
       await host.ctx.agentDefaultModel.saveSelection({ provider, model: 'mock-model-a' })
@@ -53,6 +55,38 @@ describe.each([['claude', false], ['devin', true], ['codex', true], ['kimi', fal
       expect(lead).toBeDefined()
       await vi.waitFor(() => expect(host.ctx.agentTeams.listMembers(lead)).toHaveLength(2))
       const member = required(host.ctx.agentTeams.listMembers(lead).find(member => member.role === 'teammate'))
+      await vi.waitFor(() => expect(readdirSync(host.workspaceCwd).filter(name => name.startsWith('teams-policy-ready.') && name.endsWith('.ready'))).toHaveLength(1), { timeout: 30000 })
+      // Inspect inherited policy while the child composer is still available.
+      // Once a permission card replaces the composer, its input-left menu is
+      // intentionally absent; the policy remains available again afterwards.
+      await page.getByRole('button', { name: /^Manage members ·/ }).click()
+      const management = page.getByRole('dialog', { name: 'Manage members', exact: true })
+      await management.getByRole('button', { name: 'Open calculator’s session', exact: true }).click()
+      await management.getByRole('button', { name: 'Close member management', exact: true }).click()
+      const sidebar = page.locator('[data-sidebar-chat]')
+      await sidebar.waitFor()
+      const memberSettings = sidebar.getByRole('button', { name: /^Session ·/ })
+      await memberSettings.waitFor()
+      await (host.ctx.get('dshAcp') as AcpRemoteService).setToolApprovalPolicy(lead.id, { policy: 'ask' })
+      await memberSettings.click()
+      const policyRow = page.getByRole('menuitem', { name: /^DSH tool approval/ })
+      await policyRow.waitFor()
+      await policyRow.click()
+      const policyOptions = page.getByRole('menu')
+      expect(await policyOptions.innerText()).toContain('Following the Lead’s current policy; read-only.')
+      const inheritedAsk = policyOptions.getByRole('menuitem', { name: /^Ask each time/ })
+      await inheritedAsk.waitFor()
+      expect(await inheritedAsk.isDisabled()).toBe(true)
+      await (host.ctx.get('dshAcp') as AcpRemoteService).setToolApprovalPolicy(lead.id, { policy: 'auto' })
+      await expect.poll(() => policyOptions.innerText()).toContain('Auto approve')
+      await expect.poll(() => policyOptions.getByRole('menuitem', { name: /^Auto approve/ }).locator('svg').count()).toBe(1)
+      await (host.ctx.get('dshAcp') as AcpRemoteService).setToolApprovalPolicy(lead.id, { policy: 'ask' })
+      await expect.poll(() => policyOptions.innerText()).toContain('Ask each time')
+      await expect.poll(() => inheritedAsk.locator('svg').count()).toBe(1)
+      await page.keyboard.press('Escape')
+      // Coordination setup itself produced no cards before the gated tool request.
+      expect(await page.locator('[data-approval-key], [data-question-key]').count()).toBe(0)
+      writeFileSync(policyGate, 'ready')
       await vi.waitFor(() => {
         const initial = events.find(event => event.sessionId === member.id && event.type === 'user/message' && 'form' in event.data.source && event.data.source.form === 'snapshot')
         expect(JSON.stringify(initial)).toContain('Approval policy: ask.')
@@ -62,8 +96,6 @@ describe.each([['claude', false], ['devin', true], ['codex', true], ['kimi', fal
       const child = required(host.ctx.agents.get(member.id))
       expect(child.options).toMatchObject({ provider, model: 'mock-model-a' })
       expect(child.session.header.cwd).toBe(lead.session.header.cwd)
-      // Coordination completed without taking over the Lead composer.
-      expect(await page.locator('[data-approval-key], [data-question-key]').count()).toBe(0)
       await page.getByRole('button', { name: 'calculator · Pending request', exact: true }).waitFor({ timeout: 20_000 })
       const action = page.locator('[data-team-action]')
       await action.getByRole('button', { name: /Agent Team/ }).click()
@@ -73,12 +105,16 @@ describe.each([['claude', false], ['devin', true], ['codex', true], ['kimi', fal
       if (profile === 'devin' && decision === 'allow') await verifyTaskBoard(panel, host, lead)
       await action.getByRole('button', { name: /Agent Team/ }).click()
       await page.getByRole('button', { name: 'calculator · Pending request', exact: true }).click()
-      const sidebar = page.locator('[data-sidebar-chat]')
       await sidebar.waitFor()
       await page.locator('[data-acp-team-approvals]').waitFor()
       const approval = sidebar.locator('[data-approval-key]')
       await approval.waitFor()
       expect(await approval.innerText()).toContain('echo E2E_TEAM_PERMISSION')
+      // All decision paths exercise this original Ask-created request. Keep
+      // subsequent Lead completion/cancel coordination on Auto to avoid
+      // unrelated approval cards, while proving this card stays pending.
+      await (host.ctx.get('dshAcp') as AcpRemoteService).setToolApprovalPolicy(lead.id, { policy: 'auto' })
+      expect(await approval.getByRole('button', { name: 'Allow once', exact: true }).isVisible()).toBe(true)
       // Native addressed children expose no model-switch control or /model entry.
       expect(await sidebar.getByRole('button', { name: /Select model/ }).count()).toBe(0)
       expect(await page.locator('[data-composer-input]').count()).toBeGreaterThanOrEqual(2)
@@ -98,6 +134,10 @@ describe.each([['claude', false], ['devin', true], ['codex', true], ['kimi', fal
         expect(errors).toEqual([])
         return
       }
+      writeFileSync(`${policyGate}.continue`, 'ready')
+      // Changing the session policy after this request is already pending does
+      // not dismiss or auto-answer its native approval card.
+      expect(await approval.getByRole('button', { name: 'Allow once', exact: true }).isVisible()).toBe(true)
       await approval.getByRole('button', { name: 'Allow once', exact: true }).click()
       await page.getByText('E2E_TEAM_MEMBER_DONE', { exact: true }).waitFor({ timeout: 30_000 })
       await vi.waitFor(() => expect(readFileSync(log, 'utf8')).toContain('E2E_TEAM_LEAD_RECEIVED'), { timeout: 30_000 })

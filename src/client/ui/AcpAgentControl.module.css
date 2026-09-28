@@ -12,10 +12,22 @@
   outline: none;
   background: transparent;
   color: var(--dsw-alias-label-secondary);
+  font: inherit;
   font-size: 13px;
   line-height: 20px;
   font-weight: 500;
   cursor: pointer;
+}
+
+.retryTrigger {
+  width: fit-content;
+  max-width: min(320px, calc(100vw - 24px));
+  height: auto;
+  min-height: 28px;
+  padding: 4px 8px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: left;
 }
 
 .trigger:hover:not(:disabled) {

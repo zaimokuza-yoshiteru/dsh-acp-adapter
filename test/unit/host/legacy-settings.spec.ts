@@ -9,7 +9,7 @@ it('reads both sides of the native import rename without rewriting the old confi
   try {
     expect(await readLegacyAcpSettings(home)).toBeUndefined()
     await writeFile(join(home, 'settings.yaml'), 'dsh-acp:\n  agents:\n    codex:\n      name: Codex\n      command: codex-acp\n')
-    const expected = { agents: { codex: { name: 'Codex', command: 'codex-acp', args: [], env: {} } }, searchableModelPicker: false }
+    const expected = { agents: { codex: { name: 'Codex', command: 'codex-acp', args: [], env: {} } }, searchableModelPicker: false, toolApprovalDefault: 'auto' }
     expect(await readLegacyAcpSettings(home)).toEqual(expected)
     await rename(join(home, 'settings.yaml'), join(home, 'settings.yaml.imported'))
     expect(await readLegacyAcpSettings(home)).toEqual(expected)
@@ -24,10 +24,12 @@ it('publishes a rehydratable form while keeping host-only Agent validation', asy
   const schema = new z(JSON.parse(JSON.stringify(Config.toJSON())))
   delete schema.dict!.agents!.meta.volatile
   delete schema.dict!.searchableModelPicker!.meta.volatile
+  delete schema.dict!.toolApprovalDefault!.meta.volatile
   const value = { agents: { codex: { name: 'Codex', command: 'codex-acp', args: [], env: {} } } }
-  expect(schema(value)).toEqual({ ...value, searchableModelPicker: false })
+  expect(schema(value)).toEqual({ ...value, searchableModelPicker: false, toolApprovalDefault: 'auto' })
   expect(Config(value).agents.get()).toEqual(value.agents)
   expect(Config(value).searchableModelPicker.get()).toBe(false)
+  expect(Config(value).toolApprovalDefault.get()).toBe('auto')
   expect(() => Config['~standard'].validate({ agents: { codex: value.agents.codex, second: { ...value.agents.codex, runtime: 'codex' } } })).toThrow('singleton')
   expect(() => Config({ agents: { codex: value.agents.codex, second: { ...value.agents.codex, runtime: 'codex' } } })).toThrow('singleton')
 })

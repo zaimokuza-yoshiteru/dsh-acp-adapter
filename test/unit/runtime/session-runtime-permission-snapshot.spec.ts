@@ -112,11 +112,31 @@ describe('AcpSessionRuntime prompt-scoped permission snapshots', () => {
         })
       await runtime.prompt(PROMPT, () => undefined)
       expect(nativeRequests).toBe(0)
-      expect(answers).toBe(auditFails ? 0 : 1)
+      // The exact inspected response is reused after the audit; permission()
+      // is never asked to resolve the same policy a second time.
+      expect(answers).toBe(0)
       expect(records).toHaveLength(auditFails ? 0 : 1)
       expect(JSON.stringify(records)).not.toContain('CAPABILITY_SECRET')
       if (!auditFails) expect(records[0]).toMatchObject({ phase: 'bridge', reason: 'auto-approved', toolName: 'send_message', toolCallId: 'shared-call' })
     }
+  })
+
+  it('keeps an audited Ask decision manual even if a legacy resolver would now auto-approve', async () => {
+    const response: acp.RequestPermissionResponse = { outcome: { outcome: 'selected', optionId: 'user-once' } }
+    let legacyResolutions = 0
+    let nativeRequests = 0
+    const records: unknown[] = []
+    const lease: AcpMcpLease = {
+      signal: new AbortController().signal, servers: [], beginPrompt() {}, endPrompt() {}, async close() {},
+      inspectPermission: () => ({ reason: 'approval-required' }),
+      permission: () => { legacyResolutions++; return { outcome: { outcome: 'selected', optionId: 'auto' } } },
+    }
+    const runtime = createRuntime(async () => { nativeRequests++; return response }, 'raw-input', 'in_progress', lease,
+      async (check, request) => { records.push(createPermissionCheckAudit(check, request.sessionId, request.toolCall.toolCallId)) })
+    await runtime.prompt(PROMPT, () => undefined)
+    expect(nativeRequests).toBe(1)
+    expect(legacyResolutions).toBe(0)
+    expect(records[0]).toMatchObject({ phase: 'bridge', reason: 'approval-required' })
   })
 
   it('checks wire identity before presenting a normalized native approval without changing arguments', async () => {

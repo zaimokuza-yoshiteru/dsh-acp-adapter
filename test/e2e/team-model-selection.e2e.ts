@@ -5,7 +5,7 @@ import { launchBrowser, newEnglishPage } from './browser.ts'
 import type { ObservedEvent } from './types.ts'
 import type { Page } from 'playwright'
 import { join } from 'node:path'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { expect, it, vi } from 'vitest'
 import { connectFreshWorkspace, writeComposerDraft } from '#host-support'
 import { launchAdapterWorld, root } from './scaffold.ts'
@@ -15,13 +15,14 @@ it('persists teammate model selection, applies it on wake, and protects Team bou
   let browser!: TestBrowser
   let page!: Page
   const log = join(host.workspaceCwd, 'team-model-selection.log')
+  const policyGate = join(host.workspaceCwd, 'team-model-policy-ready')
   const events: ObservedEvent[] = []
   host.ctx.on('session/event', (session, event) => events.push({ sessionId: session.id, ...event }))
   try {
-    await host.ctx.settings.replace('dsh-acp-adapter', { agents: { devin: {
+    await host.ctx.settings.replace('dsh-acp-adapter', { toolApprovalDefault: 'auto', agents: { devin: {
       name: 'ACP model fixture', command: process.execPath,
       args: [join(root, 'test/mock-agent/mock-agent.ts')],
-      env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: 'devin', MOCK_MCP_HTTP: '1', MOCK_LOG: log },
+      env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: 'devin', MOCK_MCP_HTTP: '1', MOCK_LOG: log, MOCK_TEAM_PERMISSION_GATE: policyGate },
     } } })
     await vi.waitFor(() => expect(host.ctx.llm.listProviders().some(provider => provider.id === 'acp-devin')).toBe(true))
     await host.ctx.agentDefaultModel.saveSelection({ provider: 'acp-devin', model: 'mock-model-a' })
@@ -38,6 +39,9 @@ it('persists teammate model selection, applies it on wake, and protects Team bou
     await send('E2E_TEAM_START')
     await page.getByText('E2E_TEAM_READY', { exact: true }).waitFor()
     const lead = required(host.ctx.agents.list().find(agent => host.ctx.agentTeams.tryMembership(agent)?.role === 'lead'))
+    await vi.waitFor(() => expect(readdirSync(host.workspaceCwd).filter(name => name.startsWith('team-model-policy-ready.') && name.endsWith('.ready'))).toHaveLength(1), { timeout: 30000 })
+    await (host.ctx.get('dshAcp') as AcpRemoteService).setToolApprovalPolicy(lead.id, { policy: 'ask' })
+    writeFileSync(policyGate, 'ready')
     const child = required(host.ctx.agentTeams.listMembers(lead).find(member => member.role === 'teammate'))
     expect(lead).toBeDefined()
     expect(child).toMatchObject({ name: 'calculator' })
@@ -54,6 +58,7 @@ it('persists teammate model selection, applies it on wake, and protects Team bou
     // dormant selection must be persisted without starting another request.
     await approvals.locator('[data-team-pending-member="calculator"]').getByRole('button', { name: 'Allow once', exact: true }).click()
     await expect.poll(() => host.ctx.agentTeams.listMembers(lead).find(member => member.id === child.id)?.status, { timeout: 30000 }).toSatisfy(status => status === 'idle' || status === 'inactive')
+    await (host.ctx.get('dshAcp') as AcpRemoteService).setToolApprovalPolicy(lead.id, { policy: 'auto' })
     await expect((host.ctx.get('dshAcp') as AcpRemoteService).setTeamMemberModel(lead.id, child.id, 'unknown-model')).rejects.toThrow()
     const beforeSaveLog = readFileSync(log, 'utf8')
     const saved = await (host.ctx.get('dshAcp') as AcpRemoteService).setTeamMemberModel(lead.id, child.id, 'mock-model-b')

@@ -60,6 +60,7 @@ export interface AcpSectionWire {
   saveAgent(editingId: string | undefined, draft: AgentDraft): Promise<string | undefined>
   deleteAgent(id: string): Promise<string | undefined>
   setSearchableModelPicker(enabled: boolean): Promise<string | undefined>
+  setToolApprovalDefault(policy: 'auto' | 'ask'): Promise<string | undefined>
   /**
  * 删除确认提示：该 profile 的既有会话 binding 计数；undefined = 计数不可
    * 得（RPC 失败/畸形），确认块退回无计数的基础文案（不冒充 0）。
@@ -108,6 +109,9 @@ function Loaded({ t, useStore, panel }: {
   const [notice, setNotice] = useState<'saved' | 'deleted' | null>(null)
   const [pickerSaving, setPickerSaving] = useState(false)
   const [pickerSaveFailed, setPickerSaveFailed] = useState(false)
+  const [approvalSaving, setApprovalSaving] = useState(false)
+  const [approvalSaveFailed, setApprovalSaveFailed] = useState(false)
+  const [approvalMenuOpen, setApprovalMenuOpen] = useState(false)
   // Delegate placement, scrolling, focus and keyboard interaction to the native Menu.
   const [addMenuOpen, setAddMenuOpen] = useState(false)
   const [addMenuSide, setAddMenuSide] = useState<'bottom' | 'top'>('bottom')
@@ -197,6 +201,15 @@ function Loaded({ t, useStore, panel }: {
     } finally {
       setPickerSaving(false)
     }
+  }
+
+  const onApprovalDefaultChange = async (policy: unknown): Promise<void> => {
+    if (policy !== 'auto' && policy !== 'ask') return
+    setApprovalSaving(true)
+    setApprovalSaveFailed(false)
+    try {
+      if (await panel.setToolApprovalDefault(policy) !== undefined) setApprovalSaveFailed(true)
+    } catch { setApprovalSaveFailed(true) } finally { setApprovalSaving(false) }
   }
 
   if (readOnly) children.push(h('p', { key: 'ro', className: css.notice }, t('readOnly')))
@@ -325,6 +338,26 @@ function Loaded({ t, useStore, panel }: {
       h(IconRefreshOutlineMedium, { size: 14 }),
       t(refreshing ? 'refreshing' : 'refresh'),
     ),
+  ))
+
+  children.push(h('section', { key: 'tool-approval', className: css.preferences, 'aria-labelledby': 'dsh-acp-approval-title' },
+    h('h2', { id: 'dsh-acp-approval-title', className: css.preferencesTitle }, t('toolApprovalDefault')),
+    h('p', { className: css.hint }, t('toolApprovalDefaultHelp')),
+    h(Menu, {
+      open: approvalMenuOpen, portal: true, dense: true, autoFocus: true,
+      side: 'bottom', align: 'start', selectedId: settings.toolApprovalDefault,
+      items: [
+        { id: 'auto', label: h('span', { className: css.catalogEntry }, t('toolApprovalAuto')) },
+        { id: 'ask', label: h('span', { className: css.catalogEntry }, t('toolApprovalAsk')) },
+      ],
+      onClose: () => setApprovalMenuOpen(false),
+      onSelect: (id: string) => { setApprovalMenuOpen(false); void onApprovalDefaultChange(id) },
+      anchor: h('button', { type: 'button', className: css.approvalButton, disabled: readOnly || approvalSaving,
+        'aria-label': t('toolApprovalDefault'), 'aria-haspopup': 'menu', 'aria-expanded': approvalMenuOpen,
+        onClick: () => setApprovalMenuOpen(value => !value) },
+      t(settings.toolApprovalDefault === 'auto' ? 'toolApprovalAuto' : 'toolApprovalAsk'), h(IconChevronDownOutlineMedium, null)),
+    }),
+    approvalSaveFailed ? h('p', { className: css.error, role: 'alert' }, t('toolApprovalSaveFailed')) : null,
   ))
 
   children.push(h('section', { key: 'preferences', className: css.preferences, 'aria-labelledby': 'dsh-acp-preferences-title' },

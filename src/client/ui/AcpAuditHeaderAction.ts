@@ -138,6 +138,8 @@ export function auditSummaryOf(t: Translate | undefined, entry: AcpAuditTimeline
 function auditStatusOf(t: Translate | undefined, status: string): string {
   const key: Partial<Record<string, AcpLocaleKey>> = {
     'auto-approved': 'auditAutoApproved',
+    'approval-required': 'auditApprovalRequired',
+    'policy-unavailable': 'auditPolicyUnavailable',
     'bridge-unavailable': 'auditBridgeUnavailable',
     'inactive-connection': 'auditBridgeInactive',
     'inactive-prompt': 'auditPromptInactive',

@@ -9,9 +9,14 @@ describe('ACP Agent control route selection', () => {
     expect(snapshotIsAcp({ lastUsed: { provider: 'native' }, next: { provider: 'acp-devin' } }, owns)).toBe(true)
   })
 
-  it('falls back to lastUsed only when no next selection exists', () => {
+  it('falls back from an empty session projection to the host default route', () => {
     expect(snapshotIsAcp({ lastUsed: { provider: 'acp-devin' } }, owns)).toBe(true)
     expect(snapshotIsAcp({ lastUsed: { provider: 'acp-devin' }, next: undefined }, owns)).toBe(true)
     expect(snapshotIsAcp({ lastUsed: { provider: 'acp-devin' }, next: { provider: undefined } }, owns)).toBe(false)
+    expect(snapshotIsAcp({ lastUsed: null, next: null }, owns, 'acp-devin')).toBe(true)
+    expect(snapshotIsAcp({ lastUsed: { provider: 'acp-devin' }, next: null }, owns, 'native')).toBe(false)
+    expect(snapshotIsAcp({ lastUsed: null, next: null }, owns, 'native')).toBe(false)
+    expect(snapshotIsAcp({ lastUsed: null, next: { provider: 'native' } }, owns, 'acp-devin')).toBe(false)
+    expect(snapshotIsAcp(null, owns, 'acp-devin')).toBe(true)
   })
 })

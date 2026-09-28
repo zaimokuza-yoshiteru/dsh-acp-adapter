@@ -24,6 +24,10 @@ ACP approvals reuse DSH's native approval card, with the full command visible be
 
 ![A complete ACP command in the native DSH approval card](assets/readme/acp-permission.en.png)
 
+**DSH tool approval:** Set the default for newly initialized sessions to Auto approve or Ask in the plugin detail page. The session menu can override the current ACP session. Auto applies to reads and writes through DSH native tools visible in the current session; it excludes Agent-owned tools and other MCP servers. Ask uses DSH's native approval flow, including Team coordination tools.
+
+This setting governs requests the Agent makes for approval; it cannot make an Agent ask when it does not request permission. Changes affect future requests only, and existing pending approvals remain manual. A session stores the plugin default before its first tool request, so later global changes do not rewrite initialized sessions. After upgrading, an older session without a policy stores the current plugin default the first time it enters the approval policy path; pending requests are not auto-approved retroactively.
+
 View the subagent's actual findings in DSH's native read-only detail view:
 
 ![An ACP subagent in the native read-only detail view](assets/readme/acp-subagent.en.png)
@@ -88,13 +92,13 @@ Catalog versions are advisory. A difference from the snapshot does not mean the 
 
 ## <img src="assets/readme/icon-connect.svg" width="24" height="24" alt="" /> How it fits together
 
-![DSH owns sessions and UI; the adapter passes context and normalizes activity; the Agent owns models, tools and permissions. External subagent projections are read-only, and jobs do not survive a DSH restart.](assets/readme/acp-overview.en.svg)
+![DSH owns sessions and UI; the adapter passes context and normalizes activity; the Agent owns its models and tools, while DSH handles DSH tool approval by session policy. External subagent projections are read-only, and jobs do not survive a DSH restart.](assets/readme/acp-overview.en.svg)
 
-**Experimental Agent Teams:** Follows DSH’s Teams profiles and uses its native Team panel. Members inherit the Lead’s Agent, model and reasoning settings at creation, with fresh context only. Switching the Lead’s model affects future members; existing members retain theirs. A team uses one ACP Agent. Shared tasks use the native task board. Answer member approvals from the Lead; allow or reject all current ordinary approvals, with permission granted once only. The member icon at the top right shows status and models. Change Agent modes individually or in batches grouped by ACP profile; dormant members apply saved modes before their next run. Team coordination adds no approval prompts; ordinary permissions remain unchanged. Messages arrive at DSH step boundaries.
+**Experimental Agent Teams:** Follows DSH’s Teams profiles and uses its native Team panel. Members inherit the Lead’s Agent, model and reasoning settings at creation, with fresh context only. Switching the Lead’s model affects future members; existing members retain theirs. A team uses one ACP Agent. Shared tasks use the native task board. Answer member approvals from the Lead; allow or reject all current ordinary approvals, with permission granted once only. The member icon at the top right shows status and models. Change Agent modes individually or in batches grouped by ACP profile; dormant members apply saved modes before their next run. Members follow the Lead’s current DSH tool approval policy; Ask also uses native approval for future Teams tool requests. Messages arrive at DSH step boundaries.
 
 Click a member name in member management to open its native sidebar conversation. Settings remain inspectable while running, with read-only reasons in the menu. Batch changes include expandable per-member results. If recovery status cannot be read, retry beside the composer.
 
-**Automatic DSH plugin tools:** Native tools visible to the current session are automatically exposed over MCP, without a manual tool list or Teams. For example, when the Host provides `present`, the Agent can use native file delivery and previews. Calls use the native tool pipeline and retain Agent approval and each tool's rules. The retired `hostTools` setting is ignored and removed when saving in the editor. See [native reuse boundaries](docs/native-reuse.en.md).
+**Automatic DSH plugin tools:** Native tools visible to the current session are automatically exposed over MCP, without a manual tool list or Teams. For example, when the Host provides `present`, the Agent can use native file delivery and previews. Calls use the native tool pipeline and follow the current session's DSH tool approval policy while retaining each tool's rules. The retired `hostTools` setting is ignored and removed when saving in the editor. See [native reuse boundaries](docs/native-reuse.en.md).
 
 During execution, Enter queues a message; use the queue’s steering action to deliver it to the active task. The adapter uses negotiated atomic steering when available. Otherwise it cancels the current execution, waits for it to settle, and sends the input in the same Agent session. Kimi requires no additional SDK. Cancellation timeouts do not trigger an automatic resend; the Agent retains permission and context ownership. See [input capabilities and limitations](docs/agent-input-capabilities.en.md).
 

@@ -7,7 +7,7 @@ import type { ObservedEvent } from './types.ts'
 import type { Page } from 'playwright'
 import { LlmAdapter } from '@deepseek-ai/dsh-llm'
 import { join } from 'node:path'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { it, expect, vi } from 'vitest'
 import { connectFreshWorkspace, writeComposerDraft } from '#host-support'
 import { launchAdapterWorld, root } from './scaffold.ts'
@@ -19,9 +19,10 @@ it('shows per-profile mode menus with dormant mode persistence and approval prot
   const events: ObservedEvent[] = [], errors: string[] = []
   host.ctx.on('session/event', (session, event) => events.push({ sessionId: session.id, ...event }))
   const retain = process.env.DSH_E2E_RETAIN_MANAGEMENT === '1'
+  const policyGate = join(host.workspaceCwd, 'team-management-policy-ready')
   try {
-    await host.ctx.settings.replace('dsh-acp-adapter', { agents: { devin: { name: 'ACP demo', command: process.execPath,
-      args: [join(root, 'test/mock-agent/mock-agent.ts')], env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: 'devin', MOCK_MCP_HTTP: '1', MOCK_SESSION_NEW_DELAY_MS: '5000' } } } })
+    await host.ctx.settings.replace('dsh-acp-adapter', { toolApprovalDefault: 'auto', agents: { devin: { name: 'ACP demo', command: process.execPath,
+      args: [join(root, 'test/mock-agent/mock-agent.ts')], env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: 'devin', MOCK_MCP_HTTP: '1', MOCK_SESSION_NEW_DELAY_MS: '5000', MOCK_TEAM_PERMISSION_GATE: policyGate } } } })
     await vi.waitFor(() => expect(host.ctx.llm.listProviders().some(p => p.id === 'acp-devin')).toBe(true))
     await host.ctx.agentDefaultModel.saveSelection({ provider: 'acp-devin', model: 'mock-model-a' })
     browser = await launchBrowser({ channel: process.env.DSH_E2E_BROWSER_CHANNEL, headless: !retain, ...(retain ? { args: ['--window-size=1440,1000'] } : {}) })
@@ -50,12 +51,16 @@ it('shows per-profile mode menus with dormant mode persistence and approval prot
     const evidence = join(root, '.local/shared-session-menu')
     mkdirSync(evidence, { recursive: true })
     const enterMode = async () => { await modeMenu.getByRole('menuitem', { name: /^(?:Session Mode|Mode|模式)(?:\s|$)/ }).click() }
+    // Capture the pre-session/new window before waiting for the child approval
+    // gate, which can outlast the mock's deliberate startup delay.
     await panel.getByRole('button', { name: 'Manage members · 1', exact: true }).click()
     const row = panel.locator('[data-acp-managed-member="calculator"]')
-    // Open while native membership exists but session/new has not completed.
-    // The catalog must load automatically once the child's binding is ready.
     await row.waitFor()
     expect(await row.getByRole('button', { name: 'Choose a model for calculator', exact: true }).isDisabled()).toBe(true)
+    await vi.waitFor(() => expect(readdirSync(host.workspaceCwd).filter(name => name.startsWith('team-management-policy-ready.') && name.endsWith('.ready'))).toHaveLength(1), { timeout: 30000 })
+    await (host.ctx.get('dshAcp') as AcpRemoteService).setToolApprovalPolicy(lead.id, { policy: 'ask' })
+    writeFileSync(policyGate, 'ready')
+    // The catalog must load automatically once the child's binding is ready.
     await row.getByText('Mock Model A', { exact: true }).waitFor()
     expect(await row.innerText()).not.toContain('not authorized')
     expect(await row.getByText('Mock Model A', { exact: true }).count()).toBe(1)
@@ -79,8 +84,15 @@ it('shows per-profile mode menus with dormant mode persistence and approval prot
     await page.keyboard.press('Escape')
     await panel.getByRole('button', { name: 'Close member management', exact: true }).click()
     await expect((host.ctx.get('dshAcp') as AcpRemoteService).setTeamMemberMode(lead.id, childId, 'plan')).rejects.toThrow()
-    await page.locator('[data-acp-team-approvals]').getByRole('button', { name: 'Allow once', exact: true }).click()
+    const memberApprovals = page.locator('[data-acp-team-approvals]')
+    // This ordinary tool was requested while the inherited policy was Ask.
+    // Returning the Lead to Auto must leave its native card pending.
+    await memberApprovals.getByRole('button', { name: 'Allow once', exact: true }).waitFor()
+    await (host.ctx.get('dshAcp') as AcpRemoteService).setToolApprovalPolicy(lead.id, { policy: 'auto' })
+    expect(await memberApprovals.getByRole('button', { name: 'Allow once', exact: true }).count()).toBe(1)
+    await memberApprovals.getByRole('button', { name: 'Allow once', exact: true }).click()
     await expect.poll(async () => (await (host.ctx.get('dshAcp') as AcpRemoteService).agentSessionSnapshot(childId)).freshness, { timeout: 15000 }).toBe('stale')
+    rmSync(policyGate, { force: true })
     await expect((host.ctx.get('dshAcp') as AcpRemoteService).setAgentSessionOption(childId, { kind: 'config', id: 'mode', value: 'plan' })).rejects.toThrow()
     expect(page.url()).toBe(url)
     await page.reload()
@@ -146,7 +158,10 @@ it('shows per-profile mode menus with dormant mode persistence and approval prot
     await page.locator('[data-composer-input][contenteditable="true"][data-placeholder="Describe what you want to build, / commands, @ files or sessions"]').waitFor()
     await send('演示成员管理与集中审批 E2E_TEAM_DEMO')
     await page.getByText('团队演示已就绪。', { exact: false }).waitFor()
+    await vi.waitFor(() => expect(readdirSync(host.workspaceCwd).filter(name => name.startsWith('team-management-policy-ready.') && name.endsWith('.ready'))).toHaveLength(3), { timeout: 30000 })
     const demoLead = required(host.ctx.agents.list().find(a => a.id !== lead.id && host.ctx.agentTeams.tryMembership(a)?.role === 'lead'))
+    await (host.ctx.get('dshAcp') as AcpRemoteService).setToolApprovalPolicy(demoLead.id, { policy: 'ask' })
+    writeFileSync(policyGate, 'ready')
     expect(events.filter(event => event.type === 'user/message'
       && event.data.content.some(block => block.type === 'text' && block.text === '演示成员管理与集中审批 E2E_TEAM_DEMO'))
       .map(event => event.sessionId)).toEqual([demoLead.id])
@@ -160,6 +175,11 @@ it('shows per-profile mode menus with dormant mode persistence and approval prot
     await panel.getByRole('button', { name: '成员管理 · 2', exact: true }).waitFor()
     const approvals = page.locator('[data-acp-team-approvals]')
     await approvals.getByText('需要你处理 · 2 位成员', { exact: true }).waitFor()
+    await expect.poll(() => approvals.locator('[data-team-pending-member]').count()).toBe(2)
+    // Both member requests were issued under Ask; subsequent Lead coordination
+    // uses Auto so it does not create unrelated approval cards during cleanup.
+    await (host.ctx.get('dshAcp') as AcpRemoteService).setToolApprovalPolicy(demoLead.id, { policy: 'auto' })
+    expect(await approvals.locator('[data-team-pending-member]').count()).toBe(2)
     const triggerBox = required(await panel.getByRole('button', { name: '成员管理 · 2', exact: true }).boundingBox())
     expect(triggerBox.y).toBeLessThan(100)
     expect(triggerBox.x).toBeGreaterThan((await page.evaluate(() => innerWidth)) / 2)
