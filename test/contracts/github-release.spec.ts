@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
 import {
+  assertRemoteTagMatchesLocal,
   changelogSection,
   createRelease,
   previousPublishedTag,
@@ -26,6 +27,18 @@ const manifest: Manifest = {
 const registry: Packument = { versions: { [version]: manifest }, time: { [version]: '2026-09-18T01:00:00.000Z' } }
 
 describe('GitHub release publication', () => {
+  it('checks remote tag identity from a SHA-only CLI projection', () => {
+    const github = vi.fn(() => ({ sha })) as unknown as Github
+    expect(() => assertRemoteTagMatchesLocal(tag, sha, github)).not.toThrow()
+    expect(github).toHaveBeenCalledWith(`commits/${tag}`, undefined, '{sha: .sha}')
+    expect(() => assertRemoteTagMatchesLocal(tag, 'different-sha', (() => ({ sha })) as Github)).toThrow(
+      'Local and remote tag commits differ',
+    )
+    expect(() => assertRemoteTagMatchesLocal(tag, sha, (() => ({})) as Github)).toThrow(
+      'Local and remote tag commits differ',
+    )
+  })
+
   it('requires the exact npm package and tested tarball, not just a successful tag push', () => {
     expect(validatePublished(tag, manifest, registry, sha, tarball).published).toEqual(manifest)
     expect(() => validatePublished(tag, manifest, { ...registry, versions: {} }, sha)).toThrow('Not published on npm')

@@ -22,7 +22,7 @@ export interface Packument {
   time: Record<string, string>
 }
 type Git = (...args: string[]) => string
-export type Github = <T>(endpoint: string, body?: Record<string, unknown>) => T
+export type Github = <T>(endpoint: string, body?: Record<string, unknown>, jq?: string) => T
 const packageName = '@zaimokuza/dsh-acp-adapter'
 const repository = 'zaimokuza-yoshiteru/dsh-acp-adapter'
 const versionPattern = /^v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$/
@@ -133,6 +133,11 @@ export function createRelease(tag: string, body: string, github: Github) {
   return { created: true, url: result.html_url }
 }
 
+export function assertRemoteTagMatchesLocal(tag: string, sha: string, github: Github): void {
+  const remoteSha = github<{ sha?: string }>(`commits/${tag}`, undefined, '{sha: .sha}')?.sha
+  if (remoteSha !== sha) throw new Error('Local and remote tag commits differ')
+}
+
 export async function readRegistry(
   version: string,
   fetcher: typeof fetch = fetch,
@@ -168,9 +173,10 @@ async function main() {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
   const git: Git = (...args) =>
     execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
-  const github: Github = <T>(endpoint: string, body?: Record<string, unknown>): T => {
+  const github: Github = <T>(endpoint: string, body?: Record<string, unknown>, jq?: string): T => {
     const args = ['api', `repos/${repository}/${endpoint}`]
     if (body) args.push('--method', 'POST', '--input', '-')
+    if (jq) args.push('--jq', jq)
     try {
       return JSON.parse(
         execFileSync('gh', args, {
@@ -188,7 +194,7 @@ async function main() {
   }
   const source = JSON.parse(git('show', `${tag}:package.json`)) as Manifest
   const sha = git('rev-parse', `${tag}^{commit}`)
-  if (github<{ sha: string }>(`commits/${tag}`).sha !== sha) throw new Error('Local and remote tag commits differ')
+  assertRemoteTagMatchesLocal(tag, sha, github)
   const registry = await readRegistry(tag.slice(1))
   const { published, publishedAt } = validatePublished(
     tag,
