@@ -21,27 +21,27 @@
 //
 // 先例：test/contracts/architecture.spec.ts 的 fs 直读 + vitest expect 守卫风格。
 
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { describe, expect, it } from 'vitest'
 
-const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
-const SRC_DIR = path.resolve(TEST_DIR, '..', '..', 'src');
+const TEST_DIR = path.dirname(fileURLToPath(import.meta.url))
+const SRC_DIR = path.resolve(TEST_DIR, '..', '..', 'src')
 
 function walkTsFiles(dir: string): string[] {
-  const out: string[] = [];
+  const out: string[] = []
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    const p = path.join(dir, entry.name);
-    if (entry.isDirectory()) out.push(...walkTsFiles(p));
-    else if (entry.name.endsWith('.ts')) out.push(p);
+    const p = path.join(dir, entry.name)
+    if (entry.isDirectory()) out.push(...walkTsFiles(p))
+    else if (entry.name.endsWith('.ts')) out.push(p)
   }
-  return out.sort();
+  return out.sort()
 }
 
 /** 剥注释后的源码（块注释 + 行注释；键名/词表扫描在剥净文本上进行，注释提及不误伤）。 */
 function stripComments(text: string): string {
-  return text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  return text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
 }
 
 /** 旁路面原语词表（任一命中即 回归）。 */
@@ -51,11 +51,12 @@ const HTTP_SURFACE_PATTERNS: ReadonlyArray<readonly [string, RegExp]> = [
   ['fetch(', /\bfetch\s*\(/],
   ['XMLHttpRequest', /\bXMLHttpRequest\b/],
   ['node:http(s)/node:net import', /from\s+['"]node:(?:https?|net)['"]/],
-];
+]
 
 /** 钉版的完整 Remote invocation 集合。 */
 const PINNED_REMOTE_METHODS: readonly string[] = [
-  'activityDetail', 'activityFollow',
+  'activityDetail',
+  'activityFollow',
   'activityPage',
   'activitySnapshot',
   'agentSessionFollow',
@@ -69,46 +70,55 @@ const PINNED_REMOTE_METHODS: readonly string[] = [
   'rebindRecoveryBlank',
   'recoverySnapshot',
   'retryOriginal',
-  'setAgentSessionOption', 'setTeamMemberMode', 'setTeamMemberModel', 'setToolApprovalPolicy', 'teamMemberModels', 'teamMembers',
-  'toolApprovalPolicy', 'toolApprovalPolicyFollow',
-];
+  'setAgentSessionOption',
+  'setTeamMemberMode',
+  'setTeamMemberModel',
+  'setToolApprovalPolicy',
+  'teamMemberModels',
+  'teamMembers',
+  'toolApprovalPolicy',
+  'toolApprovalPolicyFollow',
+]
 
 describe(' 旁路 API 消除门', () => {
   it('only the session-owned Teams MCP transport may create a network listener', () => {
-    const violations: string[] = [];
+    const violations: string[] = []
     for (const abs of walkTsFiles(SRC_DIR)) {
-      const rel = path.relative(SRC_DIR, abs).split(path.sep).join('/');
-      const text = stripComments(fs.readFileSync(abs, 'utf8'));
+      const rel = path.relative(SRC_DIR, abs).split(path.sep).join('/')
+      const text = stripComments(fs.readFileSync(abs, 'utf8'))
       for (const [label, pattern] of HTTP_SURFACE_PATTERNS) {
-        if (pattern.test(text)) violations.push(`${rel}: ${label}`);
+        if (pattern.test(text)) violations.push(`${rel}: ${label}`)
       }
     }
     expect(violations, `旁路 API 回归：\n  ${violations.join('\n  ')}`).toEqual([
       'host/teams/bridge.ts: createServer',
       'host/teams/bridge.ts: .listen(',
       'host/teams/bridge.ts: node:http(s)/node:net import',
-    ]);
-  });
+    ])
+  })
 
   it('Remote 调用面钉版：@Remote 装饰器只暴露当前公开面（无旁路增删）', () => {
-    const text = stripComments(fs.readFileSync(path.join(SRC_DIR, 'remote', 'service.ts'), 'utf8'));
-    const named = [...text.matchAll(/@Remote\(\s*['"]([^'"]+)['"]\s*\)/g)].map((m) => m[1]!);
-    const streamed = [...text.matchAll(/@Remote\(\s*\{\s*mode:\s*['"]stream['"]\s*\}\s*\)\s*\n\s*async\s+\*\s*(\w+)/g)].map((m) => m[1]!);
+    const text = stripComments(fs.readFileSync(path.join(SRC_DIR, 'remote', 'service.ts'), 'utf8'))
+    const named = [...text.matchAll(/@Remote\(\s*['"]([^'"]+)['"]\s*\)/g)].map((m) => m[1]!)
+    const streamed = [
+      ...text.matchAll(/@Remote\(\s*\{\s*mode:\s*['"]stream['"]\s*\}\s*\)\s*\n\s*async\s+\*\s*(\w+)/g),
+    ].map((m) => m[1]!)
     // 裸 @Remote：方法名即 invocation 名（health）
-    const bare = [...text.matchAll(/@Remote\s*\n\s*async\s+(\w+)/g)].map((m) => m[1]!);
-    expect([...named, ...bare, ...streamed].sort()).toEqual([...PINNED_REMOTE_METHODS].sort());
-  });
+    const bare = [...text.matchAll(/@Remote\s*\n\s*async\s+(\w+)/g)].map((m) => m[1]!)
+    expect([...named, ...bare, ...streamed].sort()).toEqual([...PINNED_REMOTE_METHODS].sort())
+  })
 
   it('wire 类型收窄钉版：contract 无 _meta/credential 形态字段、无 unknown 字段', () => {
-    const text = stripComments(fs.readFileSync(path.join(SRC_DIR, 'contract', 'remote.ts'), 'utf8'));
+    const text = stripComments(fs.readFileSync(path.join(SRC_DIR, 'contract', 'remote.ts'), 'utf8'))
     // 字段声明形态的词表（`key?:` / `key:`）；authMethods 等合法键不被 \b 词边界误伤
-    const forbiddenKey = /\b(?:_meta|token|accessToken|refreshToken|apiKey|secret|password|credential|credentials|authorization|env)\s*\??\s*:/;
+    const forbiddenKey =
+      /\b(?:_meta|token|accessToken|refreshToken|apiKey|secret|password|credential|credentials|authorization|env)\s*\??\s*:/
     const hits = text
       .split('\n')
       .map((line) => line.trim())
-      .filter((line) => forbiddenKey.test(line));
-    expect(hits, `contract/remote.ts 出现 credential 形态字段：\n  ${hits.join('\n  ')}`).toEqual([]);
+      .filter((line) => forbiddenKey.test(line))
+    expect(hits, `contract/remote.ts 出现 credential 形态字段：\n  ${hits.join('\n  ')}`).toEqual([])
     // `unknown` 被 strict boundary 拒绝（生成前提）：wire 类型里不得出现
-    expect(/:\s*unknown\b/.test(text), 'contract/remote.ts 出现 unknown 字段类型').toBe(false);
-  });
-});
+    expect(/:\s*unknown\b/.test(text), 'contract/remote.ts 出现 unknown 字段类型').toBe(false)
+  })
+})

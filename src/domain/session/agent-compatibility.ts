@@ -31,6 +31,8 @@ export function reasoningRequestIsCurrent(
 ): boolean {
   if (option.currentValue === requested) return true
   if (runtime !== 'kimi' || requested !== 'high' || option.currentValue !== 'on') return false
-  const values = new Set(option.options.flatMap(entry => 'options' in entry ? entry.options : [entry]).map(entry => entry.value))
+  const values = new Set(
+    option.options.flatMap((entry) => ('options' in entry ? entry.options : [entry])).map((entry) => entry.value),
+  )
   return values.has('on') && !values.has('high')
 }

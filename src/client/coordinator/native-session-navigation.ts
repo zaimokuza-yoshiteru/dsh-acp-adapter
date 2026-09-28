@@ -17,6 +17,7 @@ export function isMainSession(sessions: ISessions, sessionId: SessionId): boolea
 export function openSubagentAside(sidebar: ISidebarRight, address: SubagentAddress): void {
   const query = new URLSearchParams({ parent: address.parentSessionId, mode: address.mode })
   sidebar.openResource(`dsh-resource://subagentchat/session/${encodeURIComponent(address.childSessionId)}?${query}`, {
-    kind: 'subagentchat', preferNewPane: true,
+    kind: 'subagentchat',
+    preferNewPane: true,
   })
 }

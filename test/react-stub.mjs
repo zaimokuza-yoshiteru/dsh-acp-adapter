@@ -12,6 +12,7 @@ export const useState = (init) => [typeof init === 'function' ? init() : init, (
 export const useEffect = () => {}
 export const useLayoutEffect = () => {}
 export const useRef = (value) => ({ current: value })
+export const useId = () => ':test-id:'
 export const useMemo = (factory) => factory()
 
-export const useCallback = callback => callback
+export const useCallback = (callback) => callback

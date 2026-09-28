@@ -16,12 +16,12 @@ DSH 中运行时按 Enter 会排队；队列中的“插话”操作请求交接
 
 以下记录已核查的接口边界；固定源码链接用于说明决策依据，升级后仍需重新验证能力声明与完成语义。
 
-| Agent | 原生能力 | ACP 边界与适配策略 |
-| --- | --- | --- |
-| Codex | CLI steering；App Server `turn/steer` 通过 `expectedTurnId` 限定活动 turn，空闲时失败。 | 已核查的 ACP 实现会在空闲竞态中创建新 turn 并返回 `startedNewTurn`，新执行不能安全共享原 prompt 的完成响应。使用取消后续发。 |
-| Claude Code | CLI 输入队列、SDK streaming input；ACP `_session/steering` 可向活动执行注入输入。 | 支持上述原子空闲契约时使用注入。普通并发 `session/prompt` 的 `promptQueueing` 会创建各自的 ACP Turn/Promise，不等同于注入原 ACP Turn。SDK priority `now` 可能打断生成；待答问题使用默认策略保护生命周期。 |
-| Kimi Code | TypeScript CLI 的 TUI `Ctrl-S`、Node SDK `Session.steer()` 和 Server REST/WS 队列。 | 已核查的 ACP 入口没有暴露等价 steering。使用取消后续发，无需引入 SDK。 |
-| Devin | CLI 支持工作中排队、中断后发送和独立旁问。 | 已观察到并发 ACP prompt 排队，但响应共享完成元数据，且可能早于追加输出返回，无法据此确认逐消息完成归属。使用取消后续发。 |
+| Agent       | 原生能力                                                                                | ACP 边界与适配策略                                                                                                                                                                                        |
+| ----------- | --------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Codex       | CLI steering；App Server `turn/steer` 通过 `expectedTurnId` 限定活动 turn，空闲时失败。 | 已核查的 ACP 实现会在空闲竞态中创建新 turn 并返回 `startedNewTurn`，新执行不能安全共享原 prompt 的完成响应。使用取消后续发。                                                                              |
+| Claude Code | CLI 输入队列、SDK streaming input；ACP `_session/steering` 可向活动执行注入输入。       | 支持上述原子空闲契约时使用注入。普通并发 `session/prompt` 的 `promptQueueing` 会创建各自的 ACP Turn/Promise，不等同于注入原 ACP Turn。SDK priority `now` 可能打断生成；待答问题使用默认策略保护生命周期。 |
+| Kimi Code   | TypeScript CLI 的 TUI `Ctrl-S`、Node SDK `Session.steer()` 和 Server REST/WS 队列。     | 已核查的 ACP 入口没有暴露等价 steering。使用取消后续发，无需引入 SDK。                                                                                                                                    |
+| Devin       | CLI 支持工作中排队、中断后发送和独立旁问。                                              | 已观察到并发 ACP prompt 排队，但响应共享完成元数据，且可能早于追加输出返回，无法据此确认逐消息完成归属。使用取消后续发。                                                                                  |
 
 Kimi 的 `@moonshot-ai/kimi-code-sdk` 是 TypeScript/Node Agent SDK，提供会话和执行接口，并非 Moonshot 模型 HTTP 客户端。若将来采用 SDK 或 Server transport，执行与插话必须由同一 runtime 管理，并补齐事件、权限、附件及恢复适配；另起进程使用同名 session ID 不能控制现有 ACP 执行。
 

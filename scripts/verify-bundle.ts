@@ -20,7 +20,16 @@ import { DSH_COMPAT_RANGE, DSH_SOURCE_VERSION } from './dsh-target.ts'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const read = (rel: string) => readFileSync(join(root, rel), 'utf8')
-const pkg = JSON.parse(read('package.json')) as Omit<typeof import('../package.json'), 'dependencies' | 'devDependencies' | 'peerDependencies' | 'peerDependenciesMeta'> & { dependencies: Record<string, string>; devDependencies: Record<string, string>; peerDependencies: Record<string, string>; peerDependenciesMeta: Record<string, { optional?: boolean }>; optionalDependencies?: Record<string, string> }
+const pkg = JSON.parse(read('package.json')) as Omit<
+  typeof import('../package.json'),
+  'dependencies' | 'devDependencies' | 'peerDependencies' | 'peerDependenciesMeta'
+> & {
+  dependencies: Record<string, string>
+  devDependencies: Record<string, string>
+  peerDependencies: Record<string, string>
+  peerDependenciesMeta: Record<string, { optional?: boolean }>
+  optionalDependencies?: Record<string, string>
+}
 
 /** Checked-in DSH web platform rows (PLATFORM_MODULES + PRELOADED_CLIENT_EXTERNALS). */
 const BASELINE_MODULES = PLATFORM_EXTERNALS
@@ -53,8 +62,10 @@ const client = pkg.dsh?.client
 if (typeof client !== 'object' || client === null || Array.isArray(client)) {
   fail('package.json: dsh.client must be an object')
 } else {
-  if (client.platform !== 'web') fail(`package.json: dsh.client.platform must be "web"; found ${JSON.stringify(client.platform)}`)
-  if ('immediately' in client) fail('package.json: dsh.client.immediately 不声明（prefetch 分层是宿主编排，非本包职责）')
+  if (client.platform !== 'web')
+    fail(`package.json: dsh.client.platform must be "web"; found ${JSON.stringify(client.platform)}`)
+  if ('immediately' in client)
+    fail('package.json: dsh.client.immediately 不声明（prefetch 分层是宿主编排，非本包职责）')
   if ('external' in client) checkStringArray('dsh.client.external', client.external)
   checkStringArray('dsh.client.inject', client.inject, { required: true })
 }
@@ -77,19 +88,27 @@ function checkStringArray(field: string, value: unknown, { required = false } = 
   return value
 }
 
-const inject = Array.isArray(client?.inject) ? client.inject.filter((item: unknown): item is string => typeof item === 'string' && item !== '') : []
-const declaredExternal = Array.isArray(client?.external) ? client.external.filter((item: unknown): item is string => typeof item === 'string' && item !== '') : []
+const inject = Array.isArray(client?.inject)
+  ? client.inject.filter((item: unknown): item is string => typeof item === 'string' && item !== '')
+  : []
+const declaredExternal = Array.isArray(client?.external)
+  ? client.external.filter((item: unknown): item is string => typeof item === 'string' && item !== '')
+  : []
 
 for (const name of inject) {
   if (BASELINE_PACKAGES.has(name)) {
-    fail(`package.json: dsh.client.inject 点名 baseline 包 ${JSON.stringify(name)}；baseline 由 shell 隐式提供（如需类型仅 devDependencies）`)
+    fail(
+      `package.json: dsh.client.inject 点名 baseline 包 ${JSON.stringify(name)}；baseline 由 shell 隐式提供（如需类型仅 devDependencies）`,
+    )
   }
 }
 
 const baselineModuleSet = new Set(BASELINE_MODULES)
 for (const spec of declaredExternal) {
   if (baselineModuleSet.has(spec)) {
-    fail(`package.json: dsh.client.external repeats baseline module ${JSON.stringify(spec)}; remove the explicit declaration`)
+    fail(
+      `package.json: dsh.client.external repeats baseline module ${JSON.stringify(spec)}; remove the explicit declaration`,
+    )
   }
   if (spec === pkg.name || spec === `${pkg.name}/client`) {
     fail(`package.json: dsh.client.external names its own row ${JSON.stringify(spec)}`)
@@ -113,11 +132,13 @@ for (const [name, peerRange] of Object.entries(pkg.peerDependencies ?? {})) {
 }
 for (const section of ['dependencies', 'optionalDependencies'] as const) {
   for (const name of Object.keys(pkg[section] ?? {})) {
-    if (name.startsWith('@deepseek-ai/') || name === 'react') fail(`package.json: host module ${name} must not be in ${section}`)
+    if (name.startsWith('@deepseek-ai/') || name === 'react')
+      fail(`package.json: host module ${name} must not be in ${section}`)
   }
 }
 for (const [name, version] of Object.entries(pkg.devDependencies ?? {})) {
-  if ((name.startsWith('@deepseek-ai/dsh-') || name === '@deepseek-ai/dsh') && version !== DSH_SOURCE_VERSION) fail(`package.json: devDependencies.${name} must be ${DSH_SOURCE_VERSION}`)
+  if ((name.startsWith('@deepseek-ai/dsh-') || name === '@deepseek-ai/dsh') && version !== DSH_SOURCE_VERSION)
+    fail(`package.json: devDependencies.${name} must be ${DSH_SOURCE_VERSION}`)
   if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) {
     fail(`package.json: devDependencies.${name} must pin an exact tool version; found ${version}`)
   }
@@ -146,7 +167,10 @@ if (typertExport?.default !== './lib/typert.host.js' || typertExport?.types !== 
   fail('package.json: exports["./typert"] 应指向 ./lib/typert.host.{js,d.ts}（公开 host 入口）')
 }
 const remoteExport = pkg.exports?.['./remote']
-if (remoteExport?.default !== './lib/typert.remote-client.js' || remoteExport?.types !== './lib/typert.remote-client.d.ts') {
+if (
+  remoteExport?.default !== './lib/typert.remote-client.js' ||
+  remoteExport?.types !== './lib/typert.remote-client.d.ts'
+) {
   fail('package.json: exports["./remote"] 应指向 ./lib/typert.remote-client.{js,d.ts}（公开 client contribution）')
 }
 
@@ -186,12 +210,15 @@ const bundlePath = join(root, 'lib/client.js')
 if (existsSync(bundlePath)) {
   const js = read('lib/client.js')
   // rolldown 会把 banner/intro/footer 作为包装器重排缩进，故按规范化形态断言。
-  const banner = js.match(/^window\.__ModuleLoader__\.load\(\{\s*id:\s*("(?:[^"\\]|\\.)*"),\s*factory:\s*\(require\)\s*=>\s*\{/)
+  const banner = js.match(
+    /^window\.__ModuleLoader__\.load\(\{\s*id:\s*("(?:[^"\\]|\\.)*"),\s*factory:\s*\(require\)\s*=>\s*\{/,
+  )
   if (banner === null) {
     fail('lib/client.js: 不以 window.__ModuleLoader__.load({ id, factory: (require) => { 包装开头')
   } else {
     const id = JSON.parse(banner[1])
-    if (id !== pkg.name) fail(`lib/client.js: 注册 id ${JSON.stringify(id)} !== package.json name ${JSON.stringify(pkg.name)}`)
+    if (id !== pkg.name)
+      fail(`lib/client.js: 注册 id ${JSON.stringify(id)} !== package.json name ${JSON.stringify(pkg.name)}`)
   }
   if (!js.includes('var module = { exports: {} };') || !js.includes('var exports = module.exports;')) {
     fail('lib/client.js: 缺少 module/exports intro 初始化')
@@ -228,7 +255,9 @@ if (existsSync(bundlePath)) {
   const allowed = new Set([...BASELINE_MODULES, ...declaredExternal])
   for (const spec of [...requested].sort()) {
     if (!allowed.has(spec)) {
-      fail(`lib/client.js: require(${JSON.stringify(spec)}) 不在 DSH platform snapshot 或 dsh.client.external 内 —— module table 无法应答`)
+      fail(
+        `lib/client.js: require(${JSON.stringify(spec)}) 不在 DSH platform snapshot 或 dsh.client.external 内 —— module table 无法应答`,
+      )
     }
   }
   console.log(`[verify-bundle] module requests: ${requested.size === 0 ? '(none)' : [...requested].sort().join(', ')}`)
@@ -283,7 +312,9 @@ for (const service of [...serviceReads].sort()) {
     fail(`src/client: ctx.get('${service}') 未在模块级 inject 声明，也不在可选登记（OPTIONAL_SERVICE_READS）内`)
   }
 }
-console.log(`[verify-bundle] cordis inject: [${[...moduleInject].join(', ')}]; optional reads: [${[...OPTIONAL_SERVICE_READS].join(', ')}]`)
+console.log(
+  `[verify-bundle] cordis inject: [${[...moduleInject].join(', ')}]; optional reads: [${[...OPTIONAL_SERVICE_READS].join(', ')}]`,
+)
 
 // ---------------------------------------------------------------------------
 // ⑥ tarball 内容：npm pack --dry-run --json
@@ -327,9 +358,11 @@ if (packOutput !== null) {
       if (/^(tsconfig.*|tsdown\.config|vitest\.config|pnpm-lock|pnpm-workspace|\.nvmrc|AGENTS|ACCEPTANCE)/.test(path)) {
         fail(`tarball 含仓内配置/文档文件: ${path}`)
       }
-      if (path.startsWith('lib/client/')) fail(`tarball 含 tsc 版 client 半（浏览器只消费 lib/client.js bundle）: ${path}`)
+      if (path.startsWith('lib/client/'))
+        fail(`tarball 含 tsc 版 client 半（浏览器只消费 lib/client.js bundle）: ${path}`)
       if (path.endsWith('.d.ts.map')) fail(`tarball 含 declaration map（不进 payload）: ${path}`)
-      if (path.endsWith('.js.map') && path !== 'lib/client.js.map') fail(`tarball 含宿主半 source map（仅 client bundle 需要）: ${path}`)
+      if (path.endsWith('.js.map') && path !== 'lib/client.js.map')
+        fail(`tarball 含宿主半 source map（仅 client bundle 需要）: ${path}`)
     }
     for (const required of [...REQUIRED_ARTIFACTS, 'cordis.patch.yml', 'package.json', 'README.md', 'LICENSE']) {
       if (!actual.has(required)) fail(`tarball 缺少: ${required}`)
@@ -361,12 +394,19 @@ if (packOutput !== null) {
     // tarball file set before declaring the package installable.
     // JSON data files (assets/registry snapshots) participate as import
     // targets even though they are never scanned for their own imports.
-    const runtimeFiles = [...actual].filter((file) => file.endsWith('.js') || file.endsWith('.mjs') || file.endsWith('.json'))
-    const missingRuntimeImports = findMissingRelativeRuntimeImports(runtimeFiles, (file) => readFileSync(join(root, file), 'utf8'))
+    const runtimeFiles = [...actual].filter(
+      (file) => file.endsWith('.js') || file.endsWith('.mjs') || file.endsWith('.json'),
+    )
+    const missingRuntimeImports = findMissingRelativeRuntimeImports(runtimeFiles, (file) =>
+      readFileSync(join(root, file), 'utf8'),
+    )
     for (const missing of missingRuntimeImports) {
       fail(`tarball runtime closure missing ${missing.file} → ${missing.specifier} (${missing.resolved})`)
     }
-    if (missingRuntimeImports.length === 0) console.log(`[verify-bundle] runtime relative-import closure: ${String(runtimeFiles.length)} JavaScript artifacts checked`)
+    if (missingRuntimeImports.length === 0)
+      console.log(
+        `[verify-bundle] runtime relative-import closure: ${String(runtimeFiles.length)} JavaScript artifacts checked`,
+      )
   }
 }
 
@@ -374,18 +414,27 @@ if (packOutput !== null) {
 // The generator's staging entry alone cannot prove the package exports its payloads.
 {
   const program = ts.createProgram([join(root, pkg.exports['./remote'].types)], {
-    noEmit: true, strict: true, skipLibCheck: false, types: [],
-    module: ts.ModuleKind.NodeNext, target: ts.ScriptTarget.ES2024,
+    noEmit: true,
+    strict: true,
+    skipLibCheck: false,
+    types: [],
+    module: ts.ModuleKind.NodeNext,
+    target: ts.ScriptTarget.ES2024,
     // DSH Typert ownership and Session references expose Disposable.
     lib: ['lib.es2024.d.ts', 'lib.dom.d.ts', 'lib.esnext.disposable.d.ts'],
   })
   const diagnostics = ts.getPreEmitDiagnostics(program)
   if (diagnostics.length > 0) {
-    fail(`public remote declarations fail strict consumer checking:\n${ts.formatDiagnosticsWithColorAndContext(diagnostics, {
-      getCurrentDirectory: () => root,
-      getCanonicalFileName: file => file,
-      getNewLine: () => '\n',
-    })}`)
+    fail(
+      `public remote declarations fail strict consumer checking:\n${ts.formatDiagnosticsWithColorAndContext(
+        diagnostics,
+        {
+          getCurrentDirectory: () => root,
+          getCanonicalFileName: (file) => file,
+          getNewLine: () => '\n',
+        },
+      )}`,
+    )
   } else console.log('[verify-bundle] public remote declarations: strict consumer passed')
 }
 
@@ -396,4 +445,6 @@ if (failures.length > 0) {
   for (const msg of failures) console.error(`  - ${msg}`)
   process.exit(1)
 }
-console.log('[verify-bundle] OK: manifest / artifacts / closure / module requests / source audit / style pipeline / tarball 全部通过')
+console.log(
+  '[verify-bundle] OK: manifest / artifacts / closure / module requests / source audit / style pipeline / tarball 全部通过',
+)

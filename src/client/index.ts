@@ -16,7 +16,12 @@ import type {} from '@deepseek-ai/dsh-client-ui-model-selection/client'
 import { isMainSession, openSubagentAside } from './coordinator/native-session-navigation.ts'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
-import { AcpActivityNode, acpPromptAnchorDefinition, createAcpActivityDefinition, createAcpLiveActivityDefinition } from './ui/AcpActivityNode.ts'
+import {
+  AcpActivityNode,
+  acpPromptAnchorDefinition,
+  createAcpActivityDefinition,
+  createAcpLiveActivityDefinition,
+} from './ui/AcpActivityNode.ts'
 import { installNativeToolRenderer } from './ui/native-tool-renderer.ts'
 import { installAcpAssistantStream } from './ui/AcpAssistantStream.ts'
 import { AcpActivityJournalHub } from './data/activity-journal.ts'
@@ -58,8 +63,17 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 }
 
 export const inject = [
-  'uiConversation', 'slots', 'locale', 'remote',
-  'sessions', 'workspaces', 'uiWorkspace', 'sidebarRight', 'configForms', 'remote.settings', 'remote.session',
+  'uiConversation',
+  'slots',
+  'locale',
+  'remote',
+  'sessions',
+  'workspaces',
+  'uiWorkspace',
+  'sidebarRight',
+  'configForms',
+  'remote.settings',
+  'remote.session',
 ] as const
 
 /** Normalize ACP presentation facts and compose the registered native UI. */
@@ -70,7 +84,9 @@ async function registerUi(ctx: ClientContext): Promise<void> {
   const workspaces = ctx.get('workspaces') as unknown as IWorkspaces
   const openProjectedChild = (parentSessionId: string, childSessionId: string): void => {
     openSubagentAside(ctx.sidebarRight, {
-      parentSessionId: parentSessionId as SessionId, childSessionId: childSessionId as SessionId, mode: 'one-shot',
+      parentSessionId: parentSessionId as SessionId,
+      childSessionId: childSessionId as SessionId,
+      mode: 'one-shot',
     })
   }
   const settingsScope = ctx.configForms.get<AcpSettings>(ACP_SETTINGS_NS)
@@ -92,8 +108,12 @@ async function registerUi(ctx: ClientContext): Promise<void> {
   })
   const jsonStringWrapping = createAcpJsonStringWrapping()
   const panelWire: AcpSectionWire = {
-    refreshHealth: (recheck) => { void panelController.refreshHealth(recheck) },
-    refreshAgentHealth: (agentId) => { void panelController.refreshAgentHealth(agentId) },
+    refreshHealth: (recheck) => {
+      void panelController.refreshHealth(recheck)
+    },
+    refreshAgentHealth: (agentId) => {
+      void panelController.refreshAgentHealth(agentId)
+    },
     saveAgent: (editingId, draft) => panelController.saveAgent(editingId, draft),
     deleteAgent: (id) => panelController.deleteAgent(id),
     setSearchableModelPicker: (enabled) => panelController.setSearchableModelPicker(enabled),
@@ -106,24 +126,47 @@ async function registerUi(ctx: ClientContext): Promise<void> {
   ctx.uiConversation.events.register(createAcpActivityDefinition(managedRoutes.owns))
   ctx.effect(() => ctx.locale.register('acpActivity', { zh, en }), 'dsh-acp: activity dictionaries')
   ctx.effect(() => ctx.locale.register('settings.acp', { zh, en }), 'dsh-acp: settings dictionaries')
-  ctx.effect(() => ctx.locale.register('acpModelPicker', { zh: modelPickerZh, en: modelPickerEn }), 'dsh-acp: searchable model picker dictionaries')
-  ctx.effect(() => () => { panelController.dispose() }, 'dsh-acp: settings controller')
-  ctx.effect(() => () => { managedRoutes.dispose() }, 'dsh-acp: managed route catalogue')
-  ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register({
-    name: 'plugins.bundle.config',
-    key: '@zaimokuza/dsh-acp-adapter',
-    locale: 'settings.acp',
-    store: createAcpPanelStore,
-    inject: (actions: AcpPanelStoreActions) => {
-      panelController.attach(actions)
-      return { panel: panelWire }
+  ctx.effect(
+    () => ctx.locale.register('acpModelPicker', { zh: modelPickerZh, en: modelPickerEn }),
+    'dsh-acp: searchable model picker dictionaries',
+  )
+  ctx.effect(
+    () => () => {
+      panelController.dispose()
     },
-  }, AcpSection))
+    'dsh-acp: settings controller',
+  )
+  ctx.effect(
+    () => () => {
+      managedRoutes.dispose()
+    },
+    'dsh-acp: managed route catalogue',
+  )
+  ctx.slots.inject('plugins.bundle.config', () =>
+    ctx.slots.register(
+      {
+        name: 'plugins.bundle.config',
+        key: '@zaimokuza/dsh-acp-adapter',
+        locale: 'settings.acp',
+        store: createAcpPanelStore,
+        inject: (actions: AcpPanelStoreActions) => {
+          panelController.attach(actions)
+          return { panel: panelWire }
+        },
+      },
+      AcpSection,
+    ),
+  )
   ctx.inject(['slots', 'modelDirectories'], (scope) => {
-    return installSearchableModelPickerSlot({
-      inject: (name, factory) => scope.slots.inject(name, factory),
-      register: (options, component) => scope.slots.register(options, component),
-    }, settingsScope, scope.modelDirectories, sessions)
+    return installSearchableModelPickerSlot(
+      {
+        inject: (name, factory) => scope.slots.inject(name, factory),
+        register: (options, component) => scope.slots.register(options, component),
+      },
+      settingsScope,
+      scope.modelDirectories,
+      sessions,
+    )
   })
   let setAuditViewVisible: (sessionId: string, visible: boolean) => void = () => undefined
   ctx.slots.inject('conversation.view', () => {
@@ -140,14 +183,17 @@ async function registerUi(ctx: ClientContext): Promise<void> {
       if (ownerSessionId === sessionId && disposeView !== undefined) return
       disposeView?.()
       ownerSessionId = sessionId
-      disposeView = ctx.slots.register({
-        name: 'conversation.view',
-        id: 'dsh-acp-audit',
-        order: 20,
-        label: () => settingsT('auditOpen'),
-        locale: 'acpActivity',
-        inject: () => ({ remote: acpRemote }),
-      }, createAcpAuditView(acpRemote, jsonStringWrapping))
+      disposeView = ctx.slots.register(
+        {
+          name: 'conversation.view',
+          id: 'dsh-acp-audit',
+          order: 20,
+          label: () => settingsT('auditOpen'),
+          locale: 'acpActivity',
+          inject: () => ({ remote: acpRemote }),
+        },
+        createAcpAuditView(acpRemote, jsonStringWrapping),
+      )
     }
     return () => {
       setAuditViewVisible = () => undefined
@@ -156,49 +202,67 @@ async function registerUi(ctx: ClientContext): Promise<void> {
   })
   // Keep the non-rendering session gate so only bound ACP sessions contribute
   // the diagnostic tab; ordinary model sessions retain the native tab set.
-  ctx.slots.inject('conversation.session.header.utilities', () => ctx.slots.register({
-    name: 'conversation.session.header.utilities',
-    id: 'dsh-acp-audit-visibility',
-    order: 100,
-        inject: (): { readonly remote: AcpRemoteLike; readonly onVisibilityChange: typeof setAuditViewVisible; readonly ownsRoute: typeof managedRoutes.owns } => ({
+  ctx.slots.inject('conversation.session.header.utilities', () =>
+    ctx.slots.register(
+      {
+        name: 'conversation.session.header.utilities',
+        id: 'dsh-acp-audit-visibility',
+        order: 100,
+        inject: (): {
+          readonly remote: AcpRemoteLike
+          readonly onVisibilityChange: typeof setAuditViewVisible
+          readonly ownsRoute: typeof managedRoutes.owns
+        } => ({
           remote: acpRemote,
           ownsRoute: managedRoutes.owns,
-          onVisibilityChange: (sessionId, visible) => { setAuditViewVisible(sessionId, visible) },
-    }),
-  }, AcpAuditVisibilityGate))
+          onVisibilityChange: (sessionId, visible) => {
+            setAuditViewVisible(sessionId, visible)
+          },
+        }),
+      },
+      AcpAuditVisibilityGate,
+    ),
+  )
   installNativeToolRenderer(ctx)
   installAcpAssistantStream(ctx, {
-    journalHub, t: ctx.locale.bind('acpActivity'), jsonStringWrapping,
+    journalHub,
+    t: ctx.locale.bind('acpActivity'),
+    jsonStringWrapping,
     onProjectedChild: (_parentSessionId, childSessionId) => {
       projectedSubagents.add(childSessionId)
     },
     onOpenProjectedChild: openProjectedChild,
   })
-  ctx.slots.inject('conversation.chat.node', () => ctx.slots.register({
-    name: 'conversation.chat.node',
-    key: 'acp-activity',
-    locale: 'acpActivity',
-    inject: (): {
-      readonly journalHub: AcpActivityJournalHub
-      readonly onProjectedChild: (parentSessionId: string, childSessionId: string) => void
-      readonly onOpenProjectedChild: (parentSessionId: string, childSessionId: string) => void
-      readonly jsonStringWrapping: AcpJsonStringWrapping
-    } => ({
-      journalHub,
-      onProjectedChild: (_parentSessionId, childSessionId) => {
-        projectedSubagents.add(childSessionId)
+  ctx.slots.inject('conversation.chat.node', () =>
+    ctx.slots.register(
+      {
+        name: 'conversation.chat.node',
+        key: 'acp-activity',
+        locale: 'acpActivity',
+        inject: (): {
+          readonly journalHub: AcpActivityJournalHub
+          readonly onProjectedChild: (parentSessionId: string, childSessionId: string) => void
+          readonly onOpenProjectedChild: (parentSessionId: string, childSessionId: string) => void
+          readonly jsonStringWrapping: AcpJsonStringWrapping
+        } => ({
+          journalHub,
+          onProjectedChild: (_parentSessionId, childSessionId) => {
+            projectedSubagents.add(childSessionId)
+          },
+          onOpenProjectedChild: openProjectedChild,
+          jsonStringWrapping,
+        }),
       },
-      onOpenProjectedChild: openProjectedChild,
-      jsonStringWrapping,
-    }),
-  }, AcpActivityNode))
+      AcpActivityNode,
+    ),
+  )
   const coordinator = new CrossBackendCoordinator(ctx, managedRoutes.owns)
   // RC publishes team identity through the shared Session projection. The ACP
   // Remote remains responsible for ACP-specific metadata and authorized writes.
   ctx.inject(['remote.subagents', 'uiSession'], (teamCtx) => {
     const actions: AcpTeamApprovalActions = {
       status: teamCtx.uiSession.sessionStatus,
-      isCurrent: sessionId => isMainSession(sessions, sessionId),
+      isCurrent: (sessionId) => isMainSession(sessions, sessionId),
       ownsRoute: managedRoutes.owns,
       async loadMembers(sessionId) {
         const result = await acpRemote.teamMembers(sessionId)
@@ -210,73 +274,122 @@ async function registerUi(ctx: ClientContext): Promise<void> {
         openSubagentAside(ctx.sidebarRight, { parentSessionId, childSessionId, mode: 'continuable' })
       },
     }
-    teamCtx.slots.inject('conversation.session.header.utilities', () => teamCtx.slots.register({
-      name: 'conversation.session.header.utilities', id: 'acp-team-management', order: 94,
-      locale: 'acpActivity', inject: () => ({ remote: ctx.remote.dshAcp, streamFactory: ctx.remote, loadMembers: actions.loadMembers, ownsRoute: managedRoutes.owns, isCurrent: actions.isCurrent,
-        status: actions.status, openMember: actions.openMember,
-        async interruptMember(lead: SessionId, member: SessionId) {
-          const result = await teamCtx.remote.subagents.interruptByParent(member, lead, 'continuable')
-          if (!result.ok) throw new Error(result.error.message)
+    teamCtx.slots.inject('conversation.session.header.utilities', () =>
+      teamCtx.slots.register(
+        {
+          name: 'conversation.session.header.utilities',
+          id: 'acp-team-management',
+          order: 94,
+          locale: 'acpActivity',
+          inject: () => ({
+            remote: ctx.remote.dshAcp,
+            streamFactory: ctx.remote,
+            loadMembers: actions.loadMembers,
+            ownsRoute: managedRoutes.owns,
+            isCurrent: actions.isCurrent,
+            status: actions.status,
+            openMember: actions.openMember,
+            async interruptMember(lead: SessionId, member: SessionId) {
+              const result = await teamCtx.remote.subagents.interruptByParent(member, lead, 'continuable')
+              if (!result.ok) throw new Error(result.error.message)
+            },
+          }),
         },
-      }),
-    }, AcpTeamManagement))
-    teamCtx.slots.inject('conversation.input.dock', () => teamCtx.slots.register({
-      name: 'conversation.input.dock', id: 'acp-team-approvals', order: 95,
-      locale: 'acpActivity', inject: () => actions,
-    }, AcpTeamApprovals))
+        AcpTeamManagement,
+      ),
+    )
+    teamCtx.slots.inject('conversation.input.dock', () =>
+      teamCtx.slots.register(
+        {
+          name: 'conversation.input.dock',
+          id: 'acp-team-approvals',
+          order: 95,
+          locale: 'acpActivity',
+          inject: () => actions,
+        },
+        AcpTeamApprovals,
+      ),
+    )
   })
   ctx.effect(() => coordinator.start(), 'dsh-acp: model transition coordinator')
-  ctx.slots.inject('shell.overlay', () => ctx.slots.register({
-    name: 'shell.overlay',
-    id: 'dsh-acp-cross-backend-confirmation',
-    locale: 'acpActivity',
-    inject: (): { readonly coordinator: CrossBackendCoordinator } => ({ coordinator }),
-  }, CrossBackendModal))
-  ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({
-    name: 'conversation.input.dock',
-    id: 'dsh-acp-recovery',
-    order: 90,
-    locale: 'acpActivity',
-    inject: (): { readonly remote: AcpRemoteLike; readonly createNewSession: (sourceSessionId: string) => Promise<void>; readonly ownsRoute: typeof managedRoutes.owns } => ({
-      remote: acpRemote,
-      ownsRoute: managedRoutes.owns,
-      createNewSession: async (sourceSessionId) => {
-        const row = sessions.list.getSnapshot().byId[sourceSessionId as never]
-        const location = resolveCrossBackendLocation(sourceSessionId, workspaces.list.getSnapshot().items, row?.cwd)
-        if (location === undefined) throw new Error('The original session workspace is unavailable')
-        const child = await sessions.create({
-          ...(location.cwd === undefined ? {} : { cwd: location.cwd }),
-          ...(location.workspaceId === undefined ? {} : { workspaceId: location.workspaceId as never }),
-        })
-        ctx.uiWorkspace.openSession(child)
+  ctx.slots.inject('shell.overlay', () =>
+    ctx.slots.register(
+      {
+        name: 'shell.overlay',
+        id: 'dsh-acp-cross-backend-confirmation',
+        locale: 'acpActivity',
+        inject: (): { readonly coordinator: CrossBackendCoordinator } => ({ coordinator }),
       },
-    }),
-  }, AcpRecoveryDock))
-  ctx.slots.inject('conversation.input.left', () => ctx.slots.register({
-    name: 'conversation.input.left',
-    id: 'dsh-acp-agent-control',
-    order: 80,
-    locale: 'acpActivity',
-    inject: (): { readonly remote: AcpRemoteLike; readonly streamFactory: RemoteStreamFactory; readonly ownsRoute: typeof managedRoutes.owns; readonly getDefaultProvider: () => Promise<string | undefined>; readonly watchDefaultProvider: (changed: () => void) => () => void } => ({
-      remote: acpRemote,
-      streamFactory: ctx.remote,
-      ownsRoute: managedRoutes.owns,
-      getDefaultProvider: async () => {
-        const result = await ctx.remote.session.modelCatalog()
-        return result.ok ? result.value.default.provider : undefined
+      CrossBackendModal,
+    ),
+  )
+  ctx.slots.inject('conversation.input.dock', () =>
+    ctx.slots.register(
+      {
+        name: 'conversation.input.dock',
+        id: 'dsh-acp-recovery',
+        order: 90,
+        locale: 'acpActivity',
+        inject: (): {
+          readonly remote: AcpRemoteLike
+          readonly createNewSession: (sourceSessionId: string) => Promise<void>
+          readonly ownsRoute: typeof managedRoutes.owns
+        } => ({
+          remote: acpRemote,
+          ownsRoute: managedRoutes.owns,
+          createNewSession: async (sourceSessionId) => {
+            const row = sessions.list.getSnapshot().byId[sourceSessionId as never]
+            const location = resolveCrossBackendLocation(sourceSessionId, workspaces.list.getSnapshot().items, row?.cwd)
+            if (location === undefined) throw new Error('The original session workspace is unavailable')
+            const child = await sessions.create({
+              ...(location.cwd === undefined ? {} : { cwd: location.cwd }),
+              ...(location.workspaceId === undefined ? {} : { workspaceId: location.workspaceId as never }),
+            })
+            ctx.uiWorkspace.openSession(child)
+          },
+        }),
       },
-      watchDefaultProvider: changed => {
-        const disposers = [
-          ctx.remote.$on('settings/document-updated', changed),
-          ctx.remote.$on('llm/adapters-updated', changed),
-          ctx.remote.$on('credentials/record-updated', changed),
-          ctx.remote.$on('credentials/reference-updated', changed),
-          ctx.on('connection/reset', changed),
-        ]
-        return () => { for (const dispose of disposers) dispose() }
+      AcpRecoveryDock,
+    ),
+  )
+  ctx.slots.inject('conversation.input.left', () =>
+    ctx.slots.register(
+      {
+        name: 'conversation.input.left',
+        id: 'dsh-acp-agent-control',
+        order: 80,
+        locale: 'acpActivity',
+        inject: (): {
+          readonly remote: AcpRemoteLike
+          readonly streamFactory: RemoteStreamFactory
+          readonly ownsRoute: typeof managedRoutes.owns
+          readonly getDefaultProvider: () => Promise<string | undefined>
+          readonly watchDefaultProvider: (changed: () => void) => () => void
+        } => ({
+          remote: acpRemote,
+          streamFactory: ctx.remote,
+          ownsRoute: managedRoutes.owns,
+          getDefaultProvider: async () => {
+            const result = await ctx.remote.session.modelCatalog()
+            return result.ok ? result.value.default.provider : undefined
+          },
+          watchDefaultProvider: (changed) => {
+            const disposers = [
+              ctx.remote.$on('settings/document-updated', changed),
+              ctx.remote.$on('llm/adapters-updated', changed),
+              ctx.remote.$on('credentials/record-updated', changed),
+              ctx.remote.$on('credentials/reference-updated', changed),
+              ctx.on('connection/reset', changed),
+            ]
+            return () => {
+              for (const dispose of disposers) dispose()
+            }
+          },
+        }),
       },
-    }),
-  }, AcpAgentControl))
+      AcpAgentControl,
+    ),
+  )
 }
 
 /** Mount the generated namespace before starting the fiber that consumes it. */

@@ -36,7 +36,11 @@
   border-radius: 8px;
   background: var(--dsw-alias-bg-layer-1);
   padding: 10px;
-  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+  font:
+    12px/1.45 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
 }
 
 .actions {

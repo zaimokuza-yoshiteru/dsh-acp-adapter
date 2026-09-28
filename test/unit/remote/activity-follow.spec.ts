@@ -6,13 +6,20 @@ import type { AcpActivityRecord } from '../../../src/persistence/sidecar.ts'
 
 function row(revisionSeq: number): AcpActivityRecord {
   return {
-    dshSessionId: 'session-1', ownerDshSessionId: 'session-1', promptAnchorMessageId: 'user-1',
-    activityId: `activity-${revisionSeq}`, activitySeq: revisionSeq, revisionSeq,
-    time: revisionSeq, kind: 'tool', status: 'running', presentation: `Activity ${revisionSeq}`,
+    dshSessionId: 'session-1',
+    ownerDshSessionId: 'session-1',
+    promptAnchorMessageId: 'user-1',
+    activityId: `activity-${revisionSeq}`,
+    activitySeq: revisionSeq,
+    revisionSeq,
+    time: revisionSeq,
+    kind: 'tool',
+    status: 'running',
+    presentation: `Activity ${revisionSeq}`,
   }
 }
 
-const idle = () => new Promise<void>(resolve => setImmediate(resolve))
+const idle = () => new Promise<void>((resolve) => setImmediate(resolve))
 const abortListenerCount = (signal: AbortSignal) => getEventListeners(signal, 'abort').length
 
 function createService(source: {
@@ -42,7 +49,9 @@ describe('ACP activity follow lifecycle', () => {
       head: async () => 0,
       subscribe: (_sessionId, _filter, subscriber) => {
         listener = subscriber
-        return () => { unsubscribed = true }
+        return () => {
+          unsubscribed = true
+        }
       },
     })
     const abort = new AbortController()
@@ -54,7 +63,10 @@ describe('ACP activity follow lifecycle', () => {
       await idle()
       expect(abortListenerCount(abort.signal)).toBe(1)
       listener?.(row(revision))
-      await expect(next).resolves.toMatchObject({ value: { type: 'entry', activity: { revisionSeq: revision } }, done: false })
+      await expect(next).resolves.toMatchObject({
+        value: { type: 'entry', activity: { revisionSeq: revision } },
+        done: false,
+      })
     }
 
     await expect(iterator.return!()).resolves.toMatchObject({ done: true })
@@ -72,7 +84,9 @@ describe('ACP activity follow lifecycle', () => {
       head: async () => 0,
       subscribe: (_sessionId, _filter, subscriber) => {
         listener = subscriber
-        return () => { unsubscribed = true }
+        return () => {
+          unsubscribed = true
+        }
       },
     })
     const abort = new AbortController()
@@ -94,8 +108,12 @@ describe('ACP activity follow lifecycle', () => {
     const failure = new Error('opening head failed')
     const service = createService({
       page: async () => [],
-      head: async () => { throw failure },
-      subscribe: () => () => { unsubscribed = true },
+      head: async () => {
+        throw failure
+      },
+      subscribe: () => () => {
+        unsubscribed = true
+      },
     })
     const abort = new AbortController()
     const iterator = service.activityFollow('session-1', undefined, abort.signal)[Symbol.asyncIterator]()
@@ -110,8 +128,13 @@ describe('ACP activity follow lifecycle', () => {
     let unsubscribed = false
     const service = createService({
       page: async () => [],
-      head: () => new Promise(resolve => { resolveHead = resolve }),
-      subscribe: () => () => { unsubscribed = true },
+      head: () =>
+        new Promise((resolve) => {
+          resolveHead = resolve
+        }),
+      subscribe: () => () => {
+        unsubscribed = true
+      },
     })
     const abort = new AbortController()
     const iterator = service.activityFollow('session-1', undefined, abort.signal)[Symbol.asyncIterator]()
@@ -130,9 +153,14 @@ describe('ACP activity follow lifecycle', () => {
     let resolvePage: ((page: readonly AcpActivityRecord[]) => void) | undefined
     let unsubscribed = false
     const service = createService({
-      page: () => new Promise(resolve => { resolvePage = resolve }),
+      page: () =>
+        new Promise((resolve) => {
+          resolvePage = resolve
+        }),
       head: async () => 1,
-      subscribe: () => () => { unsubscribed = true },
+      subscribe: () => () => {
+        unsubscribed = true
+      },
     })
     const abort = new AbortController()
     const iterator = service.activityFollow('session-1', undefined, abort.signal)[Symbol.asyncIterator]()

@@ -81,7 +81,7 @@
   width: min(var(--acp-catalog-menu-width, 180px), calc(100vw - 24px));
   min-width: 0;
   max-width: calc(100vw - 24px);
-  max-height: var(--acp-catalog-menu-max-height, calc(100vh - 24px));
+  max-height: var(--acp-catalog-menu-max-height, calc(100vh - 12px - max(12px, var(--dsh-frame-overlay-top, 12px))));
 }
 .catalogEntry {
   display: flex;
@@ -154,9 +154,17 @@
   text-align: left;
   cursor: pointer;
 }
-.approvalButton:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); }
-.approvalButton:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--dsw-alias-border-l3); }
-.approvalButton:disabled { opacity: 0.5; cursor: default; }
+.approvalButton:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+.approvalButton:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--dsw-alias-border-l3);
+}
+.approvalButton:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
 .chevron {
   display: inline-flex;
   transition: transform 0.15s ease;
@@ -268,7 +276,9 @@
   line-height: 18px;
   cursor: pointer;
 }
-.advancedToggle:hover { color: var(--dsw-alias-label-primary); }
+.advancedToggle:hover {
+  color: var(--dsw-alias-label-primary);
+}
 .advancedToggle:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px var(--dsw-alias-border-l3);
@@ -303,11 +313,22 @@
   font-weight: 500;
   cursor: pointer;
 }
-.pickerSettingLabel input { margin: 0; accent-color: var(--dsw-alias-fill-primary); }
-.pickerSettingLabel input:disabled { cursor: not-allowed; }
-.input { min-width: 0; }
-.input:has(input:disabled) { opacity: 0.6; }
-.input.inputInvalid { border-color: var(--dsw-alias-state-error-primary); }
+.pickerSettingLabel input {
+  margin: 0;
+  accent-color: var(--dsw-alias-fill-primary);
+}
+.pickerSettingLabel input:disabled {
+  cursor: not-allowed;
+}
+.input {
+  min-width: 0;
+}
+.input:has(input:disabled) {
+  opacity: 0.6;
+}
+.input.inputInvalid {
+  border-color: var(--dsw-alias-state-error-primary);
+}
 .textarea {
   box-sizing: border-box;
   width: 100%;
@@ -338,8 +359,12 @@
   justify-content: flex-end;
   gap: 8px;
 }
-.dangerButton { color: var(--dsw-alias-state-error-primary); }
-.dangerButton:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover-danger); }
+.dangerButton {
+  color: var(--dsw-alias-state-error-primary);
+}
+.dangerButton:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover-danger);
+}
 .deleteBlock {
   display: flex;
   flex-wrap: wrap;

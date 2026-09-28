@@ -23,7 +23,7 @@ export function findMissingRelativeRuntimeImports(files: readonly string[], read
     }
     for (const specifier of relativeSpecifiers(source)) {
       const resolved = resolveRuntimeImport(file, specifier)
-      if (resolved === undefined || !runtimeCandidates(resolved).some(candidate => actual.has(candidate))) {
+      if (resolved === undefined || !runtimeCandidates(resolved).some((candidate) => actual.has(candidate))) {
         failures.push({ file, specifier, resolved: resolved ?? '<outside-package>' })
       }
     }

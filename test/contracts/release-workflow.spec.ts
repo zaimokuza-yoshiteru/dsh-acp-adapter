@@ -19,12 +19,10 @@ describe('npm release contract', () => {
     const output = join(directory, 'output')
     try {
       mkdirSync(join(directory, 'scripts'))
-      for (const file of ['verify-release.ts', 'dsh-target.ts']) cpSync(new URL(`scripts/${file}`, root), join(directory, 'scripts', file))
+      for (const file of ['verify-release.ts', 'dsh-target.ts'])
+        cpSync(new URL(`scripts/${file}`, root), join(directory, 'scripts', file))
       writeFileSync(join(directory, 'package.json'), JSON.stringify({ ...pkg, version }))
-      execFileSync(
-      process.execPath,
-      [join(directory, 'scripts/verify-release.ts'), `v${version}`],
-      {
+      execFileSync(process.execPath, [join(directory, 'scripts/verify-release.ts'), `v${version}`], {
         encoding: 'utf8',
         stdio: 'pipe',
         env: {
@@ -33,34 +31,45 @@ describe('npm release contract', () => {
           GITHUB_REF_TYPE: 'tag',
           GITHUB_REF_NAME: `v${version}`,
         },
-      },
-      )
+      })
       expect(readFileSync(output, 'utf8')).toContain(`dist-tag=${distTag}\n`)
       expect(readFileSync(output, 'utf8')).toContain(`tarball=zaimokuza-dsh-acp-adapter-${version}.tgz`)
-    } finally { rmSync(directory, { recursive: true, force: true }) }
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
   })
 
   it('still blocks local source dependencies from publishing', () => {
     const directory = mkdtempSync(join(tmpdir(), 'dsh-acp-source-release-'))
     try {
       mkdirSync(join(directory, 'scripts'))
-      for (const file of ['verify-release.ts', 'dsh-target.ts']) cpSync(new URL(`scripts/${file}`, root), join(directory, 'scripts', file))
-      writeFileSync(join(directory, 'package.json'), JSON.stringify({ ...pkg, devDependencies: { ...pkg.devDependencies, '@deepseek-ai/dsh-llm': 'link:../source' } }))
-      expect(() => execFileSync(process.execPath, [join(directory, 'scripts/verify-release.ts'), `v${pkg.version}`], {
-        stdio: 'pipe', env: { ...process.env, GITHUB_REF_TYPE: 'tag' },
-      })).toThrow('has not passed the published-package lane')
-    } finally { rmSync(directory, { recursive: true, force: true }) }
+      for (const file of ['verify-release.ts', 'dsh-target.ts'])
+        cpSync(new URL(`scripts/${file}`, root), join(directory, 'scripts', file))
+      writeFileSync(
+        join(directory, 'package.json'),
+        JSON.stringify({
+          ...pkg,
+          devDependencies: { ...pkg.devDependencies, '@deepseek-ai/dsh-llm': 'link:../source' },
+        }),
+      )
+      expect(() =>
+        execFileSync(process.execPath, [join(directory, 'scripts/verify-release.ts'), `v${pkg.version}`], {
+          stdio: 'pipe',
+          env: { ...process.env, GITHUB_REF_TYPE: 'tag' },
+        }),
+      ).toThrow('has not passed the published-package lane')
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
   })
 
   it('rejects a branch ref even when its name resembles the expected tag', () => {
-    expect(() => execFileSync(
-      process.execPath,
-      [verifyRelease],
-      {
+    expect(() =>
+      execFileSync(process.execPath, [verifyRelease], {
         stdio: 'pipe',
         env: { ...process.env, GITHUB_REF_TYPE: 'branch', GITHUB_REF_NAME: `v${pkg.version}` },
-      },
-    )).toThrow()
+      }),
+    ).toThrow()
   })
 
   it('uses OIDC and never wires a long-lived npm token into the workflow', () => {
@@ -81,7 +90,9 @@ describe('npm release contract', () => {
     expect(workflow).not.toContain('if: ${{ false }}')
     expect(workflow).not.toContain('alpha-release-block')
     expect(workflow).toContain('pnpm install --frozen-lockfile')
-    expect(workflow.indexOf('node scripts/verify-release.ts')).toBeLessThan(workflow.indexOf('pnpm install --frozen-lockfile'))
+    expect(workflow.indexOf('node scripts/verify-release.ts')).toBeLessThan(
+      workflow.indexOf('pnpm install --frozen-lockfile'),
+    )
   })
 
   it('runs validation through prepack once and gates the same tarball before publishing', () => {
@@ -92,7 +103,9 @@ describe('npm release contract', () => {
     expect(workflow).toContain('npm pack --pack-destination dist/npm')
     expect(workflow).not.toMatch(/--ignore-scripts|pnpm (?:typecheck|test|build)/)
     expect(workflow).toContain('node scripts/install-gate.ts --tgz "dist/npm/${{ steps.release.outputs.tarball }}"')
-    expect(workflow.indexOf('npm pack --pack-destination')).toBeLessThan(workflow.indexOf('node scripts/install-gate.ts'))
+    expect(workflow.indexOf('npm pack --pack-destination')).toBeLessThan(
+      workflow.indexOf('node scripts/install-gate.ts'),
+    )
     expect(workflow).toContain('needs: pack')
   })
 
@@ -106,7 +119,9 @@ describe('npm release contract', () => {
   it('freezes optional Registry inputs before packing and keeps issue reporting outside the publish dependency', () => {
     const workflow = readFileSync(new URL('.github/workflows/publish.yml', root), 'utf8')
     expect(workflow).toContain('node scripts/sync-release-registry.ts --reuse')
-    expect(workflow.indexOf('node scripts/sync-release-registry.ts')).toBeLessThan(workflow.indexOf('npm pack --pack-destination'))
+    expect(workflow.indexOf('node scripts/sync-release-registry.ts')).toBeLessThan(
+      workflow.indexOf('npm pack --pack-destination'),
+    )
     expect(workflow).toContain("item.name === 'release-registry-snapshot'")
     expect(workflow).toContain("if: steps.registry-checkpoint.outputs.result == 'true'")
     const notification = workflow.split('  registry-notification:')[1]!.split('  publish:')[0]!

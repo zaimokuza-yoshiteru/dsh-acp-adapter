@@ -7,11 +7,12 @@ import type { OwnsAcpRoute } from '../coordinator/cross-backend-coordinator.ts'
 import type { AcpLocaleKey } from './locales.ts'
 import css from './AcpRecoveryDock.module.css'
 
-type RecoveryDockProps = PropsRuntime<'conversation.input.dock'> & PropsLocale<'acpActivity'> & {
-  readonly remote: AcpRemoteLike
-  readonly createNewSession: (sourceSessionId: string) => Promise<void>
-  readonly ownsRoute: OwnsAcpRoute
-}
+type RecoveryDockProps = PropsRuntime<'conversation.input.dock'> &
+  PropsLocale<'acpActivity'> & {
+    readonly remote: AcpRemoteLike
+    readonly createNewSession: (sourceSessionId: string) => Promise<void>
+    readonly ownsRoute: OwnsAcpRoute
+  }
 
 type Translate = (key: AcpLocaleKey, params?: Record<string, unknown>) => string
 type Selection = { readonly provider?: unknown } | null | undefined
@@ -40,8 +41,18 @@ export function recoveryText(t: Translate, recovery: AcpRecoveryView): string {
   return t(key[recovery.kind])
 }
 
-export function AcpRecoveryDock({ sessionId, useSession, useProjection, t, remote, createNewSession, ownsRoute }: RecoveryDockProps): ReactNode {
-  const lifecycleKey = useSession((snapshot) => [snapshot.openState, snapshot.running, snapshot.promptAttempted, snapshot.lastAgentError ?? ''].join('|'))
+export function AcpRecoveryDock({
+  sessionId,
+  useSession,
+  useProjection,
+  t,
+  remote,
+  createNewSession,
+  ownsRoute,
+}: RecoveryDockProps): ReactNode {
+  const lifecycleKey = useSession((snapshot) =>
+    [snapshot.openState, snapshot.running, snapshot.promptAttempted, snapshot.lastAgentError ?? ''].join('|'),
+  )
   const projection = useProjection('modelSelection')
   const [recovery, setRecovery] = useState<AcpRecoveryView | null>(null)
   const [open, setOpen] = useState(false)
@@ -61,22 +72,38 @@ export function AcpRecoveryDock({ sessionId, useSession, useProjection, t, remot
     setError(false)
     setUnavailable(false)
     setRecovery(null)
-    if (!projectionIsAcp(projection, ownsRoute)) return () => { cancelled = true }
-    void remote.recoverySnapshot(sessionId).then((result) => {
-      if (cancelled) return
-      setUnavailable(!result.ok)
-      if (result.ok) setRecovery(result.value.kind === 'healthy' ? null : result.value)
-    }).catch(() => {
-      if (!cancelled) setUnavailable(true)
-    })
-    return () => { cancelled = true; ++epoch.current }
+    if (!projectionIsAcp(projection, ownsRoute))
+      return () => {
+        cancelled = true
+      }
+    void remote
+      .recoverySnapshot(sessionId)
+      .then((result) => {
+        if (cancelled) return
+        setUnavailable(!result.ok)
+        if (result.ok) setRecovery(result.value.kind === 'healthy' ? null : result.value)
+      })
+      .catch(() => {
+        if (!cancelled) setUnavailable(true)
+      })
+    return () => {
+      cancelled = true
+      ++epoch.current
+    }
   }, [lifecycleKey, ownsRoute, projection, remote, sessionId, retry])
 
   if (!projectionIsAcp(projection, ownsRoute)) return null
-  if (unavailable) return h('div', { className: css.dock, role: 'status' },
-    h('div', { className: css.summary },
-      h('span', { className: css.summaryText }, t('recoveryUnavailable')),
-      h(Button, { variant: 'outline', onClick: () => setRetry(value => value + 1) }, t('activity.detailRetry'))))
+  if (unavailable)
+    return h(
+      'div',
+      { className: css.dock, role: 'status' },
+      h(
+        'div',
+        { className: css.summary },
+        h('span', { className: css.summaryText }, t('recoveryUnavailable')),
+        h(Button, { variant: 'outline', onClick: () => setRetry((value) => value + 1) }, t('activity.detailRetry')),
+      ),
+    )
   if (recovery === null) return null
 
   const run = async (action: () => Promise<unknown>): Promise<void> => {
@@ -100,30 +127,80 @@ export function AcpRecoveryDock({ sessionId, useSession, useProjection, t, remot
   }
 
   const detail = recovery.detail ?? recovery.cause ?? ''
-  return h('div', { className: css.dock, role: 'status' },
-    h('div', { className: css.summary },
+  return h(
+    'div',
+    { className: css.dock, role: 'status' },
+    h(
+      'div',
+      { className: css.summary },
       h('span', { className: css.summaryText }, recoveryText(t, recovery)),
-      h(Button, { variant: 'outline', disabled: busy, onClick: () => { setOpen(true) } }, t('recoveryDetails')),
-    ),
-    h(Modal, {
-      open,
-      onClose: () => { if (!busy) setOpen(false) },
-      title: t('recoveryTitle'),
-      description: t('recoveryChoiceHelp'),
-      closeLabel: t('recoveryClose'),
-      ...(css.details === undefined ? {} : { contentClassName: css.details }),
-      footer: h('div', { className: css.actions },
-        h(Button, { variant: 'outline', disabled: busy, onClick: () => { void run(async () => {
-          const result = await remote.retryOriginal(sessionId)
-          if (!result.ok) throw new Error(result.error.message)
-        }) } }, busy ? t('recoveryBusy') : t('recoveryReconnect')),
-        h(Button, { variant: 'outline', disabled: busy, onClick: () => { void run(async () => {
-          const result = await remote.rebindRecoveryBlank(sessionId)
-          if (!result.ok) throw new Error(result.error.message)
-        }) } }, t('recoveryRebind')),
-        h(Button, { variant: 'primary', disabled: busy, onClick: () => { void run(() => createNewSession(sessionId)) } }, t('recoveryNew')),
+      h(
+        Button,
+        {
+          variant: 'outline',
+          disabled: busy,
+          onClick: () => {
+            setOpen(true)
+          },
+        },
+        t('recoveryDetails'),
       ),
-    },
+    ),
+    h(
+      Modal,
+      {
+        open,
+        onClose: () => {
+          if (!busy) setOpen(false)
+        },
+        title: t('recoveryTitle'),
+        description: t('recoveryChoiceHelp'),
+        closeLabel: t('recoveryClose'),
+        ...(css.details === undefined ? {} : { contentClassName: css.details }),
+        footer: h(
+          'div',
+          { className: css.actions },
+          h(
+            Button,
+            {
+              variant: 'outline',
+              disabled: busy,
+              onClick: () => {
+                void run(async () => {
+                  const result = await remote.retryOriginal(sessionId)
+                  if (!result.ok) throw new Error(result.error.message)
+                })
+              },
+            },
+            busy ? t('recoveryBusy') : t('recoveryReconnect'),
+          ),
+          h(
+            Button,
+            {
+              variant: 'outline',
+              disabled: busy,
+              onClick: () => {
+                void run(async () => {
+                  const result = await remote.rebindRecoveryBlank(sessionId)
+                  if (!result.ok) throw new Error(result.error.message)
+                })
+              },
+            },
+            t('recoveryRebind'),
+          ),
+          h(
+            Button,
+            {
+              variant: 'primary',
+              disabled: busy,
+              onClick: () => {
+                void run(() => createNewSession(sessionId))
+              },
+            },
+            t('recoveryNew'),
+          ),
+        ),
+      },
       h('p', null, recoveryText(t, recovery)),
       h('p', null, t('recoveryHistoryPreserved')),
       h('p', null, `${t('recoveryIssueCode')}: ${recovery.kind}`),

@@ -4,12 +4,31 @@ import { AcpToolCallReducer, acpToolProvenanceId } from '../../../src/host/compo
 describe('ACP tool-call reducer', () => {
   it('merges sparse updates into one current snapshot', () => {
     const reducer = new AcpToolCallReducer('turn-1')
-    expect(reducer.apply({ callId: '7', title: 'Read', name: 'read_file', kind: 'read', rawInput: { path: '/tmp/a' }, locations: [{ path: '/tmp/a' }], content: [{ type: 'terminal' }], status: 'in_progress' }).status).toBe('running')
+    expect(
+      reducer.apply({
+        callId: '7',
+        title: 'Read',
+        name: 'read_file',
+        kind: 'read',
+        rawInput: { path: '/tmp/a' },
+        locations: [{ path: '/tmp/a' }],
+        content: [{ type: 'terminal' }],
+        status: 'in_progress',
+      }).status,
+    ).toBe('running')
     reducer.apply({ callId: '7', name: null, rawOutput: { bytes: 4 }, status: 'completed' })
     const settled = reducer.apply({ callId: '7', status: 'completed' })
     expect(settled).toMatchObject({
-      callId: '7', provenanceId: acpToolProvenanceId('turn-1', '7'), title: 'Read', name: 'read_file', kind: 'read',
-      rawInput: { path: '/tmp/a' }, rawOutput: { bytes: 4 }, locations: [{ path: '/tmp/a' }], content: [{ type: 'terminal' }], status: 'completed',
+      callId: '7',
+      provenanceId: acpToolProvenanceId('turn-1', '7'),
+      title: 'Read',
+      name: 'read_file',
+      kind: 'read',
+      rawInput: { path: '/tmp/a' },
+      rawOutput: { bytes: 4 },
+      locations: [{ path: '/tmp/a' }],
+      content: [{ type: 'terminal' }],
+      status: 'completed',
     })
   })
 
@@ -23,7 +42,11 @@ describe('ACP tool-call reducer', () => {
     const reducer = new AcpToolCallReducer('turn-crash')
     reducer.apply({ callId: 'x', name: 'Terminal', content: [{ type: 'terminal' }], status: 'running' })
     reducer.apply({ callId: 'x', status })
-    expect(reducer.apply({ callId: 'x', status })).toMatchObject({ name: 'Terminal', content: [{ type: 'terminal' }], status })
+    expect(reducer.apply({ callId: 'x', status })).toMatchObject({
+      name: 'Terminal',
+      content: [{ type: 'terminal' }],
+      status,
+    })
   })
 
   it('keeps provenance stable and isolates equal call ids across turns', () => {

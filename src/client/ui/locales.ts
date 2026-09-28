@@ -89,7 +89,8 @@ const zh = {
   teamApprovalOpenFailed: '无法打开成员会话，请从原生团队面板重试。',
   agentConfiguration: 'Agent 配置',
   toolApprovalDefault: 'DSH 工具默认审批',
-  toolApprovalDefaultHelp: '新初始化的会话使用此默认值；不改写已有会话。自动批准 DSH 工具读取与写入，或使用原生审批逐项确认。不包括 Agent 自带工具和其他 MCP 服务。',
+  toolApprovalDefaultHelp:
+    '新初始化的会话使用此默认值；不改写已有会话。自动批准 DSH 工具读取与写入，或使用原生审批逐项确认。不包括 Agent 自带工具和其他 MCP 服务。',
   toolApprovalAuto: '自动批准',
   toolApprovalAsk: '逐项询问',
   toolApprovalSaveFailed: '无法保存默认审批设置，请重试。',
@@ -125,7 +126,8 @@ const zh = {
   actionSaveFailed: '保存失败，请重试。{reference}',
   actionDeleteFailed: '删除失败，请重试。{reference}',
   loginInstruction: '请先在终端完成登录：{hint}',
-  loginSetupInstruction: '如需登录，请在 Agent 所在主机的终端运行：{hint}。此处仅提供指引，不会执行命令或更改认证配置。',
+  loginSetupInstruction:
+    '如需登录，请在 Agent 所在主机的终端运行：{hint}。此处仅提供指引，不会执行命令或更改认证配置。',
   loginGenericInstruction: '登录和 API 配置由 Agent 自己管理；如需配置，请在 Agent 所在主机按其官方说明操作。',
   auditSummaryRestoreReused: '继续使用当前 Agent 连接',
   auditSummaryRestoreResumed: '已恢复 Agent 会话（resume）',
@@ -138,11 +140,13 @@ const zh = {
   catalogUnverified: '目录收录 · 未验证 · {count}',
   catalogVerificationScope: '验证针对适配能力，不覆盖每个版本或平台。',
   catalogInstallHint: '安装指引：{hint}',
-  catalogManualCommand: '请按 Agent 所在主机的平台安装二进制，并填写已安装的命令路径；浏览器平台不用于选择 Agent 程序。',
+  catalogManualCommand:
+    '请按 Agent 所在主机的平台安装二进制，并填写已安装的命令路径；浏览器平台不用于选择 Agent 程序。',
   edit: '编辑',
   remove: '删除',
   removeConfirm: '删除 agent「{name}」？其模型路由将一并移除。',
-  removeConfirmBound: '注意：{count} 个既有会话绑定在该 profile 上；删除后这些会话将显示 backend-unavailable，不会自动改用其他 agent。',
+  removeConfirmBound:
+    '注意：{count} 个既有会话绑定在该 profile 上；删除后这些会话将显示 backend-unavailable，不会自动改用其他 agent。',
   removing: '删除中…',
   cancel: '取消',
   save: '保存',
@@ -164,7 +168,8 @@ const zh = {
   fieldArgs: '启动参数',
   fieldArgsHint: '每行一个参数，空行忽略。',
   fieldEnv: '环境变量',
-  fieldEnvHint: '传给此 Agent 进程的配置，每行 KEY=VALUE。可设置 API 地址、密钥或配置目录，可能覆盖 Agent 原有设置；留空不添加覆盖。已保存的疑似密钥不回显。',
+  fieldEnvHint:
+    '传给此 Agent 进程的配置，每行 KEY=VALUE。可设置 API 地址、密钥或配置目录，可能覆盖 Agent 原有设置；留空不添加覆盖。已保存的疑似密钥不回显。',
   fieldEnvMasked: '已配置的密钥（值不回显）',
   envMaskedConfigured: '已配置',
   envMaskedRemove: '移除',
@@ -175,7 +180,8 @@ const zh = {
   errorCommandRequired: '可执行命令不能为空。',
   errorEnvKey: '第 {line} 行不是合法的 KEY=VALUE（键需为 shell 标识符）。',
   errorEnvDuplicate: '第 {line} 行的键与前面重复。',
-  errorRuntimeTaken: '内置 runtime「{runtime}」已被 agent「{name}」（ID：{id}）占用——每种内置 agent 只允许一个 profile，请直接编辑已有配置。',
+  errorRuntimeTaken:
+    '内置 runtime「{runtime}」已被 agent「{name}」（ID：{id}）占用——每种内置 agent 只允许一个 profile，请直接编辑已有配置。',
   openExisting: '打开已有配置',
   stateSavedUnverified: '未探测',
   stateReady: '协议可用',
@@ -194,7 +200,8 @@ const zh = {
   recoveryRebind: '放弃上下文并继续',
   recoveryNew: '新建会话',
   recoveryBusy: '处理中…',
-  recoveryChoiceHelp: '请选择如何继续：重试会保留原 Agent 上下文；放弃上下文会保留页面中的 DSH 历史，但 Agent 将从空白上下文开始；新建会话不会修改当前会话。',
+  recoveryChoiceHelp:
+    '请选择如何继续：重试会保留原 Agent 上下文；放弃上下文会保留页面中的 DSH 历史，但 Agent 将从空白上下文开始；新建会话不会修改当前会话。',
   recoveryHistoryPreserved: '无论选择哪一项，DSH 中已经显示的对话都不会被删除。',
   agentControlTitle: '会话',
   agentControlMode: '模式',
@@ -225,7 +232,8 @@ const zh = {
   auditSummaryWrite: '写入文件',
   auditStatusStopRequested: '已请求终止',
   auditStatusExitUnverified: '退出原因待确认',
-  auditLegacyExitExplanation: '此旧记录包含非零退出码或退出信号，但未记录是否主动终止；不能据此确定是操作取消还是进程故障。',
+  auditLegacyExitExplanation:
+    '此旧记录包含非零退出码或退出信号，但未记录是否主动终止；不能据此确定是操作取消还是进程故障。',
   auditAllowOnce: '已允许本次操作',
   auditAllowAlways: '已选择持续允许（范围由 Agent 定义）',
   auditRejectOnce: '已拒绝本次操作',
@@ -304,6 +312,7 @@ const zh = {
   auditForkOlderBoundary: '分叉点不是最新语义边界',
   auditForkCandidateUnavailable: '缺少可验证的分叉信息',
   'activity.unavailable': 'Agent 活动暂时不可用。',
+  'activity.retry': '重试',
   'activity.detailTooLarge': '内容过大，未显示完整详情；审计摘要不能用于比较完整文件。',
   'activity.detailInvalid': '完整详情已损坏，无法展示；审计摘要不能用于比较完整文件。',
   'activity.status.pending': '待处理',
@@ -343,7 +352,8 @@ const zh = {
   crossBackendWorking: '处理中…',
   crossBackendNoLocation: '找不到新会话的工作区或工作目录。',
   crossBackendFromTo: '将从 {source} 切换到 {target}。',
-  crossBackendExistingHistory: '当前会话已有对话历史，所选智能体需要新建 DSH 会话。',
+  crossBackendExistingHistory:
+    '当前对话已有历史，但没有记录可恢复的原模型。继续会在新 DSH 会话中运行智能体并保留原对话；取消后当前会话仍选中该智能体，若要继续原对话，请重新选择模型。',
 } as const
 
 /** Locale key union the section's `t` seat is typed against. */
@@ -380,7 +390,8 @@ const en: Record<AcpLocaleKey, string> = {
   teamResultFailed: 'Save failed; please retry',
   auditCopy: 'Copy selected record',
 
-  settingsWriteRefused: 'The configuration change was refused. Latest values have been reloaded; review them and retry.',
+  settingsWriteRefused:
+    'The configuration change was refused. Latest values have been reloaded; review them and retry.',
   teamManage: 'Manage members',
   teamBatchMode: 'Change modes together',
   teamInterruptAll: 'Interrupt all sessions',
@@ -420,7 +431,8 @@ const en: Record<AcpLocaleKey, string> = {
   teamBatchHint: 'Only the current {count} approvals, once each. Handle other requests individually.',
   teamAnswerFailed: '{count} requests could not be submitted. Review the remaining requests and retry.',
   teamPendingTitle: 'Members needing your attention · {count}',
-  teamPendingHint: 'Operations awaiting approval are paused. You can still talk to the lead; sending a message does not approve these requests.',
+  teamPendingHint:
+    'Operations awaiting approval are paused. You can still talk to the lead; sending a message does not approve these requests.',
   teamPendingCollapse: 'Collapse',
   teamPendingExpand: 'Expand',
   teamPendingApproval: 'Awaiting approval',
@@ -432,7 +444,8 @@ const en: Record<AcpLocaleKey, string> = {
   teamApprovalOpenFailed: 'Could not open the member session. Retry from the native Team panel.',
   agentConfiguration: 'Agent configuration',
   toolApprovalDefault: 'Default DSH tool approval',
-  toolApprovalDefaultHelp: 'Used by newly initialized sessions; existing sessions keep their policy. Auto approves DSH tool reads and writes. Ask uses native approval for each request. Agent tools and other MCP servers are excluded.',
+  toolApprovalDefaultHelp:
+    'Used by newly initialized sessions; existing sessions keep their policy. Auto approves DSH tool reads and writes. Ask uses native approval for each request. Agent tools and other MCP servers are excluded.',
   toolApprovalAuto: 'Auto approve',
   toolApprovalAsk: 'Ask each time',
   toolApprovalSaveFailed: 'Could not save the default approval setting. Please retry.',
@@ -446,46 +459,57 @@ const en: Record<AcpLocaleKey, string> = {
   toolApprovalChangeFailed: 'Could not save the DSH tool approval setting. Please retry.',
   interfacePreferences: 'Interface preferences',
   searchableModelPicker: 'Searchable model picker',
-  searchableModelPickerHint: 'Search by model name, ID, or provider when enabled; turn off to restore the native DSH selector.',
+  searchableModelPickerHint:
+    'Search by model name, ID, or provider when enabled; turn off to restore the native DSH selector.',
   searchableModelPickerSaveFailed: 'Could not save the model picker setting. Please retry.',
   settingsLoading: 'Loading settings…',
   settingsUnavailable: 'No settings service in this environment; the ACP panel is unavailable.',
-  settingsInvalid: 'The dsh-acp-adapter configuration is invalid. Fix the config file and retry; the panel refuses to edit an invalid document.',
+  settingsInvalid:
+    'The dsh-acp-adapter configuration is invalid. Fix the config file and retry; the panel refuses to edit an invalid document.',
   readOnly: 'The settings document is read-only; changes cannot be saved.',
-  healthUnreachable: 'The dsh-acp host endpoints are unreachable (the plugin host half may not be loaded): health data is unavailable, configuration editing is unaffected.',
+  healthUnreachable:
+    'The dsh-acp host endpoints are unreachable (the plugin host half may not be loaded): health data is unavailable, configuration editing is unaffected.',
   emptyAgents: 'No ACP agents configured yet.',
   addAgent: 'Add agent',
   addCustom: 'Add manually',
   refresh: 'Re-check',
   refreshing: 'Checking…',
   healthCheckTransportFailed: 'The check request failed. Try again.{reference}',
-  probeNotInstalled: 'Cannot start "{command}". Check that it is installed and that its executable and arguments are correct.{reference}',
+  probeNotInstalled:
+    'Cannot start "{command}". Check that it is installed and that its executable and arguments are correct.{reference}',
   probeAuthRequired: 'The Agent is not signed in. Complete login in your terminal, then re-check it.{reference}',
-  probeTimeout: 'The Agent did not complete the ACP handshake in time. Verify that the command starts correctly, then retry.{reference}',
+  probeTimeout:
+    'The Agent did not complete the ACP handshake in time. Verify that the command starts correctly, then retry.{reference}',
   probeCrash: 'The Agent exited during the ACP check. Inspect the Agent logs, then retry.{reference}',
   probeCancelled: 'The ACP check was cancelled.{reference}',
-  probeProtocolError: 'The Agent could not complete the ACP protocol exchange. Check the Agent version and launch configuration.{reference}',
+  probeProtocolError:
+    'The Agent could not complete the ACP protocol exchange. Check the Agent version and launch configuration.{reference}',
   actionSaveFailed: 'Saving failed. Try again.{reference}',
   actionDeleteFailed: 'Deleting failed. Try again.{reference}',
   loginInstruction: 'Complete login in your terminal first: {hint}',
-  loginSetupInstruction: 'If sign-in is needed, run this in a terminal on the Agent host: {hint}. This is guidance only; it does not run commands or change authentication settings.',
-  loginGenericInstruction: 'The Agent manages its own sign-in and API configuration. Follow its official instructions on the Agent host if setup is needed.',
+  loginSetupInstruction:
+    'If sign-in is needed, run this in a terminal on the Agent host: {hint}. This is guidance only; it does not run commands or change authentication settings.',
+  loginGenericInstruction:
+    'The Agent manages its own sign-in and API configuration. Follow its official instructions on the Agent host if setup is needed.',
   auditSummaryRestoreReused: 'Continued on the active Agent connection',
   auditSummaryRestoreResumed: 'Agent session resumed',
   auditSummaryRestoreLoaded: 'Agent session loaded; replay kept for diagnostics',
   'activity.detailLoading': 'Loading details…',
   'activity.detailLoadFailed': 'Could not load details. Your conversation is unaffected.',
   'activity.detailRetry': 'Retry',
-  catalogVersionDifferent: 'Agent version {actual} differs from catalog reference {reference}. This does not mean it is outdated and does not block use.',
+  catalogVersionDifferent:
+    'Agent version {actual} differs from catalog reference {reference}. This does not mean it is outdated and does not block use.',
   catalogVerified: 'Verified adapters · {count}',
   catalogUnverified: 'Catalog entries · Unverified · {count}',
   catalogVerificationScope: 'Adapter coverage does not certify every version or platform.',
   catalogInstallHint: 'Install: {hint}',
-  catalogManualCommand: 'Install the binary for the Agent host and enter its installed command path. The browser platform is not used to select the Agent executable.',
+  catalogManualCommand:
+    'Install the binary for the Agent host and enter its installed command path. The browser platform is not used to select the Agent executable.',
   edit: 'Edit',
   remove: 'Delete',
   removeConfirm: 'Delete agent "{name}"? Its model route is removed with it.',
-  removeConfirmBound: 'Note: {count} existing session(s) are bound to this profile; after deletion they will show backend-unavailable — they will not silently fall back to another agent.',
+  removeConfirmBound:
+    'Note: {count} existing session(s) are bound to this profile; after deletion they will show backend-unavailable — they will not silently fall back to another agent.',
   removing: 'Deleting…',
   cancel: 'Cancel',
   save: 'Save',
@@ -499,7 +523,8 @@ const en: Record<AcpLocaleKey, string> = {
   savedNotice: 'Saved.',
   deletedNotice: 'Deleted.',
   fieldId: 'ID',
-  fieldIdHint: 'Starts with a lowercase letter, may contain digits and dashes; becomes the model route acp-<id> and a health-endpoint path segment.',
+  fieldIdHint:
+    'Starts with a lowercase letter, may contain digits and dashes; becomes the model route acp-<id> and a health-endpoint path segment.',
   fieldName: 'Display name',
   fieldNameHint: 'Shown in the model picker as `<name> · ACP`.',
   fieldCommand: 'Executable',
@@ -507,7 +532,8 @@ const en: Record<AcpLocaleKey, string> = {
   fieldArgs: 'Arguments',
   fieldArgsHint: 'One argument per line; blank lines are ignored.',
   fieldEnv: 'Environment',
-  fieldEnvHint: 'Configuration passed to this Agent process, one KEY=VALUE per line. API endpoints, keys or configuration directories may override its existing settings; leave empty for no extra overrides. Saved secret-looking values are hidden.',
+  fieldEnvHint:
+    'Configuration passed to this Agent process, one KEY=VALUE per line. API endpoints, keys or configuration directories may override its existing settings; leave empty for no extra overrides. Saved secret-looking values are hidden.',
   fieldEnvMasked: 'Configured secrets (values never shown)',
   envMaskedConfigured: 'Configured',
   envMaskedRemove: 'Remove',
@@ -518,18 +544,22 @@ const en: Record<AcpLocaleKey, string> = {
   errorCommandRequired: 'Executable must not be empty.',
   errorEnvKey: 'Line {line} is not a valid KEY=VALUE entry (the key must be a shell identifier).',
   errorEnvDuplicate: 'Line {line} repeats an earlier key.',
-  errorRuntimeTaken: 'The built-in runtime "{runtime}" is already bound by agent "{name}" (ID: {id}) — each built-in agent allows exactly one profile; edit the existing configuration instead.',
+  errorRuntimeTaken:
+    'The built-in runtime "{runtime}" is already bound by agent "{name}" (ID: {id}) — each built-in agent allows exactly one profile; edit the existing configuration instead.',
   openExisting: 'Open existing configuration',
   stateSavedUnverified: 'not probed',
   stateReady: 'protocol available',
   'subagent.openRecord': 'Open read-only record',
-  incompatibleInstruction: 'ACP routes are disabled. Move DSH to a plugin-supported version and reload the plugin; native model sessions are unaffected.',
+  incompatibleInstruction:
+    'ACP routes are disabled. Move DSH to a plugin-supported version and reload the plugin; native model sessions are unaffected.',
   recoveryTitle: 'ACP session recovery required',
-  recoveryOutcomeUnknown: 'The previous Agent outcome is unknown. Reconnect or explicitly abandon the context before continuing.',
+  recoveryOutcomeUnknown:
+    'The previous Agent outcome is unknown. Reconnect or explicitly abandon the context before continuing.',
   recoveryReconnectRequired: 'The Agent session needs to be reconnected.',
   recoverySessionLost: 'The original Agent session is unavailable.',
   recoveryHistoryDamaged: 'Local ACP recovery data is damaged; execution is blocked.',
-  recoveryHistoryMismatch: 'The Agent history and the DSH history could not be proven to match. Sending is paused to protect both histories.',
+  recoveryHistoryMismatch:
+    'The Agent history and the DSH history could not be proven to match. Sending is paused to protect both histories.',
   recoveryGeneric: 'The ACP session requires recovery.',
   recoveryDetails: 'Resolve recovery issue',
   recoveryClose: 'Close',
@@ -537,7 +567,8 @@ const en: Record<AcpLocaleKey, string> = {
   recoveryRebind: 'Abandon context and continue',
   recoveryNew: 'New session',
   recoveryBusy: 'Working…',
-  recoveryChoiceHelp: 'Choose how to continue. Retry keeps the original Agent context; abandoning it keeps the visible DSH history but starts the Agent with no previous context; a new session leaves this session unchanged.',
+  recoveryChoiceHelp:
+    'Choose how to continue. Retry keeps the original Agent context; abandoning it keeps the visible DSH history but starts the Agent with no previous context; a new session leaves this session unchanged.',
   recoveryHistoryPreserved: 'The conversation already shown in DSH is not deleted by any of these choices.',
   agentControlTitle: 'Session',
   agentControlMode: 'Mode',
@@ -548,7 +579,7 @@ const en: Record<AcpLocaleKey, string> = {
   agentControlDefault: 'Default',
   agentControlUnavailable: 'Agent controls are unavailable',
   agentControlRetry: 'Click to reconnect Agent controls',
-  agentControlTooltip: "Configure modes and options for this Agent session.",
+  agentControlTooltip: 'Configure modes and options for this Agent session.',
   agentContextUsage: 'Context: {used} / {size} ({percent}%)',
   agentSessionCost: 'Agent-reported cumulative session cost: {amount} {currency}',
   agentStateStale: 'Last Agent report',
@@ -563,12 +594,14 @@ const en: Record<AcpLocaleKey, string> = {
   auditRecoveryUnavailable: 'Current recovery status could not be read. Refresh to retry.',
   auditRecoveryAction: 'Use the recovery notice beside the composer to choose the next step.',
   auditNoCause: 'No specific cause was recorded.',
-  auditReplayExplanation: 'This record does not distinguish connection reuse from restoration or compare external replay with DSH history. It does not indicate a restoration failure.',
+  auditReplayExplanation:
+    'This record does not distinguish connection reuse from restoration or compare external replay with DSH history. It does not indicate a restoration failure.',
   auditSummaryRead: 'Read file',
   auditSummaryWrite: 'Write file',
   auditStatusStopRequested: 'Termination requested',
   auditStatusExitUnverified: 'Exit cause unconfirmed',
-  auditLegacyExitExplanation: 'This older record has a nonzero exit code or exit signal but no termination intent. It cannot distinguish cancellation from a process failure.',
+  auditLegacyExitExplanation:
+    'This older record has a nonzero exit code or exit signal but no termination intent. It cannot distinguish cancellation from a process failure.',
   auditAllowOnce: 'Allowed this operation',
   auditAllowAlways: 'Persistent allow selected (scope defined by Agent)',
   auditRejectOnce: 'Rejected this operation',
@@ -647,8 +680,11 @@ const en: Record<AcpLocaleKey, string> = {
   auditForkOlderBoundary: 'Fork point is not the latest semantic boundary',
   auditForkCandidateUnavailable: 'Verifiable fork information unavailable',
   'activity.unavailable': 'Agent activity is temporarily unavailable.',
-  'activity.detailTooLarge': 'Content is too large to display in full. The audit summary cannot be used to compare complete files.',
-  'activity.detailInvalid': 'Complete details are corrupted and cannot be displayed. The audit summary cannot be used to compare complete files.',
+  'activity.retry': 'Retry',
+  'activity.detailTooLarge':
+    'Content is too large to display in full. The audit summary cannot be used to compare complete files.',
+  'activity.detailInvalid':
+    'Complete details are corrupted and cannot be displayed. The audit summary cannot be used to compare complete files.',
   'activity.status.pending': 'Pending',
   'activity.status.running': 'Running',
   'activity.status.completed': 'Completed',
@@ -677,7 +713,8 @@ const en: Record<AcpLocaleKey, string> = {
   'subagent.result': 'Final output',
   'subagent.summary': 'Agent-reported summary',
   'subagent.unavailable': 'This information is unavailable.',
-  'subagent.observedTiming': 'Catalog duration is the delegation wall time observed by DSH, not model or Agent-reported time.',
+  'subagent.observedTiming':
+    'Catalog duration is the delegation wall time observed by DSH, not model or Agent-reported time.',
   crossBackendTitle: 'New session required',
   crossBackendDescription: 'The current session will stay unchanged; the new backend will run in a new DSH session.',
   crossBackendHistory: 'The current DSH conversation will be kept unchanged.',
@@ -686,7 +723,8 @@ const en: Record<AcpLocaleKey, string> = {
   crossBackendWorking: 'Working…',
   crossBackendNoLocation: 'No workspace or working directory is available for the new session.',
   crossBackendFromTo: 'Switch from {source} to {target}.',
-  crossBackendExistingHistory: 'This session already has conversation history. The selected Agent requires a new DSH session.',
+  crossBackendExistingHistory:
+    'This session has conversation history but no recorded model to restore. Continuing runs the Agent in a new DSH session and keeps the original conversation. Cancel leaves this Agent selected in the current session; choose another model to continue that conversation.',
 }
 
 export { en, zh }

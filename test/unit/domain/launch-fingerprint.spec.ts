@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest'
 import baseline from '../../fixtures/launch-identity-before-descriptor-removal.json' with { type: 'json' }
 import type { AcpLaunchFingerprintInput } from '../../../src/domain/session/launch-fingerprint.ts'
 import type { AcpStubAgentConfig } from '../../../src/domain/session/agent-config.ts'
-import { acpLaunchEnvironment, acpLaunchFingerprint, acpLaunchFingerprintsCompatible, profileLaunchIdentityHash } from '../../../src/domain/session/launch-fingerprint.ts'
+import {
+  acpLaunchEnvironment,
+  acpLaunchFingerprint,
+  acpLaunchFingerprintsCompatible,
+  profileLaunchIdentityHash,
+} from '../../../src/domain/session/launch-fingerprint.ts'
 import { acpCanonicalHash16 } from '../../../src/persistence/sidecar.ts'
 
 const HOME = '/home/tester'
@@ -10,23 +15,29 @@ const HOME = '/home/tester'
 describe('acpLaunchEnvironment（Native-first）', () => {
   it('仅传递 profile 显式 env（父环境由 DSH scrubbed subprocess 提供）', async () => {
     const config: AcpStubAgentConfig = {
-      name: 'Custom', command: 'custom-acp', args: [],
+      name: 'Custom',
+      command: 'custom-acp',
+      args: [],
       env: { HTTPS_PROXY: 'http://profile-proxy', PROFILE_ONLY: 'yes' },
     }
-    await expect(acpLaunchEnvironment({
-      config,
-    })).resolves.toEqual({
+    await expect(
+      acpLaunchEnvironment({
+        config,
+      }),
+    ).resolves.toEqual({
       HTTPS_PROXY: 'http://profile-proxy',
       PROFILE_ONLY: 'yes',
     })
   })
-
 })
 
 function baseConfig(): AcpStubAgentConfig {
   return {
-    name: 'Codex', command: 'codex-acp', args: [],
-    env: { ZED_LIKE: '1', ALPHA: '2' }, runtime: 'codex',
+    name: 'Codex',
+    command: 'codex-acp',
+    args: [],
+    env: { ZED_LIKE: '1', ALPHA: '2' },
+    runtime: 'codex',
   }
 }
 
@@ -42,17 +53,28 @@ describe('acpLaunchFingerprint（Native 会话连续性）', () => {
   it('相同输入恒等，profile、runtime 或显式配置变化会改变指纹', () => {
     const base = acpLaunchFingerprint(baseInput())
     expect(acpLaunchFingerprint(baseInput())).toEqual(base)
-    expect(acpCanonicalHash16(acpLaunchFingerprint({ ...baseInput(), profileId: 'codex-alt' }))).not.toBe(acpCanonicalHash16(base))
-    expect(acpCanonicalHash16(acpLaunchFingerprint({ ...baseInput(), config: { ...baseConfig(), runtime: 'kimi' } }))).not.toBe(acpCanonicalHash16(base))
+    expect(acpCanonicalHash16(acpLaunchFingerprint({ ...baseInput(), profileId: 'codex-alt' }))).not.toBe(
+      acpCanonicalHash16(base),
+    )
+    expect(
+      acpCanonicalHash16(acpLaunchFingerprint({ ...baseInput(), config: { ...baseConfig(), runtime: 'kimi' } })),
+    ).not.toBe(acpCanonicalHash16(base))
     expect(base.envKeys).toEqual(['ALPHA', 'ZED_LIKE'])
     expect(JSON.stringify(base)).not.toContain('"1"')
   })
 
   it('不接管 Agent 凭证引用；executable override 只记录存在性', () => {
     const secret = 'sk-test-SECRET-value-never-persisted'
-    const config: AcpStubAgentConfig = { name: 'Claude', command: 'claude-agent-acp', args: [], env: {}, runtime: 'claude' }
+    const config: AcpStubAgentConfig = {
+      name: 'Claude',
+      command: 'claude-agent-acp',
+      args: [],
+      env: {},
+      runtime: 'claude',
+    }
     const withValues = acpLaunchFingerprint({
-      profileId: 'claude', config,
+      profileId: 'claude',
+      config,
       env: { ANTHROPIC_API_KEY: secret, CLAUDE_CODE_EXECUTABLE: '/opt/claude/bin/claude' },
     })
     expect(withValues.envRefs).toBeNull()
@@ -68,12 +90,14 @@ describe('acpLaunchFingerprint（Native 会话连续性）', () => {
       ...baseInput(),
       env: { HOME, CODEX_HOME: '/home/tester/.codex-a', XDG_STATE_HOME: '/state-a' },
     })
-    expect(first.nativeStateEnv).toEqual(expect.arrayContaining([
-      { key: 'HOME', present: true, hash16: expect.stringMatching(/^[0-9a-f]{16}$/) },
-      { key: 'CODEX_HOME', present: true, hash16: expect.stringMatching(/^[0-9a-f]{16}$/) },
-      { key: 'XDG_STATE_HOME', present: true, hash16: expect.stringMatching(/^[0-9a-f]{16}$/) },
-      { key: 'KIMI_CODE_HOME', present: false },
-    ]))
+    expect(first.nativeStateEnv).toEqual(
+      expect.arrayContaining([
+        { key: 'HOME', present: true, hash16: expect.stringMatching(/^[0-9a-f]{16}$/) },
+        { key: 'CODEX_HOME', present: true, hash16: expect.stringMatching(/^[0-9a-f]{16}$/) },
+        { key: 'XDG_STATE_HOME', present: true, hash16: expect.stringMatching(/^[0-9a-f]{16}$/) },
+        { key: 'KIMI_CODE_HOME', present: false },
+      ]),
+    )
     expect(JSON.stringify(first)).not.toContain('/home/tester/.codex-a')
     const moved = acpLaunchFingerprint({
       ...baseInput(),
@@ -89,27 +113,43 @@ describe('acpLaunchFingerprint（Native 会话连续性）', () => {
       env: {},
     })
     expect(fp).toMatchObject({
-      profileId: 'plain', descriptorId: null, adapterVersion: null,
-      wrappedCliVersion: null, envRefs: null, executableOverride: null,
+      profileId: 'plain',
+      descriptorId: null,
+      adapterVersion: null,
+      wrappedCliVersion: null,
+      envRefs: null,
+      executableOverride: null,
     })
     expect(acpCanonicalHash16(fp)).not.toBe(acpCanonicalHash16({ command: 'plain-acp', args: ['--x'], envKeys: [] }))
   })
 })
 
-
 describe('effective launch environment identity', () => {
-  it.each(['HOME', 'CODEX_HOME', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME', 'XDG_DATA_HOME'])('tracks inherited %s in both fingerprints', key => {
-    const config = baseConfig()
-    const first = { [key]: '/first' }, second = { [key]: '/second' }
-    const fingerprint = (env: Record<string, string>) => acpLaunchFingerprint({ ...baseInput(), config, env })
-    expect(fingerprint(first)).not.toEqual(fingerprint(second))
-    expect(profileLaunchIdentityHash('codex', config, first)).not.toBe(profileLaunchIdentityHash('codex', config, second))
-  })
+  it.each(['HOME', 'CODEX_HOME', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME', 'XDG_DATA_HOME'])(
+    'tracks inherited %s in both fingerprints',
+    (key) => {
+      const config = baseConfig()
+      const first = { [key]: '/first' },
+        second = { [key]: '/second' }
+      const fingerprint = (env: Record<string, string>) => acpLaunchFingerprint({ ...baseInput(), config, env })
+      expect(fingerprint(first)).not.toEqual(fingerprint(second))
+      expect(profileLaunchIdentityHash('codex', config, first)).not.toBe(
+        profileLaunchIdentityHash('codex', config, second),
+      )
+    },
+  )
 
   it('uses explicit state and executable overrides consistently, without forwarding parent secrets', async () => {
-    const config: AcpStubAgentConfig = { name: 'Claude', command: 'claude-agent-acp', args: [], runtime: 'claude', env: { HOME: '/fixed', CLAUDE_CODE_EXECUTABLE: '/fixed/claude' } }
+    const config: AcpStubAgentConfig = {
+      name: 'Claude',
+      command: 'claude-agent-acp',
+      args: [],
+      runtime: 'claude',
+      env: { HOME: '/fixed', CLAUDE_CODE_EXECUTABLE: '/fixed/claude' },
+    }
     const input = { profileId: 'claude', config }
-    const first = { HOME: '/old', TOKEN: 'secret' }, second = { HOME: '/new' }
+    const first = { HOME: '/old', TOKEN: 'secret' },
+      second = { HOME: '/new' }
     expect(acpLaunchFingerprint({ ...input, env: first })).toEqual(acpLaunchFingerprint({ ...input, env: second }))
     expect(profileLaunchIdentityHash('claude', config, first)).toBe(profileLaunchIdentityHash('claude', config, second))
     expect(acpLaunchFingerprint({ ...input, env: {} }).executableOverride?.present).toBe(true)
@@ -124,10 +164,16 @@ describe('registry reference upgrade continuity', () => {
     expect(acpCanonicalHash16(old)).not.toBe(acpCanonicalHash16(current))
     expect(acpLaunchFingerprintsCompatible(old, current)).toBe(true)
     for (const changed of [
-      { command: 'other' }, { args: ['--other'] }, { profileId: 'renamed' },
-      { descriptorId: 'claude' }, { explicitEnv: [] }, { nativeStateEnv: [] },
-      { envRefs: [{ key: 'KEY', present: true }] }, { executableOverride: { name: 'OVERRIDE', present: true } },
-    ]) expect(acpLaunchFingerprintsCompatible(old, { ...current, ...changed }), JSON.stringify(changed)).toBe(false)
+      { command: 'other' },
+      { args: ['--other'] },
+      { profileId: 'renamed' },
+      { descriptorId: 'claude' },
+      { explicitEnv: [] },
+      { nativeStateEnv: [] },
+      { envRefs: [{ key: 'KEY', present: true }] },
+      { executableOverride: { name: 'OVERRIDE', present: true } },
+    ])
+      expect(acpLaunchFingerprintsCompatible(old, { ...current, ...changed }), JSON.stringify(changed)).toBe(false)
     const { nativeStateEnv: _, ...incomplete } = current
     expect(acpLaunchFingerprintsCompatible(incomplete, current)).toBe(false)
     expect(old.adapterVersion).toBe('1.6.2')
@@ -137,7 +183,10 @@ describe('registry reference upgrade continuity', () => {
 // Captured from the pre-refactor implementation, with an explicit environment.
 // Checks the whole persisted identity, not just the new runtime lookup.
 describe('persisted identity across descriptor removal', () => {
-  it.each(baseline)('preserves the previous fingerprint for $input.profileId / $input.config.name', ({ input, expectedHash }) => {
-    expect(acpCanonicalHash16(acpLaunchFingerprint(input as AcpLaunchFingerprintInput))).toBe(expectedHash)
-  })
+  it.each(baseline)(
+    'preserves the previous fingerprint for $input.profileId / $input.config.name',
+    ({ input, expectedHash }) => {
+      expect(acpCanonicalHash16(acpLaunchFingerprint(input as AcpLaunchFingerprintInput))).toBe(expectedHash)
+    },
+  )
 })

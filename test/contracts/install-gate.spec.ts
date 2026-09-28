@@ -26,8 +26,12 @@ describe('DSH clean-install gate contracts', () => {
       '- id: dsh-acp-adapter\n  name: @zaimokuza/dsh-acp-adapter',
     ].join('\n')
     expect(() => assertComposedDump(dump)).not.toThrow()
-    expect(() => assertComposedDump(dump.replace('id: agent-loop', 'id: agent-loop\n  disabled: true'))).toThrow(/stock agent-loop row is disabled/)
-    expect(() => assertComposedDump(dump.replace('id: dsh-acp-adapter', 'id: other'))).toThrow(/additive dsh-acp-adapter row/)
+    expect(() => assertComposedDump(dump.replace('id: agent-loop', 'id: agent-loop\n  disabled: true'))).toThrow(
+      /stock agent-loop row is disabled/,
+    )
+    expect(() => assertComposedDump(dump.replace('id: dsh-acp-adapter', 'id: other'))).toThrow(
+      /additive dsh-acp-adapter row/,
+    )
   })
 
   it('rejects legacy and development files from a published tarball', () => {
@@ -38,7 +42,11 @@ describe('DSH clean-install gate contracts', () => {
   })
 
   it('catches a missing relative host runtime module in the tarball', () => {
-    const files = ['lib/index.js', 'lib/host/composition/index.js', 'lib/host/composition/installed-profile-registry.js']
+    const files = [
+      'lib/index.js',
+      'lib/host/composition/index.js',
+      'lib/host/composition/installed-profile-registry.js',
+    ]
     const source = new Map([
       ['lib/index.js', 'export * from "./host/composition/index.js"'],
       ['lib/host/composition/index.js', 'import "./installed-profile-registry.js"'],
@@ -51,17 +59,23 @@ describe('DSH clean-install gate contracts', () => {
         resolved: 'lib/contract/config-options.js',
       },
     ])
-    expect(findMissingRelativeRuntimeImports([...files, 'lib/contract/config-options.js'], (file) => source.get(file) ?? '')).toEqual([])
+    expect(
+      findMissingRelativeRuntimeImports([...files, 'lib/contract/config-options.js'], (file) => source.get(file) ?? ''),
+    ).toEqual([])
   })
 
   it('extracts the authenticated loopback URL without accepting an unauthenticated URL', () => {
-    expect(parseAuthenticatedStartupUrl('starting\ndsh web: http://127.0.0.1:3199/?token=launch-secret\n')).toBe('http://127.0.0.1:3199/?token=launch-secret')
+    expect(parseAuthenticatedStartupUrl('starting\ndsh web: http://127.0.0.1:3199/?token=launch-secret\n')).toBe(
+      'http://127.0.0.1:3199/?token=launch-secret',
+    )
     expect(parseAuthenticatedStartupUrl('dsh web: http://127.0.0.1:3199/')).toBeUndefined()
     expect(parseAuthenticatedStartupUrl('dsh web: https://example.test/?token=secret')).toBeUndefined()
   })
 
   it('redacts bootstrap tokens and cookie-like credentials from diagnostics', () => {
-    const safe = redactGateOutput('dsh web: http://127.0.0.1:3199/?token=launch-secret\nCookie: dsh-session=session-secret\nBearer bearer-secret')
+    const safe = redactGateOutput(
+      'dsh web: http://127.0.0.1:3199/?token=launch-secret\nCookie: dsh-session=session-secret\nBearer bearer-secret',
+    )
     expect(safe).not.toContain('launch-secret')
     expect(safe).not.toContain('session-secret')
     expect(safe).not.toContain('bearer-secret')
@@ -77,14 +91,13 @@ describe('DSH clean-install gate contracts', () => {
     const fetchImpl = async (input: URL | RequestInfo | Request, _init?: RequestInit) => {
       const url = String(input)
       requests.push(url)
-      if (!parseAuthenticatedStartupUrl(outputs[Math.min(outputIndex - 1, outputs.length - 1)] ?? '')) fetchedBeforeUrl = true
+      if (!parseAuthenticatedStartupUrl(outputs[Math.min(outputIndex - 1, outputs.length - 1)] ?? ''))
+        fetchedBeforeUrl = true
       if (url.includes('?token=')) {
         return new Response(null, { status: 303, headers: { 'set-cookie': 'dsh-session=cookie-secret; Path=/' } })
       }
       rootAttempts += 1
-      return rootAttempts === 1
-        ? new Response(null, { status: 401 })
-        : new Response('<__DSH_BOOT__>', { status: 200 })
+      return rootAttempts === 1 ? new Response(null, { status: 401 }) : new Response('<__DSH_BOOT__>', { status: 200 })
     }
     const result = await waitForAuthenticatedBootstrap({
       readOutput: () => outputs[Math.min(outputIndex++, outputs.length - 1)] ?? '',

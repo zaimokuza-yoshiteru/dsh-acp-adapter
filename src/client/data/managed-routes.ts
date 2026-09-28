@@ -7,15 +7,19 @@ export class ManagedAcpRouteCatalog {
   private readonly durableRoutes: ReadonlySet<string>
   private readonly unsubscribe: () => void
 
-  constructor(private readonly scope: SettingsScopeLike, durableRoutes: Iterable<string> = []) {
+  constructor(
+    private readonly scope: SettingsScopeLike,
+    durableRoutes: Iterable<string> = [],
+  ) {
     this.durableRoutes = new Set(durableRoutes)
     this.routes = new Set(this.durableRoutes)
     this.refresh()
-    this.unsubscribe = scope.subscribe(() => { this.refresh() })
+    this.unsubscribe = scope.subscribe(() => {
+      this.refresh()
+    })
   }
 
-  owns = (provider: string | undefined): boolean =>
-    provider !== undefined && this.routes.has(provider)
+  owns = (provider: string | undefined): boolean => provider !== undefined && this.routes.has(provider)
 
   snapshot(): ReadonlySet<string> {
     return new Set(this.routes)
@@ -29,6 +33,6 @@ export class ManagedAcpRouteCatalog {
   private refresh(): void {
     const agents = this.scope.getSnapshot().value?.agents
     if (agents === undefined) return
-    this.routes = new Set([...this.durableRoutes, ...Object.keys(agents).map(id => `acp-${id}`)])
+    this.routes = new Set([...this.durableRoutes, ...Object.keys(agents).map((id) => `acp-${id}`)])
   }
 }

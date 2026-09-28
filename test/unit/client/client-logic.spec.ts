@@ -1,30 +1,7 @@
-// client-logic.spec.ts — 随附测试：设置面板 client 半纯逻辑（src/client/data/logic.ts）黑盒契约测试。
-//
-// 被测模块零 import（无 DOM/fetch/React），直接 vitest 可测。契约值交叉核对自宿主侧
-// src/host/composition/installed-profile-registry.ts（settings 形状与 DEVIN_ACP_TEMPLATE）、src/contract/remote.ts（dshAcp
-// Remote wire 形状）、src/protocol/v1/types.ts（AcpErrorKind 的 'auth_required'），此处以字面值
-// 钉死——client 半禁止 import host 模块，本测试同样只 import 被测模块。
-//
-// 覆盖：
-//   - 常量：命名空间 / id·env 键两类正则 / DEVIN_ACP_TEMPLATE 逐字段 / 健康与失败分类常量
-//   - parseArgsText/formatArgsText：逐行 trim、空行丢弃、行内空白保留、往返归一
-//   - parseEnvText/formatEnvText：KEY=VALUE 首个 '=' 切分、key trim + 标识符校验、
-// 重复 key、行号 1-based、往返； $credential: 形状值一律字面值（无引用分支）
-//   - validateAgentDraft：id 必填/模式/唯一（editingId 豁免）、name/command 必填、
-//     env 两分支错误映射（locale key + 行号 params）、多错并发、成功出 config；
-// 内置 runtime singleton 冲突（显式 runtime 与 id 回退同口径、点名已有
-//     profile、editingId 豁免、generic profile 不受影响）
-//   - decodeBoundSessions：boundSessions 应答严格解码（合法往返；畸形/错型整体拒绝）
-//   - 草稿种子：emptyDraft / draftFromTemplate / draftFromAgent（含 config 校验往返）
-//   - agents map 排序：sortedAgentIds
-//   - panelSettingsOf 四态投影（ready/unavailable/loading/invalid）
-// - decodeHealthResponse：三种 probe 分支逐字段、 state 五态词表强制、
-//     畸形 body/行/probe 整体拒绝（传染）
-// - healthRowOf（按 Agent ID 匹配健康数据）
-// - errorMessageOf（起旁路 HTTP 词汇 ACP_HEALTH_PATH/acpAuthenticatePath/
-//     parseHttpErrorMessage 已随 dshAcp Remote 迁移删除）
+// Client settings logic: draft parsing and validation, catalog identity,
+// panel settings, health response decoding, bound sessions, and error text.
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest'
 import {
   ACP_AGENT_ID_PATTERN,
   ACP_ENV_KEY_PATTERN,
@@ -49,9 +26,9 @@ import {
   type AcpAgentConfig,
   type AcpProviderHealth,
   type AgentDraft,
-} from '../../../src/client/data/logic.ts';
-import registrySnapshot from '../../../assets/registry/registry.json' with { type: 'json' };
-import { ACP_CATALOG_ENTRIES, catalogEntryOf } from '../../../src/client/data/catalog.ts';
+} from '../../../src/client/data/logic.ts'
+import registrySnapshot from '../../../assets/registry/registry.json' with { type: 'json' }
+import { ACP_CATALOG_ENTRIES, catalogEntryOf } from '../../../src/client/data/catalog.ts'
 
 // ---------- 夹具 ----------
 
@@ -61,14 +38,14 @@ const devinConfig: AcpAgentConfig = {
   args: ['acp'],
   env: {},
   loginHint: 'devin auth login',
-};
+}
 
 const fooConfig: AcpAgentConfig = {
   name: 'Foo Agent',
   command: 'foo-cli',
   args: ['serve', '--acp'],
   env: { FOO_HOME: '/opt/foo' },
-};
+}
 
 /** 九键齐备的能力事实夹具（okRow 与 decode 专项用例的缺键/错型变体共用）。 */
 function fullCaps() {
@@ -82,17 +59,23 @@ function fullCaps() {
     promptEmbeddedContext: true,
     mcpHttp: false,
     mcpSse: false,
-  };
+  }
 }
 
 /** 清理事实夹具（okRow 用；decode 专项另造三态变体）。 */
-const okCleanup = { close: 'not-advertised' as const, delete: 'done' as const, message: null };
+const okCleanup = { close: 'not-advertised' as const, delete: 'done' as const, message: null }
 
 /** 端到端能力矩阵夹具（okRow 与各 ok probe 字面量共用；两行覆盖 supported/unsupported + note）。 */
 const okMatrix = [
   { id: 'loadSession', advertised: true, adapterPath: 'resume-staging', hostSeam: null, status: 'supported' as const },
-  { id: 'promptImage', advertised: true, adapterPath: 'durable-attachment-to-inline-image', hostSeam: 'attachments', status: 'supported' as const },
-];
+  {
+    id: 'promptImage',
+    advertised: true,
+    adapterPath: 'durable-attachment-to-inline-image',
+    hostSeam: 'attachments',
+    status: 'supported' as const,
+  },
+]
 
 const okRow: AcpProviderHealth = {
   id: 'devin',
@@ -116,7 +99,7 @@ const okRow: AcpProviderHealth = {
     versionCompatibility: 'current',
     matrix: okMatrix,
   },
-};
+}
 
 const neverRow: AcpProviderHealth = {
   id: 'foo',
@@ -128,7 +111,7 @@ const neverRow: AcpProviderHealth = {
   version: null,
   state: 'saved-unverified',
   probe: { status: 'never', at: null },
-};
+}
 
 const authErrorRow: AcpProviderHealth = {
   id: 'bar',
@@ -139,8 +122,14 @@ const authErrorRow: AcpProviderHealth = {
   executable: true,
   version: null,
   state: 'auth-required',
-  probe: { status: 'error', at: 1_700_000_000_001, failureKind: 'auth_required', message: 'sign in first', phase: 'session' },
-};
+  probe: {
+    status: 'error',
+    at: 1_700_000_000_001,
+    failureKind: 'auth_required',
+    message: 'sign in first',
+    phase: 'session',
+  },
+}
 
 function validDraft(overrides: Partial<AgentDraft> = {}): AgentDraft {
   return {
@@ -151,38 +140,38 @@ function validDraft(overrides: Partial<AgentDraft> = {}): AgentDraft {
     envText: 'A=1',
     loginHint: 'devin auth login',
     ...overrides,
-  };
+  }
 }
 
 // ---------- 常量 ----------
 
 describe('常量：与宿主侧契约逐字对齐', () => {
   it('命名空间 / 失败分类', () => {
-    expect(ACP_SETTINGS_NS).toBe('dsh-acp-adapter');
-  });
+    expect(ACP_SETTINGS_NS).toBe('dsh-acp-adapter')
+  })
 
   it('ACP_AGENT_ID_PATTERN：小写字母开头 + 小写字母/数字/连字符', () => {
-    expect(ACP_AGENT_ID_PATTERN.source).toBe('^[a-z][a-z0-9-]*$');
+    expect(ACP_AGENT_ID_PATTERN.source).toBe('^[a-z][a-z0-9-]*$')
     for (const ok of ['a', 'devin', 'a1', 'a-b', 'z-9-x']) {
-      expect(ACP_AGENT_ID_PATTERN.test(ok), ok).toBe(true);
+      expect(ACP_AGENT_ID_PATTERN.test(ok), ok).toBe(true)
     }
     for (const bad of ['', 'A', 'Devin', '1a', '-a', 'a_b', 'a b', 'a.b', 'a/b']) {
-      expect(ACP_AGENT_ID_PATTERN.test(bad), bad).toBe(false);
+      expect(ACP_AGENT_ID_PATTERN.test(bad), bad).toBe(false)
     }
-  });
+  })
 
   it('ACP_ENV_KEY_PATTERN 是 POSIX 标识符字母表', () => {
-    expect(ACP_ENV_KEY_PATTERN.source).toBe('^[A-Za-z_][A-Za-z0-9_]*$');
+    expect(ACP_ENV_KEY_PATTERN.source).toBe('^[A-Za-z_][A-Za-z0-9_]*$')
     for (const ok of ['A', '_', '_1', 'DEEPSEEK_API_KEY', 'a9_Z']) {
-      expect(ACP_ENV_KEY_PATTERN.test(ok), ok).toBe(true);
+      expect(ACP_ENV_KEY_PATTERN.test(ok), ok).toBe(true)
     }
     for (const bad of ['', '1A', 'A-B', 'A B', 'A.B']) {
-      expect(ACP_ENV_KEY_PATTERN.test(bad), bad).toBe(false);
+      expect(ACP_ENV_KEY_PATTERN.test(bad), bad).toBe(false)
     }
-  });
+  })
 
- it('catalog installation defaults retain login guidance and explicit runtime binding', () => {
-    const devin = catalogEntryOf('devin');
+  it('catalog installation defaults retain login guidance and explicit runtime binding', () => {
+    const devin = catalogEntryOf('devin')
     expect(devin).toEqual({
       id: 'devin',
       name: 'Devin',
@@ -195,45 +184,71 @@ describe('常量：与宿主侧契约逐字对齐', () => {
       command: 'devin',
       args: ['acp'],
       runtime: 'devin',
-    });
-    expect(ACP_AGENT_ID_PATTERN.test(devin?.id ?? '')).toBe(true);
-    const draft = draftFromCatalogEntry('devin');
-    expect(draft).toBeDefined();
-    expect(validateAgentDraft(draft as AgentDraft, {}, undefined).config)
-      .toEqual({ ...devinConfig, runtime: 'devin', catalogId: 'devin' });
-  });
+    })
+    expect(ACP_AGENT_ID_PATTERN.test(devin?.id ?? '')).toBe(true)
+    const draft = draftFromCatalogEntry('devin')
+    expect(draft).toBeDefined()
+    expect(validateAgentDraft(draft as AgentDraft, {}, undefined).config).toEqual({
+      ...devinConfig,
+      runtime: 'devin',
+      catalogId: 'devin',
+    })
+  })
 
   it('ACP_CATALOG_ENTRIES 钉版：override 四条排前（devin/codex-acp/kimi/claude-acp），其余按 registry 顺序', () => {
-    expect(ACP_CATALOG_ENTRIES.slice(0, 4).map((entry) => entry.id)).toEqual(['devin', 'codex-acp', 'kimi', 'claude-acp']);
-    expect(new Set(ACP_CATALOG_ENTRIES.map(entry => entry.id))).toEqual(new Set(registrySnapshot.agents.map(agent => agent.id)));
+    expect(ACP_CATALOG_ENTRIES.slice(0, 4).map((entry) => entry.id)).toEqual([
+      'devin',
+      'codex-acp',
+      'kimi',
+      'claude-acp',
+    ])
+    expect(new Set(ACP_CATALOG_ENTRIES.map((entry) => entry.id))).toEqual(
+      new Set(registrySnapshot.agents.map((agent) => agent.id)),
+    )
     // 条目 id 即 profile id 预填值，均合法
     for (const entry of ACP_CATALOG_ENTRIES) {
-      expect(ACP_AGENT_ID_PATTERN.test(entry.id), entry.id).toBe(true);
-      const draft = draftFromCatalogEntry(entry.id);
-      expect(draft, entry.id).toBeDefined();
-      if (draft === undefined) continue;
+      expect(ACP_AGENT_ID_PATTERN.test(entry.id), entry.id).toBe(true)
+      const draft = draftFromCatalogEntry(entry.id)
+      expect(draft, entry.id).toBeDefined()
+      if (draft === undefined) continue
       if (entry.requiresCommand) {
-        expect(draft.command).toBe('');
-        expect(validateAgentDraft(draft, {}, undefined).config).toBeUndefined();
-        continue;
+        expect(draft.command).toBe('')
+        expect(validateAgentDraft(draft, {}, undefined).config).toBeUndefined()
+        continue
       }
-      const { config } = validateAgentDraft(draft, {}, undefined);
-      expect(config, entry.id).toBeDefined();
-      expect(config, entry.id).toMatchObject({ name: expect.any(String), command: expect.any(String) });
+      const { config } = validateAgentDraft(draft, {}, undefined)
+      expect(config, entry.id).toBeDefined()
+      expect(config, entry.id).toMatchObject({ name: expect.any(String), command: expect.any(String) })
     }
-  });
+  })
 
   it('seeds distribution args/env only for new profiles and leaves platform commands manual', () => {
-    expect(draftFromCatalogEntry('minion-code')?.argsText).toBe('acp');
-    expect(draftFromCatalogEntry('fast-agent')).toMatchObject({ argsText: '-x', envText: 'FAST_AGENT_MODEL=codexplan' });
-    expect(draftFromCatalogEntry('vtcode')).toMatchObject({ command: '', argsText: 'acp', envText: 'VT_ACP_ENABLED=1\nVT_ACP_ZED_ENABLED=1' });
-    expect(catalogEntryOf('poolside')).toMatchObject({ command: '', requiresCommand: true });
-    expect(catalogEntryOf('vtcode')?.installHint).toMatch(/^https:/);
-    const custom = { name: 'My fast agent', command: '/opt/my-agent', args: ['--custom'], env: { FAST_AGENT_MODEL: 'my-model' } };
-    const edited = draftFromAgent('fast-agent', custom);
-    expect(edited).toMatchObject({ command: '/opt/my-agent', argsText: '--custom', envText: 'FAST_AGENT_MODEL=my-model' });
-    expect(validateAgentDraft(edited, { 'fast-agent': custom }, 'fast-agent').config).toEqual({ ...custom, catalogId: 'fast-agent' });
-  });
+    expect(draftFromCatalogEntry('minion-code')?.argsText).toBe('acp')
+    expect(draftFromCatalogEntry('fast-agent')).toMatchObject({ argsText: '-x', envText: 'FAST_AGENT_MODEL=codexplan' })
+    expect(draftFromCatalogEntry('vtcode')).toMatchObject({
+      command: '',
+      argsText: 'acp',
+      envText: 'VT_ACP_ENABLED=1\nVT_ACP_ZED_ENABLED=1',
+    })
+    expect(catalogEntryOf('poolside')).toMatchObject({ command: '', requiresCommand: true })
+    expect(catalogEntryOf('vtcode')?.installHint).toMatch(/^https:/)
+    const custom = {
+      name: 'My fast agent',
+      command: '/opt/my-agent',
+      args: ['--custom'],
+      env: { FAST_AGENT_MODEL: 'my-model' },
+    }
+    const edited = draftFromAgent('fast-agent', custom)
+    expect(edited).toMatchObject({
+      command: '/opt/my-agent',
+      argsText: '--custom',
+      envText: 'FAST_AGENT_MODEL=my-model',
+    })
+    expect(validateAgentDraft(edited, { 'fast-agent': custom }, 'fast-agent').config).toEqual({
+      ...custom,
+      catalogId: 'fast-agent',
+    })
+  })
 
   it('claude-acp 条目逐字段钉版：runtime=claude、不假设推理提供方（无 env 预填面）', () => {
     expect(catalogEntryOf('claude-acp')).toMatchObject({
@@ -242,8 +257,8 @@ describe('常量：与宿主侧契约逐字对齐', () => {
       command: 'claude-agent-acp',
       args: [],
       runtime: 'claude',
-    });
-  });
+    })
+  })
 
   it('codex-acp 条目逐字段钉版（与 host 侧真源对齐）：runtime=codex', () => {
     expect(catalogEntryOf('codex-acp')).toMatchObject({
@@ -252,8 +267,8 @@ describe('常量：与宿主侧契约逐字对齐', () => {
       command: 'codex-acp',
       args: [],
       runtime: 'codex',
-    });
-  });
+    })
+  })
 
   it('kimi 条目逐字段钉版（与 host 侧真源对齐）：runtime=kimi、command 为 kimi CLI 的 acp 子命令', () => {
     expect(catalogEntryOf('kimi')).toMatchObject({
@@ -262,98 +277,98 @@ describe('常量：与宿主侧契约逐字对齐', () => {
       command: 'kimi',
       args: ['acp'],
       runtime: 'kimi',
-    });
-  });
+    })
+  })
 
   it('catalog 预填纪律钉：全部条目的 command/args 无 shell 元字符（spawn 姿态写入闸口径），不含疑似 secret 值', () => {
     // Catalog presets use bare PATH executable names; user-entered paths may contain spaces.
     // 纯 PATH 可执行名（无空白/管道/重定向/引号），绝不 npx -y 下载式形态。
-    const forbidden = /[\s|&;<>()$`"'\\]/;
+    const forbidden = /[\s|&;<>()$`"'\\]/
     for (const entry of ACP_CATALOG_ENTRIES) {
-      expect(forbidden.test(entry.command), `${entry.id}: ${entry.command}`).toBe(false);
-      expect(entry.command.startsWith('npx') || entry.command.startsWith('uvx'), entry.id).toBe(false);
-      expect(JSON.stringify(entry.args), entry.id).not.toContain('ANTHROPIC_AUTH_TOKEN');
-      expect(JSON.stringify(entry.args), entry.id).not.toContain('ANTHROPIC_API_KEY');
+      expect(forbidden.test(entry.command), `${entry.id}: ${entry.command}`).toBe(false)
+      expect(entry.command.startsWith('npx') || entry.command.startsWith('uvx'), entry.id).toBe(false)
+      expect(JSON.stringify(entry.args), entry.id).not.toContain('ANTHROPIC_AUTH_TOKEN')
+      expect(JSON.stringify(entry.args), entry.id).not.toContain('ANTHROPIC_API_KEY')
     }
-  });
-});
+  })
+})
 
 // ---------- args 文本 ----------
 
 describe('parseArgsText / formatArgsText', () => {
   it('逐行 trim、空行丢弃、行内空白保留', () => {
-    expect(parseArgsText('')).toEqual([]);
-    expect(parseArgsText('\n  \n\t\n')).toEqual([]);
-    expect(parseArgsText('acp')).toEqual(['acp']);
-    expect(parseArgsText('  acp  \n\t--verbose\t')).toEqual(['acp', '--verbose']);
-    expect(parseArgsText('acp\n\n\n--verbose')).toEqual(['acp', '--verbose']);
-    expect(parseArgsText('--config a  b')).toEqual(['--config a  b']);
-    expect(parseArgsText('a\r\nb')).toEqual(['a', 'b']);
-  });
+    expect(parseArgsText('')).toEqual([])
+    expect(parseArgsText('\n  \n\t\n')).toEqual([])
+    expect(parseArgsText('acp')).toEqual(['acp'])
+    expect(parseArgsText('  acp  \n\t--verbose\t')).toEqual(['acp', '--verbose'])
+    expect(parseArgsText('acp\n\n\n--verbose')).toEqual(['acp', '--verbose'])
+    expect(parseArgsText('--config a  b')).toEqual(['--config a  b'])
+    expect(parseArgsText('a\r\nb')).toEqual(['a', 'b'])
+  })
 
   it('formatArgsText 一行一个参数；与 parse 往返/归一', () => {
-    expect(formatArgsText([])).toBe('');
-    expect(formatArgsText(['acp'])).toBe('acp');
-    expect(formatArgsText(['acp', '--verbose'])).toBe('acp\n--verbose');
-    expect(parseArgsText(formatArgsText(['acp', '--config a  b']))).toEqual(['acp', '--config a  b']);
+    expect(formatArgsText([])).toBe('')
+    expect(formatArgsText(['acp'])).toBe('acp')
+    expect(formatArgsText(['acp', '--verbose'])).toBe('acp\n--verbose')
+    expect(parseArgsText(formatArgsText(['acp', '--config a  b']))).toEqual(['acp', '--config a  b'])
     // parse 后再 format 是归一化：前导/尾随空白与空行消失
-    expect(formatArgsText(parseArgsText('  acp \n\n --verbose '))).toBe('acp\n--verbose');
-  });
-});
+    expect(formatArgsText(parseArgsText('  acp \n\n --verbose '))).toBe('acp\n--verbose')
+  })
+})
 
 // ---------- env 文本 ----------
 
 describe('parseEnvText / formatEnvText', () => {
   it('逐行 KEY=VALUE：首个 = 切分、key trim、行 trim 后值原样、空行忽略', () => {
-    expect(parseEnvText('')).toEqual({ ok: true, env: {} });
-    expect(parseEnvText('\n  \n')).toEqual({ ok: true, env: {} });
-    expect(parseEnvText('A=1\nB=2')).toEqual({ ok: true, env: { A: '1', B: '2' } });
-    expect(parseEnvText('_=1')).toEqual({ ok: true, env: { _: '1' } });
+    expect(parseEnvText('')).toEqual({ ok: true, env: {} })
+    expect(parseEnvText('\n  \n')).toEqual({ ok: true, env: {} })
+    expect(parseEnvText('A=1\nB=2')).toEqual({ ok: true, env: { A: '1', B: '2' } })
+    expect(parseEnvText('_=1')).toEqual({ ok: true, env: { _: '1' } })
     // 值内的 = 保留（首个 = 切分）
-    expect(parseEnvText('A=a=b=c')).toEqual({ ok: true, env: { A: 'a=b=c' } });
+    expect(parseEnvText('A=a=b=c')).toEqual({ ok: true, env: { A: 'a=b=c' } })
     // 无 = 行：key 为整行，值空串
-    expect(parseEnvText('A')).toEqual({ ok: true, env: { A: '' } });
-    expect(parseEnvText('A=')).toEqual({ ok: true, env: { A: '' } });
+    expect(parseEnvText('A')).toEqual({ ok: true, env: { A: '' } })
+    expect(parseEnvText('A=')).toEqual({ ok: true, env: { A: '' } })
     // 行整体 trim；key 另行 trim；= 之后的值原样（含前导空白）
-    expect(parseEnvText('  A=1  ')).toEqual({ ok: true, env: { A: '1' } });
-    expect(parseEnvText('A= 1')).toEqual({ ok: true, env: { A: ' 1' } });
-    expect(parseEnvText(' A = 1 ')).toEqual({ ok: true, env: { A: ' 1' } });
-    expect(parseEnvText('A=1\n\n\nB=2')).toEqual({ ok: true, env: { A: '1', B: '2' } });
-  });
+    expect(parseEnvText('  A=1  ')).toEqual({ ok: true, env: { A: '1' } })
+    expect(parseEnvText('A= 1')).toEqual({ ok: true, env: { A: ' 1' } })
+    expect(parseEnvText(' A = 1 ')).toEqual({ ok: true, env: { A: ' 1' } })
+    expect(parseEnvText('A=1\n\n\nB=2')).toEqual({ ok: true, env: { A: '1', B: '2' } })
+  })
 
   it('key 非法 → key 失败（行号 1-based 且计入空行）', () => {
-    expect(parseEnvText('1A=x')).toEqual({ ok: false, failure: { line: 1, reason: 'key' } });
-    expect(parseEnvText('A-B=x')).toEqual({ ok: false, failure: { line: 1, reason: 'key' } });
-    expect(parseEnvText('=x')).toEqual({ ok: false, failure: { line: 1, reason: 'key' } });
-    expect(parseEnvText('A B=x')).toEqual({ ok: false, failure: { line: 1, reason: 'key' } });
-    expect(parseEnvText('A=1\n\n1B=x')).toEqual({ ok: false, failure: { line: 3, reason: 'key' } });
-  });
+    expect(parseEnvText('1A=x')).toEqual({ ok: false, failure: { line: 1, reason: 'key' } })
+    expect(parseEnvText('A-B=x')).toEqual({ ok: false, failure: { line: 1, reason: 'key' } })
+    expect(parseEnvText('=x')).toEqual({ ok: false, failure: { line: 1, reason: 'key' } })
+    expect(parseEnvText('A B=x')).toEqual({ ok: false, failure: { line: 1, reason: 'key' } })
+    expect(parseEnvText('A=1\n\n1B=x')).toEqual({ ok: false, failure: { line: 3, reason: 'key' } })
+  })
 
   it('重复 key → duplicate 失败（key trim 后判重，且先于值校验）', () => {
-    expect(parseEnvText('A=1\nA=2')).toEqual({ ok: false, failure: { line: 2, reason: 'duplicate' } });
-    expect(parseEnvText('A=1\n A =2')).toEqual({ ok: false, failure: { line: 2, reason: 'duplicate' } });
-  });
+    expect(parseEnvText('A=1\nA=2')).toEqual({ ok: false, failure: { line: 2, reason: 'duplicate' } })
+    expect(parseEnvText('A=1\n A =2')).toEqual({ ok: false, failure: { line: 2, reason: 'duplicate' } })
+  })
 
- it('：$credential: 形状的值一律按字面值入 env（引用语法已随宿主侧删除）', () => {
+  it('：$credential: 形状的值一律按字面值入 env（引用语法已随宿主侧删除）', () => {
     expect(parseEnvText('A=$credential:DEEPSEEK_API_KEY')).toEqual({
       ok: true,
       env: { A: '$credential:DEEPSEEK_API_KEY' },
-    });
+    })
     // 空名 / 数字开头 / 连字符 / 含空格 也都不再特殊——没有 credential 失败分支了
-    expect(parseEnvText('A=$credential:')).toEqual({ ok: true, env: { A: '$credential:' } });
-    expect(parseEnvText('A=$credential:1BAD')).toEqual({ ok: true, env: { A: '$credential:1BAD' } });
-    expect(parseEnvText('A=$credential:BAD-NAME')).toEqual({ ok: true, env: { A: '$credential:BAD-NAME' } });
-    expect(parseEnvText('A=$credential:OK extra')).toEqual({ ok: true, env: { A: '$credential:OK extra' } });
-  });
+    expect(parseEnvText('A=$credential:')).toEqual({ ok: true, env: { A: '$credential:' } })
+    expect(parseEnvText('A=$credential:1BAD')).toEqual({ ok: true, env: { A: '$credential:1BAD' } })
+    expect(parseEnvText('A=$credential:BAD-NAME')).toEqual({ ok: true, env: { A: '$credential:BAD-NAME' } })
+    expect(parseEnvText('A=$credential:OK extra')).toEqual({ ok: true, env: { A: '$credential:OK extra' } })
+  })
 
   it('formatEnvText 与 parse 往返（含 = 值、空值与 $ 前缀字面值）', () => {
-    expect(formatEnvText({})).toBe('');
-    expect(formatEnvText({ A: '1', B: '2' })).toBe('A=1\nB=2');
-    expect(formatEnvText({ A: 'a=b', B: '$credential:KEY' })).toBe('A=a=b\nB=$credential:KEY');
-    const env = { A: '1', B: 'a=b', C: '$credential:DEEPSEEK_API_KEY', D: '' };
-    expect(parseEnvText(formatEnvText(env))).toEqual({ ok: true, env });
-  });
-});
+    expect(formatEnvText({})).toBe('')
+    expect(formatEnvText({ A: '1', B: '2' })).toBe('A=1\nB=2')
+    expect(formatEnvText({ A: 'a=b', B: '$credential:KEY' })).toBe('A=a=b\nB=$credential:KEY')
+    const env = { A: '1', B: 'a=b', C: '$credential:DEEPSEEK_API_KEY', D: '' }
+    expect(parseEnvText(formatEnvText(env))).toEqual({ ok: true, env })
+  })
+})
 
 // ---------- 草稿校验 ----------
 
@@ -367,147 +382,159 @@ describe('validateAgentDraft', () => {
         env: { A: '1' },
         loginHint: 'devin auth login',
       },
-    });
-  });
+    })
+  })
 
   it('字段 trim 后入 config；loginHint 空白则不出现在 config', () => {
     const result = validateAgentDraft(
       validDraft({ id: '  devin  ', name: ' Devin ', command: ' devin ', argsText: '', envText: '', loginHint: '   ' }),
       {},
       undefined,
-    );
-    expect(result).toEqual({ config: { name: 'Devin', command: 'devin', args: [], env: {} } });
-  });
+    )
+    expect(result).toEqual({ config: { name: 'Devin', command: 'devin', args: [], env: {} } })
+  })
 
   it('id 三分支：必填 / 模式 / 唯一（trim 先于一切检查）', () => {
-    expect(validateAgentDraft(validDraft({ id: '' }), {}, undefined).id).toEqual({ key: 'errorIdRequired' });
-    expect(validateAgentDraft(validDraft({ id: '   ' }), {}, undefined).id).toEqual({ key: 'errorIdRequired' });
+    expect(validateAgentDraft(validDraft({ id: '' }), {}, undefined).id).toEqual({ key: 'errorIdRequired' })
+    expect(validateAgentDraft(validDraft({ id: '   ' }), {}, undefined).id).toEqual({ key: 'errorIdRequired' })
     for (const bad of ['Devin', '1devin', '-devin', 'de_vin', 'de vin']) {
-      expect(validateAgentDraft(validDraft({ id: bad }), {}, undefined).id, bad).toEqual({ key: 'errorIdInvalid' });
+      expect(validateAgentDraft(validDraft({ id: bad }), {}, undefined).id, bad).toEqual({ key: 'errorIdInvalid' })
     }
-    expect(validateAgentDraft(validDraft({ id: ' devin ' }), { devin: devinConfig }, undefined).id).toEqual({ key: 'errorIdTaken' });
-    expect(validateAgentDraft(validDraft(), { devin: devinConfig, foo: fooConfig }, undefined).id).toEqual({ key: 'errorIdTaken' });
-  });
+    expect(validateAgentDraft(validDraft({ id: ' devin ' }), { devin: devinConfig }, undefined).id).toEqual({
+      key: 'errorIdTaken',
+    })
+    expect(validateAgentDraft(validDraft(), { devin: devinConfig, foo: fooConfig }, undefined).id).toEqual({
+      key: 'errorIdTaken',
+    })
+  })
 
   it('编辑豁免：editingId 与自身 id 相同不撞 taken；改成别人的 id 仍撞', () => {
-    expect(validateAgentDraft(validDraft(), { devin: devinConfig }, 'devin').id).toBeUndefined();
-    expect(validateAgentDraft(validDraft(), { devin: devinConfig, foo: fooConfig }, 'foo').id).toEqual({ key: 'errorIdTaken' });
+    expect(validateAgentDraft(validDraft(), { devin: devinConfig }, 'devin').id).toBeUndefined()
+    expect(validateAgentDraft(validDraft(), { devin: devinConfig, foo: fooConfig }, 'foo').id).toEqual({
+      key: 'errorIdTaken',
+    })
     // editingId 缺席（新增流程）不豁免
-    expect(validateAgentDraft(validDraft(), { devin: devinConfig }, undefined).id).toEqual({ key: 'errorIdTaken' });
-  });
+    expect(validateAgentDraft(validDraft(), { devin: devinConfig }, undefined).id).toEqual({ key: 'errorIdTaken' })
+  })
 
- it(' singleton：草稿生效 runtime 撞存量 profile → runtime 错误点名已有 profile，config 缺席', () => {
+  it(' singleton：草稿生效 runtime 撞存量 profile → runtime 错误点名已有 profile，config 缺席', () => {
     // 显式 runtime 相撞（草稿带模板播种的 runtime）
-    const seeded = { ...validDraft({ id: 'devin2' }), runtime: 'devin' as const };
-    const conflict = validateAgentDraft(seeded, { devin: { ...devinConfig, runtime: 'devin', catalogId: 'devin' } }, undefined);
+    const seeded = { ...validDraft({ id: 'devin2' }), runtime: 'devin' as const }
+    const conflict = validateAgentDraft(
+      seeded,
+      { devin: { ...devinConfig, runtime: 'devin', catalogId: 'devin' } },
+      undefined,
+    )
     expect(conflict.runtime).toEqual({
       key: 'errorRuntimeTaken',
       params: { runtime: 'devin', id: 'devin', name: 'Devin' },
-    });
-    expect(conflict.config).toBeUndefined();
+    })
+    expect(conflict.config).toBeUndefined()
     // id 回退相撞：草稿无 runtime 但 id 恰为内置 id，存量条目也无 runtime 按 id 回退
-    const kimiConfig: AcpAgentConfig = { name: 'K', command: 'kimi', args: [], env: {} };
-    const fallback = validateAgentDraft(validDraft(), { kimi: kimiConfig }, undefined);
+    const kimiConfig: AcpAgentConfig = { name: 'K', command: 'kimi', args: [], env: {} }
+    const fallback = validateAgentDraft(validDraft(), { kimi: kimiConfig }, undefined)
     // validDraft 的 id=devin 与存量 kimi 不撞 → 无 runtime 错误
-    expect(fallback.runtime).toBeUndefined();
-    const fallbackHit = validateAgentDraft(
-      validDraft({ id: 'kimi' }),
-      { kimi: kimiConfig },
-      undefined,
-    );
+    expect(fallback.runtime).toBeUndefined()
+    const fallbackHit = validateAgentDraft(validDraft({ id: 'kimi' }), { kimi: kimiConfig }, undefined)
     expect(fallbackHit.runtime).toEqual({
       key: 'errorRuntimeTaken',
       params: { runtime: 'kimi', id: 'kimi', name: 'K' },
-    });
-  });
+    })
+  })
 
- it(' singleton 豁免：编辑自身不撞；generic profile（无 runtime 且非内置 id）永不受约束', () => {
-    const boundDevin = { ...devinConfig, runtime: 'devin' as const };
-    const editSelf = { ...validDraft(), runtime: 'devin' as const };
-    expect(validateAgentDraft(editSelf, { devin: boundDevin }, 'devin').runtime).toBeUndefined();
+  it(' singleton 豁免：编辑自身不撞；generic profile（无 runtime 且非内置 id）永不受约束', () => {
+    const boundDevin = { ...devinConfig, runtime: 'devin' as const }
+    const editSelf = { ...validDraft(), runtime: 'devin' as const }
+    expect(validateAgentDraft(editSelf, { devin: boundDevin }, 'devin').runtime).toBeUndefined()
     // generic 草稿对 generic 存量：双方都无 runtime 身份，多实例合法
-    const generic = validDraft({ id: 'foo' });
-    expect(validateAgentDraft(generic, { foo: fooConfig }, 'foo').config).not.toBeUndefined();
-    expect(validateAgentDraft(generic, { bar: fooConfig }, undefined).config).not.toBeUndefined();
-  });
+    const generic = validDraft({ id: 'foo' })
+    expect(validateAgentDraft(generic, { foo: fooConfig }, 'foo').config).not.toBeUndefined()
+    expect(validateAgentDraft(generic, { bar: fooConfig }, undefined).config).not.toBeUndefined()
+  })
 
   it('effectiveRuntimeOf：显式 runtime 优先，内置 id 回退，generic 归 undefined（与 host 共用规则）', () => {
-    expect(effectiveRuntimeOf('foo', { runtime: 'codex' })).toBe('codex');
-    expect(effectiveRuntimeOf('kimi', {})).toBe('kimi');
-    expect(effectiveRuntimeOf('foo', {})).toBeUndefined();
-  });
+    expect(effectiveRuntimeOf('foo', { runtime: 'codex' })).toBe('codex')
+    expect(effectiveRuntimeOf('kimi', {})).toBe('kimi')
+    expect(effectiveRuntimeOf('foo', {})).toBeUndefined()
+  })
 
   it('name / command 必填（空白视同空）', () => {
-    expect(validateAgentDraft(validDraft({ name: '' }), {}, undefined).name).toEqual({ key: 'errorNameRequired' });
-    expect(validateAgentDraft(validDraft({ name: '  ' }), {}, undefined).name).toEqual({ key: 'errorNameRequired' });
-    expect(validateAgentDraft(validDraft({ command: '' }), {}, undefined).command).toEqual({ key: 'errorCommandRequired' });
-    expect(validateAgentDraft(validDraft({ command: '\t' }), {}, undefined).command).toEqual({ key: 'errorCommandRequired' });
-  });
+    expect(validateAgentDraft(validDraft({ name: '' }), {}, undefined).name).toEqual({ key: 'errorNameRequired' })
+    expect(validateAgentDraft(validDraft({ name: '  ' }), {}, undefined).name).toEqual({ key: 'errorNameRequired' })
+    expect(validateAgentDraft(validDraft({ command: '' }), {}, undefined).command).toEqual({
+      key: 'errorCommandRequired',
+    })
+    expect(validateAgentDraft(validDraft({ command: '\t' }), {}, undefined).command).toEqual({
+      key: 'errorCommandRequired',
+    })
+  })
 
-  it.each([String.raw`C:\Program Files\Agent Tools\agent.exe`, String.raw`\\server\Agent Tools\agent.exe`, '/Users/Test User/Agent Tools/agent'])(
-    'preserves executable paths in edited and saved drafts: %s', command => {
-      const original = { name: 'Custom Agent', command, args: ['acp'], env: {} };
-      const draft = draftFromAgent('custom', original);
-      expect(draft.command).toBe(command);
-      expect(validateAgentDraft(draft, { custom: original }, 'custom').config).toEqual(original);
-    },
-  );
+  it.each([
+    String.raw`C:\Program Files\Agent Tools\agent.exe`,
+    String.raw`\\server\Agent Tools\agent.exe`,
+    '/Users/Test User/Agent Tools/agent',
+  ])('preserves executable paths in edited and saved drafts: %s', (command) => {
+    const original = { name: 'Custom Agent', command, args: ['acp'], env: {} }
+    const draft = draftFromAgent('custom', original)
+    expect(draft.command).toBe(command)
+    expect(validateAgentDraft(draft, { custom: original }, 'custom').config).toEqual(original)
+  })
 
- it('env 两分支映射：key/duplicate → locale key + 行号 params（credential 分支已删）', () => {
+  it('env 两分支映射：key/duplicate → locale key + 行号 params（credential 分支已删）', () => {
     expect(validateAgentDraft(validDraft({ envText: '1A=x' }), {}, undefined).env).toEqual({
       key: 'errorEnvKey',
       params: { line: 1 },
-    });
+    })
     expect(validateAgentDraft(validDraft({ envText: 'A=1\nA=2' }), {}, undefined).env).toEqual({
       key: 'errorEnvDuplicate',
       params: { line: 2 },
-    });
-  });
+    })
+  })
 
   it('任一错误存在即无 config；多字段错误并发报告', () => {
-    expect(validateAgentDraft(validDraft({ envText: '1A=x' }), {}, undefined).config).toBeUndefined();
+    expect(validateAgentDraft(validDraft({ envText: '1A=x' }), {}, undefined).config).toBeUndefined()
     const all = validateAgentDraft(
       { id: '', name: '', command: '', argsText: '', envText: 'A=1\nA=2', loginHint: '' },
       {},
       undefined,
-    );
+    )
     expect(all).toEqual({
       id: { key: 'errorIdRequired' },
       name: { key: 'errorNameRequired' },
       command: { key: 'errorCommandRequired' },
       env: { key: 'errorEnvDuplicate', params: { line: 2 } },
-    });
-  });
+    })
+  })
 
   it('成功 config 的 args/env 来自 argsText/envText 的解析结果', () => {
     const result = validateAgentDraft(
       validDraft({ argsText: 'acp\n--verbose', envText: 'A=1\nB=$credential:KEY', loginHint: '' }),
       {},
       undefined,
-    );
+    )
     expect(result.config).toEqual({
       name: 'Devin',
       command: 'devin',
       args: ['acp', '--verbose'],
       env: { A: '1', B: '$credential:KEY' },
-    });
-  });
-});
+    })
+  })
+})
 
 // ---------- 草稿种子 ----------
 
 describe('草稿种子：emptyDraft / draftFromCatalogEntry / draftFromAgent', () => {
   it('derives display-only login guidance without changing saved custom hints or runtime identity', () => {
-    expect(agentLoginHint('custom-codex', { catalogId: 'codex-acp' })).toBe('codex login');
-    expect(agentLoginHint('claude', {})).toBe('claude');
-    expect(agentLoginHint('custom', { runtime: 'kimi', loginHint: 'company-login' })).toBe('company-login');
-    expect(agentLoginHint('unknown', {})).toBeUndefined();
-    const config = { ...fooConfig, loginHint: 'company-login' };
-    expect(validateAgentDraft(draftFromAgent('foo', config), { foo: config }, 'foo').config).toEqual(config);
-  });
+    expect(agentLoginHint('custom-codex', { catalogId: 'codex-acp' })).toBe('codex login')
+    expect(agentLoginHint('claude', {})).toBe('claude')
+    expect(agentLoginHint('custom', { runtime: 'kimi', loginHint: 'company-login' })).toBe('company-login')
+    expect(agentLoginHint('unknown', {})).toBeUndefined()
+    const config = { ...fooConfig, loginHint: 'company-login' }
+    expect(validateAgentDraft(draftFromAgent('foo', config), { foo: config }, 'foo').config).toEqual(config)
+  })
   it('emptyDraft 全空串', () => {
-    expect(emptyDraft()).toEqual({ id: '', name: '', command: '', argsText: '', envText: '', loginHint: '' });
-  });
+    expect(emptyDraft()).toEqual({ id: '', name: '', command: '', argsText: '', envText: '', loginHint: '' })
+  })
 
   it('draftFromCatalogEntry 按条目 id 播种：内置 runtime 四条各回其编辑态', () => {
     expect(draftFromCatalogEntry('devin')).toEqual({
@@ -519,12 +546,15 @@ describe('草稿种子：emptyDraft / draftFromCatalogEntry / draftFromAgent', (
       envText: '',
       loginHint: 'devin auth login',
       runtime: 'devin',
-    });
-    expect(validateAgentDraft(draftFromCatalogEntry('devin') as AgentDraft, {}, undefined).config)
-      .toEqual({ ...devinConfig, runtime: 'devin', catalogId: 'devin' });
+    })
+    expect(validateAgentDraft(draftFromCatalogEntry('devin') as AgentDraft, {}, undefined).config).toEqual({
+      ...devinConfig,
+      runtime: 'devin',
+      catalogId: 'devin',
+    })
 
     // claude-acp 通用预设：env 空（不假设推理提供方）
-    const claudeDraft = draftFromCatalogEntry('claude-acp');
+    const claudeDraft = draftFromCatalogEntry('claude-acp')
     expect(claudeDraft).toMatchObject({
       id: 'claude-acp',
       name: 'Claude Agent',
@@ -533,10 +563,10 @@ describe('草稿种子：emptyDraft / draftFromCatalogEntry / draftFromAgent', (
       envText: '',
       loginHint: 'claude',
       runtime: 'claude',
-    });
+    })
 
     // codex-acp 预设：env 空，runtime 绑定随草稿过站
-    const codexDraft = draftFromCatalogEntry('codex-acp');
+    const codexDraft = draftFromCatalogEntry('codex-acp')
     expect(codexDraft).toEqual({
       id: 'codex-acp',
       catalogId: 'codex-acp',
@@ -546,12 +576,19 @@ describe('草稿种子：emptyDraft / draftFromCatalogEntry / draftFromAgent', (
       envText: '',
       loginHint: 'codex login',
       runtime: 'codex',
-    });
-    expect(validateAgentDraft(codexDraft as AgentDraft, {}, undefined).config)
-      .toEqual({ name: 'Codex', command: 'codex-acp', args: [], env: {}, loginHint: 'codex login', runtime: 'codex', catalogId: 'codex-acp' });
+    })
+    expect(validateAgentDraft(codexDraft as AgentDraft, {}, undefined).config).toEqual({
+      name: 'Codex',
+      command: 'codex-acp',
+      args: [],
+      env: {},
+      loginHint: 'codex login',
+      runtime: 'codex',
+      catalogId: 'codex-acp',
+    })
 
     // kimi 预设：env 空，runtime 绑定随草稿过站
-    const kimiDraft = draftFromCatalogEntry('kimi');
+    const kimiDraft = draftFromCatalogEntry('kimi')
     expect(kimiDraft).toEqual({
       id: 'kimi',
       catalogId: 'kimi',
@@ -561,19 +598,26 @@ describe('草稿种子：emptyDraft / draftFromCatalogEntry / draftFromAgent', (
       envText: '',
       loginHint: 'kimi login',
       runtime: 'kimi',
-    });
-    expect(validateAgentDraft(kimiDraft as AgentDraft, {}, undefined).config)
-      .toEqual({ name: 'Kimi CLI', command: 'kimi', args: ['acp'], env: {}, loginHint: 'kimi login', runtime: 'kimi', catalogId: 'kimi' });
+    })
+    expect(validateAgentDraft(kimiDraft as AgentDraft, {}, undefined).config).toEqual({
+      name: 'Kimi CLI',
+      command: 'kimi',
+      args: ['acp'],
+      env: {},
+      loginHint: 'kimi login',
+      runtime: 'kimi',
+      catalogId: 'kimi',
+    })
 
     // 未知条目 id → undefined（菜单只从 catalog 列表渲染，正常不可达）
-    expect(draftFromCatalogEntry('no-such-entry')).toBeUndefined();
-  });
+    expect(draftFromCatalogEntry('no-such-entry')).toBeUndefined()
+  })
 
   it('draftFromCatalogEntry 普通条目：sidecar 预填 command/args、无 runtime、无 loginHint', () => {
-    const entry = ACP_CATALOG_ENTRIES.find((candidate) => candidate.runtime === undefined);
-    expect(entry).toBeDefined();
-    if (entry === undefined) return;
-    const draft = draftFromCatalogEntry(entry.id);
+    const entry = ACP_CATALOG_ENTRIES.find((candidate) => candidate.runtime === undefined)
+    expect(entry).toBeDefined()
+    if (entry === undefined) return
+    const draft = draftFromCatalogEntry(entry.id)
     expect(draft).toEqual({
       id: entry.id,
       catalogId: entry.id,
@@ -582,9 +626,9 @@ describe('草稿种子：emptyDraft / draftFromCatalogEntry / draftFromAgent', (
       argsText: entry.args.join('\n'),
       envText: '',
       loginHint: '',
-    });
-    expect('runtime' in (draft ?? {})).toBe(false);
-  });
+    })
+    expect('runtime' in (draft ?? {})).toBe(false)
+  })
 
   it('draftFromAgent：args/env 渲染成逐行文本，loginHint 缺席补空串', () => {
     expect(draftFromAgent('foo', fooConfig)).toEqual({
@@ -594,25 +638,28 @@ describe('草稿种子：emptyDraft / draftFromCatalogEntry / draftFromAgent', (
       argsText: 'serve\n--acp',
       envText: 'FOO_HOME=/opt/foo',
       loginHint: '',
-    });
-    expect(draftFromAgent('devin', devinConfig).loginHint).toBe('devin auth login');
-  });
+    })
+    expect(draftFromAgent('devin', devinConfig).loginHint).toBe('devin auth login')
+  })
 
   it('draftFromAgent 与 validateAgentDraft 往返：存出的 config 原样回得来', () => {
-    for (const [id, config] of [['devin', devinConfig], ['foo', fooConfig]] as const) {
-      expect(validateAgentDraft(draftFromAgent(id, config), { [id]: config }, id)).toEqual({ config });
+    for (const [id, config] of [
+      ['devin', devinConfig],
+      ['foo', fooConfig],
+    ] as const) {
+      expect(validateAgentDraft(draftFromAgent(id, config), { [id]: config }, id)).toEqual({ config })
     }
-  });
+  })
 
- it('边界：runtime 绑定随草稿过站——编辑器不暴露，保存不静默解除', () => {
-    const bound: AcpAgentConfig = { ...fooConfig, runtime: 'claude' };
-    const draft = draftFromAgent('foo', bound);
-    expect(draft.runtime).toBe('claude');
-    expect(validateAgentDraft(draft, { foo: bound }, 'foo')).toEqual({ config: bound });
+  it('边界：runtime 绑定随草稿过站——编辑器不暴露，保存不静默解除', () => {
+    const bound: AcpAgentConfig = { ...fooConfig, runtime: 'claude' }
+    const draft = draftFromAgent('foo', bound)
+    expect(draft.runtime).toBe('claude')
+    expect(validateAgentDraft(draft, { foo: bound }, 'foo')).toEqual({ config: bound })
     // 无绑定的 config 不带 runtime 字段（保持「无绑定 = 字段缺席」单一形态）
-    expect('runtime' in draftFromAgent('foo', fooConfig)).toBe(false);
-  });
-});
+    expect('runtime' in draftFromAgent('foo', fooConfig)).toBe(false)
+  })
+})
 
 // ----------：疑似 secret env 键的掩码过站 ----------
 
@@ -622,58 +669,61 @@ describe(' env 密钥掩码（draftFromAgent / validateAgentDraft / dropMaskedEn
     command: 'secretive-cli',
     args: [],
     env: { DEVIN_API_KEY: 'sk-live-9f8e7d', ANTHROPIC_TOKEN: 'tok-abc', FOO_HOME: '/opt/foo' },
-  };
+  }
 
   it('draftFromAgent：疑似 secret 的键不进 envText（值不回显），原值进 maskedEnv 过站', () => {
-    const draft = draftFromAgent('secretive', secretConfig);
-    expect(draft.envText).toBe('FOO_HOME=/opt/foo');
-    expect(draft.maskedEnv).toEqual({ DEVIN_API_KEY: 'sk-live-9f8e7d', ANTHROPIC_TOKEN: 'tok-abc' });
+    const draft = draftFromAgent('secretive', secretConfig)
+    expect(draft.envText).toBe('FOO_HOME=/opt/foo')
+    expect(draft.maskedEnv).toEqual({ DEVIN_API_KEY: 'sk-live-9f8e7d', ANTHROPIC_TOKEN: 'tok-abc' })
     // 文本框（用户可见面）序列化后不含任何疑似键的值
-    expect(draft.envText).not.toContain('sk-live-9f8e7d');
-    expect(draft.envText).not.toContain('DEVIN_API_KEY');
+    expect(draft.envText).not.toContain('sk-live-9f8e7d')
+    expect(draft.envText).not.toContain('DEVIN_API_KEY')
     // 无疑似键的 config 不带 maskedEnv 字段（单一形态：无掩码 = 字段不在）
-    expect('maskedEnv' in draftFromAgent('foo', fooConfig)).toBe(false);
-  });
+    expect('maskedEnv' in draftFromAgent('foo', fooConfig)).toBe(false)
+  })
 
   it('validateAgentDraft：掩码键原样合回 config.env；同名显式重填优先（轮换值）', () => {
-    const draft = draftFromAgent('secretive', secretConfig);
+    const draft = draftFromAgent('secretive', secretConfig)
     // 不动文本框：掩码值原样保留
-    expect(validateAgentDraft(draft, { secretive: secretConfig }, 'secretive').config?.env).toEqual(secretConfig.env);
+    expect(validateAgentDraft(draft, { secretive: secretConfig }, 'secretive').config?.env).toEqual(secretConfig.env)
     // 同名重填 = 轮换；新增疑似键经文本框显式录入也照存（用户亲手输入即所见即所存）
-    const rotated: AgentDraft = { ...draft, envText: `${draft.envText}\nDEVIN_API_KEY=sk-rotated-123` };
+    const rotated: AgentDraft = { ...draft, envText: `${draft.envText}\nDEVIN_API_KEY=sk-rotated-123` }
     expect(validateAgentDraft(rotated, { secretive: secretConfig }, 'secretive').config?.env).toEqual({
       DEVIN_API_KEY: 'sk-rotated-123',
       ANTHROPIC_TOKEN: 'tok-abc',
       FOO_HOME: '/opt/foo',
-    });
-  });
+    })
+  })
 
   it('dropMaskedEnvKey：移除指定键；删空后 maskedEnv 字段整体缺席；未知键原样返回', () => {
-    const draft = draftFromAgent('secretive', secretConfig);
-    const dropped = dropMaskedEnvKey(draft, 'DEVIN_API_KEY');
-    expect(dropped.maskedEnv).toEqual({ ANTHROPIC_TOKEN: 'tok-abc' });
+    const draft = draftFromAgent('secretive', secretConfig)
+    const dropped = dropMaskedEnvKey(draft, 'DEVIN_API_KEY')
+    expect(dropped.maskedEnv).toEqual({ ANTHROPIC_TOKEN: 'tok-abc' })
     // 保存后该键即从 config.env 消失（UI 移除行 = 删除该键）
     expect(validateAgentDraft(dropped, { secretive: secretConfig }, 'secretive').config?.env).toEqual({
       ANTHROPIC_TOKEN: 'tok-abc',
       FOO_HOME: '/opt/foo',
-    });
-    const emptied = dropMaskedEnvKey(dropMaskedEnvKey(draft, 'DEVIN_API_KEY'), 'ANTHROPIC_TOKEN');
-    expect('maskedEnv' in emptied).toBe(false);
-    const untouched = dropMaskedEnvKey(draft, 'NO_SUCH_KEY');
-    expect(untouched).toBe(draft);
-  });
-});
+    })
+    const emptied = dropMaskedEnvKey(dropMaskedEnvKey(draft, 'DEVIN_API_KEY'), 'ANTHROPIC_TOKEN')
+    expect('maskedEnv' in emptied).toBe(false)
+    const untouched = dropMaskedEnvKey(draft, 'NO_SUCH_KEY')
+    expect(untouched).toBe(draft)
+  })
+})
 
 // ---------- agents map 纯操作 ----------
 
 describe('agents map projection', () => {
   it('sortedAgentIds 按 localeCompare 序返回全部 id', () => {
-    expect(sortedAgentIds({})).toEqual([]);
-    expect(sortedAgentIds({ devin: devinConfig })).toEqual(['devin']);
-    expect(sortedAgentIds({ gamma: devinConfig, alpha: devinConfig, beta: devinConfig })).toEqual(['alpha', 'beta', 'gamma']);
-  });
-
-});
+    expect(sortedAgentIds({})).toEqual([])
+    expect(sortedAgentIds({ devin: devinConfig })).toEqual(['devin'])
+    expect(sortedAgentIds({ gamma: devinConfig, alpha: devinConfig, beta: devinConfig })).toEqual([
+      'alpha',
+      'beta',
+      'gamma',
+    ])
+  })
+})
 
 // ---------- settings 快照投影 ----------
 
@@ -681,12 +731,35 @@ describe('panelSettingsOf', () => {
   it('ready → ready，agents/writable/revision 透传；value 缺席时 agents 归零', () => {
     expect(
       panelSettingsOf({ status: 'ready', value: { agents: { devin: devinConfig } }, revision: 3, writable: true }),
-    ).toEqual({ status: 'ready', writable: true, agents: { devin: devinConfig }, searchableModelPicker: false, toolApprovalDefault: 'auto', revision: 3 });
-    expect(panelSettingsOf({ status: 'ready', value: { agents: {}, searchableModelPicker: true }, revision: 4, writable: true }).searchableModelPicker).toBe(true);
-    expect(panelSettingsOf({ status: 'ready', value: { agents: {}, toolApprovalDefault: 'ask' }, revision: 4, writable: true }).toolApprovalDefault).toBe('ask');
-    expect(panelSettingsOf({ status: 'ready', value: undefined, revision: 3, writable: false }).agents).toEqual({});
-    expect(panelSettingsOf({ status: 'ready', value: undefined, revision: 3, writable: false }).searchableModelPicker).toBe(false);
-  });
+    ).toEqual({
+      status: 'ready',
+      writable: true,
+      agents: { devin: devinConfig },
+      searchableModelPicker: false,
+      toolApprovalDefault: 'auto',
+      revision: 3,
+    })
+    expect(
+      panelSettingsOf({
+        status: 'ready',
+        value: { agents: {}, searchableModelPicker: true },
+        revision: 4,
+        writable: true,
+      }).searchableModelPicker,
+    ).toBe(true)
+    expect(
+      panelSettingsOf({
+        status: 'ready',
+        value: { agents: {}, toolApprovalDefault: 'ask' },
+        revision: 4,
+        writable: true,
+      }).toolApprovalDefault,
+    ).toBe('ask')
+    expect(panelSettingsOf({ status: 'ready', value: undefined, revision: 3, writable: false }).agents).toEqual({})
+    expect(
+      panelSettingsOf({ status: 'ready', value: undefined, revision: 3, writable: false }).searchableModelPicker,
+    ).toBe(false)
+  })
 
   it('unavailable → unavailable；loading 按 revision 分 loading/invalid', () => {
     expect(panelSettingsOf({ status: 'unavailable', value: undefined, revision: undefined, writable: false })).toEqual({
@@ -696,8 +769,10 @@ describe('panelSettingsOf', () => {
       searchableModelPicker: false,
       toolApprovalDefault: 'auto',
       revision: undefined,
-    });
-    expect(panelSettingsOf({ status: 'loading', value: undefined, revision: undefined, writable: true }).status).toBe('loading');
+    })
+    expect(panelSettingsOf({ status: 'loading', value: undefined, revision: undefined, writable: true }).status).toBe(
+      'loading',
+    )
     // decode miss：scope 停在 loading 但 revision 证明读到过 → invalid
     expect(panelSettingsOf({ status: 'loading', value: undefined, revision: 7, writable: false })).toEqual({
       status: 'invalid',
@@ -706,70 +781,111 @@ describe('panelSettingsOf', () => {
       searchableModelPicker: false,
       toolApprovalDefault: 'auto',
       revision: 7,
-    });
-  });
-});
+    })
+  })
+})
 
 // ---------- 健康响应解码 ----------
 
 describe('decodeHealthResponse', () => {
   it('合法响应：三种 probe 分支逐字段解出；未知顶层/行键剥离', () => {
-    const body = { providers: [okRow, neverRow, authErrorRow] };
-    expect(decodeHealthResponse(body)).toEqual([okRow, neverRow, authErrorRow]);
-    expect(decodeHealthResponse({ providers: [] })).toEqual([]);
-    expect(decodeHealthResponse({ providers: [{ ...okRow, extra: 1 }], extra: true })).toEqual([okRow]);
-  });
+    const body = { providers: [okRow, neverRow, authErrorRow] }
+    expect(decodeHealthResponse(body)).toEqual([okRow, neverRow, authErrorRow])
+    expect(decodeHealthResponse({ providers: [] })).toEqual([])
+    expect(decodeHealthResponse({ providers: [{ ...okRow, extra: 1 }], extra: true })).toEqual([okRow])
+  })
 
   it('authMethods：null（宿主未透传）与空数组均合法；description 可缺/为 null', () => {
-    const withNull = { ...okRow, probe: { status: 'ok', at: 1, modelCount: 0, authMethods: null, agentInfo: null, capabilities: null, cleanup: null, capabilityHash: null, protocolVersion: null, versionCompatibility: null, matrix: okMatrix } };
-    const withEmpty = { ...okRow, probe: { status: 'ok', at: 1, modelCount: 0, authMethods: [], agentInfo: null, capabilities: null, cleanup: null, capabilityHash: null, protocolVersion: null, versionCompatibility: null, matrix: okMatrix } };
+    const withNull = {
+      ...okRow,
+      probe: {
+        status: 'ok',
+        at: 1,
+        modelCount: 0,
+        authMethods: null,
+        agentInfo: null,
+        capabilities: null,
+        cleanup: null,
+        capabilityHash: null,
+        protocolVersion: null,
+        versionCompatibility: null,
+        matrix: okMatrix,
+      },
+    }
+    const withEmpty = {
+      ...okRow,
+      probe: {
+        status: 'ok',
+        at: 1,
+        modelCount: 0,
+        authMethods: [],
+        agentInfo: null,
+        capabilities: null,
+        cleanup: null,
+        capabilityHash: null,
+        protocolVersion: null,
+        versionCompatibility: null,
+        matrix: okMatrix,
+      },
+    }
     const withDesc = {
       ...okRow,
-      probe: { status: 'ok', at: 1, modelCount: 1, authMethods: [{ id: 'oauth', name: 'OAuth', description: null }], agentInfo: null, capabilities: null, cleanup: null, capabilityHash: null, protocolVersion: null, versionCompatibility: null, matrix: okMatrix },
-    };
-    expect(decodeHealthResponse({ providers: [withNull] })).toEqual([withNull]);
-    expect(decodeHealthResponse({ providers: [withEmpty] })).toEqual([withEmpty]);
-    expect(decodeHealthResponse({ providers: [withDesc] })).toEqual([withDesc]);
-  });
+      probe: {
+        status: 'ok',
+        at: 1,
+        modelCount: 1,
+        authMethods: [{ id: 'oauth', name: 'OAuth', description: null }],
+        agentInfo: null,
+        capabilities: null,
+        cleanup: null,
+        capabilityHash: null,
+        protocolVersion: null,
+        versionCompatibility: null,
+        matrix: okMatrix,
+      },
+    }
+    expect(decodeHealthResponse({ providers: [withNull] })).toEqual([withNull])
+    expect(decodeHealthResponse({ providers: [withEmpty] })).toEqual([withEmpty])
+    expect(decodeHealthResponse({ providers: [withDesc] })).toEqual([withDesc])
+  })
 
- it('readiness 两键：null 词表与三态合法值解出；词表外/畸形整行拒', () => {
-    const probe = okRow.probe;
-    if (probe.status !== 'ok') throw new Error('fixture: okRow.probe must be the ok branch');
+  it('readiness 两键：null 词表与三态合法值解出；词表外/畸形整行拒', () => {
+    const probe = okRow.probe
+    if (probe.status !== 'ok') throw new Error('fixture: okRow.probe must be the ok branch')
     // 合法：versionCompatibility 三态 + null；protocolVersion number|null
     for (const versionCompatibility of ['current', 'different', 'unknown', null] as const) {
-      const row = { ...okRow, probe: { ...probe, protocolVersion: 1, versionCompatibility } };
-      expect(decodeHealthResponse({ providers: [row] }), String(versionCompatibility)).toEqual([row]);
+      const row = { ...okRow, probe: { ...probe, protocolVersion: 1, versionCompatibility } }
+      expect(decodeHealthResponse({ providers: [row] }), String(versionCompatibility)).toEqual([row])
     }
-    const nullPair = { ...okRow, probe: { ...probe, protocolVersion: null, versionCompatibility: null } };
-    expect(decodeHealthResponse({ providers: [nullPair] })).toEqual([nullPair]);
+    const nullPair = { ...okRow, probe: { ...probe, protocolVersion: null, versionCompatibility: null } }
+    expect(decodeHealthResponse({ providers: [nullPair] })).toEqual([nullPair])
     // 词表外/畸形：strict codec 边界整行拒绝
-    for (const patch of [
-      { protocolVersion: '1' },
-      { versionCompatibility: 'pinned' },
-      { versionCompatibility: 42 },
-    ]) {
-      const row = { ...okRow, probe: { ...probe, ...patch } };
-      expect(decodeHealthResponse({ providers: [row] }), JSON.stringify(patch)).toBeUndefined();
+    for (const patch of [{ protocolVersion: '1' }, { versionCompatibility: 'pinned' }, { versionCompatibility: 42 }]) {
+      const row = { ...okRow, probe: { ...probe, ...patch } }
+      expect(decodeHealthResponse({ providers: [row] }), JSON.stringify(patch)).toBeUndefined()
     }
-  });
+  })
 
- it('matrix：空数组/note 缺席/未知行 id 均合法解出（向前兼容 host 新增行）', () => {
-    const empty = { ...okRow, probe: { ...okRow.probe, matrix: [] } };
-    expect(decodeHealthResponse({ providers: [empty] })).toEqual([empty]);
+  it('matrix：空数组/note 缺席/未知行 id 均合法解出（向前兼容 host 新增行）', () => {
+    const empty = { ...okRow, probe: { ...okRow.probe, matrix: [] } }
+    expect(decodeHealthResponse({ providers: [empty] })).toEqual([empty])
     const noNote = {
       ...okRow,
-      probe: { ...okRow.probe, matrix: [{ id: 'futureRow', advertised: null, adapterPath: 'x', hostSeam: null, status: 'degraded' }] },
-    };
-    expect(decodeHealthResponse({ providers: [noNote] })).toEqual([noNote]);
-  });
+      probe: {
+        ...okRow.probe,
+        matrix: [{ id: 'futureRow', advertised: null, adapterPath: 'x', hostSeam: null, status: 'degraded' }],
+      },
+    }
+    expect(decodeHealthResponse({ providers: [noNote] })).toEqual([noNote])
+  })
 
   it('畸形整体拒绝：body 非 object / providers 非数组', () => {
     for (const bad of [null, 'x', 42, [], {}]) {
-      expect(decodeHealthResponse(bad), JSON.stringify(bad)).toBeUndefined();
+      expect(decodeHealthResponse(bad), JSON.stringify(bad)).toBeUndefined()
     }
-    expect(decodeHealthResponse({ providers: {} })).toBeUndefined();
-    expect(decodeHealthResponse({ providers: 'rows' })).toBeUndefined();
-  });
+    expect(decodeHealthResponse({ providers: {} })).toBeUndefined()
+    expect(decodeHealthResponse({ providers: 'rows' })).toBeUndefined()
+  })
 
   it('行字段违规逐一拒绝（且传染整个响应）', () => {
     const badRows: Array<[string, unknown]> = [
@@ -784,28 +900,38 @@ describe('decodeHealthResponse', () => {
       ['executable 非 boolean', { ...okRow, executable: 'yes' }],
       ['version 缺席', { ...okRow, version: undefined }],
       ['version 数字', { ...okRow, version: 1 }],
- // state 为五态词表强制字段
+      // state 为五态词表强制字段
       ['state 缺席', { ...okRow, state: undefined }],
       ['state 未知值', { ...okRow, state: 'half-ready' }],
       ['state 非 string', { ...okRow, state: 1 }],
-    ];
+    ]
     for (const [label, row] of badRows) {
-      expect(decodeHealthResponse({ providers: [row] }), label).toBeUndefined();
+      expect(decodeHealthResponse({ providers: [row] }), label).toBeUndefined()
       // 传染：好行与坏行并存同样整体拒绝
-      expect(decodeHealthResponse({ providers: [neverRow, row] }), `${label}（传染）`).toBeUndefined();
+      expect(decodeHealthResponse({ providers: [neverRow, row] }), `${label}（传染）`).toBeUndefined()
     }
-  });
+  })
 
- it(' state 词表：五态全部合法解出（行其余字段不动）', () => {
+  it(' state 词表：五态全部合法解出（行其余字段不动）', () => {
     for (const state of ['saved-unverified', 'ready', 'auth-required', 'unavailable', 'incompatible'] as const) {
-      const row = { ...okRow, state };
-      expect(decodeHealthResponse({ providers: [row] }), state).toEqual([row]);
+      const row = { ...okRow, state }
+      expect(decodeHealthResponse({ providers: [row] }), state).toEqual([row])
     }
-  });
+  })
 
   it('probe 分支违规逐一拒绝', () => {
-    const okBase = { status: 'ok', at: 1, modelCount: 1, authMethods: null, agentInfo: null, capabilities: null, cleanup: null, capabilityHash: null, matrix: okMatrix };
-    const errBase = { status: 'error', at: 1, failureKind: 'timeout', message: 'boom', phase: null };
+    const okBase = {
+      status: 'ok',
+      at: 1,
+      modelCount: 1,
+      authMethods: null,
+      agentInfo: null,
+      capabilities: null,
+      cleanup: null,
+      capabilityHash: null,
+      matrix: okMatrix,
+    }
+    const errBase = { status: 'error', at: 1, failureKind: 'timeout', message: 'boom', phase: null }
     const badProbes: Array<[string, unknown]> = [
       ['probe 非 object', 'ok'],
       ['probe status 未知', { status: 'pending', at: 1 }],
@@ -816,47 +942,161 @@ describe('decodeHealthResponse', () => {
       ['ok 的 authMethods 非 null/数组', { ...okBase, authMethods: 'oauth' }],
       ['authMethods 元素缺 name', { ...okBase, authMethods: [{ id: 'oauth' }] }],
       ['authMethods 元素 id 非 string', { ...okBase, authMethods: [{ id: 1, name: 'OAuth' }] }],
-      ['ok 缺 agentInfo（宿主恒发 string|null 词表）', { status: 'ok', at: 1, modelCount: 1, authMethods: null, capabilities: null, cleanup: null, capabilityHash: null, matrix: okMatrix }],
-      ['ok 缺 capabilities', { status: 'ok', at: 1, modelCount: 1, authMethods: null, agentInfo: null, cleanup: null, capabilityHash: null, matrix: okMatrix }],
+      [
+        'ok 缺 agentInfo（宿主恒发 string|null 词表）',
+        {
+          status: 'ok',
+          at: 1,
+          modelCount: 1,
+          authMethods: null,
+          capabilities: null,
+          cleanup: null,
+          capabilityHash: null,
+          matrix: okMatrix,
+        },
+      ],
+      [
+        'ok 缺 capabilities',
+        {
+          status: 'ok',
+          at: 1,
+          modelCount: 1,
+          authMethods: null,
+          agentInfo: null,
+          cleanup: null,
+          capabilityHash: null,
+          matrix: okMatrix,
+        },
+      ],
       ['agentInfo 缺 version', { ...okBase, agentInfo: { name: 'devin-acp' } }],
       ['agentInfo name 非 string', { ...okBase, agentInfo: { name: 1, version: '1' } }],
       ['capabilities 缺键', { ...okBase, capabilities: { loadSession: true } }],
       ['capabilities 值非 boolean', { ...okBase, capabilities: { ...fullCaps(), promptImage: 'yes' } }],
- // cleanup/capabilityHash 为宿主恒发键（null 词表或合法事实）
-      ['ok 缺 cleanup', { status: 'ok', at: 1, modelCount: 1, authMethods: null, agentInfo: null, capabilities: null, capabilityHash: null, matrix: okMatrix }],
-      ['ok 缺 capabilityHash', { status: 'ok', at: 1, modelCount: 1, authMethods: null, agentInfo: null, capabilities: null, cleanup: null, matrix: okMatrix }],
+      // cleanup/capabilityHash 为宿主恒发键（null 词表或合法事实）
+      [
+        'ok 缺 cleanup',
+        {
+          status: 'ok',
+          at: 1,
+          modelCount: 1,
+          authMethods: null,
+          agentInfo: null,
+          capabilities: null,
+          capabilityHash: null,
+          matrix: okMatrix,
+        },
+      ],
+      [
+        'ok 缺 capabilityHash',
+        {
+          status: 'ok',
+          at: 1,
+          modelCount: 1,
+          authMethods: null,
+          agentInfo: null,
+          capabilities: null,
+          cleanup: null,
+          matrix: okMatrix,
+        },
+      ],
       ['cleanup 步骤词表外', { ...okBase, cleanup: { close: 'maybe', delete: 'done', message: null } }],
       ['cleanup 缺 delete', { ...okBase, cleanup: { close: 'done', message: null } }],
       ['cleanup message 非 string/null', { ...okBase, cleanup: { close: 'done', delete: 'failed', message: 7 } }],
       ['capabilityHash 非 string/null', { ...okBase, capabilityHash: 16 }],
- // matrix 为 probe-ok 宿主恒发键（逐行严检，畸形整包拒）
-      ['ok 缺 matrix', { status: 'ok', at: 1, modelCount: 1, authMethods: null, agentInfo: null, capabilities: null, cleanup: null, capabilityHash: null }],
+      // matrix 为 probe-ok 宿主恒发键（逐行严检，畸形整包拒）
+      [
+        'ok 缺 matrix',
+        {
+          status: 'ok',
+          at: 1,
+          modelCount: 1,
+          authMethods: null,
+          agentInfo: null,
+          capabilities: null,
+          cleanup: null,
+          capabilityHash: null,
+        },
+      ],
       ['matrix 非数组', { ...okBase, matrix: {} }],
       ['matrix 行非 object', { ...okBase, matrix: ['loadSession'] }],
-      ['matrix 行缺 id', { ...okBase, matrix: [{ advertised: true, adapterPath: 'resume-staging', hostSeam: null, status: 'supported' }] }],
-      ['matrix advertised 非 boolean/null', { ...okBase, matrix: [{ id: 'loadSession', advertised: 'yes', adapterPath: 'resume-staging', hostSeam: null, status: 'supported' }] }],
-      ['matrix hostSeam 非 string/null', { ...okBase, matrix: [{ id: 'sandbox', advertised: null, adapterPath: 'confined-spawn', hostSeam: 1, status: 'supported' }] }],
-      ['matrix status 词表外', { ...okBase, matrix: [{ id: 'loadSession', advertised: true, adapterPath: 'resume-staging', hostSeam: null, status: 'half' }] }],
-      ['matrix note 非 string', { ...okBase, matrix: [{ id: 'mcpHttp', advertised: false, adapterPath: 'mcpServers-empty', hostSeam: null, status: 'unsupported', note: 10 }] }],
+      [
+        'matrix 行缺 id',
+        {
+          ...okBase,
+          matrix: [{ advertised: true, adapterPath: 'resume-staging', hostSeam: null, status: 'supported' }],
+        },
+      ],
+      [
+        'matrix advertised 非 boolean/null',
+        {
+          ...okBase,
+          matrix: [
+            {
+              id: 'loadSession',
+              advertised: 'yes',
+              adapterPath: 'resume-staging',
+              hostSeam: null,
+              status: 'supported',
+            },
+          ],
+        },
+      ],
+      [
+        'matrix hostSeam 非 string/null',
+        {
+          ...okBase,
+          matrix: [
+            { id: 'sandbox', advertised: null, adapterPath: 'confined-spawn', hostSeam: 1, status: 'supported' },
+          ],
+        },
+      ],
+      [
+        'matrix status 词表外',
+        {
+          ...okBase,
+          matrix: [
+            { id: 'loadSession', advertised: true, adapterPath: 'resume-staging', hostSeam: null, status: 'half' },
+          ],
+        },
+      ],
+      [
+        'matrix note 非 string',
+        {
+          ...okBase,
+          matrix: [
+            {
+              id: 'mcpHttp',
+              advertised: false,
+              adapterPath: 'mcpServers-empty',
+              hostSeam: null,
+              status: 'unsupported',
+              note: 10,
+            },
+          ],
+        },
+      ],
       ['error 缺 failureKind', { ...errBase, failureKind: undefined }],
       ['error 的 message 非 string', { ...errBase, message: 42 }],
       ['error 的 at 非 number', { ...errBase, at: 'now' }],
-      ['error 缺 phase（宿主恒发 phase|null 词表）', { status: 'error', at: 1, failureKind: 'timeout', message: 'boom' }],
+      [
+        'error 缺 phase（宿主恒发 phase|null 词表）',
+        { status: 'error', at: 1, failureKind: 'timeout', message: 'boom' },
+      ],
       ['error phase 非法值', { ...errBase, phase: 'prompt' }],
-    ];
+    ]
     for (const [label, probe] of badProbes) {
-      expect(decodeHealthResponse({ providers: [{ ...okRow, probe }] }), label).toBeUndefined();
+      expect(decodeHealthResponse({ providers: [{ ...okRow, probe }] }), label).toBeUndefined()
     }
-  });
-});
+  })
+})
 
 // ---------- boundSessions 应答解码（删除确认提示的 binding 计数） ----------
 
 describe('decodeBoundSessions', () => {
   it('合法应答原样往返（count=0 也是合法计数）', () => {
-    expect(decodeBoundSessions({ agentId: 'devin', count: 3 })).toEqual({ agentId: 'devin', count: 3 });
-    expect(decodeBoundSessions({ agentId: 'kimi', count: 0 })).toEqual({ agentId: 'kimi', count: 0 });
-  });
+    expect(decodeBoundSessions({ agentId: 'devin', count: 3 })).toEqual({ agentId: 'devin', count: 3 })
+    expect(decodeBoundSessions({ agentId: 'kimi', count: 0 })).toEqual({ agentId: 'kimi', count: 0 })
+  })
 
   it('畸形/错型整体拒绝为 undefined（绝不拿解码失败冒充 0）', () => {
     const bads: Array<[string, unknown]> = [
@@ -870,36 +1110,36 @@ describe('decodeBoundSessions', () => {
       ['count 非 number', { agentId: 'devin', count: '3' }],
       ['count 非整数', { agentId: 'devin', count: 1.5 }],
       ['count 负数', { agentId: 'devin', count: -1 }],
-    ];
+    ]
     for (const [label, body] of bads) {
-      expect(decodeBoundSessions(body), label).toBeUndefined();
+      expect(decodeBoundSessions(body), label).toBeUndefined()
     }
-  });
-});
+  })
+})
 
 describe('healthRowOf', () => {
   it('按 id 匹配；未覆盖或空列表时返回 undefined', () => {
-    const rows = [okRow, neverRow, authErrorRow];
-    expect(healthRowOf(rows, 'devin')).toBe(okRow);
-    expect(healthRowOf(rows, 'foo')).toBe(neverRow);
-    expect(healthRowOf(rows, 'ghost')).toBeUndefined();
-    expect(healthRowOf([], 'devin')).toBeUndefined();
-  });
-});
+    const rows = [okRow, neverRow, authErrorRow]
+    expect(healthRowOf(rows, 'devin')).toBe(okRow)
+    expect(healthRowOf(rows, 'foo')).toBe(neverRow)
+    expect(healthRowOf(rows, 'ghost')).toBeUndefined()
+    expect(healthRowOf([], 'devin')).toBeUndefined()
+  })
+})
 
 // ---------- 错误文本整形 ----------
 
 describe('错误文本整形：errorMessageOf', () => {
   it('errorMessageOf：Error 取 message，其余 String()', () => {
-    expect(errorMessageOf(new Error('boom'))).toBe('boom');
-    expect(errorMessageOf(new TypeError('bad'))).toBe('bad');
-    expect(errorMessageOf('plain')).toBe('plain');
-    expect(errorMessageOf(42)).toBe('42');
-    expect(errorMessageOf(null)).toBe('null');
-    expect(errorMessageOf(undefined)).toBe('undefined');
-    expect(errorMessageOf({ a: 1 })).toBe('[object Object]');
-  });
-});
+    expect(errorMessageOf(new Error('boom'))).toBe('boom')
+    expect(errorMessageOf(new TypeError('bad'))).toBe('bad')
+    expect(errorMessageOf('plain')).toBe('plain')
+    expect(errorMessageOf(42)).toBe('42')
+    expect(errorMessageOf(null)).toBe('null')
+    expect(errorMessageOf(undefined)).toBe('undefined')
+    expect(errorMessageOf({ a: 1 })).toBe('[object Object]')
+  })
+})
 
 describe('catalog identity survives profile customization', () => {
   it('preserves generic catalog identity through changing ID and editing', () => {
@@ -907,7 +1147,9 @@ describe('catalog identity survives profile customization', () => {
     const config = validateAgentDraft({ ...draft, id: 'my-fast', name: 'My fast' }, {}, undefined).config!
     expect(config.catalogId).toBe('fast-agent')
     expect(config.runtime).toBeUndefined()
-    expect(validateAgentDraft(draftFromAgent('my-fast', config), { 'my-fast': config }, 'my-fast').config).toEqual(config)
+    expect(validateAgentDraft(draftFromAgent('my-fast', config), { 'my-fast': config }, 'my-fast').config).toEqual(
+      config,
+    )
   })
   it('keeps unknown catalog IDs without granting a runtime', () => {
     const config: AcpAgentConfig = { name: 'Custom', command: 'custom', args: [], env: {}, catalogId: 'future-agent' }

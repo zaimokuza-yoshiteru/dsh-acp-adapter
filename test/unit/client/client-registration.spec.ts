@@ -4,8 +4,17 @@ import { apply, inject } from '../../../src/client/index.ts'
 describe('client contribution', () => {
   it('declares the plugin detail, audit, and conversation seams', () => {
     expect(inject).toEqual([
-      'uiConversation', 'slots', 'locale', 'remote',
-      'sessions', 'workspaces', 'uiWorkspace', 'sidebarRight', 'configForms', 'remote.settings', 'remote.session',
+      'uiConversation',
+      'slots',
+      'locale',
+      'remote',
+      'sessions',
+      'workspaces',
+      'uiWorkspace',
+      'sidebarRight',
+      'configForms',
+      'remote.settings',
+      'remote.session',
     ])
   })
 
@@ -22,7 +31,12 @@ describe('client contribution', () => {
     const lifecycle: string[] = []
     const ctx = {
       remote: {
-        $mount: async () => { lifecycle.push('mount'); return async () => { lifecycle.push('dispose') } },
+        $mount: async () => {
+          lifecycle.push('mount')
+          return async () => {
+            lifecycle.push('dispose')
+          }
+        },
         settings: { mutate: async () => ({ ok: true, value: null }) },
         dshAcp: {
           ownedProviderRoutes: async () => ({ ok: true, value: { providers: [] } }),
@@ -30,7 +44,13 @@ describe('client contribution', () => {
         },
       },
       uiSession: { sessionStatus: { getSnapshot: () => new Map(), subscribe: () => () => {} } },
-      uiConversation: { events: { register: (definition: unknown) => { definitions.push(definition) } } },
+      uiConversation: {
+        events: {
+          register: (definition: unknown) => {
+            definitions.push(definition)
+          },
+        },
+      },
       locale: { register: () => undefined, bind: () => (key: string) => key },
       configForms: {
         get: () => ({
@@ -40,7 +60,9 @@ describe('client contribution', () => {
       },
       sessions: {},
       workspaces: {},
-      effect: (fn: () => unknown) => { void fn() },
+      effect: (fn: () => unknown) => {
+        void fn()
+      },
       slots: {
         subscribe: () => () => {},
         entriesOfSlot: () => [],
@@ -64,7 +86,9 @@ describe('client contribution', () => {
         // remains registered if the host does not provide that service.
         const started = deps.includes('modelDirectories') ? Promise.resolve() : Promise.resolve(callback(ctx))
         return Object.assign(started, {
-          dispose: async () => { lifecycle.push('ui-dispose') },
+          dispose: async () => {
+            lifecycle.push('ui-dispose')
+          },
         })
       },
     })
@@ -76,12 +100,14 @@ describe('client contribution', () => {
       ['remote.subagents', 'uiSession'],
     ])
     expect(definitions).toHaveLength(3)
-    expect(injections).toEqual(expect.arrayContaining([
-      expect.objectContaining({ name: 'plugins.bundle.config', key: '@zaimokuza/dsh-acp-adapter' }),
-      expect.objectContaining({ key: 'acp-activity' }),
-      expect.objectContaining({ key: 'acp-inline-activity' }),
-      expect.objectContaining({ id: 'dsh-acp-agent-control' }),
-    ]))
+    expect(injections).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'plugins.bundle.config', key: '@zaimokuza/dsh-acp-adapter' }),
+        expect.objectContaining({ key: 'acp-activity' }),
+        expect.objectContaining({ key: 'acp-inline-activity' }),
+        expect.objectContaining({ id: 'dsh-acp-agent-control' }),
+      ]),
+    )
     expect(injections).not.toContainEqual(expect.objectContaining({ name: 'settings.section' }))
     expect(slotEntries.get('shell.overlay')).toEqual([
       { name: 'shell.overlay', id: 'third-party-overlay' },
@@ -96,8 +122,18 @@ describe('client contribution', () => {
 
   it('does not register a partial contribution when Remote mounting fails', async () => {
     const ctx = {
-      remote: { $mount: async () => { throw new Error('mount failed') } },
-      uiConversation: { events: { register: () => { throw new Error('must not register') } } },
+      remote: {
+        $mount: async () => {
+          throw new Error('mount failed')
+        },
+      },
+      uiConversation: {
+        events: {
+          register: () => {
+            throw new Error('must not register')
+          },
+        },
+      },
     } as never
     await expect(apply(ctx)).rejects.toThrow('mount failed')
   })

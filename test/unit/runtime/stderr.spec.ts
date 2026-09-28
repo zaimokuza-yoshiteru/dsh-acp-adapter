@@ -4,7 +4,9 @@ import { StderrRing, defaultRedactStderrLine } from '../../../src/runtime/proces
 describe('StderrRing private-key redaction', () => {
   it('masks a complete PEM block inside one push and keeps following text visible', () => {
     const ring = new StderrRing(20, 4096, defaultRedactStderrLine)
-    ring.push('before -----BEGIN PRIVATE KEY-----\nprivate-key-body\n-----END PRIVATE KEY----- after password=hunter2\nordinary diagnostic')
+    ring.push(
+      'before -----BEGIN PRIVATE KEY-----\nprivate-key-body\n-----END PRIVATE KEY----- after password=hunter2\nordinary diagnostic',
+    )
 
     const snapshot = ring.snapshot()
     const text = snapshot.join('\n')
@@ -27,7 +29,7 @@ describe('StderrRing private-key redaction', () => {
     expect(snapshot).toContain('<redacted-private-key>')
     expect(snapshot.join('\n')).toContain('trailing API_TOKEN=<redacted>')
     expect(snapshot).toContain('visible post-key diagnostic')
-    expect(snapshot.filter(line => line === '<redacted-private-key>')).toHaveLength(1)
+    expect(snapshot.filter((line) => line === '<redacted-private-key>')).toHaveLength(1)
   })
 
   it('keeps masking a truncated block across pushes, then resumes ordinary redaction after END', () => {

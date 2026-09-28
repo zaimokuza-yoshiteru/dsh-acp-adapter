@@ -17,12 +17,20 @@ it('distinguishes loading, unavailable, empty, ready, and failed Team projection
   expect(teamRoster(projection({ members: [] }), false).kind).toBe('empty')
   expect(teamRoster(projection(), false)).toMatchObject({ kind: 'ready', members: [{ name: 'Member' }] })
   expect(teamRoster(projection({ failure: 'damaged record' }), false)).toEqual({
-    kind: 'failed', message: 'damaged record', members: [], memberIds: ['member'],
+    kind: 'failed',
+    message: 'damaged record',
+    members: [],
+    memberIds: ['member'],
   })
 })
 
 it('changes its revision when durable member identity or phase changes', () => {
   const before = projection()
-  expect(projectionRevision(projection({ members: before.members.map(member => member.id === 'member' ? { ...member, phase: 'failed' } : member) })))
-    .not.toBe(projectionRevision(before))
+  expect(
+    projectionRevision(
+      projection({
+        members: before.members.map((member) => (member.id === 'member' ? { ...member, phase: 'failed' } : member)),
+      }),
+    ),
+  ).not.toBe(projectionRevision(before))
 })

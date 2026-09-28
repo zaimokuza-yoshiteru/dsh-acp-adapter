@@ -10,14 +10,9 @@
     "allowImportingTsExtensions": true,
     "skipLibCheck": true,
     "resolveJsonModule": true,
-    "types": [
-      "node"
-    ],
+    "types": ["node"],
     "noUnusedLocals": true,
     "noUnusedParameters": true
   },
-  "include": [
-    "scripts/**/*.ts",
-    "test/mock-agent/**/*.ts"
-  ]
+  "include": ["scripts/**/*.ts", "test/mock-agent/**/*.ts"]
 }

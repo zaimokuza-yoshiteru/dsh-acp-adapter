@@ -5,7 +5,7 @@ import { expect, it } from 'vitest'
 import { AcpSessionRuntime } from '../../../src/runtime/session/session-runtime.ts'
 import { sharedTestSubprocess } from '../../fixtures/subprocess-seam-testing.ts'
 
-it.each(['resume', 'load'] as const)('records an actual %s RPC once, then reuses the live session', async method => {
+it.each(['resume', 'load'] as const)('records an actual %s RPC once, then reuses the live session', async (method) => {
   const cwd = mkdtempSync(join(tmpdir(), 'acp-restore-'))
   const source = `
     const readline = require('node:readline');
@@ -25,15 +25,19 @@ it.each(['resume', 'load'] as const)('records an actual %s RPC once, then reuses
   `
   const argv = [process.execPath, '-e', source]
   const runtime = new AcpSessionRuntime({
-    profileId: 'test', config: { command: process.execPath, args: argv.slice(1), env: {} }, cwd,
+    profileId: 'test',
+    config: { command: process.execPath, args: argv.slice(1), env: {} },
+    cwd,
     subprocess: (await sharedTestSubprocess()).seam,
     prepareLaunch: async () => ({ argv, env: {}, spawnPlan: { argv, env: {} } }),
   })
   try {
     const replay: unknown[] = []
-    expect(await runtime.restore({ agentSessionId: 'saved' }, undefined, value => replay.push(value))).toBe(method === 'resume' ? 'resumed' : 'loaded')
+    expect(await runtime.restore({ agentSessionId: 'saved' }, undefined, (value) => replay.push(value))).toBe(
+      method === 'resume' ? 'resumed' : 'loaded',
+    )
     expect(replay).toHaveLength(1)
-    expect(await runtime.restore({ agentSessionId: 'saved' }, undefined, value => replay.push(value))).toBe('reused')
+    expect(await runtime.restore({ agentSessionId: 'saved' }, undefined, (value) => replay.push(value))).toBe('reused')
     expect(replay).toHaveLength(1)
     await expect(runtime.restore({ agentSessionId: 'other' })).rejects.toThrow('does not match')
   } finally {

@@ -3,10 +3,7 @@ import {
   CrossBackendTransactionController,
   resolveCrossBackendLocation,
 } from '../../../src/client/data/cross-backend-controller.ts'
-import type {
-  CrossBackendOperations,
-  CrossBackendTicket,
-} from '../../../src/client/data/cross-backend-controller.ts'
+import type { CrossBackendOperations, CrossBackendTicket } from '../../../src/client/data/cross-backend-controller.ts'
 
 const source = { provider: 'deepseek', model: 'deepseek-chat' }
 const target = { provider: 'acp-codex', model: 'gpt-5.6-mini' }
@@ -23,18 +20,35 @@ function ticket(): CrossBackendTicket {
 
 function operations(order: string[], overrides: Partial<CrossBackendOperations> = {}): CrossBackendOperations {
   return {
-    restoreSource: vi.fn(async () => { order.push('restore'); return { ok: true } }),
-    createDestination: vi.fn(async ({ sessionId }) => { order.push(`create:${sessionId}`); return { published: true } }),
-    selectDestination: vi.fn(async () => { order.push('select'); return { ok: true } }),
-    openDestination: vi.fn(async () => { order.push('open'); return { ok: true } }),
+    restoreSource: vi.fn(async () => {
+      order.push('restore')
+      return { ok: true }
+    }),
+    createDestination: vi.fn(async ({ sessionId }) => {
+      order.push(`create:${sessionId}`)
+      return { published: true }
+    }),
+    selectDestination: vi.fn(async () => {
+      order.push('select')
+      return { ok: true }
+    }),
+    openDestination: vi.fn(async () => {
+      order.push('open')
+      return { ok: true }
+    }),
     ...overrides,
   }
 }
 
+function statesOf(controller: CrossBackendTransactionController): Map<string, unknown> {
+  return (controller as unknown as { states: Map<string, unknown> }).states
+}
+
 describe('CrossBackendTransactionController', () => {
   it('resolves workspace before cwd, and falls back to cwd only when ungrouped', () => {
-    expect(resolveCrossBackendLocation('s1', [{ workspaceId: 'w', sessionIds: ['s1'] }], '/tmp/project'))
-      .toEqual({ workspaceId: 'w' })
+    expect(resolveCrossBackendLocation('s1', [{ workspaceId: 'w', sessionIds: ['s1'] }], '/tmp/project')).toEqual({
+      workspaceId: 'w',
+    })
     expect(resolveCrossBackendLocation('s1', [], '/tmp/project')).toEqual({ cwd: '/tmp/project' })
     expect(resolveCrossBackendLocation('s1', [], undefined)).toBeUndefined()
   })
@@ -44,12 +58,7 @@ describe('CrossBackendTransactionController', () => {
     const ops = operations(order)
     const result = await new CrossBackendTransactionController().confirm(ticket(), ops)
     expect(result.ok).toBe(true)
-    expect(order).toEqual([
-      'restore',
-      expect.stringMatching(/^create:session-/),
-      'select',
-      'open',
-    ])
+    expect(order).toEqual(['restore', expect.stringMatching(/^create:session-/), 'select', 'open'])
   })
 
   it('does not create a second destination when create/select/open fails and is retried', async () => {
@@ -82,10 +91,13 @@ describe('CrossBackendTransactionController', () => {
     expect(second.ok).toBe(false)
     const third = await controller.confirm(ticket(), ops)
     expect(third.ok).toBe(true)
+    const fourth = await controller.confirm(ticket(), ops)
+    expect(fourth.ok).toBe(true)
     expect(createAttempt).toBe(1)
     expect(selectAttempt).toBe(2)
     expect(openAttempt).toBe(2)
     expect(third.ok ? third.destinationSessionId : '').toBe(firstId)
+    expect(fourth.ok ? fourth.destinationSessionId : '').toBe(firstId)
   })
 
   it('cancel only restores source and keeps destination untouched', async () => {
@@ -103,7 +115,29 @@ describe('CrossBackendTransactionController', () => {
       restoreSource: vi.fn(async () => ({ ok: false, message: 'restore rejected' })),
     })
     const result = await new CrossBackendTransactionController().confirm(ticket(), ops)
-    expect(result).toEqual({ ok: false, failure: { phase: 'restore-source', message: 'restore rejected', destinationSessionId: expect.any(String) } })
+    expect(result).toEqual({
+      ok: false,
+      failure: { phase: 'restore-source', message: 'restore rejected', destinationSessionId: expect.any(String) },
+    })
     expect(ops.createDestination).not.toHaveBeenCalled()
+  })
+
+  it('clears state when canceling a failed transaction with no source selection', async () => {
+    const order: string[] = []
+    const tx = new CrossBackendTransactionController()
+    const noSourceTicket = { ...ticket(), sourceSelection: undefined }
+    const ops = operations(order, {
+      selectDestination: vi.fn(async () => {
+        order.push('select')
+        return { ok: false, message: 'temporary select failure' }
+      }),
+    })
+    await tx.confirm(noSourceTicket, ops)
+    expect(statesOf(tx).has(noSourceTicket.key)).toBe(true)
+
+    await tx.cancel(noSourceTicket, ops)
+
+    expect(statesOf(tx).has(noSourceTicket.key)).toBe(false)
+    expect(order).toEqual([expect.stringMatching(/^create:session-/), 'select'])
   })
 })

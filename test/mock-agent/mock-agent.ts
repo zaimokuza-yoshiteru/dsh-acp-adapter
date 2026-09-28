@@ -1,30 +1,42 @@
-import type { MockSession, MockRequest, MockTurn, MockConfigOption, PromptMessage, WireUpdate, RpcId, ClientResults } from './types.ts';
+import type {
+  MockSession,
+  MockRequest,
+  MockTurn,
+  MockConfigOption,
+  PromptMessage,
+  WireUpdate,
+  RpcId,
+  ClientResults,
+} from './types.ts'
 // Deterministic ACP protocol fixture. Scenarios are selected by MOCK_SCENARIO
 // (default happy); regression delegates product flows to regression-turn.ts.
 // Optional test inputs: MOCK_LOG, MOCK_STEP_DELAY_MS, MOCK_SLOW_INIT_MS, MOCK_SESSION_NEW_DELAY_MS,
 // MOCK_ADVERTISE_RESUME, MOCK_ADVERTISE_FORK, MOCK_EMIT_NATIVE_SUBAGENT,
 // MOCK_NEVER_METHODS, and MOCK_MODEL_THOUGHT_LEVELS.
-import readline from 'node:readline';
-import { regressionTurn } from './regression-turn.ts';
-import fs from 'node:fs';
-import { join } from 'node:path';
+import readline from 'node:readline'
+import { regressionTurn } from './regression-turn.ts'
+import fs from 'node:fs'
+import { join } from 'node:path'
 
 // Native CLI registration fixture; real executable coverage lives in check-devin-mcp/live.
-const mcpIndex = process.argv.indexOf('mcp');
+const mcpIndex = process.argv.indexOf('mcp')
 if (mcpIndex >= 0) {
-  const file = join(process.env.HOME ?? process.cwd(), '.mock-devin-mcp.json');
-  const action = process.argv[mcpIndex + 1];
+  const file = join(process.env.HOME ?? process.cwd(), '.mock-devin-mcp.json')
+  const action = process.argv[mcpIndex + 1]
   if (action === 'get') {
-    if (!fs.existsSync(file)) { console.error("Error: Server 'dsh' not found"); process.exit(1); }
-    const args = JSON.parse(fs.readFileSync(file, 'utf8')) as string[];
-    console.log(`Server: dsh\n    Command: ${args.join(' ')}`);
+    if (!fs.existsSync(file)) {
+      console.error("Error: Server 'dsh' not found")
+      process.exit(1)
+    }
+    const args = JSON.parse(fs.readFileSync(file, 'utf8')) as string[]
+    console.log(`Server: dsh\n    Command: ${args.join(' ')}`)
   } else if (action === 'add') {
-    fs.writeFileSync(file, JSON.stringify(process.argv.slice(process.argv.indexOf('--') + 1)));
-  } else process.exit(1);
-  process.exit(0);
+    fs.writeFileSync(file, JSON.stringify(process.argv.slice(process.argv.indexOf('--') + 1)))
+  } else process.exit(1)
+  process.exit(0)
 }
 
-const FIXED_TIMESTAMP = '2026-01-01T00:00:00.000Z';
+const FIXED_TIMESTAMP = '2026-01-01T00:00:00.000Z'
 
 const KNOWN_SCENARIOS = new Set([
   'regression',
@@ -45,26 +57,26 @@ const KNOWN_SCENARIOS = new Set([
   'cancel-stuck',
   'never-resolve',
   'config-write-fail',
-]);
+])
 
 const intEnv = (name: string, dflt: number) => {
-  const v = Number.parseInt(process.env[name] ?? '', 10);
-  return Number.isFinite(v) && v >= 0 ? v : dflt;
-};
-const STEP_DELAY_MS = intEnv('MOCK_STEP_DELAY_MS', 10);
-const SLOW_INIT_MS = intEnv('MOCK_SLOW_INIT_MS', 5000);
-const ADVERTISE_RESUME = process.env.MOCK_ADVERTISE_RESUME === '1';
-const ADVERTISE_FORK = process.env.MOCK_ADVERTISE_FORK === '1';
-const EMIT_NATIVE_SUBAGENT = process.env.MOCK_EMIT_NATIVE_SUBAGENT === '1';
+  const v = Number.parseInt(process.env[name] ?? '', 10)
+  return Number.isFinite(v) && v >= 0 ? v : dflt
+}
+const STEP_DELAY_MS = intEnv('MOCK_STEP_DELAY_MS', 10)
+const SLOW_INIT_MS = intEnv('MOCK_SLOW_INIT_MS', 5000)
+const ADVERTISE_RESUME = process.env.MOCK_ADVERTISE_RESUME === '1'
+const ADVERTISE_FORK = process.env.MOCK_ADVERTISE_FORK === '1'
+const EMIT_NATIVE_SUBAGENT = process.env.MOCK_EMIT_NATIVE_SUBAGENT === '1'
 // never-resolve：永不响应的方法集合（RPC deadline 矩阵；默认只挂 session/new）
 const NEVER_METHODS = (() => {
   try {
-    const parsed = JSON.parse(process.env.MOCK_NEVER_METHODS ?? '["session/new"]');
-    return new Set(Array.isArray(parsed) ? parsed.filter((m) => typeof m === 'string') : []);
+    const parsed = JSON.parse(process.env.MOCK_NEVER_METHODS ?? '["session/new"]')
+    return new Set(Array.isArray(parsed) ? parsed.filter((m) => typeof m === 'string') : [])
   } catch {
-    return new Set();
+    return new Set()
   }
-})();
+})()
 
 const state = {
   scenario: process.env.MOCK_SCENARIO || 'happy',
@@ -72,68 +84,71 @@ const state = {
   sessionSeq: 0,
   agentReqSeq: 0,
   pendingAgentRequests: new Map<RpcId, (result: unknown) => void>(), // agent 侧请求 id -> resolve(result)
-};
+}
 
 if (!KNOWN_SCENARIOS.has(state.scenario)) {
-  process.stderr.write(`[mock-agent] unknown MOCK_SCENARIO: ${state.scenario}\n`);
-  process.exit(2);
+  process.stderr.write(`[mock-agent] unknown MOCK_SCENARIO: ${state.scenario}\n`)
+  process.exit(2)
 }
 
 // ---------- 日志 ----------
-const MOCK_LOG = process.env.MOCK_LOG;
+const MOCK_LOG = process.env.MOCK_LOG
 function log(msg: string) {
-  const line = `[mock-agent scenario=${state.scenario}] ${msg}\n`;
-  if (MOCK_LOG) fs.appendFileSync(MOCK_LOG, line);
-  else process.stderr.write(line);
+  const line = `[mock-agent scenario=${state.scenario}] ${msg}\n`
+  if (MOCK_LOG) fs.appendFileSync(MOCK_LOG, line)
+  else process.stderr.write(line)
 }
 
 // ---------- 帧输出（stdout 只允许协议帧） ----------
 function sendFrame(frame: unknown, cb?: (error?: Error | null) => void) {
-  process.stdout.write(JSON.stringify(frame) + '\n', cb);
+  process.stdout.write(JSON.stringify(frame) + '\n', cb)
 }
 function respond(id: RpcId, result: unknown) {
-  sendFrame({ jsonrpc: '2.0', id, result });
+  sendFrame({ jsonrpc: '2.0', id, result })
 }
 function respondError(id: RpcId, code: number, message: string) {
-  sendFrame({ jsonrpc: '2.0', id, error: { code, message } });
+  sendFrame({ jsonrpc: '2.0', id, error: { code, message } })
 }
 function sendUpdate(sessionId: string, update: WireUpdate, cb?: (error?: Error | null) => void) {
-  sendFrame({ jsonrpc: '2.0', method: 'session/update', params: { sessionId, update } }, cb);
+  sendFrame({ jsonrpc: '2.0', method: 'session/update', params: { sessionId, update } }, cb)
 }
 // agent → client 请求（session/request_permission），返回 client 响应的 result
-function sendAgentRequest<M extends keyof ClientResults>(method: M, params: Record<string, unknown>): Promise<ClientResults[M]> {
-  const id = `mock-agent-req-${++state.agentReqSeq}`;
+function sendAgentRequest<M extends keyof ClientResults>(
+  method: M,
+  params: Record<string, unknown>,
+): Promise<ClientResults[M]> {
+  const id = `mock-agent-req-${++state.agentReqSeq}`
   return new Promise<ClientResults[M]>((resolve) => {
     // JSON-RPC response boundary; the client contract is checked by protocol tests.
-    state.pendingAgentRequests.set(id, result => resolve(result as ClientResults[M]));
-    sendFrame({ jsonrpc: '2.0', id, method, params });
-  });
+    state.pendingAgentRequests.set(id, (result) => resolve(result as ClientResults[M]))
+    sendFrame({ jsonrpc: '2.0', id, method, params })
+  })
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 // ---------- scenario 行为谓词 ----------
-const fullCaps = () => state.scenario !== 'minimal-caps';
-const hasConfigOptions = () => state.scenario !== 'minimal-caps' && state.scenario !== 'no-config-options';
+const fullCaps = () => state.scenario !== 'minimal-caps'
+const hasConfigOptions = () => state.scenario !== 'minimal-caps' && state.scenario !== 'no-config-options'
 const MODEL_THOUGHT_LEVELS: Record<string, unknown> = (() => {
   try {
-    const parsed = JSON.parse(process.env.MOCK_MODEL_THOUGHT_LEVELS ?? '{}');
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    const parsed = JSON.parse(process.env.MOCK_MODEL_THOUGHT_LEVELS ?? '{}')
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
   } catch {
-    return {};
+    return {}
   }
-})();
+})()
 
 function thoughtLevelsForModel(model: string) {
-  const values = MODEL_THOUGHT_LEVELS[model];
+  const values = MODEL_THOUGHT_LEVELS[model]
   return Array.isArray(values) && values.every((value) => typeof value === 'string' && value.length > 0)
     ? values
-    : undefined;
+    : undefined
 }
 // 清理矩阵的广告旋钮（真机 devin：delete 有、close 无）：
 //   no-delete 不广告 delete；cleanup-close-delete 额外广告 close。
-const advertisesDelete = () => fullCaps() && state.scenario !== 'no-delete';
-const advertisesClose = () => state.scenario === 'cleanup-close-delete';
+const advertisesDelete = () => fullCaps() && state.scenario !== 'no-delete'
+const advertisesClose = () => state.scenario === 'cleanup-close-delete'
 
 // ---------- 固定脚本数据（对齐 reference/agent-client-protocol/schema/v1/schema.json） ----------
 // mode 集合固定自 Devin 3000.4.25 的历史实测：id accept-edits（显示名 "Code"）等 5 项，
@@ -144,14 +159,14 @@ const MODE_ENTRIES = [
   { id: 'ask', name: 'Ask', description: 'Answer questions without code changes' },
   { id: 'plan', name: 'Plan', description: 'Plan changes before implementing' },
   { id: 'bypass', name: 'Bypass Permissions', description: 'Auto-approve all tool calls' },
-];
+]
 
 function freshModes() {
   // SessionModeState
   return {
     currentModeId: 'accept-edits',
     availableModes: MODE_ENTRIES.map(({ id, name }) => ({ id, name })),
-  };
+  }
 }
 
 function freshConfigOptions() {
@@ -178,10 +193,10 @@ function freshConfigOptions() {
         { value: 'mock-model-c', name: 'Mock Model C' },
       ],
     },
-  ];
-  const initialThoughtLevels = thoughtLevelsForModel('mock-model-a');
+  ]
+  const initialThoughtLevels = thoughtLevelsForModel('mock-model-a')
   if (initialThoughtLevels !== undefined) {
-    const levels = initialThoughtLevels;
+    const levels = initialThoughtLevels
     options.push({
       id: 'thought_level',
       name: 'Thought Level',
@@ -189,14 +204,18 @@ function freshConfigOptions() {
       type: 'select',
       currentValue: levels[0],
       options: levels.map((value) => ({ value, name: value[0].toUpperCase() + value.slice(1) })),
-    });
+    })
   }
-  return options;
+  return options
 }
 
 function happyTurnUpdates(cwd: string) {
   return [
-    { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'Thinking about the mock request.' }, messageId: 'mock-thought-1' },
+    {
+      sessionUpdate: 'agent_thought_chunk',
+      content: { type: 'text', text: 'Thinking about the mock request.' },
+      messageId: 'mock-thought-1',
+    },
     { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Hello' }, messageId: 'mock-msg-1' },
     { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: ', mock' }, messageId: 'mock-msg-1' },
     { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: ' world.' }, messageId: 'mock-msg-1' },
@@ -225,7 +244,7 @@ function happyTurnUpdates(cwd: string) {
       ],
     },
     { sessionUpdate: 'usage_update', used: 1234, size: 1048576 },
-  ];
+  ]
 }
 
 // .1t：同 happy 的 turn 骨架，tool_call_update 的 content 换成全非文本类型混合
@@ -233,7 +252,7 @@ function happyTurnUpdates(cwd: string) {
 // fidelity 的 e2e 夹具（占位/摘要落 log、meta、sidecar degradation 审计）。
 function richContentTurnUpdates(cwd: string) {
   return happyTurnUpdates(cwd).map((update) => {
-    if (update.sessionUpdate !== 'tool_call_update') return update;
+    if (update.sessionUpdate !== 'tool_call_update') return update
     return {
       ...update,
       content: [
@@ -241,24 +260,58 @@ function richContentTurnUpdates(cwd: string) {
         { type: 'diff', path: `${cwd}/README.md`, oldText: 'old title\n', newText: '# mock readme\n' },
         { type: 'terminal', terminalId: 'mock-term-1' },
         { type: 'content', content: { type: 'image', data: 'aGVsbG8taW1hZ2U=', mimeType: 'image/png' } },
-        { type: 'content', content: { type: 'resource', resource: { uri: 'file:///mock/cwd/notes.txt', mimeType: 'text/plain', text: 'notes body' } } },
-        { type: 'content', content: { type: 'resource', resource: { uri: 'file:///mock/cwd/bin.dat', mimeType: 'application/octet-stream', blob: 'AAECAwQ=' } } },
-        { type: 'content', content: { type: 'resource_link', name: 'report.pdf', title: '报表', uri: 'file:///mock/cwd/report.pdf', mimeType: 'application/pdf', size: 2048 } },
+        {
+          type: 'content',
+          content: {
+            type: 'resource',
+            resource: { uri: 'file:///mock/cwd/notes.txt', mimeType: 'text/plain', text: 'notes body' },
+          },
+        },
+        {
+          type: 'content',
+          content: {
+            type: 'resource',
+            resource: { uri: 'file:///mock/cwd/bin.dat', mimeType: 'application/octet-stream', blob: 'AAECAwQ=' },
+          },
+        },
+        {
+          type: 'content',
+          content: {
+            type: 'resource_link',
+            name: 'report.pdf',
+            title: '报表',
+            uri: 'file:///mock/cwd/report.pdf',
+            mimeType: 'application/pdf',
+            size: 2048,
+          },
+        },
       ],
-    };
-  });
+    }
+  })
 }
 
 const MINIMAL_TURN_UPDATES = [
   { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Minimal reply.' }, messageId: 'mock-msg-1' },
   { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: ' Done.' }, messageId: 'mock-msg-1' },
-];
+]
 
 // session/load 回放：固定 messageId/toolCallId，供恢复归并逻辑做去重测试
 const LOAD_REPLAY = [
-  { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'Earlier user question' }, messageId: 'mock-load-msg-user-1' },
-  { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Earlier answer, part 1' }, messageId: 'mock-load-msg-agent-1' },
-  { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: ' + part 2' }, messageId: 'mock-load-msg-agent-1' },
+  {
+    sessionUpdate: 'user_message_chunk',
+    content: { type: 'text', text: 'Earlier user question' },
+    messageId: 'mock-load-msg-user-1',
+  },
+  {
+    sessionUpdate: 'agent_message_chunk',
+    content: { type: 'text', text: 'Earlier answer, part 1' },
+    messageId: 'mock-load-msg-agent-1',
+  },
+  {
+    sessionUpdate: 'agent_message_chunk',
+    content: { type: 'text', text: ' + part 2' },
+    messageId: 'mock-load-msg-agent-1',
+  },
   {
     sessionUpdate: 'tool_call',
     toolCallId: 'mock-load-tool-1',
@@ -281,14 +334,14 @@ const LOAD_REPLAY = [
       { content: 'Summarize history', priority: 'medium', status: 'completed' },
     ],
   },
-];
+]
 
 const PERMISSION_OPTIONS = [
   { optionId: 'allow_once', name: 'Allow once', kind: 'allow_once' },
   { optionId: 'allow_always', name: 'Allow always', kind: 'allow_always' },
   { optionId: 'reject_once', name: 'Reject once', kind: 'reject_once' },
   { optionId: 'reject_always', name: 'Reject always', kind: 'reject_always' },
-];
+]
 
 // ---------- 会话 ----------
 function createSession(id: string, cwd: string) {
@@ -299,30 +352,32 @@ function createSession(id: string, cwd: string) {
     configOptions: hasConfigOptions() ? freshConfigOptions() : null,
     turn: null, // { cancelled, cancel(), cancelWait? }
     closed: false, // session/close 后置位：prompt 拒绝（-32602），delete 仍合法
-  };
-  state.sessions.set(id, session);
-  return session;
+  }
+  state.sessions.set(id, session)
+  return session
 }
 
 function getSession(msg: MockRequest) {
-  const sessionId = msg.params?.sessionId;
-  const session = typeof sessionId === 'string' ? state.sessions.get(sessionId) : undefined;
-  if (!session) respondError(msg.id, -32602, `Invalid params: unknown sessionId ${String(sessionId)}`);
-  return session;
+  const sessionId = msg.params?.sessionId
+  const session = typeof sessionId === 'string' ? state.sessions.get(sessionId) : undefined
+  if (!session) respondError(msg.id, -32602, `Invalid params: unknown sessionId ${String(sessionId)}`)
+  return session
 }
 
 // ---------- 方法处理 ----------
 async function handleInitialize(msg: MockRequest) {
   if (process.env.MOCK_UNAVAILABLE_FILE && fs.existsSync(process.env.MOCK_UNAVAILABLE_FILE)) {
-    respondError(msg.id, -32000, 'E2E_AGENT_TEMPORARILY_UNAVAILABLE');
-    return;
+    respondError(msg.id, -32000, 'E2E_AGENT_TEMPORARILY_UNAVAILABLE')
+    return
   }
   if (state.scenario === 'slow-response') {
-    log(`initialize delayed ${SLOW_INIT_MS}ms (slow-response)`);
-    await sleep(SLOW_INIT_MS);
+    log(`initialize delayed ${SLOW_INIT_MS}ms (slow-response)`)
+    await sleep(SLOW_INIT_MS)
   }
-  const nativeSubagentCapabilities = msg.params?.clientCapabilities?._meta?.jetbrains?.air?.capabilities;
-  log(`initialize nativeSubagentSessions=${String(Array.isArray(nativeSubagentCapabilities) && nativeSubagentCapabilities.includes('nativeSubagentSessions'))}`);
+  const nativeSubagentCapabilities = msg.params?.clientCapabilities?._meta?.jetbrains?.air?.capabilities
+  log(
+    `initialize nativeSubagentSessions=${String(Array.isArray(nativeSubagentCapabilities) && nativeSubagentCapabilities.includes('nativeSubagentSessions'))}`,
+  )
   // AgentCapabilities：happy 系全能力；minimal-caps 仅基线。
   // fixture 基线来自 Devin 3000.4.25 历史实测：{ list, delete, additionalDirectories }，无 close；
   // 清理矩阵的 scenario 旋钮（no-delete / cleanup-close-delete）改写 delete/close 两键。
@@ -335,7 +390,7 @@ async function handleInitialize(msg: MockRequest) {
         ...(advertisesClose() ? { close: {} } : {}),
         additionalDirectories: {},
       }
-    : {};
+    : {}
   const agentCapabilities = fullCaps()
     ? {
         loadSession: true,
@@ -350,206 +405,223 @@ async function handleInitialize(msg: MockRequest) {
         mcpCapabilities: { http: false, sse: false },
         sessionCapabilities,
         auth: {},
-      };
+      }
   respond(msg.id, {
     protocolVersion: 1,
-    ...(process.env.MOCK_STEERING === 'atomic' ? { _meta: { steering: { supported: true, idleBehavior: 'promptRequired' } } } : {}),
+    ...(process.env.MOCK_STEERING === 'atomic'
+      ? { _meta: { steering: { supported: true, idleBehavior: 'promptRequired' } } }
+      : {}),
     agentCapabilities,
     authMethods: [],
     agentInfo: { name: 'dsh-mock-acp-agent', title: 'DSH Mock ACP Agent', version: '1.0.0' },
-  });
+  })
 }
 
 function sessionMcpServers(msg: MockRequest): NonNullable<MockSession['mcpServers']> {
   if (process.env.MOCK_PROFILE === 'devin' && process.env.DSH_ACP_TEAM_MCP_URL) {
-    return [{ name: 'dsh', type: 'http', url: process.env.DSH_ACP_TEAM_MCP_URL, headers: [] }];
+    return [{ name: 'dsh', type: 'http', url: process.env.DSH_ACP_TEAM_MCP_URL, headers: [] }]
   }
-  return msg.params?.mcpServers ?? [];
+  return msg.params?.mcpServers ?? []
 }
 
 async function handleSessionNew(msg: MockRequest) {
-  const delay = intEnv('MOCK_SESSION_NEW_DELAY_MS', 0);
-  if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay));
-  const session = createSession(`mock-session-${++state.sessionSeq}`, msg.params?.cwd ?? '/mock/cwd');
-  session.mcpServers = sessionMcpServers(msg);
+  const delay = intEnv('MOCK_SESSION_NEW_DELAY_MS', 0)
+  if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay))
+  const session = createSession(`mock-session-${++state.sessionSeq}`, msg.params?.cwd ?? '/mock/cwd')
+  session.mcpServers = sessionMcpServers(msg)
   // 对齐 devin 实测流量（research/probe-output.log L55-58 先于 session/new 响应）：
   // 先主动推厂商扩展通知 + config_option_update + current_mode_update 快照，再回响应
   if (fullCaps() && !process.env.MOCK_CONTROLS_DELIVERY) {
-    sendFrame({ jsonrpc: '2.0', method: '_cognition.ai/mcp/serversChanged', params: {} });
+    sendFrame({ jsonrpc: '2.0', method: '_cognition.ai/mcp/serversChanged', params: {} })
     if (session.configOptions) {
-      sendUpdate(session.id, { sessionUpdate: 'config_option_update', configOptions: session.configOptions });
+      sendUpdate(session.id, { sessionUpdate: 'config_option_update', configOptions: session.configOptions })
     }
     if (session.modes) {
-      sendUpdate(session.id, { sessionUpdate: 'current_mode_update', currentModeId: session.modes.currentModeId });
+      sendUpdate(session.id, { sessionUpdate: 'current_mode_update', currentModeId: session.modes.currentModeId })
     }
   }
-  const result: Record<string, unknown> = { sessionId: session.id };
+  const result: Record<string, unknown> = { sessionId: session.id }
   if (process.env.MOCK_CONTROLS_DELIVERY === 'deferred') {
-    result.configOptions = session.configOptions?.filter(option => option.category === 'model');
+    result.configOptions = session.configOptions?.filter((option) => option.category === 'model')
   } else {
-    if (session.modes) result.modes = session.modes;
-    if (session.configOptions) result.configOptions = session.configOptions;
+    if (session.modes) result.modes = session.modes
+    if (session.configOptions) result.configOptions = session.configOptions
   }
-  respond(msg.id, result);
+  respond(msg.id, result)
 }
 
 function handleSessionLoad(msg: MockRequest) {
-  const sessionId = msg.params?.sessionId;
+  const sessionId = msg.params?.sessionId
   if (typeof sessionId !== 'string' || !sessionId) {
-    return respondError(msg.id, -32602, 'Invalid params: sessionId required');
+    return respondError(msg.id, -32602, 'Invalid params: sessionId required')
   }
   if (state.scenario === 'load-fail') {
-    log(`session/load ${sessionId} fails by scenario (load-fail)`);
-    return respondError(msg.id, -32603, 'mock: session/load failed (load-fail scenario)');
+    log(`session/load ${sessionId} fails by scenario (load-fail)`)
+    return respondError(msg.id, -32603, 'mock: session/load failed (load-fail scenario)')
   }
-  const session = state.sessions.get(sessionId) ?? createSession(sessionId, msg.params?.cwd ?? '/mock/cwd');
-  session.mcpServers = sessionMcpServers(msg);
-  const replay = (session.recordedHistory?.length ?? 0) > 0 ? session.recordedHistory! : LOAD_REPLAY;
-  log(`session/load ${session.id}: replaying ${replay.length} updates`);
-  for (const update of replay) sendUpdate(session.id, update);
-  const result: Record<string, unknown> = {};
-  if (session.modes) result.modes = session.modes;
-  if (session.configOptions) result.configOptions = session.configOptions;
-  respond(msg.id, result);
+  const session = state.sessions.get(sessionId) ?? createSession(sessionId, msg.params?.cwd ?? '/mock/cwd')
+  session.mcpServers = sessionMcpServers(msg)
+  const replay = (session.recordedHistory?.length ?? 0) > 0 ? session.recordedHistory! : LOAD_REPLAY
+  log(`session/load ${session.id}: replaying ${replay.length} updates`)
+  for (const update of replay) sendUpdate(session.id, update)
+  const result: Record<string, unknown> = {}
+  if (session.modes) result.modes = session.modes
+  if (session.configOptions) result.configOptions = session.configOptions
+  respond(msg.id, result)
 }
 
 function handleSessionResume(msg: MockRequest) {
   if (!ADVERTISE_RESUME) {
-    return respondError(msg.id, -32601, 'Method not found: session/resume');
+    return respondError(msg.id, -32601, 'Method not found: session/resume')
   }
-  const session = getSession(msg);
-  if (!session) return;
-  session.closed = false;
-  session.mcpServers = sessionMcpServers(msg);
-  log(`session/resume ${session.id}: no replay`);
-  const result: Record<string, unknown> = {};
-  if (session.modes) result.modes = session.modes;
-  if (session.configOptions) result.configOptions = session.configOptions;
-  respond(msg.id, result);
+  const session = getSession(msg)
+  if (!session) return
+  session.closed = false
+  session.mcpServers = sessionMcpServers(msg)
+  log(`session/resume ${session.id}: no replay`)
+  const result: Record<string, unknown> = {}
+  if (session.modes) result.modes = session.modes
+  if (session.configOptions) result.configOptions = session.configOptions
+  respond(msg.id, result)
 }
 
 function handleSessionFork(msg: MockRequest) {
-  const parent = getSession(msg);
-  if (!parent) return;
-  if (!ADVERTISE_FORK) return respondError(msg.id, -32601, 'Method not found: session/fork');
-  const child = createSession(`mock-session-${++state.sessionSeq}`, msg.params?.cwd ?? parent.cwd);
-  child.configOptions = parent.configOptions ? JSON.parse(JSON.stringify(parent.configOptions)) : null;
-  child.modes = parent.modes ? JSON.parse(JSON.stringify(parent.modes)) : null;
-  log(`session/fork parent=${parent.id} child=${child.id}`);
-  const result: Record<string, unknown> = { sessionId: child.id };
-  if (child.modes) result.modes = child.modes;
-  if (child.configOptions) result.configOptions = child.configOptions;
-  respond(msg.id, result);
+  const parent = getSession(msg)
+  if (!parent) return
+  if (!ADVERTISE_FORK) return respondError(msg.id, -32601, 'Method not found: session/fork')
+  const child = createSession(`mock-session-${++state.sessionSeq}`, msg.params?.cwd ?? parent.cwd)
+  child.configOptions = parent.configOptions ? JSON.parse(JSON.stringify(parent.configOptions)) : null
+  child.modes = parent.modes ? JSON.parse(JSON.stringify(parent.modes)) : null
+  log(`session/fork parent=${parent.id} child=${child.id}`)
+  const result: Record<string, unknown> = { sessionId: child.id }
+  if (child.modes) result.modes = child.modes
+  if (child.configOptions) result.configOptions = child.configOptions
+  respond(msg.id, result)
 }
 
 function handleSessionList(msg: MockRequest) {
-  const cwd = msg.params?.cwd;
+  const cwd = msg.params?.cwd
   const all = [...state.sessions.values()]
     .filter((s) => !cwd || s.cwd === cwd)
-    .map((s) => ({ sessionId: s.id, cwd: s.cwd, title: `Mock session ${s.id}`, updatedAt: FIXED_TIMESTAMP }));
-  respond(msg.id, { sessions: all });
+    .map((s) => ({ sessionId: s.id, cwd: s.cwd, title: `Mock session ${s.id}`, updatedAt: FIXED_TIMESTAMP }))
+  respond(msg.id, { sessions: all })
 }
 
 function handleSessionDelete(msg: MockRequest) {
   if (state.scenario === 'delete-fail') {
-    log('session/delete fails by scenario (delete-fail)');
-    return respondError(msg.id, -32603, 'mock: session/delete failed (delete-fail scenario)');
+    log('session/delete fails by scenario (delete-fail)')
+    return respondError(msg.id, -32603, 'mock: session/delete failed (delete-fail scenario)')
   }
   if (state.scenario === 'no-delete') {
     // 未广告 delete 的 agent 视该方法为未实现（对齐 minimal-caps 的 -32601 口径）
-    return respondError(msg.id, -32601, 'Method not found: session/delete');
+    return respondError(msg.id, -32601, 'Method not found: session/delete')
   }
-  const sessionId = msg.params?.sessionId;
+  const sessionId = msg.params?.sessionId
   if (typeof sessionId !== 'string' || !state.sessions.has(sessionId)) {
-    return respondError(msg.id, -32602, `Invalid params: unknown sessionId ${String(sessionId)}`);
+    return respondError(msg.id, -32602, `Invalid params: unknown sessionId ${String(sessionId)}`)
   }
-  state.sessions.delete(sessionId);
-  log(`session/delete ${sessionId}`);
-  respond(msg.id, {});
+  state.sessions.delete(sessionId)
+  log(`session/delete ${sessionId}`)
+  respond(msg.id, {})
 }
 
 function handleSessionClose(msg: MockRequest) {
-  const sessionId = msg.params?.sessionId;
-  const session = typeof sessionId === 'string' ? state.sessions.get(sessionId) : undefined;
+  const sessionId = msg.params?.sessionId
+  const session = typeof sessionId === 'string' ? state.sessions.get(sessionId) : undefined
   if (!session) {
-    return respondError(msg.id, -32602, `Invalid params: unknown sessionId ${String(sessionId)}`);
+    return respondError(msg.id, -32602, `Invalid params: unknown sessionId ${String(sessionId)}`)
   }
   // 规范：close 隐含 cancel 当前进行中的工作。会话条目保留在表内（标记
   // closed）——close 只结束活动会话，delete 才删除持久状态；真机 devin 的
   // list 在 close 后仍列出该会话，delete 对已 close 会话合法（清理
   // 次序 close→delete 依赖此语义）。
-  session.turn?.cancel();
-  session.closed = true;
-  log(`session/close ${sessionId}`);
-  respond(msg.id, {});
+  session.turn?.cancel()
+  session.closed = true
+  log(`session/close ${sessionId}`)
+  respond(msg.id, {})
 }
 
 // ---------- prompt turns ----------
 async function runUpdateTurn(session: MockSession, msg: PromptMessage, updates: WireUpdate[]) {
   const turn: MockTurn = {
     cancelled: false,
-    cancel() { this.cancelled = true; },
-  };
-  session.turn = turn;
+    cancel() {
+      this.cancelled = true
+    },
+  }
+  session.turn = turn
   // recorded-replay 记录面：turn 开始时先把当前发布 prompt 的文本块合成为
   // user_message_chunk（ACP 回放语义含 user 消息），其后逐条记录实际发出的 update
-  session.recordedHistory ??= [];
+  session.recordedHistory ??= []
   for (const block of Array.isArray(msg.params?.prompt) ? msg.params.prompt : []) {
     if (block.type === 'text') {
       session.recordedHistory.push({
         sessionUpdate: 'user_message_chunk',
         content: { type: 'text', text: block.text },
         messageId: 'mock-recorded-user',
-      });
+      })
     }
   }
   try {
     for (const update of updates) {
-      if (turn.cancelled) return respond(msg.id, { stopReason: 'cancelled' });
-      session.recordedHistory.push(update);
-      sendUpdate(session.id, update);
-      await sleep(STEP_DELAY_MS);
+      if (turn.cancelled) return respond(msg.id, { stopReason: 'cancelled' })
+      session.recordedHistory.push(update)
+      sendUpdate(session.id, update)
+      await sleep(STEP_DELAY_MS)
     }
-    respond(msg.id, { stopReason: turn.cancelled ? 'cancelled' : 'end_turn' });
+    respond(msg.id, { stopReason: turn.cancelled ? 'cancelled' : 'end_turn' })
   } finally {
-    session.turn = null;
+    session.turn = null
   }
 }
 
 async function runNativeSubagentTurn(session: MockSession, msg: PromptMessage) {
-  const childSessionId = `${session.id}-child-1`;
+  const childSessionId = `${session.id}-child-1`
   sendUpdate(session.id, {
-    sessionUpdate: 'subagent_spawned', subagentSessionId: childSessionId,
-    name: 'Research', task: 'Inspect source', capabilities: { cancel: true, close: true },
-  });
-  await sleep(STEP_DELAY_MS);
+    sessionUpdate: 'subagent_spawned',
+    subagentSessionId: childSessionId,
+    name: 'Research',
+    task: 'Inspect source',
+    capabilities: { cancel: true, close: true },
+  })
+  await sleep(STEP_DELAY_MS)
   sendUpdate(childSessionId, {
-    sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'child result' }, messageId: 'mock-child-message-1',
-  });
-  await sleep(STEP_DELAY_MS);
+    sessionUpdate: 'agent_message_chunk',
+    content: { type: 'text', text: 'child result' },
+    messageId: 'mock-child-message-1',
+  })
+  await sleep(STEP_DELAY_MS)
   sendUpdate(session.id, {
-    sessionUpdate: 'subagent_state_update', subagentSessionId: childSessionId, state: 'completed',
-  });
-  await sleep(STEP_DELAY_MS);
+    sessionUpdate: 'subagent_state_update',
+    subagentSessionId: childSessionId,
+    state: 'completed',
+  })
+  await sleep(STEP_DELAY_MS)
   sendUpdate(session.id, {
-    sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'root result' }, messageId: 'mock-root-message-1',
-  });
-  respond(msg.id, { stopReason: 'end_turn' });
+    sessionUpdate: 'agent_message_chunk',
+    content: { type: 'text', text: 'root result' },
+    messageId: 'mock-root-message-1',
+  })
+  respond(msg.id, { stopReason: 'end_turn' })
 }
 
 async function runPermissionTurn(session: MockSession, msg: PromptMessage) {
   const turn: MockTurn = {
     cancelled: false,
     cancel() {
-      this.cancelled = true;
-      this.cancelWait?.();
+      this.cancelled = true
+      this.cancelWait?.()
     },
-  };
-  session.turn = turn;
+  }
+  session.turn = turn
   try {
-    sendUpdate(session.id, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'I need to run a shell command.' }, messageId: 'mock-msg-1' });
-    await sleep(STEP_DELAY_MS);
-    if (turn.cancelled) return respond(msg.id, { stopReason: 'cancelled' });
+    sendUpdate(session.id, {
+      sessionUpdate: 'agent_message_chunk',
+      content: { type: 'text', text: 'I need to run a shell command.' },
+      messageId: 'mock-msg-1',
+    })
+    await sleep(STEP_DELAY_MS)
+    if (turn.cancelled) return respond(msg.id, { stopReason: 'cancelled' })
     sendUpdate(session.id, {
       sessionUpdate: 'tool_call',
       toolCallId: 'mock-tool-perm-1',
@@ -557,9 +629,9 @@ async function runPermissionTurn(session: MockSession, msg: PromptMessage) {
       kind: 'execute',
       status: 'pending',
       rawInput: { command: 'echo hello' },
-    });
-    await sleep(STEP_DELAY_MS);
-    if (turn.cancelled) return respond(msg.id, { stopReason: 'cancelled' });
+    })
+    await sleep(STEP_DELAY_MS)
+    if (turn.cancelled) return respond(msg.id, { stopReason: 'cancelled' })
 
     // 发出 session/request_permission，等待 client 决策或 cancel
     const permissionPromise = sendAgentRequest('session/request_permission', {
@@ -572,19 +644,19 @@ async function runPermissionTurn(session: MockSession, msg: PromptMessage) {
         rawInput: { command: 'echo hello' },
       },
       options: PERMISSION_OPTIONS,
-    });
+    })
     const result = await new Promise<ClientResults['session/request_permission'] | null>((resolve) => {
-      turn.cancelWait = () => resolve(null);
-      permissionPromise.then(resolve);
-    });
+      turn.cancelWait = () => resolve(null)
+      permissionPromise.then(resolve)
+    })
 
     if (turn.cancelled || !result || result.outcome?.outcome === 'cancelled') {
-      log('permission outcome=cancelled');
-      return respond(msg.id, { stopReason: 'cancelled' });
+      log('permission outcome=cancelled')
+      return respond(msg.id, { stopReason: 'cancelled' })
     }
-    const optionId = result.outcome?.optionId ?? '<none>';
-    log(`permission outcome=selected optionId=${optionId}`);
-    await sleep(STEP_DELAY_MS);
+    const optionId = result.outcome?.optionId ?? '<none>'
+    log(`permission outcome=selected optionId=${optionId}`)
+    await sleep(STEP_DELAY_MS)
 
     if (typeof optionId === 'string' && optionId.startsWith('allow')) {
       sendUpdate(session.id, {
@@ -593,17 +665,25 @@ async function runPermissionTurn(session: MockSession, msg: PromptMessage) {
         status: 'completed',
         content: [{ type: 'content', content: { type: 'text', text: 'hello\n' } }],
         rawOutput: { exitCode: 0 },
-      });
-      await sleep(STEP_DELAY_MS);
-      sendUpdate(session.id, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Command finished.' }, messageId: 'mock-msg-1' });
+      })
+      await sleep(STEP_DELAY_MS)
+      sendUpdate(session.id, {
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: 'Command finished.' },
+        messageId: 'mock-msg-1',
+      })
     } else {
-      sendUpdate(session.id, { sessionUpdate: 'tool_call_update', toolCallId: 'mock-tool-perm-1', status: 'failed' });
-      await sleep(STEP_DELAY_MS);
-      sendUpdate(session.id, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Permission denied.' }, messageId: 'mock-msg-1' });
+      sendUpdate(session.id, { sessionUpdate: 'tool_call_update', toolCallId: 'mock-tool-perm-1', status: 'failed' })
+      await sleep(STEP_DELAY_MS)
+      sendUpdate(session.id, {
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: 'Permission denied.' },
+        messageId: 'mock-msg-1',
+      })
     }
-    respond(msg.id, { stopReason: turn.cancelled ? 'cancelled' : 'end_turn' });
+    respond(msg.id, { stopReason: turn.cancelled ? 'cancelled' : 'end_turn' })
   } finally {
-    session.turn = null;
+    session.turn = null
   }
 }
 
@@ -613,15 +693,19 @@ async function runElicitationTurn(session: MockSession, msg: PromptMessage) {
   const turn: MockTurn = {
     cancelled: false,
     cancel() {
-      this.cancelled = true;
-      this.cancelWait?.();
+      this.cancelled = true
+      this.cancelWait?.()
     },
-  };
-  session.turn = turn;
+  }
+  session.turn = turn
   try {
-    sendUpdate(session.id, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'I need structured input. ' }, messageId: 'mock-msg-1' });
-    await sleep(STEP_DELAY_MS);
-    if (turn.cancelled) return respond(msg.id, { stopReason: 'cancelled' });
+    sendUpdate(session.id, {
+      sessionUpdate: 'agent_message_chunk',
+      content: { type: 'text', text: 'I need structured input. ' },
+      messageId: 'mock-msg-1',
+    })
+    await sleep(STEP_DELAY_MS)
+    if (turn.cancelled) return respond(msg.id, { stopReason: 'cancelled' })
     const elicitationPromise = sendAgentRequest('elicitation/create', {
       mode: 'form',
       sessionId: session.id,
@@ -633,37 +717,54 @@ async function runElicitationTurn(session: MockSession, msg: PromptMessage) {
         },
         required: ['target'],
       },
-    });
+    })
     const result = await new Promise<ClientResults['elicitation/create'] | null>((resolve) => {
-      turn.cancelWait = () => resolve(null);
-      elicitationPromise.then(resolve);
-    });
+      turn.cancelWait = () => resolve(null)
+      elicitationPromise.then(resolve)
+    })
     if (turn.cancelled || !result) {
-      log('elicitation aborted (cancelled)');
-      return respond(msg.id, { stopReason: 'cancelled' });
+      log('elicitation aborted (cancelled)')
+      return respond(msg.id, { stopReason: 'cancelled' })
     }
     // 将 client 应答记入日志，供协议测试核对。
-    log(`elicitation response ${JSON.stringify(result)}`);
-    sendUpdate(session.id, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: `Elicitation answered with action=${String(result.action)}; continuing in plain text.` }, messageId: 'mock-msg-1' });
-    await sleep(STEP_DELAY_MS);
-    respond(msg.id, { stopReason: turn.cancelled ? 'cancelled' : 'end_turn' });
+    log(`elicitation response ${JSON.stringify(result)}`)
+    sendUpdate(session.id, {
+      sessionUpdate: 'agent_message_chunk',
+      content: {
+        type: 'text',
+        text: `Elicitation answered with action=${String(result.action)}; continuing in plain text.`,
+      },
+      messageId: 'mock-msg-1',
+    })
+    await sleep(STEP_DELAY_MS)
+    respond(msg.id, { stopReason: turn.cancelled ? 'cancelled' : 'end_turn' })
   } finally {
-    session.turn = null;
+    session.turn = null
   }
 }
 
 function runCrashTurn(session: MockSession, _msg: PromptMessage) {
   const turn: MockTurn = {
     cancelled: false,
-    cancel() { this.cancelled = true; },
-  };
-  session.turn = turn;
-  sendUpdate(session.id, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Partial' }, messageId: 'mock-msg-1' });
+    cancel() {
+      this.cancelled = true
+    },
+  }
+  session.turn = turn
+  sendUpdate(session.id, {
+    sessionUpdate: 'agent_message_chunk',
+    content: { type: 'text', text: 'Partial' },
+    messageId: 'mock-msg-1',
+  })
   // 第二帧写盘回调里退出，避免管道缓冲截断；prompt 永远没有响应
-  sendUpdate(session.id, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: ' output' }, messageId: 'mock-msg-1' }, () => {
-    log('crash-mid-turn: exit(1) without prompt response');
-    process.exit(1);
-  });
+  sendUpdate(
+    session.id,
+    { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: ' output' }, messageId: 'mock-msg-1' },
+    () => {
+      log('crash-mid-turn: exit(1) without prompt response')
+      process.exit(1)
+    },
+  )
 }
 
 // cancel-stuck：prompt 发一条 chunk 后永不响应；session/cancel 照常记录
@@ -673,210 +774,224 @@ function runCancelStuckTurn(session: MockSession, _msg: PromptMessage) {
   const turn: MockTurn = {
     cancelled: false,
     cancel() {
-      this.cancelled = true;
-      log('cancel-stuck: session/cancel received; turn intentionally NOT stopped (no prompt response)');
+      this.cancelled = true
+      log('cancel-stuck: session/cancel received; turn intentionally NOT stopped (no prompt response)')
     },
-  };
-  session.turn = turn;
-  sendUpdate(session.id, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Stuck turn working' }, messageId: 'mock-stuck-1' });
-  log('cancel-stuck: prompt will never be answered');
+  }
+  session.turn = turn
+  sendUpdate(session.id, {
+    sessionUpdate: 'agent_message_chunk',
+    content: { type: 'text', text: 'Stuck turn working' },
+    messageId: 'mock-stuck-1',
+  })
+  log('cancel-stuck: prompt will never be answered')
   // 永不 respond；session.turn 保持悬挂，进程只可能被外部 terminate
 }
 
 function handlePrompt(request: MockRequest) {
-  if (!request.params || !Array.isArray(request.params.prompt)) return respondError(request.id, -32602, 'Invalid params: prompt required');
-  const msg: PromptMessage = { ...request, params: { ...request.params, prompt: request.params.prompt } };
-  const session = getSession(msg);
-  if (!session) return;
+  if (!request.params || !Array.isArray(request.params.prompt))
+    return respondError(request.id, -32602, 'Invalid params: prompt required')
+  const msg: PromptMessage = { ...request, params: { ...request.params, prompt: request.params.prompt } }
+  const session = getSession(msg)
+  if (!session) return
   if (session.closed) {
-    return respondError(msg.id, -32602, `Invalid params: session ${String(msg.params?.sessionId)} is closed`);
+    return respondError(msg.id, -32602, `Invalid params: session ${String(msg.params?.sessionId)} is closed`)
   }
-  if (session.turn) return respondError(msg.id, -32603, 'turn already active on this session');
-  if (EMIT_NATIVE_SUBAGENT) return void runNativeSubagentTurn(session, msg);
+  if (session.turn) return respondError(msg.id, -32603, 'turn already active on this session')
+  if (EMIT_NATIVE_SUBAGENT) return void runNativeSubagentTurn(session, msg)
   switch (state.scenario) {
     case 'regression':
-      return void regressionTurn(session, msg, { sendUpdate, sendAgentRequest, respond, log });
+      return void regressionTurn(session, msg, { sendUpdate, sendAgentRequest, respond, log })
     case 'minimal-caps':
-      return void runUpdateTurn(session, msg, MINIMAL_TURN_UPDATES);
+      return void runUpdateTurn(session, msg, MINIMAL_TURN_UPDATES)
     case 'rich-content':
-      return void runUpdateTurn(session, msg, richContentTurnUpdates(session.cwd));
+      return void runUpdateTurn(session, msg, richContentTurnUpdates(session.cwd))
     case 'permission-flow':
-      return void runPermissionTurn(session, msg);
+      return void runPermissionTurn(session, msg)
     case 'elicitation':
-      return void runElicitationTurn(session, msg);
+      return void runElicitationTurn(session, msg)
     case 'crash-mid-turn':
-      return void runCrashTurn(session, msg);
+      return void runCrashTurn(session, msg)
     case 'cancel-stuck':
-      return void runCancelStuckTurn(session, msg);
+      return void runCancelStuckTurn(session, msg)
     default:
-      return void runUpdateTurn(session, msg, happyTurnUpdates(session.cwd));
+      return void runUpdateTurn(session, msg, happyTurnUpdates(session.cwd))
   }
 }
 
 function handleSetConfigOption(msg: MockRequest) {
-  const session = getSession(msg);
-  if (!session) return;
-  const { configId, value } = msg.params ?? {};
-  const option = session.configOptions?.find((o) => o.id === configId);
+  const session = getSession(msg)
+  if (!session) return
+  const { configId, value } = msg.params ?? {}
+  const option = session.configOptions?.find((o) => o.id === configId)
   if (!option || typeof value !== 'string') {
-    return respondError(msg.id, -32602, `Invalid params: unknown configId ${String(configId)}`);
+    return respondError(msg.id, -32602, `Invalid params: unknown configId ${String(configId)}`)
   }
   if (state.scenario === 'config-write-fail') {
     // 拒绝写入且不应用值，验证 RPC 错误不会破坏连接。
-    log(`set_config_option configId=${configId} value=${JSON.stringify(value)} (refused by scenario)`);
-    return respondError(msg.id, -32603, 'config write refused by scenario (config-write-fail)');
+    log(`set_config_option configId=${configId} value=${JSON.stringify(value)} (refused by scenario)`)
+    return respondError(msg.id, -32603, 'config write refused by scenario (config-write-fail)')
   }
-  option.currentValue = value;
+  option.currentValue = value
   if ((option.category === 'model' || configId === 'model') && typeof value === 'string') {
-    const levels = thoughtLevelsForModel(value);
-    const thought = session.configOptions?.find((candidate) => candidate.id === 'thought_level');
+    const levels = thoughtLevelsForModel(value)
+    const thought = session.configOptions?.find((candidate) => candidate.id === 'thought_level')
     if (levels !== undefined && thought?.type === 'select') {
-      thought.currentValue = levels[0];
-      thought.options = levels.map((level) => ({ value: level, name: level[0].toUpperCase() + level.slice(1) }));
+      thought.currentValue = levels[0]
+      thought.options = levels.map((level) => ({ value: level, name: level[0].toUpperCase() + level.slice(1) }))
     }
   }
-  log(`set_config_option configId=${configId} value=${JSON.stringify(value)}`);
+  log(`set_config_option configId=${configId} value=${JSON.stringify(value)}`)
   // 规范：回完整 configOptions 快照（切换可能连带改变其他选项）
-  respond(msg.id, { configOptions: session.configOptions });
+  respond(msg.id, { configOptions: session.configOptions })
   // 双发保持一致（协议过渡期指引）：写 mode 类 config option 且 legacy modes 在场时，
   // 同步 modes 一面并补推 current_mode_update
-  if ((option.category === 'mode' || configId === 'mode') && session.modes
-    && session.modes.availableModes.some((m) => m.id === value)) {
-    session.modes.currentModeId = value;
-    sendUpdate(session.id, { sessionUpdate: 'current_mode_update', currentModeId: value });
+  if (
+    (option.category === 'mode' || configId === 'mode') &&
+    session.modes &&
+    session.modes.availableModes.some((m) => m.id === value)
+  ) {
+    session.modes.currentModeId = value
+    sendUpdate(session.id, { sessionUpdate: 'current_mode_update', currentModeId: value })
   }
 }
 
 function handleSetMode(msg: MockRequest) {
-  const session = getSession(msg);
-  if (!session) return;
-  const modeId = msg.params?.modeId;
+  const session = getSession(msg)
+  if (!session) return
+  const modeId = msg.params?.modeId
   if (typeof modeId !== 'string' || !session.modes || !session.modes.availableModes.some((m) => m.id === modeId)) {
-    return respondError(msg.id, -32602, `Invalid params: unknown modeId ${String(modeId)}`);
+    return respondError(msg.id, -32602, `Invalid params: unknown modeId ${String(modeId)}`)
   }
-  session.modes.currentModeId = modeId;
-  log(`set_mode modeId=${modeId}`);
-  respond(msg.id, {});
-  sendUpdate(session.id, { sessionUpdate: 'current_mode_update', currentModeId: modeId });
+  session.modes.currentModeId = modeId
+  log(`set_mode modeId=${modeId}`)
+  respond(msg.id, {})
+  sendUpdate(session.id, { sessionUpdate: 'current_mode_update', currentModeId: modeId })
 }
 
 // minimal-caps 下未声明的可选方法视为未实现
-const MINIMAL_CAPS_FORBIDDEN = new Set(['session/load', 'session/resume', 'session/list', 'session/delete', 'session/close']);
+const MINIMAL_CAPS_FORBIDDEN = new Set([
+  'session/load',
+  'session/resume',
+  'session/list',
+  'session/delete',
+  'session/close',
+])
 
 function handleRequest(msg: MockRequest) {
-  const { id, method } = msg;
-  log(`--> ${method} id=${JSON.stringify(id)}`);
+  const { id, method } = msg
+  log(`--> ${method} id=${JSON.stringify(id)}`)
   if (state.scenario === 'never-resolve' && NEVER_METHODS.has(method)) {
     // 永不响应——client 侧的 RPC deadline/poison 只能靠自己收束本请求
-    log(`never-resolve: ${method} will never be answered`);
-    return;
+    log(`never-resolve: ${method} will never be answered`)
+    return
   }
   if (state.scenario === 'minimal-caps' && MINIMAL_CAPS_FORBIDDEN.has(method)) {
-    return respondError(id, -32601, `Method not found: ${method}`);
+    return respondError(id, -32601, `Method not found: ${method}`)
   }
   switch (method) {
     case '_session/steering': {
-      if (process.env.MOCK_STEERING !== 'atomic') return respondError(id, -32601, 'Method not found');
-      const session = state.sessions.get(msg.params?.sessionId ?? '');
-      if (!session?.turn?.steer) return respond(id, { outcome: 'promptRequired' });
-      session.turn.steer(msg.params?.prompt ?? []);
-      return respond(id, { outcome: 'injected' });
+      if (process.env.MOCK_STEERING !== 'atomic') return respondError(id, -32601, 'Method not found')
+      const session = state.sessions.get(msg.params?.sessionId ?? '')
+      if (!session?.turn?.steer) return respond(id, { outcome: 'promptRequired' })
+      session.turn.steer(msg.params?.prompt ?? [])
+      return respond(id, { outcome: 'injected' })
     }
     case 'initialize':
-      return void handleInitialize(msg);
+      return void handleInitialize(msg)
     case 'authenticate':
-      return respond(id, {});
+      return respond(id, {})
     case 'session/new':
-      return handleSessionNew(msg);
+      return handleSessionNew(msg)
     case 'session/load':
-      return handleSessionLoad(msg);
+      return handleSessionLoad(msg)
     case 'session/resume':
-      return handleSessionResume(msg);
+      return handleSessionResume(msg)
     case 'session/fork':
-      return handleSessionFork(msg);
+      return handleSessionFork(msg)
     case 'session/list':
-      return handleSessionList(msg);
+      return handleSessionList(msg)
     case 'session/delete':
-      return handleSessionDelete(msg);
+      return handleSessionDelete(msg)
     case 'session/close':
-      return handleSessionClose(msg);
+      return handleSessionClose(msg)
     case 'session/prompt':
-      return handlePrompt(msg);
+      return handlePrompt(msg)
     case 'session/set_config_option':
-      return handleSetConfigOption(msg);
+      return handleSetConfigOption(msg)
     case 'session/set_mode':
-      return handleSetMode(msg);
+      return handleSetMode(msg)
     default:
-      return respondError(id, -32601, `Method not found: ${method}`);
+      return respondError(id, -32601, `Method not found: ${method}`)
   }
 }
 
 function handleNotification(msg: MockRequest) {
   switch (msg.method) {
     case 'session/cancel': {
-      const session = state.sessions.get(msg.params?.sessionId ?? '');
-      log(`session/cancel sessionId=${msg.params?.sessionId} turnActive=${Boolean(session?.turn)}`);
-      session?.turn?.cancel();
-      break;
+      const session = state.sessions.get(msg.params?.sessionId ?? '')
+      log(`session/cancel sessionId=${msg.params?.sessionId} turnActive=${Boolean(session?.turn)}`)
+      session?.turn?.cancel()
+      break
     }
     default:
-      log(`notification ignored: ${msg.method}`);
+      log(`notification ignored: ${msg.method}`)
   }
 }
 
 // ---------- 主循环 ----------
 if (state.scenario === 'garbage-stdout') {
   // 故意污染 stdout 一行，验证 client 的非 JSON 帧容忍性
-  process.stdout.write('mock-agent startup banner: this line is intentionally not valid JSON\n');
+  process.stdout.write('mock-agent startup banner: this line is intentionally not valid JSON\n')
 }
-log(`started pid=${process.pid} stepDelayMs=${STEP_DELAY_MS}`);
+log(`started pid=${process.pid} stepDelayMs=${STEP_DELAY_MS}`)
 
-const rl = readline.createInterface({ input: process.stdin });
+const rl = readline.createInterface({ input: process.stdin })
 rl.on('line', (line) => {
-  const trimmed = line.trim();
-  if (!trimmed) return;
-  let msg;
+  const trimmed = line.trim()
+  if (!trimmed) return
+  let msg
   try {
-    msg = JSON.parse(trimmed);
+    msg = JSON.parse(trimmed)
   } catch {
-    log(`parse error: ${trimmed.slice(0, 120)}`);
-    return respondError(null, -32700, 'Parse error');
+    log(`parse error: ${trimmed.slice(0, 120)}`)
+    return respondError(null, -32700, 'Parse error')
   }
   if (msg.method !== undefined && msg.id !== undefined) {
-    handleRequest(msg);
+    handleRequest(msg)
   } else if (msg.method !== undefined) {
-    handleNotification(msg);
+    handleNotification(msg)
   } else if (msg.id !== undefined) {
     // client → agent 响应（如 session/request_permission 的答复）
-    const resolve = state.pendingAgentRequests.get(msg.id);
+    const resolve = state.pendingAgentRequests.get(msg.id)
     if (resolve) {
-      state.pendingAgentRequests.delete(msg.id);
-      resolve(msg.error ? { outcome: { outcome: 'cancelled' } } : msg.result);
+      state.pendingAgentRequests.delete(msg.id)
+      resolve(msg.error ? { outcome: { outcome: 'cancelled' } } : msg.result)
     } else {
-      log(`orphan response id=${JSON.stringify(msg.id)} ignored`);
+      log(`orphan response id=${JSON.stringify(msg.id)} ignored`)
     }
   } else {
-    respondError(msg.id ?? null, -32600, 'Invalid Request');
+    respondError(msg.id ?? null, -32600, 'Invalid Request')
   }
-});
+})
 
 rl.on('close', () => {
   if (state.scenario === 'eof-exit') {
-    log('stdin EOF -> exit(0) (eof-exit)');
-    process.exit(0);
+    log('stdin EOF -> exit(0) (eof-exit)')
+    process.exit(0)
   }
   // 默认行为：对齐 devin——stdin EOF 不退出，等 SIGTERM 级拆除
-  log('stdin EOF; staying alive until SIGTERM');
-});
+  log('stdin EOF; staying alive until SIGTERM')
+})
 
 process.on('SIGTERM', () => {
-  log('SIGTERM received, exit(0)');
-  process.exit(0);
-});
+  log('SIGTERM received, exit(0)')
+  process.exit(0)
+})
 process.on('SIGINT', () => {
-  log('SIGINT received, exit(0)');
-  process.exit(0);
-});
+  log('SIGINT received, exit(0)')
+  process.exit(0)
+})
 
 // 保持事件循环存活：EOF 后进程不得自然退出（默认 scenario）
-setInterval(() => {}, 1 << 30);
+setInterval(() => {}, 1 << 30)

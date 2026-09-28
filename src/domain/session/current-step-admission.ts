@@ -27,15 +27,14 @@ export interface CurrentStepProof {
 }
 
 export class AcpAdmissionError extends Error {
-  constructor(readonly code:
-    | 'ACP_SESSION_UNAVAILABLE'
-    | 'ACP_NO_OPEN_STEP'
-    | 'ACP_NO_CURRENT_INPUT') {
-    super(code === 'ACP_SESSION_UNAVAILABLE'
+  constructor(readonly code: 'ACP_SESSION_UNAVAILABLE' | 'ACP_NO_OPEN_STEP' | 'ACP_NO_CURRENT_INPUT') {
+    super(
+      code === 'ACP_SESSION_UNAVAILABLE'
         ? 'ACP cannot prove the live DSH session for this request'
         : code === 'ACP_NO_OPEN_STEP'
           ? 'ACP cannot prove a currently open DSH AgentLoop step'
-          : 'the current DSH AgentLoop step contains no projected, logged input')
+          : 'the current DSH AgentLoop step contains no projected, logged input',
+    )
     this.name = 'AcpAdmissionError'
   }
 }
@@ -60,11 +59,11 @@ export function admitCurrentStep(
   const step = session.facts.openSteps.at(-1)
   if (step === undefined) throw new AcpAdmissionError('ACP_NO_OPEN_STEP')
   const currentIds = step.messageIds
-  const messagesById = new Map(options.messages.map(message => [String(message.id), message]))
+  const messagesById = new Map(options.messages.map((message) => [String(message.id), message]))
   // Durable log order is authoritative. The projection order can differ after
   // middleware copies/reorders it, so never forward the projection's order.
   const admitted = currentIds
-    .map(id => messagesById.get(id))
+    .map((id) => messagesById.get(id))
     .filter((message): message is UserMessage => message !== undefined && message.role === 'user')
   if (admitted.length === 0) throw new AcpAdmissionError('ACP_NO_CURRENT_INPUT')
   const proof: CurrentStepProof = {
@@ -73,7 +72,7 @@ export function admitCurrentStep(
     startSeq: step.startSeq,
     endSeq: null,
     acceptedMessageIds: admitted.map((message) => String(message.id)),
-    anchorMessageId: String((admitted.findLast(message => message.source.kind === 'user') ?? admitted.at(-1)!).id),
+    anchorMessageId: String((admitted.findLast((message) => message.source.kind === 'user') ?? admitted.at(-1)!).id),
     projectionFiltered: options.messages.length !== admitted.length,
   }
   onProof?.(proof)

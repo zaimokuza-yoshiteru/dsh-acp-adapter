@@ -92,19 +92,29 @@ function record(value: unknown): value is Record<string, unknown> {
  * subagent variants. Known variants remain defensively consumed by their
  * discriminant-specific handlers; malformed payloads never cross this parser. */
 function parseSessionNotification(value: unknown): AcpSessionNotification {
-  if (!record(value) || typeof value.sessionId !== 'string' || !record(value.update)
-    || typeof value.update.sessionUpdate !== 'string') {
+  if (
+    !record(value) ||
+    typeof value.sessionId !== 'string' ||
+    !record(value.update) ||
+    typeof value.update.sessionUpdate !== 'string'
+  ) {
     throw new TypeError('ACP session/update notification is malformed')
   }
   const update = value.update
   if (update.sessionUpdate === 'subagent_spawned') {
-    if (typeof update.subagentSessionId !== 'string' || typeof update.name !== 'string'
-      || typeof update.task !== 'string' || !record(update.capabilities)) {
+    if (
+      typeof update.subagentSessionId !== 'string' ||
+      typeof update.name !== 'string' ||
+      typeof update.task !== 'string' ||
+      !record(update.capabilities)
+    ) {
       throw new TypeError('ACP subagent_spawned notification is malformed')
     }
   } else if (update.sessionUpdate === 'subagent_state_update') {
-    if (typeof update.subagentSessionId !== 'string'
-      || !['completed', 'failed', 'cancelled', 'disconnected'].includes(String(update.state))) {
+    if (
+      typeof update.subagentSessionId !== 'string' ||
+      !['completed', 'failed', 'cancelled', 'disconnected'].includes(String(update.state))
+    ) {
       throw new TypeError('ACP subagent_state_update notification is malformed')
     }
   }
@@ -122,7 +132,10 @@ interface SdkHandlerView {
  * The dependency is exact-pinned and the structural contract is covered by a
  * subprocess protocol test so SDK drift fails during CI instead of silently
  * losing child sessions. */
-function prependDraftSubagentHandler(app: acp.ClientApp, deliver: (notification: AcpSessionNotification) => void): boolean {
+function prependDraftSubagentHandler(
+  app: acp.ClientApp,
+  deliver: (notification: AcpSessionNotification) => void,
+): boolean {
   const internals = app as unknown as { readonly builder?: { readonly handlers?: SdkHandlerView[] } }
   const handlers = internals.builder?.handlers
   // This is a private SDK seam.  A missing seam must not make a standard ACP
@@ -130,9 +143,15 @@ function prependDraftSubagentHandler(app: acp.ClientApp, deliver: (notification:
   if (!Array.isArray(handlers)) return false
   handlers.unshift({
     handleMessage(message: unknown): unknown {
-      if (!record(message) || message.kind !== 'notification' || message.method !== 'session/update' || !record(message.params)
-        || !record(message.params.update)
-        || (message.params.update.sessionUpdate !== 'subagent_spawned' && message.params.update.sessionUpdate !== 'subagent_state_update')) {
+      if (
+        !record(message) ||
+        message.kind !== 'notification' ||
+        message.method !== 'session/update' ||
+        !record(message.params) ||
+        !record(message.params.update) ||
+        (message.params.update.sessionUpdate !== 'subagent_spawned' &&
+          message.params.update.sessionUpdate !== 'subagent_state_update')
+      ) {
         return { handled: false, message }
       }
       deliver(parseSessionNotification(message.params))
@@ -167,8 +186,12 @@ function isConnectionClosedError(error: unknown): boolean {
  * only explicit authentication wording is upgraded, while every other
  * internal error remains a protocol error with unknown prompt outcome. */
 function isAuthenticationRejection(error: acp.RequestError): boolean {
-  return error.code === ACP_ERROR_CODE_AUTH_REQUIRED
-    || /failed to authenticate|authentication (?:is )?required|requires authentication|oauth (?:session|token) expired/i.test(error.message)
+  return (
+    error.code === ACP_ERROR_CODE_AUTH_REQUIRED ||
+    /failed to authenticate|authentication (?:is )?required|requires authentication|oauth (?:session|token) expired/i.test(
+      error.message,
+    )
+  )
 }
 
 /**
@@ -181,7 +204,11 @@ function isAuthenticationRejection(error: acp.RequestError): boolean {
  * `DEFAULT_SESSION_CLEANUP_TIMEOUT_MS` 预算（超预算 poison 的是这条将被拆除的
  * 短连接，无副作用外溢）。
  */
-async function probeSessionCleanup(conn: AcpClientConnection, capabilities: acp.AgentCapabilities | undefined, sessionId: string): Promise<AcpProbeCleanup> {
+async function probeSessionCleanup(
+  conn: AcpClientConnection,
+  capabilities: acp.AgentCapabilities | undefined,
+  sessionId: string,
+): Promise<AcpProbeCleanup> {
   const sessionCaps = capabilities?.sessionCapabilities
   let closeStep: AcpProbeCleanup['close'] = sessionCaps?.close != null ? 'done' : 'not-advertised'
   let deleteStep: AcpProbeCleanup['delete'] = sessionCaps?.delete != null ? 'done' : 'not-advertised'
@@ -223,7 +250,10 @@ function markProbePhase(error: unknown, probePhase: AcpProbePhase): AcpClientErr
     })
   }
   const message = error instanceof Error ? error.message : String(error)
-  return new AcpClientError('protocol-error', `ACP probe ${probePhase} failed: ${message}`, { cause: error, probePhase })
+  return new AcpClientError('protocol-error', `ACP probe ${probePhase} failed: ${message}`, {
+    cause: error,
+    probePhase,
+  })
 }
 
 /**
@@ -253,7 +283,7 @@ export class AcpClientConnection {
   private connectionClosePromise: Promise<void> | undefined
   private negotiated: acp.InitializeResponse | undefined
   /**
- * connection poison：触发放弃的 RPC 操作名（未 poison 为 undefined）。
+   * connection poison：触发放弃的 RPC 操作名（未 poison 为 undefined）。
    * 一次性不信任声明——被弃 RPC 的迟到响应可能与后续帧交错，连接协议状态从此
    * 不可证；置位时已后台发起 close()，此后所有 RPC 立即拒绝（见 {@link rpc}）。
    */
@@ -261,26 +291,39 @@ export class AcpClientConnection {
 
   constructor(spec: AcpConnectionSpec, options: AcpConnectionOptions = {}) {
     if (spec.argv.length === 0) {
- // 配置类失败（taxonomy category='config'）：spec 组装错误，非「命令未安装」
-      throw new AcpClientError('spawn-failure', 'ACP connection spec requires a non-empty argv (argv[0] is the executable)', { category: 'config' })
+      // 配置类失败（taxonomy category='config'）：spec 组装错误，非「命令未安装」
+      throw new AcpClientError(
+        'spawn-failure',
+        'ACP connection spec requires a non-empty argv (argv[0] is the executable)',
+        { category: 'config' },
+      )
     }
     if (spec.spawnPlan !== undefined && spec.wrapArgv !== undefined) {
-      throw new AcpClientError('spawn-failure', 'AcpConnectionSpec.spawnPlan and wrapArgv are mutually exclusive: a spawn plan carries the final argv (already confined)', { category: 'config' })
+      throw new AcpClientError(
+        'spawn-failure',
+        'AcpConnectionSpec.spawnPlan and wrapArgv are mutually exclusive: a spawn plan carries the final argv (already confined)',
+        { category: 'config' },
+      )
     }
- // fail closed：subprocess seam 必填（宿主 ctx.subprocess 的窄化产物）；
+    // fail closed：subprocess seam 必填（宿主 ctx.subprocess 的窄化产物）；
     // 缺席 = 宿主 composition 缺 subprocess-local provider（部署/配置问题，category='config'），
     // 绝不回退自制 spawn。
     if (spec.subprocess === undefined || spec.subprocess === null) {
       throw new AcpClientError('spawn-failure', ACP_SUBPROCESS_UNAVAILABLE_MESSAGE, { category: 'config' })
     }
-    const argv = spec.spawnPlan !== undefined
-      ? [...spec.spawnPlan.argv]
-      : spec.wrapArgv !== undefined
-        ? spec.wrapArgv([...spec.argv])
-        : spec.argv
+    const argv =
+      spec.spawnPlan !== undefined
+        ? [...spec.spawnPlan.argv]
+        : spec.wrapArgv !== undefined
+          ? spec.wrapArgv([...spec.argv])
+          : spec.argv
     const command = argv[0]
     if (command === undefined || command === '') {
-      throw new AcpClientError('spawn-failure', 'wrapArgv/spawnPlan must yield a non-empty argv (argv[0] is the executable)', { category: 'config' })
+      throw new AcpClientError(
+        'spawn-failure',
+        'wrapArgv/spawnPlan must yield a non-empty argv (argv[0] is the executable)',
+        { category: 'config' },
+      )
     }
     this.spec = spec
     this.command = command
@@ -294,11 +337,16 @@ export class AcpClientConnection {
     this.onCapabilityDegraded = options.onCapabilityDegraded
     if (options.onSessionUpdate !== undefined) this.updateListeners.add(options.onSessionUpdate)
 
- // 结构化 spawn：argv 直达 seam，不经 shell（堵注入面； 经 spawnPlan/wrapArgv 包
+    // 结构化 spawn：argv 直达 seam，不经 shell（堵注入面； 经 spawnPlan/wrapArgv 包
     // confine）。spawnPlan 存在时其 env 整体替换 spec.env（计划在组装期已含全量 env）。
     // 进程旋钮是 AcpConnectionOptions 的进程半（AcpProcessOptions），原样透传。
     this.process = new AcpAgentProcess(
-      { argv, cwd: spec.cwd, env: spec.spawnPlan !== undefined ? spec.spawnPlan.env : spec.env, subprocess: spec.subprocess },
+      {
+        argv,
+        cwd: spec.cwd,
+        env: spec.spawnPlan !== undefined ? spec.spawnPlan.env : spec.env,
+        subprocess: spec.subprocess,
+      },
       options,
     )
 
@@ -321,7 +369,7 @@ export class AcpClientConnection {
     return this.process.isClosed
   }
 
- /** poison 事实：触发放弃的 RPC 操作名；未 poison 为 undefined。 */
+  /** poison 事实：触发放弃的 RPC 操作名；未 poison 为 undefined。 */
   get poisonedBy(): string | undefined {
     return this.poisonedByOp
   }
@@ -344,7 +392,12 @@ export class AcpClientConnection {
 
   async steer(sessionId: string, prompt: acp.ContentBlock[]): Promise<'injected' | 'promptRequired'> {
     if (!this.supportsSteering) return 'promptRequired'
-    const result: unknown = await this.rpc('_session/steering', agent => agent.request('_session/steering', { sessionId, prompt }), {}, DEFAULT_SESSION_WRITE_TIMEOUT_MS)
+    const result: unknown = await this.rpc(
+      '_session/steering',
+      (agent) => agent.request('_session/steering', { sessionId, prompt }),
+      {},
+      DEFAULT_SESSION_WRITE_TIMEOUT_MS,
+    )
     if (record(result) && (result.outcome === 'injected' || result.outcome === 'promptRequired')) return result.outcome
     // A detached new turn or unknown acceptance must never trigger a resend.
     await this.close()
@@ -379,15 +432,41 @@ export class AcpClientConnection {
   }
 
   /** 建 ACP 会话；只透传调用方已验证且 Agent 已广告支持的 MCP 定义。 */
-  async newSession(params: { cwd?: string; mcpServers?: readonly acp.McpServer[] } = {}, options: AcpRpcOptions = {}): Promise<acp.NewSessionResponse> {
-    const response = await this.rpc<acp.NewSessionResponse>('session/new', async (agent) => await agent.request('session/new', { cwd: params.cwd ?? this.spec.cwd, mcpServers: [...(params.mcpServers ?? [])] }) as acp.NewSessionResponse, options, DEFAULT_SESSION_SETUP_TIMEOUT_MS)
+  async newSession(
+    params: { cwd?: string; mcpServers?: readonly acp.McpServer[] } = {},
+    options: AcpRpcOptions = {},
+  ): Promise<acp.NewSessionResponse> {
+    const response = await this.rpc<acp.NewSessionResponse>(
+      'session/new',
+      async (agent) =>
+        (await agent.request('session/new', {
+          cwd: params.cwd ?? this.spec.cwd,
+          mcpServers: [...(params.mcpServers ?? [])],
+        })) as acp.NewSessionResponse,
+      options,
+      DEFAULT_SESSION_SETUP_TIMEOUT_MS,
+    )
     this.activeSessionIds.add(response.sessionId)
     return response
   }
 
   /** 恢复 ACP 会话（agent 须广告 loadSession；回放更新走 session/update 通知）。 */
-  async loadSession(sessionId: string, params: { cwd?: string; mcpServers?: readonly acp.McpServer[] } = {}, options: AcpRpcOptions = {}): Promise<acp.LoadSessionResponse> {
-    const response = await this.rpc<acp.LoadSessionResponse>('session/load', async (agent) => await agent.request('session/load', { sessionId, cwd: params.cwd ?? this.spec.cwd, mcpServers: [...(params.mcpServers ?? [])] }) as acp.LoadSessionResponse, options, DEFAULT_SESSION_SETUP_TIMEOUT_MS)
+  async loadSession(
+    sessionId: string,
+    params: { cwd?: string; mcpServers?: readonly acp.McpServer[] } = {},
+    options: AcpRpcOptions = {},
+  ): Promise<acp.LoadSessionResponse> {
+    const response = await this.rpc<acp.LoadSessionResponse>(
+      'session/load',
+      async (agent) =>
+        (await agent.request('session/load', {
+          sessionId,
+          cwd: params.cwd ?? this.spec.cwd,
+          mcpServers: [...(params.mcpServers ?? [])],
+        })) as acp.LoadSessionResponse,
+      options,
+      DEFAULT_SESSION_SETUP_TIMEOUT_MS,
+    )
     this.activeSessionIds.add(sessionId)
     return response
   }
@@ -397,8 +476,22 @@ export class AcpClientConnection {
    * `sessionCapabilities.resume`；成功响应表示 Agent 已恢复原语义上下文，历史展示
    * 继续以 DSH 日志为准。
    */
-  async resumeSession(sessionId: string, params: { cwd?: string; mcpServers?: readonly acp.McpServer[] } = {}, options: AcpRpcOptions = {}): Promise<acp.ResumeSessionResponse> {
-    const response = await this.rpc<acp.ResumeSessionResponse>('session/resume', async (agent) => await agent.request('session/resume', { sessionId, cwd: params.cwd ?? this.spec.cwd, mcpServers: [...(params.mcpServers ?? [])] }) as acp.ResumeSessionResponse, options, DEFAULT_SESSION_SETUP_TIMEOUT_MS)
+  async resumeSession(
+    sessionId: string,
+    params: { cwd?: string; mcpServers?: readonly acp.McpServer[] } = {},
+    options: AcpRpcOptions = {},
+  ): Promise<acp.ResumeSessionResponse> {
+    const response = await this.rpc<acp.ResumeSessionResponse>(
+      'session/resume',
+      async (agent) =>
+        (await agent.request('session/resume', {
+          sessionId,
+          cwd: params.cwd ?? this.spec.cwd,
+          mcpServers: [...(params.mcpServers ?? [])],
+        })) as acp.ResumeSessionResponse,
+      options,
+      DEFAULT_SESSION_SETUP_TIMEOUT_MS,
+    )
     this.activeSessionIds.add(sessionId)
     return response
   }
@@ -409,33 +502,55 @@ export class AcpClientConnection {
    * connection still owns timeout/abort/poison handling for the typed SDK
    * method.
    */
-  async forkSession(sessionId: string, params: { cwd?: string; mcpServers?: readonly acp.McpServer[] } = {}, options: AcpRpcOptions = {}): Promise<acp.ForkSessionResponse> {
-    const response = await this.rpc<acp.ForkSessionResponse>('session/fork', async (agent) => {
-      const request = {
-        sessionId,
-        cwd: params.cwd ?? this.spec.cwd,
-        mcpServers: [...(params.mcpServers ?? [])],
-      } satisfies acp.ForkSessionRequest
-      // ACP SDK 1.3.0 declares unstable_forkSession on ClientContext, but the
-      // ESM runtime ClientContext returned by client().connect() does not
-      // install that convenience method. Its typed generic request surface is
-      // the interoperable path until the SDK declaration/runtime drift closes.
-      return await agent.request<acp.ForkSessionResponse, acp.ForkSessionRequest>('session/fork', request)
-    }, options, DEFAULT_SESSION_SETUP_TIMEOUT_MS)
+  async forkSession(
+    sessionId: string,
+    params: { cwd?: string; mcpServers?: readonly acp.McpServer[] } = {},
+    options: AcpRpcOptions = {},
+  ): Promise<acp.ForkSessionResponse> {
+    const response = await this.rpc<acp.ForkSessionResponse>(
+      'session/fork',
+      async (agent) => {
+        const request = {
+          sessionId,
+          cwd: params.cwd ?? this.spec.cwd,
+          mcpServers: [...(params.mcpServers ?? [])],
+        } satisfies acp.ForkSessionRequest
+        // ACP SDK 1.3.0 declares unstable_forkSession on ClientContext, but the
+        // ESM runtime ClientContext returned by client().connect() does not
+        // install that convenience method. Its typed generic request surface is
+        // the interoperable path until the SDK declaration/runtime drift closes.
+        return await agent.request<acp.ForkSessionResponse, acp.ForkSessionRequest>('session/fork', request)
+      },
+      options,
+      DEFAULT_SESSION_SETUP_TIMEOUT_MS,
+    )
     this.activeSessionIds.add(response.sessionId)
     return response
   }
 
   /** 列 ACP 会话（agent 须广告 sessionCapabilities.list）。 */
-  async listSessions(params: { cwd?: string; cursor?: string } = {}, options: AcpRpcOptions = {}): Promise<acp.ListSessionsResponse> {
-    return await this.rpc('session/list', (agent) => agent.request('session/list', { cwd: params.cwd ?? null, cursor: params.cursor ?? null }), options, DEFAULT_SESSION_SETUP_TIMEOUT_MS)
+  async listSessions(
+    params: { cwd?: string; cursor?: string } = {},
+    options: AcpRpcOptions = {},
+  ): Promise<acp.ListSessionsResponse> {
+    return await this.rpc(
+      'session/list',
+      (agent) => agent.request('session/list', { cwd: params.cwd ?? null, cursor: params.cursor ?? null }),
+      options,
+      DEFAULT_SESSION_SETUP_TIMEOUT_MS,
+    )
   }
 
- /** 关闭 ACP 会话（agent 须广告 sessionCapabilities.close； probe 清理用）。 */
+  /** 关闭 ACP 会话（agent 须广告 sessionCapabilities.close； probe 清理用）。 */
   async closeSession(sessionId: string, options: AcpRpcOptions = {}): Promise<acp.CloseSessionResponse> {
     await this.terminalHandlers?.releaseSession?.(sessionId)
     try {
-      return await this.rpc('session/close', (agent) => agent.request('session/close', { sessionId }), options, DEFAULT_SESSION_CLEANUP_TIMEOUT_MS)
+      return await this.rpc(
+        'session/close',
+        (agent) => agent.request('session/close', { sessionId }),
+        options,
+        DEFAULT_SESSION_CLEANUP_TIMEOUT_MS,
+      )
     } finally {
       this.activeSessionIds.delete(sessionId)
       await this.terminalHandlers?.releaseSession?.(sessionId)
@@ -446,7 +561,12 @@ export class AcpClientConnection {
   async deleteSession(sessionId: string, options: AcpRpcOptions = {}): Promise<acp.DeleteSessionResponse> {
     await this.terminalHandlers?.releaseSession?.(sessionId)
     try {
-      return await this.rpc('session/delete', (agent) => agent.request('session/delete', { sessionId }), options, DEFAULT_SESSION_CLEANUP_TIMEOUT_MS)
+      return await this.rpc(
+        'session/delete',
+        (agent) => agent.request('session/delete', { sessionId }),
+        options,
+        DEFAULT_SESSION_CLEANUP_TIMEOUT_MS,
+      )
     } finally {
       this.activeSessionIds.delete(sessionId)
       await this.terminalHandlers?.releaseSession?.(sessionId)
@@ -455,19 +575,33 @@ export class AcpClientConnection {
 
   /**
    * 配置项热切换（模型/模式/思考强度走这里）；响应为完整 configOptions 快照。
- * 类型保真：select 传 string 值 id；boolean 传原生 boolean（协议要求
+   * 类型保真：select 传 string 值 id；boolean 传原生 boolean（协议要求
    * 请求携带 `type: "boolean"` 判别字段），不把 boolean 编码成字符串。
    */
-  async setConfigOption(sessionId: string, configId: string, value: string | boolean, options: AcpRpcOptions = {}): Promise<acp.SetSessionConfigOptionResponse> {
-    const params: acp.SetSessionConfigOptionRequest = typeof value === 'boolean'
-      ? { sessionId, configId, type: 'boolean', value }
-      : { sessionId, configId, value }
-    return await this.rpc('session/set_config_option', (agent) => agent.request('session/set_config_option', params), options, DEFAULT_SESSION_WRITE_TIMEOUT_MS)
+  async setConfigOption(
+    sessionId: string,
+    configId: string,
+    value: string | boolean,
+    options: AcpRpcOptions = {},
+  ): Promise<acp.SetSessionConfigOptionResponse> {
+    const params: acp.SetSessionConfigOptionRequest =
+      typeof value === 'boolean' ? { sessionId, configId, type: 'boolean', value } : { sessionId, configId, value }
+    return await this.rpc(
+      'session/set_config_option',
+      (agent) => agent.request('session/set_config_option', params),
+      options,
+      DEFAULT_SESSION_WRITE_TIMEOUT_MS,
+    )
   }
 
   /** 会话模式切换。 */
   async setMode(sessionId: string, modeId: string, options: AcpRpcOptions = {}): Promise<acp.SetSessionModeResponse> {
-    return await this.rpc('session/set_mode', (agent) => agent.request('session/set_mode', { sessionId, modeId }), options, DEFAULT_SESSION_WRITE_TIMEOUT_MS)
+    return await this.rpc(
+      'session/set_mode',
+      (agent) => agent.request('session/set_mode', { sessionId, modeId }),
+      options,
+      DEFAULT_SESSION_WRITE_TIMEOUT_MS,
+    )
   }
 
   /**
@@ -475,16 +609,25 @@ export class AcpClientConnection {
    * 监听器（turn 结束自动摘除）；崩溃时已流出的 chunk 不丢（监听器先收，
    * 挂起的 prompt 后以 crash 分类 reject）。
    *
- * 无默认预算：turn 时长合法无界，正常取消由 AcpSessionRuntime 的取消升级梯子
+   * 无默认预算：turn 时长合法无界，正常取消由 AcpSessionRuntime 的取消升级梯子
    * 治理（cancel 帧 → 限时停稳 → terminate），那条路径 prompt 正常 settle、
    * 不 poison；只有调用方经 `options` 显式给 `timeoutMs`/`signal` 且竞速胜出
    * 时才按放弃处理（poison）。
    */
-  async prompt(sessionId: string, prompt: acp.ContentBlock[], onUpdate?: SessionUpdateListener, options: AcpRpcOptions = {}): Promise<acp.PromptResponse> {
+  async prompt(
+    sessionId: string,
+    prompt: acp.ContentBlock[],
+    onUpdate?: SessionUpdateListener,
+    options: AcpRpcOptions = {},
+  ): Promise<acp.PromptResponse> {
     if (onUpdate !== undefined) this.updateListeners.add(onUpdate)
     this.activePromptSessionIds.add(sessionId)
     try {
-      return await this.rpc('session/prompt', (agent) => agent.request('session/prompt', { sessionId, prompt }), options)
+      return await this.rpc(
+        'session/prompt',
+        (agent) => agent.request('session/prompt', { sessionId, prompt }),
+        options,
+      )
     } finally {
       this.activePromptSessionIds.delete(sessionId)
       if (onUpdate !== undefined) this.updateListeners.delete(onUpdate)
@@ -510,7 +653,7 @@ export class AcpClientConnection {
     // operation could outlive the ACP connection and resolve against a future
     // session/process generation.
     this.fileSystemHandlers?.dispose?.()
-    return this.connectionClosePromise ??= (async () => {
+    return (this.connectionClosePromise ??= (async () => {
       try {
         await this.terminalHandlers?.dispose?.()
       } finally {
@@ -519,15 +662,15 @@ export class AcpClientConnection {
         // bounded termination ladder.
         await this.process.close()
       }
-    })()
+    })())
   }
 
   /**
    * 独立短生命周期 probe：spawn → initialize → `session/new`（临时 cwd）→
- * 收集 configOptions → capability-aware 会话清理→
+   * 收集 configOptions → capability-aware 会话清理→
    * 拆除（finally 保证）。清理次序 close 先 delete 后，各自独立 try/catch：
    * 失败记进结果的 `cleanup` 事实，**不翻转** probe 成败，也不阻塞 finally 的
- * 进程强杀与临时目录删除。失败携带 probe 阶段标记（
+   * 进程强杀与临时目录删除。失败携带 probe 阶段标记（
    * `AcpClientError.probePhase`，健康卡 initialize/session 分层的判据；到达
    * session 阶段即证明 initialize 已通过）。
    */
@@ -555,7 +698,7 @@ export class AcpClientConnection {
       }
       let session: acp.NewSessionResponse
       try {
- // session/new 的预算并入连接层单笔 deadline（同一套 RPC 定时器，
+        // session/new 的预算并入连接层单笔 deadline（同一套 RPC 定时器，
         // 不再自卷第二套 withTimeout）；超时错误经 markProbePhase 归 session 阶段
         session = await conn.newSession({ cwd: probeCwd }, { timeoutMs: timeout })
       } catch (error: unknown) {
@@ -564,16 +707,19 @@ export class AcpClientConnection {
       const initialConfigOptions = session.configOptions ?? pushedConfigOptions
       let modelConfigOptions: Record<string, readonly acp.SessionConfigOption[]> | undefined
       if (probeModelConfigOptions) {
-        const modelOption = initialConfigOptions?.find((option) => option.type === 'select'
-          && (option.category === 'model' || option.id === 'model'))
+        const modelOption = initialConfigOptions?.find(
+          (option) => option.type === 'select' && (option.category === 'model' || option.id === 'model'),
+        )
         if (modelOption?.type === 'select') {
           modelConfigOptions = {}
-          const values = modelOption.options.flatMap((entry) => 'options' in entry ? entry.options : [entry])
+          const values = modelOption.options.flatMap((entry) => ('options' in entry ? entry.options : [entry]))
           for (const value of values.slice(0, 32)) {
             try {
-              const snapshot = value.value === modelOption.currentValue
-                ? initialConfigOptions
-                : (await conn.setConfigOption(session.sessionId, modelOption.id, value.value, { timeoutMs: timeout })).configOptions
+              const snapshot =
+                value.value === modelOption.currentValue
+                  ? initialConfigOptions
+                  : (await conn.setConfigOption(session.sessionId, modelOption.id, value.value, { timeoutMs: timeout }))
+                      .configOptions
               if (snapshot !== undefined) modelConfigOptions[value.value] = snapshot
             } catch {
               // A single stale model entry must not hide the remaining Agent
@@ -588,7 +734,7 @@ export class AcpClientConnection {
         cleanup,
         agentInfo: init.agentInfo,
         agentCapabilities: init.agentCapabilities,
- // readiness：协商出的协议版本随 probe 结果上缓存（健康行展示）
+        // readiness：协商出的协议版本随 probe 结果上缓存（健康行展示）
         protocolVersion: init.protocolVersion,
         authMethods: init.authMethods ?? [],
         modes: session.modes,
@@ -623,16 +769,18 @@ export class AcpClientConnection {
               // The released SDK does not yet type the draft canonical
               // `subagents` field. Claude Agent ACP documents this AIR
               // extension as the interoperable capability signal meanwhile.
-              ...(this.enableClaudeDraftSubagents ? {
-                _meta: {
-                  jetbrains: {
-                    air: {
-                      version: 1,
-                      capabilities: [CLAUDE_NATIVE_SUBAGENT_CAPABILITY],
+              ...(this.enableClaudeDraftSubagents
+                ? {
+                    _meta: {
+                      jetbrains: {
+                        air: {
+                          version: 1,
+                          capabilities: [CLAUDE_NATIVE_SUBAGENT_CAPABILITY],
+                        },
+                      },
                     },
-                  },
-                },
-              } : {}),
+                  }
+                : {}),
             },
             clientInfo: this.clientInfo,
           }),
@@ -654,80 +802,106 @@ export class AcpClientConnection {
 
   private buildClientApp(): acp.ClientApp {
     const app = acp.client()
-    if (this.enableClaudeDraftSubagents && !prependDraftSubagentHandler(app, notification => { this.deliverSessionNotification(notification) })) {
-      this.onCapabilityDegraded?.('Claude draft subagent notifications are unavailable with this ACP SDK; continuing with standard ACP capabilities')
+    if (
+      this.enableClaudeDraftSubagents &&
+      !prependDraftSubagentHandler(app, (notification) => {
+        this.deliverSessionNotification(notification)
+      })
+    ) {
+      this.onCapabilityDegraded?.(
+        'Claude draft subagent notifications are unavailable with this ACP SDK; continuing with standard ACP capabilities',
+      )
     }
-    return app
-      .onNotification('session/update', ({ params }) => { this.deliverSessionNotification(params) })
-      .onRequest('session/request_permission', ({ params }) => {
-        // Permission is a turn-scoped capability, not a connection-scoped UI
-        // channel. Fail closed for initialize/idle requests and for a session
-        // id that this connection does not own.
-        if (!this.activeSessionIds.has(params.sessionId) || !this.activePromptSessionIds.has(params.sessionId)) {
-          return { outcome: { outcome: 'cancelled' } }
-        }
-        const handler = this.onPermissionRequest
-        if (handler === undefined) {
- // 审批桥接入前 fail closed（对齐 sdk-contract 先例）
-          return { outcome: { outcome: 'cancelled' } }
-        }
-        return handler(params)
-      })
-      // Elicitation is handled only when the full host broker + Remote + UI seam
-      // is present; otherwise the standard decline response remains fail-closed.
-      .onRequest('elicitation/create', ({ params }) => {
-        // ACP v1 requests are session-scoped when a sessionId is present. Do
-        // not let a peer use this connection's broker to cross that boundary;
-        // request-scoped variants (requestId only) remain eligible for the
-        // currently bound connection.
-        const sessionId = 'sessionId' in params && typeof params.sessionId === 'string' ? params.sessionId : undefined
-        if (sessionId !== undefined && !this.activeSessionIds.has(sessionId)) return { action: 'decline' }
-        const handler = this.onElicitationRequest
-        if (handler === undefined) return { action: 'decline' }
-        return handler(params)
-      })
-      .onRequest('fs/read_text_file', ({ params }) => {
-        const handler = this.fileSystemHandlers?.readTextFile
-        if (handler === undefined) throw new Error('ACP fs/read_text_file is not available')
-        if (!this.activeSessionIds.has(params.sessionId)) throw new Error(`ACP fs/read_text_file rejected: session ${params.sessionId} is not owned by this connection`)
-        return handler(params)
-      })
-      .onRequest('fs/write_text_file', ({ params }) => {
-        const handler = this.fileSystemHandlers?.writeTextFile
-        if (handler === undefined) throw new Error('ACP fs/write_text_file is not available')
-        if (!this.activeSessionIds.has(params.sessionId)) throw new Error(`ACP fs/write_text_file rejected: session ${params.sessionId} is not owned by this connection`)
-        return handler(params)
-      })
-      .onRequest('terminal/create', ({ params }) => {
-        const handler = this.terminalHandlers?.createTerminal
-        if (handler === undefined) throw new Error('ACP terminal/create is not available')
-        if (!this.activeSessionIds.has(params.sessionId)) throw new Error(`ACP terminal/create rejected: session ${params.sessionId} is not owned by this connection`)
-        return handler(params)
-      })
-      .onRequest('terminal/output', ({ params }) => {
-        const handler = this.terminalHandlers?.terminalOutput
-        if (handler === undefined) throw new Error('ACP terminal/output is not available')
-        if (!this.activeSessionIds.has(params.sessionId)) throw new Error(`ACP terminal/output rejected: session ${params.sessionId} is not owned by this connection`)
-        return handler(params)
-      })
-      .onRequest('terminal/wait_for_exit', ({ params }) => {
-        const handler = this.terminalHandlers?.waitForExit
-        if (handler === undefined) throw new Error('ACP terminal/wait_for_exit is not available')
-        if (!this.activeSessionIds.has(params.sessionId)) throw new Error(`ACP terminal/wait_for_exit rejected: session ${params.sessionId} is not owned by this connection`)
-        return handler(params)
-      })
-      .onRequest('terminal/kill', ({ params }) => {
-        const handler = this.terminalHandlers?.killTerminal
-        if (handler === undefined) throw new Error('ACP terminal/kill is not available')
-        if (!this.activeSessionIds.has(params.sessionId)) throw new Error(`ACP terminal/kill rejected: session ${params.sessionId} is not owned by this connection`)
-        return handler(params)
-      })
-      .onRequest('terminal/release', ({ params }) => {
-        const handler = this.terminalHandlers?.releaseTerminal
-        if (handler === undefined) throw new Error('ACP terminal/release is not available')
-        if (!this.activeSessionIds.has(params.sessionId)) throw new Error(`ACP terminal/release rejected: session ${params.sessionId} is not owned by this connection`)
-        return handler(params)
-      })
+    return (
+      app
+        .onNotification('session/update', ({ params }) => {
+          this.deliverSessionNotification(params)
+        })
+        .onRequest('session/request_permission', ({ params }) => {
+          // Permission is a turn-scoped capability, not a connection-scoped UI
+          // channel. Fail closed for initialize/idle requests and for a session
+          // id that this connection does not own.
+          if (!this.activeSessionIds.has(params.sessionId) || !this.activePromptSessionIds.has(params.sessionId)) {
+            return { outcome: { outcome: 'cancelled' } }
+          }
+          const handler = this.onPermissionRequest
+          if (handler === undefined) {
+            // 审批桥接入前 fail closed（对齐 sdk-contract 先例）
+            return { outcome: { outcome: 'cancelled' } }
+          }
+          return handler(params)
+        })
+        // Elicitation is handled only when the full host broker + Remote + UI seam
+        // is present; otherwise the standard decline response remains fail-closed.
+        .onRequest('elicitation/create', ({ params }) => {
+          // ACP v1 requests are session-scoped when a sessionId is present. Do
+          // not let a peer use this connection's broker to cross that boundary;
+          // request-scoped variants (requestId only) remain eligible for the
+          // currently bound connection.
+          const sessionId = 'sessionId' in params && typeof params.sessionId === 'string' ? params.sessionId : undefined
+          if (sessionId !== undefined && !this.activeSessionIds.has(sessionId)) return { action: 'decline' }
+          const handler = this.onElicitationRequest
+          if (handler === undefined) return { action: 'decline' }
+          return handler(params)
+        })
+        .onRequest('fs/read_text_file', ({ params }) => {
+          const handler = this.fileSystemHandlers?.readTextFile
+          if (handler === undefined) throw new Error('ACP fs/read_text_file is not available')
+          if (!this.activeSessionIds.has(params.sessionId))
+            throw new Error(
+              `ACP fs/read_text_file rejected: session ${params.sessionId} is not owned by this connection`,
+            )
+          return handler(params)
+        })
+        .onRequest('fs/write_text_file', ({ params }) => {
+          const handler = this.fileSystemHandlers?.writeTextFile
+          if (handler === undefined) throw new Error('ACP fs/write_text_file is not available')
+          if (!this.activeSessionIds.has(params.sessionId))
+            throw new Error(
+              `ACP fs/write_text_file rejected: session ${params.sessionId} is not owned by this connection`,
+            )
+          return handler(params)
+        })
+        .onRequest('terminal/create', ({ params }) => {
+          const handler = this.terminalHandlers?.createTerminal
+          if (handler === undefined) throw new Error('ACP terminal/create is not available')
+          if (!this.activeSessionIds.has(params.sessionId))
+            throw new Error(`ACP terminal/create rejected: session ${params.sessionId} is not owned by this connection`)
+          return handler(params)
+        })
+        .onRequest('terminal/output', ({ params }) => {
+          const handler = this.terminalHandlers?.terminalOutput
+          if (handler === undefined) throw new Error('ACP terminal/output is not available')
+          if (!this.activeSessionIds.has(params.sessionId))
+            throw new Error(`ACP terminal/output rejected: session ${params.sessionId} is not owned by this connection`)
+          return handler(params)
+        })
+        .onRequest('terminal/wait_for_exit', ({ params }) => {
+          const handler = this.terminalHandlers?.waitForExit
+          if (handler === undefined) throw new Error('ACP terminal/wait_for_exit is not available')
+          if (!this.activeSessionIds.has(params.sessionId))
+            throw new Error(
+              `ACP terminal/wait_for_exit rejected: session ${params.sessionId} is not owned by this connection`,
+            )
+          return handler(params)
+        })
+        .onRequest('terminal/kill', ({ params }) => {
+          const handler = this.terminalHandlers?.killTerminal
+          if (handler === undefined) throw new Error('ACP terminal/kill is not available')
+          if (!this.activeSessionIds.has(params.sessionId))
+            throw new Error(`ACP terminal/kill rejected: session ${params.sessionId} is not owned by this connection`)
+          return handler(params)
+        })
+        .onRequest('terminal/release', ({ params }) => {
+          const handler = this.terminalHandlers?.releaseTerminal
+          if (handler === undefined) throw new Error('ACP terminal/release is not available')
+          if (!this.activeSessionIds.has(params.sessionId))
+            throw new Error(
+              `ACP terminal/release rejected: session ${params.sessionId} is not owned by this connection`,
+            )
+          return handler(params)
+        })
+    )
   }
 
   private deliverSessionNotification(notification: AcpSessionNotification): void {
@@ -740,13 +914,23 @@ export class AcpClientConnection {
     }
   }
 
-  private async rpc<T>(operation: string, call: (agent: acp.ClientContext) => Promise<T>, options: AcpRpcOptions = {}, defaultTimeoutMs?: number): Promise<T> {
+  private async rpc<T>(
+    operation: string,
+    call: (agent: acp.ClientContext) => Promise<T>,
+    options: AcpRpcOptions = {},
+    defaultTimeoutMs?: number,
+  ): Promise<T> {
     this.assertNotPoisoned(operation)
     this.assertOpen(operation)
     this.assertInitialized(operation)
     this.assertNotAborted(operation, options.signal)
     try {
-      return await this.raceBudget(operation, Promise.race([call(this.conn.agent), this.process.failureArm]), options.signal, options.timeoutMs ?? defaultTimeoutMs)
+      return await this.raceBudget(
+        operation,
+        Promise.race([call(this.conn.agent), this.process.failureArm]),
+        options.signal,
+        options.timeoutMs ?? defaultTimeoutMs,
+      )
     } catch (error: unknown) {
       // raceBudget 的放弃臂产物（AcpClientError）由 classify 原样透传
       throw await this.classify(error, operation)
@@ -754,32 +938,51 @@ export class AcpClientConnection {
   }
 
   /**
- * RPC 预算竞速：底层 RPC promise vs 超时臂 vs 中止臂。超时/中止竞速胜出
+   * RPC 预算竞速：底层 RPC promise vs 超时臂 vs 中止臂。超时/中止竞速胜出
    * 而底层 promise 未 settle = **放弃该 RPC** 被弃 promise 挂 noop catch（迟到
    * rejection 安全落地，不泄漏 unhandled），连接置 poison 并后台发起 close    * （不等它）。无预算且无 signal 时零开销直通。
    */
-  private async raceBudget<T>(operation: string, attempt: Promise<T>, signal: AbortSignal | undefined, timeoutMs: number | undefined): Promise<T> {
+  private async raceBudget<T>(
+    operation: string,
+    attempt: Promise<T>,
+    signal: AbortSignal | undefined,
+    timeoutMs: number | undefined,
+  ): Promise<T> {
     if (timeoutMs === undefined && signal === undefined) return await attempt
     let timer: ReturnType<typeof setTimeout> | undefined
     let onAbort: (() => void) | undefined
     const arms: Promise<never>[] = []
     if (timeoutMs !== undefined) {
-      arms.push(new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => {
-          reject(new AcpClientError('timeout', `ACP agent "${this.command}" did not answer ${operation} within ${String(timeoutMs)}ms`))
-        }, timeoutMs)
-      }))
+      arms.push(
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => {
+            reject(
+              new AcpClientError(
+                'timeout',
+                `ACP agent "${this.command}" did not answer ${operation} within ${String(timeoutMs)}ms`,
+              ),
+            )
+          }, timeoutMs)
+        }),
+      )
     }
     if (signal !== undefined) {
-      arms.push(new Promise<never>((_resolve, reject) => {
-        onAbort = () => {
-          reject(new AcpClientError('aborted', `ACP ${operation} aborted by the caller; the in-flight RPC was abandoned and the connection is being torn down`))
-        }
-        // 已中止的信号不回放 abort 事件——手动补触发（调用点 assertNotAborted 之后
-        // 到本臂注册之间中止的竞态由这里兜住）
-        if (signal.aborted) onAbort()
-        else signal.addEventListener('abort', onAbort, { once: true })
-      }))
+      arms.push(
+        new Promise<never>((_resolve, reject) => {
+          onAbort = () => {
+            reject(
+              new AcpClientError(
+                'aborted',
+                `ACP ${operation} aborted by the caller; the in-flight RPC was abandoned and the connection is being torn down`,
+              ),
+            )
+          }
+          // 已中止的信号不回放 abort 事件——手动补触发（调用点 assertNotAborted 之后
+          // 到本臂注册之间中止的竞态由这里兜住）
+          if (signal.aborted) onAbort()
+          else signal.addEventListener('abort', onAbort, { once: true })
+        }),
+      )
     }
     try {
       return await Promise.race([attempt, ...arms])
@@ -798,7 +1001,7 @@ export class AcpClientConnection {
   }
 
   /**
- * connection poison：任何 RPC 因 timeout/abort 被放弃后，记录触发 op
+   * connection poison：任何 RPC 因 timeout/abort 被放弃后，记录触发 op
    * 并后台发起拆除。一次性闩锁；crash（进程消亡后 RPC 本就 reject）不需要
    * poison 概念，close 已发起时也不重复置位。
    */
@@ -856,7 +1059,11 @@ export class AcpClientConnection {
     }
     if (this.process.failure !== undefined) {
       void this.close().catch(() => {})
-      return new AcpClientError('crash', `ACP subprocess provider failed during ${operation}; managed-range cleanup is required`, { cause: this.process.failure })
+      return new AcpClientError(
+        'crash',
+        `ACP subprocess provider failed during ${operation}; managed-range cleanup is required`,
+        { cause: this.process.failure },
+      )
     }
     if (error instanceof acp.RequestError) {
       if (isAuthenticationRejection(error)) {
@@ -874,7 +1081,11 @@ export class AcpClientConnection {
     }
     if (closed) {
       const stderrTail = this.process.stderrLines().slice(-5)
-      return new AcpClientError('crash', this.crashMessage(operation, exit, stderrTail), { exit, stderrTail, cause: error })
+      return new AcpClientError('crash', this.crashMessage(operation, exit, stderrTail), {
+        exit,
+        stderrTail,
+        cause: error,
+      })
     }
     const message = error instanceof Error ? error.message : String(error)
     return new AcpClientError('protocol-error', `ACP ${operation} failed: ${message}`, { cause: error })
@@ -889,8 +1100,13 @@ export class AcpClientConnection {
   }
 
   private crashMessage(operation: string, exit: AcpProcessExit | undefined, stderrTail: string[]): string {
-    const fact = exit === undefined ? 'exit status unknown' : `exit code ${String(exit.code ?? 'none')}, signal ${exit.signal ?? 'none'}`
+    const fact =
+      exit === undefined
+        ? 'exit status unknown'
+        : `exit code ${String(exit.code ?? 'none')}, signal ${exit.signal ?? 'none'}`
     const base = `ACP agent "${this.command}" died during ${operation} (${fact}); updates streamed so far were preserved`
-    return stderrTail.length === 0 ? base : `${base}\nagent stderr (last ${String(stderrTail.length)} lines):\n${stderrTail.join('\n')}`
+    return stderrTail.length === 0
+      ? base
+      : `${base}\nagent stderr (last ${String(stderrTail.length)} lines):\n${stderrTail.join('\n')}`
   }
 }

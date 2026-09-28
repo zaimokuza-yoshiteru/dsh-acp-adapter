@@ -35,12 +35,21 @@ export function reconcileMemberModelView(previous: ModelView | null, member: Mem
 
 function modelName(models: readonly Model[], id: string | null | undefined): string | null {
   if (id === null || id === undefined || id === '') return null
-  return models.find(model => model.id === id)?.name ?? id
+  return models.find((model) => model.id === id)?.name ?? id
 }
 
 /** Resolve display names when the member card mounts, so the trigger, menu
  * and pending notice use the same catalog even before the first click. */
-export function TeamMemberModelControl({ lead, member, initialModel, sessionReady, remote, t, isCurrent, onMenuOpen }: Props): ReactNode {
+export function TeamMemberModelControl({
+  lead,
+  member,
+  initialModel,
+  sessionReady,
+  remote,
+  t,
+  isCurrent,
+  onMenuOpen,
+}: Props): ReactNode {
   const [open, setOpen] = useState(false)
   const [view, setView] = useState<ModelView | null>(null)
   const [loading, setLoading] = useState(false)
@@ -56,15 +65,18 @@ export function TeamMemberModelControl({ lead, member, initialModel, sessionRead
   latestMember.current = member
 
   const memberFacts = member
-  const canWrite = sessionReady && !saving && member.status === 'inactive'
-    && (memberFacts.modelWritable ?? view?.writable ?? false)
-  const pendingModel = view === null ? member.pendingModel ?? null : view.pendingModel
+  const canWrite =
+    sessionReady && !saving && member.status === 'inactive' && (memberFacts.modelWritable ?? view?.writable ?? false)
+  const pendingModel = view === null ? (member.pendingModel ?? null) : view.pendingModel
   const currentModel = view?.currentModel ?? initialModel ?? member.model
   const selectedModel = pendingModel ?? currentModel
 
   useEffect(() => {
     alive.current = true
-    return () => { alive.current = false; ++epoch.current }
+    return () => {
+      alive.current = false
+      ++epoch.current
+    }
   }, [])
   useEffect(() => {
     ++epoch.current
@@ -78,9 +90,12 @@ export function TeamMemberModelControl({ lead, member, initialModel, sessionRead
   }, [lead, member.sessionId])
   useEffect(() => {
     ++factsRevision.current
-    setView(previous => reconcileMemberModelView(previous, memberFacts))
+    setView((previous) => reconcileMemberModelView(previous, memberFacts))
   }, [member.model, member.pendingModel, memberFacts.modelWritable])
-  useEffect(() => { onMenuOpen(open); return () => onMenuOpen(false) }, [open, onMenuOpen])
+  useEffect(() => {
+    onMenuOpen(open)
+    return () => onMenuOpen(false)
+  }, [open, onMenuOpen])
 
   useEffect(() => {
     // Native team membership precedes the child's durable ACP binding. The
@@ -91,39 +106,56 @@ export function TeamMemberModelControl({ lead, member, initialModel, sessionRead
     const currentFactsRevision = factsRevision.current
     setLoading(true)
     setError(null)
-    void remote.teamMemberModels(lead, member.sessionId).then(result => {
-      if (disposed || !alive.current || currentEpoch !== epoch.current || !isCurrent(lead)) return
-      if (!result.ok) { setError('load'); return }
-      setView(currentFactsRevision === factsRevision.current ? result.value : reconcileMemberModelView(result.value, latestMember.current))
-    }).catch(() => {
-      if (!disposed && alive.current && currentEpoch === epoch.current) setError('load')
-    }).finally(() => {
-      if (!disposed && alive.current && currentEpoch === epoch.current) setLoading(false)
-    })
-    return () => { disposed = true }
+    void remote
+      .teamMemberModels(lead, member.sessionId)
+      .then((result) => {
+        if (disposed || !alive.current || currentEpoch !== epoch.current || !isCurrent(lead)) return
+        if (!result.ok) {
+          setError('load')
+          return
+        }
+        setView(
+          currentFactsRevision === factsRevision.current
+            ? result.value
+            : reconcileMemberModelView(result.value, latestMember.current),
+        )
+      })
+      .catch(() => {
+        if (!disposed && alive.current && currentEpoch === epoch.current) setError('load')
+      })
+      .finally(() => {
+        if (!disposed && alive.current && currentEpoch === epoch.current) setLoading(false)
+      })
+    return () => {
+      disposed = true
+    }
   }, [lead, member.sessionId, member.profileId, sessionReady, remote, isCurrent, catalogRetry])
 
   const toggle = (): void => {
-    if (open) { setOpen(false); return }
+    if (open) {
+      setOpen(false)
+      return
+    }
     setOpen(true)
-    if (view === null && error !== null && !loading) setCatalogRetry(value => value + 1)
+    if (view === null && error !== null && !loading) setCatalogRetry((value) => value + 1)
   }
 
   const models = view?.models ?? []
-  const items = loading && view === null
-    ? [{ id: '__loading__', label: t('teamModelLoading'), disabled: true }]
-    : error !== null && view === null
-      ? [{ id: '__error__', label: t('teamModelLoadFailed'), disabled: true }]
-      : models.length === 0
-        ? [{ id: '__empty__', label: t('teamModelEmpty'), disabled: true }]
-        : models.map(model => ({ id: model.id, label: model.name, disabled: !canWrite }))
+  const items =
+    loading && view === null
+      ? [{ id: '__loading__', label: t('teamModelLoading'), disabled: true }]
+      : error !== null && view === null
+        ? [{ id: '__error__', label: t('teamModelLoadFailed'), disabled: true }]
+        : models.length === 0
+          ? [{ id: '__empty__', label: t('teamModelEmpty'), disabled: true }]
+          : models.map((model) => ({ id: model.id, label: model.name, disabled: !canWrite }))
   const disabled = member.profileId === null || !sessionReady
   const selectedLabel = modelName(view?.models ?? [], selectedModel) ?? selectedModel ?? t('teamModelUnknown')
   const currentLabel = modelName(view?.models ?? [], currentModel) ?? currentModel ?? t('teamModelUnknown')
 
   const choose = (id: string): void => {
     if (id.startsWith('__') || !canWrite || writeInFlight.current || !isCurrent(lead)) return
-    const chosen = (view?.models ?? []).find(model => model.id === id)
+    const chosen = (view?.models ?? []).find((model) => model.id === id)
     if (chosen === undefined) return
     const currentEpoch = epoch.current
     const currentFactsRevision = factsRevision.current
@@ -131,31 +163,53 @@ export function TeamMemberModelControl({ lead, member, initialModel, sessionRead
     const previous = pendingModel
     writeInFlight.current = true
     setSaving(true)
-    setView(previousView => previousView === null ? previousView : { ...previousView, pendingModel: id })
+    setView((previousView) => (previousView === null ? previousView : { ...previousView, pendingModel: id }))
     setError(null)
     setOpen(false)
-    void remote.setTeamMemberModel(lead, member.sessionId, id).then(result => {
-      if (!alive.current || currentEpoch !== epoch.current || currentFactsRevision !== factsRevision.current || currentMutation !== mutationSeq.current || !isCurrent(lead)) return
-      if (!result.ok) {
-        setView(previousView => previousView === null ? previousView : { ...previousView, pendingModel: previous })
-        setError('save')
-        return
-      }
-      setView(result.value)
-    }).catch(() => {
-      if (alive.current && currentEpoch === epoch.current && currentFactsRevision === factsRevision.current && currentMutation === mutationSeq.current) {
-        setView(previousView => previousView === null ? previousView : { ...previousView, pendingModel: previous })
-        setError('save')
-      }
-    }).finally(() => {
-      if (alive.current && currentEpoch === epoch.current) {
-        writeInFlight.current = false
-        setSaving(false)
-      }
-    })
+    void remote
+      .setTeamMemberModel(lead, member.sessionId, id)
+      .then((result) => {
+        if (
+          !alive.current ||
+          currentEpoch !== epoch.current ||
+          currentFactsRevision !== factsRevision.current ||
+          currentMutation !== mutationSeq.current ||
+          !isCurrent(lead)
+        )
+          return
+        if (!result.ok) {
+          setView((previousView) =>
+            previousView === null ? previousView : { ...previousView, pendingModel: previous },
+          )
+          setError('save')
+          return
+        }
+        setView(result.value)
+      })
+      .catch(() => {
+        if (
+          alive.current &&
+          currentEpoch === epoch.current &&
+          currentFactsRevision === factsRevision.current &&
+          currentMutation === mutationSeq.current
+        ) {
+          setView((previousView) =>
+            previousView === null ? previousView : { ...previousView, pendingModel: previous },
+          )
+          setError('save')
+        }
+      })
+      .finally(() => {
+        if (alive.current && currentEpoch === epoch.current) {
+          writeInFlight.current = false
+          setSaving(false)
+        }
+      })
   }
 
-  return h('div', { className: css.modelControl, 'data-acp-member-model': member.sessionId },
+  return h(
+    'div',
+    { className: css.modelControl, 'data-acp-member-model': member.sessionId },
     h(Menu, {
       portal: true,
       autoFocus: true,
@@ -164,25 +218,48 @@ export function TeamMemberModelControl({ lead, member, initialModel, sessionRead
       align: 'end',
       onClose: () => setOpen(false),
       items,
-      ...(!canWrite && !saving ? { footer: [{ type: 'label' as const, id: 'read-only', text: t(member.status === 'running' ? 'agentControlRunning' : 'agentControlReadOnly') }] } : {}),
+      ...(!canWrite && !saving
+        ? {
+            footer: [
+              {
+                type: 'label' as const,
+                id: 'read-only',
+                text: t(member.status === 'running' ? 'agentControlRunning' : 'agentControlReadOnly'),
+              },
+            ],
+          }
+        : {}),
       selectedId: selectedModel ?? undefined,
       onSelect: choose,
-      anchor: h('button', {
-        type: 'button',
-        className: agentControlCss.trigger,
-        disabled,
-        'aria-expanded': open,
-        'aria-haspopup': 'menu',
-        'aria-label': t('teamModelChoose', { name: member.name }),
-        onClick: toggle,
-      },
-      h('span', { className: agentControlCss.triggerLabel }, selectedLabel),
-      h(IconChevronDownOutlineMedium, { className: `${agentControlCss.chevron}${open ? ` ${agentControlCss.chevronOpen}` : ''}` })),
+      anchor: h(
+        'button',
+        {
+          type: 'button',
+          className: agentControlCss.trigger,
+          disabled,
+          'aria-expanded': open,
+          'aria-haspopup': 'menu',
+          'aria-label': t('teamModelChoose', { name: member.name }),
+          onClick: toggle,
+        },
+        h('span', { className: agentControlCss.triggerLabel }, selectedLabel),
+        h(IconChevronDownOutlineMedium, {
+          className: `${agentControlCss.chevron}${open ? ` ${agentControlCss.chevronOpen}` : ''}`,
+        }),
+      ),
     }),
-    h('div', { className: css.settingNotice, 'data-member-model-notice': '', role: 'status' },
+    h(
+      'div',
+      { className: css.settingNotice, 'data-member-model-notice': '', role: 'status' },
       error !== null
         ? h('span', { className: css.noticeError }, t(error === 'load' ? 'teamModelLoadFailed' : 'teamModelSaveFailed'))
-        : pendingModel === null || pendingModel === currentModel ? null
-          : h('span', { title: t('teamMemberModelPending', { model: currentLabel }) }, t('teamMemberModelPending', { model: currentLabel }))),
+        : pendingModel === null || pendingModel === currentModel
+          ? null
+          : h(
+              'span',
+              { title: t('teamMemberModelPending', { model: currentLabel }) },
+              t('teamMemberModelPending', { model: currentLabel }),
+            ),
+    ),
   )
 }

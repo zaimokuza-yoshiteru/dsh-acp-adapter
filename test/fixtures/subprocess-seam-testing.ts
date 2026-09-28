@@ -9,44 +9,44 @@
 // dispose）；harness 间经 ctx.provide('subprocess', raw) 共享同一实例，监听器数量
 // 不随 harness 数增长。
 
-import { afterAll } from 'vitest';
-import { Context } from '@deepseek-ai/cordis';
-import { LocalSubprocessRuntime } from '@deepseek-ai/dsh-subprocess-local';
-import { narrowSubprocessSeam } from '../../src/runtime/process/subprocess.ts';
-import type { SubprocessSeam } from '../../src/runtime/process/subprocess.ts';
+import { afterAll } from 'vitest'
+import { Context } from '@deepseek-ai/cordis'
+import { LocalSubprocessRuntime } from '@deepseek-ai/dsh-subprocess-local'
+import { narrowSubprocessSeam } from '../../src/runtime/process/subprocess.ts'
+import type { SubprocessSeam } from '../../src/runtime/process/subprocess.ts'
 
 interface TestSubprocess {
   /** 结构化窄化后的消费面（AcpConnectionSpec.subprocess / adapter options 传它）。 */
-  readonly seam: SubprocessSeam;
+  readonly seam: SubprocessSeam
   /** 原始服务实例（harness 的 `ctx.provide('subprocess', raw)` 用）。 */
-  readonly raw: LocalSubprocessRuntime;
+  readonly raw: LocalSubprocessRuntime
   /** 卸载服务（dispose 兜底强杀全部托管进程并 await 退出）。 */
-  readonly dispose: () => Promise<void>;
+  readonly dispose: () => Promise<void>
 }
 
 /** 挂载一次真实 subprocess-local 服务（该 Context 仅作服务载体，不参与被测组装）。 */
 async function mountTestSubprocess(): Promise<TestSubprocess> {
-  const ctx = new Context();
-  await ctx.plugin(LocalSubprocessRuntime);
-  const holder = ctx as Context & { get(name: string): unknown };
-  const raw = holder.get('subprocess');
-  const seam = narrowSubprocessSeam(raw);
-  if (seam === undefined) throw new Error('test subprocess mount failed: ctx.subprocess failed structural narrowing');
-  return { seam, raw: raw as LocalSubprocessRuntime, dispose: () => ctx.fiber.dispose() };
+  const ctx = new Context()
+  await ctx.plugin(LocalSubprocessRuntime)
+  const holder = ctx as Context & { get(name: string): unknown }
+  const raw = holder.get('subprocess')
+  const seam = narrowSubprocessSeam(raw)
+  if (seam === undefined) throw new Error('test subprocess mount failed: ctx.subprocess failed structural narrowing')
+  return { seam, raw: raw as LocalSubprocessRuntime, dispose: () => ctx.fiber.dispose() }
 }
 
-let shared: Promise<TestSubprocess> | undefined;
+let shared: Promise<TestSubprocess> | undefined
 
 // 顶层 afterAll（注册时机安全）：仅在实际挂载过时卸载。
 afterAll(async () => {
-  if (shared !== undefined) await (await shared).dispose();
-});
+  if (shared !== undefined) await (await shared).dispose()
+})
 
 /**
  * 模块级共享单例（每 spec 文件一次挂载）：首个调用懒挂载，其后复用。
  * harness 组装的 `ctx.provide('subprocess', raw)` 与各 spec 直连构造共享同一实例。
  */
 export function sharedTestSubprocess(): Promise<TestSubprocess> {
-  shared ??= mountTestSubprocess();
-  return shared;
+  shared ??= mountTestSubprocess()
+  return shared
 }

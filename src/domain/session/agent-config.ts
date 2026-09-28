@@ -52,12 +52,20 @@ export function acpVersionCompatibility(
  * 新鲜度判定与 installed-profile registry 的会话创建门都要消费它，放 host
  * 组合层会造成不必要的跨层依赖。
  */
-export function acpProbeConfigKey<C extends Pick<AcpStubAgentConfig, 'command' | 'args' | 'env'> & { readonly runtime?: AcpAgentId }>(config: C): string {
+export function acpProbeConfigKey<
+  C extends Pick<AcpStubAgentConfig, 'command' | 'args' | 'env'> & { readonly runtime?: AcpAgentId },
+>(config: C): string {
   const envKeys = Object.keys(config.env).sort()
   const envHashes = Object.entries(config.env)
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([key, value]) => [key, shortSecretHash(value)])
-  return JSON.stringify({ command: config.command, args: config.args, envKeys, envHashes, runtime: config.runtime ?? null })
+  return JSON.stringify({
+    command: config.command,
+    args: config.args,
+    envKeys,
+    envHashes,
+    runtime: config.runtime ?? null,
+  })
 }
 
 /** Deterministic short hash for cache identity; never returns the secret itself. */

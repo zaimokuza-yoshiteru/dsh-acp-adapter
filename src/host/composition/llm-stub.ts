@@ -24,7 +24,13 @@
 
 import os from 'node:os'
 import { LlmAdapter, LlmError, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
-import type { GenerateOptions, LlmModelInfo, LlmModelReasoningInfo, LlmProviderInfo, StreamChunk } from '@deepseek-ai/dsh-llm'
+import type {
+  GenerateOptions,
+  LlmModelInfo,
+  LlmModelReasoningInfo,
+  LlmProviderInfo,
+  StreamChunk,
+} from '@deepseek-ai/dsh-llm'
 import type * as acp from '@agentclientprotocol/sdk'
 import { acpProbeConfigKey, acpProbeFresh } from '../../domain/session/agent-config.ts'
 import type { AcpStubAgentConfig } from '../../domain/session/agent-config.ts'
@@ -34,7 +40,13 @@ import { acpConfigOptionsSnapshot } from '../../domain/session/acp-config-option
 import { acpCanonicalHash16 } from '../../persistence/sidecar.ts'
 import { AcpClientConnection } from '../../protocol/v1/connection.ts'
 import { AcpClientError } from '../../protocol/v1/errors.ts'
-import type { AcpErrorKind, AcpProbeCleanup, AcpProbeOptions, AcpProbePhase, AcpProbeResult } from '../../protocol/v1/types.ts'
+import type {
+  AcpErrorKind,
+  AcpProbeCleanup,
+  AcpProbeOptions,
+  AcpProbePhase,
+  AcpProbeResult,
+} from '../../protocol/v1/types.ts'
 import type { AcpSpawnPlanView } from '../../runtime/process/types.ts'
 import type { SubprocessSeamResolution } from '../../runtime/process/subprocess.ts'
 import { normalizeAcpConfigOptionKey } from '../../contract/config-options.ts'
@@ -86,19 +98,19 @@ export interface AcpStubAdapterOptions {
   /** Connection knobs forwarded to every probe (tests shorten the teardown ladder). */
   probeOptions?: AcpProbeOptions
   /**
- * 加载期解析的 subprocess seam：probe 的 spawn 经它走宿主服务。
+   * 加载期解析的 subprocess seam：probe 的 spawn 经它走宿主服务。
    * `{ok:false}`（宿主无 subprocess 服务/未接线）时 probe 以 spawn-failure
    * fail closed 进缓存，绝不自制 child_process 回退。
    */
   subprocess: SubprocessSeamResolution
   /**
- * Probe 的 runtime preparation（临时 cwd + cleanup，不提供安全隔离）。
- * 存在时 probe 以 `spawnPlan` spawn（env 整体由计划供给）；缺席时保持
+   * Probe 的 runtime preparation（临时 cwd + cleanup，不提供安全隔离）。
+   * 存在时 probe 以 `spawnPlan` spawn（env 整体由计划供给）；缺席时保持
    * 逐字节旧行为（配置 env 原样透传、无 confine——纯模块单测路径）。
    */
   prepareProbe?: AcpProbeRuntimePreparer
   /**
- * 结构性 warn 通道（runtime cleanup 失败只 warn 不翻转 probe
+   * 结构性 warn 通道（runtime cleanup 失败只 warn 不翻转 probe
    * 结果）。缺席时写 `process.stderr` 保底。
    */
   onWarn?: (message: string) => void
@@ -108,31 +120,31 @@ export interface AcpStubAdapterOptions {
 export interface AcpProbeCacheEntry {
   /** Config hash the entry was produced from. */
   readonly key: string
- /** `Date.now()` at write; the health endpoint displays it. */
+  /** `Date.now()` at write; the health endpoint displays it. */
   readonly at: number
   readonly result:
     | {
         readonly kind: 'ok'
         readonly models: readonly LlmModelInfo[]
- /** initialize 响应的 authMethods 原值（现在随缓存保留；health 端点透传）。 */
+        /** initialize 响应的 authMethods 原值（现在随缓存保留；health 端点透传）。 */
         readonly authMethods: readonly acp.AuthMethod[]
- /** initialize 握手的 agentInfo 原值（现在随缓存保留；health 端点透传）。 */
+        /** initialize 握手的 agentInfo 原值（现在随缓存保留；health 端点透传）。 */
         readonly agentInfo: acp.Implementation | null | undefined
- /** initialize 握手的 agentCapabilities 实际值（能力披露的数据源）。 */
+        /** initialize 握手的 agentCapabilities 实际值（能力披露的数据源）。 */
         readonly agentCapabilities: acp.AgentCapabilities | undefined
         /**
- * probe 会话清理事实（close/delete 三态如实三态）。
+         * probe 会话清理事实（close/delete 三态如实三态）。
          * 清理失败不翻转 probe 成败——本分支仍是 ok，但 health 据此展示降级。
          */
         readonly cleanup: AcpProbeCleanup
         /**
- * initialize 握手的 capability hash（sha256-16 of canonical
+         * initialize 握手的 capability hash（sha256-16 of canonical
          * capabilities，`null` 输入当未握手）。记录进条目供 health 展示；
          * **不进缓存键**——agent version 与 capability 是 probe 的**结果**而非
          * 输入（计划条文的合理解读），版本/能力漂移靠 TTL 与「重新检查」发现。
          */
         readonly capabilityHash: string
- /** initialize 协商的 ACP 协议版本（readiness；health 端点透传）。 */
+        /** initialize 协商的 ACP 协议版本（readiness；health 端点透传）。 */
         readonly protocolVersion: number | undefined
         /**
          * configOptions 是否含 `category=model` 项（ 五态目录口径的输入事实）：
@@ -150,34 +162,49 @@ export interface AcpProbeCacheEntry {
         readonly kind: 'error'
         readonly failureKind: AcpErrorKind
         readonly error: LlmError
- /** probe 失败阶段（健康四层分层判据；未标记时为 undefined → 端点归 null）。 */
+        /** probe 失败阶段（健康四层分层判据；未标记时为 undefined → 端点归 null）。 */
         readonly probePhase: AcpProbePhase | undefined
       }
 }
 
 /** Extract the `category: 'model'` select options from a probe, flattening grouped options. */
 /** Resolve ACP thought-level metadata into DSH's adapter-owned reasoning shape. */
-export function reasoningInfoFromConfigOptions(profileId: string, config: AcpStubAgentConfig, configOptions: readonly acp.SessionConfigOption[] | undefined): LlmModelReasoningInfo | undefined {
+export function reasoningInfoFromConfigOptions(
+  profileId: string,
+  config: AcpStubAgentConfig,
+  configOptions: readonly acp.SessionConfigOption[] | undefined,
+): LlmModelReasoningInfo | undefined {
   if (!exposesReasoningControl(effectiveRuntimeOf(profileId, config))) return undefined
   const option = configOptions?.find((candidate) => {
     if (candidate.type !== 'select') return false
     const id = candidate.id.toLowerCase().replaceAll('-', '_')
-    return normalizeAcpConfigOptionKey(candidate.category ?? '') === 'thought_level' || normalizeAcpConfigOptionKey(candidate.category ?? '') === 'reasoning_effort' || id === 'thought_level' || id === 'reasoning_effort'
+    return (
+      normalizeAcpConfigOptionKey(candidate.category ?? '') === 'thought_level' ||
+      normalizeAcpConfigOptionKey(candidate.category ?? '') === 'reasoning_effort' ||
+      id === 'thought_level' ||
+      id === 'reasoning_effort'
+    )
   })
   if (option === undefined || option.type !== 'select') return undefined
   const seen = new Set<string>()
-  const efforts = option.options.flatMap((entry) => 'options' in entry ? entry.options : [entry]).filter((entry) => {
-    if (seen.has(entry.value)) return false
-    seen.add(entry.value)
-    return entry.value.length > 0 && entry.name.length > 0
-  }).map((entry) => ({
-    id: ReasoningEffortId(entry.value),
-    name: entry.name,
-    ...(entry.description === undefined || entry.description === null ? {} : { description: entry.description }),
-  }))
+  const efforts = option.options
+    .flatMap((entry) => ('options' in entry ? entry.options : [entry]))
+    .filter((entry) => {
+      if (seen.has(entry.value)) return false
+      seen.add(entry.value)
+      return entry.value.length > 0 && entry.name.length > 0
+    })
+    .map((entry) => ({
+      id: ReasoningEffortId(entry.value),
+      name: entry.name,
+      ...(entry.description === undefined || entry.description === null ? {} : { description: entry.description }),
+    }))
   if (efforts.length === 0) return undefined
   const current = String(option.currentValue)
-  return { efforts, ...(efforts.some((effort) => effort.id === current) ? { defaultEffort: ReasoningEffortId(current) } : {}) }
+  return {
+    efforts,
+    ...(efforts.some((effort) => effort.id === current) ? { defaultEffort: ReasoningEffortId(current) } : {}),
+  }
 }
 
 /** Apply display-only disambiguation after flattening ACP model options.
@@ -235,10 +262,16 @@ export function boundedProbeDiagnostic(value: string): string {
   return firstLine.length > 240 ? `${firstLine.slice(0, 237)}...` : firstLine
 }
 
-function acpProbeFailure(error: unknown, config: AcpStubAgentConfig): { kind: AcpErrorKind; error: LlmError; phase: AcpProbePhase | undefined } {
- // probe 阶段标记原样透传（健康卡 initialize/session 分层判据；未标记归 undefined）
+function acpProbeFailure(
+  error: unknown,
+  config: AcpStubAgentConfig,
+): { kind: AcpErrorKind; error: LlmError; phase: AcpProbePhase | undefined } {
+  // probe 阶段标记原样透传（健康卡 initialize/session 分层判据；未标记归 undefined）
   const phase = error instanceof AcpClientError ? error.probePhase : undefined
-  const wrap = (kind: AcpErrorKind, message: string): { kind: AcpErrorKind; error: LlmError; phase: AcpProbePhase | undefined } => ({
+  const wrap = (
+    kind: AcpErrorKind,
+    message: string,
+  ): { kind: AcpErrorKind; error: LlmError; phase: AcpProbePhase | undefined } => ({
     kind,
     error: new LlmError(message, 'ACP_PROBE_FAILED', { cause: error }),
     phase,
@@ -253,7 +286,10 @@ function acpProbeFailure(error: unknown, config: AcpStubAgentConfig): { kind: Ac
         )
       case 'auth_required': {
         const hint = config.loginHint === undefined ? 'sign in with the agent CLI' : `run \`${config.loginHint}\``
-        return wrap(error.kind, `ACP agent "${config.command}" requires authentication. ${hint}, then re-check it in ACP settings${ref}`)
+        return wrap(
+          error.kind,
+          `ACP agent "${config.command}" requires authentication. ${hint}, then re-check it in ACP settings${ref}`,
+        )
       }
       case 'timeout':
         return wrap(
@@ -261,22 +297,34 @@ function acpProbeFailure(error: unknown, config: AcpStubAgentConfig): { kind: Ac
           `ACP agent "${config.command}" did not answer initialize/session/new before the probe timeout. Verify the command, then re-check it in ACP settings${ref}`,
         )
       case 'aborted':
- // 调用方中止（连接层 aborted kind，taxonomy user-rejected）
+        // 调用方中止（连接层 aborted kind，taxonomy user-rejected）
         return wrap(error.kind, `ACP agent probe for "${config.command}" was cancelled${ref}`)
       case 'crash': {
         const exit = error.exit
-        const fact = exit === undefined ? 'exit status unknown' : `exit code ${String(exit.code ?? 'none')}, signal ${exit.signal ?? 'none'}`
-        return wrap(error.kind, `ACP agent "${config.command}" exited during the probe (${fact}). Fix it, then re-check it in ACP settings${ref}`)
+        const fact =
+          exit === undefined
+            ? 'exit status unknown'
+            : `exit code ${String(exit.code ?? 'none')}, signal ${exit.signal ?? 'none'}`
+        return wrap(
+          error.kind,
+          `ACP agent "${config.command}" exited during the probe (${fact}). Fix it, then re-check it in ACP settings${ref}`,
+        )
       }
       // protocol-error（预留）：协议层（connection
       // classify）的 message 只允许一个脱敏、有界首行；完整诊断留在
       // Settings/log correlation 侧，不能进入 stock ModelPicker。
       case 'protocol-error':
-        return wrap(error.kind, `ACP agent probe protocol error: ${boundedProbeDiagnostic(error.message) || 'invalid ACP response'}${ref}`)
+        return wrap(
+          error.kind,
+          `ACP agent probe protocol error: ${boundedProbeDiagnostic(error.message) || 'invalid ACP response'}${ref}`,
+        )
     }
   }
   const message = error instanceof Error ? error.message : String(error)
-  return wrap('protocol-error', `ACP agent probe for "${config.command}" failed: ${boundedProbeDiagnostic(message) || 'invalid ACP response'}`)
+  return wrap(
+    'protocol-error',
+    `ACP agent probe for "${config.command}" failed: ${boundedProbeDiagnostic(message) || 'invalid ACP response'}`,
+  )
 }
 
 /**
@@ -311,11 +359,14 @@ export class AcpStubAdapter extends LlmAdapter {
   override async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
     const config = this.options.agents().get(provider)
     if (config === undefined) {
-      throw new LlmError(`ACP provider "${provider}" is no longer configured; refresh the model catalog`, 'ACP_UNKNOWN_PROVIDER')
+      throw new LlmError(
+        `ACP provider "${provider}" is no longer configured; refresh the model catalog`,
+        'ACP_UNKNOWN_PROVIDER',
+      )
     }
     const key = acpProbeConfigKey(config)
     const cached = this.cache.get(provider)
- // 新鲜度集中判定（agent-config.ts acpProbeFresh）：key 相等且未过期
+    // 新鲜度集中判定（agent-config.ts acpProbeFresh）：key 相等且未过期
     // （ok 10min / error 30s TTL）才算命中；过期条目按 miss 重 probe。
     if (cached !== undefined && acpProbeFresh(cached, key, Date.now())) {
       if (cached.result.kind === 'ok') return cached.result.models
@@ -354,7 +405,7 @@ export class AcpStubAdapter extends LlmAdapter {
     this.cache.delete(provider)
   }
 
- /** Last cached probe outcome for the health endpoint; undefined when never probed. */
+  /** Last cached probe outcome for the health endpoint; undefined when never probed. */
   probeSnapshot(provider: string): AcpProbeCacheEntry | undefined {
     return this.cache.get(provider)
   }
@@ -373,13 +424,17 @@ export class AcpStubAdapter extends LlmAdapter {
     return entry.result.modelConfigOptions?.[model] ?? entry.result.configOptions
   }
 
-  private async probeAndCache(provider: string, config: AcpStubAgentConfig, key: string): Promise<readonly LlmModelInfo[]> {
- // 埋点：实际 probe 的延迟与结果（缓存命中/在飞合并不计）
- // 边界：runtime preparation 的清理回调（disposable probe 根必删）——成功、失败、
+  private async probeAndCache(
+    provider: string,
+    config: AcpStubAgentConfig,
+    key: string,
+  ): Promise<readonly LlmModelInfo[]> {
+    // 埋点：实际 probe 的延迟与结果（缓存命中/在飞合并不计）
+    // 边界：runtime preparation 的清理回调（disposable probe 根必删）——成功、失败、
     // probe 内清理失败一律经 finally 执行；cleanup 自身失败仅 warn，不翻转结果。
     let preparation: AcpProbeRuntimePreparation | undefined
     try {
- // fail closed：seam 缺席（宿主无 subprocess 服务）时 probe 以
+      // fail closed：seam 缺席（宿主无 subprocess 服务）时 probe 以
       // spawn-failure 响亮进缓存——零 spawn、零目录副作用，不自制回退。
       const resolution = this.options.subprocess
       if (!resolution.ok) throw new AcpClientError('spawn-failure', resolution.message, { category: 'config' })
@@ -406,7 +461,7 @@ export class AcpStubAdapter extends LlmAdapter {
               spawnPlan: preparation.plan,
               subprocess: resolution.seam,
             },
- // 边界：disposable run 目录同时作 session/new 落点（options.cwd 提供则
+        // 边界：disposable run 目录同时作 session/new 落点（options.cwd 提供则
         // probe 不自删——由 finally 的 preparation.cleanup 删除）。
         preparation?.cwd === undefined
           ? {
@@ -429,18 +484,27 @@ export class AcpStubAdapter extends LlmAdapter {
           authMethods: probe.authMethods,
           agentInfo: probe.agentInfo,
           agentCapabilities: probe.agentCapabilities,
- // 清理事实（probe 清理）与 capability hash 随 ok 条目保留，供 health 展示；
+          // 清理事实（probe 清理）与 capability hash 随 ok 条目保留，供 health 展示；
           // 均不进缓存键（它们是 probe 的结果而非输入）
           cleanup: probe.cleanup,
           capabilityHash: acpCanonicalHash16(probe.agentCapabilities ?? null),
- // readiness：协商的协议版本随缓存保留（health 行展示）
+          // readiness：协商的协议版本随缓存保留（health 行展示）
           protocolVersion: probe.protocolVersion,
           // configOptions-only 目录事实（Kimi 形态），供五态派生放行。
-          hasModelConfigOption: probe.configOptions?.some((option) => normalizeAcpConfigOptionKey(option.category ?? '') === 'model') ?? false,
+          hasModelConfigOption:
+            probe.configOptions?.some((option) => normalizeAcpConfigOptionKey(option.category ?? '') === 'model') ??
+            false,
           configOptions: acpConfigOptionsSnapshot(probe.configOptions),
-          ...(probe.modelConfigOptions === undefined ? {} : {
-            modelConfigOptions: Object.fromEntries(Object.entries(probe.modelConfigOptions).map(([model, options]) => [model, acpConfigOptionsSnapshot(options) ?? []])),
-          }),
+          ...(probe.modelConfigOptions === undefined
+            ? {}
+            : {
+                modelConfigOptions: Object.fromEntries(
+                  Object.entries(probe.modelConfigOptions).map(([model, options]) => [
+                    model,
+                    acpConfigOptionsSnapshot(options) ?? [],
+                  ]),
+                ),
+              }),
         },
       })
       return models
@@ -457,8 +521,14 @@ export class AcpStubAdapter extends LlmAdapter {
         try {
           await preparation.cleanup()
         } catch (error: unknown) {
-          const warn = this.options.onWarn ?? ((message: string) => { process.stderr.write(`dsh-acp: ${message}\n`) })
-          warn(`probe runtime cleanup failed for "${provider}" (${error instanceof Error ? error.message : String(error)}); the disposable probe root may linger until the next probe sweep`)
+          const warn =
+            this.options.onWarn ??
+            ((message: string) => {
+              process.stderr.write(`dsh-acp: ${message}\n`)
+            })
+          warn(
+            `probe runtime cleanup failed for "${provider}" (${error instanceof Error ? error.message : String(error)}); the disposable probe root may linger until the next probe sweep`,
+          )
         }
       }
     }

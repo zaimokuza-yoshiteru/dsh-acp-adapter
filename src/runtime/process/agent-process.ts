@@ -3,12 +3,7 @@
 
 import { PassThrough } from 'node:stream'
 import type { Readable, Writable } from 'node:stream'
-import {
-  DEFAULT_STDERR_MAX_BYTES,
-  DEFAULT_STDERR_MAX_LINES,
-  StderrRing,
-  defaultRedactStderrLine,
-} from './stderr.ts'
+import { DEFAULT_STDERR_MAX_BYTES, DEFAULT_STDERR_MAX_LINES, StderrRing, defaultRedactStderrLine } from './stderr.ts'
 import type { AcpSubprocessHandle, SubprocessSeam } from './subprocess.ts'
 import { stopSubprocess } from './cleanup.ts'
 import { isSubprocessLaunchFailure } from './subprocess.ts'
@@ -54,7 +49,7 @@ export class AcpAgentProcess {
   private readonly eofGraceMs: number
   private readonly termGraceMs: number
   private readonly exitWaitMs: number
- /** 进程半的响亮告警通道（缺省落 console.error——无 hook 也要响亮）。 */
+  /** 进程半的响亮告警通道（缺省落 console.error——无 hook 也要响亮）。 */
   private readonly onWarn: (message: string) => void
   private readonly stderrRing: StderrRing
   private stderrLeftover = ''
@@ -82,14 +77,18 @@ export class AcpAgentProcess {
     this.eofGraceMs = options.eofGraceMs ?? DEFAULT_EOF_GRACE_MS
     this.termGraceMs = options.termGraceMs ?? DEFAULT_TERM_GRACE_MS
     this.exitWaitMs = options.exitWaitMs ?? DEFAULT_EXIT_WAIT_MS
-    this.onWarn = options.onProcessWarn ?? ((message: string): void => { console.error(message) })
+    this.onWarn =
+      options.onProcessWarn ??
+      ((message: string): void => {
+        console.error(message)
+      })
     this.stderrRing = new StderrRing(
       options.stderrMaxLines ?? DEFAULT_STDERR_MAX_LINES,
       options.stderrMaxBytes ?? DEFAULT_STDERR_MAX_BYTES,
       options.redactStderrLine ?? defaultRedactStderrLine,
     )
 
- // 结构化 spawn：argv 直达 seam，不经 shell（堵注入面； 经 spawnPlan/wrapArgv
+    // 结构化 spawn：argv 直达 seam，不经 shell（堵注入面； 经 spawnPlan/wrapArgv
     // 包 confine——spawnPlan 存在时其 env 整体替换 spec.env，由连接层在传入前解析）。
     // graceMs = 拆除梯子第 2 级的升级间隔（terminate 的 SIGTERM→SIGKILL 定时由 seam 持有）。
     // env = profile 显式覆盖；subprocess service 负责 scrubbed parent env 底座。
@@ -195,11 +194,16 @@ export class AcpAgentProcess {
   }
 
   /** Provider failure remains observable even after successful ACP initialization. */
-  get failure(): Error | undefined { return this.processFailureError }
+  get failure(): Error | undefined {
+    return this.processFailureError
+  }
 
   /** Only synchronous launch or explicit OS executable failures prove a spawn failure. */
   get spawnFailure(): Error | undefined {
-    return this.syncSpawnFailure ?? (isSubprocessLaunchFailure(this.processFailureError) ? this.processFailureError : undefined)
+    return (
+      this.syncSpawnFailure ??
+      (isSubprocessLaunchFailure(this.processFailureError) ? this.processFailureError : undefined)
+    )
   }
 
   /** 脱敏后的 stderr 环形缓冲快照（供健康/诊断端点与 crash 分类）。 */
@@ -225,7 +229,9 @@ export class AcpAgentProcess {
     if (this.handle !== undefined) {
       // A settled command (including provider failure) may leave live range members.
       await stopSubprocess(this.handle, {
-        eofGraceMs: this.eofGraceMs, exitWaitMs: this.exitWaitMs, warn: this.onWarn,
+        eofGraceMs: this.eofGraceMs,
+        exitWaitMs: this.exitWaitMs,
+        warn: this.onWarn,
       })
     }
     await waitWithin(this.exitPromise, EXIT_FACT_GRACE_MS)

@@ -33,33 +33,60 @@ async function lock(directory: string, signal: AbortSignal): Promise<() => void>
       signal.throwIfAborted()
       try {
         database.exec('BEGIN IMMEDIATE')
-        return () => { try { database.exec('COMMIT') } finally { database.close() } }
+        return () => {
+          try {
+            database.exec('COMMIT')
+          } finally {
+            database.close()
+          }
+        }
       } catch (error) {
         const code = (error as { errcode?: number }).errcode
         if (code !== 5 && code !== 6) throw error
-        if (Date.now() >= deadline) throw new Error('DSH MCP registration is busy; retry after the other Devin launch finishes')
+        if (Date.now() >= deadline)
+          throw new Error('DSH MCP registration is busy; retry after the other Devin launch finishes')
         // Do not synchronously wait: the owner may be another session in this process.
         await delay(100, undefined, { signal })
       }
     }
-  } catch (error) { database.close(); throw error }
+  } catch (error) {
+    database.close()
+    throw error
+  }
 }
 
-export async function prepareDevinMcp({ subprocess, command, args, cwd, env, lease }: DevinMcpOptions): Promise<{ env: Record<string, string>; lease: AcpMcpLease }> {
+export async function prepareDevinMcp({
+  subprocess,
+  command,
+  args,
+  cwd,
+  env,
+  lease,
+}: DevinMcpOptions): Promise<{ env: Record<string, string>; lease: AcpMcpLease }> {
   try {
     const server = lease.servers[0]
-    if (lease.servers.length !== 1 || server === undefined || !('type' in server) || server.type !== 'http') throw new Error('Devin requires one local DSH HTTP bridge')
+    if (lease.servers.length !== 1 || server === undefined || !('type' in server) || server.type !== 'http')
+      throw new Error('Devin requires one local DSH HTTP bridge')
     // A stable, dependency-free launcher survives plugin upgrades. It is inert outside a DSH launch.
     const directory = join(env.HOME ?? homedir(), '.dsh', 'acp', 'mcp')
     const launcher = join(directory, 'dsh-mcp-launcher.mjs')
     const release = await lock(directory, lease.signal)
     try {
-      const bytes = await readFile(fileURLToPath(new URL('../../../lib/runtime/session/dsh-mcp-launcher.mjs', import.meta.url)))
-      const existing = await readFile(launcher).catch((error: NodeJS.ErrnoException) => { if (error.code !== 'ENOENT') throw error; return undefined })
+      const bytes = await readFile(
+        fileURLToPath(new URL('../../../lib/runtime/session/dsh-mcp-launcher.mjs', import.meta.url)),
+      )
+      const existing = await readFile(launcher).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== 'ENOENT') throw error
+        return undefined
+      })
       if (!existing?.equals(bytes)) {
         const temporary = `${launcher}.${randomUUID()}.tmp`
-        try { await writeFile(temporary, bytes, { mode: 0o600 }); await rename(temporary, launcher) }
-        finally { await rm(temporary, { force: true }) }
+        try {
+          await writeFile(temporary, bytes, { mode: 0o600 })
+          await rename(temporary, launcher)
+        } finally {
+          await rm(temporary, { force: true })
+        }
       }
       const index = args.lastIndexOf('acp')
       const prefix = index < 0 ? [...args] : args.slice(0, index)
@@ -67,21 +94,41 @@ export async function prepareDevinMcp({ subprocess, command, args, cwd, env, lea
         const abort = new AbortController()
         const timer = setTimeout(() => abort.abort(), 10_000)
         let handle: AcpSubprocessHandle
-        try { handle = subprocess.spawn({ argv: [command, ...prefix, 'mcp', ...parameters], cwd, env, graceMs: 500, signal: AbortSignal.any([abort.signal, lease.signal]) }) }
-        catch { clearTimeout(timer); throw new Error('Cannot launch Devin MCP registration command') }
-        let stdout = '', stderr = ''
+        try {
+          handle = subprocess.spawn({
+            argv: [command, ...prefix, 'mcp', ...parameters],
+            cwd,
+            env,
+            graceMs: 500,
+            signal: AbortSignal.any([abort.signal, lease.signal]),
+          })
+        } catch {
+          clearTimeout(timer)
+          throw new Error('Cannot launch Devin MCP registration command')
+        }
+        let stdout = '',
+          stderr = ''
         const collect = (chunk: Buffer, target: 'out' | 'err') => {
-          if (stdout.length + stderr.length > 1024 * 1024) { abort.abort(); return }
+          if (stdout.length + stderr.length > 1024 * 1024) {
+            abort.abort()
+            return
+          }
           if (target === 'out') stdout += chunk.toString()
           else stderr += chunk.toString()
         }
-        handle.stdout?.on('data', chunk => collect(chunk, 'out'))
-        handle.stderr?.on('data', chunk => collect(chunk, 'err'))
+        handle.stdout?.on('data', (chunk) => collect(chunk, 'out'))
+        handle.stderr?.on('data', (chunk) => collect(chunk, 'err'))
         try {
           handle.stdin?.end()
-          const [result] = await Promise.all([handle.done, ...[handle.stdout, handle.stderr].filter(stream => stream !== undefined).map(stream => finished(stream))])
+          const [result] = await Promise.all([
+            handle.done,
+            ...[handle.stdout, handle.stderr]
+              .filter((stream) => stream !== undefined)
+              .map((stream) => finished(stream)),
+          ])
           if (result.exitCode === 0 && !abort.signal.aborted) return { stdout }
-          if (parameters[0] === 'get' && result.exitCode === 1 && stderr.includes("Server 'dsh' not found")) return undefined
+          if (parameters[0] === 'get' && result.exitCode === 1 && stderr.includes("Server 'dsh' not found"))
+            return undefined
           throw new Error('command failed')
         } catch {
           // Never surface third-party argv/stdout/stderr: they may contain credentials.
@@ -93,34 +140,60 @@ export async function prepareDevinMcp({ subprocess, command, args, cwd, env, lea
       }
       const current = await cli(['get', DEVIN_MCP_NAME])
       const expected = `Command: ${process.execPath} ${launcher}`
-      if (current !== undefined && !current.stdout.split('\n').some(line => line.trim() === expected)) {
+      if (current !== undefined && !current.stdout.split('\n').some((line) => line.trim() === expected)) {
         // A previous install may have used another Node executable, but an unrelated server is never overwritten.
-        if (!current.stdout.split('\n').some(line => line.trim().startsWith('Command: ') && line.trim().endsWith(` ${launcher}`))) {
-          throw new Error('Devin already has an unrelated MCP server named dsh; rename that entry before connecting DSH')
+        if (
+          !current.stdout
+            .split('\n')
+            .some((line) => line.trim().startsWith('Command: ') && line.trim().endsWith(` ${launcher}`))
+        ) {
+          throw new Error(
+            'Devin already has an unrelated MCP server named dsh; rename that entry before connecting DSH',
+          )
         }
       }
       // `mcp get` redacts environment values, so an identical command cannot prove
       // Electron Node mode is enabled. Reapply our owned entry through Devin's CLI;
       // this replaces the same server, preserves other servers and repairs missing/wrong env.
-      await cli(['add', '--scope', 'user', '-e', 'ELECTRON_RUN_AS_NODE=1', DEVIN_MCP_NAME, '--', process.execPath, launcher])
+      await cli([
+        'add',
+        '--scope',
+        'user',
+        '-e',
+        'ELECTRON_RUN_AS_NODE=1',
+        DEVIN_MCP_NAME,
+        '--',
+        process.execPath,
+        launcher,
+      ])
       // Verify the effective entry, not merely that writing the user scope
       // succeeded. A higher-priority entry must not redirect a trusted server
       // identity or replace the per-process endpoint with a saved address.
       const effective = await cli(['get', DEVIN_MCP_NAME])
-      if (effective === undefined || !effective.stdout.split('\n').some(line => line.trim() === expected)
-        || /\bDSH_ACP_TEAM_MCP_URL\s*=/.test(effective.stdout)) {
-        throw new Error('Devin effective dsh MCP entry conflicts with this session bridge; check project-level MCP overrides')
+      if (
+        effective === undefined ||
+        !effective.stdout.split('\n').some((line) => line.trim() === expected) ||
+        /\bDSH_ACP_TEAM_MCP_URL\s*=/.test(effective.stdout)
+      ) {
+        throw new Error(
+          'Devin effective dsh MCP entry conflicts with this session bridge; check project-level MCP overrides',
+        )
       }
       lease.signal.throwIfAborted()
-    } finally { await release() }
+    } finally {
+      await release()
+    }
     let closing: Promise<void> | undefined
     return {
       env: { ...env, DSH_ACP_TEAM_MCP_URL: server.url },
       lease: {
         ...lease,
         servers: [],
-        close: () => closing ??= lease.close(),
+        close: () => (closing ??= lease.close()),
       },
     }
-  } catch (error) { await lease.close(); throw error }
+  } catch (error) {
+    await lease.close()
+    throw error
+  }
 }

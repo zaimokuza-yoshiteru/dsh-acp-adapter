@@ -35,7 +35,7 @@ export interface AcpConnectionSpec {
    */
   env: Record<string, string>
   /**
- * 子进程 spawn/终止的宿主 seam：`ctx.subprocess` 的结构化窄化产物。
+   * 子进程 spawn/终止的宿主 seam：`ctx.subprocess` 的结构化窄化产物。
    * 必填——无 seam 即无 ACP 子进程（fail closed，不自制 child_process 回退）。
    */
   subprocess: SubprocessSeam

@@ -7,7 +7,13 @@ import css from './CrossBackendModal.module.css'
 
 type Translate = (key: AcpLocaleKey, params?: Record<string, string | number>) => string
 
-export function CrossBackendModal({ coordinator, t }: { coordinator: CrossBackendCoordinator; t: Translate }): ReactNode {
+export function CrossBackendModal({
+  coordinator,
+  t,
+}: {
+  coordinator: CrossBackendCoordinator
+  t: Translate
+}): ReactNode {
   const snapshot = useSyncExternalStore(
     (listener) => coordinator.subscribe(listener),
     () => coordinator.getSnapshot(),
@@ -17,36 +23,55 @@ export function CrossBackendModal({ coordinator, t }: { coordinator: CrossBacken
   if (pending === null) return null
   const source = pending.ticket.sourceSelection
   const target = pending.ticket.targetSelection
-  const description = source === undefined
-    ? t('crossBackendExistingHistory')
-    : t('crossBackendFromTo', {
-      source: `${source.provider} · ${source.model}`,
-      target: `${target.provider} · ${target.model}`,
-    })
-  const error = pending.blockingReason === 'no-location'
-    ? t('crossBackendNoLocation')
-    : pending.error
-  return h(Modal, {
-    open: true,
-    onClose: () => { void coordinator.cancel() },
-    title: t('crossBackendTitle'),
-    description: `${description} ${t('crossBackendDescription')}`,
-    closeLabel: t('crossBackendCancel'),
-    ...(css.dialog === undefined ? {} : { className: css.dialog }),
-    ...(css.content === undefined ? {} : { contentClassName: css.content }),
-    footer: h('div', { className: css.footer },
-      h(Button, {
-        variant: 'outline',
-        disabled: pending.busy,
-        onClick: () => { void coordinator.cancel() },
-      }, t('crossBackendCancel')),
-      h(Button, {
-        variant: 'primary',
-        disabled: pending.busy || !pending.confirmable,
-        onClick: () => { void coordinator.confirm() },
-      }, pending.busy ? t('crossBackendWorking') : t('crossBackendContinue')),
-    ),
-  }, error === null
-    ? h('p', { className: css.note }, t('crossBackendHistory'))
-    : h('p', { className: css.error, role: 'alert' }, error))
+  const description =
+    source === undefined
+      ? t('crossBackendExistingHistory')
+      : `${t('crossBackendFromTo', {
+          source: `${source.provider} · ${source.model}`,
+          target: `${target.provider} · ${target.model}`,
+        })} ${t('crossBackendDescription')}`
+  const error = pending.blockingReason === 'no-location' ? t('crossBackendNoLocation') : pending.error
+  return h(
+    Modal,
+    {
+      open: true,
+      onClose: () => {
+        void coordinator.cancel()
+      },
+      title: t('crossBackendTitle'),
+      description,
+      closeLabel: t('crossBackendCancel'),
+      ...(css.dialog === undefined ? {} : { className: css.dialog }),
+      ...(css.content === undefined ? {} : { contentClassName: css.content }),
+      footer: h(
+        'div',
+        { className: css.footer },
+        h(
+          Button,
+          {
+            variant: 'outline',
+            disabled: pending.busy,
+            onClick: () => {
+              void coordinator.cancel()
+            },
+          },
+          t('crossBackendCancel'),
+        ),
+        h(
+          Button,
+          {
+            variant: 'primary',
+            disabled: pending.busy || !pending.confirmable,
+            onClick: () => {
+              void coordinator.confirm()
+            },
+          },
+          pending.busy ? t('crossBackendWorking') : t('crossBackendContinue'),
+        ),
+      ),
+    },
+    error === null
+      ? h('p', { className: css.note }, t('crossBackendHistory'))
+      : h('p', { className: css.error, role: 'alert' }, error),
+  )
 }

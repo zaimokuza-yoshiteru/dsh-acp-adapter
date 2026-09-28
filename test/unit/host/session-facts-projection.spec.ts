@@ -13,10 +13,16 @@ import { sessionFactsSchema } from '../../../src/domain/session/session-facts.ts
 import type { AcpReplayPayloadV1 } from '../../../src/domain/session/acp-replay-payload.ts'
 
 const replay = (owner: string, agent = `agent-${owner}`): AcpReplayPayloadV1 => ({
-  kind: 'dsh-acp', version: 1, ownerDshSessionId: owner,
-  profileId: 'codex', profileGeneration: 2, agentSessionId: agent,
-  bindingEpoch: 2, launchFingerprint: 'fingerprint',
-  committedPromptOrdinal: 3, committedActivitySeq: 8,
+  kind: 'dsh-acp',
+  version: 1,
+  ownerDshSessionId: owner,
+  profileId: 'codex',
+  profileGeneration: 2,
+  agentSessionId: agent,
+  bindingEpoch: 2,
+  launchFingerprint: 'fingerprint',
+  committedPromptOrdinal: 3,
+  committedActivitySeq: 8,
 })
 
 const contexts: Context[] = []
@@ -46,11 +52,18 @@ function appendUserStep(session: Session, turn: number, step: number, text: stri
   return session.append('user/message', user(text), { surfaceOp: 'append' })
 }
 
-function appendReplay(session: Session, turn: number, step: number, payload: AcpReplayPayloadV1, extra: Record<string, unknown> = {}) {
+function appendReplay(
+  session: Session,
+  turn: number,
+  step: number,
+  payload: AcpReplayPayloadV1,
+  extra: Record<string, unknown> = {},
+) {
   const message = createAssistantMessage({
     content: [{ type: 'text', text: 'answer must not enter the projection' }],
     source: {
-      provider: 'acp', model: 'codex',
+      provider: 'acp',
+      model: 'codex',
       replayState: { response: { ...payload, ...extra } } as never,
     },
   })
@@ -77,7 +90,9 @@ describe('ACP execution SessionProjection integration', () => {
     const first = appendUserStep(session, 1, 0, 'first input')
     let facts = readSessionFacts(ctx, session)
     expect(facts).toMatchObject({
-      turnOpen: true, turnSeen: true, hasSemanticHistory: true,
+      turnOpen: true,
+      turnSeen: true,
+      hasSemanticHistory: true,
       priorSemanticHistory: false,
       openSteps: [{ turn: 1, step: 0, startSeq: first.seq - 1, messageIds: [first.data.id] }],
     })
@@ -150,13 +165,17 @@ describe('ACP execution SessionProjection integration', () => {
     const watermark = checkpointSeq(checkpoint)
     session.append('turn/start', { turn: 2 })
 
-    expect(() => ctx.sessionProjections.restore(
-      checkpoint, [], SessionLogOffset(watermark), session.header, SessionLogOffset(0),
-    )).toThrow(/re-read from seq 0/)
+    expect(() =>
+      ctx.sessionProjections.restore(checkpoint, [], SessionLogOffset(watermark), session.header, SessionLogOffset(0)),
+    ).toThrow(/re-read from seq 0/)
 
     const truncated = session.snapshotEvents(SessionLogOffset(0), SessionLogOffset(watermark - 1))
     const restored = ctx.sessionProjections.restore(
-      checkpoint, truncated, SessionLogOffset(0), session.header, SessionLogOffset(0),
+      checkpoint,
+      truncated,
+      SessionLogOffset(0),
+      session.header,
+      SessionLogOffset(0),
     )
     expect(restored.snapshot.asOfSeq).toBe(truncated.at(-1)?.seq)
     expect(restored.checkpoint.acpExecution?.seq).toBe(truncated.at(-1)?.seq)

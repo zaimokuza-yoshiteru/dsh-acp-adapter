@@ -13,7 +13,9 @@ export class AcpActivityJournalStore {
   private readonly rowsByAnchor = new Map<string, Map<string, AcpActivityView>>()
   private cursor = 0
 
-  get head(): number { return this.cursor }
+  get head(): number {
+    return this.cursor
+  }
 
   replace(head: number, activities: readonly AcpActivityView[]): void {
     this.rows.clear()
@@ -29,8 +31,14 @@ export class AcpActivityJournalStore {
     }
     this.cursor = activity.revisionSeq
     const previous = this.rows.get(activity.activityId)
-    if (previous !== undefined && (previous.ownerDshSessionId !== activity.ownerDshSessionId || previous.promptAnchorMessageId !== activity.promptAnchorMessageId)) {
-      this.rowsByAnchor.get(this.anchorKey(previous.ownerDshSessionId, previous.promptAnchorMessageId))?.delete(previous.activityId)
+    if (
+      previous !== undefined &&
+      (previous.ownerDshSessionId !== activity.ownerDshSessionId ||
+        previous.promptAnchorMessageId !== activity.promptAnchorMessageId)
+    ) {
+      this.rowsByAnchor
+        .get(this.anchorKey(previous.ownerDshSessionId, previous.promptAnchorMessageId))
+        ?.delete(previous.activityId)
     }
     this.insert(activity)
   }
@@ -62,7 +70,9 @@ interface ActivityWindowPage {
   readonly head: number
   readonly batches: readonly ActivityBatch[]
 }
-interface ActivityRequest { readonly limit: number }
+interface ActivityRequest {
+  readonly limit: number
+}
 
 function snapshotBatch(head: number, activities: readonly AcpActivityView[]): readonly ActivityBatch[] {
   return head === 0 ? [] : [{ firstRevision: 1, lastRevision: head, activities }]
@@ -84,10 +94,10 @@ class AcpActivityRemoteJournal extends RemoteJournalStream<ActivityWindowPage, A
     super(streamFactory, {
       name: 'dsh-acp activity journal',
       emptyCursor: 0,
-      entries: page => page.batches,
+      entries: (page) => page.batches,
       hasMore: () => false,
-      first: batch => batch.firstRevision,
-      last: batch => batch.lastRevision,
+      first: (batch) => batch.firstRevision,
+      last: (batch) => batch.lastRevision,
       compare: (left, right) => left - right,
       follows: (left, right) => right === left + 1,
       publish,
@@ -150,7 +160,9 @@ class AcpActivityRemoteJournal extends RemoteJournalStream<ActivityWindowPage, A
     return { head: through, batches: snapshotBatch(through, activities) }
   }
 
-  protected override repairRequest(initial: ActivityRequest): ActivityRequest { return initial }
+  protected override repairRequest(initial: ActivityRequest): ActivityRequest {
+    return initial
+  }
 }
 
 type HubEntry = {
@@ -161,9 +173,28 @@ type HubEntry = {
   refs: number
   ready: boolean
   error?: unknown
+  cancelRetry?: () => void
+  retryExhausted: boolean
+  retrying: boolean
 }
 
-const INITIAL_OPEN_RETRY_MS = 100
+const INITIAL_OPEN_MAX_ATTEMPTS = 10
+const INITIAL_OPEN_RETRY_BASE_MS = 100
+const INITIAL_OPEN_RETRY_MAX_MS = 8_000
+
+function waitForInitialRetry(entry: HubEntry, delay: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      delete entry.cancelRetry
+      resolve(true)
+    }, delay)
+    entry.cancelRetry = () => {
+      clearTimeout(timer)
+      delete entry.cancelRetry
+      resolve(false)
+    }
+  })
+}
 
 /** One live ACP journal per DSH session. Nodes only subscribe to projections. */
 export class AcpActivityJournalHub {
@@ -182,23 +213,43 @@ export class AcpActivityJournalHub {
     const key = JSON.stringify([row.dshSessionId, row.ownerDshSessionId, row.activityId, row.revisionSeq])
     const pending = this.detailRequests.get(key)
     if (pending !== undefined) return pending
-    const request = this.remote.activityDetail(row.dshSessionId, {
-      activityId: row.activityId, revisionSeq: row.revisionSeq, ownerDshSessionId: row.ownerDshSessionId,
-    }).then(result => {
-      if (!result.ok) throw result.error
-      const detail = result.value
-      if (detail.dshSessionId !== row.dshSessionId || detail.ownerDshSessionId !== row.ownerDshSessionId
-        || detail.activityId !== row.activityId || detail.revisionSeq !== row.revisionSeq) throw new Error('ACP activity detail identity mismatch')
-      return detail
-    }).finally(() => { this.detailRequests.delete(key) })
+    const request = this.remote
+      .activityDetail(row.dshSessionId, {
+        activityId: row.activityId,
+        revisionSeq: row.revisionSeq,
+        ownerDshSessionId: row.ownerDshSessionId,
+      })
+      .then((result) => {
+        if (!result.ok) throw result.error
+        const detail = result.value
+        if (
+          detail.dshSessionId !== row.dshSessionId ||
+          detail.ownerDshSessionId !== row.ownerDshSessionId ||
+          detail.activityId !== row.activityId ||
+          detail.revisionSeq !== row.revisionSeq
+        )
+          throw new Error('ACP activity detail identity mismatch')
+        return detail
+      })
+      .finally(() => {
+        this.detailRequests.delete(key)
+      })
     this.detailRequests.set(key, request)
     return request
   }
 
-  acquire(sessionId: string, ownerDshSessionId: string, promptAnchorMessageId: string, listener: () => void): {
+  acquire(
+    sessionId: string,
+    ownerDshSessionId: string,
+    promptAnchorMessageId: string,
+    listener: () => void,
+  ): {
     readonly snapshot: () => readonly AcpActivityView[]
     readonly ready: () => boolean
     readonly error: () => unknown
+    readonly canRetry: () => boolean
+    readonly retrying: () => boolean
+    readonly retry: () => void
     readonly release: () => void
   } {
     let entry = this.entries.get(sessionId)
@@ -214,6 +265,23 @@ export class AcpActivityJournalHub {
       snapshot: () => entry!.store.values(ownerDshSessionId, promptAnchorMessageId),
       ready: () => entry!.ready,
       error: () => entry!.error,
+      canRetry: () => entry!.retryExhausted,
+      retrying: () => entry!.retrying,
+      retry: () => {
+        if (
+          this.entries.get(sessionId) !== entry ||
+          entry!.refs === 0 ||
+          !entry!.retryExhausted ||
+          entry!.opening !== undefined ||
+          entry!.journal !== undefined
+        )
+          return
+        entry!.retryExhausted = false
+        entry!.retrying = true
+        entry!.error = undefined
+        this.notifyAll(entry!)
+        this.startEntry(sessionId, entry!)
+      },
       release: () => {
         if (released) return
         released = true
@@ -223,6 +291,7 @@ export class AcpActivityJournalHub {
         entry!.refs -= 1
         if (entry!.refs === 0) {
           this.entries.delete(sessionId)
+          entry!.cancelRetry?.()
           void entry!.journal?.dispose()
         }
       },
@@ -232,23 +301,21 @@ export class AcpActivityJournalHub {
   private createEntry(sessionId: string): HubEntry {
     const store = new AcpActivityJournalStore()
     const listenersByAnchor = new Map<string, Set<() => void>>()
-    const entry: HubEntry = { store, listenersByAnchor, refs: 0, ready: false }
+    const entry: HubEntry = { store, listenersByAnchor, refs: 0, ready: false, retryExhausted: false, retrying: false }
     this.entries.set(sessionId, entry)
     return entry
   }
 
   /**
-   * A conversation node can mount a few milliseconds before the host commits
-   * its durable ACP binding. Retry only that initial unopened window. Once an
+   * The conversation node can mount before the Agent startup commits its
+   * durable ACP binding. Retry only that initial unopened window. Once an
    * opened frame arrives, DSH's RemoteJournalStream remains the sole owner
    * of carrier reconnect and gap repair.
    */
   private startEntry(sessionId: string, entry: HubEntry): void {
-    if (entry.opening !== undefined || entry.journal !== undefined) return
-    const notifyAll = (): void => {
-      for (const listeners of entry.listenersByAnchor.values()) for (const notify of listeners) notify()
-    }
+    if (entry.retryExhausted || entry.opening !== undefined || entry.journal !== undefined) return
     entry.opening = (async () => {
+      let attempts = 0
       while (this.entries.get(sessionId) === entry && entry.refs > 0) {
         let opened = false
         let journal: AcpActivityRemoteJournal
@@ -256,7 +323,7 @@ export class AcpActivityJournalHub {
           this.streamFactory,
           this.remote,
           sessionId,
-          change => {
+          (change) => {
             if (this.entries.get(sessionId) !== entry || entry.journal !== journal) return
             opened = true
             if (change.type === 'append') {
@@ -271,17 +338,18 @@ export class AcpActivityJournalHub {
             for (const batch of tail) for (const activity of batch.activities) entry.store.append(activity)
             entry.ready = true
             entry.error = undefined
-            notifyAll()
+            entry.retrying = false
+            this.notifyAll(entry)
           },
-          error => {
+          (error) => {
             if (!opened || this.entries.get(sessionId) !== entry || entry.journal !== journal) return
             entry.error = error
-            notifyAll()
+            this.notifyAll(entry)
           },
-          error => {
+          (error) => {
             if (!opened || this.entries.get(sessionId) !== entry || entry.journal !== journal) return
             entry.error = error
-            notifyAll()
+            this.notifyAll(entry)
           },
         )
         entry.journal = journal
@@ -293,21 +361,37 @@ export class AcpActivityJournalHub {
           await journal.dispose()
           if (this.entries.get(sessionId) !== entry || entry.refs === 0) return
           entry.error = error
-          notifyAll()
-          await new Promise<void>(resolve => setTimeout(resolve, INITIAL_OPEN_RETRY_MS))
+          attempts += 1
+          if (attempts >= INITIAL_OPEN_MAX_ATTEMPTS) {
+            entry.retryExhausted = true
+            entry.retrying = false
+            return
+          }
+          if (!entry.retrying) this.notifyAll(entry)
+          const delay = Math.min(INITIAL_OPEN_RETRY_BASE_MS * 2 ** (attempts - 1), INITIAL_OPEN_RETRY_MAX_MS)
+          if (!(await waitForInitialRetry(entry, delay))) return
         }
       }
     })().finally(() => {
-      if (this.entries.get(sessionId) === entry) delete entry.opening
+      if (this.entries.get(sessionId) === entry) {
+        delete entry.opening
+        if (entry.retryExhausted) this.notifyAll(entry)
+      }
     })
   }
 
   private notifyActivities(entry: HubEntry, activities: readonly AcpActivityView[]): void {
-    const keys = new Set(activities.map(activity => this.anchorKey(activity.ownerDshSessionId, activity.promptAnchorMessageId)))
+    const keys = new Set(
+      activities.map((activity) => this.anchorKey(activity.ownerDshSessionId, activity.promptAnchorMessageId)),
+    )
     for (const key of keys) {
       const listeners = entry.listenersByAnchor.get(key)
       if (listeners !== undefined) for (const listener of listeners) listener()
     }
+  }
+
+  private notifyAll(entry: HubEntry): void {
+    for (const listeners of entry.listenersByAnchor.values()) for (const notify of listeners) notify()
   }
 
   private anchorKey(ownerDshSessionId: string, promptAnchorMessageId: string): string {

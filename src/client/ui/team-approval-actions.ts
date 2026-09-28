@@ -9,8 +9,13 @@ export interface TeamApproval extends SessionPendingInteractionBase {
   answer(outcome: 'allowed-once' | 'rejected'): Promise<void>
 }
 export function teamApproval(value: SessionPendingInteractionBase): TeamApproval | undefined {
-  return value.kind === 'approval' && 'answer' in value && typeof value.answer === 'function' && 'toolName' in value && typeof value.toolName === 'string'
-    ? value as TeamApproval : undefined
+  return value.kind === 'approval' &&
+    'answer' in value &&
+    typeof value.answer === 'function' &&
+    'toolName' in value &&
+    typeof value.toolName === 'string'
+    ? (value as TeamApproval)
+    : undefined
 }
 /** Settle only the captured, still-current requests. New arrivals never join a batch. */
 export async function answerTeamRequests(
@@ -20,11 +25,23 @@ export async function answerTeamRequests(
   active: () => boolean,
   inFlight: Set<SessionPendingInteractionBase>,
 ): Promise<number> {
-  const outcomes = await Promise.allSettled(requests.map(async request => {
-    const pending = request.pending
-    if (!active() || !allowedMembers.has(pending.sessionId) || current().get(pending.sessionId)?.pendingInteraction !== pending || inFlight.has(pending)) return
-    inFlight.add(pending)
-    try { await request.answer() } finally { inFlight.delete(pending) }
-  }))
-  return outcomes.filter(outcome => outcome.status === 'rejected').length
+  const outcomes = await Promise.allSettled(
+    requests.map(async (request) => {
+      const pending = request.pending
+      if (
+        !active() ||
+        !allowedMembers.has(pending.sessionId) ||
+        current().get(pending.sessionId)?.pendingInteraction !== pending ||
+        inFlight.has(pending)
+      )
+        return
+      inFlight.add(pending)
+      try {
+        await request.answer()
+      } finally {
+        inFlight.delete(pending)
+      }
+    }),
+  )
+  return outcomes.filter((outcome) => outcome.status === 'rejected').length
 }

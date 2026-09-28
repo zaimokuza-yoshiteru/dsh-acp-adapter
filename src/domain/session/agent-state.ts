@@ -46,7 +46,7 @@ export interface AcpAgentStateProbeView {
 
 /** {@link deriveAcpAgentState} 的输入事实。 */
 export interface AcpAgentStateInput {
- /** 宿主结构门是否通过；不通过即 `incompatible`，其余事实不再消费。 */
+  /** 宿主结构门是否通过；不通过即 `incompatible`，其余事实不再消费。 */
   readonly hostCompatible: boolean
   /**
    * 配置是否有效（settings schema 口径）。五态无独立的 invalid 桶：registry

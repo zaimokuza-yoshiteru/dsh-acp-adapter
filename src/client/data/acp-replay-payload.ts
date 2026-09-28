@@ -23,7 +23,10 @@ function record(value: unknown): value is Record<string, unknown> {
 }
 
 /** Extract an ACP marker from a DSH assistant/message event. */
-export function acpReplayPayloadOf(event: { readonly type: string; readonly data: unknown }): AcpReplayPayloadV1 | undefined {
+export function acpReplayPayloadOf(event: {
+  readonly type: string
+  readonly data: unknown
+}): AcpReplayPayloadV1 | undefined {
   if (event.type !== 'assistant/message' || !record(event.data)) return undefined
   const message = record(event.data.message) ? event.data.message : event.data
   // Production DSH stores the envelope at message.source.replayState. Keep the
@@ -34,14 +37,21 @@ export function acpReplayPayloadOf(event: { readonly type: string; readonly data
     ? source.replayState
     : record(message.replayState)
       ? message.replayState
-      : record(event.data.replayState) ? event.data.replayState : undefined
-  const response = record(replayState?.response)
-    ? replayState.response
-    : replayState
+      : record(event.data.replayState)
+        ? event.data.replayState
+        : undefined
+  const response = record(replayState?.response) ? replayState.response : replayState
   if (!record(response) || response.kind !== 'dsh-acp' || response.version !== 1) return undefined
-  if (typeof response.ownerDshSessionId !== 'string' || typeof response.profileId !== 'string'
-    || typeof response.profileGeneration !== 'number' || typeof response.agentSessionId !== 'string'
-    || typeof response.bindingEpoch !== 'number' || typeof response.launchFingerprint !== 'string'
-    || typeof response.committedPromptOrdinal !== 'number' || typeof response.committedActivitySeq !== 'number') return undefined
+  if (
+    typeof response.ownerDshSessionId !== 'string' ||
+    typeof response.profileId !== 'string' ||
+    typeof response.profileGeneration !== 'number' ||
+    typeof response.agentSessionId !== 'string' ||
+    typeof response.bindingEpoch !== 'number' ||
+    typeof response.launchFingerprint !== 'string' ||
+    typeof response.committedPromptOrdinal !== 'number' ||
+    typeof response.committedActivitySeq !== 'number'
+  )
+    return undefined
   return response as unknown as AcpReplayPayloadV1
 }

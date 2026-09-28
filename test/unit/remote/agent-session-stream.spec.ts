@@ -4,8 +4,15 @@ import { AcpRemoteService } from '../../../src/remote/service.ts'
 import type { AcpAgentSessionSnapshotView } from '../../../src/contract/remote.ts'
 
 const snapshot = (): AcpAgentSessionSnapshotView => ({
-  sessionId: 'session', profileId: 'kimi', freshness: 'live', editable: false,
-  configOptions: [], modes: [{ id: 'plan', name: 'Plan' }], currentModeId: 'plan', contextUsage: null, note: null,
+  sessionId: 'session',
+  profileId: 'kimi',
+  freshness: 'live',
+  editable: false,
+  configOptions: [],
+  modes: [{ id: 'plan', name: 'Plan' }],
+  currentModeId: 'plan',
+  contextUsage: null,
+  note: null,
 })
 
 function setup() {
@@ -14,18 +21,35 @@ function setup() {
   const listeners = new Set<() => void>()
   const read = vi.fn(async () => current)
   const service = new AcpRemoteService(new Context(), {
-    registry: { agents: () => new Map(), probeCacheFor: () => undefined }, resolveLiveAgent: () => undefined,
-    backendFacts: { readBindingProvider: async () => bound ? 'acp-kimi' : undefined, peekHeaderProvider: async () => undefined, hasLiveAgent: () => true },
+    registry: { agents: () => new Map(), probeCacheFor: () => undefined },
+    resolveLiveAgent: () => undefined,
+    backendFacts: {
+      readBindingProvider: async () => (bound ? 'acp-kimi' : undefined),
+      peekHeaderProvider: async () => undefined,
+      hasLiveAgent: () => true,
+    },
     agentSessionControl: () => ({ agentSessionSnapshot: read, setAgentSessionOption: async () => current }),
     agentSessionChanges: {
-      canRead: id => id === 'session',
-      subscribe: (_id, notify) => { listeners.add(notify); return () => { listeners.delete(notify) } },
+      canRead: (id) => id === 'session',
+      subscribe: (_id, notify) => {
+        listeners.add(notify)
+        return () => {
+          listeners.delete(notify)
+        }
+      },
     },
   })
   return {
-    service, read, listeners,
-    bind: () => { bound = true },
-    update: (patch: Partial<AcpAgentSessionSnapshotView>) => { current = { ...current, ...patch }; for (const notify of listeners) notify() },
+    service,
+    read,
+    listeners,
+    bind: () => {
+      bound = true
+    },
+    update: (patch: Partial<AcpAgentSessionSnapshotView>) => {
+      current = { ...current, ...patch }
+      for (const notify of listeners) notify()
+    },
   }
 }
 

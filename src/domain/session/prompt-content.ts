@@ -14,9 +14,11 @@ export class AcpPromptContentError extends Error {
 /** Validate the image limits before accepting any attachment bytes. */
 export function validImageLimits(limits: ImageAttachmentLimits): boolean {
   const integers = [limits.maxImageBytes, limits.maxImagesPerMessage, limits.maxMessageImageBytes]
-  return integers.every((value) => Number.isSafeInteger(value) && value > 0)
-    && Array.isArray(limits.mediaTypes)
-    && limits.mediaTypes.every((value) => typeof value === 'string' && value.startsWith('image/'))
+  return (
+    integers.every((value) => Number.isSafeInteger(value) && value > 0) &&
+    Array.isArray(limits.mediaTypes) &&
+    limits.mediaTypes.every((value) => typeof value === 'string' && value.startsWith('image/'))
+  )
 }
 
 /**
@@ -43,7 +45,9 @@ export async function toAcpPrompt(
   }
   if (images.length > 0) {
     if (!options.imageEnabled) {
-      throw new AcpPromptContentError('dsh-acp: the ACP agent did not advertise image prompt support; the image was not sent')
+      throw new AcpPromptContentError(
+        'dsh-acp: the ACP agent did not advertise image prompt support; the image was not sent',
+      )
     }
     const attachments = options.attachments
     if (attachments === undefined) {
@@ -56,15 +60,23 @@ export async function toAcpPrompt(
     let declaredTotal = 0
     for (const image of images) {
       const ref = image.ref as { readonly mediaType?: unknown; readonly bytes?: unknown }
-      if (typeof ref.mediaType !== 'string' || !ref.mediaType.startsWith('image/')
-        || !imageLimits.mediaTypes.includes(ref.mediaType as never)
-        || !Number.isSafeInteger(ref.bytes) || (ref.bytes as number) < 0
-        || (ref.bytes as number) > imageLimits.maxImageBytes) {
-        throw new AcpPromptContentError('dsh-acp: an image declaration exceeds the configured DSH image limits; nothing was sent')
+      if (
+        typeof ref.mediaType !== 'string' ||
+        !ref.mediaType.startsWith('image/') ||
+        !imageLimits.mediaTypes.includes(ref.mediaType as never) ||
+        !Number.isSafeInteger(ref.bytes) ||
+        (ref.bytes as number) < 0 ||
+        (ref.bytes as number) > imageLimits.maxImageBytes
+      ) {
+        throw new AcpPromptContentError(
+          'dsh-acp: an image declaration exceeds the configured DSH image limits; nothing was sent',
+        )
       }
       declaredTotal += ref.bytes as number
       if (images.length > imageLimits.maxImagesPerMessage || declaredTotal > imageLimits.maxMessageImageBytes) {
-        throw new AcpPromptContentError('dsh-acp: the prompt images exceed the configured DSH count or byte limits; nothing was sent')
+        throw new AcpPromptContentError(
+          'dsh-acp: the prompt images exceed the configured DSH count or byte limits; nothing was sent',
+        )
       }
     }
   }
@@ -83,25 +95,38 @@ export async function toAcpPrompt(
       if (block.type === 'image') {
         const attachments = options.attachments
         const image = images[imageIndex++]
-        if (attachments === undefined || image === undefined) throw new AcpPromptContentError('dsh-acp: DSH attachment storage is unavailable; the image was not sent')
+        if (attachments === undefined || image === undefined)
+          throw new AcpPromptContentError('dsh-acp: DSH attachment storage is unavailable; the image was not sent')
         options.signal.throwIfAborted()
         const stored = await attachments.readImage(block.attachment, options.signal)
         options.signal.throwIfAborted()
-        const storedRecord = stored as unknown as { readonly ref?: { readonly mediaType?: unknown; readonly bytes?: unknown }; readonly data?: unknown }
+        const storedRecord = stored as unknown as {
+          readonly ref?: { readonly mediaType?: unknown; readonly bytes?: unknown }
+          readonly data?: unknown
+        }
         const storedMediaType = storedRecord.ref?.mediaType
         const storedBytes = storedRecord.ref?.bytes
         const actual = storedRecord.data instanceof Uint8Array ? storedRecord.data.byteLength : -1
-        if (typeof storedMediaType !== 'string' || !Number.isSafeInteger(storedBytes)
-          || actual < 0 || actual !== storedBytes || storedBytes !== block.attachment.bytes
-          || storedMediaType !== block.attachment.mediaType
-          || !storedMediaType.startsWith('image/')
-          || !attachments.imageLimits.mediaTypes.includes(storedMediaType as never)
-          || actual > attachments.imageLimits.maxImageBytes) {
-          throw new AcpPromptContentError('dsh-acp: stored image bytes or media type do not match the DSH declaration/limits; nothing was sent')
+        if (
+          typeof storedMediaType !== 'string' ||
+          !Number.isSafeInteger(storedBytes) ||
+          actual < 0 ||
+          actual !== storedBytes ||
+          storedBytes !== block.attachment.bytes ||
+          storedMediaType !== block.attachment.mediaType ||
+          !storedMediaType.startsWith('image/') ||
+          !attachments.imageLimits.mediaTypes.includes(storedMediaType as never) ||
+          actual > attachments.imageLimits.maxImageBytes
+        ) {
+          throw new AcpPromptContentError(
+            'dsh-acp: stored image bytes or media type do not match the DSH declaration/limits; nothing was sent',
+          )
         }
         actualTotal += actual
         if (actualTotal > attachments.imageLimits.maxMessageImageBytes) {
-          throw new AcpPromptContentError('dsh-acp: stored prompt images exceed the configured DSH byte limit; nothing was sent')
+          throw new AcpPromptContentError(
+            'dsh-acp: stored prompt images exceed the configured DSH byte limit; nothing was sent',
+          )
         }
         blocks.push({
           type: 'image',
@@ -116,14 +141,17 @@ export async function toAcpPrompt(
     }
   }
   if (blocks.length === 0) {
-    throw new AcpPromptContentError('dsh-acp: the claimed message(s) carry no supported content; nothing to send to the ACP agent')
+    throw new AcpPromptContentError(
+      'dsh-acp: the claimed message(s) carry no supported content; nothing to send to the ACP agent',
+    )
   }
   if (options.system !== undefined) {
     blocks.unshift({
       type: 'text',
-      text: 'Current host instructions (replace earlier host instructions for this request). '
-        + 'Use only tools available in your agent; these instructions do not add tools or grant permissions.\n\n'
-        + (options.system || 'No additional host instructions.'),
+      text:
+        'Current host instructions (replace earlier host instructions for this request). ' +
+        'Use only tools available in your agent; these instructions do not add tools or grant permissions.\n\n' +
+        (options.system || 'No additional host instructions.'),
     })
   }
   return blocks

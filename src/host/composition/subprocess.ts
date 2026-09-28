@@ -14,10 +14,7 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import {
-  ACP_SUBPROCESS_UNAVAILABLE_MESSAGE,
-  narrowSubprocessSeam,
-} from '../../runtime/process/subprocess.ts'
+import { ACP_SUBPROCESS_UNAVAILABLE_MESSAGE, narrowSubprocessSeam } from '../../runtime/process/subprocess.ts'
 import type { SubprocessSeamResolution } from '../../runtime/process/subprocess.ts'
 
 /**

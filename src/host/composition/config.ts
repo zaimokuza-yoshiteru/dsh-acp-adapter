@@ -2,12 +2,25 @@
 import z from '@deepseek-ai/schemastery'
 import type { Volatile } from '@deepseek-ai/cordis'
 import { posix, win32 } from 'node:path'
-import { ACP_AGENT_IDS, ACP_AGENT_ID_PATTERN, acpRouteId, effectiveRuntimeOf } from '../../domain/session/agent-config.ts'
+import {
+  ACP_AGENT_IDS,
+  ACP_AGENT_ID_PATTERN,
+  acpRouteId,
+  effectiveRuntimeOf,
+} from '../../domain/session/agent-config.ts'
 import type { AcpAgentConfig, AcpAgentId } from '../../domain/session/agent-config.ts'
 
 export type AcpToolApprovalPolicy = 'auto' | 'ask'
-export interface AcpSettings { agents: Record<string, AcpAgentConfig>; searchableModelPicker: boolean; toolApprovalDefault: AcpToolApprovalPolicy }
-export interface Config { agents: Volatile<Record<string, AcpAgentConfig>>; searchableModelPicker: Volatile<boolean>; toolApprovalDefault: Volatile<AcpToolApprovalPolicy> }
+export interface AcpSettings {
+  agents: Record<string, AcpAgentConfig>
+  searchableModelPicker: boolean
+  toolApprovalDefault: AcpToolApprovalPolicy
+}
+export interface Config {
+  agents: Volatile<Record<string, AcpAgentConfig>>
+  searchableModelPicker: Volatile<boolean>
+  toolApprovalDefault: Volatile<AcpToolApprovalPolicy>
+}
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
   const proto: unknown = Object.getPrototypeOf(value)
@@ -57,7 +70,7 @@ function agentConfigOf(id: string, raw: unknown): AcpAgentConfig {
   if (loginHint !== undefined && typeof loginHint !== 'string') {
     throw new TypeError(`dsh-acp settings: agents.${id}.loginHint must be a string`)
   }
- // 边界：runtime 是专有行为绑定，只收四个合法值——非法值拒绝写入
+  // 边界：runtime 是专有行为绑定，只收四个合法值——非法值拒绝写入
   // （普通 profile 不允许拼出宿主 path/env ref，也不允许指定未知的 runtime）
   const catalogId = raw['catalogId']
   if (catalogId !== undefined && (typeof catalogId !== 'string' || !ACP_AGENT_ID_PATTERN.test(catalogId))) {
@@ -113,11 +126,14 @@ function assertSingletonRuntimes(agents: Record<string, AcpAgentConfig>): void {
 export const acpSettingsSchema: ((value: unknown) => AcpSettings) & { toJSON(): unknown } = Object.assign(
   (value: unknown): AcpSettings => {
     if (value === undefined) return { agents: {}, searchableModelPicker: false, toolApprovalDefault: 'auto' }
-    if (!isPlainObject(value)) throw new TypeError('dsh-acp settings: the section must be an object with an "agents" map')
+    if (!isPlainObject(value))
+      throw new TypeError('dsh-acp settings: the section must be an object with an "agents" map')
     const searchableModelPicker = value['searchableModelPicker'] === undefined ? false : value['searchableModelPicker']
-    if (typeof searchableModelPicker !== 'boolean') throw new TypeError('dsh-acp settings: "searchableModelPicker" must be a boolean')
+    if (typeof searchableModelPicker !== 'boolean')
+      throw new TypeError('dsh-acp settings: "searchableModelPicker" must be a boolean')
     const toolApprovalDefault = value['toolApprovalDefault'] === undefined ? 'auto' : value['toolApprovalDefault']
-    if (toolApprovalDefault !== 'auto' && toolApprovalDefault !== 'ask') throw new TypeError('dsh-acp settings: "toolApprovalDefault" must be "auto" or "ask"')
+    if (toolApprovalDefault !== 'auto' && toolApprovalDefault !== 'ask')
+      throw new TypeError('dsh-acp settings: "toolApprovalDefault" must be "auto" or "ask"')
     const rawAgents = value['agents'] ?? {}
     if (!isPlainObject(rawAgents)) throw new TypeError('dsh-acp settings: "agents" must be a map of agent id → config')
     const agents: Record<string, AcpAgentConfig> = {}
@@ -129,12 +145,20 @@ export const acpSettingsSchema: ((value: unknown) => AcpSettings) & { toJSON(): 
 )
 
 const AgentSchema = z.object({
-  name: z.string().required(), command: z.string().required(),
-  args: z.array(z.string()).default([]), env: z.dict(z.string()).default({}),
-  loginHint: z.string(), catalogId: z.string(), runtime: z.union([...ACP_AGENT_IDS]),
+  name: z.string().required(),
+  command: z.string().required(),
+  args: z.array(z.string()).default([]),
+  env: z.dict(z.string()).default({}),
+  loginHint: z.string(),
+  catalogId: z.string(),
+  runtime: z.union([...ACP_AGENT_IDS]),
 })
 const AgentsSchema = z.dict(AgentSchema)
-const SettingsSchema = z.object({ agents: AgentsSchema.default({}), searchableModelPicker: z.boolean().default(false), toolApprovalDefault: z.union(['auto', 'ask']).default('auto') })
+const SettingsSchema = z.object({
+  agents: AgentsSchema.default({}),
+  searchableModelPicker: z.boolean().default(false),
+  toolApprovalDefault: z.union(['auto', 'ask']).default('auto'),
+})
 /** Native volatile fields; Loader validates before publishing an atomic live update. */
 const NativeConfig = z.object({
   agents: AgentsSchema.default({}).volatile(),
@@ -146,9 +170,12 @@ const NativeConfig = z.object({
 export const Config = new Proxy(NativeConfig, {
   get(target, key, receiver) {
     if (key !== '~standard') return Reflect.get(target, key, receiver)
-    return { ...target['~standard'], validate(value: unknown) {
-      return target['~standard'].validate(acpSettingsSchema(value))
-    } }
+    return {
+      ...target['~standard'],
+      validate(value: unknown) {
+        return target['~standard'].validate(acpSettingsSchema(value))
+      },
+    }
   },
   apply(target, thisArg, args: Parameters<typeof NativeConfig>) {
     const validated = acpSettingsSchema(args[0])

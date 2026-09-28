@@ -25,8 +25,19 @@ describe('native DSH non-interference contract', () => {
   it('keeps native A→A and A→B dispatch independent after ACP composition is installed', async () => {
     const nativeCalls: string[] = []
     class NativeAdapter extends LlmAdapter {
-      override providerInfo(provider: string) { return { id: provider, name: provider } }
-      override providerRetryPolicy() { return { mode: 'normal' as const, maxRetries: 0, retryableCodes: [], initialDelayMs: 0, maxDelayMs: 0, jitterRatio: 0 } }
+      override providerInfo(provider: string) {
+        return { id: provider, name: provider }
+      }
+      override providerRetryPolicy() {
+        return {
+          mode: 'normal' as const,
+          maxRetries: 0,
+          retryableCodes: [],
+          initialDelayMs: 0,
+          maxDelayMs: 0,
+          jitterRatio: 0,
+        }
+      }
       async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
         nativeCalls.push(options.provider)
         yield { type: 'text-delta', index: 0, text: `native:${options.provider}` }
@@ -36,11 +47,23 @@ describe('native DSH non-interference contract', () => {
     const routes = new Map<string, LlmAdapter>()
     const native = new NativeAdapter()
     const home = mkdtempSync(`${tmpdir()}/dsh-acp-native-`)
-    const settings = { register: () => ({ get: () => ({ agents: { devin: { name: 'Devin', command: 'devin', args: ['acp'], env: {} } } }), watch: () => () => undefined }) }
+    const settings = {
+      register: () => ({
+        get: () => ({ agents: { devin: { name: 'Devin', command: 'devin', args: ['acp'], env: {} } } }),
+        watch: () => () => undefined,
+      }),
+    }
     const context = {
       sessionProjections: { register: () => () => undefined },
-      get: (name: string) => name === 'settings' ? settings : name === 'dshHomePath' ? ((...segments: string[]) => [home, ...segments].join('/')) : undefined,
-      inject: (deps: string[], callback: (ctx: unknown) => void) => { if (!deps.includes('settings') && !deps.includes('configEditor')) callback({ get: context.get, on: context.on }) },
+      get: (name: string) =>
+        name === 'settings'
+          ? settings
+          : name === 'dshHomePath'
+            ? (...segments: string[]) => [home, ...segments].join('/')
+            : undefined,
+      inject: (deps: string[], callback: (ctx: unknown) => void) => {
+        if (!deps.includes('settings') && !deps.includes('configEditor')) callback({ get: context.get, on: context.on })
+      },
       on: () => () => undefined,
       effect: () => undefined,
       llm: {

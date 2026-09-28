@@ -13,11 +13,13 @@ const { standardDecoratorPlugin, vitestExecArgv } = await import(pathToFileURL(r
 export default {
   root,
   plugins: [tsconfigPaths({ projects: [resolve(host, 'tsconfig.base.json')], loose: true }), standardDecoratorPlugin()],
-  resolve: { alias: {
-    '#host-scaffold': resolve(host, 'apps/web/tests/scaffold.ts'),
-    '#host-support': resolve(host, 'apps/web/tests/support.ts'),
-    playwright: createRequire(resolve(host, 'apps/web/package.json')).resolve('playwright'),
-  } },
+  resolve: {
+    alias: {
+      '#host-scaffold': resolve(host, 'apps/web/tests/scaffold.ts'),
+      '#host-support': resolve(host, 'apps/web/tests/support.ts'),
+      playwright: createRequire(resolve(host, 'apps/web/package.json')).resolve('playwright'),
+    },
+  },
   test: {
     include: ['test/e2e/**/*.e2e.ts'],
     execArgv: vitestExecArgv,

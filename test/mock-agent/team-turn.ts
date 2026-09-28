@@ -5,23 +5,46 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 
-export async function teamTurn(session: MockSession, msg: PromptMessage, { sendUpdate, sendAgentRequest, respond, log }: MockPeer) {
-  const prompt = msg.params.prompt.filter(block => block.type === 'text').map(block => block.text).join('\n')
+export async function teamTurn(
+  session: MockSession,
+  msg: PromptMessage,
+  { sendUpdate, sendAgentRequest, respond, log }: MockPeer,
+) {
+  const prompt = msg.params.prompt
+    .filter((block) => block.type === 'text')
+    .map((block) => block.text)
+    .join('\n')
   if (!prompt.includes('E2E_TEAM_')) return false
   let finishHold = () => {}
-  const held = new Promise<void>(resolve => { finishHold = resolve })
-  const turn = { cancelled: false, cancel() { this.cancelled = true; finishHold() } }
+  const held = new Promise<void>((resolve) => {
+    finishHold = resolve
+  })
+  const turn = {
+    cancelled: false,
+    cancel() {
+      this.cancelled = true
+      finishHold()
+    },
+  }
   session.turn = turn
   const permissionGate = process.env.MOCK_TEAM_PERMISSION_GATE
   const policyGate = process.env.MOCK_TEAM_POLICY_GATE
   const approvalGate = permissionGate ?? policyGate
-  const say = (text: string) => { log(text); sendUpdate(session.id, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } }) }
+  const say = (text: string) => {
+    log(text)
+    sendUpdate(session.id, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } })
+  }
   // A real child-settled notice asks only for acknowledgement. Permission-
   // gated approval fixtures must not invent a roster lookup to handle it, and
   // a coalesced actionable fixture prompt must continue through normal tools.
-  const actionableTeamPrompt = /\bE2E_TEAM_(?:START(?:_HOLD)?|LAYOUT|DEMO|EIGHT|SECOND|WAKE|CONTINUE|REPLY|INTERRUPT|MEMBER)\b/.test(prompt)
-  const settledNotice = permissionGate !== undefined && !actionableTeamPrompt
-    && /Background subagent [a-z0-9-]+ finished and will do no further work unless you send it more\.\nIts closing message:\nE2E_TEAM_(?:MEMBER_(?:DONE|DENIED|CANCELLED)|LATE_DENIED)\b/i.test(prompt)
+  const actionableTeamPrompt =
+    /\bE2E_TEAM_(?:START(?:_HOLD)?|LAYOUT|DEMO|EIGHT|SECOND|WAKE|CONTINUE|REPLY|INTERRUPT|MEMBER)\b/.test(prompt)
+  const settledNotice =
+    permissionGate !== undefined &&
+    !actionableTeamPrompt &&
+    /Background subagent [a-z0-9-]+ finished and will do no further work unless you send it more\.\nIts closing message:\nE2E_TEAM_(?:MEMBER_(?:DONE|DENIED|CANCELLED)|LATE_DENIED)\b/i.test(
+      prompt,
+    )
   if (settledNotice) {
     say('E2E_TEAM_NOTICE_RECEIVED')
     respond(msg.id, { stopReason: 'end_turn' })
@@ -32,36 +55,84 @@ export async function teamTurn(session: MockSession, msg: PromptMessage, { sendU
   const server = session.mcpServers?.[0]
   let ordinal = 0
   try {
-    if (/\bE2E_TEAM_(?:MEMBER|CONTINUE)\b/.test(prompt) && /Approval prompts are disabled in this session|operations that require approval are rejected automatically/.test(prompt)) throw new Error('Member first prompt incorrectly disables approval')
+    if (
+      /\bE2E_TEAM_(?:MEMBER|CONTINUE)\b/.test(prompt) &&
+      /Approval prompts are disabled in this session|operations that require approval are rejected automatically/.test(
+        prompt,
+      )
+    )
+      throw new Error('Member first prompt incorrectly disables approval')
     if (!server) throw new Error('No Teams MCP server provided')
-    const transport = server.type === 'http' ? new StreamableHTTPClientTransport(new URL(server.url))
-      : new StdioClientTransport({ command: server.command, args: server.args, env: Object.fromEntries(server.env.map(item => [item.name, item.value])), stderr: 'pipe' })
-    if ('stderr' in transport) transport.stderr?.on('data', data => log(`team stdio: ${String(data)}`))
+    const transport =
+      server.type === 'http'
+        ? new StreamableHTTPClientTransport(new URL(server.url))
+        : new StdioClientTransport({
+            command: server.command,
+            args: server.args,
+            env: Object.fromEntries(server.env.map((item) => [item.name, item.value])),
+            stderr: 'pipe',
+          })
+    if ('stderr' in transport) transport.stderr?.on('data', (data) => log(`team stdio: ${String(data)}`))
     await client.connect(transport)
     const tools = (await client.listTools()).tools
     const call = async (shortName: string, args: Record<string, unknown> = {}, expectedError?: string) => {
-      const tool = tools.find(tool => tool.name === shortName)
+      const tool = tools.find((tool) => tool.name === shortName)
       if (!tool) throw new Error(`Missing ${shortName}`)
       const toolCallId = `team-${++ordinal}`
       const name = `mcp__${server.name}__${tool.name}`
       const profile = process.env.MOCK_PROFILE
-      const toolCall = { toolCallId, title: shortName, kind: 'other', status: 'pending', rawInput: args,
-        ...(profile === 'claude' ? { _meta: { claudeCode: { toolName: name } } }
-          : profile === 'devin' ? { title: `Calling ${tool.name} from ${server.name}` }
-            : profile === 'kimi' ? { title: name }
-              : { title: `mcp.${server.name}.${tool.name}`, _meta: { is_mcp_tool_call: true }, rawInput: { server: server.name, tool: tool.name, arguments: args } }) }
+      const toolCall = {
+        toolCallId,
+        title: shortName,
+        kind: 'other',
+        status: 'pending',
+        rawInput: args,
+        ...(profile === 'claude'
+          ? { _meta: { claudeCode: { toolName: name } } }
+          : profile === 'devin'
+            ? { title: `Calling ${tool.name} from ${server.name}` }
+            : profile === 'kimi'
+              ? { title: name }
+              : {
+                  title: `mcp.${server.name}.${tool.name}`,
+                  _meta: { is_mcp_tool_call: true },
+                  rawInput: { server: server.name, tool: tool.name, arguments: args },
+                }),
+      }
       sendUpdate(session.id, { sessionUpdate: 'tool_call', ...toolCall })
       if (profile === 'codex') {
-        const permission = await sendAgentRequest('elicitation/create', { sessionId: session.id, toolCallId, mode: 'form', message: 'Approve MCP tool',
-          _meta: { codex_approval_kind: 'mcp_tool_call' }, requestedSchema: { type: 'object', properties: { persist: { type: 'string', enum: ['once', 'session', 'always'] } }, required: ['persist'] } })
-        if (permission.action !== 'accept' || permission.content?.persist !== 'once') throw new Error('Team elicitation required extra approval')
+        const permission = await sendAgentRequest('elicitation/create', {
+          sessionId: session.id,
+          toolCallId,
+          mode: 'form',
+          message: 'Approve MCP tool',
+          _meta: { codex_approval_kind: 'mcp_tool_call' },
+          requestedSchema: {
+            type: 'object',
+            properties: { persist: { type: 'string', enum: ['once', 'session', 'always'] } },
+            required: ['persist'],
+          },
+        })
+        if (permission.action !== 'accept' || permission.content?.persist !== 'once')
+          throw new Error('Team elicitation required extra approval')
       } else {
-        const permission = await sendAgentRequest('session/request_permission', { sessionId: session.id, toolCall,
-          options: [{ optionId: 'allow', kind: 'allow_once', name: 'Allow once' }, { optionId: 'deny', kind: 'reject_once', name: 'Reject' }] })
+        const permission = await sendAgentRequest('session/request_permission', {
+          sessionId: session.id,
+          toolCall,
+          options: [
+            { optionId: 'allow', kind: 'allow_once', name: 'Allow once' },
+            { optionId: 'deny', kind: 'reject_once', name: 'Reject' },
+          ],
+        })
         if (permission.outcome?.optionId !== 'allow') throw new Error('Team coordination required extra approval')
       }
       const result = CallToolResultSchema.parse(await client.callTool({ name: tool.name, arguments: args }))
-      sendUpdate(session.id, { sessionUpdate: 'tool_call_update', toolCallId, status: result.isError ? 'failed' : 'completed', content: result.content.map(content => ({ type: 'content', content })) })
+      sendUpdate(session.id, {
+        sessionUpdate: 'tool_call_update',
+        toolCallId,
+        status: result.isError ? 'failed' : 'completed',
+        content: result.content.map((content) => ({ type: 'content', content })),
+      })
       if (expectedError) {
         const text = JSON.stringify(result.content)
         if (!result.isError || !text.includes(expectedError)) throw new Error(`Expected ${expectedError}; got ${text}`)
@@ -75,27 +146,64 @@ export async function teamTurn(session: MockSession, msg: PromptMessage, { sendU
       return JSON.parse(first.text)
     }
     const roster = await call('list_agents')
-    log(`team model=${session.configOptions?.find(option => option.id === 'model')?.currentValue}`)
+    log(`team model=${session.configOptions?.find((option) => option.id === 'model')?.currentValue}`)
     if (/\bE2E_TEAM_INTERRUPT\b/.test(prompt)) {
       await call('interrupt_agent', { target: 'calculator' })
       say('E2E_TEAM_INTERRUPTED')
     } else if (prompt.includes('E2E_TEAM_LAYOUT')) {
       for (const [name, description] of [
-        ['worker-deepseek-harness', 'Owner worker for reference/deepseek-harness (DSH agent harness, TypeScript monorepo). Review native message rendering and plugin compatibility.'],
-        ['worker-deer-flow', 'Owner worker for reference/deer-flow (Python LangGraph + Node frontend). Review streaming, tools and approval boundaries.'],
-      ]) await call('spawn_teammate', { name, description, prompt: 'E2E_TEAM_MEMBER calculate 1+1', context: 'fresh' })
+        [
+          'worker-deepseek-harness',
+          'Owner worker for reference/deepseek-harness (DSH agent harness, TypeScript monorepo). Review native message rendering and plugin compatibility.',
+        ],
+        [
+          'worker-deer-flow',
+          'Owner worker for reference/deer-flow (Python LangGraph + Node frontend). Review streaming, tools and approval boundaries.',
+        ],
+      ])
+        await call('spawn_teammate', { name, description, prompt: 'E2E_TEAM_MEMBER calculate 1+1', context: 'fresh' })
       say('E2E_TEAM_LAYOUT_READY')
     } else if (prompt.includes('E2E_TEAM_DEMO')) {
-      const task = await call('team_task_create', { subject: '整理需求', description: '梳理成员管理和集中审批的验收要点' })
-      await call('team_task_create', { subject: '复核方案', description: '等待需求整理完成，再检查边界', blocked_by: [task.id] })
-      await call('spawn_teammate', { name: 'analyst', description: '整理需求与验收要点', prompt: 'E2E_TEAM_MEMBER calculate 1+1', context: 'fresh' })
-      await call('spawn_teammate', { name: 'reviewer', description: '检查实现与审批边界', prompt: 'E2E_TEAM_MEMBER calculate 1+1', context: 'fresh' })
-      say('团队演示已就绪。两个成员的审批可在下方直接处理；点击右上角人员图标，可查看成员模式，并按 ACP 类型批量调整成员模式；休眠成员下次运行生效。共享任务在原生 Agent Team 面板中。此实例使用本地测试 Agent。')
+      const task = await call('team_task_create', {
+        subject: '整理需求',
+        description: '梳理成员管理和集中审批的验收要点',
+      })
+      await call('team_task_create', {
+        subject: '复核方案',
+        description: '等待需求整理完成，再检查边界',
+        blocked_by: [task.id],
+      })
+      await call('spawn_teammate', {
+        name: 'analyst',
+        description: '整理需求与验收要点',
+        prompt: 'E2E_TEAM_MEMBER calculate 1+1',
+        context: 'fresh',
+      })
+      await call('spawn_teammate', {
+        name: 'reviewer',
+        description: '检查实现与审批边界',
+        prompt: 'E2E_TEAM_MEMBER calculate 1+1',
+        context: 'fresh',
+      })
+      say(
+        '团队演示已就绪。两个成员的审批可在下方直接处理；点击右上角人员图标，可查看成员模式，并按 ACP 类型批量调整成员模式；休眠成员下次运行生效。共享任务在原生 Agent Team 面板中。此实例使用本地测试 Agent。',
+      )
     } else if (prompt.includes('E2E_TEAM_EIGHT')) {
-      for (let index = 1; index <= 8; index++) await call('spawn_teammate', { name: `worker-${index}`, description: 'Batch approval member', prompt: `E2E_TEAM_MEMBER calculate 1+1${index === 1 ? ' E2E_TEAM_FOLLOWUP_PERMISSION' : ''}`, context: 'fresh' })
+      for (let index = 1; index <= 8; index++)
+        await call('spawn_teammate', {
+          name: `worker-${index}`,
+          description: 'Batch approval member',
+          prompt: `E2E_TEAM_MEMBER calculate 1+1${index === 1 ? ' E2E_TEAM_FOLLOWUP_PERMISSION' : ''}`,
+          context: 'fresh',
+        })
       say('E2E_TEAM_EIGHT_READY')
     } else if (prompt.includes('E2E_TEAM_SECOND')) {
-      await call('spawn_teammate', { name: 'calculator-b', description: 'Model B member', prompt: 'E2E_TEAM_MEMBER calculate 1+1', context: 'fresh' })
+      await call('spawn_teammate', {
+        name: 'calculator-b',
+        description: 'Model B member',
+        prompt: 'E2E_TEAM_MEMBER calculate 1+1',
+        context: 'fresh',
+      })
       say('E2E_TEAM_SECOND_READY')
     } else if (prompt.includes('E2E_TEAM_WAKE')) {
       await call('send_message', { target: 'calculator', message: 'E2E_TEAM_CONTINUE' })
@@ -103,11 +211,15 @@ export async function teamTurn(session: MockSession, msg: PromptMessage, { sendU
     } else if (prompt.includes('E2E_TEAM_REPLY')) {
       say('E2E_TEAM_LEAD_RECEIVED')
     } else if (/\bE2E_TEAM_CONTINUE\b/.test(prompt)) {
-      say(`E2E_TEAM_MEMBER_MODE ${session.configOptions?.find(option => option.id === 'mode')?.currentValue}`)
+      say(`E2E_TEAM_MEMBER_MODE ${session.configOptions?.find((option) => option.id === 'mode')?.currentValue}`)
       await call('send_message', { target: 'lead', message: 'E2E_TEAM_REPLY continued' })
       say('E2E_TEAM_MEMBER_CONTINUED')
     } else if (/\bE2E_TEAM_MEMBER\b/.test(prompt)) {
-      await call('spawn_teammate', { name: 'nested', description: 'Denied nested spawn', prompt: 'do nothing' }, 'only the Team Lead')
+      await call(
+        'spawn_teammate',
+        { name: 'nested', description: 'Denied nested spawn', prompt: 'do nothing' },
+        'only the Team Lead',
+      )
       if (approvalGate !== undefined) {
         // Manual-approval E2E fixtures let the Lead switch policy after all
         // coordination setup has completed, before this ordinary MCP request.
@@ -115,33 +227,59 @@ export async function teamTurn(session: MockSession, msg: PromptMessage, { sendU
         // Mock ACP session ids restart per child process, so include the pid
         // to keep readiness barriers distinct across teammates.
         writeFileSync(`${approvalGate}.${process.pid}.${safeSessionId}.ready`, 'ready')
-        while (!turn.cancelled && !existsSync(approvalGate)) await new Promise(resolve => setTimeout(resolve, 20))
+        while (!turn.cancelled && !existsSync(approvalGate)) await new Promise((resolve) => setTimeout(resolve, 20))
         if (turn.cancelled) return true
       }
-      sendUpdate(session.id, { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'Private fixture reasoning' } })
+      sendUpdate(session.id, {
+        sessionUpdate: 'agent_thought_chunk',
+        content: { type: 'text', text: 'Private fixture reasoning' },
+      })
       const requestMemberPermission = async (toolCallId: string, command: string) => {
         if (process.env.MOCK_PROFILE === 'codex') {
-          const tool = tools.find(tool => tool.name === 'bash')
+          const tool = tools.find((tool) => tool.name === 'bash')
           if (!tool) throw new Error('No native bash tool for member approval')
-          sendUpdate(session.id, { sessionUpdate: 'tool_call', toolCallId, title: 'Run member command', kind: 'execute', status: 'pending',
-            _meta: { is_mcp_tool_call: true }, rawInput: { server: server.name, tool: tool.name, arguments: { command } } })
-          const answer = await sendAgentRequest('elicitation/create', { sessionId: session.id, toolCallId,
-            mode: 'form', message: `Allow the ${server.name} MCP server to run tool "${tool.name}"?`,
-            _meta: { codex_approval_kind: 'mcp_tool_call' }, requestedSchema: { type: 'object', properties: {
-              persist: { type: 'string', enum: ['once', 'session', 'always'] },
-            }, required: ['persist'] } })
-          if (answer.action === 'accept' && answer.content?.persist !== 'once') throw new Error('Member approval exceeded once')
+          sendUpdate(session.id, {
+            sessionUpdate: 'tool_call',
+            toolCallId,
+            title: 'Run member command',
+            kind: 'execute',
+            status: 'pending',
+            _meta: { is_mcp_tool_call: true },
+            rawInput: { server: server.name, tool: tool.name, arguments: { command } },
+          })
+          const answer = await sendAgentRequest('elicitation/create', {
+            sessionId: session.id,
+            toolCallId,
+            mode: 'form',
+            message: `Allow the ${server.name} MCP server to run tool "${tool.name}"?`,
+            _meta: { codex_approval_kind: 'mcp_tool_call' },
+            requestedSchema: {
+              type: 'object',
+              properties: {
+                persist: { type: 'string', enum: ['once', 'session', 'always'] },
+              },
+              required: ['persist'],
+            },
+          })
+          if (answer.action === 'accept' && answer.content?.persist !== 'once')
+            throw new Error('Member approval exceeded once')
           log(`member elicitation ${JSON.stringify(answer)}`)
           return { outcome: { outcome: 'selected', optionId: answer.action === 'accept' ? 'allow' : 'deny' } }
         }
-        return sendAgentRequest('session/request_permission', { sessionId: session.id,
+        return sendAgentRequest('session/request_permission', {
+          sessionId: session.id,
           toolCall: { toolCallId, name: 'bash', title: 'Run member command', kind: 'execute', rawInput: { command } },
-          options: [{ optionId: 'allow', kind: 'allow_once', name: 'Allow once' }, { optionId: 'deny', kind: 'reject_once', name: 'Reject' }] })
+          options: [
+            { optionId: 'allow', kind: 'allow_once', name: 'Allow once' },
+            { optionId: 'deny', kind: 'reject_once', name: 'Reject' },
+          ],
+        })
       }
       const response = await requestMemberPermission('member-shell', 'echo E2E_TEAM_PERMISSION')
       if (prompt.includes('E2E_TEAM_FOLLOWUP_PERMISSION')) {
         const answer = await requestMemberPermission('member-late-shell', 'echo E2E_TEAM_LATE_PERMISSION')
-        if (answer.outcome?.optionId !== 'deny') throw new Error(`Unexpected late permission: ${JSON.stringify(answer)}`)
+        if (answer.outcome?.optionId !== 'deny')
+          throw new Error(`Unexpected late permission: ${JSON.stringify(answer)}`)
         say('E2E_TEAM_LATE_DENIED')
       }
       if (response.outcome?.optionId !== 'allow') {
@@ -153,13 +291,14 @@ export async function teamTurn(session: MockSession, msg: PromptMessage, { sendU
         return true
       }
       if (policyGate !== undefined) {
-        while (!turn.cancelled && !existsSync(`${policyGate}.continue`)) await new Promise(resolve => setTimeout(resolve, 20))
+        while (!turn.cancelled && !existsSync(`${policyGate}.continue`))
+          await new Promise((resolve) => setTimeout(resolve, 20))
         if (turn.cancelled) return true
       }
       await call('send_message', { target: 'lead', message: 'E2E_TEAM_REPLY result=2' })
       say('E2E_TEAM_MEMBER_DONE')
     } else if (prompt.includes('E2E_TEAM_START')) {
-      if (prompt.includes('E2E_TEAM_START_HOLD')) await new Promise(resolve => setTimeout(resolve, 1000))
+      if (prompt.includes('E2E_TEAM_START_HOLD')) await new Promise((resolve) => setTimeout(resolve, 1000))
       if (roster.length !== 1) throw new Error('Expected fresh team')
       const wait = await call('wait_agent', { timeout_ms: 10_000 })
       if (!wait.noProgress) throw new Error('Native wait must not poll without an active peer')
@@ -167,14 +306,40 @@ export async function teamTurn(session: MockSession, msg: PromptMessage, { sendU
       await call('team_task_get', { task_id: task.id })
       await call('team_task_update', { task_id: task.id, expected_revision: task.revision, action: 'claim' })
       await call('team_task_list')
-      await call('team_task_update', { task_id: task.id, expected_revision: task.revision, action: 'complete' }, 'stale team task')
-      const blocked = await call('team_task_create', { subject: 'Blocked fixture', description: 'Wait for compute', blocked_by: [task.id] })
-      await call('team_task_update', { task_id: blocked.id, expected_revision: blocked.revision, action: 'claim' }, 'not ready to claim')
+      await call(
+        'team_task_update',
+        { task_id: task.id, expected_revision: task.revision, action: 'complete' },
+        'stale team task',
+      )
+      const blocked = await call('team_task_create', {
+        subject: 'Blocked fixture',
+        description: 'Wait for compute',
+        blocked_by: [task.id],
+      })
+      await call(
+        'team_task_update',
+        { task_id: blocked.id, expected_revision: blocked.revision, action: 'claim' },
+        'not ready to claim',
+      )
       await call('send_message', { target: 'missing-member', message: 'must not deliver' }, 'not found')
-      for (const override of [{ context: 'fork' }, { model: 'mock-model-b' }, { agent: 'other' }, { provider: 'acp-other' }]) {
-        await call('spawn_teammate', { name: 'invalid', description: 'Must not create', prompt: 'do nothing', ...override }, override.context ? 'ACP_TEAM_FORK_UNSUPPORTED' : 'ACP_TEAM_ROUTE_OVERRIDE_UNSUPPORTED')
+      for (const override of [
+        { context: 'fork' },
+        { model: 'mock-model-b' },
+        { agent: 'other' },
+        { provider: 'acp-other' },
+      ]) {
+        await call(
+          'spawn_teammate',
+          { name: 'invalid', description: 'Must not create', prompt: 'do nothing', ...override },
+          override.context ? 'ACP_TEAM_FORK_UNSUPPORTED' : 'ACP_TEAM_ROUTE_OVERRIDE_UNSUPPORTED',
+        )
       }
-      await call('spawn_teammate', { name: 'calculator', description: 'Compute fixture', prompt: 'E2E_TEAM_MEMBER calculate 1+1', context: 'fresh' })
+      await call('spawn_teammate', {
+        name: 'calculator',
+        description: 'Compute fixture',
+        prompt: 'E2E_TEAM_MEMBER calculate 1+1',
+        context: 'fresh',
+      })
       say('E2E_TEAM_READY')
       if (prompt.includes('E2E_TEAM_START_HOLD')) await held
     } else {
@@ -183,8 +348,8 @@ export async function teamTurn(session: MockSession, msg: PromptMessage, { sendU
   } catch (error) {
     if (turn.cancelled) log('team cancelled')
     else {
-      log(`team failed ${(error instanceof Error ? error.stack : String(error))}`)
-      say(`E2E_TEAM_ERROR ${(error instanceof Error ? error.message : String(error))}`)
+      log(`team failed ${error instanceof Error ? error.stack : String(error)}`)
+      say(`E2E_TEAM_ERROR ${error instanceof Error ? error.message : String(error)}`)
     }
   } finally {
     await client.close()

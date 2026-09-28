@@ -60,7 +60,10 @@ let correlationSeq = 0
  * 确定性；生产缺省 `new Date()` + `crypto.randomBytes(3)`。
  */
 export function newAcpCorrelationId(now: Date = new Date(), random: Buffer = randomBytes(3)): string {
-  const stamp = now.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '')
+  const stamp = now
+    .toISOString()
+    .replace(/[-:]/g, '')
+    .replace(/\.\d{3}/, '')
   correlationSeq = (correlationSeq + 1) % 1296
   const seq = correlationSeq.toString(36)
   return `acperr-${stamp}-${seq}-${random.toString('hex')}`
@@ -70,7 +73,7 @@ export class AcpClientError extends Error {
   readonly kind: AcpErrorKind
   /** 稳定 code（`ACP_*`；kind → code 的唯一映射表 {@link ACP_ERROR_CODES}）。 */
   readonly code: string
- /** taxonomy 分类（默认按 kind 映射；构造点可经 details.category 覆盖）。 */
+  /** taxonomy 分类（默认按 kind 映射；构造点可经 details.category 覆盖）。 */
   readonly category: AcpErrorCategory
   /** correlation id（构造期生成或 details.correlationId 覆盖；规则见模块头注释）。 */
   readonly correlationId: string

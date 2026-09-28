@@ -15,13 +15,14 @@ export function isAcpModelOrReasoningOption(option: {
   readonly category?: string | null
 }): boolean {
   const id = normalizeAcpConfigOptionKey(option.id)
-  const category = option.category === undefined || option.category === null
-    ? ''
-    : normalizeAcpConfigOptionKey(option.category)
-  return category === 'model'
-    || id === 'model'
-    || category === 'thought_level'
-    || category === 'reasoning_effort'
-    || id === 'thought_level'
-    || id === 'reasoning_effort'
+  const category =
+    option.category === undefined || option.category === null ? '' : normalizeAcpConfigOptionKey(option.category)
+  return (
+    category === 'model' ||
+    id === 'model' ||
+    category === 'thought_level' ||
+    category === 'reasoning_effort' ||
+    id === 'thought_level' ||
+    id === 'reasoning_effort'
+  )
 }

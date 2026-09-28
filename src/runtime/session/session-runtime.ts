@@ -19,7 +19,9 @@ import { waitWithin } from '../process/timeout.ts'
 import type { AcpMcpLease } from './mcp-lease.ts'
 import type { AcpPermissionCheck } from '../../domain/policy/permission-check.ts'
 /** Deliberately protocol-local: runtime restoration does not own persistence. */
-export interface AcpRuntimeBindingRef { readonly agentSessionId: string }
+export interface AcpRuntimeBindingRef {
+  readonly agentSessionId: string
+}
 export interface AcpRuntimeConfig {
   readonly command: string
   readonly args: readonly string[]
@@ -50,15 +52,29 @@ export interface AcpSessionRuntimeOptions {
   readonly cwd: string
   readonly prepareLaunch: (config: AcpRuntimeConfig, cwd: string) => Promise<AcpRuntimeLaunch>
   /** Optional host capability handlers, created after the native launch environment is known. */
-  readonly createFileSystemHandlers?: (context: { readonly cwd: string; readonly env: Readonly<Record<string, string>> }) => AcpFileSystemHandlers
-  readonly createTerminalHandlers?: (context: { readonly cwd: string; readonly env: Readonly<Record<string, string>> }) => AcpTerminalHandlers
+  readonly createFileSystemHandlers?: (context: {
+    readonly cwd: string
+    readonly env: Readonly<Record<string, string>>
+  }) => AcpFileSystemHandlers
+  readonly createTerminalHandlers?: (context: {
+    readonly cwd: string
+    readonly env: Readonly<Record<string, string>>
+  }) => AcpTerminalHandlers
   /** Replay/load notifications are staging-only; the DSH log remains authoritative. */
   readonly onSessionUpdate?: (notification: AcpSessionNotification) => void
   /** Host-owned approval bridge. The optional signal is the active prompt lifetime. */
-  readonly onPermissionRequest?: (params: acp.RequestPermissionRequest, signal?: AbortSignal) => Promise<acp.RequestPermissionResponse>
+  readonly onPermissionRequest?: (
+    params: acp.RequestPermissionRequest,
+    signal?: AbortSignal,
+  ) => Promise<acp.RequestPermissionResponse>
   readonly onPermissionCheck?: (check: AcpPermissionCheck, request: acp.RequestPermissionRequest) => Promise<void>
   /** Host-owned form elicitation bridge; URL elicitation is intentionally not advertised. */
-  readonly onElicitationRequest?: (params: acp.CreateElicitationRequest, signal?: AbortSignal, hostToolName?: string, hostToolCall?: acp.ToolCallUpdate) => Promise<acp.CreateElicitationResponse>
+  readonly onElicitationRequest?: (
+    params: acp.CreateElicitationRequest,
+    signal?: AbortSignal,
+    hostToolName?: string,
+    hostToolCall?: acp.ToolCallUpdate,
+  ) => Promise<acp.CreateElicitationResponse>
   /** One-shot diagnostic for optional private capability degradation. */
   readonly onCapabilityDegraded?: (message: string) => void
   /** Grace period after `session/cancel` before the Agent process is closed. */
@@ -67,7 +83,7 @@ export interface AcpSessionRuntimeOptions {
 
 /** A conforming Agent normally settles cancellation immediately; this only
  * bounds an Agent that ignores `session/cancel`. */
-export const ACP_CANCEL_SETTLE_GRACE_MS = 5_000
+const ACP_CANCEL_SETTLE_GRACE_MS = 5_000
 
 function isAborted(signal: AbortSignal | undefined): boolean {
   return signal?.aborted === true
@@ -116,22 +132,24 @@ function executeInputFromContent(content: unknown): Record<string, unknown> | un
   const serialized = parts.join('').trim()
   if (serialized === '' || Buffer.byteLength(serialized, 'utf8') > 64 * 1024) return undefined
   let parsed: unknown
-  try { parsed = JSON.parse(serialized) } catch { return undefined }
+  try {
+    parsed = JSON.parse(serialized)
+  } catch {
+    return undefined
+  }
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined
   const input = parsed as Record<string, unknown>
   const command = input.command ?? input.cmd
   const argv = input.argv
   if (
-    !(typeof command === 'string' && command.trim() !== '')
-    && !(Array.isArray(argv) && argv.length > 0 && argv.every(item => typeof item === 'string'))
-  ) return undefined
+    !(typeof command === 'string' && command.trim() !== '') &&
+    !(Array.isArray(argv) && argv.length > 0 && argv.every((item) => typeof item === 'string'))
+  )
+    return undefined
   return structuredClone(input)
 }
 
-function permissionToolCall(
-  prior: acp.ToolCallUpdate | undefined,
-  request: acp.ToolCallUpdate,
-): acp.ToolCallUpdate {
+function permissionToolCall(prior: acp.ToolCallUpdate | undefined, request: acp.ToolCallUpdate): acp.ToolCallUpdate {
   const toolCall = prior === undefined ? structuredClone(request) : mergeToolCallSnapshot(prior, request)
   if (toolCall.kind === 'execute' && toolCall.rawInput === undefined) {
     // Kimi replaces the streamed JSON argument content with human-readable
@@ -157,7 +175,8 @@ function permissionPriorSnapshot(
   if (match?.[2] !== undefined) {
     const candidate = snapshots?.get(match[2])
     if (candidate !== undefined) {
-      if (request.kind !== undefined && candidate.kind !== undefined && request.kind !== candidate.kind) return undefined
+      if (request.kind !== undefined && candidate.kind !== undefined && request.kind !== candidate.kind)
+        return undefined
       return candidate
     }
   }
@@ -175,8 +194,13 @@ async function completePermissionToolCall(
 ): Promise<acp.ToolCallUpdate> {
   const deadline = Date.now() + ACP_PERMISSION_INPUT_GRACE_MS
   let toolCall = permissionToolCall(permissionPriorSnapshot(snapshots, request), request)
-  while (toolCall.kind === 'execute' && toolCall.rawInput === undefined && Date.now() < deadline && !isAborted(signal)) {
-    await new Promise<void>(resolve => setTimeout(resolve, 20))
+  while (
+    toolCall.kind === 'execute' &&
+    toolCall.rawInput === undefined &&
+    Date.now() < deadline &&
+    !isAborted(signal)
+  ) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 20))
     toolCall = permissionToolCall(permissionPriorSnapshot(snapshots, request), request)
   }
   return toolCall
@@ -215,21 +239,43 @@ export class AcpSessionRuntime {
     this.cancelGraceMs = options.cancelGraceMs ?? ACP_CANCEL_SETTLE_GRACE_MS
   }
 
-  get acpSessionId(): string | undefined { return this.sessionId }
-  get agentCapabilities(): acp.AgentCapabilities | undefined { return this.connection?.agentCapabilities }
-  get agentInfo(): acp.Implementation | null | undefined { return this.connection?.agentInfo }
-  get protocolVersion(): number | undefined { return this.connection?.protocolVersion }
-  get launchInfo(): AcpRuntimeLaunch | undefined { return this.launch }
+  get acpSessionId(): string | undefined {
+    return this.sessionId
+  }
+  get agentCapabilities(): acp.AgentCapabilities | undefined {
+    return this.connection?.agentCapabilities
+  }
+  get agentInfo(): acp.Implementation | null | undefined {
+    return this.connection?.agentInfo
+  }
+  get protocolVersion(): number | undefined {
+    return this.connection?.protocolVersion
+  }
+  get launchInfo(): AcpRuntimeLaunch | undefined {
+    return this.launch
+  }
   /** Latest detached options advertised by this ACP session. */
-  get configOptions(): readonly acp.SessionConfigOption[] | undefined { return this.configSnapshot }
-  get currentModeId(): string | undefined { return this.currentMode }
+  get configOptions(): readonly acp.SessionConfigOption[] | undefined {
+    return this.configSnapshot
+  }
+  get currentModeId(): string | undefined {
+    return this.currentMode
+  }
   /** Complete detached legacy mode state advertised by this ACP session. */
-  get modes(): acp.SessionModeState | undefined { return this.modeSnapshot }
+  get modes(): acp.SessionModeState | undefined {
+    return this.modeSnapshot
+  }
   /** ACP context occupancy/cumulative cost; intentionally not DSH TokenUsage. */
-  get contextUsage(): AcpRuntimeContextUsage | undefined { return this.usageSnapshot }
-  get isBusy(): boolean { return this.promptClaimed }
+  get contextUsage(): AcpRuntimeContextUsage | undefined {
+    return this.usageSnapshot
+  }
+  get isBusy(): boolean {
+    return this.promptClaimed
+  }
   private pendingQuestions = 0
-  get canSteer(): boolean { return this.connection?.supportsSteering === true && this.pendingQuestions === 0 }
+  get canSteer(): boolean {
+    return this.connection?.supportsSteering === true && this.pendingQuestions === 0
+  }
 
   async steer(content: acp.ContentBlock[]): Promise<'injected' | 'promptRequired'> {
     if (!this.canSteer || !this.promptActive || this.sessionId === undefined) return 'promptRequired'
@@ -249,7 +295,11 @@ export class AcpSessionRuntime {
 
   /** Initialize and negotiate capabilities without creating session/new. */
   async initialize(signal?: AbortSignal): Promise<void> {
-    if (this.connection !== undefined && (this.connection.isClosed || this.mcpLease?.signal.aborted === true || this.mcpKey !== this.options.mcpKey?.())) await this.close()
+    if (
+      this.connection !== undefined &&
+      (this.connection.isClosed || this.mcpLease?.signal.aborted === true || this.mcpKey !== this.options.mcpKey?.())
+    )
+      await this.close()
     if (this.connection !== undefined) return
     this.starting ??= this.createConnection(signal)
     try {
@@ -276,7 +326,8 @@ export class AcpSessionRuntime {
     // remains responsible for authorizing a resume after an unknown outcome.
     if (this.connection?.isClosed === true) await this.close()
     if (this.sessionId !== undefined) {
-      if (this.sessionId !== binding.agentSessionId) throw new Error('ACP binding session id does not match the active runtime')
+      if (this.sessionId !== binding.agentSessionId)
+        throw new Error('ACP binding session id does not match the active runtime')
       return 'reused'
     }
     await this.initialize(signal)
@@ -289,7 +340,11 @@ export class AcpSessionRuntime {
     this.restoringSessionId = binding.agentSessionId
     try {
       if (caps?.sessionCapabilities?.resume != null) {
-        const response = await connection.resumeSession(binding.agentSessionId, { cwd: this.options.cwd, mcpServers }, rpcOptions)
+        const response = await connection.resumeSession(
+          binding.agentSessionId,
+          { cwd: this.options.cwd, mcpServers },
+          rpcOptions,
+        )
         this.applySessionSnapshot(response)
         this.sessionId = binding.agentSessionId
         return 'resumed'
@@ -297,7 +352,11 @@ export class AcpSessionRuntime {
       if (caps?.loadSession !== true) {
         throw new Error('ACP agent does not advertise session/resume or session/load')
       }
-      const response = await connection.loadSession(binding.agentSessionId, { cwd: this.options.cwd, mcpServers }, rpcOptions)
+      const response = await connection.loadSession(
+        binding.agentSessionId,
+        { cwd: this.options.cwd, mcpServers },
+        rpcOptions,
+      )
       this.applySessionSnapshot(response)
       this.sessionId = binding.agentSessionId
       return 'loaded'
@@ -312,7 +371,15 @@ export class AcpSessionRuntime {
    * separate from start(): a successful fork owns the returned child id and
    * must never first create an unrelated session/new.
    */
-  async fork(parentSessionId: string, signal?: AbortSignal, expected?: { readonly agent?: { readonly name?: string; readonly version?: string }; readonly protocolVersion?: number }, beforeDispatch?: () => Promise<void>): Promise<acp.ForkSessionResponse> {
+  async fork(
+    parentSessionId: string,
+    signal?: AbortSignal,
+    expected?: {
+      readonly agent?: { readonly name?: string; readonly version?: string }
+      readonly protocolVersion?: number
+    },
+    beforeDispatch?: () => Promise<void>,
+  ): Promise<acp.ForkSessionResponse> {
     if (this.sessionId !== undefined) throw new Error('ACP runtime already owns a session')
     await this.initialize(signal)
     const connection = this.connection
@@ -320,16 +387,27 @@ export class AcpSessionRuntime {
     const mcpServers = this.mcpLease?.servers ?? []
     try {
       if (!supportsFork(connection.agentCapabilities)) throw new Error('ACP_FORK_UNSUPPORTED')
-      if (expected?.protocolVersion !== undefined && connection.protocolVersion !== expected.protocolVersion) throw new Error('ACP_FORK_PRECONDITION_FAILED')
-      if (expected?.agent?.name !== undefined && connection.agentInfo?.name !== expected.agent.name) throw new Error('ACP_FORK_PRECONDITION_FAILED')
-      if (expected?.agent?.version !== undefined && connection.agentInfo?.version !== expected.agent.version) throw new Error('ACP_FORK_PRECONDITION_FAILED')
+      if (expected?.protocolVersion !== undefined && connection.protocolVersion !== expected.protocolVersion)
+        throw new Error('ACP_FORK_PRECONDITION_FAILED')
+      if (expected?.agent?.name !== undefined && connection.agentInfo?.name !== expected.agent.name)
+        throw new Error('ACP_FORK_PRECONDITION_FAILED')
+      if (expected?.agent?.version !== undefined && connection.agentInfo?.version !== expected.agent.version)
+        throw new Error('ACP_FORK_PRECONDITION_FAILED')
       try {
         await beforeDispatch?.()
       } catch (error) {
         throw new Error(`ACP_FORK_INTENT_FAILED: ${error instanceof Error ? error.message : String(error)}`)
       }
-      const response = await connection.forkSession(parentSessionId, { cwd: this.options.cwd, mcpServers }, signal === undefined ? {} : { signal })
-      if (typeof response.sessionId !== 'string' || response.sessionId.length === 0 || response.sessionId === parentSessionId) {
+      const response = await connection.forkSession(
+        parentSessionId,
+        { cwd: this.options.cwd, mcpServers },
+        signal === undefined ? {} : { signal },
+      )
+      if (
+        typeof response.sessionId !== 'string' ||
+        response.sessionId.length === 0 ||
+        response.sessionId === parentSessionId
+      ) {
         throw new Error('ACP_FORK_INVALID_RESPONSE')
       }
       this.applySessionSnapshot(response)
@@ -375,17 +453,32 @@ export class AcpSessionRuntime {
       // in-flight JSON-RPC request poisons the connection. ACP cancellation is a
       // protocol notification followed by a bounded wait for this same prompt.
       const instructions = this.mcpLease?.instructions
-      const prompting = connection.prompt(sessionId, instructions === undefined ? content : [{ type: 'text', text: instructions }, ...content], notification => {
-        const update = notification.update
-        // Permission snapshots retain the original wire identity; only the presentation callback is normalized.
-        const presented = notification.sessionId === sessionId && (update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update')
-          ? this.mcpLease?.presentTool?.(update) : undefined
-        onUpdate(presented === undefined ? notification : { ...notification, update: { ...update, ...presented } as typeof update })
-      })
+      const prompting = connection.prompt(
+        sessionId,
+        instructions === undefined ? content : [{ type: 'text', text: instructions }, ...content],
+        (notification) => {
+          const update = notification.update
+          // Permission snapshots retain the original wire identity; only the presentation callback is normalized.
+          const presented =
+            notification.sessionId === sessionId &&
+            (update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update')
+              ? this.mcpLease?.presentTool?.(update)
+              : undefined
+          onUpdate(
+            presented === undefined
+              ? notification
+              : { ...notification, update: { ...update, ...presented } as typeof update },
+          )
+        },
+      )
       let settled = false
       void prompting.then(
-        () => { settled = true },
-        () => { settled = true },
+        () => {
+          settled = true
+        },
+        () => {
+          settled = true
+        },
       )
       const onAbort = (): void => {
         if (settled) return
@@ -398,7 +491,9 @@ export class AcpSessionRuntime {
             // guard to take over instead of hanging the DSH turn indefinitely.
             void connection.close().catch(() => undefined)
           },
-          () => { /* prompt failed inside the grace period; no escalation needed */ },
+          () => {
+            /* prompt failed inside the grace period; no escalation needed */
+          },
         )
       }
       signal?.addEventListener('abort', onAbort, { once: true })
@@ -435,9 +530,16 @@ export class AcpSessionRuntime {
     if (connection === undefined || sessionId === undefined) throw new Error('ACP session is not started')
     const run = this.configWrite.then(async () => {
       signal?.throwIfAborted()
-      if (connection !== this.connection || sessionId !== this.sessionId) throw new Error('ACP configuration connection changed')
-      const response = await connection.setConfigOption(sessionId, configId, value, signal === undefined ? {} : { signal })
-      if (connection !== this.connection || sessionId !== this.sessionId) throw new Error('ACP configuration connection changed')
+      if (connection !== this.connection || sessionId !== this.sessionId)
+        throw new Error('ACP configuration connection changed')
+      const response = await connection.setConfigOption(
+        sessionId,
+        configId,
+        value,
+        signal === undefined ? {} : { signal },
+      )
+      if (connection !== this.connection || sessionId !== this.sessionId)
+        throw new Error('ACP configuration connection changed')
       this.configSnapshot = acpConfigOptionsSnapshot(response.configOptions)
     })
     this.configWrite = run.catch(() => undefined)
@@ -452,9 +554,11 @@ export class AcpSessionRuntime {
     if (connection === undefined || sessionId === undefined) throw new Error('ACP session is not started')
     const run = this.configWrite.then(async () => {
       signal?.throwIfAborted()
-      if (connection !== this.connection || sessionId !== this.sessionId) throw new Error('ACP configuration connection changed')
+      if (connection !== this.connection || sessionId !== this.sessionId)
+        throw new Error('ACP configuration connection changed')
       await connection.setMode(sessionId, modeId, signal === undefined ? {} : { signal })
-      if (connection !== this.connection || sessionId !== this.sessionId) throw new Error('ACP configuration connection changed')
+      if (connection !== this.connection || sessionId !== this.sessionId)
+        throw new Error('ACP configuration connection changed')
       this.currentMode = modeId
     })
     this.configWrite = run.catch(() => undefined)
@@ -477,14 +581,21 @@ export class AcpSessionRuntime {
     this.modeSnapshot = undefined
     this.usageSnapshot = undefined
     const errors = closed.filter((result): result is PromiseRejectedResult => result.status === 'rejected')
-    if (errors.length > 0) throw new AggregateError(errors.map(result => result.reason), 'ACP runtime cleanup failed')
+    if (errors.length > 0)
+      throw new AggregateError(
+        errors.map((result) => result.reason),
+        'ACP runtime cleanup failed',
+      )
   }
 
   private async createSession(signal?: AbortSignal): Promise<void> {
     const connection = this.connection
     if (connection === undefined) throw new Error('ACP connection is not started')
     try {
-      const session = await connection.newSession({ cwd: this.options.cwd, mcpServers: this.mcpLease?.servers ?? [] }, signal === undefined ? {} : { signal })
+      const session = await connection.newSession(
+        { cwd: this.options.cwd, mcpServers: this.mcpLease?.servers ?? [] },
+        signal === undefined ? {} : { signal },
+      )
       this.applySessionSnapshot(session)
       this.sessionId = session.sessionId
     } catch (error) {
@@ -500,7 +611,8 @@ export class AcpSessionRuntime {
     // publish a newly initialized child after close() has returned.
     const connectionAbort = new AbortController()
     this.connectionAbort = connectionAbort
-    const setupSignal = signal === undefined ? connectionAbort.signal : AbortSignal.any([signal, connectionAbort.signal])
+    const setupSignal =
+      signal === undefined ? connectionAbort.signal : AbortSignal.any([signal, connectionAbort.signal])
     const launch = await this.options.prepareLaunch(this.options.config, this.options.cwd)
     if (setupSignal.aborted) {
       await launch.mcpLease?.close().catch(() => undefined)
@@ -519,51 +631,74 @@ export class AcpSessionRuntime {
     const terminalHandlers = this.options.createTerminalHandlers?.({ cwd: this.options.cwd, env: launch.env })
     const connection = new AcpClientConnection(spec, {
       ...(this.options.enableClaudeDraftSubagents === true ? { enableClaudeDraftSubagents: true } : {}),
-      ...(this.options.onCapabilityDegraded === undefined ? {} : { onCapabilityDegraded: this.options.onCapabilityDegraded }),
+      ...(this.options.onCapabilityDegraded === undefined
+        ? {}
+        : { onCapabilityDegraded: this.options.onCapabilityDegraded }),
       ...(fileSystemHandlers === undefined ? {} : { fileSystemHandlers }),
       ...(terminalHandlers === undefined ? {} : { terminalHandlers }),
-      ...(this.options.onPermissionRequest === undefined ? {} : {
-        onPermissionRequest: async (params: acp.RequestPermissionRequest): Promise<acp.RequestPermissionResponse> => {
-          this.pendingQuestions += 1
-          try { return await this.handlePermissionRequest(params) } finally { this.pendingQuestions -= 1 }
-        },
-      }),
-      ...(this.options.onElicitationRequest === undefined ? {} : {
-        onElicitationRequest: async (params: acp.CreateElicitationRequest): Promise<acp.CreateElicitationResponse> => {
-          const signal = this.permissionSignal()
-          if (!this.promptActive || isAborted(signal)) return { action: 'cancel' }
-          const scope = params as { sessionId?: unknown; toolCallId?: unknown }
-          const toolCall = scope.sessionId !== this.sessionId || typeof scope.toolCallId !== 'string'
-            ? undefined : this.promptToolSnapshots?.get(scope.toolCallId)
-          this.pendingQuestions += 1
-          try {
-            const lease = this.mcpLease
-            const automaticPromise = Promise.resolve(lease?.elicitation?.(params, toolCall))
-            let automatic: acp.CreateElicitationResponse | undefined
-            if (signal === undefined) automatic = await automaticPromise
-            else {
-              const abortToken = Symbol('abort')
-              let onAbort: (() => void) | undefined
-              const aborted = new Promise<typeof abortToken>(resolve => {
-                onAbort = () => resolve(abortToken)
-                if (isAborted(signal)) onAbort()
-                else signal.addEventListener('abort', onAbort, { once: true })
-              })
+      ...(this.options.onPermissionRequest === undefined
+        ? {}
+        : {
+            onPermissionRequest: async (
+              params: acp.RequestPermissionRequest,
+            ): Promise<acp.RequestPermissionResponse> => {
+              this.pendingQuestions += 1
               try {
-                const result = await Promise.race([automaticPromise, aborted])
-                if (result === abortToken) return { action: 'cancel' }
-                automatic = result
-              } finally { if (onAbort !== undefined) signal.removeEventListener('abort', onAbort) }
-            }
-            if (isAborted(signal) || lease !== this.mcpLease || lease?.signal.aborted) return { action: 'cancel' }
-            if (automatic !== undefined) return automatic
-            const hostToolName = this.mcpLease?.elicitationToolName?.(params, toolCall)
-            return await this.options.onElicitationRequest!(params, signal, hostToolName,
-              hostToolName === undefined ? undefined : toolCall)
-          }
-          finally { this.pendingQuestions -= 1 }
-        },
-      }),
+                return await this.handlePermissionRequest(params)
+              } finally {
+                this.pendingQuestions -= 1
+              }
+            },
+          }),
+      ...(this.options.onElicitationRequest === undefined
+        ? {}
+        : {
+            onElicitationRequest: async (
+              params: acp.CreateElicitationRequest,
+            ): Promise<acp.CreateElicitationResponse> => {
+              const signal = this.permissionSignal()
+              if (!this.promptActive || isAborted(signal)) return { action: 'cancel' }
+              const scope = params as { sessionId?: unknown; toolCallId?: unknown }
+              const toolCall =
+                scope.sessionId !== this.sessionId || typeof scope.toolCallId !== 'string'
+                  ? undefined
+                  : this.promptToolSnapshots?.get(scope.toolCallId)
+              this.pendingQuestions += 1
+              try {
+                const lease = this.mcpLease
+                const automaticPromise = Promise.resolve(lease?.elicitation?.(params, toolCall))
+                let automatic: acp.CreateElicitationResponse | undefined
+                if (signal === undefined) automatic = await automaticPromise
+                else {
+                  const abortToken = Symbol('abort')
+                  let onAbort: (() => void) | undefined
+                  const aborted = new Promise<typeof abortToken>((resolve) => {
+                    onAbort = () => resolve(abortToken)
+                    if (isAborted(signal)) onAbort()
+                    else signal.addEventListener('abort', onAbort, { once: true })
+                  })
+                  try {
+                    const result = await Promise.race([automaticPromise, aborted])
+                    if (result === abortToken) return { action: 'cancel' }
+                    automatic = result
+                  } finally {
+                    if (onAbort !== undefined) signal.removeEventListener('abort', onAbort)
+                  }
+                }
+                if (isAborted(signal) || lease !== this.mcpLease || lease?.signal.aborted) return { action: 'cancel' }
+                if (automatic !== undefined) return automatic
+                const hostToolName = this.mcpLease?.elicitationToolName?.(params, toolCall)
+                return await this.options.onElicitationRequest!(
+                  params,
+                  signal,
+                  hostToolName,
+                  hostToolName === undefined ? undefined : toolCall,
+                )
+              } finally {
+                this.pendingQuestions -= 1
+              }
+            },
+          }),
       onSessionUpdate: (notification) => {
         if (connectionAbort.signal.aborted) return
         this.applyUpdate(notification)
@@ -587,8 +722,12 @@ export class AcpSessionRuntime {
     }
   }
 
-  private applySessionSnapshot(snapshot: { readonly configOptions?: readonly acp.SessionConfigOption[] | null; readonly modes?: acp.SessionModeState | null }): void {
-    if (snapshot.configOptions !== undefined && snapshot.configOptions !== null) this.configSnapshot = acpConfigOptionsSnapshot(snapshot.configOptions)
+  private applySessionSnapshot(snapshot: {
+    readonly configOptions?: readonly acp.SessionConfigOption[] | null
+    readonly modes?: acp.SessionModeState | null
+  }): void {
+    if (snapshot.configOptions !== undefined && snapshot.configOptions !== null)
+      this.configSnapshot = acpConfigOptionsSnapshot(snapshot.configOptions)
     if (snapshot.modes?.currentModeId !== undefined) {
       this.currentMode = snapshot.modes.currentModeId
       this.modeSnapshot = structuredClone(snapshot.modes)
@@ -602,27 +741,32 @@ export class AcpSessionRuntime {
     if (notification.sessionId !== (this.sessionId ?? this.restoringSessionId)) return
     const update = notification.update
     if (
-      this.promptActive
-      && notification.sessionId === this.sessionId
-      && (update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update')
+      this.promptActive &&
+      notification.sessionId === this.sessionId &&
+      (update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update')
     ) {
       // Keep permission enrichment prompt- and session-scoped. Kimi streams
       // tool arguments before requesting permission, so the map is cleared at
       // every turn boundary and can never authorize data from another turn.
       const snapshots = this.promptToolSnapshots
-      if (snapshots !== undefined) snapshots.set(update.toolCallId, mergeToolCallSnapshot(snapshots.get(update.toolCallId), update))
+      if (snapshots !== undefined)
+        snapshots.set(update.toolCallId, mergeToolCallSnapshot(snapshots.get(update.toolCallId), update))
     }
-    if (update.sessionUpdate === 'config_option_update') this.configSnapshot = acpConfigOptionsSnapshot(update.configOptions)
+    if (update.sessionUpdate === 'config_option_update')
+      this.configSnapshot = acpConfigOptionsSnapshot(update.configOptions)
     if (update.sessionUpdate === 'current_mode_update') {
       this.currentMode = update.currentModeId
-      if (this.modeSnapshot !== undefined) this.modeSnapshot = { ...this.modeSnapshot, currentModeId: update.currentModeId }
+      if (this.modeSnapshot !== undefined)
+        this.modeSnapshot = { ...this.modeSnapshot, currentModeId: update.currentModeId }
     }
     if (update.sessionUpdate === 'usage_update') {
       const cost = update.cost
       this.usageSnapshot = {
         used: update.used,
         size: update.size,
-        ...(cost === undefined ? {} : { cost: cost === null ? null : { amount: cost.amount, currency: cost.currency } }),
+        ...(cost === undefined
+          ? {}
+          : { cost: cost === null ? null : { amount: cost.amount, currency: cost.currency } }),
       }
     }
   }
@@ -631,7 +775,9 @@ export class AcpSessionRuntime {
     const connectionSignal = this.connectionAbort?.signal
     const promptLifetimeSignal = this.promptAbort?.signal
     const promptSignal = this.promptSignal
-    const signals = [connectionSignal, promptLifetimeSignal, promptSignal].filter((signal): signal is AbortSignal => signal !== undefined)
+    const signals = [connectionSignal, promptLifetimeSignal, promptSignal].filter(
+      (signal): signal is AbortSignal => signal !== undefined,
+    )
     if (signals.length === 0) return undefined
     if (signals.length === 1) return signals[0]
     return AbortSignal.any(signals)
@@ -655,7 +801,7 @@ export class AcpSessionRuntime {
     else {
       const abortToken = Symbol('permission-abort')
       let onAbort: (() => void) | undefined
-      const aborted = new Promise<typeof abortToken>(resolve => {
+      const aborted = new Promise<typeof abortToken>((resolve) => {
         onAbort = () => resolve(abortToken)
         if (isAborted(signal)) onAbort()
         else signal.addEventListener('abort', onAbort, { once: true })
@@ -664,26 +810,41 @@ export class AcpSessionRuntime {
         const result = await Promise.race([inspectPromise, aborted])
         if (result === abortToken) return cancelled()
         inspected = result
-      } finally { if (onAbort !== undefined) signal.removeEventListener('abort', onAbort) }
+      } finally {
+        if (onAbort !== undefined) signal.removeEventListener('abort', onAbort)
+      }
     }
     if (this.options.onPermissionCheck !== undefined) {
       // Audit stores only the bounded decision facts, never capability names or addresses.
-      try { await this.options.onPermissionCheck(inspected ?? { reason: 'bridge-unavailable' }, request) }
-      catch { return cancelled() }
+      try {
+        await this.options.onPermissionCheck(inspected ?? { reason: 'bridge-unavailable' }, request)
+      } catch {
+        return cancelled()
+      }
     }
-    if (isAborted(signal) || lease !== this.mcpLease || lease?.signal.aborted
-      || (inspected?.reason === 'auto-approved' && lease?.validatePermissionDecision?.(request) === false)) return cancelled()
+    if (
+      isAborted(signal) ||
+      lease !== this.mcpLease ||
+      lease?.signal.aborted ||
+      (inspected?.reason === 'auto-approved' && lease?.validatePermissionDecision?.(request) === false)
+    )
+      return cancelled()
     // Use the very policy resolution that was audited above. Re-reading here
     // could turn an audited Ask into an automatic approval (or the reverse).
     const bridgeDecision = inspected === undefined ? await lease?.permission(request) : inspected.response
     if (bridgeDecision !== undefined) return bridgeDecision
     // Resolve bridge decisions against the original wire identity first; normalize
     // only the request shown by the native approval surface.
-    const pending = handler({ ...request, toolCall: this.mcpLease?.presentTool?.(request.toolCall) ?? request.toolCall }, signal)
+    const pending = handler(
+      { ...request, toolCall: this.mcpLease?.presentTool?.(request.toolCall) ?? request.toolCall },
+      signal,
+    )
     if (signal === undefined) return await pending
     let onAbort: (() => void) | undefined
     const aborted = new Promise<acp.RequestPermissionResponse>((resolve) => {
-      onAbort = () => { resolve(cancelled()) }
+      onAbort = () => {
+        resolve(cancelled())
+      }
       if (isAborted(signal)) onAbort()
       else signal.addEventListener('abort', onAbort, { once: true })
     })

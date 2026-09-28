@@ -3,14 +3,20 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { Session, SessionHeader } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-subagent'
 
-export function installExternalChildCatalog(ctx: Context, store: {
-  get(id: string): Session | undefined
-  flush(session: Session): Promise<boolean>
-}): (header: SessionHeader, label: string) => Promise<void> {
+export function installExternalChildCatalog(
+  ctx: Context,
+  store: {
+    get(id: string): Session | undefined
+    flush(session: Session): Promise<boolean>
+  },
+): (header: SessionHeader, label: string) => Promise<void> {
   const pending = new Map<string, Map<string, { header: SessionHeader; label: string }>>()
   const publishing = new Map<string, Promise<void>>()
   let disposed = false
-  ctx.effect(() => () => { disposed = true; pending.clear() })
+  ctx.effect(() => () => {
+    disposed = true
+    pending.clear()
+  })
   const publishPending = async (parent: Session): Promise<void> => {
     const children = pending.get(parent.id)
     if (children === undefined) return
@@ -20,10 +26,14 @@ export function installExternalChildCatalog(ctx: Context, store: {
       // The native Subagent plugin may be absent or still loading. Keep facts
       // queued until it can own discovery; never start an Agent just to list it.
       if (!Array.isArray(rows)) return
-      if (!rows.some(row => row.id === id)) parent.append('subagent/catalog', {
-        version: 0, childId: child.header.id, childCreatedAt: child.header.createdAt,
-        mode: 'one-shot', label: child.label,
-      })
+      if (!rows.some((row) => row.id === id))
+        parent.append('subagent/catalog', {
+          version: 0,
+          childId: child.header.id,
+          childCreatedAt: child.header.createdAt,
+          mode: 'one-shot',
+          label: child.label,
+        })
       if (!(await store.flush(parent))) throw new Error('ACP_SUBAGENT_CATALOG_NOT_DURABLE')
       children.delete(id)
     }
@@ -33,12 +43,16 @@ export function installExternalChildCatalog(ctx: Context, store: {
     const previous = publishing.get(parent.id) ?? Promise.resolve()
     const task = previous.catch(() => {}).then(() => publishPending(parent))
     publishing.set(parent.id, task)
-    const release = (): void => { if (publishing.get(parent.id) === task) publishing.delete(parent.id) }
+    const release = (): void => {
+      if (publishing.get(parent.id) === task) publishing.delete(parent.id)
+    }
     void task.then(release, release)
     return task
   }
   const resume = (parent: Session): void => {
-    void publish(parent).catch(() => ctx.logger.warn('ACP external-child catalog publication will be retried when the parent is reopened.'))
+    void publish(parent).catch(() =>
+      ctx.logger.warn('ACP external-child catalog publication will be retried when the parent is reopened.'),
+    )
   }
   ctx.on('session/created', resume)
   ctx.inject(['subagents'], () => {

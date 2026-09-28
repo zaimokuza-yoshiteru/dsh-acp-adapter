@@ -12,16 +12,22 @@ export async function interruptTeam(input: {
   interrupt(id: string): Promise<void>
 }): Promise<{ accepted: number; skipped: number; failed: number }> {
   const result = { accepted: 0, skipped: 0, failed: 0 }
-  const targets = [...new Set(input.targets)].filter(id => id !== input.lead)
+  const targets = [...new Set(input.targets)].filter((id) => id !== input.lead)
   if (!input.isCurrent()) return { ...result, skipped: targets.length }
   const members = await input.members()
-  await Promise.all(targets.map(async id => {
-    if (!input.isCurrent() || !members.some(member => member.sessionId === id && member.status === 'running')) {
-      result.skipped++
-      return
-    }
-    try { await input.interrupt(id); result.accepted++ }
-    catch { result.failed++ }
-  }))
+  await Promise.all(
+    targets.map(async (id) => {
+      if (!input.isCurrent() || !members.some((member) => member.sessionId === id && member.status === 'running')) {
+        result.skipped++
+        return
+      }
+      try {
+        await input.interrupt(id)
+        result.accepted++
+      } catch {
+        result.failed++
+      }
+    }),
+  )
   return result
 }

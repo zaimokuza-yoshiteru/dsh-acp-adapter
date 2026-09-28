@@ -18,7 +18,12 @@ import { ACP_AGENT_ID_PATTERN, effectiveRuntimeOf, catalogIdOf } from '../../con
 import type { AcpAgentConfig, AcpAgentId as AcpAgentRuntimeId } from '../../contract/agent-config.ts'
 import { ACP_AGENT_CONFIG_STATES } from '../../contract/remote.ts'
 import type { AcpAgentConfigState } from '../../contract/remote.ts'
-export { ACP_AGENT_IDS as ACP_AGENT_RUNTIME_IDS, ACP_AGENT_ID_PATTERN, ACP_SETTINGS_NS, effectiveRuntimeOf } from '../../contract/agent-config.ts'
+export {
+  ACP_AGENT_IDS as ACP_AGENT_RUNTIME_IDS,
+  ACP_AGENT_ID_PATTERN,
+  ACP_SETTINGS_NS,
+  effectiveRuntimeOf,
+} from '../../contract/agent-config.ts'
 export type { AcpAgentConfig, AcpAgentId as AcpAgentRuntimeId } from '../../contract/agent-config.ts'
 export type { AcpAgentConfigState } from '../../contract/remote.ts'
 
@@ -63,14 +68,14 @@ export interface AgentDraft {
   loginHint: string
   /**
    * 疑似 secret（键名命中 {@link ACP_SECRET_ENV_KEY_PATTERN}）的存量 env 值
- * **不回显**——文本框只放非疑似键，疑似键由 UI 以「键名 + 已配置」
+   * **不回显**——文本框只放非疑似键，疑似键由 UI 以「键名 + 已配置」
    * 行展示；原值在此携带过站，保存时与用户显式重填的同名行合并（显式行优先，
    * 即同名重填 = 轮换值；UI 移除行 = 删除该键）。仅「编辑存量 agent」路径会
    * 带上本字段。
    */
   maskedEnv?: Record<string, string>
   /**
- * 存量 agent 的 runtime 绑定（边界）原样过站：编辑器不暴露本
+   * 存量 agent 的 runtime 绑定（边界）原样过站：编辑器不暴露本
    * 字段，但保存时必须挂回——否则面板保存会静默解除 runtime 绑定。
    * 仅「编辑存量 agent 且其配置带 runtime」路径携带本字段。
    */
@@ -84,7 +89,10 @@ export function emptyDraft(): AgentDraft {
 }
 
 /** Display-only guidance: preserve saved hints and fall back to catalog metadata. */
-export function agentLoginHint(id: string, config: Pick<AcpAgentConfig, 'runtime' | 'catalogId' | 'loginHint'>): string | undefined {
+export function agentLoginHint(
+  id: string,
+  config: Pick<AcpAgentConfig, 'runtime' | 'catalogId' | 'loginHint'>,
+): string | undefined {
   return config.loginHint?.trim() || catalogEntryOf(catalogIdOf(id, config))?.loginHint
 }
 
@@ -110,7 +118,7 @@ export function draftFromCatalogEntry(entryId: string): AgentDraft | undefined {
 
 /** Seed the editor from a stored agent (the row's 编辑 button)。 */
 export function draftFromAgent(id: string, config: AcpAgentConfig): AgentDraft {
- // 疑似 secret 的 env 键不进文本框（不回显值），原值进 maskedEnv 过站
+  // 疑似 secret 的 env 键不进文本框（不回显值），原值进 maskedEnv 过站
   const visibleEnv: Record<string, string> = {}
   const maskedEnv: Record<string, string> = {}
   for (const [key, value] of Object.entries(config.env)) {
@@ -120,13 +128,16 @@ export function draftFromAgent(id: string, config: AcpAgentConfig): AgentDraft {
   return {
     id,
     name: config.name,
-    ...(config.catalogId === undefined && (effectiveRuntimeOf(id, config) !== undefined || catalogEntryOf(id) === undefined) ? {} : { catalogId: catalogIdOf(id, config) }),
+    ...(config.catalogId === undefined &&
+    (effectiveRuntimeOf(id, config) !== undefined || catalogEntryOf(id) === undefined)
+      ? {}
+      : { catalogId: catalogIdOf(id, config) }),
     command: config.command,
     argsText: formatArgsText(config.args),
     envText: formatEnvText(visibleEnv),
     loginHint: config.loginHint ?? '',
     ...(Object.keys(maskedEnv).length === 0 ? {} : { maskedEnv }),
- // 边界：runtime 绑定不暴露编辑，原样过站（保存时挂回，见 validateAgentDraft）
+    // 边界：runtime 绑定不暴露编辑，原样过站（保存时挂回，见 validateAgentDraft）
     ...(config.runtime === undefined ? {} : { runtime: config.runtime }),
   }
 }
@@ -149,7 +160,10 @@ export function dropMaskedEnvKey(draft: AgentDraft, key: string): AgentDraft {
  * lines dropped. A line's interior whitespace is the user's to keep.
  */
 export function parseArgsText(text: string): string[] {
-  return text.split('\n').map((line) => line.trim()).filter((line) => line !== '')
+  return text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line !== '')
 }
 
 /** Render stored args as the editor's one-per-line text. */
@@ -159,8 +173,7 @@ export function formatArgsText(args: readonly string[]): string {
 
 /** Why one env line failed to parse. */
 export type EnvParseFailure =
-  | { readonly line: number; readonly reason: 'key' }
-  | { readonly line: number; readonly reason: 'duplicate' }
+  { readonly line: number; readonly reason: 'key' } | { readonly line: number; readonly reason: 'duplicate' }
 
 /**
  * Parse the env textarea: one `KEY=VALUE` per line (split on the FIRST `=`),
@@ -170,7 +183,9 @@ export type EnvParseFailure =
  * @param text - the staged env text.
  * @returns the env map, or the first offending line (1-based).
  */
-export function parseEnvText(text: string): { ok: true; env: Record<string, string> } | { ok: false; failure: EnvParseFailure } {
+export function parseEnvText(
+  text: string,
+): { ok: true; env: Record<string, string> } | { ok: false; failure: EnvParseFailure } {
   const env: Record<string, string> = {}
   const lines = text.split('\n')
   for (let index = 0; index < lines.length; index += 1) {
@@ -187,7 +202,9 @@ export function parseEnvText(text: string): { ok: true; env: Record<string, stri
 
 /** Render a stored env map as the editor's `KEY=VALUE` text (insertion order). */
 export function formatEnvText(env: Record<string, string>): string {
-  return Object.entries(env).map(([key, value]) => `${key}=${value}`).join('\n')
+  return Object.entries(env)
+    .map(([key, value]) => `${key}=${value}`)
+    .join('\n')
 }
 
 /** Locale key of one validation failure (the component maps it through `t`). */
@@ -214,7 +231,7 @@ export interface DraftValidation {
   readonly command?: DraftError
   readonly env?: DraftError
   /**
- * （内置 runtime 唯一性）内置 runtime singleton 冲突：草稿的生效 runtime 已被另一个
+   * （内置 runtime 唯一性）内置 runtime singleton 冲突：草稿的生效 runtime 已被另一个
    * 存量 profile 绑定。params 携带 `{runtime, id, name}` 点名已有 profile——
    * UI 据此展示「打开已有配置」出口，不自动覆盖/删除。
    */
@@ -260,20 +277,28 @@ export function validateAgentDraft(
     const key: DraftErrorKey = parsedEnv.failure.reason === 'key' ? 'errorEnvKey' : 'errorEnvDuplicate'
     validation.env = { key, params: { line: parsedEnv.failure.line } }
   }
- // singleton：草稿的生效 runtime（显式 runtime 优先、内置 id 回退）与任一
+  // singleton：草稿的生效 runtime（显式 runtime 优先、内置 id 回退）与任一
   // 其他存量 profile 的生效 runtime 相撞即拒绝，错误点名已有 profile。
   const draftRuntime = effectiveRuntimeOf(id, draft)
   if (draftRuntime !== undefined) {
     for (const [existingId, existing] of Object.entries(agents)) {
       if (existingId === editingId) continue
       if (effectiveRuntimeOf(existingId, existing) !== draftRuntime) continue
-      validation.runtime = { key: 'errorRuntimeTaken', params: { runtime: draftRuntime, id: existingId, name: existing.name } }
+      validation.runtime = {
+        key: 'errorRuntimeTaken',
+        params: { runtime: draftRuntime, id: existingId, name: existing.name },
+      }
       break
     }
   }
-  if (validation.id !== undefined || validation.name !== undefined
-    || validation.command !== undefined || validation.env !== undefined
-    || validation.runtime !== undefined || !parsedEnv.ok) {
+  if (
+    validation.id !== undefined ||
+    validation.name !== undefined ||
+    validation.command !== undefined ||
+    validation.env !== undefined ||
+    validation.runtime !== undefined ||
+    !parsedEnv.ok
+  ) {
     return validation
   }
   return {
@@ -282,10 +307,10 @@ export function validateAgentDraft(
       name,
       command,
       args: parseArgsText(draft.argsText),
- // 掩码键原样合回（用户同名重填的显式行优先 = 轮换值）
+      // 掩码键原样合回（用户同名重填的显式行优先 = 轮换值）
       env: { ...draft.maskedEnv, ...parsedEnv.env },
       ...(loginHint === '' ? {} : { loginHint }),
- // 边界：存量 agent 的 runtime 绑定原样挂回（编辑器不暴露，保存不得静默解除）
+      // 边界：存量 agent 的 runtime 绑定原样挂回（编辑器不暴露，保存不得静默解除）
       ...(draft.runtime === undefined ? {} : { runtime: draft.runtime }),
       ...(draft.catalogId === undefined ? {} : { catalogId: draft.catalogId }),
     },
@@ -326,13 +351,14 @@ export interface PanelSettingsState {
 
 /** Project one scope snapshot into the panel's settings state. */
 export function panelSettingsOf(snapshot: AcpScopeSnapshot): PanelSettingsState {
-  const status = snapshot.status === 'ready'
-    ? 'ready'
-    : snapshot.status === 'unavailable'
-      ? 'unavailable'
-      : snapshot.revision === undefined
-        ? 'loading'
-        : 'invalid'
+  const status =
+    snapshot.status === 'ready'
+      ? 'ready'
+      : snapshot.status === 'unavailable'
+        ? 'unavailable'
+        : snapshot.revision === undefined
+          ? 'loading'
+          : 'invalid'
   return {
     status,
     writable: snapshot.writable,
@@ -356,9 +382,9 @@ export interface AcpAuthMethod {
 export interface AcpCapabilityFacts {
   loadSession: boolean
   sessionList: boolean
- /** `session/close`（清理事实展示用）。 */
+  /** `session/close`（清理事实展示用）。 */
   sessionClose: boolean
- /** `session/delete`（清理事实展示用）。 */
+  /** `session/delete`（清理事实展示用）。 */
   sessionDelete: boolean
   promptImage: boolean
   promptAudio: boolean
@@ -403,28 +429,28 @@ export interface AcpProviderHealth {
   loginHint: string | null
   executable: boolean
   version: string | null
- /** 五态状态（host 侧 deriveAcpAgentState 派生）。 */
+  /** 五态状态（host 侧 deriveAcpAgentState 派生）。 */
   state: AcpAgentConfigState
   probe:
     | { status: 'never'; at: null }
     | {
-      status: 'ok'
-      at: number
-      modelCount: number
-      authMethods: readonly AcpAuthMethod[] | null
-      agentInfo: { name: string; version: string } | null
-      capabilities: AcpCapabilityFacts | null
- /** probe 会话清理事实（delete 未广告/失败 = 降级，面板须如实展示）。 */
-      cleanup: AcpProbeCleanup | null
-  /** initialize 握手能力的 sha256-16 指纹（旧条目缺席归 null）。 */
-      capabilityHash: string | null
-  /** 协商的 ACP 协议版本（readiness；旧缓存条目/握手未给出归 null）。 */
-      protocolVersion: number | null
-  /** 兼容状态（边界；无版本参考/握手无版本归 null，快照无版本 'unknown'）。 */
-      versionCompatibility: 'current' | 'different' | 'unknown' | null
- /** 端到端能力矩阵（host 计算的交集结论，UI 只展示它，不直译 capabilities 布尔）。 */
-      matrix: readonly AcpCapabilityMatrixRow[]
-    }
+        status: 'ok'
+        at: number
+        modelCount: number
+        authMethods: readonly AcpAuthMethod[] | null
+        agentInfo: { name: string; version: string } | null
+        capabilities: AcpCapabilityFacts | null
+        /** probe 会话清理事实（delete 未广告/失败 = 降级，面板须如实展示）。 */
+        cleanup: AcpProbeCleanup | null
+        /** initialize 握手能力的 sha256-16 指纹（旧条目缺席归 null）。 */
+        capabilityHash: string | null
+        /** 协商的 ACP 协议版本（readiness；旧缓存条目/握手未给出归 null）。 */
+        protocolVersion: number | null
+        /** 兼容状态（边界；无版本参考/握手无版本归 null，快照无版本 'unknown'）。 */
+        versionCompatibility: 'current' | 'different' | 'unknown' | null
+        /** 端到端能力矩阵（host 计算的交集结论，UI 只展示它，不直译 capabilities 布尔）。 */
+        matrix: readonly AcpCapabilityMatrixRow[]
+      }
     | { status: 'error'; at: number; failureKind: string; message: string; phase: AcpProbePhase | null }
 }
 
@@ -454,11 +480,21 @@ function decodeHealthRow(raw: unknown): AcpProviderHealth | undefined {
   if (!(typeof loginHint === 'string' || loginHint === null)) return undefined
   if (typeof executable !== 'boolean') return undefined
   if (!(typeof version === 'string' || version === null)) return undefined
- // 五态：词表外一律整行拒绝（health 响应整体失格，与 decodeHealthResponse 口径一致）
+  // 五态：词表外一律整行拒绝（health 响应整体失格，与 decodeHealthResponse 口径一致）
   if (typeof state !== 'string' || !(ACP_AGENT_CONFIG_STATES as readonly string[]).includes(state)) return undefined
   const probeRow = decodeProbeRow(probe)
   if (probeRow === undefined) return undefined
-  return { id, name, command, args: args as string[], loginHint, executable, version, state: state as AcpAgentConfigState, probe: probeRow }
+  return {
+    id,
+    name,
+    command,
+    args: args as string[],
+    loginHint,
+    executable,
+    version,
+    state: state as AcpAgentConfigState,
+    probe: probeRow,
+  }
 }
 
 function decodeProbeRow(raw: unknown): AcpProviderHealth['probe'] | undefined {
@@ -479,11 +515,17 @@ function decodeProbeRow(raw: unknown): AcpProviderHealth['probe'] | undefined {
     if (cleanup === undefined) return undefined
     const capabilityHash = raw['capabilityHash']
     if (!(capabilityHash === null || typeof capabilityHash === 'string')) return undefined
- // readiness 三键（probe-ok 必填；null 词表/词表外值整行拒绝）
+    // readiness 三键（probe-ok 必填；null 词表/词表外值整行拒绝）
     const protocolVersion = raw['protocolVersion']
     if (!(protocolVersion === null || typeof protocolVersion === 'number')) return undefined
     const versionCompatibility = raw['versionCompatibility']
-    if (!(versionCompatibility === null || versionCompatibility === 'current' || versionCompatibility === 'different' || versionCompatibility === 'unknown')) return undefined
+    if (!(
+      versionCompatibility === null ||
+      versionCompatibility === 'current' ||
+      versionCompatibility === 'different' ||
+      versionCompatibility === 'unknown'
+    ))
+      return undefined
     const matrix = decodeCapabilityMatrix(raw['matrix'])
     if (matrix === undefined) return undefined
     return {
@@ -524,7 +566,17 @@ function decodeAgentInfo(raw: unknown): { name: string; version: string } | null
 function decodeCapabilityFacts(raw: unknown): AcpCapabilityFacts | null | undefined {
   if (raw === null) return null
   if (!isPlainObject(raw)) return undefined
-  const keys = ['loadSession', 'sessionList', 'sessionClose', 'sessionDelete', 'promptImage', 'promptAudio', 'promptEmbeddedContext', 'mcpHttp', 'mcpSse'] as const
+  const keys = [
+    'loadSession',
+    'sessionList',
+    'sessionClose',
+    'sessionDelete',
+    'promptImage',
+    'promptAudio',
+    'promptEmbeddedContext',
+    'mcpHttp',
+    'mcpSse',
+  ] as const
   const facts = {} as Record<(typeof keys)[number], boolean>
   for (const key of keys) {
     const value = (raw as Record<string, unknown>)[key]

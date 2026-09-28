@@ -14,11 +14,15 @@ export const ACTIVITY_PRESENTATION_BYTES = 2 * 1024 * 1024
 
 export function boundedActivityPresentation(value: AcpActivityPresentation): AcpActivityPresentation {
   return new TextEncoder().encode(JSON.stringify(value)).byteLength > ACTIVITY_PRESENTATION_BYTES
-    ? { unavailable: 'too-large' } : value
+    ? { unavailable: 'too-large' }
+    : value
 }
 
 /** Normalize only known ACP display fields. Transport details remain in the audit record. */
-export function activityPresentation(value: unknown, kind: 'plan' | 'tool' | 'diff'): AcpActivityPresentation | undefined {
+export function activityPresentation(
+  value: unknown,
+  kind: 'plan' | 'tool' | 'diff',
+): AcpActivityPresentation | undefined {
   if (kind === 'plan') {
     const parsed = activityPresentationSchema.shape.plan.safeParse(value)
     return parsed.success && parsed.data !== undefined ? boundedActivityPresentation({ plan: parsed.data }) : undefined

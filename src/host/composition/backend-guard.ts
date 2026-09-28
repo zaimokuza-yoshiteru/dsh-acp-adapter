@@ -32,11 +32,7 @@ export interface BackendTransitionInput {
 }
 
 export type BackendTransition =
-  | 'allow-native'
-  | 'allow-blank-acp'
-  | 'allow-same-acp'
-  | 'require-new-session'
-  | 'recovery-conflict'
+  'allow-native' | 'allow-blank-acp' | 'allow-same-acp' | 'require-new-session' | 'recovery-conflict'
 
 /** Classify one model transition without performing the transition. */
 export function classifyBackendTransition(input: BackendTransitionInput): BackendTransition {
@@ -52,9 +48,7 @@ export function classifyBackendTransition(input: BackendTransitionInput): Backen
 
   if (input.lastUsed === null) {
     // An inconsistent projection must not let ACP adopt an existing transcript.
-    return input.blank && !input.hasPriorSemanticHistory
-      ? 'allow-blank-acp'
-      : 'require-new-session'
+    return input.blank && !input.hasPriorSemanticHistory ? 'allow-blank-acp' : 'require-new-session'
   }
 
   if (previousProfile === undefined || previousProfile !== nextProfile) return 'require-new-session'
@@ -65,7 +59,11 @@ export interface AcpBackendGuardOptions {
   readonly sidecar: AcpSidecar
 }
 
-function transitionError(code: 'ACP_BACKEND_NEW_SESSION_REQUIRED' | 'ACP_BACKEND_RECOVERY_REQUIRED', message: string, cause?: unknown): LlmError {
+function transitionError(
+  code: 'ACP_BACKEND_NEW_SESSION_REQUIRED' | 'ACP_BACKEND_RECOVERY_REQUIRED',
+  message: string,
+  cause?: unknown,
+): LlmError {
   return new LlmError(message, code, cause instanceof Error ? { cause } : undefined)
 }
 
@@ -85,11 +83,17 @@ async function blockWithRecovery(
       cause,
       detail,
       provider,
-      ...(bindingData === undefined ? {} : { acpSessionId: bindingData.agentSessionId, generation: bindingData.generation }),
+      ...(bindingData === undefined
+        ? {}
+        : { acpSessionId: bindingData.agentSessionId, generation: bindingData.generation }),
       updatedAt: Date.now(),
     })
   } catch (error: unknown) {
-    throw transitionError('ACP_BACKEND_RECOVERY_REQUIRED', `ACP transition is blocked and its recovery state could not be persisted: ${detail}`, error)
+    throw transitionError(
+      'ACP_BACKEND_RECOVERY_REQUIRED',
+      `ACP transition is blocked and its recovery state could not be persisted: ${detail}`,
+      error,
+    )
   }
   throw transitionError('ACP_BACKEND_RECOVERY_REQUIRED', detail)
 }
@@ -106,8 +110,9 @@ export function installAcpBackendGuard(ctx: Context, options: AcpBackendGuardOpt
       // The API controller contributes modelSelection for interactive hosts.
       // Headless AgentLoop hosts retain the same committed route in the native
       // Session request header. Do not require an API/UI plugin to continue ACP.
-      const previous = projection === undefined ? session.requestHeader()?.config ?? null : projection.lastUsed
-      if (targetProfile === undefined && (previous === null || acpAgentIdFromRoute(previous.provider) === undefined)) return resolved
+      const previous = projection === undefined ? (session.requestHeader()?.config ?? null) : projection.lastUsed
+      if (targetProfile === undefined && (previous === null || acpAgentIdFromRoute(previous.provider) === undefined))
+        return resolved
       const previousProfile = acpAgentIdFromRoute(previous?.provider ?? '')
       const baseInput = {
         lastUsed: previous,
@@ -120,8 +125,15 @@ export function installAcpBackendGuard(ctx: Context, options: AcpBackendGuardOpt
       if (targetProfile === undefined || previousProfile === undefined || previousProfile !== targetProfile) {
         const transition = classifyBackendTransition(baseInput)
         if (transition === 'allow-native' || transition === 'allow-blank-acp') return resolved
-        if (transition === 'require-new-session') throw transitionError('ACP_BACKEND_NEW_SESSION_REQUIRED', 'This selection changes the execution backend; create a new DSH session to continue')
-        throw transitionError('ACP_BACKEND_RECOVERY_REQUIRED', 'The DSH model-selection state conflicts with the ACP backend; restore the session or create a new DSH session')
+        if (transition === 'require-new-session')
+          throw transitionError(
+            'ACP_BACKEND_NEW_SESSION_REQUIRED',
+            'This selection changes the execution backend; create a new DSH session to continue',
+          )
+        throw transitionError(
+          'ACP_BACKEND_RECOVERY_REQUIRED',
+          'The DSH model-selection state conflicts with the ACP backend; restore the session or create a new DSH session',
+        )
       }
 
       const sessionId = String(session.id)
@@ -129,7 +141,14 @@ export function installAcpBackendGuard(ctx: Context, options: AcpBackendGuardOpt
       try {
         binding = await options.sidecar.readLatestBinding(session.id)
       } catch (error: unknown) {
-        await blockWithRecovery(options.sidecar, sessionId, resolved.provider, 'binding-missing', 'ACP binding could not be read; restore the session or create a new DSH session', undefined)
+        await blockWithRecovery(
+          options.sidecar,
+          sessionId,
+          resolved.provider,
+          'binding-missing',
+          'ACP binding could not be read; restore the session or create a new DSH session',
+          undefined,
+        )
         throw error
       }
       // DSH's native fork creates a new session whose model-selection
@@ -139,9 +158,7 @@ export function installAcpBackendGuard(ctx: Context, options: AcpBackendGuardOpt
       // proven ACP fork) and record the child binding. Treating this as a
       // same-session recovery failure would prevent the documented blank
       // context fallback before the adapter is reached.
-      if (binding === undefined
-        && session.header.parentSession !== undefined
-        && previousProfile === targetProfile) {
+      if (binding === undefined && session.header.parentSession !== undefined && previousProfile === targetProfile) {
         return resolved
       }
       const transition = classifyBackendTransition({
@@ -149,8 +166,16 @@ export function installAcpBackendGuard(ctx: Context, options: AcpBackendGuardOpt
         ...(binding?.status === 'ok' ? { bindingProfileId: binding.binding.profileId } : {}),
       })
       if (transition === 'allow-same-acp') return resolved
-      const cause = binding?.status === 'ok' && binding.binding.profileId !== targetProfile ? 'backend-conflict' : 'binding-missing'
-      return await blockWithRecovery(options.sidecar, sessionId, resolved.provider, cause, 'ACP session binding is missing or belongs to another profile; restore the original profile or create a new DSH session', binding)
+      const cause =
+        binding?.status === 'ok' && binding.binding.profileId !== targetProfile ? 'backend-conflict' : 'binding-missing'
+      return await blockWithRecovery(
+        options.sidecar,
+        sessionId,
+        resolved.provider,
+        cause,
+        'ACP session binding is missing or belongs to another profile; restore the original profile or create a new DSH session',
+        binding,
+      )
     })
   })
 }

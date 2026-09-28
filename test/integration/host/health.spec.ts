@@ -16,7 +16,11 @@ import type { AcpRecoveryView } from '../../../src/contract/remote.ts'
 import { TYPERT } from '../../../lib/typert.host.js'
 
 const DEVIN: AcpAgentConfig = {
-  name: 'Devin', command: 'devin', args: ['acp'], env: {}, loginHint: 'devin auth login',
+  name: 'Devin',
+  command: 'devin',
+  args: ['acp'],
+  env: {},
+  loginHint: 'devin auth login',
 }
 
 const PROBE: AcpProbeSnapshotLike = {
@@ -36,11 +40,14 @@ const PROBE: AcpProbeSnapshotLike = {
   },
 }
 
-function registry(agents: Record<string, AcpAgentConfig> = { devin: DEVIN }, snapshots: Record<string, AcpProbeSnapshotLike | undefined> = { 'acp-devin': PROBE }): AcpHealthRegistryLike {
+function registry(
+  agents: Record<string, AcpAgentConfig> = { devin: DEVIN },
+  snapshots: Record<string, AcpProbeSnapshotLike | undefined> = { 'acp-devin': PROBE },
+): AcpHealthRegistryLike {
   return {
     agents: () => new Map(Object.entries(agents)),
     probeCacheFor: () => ({
-      probeSnapshot: route => snapshots[route],
+      probeSnapshot: (route) => snapshots[route],
       invalidateProbe: () => {},
       listModels: async () => [],
     }),
@@ -70,19 +77,26 @@ describe('AcpRemoteService current public surface', () => {
 
   it('health recheck is targeted and does not expose authentication RPCs', async () => {
     const { instance } = service()
-    await expect(instance.health({ recheck: true, agentId: 'devin' })).resolves.toMatchObject({ providers: [{ id: 'devin' }] })
+    await expect(instance.health({ recheck: true, agentId: 'devin' })).resolves.toMatchObject({
+      providers: [{ id: 'devin' }],
+    })
     expect((instance as unknown as Record<string, unknown>).authenticate).toBeUndefined()
     expect((instance as unknown as Record<string, unknown>).options).toBeUndefined()
   })
 
   it('publishes rechecked models only after the probe settles, including failures; read-only health does not refresh', async () => {
     const changed = vi.fn()
-    const probe = vi.fn(async () => { expect(changed).not.toHaveBeenCalled(); throw new Error('offline') })
-    const { instance } = service({ registry: {
-      agents: () => new Map([['devin', DEVIN]]),
-      probeCacheFor: () => ({ invalidateProbe: () => {}, listModels: probe, probeSnapshot: () => undefined }),
-      modelsChanged: changed,
-    } })
+    const probe = vi.fn(async () => {
+      expect(changed).not.toHaveBeenCalled()
+      throw new Error('offline')
+    })
+    const { instance } = service({
+      registry: {
+        agents: () => new Map([['devin', DEVIN]]),
+        probeCacheFor: () => ({ invalidateProbe: () => {}, listModels: probe, probeSnapshot: () => undefined }),
+        modelsChanged: changed,
+      },
+    })
     await instance.health()
     expect(changed).not.toHaveBeenCalled()
     await instance.health({ recheck: true, agentId: 'devin' })
@@ -106,9 +120,17 @@ describe('AcpRemoteService current public surface', () => {
 
   it('routes recovery through the bound provider adapter and keeps DSH history untouched', async () => {
     let current: AcpRecoveryView = {
-      dshSessionId: 's1', kind: 'outcome-unknown', cause: 'transport-closed', detail: 'unknown',
-      provider: 'acp-devin', acpSessionId: 'agent-1', generation: 1, interruptedTurnId: null,
-      lastAttemptAt: null, lastUserAction: null, updatedAt: 1,
+      dshSessionId: 's1',
+      kind: 'outcome-unknown',
+      cause: 'transport-closed',
+      detail: 'unknown',
+      provider: 'acp-devin',
+      acpSessionId: 'agent-1',
+      generation: 1,
+      interruptedTurnId: null,
+      lastAttemptAt: null,
+      lastUserAction: null,
+      updatedAt: 1,
     }
     const actions: string[] = []
     const { instance } = service({
@@ -120,8 +142,13 @@ describe('AcpRemoteService current public surface', () => {
       },
       recoveryStateStore: { read: async () => current },
       recoveryAdapter: () => ({
-        retryOriginal: async () => { actions.push('retry') },
-        rebindBlank: async () => { actions.push('rebind'); current = { ...current, kind: 'healthy', cause: null, detail: null } },
+        retryOriginal: async () => {
+          actions.push('retry')
+        },
+        rebindBlank: async () => {
+          actions.push('rebind')
+          current = { ...current, kind: 'healthy', cause: null, detail: null }
+        },
       }),
     })
     await expect(instance.retryOriginal('s1')).resolves.toMatchObject({ kind: 'outcome-unknown' })
@@ -156,32 +183,70 @@ describe('AcpRemoteService current public surface', () => {
   })
 
   it('uses the additive agent session controls only for an established ACP binding', async () => {
-    const snapshot = { sessionId: 's1', profileId: 'devin', freshness: 'live' as const, editable: true, configOptions: null, modes: null, currentModeId: null, contextUsage: null, note: null }
+    const snapshot = {
+      sessionId: 's1',
+      profileId: 'devin',
+      freshness: 'live' as const,
+      editable: true,
+      configOptions: null,
+      modes: null,
+      currentModeId: null,
+      contextUsage: null,
+      note: null,
+    }
     const setOption = vi.fn(async () => snapshot)
     const { instance } = service({
       ownedSessionReadGate: async () => true,
-      backendFacts: { readBindingProvider: async () => 'acp-devin', peekHeaderProvider: async () => 'acp-devin', hasLiveAgent: () => true },
+      backendFacts: {
+        readBindingProvider: async () => 'acp-devin',
+        peekHeaderProvider: async () => 'acp-devin',
+        hasLiveAgent: () => true,
+      },
       agentSessionControl: () => ({ agentSessionSnapshot: async () => snapshot, setAgentSessionOption: setOption }),
     })
     await expect(instance.agentSessionSnapshot('s1')).resolves.toEqual(snapshot)
-    await expect(instance.setAgentSessionOption('s1', { kind: 'config', id: 'compact', value: false })).resolves.toEqual(snapshot)
+    await expect(
+      instance.setAgentSessionOption('s1', { kind: 'config', id: 'compact', value: false }),
+    ).resolves.toEqual(snapshot)
     expect(setOption).toHaveBeenCalledExactlyOnceWith('s1', { kind: 'config', id: 'compact', value: false })
   })
 
   it('guards ACP-only snapshots and recovery mutations before reading or changing an unowned session', async () => {
-    const controlSnapshot = vi.fn(async () => ({ sessionId: 'foreign', profileId: 'devin', freshness: 'live' as const, editable: true, configOptions: null, modes: null, currentModeId: null, contextUsage: null, note: null }))
+    const controlSnapshot = vi.fn(async () => ({
+      sessionId: 'foreign',
+      profileId: 'devin',
+      freshness: 'live' as const,
+      editable: true,
+      configOptions: null,
+      modes: null,
+      currentModeId: null,
+      contextUsage: null,
+      note: null,
+    }))
     const setOption = vi.fn(async () => controlSnapshot())
     const readRecovery = vi.fn(async () => ({
-      dshSessionId: 'foreign', kind: 'outcome-unknown' as const, cause: 'transport-closed', detail: 'sensitive recovery detail',
-      provider: 'acp-devin', acpSessionId: 'agent-secret', generation: 1, interruptedTurnId: null,
-      lastAttemptAt: 1, lastUserAction: null, updatedAt: 1,
+      dshSessionId: 'foreign',
+      kind: 'outcome-unknown' as const,
+      cause: 'transport-closed',
+      detail: 'sensitive recovery detail',
+      provider: 'acp-devin',
+      acpSessionId: 'agent-secret',
+      generation: 1,
+      interruptedTurnId: null,
+      lastAttemptAt: 1,
+      lastUserAction: null,
+      updatedAt: 1,
     }))
     const recoveryAction = vi.fn(async () => {})
     const readBinding = vi.fn(async () => 'acp-devin')
     const readLiveAgent = vi.fn(() => undefined)
     const { instance } = service({
       ownedSessionReadGate: async () => false,
-      backendFacts: { readBindingProvider: readBinding, peekHeaderProvider: async () => undefined, hasLiveAgent: () => false },
+      backendFacts: {
+        readBindingProvider: readBinding,
+        peekHeaderProvider: async () => undefined,
+        hasLiveAgent: () => false,
+      },
       resolveLiveAgent: readLiveAgent,
       agentSessionControl: () => ({ agentSessionSnapshot: controlSnapshot, setAgentSessionOption: setOption }),
       recoveryStateStore: { read: readRecovery },
@@ -189,8 +254,15 @@ describe('AcpRemoteService current public surface', () => {
     })
 
     await expect(instance.agentSessionSnapshot('foreign')).rejects.toMatchObject({ code: 'dsh-acp/user-rejected' })
-    await expect(instance.setAgentSessionOption('foreign', { kind: 'config', id: 'compact', value: false })).rejects.toMatchObject({ code: 'dsh-acp/user-rejected' })
-    await expect(instance.recoverySnapshot('foreign')).resolves.toMatchObject({ dshSessionId: 'foreign', kind: 'healthy', provider: null, detail: null })
+    await expect(
+      instance.setAgentSessionOption('foreign', { kind: 'config', id: 'compact', value: false }),
+    ).rejects.toMatchObject({ code: 'dsh-acp/user-rejected' })
+    await expect(instance.recoverySnapshot('foreign')).resolves.toMatchObject({
+      dshSessionId: 'foreign',
+      kind: 'healthy',
+      provider: null,
+      detail: null,
+    })
     await expect(instance.retryOriginal('foreign')).rejects.toMatchObject({ code: 'dsh-acp/user-rejected' })
     await expect(instance.rebindRecoveryBlank('foreign')).rejects.toMatchObject({ code: 'dsh-acp/user-rejected' })
     expect(controlSnapshot).not.toHaveBeenCalled()
@@ -206,7 +278,9 @@ describe('AcpRemoteService current public surface', () => {
     expect(readBinding).toHaveBeenCalledOnce()
 
     const { instance: unavailableGate } = service({
-      ownedSessionReadGate: async () => { throw new Error('sidecar unavailable') },
+      ownedSessionReadGate: async () => {
+        throw new Error('sidecar unavailable')
+      },
       recoveryStateStore: { read: readRecovery },
     })
     await expect(unavailableGate.recoverySnapshot('session')).rejects.toThrow('sidecar unavailable')
@@ -216,23 +290,52 @@ describe('AcpRemoteService current public surface', () => {
   it('generated descriptors contain only the current invocation set', () => {
     const ids = (TYPERT as { invocations: Array<{ id: string }> }).invocations.map(({ id }) => id.split('/').at(-1))
     expect(ids).toEqual([
-      'activityDetail', 'activityFollow', 'activityPage', 'activitySnapshot', 'agentSessionFollow', 'agentSessionSnapshot', 'auditTimeline',
-      'backendOf', 'boundSessions', 'health', 'ownedProviderRoutes', 'projectedSubagentIds', 'rebindRecoveryBlank', 'recoverySnapshot', 'retryOriginal',
-      'setAgentSessionOption', 'setTeamMemberMode', 'setTeamMemberModel', 'setToolApprovalPolicy', 'teamMemberModels', 'teamMembers',
-      'toolApprovalPolicy', 'toolApprovalPolicyFollow',
+      'activityDetail',
+      'activityFollow',
+      'activityPage',
+      'activitySnapshot',
+      'agentSessionFollow',
+      'agentSessionSnapshot',
+      'auditTimeline',
+      'backendOf',
+      'boundSessions',
+      'health',
+      'ownedProviderRoutes',
+      'projectedSubagentIds',
+      'rebindRecoveryBlank',
+      'recoverySnapshot',
+      'retryOriginal',
+      'setAgentSessionOption',
+      'setTeamMemberMode',
+      'setTeamMemberModel',
+      'setToolApprovalPolicy',
+      'teamMemberModels',
+      'teamMembers',
+      'toolApprovalPolicy',
+      'toolApprovalPolicyFollow',
     ])
   })
 })
 
 it('looks up reference versions by catalog identity after customizing the profile ID', async () => {
   const { registryVersionOf } = await import('../../../src/domain/session/registry-versions.ts')
-  const config: AcpAgentConfig = { name: 'My agent', command: 'custom-agent', args: [], env: {}, catalogId: 'fast-agent' }
+  const config: AcpAgentConfig = {
+    name: 'My agent',
+    command: 'custom-agent',
+    args: [],
+    env: {},
+    catalogId: 'fast-agent',
+  }
   const version = registryVersionOf('fast-agent')!
   const probe: AcpProbeSnapshotLike = {
-    key: acpProbeConfigKey(config), at: Date.now(), result: { kind: 'ok', models: [], agentInfo: { name: 'custom', version } },
+    key: acpProbeConfigKey(config),
+    at: Date.now(),
+    result: { kind: 'ok', models: [], agentInfo: { name: 'custom', version } },
   }
   const { instance } = service({ registry: registry({ custom: config }, { 'acp-custom': probe }) })
   expect((await instance.health()).providers[0]?.probe).toMatchObject({ versionCompatibility: 'current' })
-  const changed = service({ registry: registry({ custom: { ...config, catalogId: 'not-in-snapshot' } }, { 'acp-custom': probe }) }).instance
+  const changed = service({
+    registry: registry({ custom: { ...config, catalogId: 'not-in-snapshot' } }, { 'acp-custom': probe }),
+  }).instance
   expect((await changed.health()).providers[0]?.probe).toMatchObject({ versionCompatibility: null })
 })

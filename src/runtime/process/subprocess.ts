@@ -78,11 +78,7 @@ export interface AcpSubprocessHandle {
  */
 export interface SubprocessSeam {
   spawn(spec: AcpSubprocessSpawnSpec): AcpSubprocessHandle
-  resolveExecutable(
-    command: string,
-    env?: Readonly<Record<string, string>>,
-    signal?: AbortSignal,
-  ): Promise<string>
+  resolveExecutable(command: string, env?: Readonly<Record<string, string>>, signal?: AbortSignal): Promise<string>
 }
 
 /**
@@ -96,18 +92,15 @@ export function narrowSubprocessSeam(candidate: unknown): SubprocessSeam | undef
   const face = candidate as { spawn?: unknown; resolveExecutable?: unknown }
   if (typeof face.spawn !== 'function' || typeof face.resolveExecutable !== 'function') return undefined
   const service = candidate as {
-    spawn(spec: AcpSubprocessSpawnSpec & {
-      stdio: { stdin: 'pipe'; stdout: 'pipe'; stderr: 'pipe' }
-    }): AcpSubprocessHandle
-    resolveExecutable(
-      command: string,
-      env?: Readonly<Record<string, string>>,
-      signal?: AbortSignal,
-    ): Promise<string>
+    spawn(
+      spec: AcpSubprocessSpawnSpec & {
+        stdio: { stdin: 'pipe'; stdout: 'pipe'; stderr: 'pipe' }
+      },
+    ): AcpSubprocessHandle
+    resolveExecutable(command: string, env?: Readonly<Record<string, string>>, signal?: AbortSignal): Promise<string>
   }
   return {
-    spawn: (spec) =>
-      service.spawn({ ...spec, stdio: { stdin: 'pipe', stdout: 'pipe', stderr: 'pipe' } }),
+    spawn: (spec) => service.spawn({ ...spec, stdio: { stdin: 'pipe', stdout: 'pipe', stderr: 'pipe' } }),
     resolveExecutable: (command, env, signal) => service.resolveExecutable(command, env, signal),
   }
 }
@@ -118,21 +111,24 @@ export function narrowSubprocessSeam(candidate: unknown): SubprocessSeam | undef
  * `AcpClientError('spawn-failure', message)`——六分类不新增词表项）。
  */
 export type SubprocessSeamResolution =
-  | { readonly ok: true; readonly seam: SubprocessSeam }
-  | { readonly ok: false; readonly message: string }
+  { readonly ok: true; readonly seam: SubprocessSeam } | { readonly ok: false; readonly message: string }
 
 /**
  * seam 缺席的统一文案（解析失败与「未接线」共用同一诊断）：宿主 composition
  * 缺 subprocess-local provider 是部署错误，ACP 路由 fail closed，native 路由不受影响。
  */
 export const ACP_SUBPROCESS_UNAVAILABLE_MESSAGE =
-  'the host provides no subprocess service (ctx.subprocess): the ACP adapter requires the dsh-base subprocess-local provider; '
-  + 'refusing to spawn ACP agents on this host (native dsh routes are unaffected)'
+  'the host provides no subprocess service (ctx.subprocess): the ACP adapter requires the dsh-base subprocess-local provider; ' +
+  'refusing to spawn ACP agents on this host (native dsh routes are unaffected)'
 
 /** Distinguish OS launch failures from provider observation/I/O errors. */
 export function isSubprocessLaunchFailure(error: unknown): boolean {
   if (typeof error !== 'object' || error === null) return false
   const { code, syscall } = error as { code?: unknown; syscall?: unknown }
-  return typeof code === 'string' && ['ENOENT', 'EACCES', 'ENOEXEC'].includes(code)
-    && typeof syscall === 'string' && (syscall.startsWith('spawn ') || syscall === 'execve')
+  return (
+    typeof code === 'string' &&
+    ['ENOENT', 'EACCES', 'ENOEXEC'].includes(code) &&
+    typeof syscall === 'string' &&
+    (syscall.startsWith('spawn ') || syscall === 'execve')
+  )
 }

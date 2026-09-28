@@ -21,7 +21,10 @@ function record(value: unknown): value is Record<string, unknown> {
 }
 
 /** Extract the latest ACP marker from a seeded assistant message. */
-export function acpReplayPayloadOf(event: { readonly type: string; readonly data: unknown }): AcpReplayPayloadV1 | undefined {
+export function acpReplayPayloadOf(event: {
+  readonly type: string
+  readonly data: unknown
+}): AcpReplayPayloadV1 | undefined {
   if (event.type !== 'assistant/message' || !record(event.data)) return undefined
   const message = record(event.data.message) ? event.data.message : event.data
   const source = record(message.source) ? message.source : undefined

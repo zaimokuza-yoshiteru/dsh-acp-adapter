@@ -52,13 +52,13 @@
 // specifier，相对 specifier 解析回 src 相对路径定层后对照白名单。先例：
 // test/host-scope.spec.ts 的守卫风格（fs 读 + vitest expect）。
 
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { describe, expect, it } from 'vitest'
 
-const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
-const SRC_DIR = path.resolve(TEST_DIR, '..', '..', 'src');
+const TEST_DIR = path.dirname(fileURLToPath(import.meta.url))
+const SRC_DIR = path.resolve(TEST_DIR, '..', '..', 'src')
 
 // ---------- 层归类 ----------
 
@@ -75,28 +75,28 @@ type Layer =
   | 'hostEntry'
   | 'clientData'
   | 'clientUi'
-  | 'clientEntry';
+  | 'clientEntry'
 
 /** src 相对路径 → 层；返回 undefined 表示路径不在任何已知层（归类本身也被钉死）。 */
 function layerOf(srcRel: string): Layer | undefined {
-  if (srcRel === 'index.ts') return 'hostEntry';
-  if (srcRel.startsWith('runtime/')) return 'runtime';
-  if (srcRel.startsWith('protocol/')) return 'protocol';
-  if (srcRel.startsWith('domain/policy/')) return 'domainPolicy';
-  if (srcRel.startsWith('domain/observability/')) return 'domainObservability';
-  if (srcRel.startsWith('domain/session/')) return 'domainSession';
-  if (srcRel.startsWith('domain/subagent/')) return 'domainSession';
-  if (srcRel.startsWith('persistence/')) return 'persistence';
-  if (srcRel.startsWith('contract/')) return 'contract';
-  if (srcRel.startsWith('remote/')) return 'remote';
-  if (srcRel.startsWith('host/composition/')) return 'hostComposition';
-  if (srcRel.startsWith('host/subagent/')) return 'hostComposition';
-  if (srcRel.startsWith('host/teams/')) return 'hostComposition';
-  if (srcRel === 'client/index.ts' || srcRel.startsWith('client/react.')) return 'clientEntry';
-  if (srcRel.startsWith('client/coordinator/')) return 'clientEntry';
-  if (srcRel.startsWith('client/data/')) return 'clientData';
-  if (srcRel.startsWith('client/ui/')) return 'clientUi';
-  return undefined;
+  if (srcRel === 'index.ts') return 'hostEntry'
+  if (srcRel.startsWith('runtime/')) return 'runtime'
+  if (srcRel.startsWith('protocol/')) return 'protocol'
+  if (srcRel.startsWith('domain/policy/')) return 'domainPolicy'
+  if (srcRel.startsWith('domain/observability/')) return 'domainObservability'
+  if (srcRel.startsWith('domain/session/')) return 'domainSession'
+  if (srcRel.startsWith('domain/subagent/')) return 'domainSession'
+  if (srcRel.startsWith('persistence/')) return 'persistence'
+  if (srcRel.startsWith('contract/')) return 'contract'
+  if (srcRel.startsWith('remote/')) return 'remote'
+  if (srcRel.startsWith('host/composition/')) return 'hostComposition'
+  if (srcRel.startsWith('host/subagent/')) return 'hostComposition'
+  if (srcRel.startsWith('host/teams/')) return 'hostComposition'
+  if (srcRel === 'client/index.ts' || srcRel.startsWith('client/react.')) return 'clientEntry'
+  if (srcRel.startsWith('client/coordinator/')) return 'clientEntry'
+  if (srcRel.startsWith('client/data/')) return 'clientData'
+  if (srcRel.startsWith('client/ui/')) return 'clientUi'
+  return undefined
 }
 
 const HOST_LAYERS: readonly Layer[] = [
@@ -109,7 +109,7 @@ const HOST_LAYERS: readonly Layer[] = [
   'remote',
   'hostComposition',
   'hostEntry',
-];
+]
 
 /** 跨层白名单：key 层可 import 的异层集合（同层恒允许，不入表）。 */
 const ALLOWED_CROSS_LAYER: Readonly<Record<Layer, readonly Layer[]>> = {
@@ -118,12 +118,12 @@ const ALLOWED_CROSS_LAYER: Readonly<Record<Layer, readonly Layer[]>> = {
   protocol: ['runtime'],
   // Pure presentation parsing is shared with the client in the dependency-free contract layer.
   domainPolicy: ['protocol', 'runtime', 'domainObservability', 'contract'],
- // domain/observability 是零 import 叶子（结构化日志包装 + 内存指标）：
+  // domain/observability 是零 import 叶子（结构化日志包装 + 内存指标）：
   // 各层向下消费它，它自己不依赖任何层。
   domainObservability: [],
   // sidecar 的落盘条目携带 events.ts 审计 payload 类型——persistence 唯一的 sideways 边。
   persistence: ['domainPolicy', 'domainObservability'],
- // contract 是零 import 叶子：收窄 wire 类型真源，host 的 remote 与
+  // contract 是零 import 叶子：收窄 wire 类型真源，host 的 remote 与
   // client 两半共同下行消费（共享层，不进 HOST_LAYERS）。
   contract: [],
   domainSession: ['domainPolicy', 'domainObservability', 'protocol', 'runtime', 'persistence', 'contract'],
@@ -144,7 +144,7 @@ const ALLOWED_CROSS_LAYER: Readonly<Record<Layer, readonly Layer[]>> = {
   // contract layer; this does not grant it access to host/domain state.
   clientUi: ['clientData', 'clientEntry', 'contract'],
   clientEntry: ['contract', 'clientData', 'clientUi'],
-};
+}
 
 // ---------- import specifier 抽取 ----------
 
@@ -162,131 +162,133 @@ const ALLOWED_SRC_ESCAPES: Readonly<Record<string, readonly string[]>> = {
   // host 半的版本参考边：同一份快照 sidecar（纯数据），domain 零依赖叶子内嵌
   // ——见 src/domain/session/registry-versions.ts 头注释。
   'domain/session/registry-versions.ts': ['../../../assets/registry/executables.json'],
-};
+}
 
-const IMPORT_FROM_RE = /(?:import|export)\s[^'"]*?from\s+['"]([^'"]+)['"]/g;
-const DYNAMIC_IMPORT_RE = /import\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
-const SIDE_EFFECT_IMPORT_RE = /^\s*import\s+['"]([^'"]+)['"]/gm;
+const IMPORT_FROM_RE = /(?:import|export)\s[^'"]*?from\s+['"]([^'"]+)['"]/g
+const DYNAMIC_IMPORT_RE = /import\s*\(\s*['"]([^'"]+)['"]\s*\)/g
+const SIDE_EFFECT_IMPORT_RE = /^\s*import\s+['"]([^'"]+)['"]/gm
 
 function specifiersOf(fileText: string): string[] {
-  const out: string[] = [];
-  for (const m of fileText.matchAll(IMPORT_FROM_RE)) out.push(m[1]!);
-  for (const m of fileText.matchAll(DYNAMIC_IMPORT_RE)) out.push(m[1]!);
-  for (const m of fileText.matchAll(SIDE_EFFECT_IMPORT_RE)) out.push(m[1]!);
-  return out;
+  const out: string[] = []
+  for (const m of fileText.matchAll(IMPORT_FROM_RE)) out.push(m[1]!)
+  for (const m of fileText.matchAll(DYNAMIC_IMPORT_RE)) out.push(m[1]!)
+  for (const m of fileText.matchAll(SIDE_EFFECT_IMPORT_RE)) out.push(m[1]!)
+  return out
 }
 
 function walkTsFiles(dir: string): string[] {
-  const out: string[] = [];
+  const out: string[] = []
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    const p = path.join(dir, entry.name);
-    if (entry.isDirectory()) out.push(...walkTsFiles(p));
-    else if (entry.name.endsWith('.ts')) out.push(p);
+    const p = path.join(dir, entry.name)
+    if (entry.isDirectory()) out.push(...walkTsFiles(p))
+    else if (entry.name.endsWith('.ts')) out.push(p)
   }
-  return out.sort();
+  return out.sort()
 }
 
 // ---------- 依赖图 ----------
 
 type ImportEdge = {
   /** src 相对路径（posix 分隔符）。 */
-  fromFile: string;
-  toFile: string;
-  fromLayer: Layer;
-  toLayer: Layer;
-};
+  fromFile: string
+  toFile: string
+  fromLayer: Layer
+  toLayer: Layer
+}
 
-type NonRelativeImport = { fromFile: string; specifier: string };
+type NonRelativeImport = { fromFile: string; specifier: string }
 
 function buildGraph(): { edges: ImportEdge[]; nonRelative: NonRelativeImport[] } {
-  const edges: ImportEdge[] = [];
-  const nonRelative: NonRelativeImport[] = [];
+  const edges: ImportEdge[] = []
+  const nonRelative: NonRelativeImport[] = []
   for (const abs of walkTsFiles(SRC_DIR)) {
-    const fromFile = path.relative(SRC_DIR, abs).split(path.sep).join('/');
-    const fromLayer = layerOf(fromFile);
+    const fromFile = path.relative(SRC_DIR, abs).split(path.sep).join('/')
+    const fromLayer = layerOf(fromFile)
     // 归类白名单本身也被钉死：任何落在已知层之外的文件立刻报错。
-    expect(fromLayer, `未归类的 src 文件：${fromFile}`).toBeDefined();
+    expect(fromLayer, `未归类的 src 文件：${fromFile}`).toBeDefined()
     for (const spec of specifiersOf(fs.readFileSync(abs, 'utf8'))) {
       if (!spec.startsWith('.')) {
-        nonRelative.push({ fromFile, specifier: spec });
-        continue;
+        nonRelative.push({ fromFile, specifier: spec })
+        continue
       }
       const toFile = path
         .relative(SRC_DIR, path.resolve(path.dirname(abs), spec))
         .split(path.sep)
-        .join('/');
+        .join('/')
       // 相对 import 不得逃出 src/（client/* 逃进 host 半、或任何 ../.. 越界都会在这里变红）；
       // 唯一例外是 ALLOWED_SRC_ESCAPES 钉死的生成物边（出 src 的目标不参与层归类）。
       if (toFile.startsWith('..')) {
         expect(
           ALLOWED_SRC_ESCAPES[fromFile]?.includes(spec) === true,
           `${fromFile} 的相对 import 逃出 src/：'${spec}'`,
-        ).toBe(true);
-        continue;
+        ).toBe(true)
+        continue
       }
-      const toLayer = layerOf(toFile);
-      expect(toLayer, `${fromFile} 引用了未归类目标：${toFile}`).toBeDefined();
-      edges.push({ fromFile, toFile, fromLayer: fromLayer!, toLayer: toLayer! });
+      const toLayer = layerOf(toFile)
+      expect(toLayer, `${fromFile} 引用了未归类目标：${toFile}`).toBeDefined()
+      edges.push({ fromFile, toFile, fromLayer: fromLayer!, toLayer: toLayer! })
     }
   }
-  return { edges, nonRelative };
+  return { edges, nonRelative }
 }
 
-const { edges, nonRelative } = buildGraph();
+const { edges, nonRelative } = buildGraph()
 
 // ---------- 断言 ----------
 
 describe(' 分层架构守卫', () => {
   it('入口文件存在且各归其位', () => {
     for (const entry of ['index.ts', 'host/composition/index.ts', 'client/index.ts']) {
-      expect(fs.existsSync(path.join(SRC_DIR, entry)), `缺失入口：src/${entry}`).toBe(true);
+      expect(fs.existsSync(path.join(SRC_DIR, entry)), `缺失入口：src/${entry}`).toBe(true)
     }
-  });
+  })
 
   it('所有跨层 import 都在白名单内', () => {
     const violations = edges
       .filter((e) => e.fromLayer !== e.toLayer)
       .filter((e) => !ALLOWED_CROSS_LAYER[e.fromLayer].includes(e.toLayer))
-      .map((e) => `${e.fromFile} (${e.fromLayer}) → ${e.toFile} (${e.toLayer})`);
-    expect(violations, `违规跨层边：\n  ${violations.join('\n  ')}`).toEqual([]);
-  });
+      .map((e) => `${e.fromFile} (${e.fromLayer}) → ${e.toFile} (${e.toLayer})`)
+    expect(violations, `违规跨层边：\n  ${violations.join('\n  ')}`).toEqual([])
+  })
 
   it('host 以下各层不得上行 import host/*', () => {
-    const violations = edges.filter(
-      (e) =>
-        e.toLayer.startsWith('host') &&
-        !e.fromLayer.startsWith('host'),
-    );
-    expect(violations.map((e) => `${e.fromFile} → ${e.toFile}`)).toEqual([]);
-  });
+    const violations = edges.filter((e) => e.toLayer.startsWith('host') && !e.fromLayer.startsWith('host'))
+    expect(violations.map((e) => `${e.fromFile} → ${e.toFile}`)).toEqual([])
+  })
 
   it('client 半自封闭：client/* 不得 import host 各层', () => {
-    const violations = edges.filter(
-      (e) => !HOST_LAYERS.includes(e.fromLayer) && HOST_LAYERS.includes(e.toLayer),
-    );
-    expect(violations.map((e) => `${e.fromFile} → ${e.toFile}`)).toEqual([]);
-  });
+    const violations = edges.filter((e) => !HOST_LAYERS.includes(e.fromLayer) && HOST_LAYERS.includes(e.toLayer))
+    expect(violations.map((e) => `${e.fromFile} → ${e.toFile}`)).toEqual([])
+  })
 
   it('clientData only imports contract and published DSH data contracts', () => {
     const crossLayer = edges.filter(
       (e) => e.fromLayer === 'clientData' && e.toLayer !== 'clientData' && e.toLayer !== 'contract',
-    );
+    )
     const external = nonRelative
       .filter((i) => layerOf(i.fromFile) === 'clientData')
-      .filter((i) => !['@deepseek-ai/dsh-client-store', '@deepseek-ai/dsh-api-gateway/client', '@deepseek-ai/dsh-typert-protocol', '@deepseek-ai/dsh-settings/types'].includes(i.specifier))
-      .map((i) => `${i.fromFile} import '${i.specifier}'`);
-    expect(crossLayer.map((e) => `${e.fromFile} → ${e.toFile}`)).toEqual([]);
-    expect(external).toEqual([]);
-  });
+      .filter(
+        (i) =>
+          ![
+            '@deepseek-ai/dsh-client-store',
+            '@deepseek-ai/dsh-api-gateway/client',
+            '@deepseek-ai/dsh-typert-protocol',
+            '@deepseek-ai/dsh-settings/types',
+          ].includes(i.specifier),
+      )
+      .map((i) => `${i.fromFile} import '${i.specifier}'`)
+    expect(crossLayer.map((e) => `${e.fromFile} → ${e.toFile}`)).toEqual([])
+    expect(external).toEqual([])
+  })
 
   it('react 只允许出现在 clientUi', () => {
     const violations = nonRelative
       .filter((i) => i.specifier === 'react' || i.specifier.startsWith('react/'))
       .filter((i) => {
-        const layer = layerOf(i.fromFile);
-        return layer !== 'clientUi';
+        const layer = layerOf(i.fromFile)
+        return layer !== 'clientUi'
       })
-      .map((i) => `${i.fromFile} import '${i.specifier}'`);
-    expect(violations).toEqual([]);
-  });
-});
+      .map((i) => `${i.fromFile} import '${i.specifier}'`)
+    expect(violations).toEqual([])
+  })
+})

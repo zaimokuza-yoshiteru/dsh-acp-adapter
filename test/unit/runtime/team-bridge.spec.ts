@@ -1,43 +1,115 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
+import { Context as CordisContext } from '@deepseek-ai/cordis'
+import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
+import ToolRuntime, { defineTool, RUN_CODE_NAME } from '@deepseek-ai/dsh-tools'
+import { PtcRuntime } from '@deepseek-ai/dsh-ptc-runtime'
+import type { PtcRunRequest, PtcRunResult } from '@deepseek-ai/dsh-ptc-runtime'
+import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import type { RequestPermissionRequest, CreateElicitationRequest } from '@agentclientprotocol/sdk'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { createTeamBridge, teamBridgeKey } from '../../../src/host/teams/bridge.ts'
 
 const cleanup: Array<() => Promise<unknown>> = []
-afterEach(async () => { await Promise.allSettled(cleanup.splice(0).reverse().map(close => close())) })
 
-async function setup(wireProfile?: string, registeredTools: readonly string[] = [], hasTeams = true, role: 'lead' | 'teammate' = 'lead', policy?: () => Promise<'auto' | 'ask'>) {
+class BridgeFakePtcRuntime extends PtcRuntime {
+  readonly language = 'typescript'
+  readonly isolation = 'fake'
+  resolve(request: PtcRunRequest) {
+    return { ...request, cwd: request.cwd ?? process.cwd(), timeoutMs: request.timeoutMs ?? 120_000 }
+  }
+  run(_request: PtcRunRequest): Promise<PtcRunResult> {
+    return Promise.resolve({ logs: [] })
+  }
+}
+afterEach(async () => {
+  await Promise.allSettled(
+    cleanup
+      .splice(0)
+      .reverse()
+      .map((close) => close()),
+  )
+})
+
+async function setup(
+  wireProfile?: string,
+  registeredTools: readonly string[] = [],
+  hasTeams = true,
+  role: 'lead' | 'teammate' = 'lead',
+  policy?: () => Promise<'auto' | 'ask'>,
+) {
   const agent = { id: 'lead', inbox: { nextStep: [] }, steer: vi.fn() }
   const rootAgent = role === 'teammate' ? { id: 'team-root', inbox: { nextStep: [] }, steer: vi.fn() } : agent
-  const names = [...registeredTools, ...(hasTeams ? [
-    'spawn_teammate', 'send_message', 'list_agents', 'wait_agent', 'interrupt_agent',
-    'team_task_create', 'team_task_list', 'team_task_get', 'team_task_update',
-  ] : [])]
-  const definitions = new Map<string, any>(names.map(name => [name, {
-    name, description: name, parameters: { type: 'object', properties: {} },
-  }]))
+  const names = [
+    ...registeredTools,
+    ...(hasTeams
+      ? [
+          'spawn_teammate',
+          'send_message',
+          'list_agents',
+          'wait_agent',
+          'interrupt_agent',
+          'team_task_create',
+          'team_task_list',
+          'team_task_get',
+          'team_task_update',
+        ]
+      : []),
+  ]
+  const definitions = new Map<string, any>(
+    names.map((name) => [
+      name,
+      {
+        name,
+        description: name,
+        parameters: { type: 'object', properties: {} },
+      },
+    ]),
+  )
   const hidden = new Set<string>()
   const membership = { current: { role, id: 'member-1', root: rootAgent } }
   const execute = vi.fn(async (input) => ({ content: [{ type: 'text', text: input.name }], isError: false }))
   const services: Record<string, unknown> = {
-    agentTeams: { tryMembership: (value: unknown) => value === rootAgent
-      ? { role: 'lead', id: 'member-1', root: rootAgent } : value === agent ? membership.current : undefined },
-    agents: { get: (id: string) => id === 'lead' ? agent : id === 'team-root' ? rootAgent : undefined },
+    agentTeams: {
+      tryMembership: (value: unknown) =>
+        value === rootAgent
+          ? { role: 'lead', id: 'member-1', root: rootAgent }
+          : value === agent
+            ? membership.current
+            : undefined,
+    },
+    agents: { get: (id: string) => (id === 'lead' ? agent : id === 'team-root' ? rootAgent : undefined) },
     tools: {
-      schemas: (scope: unknown) => scope === agent ? [...definitions.values()].filter(definition => !hidden.has(definition.name)) : [],
-      get: (name: string, scope: unknown) => scope === agent && !hidden.has(name) ? definitions.get(name) : undefined,
+      schemas: (scope: unknown) =>
+        scope === agent ? [...definitions.values()].filter((definition) => !hidden.has(definition.name)) : [],
+      get: (name: string, scope: unknown) => (scope === agent && !hidden.has(name) ? definitions.get(name) : undefined),
       execute,
     },
   }
   const listeners = new Map<string, (...args: any[]) => void>()
   if (!hasTeams) delete services.agentTeams
-  const ctx = { get: (name: string) => services[name], on: (name: string, listener: (...args: any[]) => void) => {
-    listeners.set(name, listener)
-    return () => listeners.delete(name)
-  } } as unknown as Context
-  const lease = (await createTeamBridge(ctx, 'lead', { mcpCapabilities: { http: true } }, wireProfile, policy ?? (async () => 'auto')))!
+  const ctx = {
+    get: (name: string) => services[name],
+    on: (name: string, listener: (...args: any[]) => void) => {
+      listeners.set(name, listener)
+      return () => listeners.delete(name)
+    },
+  } as unknown as Context
+  const schemas = [...definitions.values()].map((definition) => ({
+    name: definition.name,
+    description: definition.description ?? definition.name,
+    parameters: definition.parameters,
+  }))
+  const lease = (await createTeamBridge(
+    ctx,
+    'lead',
+    { mcpCapabilities: { http: true } },
+    wireProfile,
+    policy ?? (async () => 'auto'),
+    undefined,
+    schemas,
+  ))!
   cleanup.push(() => lease.close())
   const server = lease.servers[0]!
   if (!('url' in server)) throw new Error('Expected HTTP')
@@ -45,12 +117,33 @@ async function setup(wireProfile?: string, registeredTools: readonly string[] = 
   await client.connect(new StreamableHTTPClientTransport(new URL(server.url)) as Parameters<Client['connect']>[0])
   cleanup.push(() => client.close())
   const tools = (await client.listTools()).tools
-  const name = (tools.find(tool => tool.name === 'list_agents') ?? tools[0])!.name
+  const name = (tools.find((tool) => tool.name === 'list_agents') ?? tools[0])!.name
   const permission = (toolName?: string): RequestPermissionRequest => ({
-    sessionId: 'acp', toolCall: { toolCallId: 'permission', ...(toolName === undefined ? {} : { name: toolName.startsWith('mcp__') ? toolName : `mcp__${server.name}__${toolName}` }) },
+    sessionId: 'acp',
+    toolCall: {
+      toolCallId: 'permission',
+      ...(toolName === undefined
+        ? {}
+        : { name: toolName.startsWith('mcp__') ? toolName : `mcp__${server.name}__${toolName}` }),
+    },
     options: [{ optionId: 'yes', kind: 'allow_once', name: 'Allow once' }],
   })
-  return { ctx, services, execute, definitions, agent, lease, server, client, tools, name, permission, listeners, hidden, membership }
+  return {
+    ctx,
+    services,
+    execute,
+    definitions,
+    agent,
+    lease,
+    server,
+    client,
+    tools,
+    name,
+    permission,
+    listeners,
+    hidden,
+    membership,
+  }
 }
 
 describe('session-owned native Teams MCP bridge', () => {
@@ -59,33 +152,53 @@ describe('session-owned native Teams MCP bridge', () => {
     auto.lease.beginPrompt(new AbortController().signal)
     const write = auto.tools[0]!.name
     const decision = await auto.lease.inspectPermission!(auto.permission(write))
-    expect(decision).toMatchObject({ reason: 'auto-approved', toolName: 'file_write', response: { outcome: { outcome: 'selected', optionId: 'yes' } } })
-    const ambiguous = await auto.lease.inspectPermission!({ ...auto.permission(write), options: [
-      { optionId: 'same', kind: 'allow_once', name: 'Allow once' },
-      { optionId: 'same', kind: 'allow_always', name: 'Always' },
-    ] })
+    expect(decision).toMatchObject({
+      reason: 'auto-approved',
+      toolName: 'file_write',
+      response: { outcome: { outcome: 'selected', optionId: 'yes' } },
+    })
+    const ambiguous = await auto.lease.inspectPermission!({
+      ...auto.permission(write),
+      options: [
+        { optionId: 'same', kind: 'allow_once', name: 'Allow once' },
+        { optionId: 'same', kind: 'allow_always', name: 'Always' },
+      ],
+    })
     expect(ambiguous).toMatchObject({ reason: 'allow-once-unavailable' })
-    const emptyOption = await auto.lease.inspectPermission!({ ...auto.permission(write), options: [
-      { optionId: '', kind: 'allow_once', name: 'Allow once' },
-    ] })
+    const emptyOption = await auto.lease.inspectPermission!({
+      ...auto.permission(write),
+      options: [{ optionId: '', kind: 'allow_once', name: 'Allow once' }],
+    })
     expect(emptyOption).toMatchObject({ reason: 'allow-once-unavailable' })
-    const oversizedOption = await auto.lease.inspectPermission!({ ...auto.permission(write), options: [
-      { optionId: 'x'.repeat(513), kind: 'allow_once', name: 'Allow once' },
-    ] })
+    const oversizedOption = await auto.lease.inspectPermission!({
+      ...auto.permission(write),
+      options: [{ optionId: 'x'.repeat(513), kind: 'allow_once', name: 'Allow once' }],
+    })
     expect(oversizedOption).toMatchObject({ reason: 'allow-once-unavailable' })
-    const oversizedToolCall = await auto.lease.inspectPermission!({ ...auto.permission(write), toolCall: {
-      ...auto.permission(write).toolCall, toolCallId: 'x'.repeat(513),
-    } })
+    const oversizedToolCall = await auto.lease.inspectPermission!({
+      ...auto.permission(write),
+      toolCall: {
+        ...auto.permission(write).toolCall,
+        toolCallId: 'x'.repeat(513),
+      },
+    })
     expect(oversizedToolCall).toMatchObject({ reason: 'allow-once-unavailable' })
 
     const ask = await setup(undefined, ['file_write'], false, 'lead', async () => 'ask')
     ask.lease.beginPrompt(new AbortController().signal)
-    expect(await ask.lease.inspectPermission!(ask.permission(ask.tools[0]!.name))).toMatchObject({ reason: 'approval-required' })
+    expect(await ask.lease.inspectPermission!(ask.permission(ask.tools[0]!.name))).toMatchObject({
+      reason: 'approval-required',
+    })
 
-    const unavailable = await setup(undefined, ['file_write'], false, 'lead', async () => { throw new Error('storage unavailable') })
+    const unavailable = await setup(undefined, ['file_write'], false, 'lead', async () => {
+      throw new Error('storage unavailable')
+    })
     unavailable.lease.beginPrompt(new AbortController().signal)
-    expect(await unavailable.lease.inspectPermission!(unavailable.permission(unavailable.tools[0]!.name))).toMatchObject({
-      reason: 'policy-unavailable', response: { outcome: { outcome: 'cancelled' } },
+    expect(
+      await unavailable.lease.inspectPermission!(unavailable.permission(unavailable.tools[0]!.name)),
+    ).toMatchObject({
+      reason: 'policy-unavailable',
+      response: { outcome: { outcome: 'cancelled' } },
     })
   })
   it('snapshots the plugin default at bridge admission and follows the current Lead value for teammates', async () => {
@@ -108,23 +221,42 @@ describe('session-owned native Teams MCP bridge', () => {
     expect((await member.lease.inspectPermission!(member.permission('send_message'))).reason).toBe('approval-required')
   })
   it('automatically approves scoped DSH tools when Auto is selected, without enabling unregistered Agent tools', async () => {
-    const { ctx, client, lease, name, permission, tools, execute, definitions } = await setup(undefined, ['project_lookup'], false)
+    const { ctx, client, lease, name, permission, tools, execute, definitions } = await setup(
+      undefined,
+      ['project_lookup'],
+      false,
+    )
     expect(tools).toHaveLength(1)
     expect(name).toBe('project_lookup')
     lease.beginPrompt(new AbortController().signal)
     expect((await lease.permission(permission(name)))?.outcome).toEqual({ outcome: 'selected', optionId: 'yes' })
     await client.callTool({ name, arguments: { query: 'test' } })
-    expect(execute).toHaveBeenCalledWith(expect.objectContaining({ name: 'project_lookup', arguments: { query: 'test' } }))
+    expect(execute).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'project_lookup', arguments: { query: 'test' } }),
+    )
     expect((await client.callTool({ name: 'bash' })).isError).toBe(true)
-    const key = teamBridgeKey(ctx, 'lead')
-    expect(teamBridgeKey(ctx, 'lead')).toBe(key)
+    const schemas = [{ name: 'project_lookup', description: 'project_lookup', parameters: { type: 'object' } }]
+    const key = teamBridgeKey(ctx, 'lead', schemas)
+    expect(teamBridgeKey(ctx, 'lead', schemas)).toBe(key)
     definitions.set('project_lookup', { name: 'project_lookup' })
-    expect(teamBridgeKey(ctx, 'lead')).not.toBe(key)
+    expect(teamBridgeKey(ctx, 'lead', schemas)).not.toBe(key)
     await expect(client.callTool({ name })).rejects.toThrow()
   })
   it('does not retain the legacy Team auto-approval when no host policy resolver is wired', async () => {
     const fixture = await setup(undefined, ['file_write'], false)
-    const lease = (await createTeamBridge(fixture.ctx, 'lead', { mcpCapabilities: { http: true } }))!
+    const lease = (await createTeamBridge(
+      fixture.ctx,
+      'lead',
+      { mcpCapabilities: { http: true } },
+      undefined,
+      undefined,
+      undefined,
+      [...fixture.definitions.values()].map((definition) => ({
+        name: definition.name,
+        description: definition.description ?? definition.name,
+        parameters: definition.parameters,
+      })),
+    ))!
     cleanup.push(() => lease.close())
     lease.beginPrompt(new AbortController().signal)
     const server = lease.servers[0]!
@@ -137,19 +269,34 @@ describe('session-owned native Teams MCP bridge', () => {
   })
   it('discovers added tools on reconnection and revokes a removed or restricted capability', async () => {
     const { ctx, lease, client, name, hidden, definitions, listeners } = await setup(undefined, ['present'], false)
-    const before = teamBridgeKey(ctx, 'lead')
+    const beforeSchemas = [{ name: 'present', description: 'present', parameters: { type: 'object', properties: {} } }]
+    const before = teamBridgeKey(ctx, 'lead', beforeSchemas)
     definitions.set('new_plugin', { name: 'new_plugin', description: 'New plugin', parameters: { type: 'object' } })
-    expect(teamBridgeKey(ctx, 'lead')).not.toBe(before)
+    const nextSchemas = [
+      ...beforeSchemas,
+      { name: 'new_plugin', description: 'New plugin', parameters: { type: 'object' } },
+    ]
+    expect(teamBridgeKey(ctx, 'lead', nextSchemas)).not.toBe(before)
     // New tools join the next connection; the current advertised capability stays stable.
     expect((await client.listTools()).tools).toHaveLength(1)
-    const next = (await createTeamBridge(ctx, 'lead', { mcpCapabilities: { http: true } }))!
+    const next = (await createTeamBridge(
+      ctx,
+      'lead',
+      { mcpCapabilities: { http: true } },
+      undefined,
+      undefined,
+      undefined,
+      nextSchemas,
+    ))!
     cleanup.push(() => next.close())
     const nextServer = next.servers[0]!
     if (!('url' in nextServer)) throw new Error('Expected HTTP')
     const nextClient = new Client({ name: 'next', version: '1' })
-    await nextClient.connect(new StreamableHTTPClientTransport(new URL(nextServer.url)) as Parameters<Client['connect']>[0])
+    await nextClient.connect(
+      new StreamableHTTPClientTransport(new URL(nextServer.url)) as Parameters<Client['connect']>[0],
+    )
     cleanup.push(() => nextClient.close())
-    expect((await nextClient.listTools()).tools.map(tool => tool.name)).toEqual(['new_plugin', 'present'])
+    expect((await nextClient.listTools()).tools.map((tool) => tool.name)).toEqual(['new_plugin', 'present'])
     hidden.add('present')
     listeners.get('tools/change')!()
     expect(next.signal.aborted).toBe(true)
@@ -164,12 +311,135 @@ describe('session-owned native Teams MCP bridge', () => {
     expect(definitions.has('present')).toBe(true)
     expect((services.tools as { schemas(scope?: unknown): unknown[] }).schemas()).toEqual([])
   })
+  it('publishes only model-visible schemas and invalidates the key when those schemas change', async () => {
+    const fixture = await setup(undefined, ['file_read', 'file_write'], false)
+    const readSchema = { name: 'file_read', description: 'Visible read', parameters: { type: 'object' } }
+    const firstKey = teamBridgeKey(fixture.ctx, 'lead', [readSchema])
+    expect(teamBridgeKey(fixture.ctx, 'lead', [readSchema])).toBe(firstKey)
+    expect(teamBridgeKey(fixture.ctx, 'lead', [{ ...readSchema, description: 'Changed schema' }])).not.toBe(firstKey)
+    expect(teamBridgeKey(fixture.ctx, 'lead', undefined)).toBeUndefined()
+    const lease = (await createTeamBridge(
+      fixture.ctx,
+      'lead',
+      { mcpCapabilities: { http: true } },
+      undefined,
+      undefined,
+      undefined,
+      [readSchema],
+    ))!
+    cleanup.push(() => lease.close())
+    const server = lease.servers[0]!
+    if (!('url' in server)) throw new Error('Expected HTTP')
+    const client = new Client({ name: 'visible-schema', version: '1' })
+    await client.connect(new StreamableHTTPClientTransport(new URL(server.url)) as Parameters<Client['connect']>[0])
+    cleanup.push(() => client.close())
+    expect((await client.listTools()).tools.map(({ name, description }) => ({ name, description }))).toEqual([
+      { name: 'file_read', description: 'Visible read' },
+    ])
+  })
+  it.each(['native', 'ptc', 'both'] as const)(
+    'uses official assembled %s schemas as the bridge directory and preserves ToolRuntime execution limits',
+    async (mode) => {
+      const dsh = new CordisContext()
+      const systemPromptFiber = await dsh.plugin(SystemPrompt, {})
+      const ptcFiber = mode === 'native' ? undefined : await dsh.plugin(BridgeFakePtcRuntime)
+      const runtimeFiber = await dsh.plugin(ToolRuntime, { mode })
+      cleanup.push(async () => {
+        await runtimeFiber.dispose()
+        await ptcFiber?.dispose()
+        await systemPromptFiber.dispose()
+      })
+      const runtime = dsh.tools
+      let executions = 0
+      dsh.tools.register(
+        defineTool({
+          name: 'file_read',
+          description: 'Read a file.',
+          parameters: { path: { type: 'string', required: true } },
+          output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
+          execute: () => {
+            executions += 1
+            return Promise.resolve('read')
+          },
+        }),
+      )
+      const agent = {
+        id: 'assembled-agent',
+        inbox: { nextStep: [] },
+        session: { header: { cwd: process.cwd() }, append: vi.fn() },
+        steer: vi.fn(),
+      }
+      const assembly = await dsh.systemPrompt.assemble({ scope: agent as never })
+      const expected =
+        mode === 'native' ? ['file_read'] : mode === 'ptc' ? [RUN_CODE_NAME] : ['file_read', RUN_CODE_NAME]
+      expect(assembly.tools.map((schema) => schema.name).sort()).toEqual([...expected].sort())
+      const bridgeCtx = {
+        on: (name: string, listener: (...args: unknown[]) => void) => dsh.on(name as never, listener as never),
+        get: (name: string) => {
+          if (name === 'agents') return { get: (id: string) => (id === agent.id ? agent : undefined) }
+          if (name === 'agentTeams' || name === 'attachments') return undefined
+          return dsh.get(name as never)
+        },
+      } as unknown as Context
+      const lease = (await createTeamBridge(
+        bridgeCtx,
+        agent.id,
+        { mcpCapabilities: { http: true } },
+        undefined,
+        async () => 'auto',
+        undefined,
+        assembly.tools,
+      ))!
+      cleanup.push(() => lease.close())
+      const server = lease.servers[0]!
+      if (!('url' in server)) throw new Error('Expected HTTP')
+      const client = new Client({ name: `official-${mode}`, version: '1' })
+      await client.connect(new StreamableHTTPClientTransport(new URL(server.url)) as Parameters<Client['connect']>[0])
+      cleanup.push(() => client.close())
+      const listed = (await client.listTools()).tools.map((schema) => schema.name).sort()
+      expect(listed).toEqual([...expected].sort())
+      lease.beginPrompt(new AbortController().signal)
+      const result = await runtime.execute({
+        signal: new AbortController().signal,
+        callId: ToolCallId(`bridge-${mode}`),
+        name: 'file_read',
+        arguments: { path: '/tmp/file' },
+        agent: agent as never,
+      })
+      if (mode === 'ptc') {
+        expect(result.isError).toBe(true)
+        expect(executions).toBe(0)
+      } else {
+        expect(result.isError).toBe(false)
+        expect(executions).toBe(1)
+        const mcpResult = await client.callTool({ name: 'file_read', arguments: { path: '/tmp/file' } })
+        expect(mcpResult, JSON.stringify(mcpResult)).toMatchObject({ isError: false })
+        expect(executions).toBe(2)
+      }
+    },
+  )
 
   it('keeps correlated Codex MCP approvals manual when Ask is selected', async () => {
     const { lease, name, server } = await setup('codex', ['project_lookup'], false, 'lead', async () => 'ask')
     lease.beginPrompt(new AbortController().signal)
-    const call = { toolCallId: 'custom', rawInput: { server: server.name, tool: name }, _meta: { is_mcp_tool_call: true } }
-    expect(await lease.elicitation!({ sessionId: 'acp', mode: 'form', message: 'Approve', toolCallId: 'custom', requestedSchema: { type: 'object', properties: {} }, _meta: { codex_approval_kind: 'mcp_tool_call' } } as CreateElicitationRequest, call)).toBeUndefined()
+    const call = {
+      toolCallId: 'custom',
+      rawInput: { server: server.name, tool: name },
+      _meta: { is_mcp_tool_call: true },
+    }
+    expect(
+      await lease.elicitation!(
+        {
+          sessionId: 'acp',
+          mode: 'form',
+          message: 'Approve',
+          toolCallId: 'custom',
+          requestedSchema: { type: 'object', properties: {} },
+          _meta: { codex_approval_kind: 'mcp_tool_call' },
+        } as CreateElicitationRequest,
+        call,
+      ),
+    ).toBeUndefined()
   })
   it('stays absent without a tool runtime or a live session', async () => {
     const ctx = { get: () => undefined } as unknown as Context
@@ -185,10 +455,17 @@ describe('session-owned native Teams MCP bridge', () => {
     expect((await client.callTool({ name })).content).toEqual([{ type: 'text', text: 'list_agents' }])
     expect(execute.mock.calls[0]![0].agent).toBe(agent)
     expect((await client.callTool({ name: 'bash', arguments: { command: 'echo no' } })).isError).toBe(true)
-    const spawn = tools.find(tool => tool.name === 'spawn_teammate')!
+    const spawn = tools.find((tool) => tool.name === 'spawn_teammate')!
     expect((await client.callTool({ name: spawn.name, arguments: { context: 'fork' } })).isError).toBe(true)
-    for (const override of [{ model: 'other' }, { provider: 'acp-other' }, { agent: 'other' }, { reasoningEffort: 'high' }]) {
-      expect((await client.callTool({ name: spawn.name, arguments: { context: 'fresh', ...override } })).isError).toBe(true)
+    for (const override of [
+      { model: 'other' },
+      { provider: 'acp-other' },
+      { agent: 'other' },
+      { reasoningEffort: 'high' },
+    ]) {
+      expect((await client.callTool({ name: spawn.name, arguments: { context: 'fresh', ...override } })).isError).toBe(
+        true,
+      )
     }
     expect(execute).toHaveBeenCalledTimes(1)
   })
@@ -196,21 +473,39 @@ describe('session-owned native Teams MCP bridge', () => {
     const { lease, server, name, permission } = await setup()
     expect(await lease.permission(permission(name))).toBeUndefined()
     lease.beginPrompt(new AbortController().signal)
-    expect((await lease.permission(permission(`mcp__${server.name}__${name}`)))?.outcome).toEqual({ outcome: 'selected', optionId: 'yes' })
-    expect((await lease.permission({ ...permission(), toolCall: { toolCallId: 'devin', _meta: { 'cognition.ai/toolName': `mcp__${server.name}__${name}` } } }))?.outcome).toEqual({ outcome: 'selected', optionId: 'yes' })
-    expect(await lease.permission({ ...permission(), toolCall: {toolCallId:'bare',name:'list_agents'} })).toBeUndefined()
+    expect((await lease.permission(permission(`mcp__${server.name}__${name}`)))?.outcome).toEqual({
+      outcome: 'selected',
+      optionId: 'yes',
+    })
+    expect(
+      (
+        await lease.permission({
+          ...permission(),
+          toolCall: { toolCallId: 'devin', _meta: { 'cognition.ai/toolName': `mcp__${server.name}__${name}` } },
+        })
+      )?.outcome,
+    ).toEqual({ outcome: 'selected', optionId: 'yes' })
+    expect(
+      await lease.permission({ ...permission(), toolCall: { toolCallId: 'bare', name: 'list_agents' } }),
+    ).toBeUndefined()
     const raw = { toolCallId: 'display', name: `mcp__${server.name}__${name}`, title: name }
     expect(lease.presentTool!(raw).title).toBe('list_agents')
     expect(raw.title).toBe(name)
     expect(lease.presentTool!({ toolCallId: 'display', title: 'Updated transport label' }).title).toBe('list_agents')
-    expect(await lease.permission({ ...permission(), toolCall: { toolCallId: 'fake', title: name, rawInput: { command: name } } })).toBeUndefined()
+    expect(
+      await lease.permission({
+        ...permission(),
+        toolCall: { toolCallId: 'fake', title: name, rawInput: { command: name } },
+      }),
+    ).toBeUndefined()
     const other = await setup()
     expect(await other.lease.permission(permission(name))).toBeUndefined()
     lease.endPrompt()
     expect(await lease.permission(permission(name))).toBeUndefined()
   })
   it('uses identical native names while binding each connection to its own caller', async () => {
-    const one = await setup('devin'), two = await setup('devin')
+    const one = await setup('devin'),
+      two = await setup('devin')
     expect(one.server.name).toBe('dsh')
     expect(two.server.name).toBe('dsh')
     expect(one.name).toBe('list_agents')
@@ -218,13 +513,16 @@ describe('session-owned native Teams MCP bridge', () => {
     for (const fixture of [one, two]) {
       fixture.lease.beginPrompt(new AbortController().signal)
       expect((await fixture.lease.permission(fixture.permission('send_message')))?.outcome.outcome).toBe('selected')
-      await fixture.client.callTool({name:'send_message',arguments:{target:'lead',message:'hello'}})
+      await fixture.client.callTool({ name: 'send_message', arguments: { target: 'lead', message: 'hello' } })
       expect(fixture.execute.mock.calls[0]![0].agent).toBe(fixture.agent)
     }
     expect(one.agent).not.toBe(two.agent)
     await one.lease.close()
     expect(await one.lease.permission(one.permission('send_message'))).toBeUndefined()
-    expect((await two.client.callTool({name:'send_message',arguments:{target:'lead',message:'still alive'}})).isError).toBe(false)
+    expect(
+      (await two.client.callTool({ name: 'send_message', arguments: { target: 'lead', message: 'still alive' } }))
+        .isError,
+    ).toBe(false)
   })
   it('reports only a successful nonempty teammate message to its own lead during the same prompt', async () => {
     const { lease, client, execute } = await setup('devin', [], true, 'teammate')
@@ -256,8 +554,16 @@ describe('session-owned native Teams MCP bridge', () => {
 
     let release!: (result: { content: Array<{ type: 'text'; text: string }>; isError: boolean }) => void
     let started!: () => void
-    const executionStarted = new Promise<void>(resolve => { started = resolve })
-    execute.mockImplementationOnce(() => new Promise(resolve => { release = resolve; started() }))
+    const executionStarted = new Promise<void>((resolve) => {
+      started = resolve
+    })
+    execute.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = resolve
+          started()
+        }),
+    )
     const prompt = new AbortController()
     const oldPromptReport = vi.fn()
     lease.endPrompt()
@@ -273,25 +579,114 @@ describe('session-owned native Teams MCP bridge', () => {
     expect(nextReport).not.toHaveBeenCalled()
   })
   it('recognizes exact Devin MCP labels but never repairs malformed tool names into approval authority', async () => {
-    const { lease, tools, permission, client, execute } = await setup('devin', ['bash'])
+    const { lease, tools, permission, client, execute } = await setup('devin', ['bash', 'jira_get_issue'])
     lease.beginPrompt(new AbortController().signal)
-    const wait = tools.find(tool => tool.name === 'wait_agent')!.name
-    const shell = tools.find(tool => tool.name === 'bash')!.name
+    const wait = tools.find((tool) => tool.name === 'wait_agent')!.name
+    const shell = tools.find((tool) => tool.name === 'bash')!.name
     const request = (title: string) => ({ ...permission(), toolCall: { toolCallId: title, title } })
-    expect((await lease.permission(request(`Calling ${wait} from dsh`)))?.outcome).toEqual({ outcome: 'selected', optionId: 'yes' })
-    expect((await lease.permission(request(`Calling ${shell} from dsh`)))?.outcome).toEqual({ outcome: 'selected', optionId: 'yes' })
-    expect(await lease.inspectPermission!(request(`Calling ${wait} from dsh`))).toMatchObject({ reason: 'auto-approved', toolName: 'wait_agent', identitySource: 'devin-title' })
-    expect(await lease.inspectPermission!(request(`Calling ${shell} from dsh`))).toMatchObject({ reason: 'auto-approved', toolName: 'bash' })
+    expect((await lease.permission(request(`Calling ${wait} from dsh`)))?.outcome).toEqual({
+      outcome: 'selected',
+      optionId: 'yes',
+    })
+    expect((await lease.permission(request(`Calling ${shell} from dsh`)))?.outcome).toEqual({
+      outcome: 'selected',
+      optionId: 'yes',
+    })
+    expect(await lease.inspectPermission!(request(`Calling ${wait} from dsh`))).toMatchObject({
+      reason: 'auto-approved',
+      toolName: 'wait_agent',
+      identitySource: 'devin-title',
+    })
+    expect(await lease.inspectPermission!(request(`Calling ${shell} from dsh`))).toMatchObject({
+      reason: 'auto-approved',
+      toolName: 'bash',
+    })
     const masked: RequestPermissionRequest = request(`Calling ${wait} from dsh`)
     masked.toolCall.name = 'unmatched-structured-name'
-    expect(await lease.inspectPermission!(masked)).toMatchObject({ reason: 'identity-unmatched', identitySource: 'name', structuredIdentityPresent: true, titleMatchesCurrentTool: true })
+    expect(await lease.inspectPermission!(masked)).toMatchObject({
+      reason: 'identity-unmatched',
+      identitySource: 'name',
+      structuredIdentityPresent: true,
+      titleMatchesCurrentTool: true,
+    })
     expect(await lease.permission(masked)).toBeUndefined()
-    expect(await lease.inspectPermission!({ ...request(`Calling ${wait} from dsh`), options: [] })).toMatchObject({ reason: 'allow-once-unavailable' })
-    const raw = { toolCallId: 'bash', title: `Calling ${shell} from dsh`, rawInput: { command: 'sleep 20', description: 'Wait for teammates' } }
+    const kanbanName = 'jira_get_issue'
+    const kanbanCall: RequestPermissionRequest = {
+      ...permission(),
+      toolCall: { toolCallId: 'kanban-bare-name', name: kanbanName, title: `Calling ${kanbanName} from dsh` },
+    }
+    expect(await lease.inspectPermission!(kanbanCall)).toMatchObject({
+      reason: 'auto-approved',
+      toolName: kanbanName,
+      identitySource: 'devin-title',
+      structuredIdentityPresent: true,
+    })
+    expect(await lease.permission(kanbanCall)).toEqual({ outcome: { outcome: 'selected', optionId: 'yes' } })
+    expect(
+      await lease.inspectPermission!({ ...kanbanCall, toolCall: { toolCallId: 'bare-only', name: kanbanName } }),
+    ).toMatchObject({ reason: 'identity-unmatched', identitySource: 'name' })
+    expect(
+      await lease.inspectPermission!({
+        ...kanbanCall,
+        toolCall: { ...kanbanCall.toolCall, toolCallId: 'name-conflict', name: 'bash' },
+      }),
+    ).toMatchObject({ reason: 'identity-unmatched', identitySource: 'name' })
+    expect(
+      await lease.inspectPermission!({
+        ...kanbanCall,
+        toolCall: {
+          ...kanbanCall.toolCall,
+          toolCallId: 'other-mcp',
+          name: 'mcp__other__jira_get_issue',
+        },
+      }),
+    ).toMatchObject({ reason: 'identity-unmatched', identitySource: 'name' })
+    expect(
+      await lease.inspectPermission!({
+        ...kanbanCall,
+        toolCall: {
+          ...kanbanCall.toolCall,
+          toolCallId: 'conflicting-devin-meta',
+          _meta: { 'cognition.ai/toolName': 'mcp__other__jira_get_issue' },
+        },
+      }),
+    ).toMatchObject({ reason: 'identity-unmatched', identitySource: 'devin-meta' })
+    expect(
+      await lease.inspectPermission!({
+        ...kanbanCall,
+        toolCall: {
+          ...kanbanCall.toolCall,
+          toolCallId: 'conflicting-claude-meta',
+          _meta: { claudeCode: { toolName: 'mcp__other__jira_get_issue' } },
+        },
+      }),
+    ).toMatchObject({ reason: 'identity-unmatched', identitySource: 'claude-meta' })
+    const ask = await setup('devin', ['jira_get_issue'], false, 'lead', async () => 'ask')
+    ask.lease.beginPrompt(new AbortController().signal)
+    const askRequest: RequestPermissionRequest = {
+      ...ask.permission(),
+      toolCall: { toolCallId: 'kanban-ask', name: kanbanName, title: `Calling ${kanbanName} from dsh` },
+    }
+    expect(await ask.lease.inspectPermission!(askRequest)).toMatchObject({
+      reason: 'approval-required',
+      toolName: kanbanName,
+      identitySource: 'devin-title',
+    })
+    expect(await ask.lease.permission(askRequest)).toBeUndefined()
+    expect(await lease.inspectPermission!({ ...request(`Calling ${wait} from dsh`), options: [] })).toMatchObject({
+      reason: 'allow-once-unavailable',
+    })
+    const raw = {
+      toolCallId: 'bash',
+      title: `Calling ${shell} from dsh`,
+      rawInput: { command: 'sleep 20', description: 'Wait for teammates' },
+    }
     expect(lease.presentTool!(raw)).toEqual({ ...raw, title: 'bash', name: 'bash', kind: 'execute' })
     expect(raw.title).toContain(shell)
     const malformed = `${wait}<arg_key>arguments</arg_key><arg_value>{"timeout_ms": 60000}`
-    expect(await lease.permission(request(`Calling ${malformed} from dsh`))).toEqual({ outcome: { outcome: 'cancelled' } })
+    expect(await lease.permission(request(`Calling ${malformed} from dsh`))).toEqual({
+      outcome: { outcome: 'cancelled' },
+    })
     expect((await client.callTool({ name: malformed, arguments: {} })).isError).toBe(true)
     expect(execute).not.toHaveBeenCalled()
     for (const title of [`Calling ${wait} from other`, `Calling ${wait} from dsh\nextra`]) {
@@ -306,7 +701,7 @@ describe('session-owned native Teams MCP bridge', () => {
   it('rejects invalid Devin names owned by this connection without executing or repairing them', async () => {
     const { lease, tools, permission, execute } = await setup('devin', ['bash'])
     lease.beginPrompt(new AbortController().signal)
-    const wait = tools.find(tool => tool.name === 'wait_agent')!.name
+    const wait = tools.find((tool) => tool.name === 'wait_agent')!.name
     const malformed = `${wait}<arg_key>arguments</arg_key><arg_value>{"timeout_ms":60000}`
     const options: RequestPermissionRequest['options'] = [
       { optionId: 'persist-reject', kind: 'reject_always', name: 'Reject always' },
@@ -322,22 +717,39 @@ describe('session-owned native Teams MCP bridge', () => {
       const request = { ...permission(), toolCall, options }
       expect(await lease.inspectPermission!(request)).toMatchObject({ reason: 'invalid-tool-name' })
       expect(await lease.permission(request)).toEqual({ outcome: { outcome: 'selected', optionId: 'no' } })
-      expect(await lease.permission({ ...request, options: [options[0]!, options[2]!] })).toEqual({ outcome: { outcome: 'cancelled' } })
+      expect(await lease.permission({ ...request, options: [options[0]!, options[2]!] })).toEqual({
+        outcome: { outcome: 'cancelled' },
+      })
     }
     expect(execute).not.toHaveBeenCalled()
-    expect(await lease.permission({ ...permission(wait), options })).toEqual({ outcome: { outcome: 'selected', optionId: 'yes' } })
-    expect(await lease.permission(permission(tools.find(tool => tool.name === 'bash')!.name))).toEqual({ outcome: { outcome: 'selected', optionId: 'yes' } })
+    expect(await lease.permission({ ...permission(wait), options })).toEqual({
+      outcome: { outcome: 'selected', optionId: 'yes' },
+    })
+    expect(await lease.permission(permission(tools.find((tool) => tool.name === 'bash')!.name))).toEqual({
+      outcome: { outcome: 'selected', optionId: 'yes' },
+    })
   })
   it('does not classify another connection or conflicting structured identity as its own invalid tool', async () => {
-    const one = await setup('devin'), two = await setup('codex'), generic = await setup()
+    const one = await setup('devin'),
+      two = await setup('codex'),
+      generic = await setup()
     for (const item of [one, two, generic]) item.lease.beginPrompt(new AbortController().signal)
     const invalid = `${one.name}<arg_key>arguments</arg_key>`
     expect(await two.lease.permission(one.permission(invalid))).toBeUndefined()
     expect(await one.lease.permission(one.permission(`mcp__other__${invalid}`))).toBeUndefined()
-    expect(await one.lease.permission({ ...one.permission('unknown'), toolCall: {
-      toolCallId: 'conflict', name: 'unknown', title: `Calling ${invalid} from dsh`,
-    } })).toBeUndefined()
-    expect(await generic.lease.inspectPermission!(generic.permission(`${generic.name}<arg_key>`))).toMatchObject({reason:'invalid-tool-name'})
+    expect(
+      await one.lease.permission({
+        ...one.permission('unknown'),
+        toolCall: {
+          toolCallId: 'conflict',
+          name: 'unknown',
+          title: `Calling ${invalid} from dsh`,
+        },
+      }),
+    ).toBeUndefined()
+    expect(await generic.lease.inspectPermission!(generic.permission(`${generic.name}<arg_key>`))).toMatchObject({
+      reason: 'invalid-tool-name',
+    })
     one.lease.endPrompt()
     expect(await one.lease.permission(one.permission(invalid))).toBeUndefined()
   })
@@ -354,9 +766,16 @@ describe('session-owned native Teams MCP bridge', () => {
     const { lease, execute, client, name, permission } = await setup()
     const abort = new AbortController()
     lease.beginPrompt(abort.signal)
-    execute.mockImplementationOnce(async input => await new Promise(resolve => {
-      input.signal.addEventListener('abort', () => resolve({ content: [{ type: 'text', text: 'cancelled' }], isError: false }), { once: true })
-    }))
+    execute.mockImplementationOnce(
+      async (input) =>
+        await new Promise((resolve) => {
+          input.signal.addEventListener(
+            'abort',
+            () => resolve({ content: [{ type: 'text', text: 'cancelled' }], isError: false }),
+            { once: true },
+          )
+        }),
+    )
     const pending = client.callTool({ name })
     await vi.waitFor(() => expect(execute).toHaveBeenCalled())
     abort.abort()
@@ -378,39 +797,83 @@ describe('session-owned native Teams MCP bridge', () => {
   it('recognizes Kimi’s exact qualified title only on its runtime and current capability', async () => {
     const { lease, server, name, permission } = await setup('kimi')
     lease.beginPrompt(new AbortController().signal)
-    expect((await lease.permission({ ...permission(), toolCall: { toolCallId: 'kimi', title: `mcp__${server.name}__${name}` } }))?.outcome).toEqual({ outcome: 'selected', optionId: 'yes' })
-    expect(await lease.permission({ ...permission(), toolCall: { toolCallId: 'kimi', title: 'spawn_teammate' } })).toBeUndefined()
+    expect(
+      (
+        await lease.permission({
+          ...permission(),
+          toolCall: { toolCallId: 'kimi', title: `mcp__${server.name}__${name}` },
+        })
+      )?.outcome,
+    ).toEqual({ outcome: 'selected', optionId: 'yes' })
+    expect(
+      await lease.permission({ ...permission(), toolCall: { toolCallId: 'kimi', title: 'spawn_teammate' } }),
+    ).toBeUndefined()
   })
   it('answers only a correlated Codex MCP approval with once scope, never other forms or servers', async () => {
     const { lease, server, name } = await setup('codex')
-    const request: CreateElicitationRequest = { sessionId: 'acp', toolCallId: 'call', mode: 'form', message: 'not used as authority', _meta: { codex_approval_kind: 'mcp_tool_call' }, requestedSchema: { type: 'object', properties: { persist: { type: 'string', enum: ['once', 'session', 'always'] } }, required: ['persist'] } }
-    const toolCall = { toolCallId: 'call', _meta: { is_mcp_tool_call: true }, rawInput: { server: server.name, tool: name, arguments: {} } }
+    const request: CreateElicitationRequest = {
+      sessionId: 'acp',
+      toolCallId: 'call',
+      mode: 'form',
+      message: 'not used as authority',
+      _meta: { codex_approval_kind: 'mcp_tool_call' },
+      requestedSchema: {
+        type: 'object',
+        properties: { persist: { type: 'string', enum: ['once', 'session', 'always'] } },
+        required: ['persist'],
+      },
+    }
+    const toolCall = {
+      toolCallId: 'call',
+      _meta: { is_mcp_tool_call: true },
+      rawInput: { server: server.name, tool: name, arguments: {} },
+    }
     expect(await lease.elicitation!(request, toolCall)).toBeUndefined()
     lease.beginPrompt(new AbortController().signal)
     expect(await lease.elicitation!(request, toolCall)).toEqual({ action: 'accept', content: { persist: 'once' } })
     expect(await lease.elicitation!(request, undefined)).toBeUndefined()
     expect(await lease.elicitation!({ ...request, _meta: {} }, toolCall)).toBeUndefined()
-    expect(await lease.elicitation!(request, { ...toolCall, rawInput: { server: 'other', tool: name } })).toBeUndefined()
-    expect(await lease.elicitation!({ ...request, requestedSchema: { type: 'object', properties: { answer: { type: 'string' } } } }, toolCall)).toBeUndefined()
+    expect(
+      await lease.elicitation!(request, { ...toolCall, rawInput: { server: 'other', tool: name } }),
+    ).toBeUndefined()
+    expect(
+      await lease.elicitation!(
+        { ...request, requestedSchema: { type: 'object', properties: { answer: { type: 'string' } } } },
+        toolCall,
+      ),
+    ).toBeUndefined()
     lease.endPrompt()
     expect(await lease.elicitation!(request, toolCall)).toBeUndefined()
   })
   it('presents a verified host tool name without granting approval or losing extra request context', async () => {
     const { lease, name, server, definitions } = await setup('codex', ['glob'], false, 'lead', async () => 'ask')
-    const call = { toolCallId: 'display', rawInput: { server: server.name, tool: name }, _meta: { is_mcp_tool_call: true } }
-    const request: CreateElicitationRequest = { sessionId: 'acp', toolCallId: 'display', mode: 'form',
-      message: `Allow the ${server.name} MCP server to run tool "${name}"?`, _meta: { codex_approval_kind: 'mcp_tool_call' },
-      requestedSchema: { type: 'object', properties: { persist: { type: 'string', enum: ['once', 'session', 'always'] } } } }
+    const call = {
+      toolCallId: 'display',
+      rawInput: { server: server.name, tool: name },
+      _meta: { is_mcp_tool_call: true },
+    }
+    const request: CreateElicitationRequest = {
+      sessionId: 'acp',
+      toolCallId: 'display',
+      mode: 'form',
+      message: `Allow the ${server.name} MCP server to run tool "${name}"?`,
+      _meta: { codex_approval_kind: 'mcp_tool_call' },
+      requestedSchema: {
+        type: 'object',
+        properties: { persist: { type: 'string', enum: ['once', 'session', 'always'] } },
+      },
+    }
     expect(lease.elicitationToolName!(request, call)).toBeUndefined()
     lease.beginPrompt(new AbortController().signal)
     expect(lease.elicitationToolName!(request, call)).toBe('glob')
     expect(await lease.elicitation!(request, call)).toBeUndefined()
-    expect(lease.elicitationToolName!({ ...request, message: request.message + ' Additional scope!' }, call)).toBeUndefined()
+    expect(
+      lease.elicitationToolName!({ ...request, message: request.message + ' Additional scope!' }, call),
+    ).toBeUndefined()
     expect(lease.elicitationToolName!(request, { ...call, toolCallId: 'other' })).toBeUndefined()
     expect(lease.elicitationToolName!(request, { ...call, rawInput: { server: 'other', tool: name } })).toBeUndefined()
     expect(lease.elicitationToolName!({ ...request, _meta: {} }, call)).toBeUndefined()
     definitions.delete('glob')
     expect(lease.elicitationToolName!(request, call)).toBeUndefined()
   })
-
 })

@@ -9,7 +9,4 @@ export interface AcpTerminalJobHooks {
 }
 
 /** Registration preflights admission before invoking the synchronous starter. */
-export type AcpTerminalJobStarter = (
-  label: string,
-  run: () => AcpTerminalJobHooks,
-) => { cancel(): void }
+export type AcpTerminalJobStarter = (label: string, run: () => AcpTerminalJobHooks) => { cancel(): void }

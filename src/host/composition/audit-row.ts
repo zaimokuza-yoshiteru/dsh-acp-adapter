@@ -6,7 +6,9 @@ import type { AcpAuditTimelineEntry } from '../../contract/remote.ts'
 
 function boundedAuditSubject(value: unknown): string | null {
   if (typeof value !== 'string') return null
-  const clean = redactSecretText(value).replace(/[\u0000-\u001f\u007f]/g, ' ').trim()
+  const clean = redactSecretText(value)
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .trim()
   if (clean === '') return null
   return clean.length > 160 ? `${clean.slice(0, 160)}…` : clean
 }
@@ -14,10 +16,14 @@ function boundedAuditSubject(value: unknown): string | null {
 /** Sidecar record → structured, locale-neutral audit row. */
 export function auditTimelineRowOf(entry: AcpSidecarEntry): AcpAuditTimelineEntry {
   const data = entry.data as unknown as Record<string, unknown>
-  const category = entry.kind === 'reconciliation' || entry.kind === 'replay-assessment' || entry.kind === 'degradation' ? 'recovery'
-    : entry.kind === 'permission' ? 'permission'
-      : entry.kind === 'filesystem' || entry.kind === 'terminal' ? 'files'
-        : 'agent'
+  const category =
+    entry.kind === 'reconciliation' || entry.kind === 'replay-assessment' || entry.kind === 'degradation'
+      ? 'recovery'
+      : entry.kind === 'permission'
+        ? 'permission'
+        : entry.kind === 'filesystem' || entry.kind === 'terminal'
+          ? 'files'
+          : 'agent'
   let summaryCode: AcpAuditSummaryCode = 'agent.event'
   let subject: string | null = null
   let status: string | null = null
@@ -42,9 +48,24 @@ export function auditTimelineRowOf(entry: AcpSidecarEntry): AcpAuditTimelineEntr
       status = boundedAuditSubject(data['phase'] === 'decided' ? data['outcome'] : undefined)
       if (status === 'selected') {
         const option = data['selectedOptionKind']
-        if (option === 'allow_once' || option === 'allow_always' || option === 'reject_once' || option === 'reject_always') status = option
+        if (
+          option === 'allow_once' ||
+          option === 'allow_always' ||
+          option === 'reject_once' ||
+          option === 'reject_always'
+        )
+          status = option
       }
-      if (['question-service-unavailable', 'agent-unavailable', 'custom-option-unsupported', 'invalid-option-id', 'question-error'].includes(String(data['note']))) severity = 'warning'
+      if (
+        [
+          'question-service-unavailable',
+          'agent-unavailable',
+          'custom-option-unsupported',
+          'invalid-option-id',
+          'question-error',
+        ].includes(String(data['note']))
+      )
+        severity = 'warning'
       break
     }
     case 'reconciliation':
@@ -54,11 +75,19 @@ export function auditTimelineRowOf(entry: AcpSidecarEntry): AcpAuditTimelineEntr
       break
     case 'replay-assessment':
       if (data['status'] === 'different' || data['status'] === 'overflow') severity = 'warning'
-      if (data['status'] === 'matched' || data['status'] === 'different' || data['status'] === 'overflow'
-        || data['status'] === 'not-compared' || data['status'] === 'unavailable') {
+      if (
+        data['status'] === 'matched' ||
+        data['status'] === 'different' ||
+        data['status'] === 'overflow' ||
+        data['status'] === 'not-compared' ||
+        data['status'] === 'unavailable'
+      ) {
         summaryCode = `replay.${data['status']}` as AcpAuditSummaryCode
       } else summaryCode = 'replay.unavailable'
-      if (data['status'] === 'not-compared' && (data['method'] === 'reused' || data['method'] === 'resumed' || data['method'] === 'loaded')) {
+      if (
+        data['status'] === 'not-compared' &&
+        (data['method'] === 'reused' || data['method'] === 'resumed' || data['method'] === 'loaded')
+      ) {
         summaryCode = `restore.${data['method']}`
       }
       break
@@ -74,7 +103,12 @@ export function auditTimelineRowOf(entry: AcpSidecarEntry): AcpAuditTimelineEntr
       status = data['reason'] === data['outcome'] ? null : boundedAuditSubject(data['reason'])
       break
     case 'filesystem':
-      summaryCode = data['operation'] === 'read' ? 'filesystem.read' : data['operation'] === 'write' ? 'filesystem.write' : 'filesystem.operation'
+      summaryCode =
+        data['operation'] === 'read'
+          ? 'filesystem.read'
+          : data['operation'] === 'write'
+            ? 'filesystem.write'
+            : 'filesystem.operation'
       subject = boundedAuditSubject(data['path'])
       status = boundedAuditSubject(data['outcome'])
       if (['error', 'timeout', 'concurrent-change'].includes(String(data['outcome']))) severity = 'error'
@@ -88,9 +122,12 @@ export function auditTimelineRowOf(entry: AcpSidecarEntry): AcpAuditTimelineEntr
       status = boundedAuditSubject(data['operation'] === 'output-summary' ? 'output-summary' : data['outcome'])
       if (data['operation'] === 'kill') status = 'stop-requested'
       if (data['outcome'] === 'error' || data['outcome'] === 'timeout') severity = 'error'
-      if (data['operation'] === 'exit' && data['terminationRequested'] !== true
-        && ((typeof data['exitCode'] === 'number' && data['exitCode'] !== 0)
-          || (typeof data['signal'] === 'string' && data['signal'] !== ''))) {
+      if (
+        data['operation'] === 'exit' &&
+        data['terminationRequested'] !== true &&
+        ((typeof data['exitCode'] === 'number' && data['exitCode'] !== 0) ||
+          (typeof data['signal'] === 'string' && data['signal'] !== ''))
+      ) {
         // Legacy rows did not record cancellation intent. Keep the exit fact
         // visible without claiming an intentional stop was a process failure.
         severity = data['terminationRequested'] === false ? 'error' : 'warning'
@@ -100,5 +137,15 @@ export function auditTimelineRowOf(entry: AcpSidecarEntry): AcpAuditTimelineEntr
   }
   const raw = JSON.stringify(entry.data, null, 2)
   const detail = raw === undefined ? null : redactSecretText(raw).slice(0, 4_000)
-  return { seq: entry.seq, time: entry.time, kind: entry.kind, severity, category, summaryCode, subject, status, detail }
+  return {
+    seq: entry.seq,
+    time: entry.time,
+    kind: entry.kind,
+    severity,
+    category,
+    summaryCode,
+    subject,
+    status,
+    detail,
+  }
 }

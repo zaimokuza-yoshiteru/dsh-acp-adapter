@@ -21,13 +21,25 @@ export async function prepareAgentLaunch(
   if (runtime === 'devin') {
     const lease = await createMcpLease?.({ mcpCapabilities: { http: true } })
     if (lease !== undefined) {
-      const prepared = await prepareDevinMcp({ subprocess, command: config.command, args: config.args, cwd, env, lease })
+      const prepared = await prepareDevinMcp({
+        subprocess,
+        command: config.command,
+        args: config.args,
+        cwd,
+        env,
+        lease,
+      })
       env = prepared.env
       mcpLease = prepared.lease
     }
   }
   try {
-    const plan = buildAcpSpawnPlan({ mode: 'danger-full-access', workspaceRoot: cwd, argv: [config.command, ...config.args], env })
+    const plan = buildAcpSpawnPlan({
+      mode: 'danger-full-access',
+      workspaceRoot: cwd,
+      argv: [config.command, ...config.args],
+      env,
+    })
     return { argv: plan.argv, env: plan.env, spawnPlan: plan, ...(mcpLease === undefined ? {} : { mcpLease }) }
   } catch (error) {
     await mcpLease?.close()

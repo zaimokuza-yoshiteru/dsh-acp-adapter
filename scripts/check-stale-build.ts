@@ -29,10 +29,7 @@ const MARKER_ARTIFACTS = [
 ]
 // 进 tarball 的子集（宿主半 .js.map 与全部 .d.ts.map 按 verify-bundle 纪律被
 // files[] 排除）。
-const MARKER_TARBALL_PATHS = [
-  'lib/remote/__stale-build-check__.js',
-  'lib/types/remote/__stale-build-check__.d.ts',
-]
+const MARKER_TARBALL_PATHS = ['lib/remote/__stale-build-check__.js', 'lib/types/remote/__stale-build-check__.d.ts']
 
 if (existsSync(MARKER_SOURCE)) {
   console.error(`[stale-build] FAIL: ${MARKER_SOURCE} 已存在——拒绝覆盖，先人工确认该文件归属`)

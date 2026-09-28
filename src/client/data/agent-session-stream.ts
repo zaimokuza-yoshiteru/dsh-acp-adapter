@@ -9,17 +9,23 @@ export function agentSessionStream(
   sessionId: string,
   changed: (snapshot: AcpAgentSessionSnapshotView | null) => void,
   unavailable: (error: unknown) => void,
-): RemoteSnapshotStream<Extract<AcpAgentSessionFrame, { type: 'opened' }>, Extract<AcpAgentSessionFrame, { type: 'changed' }>> {
-  return new RemoteSnapshotStream(factory.$stream<AcpAgentSessionFrame>({
-    name: 'ACP Agent controls',
-    open: signal => remote.agentSessionFollow(sessionId, signal),
-    ended: () => new Error('ACP Agent controls stream ended'),
-    carrierFailed: unavailable,
-  }), {
-    name: 'ACP Agent controls',
-    isSnapshot: (frame): frame is Extract<AcpAgentSessionFrame, { type: 'opened' }> => frame.type === 'opened',
-    replace: frame => changed(frame.snapshot),
-    update: frame => changed(frame.snapshot),
-    failed: unavailable,
-  })
+): RemoteSnapshotStream<
+  Extract<AcpAgentSessionFrame, { type: 'opened' }>,
+  Extract<AcpAgentSessionFrame, { type: 'changed' }>
+> {
+  return new RemoteSnapshotStream(
+    factory.$stream<AcpAgentSessionFrame>({
+      name: 'ACP Agent controls',
+      open: (signal) => remote.agentSessionFollow(sessionId, signal),
+      ended: () => new Error('ACP Agent controls stream ended'),
+      carrierFailed: unavailable,
+    }),
+    {
+      name: 'ACP Agent controls',
+      isSnapshot: (frame): frame is Extract<AcpAgentSessionFrame, { type: 'opened' }> => frame.type === 'opened',
+      replace: (frame) => changed(frame.snapshot),
+      update: (frame) => changed(frame.snapshot),
+      failed: unavailable,
+    },
+  )
 }

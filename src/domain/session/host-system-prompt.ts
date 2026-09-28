@@ -8,5 +8,8 @@ export function hostSystemPrompt(options: Pick<GenerateOptions, 'system' | 'mess
   if (options.system !== undefined) return options.system
   const system = options.messages[0]
   if (system?.role !== 'system') return ''
-  return system.content.filter(block => block.type === 'text').map(block => block.text).join('\n')
+  return system.content
+    .filter((block) => block.type === 'text')
+    .map((block) => block.text)
+    .join('\n')
 }

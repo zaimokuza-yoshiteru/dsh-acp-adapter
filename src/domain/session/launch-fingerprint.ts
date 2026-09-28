@@ -76,7 +76,9 @@ export async function acpLaunchEnvironment(input: AcpLaunchEnvironmentInput): Pr
 
 const NATIVE_STATE_ENV_KEYS = ['HOME', ...ACP_NATIVE_DATA_HOME_ENV_KEYS, ...ACP_NATIVE_XDG_ENV_KEYS]
 
-function nativeStateEnvFingerprint(env: Readonly<Record<string, string | undefined>>): readonly { key: string; present: boolean; hash16?: string }[] {
+function nativeStateEnvFingerprint(
+  env: Readonly<Record<string, string | undefined>>,
+): readonly { key: string; present: boolean; hash16?: string }[] {
   return NATIVE_STATE_ENV_KEYS.map((key) => {
     const value = env[key]
     return value === undefined
@@ -134,6 +136,11 @@ export function acpLaunchFingerprint(input: AcpLaunchFingerprintInput): AcpLaunc
  * to the exact persisted record. This does not relax runtime Agent identity checks.
  */
 export function acpLaunchFingerprintsCompatible(saved: AcpLaunchFingerprint, current: AcpLaunchFingerprint): boolean {
-  const normalize = (value: AcpLaunchFingerprint) => ({ ...value, adapterVersion: null, wrappedCliVersion: null, mcpFingerprint: null })
+  const normalize = (value: AcpLaunchFingerprint) => ({
+    ...value,
+    adapterVersion: null,
+    wrappedCliVersion: null,
+    mcpFingerprint: null,
+  })
   return acpCanonicalHash16(normalize(saved)) === acpCanonicalHash16(normalize(current))
 }

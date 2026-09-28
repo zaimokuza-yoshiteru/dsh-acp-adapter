@@ -9,21 +9,42 @@ import { launchWebScaffold } from '#host-scaffold'
 export const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 
 /** Install through real profile bundles so ConfigEditor owns writable configuration. */
-export async function launchAdapterWorld({ teams = false, teamMembers, terminalShell }: { teams?: boolean; teamMembers?: number; terminalShell?: { path: string; name: string; args: string[] } } = {}) {
+export async function launchAdapterWorld({
+  teams = false,
+  schedule = false,
+  teamMembers,
+  terminalShell,
+}: {
+  teams?: boolean
+  schedule?: boolean
+  teamMembers?: number
+  terminalShell?: { path: string; name: string; args: string[] }
+} = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'dsh-acp-e2e-install-'))
   try {
     const upstream = process.env.DSH_UPSTREAM_CHECKOUT ?? resolve(root, '../reference/deepseek-harness')
-    const packages = [{ dir: root, enabled: true }, ...(teams
-      ? ['agent-team-profile'].map(name => ({ dir: join(upstream, 'packages/experimental', name), enabled: true })) : [])]
+    const packages = [
+      { dir: root, enabled: true },
+      ...(teams ? [{ dir: join(upstream, 'packages/experimental/agent-team-profile'), enabled: true }] : []),
+      ...(schedule ? [{ dir: join(upstream, 'packages/experimental/schedule-bundle'), enabled: true }] : []),
+    ]
     const patches: string[] = []
     if (teamMembers !== undefined) patches.push(`- id: agent-team\n  config:\n    maxMembers: ${teamMembers}\n`)
-    if (terminalShell !== undefined) patches.push(`- id: terminal-controller\n  config:\n    shell: ${JSON.stringify(terminalShell)}\n`)
+    if (terminalShell !== undefined)
+      patches.push(`- id: terminal-controller\n  config:\n    shell: ${JSON.stringify(terminalShell)}\n`)
     const extraOverlayPath = join(directory, 'test.patch.yml')
     writeFileSync(extraOverlayPath, patches.length === 0 ? '[]\n' : patches.join('\n'))
     const host = await launchWebScaffold({ profile: { packages }, extraOverlayPath })
-    return { ...host, async close() {
-      try { await host.close() } finally { rmSync(directory, { recursive: true, force: true }) }
-    } }
+    return {
+      ...host,
+      async close() {
+        try {
+          await host.close()
+        } finally {
+          rmSync(directory, { recursive: true, force: true })
+        }
+      },
+    }
   } catch (error) {
     rmSync(directory, { recursive: true, force: true })
     throw error

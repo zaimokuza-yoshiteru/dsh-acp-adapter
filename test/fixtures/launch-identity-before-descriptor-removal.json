@@ -5,9 +5,7 @@
       "config": {
         "name": "devin",
         "command": "agent-cli",
-        "args": [
-          "acp"
-        ],
+        "args": ["acp"],
         "env": {}
       },
       "env": {}
@@ -20,9 +18,7 @@
       "config": {
         "name": "codex",
         "command": "agent-cli",
-        "args": [
-          "acp"
-        ],
+        "args": ["acp"],
         "env": {}
       },
       "env": {}
@@ -35,9 +31,7 @@
       "config": {
         "name": "kimi",
         "command": "agent-cli",
-        "args": [
-          "acp"
-        ],
+        "args": ["acp"],
         "env": {}
       },
       "env": {}
@@ -50,9 +44,7 @@
       "config": {
         "name": "claude",
         "command": "agent-cli",
-        "args": [
-          "acp"
-        ],
+        "args": ["acp"],
         "env": {}
       },
       "env": {}

@@ -1,11 +1,30 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
+import type { AcpRemoteService } from '../../src/remote/service.js'
+import type { Page } from 'playwright'
 import { launchBrowser, newEnglishPage } from './browser.ts'
 import type { TestBrowser } from './browser.ts'
 import { connectFreshWorkspace } from '#host-support'
 import { launchAdapterWorld, root } from './scaffold.ts'
-import { openAcpPluginDetail } from './plugin-panel.helpers.ts'
+import { backToPluginList, openAcpPluginDetail } from './plugin-panel.helpers.ts'
+
+function waitForBoundSessionsCount(page: Page, agentId: string, count: number) {
+  return page.waitForResponse(async (response) => {
+    if (new URL(response.url()).pathname !== '/api/dshAcp/boundSessions') return false
+    const envelope = (await response.json()) as {
+      readonly result?: {
+        readonly ok?: boolean
+        readonly value?: { readonly agentId?: string; readonly count?: number }
+      }
+    }
+    return (
+      envelope.result?.ok === true &&
+      envelope.result.value?.agentId === agentId &&
+      envelope.result.value.count === count
+    )
+  })
+}
 
 it('hosts ACP configuration on the native bundle detail page', async () => {
   const host = await launchAdapterWorld()
@@ -14,16 +33,26 @@ it('hosts ACP configuration on the native bundle detail page', async () => {
   const errors: string[] = []
   mkdirSync(evidence, { recursive: true })
   try {
-    await host.ctx.settings.replace('dsh-acp-adapter', { toolApprovalDefault: 'auto', agents: { devin: {
-      name: 'Panel-fixture-with-a-very-long-unbroken-agent-display-name-to-check-natural-wrapping-and-horizontal-overflow',
-      command: process.execPath,
-      args: [join(root, 'test/mock-agent/mock-agent.ts')],
-      env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: 'devin' },
-    } } })
-    browser = await launchBrowser({ headless: true, ...(process.env.DSH_E2E_BROWSER_CHANNEL ? { channel: process.env.DSH_E2E_BROWSER_CHANNEL } : {}) })
+    await host.ctx.settings.replace('dsh-acp-adapter', {
+      toolApprovalDefault: 'auto',
+      agents: {
+        devin: {
+          name: 'Panel-fixture-with-a-very-long-unbroken-agent-display-name-to-check-natural-wrapping-and-horizontal-overflow',
+          command: process.execPath,
+          args: [join(root, 'test/mock-agent/mock-agent.ts')],
+          env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: 'devin' },
+        },
+      },
+    })
+    browser = await launchBrowser({
+      headless: true,
+      ...(process.env.DSH_E2E_BROWSER_CHANNEL ? { channel: process.env.DSH_E2E_BROWSER_CHANNEL } : {}),
+    })
     const page = await newEnglishPage(browser)
-    page.on('pageerror', error => errors.push(`pageerror: ${error.message}`))
-    page.on('console', message => { if (message.type() === 'error') errors.push(`console: ${message.text()}`) })
+    page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`))
+    page.on('console', (message) => {
+      if (message.type() === 'error') errors.push(`console: ${message.text()}`)
+    })
     await page.goto(host.authenticatedUrl)
     await connectFreshWorkspace(page, host.workspaceCwd)
 
@@ -36,8 +65,13 @@ it('hosts ACP configuration on the native bundle detail page', async () => {
     const iconSource = `data:image/svg+xml;base64,${readFileSync(join(root, 'icon.svg')).toString('base64')}`
     const artwork = detail.locator('img').filter({ visible: true }).first()
     await expect.poll(() => artwork.getAttribute('src')).toBe(iconSource)
-    await expect.poll(() => artwork.evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth > 0)).toBe(true)
-    await detail.locator('p').getByText('Add and manage agents available from the DSH session UI through ACP.', { exact: true }).waitFor()
+    await expect
+      .poll(() => artwork.evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth > 0))
+      .toBe(true)
+    await detail
+      .locator('p')
+      .getByText('Add and manage agents available from the DSH session UI through ACP.', { exact: true })
+      .waitFor()
     await detail.getByRole('heading', { name: 'Agent configuration', exact: true }).waitFor()
     const panel = detail.locator('[data-dsh-acp-panel]')
     await panel.getByText(/Panel-fixture-with-a-very-long-unbroken-agent-display-name/, { exact: false }).waitFor()
@@ -54,7 +88,13 @@ it('hosts ACP configuration on the native bundle detail page', async () => {
     await approvalDefault.click()
     await page.getByRole('menuitem', { name: 'Ask each time', exact: true }).click()
     await expect.poll(() => approvalDefault.innerText()).toContain('Ask each time')
-    expect((host.ctx.settings.describe().find(row => row.ns === 'dsh-acp-adapter')?.value as { toolApprovalDefault?: string }).toolApprovalDefault).toBe('ask')
+    expect(
+      (
+        host.ctx.settings.describe().find((row) => row.ns === 'dsh-acp-adapter')?.value as {
+          toolApprovalDefault?: string
+        }
+      ).toolApprovalDefault,
+    ).toBe('ask')
     await page.screenshot({ path: join(evidence, 'light.png'), fullPage: true, animations: 'disabled' })
 
     const card = panel.locator('[data-dsh-acp-agent="devin"]')
@@ -77,28 +117,54 @@ it('hosts ACP configuration on the native bundle detail page', async () => {
 
     await page.setViewportSize({ width: 420, height: 900 })
     await page.locator('[data-sidebar-collapsed="true"]').waitFor()
-    await expect.poll(() => detail.evaluate(element => element.clientWidth)).toBeGreaterThan(300)
-    const geometry = await detail.evaluate(element => {
+    await expect.poll(() => detail.evaluate((element) => element.clientWidth)).toBeGreaterThan(300)
+    const geometry = await detail.evaluate((element) => {
       const rows = [element, ...Array.from(element.querySelectorAll<HTMLElement>('*'))]
-        .map(node => {
+        .map((node) => {
           const rect = node.getBoundingClientRect()
-          return { tag: node.tagName, className: typeof node.className === 'string' ? node.className : '', text: (node.textContent ?? '').slice(0, 120), clientWidth: node.clientWidth, scrollWidth: node.scrollWidth, left: Math.round(rect.left), right: Math.round(rect.right) }
+          return {
+            tag: node.tagName,
+            className: typeof node.className === 'string' ? node.className : '',
+            text: (node.textContent ?? '').slice(0, 120),
+            clientWidth: node.clientWidth,
+            scrollWidth: node.scrollWidth,
+            left: Math.round(rect.left),
+            right: Math.round(rect.right),
+          }
         })
-        .filter(row => row.scrollWidth > row.clientWidth + 1 || row.left < 0 || row.right > document.documentElement.clientWidth)
-      return { detail: { clientWidth: element.clientWidth, scrollWidth: element.scrollWidth }, document: { clientWidth: document.documentElement.clientWidth, scrollWidth: document.documentElement.scrollWidth }, offenders: rows }
+        .filter(
+          (row) =>
+            row.scrollWidth > row.clientWidth + 1 || row.left < 0 || row.right > document.documentElement.clientWidth,
+        )
+      return {
+        detail: { clientWidth: element.clientWidth, scrollWidth: element.scrollWidth },
+        document: {
+          clientWidth: document.documentElement.clientWidth,
+          scrollWidth: document.documentElement.scrollWidth,
+        },
+        offenders: rows,
+      }
     })
     writeFileSync(join(evidence, 'narrow-geometry.json'), JSON.stringify(geometry, null, 2))
     await page.screenshot({ path: join(evidence, 'narrow-before-assert.png'), fullPage: true, animations: 'disabled' })
-    expect(await detail.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true)
-    expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true)
+    expect(await detail.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true)
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth),
+    ).toBe(true)
     await page.screenshot({ path: join(evidence, 'narrow.png'), fullPage: true, animations: 'disabled' })
     expect(await panel.getByRole('checkbox', { name: 'Searchable model picker', exact: true }).isVisible()).toBe(true)
 
-    await host.ctx.settings.replace('dsh-acp-adapter', { toolApprovalDefault: 'ask', agents: { devin: {
-      name: '面板预览 Agent', command: process.execPath,
-      args: [join(root, 'test/mock-agent/mock-agent.ts')],
-      env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: 'devin' },
-    } } })
+    await host.ctx.settings.replace('dsh-acp-adapter', {
+      toolApprovalDefault: 'ask',
+      agents: {
+        devin: {
+          name: '面板预览 Agent',
+          command: process.execPath,
+          args: [join(root, 'test/mock-agent/mock-agent.ts')],
+          env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: 'devin' },
+        },
+      },
+    })
     await host.ctx.settings.replace('locale', { preference: 'zh' })
     await page.setViewportSize({ width: 1280, height: 900 })
     await page.reload()
@@ -107,11 +173,122 @@ it('hosts ACP configuration on the native bundle detail page', async () => {
     await chinesePanel.getByRole('heading', { name: 'Agent 配置', exact: true }).waitFor()
     await chinesePanel.getByRole('heading', { name: '界面偏好', exact: true }).waitFor()
     await chinesePanel.getByRole('heading', { name: 'DSH 工具默认审批', exact: true }).waitFor()
-    await chinesePanel.getByRole('button', { name: 'DSH 工具默认审批', exact: true }).getByText('逐项询问', { exact: true }).waitFor()
+    await chinesePanel
+      .getByRole('button', { name: 'DSH 工具默认审批', exact: true })
+      .getByText('逐项询问', { exact: true })
+      .waitFor()
     await chinesePanel.getByRole('checkbox', { name: '可搜索模型选择器', exact: true }).waitFor()
-    await chineseDetail.locator('p').getByText('添加并管理通过 ACP 接入 DSH 会话页面的智能体。', { exact: true }).waitFor()
+    await chineseDetail
+      .locator('p')
+      .getByText('添加并管理通过 ACP 接入 DSH 会话页面的智能体。', { exact: true })
+      .waitFor()
     expect(await chineseDetail.locator('img').first().getAttribute('src')).toBe(iconSource)
     await page.screenshot({ path: join(evidence, 'normal-zh.png'), fullPage: true, animations: 'disabled' })
+    expect(errors).toEqual([])
+  } finally {
+    await browser?.close()
+    await host.close()
+  }
+}, 120_000)
+
+it('ignores stale bound-session counts after cancelling, switching agents, and unmounting', async () => {
+  const host = await launchAdapterWorld()
+  let browser: TestBrowser | undefined
+  const errors: string[] = []
+  const pending: Array<{
+    readonly agentId: string
+    readonly resolve: (value: { readonly agentId: string; readonly count: number }) => void
+    readonly returned: Promise<{ readonly agentId: string; readonly count: number }>
+  }> = []
+  try {
+    await host.ctx.settings.replace('dsh-acp-adapter', {
+      agents: {
+        devin: {
+          name: 'Devin fixture',
+          command: process.execPath,
+          args: [join(root, 'test/mock-agent/mock-agent.ts')],
+          env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: 'devin' },
+        },
+        codex: {
+          name: 'Codex fixture',
+          command: process.execPath,
+          args: [join(root, 'test/mock-agent/mock-agent.ts')],
+          env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: 'codex' },
+        },
+      },
+    })
+    const service = host.ctx.get('dshAcp') as AcpRemoteService
+    vi.spyOn(service, 'boundSessions').mockImplementation((agentId) => {
+      let resolve!: (value: { readonly agentId: string; readonly count: number }) => void
+      const returned = new Promise<{ readonly agentId: string; readonly count: number }>((finish) => {
+        resolve = finish
+      })
+      pending.push({ agentId, resolve, returned })
+      return returned
+    })
+
+    browser = await launchBrowser({
+      headless: true,
+      ...(process.env.DSH_E2E_BROWSER_CHANNEL ? { channel: process.env.DSH_E2E_BROWSER_CHANNEL } : {}),
+    })
+    const page = await newEnglishPage(browser)
+    page.on('pageerror', (error) => errors.push(error.message))
+    await page.goto(host.authenticatedUrl)
+    await connectFreshWorkspace(page, host.workspaceCwd)
+    const detail = await openAcpPluginDetail(page)
+    const devin = detail.locator('[data-dsh-acp-agent="devin"]')
+    const codex = detail.locator('[data-dsh-acp-agent="codex"]')
+
+    await devin.getByRole('button', { name: 'Delete', exact: true }).click()
+    await expect.poll(() => pending.length).toBe(1)
+    await devin.getByRole('button', { name: 'Cancel', exact: true }).click()
+
+    // Reopen the same card. Resolve request two first, then the cancelled
+    // request one; the newer count must remain visible.
+    await devin.getByRole('button', { name: 'Delete', exact: true }).click()
+    await expect.poll(() => pending.length).toBe(2)
+    expect(pending.map((request) => request.agentId)).toEqual(['devin', 'devin'])
+    pending[1]!.resolve({ agentId: 'devin', count: 23 })
+    await devin.getByText(/23 existing session\(s\)/).waitFor()
+    const firstResponse = waitForBoundSessionsCount(page, 'devin', 11)
+    pending[0]!.resolve({ agentId: 'devin', count: 11 })
+    await pending[0]!.returned
+    await firstResponse
+    await page.evaluate(
+      () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))),
+    )
+    await devin.getByText(/23 existing session\(s\)/).waitFor()
+    expect(await devin.getByText(/11 existing session\(s\)/).count()).toBe(0)
+
+    await devin.getByRole('button', { name: 'Cancel', exact: true }).click()
+    await devin.getByRole('button', { name: 'Delete', exact: true }).click()
+    await expect.poll(() => pending.length).toBe(3)
+    await devin.getByRole('button', { name: 'Cancel', exact: true }).click()
+    await codex.getByRole('button', { name: 'Delete', exact: true }).click()
+    await expect.poll(() => pending.length).toBe(4)
+    pending[3]!.resolve({ agentId: 'codex', count: 31 })
+    await codex.getByText(/31 existing session\(s\)/).waitFor()
+    const switchedResponse = waitForBoundSessionsCount(page, 'devin', 17)
+    pending[2]!.resolve({ agentId: 'devin', count: 17 })
+    await pending[2]!.returned
+    await switchedResponse
+    await page.evaluate(
+      () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))),
+    )
+    await codex.getByText(/31 existing session\(s\)/).waitFor()
+    expect(await codex.getByText(/17 existing session\(s\)/).count()).toBe(0)
+
+    await codex.getByRole('button', { name: 'Cancel', exact: true }).click()
+    await devin.getByRole('button', { name: 'Delete', exact: true }).click()
+    await expect.poll(() => pending.length).toBe(5)
+    await backToPluginList(detail)
+    const unmountedResponse = waitForBoundSessionsCount(page, 'devin', 45)
+    pending[4]!.resolve({ agentId: 'devin', count: 45 })
+    await pending[4]!.returned
+    await unmountedResponse
+    await page.evaluate(
+      () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))),
+    )
     expect(errors).toEqual([])
   } finally {
     await browser?.close()

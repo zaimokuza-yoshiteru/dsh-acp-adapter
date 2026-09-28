@@ -7,10 +7,7 @@ import { createTeamBridge, teamBridgeKey } from '../teams/bridge.ts'
 import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
 import type { AdapterRegistrationHandle } from '@deepseek-ai/dsh-llm'
 import type { AcpProbeOptions } from '../../protocol/v1/types.ts'
-import {
-  acpAgentIdFromRoute,
-  acpRouteId,
-} from '../../domain/session/agent-config.ts'
+import { acpAgentIdFromRoute, acpRouteId } from '../../domain/session/agent-config.ts'
 import type { AcpAgentConfig, AcpResolvedAgent } from '../../domain/session/agent-config.ts'
 import { createTeamManagement } from '../teams/management.ts'
 import { createAcpLogger } from '../../domain/observability/logging.ts'
@@ -52,7 +49,9 @@ async function flushClosedParent(
   const deadline = Date.now() + 10_000
   while (isOpen()) {
     if (store.get(sessionId) !== expected || Date.now() >= deadline) return false
-    await new Promise<void>(resolve => { setTimeout(resolve, 10) })
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 10)
+    })
   }
   if (store.get(sessionId) !== expected) return false
   return await store.flush(expected)
@@ -105,7 +104,7 @@ export interface InstalledProfileRegistryOptions {
   /** Connection knobs forwarded to every probe (tests shorten the teardown ladder). */
   probeOptions?: AcpProbeOptions
   /**
- * 加载期解析的 subprocess seam（host composition 经
+   * 加载期解析的 subprocess seam（host composition 经
    * ./subprocess.ts 的 `resolveSubprocessSeam` 解析一次后传入；probe 经它
    * spawn）。缺席 = 未接线，probe 以 spawn-failure fail closed。
    */
@@ -113,7 +112,11 @@ export interface InstalledProfileRegistryOptions {
 }
 
 /** Keep ACP routes synchronized with Loader-owned volatile Agent configuration. */
-export function installInstalledProfileRegistry(ctx: Context, config: Config, options: InstalledProfileRegistryOptions = {}): InstalledProfileRegistry {
+export function installInstalledProfileRegistry(
+  ctx: Context,
+  config: Config,
+  options: InstalledProfileRegistryOptions = {},
+): InstalledProfileRegistry {
   ctx.sessionProjections.register(acpExecutionProjection)
   let disposed = false
   const log = createAcpLogger(ctx.logger)
@@ -124,41 +127,64 @@ export function installInstalledProfileRegistry(ctx: Context, config: Config, op
   // keeping the explicit option is useful for isolated tests and embedders.
   const subprocess = options.subprocess ?? resolveSubprocessSeam(ctx)
   const holder = ctx as Context & { get(name: string, strict?: boolean): unknown }
-  const sessionStore = typeof holder.get === 'function'
-    ? holder.get('sessions') as { get(id: string): Session | undefined; flush(session: Session): Promise<boolean> } | undefined
-    : undefined
+  const sessionStore =
+    typeof holder.get === 'function'
+      ? (holder.get('sessions') as
+          { get(id: string): Session | undefined; flush(session: Session): Promise<boolean> } | undefined)
+      : undefined
   const publishExternalChild = sessionStore === undefined ? undefined : installExternalChildCatalog(ctx, sessionStore)
   let externalSubagentProjector: ExternalSubagentProjector | undefined
-  const persistenceFiber = sidecar === undefined ? undefined : ctx.inject(['sessionPersistence'], (childCtx: Context) => {
-    const persistence = (childCtx as Context & { sessionPersistence: SessionPersistence }).sessionPersistence
-    const projector = new ExternalSubagentProjector(persistence, sidecar, publishExternalChild)
-    externalSubagentProjector = projector
-    void projector.repairInterrupted().then((summary) => {
-      if (summary.repaired > 0 || summary.conflicted > 0) {
-        log.info(`dsh-acp: external subagent projection recovery completed (repaired=${summary.repaired}, conflicted=${summary.conflicted})`, {
-          operation: 'subagent-projection-repair',
-          result: summary.conflicted > 0 ? 'conflict' : 'ok',
+  const persistenceFiber =
+    sidecar === undefined
+      ? undefined
+      : ctx.inject(['sessionPersistence'], (childCtx: Context) => {
+          const persistence = (childCtx as Context & { sessionPersistence: SessionPersistence }).sessionPersistence
+          const projector = new ExternalSubagentProjector(persistence, sidecar, publishExternalChild)
+          externalSubagentProjector = projector
+          void projector
+            .repairInterrupted()
+            .then((summary) => {
+              if (summary.repaired > 0 || summary.conflicted > 0) {
+                log.info(
+                  `dsh-acp: external subagent projection recovery completed (repaired=${summary.repaired}, conflicted=${summary.conflicted})`,
+                  {
+                    operation: 'subagent-projection-repair',
+                    result: summary.conflicted > 0 ? 'conflict' : 'ok',
+                  },
+                )
+              }
+            })
+            .catch((error: unknown) => {
+              log.warn(
+                `dsh-acp: external subagent projection recovery failed: ${error instanceof Error ? error.message : String(error)}`,
+                {
+                  operation: 'subagent-projection-repair',
+                  result: 'error',
+                },
+              )
+            })
+          const effect = (childCtx as Context & { effect?: Context['effect'] }).effect
+          effect?.call(
+            childCtx,
+            () => () => {
+              if (externalSubagentProjector === projector) externalSubagentProjector = undefined
+            },
+            'dsh-acp: release external subagent projector',
+          )
         })
-      }
-    }).catch((error: unknown) => {
-      log.warn(`dsh-acp: external subagent projection recovery failed: ${error instanceof Error ? error.message : String(error)}`, {
-        operation: 'subagent-projection-repair', result: 'error',
-      })
-    })
-    const effect = (childCtx as Context & { effect?: Context['effect'] }).effect
-    effect?.call(childCtx, () => () => {
-        if (externalSubagentProjector === projector) externalSubagentProjector = undefined
-      }, 'dsh-acp: release external subagent projector')
-  })
   if (persistenceFiber !== undefined) {
-    ctx.effect(() => () => {
-      persistenceFiber.dispose()
-      externalSubagentProjector = undefined
-    }, 'dsh-acp: dispose optional session persistence binding')
+    ctx.effect(
+      () => () => {
+        persistenceFiber.dispose()
+        externalSubagentProjector = undefined
+      },
+      'dsh-acp: dispose optional session persistence binding',
+    )
   }
   let attachments: Pick<AttachmentStore, 'readImage' | 'imageLimits' | 'saveImages'> | undefined
   try {
-    attachments = holder.get('attachments') as Pick<AttachmentStore, 'readImage' | 'imageLimits' | 'saveImages'> | undefined
+    attachments = holder.get('attachments') as
+      Pick<AttachmentStore, 'readImage' | 'imageLimits' | 'saveImages'> | undefined
   } catch {
     attachments = undefined
   }
@@ -169,21 +195,51 @@ export function installInstalledProfileRegistry(ctx: Context, config: Config, op
     let userQuestions: AcpNativeUserQuestionService | undefined
     let approval: import('../../domain/policy/permissions.ts').AcpNativeApprovalService | undefined
     let agents: { get(id: string): unknown } | undefined
-    try { userQuestions = (ctx as unknown as { userQuestions?: AcpNativeUserQuestionService }).userQuestions } catch { /* optional seam */ }
-    try { agents = (ctx as unknown as { agents?: { get(id: string): unknown } }).agents } catch { /* optional seam */ }
-    try { userQuestions ??= holder.get('userQuestions') as AcpNativeUserQuestionService | undefined } catch { /* optional seam */ }
-    try { approval = holder.get('approval') as import('../../domain/policy/permissions.ts').AcpNativeApprovalService | undefined } catch { /* optional seam */ }
-    try { agents ??= holder.get('agents') as { get(id: string): unknown } | undefined } catch { /* optional seam */ }
-    if ((userQuestions === undefined && approval === undefined) || agents === undefined || agents.get(dshSessionId) === undefined) return undefined
+    try {
+      userQuestions = (ctx as unknown as { userQuestions?: AcpNativeUserQuestionService }).userQuestions
+    } catch {
+      /* optional seam */
+    }
+    try {
+      agents = (ctx as unknown as { agents?: { get(id: string): unknown } }).agents
+    } catch {
+      /* optional seam */
+    }
+    try {
+      userQuestions ??= holder.get('userQuestions') as AcpNativeUserQuestionService | undefined
+    } catch {
+      /* optional seam */
+    }
+    try {
+      approval = holder.get('approval') as
+        import('../../domain/policy/permissions.ts').AcpNativeApprovalService | undefined
+    } catch {
+      /* optional seam */
+    }
+    try {
+      agents ??= holder.get('agents') as { get(id: string): unknown } | undefined
+    } catch {
+      /* optional seam */
+    }
+    if (
+      (userQuestions === undefined && approval === undefined) ||
+      agents === undefined ||
+      agents.get(dshSessionId) === undefined
+    )
+      return undefined
     // Read the native locale preference for every request so language changes
     // take effect without restarting the ACP session. Browser detection alone
     // is not a host setting; absent preferences use the English fallback.
     let locale: string | undefined
     try {
-      const settings = holder.get('settings') as Pick<import('@deepseek-ai/dsh-settings').SettingsForms, 'describe'> | undefined
-      const value = settings?.describe().find(row => row.ns === 'locale')?.value
-      if (value !== null && typeof value === 'object' && 'preference' in value && typeof value.preference === 'string') locale = value.preference
-    } catch { /* optional locale preference */ }
+      const settings = holder.get('settings') as
+        Pick<import('@deepseek-ai/dsh-settings').SettingsForms, 'describe'> | undefined
+      const value = settings?.describe().find((row) => row.ns === 'locale')?.value
+      if (value !== null && typeof value === 'object' && 'preference' in value && typeof value.preference === 'string')
+        locale = value.preference
+    } catch {
+      /* optional locale preference */
+    }
     return {
       ...(userQuestions === undefined ? {} : { userQuestions }),
       ...(approval === undefined ? {} : { approval }),
@@ -191,17 +247,24 @@ export function installInstalledProfileRegistry(ctx: Context, config: Config, op
       ...(locale === undefined ? {} : { locale }),
     }
   }
-  const ledgerStore: DispatchLedgerStore = sidecar === undefined
-    ? {
-        begin: async () => { throw new Error('ACP sidecar is unavailable; durable dispatch ledger is required') },
-        settle: async () => { throw new Error('ACP sidecar is unavailable; durable dispatch ledger is required') },
-        read: async () => undefined,
-      }
-    : {
-        begin: (record) => sidecar.beginDispatch(record),
-        settle: (sessionId, key) => sidecar.settleDispatch(sessionId as Parameters<AcpSidecar['settleDispatch']>[0], key),
-        read: async (sessionId, key) => await sidecar.readDispatch(sessionId as Parameters<AcpSidecar['readDispatch']>[0], key),
-      }
+  const ledgerStore: DispatchLedgerStore =
+    sidecar === undefined
+      ? {
+          begin: async () => {
+            throw new Error('ACP sidecar is unavailable; durable dispatch ledger is required')
+          },
+          settle: async () => {
+            throw new Error('ACP sidecar is unavailable; durable dispatch ledger is required')
+          },
+          read: async () => undefined,
+        }
+      : {
+          begin: (record) => sidecar.beginDispatch(record),
+          settle: (sessionId, key) =>
+            sidecar.settleDispatch(sessionId as Parameters<AcpSidecar['settleDispatch']>[0], key),
+          read: async (sessionId, key) =>
+            await sidecar.readDispatch(sessionId as Parameters<AcpSidecar['readDispatch']>[0], key),
+        }
   let agents: Record<string, AcpAgentConfig> = {}
   // Desired settings and the last successfully installed snapshot are kept
   // separate. A partially failed registration must never make an old route's
@@ -212,9 +275,14 @@ export function installInstalledProfileRegistry(ctx: Context, config: Config, op
   const profileAdapters = new Map<string, AcpProfileAdapter>()
   const controlSubscribers = new Map<string, Set<() => void>>()
   const policySubscribers = new Set<() => void>()
-  const notifyPolicySubscribers = (): void => { for (const notify of policySubscribers) notify() }
+  const notifyPolicySubscribers = (): void => {
+    for (const notify of policySubscribers) notify()
+  }
   ctx.on('agent/disposed', notifyPolicySubscribers)
-  const readToolApprovalPolicy = async (sessionId: string, ancestry = new Set<string>()): Promise<import('../../contract/remote.ts').AcpToolApprovalPolicySnapshot> => {
+  const readToolApprovalPolicy = async (
+    sessionId: string,
+    ancestry = new Set<string>(),
+  ): Promise<import('../../contract/remote.ts').AcpToolApprovalPolicySnapshot> => {
     if (ancestry.has(sessionId)) throw new Error('ACP_TOOL_APPROVAL_PARENT_CYCLE')
     const currentAncestry = new Set(ancestry).add(sessionId)
     if (sidecar === undefined) throw new Error('ACP_TOOL_APPROVAL_POLICY_UNAVAILABLE')
@@ -225,10 +293,15 @@ export function installInstalledProfileRegistry(ctx: Context, config: Config, op
     const selectedProvider = projection?.pending?.provider ?? projection?.lastUsed?.provider
     const liveAgent = ctx.get('agents', false)?.get(sessionId as never)
     const headerProvider = session?.requestHeader?.()?.config.provider
-    const defaultProvider = session?.header.origin === 'subagent' ? undefined : ctx.get('agentDefaultModel')?.currentSelection().provider
-    const provider = lookup?.status === 'ok' ? lookup.binding.provider : selectedProvider ?? headerProvider ?? liveAgent?.options.provider ?? defaultProvider
+    const defaultProvider =
+      session?.header.origin === 'subagent' ? undefined : ctx.get('agentDefaultModel')?.currentSelection().provider
+    const provider =
+      lookup?.status === 'ok'
+        ? lookup.binding.provider
+        : (selectedProvider ?? headerProvider ?? liveAgent?.options.provider ?? defaultProvider)
     const providerId = provider === undefined ? undefined : acpAgentIdFromRoute(provider)
-    if (providerId === undefined || !profileAdapters.has(providerId)) throw new Error('ACP_TOOL_APPROVAL_SESSION_NOT_ACP')
+    if (providerId === undefined || !profileAdapters.has(providerId))
+      throw new Error('ACP_TOOL_APPROVAL_SESSION_NOT_ACP')
     // Reading this host-owned preference must not activate the Agent runtime.
     // Live membership is used when present; dormant subagents are classified
     // through the exact parent Lead roster below.
@@ -250,26 +323,38 @@ export function installInstalledProfileRegistry(ctx: Context, config: Config, op
       }
       if (leadAgent === undefined) throw new Error('ACP_TOOL_APPROVAL_LEAD_UNAVAILABLE')
       const leadMembership = teams.tryMembership(leadAgent)
-      if (leadMembership?.role !== 'lead' || leadMembership.root !== leadAgent
-        || !teams.listMembers(leadAgent).some(row => row.id === sessionId && row.role === 'teammate')) {
+      if (
+        leadMembership?.role !== 'lead' ||
+        leadMembership.root !== leadAgent ||
+        !teams.listMembers(leadAgent).some((row) => row.id === sessionId && row.role === 'teammate')
+      ) {
         throw new Error('ACP_TOOL_APPROVAL_LEAD_UNAVAILABLE')
       }
       const policy = await sidecar.readToolApprovalPolicy(leadAgent.id as never, config.toolApprovalDefault.get())
       if (policy === undefined) throw new Error('ACP_TOOL_APPROVAL_POLICY_UNAVAILABLE')
       const currentLead = teams.tryMembership(leadAgent)
-      if (ctx.get('agents', false)?.get(leadAgent.id as never) !== leadAgent
-        || currentLead?.role !== 'lead' || currentLead.root !== leadAgent || currentLead.id !== leadMembership.id
-        || !teams.listMembers(leadAgent).some(row => row.id === sessionId && row.role === 'teammate')) {
+      if (
+        ctx.get('agents', false)?.get(leadAgent.id as never) !== leadAgent ||
+        currentLead?.role !== 'lead' ||
+        currentLead.root !== leadAgent ||
+        currentLead.id !== leadMembership.id ||
+        !teams.listMembers(leadAgent).some((row) => row.id === sessionId && row.role === 'teammate')
+      ) {
         throw new Error('ACP_TOOL_APPROVAL_LEAD_CHANGED')
       }
       return { sessionId, policy, source: 'lead', editable: false }
     }
     let policySessionId = sessionId
     let source: 'session' | 'lead' = 'session'
-    if (session !== undefined && session.header.origin !== 'subagent'
-      && membership?.role !== 'teammate' && session.header.parentSession !== undefined) {
+    if (
+      session !== undefined &&
+      session.header.origin !== 'subagent' &&
+      membership?.role !== 'teammate' &&
+      session.header.parentSession !== undefined
+    ) {
       const savedForkPolicy = await sidecar.readToolApprovalPolicy(sessionId as never)
-      if (savedForkPolicy !== undefined) return { sessionId, policy: savedForkPolicy, source: 'session', editable: true }
+      if (savedForkPolicy !== undefined)
+        return { sessionId, policy: savedForkPolicy, source: 'session', editable: true }
       // Ordinary forks take one durable snapshot from a verified ACP parent.
       // The parent id never becomes live authority after this copy.
       const parentId = session.header.parentSession
@@ -284,10 +369,17 @@ export function installInstalledProfileRegistry(ctx: Context, config: Config, op
     if (membership !== undefined) {
       const root = membership.root
       const leadMembership = teams?.tryMembership(root)
-      if (ctx.get('agents', false)?.get(root.id as never) !== root || leadMembership?.role !== 'lead'
-        || leadMembership.root !== root || leadMembership.id !== membership.id) throw new Error('ACP_TOOL_APPROVAL_LEAD_UNAVAILABLE')
-      if (membership.role === 'teammate') { policySessionId = root.id; source = 'lead' }
-      else if (membership.role !== 'lead') throw new Error('ACP_TOOL_APPROVAL_MEMBERSHIP_INVALID')
+      if (
+        ctx.get('agents', false)?.get(root.id as never) !== root ||
+        leadMembership?.role !== 'lead' ||
+        leadMembership.root !== root ||
+        leadMembership.id !== membership.id
+      )
+        throw new Error('ACP_TOOL_APPROVAL_LEAD_UNAVAILABLE')
+      if (membership.role === 'teammate') {
+        policySessionId = root.id
+        source = 'lead'
+      } else if (membership.role !== 'lead') throw new Error('ACP_TOOL_APPROVAL_MEMBERSHIP_INVALID')
     }
     const policy = await sidecar.readToolApprovalPolicy(policySessionId as never, config.toolApprovalDefault.get())
     if (policy === undefined) throw new Error('ACP_TOOL_APPROVAL_POLICY_UNAVAILABLE')
@@ -296,9 +388,16 @@ export function installInstalledProfileRegistry(ctx: Context, config: Config, op
       const current = teams?.tryMembership(agent)
       const root = membership.root
       const leadMembership = teams?.tryMembership(root)
-      if (current?.role !== 'teammate' || current.id !== membership.id || current.root !== root
-        || leadMembership?.role !== 'lead' || leadMembership.root !== root || leadMembership.id !== current.id
-        || ctx.get('agents', false)?.get(root.id as never) !== root) throw new Error('ACP_TOOL_APPROVAL_LEAD_CHANGED')
+      if (
+        current?.role !== 'teammate' ||
+        current.id !== membership.id ||
+        current.root !== root ||
+        leadMembership?.role !== 'lead' ||
+        leadMembership.root !== root ||
+        leadMembership.id !== current.id ||
+        ctx.get('agents', false)?.get(root.id as never) !== root
+      )
+        throw new Error('ACP_TOOL_APPROVAL_LEAD_CHANGED')
     }
     return { sessionId, policy, source, editable: source === 'session' }
   }
@@ -308,17 +407,26 @@ export function installInstalledProfileRegistry(ctx: Context, config: Config, op
   // A turn finishing or a browser leaving the conversation does not dispose
   // the host session. Its actual teardown releases ACP processes and jobs.
   ctx.on('session/disposed', async (session) => {
-    await Promise.all([...profileAdapters.values()].map(adapter => adapter.disposeSession(session)))
+    await Promise.all([...profileAdapters.values()].map((adapter) => adapter.disposeSession(session)))
   })
   const ownedSidecar = sidecar
   const ownedSessionReadGate = async (sessionId: string): Promise<boolean> => {
     // The sidecar is the authority for both audit and Activity ownership;
     // SessionStore liveness is intentionally not accepted as a grant.
-    try { return await ownedSidecar?.hasDurableActivityOwner(sessionId as never) ?? false } catch { return false }
+    try {
+      return (await ownedSidecar?.hasDurableActivityOwner(sessionId as never)) ?? false
+    } catch {
+      return false
+    }
   }
-  const canRegisterRemote = typeof (ctx as Context & { reflect?: { provide?: unknown } }).reflect?.provide === 'function'
+  const canRegisterRemote =
+    typeof (ctx as Context & { reflect?: { provide?: unknown } }).reflect?.provide === 'function'
   let existingRemote: unknown
-  try { existingRemote = holder.get('dshAcp') } catch { existingRemote = undefined }
+  try {
+    existingRemote = holder.get('dshAcp')
+  } catch {
+    existingRemote = undefined
+  }
   if (options.installRemote === true && canRegisterRemote && sidecar !== undefined && existingRemote === undefined) {
     new AcpRemoteService(ctx, {
       registry: {
@@ -342,10 +450,15 @@ export function installInstalledProfileRegistry(ctx: Context, config: Config, op
       // The provider composition has no Agent owner; activity methods are
       // intentionally read-only and describe provider-owned facts only.
       resolveLiveAgent: () => undefined,
-      teamManagement: createTeamManagement(ctx, provider => [...profileAdapters.keys()].some(id => acpRouteId(id) === provider), async id => {
-        const lookup = await sidecar.readLatestBinding(id as never)
-        return lookup?.status === 'ok' ? lookup.binding.provider : undefined
-      }, { sidecar, adapterFor: provider => profileAdapters.get(provider.slice(4)) }),
+      teamManagement: createTeamManagement(
+        ctx,
+        (provider) => [...profileAdapters.keys()].some((id) => acpRouteId(id) === provider),
+        async (id) => {
+          const lookup = await sidecar.readLatestBinding(id as never)
+          return lookup?.status === 'ok' ? lookup.binding.provider : undefined
+        },
+        { sidecar, adapterFor: (provider) => profileAdapters.get(provider.slice(4)) },
+      ),
       // Header/audit facts are read-only host facts.  Keeping them here makes
       // the additive provider composition useful to the stock header utility
       // without creating a second Agent lifecycle in the provider bridge.
@@ -368,7 +481,7 @@ export function installInstalledProfileRegistry(ctx: Context, config: Config, op
         },
         listBoundProviders: async () => {
           const bindings = await sidecar.listBindings()
-          return [...new Set(bindings.map(entry => entry.binding.provider))]
+          return [...new Set(bindings.map((entry) => entry.binding.provider))]
         },
       },
       auditTimeline: {
@@ -380,9 +493,11 @@ export function installInstalledProfileRegistry(ctx: Context, config: Config, op
       },
       activityTimeline: {
         snapshot: (sessionId, limit, filter) => sidecar.activitySnapshot(sessionId as never, limit, filter),
-        page: (sessionId, afterRevision, limit, filter) => sidecar.activityPage(sessionId as never, afterRevision, limit, filter),
+        page: (sessionId, afterRevision, limit, filter) =>
+          sidecar.activityPage(sessionId as never, afterRevision, limit, filter),
         head: (sessionId, filter) => sidecar.activityHead(sessionId as never, filter),
-        subscribe: (sessionId, filter, subscriber) => sidecar.subscribeActivity(sessionId as never, filter ?? {}, subscriber),
+        subscribe: (sessionId, filter, subscriber) =>
+          sidecar.subscribeActivity(sessionId as never, filter ?? {}, subscriber),
       },
       ownedSessionReadGate,
       activityAccess: ownedSessionReadGate,
@@ -412,7 +527,8 @@ export function installInstalledProfileRegistry(ctx: Context, config: Config, op
         return id === undefined ? undefined : profileAdapters.get(id)
       },
       agentSessionChanges: {
-        canRead: async sessionId => sessionStore?.get(sessionId) !== undefined || await ownedSessionReadGate(sessionId),
+        canRead: async (sessionId) =>
+          sessionStore?.get(sessionId) !== undefined || (await ownedSessionReadGate(sessionId)),
         subscribe: (sessionId, changed) => {
           const subscribers = controlSubscribers.get(sessionId) ?? new Set<() => void>()
           controlSubscribers.set(sessionId, subscribers)
@@ -429,13 +545,19 @@ export function installInstalledProfileRegistry(ctx: Context, config: Config, op
           const current = await readToolApprovalPolicy(sessionId)
           if (!current.editable) throw new Error('ACP_TOOL_APPROVAL_POLICY_INHERITED')
           const confirmed = await readToolApprovalPolicy(sessionId)
-          if (!confirmed.editable || confirmed.source !== current.source) throw new Error('ACP_TOOL_APPROVAL_POLICY_OWNER_CHANGED')
+          if (!confirmed.editable || confirmed.source !== current.source)
+            throw new Error('ACP_TOOL_APPROVAL_POLICY_OWNER_CHANGED')
           await sidecar.writeToolApprovalPolicy(sessionId as never, policy)
           return await readToolApprovalPolicy(sessionId)
         },
       },
       toolApprovalPolicyChanges: {
-        subscribe: changed => { policySubscribers.add(changed); return () => { policySubscribers.delete(changed) } },
+        subscribe: (changed) => {
+          policySubscribers.add(changed)
+          return () => {
+            policySubscribers.delete(changed)
+          }
+        },
         notify: notifyPolicySubscribers,
       },
       agentSessionControl: (provider) => {
@@ -462,7 +584,9 @@ export function installInstalledProfileRegistry(ctx: Context, config: Config, op
     // Registration facts include the selector label, while the shared launch
     // identity additionally fences the model catalogue from command/args/env/
     // runtime edits. Values are hashed and never enter the registration key.
-    const identities = Object.entries(agents).sort(([left], [right]) => left.localeCompare(right)).map(([id, config]) => [id, profileLaunchIdentityHash(id, config)])
+    const identities = Object.entries(agents)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([id, config]) => [id, profileLaunchIdentityHash(id, config)])
     const key = JSON.stringify({ facts, identities })
     if (key === registeredKey) {
       // Registration facts intentionally ignore runtime settings such as env
@@ -487,31 +611,47 @@ export function installInstalledProfileRegistry(ctx: Context, config: Config, op
             id,
             () => activeAgents[id],
             subprocess,
-            sessionId => acpSessionView(ctx, sessionStore?.get(sessionId)),
+            (sessionId) => acpSessionView(ctx, sessionStore?.get(sessionId)),
             ledgerStore,
             undefined,
             undefined,
             sidecar,
             attachments,
             resolveNativeQuestions,
-            sidecar === undefined ? undefined : async (observation, context) => {
-              const projector = externalSubagentProjector
-              if (projector === undefined) throw new Error('ACP_SUBAGENT_PERSISTENCE_UNAVAILABLE')
-              const store = sessionStore
-              if (store === undefined) throw new Error('ACP_SUBAGENT_PARENT_UNAVAILABLE')
-              const parent = store.get(context.parentDshSessionId)
-              if (parent === undefined) throw new Error('ACP_SUBAGENT_PARENT_UNAVAILABLE')
-              const result = await projector.project(observation, {
-                ...context,
-                flushParent: async () => await flushClosedParent(store, context.parentDshSessionId, parent, () => readSessionFacts(ctx, parent).turnOpen),
-              })
-              return result?.childSessionId
-            },
-            message => log.warn(message, { operation: 'claude-draft-subagent-capability' }),
-            sessionId => resolveTerminalJobs(ctx, sessionId),
-            (sessionId, capabilities, wireProfile) => createTeamBridge(ctx, sessionId, capabilities, wireProfile,
-              async () => (await readToolApprovalPolicy(sessionId)).policy, notifyPolicySubscribers),
-            sessionId => teamBridgeKey(ctx, sessionId),
+            sidecar === undefined
+              ? undefined
+              : async (observation, context) => {
+                  const projector = externalSubagentProjector
+                  if (projector === undefined) throw new Error('ACP_SUBAGENT_PERSISTENCE_UNAVAILABLE')
+                  const store = sessionStore
+                  if (store === undefined) throw new Error('ACP_SUBAGENT_PARENT_UNAVAILABLE')
+                  const parent = store.get(context.parentDshSessionId)
+                  if (parent === undefined) throw new Error('ACP_SUBAGENT_PARENT_UNAVAILABLE')
+                  const result = await projector.project(observation, {
+                    ...context,
+                    flushParent: async () =>
+                      await flushClosedParent(
+                        store,
+                        context.parentDshSessionId,
+                        parent,
+                        () => readSessionFacts(ctx, parent).turnOpen,
+                      ),
+                  })
+                  return result?.childSessionId
+                },
+            (message) => log.warn(message, { operation: 'claude-draft-subagent-capability' }),
+            (sessionId) => resolveTerminalJobs(ctx, sessionId),
+            (sessionId, capabilities, wireProfile, schemas) =>
+              createTeamBridge(
+                ctx,
+                sessionId,
+                capabilities,
+                wireProfile,
+                async () => (await readToolApprovalPolicy(sessionId)).policy,
+                notifyPolicySubscribers,
+                schemas,
+              ),
+            (sessionId, schemas) => teamBridgeKey(ctx, sessionId, schemas),
             controlsChanged,
           )
           profileAdapters.set(id, routeAdapter)
@@ -528,16 +668,27 @@ export function installInstalledProfileRegistry(ctx: Context, config: Config, op
       }
     } catch (error) {
       for (const id of created) {
-        try { registrations.get(id)?.() } catch { /* best effort rollback */ }
+        try {
+          registrations.get(id)?.()
+        } catch {
+          /* best effort rollback */
+        }
         registrations.delete(id)
-        void profileAdapters.get(id)?.close().catch(() => undefined)
+        void profileAdapters
+          .get(id)
+          ?.close()
+          .catch(() => undefined)
         profileAdapters.delete(id)
       }
       activeAgents = previousActive
       // A replace may have synchronously refreshed host metadata before a
       // later profile collided. Re-emit the old snapshot for those routes.
       for (const id of touched) {
-        try { registrations.get(id)?.replace([acpRouteId(id)]) } catch { /* best effort */ }
+        try {
+          registrations.get(id)?.replace([acpRouteId(id)])
+        } catch {
+          /* best effort */
+        }
       }
       throw error
     }
@@ -545,13 +696,16 @@ export function installInstalledProfileRegistry(ctx: Context, config: Config, op
       if (agents[id] !== undefined) continue
       handle()
       registrations.delete(id)
-      void profileAdapters.get(id)?.close().catch(() => undefined)
+      void profileAdapters
+        .get(id)
+        ?.close()
+        .catch(() => undefined)
       profileAdapters.delete(id)
     }
     registeredKey = key
   }
 
-  installNativeAgentAccess(ctx, provider => {
+  installNativeAgentAccess(ctx, (provider) => {
     const profileId = acpAgentIdFromRoute(provider ?? '')
     return profileId !== undefined && registrations.has(profileId)
   })
@@ -563,7 +717,10 @@ export function installInstalledProfileRegistry(ctx: Context, config: Config, op
     try {
       ensureRegistration()
     } catch (error: unknown) {
-      log.error('dsh-acp: keeping the previously registered routes after a refused update', { operation: 'registry-sync', result: 'error' })
+      log.error('dsh-acp: keeping the previously registered routes after a refused update', {
+        operation: 'registry-sync',
+        result: 'error',
+      })
       log.error(error)
     }
   }
@@ -571,19 +728,30 @@ export function installInstalledProfileRegistry(ctx: Context, config: Config, op
   // The composition, not a removed AgentLoop subclass, now owns teardown.
   // Dispose routes first, then ACP runtimes, then the sidecar; each failure is
   // contained so one broken profile cannot strand the remaining processes.
-  ctx.effect(() => async () => {
-    disposed = true
-    for (const handle of registrations.values()) {
-      try { handle() } catch (error) { log.warn(`dsh-acp: route disposal failed: ${String(error)}`) }
-    }
-    registrations.clear()
-    const results = await Promise.allSettled([...profileAdapters.values()].map(adapter => adapter.close()))
-    for (const result of results) {
-      if (result.status === 'rejected') log.warn(`dsh-acp: profile runtime disposal failed: ${String(result.reason)}`)
-    }
-    profileAdapters.clear()
-    try { await sidecar?.dispose() } catch (error) { log.warn(`dsh-acp: sidecar disposal failed: ${String(error)}`) }
-  }, '@zaimokuza/dsh-acp-adapter: dispose ACP profile routes and sidecar')
+  ctx.effect(
+    () => async () => {
+      disposed = true
+      for (const handle of registrations.values()) {
+        try {
+          handle()
+        } catch (error) {
+          log.warn(`dsh-acp: route disposal failed: ${String(error)}`)
+        }
+      }
+      registrations.clear()
+      const results = await Promise.allSettled([...profileAdapters.values()].map((adapter) => adapter.close()))
+      for (const result of results) {
+        if (result.status === 'rejected') log.warn(`dsh-acp: profile runtime disposal failed: ${String(result.reason)}`)
+      }
+      profileAdapters.clear()
+      try {
+        await sidecar?.dispose()
+      } catch (error) {
+        log.warn(`dsh-acp: sidecar disposal failed: ${String(error)}`)
+      }
+    },
+    '@zaimokuza/dsh-acp-adapter: dispose ACP profile routes and sidecar',
+  )
 
   const refreshConfig = (): void => {
     if (disposed) return
@@ -602,7 +770,7 @@ export function installInstalledProfileRegistry(ctx: Context, config: Config, op
       if (id === undefined) return undefined
       const config = activeAgents[id]
       if (config === undefined) return undefined
- // 运行时身份由消费方经 effectiveRuntimeOf(id, config) 解析
+      // 运行时身份由消费方经 effectiveRuntimeOf(id, config) 解析
       // （runtime 字段优先、id 回退），不随解析结果复制一份
       return { id, config }
     },

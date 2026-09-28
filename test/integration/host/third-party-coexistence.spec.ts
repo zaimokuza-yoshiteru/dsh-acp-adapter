@@ -12,10 +12,19 @@ import { apply, inject } from '../../../src/host/composition/index.ts'
 class NativeAdapter extends LlmAdapter {
   readonly calls: string[] = []
 
-  override providerInfo(provider: string) { return { id: provider, name: `Native ${provider}` } }
+  override providerInfo(provider: string) {
+    return { id: provider, name: `Native ${provider}` }
+  }
 
   override providerRetryPolicy() {
-    return { mode: 'normal' as const, maxRetries: 0, retryableCodes: [], initialDelayMs: 0, maxDelayMs: 0, jitterRatio: 0 }
+    return {
+      mode: 'normal' as const,
+      maxRetries: 0,
+      retryableCodes: [],
+      initialDelayMs: 0,
+      maxDelayMs: 0,
+      jitterRatio: 0,
+    }
   }
 
   async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
@@ -40,7 +49,9 @@ describe('third-party host coexistence', () => {
     }
     const subprocess = {
       resolveExecutable: async (command: string) => command,
-      spawn: () => { throw new Error('ACP spawn must not occur on the native path') },
+      spawn: () => {
+        throw new Error('ACP spawn must not occur on the native path')
+      },
     }
     const attachments = {
       imageLimits: {
@@ -51,7 +62,9 @@ describe('third-party host coexistence', () => {
         maxImageDimension: 4096,
         mediaTypes: ['image/png'],
       },
-      readImage: async () => { throw new Error('not used') },
+      readImage: async () => {
+        throw new Error('not used')
+      },
     }
     ctx.provide('settings', settings)
     ctx.provide('sessions', {})
@@ -67,11 +80,15 @@ describe('third-party host coexistence', () => {
     })
     const native = new NativeAdapter()
     const disposeNative = ctx.llm.registerAdapter(['native'], native)
-    const fiber = ctx.plugin({ name: 'third-party-acp-coexistence', inject: [...inject], Config, apply }, { agents: { codex: { name: 'Codex', command: 'codex-acp', args: [], env: {} } } })
+    const fiber = ctx.plugin(
+      { name: 'third-party-acp-coexistence', inject: [...inject], Config, apply },
+      { agents: { codex: { name: 'Codex', command: 'codex-acp', args: [], env: {} } } },
+    )
     await fiber.await()
 
     const chunks: StreamChunk[] = []
-    for await (const chunk of ctx.llm.stream({ provider: 'native', model: 'native-model', messages: [] })) chunks.push(chunk)
+    for await (const chunk of ctx.llm.stream({ provider: 'native', model: 'native-model', messages: [] }))
+      chunks.push(chunk)
     expect(chunks[0]).toMatchObject({ type: 'text-delta', text: 'native:native' })
     expect(native.calls).toEqual(['native'])
     expect(observerProviders).toEqual(['native'])

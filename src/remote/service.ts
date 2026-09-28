@@ -96,10 +96,15 @@ export const DEFAULT_VERSION_PROBE_TIMEOUT_MS = 3_000
 type AcpRemoteErrorCode = `dsh-acp/${AcpErrorCategory}`
 
 function acpRemoteError(error: AcpClientError): RemoteError<AcpRemoteErrorCode> {
-  return new RemoteError(`dsh-acp/${error.category}`, error.message, {
-    kind: error.kind,
-    correlationId: error.correlationId,
-  }, { cause: error })
+  return new RemoteError(
+    `dsh-acp/${error.category}`,
+    error.message,
+    {
+      kind: error.kind,
+      correlationId: error.correlationId,
+    },
+    { cause: error },
+  )
 }
 
 function acpRemoteFailure(
@@ -107,10 +112,15 @@ function acpRemoteFailure(
   message: string,
   cause?: unknown,
 ): RemoteError<AcpRemoteErrorCode> {
-  return new RemoteError(`dsh-acp/${category}`, message, {
-    kind: null,
-    correlationId: null,
-  }, cause === undefined ? undefined : { cause })
+  return new RemoteError(
+    `dsh-acp/${category}`,
+    message,
+    {
+      kind: null,
+      correlationId: null,
+    },
+    cause === undefined ? undefined : { cause },
+  )
 }
 
 function badRequest(message: string): RemoteError<'gateway/bad-request'> {
@@ -222,14 +232,15 @@ export interface AcpProbeSnapshotLike {
         readonly kind: 'ok'
         readonly models: readonly unknown[]
         readonly authMethods?: readonly acp.AuthMethod[]
- /** initialize 握手原值（现在随缓存保留；缺失时 health 行归 null）。 */
+        /** initialize 握手原值（现在随缓存保留；缺失时 health 行归 null）。 */
         readonly agentInfo?: acp.Implementation | null | undefined
         readonly agentCapabilities?: acp.AgentCapabilities | undefined
- /** probe 会话清理事实（缺席时 health 行归 null）。 */
-        readonly cleanup?: { readonly close: string; readonly delete: string; readonly message?: string | undefined } | undefined
- /** initialize 握手能力的 sha256-16（缺席时 health 行归 null）。 */
+        /** probe 会话清理事实（缺席时 health 行归 null）。 */
+        readonly cleanup?:
+          { readonly close: string; readonly delete: string; readonly message?: string | undefined } | undefined
+        /** initialize 握手能力的 sha256-16（缺席时 health 行归 null）。 */
         readonly capabilityHash?: string | undefined
- /** initialize 协商的协议版本（边界；缺席时 health 行归 null）。 */
+        /** initialize 协商的协议版本（边界；缺席时 health 行归 null）。 */
         readonly protocolVersion?: number | undefined
         /**
          * configOptions 是否含 `category=model` 项（ 五态目录口径；
@@ -241,7 +252,7 @@ export interface AcpProbeSnapshotLike {
         readonly kind: 'error'
         readonly failureKind: string
         readonly error: { readonly message: string }
- /** probe 失败阶段（未标记时 health 行归 null）。 */
+        /** probe 失败阶段（未标记时 health 行归 null）。 */
         readonly probePhase?: 'initialize' | 'session' | undefined
       }
 }
@@ -262,7 +273,7 @@ export interface AcpLiveAgentFace {
   readonly status: 'idle' | 'running'
   /** Live ACP wrapper phase; draft is not yet a committed execution backend. */
   readonly backendState?: 'blank' | 'draft' | 'established'
- /** 本会话的 provider 路由（`acp-<id>`； `backendOf` 的权威 backend 判定之一）。 */
+  /** 本会话的 provider 路由（`acp-<id>`； `backendOf` 的权威 backend 判定之一）。 */
   readonly providerRoute: string
   /** 构造该 wrapper 时采用的会话模型；draft 阶段用于覆盖 DSH 的全局默认影子。 */
   readonly selectedModel?: string | undefined
@@ -309,10 +320,10 @@ export interface AcpRemoteServiceDeps {
 
   /** Registry：agent 列表 + probe 缓存（快照/刷新）。 */
   registry: AcpHealthRegistryLike
- /** 活体 agent 解析器（接线提供真实实现）。 */
+  /** 活体 agent 解析器（接线提供真实实现）。 */
   resolveLiveAgent: AcpResolveLiveAgent
   /**
- * 宿主结构门事实（；缺省恒 true）：health 行的五态 `state` 字段在
+   * 宿主结构门事实（；缺省恒 true）：health 行的五态 `state` 字段在
    * 结构门未通过时归 `incompatible`。生产接线由 host composition 以公开宿主
    * 服务组装（remote 层不依赖宿主私有实现
    * ——test/contracts/architecture.spec.ts 白名单）。
@@ -323,7 +334,7 @@ export interface AcpRemoteServiceDeps {
   /** 版本查询；缺省经 seam 的 `<command> --version` 尽力而为（seam 缺席时恒 null）。 */
   queryVersion?: (command: string) => Promise<string | null>
   /**
- * 加载期解析的 subprocess seam（host composition 注入）。
+   * 加载期解析的 subprocess seam（host composition 注入）。
    * 仅驱动两个缺省实现：ok 时 checkExecutable=resolveExecutable 预检、
    * queryVersion=经 seam spawn `<command> --version`；缺席/未接线时缺省实现
    * fail closed（false / null）。显式注入的 checkExecutable/queryVersion 不受
@@ -338,7 +349,7 @@ export interface AcpRemoteServiceDeps {
    */
   listLiveSessions?: () => readonly { readonly sessionId: string; readonly continuity: AcpSessionContinuityState }[]
   /**
- * `backendOf` 的 backend 事实源（缺席时 backendOf 响亮拒绝——未接线
+   * `backendOf` 的 backend 事实源（缺席时 backendOf 响亮拒绝——未接线
    * 不冒充 blank）。生产接线 = host composition：
    * - `readBindingProvider`：sidecar 最新 binding 的 provider（ok 且语义门槛
    *   通过）；无记录/读取失败/outdated 归 undefined（binding 读取失败非权威，
@@ -354,7 +365,7 @@ export interface AcpRemoteServiceDeps {
     readonly hasLiveAgent: (sessionId: string) => boolean
   }
   /**
- * `boundSessions` 的 binding 计数源（删除确认提示；缺席时 boundSessions
+   * `boundSessions` 的 binding 计数源（删除确认提示；缺席时 boundSessions
    * 响亮拒绝——未接线不冒充 0）。生产接线 = host composition 以
    * sidecar.listBindings 按 provider 过滤计数（只读）。
    */
@@ -391,11 +402,24 @@ export interface AcpRemoteServiceDeps {
   /** Host-owned ACP activity journal. All reads are bounded and session-scoped;
    * raw sidecar handles never cross the Remote boundary. */
   activityTimeline?: {
-    readonly snapshot: (sessionId: string, limit: number, filter?: AcpActivityFilterView) => Promise<readonly AcpActivityView[]>
-    readonly page: (sessionId: string, afterRevision: number, limit: number, filter?: AcpActivityFilterView) => Promise<readonly AcpActivityView[]>
+    readonly snapshot: (
+      sessionId: string,
+      limit: number,
+      filter?: AcpActivityFilterView,
+    ) => Promise<readonly AcpActivityView[]>
+    readonly page: (
+      sessionId: string,
+      afterRevision: number,
+      limit: number,
+      filter?: AcpActivityFilterView,
+    ) => Promise<readonly AcpActivityView[]>
     readonly head: (sessionId: string, filter?: AcpActivityFilterView) => Promise<number>
     /** Delivers each committed revision at most once and in ascending revision order. */
-    readonly subscribe?: (sessionId: string, filter: AcpActivityFilterView | undefined, subscriber: (activity: AcpActivityView) => void) => () => void
+    readonly subscribe?: (
+      sessionId: string,
+      filter: AcpActivityFilterView | undefined,
+      subscriber: (activity: AcpActivityView) => void,
+    ) => () => void
   }
   /** Authorizes a client-facing activity read against the current DSH session.
    * Missing authorization is fail-closed; it is never inferred from a string id. */
@@ -456,7 +480,7 @@ async function acpQueryVersion(
   }
   const outcome = await waitWithin(done, timeoutMs)
   const gone = await stopSubprocess(handle, { eofGraceMs: 0, exitWaitMs: VERSION_PROBE_TERM_GRACE_MS * 2 })
-  return !gone || outcome === undefined || outcome === null ? null : firstLine(out) ?? firstLine(err)
+  return !gone || outcome === undefined || outcome === null ? null : (firstLine(out) ?? firstLine(err))
 }
 
 /** 版本探针 terminate 的 SIGTERM → SIGKILL 升级间隔（毫秒）：探针求快死，不用会话级的 2s。 */
@@ -480,11 +504,12 @@ interface ResolvedDeps {
   readonly hostCompatible: () => boolean
   readonly checkExecutable: (command: string) => Promise<boolean>
   readonly queryVersion: (command: string) => Promise<string | null>
- /** 缺省 null（host 未接线时视图如实不带活体会话连续性清单）。 */
-  readonly listLiveSessions: (() => readonly { readonly sessionId: string; readonly continuity: AcpSessionContinuityState }[]) | null
- /** 缺省 null（backendOf 未接线时响亮拒绝，不冒充 blank）。 */
+  /** 缺省 null（host 未接线时视图如实不带活体会话连续性清单）。 */
+  readonly listLiveSessions:
+    (() => readonly { readonly sessionId: string; readonly continuity: AcpSessionContinuityState }[]) | null
+  /** 缺省 null（backendOf 未接线时响亮拒绝，不冒充 blank）。 */
   readonly backendFacts: NonNullable<AcpRemoteServiceDeps['backendFacts']> | null
- /** 缺省 null（boundSessions 未接线时响亮拒绝，不冒充 0）。 */
+  /** 缺省 null（boundSessions 未接线时响亮拒绝，不冒充 0）。 */
   readonly bindingFacts: NonNullable<AcpRemoteServiceDeps['bindingFacts']> | null
   readonly recoveryStateStore: NonNullable<AcpRemoteServiceDeps['recoveryStateStore']> | null
   readonly recoveryAdapter: NonNullable<AcpRemoteServiceDeps['recoveryAdapter']> | null
@@ -519,21 +544,27 @@ export class AcpRemoteService extends TypertRemoteService {
 
   constructor(ctx: Context, deps: AcpRemoteServiceDeps) {
     super(ctx, 'dshAcp')
- // seam 解析产物只驱动缺省实现；显式注入的 deps 原样优先（测试全注入假实现）。
+    // seam 解析产物只驱动缺省实现；显式注入的 deps 原样优先（测试全注入假实现）。
     const subprocess = deps.subprocess ?? { ok: false as const, message: ACP_SUBPROCESS_UNAVAILABLE_MESSAGE }
     this.resolved = {
       registry: deps.registry,
       teamManagement: deps.teamManagement,
       resolveLiveAgent: deps.resolveLiveAgent,
- // host 未接线结构门事实时按兼容处理（纯模块单测路径；生产恒注入）
+      // host 未接线结构门事实时按兼容处理（纯模块单测路径；生产恒注入）
       hostCompatible: deps.hostCompatible ?? (() => true),
-      checkExecutable: deps.checkExecutable ?? (subprocess.ok
-        ? // `command -v` 等价物：宿主 seam 的 PATH 解析（Windows 含 PATHEXT 语义），零 spawn 副作用
-          (command: string) => subprocess.seam.resolveExecutable(command).then(() => true, () => false)
-        : () => Promise.resolve(false)),
-      queryVersion: deps.queryVersion ?? (subprocess.ok
-        ? (command: string) => acpQueryVersion(subprocess.seam, command)
-        : () => Promise.resolve(null)),
+      checkExecutable:
+        deps.checkExecutable ??
+        (subprocess.ok
+          ? // `command -v` 等价物：宿主 seam 的 PATH 解析（Windows 含 PATHEXT 语义），零 spawn 副作用
+            (command: string) =>
+              subprocess.seam.resolveExecutable(command).then(
+                () => true,
+                () => false,
+              )
+          : () => Promise.resolve(false)),
+      queryVersion:
+        deps.queryVersion ??
+        (subprocess.ok ? (command: string) => acpQueryVersion(subprocess.seam, command) : () => Promise.resolve(null)),
       listLiveSessions: deps.listLiveSessions ?? null,
       backendFacts: deps.backendFacts ?? null,
       bindingFacts: deps.bindingFacts ?? null,
@@ -553,7 +584,10 @@ export class AcpRemoteService extends TypertRemoteService {
 
   /** Read a bounded sidecar page. Raw payloads never cross the Remote boundary. */
   @Remote
-  async auditTimeline(sessionId: string, request?: { readonly afterSeq?: number; readonly limit?: number; readonly view?: AcpDiagnosticView }): Promise<AcpAuditTimelinePage> {
+  async auditTimeline(
+    sessionId: string,
+    request?: { readonly afterSeq?: number; readonly limit?: number; readonly view?: AcpDiagnosticView },
+  ): Promise<AcpAuditTimelinePage> {
     const source = this.resolved.auditTimeline
     if (source === null) throw acpRemoteFailure('config', 'ACP audit history is unavailable on this host')
     await this.requireOwnedSessionAccess(sessionId)
@@ -562,7 +596,8 @@ export class AcpRemoteService extends TypertRemoteService {
     if (!Number.isSafeInteger(afterSeq) || afterSeq < 0) throw badRequest('ACP audit cursor is invalid')
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw badRequest('ACP audit page size is invalid')
     const view = request?.view
-    if (view !== undefined && !['issues', 'operations', 'technical'].includes(view)) throw badRequest('ACP diagnostic view is invalid')
+    if (view !== undefined && !['issues', 'operations', 'technical'].includes(view))
+      throw badRequest('ACP diagnostic view is invalid')
     if (view !== undefined) {
       // Filter on the host so routine checkpoints cannot hide a later error.
       // Bound each request; the cursor tracks scanned facts, even on empty pages.
@@ -572,7 +607,10 @@ export class AcpRemoteService extends TypertRemoteService {
       let hasMore = true
       while (entries.length < limit && scanned < 1000 && hasMore) {
         const page = await source.list(sessionId, scannedSeq, 100)
-        if (page.length === 0) { hasMore = false; break }
+        if (page.length === 0) {
+          hasMore = false
+          break
+        }
         for (const entry of page) {
           scannedSeq = entry.seq
           scanned += 1
@@ -585,7 +623,7 @@ export class AcpRemoteService extends TypertRemoteService {
     }
     const entries = await source.list(sessionId, afterSeq, limit)
     const lastSeq = entries.at(-1)?.seq ?? afterSeq
-    const hasMore = entries.length === limit && await source.hasMore(sessionId, lastSeq)
+    const hasMore = entries.length === limit && (await source.hasMore(sessionId, lastSeq))
     return { sessionId, entries, nextCursor: hasMore ? lastSeq : null, hasMore }
   }
 
@@ -593,7 +631,10 @@ export class AcpRemoteService extends TypertRemoteService {
    * separate from the sidecar query: a caller cannot turn an arbitrary string
    * into access to another DSH session's Agent trace. */
   @Remote
-  async activitySnapshot(sessionId: string, request?: { readonly limit?: number; readonly filter?: AcpActivityFilterView }): Promise<AcpActivitySnapshotView> {
+  async activitySnapshot(
+    sessionId: string,
+    request?: { readonly limit?: number; readonly filter?: AcpActivityFilterView },
+  ): Promise<AcpActivitySnapshotView> {
     await this.requireActivityRead(sessionId)
     const source = this.resolved.activityTimeline
     if (source === null) throw acpRemoteFailure('config', 'ACP activity history is unavailable on this host')
@@ -606,15 +647,31 @@ export class AcpRemoteService extends TypertRemoteService {
 
   /** Exact immutable revision; use the same ownership gate as journal reads. */
   @Remote
-  async activityDetail(sessionId: string, request: { readonly activityId: string; readonly revisionSeq: number; readonly ownerDshSessionId: string }, signal?: AbortSignal): Promise<AcpActivityView> {
+  async activityDetail(
+    sessionId: string,
+    request: { readonly activityId: string; readonly revisionSeq: number; readonly ownerDshSessionId: string },
+    signal?: AbortSignal,
+  ): Promise<AcpActivityView> {
     signal?.throwIfAborted()
     await this.requireActivityRead(sessionId)
     const source = this.resolved.activityTimeline
     if (source === null) throw acpRemoteFailure('config', 'ACP activity history is unavailable on this host')
-    if (!Number.isSafeInteger(request.revisionSeq) || request.revisionSeq < 1 || !request.activityId || !request.ownerDshSessionId) throw badRequest('ACP activity detail identity is invalid')
+    if (
+      !Number.isSafeInteger(request.revisionSeq) ||
+      request.revisionSeq < 1 ||
+      !request.activityId ||
+      !request.ownerDshSessionId
+    )
+      throw badRequest('ACP activity detail identity is invalid')
     const [row] = await source.page(sessionId, request.revisionSeq - 1, 1)
     signal?.throwIfAborted()
-    if (row === undefined || row.dshSessionId !== sessionId || row.revisionSeq !== request.revisionSeq || row.activityId !== request.activityId || row.ownerDshSessionId !== request.ownerDshSessionId) {
+    if (
+      row === undefined ||
+      row.dshSessionId !== sessionId ||
+      row.revisionSeq !== request.revisionSeq ||
+      row.activityId !== request.activityId ||
+      row.ownerDshSessionId !== request.ownerDshSessionId
+    ) {
       throw badRequest('ACP activity detail revision is unavailable')
     }
     return row
@@ -623,7 +680,11 @@ export class AcpRemoteService extends TypertRemoteService {
   /** Revision-cursor page used for reconnect/gap repair. The page contains
    * every committed revision, while the snapshot contains only current rows. */
   @Remote
-  async activityPage(sessionId: string, request?: { readonly afterRevision?: number; readonly limit?: number; readonly filter?: AcpActivityFilterView }, signal?: AbortSignal): Promise<AcpActivityPageView> {
+  async activityPage(
+    sessionId: string,
+    request?: { readonly afterRevision?: number; readonly limit?: number; readonly filter?: AcpActivityFilterView },
+    signal?: AbortSignal,
+  ): Promise<AcpActivityPageView> {
     signal?.throwIfAborted()
     await this.requireActivityRead(sessionId)
     const source = this.resolved.activityTimeline
@@ -636,7 +697,13 @@ export class AcpRemoteService extends TypertRemoteService {
     signal?.throwIfAborted()
     const lastRevision = activities.at(-1)?.revisionSeq ?? afterRevision
     const head = await source.head(sessionId, request?.filter)
-    return { sessionId, activities: activities.map(activitySummary), head, nextCursor: activities.length === limit && lastRevision < head ? lastRevision : null, hasMore: activities.length === limit && lastRevision < head }
+    return {
+      sessionId,
+      activities: activities.map(activitySummary),
+      head,
+      nextCursor: activities.length === limit && lastRevision < head ? lastRevision : null,
+      hasMore: activities.length === limit && lastRevision < head,
+    }
   }
 
   /**
@@ -654,7 +721,8 @@ export class AcpRemoteService extends TypertRemoteService {
   ): AsyncIterable<AcpActivityJournalFrame> {
     await this.requireActivityRead(sessionId)
     const source = this.resolved.activityTimeline
-    if (source === null || source.subscribe === undefined) throw acpRemoteFailure('config', 'ACP activity live stream is unavailable on this host')
+    if (source === null || source.subscribe === undefined)
+      throw acpRemoteFailure('config', 'ACP activity live stream is unavailable on this host')
     const limit = request?.limit ?? 100
     validateActivityReadRequest(limit, request?.filter)
     const queue: AcpActivityView[] = []
@@ -677,7 +745,7 @@ export class AcpRemoteService extends TypertRemoteService {
     try {
       if (signal.aborted) return
       signal.addEventListener('abort', onAbort)
-      unsubscribe = source.subscribe(sessionId, undefined, activity => {
+      unsubscribe = source.subscribe(sessionId, undefined, (activity) => {
         if (closed) return
         queue.push(activitySummary(activity))
         wakeWaiter()
@@ -740,13 +808,15 @@ export class AcpRemoteService extends TypertRemoteService {
 
   /** Validate identity and ownership before touching either sidecar source. */
   private async requireOwnedSessionAccess(sessionId: string): Promise<void> {
-    if (!(await this.hasOwnedSessionAccess(sessionId))) throw acpRemoteFailure('user-rejected', 'ACP activity access is not authorized for this DSH session')
+    if (!(await this.hasOwnedSessionAccess(sessionId)))
+      throw acpRemoteFailure('user-rejected', 'ACP activity access is not authorized for this DSH session')
   }
 
   private async hasOwnedSessionAccess(sessionId: string): Promise<boolean> {
-    if (typeof sessionId !== 'string' || sessionId.length === 0 || sessionId.length > 256) throw badRequest('ACP activity session id is invalid')
+    if (typeof sessionId !== 'string' || sessionId.length === 0 || sessionId.length > 256)
+      throw badRequest('ACP activity session id is invalid')
     const access = this.resolved.ownedSessionReadGate
-    return access !== null && await access(sessionId)
+    return access !== null && (await access(sessionId))
   }
 
   @Remote
@@ -778,8 +848,9 @@ export class AcpRemoteService extends TypertRemoteService {
   @Remote
   async setTeamMemberMode(lead: string, sessionId: string, modeId: string): Promise<AcpAgentSessionSnapshotView> {
     const members = await this.teamMembers(lead)
-    const member = members.find(member => member.sessionId === sessionId)
-    if (member?.profileId === null || member === undefined || member.status !== 'inactive') throw badRequest('The ACP member must be inactive')
+    const member = members.find((member) => member.sessionId === sessionId)
+    if (member?.profileId === null || member === undefined || member.status !== 'inactive')
+      throw badRequest('The ACP member must be inactive')
     if (typeof modeId !== 'string' || !modeId || modeId.length > 128) throw badRequest('Invalid member mode')
     await this.requireOwnedSessionAccess(sessionId)
     const adapter = await this.agentSessionControlFor(sessionId)
@@ -792,11 +863,13 @@ export class AcpRemoteService extends TypertRemoteService {
    * an unrelated plugin merely using the `acp-` prefix is never claimed. */
   @Remote('ownedProviderRoutes')
   async ownedProviderRoutes(): Promise<AcpOwnedRoutesView> {
-    const configured = [...this.resolved.registry.agents().keys()]
-      .map(key => key.startsWith('acp-') ? key : acpRouteId(key))
-    const durable = this.resolved.bindingFacts?.listBoundProviders === undefined
-      ? []
-      : await this.resolved.bindingFacts.listBoundProviders()
+    const configured = [...this.resolved.registry.agents().keys()].map((key) =>
+      key.startsWith('acp-') ? key : acpRouteId(key),
+    )
+    const durable =
+      this.resolved.bindingFacts?.listBoundProviders === undefined
+        ? []
+        : await this.resolved.bindingFacts.listBoundProviders()
     return { providers: [...new Set([...configured, ...durable])].sort() }
   }
 
@@ -806,15 +879,17 @@ export class AcpRemoteService extends TypertRemoteService {
   }
 
   /**
- * 全部 provider 的健康行（executable/version/probe 快照收窄透传 + 五态
- * `state`）+ 沙箱/指标/活体会话连续性事实。`request.recheck === true` 时重探：
+   * 全部 provider 的健康行（executable/version/probe 快照收窄透传 + 五态
+   * `state`）+ 沙箱/指标/活体会话连续性事实。`request.recheck === true` 时重探：
    * `agentId` 在场只检查并返回该 provider，缺席检查并返回全部。这样卡片操作
    * 不会为无关 Agent 运行 executable/version/protocol probe；缺省只读缓存视图
    * （面板打开不 spawn probe）。
    */
   @Remote
   async health(request?: AcpHealthRequest): Promise<AcpHealthView> {
-    const allEntries = [...this.resolved.registry.agents().entries()].sort(([left], [right]) => left.localeCompare(right))
+    const allEntries = [...this.resolved.registry.agents().entries()].sort(([left], [right]) =>
+      left.localeCompare(right),
+    )
     // 五态派生的宿主结构门输入（每行共享同一事实；deps 缺省恒 true）
     const hostCompatible = this.resolved.hostCompatible()
     const recheck = request?.recheck === true
@@ -828,9 +903,7 @@ export class AcpRemoteService extends TypertRemoteService {
         throw badRequest(`dsh-acp: unknown ACP agent ${JSON.stringify(targetAgentId)}`)
       }
     }
-    const entries = targetAgentId === undefined
-      ? allEntries
-      : allEntries.filter(([id]) => id === targetAgentId)
+    const entries = targetAgentId === undefined ? allEntries : allEntries.filter(([id]) => id === targetAgentId)
     const providers: AcpProviderHealth[] = await Promise.all(
       entries.map(async ([id, config]) => {
         // The model picker and Settings health must address the same
@@ -839,14 +912,19 @@ export class AcpRemoteService extends TypertRemoteService {
         const probeCache = this.resolved.registry.probeCacheFor(id)
         if (probeCache === undefined) {
           return {
-            id, name: config.name, command: config.command, args: [...config.args], loginHint: config.loginHint ?? null,
-            executable: false, version: null,
+            id,
+            name: config.name,
+            command: config.command,
+            args: [...config.args],
+            loginHint: config.loginHint ?? null,
+            executable: false,
+            version: null,
             probe: { status: 'never', at: null },
             state: deriveAcpAgentState({ hostCompatible, configValid: true, probe: undefined }),
           }
         }
         if (recheck && (targetAgentId === undefined || targetAgentId === id)) {
- // 「重新检查」强制丢弃 probe cache 并重探（条文的接线路径）；重探
+          // 「重新检查」强制丢弃 probe cache 并重探（条文的接线路径）；重探
           // 失败不抛出——失败条目落缓存，下方照常按新鲜度产出 unavailable 行。
           const routeId = acpRouteId(id)
           probeCache.invalidateProbe(routeId)
@@ -862,9 +940,10 @@ export class AcpRemoteService extends TypertRemoteService {
         // belongs exclusively to an explicit recheck. Never make a panel
         // mount spawn an ACP process (or a version helper).
         const executable = await this.resolved.checkExecutable(config.command)
-        const cachedAgentVersion = matchingSnapshot?.result.kind === 'ok' && matchingSnapshot.result.agentInfo?.version !== undefined
-          ? matchingSnapshot.result.agentInfo.version
-          : null
+        const cachedAgentVersion =
+          matchingSnapshot?.result.kind === 'ok' && matchingSnapshot.result.agentInfo?.version !== undefined
+            ? matchingSnapshot.result.agentInfo.version
+            : null
         const version = recheck && executable ? await this.resolved.queryVersion(config.command) : cachedAgentVersion
         // Readiness is the last explicit outcome for this exact configuration.
         // Runtime consumers independently re-probe after their bounded TTL.
@@ -890,9 +969,12 @@ export class AcpRemoteService extends TypertRemoteService {
       }),
     )
     if (recheck) this.resolved.registry.modelsChanged?.(entries.map(([id]) => id))
-    const liveSessions: AcpLiveSessionContinuity[] | null = this.resolved.listLiveSessions === null
-      ? null
-      : this.resolved.listLiveSessions().map((entry) => ({ sessionId: entry.sessionId, continuity: entry.continuity }))
+    const liveSessions: AcpLiveSessionContinuity[] | null =
+      this.resolved.listLiveSessions === null
+        ? null
+        : this.resolved
+            .listLiveSessions()
+            .map((entry) => ({ sessionId: entry.sessionId, continuity: entry.continuity }))
     return {
       providers,
       liveSessions,
@@ -914,7 +996,8 @@ export class AcpRemoteService extends TypertRemoteService {
     const changes = this.resolved.agentSessionChanges
     const facts = this.resolved.backendFacts
     const resolver = this.resolved.agentSessionControl
-    if (changes === null || facts === null || resolver === null) throw acpRemoteFailure('config', 'ACP Agent session stream is unavailable')
+    if (changes === null || facts === null || resolver === null)
+      throw acpRemoteFailure('config', 'ACP Agent session stream is unavailable')
     // Unlike the durable sidecar gate used by ACP-only controls, the stream
     // permits a live session before its first ACP binding so the client can
     // wait for the initial binding and receive a null baseline.
@@ -923,21 +1006,29 @@ export class AcpRemoteService extends TypertRemoteService {
     }
     let dirty = true
     let wake: (() => void) | undefined
-    const notify = (): void => { dirty = true; wake?.() }
+    const notify = (): void => {
+      dirty = true
+      wake?.()
+    }
     const unsubscribe = changes.subscribe(sessionId, notify)
     signal.addEventListener('abort', notify, { once: true })
     let previous: string | undefined
     try {
       while (!signal.aborted) {
-        if (!dirty) await new Promise<void>(resolve => { wake = resolve })
+        if (!dirty)
+          await new Promise<void>((resolve) => {
+            wake = resolve
+          })
         wake = undefined
         if (signal.aborted) break
         dirty = false
         const provider = await facts.readBindingProvider(sessionId)
         // No binding is a normal pending state. Never infer or create a runtime from a UI read.
         const adapter = provider === undefined ? undefined : resolver(provider)
-        if (provider !== undefined && adapter === undefined) throw acpRemoteFailure('config', 'The ACP Agent profile is unavailable')
-        const snapshot = adapter === undefined ? null : await preserveAcpFailure(() => adapter.agentSessionSnapshot(sessionId))
+        if (provider !== undefined && adapter === undefined)
+          throw acpRemoteFailure('config', 'The ACP Agent profile is unavailable')
+        const snapshot =
+          adapter === undefined ? null : await preserveAcpFailure(() => adapter.agentSessionSnapshot(sessionId))
         if (signal.aborted) break
         const key = JSON.stringify(snapshot)
         if (key === previous) continue
@@ -951,7 +1042,10 @@ export class AcpRemoteService extends TypertRemoteService {
   }
 
   @Remote
-  async setAgentSessionOption(sessionId: string, request: AcpAgentSessionOptionWrite): Promise<AcpAgentSessionSnapshotView> {
+  async setAgentSessionOption(
+    sessionId: string,
+    request: AcpAgentSessionOptionWrite,
+  ): Promise<AcpAgentSessionSnapshotView> {
     await this.requireOwnedSessionAccess(sessionId)
     const adapter = await this.agentSessionControlFor(sessionId)
     return await preserveAcpFailure(() => adapter.setAgentSessionOption(sessionId, request))
@@ -966,9 +1060,13 @@ export class AcpRemoteService extends TypertRemoteService {
   }
 
   @Remote
-  async setToolApprovalPolicy(sessionId: string, request: AcpToolApprovalPolicyWrite): Promise<AcpToolApprovalPolicySnapshot> {
+  async setToolApprovalPolicy(
+    sessionId: string,
+    request: AcpToolApprovalPolicyWrite,
+  ): Promise<AcpToolApprovalPolicySnapshot> {
     await this.requirePolicySessionAccess(sessionId)
-    if (request === null || typeof request !== 'object' || (request.policy !== 'auto' && request.policy !== 'ask')) throw badRequest('Invalid DSH tool approval policy')
+    if (request === null || typeof request !== 'object' || (request.policy !== 'auto' && request.policy !== 'ask'))
+      throw badRequest('Invalid DSH tool approval policy')
     const store = this.resolved.toolApprovalPolicy
     if (store === null) throw acpRemoteFailure('config', 'DSH tool approval controls are unavailable')
     const snapshot = await store.write(sessionId, request.policy)
@@ -984,13 +1082,19 @@ export class AcpRemoteService extends TypertRemoteService {
     if (store === null || changes === null) throw acpRemoteFailure('config', 'DSH tool approval stream is unavailable')
     let dirty = true
     let wake: (() => void) | undefined
-    const notify = (): void => { dirty = true; wake?.() }
+    const notify = (): void => {
+      dirty = true
+      wake?.()
+    }
     const unsubscribe = changes.subscribe(notify)
     signal.addEventListener('abort', notify, { once: true })
     let previous: string | undefined
     try {
       while (!signal.aborted) {
-        if (!dirty) await new Promise<void>(resolve => { wake = resolve })
+        if (!dirty)
+          await new Promise<void>((resolve) => {
+            wake = resolve
+          })
         wake = undefined
         if (signal.aborted) break
         dirty = false
@@ -1010,20 +1114,27 @@ export class AcpRemoteService extends TypertRemoteService {
 
   private async requirePolicySessionAccess(sessionId: string): Promise<void> {
     const changes = this.resolved.agentSessionChanges
-    if (typeof sessionId !== 'string' || sessionId.length === 0 || sessionId.length > 256 || changes === null || !(await changes.canRead(sessionId))) {
+    if (
+      typeof sessionId !== 'string' ||
+      sessionId.length === 0 ||
+      sessionId.length > 256 ||
+      changes === null ||
+      !(await changes.canRead(sessionId))
+    ) {
       throw acpRemoteFailure('user-rejected', 'DSH tool approval access is not authorized')
     }
   }
 
   private async agentSessionControlFor(sessionId: string): Promise<AcpAgentSessionControlLike> {
-    const provider = this.resolved.backendFacts === null
-      ? undefined
-      : await this.resolved.backendFacts.readBindingProvider(sessionId)
-    if (provider === undefined) throw acpRemoteFailure('resume-conflict', 'No established ACP Agent session is available')
+    const provider =
+      this.resolved.backendFacts === null ? undefined : await this.resolved.backendFacts.readBindingProvider(sessionId)
+    if (provider === undefined)
+      throw acpRemoteFailure('resume-conflict', 'No established ACP Agent session is available')
     const resolver = this.resolved.agentSessionControl
     if (resolver === null) throw acpRemoteFailure('config', 'ACP Agent session controls are unavailable on this host')
     const adapter = resolver(provider)
-    if (adapter === undefined) throw acpRemoteFailure('resume-conflict', 'No plugin-owned ACP Agent session is available')
+    if (adapter === undefined)
+      throw acpRemoteFailure('resume-conflict', 'No plugin-owned ACP Agent session is available')
     return adapter
   }
 
@@ -1043,21 +1154,21 @@ export class AcpRemoteService extends TypertRemoteService {
     // durable binding. Return an empty healthy view in that case without
     // reading potentially sensitive recovery records for an unowned ID.
     if (!(await this.hasOwnedSessionAccess(sessionId))) return healthyRecoveryView(sessionId)
-    const persisted = this.resolved.recoveryStateStore === null
-      ? undefined
-      : await this.resolved.recoveryStateStore.read(sessionId)
+    const persisted =
+      this.resolved.recoveryStateStore === null ? undefined : await this.resolved.recoveryStateStore.read(sessionId)
     if (persisted !== undefined) return persisted
     const live = this.resolved.resolveLiveAgent(sessionId)
     return live === undefined ? healthyRecoveryView(sessionId) : recoveryViewOf(live.recoveryState, sessionId)
   }
 
   private async recoveryAdapterFor(sessionId: string): Promise<AcpRecoveryAdapterLike> {
-    const provider = this.resolved.backendFacts === null
-      ? undefined
-      : await this.resolved.backendFacts.readBindingProvider(sessionId)
-    if (provider === undefined) throw acpRemoteFailure('resume-conflict', `ACP recovery binding is unavailable for session "${sessionId}"`)
+    const provider =
+      this.resolved.backendFacts === null ? undefined : await this.resolved.backendFacts.readBindingProvider(sessionId)
+    if (provider === undefined)
+      throw acpRemoteFailure('resume-conflict', `ACP recovery binding is unavailable for session "${sessionId}"`)
     const adapter = this.resolved.recoveryAdapter?.(provider)
-    if (adapter === undefined) throw acpRemoteFailure('config', `ACP recovery profile is unavailable for provider "${provider}"`)
+    if (adapter === undefined)
+      throw acpRemoteFailure('config', `ACP recovery profile is unavailable for provider "${provider}"`)
     return adapter
   }
 
@@ -1087,11 +1198,13 @@ export class AcpRemoteService extends TypertRemoteService {
     // picker can decide whether an ACP switch must create a new DSH session.
     const facts = this.resolved.backendFacts
     if (facts === null) {
-      throw acpRemoteError(new AcpClientError(
-        'protocol-error',
-        `dsh-acp: backend facts are not wired on this host; cannot determine the backend of session "${sessionId}"`,
-        { category: 'config' },
-      ))
+      throw acpRemoteError(
+        new AcpClientError(
+          'protocol-error',
+          `dsh-acp: backend facts are not wired on this host; cannot determine the backend of session "${sessionId}"`,
+          { category: 'config' },
+        ),
+      )
     }
     const bound = await facts.readBindingProvider(sessionId)
     if (bound !== undefined) return { state: 'established', provider: bound }
@@ -1121,16 +1234,18 @@ export class AcpRemoteService extends TypertRemoteService {
       // 无日志可读时活体（任意 backend，含尚未落 header 的新 native 会话）仍是
       // 存在性证据：无 header 即 blank。
       if (facts.hasLiveAgent(sessionId)) return { state: 'blank' }
-      throw acpRemoteError(new AcpClientError(
-        'protocol-error',
-        `dsh-acp: cannot determine the execution backend of session "${sessionId}": the session does not exist or its log is unreadable (${error instanceof Error ? error.message : String(error)})`,
-        { category: 'config' },
-      ))
+      throw acpRemoteError(
+        new AcpClientError(
+          'protocol-error',
+          `dsh-acp: cannot determine the execution backend of session "${sessionId}": the session does not exist or its log is unreadable (${error instanceof Error ? error.message : String(error)})`,
+          { category: 'config' },
+        ),
+      )
     }
   }
 
   /**
- * boundSessions（删除确认提示）：该 profile（按 agent id）当前被多少个
+   * boundSessions（删除确认提示）：该 profile（按 agent id）当前被多少个
    * 既有 DSH 会话的 sidecar binding 引用——删除 profile 后这些会话显示
    * backend-unavailable，面板在确认文案中如实预告。纯读零副作用；agent id
    * 非法或未接线一律 throw（不冒充 0）。
@@ -1138,31 +1253,36 @@ export class AcpRemoteService extends TypertRemoteService {
   @Remote('boundSessions')
   async boundSessions(agentId: string): Promise<AcpBoundSessionsView> {
     if (!ACP_AGENT_ID_PATTERN.test(agentId)) {
-      throw acpRemoteError(new AcpClientError(
-        'protocol-error',
-        `dsh-acp: invalid agent id ${JSON.stringify(agentId)} (must match ${String(ACP_AGENT_ID_PATTERN)})`,
-        { category: 'config' },
-      ))
+      throw acpRemoteError(
+        new AcpClientError(
+          'protocol-error',
+          `dsh-acp: invalid agent id ${JSON.stringify(agentId)} (must match ${String(ACP_AGENT_ID_PATTERN)})`,
+          { category: 'config' },
+        ),
+      )
     }
     const facts = this.resolved.bindingFacts
     if (facts === null) {
-      throw acpRemoteError(new AcpClientError(
-        'protocol-error',
-        `dsh-acp: binding facts are not wired on this host; cannot count sessions bound to "${agentId}"`,
-        { category: 'config' },
-      ))
+      throw acpRemoteError(
+        new AcpClientError(
+          'protocol-error',
+          `dsh-acp: binding facts are not wired on this host; cannot count sessions bound to "${agentId}"`,
+          { category: 'config' },
+        ),
+      )
     }
     return { agentId, count: await facts.countBoundSessions(acpRouteId(agentId)) }
   }
-
 }
 
 function validateActivityReadRequest(limit: number, filter: AcpActivityFilterView | undefined): void {
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200) throw badRequest('ACP activity page size is invalid')
   if (filter === undefined) return
   for (const [key, value] of Object.entries(filter)) {
-    if (key !== 'ownerDshSessionId' && key !== 'promptAnchorMessageId') throw badRequest(`ACP activity filter field is invalid: ${key}`)
-    if (value !== undefined && (typeof value !== 'string' || value.length === 0 || value.length > 256)) throw badRequest('ACP activity filter value is invalid')
+    if (key !== 'ownerDshSessionId' && key !== 'promptAnchorMessageId')
+      throw badRequest(`ACP activity filter field is invalid: ${key}`)
+    if (value !== undefined && (typeof value !== 'string' || value.length === 0 || value.length > 256))
+      throw badRequest('ACP activity filter value is invalid')
   }
 }
 
@@ -1170,12 +1290,20 @@ function validateActivityReadRequest(limit: number, filter: AcpActivityFilterVie
 function probeStateView(snapshot: AcpProbeSnapshotLike): AcpAgentStateProbeView {
   const { result } = snapshot
   return result.kind === 'ok'
-    ? { result: { kind: 'ok', modelCount: result.models.length, hasModelConfigOption: result.hasModelConfigOption === true } }
+    ? {
+        result: {
+          kind: 'ok',
+          modelCount: result.models.length,
+          hasModelConfigOption: result.hasModelConfigOption === true,
+        },
+      }
     : { result: { kind: 'error', failureKind: result.failureKind } }
 }
 
 /** cleanup 三态词表收窄（结构面按 string 进；词表外值诚实归 null，不猜测）。 */
-function contractCleanupOf(cleanup: { readonly close: string; readonly delete: string; readonly message?: string | undefined } | undefined): AcpProbeCleanupView | null {
+function contractCleanupOf(
+  cleanup: { readonly close: string; readonly delete: string; readonly message?: string | undefined } | undefined,
+): AcpProbeCleanupView | null {
   if (cleanup === undefined) return null
   const steps = ['done', 'not-advertised', 'failed'] as const
   const close = steps.find((step) => step === cleanup.close)
@@ -1184,7 +1312,11 @@ function contractCleanupOf(cleanup: { readonly close: string; readonly delete: s
   return { close, delete: del, message: cleanup.message ?? null }
 }
 
-function probeRow(snapshot: AcpProbeSnapshotLike | undefined, referenceVersion: string | undefined, imageInputAvailable: boolean): AcpProviderHealth['probe'] {
+function probeRow(
+  snapshot: AcpProbeSnapshotLike | undefined,
+  referenceVersion: string | undefined,
+  imageInputAvailable: boolean,
+): AcpProviderHealth['probe'] {
   if (snapshot === undefined) return { status: 'never', at: null }
   const { result, at } = snapshot
   if (result.kind === 'ok') {
@@ -1194,17 +1326,15 @@ function probeRow(snapshot: AcpProbeSnapshotLike | undefined, referenceVersion: 
       at,
       modelCount: result.models.length,
       authMethods: result.authMethods === undefined ? null : result.authMethods.map(contractAuthMethodOf),
-      agentInfo: result.agentInfo == null
-        ? null
-        : { name: result.agentInfo.name, version: result.agentInfo.version },
+      agentInfo: result.agentInfo == null ? null : { name: result.agentInfo.name, version: result.agentInfo.version },
       capabilities,
       cleanup: contractCleanupOf(result.cleanup),
       capabilityHash: result.capabilityHash ?? null,
- // readiness：协议版本 / 兼容状态（兼容状态由 agent-config.ts
+      // readiness：协议版本 / 兼容状态（兼容状态由 agent-config.ts
       // 纯函数派生，比对握手 agentInfo.version 与 registry 快照版本参考）
       protocolVersion: result.protocolVersion ?? null,
       versionCompatibility: acpVersionCompatibility(referenceVersion, result.agentInfo?.version),
- // 端到端能力矩阵（广告 × adapter path；纯函数
+      // 端到端能力矩阵（广告 × adapter path；纯函数
       // 直通，形状与 contract `AcpCapabilityMatrixRow` 结构一致，无映射）
       matrix: acpCapabilityMatrix(capabilities, {
         imageInput: imageInputAvailable,
@@ -1231,6 +1361,8 @@ function activitySummary(row: AcpActivityView): AcpActivityView {
     // Small diagnostic metadata keeps tool summaries and projection links available.
     ...(rawSize <= 16_384 && row.rawDetail !== undefined ? { rawDetail: row.rawDetail } : {}),
     detailDeferred: true,
-    ...(row.display?.diffs === undefined ? {} : { detailPaths: [...new Set(row.display.diffs.map(diff => diff.path))] }),
+    ...(row.display?.diffs === undefined
+      ? {}
+      : { detailPaths: [...new Set(row.display.diffs.map((diff) => diff.path))] }),
   }
 }

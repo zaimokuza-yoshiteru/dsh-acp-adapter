@@ -19,13 +19,7 @@ import type * as acp from '@agentclientprotocol/sdk'
  * - `aborted`：调用方 AbortSignal 中止在飞 RPC，promise 被放弃
  *   （连接随之 poison 拆除）；taxonomy 默认映射 `user-rejected`
  */
-export type AcpErrorKind =
-  | 'spawn-failure'
-  | 'auth_required'
-  | 'timeout'
-  | 'protocol-error'
-  | 'crash'
-  | 'aborted'
+export type AcpErrorKind = 'spawn-failure' | 'auth_required' | 'timeout' | 'protocol-error' | 'crash' | 'aborted'
 
 /**
  * 统一错误 taxonomy（八分类；分类标签与 kind 映射的值表见 ./errors.ts）。
@@ -70,13 +64,13 @@ export interface AcpClientErrorDetails {
   /** probe 失败阶段（仅 probe 路径；健康卡 initialize/session 分层用）。 */
   probePhase?: AcpProbePhase | undefined
   /**
- * taxonomy 分类覆盖；缺省按 kind 映射（./errors.ts
+   * taxonomy 分类覆盖；缺省按 kind 映射（./errors.ts
    * `ACP_ERROR_KIND_CATEGORY`）。同 kind 不同成因需分流时使用（如
    * spawn-failure 的「配置非法/宿主能力缺失」归 `config`，「命令不存在」归
    * 默认的 `not-installed`）。
    */
   category?: AcpErrorCategory | undefined
- /** correlation id 覆盖；缺省构造期生成（./errors.ts `newAcpCorrelationId`）。 */
+  /** correlation id 覆盖；缺省构造期生成（./errors.ts `newAcpCorrelationId`）。 */
   correlationId?: string | undefined
 }
 
@@ -89,7 +83,11 @@ export type AcpSubagentSessionUpdate =
       readonly subagentSessionId: string
       readonly name: string
       readonly task: string
-      readonly capabilities: { readonly cancel?: boolean; readonly close?: boolean; readonly _meta?: Record<string, unknown> | null }
+      readonly capabilities: {
+        readonly cancel?: boolean
+        readonly close?: boolean
+        readonly _meta?: Record<string, unknown> | null
+      }
       readonly _meta?: Record<string, unknown> | null
     }
   | {
@@ -140,8 +138,12 @@ export interface AcpConnectionOptions extends AcpProcessOptions {
   onCapabilityDegraded?: (message: string) => void
   /** Both handlers must be present before ACP fs capability is advertised. */
   fileSystemHandlers?: {
-    readonly readTextFile: (params: acp.ReadTextFileRequest) => acp.ReadTextFileResponse | Promise<acp.ReadTextFileResponse>
-    readonly writeTextFile: (params: acp.WriteTextFileRequest) => acp.WriteTextFileResponse | Promise<acp.WriteTextFileResponse>
+    readonly readTextFile: (
+      params: acp.ReadTextFileRequest,
+    ) => acp.ReadTextFileResponse | Promise<acp.ReadTextFileResponse>
+    readonly writeTextFile: (
+      params: acp.WriteTextFileRequest,
+    ) => acp.WriteTextFileResponse | Promise<acp.WriteTextFileResponse>
     readonly dispose?: () => void
   }
   /** ACP v1 terminal handlers; supplied per connection generation. */
@@ -190,12 +192,12 @@ export interface AcpProbeCleanup {
 export interface AcpProbeResult {
   /** probe 建出的临时会话 id（连接已拆除，仅作诊断信息）。 */
   sessionId: string
- /** 会话清理事实（session/new 成功后、拆除前执行）。 */
+  /** 会话清理事实（session/new 成功后、拆除前执行）。 */
   cleanup: AcpProbeCleanup
   agentInfo: acp.Implementation | null | undefined
   agentCapabilities: acp.AgentCapabilities | undefined
   /**
- * initialize 协商出的 ACP 协议版本（readiness；握手成功恒在场，类型保持
+   * initialize 协商出的 ACP 协议版本（readiness；握手成功恒在场，类型保持
    * 与连接层 getter 同形——未协商到的防御形态是 undefined）。
    */
   protocolVersion: number | undefined

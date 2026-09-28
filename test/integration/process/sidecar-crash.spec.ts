@@ -38,7 +38,10 @@ describe('崩溃恢复（kill -9 + WAL）', () => {
       })
       // 等第一批 5 条 commit 落齐，再放行一小段「写一半」窗口后 SIGKILL
       await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error(`crash child did not commit batch1 in time; stderr: ${stderr}`)), 20_000)
+        const timer = setTimeout(
+          () => reject(new Error(`crash child did not commit batch1 in time; stderr: ${stderr}`)),
+          20_000,
+        )
         child.stdout.on('data', () => {
           if (stdout.includes('batch1-committed')) {
             clearTimeout(timer)
@@ -64,7 +67,7 @@ describe('崩溃恢复（kill -9 + WAL）', () => {
       const permissions = entries.filter((entry) => entry.kind === 'permission')
       // 已 commit 的第一批 5 条全部仍在（崩溃点在第二批中段，第二批落了多少不计，只断首批不丢）
       expect(permissions.length).toBeGreaterThanOrEqual(5)
-      const requestIds = permissions.map((entry) => entry.data.phase === 'asked' ? entry.data.requestId : undefined)
+      const requestIds = permissions.map((entry) => (entry.data.phase === 'asked' ? entry.data.requestId : undefined))
       for (let index = 0; index < 5; index += 1) {
         expect(requestIds).toContain(`req-${String(index)}`)
       }

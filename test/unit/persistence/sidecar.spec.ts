@@ -46,7 +46,11 @@ import {
   type AcpRecoveryState,
   type AcpSidecar,
 } from '../../../src/persistence/sidecar.ts'
-import { createPermissionAskedAudit, createPermissionDecidedAudit, type AcpPermissionAuditData } from '../../../src/domain/policy/events.ts'
+import {
+  createPermissionAskedAudit,
+  createPermissionDecidedAudit,
+  type AcpPermissionAuditData,
+} from '../../../src/domain/policy/events.ts'
 import { auditTimelineRowOf } from '../../../src/host/composition/audit-row.ts'
 import { matchesDiagnosticView } from '../../../src/contract/diagnostics.ts'
 
@@ -182,37 +186,61 @@ describe('createAcpSidecar 基本读写（v2 envelope 契约）', () => {
     ] as const
     let before: unknown
     try {
-      const insert = legacy.prepare('INSERT INTO audit (record_id, dsh_session_id, seq, time, kind, payload) VALUES (?, ?, ?, ?, ?, ?)')
-      facts.forEach(([kind, data], index) => insert.run(`old-${index}`, id, index + 2, TIME_BASE, kind, JSON.stringify(data)))
+      const insert = legacy.prepare(
+        'INSERT INTO audit (record_id, dsh_session_id, seq, time, kind, payload) VALUES (?, ?, ?, ?, ?, ?)',
+      )
+      facts.forEach(([kind, data], index) =>
+        insert.run(`old-${index}`, id, index + 2, TIME_BASE, kind, JSON.stringify(data)),
+      )
       before = legacy.prepare('SELECT record_id, payload FROM audit ORDER BY seq').all()
-    } finally { legacy.close() }
+    } finally {
+      legacy.close()
+    }
     store = createAcpSidecar({ root })
     const rows = (await store.list(id)).map(auditTimelineRowOf)
     expect(rows).toHaveLength(6)
-    expect(rows.filter(row => matchesDiagnosticView(row, 'technical')).map(row => row.kind)).toEqual(['binding', 'replay-assessment'])
-    expect(rows.find(row => row.kind === 'permission')?.status).toBe('selected')
-    expect(rows.find(row => row.status === 'stop-requested')?.severity).toBe('info')
-    expect(rows.find(row => row.status === 'exit-unverified')?.severity).toBe('warning')
-    expect(rows.find(row => row.kind === 'filesystem')?.severity).toBe('error')
+    expect(rows.filter((row) => matchesDiagnosticView(row, 'technical')).map((row) => row.kind)).toEqual([
+      'binding',
+      'replay-assessment',
+    ])
+    expect(rows.find((row) => row.kind === 'permission')?.status).toBe('selected')
+    expect(rows.find((row) => row.status === 'stop-requested')?.severity).toBe('info')
+    expect(rows.find((row) => row.status === 'exit-unverified')?.severity).toBe('warning')
+    expect(rows.find((row) => row.kind === 'filesystem')?.severity).toBe('error')
     await expect(store.readLatestBinding(id)).resolves.toEqual(binding)
     await expect(store.readRecoveryState(id)).resolves.toEqual(healthy)
     const inspection = rawDb()
-    try { expect(inspection.prepare('SELECT record_id, payload FROM audit ORDER BY seq').all()).toEqual(before) }
-    finally { inspection.close() }
+    try {
+      expect(inspection.prepare('SELECT record_id, payload FROM audit ORDER BY seq').all()).toEqual(before)
+    } finally {
+      inspection.close()
+    }
   })
 
   it('dispatch uncertainty is durable across reopen and settles idempotently', async () => {
     await store.beginDispatch({
-      key: 'step-1', dshSessionId: 'sess-dispatch', provider: 'acp-devin', model: 'm',
-      state: 'dispatch-uncertain', createdAt: TIME_BASE,
+      key: 'step-1',
+      dshSessionId: 'sess-dispatch',
+      provider: 'acp-devin',
+      model: 'm',
+      state: 'dispatch-uncertain',
+      createdAt: TIME_BASE,
     })
     await store.dispose()
     store = createAcpSidecar({ root, now: () => TIME_BASE + 1 })
-    await expect(store.readDispatch(SessionId('sess-dispatch'), 'step-1')).resolves.toMatchObject({ state: 'dispatch-uncertain' })
-    await expect(store.beginDispatch({
-      key: 'step-1', dshSessionId: 'sess-dispatch', provider: 'acp-devin', model: 'm',
-      state: 'dispatch-uncertain', createdAt: TIME_BASE,
-    })).rejects.toThrow('ACP_RECOVERY_REQUIRED')
+    await expect(store.readDispatch(SessionId('sess-dispatch'), 'step-1')).resolves.toMatchObject({
+      state: 'dispatch-uncertain',
+    })
+    await expect(
+      store.beginDispatch({
+        key: 'step-1',
+        dshSessionId: 'sess-dispatch',
+        provider: 'acp-devin',
+        model: 'm',
+        state: 'dispatch-uncertain',
+        createdAt: TIME_BASE,
+      }),
+    ).rejects.toThrow('ACP_RECOVERY_REQUIRED')
     await store.settleDispatch(SessionId('sess-dispatch'), 'step-1')
     await store.settleDispatch(SessionId('sess-dispatch'), 'step-1')
     await expect(store.readDispatch(SessionId('sess-dispatch'), 'step-1')).resolves.toMatchObject({ state: 'settled' })
@@ -221,11 +249,20 @@ describe('createAcpSidecar 基本读写（v2 envelope 契约）', () => {
   it('keeps at most one settled dispatch row per DSH session', async () => {
     for (let index = 0; index < 100; index += 1) {
       const key = `step-${index}`
-      await store.beginDispatch({ key, dshSessionId: 'sess-bounded', provider: 'acp-devin', model: 'm', state: 'dispatch-uncertain', createdAt: TIME_BASE + index })
+      await store.beginDispatch({
+        key,
+        dshSessionId: 'sess-bounded',
+        provider: 'acp-devin',
+        model: 'm',
+        state: 'dispatch-uncertain',
+        createdAt: TIME_BASE + index,
+      })
       await store.settleDispatch(SessionId('sess-bounded'), key)
     }
     const db = (store as unknown as { db?: { prepare(sql: string): { get(...args: unknown[]): unknown } } }).db
-    expect(db?.prepare('SELECT COUNT(*) AS n FROM dispatch_ledger WHERE dsh_session_id = ?').get('sess-bounded')).toEqual({ n: 1 })
+    expect(
+      db?.prepare('SELECT COUNT(*) AS n FROM dispatch_ledger WHERE dsh_session_id = ?').get('sess-bounded'),
+    ).toEqual({ n: 1 })
   })
 
   it('recovery state is durable and independent from the audit stream', async () => {
@@ -248,7 +285,9 @@ describe('createAcpSidecar 基本读写（v2 envelope 契约）', () => {
   })
   it('recovery schema migrates legacy current-state rows', async () => {
     const legacy = new DatabaseSync(dbFile())
-    legacy.exec('CREATE TABLE recovery_states (dsh_session_id TEXT PRIMARY KEY, time INTEGER NOT NULL, payload TEXT NOT NULL) STRICT')
+    legacy.exec(
+      'CREATE TABLE recovery_states (dsh_session_id TEXT PRIMARY KEY, time INTEGER NOT NULL, payload TEXT NOT NULL) STRICT',
+    )
     legacy.close()
     const state: AcpRecoveryState = {
       dshSessionId: 'sess-legacy',
@@ -264,7 +303,9 @@ describe('createAcpSidecar 基本读写（v2 envelope 契约）', () => {
     const inspection = new DatabaseSync(dbFile())
     try {
       const columns = inspection.prepare('PRAGMA table_info(recovery_states)').all() as Array<{ name: string }>
-      expect(columns.map((column) => column.name)).toEqual(expect.arrayContaining(['last_attempt_at', 'last_user_action']))
+      expect(columns.map((column) => column.name)).toEqual(
+        expect.arrayContaining(['last_attempt_at', 'last_user_action']),
+      )
     } finally {
       inspection.close()
     }
@@ -425,7 +466,14 @@ describe('createAcpSidecar 基本读写（v2 envelope 契约）', () => {
     await store.append(SessionId('sess-1'), { kind: 'binding', data: BINDING_A })
     await store.append(SessionId('sess-1'), { kind: 'binding', data: BINDING_B })
     const names = fs.readdirSync(root)
-    expect(names.every((name) => name === ACP_SIDECAR_DB_FILENAME || name === `${ACP_SIDECAR_DB_FILENAME}-wal` || name === `${ACP_SIDECAR_DB_FILENAME}-shm`)).toBe(true)
+    expect(
+      names.every(
+        (name) =>
+          name === ACP_SIDECAR_DB_FILENAME ||
+          name === `${ACP_SIDECAR_DB_FILENAME}-wal` ||
+          name === `${ACP_SIDECAR_DB_FILENAME}-shm`,
+      ),
+    ).toBe(true)
   })
 
   it('同一 sessionId 并发 append 全部完好落库：seq 独占 1..N 不交错（同步路径天然串行）', async () => {
@@ -436,13 +484,16 @@ describe('createAcpSidecar 基本读写（v2 envelope 契约）', () => {
           kind: 'permission',
           time: index,
           data: permissionData(`req-${String(index)}`),
-        })),
+        }),
+      ),
     )
     const lines = await readEnvelopes('sess-1')
     expect(lines).toHaveLength(count)
     const times = lines.map((line) => line.time).sort((a, b) => a - b)
     expect(times).toEqual(Array.from({ length: count }, (_, index) => index))
-    expect(lines.map((line) => line.seq).sort((a, b) => a - b)).toEqual(Array.from({ length: count }, (_, index) => index + 1))
+    expect(lines.map((line) => line.seq).sort((a, b) => a - b)).toEqual(
+      Array.from({ length: count }, (_, index) => index + 1),
+    )
     expect(new Set(lines.map((line) => line.recordId)).size).toBe(count)
   })
 })
@@ -450,11 +501,13 @@ describe('createAcpSidecar 基本读写（v2 envelope 契约）', () => {
 describe(' binding 语义门槛（readLatestBinding 三态）', () => {
   it('已有合法 binding 时拒绝畸形覆盖，索引与 audit 同事务保持不变', async () => {
     await store.append(SessionId('sess-1'), { kind: 'binding', time: 10, data: BINDING_A })
-    await expect(store.append(SessionId('sess-1'), {
-      kind: 'binding',
-      time: 20,
-      data: { provider: 'acp-devin', agentSessionId: 'agent-session-9' } as unknown as AcpBindingData,
-    })).rejects.toThrow('invalid binding')
+    await expect(
+      store.append(SessionId('sess-1'), {
+        kind: 'binding',
+        time: 20,
+        data: { provider: 'acp-devin', agentSessionId: 'agent-session-9' } as unknown as AcpBindingData,
+      }),
+    ).rejects.toThrow('invalid binding')
     expect((await latestBinding('sess-1'))?.agentSessionId).toBe('agent-session-1')
     expect(await readEnvelopes('sess-1')).toHaveLength(1)
   })
@@ -475,9 +528,19 @@ describe(' binding 语义门槛（readLatestBinding 三态）', () => {
 
   it('语义门槛逐字段钉版：删任一必填字段即 outdated', async () => {
     const required = [
-      'provider', 'agentSessionId', 'profileId', 'canonicalCwd', 'launchFingerprint',
-      'agent', 'protocolVersion', 'capabilityHash', 'configHash', 'generation',
-      'historyBaseSeq', 'establishedAt', 'dshCommittedSeq',
+      'provider',
+      'agentSessionId',
+      'profileId',
+      'canonicalCwd',
+      'launchFingerprint',
+      'agent',
+      'protocolVersion',
+      'capabilityHash',
+      'configHash',
+      'generation',
+      'historyBaseSeq',
+      'establishedAt',
+      'dshCommittedSeq',
     ] as const
     for (const field of required) {
       const payload: Record<string, unknown> = { ...BINDING_A }
@@ -512,7 +575,8 @@ describe(' binding 语义门槛（readLatestBinding 三态）', () => {
     // 经第二个连接直插一行 kind=binding 但 payload 非 JSON 的游离 audit 行
     //（模拟库外篡改/旧版残留——bindings 索引不受影响，list 跳过 + warn）
     const raw = rawDb()
-    raw.prepare('INSERT INTO audit (record_id, dsh_session_id, seq, time, kind, payload) VALUES (?, ?, ?, ?, ?, ?)')
+    raw
+      .prepare('INSERT INTO audit (record_id, dsh_session_id, seq, time, kind, payload) VALUES (?, ?, ?, ?, ?, ?)')
       .run('r-bad', 'sess-1', 99, 20, 'binding', 'not-json{')
     raw.close()
     const lookup = await store.readLatestBinding(SessionId('sess-1'))
@@ -586,7 +650,12 @@ describe('reconciliation kind', () => {
     await store.append(SessionId('sess-1'), {
       kind: 'reconciliation',
       time: 1,
-      data: { cause: 'replay-diverged', detail: 'first divergence at index 2', acpSessionId: 'agent-session-1', generation: 1 },
+      data: {
+        cause: 'replay-diverged',
+        detail: 'first divergence at index 2',
+        acpSessionId: 'agent-session-1',
+        generation: 1,
+      },
     })
     await store.append(SessionId('sess-1'), {
       kind: 'reconciliation',
@@ -595,7 +664,12 @@ describe('reconciliation kind', () => {
     })
     const entries = await store.list(SessionId('sess-1'))
     expect(entries.map((entry) => entry.kind)).toEqual(['reconciliation', 'reconciliation'])
-    expect(entries[0]?.data).toEqual({ cause: 'replay-diverged', detail: 'first divergence at index 2', acpSessionId: 'agent-session-1', generation: 1 })
+    expect(entries[0]?.data).toEqual({
+      cause: 'replay-diverged',
+      detail: 'first divergence at index 2',
+      acpSessionId: 'agent-session-1',
+      generation: 1,
+    })
     expect(entries[1]?.data).toEqual({ cause: 'binding-missing' })
     const [first, second] = await readEnvelopes('sess-1')
     expect(first?.acpSessionId).toBe('agent-session-1')
@@ -674,32 +748,40 @@ describe('permission decided 重连重放去重（/ dedupe_key）', () => {
     // 首个连接占用 seq=2；第二连接随后写 decided 时必须重新读取 DB head。
     await store.append(SessionId('sess-shared'), { kind: 'permission', time: 2, data: permissionData('asked-first') })
     await second.append(SessionId('sess-shared'), { kind: 'permission', time: 3, data: decidedData('decision-1') })
-    expect((await readEnvelopes('sess-shared')).some(entry => {
-      if (entry.kind !== 'permission') return false
-      const payload = entry.payload as AcpPermissionAuditData
-      return payload.phase === 'decided' && payload.requestId === 'decision-1'
-    })).toBe(true)
+    expect(
+      (await readEnvelopes('sess-shared')).some((entry) => {
+        if (entry.kind !== 'permission') return false
+        const payload = entry.payload as AcpPermissionAuditData
+        return payload.phase === 'decided' && payload.requestId === 'decision-1'
+      }),
+    ).toBe(true)
     // 不同连接的相同决定是幂等重放；另一个决定照常落库。
     await store.append(SessionId('sess-shared'), { kind: 'permission', time: 4, data: decidedData('decision-1') })
     await store.append(SessionId('sess-shared'), { kind: 'permission', time: 5, data: decidedData('decision-2') })
 
-    const entries = (await readEnvelopes('sess-shared')).filter(entry => entry.kind === 'permission')
-    expect(entries.map(entry => entry.seq)).toEqual([1, 2, 3, 4])
-    expect(entries.flatMap(entry => {
-      const payload = entry.payload as AcpPermissionAuditData
-      return payload.phase === 'decided' ? [payload.requestId] : []
-    })).toEqual(['decision-1', 'decision-2'])
+    const entries = (await readEnvelopes('sess-shared')).filter((entry) => entry.kind === 'permission')
+    expect(entries.map((entry) => entry.seq)).toEqual([1, 2, 3, 4])
+    expect(
+      entries.flatMap((entry) => {
+        const payload = entry.payload as AcpPermissionAuditData
+        return payload.phase === 'decided' ? [payload.requestId] : []
+      }),
+    ).toEqual(['decision-1', 'decision-2'])
   })
 
   it('permission 序号分配保留同连接 pending audit 的 reservation', async () => {
     await store.append(SessionId('sess-queued'), { kind: 'binding', time: 1, data: BINDING_A })
-    await store.append(SessionId('sess-queued'), { kind: 'reconciliation', time: 2, data: { cause: 'binding-missing' } })
+    await store.append(SessionId('sess-queued'), {
+      kind: 'reconciliation',
+      time: 2,
+      data: { cause: 'binding-missing' },
+    })
     await store.append(SessionId('sess-queued'), { kind: 'permission', time: 3, data: decidedData('queued-mix') })
     await store.flush()
 
     const rows = await readEnvelopes('sess-queued')
-    expect(rows.map(row => row.seq)).toEqual([1, 2, 3])
-    expect(rows.map(row => row.kind)).toEqual(['binding', 'reconciliation', 'permission'])
+    expect(rows.map((row) => row.seq)).toEqual([1, 2, 3])
+    expect(rows.map((row) => row.kind)).toEqual(['binding', 'reconciliation', 'permission'])
   })
 })
 
@@ -707,7 +789,9 @@ describe('行级容错与库级 fail loud（坏行/隔离概念删除后的等�
   it('直插 SQL 的非法 audit 行：跳过并 warn 计数；合法行照常读出', async () => {
     await store.append(SessionId('sess-1'), { kind: 'binding', time: 10, data: BINDING_A })
     const raw = rawDb()
-    const insert = raw.prepare('INSERT INTO audit (record_id, dsh_session_id, seq, time, kind, payload) VALUES (?, ?, ?, ?, ?, ?)')
+    const insert = raw.prepare(
+      'INSERT INTO audit (record_id, dsh_session_id, seq, time, kind, payload) VALUES (?, ?, ?, ?, ?, ?)',
+    )
     insert.run('r-bad-1', 'sess-1', 90, 1, 'unknown-kind', '{}') // 未知 kind
     insert.run('r-bad-2', 'sess-1', 91, 1, 'binding', 'not-json{') // 坏 JSON
     insert.run('r-bad-3', 'sess-1', 0, 1, 'binding', '{}') // seq 非正整数
@@ -732,7 +816,6 @@ describe('行级容错与库级 fail loud（坏行/隔离概念删除后的等�
     await expect(broken.append(SessionId('sess-1'), { kind: 'binding', time: 2, data: BINDING_A })).rejects.toThrow()
     expect(warns.some((message) => message.includes('fails loud'))).toBe(true)
   })
-
 })
 
 describe('listBindings 全量 binding 索引（双绑守卫扫描面）', () => {
@@ -775,7 +858,11 @@ describe('listBindings 全量 binding 索引（双绑守卫扫描面）', () => 
 describe('有界审计队列 + flush（有界审计队列）', () => {
   it('非审批 kind 入队：append 返回时不阻塞（未 flush 前库里查无此行）；flush 落齐', async () => {
     // 不 await：append 的同步段只入队（不展开 microtask drain）
-    void store.append(SessionId('sess-1'), { kind: 'degradation', time: 1, data: { code: 'unsupported-chunk-content', items: [], keptPreviewChars: 0, truncated: false } })
+    void store.append(SessionId('sess-1'), {
+      kind: 'degradation',
+      time: 1,
+      data: { code: 'unsupported-chunk-content', items: [], keptPreviewChars: 0, truncated: false },
+    })
     const raw = rawDb()
     const count = raw.prepare('SELECT COUNT(*) AS n FROM audit').get() as { n: number }
     raw.close()
@@ -790,7 +877,8 @@ describe('有界审计队列 + flush（有界审计队列）', () => {
     // 未经任何 await（队列 drain 的 microtask 不会跑），直查库即见
     const raw = rawDb()
     const rows = raw.prepare('SELECT kind FROM audit ORDER BY seq ASC').all() as { kind: string }[]
-    const binding = raw.prepare('SELECT payload FROM bindings WHERE dsh_session_id = ?').get('sess-1') as { payload: string } | undefined
+    const binding = raw.prepare('SELECT payload FROM bindings WHERE dsh_session_id = ?').get('sess-1') as
+      { payload: string } | undefined
     raw.close()
     expect(rows.map((row) => row.kind)).toEqual(['permission', 'binding'])
     expect(binding).toBeDefined()
@@ -801,23 +889,38 @@ describe('有界审计队列 + flush（有界审计队列）', () => {
       kind: 'filesystem',
       time: 3,
       data: {
-        operation: 'write', path: '/tmp/a.txt', bytes: 3,
-        beforeHash: null, afterHash: 'abc', outcome: 'ok',
-        acpSessionId: 'agent-session-1', profileId: 'devin',
+        operation: 'write',
+        path: '/tmp/a.txt',
+        bytes: 3,
+        beforeHash: null,
+        afterHash: 'abc',
+        outcome: 'ok',
+        acpSessionId: 'agent-session-1',
+        profileId: 'devin',
       },
     })
     const raw = rawDb()
-    const row = raw.prepare('SELECT kind FROM audit WHERE dsh_session_id = ?').get('sess-1') as { kind: string } | undefined
+    const row = raw.prepare('SELECT kind FROM audit WHERE dsh_session_id = ?').get('sess-1') as
+      { kind: string } | undefined
     raw.close()
     expect(row?.kind).toBe('filesystem')
     await pending
   })
 
   it('队列满 → 丢弃新记录并 warn 计数（绝不阻塞）', async () => {
-    const limited = createAcpSidecar({ root, now: () => ++clock, warn: (message) => warns.push(message), queueLimit: 4 })
+    const limited = createAcpSidecar({
+      root,
+      now: () => ++clock,
+      warn: (message) => warns.push(message),
+      queueLimit: 4,
+    })
     extraStores.push(limited)
     for (let index = 0; index < 6; index += 1) {
-      void limited.append(SessionId('sess-1'), { kind: 'degradation', time: index, data: { code: 'unsupported-chunk-content', items: [], keptPreviewChars: 0, truncated: false } })
+      void limited.append(SessionId('sess-1'), {
+        kind: 'degradation',
+        time: index,
+        data: { code: 'unsupported-chunk-content', items: [], keptPreviewChars: 0, truncated: false },
+      })
     }
     await limited.flush()
     expect(await limited.list(SessionId('sess-1'))).toHaveLength(4)
@@ -830,7 +933,11 @@ describe('有界审计队列 + flush（有界审计队列）', () => {
 
   it('队列批量落库保持追加序：混合排队 kind 的 seq 单调、读回顺序与 append 序一致', async () => {
     for (let index = 0; index < 50; index += 1) {
-      await store.append(SessionId('sess-1'), { kind: 'reconciliation', time: index, data: { cause: 'binding-missing', acpSessionId: `agent-${String(index)}` } })
+      await store.append(SessionId('sess-1'), {
+        kind: 'reconciliation',
+        time: index,
+        data: { cause: 'binding-missing', acpSessionId: `agent-${String(index)}` },
+      })
     }
     const entries = await store.list(SessionId('sess-1'))
     expect(entries.map((entry) => entry.seq)).toEqual(Array.from({ length: 50 }, (_, index) => index + 1))
@@ -843,10 +950,16 @@ describe('有界审计队列 + flush（有界审计队列）', () => {
     // 制造落库失败：经第二个连接装一个 INSERT 拦截触发器（drain 事务的 INSERT 必抛；
     // chmod 只读对已打开的 fd 无效，故用库内触发器注入）
     const raw = rawDb()
-    raw.exec("CREATE TRIGGER audit_block BEFORE INSERT ON audit BEGIN SELECT RAISE(ABORT, 'injected insert failure'); END")
+    raw.exec(
+      "CREATE TRIGGER audit_block BEFORE INSERT ON audit BEGIN SELECT RAISE(ABORT, 'injected insert failure'); END",
+    )
     raw.close()
     try {
-      void store.append(SessionId('sess-1'), { kind: 'degradation', time: 2, data: { code: 'unsupported-chunk-content', items: [], keptPreviewChars: 0, truncated: false } })
+      void store.append(SessionId('sess-1'), {
+        kind: 'degradation',
+        time: 2,
+        data: { code: 'unsupported-chunk-content', items: [], keptPreviewChars: 0, truncated: false },
+      })
       await store.flush() // drain 失败：整批丢弃（warn），flush 不因维护性 checkpoint 失败拒绝
     } finally {
       const restore = rawDb()
@@ -856,7 +969,11 @@ describe('有界审计队列 + flush（有界审计队列）', () => {
     expect(warns.some((message) => message.includes('failed to flush 1 queued audit record(s)'))).toBe(true)
     expect(warns.some((message) => message.includes('injected insert failure'))).toBe(true)
     // 触发器拆除后：照写照读（丢弃的非审批审计不毒化后续）
-    await store.append(SessionId('sess-1'), { kind: 'degradation', time: 3, data: { code: 'unsupported-chunk-content', items: [], keptPreviewChars: 0, truncated: false } })
+    await store.append(SessionId('sess-1'), {
+      kind: 'degradation',
+      time: 3,
+      data: { code: 'unsupported-chunk-content', items: [], keptPreviewChars: 0, truncated: false },
+    })
     const entries = await store.list(SessionId('sess-1'))
     expect(entries.map((entry) => entry.kind)).toEqual(['binding', 'degradation'])
   })
@@ -889,7 +1006,8 @@ describe('权限位（目录 0700 / 库与 wal/shm 0600）', () => {
 describe('旧 JSONL 残留（不做迁移层，一律忽略）', () => {
   it('root 下旧 *.jsonl 不读不迁不删：写库正常、旧文件字节不动、warn 一次', async () => {
     const legacy = path.join(root, 'sess-legacy.jsonl')
-    const legacyContent = '{"schemaVersion":2,"recordId":"r-1","seq":1,"time":1,"kind":"binding","dshSessionId":"sess-legacy","payload":{}}\n'
+    const legacyContent =
+      '{"schemaVersion":2,"recordId":"r-1","seq":1,"time":1,"kind":"binding","dshSessionId":"sess-legacy","payload":{}}\n'
     fs.writeFileSync(legacy, legacyContent, 'utf8')
     await store.append(SessionId('sess-1'), { kind: 'binding', time: 1, data: BINDING_A })
     // 旧文件原样保留，内容不被读取（sess-legacy 在库里查无行）
@@ -910,7 +1028,11 @@ describe('大批量写入回归', () => {
     const started = performance.now()
     const marks: number[] = []
     for (let index = 0; index < N; index += 1) {
-      await store.append(SessionId('sess-bench'), { kind: 'permission', time: index + 1, data: permissionData(`req-${String(index)}`) })
+      await store.append(SessionId('sess-bench'), {
+        kind: 'permission',
+        time: index + 1,
+        data: permissionData(`req-${String(index)}`),
+      })
       if ((index + 1) % 1_000 === 0) marks.push(performance.now() - started)
     }
     const elapsed = performance.now() - started
@@ -927,7 +1049,7 @@ describe('大批量写入回归', () => {
     db.close()
     const entries = await store.list(SessionId('sess-bench'))
     expect(entries).toHaveLength(N)
-    expect(entries.map(entry => entry.seq)).toEqual(Array.from({ length: N }, (_, index) => index + 1))
+    expect(entries.map((entry) => entry.seq)).toEqual(Array.from({ length: N }, (_, index) => index + 1))
   }, 45_000)
 })
 
@@ -949,7 +1071,7 @@ describe('createAcpSidecar 行键安全边界', () => {
 })
 
 describe('installAcpSidecar', () => {
- it('dshHomePath slot 缺席 → undefined（起由 createAcpMachine fail loud 拒启 ACP 会话；不写真实 ~/.dsh）', () => {
+  it('dshHomePath slot 缺席 → undefined（起由 createAcpMachine fail loud 拒启 ACP 会话；不写真实 ~/.dsh）', () => {
     const ctx = new Context()
     expect(installAcpSidecar(ctx)).toBeUndefined()
   })
@@ -975,7 +1097,6 @@ describe('installAcpSidecar', () => {
     }
   })
 })
-
 
 // ---------- last-known option 快照（option_snapshots 表 + acpOptionsSnapshotOf） ----------
 
@@ -1020,7 +1141,10 @@ describe(' option 快照（acpOptionsSnapshotOf 有界标准化 + option_snapsho
 
   it('硬上限：字段截断 128 字符、values 截断 64 条、选项数截断 32 项', () => {
     const longId = 'x'.repeat(ACP_SNAPSHOT_FIELD_MAX + 50)
-    const manyValues = Array.from({ length: ACP_SNAPSHOT_VALUES_LIMIT + 10 }, (_, index) => ({ value: `v${String(index)}`, name: `v${String(index)}` }))
+    const manyValues = Array.from({ length: ACP_SNAPSHOT_VALUES_LIMIT + 10 }, (_, index) => ({
+      value: `v${String(index)}`,
+      name: `v${String(index)}`,
+    }))
     const manyOptions = Array.from({ length: ACP_SNAPSHOT_OPTION_LIMIT + 5 }, (_, index) => ({
       type: 'boolean',
       id: `opt-${String(index)}`,
@@ -1028,7 +1152,10 @@ describe(' option 快照（acpOptionsSnapshotOf 有界标准化 + option_snapsho
       currentValue: false,
     }))
     const record = acpOptionsSnapshotOf(
-      [{ type: 'select', id: longId, name: 'Model', currentValue: 'm1', options: manyValues } as never, ...(manyOptions as never[])],
+      [
+        { type: 'select', id: longId, name: 'Model', currentValue: 'm1', options: manyValues } as never,
+        ...(manyOptions as never[]),
+      ],
       undefined,
       'fp-2',
       TIME_BASE,
@@ -1046,7 +1173,10 @@ describe(' option 快照（acpOptionsSnapshotOf 有界标准化 + option_snapsho
         id,
         name: id,
         currentValue: 'v',
-        options: Array.from({ length: ACP_SNAPSHOT_VALUES_LIMIT }, (_, index) => ({ value: `${id}-${'y'.repeat(100)}${String(index)}`, name: 'v' })),
+        options: Array.from({ length: ACP_SNAPSHOT_VALUES_LIMIT }, (_, index) => ({
+          value: `${id}-${'y'.repeat(100)}${String(index)}`,
+          name: 'v',
+        })),
       }) as never
     const record = acpOptionsSnapshotOf([fat('model'), fat('a'), fat('b'), fat('c')], undefined, 'fp-3', TIME_BASE)
     expect(JSON.stringify(record).length).toBeLessThanOrEqual(ACP_SNAPSHOT_TOTAL_BYTES)
@@ -1058,7 +1188,12 @@ describe(' option 快照（acpOptionsSnapshotOf 有界标准化 + option_snapsho
   it('写路径语义门槛：畸形快照 / 绕过 acpOptionsSnapshotOf 的超界快照 → TypeError，不落行', async () => {
     // 写路径校验是同步 throw（方法非 async）
     expect(() =>
-      store.writeOptionSnapshot(SessionId('sess-1'), { options: [{ id: '', category: null, name: 'x', value: 'v', values: null }], currentModeId: null, updatedAt: 1, fingerprint: 'fp' } as AcpOptionsSnapshotRecord),
+      store.writeOptionSnapshot(SessionId('sess-1'), {
+        options: [{ id: '', category: null, name: 'x', value: 'v', values: null }],
+        currentModeId: null,
+        updatedAt: 1,
+        fingerprint: 'fp',
+      } as AcpOptionsSnapshotRecord),
     ).toThrow(TypeError)
     // 字段/条数均在语义上限内、但整体超字节界：32 选项 × 64 值 × 128 字符 ≈ 270KB
     const oversized: AcpOptionsSnapshotRecord = {
@@ -1080,11 +1215,19 @@ describe(' option 快照（acpOptionsSnapshotOf 有界标准化 + option_snapsho
   it('畸形行 → undefined + warn（按「无快照」处理，不 throw）', async () => {
     await store.writeOptionSnapshot(
       SessionId('sess-1'),
-      acpOptionsSnapshotOf([{ type: 'boolean', id: 'fast', name: 'Fast', currentValue: false } as never], undefined, 'fp-4', TIME_BASE),
+      acpOptionsSnapshotOf(
+        [{ type: 'boolean', id: 'fast', name: 'Fast', currentValue: false } as never],
+        undefined,
+        'fp-4',
+        TIME_BASE,
+      ),
     )
     const db = rawDb()
     try {
-      db.prepare('UPDATE option_snapshots SET payload = ? WHERE dsh_session_id = ?').run('{"options":"not-an-array"', 'sess-1')
+      db.prepare('UPDATE option_snapshots SET payload = ? WHERE dsh_session_id = ?').run(
+        '{"options":"not-an-array"',
+        'sess-1',
+      )
     } finally {
       db.close()
     }
@@ -1100,11 +1243,20 @@ describe(' option 快照（acpOptionsSnapshotOf 有界标准化 + option_snapsho
 
   it('新快照可保存 Agent modes/context usage，旧快照仍按兼容形态读取', async () => {
     const record = acpOptionsSnapshotOf([], 'code', 'fp-new', TIME_BASE, {
-      modes: { currentModeId: 'code', availableModes: [{ id: 'code', name: 'Code' }, { id: 'plan', name: 'Plan', description: 'Planning' }] },
+      modes: {
+        currentModeId: 'code',
+        availableModes: [
+          { id: 'code', name: 'Code' },
+          { id: 'plan', name: 'Plan', description: 'Planning' },
+        ],
+      },
       contextUsage: { used: 42, size: 1000, cost: { amount: 0.3, currency: 'USD' } },
     })
     await store.writeOptionSnapshot(SessionId('sess-1'), record)
-    expect(await store.readOptionSnapshot(SessionId('sess-1'))).toMatchObject({ modes: record.modes, contextUsage: record.contextUsage })
+    expect(await store.readOptionSnapshot(SessionId('sess-1'))).toMatchObject({
+      modes: record.modes,
+      contextUsage: record.contextUsage,
+    })
     await store.writeOptionSnapshot(SessionId('sess-2'), acpOptionsSnapshotOf([], undefined, 'fp-old', TIME_BASE))
     const old = await store.readOptionSnapshot(SessionId('sess-2'))
     expect(old?.modes).toBeUndefined()

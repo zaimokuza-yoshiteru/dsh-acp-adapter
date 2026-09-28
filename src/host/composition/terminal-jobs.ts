@@ -4,7 +4,9 @@ import type { JobRegistry } from '@deepseek-ai/dsh-jobs'
 import type { AcpTerminalJobStarter } from '../../runtime/client-capabilities/terminal-job.ts'
 
 declare module '@deepseek-ai/dsh-jobs' {
-  interface JobKindMap { 'acp-terminal': 'acp-terminal' }
+  interface JobKindMap {
+    'acp-terminal': 'acp-terminal'
+  }
 }
 
 /** Resolve optional host jobs without creating a second registry or UI store. */
@@ -15,22 +17,31 @@ export function resolveTerminalJobs(ctx: Context, sessionId: string): AcpTermina
   return (label, run) => {
     const owner = sessionId as SessionId
     let id!: ReturnType<JobRegistry['start']>
-    id = jobs.start({ kind: 'acp-terminal', label, owner, run: () => {
-      const producer = run()
-      return {
-        ...producer,
-        done: producer.done.then(outcome => {
-          // Arm the public result waiter before publishing the outcome to the
-          // registry. Settlement marks it reported before tool-jobs listeners
-          // run, so ACP remains the sole completion recipient. No background
-          // polling or timer-renewal gap can cause an extra model turn.
-          void jobs.wait(id, 30_000, owner).catch((error: unknown) => {
-            ctx.logger.warn(`ACP terminal job completion could not be observed: ${String(error)}`)
-          })
-          return outcome
-        }),
-      }
-    } })
-    return { cancel: () => { jobs.kill(id, owner, 'ACP terminal cancellation') } }
+    id = jobs.start({
+      kind: 'acp-terminal',
+      label,
+      owner,
+      run: () => {
+        const producer = run()
+        return {
+          ...producer,
+          done: producer.done.then((outcome) => {
+            // Arm the public result waiter before publishing the outcome to the
+            // registry. Settlement marks it reported before tool-jobs listeners
+            // run, so ACP remains the sole completion recipient. No background
+            // polling or timer-renewal gap can cause an extra model turn.
+            void jobs.wait(id, 30_000, owner).catch((error: unknown) => {
+              ctx.logger.warn(`ACP terminal job completion could not be observed: ${String(error)}`)
+            })
+            return outcome
+          }),
+        }
+      },
+    })
+    return {
+      cancel: () => {
+        jobs.kill(id, owner, 'ACP terminal cancellation')
+      },
+    }
   }
 }

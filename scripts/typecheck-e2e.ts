@@ -38,4 +38,7 @@ const config = {
 }
 const path = join(output, 'tsconfig.json')
 writeFileSync(path, JSON.stringify(config, null, 2))
-execFileSync(process.execPath, [join(root, 'node_modules/typescript/bin/tsc'), '-p', path, '--pretty', 'false'], { cwd: root, stdio: 'inherit' })
+execFileSync(process.execPath, [join(root, 'node_modules/typescript/bin/tsc'), '-p', path, '--pretty', 'false'], {
+  cwd: root,
+  stdio: 'inherit',
+})

@@ -8,7 +8,7 @@ import type * as acp from '@agentclientprotocol/sdk'
 export const ACP_FS_MAX_BYTES = 8 * 1024 * 1024
 export const ACP_FS_MAX_LINES = 20_000
 export const ACP_FS_MAX_LINE = 1_000_000
-export const ACP_FS_DEFAULT_TIMEOUT_MS = 30_000
+const ACP_FS_DEFAULT_TIMEOUT_MS = 30_000
 
 /** Stable, content-free reason codes for failed filesystem requests. */
 export type AcpFileAuditReason =
@@ -68,7 +68,8 @@ export interface AcpFileSystemHandlers {
 }
 
 function assertPath(value: string): string {
-  if (typeof value !== 'string' || value.length === 0 || value.includes('\0')) throw new TypeError('ACP fs: path must be a non-empty absolute path without NUL')
+  if (typeof value !== 'string' || value.length === 0 || value.includes('\0'))
+    throw new TypeError('ACP fs: path must be a non-empty absolute path without NUL')
   if (!path.isAbsolute(value)) throw new TypeError('ACP fs: path must be absolute')
   return path.normalize(value)
 }
@@ -91,7 +92,9 @@ async function abortable<T>(operation: Promise<T>, signal: AbortSignal | undefin
     onAbort = () => reject(new Error('ACP fs operation aborted'))
     signal.addEventListener('abort', onAbort, { once: true })
   })
-  try { return await Promise.race([operation, aborted]) } finally {
+  try {
+    return await Promise.race([operation, aborted])
+  } finally {
     if (onAbort !== undefined) signal.removeEventListener('abort', onAbort)
   }
 }
@@ -161,12 +164,14 @@ function checkReadWindow(text: string, line: number | null | undefined, limit: n
   // ACP v1 permits zero for both fields. A zero line is treated as the first
   // line (the same compatibility behavior used by the reference clients),
   // while a zero limit intentionally returns an empty window.
-  if (line !== undefined && line !== null && (!Number.isSafeInteger(line) || line < 0)) throw new TypeError('ACP fs: line must be a safe non-negative integer')
+  if (line !== undefined && line !== null && (!Number.isSafeInteger(line) || line < 0))
+    throw new TypeError('ACP fs: line must be a safe non-negative integer')
   // The request window is a presentation bound, not an additional file-size
   // limit.  Accept an oversized safe limit and clamp it to the host's maximum
   // instead of rejecting otherwise valid files (some ACP agents use a very
   // large sentinel/default here).
-  if (limit !== undefined && limit !== null && (!Number.isSafeInteger(limit) || limit < 0)) throw new TypeError('ACP fs: limit must be a safe non-negative integer')
+  if (limit !== undefined && limit !== null && (!Number.isSafeInteger(limit) || limit < 0))
+    throw new TypeError('ACP fs: limit must be a safe non-negative integer')
   if ((line === undefined || line === null) && (limit === undefined || limit === null)) return text
   const rows = text.split('\n')
   const start = line === undefined || line === null ? 0 : Math.max(0, line - 1)
@@ -175,20 +180,24 @@ function checkReadWindow(text: string, line: number | null | undefined, limit: n
   return rows.slice(start, boundedLimit === undefined ? undefined : start + boundedLimit).join('\n')
 }
 
-async function emit(audit: ((event: AcpFileOperationAudit) => void | Promise<void>) | undefined, event: AcpFileOperationAudit): Promise<void> {
+async function emit(
+  audit: ((event: AcpFileOperationAudit) => void | Promise<void>) | undefined,
+  event: AcpFileOperationAudit,
+): Promise<void> {
   if (audit !== undefined) await audit(event)
 }
 
-async function emitCompleted(
-  options: AcpFileSystemOptions,
-  event: AcpFileOperationAudit,
-): Promise<void> {
+async function emitCompleted(options: AcpFileSystemOptions, event: AcpFileOperationAudit): Promise<void> {
   try {
     await emit(options.audit, event)
   } catch (error: unknown) {
     // A successful read/rename is a fact about the filesystem. Do not turn an
     // audit sink outage into a retriable ACP operation with the opposite meaning.
-    try { await options.onAuditError?.(error, event) } catch { /* warning sinks are best effort */ }
+    try {
+      await options.onAuditError?.(error, event)
+    } catch {
+      /* warning sinks are best effort */
+    }
   }
 }
 
@@ -226,13 +235,39 @@ export function createAcpFileSystemHandlers(options: AcpFileSystemOptions): AcpF
       }
       if (offset !== bytes.length) bytes = bytes.subarray(0, offset)
     } catch (error: unknown) {
-      await emitRead(options, params, { operation: 'read', path: target, bytes: 0, beforeHash: null, afterHash: null, outcome: requestSignal.aborted ? abortOutcome(requestSignal, timeoutSignal) : 'error', acpSessionId: params.sessionId, profileId: options.profileId, reason: readFailureReason(error, requestSignal, timeoutSignal) })
-      throw new Error(`ACP fs/read_text_file failed for ${target}: ${error instanceof Error ? error.message : String(error)}`)
-    } finally { await handle?.close().catch(() => {}) }
+      await emitRead(options, params, {
+        operation: 'read',
+        path: target,
+        bytes: 0,
+        beforeHash: null,
+        afterHash: null,
+        outcome: requestSignal.aborted ? abortOutcome(requestSignal, timeoutSignal) : 'error',
+        acpSessionId: params.sessionId,
+        profileId: options.profileId,
+        reason: readFailureReason(error, requestSignal, timeoutSignal),
+      })
+      throw new Error(
+        `ACP fs/read_text_file failed for ${target}: ${error instanceof Error ? error.message : String(error)}`,
+      )
+    } finally {
+      await handle?.close().catch(() => {})
+    }
     const beforeHash = hash(bytes)
     let content: string
-    try { content = decode(bytes) } catch {
-      await emitRead(options, params, { operation: 'read', path: target, bytes: bytes.byteLength, beforeHash, afterHash: null, outcome: 'error', acpSessionId: params.sessionId, profileId: options.profileId, reason: 'invalid-utf8' })
+    try {
+      content = decode(bytes)
+    } catch {
+      await emitRead(options, params, {
+        operation: 'read',
+        path: target,
+        bytes: bytes.byteLength,
+        beforeHash,
+        afterHash: null,
+        outcome: 'error',
+        acpSessionId: params.sessionId,
+        profileId: options.profileId,
+        reason: 'invalid-utf8',
+      })
       throw new Error(`ACP fs/read_text_file refused ${target}: content is not valid UTF-8`)
     }
     try {
@@ -241,10 +276,34 @@ export function createAcpFileSystemHandlers(options: AcpFileSystemOptions): AcpF
         throw new Error('line limits exceeded')
       }
       const result = checkReadWindow(content, params.line, params.limit)
-      await emitRead(options, params, { operation: 'read', path: target, bytes: Buffer.byteLength(result), beforeHash, afterHash: beforeHash, outcome: 'ok', acpSessionId: params.sessionId, profileId: options.profileId }, true)
+      await emitRead(
+        options,
+        params,
+        {
+          operation: 'read',
+          path: target,
+          bytes: Buffer.byteLength(result),
+          beforeHash,
+          afterHash: beforeHash,
+          outcome: 'ok',
+          acpSessionId: params.sessionId,
+          profileId: options.profileId,
+        },
+        true,
+      )
       return { content: result }
     } catch (error: unknown) {
-      await emitRead(options, params, { operation: 'read', path: target, bytes: bytes.byteLength, beforeHash, afterHash: null, outcome: requestSignal.aborted ? abortOutcome(requestSignal, timeoutSignal) : 'error', acpSessionId: params.sessionId, profileId: options.profileId, reason: readFailureReason(error, requestSignal, timeoutSignal) })
+      await emitRead(options, params, {
+        operation: 'read',
+        path: target,
+        bytes: bytes.byteLength,
+        beforeHash,
+        afterHash: null,
+        outcome: requestSignal.aborted ? abortOutcome(requestSignal, timeoutSignal) : 'error',
+        acpSessionId: params.sessionId,
+        profileId: options.profileId,
+        reason: readFailureReason(error, requestSignal, timeoutSignal),
+      })
       const message = error instanceof Error ? error.message : String(error)
       throw new Error(`ACP fs/read_text_file refused ${target}: ${message}`)
     }
@@ -260,12 +319,24 @@ export function createAcpFileSystemHandlers(options: AcpFileSystemOptions): AcpF
       target = assertPath(params.path)
       assertNotAborted(requestSignal)
       if (options.io?.beforeWrite !== undefined) await abortable(options.io.beforeWrite(), requestSignal)
-      if (typeof params.content !== 'string' || params.content.length > maxBytes) throw new Error(`content exceeds ${String(maxBytes)} bytes`)
+      if (typeof params.content !== 'string' || params.content.length > maxBytes)
+        throw new Error(`content exceeds ${String(maxBytes)} bytes`)
       bytes = new TextEncoder().encode(params.content)
       if (bytes.byteLength > maxBytes) throw new Error(`UTF-8 content exceeds ${String(maxBytes)} bytes`)
     } catch (error: unknown) {
-      await emit(options.audit, { operation: 'write', path: target, bytes: bytes.byteLength, beforeHash: null, afterHash: null, outcome: requestSignal.aborted ? abortOutcome(requestSignal, timeoutSignal) : 'error', acpSessionId: params.sessionId, profileId: options.profileId })
-      throw new Error(`ACP fs/write_text_file refused ${target}: ${error instanceof Error ? error.message : String(error)}`)
+      await emit(options.audit, {
+        operation: 'write',
+        path: target,
+        bytes: bytes.byteLength,
+        beforeHash: null,
+        afterHash: null,
+        outcome: requestSignal.aborted ? abortOutcome(requestSignal, timeoutSignal) : 'error',
+        acpSessionId: params.sessionId,
+        profileId: options.profileId,
+      })
+      throw new Error(
+        `ACP fs/write_text_file refused ${target}: ${error instanceof Error ? error.message : String(error)}`,
+      )
     }
     const parent = path.dirname(target)
     let mode = 0o600
@@ -278,8 +349,19 @@ export function createAcpFileSystemHandlers(options: AcpFileSystemOptions): AcpF
       beforeHash = await hashFile(target, requestSignal)
     } catch (error: unknown) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-        await emit(options.audit, { operation: 'write', path: target, bytes: bytes.byteLength, beforeHash, afterHash: null, outcome: requestSignal.aborted ? abortOutcome(requestSignal, timeoutSignal) : 'error', acpSessionId: params.sessionId, profileId: options.profileId })
-        throw new Error(`ACP fs/write_text_file failed for ${target}: ${error instanceof Error ? error.message : String(error)}`)
+        await emit(options.audit, {
+          operation: 'write',
+          path: target,
+          bytes: bytes.byteLength,
+          beforeHash,
+          afterHash: null,
+          outcome: requestSignal.aborted ? abortOutcome(requestSignal, timeoutSignal) : 'error',
+          acpSessionId: params.sessionId,
+          profileId: options.profileId,
+        })
+        throw new Error(
+          `ACP fs/write_text_file failed for ${target}: ${error instanceof Error ? error.message : String(error)}`,
+        )
       }
     }
     const temp = path.join(parent, `.dsh-acp-${path.basename(target)}-${randomUUID()}.tmp`)
@@ -294,8 +376,9 @@ export function createAcpFileSystemHandlers(options: AcpFileSystemOptions): AcpF
       if (beforeHash === null) {
         // Publish the complete file without replacing a path created since
         // lstat. Another existence check before rename would still race.
-        try { await abortable(fs.promises.link(temp, target), requestSignal) }
-        catch (error: unknown) {
+        try {
+          await abortable(fs.promises.link(temp, target), requestSignal)
+        } catch (error: unknown) {
           if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new Error('concurrent file change')
           throw error
         }
@@ -304,13 +387,37 @@ export function createAcpFileSystemHandlers(options: AcpFileSystemOptions): AcpF
       } else {
         await abortable(rename(temp, target), requestSignal)
       }
-      await emitCompleted(options, { operation: 'write', path: target, bytes: bytes.byteLength, beforeHash, afterHash: hash(bytes), outcome: 'ok', acpSessionId: params.sessionId, profileId: options.profileId })
+      await emitCompleted(options, {
+        operation: 'write',
+        path: target,
+        bytes: bytes.byteLength,
+        beforeHash,
+        afterHash: hash(bytes),
+        outcome: 'ok',
+        acpSessionId: params.sessionId,
+        profileId: options.profileId,
+      })
       return {}
     } catch (error: unknown) {
       await fs.promises.rm(temp, { force: true }).catch(() => {})
       const concurrent = error instanceof Error && error.message === 'concurrent file change'
-      await emit(options.audit, { operation: 'write', path: target, bytes: bytes.byteLength, beforeHash, afterHash: null, outcome: requestSignal.aborted ? abortOutcome(requestSignal, timeoutSignal) : concurrent ? 'concurrent-change' : 'error', acpSessionId: params.sessionId, profileId: options.profileId })
-      throw new Error(`ACP fs/write_text_file failed for ${target}: ${error instanceof Error ? error.message : String(error)}`)
+      await emit(options.audit, {
+        operation: 'write',
+        path: target,
+        bytes: bytes.byteLength,
+        beforeHash,
+        afterHash: null,
+        outcome: requestSignal.aborted
+          ? abortOutcome(requestSignal, timeoutSignal)
+          : concurrent
+            ? 'concurrent-change'
+            : 'error',
+        acpSessionId: params.sessionId,
+        profileId: options.profileId,
+      })
+      throw new Error(
+        `ACP fs/write_text_file failed for ${target}: ${error instanceof Error ? error.message : String(error)}`,
+      )
     }
   }
   return { readTextFile, writeTextFile, dispose: () => lifecycle.abort() }

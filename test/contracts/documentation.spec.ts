@@ -12,11 +12,11 @@ function read(path: string): string {
 
 describe('public documentation contract', () => {
   it('publishes one concise Chinese README with an English companion', () => {
-    const pkg = JSON.parse(read('package.json')) as { description?: string, files?: string[] }
+    const pkg = JSON.parse(read('package.json')) as { description?: string; files?: string[] }
     expect(pkg.files).toContain('README.md')
     expect(pkg.files).toContain('README.en.md')
     expect(pkg.files).not.toContain('docs/**/*.md')
-    expect(pkg.files?.some(path => path.startsWith('SECURITY'))).toBe(false)
+    expect(pkg.files?.some((path) => path.startsWith('SECURITY'))).toBe(false)
     expect(read('README.md')).toContain('[English](README.en.md)')
     expect(read('README.en.md')).toContain('[中文](README.md)')
   })
@@ -34,8 +34,8 @@ describe('public documentation contract', () => {
     for (const path of ['README.md', 'README.en.md']) {
       const contents = read(path)
       const links = [
-        ...[...contents.matchAll(/\[[^\]]+\]\(([^)]+)\)/g)].map(match => match[1]!),
-        ...[...contents.matchAll(/<(?:img|a)\b[^>]*\b(?:src|href)="([^"]+)"/g)].map(match => match[1]!),
+        ...[...contents.matchAll(/\[[^\]]+\]\(([^)]+)\)/g)].map((match) => match[1]!),
+        ...[...contents.matchAll(/<(?:img|a)\b[^>]*\b(?:src|href)="([^"]+)"/g)].map((match) => match[1]!),
       ]
       for (const link of links) {
         if (/^(?:https?:|mailto:|#)/.test(link)) continue

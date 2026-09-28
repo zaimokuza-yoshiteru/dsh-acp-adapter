@@ -41,15 +41,24 @@ export class AcpToolCallReducer {
   apply(patch: AcpToolCallPatch): AcpToolCallSnapshot {
     const previous = this.calls.get(patch.callId)
     const patchStatus = normalizedStatus(patch.status)
-    const status = previous !== undefined && terminalStatuses.has(previous.status)
-      ? previous.status
-      : patchStatus ?? previous?.status ?? 'pending'
+    const status =
+      previous !== undefined && terminalStatuses.has(previous.status)
+        ? previous.status
+        : (patchStatus ?? previous?.status ?? 'pending')
     const next: AcpToolCallSnapshot = {
-      ...(previous ?? { callId: patch.callId, provenanceId: acpToolProvenanceId(this.turnId, patch.callId), status: 'pending' }),
+      ...(previous ?? {
+        callId: patch.callId,
+        provenanceId: acpToolProvenanceId(this.turnId, patch.callId),
+        status: 'pending',
+      }),
       // ACP says omitting a field leaves it unchanged.  `name: null` has the
       // same meaning explicitly; title is required on a created call, so a
       // nullable update cannot replace an established title with no title.
-      ...Object.fromEntries(Object.entries(patch).filter(([key, value]) => value !== undefined && !((key === 'name' || key === 'title') && value === null))),
+      ...Object.fromEntries(
+        Object.entries(patch).filter(
+          ([key, value]) => value !== undefined && !((key === 'name' || key === 'title') && value === null),
+        ),
+      ),
       status,
     } as AcpToolCallSnapshot
     this.calls.set(patch.callId, next)

@@ -6,7 +6,9 @@ import type { AcpHealthView } from '../../../src/contract/remote.ts'
 
 function deferred<T>() {
   let resolve!: (value: T) => void
-  const promise = new Promise<T>((done) => { resolve = done })
+  const promise = new Promise<T>((done) => {
+    resolve = done
+  })
   return { promise, resolve }
 }
 
@@ -36,8 +38,14 @@ describe('AcpPanelController targeted health checks', () => {
         getSnapshot: () => ({ status: 'ready', writable: true, revision: 12, value: { agents: {} } }),
         subscribe: () => () => {},
       },
-      mutate, refusedMessage: () => 'refused',
-      remote: { health: vi.fn(), backendOf: vi.fn(), boundSessions: vi.fn(), activityFollow: async function* () {} } as never,
+      mutate,
+      refusedMessage: () => 'refused',
+      remote: {
+        health: vi.fn(),
+        backendOf: vi.fn(),
+        boundSessions: vi.fn(),
+        activityFollow: async function* () {},
+      } as never,
     })
     await expect(controller.setSearchableModelPicker(true)).resolves.toBeUndefined()
     expect(mutate).toHaveBeenCalledWith([{ op: 'set', path: ['searchableModelPicker'], value: true }], 12)
@@ -51,8 +59,14 @@ describe('AcpPanelController targeted health checks', () => {
         getSnapshot: () => ({ status: 'ready', writable: true, revision: 13, value: { agents: {} } }),
         subscribe: () => () => {},
       },
-      mutate, refusedMessage: () => 'settings changed; reload and retry',
-      remote: { health: vi.fn(), backendOf: vi.fn(), boundSessions: vi.fn(), activityFollow: async function* () {} } as never,
+      mutate,
+      refusedMessage: () => 'settings changed; reload and retry',
+      remote: {
+        health: vi.fn(),
+        backendOf: vi.fn(),
+        boundSessions: vi.fn(),
+        activityFollow: async function* () {},
+      } as never,
     })
     await expect(controller.setSearchableModelPicker(true)).resolves.toBe('settings changed; reload and retry')
     expect(mutate).toHaveBeenCalledWith([{ op: 'set', path: ['searchableModelPicker'], value: true }], 13)
@@ -83,10 +97,12 @@ describe('AcpPanelController targeted health checks', () => {
     }
     const controller = new AcpPanelController({
       scope,
-      mutate: vi.fn(), refusedMessage: () => 'refused',
+      mutate: vi.fn(),
+      refusedMessage: () => 'refused',
       remote: {
         health,
-        backendOf: vi.fn(), boundSessions: vi.fn(),
+        backendOf: vi.fn(),
+        boundSessions: vi.fn(),
         activityFollow: async function* () {},
       } as never,
     })
@@ -109,7 +125,8 @@ describe('AcpPanelController targeted health checks', () => {
 
     expect(store.getSnapshot().health.checkingAgentIds).toEqual([])
     expect(store.getSnapshot().health.rows.map((entry) => [entry.id, entry.version])).toEqual([
-      ['devin', 'new-devin'], ['kimi', 'new-kimi'],
+      ['devin', 'new-devin'],
+      ['kimi', 'new-kimi'],
     ])
     expect(health).toHaveBeenNthCalledWith(2, { recheck: true, agentId: 'devin' })
     expect(health).toHaveBeenNthCalledWith(3, { recheck: true, agentId: 'kimi' })
@@ -123,12 +140,16 @@ describe('AcpPanelController targeted health checks', () => {
     }
     const controller = new AcpPanelController({
       scope,
-      mutate: vi.fn(), refusedMessage: () => 'refused',
+      mutate: vi.fn(),
+      refusedMessage: () => 'refused',
       remote: {
-        health: vi.fn((request?: { agentId?: string }) => request?.agentId === 'devin'
-          ? Promise.resolve({ ok: false as const, error: { message: 'devin probe failed' } })
-          : Promise.resolve({ ok: true as const, value: view([]) })),
-        backendOf: vi.fn(), boundSessions: vi.fn(),
+        health: vi.fn((request?: { agentId?: string }) =>
+          request?.agentId === 'devin'
+            ? Promise.resolve({ ok: false as const, error: { message: 'devin probe failed' } })
+            : Promise.resolve({ ok: true as const, value: view([]) }),
+        ),
+        backendOf: vi.fn(),
+        boundSessions: vi.fn(),
         activityFollow: async function* () {},
       } as never,
     })

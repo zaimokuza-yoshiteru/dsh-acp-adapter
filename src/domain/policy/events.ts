@@ -116,7 +116,8 @@ export interface AcpPermissionToolCallSnapshot {
 }
 
 /** rawInput 审计摘要按字段名脱敏的 key 词表（命中键的值替换为 `<redacted>`，永不落盘）。 */
-export const AUDIT_SECRET_KEY_PATTERN = /(?:token|secret|password|passwd|api[-_]?key|authorization|credential|private[-_]?key)/i
+export const AUDIT_SECRET_KEY_PATTERN =
+  /(?:token|secret|password|passwd|api[-_]?key|authorization|credential|private[-_]?key)/i
 
 /** rawInput 审计摘要的截断上限（单行可读性；与审批 reason 摘要同口径）。 */
 export const RAW_INPUT_AUDIT_SUMMARY_MAX_CHARS = 300
@@ -131,10 +132,22 @@ const REDACT_ARRAY_MAX = 32
 const REDACT_STRING_MAX = 200
 
 const SHELL_SECRET_VALUE = `(?:"[^"]*"|'[^']*'|[^\\s'"]+)`
-const SECRET_JSON_PROPERTY_PATTERN = new RegExp(`((?:["']?)(?:token|secret|password|passwd|api[-_]?key|authorization|credential|private[-_]?key)(?:["']?)\\s*[:=]\\s*)(?:"[^"]*"|'[^']*'|[^,\\s}\\]]+(?=\\s*[,}\\]]))`, 'gi')
-const SECRET_ENV_ASSIGNMENT_PATTERN = new RegExp(`(\\b(?:[A-Za-z][A-Za-z0-9_-]*(?:token|secret|password|passwd|api[-_]?key|authorization|credential|private[-_]?key)[A-Za-z0-9_-]*|token|secret|password|passwd|api[-_]?key|authorization|credential|private[-_]?key)\\b)\\s*=\\s*${SHELL_SECRET_VALUE}`, 'gi')
-const SECRET_OPTION_PATTERN = new RegExp(`(--?[A-Za-z0-9_-]*(?:token|secret|password|passwd|api[-_]?key|authorization|credential|private[-_]?key)[A-Za-z0-9_-]*)(?:\\s*=\\s*|\\s+)${SHELL_SECRET_VALUE}`, 'gi')
-const SECRET_HEADER_PATTERN = new RegExp(`(\\b(?:authorization|proxy-authorization|x-api-key|api-key)\\b\\s*:\\s*(?:bearer\\s+)?)(?:"[^"]*"|'[^']*'|[^\\s'"]+)`, 'gi')
+const SECRET_JSON_PROPERTY_PATTERN = new RegExp(
+  `((?:["']?)(?:token|secret|password|passwd|api[-_]?key|authorization|credential|private[-_]?key)(?:["']?)\\s*[:=]\\s*)(?:"[^"]*"|'[^']*'|[^,\\s}\\]]+(?=\\s*[,}\\]]))`,
+  'gi',
+)
+const SECRET_ENV_ASSIGNMENT_PATTERN = new RegExp(
+  `(\\b(?:[A-Za-z][A-Za-z0-9_-]*(?:token|secret|password|passwd|api[-_]?key|authorization|credential|private[-_]?key)[A-Za-z0-9_-]*|token|secret|password|passwd|api[-_]?key|authorization|credential|private[-_]?key)\\b)\\s*=\\s*${SHELL_SECRET_VALUE}`,
+  'gi',
+)
+const SECRET_OPTION_PATTERN = new RegExp(
+  `(--?[A-Za-z0-9_-]*(?:token|secret|password|passwd|api[-_]?key|authorization|credential|private[-_]?key)[A-Za-z0-9_-]*)(?:\\s*=\\s*|\\s+)${SHELL_SECRET_VALUE}`,
+  'gi',
+)
+const SECRET_HEADER_PATTERN = new RegExp(
+  `(\\b(?:authorization|proxy-authorization|x-api-key|api-key)\\b\\s*:\\s*(?:bearer\\s+)?)(?:"[^"]*"|'[^']*'|[^\\s'"]+)`,
+  'gi',
+)
 
 /**
  * 跨审计摘要与审批展示共用的 secret-text 脱敏规则。
@@ -266,7 +279,8 @@ export interface AcpPermissionDecidedAuditData {
 }
 
 /** The permission audit payload union (discriminant: `phase`). */
-export type AcpPermissionAuditData = AcpPermissionAskedAuditData | AcpPermissionDecidedAuditData | AcpPermissionCheckAuditData
+export type AcpPermissionAuditData =
+  AcpPermissionAskedAuditData | AcpPermissionDecidedAuditData | AcpPermissionCheckAuditData
 
 export interface AcpPermissionCheckAuditData extends AcpPermissionCheck {
   readonly phase: 'bridge'
@@ -275,12 +289,21 @@ export interface AcpPermissionCheckAuditData extends AcpPermissionCheck {
 }
 
 /** Copy only diagnostic facts; the inspected response can contain a capability option ID. */
-export function createPermissionCheckAudit(check: AcpPermissionCheck, agentSessionId: string, toolCallId: string): AcpPermissionCheckAuditData {
-  return { phase: 'bridge', reason: check.reason,
-    agentSessionId: boundedAuditText(agentSessionId), toolCallId: boundedAuditText(toolCallId),
+export function createPermissionCheckAudit(
+  check: AcpPermissionCheck,
+  agentSessionId: string,
+  toolCallId: string,
+): AcpPermissionCheckAuditData {
+  return {
+    phase: 'bridge',
+    reason: check.reason,
+    agentSessionId: boundedAuditText(agentSessionId),
+    toolCallId: boundedAuditText(toolCallId),
     ...(check.toolName === undefined ? {} : { toolName: boundedAuditText(check.toolName) }),
     ...(check.identitySource === undefined ? {} : { identitySource: check.identitySource }),
-    ...(check.structuredIdentityPresent === undefined ? {} : { structuredIdentityPresent: check.structuredIdentityPresent }),
+    ...(check.structuredIdentityPresent === undefined
+      ? {}
+      : { structuredIdentityPresent: check.structuredIdentityPresent }),
     ...(check.titleMatchesCurrentTool === undefined ? {} : { titleMatchesCurrentTool: check.titleMatchesCurrentTool }),
   }
 }
@@ -331,10 +354,14 @@ export function createPermissionAskedAudit(init: PermissionAskedAuditInit): AcpP
       toolCallId: boundedAuditText(toolCall.toolCallId),
       ...(toolCall.title == null ? {} : { title: boundedAuditText(toolCall.title, 200) }),
       ...(toolCall.kind == null ? {} : { kind: boundedAuditText(toolCall.kind, 64) }),
-      ...(toolCall.locations == null ? {} : { locations: toolCall.locations.slice(0, 4).map((location) => ({
-        path: boundedAuditText(location.path),
-        ...(location.line == null ? {} : { line: location.line }),
-      })) }),
+      ...(toolCall.locations == null
+        ? {}
+        : {
+            locations: toolCall.locations.slice(0, 4).map((location) => ({
+              path: boundedAuditText(location.path),
+              ...(location.line == null ? {} : { line: location.line }),
+            })),
+          }),
       ...(rawInput === undefined ? {} : { rawInputSummary: rawInput.summary, rawInputHash: rawInput.hash }),
     },
     options: init.options.slice(0, ACP_PERMISSION_AUDIT_OPTIONS_MAX).map((option) => ({

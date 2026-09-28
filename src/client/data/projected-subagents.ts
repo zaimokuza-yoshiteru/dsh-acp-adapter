@@ -4,7 +4,10 @@ import type { AcpRemoteLike } from './acp-remote.ts'
 export class ProjectedSubagentCatalog {
   private readonly ids = new Set<string>()
 
-  constructor(private readonly remote: AcpRemoteLike, initial: readonly string[] = []) {
+  constructor(
+    private readonly remote: AcpRemoteLike,
+    initial: readonly string[] = [],
+  ) {
     for (const id of initial) this.ids.add(id)
   }
 

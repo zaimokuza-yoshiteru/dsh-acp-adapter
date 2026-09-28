@@ -87,7 +87,13 @@ describe('AcpSessionRuntime prompt cancellation', () => {
     const { runtime, logPath } = createRuntime('eof-exit')
     const controller = new AbortController()
     let updates = 0
-    const pending = runtime.prompt(PROMPT, () => { updates += 1 }, controller.signal)
+    const pending = runtime.prompt(
+      PROMPT,
+      () => {
+        updates += 1
+      },
+      controller.signal,
+    )
     await waitFor(() => updates > 0)
 
     controller.abort(new Error('user stopped'))
@@ -103,10 +109,18 @@ describe('AcpSessionRuntime prompt cancellation', () => {
     const firstController = new AbortController()
     const secondController = new AbortController()
     let updates = 0
-    const first = runtime.prompt(PROMPT, () => { updates += 1 }, firstController.signal)
+    const first = runtime.prompt(
+      PROMPT,
+      () => {
+        updates += 1
+      },
+      firstController.signal,
+    )
     await waitFor(() => updates > 0)
 
-    await expect(runtime.prompt(PROMPT, () => undefined, secondController.signal)).rejects.toThrow('ACP_PROMPT_ALREADY_ACTIVE')
+    await expect(runtime.prompt(PROMPT, () => undefined, secondController.signal)).rejects.toThrow(
+      'ACP_PROMPT_ALREADY_ACTIVE',
+    )
     secondController.abort(new Error('rejected prompt stopped'))
     await sleep(20)
     expect(runtime.isBusy).toBe(true)
@@ -123,9 +137,17 @@ describe('AcpSessionRuntime prompt cancellation', () => {
     const controller = new AbortController()
     let updates = 0
     const startedAt = Date.now()
-    const pending = runtime.prompt(PROMPT, () => { updates += 1 }, controller.signal)
+    const pending = runtime.prompt(
+      PROMPT,
+      () => {
+        updates += 1
+      },
+      controller.signal,
+    )
     const observed = pending.then(
-      () => { throw new Error('expected stuck prompt to reject after cancellation escalation') },
+      () => {
+        throw new Error('expected stuck prompt to reject after cancellation escalation')
+      },
       (error: unknown) => error,
     )
     await waitFor(() => updates > 0)
@@ -175,7 +197,13 @@ describe('AcpSessionRuntime prompt cancellation', () => {
     runtimes.push(runtime)
     const controller = new AbortController()
     let updates = 0
-    const pending = runtime.prompt(PROMPT, () => { updates += 1 }, controller.signal)
+    const pending = runtime.prompt(
+      PROMPT,
+      () => {
+        updates += 1
+      },
+      controller.signal,
+    )
     await waitFor(() => updates > 0)
     controller.abort(new Error('user stopped'))
     await expect(pending).rejects.toBeInstanceOf(Error)

@@ -17,9 +17,8 @@ export const PLATFORM_EXTERNALS = Object.freeze([
   '@deepseek-ai/dsh-client-ui-dockkit',
 ])
 
-const packageName = (specifier: string) => specifier.startsWith('@')
-  ? specifier.split('/').slice(0, 2).join('/')
-  : specifier.split('/')[0]
+const packageName = (specifier: string) =>
+  specifier.startsWith('@') ? specifier.split('/').slice(0, 2).join('/') : specifier.split('/')[0]
 
 /** Package names corresponding to module-table rows, used for inject checks. */
 export const PLATFORM_PACKAGES = new Set(PLATFORM_EXTERNALS.map(packageName))

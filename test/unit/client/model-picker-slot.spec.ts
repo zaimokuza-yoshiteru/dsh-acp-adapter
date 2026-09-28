@@ -5,12 +5,18 @@ import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { ModelDirectoryState } from '@deepseek-ai/dsh-client-ui-model-selection/client'
 import { describe, expect, it, vi } from 'vitest'
 import { installSearchableModelPickerSlot } from '../../../src/client/ui/model-picker-slot.ts'
-import type { ModelDirectoryResolverFace, ModelPickerSessionsFace, ModelPickerSlots, PickerSettingsScope } from '../../../src/client/ui/model-picker-slot.ts'
+import type {
+  ModelDirectoryResolverFace,
+  ModelPickerSessionsFace,
+  ModelPickerSlots,
+  PickerSettingsScope,
+} from '../../../src/client/ui/model-picker-slot.ts'
 
 describe('searchable model picker slot lifecycle', () => {
   it('leaves the native occupant alone by default and disposes/re-registers its shadow as the setting changes', async () => {
     let snapshot: { status: 'ready'; value: { agents: Record<string, never>; searchableModelPicker?: boolean } } = {
-      status: 'ready', value: { agents: {} },
+      status: 'ready',
+      value: { agents: {} },
     }
     const listeners = new Set<() => void>()
     const subscribe = vi.fn((listener: () => void) => {
@@ -23,12 +29,25 @@ describe('searchable model picker slot lifecycle', () => {
     const unregister = vi.fn()
     const register = vi.fn((_options: Parameters<ModelPickerSlots['register']>[0]) => {
       const generation = register.mock.calls.length
-      return () => { unregister(generation) }
+      return () => {
+        unregister(generation)
+      }
     })
     const directory = {
-      store: createSnapshotStore<ModelDirectoryState>({ current: null, routable: null, groups: [], failures: [], status: 'idle', pending: null, error: null }),
+      store: createSnapshotStore<ModelDirectoryState>({
+        current: null,
+        routable: null,
+        groups: [],
+        failures: [],
+        status: 'idle',
+        pending: null,
+        error: null,
+      }),
       load: vi.fn(async () => undefined),
-      select: vi.fn(async (_selection: ModelSelection): Promise<RemoteResult<void>> => ({ ok: true, value: undefined })),
+      select: vi.fn(async (_selection: ModelSelection): Promise<RemoteResult<void>> => ({
+        ok: true,
+        value: undefined,
+      })),
     }
     const directories: ModelDirectoryResolverFace = { directoryFor: vi.fn(() => directory) }
     const sessions: ModelPickerSessionsFace = { subagentAddress: vi.fn(() => undefined) }
@@ -53,7 +72,11 @@ describe('searchable model picker slot lifecycle', () => {
     snapshot = { status: 'ready', value: { agents: {}, searchableModelPicker: true } }
     for (const listener of listeners) listener()
     expect(register).toHaveBeenCalledTimes(1)
-    expect(register.mock.calls[0]?.[0]).toMatchObject({ name: 'conversation.input.model', priority: -1, locale: 'acpModelPicker' })
+    expect(register.mock.calls[0]?.[0]).toMatchObject({
+      name: 'conversation.input.model',
+      priority: -1,
+      locale: 'acpModelPicker',
+    })
     const first = register.mock.calls[0]?.[0]
     expect(first).toBeDefined()
     if (first === undefined) throw new Error('picker registration missing')
@@ -77,15 +100,33 @@ describe('searchable model picker slot lifecycle', () => {
   it('does not expose session selection for an addressed subagent', async () => {
     let factory: (() => () => void) | undefined
     let disposeFactory: (() => void) | undefined
-    let options: { inject(sessionId: SessionId): { available: boolean; select(value: never): Promise<unknown> } } | undefined
+    let options:
+      { inject(sessionId: SessionId): { available: boolean; select(value: never): Promise<unknown> } } | undefined
     const directory = {
-      store: createSnapshotStore<ModelDirectoryState>({ current: null, routable: null, groups: [], failures: [], status: 'idle', pending: null, error: null }),
+      store: createSnapshotStore<ModelDirectoryState>({
+        current: null,
+        routable: null,
+        groups: [],
+        failures: [],
+        status: 'idle',
+        pending: null,
+        error: null,
+      }),
       load: vi.fn(async () => undefined),
-      select: vi.fn(async (_selection: ModelSelection): Promise<RemoteResult<void>> => ({ ok: true, value: undefined })),
+      select: vi.fn(async (_selection: ModelSelection): Promise<RemoteResult<void>> => ({
+        ok: true,
+        value: undefined,
+      })),
     }
     const slots: ModelPickerSlots = {
-      inject: (_name, next) => { factory = next; return () => undefined },
-      register: (value) => { options = value; return () => undefined },
+      inject: (_name, next) => {
+        factory = next
+        return () => undefined
+      },
+      register: (value) => {
+        options = value
+        return () => undefined
+      },
     }
     const settings: PickerSettingsScope = {
       getSnapshot: () => ({ status: 'ready', value: { agents: {}, searchableModelPicker: true } }),

@@ -3,7 +3,9 @@ import { AcpSessionRuntime } from '../../../src/runtime/session/session-runtime.
 import { sharedTestSubprocess } from '../../fixtures/subprocess-seam-testing.ts'
 
 const runtimes: AcpSessionRuntime[] = []
-afterEach(async () => { await Promise.allSettled(runtimes.splice(0).map(runtime => runtime.close())) })
+afterEach(async () => {
+  await Promise.allSettled(runtimes.splice(0).map((runtime) => runtime.close()))
+})
 
 async function fixture(foreignUpdates = false) {
   const script = `
@@ -30,7 +32,9 @@ async function fixture(foreignUpdates = false) {
       }
     });`
   const argv = [process.execPath, '-e', script]
-  const runtime = new AcpSessionRuntime({ profileId: 'fixture', cwd: process.cwd(),
+  const runtime = new AcpSessionRuntime({
+    profileId: 'fixture',
+    cwd: process.cwd(),
     config: { command: argv[0]!, args: argv.slice(1), env: {} },
     subprocess: (await sharedTestSubprocess()).seam,
     prepareLaunch: async () => ({ argv, env: {}, spawnPlan: { argv, env: {} } }),
@@ -42,23 +46,23 @@ async function fixture(foreignUpdates = false) {
 
 it('does not let external child notifications overwrite the parent controls or usage', async () => {
   const runtime = await fixture(true)
-  await runtime.prompt([{type:'text',text:'test'}], () => {})
+  await runtime.prompt([{ type: 'text', text: 'test' }], () => {})
   expect(runtime.configOptions?.[0]?.currentValue).toBe('code')
   expect(runtime.currentModeId).toBe('code')
   expect(runtime.contextUsage?.used).toBe(100)
 })
 
-it.each(['config', 'mode'])('finishes an admitted %s write before dispatching a prompt', async kind => {
+it.each(['config', 'mode'])('finishes an admitted %s write before dispatching a prompt', async (kind) => {
   const runtime = await fixture()
-  const writing = kind === 'config' ? runtime.setConfigOption('mode','plan') : runtime.setMode('plan')
-  const prompting = runtime.prompt([{type:'text',text:'test'}], () => {})
-  await expect(Promise.all([writing, prompting])).resolves.toMatchObject([undefined, {stopReason:'end_turn'}])
+  const writing = kind === 'config' ? runtime.setConfigOption('mode', 'plan') : runtime.setMode('plan')
+  const prompting = runtime.prompt([{ type: 'text', text: 'test' }], () => {})
+  await expect(Promise.all([writing, prompting])).resolves.toMatchObject([undefined, { stopReason: 'end_turn' }])
 })
 
 it('does not restart a closed runtime when a prompt was waiting for a configuration write', async () => {
   const runtime = await fixture()
   const writing = runtime.setMode('plan')
-  const prompting = runtime.prompt([{type:'text',text:'test'}], () => {})
+  const prompting = runtime.prompt([{ type: 'text', text: 'test' }], () => {})
   const settled = Promise.allSettled([writing, prompting])
   await runtime.close()
   await settled

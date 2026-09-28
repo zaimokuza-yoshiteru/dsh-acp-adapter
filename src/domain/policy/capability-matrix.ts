@@ -59,8 +59,7 @@ export interface AcpCapabilityHostSeams {
 const UNKNOWN_ADVERTISEMENT_NOTE = 'agent capabilities unknown (no successful probe handshake)'
 
 /** session/close、session/delete 未广告时的兜底说明（既定降级口径）。 */
-const CLEANUP_FALLBACK_NOTE =
-  'not advertised; probe session leftovers fall back to process teardown'
+const CLEANUP_FALLBACK_NOTE = 'not advertised; probe session leftovers fall back to process teardown'
 
 /**
  * 广告门控行：advertised === true → supported；false → unsupported（带该行
@@ -121,11 +120,12 @@ function imageRow(advertised: boolean | null, available: boolean): AcpCapability
     adapterPath: 'durable-attachment-to-inline-image',
     hostSeam: available ? 'attachments' : null,
     status: 'unsupported',
-    note: advertised === null
-      ? UNKNOWN_ADVERTISEMENT_NOTE
-      : advertised === false
-        ? 'the agent did not advertise image prompt support'
-        : 'DSH durable attachment storage is not available on this host',
+    note:
+      advertised === null
+        ? UNKNOWN_ADVERTISEMENT_NOTE
+        : advertised === false
+          ? 'the agent did not advertise image prompt support'
+          : 'DSH durable attachment storage is not available on this host',
   }
 }
 
@@ -166,10 +166,10 @@ export function acpCapabilityMatrix(
 ): readonly AcpCapabilityMatrixRow[] {
   const advertised = (key: keyof AcpCapabilityAdvertisement): boolean | null => (caps === null ? null : caps[key])
   return [
- // 对账恢复的前提（resume-staging）；resume 前的查重/列举消费 sessionList
+    // 对账恢复的前提（resume-staging）；resume 前的查重/列举消费 sessionList
     gatedRow('loadSession', advertised('loadSession'), 'resume-staging'),
     gatedRow('sessionList', advertised('sessionList'), 'resume-precheck'),
- // probe 会话清理；未广告 = 探测会话可能残留，进程拆除兜底
+    // probe 会话清理；未广告 = 探测会话可能残留，进程拆除兜底
     gatedRow('sessionClose', advertised('sessionClose'), 'probe-cleanup', CLEANUP_FALLBACK_NOTE),
     gatedRow('sessionDelete', advertised('sessionDelete'), 'probe-cleanup', CLEANUP_FALLBACK_NOTE),
     imageRow(advertised('promptImage'), host.imageInput),

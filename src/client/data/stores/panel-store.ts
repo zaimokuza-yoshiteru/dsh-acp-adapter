@@ -38,10 +38,21 @@ export interface AcpPanelSnapshot {
 const initialPanelState = (): AcpPanelSnapshot => ({
   // 与 controller 的首投影同形：scope 尚未 ready 时面板显示 loading（attach
   // 时的 resync 会立刻把真实投影灌进来，这只是工厂播种值）。
-  settings: { status: 'loading', writable: false, agents: {}, searchableModelPicker: false, toolApprovalDefault: 'auto', revision: undefined },
+  settings: {
+    status: 'loading',
+    writable: false,
+    agents: {},
+    searchableModelPicker: false,
+    toolApprovalDefault: 'auto',
+    revision: undefined,
+  },
   health: {
-    status: 'idle', rows: [], fetchedAt: undefined, message: undefined,
-    checkingAgentIds: [], agentErrors: {},
+    status: 'idle',
+    rows: [],
+    fetchedAt: undefined,
+    message: undefined,
+    checkingAgentIds: [],
+    agentErrors: {},
   },
 })
 
@@ -59,14 +70,14 @@ const panelActions = {
     draft.health.agentErrors = {}
   },
   /** A refresh landed: rows replace wholesale, the error clears. */
-  healthReady(
-    draft: AcpPanelSnapshot,
-    rows: readonly AcpProviderHealth[],
-    fetchedAt: number,
-  ): void {
+  healthReady(draft: AcpPanelSnapshot, rows: readonly AcpProviderHealth[], fetchedAt: number): void {
     draft.health = {
-      status: 'ready', rows, fetchedAt, message: undefined,
-      checkingAgentIds: [], agentErrors: {},
+      status: 'ready',
+      rows,
+      fetchedAt,
+      message: undefined,
+      checkingAgentIds: [],
+      agentErrors: {},
     }
   },
   /** A refresh failed (network/HTTP/malformed): keep the last good rows, surface the message. */
@@ -84,20 +95,16 @@ const panelActions = {
     delete draft.health.agentErrors[agentId]
   },
   /** Merge only the checked row so concurrent checks cannot overwrite each other. */
-  agentHealthReady(
-    draft: AcpPanelSnapshot,
-    agentId: string,
-    row: AcpProviderHealth,
-    fetchedAt: number,
-  ): void {
+  agentHealthReady(draft: AcpPanelSnapshot, agentId: string, row: AcpProviderHealth, fetchedAt: number): void {
     draft.health.status = 'ready'
     draft.health.message = undefined
     draft.health.checkingAgentIds = draft.health.checkingAgentIds.filter((id) => id !== agentId)
     delete draft.health.agentErrors[agentId]
     const index = draft.health.rows.findIndex((candidate) => candidate.id === agentId)
-    draft.health.rows = index < 0
-      ? [...draft.health.rows, row].sort((left, right) => left.id.localeCompare(right.id))
-      : draft.health.rows.map((candidate, candidateIndex) => candidateIndex === index ? row : candidate)
+    draft.health.rows =
+      index < 0
+        ? [...draft.health.rows, row].sort((left, right) => left.id.localeCompare(right.id))
+        : draft.health.rows.map((candidate, candidateIndex) => (candidateIndex === index ? row : candidate))
     draft.health.fetchedAt = fetchedAt
   },
   /** A targeted transport/contract failure belongs to that card, not the whole panel. */

@@ -6,7 +6,7 @@
 
 在 DSH 会话页面使用 **Claude · Codex · Devin · Kimi**。
 
-本版本仅支持 DSH `0.1.7-rc.2`。点击 ACP 成员或子会话会在原生侧栏打开，保留主会话；Teams 成员的请求仍可直接在主会话审批。
+本版本仅支持 DSH `0.2.0-rc.1`。点击 ACP 成员或子会话会在原生侧栏打开，保留主会话；Teams 成员的请求仍可直接在主会话审批。
 
 升级后，已有 Agent 配置会从旧设置文件自动导入当前 DSH 配置；当前配置中已设置的 Agent 列表（包括空列表）会保留。主会话过程使用 DSH 原生的紧凑、标准、详细和完全展开模式，工具、思考和过程分组随宿主设置切换。
 
@@ -61,12 +61,12 @@ pnpm install --frozen-lockfile
 
 Agent 目录来自随插件发布的 [ACP 官方 registry](https://agentclientprotocol.com) 快照，提供安装指引与配置预填。发布时自动尝试更新目录；同步或校验失败则沿用仓库中已验证的快照，不阻塞发布，详情记录在发布工作流摘要和 issue 中。运行时不联网刷新目录。列入目录不代表已经逐个验证。菜单区分「已验证适配」和「目录收录 · 未验证」；验证范围不覆盖每个目录版本或平台。常用四家：
 
-| Agent | ACP 命令 | 终端登录 |
-| --- | --- | --- |
-| Claude | `claude-agent-acp` | `claude` |
-| Codex | `codex-acp` | `codex login`¹ |
-| Devin | `devin acp` | `devin auth login` |
-| Kimi | `kimi acp` | `kimi login` |
+| Agent  | ACP 命令           | 终端登录           |
+| ------ | ------------------ | ------------------ |
+| Claude | `claude-agent-acp` | `claude`           |
+| Codex  | `codex-acp`        | `codex login`¹     |
+| Devin  | `devin acp`        | `devin auth login` |
+| Kimi   | `kimi acp`         | `kimi login`       |
 
 ¹ 使用 ChatGPT 登录需另装 Codex CLI。
 
@@ -119,12 +119,12 @@ npx "@deepseek-ai/dsh@$DSH_VERSION" plugin --profile web remove @zaimokuza/dsh-a
 
 ## <img src="assets/readme/icon-help.svg" width="24" height="24" alt="" /> 遇到问题
 
-| 现象 | 先检查 |
-| --- | --- |
-| 命令无法启动 | 核对可执行文件路径，尝试填写绝对路径。 |
-| 登录或认证失败 | 在 Agent CLI 登录，检查已配置的环境变量。 |
+| 现象                   | 先检查                                                                 |
+| ---------------------- | ---------------------------------------------------------------------- |
+| 命令无法启动           | 核对可执行文件路径，尝试填写绝对路径。                                 |
+| 登录或认证失败         | 在 Agent CLI 登录，检查已配置的环境变量。                              |
 | 升级后旧子代理无法打开 | 遵循 DSH 的历史格式支持范围；不额外迁移旧投影，原文件与 ACP 记录保留。 |
-| 会话需要恢复 | 按输入栏提示与 **ACP 诊断** 处理，不要清空本地数据。 |
+| 会话需要恢复           | 按输入栏提示与 **ACP 诊断** 处理，不要清空本地数据。                   |
 
 仍有问题时，在 [Issue](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/issues) 附上错误编号、插件/DSH 版本和相关宿主日志片段；分享前移除密钥。
 

@@ -6,18 +6,18 @@
 //   - session/new 响应前先推一条 `_vendor/foo` 通知（对齐 devin 的 `_cognition.ai/*` 习惯）
 //   - session/prompt turn 中途再推一条 `_vendor/foo`
 // 只实现 initialize / session/new / session/prompt 三个方法，其余帧忽略。
-import readline from 'node:readline';
+import readline from 'node:readline'
 
 function send(frame) {
-  process.stdout.write(JSON.stringify(frame) + '\n');
+  process.stdout.write(JSON.stringify(frame) + '\n')
 }
 
-const rl = readline.createInterface({ input: process.stdin });
+const rl = readline.createInterface({ input: process.stdin })
 rl.on('line', (line) => {
-  const trimmed = line.trim();
-  if (!trimmed) return;
-  const msg = JSON.parse(trimmed); // fixture 只被测试驱动，输入必为合法 JSON
-  if (msg.id === undefined) return; // 通知/响应一律忽略
+  const trimmed = line.trim()
+  if (!trimmed) return
+  const msg = JSON.parse(trimmed) // fixture 只被测试驱动，输入必为合法 JSON
+  if (msg.id === undefined) return // 通知/响应一律忽略
   switch (msg.method) {
     case 'initialize':
       send({
@@ -25,15 +25,18 @@ rl.on('line', (line) => {
         id: msg.id,
         result: {
           protocolVersion: 1,
-          agentCapabilities: { loadSession: false, promptCapabilities: { image: false, audio: false, embeddedContext: false } },
+          agentCapabilities: {
+            loadSession: false,
+            promptCapabilities: { image: false, audio: false, embeddedContext: false },
+          },
           authMethods: [],
         },
-      });
-      break;
+      })
+      break
     case 'session/new':
-      send({ jsonrpc: '2.0', method: '_vendor/foo', params: { hint: 'before-session-new-response' } });
-      send({ jsonrpc: '2.0', id: msg.id, result: { sessionId: 'vendor-session-1' } });
-      break;
+      send({ jsonrpc: '2.0', method: '_vendor/foo', params: { hint: 'before-session-new-response' } })
+      send({ jsonrpc: '2.0', id: msg.id, result: { sessionId: 'vendor-session-1' } })
+      break
     case 'session/prompt':
       send({
         jsonrpc: '2.0',
@@ -42,14 +45,14 @@ rl.on('line', (line) => {
           sessionId: msg.params.sessionId,
           update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'vendor-ok' } },
         },
-      });
-      send({ jsonrpc: '2.0', method: '_vendor/foo', params: { hint: 'mid-turn' } });
-      send({ jsonrpc: '2.0', id: msg.id, result: { stopReason: 'end_turn' } });
-      break;
+      })
+      send({ jsonrpc: '2.0', method: '_vendor/foo', params: { hint: 'mid-turn' } })
+      send({ jsonrpc: '2.0', id: msg.id, result: { stopReason: 'end_turn' } })
+      break
     default:
-      send({ jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: `Method not found: ${msg.method}` } });
+      send({ jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: `Method not found: ${msg.method}` } })
   }
-});
+})
 
-process.on('SIGTERM', () => process.exit(0));
-process.on('SIGINT', () => process.exit(0));
+process.on('SIGTERM', () => process.exit(0))
+process.on('SIGINT', () => process.exit(0))

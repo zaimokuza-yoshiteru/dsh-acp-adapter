@@ -5,14 +5,8 @@ import type { ISessions, SessionBinding } from '@deepseek-ai/dsh-api-session-con
 import type { IWorkspaces } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { TypertClientRemote } from '@deepseek-ai/dsh-typert-protocol'
-import {
-  CrossBackendTransactionController,
-  resolveCrossBackendLocation,
-} from '../data/cross-backend-controller.ts'
-import type {
-  CrossBackendModelSelection,
-  CrossBackendTicket,
-} from '../data/cross-backend-controller.ts'
+import { CrossBackendTransactionController, resolveCrossBackendLocation } from '../data/cross-backend-controller.ts'
+import type { CrossBackendModelSelection, CrossBackendTicket } from '../data/cross-backend-controller.ts'
 
 type ModelProjection = {
   readonly lastUsed: CrossBackendModelSelection | null
@@ -37,18 +31,26 @@ function isAcpRoute(provider: string | undefined, ownsRoute: OwnsAcpRoute): bool
   return provider !== undefined && ownsRoute(provider)
 }
 
-function sameSelection(left: CrossBackendModelSelection | null | undefined, right: CrossBackendModelSelection | null | undefined): boolean {
-  return left?.provider === right?.provider
-    && left?.model === right?.model
-    && left?.reasoningEffort === right?.reasoningEffort
+function sameSelection(
+  left: CrossBackendModelSelection | null | undefined,
+  right: CrossBackendModelSelection | null | undefined,
+): boolean {
+  return (
+    left?.provider === right?.provider &&
+    left?.model === right?.model &&
+    left?.reasoningEffort === right?.reasoningEffort
+  )
 }
 
 /** Pure observation decision, independent of React and side effects. */
-export function shouldConfirmBackendTransition(input: {
-  readonly lastUsed: CrossBackendModelSelection | null
-  readonly next: CrossBackendModelSelection | null
-  readonly blank: boolean
-}, ownsRoute: OwnsAcpRoute): boolean {
+export function shouldConfirmBackendTransition(
+  input: {
+    readonly lastUsed: CrossBackendModelSelection | null
+    readonly next: CrossBackendModelSelection | null
+    readonly blank: boolean
+  },
+  ownsRoute: OwnsAcpRoute,
+): boolean {
   if (input.next === null || sameSelection(input.lastUsed, input.next)) return false
   const fromAcp = isAcpRoute(input.lastUsed?.provider, ownsRoute)
   const toAcp = isAcpRoute(input.next.provider, ownsRoute)
@@ -76,7 +78,10 @@ export class CrossBackendCoordinator {
   private snapshot: CrossBackendCoordinatorSnapshot = { pending: null }
   private disposed = false
 
-  constructor(private readonly ctx: Context, private readonly ownsRoute: OwnsAcpRoute) {}
+  constructor(
+    private readonly ctx: Context,
+    private readonly ownsRoute: OwnsAcpRoute,
+  ) {}
 
   start(): () => void {
     // dsh-session also exposes a host-side `ctx.sessions` store. Resolve the
@@ -103,10 +108,16 @@ export class CrossBackendCoordinator {
         const projection = binding?.session.projections.faceOf('modelSelection')
         if (binding === undefined || projection === undefined) continue
         const observed: ObservedSession = {
-          binding, unsubscribe: () => {}, lastProjection: undefined, suppressed: undefined, staging: false,
+          binding,
+          unsubscribe: () => {},
+          lastProjection: undefined,
+          suppressed: undefined,
+          staging: false,
         }
         this.observed.set(row.id, observed)
-        observed.unsubscribe = projection.subscribe(() => { this.observe(row.id, observed) })
+        observed.unsubscribe = projection.subscribe(() => {
+          this.observe(row.id, observed)
+        })
         this.observe(row.id, observed)
       }
     }
@@ -117,7 +128,9 @@ export class CrossBackendCoordinator {
 
   subscribe(listener: () => void): () => void {
     this.listeners.add(listener)
-    return () => { this.listeners.delete(listener) }
+    return () => {
+      this.listeners.delete(listener)
+    }
   }
 
   getSnapshot(): CrossBackendCoordinatorSnapshot {
@@ -131,6 +144,7 @@ export class CrossBackendCoordinator {
     this.suppressSelection(pending.ticket.sourceSessionId, pending.ticket.sourceSelection)
     this.emit()
     const result = await this.tx.confirm(pending.ticket, this.operationsFor(pending.ticket))
+    if (result.ok) this.tx.forget(pending.ticket.key)
     if (this.disposed) return
     if (result.ok) {
       this.pending = this.queued.shift() ?? null
@@ -145,6 +159,7 @@ export class CrossBackendCoordinator {
     if (pending === null || this.disposed || pending.busy) return
     const source = pending.ticket.sourceSelection
     if (source === undefined) {
+      this.tx.forget(pending.ticket.key)
       this.pending = this.queued.shift() ?? null
       this.emit()
       return
@@ -177,33 +192,43 @@ export class CrossBackendCoordinator {
       observed.suppressed = undefined
       return
     }
-    if (observed.staging || this.pending?.ticket.sourceSessionId === sessionId
-      || this.queued.some(item => item.ticket.sourceSessionId === sessionId)) return
+    if (
+      observed.staging ||
+      this.pending?.ticket.sourceSessionId === sessionId ||
+      this.queued.some((item) => item.ticket.sourceSessionId === sessionId)
+    )
+      return
     const row = sessions.list.getSnapshot().byId[sessionId]
-    if (!shouldConfirmBackendTransition({
-      lastUsed: projection.lastUsed,
-      next: projection.next,
-      blank: row?.blank === true,
-    }, this.ownsRoute)) return
+    if (
+      !shouldConfirmBackendTransition(
+        {
+          lastUsed: projection.lastUsed,
+          next: projection.next,
+          blank: row?.blank === true,
+        },
+        this.ownsRoute,
+      )
+    )
+      return
     const workspaces = (this.ctx.get('workspaces') as IWorkspaces).list.getSnapshot()
     const location = resolveCrossBackendLocation(sessionId, workspaces.items, row?.cwd)
     if (location === undefined) {
       const ticket: CrossBackendTicket = {
-          key: `${sessionId}\u0000${Date.now()}`,
-          sourceSessionId: sessionId,
-          sourceSelection: sourceSelection ?? undefined,
-          targetSelection: projection.next!,
-          location: {},
+        key: `${sessionId}\u0000${Date.now()}`,
+        sourceSessionId: sessionId,
+        sourceSelection: sourceSelection ?? undefined,
+        targetSelection: projection.next!,
+        location: {},
       }
       void this.stagePending(ticket, observed, 'no-location')
       return
     }
     const ticket: CrossBackendTicket = {
-        key: `${sessionId}\u0000${Date.now()}\u0000${projection.next!.provider}\u0000${projection.next!.model}`,
-        sourceSessionId: sessionId,
-        sourceSelection: sourceSelection ?? undefined,
-        targetSelection: projection.next!,
-        location,
+      key: `${sessionId}\u0000${Date.now()}\u0000${projection.next!.provider}\u0000${projection.next!.model}`,
+      sourceSessionId: sessionId,
+      sourceSelection: sourceSelection ?? undefined,
+      targetSelection: projection.next!,
+      location,
     }
     // The stock picker has already written `next` by the time this additive
     // observer runs. Compensate immediately, before exposing the decision UI,
@@ -211,18 +236,29 @@ export class CrossBackendCoordinator {
     void this.stagePending(ticket, observed)
   }
 
-  private async stagePending(ticket: CrossBackendTicket, observed: ObservedSession, blockingReason?: 'no-location'): Promise<void> {
+  private async stagePending(
+    ticket: CrossBackendTicket,
+    observed: ObservedSession,
+    blockingReason?: 'no-location',
+  ): Promise<void> {
     if (observed.staging || this.disposed) return
     const source = ticket.sourceSelection
-    if (source === undefined) return
     observed.staging = true
-    this.suppressSelection(ticket.sourceSessionId, source)
-    const restored = await this.operationsFor(ticket).restoreSource(source)
+    if (source !== undefined) this.suppressSelection(ticket.sourceSessionId, source)
+    // A nonblank session can have no committed model selection when its first
+    // request was stopped before request/header. There is no truthful source
+    // model to restore, but the host guard blocks ACP use in that history; the
+    // user can still explicitly continue by creating a fresh destination.
+    const restored =
+      source === undefined ? { ok: true as const } : await this.operationsFor(ticket).restoreSource(source)
     observed.staging = false
     if (this.disposed || this.observed.get(ticket.sourceSessionId as SessionId) !== observed) return
     const pending: CrossBackendPending = restored.ok
       ? {
-          ticket: { ...ticket, sourceAlreadyRestored: true },
+          ticket: {
+            ...ticket,
+            ...(source === undefined ? {} : { sourceAlreadyRestored: true }),
+          },
           error: null,
           ...(blockingReason === undefined ? {} : { blockingReason }),
           confirmable: blockingReason === undefined,
@@ -240,13 +276,22 @@ export class CrossBackendCoordinator {
     return {
       restoreSource: async (selection: CrossBackendModelSelection) => {
         try {
-          const result = await remote.session.selectModel({ sessionId: ticket.sourceSessionId as SessionId, ...selection })
+          const result = await remote.session.selectModel({
+            sessionId: ticket.sourceSessionId as SessionId,
+            ...selection,
+          })
           return result.ok ? { ok: true } : { ok: false, message: result.error.message }
         } catch (error) {
           return { ok: false, message: error instanceof Error ? error.message : String(error) }
         }
       },
-      createDestination: async ({ sessionId, location }: { sessionId: string; location: { workspaceId?: string; cwd?: string } }) => {
+      createDestination: async ({
+        sessionId,
+        location,
+      }: {
+        sessionId: string
+        location: { workspaceId?: string; cwd?: string }
+      }) => {
         try {
           await sessions.create({
             sessionId: sessionId as SessionId,

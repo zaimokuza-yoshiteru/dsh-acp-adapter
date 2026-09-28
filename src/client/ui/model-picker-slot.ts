@@ -21,13 +21,16 @@ export interface ModelPickerSessionsFace {
 }
 
 export interface ModelPickerSlots {
-  inject(name: 'conversation.input.model', factory: () => (() => void)): () => void
-  register(options: {
-    name: 'conversation.input.model'
-    priority: -1
-    locale: 'acpModelPicker'
-    inject(sessionId: SessionId): ModelSelectInjected
-  }, component: typeof SearchableModelPicker): () => void
+  inject(name: 'conversation.input.model', factory: () => () => void): () => void
+  register(
+    options: {
+      name: 'conversation.input.model'
+      priority: -1
+      locale: 'acpModelPicker'
+      inject(sessionId: SessionId): ModelSelectInjected
+    },
+    component: typeof SearchableModelPicker,
+  ): () => void
 }
 
 /** Subscribe to the opt-in setting and shadow the native single seat only while enabled. */
@@ -43,21 +46,29 @@ export function installSearchableModelPickerSlot(
       const snapshot = settings.getSnapshot()
       const enabled = snapshot.status === 'ready' && snapshot.value?.searchableModelPicker === true
       if (enabled && disposePicker === undefined) {
-        disposePicker = slots.register({
-          name: 'conversation.input.model',
-          priority: -1,
-          locale: 'acpModelPicker',
-          inject: (sessionId) => {
-            const directory = directories.directoryFor(sessionId)
-            const available = sessions.subagentAddress(sessionId) === undefined
-            return {
-              available,
-              directory: directory.store,
-              load: () => { if (available) void directory.load().catch(() => { /* the shared store carries failures */ }) },
-              select: (selection) => available ? directory.select(selection) : Promise.resolve(undefined),
-            }
+        disposePicker = slots.register(
+          {
+            name: 'conversation.input.model',
+            priority: -1,
+            locale: 'acpModelPicker',
+            inject: (sessionId) => {
+              const directory = directories.directoryFor(sessionId)
+              const available = sessions.subagentAddress(sessionId) === undefined
+              return {
+                available,
+                directory: directory.store,
+                load: () => {
+                  if (available)
+                    void directory.load().catch(() => {
+                      /* the shared store carries failures */
+                    })
+                },
+                select: (selection) => (available ? directory.select(selection) : Promise.resolve(undefined)),
+              }
+            },
           },
-        }, SearchableModelPicker)
+          SearchableModelPicker,
+        )
       } else if (!enabled && disposePicker !== undefined) {
         disposePicker()
         disposePicker = undefined

@@ -23,11 +23,7 @@ import {
   panelSettingsOf,
   validateAgentDraft,
 } from './logic.ts'
-import type {
-  AcpProviderHealth,
-  AcpScopeSnapshot,
-  AgentDraft,
-} from './logic.ts'
+import type { AcpProviderHealth, AcpScopeSnapshot, AgentDraft } from './logic.ts'
 import type { AcpRemoteLike } from './acp-remote.ts'
 import type { AcpPanelSnapshot, AcpPanelStoreActions, HealthState } from './stores/panel-store.ts'
 
@@ -46,15 +42,19 @@ export interface AcpPanelControllerDeps {
   /** Settings wire face (write side: path-addressed mutate with revision fencing). */
   mutate(ops: AcpSettingsOp[], expectedRevision?: number): Promise<boolean>
   refusedMessage: () => string
- /** The mounted dshAcp remote namespace; see ./acp-remote.ts. */
+  /** The mounted dshAcp remote namespace; see ./acp-remote.ts. */
   remote: AcpRemoteLike
 }
 
 export class AcpPanelController {
   private scopeSnapshot: AcpScopeSnapshot
   private health: HealthState = {
-    status: 'idle', rows: [], fetchedAt: undefined, message: undefined,
-    checkingAgentIds: [], agentErrors: {},
+    status: 'idle',
+    rows: [],
+    fetchedAt: undefined,
+    message: undefined,
+    checkingAgentIds: [],
+    agentErrors: {},
   }
   private sink: AcpPanelStoreActions | null = null
   private readonly unsubscribeScope: () => void
@@ -95,7 +95,7 @@ export class AcpPanelController {
    * in-flight one; any failure — transport, host-side throw, or a
    * contract-violating payload — lands in 'unreachable' with its message, the
    * graceful-degradation posture for an absent host half.
- * @param recheck - true = 「重新检查」（收尾：host 丢弃 probe 缓存并重探，
+   * @param recheck - true = 「重新检查」（收尾：host 丢弃 probe 缓存并重探，
    *   面板按钮路径）；false/省略 = 只读缓存视图（面板打开路径，不 spawn probe）。
    */
   async refreshHealth(recheck = false): Promise<void> {
@@ -121,8 +121,12 @@ export class AcpPanelController {
       }
       const fetchedAt = Date.now()
       this.health = {
-        status: 'ready', rows, fetchedAt, message: undefined,
-        checkingAgentIds: [], agentErrors: {},
+        status: 'ready',
+        rows,
+        fetchedAt,
+        message: undefined,
+        checkingAgentIds: [],
+        agentErrors: {},
       }
       this.sink?.healthReady(rows, fetchedAt)
     } catch (error: unknown) {
@@ -186,12 +190,18 @@ export class AcpPanelController {
     const agents = this.scopeSnapshot.value?.agents ?? {}
     const validation = validateAgentDraft(draft, agents, editingId)
     if (validation.config === undefined) {
-      throw new Error(`AcpPanelController.saveAgent called with an invalid draft (first failure: ${validation.id?.key ?? validation.name?.key ?? validation.command?.key ?? validation.env?.key ?? validation.runtime?.key ?? 'unknown'})`)
+      throw new Error(
+        `AcpPanelController.saveAgent called with an invalid draft (first failure: ${validation.id?.key ?? validation.name?.key ?? validation.command?.key ?? validation.env?.key ?? validation.runtime?.key ?? 'unknown'})`,
+      )
     }
     const id = draft.id.trim()
-    const ops: AcpSettingsOp[] = editingId !== undefined && editingId !== id
-      ? [{ op: 'unset', path: ['agents', editingId] }, { op: 'set', path: ['agents', id], value: { ...validation.config, args: [...validation.config.args] } }]
-      : [{ op: 'set', path: ['agents', id], value: { ...validation.config, args: [...validation.config.args] } }]
+    const ops: AcpSettingsOp[] =
+      editingId !== undefined && editingId !== id
+        ? [
+            { op: 'unset', path: ['agents', editingId] },
+            { op: 'set', path: ['agents', id], value: { ...validation.config, args: [...validation.config.args] } },
+          ]
+        : [{ op: 'set', path: ['agents', id], value: { ...validation.config, args: [...validation.config.args] } }]
     return this.mutate(ops)
   }
 
@@ -217,7 +227,7 @@ export class AcpPanelController {
   }
 
   /**
- * 删除确认提示：该 profile 的既有会话 binding 计数（dshAcp/boundSessions）。
+   * 删除确认提示：该 profile 的既有会话 binding 计数（dshAcp/boundSessions）。
    * RPC 失败/载荷畸形/应答张冠李戴一律归 undefined——计数是确认的增强提示
    * 而非删除门，缺失时面板退回无计数的基础文案（绝不把失败冒充成 0）。
    */
@@ -235,7 +245,7 @@ export class AcpPanelController {
   private async mutate(ops: AcpSettingsOp[]): Promise<string | undefined> {
     const revision = this.scopeSnapshot.revision
     try {
-      return await this.write(ops, revision) ? undefined : this.refusedMessage()
+      return (await this.write(ops, revision)) ? undefined : this.refusedMessage()
     } catch (error: unknown) {
       return errorMessageOf(error)
     }
@@ -269,5 +279,5 @@ function withoutKey(values: Record<string, string>, key: string): Record<string,
 function mergeHealthRow(rows: readonly AcpProviderHealth[], row: AcpProviderHealth): readonly AcpProviderHealth[] {
   const index = rows.findIndex((candidate) => candidate.id === row.id)
   if (index < 0) return [...rows, row].sort((left, right) => left.id.localeCompare(right.id))
-  return rows.map((candidate, candidateIndex) => candidateIndex === index ? row : candidate)
+  return rows.map((candidate, candidateIndex) => (candidateIndex === index ? row : candidate))
 }

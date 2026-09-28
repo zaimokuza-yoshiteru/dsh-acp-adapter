@@ -14,25 +14,36 @@ function session(events: readonly string[], parentSession?: string, id = 'sessio
   return withSessionFacts({
     id,
     header: parentSession === undefined ? {} : { parentSession },
-    snapshotEvents: () => events.map(type => ({ type, data: {} })),
+    snapshotEvents: () => events.map((type) => ({ type, data: {} })),
   }) as unknown as Session
 }
 
 function sidecar(binding: AcpBindingLookup | undefined, writes: unknown[] = []): AcpSidecar {
   return {
     readLatestBinding: vi.fn(async () => binding),
-    writeRecoveryState: vi.fn(async (state: unknown) => { writes.push(state) }),
+    writeRecoveryState: vi.fn(async (state: unknown) => {
+      writes.push(state)
+    }),
   } as unknown as AcpSidecar
 }
 
-function install(selection: unknown, acpSidecar: AcpSidecar): { listener: RequestListener; reads: ReturnType<typeof vi.fn> } {
+function install(
+  selection: unknown,
+  acpSidecar: AcpSidecar,
+): { listener: RequestListener; reads: ReturnType<typeof vi.fn> } {
   let listener: RequestListener | undefined
   const reads = vi.fn(() => selection)
   const context = {
-    inject: (_keys: readonly string[], callback: (ctx: unknown) => void) => callback({
-      sessionProjections: { stateOf: (session: { facts: unknown }, key: string) => key === 'acpExecution' ? session.facts : reads() },
-      on: (_event: string, handler: RequestListener) => { listener = handler; return () => undefined },
-    }),
+    inject: (_keys: readonly string[], callback: (ctx: unknown) => void) =>
+      callback({
+        sessionProjections: {
+          stateOf: (session: { facts: unknown }, key: string) => (key === 'acpExecution' ? session.facts : reads()),
+        },
+        on: (_event: string, handler: RequestListener) => {
+          listener = handler
+          return () => undefined
+        },
+      }),
   }
   installAcpBackendGuard(context as unknown as Context, { sidecar: acpSidecar })
   if (listener === undefined) throw new Error('guard listener was not installed')
@@ -61,7 +72,9 @@ describe('M6b additive ACP backend guard', () => {
     const headless = Object.assign(session(['turn/start', 'assistant/message', 'turn/end', 'turn/start']), {
       requestHeader: () => ({ config: config('acp-codex') }),
     })
-    await expect(listener({ agent: { session: headless } }, async () => config('acp-codex'))).resolves.toEqual(config('acp-codex'))
+    await expect(listener({ agent: { session: headless } }, async () => config('acp-codex'))).resolves.toEqual(
+      config('acp-codex'),
+    )
     expect(acpSidecar.readLatestBinding).toHaveBeenCalledOnce()
   })
 
@@ -69,7 +82,7 @@ describe('M6b additive ACP backend guard', () => {
     for (const previous of [config('native'), config('acp-codex'), undefined]) {
       const { listener } = install(undefined, sidecar(undefined))
       const headless = Object.assign(session(['turn/start', 'assistant/message', 'turn/end', 'turn/start']), {
-        requestHeader: () => previous === undefined ? undefined : { config: previous },
+        requestHeader: () => (previous === undefined ? undefined : { config: previous }),
       })
       await expect(listener({ agent: { session: headless } }, async () => config('acp-codex'))).rejects.toThrow()
     }
@@ -79,7 +92,9 @@ describe('M6b additive ACP backend guard', () => {
       const writes: unknown[] = []
       const acpSidecar = sidecar(validBinding('codex'), writes)
       const { listener } = install({ lastUsed: config('native-a'), pending: null }, acpSidecar)
-      await expect(listener({ agent: { session: session(['turn/start', 'user/message']) } }, async () => next)).resolves.toEqual(next)
+      await expect(
+        listener({ agent: { session: session(['turn/start', 'user/message']) } }, async () => next),
+      ).resolves.toEqual(next)
       expect(acpSidecar.readLatestBinding).not.toHaveBeenCalled()
       expect(acpSidecar.writeRecoveryState).not.toHaveBeenCalled()
       expect(writes).toHaveLength(0)
@@ -90,7 +105,9 @@ describe('M6b additive ACP backend guard', () => {
     const acpSidecar = sidecar(undefined)
     const { listener } = install({ lastUsed: null, pending: null }, acpSidecar)
     const next = config('acp-codex')
-    await expect(listener({ agent: { session: session(['turn/start', 'user/message']) } }, async () => next)).resolves.toEqual(next)
+    await expect(
+      listener({ agent: { session: session(['turn/start', 'user/message']) } }, async () => next),
+    ).resolves.toEqual(next)
     expect(acpSidecar.readLatestBinding).not.toHaveBeenCalled()
   })
 
@@ -98,7 +115,9 @@ describe('M6b additive ACP backend guard', () => {
     const acpSidecar = sidecar(validBinding('codex'))
     const { listener } = install({ lastUsed: config('acp-codex'), pending: null }, acpSidecar)
     const next = config('acp-codex', 'model-b')
-    await expect(listener({ agent: { session: session(['turn/start', 'user/message']) } }, async () => next)).resolves.toEqual(next)
+    await expect(
+      listener({ agent: { session: session(['turn/start', 'user/message']) } }, async () => next),
+    ).resolves.toEqual(next)
     expect(acpSidecar.readLatestBinding).toHaveBeenCalledTimes(1)
     expect(acpSidecar.writeRecoveryState).not.toHaveBeenCalled()
   })
@@ -106,8 +125,9 @@ describe('M6b additive ACP backend guard', () => {
   it('blocks cross-backend transitions without reading or writing ACP state', async () => {
     const acpSidecar = sidecar(validBinding('codex'))
     const { listener } = install({ lastUsed: config('acp-codex'), pending: null }, acpSidecar)
-    await expect(listener({ agent: { session: session(['turn/start', 'user/message']) } }, async () => config('native')))
-      .rejects.toMatchObject({ code: 'ACP_BACKEND_NEW_SESSION_REQUIRED' })
+    await expect(
+      listener({ agent: { session: session(['turn/start', 'user/message']) } }, async () => config('native')),
+    ).rejects.toMatchObject({ code: 'ACP_BACKEND_NEW_SESSION_REQUIRED' })
     expect(acpSidecar.readLatestBinding).not.toHaveBeenCalled()
     expect(acpSidecar.writeRecoveryState).not.toHaveBeenCalled()
   })
@@ -115,8 +135,9 @@ describe('M6b additive ACP backend guard', () => {
   it('blocks ACP profile changes without reading either profile binding', async () => {
     const acpSidecar = sidecar(validBinding('codex'))
     const { listener } = install({ lastUsed: config('acp-codex'), pending: null }, acpSidecar)
-    await expect(listener({ agent: { session: session(['turn/start', 'user/message']) } }, async () => config('acp-kimi')))
-      .rejects.toMatchObject({ code: 'ACP_BACKEND_NEW_SESSION_REQUIRED' })
+    await expect(
+      listener({ agent: { session: session(['turn/start', 'user/message']) } }, async () => config('acp-kimi')),
+    ).rejects.toMatchObject({ code: 'ACP_BACKEND_NEW_SESSION_REQUIRED' })
     expect(acpSidecar.readLatestBinding).not.toHaveBeenCalled()
     expect(acpSidecar.writeRecoveryState).not.toHaveBeenCalled()
   })
@@ -124,21 +145,26 @@ describe('M6b additive ACP backend guard', () => {
   it('persists recovery and blocks a same-profile continuation with a missing binding', async () => {
     const acpSidecar = sidecar(undefined)
     const { listener } = install({ lastUsed: config('acp-codex'), pending: null }, acpSidecar)
-    await expect(listener({ agent: { session: session(['turn/start', 'user/message']) } }, async () => config('acp-codex')))
-      .rejects.toMatchObject({ code: 'ACP_BACKEND_RECOVERY_REQUIRED' })
+    await expect(
+      listener({ agent: { session: session(['turn/start', 'user/message']) } }, async () => config('acp-codex')),
+    ).rejects.toMatchObject({ code: 'ACP_BACKEND_RECOVERY_REQUIRED' })
     expect(acpSidecar.readLatestBinding).toHaveBeenCalledTimes(1)
-    expect(acpSidecar.writeRecoveryState).toHaveBeenCalledWith(expect.objectContaining({
-      kind: 'reconciliation-required',
-      cause: 'binding-missing',
-      dshSessionId: 'session-test',
-    }))
+    expect(acpSidecar.writeRecoveryState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'reconciliation-required',
+        cause: 'binding-missing',
+        dshSessionId: 'session-test',
+      }),
+    )
   })
 
   it('allows a DSH fork child to establish a fresh ACP binding when the parent route is inherited', async () => {
     const acpSidecar = sidecar(undefined)
     const { listener } = install({ lastUsed: config('acp-devin'), pending: null }, acpSidecar)
     const child = session(['turn/start', 'user/message'], 'parent-session', 'child-session')
-    await expect(listener({ agent: { session: child } }, async () => config('acp-devin'))).resolves.toEqual(config('acp-devin'))
+    await expect(listener({ agent: { session: child } }, async () => config('acp-devin'))).resolves.toEqual(
+      config('acp-devin'),
+    )
     expect(acpSidecar.readLatestBinding).toHaveBeenCalledTimes(1)
     expect(acpSidecar.writeRecoveryState).not.toHaveBeenCalled()
   })
@@ -146,8 +172,9 @@ describe('M6b additive ACP backend guard', () => {
   it('records a backend conflict when the binding belongs to another ACP profile', async () => {
     const acpSidecar = sidecar(validBinding('kimi'))
     const { listener } = install({ lastUsed: config('acp-codex'), pending: null }, acpSidecar)
-    await expect(listener({ agent: { session: session(['turn/start', 'user/message']) } }, async () => config('acp-codex')))
-      .rejects.toMatchObject({ code: 'ACP_BACKEND_RECOVERY_REQUIRED' })
+    await expect(
+      listener({ agent: { session: session(['turn/start', 'user/message']) } }, async () => config('acp-codex')),
+    ).rejects.toMatchObject({ code: 'ACP_BACKEND_RECOVERY_REQUIRED' })
     expect(acpSidecar.writeRecoveryState).toHaveBeenCalledWith(expect.objectContaining({ cause: 'backend-conflict' }))
   })
 
@@ -155,15 +182,24 @@ describe('M6b additive ACP backend guard', () => {
     const acpSidecar = sidecar(undefined)
     const { listener } = install({ lastUsed: null, pending: null }, acpSidecar)
     const next = config('native')
-    await expect(listener({ agent: { session: session(['turn/start', 'user/message', 'turn/start', 'user/message']) } }, async () => next)).resolves.toEqual(next)
+    await expect(
+      listener(
+        { agent: { session: session(['turn/start', 'user/message', 'turn/start', 'user/message']) } },
+        async () => next,
+      ),
+    ).resolves.toEqual(next)
     expect(acpSidecar.readLatestBinding).not.toHaveBeenCalled()
   })
 
   it('blocks ACP adoption when prior history exists without a last-used selection', async () => {
     const acpSidecar = sidecar(undefined)
     const { listener } = install({ lastUsed: null, pending: null }, acpSidecar)
-    await expect(listener({ agent: { session: session(['turn/start', 'user/message', 'turn/start', 'user/message']) } }, async () => config('acp-codex')))
-      .rejects.toMatchObject({ code: 'ACP_BACKEND_NEW_SESSION_REQUIRED' })
+    await expect(
+      listener(
+        { agent: { session: session(['turn/start', 'user/message', 'turn/start', 'user/message']) } },
+        async () => config('acp-codex'),
+      ),
+    ).rejects.toMatchObject({ code: 'ACP_BACKEND_NEW_SESSION_REQUIRED' })
     expect(acpSidecar.readLatestBinding).not.toHaveBeenCalled()
     expect(acpSidecar.writeRecoveryState).not.toHaveBeenCalled()
   })

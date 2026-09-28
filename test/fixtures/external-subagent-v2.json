@@ -137,9 +137,7 @@
             "time0": 250,
             "index": 0,
             "dt": [],
-            "texts": [
-              "2"
-            ]
+            "texts": ["2"]
           },
           {
             "type": "chunk",

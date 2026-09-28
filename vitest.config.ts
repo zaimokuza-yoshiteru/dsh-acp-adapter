@@ -7,7 +7,9 @@ const sourcePrefix = fileURLToPath(new URL('./src/', import.meta.url)).replaceAl
 
 export default defineConfig({
   define: {
-    __DSH_ACP_ADAPTER_VERSION__: JSON.stringify(JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version),
+    __DSH_ACP_ADAPTER_VERSION__: JSON.stringify(
+      JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version,
+    ),
   },
   plugins: [
     {
@@ -38,15 +40,12 @@ export default defineConfig({
       // Published DSH client entries are loader-registration wrappers, not
       // Node ESM. Tests execute the same supported-alpha implementation emitted beside
       // its declarations; production keeps the public /client module-table edge.
-      '@deepseek-ai/dsh-api-gateway/client': fileURLToPath(new URL(
-        './node_modules/@deepseek-ai/dsh-api-gateway/lib/types/client/index.js',
-        import.meta.url,
-      )),
+      '@deepseek-ai/dsh-api-gateway/client': fileURLToPath(
+        new URL('./node_modules/@deepseek-ai/dsh-api-gateway/lib/types/client/index.js', import.meta.url),
+      ),
       // React 与 UI primitives 由宿主模块表提供。普通测试使用元素树替身；
       // 真实渲染、effects 和交互由加载已构建插件的浏览器 E2E 验证。
-      '@deepseek-ai/dsh-client-ui-primitives': fileURLToPath(
-        new URL('./test/ui-primitives-stub.mjs', import.meta.url),
-      ),
+      '@deepseek-ai/dsh-client-ui-primitives': fileURLToPath(new URL('./test/ui-primitives-stub.mjs', import.meta.url)),
       react: fileURLToPath(new URL('./test/react-stub.mjs', import.meta.url)),
     },
   },

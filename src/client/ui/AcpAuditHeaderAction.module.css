@@ -45,8 +45,15 @@
   gap: 2px;
 }
 
-.filters { flex: none; overflow-x: auto; }
-.toolbarEnd { flex: none; gap: 6px; margin-left: auto; }
+.filters {
+  flex: none;
+  overflow-x: auto;
+}
+.toolbarEnd {
+  flex: none;
+  gap: 6px;
+  margin-left: auto;
+}
 
 .filter,
 .filterActive,
@@ -80,7 +87,9 @@
 .filterActive:hover,
 .refresh:hover:not(:disabled),
 .more:hover:not(:disabled),
-.close:hover { background: var(--dsw-alias-interactive-bg-hover); }
+.close:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
 
 .filter:focus-visible,
 .filterActive:focus-visible,
@@ -93,7 +102,10 @@
 }
 
 .refresh:disabled,
-.more:disabled { cursor: default; opacity: 0.45; }
+.more:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
 
 .search {
   flex: 0 1 164px;
@@ -138,11 +150,23 @@
   font: var(--dsw-font-xxs-12);
 }
 
-.eventColumn { width: 122px; }
-.contentColumn { width: auto; }
-.table tr { height: 30px; cursor: pointer; outline: none; }
-.table tr:hover { background: var(--dsw-alias-interactive-bg-hover); }
-.table tr[data-selected='true'] { background: var(--dsw-alias-interactive-bg-active); }
+.eventColumn {
+  width: 122px;
+}
+.contentColumn {
+  width: auto;
+}
+.table tr {
+  height: 30px;
+  cursor: pointer;
+  outline: none;
+}
+.table tr:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+.table tr[data-selected='true'] {
+  background: var(--dsw-alias-interactive-bg-active);
+}
 
 .event,
 .content {
@@ -160,10 +184,21 @@
   padding-right: 4px !important;
   padding-left: 36px !important;
 }
-.content { padding-left: 4px !important; color: var(--dsw-alias-label-primary); }
+.content {
+  padding-left: 4px !important;
+  color: var(--dsw-alias-label-primary);
+}
 .eventInner,
-.contentInner { display: flex; min-width: 0; height: 100%; align-items: center; }
-.contentInner { justify-content: space-between; gap: 12px; }
+.contentInner {
+  display: flex;
+  min-width: 0;
+  height: 100%;
+  align-items: center;
+}
+.contentInner {
+  justify-content: space-between;
+  gap: 12px;
+}
 
 .kindSlot {
   display: flex;
@@ -215,7 +250,12 @@
   box-sizing: border-box;
 }
 
-.detailsTitle { display: flex; min-width: 0; align-items: center; gap: 8px; }
+.detailsTitle {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
 .detailsLocation {
   min-width: 0;
   overflow: hidden;
@@ -237,7 +277,9 @@
   font-size: 18px;
   line-height: 18px;
 }
-.close:hover { color: var(--dsw-alias-label-primary); }
+.close:hover {
+  color: var(--dsw-alias-label-primary);
+}
 
 .detailsBody {
   display: flex;
@@ -275,7 +317,9 @@
   padding: 0 14px;
   align-items: center;
 }
-.overview dt { color: var(--dsw-alias-label-tertiary); }
+.overview dt {
+  color: var(--dsw-alias-label-tertiary);
+}
 .overview dd {
   min-width: 0;
   margin: 0;
@@ -287,7 +331,11 @@
 
 /* Keep the native JsonTree interaction and copy actions; the details body owns
    vertical scrolling, so the tree needs no nested scroller. */
-.jsonPayload.jsonPayload { flex: none; min-width: 0; overflow: visible; }
+.jsonPayload.jsonPayload {
+  flex: none;
+  min-width: 0;
+  overflow: visible;
+}
 
 .detailPayload {
   box-sizing: border-box;
@@ -305,27 +353,76 @@
   font: 11px/17px var(--ds-font-family-code, monospace);
 }
 
-.more { display: block; height: 24px; margin: 8px auto; padding: 2px 8px; }
+.more {
+  display: block;
+  height: 24px;
+  margin: 8px auto;
+  padding: 2px 8px;
+}
 .muted,
 .end,
-.error { margin: 12px; font: var(--dsw-font-xxs-12); }
+.error {
+  margin: 12px;
+  font: var(--dsw-font-xxs-12);
+}
 .muted,
 .end,
-.noDetails { color: var(--dsw-alias-label-tertiary); }
-.end { text-align: center; }
-.error { color: var(--dsw-alias-state-error-primary); overflow-wrap: anywhere; }
-.currentIssue { margin: 12px; padding: 12px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 6px; font: var(--dsw-font-xs-13); }
-.currentIssue p { margin: 8px 0; }
-.noDetails { margin: 0; }
+.noDetails {
+  color: var(--dsw-alias-label-tertiary);
+}
+.end {
+  text-align: center;
+}
+.error {
+  color: var(--dsw-alias-state-error-primary);
+  overflow-wrap: anywhere;
+}
+.currentIssue {
+  margin: 12px;
+  padding: 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 6px;
+  font: var(--dsw-font-xs-13);
+}
+.currentIssue p {
+  margin: 8px 0;
+}
+.noDetails {
+  margin: 0;
+}
 
 @media (max-width: 720px) {
-  .toolbar { height: auto; min-height: 32px; }
-  .toolbarInner { align-items: flex-start; padding: 5px 8px; }
-  .filters { flex: 1; }
-  .toolbarEnd { align-items: flex-start; }
-  .search { width: 112px; }
-  .eventColumn { width: 98px; }
-  .event { padding-left: 12px !important; }
-  .kindSlot { width: 78px; }
-  .details { position: absolute; inset: 0; width: 100%; max-width: none; border-left: 0; }
+  .toolbar {
+    height: auto;
+    min-height: 32px;
+  }
+  .toolbarInner {
+    align-items: flex-start;
+    padding: 5px 8px;
+  }
+  .filters {
+    flex: 1;
+  }
+  .toolbarEnd {
+    align-items: flex-start;
+  }
+  .search {
+    width: 112px;
+  }
+  .eventColumn {
+    width: 98px;
+  }
+  .event {
+    padding-left: 12px !important;
+  }
+  .kindSlot {
+    width: 78px;
+  }
+  .details {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    max-width: none;
+    border-left: 0;
+  }
 }

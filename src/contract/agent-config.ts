@@ -63,7 +63,6 @@ export type AcpAgentId = 'devin' | 'codex' | 'kimi' | 'claude'
 /** 全部合法 runtime 绑定值（settings schema 校验与身份解析共用同一词表）。 */
 export const ACP_AGENT_IDS: readonly AcpAgentId[] = ['devin', 'codex', 'kimi', 'claude']
 
-
 export const RUNTIME_REGISTRY_IDS: Readonly<Record<AcpAgentId, string>> = {
   devin: 'devin',
   codex: 'codex-acp',
@@ -73,16 +72,19 @@ export const RUNTIME_REGISTRY_IDS: Readonly<Record<AcpAgentId, string>> = {
 
 /** Explicit runtime binding wins; legacy built-in profile IDs remain supported. */
 export function effectiveRuntimeOf(id: string, config?: { readonly runtime?: AcpAgentId }): AcpAgentId | undefined {
-  return config?.runtime ?? (ACP_AGENT_IDS.includes(id as AcpAgentId) ? id as AcpAgentId : undefined)
+  return config?.runtime ?? (ACP_AGENT_IDS.includes(id as AcpAgentId) ? (id as AcpAgentId) : undefined)
 }
 
 /** Catalog metadata does not participate in execution identity. */
-export function catalogIdOf(id: string, config: { readonly runtime?: AcpAgentId; readonly catalogId?: string }): string {
+export function catalogIdOf(
+  id: string,
+  config: { readonly runtime?: AcpAgentId; readonly catalogId?: string },
+): string {
   const runtime = effectiveRuntimeOf(id, config)
   return config.catalogId ?? (runtime === undefined ? id : RUNTIME_REGISTRY_IDS[runtime])
 }
 
 /** Used only when creating a catalog preset; never infer runtime from saved catalogId. */
 export function runtimeForCatalogId(id: string): AcpAgentId | undefined {
-  return ACP_AGENT_IDS.find(runtime => RUNTIME_REGISTRY_IDS[runtime] === id)
+  return ACP_AGENT_IDS.find((runtime) => RUNTIME_REGISTRY_IDS[runtime] === id)
 }

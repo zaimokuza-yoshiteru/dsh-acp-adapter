@@ -19,7 +19,8 @@ export interface AgentControlChoice {
   readonly description?: string | null
   readonly group?: string
   readonly current: boolean
-  readonly write: AcpAgentSessionOptionWrite | { readonly kind: 'tool-approval-policy'; readonly policy: 'auto' | 'ask' }
+  readonly write:
+    AcpAgentSessionOptionWrite | { readonly kind: 'tool-approval-policy'; readonly policy: 'auto' | 'ask' }
   readonly disabled: boolean
 }
 export interface AgentControlGroup {
@@ -37,34 +38,60 @@ export function agentControlMenuGroups(snapshot: AcpAgentSessionSnapshotView, t:
   const disabled = !snapshot.editable || snapshot.freshness !== 'live'
   // configOptions is canonical; legacy modes are only a fallback.
   if (!(snapshot.configOptions ?? []).some(isModeConfigOption) && (snapshot.modes?.length ?? 0) > 0) {
-    groups.push({ kind: 'mode', id: 'mode', name: t('agentControlMode'), current: teamModeLabel(snapshot, t('agentControlDefault')),
-      choices: (snapshot.modes ?? []).map(mode => ({ id: `mode:${mode.id}`, label: mode.name,
+    groups.push({
+      kind: 'mode',
+      id: 'mode',
+      name: t('agentControlMode'),
+      current: teamModeLabel(snapshot, t('agentControlDefault')),
+      choices: (snapshot.modes ?? []).map((mode) => ({
+        id: `mode:${mode.id}`,
+        label: mode.name,
         current: mode.id === (snapshot.pendingModeId ?? snapshot.currentModeId),
-        write: { kind: 'mode', id: mode.id }, disabled })) })
+        write: { kind: 'mode', id: mode.id },
+        disabled,
+      })),
+    })
   }
   for (const option of snapshot.configOptions ?? []) {
     // Model and reasoning remain exclusively in DSH's native ModelPicker.
     if (isAcpModelOrReasoningOption(option)) continue
-    const choices: AgentControlChoice[] = option.type === 'boolean'
-      ? [false, true].map(value => ({ id: `config:${option.id}:${value}`, label: t(value ? 'agentControlOn' : 'agentControlOff'),
-        current: value === option.currentValue, write: { kind: 'config', id: option.id, value }, disabled }))
-      : option.options.flatMap(entry => ('value' in entry ? [entry] : entry.options).map(value => ({
-        id: `config:${option.id}:${value.value}`, label: value.name,
-        ...(value.description == null ? {} : { description: value.description }),
-        ...('group' in entry ? { group: entry.name } : {}),
-        current: value.value === (isModeConfigOption(option) ? snapshot.pendingModeId ?? option.currentValue : option.currentValue),
-        write: { kind: 'config' as const, id: option.id, value: value.value }, disabled,
-      })))
-    groups.push({ kind: isModeConfigOption(option) ? 'mode' : 'config', id: `config:${option.id}`, name: option.name,
-      current: choices.find(choice => choice.current)?.label ?? String(option.currentValue),
-      ...(option.description == null ? {} : { description: option.description }), choices })
+    const choices: AgentControlChoice[] =
+      option.type === 'boolean'
+        ? [false, true].map((value) => ({
+            id: `config:${option.id}:${value}`,
+            label: t(value ? 'agentControlOn' : 'agentControlOff'),
+            current: value === option.currentValue,
+            write: { kind: 'config', id: option.id, value },
+            disabled,
+          }))
+        : option.options.flatMap((entry) =>
+            ('value' in entry ? [entry] : entry.options).map((value) => ({
+              id: `config:${option.id}:${value.value}`,
+              label: value.name,
+              ...(value.description == null ? {} : { description: value.description }),
+              ...('group' in entry ? { group: entry.name } : {}),
+              current:
+                value.value ===
+                (isModeConfigOption(option) ? (snapshot.pendingModeId ?? option.currentValue) : option.currentValue),
+              write: { kind: 'config' as const, id: option.id, value: value.value },
+              disabled,
+            })),
+          )
+    groups.push({
+      kind: isModeConfigOption(option) ? 'mode' : 'config',
+      id: `config:${option.id}`,
+      name: option.name,
+      current: choices.find((choice) => choice.current)?.label ?? String(option.currentValue),
+      ...(option.description == null ? {} : { description: option.description }),
+      choices,
+    })
   }
   return groups
 }
 
 export function toolApprovalPolicyGroup(snapshot: ToolApprovalPolicySnapshot, t: Translate): AgentControlGroup {
   const disabled = !snapshot.editable
-  const choices: AgentControlChoice[] = (['auto', 'ask'] as const).map(policy => ({
+  const choices: AgentControlChoice[] = (['auto', 'ask'] as const).map((policy) => ({
     id: `tool-approval:${policy}`,
     label: t(policy === 'auto' ? 'toolApprovalAuto' : 'toolApprovalAsk'),
     current: snapshot.policy === policy,
@@ -73,7 +100,9 @@ export function toolApprovalPolicyGroup(snapshot: ToolApprovalPolicySnapshot, t:
     disabled,
   }))
   return {
-    kind: 'policy', id: 'tool-approval-policy', name: t('toolApprovalSession'),
+    kind: 'policy',
+    id: 'tool-approval-policy',
+    name: t('toolApprovalSession'),
     current: t(snapshot.policy === 'auto' ? 'toolApprovalAuto' : 'toolApprovalAsk'),
     description: snapshot.source === 'lead' ? t('toolApprovalInherited') : t('toolApprovalScope'),
     choices,
@@ -97,11 +126,30 @@ export function formatContextTokenCount(value: number): string {
   return `${String(Math.round(scaled * factor) / factor)}${unit}`
 }
 
-export function agentControlFooter(snapshot: AcpAgentSessionSnapshotView, t: Translate): readonly { readonly type: 'label'; readonly id: string; readonly text: string }[] {
+export function agentControlFooter(
+  snapshot: AcpAgentSessionSnapshotView,
+  t: Translate,
+): readonly { readonly type: 'label'; readonly id: string; readonly text: string }[] {
   const footer: { readonly type: 'label'; readonly id: string; readonly text: string }[] = []
   if (snapshot.contextUsage !== null) {
-    footer.push({ type: 'label', id: 'context-usage', text: t('agentContextUsage', { used: formatContextTokenCount(snapshot.contextUsage.used), size: formatContextTokenCount(snapshot.contextUsage.size), percent: snapshot.contextUsage.percent }) })
-    if (snapshot.contextUsage.cost !== null) footer.push({ type: 'label', id: 'session-cost', text: t('agentSessionCost', { amount: snapshot.contextUsage.cost.amount, currency: snapshot.contextUsage.cost.currency }) })
+    footer.push({
+      type: 'label',
+      id: 'context-usage',
+      text: t('agentContextUsage', {
+        used: formatContextTokenCount(snapshot.contextUsage.used),
+        size: formatContextTokenCount(snapshot.contextUsage.size),
+        percent: snapshot.contextUsage.percent,
+      }),
+    })
+    if (snapshot.contextUsage.cost !== null)
+      footer.push({
+        type: 'label',
+        id: 'session-cost',
+        text: t('agentSessionCost', {
+          amount: snapshot.contextUsage.cost.amount,
+          currency: snapshot.contextUsage.cost.currency,
+        }),
+      })
   }
   if (snapshot.freshness === 'stale') footer.push({ type: 'label', id: 'stale', text: t('agentStateStale') })
   return footer

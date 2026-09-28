@@ -38,9 +38,9 @@ export interface AcpCapabilityFacts {
   readonly loadSession: boolean
   /** `session/list`（恢复前查重/列会话）。 */
   readonly sessionList: boolean
- /** `session/close`（probe/会话清理的「释放资源」步）。 */
+  /** `session/close`（probe/会话清理的「释放资源」步）。 */
   readonly sessionClose: boolean
- /** `session/delete`（probe/会话清理的「移出 session/list」步）。 */
+  /** `session/delete`（probe/会话清理的「移出 session/list」步）。 */
   readonly sessionDelete: boolean
   /** prompt 可携带图片。 */
   readonly promptImage: boolean
@@ -88,7 +88,6 @@ export interface AcpProbeCleanupView {
   readonly delete: 'done' | 'not-advertised' | 'failed'
   readonly message: string | null
 }
-
 
 /**
  * 收窄的 ACP `AuthMethod`：每个变体都有的 id/name/description 三键；
@@ -159,12 +158,12 @@ export interface AcpProviderHealth {
   readonly executable: boolean
   /** `<command> --version` 首行（尽力而为）；超时/失败/跳过时为 null。 */
   readonly version: string | null
- /** 五态状态（派生规则见 src/domain/session/agent-state.ts）。 */
+  /** 五态状态（派生规则见 src/domain/session/agent-state.ts）。 */
   readonly state: AcpAgentConfigState
   /**
    * 上次 probe 快照（llm-stub 缓存；首次目录构建前为 'never'）。成功分支携带
    * authMethods（收窄后）、agentInfo/capabilities（initialize 握手实际值）、
- * cleanup（清理事实）与 capabilityHash（握手能力的 sha256-16，
+   * cleanup（清理事实）与 capabilityHash（握手能力的 sha256-16，
    * 缺失归 null——条目早于本特性时如实为空，不编造）；失败分支携带 phase
    * （probe 失败阶段；未标记归 null）。
    */
@@ -180,19 +179,19 @@ export interface AcpProviderHealth {
         readonly cleanup: AcpProbeCleanupView | null
         readonly capabilityHash: string | null
         /**
- * readiness：initialize 协商的 ACP 协议版本（probe 缓存条目早于
+         * readiness：initialize 协商的 ACP 协议版本（probe 缓存条目早于
          * 本特性/握手未给出时归 null，不编造）。
- */
+         */
         readonly protocolVersion: number | null
         /**
- * 兼容状态（agent-config.ts `acpVersionCompatibility` 直通，比对握手
- * agentInfo.version 与 registry 快照的上游版本）：无版本参考或握手无
- * 版本 → null；快照无该 agent 版本 → 'unknown'；握手版本等于参考 →
- * 'current'；不等 → 'different'（不阻断，仅如实展示）。
- */
+         * 兼容状态（agent-config.ts `acpVersionCompatibility` 直通，比对握手
+         * agentInfo.version 与 registry 快照的上游版本）：无版本参考或握手无
+         * 版本 → null；快照无该 agent 版本 → 'unknown'；握手版本等于参考 →
+         * 'current'；不等 → 'different'（不阻断，仅如实展示）。
+         */
         readonly versionCompatibility: 'current' | 'different' | 'unknown' | null
         /**
- * 端到端能力矩阵：host 侧由 capabilities（广告事实）
+         * 端到端能力矩阵：host 侧由 capabilities（广告事实）
          * × adapter path 计算（src/domain/policy/
          * capability-matrix.ts）；capabilities 为 null 时矩阵照常下发（广告列
          * 全 null）。UI 只许展示本矩阵的交集结论，不再直译广告布尔。
@@ -211,7 +210,7 @@ export interface AcpProviderHealth {
 /** `health()` 的整包视图。 */
 export interface AcpHealthView {
   readonly providers: readonly AcpProviderHealth[]
- /** 活体 ACP 会话的连续性清单（未接线/无活体会话归 null 或空数组，如实区分）。 */
+  /** 活体 ACP 会话的连续性清单（未接线/无活体会话归 null 或空数组，如实区分）。 */
   readonly liveSessions: readonly AcpLiveSessionContinuity[] | null
 }
 
@@ -282,8 +281,10 @@ export interface AcpActivityView {
   readonly detailPaths?: readonly string[]
   /** Complete, normalized display fields. Independent from bounded raw diagnostics. */
   readonly display?: {
-    readonly diffs?: readonly { readonly path: string; readonly oldText: string | null; readonly newText: string }[] | undefined
-    readonly plan?: readonly { readonly content: string; readonly status: 'pending' | 'in_progress' | 'completed' }[] | undefined
+    readonly diffs?:
+      readonly { readonly path: string; readonly oldText: string | null; readonly newText: string }[] | undefined
+    readonly plan?:
+      readonly { readonly content: string; readonly status: 'pending' | 'in_progress' | 'completed' }[] | undefined
     readonly unavailable?: 'too-large' | 'invalid' | undefined
   }
   readonly contentIndex?: number
@@ -388,7 +389,14 @@ export type AcpBackendState =
   | { readonly state: 'draft'; readonly provider: string; readonly model?: string }
   | { readonly state: 'established'; readonly provider: string }
 
-export type AcpRecoveryKind = 'healthy' | 'reconnect-required' | 'outcome-unknown' | 'reconciliation-required' | 'session-lost' | 'local-history-damaged' | 'resumed-unverified'
+export type AcpRecoveryKind =
+  | 'healthy'
+  | 'reconnect-required'
+  | 'outcome-unknown'
+  | 'reconciliation-required'
+  | 'session-lost'
+  | 'local-history-damaged'
+  | 'resumed-unverified'
 
 /** Minimal recovery view used by the independent session recovery surface. */
 export interface AcpRecoveryView {
@@ -461,10 +469,18 @@ export interface AcpToolApprovalPolicySnapshot {
 export type AcpToolApprovalPolicyFrame =
   | { readonly type: 'opened'; readonly snapshot: AcpToolApprovalPolicySnapshot }
   | { readonly type: 'changed'; readonly snapshot: AcpToolApprovalPolicySnapshot }
-export interface AcpToolApprovalPolicyWrite { readonly policy: 'auto' | 'ask' }
+export interface AcpToolApprovalPolicyWrite {
+  readonly policy: 'auto' | 'ask'
+}
 
 /** ACP agent 配置的五态 wire 词表；消费层从此 client-safe contract 派生。 */
-export const ACP_AGENT_CONFIG_STATES = ['saved-unverified', 'ready', 'auth-required', 'unavailable', 'incompatible'] as const
+export const ACP_AGENT_CONFIG_STATES = [
+  'saved-unverified',
+  'ready',
+  'auth-required',
+  'unavailable',
+  'incompatible',
+] as const
 export type AcpAgentConfigState = (typeof ACP_AGENT_CONFIG_STATES)[number]
 
 /** ACP team management facts; unknown model state is explicit, never inherited from the Lead. */

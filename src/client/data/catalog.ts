@@ -11,11 +11,25 @@ interface RegistryAgent {
   readonly name: string
   readonly version?: string | undefined
   readonly website?: string | undefined
-  readonly distribution?: {
-    readonly npx?: { readonly package?: string | undefined; readonly args?: readonly string[] | undefined } | undefined
-    readonly uvx?: { readonly package?: string | undefined; readonly args?: readonly string[] | undefined } | undefined
-    readonly binary?: { readonly [platform: string]: { readonly archive?: string | undefined; readonly cmd?: string | undefined; readonly args?: readonly string[] | undefined } | undefined } | undefined
-  } | undefined
+  readonly distribution?:
+    | {
+        readonly npx?:
+          { readonly package?: string | undefined; readonly args?: readonly string[] | undefined } | undefined
+        readonly uvx?:
+          { readonly package?: string | undefined; readonly args?: readonly string[] | undefined } | undefined
+        readonly binary?:
+          | {
+              readonly [platform: string]:
+                | {
+                    readonly archive?: string | undefined
+                    readonly cmd?: string | undefined
+                    readonly args?: readonly string[] | undefined
+                  }
+                | undefined
+            }
+          | undefined
+      }
+    | undefined
 }
 
 interface ExecutableEntry {
@@ -35,7 +49,10 @@ const executableEntries = (executablesJson as { readonly entries: { readonly [id
 
 /** Display guidance absent from the registry, not launch configuration. */
 const LOGIN_HINTS: Readonly<Record<AcpAgentId, string>> = {
-  devin: 'devin auth login', codex: 'codex login', kimi: 'kimi login', claude: 'claude',
+  devin: 'devin auth login',
+  codex: 'codex login',
+  kimi: 'kimi login',
+  claude: 'claude',
 }
 
 /** Known installed CLI names for binary distributions; never archive paths. */
@@ -76,8 +93,12 @@ function installHintOf(agent: RegistryAgent): string {
   const distribution = agent.distribution
   // Match the same distribution selected by the sidecar generator.
   if (distribution?.binary !== undefined) {
-    return agent.website ?? Object.entries(distribution.binary)
-      .map(([platform, entry]) => `${platform}: ${entry?.archive ?? ''}`).join('\n')
+    return (
+      agent.website ??
+      Object.entries(distribution.binary)
+        .map(([platform, entry]) => `${platform}: ${entry?.archive ?? ''}`)
+        .join('\n')
+    )
   }
   if (distribution?.npx !== undefined) return `npm install -g ${distribution.npx.package ?? agent.id}`
   if (distribution?.uvx !== undefined) return `uv tool install ${distribution.uvx.package ?? agent.id}`
@@ -90,14 +111,18 @@ function installHintOf(agent: RegistryAgent): string {
  */
 export const ACP_CATALOG_ENTRIES: readonly AcpCatalogEntry[] = buildCatalogEntries(registryAgents, executableEntries)
 
-export function buildCatalogEntries(registryAgents: readonly RegistryAgent[], executableEntries: Readonly<Record<string, ExecutableEntry>>): AcpCatalogEntry[] {
+export function buildCatalogEntries(
+  registryAgents: readonly RegistryAgent[],
+  executableEntries: Readonly<Record<string, ExecutableEntry>>,
+): AcpCatalogEntry[] {
   const entries: AcpCatalogEntry[] = []
   for (const agent of registryAgents) {
     const executable = executableEntries[agent.id]
     const runtime = runtimeForCatalogId(agent.id)
-    const command = executable?.kind === 'binary'
-      ? INSTALLED_BINARY_COMMANDS[agent.id] ?? executable.command
-      : executable?.command ?? ''
+    const command =
+      executable?.kind === 'binary'
+        ? (INSTALLED_BINARY_COMMANDS[agent.id] ?? executable.command)
+        : (executable?.command ?? '')
     const args = executable?.args ?? []
     entries.push({
       id: agent.id,
@@ -115,7 +140,10 @@ export function buildCatalogEntries(registryAgents: readonly RegistryAgent[], ex
   entries.sort((left, right) => {
     const leftRank = VERIFIED_ADAPTER_IDS.indexOf(left.id)
     const rightRank = VERIFIED_ADAPTER_IDS.indexOf(right.id)
-    return (leftRank < 0 ? VERIFIED_ADAPTER_IDS.length : leftRank) - (rightRank < 0 ? VERIFIED_ADAPTER_IDS.length : rightRank)
+    return (
+      (leftRank < 0 ? VERIFIED_ADAPTER_IDS.length : leftRank) -
+      (rightRank < 0 ? VERIFIED_ADAPTER_IDS.length : rightRank)
+    )
   })
   return entries
 }

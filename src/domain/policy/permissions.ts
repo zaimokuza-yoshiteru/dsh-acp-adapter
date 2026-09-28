@@ -22,9 +22,16 @@ export interface AcpPermissionAuditRecord {
   readonly time: number
   readonly data: AcpPermissionAuditData
 }
-export interface AcpPermissionAuditChannel { append(record: AcpPermissionAuditRecord): Promise<void> }
+export interface AcpPermissionAuditChannel {
+  append(record: AcpPermissionAuditRecord): Promise<void>
+}
 export interface AcpNativeApprovalService {
-  request(req: { readonly agent: unknown; readonly toolName: string; readonly reason?: string; readonly signal?: AbortSignal }): Promise<'allowed-once' | 'rejected' | 'cancelled' | 'unavailable'>
+  request(req: {
+    readonly agent: unknown
+    readonly toolName: string
+    readonly reason?: string
+    readonly signal?: AbortSignal
+  }): Promise<'allowed-once' | 'rejected' | 'cancelled' | 'unavailable'>
 }
 export interface AcpNativePermissionBridgeDeps {
   readonly userQuestions?: AcpNativeUserQuestionService
@@ -36,20 +43,30 @@ export interface AcpNativePermissionBridgeDeps {
   readonly now?: () => number
 }
 
-function cancelled(): acp.RequestPermissionResponse { return { outcome: { outcome: 'cancelled' } } }
-function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error) }
+function cancelled(): acp.RequestPermissionResponse {
+  return { outcome: { outcome: 'cancelled' } }
+}
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
 function assertBounds(toolCallId: string, options: readonly acp.PermissionOption[]): void {
-  if (Buffer.byteLength(toolCallId, 'utf8') > ACP_PERMISSION_ID_MAX_BYTES) throw new Error('toolCallId exceeds ACP permission identity limit')
+  if (Buffer.byteLength(toolCallId, 'utf8') > ACP_PERMISSION_ID_MAX_BYTES)
+    throw new Error('toolCallId exceeds ACP permission identity limit')
   if (options.length > ACP_PERMISSION_OPTIONS_MAX) throw new Error('ACP permission option count exceeds limit')
   const ids = new Set<string>()
   for (const option of options) {
-    if (option.optionId.length === 0 || ids.has(option.optionId)) throw new Error('ACP permission optionId is empty or duplicated')
-    if (Buffer.byteLength(option.optionId, 'utf8') > ACP_PERMISSION_ID_MAX_BYTES) throw new Error('optionId exceeds ACP permission identity limit')
+    if (option.optionId.length === 0 || ids.has(option.optionId))
+      throw new Error('ACP permission optionId is empty or duplicated')
+    if (Buffer.byteLength(option.optionId, 'utf8') > ACP_PERMISSION_ID_MAX_BYTES)
+      throw new Error('optionId exceeds ACP permission identity limit')
     ids.add(option.optionId)
   }
 }
 function safeText(value: string, max = 180): string {
-  const clean = redactSecretText(value).replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim()
+  const clean = redactSecretText(value)
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
   return clean.length <= max ? clean : `${clean.slice(0, max - 1)}…`
 }
 /**
@@ -76,7 +93,9 @@ function markdownCodeBlock(value: string): string {
   return `${fence}\n${value}\n${fence}`
 }
 function recordValue(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined
 }
 function firstString(record: Record<string, unknown> | undefined, keys: readonly string[]): string | undefined {
   if (record === undefined) return undefined
@@ -94,29 +113,52 @@ function permissionDetail(tool: acp.RequestPermissionRequest['toolCall'], copy: 
     return command === undefined ? copy.unknownCommand : `${copy.command}: ${visibleCommand(command)}`
   }
   if (tool.kind === 'read' || tool.kind === 'edit' || tool.kind === 'delete' || tool.kind === 'move') {
-    const path = firstString(record, ['file_path', 'filePath', 'path', 'target', 'source', 'destination']) ?? tool.locations?.find((location) => typeof location.path === 'string')?.path
+    const path =
+      firstString(record, ['file_path', 'filePath', 'path', 'target', 'source', 'destination']) ??
+      tool.locations?.find((location) => typeof location.path === 'string')?.path
     return path === undefined ? undefined : `${copy.target}: ${safeText(path, 160)}`
   }
   if (tool.rawInput === undefined) return undefined
   const summary = summarizeRawInputForAudit(tool.rawInput).summary
   return summary === '{}' ? undefined : `${copy.details}: ${safeText(summary)}`
 }
-function permissionQuestionDetail(tool: acp.RequestPermissionRequest['toolCall'], copy: PermissionCopy): string | undefined {
+function permissionQuestionDetail(
+  tool: acp.RequestPermissionRequest['toolCall'],
+  copy: PermissionCopy,
+): string | undefined {
   if (tool.kind !== 'execute') return undefined
   const command = commandOf(tool)
-  return command === undefined ? copy.unknownCommand : `${copy.command}:\n\n${markdownCodeBlock(visibleCommand(command))}`
+  return command === undefined
+    ? copy.unknownCommand
+    : `${copy.command}:\n\n${markdownCodeBlock(visibleCommand(command))}`
 }
-export interface AcpPermissionReasonOptions { readonly includeExecuteDetails?: boolean }
+export interface AcpPermissionReasonOptions {
+  readonly includeExecuteDetails?: boolean
+}
 /** Native approval owns localized chrome. Only Agent-supplied operation facts cross to its reason field. */
-export function nativePermissionReason(tool: acp.RequestPermissionRequest['toolCall'], copy: PermissionCopy): string {
+function nativePermissionReason(tool: acp.RequestPermissionRequest['toolCall'], copy: PermissionCopy): string {
   const title = tool.title ?? tool.name ?? tool.kind ?? 'ACP'
   const command = tool.kind === 'execute' ? commandOf(tool) : undefined
-  const detail = command ?? (tool.rawInput === undefined ? undefined
-    : typeof tool.rawInput === 'string' ? tool.rawInput : JSON.stringify(tool.rawInput, null, 2))
-  return [safeText(title), detail === undefined ? undefined : visibleCommand(detail),
-    tool.kind === 'execute' && command === undefined ? copy.unknownCommand : undefined].filter(value => value !== undefined).join('\n')
+  const detail =
+    command ??
+    (tool.rawInput === undefined
+      ? undefined
+      : typeof tool.rawInput === 'string'
+        ? tool.rawInput
+        : JSON.stringify(tool.rawInput, null, 2))
+  return [
+    safeText(title),
+    detail === undefined ? undefined : visibleCommand(detail),
+    tool.kind === 'execute' && command === undefined ? copy.unknownCommand : undefined,
+  ]
+    .filter((value) => value !== undefined)
+    .join('\n')
 }
-function buildPermissionReason(params: acp.RequestPermissionRequest, copy: PermissionCopy, options: AcpPermissionReasonOptions = {}): string {
+function buildPermissionReason(
+  params: acp.RequestPermissionRequest,
+  copy: PermissionCopy,
+  options: AcpPermissionReasonOptions = {},
+): string {
   const kind = params.toolCall.kind ?? ''
   const lines = [copy.request(copy.actions[kind] ?? copy.restrictedOperation)]
   const title = params.toolCall.title ?? params.toolCall.name
@@ -125,7 +167,9 @@ function buildPermissionReason(params: acp.RequestPermissionRequest, copy: Permi
   if (detail !== undefined && (kind !== 'execute' || options.includeExecuteDetails !== false)) lines.push(detail)
   return lines.join('\n')
 }
-function requestId(): string { return `dsh-acp-permission-${randomUUID()}` }
+function requestId(): string {
+  return `dsh-acp-permission-${randomUUID()}`
+}
 
 /** Render names as user-facing text while keeping the response map exact. */
 function optionLabels(options: readonly acp.PermissionOption[], copy: PermissionCopy): readonly string[] {
@@ -144,27 +188,65 @@ function optionLabels(options: readonly acp.PermissionOption[], copy: Permission
   return new Set(labels).size === labels.length ? labels : labels.map((label, index) => `${index + 1}. ${label}`)
 }
 
-export function createAcpNativePermissionHandler(deps: AcpNativePermissionBridgeDeps): (params: acp.RequestPermissionRequest, signal?: AbortSignal) => Promise<acp.RequestPermissionResponse> {
+export function createAcpNativePermissionHandler(
+  deps: AcpNativePermissionBridgeDeps,
+): (params: acp.RequestPermissionRequest, signal?: AbortSignal) => Promise<acp.RequestPermissionResponse> {
   const copy = permissionCopy(deps.locale)
   return async (params, signal) => {
     const id = requestId()
-    try { assertBounds(params.toolCall.toolCallId, params.options) } catch (error: unknown) { deps.log?.(`dsh-acp native permission rejected by bounds: ${errorMessage(error)}`); return cancelled() }
+    try {
+      assertBounds(params.toolCall.toolCallId, params.options)
+    } catch (error: unknown) {
+      deps.log?.(`dsh-acp native permission rejected by bounds: ${errorMessage(error)}`)
+      return cancelled()
+    }
     const append = async (data: AcpPermissionAuditData): Promise<boolean> => {
       if (deps.audit === undefined) return true
-      try { await deps.audit.append({ kind: ACP_PERMISSION_AUDIT_KIND, time: deps.now?.() ?? Date.now(), data }); return true }
-      catch (error: unknown) { deps.log?.(`dsh-acp native permission audit failed: ${errorMessage(error)}`); return false }
+      try {
+        await deps.audit.append({ kind: ACP_PERMISSION_AUDIT_KIND, time: deps.now?.() ?? Date.now(), data })
+        return true
+      } catch (error: unknown) {
+        deps.log?.(`dsh-acp native permission audit failed: ${errorMessage(error)}`)
+        return false
+      }
     }
-    if (!await append(createPermissionAskedAudit({ requestId: id, agentSessionId: params.sessionId, toolCall: params.toolCall, options: params.options }))) return cancelled()
-    const decide = async (init: { readonly outcome: 'selected' | 'cancelled'; readonly optionId?: string; readonly selectedOptionKind?: acp.PermissionOption['kind']; readonly note?: string }, decisionVia: 'native-question' | 'native-approval' = 'native-question'): Promise<acp.RequestPermissionResponse> => {
-      const ok = await append(createPermissionDecidedAudit({ requestId: id, agentSessionId: params.sessionId, toolCallId: params.toolCall.toolCallId, ...init, decisionVia }))
+    if (
+      !(await append(
+        createPermissionAskedAudit({
+          requestId: id,
+          agentSessionId: params.sessionId,
+          toolCall: params.toolCall,
+          options: params.options,
+        }),
+      ))
+    )
+      return cancelled()
+    const decide = async (
+      init: {
+        readonly outcome: 'selected' | 'cancelled'
+        readonly optionId?: string
+        readonly selectedOptionKind?: acp.PermissionOption['kind']
+        readonly note?: string
+      },
+      decisionVia: 'native-question' | 'native-approval' = 'native-question',
+    ): Promise<acp.RequestPermissionResponse> => {
+      const ok = await append(
+        createPermissionDecidedAudit({
+          requestId: id,
+          agentSessionId: params.sessionId,
+          toolCallId: params.toolCall.toolCallId,
+          ...init,
+          decisionVia,
+        }),
+      )
       if (!ok || init.outcome === 'cancelled') return cancelled()
       return { outcome: { outcome: 'selected', optionId: init.optionId! } }
     }
     if (signal !== undefined && signal.aborted) return decide({ outcome: 'cancelled', note: 'cancelled' })
     const agent = deps.getAgent()
     if (agent === undefined) return decide({ outcome: 'cancelled', note: 'agent-unavailable' })
-    const allowOnce = params.options.find(option => option.kind === 'allow_once')
-    const reject = params.options.find(option => option.kind === 'reject_once')
+    const allowOnce = params.options.find((option) => option.kind === 'allow_once')
+    const reject = params.options.find((option) => option.kind === 'reject_once')
 
     if (deps.approval !== undefined && allowOnce !== undefined) {
       try {
@@ -174,8 +256,16 @@ export function createAcpNativePermissionHandler(deps: AcpNativePermissionBridge
           reason: nativePermissionReason(params.toolCall, copy),
           ...(signal === undefined ? {} : { signal }),
         })
-        if (outcome === 'allowed-once') return decide({ outcome: 'selected', optionId: allowOnce.optionId, selectedOptionKind: allowOnce.kind }, 'native-approval')
-        if (outcome === 'rejected' && reject !== undefined) return decide({ outcome: 'selected', optionId: reject.optionId, selectedOptionKind: reject.kind }, 'native-approval')
+        if (outcome === 'allowed-once')
+          return decide(
+            { outcome: 'selected', optionId: allowOnce.optionId, selectedOptionKind: allowOnce.kind },
+            'native-approval',
+          )
+        if (outcome === 'rejected' && reject !== undefined)
+          return decide(
+            { outcome: 'selected', optionId: reject.optionId, selectedOptionKind: reject.kind },
+            'native-approval',
+          )
         return decide({ outcome: 'cancelled', note: outcome }, 'native-approval')
       } catch (error: unknown) {
         deps.log?.(`dsh-acp native approval unavailable: ${errorMessage(error)}`)
@@ -192,23 +282,32 @@ export function createAcpNativePermissionHandler(deps: AcpNativePermissionBridge
       const detail = permissionQuestionDetail(params.toolCall, copy)
       const answer = await deps.userQuestions.ask({
         agent,
-        questions: [{
-          id: questionId,
-          // Keep the header compact and put the exact command in the native
-          // card's scrollable Markdown detail area, which preserves line
-          // breaks and does not require a second custom permission UI.
-          question: buildPermissionReason(params, copy, { includeExecuteDetails: false }),
-          ...(detail === undefined ? {} : { detail }),
-          options: renderedLabels.map((label) => ({ label })),
-        }],
+        questions: [
+          {
+            id: questionId,
+            // Keep the header compact and put the exact command in the native
+            // card's scrollable Markdown detail area, which preserves line
+            // breaks and does not require a second custom permission UI.
+            question: buildPermissionReason(params, copy, { includeExecuteDetails: false }),
+            ...(detail === undefined ? {} : { detail }),
+            options: renderedLabels.map((label) => ({ label })),
+          },
+        ],
         ...(signal === undefined ? {} : { signal }),
       })
       if (signal !== undefined && signal.aborted) return decide({ outcome: 'cancelled', note: 'cancelled' })
       const selected = answer.answers.find((item) => item.id === questionId)
-      if (selected === undefined || selected.custom !== undefined || selected.selected.length !== 1) return decide({ outcome: 'cancelled', note: selected?.custom === undefined ? 'cancelled' : 'custom-option-unsupported' })
+      if (selected === undefined || selected.custom !== undefined || selected.selected.length !== 1)
+        return decide({
+          outcome: 'cancelled',
+          note: selected?.custom === undefined ? 'cancelled' : 'custom-option-unsupported',
+        })
       const option = labels.get(selected.selected[0]!)
       if (option === undefined) return decide({ outcome: 'cancelled', note: 'invalid-option-id' })
       return decide({ outcome: 'selected', optionId: option.optionId, selectedOptionKind: option.kind })
-    } catch (error: unknown) { deps.log?.(`dsh-acp native permission question cancelled: ${errorMessage(error)}`); return decide({ outcome: 'cancelled', note: 'question-error' }) }
+    } catch (error: unknown) {
+      deps.log?.(`dsh-acp native permission question cancelled: ${errorMessage(error)}`)
+      return decide({ outcome: 'cancelled', note: 'question-error' })
+    }
   }
 }

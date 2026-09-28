@@ -1,7 +1,14 @@
 import { createElement as h, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { createPortal } from 'react-dom'
 import type { ReactNode } from 'react'
-import { Button, StateDot, IconCloseOutlineMedium, IconRefreshOutlineMedium, useAnchoredPosition, useDismissOnOutsidePointer } from '@deepseek-ai/dsh-client-ui-primitives'
+import {
+  Button,
+  StateDot,
+  IconCloseOutlineMedium,
+  IconRefreshOutlineMedium,
+  useAnchoredPosition,
+  useDismissOnOutsidePointer,
+} from '@deepseek-ai/dsh-client-ui-primitives'
 import type { HostObservable, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SessionStatusSnapshot } from '@deepseek-ai/dsh-client-ui-session/client'
 import type { RemoteStreamFactory } from '@deepseek-ai/dsh-api-gateway/client'
@@ -33,26 +40,41 @@ type Actions = {
   openMember(parent: SessionId, child: SessionId): Promise<void>
 }
 type ManagedMember = AcpTeamMemberView & { readonly phase: TeamMemberPhase; readonly runtimeKnown: boolean }
-export function AcpTeamManagement({ sessionId, useSession, useSessions, useProjection, t, ...actions }: PropsRuntime<'conversation.session.header.utilities'> & PropsLocale<'acpActivity'> & Actions): ReactNode {
-  const child = useSession(state => state.subagent?.address?.parentSessionId !== undefined)
+export function AcpTeamManagement({
+  sessionId,
+  useSession,
+  useSessions,
+  useProjection,
+  t,
+  ...actions
+}: PropsRuntime<'conversation.session.header.utilities'> & PropsLocale<'acpActivity'> & Actions): ReactNode {
+  const child = useSession((state) => state.subagent?.address?.parentSessionId !== undefined)
   const team = useProjection('agentTeam') as TeamProjection | undefined
-  const sessionOpening = useSession(state => state.openState === 'loading')
-  const sessionsLoading = useSessions(state => state.phase === 'pending')
+  const sessionOpening = useSession((state) => state.openState === 'loading')
+  const sessionsLoading = useSessions((state) => state.phase === 'pending')
   const roster = teamRoster(team, sessionOpening || sessionsLoading)
   const revision = projectionRevision(team)
-  const runtimeFacts = useSessions(state => JSON.stringify((roster.kind === 'ready' ? roster.members : []).map(member => [
-    member.id, state.byId[member.id]?.running,
-    state.projectionsBySession[member.id]?.values.modelSelection?.next,
-  ])))
+  const runtimeFacts = useSessions((state) =>
+    JSON.stringify(
+      (roster.kind === 'ready' ? roster.members : []).map((member) => [
+        member.id,
+        state.byId[member.id]?.running,
+        state.projectionsBySession[member.id]?.values.modelSelection?.next,
+      ]),
+    ),
+  )
   const runtimeById = new Map<string, boolean | undefined>(
     (JSON.parse(runtimeFacts) as [string, boolean | null, unknown][]).map(([id, running]) => [
-      id, typeof running === 'boolean' ? running : undefined,
+      id,
+      typeof running === 'boolean' ? running : undefined,
     ]),
   )
   const statusSnapshot = useSyncExternalStore(actions.status.subscribe, actions.status.getSnapshot)
   const runtimeRevision = JSON.stringify([
     runtimeFacts,
-    ...(roster.kind === 'ready' ? roster.members.map(member => [member.id, statusSnapshot.get(member.id)?.running]) : []),
+    ...(roster.kind === 'ready'
+      ? roster.members.map((member) => [member.id, statusSnapshot.get(member.id)?.running])
+      : []),
   ])
   const enabled = !child && snapshotIsAcp(useProjection('modelSelection'), actions.ownsRoute)
   const [open, setOpen] = useState(false)
@@ -70,10 +92,18 @@ export function AcpTeamManagement({ sessionId, useSession, useSessions, useProje
       rootRef.current?.querySelector('button')?.focus()
     }
     document.addEventListener('keydown', escape, true)
-    return () => { cancelAnimationFrame(frame); document.removeEventListener('keydown', escape, true) }
+    return () => {
+      cancelAnimationFrame(frame)
+      document.removeEventListener('keydown', escape, true)
+    }
   }, [open])
   const [refresh, setRefresh] = useState(0)
-  const [view, setView] = useState<{ id: string; revision: string; runtimeRevision: string; members: readonly AcpTeamMemberView[] } | null>(null)
+  const [view, setView] = useState<{
+    id: string
+    revision: string
+    runtimeRevision: string
+    members: readonly AcpTeamMemberView[]
+  } | null>(null)
   const [error, setError] = useState(false)
   const [metadataLoading, setMetadataLoading] = useState(false)
   const [interrupting, setInterrupting] = useState(false)
@@ -83,178 +113,550 @@ export function AcpTeamManagement({ sessionId, useSession, useSessions, useProje
   useEffect(() => {
     activeSession.current = sessionId
     setInterruptFeedback('')
-    return () => { activeSession.current = null }
+    return () => {
+      activeSession.current = null
+    }
   }, [sessionId])
   const interruptAll = async (): Promise<void> => {
     if (interruptLock.current || view?.id !== sessionId || view.revision !== revision || roster.kind !== 'ready') return
     interruptLock.current = true
-    setInterrupting(true); setInterruptFeedback('')
+    setInterrupting(true)
+    setInterruptFeedback('')
     const current = () => activeSession.current === sessionId && actions.isCurrent(sessionId)
     try {
       const result = await interruptTeam({
-        lead: sessionId, targets: members.filter(member => member.status === 'running' && member.runtimeKnown).map(member => member.sessionId), isCurrent: current,
+        lead: sessionId,
+        targets: members
+          .filter((member) => member.status === 'running' && member.runtimeKnown)
+          .map((member) => member.sessionId),
+        isCurrent: current,
         members: async () => {
           const result = await actions.remote.teamMembers(sessionId)
           if (!result.ok) throw new Error(result.error.message)
           return result.value
         },
-        interrupt: id => actions.interruptMember(sessionId, id as SessionId),
+        interrupt: (id) => actions.interruptMember(sessionId, id as SessionId),
       })
       if (current()) setInterruptFeedback(t('teamInterruptResult', result))
     } catch {
       if (current()) setInterruptFeedback(t('teamInterruptFailed'))
     } finally {
       interruptLock.current = false
-      if (activeSession.current !== null) { setInterrupting(false); setRefresh(n => n + 1) }
+      if (activeSession.current !== null) {
+        setInterrupting(false)
+        setRefresh((n) => n + 1)
+      }
     }
   }
-  useEffect(() => { setOpen(false); setView(null); setError(false); setMetadataLoading(false) }, [sessionId])
+  useEffect(() => {
+    setOpen(false)
+    setView(null)
+    setError(false)
+    setMetadataLoading(false)
+  }, [sessionId])
   useEffect(() => {
     let cancelled = false
     setError(false)
-    if (!enabled || !open || roster.kind !== 'ready') { setMetadataLoading(false); return () => { cancelled = true } }
+    if (!enabled || !open || roster.kind !== 'ready') {
+      setMetadataLoading(false)
+      return () => {
+        cancelled = true
+      }
+    }
     setMetadataLoading(true)
-    void actions.loadMembers(sessionId).then(value => {
-      if (!cancelled) { setView({ id: sessionId, revision, runtimeRevision, members: value }); setError(false) }
-    }).catch(() => { if (!cancelled) setError(true) }).finally(() => { if (!cancelled) setMetadataLoading(false) })
-    return () => { cancelled = true }
+    void actions
+      .loadMembers(sessionId)
+      .then((value) => {
+        if (!cancelled) {
+          setView({ id: sessionId, revision, runtimeRevision, members: value })
+          setError(false)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setError(true)
+      })
+      .finally(() => {
+        if (!cancelled) setMetadataLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
   }, [sessionId, enabled, open, revision, runtimeRevision, roster.kind, refresh, actions.loadMembers])
   if (!enabled || roster.kind === 'empty' || roster.kind === 'loading' || roster.kind === 'unavailable') return null
   const metadata = view?.id === sessionId && view.revision === revision ? view.members : []
-  const metadataById = new Map(metadata.map(member => [member.sessionId, member]))
-  const members: ManagedMember[] = roster.kind === 'ready' ? roster.members.map(projected => {
-    const facts = metadataById.get(projected.id)
-    const summaryRunning = runtimeById.get(projected.id)
-    const live = statusSnapshot.get(projected.id)?.running
-    const running = live ?? summaryRunning
-    const status: AcpTeamMemberView['status'] = projected.phase === 'failed' || projected.phase === 'provisioning'
-      ? projected.phase : running === true ? 'running' : 'inactive'
-    return {
-      profileId: facts?.profileId ?? null, sessionId: projected.id, name: projected.name, status,
-      model: facts?.model ?? null,
-      ...(facts?.pendingModel === undefined ? {} : { pendingModel: facts.pendingModel }),
-      ...(facts?.modelWritable === undefined ? {} : { modelWritable: facts.modelWritable }),
-      description: facts?.description ?? null, phase: projected.phase, runtimeKnown: running !== undefined,
-    }
-  }) : []
+  const metadataById = new Map(metadata.map((member) => [member.sessionId, member]))
+  const members: ManagedMember[] =
+    roster.kind === 'ready'
+      ? roster.members.map((projected) => {
+          const facts = metadataById.get(projected.id)
+          const summaryRunning = runtimeById.get(projected.id)
+          const live = statusSnapshot.get(projected.id)?.running
+          const running = live ?? summaryRunning
+          const status: AcpTeamMemberView['status'] =
+            projected.phase === 'failed' || projected.phase === 'provisioning'
+              ? projected.phase
+              : running === true
+                ? 'running'
+                : 'inactive'
+          return {
+            profileId: facts?.profileId ?? null,
+            sessionId: projected.id,
+            name: projected.name,
+            status,
+            model: facts?.model ?? null,
+            ...(facts?.pendingModel === undefined ? {} : { pendingModel: facts.pendingModel }),
+            ...(facts?.modelWritable === undefined ? {} : { modelWritable: facts.modelWritable }),
+            description: facts?.description ?? null,
+            phase: projected.phase,
+            runtimeKnown: running !== undefined,
+          }
+        })
+      : []
   const metadataReady = view?.id === sessionId && view.revision === revision && view.runtimeRevision === runtimeRevision
-  const canInterrupt = members.some(member => member.status === 'running' && member.runtimeKnown)
-  const groups = Map.groupBy(members, member => member.profileId)
-  return h('div', { className: css.root, ref: rootRef, 'data-acp-team-management': '' },
-    h(Button, { variant: 'ghost', className: css.trigger, 'aria-label': `${t('teamManage')} · ${members.length}`, title: t('teamManage'),
-      'aria-haspopup': 'dialog', 'aria-expanded': open, onClick: () => setOpen(!open) },
-      h('svg', { width: 20, height: 20, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.6, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true },
-        h('circle', { cx: 9, cy: 8, r: 3 }), h('path', { d: 'M3 20v-2a6 6 0 0 1 12 0v2M16 5a3 3 0 0 1 0 6M18 14a5 5 0 0 1 3 4v2' }))),
-    open ? createPortal(h('div', { className: css.panel, ref: panelRef, style: position ?? { visibility: 'hidden' }, role: 'dialog', 'aria-label': t('teamManage'), 'data-acp-team-panel': '' },
-      h('div', { className: css.toolbar }, h('strong', null, t('teamManage')),
-        h(Button, { variant: 'ghost', className: css.iconButton, 'aria-label': t('teamRefresh'), onClick: () => setRefresh(n => n + 1) }, h(IconRefreshOutlineMedium)),
-        h(Button, { variant: 'ghost', className: css.iconButton, 'aria-label': t('teamManageClose'), onClick: () => { setOpen(false); rootRef.current?.querySelector('button')?.focus() } }, h(IconCloseOutlineMedium))),
-      roster.kind === 'failed' ? h('p', { role: 'status', className: css.hint }, t('teamProjectionFailed')) : null,
-      metadataLoading ? h('p', { role: 'status', className: css.hint }, t('teamMetadataLoading')) : null,
-      error ? h('p', { role: 'status', className: css.hint }, t('teamManageError')) : null,
-      ...[...groups].map(([profileId, members], index) => h(ModeGroup, { key: `${sessionId}:${profileId}`, lead: sessionId, profileId, members, metadataCurrent: metadataReady, t, onMenuOpen: setMenuOpen,
-        interruptAction: index === 0 ? h(Button, { variant: 'ghost', className: css.batchButton,
-          disabled: interrupting || !canInterrupt || !metadataReady || roster.kind !== 'ready',
-          title: t('teamInterruptHint'), onClick: () => { void interruptAll() } }, t(interrupting ? 'teamInterrupting' : 'teamInterruptAll')) : null,
-        ...actions })),
-      interruptFeedback ? h('p', { role: 'status', className: css.hint }, interruptFeedback) : null), document.body) : null)
+  const canInterrupt = members.some((member) => member.status === 'running' && member.runtimeKnown)
+  const groups = Map.groupBy(members, (member) => member.profileId)
+  return h(
+    'div',
+    { className: css.root, ref: rootRef, 'data-acp-team-management': '' },
+    h(
+      Button,
+      {
+        variant: 'ghost',
+        className: css.trigger,
+        'aria-label': `${t('teamManage')} · ${members.length}`,
+        title: t('teamManage'),
+        'aria-haspopup': 'dialog',
+        'aria-expanded': open,
+        onClick: () => setOpen(!open),
+      },
+      h(
+        'svg',
+        {
+          width: 20,
+          height: 20,
+          viewBox: '0 0 24 24',
+          fill: 'none',
+          stroke: 'currentColor',
+          strokeWidth: 1.6,
+          strokeLinecap: 'round',
+          strokeLinejoin: 'round',
+          'aria-hidden': true,
+        },
+        h('circle', { cx: 9, cy: 8, r: 3 }),
+        h('path', { d: 'M3 20v-2a6 6 0 0 1 12 0v2M16 5a3 3 0 0 1 0 6M18 14a5 5 0 0 1 3 4v2' }),
+      ),
+    ),
+    open
+      ? createPortal(
+          h(
+            'div',
+            {
+              className: css.panel,
+              ref: panelRef,
+              style: position ?? { visibility: 'hidden' },
+              role: 'dialog',
+              'aria-label': t('teamManage'),
+              'data-acp-team-panel': '',
+            },
+            h(
+              'div',
+              { className: css.toolbar },
+              h('strong', null, t('teamManage')),
+              h(
+                Button,
+                {
+                  variant: 'ghost',
+                  className: css.iconButton,
+                  'aria-label': t('teamRefresh'),
+                  onClick: () => setRefresh((n) => n + 1),
+                },
+                h(IconRefreshOutlineMedium),
+              ),
+              h(
+                Button,
+                {
+                  variant: 'ghost',
+                  className: css.iconButton,
+                  'aria-label': t('teamManageClose'),
+                  onClick: () => {
+                    setOpen(false)
+                    rootRef.current?.querySelector('button')?.focus()
+                  },
+                },
+                h(IconCloseOutlineMedium),
+              ),
+            ),
+            roster.kind === 'failed'
+              ? h('p', { role: 'status', className: css.hint }, t('teamProjectionFailed'))
+              : null,
+            metadataLoading ? h('p', { role: 'status', className: css.hint }, t('teamMetadataLoading')) : null,
+            error ? h('p', { role: 'status', className: css.hint }, t('teamManageError')) : null,
+            ...[...groups].map(([profileId, members], index) =>
+              h(ModeGroup, {
+                key: `${sessionId}:${profileId}`,
+                lead: sessionId,
+                profileId,
+                members,
+                metadataCurrent: metadataReady,
+                t,
+                onMenuOpen: setMenuOpen,
+                interruptAction:
+                  index === 0
+                    ? h(
+                        Button,
+                        {
+                          variant: 'ghost',
+                          className: css.batchButton,
+                          disabled: interrupting || !canInterrupt || !metadataReady || roster.kind !== 'ready',
+                          title: t('teamInterruptHint'),
+                          onClick: () => {
+                            void interruptAll()
+                          },
+                        },
+                        t(interrupting ? 'teamInterrupting' : 'teamInterruptAll'),
+                      )
+                    : null,
+                ...actions,
+              }),
+            ),
+            interruptFeedback ? h('p', { role: 'status', className: css.hint }, interruptFeedback) : null,
+          ),
+          document.body,
+        )
+      : null,
+  )
 }
 
-function ModeGroup({ lead, profileId, members, metadataCurrent, t, remote, streamFactory, onMenuOpen, isCurrent, interruptAction, openMember }: { interruptAction: ReactNode; lead: SessionId; profileId: string | null; members: readonly ManagedMember[]; metadataCurrent: boolean; t: Copy; onMenuOpen(value: boolean): void } & Actions): ReactNode {
+function ModeGroup({
+  lead,
+  profileId,
+  members,
+  metadataCurrent,
+  t,
+  remote,
+  streamFactory,
+  onMenuOpen,
+  isCurrent,
+  interruptAction,
+  openMember,
+}: {
+  interruptAction: ReactNode
+  lead: SessionId
+  profileId: string | null
+  members: readonly ManagedMember[]
+  metadataCurrent: boolean
+  t: Copy
+  onMenuOpen(value: boolean): void
+} & Actions): ReactNode {
   const [snapshots, setSnapshots] = useState<Record<string, AcpAgentSessionSnapshotView | null>>({})
   const [menu, setMenu] = useState<string | null>(null)
-  useEffect(() => { onMenuOpen(menu !== null); return () => onMenuOpen(false) }, [menu, onMenuOpen])
+  useEffect(() => {
+    onMenuOpen(menu !== null)
+    return () => onMenuOpen(false)
+  }, [menu, onMenuOpen])
   const [busy, setBusy] = useState(false)
   const locked = useRef(false)
   const alive = useRef(true)
   const [feedback, setFeedback] = useState('')
   const [results, setResults] = useState<readonly TeamModeResult[]>([])
-  const ids = members.map(member => member.sessionId).join('|')
+  const ids = members.map((member) => member.sessionId).join('|')
   useEffect(() => {
     alive.current = true
-    return () => { alive.current = false }
+    return () => {
+      alive.current = false
+    }
   }, [])
   useEffect(() => {
     let disposed = false
-    const streams = ids.split('|').map(id => agentSessionStream(remote, streamFactory, id,
-      snapshot => { if (!disposed) setSnapshots(old => ({ ...old, [id]: snapshot })) },
-      () => { if (!disposed) setSnapshots(old => ({ ...old, [id]: old[id] ? { ...old[id], editable: false, modeWritable: false, freshness: 'stale' } : null })) }))
-    streams.forEach(stream => stream.start())
-    return () => { disposed = true; streams.forEach(stream => { void stream.dispose() }) }
+    const streams = ids.split('|').map((id) =>
+      agentSessionStream(
+        remote,
+        streamFactory,
+        id,
+        (snapshot) => {
+          if (!disposed) setSnapshots((old) => ({ ...old, [id]: snapshot }))
+        },
+        () => {
+          if (!disposed)
+            setSnapshots((old) => ({
+              ...old,
+              [id]: old[id] ? { ...old[id], editable: false, modeWritable: false, freshness: 'stale' } : null,
+            }))
+        },
+      ),
+    )
+    streams.forEach((stream) => stream.start())
+    return () => {
+      disposed = true
+      streams.forEach((stream) => {
+        void stream.dispose()
+      })
+    }
   }, [ids, remote, streamFactory])
-  const editable = (member: ManagedMember) => metadataCurrent && member.status === 'inactive' && member.runtimeKnown && snapshots[member.sessionId]?.profileId === profileId && snapshots[member.sessionId]?.modeWritable
-  const choices = (member: AcpTeamMemberView) => { const snapshot = snapshots[member.sessionId]; return snapshot ? teamModeChoices(snapshot).map(choice => ({ ...choice, current: snapshot.pendingModeId ? snapshot.pendingModeId === choice.id : choice.current })) : [] }
-  const batchChoices = [...new Map(members.flatMap(member => choices(member)).map(choice => [choice.id, choice])).values()]
+  const editable = (member: ManagedMember) =>
+    metadataCurrent &&
+    member.status === 'inactive' &&
+    member.runtimeKnown &&
+    snapshots[member.sessionId]?.profileId === profileId &&
+    snapshots[member.sessionId]?.modeWritable
+  const choices = (member: AcpTeamMemberView) => {
+    const snapshot = snapshots[member.sessionId]
+    return snapshot
+      ? teamModeChoices(snapshot).map((choice) => ({
+          ...choice,
+          current: snapshot.pendingModeId ? snapshot.pendingModeId === choice.id : choice.current,
+        }))
+      : []
+  }
+  const batchChoices = [
+    ...new Map(members.flatMap((member) => choices(member)).map((choice) => [choice.id, choice])).values(),
+  ]
   const change = async (targets: readonly string[], mode: string): Promise<void> => {
     if (locked.current || profileId === null || !metadataCurrent) return
-    locked.current = true; setBusy(true); setMenu(null); setFeedback(''); setResults([])
-    const unwrap = <T,>(result: { ok: true; value: T } | { ok: false; error: { message: string } }): T => {
+    locked.current = true
+    setBusy(true)
+    setMenu(null)
+    setFeedback('')
+    setResults([])
+    const unwrap = <T>(result: { ok: true; value: T } | { ok: false; error: { message: string } }): T => {
       if (!result.ok) throw new Error(result.error.message)
       return result.value
     }
     try {
-      const result = await applyTeamMode({ targets, profileId, mode, isCurrent: () => alive.current && isCurrent(lead),
+      const result = await applyTeamMode({
+        targets,
+        profileId,
+        mode,
+        isCurrent: () => alive.current && isCurrent(lead),
         members: async () => unwrap(await remote.teamMembers(lead)),
-        snapshot: async id => unwrap(await remote.agentSessionSnapshot(id)),
-        write: async (id, value) => { const snapshot = unwrap(await remote.setTeamMemberMode(lead, id, value.kind === 'mode' ? value.id : String(value.value))); if (alive.current) setSnapshots(old => ({ ...old, [id]: snapshot })) },
+        snapshot: async (id) => unwrap(await remote.agentSessionSnapshot(id)),
+        write: async (id, value) => {
+          const snapshot = unwrap(
+            await remote.setTeamMemberMode(lead, id, value.kind === 'mode' ? value.id : String(value.value)),
+          )
+          if (alive.current) setSnapshots((old) => ({ ...old, [id]: snapshot }))
+        },
       })
-      if (alive.current) { setFeedback(t('teamModeResult', result)); setResults(result.members) }
-    } finally { locked.current = false; if (alive.current) setBusy(false) }
+      if (alive.current) {
+        setFeedback(t('teamModeResult', result))
+        setResults(result.members)
+      }
+    } finally {
+      locked.current = false
+      if (alive.current) setBusy(false)
+    }
   }
-  const currentLabels = new Set(members.map(member => snapshots[member.sessionId]
-    ? teamModeLabel(snapshots[member.sessionId]!, t('teamModeUnknown')) : t('teamModeUnknown')))
+  const currentLabels = new Set(
+    members.map((member) =>
+      snapshots[member.sessionId]
+        ? teamModeLabel(snapshots[member.sessionId]!, t('teamModeUnknown'))
+        : t('teamModeUnknown'),
+    ),
+  )
   const batchGroup: AgentControlGroup = {
-    kind: 'mode', id: 'mode', name: t('agentControlMode'),
+    kind: 'mode',
+    id: 'mode',
+    name: t('agentControlMode'),
     current: currentLabels.size === 1 ? [...currentLabels][0]! : t('agentControlMixed'),
-    choices: batchChoices.map(choice => ({ id: choice.id, label: choice.name, write: choice.write,
-      current: members.every(member => choices(member).some(item => item.id === choice.id && item.current)),
-      disabled: busy || !members.some(member => editable(member) && choices(member).some(item => item.id === choice.id && !item.current)),
+    choices: batchChoices.map((choice) => ({
+      id: choice.id,
+      label: choice.name,
+      write: choice.write,
+      current: members.every((member) => choices(member).some((item) => item.id === choice.id && item.current)),
+      disabled:
+        busy ||
+        !members.some(
+          (member) => editable(member) && choices(member).some((item) => item.id === choice.id && !item.current),
+        ),
     })),
   }
-  return h('section', { 'data-acp-mode-group': profileId ?? 'unknown' },
-    h('div', { className: css.groupHeader }, h('strong', null, profileId ?? t('teamProfileUnknown')),
-      h('div', { className: css.batchActions }, interruptAction, h(AgentSessionMenu, {
-        groups: [batchGroup], label: t('teamBatchMode'), t,
-        open: menu === 'batch', side: 'bottom', align: 'end',
-        disabled: batchChoices.length === 0 || profileId === null || busy,
-        onOpenChange: value => setMenu(value ? 'batch' : null),
-        onSelect: choice => { if (choice.write.kind !== 'tool-approval-policy') void change(members.map(member => member.sessionId), choice.write.kind === 'mode' ? choice.write.id : String(choice.write.value)) },
-      }))),
-    h('div', { className: css.roster }, ...members.map(member => {
-      const snapshot = snapshots[member.sessionId]
-      const modeNotice = snapshot?.pendingModeId
-        ? t('teamModePending', { mode: teamModeLabel({ ...snapshot, pendingModeId: null }, t('teamModeUnknown')) })
-        : null
-      const reported = snapshot?.configOptions?.find(option => normalizeAcpConfigOptionKey(option.id) === 'model' || normalizeAcpConfigOptionKey(option.category ?? '') === 'model')
-      const model = member.model ?? (reported?.type === 'select' ? reported.currentValue : null)
-      return h('article', { key: member.sessionId, className: css.member, 'data-acp-managed-member': member.name },
-        h('div', { className: css.memberHeader }, h(StateDot, { state: member.status === 'running' ? 'ongoing' : member.status === 'failed' ? 'error' : member.status === 'provisioning' ? 'ongoing' : member.runtimeKnown ? 'done' : 'idle' }),
-          h(Button, { variant: 'ghost', className: css.memberName, 'aria-label': t('teamMemberOpen', { name: member.name }),
-            onClick: () => { void openMember(lead, member.sessionId as SessionId).catch(() => { if (alive.current) setFeedback(t('teamApprovalOpenFailed')) }) } }, member.name),
-          h('span', { className: css.hint }, t(member.phase === 'failed' ? 'teamStatusfailed' : member.phase === 'provisioning' ? 'teamStatusprovisioning' : member.runtimeKnown ? `teamStatus${member.status}` : 'teamStatusunknown'))),
-        member.description ? h('p', { className: css.memberDescription, title: member.description }, member.description) : null,
-        h('div', { className: css.settings },
-          h('div', { className: css.settingRow },
-            h('span', { className: css.settingLabel }, t('teamModelLabel')),
-            h('div', { className: css.settingValue },
-              h(TeamMemberModelControl, { lead, member, initialModel: model, sessionReady: metadataCurrent && member.runtimeKnown && snapshot != null && snapshot.profileId === member.profileId, remote, t, isCurrent, onMenuOpen }))),
-          h('div', { className: css.settingRow },
-            h('span', { className: css.settingLabel }, t('teamModeLabel')),
-            h('div', { className: css.settingValue },
-              h('div', { className: css.modeControl },
-                h(AgentSessionMenu, {
-                  groups: snapshot ? teamSessionMenuGroups(snapshot, t, !busy && editable(member) === true) : [],
-                  ...(!editable(member) ? { footer: [{ type: 'label' as const, id: 'read-only', text: t(member.status === 'running' ? 'agentControlRunning' : 'agentControlReadOnly') }] } : {}),
-                  label: snapshot ? agentControlLabel(snapshot, t) : t('teamModeUnknown'), t,
-                  open: menu === member.sessionId, side: 'bottom', align: 'end',
-                  disabled: !snapshot || choices(member).length === 0 || busy,
-                  onOpenChange: value => setMenu(value ? member.sessionId : null),
-                  onSelect: choice => { if (choice.write.kind !== 'tool-approval-policy') void change([member.sessionId], choice.write.kind === 'mode' ? choice.write.id : String(choice.write.value)) },
+  return h(
+    'section',
+    { 'data-acp-mode-group': profileId ?? 'unknown' },
+    h(
+      'div',
+      { className: css.groupHeader },
+      h('strong', null, profileId ?? t('teamProfileUnknown')),
+      h(
+        'div',
+        { className: css.batchActions },
+        interruptAction,
+        h(AgentSessionMenu, {
+          groups: [batchGroup],
+          label: t('teamBatchMode'),
+          t,
+          open: menu === 'batch',
+          side: 'bottom',
+          align: 'end',
+          disabled: batchChoices.length === 0 || profileId === null || busy,
+          onOpenChange: (value) => setMenu(value ? 'batch' : null),
+          onSelect: (choice) => {
+            if (choice.write.kind !== 'tool-approval-policy')
+              void change(
+                members.map((member) => member.sessionId),
+                choice.write.kind === 'mode' ? choice.write.id : String(choice.write.value),
+              )
+          },
+        }),
+      ),
+    ),
+    h(
+      'div',
+      { className: css.roster },
+      ...members.map((member) => {
+        const snapshot = snapshots[member.sessionId]
+        const modeNotice = snapshot?.pendingModeId
+          ? t('teamModePending', { mode: teamModeLabel({ ...snapshot, pendingModeId: null }, t('teamModeUnknown')) })
+          : null
+        const reported = snapshot?.configOptions?.find(
+          (option) =>
+            normalizeAcpConfigOptionKey(option.id) === 'model' ||
+            normalizeAcpConfigOptionKey(option.category ?? '') === 'model',
+        )
+        const model = member.model ?? (reported?.type === 'select' ? reported.currentValue : null)
+        return h(
+          'article',
+          { key: member.sessionId, className: css.member, 'data-acp-managed-member': member.name },
+          h(
+            'div',
+            { className: css.memberHeader },
+            h(StateDot, {
+              state:
+                member.status === 'running'
+                  ? 'ongoing'
+                  : member.status === 'failed'
+                    ? 'error'
+                    : member.status === 'provisioning'
+                      ? 'ongoing'
+                      : member.runtimeKnown
+                        ? 'done'
+                        : 'idle',
+            }),
+            h(
+              Button,
+              {
+                variant: 'ghost',
+                className: css.memberName,
+                'aria-label': t('teamMemberOpen', { name: member.name }),
+                onClick: () => {
+                  void openMember(lead, member.sessionId as SessionId).catch(() => {
+                    if (alive.current) setFeedback(t('teamApprovalOpenFailed'))
+                  })
+                },
+              },
+              member.name,
+            ),
+            h(
+              'span',
+              { className: css.hint },
+              t(
+                member.phase === 'failed'
+                  ? 'teamStatusfailed'
+                  : member.phase === 'provisioning'
+                    ? 'teamStatusprovisioning'
+                    : member.runtimeKnown
+                      ? `teamStatus${member.status}`
+                      : 'teamStatusunknown',
+              ),
+            ),
+          ),
+          member.description
+            ? h('p', { className: css.memberDescription, title: member.description }, member.description)
+            : null,
+          h(
+            'div',
+            { className: css.settings },
+            h(
+              'div',
+              { className: css.settingRow },
+              h('span', { className: css.settingLabel }, t('teamModelLabel')),
+              h(
+                'div',
+                { className: css.settingValue },
+                h(TeamMemberModelControl, {
+                  lead,
+                  member,
+                  initialModel: model,
+                  sessionReady:
+                    metadataCurrent &&
+                    member.runtimeKnown &&
+                    snapshot != null &&
+                    snapshot.profileId === member.profileId,
+                  remote,
+                  t,
+                  isCurrent,
+                  onMenuOpen,
                 }),
-                h('div', { className: css.settingNotice, 'data-member-mode-notice': '', role: 'status' }, modeNotice ? h('span', { title: modeNotice, 'data-member-pending-mode': '' }, modeNotice) : null))))))
-    })),
+              ),
+            ),
+            h(
+              'div',
+              { className: css.settingRow },
+              h('span', { className: css.settingLabel }, t('teamModeLabel')),
+              h(
+                'div',
+                { className: css.settingValue },
+                h(
+                  'div',
+                  { className: css.modeControl },
+                  h(AgentSessionMenu, {
+                    groups: snapshot ? teamSessionMenuGroups(snapshot, t, !busy && editable(member) === true) : [],
+                    ...(!editable(member)
+                      ? {
+                          footer: [
+                            {
+                              type: 'label' as const,
+                              id: 'read-only',
+                              text: t(member.status === 'running' ? 'agentControlRunning' : 'agentControlReadOnly'),
+                            },
+                          ],
+                        }
+                      : {}),
+                    label: snapshot ? agentControlLabel(snapshot, t) : t('teamModeUnknown'),
+                    t,
+                    open: menu === member.sessionId,
+                    side: 'bottom',
+                    align: 'end',
+                    disabled: !snapshot || choices(member).length === 0 || busy,
+                    onOpenChange: (value) => setMenu(value ? member.sessionId : null),
+                    onSelect: (choice) => {
+                      if (choice.write.kind !== 'tool-approval-policy')
+                        void change(
+                          [member.sessionId],
+                          choice.write.kind === 'mode' ? choice.write.id : String(choice.write.value),
+                        )
+                    },
+                  }),
+                  h(
+                    'div',
+                    { className: css.settingNotice, 'data-member-mode-notice': '', role: 'status' },
+                    modeNotice ? h('span', { title: modeNotice, 'data-member-pending-mode': '' }, modeNotice) : null,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        )
+      }),
+    ),
     h('div', { role: 'status', className: css.groupNotice }, feedback),
-    results.length === 0 ? null : h('details', { className: css.resultDetails }, h('summary', null, t('teamResultDetails')),
-      h('ul', null, ...results.map(result => h('li', { key: result.sessionId },
-        `${members.find(member => member.sessionId === result.sessionId)?.name ?? result.sessionId}: ${t(`teamResult${result.reason}`)}`)))))
+    results.length === 0
+      ? null
+      : h(
+          'details',
+          { className: css.resultDetails },
+          h('summary', null, t('teamResultDetails')),
+          h(
+            'ul',
+            null,
+            ...results.map((result) =>
+              h(
+                'li',
+                { key: result.sessionId },
+                `${members.find((member) => member.sessionId === result.sessionId)?.name ?? result.sessionId}: ${t(`teamResult${result.reason}`)}`,
+              ),
+            ),
+          ),
+        ),
+  )
 }

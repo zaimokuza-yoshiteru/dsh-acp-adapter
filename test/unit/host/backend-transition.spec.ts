@@ -23,11 +23,15 @@ describe('M6b backend transition classifier', () => {
     ['native provider change', native('anthropic', 'model-c')],
     ['native with residual ACP binding', native('openai', 'model-d')],
   ])('allows %s without consulting ACP state', (_label, next) => {
-    expect(classifyBackendTransition(input({
-      lastUsed: native('openai', 'model-a'),
-      next,
-      bindingProfileId: 'codex',
-    }))).toBe('allow-native')
+    expect(
+      classifyBackendTransition(
+        input({
+          lastUsed: native('openai', 'model-a'),
+          next,
+          bindingProfileId: 'codex',
+        }),
+      ),
+    ).toBe('allow-native')
   })
 
   it('allows a blank session to adopt ACP', () => {
@@ -35,27 +39,38 @@ describe('M6b backend transition classifier', () => {
   })
 
   it('does not adopt ACP when the projection says the session is nonblank', () => {
-    expect(classifyBackendTransition(input({
-      next: acp('codex'),
-      blank: false,
-      hasPriorSemanticHistory: true,
-    }))).toBe('require-new-session')
+    expect(
+      classifyBackendTransition(
+        input({
+          next: acp('codex'),
+          blank: false,
+          hasPriorSemanticHistory: true,
+        }),
+      ),
+    ).toBe('require-new-session')
   })
 
   it('allows a same-profile ACP model/reasoning change with a matching binding', () => {
-    expect(classifyBackendTransition(input({
-      lastUsed: acp('codex', 'model-a'),
-      next: acp('codex', 'model-b'),
-      blank: false,
-      bindingProfileId: 'codex',
-    }))).toBe('allow-same-acp')
+    expect(
+      classifyBackendTransition(
+        input({
+          lastUsed: acp('codex', 'model-a'),
+          next: acp('codex', 'model-b'),
+          blank: false,
+          bindingProfileId: 'codex',
+        }),
+      ),
+    ).toBe('allow-same-acp')
   })
 
   it.each([
     ['native to ACP', input({ lastUsed: native(), next: acp('codex'), blank: false })],
     ['ACP to native', input({ lastUsed: acp('codex'), next: native(), blank: false })],
     ['ACP profile change', input({ lastUsed: acp('codex'), next: acp('kimi'), blank: false })],
-    ['nonblank without last-used selection', input({ next: acp('codex'), blank: false, hasPriorSemanticHistory: true })],
+    [
+      'nonblank without last-used selection',
+      input({ next: acp('codex'), blank: false, hasPriorSemanticHistory: true }),
+    ],
   ])('requires a new session for %s', (_label, value) => {
     expect(classifyBackendTransition(value)).toBe('require-new-session')
   })
@@ -74,10 +89,14 @@ describe('M6b backend transition classifier', () => {
   })
 
   it('allows native with no last-used selection even when a stale binding is present', () => {
-    expect(classifyBackendTransition(input({
-      next: native(),
-      bindingProfileId: 'codex',
-    }))).toBe('allow-native')
+    expect(
+      classifyBackendTransition(
+        input({
+          next: native(),
+          bindingProfileId: 'codex',
+        }),
+      ),
+    ).toBe('allow-native')
   })
 
   it('does not count the current turn user message as prior history', () => {

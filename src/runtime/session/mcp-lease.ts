@@ -9,12 +9,24 @@ export interface AcpMcpLease {
   /** Host-only evidence callback for a successful native teammate report in this prompt. */
   beginPrompt(signal: AbortSignal, onTeamReport?: () => void): void
   endPrompt(): void
-  permission(request: acp.RequestPermissionRequest): Promise<acp.RequestPermissionResponse | undefined> | acp.RequestPermissionResponse | undefined
-  inspectPermission?(request: acp.RequestPermissionRequest): Promise<AcpPermissionCheck & { readonly response?: acp.RequestPermissionResponse }> | (AcpPermissionCheck & { readonly response?: acp.RequestPermissionResponse })
+  permission(
+    request: acp.RequestPermissionRequest,
+  ): Promise<acp.RequestPermissionResponse | undefined> | acp.RequestPermissionResponse | undefined
+  inspectPermission?(
+    request: acp.RequestPermissionRequest,
+  ):
+    | Promise<AcpPermissionCheck & { readonly response?: acp.RequestPermissionResponse }>
+    | (AcpPermissionCheck & { readonly response?: acp.RequestPermissionResponse })
   /** Revalidate the captured decision after audit I/O without resolving policy again. */
   validatePermissionDecision?(request: acp.RequestPermissionRequest): boolean
-  elicitation?(request: acp.CreateElicitationRequest, toolCall: acp.ToolCallUpdate | undefined): Promise<acp.CreateElicitationResponse | undefined> | acp.CreateElicitationResponse | undefined
-  elicitationToolName?(request: acp.CreateElicitationRequest, toolCall: acp.ToolCallUpdate | undefined): string | undefined
+  elicitation?(
+    request: acp.CreateElicitationRequest,
+    toolCall: acp.ToolCallUpdate | undefined,
+  ): Promise<acp.CreateElicitationResponse | undefined> | acp.CreateElicitationResponse | undefined
+  elicitationToolName?(
+    request: acp.CreateElicitationRequest,
+    toolCall: acp.ToolCallUpdate | undefined,
+  ): string | undefined
   presentTool?(toolCall: acp.ToolCallUpdate): acp.ToolCallUpdate
   close(): Promise<void>
 }

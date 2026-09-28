@@ -96,11 +96,21 @@ export interface AcpLogger {
  */
 export function createAcpLogger(sink: AcpLogSink, base: AcpLogFields = {}): AcpLogger {
   const merged = (fields: AcpLogFields | undefined): AcpLogFields => ({ ...base, ...fields })
-  const debug = sink.debug ?? ((message: string): void => { sink.info(message) })
+  const debug =
+    sink.debug ??
+    ((message: string): void => {
+      sink.info(message)
+    })
   return {
-    debug: (message, fields) => { debug.call(sink, `${message}${formatAcpLogFields(merged(fields))}`) },
-    info: (message, fields) => { sink.info(`${message}${formatAcpLogFields(merged(fields))}`) },
-    warn: (message, fields) => { sink.warn(`${message}${formatAcpLogFields(merged(fields))}`) },
+    debug: (message, fields) => {
+      debug.call(sink, `${message}${formatAcpLogFields(merged(fields))}`)
+    },
+    info: (message, fields) => {
+      sink.info(`${message}${formatAcpLogFields(merged(fields))}`)
+    },
+    warn: (message, fields) => {
+      sink.warn(`${message}${formatAcpLogFields(merged(fields))}`)
+    },
     error: (message, fields) => {
       sink.error(typeof message === 'string' ? `${message}${formatAcpLogFields(merged(fields))}` : message)
     },

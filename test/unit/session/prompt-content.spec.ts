@@ -11,45 +11,83 @@ const limits = {
   mediaTypes: ['image/png'],
 } as const
 
-const text = (value: string) => createUserMessage({ content: [{ type: 'text', text: value }], source: { kind: 'user' } })
+const text = (value: string) =>
+  createUserMessage({ content: [{ type: 'text', text: value }], source: { kind: 'user' } })
 
 describe('prompt content conversion', () => {
   it('forwards the native child closing answer without turning its reasoning into prompt text', async () => {
-    const message = createUserMessage({ source: { kind: 'subagent-settled', form: 'notice', senderSessionId: 'child' as never, summary: 'Child finished' }, content: [
-      { type: 'text', text: 'Child finished' }, { type: 'reasoning', text: 'private thoughts' }, { type: 'text', text: '2' },
-    ] })
+    const message = createUserMessage({
+      source: {
+        kind: 'subagent-settled',
+        form: 'notice',
+        senderSessionId: 'child' as never,
+        summary: 'Child finished',
+      },
+      content: [
+        { type: 'text', text: 'Child finished' },
+        { type: 'reasoning', text: 'private thoughts' },
+        { type: 'text', text: '2' },
+      ],
+    })
     expect(await toAcpPrompt([message], { imageEnabled: false, signal: new AbortController().signal })).toEqual([
-      { type: 'text', text: 'Child finished' }, { type: 'text', text: '2' },
+      { type: 'text', text: 'Child finished' },
+      { type: 'text', text: '2' },
     ])
-    await expect(toAcpPrompt([{ ...message, source: { kind: 'user' } }], { imageEnabled: false, signal: new AbortController().signal })).rejects.toThrow('reasoning')
+    await expect(
+      toAcpPrompt([{ ...message, source: { kind: 'user' } }], {
+        imageEnabled: false,
+        signal: new AbortController().signal,
+      }),
+    ).rejects.toThrow('reasoning')
   })
   it('carries complete host instructions and logged plugin input without advertising executable tools', async () => {
-    const context = createUserMessage({ content: [{ type: 'text', text: 'Current project guidance' }], source: { kind: 'test-plugin', plugin: 'guidance' } })
+    const context = createUserMessage({
+      content: [{ type: 'text', text: 'Current project guidance' }],
+      source: { kind: 'test-plugin', plugin: 'guidance' },
+    })
     const result = await toAcpPrompt([context, text('Continue')], {
       system: 'Apply the repository conventions.\nKeep the full instruction text.',
       imageEnabled: false,
       signal: new AbortController().signal,
     })
     expect(result).toEqual([
-      { type: 'text', text: expect.stringContaining('Apply the repository conventions.\nKeep the full instruction text.') },
+      {
+        type: 'text',
+        text: expect.stringContaining('Apply the repository conventions.\nKeep the full instruction text.'),
+      },
       { type: 'text', text: 'Current project guidance' },
       { type: 'text', text: 'Continue' },
     ])
     expect(result[0]).toMatchObject({ text: expect.stringContaining('do not add tools or grant permissions') })
-    const cleared = await toAcpPrompt([text('Continue')], { system: '', imageEnabled: false, signal: new AbortController().signal })
+    const cleared = await toAcpPrompt([text('Continue')], {
+      system: '',
+      imageEnabled: false,
+      signal: new AbortController().signal,
+    })
     expect(cleared[0]).toMatchObject({ text: expect.stringContaining('No additional host instructions.') })
-    await expect(toAcpPrompt([], { system: 'Instructions alone cannot trigger a dispatch', imageEnabled: false, signal: new AbortController().signal })).rejects.toThrow('no supported content')
+    await expect(
+      toAcpPrompt([], {
+        system: 'Instructions alone cannot trigger a dispatch',
+        imageEnabled: false,
+        signal: new AbortController().signal,
+      }),
+    ).rejects.toThrow('no supported content')
   })
 
   it('preserves text ordering and reads durable images into ACP blocks', async () => {
     const image = { attachmentId: 'att-1' as never, mediaType: 'image/png' as const, bytes: 3, width: 1, height: 1 }
     const readImage = vi.fn().mockResolvedValue({ ref: image, data: Uint8Array.of(1, 2, 3) })
 
-    await expect(toAcpPrompt([
-      text('before'),
-      createUserMessage({ content: [{ type: 'image', attachment: image }], source: { kind: 'user' } }),
-      text('after'),
-    ], { imageEnabled: true, attachments: { readImage, imageLimits: limits }, signal: new AbortController().signal })).resolves.toEqual([
+    await expect(
+      toAcpPrompt(
+        [
+          text('before'),
+          createUserMessage({ content: [{ type: 'image', attachment: image }], source: { kind: 'user' } }),
+          text('after'),
+        ],
+        { imageEnabled: true, attachments: { readImage, imageLimits: limits }, signal: new AbortController().signal },
+      ),
+    ).resolves.toEqual([
       { type: 'text', text: 'before' },
       { type: 'image', data: 'AQID', mimeType: 'image/png' },
       { type: 'text', text: 'after' },
@@ -60,34 +98,61 @@ describe('prompt content conversion', () => {
   it('rejects image input before reading when the negotiated capability or local store is missing', async () => {
     const image = { attachmentId: 'att-2' as never, mediaType: 'image/png' as const, bytes: 1, width: 1, height: 1 }
     const message = createUserMessage({ content: [{ type: 'image', attachment: image }], source: { kind: 'user' } })
-    await expect(toAcpPrompt([message], { imageEnabled: false, signal: new AbortController().signal })).rejects.toBeInstanceOf(AcpPromptContentError)
-    await expect(toAcpPrompt([message], { imageEnabled: true, signal: new AbortController().signal })).rejects.toThrow('attachment storage is unavailable')
+    await expect(
+      toAcpPrompt([message], { imageEnabled: false, signal: new AbortController().signal }),
+    ).rejects.toBeInstanceOf(AcpPromptContentError)
+    await expect(toAcpPrompt([message], { imageEnabled: true, signal: new AbortController().signal })).rejects.toThrow(
+      'attachment storage is unavailable',
+    )
   })
 
   it('enforces aggregate declaration limits and validates stored bytes before producing a prompt', async () => {
     const first = { attachmentId: 'att-a' as never, mediaType: 'image/png' as const, bytes: 3, width: 1, height: 1 }
     const second = { attachmentId: 'att-b' as never, mediaType: 'image/png' as const, bytes: 3, width: 1, height: 1 }
     const message = createUserMessage({ content: [{ type: 'image', attachment: first }], source: { kind: 'user' } })
-    await expect(toAcpPrompt([message], {
-      imageEnabled: true,
-      attachments: { readImage: vi.fn(), imageLimits: { ...limits, maxMessageImageBytes: 2 } },
-      signal: new AbortController().signal,
-    })).rejects.toThrow('prompt images exceed')
-    await expect(toAcpPrompt([createUserMessage({ content: [
-      { type: 'image', attachment: first },
-      { type: 'image', attachment: second },
-    ], source: { kind: 'user' } })], {
-      imageEnabled: true,
-      attachments: { readImage: vi.fn(), imageLimits: { ...limits, maxImagesPerMessage: 1 } },
-      signal: new AbortController().signal,
-    })).rejects.toThrow('prompt images exceed')
+    await expect(
+      toAcpPrompt([message], {
+        imageEnabled: true,
+        attachments: { readImage: vi.fn(), imageLimits: { ...limits, maxMessageImageBytes: 2 } },
+        signal: new AbortController().signal,
+      }),
+    ).rejects.toThrow('prompt images exceed')
+    await expect(
+      toAcpPrompt(
+        [
+          createUserMessage({
+            content: [
+              { type: 'image', attachment: first },
+              { type: 'image', attachment: second },
+            ],
+            source: { kind: 'user' },
+          }),
+        ],
+        {
+          imageEnabled: true,
+          attachments: { readImage: vi.fn(), imageLimits: { ...limits, maxImagesPerMessage: 1 } },
+          signal: new AbortController().signal,
+        },
+      ),
+    ).rejects.toThrow('prompt images exceed')
 
     const mismatched = vi.fn().mockResolvedValue({ ref: { ...first, bytes: 4 }, data: Uint8Array.of(1, 2, 3, 4) })
-    await expect(toAcpPrompt([message], { imageEnabled: true, attachments: { readImage: mismatched, imageLimits: limits }, signal: new AbortController().signal })).rejects.toThrow('stored image bytes')
+    await expect(
+      toAcpPrompt([message], {
+        imageEnabled: true,
+        attachments: { readImage: mismatched, imageLimits: limits },
+        signal: new AbortController().signal,
+      }),
+    ).rejects.toThrow('stored image bytes')
   })
 
   it('rejects empty and unsupported content, and validates limit shape', async () => {
-    await expect(toAcpPrompt([createUserMessage({ content: [], source: { kind: 'user' } })], { imageEnabled: true, signal: new AbortController().signal })).rejects.toThrow('no supported content')
+    await expect(
+      toAcpPrompt([createUserMessage({ content: [], source: { kind: 'user' } })], {
+        imageEnabled: true,
+        signal: new AbortController().signal,
+      }),
+    ).rejects.toThrow('no supported content')
     expect(validImageLimits(limits)).toBe(true)
     expect(validImageLimits({ ...limits, maxImageBytes: 0 })).toBe(false)
     expect(validImageLimits({ ...limits, mediaTypes: ['text/plain'] as never })).toBe(false)

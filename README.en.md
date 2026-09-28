@@ -6,7 +6,7 @@
 
 Use **Claude · Codex · Devin · Kimi** from the DSH session UI.
 
-This version supports DSH `0.1.7-rc.2` only. ACP members and subagent records open in the native sidebar while the main conversation stays in place. Team member requests can still be approved from the main conversation.
+This version supports DSH `0.2.0-rc.1` only. ACP members and subagent records open in the native sidebar while the main conversation stays in place. Team member requests can still be approved from the main conversation.
 
 On upgrade, existing Agent configuration is imported automatically from the old settings file into the current DSH profile. An Agent list already set in that profile, including an empty list, is preserved. The transcript uses DSH’s native compact, standard, detailed, and verbose modes for tools, reasoning, and process groups.
 
@@ -61,12 +61,12 @@ Regular development needs no upstream checkout. See the [E2E guide](test/e2e/REA
 
 The agent catalog uses a snapshot of the [official ACP registry](https://agentclientprotocol.com) shipped with the plugin. It provides install guidance and configuration presets. Each release attempts a refresh; if synchronization or validation fails, publishing continues with the validated snapshot committed in the repository, with details in the workflow summary and a tracking issue. The catalog does not refresh over the network at runtime. Inclusion does not mean each Agent has been verified. The menu separates verified adapters from unverified catalog entries; verification does not cover every listed version or platform. The common four:
 
-| Agent | ACP command | Terminal login |
-| --- | --- | --- |
-| Claude | `claude-agent-acp` | `claude` |
-| Codex | `codex-acp` | `codex login`¹ |
-| Devin | `devin acp` | `devin auth login` |
-| Kimi | `kimi acp` | `kimi login` |
+| Agent  | ACP command        | Terminal login     |
+| ------ | ------------------ | ------------------ |
+| Claude | `claude-agent-acp` | `claude`           |
+| Codex  | `codex-acp`        | `codex login`¹     |
+| Devin  | `devin acp`        | `devin auth login` |
+| Kimi   | `kimi acp`         | `kimi login`       |
 
 ¹ ChatGPT sign-in requires the separate Codex CLI.
 
@@ -119,12 +119,12 @@ After removing the adapter, run `devin mcp remove --scope user dsh` to remove it
 
 ## <img src="assets/readme/icon-help.svg" width="24" height="24" alt="" /> If something goes wrong
 
-| Symptom | First check |
-| --- | --- |
-| Command will not start | Verify the executable path; try its absolute path. |
-| Login or authentication fails | Sign in through the Agent CLI; check its configured environment variables. |
+| Symptom                                            | First check                                                                                                                    |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| Command will not start                             | Verify the executable path; try its absolute path.                                                                             |
+| Login or authentication fails                      | Sign in through the Agent CLI; check its configured environment variables.                                                     |
 | Older subagent details cannot open after upgrading | Follow DSH’s supported history formats. Unsupported projections are not migrated; original files and ACP records are retained. |
-| Session needs recovery | Follow the composer notice and **ACP Diagnostics**. Do not clear local data. |
+| Session needs recovery                             | Follow the composer notice and **ACP Diagnostics**. Do not clear local data.                                                   |
 
 Still stuck? Include the error reference, plugin/DSH versions and relevant host log excerpt in an [issue](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/issues). Remove secrets before sharing logs.
 

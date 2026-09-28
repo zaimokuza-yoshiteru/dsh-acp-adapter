@@ -108,7 +108,11 @@
 
 /// <reference types="node" />
 
-import { activityPresentationSchema, boundedActivityPresentation, type AcpActivityPresentation } from '../domain/policy/activity-presentation.ts'
+import {
+  activityPresentationSchema,
+  boundedActivityPresentation,
+  type AcpActivityPresentation,
+} from '../domain/policy/activity-presentation.ts'
 import { createHash } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, readdirSync } from 'node:fs'
 import path from 'node:path'
@@ -121,11 +125,7 @@ import type {
   AcpTerminalAuditData,
   AcpSessionForkAuditData,
 } from '../domain/policy/events.ts'
-import {
-  ACP_SNAPSHOT_TOTAL_BYTES,
-  acpOptionsSnapshotOf,
-  toOptionsSnapshotRecord,
-} from './options-snapshot.ts'
+import { ACP_SNAPSHOT_TOTAL_BYTES, acpOptionsSnapshotOf, toOptionsSnapshotRecord } from './options-snapshot.ts'
 import type { AcpOptionsSnapshotRecord } from './options-snapshot.ts'
 import { isSensitiveActivityField, redactSecretText } from '../domain/observability/redaction.ts'
 
@@ -204,7 +204,10 @@ export interface AcpActivityRecord {
   readonly rawDetail?: string
   readonly rawDetailRef?: string
 }
-export type AcpActivityInput = Omit<AcpActivityRecord, 'activitySeq' | 'revisionSeq'> & { readonly activitySeq?: number; readonly revisionSeq?: number }
+export type AcpActivityInput = Omit<AcpActivityRecord, 'activitySeq' | 'revisionSeq'> & {
+  readonly activitySeq?: number
+  readonly revisionSeq?: number
+}
 
 /** Restricts an activity view to one owner/turn anchor.  Both fields are
  * optional so the host can ask for a whole session, but a client that renders
@@ -234,19 +237,20 @@ export interface AcpLaunchFingerprint {
   readonly envKeys: readonly string[]
   /** Explicit profile env values, represented only by secret-free hashes. */
   readonly explicitEnv?: readonly { readonly key: string; readonly hash16: string }[]
- /** 边界：注册表 profile id。 */
+  /** 边界：注册表 profile id。 */
   readonly profileId?: string | null
- /** 历史字段名：存储 runtime 绑定 id；普通 profile 记 null，重构不改写旧绑定。 */
+  /** 历史字段名：存储 runtime 绑定 id；普通 profile 记 null，重构不改写旧绑定。 */
   readonly descriptorId?: string | null
- /** 边界：历史 descriptor 钉版字段（versionPolicy 已移除，新指纹恒 null；保留以兼容旧 binding 形状）。 */
+  /** 边界：历史 descriptor 钉版字段（versionPolicy 已移除，新指纹恒 null；保留以兼容旧 binding 形状）。 */
   readonly adapterVersion?: string | null
   readonly wrappedCliVersion?: string | null
- /** 历史凭证引用字段；当前实现恒为 null，不接管 Agent 凭证。 */
+  /** 历史凭证引用字段；当前实现恒为 null，不接管 Agent 凭证。 */
   readonly envRefs?: readonly { readonly key: string; readonly present: boolean }[] | null
- /** 边界：executable override env 的 `{name,present}`（无声明记 null）。 */
+  /** 边界：executable override env 的 `{name,present}`（无声明记 null）。 */
   readonly executableOverride?: { readonly name: string; readonly present: boolean } | null
   /** Native final state-location env shape: fixed keys, presence, and value hashes only. */
-  readonly nativeStateEnv?: readonly { readonly key: string; readonly present: boolean; readonly hash16?: string }[] | null
+  readonly nativeStateEnv?:
+    readonly { readonly key: string; readonly present: boolean; readonly hash16?: string }[] | null
   /** Sorted explicit host tool selection hash; null when no host tools are exposed. */
   readonly mcpFingerprint?: string | null
 }
@@ -273,7 +277,13 @@ const ACP_MEMBER_MODEL_MAX = 512
 const ACP_MEMBER_BINDING_KEY_MAX = 8192
 
 export function modeIntentBindingKey(binding: AcpBindingData): string {
-  return stableStringify([binding.provider, binding.agentSessionId, binding.generation, binding.bindingEpoch, binding.launchFingerprint])
+  return stableStringify([
+    binding.provider,
+    binding.agentSessionId,
+    binding.generation,
+    binding.bindingEpoch,
+    binding.launchFingerprint,
+  ])
 }
 
 /**
@@ -329,8 +339,7 @@ export type AcpBindingRecord = AcpBindingData & { readonly time: number }
  * 无 binding 行（或库不存在）→ `undefined`（与「不可用」明确区分）。
  */
 export type AcpBindingLookup =
-  | { readonly status: 'ok'; readonly binding: AcpBindingRecord }
-  | { readonly status: 'outdated' }
+  { readonly status: 'ok'; readonly binding: AcpBindingRecord } | { readonly status: 'outdated' }
 
 /**
  * reconciliation-required 的原因词表（sidecar `reconciliation` 记录的
@@ -477,7 +486,15 @@ export interface AcpFileSystemAuditData {
   readonly limit?: number
 }
 
-export type AcpSidecarKind = 'binding' | 'permission' | 'reconciliation' | 'replay-assessment' | 'degradation' | 'filesystem' | 'terminal' | 'session-fork'
+export type AcpSidecarKind =
+  | 'binding'
+  | 'permission'
+  | 'reconciliation'
+  | 'replay-assessment'
+  | 'degradation'
+  | 'filesystem'
+  | 'terminal'
+  | 'session-fork'
 
 /** Single source of truth for sidecar kind → payload decoding/storage shape. */
 export interface AcpSidecarPayloadByKind {
@@ -492,7 +509,16 @@ export interface AcpSidecarPayloadByKind {
 }
 
 /** 写/读路径共同承认的 v2 kind 全集（行校验用）。 */
-const ACP_SIDECAR_KINDS: readonly AcpSidecarKind[] = ['binding', 'permission', 'reconciliation', 'replay-assessment', 'degradation', 'filesystem', 'terminal', 'session-fork']
+const ACP_SIDECAR_KINDS: readonly AcpSidecarKind[] = [
+  'binding',
+  'permission',
+  'reconciliation',
+  'replay-assessment',
+  'degradation',
+  'filesystem',
+  'terminal',
+  'session-fork',
+]
 
 /**
  * 同步 durable 路径的 kind（有界审计队列）：append 落库 commit 后才 resolve。
@@ -503,19 +529,31 @@ const ACP_SIDECAR_KINDS: readonly AcpSidecarKind[] = ['binding', 'permission', '
  * flush 时向调用方返回成功。其余 kind 进有界内存队列（见
  * {@link ACP_SIDECAR_AUDIT_QUEUE_LIMIT}）。
  */
-const ACP_SIDECAR_SYNC_KINDS: readonly AcpSidecarKind[] = ['binding', 'permission', 'filesystem', 'terminal', 'session-fork']
+const ACP_SIDECAR_SYNC_KINDS: readonly AcpSidecarKind[] = [
+  'binding',
+  'permission',
+  'filesystem',
+  'terminal',
+  'session-fork',
+]
 
 /**
  * 统一读取模型（判别联合，`kind` 判别）：`data` 访问器即落库 payload 的原内容
  * （内容消费契约不变，envelope 只是包装层）。
  */
-export type AcpSidecarEntry = { [K in AcpSidecarKind]: AcpSidecarEntryBase & { readonly kind: K; readonly data: AcpSidecarPayloadByKind[K] } }[AcpSidecarKind]
+export type AcpSidecarEntry = {
+  [K in AcpSidecarKind]: AcpSidecarEntryBase & { readonly kind: K; readonly data: AcpSidecarPayloadByKind[K] }
+}[AcpSidecarKind]
 
 /** {@link AcpSidecar.append} 的入参：`time` 可缺省（由 store 的 `now()` 补齐）。 */
-export type AcpSidecarEntryInput = { [K in AcpSidecarKind]: { readonly kind: K; readonly time?: number; readonly data: AcpSidecarPayloadByKind[K] } }[AcpSidecarKind]
+export type AcpSidecarEntryInput = {
+  [K in AcpSidecarKind]: { readonly kind: K; readonly time?: number; readonly data: AcpSidecarPayloadByKind[K] }
+}[AcpSidecarKind]
 
 /** 补齐 `time` 后的待落盘记录（envelope 分量由 store 分配）。 */
-type StampedEntry = { [K in AcpSidecarKind]: { readonly kind: K; readonly time: number; readonly data: AcpSidecarPayloadByKind[K] } }[AcpSidecarKind]
+type StampedEntry = {
+  [K in AcpSidecarKind]: { readonly kind: K; readonly time: number; readonly data: AcpSidecarPayloadByKind[K] }
+}[AcpSidecarKind]
 
 /**
  * sidecar 存储面（的唯一审计/binding 通道；SQLite WAL 承载）。
@@ -533,7 +571,7 @@ export interface AcpSidecar {
    * 语义）；其余 kind 进有界内存队列、入队即 resolve（绝不阻塞 turn，flush 落齐，
    * 见模块注释「有界审计队列」）。幂等去重副作用：待写记录是 permission decided
    * 且同去重键的 decided 已存在 → **跳过本次写入并正常 resolve**——重连重放不
- * 生成重复决定（审批 correlation）。
+   * 生成重复决定（审批 correlation）。
    * @param sessionId - dsh 会话 id（行键；非法字符抛 TypeError）。
    * @param entry - 待落盘记录；`time` 缺省时由 store 时钟补齐。
    */
@@ -549,9 +587,18 @@ export interface AcpSidecar {
   /** Upsert one external ACP activity, preserving its first-seen sequence. */
   upsertActivity(record: AcpActivityInput): Promise<AcpActivityRecord>
   /** Opening snapshot, ordered by stable first-seen activity sequence. */
-  activitySnapshot(sessionId: SessionId, limit?: number, filter?: AcpActivityFilter): Promise<readonly AcpActivityRecord[]>
+  activitySnapshot(
+    sessionId: SessionId,
+    limit?: number,
+    filter?: AcpActivityFilter,
+  ): Promise<readonly AcpActivityRecord[]>
   /** Bounded activity revisions after a durable revision cursor. */
-  activityPage(sessionId: SessionId, afterSeq: number, limit?: number, filter?: AcpActivityFilter): Promise<readonly AcpActivityRecord[]>
+  activityPage(
+    sessionId: SessionId,
+    afterSeq: number,
+    limit?: number,
+    filter?: AcpActivityFilter,
+  ): Promise<readonly AcpActivityRecord[]>
   /** Current durable activity head. */
   activityHead(sessionId: SessionId, filter?: AcpActivityFilter): Promise<number>
   /**
@@ -568,7 +615,7 @@ export interface AcpSidecar {
   /** Subscribe to committed revisions. The returned disposer is idempotent. */
   subscribeActivity(sessionId: SessionId, filter: AcpActivityFilter, subscriber: AcpActivitySubscriber): () => void
   /**
- * 最新一条 binding 的判定（语义门槛）：bindings 索引行的 payload 全字段
+   * 最新一条 binding 的判定（语义门槛）：bindings 索引行的 payload 全字段
    * 语义校验通过 → `{status:'ok', binding}`；不通过 → `{status:'outdated'}`
    * （**不回退**——索引表只保留最新一条，最新即权威）；无 binding 行/库不存在
    * → `undefined`（resume 回退 request/header 窥测的信号）。
@@ -579,7 +626,7 @@ export interface AcpSidecar {
   /** Atomically replace the current recovery state for a DSH session. */
   writeRecoveryState(state: AcpRecoveryState): Promise<void>
   /**
- * 全量 binding 索引（双绑守卫的唯一消费点 = host composition 的
+   * 全量 binding 索引（双绑守卫的唯一消费点 = host composition 的
    * resume 路由）：查 bindings 表全部行，仅语义校验通过（`{status:'ok'}`）者计入
    * （畸形行跳过并 warn；库不存在 → 空数组）。
    */
@@ -589,7 +636,7 @@ export interface AcpSidecar {
   /** Cursor-paged audit read. Only the requested bounded window is decoded. */
   listPage(sessionId: SessionId, afterSeq: number, limit: number): Promise<readonly AcpSidecarEntry[]>
   /**
- * 写入（upsert）该会话的 last-known option 快照（输入须先经
+   * 写入（upsert）该会话的 last-known option 快照（输入须先经
    * {@link acpOptionsSnapshotOf} 标准化）。同步 durable；写失败 reject
    * （调用方按「last-known 展示面」纪律降级为 warn，不翻转主链路）。
    */
@@ -648,17 +695,36 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 function toRecoveryState(raw: unknown): AcpRecoveryState | undefined {
   if (!isPlainObject(raw) || typeof raw.dshSessionId !== 'string' || raw.dshSessionId.length === 0) return undefined
-  const kinds: readonly string[] = ['healthy', 'reconnect-required', 'outcome-unknown', 'reconciliation-required', 'session-lost', 'local-history-damaged', 'resumed-unverified']
+  const kinds: readonly string[] = [
+    'healthy',
+    'reconnect-required',
+    'outcome-unknown',
+    'reconciliation-required',
+    'session-lost',
+    'local-history-damaged',
+    'resumed-unverified',
+  ]
   if (typeof raw.kind !== 'string' || !kinds.includes(raw.kind)) return undefined
   if (typeof raw.updatedAt !== 'number' || !Number.isFinite(raw.updatedAt)) return undefined
   for (const key of ['cause', 'detail', 'provider', 'acpSessionId', 'interruptedTurnId'] as const) {
     if (key in raw && raw[key] !== undefined && typeof raw[key] !== 'string') return undefined
   }
-  if ('generation' in raw && raw.generation !== undefined && (!Number.isInteger(raw.generation) || (raw.generation as number) < 0)) return undefined
+  if (
+    'generation' in raw &&
+    raw.generation !== undefined &&
+    (!Number.isInteger(raw.generation) || (raw.generation as number) < 0)
+  )
+    return undefined
   for (const key of ['lastAttemptAt'] as const) {
-    if (key in raw && raw[key] !== undefined && (typeof raw[key] !== 'number' || !Number.isFinite(raw[key] as number))) return undefined
+    if (key in raw && raw[key] !== undefined && (typeof raw[key] !== 'number' || !Number.isFinite(raw[key] as number)))
+      return undefined
   }
-  if ('lastUserAction' in raw && raw.lastUserAction !== undefined && (typeof raw.lastUserAction !== 'string' || raw.lastUserAction.length > 256)) return undefined
+  if (
+    'lastUserAction' in raw &&
+    raw.lastUserAction !== undefined &&
+    (typeof raw.lastUserAction !== 'string' || raw.lastUserAction.length > 256)
+  )
+    return undefined
   return raw as unknown as AcpRecoveryState
 }
 
@@ -674,13 +740,11 @@ function errorMessage(error: unknown): string {
  * 身份可推导，恒 `{}`。
  * payload 语义畸形时缺省（语义校验是读路径消费方的事，写路径不抛）。
  */
-function deriveAcpIds(
-  kind: AcpSidecarKind,
-  data: unknown,
-): { acpProviderId?: string; acpSessionId?: string } {
+function deriveAcpIds(kind: AcpSidecarKind, data: unknown): { acpProviderId?: string; acpSessionId?: string } {
   if (!isPlainObject(data)) return {}
   if (kind === 'binding') {
-    const agentSessionId = typeof data.agentSessionId === 'string' && data.agentSessionId.length > 0 ? data.agentSessionId : undefined
+    const agentSessionId =
+      typeof data.agentSessionId === 'string' && data.agentSessionId.length > 0 ? data.agentSessionId : undefined
     const provider = typeof data.provider === 'string' && data.provider.length > 0 ? data.provider : undefined
     return {
       ...(provider === undefined ? {} : { acpProviderId: provider }),
@@ -688,23 +752,28 @@ function deriveAcpIds(
     }
   }
   if (kind === 'reconciliation') {
-    const acpSessionId = typeof data.acpSessionId === 'string' && data.acpSessionId.length > 0 ? data.acpSessionId : undefined
+    const acpSessionId =
+      typeof data.acpSessionId === 'string' && data.acpSessionId.length > 0 ? data.acpSessionId : undefined
     return acpSessionId === undefined ? {} : { acpSessionId }
   }
   if (kind === 'filesystem') {
-    const acpSessionId = typeof data.acpSessionId === 'string' && data.acpSessionId.length > 0 ? data.acpSessionId : undefined
+    const acpSessionId =
+      typeof data.acpSessionId === 'string' && data.acpSessionId.length > 0 ? data.acpSessionId : undefined
     return acpSessionId === undefined ? {} : { acpSessionId }
   }
   if (kind === 'terminal') {
-    const acpSessionId = typeof data.acpSessionId === 'string' && data.acpSessionId.length > 0 ? data.acpSessionId : undefined
+    const acpSessionId =
+      typeof data.acpSessionId === 'string' && data.acpSessionId.length > 0 ? data.acpSessionId : undefined
     return acpSessionId === undefined ? {} : { acpSessionId }
   }
   if (kind === 'session-fork') {
-    const acpSessionId = typeof data.agentSessionId === 'string' && data.agentSessionId.length > 0 ? data.agentSessionId : undefined
+    const acpSessionId =
+      typeof data.agentSessionId === 'string' && data.agentSessionId.length > 0 ? data.agentSessionId : undefined
     return acpSessionId === undefined ? {} : { acpSessionId }
   }
   if (kind !== 'permission') return {}
-  const agentSessionId = typeof data.agentSessionId === 'string' && data.agentSessionId.length > 0 ? data.agentSessionId : undefined
+  const agentSessionId =
+    typeof data.agentSessionId === 'string' && data.agentSessionId.length > 0 ? data.agentSessionId : undefined
   // asked 与 decided 均带 agentSessionId（decided 也落——见 events.ts），
   // 可推导即落 envelope acpSessionId。
   return agentSessionId === undefined ? {} : { acpSessionId: agentSessionId }
@@ -746,7 +815,8 @@ function decidedDedupeKeyOf(kind: string, data: unknown): string | undefined {
   if (kind !== 'permission' || !isPlainObject(data)) return undefined
   if (data.phase !== 'decided') return undefined
   const requestId = typeof data.requestId === 'string' && data.requestId.length > 0 ? data.requestId : undefined
-  const agentSessionId = typeof data.agentSessionId === 'string' && data.agentSessionId.length > 0 ? data.agentSessionId : undefined
+  const agentSessionId =
+    typeof data.agentSessionId === 'string' && data.agentSessionId.length > 0 ? data.agentSessionId : undefined
   const toolCallId = typeof data.toolCallId === 'string' && data.toolCallId.length > 0 ? data.toolCallId : undefined
   if (requestId === undefined || agentSessionId === undefined || toolCallId === undefined) return undefined
   return `decided:${agentSessionId}:${toolCallId}:${requestId}`
@@ -754,7 +824,10 @@ function decidedDedupeKeyOf(kind: string, data: unknown): string | undefined {
 
 /** 非 decided 记录的 recordId 基座：`h:<sha256(canonical [kind,time,payload])>` 前 16 hex。 */
 function contentRecordIdBase(kind: AcpSidecarKind, time: number, data: unknown): string {
-  return `h:${createHash('sha256').update(stableStringify([kind, time, data])).digest('hex').slice(0, 16)}`
+  return `h:${createHash('sha256')
+    .update(stableStringify([kind, time, data]))
+    .digest('hex')
+    .slice(0, 16)}`
 }
 
 /** audit 表行（SELECT 的原始形态）。 */
@@ -927,7 +1000,10 @@ class SidecarStore implements AcpSidecar {
   private legacyJsonlWarned = false
   /** In-process listeners are only a delivery optimization; SQLite remains the
    * source of truth and reconnecting consumers use activityPage to repair gaps. */
-  private readonly activitySubscribers = new Map<string, Set<{ readonly filter: AcpActivityFilter; readonly subscriber: AcpActivitySubscriber }>>()
+  private readonly activitySubscribers = new Map<
+    string,
+    Set<{ readonly filter: AcpActivityFilter; readonly subscriber: AcpActivitySubscriber }>
+  >()
 
   constructor(options: AcpSidecarOptions) {
     this.root = options.root
@@ -963,12 +1039,21 @@ class SidecarStore implements AcpSidecar {
       db.exec(SCHEMA_SQL)
       // v2 databases predate the recovery columns/table. Migrate by schema
       // inspection so an old sidecar remains readable without a reset.
-      const recoveryColumns = new Set((db.prepare('PRAGMA table_info(recovery_states)').all() as Array<{ name?: string }>).map((row) => row.name))
-      if (!recoveryColumns.has('last_attempt_at')) db.exec('ALTER TABLE recovery_states ADD COLUMN last_attempt_at INTEGER')
-      if (!recoveryColumns.has('last_user_action')) db.exec('ALTER TABLE recovery_states ADD COLUMN last_user_action TEXT')
-      const dispatchColumns = new Set((db.prepare('PRAGMA table_info(dispatch_ledger)').all() as Array<{ name?: string }>).map((row) => row.name))
+      const recoveryColumns = new Set(
+        (db.prepare('PRAGMA table_info(recovery_states)').all() as Array<{ name?: string }>).map((row) => row.name),
+      )
+      if (!recoveryColumns.has('last_attempt_at'))
+        db.exec('ALTER TABLE recovery_states ADD COLUMN last_attempt_at INTEGER')
+      if (!recoveryColumns.has('last_user_action'))
+        db.exec('ALTER TABLE recovery_states ADD COLUMN last_user_action TEXT')
+      const dispatchColumns = new Set(
+        (db.prepare('PRAGMA table_info(dispatch_ledger)').all() as Array<{ name?: string }>).map((row) => row.name),
+      )
       if (!dispatchColumns.has('provenance')) db.exec('ALTER TABLE dispatch_ledger ADD COLUMN provenance TEXT')
-      const activitySql = (db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'activity_journal'").get() as { sql?: unknown } | undefined)?.sql
+      const activitySql = (
+        db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'activity_journal'").get() as
+          { sql?: unknown } | undefined
+      )?.sql
       if (typeof activitySql === 'string' && !activitySql.includes('PRIMARY KEY (dsh_session_id, revision_seq)')) {
         db.exec('ALTER TABLE activity_journal RENAME TO activity_journal_legacy')
         db.exec(`CREATE TABLE activity_journal (
@@ -977,16 +1062,23 @@ class SidecarStore implements AcpSidecar {
           time INTEGER NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL, presentation TEXT NOT NULL,
           raw_detail TEXT, raw_detail_ref TEXT, PRIMARY KEY (dsh_session_id, revision_seq)
         ) STRICT`)
-        const columns = new Set((db.prepare('PRAGMA table_info(activity_journal_legacy)').all() as Array<{ name?: string }>).map((row) => row.name))
+        const columns = new Set(
+          (db.prepare('PRAGMA table_info(activity_journal_legacy)').all() as Array<{ name?: string }>).map(
+            (row) => row.name,
+          ),
+        )
         const time = columns.has('time') ? 'time' : '0'
         const revision = columns.has('revision_seq') ? 'revision_seq' : 'activity_seq'
         db.exec(`INSERT INTO activity_journal (dsh_session_id, activity_id, owner_dsh_session_id, prompt_anchor_message_id, activity_seq, revision_seq, time, kind, status, presentation, raw_detail, raw_detail_ref)
           SELECT dsh_session_id, activity_id, owner_dsh_session_id, prompt_anchor_message_id, activity_seq, ${revision}, ${time}, kind, status, presentation, raw_detail, raw_detail_ref FROM activity_journal_legacy`)
         db.exec('DROP TABLE activity_journal_legacy')
       }
-      const activityColumns = new Set((db.prepare('PRAGMA table_info(activity_journal)').all() as Array<{ name?: string }>).map(row => row.name))
+      const activityColumns = new Set(
+        (db.prepare('PRAGMA table_info(activity_journal)').all() as Array<{ name?: string }>).map((row) => row.name),
+      )
       if (!activityColumns.has('display_detail')) db.exec('ALTER TABLE activity_journal ADD COLUMN display_detail TEXT')
-      if (!activityColumns.has('content_index')) db.exec('ALTER TABLE activity_journal ADD COLUMN content_index INTEGER')
+      if (!activityColumns.has('content_index'))
+        db.exec('ALTER TABLE activity_journal ADD COLUMN content_index INTEGER')
     } catch (error: unknown) {
       try {
         db?.close()
@@ -998,8 +1090,12 @@ class SidecarStore implements AcpSidecar {
     }
     if (db === undefined) throw new Error(`dsh-acp sidecar: failed to open ${this.dbPath}`)
     this.db = db
-    this.stmtInsert = db.prepare('INSERT INTO audit (record_id, dsh_session_id, seq, time, kind, acp_provider_id, acp_session_id, dedupe_key, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    this.stmtInsertIgnore = db.prepare('INSERT INTO audit (record_id, dsh_session_id, seq, time, kind, acp_provider_id, acp_session_id, dedupe_key, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (dsh_session_id, dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING')
+    this.stmtInsert = db.prepare(
+      'INSERT INTO audit (record_id, dsh_session_id, seq, time, kind, acp_provider_id, acp_session_id, dedupe_key, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    )
+    this.stmtInsertIgnore = db.prepare(
+      'INSERT INTO audit (record_id, dsh_session_id, seq, time, kind, acp_provider_id, acp_session_id, dedupe_key, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (dsh_session_id, dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING',
+    )
     this.stmtMaxSeq = db.prepare('SELECT MAX(seq) AS max_seq FROM audit WHERE dsh_session_id = ?')
     this.stmtHasRecordId = db.prepare('SELECT 1 AS x FROM audit WHERE dsh_session_id = ? AND record_id = ?')
     this.stmtHasDedupe = db.prepare('SELECT 1 AS x FROM audit WHERE dsh_session_id = ? AND dedupe_key = ?')
@@ -1007,24 +1103,48 @@ class SidecarStore implements AcpSidecar {
     this.stmtListPage = db.prepare('SELECT * FROM audit WHERE dsh_session_id = ? AND seq > ? ORDER BY seq ASC LIMIT ?')
     this.stmtGetBinding = db.prepare('SELECT * FROM bindings WHERE dsh_session_id = ?')
     this.stmtListBindings = db.prepare('SELECT * FROM bindings ORDER BY dsh_session_id ASC')
-    this.stmtUpsertBinding = db.prepare('INSERT INTO bindings (dsh_session_id, time, acp_provider_id, acp_session_id, payload) VALUES (?, ?, ?, ?, ?) ON CONFLICT(dsh_session_id) DO UPDATE SET time = excluded.time, acp_provider_id = excluded.acp_provider_id, acp_session_id = excluded.acp_session_id, payload = excluded.payload')
+    this.stmtUpsertBinding = db.prepare(
+      'INSERT INTO bindings (dsh_session_id, time, acp_provider_id, acp_session_id, payload) VALUES (?, ?, ?, ?, ?) ON CONFLICT(dsh_session_id) DO UPDATE SET time = excluded.time, acp_provider_id = excluded.acp_provider_id, acp_session_id = excluded.acp_session_id, payload = excluded.payload',
+    )
     this.stmtGetOptionSnapshot = db.prepare('SELECT * FROM option_snapshots WHERE dsh_session_id = ?')
-    this.stmtUpsertOptionSnapshot = db.prepare('INSERT INTO option_snapshots (dsh_session_id, time, payload) VALUES (?, ?, ?) ON CONFLICT(dsh_session_id) DO UPDATE SET time = excluded.time, payload = excluded.payload')
+    this.stmtUpsertOptionSnapshot = db.prepare(
+      'INSERT INTO option_snapshots (dsh_session_id, time, payload) VALUES (?, ?, ?) ON CONFLICT(dsh_session_id) DO UPDATE SET time = excluded.time, payload = excluded.payload',
+    )
     this.stmtGetDispatch = db.prepare('SELECT * FROM dispatch_ledger WHERE dsh_session_id = ? AND dispatch_key = ?')
-    this.stmtInsertDispatch = db.prepare('INSERT INTO dispatch_ledger (dsh_session_id, dispatch_key, provider, model, state, created_at, settled_at, provenance) VALUES (?, ?, ?, ?, ?, ?, NULL, ?)')
-    this.stmtSettleDispatch = db.prepare('UPDATE dispatch_ledger SET state = ?, settled_at = ? WHERE dsh_session_id = ? AND dispatch_key = ? AND state = ?')
+    this.stmtInsertDispatch = db.prepare(
+      'INSERT INTO dispatch_ledger (dsh_session_id, dispatch_key, provider, model, state, created_at, settled_at, provenance) VALUES (?, ?, ?, ?, ?, ?, NULL, ?)',
+    )
+    this.stmtSettleDispatch = db.prepare(
+      'UPDATE dispatch_ledger SET state = ?, settled_at = ? WHERE dsh_session_id = ? AND dispatch_key = ? AND state = ?',
+    )
     this.stmtClearDispatch = db.prepare('DELETE FROM dispatch_ledger WHERE dsh_session_id = ? AND dispatch_key = ?')
     this.stmtDeleteDispatch = db.prepare('DELETE FROM dispatch_ledger WHERE dsh_session_id = ?')
-    this.stmtActivityGet = db.prepare('SELECT * FROM activity_journal WHERE dsh_session_id = ? AND activity_id = ? ORDER BY revision_seq DESC LIMIT 1')
-    this.stmtActivityInsert = db.prepare('INSERT INTO activity_journal (dsh_session_id, activity_id, owner_dsh_session_id, prompt_anchor_message_id, activity_seq, revision_seq, time, kind, status, presentation, raw_detail, raw_detail_ref, content_index, display_detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    this.stmtActivityGet = db.prepare(
+      'SELECT * FROM activity_journal WHERE dsh_session_id = ? AND activity_id = ? ORDER BY revision_seq DESC LIMIT 1',
+    )
+    this.stmtActivityInsert = db.prepare(
+      'INSERT INTO activity_journal (dsh_session_id, activity_id, owner_dsh_session_id, prompt_anchor_message_id, activity_seq, revision_seq, time, kind, status, presentation, raw_detail, raw_detail_ref, content_index, display_detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    )
     this.stmtActivityUpdate = this.stmtActivityInsert
-    this.stmtActivityList = db.prepare('SELECT * FROM (SELECT activity_journal.*, ROW_NUMBER() OVER (PARTITION BY activity_id ORDER BY revision_seq DESC) AS latest_row FROM activity_journal WHERE dsh_session_id = ?) WHERE latest_row = 1 ORDER BY activity_seq ASC LIMIT ?')
-    this.stmtActivityPage = db.prepare('SELECT * FROM activity_journal WHERE dsh_session_id = ? AND revision_seq > ? ORDER BY revision_seq ASC LIMIT ?')
-    this.stmtActivityHead = db.prepare('SELECT COALESCE(MAX(revision_seq), 0) AS head FROM activity_journal WHERE dsh_session_id = ?')
+    this.stmtActivityList = db.prepare(
+      'SELECT * FROM (SELECT activity_journal.*, ROW_NUMBER() OVER (PARTITION BY activity_id ORDER BY revision_seq DESC) AS latest_row FROM activity_journal WHERE dsh_session_id = ?) WHERE latest_row = 1 ORDER BY activity_seq ASC LIMIT ?',
+    )
+    this.stmtActivityPage = db.prepare(
+      'SELECT * FROM activity_journal WHERE dsh_session_id = ? AND revision_seq > ? ORDER BY revision_seq ASC LIMIT ?',
+    )
+    this.stmtActivityHead = db.prepare(
+      'SELECT COALESCE(MAX(revision_seq), 0) AS head FROM activity_journal WHERE dsh_session_id = ?',
+    )
     this.stmtGetRecoveryState = db.prepare('SELECT * FROM recovery_states WHERE dsh_session_id = ?')
-    this.stmtUpsertRecoveryState = db.prepare('INSERT INTO recovery_states (dsh_session_id, time, last_attempt_at, last_user_action, payload) VALUES (?, ?, ?, ?, ?) ON CONFLICT(dsh_session_id) DO UPDATE SET time = excluded.time, last_attempt_at = excluded.last_attempt_at, last_user_action = excluded.last_user_action, payload = excluded.payload')
-    this.stmtGetMemberModelSelection = db.prepare('SELECT binding_key, model_id FROM member_model_selections WHERE dsh_session_id = ?')
-    this.stmtUpsertMemberModelSelection = db.prepare('INSERT INTO member_model_selections (dsh_session_id, binding_key, model_id) VALUES (?, ?, ?) ON CONFLICT(dsh_session_id) DO UPDATE SET binding_key = excluded.binding_key, model_id = excluded.model_id')
+    this.stmtUpsertRecoveryState = db.prepare(
+      'INSERT INTO recovery_states (dsh_session_id, time, last_attempt_at, last_user_action, payload) VALUES (?, ?, ?, ?, ?) ON CONFLICT(dsh_session_id) DO UPDATE SET time = excluded.time, last_attempt_at = excluded.last_attempt_at, last_user_action = excluded.last_user_action, payload = excluded.payload',
+    )
+    this.stmtGetMemberModelSelection = db.prepare(
+      'SELECT binding_key, model_id FROM member_model_selections WHERE dsh_session_id = ?',
+    )
+    this.stmtUpsertMemberModelSelection = db.prepare(
+      'INSERT INTO member_model_selections (dsh_session_id, binding_key, model_id) VALUES (?, ?, ?) ON CONFLICT(dsh_session_id) DO UPDATE SET binding_key = excluded.binding_key, model_id = excluded.model_id',
+    )
     try {
       chmodSync(this.dbPath, 0o600)
     } catch (error: unknown) {
@@ -1066,7 +1186,7 @@ class SidecarStore implements AcpSidecar {
     if (legacy.length > 0) {
       this.warn(
         `dsh-acp sidecar: ignoring ${String(legacy.length)} legacy JSONL file(s) under ${this.root} ` +
-        '(no migration layer by design; sessions without a SQLite binding will fail safe into reconciliation-required)',
+          '(no migration layer by design; sessions without a SQLite binding will fail safe into reconciliation-required)',
       )
     }
   }
@@ -1094,7 +1214,7 @@ class SidecarStore implements AcpSidecar {
 
   /**
    * 同步落库（binding/permission 专用路径）：decided 先去重预检（已存在 → 跳过并
- * 正常返回， 幂等语义）；非 decided 的 recordId 撞名追加 -2/-3… 序号（先查
+   * 正常返回， 幂等语义）；非 decided 的 recordId 撞名追加 -2/-3… 序号（先查
    * 后插，同进程同步执行无竞争）。binding 同时 upsert 最新索引表。
    */
   private insertSync(sessionId: string, entry: StampedEntry): void {
@@ -1114,14 +1234,42 @@ class SidecarStore implements AcpSidecar {
         }
         const seq = this.nextPermissionSeq(sessionId)
         const recordId = dedupeKey ?? this.nextAuditIdentityWithSeq(sessionId, entry, seq).recordId
-        const result = dedupeKey === undefined
-          ? this.stmtInsert?.run(recordId, sessionId, seq, entry.time, entry.kind, ids.acpProviderId ?? null, ids.acpSessionId ?? null, null, payload)
-          : this.stmtInsertIgnore?.run(recordId, sessionId, seq, entry.time, entry.kind, ids.acpProviderId ?? null, ids.acpSessionId ?? null, dedupeKey, payload)
+        const result =
+          dedupeKey === undefined
+            ? this.stmtInsert?.run(
+                recordId,
+                sessionId,
+                seq,
+                entry.time,
+                entry.kind,
+                ids.acpProviderId ?? null,
+                ids.acpSessionId ?? null,
+                null,
+                payload,
+              )
+            : this.stmtInsertIgnore?.run(
+                recordId,
+                sessionId,
+                seq,
+                entry.time,
+                entry.kind,
+                ids.acpProviderId ?? null,
+                ids.acpSessionId ?? null,
+                dedupeKey,
+                payload,
+              )
         // This targeted conflict can only mean the exact decided dedupe index.
-        if (result !== undefined && Number(result.changes) === 0) { db.exec('COMMIT'); return }
+        if (result !== undefined && Number(result.changes) === 0) {
+          db.exec('COMMIT')
+          return
+        }
         db.exec('COMMIT')
       } catch (error) {
-        try { db.exec('ROLLBACK') } catch { /* preserve original */ }
+        try {
+          db.exec('ROLLBACK')
+        } catch {
+          /* preserve original */
+        }
         // Keep the local reservation after rollback; a queued non-approval audit may own an earlier seq.
         throw error
       }
@@ -1135,11 +1283,25 @@ class SidecarStore implements AcpSidecar {
       try {
         this.assertBindingTransition(sessionId, entry)
         const { seq, recordId } = this.nextAuditIdentity(sessionId, entry)
-        this.stmtInsert?.run(recordId, sessionId, seq, entry.time, entry.kind, ids.acpProviderId ?? null, ids.acpSessionId ?? null, null, payload)
+        this.stmtInsert?.run(
+          recordId,
+          sessionId,
+          seq,
+          entry.time,
+          entry.kind,
+          ids.acpProviderId ?? null,
+          ids.acpSessionId ?? null,
+          null,
+          payload,
+        )
         this.stmtUpsertBinding?.run(sessionId, entry.time, ids.acpProviderId ?? null, ids.acpSessionId ?? null, payload)
         db.exec('COMMIT')
       } catch (error: unknown) {
-        try { db.exec('ROLLBACK') } catch { /* 原错误优先 */ }
+        try {
+          db.exec('ROLLBACK')
+        } catch {
+          /* 原错误优先 */
+        }
         // nextSeq 的内存种子可能已在失败事务内前移；丢弃后从 durable MAX 重种。
         this.seqCounters.delete(sessionId)
         throw error
@@ -1147,7 +1309,17 @@ class SidecarStore implements AcpSidecar {
       return
     }
     const { seq, recordId } = this.nextAuditIdentity(sessionId, entry)
-    this.stmtInsert?.run(recordId, sessionId, seq, entry.time, entry.kind, ids.acpProviderId ?? null, ids.acpSessionId ?? null, null, payload)
+    this.stmtInsert?.run(
+      recordId,
+      sessionId,
+      seq,
+      entry.time,
+      entry.kind,
+      ids.acpProviderId ?? null,
+      ids.acpSessionId ?? null,
+      null,
+      payload,
+    )
   }
 
   /** 为一条非去重审计分配 seq 与无碰撞 record id。 */
@@ -1156,7 +1328,11 @@ class SidecarStore implements AcpSidecar {
     return this.nextAuditIdentityWithSeq(sessionId, entry, seq)
   }
 
-  private nextAuditIdentityWithSeq(sessionId: string, entry: StampedEntry, seq: number): { seq: number; recordId: string } {
+  private nextAuditIdentityWithSeq(
+    sessionId: string,
+    entry: StampedEntry,
+    seq: number,
+  ): { seq: number; recordId: string } {
     const base = contentRecordIdBase(entry.kind, entry.time, entry.data)
     let recordId = base
     for (let suffix = 2; ; suffix += 1) {
@@ -1180,15 +1356,19 @@ class SidecarStore implements AcpSidecar {
     if (row === undefined) return
     const current = this.parseBindingRow(row)
     if (current === undefined) {
-      throw new Error(`dsh-acp sidecar: refusing to overwrite an outdated binding for session ${JSON.stringify(sessionId)}`)
+      throw new Error(
+        `dsh-acp sidecar: refusing to overwrite an outdated binding for session ${JSON.stringify(sessionId)}`,
+      )
     }
     if (next === undefined) {
-      throw new Error(`dsh-acp sidecar: refusing to overwrite a valid binding with an invalid binding for session ${JSON.stringify(sessionId)}`)
+      throw new Error(
+        `dsh-acp sidecar: refusing to overwrite a valid binding with an invalid binding for session ${JSON.stringify(sessionId)}`,
+      )
     }
     if (current.provider !== next.provider) {
       throw new Error(
         `dsh-acp sidecar: execution backend for session ${JSON.stringify(sessionId)} is immutable ` +
-        `(${JSON.stringify(current.provider)} cannot be replaced by ${JSON.stringify(next.provider)})`,
+          `(${JSON.stringify(current.provider)} cannot be replaced by ${JSON.stringify(next.provider)})`,
       )
     }
     if (current.profileId !== next.profileId) {
@@ -1196,21 +1376,31 @@ class SidecarStore implements AcpSidecar {
     }
     if (next.generation === current.generation) {
       if (next.agentSessionId !== current.agentSessionId) {
-        throw new Error(`dsh-acp sidecar: refusing to change the Agent session id without a new generation for session ${JSON.stringify(sessionId)}`)
+        throw new Error(
+          `dsh-acp sidecar: refusing to change the Agent session id without a new generation for session ${JSON.stringify(sessionId)}`,
+        )
       }
       if (next.historyBaseSeq !== current.historyBaseSeq || next.establishedAt !== current.establishedAt) {
-        throw new Error(`dsh-acp sidecar: refusing to rewrite same-generation continuity anchors for session ${JSON.stringify(sessionId)}`)
+        throw new Error(
+          `dsh-acp sidecar: refusing to rewrite same-generation continuity anchors for session ${JSON.stringify(sessionId)}`,
+        )
       }
       if (next.dshCommittedSeq < current.dshCommittedSeq) {
-        throw new Error(`dsh-acp sidecar: refusing to move the committed DSH sequence backwards for session ${JSON.stringify(sessionId)}`)
+        throw new Error(
+          `dsh-acp sidecar: refusing to move the committed DSH sequence backwards for session ${JSON.stringify(sessionId)}`,
+        )
       }
       return
     }
     if (next.generation !== current.generation + 1) {
-      throw new Error(`dsh-acp sidecar: binding generation must advance by exactly one for session ${JSON.stringify(sessionId)}`)
+      throw new Error(
+        `dsh-acp sidecar: binding generation must advance by exactly one for session ${JSON.stringify(sessionId)}`,
+      )
     }
     if (next.historyBaseSeq < current.dshCommittedSeq || next.establishedAt < current.establishedAt) {
-      throw new Error(`dsh-acp sidecar: refusing a new binding generation with regressed continuity anchors for session ${JSON.stringify(sessionId)}`)
+      throw new Error(
+        `dsh-acp sidecar: refusing a new binding generation with regressed continuity anchors for session ${JSON.stringify(sessionId)}`,
+      )
     }
   }
 
@@ -1221,7 +1411,9 @@ class SidecarStore implements AcpSidecar {
       this.droppedEntries += 1
       if (!this.queueFullWarned) {
         this.queueFullWarned = true
-        this.warn(`dsh-acp sidecar: audit queue is full (limit ${String(this.queueLimit)}); dropping non-approval audit records (dropped ${String(this.droppedEntries)} so far)`)
+        this.warn(
+          `dsh-acp sidecar: audit queue is full (limit ${String(this.queueLimit)}); dropping non-approval audit records (dropped ${String(this.droppedEntries)} so far)`,
+        )
       }
       return
     }
@@ -1252,15 +1444,29 @@ class SidecarStore implements AcpSidecar {
           if (this.stmtHasRecordId?.get(item.sessionId, recordId) === undefined) break
           recordId = `${base}-${String(suffix)}`
         }
-        this.stmtInsert?.run(recordId, item.sessionId, item.seq, item.entry.time, item.entry.kind, ids.acpProviderId ?? null, ids.acpSessionId ?? null, null, stableStringify(item.entry.data))
+        this.stmtInsert?.run(
+          recordId,
+          item.sessionId,
+          item.seq,
+          item.entry.time,
+          item.entry.kind,
+          ids.acpProviderId ?? null,
+          ids.acpSessionId ?? null,
+          null,
+          stableStringify(item.entry.data),
+        )
       }
       db.exec('COMMIT')
     } catch (error: unknown) {
       try {
         db.exec('ROLLBACK')
-      } catch { /* 连接级失败时 ROLLBACK 也可能抛，尽力而为 */ }
+      } catch {
+        /* 连接级失败时 ROLLBACK 也可能抛，尽力而为 */
+      }
       this.droppedEntries += batch.length
-      this.warn(`dsh-acp sidecar: failed to flush ${String(batch.length)} queued audit record(s); dropping them (${errorMessage(error)})`)
+      this.warn(
+        `dsh-acp sidecar: failed to flush ${String(batch.length)} queued audit record(s); dropping them (${errorMessage(error)})`,
+      )
     }
   }
 
@@ -1294,24 +1500,44 @@ class SidecarStore implements AcpSidecar {
 
   async beginDispatch(record: AcpDispatchRecord): Promise<void> {
     assertSafeSessionId(record.dshSessionId)
-    if (record.state !== 'dispatch-uncertain') throw new TypeError('dsh-acp dispatch begin must use state dispatch-uncertain')
-    if (record.key.length === 0 || record.key.length > 1024) throw new TypeError('dsh-acp dispatch key must be 1..1024 characters')
-    if (record.provider.length === 0 || record.model.length === 0 || !Number.isSafeInteger(record.createdAt)) throw new TypeError('dsh-acp dispatch record is malformed')
+    if (record.state !== 'dispatch-uncertain')
+      throw new TypeError('dsh-acp dispatch begin must use state dispatch-uncertain')
+    if (record.key.length === 0 || record.key.length > 1024)
+      throw new TypeError('dsh-acp dispatch key must be 1..1024 characters')
+    if (record.provider.length === 0 || record.model.length === 0 || !Number.isSafeInteger(record.createdAt))
+      throw new TypeError('dsh-acp dispatch record is malformed')
     const provenance = record.provenance === undefined ? null : JSON.stringify(record.provenance)
-    if (provenance !== null && provenance.length > 32_768) throw new TypeError('dsh-acp dispatch provenance exceeds 32 KiB')
+    if (provenance !== null && provenance.length > 32_768)
+      throw new TypeError('dsh-acp dispatch provenance exceeds 32 KiB')
     const db = this.ensureDb()
     db.exec('BEGIN IMMEDIATE')
     try {
-      const existing = db.prepare('SELECT dispatch_key, state FROM dispatch_ledger WHERE dsh_session_id = ?').all(record.dshSessionId) as Array<{ dispatch_key?: unknown; state?: unknown }>
+      const existing = db
+        .prepare('SELECT dispatch_key, state FROM dispatch_ledger WHERE dsh_session_id = ?')
+        .all(record.dshSessionId) as Array<{ dispatch_key?: unknown; state?: unknown }>
       for (const row of existing) {
-        if (row.dispatch_key === record.key) throw new Error(`ACP_RECOVERY_REQUIRED: dispatch ${record.key} already exists`)
-        if (row.state === 'dispatch-uncertain') throw new Error(`ACP_RECOVERY_REQUIRED: dispatch ${String(row.dispatch_key)} is dispatch-uncertain`)
+        if (row.dispatch_key === record.key)
+          throw new Error(`ACP_RECOVERY_REQUIRED: dispatch ${record.key} already exists`)
+        if (row.state === 'dispatch-uncertain')
+          throw new Error(`ACP_RECOVERY_REQUIRED: dispatch ${String(row.dispatch_key)} is dispatch-uncertain`)
       }
       db.prepare('DELETE FROM dispatch_ledger WHERE dsh_session_id = ?').run(record.dshSessionId)
-      this.stmtInsertDispatch?.run(record.dshSessionId, record.key, record.provider, record.model, 'dispatch-uncertain', record.createdAt, provenance)
+      this.stmtInsertDispatch?.run(
+        record.dshSessionId,
+        record.key,
+        record.provider,
+        record.model,
+        'dispatch-uncertain',
+        record.createdAt,
+        provenance,
+      )
       db.exec('COMMIT')
     } catch (error) {
-      try { db.exec('ROLLBACK') } catch { /* best effort */ }
+      try {
+        db.exec('ROLLBACK')
+      } catch {
+        /* best effort */
+      }
       throw error
     }
   }
@@ -1323,35 +1549,75 @@ class SidecarStore implements AcpSidecar {
     try {
       const existing = this.stmtGetDispatch?.get(dshSessionId, key) as { state?: unknown } | undefined
       if (existing === undefined) throw new Error(`ACP_LEDGER_MISSING: dispatch ${key} was not begun`)
-      if (existing.state === 'settled') { db.exec('COMMIT'); return }
+      if (existing.state === 'settled') {
+        db.exec('COMMIT')
+        return
+      }
       const result = this.stmtSettleDispatch?.run('settled', settledAt, dshSessionId, key, 'dispatch-uncertain')
       if (Number(result?.changes ?? 0) !== 1) throw new Error(`ACP_LEDGER_STATE: dispatch ${key} was not uncertain`)
       db.exec('COMMIT')
     } catch (error) {
-      try { db.exec('ROLLBACK') } catch { /* best effort */ }
+      try {
+        db.exec('ROLLBACK')
+      } catch {
+        /* best effort */
+      }
       throw error
     }
   }
 
   readDispatch(dshSessionId: SessionId, key: string): Promise<AcpDispatchRecord | undefined> {
     assertSafeSessionId(dshSessionId)
-    const row = this.openIfExists() === undefined ? undefined : this.stmtGetDispatch?.get(dshSessionId, key) as {
-      dsh_session_id?: unknown; dispatch_key?: unknown; provider?: unknown; model?: unknown; state?: unknown; created_at?: unknown; settled_at?: unknown; provenance?: unknown
-    } | undefined
-    if (row === undefined || typeof row.dsh_session_id !== 'string' || typeof row.dispatch_key !== 'string' || typeof row.provider !== 'string' || typeof row.model !== 'string' || (row.state !== 'dispatch-uncertain' && row.state !== 'settled') || typeof row.created_at !== 'number') return Promise.resolve(undefined)
+    const row =
+      this.openIfExists() === undefined
+        ? undefined
+        : (this.stmtGetDispatch?.get(dshSessionId, key) as
+            | {
+                dsh_session_id?: unknown
+                dispatch_key?: unknown
+                provider?: unknown
+                model?: unknown
+                state?: unknown
+                created_at?: unknown
+                settled_at?: unknown
+                provenance?: unknown
+              }
+            | undefined)
+    if (
+      row === undefined ||
+      typeof row.dsh_session_id !== 'string' ||
+      typeof row.dispatch_key !== 'string' ||
+      typeof row.provider !== 'string' ||
+      typeof row.model !== 'string' ||
+      (row.state !== 'dispatch-uncertain' && row.state !== 'settled') ||
+      typeof row.created_at !== 'number'
+    )
+      return Promise.resolve(undefined)
     let provenance: AcpDispatchRecord['provenance']
     if (typeof row.provenance === 'string') {
       try {
         const parsed = JSON.parse(row.provenance)
         if (isPlainObject(parsed)) provenance = parsed as AcpDispatchRecord['provenance']
-      } catch { /* malformed provenance is omitted from diagnostics */ }
+      } catch {
+        /* malformed provenance is omitted from diagnostics */
+      }
     }
-    return Promise.resolve({ key: row.dispatch_key, dshSessionId: row.dsh_session_id, provider: row.provider, model: row.model, state: row.state, createdAt: row.created_at, ...(typeof row.settled_at === 'number' ? { settledAt: row.settled_at } : {}), ...(provenance === undefined ? {} : { provenance }) })
+    return Promise.resolve({
+      key: row.dispatch_key,
+      dshSessionId: row.dsh_session_id,
+      provider: row.provider,
+      model: row.model,
+      state: row.state,
+      createdAt: row.created_at,
+      ...(typeof row.settled_at === 'number' ? { settledAt: row.settled_at } : {}),
+      ...(provenance === undefined ? {} : { provenance }),
+    })
   }
 
   async clearDispatch(dshSessionId: SessionId, key?: string): Promise<void> {
     assertSafeSessionId(dshSessionId)
-    if (key !== undefined && (key.length === 0 || key.length > 1024)) throw new TypeError('dsh-acp dispatch key must be 1..1024 characters')
+    if (key !== undefined && (key.length === 0 || key.length > 1024))
+      throw new TypeError('dsh-acp dispatch key must be 1..1024 characters')
     const db = this.openIfExists()
     if (db === undefined) return
     db.exec('BEGIN IMMEDIATE')
@@ -1360,7 +1626,11 @@ class SidecarStore implements AcpSidecar {
       else this.stmtClearDispatch?.run(dshSessionId, key)
       db.exec('COMMIT')
     } catch (error) {
-      try { db.exec('ROLLBACK') } catch { /* preserve original */ }
+      try {
+        db.exec('ROLLBACK')
+      } catch {
+        /* preserve original */
+      }
       throw error
     }
   }
@@ -1368,14 +1638,22 @@ class SidecarStore implements AcpSidecar {
   async upsertActivity(record: AcpActivityInput): Promise<AcpActivityRecord> {
     assertSafeSessionId(record.dshSessionId)
     assertSafeSessionId(record.ownerDshSessionId)
-    if (!isActivityKind(record.kind) || !isActivityStatus(record.status)) throw new TypeError('dsh-acp activity record has an unknown kind or status')
-    if (record.activityId.length === 0 || record.activityId.length > 256) throw new TypeError('dsh-acp activity id must be 1..256 characters')
-    if (record.promptAnchorMessageId.length === 0 || record.promptAnchorMessageId.length > 256) throw new TypeError('dsh-acp activity anchor must be 1..256 characters')
-    if (!Number.isSafeInteger(record.time) || record.time < 0) throw new TypeError('dsh-acp activity time must be a non-negative safe integer')
-    if (record.contentIndex !== undefined && (!Number.isSafeInteger(record.contentIndex) || record.contentIndex < 0)) throw new TypeError('dsh-acp activity content index must be a non-negative safe integer')
+    if (!isActivityKind(record.kind) || !isActivityStatus(record.status))
+      throw new TypeError('dsh-acp activity record has an unknown kind or status')
+    if (record.activityId.length === 0 || record.activityId.length > 256)
+      throw new TypeError('dsh-acp activity id must be 1..256 characters')
+    if (record.promptAnchorMessageId.length === 0 || record.promptAnchorMessageId.length > 256)
+      throw new TypeError('dsh-acp activity anchor must be 1..256 characters')
+    if (!Number.isSafeInteger(record.time) || record.time < 0)
+      throw new TypeError('dsh-acp activity time must be a non-negative safe integer')
+    if (record.contentIndex !== undefined && (!Number.isSafeInteger(record.contentIndex) || record.contentIndex < 0))
+      throw new TypeError('dsh-acp activity content index must be a non-negative safe integer')
     const presentation = boundedActivityText(record.presentation, ACP_ACTIVITY_PRESENTATION_MAX) ?? ''
     if (presentation.length === 0) throw new TypeError('dsh-acp activity presentation must not be empty')
-    const display = record.display === undefined ? undefined : boundedActivityPresentation(activityPresentationSchema.parse(record.display))
+    const display =
+      record.display === undefined
+        ? undefined
+        : boundedActivityPresentation(activityPresentationSchema.parse(record.display))
     const rawDetail = boundedActivityText(redactActivityDetail(record.rawDetail), ACP_ACTIVITY_RAW_MAX)
     const rawDetailRef = boundedActivityText(record.rawDetailRef, ACP_ACTIVITY_REF_MAX)
     const db = this.ensureDb()
@@ -1385,9 +1663,18 @@ class SidecarStore implements AcpSidecar {
       if (existing !== undefined) {
         const current = rowToActivity(existing)
         if (current === undefined) throw new Error(`ACP_ACTIVITY_CORRUPT: activity ${record.activityId} is malformed`)
-        if (record.ownerDshSessionId !== current.ownerDshSessionId || record.promptAnchorMessageId !== current.promptAnchorMessageId || record.kind !== current.kind) throw new Error(`ACP_ACTIVITY_IMMUTABLE: activity ${record.activityId} owner, anchor, and kind cannot change`)
-        if (record.kind !== 'plan' && isTerminalActivityStatus(current.status) && record.status === 'running') throw new Error(`ACP_ACTIVITY_STATE: terminal activity ${record.activityId} cannot return to running`)
-        const revisionSeq = Number((this.stmtActivityHead?.get(record.dshSessionId) as { head?: number | bigint } | undefined)?.head ?? 0) + 1
+        if (
+          record.ownerDshSessionId !== current.ownerDshSessionId ||
+          record.promptAnchorMessageId !== current.promptAnchorMessageId ||
+          record.kind !== current.kind
+        )
+          throw new Error(`ACP_ACTIVITY_IMMUTABLE: activity ${record.activityId} owner, anchor, and kind cannot change`)
+        if (record.kind !== 'plan' && isTerminalActivityStatus(current.status) && record.status === 'running')
+          throw new Error(`ACP_ACTIVITY_STATE: terminal activity ${record.activityId} cannot return to running`)
+        const revisionSeq =
+          Number(
+            (this.stmtActivityHead?.get(record.dshSessionId) as { head?: number | bigint } | undefined)?.head ?? 0,
+          ) + 1
         this.stmtActivityUpdate?.run(
           record.dshSessionId,
           record.activityId,
@@ -1406,50 +1693,119 @@ class SidecarStore implements AcpSidecar {
         )
         db.exec('COMMIT')
         const { display: _previousDisplay, ...previous } = current
-        const committed = { ...previous, ...(display === undefined ? {} : { display }), revisionSeq, time: record.time, status: record.status, presentation, ...(rawDetail === undefined ? {} : { rawDetail }), ...(rawDetailRef === undefined ? {} : { rawDetailRef }) }
+        const committed = {
+          ...previous,
+          ...(display === undefined ? {} : { display }),
+          revisionSeq,
+          time: record.time,
+          status: record.status,
+          presentation,
+          ...(rawDetail === undefined ? {} : { rawDetail }),
+          ...(rawDetailRef === undefined ? {} : { rawDetailRef }),
+        }
         this.notifyActivitySubscribers(committed)
         return committed
       }
-      const firstSeenHead = Number((db.prepare('SELECT COALESCE(MAX(activity_seq), 0) AS head FROM activity_journal WHERE dsh_session_id = ?').get(record.dshSessionId) as { head?: number | bigint } | undefined)?.head ?? 0)
-      const revisionHead = Number((this.stmtActivityHead?.get(record.dshSessionId) as { head?: number | bigint } | undefined)?.head ?? 0)
+      const firstSeenHead = Number(
+        (
+          db
+            .prepare('SELECT COALESCE(MAX(activity_seq), 0) AS head FROM activity_journal WHERE dsh_session_id = ?')
+            .get(record.dshSessionId) as { head?: number | bigint } | undefined
+        )?.head ?? 0,
+      )
+      const revisionHead = Number(
+        (this.stmtActivityHead?.get(record.dshSessionId) as { head?: number | bigint } | undefined)?.head ?? 0,
+      )
       const activitySeq = firstSeenHead + 1
       const revisionSeq = revisionHead + 1
-      this.stmtActivityInsert?.run(record.dshSessionId, record.activityId, record.ownerDshSessionId, record.promptAnchorMessageId, activitySeq, revisionSeq, record.time, record.kind, record.status, presentation, rawDetail ?? null, rawDetailRef ?? null, record.contentIndex ?? null, display === undefined ? null : JSON.stringify(display))
+      this.stmtActivityInsert?.run(
+        record.dshSessionId,
+        record.activityId,
+        record.ownerDshSessionId,
+        record.promptAnchorMessageId,
+        activitySeq,
+        revisionSeq,
+        record.time,
+        record.kind,
+        record.status,
+        presentation,
+        rawDetail ?? null,
+        rawDetailRef ?? null,
+        record.contentIndex ?? null,
+        display === undefined ? null : JSON.stringify(display),
+      )
       db.exec('COMMIT')
-      const committed = { ...(display === undefined ? {} : { display }), ...(record.contentIndex === undefined ? {} : { contentIndex: record.contentIndex }), dshSessionId: record.dshSessionId, ownerDshSessionId: record.ownerDshSessionId, promptAnchorMessageId: record.promptAnchorMessageId, activityId: record.activityId, activitySeq, revisionSeq, time: record.time, kind: record.kind, status: record.status, presentation, ...(rawDetail === undefined ? {} : { rawDetail }), ...(rawDetailRef === undefined ? {} : { rawDetailRef }) }
+      const committed = {
+        ...(display === undefined ? {} : { display }),
+        ...(record.contentIndex === undefined ? {} : { contentIndex: record.contentIndex }),
+        dshSessionId: record.dshSessionId,
+        ownerDshSessionId: record.ownerDshSessionId,
+        promptAnchorMessageId: record.promptAnchorMessageId,
+        activityId: record.activityId,
+        activitySeq,
+        revisionSeq,
+        time: record.time,
+        kind: record.kind,
+        status: record.status,
+        presentation,
+        ...(rawDetail === undefined ? {} : { rawDetail }),
+        ...(rawDetailRef === undefined ? {} : { rawDetailRef }),
+      }
       this.notifyActivitySubscribers(committed)
       return committed
     } catch (error) {
-      try { db.exec('ROLLBACK') } catch { /* best effort */ }
+      try {
+        db.exec('ROLLBACK')
+      } catch {
+        /* best effort */
+      }
       throw error
     }
   }
 
-  activitySnapshot(sessionId: SessionId, limit = 100, filter?: AcpActivityFilter): Promise<readonly AcpActivityRecord[]> {
+  activitySnapshot(
+    sessionId: SessionId,
+    limit = 100,
+    filter?: AcpActivityFilter,
+  ): Promise<readonly AcpActivityRecord[]> {
     assertSafeSessionId(sessionId)
-    if (!Number.isSafeInteger(limit) || limit < 1) throw new TypeError('dsh-acp activity limit must be a positive integer')
+    if (!Number.isSafeInteger(limit) || limit < 1)
+      throw new TypeError('dsh-acp activity limit must be a positive integer')
     try {
       const db = this.openIfExists()
       if (db === undefined) return Promise.resolve([])
-      const rows = (filter === undefined || (filter.ownerDshSessionId === undefined && filter.promptAnchorMessageId === undefined))
-        ? (this.stmtActivityList?.all(sessionId, Math.min(limit, 200)) ?? []) as unknown as ActivityRow[]
-        : this.activitySnapshotRows(db, sessionId, Math.min(limit, 200), filter)
+      const rows =
+        filter === undefined || (filter.ownerDshSessionId === undefined && filter.promptAnchorMessageId === undefined)
+          ? ((this.stmtActivityList?.all(sessionId, Math.min(limit, 200)) ?? []) as unknown as ActivityRow[])
+          : this.activitySnapshotRows(db, sessionId, Math.min(limit, 200), filter)
       return Promise.resolve(rows.map(rowToActivity).filter((row): row is AcpActivityRecord => row !== undefined))
-    } catch (error) { return Promise.reject(error instanceof Error ? error : new Error(errorMessage(error))) }
+    } catch (error) {
+      return Promise.reject(error instanceof Error ? error : new Error(errorMessage(error)))
+    }
   }
 
-  activityPage(sessionId: SessionId, afterSeq: number, limit = 100, filter?: AcpActivityFilter): Promise<readonly AcpActivityRecord[]> {
+  activityPage(
+    sessionId: SessionId,
+    afterSeq: number,
+    limit = 100,
+    filter?: AcpActivityFilter,
+  ): Promise<readonly AcpActivityRecord[]> {
     assertSafeSessionId(sessionId)
-    if (!Number.isSafeInteger(afterSeq) || afterSeq < 0) throw new TypeError('dsh-acp activity cursor must be a non-negative integer')
-    if (!Number.isSafeInteger(limit) || limit < 1) throw new TypeError('dsh-acp activity limit must be a positive integer')
+    if (!Number.isSafeInteger(afterSeq) || afterSeq < 0)
+      throw new TypeError('dsh-acp activity cursor must be a non-negative integer')
+    if (!Number.isSafeInteger(limit) || limit < 1)
+      throw new TypeError('dsh-acp activity limit must be a positive integer')
     try {
       const db = this.openIfExists()
       if (db === undefined) return Promise.resolve([])
-      const rows = (filter === undefined || (filter.ownerDshSessionId === undefined && filter.promptAnchorMessageId === undefined))
-        ? (this.stmtActivityPage?.all(sessionId, afterSeq, Math.min(limit, 200)) ?? []) as unknown as ActivityRow[]
-        : this.activityPageRows(db, sessionId, afterSeq, Math.min(limit, 200), filter)
+      const rows =
+        filter === undefined || (filter.ownerDshSessionId === undefined && filter.promptAnchorMessageId === undefined)
+          ? ((this.stmtActivityPage?.all(sessionId, afterSeq, Math.min(limit, 200)) ?? []) as unknown as ActivityRow[])
+          : this.activityPageRows(db, sessionId, afterSeq, Math.min(limit, 200), filter)
       return Promise.resolve(rows.map(rowToActivity).filter((row): row is AcpActivityRecord => row !== undefined))
-    } catch (error) { return Promise.reject(error instanceof Error ? error : new Error(errorMessage(error))) }
+    } catch (error) {
+      return Promise.reject(error instanceof Error ? error : new Error(errorMessage(error)))
+    }
   }
 
   activityHead(sessionId: SessionId, filter?: AcpActivityFilter): Promise<number> {
@@ -1457,11 +1813,20 @@ class SidecarStore implements AcpSidecar {
     try {
       const db = this.openIfExists()
       if (db === undefined) return Promise.resolve(0)
-      if (filter === undefined || (filter.ownerDshSessionId === undefined && filter.promptAnchorMessageId === undefined)) {
-        return Promise.resolve(Number((this.stmtActivityHead?.get(sessionId) as { head?: number | bigint } | undefined)?.head ?? 0))
+      if (
+        filter === undefined ||
+        (filter.ownerDshSessionId === undefined && filter.promptAnchorMessageId === undefined)
+      ) {
+        return Promise.resolve(
+          Number((this.stmtActivityHead?.get(sessionId) as { head?: number | bigint } | undefined)?.head ?? 0),
+        )
       }
-      return Promise.resolve(Number((this.activityHeadRow(db, sessionId, filter) as { head?: number | bigint } | undefined)?.head ?? 0))
-    } catch (error) { return Promise.reject(error instanceof Error ? error : new Error(errorMessage(error))) }
+      return Promise.resolve(
+        Number((this.activityHeadRow(db, sessionId, filter) as { head?: number | bigint } | undefined)?.head ?? 0),
+      )
+    } catch (error) {
+      return Promise.reject(error instanceof Error ? error : new Error(errorMessage(error)))
+    }
   }
 
   async hasDurableActivityOwner(sessionId: SessionId): Promise<boolean> {
@@ -1473,9 +1838,11 @@ class SidecarStore implements AcpSidecar {
     const db = this.openIfExists()
     if (db === undefined) return false
     try {
-      const row = db.prepare(
-        'SELECT 1 AS present FROM activity_journal WHERE dsh_session_id = ? AND owner_dsh_session_id = ? LIMIT 1',
-      ).get(sessionId, sessionId) as { present?: number } | undefined
+      const row = db
+        .prepare(
+          'SELECT 1 AS present FROM activity_journal WHERE dsh_session_id = ? AND owner_dsh_session_id = ? LIMIT 1',
+        )
+        .get(sessionId, sessionId) as { present?: number } | undefined
       return row?.present === 1
     } catch (error) {
       throw error instanceof Error ? error : new Error(errorMessage(error))
@@ -1485,23 +1852,27 @@ class SidecarStore implements AcpSidecar {
   async listProjectedSubagentIds(): Promise<readonly string[]> {
     const db = this.openIfExists()
     if (db === undefined) return []
-    const rows = db.prepare(
-      'SELECT DISTINCT dsh_session_id FROM activity_journal WHERE prompt_anchor_message_id = ? ORDER BY dsh_session_id ASC',
-    ).all('external-subagent-record') as Array<{ dsh_session_id?: unknown }>
-    return rows.flatMap(row => typeof row.dsh_session_id === 'string' ? [row.dsh_session_id] : [])
+    const rows = db
+      .prepare(
+        'SELECT DISTINCT dsh_session_id FROM activity_journal WHERE prompt_anchor_message_id = ? ORDER BY dsh_session_id ASC',
+      )
+      .all('external-subagent-record') as Array<{ dsh_session_id?: unknown }>
+    return rows.flatMap((row) => (typeof row.dsh_session_id === 'string' ? [row.dsh_session_id] : []))
   }
 
   async listProjectedSubagentActivities(): Promise<readonly AcpActivityRecord[]> {
     const db = this.openIfExists()
     if (db === undefined) return []
-    const rows = db.prepare(
-      `SELECT * FROM (
+    const rows = db
+      .prepare(
+        `SELECT * FROM (
         SELECT activity_journal.*, ROW_NUMBER() OVER (
           PARTITION BY dsh_session_id, activity_id ORDER BY revision_seq DESC
         ) AS latest_row
         FROM activity_journal WHERE prompt_anchor_message_id = ?
       ) WHERE latest_row = 1 ORDER BY dsh_session_id ASC, activity_seq ASC`,
-    ).all('external-subagent-record') as unknown as ActivityRow[]
+      )
+      .all('external-subagent-record') as unknown as ActivityRow[]
     return rows.map(rowToActivity).filter((row): row is AcpActivityRecord => row !== undefined)
   }
 
@@ -1530,23 +1901,46 @@ class SidecarStore implements AcpSidecar {
     if (listeners === undefined) return
     for (const { filter, subscriber } of listeners) {
       if (!activityMatchesFilter(activity, filter)) continue
-      try { subscriber(activity) } catch (error) { this.warn(`dsh-acp activity subscriber failed: ${errorMessage(error)}`) }
+      try {
+        subscriber(activity)
+      } catch (error) {
+        this.warn(`dsh-acp activity subscriber failed: ${errorMessage(error)}`)
+      }
     }
   }
 
-  private activitySnapshotRows(db: DatabaseSync, sessionId: SessionId, limit: number, filter: AcpActivityFilter): ActivityRow[] {
+  private activitySnapshotRows(
+    db: DatabaseSync,
+    sessionId: SessionId,
+    limit: number,
+    filter: AcpActivityFilter,
+  ): ActivityRow[] {
     const { where, params } = activityFilterSql(sessionId, filter)
-    return db.prepare(`SELECT * FROM (SELECT activity_journal.*, ROW_NUMBER() OVER (PARTITION BY activity_id ORDER BY revision_seq DESC) AS latest_row FROM activity_journal WHERE ${where}) WHERE latest_row = 1 ORDER BY activity_seq ASC LIMIT ?`).all(...params, limit) as unknown as ActivityRow[]
+    return db
+      .prepare(
+        `SELECT * FROM (SELECT activity_journal.*, ROW_NUMBER() OVER (PARTITION BY activity_id ORDER BY revision_seq DESC) AS latest_row FROM activity_journal WHERE ${where}) WHERE latest_row = 1 ORDER BY activity_seq ASC LIMIT ?`,
+      )
+      .all(...params, limit) as unknown as ActivityRow[]
   }
 
-  private activityPageRows(db: DatabaseSync, sessionId: SessionId, afterSeq: number, limit: number, filter: AcpActivityFilter): ActivityRow[] {
+  private activityPageRows(
+    db: DatabaseSync,
+    sessionId: SessionId,
+    afterSeq: number,
+    limit: number,
+    filter: AcpActivityFilter,
+  ): ActivityRow[] {
     const { where, params } = activityFilterSql(sessionId, filter)
-    return db.prepare(`SELECT * FROM activity_journal WHERE ${where} AND revision_seq > ? ORDER BY revision_seq ASC LIMIT ?`).all(...params, afterSeq, limit) as unknown as ActivityRow[]
+    return db
+      .prepare(`SELECT * FROM activity_journal WHERE ${where} AND revision_seq > ? ORDER BY revision_seq ASC LIMIT ?`)
+      .all(...params, afterSeq, limit) as unknown as ActivityRow[]
   }
 
   private activityHeadRow(db: DatabaseSync, sessionId: SessionId, filter: AcpActivityFilter): unknown {
     const { where, params } = activityFilterSql(sessionId, filter)
-    return db.prepare(`SELECT COALESCE(MAX(revision_seq), 0) AS head FROM activity_journal WHERE ${where}`).get(...params)
+    return db
+      .prepare(`SELECT COALESCE(MAX(revision_seq), 0) AS head FROM activity_journal WHERE ${where}`)
+      .get(...params)
   }
 
   flush(): Promise<void> {
@@ -1584,7 +1978,9 @@ class SidecarStore implements AcpSidecar {
       if (row === undefined) return Promise.resolve(undefined)
       const record = this.parseBindingRow(row)
       if (record === undefined) {
-        this.warn(`dsh-acp sidecar: latest binding row for session ${JSON.stringify(sessionId as string)} fails semantic validation; binding is outdated`)
+        this.warn(
+          `dsh-acp sidecar: latest binding row for session ${JSON.stringify(sessionId as string)} fails semantic validation; binding is outdated`,
+        )
         return Promise.resolve({ status: 'outdated' })
       }
       return Promise.resolve({ status: 'ok', binding: record })
@@ -1601,10 +1997,16 @@ class SidecarStore implements AcpSidecar {
       const row = this.stmtGetRecoveryState?.get(sessionId) as { payload: string } | undefined
       if (row === undefined) return Promise.resolve(undefined)
       let payload: unknown
-      try { payload = JSON.parse(row.payload) } catch { payload = undefined }
+      try {
+        payload = JSON.parse(row.payload)
+      } catch {
+        payload = undefined
+      }
       const state = toRecoveryState(payload)
       if (state === undefined || state.dshSessionId !== (sessionId as string)) {
-        throw new Error(`dsh-acp sidecar: recovery state for session ${JSON.stringify(sessionId as string)} is malformed; local recovery history is damaged`)
+        throw new Error(
+          `dsh-acp sidecar: recovery state for session ${JSON.stringify(sessionId as string)} is malformed; local recovery history is damaged`,
+        )
       }
       return Promise.resolve(state)
     } catch (error: unknown) {
@@ -1615,7 +2017,8 @@ class SidecarStore implements AcpSidecar {
   writeRecoveryState(state: AcpRecoveryState): Promise<void> {
     assertSafeSessionId(state.dshSessionId)
     const validated = toRecoveryState(state)
-    if (validated === undefined) throw new TypeError(`dsh-acp sidecar: malformed recovery state for session ${JSON.stringify(state.dshSessionId)}`)
+    if (validated === undefined)
+      throw new TypeError(`dsh-acp sidecar: malformed recovery state for session ${JSON.stringify(state.dshSessionId)}`)
     try {
       const db = this.ensureDb()
       db.exec('BEGIN IMMEDIATE')
@@ -1629,7 +2032,11 @@ class SidecarStore implements AcpSidecar {
         )
         db.exec('COMMIT')
       } catch (error: unknown) {
-        try { db.exec('ROLLBACK') } catch { /* preserve original failure */ }
+        try {
+          db.exec('ROLLBACK')
+        } catch {
+          /* preserve original failure */
+        }
         throw error
       }
       return Promise.resolve()
@@ -1654,7 +2061,8 @@ class SidecarStore implements AcpSidecar {
         }
         bound.push({ dshSessionId: row.dsh_session_id, binding: record })
       }
-      if (skipped > 0) this.warn(`dsh-acp sidecar: skipped ${String(skipped)} outdated binding row(s) in the bindings index`)
+      if (skipped > 0)
+        this.warn(`dsh-acp sidecar: skipped ${String(skipped)} outdated binding row(s) in the bindings index`)
       return Promise.resolve(bound)
     } catch (error: unknown) {
       return Promise.reject(error instanceof Error ? error : new Error(errorMessage(error)))
@@ -1675,7 +2083,10 @@ class SidecarStore implements AcpSidecar {
         if (entry === undefined) skipped += 1
         else entries.push(entry)
       }
-      if (skipped > 0) this.warn(`dsh-acp sidecar: skipped ${String(skipped)} malformed audit row(s) for session ${JSON.stringify(sessionId as string)}`)
+      if (skipped > 0)
+        this.warn(
+          `dsh-acp sidecar: skipped ${String(skipped)} malformed audit row(s) for session ${JSON.stringify(sessionId as string)}`,
+        )
       return Promise.resolve(entries)
     } catch (error: unknown) {
       return Promise.reject(error instanceof Error ? error : new Error(errorMessage(error)))
@@ -1684,8 +2095,10 @@ class SidecarStore implements AcpSidecar {
 
   listPage(sessionId: SessionId, afterSeq: number, limit: number): Promise<readonly AcpSidecarEntry[]> {
     assertSafeSessionId(sessionId)
-    if (!Number.isSafeInteger(afterSeq) || afterSeq < 0) throw new TypeError('dsh-acp sidecar: audit cursor must be a non-negative integer')
-    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new TypeError('dsh-acp sidecar: audit page size must be between 1 and 100')
+    if (!Number.isSafeInteger(afterSeq) || afterSeq < 0)
+      throw new TypeError('dsh-acp sidecar: audit cursor must be a non-negative integer')
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100)
+      throw new TypeError('dsh-acp sidecar: audit page size must be between 1 and 100')
     try {
       this.drainQueue()
       const db = this.openIfExists()
@@ -1698,7 +2111,10 @@ class SidecarStore implements AcpSidecar {
         if (entry === undefined) skipped += 1
         else entries.push(entry)
       }
-      if (skipped > 0) this.warn(`dsh-acp sidecar: skipped ${String(skipped)} malformed audit row(s) in page for session ${JSON.stringify(sessionId as string)}`)
+      if (skipped > 0)
+        this.warn(
+          `dsh-acp sidecar: skipped ${String(skipped)} malformed audit row(s) in page for session ${JSON.stringify(sessionId as string)}`,
+        )
       return Promise.resolve(entries)
     } catch (error: unknown) {
       return Promise.reject(error instanceof Error ? error : new Error(errorMessage(error)))
@@ -1707,28 +2123,49 @@ class SidecarStore implements AcpSidecar {
 
   async readModeIntent(sessionId: SessionId): Promise<AcpModeIntent | undefined> {
     assertSafeSessionId(sessionId)
-    const row = this.openIfExists()?.prepare('SELECT binding_key, mode_id FROM mode_intents WHERE dsh_session_id = ?').get(sessionId) as { binding_key: string; mode_id: string } | undefined
+    const row = this.openIfExists()
+      ?.prepare('SELECT binding_key, mode_id FROM mode_intents WHERE dsh_session_id = ?')
+      .get(sessionId) as { binding_key: string; mode_id: string } | undefined
     return row === undefined ? undefined : { bindingKey: row.binding_key, modeId: row.mode_id }
   }
 
   async writeModeIntent(sessionId: SessionId, intent: AcpModeIntent): Promise<void> {
     assertSafeSessionId(sessionId)
-    if (!intent.modeId || intent.modeId.length > 128 || !intent.bindingKey || intent.bindingKey.length > 8192) throw new TypeError('Invalid ACP mode intent')
-    this.ensureDb().prepare('INSERT INTO mode_intents VALUES (?, ?, ?) ON CONFLICT(dsh_session_id) DO UPDATE SET binding_key=excluded.binding_key, mode_id=excluded.mode_id').run(sessionId, intent.bindingKey, intent.modeId)
+    if (!intent.modeId || intent.modeId.length > 128 || !intent.bindingKey || intent.bindingKey.length > 8192)
+      throw new TypeError('Invalid ACP mode intent')
+    this.ensureDb()
+      .prepare(
+        'INSERT INTO mode_intents VALUES (?, ?, ?) ON CONFLICT(dsh_session_id) DO UPDATE SET binding_key=excluded.binding_key, mode_id=excluded.mode_id',
+      )
+      .run(sessionId, intent.bindingKey, intent.modeId)
   }
 
   async clearModeIntent(sessionId: SessionId, intent: AcpModeIntent): Promise<void> {
     assertSafeSessionId(sessionId)
-    this.openIfExists()?.prepare('DELETE FROM mode_intents WHERE dsh_session_id = ? AND binding_key = ? AND mode_id = ?').run(sessionId, intent.bindingKey, intent.modeId)
+    this.openIfExists()
+      ?.prepare('DELETE FROM mode_intents WHERE dsh_session_id = ? AND binding_key = ? AND mode_id = ?')
+      .run(sessionId, intent.bindingKey, intent.modeId)
   }
 
   async readMemberModelSelection(sessionId: SessionId): Promise<AcpMemberModelSelection | undefined> {
     assertSafeSessionId(sessionId)
-    const row = this.openIfExists() === undefined ? undefined : this.stmtGetMemberModelSelection?.get(sessionId) as { binding_key?: unknown; model_id?: unknown } | undefined
+    const row =
+      this.openIfExists() === undefined
+        ? undefined
+        : (this.stmtGetMemberModelSelection?.get(sessionId) as
+            { binding_key?: unknown; model_id?: unknown } | undefined)
     if (row === undefined) return undefined
-    if (typeof row.binding_key !== 'string' || row.binding_key.length === 0 || row.binding_key.length > ACP_MEMBER_BINDING_KEY_MAX
-      || typeof row.model_id !== 'string' || row.model_id.length === 0 || row.model_id.length > ACP_MEMBER_MODEL_MAX) {
-      this.warn(`dsh-acp sidecar: malformed member model selection row for session ${JSON.stringify(sessionId as string)}; ignoring it`)
+    if (
+      typeof row.binding_key !== 'string' ||
+      row.binding_key.length === 0 ||
+      row.binding_key.length > ACP_MEMBER_BINDING_KEY_MAX ||
+      typeof row.model_id !== 'string' ||
+      row.model_id.length === 0 ||
+      row.model_id.length > ACP_MEMBER_MODEL_MAX
+    ) {
+      this.warn(
+        `dsh-acp sidecar: malformed member model selection row for session ${JSON.stringify(sessionId as string)}; ignoring it`,
+      )
       return undefined
     }
     return { bindingKey: row.binding_key, model: row.model_id }
@@ -1736,9 +2173,15 @@ class SidecarStore implements AcpSidecar {
 
   async writeMemberModelSelection(sessionId: SessionId, selection: AcpMemberModelSelection): Promise<void> {
     assertSafeSessionId(sessionId)
-    if (!isPlainObject(selection)
-      || typeof selection.bindingKey !== 'string' || selection.bindingKey.length === 0 || selection.bindingKey.length > ACP_MEMBER_BINDING_KEY_MAX
-      || typeof selection.model !== 'string' || selection.model.length === 0 || selection.model.length > ACP_MEMBER_MODEL_MAX) {
+    if (
+      !isPlainObject(selection) ||
+      typeof selection.bindingKey !== 'string' ||
+      selection.bindingKey.length === 0 ||
+      selection.bindingKey.length > ACP_MEMBER_BINDING_KEY_MAX ||
+      typeof selection.model !== 'string' ||
+      selection.model.length === 0 ||
+      selection.model.length > ACP_MEMBER_MODEL_MAX
+    ) {
       throw new TypeError('Invalid ACP member model selection')
     }
     this.ensureDb()
@@ -1747,14 +2190,21 @@ class SidecarStore implements AcpSidecar {
 
   async readToolApprovalPolicy(sessionId: SessionId, initialize?: 'auto' | 'ask'): Promise<'auto' | 'ask' | undefined> {
     assertSafeSessionId(sessionId)
-    if (initialize !== undefined && initialize !== 'auto' && initialize !== 'ask') throw new TypeError('Invalid ACP tool approval policy')
+    if (initialize !== undefined && initialize !== 'auto' && initialize !== 'ask')
+      throw new TypeError('Invalid ACP tool approval policy')
     const db = initialize === undefined ? this.openIfExists() : this.ensureDb()
     if (db === undefined) return undefined
-    if (initialize !== undefined) db.prepare('INSERT INTO tool_approval_policies (dsh_session_id, policy) VALUES (?, ?) ON CONFLICT(dsh_session_id) DO NOTHING').run(sessionId, initialize)
-    const row = db.prepare('SELECT policy FROM tool_approval_policies WHERE dsh_session_id = ?').get(sessionId) as { policy?: unknown } | undefined
+    if (initialize !== undefined)
+      db.prepare(
+        'INSERT INTO tool_approval_policies (dsh_session_id, policy) VALUES (?, ?) ON CONFLICT(dsh_session_id) DO NOTHING',
+      ).run(sessionId, initialize)
+    const row = db.prepare('SELECT policy FROM tool_approval_policies WHERE dsh_session_id = ?').get(sessionId) as
+      { policy?: unknown } | undefined
     if (row === undefined) return undefined
     if (row.policy !== 'auto' && row.policy !== 'ask') {
-      this.warn(`dsh-acp sidecar: invalid tool approval policy for session ${JSON.stringify(sessionId as string)}; refusing to choose a policy`)
+      this.warn(
+        `dsh-acp sidecar: invalid tool approval policy for session ${JSON.stringify(sessionId as string)}; refusing to choose a policy`,
+      )
       throw new Error('ACP_TOOL_APPROVAL_POLICY_INVALID')
     }
     return row.policy
@@ -1763,18 +2213,26 @@ class SidecarStore implements AcpSidecar {
   async writeToolApprovalPolicy(sessionId: SessionId, policy: 'auto' | 'ask'): Promise<void> {
     assertSafeSessionId(sessionId)
     if (policy !== 'auto' && policy !== 'ask') throw new TypeError('Invalid ACP tool approval policy')
-    this.ensureDb().prepare('INSERT INTO tool_approval_policies (dsh_session_id, policy) VALUES (?, ?) ON CONFLICT(dsh_session_id) DO UPDATE SET policy = excluded.policy').run(sessionId, policy)
+    this.ensureDb()
+      .prepare(
+        'INSERT INTO tool_approval_policies (dsh_session_id, policy) VALUES (?, ?) ON CONFLICT(dsh_session_id) DO UPDATE SET policy = excluded.policy',
+      )
+      .run(sessionId, policy)
   }
 
   writeOptionSnapshot(sessionId: SessionId, snapshot: AcpOptionsSnapshotRecord): Promise<void> {
     assertSafeSessionId(sessionId)
     const validated = toOptionsSnapshotRecord(snapshot)
     if (validated === undefined) {
-      throw new TypeError(`dsh-acp sidecar: malformed option snapshot for session ${JSON.stringify(sessionId as string)}`)
+      throw new TypeError(
+        `dsh-acp sidecar: malformed option snapshot for session ${JSON.stringify(sessionId as string)}`,
+      )
     }
     const payload = stableStringify(validated)
     if (payload.length > ACP_SNAPSHOT_TOTAL_BYTES) {
-      throw new TypeError(`dsh-acp sidecar: option snapshot for session ${JSON.stringify(sessionId as string)} exceeds the ${String(ACP_SNAPSHOT_TOTAL_BYTES)}-byte bound (${String(payload.length)}); pass it through acpOptionsSnapshotOf first`)
+      throw new TypeError(
+        `dsh-acp sidecar: option snapshot for session ${JSON.stringify(sessionId as string)} exceeds the ${String(ACP_SNAPSHOT_TOTAL_BYTES)}-byte bound (${String(payload.length)}); pass it through acpOptionsSnapshotOf first`,
+      )
     }
     try {
       this.ensureDb()
@@ -1800,7 +2258,9 @@ class SidecarStore implements AcpSidecar {
       }
       const record = toOptionsSnapshotRecord(payload)
       if (record === undefined) {
-        this.warn(`dsh-acp sidecar: option snapshot row for session ${JSON.stringify(sessionId as string)} is malformed; ignoring it`)
+        this.warn(
+          `dsh-acp sidecar: option snapshot row for session ${JSON.stringify(sessionId as string)} is malformed; ignoring it`,
+        )
         return Promise.resolve(undefined)
       }
       return Promise.resolve(record)
@@ -1809,7 +2269,7 @@ class SidecarStore implements AcpSidecar {
     }
   }
 
- /** bindings 行 → 全字段语义校验 + 窄化（不通过 → undefined = outdated）。 */
+  /** bindings 行 → 全字段语义校验 + 窄化（不通过 → undefined = outdated）。 */
   private parseBindingRow(row: BindingRow): AcpBindingRecord | undefined {
     let payload: unknown
     try {
@@ -1842,7 +2302,15 @@ function rowToEntry(row: AuditRow): AcpSidecarEntry | undefined {
   } as unknown as AcpSidecarEntry
 }
 
-const ACP_ACTIVITY_KINDS: readonly AcpActivityKind[] = ['tool', 'plan', 'terminal', 'diff', 'resource', 'delegated', 'other']
+const ACP_ACTIVITY_KINDS: readonly AcpActivityKind[] = [
+  'tool',
+  'plan',
+  'terminal',
+  'diff',
+  'resource',
+  'delegated',
+  'other',
+]
 const ACP_ACTIVITY_STATUSES: readonly AcpActivityStatus[] = ['running', 'completed', 'failed', 'cancelled']
 
 function isActivityKind(value: unknown): value is AcpActivityKind {
@@ -1860,14 +2328,18 @@ function isTerminalActivityStatus(value: AcpActivityStatus): boolean {
 function validateActivityFilter(filter: AcpActivityFilter): void {
   if (filter === null || typeof filter !== 'object') throw new TypeError('dsh-acp activity filter must be an object')
   for (const [name, value] of Object.entries(filter)) {
-    if (name !== 'ownerDshSessionId' && name !== 'promptAnchorMessageId') throw new TypeError(`dsh-acp activity filter has unknown field ${name}`)
-    if (value !== undefined && (typeof value !== 'string' || value.length === 0 || value.length > 256)) throw new TypeError(`dsh-acp activity filter ${name} must be 1..256 characters`)
+    if (name !== 'ownerDshSessionId' && name !== 'promptAnchorMessageId')
+      throw new TypeError(`dsh-acp activity filter has unknown field ${name}`)
+    if (value !== undefined && (typeof value !== 'string' || value.length === 0 || value.length > 256))
+      throw new TypeError(`dsh-acp activity filter ${name} must be 1..256 characters`)
   }
 }
 
 function activityMatchesFilter(activity: AcpActivityRecord, filter: AcpActivityFilter): boolean {
-  return (filter.ownerDshSessionId === undefined || activity.ownerDshSessionId === filter.ownerDshSessionId)
-    && (filter.promptAnchorMessageId === undefined || activity.promptAnchorMessageId === filter.promptAnchorMessageId)
+  return (
+    (filter.ownerDshSessionId === undefined || activity.ownerDshSessionId === filter.ownerDshSessionId) &&
+    (filter.promptAnchorMessageId === undefined || activity.promptAnchorMessageId === filter.promptAnchorMessageId)
+  )
 }
 
 function activityFilterSql(sessionId: SessionId, filter: AcpActivityFilter): { where: string; params: string[] } {
@@ -1902,7 +2374,8 @@ function redactActivityDetail(value: string | undefined): string | undefined {
       if (typeof item === 'string') return redactSecretText(item)
       if (isPlainObject(item)) {
         const output: Record<string, unknown> = {}
-        for (const [key, entry] of Object.entries(item).slice(0, 128)) output[key] = isSensitiveActivityField(key, entry) ? '[redacted]' : redact(entry, depth + 1)
+        for (const [key, entry] of Object.entries(item).slice(0, 128))
+          output[key] = isSensitiveActivityField(key, entry) ? '[redacted]' : redact(entry, depth + 1)
         return output
       }
       return item
@@ -1916,21 +2389,45 @@ function redactActivityDetail(value: string | undefined): string | undefined {
 /** Ignore unavailable/corrupt presentation data without interpreting truncated audit text as complete files. */
 function readActivityDisplay(value: unknown): { display?: AcpActivityPresentation } {
   if (typeof value !== 'string') return {}
-  try { return { display: boundedActivityPresentation(activityPresentationSchema.parse(JSON.parse(value))) } }
-  catch { return { display: { unavailable: 'invalid' } } }
+  try {
+    return { display: boundedActivityPresentation(activityPresentationSchema.parse(JSON.parse(value))) }
+  } catch {
+    return { display: { unavailable: 'invalid' } }
+  }
 }
 
 function rowToActivity(row: ActivityRow): AcpActivityRecord | undefined {
-  if (typeof row.dsh_session_id !== 'string' || typeof row.activity_id !== 'string' || typeof row.owner_dsh_session_id !== 'string' || typeof row.prompt_anchor_message_id !== 'string' || typeof row.activity_seq !== 'number' || !Number.isSafeInteger(row.activity_seq) || row.activity_seq < 1 || typeof row.revision_seq !== 'number' || !Number.isSafeInteger(row.revision_seq) || row.revision_seq < 1 || typeof row.time !== 'number' || !Number.isSafeInteger(row.time) || row.time < 0 || !isActivityKind(row.kind) || !isActivityStatus(row.status) || typeof row.presentation !== 'string') return undefined
+  if (
+    typeof row.dsh_session_id !== 'string' ||
+    typeof row.activity_id !== 'string' ||
+    typeof row.owner_dsh_session_id !== 'string' ||
+    typeof row.prompt_anchor_message_id !== 'string' ||
+    typeof row.activity_seq !== 'number' ||
+    !Number.isSafeInteger(row.activity_seq) ||
+    row.activity_seq < 1 ||
+    typeof row.revision_seq !== 'number' ||
+    !Number.isSafeInteger(row.revision_seq) ||
+    row.revision_seq < 1 ||
+    typeof row.time !== 'number' ||
+    !Number.isSafeInteger(row.time) ||
+    row.time < 0 ||
+    !isActivityKind(row.kind) ||
+    !isActivityStatus(row.status) ||
+    typeof row.presentation !== 'string'
+  )
+    return undefined
   if (row.raw_detail !== null && row.raw_detail !== undefined && typeof row.raw_detail !== 'string') return undefined
-  if (row.raw_detail_ref !== null && row.raw_detail_ref !== undefined && typeof row.raw_detail_ref !== 'string') return undefined
+  if (row.raw_detail_ref !== null && row.raw_detail_ref !== undefined && typeof row.raw_detail_ref !== 'string')
+    return undefined
   return {
     ...readActivityDisplay(row.display_detail),
     dshSessionId: row.dsh_session_id,
     ownerDshSessionId: row.owner_dsh_session_id,
     promptAnchorMessageId: row.prompt_anchor_message_id,
     activityId: row.activity_id,
-    ...(typeof row.content_index === 'number' && Number.isSafeInteger(row.content_index) && row.content_index >= 0 ? { contentIndex: row.content_index } : {}),
+    ...(typeof row.content_index === 'number' && Number.isSafeInteger(row.content_index) && row.content_index >= 0
+      ? { contentIndex: row.content_index }
+      : {}),
     activitySeq: row.activity_seq,
     revisionSeq: row.revision_seq,
     time: row.time,
@@ -1976,9 +2473,21 @@ function rowToEnvelope(row: AuditRow): AcpSidecarEnvelopeV2 | undefined {
 function toBindingRecord(time: number, raw: unknown): AcpBindingRecord | undefined {
   if (!isPlainObject(raw)) return undefined
   const {
-    provider, agentSessionId, profileId, canonicalCwd,
-    launchFingerprint, agent, protocolVersion, capabilityHash, configHash,
-    generation, bindingEpoch, committedPromptOrdinal, historyBaseSeq, establishedAt, dshCommittedSeq,
+    provider,
+    agentSessionId,
+    profileId,
+    canonicalCwd,
+    launchFingerprint,
+    agent,
+    protocolVersion,
+    capabilityHash,
+    configHash,
+    generation,
+    bindingEpoch,
+    committedPromptOrdinal,
+    historyBaseSeq,
+    establishedAt,
+    dshCommittedSeq,
   } = raw
   if (typeof provider !== 'string' || provider.length === 0) return undefined
   if (typeof agentSessionId !== 'string' || agentSessionId.length === 0) return undefined
@@ -1986,15 +2495,18 @@ function toBindingRecord(time: number, raw: unknown): AcpBindingRecord | undefin
   if (typeof canonicalCwd !== 'string' || canonicalCwd.length === 0) return undefined
   if (!isPlainObject(launchFingerprint)) return undefined
   if (typeof launchFingerprint.command !== 'string' || launchFingerprint.command.length === 0) return undefined
-  if (!Array.isArray(launchFingerprint.args) || !launchFingerprint.args.every((arg) => typeof arg === 'string')) return undefined
-  if (!Array.isArray(launchFingerprint.envKeys) || !launchFingerprint.envKeys.every((key) => typeof key === 'string')) return undefined
+  if (!Array.isArray(launchFingerprint.args) || !launchFingerprint.args.every((arg) => typeof arg === 'string'))
+    return undefined
+  if (!Array.isArray(launchFingerprint.envKeys) || !launchFingerprint.envKeys.every((key) => typeof key === 'string'))
+    return undefined
   if (launchFingerprint.explicitEnv !== undefined) {
     if (!Array.isArray(launchFingerprint.explicitEnv)) return undefined
     for (const entry of launchFingerprint.explicitEnv as unknown[]) {
-      if (!isPlainObject(entry) || typeof entry.key !== 'string' || !/^[0-9a-f]{16}$/.test(String(entry.hash16))) return undefined
+      if (!isPlainObject(entry) || typeof entry.key !== 'string' || !/^[0-9a-f]{16}$/.test(String(entry.hash16)))
+        return undefined
     }
   }
- // 指纹分量：optional——缺席（旧版本 binding）不判 outdated（由指纹哈希
+  // 指纹分量：optional——缺席（旧版本 binding）不判 outdated（由指纹哈希
   // 预检以 'profile-changed' 阻断）；在场时只做形态校验。
   const fpNullableStrings = ['profileId', 'descriptorId', 'adapterVersion', 'wrappedCliVersion'] as const
   for (const key of fpNullableStrings) {
@@ -2009,18 +2521,24 @@ function toBindingRecord(time: number, raw: unknown): AcpBindingRecord | undefin
   }
   if (launchFingerprint.executableOverride !== undefined && launchFingerprint.executableOverride !== null) {
     const override = launchFingerprint.executableOverride as unknown
-    if (!isPlainObject(override) || typeof override.name !== 'string' || typeof override.present !== 'boolean') return undefined
+    if (!isPlainObject(override) || typeof override.name !== 'string' || typeof override.present !== 'boolean')
+      return undefined
   }
   if (launchFingerprint.nativeStateEnv !== undefined && launchFingerprint.nativeStateEnv !== null) {
     if (!Array.isArray(launchFingerprint.nativeStateEnv)) return undefined
     for (const entry of launchFingerprint.nativeStateEnv as unknown[]) {
       if (!isPlainObject(entry) || typeof entry.key !== 'string' || typeof entry.present !== 'boolean') return undefined
-      if (entry.hash16 !== undefined && (typeof entry.hash16 !== 'string' || !/^[0-9a-f]{16}$/.test(entry.hash16))) return undefined
+      if (entry.hash16 !== undefined && (typeof entry.hash16 !== 'string' || !/^[0-9a-f]{16}$/.test(entry.hash16)))
+        return undefined
       if (!entry.present && entry.hash16 !== undefined) return undefined
     }
   }
-  if (launchFingerprint.mcpFingerprint !== undefined && launchFingerprint.mcpFingerprint !== null
-    && (typeof launchFingerprint.mcpFingerprint !== 'string' || !/^[0-9a-f]{16}$/.test(launchFingerprint.mcpFingerprint))) return undefined
+  if (
+    launchFingerprint.mcpFingerprint !== undefined &&
+    launchFingerprint.mcpFingerprint !== null &&
+    (typeof launchFingerprint.mcpFingerprint !== 'string' || !/^[0-9a-f]{16}$/.test(launchFingerprint.mcpFingerprint))
+  )
+    return undefined
   if (!isPlainObject(agent)) return undefined
   if (agent.name !== undefined && typeof agent.name !== 'string') return undefined
   if (agent.version !== undefined && typeof agent.version !== 'string') return undefined
@@ -2029,7 +2547,12 @@ function toBindingRecord(time: number, raw: unknown): AcpBindingRecord | undefin
   if (typeof configHash !== 'string' || configHash.length === 0) return undefined
   if (typeof generation !== 'number' || !Number.isInteger(generation) || generation < 1) return undefined
   if (typeof bindingEpoch !== 'number' || !Number.isInteger(bindingEpoch) || bindingEpoch < 1) return undefined
-  if (typeof committedPromptOrdinal !== 'number' || !Number.isInteger(committedPromptOrdinal) || committedPromptOrdinal < 0) return undefined
+  if (
+    typeof committedPromptOrdinal !== 'number' ||
+    !Number.isInteger(committedPromptOrdinal) ||
+    committedPromptOrdinal < 0
+  )
+    return undefined
   if (typeof historyBaseSeq !== 'number' || !Number.isInteger(historyBaseSeq) || historyBaseSeq < 0) return undefined
   if (typeof establishedAt !== 'number' || !Number.isFinite(establishedAt)) return undefined
   if (typeof dshCommittedSeq !== 'number' || !Number.isInteger(dshCommittedSeq) || dshCommittedSeq < 0) return undefined
@@ -2079,12 +2602,16 @@ export function installAcpSidecar(ctx: Context): AcpSidecar | undefined {
   }
   const dshHomePath = holder.get('dshHomePath') as ((...segments: string[]) => string) | undefined
   if (dshHomePath === undefined) {
-    ctx.logger.warn('dsh-acp: dshHomePath slot is absent; sidecar storage unavailable — ACP sessions will refuse to start (fail-closed to preserve binding and audit integrity)')
+    ctx.logger.warn(
+      'dsh-acp: dshHomePath slot is absent; sidecar storage unavailable — ACP sessions will refuse to start (fail-closed to preserve binding and audit integrity)',
+    )
     return undefined
   }
   return createAcpSidecar({
     // 数据目录命名空间同 ACP_SETTINGS_NS：不随 npm 包名改（改名会丢下既有 sidecar）。
     root: dshHomePath('dsh-acp'),
-    warn: (message) => { ctx.logger.warn(message) },
+    warn: (message) => {
+      ctx.logger.warn(message)
+    },
   })
 }

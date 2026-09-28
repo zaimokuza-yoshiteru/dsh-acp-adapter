@@ -12,16 +12,29 @@ import { en, zh } from '../../../src/client/ui/locales.ts'
 
 const t = (key: string, params?: Record<string, unknown>): string => `${key}:${JSON.stringify(params ?? {})}`
 const snapshot = (overrides: Partial<AcpAgentSessionSnapshotView> = {}): AcpAgentSessionSnapshotView => ({
-  sessionId: 's', profileId: 'claude', freshness: 'live', editable: true, configOptions: null,
-  modes: [{ id: 'plan', name: 'Plan' }], currentModeId: 'plan', contextUsage: null, note: null, ...overrides,
+  sessionId: 's',
+  profileId: 'claude',
+  freshness: 'live',
+  editable: true,
+  configOptions: null,
+  modes: [{ id: 'plan', name: 'Plan' }],
+  currentModeId: 'plan',
+  contextUsage: null,
+  note: null,
+  ...overrides,
 })
 
 describe('ACP Agent control presentation', () => {
   it('presents session approval policy in both locales and keeps inherited Lead policy read-only', () => {
     const policy: ToolApprovalPolicySnapshot = { sessionId: 's', policy: 'auto', source: 'lead', editable: false }
     for (const dictionary of [zh, en]) {
-      const group = toolApprovalPolicyGroup(policy, key => dictionary[key])
-      expect(group).toMatchObject({ kind: 'policy', id: 'tool-approval-policy', current: dictionary.toolApprovalAuto, description: dictionary.toolApprovalInherited })
+      const group = toolApprovalPolicyGroup(policy, (key) => dictionary[key])
+      expect(group).toMatchObject({
+        kind: 'policy',
+        id: 'tool-approval-policy',
+        current: dictionary.toolApprovalAuto,
+        description: dictionary.toolApprovalInherited,
+      })
       expect(group.choices).toMatchObject([
         { current: true, disabled: true, write: { kind: 'tool-approval-policy', policy: 'auto' } },
         { current: false, disabled: true, write: { kind: 'tool-approval-policy', policy: 'ask' } },
@@ -31,18 +44,36 @@ describe('ACP Agent control presentation', () => {
 
   it('labels config-only modes and prefers canonical config updates over a legacy mode snapshot', () => {
     const value = {
-      sessionId: 's', profileId: 'kimi', freshness: 'live' as const, editable: false,
-      configOptions: [{ id: 'mode', name: 'Mode', type: 'select' as const, currentValue: 'plan', options: [{ value: 'plan', name: 'Plan' }] }],
-      modes: null, currentModeId: null, contextUsage: null, note: null,
+      sessionId: 's',
+      profileId: 'kimi',
+      freshness: 'live' as const,
+      editable: false,
+      configOptions: [
+        {
+          id: 'mode',
+          name: 'Mode',
+          type: 'select' as const,
+          currentValue: 'plan',
+          options: [{ value: 'plan', name: 'Plan' }],
+        },
+      ],
+      modes: null,
+      currentModeId: null,
+      contextUsage: null,
+      note: null,
     }
-    expect(agentControlLabel(value, key => key)).toBe('agentControlTitle · Plan')
-    expect(agentControlLabel({ ...value, modes: [{ id: 'code', name: 'Code' }], currentModeId: 'code' }, key => key)).toBe('agentControlTitle · Plan')
+    expect(agentControlLabel(value, (key) => key)).toBe('agentControlTitle · Plan')
+    expect(
+      agentControlLabel({ ...value, modes: [{ id: 'code', name: 'Code' }], currentModeId: 'code' }, (key) => key),
+    ).toBe('agentControlTitle · Plan')
   })
 
   it('shows Agent mode separately from DSH permissions and context/cumulative cost', () => {
-    const value = snapshot({ contextUsage: { used: 12, size: 100, percent: 12, cost: { amount: 0.42, currency: 'USD' } } })
+    const value = snapshot({
+      contextUsage: { used: 12, size: 100, percent: 12, cost: { amount: 0.42, currency: 'USD' } },
+    })
     expect(agentControlLabel(value, t)).toBe('agentControlTitle:{} · Plan')
-    expect(agentControlFooter(value, t).map(item => item.text)).toEqual([
+    expect(agentControlFooter(value, t).map((item) => item.text)).toEqual([
       'agentContextUsage:{"used":"0.012k","size":"0.1k","percent":12}',
       'agentSessionCost:{"amount":0.42,"currency":"USD"}',
     ])
@@ -51,12 +82,27 @@ describe('ACP Agent control presentation', () => {
   it('localizes adapter-owned boolean and fallback labels while preserving Agent names', () => {
     for (const dictionary of [zh, en]) {
       const translate = (key: keyof typeof zh) => dictionary[key]
-      const value = snapshot({ modes: [], currentModeId: null, configOptions: [
-        { type: 'boolean', id: 'flag', name: 'Agent supplied label', currentValue: true },
-      ] })
-      expect(agentControlLabel(value, translate)).toBe(`${dictionary.agentControlTitle} · ${dictionary.agentControlDefault}`)
-      expect(agentControlMenuGroups(value, translate)[0]).toMatchObject({ name: 'Agent supplied label', current: dictionary.agentControlOn })
-      expect(agentControlMenuGroups({ ...value, configOptions: [{ type: 'boolean', id: 'flag', name: 'Agent supplied label', currentValue: false }] }, translate)[0]).toMatchObject({ name: 'Agent supplied label', current: dictionary.agentControlOff })
+      const value = snapshot({
+        modes: [],
+        currentModeId: null,
+        configOptions: [{ type: 'boolean', id: 'flag', name: 'Agent supplied label', currentValue: true }],
+      })
+      expect(agentControlLabel(value, translate)).toBe(
+        `${dictionary.agentControlTitle} · ${dictionary.agentControlDefault}`,
+      )
+      expect(agentControlMenuGroups(value, translate)[0]).toMatchObject({
+        name: 'Agent supplied label',
+        current: dictionary.agentControlOn,
+      })
+      expect(
+        agentControlMenuGroups(
+          {
+            ...value,
+            configOptions: [{ type: 'boolean', id: 'flag', name: 'Agent supplied label', currentValue: false }],
+          },
+          translate,
+        )[0],
+      ).toMatchObject({ name: 'Agent supplied label', current: dictionary.agentControlOff })
     }
   })
 
@@ -74,19 +120,31 @@ describe('ACP Agent control presentation', () => {
 
   it('marks stale last-reported state and omits cost when Agent did not report it', () => {
     const value = snapshot({ freshness: 'stale', contextUsage: { used: 1, size: 2, percent: 50, cost: null } })
-    expect(agentControlFooter(value, t).map(item => item.id)).toEqual(['context-usage', 'stale'])
+    expect(agentControlFooter(value, t).map((item) => item.id)).toEqual(['context-usage', 'stale'])
   })
 
   it('prefers configOptions.mode over the duplicate legacy modes roster', () => {
     const value = snapshot({
-      modes: [{ id: 'accept-edits', name: 'Code' }, { id: 'ask', name: 'Ask' }],
+      modes: [
+        { id: 'accept-edits', name: 'Code' },
+        { id: 'ask', name: 'Ask' },
+      ],
       currentModeId: 'accept-edits',
-      configOptions: [{
-        type: 'select', id: 'mode', name: 'Session Mode', category: 'mode', currentValue: 'accept-edits',
-        options: [{ value: 'accept-edits', name: 'Code' }, { value: 'ask', name: 'Ask' }],
-      }],
+      configOptions: [
+        {
+          type: 'select',
+          id: 'mode',
+          name: 'Session Mode',
+          category: 'mode',
+          currentValue: 'accept-edits',
+          options: [
+            { value: 'accept-edits', name: 'Code' },
+            { value: 'ask', name: 'Ask' },
+          ],
+        },
+      ],
     })
-    expect(agentControlMenuGroups(value, t).flatMap(group => group.choices.map(item => item.id))).toEqual([
+    expect(agentControlMenuGroups(value, t).flatMap((group) => group.choices.map((item) => item.id))).toEqual([
       'config:mode:accept-edits',
       'config:mode:ask',
     ])
@@ -94,24 +152,49 @@ describe('ACP Agent control presentation', () => {
 
   it('keeps legacy modes as the fallback when no mode config option exists', () => {
     const value = snapshot({
-      modes: [{ id: 'plan', name: 'Plan' }, { id: 'ask', name: 'Ask' }],
+      modes: [
+        { id: 'plan', name: 'Plan' },
+        { id: 'ask', name: 'Ask' },
+      ],
       configOptions: [],
     })
-    expect(agentControlMenuGroups(value, t).flatMap(group => group.choices.map(item => item.id))).toEqual(['mode:plan', 'mode:ask'])
+    expect(agentControlMenuGroups(value, t).flatMap((group) => group.choices.map((item) => item.id))).toEqual([
+      'mode:plan',
+      'mode:ask',
+    ])
   })
 
-
-
   it('keeps independent settings grouped, selected and read-only when stale', () => {
-    const groups = agentControlMenuGroups(snapshot({ freshness: 'stale', configOptions: [
-      { id: 'model', name: 'Model', type: 'select', currentValue: 'm', options: [{ value: 'm', name: 'Model' }] },
-      { id: 'collaboration', name: 'Collaboration mode', type: 'select', currentValue: 'plan', options: [
-        { group: 'work', name: 'Work modes', options: [{ value: 'plan', name: 'Plan', description: 'Plan before acting' }] },
-      ] },
-      { id: 'fast', name: 'Fast mode', type: 'boolean', currentValue: false },
-    ] }), key => en[key])
-    expect(groups.map(group => group.name)).toEqual(['Mode', 'Collaboration mode', 'Fast mode'])
-    expect(groups[1]?.choices[0]).toMatchObject({ current: true, disabled: true, group: 'Work modes', description: 'Plan before acting' })
+    const groups = agentControlMenuGroups(
+      snapshot({
+        freshness: 'stale',
+        configOptions: [
+          { id: 'model', name: 'Model', type: 'select', currentValue: 'm', options: [{ value: 'm', name: 'Model' }] },
+          {
+            id: 'collaboration',
+            name: 'Collaboration mode',
+            type: 'select',
+            currentValue: 'plan',
+            options: [
+              {
+                group: 'work',
+                name: 'Work modes',
+                options: [{ value: 'plan', name: 'Plan', description: 'Plan before acting' }],
+              },
+            ],
+          },
+          { id: 'fast', name: 'Fast mode', type: 'boolean', currentValue: false },
+        ],
+      }),
+      (key) => en[key],
+    )
+    expect(groups.map((group) => group.name)).toEqual(['Mode', 'Collaboration mode', 'Fast mode'])
+    expect(groups[1]?.choices[0]).toMatchObject({
+      current: true,
+      disabled: true,
+      group: 'Work modes',
+      description: 'Plan before acting',
+    })
     expect(groups[2]?.choices).toMatchObject([
       { label: 'Off', current: true, write: { kind: 'config', id: 'fast', value: false } },
       { label: 'On', current: false, write: { kind: 'config', id: 'fast', value: true } },

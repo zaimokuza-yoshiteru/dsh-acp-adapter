@@ -6,48 +6,124 @@ import type { AcpAuditTimelineEntry } from '../../../src/contract/remote.ts'
 describe('ACP audit timeline Remote', () => {
   it('finds errors beyond routine pages and resumes bounded scans without losing rows', async () => {
     const rows: AcpAuditTimelineEntry[] = Array.from({ length: 1204 }, (_, index) => ({
-      seq: index + 1, time: 1, kind: 'replay-assessment', severity: 'info', category: 'recovery',
-      summaryCode: 'replay.not-compared', subject: null, status: null, detail: null,
+      seq: index + 1,
+      time: 1,
+      kind: 'replay-assessment',
+      severity: 'info',
+      category: 'recovery',
+      summaryCode: 'replay.not-compared',
+      subject: null,
+      status: null,
+      detail: null,
     }))
-    rows[1201] = { ...rows[1201]!, kind: 'filesystem', severity: 'error', category: 'files', summaryCode: 'filesystem.read' }
-    rows[1203] = { ...rows[1203]!, kind: 'terminal', severity: 'error', category: 'files', summaryCode: 'terminal.operation' }
+    rows[1201] = {
+      ...rows[1201]!,
+      kind: 'filesystem',
+      severity: 'error',
+      category: 'files',
+      summaryCode: 'filesystem.read',
+    }
+    rows[1203] = {
+      ...rows[1203]!,
+      kind: 'terminal',
+      severity: 'error',
+      category: 'files',
+      summaryCode: 'terminal.operation',
+    }
     const service = new AcpRemoteService(new Context(), {
-      registry: { agents: () => new Map(), probeCacheFor: () => undefined }, resolveLiveAgent: () => undefined,
+      registry: { agents: () => new Map(), probeCacheFor: () => undefined },
+      resolveLiveAgent: () => undefined,
       ownedSessionReadGate: () => true,
       auditTimeline: {
-        list: async (_id, after, limit) => rows.filter(row => row.seq > after).slice(0, limit),
-        hasMore: async (_id, after) => rows.some(row => row.seq > after),
+        list: async (_id, after, limit) => rows.filter((row) => row.seq > after).slice(0, limit),
+        hasMore: async (_id, after) => rows.some((row) => row.seq > after),
       },
     })
-    expect(await service.auditTimeline('session', { view: 'issues', limit: 1 })).toMatchObject({ entries: [], nextCursor: 1000, hasMore: true })
-    expect(await service.auditTimeline('session', { view: 'issues', afterSeq: 1000, limit: 1 })).toMatchObject({ entries: [{ seq: 1202 }], nextCursor: 1202, hasMore: true })
-    expect(await service.auditTimeline('session', { view: 'issues', afterSeq: 1202, limit: 1 })).toMatchObject({ entries: [{ seq: 1204 }], nextCursor: null, hasMore: false })
-    expect((await service.auditTimeline('session', { view: 'technical', limit: 2 })).entries.map(row => row.seq)).toEqual([1, 2])
-    expect((await service.auditTimeline('session', { view: 'operations', afterSeq: 1000 })).entries.map(row => row.seq)).toEqual([1202, 1204])
+    expect(await service.auditTimeline('session', { view: 'issues', limit: 1 })).toMatchObject({
+      entries: [],
+      nextCursor: 1000,
+      hasMore: true,
+    })
+    expect(await service.auditTimeline('session', { view: 'issues', afterSeq: 1000, limit: 1 })).toMatchObject({
+      entries: [{ seq: 1202 }],
+      nextCursor: 1202,
+      hasMore: true,
+    })
+    expect(await service.auditTimeline('session', { view: 'issues', afterSeq: 1202, limit: 1 })).toMatchObject({
+      entries: [{ seq: 1204 }],
+      nextCursor: null,
+      hasMore: false,
+    })
+    expect(
+      (await service.auditTimeline('session', { view: 'technical', limit: 2 })).entries.map((row) => row.seq),
+    ).toEqual([1, 2])
+    expect(
+      (await service.auditTimeline('session', { view: 'operations', afterSeq: 1000 })).entries.map((row) => row.seq),
+    ).toEqual([1202, 1204])
   })
   it('provides authorized snapshot/page/follow activity views with revision cursors', async () => {
     const rows = [
-      { dshSessionId: 'session-1', ownerDshSessionId: 'session-1', promptAnchorMessageId: 'user-1', activityId: 'tool-1', activitySeq: 1, revisionSeq: 1, time: 1, kind: 'tool' as const, status: 'running' as const, presentation: 'Read' },
-      { dshSessionId: 'session-1', ownerDshSessionId: 'session-1', promptAnchorMessageId: 'user-1', activityId: 'tool-1', activitySeq: 1, revisionSeq: 2, time: 2, kind: 'tool' as const, status: 'completed' as const, presentation: 'Read complete' },
+      {
+        dshSessionId: 'session-1',
+        ownerDshSessionId: 'session-1',
+        promptAnchorMessageId: 'user-1',
+        activityId: 'tool-1',
+        activitySeq: 1,
+        revisionSeq: 1,
+        time: 1,
+        kind: 'tool' as const,
+        status: 'running' as const,
+        presentation: 'Read',
+      },
+      {
+        dshSessionId: 'session-1',
+        ownerDshSessionId: 'session-1',
+        promptAnchorMessageId: 'user-1',
+        activityId: 'tool-1',
+        activitySeq: 1,
+        revisionSeq: 2,
+        time: 2,
+        kind: 'tool' as const,
+        status: 'completed' as const,
+        presentation: 'Read complete',
+      },
     ]
     const source = {
       snapshot: async () => [rows[1]!],
-      page: async (_id: string, after: number, limit: number) => rows.filter((row) => row.revisionSeq > after).slice(0, limit),
+      page: async (_id: string, after: number, limit: number) =>
+        rows.filter((row) => row.revisionSeq > after).slice(0, limit),
       head: async () => 2,
-      subscribe: (_id: string, _filter: unknown, _subscriber: (row: typeof rows[number]) => void) => () => undefined,
+      subscribe: (_id: string, _filter: unknown, _subscriber: (row: (typeof rows)[number]) => void) => () => undefined,
     }
     const service = new AcpRemoteService(new Context(), {
-      registry: { agents: () => new Map(), probeCacheFor: () => ({ probeSnapshot: () => undefined, invalidateProbe: () => undefined, listModels: async () => undefined }) },
+      registry: {
+        agents: () => new Map(),
+        probeCacheFor: () => ({
+          probeSnapshot: () => undefined,
+          invalidateProbe: () => undefined,
+          listModels: async () => undefined,
+        }),
+      },
       resolveLiveAgent: () => undefined,
       activityTimeline: source,
       activityAccess: (sessionId) => sessionId === 'session-1',
     })
-    await expect(service.activitySnapshot('session-1', { filter: { ownerDshSessionId: 'session-1' } })).resolves.toMatchObject({ head: 2, activities: [rows[1]] })
-    await expect(service.activityPage('session-1', { afterRevision: 0, limit: 1 })).resolves.toMatchObject({ head: 2, nextCursor: 1, hasMore: true, activities: [rows[0]] })
+    await expect(
+      service.activitySnapshot('session-1', { filter: { ownerDshSessionId: 'session-1' } }),
+    ).resolves.toMatchObject({ head: 2, activities: [rows[1]] })
+    await expect(service.activityPage('session-1', { afterRevision: 0, limit: 1 })).resolves.toMatchObject({
+      head: 2,
+      nextCursor: 1,
+      hasMore: true,
+      activities: [rows[0]],
+    })
     const abort = new AbortController()
     const follow = service.activityFollow('session-1', undefined, abort.signal)
     const iterator = follow[Symbol.asyncIterator]()
-    await expect(iterator.next()).resolves.toMatchObject({ value: { type: 'opened', cursor: 2, activities: [rows[1]], head: 2 }, done: false })
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: { type: 'opened', cursor: 2, activities: [rows[1]], head: 2 },
+      done: false,
+    })
     abort.abort()
     await expect(iterator.next()).resolves.toMatchObject({ done: true })
     await expect(service.activitySnapshot('other-session')).rejects.toMatchObject({
@@ -59,7 +135,7 @@ describe('ACP audit timeline Remote', () => {
 
   it('subscribes before opening and emits only durable revisions after the opening head', async () => {
     const opening: typeof rowsForStream = []
-    let listener: ((row: typeof rowsForStream[number]) => void) | undefined
+    let listener: ((row: (typeof rowsForStream)[number]) => void) | undefined
     let disposed = false
     const source = {
       snapshot: async () => {
@@ -70,13 +146,22 @@ describe('ACP audit timeline Remote', () => {
       },
       page: async () => [],
       head: async () => 1,
-      subscribe: (_id: string, _filter: unknown, subscriber: (row: typeof rowsForStream[number]) => void) => {
+      subscribe: (_id: string, _filter: unknown, subscriber: (row: (typeof rowsForStream)[number]) => void) => {
         listener = subscriber
-        return () => { disposed = true }
+        return () => {
+          disposed = true
+        }
       },
     }
     const service = new AcpRemoteService(new Context(), {
-      registry: { agents: () => new Map(), probeCacheFor: () => ({ probeSnapshot: () => undefined, invalidateProbe: () => undefined, listModels: async () => undefined }) },
+      registry: {
+        agents: () => new Map(),
+        probeCacheFor: () => ({
+          probeSnapshot: () => undefined,
+          invalidateProbe: () => undefined,
+          listModels: async () => undefined,
+        }),
+      },
       resolveLiveAgent: () => undefined,
       activityTimeline: source,
       activityAccess: () => true,
@@ -94,23 +179,37 @@ describe('ACP audit timeline Remote', () => {
 
   it('folds every current activity across bounded opening pages without losing row 201+', async () => {
     const rows = Array.from({ length: 205 }, (_, index) => ({
-      dshSessionId: 'session-1', ownerDshSessionId: 'session-1', promptAnchorMessageId: 'user-1',
-      activityId: `tool-${String(index + 1)}`, activitySeq: index + 1, revisionSeq: index + 1,
-      time: index + 1, kind: 'tool' as const, status: 'completed' as const,
+      dshSessionId: 'session-1',
+      ownerDshSessionId: 'session-1',
+      promptAnchorMessageId: 'user-1',
+      activityId: `tool-${String(index + 1)}`,
+      activitySeq: index + 1,
+      revisionSeq: index + 1,
+      time: index + 1,
+      kind: 'tool' as const,
+      status: 'completed' as const,
       presentation: `Tool ${String(index + 1)}`,
     }))
-    let listener: ((row: typeof rows[number]) => void) | undefined
+    let listener: ((row: (typeof rows)[number]) => void) | undefined
     const source = {
       snapshot: async () => rows.slice(0, 200),
-      page: async (_id: string, after: number, limit: number) => rows.filter(row => row.revisionSeq > after).slice(0, limit),
+      page: async (_id: string, after: number, limit: number) =>
+        rows.filter((row) => row.revisionSeq > after).slice(0, limit),
       head: async () => 205,
-      subscribe: (_id: string, _filter: unknown, subscriber: (row: typeof rows[number]) => void) => {
+      subscribe: (_id: string, _filter: unknown, subscriber: (row: (typeof rows)[number]) => void) => {
         listener = subscriber
         return () => undefined
       },
     }
     const service = new AcpRemoteService(new Context(), {
-      registry: { agents: () => new Map(), probeCacheFor: () => ({ probeSnapshot: () => undefined, invalidateProbe: () => undefined, listModels: async () => undefined }) },
+      registry: {
+        agents: () => new Map(),
+        probeCacheFor: () => ({
+          probeSnapshot: () => undefined,
+          invalidateProbe: () => undefined,
+          listModels: async () => undefined,
+        }),
+      },
       resolveLiveAgent: () => undefined,
       activityTimeline: source,
       activityAccess: () => true,
@@ -129,9 +228,39 @@ describe('ACP audit timeline Remote', () => {
 
   it('returns a bounded cursor page without exposing raw persistence payloads', async () => {
     const rows = [
-      { seq: 1, time: 100, kind: 'binding', severity: 'info' as const, category: 'agent' as const, summaryCode: 'binding.established' as const, subject: 'codex', status: null, detail: null },
-      { seq: 2, time: 200, kind: 'permission', severity: 'info' as const, category: 'permission' as const, summaryCode: 'permission.decided' as const, subject: 'call-1', status: 'selected', detail: '{"optionId":"allow_once"}' },
-      { seq: 3, time: 300, kind: 'filesystem', severity: 'info' as const, category: 'files' as const, summaryCode: 'filesystem.operation' as const, subject: '/tmp/file', status: 'ok', detail: '{"path":"/tmp/file"}' },
+      {
+        seq: 1,
+        time: 100,
+        kind: 'binding',
+        severity: 'info' as const,
+        category: 'agent' as const,
+        summaryCode: 'binding.established' as const,
+        subject: 'codex',
+        status: null,
+        detail: null,
+      },
+      {
+        seq: 2,
+        time: 200,
+        kind: 'permission',
+        severity: 'info' as const,
+        category: 'permission' as const,
+        summaryCode: 'permission.decided' as const,
+        subject: 'call-1',
+        status: 'selected',
+        detail: '{"optionId":"allow_once"}',
+      },
+      {
+        seq: 3,
+        time: 300,
+        kind: 'filesystem',
+        severity: 'info' as const,
+        category: 'files' as const,
+        summaryCode: 'filesystem.operation' as const,
+        subject: '/tmp/file',
+        status: 'ok',
+        detail: '{"path":"/tmp/file"}',
+      },
     ]
     const service = new AcpRemoteService(new Context(), {
       registry: {
@@ -167,7 +296,11 @@ describe('ACP audit timeline Remote', () => {
     const service = new AcpRemoteService(new Context(), {
       registry: {
         agents: () => new Map(),
-                probeCacheFor: () => ({ probeSnapshot: () => undefined, invalidateProbe: () => undefined, listModels: async () => undefined }),
+        probeCacheFor: () => ({
+          probeSnapshot: () => undefined,
+          invalidateProbe: () => undefined,
+          listModels: async () => undefined,
+        }),
       },
       resolveLiveAgent: () => undefined,
       ownedSessionReadGate: () => true,
@@ -193,8 +326,14 @@ describe('ACP audit timeline Remote', () => {
       resolveLiveAgent: () => undefined,
       ownedSessionReadGate: () => false,
       auditTimeline: {
-        list: async () => { lists += 1; return [] },
-        hasMore: async () => { more += 1; return false },
+        list: async () => {
+          lists += 1
+          return []
+        },
+        hasMore: async () => {
+          more += 1
+          return false
+        },
       },
     })
     for (const id of ['native-session', 'unknown-session', 'x'.repeat(257)]) {
@@ -208,7 +347,11 @@ describe('ACP audit timeline Remote', () => {
     const service = new AcpRemoteService(new Context(), {
       registry: {
         agents: () => new Map(),
-        probeCacheFor: () => ({ probeSnapshot: () => undefined, invalidateProbe: () => undefined, listModels: async () => undefined }),
+        probeCacheFor: () => ({
+          probeSnapshot: () => undefined,
+          invalidateProbe: () => undefined,
+          listModels: async () => undefined,
+        }),
       },
       resolveLiveAgent: () => undefined,
     })
@@ -220,8 +363,17 @@ describe('ACP audit timeline Remote', () => {
   })
 })
 
-const rowsForStream = [{
-  dshSessionId: 'session-1', ownerDshSessionId: 'session-1', promptAnchorMessageId: 'user-1',
-  activityId: 'tool-1', activitySeq: 1, revisionSeq: 1, time: 1,
-  kind: 'tool' as const, status: 'completed' as const, presentation: 'Read',
-}]
+const rowsForStream = [
+  {
+    dshSessionId: 'session-1',
+    ownerDshSessionId: 'session-1',
+    promptAnchorMessageId: 'user-1',
+    activityId: 'tool-1',
+    activitySeq: 1,
+    revisionSeq: 1,
+    time: 1,
+    kind: 'tool' as const,
+    status: 'completed' as const,
+    presentation: 'Read',
+  },
+]

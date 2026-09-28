@@ -4,6 +4,28 @@
 
 User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for publication dates, exact installation instructions, and checksums. Historical entries were reconstructed from tag diffs; npm packages were not republished.
 
+## 0.2.0-rc.1.0
+
+2026-09-28
+
+### 中文
+
+- 适配 DSH `0.2.0-rc.1` 的插件兼容检查，宿主和插件需一同升级。
+- 可搜索模型选择器的输入框样式对齐 DSH 原生 Input，菜单定位复用原生锚点边界计算。
+- Devin DSH 工具识别兼容完整 `Calling/Called <tool> from dsh` 标题与完全一致的裸工具名，并保留有效的结构化 MCP 身份识别；仅有裸工具名或身份信息冲突时不自动批准。
+- 新增可选定时任务 bundle 的 ACP 宿主集成覆盖，检查工具发现与提醒生命周期。
+- MCP 工具目录遵循宿主当前模型请求的工具展示策略，修复 PTC 模式列出无法直调工具的问题。
+- 补齐已有历史但没有模型请求记录时的跨后端切换确认；活动日志首次连接采用有限退避重试；修复删除确认中旧请求覆盖绑定会话计数的问题。
+
+### English
+
+- Targets the DSH `0.2.0-rc.1` plugin compatibility check; upgrade the host and plugin together.
+- Aligns the searchable model picker input with the native DSH Input and reuses native anchored boundary positioning.
+- Recognizes Devin DSH tools when the complete `Calling/Called <tool> from dsh` title agrees exactly with the bare tool name, while retaining valid structured MCP identity checks; a bare tool name alone or conflicting identity evidence never auto-approves a call.
+- Adds ACP host integration coverage for the optional Schedule bundle's tool discovery and reminder lifecycle.
+- Makes the MCP tool directory follow the host’s current model-facing tool presentation, fixing tools advertised for direct calls that PTC mode rejects.
+- Confirms backend changes for historical sessions without a recorded model request, bounds initial activity-journal retries with backoff, and prevents stale requests from overwriting the bound-session count in delete confirmations.
+
 ## 0.1.7-rc.2.4
 
 2026-09-28

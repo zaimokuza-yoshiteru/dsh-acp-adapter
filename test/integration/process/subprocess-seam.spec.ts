@@ -13,82 +13,79 @@ import type { AcpSubprocessHandle } from '../../../src/runtime/process/subproces
 //   - 依赖面守卫：两包仅在 devDependencies（精确且同版），src/** 零值级 import
 //     （宿主模块实例一致性 纪律：值级 import dsh 包会让产物解析到第二实例）
 
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { beforeAll, describe, expect, expectTypeOf, it, vi } from 'vitest';
-import {
-  ACP_SUBPROCESS_UNAVAILABLE_MESSAGE,
-  narrowSubprocessSeam,
-} from '../../../src/runtime/process/subprocess.ts';
-import type { SubprocessSeam } from '../../../src/runtime/process/subprocess.ts';
-import { waitWithin } from '../../../src/runtime/process/timeout.ts';
-import { AcpAgentProcess } from '../../../src/runtime/process/agent-process.ts';
-import { AcpClientConnection } from '../../../src/protocol/v1/connection.ts';
-import { AcpClientError } from '../../../src/protocol/v1/errors.ts';
-import type { AcpConnectionSpec } from '../../../src/runtime/process/types.ts';
-import { sharedTestSubprocess } from '../../fixtures/subprocess-seam-testing.ts';
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { beforeAll, describe, expect, expectTypeOf, it, vi } from 'vitest'
+import { ACP_SUBPROCESS_UNAVAILABLE_MESSAGE, narrowSubprocessSeam } from '../../../src/runtime/process/subprocess.ts'
+import type { SubprocessSeam } from '../../../src/runtime/process/subprocess.ts'
+import { waitWithin } from '../../../src/runtime/process/timeout.ts'
+import { AcpAgentProcess } from '../../../src/runtime/process/agent-process.ts'
+import { AcpClientConnection } from '../../../src/protocol/v1/connection.ts'
+import { AcpClientError } from '../../../src/protocol/v1/errors.ts'
+import type { AcpConnectionSpec } from '../../../src/runtime/process/types.ts'
+import { sharedTestSubprocess } from '../../fixtures/subprocess-seam-testing.ts'
 
-const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
-const PKG_ROOT = path.resolve(TEST_DIR, '..', '..', '..');
+const TEST_DIR = path.dirname(fileURLToPath(import.meta.url))
+const PKG_ROOT = path.resolve(TEST_DIR, '..', '..', '..')
 
-let subprocess: SubprocessSeam;
+let subprocess: SubprocessSeam
 
 beforeAll(async () => {
-  subprocess = (await sharedTestSubprocess()).seam;
-});
+  subprocess = (await sharedTestSubprocess()).seam
+})
 
 /** 临时污染 process.env（key 带 spec 前缀防撞真环境），fn 结束后逐键还原。 */
 async function withPollutedEnv(entries: Record<string, string>, fn: () => Promise<void> | void): Promise<void> {
-  const saved = new Map<string, string | undefined>();
-  for (const key of Object.keys(entries)) saved.set(key, process.env[key]);
+  const saved = new Map<string, string | undefined>()
+  for (const key of Object.keys(entries)) saved.set(key, process.env[key])
   try {
-    for (const [key, value] of Object.entries(entries)) process.env[key] = value;
-    await fn();
+    for (const [key, value] of Object.entries(entries)) process.env[key] = value
+    await fn()
   } finally {
     for (const [key, value] of saved) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
     }
   }
 }
 
 describe('narrowSubprocessSeam 结构化窄化', () => {
   it('缺 spawn/resolveExecutable 方法面的候选一律 undefined（调用方 fail closed）', () => {
-    expect(narrowSubprocessSeam(undefined)).toBeUndefined();
-    expect(narrowSubprocessSeam(null)).toBeUndefined();
-    expect(narrowSubprocessSeam('subprocess')).toBeUndefined();
-    expect(narrowSubprocessSeam({})).toBeUndefined();
-    expect(narrowSubprocessSeam({ spawn: () => ({}) })).toBeUndefined();
-    expect(narrowSubprocessSeam({ resolveExecutable: () => ({}) })).toBeUndefined();
-  });
+    expect(narrowSubprocessSeam(undefined)).toBeUndefined()
+    expect(narrowSubprocessSeam(null)).toBeUndefined()
+    expect(narrowSubprocessSeam('subprocess')).toBeUndefined()
+    expect(narrowSubprocessSeam({})).toBeUndefined()
+    expect(narrowSubprocessSeam({ spawn: () => ({}) })).toBeUndefined()
+    expect(narrowSubprocessSeam({ resolveExecutable: () => ({}) })).toBeUndefined()
+  })
 
   it('适配产物在 spawn 调用点固定填入 pipe/pipe/pipe stdio（本包唯一 stdio 形态）', () => {
-    let seen: unknown;
+    let seen: unknown
     const candidate = {
       spawn: (spec: unknown): never => {
-        seen = spec;
-        throw new Error('capture-only');
+        seen = spec
+        throw new Error('capture-only')
       },
       resolveExecutable: (): Promise<string> => Promise.reject(new Error('unused')),
-    };
-    const seam = narrowSubprocessSeam(candidate);
-    expect(seam).toBeDefined();
-    expect(() => seam?.spawn({ argv: ['cmd', '--flag'], cwd: '/tmp', graceMs: 100 })).toThrow('capture-only');
+    }
+    const seam = narrowSubprocessSeam(candidate)
+    expect(seam).toBeDefined()
+    expect(() => seam?.spawn({ argv: ['cmd', '--flag'], cwd: '/tmp', graceMs: 100 })).toThrow('capture-only')
     expect(seen).toEqual({
       argv: ['cmd', '--flag'],
       cwd: '/tmp',
       graceMs: 100,
       stdio: { stdin: 'pipe', stdout: 'pipe', stderr: 'pipe' },
-    });
-  });
+    })
+  })
 
   it('真实服务（LocalSubprocessRuntime 实例）通过窄化', () => {
     // sharedTestSubprocess 挂载时已窄化一次；此处对原始实例再窄化证明形态吻合
-    expect(narrowSubprocessSeam(subprocess)).toBeDefined();
-  });
-});
+    expect(narrowSubprocessSeam(subprocess)).toBeDefined()
+  })
+})
 
 describe('真 spawn scrubbed-parent 实证（AcpAgentProcess 生产路径）', () => {
   it('保留 scrub 后的普通父环境、删除父凭证，并允许 profile 显式 credential', async () => {
@@ -100,144 +97,173 @@ describe('真 spawn scrubbed-parent 实证（AcpAgentProcess 生产路径）', (
         DSH_ACP_SEAM_MARKER: 'dsh-should-not-leak', // provider scrub 删除
       },
       async () => {
-        const outPath = path.join(os.tmpdir(), `dsh-acp-seam-env-${String(process.pid)}.json`);
+        const outPath = path.join(os.tmpdir(), `dsh-acp-seam-env-${String(process.pid)}.json`)
         try {
-          const desired = { EXPOSED_API_KEY: 'explicit-credential-passthrough', PLAIN_VAR: 'plain-ok' };
+          const desired = { EXPOSED_API_KEY: 'explicit-credential-passthrough', PLAIN_VAR: 'plain-ok' }
           const proc = new AcpAgentProcess(
             {
-              argv: [process.execPath, '-e', 'require("node:fs").writeFileSync(process.argv[1], JSON.stringify(process.env))', outPath],
+              argv: [
+                process.execPath,
+                '-e',
+                'require("node:fs").writeFileSync(process.argv[1], JSON.stringify(process.env))',
+                outPath,
+              ],
               cwd: os.tmpdir(),
               env: desired,
               subprocess,
             },
             { eofGraceMs: 200, termGraceMs: 300 },
-          );
+          )
           // This test checks environment inheritance, not the startup/termination race.
           // Let the one-shot child finish its write before entering the short cleanup ladder.
           try {
-            await vi.waitFor(() => expect(proc.exited).toEqual({ code: 0, signal: null }), { timeout: 5000 });
+            await vi.waitFor(() => expect(proc.exited).toEqual({ code: 0, signal: null }), { timeout: 5000 })
           } finally {
-            await proc.close();
+            await proc.close()
           }
-          const env = JSON.parse(fs.readFileSync(outPath, 'utf8')) as Record<string, string>;
+          const env = JSON.parse(fs.readFileSync(outPath, 'utf8')) as Record<string, string>
           // 显式条目（含 credential 形名）穿透
-          expect(env['EXPOSED_API_KEY']).toBe('explicit-credential-passthrough');
-          expect(env['PLAIN_VAR']).toBe('plain-ok');
+          expect(env['EXPOSED_API_KEY']).toBe('explicit-credential-passthrough')
+          expect(env['PLAIN_VAR']).toBe('plain-ok')
           // DSH scrub 后的普通父环境继续存在，保证原生 CLI 行为。
-          expect(env['HTTP_PROXY']).toBe('http://127.0.0.1:9');
-          expect(env['SSH_AUTH_SOCK']).toBe('/tmp/dsh-acp-seam-fake.sock');
-          expect(env['DSH_ACP_SEAM_API_KEY']).toBeUndefined();
-          expect(env['DSH_ACP_SEAM_MARKER']).toBeUndefined();
-          expect(env['PATH']).toBe(process.env.PATH);
+          expect(env['HTTP_PROXY']).toBe('http://127.0.0.1:9')
+          expect(env['SSH_AUTH_SOCK']).toBe('/tmp/dsh-acp-seam-fake.sock')
+          expect(env['DSH_ACP_SEAM_API_KEY']).toBeUndefined()
+          expect(env['DSH_ACP_SEAM_MARKER']).toBeUndefined()
+          expect(env['PATH']).toBe(process.env.PATH)
           // 关键继承项与显式覆盖同时存在；其他普通父环境由 DSH 决定。
           if (process.platform === 'darwin') {
-            expect(Object.keys(env).sort()).toEqual(expect.arrayContaining(['EXPOSED_API_KEY', 'PLAIN_VAR', 'HTTP_PROXY', 'SSH_AUTH_SOCK', 'PATH']));
+            expect(Object.keys(env).sort()).toEqual(
+              expect.arrayContaining(['EXPOSED_API_KEY', 'PLAIN_VAR', 'HTTP_PROXY', 'SSH_AUTH_SOCK', 'PATH']),
+            )
           } else if (process.platform !== 'win32') {
-            expect(Object.keys(env).sort()).toEqual(expect.arrayContaining(['EXPOSED_API_KEY', 'PLAIN_VAR', 'HTTP_PROXY', 'SSH_AUTH_SOCK', 'PATH']));
+            expect(Object.keys(env).sort()).toEqual(
+              expect.arrayContaining(['EXPOSED_API_KEY', 'PLAIN_VAR', 'HTTP_PROXY', 'SSH_AUTH_SOCK', 'PATH']),
+            )
           }
         } finally {
-          fs.rmSync(outPath, { force: true });
+          fs.rmSync(outPath, { force: true })
         }
       },
-    );
-  });
-});
+    )
+  })
+})
 
 describe('ACP process exit deadline', () => {
   it('keeps the consumed handle compatible with the upstream public contract', () => {
     expectTypeOf<SubprocessHandle>().toExtend<AcpSubprocessHandle>()
   })
-  it.each([0, 20])('closes an EOF-ignoring child with %s ms grace', async eofGraceMs => {
+  it.each([0, 20])('closes an EOF-ignoring child with %s ms grace', async (eofGraceMs) => {
     let handle: AcpSubprocessHandle | undefined
-    const tracked = { ...subprocess, spawn(spec: Parameters<SubprocessSeam['spawn']>[0]) { handle = subprocess.spawn(spec); return handle } }
-    const proc = new AcpAgentProcess({
-      argv: [process.execPath, '-e', 'setInterval(() => {}, 1000); process.stdout.write("ready")'],
-      cwd: os.tmpdir(), env: {}, subprocess: tracked,
-    }, { eofGraceMs, termGraceMs: 100 });
+    const tracked = {
+      ...subprocess,
+      spawn(spec: Parameters<SubprocessSeam['spawn']>[0]) {
+        handle = subprocess.spawn(spec)
+        return handle
+      },
+    }
+    const proc = new AcpAgentProcess(
+      {
+        argv: [process.execPath, '-e', 'setInterval(() => {}, 1000); process.stdout.write("ready")'],
+        cwd: os.tmpdir(),
+        env: {},
+        subprocess: tracked,
+      },
+      { eofGraceMs, termGraceMs: 100 },
+    )
     try {
-      await expect(waitWithin(new Promise<boolean>(resolve => proc.stdout.once('data', () => resolve(true))), 2000)).resolves.toBe(true);
-      await expect(waitWithin(proc.close().then(() => true), 2000)).resolves.toBe(true);
-      expect(proc.exited).not.toBeNull();
+      await expect(
+        waitWithin(new Promise<boolean>((resolve) => proc.stdout.once('data', () => resolve(true))), 2000),
+      ).resolves.toBe(true)
+      await expect(
+        waitWithin(
+          proc.close().then(() => true),
+          2000,
+        ),
+      ).resolves.toBe(true)
+      expect(proc.exited).not.toBeNull()
     } finally {
       // A failed bounded wait still terminates this test's child.
-      handle?.terminate();
-      await expect(handle!.waitForExit(AbortSignal.timeout(2000))).resolves.toBe(true);
+      handle?.terminate()
+      await expect(handle!.waitForExit(AbortSignal.timeout(2000))).resolves.toBe(true)
     }
-  });
-});
+  })
+})
 
 describe('fail closed（spawn-failure 分类）', () => {
   it('spec.subprocess 缺席（运行时裸 spec）→ 构造即抛 spawn-failure + 统一诊断文案', () => {
-    const bare = { argv: [process.execPath, '-e', ''], cwd: os.tmpdir(), env: {} } as unknown as AcpConnectionSpec;
-    let thrown: unknown;
+    const bare = { argv: [process.execPath, '-e', ''], cwd: os.tmpdir(), env: {} } as unknown as AcpConnectionSpec
+    let thrown: unknown
     try {
-      void new AcpClientConnection(bare);
+      void new AcpClientConnection(bare)
     } catch (error: unknown) {
-      thrown = error;
+      thrown = error
     }
-    expect(thrown).toBeInstanceOf(AcpClientError);
-    const acpErr = thrown as AcpClientError;
-    expect(acpErr.kind).toBe('spawn-failure');
-    expect(acpErr.message).toBe(ACP_SUBPROCESS_UNAVAILABLE_MESSAGE);
-  });
+    expect(thrown).toBeInstanceOf(AcpClientError)
+    const acpErr = thrown as AcpClientError
+    expect(acpErr.kind).toBe('spawn-failure')
+    expect(acpErr.message).toBe(ACP_SUBPROCESS_UNAVAILABLE_MESSAGE)
+  })
 
   it('seam spawn 同步抛错 → initialize 分类 spawn-failure，文案含命令名与原始错误', async () => {
     const throwingSeam: SubprocessSeam = {
       spawn: () => {
-        throw new Error('boom-sync-spawn');
+        throw new Error('boom-sync-spawn')
       },
       resolveExecutable: () => Promise.reject(new Error('unused')),
-    };
+    }
     const conn = new AcpClientConnection(
       { argv: ['/bin/dsh-acp-false-agent', 'acp'], cwd: os.tmpdir(), env: {}, subprocess: throwingSeam },
       { initializeTimeoutMs: 1000 },
-    );
-    let thrown: unknown;
+    )
+    let thrown: unknown
     try {
-      await conn.initialize();
+      await conn.initialize()
     } catch (error: unknown) {
-      thrown = error;
+      thrown = error
     }
-    expect(thrown).toBeInstanceOf(AcpClientError);
-    const acpErr = thrown as AcpClientError;
-    expect(acpErr.kind).toBe('spawn-failure');
-    expect(acpErr.message).toContain('/bin/dsh-acp-false-agent');
-    expect(acpErr.message).toContain('boom-sync-spawn');
-    await conn.close();
-  });
-});
+    expect(thrown).toBeInstanceOf(AcpClientError)
+    const acpErr = thrown as AcpClientError
+    expect(acpErr.kind).toBe('spawn-failure')
+    expect(acpErr.message).toContain('/bin/dsh-acp-false-agent')
+    expect(acpErr.message).toContain('boom-sync-spawn')
+    await conn.close()
+  })
+})
 
 describe('依赖面守卫（宿主模块实例一致性 纪律）', () => {
   it('package.json：两包只作为精确 npm 开发依赖，不进入运行时依赖面', () => {
     const pkg = JSON.parse(fs.readFileSync(path.join(PKG_ROOT, 'package.json'), 'utf8')) as {
-      engines: { dsh: string };
-      dependencies?: Record<string, string>;
-      peerDependencies?: Record<string, string>;
-      devDependencies?: Record<string, string>;
-    };
+      engines: { dsh: string }
+      dependencies?: Record<string, string>
+      peerDependencies?: Record<string, string>
+      devDependencies?: Record<string, string>
+    }
     const names = ['@deepseek-ai/dsh-subprocess', '@deepseek-ai/dsh-subprocess-local']
     for (const name of names) {
-      expect(pkg.dependencies?.[name]).toBeUndefined();
-      expect(pkg.peerDependencies?.[name]).toBeUndefined();
+      expect(pkg.dependencies?.[name]).toBeUndefined()
+      expect(pkg.peerDependencies?.[name]).toBeUndefined()
       const version = pkg.devDependencies?.[name]
       expect(version).toBe(pkg.engines.dsh)
     }
-    expect(JSON.parse(fs.readFileSync(path.join(PKG_ROOT, 'package.json'), 'utf8')).scripts['verify:dev-install']).toBeDefined();
-  });
+    expect(
+      JSON.parse(fs.readFileSync(path.join(PKG_ROOT, 'package.json'), 'utf8')).scripts['verify:dev-install'],
+    ).toBeDefined()
+  })
 
   it('src/** 零 dsh-subprocess 值级 import（结构镜像全在 src/runtime/process/subprocess.ts）', () => {
-    const files: string[] = [];
+    const files: string[] = []
     const walk = (dir: string): void => {
       for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-        const full = path.join(dir, entry.name);
-        if (entry.isDirectory()) walk(full);
-        else if (entry.name.endsWith('.ts')) files.push(full);
+        const full = path.join(dir, entry.name)
+        if (entry.isDirectory()) walk(full)
+        else if (entry.name.endsWith('.ts')) files.push(full)
       }
-    };
-    walk(path.join(PKG_ROOT, 'src'));
-    expect(files.length).toBeGreaterThan(0);
-    const importPattern = /(?:from|import)\s*\(?\s*['"]@deepseek-ai\/dsh-subprocess/;
-    const offenders = files.filter((file) => importPattern.test(fs.readFileSync(file, 'utf8')));
-    expect(offenders).toEqual([]);
-  });
-});
+    }
+    walk(path.join(PKG_ROOT, 'src'))
+    expect(files.length).toBeGreaterThan(0)
+    const importPattern = /(?:from|import)\s*\(?\s*['"]@deepseek-ai\/dsh-subprocess/
+    const offenders = files.filter((file) => importPattern.test(fs.readFileSync(file, 'utf8')))
+    expect(offenders).toEqual([])
+  })
+})

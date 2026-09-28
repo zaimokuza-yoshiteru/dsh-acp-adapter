@@ -37,14 +37,18 @@ export interface WaitForAuthenticatedBootstrapOptions {
   intervalMs?: number
 }
 
-
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const packageJson = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
 const packageName = packageJson.name
 const profileName = 'web'
 
 export function parseArgs(argv: readonly string[]) {
-  const result: InstallGateArgs = { hostRoot: resolve(root, 'node_modules', '@deepseek-ai', 'dsh'), tgz: undefined, skipBoot: false, help: false }
+  const result: InstallGateArgs = {
+    hostRoot: resolve(root, 'node_modules', '@deepseek-ai', 'dsh'),
+    tgz: undefined,
+    skipBoot: false,
+    help: false,
+  }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
     if (arg === '--help' || arg === '-h') result.help = true
@@ -136,16 +140,22 @@ export async function waitForAuthenticatedBootstrap({
       }
     }
     if (!isAlive()) break
-    await new Promise(resolveDelay => setTimeout(resolveDelay, intervalMs))
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, intervalMs))
   }
-  throw new Error(`clean DSH web boot did not become authenticated HTTP-ready${lastStatus === undefined ? '' : ` (last HTTP status ${String(lastStatus)})`}`)
+  throw new Error(
+    `clean DSH web boot did not become authenticated HTTP-ready${lastStatus === undefined ? '' : ` (last HTTP status ${String(lastStatus)})`}`,
+  )
 }
 
 function fail(message: string): never {
   throw new Error(`[install-gate] ${message}`)
 }
 
-function run(command: string, args: string[], options: { cwd?: string; env?: NodeJS.ProcessEnv; timeout?: number } = {}) {
+function run(
+  command: string,
+  args: string[],
+  options: { cwd?: string; env?: NodeJS.ProcessEnv; timeout?: number } = {},
+) {
   const result = spawnSync(command, args, {
     cwd: options.cwd ?? root,
     env: { ...process.env, ...(options.env ?? {}) },
@@ -165,14 +175,17 @@ function run(command: string, args: string[], options: { cwd?: string; env?: Nod
 function packLocalTarball(tempRoot: string) {
   const before = new Set(readdirSync(tempRoot))
   run('pnpm', ['pack', '--pack-destination', tempRoot, '--silent'], { timeout: 120_000 })
-  const candidates = readdirSync(tempRoot).filter(name => name.endsWith('.tgz') && !before.has(name))
+  const candidates = readdirSync(tempRoot).filter((name) => name.endsWith('.tgz') && !before.has(name))
   if (candidates.length !== 1) fail(`expected one packed tarball, found ${candidates.join(', ') || '(none)'}`)
   return join(tempRoot, candidates[0]!)
 }
 
 function tarEntries(tgz: string) {
   const output = run('tar', ['-tzf', tgz], { timeout: 30_000 }).stdout
-  return output.split(/\r?\n/).filter(Boolean).map(entry => entry.replace(/^package\//, '').replaceAll('\\', '/'))
+  return output
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((entry) => entry.replace(/^package\//, '').replaceAll('\\', '/'))
 }
 
 export function assertTarballEntries(entries: readonly string[]) {
@@ -180,9 +193,17 @@ export function assertTarballEntries(entries: readonly string[]) {
   // The existing host-compat path ban still rejects the retired picker implementation.
   const forbidden = [/^(?:experiments|test|scripts)\//i, /(?:release-evidence|evidence)/i, /host-compat/i]
   for (const entry of entries) {
-    if (forbidden.some(pattern => pattern.test(entry))) fail(`tarball contains forbidden development/legacy path: ${entry}`)
+    if (forbidden.some((pattern) => pattern.test(entry)))
+      fail(`tarball contains forbidden development/legacy path: ${entry}`)
   }
-  for (const required of ['package.json', 'cordis.patch.yml', 'lib/index.js', 'lib/client.js', 'README.md', 'LICENSE']) {
+  for (const required of [
+    'package.json',
+    'cordis.patch.yml',
+    'lib/index.js',
+    'lib/client.js',
+    'README.md',
+    'LICENSE',
+  ]) {
     if (!entries.includes(required)) fail(`tarball is missing ${required}`)
   }
 }
@@ -193,7 +214,8 @@ function rowBlocks(dump: string) {
   for (let index = 0; index < lines.length; index += 1) {
     if (!/^\s*- id: /.test(lines[index]!)) continue
     const block = [lines[index]!]
-    for (let next = index + 1; next < lines.length && !/^\s*- id: /.test(lines[next]!); next += 1) block.push(lines[next]!)
+    for (let next = index + 1; next < lines.length && !/^\s*- id: /.test(lines[next]!); next += 1)
+      block.push(lines[next]!)
     rows.push(block.join('\n'))
   }
   return rows
@@ -201,7 +223,10 @@ function rowBlocks(dump: string) {
 
 export function assertComposedDump(dump: string) {
   const rows = rowBlocks(dump)
-  const row = (id: string) => rows.filter(block => new RegExp(`^\\s*- id: ${id.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}(?:\\s|$)`, 'm').test(block))
+  const row = (id: string) =>
+    rows.filter((block) =>
+      new RegExp(`^\\s*- id: ${id.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}(?:\\s|$)`, 'm').test(block),
+    )
   // `agent` is the model-facing service row; `agent-loop` is the stock
   // AgentLoop row.  Both exist in Alpha, and checking only `agent` would let
   // an accidental AgentLoop replacement pass this gate.
@@ -211,7 +236,8 @@ export function assertComposedDump(dump: string) {
     if (/^\s*disabled:\s*true\s*$/m.test(matches[0]!)) fail(`stock ${id} row is disabled`)
   }
   const pluginRows = row('dsh-acp-adapter')
-  if (pluginRows.length !== 1) fail(`composed dump must contain exactly one additive dsh-acp-adapter row; found ${pluginRows.length}`)
+  if (pluginRows.length !== 1)
+    fail(`composed dump must contain exactly one additive dsh-acp-adapter row; found ${pluginRows.length}`)
   if (/^\s*disabled:\s*true\s*$/m.test(pluginRows[0]!)) fail('dsh-acp-adapter row is disabled')
   if (/^\s*- (?:disable|replace):/m.test(dump)) fail('plugin composition must not disable or replace stock rows')
 }
@@ -226,7 +252,7 @@ function getFreePort() {
         server.close(() => reject(new Error('failed to allocate a loopback port')))
         return
       }
-      server.close(error => error === undefined ? resolvePort(address.port) : reject(error))
+      server.close((error) => (error === undefined ? resolvePort(address.port) : reject(error)))
     })
   })
 }
@@ -241,8 +267,12 @@ async function bootAndCheck(hostRoot: string, dshHome: string) {
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   let output = ''
-  child.stdout.on('data', chunk => { output += String(chunk) })
-  child.stderr.on('data', chunk => { output += String(chunk) })
+  child.stdout.on('data', (chunk) => {
+    output += String(chunk)
+  })
+  child.stderr.on('data', (chunk) => {
+    output += String(chunk)
+  })
   try {
     const result = await waitForAuthenticatedBootstrap({
       readOutput: () => output,
@@ -259,7 +289,7 @@ async function bootAndCheck(hostRoot: string, dshHome: string) {
     fail(`${detail}\n${redactGateOutput(output.slice(-4000))}`)
   } finally {
     if (child.exitCode === null) child.kill('SIGTERM')
-    await new Promise<void>(resolveExit => {
+    await new Promise<void>((resolveExit) => {
       if (child.exitCode !== null) resolveExit()
       else child.once('exit', resolveExit)
       setTimeout(resolveExit, 5_000)
@@ -270,7 +300,9 @@ async function bootAndCheck(hostRoot: string, dshHome: string) {
 function hostCli(hostRoot: string) {
   const manifest = JSON.parse(readFileSync(join(hostRoot, 'package.json'), 'utf8'))
   if (manifest.version !== DSH_SOURCE_TAG.slice(5)) fail('host version does not match the accepted DSH tag')
-  return manifest.name === '@deepseek-ai/dsh' ? join(hostRoot, 'lib', 'bin.js') : join(hostRoot, 'apps', 'cli', 'lib', 'bin.js')
+  return manifest.name === '@deepseek-ai/dsh'
+    ? join(hostRoot, 'lib', 'bin.js')
+    : join(hostRoot, 'apps', 'cli', 'lib', 'bin.js')
 }
 
 async function main() {
@@ -289,24 +321,53 @@ async function main() {
     if (!existsSync(tgz)) fail(`tarball does not exist: ${tgz}`)
     const entries = tarEntries(tgz)
     assertTarballEntries(entries)
-    const env = { DSH_HOME: dshHome, DSH_TELEMETRY_DISABLED: '1', NO_COLOR: '1', npm_config_store_dir: join(tempRoot, 'pnpm-store') }
-    run(process.execPath, [hostCli(args.hostRoot), 'plugin', '--profile', profileName, 'add', tgz, '--save-exact', '--ignore-scripts'], { env, timeout: 120_000 })
-    const dump = run(process.execPath, [hostCli(args.hostRoot), '--profile', profileName, '--dump-config'], { env, timeout: 30_000 }).stdout
+    const env = {
+      DSH_HOME: dshHome,
+      DSH_TELEMETRY_DISABLED: '1',
+      NO_COLOR: '1',
+      npm_config_store_dir: join(tempRoot, 'pnpm-store'),
+    }
+    run(
+      process.execPath,
+      [hostCli(args.hostRoot), 'plugin', '--profile', profileName, 'add', tgz, '--save-exact', '--ignore-scripts'],
+      { env, timeout: 120_000 },
+    )
+    const dump = run(process.execPath, [hostCli(args.hostRoot), '--profile', profileName, '--dump-config'], {
+      env,
+      timeout: 30_000,
+    }).stdout
     assertComposedDump(dump)
     let boot: { skipped: true } | { status: number; output: string } = { skipped: true }
     if (!args.skipBoot) boot = await bootAndCheck(args.hostRoot, dshHome)
-    run(process.execPath, [hostCli(args.hostRoot), 'plugin', '--profile', profileName, 'remove', packageName], { env, timeout: 120_000 })
-    const afterRemove = run(process.execPath, [hostCli(args.hostRoot), '--profile', profileName, '--dump-config'], { env, timeout: 30_000 }).stdout
-    if (rowBlocks(afterRemove).some(block => block.includes(`id: dsh-acp-adapter`))) fail('plugin row remains after removal')
+    run(process.execPath, [hostCli(args.hostRoot), 'plugin', '--profile', profileName, 'remove', packageName], {
+      env,
+      timeout: 120_000,
+    })
+    const afterRemove = run(process.execPath, [hostCli(args.hostRoot), '--profile', profileName, '--dump-config'], {
+      env,
+      timeout: 30_000,
+    }).stdout
+    if (rowBlocks(afterRemove).some((block) => block.includes(`id: dsh-acp-adapter`)))
+      fail('plugin row remains after removal')
     const profilePackage = JSON.parse(readFileSync(join(dshHome, 'profiles', profileName, 'package.json'), 'utf8'))
-    if (Object.hasOwn(profilePackage.dependencies ?? {}, packageName)) fail('profile manifest retains plugin dependency after removal')
-    if (existsSync(join(dshHome, 'profiles', profileName, 'node_modules', ...packageName.split('/')))) fail('profile node_modules retains plugin after removal')
-    writeFileSync(evidence, JSON.stringify({ packageName, tarball: basename(tgz), files: entries.length, boot }, null, 2) + '\n')
-    console.log(`[install-gate] OK: ${entries.length} tarball files; additive composition; removal clean${args.skipBoot ? '; boot skipped' : '; HTTP 200/client bootstrap'}`)
+    if (Object.hasOwn(profilePackage.dependencies ?? {}, packageName))
+      fail('profile manifest retains plugin dependency after removal')
+    if (existsSync(join(dshHome, 'profiles', profileName, 'node_modules', ...packageName.split('/'))))
+      fail('profile node_modules retains plugin after removal')
+    writeFileSync(
+      evidence,
+      JSON.stringify({ packageName, tarball: basename(tgz), files: entries.length, boot }, null, 2) + '\n',
+    )
+    console.log(
+      `[install-gate] OK: ${entries.length} tarball files; additive composition; removal clean${args.skipBoot ? '; boot skipped' : '; HTTP 200/client bootstrap'}`,
+    )
     console.log(`[install-gate] evidence: ${evidence}`)
   } catch (error) {
     keep = true
-    writeFileSync(evidence, JSON.stringify({ error: error instanceof Error ? error.message : String(error) }, null, 2) + '\n')
+    writeFileSync(
+      evidence,
+      JSON.stringify({ error: error instanceof Error ? error.message : String(error) }, null, 2) + '\n',
+    )
     console.error(`[install-gate] evidence: ${evidence}`)
     throw error
   } finally {

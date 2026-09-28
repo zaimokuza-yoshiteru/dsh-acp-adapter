@@ -53,16 +53,21 @@ async function harness(options: HarnessOptions = {}) {
   } as unknown as Agent
   let live = options.initialList === true ? agent : undefined
   const agents = {
-    get: vi.fn((id: string) => id === agent.id ? live : undefined),
-    list: vi.fn(() => live === undefined ? [] : [live]),
+    get: vi.fn((id: string) => (id === agent.id ? live : undefined)),
+    list: vi.fn(() => (live === undefined ? [] : [live])),
   }
   const teams = {
     tryMembership: vi.fn(() => ({ role: options.role ?? 'teammate' })),
   }
   const llm = {
-    listModels: vi.fn(async () => [{ id: 'model-default', name: 'Default' }, { id: 'model-next', name: 'Next' }]),
+    listModels: vi.fn(async () => [
+      { id: 'model-default', name: 'Default' },
+      { id: 'model-next', name: 'Next' },
+    ]),
     resolveCallConfig: vi.fn(async ({ provider, model }: { provider: string; model: string }) => ({
-      provider, model, reasoningEffort: 'medium',
+      provider,
+      model,
+      reasoningEffort: 'medium',
     })),
   }
   const currentBinding = options.binding ?? { status: 'ok' as const, binding: binding() }
@@ -71,10 +76,12 @@ async function harness(options: HarnessOptions = {}) {
     readMemberModelSelection: vi.fn(async () => options.saved),
     writeMemberModelSelection: vi.fn(async () => undefined),
   }
-  const adapter = { agentSessionSnapshot: vi.fn(async () => ({
-    modeWritable: true,
-    configOptions: [{ id: 'model', type: 'select', currentValue: 'model-default' }],
-  })) }
+  const adapter = {
+    agentSessionSnapshot: vi.fn(async () => ({
+      modeWritable: true,
+      configOptions: [{ id: 'model', type: 'select', currentValue: 'model-default' }],
+    })),
+  }
   ctx.provide('llm', llm)
   ctx.provide('agents', agents)
   ctx.provide('agentTeams', teams)
@@ -98,7 +105,9 @@ describe('createMemberModels()', () => {
     })
 
     const assembled = await agentCtx.waterfall(
-      'system-prompt/assemble', { sections: [], contexts: [], tools: [], variables: {} }, {},
+      'system-prompt/assemble',
+      { sections: [], contexts: [], tools: [], variables: {} },
+      {},
       async (): Promise<PromptAssembly> => ({ sections: [], contexts: [], tools: [], variables: { preserved: 'yes' } }),
     )
     expect(assembled.variables).toMatchObject({ preserved: 'yes', provider: 'acp-demo', model: 'model-next' })
@@ -106,8 +115,14 @@ describe('createMemberModels()', () => {
     expect(sidecar.writeMemberModelSelection).not.toHaveBeenCalled()
 
     const routed = await agentCtx.waterfall(
-      'agent/request', { agent: {} as Agent, turn: 1, step: 0, signal: new AbortController().signal },
-      async (): Promise<LlmCallConfig> => ({ provider: 'acp-demo', model: 'model-default', reasoningEffort: ReasoningEffortId('high'), temperature: 0.2 }),
+      'agent/request',
+      { agent: {} as Agent, turn: 1, step: 0, signal: new AbortController().signal },
+      async (): Promise<LlmCallConfig> => ({
+        provider: 'acp-demo',
+        model: 'model-default',
+        reasoningEffort: ReasoningEffortId('high'),
+        temperature: 0.2,
+      }),
     )
     expect(routed).toEqual({ provider: 'acp-demo', model: 'model-next', reasoningEffort: 'medium', temperature: 0.2 })
   })
@@ -120,7 +135,9 @@ describe('createMemberModels()', () => {
     })
 
     const assembled = await agentCtx.waterfall(
-      'system-prompt/assemble', { sections: [], contexts: [], tools: [], variables: {} }, {},
+      'system-prompt/assemble',
+      { sections: [], contexts: [], tools: [], variables: {} },
+      {},
       async (): Promise<PromptAssembly> => ({ sections: [], contexts: [], tools: [], variables: { preserved: 'yes' } }),
     )
     expect(assembled.variables).toEqual({ preserved: 'yes' })
@@ -139,7 +156,8 @@ describe('createMemberModels()', () => {
 
     expect(authorize).toHaveBeenCalledOnce()
     expect(sidecar.writeMemberModelSelection).toHaveBeenCalledWith('member-1', {
-      bindingKey: modeIntentBindingKey(current), model: 'model-next',
+      bindingKey: modeIntentBindingKey(current),
+      model: 'model-next',
     })
     expect(memberSession.append).toHaveBeenCalledWith('model/selection', { provider: 'acp-demo', model: 'model-next' })
   })
@@ -147,7 +165,9 @@ describe('createMemberModels()', () => {
   it('does not install model selection for a non-teammate created agent', async () => {
     const { agentCtx, llm } = await harness({ role: 'lead' })
     const assembled = await agentCtx.waterfall(
-      'system-prompt/assemble', { sections: [], contexts: [], tools: [], variables: {} }, {},
+      'system-prompt/assemble',
+      { sections: [], contexts: [], tools: [], variables: {} },
+      {},
       async (): Promise<PromptAssembly> => ({ sections: [], contexts: [], tools: [], variables: { preserved: 'yes' } }),
     )
     expect(assembled.variables).toEqual({ preserved: 'yes' })
@@ -158,20 +178,31 @@ describe('createMemberModels()', () => {
     const ctx = new Context()
     contexts.push(ctx)
     const leadSession = session()
-    const member = { id: 'member-1', role: 'teammate', status: 'inactive', name: 'Member', options: { provider: 'acp-demo' }, session: session(), ctx: new Context() }
+    const member = {
+      id: 'member-1',
+      role: 'teammate',
+      status: 'inactive',
+      name: 'Member',
+      options: { provider: 'acp-demo' },
+      session: session(),
+      ctx: new Context(),
+    }
     const lead = { id: 'lead-1', options: { provider: 'acp-demo' }, session: leadSession, ctx: new Context() }
     contexts.push(member.ctx, lead.ctx)
     const agents = {
-      get: vi.fn((id: string) => id === 'lead-1' ? lead : id === 'member-1' ? member : undefined),
+      get: vi.fn((id: string) => (id === 'lead-1' ? lead : id === 'member-1' ? member : undefined)),
       list: vi.fn(() => [lead, member]),
     }
     const teams = {
-      tryMembership: vi.fn((agent: unknown) => agent === lead ? { role: 'lead' } : { role: 'teammate' }),
+      tryMembership: vi.fn((agent: unknown) => (agent === lead ? { role: 'lead' } : { role: 'teammate' })),
       listMembers: vi.fn(() => [member]),
     }
     const llm = {
       listModels: vi.fn(async () => [{ id: 'model-next', name: 'Next' }]),
-      resolveCallConfig: vi.fn(async ({ provider, model }: { provider: string; model: string }) => ({ provider, model })),
+      resolveCallConfig: vi.fn(async ({ provider, model }: { provider: string; model: string }) => ({
+        provider,
+        model,
+      })),
     }
     ctx.provide('agents', agents)
     ctx.provide('agentTeams', teams)
@@ -186,13 +217,15 @@ describe('createMemberModels()', () => {
       readMemberModelSelection: vi.fn(async () => undefined),
       writeMemberModelSelection: vi.fn(async () => undefined),
     }
-    const adapter = { agentSessionSnapshot: vi.fn(async () => ({
-      modeWritable: true,
-      configOptions: [{ id: 'model', type: 'select', currentValue: 'model-default' }],
-    })) }
+    const adapter = {
+      agentSessionSnapshot: vi.fn(async () => ({
+        modeWritable: true,
+        configOptions: [{ id: 'model', type: 'select', currentValue: 'model-default' }],
+      })),
+    }
     const management = createTeamManagement(
       ctx,
-      provider => provider === 'acp-demo',
+      (provider) => provider === 'acp-demo',
       async () => 'acp-demo',
       { sidecar: sidecar as unknown as AcpSidecar, adapterFor: () => adapter as never },
     )

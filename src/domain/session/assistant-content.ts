@@ -7,7 +7,10 @@ export type AcpNonTextContent = Exclude<acp.ContentBlock, { readonly type: 'text
 
 function boundedContentMetadata(value: string | null | undefined): string | undefined {
   if (value === undefined || value === null) return undefined
-  const clean = redactSecretText(value).replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim()
+  const clean = redactSecretText(value)
+    .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
   if (clean.length === 0) return undefined
   return clean.length > 240 ? `${clean.slice(0, 240)}…` : clean
 }

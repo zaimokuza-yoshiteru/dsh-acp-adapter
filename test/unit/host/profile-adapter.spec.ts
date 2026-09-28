@@ -10,31 +10,41 @@ import { AcpRemoteService } from '../../../src/remote/service.ts'
 import type { DispatchLedgerStore, DispatchRecord } from '../../../src/runtime/session/dispatch-ledger.ts'
 import type { AcpSidecar } from '../../../src/persistence/sidecar.ts'
 
-const profile = (command = 'agent', env: Record<string, string> = {}): AcpAgentConfig => ({ name: 'Test', command, args: ['acp'], env })
+const profile = (command = 'agent', env: Record<string, string> = {}): AcpAgentConfig => ({
+  name: 'Test',
+  command,
+  args: ['acp'],
+  env,
+})
 const user = (text: string) => createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })
-const request = (sessionId: string, messages: GenerateOptions['messages']) => markAgentLoopRequest({ provider: 'acp-test', model: 'model-a', sessionId: sessionId as never, messages })
-const session = (message: ReturnType<typeof user>, seq = 2) => (withSessionFacts({
-  header: { cwd: '/workspace' },
-  inheritedEventCount: 0,
-  snapshotEvents: () => [
-    { type: 'step/start', seq: 1, data: { turn: 1, step: 0 } },
-    { type: 'user/message', seq, data: message },
-  ],
-}))
+const request = (sessionId: string, messages: GenerateOptions['messages']) =>
+  markAgentLoopRequest({ provider: 'acp-test', model: 'model-a', sessionId: sessionId as never, messages })
+const session = (message: ReturnType<typeof user>, seq = 2) =>
+  withSessionFacts({
+    header: { cwd: '/workspace' },
+    inheritedEventCount: 0,
+    snapshotEvents: () => [
+      { type: 'step/start', seq: 1, data: { turn: 1, step: 0 } },
+      { type: 'user/message', seq, data: message },
+    ],
+  })
 
 class Ledger implements DispatchLedgerStore {
   records: DispatchRecord[] = []
   failBegin = false
   async begin(record: DispatchRecord): Promise<void> {
     if (this.failBegin) throw new Error('WAL unavailable')
-    if (this.records.some(entry => entry.key === record.key || entry.state === 'dispatch-uncertain')) throw new Error('ACP_RECOVERY_REQUIRED')
+    if (this.records.some((entry) => entry.key === record.key || entry.state === 'dispatch-uncertain'))
+      throw new Error('ACP_RECOVERY_REQUIRED')
     this.records = [record]
   }
   async settle(_sessionId: string, key: string): Promise<void> {
-    const record = this.records.find(entry => entry.key === key)
+    const record = this.records.find((entry) => entry.key === key)
     if (record !== undefined) this.records = [{ ...record, state: 'settled' }]
   }
-  async read(_sessionId: string, key: string): Promise<DispatchRecord | undefined> { return this.records.find(entry => entry.key === key) }
+  async read(_sessionId: string, key: string): Promise<DispatchRecord | undefined> {
+    return this.records.find((entry) => entry.key === key)
+  }
 }
 
 function seam(): { ok: true; seam: never } {
@@ -56,17 +66,33 @@ describe('AcpProfileAdapter generation and dispatch boundaries', () => {
     let spawns = 0
     let cacheValid = false
     const models = [{ id: 'model-a', name: 'Model A', provider: 'acp-shared' }]
-    const adapter = new AcpProfileAdapter('shared', () => current, seam(), () => undefined, new Ledger(), () => ({
-      listModels: async () => {
-        if (cacheValid) return models
-        spawns += 1
-        cacheValid = true
-        snapshot = { key: acpProbeConfigKey(current), at: Date.now(), result: { kind: 'ok', models, agentInfo: { name: 'shared-agent', version: '1' }, agentCapabilities: {} } }
-        return models
-      },
-      probeSnapshot: () => snapshot as never,
-      invalidateProbe: () => { snapshot = undefined; cacheValid = false },
-    }), undefined, durableSidecar)
+    const adapter = new AcpProfileAdapter(
+      'shared',
+      () => current,
+      seam(),
+      () => undefined,
+      new Ledger(),
+      () => ({
+        listModels: async () => {
+          if (cacheValid) return models
+          spawns += 1
+          cacheValid = true
+          snapshot = {
+            key: acpProbeConfigKey(current),
+            at: Date.now(),
+            result: { kind: 'ok', models, agentInfo: { name: 'shared-agent', version: '1' }, agentCapabilities: {} },
+          }
+          return models
+        },
+        probeSnapshot: () => snapshot as never,
+        invalidateProbe: () => {
+          snapshot = undefined
+          cacheValid = false
+        },
+      }),
+      undefined,
+      durableSidecar,
+    )
     const service = new AcpRemoteService(new Context(), {
       registry: { agents: () => new Map([['shared', current]]), probeCacheFor: () => adapter },
       resolveLiveAgent: () => undefined,
@@ -76,7 +102,9 @@ describe('AcpProfileAdapter generation and dispatch boundaries', () => {
     await expect(adapter.listModels('acp-shared')).resolves.toEqual(models)
     await expect(service.health()).resolves.toMatchObject({ providers: [{ id: 'shared', probe: { status: 'ok' } }] })
     expect(spawns).toBe(1)
-    await expect(service.health({ recheck: true, agentId: 'shared' })).resolves.toMatchObject({ providers: [{ id: 'shared', probe: { status: 'ok' } }] })
+    await expect(service.health({ recheck: true, agentId: 'shared' })).resolves.toMatchObject({
+      providers: [{ id: 'shared', probe: { status: 'ok' } }],
+    })
     await expect(adapter.listModels('acp-shared')).resolves.toEqual(models)
     expect(spawns).toBe(2)
   })
@@ -84,13 +112,28 @@ describe('AcpProfileAdapter generation and dispatch boundaries', () => {
   it('forwards the V3 host system message while admitting only the current input', async () => {
     const message = user('current')
     const sent: unknown[] = []
-    const adapter = new AcpProfileAdapter('test', () => profile(), seam(), () => session(message), new Ledger(), undefined, () => ({
-      acpSessionId: 'system-request', start: async () => undefined,
-      prompt: async prompt => { sent.push(prompt); return { stopReason: 'end_turn' } as never },
-      close: async () => undefined,
-    }), durableSidecar)
+    const adapter = new AcpProfileAdapter(
+      'test',
+      () => profile(),
+      seam(),
+      () => session(message),
+      new Ledger(),
+      undefined,
+      () => ({
+        acpSessionId: 'system-request',
+        start: async () => undefined,
+        prompt: async (prompt) => {
+          sent.push(prompt)
+          return { stopReason: 'end_turn' } as never
+        },
+        close: async () => undefined,
+      }),
+      durableSidecar,
+    )
     const system = { ...user('HOST_SYSTEM_A'), role: 'system' as const, source: { kind: 'system-prompt' as const } }
-    for await (const chunk of adapter.stream(request('system-request', [system, user('old history'), message]))) { void chunk }
+    for await (const chunk of adapter.stream(request('system-request', [system, user('old history'), message]))) {
+      void chunk
+    }
     expect(JSON.stringify(sent)).toContain('HOST_SYSTEM_A')
     expect(JSON.stringify(sent)).toContain('current')
     expect(JSON.stringify(sent)).not.toContain('old history')
@@ -99,25 +142,86 @@ describe('AcpProfileAdapter generation and dispatch boundaries', () => {
   it('accepts the finalized request copy delivered by the DSH LLM runtime', async () => {
     const message = user('current')
     let prompts = 0
-    const adapter = new AcpProfileAdapter('test', () => profile(), seam(), () => session(message), new Ledger(), undefined, _options => ({
+    const adapter = new AcpProfileAdapter(
+      'test',
+      () => profile(),
+      seam(),
+      () => session(message),
+      new Ledger(),
+      undefined,
+      (_options) => ({
         acpSessionId: 'copied-request-session',
         start: async () => undefined,
-        prompt: async () => { prompts += 1; return { stopReason: 'end_turn' } as never },
+        prompt: async () => {
+          prompts += 1
+          return { stopReason: 'end_turn' } as never
+        },
         close: async () => undefined,
-      }), durableSidecar)
+      }),
+      durableSidecar,
+    )
     const loopRequest = request('copied-request-session', [message])
     const finalizedCopy: GenerateOptions = { ...loopRequest, messages: [...loopRequest.messages] }
-    for await (const _chunk of adapter.stream(finalizedCopy)) { /* drain */ }
+    for await (const _chunk of adapter.stream(finalizedCopy)) {
+      /* drain */
+    }
     expect(prompts).toBe(1)
+  })
+
+  it('passes only an admitted request’s model-facing schemas to the MCP lease factory', async () => {
+    const message = user('current')
+    let received: unknown
+    const adapter = new AcpProfileAdapter(
+      'test',
+      () => profile(),
+      seam(),
+      () => session(message),
+      new Ledger(),
+      undefined,
+      (runtimeOptions) => ({
+        acpSessionId: 'visible-tools-session',
+        initialize: async () => {
+          runtimeOptions.mcpKey?.()
+          await runtimeOptions.createMcpLease?.({})
+        },
+        start: async () => undefined,
+        prompt: async () => ({ stopReason: 'end_turn' }) as never,
+        close: async () => undefined,
+      }),
+      durableSidecar,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      (_sessionId, _capabilities, _wireProfile, schemas) => {
+        received = schemas
+        return Promise.resolve(undefined)
+      },
+      (_sessionId, schemas) => JSON.stringify(schemas),
+    )
+    const options: GenerateOptions = {
+      ...request('visible-tools-session', [message]),
+      tools: [{ name: 'file_read', description: 'Read', parameters: { type: 'object' } }],
+    }
+    for await (const _chunk of adapter.stream(options)) {
+      /* drain */
+    }
+    expect(received).toEqual(options.tools)
   })
 
   it('replaces the picker probe when an edited profile changes launch identity', async () => {
     let current = profile('old-agent')
     const created: string[] = []
-    const adapter = new AcpProfileAdapter('test', () => current, seam(), () => undefined, new Ledger(),
-      config => {
+    const adapter = new AcpProfileAdapter(
+      'test',
+      () => current,
+      seam(),
+      () => undefined,
+      new Ledger(),
+      (config) => {
         created.push(config.command)
-        return { listModels: async provider => [{ id: config.command, name: config.command, provider }] }
+        return { listModels: async (provider) => [{ id: config.command, name: config.command, provider }] }
       },
       undefined,
       durableSidecar,
@@ -132,44 +236,139 @@ describe('AcpProfileAdapter generation and dispatch boundaries', () => {
     const current = profile()
     const ledger = new Ledger()
     const message = user('current')
-    const adapter = new AcpProfileAdapter('test', () => current, seam(), () => session(message), ledger, undefined, _options => ({
+    const adapter = new AcpProfileAdapter(
+      'test',
+      () => current,
+      seam(),
+      () => session(message),
+      ledger,
+      undefined,
+      (_options) => ({
         acpSessionId: 'stream-session',
         start: async () => undefined,
         prompt: async (_content, onUpdate) => {
-          onUpdate({ sessionId: 'stream-session', update: { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'private reasoning' } } } as never)
-          onUpdate({ sessionId: 'stream-session', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'visible answer' } } } as never)
+          onUpdate({
+            sessionId: 'stream-session',
+            update: { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'private reasoning' } },
+          } as never)
+          onUpdate({
+            sessionId: 'stream-session',
+            update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'visible answer' } },
+          } as never)
           return { stopReason: 'end_turn' } as never
         },
         close: async () => undefined,
-      }), durableSidecar)
+      }),
+      durableSidecar,
+    )
     const chunks = []
     for await (const chunk of adapter.stream(request('stream-session', [message]))) chunks.push(chunk)
-    expect(chunks).toEqual(expect.arrayContaining([
-      { type: 'reasoning-delta', index: 0, text: 'private reasoning' },
-      { type: 'text-delta', index: 1, text: 'visible answer' },
-    ]))
+    expect(chunks).toEqual(
+      expect.arrayContaining([
+        { type: 'reasoning-delta', index: 0, text: 'private reasoning' },
+        { type: 'text-delta', index: 1, text: 'visible answer' },
+      ]),
+    )
   })
 
-  const textChunk = (text: string, messageId?: string) => ({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text }, ...(messageId ? { messageId } : {}) })
+  const textChunk = (text: string, messageId?: string) => ({
+    sessionUpdate: 'agent_message_chunk',
+    content: { type: 'text', text },
+    ...(messageId ? { messageId } : {}),
+  })
   const thoughtChunk = (text: string) => ({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text } })
-  const toolChunk = (status: string, initial = false) => ({ sessionUpdate: initial ? 'tool_call' : 'tool_call_update', toolCallId: 'tool-1', title: 'Check project', kind: 'read', status })
+  const toolChunk = (status: string, initial = false) => ({
+    sessionUpdate: initial ? 'tool_call' : 'tool_call_update',
+    toolCallId: 'tool-1',
+    title: 'Check project',
+    kind: 'read',
+    status,
+  })
   it.each([
-    { name: 'alternating reasoning and answers', updates: [thoughtChunk('R1'), textChunk('A1'), thoughtChunk('R2'), textChunk('A2')], expected: [['reasoning', 'R1'], ['text', 'A1'], ['reasoning', 'R2'], ['text', 'A2']] },
-    { name: 'same-message tokens and changed message IDs', updates: [textChunk('Hel', 'a'), textChunk('lo', 'a'), textChunk('Next', 'b')], expected: [['text', 'Hello'], ['text', 'Next']] },
-    { name: 'optional IDs without invented boundaries', updates: [textChunk('H'), textChunk('e', 'a'), textChunk('l'), textChunk('lo', 'a')], expected: [['text', 'Hello']] },
-    { name: 'tool invocation between replies', updates: [textChunk('Before'), toolChunk('in_progress', true), textChunk('After')], expected: [['text', 'Before'], ['text', 'After']] },
-    { name: 'tool completion but not progress or repeated completion', updates: [toolChunk('in_progress', true), textChunk('Hel'), toolChunk('in_progress'), textChunk('lo'), toolChunk('completed'), textChunk('Do'), toolChunk('completed'), textChunk('ne')], expected: [['text', 'Hello'], ['text', 'Done']] },
-    { name: 'non-content metadata between tokens', updates: [textChunk('Hel'), { sessionUpdate: 'current_mode_update', currentModeId: 'code' }, textChunk('lo')], expected: [['text', 'Hello']] },
-    { name: 'cancelled partial segments', updates: [thoughtChunk('R1'), textChunk('A1'), thoughtChunk('R2'), textChunk('A2')], expected: [['reasoning', 'R1'], ['text', 'A1'], ['reasoning', 'R2'], ['text', 'A2']], stop: 'cancelled' },
+    {
+      name: 'alternating reasoning and answers',
+      updates: [thoughtChunk('R1'), textChunk('A1'), thoughtChunk('R2'), textChunk('A2')],
+      expected: [
+        ['reasoning', 'R1'],
+        ['text', 'A1'],
+        ['reasoning', 'R2'],
+        ['text', 'A2'],
+      ],
+    },
+    {
+      name: 'same-message tokens and changed message IDs',
+      updates: [textChunk('Hel', 'a'), textChunk('lo', 'a'), textChunk('Next', 'b')],
+      expected: [
+        ['text', 'Hello'],
+        ['text', 'Next'],
+      ],
+    },
+    {
+      name: 'optional IDs without invented boundaries',
+      updates: [textChunk('H'), textChunk('e', 'a'), textChunk('l'), textChunk('lo', 'a')],
+      expected: [['text', 'Hello']],
+    },
+    {
+      name: 'tool invocation between replies',
+      updates: [textChunk('Before'), toolChunk('in_progress', true), textChunk('After')],
+      expected: [
+        ['text', 'Before'],
+        ['text', 'After'],
+      ],
+    },
+    {
+      name: 'tool completion but not progress or repeated completion',
+      updates: [
+        toolChunk('in_progress', true),
+        textChunk('Hel'),
+        toolChunk('in_progress'),
+        textChunk('lo'),
+        toolChunk('completed'),
+        textChunk('Do'),
+        toolChunk('completed'),
+        textChunk('ne'),
+      ],
+      expected: [
+        ['text', 'Hello'],
+        ['text', 'Done'],
+      ],
+    },
+    {
+      name: 'non-content metadata between tokens',
+      updates: [textChunk('Hel'), { sessionUpdate: 'current_mode_update', currentModeId: 'code' }, textChunk('lo')],
+      expected: [['text', 'Hello']],
+    },
+    {
+      name: 'cancelled partial segments',
+      updates: [thoughtChunk('R1'), textChunk('A1'), thoughtChunk('R2'), textChunk('A2')],
+      expected: [
+        ['reasoning', 'R1'],
+        ['text', 'A1'],
+        ['reasoning', 'R2'],
+        ['text', 'A2'],
+      ],
+      stop: 'cancelled',
+    },
   ])('preserves native content boundaries: $name', async ({ updates, expected, stop }) => {
     const message = user('Build a small project')
-    const adapter = new AcpProfileAdapter('test', () => profile(), seam(), () => session(message), new Ledger(), undefined, () => ({
-      acpSessionId: 'stream-session', start: async () => undefined, close: async () => undefined,
-      prompt: async (_content, onUpdate) => {
-        for (const update of updates) onUpdate({ sessionId: 'stream-session', update } as never)
-        return { stopReason: stop ?? 'end_turn' } as never
-      },
-    }), durableSidecar)
+    const adapter = new AcpProfileAdapter(
+      'test',
+      () => profile(),
+      seam(),
+      () => session(message),
+      new Ledger(),
+      undefined,
+      () => ({
+        acpSessionId: 'stream-session',
+        start: async () => undefined,
+        close: async () => undefined,
+        prompt: async (_content, onUpdate) => {
+          for (const update of updates) onUpdate({ sessionId: 'stream-session', update } as never)
+          return { stopReason: stop ?? 'end_turn' } as never
+        },
+      }),
+      durableSidecar,
+    )
     const assembler = new BlockAssembler()
     for await (const chunk of adapter.stream(request('stream-session', [message]))) assembler.push(chunk)
     expect(assembler.blocks()).toEqual(expected.map(([type, text]) => ({ type, text })))
@@ -177,27 +376,56 @@ describe('AcpProfileAdapter generation and dispatch boundaries', () => {
 
   it('prepareCall keeps metadata and dispatch on one immutable generation', async () => {
     let release!: () => void
-    const gate = new Promise<void>(resolve => { release = resolve })
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
     let current = profile('old-agent', { TOKEN: 'old' })
     const ledger = new Ledger()
     const runtimes: Array<{ config: AcpAgentConfig; prompts: number }> = []
     const message = user('hello')
-    const adapter = new AcpProfileAdapter('test', () => current, seam(), () => (withSessionFacts({ header: { cwd: '/workspace' }, inheritedEventCount: 0, snapshotEvents: () => [
-      { type: 'step/start', seq: 1, data: { turn: 1, step: 0 } }, { type: 'user/message', seq: 2, data: message },
-    ] })) as never, ledger,
-      () => ({ listModels: async () => { await gate; return [{ id: 'model-a', name: 'Old model', provider: 'acp-test' }] } }),
-      options => {
+    const adapter = new AcpProfileAdapter(
+      'test',
+      () => current,
+      seam(),
+      () =>
+        withSessionFacts({
+          header: { cwd: '/workspace' },
+          inheritedEventCount: 0,
+          snapshotEvents: () => [
+            { type: 'step/start', seq: 1, data: { turn: 1, step: 0 } },
+            { type: 'user/message', seq: 2, data: message },
+          ],
+        }) as never,
+      ledger,
+      () => ({
+        listModels: async () => {
+          await gate
+          return [{ id: 'model-a', name: 'Old model', provider: 'acp-test' }]
+        },
+      }),
+      (options) => {
         const record = { config: options.config as AcpAgentConfig, prompts: 0 }
         runtimes.push(record)
-        return { acpSessionId: 'test-session', start: async () => undefined, prompt: async () => { record.prompts += 1; return { stopReason: 'end_turn' } as never }, close: async () => undefined }
-      }, durableSidecar,
+        return {
+          acpSessionId: 'test-session',
+          start: async () => undefined,
+          prompt: async () => {
+            record.prompts += 1
+            return { stopReason: 'end_turn' } as never
+          },
+          close: async () => undefined,
+        }
+      },
+      durableSidecar,
     )
     const preparedPromise = adapter.prepareCall('acp-test', 'model-a')
     current = profile('new-agent', { TOKEN: 'new' })
     release()
     const prepared = await preparedPromise
     expect(prepared.model.name).toBe('Old model')
-    for await (const _chunk of prepared.stream(request('session-a', [message]))) { /* drain */ }
+    for await (const _chunk of prepared.stream(request('session-a', [message]))) {
+      /* drain */
+    }
     expect(runtimes[0]?.config.command).toBe('old-agent')
     expect(runtimes[0]?.config.env).toEqual({ TOKEN: 'old' })
   })
@@ -208,15 +436,39 @@ describe('AcpProfileAdapter generation and dispatch boundaries', () => {
     const runtimes: AcpAgentConfig[] = []
     const first = user('one')
     const second = user('two')
-    const adapter = new AcpProfileAdapter('test', () => current, seam(), id => id === 'old-session' ? session(first) : session(second), ledger, undefined, options => {
+    const adapter = new AcpProfileAdapter(
+      'test',
+      () => current,
+      seam(),
+      (id) => (id === 'old-session' ? session(first) : session(second)),
+      ledger,
+      undefined,
+      (options) => {
         runtimes.push(options.config as AcpAgentConfig)
-        return { acpSessionId: 'test-session', start: async () => undefined, prompt: async () => ({ stopReason: 'end_turn' } as never), close: async () => undefined }
-      }, durableSidecar)
-    for await (const _chunk of adapter.stream(request('old-session', [first]))) { /* drain */ }
+        return {
+          acpSessionId: 'test-session',
+          start: async () => undefined,
+          prompt: async () => ({ stopReason: 'end_turn' }) as never,
+          close: async () => undefined,
+        }
+      },
+      durableSidecar,
+    )
+    for await (const _chunk of adapter.stream(request('old-session', [first]))) {
+      /* drain */
+    }
     current = profile('new-agent', { TOKEN: 'new' })
-    await expect((async () => { for await (const _chunk of adapter.stream(request('old-session', [first])) ) { /* drain */ } })()).rejects.toMatchObject({ code: 'ACP_RECONCILIATION_REQUIRED' })
-    for await (const _chunk of adapter.stream(request('blank-session', [second]))) { /* drain */ }
-    expect(runtimes.map(entry => entry.command)).toEqual(['old-agent', 'new-agent'])
+    await expect(
+      (async () => {
+        for await (const _chunk of adapter.stream(request('old-session', [first]))) {
+          /* drain */
+        }
+      })(),
+    ).rejects.toMatchObject({ code: 'ACP_RECONCILIATION_REQUIRED' })
+    for await (const _chunk of adapter.stream(request('blank-session', [second]))) {
+      /* drain */
+    }
+    expect(runtimes.map((entry) => entry.command)).toEqual(['old-agent', 'new-agent'])
   })
 
   it('keeps the dispatch key short and never prompts when WAL begin fails', async () => {
@@ -224,21 +476,46 @@ describe('AcpProfileAdapter generation and dispatch boundaries', () => {
     const ledger = new Ledger()
     let prompts = 0
     const message = user('current')
-    const adapter = new AcpProfileAdapter('test', () => current, seam(), () => (withSessionFacts({ header: { cwd: '/workspace' }, inheritedEventCount: 0, snapshotEvents: () => [
-      { type: 'step/start', seq: 1, data: { turn: 1, step: 0 } },
-      { type: 'user/message', seq: 2, data: message },
-    ] })), ledger, undefined, _options => ({
-      acpSessionId: 'test-session',
-      start: async () => undefined,
-      prompt: async (_content, _onUpdate, _signal) => { prompts += 1; return { stopReason: 'end_turn' } as never },
-      close: async () => undefined,
-    }), durableSidecar)
+    const adapter = new AcpProfileAdapter(
+      'test',
+      () => current,
+      seam(),
+      () =>
+        withSessionFacts({
+          header: { cwd: '/workspace' },
+          inheritedEventCount: 0,
+          snapshotEvents: () => [
+            { type: 'step/start', seq: 1, data: { turn: 1, step: 0 } },
+            { type: 'user/message', seq: 2, data: message },
+          ],
+        }),
+      ledger,
+      undefined,
+      (_options) => ({
+        acpSessionId: 'test-session',
+        start: async () => undefined,
+        prompt: async (_content, _onUpdate, _signal) => {
+          prompts += 1
+          return { stopReason: 'end_turn' } as never
+        },
+        close: async () => undefined,
+      }),
+      durableSidecar,
+    )
     const longHistory = Array.from({ length: 1000 }, (_, index) => user(`history-${index}`))
     ledger.failBegin = true
-    await expect((async () => { for await (const _chunk of adapter.stream(request('long-session', [message, ...longHistory]))) { /* drain */ } })()).rejects.toMatchObject({ code: 'ACP_RECOVERY_REQUIRED' })
+    await expect(
+      (async () => {
+        for await (const _chunk of adapter.stream(request('long-session', [message, ...longHistory]))) {
+          /* drain */
+        }
+      })(),
+    ).rejects.toMatchObject({ code: 'ACP_RECOVERY_REQUIRED' })
     expect(prompts).toBe(0)
     ledger.failBegin = false
-    for await (const _chunk of adapter.stream(request('long-session', [message]))) { /* drain */ }
+    for await (const _chunk of adapter.stream(request('long-session', [message]))) {
+      /* drain */
+    }
     expect(ledger.records[0]?.key.length).toBeLessThan(100)
   })
 
@@ -247,16 +524,46 @@ describe('AcpProfileAdapter generation and dispatch boundaries', () => {
     const ledger = new Ledger()
     let prompts = 0
     const message = user('current')
-    const adapter = new AcpProfileAdapter('test', () => current, seam(), () => (withSessionFacts({ header: { cwd: '/workspace' }, inheritedEventCount: 0, snapshotEvents: () => [
-      { type: 'step/start', seq: 1, data: { turn: 1, step: 0 } }, { type: 'user/message', seq: 2, data: message },
-    ] })), ledger, undefined, _options => ({
-      acpSessionId: 'test-session',
-      start: async () => undefined,
-      prompt: async (_content, _onUpdate, _signal) => { prompts += 1; throw new Error('remote interrupted') },
-      close: async () => undefined,
-    }), durableSidecar)
-    await expect((async () => { for await (const _chunk of adapter.stream(request('uncertain-session', [message]))) { /* drain */ } })()).rejects.toThrow('remote interrupted')
-    await expect((async () => { for await (const _chunk of adapter.stream(request('uncertain-session', [message]))) { /* drain */ } })()).rejects.toMatchObject({ code: 'ACP_RECOVERY_REQUIRED' })
+    const adapter = new AcpProfileAdapter(
+      'test',
+      () => current,
+      seam(),
+      () =>
+        withSessionFacts({
+          header: { cwd: '/workspace' },
+          inheritedEventCount: 0,
+          snapshotEvents: () => [
+            { type: 'step/start', seq: 1, data: { turn: 1, step: 0 } },
+            { type: 'user/message', seq: 2, data: message },
+          ],
+        }),
+      ledger,
+      undefined,
+      (_options) => ({
+        acpSessionId: 'test-session',
+        start: async () => undefined,
+        prompt: async (_content, _onUpdate, _signal) => {
+          prompts += 1
+          throw new Error('remote interrupted')
+        },
+        close: async () => undefined,
+      }),
+      durableSidecar,
+    )
+    await expect(
+      (async () => {
+        for await (const _chunk of adapter.stream(request('uncertain-session', [message]))) {
+          /* drain */
+        }
+      })(),
+    ).rejects.toThrow('remote interrupted')
+    await expect(
+      (async () => {
+        for await (const _chunk of adapter.stream(request('uncertain-session', [message]))) {
+          /* drain */
+        }
+      })(),
+    ).rejects.toMatchObject({ code: 'ACP_RECOVERY_REQUIRED' })
     expect(prompts).toBe(1)
   })
 
@@ -265,16 +572,42 @@ describe('AcpProfileAdapter generation and dispatch boundaries', () => {
     const ledger = new Ledger()
     let prompts = 0
     const message = user('current')
-    const adapter = new AcpProfileAdapter('test', () => current, seam(), () => (withSessionFacts({ header: { cwd: '/workspace' }, inheritedEventCount: 0, snapshotEvents: () => [
-      { type: 'step/start', seq: 1, data: { turn: 1, step: 0 } }, { type: 'user/message', seq: 2, data: message },
-    ] })), ledger, undefined, _options => ({
-      acpSessionId: 'test-session',
-      start: async () => undefined,
-      prompt: async (_content, _onUpdate, _signal) => { prompts += 1; return { stopReason: 'end_turn' } as never },
-      close: async () => undefined,
-    }), durableSidecar)
-    for await (const _chunk of adapter.stream(request('settled-session', [message]))) { /* drain */ }
-    await expect((async () => { for await (const _chunk of adapter.stream(request('settled-session', [message]))) { /* drain */ } })()).rejects.toMatchObject({ code: 'ACP_RECOVERY_REQUIRED' })
+    const adapter = new AcpProfileAdapter(
+      'test',
+      () => current,
+      seam(),
+      () =>
+        withSessionFacts({
+          header: { cwd: '/workspace' },
+          inheritedEventCount: 0,
+          snapshotEvents: () => [
+            { type: 'step/start', seq: 1, data: { turn: 1, step: 0 } },
+            { type: 'user/message', seq: 2, data: message },
+          ],
+        }),
+      ledger,
+      undefined,
+      (_options) => ({
+        acpSessionId: 'test-session',
+        start: async () => undefined,
+        prompt: async (_content, _onUpdate, _signal) => {
+          prompts += 1
+          return { stopReason: 'end_turn' } as never
+        },
+        close: async () => undefined,
+      }),
+      durableSidecar,
+    )
+    for await (const _chunk of adapter.stream(request('settled-session', [message]))) {
+      /* drain */
+    }
+    await expect(
+      (async () => {
+        for await (const _chunk of adapter.stream(request('settled-session', [message]))) {
+          /* drain */
+        }
+      })(),
+    ).rejects.toMatchObject({ code: 'ACP_RECOVERY_REQUIRED' })
     expect(prompts).toBe(1)
   })
 
@@ -284,19 +617,65 @@ describe('AcpProfileAdapter generation and dispatch boundaries', () => {
     const image = { attachmentId: 'image-1' as never, mediaType: 'image/png' as const, bytes: 3, width: 1, height: 1 }
     const message = createUserMessage({ content: [{ type: 'image', attachment: image }], source: { kind: 'user' } })
     const calls = { initialize: 0, start: 0, prompt: 0, close: 0 }
-    const adapter = new AcpProfileAdapter('test', () => current, seam(), () => (withSessionFacts({ header: { cwd: '/workspace' }, inheritedEventCount: 0, snapshotEvents: () => [
-      { type: 'step/start', seq: 1, data: { turn: 1, step: 0 } }, { type: 'user/message', seq: 2, data: message },
-    ] })) as never, ledger, undefined, _options => ({
+    const adapter = new AcpProfileAdapter(
+      'test',
+      () => current,
+      seam(),
+      () =>
+        withSessionFacts({
+          header: { cwd: '/workspace' },
+          inheritedEventCount: 0,
+          snapshotEvents: () => [
+            { type: 'step/start', seq: 1, data: { turn: 1, step: 0 } },
+            { type: 'user/message', seq: 2, data: message },
+          ],
+        }) as never,
+      ledger,
+      undefined,
+      (_options) => ({
         acpSessionId: 'image-session',
         agentCapabilities: {},
-        initialize: async () => { calls.initialize += 1 },
-        start: async () => { calls.start += 1 },
-        prompt: async () => { calls.prompt += 1; return { stopReason: 'end_turn' } as never },
-        close: async () => { calls.close += 1 },
-      }), durableSidecar,
-      { imageLimits: { maxImageBytes: 1024, maxImagesPerMessage: 2, maxMessageImageBytes: 4096, maxImagePixels: 1024, maxImageDimension: 1024, mediaTypes: ['image/png'] }, readImage: async () => ({ ref: image, data: Uint8Array.of(1, 2, 3) }) },
+        initialize: async () => {
+          calls.initialize += 1
+        },
+        start: async () => {
+          calls.start += 1
+        },
+        prompt: async () => {
+          calls.prompt += 1
+          return { stopReason: 'end_turn' } as never
+        },
+        close: async () => {
+          calls.close += 1
+        },
+      }),
+      durableSidecar,
+      {
+        imageLimits: {
+          maxImageBytes: 1024,
+          maxImagesPerMessage: 2,
+          maxMessageImageBytes: 4096,
+          maxImagePixels: 1024,
+          maxImageDimension: 1024,
+          mediaTypes: ['image/png'],
+        },
+        readImage: async () => ({ ref: image, data: Uint8Array.of(1, 2, 3) }),
+      },
     )
-    await expect((async () => { for await (const _chunk of adapter.stream(markAgentLoopRequest({ provider: 'acp-test', model: 'model-a', sessionId: 'image-session' as never, messages: [message] }))) { /* drain */ } })()).rejects.toMatchObject({ code: 'ACP_INPUT_NOT_SUPPORTED' })
+    await expect(
+      (async () => {
+        for await (const _chunk of adapter.stream(
+          markAgentLoopRequest({
+            provider: 'acp-test',
+            model: 'model-a',
+            sessionId: 'image-session' as never,
+            messages: [message],
+          }),
+        )) {
+          /* drain */
+        }
+      })(),
+    ).rejects.toMatchObject({ code: 'ACP_INPUT_NOT_SUPPORTED' })
     expect(calls).toEqual({ initialize: 1, start: 0, prompt: 0, close: 1 })
     expect(ledger.records).toHaveLength(0)
   })

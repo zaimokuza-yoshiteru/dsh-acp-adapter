@@ -60,7 +60,11 @@ export interface AcpOptionsSnapshotRecord {
   /** Complete bounded legacy mode state, when advertised by the Agent. */
   readonly modes?: {
     readonly currentModeId: string
-    readonly availableModes: readonly { readonly id: string; readonly name: string; readonly description?: string | null }[]
+    readonly availableModes: readonly {
+      readonly id: string
+      readonly name: string
+      readonly description?: string | null
+    }[]
   } | null
 }
 
@@ -135,10 +139,7 @@ export function acpOptionsSnapshotOf(
   while (JSON.stringify(record).length > ACP_SNAPSHOT_TOTAL_BYTES && record.options.length > 1) {
     const list = [...record.options]
     // 从尾部丢非 model 类选项；都在保底集合里则剥尾部选项的 values 列表
-    const dropIndex = list.reduce(
-      (found, candidate, index) => (isModelSnapshotOption(candidate) ? found : index),
-      -1,
-    )
+    const dropIndex = list.reduce((found, candidate, index) => (isModelSnapshotOption(candidate) ? found : index), -1)
     if (dropIndex >= 0) list.splice(dropIndex, 1)
     else {
       const tail = list[list.length - 1]
@@ -158,11 +159,22 @@ export function toOptionsSnapshotRecord(raw: unknown): AcpOptionsSnapshotRecord 
   const options: AcpOptionsSnapshotOption[] = []
   for (const entry of raw.options as unknown[]) {
     if (!isPlainObject(entry)) return undefined
-    if (typeof entry.id !== 'string' || entry.id.length === 0 || entry.id.length > ACP_SNAPSHOT_FIELD_MAX) return undefined
+    if (typeof entry.id !== 'string' || entry.id.length === 0 || entry.id.length > ACP_SNAPSHOT_FIELD_MAX)
+      return undefined
     if (typeof entry.name !== 'string' || entry.name.length > ACP_SNAPSHOT_FIELD_MAX) return undefined
-    if (entry.category !== null && (typeof entry.category !== 'string' || entry.category.length > ACP_SNAPSHOT_FIELD_MAX)) return undefined
+    if (
+      entry.category !== null &&
+      (typeof entry.category !== 'string' || entry.category.length > ACP_SNAPSHOT_FIELD_MAX)
+    )
+      return undefined
     if (typeof entry.value !== 'string' && typeof entry.value !== 'boolean') return undefined
-    if (entry.values !== null && (!Array.isArray(entry.values) || entry.values.length > ACP_SNAPSHOT_VALUES_LIMIT || !(entry.values as unknown[]).every((v) => typeof v === 'string'))) return undefined
+    if (
+      entry.values !== null &&
+      (!Array.isArray(entry.values) ||
+        entry.values.length > ACP_SNAPSHOT_VALUES_LIMIT ||
+        !(entry.values as unknown[]).every((v) => typeof v === 'string'))
+    )
+      return undefined
     options.push({
       id: entry.id,
       category: entry.category as string | null,
@@ -177,24 +189,68 @@ export function toOptionsSnapshotRecord(raw: unknown): AcpOptionsSnapshotRecord 
   let contextUsage: AcpOptionsSnapshotRecord['contextUsage']
   if (raw.contextUsage !== undefined && raw.contextUsage !== null) {
     const usage = raw.contextUsage
-    if (!isPlainObject(usage) || typeof usage.used !== 'number' || typeof usage.size !== 'number' || !Number.isFinite(usage.used) || !Number.isFinite(usage.size)
-      || usage.used < 0 || usage.size < 0) return undefined
+    if (
+      !isPlainObject(usage) ||
+      typeof usage.used !== 'number' ||
+      typeof usage.size !== 'number' ||
+      !Number.isFinite(usage.used) ||
+      !Number.isFinite(usage.size) ||
+      usage.used < 0 ||
+      usage.size < 0
+    )
+      return undefined
     const rawCost = usage.cost
-    if (rawCost !== undefined && rawCost !== null && (!isPlainObject(rawCost) || typeof rawCost.amount !== 'number' || !Number.isFinite(rawCost.amount) || typeof rawCost.currency !== 'string' || rawCost.currency.length > ACP_SNAPSHOT_FIELD_MAX)) return undefined
+    if (
+      rawCost !== undefined &&
+      rawCost !== null &&
+      (!isPlainObject(rawCost) ||
+        typeof rawCost.amount !== 'number' ||
+        !Number.isFinite(rawCost.amount) ||
+        typeof rawCost.currency !== 'string' ||
+        rawCost.currency.length > ACP_SNAPSHOT_FIELD_MAX)
+    )
+      return undefined
     contextUsage = {
       used: usage.used,
       size: usage.size,
-      cost: rawCost === undefined ? null : rawCost === null ? null : { amount: rawCost.amount as number, currency: rawCost.currency as string },
+      cost:
+        rawCost === undefined
+          ? null
+          : rawCost === null
+            ? null
+            : { amount: rawCost.amount as number, currency: rawCost.currency as string },
     }
   } else if (raw.contextUsage === null) contextUsage = null
   let modes: AcpOptionsSnapshotRecord['modes']
   if (raw.modes !== undefined && raw.modes !== null) {
-    if (!isPlainObject(raw.modes) || typeof raw.modes.currentModeId !== 'string' || !Array.isArray(raw.modes.availableModes) || raw.modes.availableModes.length > ACP_SNAPSHOT_OPTION_LIMIT) return undefined
+    if (
+      !isPlainObject(raw.modes) ||
+      typeof raw.modes.currentModeId !== 'string' ||
+      !Array.isArray(raw.modes.availableModes) ||
+      raw.modes.availableModes.length > ACP_SNAPSHOT_OPTION_LIMIT
+    )
+      return undefined
     const availableModes: { id: string; name: string; description?: string | null }[] = []
     for (const rawMode of raw.modes.availableModes as unknown[]) {
-      if (!isPlainObject(rawMode) || typeof rawMode.id !== 'string' || typeof rawMode.name !== 'string' || rawMode.id.length > ACP_SNAPSHOT_FIELD_MAX || rawMode.name.length > ACP_SNAPSHOT_FIELD_MAX) return undefined
-      if (rawMode.description !== undefined && rawMode.description !== null && (typeof rawMode.description !== 'string' || rawMode.description.length > ACP_SNAPSHOT_FIELD_MAX)) return undefined
-      availableModes.push({ id: rawMode.id, name: rawMode.name, ...(rawMode.description === undefined ? {} : { description: rawMode.description as string | null }) })
+      if (
+        !isPlainObject(rawMode) ||
+        typeof rawMode.id !== 'string' ||
+        typeof rawMode.name !== 'string' ||
+        rawMode.id.length > ACP_SNAPSHOT_FIELD_MAX ||
+        rawMode.name.length > ACP_SNAPSHOT_FIELD_MAX
+      )
+        return undefined
+      if (
+        rawMode.description !== undefined &&
+        rawMode.description !== null &&
+        (typeof rawMode.description !== 'string' || rawMode.description.length > ACP_SNAPSHOT_FIELD_MAX)
+      )
+        return undefined
+      availableModes.push({
+        id: rawMode.id,
+        name: rawMode.name,
+        ...(rawMode.description === undefined ? {} : { description: rawMode.description as string | null }),
+      })
     }
     modes = { currentModeId: raw.modes.currentModeId as string, availableModes }
   } else if (raw.modes === null) modes = null

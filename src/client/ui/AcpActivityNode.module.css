@@ -5,8 +5,12 @@
   min-width: 0;
 }
 
-.row { min-width: 0; }
-.rowSummary { min-width: 0; }
+.row {
+  min-width: 0;
+}
+.rowSummary {
+  min-width: 0;
+}
 .presentation {
   flex: 0 1 auto;
   min-width: 0;
@@ -33,15 +37,56 @@
   corner-shape: round;
   background: var(--dsw-alias-label-caption);
 }
-.body { display: grid; gap: 8px; min-width: 0; margin: 4px 0 6px 22px; }
-.json { max-height: 320px; min-width: 0; overflow: auto; }
-.raw { max-height: 320px; min-width: 0; overflow: auto; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
-.nativeBlock { min-width: 0; }
-.externalRecord { display: grid; gap: 10px; min-width: 0; padding: 8px 0 2px; }
-.externalSection { display: grid; gap: 3px; min-width: 0; }
-.externalLabel { color: var(--dsw-alias-label-tertiary, #777); font-size: 12px; font-weight: 510; }
-.externalText { margin: 0; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--dsw-alias-label-primary, #222); }
-.externalNote { margin: 0; color: var(--dsw-alias-label-tertiary, #777); font-size: 12px; }
+.body {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  margin: 4px 0 6px 22px;
+}
+.json {
+  max-height: 320px;
+  min-width: 0;
+  overflow: auto;
+}
+.raw {
+  max-height: 320px;
+  min-width: 0;
+  overflow: auto;
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.nativeBlock {
+  min-width: 0;
+}
+.externalRecord {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 8px 0 2px;
+}
+.externalSection {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.externalLabel {
+  color: var(--dsw-alias-label-tertiary, #777);
+  font-size: 12px;
+  font-weight: 510;
+}
+.externalText {
+  margin: 0;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--dsw-alias-label-primary, #222);
+}
+.externalNote {
+  margin: 0;
+  color: var(--dsw-alias-label-tertiary, #777);
+  font-size: 12px;
+}
 .openRecord {
   justify-self: start;
 }
@@ -54,5 +99,7 @@
   font-size: var(--dsh-content-font-size-secondary, 13px);
 }
 
-
-.inspection { padding: 16px 24px; overflow: auto; }
+.inspection {
+  padding: 16px 24px;
+  overflow: auto;
+}

@@ -17,7 +17,7 @@ import { catalogIdOf } from '../../contract/agent-config.ts'
  * @module @zaimokuza/dsh-acp-adapter/client/AcpSection
  */
 
-import { createElement as h, useCallback, useEffect, useRef, useState } from 'react'
+import { createElement as h, useCallback, useEffect, useId, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import {
   Button,
@@ -49,12 +49,20 @@ import css from './AcpSection.module.css'
 /** The section's translate seat (slot renderer binds it from the entry's `locale` declaration). */
 export type AcpTranslate = (key: AcpLocaleKey, params?: Record<string, string | number>) => string
 
+/** Keep catalog placement in step with the host's overlayTopMargin contract. */
+function catalogOverlayTopMargin(margin: number): number {
+  const root = document.documentElement
+  const clearance = Number.parseFloat(getComputedStyle(root).getPropertyValue('--dsh-frame-top-clearance'))
+  if (Number.isNaN(clearance)) return margin
+  return Math.max(margin, (root.hasAttribute('data-fullscreen') ? 0 : clearance) + 20)
+}
+
 /** The framework-synthesized selector hook over the entry's store (PropsStore share). */
 export type UsePanelStore = <S>(selector: (snapshot: AcpPanelSnapshot) => S, equal?: (a: S, b: S) => boolean) => S
 
 /** The controller wire handed to the section (bound in apply; plain callbacks). */
 export interface AcpSectionWire {
- /** recheck = true 即「重新检查」（收尾：丢弃 probe 缓存并重探）；省略 = 只读缓存视图。 */
+  /** recheck = true 即「重新检查」（收尾：丢弃 probe 缓存并重探）；省略 = 只读缓存视图。 */
   refreshHealth(recheck?: boolean): void
   refreshAgentHealth(agentId: string): void
   saveAgent(editingId: string | undefined, draft: AgentDraft): Promise<string | undefined>
@@ -62,7 +70,7 @@ export interface AcpSectionWire {
   setSearchableModelPicker(enabled: boolean): Promise<string | undefined>
   setToolApprovalDefault(policy: 'auto' | 'ask'): Promise<string | undefined>
   /**
- * 删除确认提示：该 profile 的既有会话 binding 计数；undefined = 计数不可
+   * 删除确认提示：该 profile 的既有会话 binding 计数；undefined = 计数不可
    * 得（RPC 失败/畸形），确认块退回无计数的基础文案（不冒充 0）。
    */
   countBoundSessions(id: string): Promise<number | undefined>
@@ -76,9 +84,7 @@ export interface AcpSectionProps {
 }
 
 /** Which editor card is open; the add flow carries its seed draft (empty or a one-click template). */
-type EditorState =
-  | { mode: 'add'; seed: AgentDraft }
-  | { mode: 'edit'; id: string }
+type EditorState = { mode: 'add'; seed: AgentDraft } | { mode: 'edit'; id: string }
 
 /** The change events our inputs care about (the attribute bag types handlers loosely; see react.d.ts). */
 interface InputEvent {
@@ -99,7 +105,11 @@ export function AcpSection(props: AcpSectionProps): ReactNode {
   return h(Loaded, { t, useStore, panel })
 }
 
-function Loaded({ t, useStore, panel }: {
+function Loaded({
+  t,
+  useStore,
+  panel,
+}: {
   t: AcpTranslate
   useStore: UsePanelStore
   panel: AcpSectionWire
@@ -117,32 +127,36 @@ function Loaded({ t, useStore, panel }: {
   const [addMenuSide, setAddMenuSide] = useState<'bottom' | 'top'>('bottom')
   const addMenuSideRef = useRef<'bottom' | 'top'>('bottom')
   const addButtonRef = useRef<HTMLButtonElement | null>(null)
+  const catalogMenuId = `acp-catalog-${useId().replaceAll(':', '')}`
   const getCatalogAnchorRect = useCallback((): DOMRect | null => {
     const button = addButtonRef.current
     if (button === null) return null
     const rect = button.getBoundingClientRect()
-    const list = css.catalogMenu === undefined
-      ? null
-      : document.getElementsByClassName(css.catalogMenu).item(0) as HTMLElement | null
-    const topClearanceValue = getComputedStyle(document.documentElement).getPropertyValue('--dsh-frame-top-clearance')
-    const topClearance = Math.max(12, Number.parseFloat(topClearanceValue) || 12)
+    // `listClassName` is Menu's public portal styling hook. A per-instance
+    // class prevents a second ACP panel from receiving this menu's sizing.
+    const list = document.getElementsByClassName(catalogMenuId).item(0) as HTMLElement | null
+    // The overlay token is a CSS `calc()` and cannot be parsed with parseFloat.
+    // Mirror the upstream Menu's numeric clearance/fullscreen contract instead.
+    const overlayTop = catalogOverlayTopMargin(12)
     const below = Math.max(0, window.innerHeight - rect.bottom - 16)
-    const above = Math.max(0, rect.top - topClearance - 4)
+    const above = Math.max(0, rect.top - overlayTop - 4)
     // Prefer the lower half of the viewport for the menu; anchors with more
     // usable room above open upward. Long catalogs still scroll within either side.
     const nextSide = below >= above ? 'bottom' : 'top'
     const width = `${rect.width}px`
     const height = `${nextSide === 'bottom' ? below : above}px`
     if (list !== null) {
-      if (list.style.getPropertyValue('--acp-catalog-menu-width') !== width) list.style.setProperty('--acp-catalog-menu-width', width)
-      if (list.style.getPropertyValue('--acp-catalog-menu-max-height') !== height) list.style.setProperty('--acp-catalog-menu-max-height', height)
+      if (list.style.getPropertyValue('--acp-catalog-menu-width') !== width)
+        list.style.setProperty('--acp-catalog-menu-width', width)
+      if (list.style.getPropertyValue('--acp-catalog-menu-max-height') !== height)
+        list.style.setProperty('--acp-catalog-menu-max-height', height)
     }
     if (addMenuSideRef.current !== nextSide) {
       addMenuSideRef.current = nextSide
       setAddMenuSide(nextSide)
     }
     return rect
-  }, [])
+  }, [catalogMenuId])
   // Opening the panel reads saved health facts; only an explicit recheck probes.
   useEffect(() => {
     panel.refreshHealth()
@@ -158,14 +172,14 @@ function Loaded({ t, useStore, panel }: {
   }
   const openEdit = (id: string): void => {
     setNotice(null)
-    setEditor((previous) => previous?.mode === 'edit' && previous.id === id ? null : { mode: 'edit', id })
+    setEditor((previous) => (previous?.mode === 'edit' && previous.id === id ? null : { mode: 'edit', id }))
   }
   const onDeleted = (id: string): void => {
     // Only the deleted row's own editor closes; an unrelated add/edit draft survives.
-    setEditor((previous) => previous?.mode === 'edit' && previous.id === id ? null : previous)
+    setEditor((previous) => (previous?.mode === 'edit' && previous.id === id ? null : previous))
     setNotice('deleted')
   }
- // singleton 冲突的「打开已有配置」出口：关掉当前草稿，改开已有 profile 的编辑器
+  // singleton 冲突的「打开已有配置」出口：关掉当前草稿，改开已有 profile 的编辑器
   const openExisting = (id: string): void => {
     setNotice(null)
     setEditor({ mode: 'edit', id })
@@ -175,11 +189,12 @@ function Loaded({ t, useStore, panel }: {
   const children: ReactNode[] = []
 
   if (settings.status !== 'ready') {
-    const key = settings.status === 'loading'
-      ? 'settingsLoading'
-      : settings.status === 'unavailable'
-        ? 'settingsUnavailable'
-        : 'settingsInvalid'
+    const key =
+      settings.status === 'loading'
+        ? 'settingsLoading'
+        : settings.status === 'unavailable'
+          ? 'settingsUnavailable'
+          : 'settingsInvalid'
     const cls = settings.status === 'invalid' ? css.error : css.hint
     children.push(h('p', { key: 'status', className: cls }, t(key)))
     return h('div', { className: css.section, 'data-dsh-acp-panel': '' }, children)
@@ -208,21 +223,39 @@ function Loaded({ t, useStore, panel }: {
     setApprovalSaving(true)
     setApprovalSaveFailed(false)
     try {
-      if (await panel.setToolApprovalDefault(policy) !== undefined) setApprovalSaveFailed(true)
-    } catch { setApprovalSaveFailed(true) } finally { setApprovalSaving(false) }
+      if ((await panel.setToolApprovalDefault(policy)) !== undefined) setApprovalSaveFailed(true)
+    } catch {
+      setApprovalSaveFailed(true)
+    } finally {
+      setApprovalSaving(false)
+    }
   }
 
   if (readOnly) children.push(h('p', { key: 'ro', className: css.notice }, t('readOnly')))
   if (notice !== null) {
-    children.push(h('p', {
-      key: 'notice', className: css.saved, role: 'status', 'aria-live': 'polite',
-    }, t(notice === 'saved' ? 'savedNotice' : 'deletedNotice')))
+    children.push(
+      h(
+        'p',
+        {
+          key: 'notice',
+          className: css.saved,
+          role: 'status',
+          'aria-live': 'polite',
+        },
+        t(notice === 'saved' ? 'savedNotice' : 'deletedNotice'),
+      ),
+    )
   }
   if (snapshot.health.status === 'unreachable') {
     children.push(h('p', { key: 'unreachable', className: css.notice }, t('healthUnreachable')))
     if (snapshot.health.message !== undefined) {
-      children.push(h('p', { key: 'unreachable-detail', className: css.hint },
-        localizedDiagnostic(t, 'healthCheckTransportFailed', snapshot.health.message)))
+      children.push(
+        h(
+          'p',
+          { key: 'unreachable-detail', className: css.hint },
+          localizedDiagnostic(t, 'healthCheckTransportFailed', snapshot.health.message),
+        ),
+      )
     }
   }
   const refreshing = snapshot.health.status === 'loading'
@@ -233,150 +266,224 @@ function Loaded({ t, useStore, panel }: {
   }
 
   if (ids.length > 0) {
-    children.push(h('ul', { key: 'rows', className: css.rows },
-      ids.map((id) => {
-        const config = agents[id] as AcpAgentConfig
-        const editing = editor?.mode === 'edit' && editor.id === id
-        return h(AgentCard, {
-          key: id,
-          t,
-          id,
-          config,
-          health: snapshot.health,
-          readOnly,
-          editing,
-          agents,
-          panel,
-          onEdit: () => { openEdit(id) },
-          onDeleted,
-          onCloseEditor: closeEditor,
-          onOpenAgent: openExisting,
-        })
-      }),
-    ))
+    children.push(
+      h(
+        'ul',
+        { key: 'rows', className: css.rows },
+        ids.map((id) => {
+          const config = agents[id] as AcpAgentConfig
+          const editing = editor?.mode === 'edit' && editor.id === id
+          return h(AgentCard, {
+            key: id,
+            t,
+            id,
+            config,
+            health: snapshot.health,
+            readOnly,
+            editing,
+            agents,
+            panel,
+            onEdit: () => {
+              openEdit(id)
+            },
+            onDeleted,
+            onCloseEditor: closeEditor,
+            onOpenAgent: openExisting,
+          })
+        }),
+      ),
+    )
   }
 
   if (editor?.mode === 'add') {
-    children.push(h('div', { key: 'add', className: css.rowCard },
-      h(AgentForm, {
-        key: 'add-form',
-        t,
-        initial: editor.seed,
-        editingId: undefined,
-        agents,
-        readOnly,
-        panel,
-        onClose: closeEditor,
-        onOpenAgent: openExisting,
-      }),
-    ))
+    children.push(
+      h(
+        'div',
+        { key: 'add', className: css.rowCard },
+        h(AgentForm, {
+          key: 'add-form',
+          t,
+          initial: editor.seed,
+          editingId: undefined,
+          agents,
+          readOnly,
+          panel,
+          onClose: closeEditor,
+          onOpenAgent: openExisting,
+        }),
+      ),
+    )
   }
 
   // Match the native Models settings footer: two equal-width dashed entry
   // points below the rows. The template chooser itself is the host Menu
   // primitive, so its surface and interaction stay native across themes.
   const customAgentItemId = 'custom'
-  const verified = ACP_CATALOG_ENTRIES.filter(entry => entry.verification === 'adapter-tested')
-  const unverified = ACP_CATALOG_ENTRIES.filter(entry => entry.verification === 'unverified')
+  const verified = ACP_CATALOG_ENTRIES.filter((entry) => entry.verification === 'adapter-tested')
+  const unverified = ACP_CATALOG_ENTRIES.filter((entry) => entry.verification === 'unverified')
   const catalogItem = (entry: AcpCatalogEntry) => ({
     id: entry.id,
-    label: h('span', { className: css.catalogEntry, title: entry.name },
+    label: h(
+      'span',
+      { className: css.catalogEntry, title: entry.name },
       h('span', { className: css.catalogName }, entry.name),
       entry.version === undefined ? null : h('span', { className: css.catalogVersion }, ` · ${entry.version}`),
     ),
   })
-  children.push(h('div', { key: 'actions', className: css.addActions },
-    h(Menu, {
-      open: addMenuOpen,
-      portal: true,
-      dense: true,
-      autoFocus: true,
-      className: css.addMenu ?? '',
-      listClassName: css.catalogMenu ?? '',
-      side: addMenuSide,
-      getAnchorRect: getCatalogAnchorRect,
-      items: [
-        ...(verified.length === 0 ? [] : [{ type: 'label' as const, id: 'verified-label', text: t('catalogVerified', { count: verified.length }) }]),
-        ...verified.map(catalogItem),
-        ...(verified.length === 0 || unverified.length === 0 ? [] : [{ type: 'separator' as const, id: 'verification-divider' }]),
-        ...(unverified.length === 0 ? [] : [{ type: 'label' as const, id: 'unverified-label', text: t('catalogUnverified', { count: unverified.length }) }]),
-        ...unverified.map(catalogItem),
-      ],
-      footer: [
-        { type: 'label', id: 'verification-scope', text: t('catalogVerificationScope') },
-        { id: customAgentItemId, label: h('span', { className: css.catalogEntry }, t('addCustom')) },
-      ],
-      onClose: () => { setAddMenuOpen(false) },
-      onSelect: (id: string) => {
-        setAddMenuOpen(false)
-        if (id === customAgentItemId) {
-          openAdd(emptyDraft())
-          return
-        }
-        const seed = draftFromCatalogEntry(id)
-        if (seed !== undefined) openAdd(seed)
-      },
-      anchor: h('button', {
-        type: 'button',
-        className: css.addButton,
-        ref: addButtonRef,
-        disabled: readOnly,
-        'aria-haspopup': 'menu',
-        'aria-expanded': addMenuOpen,
-        onClick: () => { setAddMenuOpen((previous) => !previous) },
-      },
-        h(IconPlusOutlineMedium, { size: 14 }),
-        t('addAgent'),
+  children.push(
+    h(
+      'div',
+      { key: 'actions', className: css.addActions },
+      h(Menu, {
+        open: addMenuOpen,
+        portal: true,
+        dense: true,
+        autoFocus: true,
+        className: css.addMenu ?? '',
+        listClassName: `${css.catalogMenu ?? ''} ${catalogMenuId}`,
+        side: addMenuSide,
+        getAnchorRect: getCatalogAnchorRect,
+        items: [
+          ...(verified.length === 0
+            ? []
+            : [
+                {
+                  type: 'label' as const,
+                  id: 'verified-label',
+                  text: t('catalogVerified', { count: verified.length }),
+                },
+              ]),
+          ...verified.map(catalogItem),
+          ...(verified.length === 0 || unverified.length === 0
+            ? []
+            : [{ type: 'separator' as const, id: 'verification-divider' }]),
+          ...(unverified.length === 0
+            ? []
+            : [
+                {
+                  type: 'label' as const,
+                  id: 'unverified-label',
+                  text: t('catalogUnverified', { count: unverified.length }),
+                },
+              ]),
+          ...unverified.map(catalogItem),
+        ],
+        footer: [
+          { type: 'label', id: 'verification-scope', text: t('catalogVerificationScope') },
+          { id: customAgentItemId, label: h('span', { className: css.catalogEntry }, t('addCustom')) },
+        ],
+        onClose: () => {
+          setAddMenuOpen(false)
+        },
+        onSelect: (id: string) => {
+          setAddMenuOpen(false)
+          if (id === customAgentItemId) {
+            openAdd(emptyDraft())
+            return
+          }
+          const seed = draftFromCatalogEntry(id)
+          if (seed !== undefined) openAdd(seed)
+        },
+        anchor: h(
+          'button',
+          {
+            type: 'button',
+            className: css.addButton,
+            ref: addButtonRef,
+            disabled: readOnly,
+            'aria-haspopup': 'menu',
+            'aria-expanded': addMenuOpen,
+            onClick: () => {
+              setAddMenuOpen((previous) => !previous)
+            },
+          },
+          h(IconPlusOutlineMedium, { size: 14 }),
+          t('addAgent'),
+        ),
+      }),
+      h(
+        'button',
+        {
+          type: 'button',
+          className: css.addButton,
+          disabled: refreshing || checkingAnyAgent,
+          onClick: () => {
+            panel.refreshHealth(true)
+          },
+        },
+        h(IconRefreshOutlineMedium, { size: 14 }),
+        t(refreshing ? 'refreshing' : 'refresh'),
       ),
-    }),
-    h('button', {
-      type: 'button',
-      className: css.addButton,
-      disabled: refreshing || checkingAnyAgent,
-      onClick: () => { panel.refreshHealth(true) },
-    },
-      h(IconRefreshOutlineMedium, { size: 14 }),
-      t(refreshing ? 'refreshing' : 'refresh'),
     ),
-  ))
+  )
 
-  children.push(h('section', { key: 'tool-approval', className: css.preferences, 'aria-labelledby': 'dsh-acp-approval-title' },
-    h('h2', { id: 'dsh-acp-approval-title', className: css.preferencesTitle }, t('toolApprovalDefault')),
-    h('p', { className: css.hint }, t('toolApprovalDefaultHelp')),
-    h(Menu, {
-      open: approvalMenuOpen, portal: true, dense: true, autoFocus: true,
-      side: 'bottom', align: 'start', selectedId: settings.toolApprovalDefault,
-      items: [
-        { id: 'auto', label: h('span', { className: css.catalogEntry }, t('toolApprovalAuto')) },
-        { id: 'ask', label: h('span', { className: css.catalogEntry }, t('toolApprovalAsk')) },
-      ],
-      onClose: () => setApprovalMenuOpen(false),
-      onSelect: (id: string) => { setApprovalMenuOpen(false); void onApprovalDefaultChange(id) },
-      anchor: h('button', { type: 'button', className: css.approvalButton, disabled: readOnly || approvalSaving,
-        'aria-label': t('toolApprovalDefault'), 'aria-haspopup': 'menu', 'aria-expanded': approvalMenuOpen,
-        onClick: () => setApprovalMenuOpen(value => !value) },
-      t(settings.toolApprovalDefault === 'auto' ? 'toolApprovalAuto' : 'toolApprovalAsk'), h(IconChevronDownOutlineMedium, null)),
-    }),
-    approvalSaveFailed ? h('p', { className: css.error, role: 'alert' }, t('toolApprovalSaveFailed')) : null,
-  ))
+  children.push(
+    h(
+      'section',
+      { key: 'tool-approval', className: css.preferences, 'aria-labelledby': 'dsh-acp-approval-title' },
+      h('h2', { id: 'dsh-acp-approval-title', className: css.preferencesTitle }, t('toolApprovalDefault')),
+      h('p', { className: css.hint }, t('toolApprovalDefaultHelp')),
+      h(Menu, {
+        open: approvalMenuOpen,
+        portal: true,
+        dense: true,
+        autoFocus: true,
+        side: 'bottom',
+        align: 'start',
+        selectedId: settings.toolApprovalDefault,
+        items: [
+          { id: 'auto', label: h('span', { className: css.catalogEntry }, t('toolApprovalAuto')) },
+          { id: 'ask', label: h('span', { className: css.catalogEntry }, t('toolApprovalAsk')) },
+        ],
+        onClose: () => setApprovalMenuOpen(false),
+        onSelect: (id: string) => {
+          setApprovalMenuOpen(false)
+          void onApprovalDefaultChange(id)
+        },
+        anchor: h(
+          'button',
+          {
+            type: 'button',
+            className: css.approvalButton,
+            disabled: readOnly || approvalSaving,
+            'aria-label': t('toolApprovalDefault'),
+            'aria-haspopup': 'menu',
+            'aria-expanded': approvalMenuOpen,
+            onClick: () => setApprovalMenuOpen((value) => !value),
+          },
+          t(settings.toolApprovalDefault === 'auto' ? 'toolApprovalAuto' : 'toolApprovalAsk'),
+          h(IconChevronDownOutlineMedium, null),
+        ),
+      }),
+      approvalSaveFailed ? h('p', { className: css.error, role: 'alert' }, t('toolApprovalSaveFailed')) : null,
+    ),
+  )
 
-  children.push(h('section', { key: 'preferences', className: css.preferences, 'aria-labelledby': 'dsh-acp-preferences-title' },
-    h('h2', { id: 'dsh-acp-preferences-title', className: css.preferencesTitle }, t('interfacePreferences')),
-    h('div', { className: css.pickerSetting },
-      h('label', { className: css.pickerSettingLabel },
-        h('input', {
-          type: 'checkbox',
-          checked: settings.searchableModelPicker,
-          disabled: readOnly || pickerSaving,
-          onChange: onSearchablePickerChange,
-          'aria-describedby': 'dsh-acp-searchable-picker-description',
-        }),
-        h('span', null, t('searchableModelPicker')),
+  children.push(
+    h(
+      'section',
+      { key: 'preferences', className: css.preferences, 'aria-labelledby': 'dsh-acp-preferences-title' },
+      h('h2', { id: 'dsh-acp-preferences-title', className: css.preferencesTitle }, t('interfacePreferences')),
+      h(
+        'div',
+        { className: css.pickerSetting },
+        h(
+          'label',
+          { className: css.pickerSettingLabel },
+          h('input', {
+            type: 'checkbox',
+            checked: settings.searchableModelPicker,
+            disabled: readOnly || pickerSaving,
+            onChange: onSearchablePickerChange,
+            'aria-describedby': 'dsh-acp-searchable-picker-description',
+          }),
+          h('span', null, t('searchableModelPicker')),
+        ),
+        h('p', { id: 'dsh-acp-searchable-picker-description', className: css.hint }, t('searchableModelPickerHint')),
+        pickerSaveFailed ? h('p', { className: css.error, role: 'alert' }, t('searchableModelPickerSaveFailed')) : null,
       ),
-      h('p', { id: 'dsh-acp-searchable-picker-description', className: css.hint }, t('searchableModelPickerHint')),
-      pickerSaveFailed ? h('p', { className: css.error, role: 'alert' }, t('searchableModelPickerSaveFailed')) : null,
     ),
-  ))
+  )
 
   return h('div', { className: css.section, 'data-dsh-acp-panel': '' }, children)
 }
@@ -400,14 +507,22 @@ function AgentCard(props: {
   const [confirming, setConfirming] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [failure, setFailure] = useState<string | undefined>(undefined)
- // 删除确认的绑定计数（确认块打开时现取；undefined = 不可得，不冒充 0）
+  // 删除确认的绑定计数（确认块打开时现取；undefined = 不可得，不冒充 0）
   const [boundCount, setBoundCount] = useState<number | undefined>(undefined)
+  const boundCountGeneration = useRef(0)
+  useEffect(
+    () => () => {
+      boundCountGeneration.current += 1
+    },
+    [],
+  )
   const checking = props.health.status === 'loading' || props.health.checkingAgentIds.includes(id)
   const checkError = props.health.agentErrors[id]
   const confirmDelete = (): void => {
     setDeleting(true)
     setFailure(undefined)
-    void panel.deleteAgent(id)
+    void panel
+      .deleteAgent(id)
       .then((message) => {
         if (message !== undefined) {
           setFailure(localizedDiagnostic(t, 'actionDeleteFailed', message))
@@ -418,107 +533,162 @@ function AgentCard(props: {
       .catch((error: unknown) => {
         setFailure(localizedDiagnostic(t, 'actionDeleteFailed', errorMessageOf(error)))
       })
-      .finally(() => { setDeleting(false) })
+      .finally(() => {
+        setDeleting(false)
+      })
   }
 
   const healthRow = healthRowOf(props.health.rows, id)
   const state = healthRow?.state
-  const statusText = state === undefined
-    ? t('stateSavedUnverified')
-    : stateText(t, state)
+  const statusText = state === undefined ? t('stateSavedUnverified') : stateText(t, state)
   const statusTone = state === 'ready' ? 'success' : 'neutral'
   const diagnostic = healthDiagnostic(t, config.command, healthRow, checkError)
 
   const children: ReactNode[] = [
-    h('div', { key: 'head', className: css.rowHead },
-      h('span', { className: css.rowIdentity },
+    h(
+      'div',
+      { key: 'head', className: css.rowHead },
+      h(
+        'span',
+        { className: css.rowIdentity },
         h('span', { className: css.rowName }, config.name),
         h(Tag, { tone: statusTone }, statusText),
       ),
-      h('span', { className: css.rowActions },
-        h(Button, {
-          variant: 'outline',
-          size: 'sm',
-          disabled: checking,
-          onClick: () => { panel.refreshAgentHealth(id) },
-        }, t(checking ? 'refreshing' : 'refresh')),
-        h(Button, {
-          variant: 'outline',
-          size: 'sm',
-          onClick: props.onEdit,
-        }, t('edit')),
-        h(Button, {
-          variant: 'ghost',
-          size: 'sm',
-          className: css.dangerButton,
-          disabled: props.readOnly || deleting,
-          onClick: () => {
-            setFailure(undefined)
-            setBoundCount(undefined)
-            setConfirming(true)
- // 进入确认块时现取绑定计数（点击时刻的新鲜事实，不用缓存健康视图）
-            void panel.countBoundSessions(id).then(setBoundCount)
+      h(
+        'span',
+        { className: css.rowActions },
+        h(
+          Button,
+          {
+            variant: 'outline',
+            size: 'sm',
+            disabled: checking,
+            onClick: () => {
+              panel.refreshAgentHealth(id)
+            },
           },
-        }, t('remove')),
+          t(checking ? 'refreshing' : 'refresh'),
+        ),
+        h(
+          Button,
+          {
+            variant: 'outline',
+            size: 'sm',
+            onClick: props.onEdit,
+          },
+          t('edit'),
+        ),
+        h(
+          Button,
+          {
+            variant: 'ghost',
+            size: 'sm',
+            className: css.dangerButton,
+            disabled: props.readOnly || deleting,
+            onClick: () => {
+              setFailure(undefined)
+              setBoundCount(undefined)
+              setConfirming(true)
+              // 进入确认块时现取绑定计数（点击时刻的新鲜事实，不用缓存健康视图）
+              const generation = ++boundCountGeneration.current
+              void panel
+                .countBoundSessions(id)
+                .then((count) => {
+                  if (boundCountGeneration.current === generation) setBoundCount(count)
+                })
+                .catch(() => {
+                  if (boundCountGeneration.current === generation) setBoundCount(undefined)
+                })
+            },
+          },
+          t('remove'),
+        ),
       ),
     ),
   ]
 
   if (healthRow?.probe.status === 'ok' && healthRow.probe.versionCompatibility === 'different') {
     const reference = catalogEntryOf(catalogIdOf(id, config))?.version
-    children.push(h('p', { key: 'version-reference', className: css.hint }, t('catalogVersionDifferent', {
-      actual: healthRow.probe.agentInfo?.version ?? healthRow.version ?? '—', reference: reference ?? '—',
-    })))
+    children.push(
+      h(
+        'p',
+        { key: 'version-reference', className: css.hint },
+        t('catalogVersionDifferent', {
+          actual: healthRow.probe.agentInfo?.version ?? healthRow.version ?? '—',
+          reference: reference ?? '—',
+        }),
+      ),
+    )
   }
   if (diagnostic !== undefined) {
-    children.push(h('p', { key: 'diagnostic', className: css.error, role: 'alert' },
-      diagnostic))
+    children.push(h('p', { key: 'diagnostic', className: css.error, role: 'alert' }, diagnostic))
   }
   if (state === 'auth-required') {
     const hint = agentLoginHint(id, config)
-    children.push(h('p', { key: 'login-hint', className: css.hint },
-      hint === undefined ? t('loginGenericInstruction') : t('loginInstruction', { hint })))
+    children.push(
+      h(
+        'p',
+        { key: 'login-hint', className: css.hint },
+        hint === undefined ? t('loginGenericInstruction') : t('loginInstruction', { hint }),
+      ),
+    )
   }
   if (state === 'incompatible') {
-    children.push(h('p', { key: 'incompatible-hint', className: css.hint },
-      t('incompatibleInstruction')))
+    children.push(h('p', { key: 'incompatible-hint', className: css.hint }, t('incompatibleInstruction')))
   }
 
   if (confirming) {
-    children.push(h('div', { key: 'delete', className: css.deleteBlock },
-      h('p', { className: css.deleteText }, t('removeConfirm', { name: config.name })),
- // 预告：计数 > 0 时明示后果——这些会话将显示 backend-unavailable，
-      // 不会静默改用其他 profile（countBoundSessions 不可得不渲染本行，不冒充 0）
-      boundCount === undefined || boundCount === 0
-        ? null
-        : h('p', { className: css.deleteText }, t('removeConfirmBound', { count: boundCount })),
-      failure === undefined ? null : h('p', { className: css.error }, failure),
-      h(Button, {
-        variant: 'ghost',
-        className: css.dangerButton,
-        disabled: deleting,
-        onClick: confirmDelete,
-      }, t(deleting ? 'removing' : 'remove')),
-      h(Button, {
-        variant: 'outline',
-        disabled: deleting,
-        onClick: () => { setConfirming(false) },
-      }, t('cancel')),
-    ))
+    children.push(
+      h(
+        'div',
+        { key: 'delete', className: css.deleteBlock },
+        h('p', { className: css.deleteText }, t('removeConfirm', { name: config.name })),
+        // 预告：计数 > 0 时明示后果——这些会话将显示 backend-unavailable，
+        // 不会静默改用其他 profile（countBoundSessions 不可得不渲染本行，不冒充 0）
+        boundCount === undefined || boundCount === 0
+          ? null
+          : h('p', { className: css.deleteText }, t('removeConfirmBound', { count: boundCount })),
+        failure === undefined ? null : h('p', { className: css.error }, failure),
+        h(
+          Button,
+          {
+            variant: 'ghost',
+            className: css.dangerButton,
+            disabled: deleting,
+            onClick: confirmDelete,
+          },
+          t(deleting ? 'removing' : 'remove'),
+        ),
+        h(
+          Button,
+          {
+            variant: 'outline',
+            disabled: deleting,
+            onClick: () => {
+              boundCountGeneration.current += 1
+              setConfirming(false)
+            },
+          },
+          t('cancel'),
+        ),
+      ),
+    )
   }
 
   if (props.editing) {
-    children.push(h(AgentForm, {
-      key: `edit-${id}`,
-      t,
-      initial: draftFromAgent(id, config),
-      editingId: id,
-      agents: props.agents,
-      readOnly: props.readOnly,
-      panel,
-      onClose: props.onCloseEditor,
-      onOpenAgent: props.onOpenAgent,
-    }))
+    children.push(
+      h(AgentForm, {
+        key: `edit-${id}`,
+        t,
+        initial: draftFromAgent(id, config),
+        editingId: id,
+        agents: props.agents,
+        readOnly: props.readOnly,
+        panel,
+        onClose: props.onCloseEditor,
+        onOpenAgent: props.onOpenAgent,
+      }),
+    )
   }
 
   return h('li', { className: css.rowCard, 'data-dsh-acp-agent': props.id }, children)
@@ -535,17 +705,18 @@ function healthDiagnostic(
     return localizedDiagnostic(t, 'healthCheckTransportFailed', transportError)
   }
   if (health?.probe.status !== 'error') return undefined
-  const key: AcpLocaleKey = health.probe.failureKind === 'spawn-failure'
-    ? 'probeNotInstalled'
-    : health.probe.failureKind === 'auth_required'
-      ? 'probeAuthRequired'
-      : health.probe.failureKind === 'timeout'
-        ? 'probeTimeout'
-        : health.probe.failureKind === 'crash'
-          ? 'probeCrash'
-          : health.probe.failureKind === 'aborted'
-            ? 'probeCancelled'
-            : 'probeProtocolError'
+  const key: AcpLocaleKey =
+    health.probe.failureKind === 'spawn-failure'
+      ? 'probeNotInstalled'
+      : health.probe.failureKind === 'auth_required'
+        ? 'probeAuthRequired'
+        : health.probe.failureKind === 'timeout'
+          ? 'probeTimeout'
+          : health.probe.failureKind === 'crash'
+            ? 'probeCrash'
+            : health.probe.failureKind === 'aborted'
+              ? 'probeCancelled'
+              : 'probeProtocolError'
   return localizedDiagnostic(t, key, health.probe.message, { command })
 }
 
@@ -566,7 +737,7 @@ function AgentForm(props: {
   readOnly: boolean
   panel: AcpSectionWire
   onClose(changed: boolean): void
- /** singleton 冲突的出口：打开占用该 runtime 的已有 profile 的编辑器。 */
+  /** singleton 冲突的出口：打开占用该 runtime 的已有 profile 的编辑器。 */
   onOpenAgent(id: string): void
 }): ReactNode {
   const { t } = props
@@ -592,7 +763,8 @@ function AgentForm(props: {
     if (validation.config === undefined) return
     setBusy(true)
     setFailure(undefined)
-    void props.panel.saveAgent(props.editingId, draft)
+    void props.panel
+      .saveAgent(props.editingId, draft)
       .then((message) => {
         if (message !== undefined) {
           setFailure(localizedDiagnostic(t, 'actionSaveFailed', message))
@@ -603,7 +775,9 @@ function AgentForm(props: {
       .catch((error: unknown) => {
         setFailure(localizedDiagnostic(t, 'actionSaveFailed', errorMessageOf(error)))
       })
-      .finally(() => { setBusy(false) })
+      .finally(() => {
+        setBusy(false)
+      })
   }
 
   // Required-field errors stay quiet over a pristine empty field until the
@@ -615,14 +789,24 @@ function AgentForm(props: {
   // catalog 播种条目的安装指引（来自 registry 分发事实；纯展示，不自动安装）
   const seededEntry = props.editingId === undefined ? catalogEntryOf(draft.catalogId ?? draft.id) : undefined
   const loginHint = agentLoginHint(draft.id, draft)
-  const envCount = draft.envText.split('\n').filter(line => line.trim()).length + Object.keys(draft.maskedEnv ?? {}).length
+  const envCount =
+    draft.envText.split('\n').filter((line) => line.trim()).length + Object.keys(draft.maskedEnv ?? {}).length
 
-  return h('div', { className: css.editor },
-    h('div', { className: css.editorHeader },
-      h('span', { className: css.editorTitle }, t(props.editingId === undefined ? 'editorTitleAdd' : 'editorTitleEdit')),
+  return h(
+    'div',
+    { className: css.editor },
+    h(
+      'div',
+      { className: css.editorHeader },
+      h(
+        'span',
+        { className: css.editorTitle },
+        t(props.editingId === undefined ? 'editorTitleAdd' : 'editorTitleEdit'),
+      ),
     ),
-    props.editingId === undefined && seededEntry !== undefined ? h('p', { key: 'install-hint', className: css.hint },
-      t('catalogInstallHint', { hint: seededEntry.installHint })) : null,
+    props.editingId === undefined && seededEntry !== undefined
+      ? h('p', { key: 'install-hint', className: css.hint }, t('catalogInstallHint', { hint: seededEntry.installHint }))
+      : null,
     seededEntry?.requiresCommand ? h('p', { className: css.hint }, t('catalogManualCommand')) : null,
     textField({
       t,
@@ -633,128 +817,194 @@ function AgentForm(props: {
       value: draft.name,
       disabled,
       placeholder: 'Devin',
-      onChange: (value) => { edit({ name: value }) },
+      onChange: (value) => {
+        edit({ name: value })
+      },
     }),
-    h('button', {
-      type: 'button',
-      className: css.advancedToggle,
-      'aria-expanded': advancedOpen,
-      onClick: () => { setAdvancedOpen(previous => !previous) },
-    },
+    h(
+      'button',
+      {
+        type: 'button',
+        className: css.advancedToggle,
+        'aria-expanded': advancedOpen,
+        onClick: () => {
+          setAdvancedOpen((previous) => !previous)
+        },
+      },
       h(IconChevronDownOutlineMedium, {
         size: 14,
         className: advancedOpen ? `${css.chevron} ${css.chevronFlip}` : css.chevron,
       }),
       t('advancedSettings'),
     ),
-    advancedOpen ? h('div', { className: css.advancedFields },
-      textField({
-        t,
-        id: `dsh-acp-${scope}-id`,
-        label: t('fieldId'),
-        hint: t('fieldIdHint'),
-        error: shown(validation.id, draft.id),
-        value: draft.id,
-        disabled,
-        placeholder: 'devin',
-        onChange: (value) => { edit({ id: value }) },
-      }),
-      textField({
-        t,
-        id: `dsh-acp-${scope}-command`,
-        label: t('fieldCommand'),
-        hint: t('fieldCommandHint'),
-        error: shown(validation.command, draft.command),
-        value: draft.command,
-        disabled,
-        placeholder: 'devin',
-        onChange: (value) => { edit({ command: value }) },
-      }),
-      textField({
-        t,
-        id: `dsh-acp-${scope}-args`,
-        label: t('fieldArgs'),
-        hint: t('fieldArgsHint'),
-        value: draft.argsText,
-        disabled,
-        multiline: true,
-        placeholder: 'acp',
-        onChange: (value) => { edit({ argsText: value }) },
-      }),
-      h('p', { className: css.hint }, loginHint === undefined
-        ? t('loginGenericInstruction') : t('loginSetupInstruction', { hint: loginHint })),
-    ) : null,
-    h('button', {
-      type: 'button',
-      className: css.advancedToggle,
-      'aria-expanded': optionsOpen,
-      onClick: () => { setOptionsOpen(previous => !previous) },
-    },
+    advancedOpen
+      ? h(
+          'div',
+          { className: css.advancedFields },
+          textField({
+            t,
+            id: `dsh-acp-${scope}-id`,
+            label: t('fieldId'),
+            hint: t('fieldIdHint'),
+            error: shown(validation.id, draft.id),
+            value: draft.id,
+            disabled,
+            placeholder: 'devin',
+            onChange: (value) => {
+              edit({ id: value })
+            },
+          }),
+          textField({
+            t,
+            id: `dsh-acp-${scope}-command`,
+            label: t('fieldCommand'),
+            hint: t('fieldCommandHint'),
+            error: shown(validation.command, draft.command),
+            value: draft.command,
+            disabled,
+            placeholder: 'devin',
+            onChange: (value) => {
+              edit({ command: value })
+            },
+          }),
+          textField({
+            t,
+            id: `dsh-acp-${scope}-args`,
+            label: t('fieldArgs'),
+            hint: t('fieldArgsHint'),
+            value: draft.argsText,
+            disabled,
+            multiline: true,
+            placeholder: 'acp',
+            onChange: (value) => {
+              edit({ argsText: value })
+            },
+          }),
+          h(
+            'p',
+            { className: css.hint },
+            loginHint === undefined ? t('loginGenericInstruction') : t('loginSetupInstruction', { hint: loginHint }),
+          ),
+        )
+      : null,
+    h(
+      'button',
+      {
+        type: 'button',
+        className: css.advancedToggle,
+        'aria-expanded': optionsOpen,
+        onClick: () => {
+          setOptionsOpen((previous) => !previous)
+        },
+      },
       h(IconChevronDownOutlineMedium, {
         size: 14,
         className: optionsOpen ? `${css.chevron} ${css.chevronFlip}` : css.chevron,
       }),
       t('advancedOptions'),
     ),
-    envCount === 0 ? null : h('p', { className: css.hint },
-      t('advancedOptionsConfigured', { envCount })),
-    optionsOpen ? h('div', { className: css.advancedFields },
-      h('p', { className: css.hint }, t('advancedOptionsHint')),
-      textField({
-        t,
-        id: `dsh-acp-${scope}-env`,
-        label: t('fieldEnv'),
-        hint: t('fieldEnvHint'),
-        error: validation.env,
-        value: draft.envText,
-        disabled,
-        multiline: true,
-        placeholder: 'NO_COLOR=1',
-        onChange: (value) => { edit({ envText: value }) },
-      }),
-      // 疑似 secret 的存量 env 键只展示键名 + 已配置状态，值永不进文本框；
-      // 「移除」从草稿的 maskedEnv 删键（保存后即从 settings 抹去）。
-      draft.maskedEnv === undefined ? null : h('div', { className: css.field },
-        h('span', { className: css.fieldLabel }, t('fieldEnvMasked')),
-        h('ul', { className: css.maskedEnvRows },
-          Object.keys(draft.maskedEnv).sort().map((key) =>
-            h('li', { key, className: css.maskedEnvRow },
-              h('code', { className: css.maskedEnvKey }, key),
-              h('span', { className: css.healthMuted }, t('envMaskedConfigured')),
-              h(Button, {
-                variant: 'outline',
-                size: 'sm',
-                disabled,
-                onClick: () => {
-                  setDraft((previous) => dropMaskedEnvKey(previous, key))
-                  setFailure(undefined)
-                },
-              }, t('envMaskedRemove')),
-            ))),
-      ),
-    ) : null,
- // singleton：草稿 runtime 与存量 profile 冲突的块级错误（runtime 不是
+    envCount === 0 ? null : h('p', { className: css.hint }, t('advancedOptionsConfigured', { envCount })),
+    optionsOpen
+      ? h(
+          'div',
+          { className: css.advancedFields },
+          h('p', { className: css.hint }, t('advancedOptionsHint')),
+          textField({
+            t,
+            id: `dsh-acp-${scope}-env`,
+            label: t('fieldEnv'),
+            hint: t('fieldEnvHint'),
+            error: validation.env,
+            value: draft.envText,
+            disabled,
+            multiline: true,
+            placeholder: 'NO_COLOR=1',
+            onChange: (value) => {
+              edit({ envText: value })
+            },
+          }),
+          // 疑似 secret 的存量 env 键只展示键名 + 已配置状态，值永不进文本框；
+          // 「移除」从草稿的 maskedEnv 删键（保存后即从 settings 抹去）。
+          draft.maskedEnv === undefined
+            ? null
+            : h(
+                'div',
+                { className: css.field },
+                h('span', { className: css.fieldLabel }, t('fieldEnvMasked')),
+                h(
+                  'ul',
+                  { className: css.maskedEnvRows },
+                  Object.keys(draft.maskedEnv)
+                    .sort()
+                    .map((key) =>
+                      h(
+                        'li',
+                        { key, className: css.maskedEnvRow },
+                        h('code', { className: css.maskedEnvKey }, key),
+                        h('span', { className: css.healthMuted }, t('envMaskedConfigured')),
+                        h(
+                          Button,
+                          {
+                            variant: 'outline',
+                            size: 'sm',
+                            disabled,
+                            onClick: () => {
+                              setDraft((previous) => dropMaskedEnvKey(previous, key))
+                              setFailure(undefined)
+                            },
+                          },
+                          t('envMaskedRemove'),
+                        ),
+                      ),
+                    ),
+                ),
+              ),
+        )
+      : null,
+    // singleton：草稿 runtime 与存量 profile 冲突的块级错误（runtime 不是
     // 可编辑字段，错误不挂在某个输入框上）——点名已有 profile 并给「打开已有
     // 配置」出口；保存钮经 validation.config 缺席自然禁用（不自动覆盖/删除）。
-    validation.runtime === undefined ? null : h('div', { className: css.field },
-      h('p', { className: css.error, role: 'alert' }, t(validation.runtime.key, validation.runtime.params)),
-      h(Button, {
-        variant: 'outline',
-        onClick: () => { props.onOpenAgent(String(validation.runtime?.params?.['id'] ?? '')) },
-      }, t('openExisting')),
-    ),
+    validation.runtime === undefined
+      ? null
+      : h(
+          'div',
+          { className: css.field },
+          h('p', { className: css.error, role: 'alert' }, t(validation.runtime.key, validation.runtime.params)),
+          h(
+            Button,
+            {
+              variant: 'outline',
+              onClick: () => {
+                props.onOpenAgent(String(validation.runtime?.params?.['id'] ?? ''))
+              },
+            },
+            t('openExisting'),
+          ),
+        ),
     failure === undefined ? null : h('p', { className: css.error }, failure),
-    h('div', { className: css.editorActions },
-      h(Button, {
-        variant: 'outline',
-        disabled: busy,
-        onClick: () => { props.onClose(false) },
-      }, t('cancel')),
-      h(Button, {
-        variant: 'primary',
-        disabled: disabled || validation.config === undefined,
-        onClick: save,
-      }, t(busy ? 'saving' : 'save')),
+    h(
+      'div',
+      { className: css.editorActions },
+      h(
+        Button,
+        {
+          variant: 'outline',
+          disabled: busy,
+          onClick: () => {
+            props.onClose(false)
+          },
+        },
+        t('cancel'),
+      ),
+      h(
+        Button,
+        {
+          variant: 'primary',
+          disabled: disabled || validation.config === undefined,
+          onClick: save,
+        },
+        t(busy ? 'saving' : 'save'),
+      ),
     ),
   )
 }
@@ -773,31 +1023,41 @@ function textField(props: {
   placeholder?: string
 }): ReactNode {
   const invalid = props.error !== undefined
-  const control = props.multiline === true
-    ? h('textarea', {
-      id: props.id,
-      className: invalid ? `${css.textarea} ${css.textareaInvalid}` : css.textarea,
-      value: props.value,
-      disabled: props.disabled,
-      placeholder: props.placeholder ?? '',
-      rows: 3,
-      ...(invalid ? { 'aria-invalid': true } : {}),
-      onChange: (event: InputEvent) => { props.onChange(event.target.value) },
-    })
-    : h(Input, {
-      id: props.id,
-      className: invalid ? `${css.input} ${css.inputInvalid}` : css.input!,
-      type: 'text',
-      value: props.value,
-      disabled: props.disabled,
-      placeholder: props.placeholder ?? '',
-      ...(invalid ? { 'aria-invalid': true } : {}),
-      onChange: (event: InputEvent) => { props.onChange(event.target.value) },
-    })
-  return h('div', { className: css.field },
+  const control =
+    props.multiline === true
+      ? h('textarea', {
+          id: props.id,
+          className: invalid ? `${css.textarea} ${css.textareaInvalid}` : css.textarea,
+          value: props.value,
+          disabled: props.disabled,
+          placeholder: props.placeholder ?? '',
+          rows: 3,
+          ...(invalid ? { 'aria-invalid': true } : {}),
+          onChange: (event: InputEvent) => {
+            props.onChange(event.target.value)
+          },
+        })
+      : h(Input, {
+          id: props.id,
+          className: invalid ? `${css.input} ${css.inputInvalid}` : css.input!,
+          type: 'text',
+          value: props.value,
+          disabled: props.disabled,
+          placeholder: props.placeholder ?? '',
+          ...(invalid ? { 'aria-invalid': true } : {}),
+          onChange: (event: InputEvent) => {
+            props.onChange(event.target.value)
+          },
+        })
+  return h(
+    'div',
+    { className: css.field },
     h('label', { className: css.fieldLabel, htmlFor: props.id }, props.label),
     control,
-    h('p', { className: invalid ? css.error : css.hint },
-      props.error !== undefined ? props.t(props.error.key, props.error.params) : props.hint),
+    h(
+      'p',
+      { className: invalid ? css.error : css.hint },
+      props.error !== undefined ? props.t(props.error.key, props.error.params) : props.hint,
+    ),
   )
 }

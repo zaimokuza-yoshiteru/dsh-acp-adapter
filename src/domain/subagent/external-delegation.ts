@@ -60,7 +60,9 @@ function number(value: unknown): number | undefined {
 
 function contentText(value: unknown): string {
   if (!Array.isArray(value)) return ''
-  return value.flatMap(item => record(item) && text(item.text) !== undefined ? [item.text as string] : []).join('\n')
+  return value
+    .flatMap((item) => (record(item) && text(item.text) !== undefined ? [item.text as string] : []))
+    .join('\n')
 }
 
 /** Keep native child output in protocol order while matching the root turn's
@@ -68,7 +70,8 @@ function contentText(value: unknown): string {
 function nativeChildResultChunk(value: unknown): string | undefined {
   if (!record(value)) return undefined
   if (value.type === 'text') return text(value.text)
-  if (value.type !== 'image' && value.type !== 'audio' && value.type !== 'resource_link' && value.type !== 'resource') return undefined
+  if (value.type !== 'image' && value.type !== 'audio' && value.type !== 'resource_link' && value.type !== 'resource')
+    return undefined
   try {
     return `\n\n${nonTextContentFallback(value as unknown as AcpNonTextContent)}\n\n`
   } catch {
@@ -106,8 +109,10 @@ export class ExternalDelegationNormalizer {
       })
       return undefined
     }
-    if ((update.sessionUpdate === 'agent_message_chunk' || update.sessionUpdate === 'agent_thought_chunk')
-      && sessionId !== undefined) {
+    if (
+      (update.sessionUpdate === 'agent_message_chunk' || update.sessionUpdate === 'agent_thought_chunk') &&
+      sessionId !== undefined
+    ) {
       const pending = this.pending.get(sessionId)
       const chunk = nativeChildResultChunk(update.content)
       if (pending !== undefined && chunk !== undefined && update.sessionUpdate === 'agent_message_chunk') {
@@ -123,12 +128,15 @@ export class ExternalDelegationNormalizer {
       const state = text(update.state)
       const completed = state === 'completed'
       return {
-        profileKind: 'claude', vendorDelegationKey: childId,
-        vendorChildId: childId, label: pending.label,
+        profileKind: 'claude',
+        vendorDelegationKey: childId,
+        vendorChildId: childId,
+        label: pending.label,
         task: { text: pending.task, source: 'vendor-meta' },
         result: {
           text: pending.resultChunks?.join('') ?? '',
-          source: 'verbatim-child-final', completeness: 'final-output',
+          source: 'verbatim-child-final',
+          completeness: 'final-output',
         },
         status: completed ? 'completed' : 'failed',
         timing: { observedStartedAt: pending.startedAt, observedCompletedAt: observedAt, source: 'client-observed' },
@@ -148,7 +156,9 @@ export class ExternalDelegationNormalizer {
 
   private acceptDevin(update: Record<string, unknown>, observedAt: number): ExternalDelegationObservation | undefined {
     const meta = record(update._meta) ? update._meta : undefined
-    const started = record(meta?.['cognition.ai/subagent_started']) ? meta?.['cognition.ai/subagent_started'] as Record<string, unknown> : undefined
+    const started = record(meta?.['cognition.ai/subagent_started'])
+      ? (meta?.['cognition.ai/subagent_started'] as Record<string, unknown>)
+      : undefined
     if (started !== undefined) {
       const agentId = text(started.agentId)
       const task = text(started.task)
@@ -164,7 +174,9 @@ export class ExternalDelegationNormalizer {
       }
       return undefined
     }
-    const completed = record(meta?.['cognition.ai/subagent_completed']) ? meta?.['cognition.ai/subagent_completed'] as Record<string, unknown> : undefined
+    const completed = record(meta?.['cognition.ai/subagent_completed'])
+      ? (meta?.['cognition.ai/subagent_completed'] as Record<string, unknown>)
+      : undefined
     if (completed === undefined) return undefined
     const agentId = text(completed.agentId)
     const pending = agentId === undefined ? undefined : this.pending.get(agentId)
@@ -172,9 +184,11 @@ export class ExternalDelegationNormalizer {
     if (agentId === undefined || pending === undefined || summary === undefined) return undefined
     this.pending.delete(agentId)
     return {
-      profileKind: 'devin', vendorDelegationKey: agentId,
+      profileKind: 'devin',
+      vendorDelegationKey: agentId,
       ...(pending.toolCallId === undefined ? {} : { sourceToolCallId: pending.toolCallId }),
-      vendorChildId: agentId, label: pending.label,
+      vendorChildId: agentId,
+      label: pending.label,
       task: { text: pending.task, source: 'vendor-meta' },
       result: { text: summary, source: 'agent-summary', completeness: 'summary' },
       status: completed.success === false ? 'failed' : 'completed',
@@ -185,7 +199,7 @@ export class ExternalDelegationNormalizer {
 
   private acceptClaude(update: Record<string, unknown>, observedAt: number): ExternalDelegationObservation | undefined {
     const meta = record(update._meta) ? update._meta : undefined
-    const claude = record(meta?.claudeCode) ? meta?.claudeCode as Record<string, unknown> : undefined
+    const claude = record(meta?.claudeCode) ? (meta?.claudeCode as Record<string, unknown>) : undefined
     const callId = text(update.toolCallId)
     const rawInput = record(update.rawInput) ? update.rawInput : undefined
     if (claude?.subagent === true && callId !== undefined && text(rawInput?.prompt) !== undefined) {
@@ -197,7 +211,7 @@ export class ExternalDelegationNormalizer {
       })
       return undefined
     }
-    const response = record(claude?.toolResponse) ? claude?.toolResponse as Record<string, unknown> : undefined
+    const response = record(claude?.toolResponse) ? (claude?.toolResponse as Record<string, unknown>) : undefined
     if (response === undefined || callId === undefined) return undefined
     const pending = this.pending.get(callId)
     const agentId = text(response.agentId)
@@ -213,22 +227,32 @@ export class ExternalDelegationNormalizer {
     const cacheWriteTokens = number(usage?.cache_creation_input_tokens)
     const totalTokens = number(response.totalTokens)
     return {
-      profileKind: 'claude', vendorDelegationKey: agentId, sourceToolCallId: callId,
-      vendorChildId: agentId, label: pending.label,
+      profileKind: 'claude',
+      vendorDelegationKey: agentId,
+      sourceToolCallId: callId,
+      vendorChildId: agentId,
+      label: pending.label,
       task: { text: task, source: 'structured-tool-input' },
       result: { text: result, source: 'verbatim-child-final', completeness: 'final-output' },
       status: response.status === 'failed' ? 'failed' : 'completed',
-      ...(text(response.resolvedModel) === undefined ? {} : { model: { id: text(response.resolvedModel)!, source: 'agent-structured-live' as const } }),
-      ...(usage === undefined && totalTokens === undefined ? {} : { usage: {
-        ...(inputTokens === undefined ? {} : { inputTokens }),
-        ...(outputTokens === undefined ? {} : { outputTokens }),
-        ...(cacheReadTokens === undefined ? {} : { cacheReadTokens }),
-        ...(cacheWriteTokens === undefined ? {} : { cacheWriteTokens }),
-        ...(totalTokens === undefined ? {} : { totalTokens }),
-        source: 'agent-structured-live' as const,
-      } }),
+      ...(text(response.resolvedModel) === undefined
+        ? {}
+        : { model: { id: text(response.resolvedModel)!, source: 'agent-structured-live' as const } }),
+      ...(usage === undefined && totalTokens === undefined
+        ? {}
+        : {
+            usage: {
+              ...(inputTokens === undefined ? {} : { inputTokens }),
+              ...(outputTokens === undefined ? {} : { outputTokens }),
+              ...(cacheReadTokens === undefined ? {} : { cacheReadTokens }),
+              ...(cacheWriteTokens === undefined ? {} : { cacheWriteTokens }),
+              ...(totalTokens === undefined ? {} : { totalTokens }),
+              source: 'agent-structured-live' as const,
+            },
+          }),
       timing: {
-        observedStartedAt: pending.startedAt, observedCompletedAt: observedAt,
+        observedStartedAt: pending.startedAt,
+        observedCompletedAt: observedAt,
         ...(duration === undefined ? {} : { agentReportedDurationMs: duration }),
         source: duration === undefined ? 'client-observed' : 'mixed',
       },
@@ -242,7 +266,8 @@ export class ExternalDelegationNormalizer {
     const title = text(update.title)
     if (callId !== undefined && title?.startsWith('Launching ') === true && text(rawInput?.prompt) !== undefined) {
       this.pending.set(callId, {
-        startedAt: observedAt, toolCallId: callId,
+        startedAt: observedAt,
+        toolCallId: callId,
         label: text(rawInput?.description) ?? title,
         task: text(rawInput?.prompt)!,
       })
@@ -255,8 +280,11 @@ export class ExternalDelegationNormalizer {
     if (pending === undefined || result === undefined || child === undefined) return undefined
     this.pending.delete(callId)
     return {
-      profileKind: 'kimi', vendorDelegationKey: callId, sourceToolCallId: callId,
-      vendorChildId: child, label: pending.label,
+      profileKind: 'kimi',
+      vendorDelegationKey: callId,
+      sourceToolCallId: callId,
+      vendorChildId: child,
+      label: pending.label,
       task: { text: pending.task, source: 'structured-tool-input' },
       result: { text: result, source: 'tool-result', completeness: 'summary' },
       status: 'completed',

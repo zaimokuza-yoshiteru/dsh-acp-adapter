@@ -1,0 +1,27 @@
+# Build and local development output
+lib/
+.typert/
+.local/
+node_modules/
+reference/
+tmp/
+
+# Lockfile and generated registry snapshots (release tooling hashes exact bytes)
+pnpm-lock.yaml
+assets/registry/
+
+# Binary and visual assets
+**/*.png
+**/*.jpg
+**/*.jpeg
+**/*.gif
+**/*.ico
+**/*.webp
+**/*.pdf
+**/*.zip
+**/*.tgz
+**/*.wasm
+**/*.mp4
+**/*.mp3
+icon.svg
+assets/readme/*.svg

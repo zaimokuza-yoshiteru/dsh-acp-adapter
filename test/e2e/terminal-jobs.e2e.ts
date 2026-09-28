@@ -18,7 +18,7 @@ function finishFixture(path: string, code: number) {
   renameSync(`${path}.pending`, path)
 }
 
-describe.each(['claude', 'codex', 'devin', 'kimi'])('native terminal jobs: %s', profile => {
+describe.each(['claude', 'codex', 'devin', 'kimi'])('native terminal jobs: %s', (profile) => {
   it('shows running jobs across reload, isolates owners, and settles without extra model turns', async () => {
     const host = await launchAdapterWorld()
     let browser!: TestBrowser
@@ -28,17 +28,28 @@ describe.each(['claude', 'codex', 'devin', 'kimi'])('native terminal jobs: %s', 
     const provider = `acp-${profile}`
     const agentLog = join(host.workspaceCwd, 'jobs-agent.log')
     try {
-      await host.ctx.settings.replace('dsh-acp-adapter', { agents: { [profile]: {
-        name: `Fixture ${profile}`, command: process.execPath,
-        args: [join(root, 'test/mock-agent/mock-agent.ts')],
-        env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: profile, MOCK_LOG: agentLog },
-      } } })
-      await vi.waitFor(() => expect(host.ctx.llm.listProviders().some(item => item.id === provider)).toBe(true))
+      await host.ctx.settings.replace('dsh-acp-adapter', {
+        agents: {
+          [profile]: {
+            name: `Fixture ${profile}`,
+            command: process.execPath,
+            args: [join(root, 'test/mock-agent/mock-agent.ts')],
+            env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: profile, MOCK_LOG: agentLog },
+          },
+        },
+      })
+      await vi.waitFor(() => expect(host.ctx.llm.listProviders().some((item) => item.id === provider)).toBe(true))
       await host.ctx.agentDefaultModel.saveSelection({ provider, model: 'mock-model-a' })
-      host.ctx.on('llm/stream', (request, next) => { if (request.provider === provider) observed.push(request); return next() })
-      browser = await launchBrowser({ headless: true, ...(process.env.DSH_E2E_BROWSER_CHANNEL ? { channel: process.env.DSH_E2E_BROWSER_CHANNEL } : {}) })
+      host.ctx.on('llm/stream', (request, next) => {
+        if (request.provider === provider) observed.push(request)
+        return next()
+      })
+      browser = await launchBrowser({
+        headless: true,
+        ...(process.env.DSH_E2E_BROWSER_CHANNEL ? { channel: process.env.DSH_E2E_BROWSER_CHANNEL } : {}),
+      })
       page = await newEnglishPage(browser)
-      page.on('pageerror', error => errors.push(error.message))
+      page.on('pageerror', (error) => errors.push(error.message))
       await page.goto(host.authenticatedUrl)
       await connectFreshWorkspace(page, host.workspaceCwd)
       let sent = 0
@@ -53,8 +64,16 @@ describe.each(['claude', 'codex', 'devin', 'kimi'])('native terminal jobs: %s', 
       }
       const id = await send(page, 'E2E_JOB_START')
       const owner = id
-      const jobs = () => host.ctx.jobs.list(owner).filter(job => job.kind === 'acp-terminal')
-      const latestFixture = () => JSON.parse(required(readFileSync(agentLog, 'utf8').split('\n').filter(line => line.includes('regression job=')).at(-1)).split('regression job=')[1])
+      const jobs = () => host.ctx.jobs.list(owner).filter((job) => job.kind === 'acp-terminal')
+      const latestFixture = () =>
+        JSON.parse(
+          required(
+            readFileSync(agentLog, 'utf8')
+              .split('\n')
+              .filter((line) => line.includes('regression job='))
+              .at(-1),
+          ).split('regression job=')[1],
+        )
       await expect.poll(() => jobs().length).toBe(1)
       const first = jobs()[0]
       const fixture = latestFixture()
@@ -68,7 +87,7 @@ describe.each(['claude', 'codex', 'devin', 'kimi'])('native terminal jobs: %s', 
       expect(await list.innerText()).toContain('E2E_JOB_TICK')
       await page.reload()
       await running.waitFor()
-      expect(jobs().map(job => job.id)).toEqual([first.id])
+      expect(jobs().map((job) => job.id)).toEqual([first.id])
 
       // A different session must neither see nor be allowed to cancel this job.
       const otherPage = await newEnglishPage(browser)
@@ -80,7 +99,9 @@ describe.each(['claude', 'codex', 'devin', 'kimi'])('native terminal jobs: %s', 
         expect(host.ctx.jobs.list(otherId)).toEqual([])
         expect(() => host.ctx.jobs.kill(first.id, otherId)).toThrow()
         expect(await otherPage.getByRole('button', { name: /background job/ }).count()).toBe(0)
-      } finally { await otherPage.close() }
+      } finally {
+        await otherPage.close()
+      }
 
       // Finish while disconnected: the native control baseline must recover
       // the settled status without resending a prompt or creating a new job.
@@ -89,10 +110,14 @@ describe.each(['claude', 'codex', 'devin', 'kimi'])('native terminal jobs: %s', 
         await page.getByRole('button', { name: 'Disconnected, reconnect now', exact: true }).waitFor()
         finishFixture(fixture.stopFile, 0)
         await expect.poll(() => host.ctx.jobs.get(first.id, owner).status).toBe('completed')
-      } finally { await page.context().setOffline(false) }
-      await page.getByRole('button', { name: /Disconnected, reconnect now|Reconnecting automatically, reconnect now/ }).waitFor({ state: 'hidden' })
+      } finally {
+        await page.context().setOffline(false)
+      }
+      await page
+        .getByRole('button', { name: /Disconnected, reconnect now|Reconnecting automatically, reconnect now/ })
+        .waitFor({ state: 'hidden' })
       await page.getByRole('button', { name: '1 background job', exact: true }).waitFor()
-      expect(jobs().map(job => job.id)).toEqual([first.id])
+      expect(jobs().map((job) => job.id)).toEqual([first.id])
       await page.reload()
       await page.getByRole('button', { name: '1 background job', exact: true }).click()
       expect(await list.innerText()).toContain('exit code: 0')
@@ -144,12 +169,27 @@ describe.each(['claude', 'codex', 'devin', 'kimi'])('native terminal jobs: %s', 
       if (page) {
         const dir = join(root, '.local/e2e-failures')
         mkdirSync(dir, { recursive: true })
-        writeFileSync(join(dir, `jobs-${profile}.json`), JSON.stringify({ errors, body: await page.locator('body').innerText(), agent: existsSync(agentLog) ? readFileSync(agentLog, 'utf8') : '' }, null, 2))
+        writeFileSync(
+          join(dir, `jobs-${profile}.json`),
+          JSON.stringify(
+            {
+              errors,
+              body: await page.locator('body').innerText(),
+              agent: existsSync(agentLog) ? readFileSync(agentLog, 'utf8') : '',
+            },
+            null,
+            2,
+          ),
+        )
         await page.screenshot({ path: join(dir, `jobs-${profile}.png`), fullPage: true })
       }
       throw error
     } finally {
-      try { await browser?.close() } finally { await host.close() }
+      try {
+        await browser?.close()
+      } finally {
+        await host.close()
+      }
     }
   })
 })

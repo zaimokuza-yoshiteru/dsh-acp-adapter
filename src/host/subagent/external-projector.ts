@@ -1,8 +1,13 @@
 /// <reference types="node" />
 import { createHash } from 'node:crypto'
 import {
-  SESSION_FORMAT_VERSION, Session, SessionId, SessionLogOffset, SessionSeq,
-  type SessionEvent, type SessionHeader,
+  SESSION_FORMAT_VERSION,
+  Session,
+  SessionId,
+  SessionLogOffset,
+  SessionSeq,
+  type SessionEvent,
+  type SessionHeader,
 } from '@deepseek-ai/dsh-session'
 import { createSessionFormatCatalogWithChildren } from '@deepseek-ai/dsh-session-format-catalog'
 import { releasedV3SessionFormatCodec } from '@deepseek-ai/dsh-session-format-v3-to-v4'
@@ -60,7 +65,11 @@ interface ProjectedDetail {
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`
   if (value !== null && typeof value === 'object') {
-    return `{${Object.entries(value).filter(([, item]) => item !== undefined).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`).join(',')}}`
+    return `{${Object.entries(value)
+      .filter(([, item]) => item !== undefined)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`)
+      .join(',')}}`
   }
   return JSON.stringify(value)
 }
@@ -81,7 +90,9 @@ function safeObservation(observation: ExternalDelegationObservation): ExternalDe
     label: bounded(redactSecretText(observation.label), 256),
     task: { ...observation.task, text: bounded(redactSecretText(observation.task.text)) },
     result: { ...observation.result, text: bounded(redactSecretText(observation.result.text)) },
-    ...(observation.model === undefined ? {} : { model: { ...observation.model, id: redactSecretText(observation.model.id) } }),
+    ...(observation.model === undefined
+      ? {}
+      : { model: { ...observation.model, id: redactSecretText(observation.model.id) } }),
   }
 }
 
@@ -116,9 +127,12 @@ function recordDetail(
     timing: observation.timing,
   }
   return {
-    kind: 'dsh-acp-external-subagent', version: 5,
-    childSessionId, parentDshSessionId: context.parentDshSessionId,
-    profileId: context.profileId, profileKind: observation.profileKind,
+    kind: 'dsh-acp-external-subagent',
+    version: 5,
+    childSessionId,
+    parentDshSessionId: context.parentDshSessionId,
+    profileId: context.profileId,
+    profileKind: observation.profileKind,
     task: { ...observation.task, text: bounded(observation.task.text) },
     result: { ...observation.result, text: bounded(observation.result.text) },
     ...(observation.model === undefined ? {} : { model: observation.model }),
@@ -146,9 +160,8 @@ function transcriptLog(
     content: [{ type: 'text', text: detail.task.text }],
     source: { kind: 'user' },
   }
-  const reported = detail.result.completeness === 'summary'
-    ? `Agent-reported summary:\n\n${detail.result.text}`
-    : detail.result.text
+  const reported =
+    detail.result.completeness === 'summary' ? `Agent-reported summary:\n\n${detail.result.text}` : detail.result.text
   const assistant: AssistantMessage = {
     id: MessageId(`${header.id}:external-result`),
     role: 'assistant',
@@ -159,15 +172,16 @@ function transcriptLog(
       model: detail.model?.id ?? `${detail.profileKind}-external-subagent`,
     },
   }
-  const usage = detail.usage?.inputTokens !== undefined && detail.usage.outputTokens !== undefined
-    ? {
-        inputTokens: detail.usage.inputTokens,
-        outputTokens: detail.usage.outputTokens,
-        ...(detail.usage.totalTokens === undefined ? {} : { totalTokens: detail.usage.totalTokens }),
-        ...(detail.usage.cacheReadTokens === undefined ? {} : { cacheReadTokens: detail.usage.cacheReadTokens }),
-        ...(detail.usage.cacheWriteTokens === undefined ? {} : { cacheWriteTokens: detail.usage.cacheWriteTokens }),
-      }
-    : undefined
+  const usage =
+    detail.usage?.inputTokens !== undefined && detail.usage.outputTokens !== undefined
+      ? {
+          inputTokens: detail.usage.inputTokens,
+          outputTokens: detail.usage.outputTokens,
+          ...(detail.usage.totalTokens === undefined ? {} : { totalTokens: detail.usage.totalTokens }),
+          ...(detail.usage.cacheReadTokens === undefined ? {} : { cacheReadTokens: detail.usage.cacheReadTokens }),
+          ...(detail.usage.cacheWriteTokens === undefined ? {} : { cacheWriteTokens: detail.usage.cacheWriteTokens }),
+        }
+      : undefined
   // This is a projection of the reported result, not a reconstructed external
   // token timeline. All synthetic chunks use the result observation time.
   const stream = new AssistantStreamAccumulator()
@@ -177,14 +191,24 @@ function transcriptLog(
   if (usage !== undefined) stream.push({ time: completedAt, chunk: { type: 'usage', usage } })
   stream.push({ time: completedAt, chunk: { type: 'finish', reason: { kind: 'stop' } } })
   const events: readonly SessionEvent[] = [
-    { type: 'subagent/descriptor', seq: SessionSeq(0), time: startedAt, data: snapshotSubagentDescriptor({ mode: 'one-shot', provider: EXTERNAL_SUBAGENT_DESCRIPTOR_PROVIDER, label }) },
+    {
+      type: 'subagent/descriptor',
+      seq: SessionSeq(0),
+      time: startedAt,
+      data: snapshotSubagentDescriptor({ mode: 'one-shot', provider: EXTERNAL_SUBAGENT_DESCRIPTOR_PROVIDER, label }),
+    },
     { type: 'turn/start', seq: SessionSeq(1), time: startedAt, data: { turn: 1 } },
     { type: 'step/start', seq: SessionSeq(2), time: startedAt, data: { turn: 1, step: 1 } },
     { type: 'user/message', seq: SessionSeq(3), time: startedAt, data: user, surfaceOp: 'append' },
     {
-      type: 'assistant/message', seq: SessionSeq(4), time: completedAt,
+      type: 'assistant/message',
+      seq: SessionSeq(4),
+      time: completedAt,
       data: {
-        turn: 1, step: 1, message: assistant, ...(usage === undefined ? {} : { usage }),
+        turn: 1,
+        step: 1,
+        message: assistant,
+        ...(usage === undefined ? {} : { usage }),
         stream: [...stream.snapshot()],
       },
       surfaceOp: 'append',
@@ -194,12 +218,17 @@ function transcriptLog(
   ]
   if (header.version === SESSION_FORMAT_VERSION) {
     const validated = Session.fromRestore(header.id, events, header, SessionLogOffset(0), 'detached')
-    if (validated.deriveMessages().length !== 2) throw new Error('ACP_SUBAGENT_TRANSCRIPT_INVALID: projected task/result were not admitted')
+    if (validated.deriveMessages().length !== 2)
+      throw new Error('ACP_SUBAGENT_TRANSCRIPT_INVALID: projected task/result were not admitted')
   }
   return { header, events }
 }
 
-function projectionLog(context: ExternalProjectionContext, observation: ExternalDelegationObservation, id: string): {
+function projectionLog(
+  context: ExternalProjectionContext,
+  observation: ExternalDelegationObservation,
+  id: string,
+): {
   readonly header: SessionHeader
   readonly events: readonly SessionEvent[]
 } {
@@ -209,8 +238,11 @@ function projectionLog(context: ExternalProjectionContext, observation: External
   const header: SessionHeader = {
     version: SESSION_FORMAT_VERSION,
     isSeeded: false,
-    id: SessionId(id), createdAt: startedAt, cwd: context.parentCwd,
-    parentSession: SessionId(context.parentDshSessionId), origin: 'subagent',
+    id: SessionId(id),
+    createdAt: startedAt,
+    cwd: context.parentCwd,
+    parentSession: SessionId(context.parentDshSessionId),
+    origin: 'subagent',
     delegationDepth: (context.parentDelegationDepth ?? 0) + 1,
   }
   return transcriptLog(header, label, startedAt, completedAt, {
@@ -222,7 +254,10 @@ function projectionLog(context: ExternalProjectionContext, observation: External
   })
 }
 
-function sameProjection(existing: { readonly meta: SessionHeader; readonly events: readonly SessionEvent[] }, expected: { readonly header: SessionHeader; readonly events: readonly SessionEvent[] }): boolean {
+function sameProjection(
+  existing: { readonly meta: SessionHeader; readonly events: readonly SessionEvent[] },
+  expected: { readonly header: SessionHeader; readonly events: readonly SessionEvent[] },
+): boolean {
   if (canonical(existing.meta) !== canonical(expected.header)) return false
   // The complete current projection must match, including the durable stream.
   return canonical(existing.events) === canonical(expected.events)
@@ -237,23 +272,51 @@ function isCurrentProjectionEnvelope(row: AcpActivityRecord): boolean {
   if (row.rawDetail === undefined) return false
   try {
     const value: unknown = JSON.parse(row.rawDetail)
-    return object(value) && value.kind === 'dsh-acp-external-subagent'
-      && value.version === 5 && value.childSessionId === row.dshSessionId
-      && object(value.projectionHeader)
-      && (value.projectionHeader.version === 3 || value.projectionHeader.version === SESSION_FORMAT_VERSION)
-  } catch { return false }
+    return (
+      object(value) &&
+      value.kind === 'dsh-acp-external-subagent' &&
+      value.version === 5 &&
+      value.childSessionId === row.dshSessionId &&
+      object(value.projectionHeader) &&
+      (value.projectionHeader.version === 3 || value.projectionHeader.version === SESSION_FORMAT_VERSION)
+    )
+  } catch {
+    return false
+  }
 }
 
-function storedProjection(row: AcpActivityRecord): { readonly detail: ProjectedDetail; readonly expected: ReturnType<typeof projectionLog> } | undefined {
+function storedProjection(
+  row: AcpActivityRecord,
+): { readonly detail: ProjectedDetail; readonly expected: ReturnType<typeof projectionLog> } | undefined {
   if (row.rawDetail === undefined) return undefined
   let value: unknown
-  try { value = JSON.parse(row.rawDetail) } catch { return undefined }
-  if (!object(value) || value.kind !== 'dsh-acp-external-subagent' || value.version !== 5 || value.childSessionId !== row.dshSessionId) return undefined
-  if (!object(value.projectionHeader) || typeof value.projectionLabel !== 'string'
-    || typeof value.projectionStartedAt !== 'number' || typeof value.projectionCompletedAt !== 'number'
-    || typeof value.projectionDigest !== 'string') return undefined
+  try {
+    value = JSON.parse(row.rawDetail)
+  } catch {
+    return undefined
+  }
+  if (
+    !object(value) ||
+    value.kind !== 'dsh-acp-external-subagent' ||
+    value.version !== 5 ||
+    value.childSessionId !== row.dshSessionId
+  )
+    return undefined
+  if (
+    !object(value.projectionHeader) ||
+    typeof value.projectionLabel !== 'string' ||
+    typeof value.projectionStartedAt !== 'number' ||
+    typeof value.projectionCompletedAt !== 'number' ||
+    typeof value.projectionDigest !== 'string'
+  )
+    return undefined
   const header = value.projectionHeader as unknown as SessionHeader
-  if (![3, SESSION_FORMAT_VERSION].includes(header.version) || header.id !== row.dshSessionId || header.parentSession !== value.parentDshSessionId) return undefined
+  if (
+    ![3, SESSION_FORMAT_VERSION].includes(header.version) ||
+    header.id !== row.dshSessionId ||
+    header.parentSession !== value.parentDshSessionId
+  )
+    return undefined
   let expected: ReturnType<typeof transcriptLog>
   try {
     expected = transcriptLog(header, value.projectionLabel, value.projectionStartedAt, value.projectionCompletedAt, {
@@ -263,7 +326,9 @@ function storedProjection(row: AcpActivityRecord): { readonly detail: ProjectedD
       ...(object(value.model) ? { model: value.model as unknown as NonNullable<ProjectedDetail['model']> } : {}),
       ...(object(value.usage) ? { usage: value.usage as unknown as NonNullable<ProjectedDetail['usage']> } : {}),
     })
-  } catch { return undefined }
+  } catch {
+    return undefined
+  }
   if (value.projectionDigest !== digest(expected)) return undefined
   // Authenticate the original transaction before using the host's released
   // migration catalog. Never "upgrade" durable data by changing only its version.
@@ -271,11 +336,20 @@ function storedProjection(row: AcpActivityRecord): { readonly detail: ProjectedD
     try {
       // The authenticated seven-event read-only transcript cannot own children.
       const codec = releasedV3SessionFormatCodec
-      const restore = createSessionFormatCatalogWithChildren([]).createRestore(codec.encodeHeader(header as unknown as Parameters<typeof codec.encodeHeader>[0], 0), { recovery: 'strict', validation: 'current' })
-      for (const event of expected.events) restore.decodeRow(codec.encodeEvent(event as unknown as Parameters<typeof codec.encodeEvent>[0]))
+      const restore = createSessionFormatCatalogWithChildren([]).createRestore(
+        codec.encodeHeader(header as unknown as Parameters<typeof codec.encodeHeader>[0], 0),
+        { recovery: 'strict', validation: 'current' },
+      )
+      for (const event of expected.events)
+        restore.decodeRow(codec.encodeEvent(event as unknown as Parameters<typeof codec.encodeEvent>[0]))
       const migrated = restore.finish()
-      expected = { header: migrated.header as unknown as SessionHeader, events: migrated.events as unknown as readonly SessionEvent[] }
-    } catch { return undefined }
+      expected = {
+        header: migrated.header as unknown as SessionHeader,
+        events: migrated.events as unknown as readonly SessionEvent[],
+      }
+    } catch {
+      return undefined
+    }
   }
   return { detail: value as unknown as ProjectedDetail, expected }
 }
@@ -290,13 +364,18 @@ export interface ExternalProjectionRepairSummary {
 export class ExternalSubagentProjector {
   constructor(
     private readonly persistence: Pick<SessionPersistence, 'create' | 'open'>,
-    private readonly sidecar: Pick<AcpSidecar, 'upsertActivity'> & Partial<Pick<AcpSidecar, 'listProjectedSubagentActivities'>>,
+    private readonly sidecar: Pick<AcpSidecar, 'upsertActivity'> &
+      Partial<Pick<AcpSidecar, 'listProjectedSubagentActivities'>>,
     private readonly publishChild?: (header: SessionHeader, label: string) => Promise<void>,
   ) {}
 
-  private async inspect(id: string): Promise<{ readonly meta: SessionHeader; readonly events: readonly SessionEvent[] } | undefined> {
+  private async inspect(
+    id: string,
+  ): Promise<{ readonly meta: SessionHeader; readonly events: readonly SessionEvent[] } | undefined> {
     let handle: SessionHandle
-    try { handle = await this.persistence.open(SessionId(id), 'read') } catch (error) {
+    try {
+      handle = await this.persistence.open(SessionId(id), 'read')
+    } catch (error) {
       if (error instanceof SessionPersistenceNotFoundError) return undefined
       throw error
     }
@@ -345,7 +424,7 @@ export class ExternalSubagentProjector {
 
   /** Converge interrupted projection transactions after the persistence seam mounts. */
   async repairInterrupted(): Promise<ExternalProjectionRepairSummary> {
-    const rows = await this.sidecar.listProjectedSubagentActivities?.() ?? []
+    const rows = (await this.sidecar.listProjectedSubagentActivities?.()) ?? []
     let committed = 0
     let repaired = 0
     let conflicted = 0
@@ -364,7 +443,11 @@ export class ExternalSubagentProjector {
       }
       try {
         const parent = await this.inspect(stored.detail.parentDshSessionId)
-        if (parent === undefined || parent.meta.id !== stored.expected.header.parentSession || parent.meta.cwd !== stored.expected.header.cwd) {
+        if (
+          parent === undefined ||
+          parent.meta.id !== stored.expected.header.parentSession ||
+          parent.meta.cwd !== stored.expected.header.cwd
+        ) {
           throw new Error(`ACP_SUBAGENT_PARENT_NOT_DURABLE: ${stored.detail.parentDshSessionId}`)
         }
         const created = await this.commit(stored.expected)
@@ -380,7 +463,10 @@ export class ExternalSubagentProjector {
     return { committed, repaired, conflicted }
   }
 
-  async project(observation: ExternalDelegationObservation, context: ExternalProjectionContext): Promise<ExternalProjectionResult | undefined> {
+  async project(
+    observation: ExternalDelegationObservation,
+    context: ExternalProjectionContext,
+  ): Promise<ExternalProjectionResult | undefined> {
     if (!observation.projectionEligible || observation.status !== 'completed') return undefined
     const id = childId(context, observation)
     const safe = safeObservation(observation)
@@ -391,9 +477,13 @@ export class ExternalSubagentProjector {
     // at any later boundary, startup repair can converge without reconstructing
     // identity or display evidence from Agent text.
     const staged = await this.sidecar.upsertActivity({
-      dshSessionId: id, ownerDshSessionId: id,
+      dshSessionId: id,
+      ownerDshSessionId: id,
       promptAnchorMessageId: EXTERNAL_SUBAGENT_ACTIVITY_ANCHOR,
-      activityId: 'external-subagent-record', time: Date.now(), kind: 'delegated', status: 'running',
+      activityId: 'external-subagent-record',
+      time: Date.now(),
+      kind: 'delegated',
+      status: 'running',
       presentation: safe.label,
       rawDetail: JSON.stringify(detail),
     })

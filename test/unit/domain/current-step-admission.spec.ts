@@ -30,7 +30,10 @@ describe('current-step ACP admission', () => {
       anchorMessageId: string
       projectionFiltered: boolean
     }> = []
-    expect(admitCurrentStep(request([current, old, injected]), session, value => proof.push(value))).toEqual([injected, current])
+    expect(admitCurrentStep(request([current, old, injected]), session, (value) => proof.push(value))).toEqual([
+      injected,
+      current,
+    ])
     expect(proof[0]?.acceptedMessageIds).toEqual([String(injected.id), String(current.id)])
     expect(proof[0]?.anchorMessageId).toBe(String(current.id))
     expect(proof[0]?.projectionFiltered).toBe(true)
@@ -38,11 +41,16 @@ describe('current-step ACP admission', () => {
 
   it('fails closed when no step is open', () => {
     const message = user('current')
-    expect(() => admitCurrentStep(request([message]), withSessionFacts({
-      header: { cwd: '/workspace' },
-      inheritedEventCount: 0,
-      snapshotEvents: () => [{ type: 'user/message', seq: 0, data: message }],
-    }))).toThrowError(new AcpAdmissionError('ACP_NO_OPEN_STEP'))
+    expect(() =>
+      admitCurrentStep(
+        request([message]),
+        withSessionFacts({
+          header: { cwd: '/workspace' },
+          inheritedEventCount: 0,
+          snapshotEvents: () => [{ type: 'user/message', seq: 0, data: message }],
+        }),
+      ),
+    ).toThrowError(new AcpAdmissionError('ACP_NO_OPEN_STEP'))
   })
 
   it('admits a copied request after DSH finalizes adapter options', () => {
@@ -53,19 +61,27 @@ describe('current-step ACP admission', () => {
     // session/message evidence rather than process-local object identity.
     const copied: GenerateOptions = { ...original, messages: [...original.messages] }
     const proofs: Array<{ projectionFiltered: boolean }> = []
-    expect(admitCurrentStep(copied, withSessionFacts({
-      header: { cwd: '/workspace' },
-      inheritedEventCount: 0,
-      snapshotEvents: () => [
-        { type: 'step/start', seq: 1, data: { turn: 1, step: 0 } },
-        { type: 'user/message', seq: 2, data: message },
-      ],
-    }), proof => proofs.push(proof))).toEqual([message])
+    expect(
+      admitCurrentStep(
+        copied,
+        withSessionFacts({
+          header: { cwd: '/workspace' },
+          inheritedEventCount: 0,
+          snapshotEvents: () => [
+            { type: 'step/start', seq: 1, data: { turn: 1, step: 0 } },
+            { type: 'user/message', seq: 2, data: message },
+          ],
+        }),
+        (proof) => proofs.push(proof),
+      ),
+    ).toEqual([message])
     expect(proofs[0]?.projectionFiltered).toBe(false)
   })
 
   it('旁路 auxiliary purpose before provenance and does not inspect/send ACP input', () => {
-    expect(admitCurrentStep({ provider: 'acp-devin', model: 'm', purpose: 'session-title', messages: [] }, undefined)).toEqual([])
+    expect(
+      admitCurrentStep({ provider: 'acp-devin', model: 'm', purpose: 'session-title', messages: [] }, undefined),
+    ).toEqual([])
   })
 
   it('keeps proof bounded for long history', () => {
@@ -81,9 +97,15 @@ describe('current-step ACP admission', () => {
       { type: 'user/message', seq: 2004, data: first },
     ]
     const proofs: any[] = []
-    const admitted = admitCurrentStep(request([first, ...old, injected, second]), withSessionFacts({
-      header: { cwd: '/workspace' }, inheritedEventCount: 0, snapshotEvents: () => events,
-    }), proof => proofs.push(proof))
+    const admitted = admitCurrentStep(
+      request([first, ...old, injected, second]),
+      withSessionFacts({
+        header: { cwd: '/workspace' },
+        inheritedEventCount: 0,
+        snapshotEvents: () => events,
+      }),
+      (proof) => proofs.push(proof),
+    )
     expect(admitted).toEqual([injected, second, first])
     expect(proofs[0]?.projectionFiltered).toBe(true)
     expect(JSON.stringify(proofs[0])).not.toContain(String(old[0]?.id))
@@ -91,17 +113,25 @@ describe('current-step ACP admission', () => {
 
   it('admits plugin-only follow-up steps without replaying earlier user messages', () => {
     const earlier = user('already dispatched')
-    const followup = createUserMessage({ content: [{ type: 'text', text: 'Verify the result' }], source: { kind: 'test-plugin', plugin: 'review' } })
+    const followup = createUserMessage({
+      content: [{ type: 'text', text: 'Verify the result' }],
+      source: { kind: 'test-plugin', plugin: 'review' },
+    })
     const unlogged = user('not admitted by the host')
-    expect(admitCurrentStep(request([earlier, unlogged, followup]), withSessionFacts({
-      inheritedEventCount: 0,
-      snapshotEvents: () => [
-        { type: 'step/start', seq: 1, data: { turn: 1, step: 1 } },
-        { type: 'user/message', seq: 2, data: earlier },
-        { type: 'step/end', seq: 3, data: { turn: 1, step: 1 } },
-        { type: 'step/start', seq: 4, data: { turn: 1, step: 2 } },
-        { type: 'user/message', seq: 5, data: followup },
-      ],
-    }))).toEqual([followup])
+    expect(
+      admitCurrentStep(
+        request([earlier, unlogged, followup]),
+        withSessionFacts({
+          inheritedEventCount: 0,
+          snapshotEvents: () => [
+            { type: 'step/start', seq: 1, data: { turn: 1, step: 1 } },
+            { type: 'user/message', seq: 2, data: earlier },
+            { type: 'step/end', seq: 3, data: { turn: 1, step: 1 } },
+            { type: 'step/start', seq: 4, data: { turn: 1, step: 2 } },
+            { type: 'user/message', seq: 5, data: followup },
+          ],
+        }),
+      ),
+    ).toEqual([followup])
   })
 })

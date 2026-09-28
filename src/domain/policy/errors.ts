@@ -16,9 +16,9 @@ export type AcpSpawnPlanErrorCode = 'ACP_SPAWN_CONFIG'
 /** spawn 计划组装的配置类失败。 */
 export class AcpSpawnPlanError extends Error {
   readonly code: AcpSpawnPlanErrorCode
- /** taxonomy 分类：恒为 `config`（配置/部署类失败）。 */
+  /** taxonomy 分类：恒为 `config`（配置/部署类失败）。 */
   readonly category: AcpErrorCategory = 'config'
- /** correlation id（生成规则见 src/protocol/v1/errors.ts 模块头注释）。 */
+  /** correlation id（生成规则见 src/protocol/v1/errors.ts 模块头注释）。 */
   readonly correlationId: string
 
   constructor(code: AcpSpawnPlanErrorCode, message: string, correlationId: string = newAcpCorrelationId()) {

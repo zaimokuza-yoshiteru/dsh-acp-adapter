@@ -4,7 +4,9 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
     readonly host: Host
     readonly wire: Wire
   }
-  export interface TypertContext<Wire> { readonly wire: Wire }
+  export interface TypertContext<Wire> {
+    readonly wire: Wire
+  }
   export interface TypertLookupMap {}
   export interface TypertContextMap {}
   export interface TypertRemoteMap {}
@@ -24,12 +26,12 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
   }
   export type RemoteFailure = { [Code in RemoteErrorCode]: RemoteError<Code> }[RemoteErrorCode]
   export type RemoteResult<T> =
-    | { readonly ok: true; readonly value: T }
-    | { readonly ok: false; readonly error: RemoteFailure }
+    { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: RemoteFailure }
 
   export type TypertRemoteNamespace<Namespace extends string> = {
-    [Endpoint in keyof TypertRemoteMap as Endpoint extends `${Namespace}/${infer Method}` ? Method : never]:
-    TypertRemoteMap[Endpoint]
+    [
+      Endpoint in keyof TypertRemoteMap as Endpoint extends `${Namespace}/${infer Method}` ? Method : never
+    ]: TypertRemoteMap[Endpoint]
   }
   export interface TypertRemoteNamespaceMap {}
   export interface TypertRemoteContribution {
@@ -54,13 +56,16 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
     method: (this: This, ...args: Args) => Result,
     context: ClassMethodDecoratorContext<This, (this: This, ...args: Args) => Result>,
   ): void
-  export function Remote(option: string | { readonly mode: 'stream' }):
-  <This extends object, Args extends unknown[], Result>(
+  export function Remote(
+    option: string | { readonly mode: 'stream' },
+  ): <This extends object, Args extends unknown[], Result>(
     method: (this: This, ...args: Args) => Result,
     context: ClassMethodDecoratorContext<This, (this: This, ...args: Args) => Result>,
   ) => void
-  export function RemoteScope(key: Extract<keyof TypertContextMap, string>, exportName?: string):
-  <This extends object, Args extends unknown[], Result>(
+  export function RemoteScope(
+    key: Extract<keyof TypertContextMap, string>,
+    exportName?: string,
+  ): <This extends object, Args extends unknown[], Result>(
     method: (this: This, ...args: Args) => Result,
     context: ClassMethodDecoratorContext<This, (this: This, ...args: Args) => Result>,
   ) => void

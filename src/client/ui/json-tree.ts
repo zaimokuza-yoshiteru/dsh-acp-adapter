@@ -22,12 +22,17 @@ export function acpJsonTreeLabels(t: Translate | undefined): JsonTreeLabels {
     copyFailed: text('auditCopyFailed', 'Copy failed'),
     collapseNode: text('auditCollapseNode', 'Collapse node'),
     expandNode: text('auditExpandNode', 'Expand node'),
-    copyButtonTitle: action => text('auditCopyOptions', `Copy options: ${action}`, { action }),
+    copyButtonTitle: (action) => text('auditCopyOptions', `Copy options: ${action}`, { action }),
   }
 }
 
 /** Share the native expanded-string preference for one client registration. */
 export function createAcpJsonStringWrapping(): AcpJsonStringWrapping {
   const store = createSnapshotStore(true)
-  return { getDefault: store.getSnapshot, setDefault: value => { store.set(value) } }
+  return {
+    getDefault: store.getSnapshot,
+    setDefault: (value) => {
+      store.set(value)
+    },
+  }
 }

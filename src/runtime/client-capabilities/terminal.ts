@@ -62,11 +62,14 @@ class TerminalOutputRing {
   readonly limit: number
 
   constructor(requested: number | null | undefined) {
-    const normalized = requested === null || requested === undefined
-      ? ACP_TERMINAL_DEFAULT_OUTPUT_BYTES
-      : Number.isSafeInteger(requested) && requested >= 0
-        ? requested
-        : (() => { throw new Error('terminal outputByteLimit must be a non-negative integer') })()
+    const normalized =
+      requested === null || requested === undefined
+        ? ACP_TERMINAL_DEFAULT_OUTPUT_BYTES
+        : Number.isSafeInteger(requested) && requested >= 0
+          ? requested
+          : (() => {
+              throw new Error('terminal outputByteLimit must be a non-negative integer')
+            })()
     this.limit = Math.min(normalized, ACP_TERMINAL_MAX_OUTPUT_BYTES)
   }
 
@@ -96,9 +99,15 @@ class TerminalOutputRing {
     this.data = combined.subarray(start)
   }
 
-  get bytes(): number { return this.data.length }
-  get truncated(): boolean { return this.didTruncate }
-  text(): string { return this.data.toString('utf8') }
+  get bytes(): number {
+    return this.data.length
+  }
+  get truncated(): boolean {
+    return this.didTruncate
+  }
+  text(): string {
+    return this.data.toString('utf8')
+  }
 }
 
 interface TerminalRecord {
@@ -131,7 +140,8 @@ function assertSession(paramsSessionId: string, expected: string): void {
 }
 
 function assertCommand(command: string): void {
-  if (command.length === 0 || command.includes('\0')) throw new Error('terminal command must be a non-empty executable without NUL')
+  if (command.length === 0 || command.includes('\0'))
+    throw new Error('terminal command must be a non-empty executable without NUL')
 }
 
 function assertArgs(args: readonly string[]): void {
@@ -151,13 +161,12 @@ function isSpawnNotFound(error: unknown): boolean {
  */
 function shellFallbackArgv(command: string, args: readonly string[]): readonly string[] {
   const commandLine = [command, ...args].join(' ')
-  return process.platform === 'win32'
-    ? ['cmd.exe', '/d', '/s', '/c', commandLine]
-    : ['/bin/sh', '-c', commandLine]
+  return process.platform === 'win32' ? ['cmd.exe', '/d', '/s', '/c', commandLine] : ['/bin/sh', '-c', commandLine]
 }
 
 function assertEnvName(name: string): void {
-  if (name.length === 0 || name.includes('=') || /[\0\r\n]/.test(name)) throw new Error('terminal environment names must be non-empty and must not contain =, NUL, or line breaks')
+  if (name.length === 0 || name.includes('=') || /[\0\r\n]/.test(name))
+    throw new Error('terminal environment names must be non-empty and must not contain =, NUL, or line breaks')
 }
 
 function exitStatus(exit: AcpSubprocessExitFact | null): acp.TerminalExitStatus | null {
@@ -168,7 +177,11 @@ function terminalState(record: Pick<TerminalRecord, 'exit' | 'error'>): AcpTermi
   return record.error !== undefined ? 'error' : record.exit === null ? 'running' : 'completed'
 }
 
-function auditEvent(record: TerminalRecord, operation: AcpTerminalAuditData['operation'], outcome: AcpTerminalAuditData['outcome']): AcpTerminalAuditData {
+function auditEvent(
+  record: TerminalRecord,
+  operation: AcpTerminalAuditData['operation'],
+  outcome: AcpTerminalAuditData['outcome'],
+): AcpTerminalAuditData {
   const event: AcpTerminalAuditData = {
     operation,
     terminalId: record.id,
@@ -213,11 +226,18 @@ export function createAcpTerminalHandlers(options: AcpTerminalHandlersOptions): 
     pruneReleased()
   }
 
-  const recordAudit = (record: TerminalRecord, operation: AcpTerminalAuditData['operation'], outcome: AcpTerminalAuditData['outcome']): Promise<void> => {
+  const recordAudit = (
+    record: TerminalRecord,
+    operation: AcpTerminalAuditData['operation'],
+    outcome: AcpTerminalAuditData['outcome'],
+  ): Promise<void> => {
     const event = auditEvent(record, operation, outcome)
     const audit = options.audit
     if (audit === undefined) return Promise.resolve()
-    const operationPromise = record.auditTail.then(() => audit(event)).catch((error: unknown) => options.onAuditError?.(error, event)).then(() => {})
+    const operationPromise = record.auditTail
+      .then(() => audit(event))
+      .catch((error: unknown) => options.onAuditError?.(error, event))
+      .then(() => {})
     record.auditTail = operationPromise
     return operationPromise
   }
@@ -240,7 +260,9 @@ export function createAcpTerminalHandlers(options: AcpTerminalHandlersOptions): 
   const cancelRecord = (record: TerminalRecord): void => {
     if (record.killRequested) return
     if (record.job === undefined) return requestKill(record)
-    try { record.job.cancel() } catch {
+    try {
+      record.job.cancel()
+    } catch {
       // The owner/registry may already have been disposed. The terminal still
       // owns its handle and must finish cleanup independently of presentation.
       requestKill(record)
@@ -259,11 +281,22 @@ export function createAcpTerminalHandlers(options: AcpTerminalHandlersOptions): 
     } catch (error) {
       cleanupError = `terminal cleanup failed: ${String(error)}; managed-range exit remains unconfirmed`
     }
-    if (!exited && cleanupError === undefined) cleanupError = 'terminal managed-range exit was not confirmed; cleanup remains unconfirmed'
-    const failure = [record.error?.message, cleanupError].filter((detail): detail is string => detail !== undefined).join('; ') || undefined
+    if (!exited && cleanupError === undefined)
+      cleanupError = 'terminal managed-range exit was not confirmed; cleanup remains unconfirmed'
+    const failure =
+      [record.error?.message, cleanupError].filter((detail): detail is string => detail !== undefined).join('; ') ||
+      undefined
     return {
-      status: failure !== undefined ? 'failed' : record.killRequested ? 'killed' : fact?.exitCode === 0 ? 'completed' : 'failed',
-      detail: failure ?? (fact?.signal ? `signal: ${fact.signal}` : `exit code: ${String(fact?.exitCode ?? 'unknown')}`),
+      status:
+        failure !== undefined
+          ? 'failed'
+          : record.killRequested
+            ? 'killed'
+            : fact?.exitCode === 0
+              ? 'completed'
+              : 'failed',
+      detail:
+        failure ?? (fact?.signal ? `signal: ${fact.signal}` : `exit code: ${String(fact?.exitCode ?? 'unknown')}`),
       output: record.output.text(),
     }
   }
@@ -318,11 +351,21 @@ export function createAcpTerminalHandlers(options: AcpTerminalHandlersOptions): 
       active.set(id, record)
       const attachHandle = (nextHandle: AcpSubprocessHandle): void => {
         record.handle = nextHandle
-        attachOutput(nextHandle.stdout, (chunk) => { record.output.append(chunk); refreshReleasedSnapshot(record) })
-        attachOutput(nextHandle.stderr, (chunk) => { record.output.append(chunk); refreshReleasedSnapshot(record) })
+        attachOutput(nextHandle.stdout, (chunk) => {
+          record.output.append(chunk)
+          refreshReleasedSnapshot(record)
+        })
+        attachOutput(nextHandle.stderr, (chunk) => {
+          record.output.append(chunk)
+          refreshReleasedSnapshot(record)
+        })
         // ACP v1 exposes no terminal stdin method. Closing stdin prevents commands
         // that read input from remaining alive forever while the Agent only polls output.
-        try { nextHandle.stdin?.end() } catch { /* process teardown remains authoritative */ }
+        try {
+          nextHandle.stdin?.end()
+        } catch {
+          /* process teardown remains authoritative */
+        }
       }
       attachHandle(handle)
       const settleProcess = async (): Promise<AcpSubprocessExitFact> => {
@@ -332,23 +375,26 @@ export function createAcpTerminalHandlers(options: AcpTerminalHandlersOptions): 
           // A process that was accepted by the OS and later exits with an error
           // must not be retried. Only the launch-level ENOENT path is eligible.
           if (!canShellFallback || !isSpawnNotFound(error)) throw error
-          if (!await stopSubprocess(handle, { eofGraceMs: 0, exitWaitMs: releaseWaitMs })) throw error
+          if (!(await stopSubprocess(handle, { eofGraceMs: 0, exitWaitMs: releaseWaitMs }))) throw error
           if (record.released || record.killRequested || disposed) throw error
           const fallback = options.subprocess.spawn({ ...spawnSpec, argv: shellFallbackArgv(params.command, args) })
           attachHandle(fallback)
           return await fallback.done
         }
       }
-      record.done = settleProcess().then((fact) => {
-        record.exit = fact
-        refreshReleasedSnapshot(record)
-        void recordAudit(record, 'exit', 'exited')
-        return fact
-      }, (error: unknown) => {
-        record.error = error instanceof Error ? error : new Error(String(error))
-        void recordAudit(record, 'exit', 'error')
-        return undefined
-      })
+      record.done = settleProcess().then(
+        (fact) => {
+          record.exit = fact
+          refreshReleasedSnapshot(record)
+          void recordAudit(record, 'exit', 'exited')
+          return fact
+        },
+        (error: unknown) => {
+          record.error = error instanceof Error ? error : new Error(String(error))
+          void recordAudit(record, 'exit', 'error')
+          return undefined
+        },
+      )
       return record
     }
     let record!: TerminalRecord
@@ -366,9 +412,7 @@ export function createAcpTerminalHandlers(options: AcpTerminalHandlersOptions): 
 
   const terminalOutput = async (params: acp.TerminalOutputRequest): Promise<acp.TerminalOutputResponse> => {
     const record = get(params.terminalId, params.sessionId)
-    const outcome = record.error === undefined
-      ? record.exit === null ? 'running' : 'exited'
-      : 'error'
+    const outcome = record.error === undefined ? (record.exit === null ? 'running' : 'exited') : 'error'
     await recordAudit(record, 'output-summary', outcome)
     return {
       output: record.output.text(),
@@ -439,7 +483,8 @@ export function createAcpTerminalHandlers(options: AcpTerminalHandlersOptions): 
 
   const releaseTerminal = async (params: acp.ReleaseTerminalRequest): Promise<acp.ReleaseTerminalResponse> => {
     const record = get(params.terminalId, params.sessionId)
-    if (!await releaseOne(record)) throw new Error('terminal release timed out while the process tree was still running; retry release')
+    if (!(await releaseOne(record)))
+      throw new Error('terminal release timed out while the process tree was still running; retry release')
     return {}
   }
 
@@ -483,5 +528,15 @@ export function createAcpTerminalHandlers(options: AcpTerminalHandlersOptions): 
     }
   }
 
-  return { createTerminal, terminalOutput, waitForExit, killTerminal, releaseTerminal, cancelSession, releaseSession, dispose, presentationSnapshot }
+  return {
+    createTerminal,
+    terminalOutput,
+    waitForExit,
+    killTerminal,
+    releaseTerminal,
+    cancelSession,
+    releaseSession,
+    dispose,
+    presentationSnapshot,
+  }
 }

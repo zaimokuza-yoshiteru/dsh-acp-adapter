@@ -9,13 +9,23 @@ const GOOGLE_API_KEY = /\bAIza[0-9A-Za-z_-]{35}\b/g
 const GOOGLE_CLIENT_SECRET = /\bGOCSPX-[A-Za-z0-9_-]{20,}\b/g
 const PEM_PRIVATE_KEY = /-----BEGIN ((?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY)-----[\s\S]*?-----END \1-----/g
 const ASSIGNMENT = /\b([A-Za-z][A-Za-z0-9_-]*)\b(\s*[=:]\s*["']?)([^\s"',}\]]+)/gi
-const NUMERIC_USAGE_FIELDS = new Set(['inputtokens', 'outputtokens', 'totaltokens', 'cachereadtokens', 'cachewritetokens'])
+const NUMERIC_USAGE_FIELDS = new Set([
+  'inputtokens',
+  'outputtokens',
+  'totaltokens',
+  'cachereadtokens',
+  'cachewritetokens',
+])
 const SENSITIVE_FIELD = /(?:token|secret|password|passwd|authorization|api[_-]?key|cookie|credential|private[_-]?key)/i
 
 /** These exact structured counters are public usage metadata, not credentials. */
 function isSafeNumericUsageField(key: string, value: unknown): boolean {
-  return NUMERIC_USAGE_FIELDS.has(key.toLowerCase())
-    && typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+  return (
+    NUMERIC_USAGE_FIELDS.has(key.toLowerCase()) &&
+    typeof value === 'number' &&
+    Number.isSafeInteger(value) &&
+    value >= 0
+  )
 }
 
 /** Shared field policy for structured Activity payloads. */

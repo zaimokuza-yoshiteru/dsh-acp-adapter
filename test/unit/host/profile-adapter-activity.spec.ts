@@ -25,15 +25,26 @@ function testSidecar(root: string): AcpSidecar {
 }
 
 const profile = (): AcpAgentConfig => ({ name: 'Activity test', command: 'agent', args: [], env: {} })
-const claudeProfile = (): AcpAgentConfig => ({ name: 'Claude', command: 'claude-agent-acp', args: [], env: {}, runtime: 'claude' })
+const claudeProfile = (): AcpAgentConfig => ({
+  name: 'Claude',
+  command: 'claude-agent-acp',
+  args: [],
+  env: {},
+  runtime: 'claude',
+})
 const user = (text: string) => createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })
-const session = (message: ReturnType<typeof user>): SessionLike => (withSessionFacts({
-  header: { cwd: os.tmpdir() },
-  inheritedEventCount: 0,
-  snapshotEvents: () => [{ type: 'step/start', seq: 1, data: { turn: 1, step: 0 } }, { type: 'user/message', seq: 2, data: message }],
-}))
+const session = (message: ReturnType<typeof user>): SessionLike =>
+  withSessionFacts({
+    header: { cwd: os.tmpdir() },
+    inheritedEventCount: 0,
+    snapshotEvents: () => [
+      { type: 'step/start', seq: 1, data: { turn: 1, step: 0 } },
+      { type: 'user/message', seq: 2, data: message },
+    ],
+  })
 const seam = (): { ok: true; seam: never } => ({ ok: true, seam: undefined as never })
-const request = (id: string, message: ReturnType<typeof user>): GenerateOptions => markAgentLoopRequest({ provider: 'acp-test', model: 'model-a', sessionId: id as never, messages: [message] })
+const request = (id: string, message: ReturnType<typeof user>): GenerateOptions =>
+  markAgentLoopRequest({ provider: 'acp-test', model: 'model-a', sessionId: id as never, messages: [message] })
 
 function ledgerFor(sidecar: AcpSidecar) {
   return {
@@ -68,16 +79,29 @@ describe('provider activity bridge', () => {
           },
         }
         options.onSessionUpdate?.(notification)
-        onUpdate({ sessionId: 'agent-command-session', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'ready' } } } as never)
+        onUpdate({
+          sessionId: 'agent-command-session',
+          update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'ready' } },
+        } as never)
         return { stopReason: 'end_turn' } as never
       },
       close: async () => undefined,
     })
     const adapter = new AcpProfileAdapter(
-      'activity', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, runtimeFactory as never, sidecar, undefined,
+      'activity',
+      profile,
+      seam(),
+      (id) => sessions.get(id),
+      ledgerFor(sidecar),
+      undefined,
+      runtimeFactory as never,
+      sidecar,
+      undefined,
       () => ({ userQuestions: {} as never, getAgent: () => stockAgent }),
     )
-    for await (const _chunk of adapter.stream(request('command-session', message))) { /* drain */ }
+    for await (const _chunk of adapter.stream(request('command-session', message))) {
+      /* drain */
+    }
     expect(register).not.toHaveBeenCalled()
     expect(followup).not.toHaveBeenCalled()
     await adapter.close()
@@ -90,48 +114,98 @@ describe('provider activity bridge', () => {
     const message = user('show the image')
     const sessions = new Map<string, SessionLike>([['native-image-session', session(message)]])
     const imageRef = {
-      attachmentId: 'sha256:test-image', mediaType: 'image/png', bytes: 1, width: 1, height: 1,
+      attachmentId: 'sha256:test-image',
+      mediaType: 'image/png',
+      bytes: 1,
+      width: 1,
+      height: 1,
     } as never
     const saveImages = vi.fn(async (_inputs: readonly { mediaType: string; data: Uint8Array }[]) => [imageRef])
     const attachments = {
       imageLimits: {
-        maxImageBytes: 1_000, maxImagesPerMessage: 10, maxMessageImageBytes: 10_000,
-        maxImagePixels: 1_000, maxImageDimension: 100, mediaTypes: ['image/png'],
+        maxImageBytes: 1_000,
+        maxImagesPerMessage: 10,
+        maxMessageImageBytes: 10_000,
+        maxImagePixels: 1_000,
+        maxImageDimension: 100,
+        mediaTypes: ['image/png'],
       },
-      readImage: async () => { throw new Error('not used') },
+      readImage: async () => {
+        throw new Error('not used')
+      },
       saveImages,
     }
     const runtimeFactory = (): AcpProfileRuntime => ({
       acpSessionId: 'agent-native-image',
       start: async () => undefined,
       prompt: async (_content, onUpdate) => {
-        onUpdate({ sessionId: 'agent-native-image', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'before' } } } as never)
-        onUpdate({ sessionId: 'agent-native-image', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'image', mimeType: 'image/png', data: 'AQ==' } } } as never)
-        onUpdate({ sessionId: 'agent-native-image', update: { sessionUpdate: 'tool_call', toolCallId: 'image-check', title: 'Inspect image', kind: 'read', status: 'in_progress' } } as never)
-        onUpdate({ sessionId: 'agent-native-image', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'after' } } } as never)
-        onUpdate({ sessionId: 'agent-native-image', update: { sessionUpdate: 'tool_call_update', toolCallId: 'image-check', status: 'completed' } } as never)
+        onUpdate({
+          sessionId: 'agent-native-image',
+          update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'before' } },
+        } as never)
+        onUpdate({
+          sessionId: 'agent-native-image',
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            content: { type: 'image', mimeType: 'image/png', data: 'AQ==' },
+          },
+        } as never)
+        onUpdate({
+          sessionId: 'agent-native-image',
+          update: {
+            sessionUpdate: 'tool_call',
+            toolCallId: 'image-check',
+            title: 'Inspect image',
+            kind: 'read',
+            status: 'in_progress',
+          },
+        } as never)
+        onUpdate({
+          sessionId: 'agent-native-image',
+          update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'after' } },
+        } as never)
+        onUpdate({
+          sessionId: 'agent-native-image',
+          update: { sessionUpdate: 'tool_call_update', toolCallId: 'image-check', status: 'completed' },
+        } as never)
         return { stopReason: 'end_turn' } as never
       },
       close: async () => undefined,
     })
     const adapter = new AcpProfileAdapter(
-      'native-image', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, runtimeFactory, sidecar, attachments as never,
+      'native-image',
+      profile,
+      seam(),
+      (id) => sessions.get(id),
+      ledgerFor(sidecar),
+      undefined,
+      runtimeFactory,
+      sidecar,
+      attachments as never,
     )
     const chunks: unknown[] = []
     for await (const chunk of adapter.stream(request('native-image-session', message))) chunks.push(chunk)
-    expect(chunks).toEqual(expect.arrayContaining([
-      { type: 'text-delta', index: 0, text: 'before' },
-      { type: 'block-start', index: 1, blockType: 'image' },
-      { type: 'block-end', index: 1, block: { type: 'image', attachment: imageRef } },
-      { type: 'text-delta', index: 2, text: 'after' },
-    ]))
-    expect(chunks.map(chunk => (chunk as { type?: string }).type).slice(0, 4)).toEqual(['text-delta', 'block-start', 'block-end', 'text-delta'])
+    expect(chunks).toEqual(
+      expect.arrayContaining([
+        { type: 'text-delta', index: 0, text: 'before' },
+        { type: 'block-start', index: 1, blockType: 'image' },
+        { type: 'block-end', index: 1, block: { type: 'image', attachment: imageRef } },
+        { type: 'text-delta', index: 2, text: 'after' },
+      ]),
+    )
+    expect(chunks.map((chunk) => (chunk as { type?: string }).type).slice(0, 4)).toEqual([
+      'text-delta',
+      'block-start',
+      'block-end',
+      'text-delta',
+    ])
     const saved = saveImages.mock.calls[0]?.[0]?.[0] as { mediaType?: string; data?: Uint8Array } | undefined
     const activities = await sidecar.activitySnapshot('native-image-session' as never, 20)
-    expect(activities.find(row => row.activityId.endsWith(':tool:image-check'))?.contentIndex).toBe(2)
+    expect(activities.find((row) => row.activityId.endsWith(':tool:image-check'))?.contentIndex).toBe(2)
     expect(saved?.mediaType).toBe('image/png')
     expect(Array.from(saved?.data ?? [])).toEqual([1])
-    const finish = chunks.find(chunk => (chunk as { type?: string }).type === 'finish') as { reason?: { kind?: string } } | undefined
+    const finish = chunks.find((chunk) => (chunk as { type?: string }).type === 'finish') as
+      { reason?: { kind?: string } } | undefined
     expect(finish?.reason?.kind).toBe('stop')
   })
 
@@ -141,34 +215,75 @@ describe('provider activity bridge', () => {
     const sidecar = testSidecar(root)
     const message = user('return resources')
     const sessions = new Map<string, SessionLike>([['nontext-session', session(message)]])
-    const saveImages = vi.fn(async (_inputs: readonly { mediaType: string; data: Uint8Array }[]) => { throw new Error('image store unavailable') })
+    const saveImages = vi.fn(async (_inputs: readonly { mediaType: string; data: Uint8Array }[]) => {
+      throw new Error('image store unavailable')
+    })
     const attachments = {
       imageLimits: {
-        maxImageBytes: 1_000, maxImagesPerMessage: 10, maxMessageImageBytes: 10_000,
-        maxImagePixels: 1_000, maxImageDimension: 100, mediaTypes: ['image/png'],
+        maxImageBytes: 1_000,
+        maxImagesPerMessage: 10,
+        maxMessageImageBytes: 10_000,
+        maxImagePixels: 1_000,
+        maxImageDimension: 100,
+        mediaTypes: ['image/png'],
       },
-      readImage: async () => { throw new Error('not used') },
+      readImage: async () => {
+        throw new Error('not used')
+      },
       saveImages,
     }
     const runtimeFactory = (): AcpProfileRuntime => ({
       acpSessionId: 'agent-nontext',
       start: async () => undefined,
       prompt: async (_content, onUpdate) => {
-        onUpdate({ sessionId: 'agent-nontext', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'image', mimeType: 'image/png', data: 'AQ==', uri: 'memory://image' } } } as never)
-        onUpdate({ sessionId: 'agent-nontext', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'audio', mimeType: 'audio/wav', data: 'SECRET_AUDIO_BYTES' } } } as never)
-        onUpdate({ sessionId: 'agent-nontext', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'resource_link', name: 'report', mimeType: 'application/pdf', uri: 'https://example.test/report?token=super-secret-value' } } } as never)
         onUpdate({
           sessionId: 'agent-nontext',
           update: {
             sessionUpdate: 'agent_message_chunk',
-            content: { type: 'resource', resource: { uri: 'memory://notes', mimeType: 'text/markdown', text: 'Visible embedded body\nsecond line' } },
+            content: { type: 'image', mimeType: 'image/png', data: 'AQ==', uri: 'memory://image' },
           },
         } as never)
         onUpdate({
           sessionId: 'agent-nontext',
           update: {
             sessionUpdate: 'agent_message_chunk',
-            content: { type: 'resource', resource: { uri: 'memory://blob', mimeType: 'application/octet-stream', blob: 'SECRET_RESOURCE_BLOB' } },
+            content: { type: 'audio', mimeType: 'audio/wav', data: 'SECRET_AUDIO_BYTES' },
+          },
+        } as never)
+        onUpdate({
+          sessionId: 'agent-nontext',
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            content: {
+              type: 'resource_link',
+              name: 'report',
+              mimeType: 'application/pdf',
+              uri: 'https://example.test/report?token=super-secret-value',
+            },
+          },
+        } as never)
+        onUpdate({
+          sessionId: 'agent-nontext',
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            content: {
+              type: 'resource',
+              resource: {
+                uri: 'memory://notes',
+                mimeType: 'text/markdown',
+                text: 'Visible embedded body\nsecond line',
+              },
+            },
+          },
+        } as never)
+        onUpdate({
+          sessionId: 'agent-nontext',
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            content: {
+              type: 'resource',
+              resource: { uri: 'memory://blob', mimeType: 'application/octet-stream', blob: 'SECRET_RESOURCE_BLOB' },
+            },
           },
         } as never)
         return { stopReason: 'end_turn' } as never
@@ -176,13 +291,24 @@ describe('provider activity bridge', () => {
       close: async () => undefined,
     })
     const adapter = new AcpProfileAdapter(
-      'nontext', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, runtimeFactory, sidecar, attachments as never,
+      'nontext',
+      profile,
+      seam(),
+      (id) => sessions.get(id),
+      ledgerFor(sidecar),
+      undefined,
+      runtimeFactory,
+      sidecar,
+      attachments as never,
     )
     const chunks: unknown[] = []
     for await (const chunk of adapter.stream(request('nontext-session', message))) chunks.push(chunk)
     const visible = chunks
-      .filter((chunk): chunk is { type: 'text-delta'; text: string } => (chunk as { type?: string }).type === 'text-delta')
-      .map(chunk => chunk.text).join('')
+      .filter(
+        (chunk): chunk is { type: 'text-delta'; text: string } => (chunk as { type?: string }).type === 'text-delta',
+      )
+      .map((chunk) => chunk.text)
+      .join('')
     expect(visible).toContain('ACP image (image/png; memory://image)')
     expect(visible).toContain('ACP audio (audio/wav)')
     expect(visible).toContain('ACP resource: report (application/pdf)')
@@ -193,7 +319,8 @@ describe('provider activity bridge', () => {
     expect(visible).not.toContain('SECRET_AUDIO_BYTES')
     expect(visible).not.toContain('super-secret-value')
     expect(visible).not.toContain('SECRET_RESOURCE_BLOB')
-    const finish = chunks.find(chunk => (chunk as { type?: string }).type === 'finish') as { reason?: { kind?: string; failure?: { code?: string } } } | undefined
+    const finish = chunks.find((chunk) => (chunk as { type?: string }).type === 'finish') as
+      { reason?: { kind?: string; failure?: { code?: string } } } | undefined
     expect(finish?.reason).toEqual({ kind: 'stop' })
   })
 
@@ -205,30 +332,104 @@ describe('provider activity bridge', () => {
     const sessions = new Map<string, SessionLike>([['claude-root', session(message)]])
     const projected: unknown[] = []
     const runtimeFactory = (): AcpProfileRuntime => ({
-      acpSessionId: 'claude-agent-root', agentInfo: { name: 'claude-agent-acp', version: '1' }, agentCapabilities: {}, protocolVersion: 1,
+      acpSessionId: 'claude-agent-root',
+      agentInfo: { name: 'claude-agent-acp', version: '1' },
+      agentCapabilities: {},
+      protocolVersion: 1,
       start: async () => undefined,
       prompt: async (_content, onUpdate) => {
-        onUpdate({ sessionId: 'claude-agent-root', update: { sessionUpdate: 'subagent_spawned', subagentSessionId: 'claude-agent-child', name: 'Research', task: 'Inspect source', capabilities: {} } } as never)
-        onUpdate({ sessionId: 'claude-agent-child', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'image', mimeType: 'image/png', data: 'AQ==' } } } as never)
-        onUpdate({ sessionId: 'claude-agent-child', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'audio', mimeType: 'audio/wav', data: 'SECRET_AUDIO' } } } as never)
-        onUpdate({ sessionId: 'claude-agent-child', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'resource_link', name: 'report', uri: 'https://example.test/child?token=secret' } } } as never)
-        onUpdate({ sessionId: 'claude-agent-child', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'resource', resource: { uri: 'memory://notes', mimeType: 'text/plain', text: 'child embedded text' } } } } as never)
-        onUpdate({ sessionId: 'claude-agent-root', update: { sessionUpdate: 'subagent_state_update', subagentSessionId: 'claude-agent-child', state: 'completed' } } as never)
-        onUpdate({ sessionId: 'claude-agent-root', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'root-visible result' } } } as never)
+        onUpdate({
+          sessionId: 'claude-agent-root',
+          update: {
+            sessionUpdate: 'subagent_spawned',
+            subagentSessionId: 'claude-agent-child',
+            name: 'Research',
+            task: 'Inspect source',
+            capabilities: {},
+          },
+        } as never)
+        onUpdate({
+          sessionId: 'claude-agent-child',
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            content: { type: 'image', mimeType: 'image/png', data: 'AQ==' },
+          },
+        } as never)
+        onUpdate({
+          sessionId: 'claude-agent-child',
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            content: { type: 'audio', mimeType: 'audio/wav', data: 'SECRET_AUDIO' },
+          },
+        } as never)
+        onUpdate({
+          sessionId: 'claude-agent-child',
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            content: { type: 'resource_link', name: 'report', uri: 'https://example.test/child?token=secret' },
+          },
+        } as never)
+        onUpdate({
+          sessionId: 'claude-agent-child',
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            content: {
+              type: 'resource',
+              resource: { uri: 'memory://notes', mimeType: 'text/plain', text: 'child embedded text' },
+            },
+          },
+        } as never)
+        onUpdate({
+          sessionId: 'claude-agent-root',
+          update: {
+            sessionUpdate: 'subagent_state_update',
+            subagentSessionId: 'claude-agent-child',
+            state: 'completed',
+          },
+        } as never)
+        onUpdate({
+          sessionId: 'claude-agent-root',
+          update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'root-visible result' } },
+        } as never)
         return { stopReason: 'end_turn' } as never
       },
       close: async () => undefined,
     })
     const adapter = new AcpProfileAdapter(
-      'claude', claudeProfile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, runtimeFactory, sidecar, undefined, undefined,
-      async (observation) => { projected.push(observation); return 'projected-child-session' },
+      'claude',
+      claudeProfile,
+      seam(),
+      (id) => sessions.get(id),
+      ledgerFor(sidecar),
+      undefined,
+      runtimeFactory,
+      sidecar,
+      undefined,
+      undefined,
+      async (observation) => {
+        projected.push(observation)
+        return 'projected-child-session'
+      },
     )
     const chunks: unknown[] = []
-    for await (const chunk of adapter.stream(markAgentLoopRequest({ provider: 'acp-claude', model: 'claude-model', sessionId: 'claude-root' as never, messages: [message] }))) chunks.push(chunk)
-    await new Promise(resolve => setTimeout(resolve, 0))
+    for await (const chunk of adapter.stream(
+      markAgentLoopRequest({
+        provider: 'acp-claude',
+        model: 'claude-model',
+        sessionId: 'claude-root' as never,
+        messages: [message],
+      }),
+    ))
+      chunks.push(chunk)
+    await new Promise((resolve) => setTimeout(resolve, 0))
     expect(chunks).toContainEqual({ type: 'text-delta', index: 0, text: 'root-visible result' })
-    const rootText = chunks.flatMap(chunk => typeof chunk === 'object' && chunk !== null && (chunk as { type?: unknown }).type === 'text-delta'
-      ? [String((chunk as { text?: unknown }).text ?? '')] : []).join('')
+    const rootText = chunks
+      .flatMap((chunk) =>
+        typeof chunk === 'object' && chunk !== null && (chunk as { type?: unknown }).type === 'text-delta'
+          ? [String((chunk as { text?: unknown }).text ?? '')]
+          : [],
+      )
+      .join('')
     expect(rootText).toBe('root-visible result')
     expect(projected).toHaveLength(1)
     expect(projected[0]).toMatchObject({
@@ -257,41 +458,91 @@ describe('provider activity bridge', () => {
     const runtimeFactory = (): AcpProfileRuntime => {
       let sessionId = 'agent-session-1'
       return {
-        get acpSessionId() { return sessionId },
+        get acpSessionId() {
+          return sessionId
+        },
         agentInfo: { name: 'activity-agent', version: '1' },
         agentCapabilities: {},
         protocolVersion: 1,
         start: async () => undefined,
         prompt: async (_content, onUpdate) => {
-          onUpdate({ sessionId: sessionId as never, update: { sessionUpdate: 'tool_call', toolCallId: 'tool-1', title: 'Read project', name: 'read_file', kind: 'read', status: 'in_progress', rawInput: { path: '/tmp/project', apiKey: 'secret-value' }, locations: [{ path: '/tmp/project/app.ts', line: 1 }] } } as never)
-          onUpdate({ sessionId: sessionId as never, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'work' } } } as never)
-          onUpdate({ sessionId: sessionId as never, update: { sessionUpdate: 'tool_call_update', toolCallId: 'tool-1', content: [{ type: 'diff', path: '/tmp/project/app.ts', oldText: 'a', newText: 'b' }] } } as never)
-          onUpdate({ sessionId: sessionId as never, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'ing' } } } as never)
+          onUpdate({
+            sessionId: sessionId as never,
+            update: {
+              sessionUpdate: 'tool_call',
+              toolCallId: 'tool-1',
+              title: 'Read project',
+              name: 'read_file',
+              kind: 'read',
+              status: 'in_progress',
+              rawInput: { path: '/tmp/project', apiKey: 'secret-value' },
+              locations: [{ path: '/tmp/project/app.ts', line: 1 }],
+            },
+          } as never)
+          onUpdate({
+            sessionId: sessionId as never,
+            update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'work' } },
+          } as never)
+          onUpdate({
+            sessionId: sessionId as never,
+            update: {
+              sessionUpdate: 'tool_call_update',
+              toolCallId: 'tool-1',
+              content: [{ type: 'diff', path: '/tmp/project/app.ts', oldText: 'a', newText: 'b' }],
+            },
+          } as never)
+          onUpdate({
+            sessionId: sessionId as never,
+            update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'ing' } },
+          } as never)
           // ACP tool_call_update is a sparse patch.  In particular name:null
           // leaves the existing name unchanged and omitted content/locations
           // must survive the terminal frame.
-          onUpdate({ sessionId: sessionId as never, update: { sessionUpdate: 'tool_call_update', toolCallId: 'tool-1', name: null, status: 'completed', rawOutput: { result: 'ok' } } } as never)
-          onUpdate({ sessionId: sessionId as never, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'done' } } } as never)
+          onUpdate({
+            sessionId: sessionId as never,
+            update: {
+              sessionUpdate: 'tool_call_update',
+              toolCallId: 'tool-1',
+              name: null,
+              status: 'completed',
+              rawOutput: { result: 'ok' },
+            },
+          } as never)
+          onUpdate({
+            sessionId: sessionId as never,
+            update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'done' } },
+          } as never)
           sessionId = 'agent-session-1'
           return { stopReason: 'end_turn' } as never
         },
         close: async () => undefined,
       }
     }
-    const adapter = new AcpProfileAdapter('activity', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, runtimeFactory, sidecar)
+    const adapter = new AcpProfileAdapter(
+      'activity',
+      profile,
+      seam(),
+      (id) => sessions.get(id),
+      ledgerFor(sidecar),
+      undefined,
+      runtimeFactory,
+      sidecar,
+    )
     const chunks: unknown[] = []
     for await (const chunk of adapter.stream(request('session-1', message))) chunks.push(chunk)
     const activities = await sidecar.activitySnapshot('session-1' as never)
-    expect(activities.map((item) => [item.activityId.slice(item.activityId.indexOf(':') + 1), item.kind, item.status])).toEqual([
+    expect(
+      activities.map((item) => [item.activityId.slice(item.activityId.indexOf(':') + 1), item.kind, item.status]),
+    ).toEqual([
       ['tool:tool-1', 'tool', 'completed'],
       ['tool:tool-1:0:diff', 'diff', 'completed'],
     ])
-    expect(chunks.filter(chunk => (chunk as { type: string }).type === 'text-delta')).toEqual([
+    expect(chunks.filter((chunk) => (chunk as { type: string }).type === 'text-delta')).toEqual([
       { type: 'text-delta', index: 0, text: 'work' },
       { type: 'text-delta', index: 0, text: 'ing' },
       { type: 'text-delta', index: 1, text: 'done' },
     ])
-    expect(activities.map(activity => activity.contentIndex)).toEqual([0, 0])
+    expect(activities.map((activity) => activity.contentIndex)).toEqual([0, 0])
     expect(activities[0]?.activitySeq).toBe(1)
     expect(activities[1]?.activitySeq).toBe(2)
     expect(activities[0]?.rawDetail).not.toContain('secret-value')
@@ -301,8 +552,22 @@ describe('provider activity bridge', () => {
     expect(activities[0]?.rawDetail).toContain('"rawOutput":{"result":"ok"}')
     expect(activities[0]?.rawDetail).toContain('"locations"')
     expect(activities[0]?.rawDetail).toContain('"content"')
-    expect(chunks.filter((chunk) => typeof chunk === 'object' && chunk !== null && 'type' in chunk && (chunk as { type?: unknown }).type === 'tool-call').length).toBe(0)
-    const finish = chunks.find((chunk) => typeof chunk === 'object' && chunk !== null && 'type' in chunk && (chunk as { type?: unknown }).type === 'finish') as { replayState?: { response?: { committedActivitySeq?: number } } } | undefined
+    expect(
+      chunks.filter(
+        (chunk) =>
+          typeof chunk === 'object' &&
+          chunk !== null &&
+          'type' in chunk &&
+          (chunk as { type?: unknown }).type === 'tool-call',
+      ).length,
+    ).toBe(0)
+    const finish = chunks.find(
+      (chunk) =>
+        typeof chunk === 'object' &&
+        chunk !== null &&
+        'type' in chunk &&
+        (chunk as { type?: unknown }).type === 'finish',
+    ) as { replayState?: { response?: { committedActivitySeq?: number } } } | undefined
     expect(finish?.replayState?.response?.committedActivitySeq).toBe(5)
   })
 
@@ -313,23 +578,44 @@ describe('provider activity bridge', () => {
     const message = user('inspect replacements')
     const sessions = new Map<string, SessionLike>([['session-details', session(message)]])
     const runtimeFactory = (): AcpProfileRuntime => ({
-      acpSessionId: 'agent-details', agentInfo: { name: 'activity-agent', version: '1' }, agentCapabilities: {}, protocolVersion: 1,
+      acpSessionId: 'agent-details',
+      agentInfo: { name: 'activity-agent', version: '1' },
+      agentCapabilities: {},
+      protocolVersion: 1,
       start: async () => undefined,
       prompt: async (_content, onUpdate) => {
         const update = (value: unknown) => onUpdate({ sessionId: 'agent-details', update: value } as never)
-        update({ sessionUpdate: 'tool_call', toolCallId: 'replace', title: 'Edit then read', kind: 'edit', status: 'in_progress',
-          content: [{ type: 'diff', path: 'file.txt', oldText: 'before', newText: 'after' }] })
+        update({
+          sessionUpdate: 'tool_call',
+          toolCallId: 'replace',
+          title: 'Edit then read',
+          kind: 'edit',
+          status: 'in_progress',
+          content: [{ type: 'diff', path: 'file.txt', oldText: 'before', newText: 'after' }],
+        })
         update({ sessionUpdate: 'tool_call_update', toolCallId: 'replace', status: 'completed', content: [] })
         update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'done' } })
         return { stopReason: 'end_turn' } as never
       },
       close: async () => undefined,
     })
-    const adapter = new AcpProfileAdapter('activity', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, runtimeFactory, sidecar)
-    for await (const _chunk of adapter.stream(request('session-details', message))) { /* consume */ }
+    const adapter = new AcpProfileAdapter(
+      'activity',
+      profile,
+      seam(),
+      (id) => sessions.get(id),
+      ledgerFor(sidecar),
+      undefined,
+      runtimeFactory,
+      sidecar,
+    )
+    for await (const _chunk of adapter.stream(request('session-details', message))) {
+      /* consume */
+    }
     const rows = await sidecar.activitySnapshot('session-details' as never)
-    expect(rows.map(row => [row.kind, row.status, row.contentIndex])).toEqual([
-      ['tool', 'completed', 0], ['diff', 'completed', 0],
+    expect(rows.map((row) => [row.kind, row.status, row.contentIndex])).toEqual([
+      ['tool', 'completed', 0],
+      ['diff', 'completed', 0],
     ])
     expect(rows[0]!.activitySeq).toBeLessThan(rows[1]!.activitySeq)
     expect(rows[1]!.revisionSeq).toBeGreaterThan(rows[1]!.activitySeq)
@@ -342,18 +628,41 @@ describe('provider activity bridge', () => {
     const message = user('continue')
     const sessions = new Map<string, SessionLike>([['session-2', session(message)]])
     const runtimeFactory = (): AcpProfileRuntime => ({
-      acpSessionId: 'agent-session-2', agentInfo: { name: 'activity-agent', version: '1' }, agentCapabilities: {}, protocolVersion: 1,
+      acpSessionId: 'agent-session-2',
+      agentInfo: { name: 'activity-agent', version: '1' },
+      agentCapabilities: {},
+      protocolVersion: 1,
       start: async () => undefined,
       prompt: async (_content, onUpdate) => {
-        onUpdate({ sessionId: 'agent-session-2' as never, update: { sessionUpdate: 'vendor_progress', detail: 'working' } } as never)
+        onUpdate({
+          sessionId: 'agent-session-2' as never,
+          update: { sessionUpdate: 'vendor_progress', detail: 'working' },
+        } as never)
         return { stopReason: 'end_turn' } as never
       },
       close: async () => undefined,
     })
-    const adapter = new AcpProfileAdapter('activity', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, runtimeFactory, sidecar)
+    const adapter = new AcpProfileAdapter(
+      'activity',
+      profile,
+      seam(),
+      (id) => sessions.get(id),
+      ledgerFor(sidecar),
+      undefined,
+      runtimeFactory,
+      sidecar,
+    )
     const chunks: unknown[] = []
     for await (const chunk of adapter.stream(request('session-2', message))) chunks.push(chunk)
-    expect(chunks.some((chunk) => typeof chunk === 'object' && chunk !== null && 'type' in chunk && (chunk as { type?: unknown }).type === 'finish')).toBe(true)
+    expect(
+      chunks.some(
+        (chunk) =>
+          typeof chunk === 'object' &&
+          chunk !== null &&
+          'type' in chunk &&
+          (chunk as { type?: unknown }).type === 'finish',
+      ),
+    ).toBe(true)
     expect((await sidecar.activitySnapshot('session-2' as never))[0]?.presentation).toBe('Agent activity')
   })
 
@@ -372,18 +681,47 @@ describe('provider activity bridge', () => {
       prompt: async (_content, onUpdate) => {
         onUpdate({
           sessionId: 'agent-session-reasoning-only' as never,
-          update: { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'private reasoning RESPONSE_OK.' } },
+          update: {
+            sessionUpdate: 'agent_thought_chunk',
+            content: { type: 'text', text: 'private reasoning RESPONSE_OK.' },
+          },
         } as never)
         return { stopReason: 'end_turn' } as never
       },
       close: async () => undefined,
     })
-    const adapter = new AcpProfileAdapter('reasoning-only', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, runtimeFactory, sidecar)
+    const adapter = new AcpProfileAdapter(
+      'reasoning-only',
+      profile,
+      seam(),
+      (id) => sessions.get(id),
+      ledgerFor(sidecar),
+      undefined,
+      runtimeFactory,
+      sidecar,
+    )
     const chunks: unknown[] = []
     for await (const chunk of adapter.stream(request('session-reasoning-only', message))) chunks.push(chunk)
-    expect(chunks.some((chunk) => typeof chunk === 'object' && chunk !== null && 'type' in chunk && (chunk as { type?: unknown }).type === 'reasoning-delta')).toBe(true)
-    const finish = chunks.find((chunk) => typeof chunk === 'object' && chunk !== null && 'type' in chunk && (chunk as { type?: unknown }).type === 'finish') as { reason?: { kind?: string; failure?: { code?: string } } } | undefined
-    expect(finish?.reason).toEqual({ kind: 'error', failure: { code: 'ACP_NO_VISIBLE_RESPONSE', message: 'ACP agent completed without a visible response' } })
+    expect(
+      chunks.some(
+        (chunk) =>
+          typeof chunk === 'object' &&
+          chunk !== null &&
+          'type' in chunk &&
+          (chunk as { type?: unknown }).type === 'reasoning-delta',
+      ),
+    ).toBe(true)
+    const finish = chunks.find(
+      (chunk) =>
+        typeof chunk === 'object' &&
+        chunk !== null &&
+        'type' in chunk &&
+        (chunk as { type?: unknown }).type === 'finish',
+    ) as { reason?: { kind?: string; failure?: { code?: string } } } | undefined
+    expect(finish?.reason).toEqual({
+      kind: 'error',
+      failure: { code: 'ACP_NO_VISIBLE_RESPONSE', message: 'ACP agent completed without a visible response' },
+    })
   })
 
   it('does not treat whitespace-only assistant chunks as a visible answer', async () => {
@@ -399,17 +737,44 @@ describe('provider activity bridge', () => {
       protocolVersion: 1,
       start: async () => undefined,
       prompt: async (_content, onUpdate) => {
-        onUpdate({ sessionId: 'agent-session-whitespace' as never, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: ' \n\t ' } } } as never)
-        onUpdate({ sessionId: 'agent-session-whitespace' as never, update: { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'private reasoning RESPONSE_OK.' } } } as never)
+        onUpdate({
+          sessionId: 'agent-session-whitespace' as never,
+          update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: ' \n\t ' } },
+        } as never)
+        onUpdate({
+          sessionId: 'agent-session-whitespace' as never,
+          update: {
+            sessionUpdate: 'agent_thought_chunk',
+            content: { type: 'text', text: 'private reasoning RESPONSE_OK.' },
+          },
+        } as never)
         return { stopReason: 'end_turn' } as never
       },
       close: async () => undefined,
     })
-    const adapter = new AcpProfileAdapter('whitespace', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, runtimeFactory, sidecar)
+    const adapter = new AcpProfileAdapter(
+      'whitespace',
+      profile,
+      seam(),
+      (id) => sessions.get(id),
+      ledgerFor(sidecar),
+      undefined,
+      runtimeFactory,
+      sidecar,
+    )
     const chunks: unknown[] = []
     for await (const chunk of adapter.stream(request('session-whitespace', message))) chunks.push(chunk)
-    const finish = chunks.find((chunk) => typeof chunk === 'object' && chunk !== null && 'type' in chunk && (chunk as { type?: unknown }).type === 'finish') as { reason?: { kind?: string; failure?: { code?: string } } } | undefined
-    expect(finish?.reason).toEqual({ kind: 'error', failure: { code: 'ACP_NO_VISIBLE_RESPONSE', message: 'ACP agent completed without a visible response' } })
+    const finish = chunks.find(
+      (chunk) =>
+        typeof chunk === 'object' &&
+        chunk !== null &&
+        'type' in chunk &&
+        (chunk as { type?: unknown }).type === 'finish',
+    ) as { reason?: { kind?: string; failure?: { code?: string } } } | undefined
+    expect(finish?.reason).toEqual({
+      kind: 'error',
+      failure: { code: 'ACP_NO_VISIBLE_RESPONSE', message: 'ACP agent completed without a visible response' },
+    })
   })
 
   it('ignores standard control frames and closes known children when terminal update has no content', async () => {
@@ -419,19 +784,48 @@ describe('provider activity bridge', () => {
     const message = user('run')
     const sessions = new Map<string, SessionLike>([['session-3', session(message)]])
     const runtimeFactory = (): AcpProfileRuntime => ({
-      acpSessionId: 'agent-session-3', agentInfo: { name: 'activity-agent', version: '1' }, agentCapabilities: {}, protocolVersion: 1,
+      acpSessionId: 'agent-session-3',
+      agentInfo: { name: 'activity-agent', version: '1' },
+      agentCapabilities: {},
+      protocolVersion: 1,
       start: async () => undefined,
       prompt: async (_content, onUpdate) => {
-        onUpdate({ sessionId: 'agent-session-3' as never, update: { sessionUpdate: 'tool_call', toolCallId: 'tool-3', title: 'Run', status: 'in_progress', content: [{ type: 'terminal', terminalId: 'term-3' }] } } as never)
+        onUpdate({
+          sessionId: 'agent-session-3' as never,
+          update: {
+            sessionUpdate: 'tool_call',
+            toolCallId: 'tool-3',
+            title: 'Run',
+            status: 'in_progress',
+            content: [{ type: 'terminal', terminalId: 'term-3' }],
+          },
+        } as never)
         onUpdate({ sessionId: 'agent-session-3' as never, update: { sessionUpdate: 'usage_update', used: 2 } } as never)
-        onUpdate({ sessionId: 'agent-session-3' as never, update: { sessionUpdate: 'tool_call_update', toolCallId: 'tool-3', status: 'completed' } } as never)
-        onUpdate({ sessionId: 'agent-session-3' as never, update: { sessionUpdate: 'current_mode_update', currentModeId: 'code' } } as never)
+        onUpdate({
+          sessionId: 'agent-session-3' as never,
+          update: { sessionUpdate: 'tool_call_update', toolCallId: 'tool-3', status: 'completed' },
+        } as never)
+        onUpdate({
+          sessionId: 'agent-session-3' as never,
+          update: { sessionUpdate: 'current_mode_update', currentModeId: 'code' },
+        } as never)
         return { stopReason: 'end_turn' } as never
       },
       close: async () => undefined,
     })
-    const adapter = new AcpProfileAdapter('activity', profile, seam(), id => sessions.get(id), ledgerFor(sidecar), undefined, runtimeFactory, sidecar)
-    for await (const _ of adapter.stream(request('session-3', message))) { /* drain */ }
+    const adapter = new AcpProfileAdapter(
+      'activity',
+      profile,
+      seam(),
+      (id) => sessions.get(id),
+      ledgerFor(sidecar),
+      undefined,
+      runtimeFactory,
+      sidecar,
+    )
+    for await (const _ of adapter.stream(request('session-3', message))) {
+      /* drain */
+    }
     const rows = await sidecar.activitySnapshot('session-3' as never)
     expect(rows.map((row) => [row.activityId.slice(row.activityId.indexOf(':') + 1), row.kind, row.status])).toEqual([
       ['tool:tool-3', 'tool', 'completed'],
@@ -447,17 +841,41 @@ describe('provider activity bridge', () => {
     const sidecar = testSidecar(root)
     const failingSidecar = Object.create(sidecar) as AcpSidecar
     sidecars.push(failingSidecar)
-    failingSidecar.activityHead = async () => { throw new Error('activity head unavailable') }
+    failingSidecar.activityHead = async () => {
+      throw new Error('activity head unavailable')
+    }
     const message = user('finish')
     const sessions = new Map<string, SessionLike>([['session-4', session(message)]])
     const runtimeFactory = (): AcpProfileRuntime => ({
-      acpSessionId: 'agent-session-4', agentInfo: { name: 'activity-agent', version: '1' }, agentCapabilities: {}, protocolVersion: 1,
-      start: async () => undefined, prompt: async () => ({ stopReason: 'end_turn' } as never), close: async () => undefined,
+      acpSessionId: 'agent-session-4',
+      agentInfo: { name: 'activity-agent', version: '1' },
+      agentCapabilities: {},
+      protocolVersion: 1,
+      start: async () => undefined,
+      prompt: async () => ({ stopReason: 'end_turn' }) as never,
+      close: async () => undefined,
     })
-    const adapter = new AcpProfileAdapter('activity', profile, seam(), id => sessions.get(id), ledgerFor(failingSidecar), undefined, runtimeFactory, failingSidecar)
+    const adapter = new AcpProfileAdapter(
+      'activity',
+      profile,
+      seam(),
+      (id) => sessions.get(id),
+      ledgerFor(failingSidecar),
+      undefined,
+      runtimeFactory,
+      failingSidecar,
+    )
     const chunks: unknown[] = []
     for await (const chunk of adapter.stream(request('session-4', message))) chunks.push(chunk)
-    expect(chunks.some((chunk) => typeof chunk === 'object' && chunk !== null && 'type' in chunk && (chunk as { type?: unknown }).type === 'finish')).toBe(true)
+    expect(
+      chunks.some(
+        (chunk) =>
+          typeof chunk === 'object' &&
+          chunk !== null &&
+          'type' in chunk &&
+          (chunk as { type?: unknown }).type === 'finish',
+      ),
+    ).toBe(true)
     expect((await sidecar.readRecoveryState('session-4' as never))?.kind).toBe('healthy')
   })
 })

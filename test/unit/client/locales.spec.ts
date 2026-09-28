@@ -3,11 +3,15 @@ import { describe, expect, it } from 'vitest'
 import { en, zh } from '../../../src/client/ui/locales.ts'
 import { en as pickerEn, zh as pickerZh } from '../../../src/client/ui/model-picker-locales.ts'
 
-const parameters = (text: string) => [...text.matchAll(/\{([A-Za-z][A-Za-z0-9]*)\}/g)].map(match => match[1]).sort()
+const parameters = (text: string) => [...text.matchAll(/\{([A-Za-z][A-Za-z0-9]*)\}/g)].map((match) => match[1]).sort()
 
 describe('ACP locale dictionaries', () => {
   const metadata = (language: string): Record<string, string> =>
-    (JSON.parse(readFileSync(new URL(`../../../locale/${language}.json`, import.meta.url), 'utf8')) as { meta: Record<string, string> }).meta
+    (
+      JSON.parse(readFileSync(new URL(`../../../locale/${language}.json`, import.meta.url), 'utf8')) as {
+        meta: Record<string, string>
+      }
+    ).meta
   const dictionaries: { name: string; english: Record<string, string>; chinese: Record<string, string> }[] = [
     { name: 'panel', english: en, chinese: zh },
     { name: 'model picker', english: pickerEn, chinese: pickerZh },

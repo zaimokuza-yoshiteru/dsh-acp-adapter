@@ -34,11 +34,7 @@ export interface CrossBackendTicket {
 }
 
 export type CrossBackendPhase =
-  | 'restore-source'
-  | 'create-destination'
-  | 'select-destination'
-  | 'open-destination'
-  | 'completed'
+  'restore-source' | 'create-destination' | 'select-destination' | 'open-destination' | 'completed'
 
 export interface CrossBackendFailure {
   readonly phase: CrossBackendPhase
@@ -63,10 +59,7 @@ export interface CrossBackendOperationResult {
 
 export interface CrossBackendOperations {
   restoreSource(selection: CrossBackendModelSelection): Promise<CrossBackendOperationResult>
-  createDestination(input: {
-    sessionId: string
-    location: CrossBackendLocation
-  }): Promise<CrossBackendCreateResult>
+  createDestination(input: { sessionId: string; location: CrossBackendLocation }): Promise<CrossBackendCreateResult>
   selectDestination(sessionId: string, selection: CrossBackendModelSelection): Promise<CrossBackendOperationResult>
   openDestination(sessionId: string): Promise<CrossBackendOperationResult>
 }
@@ -126,7 +119,14 @@ export class CrossBackendTransactionController {
     if (!state.sourceRestored && ticket.sourceSelection !== undefined) {
       const restored = await operations.restoreSource(ticket.sourceSelection)
       if (!restored.ok) {
-        return { ok: false, failure: { phase: 'restore-source', message: messageOf(restored.message, 'source model restore failed'), destinationSessionId: state.destinationSessionId } }
+        return {
+          ok: false,
+          failure: {
+            phase: 'restore-source',
+            message: messageOf(restored.message, 'source model restore failed'),
+            destinationSessionId: state.destinationSessionId,
+          },
+        }
       }
       state.sourceRestored = true
     }
@@ -137,12 +137,29 @@ export class CrossBackendTransactionController {
     if (!state.destinationCreated) {
       let created: CrossBackendCreateResult = { published: false }
       try {
-        created = await operations.createDestination({ sessionId: state.destinationSessionId, location: ticket.location })
+        created = await operations.createDestination({
+          sessionId: state.destinationSessionId,
+          location: ticket.location,
+        })
       } catch (error) {
-        return { ok: false, failure: { phase: 'create-destination', message: messageOf(error instanceof Error ? error.message : undefined, 'destination creation failed'), destinationSessionId: state.destinationSessionId } }
+        return {
+          ok: false,
+          failure: {
+            phase: 'create-destination',
+            message: messageOf(error instanceof Error ? error.message : undefined, 'destination creation failed'),
+            destinationSessionId: state.destinationSessionId,
+          },
+        }
       }
       if (!created.published) {
-        return { ok: false, failure: { phase: 'create-destination', message: messageOf(created.message, 'destination creation failed'), destinationSessionId: state.destinationSessionId } }
+        return {
+          ok: false,
+          failure: {
+            phase: 'create-destination',
+            message: messageOf(created.message, 'destination creation failed'),
+            destinationSessionId: state.destinationSessionId,
+          },
+        }
       }
       state.destinationCreated = true
     }
@@ -150,7 +167,14 @@ export class CrossBackendTransactionController {
     if (!state.destinationSelected) {
       const selected = await operations.selectDestination(state.destinationSessionId, ticket.targetSelection)
       if (!selected.ok) {
-        return { ok: false, failure: { phase: 'select-destination', message: messageOf(selected.message, 'destination model selection failed'), destinationSessionId: state.destinationSessionId } }
+        return {
+          ok: false,
+          failure: {
+            phase: 'select-destination',
+            message: messageOf(selected.message, 'destination model selection failed'),
+            destinationSessionId: state.destinationSessionId,
+          },
+        }
       }
       state.destinationSelected = true
     }
@@ -158,7 +182,14 @@ export class CrossBackendTransactionController {
     if (!state.opened) {
       const opened = await operations.openDestination(state.destinationSessionId)
       if (!opened.ok) {
-        return { ok: false, failure: { phase: 'open-destination', message: messageOf(opened.message, 'opening destination failed'), destinationSessionId: state.destinationSessionId } }
+        return {
+          ok: false,
+          failure: {
+            phase: 'open-destination',
+            message: messageOf(opened.message, 'opening destination failed'),
+            destinationSessionId: state.destinationSessionId,
+          },
+        }
       }
       state.opened = true
     }
@@ -172,10 +203,16 @@ export class CrossBackendTransactionController {
       this.states.delete(ticket.key)
       return { ok: true, destinationSessionId: '' }
     }
-    if (ticket.sourceSelection === undefined) return { ok: true, destinationSessionId: '' }
+    if (ticket.sourceSelection === undefined) {
+      this.states.delete(ticket.key)
+      return { ok: true, destinationSessionId: '' }
+    }
     const restored = await operations.restoreSource(ticket.sourceSelection)
     if (!restored.ok) {
-      return { ok: false, failure: { phase: 'restore-source', message: messageOf(restored.message, 'source model restore failed') } }
+      return {
+        ok: false,
+        failure: { phase: 'restore-source', message: messageOf(restored.message, 'source model restore failed') },
+      }
     }
     this.states.delete(ticket.key)
     return { ok: true, destinationSessionId: '' }
