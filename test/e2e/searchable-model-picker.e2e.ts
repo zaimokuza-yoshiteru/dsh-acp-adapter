@@ -6,12 +6,42 @@ import type { GenerateOptions, LlmModelInfo, LlmResolvedModelInfo, LlmProviderIn
 import { connectFreshWorkspace, writeComposerDraft } from '#host-support'
 import { launchBrowser, newEnglishPage } from './browser.ts'
 import type { TestBrowser } from './browser.ts'
-import type { Page } from 'playwright'
+import type { Locator, Page } from 'playwright'
 import { launchAdapterWorld, root } from './scaffold.ts'
 import { backToPluginList, openAcpPluginDetail, returnToConversation } from './plugin-panel.helpers.ts'
 
 const pickerSelector = '[data-acp-searchable-model-picker]'
 const nativeProvider = 'native-picker'
+
+async function pickerStyles(trigger: Locator, row: Locator, label: Locator) {
+  const [triggerStyle, rowStyle, labelStyle] = await Promise.all([
+    trigger.evaluate(element => {
+      const style = getComputedStyle(element)
+      const rect = element.getBoundingClientRect()
+      return {
+        fontFamily: style.fontFamily, fontSize: style.fontSize, lineHeight: style.lineHeight, fontWeight: style.fontWeight,
+        width: rect.width, height: rect.height, maxWidth: style.maxWidth,
+        paddingLeft: style.paddingLeft, paddingRight: style.paddingRight, gap: style.gap,
+      }
+    }),
+    row.evaluate(element => {
+      const style = getComputedStyle(element)
+      const rect = element.getBoundingClientRect()
+      return { height: rect.height, paddingLeft: style.paddingLeft, paddingRight: style.paddingRight, gap: style.gap }
+    }),
+    label.evaluate(element => {
+      const style = getComputedStyle(element)
+      return { fontFamily: style.fontFamily, fontSize: style.fontSize, lineHeight: style.lineHeight, fontWeight: style.fontWeight }
+    }),
+  ])
+  return { trigger: triggerStyle, row: rowStyle, label: labelStyle }
+}
+
+function expectPickerStylesMatch(native: Awaited<ReturnType<typeof pickerStyles>>, custom: Awaited<ReturnType<typeof pickerStyles>>) {
+  expect(custom.trigger).toEqual(native.trigger)
+  expect(custom.row).toEqual(native.row)
+  expect(custom.label).toEqual(native.label)
+}
 
 /** Minimal regular DSH provider with a real reasoning-effort model contract. */
 class SearchEffortProvider extends LlmAdapter {
@@ -73,6 +103,7 @@ it('opts into searchable model selection and restores the native picker when dis
     browser = await launchBrowser({ headless: true, ...(process.env.DSH_E2E_BROWSER_CHANNEL ? { channel: process.env.DSH_E2E_BROWSER_CHANNEL } : {}) })
     page = await newEnglishPage(browser)
     pageReady = true
+    const originalViewport = page.viewportSize()
     page.setDefaultTimeout(10_000)
     const errors: string[] = []
     page.on('pageerror', error => errors.push(error.message))
@@ -94,7 +125,12 @@ it('opts into searchable model selection and restores the native picker when dis
     const stockTrigger = page.getByRole('button', { name: /^Select model/ })
     await stockTrigger.click()
     await page.getByRole('menuitem', { name: /^Model/ }).click()
-    await page.getByLabel('Fixture devin · ACP', { exact: true }).getByRole('menuitemradio', { name: 'Mock Model A', exact: true }).waitFor()
+    const nativeModelRow = page.getByLabel('Fixture devin · ACP', { exact: true }).getByRole('menuitemradio', { name: 'Mock Model A', exact: true })
+    await nativeModelRow.waitFor()
+    const nativeModelLabel = nativeModelRow.getByText('Mock Model A', { exact: true })
+    const nativeStyles = await pickerStyles(stockTrigger, nativeModelRow, nativeModelLabel)
+    await page.screenshot({ path: join(evidence, 'native-model-picker-en.png') })
+    writeFileSync(join(evidence, 'native-model-picker-styles.json'), `${JSON.stringify(nativeStyles, null, 2)}\n`)
     await page.keyboard.press('Escape')
     await page.keyboard.press('Escape')
 
@@ -121,6 +157,13 @@ it('opts into searchable model selection and restores the native picker when dis
     const dialog = page.getByRole('dialog', { name: 'Model', exact: true })
     const search = dialog.getByRole('searchbox', { name: 'Search model name, ID, or provider', exact: true })
     await search.waitFor()
+    const customModelRow = dialog.getByRole('menuitemradio', { name: 'Mock Model A', exact: true })
+    await customModelRow.waitFor()
+    const customModelLabel = customModelRow.getByText('Mock Model A', { exact: true })
+    const customStyles = await pickerStyles(trigger, customModelRow, customModelLabel)
+    expectPickerStylesMatch(nativeStyles, customStyles)
+    writeFileSync(join(evidence, 'searchable-model-picker-styles.json'), `${JSON.stringify(customStyles, null, 2)}\n`)
+    await page.screenshot({ path: join(evidence, 'searchable-model-picker-en.png') })
     await page.screenshot({ path: join(evidence, 'on-search.png'), fullPage: true })
 
     await search.fill('Mock Model B')
@@ -204,6 +247,18 @@ it('opts into searchable model selection and restores the native picker when dis
     await chineseDialog.getByText('没有匹配的模型。', { exact: true }).waitFor()
     await chineseDialog.getByRole('button', { name: '推理等级', exact: true }).waitFor()
     await page.screenshot({ path: join(evidence, 'search-zh.png'), fullPage: true })
+    await chineseSearch.fill(nativeProvider)
+    const narrowModel = chineseDialog.getByRole('menuitemradio', { name: 'Native Model', exact: true })
+    await narrowModel.waitFor({ state: 'visible' })
+    await page.setViewportSize({ width: 740, height: 800 })
+    await expect.poll(async () => {
+      const bounds = await chineseDialog.boundingBox()
+      return bounds !== null && bounds.x >= 0 && bounds.y >= 0
+        && bounds.x + bounds.width <= 740 && bounds.y + bounds.height <= 800
+    }).toBe(true)
+    expect(await narrowModel.isVisible()).toBe(true)
+    await page.screenshot({ path: join(evidence, 'searchable-model-picker-zh-narrow.png') })
+    if (originalViewport !== null) await page.setViewportSize(originalViewport)
     await page.keyboard.press('Escape')
     await host.ctx.settings.replace('locale', { preference: 'en' })
     await page.reload()

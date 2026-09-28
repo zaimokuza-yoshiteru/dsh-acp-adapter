@@ -2,7 +2,7 @@ import { createElement as h, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import type { ChangeEvent, FocusEvent, KeyboardEvent } from 'react'
 import { createPortal } from 'react-dom'
 import type { ModelSelection } from '@deepseek-ai/dsh-api-remotes/client'
-import { MenuSurface, StateDot, IconChevronDownOutlineRegular, IconDataOutlineRegular, Toast, IconWarningOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
+import { MenuSurface, StateDot, IconCheckOutlineRegular, IconChevronDownOutlineRegular, IconDataOutlineRegular, Toast, IconWarningOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ModelSelectInjected } from '@deepseek-ai/dsh-client-ui-model-selection/client'
 import type { ModelPickerLocaleKey } from './model-picker-locales.ts'
 import css from './SearchableModelPicker.module.css'
@@ -213,7 +213,7 @@ export function SearchableModelPicker({ available, directory, load, select, lock
               key: `${group.id}:${model.id}`, title: `${group.id}/${model.id}`, disabled: busy || locked,
               onClick: () => { choose(group.id, model.id) },
               children: [h('span', { className: css.rowName, key: 'name' }, model.name), h('span', { className: css.check, key: 'check' },
-                state.pending?.provider === group.id && state.pending.model === model.id ? h(StateDot, { state: 'ongoing' }) : selected ? '✓' : null)],
+                state.pending?.provider === group.id && state.pending.model === model.id ? h(StateDot, { state: 'ongoing' }) : selected ? h(IconCheckOutlineRegular) : null)],
             })
           }),
         )
@@ -224,7 +224,7 @@ export function SearchableModelPicker({ available, directory, load, select, lock
           onClick: () => { chooseEffort(choice.id) },
           children: [h('span', { className: css.rowName, key: 'name' }, choice.name), h('span', { className: css.check, key: 'check' },
           state.pending !== null && state.pending.provider === state.current?.provider && state.pending.model === state.current?.model
-            && state.pending.reasoningEffort === choice.id ? h(StateDot, { state: 'ongoing' }) : effort === choice.id ? '✓' : null)],
+            && state.pending.reasoningEffort === choice.id ? h(StateDot, { state: 'ongoing' }) : effort === choice.id ? h(IconCheckOutlineRegular) : null)],
         })),
       ),
       pane === 'model' && filtered.length === 0 && state.status === 'ready'
@@ -244,7 +244,7 @@ export function SearchableModelPicker({ available, directory, load, select, lock
       children: [h(IconDataOutlineRegular, { className: css.triggerIcon, size: 16, key: 'icon' }),
         h('span', { className: css.triggerName, key: 'name' }, currentModel?.name ?? state.current?.model ?? t('trigger')),
         effortLabel === undefined ? null : h('span', { className: css.triggerEffort, key: 'effort' }, effortLabel),
-        busy ? h(StateDot, { state: 'ongoing', key: 'busy' }) : h(IconChevronDownOutlineRegular, { className: css.chevron, key: 'chevron' })],
+        busy ? h(StateDot, { state: 'ongoing', key: 'busy' }) : h(IconChevronDownOutlineRegular, { className: open ? `${css.chevron} ${css.chevronOpen}` : css.chevron, key: 'chevron' })],
     }),
     menu,
     toast === null ? null : h(Toast, {

@@ -4,6 +4,18 @@
 
 User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for publication dates, exact installation instructions, and checksums. Historical entries were reconstructed from tag diffs; npm packages were not republished.
 
+## 0.1.7-rc.2.4
+
+2026-09-28
+
+### 中文
+
+- 可搜索模型选择器的字体、行高、行间距、勾选图标和展开箭头对齐 DSH 原生选择器；保留模型搜索、推理等级切换、选择行为，以及关闭后恢复原生选择器的设置。
+
+### English
+
+- Aligns the searchable model picker’s typography, row spacing, check icon, and expanded chevron with the native DSH picker while preserving model search, reasoning-effort tabs, selection behavior, and the setting that restores the native picker when disabled.
+
 ## 0.1.7-rc.2.3
 
 2026-09-27
