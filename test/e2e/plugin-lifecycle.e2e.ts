@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { expect, it, vi } from 'vitest'
 import { launchWebScaffold } from '#host-scaffold'
 import { connectFreshWorkspace, writeComposerDraft } from '#host-support'
+import type { AcpRemoteService } from '../../src/remote/service.js'
 import { root } from './scaffold.ts'
 
 it('unloads and remounts ACP through the native plugin manager without restarting DSH', async () => {
@@ -49,11 +50,27 @@ it('unloads and remounts ACP through the native plugin manager without restartin
       if (active) await settled
       expect(await manager.setPluginEnabled(entry.entryId, true)).toMatchObject({ application: 'applied' })
       await vi.waitFor(() => expect(routed()).toBe(true))
+      const previousSessionId = await page.locator('[data-conversation-session]').last().getAttribute('data-conversation-session')
       await page.getByRole('button', { name: 'New session', exact: true }).last().click()
+      await expect.poll(async () => {
+        const id = await page.locator('[data-conversation-session]').last().getAttribute('data-conversation-session')
+        return id !== null && id.length > 0 && id !== previousSessionId
+      }).toBe(true)
+      const sessionId = await page.locator('[data-conversation-session]').last().getAttribute('data-conversation-session')
+      if (sessionId === null || sessionId.length === 0) throw new Error('New conversation has no session ID')
+      const conversation = page.locator(`[data-conversation-session="${sessionId}"]`)
+      const composer = conversation.locator('[data-composer-input][contenteditable="true"]')
+      await composer.waitFor({ state: 'visible' })
       settled = host.whenTurnSettled()
-      await send('E2E_MESSAGE')
-      await settled
-      await controls.waitFor()
+      await writeComposerDraft(page, composer, 'E2E_MESSAGE')
+      await conversation.getByRole('button', { name: 'Send message', exact: true }).click()
+      const settledSessionId = await settled
+      expect(settledSessionId).toBe(sessionId)
+      const snapshot = await (host.ctx.get('dshAcp') as AcpRemoteService).agentSessionSnapshot(settledSessionId)
+      expect(snapshot.freshness).toBe('live')
+      const remountedControls = conversation.getByRole('button', { name: /^Session ·/ })
+      await remountedControls.waitFor()
+      await expect.poll(() => page.locator('[data-conversation-session]').last().getAttribute('data-conversation-session')).toBe(sessionId)
     }
     expect(errors).toEqual([])
   } finally {
