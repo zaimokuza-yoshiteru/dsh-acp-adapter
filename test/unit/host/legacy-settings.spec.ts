@@ -14,7 +14,6 @@ it('reads both sides of the native import rename without rewriting the old confi
     )
     const expected = {
       agents: { codex: { name: 'Codex', command: 'codex-acp', args: [], env: {} } },
-      searchableModelPicker: false,
       toolApprovalDefault: 'auto',
     }
     expect(await readLegacyAcpSettings(home)).toEqual(expected)
@@ -32,12 +31,15 @@ it('publishes a rehydratable form while keeping host-only Agent validation', asy
   const { Config } = await import('../../../src/host/composition/config.ts')
   const schema = new z(JSON.parse(JSON.stringify(Config.toJSON())))
   delete schema.dict!.agents!.meta.volatile
-  delete schema.dict!.searchableModelPicker!.meta.volatile
   delete schema.dict!.toolApprovalDefault!.meta.volatile
   const value = { agents: { codex: { name: 'Codex', command: 'codex-acp', args: [], env: {} } } }
-  expect(schema(value)).toEqual({ ...value, searchableModelPicker: false, toolApprovalDefault: 'auto' })
+  expect(schema({ ...value, searchableModelPicker: true })).toEqual({
+    ...value,
+    searchableModelPicker: true,
+    toolApprovalDefault: 'auto',
+  })
   expect(Config(value).agents.get()).toEqual(value.agents)
-  expect(Config(value).searchableModelPicker.get()).toBe(false)
+  expect(Config({ ...value, searchableModelPicker: true }).agents.get()).toEqual(value.agents)
   expect(Config(value).toolApprovalDefault.get()).toBe('auto')
   expect(() =>
     Config['~standard'].validate({

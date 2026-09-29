@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import type { AcpActivityPresentation } from '../policy/activity-presentation.ts'
 import { acpReplayPayloadOf, acpReplayPayloadSchema } from './acp-replay-payload.ts'
+import type { ModelContextSnapshot } from './model-context-snapshots.ts'
 
 export interface SessionEventLike {
   readonly type: string
@@ -101,6 +102,8 @@ export interface SessionLike {
   }
   readonly seq: number
   readonly facts: SessionFacts
+  /** Current effective DSH model-facing snapshots, without replaying ordinary history. */
+  currentModelContextSnapshots?(): readonly ModelContextSnapshot[]
   readonly permissions: { readonly sandbox: string | null; readonly approval: string | null }
   append?(type: string, data: unknown): unknown
 }

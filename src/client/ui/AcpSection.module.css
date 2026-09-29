@@ -296,30 +296,6 @@
   font-weight: 500;
   color: var(--dsw-alias-label-secondary);
 }
-.pickerSetting {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 10px 12px;
-  border: 0.5px solid var(--dsw-alias-border-l2);
-  border-radius: 8px;
-}
-.pickerSettingLabel {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  line-height: 20px;
-  font-weight: 500;
-  cursor: pointer;
-}
-.pickerSettingLabel input {
-  margin: 0;
-  accent-color: var(--dsw-alias-fill-primary);
-}
-.pickerSettingLabel input:disabled {
-  cursor: not-allowed;
-}
 .input {
   min-width: 0;
 }

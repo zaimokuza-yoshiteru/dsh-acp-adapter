@@ -30,8 +30,6 @@ export type { AcpAgentConfigState } from '../../contract/remote.ts'
 /** Resolved `dsh-acp-adapter` settings section. */
 export interface AcpSettings {
   agents: Record<string, AcpAgentConfig>
-  /** Optional so older serialized settings snapshots and fixtures remain valid. */
-  searchableModelPicker?: boolean
   /** Default policy snapshotted by newly initialized ACP sessions. */
   toolApprovalDefault?: 'auto' | 'ask'
 }
@@ -344,7 +342,6 @@ export interface PanelSettingsState {
   status: 'loading' | 'invalid' | 'unavailable' | 'ready'
   writable: boolean
   agents: Record<string, AcpAgentConfig>
-  searchableModelPicker: boolean
   toolApprovalDefault: 'auto' | 'ask'
   revision: number | undefined
 }
@@ -363,7 +360,6 @@ export function panelSettingsOf(snapshot: AcpScopeSnapshot): PanelSettingsState 
     status,
     writable: snapshot.writable,
     agents: snapshot.value?.agents ?? {},
-    searchableModelPicker: snapshot.value?.searchableModelPicker ?? false,
     toolApprovalDefault: snapshot.value?.toolApprovalDefault ?? 'auto',
     revision: snapshot.revision,
   }

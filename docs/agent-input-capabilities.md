@@ -12,6 +12,8 @@ DSH 中运行时按 Enter 会排队；队列中的“插话”操作请求交接
 
 声明 `_meta.steering = { supported: true, idleBehavior: "promptRequired" }` 的连接可使用原生注入。适配器保留原 ACP prompt，让出 DSH 输出段；下一原生 step 准入后调用 `_session/steering`。收到 `injected` 后继续承接原 prompt；只有 `promptRequired` 确认消息未消费，才允许排空旧执行后改发普通 prompt。权限或用户问题待答、模型配置变化时使用默认策略。
 
+ACP 每次请求最多附带 DSH 当前有效的 `runtime-context` 与 `skill-catalog` 快照；它们来自 DSH 当前可见的 session surface，不会重放普通用户历史。目录仅在当前 DSH scope 存在 skill 加载入口时提供，并通过 DSH 的 `skill` 工具或受支持的 `run_code` 路由加载；这不会安装 Agent 原生 skill，也不授予新工具或权限。
+
 ## 各 Agent 的接入边界
 
 以下记录已核查的接口边界；固定源码链接用于说明决策依据，升级后仍需重新验证能力声明与完成语义。

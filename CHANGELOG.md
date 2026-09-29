@@ -4,6 +4,24 @@
 
 User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for publication dates, exact installation instructions, and checksums. Historical entries were reconstructed from tag diffs; npm packages were not republished.
 
+## 0.2.0-rc.2.0 (unreleased)
+
+### 中文
+
+- 适配 DSH `0.2.0-rc.2` 的精确宿主契约与依赖，并将 ACP SDK 从 `1.3.0` 升级到 `1.5.1`。
+- 删除重复维护的自定义模型选择器与设置开关，模型搜索、键盘导航和中文输入法处理统一使用 DSH 原生选择器。旧 `searchableModelPicker` 设置会被忽略，无需手动清理。
+- 将 DSH 当前有效的运行时上下文和 Skill 目录投影到 ACP 请求，并明确提示 Agent 使用 DSH 的 Skill 入口。
+- 修复已开始工具的晚到状态通知在连续助手回复中产生额外分段或空行的问题。
+- 定时提问超时后仍可回答；将迟到答复送入原 ACP 会话的当前执行步骤，定时模式保持可选。
+
+### English
+
+- Align the exact host contract and dependencies with DSH `0.2.0-rc.2`, and upgrade the ACP SDK from `1.3.0` to `1.5.1`.
+- Remove the duplicated custom model picker and preference toggle. Model search, keyboard navigation, and Chinese IME handling now use DSH’s native selector. Existing `searchableModelPicker` settings are ignored; users do not need to clean up their configuration.
+- Project DSH’s current effective runtime context and Skill catalog into ACP requests, and tell Agents to use DSH’s Skill entry point.
+- Prevent late state notifications for started tools from adding unwanted segment breaks or blank lines to a continuous assistant reply.
+- Keep timed questions answerable after their wait expires and deliver late answers into the original ACP session’s current execution step; timed mode remains opt-in.
+
 ## 0.2.0-rc.1.0
 
 2026-09-28

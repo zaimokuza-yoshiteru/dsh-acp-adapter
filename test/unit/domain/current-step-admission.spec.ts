@@ -134,4 +134,24 @@ describe('current-step ACP admission', () => {
       ),
     ).toEqual([followup])
   })
+
+  it('admits a scheduled reminder as logged current-step input', () => {
+    const reminder = createUserMessage({
+      content: [{ type: 'text', text: 'This is a scheduled message from the user: check the report.' }],
+      source: { kind: 'schedule' } as never,
+    })
+
+    expect(
+      admitCurrentStep(
+        request([reminder]),
+        withSessionFacts({
+          inheritedEventCount: 0,
+          snapshotEvents: () => [
+            { type: 'step/start', seq: 1, data: { turn: 2, step: 0 } },
+            { type: 'user/message', seq: 2, data: reminder },
+          ],
+        }),
+      ),
+    ).toEqual([reminder])
+  })
 })

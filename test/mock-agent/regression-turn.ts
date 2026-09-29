@@ -19,7 +19,10 @@ export async function regressionTurn(
     .join('\n')
   const profile = process.env.MOCK_PROFILE
   const model = session.configOptions?.find((option) => option.id === 'model')?.currentValue
-  log(`regression prompt=${JSON.stringify(prompt)} model=${model}`)
+  const thoughtLevel = session.configOptions?.find((option) => option.id === 'thought_level')?.currentValue
+  log(
+    `regression prompt=${JSON.stringify(prompt)} model=${model} thought_level=${String(thoughtLevel)} session=${session.id}`,
+  )
   const file = /verbatim read-only copy saved at ("(?:[^"\\]|\\.)*")/.exec(prompt)
   if (file) log(`regression file-bytes=${fs.readFileSync(JSON.parse(file[1]), 'utf8')}`)
   let release!: () => void
@@ -101,6 +104,9 @@ export async function regressionTurn(
       })
       await emit('agent_thought_chunk', '\n\n先规划计数器页面。')
       await emit('agent_message_chunk', '页面骨架', 'answer-1')
+      // The setup tool started before this answer. Its delayed completion must
+      // not split two chunks that still belong to the same ACP message.
+      sendUpdate(session.id, { sessionUpdate: 'tool_call_update', toolCallId: 'segment-setup', status: 'completed' })
       await emit('agent_message_chunk', '已完成。', 'answer-1')
       sendUpdate(session.id, {
         sessionUpdate: 'tool_call',

@@ -215,11 +215,6 @@ export class AcpPanelController {
     return this.mutate([{ op: 'unset', path: ['agents', id] }])
   }
 
-  /** Persist the opt-in picker enhancement through the same revision fence as agent settings. */
-  async setSearchableModelPicker(enabled: boolean): Promise<string | undefined> {
-    return this.mutate([{ op: 'set', path: ['searchableModelPicker'], value: enabled }])
-  }
-
   /** Persist the default approval behavior for DSH native tools in new sessions. */
   async setToolApprovalDefault(policy: 'auto' | 'ask'): Promise<string | undefined> {
     if (policy !== 'auto' && policy !== 'ask') throw new TypeError('Invalid DSH tool approval policy')

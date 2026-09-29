@@ -735,18 +735,9 @@ describe('panelSettingsOf', () => {
       status: 'ready',
       writable: true,
       agents: { devin: devinConfig },
-      searchableModelPicker: false,
       toolApprovalDefault: 'auto',
       revision: 3,
     })
-    expect(
-      panelSettingsOf({
-        status: 'ready',
-        value: { agents: {}, searchableModelPicker: true },
-        revision: 4,
-        writable: true,
-      }).searchableModelPicker,
-    ).toBe(true)
     expect(
       panelSettingsOf({
         status: 'ready',
@@ -756,9 +747,6 @@ describe('panelSettingsOf', () => {
       }).toolApprovalDefault,
     ).toBe('ask')
     expect(panelSettingsOf({ status: 'ready', value: undefined, revision: 3, writable: false }).agents).toEqual({})
-    expect(
-      panelSettingsOf({ status: 'ready', value: undefined, revision: 3, writable: false }).searchableModelPicker,
-    ).toBe(false)
   })
 
   it('unavailable → unavailable；loading 按 revision 分 loading/invalid', () => {
@@ -766,7 +754,6 @@ describe('panelSettingsOf', () => {
       status: 'unavailable',
       writable: false,
       agents: {},
-      searchableModelPicker: false,
       toolApprovalDefault: 'auto',
       revision: undefined,
     })
@@ -778,7 +765,6 @@ describe('panelSettingsOf', () => {
       status: 'invalid',
       writable: false,
       agents: {},
-      searchableModelPicker: false,
       toolApprovalDefault: 'auto',
       revision: 7,
     })

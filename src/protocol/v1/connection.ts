@@ -4,12 +4,12 @@
  * `client()` app、v1 initialize 协商、typed 会话方法 RPC、能力记录、probe、
  * 错误六分类。
  *
- * - 传输：`@agentclientprotocol/sdk` 1.3.0 的 `client()` API + `ndJsonStream`
+ * - 传输：`@agentclientprotocol/sdk` 1.5.1 的 `client()` API + `ndJsonStream`
  * （自 @deprecated 的 `ClientSideConnection` 迁入：handler 按方法名经
  *   `onRequest`/`onNotification` 注册，`connect(stream)` 拿长连接，向外 RPC 走
- * `conn.agent.request('<method>', params)`）。 契约实测结论不变——两 API 共用
- *   同一 Connection/jsonrpc 核心（test/contracts/sdk-contract.spec.ts 已同步迁移复验）：
- *   容忍未知 `_vendor` 通知、garbage 行跳行、崩溃时挂起请求以
+ * `conn.agent.request('<method>', params)`）。SDK 1.5.1 对无效 JSON 输入回送
+ *   JSON-RPC parse error；未知 `_vendor` 通知仍被忽略，畸形行后的协议请求仍可用。
+ *   连接关闭时挂起请求以
  *   `Error('ACP connection closed')` reject 且已流出 chunk 不丢。
  * - 结构化 spawn 规格（{@link AcpConnectionSpec}）：`spawnPlan` 承载已校验的
  *   原生访问启动参数，`wrapArgv` 是宿主进程层的可选包装插口；两者互斥，
@@ -126,7 +126,7 @@ interface SdkHandlerView {
   describe(): string
 }
 
-/** SDK 1.3.0 installs a closed-union session router before public app
+/** SDK 1.5.1 installs a closed-union session router before public app
  * handlers. Preempt only the two negotiated Claude draft variants; every
  * standard ACP update continues through the SDK's own generated validator.
  * The dependency is exact-pinned and the structural contract is covered by a
@@ -515,10 +515,8 @@ export class AcpClientConnection {
           cwd: params.cwd ?? this.spec.cwd,
           mcpServers: [...(params.mcpServers ?? [])],
         } satisfies acp.ForkSessionRequest
-        // ACP SDK 1.3.0 declares unstable_forkSession on ClientContext, but the
-        // ESM runtime ClientContext returned by client().connect() does not
-        // install that convenience method. Its typed generic request surface is
-        // the interoperable path until the SDK declaration/runtime drift closes.
+        // SDK 1.5.1 still declares unstable_forkSession, but the ESM runtime
+        // ClientContext returned by client().connect() does not install it.
         return await agent.request<acp.ForkSessionResponse, acp.ForkSessionRequest>('session/fork', request)
       },
       options,
@@ -1046,7 +1044,9 @@ export class AcpClientConnection {
     if (error instanceof AcpClientError) return error
     // Linux can close stdout before publishing its bootstrap's launch error.
     // Harvest the outcome before deciding whether this was startup or a crash.
-    const closed = !this.process.isClosing && (this.process.exited !== null || isConnectionClosedError(error))
+    const closed =
+      !this.process.isClosing &&
+      (this.process.exited !== null || isConnectionClosedError(error) || error instanceof acp.MessageTooLargeError)
     const exit = closed ? await this.process.harvestExit() : undefined
     if (closed) {
       // A broken protocol stream is unusable even when the OS process remains
@@ -1081,7 +1081,11 @@ export class AcpClientConnection {
     }
     if (closed) {
       const stderrTail = this.process.stderrLines().slice(-5)
-      return new AcpClientError('crash', this.crashMessage(operation, exit, stderrTail), {
+      const message =
+        error instanceof acp.MessageTooLargeError
+          ? `ACP agent "${this.command}" exceeded the incoming message limit (${String(error.maxMessageBytes)} bytes) during ${operation}; connection closed`
+          : this.crashMessage(operation, exit, stderrTail)
+      return new AcpClientError('crash', message, {
         exit,
         stderrTail,
         cause: error,

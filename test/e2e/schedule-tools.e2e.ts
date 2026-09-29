@@ -151,6 +151,7 @@ it('delivers reminders into the owning ACP Session while idle and while a turn i
       acpSessionId: idleScenario.acpSessionId,
       prompt: expect.stringContaining('E2E_SCHEDULE_DELIVERY_IDLE'),
     })
+    expect(idleDelivery[0]?.prompt).toContain('This is a scheduled message from the user')
     const idleConversation = page.locator(`[data-conversation-session="${idleTask.sessionId}"]`)
     await idleConversation.getByText('E2E_SCHEDULE_DELIVERED_IDLE', { exact: true }).waitFor()
 
@@ -196,6 +197,7 @@ it('delivers reminders into the owning ACP Session while idle and while a turn i
       acpSessionId: activeScenario.acpSessionId,
       prompt: expect.stringContaining('E2E_SCHEDULE_DELIVERY_ACTIVE'),
     })
+    expect(activeDelivery[0]?.prompt).toContain('This is a scheduled message from the user')
     const activeConversation = page.locator(`[data-conversation-session="${activeTask.sessionId}"]`)
     await activeConversation.getByText('E2E_SCHEDULE_DELIVERED_ACTIVE', { exact: true }).waitFor()
   } finally {

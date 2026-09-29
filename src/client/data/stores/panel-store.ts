@@ -42,7 +42,6 @@ const initialPanelState = (): AcpPanelSnapshot => ({
     status: 'loading',
     writable: false,
     agents: {},
-    searchableModelPicker: false,
     toolApprovalDefault: 'auto',
     revision: undefined,
   },

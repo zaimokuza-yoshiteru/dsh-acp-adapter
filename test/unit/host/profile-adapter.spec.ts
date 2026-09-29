@@ -3,12 +3,17 @@ import { describe, expect, it } from 'vitest'
 import { BlockAssembler, createUserMessage, markAgentLoopRequest } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
 import { Context } from '@deepseek-ai/cordis'
+import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
+import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
+import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
+import ToolRuntime, { defineTool } from '@deepseek-ai/dsh-tools'
 import { AcpProfileAdapter } from '../../../src/host/composition/profile-adapter.ts'
 import { acpProbeConfigKey } from '../../../src/domain/session/agent-config.ts'
 import type { AcpAgentConfig } from '../../../src/domain/session/agent-config.ts'
 import { AcpRemoteService } from '../../../src/remote/service.ts'
 import type { DispatchLedgerStore, DispatchRecord } from '../../../src/runtime/session/dispatch-ledger.ts'
 import type { AcpSidecar } from '../../../src/persistence/sidecar.ts'
+import { acpExecutionProjection, acpSessionView } from '../../../src/host/composition/session-facts.ts'
 
 const profile = (command = 'agent', env: Record<string, string> = {}): AcpAgentConfig => ({
   name: 'Test',
@@ -138,6 +143,90 @@ describe('AcpProfileAdapter generation and dispatch boundaries', () => {
     expect(JSON.stringify(sent)).toContain('current')
     expect(JSON.stringify(sent)).not.toContain('old history')
   })
+
+  it.each(['native', 'ptc'] as const)(
+    'projects the real DSH effective context through composition into a new ACP binding (%s)',
+    async (mode) => {
+      const ctx = new Context()
+      await ctx.plugin(SessionStore)
+      await ctx.plugin(SessionProjectionRegistry)
+      await ctx.plugin(SystemPrompt, {})
+      await ctx.plugin(ToolRuntime)
+      ctx.sessionProjections.register(acpExecutionProjection)
+      try {
+        const native = ctx.sessions.create(SessionId('native-before-acp'), { meta: { cwd: '/workspace' } })
+        const appendContext = (kind: string, text: string) => {
+          const message = createUserMessage({
+            content: [{ type: 'text', text }],
+            source: {
+              kind,
+              ...(kind === 'skill-catalog'
+                ? { form: 'catalog', entries: [{ name: 'office-docx', description: 'Read and write Word documents.' }] }
+                : {}),
+            } as never,
+          })
+          native.append('user/message', message, { surfaceOp: 'append' })
+        }
+        appendContext(
+          'skill-catalog',
+          '<available_skills>\n- `office-docx`: Read and write Word documents.\n</available_skills>',
+        )
+        appendContext('runtime-context', 'Current DSH mode: read-only.')
+        const agent = { id: native.header.id, session: native, inbox: { nextStep: [] } } as never
+        ctx.provide('agents', { get: () => agent } as never)
+        ctx.tools.register(
+          defineTool({
+            name: 'skill',
+            description: 'Load a DSH skill.',
+            parameters: { name: { type: 'string', required: true } },
+            output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
+            execute: () => Promise.resolve('loaded'),
+          }),
+        )
+        native.append('turn/start', { turn: 1 })
+        native.append('step/start', { turn: 1, step: 0 })
+        const current = user('Current question')
+        native.append('user/message', current, { surfaceOp: 'append' })
+        const nativeView = acpSessionView(ctx, native)!
+        const adapterView = Object.create(nativeView) as typeof nativeView
+        Object.defineProperty(adapterView, 'permissions', { value: { sandbox: null, approval: null } })
+        const sent: unknown[] = []
+        const adapter = new AcpProfileAdapter(
+          'test',
+          () => profile(),
+          seam(),
+          () => adapterView,
+          new Ledger(),
+          undefined,
+          () => ({
+            acpSessionId: 'native-before-acp-remote',
+            start: async () => undefined,
+            prompt: async (prompt) => {
+              sent.push(prompt)
+              return { stopReason: 'end_turn' } as never
+            },
+            close: async () => undefined,
+          }),
+          durableSidecar,
+        )
+        const currentRouteTools =
+          mode === 'native'
+            ? [{ name: 'skill', description: 'Load DSH skill.', parameters: { type: 'object', properties: {} } }]
+            : [{ name: 'run_code', description: 'Run DSH code.', parameters: { type: 'object', properties: {} } }]
+        for await (const _chunk of adapter.stream({
+          ...request('native-before-acp', [user('older native question'), current]),
+          tools: currentRouteTools as never,
+        })) {
+          /* drain */
+        }
+        expect(JSON.stringify(sent)).toContain('Current DSH mode: read-only.')
+        expect(JSON.stringify(sent)).toContain('office-docx')
+        expect(JSON.stringify(sent)).not.toContain('older native question')
+      } finally {
+        await ctx.fiber.dispose()
+      }
+    },
+  )
 
   it('accepts the finalized request copy delivered by the DSH LLM runtime', async () => {
     const message = user('current')
@@ -277,9 +366,9 @@ describe('AcpProfileAdapter generation and dispatch boundaries', () => {
     ...(messageId ? { messageId } : {}),
   })
   const thoughtChunk = (text: string) => ({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text } })
-  const toolChunk = (status: string, initial = false) => ({
+  const toolChunk = (status: string, initial = false, toolCallId = 'tool-1') => ({
     sessionUpdate: initial ? 'tool_call' : 'tool_call_update',
-    toolCallId: 'tool-1',
+    toolCallId,
     title: 'Check project',
     kind: 'read',
     status,
@@ -317,7 +406,7 @@ describe('AcpProfileAdapter generation and dispatch boundaries', () => {
       ],
     },
     {
-      name: 'tool completion but not progress or repeated completion',
+      name: 'late and repeated completion does not split an answer',
       updates: [
         toolChunk('in_progress', true),
         textChunk('Hel'),
@@ -328,9 +417,27 @@ describe('AcpProfileAdapter generation and dispatch boundaries', () => {
         toolChunk('completed'),
         textChunk('ne'),
       ],
+      expected: [['text', 'HelloDone']],
+    },
+    {
+      name: 'late parallel tool completions keep same-message text contiguous',
+      updates: [
+        toolChunk('in_progress', true, 'tool-1'),
+        toolChunk('in_progress', true, 'tool-2'),
+        textChunk('Two teammates are ', 'answer-1'),
+        toolChunk('completed', false, 'tool-1'),
+        toolChunk('completed', false, 'tool-2'),
+        toolChunk('completed', false, 'tool-1'),
+        textChunk('processing the document.', 'answer-1'),
+      ],
+      expected: [['text', 'Two teammates are processing the document.']],
+    },
+    {
+      name: 'a genuinely new tool start separates following answer text',
+      updates: [textChunk('First answer.'), toolChunk('in_progress', true, 'tool-2'), textChunk('Second answer.')],
       expected: [
-        ['text', 'Hello'],
-        ['text', 'Done'],
+        ['text', 'First answer.'],
+        ['text', 'Second answer.'],
       ],
     },
     {

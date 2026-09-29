@@ -12,7 +12,6 @@ import type {} from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
 import type {} from '@deepseek-ai/dsh-client-ui-session/client'
 import type {} from '@deepseek-ai/dsh-client-ui-workspace/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
-import type {} from '@deepseek-ai/dsh-client-ui-model-selection/client'
 import { isMainSession, openSubagentAside } from './coordinator/native-session-navigation.ts'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
@@ -40,8 +39,6 @@ import { createAcpPanelStore } from './data/stores/panel-store.ts'
 import type { AcpPanelStoreActions } from './data/stores/panel-store.ts'
 import { AcpSection } from './ui/AcpSection.ts'
 import type { AcpSectionWire, AcpTranslate } from './ui/AcpSection.ts'
-import { en as modelPickerEn, zh as modelPickerZh, type ModelPickerLocaleKey } from './ui/model-picker-locales.ts'
-import { installSearchableModelPickerSlot } from './ui/model-picker-slot.ts'
 import { ACP_SETTINGS_NS } from './data/logic.ts'
 import type { AcpSettings } from './data/logic.ts'
 import { AcpAuditVisibilityGate, createAcpAuditView } from './ui/AcpAuditHeaderAction.ts'
@@ -58,7 +55,6 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
     acpActivity: import('./ui/locales.ts').AcpLocaleKey
     'settings.acp': import('./ui/locales.ts').AcpLocaleKey
-    acpModelPicker: ModelPickerLocaleKey
   }
 }
 
@@ -116,7 +112,6 @@ async function registerUi(ctx: ClientContext): Promise<void> {
     },
     saveAgent: (editingId, draft) => panelController.saveAgent(editingId, draft),
     deleteAgent: (id) => panelController.deleteAgent(id),
-    setSearchableModelPicker: (enabled) => panelController.setSearchableModelPicker(enabled),
     setToolApprovalDefault: (policy) => panelController.setToolApprovalDefault(policy),
     countBoundSessions: (id) => panelController.countBoundSessions(id),
   }
@@ -126,10 +121,6 @@ async function registerUi(ctx: ClientContext): Promise<void> {
   ctx.uiConversation.events.register(createAcpActivityDefinition(managedRoutes.owns))
   ctx.effect(() => ctx.locale.register('acpActivity', { zh, en }), 'dsh-acp: activity dictionaries')
   ctx.effect(() => ctx.locale.register('settings.acp', { zh, en }), 'dsh-acp: settings dictionaries')
-  ctx.effect(
-    () => ctx.locale.register('acpModelPicker', { zh: modelPickerZh, en: modelPickerEn }),
-    'dsh-acp: searchable model picker dictionaries',
-  )
   ctx.effect(
     () => () => {
       panelController.dispose()
@@ -157,17 +148,6 @@ async function registerUi(ctx: ClientContext): Promise<void> {
       AcpSection,
     ),
   )
-  ctx.inject(['slots', 'modelDirectories'], (scope) => {
-    return installSearchableModelPickerSlot(
-      {
-        inject: (name, factory) => scope.slots.inject(name, factory),
-        register: (options, component) => scope.slots.register(options, component),
-      },
-      settingsScope,
-      scope.modelDirectories,
-      sessions,
-    )
-  })
   let setAuditViewVisible: (sessionId: string, visible: boolean) => void = () => undefined
   ctx.slots.inject('conversation.view', () => {
     let disposeView: (() => void) | undefined

@@ -6,7 +6,7 @@
 
 Use **Claude · Codex · Devin · Kimi** from the DSH session UI.
 
-This version supports DSH `0.2.0-rc.1` only. ACP members and subagent records open in the native sidebar while the main conversation stays in place. Team member requests can still be approved from the main conversation.
+This version supports DSH `0.2.0-rc.2` only. ACP members and subagent records open in the native sidebar while the main conversation stays in place. Team member requests can still be approved from the main conversation.
 
 On upgrade, existing Agent configuration is imported automatically from the old settings file into the current DSH profile. An Agent list already set in that profile, including an empty list, is preserved. The transcript uses DSH’s native compact, standard, detailed, and verbose modes for tools, reasoning, and process groups.
 
@@ -80,7 +80,7 @@ npx "@deepseek-ai/dsh@$DSH_VERSION" plugin --profile web add @zaimokuza/dsh-acp-
 
 **3. Open the native Plugins → ACP adapter detail page**, add an Agent from the catalog and review or complete its connection settings, check the connection, then choose an Agent model in a new session.
 
-The searchable model picker is off by default. To search by model name, ID, or provider, turn it on under **Interface preferences** on the detail page. Turning it off restores the native DSH model picker.
+For long model lists, use the search field in DSH’s native model selector. DSH owns model discovery, search, keyboard selection, and switching.
 
 Executable paths may contain spaces, for example `C:\Program Files\Agent Tools\agent.exe`. Enter the path directly without surrounding quotes; put startup arguments in the separate arguments field.
 

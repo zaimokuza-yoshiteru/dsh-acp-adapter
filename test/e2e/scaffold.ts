@@ -12,11 +12,13 @@ export const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 export async function launchAdapterWorld({
   teams = false,
   schedule = false,
+  timedAskUser,
   teamMembers,
   terminalShell,
 }: {
   teams?: boolean
   schedule?: boolean
+  timedAskUser?: { timeout: number }
   teamMembers?: number
   terminalShell?: { path: string; name: string; args: string[] }
 } = {}) {
@@ -34,7 +36,30 @@ export async function launchAdapterWorld({
       patches.push(`- id: terminal-controller\n  config:\n    shell: ${JSON.stringify(terminalShell)}\n`)
     const extraOverlayPath = join(directory, 'test.patch.yml')
     writeFileSync(extraOverlayPath, patches.length === 0 ? '[]\n' : patches.join('\n'))
-    const host = await launchWebScaffold({ profile: { packages }, extraOverlayPath })
+    const host = await launchWebScaffold({
+      profile: { packages },
+      extraOverlayPath,
+      ...(timedAskUser === undefined
+        ? {}
+        : {
+            agentPresets: {
+              default: 'timed-ask-user',
+              definitions: [
+                {
+                  id: 'timed-ask-user',
+                  name: 'Timed ask user fixture',
+                  plugins: [
+                    {
+                      id: 'tool-ask-user',
+                      name: '@deepseek-ai/dsh-tool-ask-user',
+                      config: { mode: 'timed', timeout: timedAskUser.timeout },
+                    },
+                  ],
+                },
+              ],
+            },
+          }),
+    })
     return {
       ...host,
       async close() {

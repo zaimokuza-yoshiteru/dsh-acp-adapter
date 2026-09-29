@@ -67,7 +67,6 @@ export interface AcpSectionWire {
   refreshAgentHealth(agentId: string): void
   saveAgent(editingId: string | undefined, draft: AgentDraft): Promise<string | undefined>
   deleteAgent(id: string): Promise<string | undefined>
-  setSearchableModelPicker(enabled: boolean): Promise<string | undefined>
   setToolApprovalDefault(policy: 'auto' | 'ask'): Promise<string | undefined>
   /**
    * 删除确认提示：该 profile 的既有会话 binding 计数；undefined = 计数不可
@@ -90,10 +89,6 @@ type EditorState = { mode: 'add'; seed: AgentDraft } | { mode: 'edit'; id: strin
 interface InputEvent {
   target: { value: string }
 }
-interface CheckboxEvent {
-  currentTarget: { checked: boolean }
-}
-
 /**
  * Render the ACP section content column.
  * @param props - slot-delivered inject face.
@@ -117,8 +112,6 @@ function Loaded({
   const snapshot = useStore((value) => value)
   const [editor, setEditor] = useState<EditorState | null>(null)
   const [notice, setNotice] = useState<'saved' | 'deleted' | null>(null)
-  const [pickerSaving, setPickerSaving] = useState(false)
-  const [pickerSaveFailed, setPickerSaveFailed] = useState(false)
   const [approvalSaving, setApprovalSaving] = useState(false)
   const [approvalSaveFailed, setApprovalSaveFailed] = useState(false)
   const [approvalMenuOpen, setApprovalMenuOpen] = useState(false)
@@ -204,19 +197,6 @@ function Loaded({
   const agents = settings.agents
   const ids = sortedAgentIds(agents)
   children.push(h('h2', { key: 'agents-title', className: css.sectionTitle }, t('agentConfiguration')))
-
-  const onSearchablePickerChange = async (event: CheckboxEvent): Promise<void> => {
-    setPickerSaving(true)
-    setPickerSaveFailed(false)
-    try {
-      const error = await panel.setSearchableModelPicker(event.currentTarget.checked)
-      if (error !== undefined) setPickerSaveFailed(true)
-    } catch {
-      setPickerSaveFailed(true)
-    } finally {
-      setPickerSaving(false)
-    }
-  }
 
   const onApprovalDefaultChange = async (policy: unknown): Promise<void> => {
     if (policy !== 'auto' && policy !== 'ask') return
@@ -456,32 +436,6 @@ function Loaded({
         ),
       }),
       approvalSaveFailed ? h('p', { className: css.error, role: 'alert' }, t('toolApprovalSaveFailed')) : null,
-    ),
-  )
-
-  children.push(
-    h(
-      'section',
-      { key: 'preferences', className: css.preferences, 'aria-labelledby': 'dsh-acp-preferences-title' },
-      h('h2', { id: 'dsh-acp-preferences-title', className: css.preferencesTitle }, t('interfacePreferences')),
-      h(
-        'div',
-        { className: css.pickerSetting },
-        h(
-          'label',
-          { className: css.pickerSettingLabel },
-          h('input', {
-            type: 'checkbox',
-            checked: settings.searchableModelPicker,
-            disabled: readOnly || pickerSaving,
-            onChange: onSearchablePickerChange,
-            'aria-describedby': 'dsh-acp-searchable-picker-description',
-          }),
-          h('span', null, t('searchableModelPicker')),
-        ),
-        h('p', { id: 'dsh-acp-searchable-picker-description', className: css.hint }, t('searchableModelPickerHint')),
-        pickerSaveFailed ? h('p', { className: css.error, role: 'alert' }, t('searchableModelPickerSaveFailed')) : null,
-      ),
     ),
   )
 

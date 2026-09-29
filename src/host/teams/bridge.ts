@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-experimental-agent-team'
 import type {} from '@deepseek-ai/dsh-tools'
+import { RUN_CODE_NAME } from '@deepseek-ai/dsh-tools'
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
 import type { ToolSchema } from '@deepseek-ai/dsh-llm'
 import type * as acp from '@agentclientprotocol/sdk'
@@ -27,6 +28,14 @@ const TEAM_TOOLS = [
   'team_task_get',
   'team_task_update',
 ] as const
+function bridgeInstructions(names: ReadonlyMap<string, ToolDefinition>, hasTeams: boolean): string {
+  const skillRoute = names.has('skill')
+    ? 'The DSH MCP tool "skill" is listed; access DSH skill-catalog entries through that tool using its exact tools/list schema and names.'
+    : names.has(RUN_CODE_NAME)
+      ? `No direct DSH skill tool is listed. If DSH skill access is exposed through the generated SDK, call it inside "${RUN_CODE_NAME}" using the host-provided SDK instructions and listed schema; do not invent a direct skill tool.`
+      : 'No DSH skill-loading entry point is listed. Do not claim DSH skill-catalog entries are available through an Agent-native skill tool; explain that this DSH connection has no listed skill entry point.'
+  return `These are native DSH tools available to this session. Use the exact tool names and schemas from tools/list. Tools and skills discovered in DSH context, including skill-catalog entries, must use this session's DSH MCP tools; do not route them through the Agent's native skill invocation or private skill directory, and do not copy DSH skill files into that directory. This does not replace or modify the Agent's own skills. Do not assume or expose tools or permissions absent from this DSH connection. ${skillRoute}${hasTeams ? ' Team tools require an explicit user request for a team; members share the workspace and only fresh context is supported.' : ''}`
+}
 const isTeamTool = (name: string): boolean => (TEAM_TOOLS as readonly string[]).includes(name)
 const identities = new WeakMap<object, number>()
 let nextIdentity = 0
@@ -118,6 +127,7 @@ export async function createTeamBridge(
   // The connection owns caller identity. Keep native tool names intact so
   // upstream prompts, descriptions and plugin instructions share one contract.
   const names = definitions
+  const scopedInstructions = bridgeInstructions(names, hasTeams)
   const presented = new Map<string, string>()
   const permissionFences = new WeakMap<object, { generation: number; prompt: AbortSignal }>()
   const identityOf = (call: acp.ToolCallUpdate): { tool?: string; source?: AcpPermissionCheck['identitySource'] } => {
@@ -277,8 +287,7 @@ export async function createTeamBridge(
       { name: 'DSH tools', version: '1.0.0' },
       {
         capabilities: { tools: {} },
-        instructions:
-          'These are native DSH tools available to this session. Use the exact tool names from tools/list. Team tools require an explicit user request for a team; members share the workspace and only fresh context is supported.',
+        instructions: scopedInstructions,
       },
     )
     sessions.add(server)
@@ -431,7 +440,7 @@ export async function createTeamBridge(
   const listeners: Array<() => unknown> = []
   const lease: AcpMcpLease = {
     signal: lifetime.signal,
-    instructions: `Current DSH tools connection: MCP server ${serverName}. It exposes native DSH tool names. Discover the tools for their parameter schemas. Each session has its own connection and caller identity. Do not copy a connection address or server identity to another session.${hasTeams ? ' Team target names resolve within the caller’s Team. Create teams only when explicitly requested.' : ''} Pending DSH messages are delivered after you end the current response; give a brief progress update when asked to yield.`,
+    instructions: `Current DSH tools connection: MCP server ${serverName}. ${scopedInstructions} Each session has its own connection and caller identity. Do not copy a connection address or server identity to another session.${hasTeams ? ' Team target names resolve within the caller’s Team. Create teams only when explicitly requested.' : ''} Pending DSH messages are delivered after you end the current response; give a brief progress update when asked to yield.`,
     servers,
     beginPrompt(signal, reportCallback) {
       prompt = signal

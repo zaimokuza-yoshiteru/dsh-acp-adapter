@@ -3,12 +3,12 @@
 // `_vendor/foo`）不会中断连接。完整生命周期与失败矩阵由生产
 // AcpClientConnection 套件覆盖，这里不再重复。
 //
-// 代码走读依据（research/acp-sdk/package/dist/ 快照）：
+// SDK 1.5.1 的真实子进程连接契约：
 //   - jsonrpc.js processIncomingMessage：无 handler 的「通知」走完全部 handler 链后静默丢弃，
 //     不抛错不断流；无 handler 的「请求」回 -32601 methodNotFound，同样不断流。
 // 本文件用真实子进程 stdio 流量钉住这一 SDK 兼容边界。
 //
-// 注：SDK 1.3.0 中 ClientSideConnection 已标记 @deprecated；本套件与
+// 注：SDK 1.5.1 中 ClientSideConnection 已标记 @deprecated；本套件与
 // src/protocol/v1/connection.ts 统一改用官方推荐的 client 新 API（handler 按方法名经
 // onRequest/onNotification 注册，向外调用走 conn.agent.request/notify）。新旧 API
 // 共用同一 Connection/jsonrpc 核心，本文件的容忍性断言因此直接钉住生产代码所用路径。
@@ -188,5 +188,45 @@ describe('SDK 容忍性专项：未知厂商通知', () => {
     expect(resp.stopReason).toBe('end_turn')
     await waitFor(() => h.updates.length === 1)
     expect(messageTexts(h.updates)).toEqual(['vendor-ok'])
+  })
+})
+
+describe('SDK ndJsonStream 接收上限与取消', () => {
+  it('默认 32 MiB 上限超出时以 MessageTooLargeError 结束 readable 并取消输入源', async () => {
+    let cancelReason: unknown
+    const input = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(acp.DEFAULT_MAX_MESSAGE_BYTES + 1).fill(0x20))
+      },
+      cancel(reason) {
+        cancelReason = reason
+      },
+    })
+    const stream = acp.ndJsonStream(new WritableStream<Uint8Array>(), input)
+    const reader = stream.readable.getReader()
+
+    await expect(reader.read()).rejects.toMatchObject({
+      name: 'MessageTooLargeError',
+      maxMessageBytes: 32 * 1024 * 1024,
+    })
+    await waitFor(() => cancelReason !== undefined)
+    expect(cancelReason).toMatchObject({ name: 'MessageTooLargeError' })
+    await reader.cancel().catch(() => {})
+  })
+
+  it('调用方取消 pending read 后取消 SDK 的输入读取并保持取消结局', async () => {
+    let sourceCancelled = false
+    const input = new ReadableStream<Uint8Array>({
+      cancel() {
+        sourceCancelled = true
+      },
+    })
+    const stream = acp.ndJsonStream(new WritableStream<Uint8Array>(), input)
+    const reader = stream.readable.getReader()
+    const pendingRead = reader.read()
+
+    await reader.cancel('connection disposed')
+    await expect(pendingRead).resolves.toEqual({ value: undefined, done: true })
+    expect(sourceCancelled).toBe(true)
   })
 })

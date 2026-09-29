@@ -1,7 +1,6 @@
 /**
  * Additive ACP composition root. DSH owns the AgentLoop, native ModelPicker,
- * and conversation surface. The native picker remains the default; an
- * opt-in setting enables the adapter's searchable picker enhancement.
+ * and conversation surface, including model search and selection.
  * This plugin also contributes ACP LLM routes and its existing settings/
  * sidecar services through public seams.
  */

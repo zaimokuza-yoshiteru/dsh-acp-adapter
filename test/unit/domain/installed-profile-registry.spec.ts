@@ -88,7 +88,6 @@ class FakeSettingsProvider {
   onChange: () => void = () => {}
   readonly config = {
     agents: { get: () => acpSettingsSchema(this.section).agents },
-    searchableModelPicker: { get: () => acpSettingsSchema(this.section).searchableModelPicker },
     toolApprovalDefault: { get: () => acpSettingsSchema(this.section).toolApprovalDefault },
   }
   private watchers: WatchCallback[] = []
@@ -335,18 +334,17 @@ describe('acpSettingsSchema', () => {
   it('空/缺省 section 解析为零 agents', () => {
     expect(acpSettingsSchema(undefined)).toEqual({
       agents: {},
-      searchableModelPicker: false,
       toolApprovalDefault: 'auto',
     })
-    expect(acpSettingsSchema({})).toEqual({ agents: {}, searchableModelPicker: false, toolApprovalDefault: 'auto' })
+    expect(acpSettingsSchema({})).toEqual({ agents: {}, toolApprovalDefault: 'auto' })
     expect(acpSettingsSchema({ agents: {} })).toEqual({
       agents: {},
-      searchableModelPicker: false,
       toolApprovalDefault: 'auto',
     })
-    expect(acpSettingsSchema({ agents: {}, searchableModelPicker: true }).searchableModelPicker).toBe(true)
-    expect(() => acpSettingsSchema({ agents: {}, searchableModelPicker: 'yes' })).toThrow(/must be a boolean/)
-    expect(() => acpSettingsSchema({ agents: {}, searchableModelPicker: null })).toThrow(/must be a boolean/)
+    expect(acpSettingsSchema({ agents: {}, searchableModelPicker: true })).toEqual({
+      agents: {},
+      toolApprovalDefault: 'auto',
+    })
   })
 
   it('解析合法 agents 并补默认值（args/env），保留 loginHint', () => {
@@ -405,7 +403,6 @@ describe('acpSettingsSchema', () => {
     })
     expect(resolved).toEqual({
       agents: { devin: { name: 'Devin', command: 'devin', args: [], env: {} } },
-      searchableModelPicker: false,
       toolApprovalDefault: 'auto',
     })
   })
@@ -441,9 +438,7 @@ describe('acpSettingsSchema', () => {
     expect(Object.isFrozen(config.agents.get())).toBe(true)
     expect(() => Config({ agents: { custom: { name: 'Custom' } } })).toThrow()
     expect(Config.dict?.agents?.meta.volatile).toBe(true)
-    expect(Config.dict?.searchableModelPicker?.meta.volatile).toBe(true)
-    expect(Config({ agents: {} }).searchableModelPicker.get()).toBe(false)
-    expect(Config({ agents: {}, searchableModelPicker: true }).searchableModelPicker.get()).toBe(true)
+    expect(Config({ agents: {}, searchableModelPicker: true }).agents.get()).toEqual({})
   })
 
   it(' singleton：同一内置 runtime 的第二个 profile 被拒绝，错误点名已有 profile', () => {
@@ -661,7 +656,6 @@ describe('installInstalledProfileRegistry：注册/替换调用序列', () => {
     installInstalledProfileRegistry(ctx, settings.config)
     await settings.mutate([{ op: 'set', path: ['agents', 'devin'], value: { ...devinAgent } }])
     llm.calls.length = 0
-    await settings.mutate([{ op: 'set', path: ['searchableModelPicker'], value: true }])
     expect(llm.calls).toEqual([])
     expect(llm.adapters).toHaveLength(1)
   })

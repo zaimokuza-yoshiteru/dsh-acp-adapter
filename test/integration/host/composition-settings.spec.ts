@@ -21,7 +21,6 @@ class SettingsDocument {
   onChange: () => void = () => {}
   readonly config = {
     agents: { get: () => acpSettingsSchema(this.value).agents },
-    searchableModelPicker: { get: () => acpSettingsSchema(this.value).searchableModelPicker },
     toolApprovalDefault: { get: () => acpSettingsSchema(this.value).toolApprovalDefault },
   }
   configure() {

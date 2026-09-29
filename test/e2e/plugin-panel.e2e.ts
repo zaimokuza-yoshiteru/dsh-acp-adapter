@@ -81,7 +81,6 @@ it('hosts ACP configuration on the native bundle detail page', async () => {
     const version = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version as string
     expect(await detail.getByText(`v${version}`, { exact: true }).count()).toBe(1)
     expect(await panel.getByText(`v${version}`, { exact: true }).count()).toBe(0)
-    await panel.getByRole('heading', { name: 'Interface preferences', exact: true }).waitFor()
     await panel.getByRole('heading', { name: 'Default DSH tool approval', exact: true }).waitFor()
     const approvalDefault = panel.getByRole('button', { name: 'Default DSH tool approval', exact: true })
     await expect.poll(() => approvalDefault.innerText()).toContain('Auto approve')
@@ -152,7 +151,6 @@ it('hosts ACP configuration on the native bundle detail page', async () => {
       await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth),
     ).toBe(true)
     await page.screenshot({ path: join(evidence, 'narrow.png'), fullPage: true, animations: 'disabled' })
-    expect(await panel.getByRole('checkbox', { name: 'Searchable model picker', exact: true }).isVisible()).toBe(true)
 
     await host.ctx.settings.replace('dsh-acp-adapter', {
       toolApprovalDefault: 'ask',
@@ -171,13 +169,11 @@ it('hosts ACP configuration on the native bundle detail page', async () => {
     const chineseDetail = await openAcpPluginDetail(page, 'zh')
     const chinesePanel = chineseDetail.locator('[data-dsh-acp-panel]')
     await chinesePanel.getByRole('heading', { name: 'Agent 配置', exact: true }).waitFor()
-    await chinesePanel.getByRole('heading', { name: '界面偏好', exact: true }).waitFor()
     await chinesePanel.getByRole('heading', { name: 'DSH 工具默认审批', exact: true }).waitFor()
     await chinesePanel
       .getByRole('button', { name: 'DSH 工具默认审批', exact: true })
       .getByText('逐项询问', { exact: true })
       .waitFor()
-    await chinesePanel.getByRole('checkbox', { name: '可搜索模型选择器', exact: true }).waitFor()
     await chineseDetail
       .locator('p')
       .getByText('添加并管理通过 ACP 接入 DSH 会话页面的智能体。', { exact: true })

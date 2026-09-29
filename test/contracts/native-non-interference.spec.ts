@@ -12,14 +12,13 @@ const patch = readFileSync(new URL('cordis.patch.yml', root), 'utf8')
 const client = readFileSync(new URL('src/client/index.ts', root), 'utf8')
 
 describe('native DSH non-interference contract', () => {
-  it('keeps native AgentLoop/ModelPicker rows enabled and defaults the opt-in replacement off', () => {
+  it('keeps native AgentLoop/ModelPicker rows enabled', () => {
     expect(patch).not.toMatch(/id:\s+agent-loop[\s\S]*disabled:\s*true/)
     expect(patch).not.toMatch(/id:\s+ui-model-selection[\s\S]*disabled:\s*true/)
     expect(patch).not.toContain('agent-loop-acp')
     expect(patch).not.toContain('ui-model-selection')
     expect(client).not.toContain("register({ name: 'model'")
-    expect(acpSettingsSchema(undefined).searchableModelPicker).toBe(false)
-    expect(acpSettingsSchema({ agents: {} }).searchableModelPicker).toBe(false)
+    expect(acpSettingsSchema({ agents: {} })).toEqual({ agents: {}, toolApprovalDefault: 'auto' })
   })
 
   it('keeps native A→A and A→B dispatch independent after ACP composition is installed', async () => {

@@ -540,7 +540,7 @@ describe('provider activity bridge', () => {
     expect(chunks.filter((chunk) => (chunk as { type: string }).type === 'text-delta')).toEqual([
       { type: 'text-delta', index: 0, text: 'work' },
       { type: 'text-delta', index: 0, text: 'ing' },
-      { type: 'text-delta', index: 1, text: 'done' },
+      { type: 'text-delta', index: 0, text: 'done' },
     ])
     expect(activities.map((activity) => activity.contentIndex)).toEqual([0, 0])
     expect(activities[0]?.activitySeq).toBe(1)

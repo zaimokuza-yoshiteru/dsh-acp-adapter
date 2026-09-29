@@ -11,6 +11,7 @@ import {
   type SessionFacts,
   type SessionLike,
 } from '../../domain/session/session-facts.ts'
+import { currentModelContextSnapshots } from '../../domain/session/model-context-snapshots.ts'
 
 declare module '@deepseek-ai/dsh-session-projection' {
   interface SessionProjectionStateMap {
@@ -44,6 +45,13 @@ export function acpSessionView(ctx: Context, session: Session | undefined): Sess
     get facts() {
       return readSessionFacts(ctx, session)
     },
+    currentModelContextSnapshots: () => {
+      const agent = ctx.get('agents', false)?.get(session.id)
+      const tools = ctx.get('tools', false)
+      const skillEntryPointAvailable =
+        agent !== undefined && tools?.schemas(agent).some((schema) => schema.name === 'skill') === true
+      return currentModelContextSnapshots(session.deriveMessages(), skillEntryPointAvailable)
+    },
     get permissions() {
       const state = ctx.sessionProjections.stateOf(session, 'permissions')
       if (state === undefined) throw new Error('DSH permission projection is unavailable')
@@ -65,7 +73,12 @@ export function acpSessionView(ctx: Context, session: Session | undefined): Sess
       const check = (): void => {
         if (disposed) return
         const agent = ctx.get('agents')?.get(session.id)
-        if (agent?.inbox.nextStep.some((message) => message.source.kind === 'user')) listener()
+        if (
+          agent?.inbox.nextStep.some(
+            (message) => message.source.kind === 'user' || message.source.kind === 'user-question-reply',
+          )
+        )
+          listener()
       }
       // Re-read after the mutation's synchronous listeners have run: an edit or
       // removal in the same task must not interrupt an otherwise valid prompt.

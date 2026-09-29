@@ -102,10 +102,6 @@ const zh = {
   toolApprovalUnavailable: '无法读取 DSH 工具审批设置，请重试。',
   toolApprovalRetry: '重试读取 DSH 工具审批设置',
   toolApprovalChangeFailed: '无法保存 DSH 工具审批设置，请重试。',
-  interfacePreferences: '界面偏好',
-  searchableModelPicker: '可搜索模型选择器',
-  searchableModelPickerHint: '开启后可按模型名称、ID 或提供商搜索；关闭后恢复 DSH 原生选择器。',
-  searchableModelPickerSaveFailed: '无法保存模型选择器设置，请重试。',
   settingsLoading: '正在读取设置…',
   settingsUnavailable: '当前环境不提供设置服务，ACP 面板不可用。',
   settingsInvalid: 'dsh-acp-adapter 配置无效，请检查配置文件后重试；面板已拒绝编辑无效配置。',
@@ -457,11 +453,6 @@ const en: Record<AcpLocaleKey, string> = {
   toolApprovalUnavailable: 'Could not read DSH tool approval settings. Please retry.',
   toolApprovalRetry: 'Retry reading DSH tool approval settings',
   toolApprovalChangeFailed: 'Could not save the DSH tool approval setting. Please retry.',
-  interfacePreferences: 'Interface preferences',
-  searchableModelPicker: 'Searchable model picker',
-  searchableModelPickerHint:
-    'Search by model name, ID, or provider when enabled; turn off to restore the native DSH selector.',
-  searchableModelPickerSaveFailed: 'Could not save the model picker setting. Please retry.',
   settingsLoading: 'Loading settings…',
   settingsUnavailable: 'No settings service in this environment; the ACP panel is unavailable.',
   settingsInvalid:

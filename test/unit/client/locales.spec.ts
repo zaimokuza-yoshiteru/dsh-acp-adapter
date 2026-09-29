@@ -1,7 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { en, zh } from '../../../src/client/ui/locales.ts'
-import { en as pickerEn, zh as pickerZh } from '../../../src/client/ui/model-picker-locales.ts'
 
 const parameters = (text: string) => [...text.matchAll(/\{([A-Za-z][A-Za-z0-9]*)\}/g)].map((match) => match[1]).sort()
 
@@ -14,7 +13,6 @@ describe('ACP locale dictionaries', () => {
     ).meta
   const dictionaries: { name: string; english: Record<string, string>; chinese: Record<string, string> }[] = [
     { name: 'panel', english: en, chinese: zh },
-    { name: 'model picker', english: pickerEn, chinese: pickerZh },
     { name: 'plugin metadata', english: metadata('en'), chinese: metadata('zh') },
   ]
   it.each(dictionaries)('keeps $name copy complete with matching interpolation parameters', ({ english, chinese }) => {

@@ -59,7 +59,7 @@ import type {
 import type { AcpSessionForkReason, AcpTerminalAuditData } from '../../domain/policy/events.ts'
 import { isSensitiveActivityField, redactSecretText } from '../../domain/observability/redaction.ts'
 import { hostSystemPrompt } from '../../domain/session/host-system-prompt.ts'
-import { AcpPromptContentError, toAcpPrompt } from '../../domain/session/prompt-content.ts'
+import { AcpPromptContentError, skillRouteForTools, toAcpPrompt } from '../../domain/session/prompt-content.ts'
 import { createAcpFileSystemHandlers } from '../../runtime/client-capabilities/filesystem.ts'
 import { createAcpTerminalHandlers } from '../../runtime/client-capabilities/terminal.ts'
 import type { AcpTerminalJobStarter } from '../../runtime/client-capabilities/terminal-job.ts'
@@ -1266,8 +1266,11 @@ export class AcpProfileAdapter extends LlmAdapter {
           // create session/new, and doing it before fork/restore both duplicates
           // setup and makes a fork look like a blank session.
           if (runtime.initialize !== undefined) await runtime.initialize(options.signal)
+          const modelContextSnapshots = session?.currentModelContextSnapshots?.()
           const prompt = await toAcpPrompt(messages, {
             system: hostSystemPrompt(options),
+            ...(modelContextSnapshots === undefined ? {} : { modelContextSnapshots }),
+            skillRoute: skillRouteForTools(options.tools),
             imageEnabled: runtime.agentCapabilities?.promptCapabilities?.image === true,
             ...(self.attachments === undefined ? {} : { attachments: self.attachments }),
             signal: options.signal ?? new AbortController().signal,
@@ -1817,9 +1820,11 @@ export class AcpProfileAdapter extends LlmAdapter {
             toolCall = toolCallReducer.apply(patch)
             const terminal = isTerminalActivityStatus(activityStatus(toolCall.status))
             const previousTerminal = toolContentBoundaries.get(toolId)
-            if (previousTerminal === undefined || (terminal && !previousTerminal)) {
-              // Serialize boundaries with image admission and text delivery;
-              // progress-only tool patches must not split individual tokens.
+            if (previousTerminal === undefined || (previousTerminal && !terminal)) {
+              // A tool's first observation (or a new active lifecycle after a
+              // terminal one) marks its insertion point in the answer stream.
+              // A late terminal notification only updates activity state; it
+              // must not split answer text that arrived after the tool began.
               scheduleContent(breakContent)
             }
             toolContentBoundaries.set(toolId, terminal)
@@ -1908,8 +1913,11 @@ export class AcpProfileAdapter extends LlmAdapter {
             nextProof = proof
           })
           if (nextProof?.turn !== admissionProof?.turn) return false
+          const modelContextSnapshots = session?.currentModelContextSnapshots?.()
           const nextPrompt = await toAcpPrompt(nextMessages, {
             system: hostSystemPrompt(nextOptions),
+            ...(modelContextSnapshots === undefined ? {} : { modelContextSnapshots }),
+            skillRoute: skillRouteForTools(nextOptions.tools),
             imageEnabled: runtime.agentCapabilities?.promptCapabilities?.image === true,
             ...(self.attachments === undefined ? {} : { attachments: self.attachments }),
             signal: promptSignal,

@@ -81,10 +81,8 @@ describe('client contribution', () => {
     Object.assign(ctx, {
       inject: (deps: readonly string[], callback: (scope: typeof ctx) => void | Promise<void>) => {
         uiInjects.push([...deps])
-        // The RC assembly intentionally has no deleted Remote agentTeams namespace.
-        // Model directory is optional: the shell's original composer occupant
-        // remains registered if the host does not provide that service.
-        const started = deps.includes('modelDirectories') ? Promise.resolve() : Promise.resolve(callback(ctx))
+        // Model search and selection remain owned by the host's native composer.
+        const started = Promise.resolve(callback(ctx))
         return Object.assign(started, {
           dispose: async () => {
             lifecycle.push('ui-dispose')
@@ -96,7 +94,6 @@ describe('client contribution', () => {
     expect(lifecycle).toEqual(['mount'])
     expect(uiInjects).toEqual([
       [...inject, 'remote.dshAcp'],
-      ['slots', 'modelDirectories'],
       ['remote.subagents', 'uiSession'],
     ])
     expect(definitions).toHaveLength(3)

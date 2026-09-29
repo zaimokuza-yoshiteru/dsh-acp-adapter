@@ -398,6 +398,21 @@ describe('session-owned native Teams MCP bridge', () => {
       cleanup.push(() => client.close())
       const listed = (await client.listTools()).tools.map((schema) => schema.name).sort()
       expect(listed).toEqual([...expected].sort())
+      const instructions = client.getInstructions() ?? ''
+      expect(instructions).toContain('Tools and skills discovered in DSH context')
+      expect(instructions).toContain("do not route them through the Agent's native skill invocation")
+      expect(lease.instructions).toContain('Tools and skills discovered in DSH context')
+      expect(lease.instructions).toContain("do not route them through the Agent's native skill invocation")
+      if (mode === 'native') {
+        expect(instructions).toContain('No DSH skill-loading entry point is listed')
+        expect(lease.instructions).toContain('No DSH skill-loading entry point is listed')
+      } else {
+        expect(instructions).toContain(`call it inside "${RUN_CODE_NAME}"`)
+        expect(instructions).toContain('host-provided SDK instructions')
+        expect(instructions).toContain('do not invent a direct skill tool')
+        expect(lease.instructions).toContain(`call it inside "${RUN_CODE_NAME}"`)
+        expect(lease.instructions).toContain('host-provided SDK instructions')
+      }
       lease.beginPrompt(new AbortController().signal)
       const result = await runtime.execute({
         signal: new AbortController().signal,
@@ -418,6 +433,21 @@ describe('session-owned native Teams MCP bridge', () => {
       }
     },
   )
+
+  it('routes DSH skill-catalog entries through the listed skill tool and reports a missing entry point', async () => {
+    const withSkill = await setup(undefined, ['skill'], false)
+    const skillInstructions = withSkill.client.getInstructions() ?? ''
+    expect(skillInstructions).toContain('The DSH MCP tool "skill" is listed')
+    expect(skillInstructions).toContain('through that tool using its exact tools/list schema and names')
+    expect(skillInstructions).toContain("do not route them through the Agent's native skill invocation")
+    expect(withSkill.lease.instructions).toContain('The DSH MCP tool "skill" is listed')
+
+    const withoutSkill = await setup(undefined, ['file_read'], false)
+    const missingInstructions = withoutSkill.client.getInstructions() ?? ''
+    expect(missingInstructions).toContain('No DSH skill-loading entry point is listed')
+    expect(missingInstructions).toContain('explain that this DSH connection has no listed skill entry point')
+    expect(withoutSkill.lease.instructions).toContain('No DSH skill-loading entry point is listed')
+  })
 
   it('keeps correlated Codex MCP approvals manual when Ask is selected', async () => {
     const { lease, name, server } = await setup('codex', ['project_lookup'], false, 'lead', async () => 'ask')

@@ -12,6 +12,8 @@ The default is ACP cancel → wait for the old prompt and pending approvals to s
 
 Connections advertising `_meta.steering = { supported: true, idleBehavior: "promptRequired" }` can use native injection. The adapter retains the original ACP prompt and yields the DSH output segment, then calls `_session/steering` after the next native step admits input. `injected` continues the original prompt. Only `promptRequired` confirms that input was not consumed and permits draining the old execution before ordinary prompting. Pending permissions, unanswered user questions, and model configuration changes use the default strategy.
 
+Each ACP request may include DSH's current effective `runtime-context` and `skill-catalog` snapshots from the visible session surface. It never replays ordinary user history. A catalog is included only when the current DSH scope has a skill-loading entry point; skills must be loaded through DSH's `skill` tool or supported `run_code` route. This does not install Agent-native skills or grant tools or permissions.
+
 ## Agent boundaries
 
 These are the inspected interface boundaries. Pinned sources document the basis for each decision; upgrades still require verification of capability declarations and completion semantics.

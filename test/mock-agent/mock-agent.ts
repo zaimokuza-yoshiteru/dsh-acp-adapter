@@ -48,6 +48,7 @@ const KNOWN_SCENARIOS = new Set([
   'elicitation',
   'crash-mid-turn',
   'garbage-stdout',
+  'oversized-stdout',
   'slow-response',
   'eof-exit',
   'cleanup-close-delete',
@@ -798,6 +799,14 @@ function handlePrompt(request: MockRequest) {
     return respondError(msg.id, -32602, `Invalid params: session ${String(msg.params?.sessionId)} is closed`)
   }
   if (session.turn) return respondError(msg.id, -32603, 'turn already active on this session')
+  if (state.scenario === 'oversized-stdout') {
+    // Exceed the SDK's default NDJSON frame cap during an in-flight prompt.
+    const chunk = Buffer.alloc(1024 * 1024, 0x20)
+    for (let index = 0; index < 33; index += 1) process.stdout.write(chunk)
+    process.stdout.write('\n')
+    log('oversized-stdout: emitted a frame above the default SDK limit')
+    return
+  }
   if (EMIT_NATIVE_SUBAGENT) return void runNativeSubagentTurn(session, msg)
   switch (state.scenario) {
     case 'regression':
@@ -968,7 +977,7 @@ rl.on('line', (line) => {
       state.pendingAgentRequests.delete(msg.id)
       resolve(msg.error ? { outcome: { outcome: 'cancelled' } } : msg.result)
     } else {
-      log(`orphan response id=${JSON.stringify(msg.id)} ignored`)
+      log(`orphan response id=${JSON.stringify(msg.id)}${msg.error?.code === -32700 ? ' code=-32700' : ''} ignored`)
     }
   } else {
     respondError(msg.id ?? null, -32600, 'Invalid Request')

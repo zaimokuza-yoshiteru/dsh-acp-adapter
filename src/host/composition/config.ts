@@ -13,12 +13,10 @@ import type { AcpAgentConfig, AcpAgentId } from '../../domain/session/agent-conf
 export type AcpToolApprovalPolicy = 'auto' | 'ask'
 export interface AcpSettings {
   agents: Record<string, AcpAgentConfig>
-  searchableModelPicker: boolean
   toolApprovalDefault: AcpToolApprovalPolicy
 }
 export interface Config {
   agents: Volatile<Record<string, AcpAgentConfig>>
-  searchableModelPicker: Volatile<boolean>
   toolApprovalDefault: Volatile<AcpToolApprovalPolicy>
 }
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -125,12 +123,10 @@ function assertSingletonRuntimes(agents: Record<string, AcpAgentConfig>): void {
  */
 export const acpSettingsSchema: ((value: unknown) => AcpSettings) & { toJSON(): unknown } = Object.assign(
   (value: unknown): AcpSettings => {
-    if (value === undefined) return { agents: {}, searchableModelPicker: false, toolApprovalDefault: 'auto' }
+    if (value === undefined) return { agents: {}, toolApprovalDefault: 'auto' }
     if (!isPlainObject(value))
       throw new TypeError('dsh-acp settings: the section must be an object with an "agents" map')
-    const searchableModelPicker = value['searchableModelPicker'] === undefined ? false : value['searchableModelPicker']
-    if (typeof searchableModelPicker !== 'boolean')
-      throw new TypeError('dsh-acp settings: "searchableModelPicker" must be a boolean')
+    // Deliberately ignore the retired preference so existing settings remain readable.
     const toolApprovalDefault = value['toolApprovalDefault'] === undefined ? 'auto' : value['toolApprovalDefault']
     if (toolApprovalDefault !== 'auto' && toolApprovalDefault !== 'ask')
       throw new TypeError('dsh-acp settings: "toolApprovalDefault" must be "auto" or "ask"')
@@ -139,7 +135,7 @@ export const acpSettingsSchema: ((value: unknown) => AcpSettings) & { toJSON(): 
     const agents: Record<string, AcpAgentConfig> = {}
     for (const [id, raw] of Object.entries(rawAgents)) agents[id] = agentConfigOf(id, raw)
     assertSingletonRuntimes(agents)
-    return { agents, searchableModelPicker, toolApprovalDefault }
+    return { agents, toolApprovalDefault }
   },
   { toJSON: () => SettingsSchema.toJSON() },
 )
@@ -156,13 +152,11 @@ const AgentSchema = z.object({
 const AgentsSchema = z.dict(AgentSchema)
 const SettingsSchema = z.object({
   agents: AgentsSchema.default({}),
-  searchableModelPicker: z.boolean().default(false),
   toolApprovalDefault: z.union(['auto', 'ask']).default('auto'),
 })
 /** Native volatile fields; Loader validates before publishing an atomic live update. */
 const NativeConfig = z.object({
   agents: AgentsSchema.default({}).volatile(),
-  searchableModelPicker: z.boolean().default(false).volatile(),
   toolApprovalDefault: z.union(['auto', 'ask']).default('auto').volatile(),
 })
 // Business validation belongs to Loader, not to a serialized browser callback.

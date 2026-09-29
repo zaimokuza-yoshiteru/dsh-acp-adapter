@@ -8,7 +8,7 @@ import type { AcpSubprocessHandle } from '../../../src/runtime/process/subproces
 //   - prompt 的 session/update 回调流；permission 默认 fail closed 与自定义 handler
 //   - 错误分类：timeout（slow-response）、crash（crash-mid-turn，exit code+signal 且已流
 //     chunk 不丢）、spawn-failure（ENOENT）、auth_required（-32000，内联 agent）、
-//     protocol-error（-32601）、garbage-stdout 按 SDK 实测跳行
+//     protocol-error（-32601）、garbage-stdout 由 SDK 回送 JSON-RPC parse error 后续 RPC 仍可用
 //   - 拆除梯子：EOF 不退 → SIGTERM（devin 口径）；eof-exit 对照纯 EOF；SIGTERM 不退 →
 //     SIGKILL；重复 close 幂等；close 后调用被拒
 // - ：never-resolve 矩阵（每个 RPC 在预算内 timeout → connection poison →
@@ -631,23 +631,35 @@ describe('错误分类', () => {
     },
   )
 
-  it('garbage-stdout：非 JSON 行被 console.error 记录后跳过，协议流不受影响（SDK 实测行为）', async () => {
-    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
-    try {
-      const { conn } = connectMock('garbage-stdout')
-      await conn.initialize()
-      const session = await conn.newSession()
-      const resp = await conn.prompt(session.sessionId, PROMPT_BLOCKS)
-      expect(resp.stopReason).toBe('end_turn')
-      expect(errSpy).toHaveBeenCalledWith(
-        'Failed to parse JSON message:',
-        expect.stringContaining('intentionally not valid JSON'),
-        expect.anything(),
-      )
-    } finally {
-      errSpy.mockRestore()
-    }
+  it('garbage-stdout：SDK 回送 JSON-RPC parse error，随后正常完成 ACP turn', async () => {
+    const { conn, logPath } = connectMock('garbage-stdout')
+    await conn.initialize()
+    const session = await conn.newSession()
+    const resp = await conn.prompt(session.sessionId, PROMPT_BLOCKS)
+    expect(resp.stopReason).toBe('end_turn')
+    expect(fs.readFileSync(logPath, 'utf8')).toContain('orphan response id=null code=-32700 ignored')
+    expect(conn.exited).toBeNull()
   })
+
+  it('SDK 超大 NDJSON 帧拒绝在飞 prompt、关闭连接并允许在新连接恢复', async () => {
+    const { conn } = connectMock('oversized-stdout')
+    await conn.initialize()
+    const session = await conn.newSession()
+
+    const failure = await expectReject(conn.prompt(session.sessionId, PROMPT_BLOCKS))
+    expect(failure).toBeInstanceOf(AcpClientError)
+    expect((failure as AcpClientError).kind).toBe('crash')
+    expect((failure as AcpClientError).message).toContain('incoming message limit (33554432 bytes)')
+    await expectStopped(conn)
+    await expect(conn.listSessions()).rejects.toThrow(/connection is closed/)
+
+    const recovered = connectMock('happy').conn
+    await recovered.initialize()
+    const nextSession = await recovered.newSession()
+    await expect(recovered.prompt(nextSession.sessionId, PROMPT_BLOCKS)).resolves.toMatchObject({
+      stopReason: 'end_turn',
+    })
+  }, 15_000)
 
   it('spawn-failure：命令不存在（ENOENT）分类正确，message 含命令名，无进程残留', async () => {
     const conn = track(
