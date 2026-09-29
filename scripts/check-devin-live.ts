@@ -8,6 +8,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
 import { safeLiveDiagnostic } from './live-diagnostics.ts'
+import type { SafeLiveDiagnostic } from './live-diagnostics.ts'
 import { initProfile, loadProfileDirectory, loadLayeredEnv } from '@deepseek-ai/dsh-app-boot'
 import { runProfile } from '@deepseek-ai/dsh/profile-boot'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
@@ -32,7 +33,12 @@ const home = join(root, 'home')
 const workspace = join(root, 'workspace')
 const profileDir = join(home, 'profiles', 'devin-e2e')
 let host: Awaited<ReturnType<typeof runProfile>> | undefined
-const executions: Array<{ name: string; sessionId: string; success: boolean }> = []
+const executions: Array<{
+  name: string
+  sessionId: string
+  success: boolean
+  diagnostic?: SafeLiveDiagnostic
+}> = []
 const received: Array<{ id: string; senderId: string; targetId: string; text: string }> = []
 const receipts = new Map<string, { sessionId: string; seq: number }>()
 const expectedReplyMarkers = new Map<string, Set<string>>()
@@ -51,7 +57,13 @@ const wait = async (condition: () => boolean, label: string) => {
     assert.equal(failures.length, 0, JSON.stringify(failures))
     if (Date.now() > deadline)
       throw new Error(
-        `Timeout: ${label}; completed tools: ${JSON.stringify(executions.map((e) => ({ name: e.name, success: e.success })))}`,
+        `Timeout: ${label}; completed tools: ${JSON.stringify(
+          executions.map((e) => ({
+            name: e.name,
+            success: e.success,
+            ...(e.diagnostic === undefined ? {} : { diagnostic: e.diagnostic }),
+          })),
+        )}`,
       )
     await delay(250)
   }
@@ -135,13 +147,20 @@ try {
   })
   ctx.on('tools/result', (execution, result) => {
     if (execution.agent?.options.provider === 'acp-devin') {
-      executions.push({ name: execution.name, sessionId: execution.agent.id, success: !result.isError })
+      const diagnostic = result.isError ? safeLiveDiagnostic(result.error) : undefined
+      executions.push({
+        name: execution.name,
+        sessionId: execution.agent.id,
+        success: !result.isError,
+        ...(diagnostic === undefined ? {} : { diagnostic }),
+      })
       console.log(
         JSON.stringify({
           actor: roles.get(execution.agent.id) ?? 'member',
           session: execution.agent.id,
           tool: execution.name,
           success: !result.isError,
+          ...(diagnostic === undefined ? {} : { diagnostic }),
         }),
       )
     }

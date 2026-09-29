@@ -26,3 +26,37 @@ it('extracts an allowlisted method from a generic typed-RPC failure', () => {
     safeLiveDiagnostic({ code: 'ACP_PROTOCOL_ERROR', message: 'ACP session/new failed: prompt=<private>' }),
   ).toEqual({ code: 'ACP_PROTOCOL_ERROR', operation: 'session/new' })
 })
+
+it('keeps fixed Agent Teams and generic tool failure codes', () => {
+  expect(safeLiveDiagnostic({ info: { code: 'TEAM_PROVISIONING_CONFLICT' } })).toEqual({
+    code: 'TEAM_PROVISIONING_CONFLICT',
+  })
+  expect(safeLiveDiagnostic({ info: { code: 'INVALID_ARGS' } })).toEqual({ code: 'INVALID_ARGS' })
+})
+
+it('extracts only structured ToolFailure facts and never exposes failure text or metadata', () => {
+  const diagnostic = safeLiveDiagnostic({
+    message: 'ACP session/prompt failed: prompt=private conversation toolArgs=private (JSON-RPC code -32603)',
+    info: {
+      name: 'PrivateToolFailureClass',
+      code: 'INVALID_TOOL_OUTPUT',
+      reason: 'private failure reason',
+    },
+  })
+  expect(diagnostic).toEqual({ code: 'INVALID_TOOL_OUTPUT', operation: 'session/prompt', jsonRpcCode: -32603 })
+  const serialized = JSON.stringify(diagnostic)
+  for (const secret of ['private conversation', 'toolArgs', 'PrivateToolFailureClass', 'private failure reason']) {
+    expect(serialized).not.toContain(secret)
+  }
+})
+
+it('omits malformed nested ToolFailure codes', () => {
+  for (const code of ['not a fixed code', 'UNKNOWN_BUT_NOT_ALLOWLISTED', 'Team_Invalid_Argument']) {
+    expect(
+      safeLiveDiagnostic({
+        message: 'private error text',
+        info: { code, name: 'secret class', reason: 'secret reason' },
+      }),
+    ).toEqual({})
+  }
+})
