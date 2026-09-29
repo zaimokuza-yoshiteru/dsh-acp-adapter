@@ -4,7 +4,7 @@
 
 User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for publication dates, exact installation instructions, and checksums. Historical entries were reconstructed from tag diffs; npm packages were not republished.
 
-## 0.2.0-rc.2.0 (unreleased)
+## 0.2.0-rc.2.0 (2026-09-30)
 
 ### 中文
 
