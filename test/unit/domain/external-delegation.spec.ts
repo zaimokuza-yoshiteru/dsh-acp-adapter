@@ -38,6 +38,152 @@ describe('external delegation normalizer', () => {
     })
   })
 
+  it('exposes an exact-source live fact and keeps tracking after the source tool ends', () => {
+    const normalizer = new ExternalDelegationNormalizer('devin')
+    normalizer.accept(
+      {
+        toolCallId: 'tool-live',
+        _meta: { 'cognition.ai/subagent_started': { agentId: 'child-live', title: 'Research', task: 'Find it' } },
+      },
+      100,
+    )
+    expect(normalizer.liveForToolCall('tool-live')).toEqual([
+      {
+        profileKind: 'devin',
+        vendorDelegationKey: 'child-live',
+        vendorChildId: 'child-live',
+        sourceToolCallId: 'tool-live',
+        label: 'Research',
+        status: 'running',
+        observedStartedAt: 100,
+        observedAt: 100,
+      },
+    ])
+    expect(normalizer.resolveToolCall('tool-live', 'cancelled', 200)).toMatchObject([
+      {
+        vendorChildId: 'child-live',
+        sourceToolCallId: 'tool-live',
+        status: 'unfinished',
+        sourceToolStatus: 'cancelled',
+      },
+    ])
+    expect(normalizer.liveForToolCall('tool-live')).toMatchObject([{ status: 'running' }])
+    expect(
+      normalizer.accept(
+        {
+          toolCallId: 'tool-live',
+          _meta: { 'cognition.ai/subagent_completed': { agentId: 'child-live', summary: 'done', success: true } },
+        },
+        300,
+      ),
+    ).toMatchObject({ status: 'completed', sourceToolCallId: 'tool-live', vendorChildId: 'child-live' })
+    expect(normalizer.liveForToolCall('tool-live')).toEqual([])
+  })
+
+  it('emits a late child terminal only once after a completed source tool call', () => {
+    const normalizer = new ExternalDelegationNormalizer('devin')
+    normalizer.accept(
+      {
+        toolCallId: 'tool-late',
+        _meta: { 'cognition.ai/subagent_started': { agentId: 'child-late', title: 'Research', task: 'Find it' } },
+      },
+      10,
+    )
+    expect(normalizer.resolveToolCall('tool-late', 'completed', 20)).toMatchObject([
+      { status: 'unfinished', sourceToolStatus: 'completed' },
+    ])
+    expect(
+      normalizer.accept(
+        {
+          toolCallId: 'tool-late',
+          _meta: { 'cognition.ai/subagent_completed': { agentId: 'child-late', summary: 'done', success: true } },
+        },
+        30,
+      ),
+    ).toMatchObject({ status: 'completed', sourceToolCallId: 'tool-late' })
+    expect(
+      normalizer.accept(
+        {
+          toolCallId: 'tool-late',
+          _meta: { 'cognition.ai/subagent_completed': { agentId: 'child-late', summary: 'done', success: true } },
+        },
+        40,
+      ),
+    ).toBeUndefined()
+  })
+
+  it('bounds pending external lifecycle tracking and clears unfinished children at prompt end', () => {
+    const normalizer = new ExternalDelegationNormalizer('devin')
+    for (let index = 0; index < 70; index += 1) {
+      normalizer.accept(
+        {
+          toolCallId: `tool-${index}`,
+          _meta: {
+            'cognition.ai/subagent_started': {
+              agentId: `child-${index}`,
+              title: 'Research',
+              task: 'Find it',
+            },
+          },
+        },
+        index,
+      )
+    }
+    expect(normalizer.liveForToolCall('tool-0')).toHaveLength(1)
+    expect(normalizer.liveForToolCall('tool-69')).toEqual([])
+    expect(normalizer.finishPrompt(100)).toHaveLength(64)
+    expect(normalizer.finishPrompt(101)).toEqual([])
+  })
+
+  it('accepts an explicit failed child terminal without inventing a result', () => {
+    const normalizer = new ExternalDelegationNormalizer('devin')
+    normalizer.accept(
+      {
+        toolCallId: 'tool-failed',
+        _meta: { 'cognition.ai/subagent_started': { agentId: 'child-failed', title: 'Research', task: 'Find it' } },
+      },
+      10,
+    )
+    expect(
+      normalizer.accept(
+        {
+          toolCallId: 'tool-failed',
+          _meta: { 'cognition.ai/subagent_completed': { agentId: 'child-failed', success: false } },
+        },
+        20,
+      ),
+    ).toMatchObject({ status: 'failed', projectionEligible: false, result: { text: '' } })
+    expect(normalizer.finishPrompt(30)).toEqual([])
+  })
+
+  it('keeps an explicit Claude child cancellation distinct from failure', () => {
+    const normalizer = new ExternalDelegationNormalizer('claude')
+    normalizer.acceptNotification(
+      {
+        sessionId: 'root',
+        update: {
+          sessionUpdate: 'subagent_spawned',
+          subagentSessionId: 'child-cancelled',
+          task: 'Inspect source',
+        },
+      },
+      10,
+    )
+    expect(
+      normalizer.acceptNotification(
+        {
+          sessionId: 'root',
+          update: {
+            sessionUpdate: 'subagent_state_update',
+            subagentSessionId: 'child-cancelled',
+            state: 'cancelled',
+          },
+        },
+        20,
+      ),
+    ).toMatchObject({ status: 'cancelled', projectionEligible: false })
+  })
+
   it('normalizes Claude structured task/result/model/usage from one live lifecycle', () => {
     const normalizer = new ExternalDelegationNormalizer('claude')
     normalizer.accept(

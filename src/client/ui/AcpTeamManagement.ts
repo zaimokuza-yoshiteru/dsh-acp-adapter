@@ -1,13 +1,16 @@
-import { createElement as h, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { createElement as h, useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { createPortal } from 'react-dom'
-import type { ReactNode } from 'react'
+import type { ComponentPropsWithRef, ReactNode } from 'react'
 import {
   Button,
   StateDot,
   IconCloseOutlineMedium,
   IconRefreshOutlineMedium,
+  IconUsersOutlineMedium,
+  MenuSurface,
   useAnchoredPosition,
   useDismissOnOutsidePointer,
+  focusWithoutRing,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { HostObservable, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SessionStatusSnapshot } from '@deepseek-ai/dsh-client-ui-session/client'
@@ -81,22 +84,38 @@ export function AcpTeamManagement({
   const rootRef = useRef<HTMLDivElement | null>(null)
   const panelRef = useRef<HTMLDivElement | null>(null)
   const [menuOpen, setMenuOpen] = useState(false)
+  const openMenuOwners = useRef(new Set<string>())
+  const reportMenuOpen = useCallback((owner: string, value: boolean): void => {
+    if (value) openMenuOwners.current.add(owner)
+    else openMenuOwners.current.delete(owner)
+    setMenuOpen(openMenuOwners.current.size > 0)
+  }, [])
   useDismissOnOutsidePointer(rootRef, open && !menuOpen, setOpen, panelRef)
   const position = useAnchoredPosition({ open, anchorRef: rootRef, panelRef, gap: 6, margin: 16 })
+  const focusTrigger = useCallback((): void => {
+    const trigger = rootRef.current?.querySelector<HTMLButtonElement>('button')
+    if (trigger !== null && trigger !== undefined) focusWithoutRing(trigger)
+  }, [])
   useEffect(() => {
     if (!open) return
-    const frame = requestAnimationFrame(() => panelRef.current?.querySelector('button')?.focus())
+    const frame = requestAnimationFrame(() => {
+      const first = panelRef.current?.querySelector<HTMLButtonElement>('button')
+      if (first !== null && first !== undefined) focusWithoutRing(first)
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [open])
+  useEffect(() => {
+    if (!open) return
     const escape = (event: KeyboardEvent): void => {
-      if (event.key !== 'Escape' || event.defaultPrevented || document.querySelector('[role=menu]')) return
+      if (event.key !== 'Escape' || event.defaultPrevented || openMenuOwners.current.size > 0) return
       setOpen(false)
-      rootRef.current?.querySelector('button')?.focus()
+      focusTrigger()
     }
     document.addEventListener('keydown', escape, true)
     return () => {
-      cancelAnimationFrame(frame)
       document.removeEventListener('keydown', escape, true)
     }
-  }, [open])
+  }, [open, focusTrigger])
   const [refresh, setRefresh] = useState(0)
   const [view, setView] = useState<{
     id: string
@@ -215,6 +234,14 @@ export function AcpTeamManagement({
   const metadataReady = view?.id === sessionId && view.revision === revision && view.runtimeRevision === runtimeRevision
   const canInterrupt = members.some((member) => member.status === 'running' && member.runtimeKnown)
   const groups = Map.groupBy(members, (member) => member.profileId)
+  const panelProps: ComponentPropsWithRef<typeof MenuSurface> & { 'data-acp-team-panel': '' } = {
+    className: css.panel,
+    ref: panelRef,
+    style: position ?? { visibility: 'hidden' },
+    role: 'dialog',
+    'aria-label': t('teamManage'),
+    'data-acp-team-panel': '',
+  }
   return h(
     'div',
     { className: css.root, ref: rootRef, 'data-acp-team-management': '' },
@@ -229,35 +256,13 @@ export function AcpTeamManagement({
         'aria-expanded': open,
         onClick: () => setOpen(!open),
       },
-      h(
-        'svg',
-        {
-          width: 20,
-          height: 20,
-          viewBox: '0 0 24 24',
-          fill: 'none',
-          stroke: 'currentColor',
-          strokeWidth: 1.6,
-          strokeLinecap: 'round',
-          strokeLinejoin: 'round',
-          'aria-hidden': true,
-        },
-        h('circle', { cx: 9, cy: 8, r: 3 }),
-        h('path', { d: 'M3 20v-2a6 6 0 0 1 12 0v2M16 5a3 3 0 0 1 0 6M18 14a5 5 0 0 1 3 4v2' }),
-      ),
+      h(IconUsersOutlineMedium),
     ),
     open
       ? createPortal(
           h(
-            'div',
-            {
-              className: css.panel,
-              ref: panelRef,
-              style: position ?? { visibility: 'hidden' },
-              role: 'dialog',
-              'aria-label': t('teamManage'),
-              'data-acp-team-panel': '',
-            },
+            MenuSurface,
+            panelProps,
             h(
               'div',
               { className: css.toolbar },
@@ -280,7 +285,7 @@ export function AcpTeamManagement({
                   'aria-label': t('teamManageClose'),
                   onClick: () => {
                     setOpen(false)
-                    rootRef.current?.querySelector('button')?.focus()
+                    focusTrigger()
                   },
                 },
                 h(IconCloseOutlineMedium),
@@ -299,7 +304,7 @@ export function AcpTeamManagement({
                 members,
                 metadataCurrent: metadataReady,
                 t,
-                onMenuOpen: setMenuOpen,
+                onMenuOpen: reportMenuOpen,
                 interruptAction:
                   index === 0
                     ? h(
@@ -346,14 +351,18 @@ function ModeGroup({
   members: readonly ManagedMember[]
   metadataCurrent: boolean
   t: Copy
-  onMenuOpen(value: boolean): void
+  onMenuOpen(owner: string, value: boolean): void
 } & Actions): ReactNode {
   const [snapshots, setSnapshots] = useState<Record<string, AcpAgentSessionSnapshotView | null>>({})
   const [menu, setMenu] = useState<string | null>(null)
+  const menuOwner = `mode:${String(lead)}:${profileId ?? 'unknown'}`
+  const updateMenu = (value: string | null): void => {
+    setMenu(value)
+    onMenuOpen(menuOwner, value !== null)
+  }
   useEffect(() => {
-    onMenuOpen(menu !== null)
-    return () => onMenuOpen(false)
-  }, [menu, onMenuOpen])
+    return () => onMenuOpen(menuOwner, false)
+  }, [menuOwner, onMenuOpen])
   const [busy, setBusy] = useState(false)
   const locked = useRef(false)
   const alive = useRef(true)
@@ -415,7 +424,7 @@ function ModeGroup({
     if (locked.current || profileId === null || !metadataCurrent) return
     locked.current = true
     setBusy(true)
-    setMenu(null)
+    updateMenu(null)
     setFeedback('')
     setResults([])
     const unwrap = <T>(result: { ok: true; value: T } | { ok: false; error: { message: string } }): T => {
@@ -489,7 +498,7 @@ function ModeGroup({
           side: 'bottom',
           align: 'end',
           disabled: batchChoices.length === 0 || profileId === null || busy,
-          onOpenChange: (value) => setMenu(value ? 'batch' : null),
+          onOpenChange: (value) => updateMenu(value ? 'batch' : null),
           onSelect: (choice) => {
             if (choice.write.kind !== 'tool-approval-policy')
               void change(
@@ -618,7 +627,7 @@ function ModeGroup({
                     side: 'bottom',
                     align: 'end',
                     disabled: !snapshot || choices(member).length === 0 || busy,
-                    onOpenChange: (value) => setMenu(value ? member.sessionId : null),
+                    onOpenChange: (value) => updateMenu(value ? member.sessionId : null),
                     onSelect: (choice) => {
                       if (choice.write.kind !== 'tool-approval-policy')
                         void change(

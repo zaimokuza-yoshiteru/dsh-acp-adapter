@@ -11,11 +11,6 @@ import {
   useCallback,
 } from 'react'
 import type { ReactNode } from 'react'
-import type {
-  ConversationNodeDefinition,
-  ConversationMatch,
-  ConversationLocation,
-} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { ToolCallBlock, ChatNodeViewProps, ChatConversationViewNode } from '@deepseek-ai/dsh-client-ui-chat/client'
 import {
   Button,
@@ -38,50 +33,23 @@ import type {
 import type { AcpJsonStringWrapping } from './json-tree.ts'
 import { acpJsonTreeLabels } from './json-tree.ts'
 import type { AcpActivityView } from '../data/acp-remote.ts'
-import { acpReplayPayloadOf, type AcpReplayPayloadV1 } from '../data/acp-replay-payload.ts'
+import type { AcpActivityNodeData } from './activity-definitions.ts'
+export {
+  acpPromptAnchorDefinition,
+  createAcpActivityDefinition,
+  createAcpEffectiveRouteDefinition,
+  createAcpLiveActivityDefinition,
+} from './activity-definitions.ts'
+export type { AcpActivityNodeData } from './activity-definitions.ts'
 import { AcpActivityJournalHub } from '../data/activity-journal.ts'
 import css from './AcpActivityNode.module.css'
 import { nativeOwner, type NativeToolOwner } from './native-tool-renderer.ts'
 import type { AcpLocaleKey } from './locales.ts'
-import type { OwnsAcpRoute } from '../coordinator/cross-backend-coordinator.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
     acpActivity: import('./locales.ts').AcpLocaleKey
   }
-}
-
-declare module '@deepseek-ai/dsh-client-ui-conversation/client' {
-  interface ConversationStepDataMap {
-    'acp-activity': AcpActivityNodeData
-    'acp-activity-live': AcpActivityNodeData
-  }
-}
-
-declare module '@deepseek-ai/dsh-client-ui-chat/client' {
-  interface ChatNodeDataMap {
-    'acp-activity': AcpActivityNodeData
-  }
-}
-
-export interface AcpActivityNodeData {
-  readonly settled?: true
-  readonly ownerDshSessionId: string
-  readonly promptAnchorMessageId: string
-  readonly profileId: string
-  readonly agentSessionId: string
-  readonly committedActivitySeq: number
-}
-
-interface AcpPromptAnchorState {
-  readonly messageId: string
-  readonly seq: number
-  readonly location: ConversationLocation
-}
-
-interface AcpActivityState extends AcpActivityNodeData {
-  readonly seq: number
-  readonly location: ConversationLocation
 }
 
 type ActivityNode = ChatConversationViewNode & {
@@ -111,6 +79,10 @@ export function activityJournalSessionId(
   currentSessionId?: string,
 ): string {
   return data.ownerDshSessionId === '' ? (currentSessionId ?? '') : data.ownerDshSessionId
+}
+
+function record(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function statusLabel(status: AcpActivityView['status'], t: ActivityNodeProps['t']): string {
@@ -803,7 +775,7 @@ export function AcpActivityContent({
       setRows(next)
       setRetrying(handle.retrying())
       setCanRetry(handle.canRetry())
-      setUnavailable(handle.error() !== undefined || handle.retrying())
+      setUnavailable(handle.error() !== undefined && !handle.loading())
       for (const row of all) {
         const projected = completedProjectedChild(row)
         if (projected !== undefined) onProjectedChild?.(projected.parentSessionId, projected.childSessionId)
@@ -860,185 +832,27 @@ export function AcpActivityContent({
   )
 }
 
-function payloadOf(match: ConversationMatch): AcpReplayPayloadV1 | undefined {
-  return acpReplayPayloadOf(match.event)
-}
-
-function record(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-function directUserMessageId(event: { readonly type: string; readonly data: unknown }): string | undefined {
-  if (event.type !== 'user/message' || !record(event.data)) return undefined
-  const source = record(event.data.source) ? event.data.source : undefined
-  return source?.kind === 'user' && typeof event.data.id === 'string' ? event.data.id : undefined
-}
-
-function requestProvider(event: { readonly type: string; readonly data: unknown }): string | undefined {
-  if (event.type !== 'request/header' || !record(event.data)) return undefined
-  const header = record(event.data.header) ? event.data.header : undefined
-  const config = record(header?.config) ? header.config : undefined
-  return typeof config?.provider === 'string' ? config.provider : undefined
-}
-
-function interruptedAssistantProvider(event: { readonly type: string; readonly data: unknown }): string | undefined {
-  if (event.type !== 'assistant/message' || !record(event.data) || event.data.interrupted !== true) return undefined
-  const message = record(event.data.message) ? event.data.message : undefined
-  const source = record(message?.source) ? message.source : undefined
-  return source?.kind === 'model' && typeof source.provider === 'string' ? source.provider : undefined
-}
-
-function activityNodeData(state: AcpActivityState): AcpActivityNodeData {
-  return {
-    ...(state.settled === true ? { settled: true } : {}),
-    ownerDshSessionId: state.ownerDshSessionId,
-    promptAnchorMessageId: state.promptAnchorMessageId,
-    profileId: state.profileId,
-    agentSessionId: state.agentSessionId,
-    committedActivitySeq: state.committedActivitySeq,
-  }
-}
-
-/** State-only direct-user anchor consumed by the subsequent ACP request. */
-export const acpPromptAnchorDefinition: ConversationNodeDefinition<AcpPromptAnchorState> = {
-  kind: 'acp-prompt-anchor',
-  match: (event) => {
-    const id = directUserMessageId(event)
-    return id === undefined ? null : { id, role: 'start' }
-  },
-  start: (_context, match) => ({
-    messageId: directUserMessageId(match.event)!,
-    seq: match.event.seq,
-    location: match.location,
-  }),
-  update: (context) => context.state,
-}
-
-/**
- * Owned request/header evidence creates the node before the Agent starts.
- * A durable assistant marker publishes the settled node; native Step data
- * retires its live placeholder without retaining event-number references. Native
- * turns and ACP routes owned by another plugin create no node or subscription.
- */
-export function createAcpActivityDefinition(ownsRoute: OwnsAcpRoute): ConversationNodeDefinition<AcpActivityState> {
-  return {
-    kind: 'acp-activity',
-    target: 'chat',
-    match: (event) => {
-      const payload = acpReplayPayloadOf(event)
-      // Session migrations renumber events but preserve opaque replay state.
-      // Settle from stable ACP identity, never a saved request/header seq.
-      if (payload !== undefined)
-        return {
-          id: `answer:${JSON.stringify([payload.ownerDshSessionId, payload.profileId, payload.profileGeneration, payload.bindingEpoch, payload.agentSessionId, payload.committedPromptOrdinal])}`,
-          role: 'start',
-        }
-      const interruptedProvider = interruptedAssistantProvider(event)
-      if (interruptedProvider !== undefined && ownsRoute(interruptedProvider))
-        return { id: `interrupted:${event.seq}`, role: 'start' }
-      const provider = requestProvider(event)
-      return provider !== undefined && ownsRoute(provider) ? { id: `request:${event.seq}`, role: 'start' } : null
-    },
-    start: (_context, match, reader) => {
-      const payload = payloadOf(match)
-      if (payload !== undefined) {
-        return {
-          settled: true,
-          ownerDshSessionId: payload.ownerDshSessionId,
-          promptAnchorMessageId: payload.activityAnchorMessageId ?? `prompt:${payload.committedPromptOrdinal}`,
-          profileId: payload.profileId,
-          agentSessionId: payload.agentSessionId,
-          committedActivitySeq: payload.committedActivitySeq,
-          seq: match.event.seq,
-          location: match.location,
-        }
-      }
-      const interruptedProvider = interruptedAssistantProvider(match.event)
-      const provider = requestProvider(match.event) ?? interruptedProvider
-      if (provider === undefined) throw new Error('acp-activity requires a matched ACP request or interrupted answer')
-      const anchor = reader.previous<AcpPromptAnchorState>('acp-prompt-anchor')?.state
-      if (interruptedProvider !== undefined) {
-        const previous = reader.previous<AcpActivityState>('acp-activity')?.state
-        if (
-          previous !== undefined &&
-          previous.settled !== true &&
-          previous.profileId === interruptedProvider &&
-          (anchor === undefined || previous.promptAnchorMessageId === anchor.messageId)
-        ) {
-          return { ...previous, settled: true, seq: match.event.seq, location: match.location }
-        }
-        // History can contain the interrupted answer before its request context
-        // is available. Anchor to this prompt, never a prior completed answer;
-        // reader dependencies replay this node when earlier contexts arrive.
-      }
-      return {
-        ...(interruptedProvider === undefined ? {} : { settled: true as const }),
-        ownerDshSessionId: '',
-        promptAnchorMessageId: anchor?.messageId ?? `request:${match.event.seq}`,
-        profileId: provider,
-        agentSessionId: '',
-        committedActivitySeq: 0,
-        seq: match.event.seq,
-        location: match.location,
-      }
-    },
-    update: (context) => context.state,
-    buildLocationData: (context, scope) => {
-      const state = context.state
-      if (scope !== 'step' || state?.settled !== true || state.location.kind !== 'step') return null
-      return {
-        kind: 'step',
-        turn: state.location.turn.turn,
-        step: state.location.step.step,
-        key: 'acp-activity',
-        value: activityNodeData(state),
-      }
-    },
-    buildViewNode: (context): ActivityNode | null => {
-      if (context.state === undefined) return null
-      return {
-        key: context.key,
-        kind: 'acp-activity',
-        id: context.id,
-        target: 'chat',
-        // The native Chat adapter expands this marker into activity nodes once
-        // its journal is available. Keep its durable position for fallback UI.
-        anchorSeq: context.state.seq,
-        location: context.state.location,
-        visibility: 'visible',
-        data: activityNodeData(context.state),
-      }
-    },
-  }
-}
-
-/** Own the live Step fact separately from the settled activity projection. */
-export function createAcpLiveActivityDefinition(ownsRoute: OwnsAcpRoute): ConversationNodeDefinition<AcpActivityState> {
-  const activity = createAcpActivityDefinition(ownsRoute)
-  return {
-    kind: 'acp-activity-live',
-    match: (event) => (event.type === 'request/header' ? activity.match(event) : null),
-    start: activity.start,
-    update: activity.update,
-    buildLocationData: (context, scope) => {
-      const state = context.state
-      if (scope !== 'step' || state === undefined || state.location.kind !== 'step') return null
-      return {
-        kind: 'step',
-        turn: state.location.turn.turn,
-        step: state.location.step.step,
-        key: 'acp-activity-live',
-        value: activityNodeData(state),
-      }
-    },
-  }
-}
-
 /** Presentation-only normalization. These blocks never enter the agent loop,
  * session event log, model context, tool execution or permission system. */
-export function nativeActivityToolBlock(row: AcpActivityView): ToolCallBlock {
+export function nativeActivityToolBlock(
+  row: AcpActivityView,
+  externalAgentLabel?: string,
+  externalAgentStatusLabel?: (status: string) => string,
+): ToolCallBlock {
   const value = detailValue(row)
   const detail = record(value) ? value : {}
+  const externalDelegations = Array.isArray(detail.externalDelegations)
+    ? detail.externalDelegations.flatMap((item) =>
+        record(item) && typeof item.label === 'string' && item.label.length > 0
+          ? [
+              {
+                label: item.label,
+                status: typeof item.status === 'string' ? item.status : 'unfinished',
+              },
+            ]
+          : [],
+      )
+    : []
   const raw = detail.rawInput
   const mcp = record(raw) && typeof raw.tool === 'string' && record(raw.arguments)
   let input: unknown = mcp ? raw.arguments : raw
@@ -1093,6 +907,14 @@ export function nativeActivityToolBlock(row: AcpActivityView): ToolCallBlock {
         lang: read.lang,
       }
   }
+  if (externalAgentLabel !== undefined && externalDelegations.length > 0) {
+    const labels = externalDelegations.map((item) =>
+      externalAgentStatusLabel === undefined
+        ? `${item.label} · ${item.status}`
+        : `${item.label} · ${externalAgentStatusLabel(item.status)}`,
+    )
+    name = `${externalAgentLabel} · ${labels.join(', ')} · ${name}`
+  }
   const callId = `acp:${row.ownerDshSessionId}:${row.promptAnchorMessageId}:${row.activityId}`
   const argsRaw = input === undefined ? '{}' : typeof input === 'string' ? input : JSON.stringify(input)
   if (row.status === 'running')
@@ -1139,7 +961,17 @@ function NativeActivityTool({
   t: ActivityNodeProps['t']
 }): ReactNode {
   const [inspecting, setInspecting] = useState(false)
-  const block = useMemo(() => nativeActivityToolBlock(row), [row])
+  const block = useMemo(
+    () =>
+      nativeActivityToolBlock(row, t('activity.externalAgent'), (status) => {
+        const statusKey =
+          status === 'running' || status === 'completed' || status === 'failed' || status === 'cancelled'
+            ? status
+            : 'unfinished'
+        return t(`activity.externalAgentStatus.${statusKey}` as AcpLocaleKey)
+      }),
+    [row, t],
+  )
   const inspectCall = useCallback(() => setInspecting(true), [])
   const props: NativeToolOwner = {
     ...nativeOwner(owner),

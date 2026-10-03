@@ -135,6 +135,32 @@ function connectInline(script: string, opts: AcpConnectionOptions = {}): AcpClie
   )
 }
 
+function connectPromptError(error: { code: number; message: string; data?: unknown }): AcpClientConnection {
+  const encodedError = JSON.stringify(error)
+  return connectInline(`
+// ${SPEC_TAG}-inline-prompt-error
+const failure = ${encodedError};
+let buf = '';
+process.stdin.on('data', (d) => {
+  buf += d;
+  let i;
+  while ((i = buf.indexOf('\\n')) >= 0) {
+    const line = buf.slice(0, i);
+    buf = buf.slice(i + 1);
+    if (!line.trim()) continue;
+    const msg = JSON.parse(line);
+    if (msg.id === undefined || msg.method === undefined) continue;
+    if (msg.method === 'initialize') {
+      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: 1 } }) + '\\n');
+    } else if (msg.method === 'session/prompt') {
+      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, error: failure }) + '\\n');
+    }
+  }
+});
+setInterval(() => {}, 1 << 30);
+`)
+}
+
 // initialize 一律回 -32000 auth_required
 const AUTH_REFUSING_AGENT = `
 // ${SPEC_TAG}-inline-auth
@@ -705,6 +731,48 @@ describe('错误分类', () => {
     const acpErr = err as AcpClientError
     expect(acpErr.kind).toBe('auth_required')
     expect(acpErr.message).toContain('requires authentication')
+  })
+
+  it('resource exhaustion requires Devin code plus the structured vendor errorKind and preserves a redacted reason', async () => {
+    for (const retryable of [true, false]) {
+      const conn = connectPromptError({
+        code: -32011,
+        message: 'weekly usage quota exhausted; api_key=sk-proj-abcdef1234567890abcdef',
+        data: { errorKind: 'resource_exhausted', retryable },
+      })
+      await conn.initialize()
+      const err = await expectReject(conn.prompt('session-1', PROMPT_BLOCKS))
+      expect(err).toMatchObject({ kind: 'resource-exhausted', code: 'ACP_RESOURCE_EXHAUSTED' })
+      expect((err as Error).message).toContain('weekly usage quota exhausted')
+      expect((err as Error).message).toContain('JSON-RPC code -32011')
+      expect((err as Error).message).toContain('api_key=<redacted>')
+      expect((err as Error).message).not.toContain('sk-proj-abcdef1234567890abcdef')
+    }
+  })
+
+  it.each([
+    ['missing data', { code: -32011, message: 'weekly usage quota exhausted' }],
+    ['unknown kind', { code: -32011, message: 'weekly usage quota exhausted', data: { errorKind: 'rate_limited' } }],
+    [
+      'wrong code',
+      { code: -32603, message: 'weekly usage quota exhausted', data: { errorKind: 'resource_exhausted' } },
+    ],
+  ])('unknown or non-matching provider error (%s) stays protocol-error', async (_label, failure) => {
+    const conn = connectPromptError(failure)
+    await conn.initialize()
+    const err = await expectReject(conn.prompt('session-1', PROMPT_BLOCKS))
+    expect(err).toMatchObject({ kind: 'protocol-error', code: 'ACP_PROTOCOL_ERROR' })
+  })
+
+  it('authentication classification takes precedence over quota-shaped vendor data', async () => {
+    const conn = connectPromptError({
+      code: -32000,
+      message: 'Authentication required',
+      data: { errorKind: 'resource_exhausted' },
+    })
+    await conn.initialize()
+    const err = await expectReject(conn.prompt('session-1', PROMPT_BLOCKS))
+    expect(err).toMatchObject({ kind: 'auth_required', code: 'ACP_AUTH_REQUIRED' })
   })
 
   it('provider failure interrupts an active RPC as a crash and cleans up the managed range', async () => {

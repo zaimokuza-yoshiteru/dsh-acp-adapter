@@ -33,6 +33,35 @@ import { ExternalSubagentProjector } from '../subagent/external-projector.ts'
 
 export { acpProbeConfigKey }
 
+export type ActivityReadStatus = 'owned' | 'binding-pending' | 'denied'
+
+/**
+ * Resolve the activity stream's strict read status. A confirmed owned live ACP
+ * route with no durable binding returns a temporary pending signal for initial-
+ * follow retry; it never grants access. Malformed records and storage failures
+ * remain denied.
+ */
+export async function activityReadStatusOf(input: {
+  readonly sessionId: string
+  readonly sidecar: Pick<AcpSidecar, 'hasDurableActivityOwner' | 'readLatestBinding'> | undefined
+  readonly liveProvider: string | undefined
+  readonly ownedProviders: ReadonlySet<string>
+}): Promise<ActivityReadStatus> {
+  try {
+    if (input.sidecar === undefined) return 'denied'
+    if (await input.sidecar.hasDurableActivityOwner(input.sessionId as never)) return 'owned'
+    const binding = await input.sidecar.readLatestBinding(input.sessionId as never)
+    if (binding !== undefined) return 'denied'
+    // Include an owner committed between the first owner check and binding read.
+    if (await input.sidecar.hasDurableActivityOwner(input.sessionId as never)) return 'owned'
+    return input.liveProvider !== undefined && input.ownedProviders.has(input.liveProvider)
+      ? 'binding-pending'
+      : 'denied'
+  } catch {
+    return 'denied'
+  }
+}
+
 export { acpSettingsSchema } from './config.ts'
 export type { AcpSettings, AcpSettingsSchema } from './config.ts'
 import type { Config } from './config.ts'
@@ -419,6 +448,20 @@ export function installInstalledProfileRegistry(
       return false
     }
   }
+  const activityReadStatus = async (sessionId: string): Promise<'owned' | 'binding-pending' | 'denied'> => {
+    let liveProvider: string | undefined
+    try {
+      liveProvider = sessionStore?.get(sessionId)?.requestHeader()?.config.provider
+    } catch {
+      liveProvider = undefined
+    }
+    return activityReadStatusOf({
+      sessionId,
+      sidecar,
+      liveProvider,
+      ownedProviders: new Set([...profileAdapters.keys()].map(acpRouteId)),
+    })
+  }
   const canRegisterRemote =
     typeof (ctx as Context & { reflect?: { provide?: unknown } }).reflect?.provide === 'function'
   let existingRemote: unknown
@@ -500,6 +543,7 @@ export function installInstalledProfileRegistry(
           sidecar.subscribeActivity(sessionId as never, filter ?? {}, subscriber),
       },
       ownedSessionReadGate,
+      activityReadStatus,
       activityAccess: ownedSessionReadGate,
       projectedSubagentIds: () => sidecar.listProjectedSubagentIds(),
       imageInputAvailable: attachments !== undefined,

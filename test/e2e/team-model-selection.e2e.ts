@@ -117,8 +117,34 @@ it('persists teammate model selection, applies it on wake, and protects Team bou
     )
 
     const panel = page.locator('[data-acp-team-management], [data-acp-team-panel]')
+    const service = host.ctx.get('dshAcp') as AcpRemoteService
+    const catalog = await service.teamMemberModels(lead.id, child.id)
+    // Exercise the mounted picker with an opaque catalog id that resembles
+    // the menu's synthetic placeholder namespace. The host fixture does not
+    // advertise such an id, so adapt its catalog response and capture the
+    // actual write handler call, then remount against the real catalog.
+    const catalogSpy = vi.spyOn(service, 'teamMemberModels').mockResolvedValue({
+      ...catalog,
+      models: [...catalog.models, { id: '__vendor_model', name: 'Vendor model' }],
+    })
+    const writeSpy = vi.spyOn(service, 'setTeamMemberModel').mockImplementation(async (_lead, _member, model) => {
+      if (model === '__vendor_model') return { ...catalog, pendingModel: model }
+      return catalog
+    })
     await panel.getByRole('button', { name: 'Manage members · 1', exact: true }).click()
     const row = panel.locator('[data-acp-managed-member="calculator"]')
+    try {
+      const opaqueModelButton = row.getByRole('button', { name: 'Choose a model for calculator', exact: true })
+      await opaqueModelButton.waitFor()
+      await opaqueModelButton.click()
+      await page.getByRole('menu').getByRole('menuitem', { name: 'Vendor model', exact: true }).click()
+      await expect.poll(() => writeSpy.mock.calls.some((call) => call[2] === '__vendor_model')).toBe(true)
+    } finally {
+      writeSpy.mockRestore()
+      catalogSpy.mockRestore()
+    }
+    await panel.getByRole('button', { name: 'Close member management', exact: true }).click()
+    await panel.getByRole('button', { name: 'Manage members · 1', exact: true }).click()
     await row
       .getByRole('status')
       .filter({ hasText: /mock[ -]model[ -]a/i })
@@ -242,7 +268,9 @@ it('persists teammate model selection, applies it on wake, and protects Team bou
     // transition refreshes metadata, while current and next model facts stay
     // distinct until the pending choice is consumed.
     const management = page.locator('[data-acp-team-management], [data-acp-team-panel]')
-    await management.getByRole('button', { name: 'Manage members · 2', exact: true }).click()
+    const managementPanel = page.locator('[data-acp-team-panel]')
+    const manageMembersButton = management.getByRole('button', { name: 'Manage members · 2', exact: true })
+    await manageMembersButton.click()
     await modelButton.click()
     await page.getByRole('menu').getByRole('menuitem', { name: 'Mock Model A', exact: true }).click()
     expect(await row.locator('[data-member-model-notice]').textContent()).toBe(
@@ -272,7 +300,13 @@ it('persists teammate model selection, applies it on wake, and protects Team bou
       page.getByRole('menu').getByRole('menuitem', { name: 'Mock Model B', exact: true }).isEnabled(),
     ).resolves.toBe(true)
     await page.keyboard.press('Escape')
-    await management.getByRole('button', { name: 'Close member management', exact: true }).click()
+    await expect.poll(() => page.getByRole('menu').count()).toBe(0)
+    await expect.poll(() => managementPanel.count()).toBe(1)
+    await expect.poll(() => modelButton.evaluate((button) => button.getAttribute('aria-expanded'))).toBe('false')
+    await expect.poll(() => modelButton.evaluate((button) => button === document.activeElement)).toBe(true)
+    await page.keyboard.press('Escape')
+    await expect.poll(() => managementPanel.count()).toBe(0)
+    await expect.poll(() => manageMembersButton.evaluate((button) => button === document.activeElement)).toBe(true)
   } finally {
     await browser?.close()
     await host.close()

@@ -19,7 +19,7 @@ type Props = {
   readonly remote: AcpRemoteLike
   readonly t: Copy
   readonly isCurrent: (sessionId: SessionId) => boolean
-  readonly onMenuOpen: (value: boolean) => void
+  readonly onMenuOpen: (owner: string, value: boolean) => void
 }
 type MemberModelFacts = AcpTeamMemberView
 
@@ -63,6 +63,11 @@ export function TeamMemberModelControl({
   const writeInFlight = useRef(false)
   const latestMember = useRef(member)
   latestMember.current = member
+  const menuOwner = `model:${String(member.sessionId)}`
+  const changeOpen = (value: boolean): void => {
+    setOpen(value)
+    onMenuOpen(menuOwner, value)
+  }
 
   const memberFacts = member
   const canWrite =
@@ -78,25 +83,22 @@ export function TeamMemberModelControl({
       ++epoch.current
     }
   }, [])
+  useEffect(() => () => onMenuOpen(menuOwner, false), [menuOwner, onMenuOpen])
   useEffect(() => {
     ++epoch.current
     setOpen(false)
+    onMenuOpen(menuOwner, false)
     setView(null)
     setError(null)
     setLoading(false)
     setSaving(false)
     writeInFlight.current = false
     ++factsRevision.current
-  }, [lead, member.sessionId])
+  }, [lead, member.sessionId, menuOwner, onMenuOpen])
   useEffect(() => {
     ++factsRevision.current
     setView((previous) => reconcileMemberModelView(previous, memberFacts))
   }, [member.model, member.pendingModel, memberFacts.modelWritable])
-  useEffect(() => {
-    onMenuOpen(open)
-    return () => onMenuOpen(false)
-  }, [open, onMenuOpen])
-
   useEffect(() => {
     // Native team membership precedes the child's durable ACP binding. The
     // session stream tells us when ownership-checked catalog reads are ready.
@@ -133,10 +135,10 @@ export function TeamMemberModelControl({
 
   const toggle = (): void => {
     if (open) {
-      setOpen(false)
+      changeOpen(false)
       return
     }
-    setOpen(true)
+    changeOpen(true)
     if (view === null && error !== null && !loading) setCatalogRetry((value) => value + 1)
   }
 
@@ -154,7 +156,7 @@ export function TeamMemberModelControl({
   const currentLabel = modelName(view?.models ?? [], currentModel) ?? currentModel ?? t('teamModelUnknown')
 
   const choose = (id: string): void => {
-    if (id.startsWith('__') || !canWrite || writeInFlight.current || !isCurrent(lead)) return
+    if (!canWrite || writeInFlight.current || !isCurrent(lead)) return
     const chosen = (view?.models ?? []).find((model) => model.id === id)
     if (chosen === undefined) return
     const currentEpoch = epoch.current
@@ -165,7 +167,7 @@ export function TeamMemberModelControl({
     setSaving(true)
     setView((previousView) => (previousView === null ? previousView : { ...previousView, pendingModel: id }))
     setError(null)
-    setOpen(false)
+    changeOpen(false)
     void remote
       .setTeamMemberModel(lead, member.sessionId, id)
       .then((result) => {
@@ -216,7 +218,7 @@ export function TeamMemberModelControl({
       open,
       side: 'bottom',
       align: 'end',
-      onClose: () => setOpen(false),
+      onClose: () => changeOpen(false),
       items,
       ...(!canWrite && !saving
         ? {

@@ -12,6 +12,7 @@ import type * as acp from '@agentclientprotocol/sdk'
  * ACP 连接错误的结构化分类。
  * - `spawn-failure`：可执行不存在（ENOENT）/不可执行（EACCES）等 spawn 级失败
  * - `auth_required`：agent 返回 JSON-RPC -32000（ACP `auth_required`），需走 agent 自有登录
+ * - `resource-exhausted`：已知 provider 结构化错误明确报告资源/配额耗尽；不会自动重试
  * - `timeout`：initialize / probe 超时下限保护；所有带预算的 RPC
  *   超预算放弃（connection poison 的触发源之一）也归本类
  * - `protocol-error`：JSON-RPC 层错误（方法未实现、参数非法等）及其它未分类失败
@@ -19,15 +20,17 @@ import type * as acp from '@agentclientprotocol/sdk'
  * - `aborted`：调用方 AbortSignal 中止在飞 RPC，promise 被放弃
  *   （连接随之 poison 拆除）；taxonomy 默认映射 `user-rejected`
  */
-export type AcpErrorKind = 'spawn-failure' | 'auth_required' | 'timeout' | 'protocol-error' | 'crash' | 'aborted'
+export type AcpErrorKind =
+  'spawn-failure' | 'auth_required' | 'resource-exhausted' | 'timeout' | 'protocol-error' | 'crash' | 'aborted'
 
 /**
- * 统一错误 taxonomy（八分类；分类标签与 kind 映射的值表见 ./errors.ts）。
+ * 统一错误 taxonomy（十分类；分类标签与 kind 映射的值表见 ./errors.ts）。
  * `AcpErrorKind` 是协议层的传输期分类（线上接口形状，remote/service 与 client
  * 面板消费，不变）；本词表是跨层统一的用户问题分类：
  * - `config`：配置/部署错误（agent 配置非法、spawn 计划组装失败、宿主缺 subprocess 能力）
  * - `not-installed`：agent 命令未安装/不可执行（spawn ENOENT/EACCES）
  * - `auth-required`：agent 未认证（ACP `auth_required`）
+ * - `resource-exhausted`：provider 明确报告资源或使用配额耗尽
  * - `protocol-incompatible`：协议不兼容/对端 RPC 拒绝及其它未分类失败
  * - `timeout`：各握手/RPC 超预算
  * - `agent-crash`：agent 进程意外退出
@@ -40,10 +43,12 @@ export type AcpErrorCategory =
   | 'config'
   | 'not-installed'
   | 'auth-required'
+  | 'resource-exhausted'
   | 'protocol-incompatible'
   | 'timeout'
   | 'agent-crash'
   | 'user-rejected'
+  | 'activity-binding-pending'
   | 'resume-conflict'
 
 /**

@@ -8,6 +8,8 @@
 
 本版本仅支持 DSH `0.2.0-rc.2`。点击 ACP 成员或子会话会在原生侧栏打开，保留主会话；Teams 成员的请求仍可直接在主会话审批。
 
+`0.2.0-rc.2.2` 继续使用 DSH 原生对话与菜单组件，并修复菜单焦点、恢复操作并发和结果反馈。活动日志首次加载与连续的无文本工具回合有更准确的状态；外部子代理在运行中可见，晚到或缺失的子代理终态不会被工具结束替代。已识别的 Devin 配额耗尽会单独说明，不会自动重试。详见[更新记录](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/main/CHANGELOG.md)和[原生复用说明](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/main/docs/native-reuse.md)。
+
 升级后，已有 Agent 配置会从旧设置文件自动导入当前 DSH 配置；当前配置中已设置的 Agent 列表（包括空列表）会保留。主会话过程使用 DSH 原生的紧凑、标准、详细和完全展开模式，工具、思考和过程分组随宿主设置切换。
 
 ## <img src="assets/readme/icon-preview.svg" width="24" height="24" alt="" /> 功能预览

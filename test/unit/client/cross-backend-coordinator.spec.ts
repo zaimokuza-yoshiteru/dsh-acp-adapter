@@ -304,8 +304,38 @@ describe('cross-backend coordinator', () => {
     selectModel.mockResolvedValueOnce({ ok: false, error: { message: 'rollback failed' } })
     const stop = f.coordinator.start()
     await settle()
-    expect(f.coordinator.getSnapshot().pending?.error).toBe('rollback failed')
+    expect(f.coordinator.getSnapshot().pending?.failure).toEqual({
+      phase: 'restore-source',
+      message: 'rollback failed',
+    })
     expect(selectModel).toHaveBeenCalledTimes(1)
+    stop()
+  })
+
+  it.each([
+    ['create-destination', 'create'],
+    ['select-destination', 'select'],
+    ['open-destination', 'open'],
+  ] as const)('retains the structured %s failure for localized UI handling', async (phase, failedStep) => {
+    const f = fixture({
+      projection: {
+        lastUsed: { provider: 'native', model: 'old' },
+        next: { provider: 'acp-codex', model: 'new' },
+      },
+    })
+    if (failedStep === 'create') f.sessions.create.mockRejectedValueOnce(new Error('CREATE_DIAGNOSTIC'))
+    if (failedStep === 'select')
+      f.remote.session.selectModel
+        .mockResolvedValueOnce({ ok: true })
+        .mockResolvedValueOnce({ ok: false, error: { message: 'SELECT_DIAGNOSTIC' } })
+    if (failedStep === 'open')
+      f.sessions.open.mockImplementationOnce(() => {
+        throw new Error('OPEN_DIAGNOSTIC')
+      })
+    const stop = f.coordinator.start()
+    await settle()
+    await f.coordinator.confirm()
+    expect(f.coordinator.getSnapshot().pending?.failure).toMatchObject({ phase })
     stop()
   })
 

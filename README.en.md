@@ -8,6 +8,8 @@ Use **Claude · Codex · Devin · Kimi** from the DSH session UI.
 
 This version supports DSH `0.2.0-rc.2` only. ACP members and subagent records open in the native sidebar while the main conversation stays in place. Team member requests can still be approved from the main conversation.
 
+`0.2.0-rc.2.2` continues to use DSH's native conversation and menu components, with fixes for menu focus, concurrent recovery actions, and outcome feedback. Initial activity loading and consecutive tool turns without visible text now retain accurate state. External subagents appear while running; a tool ending does not substitute for a late or missing child terminal state. Recognized Devin quota exhaustion has its own message and is not retried automatically. See the [changelog](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/main/CHANGELOG.md) and [native reuse notes](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/main/docs/native-reuse.en.md).
+
 On upgrade, existing Agent configuration is imported automatically from the old settings file into the current DSH profile. An Agent list already set in that profile, including an empty list, is preserved. The transcript uses DSH’s native compact, standard, detailed, and verbose modes for tools, reasoning, and process groups.
 
 ## <img src="assets/readme/icon-preview.svg" width="24" height="24" alt="" /> Preview

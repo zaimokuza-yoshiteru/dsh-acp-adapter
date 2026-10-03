@@ -37,6 +37,7 @@ import {
   acpProbeConfigKey,
   acpRegistrationFacts,
   acpSettingsSchema,
+  activityReadStatusOf,
   installInstalledProfileRegistry,
   type AcpSettings,
   type AcpSettingsSchema,
@@ -131,6 +132,46 @@ class FakeSettingsProvider {
     this.commit(section)
   }
 }
+
+describe('ACP activity stream ownership status', () => {
+  const ownedProviders = new Set(['acp-codex'])
+  const base = {
+    sessionId: 'session-1',
+    liveProvider: 'acp-codex',
+    ownedProviders,
+  }
+
+  it('recognizes only a live ACP session with no durable owner or binding as pending', async () => {
+    const noBinding = {
+      hasDurableActivityOwner: async () => false,
+      readLatestBinding: async () => undefined,
+    }
+    await expect(activityReadStatusOf({ ...base, sidecar: noBinding as never })).resolves.toBe('binding-pending')
+    await expect(
+      activityReadStatusOf({ ...base, liveProvider: 'native-provider', sidecar: noBinding as never }),
+    ).resolves.toBe('denied')
+  })
+
+  it('preserves durable ownership and denies malformed bindings and sidecar read failures', async () => {
+    const durableOwner = {
+      hasDurableActivityOwner: async () => true,
+      readLatestBinding: async () => undefined,
+    }
+    const malformedBinding = {
+      hasDurableActivityOwner: async () => false,
+      readLatestBinding: async () => ({ status: 'outdated' }),
+    }
+    const failedRead = {
+      hasDurableActivityOwner: async () => {
+        throw new Error('sidecar unavailable')
+      },
+      readLatestBinding: async () => undefined,
+    }
+    await expect(activityReadStatusOf({ ...base, sidecar: durableOwner as never })).resolves.toBe('owned')
+    await expect(activityReadStatusOf({ ...base, sidecar: malformedBinding as never })).resolves.toBe('denied')
+    await expect(activityReadStatusOf({ ...base, sidecar: failedRead as never })).resolves.toBe('denied')
+  })
+})
 
 // ---------- 假 ctx.llm（记录注册/替换调用序列； 不再有 directory 通道） ----------
 

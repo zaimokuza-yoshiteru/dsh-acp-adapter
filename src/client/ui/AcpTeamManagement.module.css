@@ -16,10 +16,7 @@
   max-height: min(680px, calc(100dvh - 120px));
   padding: 10px;
   overflow: auto;
-  border-radius: 12px;
-  background: var(--dsw-specific-menu);
   color: var(--dsw-alias-label-primary);
-  backdrop-filter: var(--dsw-menu-backdrop-filter);
   --dsw-elevation-stroke-color: var(--dsw-alias-border-l1);
   box-shadow: var(--dsw-elevation-prominent);
   --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);
@@ -58,7 +55,7 @@
   box-sizing: border-box;
   padding: 14px 12px;
   border: 0.5px solid var(--dsw-alias-border-l1);
-  border-radius: 8px;
+  border-radius: var(--dsw-radius-md);
   gap: 10px;
 }
 .memberHeader {

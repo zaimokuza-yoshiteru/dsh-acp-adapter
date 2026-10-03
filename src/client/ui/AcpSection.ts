@@ -67,6 +67,7 @@ export interface AcpSectionWire {
   refreshAgentHealth(agentId: string): void
   saveAgent(editingId: string | undefined, draft: AgentDraft): Promise<string | undefined>
   deleteAgent(id: string): Promise<string | undefined>
+  notifyOutcome?(outcome: 'saved' | 'save-failed' | 'deleted' | 'delete-failed'): void
   setToolApprovalDefault(policy: 'auto' | 'ask'): Promise<string | undefined>
   /**
    * 删除确认提示：该 profile 的既有会话 binding 计数；undefined = 计数不可
@@ -83,7 +84,7 @@ export interface AcpSectionProps {
 }
 
 /** Which editor card is open; the add flow carries its seed draft (empty or a one-click template). */
-type EditorState = { mode: 'add'; seed: AgentDraft } | { mode: 'edit'; id: string }
+type EditorState = { readonly key: number } & ({ mode: 'add'; seed: AgentDraft } | { mode: 'edit'; id: string })
 
 /** The change events our inputs care about (the attribute bag types handlers loosely; see react.d.ts). */
 interface InputEvent {
@@ -111,7 +112,7 @@ function Loaded({
 }): ReactNode {
   const snapshot = useStore((value) => value)
   const [editor, setEditor] = useState<EditorState | null>(null)
-  const [notice, setNotice] = useState<'saved' | 'deleted' | null>(null)
+  const editorKey = useRef(0)
   const [approvalSaving, setApprovalSaving] = useState(false)
   const [approvalSaveFailed, setApprovalSaveFailed] = useState(false)
   const [approvalMenuOpen, setApprovalMenuOpen] = useState(false)
@@ -155,27 +156,25 @@ function Loaded({
     panel.refreshHealth()
   }, [panel])
 
-  const closeEditor = (changed: boolean): void => {
-    setEditor(null)
-    if (changed) setNotice('saved')
+  const closeEditor = (key: number, changed: boolean): void => {
+    setEditor((previous) => (previous?.key === key ? null : previous))
+    if (changed) panel.notifyOutcome?.('saved')
   }
   const openAdd = (seed: AgentDraft): void => {
-    setNotice(null)
-    setEditor({ mode: 'add', seed })
+    setEditor({ key: ++editorKey.current, mode: 'add', seed })
   }
   const openEdit = (id: string): void => {
-    setNotice(null)
-    setEditor((previous) => (previous?.mode === 'edit' && previous.id === id ? null : { mode: 'edit', id }))
+    if (editor?.mode === 'edit' && editor.id === id) setEditor(null)
+    else setEditor({ key: ++editorKey.current, mode: 'edit', id })
   }
   const onDeleted = (id: string): void => {
     // Only the deleted row's own editor closes; an unrelated add/edit draft survives.
     setEditor((previous) => (previous?.mode === 'edit' && previous.id === id ? null : previous))
-    setNotice('deleted')
+    panel.notifyOutcome?.('deleted')
   }
   // singleton 冲突的「打开已有配置」出口：关掉当前草稿，改开已有 profile 的编辑器
   const openExisting = (id: string): void => {
-    setNotice(null)
-    setEditor({ mode: 'edit', id })
+    setEditor({ key: ++editorKey.current, mode: 'edit', id })
   }
 
   const settings = snapshot.settings
@@ -212,20 +211,6 @@ function Loaded({
   }
 
   if (readOnly) children.push(h('p', { key: 'ro', className: css.notice }, t('readOnly')))
-  if (notice !== null) {
-    children.push(
-      h(
-        'p',
-        {
-          key: 'notice',
-          className: css.saved,
-          role: 'status',
-          'aria-live': 'polite',
-        },
-        t(notice === 'saved' ? 'savedNotice' : 'deletedNotice'),
-      ),
-    )
-  }
   if (snapshot.health.status === 'unreachable') {
     children.push(h('p', { key: 'unreachable', className: css.notice }, t('healthUnreachable')))
     if (snapshot.health.message !== undefined) {
@@ -263,11 +248,12 @@ function Loaded({
             editing,
             agents,
             panel,
+            editorKey: editor?.mode === 'edit' && editor.id === id ? editor.key : -1,
             onEdit: () => {
               openEdit(id)
             },
             onDeleted,
-            onCloseEditor: closeEditor,
+            onCloseEditor: (changed) => closeEditor(editor?.key ?? -1, changed),
             onOpenAgent: openExisting,
           })
         }),
@@ -281,13 +267,14 @@ function Loaded({
         'div',
         { key: 'add', className: css.rowCard },
         h(AgentForm, {
-          key: 'add-form',
+          key: `add-form-${editor.key}`,
           t,
           initial: editor.seed,
           editingId: undefined,
           agents,
           readOnly,
           panel,
+          editorKey: editor.key,
           onClose: closeEditor,
           onOpenAgent: openExisting,
         }),
@@ -454,6 +441,7 @@ function AgentCard(props: {
   panel: AcpSectionWire
   onEdit(): void
   onDeleted(id: string): void
+  editorKey: number
   onCloseEditor(changed: boolean): void
   onOpenAgent(id: string): void
 }): ReactNode {
@@ -479,12 +467,14 @@ function AgentCard(props: {
       .deleteAgent(id)
       .then((message) => {
         if (message !== undefined) {
+          panel.notifyOutcome?.('delete-failed')
           setFailure(localizedDiagnostic(t, 'actionDeleteFailed', message))
           return
         }
         props.onDeleted(id)
       })
       .catch((error: unknown) => {
+        panel.notifyOutcome?.('delete-failed')
         setFailure(localizedDiagnostic(t, 'actionDeleteFailed', errorMessageOf(error)))
       })
       .finally(() => {
@@ -632,14 +622,15 @@ function AgentCard(props: {
   if (props.editing) {
     children.push(
       h(AgentForm, {
-        key: `edit-${id}`,
+        key: `edit-${id}-${props.editorKey}`,
         t,
         initial: draftFromAgent(id, config),
         editingId: id,
         agents: props.agents,
         readOnly: props.readOnly,
         panel,
-        onClose: props.onCloseEditor,
+        editorKey: props.editorKey,
+        onClose: (_key, changed) => props.onCloseEditor(changed),
         onOpenAgent: props.onOpenAgent,
       }),
     )
@@ -664,13 +655,15 @@ function healthDiagnostic(
       ? 'probeNotInstalled'
       : health.probe.failureKind === 'auth_required'
         ? 'probeAuthRequired'
-        : health.probe.failureKind === 'timeout'
-          ? 'probeTimeout'
-          : health.probe.failureKind === 'crash'
-            ? 'probeCrash'
-            : health.probe.failureKind === 'aborted'
-              ? 'probeCancelled'
-              : 'probeProtocolError'
+        : health.probe.failureKind === 'resource-exhausted'
+          ? 'probeResourceExhausted'
+          : health.probe.failureKind === 'timeout'
+            ? 'probeTimeout'
+            : health.probe.failureKind === 'crash'
+              ? 'probeCrash'
+              : health.probe.failureKind === 'aborted'
+                ? 'probeCancelled'
+                : 'probeProtocolError'
   return localizedDiagnostic(t, key, health.probe.message, { command })
 }
 
@@ -690,7 +683,8 @@ function AgentForm(props: {
   agents: Record<string, AcpAgentConfig>
   readOnly: boolean
   panel: AcpSectionWire
-  onClose(changed: boolean): void
+  editorKey: number
+  onClose(key: number, changed: boolean): void
   /** singleton 冲突的出口：打开占用该 runtime 的已有 profile 的编辑器。 */
   onOpenAgent(id: string): void
 }): ReactNode {
@@ -721,12 +715,14 @@ function AgentForm(props: {
       .saveAgent(props.editingId, draft)
       .then((message) => {
         if (message !== undefined) {
+          props.panel.notifyOutcome?.('save-failed')
           setFailure(localizedDiagnostic(t, 'actionSaveFailed', message))
           return
         }
-        props.onClose(true)
+        props.onClose(props.editorKey, true)
       })
       .catch((error: unknown) => {
+        props.panel.notifyOutcome?.('save-failed')
         setFailure(localizedDiagnostic(t, 'actionSaveFailed', errorMessageOf(error)))
       })
       .finally(() => {
@@ -945,7 +941,7 @@ function AgentForm(props: {
           variant: 'outline',
           disabled: busy,
           onClick: () => {
-            props.onClose(false)
+            props.onClose(props.editorKey, false)
           },
         },
         t('cancel'),

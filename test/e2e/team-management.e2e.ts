@@ -106,6 +106,7 @@ it(
       await row.getByRole('button', { name: /^(?:Session|会话) ·/ }).click()
       await enterMode()
       await modeMenu.getByRole('menuitem', { name: /^Plan(?:\s|$)/i }).waitFor()
+      await expect.poll(() => modeMenu.evaluate((element) => element.contains(document.activeElement))).toBe(true)
       for (const item of await modeMenu
         .getByRole('menuitem')
         .filter({ hasNotText: /Back to session settings|返回会话设置/ })
@@ -114,19 +115,34 @@ it(
       expect(await modeMenu.innerText()).not.toMatch(/Model:|Reasoning:/)
       await modeMenu.screenshot({ path: join(evidence, 'member-readonly.png') })
       await page.keyboard.press('Escape')
+      await page.evaluate(
+        () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))),
+      )
       await expect.poll(() => page.getByRole('menu').count()).toBe(0)
       expect(await page.locator('[data-acp-team-panel]').count()).toBe(1)
+      expect(
+        await row.getByRole('button', { name: /^(?:Session|会话) ·/ }).evaluate((el) => el === document.activeElement),
+      ).toBe(true)
       const group = panel.locator('[data-acp-mode-group="devin"]')
       expect(await panel.locator('[data-acp-mode-group]').count()).toBe(1)
       await group.getByRole('button', { name: 'Change modes together', exact: true }).click()
       await enterMode()
       await modeMenu.getByRole('menuitem', { name: /^Plan(?:\s|$)/i }).waitFor()
+      await expect.poll(() => modeMenu.evaluate((element) => element.contains(document.activeElement))).toBe(true)
       for (const item of await modeMenu
         .getByRole('menuitem')
         .filter({ hasNotText: /Back to session settings|返回会话设置/ })
         .all())
         expect(await item.isDisabled()).toBe(true)
       await page.keyboard.press('Escape')
+      await page.evaluate(
+        () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))),
+      )
+      expect(
+        await group
+          .getByRole('button', { name: 'Change modes together', exact: true })
+          .evaluate((el) => el === document.activeElement),
+      ).toBe(true)
       await panel.getByRole('button', { name: 'Close member management', exact: true }).click()
       await expect(
         (host.ctx.get('dshAcp') as AcpRemoteService).setTeamMemberMode(lead.id, childId, 'plan'),

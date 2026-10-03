@@ -5,6 +5,7 @@ import { basename, dirname, join } from 'node:path'
 import { teamTurn } from './team-turn.ts'
 import { hostToolsTurn } from './host-tools-turn.ts'
 import { scheduleTurn } from './schedule-turn.ts'
+import { longConversationTurn } from './long-conversation-turn.ts'
 
 export async function regressionTurn(
   session: MockSession,
@@ -13,6 +14,7 @@ export async function regressionTurn(
 ) {
   if (await teamTurn(session, msg, { sendUpdate, sendAgentRequest, respond, log })) return
   if (await scheduleTurn(session, msg, { sendUpdate, sendAgentRequest, respond, log })) return
+  if (await longConversationTurn(session, msg, { sendUpdate, sendAgentRequest, respond, log })) return
   if (await hostToolsTurn(session, msg, { sendUpdate, sendAgentRequest, respond })) return
   const prompt = msg.params.prompt
     .filter((block) => block.type === 'text')
@@ -89,6 +91,129 @@ export async function regressionTurn(
     return waitForFileGate(directory, 'release-steering-ack', 'steering acknowledgement', signal)
   }
   try {
+    const recoveryCrash = /E2E_RECOVERY_(QUEUE|PERMISSION)_CRASH/.exec(prompt)?.[1]
+    if (profile === 'devin' && recoveryCrash !== undefined) {
+      const directory = process.env.MOCK_RECOVERY_GATE_DIR
+      if (directory === undefined) throw new Error('MOCK_RECOVERY_GATE_DIR is required for recovery E2E')
+      fs.mkdirSync(directory, { recursive: true })
+      const key = recoveryCrash.toLowerCase()
+      if (recoveryCrash === 'PERMISSION') {
+        say('E2E_RECOVERY_PERMISSION_RUNNING')
+        fs.writeFileSync(join(directory, `${key}-started.ready`), 'ready')
+        const proceedToPermission = await waitForFileGate(
+          directory,
+          `release-${key}-request`,
+          `${key} permission request`,
+          new AbortController().signal,
+        )
+        if (!proceedToPermission) throw new Error('Failed to release the permission request gate')
+        sendUpdate(session.id, {
+          sessionUpdate: 'tool_call',
+          toolCallId: 'recovery-permission-crash',
+          title: 'Write recovery approval marker',
+          kind: 'execute',
+          status: 'pending',
+          rawInput: { command: 'echo E2E_RECOVERY_PERMISSION_APPROVED' },
+        })
+        void sendAgentRequest('session/request_permission', {
+          sessionId: session.id,
+          toolCall: {
+            toolCallId: 'recovery-permission-crash',
+            title: 'Write recovery approval marker',
+            kind: 'execute',
+            status: 'pending',
+            rawInput: { command: 'echo E2E_RECOVERY_PERMISSION_APPROVED' },
+          },
+          options: [
+            { optionId: 'allow-recovery-once', kind: 'allow_once', name: 'Allow this operation' },
+            { optionId: 'reject-recovery-once', kind: 'reject_once', name: 'Reject this operation' },
+          ],
+        })
+          .then((answer) => {
+            log(`recovery permission answer=${JSON.stringify(answer)}`)
+            if (answer?.outcome?.optionId === 'allow-recovery-once')
+              fs.writeFileSync(`${session.cwd}/recovery-approval-marker.txt`, 'E2E_RECOVERY_PERMISSION_APPROVED')
+          })
+          .catch((error: unknown) => {
+            log(`recovery permission request closed=${error instanceof Error ? error.message : String(error)}`)
+          })
+        fs.writeFileSync(join(directory, `${key}-permission-requested.ready`), 'ready')
+      } else {
+        say('E2E_RECOVERY_QUEUE_CRASH_RUNNING')
+        fs.writeFileSync(join(directory, `${key}-started.ready`), 'ready')
+      }
+      const released = await waitForFileGate(
+        directory,
+        `release-${key}-crash`,
+        `${key} recovery crash`,
+        new AbortController().signal,
+      )
+      if (!released) throw new Error(`Failed to release the ${key} recovery crash gate`)
+      process.exit(49)
+    }
+    if (prompt.includes('E2E_RECOVERY_FOLLOWUP')) {
+      say('E2E_RECOVERY_FOLLOWUP_DONE')
+      return respond(msg.id, { stopReason: 'end_turn' })
+    }
+    const externalChildScenario = /E2E_EXTERNAL_CHILD_(SUCCESS|FAILURE|PARENT_CANCELLED)/.exec(prompt)?.[1]
+    if (profile === 'devin' && externalChildScenario !== undefined) {
+      const directory = process.env.MOCK_EXTERNAL_CHILD_GATE_DIR
+      if (directory === undefined) throw new Error('MOCK_EXTERNAL_CHILD_GATE_DIR is required for external-child E2E')
+      fs.mkdirSync(directory, { recursive: true })
+      const key = externalChildScenario.toLowerCase().replaceAll('_', '-')
+      const toolCallId = `external-child-${key}`
+      const agentId = `external-${key}`
+      const startedFile = `${key}-started.ready`
+      const releaseLaunch = `release-${key}-launch-tool`
+      const toolCompleteFile = `${key}-launch-tool-completed.ready`
+      const releaseChild = `release-${key}-child-terminal`
+      const terminalFile = `${key}-child-terminal.ready`
+      const turnAbort = new AbortController()
+      void cancelled.then(() => turnAbort.abort())
+      sendUpdate(session.id, {
+        sessionUpdate: 'tool_call',
+        toolCallId,
+        title: 'Inspect fixture',
+        kind: 'other',
+        status: 'in_progress',
+        rawInput: { prompt: `Inspect ${key} fixture` },
+        _meta: {
+          'cognition.ai/subagent_started': {
+            agentId,
+            title: `${key} research`,
+            task: `Inspect external child lifecycle: ${key}`,
+          },
+        },
+      })
+      fs.writeFileSync(join(directory, startedFile), 'ready')
+      if (!(await waitForFileGate(directory, releaseLaunch, 'external child launch tool', turnAbort.signal)))
+        return respond(msg.id, { stopReason: 'cancelled' })
+      sendUpdate(session.id, {
+        sessionUpdate: 'tool_call_update',
+        toolCallId,
+        status: 'completed',
+        rawOutput: { result: 'Child launched; awaiting its independent report.' },
+      })
+      fs.writeFileSync(join(directory, toolCompleteFile), 'ready')
+      const releasedChild = await waitForFileGate(directory, releaseChild, 'external child terminal', turnAbort.signal)
+      if (!releasedChild || session.turn?.cancelled === true) return respond(msg.id, { stopReason: 'cancelled' })
+      const failed = externalChildScenario === 'FAILURE'
+      sendUpdate(session.id, {
+        sessionUpdate: 'tool_call_update',
+        toolCallId,
+        status: 'completed',
+        _meta: {
+          'cognition.ai/subagent_completed': {
+            agentId,
+            success: !failed,
+            ...(failed ? {} : { summary: `Inspection complete for ${key}.` }),
+          },
+        },
+      })
+      fs.writeFileSync(join(directory, terminalFile), 'ready')
+      say(`E2E_EXTERNAL_CHILD_${externalChildScenario}_DONE`)
+      return respond(msg.id, { stopReason: 'end_turn' })
+    }
     if (prompt.includes('E2E_STEERING_ACK_RACE')) {
       const inputs: string[] = []
       let acknowledgedSteers = 0

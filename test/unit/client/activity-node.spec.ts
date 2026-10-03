@@ -3,12 +3,13 @@ import {
   activityJournalSessionId,
   activityRowElement,
   completedProjectedChild,
-  createAcpActivityDefinition,
   visibleActivityRows,
 } from '../../../src/client/ui/AcpActivityNode.ts'
+import { createAcpActivityDefinition } from '../../../src/client/ui/activity-definitions.ts'
 import { AcpActivityJournalStore } from '../../../src/client/data/activity-journal.ts'
 import { AcpActivityJournalHub } from '../../../src/client/data/activity-journal.ts'
 import { acpReplayPayloadOf } from '../../../src/client/data/acp-replay-payload.ts'
+import type { ConversationLocation } from '@deepseek-ai/dsh-client-ui-conversation/client'
 
 const payload = {
   kind: 'dsh-acp' as const,
@@ -22,6 +23,18 @@ const payload = {
   committedPromptOrdinal: 3,
   committedActivitySeq: 4,
   activityAnchorMessageId: 'user-3',
+}
+
+function stepLocation(turn: number, step: number): ConversationLocation {
+  const locationData = {
+    get: () => undefined,
+    source: () => ({ getSnapshot: () => undefined, subscribe: () => () => undefined }),
+  } as never
+  return {
+    kind: 'step',
+    turn: { turn, start: undefined, end: undefined, status: 'open', steps: [], data: locationData },
+    step: { turn, step, start: undefined, end: undefined, status: 'open', data: locationData },
+  } as ConversationLocation
 }
 
 function assistantEvent() {
@@ -284,7 +297,7 @@ describe('ACP activity conversation node', () => {
 
   it('keeps cancelled tool activity visible at the interrupted assistant boundary', () => {
     const definition = createAcpActivityDefinition((provider) => provider === 'acp-devin')
-    const location = { kind: 'session' }
+    const location = stepLocation(1, 1)
     const request = {
       event: {
         type: 'request/header',
@@ -338,17 +351,18 @@ describe('ACP activity conversation node', () => {
 
   it.each([
     undefined,
-    { settled: true, profileId: 'devin', promptAnchorMessageId: 'old-prompt' },
-    { profileId: 'acp-devin', promptAnchorMessageId: 'old-prompt' },
+    { settled: true, profileId: 'devin', promptAnchorMessageId: 'old-prompt', location: stepLocation(1, 1) },
+    { profileId: 'acp-devin', promptAnchorMessageId: 'old-prompt', location: stepLocation(1, 1) },
   ])('replays an interrupted answer without borrowing an earlier prompt: %j', (previous) => {
     const definition = createAcpActivityDefinition((provider) => provider === 'acp-devin')
+    const location = stepLocation(2, 1)
     const match = {
       event: {
         type: 'assistant/message',
         seq: 93,
         data: { interrupted: true, message: { source: { kind: 'model', provider: 'acp-devin' } } },
       },
-      location: { kind: 'session' },
+      location,
     }
     const state = definition.start(
       {} as never,
@@ -356,7 +370,7 @@ describe('ACP activity conversation node', () => {
       {
         previous: (kind: string) =>
           kind === 'acp-prompt-anchor'
-            ? { state: { messageId: 'cancelled-prompt' } }
+            ? { state: { anchorMessageId: 'cancelled-prompt', location } }
             : previous === undefined
               ? undefined
               : { state: previous },
@@ -367,6 +381,35 @@ describe('ACP activity conversation node', () => {
       profileId: 'acp-devin',
       promptAnchorMessageId: 'cancelled-prompt',
       committedActivitySeq: 0,
+      seq: 93,
+    })
+  })
+
+  it('does not borrow an ACP input anchor from a prior step for interrupted activity', () => {
+    const definition = createAcpActivityDefinition((provider) => provider === 'acp-devin')
+    const previousLocation = stepLocation(1, 1)
+    const location = stepLocation(1, 2)
+    const state = definition.start(
+      {} as never,
+      {
+        event: {
+          type: 'assistant/message',
+          seq: 93,
+          data: { interrupted: true, message: { source: { kind: 'model', provider: 'acp-devin' } } },
+        },
+        location,
+      } as never,
+      {
+        previous: (kind: string) =>
+          kind === 'acp-prompt-anchor'
+            ? { state: { anchorMessageId: 'old-step-prompt', location: previousLocation } }
+            : undefined,
+      } as never,
+    )
+    expect(state).toMatchObject({
+      settled: true,
+      profileId: 'acp-devin',
+      promptAnchorMessageId: 'request:93',
       seq: 93,
     })
   })
@@ -1144,6 +1187,8 @@ describe('ACP activity conversation node', () => {
       await new Promise((resolve) => setTimeout(resolve, 10))
       expect(handle.error()).toBe(failure)
       expect(handle.ready()).toBe(false)
+      expect(handle.loading()).toBe(false)
+      expect(handle.canRetry()).toBe(true)
       expect(notifications).toBeGreaterThan(0)
     } finally {
       handle.release()
@@ -1156,7 +1201,8 @@ describe('ACP activity conversation node', () => {
     const remote = {
       activityFollow: async function* (_sessionId: string, _request: unknown, signal: AbortSignal) {
         starts += 1
-        if (starts === 1) throw new Error('binding is not committed yet')
+        if (starts === 1)
+          throw Object.assign(new Error('binding is not committed yet'), { code: 'dsh-acp/activity-binding-pending' })
         yield { type: 'opened' as const, cursor: 0, head: 0, activities: [] }
         await new Promise<void>((resolve) => {
           releaseStream = resolve
@@ -1166,6 +1212,9 @@ describe('ACP activity conversation node', () => {
     }
     const hub = new AcpActivityJournalHub(remote as never, activityStreamFactory() as never)
     const handle = hub.acquire('dsh-1', 'dsh-1', 'user-1', () => undefined)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(handle.loading()).toBe(true)
+    expect((handle.error() as { code?: string } | undefined)?.code).toBe('dsh-acp/activity-binding-pending')
     for (let attempt = 0; attempt < 50 && starts < 2; attempt += 1)
       await new Promise((resolve) => setTimeout(resolve, 10))
     expect(starts).toBe(2)
@@ -1182,7 +1231,8 @@ describe('ACP activity conversation node', () => {
     const remote = {
       activityFollow: async function* (_sessionId: string, _request: unknown, signal: AbortSignal) {
         starts += 1
-        if (starts < 10) throw new Error('binding is not committed yet')
+        if (starts < 10)
+          throw Object.assign(new Error('binding is not committed yet'), { code: 'dsh-acp/activity-binding-pending' })
         yield { type: 'opened' as const, cursor: 0, head: 0, activities: [] }
         await new Promise<void>((resolve) => {
           releaseStream = resolve
@@ -1208,7 +1258,9 @@ describe('ACP activity conversation node', () => {
     vi.useFakeTimers()
     let starts = 0
     let releaseStream: (() => void) | undefined
-    const failure = new Error('activity service unavailable')
+    const failure = Object.assign(new Error('binding is not committed yet'), {
+      code: 'dsh-acp/activity-binding-pending',
+    })
     const remote = {
       activityFollow: async function* (_sessionId: string, _request: unknown, signal: AbortSignal) {
         starts += 1
@@ -1234,6 +1286,9 @@ describe('ACP activity conversation node', () => {
       expect(starts).toBe(10)
       first.retry()
       second.retry()
+      expect(first.loading()).toBe(true)
+      expect(first.retrying()).toBe(true)
+      expect(first.error()).toBeUndefined()
       await vi.advanceTimersByTimeAsync(0)
       for (let turn = 0; turn < 10 && !first.ready(); turn += 1) await Promise.resolve()
       expect(starts).toBe(11)
@@ -1257,7 +1312,7 @@ describe('ACP activity conversation node', () => {
     const remote = {
       activityFollow: async function* () {
         starts += 1
-        throw new Error('activity service unavailable')
+        throw Object.assign(new Error('binding is not committed yet'), { code: 'dsh-acp/activity-binding-pending' })
       },
     }
     const hub = new AcpActivityJournalHub(remote as never, activityStreamFactory() as never)
@@ -1271,6 +1326,28 @@ describe('ACP activity conversation node', () => {
     }
     await new Promise((resolve) => setTimeout(resolve, 250))
     expect(starts).toBe(1)
+  })
+
+  it('does not automatically retry an authorization or service failure', async () => {
+    let starts = 0
+    const failure = Object.assign(new Error('not authorized'), { code: 'dsh-acp/user-rejected' })
+    const remote = {
+      activityFollow: async function* () {
+        starts += 1
+        throw failure
+      },
+    }
+    const hub = new AcpActivityJournalHub(remote as never, activityStreamFactory() as never)
+    const handle = hub.acquire('dsh-1', 'dsh-1', 'user-1', () => undefined)
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      expect(starts).toBe(1)
+      expect(handle.error()).toBe(failure)
+      expect(handle.loading()).toBe(false)
+      expect(handle.canRetry()).toBe(true)
+    } finally {
+      handle.release()
+    }
   })
 
   it('repairs a 2→4 gap through every page before delivering revision 4', async () => {
@@ -1368,6 +1445,8 @@ describe('ACP activity conversation node', () => {
       await new Promise((resolve) => setTimeout(resolve, 10))
     expect(starts).toBe(1)
     expect(handle.error()).toBeInstanceOf(Error)
+    expect(handle.ready()).toBe(true)
+    expect(handle.loading()).toBe(false)
     expect(handle.snapshot().map((activity) => activity.revisionSeq)).toEqual([1, 2])
     handle.release()
   })

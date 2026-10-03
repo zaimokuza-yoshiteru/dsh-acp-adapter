@@ -16,6 +16,7 @@ const CORRELATION_ID_PATTERN = /^acperr-\d{8}T\d{6}Z-[0-9a-z]+-[0-9a-f]{6}$/
 const ALL_KINDS: readonly AcpErrorKind[] = [
   'spawn-failure',
   'auth_required',
+  'resource-exhausted',
   'timeout',
   'protocol-error',
   'crash',
@@ -27,6 +28,7 @@ describe(' 错误 taxonomy', () => {
     expect(ACP_ERROR_CODES).toEqual({
       'spawn-failure': 'ACP_SPAWN_FAILURE',
       auth_required: 'ACP_AUTH_REQUIRED',
+      'resource-exhausted': 'ACP_RESOURCE_EXHAUSTED',
       timeout: 'ACP_TIMEOUT',
       'protocol-error': 'ACP_PROTOCOL_ERROR',
       crash: 'ACP_CRASH',
@@ -38,6 +40,7 @@ describe(' 错误 taxonomy', () => {
     expect(ACP_ERROR_KIND_CATEGORY).toEqual({
       'spawn-failure': 'not-installed',
       auth_required: 'auth-required',
+      'resource-exhausted': 'resource-exhausted',
       timeout: 'timeout',
       'protocol-error': 'protocol-incompatible',
       crash: 'agent-crash',

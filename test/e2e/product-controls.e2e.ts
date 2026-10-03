@@ -50,6 +50,16 @@ it('refreshes member controls during a running lead, retries metadata failures a
       await panel.getByText('Cannot read member state. Refresh to retry.', { exact: true }).waitFor()
       // ACP metadata failure must not erase the native projected member.
       expect(await panel.locator('[data-acp-managed-member="calculator"]').count()).toBe(1)
+      const sessionControl = panel.locator('[data-acp-managed-member="calculator"]').getByRole('button', {
+        name: /^(?:Session|会话) ·/,
+      })
+      await page.emulateMedia({ reducedMotion: 'no-preference' })
+      expect(await sessionControl.locator('svg').evaluate((el) => getComputedStyle(el).transitionDuration)).not.toBe(
+        '0s',
+      )
+      await page.emulateMedia({ reducedMotion: 'reduce' })
+      expect(await sessionControl.locator('svg').evaluate((el) => getComputedStyle(el).transitionDuration)).toBe('0s')
+      await page.emulateMedia({ reducedMotion: 'no-preference' })
     } finally {
       failedMetadata.mockRestore()
     }
@@ -62,6 +72,10 @@ it('refreshes member controls during a running lead, retries metadata failures a
     expect(page.url()).toBe(url)
     await page.keyboard.press('Escape')
     await expect.poll(() => page.locator('[data-acp-team-panel]').count()).toBe(0)
+    await page.evaluate(
+      () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))),
+    )
+    expect(await trigger.evaluate((el) => el === document.activeElement)).toBe(true)
   } finally {
     await browser?.close()
     await host.close()

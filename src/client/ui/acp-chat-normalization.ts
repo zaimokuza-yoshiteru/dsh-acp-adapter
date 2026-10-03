@@ -21,8 +21,25 @@ export function activityWindowKey(data: AcpActivityNodeData, fallbackSessionId?:
   return JSON.stringify([data.ownerDshSessionId || fallbackSessionId || '', data.promptAnchorMessageId])
 }
 export function activityData(node: ChatConversationViewNode): AcpActivityNodeData | undefined {
+  if (node.kind === 'acp-activity') return node.visibility === 'hidden' ? undefined : (node.data as AcpActivityNodeData)
   if (node.location.kind !== 'step') return undefined
   return node.location.step.data.get('acp-activity') ?? node.location.step.data.get('acp-activity-live')
+}
+function stepKey(node: ChatConversationViewNode): string | undefined {
+  return node.location.kind === 'step' ? `${node.location.turn.turn}:${node.location.step.step}` : undefined
+}
+function stepActivityData(
+  node: ChatConversationViewNode,
+  liveMarkersByStep: ReadonlyMap<string, readonly ChatConversationViewNode[]>,
+): AcpActivityNodeData | undefined {
+  const locationData =
+    node.location.kind === 'step'
+      ? (node.location.step.data.get('acp-activity') ?? node.location.step.data.get('acp-activity-live'))
+      : undefined
+  if (locationData !== undefined) return locationData
+  if (node.kind !== 'assistant-step') return undefined
+  const live = liveMarkersByStep.get(stepKey(node) ?? '') ?? []
+  return live.length === 1 ? (live[0]!.data as AcpActivityNodeData) : undefined
 }
 export function activityBoundaries(
   rows: readonly ActivityPresentationRow[],
@@ -125,19 +142,67 @@ export function normalizeAcpChatNodes(
   const replaced = new Map<string, readonly ChatConversationViewNode[]>()
   const owned = new Set<string>()
   const owners = new Map<string, number>()
+  const markersByWindow = new Map<string, ChatConversationViewNode[]>()
+  for (const node of nodes) {
+    if (node.kind === 'acp-activity') {
+      const data = node.data as AcpActivityNodeData
+      const key = activityWindowKey(data, fallbackSessionId)
+      const group = markersByWindow.get(key) ?? []
+      group.push(node)
+      markersByWindow.set(key, group)
+    }
+  }
+  const duplicateMarkers = new Set<string>()
+  for (const markers of markersByWindow.values()) {
+    const settled = markers.find(
+      (node) => node.visibility !== 'hidden' && (node.data as AcpActivityNodeData).settled === true,
+    )
+    if (settled !== undefined) {
+      for (const marker of markers) if (marker !== settled) duplicateMarkers.add(marker.key)
+      continue
+    }
+    const live = markers.find((node) => node.id.startsWith('input:') && node.visibility !== 'hidden')
+    if (live !== undefined) {
+      for (const marker of markers) if (marker !== live) duplicateMarkers.add(marker.key)
+      continue
+    }
+    // A hidden current-input marker means this Step resolved to another or an
+    // unknown provider. Do not leave an earlier ACP request/header fallback
+    // visible for the same input window.
+    const hiddenLive = markers.some((node) => node.id.startsWith('input:') && node.visibility === 'hidden')
+    if (hiddenLive) {
+      for (const marker of markers) duplicateMarkers.add(marker.key)
+      continue
+    }
+    const fallback = markers.find((node) => node.visibility !== 'hidden')
+    if (fallback !== undefined) for (const marker of markers) if (marker !== fallback) duplicateMarkers.add(marker.key)
+  }
+  const liveMarkersByStep = new Map<string, ChatConversationViewNode[]>()
+  for (const markers of markersByWindow.values()) {
+    for (const marker of markers) {
+      if (!marker.id.startsWith('input:') || duplicateMarkers.has(marker.key) || marker.visibility === 'hidden')
+        continue
+      const data = marker.data as AcpActivityNodeData
+      if ((windows.get(activityWindowKey(data, fallbackSessionId))?.rows.length ?? 0) === 0) continue
+      const key = stepKey(marker)
+      if (key === undefined) continue
+      const group = liveMarkersByStep.get(key) ?? []
+      group.push(marker)
+      liveMarkersByStep.set(key, group)
+    }
+  }
   for (const node of nodes) {
     if (node.kind !== 'assistant-step') continue
-    const data = activityData(node)
-    if (data !== undefined) {
-      const key = activityWindowKey(data, fallbackSessionId)
-      owners.set(key, (owners.get(key) ?? 0) + 1)
-    }
+    const data = stepActivityData(node, liveMarkersByStep)
+    if (data === undefined) continue
+    const key = activityWindowKey(data, fallbackSessionId)
+    owners.set(key, (owners.get(key) ?? 0) + 1)
   }
   const turns = new Map<number, { tools: number; answer: number | null; step: number; inlineReasoning: boolean }>()
   const seenCache = new Set<string>()
   for (const base of nodes) {
     if (base.kind !== 'assistant-step') continue
-    const data = activityData(base)
+    const data = stepActivityData(base, liveMarkersByStep)
     if (data === undefined) continue
     const node = base as ChatNode<'assistant-step'>
     const windowKey = activityWindowKey(data, fallbackSessionId)
@@ -266,7 +331,8 @@ export function normalizeAcpChatNodes(
     if (replacement !== undefined) return replacement
     if (
       node.kind === 'acp-activity' &&
-      owned.has(activityWindowKey(node.data as AcpActivityNodeData, fallbackSessionId))
+      (owned.has(activityWindowKey(node.data as AcpActivityNodeData, fallbackSessionId)) ||
+        duplicateMarkers.has(node.key))
     )
       return []
     if (node.kind === 'turn-process') {

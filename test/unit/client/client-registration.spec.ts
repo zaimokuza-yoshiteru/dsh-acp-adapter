@@ -96,7 +96,7 @@ describe('client contribution', () => {
       [...inject, 'remote.dshAcp'],
       ['remote.subagents', 'uiSession'],
     ])
-    expect(definitions).toHaveLength(3)
+    expect(definitions).toHaveLength(4)
     expect(injections).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ name: 'plugins.bundle.config', key: '@zaimokuza/dsh-acp-adapter' }),
@@ -109,6 +109,7 @@ describe('client contribution', () => {
     expect(slotEntries.get('shell.overlay')).toEqual([
       { name: 'shell.overlay', id: 'third-party-overlay' },
       expect.objectContaining({ id: 'dsh-acp-cross-backend-confirmation' }),
+      expect.objectContaining({ id: 'dsh-acp-operation-outcomes' }),
     ])
     expect(slotEntries.get('conversation.input.model')).toEqual([
       { name: 'conversation.input.model', priority: 0, id: 'native-model-selector' },

@@ -6,7 +6,11 @@ import type { IWorkspaces } from '@deepseek-ai/dsh-api-workspace-controller/clie
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { TypertClientRemote } from '@deepseek-ai/dsh-typert-protocol'
 import { CrossBackendTransactionController, resolveCrossBackendLocation } from '../data/cross-backend-controller.ts'
-import type { CrossBackendModelSelection, CrossBackendTicket } from '../data/cross-backend-controller.ts'
+import type {
+  CrossBackendFailure,
+  CrossBackendModelSelection,
+  CrossBackendTicket,
+} from '../data/cross-backend-controller.ts'
 
 type ModelProjection = {
   readonly lastUsed: CrossBackendModelSelection | null
@@ -15,7 +19,7 @@ type ModelProjection = {
 
 export interface CrossBackendPending {
   readonly ticket: CrossBackendTicket
-  readonly error: string | null
+  readonly failure: CrossBackendFailure | null
   readonly blockingReason?: 'no-location'
   readonly confirmable: boolean
   readonly busy: boolean
@@ -140,7 +144,7 @@ export class CrossBackendCoordinator {
   async confirm(): Promise<void> {
     const pending = this.pending
     if (pending === null || this.disposed || !pending.confirmable || pending.busy) return
-    this.pending = { ...pending, busy: true, error: null }
+    this.pending = { ...pending, busy: true, failure: null }
     this.suppressSelection(pending.ticket.sourceSessionId, pending.ticket.sourceSelection)
     this.emit()
     const result = await this.tx.confirm(pending.ticket, this.operationsFor(pending.ticket))
@@ -149,7 +153,7 @@ export class CrossBackendCoordinator {
     if (result.ok) {
       this.pending = this.queued.shift() ?? null
     } else {
-      this.pending = { ...pending, busy: false, error: result.failure.message }
+      this.pending = { ...pending, busy: false, failure: result.failure }
     }
     this.emit()
   }
@@ -164,13 +168,13 @@ export class CrossBackendCoordinator {
       this.emit()
       return
     }
-    this.pending = { ...pending, busy: true, error: null }
+    this.pending = { ...pending, busy: true, failure: null }
     this.suppressSelection(pending.ticket.sourceSessionId, source)
     this.emit()
     const result = await this.tx.cancel(pending.ticket, this.operationsFor(pending.ticket))
     if (this.disposed) return
     if (result.ok) this.pending = this.queued.shift() ?? null
-    else this.pending = { ...pending, busy: false, error: result.failure.message }
+    else this.pending = { ...pending, busy: false, failure: result.failure }
     this.emit()
   }
 
@@ -259,12 +263,20 @@ export class CrossBackendCoordinator {
             ...ticket,
             ...(source === undefined ? {} : { sourceAlreadyRestored: true }),
           },
-          error: null,
+          failure: null,
           ...(blockingReason === undefined ? {} : { blockingReason }),
           confirmable: blockingReason === undefined,
           busy: false,
         }
-      : { ticket, error: restored.message ?? 'source model restore failed', confirmable: false, busy: false }
+      : {
+          ticket,
+          failure: {
+            phase: 'restore-source',
+            message: restored.message ?? 'source model restore failed',
+          },
+          confirmable: false,
+          busy: false,
+        }
     if (this.pending === null) this.pending = pending
     else this.queued.push(pending)
     this.emit()

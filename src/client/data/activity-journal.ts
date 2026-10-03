@@ -176,6 +176,7 @@ type HubEntry = {
   cancelRetry?: () => void
   retryExhausted: boolean
   retrying: boolean
+  initialLoading: boolean
 }
 
 const INITIAL_OPEN_MAX_ATTEMPTS = 10
@@ -249,6 +250,7 @@ export class AcpActivityJournalHub {
     readonly error: () => unknown
     readonly canRetry: () => boolean
     readonly retrying: () => boolean
+    readonly loading: () => boolean
     readonly retry: () => void
     readonly release: () => void
   } {
@@ -267,6 +269,7 @@ export class AcpActivityJournalHub {
       error: () => entry!.error,
       canRetry: () => entry!.retryExhausted,
       retrying: () => entry!.retrying,
+      loading: () => entry!.initialLoading,
       retry: () => {
         if (
           this.entries.get(sessionId) !== entry ||
@@ -278,6 +281,7 @@ export class AcpActivityJournalHub {
           return
         entry!.retryExhausted = false
         entry!.retrying = true
+        entry!.initialLoading = true
         entry!.error = undefined
         this.notifyAll(entry!)
         this.startEntry(sessionId, entry!)
@@ -301,7 +305,15 @@ export class AcpActivityJournalHub {
   private createEntry(sessionId: string): HubEntry {
     const store = new AcpActivityJournalStore()
     const listenersByAnchor = new Map<string, Set<() => void>>()
-    const entry: HubEntry = { store, listenersByAnchor, refs: 0, ready: false, retryExhausted: false, retrying: false }
+    const entry: HubEntry = {
+      store,
+      listenersByAnchor,
+      refs: 0,
+      ready: false,
+      retryExhausted: false,
+      retrying: false,
+      initialLoading: true,
+    }
     this.entries.set(sessionId, entry)
     return entry
   }
@@ -337,6 +349,7 @@ export class AcpActivityJournalHub {
             entry.store.replace(baseline?.lastRevision ?? 0, baseline?.activities ?? [])
             for (const batch of tail) for (const activity of batch.activities) entry.store.append(activity)
             entry.ready = true
+            entry.initialLoading = false
             entry.error = undefined
             entry.retrying = false
             this.notifyAll(entry)
@@ -361,13 +374,21 @@ export class AcpActivityJournalHub {
           await journal.dispose()
           if (this.entries.get(sessionId) !== entry || entry.refs === 0) return
           entry.error = error
+          if (!isActivityBindingPending(error)) {
+            entry.retryExhausted = true
+            entry.initialLoading = false
+            entry.retrying = false
+            this.notifyAll(entry)
+            return
+          }
           attempts += 1
           if (attempts >= INITIAL_OPEN_MAX_ATTEMPTS) {
             entry.retryExhausted = true
+            entry.initialLoading = false
             entry.retrying = false
+            this.notifyAll(entry)
             return
           }
-          if (!entry.retrying) this.notifyAll(entry)
           const delay = Math.min(INITIAL_OPEN_RETRY_BASE_MS * 2 ** (attempts - 1), INITIAL_OPEN_RETRY_MAX_MS)
           if (!(await waitForInitialRetry(entry, delay))) return
         }
@@ -397,4 +418,13 @@ export class AcpActivityJournalHub {
   private anchorKey(ownerDshSessionId: string, promptAnchorMessageId: string): string {
     return `${ownerDshSessionId}\u0000${promptAnchorMessageId}`
   }
+}
+
+function isActivityBindingPending(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { readonly code?: unknown }).code === 'dsh-acp/activity-binding-pending'
+  )
 }

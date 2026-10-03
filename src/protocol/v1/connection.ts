@@ -2,7 +2,7 @@
  * ACP 协议连接（自 acp-client.ts 切出的协议半；进程半——spawn、stdio 泵、
  * stderr 环、拆除梯子、托管范围清理——见 src/runtime/process/agent-process.ts）：
  * `client()` app、v1 initialize 协商、typed 会话方法 RPC、能力记录、probe、
- * 错误六分类。
+ * 错误七分类。
  *
  * - 传输：`@agentclientprotocol/sdk` 1.5.1 的 `client()` API + `ndJsonStream`
  * （自 @deprecated 的 `ClientSideConnection` 迁入：handler 按方法名经
@@ -57,6 +57,7 @@ import * as acp from '@agentclientprotocol/sdk'
 import { AcpAgentProcess } from '../../runtime/process/agent-process.ts'
 import { ACP_SUBPROCESS_UNAVAILABLE_MESSAGE } from '../../runtime/process/subprocess.ts'
 import type { AcpConnectionSpec, AcpProcessExit } from '../../runtime/process/types.ts'
+import { redactSecretText } from '../../contract/redaction.ts'
 import { AcpClientError } from './errors.ts'
 import type {
   AcpSessionNotification,
@@ -185,6 +186,8 @@ export function supportsFork(capabilities: acp.AgentCapabilities | undefined): b
 
 /** ACP `auth_required` 的 JSON-RPC code（SDK `RequestError.authRequired()`，jsonrpc.js）。 */
 const ACP_ERROR_CODE_AUTH_REQUIRED = -32000
+/** Devin CLI 3000.11.3's observed structured resource exhaustion response. */
+const DEVIN_RESOURCE_EXHAUSTED_CODE = -32011
 /** SDK 连接关闭时拒绝挂起请求的文案（实测）。 */
 const CONNECTION_CLOSED_MESSAGE = 'ACP connection closed'
 
@@ -202,6 +205,22 @@ function isAuthenticationRejection(error: acp.RequestError): boolean {
     /failed to authenticate|authentication (?:is )?required|requires authentication|oauth (?:session|token) expired/i.test(
       error.message,
     )
+  )
+}
+
+/**
+ * Devin's observed JSON-RPC vendor extension: code -32011 with its own
+ * `data.errorKind === 'resource_exhausted'`. ACP/JSON-RPC do not standardize
+ * this data member, so require both facts and keep every unknown shape in the
+ * conservative protocol-error fallback. `retryable` is advisory metadata and
+ * never causes automatic retry.
+ */
+function isResourceExhaustion(error: acp.RequestError): boolean {
+  return (
+    error.code === DEVIN_RESOURCE_EXHAUSTED_CODE &&
+    record(error.data) &&
+    Object.hasOwn(error.data, 'errorKind') &&
+    error.data.errorKind === 'resource_exhausted'
   )
 }
 
@@ -1114,6 +1133,13 @@ export class AcpClientConnection {
         return new AcpClientError(
           'auth_required',
           `ACP agent "${this.command}" requires authentication (${operation}); sign in with the agent's own tooling or explicitly configure its required credentials in the ACP profile Connection settings. Parent KEY/TOKEN/SECRET/PASSWORD variables are not inherited`,
+          { cause: error },
+        )
+      }
+      if (isResourceExhaustion(error)) {
+        return new AcpClientError(
+          'resource-exhausted',
+          `ACP agent "${this.command}" reported resource exhaustion during ${operation}: ${redactSecretText(error.message)} (JSON-RPC code ${String(error.code)})`,
           { cause: error },
         )
       }

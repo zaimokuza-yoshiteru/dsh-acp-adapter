@@ -571,6 +571,164 @@ describe('provider activity bridge', () => {
     expect(finish?.replayState?.response?.committedActivitySeq).toBe(5)
   })
 
+  it('shows Devin external child identity on its source tool row while the child is held', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-live-external-child-'))
+    roots.push(root)
+    const sidecar = testSidecar(root)
+    const message = user('delegate this work')
+    const sessions = new Map<string, SessionLike>([['external-live-session', session(message)]])
+    const childStarted = Promise.withResolvers<void>()
+    const holdChild = Promise.withResolvers<void>()
+    const projected = vi.fn(async () => 'must-not-be-created-while-running')
+    const runtimeFactory = (): AcpProfileRuntime => ({
+      acpSessionId: 'devin-agent-session',
+      start: async () => undefined,
+      prompt: async (_content, onUpdate) => {
+        onUpdate({
+          sessionId: 'devin-agent-session',
+          update: {
+            sessionUpdate: 'tool_call',
+            toolCallId: 'external-call-1',
+            title: 'Inspect fixture',
+            name: 'tool"\\\u0000'.repeat(1_000),
+            kind: 'kind"\\\u0000'.repeat(1_000),
+            status: 'in_progress',
+            rawInput: { prompt: 'P'.repeat(4_096) },
+            _meta: {
+              'cognition.ai/subagent_started': {
+                agentId: 'external-child-1',
+                title: 'Research files',
+                task: 'Inspect the fixture source',
+              },
+            },
+          },
+        } as never)
+        for (let index = 2; index <= 64; index++) {
+          onUpdate({
+            sessionId: 'devin-agent-session',
+            update: {
+              sessionUpdate: 'tool_call_update',
+              toolCallId: 'external-call-1',
+              status: 'in_progress',
+              _meta: {
+                'cognition.ai/subagent_started': {
+                  agentId: `external-child-${index}`,
+                  title: '"\\\u0000'.repeat(400),
+                  task: 'A duplicated task that should remain only in terminal projection data',
+                },
+              },
+            },
+          } as never)
+        }
+        childStarted.resolve()
+        await holdChild.promise
+        onUpdate({
+          sessionId: 'devin-agent-session',
+          update: {
+            sessionUpdate: 'tool_call_update',
+            toolCallId: 'external-call-1',
+            status: 'completed',
+            rawOutput: 'O'.repeat(4_096),
+          },
+        } as never)
+        onUpdate({
+          sessionId: 'devin-agent-session',
+          update: {
+            sessionUpdate: 'usage_update',
+            toolCallId: 'external-call-1',
+            _meta: {
+              'cognition.ai/subagent_completed': {
+                agentId: 'external-child-1',
+                summary: 'Inspection complete',
+                success: true,
+              },
+            },
+          },
+        } as never)
+        onUpdate({
+          sessionId: 'devin-agent-session',
+          update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'done' } },
+        } as never)
+        return { stopReason: 'end_turn' } as never
+      },
+      close: async () => undefined,
+    })
+    const adapter = new AcpProfileAdapter(
+      'devin',
+      profile,
+      seam(),
+      (id) => sessions.get(id),
+      ledgerFor(sidecar),
+      undefined,
+      runtimeFactory,
+      sidecar,
+      undefined,
+      undefined,
+      projected as never,
+    )
+    const drain = (async () => {
+      for await (const _chunk of adapter.stream(request('external-live-session', message))) {
+        /* drain until the held child is released */
+      }
+    })()
+    await childStarted.promise
+    let running = (await sidecar.activitySnapshot('external-live-session' as never)).find((activity) =>
+      activity.activityId.endsWith(':tool:external-call-1'),
+    )
+    for (let attempt = 0; running === undefined && attempt < 20; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5))
+      running = (await sidecar.activitySnapshot('external-live-session' as never)).find((activity) =>
+        activity.activityId.endsWith(':tool:external-call-1'),
+      )
+    }
+    expect(running).toMatchObject({
+      status: 'running',
+      presentation: 'Inspect fixture',
+    })
+    expect(running?.activityId).toContain(':tool:external-call-1')
+    const runningDetail = JSON.parse(running!.rawDetail!) as { externalDelegations?: unknown[] }
+    expect(runningDetail.externalDelegations).toHaveLength(64)
+    expect(runningDetail.externalDelegations?.[0]).toMatchObject({ label: 'Research files', status: 'running' })
+    expect(runningDetail).not.toHaveProperty('task')
+    expect(runningDetail).toHaveProperty('detailsOmitted', true)
+    expect(running!.rawDetail!.length).toBeLessThan(16_384)
+    expect(
+      runningDetail.externalDelegations?.every(
+        (fact) =>
+          Object.keys(fact as object)
+            .sort()
+            .join(',') === 'label,status',
+      ),
+    ).toBe(true)
+    expect(projected).not.toHaveBeenCalled()
+
+    holdChild.resolve()
+    await drain
+    const completed = (await sidecar.activitySnapshot('external-live-session' as never)).find((activity) =>
+      activity.activityId.endsWith(':tool:external-call-1'),
+    )
+    expect(completed).toMatchObject({ status: 'completed' })
+    expect(completed?.rawDetail?.length).toBeLessThan(16_384)
+    const completedDetail = JSON.parse(completed!.rawDetail!) as {
+      externalDelegations?: { status?: string }[]
+      toolName?: string
+      toolKind?: string
+      detailsOmitted?: boolean
+    }
+    expect(completedDetail.externalDelegations).toHaveLength(64)
+    expect(completedDetail.externalDelegations?.[0]?.status).toBe('completed')
+    expect(completedDetail.externalDelegations?.slice(1).every((fact) => fact.status === 'unfinished')).toBe(true)
+    expect(completedDetail).toHaveProperty('detailsOmitted', true)
+    expect(completedDetail.toolName).toBeDefined()
+    expect(completedDetail.toolName!.length).toBeLessThanOrEqual(96)
+    expect(completedDetail.toolKind).toBeDefined()
+    expect(completedDetail.toolKind!.length).toBeLessThanOrEqual(32)
+    expect(completedDetail).not.toHaveProperty('rawInput')
+    expect(completedDetail).not.toHaveProperty('rawOutput')
+    expect(projected).toHaveBeenCalledOnce()
+    await adapter.close()
+  })
+
   it('settles replaced tool details after their queued first update', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-detail-order-'))
     roots.push(root)

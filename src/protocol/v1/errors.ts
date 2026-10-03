@@ -4,7 +4,7 @@
  * （src/host/composition/llm-stub.ts 失败文案、src/remote/service.ts 方法、
  * turn 错误）分流；`message` 面向用户可读。
  *
- * 统一 taxonomy（错误分类；八分类词表见 ./types.ts
+ * 统一 taxonomy（错误分类；十分类词表见 ./types.ts
  * `AcpErrorCategory` 的逐类注释）：
  * - 每个用户可见错误携带三件套：**稳定 code**（`ACP_*`，kind → code 映射见
  *   {@link ACP_ERROR_CODES}，turn/end 与 llm-stub 沿用同一张表）、**taxonomy
@@ -36,6 +36,7 @@ import type { AcpClientErrorDetails, AcpErrorCategory, AcpErrorKind, AcpProbePha
 export const ACP_ERROR_CODES: Record<AcpErrorKind, string> = {
   'spawn-failure': 'ACP_SPAWN_FAILURE',
   auth_required: 'ACP_AUTH_REQUIRED',
+  'resource-exhausted': 'ACP_RESOURCE_EXHAUSTED',
   timeout: 'ACP_TIMEOUT',
   'protocol-error': 'ACP_PROTOCOL_ERROR',
   crash: 'ACP_CRASH',
@@ -46,6 +47,7 @@ export const ACP_ERROR_CODES: Record<AcpErrorKind, string> = {
 export const ACP_ERROR_KIND_CATEGORY: Record<AcpErrorKind, AcpErrorCategory> = {
   'spawn-failure': 'not-installed',
   auth_required: 'auth-required',
+  'resource-exhausted': 'resource-exhausted',
   timeout: 'timeout',
   'protocol-error': 'protocol-incompatible',
   crash: 'agent-crash',

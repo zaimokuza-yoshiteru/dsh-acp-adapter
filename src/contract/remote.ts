@@ -24,10 +24,12 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
     'dsh-acp/config': AcpRemoteErrorDetails
     'dsh-acp/not-installed': AcpRemoteErrorDetails
     'dsh-acp/auth-required': AcpRemoteErrorDetails
+    'dsh-acp/resource-exhausted': AcpRemoteErrorDetails
     'dsh-acp/protocol-incompatible': AcpRemoteErrorDetails
     'dsh-acp/timeout': AcpRemoteErrorDetails
     'dsh-acp/agent-crash': AcpRemoteErrorDetails
     'dsh-acp/user-rejected': AcpRemoteErrorDetails
+    'dsh-acp/activity-binding-pending': AcpRemoteErrorDetails
     'dsh-acp/resume-conflict': AcpRemoteErrorDetails
   }
 }

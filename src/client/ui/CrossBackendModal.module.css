@@ -23,10 +23,21 @@
   margin: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  color: var(--dsw-alias-label-danger);
+  color: var(--dsw-alias-state-error-primary);
   font-size: 14px;
   line-height: 22px;
   font-weight: 400;
+}
+
+.diagnostic {
+  margin: 0;
+  max-height: 180px;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 18px;
 }
 
 .footer {

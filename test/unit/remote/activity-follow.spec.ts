@@ -26,11 +26,16 @@ function createService(source: {
   page: (sessionId: string, after: number, limit: number) => Promise<readonly AcpActivityRecord[]>
   head: () => Promise<number>
   subscribe: (sessionId: string, filter: unknown, listener: (activity: AcpActivityRecord) => void) => () => void
+  ownedSessionReadGate?: (sessionId: string) => boolean | Promise<boolean>
+  activityReadStatus?: (
+    sessionId: string,
+  ) => 'owned' | 'binding-pending' | 'denied' | Promise<'owned' | 'binding-pending' | 'denied'>
 }) {
   return new AcpRemoteService(new Context(), {
     registry: { agents: () => new Map(), probeCacheFor: () => undefined },
     resolveLiveAgent: () => undefined,
-    ownedSessionReadGate: () => true,
+    ownedSessionReadGate: source.ownedSessionReadGate ?? (() => true),
+    ...(source.activityReadStatus === undefined ? {} : { activityReadStatus: source.activityReadStatus }),
     activityTimeline: {
       snapshot: async () => [],
       page: source.page,
@@ -41,6 +46,42 @@ function createService(source: {
 }
 
 describe('ACP activity follow lifecycle', () => {
+  it('marks only a recognized initial binding race as retryable', async () => {
+    const source = {
+      page: async () => [],
+      head: async () => 0,
+      subscribe: () => () => undefined,
+      ownedSessionReadGate: () => false,
+      activityReadStatus: () => 'binding-pending' as const,
+    }
+    const service = createService(source)
+    const abort = new AbortController()
+    const iterator = service.activityFollow('session-1', undefined, abort.signal)[Symbol.asyncIterator]()
+    await expect(iterator.next()).rejects.toMatchObject({ code: 'dsh-acp/activity-binding-pending' })
+    await expect(service.activityPage('session-1')).rejects.toMatchObject({ code: 'dsh-acp/user-rejected' })
+
+    const unauthorized = createService({ ...source, activityReadStatus: () => 'denied' as const })
+    const denied = unauthorized
+      .activityFollow('foreign', undefined, new AbortController().signal)
+      [Symbol.asyncIterator]()
+    await expect(denied.next()).rejects.toMatchObject({ code: 'dsh-acp/user-rejected' })
+  })
+
+  it('treats an errored pending-state probe as unauthorized', async () => {
+    const service = createService({
+      page: async () => [],
+      head: async () => 0,
+      subscribe: () => () => undefined,
+      activityReadStatus: async () => {
+        throw new Error('binding store unavailable')
+      },
+    })
+    const iterator = service
+      .activityFollow('session-1', undefined, new AbortController().signal)
+      [Symbol.asyncIterator]()
+    await expect(iterator.next()).rejects.toMatchObject({ code: 'dsh-acp/user-rejected' })
+  })
+
   it('uses one abort listener for a long stream and releases it on iterator return', async () => {
     let listener: ((activity: AcpActivityRecord) => void) | undefined
     let unsubscribed = false

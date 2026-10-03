@@ -53,8 +53,8 @@ describe('deriveAcpAgentState（五态）', () => {
     expect(deriveAcpAgentState({ ...BASE, probe })).toBe('auth-required')
   })
 
-  it('probe error + 其余 kind → unavailable（spawn-failure/timeout/crash/protocol-error 同桶）', () => {
-    for (const failureKind of ['spawn-failure', 'timeout', 'crash', 'protocol-error']) {
+  it('probe error + 其余 kind → unavailable（spawn-failure/resource-exhausted/timeout/crash/protocol-error 同桶）', () => {
+    for (const failureKind of ['spawn-failure', 'resource-exhausted', 'timeout', 'crash', 'protocol-error']) {
       expect(deriveAcpAgentState({ ...BASE, probe: { result: { kind: 'error', failureKind } } }), failureKind).toBe(
         'unavailable',
       )

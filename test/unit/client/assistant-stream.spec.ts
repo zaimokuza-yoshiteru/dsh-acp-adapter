@@ -1,12 +1,17 @@
 import { describe, it, expect } from 'vitest'
 import { SlotCore } from '@deepseek-ai/dsh-client-ui-slots'
-import { normalizeAcpChatNodes, activityWindowKey } from '../../../src/client/ui/acp-chat-normalization.ts'
+import {
+  normalizeAcpChatNodes,
+  activityData,
+  activityWindowKey,
+} from '../../../src/client/ui/acp-chat-normalization.ts'
 import type { ChatConversationViewNode, ChatNode, ChatSnapshot } from '@deepseek-ai/dsh-client-ui-chat/client'
 import type {
   ConversationGroupDefinition,
   ConversationViewDefinition,
 } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { AcpActivityView } from '../../../src/client/data/acp-remote.ts'
+import type { AcpActivityNodeData } from '../../../src/client/ui/activity-definitions.ts'
 import {
   activityBoundaries,
   finalAnswerStart,
@@ -18,6 +23,123 @@ import {
 } from '../../../src/client/ui/AcpAssistantStream.ts'
 
 describe('native assistant renderer composition', () => {
+  it('keeps one live or settled marker per prompt window and ignores hidden live markers', () => {
+    const data: AcpActivityNodeData = {
+      ownerDshSessionId: 'owner',
+      promptAnchorMessageId: 'prompt',
+      profileId: 'codex',
+      agentSessionId: '',
+      committedActivitySeq: 0,
+    }
+    const location = {
+      kind: 'step',
+      turn: { turn: 2 },
+      step: { step: 1, data: { get: () => undefined } },
+    }
+    const marker = (
+      key: string,
+      id: string,
+      visibility: 'visible' | 'hidden',
+      markerData: AcpActivityNodeData = data,
+    ) =>
+      ({
+        key,
+        id,
+        kind: 'acp-activity',
+        target: 'chat',
+        visibility,
+        anchorSeq: 10,
+        location,
+        data: markerData,
+      }) as unknown as ChatConversationViewNode
+    const fallback = marker('header', 'header', 'visible')
+    const secondFallback = marker('header-2', 'header-2', 'visible')
+    const live = marker('live', 'input:user-2', 'visible')
+    const hiddenLive = marker('hidden-live', 'input:user-2', 'hidden', { ...data, profileId: '' })
+    expect(activityData(hiddenLive)).toBeUndefined()
+    expect(normalizeAcpChatNodes([fallback, secondFallback], new Map()).map((node) => node.key)).toEqual(['header'])
+    expect(normalizeAcpChatNodes([fallback, live], new Map()).map((node) => node.key)).toEqual(['live'])
+    expect(normalizeAcpChatNodes([fallback, hiddenLive], new Map())).toEqual([])
+
+    const settled = marker('settled', 'answer:durable', 'visible', { ...data, settled: true })
+    expect(normalizeAcpChatNodes([live, settled], new Map()).map((node) => node.key)).toEqual(['settled'])
+  })
+
+  it('uses one live marker as an assistant-step fallback, but leaves ambiguous same-step inputs standalone', () => {
+    const data: AcpActivityNodeData = {
+      ownerDshSessionId: 'owner',
+      promptAnchorMessageId: 'prompt',
+      profileId: 'codex',
+      agentSessionId: '',
+      committedActivitySeq: 0,
+    }
+    const location = {
+      kind: 'step',
+      turn: { turn: 2 },
+      step: { step: 1, data: { get: () => undefined } },
+    }
+    const assistant = {
+      key: 'assistant',
+      id: 'assistant',
+      kind: 'assistant-step',
+      target: 'chat',
+      visibility: 'visible',
+      anchorSeq: 11,
+      location,
+      data: { status: 'running', turn: 2, step: 1, blocks: [] },
+    } as unknown as ChatConversationViewNode
+    const marker = (key: string, promptAnchorMessageId: string) =>
+      ({
+        key,
+        id: `input:${promptAnchorMessageId}`,
+        kind: 'acp-activity',
+        target: 'chat',
+        visibility: 'visible',
+        anchorSeq: 10,
+        location,
+        data: { ...data, promptAnchorMessageId },
+      }) as unknown as ChatConversationViewNode
+    const live = marker('live', 'prompt')
+    const row = {
+      activityId: 'tool:running',
+      kind: 'tool',
+      status: 'running',
+      rawDetail: JSON.stringify({ toolName: 'delegate', rawInput: {} }),
+    } as AcpActivityView
+    const key = activityWindowKey(data)
+    const projected = normalizeAcpChatNodes([assistant, live], new Map([[key, { rows: [row], unavailable: false }]]))
+    expect(projected.map((node) => node.kind)).toEqual(['tool-call', 'assistant-step'])
+    expect(projected.some((node) => node.kind === 'acp-activity')).toBe(false)
+
+    const ambiguous = normalizeAcpChatNodes([assistant, live, marker('live-2', 'prompt-2')], new Map())
+    expect(ambiguous.filter((node) => node.kind === 'acp-activity').map((node) => node.key)).toEqual(['live', 'live-2'])
+
+    const candidate = marker('empty-candidate', 'prompt-empty')
+    const emptyCandidateKey = activityWindowKey({ ...data, promptAnchorMessageId: 'prompt-empty' })
+    const onlyExecutedWindow = normalizeAcpChatNodes(
+      [assistant, live, candidate],
+      new Map([
+        [key, { rows: [row], unavailable: false }],
+        [emptyCandidateKey, { rows: [], unavailable: false }],
+      ]),
+    )
+    expect(onlyExecutedWindow.map((node) => node.kind)).toEqual(['tool-call', 'assistant-step', 'acp-activity'])
+    expect(onlyExecutedWindow.at(-1)?.key).toBe('empty-candidate')
+
+    const bothExecuted = normalizeAcpChatNodes(
+      [assistant, live, candidate],
+      new Map([
+        [key, { rows: [row], unavailable: false }],
+        [emptyCandidateKey, { rows: [row], unavailable: false }],
+      ]),
+    )
+    expect(bothExecuted.filter((node) => node.kind === 'assistant-step').map((node) => node.key)).toEqual(['assistant'])
+    expect(bothExecuted.filter((node) => node.kind === 'acp-activity').map((node) => node.key)).toEqual([
+      'live',
+      'empty-candidate',
+    ])
+  })
+
   it('keeps legacy and not-yet-delivered activity out of the inline boundaries', () => {
     const rows = [
       { activityId: 'old' },

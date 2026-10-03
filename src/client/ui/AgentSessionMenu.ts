@@ -6,6 +6,7 @@ import {
   IconChevronLeftOutlineMedium,
   Menu,
   Tooltip,
+  focusWithoutRing,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { MenuEntry } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { AgentControlChoice, AgentControlGroup, AgentControlTranslate } from './agent-session-controls.ts'
@@ -51,10 +52,10 @@ export function AgentSessionMenu({
     if (!open) return
     // The list is portaled to avoid clipping inside the team panel. Focus its
     // first native row after replacing a pane, retaining native arrow keys.
-    firstContent.current
+    const first = firstContent.current
       ?.closest('[role=menu]')
       ?.querySelector<HTMLButtonElement>('[role=menuitem]:not(:disabled)')
-      ?.focus()
+    if (first !== null && first !== undefined) focusWithoutRing(first)
   }, [open, group?.id])
   const items: MenuEntry[] =
     group === undefined

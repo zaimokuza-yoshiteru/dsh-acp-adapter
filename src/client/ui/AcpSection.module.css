@@ -47,12 +47,6 @@
   line-height: 18px;
   color: var(--dsw-alias-state-warn-label);
 }
-.saved {
-  margin: 0;
-  font-size: 12px;
-  line-height: 18px;
-  color: var(--dsw-alias-state-success-primary);
-}
 .error {
   margin: 0;
   font-size: 12px;
@@ -144,9 +138,9 @@
   width: min(100%, 360px);
   min-height: 40px;
   padding: 8px 12px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 10px;
-  background: var(--dsw-alias-bg-primary);
+  border: 0.5px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-layer-1);
   color: var(--dsw-alias-label-primary);
   font: inherit;
   font-size: 14px;
@@ -167,10 +161,15 @@
 }
 .chevron {
   display: inline-flex;
-  transition: transform 0.15s ease;
+  transition: transform var(--ds-transition-duration-fast) var(--ds-ease-in-out);
 }
 .chevronFlip {
   transform: rotate(180deg);
+}
+@media (prefers-reduced-motion: reduce) {
+  .chevron {
+    transition: none;
+  }
 }
 .rows {
   list-style: none;

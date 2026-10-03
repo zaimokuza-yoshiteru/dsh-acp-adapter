@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url'
 import { launchWebScaffold } from '#host-scaffold'
 
 export const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
+type ToolsMode = NonNullable<Parameters<typeof launchWebScaffold>[0]>['toolsMode']
 
 /** Install through real profile bundles so ConfigEditor owns writable configuration. */
 export async function launchAdapterWorld({
@@ -17,6 +18,7 @@ export async function launchAdapterWorld({
   teamMembers,
   terminalShell,
   renderProbe = false,
+  toolsMode,
 }: {
   teams?: boolean
   schedule?: boolean
@@ -24,6 +26,7 @@ export async function launchAdapterWorld({
   teamMembers?: number
   terminalShell?: { path: string; name: string; args: string[] }
   renderProbe?: boolean
+  toolsMode?: ToolsMode
 } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'dsh-acp-e2e-install-'))
   try {
@@ -69,6 +72,7 @@ export async function launchAdapterWorld({
               ],
             },
           }),
+      ...(toolsMode === undefined ? {} : { toolsMode }),
     })
     return {
       ...host,

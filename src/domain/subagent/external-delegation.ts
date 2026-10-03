@@ -17,7 +17,7 @@ export interface ExternalDelegationObservation {
     readonly source: 'verbatim-child-final' | 'agent-summary' | 'tool-result'
     readonly completeness: 'final-output' | 'summary'
   }
-  readonly status: 'completed' | 'failed'
+  readonly status: 'completed' | 'failed' | 'cancelled'
   readonly model?: { readonly id: string; readonly source: 'agent-structured-live' }
   readonly usage?: {
     readonly inputTokens?: number
@@ -37,6 +37,20 @@ export interface ExternalDelegationObservation {
   readonly projectionEligible: boolean
 }
 
+/** Small read-only fact for the originating tool activity. It never identifies
+ * a DSH child session and deliberately excludes child output. */
+export interface ExternalDelegationLiveFact {
+  readonly profileKind: ExternalDelegationProfileKind
+  readonly vendorDelegationKey: string
+  readonly vendorChildId?: string
+  readonly sourceToolCallId?: string
+  readonly label: string
+  readonly status: 'running' | 'completed' | 'failed' | 'cancelled' | 'unfinished'
+  readonly observedStartedAt: number
+  readonly observedAt: number
+  readonly sourceToolStatus?: 'completed' | 'failed' | 'cancelled'
+}
+
 interface PendingDelegation {
   readonly startedAt: number
   readonly toolCallId?: string
@@ -49,6 +63,7 @@ interface PendingDelegation {
 }
 
 export const EXTERNAL_CHILD_RESULT_PREVIEW_LIMIT = 4_000
+export const EXTERNAL_DELEGATION_PENDING_LIMIT = 64
 const NATIVE_CHILD_OMITTED_RESULT = '[ACP child result omitted after exceeding the 4000-character preview limit.]'
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -92,6 +107,65 @@ export class ExternalDelegationNormalizer {
 
   constructor(readonly profileKind: ExternalDelegationProfileKind) {}
 
+  /** A bounded snapshot keyed by the exact origin tool call. */
+  liveForToolCall(toolCallId: string): readonly ExternalDelegationLiveFact[] {
+    return [...this.pending.entries()]
+      .filter(([, pending]) => pending.toolCallId === toolCallId)
+      .map(([key, pending]) => this.liveFact(key, pending, 'running', pending.startedAt))
+  }
+
+  /** A tool ending does not prove that its child ended. Resolve the live row
+   * as unfinished while preserving the tool's own independent terminal state.
+   * Keep the bounded pending identity until the child reports its own terminal
+   * state or the parent prompt ends; a launcher can return before its child. */
+  resolveToolCall(
+    toolCallId: string,
+    sourceToolStatus: 'completed' | 'failed' | 'cancelled',
+    observedAt: number,
+  ): readonly ExternalDelegationLiveFact[] {
+    const resolved: ExternalDelegationLiveFact[] = []
+    for (const [key, pending] of this.pending) {
+      if (pending.toolCallId !== toolCallId) continue
+      resolved.push(this.liveFact(key, pending, 'unfinished', observedAt, sourceToolStatus))
+    }
+    return resolved
+  }
+
+  /** The parent prompt can end while an external child is still running. Keep
+   * that uncertainty explicit and release the turn-local tracker. */
+  finishPrompt(observedAt: number): readonly ExternalDelegationLiveFact[] {
+    const resolved = [...this.pending.entries()].map(([key, pending]) =>
+      this.liveFact(key, pending, 'unfinished', observedAt),
+    )
+    this.pending.clear()
+    return resolved
+  }
+
+  private liveFact(
+    key: string,
+    pending: PendingDelegation,
+    status: ExternalDelegationLiveFact['status'],
+    observedAt: number,
+    sourceToolStatus?: ExternalDelegationLiveFact['sourceToolStatus'],
+  ): ExternalDelegationLiveFact {
+    return {
+      profileKind: this.profileKind,
+      vendorDelegationKey: key,
+      ...(pending.vendorChildId === undefined ? {} : { vendorChildId: pending.vendorChildId }),
+      ...(pending.toolCallId === undefined ? {} : { sourceToolCallId: pending.toolCallId }),
+      label: pending.label,
+      status,
+      observedStartedAt: pending.startedAt,
+      observedAt,
+      ...(sourceToolStatus === undefined ? {} : { sourceToolStatus }),
+    }
+  }
+
+  private track(key: string, pending: PendingDelegation): void {
+    if (this.pending.has(key) || this.pending.size >= EXTERNAL_DELEGATION_PENDING_LIMIT) return
+    this.pending.set(key, pending)
+  }
+
   /** Normalize one complete notification. Claude's negotiated native child
    * lifecycle uses the notification session id to route child transcript
    * updates, so update-only normalization cannot represent it truthfully. */
@@ -105,7 +179,7 @@ export class ExternalDelegationNormalizer {
       const childId = text(update.subagentSessionId)
       const task = text(update.task)
       if (childId === undefined || task === undefined) return undefined
-      this.pending.set(childId, {
+      this.track(childId, {
         startedAt: observedAt,
         label: text(update.name) ?? 'Agent delegation',
         task,
@@ -144,7 +218,7 @@ export class ExternalDelegationNormalizer {
       if (childId === undefined || pending === undefined) return undefined
       this.pending.delete(childId)
       const state = text(update.state)
-      const completed = state === 'completed'
+      const status = state === 'completed' ? 'completed' : state === 'cancelled' ? 'cancelled' : 'failed'
       return {
         profileKind: 'claude',
         vendorDelegationKey: childId,
@@ -158,9 +232,9 @@ export class ExternalDelegationNormalizer {
           source: 'verbatim-child-final',
           completeness: 'final-output',
         },
-        status: completed ? 'completed' : 'failed',
+        status,
         timing: { observedStartedAt: pending.startedAt, observedCompletedAt: observedAt, source: 'client-observed' },
-        projectionEligible: completed,
+        projectionEligible: status === 'completed',
       }
     }
     return this.accept(update, observedAt)
@@ -184,7 +258,7 @@ export class ExternalDelegationNormalizer {
       const task = text(started.task)
       if (agentId !== undefined && task !== undefined) {
         const toolCallId = text(update.toolCallId)
-        this.pending.set(agentId, {
+        this.track(agentId, {
           startedAt: observedAt,
           ...(toolCallId === undefined ? {} : { toolCallId }),
           label: text(started.title) ?? 'Agent delegation',
@@ -201,7 +275,8 @@ export class ExternalDelegationNormalizer {
     const agentId = text(completed.agentId)
     const pending = agentId === undefined ? undefined : this.pending.get(agentId)
     const summary = text(completed.summary)
-    if (agentId === undefined || pending === undefined || summary === undefined) return undefined
+    if (agentId === undefined || pending === undefined || (completed.success !== false && summary === undefined))
+      return undefined
     this.pending.delete(agentId)
     return {
       profileKind: 'devin',
@@ -210,7 +285,7 @@ export class ExternalDelegationNormalizer {
       vendorChildId: agentId,
       label: pending.label,
       task: { text: pending.task, source: 'vendor-meta' },
-      result: { text: summary, source: 'agent-summary', completeness: 'summary' },
+      result: { text: summary ?? '', source: 'agent-summary', completeness: 'summary' },
       status: completed.success === false ? 'failed' : 'completed',
       timing: { observedStartedAt: pending.startedAt, observedCompletedAt: observedAt, source: 'client-observed' },
       projectionEligible: completed.success !== false,
@@ -223,7 +298,7 @@ export class ExternalDelegationNormalizer {
     const callId = text(update.toolCallId)
     const rawInput = record(update.rawInput) ? update.rawInput : undefined
     if (claude?.subagent === true && callId !== undefined && text(rawInput?.prompt) !== undefined) {
-      this.pending.set(callId, {
+      this.track(callId, {
         startedAt: this.pending.get(callId)?.startedAt ?? observedAt,
         toolCallId: callId,
         label: text(rawInput?.description) ?? text(update.title) ?? 'Agent delegation',
@@ -254,7 +329,7 @@ export class ExternalDelegationNormalizer {
       label: pending.label,
       task: { text: task, source: 'structured-tool-input' },
       result: { text: result, source: 'verbatim-child-final', completeness: 'final-output' },
-      status: response.status === 'failed' ? 'failed' : 'completed',
+      status: response.status === 'failed' ? 'failed' : response.status === 'cancelled' ? 'cancelled' : 'completed',
       ...(text(response.resolvedModel) === undefined
         ? {}
         : { model: { id: text(response.resolvedModel)!, source: 'agent-structured-live' as const } }),
@@ -276,7 +351,7 @@ export class ExternalDelegationNormalizer {
         ...(duration === undefined ? {} : { agentReportedDurationMs: duration }),
         source: duration === undefined ? 'client-observed' : 'mixed',
       },
-      projectionEligible: response.status !== 'failed',
+      projectionEligible: response.status !== 'failed' && response.status !== 'cancelled',
     }
   }
 
@@ -285,7 +360,7 @@ export class ExternalDelegationNormalizer {
     const rawInput = record(update.rawInput) ? update.rawInput : undefined
     const title = text(update.title)
     if (callId !== undefined && title?.startsWith('Launching ') === true && text(rawInput?.prompt) !== undefined) {
-      this.pending.set(callId, {
+      this.track(callId, {
         startedAt: observedAt,
         toolCallId: callId,
         label: text(rawInput?.description) ?? title,

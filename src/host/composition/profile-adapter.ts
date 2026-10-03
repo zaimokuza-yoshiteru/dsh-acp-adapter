@@ -2,7 +2,7 @@
 /// <reference types="node" />
 
 import { activityPresentation, type AcpActivityPresentation } from '../../domain/policy/activity-presentation.ts'
-import { modeIntentBindingKey } from '../../persistence/sidecar.ts'
+import { ACP_ACTIVITY_RAW_MAX, modeIntentBindingKey } from '../../persistence/sidecar.ts'
 import { teamModeChoices } from '../../contract/session-modes.ts'
 import { projectNativeAgentAccess } from './native-agent-access.ts'
 
@@ -45,7 +45,11 @@ import { admitCurrentStep } from '../../domain/session/current-step-admission.ts
 import { AcpAdmissionError } from '../../domain/session/current-step-admission.ts'
 import type { CurrentStepProof, SessionLike } from '../../domain/session/current-step-admission.ts'
 import { ExternalDelegationNormalizer } from '../../domain/subagent/external-delegation.ts'
-import type { ExternalDelegationObservation } from '../../domain/subagent/external-delegation.ts'
+import {
+  EXTERNAL_DELEGATION_PENDING_LIMIT,
+  type ExternalDelegationLiveFact,
+  type ExternalDelegationObservation,
+} from '../../domain/subagent/external-delegation.ts'
 import { acpCanonicalHash16 } from '../../persistence/sidecar.ts'
 import { acpOptionsSnapshotOf } from '../../persistence/options-snapshot.ts'
 import type {
@@ -315,6 +319,7 @@ function activitiesForNotification(
   notification: AcpSessionNotification,
   fallbackId: string,
   toolCall?: AcpToolCallSnapshot,
+  externalDelegations: readonly ExternalDelegationLiveFact[] = [],
 ): readonly NormalizedActivity[] {
   const update = notification.update as unknown as Record<string, unknown>
   const type = update.sessionUpdate
@@ -339,14 +344,17 @@ function activitiesForNotification(
         kind: 'tool',
         status,
         presentation: title,
-        rawDetail: activityRawDetail({
-          toolKind: detail.kind,
-          toolName: detail.name,
-          rawInput: detail.rawInput,
-          rawOutput: detail.rawOutput,
-          locations: detail.locations,
-          content: detail.content,
-        }),
+        rawDetail: toolActivityRawDetail(
+          {
+            toolKind: detail.kind,
+            toolName: detail.name,
+            rawInput: detail.rawInput,
+            rawOutput: detail.rawOutput,
+            locations: detail.locations,
+            content: detail.content,
+          },
+          externalDelegations,
+        ),
       },
     ]
     if (Array.isArray(detail.content)) {
@@ -438,6 +446,81 @@ function activitiesForNotification(
       rawDetail: activityRawDetail(update),
     },
   ]
+}
+
+function withExternalDelegations(
+  activity: NormalizedActivity,
+  delegations: readonly ExternalDelegationLiveFact[],
+): NormalizedActivity {
+  if (activity.kind !== 'tool' || delegations.length === 0) return activity
+  let detail: unknown = activity.rawDetail
+  try {
+    detail = JSON.parse(activity.rawDetail ?? 'null') as unknown
+  } catch {
+    /* Preserve the existing detail as a value if it was not valid JSON. */
+  }
+  const detailRecord = isPlainRecord(detail) ? detail : { toolDetail: detail }
+  return {
+    ...activity,
+    rawDetail: toolActivityRawDetail(detailRecord, delegations),
+  }
+}
+
+function toolActivityRawDetail(
+  detail: Record<string, unknown>,
+  delegations: readonly ExternalDelegationLiveFact[],
+): string {
+  if (delegations.length === 0) return activityRawDetail(detail)
+  const externalDelegationDetails = compactExternalDelegationDetails(delegations)
+  const rawDetail = activityRawDetail({ ...detail, externalDelegations: externalDelegationDetails })
+  if (rawDetail.length <= ACP_ACTIVITY_RAW_MAX) return rawDetail
+  const compact = (labelLimit: number, toolNameLimit: number, toolKindLimit: number): string =>
+    activityRawDetail({
+      ...(typeof detail.toolKind === 'string'
+        ? { toolKind: boundedExternalPreview(detail.toolKind, toolKindLimit) }
+        : {}),
+      ...(typeof detail.toolName === 'string'
+        ? { toolName: boundedExternalPreview(detail.toolName, toolNameLimit) }
+        : {}),
+      externalDelegations: compactExternalDelegationDetails(delegations, labelLimit),
+      detailsOmitted: true,
+    })
+  for (const [labelLimit, toolNameLimit, toolKindLimit] of [
+    [24, 96, 32],
+    [8, 32, 16],
+  ] as const) {
+    const fallback = compact(labelLimit, toolNameLimit, toolKindLimit)
+    if (fallback.length <= ACP_ACTIVITY_RAW_MAX) return fallback
+  }
+  // All bounded Agent-controlled strings can be omitted if escaping still made
+  // the verbose fallback unexpectedly large; every child status remains.
+  return activityRawDetail({
+    externalDelegations: compactExternalDelegationDetails(delegations, 0),
+    detailsOmitted: true,
+  })
+}
+
+/** The row owns the exact source tool id, so its persisted child facts need only
+ * the small fields the read-only presentation consumes. Keep Agent labels as
+ * verbatim metadata until this display boundary, then cap them for both the
+ * 16 KiB activity envelope and the native tool name. */
+function compactExternalDelegationDetails(
+  delegations: readonly ExternalDelegationLiveFact[],
+  labelLimit = 96,
+): readonly { readonly label: string; readonly status: ExternalDelegationLiveFact['status'] }[] {
+  return delegations.map(({ label, status }) => ({
+    label: boundedExternalPreview(label, labelLimit),
+    status,
+  }))
+}
+
+function boundedExternalPreview(value: string, maxCodePoints: number): string {
+  const safe = redactSecretText(value).replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')
+  return Array.from(safe, (point) =>
+    point.length === 1 && point.charCodeAt(0) >= 0xd800 && point.charCodeAt(0) <= 0xdfff ? '�' : point,
+  )
+    .slice(0, maxCodePoints)
+    .join('')
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
@@ -1755,6 +1838,43 @@ export class AcpProfileAdapter extends LlmAdapter {
         const externalDelegations: ExternalDelegationObservation[] = []
         const profileKind = effectiveRuntimeOf(self.profileId, profile) ?? self.profileId
         const delegationNormalizer = new ExternalDelegationNormalizer(profileKind)
+        const externalFactsByTool = new Map<string, Map<string, ExternalDelegationLiveFact>>()
+        const toolActivityBases = new Map<string, NormalizedActivity>()
+        let externalFactCount = 0
+        const rememberExternalFact = (fact: ExternalDelegationLiveFact): void => {
+          const toolCallId = fact.sourceToolCallId
+          if (toolCallId === undefined) return
+          let facts = externalFactsByTool.get(toolCallId)
+          if (facts === undefined) {
+            if (externalFactCount >= EXTERNAL_DELEGATION_PENDING_LIMIT) return
+            facts = new Map()
+            externalFactsByTool.set(toolCallId, facts)
+          }
+          if (!facts.has(fact.vendorDelegationKey)) {
+            if (externalFactCount >= EXTERNAL_DELEGATION_PENDING_LIMIT) return
+            externalFactCount += 1
+          }
+          facts.set(fact.vendorDelegationKey, fact)
+        }
+        const factsForTool = (toolCallId: string): readonly ExternalDelegationLiveFact[] => [
+          ...(externalFactsByTool.get(toolCallId)?.values() ?? []),
+        ]
+        const factFromObservation = (
+          observation: ExternalDelegationObservation,
+          observedAt: number,
+        ): ExternalDelegationLiveFact | undefined => {
+          if (observation.sourceToolCallId === undefined) return undefined
+          return {
+            profileKind: observation.profileKind,
+            vendorDelegationKey: observation.vendorDelegationKey,
+            ...(observation.vendorChildId === undefined ? {} : { vendorChildId: observation.vendorChildId }),
+            sourceToolCallId: observation.sourceToolCallId,
+            label: observation.label,
+            status: observation.status,
+            observedStartedAt: observation.timing.observedStartedAt,
+            observedAt,
+          }
+        }
         const toolChildren = new Map<string, Map<number, NormalizedActivity>>()
         // Tool ids are session-scoped, while sparse patch state belongs to this
         // one prompt projection.  Never carry a partially observed call into a
@@ -1914,11 +2034,14 @@ export class AcpProfileAdapter extends LlmAdapter {
         const toolContentBoundaries = new Map<string, boolean>()
         const onUpdate = (notification: AcpSessionNotification): void => {
           const update = notification.update
-          const delegation = delegationNormalizer.acceptNotification(notification, Date.now())
+          const observedAt = Date.now()
+          const delegation = delegationNormalizer.acceptNotification(notification, observedAt)
           if (delegation !== undefined) externalDelegations.push(delegation)
+          const completedFact = delegation === undefined ? undefined : factFromObservation(delegation, observedAt)
           // Native child notifications are evidence for the projected child,
           // never assistant/tool output of the root DSH turn.
           if (runtime.acpSessionId !== undefined && notification.sessionId !== runtime.acpSessionId) return
+          if (completedFact !== undefined) rememberExternalFact(completedFact)
           const isToolUpdate = update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update'
           const toolId =
             isToolUpdate && typeof update.toolCallId === 'string'
@@ -1949,11 +2072,6 @@ export class AcpProfileAdapter extends LlmAdapter {
             }
             toolContentBoundaries.set(toolId, terminal)
           }
-          const normalized = activitiesForNotification(
-            notification,
-            `${String(notification.sessionId)}:${String(activityFallbackSeq + 1)}`,
-            toolCall,
-          )
           if (isToolUpdate && toolCall !== undefined) {
             const previousChildren = toolChildren.get(toolId) ?? new Map<number, NormalizedActivity>()
             const nextChildren = new Map<number, NormalizedActivity>()
@@ -1977,10 +2095,38 @@ export class AcpProfileAdapter extends LlmAdapter {
             }
             toolChildren.set(toolId, nextChildren)
           }
+          if (toolCall !== undefined) {
+            const terminal = activityStatus(toolCall.status)
+            if (terminal === 'completed' || terminal === 'failed' || terminal === 'cancelled') {
+              for (const fact of delegationNormalizer.resolveToolCall(toolId, terminal, observedAt))
+                rememberExternalFact(fact)
+            } else {
+              for (const fact of delegationNormalizer.liveForToolCall(toolId)) rememberExternalFact(fact)
+            }
+          }
+          if (toolCall === undefined && completedFact?.sourceToolCallId !== undefined) {
+            const sourceToolCallId = completedFact.sourceToolCallId
+            scheduleContent(() => {
+              const base = toolActivityBases.get(sourceToolCallId)
+              const current = base === undefined ? undefined : currentActivities.get(base.activityId)
+              if (base === undefined || current === undefined) return
+              scheduleActivity(
+                withExternalDelegations({ ...base, status: current.status }, factsForTool(sourceToolCallId)),
+              )
+            })
+          }
+          const externalFacts = toolCall === undefined ? [] : factsForTool(toolId)
+          const normalized = activitiesForNotification(
+            notification,
+            `${String(notification.sessionId)}:${String(activityFallbackSeq + 1)}`,
+            toolCall,
+            externalFacts,
+          )
           scheduleContent(() => {
             const plan = normalized.find((activity) => activity.kind === 'plan')?.display?.plan
             if (plan !== undefined) session?.publishPlan?.(plan)
             for (const activity of normalized) {
+              if (activity.kind === 'tool' && toolCall !== undefined) toolActivityBases.set(toolId, activity)
               const parentOwner = isToolUpdate ? activityOwners.get(`tool:${toolId}`) : undefined
               if (!activityOwners.has(activity.activityId) && parentOwner !== undefined)
                 activityOwners.set(activity.activityId, parentOwner)
@@ -2013,6 +2159,16 @@ export class AcpProfileAdapter extends LlmAdapter {
                     })()
               pushChunk({ type: 'reasoning-delta', index: contentIndex('reasoning', update.messageId), text })
             })
+          }
+        }
+        const finishExternalDelegations = (): void => {
+          for (const fact of delegationNormalizer.finishPrompt(Date.now())) {
+            rememberExternalFact(fact)
+            const toolCallId = fact.sourceToolCallId
+            const base = toolCallId === undefined ? undefined : toolActivityBases.get(toolCallId)
+            const current = base === undefined ? undefined : currentActivities.get(base.activityId)
+            if (toolCallId === undefined || base === undefined || current === undefined) continue
+            scheduleActivity(withExternalDelegations({ ...base, status: current.status }, factsForTool(toolCallId)))
           }
         }
         // Interrupt only the ACP execution. The native turn remains alive and
@@ -2137,6 +2293,7 @@ export class AcpProfileAdapter extends LlmAdapter {
             stopWatchingInput?.()
             try {
               await contentDeliveryTail
+              finishExternalDelegations()
               settleRunningActivities(response.stopReason === 'cancelled' ? 'cancelled' : 'completed')
               await activityWriteTail
               // The response is not exposed to DSH until the terminal state is
@@ -2317,6 +2474,7 @@ export class AcpProfileAdapter extends LlmAdapter {
             stopWatchingInput?.()
             await contentDeliveryTail.catch(() => undefined)
             await writeUnsupportedChunkAudit()
+            finishExternalDelegations()
             settleRunningActivities(options.signal?.aborted === true ? 'cancelled' : 'failed')
             await activityWriteTail
             // `auth_required` is a definitive JSON-RPC rejection, not an

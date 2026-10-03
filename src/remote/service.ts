@@ -426,6 +426,10 @@ export interface AcpRemoteServiceDeps {
   activityAccess?: (sessionId: string) => boolean | Promise<boolean>
   /** Shared strict gate for audit and activity reads; production uses durable ownership only. */
   ownedSessionReadGate?: (sessionId: string) => boolean | Promise<boolean>
+  /** Strict decision for the live activity stream, including its initial binding race. */
+  activityReadStatus?: (
+    sessionId: string,
+  ) => 'owned' | 'binding-pending' | 'denied' | Promise<'owned' | 'binding-pending' | 'denied'>
   projectedSubagentIds?: () => Promise<readonly string[]>
   /** Whether the DSH durable attachment service is mounted for ACP image input. */
   imageInputAvailable?: boolean
@@ -520,6 +524,7 @@ interface ResolvedDeps {
   readonly auditTimeline: NonNullable<AcpRemoteServiceDeps['auditTimeline']> | null
   readonly activityTimeline: NonNullable<AcpRemoteServiceDeps['activityTimeline']> | null
   readonly ownedSessionReadGate: NonNullable<AcpRemoteServiceDeps['ownedSessionReadGate']> | null
+  readonly activityReadStatus: NonNullable<AcpRemoteServiceDeps['activityReadStatus']> | null
   readonly projectedSubagentIds: NonNullable<AcpRemoteServiceDeps['projectedSubagentIds']> | null
   readonly imageInputAvailable: boolean
 }
@@ -541,6 +546,7 @@ interface ResolvedDeps {
  */
 export class AcpRemoteService extends TypertRemoteService {
   private readonly resolved: ResolvedDeps
+  private readonly recoveryOperations = new Set<string>()
 
   constructor(ctx: Context, deps: AcpRemoteServiceDeps) {
     super(ctx, 'dshAcp')
@@ -577,6 +583,7 @@ export class AcpRemoteService extends TypertRemoteService {
       auditTimeline: deps.auditTimeline ?? null,
       activityTimeline: deps.activityTimeline ?? null,
       ownedSessionReadGate: deps.ownedSessionReadGate ?? deps.activityAccess ?? null,
+      activityReadStatus: deps.activityReadStatus ?? null,
       projectedSubagentIds: deps.projectedSubagentIds ?? null,
       imageInputAvailable: deps.imageInputAvailable ?? false,
     }
@@ -719,7 +726,20 @@ export class AcpRemoteService extends TypertRemoteService {
     request: { readonly limit?: number; readonly filter?: AcpActivityFilterView } | undefined,
     signal: AbortSignal,
   ): AsyncIterable<AcpActivityJournalFrame> {
-    await this.requireActivityRead(sessionId)
+    if (this.resolved.activityReadStatus !== null) {
+      let status: 'owned' | 'binding-pending' | 'denied' = 'denied'
+      try {
+        status = await this.resolved.activityReadStatus(sessionId)
+      } catch {
+        status = 'denied'
+      }
+      if (status === 'binding-pending')
+        throw acpRemoteFailure('activity-binding-pending', 'ACP activity is waiting for the session binding')
+      if (status !== 'owned')
+        throw acpRemoteFailure('user-rejected', 'ACP activity access is not authorized for this DSH session')
+    } else if (!(await this.hasOwnedSessionAccess(sessionId))) {
+      throw acpRemoteFailure('user-rejected', 'ACP activity access is not authorized for this DSH session')
+    }
     const source = this.resolved.activityTimeline
     if (source === null || source.subscribe === undefined)
       throw acpRemoteFailure('config', 'ACP activity live stream is unavailable on this host')
@@ -1172,13 +1192,28 @@ export class AcpRemoteService extends TypertRemoteService {
     return adapter
   }
 
+  /** Serialize destructive recovery choices for one owned session only. */
+  private async runRecoveryOperation(
+    sessionId: string,
+    operation: (adapter: AcpRecoveryAdapterLike) => Promise<void>,
+  ): Promise<AcpRecoveryView> {
+    await this.requireOwnedSessionAccess(sessionId)
+    if (this.recoveryOperations.has(sessionId))
+      throw acpRemoteFailure('resume-conflict', 'An ACP recovery action is already in progress for this session')
+    this.recoveryOperations.add(sessionId)
+    try {
+      const adapter = await this.recoveryAdapterFor(sessionId)
+      await preserveAcpFailure(() => operation(adapter))
+      return await this.recoverySnapshot(sessionId)
+    } finally {
+      this.recoveryOperations.delete(sessionId)
+    }
+  }
+
   /** Retry the original durable Agent binding; never resends the interrupted prompt. */
   @Remote('retryOriginal')
   async retryOriginal(sessionId: string): Promise<AcpRecoveryView> {
-    await this.requireOwnedSessionAccess(sessionId)
-    const adapter = await this.recoveryAdapterFor(sessionId)
-    await preserveAcpFailure(() => adapter.retryOriginal(sessionId))
-    return await this.recoverySnapshot(sessionId)
+    return await this.runRecoveryOperation(sessionId, (adapter) => adapter.retryOriginal(sessionId))
   }
 
   /** Provider-composition blank rebind. Unlike the legacy rebindBlank method,
@@ -1186,10 +1221,7 @@ export class AcpRemoteService extends TypertRemoteService {
    * snapshot being present. */
   @Remote('rebindRecoveryBlank')
   async rebindRecoveryBlank(sessionId: string): Promise<AcpRecoveryView> {
-    await this.requireOwnedSessionAccess(sessionId)
-    const adapter = await this.recoveryAdapterFor(sessionId)
-    await preserveAcpFailure(() => adapter.rebindBlank(sessionId))
-    return await this.recoverySnapshot(sessionId)
+    return await this.runRecoveryOperation(sessionId, (adapter) => adapter.rebindBlank(sessionId))
   }
 
   @Remote('backendOf')

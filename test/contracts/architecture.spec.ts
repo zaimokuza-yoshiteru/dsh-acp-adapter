@@ -6,7 +6,7 @@
 //   protocol         src/protocol/**           —— ACP 协议半（连接、翻译、命令；可依赖 runtime）
 //   domainPolicy     src/domain/policy/**      —— 审批桥、审计载荷、原生访问启动策略
 // domainObservability src/domain/observability/** —— 结构化日志包装与内存指标
-//                                             registry（零 import 叶子，各层可向下消费）
+//                                             registry、共享脱敏 facade
 //   domainSession    src/domain/session/**     —— ACP 会话投影与 agent 配置 datum
 //   persistence      src/persistence/**        —— sidecar 旁路存储
 // contract src/contract/** —— dshAcp Remote 的收窄 wire 类型（
@@ -23,12 +23,12 @@
 // 允许的跨层边（白名单；同层 import 恒允许）：
 //   protocol        → runtime
 //   domainPolicy    → protocol, runtime, domainObservability, contract
-//   domainObservability → （零 import 叶子；observability 内部同层互连恒允许）
+//   domainObservability → （零 import 叶子；仅 redaction.ts 有精确 contract facade 边）
 //   persistence     → domainPolicy          ← 唯一 sideways 边：sidecar 落盘条目携带
 //                                             events.ts 的审计 payload 类型（sidecar 持久化规则），
 //                                             persistence 没有自己的协议依赖
-//   contract        → （零 import 叶子：wire 类型真源，host 的 remote 与 client 两半
-//                       共同下行消费；不进 HOST_LAYERS——它是共享层而非 host 私有）
+//   contract        → （零 import 叶子：wire 类型与无依赖共享纯函数真源，host 的 remote
+//                       与 client 两半共同下行消费；不进 HOST_LAYERS——它是共享层而非 host 私有）
 //   domainSession   → domainPolicy, domainObservability, protocol, runtime, persistence
 //   remote          → contract, protocol, runtime, domainSession, domainPolicy,
 // domainObservability（起可达 domainPolicy：health 行消费
@@ -118,12 +118,11 @@ const ALLOWED_CROSS_LAYER: Readonly<Record<Layer, readonly Layer[]>> = {
   protocol: ['runtime'],
   // Pure presentation parsing is shared with the client in the dependency-free contract layer.
   domainPolicy: ['protocol', 'runtime', 'domainObservability', 'contract'],
-  // domain/observability 是零 import 叶子（结构化日志包装 + 内存指标）：
-  // 各层向下消费它，它自己不依赖任何层。
+  // observability is a zero-import leaf except for its exact compatibility facade edge below.
   domainObservability: [],
   // sidecar 的落盘条目携带 events.ts 审计 payload 类型——persistence 唯一的 sideways 边。
   persistence: ['domainPolicy', 'domainObservability'],
-  // contract 是零 import 叶子：收窄 wire 类型真源，host 的 remote 与
+  // contract 是零 import 叶子：收窄 wire 类型与共享纯函数真源，host 的 remote 与
   // client 两半共同下行消费（共享层，不进 HOST_LAYERS）。
   contract: [],
   domainSession: ['domainPolicy', 'domainObservability', 'protocol', 'runtime', 'persistence', 'contract'],
@@ -163,6 +162,12 @@ const ALLOWED_SRC_ESCAPES: Readonly<Record<string, readonly string[]>> = {
   // ——见 src/domain/session/registry-versions.ts 头注释。
   'domain/session/registry-versions.ts': ['../../../assets/registry/executables.json'],
 }
+
+/** Exact shared-redaction edges; do not widen either layer's import permissions. */
+const ALLOWED_CROSS_FILE_EDGES = new Set([
+  'protocol/v1/connection.ts->contract/redaction.ts',
+  'domain/observability/redaction.ts->contract/redaction.ts',
+])
 
 const IMPORT_FROM_RE = /(?:import|export)\s[^'"]*?from\s+['"]([^'"]+)['"]/g
 const DYNAMIC_IMPORT_RE = /import\s*\(\s*['"]([^'"]+)['"]\s*\)/g
@@ -246,7 +251,11 @@ describe(' 分层架构守卫', () => {
   it('所有跨层 import 都在白名单内', () => {
     const violations = edges
       .filter((e) => e.fromLayer !== e.toLayer)
-      .filter((e) => !ALLOWED_CROSS_LAYER[e.fromLayer].includes(e.toLayer))
+      .filter(
+        (e) =>
+          !ALLOWED_CROSS_LAYER[e.fromLayer].includes(e.toLayer) &&
+          !ALLOWED_CROSS_FILE_EDGES.has(`${e.fromFile}->${e.toFile}`),
+      )
       .map((e) => `${e.fromFile} (${e.fromLayer}) → ${e.toFile} (${e.toLayer})`)
     expect(violations, `违规跨层边：\n  ${violations.join('\n  ')}`).toEqual([])
   })

@@ -204,15 +204,39 @@ it('keeps one ACP Agent across multiple models, isolates approvals and prevents 
         events.filter((event) => event.type === 'request/header').findLast((event) => event.sessionId === childAId),
       ).data.header.config,
     ).toMatchObject({ provider: 'acp-devin', model: 'mock-model-a' })
+    const selectModel = host.ctx.sessionController.selectModel.bind(host.ctx.sessionController)
+    let failSourceRestore = true
+    const failedSourceRestore = vi
+      .spyOn(host.ctx.sessionController, 'selectModel')
+      .mockImplementation(async (request) => {
+        if (request.provider === 'acp-devin' && failSourceRestore) {
+          failSourceRestore = false
+          throw new Error('E2E_CROSS_BACKEND_RESTORE_RAW')
+        }
+        return selectModel(request)
+      })
     await page.getByRole('button', { name: /^Select model/ }).click()
     await page.getByRole('menuitem', { name: /^Model/ }).click()
     await page
       .getByLabel('Fixture codex · ACP', { exact: true })
       .getByRole('menuitemradio', { name: 'Mock Model B', exact: true })
       .click()
-    const dialog = page.getByRole('dialog').filter({ hasText: 'New session required' })
-    await dialog.waitFor()
-    await dialog.getByRole('button', { name: 'Cancel', exact: true }).last().click()
+    const dialog = page.getByRole('dialog').last()
+    try {
+      await dialog.getByText('New session required', { exact: true }).waitFor()
+      await host.ctx.settings.replace('locale', { preference: 'zh' })
+      await expect.poll(() => dialog.getByText('无法恢复当前会话原先使用的模型', { exact: true }).count()).toBe(1)
+      expect(await dialog.locator('pre').count()).toBe(0)
+      const diagnostics = dialog.getByRole('button', { name: '查看技术详情', exact: true })
+      await diagnostics.click()
+      await expect.poll(() => diagnostics.getAttribute('aria-expanded')).toBe('true')
+      await dialog.locator('pre').waitFor({ state: 'visible' })
+      await expect.poll(() => dialog.locator('pre').textContent()).toBe('restore-source\nE2E_CROSS_BACKEND_RESTORE_RAW')
+      await dialog.getByRole('button', { name: '取消', exact: true }).last().click()
+    } finally {
+      failedSourceRestore.mockRestore()
+      await host.ctx.settings.replace('locale', { preference: 'en' })
+    }
     const selected = required(host.ctx.sessionProjections.stateOf(lead.session, 'modelSelection'))
     expect(selected.pending ?? selected.lastUsed).toMatchObject({ provider: 'acp-devin', model: 'mock-model-b' })
     Object.assign(evidence, {

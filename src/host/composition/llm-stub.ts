@@ -291,6 +291,11 @@ function acpProbeFailure(
           `ACP agent "${config.command}" requires authentication. ${hint}, then re-check it in ACP settings${ref}`,
         )
       }
+      case 'resource-exhausted':
+        return wrap(
+          error.kind,
+          `ACP agent "${config.command}" reported resource or usage quota exhaustion: ${boundedProbeDiagnostic(error.message) || 'resource exhausted'}${ref}`,
+        )
       case 'timeout':
         return wrap(
           error.kind,

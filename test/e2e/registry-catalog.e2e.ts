@@ -157,7 +157,7 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
     await detail.getByLabel('Arguments', { exact: true }).fill(join(root, 'test/mock-agent/mock-agent.ts'))
     await detail.getByLabel('Environment', { exact: true }).fill('FAST_AGENT_MODEL=my-choice\nMOCK_SCENARIO=regression')
     await detail.getByRole('button', { name: 'Save', exact: true }).click()
-    await detail.getByText('Saved.', { exact: true }).waitFor()
+    await page.getByRole('alert').filter({ hasText: 'Saved' }).waitFor()
     const saved = (
       host.ctx.settings.describe().find((row) => row.ns === 'dsh-acp-adapter')?.value as {
         agents: Record<string, AcpAgentConfig>
@@ -222,6 +222,14 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
           .findLast((event) => event.type === 'turn/end'),
       ).data.reason.kind,
     ).toBe('completed')
+    detail = await openAcpPluginDetail(page)
+    const profile = page.locator('[data-dsh-acp-agent="my-fast"]')
+    await profile.getByRole('button', { name: 'Delete', exact: true }).first().click()
+    await profile.getByText(/^Delete agent ".+"\? Its model route is removed with it\.$/).waitFor()
+    await profile.getByRole('button', { name: 'Delete', exact: true }).last().click()
+    await page.getByRole('alert').filter({ hasText: 'Deleted' }).waitFor()
+    await backToPluginList(detail)
+    await page.getByRole('alert').filter({ hasText: 'Deleted' }).waitFor()
     expect(errors).toEqual([])
   } finally {
     await browser?.close()
