@@ -16,7 +16,9 @@ export interface MockTurn {
   cancelled: boolean
   cancel(): void
   cancelWait?: () => void
-  steer?: (blocks: ContentBlock[]) => void
+  steer?: (blocks: ContentBlock[]) => void | Promise<void>
+  /** Called only by the fixture transport after it writes an injected ACK. */
+  steerAcknowledged?: () => void
 }
 export interface MockSession {
   id: string

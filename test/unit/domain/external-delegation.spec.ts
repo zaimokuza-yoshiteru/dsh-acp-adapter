@@ -184,6 +184,64 @@ describe('external delegation normalizer', () => {
     expect(result).not.toContain('token=secret')
   })
 
+  it('keeps exact-limit child previews and omits the whole preview after overflow', () => {
+    const normalizer = new ExternalDelegationNormalizer('claude')
+    const spawn = (childId: string): void => {
+      normalizer.acceptNotification(
+        {
+          sessionId: 'root',
+          update: { sessionUpdate: 'subagent_spawned', subagentSessionId: childId, task: `task ${childId}` },
+        },
+        1,
+      )
+    }
+    const send = (childId: string, value: string): void => {
+      normalizer.acceptNotification(
+        {
+          sessionId: childId,
+          update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: value } },
+        },
+        2,
+      )
+    }
+    const complete = (childId: string) =>
+      normalizer.acceptNotification(
+        {
+          sessionId: 'root',
+          update: { sessionUpdate: 'subagent_state_update', subagentSessionId: childId, state: 'completed' },
+        },
+        3,
+      )
+
+    spawn('exact-limit')
+    send('exact-limit', 'x'.repeat(4_000))
+    expect(complete('exact-limit')?.result.text).toBe('x'.repeat(4_000))
+
+    spawn('overflow')
+    const splitSecret = 'ghp_' + 'A'.repeat(16)
+    send('overflow', `prefix ${splitSecret.slice(0, 9)}`)
+    send('overflow', `${splitSecret.slice(9)} suffix${'x'.repeat(4_000)}`)
+    send('overflow', 'later child output must be ignored')
+    const omitted = complete('overflow')
+    expect(omitted?.result).toEqual({
+      text: '[ACP child result omitted after exceeding the 4000-character preview limit.]',
+      source: 'verbatim-child-final',
+      completeness: 'final-output',
+    })
+    expect(omitted?.result.text).not.toContain(splitSecret)
+    expect(omitted?.result.text).not.toContain('prefix')
+    expect(omitted?.result.text).not.toContain('later child output')
+
+    spawn('huge-chunk')
+    send('huge-chunk', `secret=${'s'.repeat(20_000)}`)
+    send('huge-chunk', 'post-overflow content')
+    expect(complete('huge-chunk')?.result.text).toBe(omitted?.result.text)
+
+    spawn('independent-child')
+    send('independent-child', 'independent result')
+    expect(complete('independent-child')?.result.text).toBe('independent result')
+  })
+
   it('keeps Kimi Activity-only until its live/load identity collision gate passes', () => {
     const normalizer = new ExternalDelegationNormalizer('kimi')
     normalizer.accept(

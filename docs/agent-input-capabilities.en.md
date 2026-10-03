@@ -31,6 +31,8 @@ Kimi's `@moonshot-ai/kimi-code-sdk` is a TypeScript/Node Agent SDK for sessions 
 
 Normal handoffs retain buffered output and transfer images at complete block boundaries. New tools belong to the newly admitted message; later content from existing tools keeps its original owner. One ACP prompt may produce multiple DSH assistant segments to preserve native admission hooks and message ordering. A successful continuation does not hide the earlier response's failure or length limit.
 
+Local admission or content-validation failures before steering dispatch do not imply uncertain Agent acceptance and do not create a durable recovery gate. A dispatched request with unconfirmed acceptance still requires explicit recovery and is never resent automatically; an in-process gate remains if recording recovery state fails. Failed execution cleanup still releases its route and listeners without deleting a newer execution. Explicit `refusal` and `max_turn_requests` responses retain existing output and end with distinct failure codes rather than success or automatic retry.
+
 Explicit Stop, rejected admission, a provider switch, or unloading terminates suspended execution. Late output that has not entered the native stream is not fabricated into history. Appending to an already-closed native step would require an upstream finalization API.
 
 Ordinary prompts remain mutually exclusive so one request cannot prematurely clear another's approval state. The Agent retains ownership of permissions, its model loop, compaction, and context. See the [E2E guide](../test/e2e/README.md) for verification methods.

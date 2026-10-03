@@ -1,0 +1,23 @@
+{
+  "name": "@dsh-acp-adapter/test-render-probe",
+  "type": "module",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-chat",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@zaimokuza/dsh-acp-adapter"
+      ],
+      "platform": "web"
+    }
+  }
+}

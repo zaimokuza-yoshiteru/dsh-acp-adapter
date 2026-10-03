@@ -14,5 +14,6 @@ export const useLayoutEffect = () => {}
 export const useRef = (value) => ({ current: value })
 export const useId = () => ':test-id:'
 export const useMemo = (factory) => factory()
+export const useSyncExternalStore = (_subscribe, getSnapshot) => getSnapshot()
 
 export const useCallback = (callback) => callback

@@ -1,4 +1,4 @@
-import { createElement as h } from 'react'
+import { createElement as h, useMemo } from 'react'
 import type { ComponentType, ReactNode } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
 import type {
@@ -74,24 +74,41 @@ export function mountNativeEntry(
   const mount = (entry: StoredEntry, destination: string, root: boolean): (() => void) => {
     const aliases = new Map(Object.keys(entry.children ?? {}).map((key) => [key, `acp.native.${++generation}.${key}`]))
     const Native = entry.component as ComponentType<EntryProps>
-    const Component = (props: EntryProps): ReactNode =>
-      (root && options.wrap !== undefined
-        ? options.wrap
-        : (component: ComponentType<EntryProps>, value: EntryProps) => h(component, value))(Native, {
-        ...props,
-        ...(props.renderSlot === undefined
-          ? {}
-          : {
-              renderSlot: (key: string, owner: unknown, options?: unknown) =>
+    const Component = (props: EntryProps): ReactNode => {
+      const renderSlot = useMemo(
+        () =>
+          props.renderSlot === undefined
+            ? undefined
+            : (key: string, owner: unknown, options?: unknown) =>
                 props.renderSlot!(aliases.get(key) ?? key, owner, options),
-            }),
-        ...(props.renderSlotChain === undefined
+        [props.renderSlot],
+      )
+      const renderSlotChain = useMemo(
+        () =>
+          props.renderSlotChain === undefined
+            ? undefined
+            : (key: string, owner: unknown, options?: unknown) =>
+                props.renderSlotChain!(aliases.get(key) ?? key, owner, options),
+        [props.renderSlotChain],
+      )
+      const render =
+        root && options.wrap !== undefined
+          ? options.wrap
+          : (component: ComponentType<EntryProps>, value: EntryProps) => h(component, value)
+      return render(Native, {
+        ...props,
+        ...(renderSlot === undefined
           ? {}
           : {
-              renderSlotChain: (key: string, owner: unknown, options?: unknown) =>
-                props.renderSlotChain!(aliases.get(key) ?? key, owner, options),
+              renderSlot,
+            }),
+        ...(renderSlotChain === undefined
+          ? {}
+          : {
+              renderSlotChain,
             }),
       })
+    }
     const registration = {
       name: destination,
       ...(root && options.factory

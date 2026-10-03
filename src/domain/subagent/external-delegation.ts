@@ -44,7 +44,12 @@ interface PendingDelegation {
   readonly task: string
   readonly vendorChildId?: string
   readonly resultChunks?: string[]
+  resultChars?: number
+  resultTruncated?: boolean
 }
+
+export const EXTERNAL_CHILD_RESULT_PREVIEW_LIMIT = 4_000
+const NATIVE_CHILD_OMITTED_RESULT = '[ACP child result omitted after exceeding the 4000-character preview limit.]'
 
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -116,7 +121,20 @@ export class ExternalDelegationNormalizer {
       const pending = this.pending.get(sessionId)
       const chunk = nativeChildResultChunk(update.content)
       if (pending !== undefined && chunk !== undefined && update.sessionUpdate === 'agent_message_chunk') {
-        pending.resultChunks?.push(chunk)
+        // Keep the existing presentation budget before redaction. Once the
+        // limit is exceeded, discard the whole preview: slicing raw text here
+        // could split a secret token and make later redaction ineffective.
+        if (pending.resultTruncated !== true) {
+          const nextChars = (pending.resultChars ?? 0) + chunk.length
+          if (nextChars > EXTERNAL_CHILD_RESULT_PREVIEW_LIMIT) {
+            pending.resultChunks?.splice(0)
+            pending.resultChars = 0
+            pending.resultTruncated = true
+          } else {
+            pending.resultChunks?.push(chunk)
+            pending.resultChars = nextChars
+          }
+        }
       }
       return undefined
     }
@@ -134,7 +152,9 @@ export class ExternalDelegationNormalizer {
         label: pending.label,
         task: { text: pending.task, source: 'vendor-meta' },
         result: {
-          text: pending.resultChunks?.join('') ?? '',
+          // This is a synthesized projection from live child notifications;
+          // ACP does not provide or persist the child's original DSH history.
+          text: pending.resultTruncated === true ? NATIVE_CHILD_OMITTED_RESULT : (pending.resultChunks?.join('') ?? ''),
           source: 'verbatim-child-final',
           completeness: 'final-output',
         },

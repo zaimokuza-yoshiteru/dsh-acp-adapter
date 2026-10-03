@@ -902,9 +902,19 @@ function handleRequest(msg: MockRequest) {
     case '_session/steering': {
       if (process.env.MOCK_STEERING !== 'atomic') return respondError(id, -32601, 'Method not found')
       const session = state.sessions.get(msg.params?.sessionId ?? '')
-      if (!session?.turn?.steer) return respond(id, { outcome: 'promptRequired' })
-      session.turn.steer(msg.params?.prompt ?? [])
-      return respond(id, { outcome: 'injected' })
+      const turn = session?.turn
+      if (!turn?.steer) return respond(id, { outcome: 'promptRequired' })
+      const ack = (): void => {
+        respond(id, { outcome: 'injected' })
+        turn.steerAcknowledged?.()
+      }
+      const accepted = turn.steer(msg.params?.prompt ?? [])
+      if (accepted instanceof Promise) {
+        void accepted.then(ack, () => respondError(id, -32603, 'Test steering gate failed'))
+        return
+      }
+      ack()
+      return
     }
     case 'initialize':
       return void handleInitialize(msg)

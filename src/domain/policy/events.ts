@@ -77,7 +77,7 @@ export interface AcpTerminalAuditData {
  * re-export 保持 sidecar 审计载荷在 events.ts 的可见性）。词表手工对齐说明见
  * 定义处注释。
  */
-export type AcpDegradationCode = 'unsupported-tool-content' | 'unsupported-chunk-content'
+export type AcpDegradationCode = 'unsupported-tool-content' | 'unsupported-chunk-content' | 'activity-head-unavailable'
 export interface AcpDegradationItem {
   readonly type: string
   readonly reason: string

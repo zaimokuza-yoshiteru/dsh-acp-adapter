@@ -1,6 +1,7 @@
 import type { MockSession, PromptMessage, MockPeer } from './types.ts'
 // Keyless product scenarios. Profiles vary wire representations, never assertions.
 import fs from 'node:fs'
+import { basename, dirname, join } from 'node:path'
 import { teamTurn } from './team-turn.ts'
 import { hostToolsTurn } from './host-tools-turn.ts'
 import { scheduleTurn } from './schedule-turn.ts'
@@ -38,7 +39,104 @@ export async function regressionTurn(
   }
   const say = (text: string) =>
     sendUpdate(session.id, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } })
+  const waitForFileGate = async (
+    directory: string,
+    filename: string,
+    description: string,
+    signal: AbortSignal,
+  ): Promise<boolean> => {
+    const marker = join(directory, filename)
+    if (signal.aborted) return false
+    if (fs.existsSync(marker)) return true
+    return new Promise<boolean>((resolve, reject) => {
+      let watcher: ReturnType<typeof fs.watch> | undefined
+      let timer: NodeJS.Timeout | undefined
+      const cleanup = (): void => {
+        watcher?.close()
+        if (timer !== undefined) clearTimeout(timer)
+        signal.removeEventListener('abort', onAbort)
+      }
+      const finish = (released: boolean): void => {
+        cleanup()
+        resolve(released)
+      }
+      const onAbort = (): void => finish(false)
+      watcher = fs.watch(dirname(marker), (_event, filename) => {
+        if (filename?.toString() !== basename(marker) || !fs.existsSync(marker)) return
+        finish(true)
+      })
+      watcher.once('error', (error) => {
+        cleanup()
+        reject(error)
+      })
+      signal.addEventListener('abort', onAbort, { once: true })
+      timer = setTimeout(() => {
+        cleanup()
+        reject(new Error(`Timed out waiting for ${description} test gate`))
+      }, 20_000)
+      if (signal.aborted) finish(false)
+      else if (fs.existsSync(marker)) finish(true)
+    })
+  }
+  const waitForRenderGate = async (index: number, signal: AbortSignal): Promise<boolean> => {
+    const directory = process.env.MOCK_RENDER_GATE_DIR
+    if (directory === undefined) throw new Error('MOCK_RENDER_GATE_DIR is required for E2E_RENDER_STREAM')
+    return waitForFileGate(directory, `continue-${index}`, 'render', signal)
+  }
+  const waitForSteeringAckGate = async (signal: AbortSignal): Promise<boolean> => {
+    const directory = process.env.MOCK_STEERING_ACK_GATE_DIR
+    if (directory === undefined) throw new Error('MOCK_STEERING_ACK_GATE_DIR is required for E2E_STEERING_ACK_RACE')
+    return waitForFileGate(directory, 'release-steering-ack', 'steering acknowledgement', signal)
+  }
   try {
+    if (prompt.includes('E2E_STEERING_ACK_RACE')) {
+      const inputs: string[] = []
+      let acknowledgedSteers = 0
+      let acknowledgementAvailable: (() => void) | undefined
+      const gateAbort = new AbortController()
+      void cancelled.then(() => {
+        gateAbort.abort()
+        acknowledgementAvailable?.()
+        acknowledgementAvailable = undefined
+      })
+      const waitForSteeringAcks = async (count: number): Promise<void> => {
+        while (acknowledgedSteers < count && !session.turn?.cancelled)
+          await new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(
+              () => reject(new Error('Timed out waiting for steering RPC acknowledgements')),
+              20_000,
+            )
+            acknowledgementAvailable = () => {
+              clearTimeout(timer)
+              resolve()
+            }
+          })
+      }
+      session.turn.steer = async (blocks) => {
+        const text = blocks
+          .filter((block) => block.type === 'text')
+          .map((block) => block.text)
+          .join('\n')
+        inputs.push(text)
+        log(`regression steer=${JSON.stringify(text)} session=${session.id}`)
+        if (inputs.length === 1) {
+          log(`steering-ack-pending session=${session.id}`)
+          if (!(await waitForSteeringAckGate(gateAbort.signal)))
+            throw new Error('Steering acknowledgement gate cancelled')
+        }
+      }
+      session.turn.steerAcknowledged = () => {
+        acknowledgedSteers += 1
+        acknowledgementAvailable?.()
+        acknowledgementAvailable = undefined
+      }
+      say('E2E_STEERING_ACK_RACE_RUNNING')
+      await waitForSteeringAcks(2)
+      if (session.turn.cancelled) return respond(msg.id, { stopReason: 'cancelled' })
+      say('E2E_STEERING_ACK_RACE_DONE')
+      gateAbort.abort()
+      return respond(msg.id, { stopReason: 'end_turn' })
+    }
     if (prompt.includes('E2E_STEERING_HOLD')) {
       let receive!: (text: string) => void
       const steered = new Promise<string>((resolve) => {
@@ -184,6 +282,29 @@ export async function regressionTurn(
       say('E2E_JOB_OTHER_DONE')
     } else if (prompt.includes('E2E_RECOVERED')) {
       say('E2E_RECOVERED_DONE')
+    } else if (prompt.includes('E2E_RENDER_STREAM')) {
+      const renderAbort = new AbortController()
+      void cancelled.then(() => renderAbort.abort())
+      const releaseOrCancel = async (index: number): Promise<boolean> => waitForRenderGate(index, renderAbort.signal)
+      sendUpdate(session.id, {
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: 'E2E_RENDER_READY' },
+        messageId: 'render-probe-answer',
+      })
+      try {
+        if (!(await releaseOrCancel(-1))) return respond(msg.id, { stopReason: 'cancelled' })
+        for (let index = 0; index < 5; index++) {
+          sendUpdate(session.id, {
+            sessionUpdate: 'agent_message_chunk',
+            content: { type: 'text', text: `E2E_RENDER_CHUNK_${index}` },
+            messageId: 'render-probe-answer',
+          })
+          if (!(await releaseOrCancel(index))) return respond(msg.id, { stopReason: 'cancelled' })
+        }
+        return respond(msg.id, { stopReason: 'end_turn' })
+      } finally {
+        renderAbort.abort()
+      }
     } else if (prompt.includes('E2E_SCROLL')) {
       for (let i = 0; i < 60; i++) {
         say(`Paragraph ${i}: deterministic streaming content for native scrolling.\n\n`)

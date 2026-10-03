@@ -505,20 +505,25 @@ export function installInstalledProfileRegistry(
       imageInputAvailable: attachments !== undefined,
       recoveryStateStore: {
         read: async (sessionId) => {
-          const state = await sidecar.readRecoveryState(sessionId as never).catch(() => undefined)
-          if (state === undefined) return undefined
+          const fallback = [...profileAdapters.values()]
+            .map((adapter) => adapter.recoveryStateFallback(sessionId))
+            .find((candidate) => candidate !== undefined)
+          // An in-memory gate exists only when durable recovery persistence
+          // failed, so it must outrank any older healthy sidecar record.
+          const visibleState = fallback ?? (await sidecar.readRecoveryState(sessionId as never))
+          if (visibleState === undefined) return undefined
           return {
-            dshSessionId: state.dshSessionId,
-            kind: state.kind,
-            cause: state.cause ?? null,
-            detail: state.detail ?? null,
-            provider: state.provider ?? null,
-            acpSessionId: state.acpSessionId ?? null,
-            generation: state.generation ?? null,
-            interruptedTurnId: state.interruptedTurnId ?? null,
-            lastAttemptAt: state.lastAttemptAt ?? null,
-            lastUserAction: state.lastUserAction ?? null,
-            updatedAt: state.updatedAt,
+            dshSessionId: visibleState.dshSessionId,
+            kind: visibleState.kind,
+            cause: visibleState.cause ?? null,
+            detail: visibleState.detail ?? null,
+            provider: visibleState.provider ?? null,
+            acpSessionId: visibleState.acpSessionId ?? null,
+            generation: visibleState.generation ?? null,
+            interruptedTurnId: visibleState.interruptedTurnId ?? null,
+            lastAttemptAt: visibleState.lastAttemptAt ?? null,
+            lastUserAction: visibleState.lastUserAction ?? null,
+            updatedAt: visibleState.updatedAt,
           }
         },
       },

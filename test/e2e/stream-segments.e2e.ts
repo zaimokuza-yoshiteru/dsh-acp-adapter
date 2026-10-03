@@ -4,14 +4,23 @@ import { launchBrowser, newEnglishPage } from './browser.ts'
 import type { ObservedEvent } from './types.ts'
 import { it, expect, vi } from 'vitest'
 import { join } from 'node:path'
-import { mkdirSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { connectFreshWorkspace, writeComposerDraft } from '#host-support'
 import { launchAdapterWorld, root } from './scaffold.ts'
+
+declare global {
+  interface Window {
+    __DSH_ACP_RENDER_COUNTS__?: Record<string, number>
+    __DSH_ACP_RENDER_PROBE__?: (key: string) => void
+  }
+}
 
 it.each(['claude', 'codex', 'devin', 'kimi'])(
   'preserves %s reasoning, message and tool boundaries live and after reload',
   async (profile) => {
-    const host = await launchAdapterWorld()
+    const host = await launchAdapterWorld({ renderProbe: true })
+    const renderGateDir = mkdtempSync(join(tmpdir(), 'dsh-acp-render-gate-'))
     let browser!: TestBrowser
     const events: ObservedEvent[] = [],
       errors: string[] = []
@@ -23,7 +32,12 @@ it.each(['claude', 'codex', 'devin', 'kimi'])(
             name: profile,
             command: process.execPath,
             args: [join(root, 'test/mock-agent/mock-agent.ts')],
-            env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: profile },
+            env: {
+              HOME: host.workspaceCwd,
+              MOCK_SCENARIO: 'regression',
+              MOCK_PROFILE: profile,
+              MOCK_RENDER_GATE_DIR: renderGateDir,
+            },
           },
         },
       })
@@ -35,6 +49,13 @@ it.each(['claude', 'codex', 'devin', 'kimi'])(
         ...(process.env.DSH_E2E_BROWSER_CHANNEL ? { channel: process.env.DSH_E2E_BROWSER_CHANNEL } : {}),
       })
       const page = await newEnglishPage(browser)
+      await page.addInitScript(() => {
+        window.__DSH_ACP_RENDER_COUNTS__ = {}
+        window.__DSH_ACP_RENDER_PROBE__ = (key) => {
+          const counts = window.__DSH_ACP_RENDER_COUNTS__!
+          counts[key] = (counts[key] ?? 0) + 1
+        }
+      })
       page.on('console', (message) => {
         if (message.type() === 'error') errors.push(message.text())
       })
@@ -138,8 +159,59 @@ it.each(['claude', 'codex', 'devin', 'kimi'])(
         expect(await page.getByText('页面骨架已完成。', { exact: true }).isVisible()).toBe(false)
         await verifyOrder()
       }
+      const historicAnswer = page.getByText('页面骨架已完成。', { exact: true }).last()
+      const historicKey = required(
+        await historicAnswer.locator('xpath=ancestor::*[@data-chat-node-key][1]').getAttribute('data-chat-node-key'),
+      )
+      const historicRenderCount = await page.evaluate(
+        (key) => window.__DSH_ACP_RENDER_COUNTS__?.[key] ?? 0,
+        historicKey,
+      )
+      expect(historicRenderCount).toBeGreaterThan(0)
+      await writeComposerDraft(page, page.locator('[data-composer-input]').first(), 'E2E_RENDER_STREAM')
+      const followUp = host.whenTurnSettled(30_000)
+      await page.getByRole('button', { name: 'Send message', exact: true }).click()
+      await page.getByText('E2E_RENDER_READY', { exact: true }).waitFor()
+      const runningRenderCount = await page.evaluate((key) => window.__DSH_ACP_RENDER_COUNTS__?.[key] ?? 0, historicKey)
+      writeFileSync(join(renderGateDir, 'continue--1'), 'ready')
+      for (let index = 0; index < 5; index++) {
+        await page.getByText(`E2E_RENDER_CHUNK_${index}`, { exact: false }).waitFor()
+        const deltaRenderCount = await page.evaluate((key) => window.__DSH_ACP_RENDER_COUNTS__?.[key] ?? 0, historicKey)
+        if (deltaRenderCount !== runningRenderCount)
+          console.info(
+            '[acp-render-probe] historical render count changed during active delta',
+            index,
+            deltaRenderCount,
+          )
+        expect(deltaRenderCount).toBe(runningRenderCount)
+        writeFileSync(join(renderGateDir, `continue-${index}`), 'next')
+      }
+      await followUp
+      await page.getByText('Completed in 1s', { exact: true }).last().waitFor()
+      const finalRenderCount = await page.evaluate((key) => window.__DSH_ACP_RENDER_COUNTS__?.[key] ?? 0, historicKey)
+      console.info(
+        '[acp-render-probe] historical counts before/running/final:',
+        historicRenderCount,
+        runningRenderCount,
+        finalRenderCount,
+      )
+      const processControlBeforeInspect = page.locator('[data-turn-process-tool-calls="4"]')
+      if ((await processControlBeforeInspect.getAttribute('aria-expanded')) === 'false') {
+        await processControlBeforeInspect.focus()
+        await processControlBeforeInspect.press('Enter')
+      }
       const inspectedCall = page.locator('[data-chat-call-id$=":tool:segment-plan"]')
-      await inspectedCall.getByRole('button').first().click()
+      const inspectedGroup = inspectedCall.locator('xpath=ancestor::*[@data-step-process][1]')
+      const inspectedGroupToggle = inspectedGroup.locator(':scope > div > button')
+      await inspectedGroupToggle.waitFor()
+      if ((await inspectedGroupToggle.getAttribute('aria-expanded')) === 'false') await inspectedGroupToggle.click()
+      const inspectedToolDisclosure = inspectedCall
+        .locator('[role="button"][aria-expanded], button[aria-expanded]')
+        .first()
+      await inspectedToolDisclosure.waitFor()
+      if ((await inspectedToolDisclosure.getAttribute('aria-expanded')) === 'false')
+        await inspectedToolDisclosure.click()
+      await expect.poll(() => inspectedToolDisclosure.getAttribute('aria-expanded')).toBe('true')
       await inspectedCall.getByRole('button', { name: 'Inspect', exact: true }).click()
       await page.getByRole('dialog').waitFor()
       expect(await page.getByRole('dialog').innerText()).toContain('list_agents')
@@ -234,6 +306,7 @@ it.each(['claude', 'codex', 'devin', 'kimi'])(
     } finally {
       await browser?.close()
       await host.close()
+      rmSync(renderGateDir, { recursive: true, force: true })
     }
   },
 )

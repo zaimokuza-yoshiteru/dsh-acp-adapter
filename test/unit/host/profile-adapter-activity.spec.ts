@@ -724,6 +724,72 @@ describe('provider activity bridge', () => {
     })
   })
 
+  it('keeps non-text ACP thought content as safe reasoning and audits the degradation without showing an answer', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-nontext-thought-'))
+    roots.push(root)
+    const sidecar = testSidecar(root)
+    const message = user('Continue safely')
+    const sessions = new Map<string, SessionLike>([['session-nontext-thought', session(message)]])
+    const runtimeFactory = (): AcpProfileRuntime => ({
+      acpSessionId: 'agent-session-nontext-thought',
+      agentInfo: { name: 'thought-agent', version: '1' },
+      agentCapabilities: {},
+      protocolVersion: 1,
+      start: async () => undefined,
+      prompt: async (_content, onUpdate) => {
+        onUpdate({
+          sessionId: 'agent-session-nontext-thought' as never,
+          update: {
+            sessionUpdate: 'agent_thought_chunk',
+            content: {
+              type: 'image',
+              mimeType: 'image/png',
+              data: 'private-image-bytes',
+              uri: 'memory://?token=private',
+            },
+          },
+        } as never)
+        return { stopReason: 'end_turn' } as never
+      },
+      close: async () => undefined,
+    })
+    const adapter = new AcpProfileAdapter(
+      'nontext-thought',
+      profile,
+      seam(),
+      (id) => sessions.get(id),
+      ledgerFor(sidecar),
+      undefined,
+      runtimeFactory,
+      sidecar,
+    )
+    const chunks: unknown[] = []
+    for await (const chunk of adapter.stream(request('session-nontext-thought', message))) chunks.push(chunk)
+    const reasoning = chunks.filter(
+      (chunk): chunk is { type: string; text?: string } =>
+        typeof chunk === 'object' && chunk !== null && 'type' in chunk && chunk.type === 'reasoning-delta',
+    )
+    expect(reasoning.map((chunk) => chunk.text).join('')).toBe('[ACP image reasoning content omitted.]')
+    const finish = chunks.find(
+      (chunk) => typeof chunk === 'object' && chunk !== null && 'type' in chunk && chunk.type === 'finish',
+    ) as { reason?: { kind?: string; failure?: { code?: string } } } | undefined
+    expect(finish?.reason).toMatchObject({ kind: 'error', failure: { code: 'ACP_NO_VISIBLE_RESPONSE' } })
+
+    const entries = await sidecar.list('session-nontext-thought' as never)
+    const degradation = entries.find((entry) => entry.kind === 'degradation')
+    expect(degradation?.data).toMatchObject({
+      code: 'unsupported-chunk-content',
+      items: [
+        {
+          type: 'image',
+          reason: 'non-text ACP thought content was omitted from the safe reasoning preview',
+        },
+      ],
+    })
+    expect(JSON.stringify(degradation)).not.toContain('private-image-bytes')
+    expect(JSON.stringify(degradation)).not.toContain('token=private')
+  })
+
   it('does not treat whitespace-only assistant chunks as a visible answer', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-whitespace-response-'))
     roots.push(root)
@@ -841,6 +907,8 @@ describe('provider activity bridge', () => {
     const sidecar = testSidecar(root)
     const failingSidecar = Object.create(sidecar) as AcpSidecar
     sidecars.push(failingSidecar)
+    const append = vi.fn(sidecar.append.bind(sidecar))
+    failingSidecar.append = append
     failingSidecar.activityHead = async () => {
       throw new Error('activity head unavailable')
     }
@@ -877,5 +945,60 @@ describe('provider activity bridge', () => {
       ),
     ).toBe(true)
     expect((await sidecar.readRecoveryState('session-4' as never))?.kind).toBe('healthy')
+    expect(append).toHaveBeenCalledWith(
+      'session-4',
+      expect.objectContaining({
+        kind: 'degradation',
+        data: expect.objectContaining({
+          code: 'activity-head-unavailable',
+          items: [{ type: 'activity-head', reason: 'activity cursor could not be read at turn finish' }],
+        }),
+      }),
+    )
+  })
+
+  it('audits unsupported assistant content without persisting its payload or changing a successful finish', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-answer-content-'))
+    roots.push(root)
+    const sidecar = testSidecar(root)
+    const message = user('describe this')
+    const sessions = new Map<string, SessionLike>([['answer-content', session(message)]])
+    const secretBytes = 'base64-private-payload'
+    const runtimeFactory = (): AcpProfileRuntime => ({
+      acpSessionId: 'answer-agent',
+      start: async () => undefined,
+      prompt: async (_content, onUpdate) => {
+        onUpdate({
+          sessionId: 'answer-agent',
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            content: { type: 'audio', data: secretBytes, mimeType: 'audio/wav' },
+          },
+        } as never)
+        return { stopReason: 'end_turn' } as never
+      },
+      close: async () => undefined,
+    })
+    const adapter = new AcpProfileAdapter(
+      'activity',
+      profile,
+      seam(),
+      (id) => sessions.get(id),
+      ledgerFor(sidecar),
+      undefined,
+      runtimeFactory,
+      sidecar,
+    )
+    const chunks: unknown[] = []
+    for await (const chunk of adapter.stream(request('answer-content', message))) chunks.push(chunk)
+    const entries = await sidecar.list('answer-content' as never)
+    const degradation = entries.find((entry) => entry.kind === 'degradation')
+    expect(degradation?.data).toMatchObject({
+      code: 'unsupported-chunk-content',
+      items: [{ type: 'audio', reason: 'non-text ACP answer content was rendered with a safe text fallback' }],
+    })
+    expect(JSON.stringify(degradation)).not.toContain(secretBytes)
+    expect(chunks.at(-1)).toMatchObject({ type: 'finish', reason: { kind: 'stop' } })
+    expect((await sidecar.readRecoveryState('answer-content' as never))?.kind).toBe('healthy')
   })
 })

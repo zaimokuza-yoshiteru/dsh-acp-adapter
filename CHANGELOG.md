@@ -4,6 +4,24 @@
 
 User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for publication dates, exact installation instructions, and checksums. Historical entries were reconstructed from tag diffs; npm packages were not republished.
 
+## 0.2.0-rc.2.1 (2026-10-03)
+
+### 中文
+
+- 区分插话发送前的本地错误与远端接收结果不明，避免本地校验失败误触恢复门禁；回收失败仍释放路由和监听器。
+- 明确保留 Agent 拒绝回答或达到本轮请求次数上限的结束原因，并补齐非文本回复降级、活动游标读取失败与通知监听器异常的诊断。
+- 对话展示复用原生 builder、分组状态和历史节点，减少流式更新的重复渲染；清理过期活动窗口，保留最终答复的原生导航锚点，共享窗口归属不明时使用活动回退。
+- 非文本思考内容保留明确的推理降级提示与诊断，不冒充可见答复；Claude 外部子代理结果超过 4000 字符预览上限时释放临时内容并显示省略提示。
+- 修复 npm 包中 README 指向未打包文档的链接，并将发布工作流的 Actions 固定到已核验的提交。
+
+### English
+
+- Distinguish local steering failures before dispatch from unconfirmed remote acceptance, preventing local validation errors from creating a recovery gate; failed cleanup still releases routes and listeners.
+- Preserve explicit Agent refusal and turn-request-limit outcomes, and add diagnostics for non-text answer fallbacks, activity-cursor failures, and notification-listener errors.
+- Reuse native conversation builders, group state, and historical nodes to reduce repeated streaming renders; release obsolete activity windows, preserve native navigation anchors on final answers, and retain the activity fallback when shared-window ownership is ambiguous.
+- Retain explicit reasoning fallbacks and diagnostics for non-text thoughts without treating them as visible answers; release temporary Claude child-result content and show an omission notice when it exceeds the 4000-character preview limit.
+- Fix README links to documents excluded from the npm package and pin release-workflow Actions to verified commits.
+
 ## 0.2.0-rc.2.0 (2026-09-30)
 
 ### 中文

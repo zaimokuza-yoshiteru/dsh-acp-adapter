@@ -70,6 +70,7 @@ import { createAcpNativeElicitationHandler } from '../../domain/policy/elicitati
 import type { AcpNativeUserQuestionService } from '../../domain/policy/elicitation.ts'
 import { isAcpModelOrReasoningOption, normalizeAcpConfigOptionKey } from '../../contract/config-options.ts'
 import { AcpClientError } from '../../protocol/v1/errors.ts'
+import { AcpSteeringRequestError } from '../../protocol/v1/connection.ts'
 import type { AcpSessionNotification } from '../../protocol/v1/types.ts'
 import { nonTextContentFallback } from '../../domain/session/assistant-content.ts'
 import type { AcpNonTextContent } from '../../domain/session/assistant-content.ts'
@@ -183,11 +184,38 @@ function createNativeProfileProbe(
   })
 }
 
-function finishReason(stopReason: string): FinishReason {
+function finishReason(stopReason: string, locale?: string): FinishReason {
   if (stopReason === 'max_tokens') return { kind: 'max-tokens' }
+  const isChinese = locale !== undefined && /^zh(?:[-_]|$)/i.test(locale)
+  if (stopReason === 'refusal')
+    return {
+      kind: 'error',
+      failure: {
+        code: 'ACP_REFUSAL',
+        message: isChinese ? 'ACP 智能体拒绝了此请求。' : 'The ACP agent declined to answer this request.',
+      },
+    }
+  if (stopReason === 'max_turn_requests')
+    return {
+      kind: 'error',
+      failure: {
+        code: 'ACP_MAX_TURN_REQUESTS',
+        message: isChinese ? 'ACP 智能体已达到本轮请求次数上限。' : 'The ACP agent reached its turn request limit.',
+      },
+    }
   if (stopReason === 'cancelled')
     return { kind: 'aborted', failure: { code: 'ACP_ABORTED', message: 'ACP prompt was cancelled' } }
   return { kind: 'stop' }
+}
+
+class SteeringFailure extends Error {
+  constructor(
+    override readonly cause: unknown,
+    readonly remoteRequestSent: boolean,
+  ) {
+    super(cause instanceof Error ? cause.message : String(cause))
+    this.name = 'SteeringFailure'
+  }
 }
 
 function redactActivityValue(value: unknown, depth = 0): unknown {
@@ -432,6 +460,13 @@ interface ProfileGeneration {
   }
 }
 
+interface HandoffOwner {
+  stream: StreamHandoff
+  generation: ProfileGeneration | undefined
+  options: GenerateOptions
+  off?: () => void
+}
+
 export interface AcpProfileRuntime {
   /** Negotiate capabilities without creating session/new. */
   initialize?(signal?: AbortSignal): Promise<void>
@@ -460,7 +495,13 @@ export interface AcpProfileRuntime {
   readonly contextUsage?: AcpRuntimeContextUsage | undefined
   readonly isBusy?: boolean
   readonly canSteer?: boolean
-  steer?(content: acp.ContentBlock[]): Promise<'injected' | 'promptRequired'>
+  /**
+   * Implementations that send steering must call `onDispatch` immediately
+   * before the RPC request is handed to the transport. Returning `injected`
+   * without calling it is treated as acceptance-unknown; a response-time call
+   * is too late to project intervening notifications safely.
+   */
+  steer?(content: acp.ContentBlock[], onDispatch?: () => void): Promise<'injected' | 'promptRequired'>
   /** ACP session-scoped writes. Implementations must confirm the resulting snapshot. */
   setConfigOption?(configId: string, value: string | boolean, signal?: AbortSignal): Promise<void>
   setMode?(modeId: string, signal?: AbortSignal): Promise<void>
@@ -491,10 +532,8 @@ export class AcpProfileAdapter extends LlmAdapter {
   private readonly admittedToolSchemaOwners = new Map<string, object>()
   private claudeDraftDegradationReported = false
   private readonly ledger: DispatchLedger
-  private readonly handoffs = new Map<
-    string,
-    { stream: StreamHandoff; generation: ProfileGeneration | undefined; options: GenerateOptions; off?: () => void }
-  >()
+  private readonly handoffs = new Map<string, HandoffOwner>()
+  private readonly inMemoryRecoveryRequired = new Map<string, number>()
 
   constructor(
     readonly profileId: string,
@@ -649,7 +688,8 @@ export class AcpProfileAdapter extends LlmAdapter {
     const binding = await this.sidecar?.readLatestBinding(sessionId as never)
     const intent = await this.sidecar?.readModeIntent(sessionId as never)
     const profile = this.readConfig()
-    const recovery = await this.sidecar?.readRecoveryState(sessionId as never)
+    const recovery =
+      this.recoveryStateFallback(sessionId) ?? (await this.sidecar?.readRecoveryState(sessionId as never))
     const compatible =
       binding?.status === 'ok' &&
       binding.binding.provider === `acp-${this.profileId}` &&
@@ -667,6 +707,19 @@ export class AcpProfileAdapter extends LlmAdapter {
         )
           ? pending
           : null,
+    }
+  }
+
+  /** In-memory fail-closed fallback exposed through the existing recovery snapshot seam. */
+  recoveryStateFallback(sessionId: string): AcpRecoveryState | undefined {
+    const updatedAt = this.inMemoryRecoveryRequired.get(sessionId)
+    if (updatedAt === undefined) return undefined
+    return {
+      dshSessionId: sessionId,
+      kind: 'outcome-unknown',
+      cause: 'load-failed',
+      detail: 'ACP steering acceptance could not be confirmed; inspect the Agent session before retrying',
+      updatedAt,
     }
   }
 
@@ -1086,12 +1139,20 @@ export class AcpProfileAdapter extends LlmAdapter {
       if (options.purpose !== undefined)
         throw new LlmError('ACP does not execute auxiliary title or compaction requests', 'ACP_AUXILIARY_CALL')
       const key = String(options.sessionId ?? '')
+      if (self.inMemoryRecoveryRequired.has(key))
+        throw new LlmError('ACP steering outcome requires explicit recovery before continuing', 'ACP_RECOVERY_REQUIRED')
       const carry: StreamChunk[] = []
       let owner = self.handoffs.get(key)
+      const retire = async (candidate: HandoffOwner, collectRemainder = false): Promise<void> => {
+        try {
+          await candidate.stream.drain()
+          if (collectRemainder) carry.push(...candidate.stream.takeRemainder())
+        } finally {
+          self.detachHandoffOwner(key, candidate)
+        }
+      }
       if (owner?.stream.closing) {
-        await owner.stream.drain()
-        owner.off?.()
-        if (self.handoffs.get(key) === owner) self.handoffs.delete(key)
+        await retire(owner)
         owner = undefined
       }
       if (owner !== undefined) {
@@ -1111,26 +1172,39 @@ export class AcpProfileAdapter extends LlmAdapter {
         try {
           resumed = compatible && (await owner.stream.resume?.(options)) === true
         } catch (error) {
-          await self.sidecar?.writeRecoveryState({
-            dshSessionId: key,
-            kind: 'outcome-unknown',
-            cause: 'load-failed',
-            detail: 'ACP steering acceptance could not be confirmed; inspect the Agent session before retrying',
-            provider: options.provider,
-            updatedAt: Date.now(),
-          })
-          await owner.stream.drain().catch(() => undefined)
-          owner.off?.()
-          self.handoffs.delete(key)
+          const localFailure = error instanceof SteeringFailure && !error.remoteRequestSent
+          const remoteRequestSent = !localFailure
+          if (remoteRequestSent) {
+            try {
+              if (self.sidecar === undefined) throw new Error('ACP sidecar is unavailable')
+              await self.sidecar.writeRecoveryState({
+                dshSessionId: key,
+                kind: 'outcome-unknown',
+                cause: 'load-failed',
+                detail: 'ACP steering acceptance could not be confirmed; inspect the Agent session before retrying',
+                provider: options.provider,
+                updatedAt: Date.now(),
+              })
+            } catch {
+              // If durable state cannot record the uncertainty, keep a bounded
+              // session-local gate until the user completes explicit recovery.
+              if (!self.inMemoryRecoveryRequired.has(key)) {
+                self.inMemoryRecoveryRequired.set(key, Date.now())
+                try {
+                  self.controlsChanged?.(key)
+                } catch {
+                  /* recovery notification is best effort and cannot alter the gate */
+                }
+              }
+            }
+            await retire(owner).catch(() => undefined)
+          }
           throw new LlmError(error instanceof Error ? error.message : String(error), 'ACP_STEERING_FAILED', {
             cause: error,
           })
         }
         if (!resumed) {
-          await owner.stream.drain()
-          carry.push(...owner.stream.takeRemainder())
-          owner.off?.()
-          self.handoffs.delete(key)
+          await retire(owner, true)
           owner = undefined
         }
       }
@@ -1159,29 +1233,50 @@ export class AcpProfileAdapter extends LlmAdapter {
           try {
             await stream.drain()
           } finally {
-            captured.off?.()
-            if (self.handoffs.get(key) === captured) self.handoffs.delete(key)
+            self.detachHandoffOwner(key, captured)
           }
         }
         const view = self.sessionOf(key)
         const offEnd = view?.watchTurnEnd?.(() => {
-          void cleanup().catch((error) => self.log?.(`ACP suspended stream cleanup: ${String(error)}`))
+          void cleanup().catch(() => {
+            try {
+              self.log?.('ACP suspended stream cleanup failed')
+            } catch {
+              /* cleanup diagnostics are best effort */
+            }
+          })
         })
         const offRoute = view?.watchRouteChange?.(options.provider, cleanup)
         owner.off = () => {
-          offEnd?.()
-          offRoute?.()
+          try {
+            offEnd?.()
+          } finally {
+            offRoute?.()
+          }
         }
       }
       try {
         yield* owner.stream.segment()
       } finally {
         if (!owner.stream.suspended) {
-          owner.off?.()
-          if (self.handoffs.get(key) === owner) self.handoffs.delete(key)
+          self.detachHandoffOwner(key, owner)
         }
       }
     })()
+  }
+
+  private detachHandoffOwner(key: string, owner: HandoffOwner): void {
+    try {
+      owner.off?.()
+    } catch {
+      try {
+        this.log?.('ACP stream listener cleanup failed')
+      } catch {
+        /* listener cleanup diagnostics must not block owner retirement */
+      }
+    } finally {
+      if (this.handoffs.get(key) === owner) this.handoffs.delete(key)
+    }
   }
 
   private executionStream(
@@ -1717,11 +1812,15 @@ export class AcpProfileAdapter extends LlmAdapter {
         let done = false
         let failure: unknown
         let visibleContentEmitted = false
+        const unsupportedChunkContents: Array<{ type: string; reason: string }> = []
+        let unsupportedChunkContentsTruncated = false
+        let contentBreakVersion = 0
         // Only contiguous content belongs to the same native block. Never
         // return to an older text/reasoning index after another segment.
         let nextContentIndex = contentOffset
         let contentSegment: { kind: 'text' | 'reasoning'; index: number; messageId?: string } | undefined
         const breakContent = (): void => {
+          contentBreakVersion += 1
           contentSegment = undefined
         }
         const contentIndex = (kind: 'text' | 'reasoning', messageId?: string | null): number => {
@@ -1739,8 +1838,13 @@ export class AcpProfileAdapter extends LlmAdapter {
           wake?.()
           wake = undefined
         }
+        const noteUnsupportedChunk = (type: string, reason: string): void => {
+          if (unsupportedChunkContents.length < 32) unsupportedChunkContents.push({ type, reason })
+          else unsupportedChunkContentsTruncated = true
+        }
         const pushNonTextFallback = (content: AcpNonTextContent): void => {
           breakContent()
+          noteUnsupportedChunk(content.type, 'non-text ACP answer content was rendered with a safe text fallback')
           pushChunk({
             type: 'text-delta',
             index: contentIndex('text'),
@@ -1781,6 +1885,22 @@ export class AcpProfileAdapter extends LlmAdapter {
             }
           }
           pushNonTextFallback(content)
+        }
+        const writeUnsupportedChunkAudit = async (): Promise<void> => {
+          if (unsupportedChunkContents.length === 0 || self.sidecar === undefined) return
+          try {
+            await self.sidecar.append(sessionKey as never, {
+              kind: 'degradation',
+              data: {
+                code: 'unsupported-chunk-content',
+                items: unsupportedChunkContents,
+                keptPreviewChars: 0,
+                truncated: unsupportedChunkContentsTruncated,
+              },
+            })
+          } catch {
+            /* best effort: audit failure never changes the prompt outcome */
+          }
         }
         // Attachment admission is asynchronous while ACP notifications are not.
         // Serialize all assistant chunks through one tail so text/image/text
@@ -1878,10 +1998,20 @@ export class AcpProfileAdapter extends LlmAdapter {
             scheduleContent(async () => {
               await emitAgentContent(update.content, update.messageId)
             })
-          } else if (update.sessionUpdate === 'agent_thought_chunk' && update.content.type === 'text') {
-            const thought = update.content.text
+          } else if (update.sessionUpdate === 'agent_thought_chunk') {
+            const thought = update.content
             scheduleContent(() => {
-              pushChunk({ type: 'reasoning-delta', index: contentIndex('reasoning', update.messageId), text: thought })
+              const text =
+                thought.type === 'text'
+                  ? thought.text
+                  : (() => {
+                      noteUnsupportedChunk(
+                        thought.type,
+                        'non-text ACP thought content was omitted from the safe reasoning preview',
+                      )
+                      return `[ACP ${thought.type} reasoning content omitted.]`
+                    })()
+              pushChunk({ type: 'reasoning-delta', index: contentIndex('reasoning', update.messageId), text })
             })
           }
         }
@@ -1909,45 +2039,85 @@ export class AcpProfileAdapter extends LlmAdapter {
         let stopWatchingInput = watchInput()
         handoff.resume = async (nextOptions) => {
           let nextProof: CurrentStepProof | undefined
-          const nextMessages = admitCurrentStep(nextOptions, session, (proof) => {
-            nextProof = proof
-          })
-          if (nextProof?.turn !== admissionProof?.turn) return false
-          const modelContextSnapshots = session?.currentModelContextSnapshots?.()
-          const nextPrompt = await toAcpPrompt(nextMessages, {
-            system: hostSystemPrompt(nextOptions),
-            ...(modelContextSnapshots === undefined ? {} : { modelContextSnapshots }),
-            skillRoute: skillRouteForTools(nextOptions.tools),
-            imageEnabled: runtime.agentCapabilities?.promptCapabilities?.image === true,
-            ...(self.attachments === undefined ? {} : { attachments: self.attachments }),
-            signal: promptSignal,
-          })
-          if (nextPrompt.length === 0) throw new AcpPromptContentError('Steering input contains no supported content')
-          if (remoteSettled || runtime.canSteer !== true || runtime.steer === undefined) return false
-          // Finish notifications already admitted before the steering request.
-          // Agents may emit new tools before acknowledging injection, so the
-          // request boundary, rather than its response, owns their projection.
-          await contentDeliveryTail
-          if (remoteSettled) return false
+          let nextPrompt: acp.ContentBlock[]
+          try {
+            const nextMessages = admitCurrentStep(nextOptions, session, (proof) => {
+              nextProof = proof
+            })
+            if (nextProof?.turn !== admissionProof?.turn) return false
+            const modelContextSnapshots = session?.currentModelContextSnapshots?.()
+            nextPrompt = await toAcpPrompt(nextMessages, {
+              system: hostSystemPrompt(nextOptions),
+              ...(modelContextSnapshots === undefined ? {} : { modelContextSnapshots }),
+              skillRoute: skillRouteForTools(nextOptions.tools),
+              imageEnabled: runtime.agentCapabilities?.promptCapabilities?.image === true,
+              ...(self.attachments === undefined ? {} : { attachments: self.attachments }),
+              signal: promptSignal,
+            })
+            if (nextPrompt.length === 0) throw new AcpPromptContentError('Steering input contains no supported content')
+            if (remoteSettled || runtime.canSteer !== true || runtime.steer === undefined) return false
+            // Finish notifications already admitted before the steering request.
+            // Agents may emit new tools before acknowledging injection, so the
+            // request boundary, rather than its response, owns their projection.
+            await contentDeliveryTail
+            if (remoteSettled) return false
+          } catch (error) {
+            throw new SteeringFailure(error, false)
+          }
           const previousAnchor = currentAnchor
           const previousOffset = activityIndexOffset
-          currentAnchor = nextProof!.anchorMessageId
-          // A pending pull may contain the old segment's final text. It will
-          // occupy a block in the next native reply before the injected output.
-          activityIndexOffset = Math.min(
-            nextContentIndex,
-            handoff.pendingIndex ?? nextContentIndex,
-            ...queue.flatMap((chunk) => ('index' in chunk ? [chunk.index] : [])),
-          )
-          breakContent()
-          // Once a newer admitted request is about to enter this prompt, any
-          // earlier report (including an outstanding tool call) is stale.
-          teammateReportEligible = false
-          teammateReportConfirmed = false
-          const result = await runtime.steer(nextPrompt)
-          if (result !== 'injected') {
+          const previousSegment = contentSegment
+          const previousReportEligible = teammateReportEligible
+          const previousReportConfirmed = teammateReportConfirmed
+          let projectedAtDispatch = false
+          let segmentBoundaryVersion = contentBreakVersion
+          let segmentBoundaryIndex = nextContentIndex
+          const applyProjectionAtDispatch = (): void => {
+            projectedAtDispatch = true
+            currentAnchor = nextProof!.anchorMessageId
+            // A pending pull may contain the old segment's final text. It will
+            // occupy a block in the next native reply before injected output.
+            activityIndexOffset = Math.min(
+              nextContentIndex,
+              handoff.pendingIndex ?? nextContentIndex,
+              ...queue.flatMap((chunk) => ('index' in chunk ? [chunk.index] : [])),
+            )
+            breakContent()
+            segmentBoundaryVersion = contentBreakVersion
+            segmentBoundaryIndex = nextContentIndex
+            teammateReportEligible = false
+            teammateReportConfirmed = false
+          }
+          const restoreProjection = (): void => {
             currentAnchor = previousAnchor
             activityIndexOffset = previousOffset
+            teammateReportEligible = previousReportEligible
+            teammateReportConfirmed = previousReportConfirmed
+            // Restore the prior text segment only when nothing arrived after
+            // the request boundary; never revisit an index already emitted.
+            if (
+              projectedAtDispatch &&
+              contentBreakVersion === segmentBoundaryVersion &&
+              nextContentIndex === segmentBoundaryIndex &&
+              contentSegment === undefined
+            )
+              contentSegment = previousSegment
+          }
+          let result: 'injected' | 'promptRequired'
+          try {
+            result = await runtime.steer(nextPrompt, applyProjectionAtDispatch)
+          } catch (error) {
+            // From the point the RPC is invoked, rejection no longer proves
+            // whether the Agent accepted the injected prompt. Only the concrete
+            // connection marker can prove it failed before SDK dispatch.
+            const remoteRequestSent = !(error instanceof AcpSteeringRequestError) || error.remoteRequestSent
+            if (!remoteRequestSent) restoreProjection()
+            throw new SteeringFailure(error, remoteRequestSent)
+          }
+          if (result === 'injected' && !projectedAtDispatch)
+            throw new SteeringFailure(new Error('ACP steering runtime did not confirm its dispatch boundary'), true)
+          if (result !== 'injected') {
+            restoreProjection()
             return false
           }
           // A racing later insertion gets its own native admission boundary.
@@ -2039,8 +2209,8 @@ export class AcpProfileAdapter extends LlmAdapter {
                     await durableSidecar.append(sessionKey as never, {
                       kind: 'degradation',
                       data: {
-                        code: 'unsupported-tool-content',
-                        items: [{ type: 'activity-head', reason: 'activity cursor unavailable at turn finish' }],
+                        code: 'activity-head-unavailable',
+                        items: [{ type: 'activity-head', reason: 'activity cursor could not be read at turn finish' }],
                         keptPreviewChars: 0,
                         truncated: false,
                       },
@@ -2050,6 +2220,7 @@ export class AcpProfileAdapter extends LlmAdapter {
                   }
                 }
               }
+              await writeUnsupportedChunkAudit()
               const replayPayload =
                 response.stopReason === 'cancelled' ||
                 committedBinding === undefined ||
@@ -2070,10 +2241,21 @@ export class AcpProfileAdapter extends LlmAdapter {
                         ? {}
                         : { activityAnchorMessageId: admissionProof.anchorMessageId }),
                     }
+              let responseLocale: string | undefined
+              if (response.stopReason === 'refusal' || response.stopReason === 'max_turn_requests') {
+                try {
+                  responseLocale = self.resolveQuestions?.(sessionKey)?.locale
+                } catch {
+                  /* locale lookup is presentation-only and cannot change a settled prompt outcome */
+                }
+              }
               const responseFinish =
-                interruptedForInput && options.signal?.aborted !== true
+                interruptedForInput &&
+                options.signal?.aborted !== true &&
+                response.stopReason !== 'refusal' &&
+                response.stopReason !== 'max_turn_requests'
                   ? { kind: 'stop' as const }
-                  : finishReason(String(response.stopReason))
+                  : finishReason(String(response.stopReason), responseLocale)
               // ACP deliberately separates private reasoning from the visible
               // assistant answer.  A successful turn that only emitted
               // agent_thought_chunk is therefore not a usable DSH answer.  Do not
@@ -2134,6 +2316,7 @@ export class AcpProfileAdapter extends LlmAdapter {
             remoteSettled = true
             stopWatchingInput?.()
             await contentDeliveryTail.catch(() => undefined)
+            await writeUnsupportedChunkAudit()
             settleRunningActivities(options.signal?.aborted === true ? 'cancelled' : 'failed')
             await activityWriteTail
             // `auth_required` is a definitive JSON-RPC rejection, not an
@@ -2279,6 +2462,7 @@ export class AcpProfileAdapter extends LlmAdapter {
       lastUserAction: 'rebind-blank',
       updatedAt: Date.now(),
     })
+    this.inMemoryRecoveryRequired.delete(sessionId)
   }
 
   /** Allow a user-selected retry to reuse the original durable ACP binding. */
@@ -2334,6 +2518,7 @@ export class AcpProfileAdapter extends LlmAdapter {
         lastUserAction: 'retry-original',
         updatedAt: Date.now(),
       })
+      this.inMemoryRecoveryRequired.delete(sessionId)
     } catch (error: unknown) {
       await this.releaseRuntime(runtimeKey, runtime)
       const detail = `ACP retry failed: ${error instanceof Error ? error.message : String(error)}`
@@ -2354,12 +2539,17 @@ export class AcpProfileAdapter extends LlmAdapter {
   }
 
   close(): Promise<void> {
-    const handoffs = [...this.handoffs.values()]
-    for (const owner of handoffs) {
-      owner.off?.()
-      owner.stream.cancel?.()
+    const handoffs = [...this.handoffs.entries()]
+    for (const [key, owner] of handoffs) {
+      this.detachHandoffOwner(key, owner)
+      try {
+        owner.stream.cancel?.()
+      } catch {
+        /* continue retiring the remaining owners */
+      }
     }
     this.handoffs.clear()
+    this.inMemoryRecoveryRequired.clear()
     this.admittedToolSchemas.clear()
     this.admittedToolSchemaOwners.clear()
     const keys = [...this.runtimes.keys()]
@@ -2368,7 +2558,10 @@ export class AcpProfileAdapter extends LlmAdapter {
     for (const key of keys) this.controlsChanged?.(key.slice(0, key.lastIndexOf(':')))
     return Promise.all([
       ...closing,
-      ...handoffs.filter((owner) => owner.stream.suspended).map((owner) => owner.stream.drain()),
+      ...handoffs
+        .map(([, owner]) => owner)
+        .filter((owner) => owner.stream.suspended)
+        .map((owner) => owner.stream.drain()),
     ]).then(() => undefined)
   }
 

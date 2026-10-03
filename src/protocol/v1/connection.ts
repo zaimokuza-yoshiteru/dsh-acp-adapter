@@ -82,6 +82,17 @@ export const DEFAULT_SESSION_SETUP_TIMEOUT_MS = 30_000
 /** 会话写类 RPC 的默认预算（session/set_config_option、session/set_mode）。 */
 export const DEFAULT_SESSION_WRITE_TIMEOUT_MS = 15_000
 
+/** Provenance for a steering failure relative to the JSON-RPC send boundary. */
+export class AcpSteeringRequestError extends Error {
+  constructor(
+    readonly remoteRequestSent: boolean,
+    cause: unknown,
+  ) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause })
+    this.name = 'AcpSteeringRequestError'
+  }
+}
+
 const CLAUDE_NATIVE_SUBAGENT_CAPABILITY = 'nativeSubagentSessions'
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -274,6 +285,7 @@ export class AcpClientConnection {
   private readonly terminalHandlers: AcpConnectionOptions['terminalHandlers']
   private readonly enableClaudeDraftSubagents: boolean
   private readonly onCapabilityDegraded: AcpConnectionOptions['onCapabilityDegraded']
+  private readonly onProcessWarn: NonNullable<AcpConnectionOptions['onProcessWarn']>
   private readonly activeSessionIds = new Set<string>()
   /** Sessions whose `session/prompt` RPC is currently in flight. Permission
    * requests are valid only inside this exact turn boundary. */
@@ -288,6 +300,7 @@ export class AcpClientConnection {
    * 不可证；置位时已后台发起 close()，此后所有 RPC 立即拒绝（见 {@link rpc}）。
    */
   private poisonedByOp: string | undefined
+  private listenerFailureReported = false
 
   constructor(spec: AcpConnectionSpec, options: AcpConnectionOptions = {}) {
     if (spec.argv.length === 0) {
@@ -335,6 +348,7 @@ export class AcpClientConnection {
     this.terminalHandlers = options.terminalHandlers
     this.enableClaudeDraftSubagents = options.enableClaudeDraftSubagents === true
     this.onCapabilityDegraded = options.onCapabilityDegraded
+    this.onProcessWarn = options.onProcessWarn ?? ((message) => console.error(message))
     if (options.onSessionUpdate !== undefined) this.updateListeners.add(options.onSessionUpdate)
 
     // 结构化 spawn：argv 直达 seam，不经 shell（堵注入面； 经 spawnPlan/wrapArgv 包
@@ -390,18 +404,39 @@ export class AcpClientConnection {
     return record(steering) && steering.supported === true && steering.idleBehavior === 'promptRequired'
   }
 
-  async steer(sessionId: string, prompt: acp.ContentBlock[]): Promise<'injected' | 'promptRequired'> {
+  async steer(
+    sessionId: string,
+    prompt: acp.ContentBlock[],
+    onDispatch?: () => void,
+  ): Promise<'injected' | 'promptRequired'> {
     if (!this.supportsSteering) return 'promptRequired'
-    const result: unknown = await this.rpc(
-      '_session/steering',
-      (agent) => agent.request('_session/steering', { sessionId, prompt }),
-      {},
-      DEFAULT_SESSION_WRITE_TIMEOUT_MS,
-    )
+    let remoteRequestSent = false
+    let result: unknown
+    try {
+      result = await this.rpc(
+        '_session/steering',
+        (agent) => {
+          // Let the owner switch projection at the actual dispatch boundary.
+          // A failure before this callback is known local; after it, remote
+          // acceptance may be uncertain.
+          onDispatch?.()
+          remoteRequestSent = true
+          return agent.request('_session/steering', { sessionId, prompt })
+        },
+        {},
+        DEFAULT_SESSION_WRITE_TIMEOUT_MS,
+      )
+    } catch (error) {
+      throw new AcpSteeringRequestError(remoteRequestSent, error)
+    }
     if (record(result) && (result.outcome === 'injected' || result.outcome === 'promptRequired')) return result.outcome
     // A detached new turn or unknown acceptance must never trigger a resend.
-    await this.close()
-    throw new Error('ACP_STEERING_OUTCOME_UNKNOWN')
+    try {
+      await this.close()
+    } catch {
+      /* the response already proves an unknown remote acceptance */
+    }
+    throw new AcpSteeringRequestError(true, new Error('ACP_STEERING_OUTCOME_UNKNOWN'))
   }
 
   /** initialize 协商出的 ACP 协议版本（未协商时为 undefined；binding 预检比对用）。 */
@@ -907,7 +942,16 @@ export class AcpClientConnection {
       try {
         listener(notification)
       } catch {
-        // 监听器错误不得污染协议流（SDK 对通知 handler 抛错仅记日志，这里主动吞掉）
+        // Keep listener isolation, but expose one bounded diagnostic per
+        // connection. Exception text may contain prompt or tool content.
+        if (!this.listenerFailureReported) {
+          this.listenerFailureReported = true
+          try {
+            this.onProcessWarn('ACP session/update listener failed; subsequent listeners were still notified')
+          } catch {
+            /* logging must not break notification delivery either */
+          }
+        }
       }
     }
   }

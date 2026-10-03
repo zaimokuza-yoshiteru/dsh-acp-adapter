@@ -18,7 +18,10 @@ import { MessageId } from '@deepseek-ai/dsh-llm/brand'
 import { SessionAlreadyExistsError, SessionPersistenceNotFoundError } from '@deepseek-ai/dsh-session-persistence'
 import type { SessionHandle, SessionPersistence } from '@deepseek-ai/dsh-session-persistence'
 import type { AcpActivityRecord, AcpSidecar } from '../../persistence/sidecar.ts'
-import type { ExternalDelegationObservation } from '../../domain/subagent/external-delegation.ts'
+import {
+  EXTERNAL_CHILD_RESULT_PREVIEW_LIMIT,
+  type ExternalDelegationObservation,
+} from '../../domain/subagent/external-delegation.ts'
 import { redactSecretText } from '../../domain/observability/redaction.ts'
 
 export const EXTERNAL_SUBAGENT_ACTIVITY_ANCHOR = 'external-subagent-record'
@@ -78,7 +81,7 @@ function digest(value: unknown): string {
   return createHash('sha256').update(canonical(value)).digest('hex')
 }
 
-function bounded(value: string, limit = 4_000): string {
+function bounded(value: string, limit = EXTERNAL_CHILD_RESULT_PREVIEW_LIMIT): string {
   return value.length <= limit ? value : `${value.slice(0, limit)}… [truncated]`
 }
 

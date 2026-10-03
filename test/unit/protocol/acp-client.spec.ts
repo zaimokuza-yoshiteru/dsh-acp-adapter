@@ -479,6 +479,27 @@ describe('prompt 流与 typed 方法', () => {
     ])
   })
 
+  it('隔离 session/update listener 异常，并以脱敏的一次性诊断继续通知其他 listener', async () => {
+    const updates: AcpSessionNotification[] = []
+    const warnings: string[] = []
+    const { conn } = connectMock('happy', {
+      conn: {
+        onProcessWarn: (message) => warnings.push(message),
+        onSessionUpdate: (notification) => {
+          if (notification.update.sessionUpdate === 'agent_message_chunk') {
+            throw new Error('secret=do-not-log prompt text')
+          }
+        },
+      },
+    })
+    await conn.initialize()
+    const session = await conn.newSession()
+    await conn.prompt(session.sessionId, PROMPT_BLOCKS, (notification) => updates.push(notification))
+    expect(updates.some((notification) => notification.update.sessionUpdate === 'agent_message_chunk')).toBe(true)
+    expect(warnings).toEqual(['ACP session/update listener failed; subsequent listeners were still notified'])
+    expect(warnings.join(' ')).not.toContain('do-not-log')
+  })
+
   it('session/resume：恢复已有会话且不回放历史 update', async () => {
     const updates: AcpSessionNotification[] = []
     const { conn } = connectMock('happy', {

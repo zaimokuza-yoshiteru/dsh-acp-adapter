@@ -2,7 +2,7 @@
 
 [English](README.en.md)
 
-[更新记录](CHANGELOG.md) · [版本发布与安装信息](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases)
+[更新记录](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/main/CHANGELOG.md) · [版本发布与安装信息](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases)
 
 在 DSH 会话页面使用 **Claude · Codex · Devin · Kimi**。
 
@@ -53,7 +53,7 @@ pnpm install --frozen-lockfile
 
 `pnpm typecheck` 同时检查源码、测试和开发脚本。复杂脚本及测试使用 TypeScript；少量启动脚本和加载器夹具保留 JavaScript，`lib/` 中的 JavaScript 是构建产物。
 
-常规开发无需上游源码；浏览器回归的准备步骤见 [E2E 指南](test/e2e/README.md)。
+常规开发无需上游源码；浏览器回归的准备步骤见 [E2E 指南](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/main/test/e2e/README.md)。
 
 ## <img src="assets/readme/icon-start.svg" width="24" height="24" alt="" /> 三步接入
 
@@ -98,9 +98,9 @@ Devin 连接 DSH 工具时，会通过原生 `devin mcp add` 自动注册或刷�
 
 成员管理中点击成员名可在原生侧栏查看会话；运行中仍可查看设置，禁用原因显示在菜单中。批量调整后可展开各成员的结果。恢复状态读取失败时，输入栏提供重试入口。
 
-**DSH 插件工具自动接入：** 当前会话可见的原生工具会自动通过 MCP 提供给 Agent，无需手填工具名，也不需要开启 Teams。例如，宿主提供 `present` 时可直接使用原生文件交付与预览。调用经过原生工具执行链，并按当前会话的 DSH 工具审批策略处理，同时保留工具自身规则。旧 `hostTools` 配置不再生效，编辑保存后移除。工具桥的能力边界见 [原生复用说明](docs/native-reuse.md)。
+**DSH 插件工具自动接入：** 当前会话可见的原生工具会自动通过 MCP 提供给 Agent，无需手填工具名，也不需要开启 Teams。例如，宿主提供 `present` 时可直接使用原生文件交付与预览。调用经过原生工具执行链，并按当前会话的 DSH 工具审批策略处理，同时保留工具自身规则。旧 `hostTools` 配置不再生效，编辑保存后移除。工具桥的能力边界见 [原生复用说明](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/main/docs/native-reuse.md)。
 
-运行中按 Enter 会排队；使用队列的插话操作可发送到当前执行。插件优先使用 Agent 声明的安全原生注入能力，否则取消当前执行，等其收尾后在同一 Agent 会话续发。Kimi 无需新增 SDK。取消超时不会盲目重发，权限与上下文仍由 Agent 管理。详见[插话能力与限制](docs/agent-input-capabilities.md)。
+运行中按 Enter 会排队；使用队列的插话操作可发送到当前执行。插件优先使用 Agent 声明的安全原生注入能力，否则取消当前执行，等其收尾后在同一 Agent 会话续发。Kimi 无需新增 SDK。取消超时不会盲目重发，权限与上下文仍由 Agent 管理。详见[插话能力与限制](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/main/docs/agent-input-capabilities.md)。
 
 ## <img src="assets/readme/icon-update.svg" width="24" height="24" alt="" /> 更新与卸载
 

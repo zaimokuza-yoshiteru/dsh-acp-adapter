@@ -277,9 +277,9 @@ export class AcpSessionRuntime {
     return this.connection?.supportsSteering === true && this.pendingQuestions === 0
   }
 
-  async steer(content: acp.ContentBlock[]): Promise<'injected' | 'promptRequired'> {
+  async steer(content: acp.ContentBlock[], onDispatch?: () => void): Promise<'injected' | 'promptRequired'> {
     if (!this.canSteer || !this.promptActive || this.sessionId === undefined) return 'promptRequired'
-    return await this.connection!.steer(this.sessionId, content)
+    return await this.connection!.steer(this.sessionId, content, onDispatch)
   }
 
   async start(signal?: AbortSignal): Promise<void> {

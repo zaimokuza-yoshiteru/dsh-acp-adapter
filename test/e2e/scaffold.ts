@@ -1,6 +1,7 @@
 import type {} from '@deepseek-ai/dsh-api-terminal-controller'
 import type {} from '@deepseek-ai/dsh-agent-default-model'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -15,18 +16,27 @@ export async function launchAdapterWorld({
   timedAskUser,
   teamMembers,
   terminalShell,
+  renderProbe = false,
 }: {
   teams?: boolean
   schedule?: boolean
   timedAskUser?: { timeout: number }
   teamMembers?: number
   terminalShell?: { path: string; name: string; args: string[] }
+  renderProbe?: boolean
 } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'dsh-acp-e2e-install-'))
   try {
     const upstream = process.env.DSH_UPSTREAM_CHECKOUT ?? resolve(root, '../reference/deepseek-harness')
+    if (renderProbe)
+      execFileSync('pnpm', ['exec', 'tsdown', '--config', 'test/e2e/fixtures/render-probe/tsdown.config.ts'], {
+        cwd: root,
+        stdio: 'inherit',
+        shell: process.platform === 'win32',
+      })
     const packages = [
       { dir: root, enabled: true },
+      ...(renderProbe ? [{ dir: join(root, 'test/e2e/fixtures/render-probe'), enabled: true }] : []),
       ...(teams ? [{ dir: join(upstream, 'packages/experimental/agent-team-profile'), enabled: true }] : []),
       ...(schedule ? [{ dir: join(upstream, 'packages/experimental/schedule-bundle'), enabled: true }] : []),
     ]

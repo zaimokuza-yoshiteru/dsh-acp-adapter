@@ -8,6 +8,12 @@ import { describe, expect, it } from 'vitest'
 const root = new URL('../..', import.meta.url)
 const pkg = JSON.parse(readFileSync(new URL('package.json', root), 'utf8'))
 const verifyRelease = fileURLToPath(new URL('scripts/verify-release.ts', root))
+const actionUseLine = /^\s*(?:-\s*)?uses:.*$/gm
+const pinnedExternalAction = /^\s*(?:-\s*)?uses:\s*[\w.-]+\/[\w.-]+@[a-f0-9]{40}\s+#\s*v\d+(?:\.\d+){0,2}\s*$/
+
+function unpinnedActions(workflow: string): string[] {
+  return (workflow.match(actionUseLine) ?? []).filter((line) => !pinnedExternalAction.test(line))
+}
 
 describe('npm release contract', () => {
   it.each([
@@ -76,13 +82,26 @@ describe('npm release contract', () => {
     const workflow = readFileSync(new URL('.github/workflows/publish.yml', root), 'utf8').replaceAll('\r\n', '\n')
     expect(workflow).toContain("tags:\n      - 'v*'")
     expect(workflow).toContain('workflow_dispatch:')
-    expect(workflow).toContain('pnpm/action-setup@v4')
+    expect(workflow).toMatch(/pnpm\/action-setup@[a-f0-9]{40} # v4(?:\.\d+){0,2}/)
     expect(workflow).toContain('version: 10.7.0')
     expect(workflow).not.toContain('corepack')
     expect(workflow).toContain('id-token: write')
     expect(workflow).toContain('environment: npm-publish')
     expect(workflow).toContain('npm publish "dist/npm/${{ needs.pack.outputs.tarball }}"')
     expect(workflow).not.toMatch(/NPM_TOKEN|NODE_AUTH_TOKEN/)
+  })
+
+  it('pins every external action to a reviewed commit and documents its release tag', () => {
+    const workflow = readFileSync(new URL('.github/workflows/publish.yml', root), 'utf8').replaceAll('\r\n', '\n')
+    const matchedSteps = workflow.match(actionUseLine) ?? []
+    expect(matchedSteps.length).toBeGreaterThan(0)
+    expect(unpinnedActions(workflow)).toEqual([])
+
+    const floatingCheckout = workflow.replace(
+      'actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0',
+      'actions/checkout@v6 # v6.1.0',
+    )
+    expect(unpinnedActions(floatingCheckout)).toEqual([expect.stringContaining('actions/checkout@v6 # v6.1.0')])
   })
 
   it('checks release eligibility before installing development dependencies', () => {

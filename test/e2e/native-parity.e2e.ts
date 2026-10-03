@@ -1025,6 +1025,96 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
       }
     })
 
+  it('keeps a third native input queued while the first atomic-steering acknowledgement is pending', async () => {
+    const previous = host.ctx.settings.describe().find((row) => row.ns === 'dsh-acp-adapter')?.value as {
+      agents: Record<string, AcpAgentConfig>
+    }
+    const gateDirectory = join(host.workspaceCwd, `steering-ack-gate-${profile}-${ordinal}`)
+    mkdirSync(gateDirectory, { recursive: true })
+    const releaseMarker = join(gateDirectory, 'release-steering-ack')
+    rmSync(releaseMarker, { force: true })
+    await host.ctx.settings.replace('dsh-acp-adapter', {
+      ...previous,
+      agents: {
+        ...previous.agents,
+        [profile]: {
+          ...previous.agents[profile],
+          env: {
+            ...previous.agents[profile].env,
+            MOCK_STEERING: 'atomic',
+            MOCK_STEERING_ACK_GATE_DIR: gateDirectory,
+          },
+        },
+      },
+    })
+    const off = host.ctx.on('agent/pre-step', async (_payload, next) => {
+      const decision = await next()
+      if (decision.kind === 'reject') return decision
+      return {
+        ...decision,
+        messages: decision.messages.map((message) => ({
+          ...message,
+          content: message.content.map((block) =>
+            block.type === 'text'
+              ? { ...block, text: block.text.replace('E2E_INPUT_RAW', 'E2E_INPUT_REWRITTEN') }
+              : block,
+          ),
+        })),
+      }
+    })
+    const offset = existsSync(agentLog) ? readFileSync(agentLog, 'utf8').length : 0
+    const steerQueued = async (value: string): Promise<void> => {
+      const input = page.locator('[data-composer-input]').first()
+      await writeComposerDraft(page, input, value)
+      await input.press('Enter')
+      const queued = page.getByRole('listitem').filter({ hasText: value })
+      await queued.getByRole('button', { name: 'Steer queued message' }).click()
+      await queued.waitFor({ state: 'detached' })
+    }
+    try {
+      const { settled } = await send('E2E_STEERING_ACK_RACE')
+      await page.getByText('E2E_STEERING_ACK_RACE_RUNNING', { exact: true }).waitFor()
+      await steerQueued('E2E_INPUT_RAW_SECOND')
+      await expect.poll(() => readFileSync(agentLog, 'utf8').slice(offset)).toContain('steering-ack-pending')
+      await steerQueued('E2E_INPUT_RAW_THIRD')
+      const pendingLog = readFileSync(agentLog, 'utf8').slice(offset)
+      expect(pendingLog.split('--> _session/steering').length - 1).toBe(1)
+      expect(pendingLog).not.toContain('E2E_INPUT_REWRITTEN_THIRD')
+      expect(pendingLog).not.toContain('session/cancel')
+
+      writeFileSync(releaseMarker, 'release')
+      const id = await settled
+      await page.getByText('E2E_STEERING_ACK_RACE_DONE', { exact: true }).waitFor()
+      const log = readFileSync(agentLog, 'utf8').slice(offset)
+      expect(log.split('regression prompt=').length - 1).toBe(1)
+      expect(log.split('--> _session/steering').length - 1).toBe(2)
+      expect(log).not.toContain('session/cancel')
+      expect(log).not.toContain('steering-cancelled')
+      expect(log).toContain('E2E_INPUT_REWRITTEN_SECOND')
+      expect(log).toContain('E2E_INPUT_REWRITTEN_THIRD')
+      expect(log.indexOf('E2E_INPUT_REWRITTEN_SECOND')).toBeLessThan(log.indexOf('E2E_INPUT_REWRITTEN_THIRD'))
+      expect(log).not.toContain('E2E_INPUT_RAW')
+
+      const sessionEvents = events.filter((event) => event.sessionId === id)
+      for (const value of ['E2E_INPUT_REWRITTEN_SECOND', 'E2E_INPUT_REWRITTEN_THIRD']) {
+        expect(
+          sessionEvents.filter((event) => event.type === 'user/message' && JSON.stringify(event.data).includes(value)),
+        ).toHaveLength(1)
+      }
+      expect(sessionEvents.filter((event) => event.type === 'step/start')).toHaveLength(3)
+      expect(
+        sessionEvents.filter(
+          (event) =>
+            event.type === 'assistant/message' && JSON.stringify(event.data).includes('E2E_STEERING_ACK_RACE_DONE'),
+        ),
+      ).toHaveLength(1)
+    } finally {
+      writeFileSync(releaseMarker, 'release')
+      off()
+      await host.ctx.settings.replace('dsh-acp-adapter', previous)
+    }
+  })
+
   it('clears the old Agent approval before delivering steering in the same session', async () => {
     const { settled } = await send('E2E_PERMISSION')
     await page.locator('[data-question-key], [data-approval-key]').waitFor()
