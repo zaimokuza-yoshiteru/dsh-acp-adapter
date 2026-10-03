@@ -1,11 +1,10 @@
 import { afterEach, expect, it } from 'vitest'
 import { createServer } from 'node:http'
 import { fileURLToPath } from 'node:url'
-import { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
-import { Server } from '@modelcontextprotocol/sdk/server/index.js'
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
+import { Client } from '@modelcontextprotocol/client'
+import { StdioClientTransport } from '@modelcontextprotocol/client/stdio'
+import { Server } from '@modelcontextprotocol/server'
+import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node'
 
 const cleanup: Array<() => Promise<unknown>> = []
 afterEach(async () => {
@@ -23,26 +22,26 @@ async function connect(url?: string) {
     await client.close()
     await transport.close()
   })
-  await client.connect(transport as Parameters<Client['connect']>[0])
+  await client.connect(transport)
   return client
 }
 async function endpoint(name: string) {
   let calls = 0
   const http = createServer(async (request, response) => {
     const server = new Server({ name, version: '1' }, { capabilities: { tools: {} } })
-    server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    server.setRequestHandler('tools/list', async () => ({
       tools: [{ name, inputSchema: { type: 'object' as const } }],
     }))
-    server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    server.setRequestHandler('tools/call', async (request) => {
       if (request.params.name !== name) return { isError: true, content: [] }
       calls++
       return { content: [{ type: 'text', text: name }] }
     })
-    const transport = new StreamableHTTPServerTransport({ enableJsonResponse: true })
+    const transport = new NodeStreamableHTTPServerTransport({ enableJsonResponse: true })
     response.once('close', () => {
       void server.close()
     })
-    await server.connect(transport as Parameters<Server['connect']>[0])
+    await server.connect(transport)
     await transport.handleRequest(request, response)
   })
   await new Promise<void>((done) => http.listen(0, '127.0.0.1', done))

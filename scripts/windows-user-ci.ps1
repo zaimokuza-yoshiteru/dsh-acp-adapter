@@ -32,6 +32,7 @@ pnpm build
 $devinVersion = if ($env:DEVIN_TEST_VERSION) { $env:DEVIN_TEST_VERSION } else { '3000.10.31' }
 $devinSha = switch ($devinVersion) {
   '3000.10.31' { '2752bc02ca6ff5fa55031d5dac6a6886e5bcca9e37edeb05fde635a240ced89f' }
+  '3000.11.3' { 'dded69a40dc54012612eda47e0935f2fb394b97cd38cb4d7d84b1e1d71c5f7ea' }
   '3000.3.27' { '254c8085137474d883cf6a6309ed98269fe4489cb83c67722d8b2279e443e11c' }
   default { throw 'Unsupported Devin test version' }
 }

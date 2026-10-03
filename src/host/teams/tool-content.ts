@@ -1,6 +1,6 @@
 import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
 import { createUserMessage, fileHandleText, type ContentBlock } from '@deepseek-ai/dsh-llm'
-import type { ContentBlock as McpContent } from '@modelcontextprotocol/sdk/types.js'
+import type { CallToolResult } from '@modelcontextprotocol/server'
 import { toAcpPrompt } from '../../domain/session/prompt-content.ts'
 
 /** Preserve model-facing tool output; unsupported blocks are disclosed, never silently dropped. */
@@ -9,7 +9,7 @@ export async function toolContent(
   signal: AbortSignal,
   imageEnabled: boolean,
   attachments?: Pick<AttachmentStore, 'readImage' | 'imageLimits'>,
-): Promise<McpContent[]> {
+): Promise<CallToolResult['content']> {
   const normalized: ContentBlock[] = []
   const visit = (items: readonly ContentBlock[]): void => {
     for (const block of items) {
@@ -30,7 +30,7 @@ export async function toolContent(
       imageEnabled,
       ...(attachments === undefined ? {} : { attachments }),
     })
-    return resolved.flatMap((item): McpContent[] =>
+    return resolved.flatMap((item): CallToolResult['content'] =>
       item.type === 'text'
         ? [{ type: 'text', text: item.text }]
         : item.type === 'image'

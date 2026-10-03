@@ -4,6 +4,16 @@
 
 User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for publication dates, exact installation instructions, and checksums. Historical entries were reconstructed from tag diffs; npm packages were not republished.
 
+## Unreleased
+
+### 中文
+
+- 迁移到 MCP TypeScript SDK v2 拆分包，保留既有 MCP 初始化、HTTP/stdio 工具调用和协议协商行为，并将取消通知正确传递到活动中的原生工具执行。
+
+### English
+
+- Migrate to the split MCP TypeScript SDK v2 packages while preserving MCP initialization, HTTP/stdio tool calls, and protocol negotiation; forward cancellation notifications to active native tool execution.
+
 ## 0.2.0-rc.2.1 (2026-10-03)
 
 ### 中文

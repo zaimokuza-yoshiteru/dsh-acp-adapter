@@ -1,8 +1,8 @@
 import type { MockSession, PromptMessage, MockPeer } from './types.ts'
 import { appendFileSync } from 'node:fs'
-import { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
+import { Client } from '@modelcontextprotocol/client'
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
+import { StdioClientTransport } from '@modelcontextprotocol/client/stdio'
 
 type ToolResult = Awaited<ReturnType<Client['callTool']>>
 

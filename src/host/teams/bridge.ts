@@ -9,9 +9,8 @@ import { RUN_CODE_NAME } from '@deepseek-ai/dsh-tools'
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
 import type { ToolSchema } from '@deepseek-ai/dsh-llm'
 import type * as acp from '@agentclientprotocol/sdk'
-import { Server } from '@modelcontextprotocol/sdk/server/index.js'
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
+import { Server } from '@modelcontextprotocol/server'
+import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node'
 import type { AcpMcpLease } from '../../runtime/session/mcp-lease.ts'
 import type { AcpPermissionCheck } from '../../domain/policy/permission-check.ts'
 import { ACP_PERMISSION_ID_MAX_BYTES, ACP_PERMISSION_OPTIONS_MAX } from '../../domain/policy/permissions.ts'
@@ -273,6 +272,9 @@ export async function createTeamBridge(
   }
   const sessions = new Set<Server>()
   const calls = new Set<Promise<unknown>>()
+  // Legacy cancellation is a separate stateless HTTP request handled by another Server instance.
+  // Keep only active lease-local calls here so that notification can reach the executing request.
+  const activeCalls = new Map<string | number, AbortController>()
   const http = createServer((request, response) => {
     if (
       !live() ||
@@ -291,7 +293,11 @@ export async function createTeamBridge(
       },
     )
     sessions.add(server)
-    server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    server.setNotificationHandler('notifications/cancelled', async (notification) => {
+      const requestId = notification.params.requestId
+      if (requestId !== undefined) activeCalls.get(requestId)?.abort()
+    })
+    server.setRequestHandler('tools/list', async () => ({
       tools: [...names]
         .filter(([, definition]) => tools.get(definition.name, agent) === definition)
         .map(([name, definition]) => ({
@@ -316,7 +322,17 @@ export async function createTeamBridge(
           },
         })),
     }))
-    server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
+    server.setRequestHandler('tools/call', async (request, context) => {
+      const requestId = context.mcpReq.id
+      if (requestId === undefined)
+        return { isError: true, content: [{ type: 'text' as const, text: 'ACP_TEAM_REQUEST_ID_MISSING' }] }
+      if (activeCalls.has(requestId))
+        return {
+          isError: true,
+          content: [{ type: 'text' as const, text: 'ACP_TEAM_REQUEST_ID_COLLISION' }],
+        }
+      const cancellation = new AbortController()
+      activeCalls.set(requestId, cancellation)
       const call = (async () => {
         const definition = names.get(request.params.name)
         if (!live() || prompt === undefined || prompt.aborted) throw new Error('ACP_TEAM_PROMPT_INACTIVE')
@@ -341,13 +357,13 @@ export async function createTeamBridge(
           name: definition.name,
           arguments: args,
           agent,
-          signal: AbortSignal.any([lifetime.signal, executedPrompt, extra.signal]),
+          signal: AbortSignal.any([lifetime.signal, executedPrompt, context.mcpReq.signal, cancellation.signal]),
         })
         onPolicyContextChange?.()
         for (const context of result.additionalContexts ?? []) agent.steer(context)
         const content = await toolContent(
           result.content,
-          AbortSignal.any([lifetime.signal, executedPrompt, extra.signal]),
+          AbortSignal.any([lifetime.signal, executedPrompt, context.mcpReq.signal, cancellation.signal]),
           capabilities?.promptCapabilities?.image === true,
           ctx.get('attachments', false),
         )
@@ -364,7 +380,8 @@ export async function createTeamBridge(
           currentMembership.root === membershipRoot &&
           executedPrompt !== undefined &&
           !executedPrompt.aborted &&
-          !extra.signal.aborted &&
+          !context.mcpReq.signal.aborted &&
+          !cancellation.signal.aborted &&
           prompt === executedPrompt &&
           promptGeneration === executedGeneration &&
           live()
@@ -394,16 +411,16 @@ export async function createTeamBridge(
         }
       } finally {
         calls.delete(call)
+        if (activeCalls.get(requestId) === cancellation) activeCalls.delete(requestId)
       }
     })
-    const transport = new StreamableHTTPServerTransport({ enableJsonResponse: true })
+    const transport = new NodeStreamableHTTPServerTransport({ enableJsonResponse: true })
     response.on('close', () => {
       sessions.delete(server)
       void server.close().catch(() => undefined)
     })
-    // SDK transport declarations do not use exactOptionalPropertyTypes; this is its standard Node transport.
     void server
-      .connect(transport as Parameters<Server['connect']>[0])
+      .connect(transport)
       .then(() => transport.handleRequest(request, response))
       .catch(() => {
         if (!response.headersSent) response.writeHead(500).end()

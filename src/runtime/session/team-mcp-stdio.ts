@@ -1,9 +1,7 @@
 /** Generic DSH tools transport. This module contains no tool implementations or session registry. */
-import { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
-import { Server } from '@modelcontextprotocol/sdk/server/index.js'
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
+import { Server } from '@modelcontextprotocol/server'
+import { StdioServerTransport } from '@modelcontextprotocol/server/stdio'
 
 const address = process.env.DSH_ACP_TEAM_MCP_URL
 delete process.env.DSH_ACP_TEAM_MCP_URL
@@ -13,8 +11,7 @@ if (address !== undefined) {
   if (endpoint.protocol !== 'http:' || endpoint.hostname !== '127.0.0.1' || endpoint.username || endpoint.password)
     throw new Error('ACP_DSH_ENDPOINT_INVALID')
   client = new Client({ name: 'dsh-tools-stdio', version: '1.0.0' })
-  // The SDK's transport declarations use optional properties with explicit undefined.
-  await client.connect(new StreamableHTTPClientTransport(endpoint) as Parameters<Client['connect']>[0])
+  await client.connect(new StreamableHTTPClientTransport(endpoint))
 }
 const server = new Server(
   { name: 'DSH tools', version: '1.0.0' },
@@ -24,12 +21,10 @@ const server = new Server(
   },
 )
 // A standalone Devin sees an inert entry, never another session's tools.
-server.setRequestHandler(ListToolsRequestSchema, async () =>
-  client === undefined ? { tools: [] } : await client.listTools(),
-)
-server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
+server.setRequestHandler('tools/list', async () => (client === undefined ? { tools: [] } : await client.listTools()))
+server.setRequestHandler('tools/call', async (request, context) => {
   if (client === undefined) return { isError: true, content: [{ type: 'text', text: 'No active DSH session' }] }
-  return await client.callTool(request.params, undefined, { signal: extra.signal, timeout: 3_660_000 })
+  return await client.callTool(request.params, { signal: context.mcpReq.signal, timeout: 3_660_000 })
 })
 server.onclose = () => {
   void client?.close()

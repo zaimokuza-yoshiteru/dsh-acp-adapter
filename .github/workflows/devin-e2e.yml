@@ -9,7 +9,7 @@ on:
         description: Pinned Devin release to verify
         type: choice
         default: '3000.10.31'
-        options: ['3000.10.31', '3000.3.27']
+        options: ['3000.10.31', '3000.11.3', '3000.3.27']
 
 run-name: Real Devin ${{ inputs.devin_version || '3000.10.31' }} (${{ github.ref_name }})
 
@@ -53,6 +53,8 @@ jobs:
           case "$DEVIN_TEST_VERSION/$(uname -m)" in
             3000.10.31/arm64) platform=aarch64-apple-darwin; sha=051dfcf29e0f5cb5f0a07c7579dc97255fee7f02ce4c6feacc7d4065ce76b5bd ;;
             3000.10.31/x86_64) platform=x86_64-apple-darwin; sha=ca450a13a7e2d83a2c6e641c0f80842826f944cad3ca93ba892a7ade3948555a ;;
+            3000.11.3/arm64) platform=aarch64-apple-darwin; sha=c08cc3f3507d103246b8c601a584fcc719fd77f6cc10f26cc90e9f4186640df2 ;;
+            3000.11.3/x86_64) platform=x86_64-apple-darwin; sha=594f89b6b0d03dffec4eabc754104e4471cc43a014a2164e2fdd7d0d752d0100 ;;
             3000.3.27/arm64) platform=aarch64-apple-darwin; sha=ec047ea396d53fc370c1c7c6de211637585cf99a5c5cd5dcdbf7e4c7f2a20626 ;;
             3000.3.27/x86_64) platform=x86_64-apple-darwin; sha=2d67b0c3aeee4fa98d022ce13925573d6c18f2666927fef79672c1abc1aff729 ;;
             *) exit 1 ;;

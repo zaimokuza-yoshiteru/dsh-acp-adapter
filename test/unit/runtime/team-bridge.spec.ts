@@ -7,8 +7,9 @@ import { PtcRuntime } from '@deepseek-ai/dsh-ptc-runtime'
 import type { PtcRunRequest, PtcRunResult } from '@deepseek-ai/dsh-ptc-runtime'
 import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import type { RequestPermissionRequest, CreateElicitationRequest } from '@agentclientprotocol/sdk'
-import { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
+import { fileURLToPath } from 'node:url'
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
+import { StdioClientTransport } from '@modelcontextprotocol/client/stdio'
 import { createTeamBridge, teamBridgeKey } from '../../../src/host/teams/bridge.ts'
 
 const cleanup: Array<() => Promise<unknown>> = []
@@ -114,7 +115,7 @@ async function setup(
   const server = lease.servers[0]!
   if (!('url' in server)) throw new Error('Expected HTTP')
   const client = new Client({ name: 'fixture', version: '1' })
-  await client.connect(new StreamableHTTPClientTransport(new URL(server.url)) as Parameters<Client['connect']>[0])
+  await client.connect(new StreamableHTTPClientTransport(new URL(server.url)))
   cleanup.push(() => client.close())
   const tools = (await client.listTools()).tools
   const name = (tools.find((tool) => tool.name === 'list_agents') ?? tools[0])!.name
@@ -146,7 +147,52 @@ async function setup(
   }
 }
 
+async function rawMcp(server: { url: string }, message: Record<string, unknown>, protocolVersion?: string) {
+  return await fetch(server.url, {
+    method: 'POST',
+    headers: {
+      accept: 'application/json, text/event-stream',
+      'content-type': 'application/json',
+      ...(protocolVersion === undefined ? {} : { 'mcp-protocol-version': protocolVersion }),
+    },
+    body: JSON.stringify({ jsonrpc: '2.0', ...message }),
+  })
+}
+
 describe('session-owned native Teams MCP bridge', () => {
+  it('accepts the legacy initialize revision over Node Streamable HTTP', async () => {
+    const { server, lease } = await setup()
+    lease.beginPrompt(new AbortController().signal)
+    const response = await fetch(server.url, {
+      method: 'POST',
+      headers: { accept: 'application/json, text/event-stream', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: {
+          protocolVersion: '2025-03-26',
+          capabilities: {},
+          clientInfo: { name: 'legacy-wire-fixture', version: '1' },
+        },
+      }),
+    })
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-type')).toContain('application/json')
+    expect(await response.json()).toMatchObject({ result: { protocolVersion: '2025-03-26' } })
+    const listed = await rawMcp(server, { id: 2, method: 'tools/list', params: {} }, '2025-03-26')
+    expect(await listed.json()).toMatchObject({
+      result: { tools: expect.arrayContaining([expect.objectContaining({ name: 'list_agents' })]) },
+    })
+    const called = await rawMcp(
+      server,
+      { id: 3, method: 'tools/call', params: { name: 'list_agents', arguments: {} } },
+      '2025-03-26',
+    )
+    expect(await called.json()).toMatchObject({
+      result: { isError: false, content: [{ type: 'text', text: 'list_agents' }] },
+    })
+  })
   it('applies the resolved host policy to all exact DSH tools and fails closed on missing policy or ambiguous options', async () => {
     const auto = await setup(undefined, ['file_write'], false, 'lead', async () => 'auto')
     auto.lease.beginPrompt(new AbortController().signal)
@@ -292,9 +338,7 @@ describe('session-owned native Teams MCP bridge', () => {
     const nextServer = next.servers[0]!
     if (!('url' in nextServer)) throw new Error('Expected HTTP')
     const nextClient = new Client({ name: 'next', version: '1' })
-    await nextClient.connect(
-      new StreamableHTTPClientTransport(new URL(nextServer.url)) as Parameters<Client['connect']>[0],
-    )
+    await nextClient.connect(new StreamableHTTPClientTransport(new URL(nextServer.url)))
     cleanup.push(() => nextClient.close())
     expect((await nextClient.listTools()).tools.map((tool) => tool.name)).toEqual(['new_plugin', 'present'])
     hidden.add('present')
@@ -331,7 +375,7 @@ describe('session-owned native Teams MCP bridge', () => {
     const server = lease.servers[0]!
     if (!('url' in server)) throw new Error('Expected HTTP')
     const client = new Client({ name: 'visible-schema', version: '1' })
-    await client.connect(new StreamableHTTPClientTransport(new URL(server.url)) as Parameters<Client['connect']>[0])
+    await client.connect(new StreamableHTTPClientTransport(new URL(server.url)))
     cleanup.push(() => client.close())
     expect((await client.listTools()).tools.map(({ name, description }) => ({ name, description }))).toEqual([
       { name: 'file_read', description: 'Visible read' },
@@ -394,7 +438,7 @@ describe('session-owned native Teams MCP bridge', () => {
       const server = lease.servers[0]!
       if (!('url' in server)) throw new Error('Expected HTTP')
       const client = new Client({ name: `official-${mode}`, version: '1' })
-      await client.connect(new StreamableHTTPClientTransport(new URL(server.url)) as Parameters<Client['connect']>[0])
+      await client.connect(new StreamableHTTPClientTransport(new URL(server.url)))
       cleanup.push(() => client.close())
       const listed = (await client.listTools()).tools.map((schema) => schema.name).sort()
       expect(listed).toEqual([...expected].sort())
@@ -811,6 +855,129 @@ describe('session-owned native Teams MCP bridge', () => {
     abort.abort()
     expect((await pending).content).toEqual([{ type: 'text', text: 'cancelled' }])
     expect(await lease.permission(permission(name))).toBeUndefined()
+  })
+  it('propagates an HTTP client cancellation into native tool execution', async () => {
+    const { lease, execute, client, name } = await setup()
+    lease.beginPrompt(new AbortController().signal)
+    let receivedAbort!: (signal: AbortSignal) => void
+    const executionStarted = new Promise<AbortSignal>((resolve) => {
+      receivedAbort = resolve
+    })
+    execute.mockImplementationOnce(
+      async (input) =>
+        await new Promise((resolve) => {
+          receivedAbort(input.signal)
+          input.signal.addEventListener(
+            'abort',
+            () => resolve({ content: [{ type: 'text', text: 'cancelled' }], isError: false }),
+            { once: true },
+          )
+        }),
+    )
+    const controller = new AbortController()
+    const pending = client.callTool({ name }, { signal: controller.signal })
+    const signal = await executionStarted
+    controller.abort()
+    await expect(pending).rejects.toThrow()
+    await vi.waitFor(() => expect(signal.aborted).toBe(true))
+  })
+  it('matches legacy cancellation IDs, rejects duplicate active IDs, and isolates leases', async () => {
+    const first = await setup(undefined, ['file_read'], false)
+    const second = await setup(undefined, ['file_read'], false)
+    first.lease.beginPrompt(new AbortController().signal)
+    second.lease.beginPrompt(new AbortController().signal)
+    const firstSignal = new Promise<AbortSignal>((resolve) => {
+      first.execute.mockImplementationOnce(
+        async (input) =>
+          await new Promise((done) => {
+            resolve(input.signal)
+            input.signal.addEventListener('abort', () => done({ content: [], isError: true }), { once: true })
+          }),
+      )
+    })
+    const secondSignal = new Promise<AbortSignal>((resolve) => {
+      second.execute.mockImplementationOnce(
+        async (input) =>
+          await new Promise((done) => {
+            resolve(input.signal)
+            input.signal.addEventListener('abort', () => done({ content: [], isError: true }), { once: true })
+          }),
+      )
+    })
+    const call = (server: typeof first.server) =>
+      rawMcp(
+        server,
+        {
+          id: 'shared-id',
+          method: 'tools/call',
+          params: { name: 'file_read', arguments: { path: '/tmp/file' } },
+        },
+        '2025-03-26',
+      )
+    const pendingFirst = call(first.server)
+    const pendingSecond = call(second.server)
+    const [firstAbort, secondAbort] = await Promise.all([firstSignal, secondSignal])
+    const duplicate = await call(first.server)
+    expect(await duplicate.json()).toMatchObject({
+      result: {
+        isError: true,
+        content: [{ type: 'text', text: 'ACP_TEAM_REQUEST_ID_COLLISION' }],
+      },
+    })
+    expect(first.execute).toHaveBeenCalledTimes(1)
+    await rawMcp(first.server, { method: 'notifications/cancelled', params: { requestId: 'unknown-id' } }, '2025-03-26')
+    expect(firstAbort.aborted).toBe(false)
+    await rawMcp(first.server, { method: 'notifications/cancelled', params: { requestId: 'shared-id' } }, '2025-03-26')
+    await vi.waitFor(() => expect(firstAbort.aborted).toBe(true))
+    expect(secondAbort.aborted).toBe(false)
+    await rawMcp(second.server, { method: 'notifications/cancelled', params: { requestId: 'shared-id' } }, '2025-03-26')
+    const [firstResult, secondResult] = await Promise.all([pendingFirst, pendingSecond])
+    expect(await firstResult.json()).toMatchObject({ result: { isError: true } })
+    expect(await secondResult.json()).toMatchObject({ result: { isError: true } })
+    await vi.waitFor(() => expect(secondAbort.aborted).toBe(true))
+    await rawMcp(first.server, { method: 'notifications/cancelled', params: { requestId: 'shared-id' } }, '2025-03-26')
+    const reused = await call(first.server)
+    expect(await reused.json()).toMatchObject({
+      result: { isError: false, content: [{ type: 'text', text: 'file_read' }] },
+    })
+    expect(first.execute).toHaveBeenCalledTimes(2)
+  })
+  it('forwards cancellation through the stdio session proxy into native execution', async () => {
+    const { lease, execute, server, name } = await setup()
+    lease.beginPrompt(new AbortController().signal)
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [fileURLToPath(new URL('../../../src/runtime/session/team-mcp-stdio.ts', import.meta.url))],
+      env: { DSH_ACP_TEAM_MCP_URL: server.url, ELECTRON_RUN_AS_NODE: '1' },
+      stderr: 'pipe',
+    })
+    const client = new Client({ name: 'stdio-cancellation-fixture', version: '1' })
+    cleanup.push(async () => {
+      await client.close()
+      await transport.close()
+    })
+    await client.connect(transport)
+    let receiveAbort!: (signal: AbortSignal) => void
+    const executionStarted = new Promise<AbortSignal>((resolve) => {
+      receiveAbort = resolve
+    })
+    execute.mockImplementationOnce(
+      async (input) =>
+        await new Promise((resolve) => {
+          receiveAbort(input.signal)
+          input.signal.addEventListener(
+            'abort',
+            () => resolve({ content: [{ type: 'text', text: 'cancelled' }], isError: false }),
+            { once: true },
+          )
+        }),
+    )
+    const controller = new AbortController()
+    const pending = client.callTool({ name }, { signal: controller.signal })
+    const signal = await executionStarted
+    controller.abort()
+    await expect(pending).rejects.toThrow()
+    await vi.waitFor(() => expect(signal.aborted).toBe(true))
   })
   it('releases the capability immediately when its native member is disposed or Teams is disabled', async () => {
     const first = await setup()
