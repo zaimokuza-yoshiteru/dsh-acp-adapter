@@ -1093,14 +1093,140 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
       await page.screenshot({ path: join(evidenceDirectory, `recovery-wide-${profile}.png`), fullPage: true })
     }
     const service = host.ctx.get('dshAcp') as AcpRemoteService
-    const failedRead = vi.spyOn(service, 'recoverySnapshot').mockRejectedValue(new Error('E2E_RECOVERY_UNAVAILABLE'))
+    const recoveryFollow = service.recoveryFollow.bind(service)
+    let recoveryFollowReads = 0
+    let releaseInitialFault!: () => void
+    let releaseRecoveryReconnect!: () => void
+    let markReconnectStarted!: () => void
+    let faultInjected = false
+    const initialFaultGate = new Promise<void>((resolve) => {
+      releaseInitialFault = resolve
+    })
+    const recoveryReconnectGate = new Promise<void>((resolve) => {
+      releaseRecoveryReconnect = resolve
+    })
+    const reconnectStarted = new Promise<void>((resolve) => {
+      markReconnectStarted = resolve
+    })
+    const recoveryFollowFacts: {
+      attempt: number
+      signalAbortedAtStart: boolean
+      signalAbortEvents: number
+      baselineYielded?: boolean
+      injectedFault?: boolean
+      waitingForReconnectRelease?: boolean
+      signalAbortedAtEnd?: boolean
+    }[] = []
+    const waitForGateOrAbort = async (gate: Promise<void>, signal: AbortSignal): Promise<void> => {
+      if (signal.aborted) return
+      let onAbort!: () => void
+      const aborted = new Promise<void>((resolve) => {
+        onAbort = resolve
+        signal.addEventListener('abort', onAbort, { once: true })
+      })
+      try {
+        await Promise.race([gate, aborted])
+      } finally {
+        signal.removeEventListener('abort', onAbort)
+      }
+    }
+    const recoveryFollowSpy = vi
+      .spyOn(service, 'recoveryFollow')
+      .mockImplementation(async function* (sessionId, signal) {
+        recoveryFollowReads++
+        const fact: (typeof recoveryFollowFacts)[number] = {
+          attempt: recoveryFollowReads,
+          signalAbortedAtStart: signal.aborted,
+          signalAbortEvents: 0,
+        }
+        recoveryFollowFacts.push(fact)
+        const recordAbort = (): void => {
+          fact.signalAbortEvents++
+        }
+        signal.addEventListener('abort', recordAbort, { once: true })
+        const source = recoveryFollow(sessionId, signal)
+        const iterator = source[Symbol.asyncIterator]()
+        try {
+          if (faultInjected) {
+            fact.waitingForReconnectRelease = true
+            markReconnectStarted()
+            await waitForGateOrAbort(recoveryReconnectGate, signal)
+            if (signal.aborted) return
+            yield* source
+            return
+          }
+
+          const initial = await iterator.next()
+          if (initial.done || signal.aborted) return
+          fact.baselineYielded = true
+          yield initial.value
+          await waitForGateOrAbort(initialFaultGate, signal)
+          if (signal.aborted) return
+          if (!faultInjected) {
+            faultInjected = true
+            fact.injectedFault = true
+            await iterator.return?.()
+            throw new Error('E2E_TEMPORARY_RECOVERY_READ_FAILURE')
+          }
+          yield* source
+        } finally {
+          fact.signalAbortedAtEnd = signal.aborted
+          signal.removeEventListener('abort', recordAbort)
+          if (!signal.aborted) await iterator.return?.()
+        }
+      })
     try {
       await page.reload()
-      await page.getByText('Recovery status could not be read. Please retry.', { exact: true }).waitFor()
+      await page.getByRole('button', { name: 'Resolve recovery issue', exact: true }).waitFor()
+      releaseInitialFault()
+      await page.getByText('Reconnecting to recovery status…', { exact: true }).waitFor()
+      await reconnectStarted
+      const reconnectingStatus = page.getByRole('status').filter({ hasText: 'Reconnecting to recovery status…' })
+      expect(await reconnectingStatus.getByRole('button').count()).toBe(0)
+      releaseRecoveryReconnect()
+      await page.getByRole('button', { name: 'Resolve recovery issue', exact: true }).waitFor()
+    } catch (error) {
+      const evidenceDirectory = process.env.DSH_E2E_EVIDENCE_DIR ?? join(root, '.local/e2e-failures')
+      try {
+        mkdirSync(evidenceDirectory, { recursive: true })
+        await page.screenshot({
+          path: join(evidenceDirectory, `recovery-reconnect-failure-${profile}.png`),
+          fullPage: true,
+        })
+        writeFileSync(
+          join(evidenceDirectory, `recovery-reconnect-failure-${profile}.json`),
+          JSON.stringify(
+            {
+              profile,
+              error: error instanceof Error ? error.message : String(error),
+              recoveryFollowReads,
+              recoveryFollowFacts,
+              reconnectingStatusCount: await page
+                .getByRole('status')
+                .filter({ hasText: 'Reconnecting to recovery status…' })
+                .count(),
+              resolveButtonCount: await page
+                .getByRole('button', { name: 'Resolve recovery issue', exact: true })
+                .count(),
+              statusText: await page.getByRole('status').allInnerTexts(),
+            },
+            null,
+            2,
+          ),
+        )
+        writeFileSync(
+          join(evidenceDirectory, `recovery-reconnect-failure-${profile}.dom.html`),
+          await page.locator('body').evaluate((body) => body.innerHTML),
+        )
+      } catch {
+        // Preserve the original assertion failure if evidence capture also fails.
+      }
+      throw error
     } finally {
-      failedRead.mockRestore()
+      releaseInitialFault()
+      releaseRecoveryReconnect()
+      recoveryFollowSpy.mockRestore()
     }
-    await page.getByRole('button', { name: 'Retry', exact: true }).click()
     await page.setViewportSize({ width: 740, height: 500 })
     await page.getByRole('button', { name: 'Resolve recovery issue', exact: true }).click()
     let unblockReconnect!: () => void

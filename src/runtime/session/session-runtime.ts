@@ -284,6 +284,9 @@ export class AcpSessionRuntime {
   private mcpKey: unknown
   private sessionId: string | undefined
   private starting: Promise<void> | undefined
+  /** Keep restore/new initialization behind process teardown. Lease shutdown is
+   * allowed its own grace, but must not shorten the subprocess close ladder. */
+  private closing: Promise<void> | undefined
   private launch: AcpRuntimeLaunch | undefined
   private replayHandler: ((notification: AcpSessionNotification) => void) | undefined
   private restoringSessionId: string | undefined
@@ -418,6 +421,7 @@ export class AcpSessionRuntime {
 
   /** Initialize and negotiate capabilities without creating session/new. */
   async initialize(signal?: AbortSignal): Promise<void> {
+    if (this.closing !== undefined) await this.closing
     if (
       this.connection !== undefined &&
       (this.connection.isClosed || this.mcpLease?.signal.aborted === true || this.mcpKey !== this.options.mcpKey?.())
@@ -443,6 +447,7 @@ export class AcpSessionRuntime {
     signal?: AbortSignal,
     onReplay?: (notification: AcpSessionNotification) => void,
   ): Promise<'reused' | 'resumed' | 'loaded'> {
+    if (this.closing !== undefined) await this.closing
     // A closed transport cannot own a reusable in-memory session, even if the
     // remote session id is still cached. Clear local state before deciding
     // whether this binding can be reused; the caller's durable recovery guard
@@ -789,42 +794,76 @@ export class AcpSessionRuntime {
     await run
   }
 
-  async close(): Promise<void> {
-    this.promptAbort?.abort(new Error('ACP session runtime closed'))
-    this.promptToolSnapshots?.clear()
-    this.promptToolSnapshots = undefined
-    this.connectionAbort?.abort()
-    this.connectionAbort = undefined
+  close(): Promise<void> {
+    if (this.closing !== undefined) return this.closing
+
+    // Capture one generation before signalling it. A concurrent restore waits
+    // for this promise, and cleanup below only clears fields still owned by
+    // this generation.
+    const connection = this.connection
     const lease = this.mcpLease
-    const closed = await waitWithin(
-      Promise.allSettled([lease?.close(this.cancelGraceMs), this.connection?.close()]),
-      this.cancelGraceMs,
+    const launch = this.launch
+    const connectionAbort = this.connectionAbort
+    const operation = (async () => {
+      this.promptAbort?.abort(new Error('ACP session runtime closed'))
+      this.promptToolSnapshots?.clear()
+      this.promptToolSnapshots = undefined
+      connectionAbort?.abort()
+
+      // MCP teardown is bounded independently. The subprocess owns a separate
+      // bounded EOF/terminate ladder; wrapping both in cancelGraceMs could
+      // abandon that ladder and let restore spawn while the old child lives.
+      const leaseClose =
+        lease === undefined
+          ? Promise.resolve(undefined)
+          : waitWithin(
+              Promise.resolve().then(() => lease.close(this.cancelGraceMs)),
+              this.cancelGraceMs,
+            )
+      const connectionClose = connection?.close()
+      const results = await Promise.allSettled([leaseClose, connectionClose])
+
+      if (lease?.hasPendingCalls?.() === true || lease?.hasRetainedFeedback?.() === true) {
+        this.retiredMcpLeases.add(lease)
+        const settled = lease.waitForCallsSettled?.()
+        if (settled !== undefined)
+          void settled.then(
+            () => {
+              if (lease.hasPendingCalls?.() !== true && lease.hasRetainedFeedback?.() !== true)
+                this.retiredMcpLeases.delete(lease)
+            },
+            () => {
+              /* keep the lease reachable when settlement cannot be observed */
+            },
+          )
+      }
+
+      if (this.connection === connection && this.mcpLease === lease && this.launch === launch) {
+        this.connection = undefined
+        this.mcpLease = undefined
+        this.sessionId = undefined
+        this.launch = undefined
+        this.configSnapshot = undefined
+        this.currentMode = undefined
+        this.modeSnapshot = undefined
+        this.usageSnapshot = undefined
+      }
+      if (this.connectionAbort === connectionAbort) this.connectionAbort = undefined
+
+      const errors: unknown[] = []
+      for (const result of results) if (result.status === 'rejected') errors.push(result.reason)
+      if (errors.length > 0) throw new AggregateError(errors, 'ACP runtime cleanup failed')
+    })()
+    this.closing = operation
+    void operation.then(
+      () => {
+        if (this.closing === operation) this.closing = undefined
+      },
+      () => {
+        if (this.closing === operation) this.closing = undefined
+      },
     )
-    if (lease?.hasPendingCalls?.() === true || lease?.hasRetainedFeedback?.() === true) {
-      this.retiredMcpLeases.add(lease)
-      const settled = lease.waitForCallsSettled?.()
-      if (settled !== undefined)
-        void settled.then(
-          () => {
-            if (lease.hasPendingCalls?.() !== true && lease.hasRetainedFeedback?.() !== true)
-              this.retiredMcpLeases.delete(lease)
-          },
-          () => {
-            /* keep the lease reachable when settlement cannot be observed */
-          },
-        )
-    }
-    this.mcpLease = undefined
-    this.connection = undefined
-    this.sessionId = undefined
-    this.launch = undefined
-    this.configSnapshot = undefined
-    this.currentMode = undefined
-    this.modeSnapshot = undefined
-    this.usageSnapshot = undefined
-    const errors: unknown[] = []
-    for (const result of closed ?? []) if (result.status === 'rejected') errors.push(result.reason)
-    if (errors.length > 0) throw new AggregateError(errors, 'ACP runtime cleanup failed')
+    return operation
   }
 
   private async createSession(signal?: AbortSignal): Promise<void> {

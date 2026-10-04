@@ -88,13 +88,41 @@ it('keeps long teammate cards and reserved notices aligned in both languages and
     const cards = panel.locator('[data-acp-managed-member]')
     setStage('wait for teammate cards')
     await expect.poll(() => cards.count()).toBe(2)
+    await page.getByText('Loading ACP member settings…', { exact: true }).waitFor({ state: 'hidden' })
     const before = required(await cards.first().boundingBox())
+    const previousCardNames = await cards.evaluateAll((elements) =>
+      elements.map((element) => element.getAttribute('data-acp-managed-member')),
+    )
     // Electron and Chromium can round the two half-pixel borders differently.
     expect(before.height + 1).toBeGreaterThanOrEqual(220)
     setStage('configure teammate model and mode')
     await (host.ctx.get('dshAcp') as AcpRemoteService).setTeamMemberModel(lead.id, members[0].id, 'mock-model-b')
     await (host.ctx.get('dshAcp') as AcpRemoteService).setTeamMemberMode(lead.id, members[0].id, 'plan')
+    const service = host.ctx.get('dshAcp') as AcpRemoteService
+    const teamMembers = service.teamMembers.bind(service)
+    let releaseRefresh!: () => void
+    const refreshGate = new Promise<void>((resolve) => {
+      releaseRefresh = resolve
+    })
+    const heldRefresh = vi.spyOn(service, 'teamMembers').mockImplementation(async (sessionId) => {
+      await refreshGate
+      return teamMembers(sessionId)
+    })
     await panel.getByRole('button', { name: 'Refresh', exact: true }).click()
+    try {
+      const loading = page.getByText('Loading ACP member settings…', { exact: true })
+      await loading.waitFor()
+      expect(await cards.count()).toBe(2)
+      expect(
+        await cards.evaluateAll((elements) =>
+          elements.map((element) => element.getAttribute('data-acp-managed-member')),
+        ),
+      ).toEqual(previousCardNames)
+    } finally {
+      releaseRefresh()
+      heldRefresh.mockRestore()
+    }
+    await page.getByText('Loading ACP member settings…', { exact: true }).waitFor({ state: 'hidden' })
     await cards
       .first()
       .getByRole('button', { name: /^(?:Session|会话) · Plan$/ })
