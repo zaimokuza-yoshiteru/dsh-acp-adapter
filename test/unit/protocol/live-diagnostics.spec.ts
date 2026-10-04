@@ -27,6 +27,15 @@ it('extracts an allowlisted method from a generic typed-RPC failure', () => {
   ).toEqual({ code: 'ACP_PROTOCOL_ERROR', operation: 'session/new' })
 })
 
+it('keeps the fixed resource-exhausted code without forwarding the provider message', () => {
+  const diagnostic = safeLiveDiagnostic({
+    code: 'ACP_RESOURCE_EXHAUSTED',
+    message: 'quota exceeded for private account details',
+  })
+  expect(diagnostic).toEqual({ code: 'ACP_RESOURCE_EXHAUSTED' })
+  expect(JSON.stringify(diagnostic)).not.toContain('private account details')
+})
+
 it('keeps fixed Agent Teams and generic tool failure codes', () => {
   expect(safeLiveDiagnostic({ info: { code: 'TEAM_PROVISIONING_CONFLICT' } })).toEqual({
     code: 'TEAM_PROVISIONING_CONFLICT',

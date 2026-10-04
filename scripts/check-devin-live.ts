@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
 import { safeLiveDiagnostic } from './live-diagnostics.ts'
 import type { SafeLiveDiagnostic } from './live-diagnostics.ts'
+import { assertDevinModelRoute, assertDevinTeamModelRoutes, selectDevinTestModel } from './devin-test-model.ts'
 import { initProfile, loadProfileDirectory, loadLayeredEnv } from '@deepseek-ai/dsh-app-boot'
 import { runProfile } from '@deepseek-ai/dsh/profile-boot'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
@@ -44,6 +45,10 @@ const receipts = new Map<string, { sessionId: string; seq: number }>()
 const expectedReplyMarkers = new Map<string, Set<string>>()
 const replyEvidence = new Map<string, Map<string, { echoSeq?: number; exactSeq?: number; exactTurn?: number }>>()
 const created = new Map<string, string>()
+const modelRoutes = new Map<
+  string,
+  { creationModelId: string | undefined; requestModelIds: Array<string | undefined> }
+>()
 const roles = new Map<string, string>()
 const completedTurns = new Map<string, number>()
 const completedTurnIds = new Map<string, Set<number>>()
@@ -134,16 +139,23 @@ try {
   await wait(() => ctx.llm.listProviders().some((p) => p.id === 'acp-devin'), 'provider registration')
   console.log('PASS: ACP provider registered')
   const models = await ctx.llm.listModels('acp-devin')
-  assert.ok(models.length, 'Authenticated Devin must expose models')
-  const model = models.find((m) => m.id === 'fast')?.id ?? models[0]!.id
+  const model = selectDevinTestModel(models, process.env.DEVIN_TEST_MODEL)
   console.log('PASS: real Devin model discovery')
   ctx.on('agent/created', ({ agent }) => {
+    const previousRoute = modelRoutes.get(agent.id)
+    modelRoutes.set(agent.id, {
+      creationModelId: agent.options.model,
+      requestModelIds: previousRoute?.requestModelIds ?? [],
+    })
     if (agent.options.provider !== undefined) created.set(agent.id, agent.options.provider)
     // Team membership is journaled before the child Agent is started. Resolve
     // the parent Lead here so a fast teammate tool call is labeled correctly.
     const parentRole =
       agent.session.header.parentSession === undefined ? undefined : roles.get(agent.session.header.parentSession)
-    if (parentRole?.startsWith('lead-')) roles.set(agent.id, `member-${parentRole.slice('lead-'.length)}`)
+    if (parentRole?.startsWith('lead-')) {
+      assertDevinModelRoute('teammate', model.id, agent.options.model)
+      roles.set(agent.id, `member-${parentRole.slice('lead-'.length)}`)
+    }
   })
   ctx.on('tools/result', (execution, result) => {
     if (execution.agent?.options.provider === 'acp-devin') {
@@ -166,6 +178,11 @@ try {
     }
   })
   ctx.on('session/event', (_session, event) => {
+    if (event.type === 'request/header') {
+      const route = modelRoutes.get(_session.id) ?? { creationModelId: undefined, requestModelIds: [] }
+      route.requestModelIds.push(event.data.header.config.model)
+      modelRoutes.set(_session.id, route)
+    }
     if (event.type === 'team/message/queued') {
       const message = event.data.message
       received.push({
@@ -221,8 +238,9 @@ try {
       const handle = await ctx.agents.create({
         sessionId: randomUUID() as SessionId,
         meta: { cwd: workspace },
-        agentOptions: { provider: 'acp-devin', model },
+        agentOptions: { provider: 'acp-devin', model: model.id },
       })
+      assertDevinModelRoute('Lead', model.id, handle.agent.options.model)
       roles.set(handle.agent.id, `lead-${index}`)
       const marker = `CI_${index}_${randomUUID().slice(0, 8)}`
       expectReplyMarker(handle.agent.id, marker)
@@ -321,6 +339,11 @@ try {
       `Teammate ${index} must not message another Team`,
     )
   }
+  for (const { handle } of leads) {
+    const member = ctx.agentTeams.listMembers(handle.agent).find((candidate) => candidate.role === 'teammate')!
+    assertDevinTeamModelRoutes(model.id, modelRoutes.get(handle.agent.id), modelRoutes.get(member.id))
+  }
+  console.log('PASS: Lead and teammate real request headers use the selected Devin model')
   assert.equal(failures.length, 0, JSON.stringify(failures))
   assert.notEqual(
     ctx.agentTeams.listMembers(leads[0]!.handle.agent)[1]!.id,

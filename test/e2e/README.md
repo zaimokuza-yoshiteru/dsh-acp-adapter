@@ -108,6 +108,14 @@ DSH_E2E_LIVE=1 pnpm test:e2e -t 'live ACP smoke'
 
 若 Agent 通过环境变量认证，需要显式指定要放入临时 ACP profile 的变量名，例如 `DSH_E2E_LIVE_CLAUDE_ENV_KEYS=ANTHROPIC_AUTH_TOKEN`。测试只读取列出的变量，值不写入测试结果；临时 profile 随宿主清理。生产环境同样需要在连接设置中显式配置凭据，父进程密钥不会自动继承。
 
+独立的 `Real Devin integration` 工作流会使用真实 Devin 创建两个 Lead 和两个 teammate，并验证消息往返及后续响应。要在本机运行，先完成依赖安装与 `pnpm build`，再在当前 shell 临时提供 `WINDSURF_API_KEY`，执行：
+
+```sh
+DEVIN_TEST_MODEL=swe-1-6-fast node scripts/check-devin-live.ts "$(command -v devin)"
+```
+
+`DEVIN_TEST_MODEL` 未设置时默认为 `swe-1-6-fast`；显式空值或当前 Devin 模型目录中不存在的 ID 会在发送 prompt 前失败，不会回退到任意目录项。可用它指定目录中另一确切模型。此检查会真实调用 Devin 模型，费用取决于服务端计价和实际 token 使用；仅在已获授权且接受这次模型用量时运行。脚本将 HOME、XDG 目录与 DSH profile 指向临时目录，不改 Devin 的用户级配置。Actions 为 macOS 和 Windows 普通用户步骤固定同一模型；Windows 启动器会显式把该值传给凭据登录的普通用户进程。
+
 Claude 使用 DeepSeek 等第三方服务时，应同时核对 `ANTHROPIC_BASE_URL`、认证变量及模型映射，并通过 `DSH_E2E_LIVE_CLAUDE_ENV_KEYS` 传入所需配置。模型目录可返回不代表生成已认证，模型别名也不能证明实际供应商。遇到意外 OAuth 报错时，先检查临时 profile 的有效路由和认证配置，再判断是否需要登录。
 
 真实运行中插话使用 `DSH_E2E_LIVE=1 DSH_E2E_LIVE_STEERING=1`，可用 `DSH_E2E_LIVE_PROFILES=codex,kimi,devin` 选择已登录的 Agent；模型仍通过对应的 `DSH_E2E_LIVE_<PROFILE>_MODEL` 指定。该专项先等待真实首段输出，再经原生 `agent.steer` 插话，验证一个 turn、两个 step、两条持久化输入与刷新后的追加回复。它不操作文件或工具。普通两轮宿主指令测试、Teams 测试与插话测试分别记录，不能互相替代。

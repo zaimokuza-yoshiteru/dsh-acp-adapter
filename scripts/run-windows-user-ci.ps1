@@ -1,6 +1,7 @@
 param([switch]$Live)
 # CI bootstrap only. All package commands run in the unprivileged child account.
 $ErrorActionPreference = 'Stop'
+if ($Live -and $env:DEVIN_TEST_MODEL -cne 'swe-1-6-fast') { throw 'Live Windows CI requires the configured Devin test model' }
 $auditUser = 'dsh-acp-ci'
 $auditRoot = Join-Path $env:RUNNER_TEMP ('dsh-acp-user-' + [guid]::NewGuid().ToString('N'))
 $workspace = (Get-Location).Path
@@ -33,7 +34,7 @@ try {
   $stdout = Join-Path $auditRoot 'stdout.log'
   $stderr = Join-Path $auditRoot 'stderr.log'
   $arguments = '-NoLogo -NoProfile -NonInteractive -File "' + (Join-Path $workspace 'scripts/windows-user-ci.ps1') + '" -AuditRoot "' + $auditRoot + '"'
-  if ($Live) { $arguments += ' -Live' }
+  if ($Live) { $arguments += ' -Live -DevinTestModel swe-1-6-fast' }
   $child = Start-Process -FilePath (Get-Command pwsh).Source -ArgumentList $arguments -WorkingDirectory $workspace -Credential $credentials -LoadUserProfile -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
   if (!$child.WaitForExit(1800000)) { $child.Kill(); throw 'Ordinary-user CI timed out' }
   $child.WaitForExit()

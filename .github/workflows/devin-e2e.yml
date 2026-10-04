@@ -71,11 +71,13 @@ jobs:
         if: runner.os == 'macOS'
         env:
           WINDSURF_API_KEY: ${{ secrets.DEVIN_CLI_TOKEN }}
+          DEVIN_TEST_MODEL: swe-1-6-fast
         run: node scripts/check-devin-live.ts "$DEVIN_TEST_EXE"
       - name: Authenticated native DSH Teams (ordinary Windows user)
         if: runner.os == 'Windows'
         env:
           WINDSURF_API_KEY: ${{ secrets.DEVIN_CLI_TOKEN }}
+          DEVIN_TEST_MODEL: swe-1-6-fast
         shell: pwsh
         run: ./scripts/run-windows-user-ci.ps1 -Live
       # Never upload transcripts, profile directories, native CLI logs or credentials.

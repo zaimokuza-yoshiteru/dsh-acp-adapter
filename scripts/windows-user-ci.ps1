@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][string]$AuditRoot, [switch]$Live)
+param([Parameter(Mandatory=$true)][string]$AuditRoot, [string]$DevinTestModel, [switch]$Live)
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -49,6 +49,8 @@ if (!$actualVersion.StartsWith("devin $devinVersion (")) { throw 'Devin executab
 node scripts/check-devin-mcp.ts $devinExe[0].FullName ([Environment]::GetFolderPath('ApplicationData'))
 if ($Live) {
   if (!$env:WINDSURF_API_KEY) { throw 'Missing DEVIN_CLI_TOKEN Secret in ordinary-user process' }
+  if ($DevinTestModel -cne 'swe-1-6-fast') { throw 'Missing configured Devin test model in ordinary-user process' }
+  $env:DEVIN_TEST_MODEL = $DevinTestModel
   node scripts/check-devin-live.ts $devinExe[0].FullName
 } else {
   npm pack --ignore-scripts
