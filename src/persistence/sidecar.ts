@@ -183,7 +183,7 @@ export interface AcpDispatchRecord {
 }
 
 export type AcpActivityKind = 'tool' | 'plan' | 'terminal' | 'diff' | 'resource' | 'delegated' | 'other'
-export type AcpActivityStatus = 'running' | 'completed' | 'failed' | 'cancelled'
+export type AcpActivityStatus = 'running' | 'completed' | 'failed' | 'cancelled' | 'unfinished'
 export interface AcpActivityRecord {
   readonly display?: AcpActivityPresentation
   /** First-seen insertion boundary in the native assistant content; absent on legacy records. */
@@ -598,6 +598,7 @@ export interface AcpSidecar {
     afterSeq: number,
     limit?: number,
     filter?: AcpActivityFilter,
+    throughRevision?: number,
   ): Promise<readonly AcpActivityRecord[]>
   /** Current durable activity head. */
   activityHead(sessionId: SessionId, filter?: AcpActivityFilter): Promise<number>
@@ -624,7 +625,7 @@ export interface AcpSidecar {
   /** Read the durable recovery state; missing rows mean healthy/never degraded. */
   readRecoveryState(sessionId: SessionId): Promise<AcpRecoveryState | undefined>
   /** Atomically replace the current recovery state for a DSH session. */
-  writeRecoveryState(state: AcpRecoveryState): Promise<void>
+  writeRecoveryState(state: AcpRecoveryState, options?: { readonly clearDispatch?: true }): Promise<void>
   /**
    * 全量 binding 索引（双绑守卫的唯一消费点 = host composition 的
    * resume 路由）：查 bindings 表全部行，仅语义校验通过（`{status:'ok'}`）者计入
@@ -634,7 +635,27 @@ export interface AcpSidecar {
   /** 该 sessionId 全量合法 entry（按 seq 升序；行级校验失败者跳过并 warn）；库不存在 → 空数组。 */
   list(sessionId: SessionId): Promise<readonly AcpSidecarEntry[]>
   /** Cursor-paged audit read. Only the requested bounded window is decoded. */
-  listPage(sessionId: SessionId, afterSeq: number, limit: number): Promise<readonly AcpSidecarEntry[]>
+  listPage(
+    sessionId: SessionId,
+    afterSeq: number,
+    limit: number,
+    throughSeq?: number,
+  ): Promise<readonly AcpSidecarEntry[]>
+  /** Snapshot-only physical page; advances across malformed stored rows. */
+  listPageScan(
+    sessionId: SessionId,
+    afterSeq: number,
+    limit: number,
+    throughSeq: number,
+  ): Promise<{
+    readonly entries: readonly AcpSidecarEntry[]
+    readonly scannedThrough: number
+    readonly scannedRecords: number
+    readonly unreadableRecords: number
+    readonly hasMore: boolean
+  }>
+  /** Flush queued audit records and return the fixed durable high-water mark. */
+  auditHead(sessionId: SessionId): Promise<number>
   /**
    * 写入（upsert）该会话的 last-known option 快照（输入须先经
    * {@link acpOptionsSnapshotOf} 标准化）。同步 durable；写失败 reject
@@ -1789,19 +1810,26 @@ class SidecarStore implements AcpSidecar {
     afterSeq: number,
     limit = 100,
     filter?: AcpActivityFilter,
+    throughRevision?: number,
   ): Promise<readonly AcpActivityRecord[]> {
     assertSafeSessionId(sessionId)
     if (!Number.isSafeInteger(afterSeq) || afterSeq < 0)
       throw new TypeError('dsh-acp activity cursor must be a non-negative integer')
     if (!Number.isSafeInteger(limit) || limit < 1)
       throw new TypeError('dsh-acp activity limit must be a positive integer')
+    if (throughRevision !== undefined && (!Number.isSafeInteger(throughRevision) || throughRevision < afterSeq))
+      throw new TypeError('dsh-acp activity snapshot head is invalid')
     try {
       const db = this.openIfExists()
       if (db === undefined) return Promise.resolve([])
       const rows =
-        filter === undefined || (filter.ownerDshSessionId === undefined && filter.promptAnchorMessageId === undefined)
-          ? ((this.stmtActivityPage?.all(sessionId, afterSeq, Math.min(limit, 200)) ?? []) as unknown as ActivityRow[])
-          : this.activityPageRows(db, sessionId, afterSeq, Math.min(limit, 200), filter)
+        throughRevision !== undefined
+          ? this.activityPageRows(db, sessionId, afterSeq, Math.min(limit, 200), filter ?? {}, throughRevision)
+          : filter === undefined ||
+              (filter.ownerDshSessionId === undefined && filter.promptAnchorMessageId === undefined)
+            ? ((this.stmtActivityPage?.all(sessionId, afterSeq, Math.min(limit, 200)) ??
+                []) as unknown as ActivityRow[])
+            : this.activityPageRows(db, sessionId, afterSeq, Math.min(limit, 200), filter)
       return Promise.resolve(rows.map(rowToActivity).filter((row): row is AcpActivityRecord => row !== undefined))
     } catch (error) {
       return Promise.reject(error instanceof Error ? error : new Error(errorMessage(error)))
@@ -1929,8 +1957,16 @@ class SidecarStore implements AcpSidecar {
     afterSeq: number,
     limit: number,
     filter: AcpActivityFilter,
+    throughRevision?: number,
   ): ActivityRow[] {
     const { where, params } = activityFilterSql(sessionId, filter)
+    if (throughRevision !== undefined) {
+      return db
+        .prepare(
+          `SELECT * FROM activity_journal WHERE ${where} AND revision_seq > ? AND revision_seq <= ? ORDER BY revision_seq ASC LIMIT ?`,
+        )
+        .all(...params, afterSeq, throughRevision, limit) as unknown as ActivityRow[]
+    }
     return db
       .prepare(`SELECT * FROM activity_journal WHERE ${where} AND revision_seq > ? ORDER BY revision_seq ASC LIMIT ?`)
       .all(...params, afterSeq, limit) as unknown as ActivityRow[]
@@ -2014,11 +2050,17 @@ class SidecarStore implements AcpSidecar {
     }
   }
 
-  writeRecoveryState(state: AcpRecoveryState): Promise<void> {
+  writeRecoveryState(state: AcpRecoveryState, options?: { readonly clearDispatch?: true }): Promise<void> {
     assertSafeSessionId(state.dshSessionId)
     const validated = toRecoveryState(state)
     if (validated === undefined)
       throw new TypeError(`dsh-acp sidecar: malformed recovery state for session ${JSON.stringify(state.dshSessionId)}`)
+    if (
+      options?.clearDispatch === true &&
+      (validated.kind !== 'healthy' ||
+        (validated.lastUserAction !== 'retry-original' && validated.lastUserAction !== 'rebind-blank'))
+    )
+      throw new TypeError('dsh-acp sidecar: dispatch can only be cleared with an explicit healthy recovery action')
     try {
       const db = this.ensureDb()
       db.exec('BEGIN IMMEDIATE')
@@ -2030,6 +2072,7 @@ class SidecarStore implements AcpSidecar {
           validated.lastUserAction ?? null,
           stableStringify(validated),
         )
+        if (options?.clearDispatch === true) this.stmtDeleteDispatch?.run(validated.dshSessionId)
         db.exec('COMMIT')
       } catch (error: unknown) {
         try {
@@ -2093,17 +2136,29 @@ class SidecarStore implements AcpSidecar {
     }
   }
 
-  listPage(sessionId: SessionId, afterSeq: number, limit: number): Promise<readonly AcpSidecarEntry[]> {
+  listPage(
+    sessionId: SessionId,
+    afterSeq: number,
+    limit: number,
+    throughSeq?: number,
+  ): Promise<readonly AcpSidecarEntry[]> {
     assertSafeSessionId(sessionId)
     if (!Number.isSafeInteger(afterSeq) || afterSeq < 0)
       throw new TypeError('dsh-acp sidecar: audit cursor must be a non-negative integer')
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100)
       throw new TypeError('dsh-acp sidecar: audit page size must be between 1 and 100')
+    if (throughSeq !== undefined && (!Number.isSafeInteger(throughSeq) || throughSeq < afterSeq))
+      throw new TypeError('dsh-acp sidecar: audit snapshot head is invalid')
     try {
       this.drainQueue()
       const db = this.openIfExists()
       if (db === undefined) return Promise.resolve([])
-      const rows = (this.stmtListPage?.all(sessionId, afterSeq, limit) ?? []) as unknown as AuditRow[]
+      const rows =
+        throughSeq === undefined
+          ? ((this.stmtListPage?.all(sessionId, afterSeq, limit) ?? []) as unknown as AuditRow[])
+          : (db
+              .prepare('SELECT * FROM audit WHERE dsh_session_id = ? AND seq > ? AND seq <= ? ORDER BY seq ASC LIMIT ?')
+              .all(sessionId, afterSeq, throughSeq, limit) as unknown as AuditRow[])
       const entries: AcpSidecarEntry[] = []
       let skipped = 0
       for (const row of rows) {
@@ -2119,6 +2174,59 @@ class SidecarStore implements AcpSidecar {
     } catch (error: unknown) {
       return Promise.reject(error instanceof Error ? error : new Error(errorMessage(error)))
     }
+  }
+
+  async listPageScan(
+    sessionId: SessionId,
+    afterSeq: number,
+    limit: number,
+    throughSeq: number,
+  ): Promise<{
+    readonly entries: readonly AcpSidecarEntry[]
+    readonly scannedThrough: number
+    readonly scannedRecords: number
+    readonly unreadableRecords: number
+    readonly hasMore: boolean
+  }> {
+    assertSafeSessionId(sessionId)
+    if (!Number.isSafeInteger(afterSeq) || afterSeq < 0)
+      throw new TypeError('dsh-acp sidecar: audit cursor must be a non-negative integer')
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100)
+      throw new TypeError('dsh-acp sidecar: audit page size must be between 1 and 100')
+    if (!Number.isSafeInteger(throughSeq) || throughSeq < afterSeq)
+      throw new TypeError('dsh-acp sidecar: audit snapshot head is invalid')
+    this.drainQueue()
+    const db = this.openIfExists()
+    if (db === undefined)
+      return { entries: [], scannedThrough: afterSeq, scannedRecords: 0, unreadableRecords: 0, hasMore: false }
+    const rows = db
+      .prepare('SELECT * FROM audit WHERE dsh_session_id = ? AND seq > ? AND seq <= ? ORDER BY seq ASC LIMIT ?')
+      .all(sessionId, afterSeq, throughSeq, limit) as unknown as AuditRow[]
+    const entries: AcpSidecarEntry[] = []
+    let unreadableRecords = 0
+    for (const row of rows) {
+      const entry = rowToEntry(row)
+      if (entry === undefined) unreadableRecords += 1
+      else entries.push(entry)
+    }
+    const scannedThrough = rows.at(-1)?.seq ?? afterSeq
+    const hasMore =
+      scannedThrough < throughSeq &&
+      db
+        .prepare('SELECT 1 AS present FROM audit WHERE dsh_session_id = ? AND seq > ? AND seq <= ? LIMIT 1')
+        .get(sessionId, scannedThrough, throughSeq) !== undefined
+    if (unreadableRecords > 0)
+      this.warn(`dsh-acp sidecar: skipped ${String(unreadableRecords)} malformed audit row(s) in support snapshot`)
+    return { entries, scannedThrough, scannedRecords: rows.length, unreadableRecords, hasMore }
+  }
+
+  async auditHead(sessionId: SessionId): Promise<number> {
+    assertSafeSessionId(sessionId)
+    await this.flush()
+    const db = this.openIfExists()
+    if (db === undefined) return 0
+    const row = this.stmtMaxSeq?.get(sessionId) as { max_seq?: number | bigint | null } | undefined
+    return Number(row?.max_seq ?? 0)
   }
 
   async readModeIntent(sessionId: SessionId): Promise<AcpModeIntent | undefined> {
@@ -2311,7 +2419,13 @@ const ACP_ACTIVITY_KINDS: readonly AcpActivityKind[] = [
   'delegated',
   'other',
 ]
-const ACP_ACTIVITY_STATUSES: readonly AcpActivityStatus[] = ['running', 'completed', 'failed', 'cancelled']
+const ACP_ACTIVITY_STATUSES: readonly AcpActivityStatus[] = [
+  'running',
+  'completed',
+  'failed',
+  'cancelled',
+  'unfinished',
+]
 
 function isActivityKind(value: unknown): value is AcpActivityKind {
   return typeof value === 'string' && ACP_ACTIVITY_KINDS.includes(value as AcpActivityKind)
@@ -2322,7 +2436,7 @@ function isActivityStatus(value: unknown): value is AcpActivityStatus {
 }
 
 function isTerminalActivityStatus(value: AcpActivityStatus): boolean {
-  return value === 'completed' || value === 'failed' || value === 'cancelled'
+  return value === 'completed' || value === 'failed' || value === 'cancelled' || value === 'unfinished'
 }
 
 function validateActivityFilter(filter: AcpActivityFilter): void {

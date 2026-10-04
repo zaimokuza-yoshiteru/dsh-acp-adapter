@@ -4,6 +4,7 @@ import fs from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { teamTurn } from './team-turn.ts'
 import { hostToolsTurn } from './host-tools-turn.ts'
+import { settlementTurn } from './settlement-turn.ts'
 import { scheduleTurn } from './schedule-turn.ts'
 import { longConversationTurn } from './long-conversation-turn.ts'
 
@@ -15,6 +16,7 @@ export async function regressionTurn(
   if (await teamTurn(session, msg, { sendUpdate, sendAgentRequest, respond, log })) return
   if (await scheduleTurn(session, msg, { sendUpdate, sendAgentRequest, respond, log })) return
   if (await longConversationTurn(session, msg, { sendUpdate, sendAgentRequest, respond, log })) return
+  if (await settlementTurn(session, msg, { sendUpdate, sendAgentRequest, respond, log })) return
   if (await hostToolsTurn(session, msg, { sendUpdate, sendAgentRequest, respond })) return
   const prompt = msg.params.prompt
     .filter((block) => block.type === 'text')
@@ -91,6 +93,29 @@ export async function regressionTurn(
     return waitForFileGate(directory, 'release-steering-ack', 'steering acknowledgement', signal)
   }
   try {
+    if (prompt.includes('E2E_UNFINISHED_TOOL_FIRST')) {
+      sendUpdate(session.id, {
+        sessionUpdate: 'tool_call',
+        toolCallId: 'unfinished-fixture',
+        title: 'Scripted tool without terminal update',
+        kind: 'read',
+        status: 'in_progress',
+      })
+      say('E2E_UNFINISHED_FIRST_DONE')
+      return respond(msg.id, { stopReason: 'end_turn' })
+    }
+    if (prompt.includes('E2E_UNFINISHED_TOOL_NEXT')) {
+      sendUpdate(session.id, {
+        sessionUpdate: 'tool_call',
+        toolCallId: 'next-turn-terminal-fixture',
+        title: 'Next turn terminal tool',
+        kind: 'read',
+        status: 'completed',
+        rawOutput: 'fixture complete',
+      })
+      say('E2E_UNFINISHED_NEXT_DONE')
+      return respond(msg.id, { stopReason: 'end_turn' })
+    }
     const recoveryCrash = /E2E_RECOVERY_(QUEUE|PERMISSION)_CRASH/.exec(prompt)?.[1]
     if (profile === 'devin' && recoveryCrash !== undefined) {
       const directory = process.env.MOCK_RECOVERY_GATE_DIR

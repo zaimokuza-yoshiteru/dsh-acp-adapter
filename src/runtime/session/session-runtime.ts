@@ -16,8 +16,74 @@ import type { AcpTerminalHandlers } from '../client-capabilities/terminal.ts'
 import { acpConfigOptionsSnapshot } from '../../protocol/v1/config-options.ts'
 import type { AcpSessionNotification } from '../../protocol/v1/types.ts'
 import { waitWithin } from '../process/timeout.ts'
+import { AcpHostSettlementError } from './mcp-lease.ts'
 import type { AcpMcpLease } from './mcp-lease.ts'
 import type { AcpPermissionCheck } from '../../domain/policy/permission-check.ts'
+import {
+  collectLiveDiagnostic,
+  emitLiveDiagnostic,
+  liveDiagnosticId,
+  liveDiagnosticTraceEnabled,
+} from '../../contract/live-diagnostic-trace.ts'
+import { AcpClientError } from '../../protocol/v1/errors.ts'
+import { performance } from 'node:perf_hooks'
+
+const safeAcpErrorCodes = new Set([
+  'ACP_ABORTED',
+  'ACP_AUTH_REQUIRED',
+  'ACP_BINDING_PERSIST_FAILED',
+  'ACP_CRASH',
+  'ACP_CONFIG_CHANGE_DURING_PROMPT',
+  'ACP_PROTOCOL_ERROR',
+  'ACP_RESOURCE_EXHAUSTED',
+  'ACP_SPAWN_FAILURE',
+  'ACP_TIMEOUT',
+  'ACP_STEERING_OUTCOME_UNKNOWN',
+  'ACP_STEERING_FAILED',
+  'ACP_TEAM_TOOL_FAILED',
+  'ACP_HOST_CALL_DRAIN_TIMEOUT',
+  'ACP_HOST_GENERATION_STILL_ACTIVE',
+  'ACP_HOST_TOOL_NOT_DISPATCHED',
+  'ACP_HOST_FEEDBACK_COMMIT_FAILED',
+  'ACP_HOST_TOOL_RECONCILIATION_REQUIRED',
+])
+
+function structuredAcpErrorCode(error: unknown): string {
+  try {
+    if (typeof error !== 'object' || error === null || !('code' in error)) return 'unavailable'
+    const code = (error as { readonly code?: unknown }).code
+    return typeof code === 'string' && safeAcpErrorCodes.has(code) ? code : 'unavailable'
+  } catch {
+    return 'unavailable'
+  }
+}
+
+function structuredJsonRpcCode(error: unknown): number | null {
+  try {
+    if (typeof error !== 'object' || error === null) return null
+    const cause = (error as { readonly cause?: unknown }).cause
+    if (typeof cause !== 'object' || cause === null || !('code' in cause)) return null
+    const code = (cause as { readonly code?: unknown }).code
+    return typeof code === 'number' && Number.isSafeInteger(code) ? code : null
+  } catch {
+    return null
+  }
+}
+
+function structuredProviderErrorKind(error: unknown): 'resource_exhausted' | 'unavailable' {
+  try {
+    if (error instanceof AcpClientError && error.kind === 'resource-exhausted') return 'resource_exhausted'
+    if (typeof error !== 'object' || error === null || !('cause' in error)) return 'unavailable'
+    const cause = (error as { readonly cause?: unknown }).cause
+    if (typeof cause !== 'object' || cause === null || !('data' in cause)) return 'unavailable'
+    const data = (cause as { readonly data?: unknown }).data
+    return typeof data === 'object' && data !== null && 'errorKind' in data && data.errorKind === 'resource_exhausted'
+      ? 'resource_exhausted'
+      : 'unavailable'
+  } catch {
+    return 'unavailable'
+  }
+}
 /** Deliberately protocol-local: runtime restoration does not own persistence. */
 export interface AcpRuntimeBindingRef {
   readonly agentSessionId: string
@@ -42,6 +108,8 @@ export interface AcpRuntimeContextUsage {
 }
 
 export interface AcpSessionRuntimeOptions {
+  /** DSH session id used only by the opt-in live-test diagnostic observer. */
+  readonly diagnosticDshSessionId?: string
   readonly mcpKey?: () => unknown
   readonly createMcpLease?: (capabilities: acp.AgentCapabilities | undefined) => Promise<AcpMcpLease | undefined>
   readonly profileId: string
@@ -77,6 +145,8 @@ export interface AcpSessionRuntimeOptions {
   ) => Promise<acp.CreateElicitationResponse>
   /** One-shot diagnostic for optional private capability degradation. */
   readonly onCapabilityDegraded?: (message: string) => void
+  /** Best-effort notification when a terminal ACP response is waiting on Host settlement. */
+  readonly onHostSettlementChanged?: () => void
   /** Grace period after `session/cancel` before the Agent process is closed. */
   readonly cancelGraceMs?: number
 }
@@ -224,16 +294,19 @@ export class AcpSessionRuntime {
   private currentMode: string | undefined
   private modeSnapshot: acp.SessionModeState | undefined
   private usageSnapshot: AcpRuntimeContextUsage | undefined
+  private promptOrdinal = 0
   private configWrite: Promise<void> = Promise.resolve()
   /** Claim the complete prompt lifecycle, including lazy session setup. This is
    * distinct from promptActive, which gates Agent callbacks only after the
    * session/prompt request has actually been dispatched. */
   private promptClaimed = false
+  private hostSettlementPendingValue = false
   private promptActive = false
   /** One map per active prompt. Tool call ids are only meaningful inside this
    * lifetime for permission enrichment and must never leak into another turn. */
   private promptToolSnapshots: Map<string, acp.ToolCallUpdate> | undefined
   private readonly cancelGraceMs: number
+  private readonly retiredMcpLeases = new Set<AcpMcpLease>()
 
   constructor(private readonly options: AcpSessionRuntimeOptions) {
     this.cancelGraceMs = options.cancelGraceMs ?? ACP_CANCEL_SETTLE_GRACE_MS
@@ -271,6 +344,56 @@ export class AcpSessionRuntime {
   }
   get isBusy(): boolean {
     return this.promptClaimed
+  }
+  get hostSettlementPending(): boolean {
+    return this.hostSettlementPendingValue
+  }
+  private setHostSettlementPending(pending: boolean): void {
+    if (this.hostSettlementPendingValue === pending) return
+    this.hostSettlementPendingValue = pending
+    try {
+      this.options.onHostSettlementChanged?.()
+    } catch {
+      /* Host settlement notifications are best effort. */
+    }
+  }
+  hasPendingHostCalls(): boolean {
+    return (
+      this.mcpLease?.hasPendingCalls?.() === true ||
+      [...this.retiredMcpLeases].some((lease) => lease.hasPendingCalls?.() === true)
+    )
+  }
+  hasUncommittedHostFeedback(): boolean {
+    return (
+      this.mcpLease?.hasUncommittedFeedback?.() === true ||
+      [...this.retiredMcpLeases].some((lease) => lease.hasUncommittedFeedback?.() === true)
+    )
+  }
+  async flushHostFeedback(): Promise<void> {
+    const leases = [this.mcpLease, ...this.retiredMcpLeases].filter(
+      (lease): lease is AcpMcpLease => lease !== undefined,
+    )
+    try {
+      for (const lease of leases) await lease.flushHostFeedback?.()
+    } finally {
+      this.setHostSettlementPending(this.hasPendingHostCalls() || this.hasUncommittedHostFeedback())
+    }
+  }
+  hasRetainedHostFeedback(): boolean {
+    return (
+      this.mcpLease?.hasRetainedFeedback?.() === true ||
+      [...this.retiredMcpLeases].some((lease) => lease.hasRetainedFeedback?.() === true)
+    )
+  }
+  async waitForHostCallsSettled(): Promise<void> {
+    const leases = [this.mcpLease, ...this.retiredMcpLeases].filter(
+      (lease): lease is AcpMcpLease => lease !== undefined,
+    )
+    await Promise.all(leases.map((lease) => lease.waitForCallsSettled?.() ?? Promise.resolve()))
+    for (const lease of this.retiredMcpLeases) {
+      if (lease.hasPendingCalls?.() !== true && lease.hasRetainedFeedback?.() !== true)
+        this.retiredMcpLeases.delete(lease)
+    }
   }
   private pendingQuestions = 0
   get canSteer(): boolean {
@@ -424,13 +547,20 @@ export class AcpSessionRuntime {
     onUpdate: (notification: AcpSessionNotification) => void,
     signal?: AbortSignal,
     onTeamReport?: () => void,
+    onTurnConcluded?: () => void,
   ): Promise<acp.PromptResponse> {
     if (this.promptClaimed) throw new Error('ACP_PROMPT_ALREADY_ACTIVE')
+    // Claim synchronously before the asynchronous local feedback flush. Without
+    // this ordering, two callers can both pass the initial check and dispatch
+    // overlapping RPC prompts while they await the same retained feedback.
     this.promptClaimed = true
     const promptAbort = new AbortController()
     this.promptAbort = promptAbort
     const setupSignal = signal === undefined ? promptAbort.signal : AbortSignal.any([signal, promptAbort.signal])
     try {
+      await this.flushHostFeedback()
+      if (this.hasPendingHostCalls() || this.hasUncommittedHostFeedback())
+        throw new AcpHostSettlementError('ACP_HOST_GENERATION_STILL_ACTIVE')
       // A turn cancelled before dispatch has no remote outcome to reconcile.
       if (isAborted(signal)) return { stopReason: 'cancelled' }
       // Claim the prompt first, preventing further UI writes, then finish any
@@ -448,7 +578,34 @@ export class AcpSessionRuntime {
       this.promptActive = true
       this.promptAbort = promptAbort
       this.promptSignal = signal
-      this.mcpLease?.beginPrompt(this.permissionSignal() ?? promptAbort.signal, onTeamReport)
+      const diagnosticsEnabled = liveDiagnosticTraceEnabled()
+      const promptOrdinal = diagnosticsEnabled ? ++this.promptOrdinal : undefined
+      const promptStartedAt = diagnosticsEnabled ? performance.now() : 0
+      const diagnosticLeaseId = diagnosticsEnabled ? this.mcpLease?.diagnosticLeaseId : undefined
+      const diagnosticSessionId = diagnosticsEnabled
+        ? (liveDiagnosticId('dsh-session', this.options.diagnosticDshSessionId) ?? 'unavailable')
+        : 'unavailable'
+      const diagnosticAcpSessionId = diagnosticsEnabled
+        ? (liveDiagnosticId('acp-session', sessionId) ?? 'unavailable')
+        : undefined
+      if (diagnosticsEnabled)
+        emitLiveDiagnostic({
+          type: 'adapter-prompt/start',
+          sessionId: diagnosticSessionId,
+          ...(diagnosticAcpSessionId === undefined ? {} : { acpSessionId: diagnosticAcpSessionId }),
+          promptOrdinal: promptOrdinal!,
+          ...(diagnosticLeaseId === undefined ? {} : { leaseId: diagnosticLeaseId }),
+        })
+      this.mcpLease?.beginPrompt(
+        this.permissionSignal() ?? promptAbort.signal,
+        onTeamReport,
+        promptOrdinal,
+        onTurnConcluded,
+        // Natural prompt completion aborts setup/permission work but must not
+        // cancel an already-dispatched Host body. When ACP has no external
+        // Stop signal, provide a distinct live signal until lease shutdown.
+        signal ?? new AbortController().signal,
+      )
       // Do not pass the turn signal into the RPC budget layer: abandoning an
       // in-flight JSON-RPC request poisons the connection. ACP cancellation is a
       // protocol notification followed by a bounded wait for this same prompt.
@@ -498,15 +655,81 @@ export class AcpSessionRuntime {
       }
       signal?.addEventListener('abort', onAbort, { once: true })
       if (isAborted(signal)) onAbort()
+      let promptResponse: acp.PromptResponse | undefined
+      let promptError: unknown
       try {
-        return await prompting
+        promptResponse = await prompting
+        return promptResponse
+      } catch (error) {
+        promptError = error
+        throw error
       } finally {
         signal?.removeEventListener('abort', onAbort)
         // Permission requests are scoped to this prompt, not merely to the
         // process connection. Natural completion must cancel an unresolved host
         // question just as Stop does, before another turn can begin.
+        const externallyAborted = isAborted(signal)
+        this.mcpLease?.endPrompt({
+          ...(promptResponse === undefined ? {} : { stopReason: promptResponse.stopReason }),
+          externallyAborted,
+          remoteOutcomeKnown: promptResponse !== undefined,
+        })
+        this.setHostSettlementPending(
+          promptResponse !== undefined && (this.hasPendingHostCalls() || this.hasUncommittedHostFeedback()),
+        )
         promptAbort.abort(new Error('ACP prompt lifetime ended'))
-        this.mcpLease?.endPrompt()
+        let drainError: unknown
+        if (this.mcpLease?.drainPrompt !== undefined) {
+          try {
+            await this.mcpLease.drainPrompt()
+          } catch (error) {
+            drainError = error
+          }
+        }
+        this.setHostSettlementPending(this.hasPendingHostCalls() || this.hasUncommittedHostFeedback())
+        const feedbackCommitFailure =
+          drainError instanceof AcpHostSettlementError &&
+          drainError.code === 'ACP_HOST_FEEDBACK_COMMIT_FAILED' &&
+          promptResponse === undefined
+        if (
+          drainError instanceof AcpHostSettlementError &&
+          drainError.code === 'ACP_HOST_FEEDBACK_COMMIT_FAILED' &&
+          promptResponse !== undefined
+        ) {
+          drainError = new AcpHostSettlementError('ACP_HOST_FEEDBACK_COMMIT_FAILED', {
+            remoteOutcomeKnown: true,
+            remoteResponse: promptResponse,
+          })
+        }
+        const structuredFailureError =
+          feedbackCommitFailure && promptError !== undefined ? promptError : (drainError ?? promptError)
+        const structuredFailure =
+          diagnosticsEnabled && structuredFailureError !== undefined
+            ? collectLiveDiagnostic(() => ({
+                operation: 'session/prompt' as const,
+                errorCode: structuredAcpErrorCode(structuredFailureError),
+                providerErrorKind: structuredProviderErrorKind(structuredFailureError),
+                jsonRpcCode: structuredJsonRpcCode(structuredFailureError),
+              }))
+            : undefined
+        if (diagnosticsEnabled)
+          emitLiveDiagnostic({
+            type: 'adapter-prompt/end',
+            sessionId: diagnosticSessionId,
+            ...(diagnosticAcpSessionId === undefined ? {} : { acpSessionId: diagnosticAcpSessionId }),
+            promptOrdinal: promptOrdinal!,
+            ...(diagnosticLeaseId === undefined ? {} : { leaseId: diagnosticLeaseId }),
+            durationMs: Math.max(0, Math.round(performance.now() - promptStartedAt)),
+            stopReason:
+              promptResponse?.stopReason === 'end_turn' ||
+              promptResponse?.stopReason === 'max_tokens' ||
+              promptResponse?.stopReason === 'cancelled' ||
+              promptResponse?.stopReason === 'refusal' ||
+              promptResponse?.stopReason === 'max_turn_requests'
+                ? promptResponse.stopReason
+                : 'unknown',
+            ...(structuredFailure ?? {}),
+          })
         if (this.promptAbort === promptAbort) {
           promptToolSnapshots.clear()
           if (this.promptToolSnapshots === promptToolSnapshots) this.promptToolSnapshots = undefined
@@ -514,6 +737,7 @@ export class AcpSessionRuntime {
           this.promptSignal = undefined
           this.promptActive = false
         }
+        if (drainError !== undefined && !(feedbackCommitFailure && promptError !== undefined)) throw drainError
       }
     } finally {
       promptAbort.abort(new Error('ACP prompt lifetime ended'))
@@ -571,7 +795,25 @@ export class AcpSessionRuntime {
     this.promptToolSnapshots = undefined
     this.connectionAbort?.abort()
     this.connectionAbort = undefined
-    const closed = await Promise.allSettled([this.mcpLease?.close(), this.connection?.close()])
+    const lease = this.mcpLease
+    const closed = await waitWithin(
+      Promise.allSettled([lease?.close(this.cancelGraceMs), this.connection?.close()]),
+      this.cancelGraceMs,
+    )
+    if (lease?.hasPendingCalls?.() === true || lease?.hasRetainedFeedback?.() === true) {
+      this.retiredMcpLeases.add(lease)
+      const settled = lease.waitForCallsSettled?.()
+      if (settled !== undefined)
+        void settled.then(
+          () => {
+            if (lease.hasPendingCalls?.() !== true && lease.hasRetainedFeedback?.() !== true)
+              this.retiredMcpLeases.delete(lease)
+          },
+          () => {
+            /* keep the lease reachable when settlement cannot be observed */
+          },
+        )
+    }
     this.mcpLease = undefined
     this.connection = undefined
     this.sessionId = undefined
@@ -580,12 +822,9 @@ export class AcpSessionRuntime {
     this.currentMode = undefined
     this.modeSnapshot = undefined
     this.usageSnapshot = undefined
-    const errors = closed.filter((result): result is PromiseRejectedResult => result.status === 'rejected')
-    if (errors.length > 0)
-      throw new AggregateError(
-        errors.map((result) => result.reason),
-        'ACP runtime cleanup failed',
-      )
+    const errors: unknown[] = []
+    for (const result of closed ?? []) if (result.status === 'rejected') errors.push(result.reason)
+    if (errors.length > 0) throw new AggregateError(errors, 'ACP runtime cleanup failed')
   }
 
   private async createSession(signal?: AbortSignal): Promise<void> {
@@ -740,6 +979,51 @@ export class AcpSessionRuntime {
     // parent's model, mode, usage or permission snapshots.
     if (notification.sessionId !== (this.sessionId ?? this.restoringSessionId)) return
     const update = notification.update
+    const diagnosticsEnabled = liveDiagnosticTraceEnabled()
+    const diagnosticSessionId = diagnosticsEnabled
+      ? (liveDiagnosticId('dsh-session', this.options.diagnosticDshSessionId) ?? 'unavailable')
+      : 'unavailable'
+    const diagnosticAcpSessionId = diagnosticsEnabled
+      ? (liveDiagnosticId('acp-session', notification.sessionId) ?? 'unavailable')
+      : undefined
+    if (diagnosticsEnabled && (update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update')) {
+      const toolNames = new Set([
+        'spawn_teammate',
+        'send_message',
+        'list_agents',
+        'wait_agent',
+        'interrupt_agent',
+        'team_task_create',
+        'team_task_list',
+        'team_task_get',
+        'team_task_update',
+      ])
+      const rawToolName = (update as { readonly name?: unknown }).name
+      const rawStatus = update.status
+      emitLiveDiagnostic({
+        type: 'acp-tool/update',
+        sessionId: diagnosticSessionId,
+        ...(diagnosticAcpSessionId === undefined ? {} : { acpSessionId: diagnosticAcpSessionId }),
+        ...(this.mcpLease?.diagnosticLeaseId === undefined ? {} : { leaseId: this.mcpLease.diagnosticLeaseId }),
+        ...(this.promptActive ? { adapterPromptOrdinal: this.promptOrdinal } : {}),
+        providerToolCallId: liveDiagnosticId('acp-tool-call', update.toolCallId) ?? 'unavailable',
+        tool: typeof rawToolName === 'string' && toolNames.has(rawToolName) ? (rawToolName as never) : 'other',
+        providerToolStatus:
+          rawStatus === 'pending' || rawStatus === 'in_progress' || rawStatus === 'completed' || rawStatus === 'failed'
+            ? rawStatus
+            : 'unknown',
+      })
+    }
+    if (diagnosticsEnabled && update.sessionUpdate === 'usage_update') {
+      emitLiveDiagnostic({
+        type: 'acp-usage/update',
+        sessionId: diagnosticSessionId,
+        ...(diagnosticAcpSessionId === undefined ? {} : { acpSessionId: diagnosticAcpSessionId }),
+        ...(this.promptActive ? { adapterPromptOrdinal: this.promptOrdinal } : {}),
+        contextUsed: update.used,
+        contextSize: update.size,
+      })
+    }
     if (
       this.promptActive &&
       notification.sessionId === this.sessionId &&

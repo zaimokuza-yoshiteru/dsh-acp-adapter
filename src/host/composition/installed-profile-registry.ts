@@ -30,6 +30,8 @@ import { installAcpBackendGuard } from './backend-guard.ts'
 import type { SessionPersistence } from '@deepseek-ai/dsh-session-persistence'
 import { installExternalChildCatalog } from '../subagent/catalog-publication.ts'
 import { ExternalSubagentProjector } from '../subagent/external-projector.ts'
+import type { AcpRecoveryView } from '../../contract/remote.ts'
+import type { AcpRecoveryState } from '../../persistence/sidecar.ts'
 
 export { acpProbeConfigKey }
 
@@ -38,8 +40,9 @@ export type ActivityReadStatus = 'owned' | 'binding-pending' | 'denied'
 /**
  * Resolve the activity stream's strict read status. A confirmed owned live ACP
  * route with no durable binding returns a temporary pending signal for initial-
- * follow retry; it never grants access. Malformed records and storage failures
- * remain denied.
+ * follow retry; it never grants access. Malformed records remain denied,
+ * while storage failures propagate so callers can retry without seeing a false
+ * healthy or unauthorized result.
  */
 export async function activityReadStatusOf(input: {
   readonly sessionId: string
@@ -47,18 +50,49 @@ export async function activityReadStatusOf(input: {
   readonly liveProvider: string | undefined
   readonly ownedProviders: ReadonlySet<string>
 }): Promise<ActivityReadStatus> {
-  try {
-    if (input.sidecar === undefined) return 'denied'
-    if (await input.sidecar.hasDurableActivityOwner(input.sessionId as never)) return 'owned'
-    const binding = await input.sidecar.readLatestBinding(input.sessionId as never)
-    if (binding !== undefined) return 'denied'
-    // Include an owner committed between the first owner check and binding read.
-    if (await input.sidecar.hasDurableActivityOwner(input.sessionId as never)) return 'owned'
-    return input.liveProvider !== undefined && input.ownedProviders.has(input.liveProvider)
-      ? 'binding-pending'
-      : 'denied'
-  } catch {
-    return 'denied'
+  if (input.sidecar === undefined) return 'denied'
+  if (await input.sidecar.hasDurableActivityOwner(input.sessionId as never)) return 'owned'
+  const binding = await input.sidecar.readLatestBinding(input.sessionId as never)
+  if (binding !== undefined) return 'denied'
+  // Include an owner committed between the first owner check and binding read.
+  if (await input.sidecar.hasDurableActivityOwner(input.sessionId as never)) return 'owned'
+  return input.liveProvider !== undefined && input.ownedProviders.has(input.liveProvider) ? 'binding-pending' : 'denied'
+}
+
+/** Compose volatile settlement context over the recovery fact without persisting it. */
+export function recoveryViewWithLocalStatus(
+  sessionId: string,
+  visibleState: AcpRecoveryState | undefined,
+  localStatus: AcpRecoveryView['localStatus'],
+): AcpRecoveryView | undefined {
+  if (visibleState !== undefined && visibleState.kind !== 'healthy')
+    return {
+      dshSessionId: visibleState.dshSessionId,
+      kind: visibleState.kind,
+      cause: visibleState.cause ?? null,
+      detail: visibleState.detail ?? null,
+      provider: visibleState.provider ?? null,
+      acpSessionId: visibleState.acpSessionId ?? null,
+      generation: visibleState.generation ?? null,
+      interruptedTurnId: visibleState.interruptedTurnId ?? null,
+      lastAttemptAt: visibleState.lastAttemptAt ?? null,
+      lastUserAction: visibleState.lastUserAction ?? null,
+      updatedAt: visibleState.updatedAt,
+    }
+  if (visibleState === undefined && localStatus === undefined) return undefined
+  return {
+    dshSessionId: visibleState?.dshSessionId ?? sessionId,
+    kind: 'healthy',
+    ...(localStatus === undefined ? {} : { localStatus }),
+    cause: visibleState?.cause ?? null,
+    detail: visibleState?.detail ?? null,
+    provider: visibleState?.provider ?? null,
+    acpSessionId: visibleState?.acpSessionId ?? null,
+    generation: visibleState?.generation ?? null,
+    interruptedTurnId: visibleState?.interruptedTurnId ?? null,
+    lastAttemptAt: visibleState?.lastAttemptAt ?? null,
+    lastUserAction: visibleState?.lastUserAction ?? null,
+    updatedAt: visibleState?.updatedAt ?? Date.now(),
   }
 }
 
@@ -442,11 +476,7 @@ export function installInstalledProfileRegistry(
   const ownedSessionReadGate = async (sessionId: string): Promise<boolean> => {
     // The sidecar is the authority for both audit and Activity ownership;
     // SessionStore liveness is intentionally not accepted as a grant.
-    try {
-      return (await ownedSidecar?.hasDurableActivityOwner(sessionId as never)) ?? false
-    } catch {
-      return false
-    }
+    return (await ownedSidecar?.hasDurableActivityOwner(sessionId as never)) ?? false
   }
   const activityReadStatus = async (sessionId: string): Promise<'owned' | 'binding-pending' | 'denied'> => {
     let liveProvider: string | undefined
@@ -528,16 +558,22 @@ export function installInstalledProfileRegistry(
         },
       },
       auditTimeline: {
-        list: async (sessionId, afterSeq, limit) => {
-          const rows = await sidecar.listPage(sessionId as never, afterSeq, limit)
+        list: async (sessionId, afterSeq, limit, throughSeq) => {
+          const rows = await sidecar.listPage(sessionId as never, afterSeq, limit, throughSeq)
           return rows.map(auditTimelineRowOf)
         },
-        hasMore: async (sessionId, seq) => (await sidecar.listPage(sessionId as never, seq, 1)).length > 0,
+        hasMore: async (sessionId, seq, throughSeq) =>
+          (await sidecar.listPage(sessionId as never, seq, 1, throughSeq)).length > 0,
+        head: async (sessionId) => sidecar.auditHead(sessionId as never),
+        scanPage: async (sessionId, afterSeq, limit, throughSeq) => {
+          const page = await sidecar.listPageScan(sessionId as never, afterSeq, limit, throughSeq)
+          return { ...page, entries: page.entries.map(auditTimelineRowOf) }
+        },
       },
       activityTimeline: {
         snapshot: (sessionId, limit, filter) => sidecar.activitySnapshot(sessionId as never, limit, filter),
-        page: (sessionId, afterRevision, limit, filter) =>
-          sidecar.activityPage(sessionId as never, afterRevision, limit, filter),
+        page: (sessionId, afterRevision, limit, filter, throughRevision) =>
+          sidecar.activityPage(sessionId as never, afterRevision, limit, filter, throughRevision),
         head: (sessionId, filter) => sidecar.activityHead(sessionId as never, filter),
         subscribe: (sessionId, filter, subscriber) =>
           sidecar.subscribeActivity(sessionId as never, filter ?? {}, subscriber),
@@ -549,26 +585,23 @@ export function installInstalledProfileRegistry(
       imageInputAvailable: attachments !== undefined,
       recoveryStateStore: {
         read: async (sessionId) => {
-          const fallback = [...profileAdapters.values()]
+          const adapters = [...profileAdapters.values()]
+          const fallback = adapters
             .map((adapter) => adapter.recoveryStateFallback(sessionId))
             .find((candidate) => candidate !== undefined)
           // An in-memory gate exists only when durable recovery persistence
           // failed, so it must outrank any older healthy sidecar record.
           const visibleState = fallback ?? (await sidecar.readRecoveryState(sessionId as never))
-          if (visibleState === undefined) return undefined
-          return {
-            dshSessionId: visibleState.dshSessionId,
-            kind: visibleState.kind,
-            cause: visibleState.cause ?? null,
-            detail: visibleState.detail ?? null,
-            provider: visibleState.provider ?? null,
-            acpSessionId: visibleState.acpSessionId ?? null,
-            generation: visibleState.generation ?? null,
-            interruptedTurnId: visibleState.interruptedTurnId ?? null,
-            lastAttemptAt: visibleState.lastAttemptAt ?? null,
-            lastUserAction: visibleState.lastUserAction ?? null,
-            updatedAt: visibleState.updatedAt,
-          }
+          // A real recovery outcome (especially outcome-unknown) always wins.
+          // Settlement status is volatile display context and is never written
+          // to the recovery sidecar.
+          const localStatus =
+            visibleState === undefined || visibleState.kind === 'healthy'
+              ? adapters
+                  .map((adapter) => adapter.localSettlementStatus(sessionId))
+                  .find((candidate) => candidate !== undefined)
+              : undefined
+          return recoveryViewWithLocalStatus(sessionId, visibleState, localStatus)
         },
       },
       recoveryAdapter: (provider) => {
@@ -702,6 +735,7 @@ export function installInstalledProfileRegistry(
               ),
             (sessionId, schemas) => teamBridgeKey(ctx, sessionId, schemas),
             controlsChanged,
+            ctx.root,
           )
           profileAdapters.set(id, routeAdapter)
         }

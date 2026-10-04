@@ -91,6 +91,7 @@ function statusLabel(status: AcpActivityView['status'], t: ActivityNodeProps['t'
     completed: 'activity.status.completed',
     failed: 'activity.status.failed',
     cancelled: 'activity.status.cancelled',
+    unfinished: 'activity.status.unfinished',
   } as const
   return t(key[status])
 }
@@ -191,7 +192,7 @@ function terminalDetail(row: AcpActivityView, value: unknown): TerminalDetail | 
 function dotState(status: AcpActivityView['status']): StateDotState {
   if (status === 'running') return 'ongoing'
   if (status === 'completed') return 'done'
-  if (status === 'cancelled') return 'warning'
+  if (status === 'cancelled' || status === 'unfinished') return 'warning'
   return 'error'
 }
 
@@ -326,6 +327,11 @@ export function completedProjectedChild(row: AcpActivityView):
 
 export type ActivityPresentationRow = AcpActivityView & {
   readonly projectedChild?: { readonly parentSessionId: string; readonly childSessionId: string }
+}
+
+/** Unknown tool outcomes stay in the ACP activity surface; never fabricate a native result block. */
+export function usesNativeActivityToolProjection(row: Pick<AcpActivityView, 'kind' | 'status'>): boolean {
+  return row.kind === 'tool' && row.status !== 'unfinished'
 }
 
 /**
@@ -618,7 +624,7 @@ export function ActivityRow(props: {
             : null,
         )
       : null
-    if (row.kind === 'tool')
+    if (usesNativeActivityToolProjection(row))
       return h(
         'div',
         { onClickCapture: () => setOpen(true) },
@@ -661,7 +667,7 @@ export function ActivityRow(props: {
   }
   const full = current ?? row
   if (full.kind === 'plan') return planRowElement(full, props.t, open, toggle)
-  if (full.kind === 'tool')
+  if (usesNativeActivityToolProjection(full))
     return h(
       'div',
       null,
@@ -763,6 +769,7 @@ export function AcpActivityContent({
 }: ActivityNodeProps): ReactNode {
   const [rows, setRows] = useState<readonly ActivityPresentationRow[]>([])
   const [unavailable, setUnavailable] = useState(false)
+  const [reconnecting, setReconnecting] = useState(false)
   const [canRetry, setCanRetry] = useState(false)
   const [retrying, setRetrying] = useState(false)
   const retryRef = useRef<(() => void) | undefined>(undefined)
@@ -775,7 +782,11 @@ export function AcpActivityContent({
       setRows(next)
       setRetrying(handle.retrying())
       setCanRetry(handle.canRetry())
-      setUnavailable(handle.error() !== undefined && !handle.loading())
+      const hasError = handle.error() !== undefined
+      const stableFailure = handle.canRetry()
+      const isRetrying = handle.retrying()
+      setUnavailable(hasError && !handle.loading() && stableFailure)
+      setReconnecting(hasError && !stableFailure && !isRetrying)
       for (const row of all) {
         const projected = completedProjectedChild(row)
         if (projected !== undefined) onProjectedChild?.(projected.parentSessionId, projected.childSessionId)
@@ -791,7 +802,7 @@ export function AcpActivityContent({
     }
   }, [data.ownerDshSessionId, data.promptAnchorMessageId, sessionId, journalHub, onProjectedChild])
 
-  if (rows.length === 0 && !unavailable) return null
+  if (rows.length === 0 && !unavailable && !reconnecting) return null
   return h(
     'section',
     { className: css.flow, 'data-acp-activity': true },
@@ -807,28 +818,35 @@ export function AcpActivityContent({
         ...(onOpenProjectedChild === undefined ? {} : { onOpenProjectedChild }),
       }),
     ),
-    unavailable
+    reconnecting
       ? h(
           'div',
-          { className: css.unavailable },
-          h(StateDot, { state: 'error' }),
-          h('span', null, t('activity.unavailable')),
-          canRetry || retrying
-            ? h(
-                Button,
-                {
-                  variant: 'outline',
-                  size: 'sm',
-                  disabled: retrying,
-                  onClick: () => {
-                    retryRef.current?.()
-                  },
-                },
-                t('activity.retry'),
-              )
-            : null,
+          { className: css.status },
+          h(StateDot, { state: 'ongoing' }),
+          h('span', null, t('activity.reconnecting')),
         )
-      : null,
+      : unavailable
+        ? h(
+            'div',
+            { className: css.unavailable },
+            h(StateDot, { state: 'error' }),
+            h('span', null, t('activity.unavailable')),
+            canRetry || retrying
+              ? h(
+                  Button,
+                  {
+                    variant: 'outline',
+                    size: 'sm',
+                    disabled: retrying,
+                    onClick: () => {
+                      retryRef.current?.()
+                    },
+                  },
+                  t('activity.retry'),
+                )
+              : null,
+          )
+        : null,
   )
 }
 
@@ -839,6 +857,8 @@ export function nativeActivityToolBlock(
   externalAgentLabel?: string,
   externalAgentStatusLabel?: (status: string) => string,
 ): ToolCallBlock {
+  if (row.status === 'unfinished')
+    throw new Error('An ACP activity without a reported result cannot be projected as a native tool result')
   const value = detailValue(row)
   const detail = record(value) ? value : {}
   const externalDelegations = Array.isArray(detail.externalDelegations)

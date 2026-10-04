@@ -1,8 +1,10 @@
 import { createElement as h, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+import type { RemoteStreamFactory } from '@deepseek-ai/dsh-api-gateway/client'
 import { Button, DisclosureRow, IconWarningTriangleOutlineRegular, Modal } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { AcpRecoveryView, AcpRemoteLike } from '../data/acp-remote.ts'
+import { recoveringRecoveryStream } from '../data/recovery-stream.ts'
 import type { OwnsAcpRoute } from '../coordinator/cross-backend-coordinator.ts'
 import type { AcpLocaleKey } from './locales.ts'
 import css from './AcpRecoveryDock.module.css'
@@ -10,6 +12,7 @@ import css from './AcpRecoveryDock.module.css'
 type RecoveryDockProps = PropsRuntime<'conversation.input.dock'> &
   PropsLocale<'acpActivity'> & {
     readonly remote: AcpRemoteLike
+    readonly streamFactory: RemoteStreamFactory
     readonly createNewSession: (sourceSessionId: string) => Promise<void>
     readonly ownsRoute: OwnsAcpRoute
   }
@@ -48,6 +51,32 @@ export function recoveryText(t: Translate, recovery: AcpRecoveryView): string {
   return t(key[recovery.kind])
 }
 
+/** Temporary settlement is shown only while the durable recovery outcome is healthy. */
+export function localSettlementText(t: Translate, recovery: AcpRecoveryView): string | null {
+  if (recovery.kind !== 'healthy' || recovery.localStatus === undefined) return null
+  const key: Record<NonNullable<AcpRecoveryView['localStatus']>, AcpLocaleKey> = {
+    'finishing-tools': 'recoveryFinishingTools',
+    'saving-results': 'recoverySavingResults',
+    'storage-error': 'recoveryStorageError',
+  }
+  return t(key[recovery.localStatus])
+}
+
+function visibleRecovery(view: AcpRecoveryView): AcpRecoveryView | null {
+  return view.kind === 'healthy' && view.localStatus === undefined ? null : view
+}
+
+/** Publish the recovery view returned by the completed action without a second snapshot read. */
+export function publishRecoveryActionResult(
+  result: AcpRecoveryView | void,
+  isCurrent: () => boolean,
+  publish: (snapshot: AcpRecoveryView) => void,
+): boolean {
+  if (result === undefined || !isCurrent()) return false
+  publish(result)
+  return true
+}
+
 function recoveryChoice(
   action: RecoveryAction,
   variant: ButtonVariant,
@@ -77,6 +106,7 @@ export function AcpRecoveryDock({
   useProjection,
   t,
   remote,
+  streamFactory,
   createNewSession,
   ownsRoute,
 }: RecoveryDockProps): ReactNode {
@@ -96,6 +126,8 @@ export function AcpRecoveryDock({
   const [actionError, setActionError] = useState<string | null>(null)
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false)
   const [unavailable, setUnavailable] = useState(false)
+  const [reconnecting, setReconnecting] = useState(false)
+  const [recoveryRefreshReady, setRecoveryRefreshReady] = useState(false)
   const [retry, setRetry] = useState(0)
   const epoch = useRef(0)
   const inFlight = useRef<RecoveryOperation | null>(null)
@@ -103,34 +135,45 @@ export function AcpRecoveryDock({
   activeSession.current = sessionId
 
   useEffect(() => {
+    const currentEpoch = ++epoch.current
     let cancelled = false
-    ++epoch.current
     setOpen(false)
     if (inFlight.current?.sessionId === sessionId) setBusyAction(inFlight.current.action)
     else setBusyAction(null)
     setActionError(null)
     setDiagnosticsOpen(false)
     setUnavailable(false)
+    setReconnecting(false)
+    setRecoveryRefreshReady(false)
     setRecovery(null)
     if (!projectionIsAcp(projection, ownsRoute))
       return () => {
         cancelled = true
       }
-    void remote
-      .recoverySnapshot(sessionId)
-      .then((result) => {
-        if (cancelled) return
-        setUnavailable(!result.ok)
-        if (result.ok) setRecovery(result.value.kind === 'healthy' ? null : result.value)
-      })
-      .catch(() => {
-        if (!cancelled) setUnavailable(true)
-      })
+    const isCurrent = (): boolean => !cancelled && activeSession.current === sessionId && currentEpoch === epoch.current
+    const stream = recoveringRecoveryStream(
+      remote,
+      streamFactory,
+      sessionId,
+      (snapshot) => {
+        if (!isCurrent()) return
+        setRecovery(visibleRecovery(snapshot))
+      },
+      (state, _error, refreshReady) => {
+        if (!isCurrent()) return
+        setReconnecting(state === 'reconnecting')
+        setUnavailable(state === 'unavailable')
+        setRecoveryRefreshReady(refreshReady === true)
+        if (state !== 'connected') setRecovery(null)
+      },
+    )
+    stream.start()
     return () => {
       cancelled = true
       ++epoch.current
+      void stream.dispose()
     }
-  }, [lifecycleKey, ownsRoute, projectionProviderKey, remote, sessionId, retry])
+  }, [lifecycleKey, ownsRoute, projectionProviderKey, remote, sessionId, streamFactory, retry])
 
   if (!projectionIsAcp(projection, ownsRoute)) return null
   if (unavailable)
@@ -142,31 +185,60 @@ export function AcpRecoveryDock({
         { className: css.surface },
         h('span', { className: css.summaryIcon, 'aria-hidden': true }, h(IconWarningTriangleOutlineRegular)),
         h('span', { className: css.summaryText }, t('recoveryUnavailable')),
-        h(Button, { variant: 'outline', onClick: () => setRetry((value) => value + 1) }, t('activity.detailRetry')),
+        h(
+          Button,
+          {
+            variant: 'outline',
+            disabled: !recoveryRefreshReady,
+            onClick: () => setRetry((value) => value + 1),
+          },
+          t('activity.detailRetry'),
+        ),
+      ),
+    )
+  if (reconnecting)
+    return h(
+      'div',
+      { className: css.dock, role: 'status' },
+      h(
+        'div',
+        { className: css.surface },
+        h('span', { className: css.summaryIcon, 'aria-hidden': true }, h(IconWarningTriangleOutlineRegular)),
+        h('span', { className: css.summaryText }, t('recoveryReconnecting')),
       ),
     )
   if (recovery === null) return null
 
+  const localStatus = localSettlementText(t, recovery)
+  if (localStatus !== null) {
+    return h(
+      'div',
+      { className: css.dock, role: 'status' },
+      h('div', { className: `${css.surface} ${css.localStatus}` }, localStatus),
+    )
+  }
+
   const busy = busyAction !== null
-  const run = async (actionName: RecoveryAction, action: () => Promise<unknown>): Promise<void> => {
+  const run = async (actionName: RecoveryAction, action: () => Promise<AcpRecoveryView | void>): Promise<void> => {
     if (inFlight.current?.sessionId === sessionId || activeSession.current !== sessionId) return
     const operation: RecoveryOperation = { sessionId, action: actionName, token: Symbol(actionName) }
+    const actionEpoch = epoch.current
     inFlight.current = operation
     setBusyAction(actionName)
     setActionError(null)
     try {
-      await action()
-      if (inFlight.current?.token !== operation.token || activeSession.current !== sessionId) return
-      const refreshEpoch = epoch.current
-      const result = await remote.recoverySnapshot(sessionId)
-      if (
-        inFlight.current?.token === operation.token &&
-        activeSession.current === sessionId &&
-        refreshEpoch === epoch.current
-      ) {
-        setUnavailable(!result.ok)
-        if (result.ok) setRecovery(result.value.kind === 'healthy' ? null : result.value)
-      }
+      const result = await action()
+      publishRecoveryActionResult(
+        result,
+        () =>
+          inFlight.current?.token === operation.token &&
+          activeSession.current === sessionId &&
+          actionEpoch === epoch.current,
+        (snapshot) => {
+          setUnavailable(false)
+          setRecovery(visibleRecovery(snapshot))
+        },
+      )
     } catch (error) {
       if (inFlight.current?.token === operation.token && activeSession.current === sessionId)
         setActionError(error instanceof Error ? error.message : String(error))
@@ -253,6 +325,7 @@ export function AcpRecoveryDock({
             void run('reconnect', async () => {
               const result = await remote.retryOriginal(sessionId)
               if (!result.ok) throw new Error(result.error.message)
+              return result.value
             })
           },
         ),
@@ -268,6 +341,7 @@ export function AcpRecoveryDock({
             void run('rebind', async () => {
               const result = await remote.rebindRecoveryBlank(sessionId)
               if (!result.ok) throw new Error(result.error.message)
+              return result.value
             })
           },
         ),

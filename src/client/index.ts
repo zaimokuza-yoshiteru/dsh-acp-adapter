@@ -252,7 +252,7 @@ async function registerUi(ctx: ClientContext): Promise<void> {
       ownsRoute: managedRoutes.owns,
       async loadMembers(sessionId) {
         const result = await acpRemote.teamMembers(sessionId)
-        if (!result.ok) throw new Error(result.error.message)
+        if (!result.ok) throw Object.assign(new Error(result.error.message), { code: result.error.code })
         return result.value
       },
       async openMember(parentSessionId, childSessionId) {
@@ -329,10 +329,12 @@ async function registerUi(ctx: ClientContext): Promise<void> {
         locale: 'acpActivity',
         inject: (): {
           readonly remote: AcpRemoteLike
+          readonly streamFactory: RemoteStreamFactory
           readonly createNewSession: (sourceSessionId: string) => Promise<void>
           readonly ownsRoute: typeof managedRoutes.owns
         } => ({
           remote: acpRemote,
+          streamFactory: ctx.remote,
           ownsRoute: managedRoutes.owns,
           createNewSession: async (sourceSessionId) => {
             const row = sessions.list.getSnapshot().byId[sourceSessionId as never]

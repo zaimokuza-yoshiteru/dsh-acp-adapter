@@ -7,6 +7,10 @@ import {
 import type { AcpActivityView } from '../../contract/remote.ts'
 import type { AcpRemoteLike } from './acp-remote.ts'
 
+class ActivityJournalProtocolError extends Error {
+  readonly code = 'gateway/internal'
+}
+
 /** Client-side projection of the unfiltered, contiguous host journal. */
 export class AcpActivityJournalStore {
   private readonly rows = new Map<string, AcpActivityView>()
@@ -27,7 +31,9 @@ export class AcpActivityJournalStore {
   append(activity: AcpActivityView): void {
     if (activity.revisionSeq <= this.cursor) return
     if (activity.revisionSeq !== this.cursor + 1) {
-      throw new Error(`ACP activity journal gap: expected ${this.cursor + 1}, received ${activity.revisionSeq}`)
+      throw new ActivityJournalProtocolError(
+        `ACP activity journal gap: expected ${this.cursor + 1}, received ${activity.revisionSeq}`,
+      )
     }
     this.cursor = activity.revisionSeq
     const previous = this.rows.get(activity.activityId)
@@ -90,6 +96,7 @@ class AcpActivityRemoteJournal extends RemoteJournalStream<ActivityWindowPage, A
     publish: (change: RemoteJournalChange<ActivityWindowPage, ActivityBatch>) => void,
     carrierFailed: (error: unknown) => void,
     failed: (error: unknown) => void,
+    private readonly onHealthyRead: () => void,
   ) {
     super(streamFactory, {
       name: 'dsh-acp activity journal',
@@ -148,15 +155,16 @@ class AcpActivityRemoteJournal extends RemoteJournalStream<ActivityWindowPage, A
       const before = cursor
       for (const activity of result.value.activities) {
         if (activity.revisionSeq > through) break
-        if (activity.revisionSeq !== cursor + 1) {
-          throw new Error(`ACP activity repair page skipped revision ${String(cursor + 1)}`)
-        }
+        if (activity.revisionSeq !== cursor + 1)
+          throw new ActivityJournalProtocolError(`ACP activity repair page skipped revision ${String(cursor + 1)}`)
         current.set(activity.activityId, activity)
         cursor = activity.revisionSeq
       }
-      if (cursor === before) throw new Error(`ACP activity repair ended before revision ${String(through)}`)
+      if (cursor === before)
+        throw new ActivityJournalProtocolError(`ACP activity repair ended before revision ${String(through)}`)
     }
     const activities = [...current.values()].sort((left, right) => left.activitySeq - right.activitySeq)
+    this.onHealthyRead()
     return { head: through, batches: snapshotBatch(through, activities) }
   }
 
@@ -174,16 +182,17 @@ type HubEntry = {
   ready: boolean
   error?: unknown
   cancelRetry?: () => void
+  retiring?: Promise<void>
   retryExhausted: boolean
   retrying: boolean
+  retryAttempts: number
   initialLoading: boolean
 }
 
-const INITIAL_OPEN_MAX_ATTEMPTS = 10
 const INITIAL_OPEN_RETRY_BASE_MS = 100
 const INITIAL_OPEN_RETRY_MAX_MS = 8_000
 
-function waitForInitialRetry(entry: HubEntry, delay: number): Promise<boolean> {
+function waitForRetry(entry: HubEntry, delay: number): Promise<boolean> {
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
       delete entry.cancelRetry
@@ -276,13 +285,16 @@ export class AcpActivityJournalHub {
           entry!.refs === 0 ||
           !entry!.retryExhausted ||
           entry!.opening !== undefined ||
-          entry!.journal !== undefined
+          entry!.journal !== undefined ||
+          entry!.retiring !== undefined ||
+          entry!.cancelRetry !== undefined
         )
           return
         entry!.retryExhausted = false
         entry!.retrying = true
         entry!.initialLoading = true
         entry!.error = undefined
+        entry!.retryAttempts = 0
         this.notifyAll(entry!)
         this.startEntry(sessionId, entry!)
       },
@@ -312,6 +324,7 @@ export class AcpActivityJournalHub {
       ready: false,
       retryExhausted: false,
       retrying: false,
+      retryAttempts: 0,
       initialLoading: true,
     }
     this.entries.set(sessionId, entry)
@@ -320,14 +333,20 @@ export class AcpActivityJournalHub {
 
   /**
    * The conversation node can mount before the Agent startup commits its
-   * durable ACP binding. Retry only that initial unopened window. Once an
-   * opened frame arrives, DSH's RemoteJournalStream remains the sole owner
-   * of carrier reconnect and gap repair.
+   * durable ACP binding. Retry transient open and terminal read failures for
+   * as long as a node subscribes; the delay is bounded, the retry count is not.
+   * Carrier reconnect remains owned by DSH's RemoteJournalStream.
    */
   private startEntry(sessionId: string, entry: HubEntry): void {
-    if (entry.retryExhausted || entry.opening !== undefined || entry.journal !== undefined) return
+    if (
+      entry.retryExhausted ||
+      entry.opening !== undefined ||
+      entry.journal !== undefined ||
+      entry.retiring !== undefined ||
+      entry.cancelRetry !== undefined
+    )
+      return
     entry.opening = (async () => {
-      let attempts = 0
       while (this.entries.get(sessionId) === entry && entry.refs > 0) {
         let opened = false
         let journal: AcpActivityRemoteJournal
@@ -341,10 +360,12 @@ export class AcpActivityJournalHub {
             if (change.type === 'append') {
               for (const activity of change.entry.activities) entry.store.append(activity)
               entry.error = undefined
+              entry.retryAttempts = 0
               this.notifyActivities(entry, change.entry.activities)
               return
             }
             if (change.type === 'prepend') return
+            const wasReady = entry.ready
             const [baseline, ...tail] = change.entries
             entry.store.replace(baseline?.lastRevision ?? 0, baseline?.activities ?? [])
             for (const batch of tail) for (const activity of batch.activities) entry.store.append(activity)
@@ -352,6 +373,7 @@ export class AcpActivityJournalHub {
             entry.initialLoading = false
             entry.error = undefined
             entry.retrying = false
+            if (!wasReady) entry.retryAttempts = 0
             this.notifyAll(entry)
           },
           (error) => {
@@ -360,9 +382,11 @@ export class AcpActivityJournalHub {
             this.notifyAll(entry)
           },
           (error) => {
-            if (!opened || this.entries.get(sessionId) !== entry || entry.journal !== journal) return
-            entry.error = error
-            this.notifyAll(entry)
+            if (!opened) return
+            this.terminalFailure(sessionId, entry, journal, error)
+          },
+          () => {
+            if (this.entries.get(sessionId) === entry && entry.journal === journal) entry.retryAttempts = 0
           },
         )
         entry.journal = journal
@@ -373,24 +397,9 @@ export class AcpActivityJournalHub {
           if (entry.journal === journal) delete entry.journal
           await journal.dispose()
           if (this.entries.get(sessionId) !== entry || entry.refs === 0) return
-          entry.error = error
-          if (!isActivityBindingPending(error)) {
-            entry.retryExhausted = true
-            entry.initialLoading = false
-            entry.retrying = false
-            this.notifyAll(entry)
-            return
-          }
-          attempts += 1
-          if (attempts >= INITIAL_OPEN_MAX_ATTEMPTS) {
-            entry.retryExhausted = true
-            entry.initialLoading = false
-            entry.retrying = false
-            this.notifyAll(entry)
-            return
-          }
-          const delay = Math.min(INITIAL_OPEN_RETRY_BASE_MS * 2 ** (attempts - 1), INITIAL_OPEN_RETRY_MAX_MS)
-          if (!(await waitForInitialRetry(entry, delay))) return
+          if (!this.noteFailure(entry, error)) return
+          const delay = nextRetryDelay(entry)
+          if (!(await waitForRetry(entry, delay))) return
         }
       }
     })().finally(() => {
@@ -399,6 +408,41 @@ export class AcpActivityJournalHub {
         if (entry.retryExhausted) this.notifyAll(entry)
       }
     })
+  }
+
+  private noteFailure(entry: HubEntry, error: unknown): boolean {
+    entry.error = error
+    entry.retrying = false
+    if (isStableActivityFailure(error)) {
+      entry.retryExhausted = true
+      entry.initialLoading = false
+      this.notifyAll(entry)
+      return false
+    }
+    this.notifyAll(entry)
+    return true
+  }
+
+  private terminalFailure(sessionId: string, entry: HubEntry, journal: AcpActivityRemoteJournal, error: unknown): void {
+    if (this.entries.get(sessionId) !== entry || entry.journal !== journal) return
+    delete entry.journal
+    entry.error = error
+    entry.retrying = false
+    this.notifyAll(entry)
+
+    const retiring = journal.dispose()
+    entry.retiring = retiring
+    const afterRetire = (): void => {
+      if (entry.retiring !== retiring) return
+      delete entry.retiring
+      if (this.entries.get(sessionId) !== entry || entry.refs === 0) return
+      if (!this.noteFailure(entry, error)) return
+      const delay = nextRetryDelay(entry)
+      void waitForRetry(entry, delay).then((retry) => {
+        if (retry && this.entries.get(sessionId) === entry && entry.refs > 0) this.startEntry(sessionId, entry)
+      })
+    }
+    void retiring.then(afterRetire, afterRetire)
   }
 
   private notifyActivities(entry: HubEntry, activities: readonly AcpActivityView[]): void {
@@ -420,11 +464,24 @@ export class AcpActivityJournalHub {
   }
 }
 
-function isActivityBindingPending(error: unknown): boolean {
+function nextRetryDelay(entry: HubEntry): number {
+  entry.retryAttempts += 1
+  const exponent = Math.min(entry.retryAttempts - 1, 10)
+  return Math.min(INITIAL_OPEN_RETRY_BASE_MS * 2 ** exponent, INITIAL_OPEN_RETRY_MAX_MS)
+}
+
+/** Known authorization, configuration, validation, and protocol failures are not transient reads. */
+function isStableActivityFailure(error: unknown): boolean {
+  if (error instanceof ActivityJournalProtocolError) return true
+  if (typeof error !== 'object' || error === null || !('code' in error)) return false
+  const code = (error as { readonly code?: unknown }).code
   return (
-    typeof error === 'object' &&
-    error !== null &&
-    'code' in error &&
-    (error as { readonly code?: unknown }).code === 'dsh-acp/activity-binding-pending'
+    code === 'gateway/bad-request' ||
+    code === 'dsh-acp/user-rejected' ||
+    code === 'dsh-acp/auth-required' ||
+    code === 'dsh-acp/not-installed' ||
+    code === 'dsh-acp/protocol-incompatible' ||
+    code === 'dsh-acp/protocol-error' ||
+    code === 'dsh-acp/config'
   )
 }

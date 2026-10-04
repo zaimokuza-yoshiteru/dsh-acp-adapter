@@ -68,6 +68,7 @@ const PINNED_REMOTE_METHODS: readonly string[] = [
   'ownedProviderRoutes',
   'projectedSubagentIds',
   'rebindRecoveryBlank',
+  'recoveryFollow',
   'recoverySnapshot',
   'retryOriginal',
   'setAgentSessionOption',

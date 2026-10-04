@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][string]$AuditRoot, [string]$DevinTestModel, [switch]$Live)
+param([Parameter(Mandatory=$true)][string]$AuditRoot, [string]$DevinTestModel, [string]$WorkflowRunId, [string]$WorkflowRunAttempt, [switch]$Live)
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -49,7 +49,12 @@ if (!$actualVersion.StartsWith("devin $devinVersion (")) { throw 'Devin executab
 node scripts/check-devin-mcp.ts $devinExe[0].FullName ([Environment]::GetFolderPath('ApplicationData'))
 if ($Live) {
   if (!$env:WINDSURF_API_KEY) { throw 'Missing DEVIN_CLI_TOKEN Secret in ordinary-user process' }
-  if ($DevinTestModel -cne 'swe-1-6-fast') { throw 'Missing configured Devin test model in ordinary-user process' }
+  if ($DevinTestModel -cne 'swe-2-high') { throw 'Missing configured Devin test model in ordinary-user process' }
+  if ($WorkflowRunId -notmatch '^\d{1,15}$' -or $WorkflowRunAttempt -notmatch '^\d{1,15}$') { throw 'Missing safe Devin live workflow metadata' }
+  $env:DEVIN_LIVE_WORKFLOW_RUN = $WorkflowRunId
+  $env:DEVIN_LIVE_WORKFLOW_ATTEMPT = $WorkflowRunAttempt
+  $env:DEVIN_LIVE_TRACE_DIR = Join-Path $AuditRoot 'devin-live-diagnostics'
+  New-Item -ItemType Directory -Path $env:DEVIN_LIVE_TRACE_DIR -Force | Out-Null
   $env:DEVIN_TEST_MODEL = $DevinTestModel
   node scripts/check-devin-live.ts $devinExe[0].FullName
 } else {

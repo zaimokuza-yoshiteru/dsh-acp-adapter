@@ -1,13 +1,19 @@
 import { afterEach, expect, it } from 'vitest'
+import { createHmac } from 'node:crypto'
 import { AcpSessionRuntime } from '../../../src/runtime/session/session-runtime.ts'
+import type { AcpMcpLease } from '../../../src/runtime/session/mcp-lease.ts'
+import { installLiveDiagnosticTrace } from '../../../src/contract/live-diagnostic-trace.ts'
+import type { LiveDiagnosticEvent } from '../../../src/contract/live-diagnostic-trace.ts'
 import { sharedTestSubprocess } from '../../fixtures/subprocess-seam-testing.ts'
 
 const runtimes: AcpSessionRuntime[] = []
+const diagnosticRemovers: Array<() => void> = []
 afterEach(async () => {
+  for (const remove of diagnosticRemovers.splice(0)) remove()
   await Promise.allSettled(runtimes.splice(0).map((runtime) => runtime.close()))
 })
 
-async function fixture(foreignUpdates = false) {
+async function fixture(foreignUpdates = false, diagnosticDshSessionId?: string, mcpLease?: AcpMcpLease) {
   const script = `
     const send = value => process.stdout.write(JSON.stringify(value)+'\\n');
     const option = value => [{id:'mode',name:'Mode',type:'select',currentValue:value,options:[{value:'code',name:'Code'},{value:'plan',name:'Plan'}]}];
@@ -38,11 +44,44 @@ async function fixture(foreignUpdates = false) {
     config: { command: argv[0]!, args: argv.slice(1), env: {} },
     subprocess: (await sharedTestSubprocess()).seam,
     prepareLaunch: async () => ({ argv, env: {}, spawnPlan: { argv, env: {} } }),
+    ...(mcpLease === undefined ? {} : { createMcpLease: async () => mcpLease }),
+    ...(diagnosticDshSessionId === undefined ? {} : { diagnosticDshSessionId }),
   })
   runtimes.push(runtime)
   await runtime.start()
   return runtime
 }
+
+it('collects live provider prompt start/end events from the real runtime prompt boundary', async () => {
+  const events: LiveDiagnosticEvent[] = []
+  const remove = installLiveDiagnosticTrace(
+    Object.assign(
+      (event: LiveDiagnosticEvent) => {
+        events.push(event)
+      },
+      {
+        id: (kind: string, value: unknown) =>
+          `h:${createHmac('sha256', 'unit-test-key')
+            .update(`${kind}:${JSON.stringify(value)}`)
+            .digest('hex')
+            .slice(0, 24)}`,
+        fingerprint: () => ({ hmac: 'h:0123456789abcdef01234567', bytes: 1, complete: true }),
+      },
+    ),
+  )
+  diagnosticRemovers.push(remove)
+  const runtime = await fixture(false, 'host-session-123')
+  await runtime.prompt([{ type: 'text', text: 'safe fixture prompt' }], () => {})
+  const promptEvents = events.filter(
+    (event) => event.type === 'adapter-prompt/start' || event.type === 'adapter-prompt/end',
+  )
+  expect(promptEvents.map((event) => event.type)).toEqual(['adapter-prompt/start', 'adapter-prompt/end'])
+  expect(promptEvents[0]).toMatchObject({
+    sessionId: `h:${createHmac('sha256', 'unit-test-key').update('dsh-session:"host-session-123"').digest('hex').slice(0, 24)}`,
+    promptOrdinal: 1,
+  })
+  expect(promptEvents[1]).toMatchObject({ stopReason: 'end_turn' })
+})
 
 it('does not let external child notifications overwrite the parent controls or usage', async () => {
   const runtime = await fixture(true)
@@ -67,4 +106,32 @@ it('does not restart a closed runtime when a prompt was waiting for a configurat
   await runtime.close()
   await settled
   expect(runtime.acpSessionId).toBeUndefined()
+})
+
+it('claims a prompt before awaiting local feedback flush so concurrent prompts cannot overlap', async () => {
+  const flushStarted = Promise.withResolvers<void>()
+  const releaseFlush = Promise.withResolvers<void>()
+  const mcpLease: AcpMcpLease = {
+    signal: new AbortController().signal,
+    servers: [],
+    beginPrompt() {},
+    endPrompt() {},
+    async flushHostFeedback() {
+      flushStarted.resolve()
+      await releaseFlush.promise
+    },
+    permission() {
+      return undefined
+    },
+    async close() {},
+  }
+  const runtime = await fixture(false, undefined, mcpLease)
+  const first = runtime.prompt([{ type: 'text', text: 'first' }], () => {})
+  await flushStarted.promise
+
+  await expect(runtime.prompt([{ type: 'text', text: 'second' }], () => {})).rejects.toThrow(
+    'ACP_PROMPT_ALREADY_ACTIVE',
+  )
+  releaseFlush.resolve()
+  await expect(first).resolves.toMatchObject({ stopReason: 'end_turn' })
 })

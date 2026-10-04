@@ -268,6 +268,14 @@ export type AcpDiagnosticView = 'issues' | 'operations' | 'technical'
 export interface AcpAuditTimelinePage {
   readonly sessionId: string
   readonly entries: readonly AcpAuditTimelineEntry[]
+  /** Fixed durable high-water mark used by every page in one export. */
+  readonly snapshotHead: number | null
+  /** Last physical sidecar sequence inspected. May advance over malformed rows. */
+  readonly scannedThrough: number
+  /** Physical rows examined by a snapshot scan; unavailable on ordinary live pages. */
+  readonly scannedRecords: number | null
+  /** Malformed stored rows skipped during this page; only known for snapshot scans. */
+  readonly unreadableRecords: number
   readonly nextCursor: number | null
   readonly hasMore: boolean
 }
@@ -275,7 +283,7 @@ export interface AcpAuditTimelinePage {
 /** Host-projected ACP activity journal row. This is not a DSH tool call and
  * never authorizes execution; it is an observable Agent activity record. */
 export type AcpActivityKindView = 'tool' | 'plan' | 'terminal' | 'diff' | 'resource' | 'delegated' | 'other'
-export type AcpActivityStatusView = 'running' | 'completed' | 'failed' | 'cancelled'
+export type AcpActivityStatusView = 'running' | 'completed' | 'failed' | 'cancelled' | 'unfinished'
 export interface AcpActivityView {
   /** Large detail is fetched on expansion, at this exact revision. */
   readonly detailDeferred?: boolean
@@ -404,6 +412,8 @@ export type AcpRecoveryKind =
 export interface AcpRecoveryView {
   readonly dshSessionId: string
   readonly kind: AcpRecoveryKind
+  /** Volatile local settlement progress; omitted for stable recovery states. */
+  readonly localStatus?: 'finishing-tools' | 'saving-results' | 'storage-error'
   readonly cause: string | null
   readonly detail: string | null
   readonly provider: string | null
@@ -414,6 +424,11 @@ export interface AcpRecoveryView {
   readonly lastUserAction: string | null
   readonly updatedAt: number
 }
+
+/** Current recovery projection stream; reconnect opens with a fresh snapshot. */
+export type AcpRecoveryFrame =
+  | { readonly type: 'opened'; readonly snapshot: AcpRecoveryView }
+  | { readonly type: 'changed'; readonly snapshot: AcpRecoveryView }
 
 /** Explicit user decisions recorded by the recovery surface. */
 /** Agent 明确提供的累计成本事实（wire 副本；amount/currency 原样透传，不换算不聚合）。 */

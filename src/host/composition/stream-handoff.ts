@@ -3,6 +3,10 @@ import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
 /** One ACP execution may span native steps; only the outer stream is handed back to DSH. */
 export class StreamHandoff {
   resume: ((options: GenerateOptions) => Promise<boolean>) | undefined
+  /** Called only when an active consumer closes before this segment ends. */
+  abandon: (() => void) | undefined
+  /** Exact signal error recorded only by a cancelled local-settlement waiter. */
+  localSettlementAbortReason: unknown
   cancel: (() => void) | undefined
   private iterator: AsyncIterator<StreamChunk> | undefined
   private pending: Promise<IteratorResult<StreamChunk>> | undefined
@@ -41,6 +45,7 @@ export class StreamHandoff {
 
   async *segment(): AsyncGenerator<StreamChunk> {
     this.suspended = false
+    this.localSettlementAbortReason = undefined
     try {
       while (!this.ended) {
         // Keep a single outstanding pull. Never race two consumers of the ACP stream.
@@ -77,11 +82,29 @@ export class StreamHandoff {
       }
     } finally {
       this.wake = undefined
-      if (!this.suspended) await this.drain()
+      if (!this.suspended) {
+        if (!this.ended) await this.drainAfterAbandon()
+        else await this.drain()
+      }
     }
   }
 
-  /** Used when Stop, rejected admission or a route change leaves no next consumer. */
+  /** Release only the consumer-owned local waiter; draining still collects the remote remainder. */
+  abandonConsumer(): void {
+    this.abandon?.()
+  }
+
+  /** Drain after releasing a local waiter, suppressing only that exact reason. */
+  async drainAfterAbandon(): Promise<void> {
+    this.abandonConsumer()
+    try {
+      await this.drain()
+    } catch (error) {
+      if (this.localSettlementAbortReason === undefined || error !== this.localSettlementAbortReason) throw error
+    }
+  }
+
+  /** Stop the remote pull and collect its remainder; this does not abandon local settlement. */
   drain(): Promise<void> {
     return (this.draining ??= (async () => {
       this.cancel?.()

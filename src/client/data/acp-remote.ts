@@ -23,6 +23,7 @@ export type {
   AcpAuditSummaryCode,
   AcpAuditTimelineEntry,
   AcpRecoveryView,
+  AcpRecoveryFrame,
   AcpAgentSessionSnapshotView,
   AcpAgentSessionOptionWrite,
   AcpToolApprovalPolicySnapshot,

@@ -152,7 +152,7 @@ describe('ACP activity stream ownership status', () => {
     ).resolves.toBe('denied')
   })
 
-  it('preserves durable ownership and denies malformed bindings and sidecar read failures', async () => {
+  it('preserves durable ownership, denies malformed bindings, and propagates sidecar read failures', async () => {
     const durableOwner = {
       hasDurableActivityOwner: async () => true,
       readLatestBinding: async () => undefined,
@@ -169,7 +169,24 @@ describe('ACP activity stream ownership status', () => {
     }
     await expect(activityReadStatusOf({ ...base, sidecar: durableOwner as never })).resolves.toBe('owned')
     await expect(activityReadStatusOf({ ...base, sidecar: malformedBinding as never })).resolves.toBe('denied')
-    await expect(activityReadStatusOf({ ...base, sidecar: failedRead as never })).resolves.toBe('denied')
+    await expect(activityReadStatusOf({ ...base, sidecar: failedRead as never })).rejects.toThrow('sidecar unavailable')
+  })
+
+  it('keeps confirmed unowned sessions denied without treating read errors as a denial', async () => {
+    const denied = {
+      hasDurableActivityOwner: async () => false,
+      readLatestBinding: async () => ({ status: 'outdated' }),
+    }
+    const failedBindingRead = {
+      hasDurableActivityOwner: async () => false,
+      readLatestBinding: async () => {
+        throw new Error('temporary binding read failure')
+      },
+    }
+    await expect(activityReadStatusOf({ ...base, sidecar: denied as never })).resolves.toBe('denied')
+    await expect(activityReadStatusOf({ ...base, sidecar: failedBindingRead as never })).rejects.toThrow(
+      'temporary binding read failure',
+    )
   })
 })
 

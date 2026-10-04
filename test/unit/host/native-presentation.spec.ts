@@ -46,12 +46,16 @@ function seam(): { ok: true; seam: never } {
   return { ok: true, seam: undefined as never }
 }
 
+const savedOptionSnapshots: unknown[] = []
 const durableSidecar = {
   append: async () => undefined,
   readLatestBinding: async () => undefined,
   readModeIntent: async () => undefined,
   readRecoveryState: async () => undefined,
   writeRecoveryState: async () => undefined,
+  writeOptionSnapshot: async (_sessionId: unknown, snapshot: unknown) => {
+    savedOptionSnapshots.push(snapshot)
+  },
 } as unknown as AcpSidecar
 
 async function captureActivity(update: object, publishPlan = vi.fn()) {
@@ -281,6 +285,7 @@ async function steeringFixture(
   const offRouteChange = vi.fn()
   const controlsChanged = vi.fn()
   let report: () => void = () => {}
+  let conclude: () => void = () => {}
   const finish = Promise.withResolvers<acp.PromptResponse>()
   const view = Object.assign(withSessionFacts({ header: { cwd: '/workspace' }, snapshotEvents: () => events }), {
     watchSteering: (listener: () => void) => {
@@ -310,9 +315,11 @@ async function steeringFixture(
         onUpdate: typeof notify,
         signal?: AbortSignal,
         onTeamReport?: () => void,
+        onTurnConcluded?: () => void,
       ) => {
         notify = onUpdate
         report = () => onTeamReport?.()
+        conclude = () => onTurnConcluded?.()
         if (runtime.prompt.mock.calls.length > 1) {
           text('replacement')
           return { stopReason: 'end_turn' } as acp.PromptResponse
@@ -393,6 +400,7 @@ async function steeringFixture(
     steerInput: () => steerInput(),
     finish,
     report: () => report(),
+    conclude: () => conclude(),
     next: (messages: ReturnType<typeof user>[] = [first, second]) =>
       adapter.stream(request('steering-session', messages)),
   }
@@ -648,6 +656,23 @@ it('does not let an earlier or late teammate report bless a newly steered reques
   })
 })
 
+it('does not let terminal-tool evidence from before or after a steering dispatch bless the next native step', async () => {
+  const f = await steeringFixture(false)
+  f.conclude()
+  f.runtime.steer.mockImplementation(async (_content, onDispatch) => {
+    onDispatch?.()
+    f.conclude()
+    f.finish.resolve({ stopReason: 'end_turn' })
+    return 'injected'
+  })
+  const chunks = []
+  for await (const chunk of f.next()) chunks.push(chunk)
+  expect(chunks.at(-1)).toMatchObject({
+    type: 'finish',
+    reason: { kind: 'error', failure: { code: 'ACP_NO_VISIBLE_RESPONSE' } },
+  })
+})
+
 it('keeps a later input ordered behind a steering request whose acknowledgement is pending', async () => {
   const f = await steeringFixture()
   const third = user('third')
@@ -694,7 +719,7 @@ it.each(['end_turn', 'max_tokens'] as const)(
     f.text('completed tail')
     f.finish.resolve({ stopReason })
     // Wait for the existing prompt's completion handler, before native admission resumes.
-    await vi.waitFor(() => expect(f.rows.findLast((row) => row.presentation === 'Old tool')?.status).toBe('completed'))
+    await vi.waitFor(() => expect(f.rows.findLast((row) => row.presentation === 'Old tool')?.status).toBe('unfinished'))
     const chunks = []
     for await (const chunk of f.next()) chunks.push(chunk)
     expect(chunks.filter((chunk) => chunk.type === 'text-delta').map((chunk) => chunk.text)).toEqual(

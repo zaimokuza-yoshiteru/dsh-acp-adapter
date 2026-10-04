@@ -7,7 +7,8 @@ import {
 
 const catalog = [{ id: DEFAULT_DEVIN_TEST_MODEL }, { id: 'swe-1-7-medium' }] as const
 
-it('defaults to the fixed low-cost Devin model and supports an exact override', () => {
+it('defaults to the fixed Devin test model and supports an exact override', () => {
+  expect(DEFAULT_DEVIN_TEST_MODEL).toBe('swe-2-high')
   expect(selectDevinTestModel(catalog, undefined)).toBe(catalog[0])
   expect(selectDevinTestModel(catalog, 'swe-1-7-medium')).toBe(catalog[1])
 })

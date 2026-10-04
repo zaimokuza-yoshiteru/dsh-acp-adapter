@@ -5,8 +5,10 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createUserMessage, markAgentLoopRequest } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
+import { Context } from '@deepseek-ai/cordis'
 import { AcpProfileAdapter } from '../../../src/host/composition/profile-adapter.ts'
 import type { AcpProfileRuntime } from '../../../src/host/composition/profile-adapter.ts'
+import { AcpHostSettlementError } from '../../../src/runtime/session/mcp-lease.ts'
 import type { AcpAgentConfig } from '../../../src/domain/session/agent-config.ts'
 import type { SessionLike } from '../../../src/domain/session/current-step-admission.ts'
 import { createAcpSidecar, type AcpSidecar } from '../../../src/persistence/sidecar.ts'
@@ -55,6 +57,350 @@ function ledgerFor(sidecar: AcpSidecar) {
 }
 
 describe('provider activity bridge', () => {
+  it.each(['end_turn', 'refusal', 'max_tokens', 'max_turn_requests'] as const)(
+    'keeps a tool without a reported terminal state unfinished after %s',
+    async (stopReason) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-unfinished-tool-'))
+      roots.push(root)
+      const sidecar = testSidecar(root)
+      const message = user('run a tool and report back')
+      const sessionId = `unfinished-${stopReason}`
+      const sessions = new Map<string, SessionLike>([[sessionId, session(message)]])
+      let promptCount = 0
+      let runtimeCount = 0
+      const runtimeFactory = (): AcpProfileRuntime => {
+        runtimeCount++
+        return {
+          acpSessionId: `agent-${sessionId}`,
+          start: async () => undefined,
+          prompt: async (_content, onUpdate) => {
+            promptCount++
+            onUpdate({
+              sessionId: `agent-${sessionId}`,
+              update: {
+                sessionUpdate: 'tool_call',
+                toolCallId: 'reported-only-start',
+                title: 'Inspect fixture',
+                kind: 'read',
+                status: 'in_progress',
+              },
+            } as never)
+            onUpdate({
+              sessionId: `agent-${sessionId}`,
+              update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'response text' } },
+            } as never)
+            return { stopReason } as never
+          },
+          close: async () => undefined,
+        }
+      }
+      const adapter = new AcpProfileAdapter(
+        'unfinished-tool',
+        profile,
+        seam(),
+        (id) => sessions.get(id),
+        ledgerFor(sidecar),
+        undefined,
+        runtimeFactory,
+        sidecar,
+      )
+      for await (const _chunk of adapter.stream(request(sessionId, message))) {
+        /* drain the response and persist its activity state */
+      }
+      const activity = (await sidecar.activitySnapshot(sessionId as never)).find((row) =>
+        row.activityId.endsWith(':tool:reported-only-start'),
+      )
+      expect(activity).toMatchObject({ status: 'unfinished', presentation: 'Inspect fixture' })
+      expect(await sidecar.readRecoveryState(sessionId as never)).toMatchObject({ kind: 'healthy' })
+      expect(promptCount).toBe(1)
+      expect(runtimeCount).toBe(1)
+      await adapter.close()
+    },
+  )
+
+  it('allows a later request after an unfinished tool and preserves a reported terminal status', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-unfinished-next-request-'))
+    roots.push(root)
+    const sidecar = testSidecar(root)
+    const sessionId = 'unfinished-next-request'
+    const firstMessage = user('start the first tool')
+    const sessions = new Map<string, SessionLike>([[sessionId, session(firstMessage)]])
+    let promptCount = 0
+    let runtimeCount = 0
+    let sendLateUpdate: ((notification: never) => void) | undefined
+    const runtimeFactory = (): AcpProfileRuntime => {
+      runtimeCount++
+      return {
+        acpSessionId: 'agent-unfinished-next-request',
+        start: async () => undefined,
+        prompt: async (_content, onUpdate) => {
+          promptCount++
+          if (promptCount === 1) sendLateUpdate = onUpdate as (notification: never) => void
+          onUpdate({
+            sessionId: 'agent-unfinished-next-request',
+            update: {
+              sessionUpdate: 'tool_call',
+              toolCallId: promptCount === 1 ? 'no-terminal' : 'has-terminal',
+              title: promptCount === 1 ? 'No terminal update' : 'Completed tool',
+              kind: 'read',
+              status: 'in_progress',
+            },
+          } as never)
+          if (promptCount === 2)
+            onUpdate({
+              sessionId: 'agent-unfinished-next-request',
+              update: { sessionUpdate: 'tool_call_update', toolCallId: 'has-terminal', status: 'completed' },
+            } as never)
+          onUpdate({
+            sessionId: 'agent-unfinished-next-request',
+            update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: `answer-${promptCount}` } },
+          } as never)
+          return { stopReason: 'end_turn' } as never
+        },
+        restore: async () => 'reused' as const,
+        close: async () => undefined,
+      }
+    }
+    const adapter = new AcpProfileAdapter(
+      'unfinished-next-request',
+      profile,
+      seam(),
+      (id) => sessions.get(id),
+      ledgerFor(sidecar),
+      undefined,
+      runtimeFactory,
+      sidecar,
+    )
+    for await (const _chunk of adapter.stream(request(sessionId, firstMessage))) {
+      /* drain first response */
+    }
+    const firstActivity = (await sidecar.activitySnapshot(sessionId as never)).find((row) =>
+      row.activityId.endsWith(':tool:no-terminal'),
+    )
+    expect(firstActivity).toMatchObject({ status: 'unfinished' })
+
+    const nextMessage = user('continue with the next request')
+    sessions.set(sessionId, session(nextMessage))
+    const chunks: unknown[] = []
+    for await (const chunk of adapter.stream(request(sessionId, nextMessage))) chunks.push(chunk)
+    const activities = await sidecar.activitySnapshot(sessionId as never)
+    expect(activities.find((row) => row.activityId.endsWith(':tool:no-terminal'))).toMatchObject({
+      status: 'unfinished',
+    })
+    expect(activities.find((row) => row.activityId.endsWith(':tool:has-terminal'))).toMatchObject({
+      status: 'completed',
+    })
+    expect(chunks).toContainEqual({ type: 'text-delta', index: 0, text: 'answer-2' })
+
+    sendLateUpdate?.({
+      sessionId: 'agent-unfinished-next-request',
+      update: { sessionUpdate: 'tool_call_update', toolCallId: 'no-terminal', status: 'completed' },
+    } as never)
+    let lateActivity = (await sidecar.activitySnapshot(sessionId as never)).find((row) =>
+      row.activityId.endsWith(':tool:no-terminal'),
+    )
+    for (let attempt = 0; lateActivity?.status !== 'completed' && attempt < 20; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 5))
+      lateActivity = (await sidecar.activitySnapshot(sessionId as never)).find((row) =>
+        row.activityId.endsWith(':tool:no-terminal'),
+      )
+    }
+    expect(lateActivity).toMatchObject({ status: 'completed' })
+    expect(promptCount).toBe(2)
+    expect(runtimeCount).toBe(1)
+    await adapter.close()
+  })
+
+  it('keeps a confirmed prompt settled and the runtime usable when response projection fails', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-response-projection-failure-'))
+    roots.push(root)
+    const sidecar = testSidecar(root)
+    const sessionId = 'response-projection-failure'
+    const beginDispatch = vi.spyOn(sidecar, 'beginDispatch')
+    const firstMessage = user('return an image and finish')
+    const sessions = new Map<string, SessionLike>([[sessionId, session(firstMessage)]])
+    let promptCount = 0
+    let runtimeCount = 0
+    let promptFinished = false
+    let failProjectionOnce = true
+    const runtimeFactory = (): AcpProfileRuntime => {
+      runtimeCount++
+      return {
+        get acpSessionId() {
+          if (promptFinished && failProjectionOnce) {
+            failProjectionOnce = false
+            throw new Error('injected response presentation failure')
+          }
+          return 'agent-response-projection-failure'
+        },
+        start: async () => undefined,
+        prompt: async (_content, onUpdate) => {
+          promptCount++
+          if (promptCount === 1) {
+            onUpdate({
+              sessionId: 'agent-response-projection-failure',
+              update: {
+                sessionUpdate: 'tool_call',
+                toolCallId: 'still-running',
+                title: 'Inspect fixture',
+                kind: 'read',
+                status: 'in_progress',
+              },
+            } as never)
+            onUpdate({
+              sessionId: 'agent-response-projection-failure',
+              update: {
+                sessionUpdate: 'agent_message_chunk',
+                content: { type: 'text', text: 'confirmed answer' },
+              },
+            } as never)
+          } else {
+            onUpdate({
+              sessionId: 'agent-response-projection-failure',
+              update: {
+                sessionUpdate: 'agent_message_chunk',
+                content: { type: 'text', text: 'next request succeeded' },
+              },
+            } as never)
+          }
+          promptFinished = promptCount === 1
+          return { stopReason: 'end_turn' } as never
+        },
+        restore: async () => 'reused' as const,
+        close: async () => undefined,
+      }
+    }
+    const adapter = new AcpProfileAdapter(
+      'response-projection-failure',
+      profile,
+      seam(),
+      (id) => sessions.get(id),
+      ledgerFor(sidecar),
+      undefined,
+      runtimeFactory,
+      sidecar,
+    )
+    await expect(async () => {
+      for await (const _chunk of adapter.stream(request(sessionId, firstMessage))) {
+        /* drain the confirmed response */
+      }
+    }).rejects.toMatchObject({ code: 'ACP_RESPONSE_PROJECTION_FAILED' })
+    const dispatchKey = beginDispatch.mock.calls[0]?.[0].key
+    expect(dispatchKey).toBeDefined()
+    expect(await sidecar.readDispatch(sessionId as never, dispatchKey!)).toMatchObject({ state: 'settled' })
+    expect(await sidecar.readRecoveryState(sessionId as never)).toMatchObject({ kind: 'healthy' })
+    expect(
+      (await sidecar.activitySnapshot(sessionId as never)).find((row) =>
+        row.activityId.endsWith(':tool:still-running'),
+      ),
+    ).toMatchObject({ status: 'unfinished' })
+
+    const nextMessage = user('continue after the projection problem')
+    sessions.set(sessionId, session(nextMessage))
+    const chunks: unknown[] = []
+    for await (const chunk of adapter.stream(request(sessionId, nextMessage))) chunks.push(chunk)
+    expect(chunks).toContainEqual({ type: 'text-delta', index: 0, text: 'next request succeeded' })
+    expect(promptCount).toBe(2)
+    expect(runtimeCount).toBe(1)
+    await adapter.close()
+  })
+
+  it('retains local settlement when Stop races with a failed response projection', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-projection-stop-settlement-'))
+    roots.push(root)
+    const sidecar = testSidecar(root)
+    const sessionId = 'projection-stop-settlement'
+    const firstMessage = user('return a plan and finish')
+    const secondMessage = user('continue after the saved result')
+    const controller = new AbortController()
+    const sessionWithFailedProjection = Object.assign(session(firstMessage), {
+      publishPlan: () => {
+        controller.abort(new DOMException('Stopped', 'AbortError'))
+        throw new Error('injected response presentation failure')
+      },
+    }) as SessionLike
+    const sessions = new Map<string, SessionLike>([[sessionId, sessionWithFailedProjection]])
+    let promptCount = 0
+    let settlementWrites = 0
+    let storageAvailable = false
+    let instance!: AcpProfileAdapter
+    let resolveStorageError!: () => void
+    const storageError = new Promise<void>((resolve) => (resolveStorageError = resolve))
+    const durableLedger = ledgerFor(sidecar)
+    const ledger = {
+      ...durableLedger,
+      settle: async (id: string, key: string) => {
+        settlementWrites++
+        if (!storageAvailable) throw new Error('injected local ledger failure')
+        return durableLedger.settle(id, key)
+      },
+    }
+    const runtimeFactory = (): AcpProfileRuntime => ({
+      acpSessionId: 'agent-projection-stop-settlement',
+      start: async () => undefined,
+      prompt: async (_content, onUpdate) => {
+        promptCount++
+        onUpdate({
+          sessionId: 'agent-projection-stop-settlement',
+          update: {
+            sessionUpdate: 'plan',
+            entries: [{ content: 'Complete the request', status: 'in_progress' }],
+          },
+        } as never)
+        if (promptCount === 2)
+          onUpdate({
+            sessionId: 'agent-projection-stop-settlement',
+            update: {
+              sessionUpdate: 'agent_message_chunk',
+              content: { type: 'text', text: 'next request succeeded' },
+            },
+          } as never)
+        return { stopReason: 'end_turn' } as never
+      },
+      restore: async () => 'reused' as const,
+      close: async () => undefined,
+    })
+    instance = new AcpProfileAdapter(
+      'projection-stop-settlement',
+      profile,
+      seam(),
+      (id) => sessions.get(id),
+      ledger,
+      undefined,
+      runtimeFactory,
+      sidecar,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      (id) => {
+        if (instance.localSettlementStatus(id) === 'storage-error') resolveStorageError()
+      },
+    )
+
+    await expect(async () => {
+      for await (const _chunk of instance.stream({ ...request(sessionId, firstMessage), signal: controller.signal })) {
+        /* drain the stopped response */
+      }
+    }).rejects.toMatchObject({ name: 'AbortError' })
+    await storageError
+    expect(settlementWrites).toBeGreaterThanOrEqual(3)
+    expect(instance.localSettlementStatus(sessionId)).toBe('storage-error')
+    expect(promptCount).toBe(1)
+
+    storageAvailable = true
+    sessions.set(sessionId, session(secondMessage))
+    const nextChunks: unknown[] = []
+    for await (const chunk of instance.stream(request(sessionId, secondMessage))) nextChunks.push(chunk)
+    expect(promptCount).toBe(2)
+    expect(nextChunks).toContainEqual({ type: 'text-delta', index: 0, text: 'next request succeeded' })
+    expect(instance.localSettlementStatus(sessionId)).toBeUndefined()
+    await instance.close()
+  })
+
   it('ignores ACP available commands instead of registering stock slash commands', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-command-wiring-'))
     roots.push(root)
@@ -882,6 +1228,42 @@ describe('provider activity bridge', () => {
     })
   })
 
+  it('accepts a prompt-scoped successful terminal-tool callback as evidence for an empty end_turn', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-terminal-tool-'))
+    roots.push(root)
+    const sidecar = testSidecar(root)
+    const message = user('Return the requested structured result.')
+    const sessions = new Map<string, SessionLike>([['session-terminal-tool', session(message)]])
+    const runtimeFactory = (): AcpProfileRuntime => ({
+      acpSessionId: 'agent-session-terminal-tool',
+      agentInfo: { name: 'terminal-tool-agent', version: '1' },
+      agentCapabilities: {},
+      protocolVersion: 1,
+      start: async () => undefined,
+      prompt: async (_content, _onUpdate, _signal, _onTeamReport, onTurnConcluded) => {
+        onTurnConcluded?.()
+        return { stopReason: 'end_turn' } as never
+      },
+      close: async () => undefined,
+    })
+    const adapter = new AcpProfileAdapter(
+      'terminal-tool',
+      profile,
+      seam(),
+      (id) => sessions.get(id),
+      ledgerFor(sidecar),
+      undefined,
+      runtimeFactory,
+      sidecar,
+    )
+    const chunks: unknown[] = []
+    for await (const chunk of adapter.stream(request('session-terminal-tool', message))) chunks.push(chunk)
+    const finish = chunks.find(
+      (chunk) => typeof chunk === 'object' && chunk !== null && 'type' in chunk && chunk.type === 'finish',
+    ) as { reason?: { kind?: string; failure?: { code?: string } } } | undefined
+    expect(finish?.reason).toEqual({ kind: 'stop' })
+  })
+
   it('keeps non-text ACP thought content as safe reasoning and audits the degradation without showing an answer', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-nontext-thought-'))
     roots.push(root)
@@ -1158,5 +1540,164 @@ describe('provider activity bridge', () => {
     expect(JSON.stringify(degradation)).not.toContain(secretBytes)
     expect(chunks.at(-1)).toMatchObject({ type: 'finish', reason: { kind: 'stop' } })
     expect((await sidecar.readRecoveryState('answer-content' as never))?.kind).toBe('healthy')
+  })
+
+  it('settles a definitely undispatched Host tool without creating a recovery gate', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-tool-not-dispatched-'))
+    roots.push(root)
+    const sidecar = testSidecar(root)
+    const sessionId = 'not-dispatched-session'
+    const message = user('run the tool')
+    const sessions = new Map<string, SessionLike>([[sessionId, session(message)]])
+    const beginDispatch = vi.spyOn(sidecar, 'beginDispatch')
+    let promptCount = 0
+    let restoreCount = 0
+    let closeCount = 0
+    const instances: Array<{ active: boolean }> = []
+    const runtimeFactory = vi.fn((): AcpProfileRuntime => {
+      const instance = { active: false }
+      instances.push(instance)
+      return {
+        acpSessionId: 'agent-not-dispatched',
+        start: async () => {
+          instance.active = true
+        },
+        restore: async (binding: { agentSessionId: string }) => {
+          restoreCount++
+          if (!instance.active) throw new Error('Agent does not advertise session restore')
+          if (binding.agentSessionId !== 'agent-not-dispatched') throw new Error('binding mismatch')
+          return 'reused' as const
+        },
+        prompt: async (_content, onUpdate) => {
+          promptCount++
+          if (promptCount === 1) throw new AcpHostSettlementError('ACP_HOST_TOOL_NOT_DISPATCHED')
+          onUpdate({
+            sessionId: 'agent-not-dispatched',
+            update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'next step succeeded' } },
+          })
+          return { stopReason: 'end_turn' } as never
+        },
+        close: async () => {
+          closeCount++
+          instance.active = false
+        },
+      }
+    })
+    const adapter = new AcpProfileAdapter(
+      'not-dispatched',
+      profile,
+      seam(),
+      (id) => sessions.get(id),
+      ledgerFor(sidecar),
+      undefined,
+      runtimeFactory,
+      sidecar,
+    )
+    await expect(async () => {
+      for await (const _chunk of adapter.stream(request(sessionId, message))) {
+        // Drain the public stream so the adapter's settlement path completes.
+      }
+    }).rejects.toMatchObject({ code: 'ACP_HOST_TOOL_NOT_DISPATCHED' })
+    const dispatchKey = beginDispatch.mock.calls[0]?.[0].key
+    expect(dispatchKey).toBeDefined()
+    expect(await sidecar.readDispatch(sessionId as never, dispatchKey!)).toMatchObject({ state: 'settled' })
+    expect(await sidecar.readRecoveryState(sessionId as never)).toMatchObject({ kind: 'healthy' })
+    expect(runtimeFactory).toHaveBeenCalledOnce()
+    expect(instances[0]?.active).toBe(true)
+    expect(closeCount).toBe(0)
+
+    const nextMessage = user('a new step after confirmed non-dispatch')
+    sessions.set(sessionId, session(nextMessage))
+    const nextChunks: unknown[] = []
+    for await (const chunk of adapter.stream(request(sessionId, nextMessage))) nextChunks.push(chunk)
+    const nextDispatchKey = beginDispatch.mock.calls[1]?.[0].key
+    expect(nextDispatchKey).toBeDefined()
+    expect(nextDispatchKey).not.toBe(dispatchKey)
+    expect(await sidecar.readDispatch(sessionId as never, nextDispatchKey!)).toMatchObject({ state: 'settled' })
+    expect(promptCount).toBe(2)
+    expect(runtimeFactory).toHaveBeenCalledOnce()
+    expect(restoreCount).toBe(1)
+    expect(closeCount).toBe(0)
+    expect(instances[0]?.active).toBe(true)
+    expect(nextChunks.at(-1)).toMatchObject({ type: 'finish', reason: { kind: 'stop' } })
+    await adapter.close()
+    expect(closeCount).toBe(1)
+    expect(instances[0]?.active).toBe(false)
+  })
+
+  it('shares quarantined Host owners and WAL fallback across adapter replacement until explicit recovery', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-host-owner-adapter-'))
+    roots.push(root)
+    const sidecar = testSidecar(root)
+    const hostRoot = new Context()
+    const sessionId = 'host-owner-session'
+    const message = user('continue after tool recovery')
+    const sessions = new Map<string, SessionLike>([[sessionId, session(message)]])
+    const callSettled = Promise.withResolvers<void>()
+    let pending = true
+    const runtimeFactory = (): AcpProfileRuntime => ({
+      acpSessionId: 'agent-host-owner',
+      start: async () => undefined,
+      prompt: async () => {
+        throw new AcpHostSettlementError('ACP_HOST_CALL_DRAIN_TIMEOUT')
+      },
+      close: async () => undefined,
+      hasPendingHostCalls: () => pending,
+      waitForHostCallsSettled: () => callSettled.promise,
+    })
+    const writeRecovery = sidecar.writeRecoveryState.bind(sidecar)
+    const beginDispatch = vi.spyOn(sidecar, 'beginDispatch')
+    vi.spyOn(sidecar, 'writeRecoveryState').mockImplementation(async (state, options) => {
+      if (state.kind === 'outcome-unknown') throw new Error('injected recovery WAL failure')
+      await writeRecovery(state, options)
+    })
+    const makeAdapter = (id: string) =>
+      new AcpProfileAdapter(
+        id,
+        profile,
+        seam(),
+        (key) => sessions.get(key),
+        ledgerFor(sidecar),
+        undefined,
+        runtimeFactory,
+        sidecar,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        hostRoot,
+      )
+    const first = makeAdapter('first-profile')
+    await expect(async () => {
+      for await (const _chunk of first.stream(request(sessionId, message))) {
+        // Drain the public stream so the adapter's settlement path completes.
+      }
+    }).rejects.toMatchObject({ code: 'ACP_RECOVERY_REQUIRED' })
+    const fallbackAdapter = makeAdapter('replacement-profile')
+    expect(fallbackAdapter.recoveryStateFallback(sessionId)).toMatchObject({
+      kind: 'outcome-unknown',
+      detail: 'ACP prompt ended while a DSH Host tool was still active and its outcome could not be confirmed.',
+    })
+    await expect(fallbackAdapter.rebindBlank(sessionId)).rejects.toMatchObject({ code: 'ACP_RECOVERY_REQUIRED' })
+    const blockedChunks: unknown[] = []
+    await expect(async () => {
+      for await (const chunk of fallbackAdapter.stream(request(sessionId, message))) blockedChunks.push(chunk)
+    }).rejects.toMatchObject({ code: 'ACP_RECOVERY_REQUIRED' })
+
+    pending = false
+    callSettled.resolve()
+    await fallbackAdapter.rebindBlank(sessionId)
+    const dispatchKey = beginDispatch.mock.calls[0]?.[0].key
+    expect(dispatchKey).toBeDefined()
+    expect(await sidecar.readRecoveryState(sessionId as never)).toMatchObject({
+      kind: 'healthy',
+      lastUserAction: 'rebind-blank',
+    })
+    expect(await sidecar.readDispatch(sessionId as never, dispatchKey!)).toBeUndefined()
+    expect(fallbackAdapter.recoveryStateFallback(sessionId)).toBeUndefined()
   })
 })

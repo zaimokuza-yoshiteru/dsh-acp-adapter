@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { AcpRemoteService } from '../../../src/remote/service.ts'
 import type { AcpAuditTimelineEntry } from '../../../src/contract/remote.ts'
@@ -37,6 +37,18 @@ describe('ACP audit timeline Remote', () => {
       auditTimeline: {
         list: async (_id, after, limit) => rows.filter((row) => row.seq > after).slice(0, limit),
         hasMore: async (_id, after) => rows.some((row) => row.seq > after),
+        head: async () => rows.at(-1)?.seq ?? 0,
+        scanPage: async (_id, after, limit, through) => {
+          const entries = rows.filter((row) => row.seq > after && row.seq <= through).slice(0, limit)
+          const scannedThrough = entries.at(-1)?.seq ?? after
+          return {
+            entries,
+            scannedThrough,
+            scannedRecords: entries.length,
+            unreadableRecords: 0,
+            hasMore: rows.some((row) => row.seq > scannedThrough && row.seq <= through),
+          }
+        },
       },
     })
     expect(await service.auditTimeline('session', { view: 'issues', limit: 1 })).toMatchObject({
@@ -131,6 +143,108 @@ describe('ACP audit timeline Remote', () => {
       message: 'ACP activity access is not authorized for this DSH session',
       details: { kind: null, correlationId: null },
     })
+  })
+
+  it('pins explicit support-export watermarks without changing live paging defaults', async () => {
+    const auditRows = [1, 2, 3].map((seq) => ({
+      seq,
+      time: seq,
+      kind: 'filesystem',
+      severity: 'error' as const,
+      category: 'files' as const,
+      summaryCode: 'filesystem.read' as const,
+      subject: null,
+      status: 'error',
+      detail: null,
+    }))
+    const auditList = vi.fn(async (_id: string, after: number, limit: number, through?: number) =>
+      auditRows.filter((row) => row.seq > after && (through === undefined || row.seq <= through)).slice(0, limit),
+    )
+    const auditHasMore = vi.fn(async (_id: string, after: number, through?: number) =>
+      auditRows.some((row) => row.seq > after && (through === undefined || row.seq <= through)),
+    )
+    const auditHead = vi.fn(async () => 3)
+    const auditScanPage = vi.fn(async (_id: string, after: number, limit: number, through: number) => {
+      const entries = auditRows.filter((row) => row.seq > after && row.seq <= through).slice(0, limit)
+      const scannedThrough = entries.at(-1)?.seq ?? after
+      return {
+        entries,
+        scannedThrough,
+        scannedRecords: entries.length,
+        unreadableRecords: 0,
+        hasMore: auditRows.some((row) => row.seq > scannedThrough && row.seq <= through),
+      }
+    })
+    const activityRows = [1, 2, 3].map((revisionSeq) => ({
+      dshSessionId: 'session-1',
+      ownerDshSessionId: 'session-1',
+      promptAnchorMessageId: 'user-1',
+      activityId: `activity-${String(revisionSeq)}`,
+      activitySeq: revisionSeq,
+      revisionSeq,
+      time: revisionSeq,
+      kind: 'tool' as const,
+      status: 'completed' as const,
+      presentation: 'safe summary',
+    }))
+    const activityPage = vi.fn(async (_id: string, after: number, limit: number, _filter?: unknown, through?: number) =>
+      activityRows
+        .filter((row) => row.revisionSeq > after && (through === undefined || row.revisionSeq <= through))
+        .slice(0, limit),
+    )
+    const activityHead = vi.fn(async () => 3)
+    const service = new AcpRemoteService(new Context(), {
+      registry: { agents: () => new Map(), probeCacheFor: () => undefined },
+      resolveLiveAgent: () => undefined,
+      ownedSessionReadGate: () => true,
+      auditTimeline: {
+        list: auditList,
+        hasMore: auditHasMore,
+        head: auditHead,
+        scanPage: auditScanPage,
+      },
+      activityAccess: () => true,
+      activityTimeline: {
+        snapshot: async () => [],
+        page: activityPage,
+        head: activityHead,
+        subscribe: () => () => undefined,
+      },
+    })
+
+    await expect(service.auditTimeline('session-1', { captureSnapshot: true, limit: 2 })).resolves.toMatchObject({
+      snapshotHead: 3,
+      entries: auditRows.slice(0, 2),
+      hasMore: true,
+    })
+    auditRows.push({ ...auditRows[0]!, seq: 4 })
+    await expect(service.auditTimeline('session-1', { snapshotHead: 3, afterSeq: 2, limit: 2 })).resolves.toMatchObject(
+      {
+        snapshotHead: 3,
+        entries: [auditRows[2]],
+        hasMore: false,
+      },
+    )
+    expect(auditScanPage).toHaveBeenNthCalledWith(1, 'session-1', 0, 2, 3)
+    expect(auditScanPage).toHaveBeenNthCalledWith(2, 'session-1', 2, 2, 3)
+    expect(auditList).not.toHaveBeenCalled()
+    expect(auditHead).toHaveBeenCalledTimes(1)
+
+    await expect(service.activityPage('session-1', { captureSnapshot: true, limit: 2 })).resolves.toMatchObject({
+      head: 3,
+      activities: activityRows.slice(0, 2),
+      hasMore: true,
+    })
+    activityRows.push({ ...activityRows[0]!, revisionSeq: 4, activitySeq: 4 })
+    await expect(
+      service.activityPage('session-1', { snapshotHead: 3, afterRevision: 2, limit: 2 }),
+    ).resolves.toMatchObject({
+      head: 3,
+      activities: [activityRows[2]],
+      hasMore: false,
+    })
+    expect(activityPage).toHaveBeenLastCalledWith('session-1', 2, 2, undefined, 3)
+    expect(activityHead).toHaveBeenCalledTimes(1)
   })
 
   it('subscribes before opening and emits only durable revisions after the opening head', async () => {
@@ -275,12 +389,28 @@ describe('ACP audit timeline Remote', () => {
       auditTimeline: {
         list: async (_sessionId, afterSeq, limit) => rows.filter((row) => row.seq > afterSeq).slice(0, limit),
         hasMore: async (_sessionId, seq) => rows.some((row) => row.seq > seq),
+        head: async () => rows.at(-1)?.seq ?? 0,
+        scanPage: async (_id, after, limit, through) => {
+          const entries = rows.filter((row) => row.seq > after && row.seq <= through).slice(0, limit)
+          const scannedThrough = entries.at(-1)?.seq ?? after
+          return {
+            entries,
+            scannedThrough,
+            scannedRecords: entries.length,
+            unreadableRecords: 0,
+            hasMore: rows.some((row) => row.seq > scannedThrough && row.seq <= through),
+          }
+        },
       },
       ownedSessionReadGate: () => true,
     })
 
     await expect(service.auditTimeline('session-1', { limit: 2 })).resolves.toEqual({
       sessionId: 'session-1',
+      snapshotHead: null,
+      scannedThrough: 2,
+      scannedRecords: null,
+      unreadableRecords: 0,
       entries: rows.slice(0, 2),
       nextCursor: 2,
       hasMore: true,
@@ -304,7 +434,18 @@ describe('ACP audit timeline Remote', () => {
       },
       resolveLiveAgent: () => undefined,
       ownedSessionReadGate: () => true,
-      auditTimeline: { list: async () => [], hasMore: async () => false },
+      auditTimeline: {
+        list: async () => [],
+        hasMore: async () => false,
+        head: async () => 0,
+        scanPage: async (_id, after) => ({
+          entries: [],
+          scannedThrough: after,
+          scannedRecords: 0,
+          unreadableRecords: 0,
+          hasMore: false,
+        }),
+      },
     })
     await expect(service.auditTimeline('session-1', { limit: 101 })).rejects.toMatchObject({
       code: 'gateway/bad-request',
@@ -333,6 +474,12 @@ describe('ACP audit timeline Remote', () => {
         hasMore: async () => {
           more += 1
           return false
+        },
+        head: async () => {
+          throw new Error('must not read head without authorization')
+        },
+        scanPage: async () => {
+          throw new Error('must not scan before authorization')
         },
       },
     })

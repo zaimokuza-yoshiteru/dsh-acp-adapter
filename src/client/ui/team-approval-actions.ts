@@ -1,5 +1,70 @@
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { SessionPendingInteractionBase, SessionStatusSnapshot } from '@deepseek-ai/dsh-client-ui-session/client'
+import type { AcpTeamMemberView } from '../data/acp-remote.ts'
+
+const memberReadRetryDelays = [500, 1_000, 2_000, 4_000, 8_000] as const
+const stableMemberReadErrorCodes = new Set([
+  'dsh-acp/config',
+  'dsh-acp/not-installed',
+  'dsh-acp/auth-required',
+  'dsh-acp/protocol-incompatible',
+  'dsh-acp/user-rejected',
+  'gateway/bad-request',
+])
+
+export function isStableTeamMemberReadError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    typeof error.code === 'string' &&
+    stableMemberReadErrorCodes.has(error.code)
+  )
+}
+
+async function waitForMemberReadRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return
+  await new Promise<void>((resolve) => {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const finish = (): void => {
+      if (timer !== undefined) clearTimeout(timer)
+      signal?.removeEventListener('abort', finish)
+      resolve()
+    }
+    timer = setTimeout(finish, delayMs)
+    signal?.addEventListener('abort', finish, { once: true })
+    if (signal?.aborted) finish()
+  })
+}
+
+/** Retry only the read while its captured session/request remains live. */
+export async function readTeamMembersUntilAvailable(
+  sessionId: SessionId,
+  loadMembers: (sessionId: SessionId) => Promise<readonly AcpTeamMemberView[]>,
+  active: () => boolean,
+  options: {
+    readonly signal?: AbortSignal
+    readonly onAttempt?: () => void
+    readonly onFailure?: () => void
+  } = {},
+): Promise<readonly AcpTeamMemberView[] | undefined> {
+  let attempt = 0
+  while (!options.signal?.aborted && active()) {
+    options.onAttempt?.()
+    try {
+      const members = await loadMembers(sessionId)
+      return !options.signal?.aborted && active() ? members : undefined
+    } catch (error) {
+      if (options.signal?.aborted || !active()) return undefined
+      if (isStableTeamMemberReadError(error)) throw error
+      options.onFailure?.()
+      const delay = memberReadRetryDelays[Math.min(attempt, memberReadRetryDelays.length - 1)]!
+      attempt++
+      await waitForMemberReadRetry(delay, options.signal)
+    }
+  }
+  return undefined
+}
 
 /** Structural subsets of the host's public pending carriers; no second approval broker. */
 export interface TeamApproval extends SessionPendingInteractionBase {

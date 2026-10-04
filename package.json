@@ -274,6 +274,7 @@
     "@deepseek-ai/dsh": "0.2.0-rc.2",
     "@deepseek-ai/dsh-agent": "0.2.0-rc.2",
     "@deepseek-ai/dsh-agent-default-model": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-agent-loop": "0.2.0-rc.2",
     "@deepseek-ai/dsh-anonymous-user-id": "0.2.0-rc.2",
     "@deepseek-ai/dsh-api-gateway": "0.2.0-rc.2",
     "@deepseek-ai/dsh-api-remotes": "0.2.0-rc.2",

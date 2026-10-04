@@ -1,6 +1,11 @@
 /** ACP presentation facts become native Chat nodes; execution events remain untouched. */
 import type { ChatConversationViewNode, ChatNode, AssistantBlock } from '@deepseek-ai/dsh-client-ui-chat/client'
-import { nativeActivityToolBlock, type AcpActivityNodeData, type ActivityPresentationRow } from './AcpActivityNode.ts'
+import {
+  nativeActivityToolBlock,
+  usesNativeActivityToolProjection,
+  type AcpActivityNodeData,
+  type ActivityPresentationRow,
+} from './AcpActivityNode.ts'
 
 export interface ActivityWindow {
   readonly rows: readonly ActivityPresentationRow[]
@@ -247,14 +252,15 @@ export function normalizeAcpChatNodes(
     let hasAnchor = false
     const emitRow = (row: ActivityPresentationRow): void => {
       const key = `${node.key}:acp:${row.activityId}`
+      const nativeTool = usesNativeActivityToolProjection(row)
       segments.push(
         reuseProjectedNode(
           {
             ...node,
             key,
             id: key,
-            kind: row.kind === 'tool' ? 'tool-call' : 'acp-inline-activity',
-            data: row.kind === 'tool' ? { root: nativeActivityToolBlock(row), acpActivity: row } : row,
+            kind: nativeTool ? 'tool-call' : 'acp-inline-activity',
+            data: nativeTool ? { root: nativeActivityToolBlock(row), acpActivity: row } : row,
           },
           previous,
         ),

@@ -21,6 +21,12 @@ import type { AcpLocaleKey } from './locales.ts'
 import type { OwnsAcpRoute } from '../coordinator/cross-backend-coordinator.ts'
 import type { AcpDiagnosticView, AcpRecoveryView } from '../../contract/remote.ts'
 import { matchesDiagnosticView } from '../../contract/diagnostics.ts'
+import {
+  AcpSupportExportError,
+  collectAcpSupportExport,
+  downloadAcpSupportExport,
+  type AcpSupportExport,
+} from '../data/acp-support-export.ts'
 import { recoveryText } from './AcpRecoveryDock.ts'
 import css from './AcpAuditHeaderAction.module.css'
 import { acpJsonTreeLabels, type AcpJsonStringWrapping } from './json-tree.ts'
@@ -224,8 +230,13 @@ function entryTone(entry: AcpAuditTimelineEntry): TagTone {
   return entry.severity === 'info' ? 'neutral' : entry.severity === 'error' ? 'danger' : 'warning'
 }
 
-function textOf(t: Translate | undefined, key: AcpLocaleKey, fallback: string): string {
-  const result = t?.(key)
+function textOf(
+  t: Translate | undefined,
+  key: AcpLocaleKey,
+  fallback: string,
+  params?: Record<string, string | number>,
+): string {
+  const result = t?.(key, params)
   return result === undefined || result.trim() === '' ? fallback : result
 }
 
@@ -312,6 +323,14 @@ function AcpAuditView(props: AcpAuditViewProps): ReactNode {
   const [recoveryUnavailable, setRecoveryUnavailable] = useState(false)
   const [query, setQuery] = useState('')
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
+  const [exportState, setExportState] = useState<'idle' | 'loading' | 'downloaded' | 'failed'>('idle')
+  const [supportExport, setSupportExport] = useState<AcpSupportExport | null>(null)
+  const [exportError, setExportError] = useState<'unavailable' | 'invalid-page' | 'session-changed' | null>(null)
+  const exportEpoch = useRef(0)
+  const exportLoading = useRef(false)
+  const exportController = useRef<AbortController | undefined>(undefined)
+  const currentSessionId = useRef(sessionId)
+  currentSessionId.current = sessionId
   const copyEpoch = useRef(0)
   const [selectedSeq, setSelectedSeq] = useState<number | null>(null)
   const requestEpoch = useRef(0)
@@ -370,8 +389,18 @@ function AcpAuditView(props: AcpAuditViewProps): ReactNode {
   )
 
   useEffect(() => {
+    exportEpoch.current += 1
+    exportLoading.current = false
+    setExportState('idle')
+    setSupportExport(null)
+    setExportError(null)
     setFilter('issues')
-  }, [sessionId])
+    return () => {
+      exportEpoch.current += 1
+      exportController.current?.abort()
+      exportController.current = undefined
+    }
+  }, [sessionId, remote])
 
   useEffect(() => {
     requestEpoch.current += 1
@@ -415,6 +444,41 @@ function AcpAuditView(props: AcpAuditViewProps): ReactNode {
       if (generation === copyEpoch.current) setCopyState(copied ? 'copied' : 'failed')
     } catch {
       if (generation === copyEpoch.current) setCopyState('failed')
+    }
+  }
+  const startSupportExport = async (): Promise<void> => {
+    if (sessionId === undefined || remote === undefined || exportLoading.current) return
+    const epoch = ++exportEpoch.current
+    const selectedSession = sessionId
+    const controller = new AbortController()
+    exportController.current = controller
+    exportLoading.current = true
+    setExportState('loading')
+    setSupportExport(null)
+    setExportError(null)
+    try {
+      const result = await collectAcpSupportExport(
+        remote,
+        selectedSession,
+        __DSH_ACP_ADAPTER_VERSION__,
+        () =>
+          exportEpoch.current === epoch && currentSessionId.current === selectedSession && !controller.signal.aborted,
+        Date.now,
+        controller.signal,
+      )
+      if (exportEpoch.current !== epoch || currentSessionId.current !== selectedSession || controller.signal.aborted)
+        return
+      downloadAcpSupportExport(result)
+      setSupportExport(result)
+      setExportState('downloaded')
+    } catch (error: unknown) {
+      if (exportEpoch.current !== epoch || currentSessionId.current !== selectedSession || controller.signal.aborted)
+        return
+      setExportError(error instanceof AcpSupportExportError ? error.code : 'unavailable')
+      setExportState('failed')
+    } finally {
+      if (exportController.current === controller) exportController.current = undefined
+      if (exportEpoch.current === epoch) exportLoading.current = false
     }
   }
   const labels: readonly [Filter, AcpLocaleKey][] = [
@@ -461,6 +525,16 @@ function AcpAuditView(props: AcpAuditViewProps): ReactNode {
             'button',
             { type: 'button', className: css.refresh, disabled: loading, onClick: () => load(true) },
             textOf(t, loading ? 'auditLoadingShort' : 'auditRefresh', loading ? 'Loading…' : 'Refresh'),
+          ),
+          h(
+            'button',
+            {
+              type: 'button',
+              className: css.refresh,
+              disabled: sessionId === undefined || remote === undefined || exportState === 'loading',
+              onClick: () => void startSupportExport(),
+            },
+            textOf(t, 'auditExport', 'Export safe summary'),
           ),
           h(Input, {
             icon: h(IconSearchOutlineMedium, { size: 16 }),
@@ -713,6 +787,53 @@ function AcpAuditView(props: AcpAuditViewProps): ReactNode {
             ),
           ),
     ),
+    exportState === 'loading'
+      ? h('p', { role: 'status' }, textOf(t, 'auditExportLoading', 'Collecting and downloading a bounded snapshot…'))
+      : exportState === 'failed'
+        ? h(
+            'p',
+            { role: 'alert', className: css.error },
+            textOf(
+              t,
+              exportError === 'session-changed' ? 'auditExportSessionChanged' : 'auditExportFailed',
+              exportError === 'session-changed'
+                ? 'The session changed. Reopen diagnostics and try again.'
+                : 'The diagnostic export could not be created. Click Export safe summary to try again.',
+            ),
+          )
+        : exportState === 'downloaded' && supportExport !== null
+          ? h(
+              'div',
+              { className: css.hint, 'data-support-export-summary': true },
+              h('p', { role: 'status' }, textOf(t, 'auditExportComplete', 'The JSON download has started.')),
+              h(
+                'p',
+                null,
+                textOf(
+                  t,
+                  'auditExportPrivacy',
+                  'The file contains a bounded snapshot of fixed diagnostic codes, statuses, and activity summaries. It excludes message text, commands, paths, and raw session IDs.',
+                ),
+              ),
+              h(
+                'p',
+                null,
+                textOf(t, 'auditExportCounts', 'Audit records: {audit}; activity revisions: {activity}.', {
+                  audit: supportExport.audit.rows.length,
+                  activity: supportExport.activity.rows.length,
+                }),
+              ),
+              h(
+                'p',
+                null,
+                textOf(
+                  t,
+                  'auditExportScopeNote',
+                  'Detailed scope and snapshot limits are included in the downloaded JSON.',
+                ),
+              ),
+            )
+          : null,
   )
 }
 

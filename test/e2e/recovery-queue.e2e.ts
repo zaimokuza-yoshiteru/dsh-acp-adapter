@@ -7,6 +7,7 @@ import type { TestBrowser } from './browser.ts'
 import { launchBrowser, newEnglishPage } from './browser.ts'
 import { connectFreshWorkspace, writeComposerDraft } from '#host-support'
 import { launchAdapterWorld, root } from './scaffold.ts'
+import type { AcpRemoteService } from '../../src/remote/service.js'
 
 it('keeps native queued input operable across ACP crash recovery and closes pending approval on teardown', async () => {
   const host = await launchAdapterWorld()
@@ -145,8 +146,17 @@ it('keeps native queued input operable across ACP crash recovery and closes pend
     expect(firstEndFacts).toHaveLength(1)
     expect(recoveryErrorCode(firstEndFacts[0]?.data)).toBe('ACP_CRASH')
 
+    const remote = host.ctx.get('dshAcp') as AcpRemoteService
+    const recoveryFollow = remote.recoveryFollow.bind(remote)
+    let recoveryFollowReads = 0
+    vi.spyOn(remote, 'recoveryFollow').mockImplementation(async function* (id, signal) {
+      recoveryFollowReads++
+      if (recoveryFollowReads === 1) throw new Error('E2E_TEMPORARY_RECOVERY_READ_FAILURE')
+      yield* recoveryFollow(id, signal)
+    })
     await page.reload()
     await page.getByRole('button', { name: 'Resolve recovery issue', exact: true }).waitFor()
+    expect(recoveryFollowReads).toBeGreaterThanOrEqual(2)
     await page.getByRole('listitem').filter({ hasText: 'E2E_RECOVERY_QUEUED_INPUT' }).waitFor({ state: 'visible' })
     expect(promptCount()).toBe(1)
     await recoverByRebind()

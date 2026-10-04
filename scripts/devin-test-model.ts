@@ -1,4 +1,4 @@
-export const DEFAULT_DEVIN_TEST_MODEL = 'swe-1-6-fast'
+export const DEFAULT_DEVIN_TEST_MODEL = 'swe-2-high'
 
 export interface DevinCatalogModel {
   readonly id: string

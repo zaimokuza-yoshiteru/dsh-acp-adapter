@@ -8,7 +8,7 @@ import type {} from '@deepseek-ai/dsh-app-boot'
 import type {} from '@deepseek-ai/dsh-tool-present/types'
 import type { AcpRemoteService } from '../../src/remote/service.js'
 import { required } from './required.ts'
-import type { TestBrowser } from './browser.ts'
+import type { DownloadTestBrowser } from './browser.ts'
 import { launchBrowser, newEnglishPage } from './browser.ts'
 import type { ObservedEvent } from './types.ts'
 import type { AdapterWorld } from './scaffold.ts'
@@ -79,7 +79,7 @@ class NativeControl extends LlmAdapter {
 
 describe.each(profiles)('native product parity: %s protocol fixture', (profile) => {
   let host!: AdapterWorld
-  let browser!: TestBrowser
+  let browser!: DownloadTestBrowser
   let page!: Page
   let agentLog!: string
   let workspace!: string
@@ -539,6 +539,89 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
       await sidecar.dispose()
       await host.ctx.settings.replace('locale', { preference: 'en' })
     }
+  })
+
+  it('downloads a bounded content-free ACP support snapshot from one explicit export action', async () => {
+    page.setDefaultTimeout(10_000)
+    const { settled } = await send('E2E_JOB_OTHER')
+    const id = await settled
+    const sidecar = createAcpSidecar({ root: required(host.ctx.dshHomePath)('dsh-acp') })
+    try {
+      for (let index = 0; index < 120; index += 1) {
+        await sidecar.append(id, {
+          kind: 'filesystem',
+          data: {
+            operation: 'read',
+            path: `/private/ACP_EXPORT_SENTINEL_${String(index)}`,
+            bytes: 0,
+            beforeHash: null,
+            afterHash: null,
+            outcome: 'error',
+            reason: 'not-found',
+            acpSessionId: 'private-acp-session',
+            profileId: profile,
+          },
+        })
+      }
+      await sidecar.flush()
+    } finally {
+      await sidecar.dispose()
+    }
+
+    const remote = host.ctx.get('dshAcp') as AcpRemoteService
+    const readAuditTimeline = remote.auditTimeline.bind(remote)
+    const readActivityPage = remote.activityPage.bind(remote)
+    let auditSnapshotAttempts = 0
+    let activitySnapshotAttempts = 0
+    vi.spyOn(remote, 'auditTimeline').mockImplementation(async (sessionId, request) => {
+      if (request?.captureSnapshot === true) {
+        auditSnapshotAttempts += 1
+        if (auditSnapshotAttempts === 1) throw new Error('E2E_TEMPORARY_AUDIT_PAGE_FAILURE')
+      }
+      return readAuditTimeline(sessionId, request)
+    })
+    vi.spyOn(remote, 'activityPage').mockImplementation(async (sessionId, request, signal) => {
+      if (request?.captureSnapshot === true) {
+        activitySnapshotAttempts += 1
+        if (activitySnapshotAttempts === 1) throw new Error('E2E_TEMPORARY_ACTIVITY_PAGE_FAILURE')
+      }
+      return readActivityPage(sessionId, request, signal)
+    })
+
+    await page.getByText('ACP Diagnostics', { exact: true }).click()
+    const panel = page.getByRole('region', { name: 'ACP Diagnostics', exact: true })
+    const download = await browser.downloadFromClick(page, () =>
+      panel.getByRole('button', { name: 'Export safe summary', exact: true }).click(),
+    )
+    expect(auditSnapshotAttempts).toBe(2)
+    expect(activitySnapshotAttempts).toBe(2)
+    const summary = panel.locator('[data-support-export-summary]')
+    await summary.waitFor()
+    expect(await summary.innerText()).toContain('The JSON download has started.')
+    expect(await summary.innerText()).toContain('Audit records:')
+    expect(await summary.innerText()).toContain('activity revisions:')
+    expect(await summary.innerText()).toContain('Detailed scope and snapshot limits are included')
+    if (process.env.DSH_E2E_SCREENSHOTS) {
+      mkdirSync(process.env.DSH_E2E_SCREENSHOTS, { recursive: true })
+      await page.screenshot({ path: join(process.env.DSH_E2E_SCREENSHOTS, `${profile}-acp-support-export.png`) })
+    }
+    const downloadPath = await download.path()
+    expect(downloadPath).not.toBeNull()
+    const bundle = JSON.parse(readFileSync(required(downloadPath), 'utf8')) as {
+      schema: string
+      schemaVersion: number
+      sessionAlias: string
+      audit: { rows: { summaryCode: string }[]; truncated: boolean }
+      unavailable: { providerPromptTrace: boolean; providerUsage: boolean; nativeSessionLog: boolean }
+    }
+    expect(bundle).toMatchObject({ schema: 'dsh-acp-support', schemaVersion: 1, sessionAlias: 'session-1' })
+    expect(bundle.audit.rows.filter((row) => row.summaryCode === 'filesystem.read').length).toBeGreaterThanOrEqual(120)
+    expect(bundle.audit.truncated).toBe(false)
+    expect(bundle.unavailable).toMatchObject({ providerPromptTrace: true, providerUsage: true, nativeSessionLog: true })
+    const serialized = JSON.stringify(bundle)
+    expect(serialized).not.toContain(id)
+    expect(serialized).not.toContain('ACP_EXPORT_SENTINEL')
+    expect(serialized).not.toContain('private-acp-session')
   })
 
   it('uses the native composer, attachment history, assistant stream and tool presentation across reload', async () => {

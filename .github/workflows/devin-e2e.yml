@@ -71,13 +71,24 @@ jobs:
         if: runner.os == 'macOS'
         env:
           WINDSURF_API_KEY: ${{ secrets.DEVIN_CLI_TOKEN }}
-          DEVIN_TEST_MODEL: swe-1-6-fast
+          DEVIN_TEST_MODEL: swe-2-high
+          DEVIN_LIVE_TRACE_DIR: ${{ runner.temp }}/devin-live-diagnostics
         run: node scripts/check-devin-live.ts "$DEVIN_TEST_EXE"
       - name: Authenticated native DSH Teams (ordinary Windows user)
         if: runner.os == 'Windows'
         env:
           WINDSURF_API_KEY: ${{ secrets.DEVIN_CLI_TOKEN }}
-          DEVIN_TEST_MODEL: swe-1-6-fast
+          DEVIN_TEST_MODEL: swe-2-high
+          DEVIN_LIVE_TRACE_DIR: ${{ runner.temp }}\devin-live-diagnostics
         shell: pwsh
         run: ./scripts/run-windows-user-ci.ps1 -Live
-      # Never upload transcripts, profile directories, native CLI logs or credentials.
+      - name: Upload safe Devin live diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: devin-live-diagnostics-${{ runner.os }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/devin-live-diagnostics/real-devin-live-*.jsonl
+          if-no-files-found: warn
+          retention-days: 7
+      # Only the bounded, sanitized JSONL trace is uploaded. Runner timeouts can
+      # terminate the job before this always() step gets a chance to run.

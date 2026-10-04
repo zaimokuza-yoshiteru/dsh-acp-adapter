@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { AcpRemoteService } from '../../../src/remote/service.ts'
-import type { AcpAgentSessionSnapshotView } from '../../../src/contract/remote.ts'
+import type { AcpAgentSessionSnapshotView, AcpRecoveryView } from '../../../src/contract/remote.ts'
 
 const snapshot = (): AcpAgentSessionSnapshotView => ({
   sessionId: 'session',
@@ -18,8 +18,22 @@ const snapshot = (): AcpAgentSessionSnapshotView => ({
 function setup() {
   let bound = false
   let current = snapshot()
+  let recovery: AcpRecoveryView = {
+    dshSessionId: 'session',
+    kind: 'healthy',
+    cause: null,
+    detail: null,
+    provider: null,
+    acpSessionId: null,
+    generation: null,
+    interruptedTurnId: null,
+    lastAttemptAt: null,
+    lastUserAction: null,
+    updatedAt: 1,
+  }
   const listeners = new Set<() => void>()
   const read = vi.fn(async () => current)
+  const readRecovery = vi.fn(async () => recovery)
   const service = new AcpRemoteService(new Context(), {
     registry: { agents: () => new Map(), probeCacheFor: () => undefined },
     resolveLiveAgent: () => undefined,
@@ -28,6 +42,8 @@ function setup() {
       peekHeaderProvider: async () => undefined,
       hasLiveAgent: () => true,
     },
+    ownedSessionReadGate: async (id) => id === 'session',
+    recoveryStateStore: { read: readRecovery },
     agentSessionControl: () => ({ agentSessionSnapshot: read, setAgentSessionOption: async () => current }),
     agentSessionChanges: {
       canRead: (id) => id === 'session',
@@ -42,12 +58,20 @@ function setup() {
   return {
     service,
     read,
+    readRecovery,
     listeners,
     bind: () => {
       bound = true
     },
     update: (patch: Partial<AcpAgentSessionSnapshotView>) => {
       current = { ...current, ...patch }
+      for (const notify of listeners) notify()
+    },
+    updateRecovery: (next: AcpRecoveryView) => {
+      recovery = next
+      for (const notify of listeners) notify()
+    },
+    notify: () => {
       for (const notify of listeners) notify()
     },
   }
@@ -114,6 +138,42 @@ describe('Agent controls snapshot stream', () => {
     const failed = stream.next()
     state.update({})
     await expect(failed).rejects.toThrow('fixture storage failure')
+    expect(state.listeners.size).toBe(0)
+  })
+})
+
+describe('recovery facts stream', () => {
+  it('publishes local status changes even when the Agent controls snapshot is unchanged', async () => {
+    const state = setup()
+    const abort = new AbortController()
+    const stream = state.service.recoveryFollow('session', abort.signal)[Symbol.asyncIterator]()
+    const opened = await stream.next()
+    expect(opened.value).toMatchObject({ type: 'opened', snapshot: { kind: 'healthy' } })
+
+    const changed = stream.next()
+    state.updateRecovery({ ...opened.value!.snapshot, localStatus: 'finishing-tools' })
+    expect((await changed).value).toMatchObject({
+      type: 'changed',
+      snapshot: { kind: 'healthy', localStatus: 'finishing-tools', updatedAt: 1 },
+    })
+    expect(state.read).not.toHaveBeenCalled()
+
+    const nextChange = stream.next()
+    state.notify()
+    await vi.waitFor(() => expect(state.readRecovery).toHaveBeenCalledTimes(3))
+    state.updateRecovery({ ...opened.value!.snapshot, localStatus: 'saving-results' })
+    expect((await nextChange).value).toMatchObject({
+      type: 'changed',
+      snapshot: { kind: 'healthy', localStatus: 'saving-results', updatedAt: 1 },
+    })
+
+    const cleared = stream.next()
+    state.updateRecovery(opened.value!.snapshot)
+    const clearedFrame = await cleared
+    expect(clearedFrame.value).toMatchObject({ type: 'changed', snapshot: { kind: 'healthy', updatedAt: 1 } })
+    expect(clearedFrame.value!.snapshot).not.toHaveProperty('localStatus')
+    abort.abort()
+    await stream.next()
     expect(state.listeners.size).toBe(0)
   })
 })

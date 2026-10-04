@@ -8,7 +8,12 @@ import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { TeamProjection } from '@deepseek-ai/dsh-experimental-agent-team/client'
 import type { AcpTeamMemberView } from '../data/acp-remote.ts'
 import type { OwnsAcpRoute } from '../coordinator/cross-backend-coordinator.ts'
-import { answerTeamRequests, teamApproval } from './team-approval-actions.ts'
+import {
+  answerTeamRequests,
+  isStableTeamMemberReadError,
+  readTeamMembersUntilAvailable,
+  teamApproval,
+} from './team-approval-actions.ts'
 import type { SessionPendingInteractionBase } from '@deepseek-ai/dsh-client-ui-session/client'
 import { projectionIsAcp } from './AcpRecoveryDock.ts'
 import { projectionRevision, teamRoster } from './team-projection.ts'
@@ -36,9 +41,14 @@ export function AcpTeamApprovals({
 }: PropsRuntime<'conversation.input.dock'> & PropsLocale<'acpActivity'> & AcpTeamApprovalActions): ReactNode {
   const inFlight = useRef(new Set<SessionPendingInteractionBase>())
   const epoch = useRef(0)
+  const runController = useRef<AbortController | undefined>(undefined)
+  const requestIdentity = useRef<{ ids: WeakMap<object, number>; next: number } | undefined>(undefined)
+  if (requestIdentity.current === undefined) requestIdentity.current = { ids: new WeakMap(), next: 0 }
   const [busy, setBusy] = useState(false)
   useEffect(() => {
     ++epoch.current
+    runController.current?.abort()
+    runController.current = undefined
     setBusy(false)
     setActionError(undefined)
     return () => {
@@ -57,47 +67,79 @@ export function AcpTeamApprovals({
   const sessionsLoading = useSessions((sessions) => sessions.phase === 'pending')
   const roster = teamRoster(team, sessionOpening || sessionsLoading)
   const revision = projectionRevision(team)
-  const pendingKeys =
+  const pendingCarriers =
     roster.kind === 'ready'
-      ? roster.members
-          .flatMap((member) => {
-            const pending = snapshot.get(member.id)?.pendingInteraction
-            return pending === undefined ? [] : [JSON.stringify([member.id, pending.key])]
-          })
-          .join('\n')
-      : ''
+      ? roster.members.flatMap((member) => {
+          const pending = snapshot.get(member.id)?.pendingInteraction
+          return pending === undefined ? [] : [{ sessionId: member.id, pending }]
+        })
+      : []
+  const pendingKeys = pendingCarriers
+    .map(({ sessionId: memberId, pending }) => {
+      const identity = requestIdentity.current!
+      let id = identity.ids.get(pending)
+      if (id === undefined) {
+        id = ++identity.next
+        identity.ids.set(pending, id)
+      }
+      return JSON.stringify([memberId, pending.key, id])
+    })
+    .join('\n')
   const failedTeamHasPending =
     roster.kind === 'failed' && roster.memberIds.some((id) => snapshot.get(id)?.pendingInteraction !== undefined)
   const [eligible, setEligible] = useState<
-    { sessionId: SessionId; revision: string; ids: ReadonlySet<string> } | undefined
+    | { sessionId: SessionId; revision: string; pendingKeys: string; ids: ReadonlySet<string> }
+    | { sessionId: SessionId; revision: string; pendingKeys: string; loading: true }
+    | { sessionId: SessionId; revision: string; pendingKeys: string; failed: true }
+    | undefined
   >(undefined)
-  const [membersLoading, setMembersLoading] = useState(false)
   useEffect(() => {
     let cancelled = false
-    setEligible(undefined)
     setActionError(undefined)
     if (!enabled || pendingKeys === '' || roster.kind !== 'ready') {
-      setMembersLoading(false)
+      setEligible(undefined)
       return () => {
         cancelled = true
       }
     }
-    setMembersLoading(true)
-    void loadMembers(sessionId)
+    const controller = new AbortController()
+    const currentEpoch = epoch.current
+    const capturedPendingIsCurrent = () =>
+      pendingCarriers.every(
+        ({ sessionId: memberId, pending }) => status.getSnapshot().get(memberId)?.pendingInteraction === pending,
+      )
+    const active = () =>
+      !cancelled &&
+      !controller.signal.aborted &&
+      epoch.current === currentEpoch &&
+      isCurrent(sessionId) &&
+      capturedPendingIsCurrent()
+    setEligible({ sessionId, revision, pendingKeys, loading: true })
+    void readTeamMembersUntilAvailable(sessionId, loadMembers, active, { signal: controller.signal })
       .then((members) => {
-        if (!cancelled) setEligible({ sessionId, revision, ids: new Set(members.map((member) => member.sessionId)) })
+        if (!active()) return
+        if (members === undefined) {
+          setEligible(undefined)
+          return
+        }
+        setEligible({ sessionId, revision, pendingKeys, ids: new Set(members.map((member) => member.sessionId)) })
       })
-      .catch(() => {
-        if (!cancelled) setActionError(t('teamApprovalLoadFailed'))
-      })
-      .finally(() => {
-        if (!cancelled) setMembersLoading(false)
+      .catch((error: unknown) => {
+        if (!active() || !isStableTeamMemberReadError(error)) return
+        setEligible({ sessionId, revision, pendingKeys, failed: true })
+        setActionError(t('teamApprovalLoadFailed'))
       })
     return () => {
       cancelled = true
+      controller.abort()
     }
-  }, [enabled, pendingKeys, sessionId, revision, roster.kind, loadMembers, t])
-  const allowedIds = eligible?.sessionId === sessionId && eligible.revision === revision ? eligible.ids : undefined
+  }, [enabled, pendingKeys, sessionId, revision, roster.kind, loadMembers, isCurrent, status])
+  const eligibleMatches =
+    eligible !== undefined &&
+    eligible.sessionId === sessionId &&
+    eligible.revision === revision &&
+    eligible.pendingKeys === pendingKeys
+  const allowedIds = eligibleMatches && eligible !== undefined && 'ids' in eligible ? eligible.ids : undefined
   const waiting = (roster.kind === 'ready' && allowedIds !== undefined ? roster.members : []).filter(
     (member) =>
       member.id !== sessionId &&
@@ -116,22 +158,55 @@ export function AcpTeamApprovals({
   const run = async (
     requests: readonly { pending: SessionPendingInteractionBase; answer: () => Promise<void> }[],
   ): Promise<void> => {
-    if (busy || !isCurrent(sessionId)) return
+    if (busy || runController.current !== undefined || !isCurrent(sessionId)) return
     const currentEpoch = epoch.current
-    const active = () => epoch.current === currentEpoch && isCurrent(sessionId)
+    const controller = new AbortController()
+    runController.current = controller
+    let settling = false
+    const active = () => !controller.signal.aborted && epoch.current === currentEpoch && isCurrent(sessionId)
+    const requestSetIsCurrent = () =>
+      requests.every(
+        (request) => status.getSnapshot().get(request.pending.sessionId)?.pendingInteraction === request.pending,
+      )
+    const unsubscribe = status.subscribe(() => {
+      if (!settling && !requestSetIsCurrent()) controller.abort()
+    })
     setBusy(true)
     setActionError(undefined)
     try {
-      const members = await loadMembers(sessionId)
+      const members = await readTeamMembersUntilAvailable(
+        sessionId,
+        loadMembers,
+        () => active() && requestSetIsCurrent(),
+        {
+          onFailure: () => {
+            if (active() && requestSetIsCurrent()) setActionError(t('teamApprovalRechecking'))
+          },
+          signal: controller.signal,
+        },
+      )
+      if (!active()) return
+      if (members === undefined || !requestSetIsCurrent()) {
+        setActionError(undefined)
+        return
+      }
+      setActionError(undefined)
       const allowed = new Set(
         members.filter((member) => member.sessionId !== sessionId).map((member) => member.sessionId as SessionId),
       )
+      settling = true
       const failures = await answerTeamRequests(requests, status.getSnapshot, allowed, active, inFlight.current)
       if (active() && failures > 0) setActionError(t('teamAnswerFailed', { count: failures }))
     } catch {
       if (active()) setActionError(t('teamApprovalLoadFailed'))
     } finally {
+      unsubscribe()
+      if (runController.current === controller) runController.current = undefined
       if (active()) setBusy(false)
+      else if (epoch.current === currentEpoch && isCurrent(sessionId)) {
+        setActionError(undefined)
+        setBusy(false)
+      }
     }
   }
   const batch = (outcome: 'allowed-once' | 'rejected'): void => {
@@ -139,26 +214,32 @@ export function AcpTeamApprovals({
   }
   const rosterMessage =
     pendingKeys !== ''
-      ? membersLoading || allowedIds === undefined
-        ? t('teamProjectionLoading')
+      ? allowedIds === undefined
+        ? t('teamPendingLoading')
         : undefined
       : failedTeamHasPending
         ? t('teamProjectionFailed')
         : undefined
   const error = actionError ?? rosterMessage
   if (!enabled || (waiting.length === 0 && error === undefined)) return null
+  const pendingTitle =
+    (pendingKeys !== '' || failedTeamHasPending) && allowedIds === undefined
+      ? eligibleMatches && eligible !== undefined && 'failed' in eligible
+        ? t('teamPendingUncounted')
+        : t('teamPendingLoading')
+      : t('teamPendingTitle', { count: waiting.length })
   return h(
     'section',
     {
       className: css.card,
       'data-acp-team-approvals': '',
-      'aria-label': t('teamPendingTitle', { count: waiting.length }),
+      'aria-label': pendingTitle,
     },
     h(
       'div',
       { className: css.header },
       h('span', { className: css.icon, 'aria-hidden': true }, '!'),
-      h('strong', { role: 'status', 'aria-live': 'polite' }, t('teamPendingTitle', { count: waiting.length })),
+      h('strong', { role: 'status', 'aria-live': 'polite' }, pendingTitle),
       approvals.length === 0
         ? null
         : h(

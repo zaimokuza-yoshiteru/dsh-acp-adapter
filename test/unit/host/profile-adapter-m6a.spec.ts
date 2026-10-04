@@ -32,12 +32,16 @@ class Ledger implements DispatchLedgerStore {
   }
 }
 
+const savedOptionSnapshots: unknown[] = []
 const sidecar = {
   append: async () => undefined,
   readLatestBinding: async () => undefined,
   readModeIntent: async () => undefined,
   readRecoveryState: async () => undefined,
   writeRecoveryState: async () => undefined,
+  writeOptionSnapshot: async (_sessionId: unknown, snapshot: unknown) => {
+    savedOptionSnapshots.push(snapshot)
+  },
 } as unknown as AcpSidecar
 
 const seam = (): { ok: true; seam: never } => ({ ok: true, seam: undefined as never })

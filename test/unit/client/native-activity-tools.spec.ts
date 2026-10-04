@@ -94,4 +94,8 @@ describe('ACP presentation normalization into native tool blocks', () => {
     expect(normalize({}, { status: 'cancelled' })).toMatchObject({ isError: true, error: { code: 'interrupted' } })
     expect(normalize({}, { promptAnchorMessageId: 'next' }).callId).not.toBe(normalize({}).callId)
   })
+
+  it('refuses to fabricate a native result for an unfinished activity', () => {
+    expect(() => normalize({}, { status: 'unfinished' })).toThrow(/cannot be projected as a native tool result/)
+  })
 })

@@ -44,6 +44,16 @@
   line-height: 18px;
 }
 
+.localStatus {
+  justify-content: center;
+  padding: 4px 0;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  box-shadow: none;
+  font-size: 12px;
+  line-height: 18px;
+}
+
 .dialog {
   width: min(560px, 100%);
   max-height: 100%;

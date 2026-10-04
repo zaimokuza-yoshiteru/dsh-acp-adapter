@@ -1,17 +1,26 @@
 param([switch]$Live)
 # CI bootstrap only. All package commands run in the unprivileged child account.
 $ErrorActionPreference = 'Stop'
-if ($Live -and $env:DEVIN_TEST_MODEL -cne 'swe-1-6-fast') { throw 'Live Windows CI requires the configured Devin test model' }
+if ($Live -and $env:DEVIN_TEST_MODEL -cne 'swe-2-high') { throw 'Live Windows CI requires the configured Devin test model' }
+if ($Live -and ($env:GITHUB_RUN_ID -notmatch '^\d{1,15}$' -or $env:GITHUB_RUN_ATTEMPT -notmatch '^\d{1,15}$')) { throw 'Live Windows CI requires numeric workflow run metadata' }
 $auditUser = 'dsh-acp-ci'
 $auditRoot = Join-Path $env:RUNNER_TEMP ('dsh-acp-user-' + [guid]::NewGuid().ToString('N'))
+$runnerTraceDirectory = $env:DEVIN_LIVE_TRACE_DIR
 $workspace = (Get-Location).Path
 $developerKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock'
 $developerProperty = 'AllowDevelopmentWithoutDevLicense'
 $previousDeveloperMode = Get-ItemPropertyValue -Path $developerKey -Name $developerProperty -ErrorAction SilentlyContinue
 $createdUser = $false
 $grantedWorkspace = $false
+$traceCopyFailed = $false
+$traceRunSucceeded = $false
 try {
   New-Item -ItemType Directory -Path $auditRoot | Out-Null
+  if ($Live) {
+    if (!$runnerTraceDirectory) { throw 'Live Windows CI requires a dedicated trace output directory' }
+    New-Item -ItemType Directory -Path (Join-Path $auditRoot 'devin-live-diagnostics') -Force | Out-Null
+    New-Item -ItemType Directory -Path $runnerTraceDirectory -Force | Out-Null
+  }
   # Include npm so the ordinary user can install its own pinned pnpm without
   # relying on an administrator's package-manager installation or cache.
   Copy-Item (Split-Path (Get-Command node).Source) (Join-Path $auditRoot 'node') -Recurse
@@ -34,7 +43,9 @@ try {
   $stdout = Join-Path $auditRoot 'stdout.log'
   $stderr = Join-Path $auditRoot 'stderr.log'
   $arguments = '-NoLogo -NoProfile -NonInteractive -File "' + (Join-Path $workspace 'scripts/windows-user-ci.ps1') + '" -AuditRoot "' + $auditRoot + '"'
-  if ($Live) { $arguments += ' -Live -DevinTestModel swe-1-6-fast' }
+  if ($Live) {
+    $arguments += ' -Live -DevinTestModel swe-2-high -WorkflowRunId ' + $env:GITHUB_RUN_ID + ' -WorkflowRunAttempt ' + $env:GITHUB_RUN_ATTEMPT
+  }
   $child = Start-Process -FilePath (Get-Command pwsh).Source -ArgumentList $arguments -WorkingDirectory $workspace -Credential $credentials -LoadUserProfile -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
   if (!$child.WaitForExit(1800000)) { $child.Kill(); throw 'Ordinary-user CI timed out' }
   $child.WaitForExit()
@@ -45,7 +56,24 @@ try {
     Get-Content -Raw $summary | Add-Content -Path $env:GITHUB_STEP_SUMMARY
   }
   if ($child.ExitCode -ne 0) { throw "Ordinary-user CI failed: $($child.ExitCode)" }
+  $traceRunSucceeded = $true
 } finally {
+  if ($Live) {
+    try {
+      $childTraceDirectory = Join-Path $auditRoot 'devin-live-diagnostics'
+      $safeTraceFiles = @(Get-ChildItem -LiteralPath $childTraceDirectory -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^real-devin-live-[a-f0-9]{24}\.jsonl$' })
+      foreach ($traceFile in $safeTraceFiles) {
+        Copy-Item -LiteralPath $traceFile.FullName -Destination (Join-Path $runnerTraceDirectory $traceFile.Name) -Force
+      }
+      if ($safeTraceFiles.Count -eq 0) {
+        $traceCopyFailed = $true
+        Write-Warning 'No safe Devin live JSONL trace was produced by the ordinary-user process'
+      }
+    } catch {
+      $traceCopyFailed = $true
+      Write-Warning 'Could not copy the safe Devin live JSONL trace before audit cleanup'
+    }
+  }
   if ($null -eq $previousDeveloperMode) {
     Remove-ItemProperty -Path $developerKey -Name $developerProperty -ErrorAction SilentlyContinue
   } else {
@@ -54,4 +82,5 @@ try {
   if ($grantedWorkspace) { & icacls $workspace /remove:g ('*' + $account.SID.Value) /T /Q | Out-Null }
   if ($createdUser) { Remove-LocalUser -Name $auditUser }
   Remove-Item -LiteralPath $auditRoot -Recurse -Force -ErrorAction SilentlyContinue
+  if ($Live -and $traceRunSucceeded -and $traceCopyFailed) { throw 'Failed to preserve safe Devin live diagnostics' }
 }

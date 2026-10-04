@@ -301,6 +301,12 @@ describe('native assistant renderer composition', () => {
         { kind: 'text', text: 'Answer two' },
       ],
     })
+    const unfinished = normalizeAcpChatNodes(
+      [assistant, marker],
+      new Map([[key, { rows: [{ ...row, status: 'unfinished' }], unavailable: false }]]),
+    )
+    expect(unfinished.map((node) => node.kind)).toEqual(['assistant-step', 'acp-inline-activity', 'assistant-step'])
+    expect(unfinished[1]!.data).toMatchObject({ status: 'unfinished' })
     expect(normalizeAcpChatNodes([assistant, marker], new Map([[key, { rows: [], unavailable: true }]]))).toEqual([
       assistant,
       marker,

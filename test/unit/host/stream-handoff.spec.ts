@@ -6,7 +6,9 @@ import { StreamHandoff } from '../../../src/host/composition/stream-handoff.ts'
 it('keeps one pending pull across a native step and preserves later output once', async () => {
   const release = Promise.withResolvers<void>()
   const disposed = vi.fn()
+  const abandon = vi.fn()
   const handoff = new StreamHandoff()
+  handoff.abandon = abandon
   handoff.attach(
     (async function* (): AsyncGenerator<StreamChunk> {
       try {
@@ -26,6 +28,7 @@ it('keeps one pending pull across a native step and preserves later output once'
   expect((await pending).value).toMatchObject({ type: 'finish' })
   await first.return(undefined)
   expect(disposed).not.toHaveBeenCalled()
+  expect(abandon).not.toHaveBeenCalled()
   release.resolve()
   const chunks = []
   for await (const chunk of handoff.segment()) chunks.push(chunk)
@@ -40,6 +43,8 @@ it('cancels and drains a suspended execution when native admission rejects the n
   const release = Promise.withResolvers<void>()
   const handoff = new StreamHandoff()
   const disposed = vi.fn()
+  const abandon = vi.fn()
+  handoff.abandon = abandon
   handoff.cancel = () => release.resolve()
   handoff.attach(
     (async function* (): AsyncGenerator<StreamChunk> {
@@ -59,6 +64,78 @@ it('cancels and drains a suspended execution when native admission rejects the n
   await handoff.drain()
   expect(handoff.ended).toBe(true)
   expect(disposed).toHaveBeenCalledOnce()
+  expect(abandon).not.toHaveBeenCalled()
+})
+
+it('abandons the settlement waiter only when a live consumer returns early', async () => {
+  const release = Promise.withResolvers<void>()
+  const handoff = new StreamHandoff()
+  const abandon = vi.fn()
+  handoff.abandon = abandon
+  handoff.cancel = () => release.resolve()
+  handoff.attach(
+    (async function* (): AsyncGenerator<StreamChunk> {
+      yield { type: 'text-delta', index: 0, text: 'answer' }
+      await release.promise
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    })(),
+  )
+
+  const segment = handoff.segment()
+  await expect(segment.next()).resolves.toMatchObject({ value: { text: 'answer' } })
+  await segment.return(undefined)
+  expect(abandon).toHaveBeenCalledOnce()
+  expect(handoff.ended).toBe(true)
+})
+
+it('does not abandon the settlement waiter when the stream finishes normally', async () => {
+  const handoff = new StreamHandoff()
+  const abandon = vi.fn()
+  handoff.abandon = abandon
+  handoff.attach(
+    (async function* (): AsyncGenerator<StreamChunk> {
+      yield { type: 'text-delta', index: 0, text: 'answer' }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    })(),
+  )
+
+  for await (const _chunk of handoff.segment()) {
+    /* consume the completed segment */
+  }
+  expect(abandon).not.toHaveBeenCalled()
+  expect(handoff.ended).toBe(true)
+})
+
+it('suppresses only the exact local waiter-abandon reason while draining', async () => {
+  const localAbandon = new DOMException('local waiter abandoned', 'AbortError')
+  const local = new StreamHandoff()
+  local.abandon = () => undefined
+  local.localSettlementAbortReason = localAbandon
+  local.attach(
+    (async function* (): AsyncGenerator<StreamChunk> {
+      throw localAbandon
+    })(),
+  )
+  await expect(local.drainAfterAbandon()).resolves.toBeUndefined()
+
+  const remoteFailure = new Error('remote stream failed')
+  const failed = new StreamHandoff()
+  failed.abandon = () => undefined
+  failed.attach(
+    (async function* (): AsyncGenerator<StreamChunk> {
+      throw remoteFailure
+    })(),
+  )
+  await expect(failed.drainAfterAbandon()).rejects.toBe(remoteFailure)
+
+  const unproven = new StreamHandoff()
+  unproven.abandon = () => undefined
+  unproven.attach(
+    (async function* (): AsyncGenerator<StreamChunk> {
+      throw localAbandon
+    })(),
+  )
+  await expect(unproven.drainAfterAbandon()).rejects.toBe(localAbandon)
 })
 
 it('finishes an image block before handing it to the native assembler', async () => {

@@ -246,6 +246,52 @@ describe('createAcpSidecar 基本读写（v2 envelope 契约）', () => {
     await expect(store.readDispatch(SessionId('sess-dispatch'), 'step-1')).resolves.toMatchObject({ state: 'settled' })
   })
 
+  it('atomically writes explicit healthy recovery with dispatch clearing and rolls both back on delete failure', async () => {
+    const recovering = SessionId('atomic-recovery')
+    const other = SessionId('atomic-other')
+    const prior: AcpRecoveryState = {
+      dshSessionId: recovering,
+      kind: 'outcome-unknown',
+      cause: 'load-failed',
+      detail: 'inspect before retry',
+      updatedAt: TIME_BASE,
+    }
+    await store.writeRecoveryState(prior)
+    await store.writeRecoveryState({ dshSessionId: other, kind: 'outcome-unknown', updatedAt: TIME_BASE })
+    for (const sessionId of [recovering, other])
+      await store.beginDispatch({
+        key: 'uncertain',
+        dshSessionId: sessionId,
+        provider: 'acp-devin',
+        model: 'm',
+        state: 'dispatch-uncertain',
+        createdAt: TIME_BASE,
+      })
+    const triggerDb = rawDb()
+    try {
+      triggerDb.exec(`CREATE TRIGGER fail_recovery_dispatch_delete BEFORE DELETE ON dispatch_ledger
+        WHEN OLD.dsh_session_id = 'atomic-recovery' BEGIN SELECT RAISE(ABORT, 'injected delete failure'); END`)
+    } finally {
+      triggerDb.close()
+    }
+
+    await expect(
+      store.writeRecoveryState(
+        {
+          dshSessionId: recovering,
+          kind: 'healthy',
+          lastUserAction: 'rebind-blank',
+          updatedAt: TIME_BASE + 1,
+        },
+        { clearDispatch: true },
+      ),
+    ).rejects.toThrow('injected delete failure')
+    await expect(store.readRecoveryState(recovering)).resolves.toEqual(prior)
+    await expect(store.readDispatch(recovering, 'uncertain')).resolves.toMatchObject({ state: 'dispatch-uncertain' })
+    await expect(store.readRecoveryState(other)).resolves.toMatchObject({ kind: 'outcome-unknown' })
+    await expect(store.readDispatch(other, 'uncertain')).resolves.toMatchObject({ state: 'dispatch-uncertain' })
+  })
+
   it('keeps at most one settled dispatch row per DSH session', async () => {
     for (let index = 0; index < 100; index += 1) {
       const key = `step-${index}`
@@ -804,6 +850,42 @@ describe('行级容错与库级 fail loud（坏行/隔离概念删除后的等�
     expect(entries[0]?.kind).toBe('binding')
     expect(entries[0]?.data).toEqual(BINDING_A)
     expect(warns.some((message) => message.includes('skipped 5 malformed audit row(s)'))).toBe(true)
+  })
+
+  it('快照分页按物理游标跨过坏行并继续读取后续合法记录', async () => {
+    await store.append(SessionId('sidecar-initialize'), { kind: 'binding', time: 1, data: BINDING_A })
+    const raw = rawDb()
+    const insert = raw.prepare(
+      'INSERT INTO audit (record_id, dsh_session_id, seq, time, kind, payload) VALUES (?, ?, ?, ?, ?, ?)',
+    )
+    for (let seq = 1; seq <= 100; seq += 1)
+      insert.run(`bad-${String(seq)}`, 'sess-scan', seq, seq, 'unknown-kind', '{}')
+    insert.run('good-101', 'sess-scan', 101, 101, 'filesystem', JSON.stringify({ operation: 'read', outcome: 'error' }))
+    insert.run('bad-single', 'sess-single-bad', 1, 1, 'unknown-kind', '{}')
+    insert.run(
+      'good-single',
+      'sess-single-bad',
+      2,
+      2,
+      'filesystem',
+      JSON.stringify({ operation: 'read', outcome: 'ok' }),
+    )
+    raw.close()
+
+    const first = await store.listPageScan(SessionId('sess-scan'), 0, 100, 101)
+    expect(first).toMatchObject({
+      entries: [],
+      scannedThrough: 100,
+      scannedRecords: 100,
+      unreadableRecords: 100,
+      hasMore: true,
+    })
+    const second = await store.listPageScan(SessionId('sess-scan'), first.scannedThrough, 100, 101)
+    expect(second).toMatchObject({ scannedThrough: 101, scannedRecords: 1, unreadableRecords: 0, hasMore: false })
+    expect(second.entries.map((entry) => entry.recordId)).toEqual(['good-101'])
+    const single = await store.listPageScan(SessionId('sess-single-bad'), 0, 100, 2)
+    expect(single).toMatchObject({ scannedThrough: 2, scannedRecords: 2, unreadableRecords: 1, hasMore: false })
+    expect(single.entries.map((entry) => entry.recordId)).toEqual(['good-single'])
   })
 
   it('库文件损坏 → open 即 fail loud（warn + reject），不再吞错降级', async () => {

@@ -36,6 +36,7 @@ function createRuntime(
   previousStatus: 'in_progress' | 'completed' = 'in_progress',
   mcpLease?: AcpMcpLease,
   onPermissionCheck?: AcpSessionRuntimeOptions['onPermissionCheck'],
+  cancelGraceMs = 5_000,
 ): AcpSessionRuntime {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-runtime-permission-snapshot-'))
   roots.push(root)
@@ -70,6 +71,7 @@ function createRuntime(
     config: { command: process.execPath, args: argv.slice(1), env },
     subprocess,
     cwd: root,
+    cancelGraceMs,
     prepareLaunch: async () => ({
       argv,
       env,
@@ -84,6 +86,48 @@ function createRuntime(
 }
 
 describe('AcpSessionRuntime prompt-scoped permission snapshots', () => {
+  it('keeps the stream claimed past the local drain grace and admits a new prompt only after settlement', async () => {
+    let pending = true
+    let releaseDrain!: () => void
+    const drain = new Promise<void>((resolve) => (releaseDrain = resolve))
+    let beginPromptCount = 0
+    const lease: AcpMcpLease = {
+      signal: new AbortController().signal,
+      servers: [],
+      beginPrompt() {
+        beginPromptCount++
+      },
+      endPrompt() {},
+      drainPrompt: () => drain,
+      hasPendingCalls: () => pending,
+      waitForCallsSettled: () => drain,
+      async close() {},
+      permission: () => undefined,
+    }
+    const runtime = createRuntime(
+      async () => ({ outcome: { outcome: 'cancelled' } }),
+      'raw-input',
+      'in_progress',
+      lease,
+      undefined,
+      15,
+    )
+
+    const firstPrompt = runtime.prompt(PROMPT, () => undefined)
+    await vi.waitFor(() => expect(runtime.hostSettlementPending).toBe(true))
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    expect(runtime.isBusy).toBe(true)
+    await expect(runtime.prompt(PROMPT, () => undefined)).rejects.toThrow('ACP_PROMPT_ALREADY_ACTIVE')
+    expect(beginPromptCount).toBe(1)
+
+    pending = false
+    releaseDrain()
+    await expect(firstPrompt).resolves.toMatchObject({ stopReason: 'end_turn' })
+    expect(runtime.hostSettlementPending).toBe(false)
+    await expect(runtime.prompt(PROMPT, () => undefined)).resolves.toMatchObject({ stopReason: 'end_turn' })
+    expect(beginPromptCount).toBe(2)
+  })
+
   it('passes host report evidence only into each active lease prompt and ends that lease prompt', async () => {
     const received: Array<(() => void) | undefined> = []
     let active: (() => void) | undefined
@@ -114,6 +158,30 @@ describe('AcpSessionRuntime prompt-scoped permission snapshots', () => {
     await runtime.prompt(PROMPT, () => undefined, undefined, second)
     expect(received[1]).toBe(second)
     expect(active).toBeUndefined()
+  })
+  it('passes independent terminal-tool evidence through each active lease prompt', async () => {
+    const received: Array<(() => void) | undefined> = []
+    const lease: AcpMcpLease = {
+      signal: new AbortController().signal,
+      servers: [],
+      beginPrompt(_signal, _onTeamReport, _ordinal, onTurnConcluded) {
+        received.push(onTurnConcluded)
+      },
+      endPrompt() {},
+      async close() {},
+      permission: () => undefined,
+    }
+    const runtime = createRuntime(
+      async () => ({ outcome: { outcome: 'cancelled' } }),
+      'raw-input',
+      'in_progress',
+      lease,
+    )
+    const first = vi.fn()
+    const second = vi.fn()
+    await runtime.prompt(PROMPT, () => undefined, undefined, undefined, first)
+    await runtime.prompt(PROMPT, () => undefined, undefined, undefined, second)
+    expect(received).toEqual([first, second])
   })
   it('audits a bridge rejection without opening a native user approval', async () => {
     let nativeRequests = 0

@@ -14,6 +14,10 @@ User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/
 - 修复 Agent Teams mailbox 输入缺少重复 request header 时的实时活动关联；按当前执行步骤的输入规则选择锚点，不借用旧步骤输入。
 - 外部子代理运行期间显示实时状态；工具结束而子代理尚无终态时标记为未完成，不把工具结束误作子代理完成。真实终态按宿主外部子代理投影入口保存；无法验证来源的活动不会制造子会话。
 - 将已识别的 Devin 资源或用量配额耗尽归为独立错误，并提示查看 Agent 用量限制；不自动重试，未知 JSON-RPC 错误仍按协议错误处理。
+- ACP 诊断新增单击安全摘要导出，使用有界分页和字段白名单；原生完整会话导出仍是独立且可能包含敏感信息的文件。
+- 已确认远端终态后的普通本地结果补存会自动重试；后续请求等待结算，不重放已完成工具。暂时的恢复状态与团队名册读取故障自动恢复，稳定错误明确显示，不把失败读取显示为空状态。
+- 工具桥遵循 Host 声明的互斥与并行执行模式，并将重复工具反馈即时写入 MCP 结果；普通工具未报告终态时显示为未完成，不冒充已完成。调用方已有待收 Teams 消息时，`wait_agent` 不再阻塞等待，并提示调用方让出响应。
+- 活动日志在视图订阅期间持续重连暂时读取故障。真实 Devin 测试默认使用 SWE-2，并有测试专用的 16 次 Host 工具分发上限和有界脱敏 trace；这些限制不适用于生产。
 - 继续仅支持 DSH `0.2.0-rc.2`。本版的协议夹具与真实 Agent 运行属于不同验证层级；详见 E2E 指南。
 
 ### English
@@ -24,6 +28,10 @@ User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/
 - Associate live activity with Agent Teams mailbox inputs when a duplicate request header is omitted, using the current step's input rules without borrowing an input from an earlier step.
 - Show external subagents while they run. If a tool ends before the child has a terminal result, mark the child unfinished instead of treating the tool result as child completion. Persist verified terminal results through the host external-subagent projection entry; unverified activity does not create a subagent session.
 - Classify recognized Devin resource or usage-quota exhaustion separately and direct users to check Agent usage limits. Do not retry automatically; unknown JSON-RPC errors remain protocol errors.
+- Add a one-click safe-summary export in ACP Diagnostics using bounded paging and an allowlist; the native full-session export remains a separate file that may contain sensitive data.
+- Automatically retry ordinary local result persistence after a confirmed remote terminal result. Later requests wait for settlement without replaying completed tools. Transient recovery-status and Team-roster reads recover automatically; stable errors are shown explicitly instead of as empty state.
+- Follow Host-declared exclusive and parallel execution modes in the tool bridge, and immediately include duplicate tool feedback in MCP results. Show ordinary tools without a reported terminal state as unfinished, not completed. When the caller already has a pending Teams message, `wait_agent` no longer blocks on the wait and prompts the caller to yield a response.
+- Keep activity logs reconnecting to transient read failures while their view is subscribed. Real Devin tests default to SWE-2 and use a test-only 16-call Host tool-dispatch cap plus bounded redacted traces; these limits do not apply in production.
 - This release still targets DSH `0.2.0-rc.2` only. Protocol fixtures and real-Agent runs are separate levels of evidence; see the E2E guide.
 
 ## 0.2.0-rc.2.1 (2026-10-03)

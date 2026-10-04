@@ -1,12 +1,148 @@
-import { describe, expect, it } from 'vitest'
-import { answerTeamRequests, teamApproval, type TeamApproval } from '../../../src/client/ui/team-approval-actions.ts'
+import { describe, expect, it, vi } from 'vitest'
+import {
+  answerTeamRequests,
+  isStableTeamMemberReadError,
+  readTeamMembersUntilAvailable,
+  teamApproval,
+  type TeamApproval,
+} from '../../../src/client/ui/team-approval-actions.ts'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
+import type { AcpTeamMemberView } from '../../../src/client/data/acp-remote.ts'
 
 const sid = (id: string) => id as SessionId
 function approval(id: string, answer: TeamApproval['answer'] = async () => {}): TeamApproval {
   return { key: id, sessionId: sid(id), kind: 'approval', toolName: 'bash', answer }
 }
 describe('Team approval settlement', () => {
+  it('automatically retries only the roster read for the same live session', async () => {
+    vi.useFakeTimers()
+    try {
+      const sessionId = sid('lead')
+      const members = [
+        {
+          profileId: null,
+          sessionId: 'worker',
+          name: 'Worker',
+          status: 'running',
+          model: null,
+          description: null,
+        },
+      ] satisfies readonly AcpTeamMemberView[]
+      const calls: SessionId[] = []
+      const failures: number[] = []
+      const loadingAttempts: number[] = []
+      const loaded = readTeamMembersUntilAvailable(
+        sessionId,
+        async (id) => {
+          calls.push(id)
+          if (calls.length === 1) throw new Error('temporary read failure')
+          return members
+        },
+        () => true,
+        { onAttempt: () => loadingAttempts.push(calls.length + 1), onFailure: () => failures.push(calls.length) },
+      )
+      await vi.advanceTimersByTimeAsync(0)
+      expect(calls).toEqual([sessionId])
+      expect(failures).toEqual([1])
+      await vi.advanceTimersByTimeAsync(500)
+      expect(await loaded).toEqual(members)
+      expect(calls).toEqual([sessionId, sessionId])
+      expect(loadingAttempts).toEqual([1, 2])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('abandons a scheduled roster retry when its captured request is no longer live', async () => {
+    vi.useFakeTimers()
+    try {
+      let active = true
+      let calls = 0
+      const loaded = readTeamMembersUntilAvailable(
+        sid('lead'),
+        async () => {
+          calls++
+          throw new Error('temporary read failure')
+        },
+        () => active,
+      )
+      await vi.advanceTimersByTimeAsync(0)
+      expect(calls).toBe(1)
+      active = false
+      await vi.advanceTimersByTimeAsync(500)
+      expect(await loaded).toBeUndefined()
+      expect(calls).toBe(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not retry stable authorization or configuration failures', async () => {
+    let reads = 0
+    const loaded = readTeamMembersUntilAvailable(
+      sid('lead'),
+      async () => {
+        reads++
+        throw Object.assign(new Error('not authorized'), { code: 'dsh-acp/user-rejected' })
+      },
+      () => true,
+    )
+    await expect(loaded).rejects.toMatchObject({ code: 'dsh-acp/user-rejected' })
+    expect(isStableTeamMemberReadError(new Error('gateway/internal'))).toBe(false)
+    expect(reads).toBe(1)
+  })
+
+  it('revalidates a captured click after roster retry and answers it only once', async () => {
+    vi.useFakeTimers()
+    try {
+      const pending = approval('worker')
+      const current = new Map([
+        [pending.sessionId, { running: false, pendingInteraction: pending, completionUnread: false }],
+      ])
+      let reads = 0
+      let answers = 0
+      const loaded = readTeamMembersUntilAvailable(
+        sid('lead'),
+        async () => {
+          reads++
+          if (reads === 1) throw new Error('temporary read failure')
+          return [
+            {
+              profileId: null,
+              sessionId: pending.sessionId,
+              name: 'Worker',
+              status: 'running',
+              model: null,
+              description: null,
+            },
+          ]
+        },
+        () => true,
+      )
+      await vi.advanceTimersByTimeAsync(500)
+      expect(await loaded).toHaveLength(1)
+      const failures = await answerTeamRequests(
+        [
+          {
+            pending,
+            answer: async () => {
+              answers++
+            },
+          },
+        ],
+        () => current,
+        new Set([pending.sessionId]),
+        () => true,
+        new Set(),
+      )
+      expect(failures).toBe(0)
+      expect(reads).toBe(2)
+      expect(answers).toBe(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('captures only current members; replacements, cancelled requests and later arrivals are untouched', async () => {
     const calls: string[] = []
     const first = approval('one'),

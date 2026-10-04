@@ -3,6 +3,7 @@ import {
   activityJournalSessionId,
   activityRowElement,
   completedProjectedChild,
+  usesNativeActivityToolProjection,
   visibleActivityRows,
 } from '../../../src/client/ui/AcpActivityNode.ts'
 import { createAcpActivityDefinition } from '../../../src/client/ui/activity-definitions.ts'
@@ -76,6 +77,12 @@ function activityStreamFactory(hooks: { accept?: () => void; dispose?: () => voi
 }
 
 describe('ACP activity conversation node', () => {
+  it('keeps unfinished tools in the generic activity surface without a native tool result', () => {
+    expect(usesNativeActivityToolProjection({ kind: 'tool', status: 'unfinished' })).toBe(false)
+    expect(usesNativeActivityToolProjection({ kind: 'tool', status: 'completed' })).toBe(true)
+    expect(usesNativeActivityToolProjection({ kind: 'other', status: 'unfinished' })).toBe(false)
+  })
+
   it('does not compare file sides from truncated legacy audit records', () => {
     const rendered = JSON.stringify(
       activityRowElement({
@@ -1171,8 +1178,8 @@ describe('ACP activity conversation node', () => {
     expect(disposed).toBe(1)
   })
 
-  it('exposes an initial journal failure instead of reporting an empty successful window', async () => {
-    const failure = new Error('activity service unavailable')
+  it('exposes a stable authorization failure instead of reporting an empty successful window', async () => {
+    const failure = Object.assign(new Error('not authorized'), { code: 'dsh-acp/user-rejected' })
     let notifications = 0
     const remote = {
       activityFollow: async function* () {
@@ -1224,14 +1231,14 @@ describe('ACP activity conversation node', () => {
     releaseStream?.()
   })
 
-  it('keeps the initial retry window open long enough for a slow Agent startup', async () => {
+  it('keeps waiting for a slow Agent binding beyond thirty seconds while subscribed', async () => {
     vi.useFakeTimers()
     let starts = 0
     let releaseStream: (() => void) | undefined
     const remote = {
       activityFollow: async function* (_sessionId: string, _request: unknown, signal: AbortSignal) {
         starts += 1
-        if (starts < 10)
+        if (starts < 12)
           throw Object.assign(new Error('binding is not committed yet'), { code: 'dsh-acp/activity-binding-pending' })
         yield { type: 'opened' as const, cursor: 0, head: 0, activities: [] }
         await new Promise<void>((resolve) => {
@@ -1243,8 +1250,8 @@ describe('ACP activity conversation node', () => {
     const hub = new AcpActivityJournalHub(remote as never, activityStreamFactory() as never)
     const handle = hub.acquire('dsh-1', 'dsh-1', 'user-1', () => undefined)
     try {
-      await vi.advanceTimersByTimeAsync(28_700)
-      expect(starts).toBe(10)
+      await vi.advanceTimersByTimeAsync(45_000)
+      expect(starts).toBe(12)
       expect(handle.ready()).toBe(true)
       expect(handle.canRetry()).toBe(false)
     } finally {
@@ -1254,55 +1261,103 @@ describe('ACP activity conversation node', () => {
     }
   })
 
-  it('requires explicit retry after exhausting the shared initial-open attempts', async () => {
-    vi.useFakeTimers()
+  it('reopens a terminal temporary read failure and replaces rows without duplicates', async () => {
     let starts = 0
-    let releaseStream: (() => void) | undefined
-    const failure = Object.assign(new Error('binding is not committed yet'), {
-      code: 'dsh-acp/activity-binding-pending',
+    let disposed = 0
+    const temporaryFailure = Object.assign(new Error('temporary activity page read failure'), {
+      code: 'gateway/internal',
+    })
+    const row = (revisionSeq: number) => ({
+      dshSessionId: 'dsh-1',
+      ownerDshSessionId: 'dsh-1',
+      promptAnchorMessageId: 'anchor',
+      activityId: `a-${String(revisionSeq)}`,
+      activitySeq: revisionSeq,
+      revisionSeq,
+      time: revisionSeq,
+      kind: 'tool' as const,
+      status: 'completed' as const,
+      presentation: `A${String(revisionSeq)}`,
     })
     const remote = {
       activityFollow: async function* (_sessionId: string, _request: unknown, signal: AbortSignal) {
         starts += 1
-        if (starts <= 10) throw failure
-        yield { type: 'opened' as const, cursor: 0, head: 0, activities: [] }
-        await new Promise<void>((resolve) => {
-          releaseStream = resolve
-          signal.addEventListener('abort', () => resolve(), { once: true })
-        })
+        if (starts === 1) {
+          yield { type: 'opened' as const, cursor: 1, head: 1, activities: [row(1)] }
+          yield { type: 'entry' as const, activity: row(3) }
+        } else yield { type: 'opened' as const, cursor: 3, head: 3, activities: [row(1), row(2), row(3)] }
+        await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }))
       },
+      activityPage: async () => ({ ok: false as const, error: temporaryFailure }),
+    }
+    const factory = activityStreamFactory({ dispose: () => (disposed += 1) })
+    const hub = new AcpActivityJournalHub(remote as never, factory as never)
+    const handle = hub.acquire('dsh-1', 'dsh-1', 'anchor', () => undefined)
+    try {
+      for (let attempt = 0; attempt < 100 && starts < 2; attempt += 1)
+        await new Promise((resolve) => setTimeout(resolve, 10))
+      expect(starts).toBe(2)
+      expect(disposed).toBe(1)
+      expect(handle.ready()).toBe(true)
+      expect(handle.error()).toBeUndefined()
+      expect(handle.snapshot().map((activity) => activity.activityId)).toEqual(['a-1', 'a-2', 'a-3'])
+      await new Promise((resolve) => setTimeout(resolve, 150))
+      expect(starts).toBe(2)
+    } finally {
+      handle.release()
+    }
+  })
+
+  it('increases backoff across opened journals that fail their first repair read', async () => {
+    vi.useFakeTimers()
+    let starts = 0
+    const row = (revisionSeq: number) => ({
+      dshSessionId: 'dsh-1',
+      ownerDshSessionId: 'dsh-1',
+      promptAnchorMessageId: 'anchor',
+      activityId: `a-${String(revisionSeq)}`,
+      activitySeq: revisionSeq,
+      revisionSeq,
+      time: revisionSeq,
+      kind: 'tool' as const,
+      status: 'completed' as const,
+      presentation: `A${String(revisionSeq)}`,
+    })
+    const remote = {
+      activityFollow: async function* (_sessionId: string, _request: unknown, signal: AbortSignal) {
+        starts += 1
+        yield { type: 'opened' as const, cursor: 1, head: 1, activities: [row(1)] }
+        yield { type: 'entry' as const, activity: row(3) }
+        await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }))
+      },
+      activityPage: async () => ({
+        ok: false as const,
+        error: Object.assign(new Error('temporary Host page failure'), { code: 'gateway/internal' }),
+      }),
     }
     const hub = new AcpActivityJournalHub(remote as never, activityStreamFactory() as never)
-    const first = hub.acquire('dsh-1', 'dsh-1', 'user-1', () => undefined)
-    const second = hub.acquire('dsh-1', 'dsh-1', 'user-2', () => undefined)
-    try {
-      await vi.advanceTimersByTimeAsync(28_700)
-      expect(starts).toBe(10)
-      expect(first.error()).toBe(failure)
-      expect(first.canRetry()).toBe(true)
-      expect(second.canRetry()).toBe(true)
-
-      const third = hub.acquire('dsh-1', 'dsh-1', 'user-3', () => undefined)
-      expect(starts).toBe(10)
-      first.retry()
-      second.retry()
-      expect(first.loading()).toBe(true)
-      expect(first.retrying()).toBe(true)
-      expect(first.error()).toBeUndefined()
+    const handle = hub.acquire('dsh-1', 'dsh-1', 'anchor', () => undefined)
+    const flush = async (): Promise<void> => {
+      for (let turn = 0; turn < 12; turn += 1) await Promise.resolve()
       await vi.advanceTimersByTimeAsync(0)
-      for (let turn = 0; turn < 10 && !first.ready(); turn += 1) await Promise.resolve()
-      expect(starts).toBe(11)
-      expect(first.ready()).toBe(true)
-      expect(second.ready()).toBe(true)
-      expect(third.ready()).toBe(true)
-      expect(first.canRetry()).toBe(false)
-      first.retry()
-      expect(starts).toBe(11)
-      third.release()
+    }
+    try {
+      await flush()
+      expect(starts).toBe(1)
+      await vi.advanceTimersByTimeAsync(99)
+      expect(starts).toBe(1)
+      await vi.advanceTimersByTimeAsync(1)
+      await flush()
+      expect(starts).toBe(2)
+      await vi.advanceTimersByTimeAsync(199)
+      expect(starts).toBe(2)
+      await vi.advanceTimersByTimeAsync(1)
+      await flush()
+      expect(starts).toBe(3)
     } finally {
-      first.release()
-      second.release()
-      releaseStream?.()
+      handle.release()
+      await vi.advanceTimersByTimeAsync(10_000)
+      expect(starts).toBe(3)
       vi.useRealTimers()
     }
   })
@@ -1328,7 +1383,7 @@ describe('ACP activity conversation node', () => {
     expect(starts).toBe(1)
   })
 
-  it('does not automatically retry an authorization or service failure', async () => {
+  it('does not automatically retry an authorization failure', async () => {
     let starts = 0
     const failure = Object.assign(new Error('not authorized'), { code: 'dsh-acp/user-rejected' })
     const remote = {
@@ -1441,10 +1496,11 @@ describe('ACP activity conversation node', () => {
     const factory = activityStreamFactory()
     const hub = new AcpActivityJournalHub(remote as never, factory as never)
     const handle = hub.acquire('dsh-1', 'dsh-1', 'anchor', () => undefined)
-    for (let attempt = 0; attempt < 100 && handle.error() === undefined; attempt += 1)
+    for (let attempt = 0; attempt < 100 && !handle.canRetry(); attempt += 1)
       await new Promise((resolve) => setTimeout(resolve, 10))
     expect(starts).toBe(1)
     expect(handle.error()).toBeInstanceOf(Error)
+    expect(handle.canRetry()).toBe(true)
     expect(handle.ready()).toBe(true)
     expect(handle.loading()).toBe(false)
     expect(handle.snapshot().map((activity) => activity.revisionSeq)).toEqual([1, 2])

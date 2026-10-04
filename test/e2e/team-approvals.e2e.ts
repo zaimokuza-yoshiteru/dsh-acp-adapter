@@ -19,6 +19,14 @@ it.each(['devin', 'codex'].flatMap((profile) => ['allow', 'reject'].map((decisio
     let page!: Page
     const events: ObservedEvent[] = [],
       errors: string[] = []
+    let releaseSecondRosterRead!: () => void
+    let notifySecondRosterReadStarted!: () => void
+    const secondRosterReadGate = new Promise<void>((resolve) => {
+      releaseSecondRosterRead = resolve
+    })
+    const secondRosterReadStarted = new Promise<void>((resolve) => {
+      notifySecondRosterReadStarted = resolve
+    })
     const log = join(host.workspaceCwd, 'team-approvals.log')
     const policyGate = join(host.workspaceCwd, 'team-approval-policy-ready')
     host.ctx.on('session/event', (session, event) => events.push({ sessionId: session.id, ...event }))
@@ -63,11 +71,29 @@ it.each(['devin', 'codex'].flatMap((profile) => ['allow', 'reject'].map((decisio
           ).toHaveLength(8),
         { timeout: 30000 },
       )
-      await (host.ctx.get('dshAcp') as AcpRemoteService).setToolApprovalPolicy(lead.id, { policy: 'ask' })
+      const remote = host.ctx.get('dshAcp') as AcpRemoteService
+      await remote.setToolApprovalPolicy(lead.id, { policy: 'ask' })
+      const readTeamMembers = remote.teamMembers.bind(remote)
+      let rosterReads = 0
+      vi.spyOn(remote, 'teamMembers').mockImplementation(async (session) => {
+        rosterReads++
+        if (rosterReads === 1) throw new Error('E2E_TEMPORARY_TEAM_ROSTER_FAILURE')
+        if (rosterReads >= 2) {
+          if (rosterReads === 2) notifySecondRosterReadStarted()
+          await secondRosterReadGate
+        }
+        return readTeamMembers(session)
+      })
       writeFileSync(policyGate, 'ready')
       expect(lead).toBeDefined()
       const card = page.locator('[data-acp-team-approvals]')
+      await secondRosterReadStarted
+      await expect.poll(() => card.locator('strong[role="status"]').innerText()).toBe('Loading pending requests…')
+      expect(await card.locator('[data-team-pending-member]').count()).toBe(0)
+      expect(await card.innerText()).not.toContain('Members needing your attention · 0')
+      releaseSecondRosterRead()
       await expect.poll(() => card.locator('[data-team-pending-member]').count(), { timeout: 30000 }).toBe(8)
+      expect(rosterReads).toBeGreaterThanOrEqual(2)
       const url = page.url()
       mkdirSync(join(root, '.local/team-approvals'), { recursive: true })
       await page.screenshot({ path: join(root, `.local/team-approvals/eight-${profile}-${decision}.png`) })
@@ -129,6 +155,7 @@ it.each(['devin', 'codex'].flatMap((profile) => ['allow', 'reject'].map((decisio
       }
       throw error
     } finally {
+      releaseSecondRosterRead()
       await browser?.close()
       await host.close()
     }

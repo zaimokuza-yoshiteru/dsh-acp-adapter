@@ -277,14 +277,23 @@ describe('AcpRemoteService current public surface', () => {
     await expect(instance.backendOf('foreign')).resolves.toEqual({ state: 'established', provider: 'acp-devin' })
     expect(readBinding).toHaveBeenCalledOnce()
 
+    let storageAvailable = false
     const { instance: unavailableGate } = service({
       ownedSessionReadGate: async () => {
-        throw new Error('sidecar unavailable')
+        if (!storageAvailable) throw new Error('sidecar unavailable')
+        return true
       },
       recoveryStateStore: { read: readRecovery },
     })
     await expect(unavailableGate.recoverySnapshot('session')).rejects.toThrow('sidecar unavailable')
     expect(readRecovery).not.toHaveBeenCalled()
+    storageAvailable = true
+    await expect(unavailableGate.recoverySnapshot('session')).resolves.toMatchObject({
+      kind: 'outcome-unknown',
+      provider: 'acp-devin',
+      detail: 'sensitive recovery detail',
+    })
+    expect(readRecovery).toHaveBeenCalledOnce()
   })
 
   it('generated descriptors contain only the current invocation set', () => {
@@ -303,6 +312,7 @@ describe('AcpRemoteService current public surface', () => {
       'ownedProviderRoutes',
       'projectedSubagentIds',
       'rebindRecoveryBlank',
+      'recoveryFollow',
       'recoverySnapshot',
       'retryOriginal',
       'setAgentSessionOption',

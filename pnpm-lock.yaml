@@ -42,6 +42,9 @@ importers:
       '@deepseek-ai/dsh-agent-default-model':
         specifier: 0.2.0-rc.2
         version: 0.2.0-rc.2(5a5f69dac67942c6551ebcc62d37d3ac)
+      '@deepseek-ai/dsh-agent-loop':
+        specifier: 0.2.0-rc.2
+        version: 0.2.0-rc.2(0c5ce3d184ce320f0d23631770cc12ac)
       '@deepseek-ai/dsh-anonymous-user-id':
         specifier: 0.2.0-rc.2
         version: 0.2.0-rc.2(@deepseek-ai/cordis@4.0.4)(@deepseek-ai/dsh-brand@0.2.0-rc.2(@deepseek-ai/cordis@4.0.4))(@deepseek-ai/dsh-home-paths@0.2.0-rc.2(@deepseek-ai/cordis@4.0.4))

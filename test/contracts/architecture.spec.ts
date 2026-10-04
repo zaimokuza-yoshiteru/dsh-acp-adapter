@@ -163,10 +163,11 @@ const ALLOWED_SRC_ESCAPES: Readonly<Record<string, readonly string[]>> = {
   'domain/session/registry-versions.ts': ['../../../assets/registry/executables.json'],
 }
 
-/** Exact shared-redaction edges; do not widen either layer's import permissions. */
+/** Exact shared pure-leaf edges; do not widen layer-level import permissions. */
 const ALLOWED_CROSS_FILE_EDGES = new Set([
   'protocol/v1/connection.ts->contract/redaction.ts',
   'domain/observability/redaction.ts->contract/redaction.ts',
+  'runtime/session/session-runtime.ts->contract/live-diagnostic-trace.ts',
 ])
 
 const IMPORT_FROM_RE = /(?:import|export)\s[^'"]*?from\s+['"]([^'"]+)['"]/g
