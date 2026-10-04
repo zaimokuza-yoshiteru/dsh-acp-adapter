@@ -286,6 +286,7 @@ async function steeringFixture(
   const controlsChanged = vi.fn()
   let report: () => void = () => {}
   let conclude: () => void = () => {}
+  let successfulToolResult: () => void = () => {}
   const finish = Promise.withResolvers<acp.PromptResponse>()
   const view = Object.assign(withSessionFacts({ header: { cwd: '/workspace' }, snapshotEvents: () => events }), {
     watchSteering: (listener: () => void) => {
@@ -316,10 +317,12 @@ async function steeringFixture(
         signal?: AbortSignal,
         onTeamReport?: () => void,
         onTurnConcluded?: () => void,
+        onSuccessfulToolResult?: () => void,
       ) => {
         notify = onUpdate
         report = () => onTeamReport?.()
         conclude = () => onTurnConcluded?.()
+        successfulToolResult = () => onSuccessfulToolResult?.()
         if (runtime.prompt.mock.calls.length > 1) {
           text('replacement')
           return { stopReason: 'end_turn' } as acp.PromptResponse
@@ -401,6 +404,7 @@ async function steeringFixture(
     finish,
     report: () => report(),
     conclude: () => conclude(),
+    successfulToolResult: () => successfulToolResult(),
     next: (messages: ReturnType<typeof user>[] = [first, second]) =>
       adapter.stream(request('steering-session', messages)),
   }
@@ -662,6 +666,23 @@ it('does not let terminal-tool evidence from before or after a steering dispatch
   f.runtime.steer.mockImplementation(async (_content, onDispatch) => {
     onDispatch?.()
     f.conclude()
+    f.finish.resolve({ stopReason: 'end_turn' })
+    return 'injected'
+  })
+  const chunks = []
+  for await (const chunk of f.next()) chunks.push(chunk)
+  expect(chunks.at(-1)).toMatchObject({
+    type: 'finish',
+    reason: { kind: 'error', failure: { code: 'ACP_NO_VISIBLE_RESPONSE' } },
+  })
+})
+
+it('does not let successful Host-tool evidence from before or after steering bless the next native step', async () => {
+  const f = await steeringFixture(false)
+  f.successfulToolResult()
+  f.runtime.steer.mockImplementation(async (_content, onDispatch) => {
+    onDispatch?.()
+    f.successfulToolResult()
     f.finish.resolve({ stopReason: 'end_turn' })
     return 'injected'
   })

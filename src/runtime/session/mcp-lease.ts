@@ -41,6 +41,7 @@ export interface AcpMcpLease {
     adapterPromptOrdinal?: number,
     onTurnConcluded?: () => void,
     bodySignal?: AbortSignal,
+    onSuccessfulToolResult?: () => void,
   ): void
   endPrompt(options?: {
     readonly stopReason?: string

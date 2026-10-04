@@ -16,6 +16,7 @@ import type { AcpMcpLease } from '../../runtime/session/mcp-lease.ts'
 import type { AcpPermissionCheck } from '../../domain/policy/permission-check.ts'
 import { ACP_PERMISSION_ID_MAX_BYTES, ACP_PERMISSION_OPTIONS_MAX } from '../../domain/policy/permissions.ts'
 import { toolContent } from './tool-content.ts'
+import { generatedContextBlock } from '../../runtime/text-block-boundary.ts'
 import { ToolExecutionScheduler } from './tool-execution-scheduler.ts'
 import { waitWithin } from '../../runtime/process/timeout.ts'
 import {
@@ -420,6 +421,7 @@ export async function createTeamBridge(
   let adapterPromptOrdinal: number | undefined
   let onTeamReport: (() => void) | undefined
   let onTurnConcluded: (() => void) | undefined
+  let onSuccessfulToolResult: (() => void) | undefined
   type PromptExecution = {
     readonly generation: number
     readonly calls: Set<ToolCallRecord>
@@ -1016,6 +1018,18 @@ export async function createTeamBridge(
             capabilities?.promptCapabilities?.image === true,
             ctx.get('attachments', false),
           )
+          if (
+            result.isError !== true &&
+            executedPrompt !== undefined &&
+            !executedPrompt.aborted &&
+            !bodySignal.aborted &&
+            !context.mcpReq.signal.aborted &&
+            !cancellation.signal.aborted &&
+            prompt === executedPrompt &&
+            promptGeneration === executedGeneration &&
+            live()
+          )
+            onSuccessfulToolResult?.()
           const currentMembership = teams?.tryMembership(agent)
           if (
             definition.name === 'send_message' &&
@@ -1052,18 +1066,24 @@ export async function createTeamBridge(
           if (result.concludesTurn === true)
             content.push({
               type: 'text',
-              text: 'This DSH tool requests the end of the current turn. Finish this ACP response now without further tool calls.',
+              text: generatedContextBlock(
+                'This DSH tool requests the end of the current turn. Finish this ACP response now without further tool calls.',
+              ),
             })
           if (repeatToolReminderPending)
             content.push({
               type: 'text',
-              text: 'DSH has queued feedback because this tool was repeated. Stop repeating the tool call and end this ACP response now so DSH can deliver the pending feedback. Then continue based on that feedback.',
+              text: generatedContextBlock(
+                'DSH has queued feedback because this tool was repeated. Stop repeating the tool call and end this ACP response now so DSH can deliver the pending feedback. Then continue based on that feedback.',
+              ),
             })
           // Do not steal or duplicate inbox messages. Only the native loop claims them.
           if (agent.inbox.nextStep.length > 0 && !repeatToolReminderPending)
             content.push({
               type: 'text',
-              text: 'DSH has queued input for your next step. End this ACP response now with a brief progress update, without a final answer; DSH will deliver the pending input and continue the turn.',
+              text: generatedContextBlock(
+                'DSH has queued input for your next step. End this ACP response now with a brief progress update, without a final answer; DSH will deliver the pending input and continue the turn.',
+              ),
             })
           if (diagnosticEnabled && diagnosticBase !== undefined)
             collectLiveDiagnostic(() => {
@@ -1164,12 +1184,13 @@ export async function createTeamBridge(
     instructions: `Current DSH tools connection: MCP server ${serverName}. ${scopedInstructions} Each session has its own connection and caller identity. Do not copy a connection address or server identity to another session.${hasTeams ? ' Team target names resolve within the caller’s Team. Create teams only when explicitly requested.' : ''} Pending DSH messages are delivered after you end the current response; give a brief progress update when asked to yield.`,
     servers,
     ...(diagnosticLeaseId === undefined ? {} : { diagnosticLeaseId }),
-    beginPrompt(signal, reportCallback, promptOrdinal, concludedCallback, bodySignal) {
+    beginPrompt(signal, reportCallback, promptOrdinal, concludedCallback, bodySignal, successfulToolResultCallback) {
       if (promptExecution?.accepting === true || calls.size > 0 || pendingFeedback.size > 0)
         throw new AcpHostSettlementError('ACP_HOST_GENERATION_STILL_ACTIVE')
       prompt = signal
       onTeamReport = reportCallback
       onTurnConcluded = concludedCallback
+      onSuccessfulToolResult = successfulToolResultCallback
       promptGeneration++
       if (liveDiagnosticTraceEnabled()) leasePromptOrdinal++
       adapterPromptOrdinal = promptOrdinal
@@ -1200,6 +1221,7 @@ export async function createTeamBridge(
       prompt = undefined
       onTeamReport = undefined
       onTurnConcluded = undefined
+      onSuccessfulToolResult = undefined
       promptGeneration++
       adapterPromptOrdinal = undefined
       presented.clear()

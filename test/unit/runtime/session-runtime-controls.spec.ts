@@ -13,7 +13,12 @@ afterEach(async () => {
   await Promise.allSettled(runtimes.splice(0).map((runtime) => runtime.close()))
 })
 
-async function fixture(foreignUpdates = false, diagnosticDshSessionId?: string, mcpLease?: AcpMcpLease) {
+async function fixture(
+  foreignUpdates = false,
+  diagnosticDshSessionId?: string,
+  mcpLease?: AcpMcpLease,
+  echoPrompt = false,
+) {
   const script = `
     const send = value => process.stdout.write(JSON.stringify(value)+'\\n');
     const option = value => [{id:'mode',name:'Mode',type:'select',currentValue:value,options:[{value:'code',name:'Code'},{value:'plan',name:'Plan'}]}];
@@ -28,6 +33,7 @@ async function fixture(foreignUpdates = false, diagnosticDshSessionId?: string, 
       }
       if(r.method==='session/prompt') {
         if(writing) return send({jsonrpc:'2.0',id:r.id,error:{code:-32603,message:'Prompt raced configuration write'}});
+        if(${echoPrompt}) update('parent',{sessionUpdate:'agent_message_chunk',content:{type:'text',text:r.params.prompt.filter(x=>x.type==='text').map(x=>x.text).join('')}});
         update('parent',{sessionUpdate:'usage_update',used:100,size:1000});
         if(${foreignUpdates}) {
           update('child',{sessionUpdate:'config_option_update',configOptions:option('plan')});
@@ -134,4 +140,41 @@ it('claims a prompt before awaiting local feedback flush so concurrent prompts c
   )
   releaseFlush.resolve()
   await expect(first).resolves.toMatchObject({ stopReason: 'end_turn' })
+})
+
+it('forwards successful Host-result evidence and separates bridge instructions in the actual Runtime.prompt', async () => {
+  let forwarded: (() => void) | undefined
+  const instructions = 'generated bridge instructions'
+  const mcpLease: AcpMcpLease = {
+    signal: new AbortController().signal,
+    instructions,
+    servers: [],
+    beginPrompt(_signal, _report, _ordinal, _concluded, _body, onSuccessfulToolResult) {
+      forwarded = onSuccessfulToolResult
+    },
+    endPrompt() {},
+    permission() {
+      return undefined
+    },
+    async close() {},
+  }
+  const runtime = await fixture(false, undefined, mcpLease, true)
+  let echoed = ''
+  let callbackCount = 0
+  const callback = () => callbackCount++
+  await runtime.prompt(
+    [{ type: 'text', text: 'original user content' }],
+    (notification) => {
+      if (notification.update.sessionUpdate === 'agent_message_chunk')
+        echoed += notification.update.content.type === 'text' ? notification.update.content.text : ''
+    },
+    undefined,
+    undefined,
+    undefined,
+    callback,
+  )
+  expect(forwarded).toBe(callback)
+  forwarded?.()
+  expect(callbackCount).toBe(1)
+  expect(echoed).toContain('generated bridge instructions\n\noriginal user content')
 })

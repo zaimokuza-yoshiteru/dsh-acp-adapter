@@ -27,6 +27,7 @@ import {
 } from '../../contract/live-diagnostic-trace.ts'
 import { AcpClientError } from '../../protocol/v1/errors.ts'
 import { performance } from 'node:perf_hooks'
+import { generatedContextBlock } from '../text-block-boundary.ts'
 
 const safeAcpErrorCodes = new Set([
   'ACP_ABORTED',
@@ -553,6 +554,7 @@ export class AcpSessionRuntime {
     signal?: AbortSignal,
     onTeamReport?: () => void,
     onTurnConcluded?: () => void,
+    onSuccessfulToolResult?: () => void,
   ): Promise<acp.PromptResponse> {
     if (this.promptClaimed) throw new Error('ACP_PROMPT_ALREADY_ACTIVE')
     // Claim synchronously before the asynchronous local feedback flush. Without
@@ -610,6 +612,7 @@ export class AcpSessionRuntime {
         // cancel an already-dispatched Host body. When ACP has no external
         // Stop signal, provide a distinct live signal until lease shutdown.
         signal ?? new AbortController().signal,
+        onSuccessfulToolResult,
       )
       // Do not pass the turn signal into the RPC budget layer: abandoning an
       // in-flight JSON-RPC request poisons the connection. ACP cancellation is a
@@ -617,7 +620,9 @@ export class AcpSessionRuntime {
       const instructions = this.mcpLease?.instructions
       const prompting = connection.prompt(
         sessionId,
-        instructions === undefined ? content : [{ type: 'text', text: instructions }, ...content],
+        instructions === undefined
+          ? content
+          : [{ type: 'text', text: generatedContextBlock(instructions) }, ...content],
         (notification) => {
           const update = notification.update
           // Permission snapshots retain the original wire identity; only the presentation callback is normalized.

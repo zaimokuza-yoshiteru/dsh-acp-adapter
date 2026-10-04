@@ -3,6 +3,7 @@ import type { AttachmentStore, ImageAttachmentLimits, ImageAttachmentRef } from 
 import type * as acp from '@agentclientprotocol/sdk'
 import type { UserMessage } from '@deepseek-ai/dsh-session'
 import type { ModelContextSnapshot } from './model-context-snapshots.ts'
+import { generatedContextBlock, generatedContextSeparator } from '../../runtime/text-block-boundary.ts'
 
 /** A prompt block that cannot be represented by the negotiated ACP bridge. */
 export class AcpPromptContentError extends Error {
@@ -32,6 +33,16 @@ const UNAVAILABLE_SKILL_CATALOG_NOTICE =
 function isSkillCatalogMessage(message: UserMessage): boolean {
   const source: unknown = message.source
   return typeof source === 'object' && source !== null && 'kind' in source && source.kind === 'skill-catalog'
+}
+
+function isGeneratedModelContextMessage(message: UserMessage): boolean {
+  const source: unknown = message.source
+  return (
+    typeof source === 'object' &&
+    source !== null &&
+    'kind' in source &&
+    (source.kind === 'runtime-context' || source.kind === 'skill-catalog')
+  )
 }
 
 /** Validate the image limits before accepting any attachment bytes. */
@@ -121,6 +132,8 @@ export async function toAcpPrompt(
   let imageIndex = 0
   let actualTotal = 0
   for (const message of admittedMessages) {
+    const generatedModelContext = isGeneratedModelContextMessage(message)
+    const messageBlockStart = blocks.length
     for (const block of message.content) {
       // Native settlement notices embed the child's whole assistant output. ACP has no
       // reasoning input block; keep the closing answer without promoting private thoughts to text.
@@ -180,7 +193,11 @@ export async function toAcpPrompt(
       )
     }
     if (isSkillCatalogMessage(message) && skillRoute === 'ptc')
-      blocks.push({ type: 'text', text: PTC_SKILL_ROUTE_NOTICE })
+      blocks.push({ type: 'text', text: generatedContextBlock(PTC_SKILL_ROUTE_NOTICE) })
+    if (generatedModelContext && blocks.length > messageBlockStart) {
+      blocks.splice(messageBlockStart, 0, { type: 'text', text: generatedContextSeparator })
+      blocks.push({ type: 'text', text: generatedContextSeparator })
+    }
   }
   if (blocks.length === 0) {
     throw new AcpPromptContentError(
@@ -190,10 +207,11 @@ export async function toAcpPrompt(
   if (options.system !== undefined) {
     blocks.unshift({
       type: 'text',
-      text:
+      text: generatedContextBlock(
         'Current host instructions (replace earlier host instructions for this request). ' +
-        'Use only tools available in your agent; these instructions do not add tools or grant permissions.\n\n' +
-        (options.system || 'No additional host instructions.'),
+          'Use only tools available in your agent; these instructions do not add tools or grant permissions.\n\n' +
+          (options.system || 'No additional host instructions.'),
+      ),
     })
   }
   const currentIds = new Set(admittedMessages.map((message) => String(message.id)))
@@ -218,15 +236,17 @@ export async function toAcpPrompt(
       .filter((line) => line !== '')
     blocks.unshift({
       type: 'text',
-      text: [
-        'Complete current DSH model context projection. This replaces earlier DSH runtime-context and skill-catalog projections for this ACP session; it does not add tools or permissions:',
-        ...contextLines,
-      ].join('\n\n'),
+      text: generatedContextBlock(
+        [
+          'Complete current DSH model context projection. This replaces earlier DSH runtime-context and skill-catalog projections for this ACP session; it does not add tools or permissions:',
+          ...contextLines,
+        ].join('\n\n'),
+      ),
     })
   }
   if (skillCatalogReferenced && !canDeliverSkillCatalog) {
     const notice = skillRoute === 'disabled' ? DISABLED_SKILL_ROUTE_NOTICE : UNAVAILABLE_SKILL_CATALOG_NOTICE
-    blocks.unshift({ type: 'text', text: notice })
+    blocks.unshift({ type: 'text', text: generatedContextBlock(notice) })
   }
   return blocks
 }

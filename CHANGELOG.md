@@ -11,6 +11,8 @@ User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/
 - MCP TypeScript SDK v2 工具调用的取消通知会继续传到正在执行的 DSH 原生工具。
 - ACP 对话继续复用 DSH 原生消息、过程分组、工具组件与布局设置；修复菜单焦点恢复和子菜单打开时的关闭行为，统一恢复操作并发控制，并在操作结果处给出提示。
 - 修复首屏活动日志加载期间的误报；保留没有可见文字、但包含工具调用的连续助手回合。
+- 同一 ACP 请求中存在已成功返回的 Host 工具结果时，允许无文字的 `end_turn` 正常结束；这只确认回合终止，不代表用户任务完成。纯思考、失败工具或尚未返回的调用仍不能作为可见答复。
+- 为 ACP Host 指令、模型上下文与桥接生成提示添加明确文本边界；用户原始文本块内容及其相邻关系保持不变。
 - 修复 Agent Teams mailbox 输入缺少重复 request header 时的实时活动关联；按当前执行步骤的输入规则选择锚点，不借用旧步骤输入。
 - 外部子代理运行期间显示实时状态；工具结束而子代理尚无终态时标记为未完成，不把工具结束误作子代理完成。真实终态按宿主外部子代理投影入口保存；无法验证来源的活动不会制造子会话。
 - 将已识别的 Devin 资源或用量配额耗尽归为独立错误，并提示查看 Agent 用量限制；不自动重试，未知 JSON-RPC 错误仍按协议错误处理。
@@ -25,6 +27,8 @@ User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/
 - Forward MCP TypeScript SDK v2 cancellation notifications to active native DSH tool execution.
 - Continue to render ACP conversations through DSH's native messages, process groups, tool components, and display settings. Fix menu focus restoration and dismissal around nested menus, serialize recovery actions, and report operation outcomes.
 - Fix false errors while the activity journal is loading, and preserve consecutive assistant turns that contain tool calls but no visible text.
+- Treat a text-free `end_turn` as a normal stop when that same ACP prompt received a successful Host tool result. This confirms turn termination, not completion of the user's broader task; reasoning-only output and pending or failed tools do not qualify.
+- Delimit generated ACP Host instructions, model context, and bridge notices for clients that concatenate text blocks, while preserving original user text blocks and their adjacency.
 - Associate live activity with Agent Teams mailbox inputs when a duplicate request header is omitted, using the current step's input rules without borrowing an input from an earlier step.
 - Show external subagents while they run. If a tool ends before the child has a terminal result, mark the child unfinished instead of treating the tool result as child completion. Persist verified terminal results through the host external-subagent projection entry; unverified activity does not create a subagent session.
 - Classify recognized Devin resource or usage-quota exhaustion separately and direct users to check Agent usage limits. Do not retry automatically; unknown JSON-RPC errors remain protocol errors.

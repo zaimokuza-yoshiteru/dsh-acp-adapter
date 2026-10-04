@@ -19,14 +19,14 @@ const limits = {
 
 const text = (value: string) =>
   createUserMessage({ content: [{ type: 'text', text: value }], source: { kind: 'user' } })
-/** Test fixture for DSH's tool-skill source augmentation, not included in the adapter's compile-time deps. */
-function asSkillCatalogUserMessage(message: unknown): UserMessage {
+/** Test fixture for DSH plugin context source augmentation, not included in the adapter's compile-time deps. */
+function asContextUserMessage(message: unknown): UserMessage {
   return message as UserMessage
 }
 
 const skillCatalog = (value: string): UserMessage => {
   const message = createUserMessage({ content: [{ type: 'text', text: value }], source: { kind: 'user' } })
-  return asSkillCatalogUserMessage({
+  return asContextUserMessage({
     ...message,
     source: { kind: 'skill-catalog', form: 'catalog', entries: [{ name: 'review', description: 'Review code' }] },
   })
@@ -86,6 +86,96 @@ describe('prompt content conversion', () => {
     await expect(
       toAcpPrompt([], {
         system: 'Instructions alone cannot trigger a dispatch',
+        imageEnabled: false,
+        signal: new AbortController().signal,
+      }),
+    ).rejects.toThrow('no supported content')
+  })
+
+  it('separates generated host and model context while preserving adjacent original text blocks', async () => {
+    const original = createUserMessage({
+      content: [
+        { type: 'text', text: 'first-original-block' },
+        { type: 'text', text: 'second-original-block' },
+      ],
+      source: { kind: 'user' },
+    })
+    const result = await toAcpPrompt([original], {
+      system: 'generated-host-instructions',
+      modelContextSnapshots: [{ source: 'runtime-context', text: 'generated-model-context' }],
+      imageEnabled: false,
+      signal: new AbortController().signal,
+    })
+    const textBlocks = result.filter(
+      (block): block is Extract<(typeof result)[number], { type: 'text' }> => block.type === 'text',
+    )
+    const joinedByTheACPConsumer = textBlocks.map((block) => block.text).join('')
+
+    expect(textBlocks.slice(-2).map((block) => block.text)).toEqual(['first-original-block', 'second-original-block'])
+    expect(textBlocks[0]?.text).toMatch(/skill-catalog: no current snapshot; do not apply older DSH skill names\.\n\n$/)
+    expect(textBlocks[1]?.text).toMatch(/^\n\nCurrent host instructions/)
+    expect(textBlocks[1]?.text).toMatch(/generated-host-instructions\n\n$/)
+    expect(joinedByTheACPConsumer).toContain(
+      'skill-catalog: no current snapshot; do not apply older DSH skill names.\n\n\n\nCurrent host instructions',
+    )
+    expect(joinedByTheACPConsumer).toContain('generated-host-instructions\n\nfirst-original-blocksecond-original-block')
+
+    const catalog = skillCatalog('original-catalog-block')
+    const ptc = await toAcpPrompt([catalog], {
+      skillRoute: 'ptc',
+      modelContextSnapshots: [{ source: 'skill-catalog', id: String(catalog.id), text: 'original-catalog-block' }],
+      imageEnabled: false,
+      signal: new AbortController().signal,
+    })
+    const joinedPtcByTheACPConsumer = ptc
+      .filter((block): block is Extract<(typeof ptc)[number], { type: 'text' }> => block.type === 'text')
+      .map((block) => block.text)
+      .join('')
+    expect(joinedPtcByTheACPConsumer).toContain('original-catalog-block\n\nFor any instruction above to call `skill`')
+    expect(joinedPtcByTheACPConsumer).toMatch(/This note adds no tools or permissions\.(?:\n\n)+$/)
+  })
+
+  it('delimits an admitted Host context snapshot from surrounding user input without changing its text', async () => {
+    const task = text('original-task')
+    const runtimeContext = asContextUserMessage({
+      ...createUserMessage({
+        content: [{ type: 'text', text: 'host-runtime-snapshot' }],
+        source: { kind: 'user' },
+      }),
+      source: { kind: 'runtime-context' },
+    })
+    const next = text('next-user-block')
+    const result = await toAcpPrompt([task, runtimeContext, next], {
+      modelContextSnapshots: [
+        { source: 'runtime-context', id: String(runtimeContext.id), text: 'host-runtime-snapshot' },
+      ],
+      imageEnabled: false,
+      signal: new AbortController().signal,
+    })
+    const textBlocks = result.filter(
+      (block): block is Extract<(typeof result)[number], { type: 'text' }> => block.type === 'text',
+    )
+    const joinedByTheACPConsumer = textBlocks.map((block) => block.text).join('')
+    const originalContentBlocks = textBlocks.filter((block) =>
+      ['original-task', 'host-runtime-snapshot', 'next-user-block'].includes(block.text),
+    )
+
+    expect(joinedByTheACPConsumer).toContain('original-task\n\nhost-runtime-snapshot\n\nnext-user-block')
+    expect(joinedByTheACPConsumer.match(/host-runtime-snapshot/g)).toHaveLength(1)
+    expect(originalContentBlocks.map((block) => block.text)).toEqual([
+      'original-task',
+      'host-runtime-snapshot',
+      'next-user-block',
+    ])
+  })
+
+  it('does not let separators make an empty synthetic Host context dispatchable', async () => {
+    const emptyRuntimeContext = asContextUserMessage({
+      ...createUserMessage({ content: [], source: { kind: 'user' } }),
+      source: { kind: 'runtime-context' },
+    })
+    await expect(
+      toAcpPrompt([emptyRuntimeContext], {
         imageEnabled: false,
         signal: new AbortController().signal,
       }),

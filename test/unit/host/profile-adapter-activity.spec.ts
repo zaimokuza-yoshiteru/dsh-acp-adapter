@@ -1264,6 +1264,85 @@ describe('provider activity bridge', () => {
     expect(finish?.reason).toEqual({ kind: 'stop' })
   })
 
+  it('accepts an empty end_turn after a successful prompt-scoped Host tool result', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-successful-tool-only-'))
+    roots.push(root)
+    const sidecar = testSidecar(root)
+    const message = user('Create the requested teammate.')
+    const sessions = new Map<string, SessionLike>([['session-successful-tool-only', session(message)]])
+    const runtimeFactory = (): AcpProfileRuntime => ({
+      acpSessionId: 'agent-session-successful-tool-only',
+      agentInfo: { name: 'tool-only-agent', version: '1' },
+      agentCapabilities: {},
+      protocolVersion: 1,
+      start: async () => undefined,
+      prompt: async (_content, _onUpdate, _signal, _onTeamReport, _onTurnConcluded, onSuccessfulToolResult) => {
+        onSuccessfulToolResult?.()
+        return { stopReason: 'end_turn' } as never
+      },
+      close: async () => undefined,
+    })
+    const adapter = new AcpProfileAdapter(
+      'successful-tool-only',
+      profile,
+      seam(),
+      (id) => sessions.get(id),
+      ledgerFor(sidecar),
+      undefined,
+      runtimeFactory,
+      sidecar,
+    )
+    const chunks: unknown[] = []
+    for await (const chunk of adapter.stream(request('session-successful-tool-only', message))) chunks.push(chunk)
+    const finish = chunks.find(
+      (chunk) => typeof chunk === 'object' && chunk !== null && 'type' in chunk && chunk.type === 'finish',
+    ) as { reason?: { kind?: string; failure?: { code?: string } } } | undefined
+    expect(finish?.reason).toEqual({ kind: 'stop' })
+  })
+
+  it.each([
+    ['refusal', 'error', 'ACP_REFUSAL'],
+    ['max_tokens', 'max-tokens', undefined],
+    ['max_turn_requests', 'error', 'ACP_MAX_TURN_REQUESTS'],
+  ] as const)('preserves %s even when a Host tool result succeeded', async (stopReason, expectedKind, code) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), `dsh-acp-tool-result-${stopReason}-`))
+    roots.push(root)
+    const sidecar = testSidecar(root)
+    const message = user('Use the requested tool.')
+    const sessionId = `session-tool-result-${stopReason}`
+    const sessions = new Map<string, SessionLike>([[sessionId, session(message)]])
+    const runtimeFactory = (): AcpProfileRuntime => ({
+      acpSessionId: `agent-${sessionId}`,
+      agentInfo: { name: 'tool-result-agent', version: '1' },
+      agentCapabilities: {},
+      protocolVersion: 1,
+      start: async () => undefined,
+      prompt: async (_content, _onUpdate, _signal, _onTeamReport, _onTurnConcluded, onSuccessfulToolResult) => {
+        onSuccessfulToolResult?.()
+        return { stopReason } as never
+      },
+      close: async () => undefined,
+    })
+    const adapter = new AcpProfileAdapter(
+      'tool-result-status',
+      profile,
+      seam(),
+      (id) => sessions.get(id),
+      ledgerFor(sidecar),
+      undefined,
+      runtimeFactory,
+      sidecar,
+    )
+    const chunks: unknown[] = []
+    for await (const chunk of adapter.stream(request(sessionId, message))) chunks.push(chunk)
+    const finish = chunks.find(
+      (chunk) => typeof chunk === 'object' && chunk !== null && 'type' in chunk && chunk.type === 'finish',
+    ) as { reason?: { kind?: string; failure?: { code?: string } } } | undefined
+    expect(finish?.reason?.kind).toBe(expectedKind)
+    if (code === undefined) expect(finish?.reason).not.toHaveProperty('failure.code', 'ACP_NO_VISIBLE_RESPONSE')
+    else expect(finish?.reason).toMatchObject({ failure: { code } })
+  })
+
   it('keeps non-text ACP thought content as safe reasoning and audits the degradation without showing an answer', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-nontext-thought-'))
     roots.push(root)

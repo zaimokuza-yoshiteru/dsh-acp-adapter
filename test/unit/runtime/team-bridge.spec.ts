@@ -540,6 +540,55 @@ describe('session-owned native Teams MCP bridge', () => {
     lease.endPrompt()
   })
 
+  it('reports only successfully returned prompt-scoped Host tool results as completion evidence', async () => {
+    const fixture = await setup()
+    cleanup.push(() => fixture.lease.close())
+    const prompt = new AbortController()
+    const onSuccessfulToolResult = vi.fn()
+    fixture.lease.beginPrompt(prompt.signal, undefined, undefined, undefined, undefined, onSuccessfulToolResult)
+    fixture.execute.mockResolvedValueOnce({
+      content: [{ type: 'text', text: 'successful result' }],
+      isError: false,
+    } as never)
+    fixture.execute.mockResolvedValueOnce({
+      content: [{ type: 'text', text: 'failed result' }],
+      isError: true,
+    } as never)
+
+    const successful = await fixture.client.callTool({ name: 'list_agents', arguments: {} })
+    expect(successful.isError).not.toBe(true)
+    expect(onSuccessfulToolResult).toHaveBeenCalledOnce()
+
+    const failed = await fixture.client.callTool({ name: 'list_agents', arguments: {} })
+    expect(failed.isError).toBe(true)
+    expect(onSuccessfulToolResult).toHaveBeenCalledOnce()
+    prompt.abort()
+    fixture.lease.endPrompt()
+  })
+
+  it('does not report a successful Host result after its prompt generation has ended', async () => {
+    const fixture = await setup()
+    cleanup.push(() => fixture.lease.close())
+    const prompt = new AbortController()
+    const onSuccessfulToolResult = vi.fn()
+    fixture.lease.beginPrompt(prompt.signal, undefined, undefined, undefined, undefined, onSuccessfulToolResult)
+    type ToolResult = Awaited<ReturnType<typeof fixture.execute>>
+    let settle!: (result: ToolResult) => void
+    fixture.execute.mockImplementationOnce(
+      () =>
+        new Promise<ToolResult>((resolve) => {
+          settle = resolve
+        }),
+    )
+    const call = fixture.client.callTool({ name: 'list_agents', arguments: {} })
+    await vi.waitFor(() => expect(fixture.execute).toHaveBeenCalledOnce())
+
+    fixture.lease.endPrompt({ stopReason: 'end_turn' })
+    settle({ content: [{ type: 'text', text: 'late result' }], isError: false } as ToolResult)
+    await expect(call).resolves.toMatchObject({ isError: false })
+    expect(onSuccessfulToolResult).not.toHaveBeenCalled()
+  })
+
   it('waits for dispatched Host execution after end_turn and preserves ordinary Stop', async () => {
     const run = async (
       stopReason: 'end_turn' | 'stop',
@@ -678,10 +727,11 @@ describe('session-owned native Teams MCP bridge', () => {
     )
 
     const result = await client.callTool({ name: 'list_agents', arguments: {} })
-    const returnedText = result.content.map((item) => ('text' in item ? item.text : '')).join('\n')
+    const returnedText = result.content.map((item) => ('text' in item ? item.text : '')).join('')
 
     expect(agent.inject).toHaveBeenCalledWith(reminder)
     expect(agent.steer).not.toHaveBeenCalled()
+    expect(returnedText).toContain('tool result\n\nDSH has queued feedback because this tool was repeated')
     expect(returnedText).toContain('Stop repeating the tool call')
     expect(returnedText).toContain('end this ACP response now')
     expect(returnedText).not.toContain('PRIVATE_REPEAT_REMINDER_BODY')

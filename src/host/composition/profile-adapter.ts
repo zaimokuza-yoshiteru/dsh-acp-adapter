@@ -666,6 +666,7 @@ export interface AcpProfileRuntime {
     signal?: AbortSignal,
     onTeamReport?: () => void,
     onTurnConcluded?: () => void,
+    onSuccessfulToolResult?: () => void,
   ): Promise<acp.PromptResponse>
   close(): Promise<void>
 }
@@ -2428,6 +2429,8 @@ export class AcpProfileAdapter extends LlmAdapter {
         let teammateReportConfirmed = false
         let turnConclusionEligible = true
         let turnConclusionConfirmed = false
+        let successfulToolResultEligible = true
+        let successfulToolResultConfirmed = false
         handoff.cancel = () => {
           inputAbort.abort(new Error('ACP stream consumer ended'))
         }
@@ -2480,6 +2483,8 @@ export class AcpProfileAdapter extends LlmAdapter {
           const previousReportConfirmed = teammateReportConfirmed
           const previousTurnConclusionEligible = turnConclusionEligible
           const previousTurnConclusionConfirmed = turnConclusionConfirmed
+          const previousSuccessfulToolResultEligible = successfulToolResultEligible
+          const previousSuccessfulToolResultConfirmed = successfulToolResultConfirmed
           let projectedAtDispatch = false
           let segmentBoundaryVersion = contentBreakVersion
           let segmentBoundaryIndex = nextContentIndex
@@ -2500,6 +2505,8 @@ export class AcpProfileAdapter extends LlmAdapter {
             teammateReportConfirmed = false
             turnConclusionEligible = false
             turnConclusionConfirmed = false
+            successfulToolResultEligible = false
+            successfulToolResultConfirmed = false
           }
           const restoreProjection = (): void => {
             currentAnchor = previousAnchor
@@ -2508,6 +2515,8 @@ export class AcpProfileAdapter extends LlmAdapter {
             teammateReportConfirmed = previousReportConfirmed
             turnConclusionEligible = previousTurnConclusionEligible
             turnConclusionConfirmed = previousTurnConclusionConfirmed
+            successfulToolResultEligible = previousSuccessfulToolResultEligible
+            successfulToolResultConfirmed = previousSuccessfulToolResultConfirmed
             // Restore the prior text segment only when nothing arrived after
             // the request boundary; never revisit an index already emitted.
             if (
@@ -2551,6 +2560,9 @@ export class AcpProfileAdapter extends LlmAdapter {
           },
           () => {
             if (turnConclusionEligible) turnConclusionConfirmed = true
+          },
+          () => {
+            if (successfulToolResultEligible) successfulToolResultConfirmed = true
           },
         )
         self.controlsChanged?.(sessionKey)
@@ -2727,12 +2739,19 @@ export class AcpProfileAdapter extends LlmAdapter {
               turnConclusionConfirmed &&
               !promptSignal.aborted &&
               options.signal?.aborted !== true
+            const hasSuccessfulToolResult =
+              response.stopReason === 'end_turn' &&
+              successfulToolResultConfirmed &&
+              !promptSignal.aborted &&
+              options.signal?.aborted !== true
+            // This records a delivered Host tool result, not completion of the user's broader task.
             const finalReason =
               responseFinish.kind === 'stop' &&
               !visibleContentEmitted &&
               !interruptedForInput &&
               !hasCompletedReport &&
-              !hasConcludedTurnTool
+              !hasConcludedTurnTool &&
+              !hasSuccessfulToolResult
                 ? {
                     kind: 'error' as const,
                     failure: {
