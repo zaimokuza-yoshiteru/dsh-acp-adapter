@@ -109,7 +109,9 @@ export async function writeReleaseIfEnabled(
   github: Github,
   assets: ReleaseAssetIO,
   tarball?: { path: string; name: string },
-): Promise<{ created: boolean; id?: number; url?: string; asset?: 'already-present' | 'uploaded' } | undefined> {
+): Promise<
+  { created: boolean; id: number; url: string | undefined; asset?: 'already-present' | 'uploaded' } | undefined
+> {
   if (!write) return undefined
   const release = createRelease(tag, body, github)
   if (!tarball) return release
