@@ -1077,23 +1077,87 @@ class SidecarStore implements AcpSidecar {
           { sql?: unknown } | undefined
       )?.sql
       if (typeof activitySql === 'string' && !activitySql.includes('PRIMARY KEY (dsh_session_id, revision_seq)')) {
-        db.exec('ALTER TABLE activity_journal RENAME TO activity_journal_legacy')
-        db.exec(`CREATE TABLE activity_journal (
+        // Perform the legacy -> new activity_journal migration atomically so a crash
+        // during migration cannot leave a stranded activity_journal_legacy while
+        // activity_journal has been partially or fully recreated by another actor.
+        db.exec('BEGIN IMMEDIATE')
+        try {
+          // Re-check under the write lock: another process may have migrated already.
+          const activitySqlNow = (
+            db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'activity_journal'").get() as
+              { sql?: unknown } | undefined
+          )?.sql
+          if (
+            typeof activitySqlNow === 'string' &&
+            activitySqlNow.includes('PRIMARY KEY (dsh_session_id, revision_seq)')
+          ) {
+            // Already migrated by a concurrent actor; nothing to do.
+            db.exec('COMMIT')
+          } else {
+            db.exec('ALTER TABLE activity_journal RENAME TO activity_journal_legacy')
+            db.exec(`CREATE TABLE activity_journal (
           dsh_session_id TEXT NOT NULL, activity_id TEXT NOT NULL, owner_dsh_session_id TEXT NOT NULL,
           prompt_anchor_message_id TEXT NOT NULL, activity_seq INTEGER NOT NULL, revision_seq INTEGER NOT NULL,
           time INTEGER NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL, presentation TEXT NOT NULL,
           raw_detail TEXT, raw_detail_ref TEXT, PRIMARY KEY (dsh_session_id, revision_seq)
         ) STRICT`)
-        const columns = new Set(
-          (db.prepare('PRAGMA table_info(activity_journal_legacy)').all() as Array<{ name?: string }>).map(
-            (row) => row.name,
-          ),
-        )
-        const time = columns.has('time') ? 'time' : '0'
-        const revision = columns.has('revision_seq') ? 'revision_seq' : 'activity_seq'
-        db.exec(`INSERT INTO activity_journal (dsh_session_id, activity_id, owner_dsh_session_id, prompt_anchor_message_id, activity_seq, revision_seq, time, kind, status, presentation, raw_detail, raw_detail_ref)
+            const columns = new Set(
+              (db.prepare('PRAGMA table_info(activity_journal_legacy)').all() as Array<{ name?: string }>).map(
+                (row) => row.name,
+              ),
+            )
+            const time = columns.has('time') ? 'time' : '0'
+            const revision = columns.has('revision_seq') ? 'revision_seq' : 'activity_seq'
+            db.exec(`INSERT INTO activity_journal (dsh_session_id, activity_id, owner_dsh_session_id, prompt_anchor_message_id, activity_seq, revision_seq, time, kind, status, presentation, raw_detail, raw_detail_ref)
           SELECT dsh_session_id, activity_id, owner_dsh_session_id, prompt_anchor_message_id, activity_seq, ${revision}, ${time}, kind, status, presentation, raw_detail, raw_detail_ref FROM activity_journal_legacy`)
-        db.exec('DROP TABLE activity_journal_legacy')
+            db.exec('DROP TABLE activity_journal_legacy')
+            db.exec('COMMIT')
+          }
+        } catch (error) {
+          try {
+            db.exec('ROLLBACK')
+          } catch {
+            /* preserve original */
+          }
+          throw error
+        }
+      }
+      // Recovery: if a previous run crashed after renaming but another actor
+      // recreated the new activity_journal, migrate remaining legacy rows without
+      // altering the already-created table (INSERT OR IGNORE then DROP legacy).
+      const legacyRow = db
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'activity_journal_legacy'")
+        .get()
+      const newActivitySql = (
+        db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'activity_journal'").get() as
+          { sql?: unknown } | undefined
+      )?.sql
+      if (
+        legacyRow !== undefined &&
+        typeof newActivitySql === 'string' &&
+        newActivitySql.includes('PRIMARY KEY (dsh_session_id, revision_seq)')
+      ) {
+        db.exec('BEGIN IMMEDIATE')
+        try {
+          const columns = new Set(
+            (db.prepare('PRAGMA table_info(activity_journal_legacy)').all() as Array<{ name?: string }>).map(
+              (row) => row.name,
+            ),
+          )
+          const time = columns.has('time') ? 'time' : '0'
+          const revision = columns.has('revision_seq') ? 'revision_seq' : 'activity_seq'
+          db.exec(`INSERT OR IGNORE INTO activity_journal (dsh_session_id, activity_id, owner_dsh_session_id, prompt_anchor_message_id, activity_seq, revision_seq, time, kind, status, presentation, raw_detail, raw_detail_ref)
+            SELECT dsh_session_id, activity_id, owner_dsh_session_id, prompt_anchor_message_id, activity_seq, ${revision}, ${time}, kind, status, presentation, raw_detail, raw_detail_ref FROM activity_journal_legacy`)
+          db.exec('DROP TABLE activity_journal_legacy')
+          db.exec('COMMIT')
+        } catch (error) {
+          try {
+            db.exec('ROLLBACK')
+          } catch {
+            /* preserve original */
+          }
+          throw error
+        }
       }
       const activityColumns = new Set(
         (db.prepare('PRAGMA table_info(activity_journal)').all() as Array<{ name?: string }>).map((row) => row.name),
@@ -1324,8 +1388,9 @@ class SidecarStore implements AcpSidecar {
         } catch {
           /* 原错误优先 */
         }
-        // nextSeq 的内存种子可能已在失败事务内前移；丢弃后从 durable MAX 重种。
-        this.seqCounters.delete(sessionId)
+        // Keep the local reservation after rollback; a queued non-approval audit may own an earlier seq.
+        // A gap in seq is harmless — avoid reseeding from DB MAX which could hand out
+        // a duplicate seq already reserved by an in-memory queued audit.
         throw error
       }
       return
@@ -1449,7 +1514,7 @@ class SidecarStore implements AcpSidecar {
     }
   }
 
-  /** 队列批量落库（单事务）；失败 → 整批丢弃 + warn 计数（非审批审计不阻塞主链路）。 */
+  /** 队列批量落库（单事务）；失败 → 逐条重试，仅丢弃仍失败的条目 + warn 计数（非审批审计不阻塞主链路）。 */
   private drainQueue(): void {
     if (this.queue.length === 0) return
     const batch = this.queue
@@ -1458,26 +1523,7 @@ class SidecarStore implements AcpSidecar {
     const db = this.ensureDb()
     db.exec('BEGIN')
     try {
-      for (const item of batch) {
-        const ids = deriveAcpIds(item.entry.kind, item.entry.data)
-        const base = contentRecordIdBase(item.entry.kind, item.entry.time, item.entry.data)
-        let recordId = base
-        for (let suffix = 2; ; suffix += 1) {
-          if (this.stmtHasRecordId?.get(item.sessionId, recordId) === undefined) break
-          recordId = `${base}-${String(suffix)}`
-        }
-        this.stmtInsert?.run(
-          recordId,
-          item.sessionId,
-          item.seq,
-          item.entry.time,
-          item.entry.kind,
-          ids.acpProviderId ?? null,
-          ids.acpSessionId ?? null,
-          null,
-          stableStringify(item.entry.data),
-        )
-      }
+      for (const item of batch) this.insertQueuedAudit(item)
       db.exec('COMMIT')
     } catch (error: unknown) {
       try {
@@ -1485,11 +1531,51 @@ class SidecarStore implements AcpSidecar {
       } catch {
         /* 连接级失败时 ROLLBACK 也可能抛，尽力而为 */
       }
-      this.droppedEntries += batch.length
+      // Fall back to per-item writes so a single poisoned item doesn't drop the
+      // whole batch. Each item gets its own BEGIN/COMMIT; failures cause a
+      // ROLLBACK for that item only and are counted as dropped.
+      let dropped = 0
+      for (const item of batch) {
+        try {
+          db.exec('BEGIN')
+          this.insertQueuedAudit(item)
+          db.exec('COMMIT')
+        } catch {
+          try {
+            db.exec('ROLLBACK')
+          } catch {
+            /* best effort */
+          }
+          dropped += 1
+        }
+      }
+      if (dropped === 0) return
+      this.droppedEntries += dropped
       this.warn(
-        `dsh-acp sidecar: failed to flush ${String(batch.length)} queued audit record(s); dropping them (${errorMessage(error)})`,
+        `dsh-acp sidecar: failed to flush ${String(dropped)} queued audit record(s); dropping them (${errorMessage(error)})`,
       )
     }
+  }
+
+  private insertQueuedAudit(item: QueuedAudit): void {
+    const ids = deriveAcpIds(item.entry.kind, item.entry.data)
+    const base = contentRecordIdBase(item.entry.kind, item.entry.time, item.entry.data)
+    let recordId = base
+    for (let suffix = 2; ; suffix += 1) {
+      if (this.stmtHasRecordId?.get(item.sessionId, recordId) === undefined) break
+      recordId = `${base}-${String(suffix)}`
+    }
+    this.stmtInsert?.run(
+      recordId,
+      item.sessionId,
+      item.seq,
+      item.entry.time,
+      item.entry.kind,
+      ids.acpProviderId ?? null,
+      ids.acpSessionId ?? null,
+      null,
+      stableStringify(item.entry.data),
+    )
   }
 
   /** WAL checkpoint + wal/shm 权限位兜底（flush/dispose 的周期 sync 点；维护性动作，失败仅 warn——已 commit 的数据不受影响）。 */

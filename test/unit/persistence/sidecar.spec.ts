@@ -1471,3 +1471,99 @@ describe('pending member mode storage', () => {
     expect(await store.readModeIntent(id)).toBeUndefined()
   })
 })
+
+// Hardening tests for recent fixes
+describe('hardening: seq reuse, batch drain fallback, activity_journal migration', () => {
+  it('preserves in-memory seq reservation after binding rollback so queued audit does not get duplicate seq', async () => {
+    const sid = 'sess-seq-reuse'
+    // enqueue a non-approval audit (goes to queue and reserves seq)
+    await store.append(SessionId(sid), { kind: 'replay-assessment', data: { status: 'not-compared' } })
+
+    // Inject a binding write failure via trigger on bindings
+    const triggerDb = rawDb()
+    try {
+      triggerDb.exec(
+        `CREATE TRIGGER fail_bind BEFORE INSERT ON bindings WHEN NEW.dsh_session_id = '${sid}' BEGIN SELECT RAISE(ABORT, 'injected bind failure'); END`,
+      )
+    } finally {
+      triggerDb.close()
+    }
+
+    // Attempt binding append which will fail and rollback
+    await expect(store.append(SessionId(sid), { kind: 'binding', data: BINDING_A })).rejects.toThrow()
+
+    // Flush queued audits (microtask drain may have been scheduled); ensure queued audit persisted
+    await store.flush()
+    const lines = await readEnvelopes(sid)
+    // The queued replay-assessment must have been persisted (seq 1)
+    expect(lines.some((l) => l.kind === 'replay-assessment')).toBe(true)
+
+    // Subsequent non-approval append should get a unique seq > existing
+    await store.append(SessionId(sid), { kind: 'replay-assessment', data: { status: 'not-compared' } })
+    await store.flush()
+    const all = await readEnvelopes(sid)
+    const seqs = all.map((l) => l.seq)
+    expect(new Set(seqs).size).toBe(seqs.length)
+  })
+
+  it('on batch flush failure falls back to per-item writes and counts dropped items', async () => {
+    const sid = 'sess-batch'
+    // enqueue one good and one poisoned item (BigInt causes stableStringify/JSON to throw)
+    await store.append(SessionId(sid), { kind: 'replay-assessment', data: { status: 'not-compared' } })
+    // poison the second item; use a cast to bypass TypeScript typing for test
+    await store.append(SessionId(sid), { kind: 'replay-assessment', data: { bad: BigInt(1) } as unknown as any })
+
+    // Flush explicitly
+    await store.flush()
+
+    const lines = await readEnvelopes(sid)
+    // Only the good item should be persisted
+    expect(lines.filter((l) => l.kind === 'replay-assessment').length).toBe(1)
+    // droppedEntries should have incremented by 1
+    expect((store as unknown as { droppedEntries: number }).droppedEntries).toBe(1)
+  })
+
+  it('recovers leftover activity_journal_legacy rows into new activity_journal when new table exists', async () => {
+    // Pre-seed DB: create new-format activity_journal and a leftover legacy table with a row
+    const pre = rawDb()
+    try {
+      pre.exec(`CREATE TABLE IF NOT EXISTS activity_journal (
+        dsh_session_id TEXT NOT NULL, activity_id TEXT NOT NULL, owner_dsh_session_id TEXT NOT NULL,
+        prompt_anchor_message_id TEXT NOT NULL, activity_seq INTEGER NOT NULL, revision_seq INTEGER NOT NULL,
+        time INTEGER NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL, presentation TEXT NOT NULL,
+        raw_detail TEXT, raw_detail_ref TEXT, PRIMARY KEY (dsh_session_id, revision_seq)
+      ) STRICT`)
+      // ensure other minimal tables exist so migration logic runs in the same environment
+      pre.exec(`CREATE TABLE IF NOT EXISTS activity_journal_legacy (
+        dsh_session_id TEXT NOT NULL, activity_id TEXT NOT NULL, owner_dsh_session_id TEXT NOT NULL,
+        prompt_anchor_message_id TEXT NOT NULL, activity_seq INTEGER NOT NULL, revision_seq INTEGER,
+        time INTEGER NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL, presentation TEXT NOT NULL,
+        raw_detail TEXT, raw_detail_ref TEXT
+      ) STRICT`)
+      const insert = pre.prepare(
+        'INSERT INTO activity_journal_legacy (dsh_session_id, activity_id, owner_dsh_session_id, prompt_anchor_message_id, activity_seq, revision_seq, time, kind, status, presentation) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      )
+      insert.run('sess-legacy', 'act-1', 'owner-1', 'anchor-1', 1, 1, TIME_BASE, 'tool', 'running', 'p')
+    } finally {
+      pre.close()
+    }
+
+    // Open sidecar which should migrate legacy rows into activity_journal and drop legacy table
+    await store.dispose()
+    store = createAcpSidecar({ root, now: () => TIME_BASE + 1, warn: (m) => warns.push(m) })
+
+    const inspection = rawDb()
+    try {
+      const row = inspection
+        .prepare('SELECT COUNT(*) AS n FROM activity_journal WHERE dsh_session_id = ?')
+        .get('sess-legacy') as { n: number }
+      expect(row.n).toBeGreaterThanOrEqual(1)
+      const legacyExists = inspection
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='activity_journal_legacy'")
+        .get()
+      expect(legacyExists).toBeUndefined()
+    } finally {
+      inspection.close()
+    }
+  })
+})
