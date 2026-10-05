@@ -222,6 +222,10 @@ export function createAcpFileSystemHandlers(options: AcpFileSystemOptions): AcpF
       target = assertPath(params.path)
       assertNotAborted(requestSignal)
       if (options.io?.beforeRead !== undefined) await abortable(options.io.beforeRead(), requestSignal)
+      // Prefer stat before open to avoid blocking libuv worker threads on FIFOs and
+      // other non-regular files. Keep the post-open stat as a TOCTOU defense.
+      const pre = await abortable(fs.promises.stat(target), requestSignal)
+      if (!pre.isFile()) throw new Error('target is not a regular file')
       handle = await abortable(fs.promises.open(target, 'r'), requestSignal)
       const stat = await abortable(handle.stat(), requestSignal)
       if (!stat.isFile()) throw new Error('target is not a regular file')
@@ -271,11 +275,11 @@ export function createAcpFileSystemHandlers(options: AcpFileSystemOptions): AcpF
       throw new Error(`ACP fs/read_text_file refused ${target}: content is not valid UTF-8`)
     }
     try {
-      const lines = content.split('\n')
+      const result = checkReadWindow(content, params.line, params.limit)
+      const lines = result.split('\n')
       if (lines.length > ACP_FS_MAX_LINES || lines.some((row) => row.length > ACP_FS_MAX_LINE)) {
         throw new Error('line limits exceeded')
       }
-      const result = checkReadWindow(content, params.line, params.limit)
       await emitRead(
         options,
         params,

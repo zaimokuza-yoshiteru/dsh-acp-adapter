@@ -342,6 +342,24 @@ it('allows only one of two simultaneous new-file writes to commit', async () => 
   }
 })
 
+it('allows reading a window from a huge file but rejects whole-file reads that exceed line limits', async () => {
+  const dir = root()
+  const file = path.join(dir, 'big.txt')
+  const lines = new Array(ACP_FS_MAX_LINES + 10).fill(null).map((_, i) => `line-${i + 1}`)
+  fs.writeFileSync(file, lines.join('\n'))
+  const handlers = createAcpFileSystemHandlers({ profileId: 'codex' })
+  try {
+    // windowed read should succeed
+    const res = await handlers.readTextFile({ sessionId: 'acp-1', path: file, line: 1, limit: 10 })
+    expect(res.content.split('\n')).toHaveLength(10)
+    // full read should fail with line limits exceeded
+    await expect(handlers.readTextFile({ sessionId: 'acp-1', path: file })).rejects.toThrow(/line limits exceeded/)
+  } finally {
+    handlers.dispose()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 it.each([1, 2])('aborts and closes old-file hash stream %i without replacing the target', async (pass) => {
   const dir = root(),
     file = path.join(dir, 'file.txt')
