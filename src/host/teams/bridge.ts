@@ -512,15 +512,52 @@ export async function createTeamBridge(
   const scopedInstructions = bridgeInstructions(names, hasTeams)
   const presented = new Map<string, string>()
   const permissionFences = new WeakMap<object, { generation: number; prompt: AbortSignal }>()
+  const plainRecord = (value: unknown): Record<string, unknown> | undefined => {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+    const prototype = Object.getPrototypeOf(value)
+    return prototype === Object.prototype || prototype === null ? (value as Record<string, unknown>) : undefined
+  }
+  const qualifiedTool = (value: unknown): string | undefined =>
+    typeof value === 'string' && value.startsWith(`mcp__${serverName}__`)
+      ? value.slice(`mcp__${serverName}__`.length)
+      : undefined
+  const codebuddyDeferredInput = (
+    call: acp.ToolCallUpdate,
+  ): { readonly tool?: string; readonly params?: Record<string, unknown> } | undefined => {
+    if (wireProfile !== 'codebuddy') return undefined
+    const input = plainRecord(call.rawInput)
+    const wrapper = call.name === 'DeferExecuteTool'
+    const hasTarget = input !== undefined && Object.hasOwn(input, 'toolName')
+    if (!wrapper && !hasTarget) return undefined
+    const qualifiedTarget = qualifiedTool(input?.['toolName'])
+    const params = plainRecord(input?.['params'])
+    return {
+      ...(qualifiedTarget === undefined || params === undefined ? {} : { tool: qualifiedTarget, params }),
+    }
+  }
   const identityOf = (call: acp.ToolCallUpdate): { tool?: string; source?: AcpPermissionCheck['identitySource'] } => {
-    const qualified = (value: unknown): string | undefined =>
-      typeof value === 'string' && value.startsWith(`mcp__${serverName}__`)
-        ? value.slice(`mcp__${serverName}__`.length)
-        : undefined
-    const input = call.rawInput as { server?: unknown; tool?: unknown } | undefined
+    const qualified = qualifiedTool
+    const input = plainRecord(call.rawInput)
     const meta = call._meta?.claudeCode as { toolName?: unknown } | undefined
     const candidates: Array<{ tool: string | undefined; source: AcpPermissionCheck['identitySource'] }> = []
-    if (wireProfile === 'codex' && call._meta?.is_mcp_tool_call === true)
+    const deferred = codebuddyDeferredInput(call)
+    if (deferred !== undefined) {
+      const target = qualifiedTool(input?.['toolName'])
+      candidates.push({
+        tool: deferred.tool,
+        source: 'codebuddy-deferred-input',
+      })
+      // A wrapper may omit name or use its documented wrapper label. A
+      // complete MCP name is also accepted only when it agrees with the
+      // nested target; every other nonempty name is conflicting evidence.
+      if (
+        call.name != null &&
+        call.name !== 'DeferExecuteTool' &&
+        (target === undefined || qualified(call.name) !== target)
+      )
+        candidates.push({ tool: undefined, source: 'codebuddy-deferred-input' })
+    }
+    if ((wireProfile === 'codex' || wireProfile === 'codebuddy') && call._meta?.is_mcp_tool_call === true)
       candidates.push({
         tool: input?.server === serverName && typeof input.tool === 'string' ? input.tool : undefined,
         source: 'codex-input',
@@ -543,10 +580,22 @@ export async function createTeamBridge(
     }
     const first = candidates[0]
     if (first === undefined) return call.name == null ? {} : { source: 'name' }
+    // A CodeBuddy connection may also send ordinary ACP-qualified calls; keep
+    // that pre-existing exact-name path. Codex metadata alone is not a
+    // substitute for CodeBuddy's deferred envelope on this runtime.
+    if (
+      wireProfile === 'codebuddy' &&
+      deferred === undefined &&
+      !candidates.some((candidate) => candidate.source === 'name')
+    )
+      return { source: first.source }
     if (
       first.tool === undefined ||
       candidates.some((candidate) => candidate.tool !== first.tool) ||
-      (call.name != null && call.name !== first.tool && qualified(call.name) !== first.tool)
+      (call.name != null &&
+        call.name !== first.tool &&
+        qualified(call.name) !== first.tool &&
+        !(wireProfile === 'codebuddy' && deferred !== undefined && call.name === 'DeferExecuteTool'))
     )
       return { source: first.source }
     return { tool: first.tool, source: first.source }
@@ -600,7 +649,8 @@ export async function createTeamBridge(
         call.name != null ||
         meta?.toolName != null ||
         call._meta?.['cognition.ai/toolName'] != null ||
-        source === 'codex-input',
+        source === 'codex-input' ||
+        source === 'codebuddy-deferred-input',
       titleMatchesCurrentTool: titleName !== undefined && names.has(titleName),
     }
     if (!live()) return { ...facts, reason: 'inactive-connection' }
@@ -1324,11 +1374,24 @@ export async function createTeamBridge(
       while (calls.size > 0) await Promise.allSettled([...calls])
     },
     presentTool(call) {
-      const name = definitionOf(call)?.name ?? presented.get(call.toolCallId)
+      const identity = identityOf(call)
+      const deferred = codebuddyDeferredInput(call)
+      const acceptedDeferred =
+        deferred?.tool !== undefined &&
+        identity.source === 'codebuddy-deferred-input' &&
+        identity.tool === deferred.tool
+      const wrapperCall = deferred !== undefined
+      const name = definitionOf(call)?.name ?? (wrapperCall ? undefined : presented.get(call.toolCallId))
       if (name === undefined) return call
       presented.set(call.toolCallId, name)
       // Same tool title as the native host. Transport capability names stay out of the conversation row.
-      return { ...call, title: name, name, ...(name === 'bash' ? { kind: 'execute' as const } : {}) }
+      return {
+        ...call,
+        ...(acceptedDeferred && deferred.params !== undefined ? { rawInput: deferred.params } : {}),
+        title: name,
+        name,
+        ...(name === 'bash' ? { kind: 'execute' as const } : {}),
+      }
     },
     inspectPermission,
     validatePermissionDecision(request) {

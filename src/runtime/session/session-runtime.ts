@@ -148,8 +148,30 @@ export interface AcpSessionRuntimeOptions {
   readonly onCapabilityDegraded?: (message: string) => void
   /** Best-effort notification when a terminal ACP response is waiting on Host settlement. */
   readonly onHostSettlementChanged?: () => void
+  /** Reopen a confirmed-cancelled native session before its next bound prompt. */
+  readonly refreshSessionAfterCancelledPrompt?: boolean
   /** Grace period after `session/cancel` before the Agent process is closed. */
   readonly cancelGraceMs?: number
+}
+
+/** Transient failure while refreshing an already-settled, cancelled session. */
+export class AcpSessionRefreshRetryError extends Error {
+  readonly code = 'ACP_SESSION_REFRESH_FAILED'
+
+  constructor(cause: unknown) {
+    super('The cancelled ACP session could not be refreshed before dispatch', { cause })
+    this.name = 'AcpSessionRefreshRetryError'
+  }
+}
+
+/** The runtime was explicitly closed while refreshing a cancelled session. */
+export class AcpSessionRefreshAbortedError extends Error {
+  readonly code = 'ACP_SESSION_REFRESH_ABORTED'
+
+  constructor(cause?: unknown) {
+    super('The cancelled ACP session refresh was cancelled before dispatch', { cause })
+    this.name = 'AcpSessionRefreshAbortedError'
+  }
 }
 
 /** A conforming Agent normally settles cancellation immediately; this only
@@ -158,6 +180,27 @@ const ACP_CANCEL_SETTLE_GRACE_MS = 5_000
 
 function isAborted(signal: AbortSignal | undefined): boolean {
   return signal?.aborted === true
+}
+
+function waitForRefreshRetry(signal: AbortSignal | undefined, delayMs: number): Promise<void> {
+  if (signal?.aborted === true) return Promise.reject(signal.reason ?? new DOMException('Aborted', 'AbortError'))
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, delayMs)
+    const onAbort = (): void => {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
+      reject(signal?.reason ?? new DOMException('Aborted', 'AbortError'))
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+    if (signal?.aborted === true) onAbort()
+  })
+}
+
+function isTransientSessionRefreshFailure(error: unknown): boolean {
+  return error instanceof AcpClientError && (error.kind === 'crash' || error.kind === 'timeout')
 }
 
 /** ACP tool updates are top-level patches. Keep the detached fields that can
@@ -288,6 +331,7 @@ export class AcpSessionRuntime {
   /** Keep restore/new initialization behind process teardown. Lease shutdown is
    * allowed its own grace, but must not shorten the subprocess close ladder. */
   private closing: Promise<void> | undefined
+  private cancelledRefreshController: AbortController | undefined
   private launch: AcpRuntimeLaunch | undefined
   private replayHandler: ((notification: AcpSessionNotification) => void) | undefined
   private restoringSessionId: string | undefined
@@ -305,6 +349,9 @@ export class AcpSessionRuntime {
    * session/prompt request has actually been dispatched. */
   private promptClaimed = false
   private hostSettlementPendingValue = false
+  private refreshBeforeRestore = false
+  private refreshBindingSessionId: string | undefined
+  private lastRestoreRefreshedCancelledSessionValue = false
   private promptActive = false
   /** One map per active prompt. Tool call ids are only meaningful inside this
    * lifetime for permission enrichment and must never leak into another turn. */
@@ -345,6 +392,12 @@ export class AcpSessionRuntime {
   /** ACP context occupancy/cumulative cost; intentionally not DSH TokenUsage. */
   get contextUsage(): AcpRuntimeContextUsage | undefined {
     return this.usageSnapshot
+  }
+  get lastRestoreRefreshedCancelledSession(): boolean {
+    return this.lastRestoreRefreshedCancelledSessionValue
+  }
+  get cancelledSessionRefreshPending(): boolean {
+    return this.refreshBeforeRestore
   }
   get isBusy(): boolean {
     return this.promptClaimed
@@ -448,6 +501,13 @@ export class AcpSessionRuntime {
     signal?: AbortSignal,
     onReplay?: (notification: AcpSessionNotification) => void,
   ): Promise<'reused' | 'resumed' | 'loaded'> {
+    this.lastRestoreRefreshedCancelledSessionValue = false
+    if (this.promptClaimed) throw new Error('ACP_PROMPT_ALREADY_ACTIVE')
+    if (this.refreshBeforeRestore) {
+      if (this.refreshBindingSessionId !== binding.agentSessionId)
+        throw new Error('ACP binding session id does not match the cancelled runtime session')
+      return await this.refreshCancelledSession(binding, signal, onReplay)
+    }
     if (this.closing !== undefined) await this.closing
     // A closed transport cannot own a reusable in-memory session, even if the
     // remote session id is still cached. Clear local state before deciding
@@ -459,6 +519,69 @@ export class AcpSessionRuntime {
         throw new Error('ACP binding session id does not match the active runtime')
       return 'reused'
     }
+    return await this.restoreCold(binding, signal, onReplay)
+  }
+
+  private async waitForCancelledSessionSettlement(): Promise<void> {
+    if (this.promptClaimed) throw new AcpHostSettlementError('ACP_HOST_GENERATION_STILL_ACTIVE')
+    if (this.hasPendingHostCalls()) throw new AcpHostSettlementError('ACP_HOST_GENERATION_STILL_ACTIVE')
+    await this.flushHostFeedback()
+    if (this.promptClaimed || this.hasPendingHostCalls() || this.hasUncommittedHostFeedback())
+      throw new AcpHostSettlementError('ACP_HOST_GENERATION_STILL_ACTIVE')
+  }
+
+  private async refreshCancelledSession(
+    binding: AcpRuntimeBindingRef,
+    signal?: AbortSignal,
+    onReplay?: (notification: AcpSessionNotification) => void,
+  ): Promise<'resumed' | 'loaded'> {
+    const refreshController = new AbortController()
+    this.cancelledRefreshController = refreshController
+    const refreshSignal =
+      signal === undefined ? refreshController.signal : AbortSignal.any([signal, refreshController.signal])
+    const retryDelaysMs = [100, 300] as const
+    try {
+      await this.waitForCancelledSessionSettlement()
+      if (refreshSignal.aborted) throw new AcpSessionRefreshAbortedError(refreshSignal.reason)
+      for (let attempt = 0; ; attempt += 1) {
+        if (refreshSignal.aborted) throw new AcpSessionRefreshAbortedError(refreshSignal.reason)
+        try {
+          await this.closeForCancelledRefresh(refreshController)
+          const restored = await this.restoreCold(binding, refreshSignal, onReplay)
+          if (refreshSignal.aborted) throw new AcpSessionRefreshAbortedError(refreshSignal.reason)
+          this.refreshBeforeRestore = false
+          this.refreshBindingSessionId = undefined
+          this.lastRestoreRefreshedCancelledSessionValue = true
+          return restored
+        } catch (error) {
+          if (refreshSignal.aborted) throw new AcpSessionRefreshAbortedError(refreshSignal.reason ?? error)
+          if (!isTransientSessionRefreshFailure(error) || attempt >= retryDelaysMs.length) {
+            if (attempt >= retryDelaysMs.length && isTransientSessionRefreshFailure(error))
+              throw new AcpSessionRefreshRetryError(error)
+            throw error
+          }
+          try {
+            await waitForRefreshRetry(refreshSignal, retryDelaysMs[attempt]!)
+          } catch (waitError) {
+            if (refreshSignal.aborted) throw new AcpSessionRefreshAbortedError(refreshSignal.reason ?? waitError)
+            throw waitError
+          }
+        }
+      }
+    } finally {
+      if (this.cancelledRefreshController === refreshController) this.cancelledRefreshController = undefined
+    }
+  }
+
+  private async closeForCancelledRefresh(owner: AbortController): Promise<void> {
+    await this.closeInternal(owner)
+  }
+
+  private async restoreCold(
+    binding: AcpRuntimeBindingRef,
+    signal?: AbortSignal,
+    onReplay?: (notification: AcpSessionNotification) => void,
+  ): Promise<'resumed' | 'loaded'> {
     await this.initialize(signal)
     const connection = this.connection
     if (connection === undefined) throw new Error('ACP connection is not started')
@@ -689,6 +812,10 @@ export class AcpSessionRuntime {
         )
         promptAbort.abort(new Error('ACP prompt lifetime ended'))
         let drainError: unknown
+        if (this.options.refreshSessionAfterCancelledPrompt === true && promptResponse?.stopReason === 'cancelled') {
+          this.refreshBeforeRestore = true
+          this.refreshBindingSessionId = sessionId
+        }
         if (this.mcpLease?.drainPrompt !== undefined) {
           try {
             await this.mcpLease.drainPrompt()
@@ -800,6 +927,12 @@ export class AcpSessionRuntime {
   }
 
   close(): Promise<void> {
+    return this.closeInternal()
+  }
+
+  private closeInternal(refreshOwner?: AbortController): Promise<void> {
+    if (this.cancelledRefreshController !== undefined && this.cancelledRefreshController !== refreshOwner)
+      this.cancelledRefreshController.abort(new Error('ACP session runtime closed during cancelled-session refresh'))
     if (this.closing !== undefined) return this.closing
 
     // Capture one generation before signalling it. A concurrent restore waits

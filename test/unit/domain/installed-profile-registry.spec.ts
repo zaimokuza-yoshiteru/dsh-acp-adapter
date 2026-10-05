@@ -303,6 +303,31 @@ describe('runtime 身份与配置兼容', () => {
     expect(effectiveRuntimeOf('ghost')).toBeUndefined()
   })
 
+  it('CodeBuddy profile id remains generic unless runtime is explicitly bound', () => {
+    const resolved = acpSettingsSchema({
+      agents: {
+        codebuddy: {
+          name: 'Existing custom profile',
+          command: 'custom-codebuddy-wrapper',
+          args: [],
+          env: {},
+          catalogId: 'codebuddy-code',
+        },
+        'codebuddy-cli': {
+          name: 'CodeBuddy CLI',
+          command: 'codebuddy-code',
+          args: ['--acp'],
+          env: {},
+          runtime: 'codebuddy',
+          catalogId: 'codebuddy-code',
+        },
+      },
+    })
+
+    expect(effectiveRuntimeOf('codebuddy', resolved.agents['codebuddy'])).toBeUndefined()
+    expect(effectiveRuntimeOf('codebuddy-cli', resolved.agents['codebuddy-cli'])).toBe('codebuddy')
+  })
+
   it('：codex 与 claude 配置共存——各自解析到自己的 runtime，profile id（backend 身份）独立', () => {
     // 手写配置经 schema 入 settings（catalog 预填的等价形状；runtime 显式绑定）
     const resolved = acpSettingsSchema({
@@ -362,8 +387,8 @@ describe('runtime 身份与配置兼容', () => {
     expect(new Set(keys).size).toBe(3)
   })
 
-  it('acpSettingsSchema 收 runtime 字段：四个合法值保留，非法值/非 string 拒绝', () => {
-    for (const runtime of ['devin', 'codex', 'kimi', 'claude'] as const) {
+  it('acpSettingsSchema 收 runtime 字段：合法值保留，非法值/非 string 拒绝', () => {
+    for (const runtime of ['devin', 'codex', 'kimi', 'claude', 'codebuddy'] as const) {
       const resolved = acpSettingsSchema({ agents: { my: { name: 'M', command: 'm', runtime } } })
       expect(resolved.agents['my']).toEqual({ name: 'M', command: 'm', args: [], env: {}, runtime })
     }
@@ -531,18 +556,19 @@ describe('acpSettingsSchema', () => {
     )
   })
 
-  it(' singleton：四个内置 runtime 各一可共存；generic profile（无 runtime 身份）多实例不受限', () => {
+  it(' singleton：内置 runtime 各一可共存；generic profile（无 runtime 身份）多实例不受限', () => {
     const resolved = acpSettingsSchema({
       agents: {
         devin: { name: 'Devin', command: 'devin', args: ['acp'], runtime: 'devin' },
         claude: { name: 'Claude', command: 'claude-agent-acp', runtime: 'claude' },
         codex: { name: 'Codex', command: 'codex-acp', runtime: 'codex' },
         kimi: { name: 'Kimi', command: 'kimi', args: ['acp'], runtime: 'kimi' },
+        codebuddy: { name: 'CodeBuddy', command: 'codebuddy-code', args: ['--acp'], runtime: 'codebuddy' },
         foo: { name: 'Foo', command: 'foo-cli' },
         bar: { name: 'Bar', command: 'bar-cli' },
       },
     })
-    expect(Object.keys(resolved.agents).sort()).toEqual(['bar', 'claude', 'codex', 'devin', 'foo', 'kimi'])
+    expect(Object.keys(resolved.agents).sort()).toEqual(['bar', 'claude', 'codebuddy', 'codex', 'devin', 'foo', 'kimi'])
     // generic profile 即便 command 相同也不受 singleton 约束（身份 = 稳定 profile id）
     expect(() =>
       acpSettingsSchema({

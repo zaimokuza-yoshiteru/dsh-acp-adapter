@@ -4,11 +4,11 @@
 
 [Changelog](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/main/CHANGELOG.md) · [Releases and installation details](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases)
 
-Use **Claude · Codex · Devin · Kimi** from the DSH session UI.
+Use **Claude · Codex · Devin · Kimi** from the DSH session UI, or configure the standard CodeBuddy CLI from the catalog.
 
 This version supports DSH `0.2.0-rc.2` only. ACP members and subagent records open in the native sidebar while the main conversation stays in place. Team member requests can still be approved from the main conversation.
 
-`0.2.0-rc.2.2` continues to use DSH's native conversation and menu components, with fixes for menu focus, concurrent recovery actions, and outcome feedback. Initial activity loading and consecutive tool turns without visible text now retain accurate state. External subagents appear while running; a tool ending does not substitute for a late or missing child terminal state. Ordinary local saving retries automatically when a remote result is known; transient recovery-status and Team-roster read failures recover automatically. ACP Diagnostics can export a safe summary with one click. Recognized Devin quota exhaustion has its own message and is not retried automatically. See the [changelog](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/main/CHANGELOG.md) and [native reuse notes](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/main/docs/native-reuse.en.md).
+`0.2.0-rc.2.3` improves ACP runtime compatibility for the standard CodeBuddy CLI and fixes local settlement being blocked by longer mode descriptions. For the explicit CodeBuddy runtime, after a confirmed cancelled terminal result (including rejection of a native tool request), the next input reloads the same session without resubmitting the cancelled prompt. Refreshing may add startup wait time; this normal path does not require manual recovery. Existing custom profiles are not silently changed to the CodeBuddy runtime based on `catalogId`; this CLI integration does not cover the WorkBuddy desktop app. See the [E2E guide](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/main/test/e2e/README.md) for real-run scope, plus the [changelog](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/main/CHANGELOG.md) and [native reuse notes](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/main/docs/native-reuse.en.md).
 
 On upgrade, existing Agent configuration is imported automatically from the old settings file into the current DSH profile. An Agent list already set in that profile, including an empty list, is preserved. The transcript uses DSH’s native compact, standard, detailed, and verbose modes for tools, reasoning, and process groups.
 
@@ -61,16 +61,19 @@ Regular development needs no upstream checkout. See the [E2E guide](https://gith
 
 **1. Install and sign in to your Agent.**
 
-The agent catalog uses a snapshot of the [official ACP registry](https://agentclientprotocol.com) shipped with the plugin. It provides install guidance and configuration presets. Each release attempts a refresh; if synchronization or validation fails, publishing continues with the validated snapshot committed in the repository, with details in the workflow summary and a tracking issue. The catalog does not refresh over the network at runtime. Inclusion does not mean each Agent has been verified. The menu separates verified adapters from unverified catalog entries; verification does not cover every listed version or platform. The common four:
+The agent catalog uses a snapshot of the [official ACP registry](https://agentclientprotocol.com) shipped with the plugin. It provides install guidance and configuration presets. Each release attempts a refresh; if synchronization or validation fails, publishing continues with the validated snapshot committed in the repository, with details in the workflow summary and a tracking issue. The catalog does not refresh over the network at runtime. Inclusion does not mean each Agent has been verified. The menu separates verified adapters from unverified catalog entries; verification does not cover every listed version or platform. Connection examples:
 
-| Agent  | ACP command        | Terminal login     |
-| ------ | ------------------ | ------------------ |
-| Claude | `claude-agent-acp` | `claude`           |
-| Codex  | `codex-acp`        | `codex login`¹     |
-| Devin  | `devin acp`        | `devin auth login` |
-| Kimi   | `kimi acp`         | `kimi login`       |
+| Agent     | ACP command        | Terminal login     |
+| --------- | ------------------ | ------------------ |
+| Claude    | `claude-agent-acp` | `claude`           |
+| Codex     | `codex-acp`        | `codex login`¹     |
+| Devin     | `devin acp`        | `devin auth login` |
+| Kimi      | `kimi acp`         | `kimi login`       |
+| CodeBuddy | `codebuddy --acp`  | `codebuddy`        |
 
 ¹ ChatGPT sign-in requires the separate Codex CLI.
+
+`codebuddy` starts the interactive CLI; the ACP connection uses `codebuddy --acp`. This configuration is for the CodeBuddy CLI and does not establish compatibility with the WorkBuddy desktop app. Existing custom profiles are not silently switched to the CodeBuddy runtime based only on `catalogId`. The catalog entry remains marked unverified; real-run evidence applies only to the exact CLI version, platform, and model recorded in the E2E guide.
 
 Select an entry under **Plugins → ACP adapter → Add agent** to see install guidance. npm/Python entries prefill the installed executable, arguments, and environment. Other binary entries require installation for the Agent host platform and a manually entered command path; shared arguments and environment are still prefilled. The plugin does not download or install Agents automatically.
 

@@ -68,7 +68,7 @@ function agentConfigOf(id: string, raw: unknown): AcpAgentConfig {
   if (loginHint !== undefined && typeof loginHint !== 'string') {
     throw new TypeError(`dsh-acp settings: agents.${id}.loginHint must be a string`)
   }
-  // 边界：runtime 是专有行为绑定，只收四个合法值——非法值拒绝写入
+  // 边界：runtime 是专有行为绑定，只收已声明的合法值——非法值拒绝写入
   // （普通 profile 不允许拼出宿主 path/env ref，也不允许指定未知的 runtime）
   const catalogId = raw['catalogId']
   if (catalogId !== undefined && (typeof catalogId !== 'string' || !ACP_AGENT_ID_PATTERN.test(catalogId))) {
@@ -93,7 +93,7 @@ function agentConfigOf(id: string, raw: unknown): AcpAgentConfig {
 
 /**
  * （ 内置 runtime 唯一性）内置 runtime singleton 的跨条目校验：每个内置 runtime
- * （devin/codex/kimi/claude）至多一个 profile。生效绑定 = 显式 `runtime`
+ * （devin/codex/kimi/claude/codebuddy）至多一个 profile。生效绑定 = 显式 `runtime`
  * 字段优先，缺席时按 agent id 回退（与 effectiveRuntimeOf 同口径）。重复的
  * 内置 runtime 会让安装检查、模型目录与会话恢复无法稳定指向唯一配置，
  * 因此必须拒绝。

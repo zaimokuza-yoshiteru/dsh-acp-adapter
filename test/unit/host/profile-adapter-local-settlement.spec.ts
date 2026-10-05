@@ -451,6 +451,39 @@ describe('ACP adapter local terminal settlement', () => {
     await instance.close()
   })
 
+  it('settles a successful remote response when an Agent mode description exceeds the snapshot field limit', async () => {
+    const { sidecar } = tempSidecar()
+    const hostRoot = new Context()
+    const message = user('terminal result with a long mode description')
+    const sessions = new Map<string, SessionLike>([['local-session', session(message, 1)]])
+    const promptCount = { value: 0 }
+    const modes = Array.from({ length: 8 }, (_, index) => ({
+      id: `mode-${String(index)}`,
+      name: `Mode ${String(index)}`,
+      ...(index === 3 ? { description: 'd'.repeat(224) } : {}),
+    }))
+    const writeOptionSnapshot = vi.spyOn(sidecar, 'writeOptionSnapshot')
+    const instance = adapter(sidecar, sessions, hostRoot, () => ({
+      ...scriptedRuntime(promptCount)(),
+      modes: { currentModeId: 'mode-3', availableModes: modes } as never,
+    }))
+
+    const chunks = await collect(instance, request('local-session', message))
+    const finish = chunks.find((chunk) => (chunk as { type?: string }).type === 'finish') as
+      { readonly reason?: { readonly kind?: string } } | undefined
+
+    expect(promptCount.value).toBe(1)
+    expect(chunks).toContainEqual(expect.objectContaining({ type: 'text-delta', text: 'answer-1' }))
+    expect(finish?.reason?.kind).toBe('stop')
+    expect(instance.localSettlementStatus('local-session')).toBeUndefined()
+    // One pre-dispatch runtime snapshot plus the known-terminal settlement snapshot.
+    expect(writeOptionSnapshot).toHaveBeenCalledTimes(2)
+    const persisted = await sidecar.readOptionSnapshot('local-session' as never)
+    expect(persisted?.modes?.currentModeId).toBe('mode-3')
+    expect(persisted?.modes?.availableModes[3]?.description).toHaveLength(224)
+    await instance.close()
+  })
+
   it('persists the active generation fingerprint when configuration disappears during a held prompt', async () => {
     const { sidecar } = tempSidecar()
     const originalProfile = profile()

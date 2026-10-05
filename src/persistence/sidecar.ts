@@ -133,6 +133,7 @@ import { isSensitiveActivityField, redactSecretText } from '../domain/observabil
 // bounded codec stays an independent persistence concern.
 export {
   ACP_SNAPSHOT_FIELD_MAX,
+  ACP_SNAPSHOT_MODE_DESCRIPTION_MAX,
   ACP_SNAPSHOT_OPTION_LIMIT,
   ACP_SNAPSHOT_TOTAL_BYTES,
   ACP_SNAPSHOT_VALUES_LIMIT,

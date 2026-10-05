@@ -4,11 +4,11 @@
 
 [更新记录](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/main/CHANGELOG.md) · [版本发布与安装信息](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases)
 
-在 DSH 会话页面使用 **Claude · Codex · Devin · Kimi**。
+在 DSH 会话页面使用 **Claude · Codex · Devin · Kimi**，也可从目录配置标准 CodeBuddy CLI。
 
 本版本仅支持 DSH `0.2.0-rc.2`。点击 ACP 成员或子会话会在原生侧栏打开，保留主会话；Teams 成员的请求仍可直接在主会话审批。
 
-`0.2.0-rc.2.2` 继续使用 DSH 原生对话与菜单组件，并修复菜单焦点、恢复操作并发和结果反馈。活动日志首次加载与连续的无文本工具回合有更准确的状态；外部子代理在运行中可见，晚到或缺失的子代理终态不会被工具结束替代。已知远端结果的普通本地补存会自动重试；恢复状态与团队名册的暂时读取故障会自动恢复。ACP 诊断可一键导出安全摘要。已识别的 Devin 配额耗尽会单独说明，不会自动重试。详见[更新记录](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/main/CHANGELOG.md)和[原生复用说明](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/main/docs/native-reuse.md)。
+`0.2.0-rc.2.3` 增强标准 CodeBuddy CLI 的 ACP runtime 兼容，并修复较长模式说明使已确认结果无法完成本地结算的问题。对显式 CodeBuddy runtime，收到确认的取消终态（包括原生工具请求被拒绝）后，下一条输入前会重新加载同一会话，不重发已取消的 prompt；刷新可能增加等待时间，这条正常路径无需手动恢复。已有自定义配置不会因 `catalogId` 被静默改成 CodeBuddy runtime；此 CLI 接入不代表 WorkBuddy 桌面端接入。真实运行范围见 [E2E 指南](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/main/test/e2e/README.md)。详见[更新记录](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/main/CHANGELOG.md)与[原生复用说明](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/main/docs/native-reuse.md)。
 
 升级后，已有 Agent 配置会从旧设置文件自动导入当前 DSH 配置；当前配置中已设置的 Agent 列表（包括空列表）会保留。主会话过程使用 DSH 原生的紧凑、标准、详细和完全展开模式，工具、思考和过程分组随宿主设置切换。
 
@@ -61,16 +61,19 @@ pnpm install --frozen-lockfile
 
 **1. 安装 Agent，并在终端登录。**
 
-Agent 目录来自随插件发布的 [ACP 官方 registry](https://agentclientprotocol.com) 快照，提供安装指引与配置预填。发布时自动尝试更新目录；同步或校验失败则沿用仓库中已验证的快照，不阻塞发布，详情记录在发布工作流摘要和 issue 中。运行时不联网刷新目录。列入目录不代表已经逐个验证。菜单区分「已验证适配」和「目录收录 · 未验证」；验证范围不覆盖每个目录版本或平台。常用四家：
+Agent 目录来自随插件发布的 [ACP 官方 registry](https://agentclientprotocol.com) 快照，提供安装指引与配置预填。发布时自动尝试更新目录；同步或校验失败则沿用仓库中已验证的快照，不阻塞发布，详情记录在发布工作流摘要和 issue 中。运行时不联网刷新目录。列入目录不代表已经逐个验证。菜单区分「已验证适配」和「目录收录 · 未验证」；验证范围不覆盖每个目录版本或平台。接入示例：
 
-| Agent  | ACP 命令           | 终端登录           |
-| ------ | ------------------ | ------------------ |
-| Claude | `claude-agent-acp` | `claude`           |
-| Codex  | `codex-acp`        | `codex login`¹     |
-| Devin  | `devin acp`        | `devin auth login` |
-| Kimi   | `kimi acp`         | `kimi login`       |
+| Agent     | ACP 命令           | 终端登录           |
+| --------- | ------------------ | ------------------ |
+| Claude    | `claude-agent-acp` | `claude`           |
+| Codex     | `codex-acp`        | `codex login`¹     |
+| Devin     | `devin acp`        | `devin auth login` |
+| Kimi      | `kimi acp`         | `kimi login`       |
+| CodeBuddy | `codebuddy --acp`  | `codebuddy`        |
 
 ¹ 使用 ChatGPT 登录需另装 Codex CLI。
+
+`codebuddy` 会启动交互式 CLI；ACP 连接使用 `codebuddy --acp`。此配置只适用于 CodeBuddy CLI，不能据此推断 WorkBuddy 桌面端兼容。已有自定义配置不会仅因 `catalogId` 而被静默切换到 CodeBuddy runtime。当前目录项仍标为未验证；真实运行证据只适用于 E2E 指南记录的具体 CLI 版本、平台和模型。
 
 在 **插件 → ACP adapter** 详情页选择「添加 agent」中的条目后可查看安装指引。npm/Python 条目预填已安装程序的命令、参数和环境变量；其他二进制条目需要按 Agent 所在主机的平台安装并填写命令路径，通用参数和环境变量仍会预填。插件不会自动下载或安装 Agent。
 

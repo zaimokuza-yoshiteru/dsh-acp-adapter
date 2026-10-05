@@ -4,6 +4,22 @@
 
 User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for publication dates, exact installation instructions, and checksums. Historical entries were reconstructed from tag diffs; npm packages were not republished.
 
+## 0.2.0-rc.2.3
+
+### 中文
+
+- 增强标准 CodeBuddy CLI 的 ACP 接入：使用 `codebuddy --acp` 启动，并将 CLI 的 Host 工具授权请求与本连接注册的工具身份关联。通过 `codebuddy` 进入交互式 CLI 登录。此支持不代表跨平台验证，也不代表 WorkBuddy 桌面端使用相同接入方式；已有自定义配置不会因 `catalogId` 被静默改成 CodeBuddy runtime。
+- 对显式 CodeBuddy runtime，确认收到取消终态后（包括原生工具请求被拒绝），下一条输入前会重新加载同一 ACP 会话，不重发已取消的 prompt；刷新可能增加等待时间，不需要为这一正常路径手动进入恢复流程。
+- 规范化 ACP Agent 模式展示快照：保留当前模式，模式说明最多保存 1024 个字符，并继续遵守既有快照总长度预算，避免普通目录说明使已确认的远端结果无法完成本地结算。
+- 继续仅支持 DSH `0.2.0-rc.2`。真实 CLI 验证仅适用于 E2E 指南明确记录的版本、平台和模型；协议夹具不等于真实 Agent 验收。
+
+### English
+
+- Improve standard CodeBuddy CLI ACP integration: start its ACP server with `codebuddy --acp`, and correlate its Host tool permission requests with the tool identity registered for that connection. Use `codebuddy` to open the interactive CLI for sign-in. This is not cross-platform verification and does not imply that the WorkBuddy desktop app uses the same integration. Existing custom profiles are not silently changed to the CodeBuddy runtime based on `catalogId`.
+- For the explicit CodeBuddy runtime, after a confirmed cancelled terminal result (including rejection of a native tool request), the next input reloads the same ACP session without resubmitting the cancelled prompt. Refreshing may add startup wait time and does not require manual recovery on this normal path.
+- Normalize ACP Agent mode display snapshots: retain the current mode, cap each mode description at 1,024 characters, and keep the existing total snapshot-length budget. Ordinary catalog descriptions can no longer prevent local settlement of a confirmed remote result.
+- Continue to target DSH `0.2.0-rc.2` only. Real CLI evidence applies only to the version, platform, and model recorded in the E2E guide; protocol fixtures are not real-Agent sign-off.
+
 ## 0.2.0-rc.2.2
 
 ### 中文

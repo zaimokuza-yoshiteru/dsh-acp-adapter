@@ -1541,6 +1541,159 @@ describe('session-owned native Teams MCP bridge', () => {
     lease.endPrompt()
     expect(await lease.permission(permission(name))).toBeUndefined()
   })
+  it('recognizes only CodeBuddy deferred inputs bound to this live bridge and presents their native tool', async () => {
+    const { lease, server, tools, permission } = await setup('codebuddy', ['project_lookup'])
+    lease.beginPrompt(new AbortController().signal)
+    const nativeName = tools.find((tool) => tool.name === 'project_lookup')!.name
+    const input = { query: 'known project' }
+    const wrapped: RequestPermissionRequest = {
+      ...permission(),
+      toolCall: {
+        toolCallId: 'deferred-valid',
+        name: 'DeferExecuteTool',
+        rawInput: { toolName: `mcp__${server.name}__${nativeName}`, params: input },
+      },
+    }
+    expect(await lease.inspectPermission!(wrapped)).toMatchObject({
+      reason: 'auto-approved',
+      toolName: nativeName,
+      identitySource: 'codebuddy-deferred-input',
+      structuredIdentityPresent: true,
+    })
+    expect(await lease.permission(wrapped)).toEqual({ outcome: { outcome: 'selected', optionId: 'yes' } })
+    expect(lease.presentTool!(wrapped.toolCall)).toEqual({
+      ...wrapped.toolCall,
+      name: nativeName,
+      title: nativeName,
+      rawInput: input,
+    })
+    expect(wrapped.toolCall.rawInput).toEqual({ toolName: `mcp__${server.name}__${nativeName}`, params: input })
+
+    const noName = {
+      ...wrapped,
+      toolCall: {
+        toolCallId: 'deferred-no-name',
+        rawInput: { toolName: `mcp__${server.name}__${nativeName}`, params: input },
+      },
+    }
+    expect(await lease.inspectPermission!(noName)).toMatchObject({ reason: 'auto-approved' })
+    const qualifiedName = {
+      ...wrapped,
+      toolCall: {
+        toolCallId: 'deferred-qualified-name',
+        name: `mcp__${server.name}__${nativeName}`,
+        rawInput: { toolName: `mcp__${server.name}__${nativeName}`, params: input },
+      },
+    }
+    expect(await lease.inspectPermission!(qualifiedName)).toMatchObject({ reason: 'auto-approved' })
+    const directQualifiedName = {
+      ...permission(`mcp__${server.name}__${nativeName}`),
+      toolCall: { toolCallId: 'direct-qualified', name: `mcp__${server.name}__${nativeName}` },
+    }
+    expect(await lease.inspectPermission!(directQualifiedName)).toMatchObject({
+      reason: 'auto-approved',
+      toolName: nativeName,
+      identitySource: 'name',
+    })
+    const codexMetadataOnly = {
+      ...permission(),
+      toolCall: {
+        toolCallId: 'codex-shape-only',
+        rawInput: { server: server.name, tool: nativeName },
+        _meta: { is_mcp_tool_call: true },
+      },
+    }
+    expect(await lease.inspectPermission!(codexMetadataOnly)).toMatchObject({ reason: 'identity-unmatched' })
+  })
+
+  it('keeps CodeBuddy Ask and fails closed for generic, foreign, malformed, conflicting, unknown, or stale identities', async () => {
+    const ask = await setup('codebuddy', ['project_lookup'], false, 'lead', async () => 'ask')
+    ask.lease.beginPrompt(new AbortController().signal)
+    const name = ask.tools.find((tool) => tool.name === 'project_lookup')!.name
+    const deferred = (serverName: string, params: unknown = {}) => ({
+      ...ask.permission(),
+      toolCall: {
+        toolCallId: 'deferred',
+        name: 'DeferExecuteTool',
+        rawInput: { toolName: `mcp__${serverName}__${name}`, params },
+      },
+    })
+    const valid = deferred(ask.server.name)
+    expect(await ask.lease.inspectPermission!(valid)).toMatchObject({
+      reason: 'approval-required',
+      toolName: name,
+      identitySource: 'codebuddy-deferred-input',
+    })
+    expect(await ask.lease.permission(valid)).toBeUndefined()
+
+    const generic = await setup(undefined, ['project_lookup'], false)
+    generic.lease.beginPrompt(new AbortController().signal)
+    const genericWrapper = {
+      ...generic.permission(),
+      toolCall: {
+        toolCallId: 'generic-wrapper',
+        name: 'DeferExecuteTool',
+        rawInput: { toolName: `mcp__${generic.server.name}__${name}`, params: {} },
+      },
+    }
+    expect(await generic.lease.inspectPermission!(genericWrapper)).toMatchObject({ reason: 'identity-unmatched' })
+    expect(await generic.lease.permission(genericWrapper)).toBeUndefined()
+
+    expect(await ask.lease.inspectPermission!(deferred('another_server'))).toMatchObject({
+      reason: 'identity-unmatched',
+    })
+    expect(await ask.lease.inspectPermission!(deferred(ask.server.name, null))).toMatchObject({
+      reason: 'identity-unmatched',
+    })
+    const conflict = deferred(ask.server.name) as RequestPermissionRequest
+    conflict.toolCall._meta = { claudeCode: { toolName: 'mcp__other__project_lookup' } }
+    expect(await ask.lease.inspectPermission!(conflict)).toMatchObject({ reason: 'identity-unmatched' })
+    const nameConflict = {
+      ...valid,
+      toolCall: {
+        ...valid.toolCall,
+        name: 'mcp__other__project_lookup',
+      },
+    }
+    expect(await ask.lease.inspectPermission!(nameConflict)).toMatchObject({ reason: 'identity-unmatched' })
+    const codexMetaConflict = {
+      ...valid,
+      toolCall: {
+        ...valid.toolCall,
+        _meta: { is_mcp_tool_call: true },
+        rawInput: {
+          toolName: `mcp__${ask.server.name}__${name}`,
+          params: {},
+          server: 'other',
+          tool: name,
+        },
+      },
+    }
+    expect(await ask.lease.inspectPermission!(codexMetaConflict)).toMatchObject({ reason: 'identity-unmatched' })
+
+    const unknown = {
+      ...ask.permission(),
+      toolCall: {
+        toolCallId: 'deferred-unknown',
+        name: 'DeferExecuteTool',
+        rawInput: { toolName: `mcp__${ask.server.name}__not_registered`, params: {} },
+      },
+    }
+    expect(await ask.lease.inspectPermission!(unknown)).toMatchObject({ reason: 'invalid-tool-name' })
+    expect(
+      await ask.lease.permission({
+        ...unknown,
+        options: [
+          { optionId: 'allow-id', kind: 'allow_once', name: 'Allow once' },
+          { optionId: 'reject-id', kind: 'reject_once', name: 'Reject once' },
+        ],
+      }),
+    ).toEqual({ outcome: { outcome: 'selected', optionId: 'reject-id' } })
+
+    ask.lease.endPrompt()
+    expect(await ask.lease.inspectPermission!(valid)).toMatchObject({ reason: 'inactive-prompt' })
+    expect(await ask.lease.permission(valid)).toBeUndefined()
+  })
   it('uses identical native names while binding each connection to its own caller', async () => {
     const one = await setup('devin'),
       two = await setup('devin')

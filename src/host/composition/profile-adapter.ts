@@ -27,7 +27,11 @@ import { AcpStubAdapter, reasoningInfoFromConfigOptions } from './llm-stub.ts'
 import type { AcpProbeCacheEntry } from './llm-stub.ts'
 import type { AcpStubAgentConfig } from '../../domain/session/agent-config.ts'
 import type { SubprocessSeamResolution } from '../../runtime/process/subprocess.ts'
-import { AcpSessionRuntime } from '../../runtime/session/session-runtime.ts'
+import {
+  AcpSessionRefreshAbortedError,
+  AcpSessionRefreshRetryError,
+  AcpSessionRuntime,
+} from '../../runtime/session/session-runtime.ts'
 import type { AcpRuntimeContextUsage } from '../../runtime/session/session-runtime.ts'
 import {
   acpLaunchEnvironment,
@@ -642,6 +646,8 @@ export interface AcpProfileRuntime {
   readonly currentModeId?: string | undefined
   readonly modes?: acp.SessionModeState | undefined
   readonly contextUsage?: AcpRuntimeContextUsage | undefined
+  readonly lastRestoreRefreshedCancelledSession?: boolean | undefined
+  readonly cancelledSessionRefreshPending?: boolean | undefined
   readonly isBusy?: boolean
   hasPendingHostCalls?(): boolean
   hasUncommittedHostFeedback?(): boolean
@@ -1579,6 +1585,7 @@ export class AcpProfileAdapter extends LlmAdapter {
       self.runtimes.set(runtimeKey, runtime)
       if (session !== undefined) self.runtimeOwners.set(runtime, session.identity ?? session)
       let retainHealthyRuntimeAfterNotDispatched = false
+      let retainCancelledRuntimeForRefreshRetry = false
       let terminalSettlementLifetime: (() => void) | undefined
       try {
         let validatedPrompt: acp.ContentBlock[]
@@ -1709,17 +1716,39 @@ export class AcpProfileAdapter extends LlmAdapter {
             })
             // Replay is staging/audit only. It is intentionally not compared to,
             // or appended over, DSH history; a provider may project it differently.
-            await self.sidecar?.append(sessionKey as never, {
-              kind: 'replay-assessment',
-              data: {
-                status: 'not-compared',
-                method,
-                detail: `ACP session ${method} (${String(replayUpdates)} staged updates, ${String(replayChars)} text characters)`,
-                acpSessionId: binding.agentSessionId,
-                generation: binding.generation,
-              },
-            })
+            try {
+              await self.sidecar?.append(sessionKey as never, {
+                kind: 'replay-assessment',
+                data: {
+                  status: 'not-compared',
+                  method,
+                  detail: `ACP session ${method} (${String(replayUpdates)} staged updates, ${String(replayChars)} text characters)`,
+                  acpSessionId: binding.agentSessionId,
+                  generation: binding.generation,
+                },
+              })
+            } catch (error) {
+              if (!runtime.lastRestoreRefreshedCancelledSession) throw error
+              // Replay assessment is staging-only evidence. A local audit write
+              // cannot invalidate a successful same-session refresh.
+            }
           } catch (error: unknown) {
+            const cancelledRefreshPending = runtime.cancelledSessionRefreshPending === true
+            if (
+              (error instanceof AcpSessionRefreshRetryError || error instanceof AcpSessionRefreshAbortedError) &&
+              cancelledRefreshPending
+            ) {
+              // The previous prompt has a confirmed cancelled terminal and its
+              // result is already settled. Keep the original binding/runtime
+              // marker so a later user request can retry session/load without
+              // creating a recovery gate or dispatching this prompt.
+              retainCancelledRuntimeForRefreshRetry = true
+              throw new LlmError(error.message, error.code, { cause: error })
+            }
+            if (options.signal?.aborted === true && cancelledRefreshPending) {
+              retainCancelledRuntimeForRefreshRetry = true
+              throw abortReason(options.signal)
+            }
             await self.releaseRuntime(runtimeKey, runtime)
             const detail = `ACP session restore failed: ${error instanceof Error ? error.message : String(error)}`
             const missing = /(?:session[_ -]?)?(?:not[ -]?found|unknown[_ -]?session)|does not exist/i.test(detail)
@@ -2993,7 +3022,8 @@ export class AcpProfileAdapter extends LlmAdapter {
         terminalSettlementLifetime?.()
         // Setup/read/recovery gates can fail after initialize has spawned the
         // Agent. Existing classified failure paths may already have released it.
-        if (!retainHealthyRuntimeAfterNotDispatched) await self.releaseRuntime(runtimeKey, runtime)
+        if (!retainHealthyRuntimeAfterNotDispatched && !retainCancelledRuntimeForRefreshRetry)
+          await self.releaseRuntime(runtimeKey, runtime)
         throw error
       }
     })()
@@ -3462,6 +3492,7 @@ export class AcpProfileAdapter extends LlmAdapter {
     return {
       profileId: this.profileId,
       diagnosticDshSessionId: sessionId,
+      ...(runtime === 'codebuddy' ? { refreshSessionAfterCancelledPrompt: true } : {}),
       onHostSettlementChanged: () => this.controlsChanged?.(sessionId),
       ...sessionProtocolExtensions(runtime),
       ...(this.mcpKey === undefined

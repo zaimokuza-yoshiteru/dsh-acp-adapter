@@ -9,7 +9,9 @@ import { connectFreshWorkspace, writeComposerDraft } from '#host-support'
 import { launchAdapterWorld, root } from './scaffold.ts'
 
 // These use the real host and plugin UI. Only the ACP peer is deterministic/keyless.
-describe.each(['kimi', 'devin', 'codex', 'claude'])('Agent controls: %s', (profile) => {
+const profiles = ['kimi', 'devin', 'codex', 'claude', 'codebuddy'] as const
+
+describe.each(profiles)('Agent controls: %s', (profile) => {
   it.each(['response', 'deferred'])(
     'shows %s options during the first turn, follows changes and unlocks on stop',
     async (delivery) => {
@@ -28,6 +30,7 @@ describe.each(['kimi', 'devin', 'codex', 'claude'])('Agent controls: %s', (profi
               name: `Fixture ${profile}`,
               command: process.execPath,
               args: [join(root, 'test/mock-agent/mock-agent.ts')],
+              runtime: profile,
               env: {
                 HOME: host.workspaceCwd,
                 MOCK_SCENARIO: 'regression',

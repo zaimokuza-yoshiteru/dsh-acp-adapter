@@ -536,7 +536,7 @@ describe('草稿种子：emptyDraft / draftFromCatalogEntry / draftFromAgent', (
     expect(emptyDraft()).toEqual({ id: '', name: '', command: '', argsText: '', envText: '', loginHint: '' })
   })
 
-  it('draftFromCatalogEntry 按条目 id 播种：内置 runtime 四条各回其编辑态', () => {
+  it('draftFromCatalogEntry 按条目 id 播种：内置 runtime 预设绑定各回其编辑态', () => {
     expect(draftFromCatalogEntry('devin')).toEqual({
       id: 'devin',
       catalogId: 'devin',
@@ -607,6 +607,22 @@ describe('草稿种子：emptyDraft / draftFromCatalogEntry / draftFromAgent', (
       loginHint: 'kimi login',
       runtime: 'kimi',
       catalogId: 'kimi',
+    })
+
+    // CodeBuddy is explicitly bound for its deferred-MCP wire shape, while
+    // remaining unverified in the catalog until separate adapter coverage exists.
+    const codebuddy = catalogEntryOf('codebuddy-code')
+    expect(codebuddy).toMatchObject({
+      runtime: 'codebuddy',
+      loginHint: 'codebuddy',
+      args: ['--acp'],
+      verification: 'unverified',
+    })
+    const codebuddyDraft = draftFromCatalogEntry('codebuddy-code')
+    expect(codebuddyDraft).toMatchObject({ runtime: 'codebuddy', catalogId: 'codebuddy-code', argsText: '--acp' })
+    expect(validateAgentDraft(codebuddyDraft as AgentDraft, {}, undefined).config).toMatchObject({
+      runtime: 'codebuddy',
+      catalogId: 'codebuddy-code',
     })
 
     // 未知条目 id → undefined（菜单只从 catalog 列表渲染，正常不可达）
@@ -1141,5 +1157,13 @@ describe('catalog identity survives profile customization', () => {
     const config: AcpAgentConfig = { name: 'Custom', command: 'custom', args: [], env: {}, catalogId: 'future-agent' }
     expect(draftFromAgent('my-custom', config).catalogId).toBe('future-agent')
     expect(effectiveRuntimeOf('my-custom', config)).toBeUndefined()
+    const copiedKnownCatalog: AcpAgentConfig = {
+      name: 'Custom CodeBuddy Wrapper',
+      command: 'custom',
+      args: [],
+      env: {},
+      catalogId: 'codebuddy-code',
+    }
+    expect(effectiveRuntimeOf('my-custom', copiedKnownCatalog)).toBeUndefined()
   })
 })

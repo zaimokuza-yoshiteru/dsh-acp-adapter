@@ -9,6 +9,8 @@ import { Context } from '@deepseek-ai/cordis'
 import { AcpProfileAdapter } from '../../../src/host/composition/profile-adapter.ts'
 import type { AcpProfileRuntime } from '../../../src/host/composition/profile-adapter.ts'
 import { AcpHostSettlementError } from '../../../src/runtime/session/mcp-lease.ts'
+import { AcpSessionRefreshRetryError } from '../../../src/runtime/session/session-runtime.ts'
+import type { AcpSessionRuntimeOptions } from '../../../src/runtime/session/session-runtime.ts'
 import type { AcpAgentConfig } from '../../../src/domain/session/agent-config.ts'
 import type { SessionLike } from '../../../src/domain/session/current-step-admission.ts'
 import { createAcpSidecar, type AcpSidecar } from '../../../src/persistence/sidecar.ts'
@@ -1702,6 +1704,109 @@ describe('provider activity bridge', () => {
     await adapter.close()
     expect(closeCount).toBe(1)
     expect(instances[0]?.active).toBe(false)
+  })
+
+  it('retains an explicit CodeBuddy runtime for a later same-binding refresh after transient pre-dispatch failure', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-codebuddy-refresh-retry-'))
+    roots.push(root)
+    const sidecar = testSidecar(root)
+    const sessionId = 'codebuddy-refresh-session'
+    const firstMessage = user('continue the existing CodeBuddy session')
+    const sessions = new Map<string, SessionLike>([[sessionId, session(firstMessage)]])
+    let refreshPending = false
+    let failRefreshOnce = true
+    let promptCount = 0
+    let restoreCount = 0
+    let closeCount = 0
+    let refreshed = false
+    const runtimeFactory = vi.fn((options: AcpSessionRuntimeOptions): AcpProfileRuntime => {
+      expect(options.refreshSessionAfterCancelledPrompt).toBe(true)
+      return {
+        acpSessionId: 'agent-codebuddy-refresh',
+        agentInfo: { name: 'codebuddy-code', version: '2.161.2' },
+        agentCapabilities: { loadSession: true },
+        protocolVersion: 1,
+        start: async () => undefined,
+        restore: async (binding) => {
+          restoreCount += 1
+          expect(binding.agentSessionId).toBe('agent-codebuddy-refresh')
+          if (refreshPending && failRefreshOnce) {
+            failRefreshOnce = false
+            throw new AcpSessionRefreshRetryError(new Error('transient load transport failure'))
+          }
+          if (refreshPending) {
+            refreshPending = false
+            refreshed = true
+          }
+          return refreshed ? 'loaded' : 'reused'
+        },
+        get lastRestoreRefreshedCancelledSession() {
+          return refreshed
+        },
+        get cancelledSessionRefreshPending() {
+          return refreshPending
+        },
+        prompt: async (_content, onUpdate) => {
+          promptCount += 1
+          if (promptCount === 1) {
+            refreshPending = true
+            return { stopReason: 'cancelled' } as never
+          }
+          onUpdate({
+            sessionId: 'agent-codebuddy-refresh',
+            update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'continued' } },
+          } as never)
+          return { stopReason: 'end_turn' } as never
+        },
+        close: async () => {
+          closeCount += 1
+        },
+      }
+    })
+    const adapter = new AcpProfileAdapter(
+      'codebuddy-code',
+      () => ({ ...profile(), runtime: 'codebuddy' }),
+      seam(),
+      (id) => sessions.get(id),
+      ledgerFor(sidecar),
+      undefined,
+      runtimeFactory,
+      sidecar,
+    )
+    const requestFor = (message: ReturnType<typeof user>) =>
+      markAgentLoopRequest({ ...request(sessionId, message), provider: 'acp-codebuddy-code' })
+    try {
+      const firstChunks: unknown[] = []
+      for await (const chunk of adapter.stream(requestFor(firstMessage))) firstChunks.push(chunk)
+      expect(firstChunks.at(-1)).toMatchObject({ type: 'finish', reason: { kind: 'aborted' } })
+      expect(await sidecar.readRecoveryState(sessionId as never)).toMatchObject({ kind: 'healthy' })
+
+      const failedRefreshMessage = user('continue after the cancellation')
+      sessions.set(sessionId, session(failedRefreshMessage))
+      await expect(async () => {
+        for await (const _chunk of adapter.stream(requestFor(failedRefreshMessage))) {
+          // Drain the failed pre-dispatch stream.
+        }
+      }).rejects.toMatchObject({ code: 'ACP_SESSION_REFRESH_FAILED' })
+      expect(await sidecar.readRecoveryState(sessionId as never)).toMatchObject({ kind: 'healthy' })
+      expect(runtimeFactory).toHaveBeenCalledOnce()
+      expect(closeCount).toBe(0)
+      expect(promptCount).toBe(1)
+
+      const retryMessage = user('continue after the temporary refresh failure')
+      sessions.set(sessionId, session(retryMessage))
+      const nextChunks: unknown[] = []
+      for await (const chunk of adapter.stream(requestFor(retryMessage))) nextChunks.push(chunk)
+      expect(nextChunks.at(-1)).toMatchObject({ type: 'finish', reason: { kind: 'stop' } })
+      expect(runtimeFactory).toHaveBeenCalledOnce()
+      expect(restoreCount).toBe(2)
+      expect(promptCount).toBe(2)
+      expect(closeCount).toBe(0)
+      expect(await sidecar.readRecoveryState(sessionId as never)).toMatchObject({ kind: 'healthy' })
+    } finally {
+      await adapter.close()
+      expect(closeCount).toBe(1)
+    }
   })
 
   it('shares quarantined Host owners and WAL fallback across adapter replacement until explicit recovery', async () => {

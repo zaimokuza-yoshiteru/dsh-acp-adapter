@@ -34,12 +34,14 @@ import {
   ACP_SIDECAR_DB_FILENAME,
   ACP_SIDECAR_SCHEMA_VERSION,
   ACP_SNAPSHOT_FIELD_MAX,
+  ACP_SNAPSHOT_MODE_DESCRIPTION_MAX,
   ACP_SNAPSHOT_OPTION_LIMIT,
   ACP_SNAPSHOT_TOTAL_BYTES,
   ACP_SNAPSHOT_VALUES_LIMIT,
   acpOptionsSnapshotOf,
   createAcpSidecar,
   installAcpSidecar,
+  toOptionsSnapshotRecord,
   type AcpBindingData,
   type AcpBindingRecord,
   type AcpOptionsSnapshotRecord,
@@ -1351,6 +1353,99 @@ describe(' option 快照（acpOptionsSnapshotOf 有界标准化 + option_snapsho
     expect(await store.readOptionSnapshot(SessionId('sess-zero'))).toMatchObject({
       contextUsage: { used: 0, size: 0, cost: null },
     })
+  })
+
+  it('规范化较长 Agent mode 描述后可往返持久化，不让展示字段卡住已完成 turn', async () => {
+    const modes = Array.from({ length: 8 }, (_, index) => ({
+      id: `mode-${String(index)}`,
+      name: `Mode ${String(index)}`,
+      ...(index === 3 ? { description: 'd'.repeat(224) } : {}),
+    }))
+    const record = acpOptionsSnapshotOf([], 'mode-3', 'fp-long-mode', TIME_BASE, {
+      modes: { currentModeId: 'mode-3', availableModes: modes },
+      contextUsage: { used: 10, size: 100 },
+    })
+    expect(record.modes?.availableModes[3]?.description).toHaveLength(224)
+    expect(record.currentModeId).toBe('mode-3')
+    expect(toOptionsSnapshotRecord(record)).toEqual(record)
+    await store.writeOptionSnapshot(SessionId('sess-long-mode'), record)
+    expect(await store.readOptionSnapshot(SessionId('sess-long-mode'))).toEqual(record)
+  })
+
+  it('限制 Agent mode 数量并保留当前 mode 的完整 ID，不截断身份字段', async () => {
+    const modes = Array.from({ length: ACP_SNAPSHOT_OPTION_LIMIT + 8 }, (_, index) => ({
+      id: `mode-${String(index)}`,
+      name: `Mode ${String(index)}`.repeat(40),
+      description: 'x'.repeat(224),
+    }))
+    const activeModeId = `mode-${String(modes.length - 1)}`
+    const record = acpOptionsSnapshotOf([], activeModeId, 'fp-many-modes', TIME_BASE, {
+      modes: { currentModeId: activeModeId, availableModes: modes },
+    })
+    expect(record.modes?.availableModes).toHaveLength(ACP_SNAPSHOT_OPTION_LIMIT)
+    expect(record.modes?.availableModes.some((mode) => mode.id === activeModeId)).toBe(true)
+    expect(record.modes?.availableModes.every((mode) => mode.name.length <= ACP_SNAPSHOT_FIELD_MAX)).toBe(true)
+    expect(record.modes?.availableModes.every((mode) => mode.description?.length === 224)).toBe(true)
+    expect(record.currentModeId).toBe(activeModeId)
+
+    const tooLongModeId = 'm'.repeat(ACP_SNAPSHOT_FIELD_MAX + 1)
+    expect(() =>
+      acpOptionsSnapshotOf([], tooLongModeId, 'fp-invalid-mode-id', TIME_BASE, {
+        modes: { currentModeId: tooLongModeId, availableModes: [{ id: tooLongModeId, name: 'Invalid' }] },
+      }),
+    ).toThrow(TypeError)
+    const invalidUsage = acpOptionsSnapshotOf([], 'active', 'fp-invalid-usage', TIME_BASE, {
+      modes: { currentModeId: 'active', availableModes: [{ id: 'active', name: 'Active' }] },
+      contextUsage: { used: Number.POSITIVE_INFINITY, size: 100 },
+    })
+    expect(invalidUsage.currentModeId).toBe('active')
+    expect(invalidUsage.modes?.currentModeId).toBe('active')
+    expect(invalidUsage.contextUsage).toBeUndefined()
+    expect(toOptionsSnapshotRecord(invalidUsage)).toEqual(invalidUsage)
+    await store.writeOptionSnapshot(SessionId('sess-invalid-usage'), invalidUsage)
+    expect(await store.readOptionSnapshot(SessionId('sess-invalid-usage'))).toEqual(invalidUsage)
+  })
+
+  it('mode description 使用独立 1024 字符上限并对超限展示字段做有界裁剪', async () => {
+    const record = acpOptionsSnapshotOf([], 'active', 'fp-mode-description-bound', TIME_BASE, {
+      modes: {
+        currentModeId: 'active',
+        availableModes: [
+          { id: 'active', name: 'Active', description: 'd'.repeat(ACP_SNAPSHOT_MODE_DESCRIPTION_MAX + 1) },
+        ],
+      },
+    })
+    expect(record.modes?.availableModes[0]?.description).toHaveLength(ACP_SNAPSHOT_MODE_DESCRIPTION_MAX)
+    expect(toOptionsSnapshotRecord(record)).toEqual(record)
+    await store.writeOptionSnapshot(SessionId('sess-mode-description-bound'), record)
+    expect(await store.readOptionSnapshot(SessionId('sess-mode-description-bound'))).toEqual(record)
+  })
+
+  it('modes 与 config options 合并后仍服从总大小上限并可被读侧接受', async () => {
+    const fat = {
+      type: 'select',
+      id: 'model',
+      name: 'Model',
+      currentValue: 'active',
+      options: Array.from({ length: ACP_SNAPSHOT_VALUES_LIMIT }, (_, index) => ({
+        value: `model-${String(index)}-${'v'.repeat(100)}`,
+        name: 'Model option',
+      })),
+    } as never
+    const modes = Array.from({ length: ACP_SNAPSHOT_OPTION_LIMIT }, (_, index) => ({
+      id: `mode-${String(index)}`,
+      name: 'n'.repeat(224),
+      description: 'd'.repeat(224),
+    }))
+    const record = acpOptionsSnapshotOf([fat], 'mode-0', 'fp-total-with-modes', TIME_BASE, {
+      modes: { currentModeId: 'mode-0', availableModes: modes },
+      contextUsage: { used: 100, size: 1000, cost: { amount: 0.2, currency: 'USD' } },
+    })
+    expect(JSON.stringify(record).length).toBeLessThanOrEqual(ACP_SNAPSHOT_TOTAL_BYTES)
+    expect(record.options.some((option) => option.id === 'model')).toBe(true)
+    expect(toOptionsSnapshotRecord(record)).toEqual(record)
+    await store.writeOptionSnapshot(SessionId('sess-total-with-modes'), record)
+    expect(await store.readOptionSnapshot(SessionId('sess-total-with-modes'))).toEqual(record)
   })
 })
 

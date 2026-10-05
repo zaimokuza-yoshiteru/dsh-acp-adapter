@@ -44,7 +44,7 @@ export interface AcpStubAgentConfig {
   env: Record<string, string>
   /** Login guidance shown when a probe fails with auth_required. */
   loginHint?: string
-  /** Explicit specialized runtime; legacy built-in profile IDs remain a fallback.
+  /** Explicit specialized runtime; the original four built-in profile IDs remain a fallback.
    * Catalog metadata never grants runtime behavior. Unknown profiles use generic ACP.
    */
   runtime?: AcpAgentId
@@ -57,22 +57,26 @@ export type AcpAgentConfig = AcpStubAgentConfig
 
 // Runtime identities are shared; their trusted execution behavior stays host-side.
 
-/** 正式产品范围的四个 ACP backend id。 */
-export type AcpAgentId = 'devin' | 'codex' | 'kimi' | 'claude'
+/** Explicitly supported ACP backend identity bindings. */
+export type AcpAgentId = 'devin' | 'codex' | 'kimi' | 'claude' | 'codebuddy'
 
-/** 全部合法 runtime 绑定值（settings schema 校验与身份解析共用同一词表）。 */
-export const ACP_AGENT_IDS: readonly AcpAgentId[] = ['devin', 'codex', 'kimi', 'claude']
+/** 所有可显式绑定的合法 runtime（settings schema 使用）。 */
+export const ACP_AGENT_IDS: readonly AcpAgentId[] = ['devin', 'codex', 'kimi', 'claude', 'codebuddy']
+
+/** Profile-ID fallback predates explicit runtime bindings and is limited to the original four IDs. */
+const LEGACY_RUNTIME_IDS: readonly AcpAgentId[] = ['devin', 'codex', 'kimi', 'claude']
 
 export const RUNTIME_REGISTRY_IDS: Readonly<Record<AcpAgentId, string>> = {
   devin: 'devin',
   codex: 'codex-acp',
   kimi: 'kimi',
   claude: 'claude-acp',
+  codebuddy: 'codebuddy-code',
 }
 
-/** Explicit runtime binding wins; legacy built-in profile IDs remain supported. */
+/** Explicit binding wins; only the original built-in profile IDs retain legacy fallback. */
 export function effectiveRuntimeOf(id: string, config?: { readonly runtime?: AcpAgentId }): AcpAgentId | undefined {
-  return config?.runtime ?? (ACP_AGENT_IDS.includes(id as AcpAgentId) ? (id as AcpAgentId) : undefined)
+  return config?.runtime ?? (LEGACY_RUNTIME_IDS.includes(id as AcpAgentId) ? (id as AcpAgentId) : undefined)
 }
 
 /** Catalog metadata does not participate in execution identity. */

@@ -2,7 +2,8 @@
  * Bounded option snapshot codec used by sidecar cold-start presentation.
  *
  * This module owns normalization and validation only; SQLite lifecycle remains
- * in sidecar.ts. The wire shape and limits are unchanged.
+ * in sidecar.ts. Snapshot fields use independent display bounds; serialized
+ * length remains protected by the existing budget below.
  */
 /// <reference types="node" />
 
@@ -18,6 +19,8 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 export const ACP_SNAPSHOT_OPTION_LIMIT = 32 as const
 /** 快照单个字符串字段（id/name/category/当前值/可选值）的字符数硬上限（超出截断）。 */
 export const ACP_SNAPSHOT_FIELD_MAX = 128 as const
+/** Mode descriptions are explanatory UI text, separate from compact option labels. */
+export const ACP_SNAPSHOT_MODE_DESCRIPTION_MAX = 1024 as const
 /** 快照单选项的可选值条数硬上限（超出截断）。 */
 export const ACP_SNAPSHOT_VALUES_LIMIT = 64 as const
 /** 快照整体序列化字节数硬上限（超出先丢尾部非 model 类选项，再剥 values 列表）。 */
@@ -103,6 +106,79 @@ function snapshotOptionOf(option: SessionConfigOption): AcpOptionsSnapshotOption
   return undefined
 }
 
+type SnapshotModes = NonNullable<AcpOptionsSnapshotRecord['modes']>
+type SnapshotContextUsage = NonNullable<AcpOptionsSnapshotRecord['contextUsage']>
+
+/** Keep stable mode ids intact; trim only display labels and descriptions. */
+function snapshotModesOf(modes: SnapshotModes | null | undefined): SnapshotModes | null | undefined {
+  if (modes == null) return modes
+  if (
+    typeof modes.currentModeId !== 'string' ||
+    modes.currentModeId.length > ACP_SNAPSHOT_FIELD_MAX ||
+    !Array.isArray(modes.availableModes)
+  )
+    throw new TypeError('ACP mode snapshot contains an invalid active mode or mode list')
+
+  const availableModes: NonNullable<SnapshotModes['availableModes']>[number][] = []
+  const seen = new Set<string>()
+  for (const mode of modes.availableModes) {
+    if (
+      typeof mode.id !== 'string' ||
+      mode.id.length === 0 ||
+      mode.id.length > ACP_SNAPSHOT_FIELD_MAX ||
+      typeof mode.name !== 'string' ||
+      (mode.description !== undefined && mode.description !== null && typeof mode.description !== 'string') ||
+      seen.has(mode.id)
+    )
+      continue
+    seen.add(mode.id)
+    availableModes.push({
+      id: mode.id,
+      name: snapshotField(mode.name),
+      ...(mode.description === undefined
+        ? {}
+        : {
+            description:
+              mode.description === null
+                ? null
+                : mode.description.length > ACP_SNAPSHOT_MODE_DESCRIPTION_MAX
+                  ? mode.description.slice(0, ACP_SNAPSHOT_MODE_DESCRIPTION_MAX)
+                  : mode.description,
+          }),
+    })
+  }
+
+  // Preserve the active mode in the bounded list even when the Agent advertises
+  // more entries than this read-only snapshot can retain.
+  let boundedModes = availableModes.slice(0, ACP_SNAPSHOT_OPTION_LIMIT)
+  if (!boundedModes.some((mode) => mode.id === modes.currentModeId)) {
+    const currentMode = availableModes.find((mode) => mode.id === modes.currentModeId)
+    if (currentMode !== undefined) {
+      if (boundedModes.length === ACP_SNAPSHOT_OPTION_LIMIT) boundedModes = boundedModes.slice(0, -1)
+      boundedModes.push(currentMode)
+    }
+  }
+  return { currentModeId: modes.currentModeId, availableModes: boundedModes }
+}
+
+/** Malformed optional usage telemetry must not prevent a terminal turn from settling. */
+function snapshotContextUsageOf(
+  usage: SnapshotContextUsage | null | undefined,
+): SnapshotContextUsage | null | undefined {
+  if (usage == null) return usage
+  if (!Number.isFinite(usage.used) || !Number.isFinite(usage.size) || usage.used < 0 || usage.size < 0) return undefined
+  const cost = usage.cost
+  const safeCost =
+    cost === undefined ||
+    cost === null ||
+    !Number.isFinite(cost.amount) ||
+    typeof cost.currency !== 'string' ||
+    cost.currency.length > ACP_SNAPSHOT_FIELD_MAX
+      ? null
+      : { amount: cost.amount, currency: cost.currency }
+  return { used: usage.used, size: usage.size, cost: safeCost }
+}
+
 /** model 类选项判定（category 优先、约定 id 兜底——与 agent.ts modelOfConfigOptions 同口径）。 */
 function isModelSnapshotOption(option: AcpOptionsSnapshotOption): boolean {
   return option.category === 'model' || option.id === 'model'
@@ -127,28 +203,57 @@ export function acpOptionsSnapshotOf(
     const narrowed = snapshotOptionOf(option)
     if (narrowed !== undefined) options.push(narrowed)
   }
-  const build = (list: readonly AcpOptionsSnapshotOption[]): AcpOptionsSnapshotRecord => ({
+  const normalizedModes = snapshotModesOf(extras?.modes)
+  const normalizedUsage = snapshotContextUsageOf(extras?.contextUsage)
+  const stableCurrentModeId =
+    typeof currentModeId === 'string' && currentModeId.length <= ACP_SNAPSHOT_FIELD_MAX ? currentModeId : null
+  const build = (
+    list: readonly AcpOptionsSnapshotOption[],
+    modes: SnapshotModes | null | undefined,
+    contextUsage: SnapshotContextUsage | null | undefined,
+  ): AcpOptionsSnapshotRecord => ({
     options: list,
-    currentModeId: typeof currentModeId === 'string' ? snapshotField(currentModeId) : null,
+    currentModeId: stableCurrentModeId,
     updatedAt,
     fingerprint,
-    ...(extras?.contextUsage === undefined ? {} : { contextUsage: extras.contextUsage }),
-    ...(extras?.modes === undefined ? {} : { modes: extras.modes }),
+    ...(contextUsage === undefined ? {} : { contextUsage }),
+    ...(modes === undefined ? {} : { modes }),
   })
-  let record = build(options)
-  while (JSON.stringify(record).length > ACP_SNAPSHOT_TOTAL_BYTES && record.options.length > 1) {
+  let record = build(options, normalizedModes, normalizedUsage)
+  while (JSON.stringify(record).length > ACP_SNAPSHOT_TOTAL_BYTES) {
     const list = [...record.options]
-    // 从尾部丢非 model 类选项；都在保底集合里则剥尾部选项的 values 列表
+    // Drop non-model options first; the model option remains the primary control snapshot.
     const dropIndex = list.reduce((found, candidate, index) => (isModelSnapshotOption(candidate) ? found : index), -1)
-    if (dropIndex >= 0) list.splice(dropIndex, 1)
-    else {
-      const tail = list[list.length - 1]
-      if (tail === undefined || tail.values === null) break
-      list[list.length - 1] = { ...tail, values: null }
+    if (dropIndex >= 0) {
+      list.splice(dropIndex, 1)
+      record = build(list, record.modes, record.contextUsage)
+      continue
     }
-    record = build(list)
+    const valueIndex = list.findLastIndex((option) => option.values !== null && option.values.length > 0)
+    if (valueIndex >= 0) {
+      list[valueIndex] = { ...list[valueIndex]!, values: null }
+      record = build(list, record.modes, record.contextUsage)
+      continue
+    }
+    const modes = record.modes
+    if (modes !== undefined && modes !== null && modes.availableModes.length > 0) {
+      const nonCurrentIndex = modes.availableModes.findLastIndex((mode) => mode.id !== modes.currentModeId)
+      const availableModes = [...modes.availableModes]
+      if (nonCurrentIndex >= 0) availableModes.splice(nonCurrentIndex, 1)
+      else availableModes.length = 0
+      record = build(record.options, { ...modes, availableModes }, record.contextUsage)
+      continue
+    }
+    if (record.contextUsage !== undefined && record.contextUsage !== null) {
+      record = build(record.options, record.modes, undefined)
+      continue
+    }
+    throw new TypeError('ACP option snapshot cannot be represented within its bounded storage format')
   }
-  return record
+  const validated = toOptionsSnapshotRecord(record)
+  if (validated === undefined)
+    throw new TypeError('ACP option snapshot projection did not produce a valid storage record')
+  return validated
 }
 
 /** snapshot 行的语义校验 + 窄化（读路径；败者 undefined + warn——按「无快照」处理）。 */
@@ -243,7 +348,7 @@ export function toOptionsSnapshotRecord(raw: unknown): AcpOptionsSnapshotRecord 
       if (
         rawMode.description !== undefined &&
         rawMode.description !== null &&
-        (typeof rawMode.description !== 'string' || rawMode.description.length > ACP_SNAPSHOT_FIELD_MAX)
+        (typeof rawMode.description !== 'string' || rawMode.description.length > ACP_SNAPSHOT_MODE_DESCRIPTION_MAX)
       )
         return undefined
       availableModes.push({

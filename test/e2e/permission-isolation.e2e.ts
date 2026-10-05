@@ -25,7 +25,9 @@ class NativeControl extends LlmAdapter {
   }
 }
 
-describe.each(['kimi', 'devin', 'codex', 'claude'])('permission isolation: %s', (profile) => {
+const profiles = ['kimi', 'devin', 'codex', 'claude', 'codebuddy'] as const
+
+describe.each(profiles)('permission isolation: %s', (profile) => {
   it('preserves native choices on blank sessions and applies ACP policy only on execution', async () => {
     const host = await launchAdapterWorld()
     try {
@@ -37,6 +39,7 @@ describe.each(['kimi', 'devin', 'codex', 'claude'])('permission isolation: %s', 
             name: profile,
             command: process.execPath,
             args: [join(root, 'test/mock-agent/mock-agent.ts')],
+            runtime: profile,
             env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: profile },
           },
         },

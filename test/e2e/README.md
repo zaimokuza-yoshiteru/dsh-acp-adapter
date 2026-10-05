@@ -2,7 +2,9 @@
 
 这组 E2E 的验收对象是 DSH 与 ACP 之间的产品行为：执行者可以不同，输入、消息、审批及详情仍应复用宿主公开能力。测试启动目标版本的完整 Loader 装配、真实 ACP 子进程和浏览器，浏览器加载构建后的插件与 DSH UI。它不使用现有单元测试的 React 或 UI primitive stub。
 
-产品矩阵覆盖 Claude、Codex、Devin、Kimi 四种协议夹具，并包含 Teams、宿主权限隔离、模型目录、成员管理与运行中输入专项。每次运行的结果以对应 PR／CI 与测试输出为准。夹具只是可控的协议输入，不代表真实 Agent 或具体模型已经通过验收；真实 Agent 的升级仍需独立冒烟。
+原有更广的协议与 Teams 等场景继续覆盖 Claude、Codex、Devin、Kimi 四种 ACP 配置。CodeBuddy 目前仅新增 Agent controls 与权限隔离专项；Agent 目录由通用 catalog 测试覆盖，不表示 CodeBuddy 已通过 Teams、成员管理或其他完整矩阵。每次运行的结果以对应 PR／CI 与测试输出为准。夹具只是可控的协议输入，不代表真实 Agent 或具体模型已经通过验收；真实 Agent 的升级仍需独立冒烟。
+
+CodeBuddy CLI 的真实运行检查属于本机 opt-in 验证，不纳入普通协议夹具或 CI 的通过声明。本次已完成 macOS CodeBuddy CLI `2.161.2`、模型 `minimax-m2.7` 的 Agent controls 三种场景，每种各运行两轮：Auto 自动批准并恰好执行一次工具；Ask 拒绝一次且工具执行为零；Stop 中止正在等待的工具，确认收到 abort 且无写入副作用。Ask 和 Stop 随后均以同一 ACP session 恢复，完成精确 follow-up；两种场景的 mode 与三个非模型配置值保持，workspace、模型和 MCP scope 匹配，刷新没有重新派发事件或 prompt。此结果仅覆盖记录的本机 CLI、平台、模型与 controls/权限隔离场景，不表示 CodeBuddy Teams、其他平台或 WorkBuddy 桌面应用已通过。已有配置也不会仅凭 `catalogId` 自动切换 runtime。本地 opt-in 检查不是稳定公共命令或 CI 门禁。
 
 无密钥的 mock-agent／协议夹具验证适配器如何处理给定的 ACP 事件，以及 DSH UI 和宿主服务的集成；它们不验证真实 Agent 是否遵循提示、真实模型是否成功执行任务或真实服务配额，也不能作为真实 Teams 运行的签收。真实 Agent 运行会使用本机登录与模型额度，单独选择性运行。此处 Web scaffold 或 Electron 窗口中的适配器检查也不等同于完整桌面产品的打包、preload、升级或跨平台验收。
 

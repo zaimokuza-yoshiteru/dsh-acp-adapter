@@ -53,6 +53,9 @@ const LOGIN_HINTS: Readonly<Record<AcpAgentId, string>> = {
   codex: 'codex login',
   kimi: 'kimi login',
   claude: 'claude',
+  // The public CLI starts the interactive CodeBuddy session with `codebuddy`;
+  // its ACP guide documents `--acp` as the server mode, not a separate login command.
+  codebuddy: 'codebuddy',
 }
 
 /** Known installed CLI names for binary distributions; never archive paths. */
