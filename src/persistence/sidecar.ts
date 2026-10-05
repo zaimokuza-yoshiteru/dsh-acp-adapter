@@ -1024,6 +1024,27 @@ function ensureActivityJournalOptionalColumns(db: DatabaseSync): void {
   if (!columns.has('content_index')) db.exec('ALTER TABLE activity_journal ADD COLUMN content_index INTEGER')
 }
 
+function ensureActivityJournalIndexes(db: DatabaseSync): void {
+  const indexes = [
+    {
+      name: 'activity_session_id_revision_desc',
+      create:
+        'CREATE INDEX IF NOT EXISTS activity_session_id_revision_desc ON activity_journal(dsh_session_id, activity_id, revision_seq DESC)',
+    },
+    {
+      name: 'activity_session_anchor_id_revision_desc',
+      create:
+        'CREATE INDEX IF NOT EXISTS activity_session_anchor_id_revision_desc ON activity_journal(dsh_session_id, prompt_anchor_message_id, activity_id, revision_seq DESC)',
+    },
+  ] as const
+  const findOwner = db.prepare("SELECT tbl_name FROM sqlite_master WHERE type = 'index' AND name = ?")
+  for (const index of indexes) {
+    const owner = findOwner.get(index.name) as { tbl_name?: unknown } | undefined
+    if (owner?.tbl_name === 'activity_journal_legacy') db.exec(`DROP INDEX ${index.name}`)
+    db.exec(index.create)
+  }
+}
+
 /**
  * Import one legacy journal while the caller holds BEGIN IMMEDIATE. Existing
  * primary keys are accepted only when every source field maps to the same
@@ -1180,6 +1201,7 @@ class SidecarStore implements AcpSidecar {
             ensureActivityJournalOptionalColumns(db)
             const conflicts = copyLegacyActivityRows(db)
             if (conflicts === 0) db.exec('DROP TABLE activity_journal_legacy')
+            ensureActivityJournalIndexes(db)
             activityLegacyConflictCount = conflicts
             db.exec('COMMIT')
           } else {
@@ -1226,6 +1248,7 @@ class SidecarStore implements AcpSidecar {
             ensureActivityJournalOptionalColumns(db)
             const conflicts = copyLegacyActivityRows(db)
             if (conflicts === 0) db.exec('DROP TABLE activity_journal_legacy')
+            ensureActivityJournalIndexes(db)
             activityLegacyConflictCount = conflicts
             db.exec('COMMIT')
           } else {
