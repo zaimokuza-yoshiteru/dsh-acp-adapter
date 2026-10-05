@@ -28,6 +28,8 @@ function recoveryStream(
 }
 
 const recoveryRetryDelays = [250, 500, 1_000, 2_000, 4_000, 8_000] as const
+// Only a connection that stayed up this long resets backoff; open-then-drop flapping keeps escalating.
+const recoveryHealthyResetMs = 30_000
 const stableRecoveryErrorCodes = new Set([
   'dsh-acp/config',
   'dsh-acp/not-installed',
@@ -63,9 +65,11 @@ export function recoveringRecoveryStream(
   let retryTimer: ReturnType<typeof setTimeout> | undefined
   let retiring: Promise<void> = Promise.resolve()
   let attempt = 0
+  let connectedAt: number | undefined
 
   const startNext = (): void => {
     if (stopped) return
+    connectedAt = undefined
     let stream: ReturnType<typeof recoveryStream>
     stream = recoveryStream(
       remote,
@@ -73,6 +77,7 @@ export function recoveringRecoveryStream(
       sessionId,
       (snapshot) => {
         if (stopped || current !== stream) return
+        connectedAt ??= Date.now()
         stateChanged('connected')
         changed(snapshot)
       },
@@ -93,6 +98,7 @@ export function recoveringRecoveryStream(
             stateChanged('unavailable', error, true)
             return
           }
+          if (connectedAt !== undefined && Date.now() - connectedAt >= recoveryHealthyResetMs) attempt = 0
           const delay = recoveryRetryDelays[Math.min(attempt, recoveryRetryDelays.length - 1)]!
           attempt++
           retryTimer = setTimeout(() => {

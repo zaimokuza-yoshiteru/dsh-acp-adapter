@@ -132,4 +132,45 @@ describe('recovering recovery snapshot stream', () => {
     await new Promise((resolve) => setTimeout(resolve, 300))
     expect(reads).toBe(1)
   })
+
+  it('keeps escalating backoff for flapping streams but resets it after a long healthy connection', async () => {
+    let now = 0
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now)
+    const timerSpy = vi.spyOn(globalThis, 'setTimeout')
+    const retryDelays = (): number[] =>
+      timerSpy.mock.calls.map((call) => call[1] as number).filter((delay) => [250, 500, 1_000].includes(delay))
+    let reads = 0
+    const remote = {
+      async *recoveryFollow(_sessionId: string, signal: AbortSignal): AsyncIterable<AcpRecoveryFrame> {
+        reads++
+        const read = reads
+        yield { type: 'opened', snapshot: { ...healthy, updatedAt: read } }
+        if (read <= 2) throw new Error('temporary stream read failure')
+        if (read === 3) {
+          now += 60_000
+          throw new Error('temporary stream read failure')
+        }
+        await new Promise<void>((resolve) => {
+          if (signal.aborted) resolve()
+          else signal.addEventListener('abort', () => resolve(), { once: true })
+        })
+      },
+    } as unknown as AcpRemoteLike
+    const owner = recoveringRecoveryStream(
+      remote,
+      streamFactory(),
+      'session-1',
+      () => {},
+      () => {},
+    )
+    try {
+      owner.start()
+      await vi.waitFor(() => expect(reads).toBe(4), { timeout: 3_000 })
+      expect(retryDelays()).toEqual([250, 500, 250])
+    } finally {
+      await owner.dispose()
+      timerSpy.mockRestore()
+      nowSpy.mockRestore()
+    }
+  })
 })

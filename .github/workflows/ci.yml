@@ -5,6 +5,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   published-compatibility:
     name: DSH npm compatibility (${{ matrix.os }})
@@ -15,8 +18,10 @@ jobs:
         os: [ubuntu-24.04, macos-15, windows-2022]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version-file: .nvmrc
           package-manager-cache: false
@@ -79,21 +84,23 @@ jobs:
     env:
       DSH_UPSTREAM_CHECKOUT: ${{ github.workspace }}/reference/deepseek-harness
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           path: dsh-acp-adapter
-      - uses: actions/setup-node@v6
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version-file: dsh-acp-adapter/.nvmrc
           package-manager-cache: false
       - name: Resolve exact DSH source tag
         id: dsh-target
         run: node --input-type=module -e 'import { appendFileSync } from "node:fs"; import { DSH_SOURCE_TAG } from "./scripts/dsh-target.ts"; appendFileSync(process.env.GITHUB_OUTPUT, `tag=${DSH_SOURCE_TAG}\n`)'
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           repository: deepseek-ai/deepseek-harness
           ref: ${{ steps.dsh-target.outputs.tag }}
           path: reference/deepseek-harness
+          persist-credentials: false
       - uses: pnpm/action-setup@v4
         with:
           version: 11.7.0
