@@ -53,6 +53,7 @@ export class AcpAgentProcess {
   private readonly onWarn: (message: string) => void
   private readonly stderrRing: StderrRing
   private stderrLeftover = ''
+  private readonly stderrLeftoverCap: number
   private processFailureError: Error | undefined
   private syncSpawnFailure: Error | undefined
   private exitInfo: AcpProcessExit | null = null
@@ -87,6 +88,7 @@ export class AcpAgentProcess {
       options.stderrMaxBytes ?? DEFAULT_STDERR_MAX_BYTES,
       options.redactStderrLine ?? defaultRedactStderrLine,
     )
+    this.stderrLeftoverCap = options.stderrMaxBytes ?? DEFAULT_STDERR_MAX_BYTES
 
     // 结构化 spawn：argv 直达 seam，不经 shell（堵注入面； 经 spawnPlan/wrapArgv
     // 包 confine——spawnPlan 存在时其 env 整体替换 spec.env，由连接层在传入前解析）。
@@ -238,10 +240,14 @@ export class AcpAgentProcess {
   }
 
   private ingestStderr(chunk: string): void {
-    const text = this.stderrLeftover + chunk
-    const lines = text.split('\n')
+    const lines = (this.stderrLeftover + chunk).split('\n')
     this.stderrLeftover = lines.pop() ?? ''
-    for (const raw of lines) this.stderrRing.push(raw.endsWith('\r') ? raw.slice(0, -1) : raw)
+    for (const raw of lines) this.stderrRing.push(lastCarriageSegment(raw.endsWith('\r') ? raw.slice(0, -1) : raw))
+    // A trailing lone CR may still become CRLF; otherwise progress redraws keep only their latest frame.
+    const pending = this.stderrLeftover.endsWith('\r')
+    const frame = lastCarriageSegment(pending ? this.stderrLeftover.slice(0, -1) : this.stderrLeftover)
+    this.stderrLeftover = frame.length > this.stderrLeftoverCap ? frame.slice(-this.stderrLeftoverCap) : frame
+    if (pending) this.stderrLeftover += '\r'
   }
 
   private flushStderrLeftover(): void {
@@ -249,4 +255,10 @@ export class AcpAgentProcess {
     this.stderrRing.push(this.stderrLeftover)
     this.stderrLeftover = ''
   }
+}
+
+/** Terminal semantics: a bare CR rewinds the line, so only the last redraw is visible. */
+function lastCarriageSegment(line: string): string {
+  const index = line.lastIndexOf('\r')
+  return index < 0 ? line : line.slice(index + 1)
 }

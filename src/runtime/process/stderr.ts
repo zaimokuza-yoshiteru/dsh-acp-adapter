@@ -59,7 +59,9 @@ export class StderrRing {
   }
 
   private store(line: string): void {
-    if (line.length > this.maxBytes) line = line.slice(line.length - this.maxBytes)
+    // Reserve one byte for the separator so an over-long line keeps its tail instead of being evicted.
+    const lineBudget = Math.max(0, this.maxBytes - 1)
+    if (line.length > lineBudget) line = line.slice(line.length - lineBudget)
     this.lines.push(line)
     this.bytes += line.length + 1
     while (this.lines.length > this.maxLines || this.bytes > this.maxBytes) {

@@ -52,4 +52,30 @@ describe('shared secret redaction', () => {
     expect(isSensitiveActivityField('token', 42)).toBe(true)
     expect(isSensitiveActivityField('accessToken', 'secret-value')).toBe(true)
   })
+
+  it('redacts JSON api_key and password and preserves credentials objects and numeric usage fields', () => {
+    const jsonApi = '{"api_key": "abc123secretvalue"}'
+    const redactedApi = redactSecretText(jsonApi)
+    expect(redactedApi).not.toContain('abc123secretvalue')
+    expect(redactedApi).toContain('api_key')
+
+    const jsonPassword = '{"password":"hunter2"}'
+    const redactedPass = redactSecretText(jsonPassword)
+    expect(redactedPass).not.toContain('hunter2')
+
+    const creds = '{"credentials": {"a":1}}'
+    const redactedCreds = redactSecretText(creds)
+    expect(redactedCreds).toContain('{"credentials": {')
+
+    const usage = '{"inputTokens": 123}'
+    const redactedUsage = redactSecretText(usage)
+    expect(redactedUsage).toContain('"inputTokens": 123')
+  })
+
+  it('redacts Authorization: Basic credentials without leaking base64', () => {
+    const header = 'Authorization: Basic dXNlcjpwYXNz'
+    const redacted = redactSecretText(header)
+    expect(redacted).not.toContain('dXNlcjpwYXNz')
+    expect(redacted).toContain('Authorization')
+  })
 })
