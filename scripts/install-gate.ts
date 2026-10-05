@@ -2,11 +2,13 @@
 /**
  * Clean-install smoke gate for the exact published DSH host (or source reference).
  *
- * The gate deliberately uses a temporary DSH_HOME and a local package tarball.
- * It does not touch the user's profile or registry configuration. The DSH
- * profile's normal module fallback resolves the host bundles from the supplied
- * installation. Plugin dependencies use their published manifest without local
- * overrides, with a temporary pnpm store so a warm checkout cannot mask omissions.
+ * By default the gate packs locally and installs that tarball; --spec exercises
+ * a DSH-supported package source, and --update-spec verifies an in-profile
+ * registry update. It uses a temporary DSH_HOME and isolated npm/pnpm config,
+ * without touching the user's profile. The DSH profile's normal module fallback
+ * resolves host bundles from the supplied installation. Plugin dependencies use
+ * their published manifest without local overrides, with a temporary pnpm store
+ * so a warm checkout cannot mask omissions.
  */
 
 import { spawn, spawnSync } from 'node:child_process'
@@ -20,6 +22,8 @@ import { DSH_SOURCE_TAG } from './dsh-target.ts'
 export interface InstallGateArgs {
   hostRoot: string
   tgz: string | undefined
+  spec: string | undefined
+  updateSpec: string | undefined
   skipBoot: boolean
   help: boolean
 }
@@ -46,6 +50,8 @@ export function parseArgs(argv: readonly string[]) {
   const result: InstallGateArgs = {
     hostRoot: resolve(root, 'node_modules', '@deepseek-ai', 'dsh'),
     tgz: undefined,
+    spec: undefined,
+    updateSpec: undefined,
     skipBoot: false,
     help: false,
   }
@@ -53,15 +59,20 @@ export function parseArgs(argv: readonly string[]) {
     const arg = argv[index]
     if (arg === '--help' || arg === '-h') result.help = true
     else if (arg === '--skip-boot') result.skipBoot = true
-    else if (arg === '--host-root' || arg === '--tgz') {
+    else if (arg === '--host-root' || arg === '--tgz' || arg === '--spec' || arg === '--update-spec') {
       const value = argv[++index]
-      if (value === undefined || value.startsWith('--')) throw new Error(`${arg} requires a path`)
+      if (value === undefined || value.startsWith('--')) throw new Error(`${arg} requires a value`)
       if (arg === '--host-root') result.hostRoot = resolve(value)
-      else result.tgz = resolve(value)
+      else if (arg === '--tgz') result.tgz = resolve(value)
+      else if (arg === '--spec') result.spec = value
+      else result.updateSpec = value
     } else {
       throw new Error(`unknown option ${JSON.stringify(arg)} (use --help)`)
     }
   }
+  if (result.tgz !== undefined && result.spec !== undefined) throw new Error('--tgz and --spec are mutually exclusive')
+  if (result.updateSpec !== undefined && result.spec === undefined)
+    throw new Error('--update-spec requires --spec to install the initial version first')
   return result
 }
 
@@ -71,10 +82,65 @@ export function usage() {
 Options:
   --host-root <path>  installed DSH package or source root (default: node_modules/@deepseek-ai/dsh)
   --tgz <path>        Reuse an existing plugin tarball instead of packing
+  --spec <spec>       Install a DSH-supported registry, Git, path, or tarball spec instead of packing
+  --update-spec <spec> Update the package installed by --spec; currently accepts this package's npm version/tag spec
   --skip-boot         Install and inspect composition, but do not bind HTTP
   -h, --help          Show this help
 
 The install uses a temporary DSH_HOME and pnpm store; registry access is required.`
+}
+
+function installedPluginManifest(dshHome: string) {
+  const path = join(dshHome, 'profiles', profileName, 'node_modules', ...packageName.split('/'), 'package.json')
+  if (!existsSync(path)) fail(`installed package manifest not found at ${path}`)
+  return JSON.parse(readFileSync(path, 'utf8')) as { name?: unknown; version?: unknown }
+}
+
+async function updateSpecVersion(spec: string) {
+  // The update gate is for this package's exact version or registry tag such as
+  // @next. Resolve it from the public npm registry without consulting npmrc or
+  // inferring the target version from what pnpm happened to install.
+  if (!spec.startsWith(`${packageName}@`))
+    fail(`--update-spec must target ${packageName} with a registry version or tag`)
+  const requested = spec.slice(packageName.length + 1)
+  if (requested.length === 0 || requested.includes('/'))
+    fail(`--update-spec must use an exact version or simple npm tag for ${packageName}`)
+  const encodedName = encodeURIComponent(packageName).replace(/^%40/iu, '@')
+  const response = await fetch(`https://registry.npmjs.org/${encodedName}`, {
+    headers: { accept: 'application/vnd.npm.install-v1+json' },
+    signal: AbortSignal.timeout(30_000),
+  })
+  if (!response.ok) fail(`npm registry metadata lookup failed with HTTP ${response.status}`)
+  const metadata = (await response.json()) as {
+    name?: unknown
+    'dist-tags'?: Record<string, unknown>
+    versions?: Record<string, unknown>
+  }
+  if (metadata.name !== packageName) fail('npm registry metadata returned a different package name')
+  const taggedVersion = metadata['dist-tags']?.[requested]
+  const version =
+    typeof taggedVersion === 'string'
+      ? taggedVersion
+      : metadata.versions?.[requested] === undefined
+        ? undefined
+        : requested
+  if (version === undefined) fail(`npm registry did not resolve --update-spec ${spec}`)
+  return version
+}
+
+function isGitSpec(spec: string) {
+  return (
+    /^(?:git\+|github:|git:\/\/|ssh:\/\/|git@)/iu.test(spec) ||
+    /^https?:\/\/github\.com\//iu.test(spec) ||
+    /\.git(?:#.*)?$/iu.test(spec)
+  )
+}
+
+export function assertAcpConfigSentinel(dump: string) {
+  const adapterRows = rowBlocks(dump).filter((block) => /^\s*- id: dsh-acp-adapter(?:\s|$)/m.test(block))
+  if (adapterRows.length !== 1) fail(`expected one dsh-acp-adapter config row, found ${adapterRows.length}`)
+  if (!/^\s*toolApprovalDefault:\s*ask\s*$/m.test(adapterRows[0]!))
+    fail('ACP toolApprovalDefault sentinel was not preserved')
 }
 
 /**
@@ -317,28 +383,87 @@ async function main() {
   const evidence = join(tempRoot, 'result.json')
   let keep = false
   try {
-    const tgz = args.tgz ?? packLocalTarball(tempRoot)
-    if (!existsSync(tgz)) fail(`tarball does not exist: ${tgz}`)
-    const entries = tarEntries(tgz)
-    assertTarballEntries(entries)
+    const tgz = args.spec === undefined ? (args.tgz ?? packLocalTarball(tempRoot)) : undefined
+    if (tgz !== undefined && !existsSync(tgz)) fail(`tarball does not exist: ${tgz}`)
+    const entries = tgz === undefined ? undefined : tarEntries(tgz)
+    if (entries !== undefined) assertTarballEntries(entries)
     const env = {
       DSH_HOME: dshHome,
       DSH_TELEMETRY_DISABLED: '1',
       NO_COLOR: '1',
       npm_config_store_dir: join(tempRoot, 'pnpm-store'),
+      npm_config_userconfig: join(tempRoot, 'npm-user-empty.rc'),
+      npm_config_globalconfig: join(tempRoot, 'npm-global-empty.rc'),
     }
+    writeFileSync(env.npm_config_userconfig, '')
+    writeFileSync(env.npm_config_globalconfig, '')
+    const installSpec = args.spec ?? tgz!
     run(
       process.execPath,
-      [hostCli(args.hostRoot), 'plugin', '--profile', profileName, 'add', tgz, '--save-exact', '--ignore-scripts'],
-      { env, timeout: 120_000 },
+      [
+        hostCli(args.hostRoot),
+        'plugin',
+        '--profile',
+        profileName,
+        'add',
+        installSpec,
+        '--save-exact',
+        ...(args.spec === undefined ? ['--ignore-scripts'] : []),
+      ],
+      { env, timeout: args.spec !== undefined && isGitSpec(args.spec) ? 10 * 60_000 : 120_000 },
     )
-    const dump = run(process.execPath, [hostCli(args.hostRoot), '--profile', profileName, '--dump-config'], {
+    const initialManifest = args.spec === undefined ? undefined : installedPluginManifest(dshHome)
+    if (
+      initialManifest !== undefined &&
+      (initialManifest.name !== packageName || typeof initialManifest.version !== 'string')
+    )
+      fail('initial spec did not install the expected package manifest')
+    if (args.updateSpec !== undefined) {
+      writeFileSync(
+        join(dshHome, 'profiles', profileName, 'cordis.patch.yml'),
+        '- id: dsh-acp-adapter\n  config:\n    toolApprovalDefault: ask\n',
+      )
+    }
+    const initialDump = run(process.execPath, [hostCli(args.hostRoot), '--profile', profileName, '--dump-config'], {
       env,
       timeout: 30_000,
     }).stdout
-    assertComposedDump(dump)
+    assertComposedDump(initialDump)
+    if (args.updateSpec !== undefined) assertAcpConfigSentinel(initialDump)
+
+    let update: { expectedVersion: string; installedVersion: string } | undefined
+    if (args.updateSpec !== undefined) {
+      const expectedVersion = await updateSpecVersion(args.updateSpec)
+      run(
+        process.execPath,
+        [hostCli(args.hostRoot), 'plugin', '--profile', profileName, 'add', args.updateSpec, '--save-exact'],
+        { env, timeout: 120_000 },
+      )
+      const updatedManifest = installedPluginManifest(dshHome)
+      if (updatedManifest.name !== packageName || updatedManifest.version !== expectedVersion)
+        fail(`update resolved ${String(updatedManifest.version)}; expected ${expectedVersion}`)
+      const profileManifest = JSON.parse(
+        readFileSync(join(dshHome, 'profiles', profileName, 'package.json'), 'utf8'),
+      ) as { dependencies?: Record<string, unknown> }
+      if (profileManifest.dependencies?.[packageName] !== expectedVersion)
+        fail('updated profile dependency is not pinned to the resolved version')
+      update = { expectedVersion, installedVersion: String(updatedManifest.version) }
+      const updatedDump = run(process.execPath, [hostCli(args.hostRoot), '--profile', profileName, '--dump-config'], {
+        env,
+        timeout: 30_000,
+      }).stdout
+      assertComposedDump(updatedDump)
+      assertAcpConfigSentinel(updatedDump)
+      const withoutAdapter = (dump: string) =>
+        rowBlocks(dump)
+          .filter((block) => !/^\s*- id: dsh-acp-adapter(?:\s|$)/m.test(block))
+          .sort()
+      if (JSON.stringify(withoutAdapter(initialDump)) !== JSON.stringify(withoutAdapter(updatedDump)))
+        fail('profile composition changed while updating the plugin')
+    }
     let boot: { skipped: true } | { status: number; output: string } = { skipped: true }
     if (!args.skipBoot) boot = await bootAndCheck(args.hostRoot, dshHome)
+    if (args.updateSpec !== undefined) writeFileSync(join(dshHome, 'profiles', profileName, 'cordis.patch.yml'), '[]\n')
     run(process.execPath, [hostCli(args.hostRoot), 'plugin', '--profile', profileName, 'remove', packageName], {
       env,
       timeout: 120_000,
@@ -356,10 +481,21 @@ async function main() {
       fail('profile node_modules retains plugin after removal')
     writeFileSync(
       evidence,
-      JSON.stringify({ packageName, tarball: basename(tgz), files: entries.length, boot }, null, 2) + '\n',
+      JSON.stringify(
+        {
+          packageName,
+          sourceKind: args.spec === undefined ? 'tgz' : 'spec',
+          ...(tgz === undefined ? {} : { tarball: basename(tgz) }),
+          ...(entries === undefined ? {} : { files: entries.length }),
+          ...(update === undefined ? {} : { update }),
+          boot,
+        },
+        null,
+        2,
+      ) + '\n',
     )
     console.log(
-      `[install-gate] OK: ${entries.length} tarball files; additive composition; removal clean${args.skipBoot ? '; boot skipped' : '; HTTP 200/client bootstrap'}`,
+      `[install-gate] OK: ${entries?.length ?? 'source'} package; additive composition; removal clean${args.skipBoot ? '; boot skipped' : '; HTTP 200/client bootstrap'}`,
     )
     console.log(`[install-gate] evidence: ${evidence}`)
   } catch (error) {

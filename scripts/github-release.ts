@@ -1,9 +1,10 @@
 #!/usr/bin/env node
-/** Release metadata only: never publishes npm packages or creates/moves Git tags. */
+/** Release metadata and a verified npm artifact; never publishes npm packages or creates/moves Git tags. */
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { basename, dirname, join, resolve } from 'node:path'
+import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -23,6 +24,15 @@ export interface Packument {
 }
 type Git = (...args: string[]) => string
 export type Github = <T>(endpoint: string, body?: Record<string, unknown>, jq?: string) => T
+export interface ReleaseAsset {
+  id: number
+  name: string
+}
+export interface ReleaseAssetIO {
+  list(releaseId: number): Promise<ReleaseAsset[]>
+  download(tag: string, asset: ReleaseAsset): Promise<Uint8Array>
+  upload(tag: string, tarballPath: string): Promise<void>
+}
 const packageName = '@zaimokuza/dsh-acp-adapter'
 const repository = 'zaimokuza-yoshiteru/dsh-acp-adapter'
 const versionPattern = /^v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$/
@@ -47,6 +57,65 @@ export function validatePublished(
     throw new Error('npm integrity does not match the tested CI tarball')
   }
   return { published, publishedAt }
+}
+
+export function npmTarballFilename(name: string, version: string): string {
+  return `${name.replace(/^@/, '').replaceAll('/', '-')}-${version}.tgz`
+}
+
+export function assertNpmTarballFilename(path: string, source: Manifest): string {
+  const expected = npmTarballFilename(source.name, source.version)
+  if (basename(path) !== expected) throw new Error(`CI tarball filename must be ${expected}`)
+  return expected
+}
+
+/** Ensure the GitHub Release carries byte-for-byte the already validated npm artifact. */
+export async function ensureReleaseTarball(
+  tag: string,
+  releaseId: number,
+  tarballPath: string,
+  expectedName: string,
+  assets: ReleaseAssetIO,
+): Promise<'already-present' | 'uploaded'> {
+  const expectedBytes = readFileSync(tarballPath)
+  const findAsset = async () => {
+    const matches = (await assets.list(releaseId)).filter((asset) => asset.name === expectedName)
+    if (matches.length > 1) throw new Error(`GitHub Release has duplicate asset ${expectedName}`)
+    return matches[0]
+  }
+  const existing = await findAsset()
+  if (existing) {
+    const remoteBytes = await assets.download(tag, existing)
+    if (!Buffer.from(remoteBytes).equals(expectedBytes))
+      throw new Error(`GitHub Release asset ${expectedName} differs from the validated npm tarball`)
+    return 'already-present'
+  }
+
+  // Intentionally omit --clobber. If another writer races us, fail and let the
+  // next idempotent run compare the resulting asset instead of replacing it.
+  await assets.upload(tag, tarballPath)
+  const uploaded = await findAsset()
+  if (!uploaded) throw new Error(`GitHub Release upload did not create ${expectedName}`)
+  const remoteBytes = await assets.download(tag, uploaded)
+  if (!Buffer.from(remoteBytes).equals(expectedBytes))
+    throw new Error(`Uploaded GitHub Release asset ${expectedName} failed byte verification`)
+  return 'uploaded'
+}
+
+export async function writeReleaseIfEnabled(
+  write: boolean,
+  tag: string,
+  body: string,
+  github: Github,
+  assets: ReleaseAssetIO,
+  tarball?: { path: string; name: string },
+): Promise<{ created: boolean; id?: number; url?: string; asset?: 'already-present' | 'uploaded' } | undefined> {
+  if (!write) return undefined
+  const release = createRelease(tag, body, github)
+  if (!tarball) return release
+  if (!release.id) throw new Error('GitHub Release response is missing its id')
+  const asset = await ensureReleaseTarball(tag, release.id, tarball.path, tarball.name, assets)
+  return { ...release, asset }
 }
 
 /** Use npm publication order: squash merges can make the previous release a non-ancestor. */
@@ -78,9 +147,10 @@ export function renderNotes(input: {
   sha: string
   previous?: string | undefined
   highlights?: string | undefined
+  tarballAsset?: string | undefined
   commits: string
 }) {
-  const { tag, source, published, publishedAt, sha, previous, highlights, commits } = input
+  const { tag, source, published, publishedAt, sha, previous, highlights, tarballAsset, commits } = input
   const base = `https://github.com/${repository}`
   const compatibility = published.engines?.dsh ?? published.peerDependencies?.['@deepseek-ai/dsh-session']
   const host = source.devDependencies?.['@deepseek-ai/dsh'] ?? source.devDependencies?.['@deepseek-ai/dsh-session']
@@ -110,6 +180,11 @@ export function renderNotes(input: {
       `- npm 发布时间 / npm published at: ${publishedAt}（UTC）`,
       `- [npm ${source.version}](https://www.npmjs.com/package/${packageName}/v/${source.version}) · [源码 / Source](${base}/tree/${sha})`,
       `- npm integrity: \`${published.dist!.integrity}\``,
+      ...(tarballAsset
+        ? [
+            `- 预构建插件包 / Prebuilt plugin package: [${tarballAsset}](${base}/releases/download/${tag}/${tarballAsset})。这是与 npm 校验值一致的 CI tarball。GitHub 自动生成的 Source code 压缩包只有源码，并非此预构建插件包；首次安装依赖仍需联网。\n  This is the CI tarball verified against npm. GitHub's automatically generated source archives contain source code, not this built package; installing uncached dependencies still requires network access.`,
+          ]
+        : []),
       `[完整变更 / Full changelog](${base}/${previous ? `compare/${previous}...${tag}` : `commits/${tag}`})`,
     ].join('\n\n') + '\n'
   )
@@ -121,8 +196,8 @@ export function createRelease(tag: string, body: string, github: Github) {
   if (!refs.some((ref) => ref.ref === `refs/tags/${tag}`)) throw new Error(`Remote tag is missing: ${tag}`)
   // A 404 on this public release endpoint means absent; other failures must stop the job.
   const existing = github<{ id?: number; html_url?: string } | null>(`releases/tags/${tag}`)
-  if (existing?.id) return { created: false, url: existing.html_url }
-  const result = github<{ html_url: string }>('releases', {
+  if (existing?.id) return { created: false, id: existing.id, url: existing.html_url }
+  const result = github<{ id?: number; html_url?: string }>('releases', {
     tag_name: tag,
     name: tag,
     body,
@@ -130,7 +205,47 @@ export function createRelease(tag: string, body: string, github: Github) {
     prerelease: tag.includes('-'),
     make_latest: 'false',
   })
-  return { created: true, url: result.html_url }
+  if (!result.id) throw new Error('GitHub Release creation response is missing its id')
+  return { created: true, id: result.id, url: result.html_url }
+}
+
+function githubReleaseAssets(github: Github): ReleaseAssetIO {
+  return {
+    list: async (releaseId) => {
+      const assets: ReleaseAsset[] = []
+      for (let page = 1; page <= 100; page++) {
+        const batch = github<ReleaseAsset[]>(`releases/${releaseId}/assets?per_page=100&page=${page}`)
+        assets.push(...batch)
+        if (batch.length < 100) return assets
+      }
+      throw new Error('GitHub Release asset list exceeded 100 pages')
+    },
+    download: async (tag, asset) => {
+      const directory = mkdtempSync(join(tmpdir(), 'dsh-release-asset-'))
+      try {
+        execFileSync(
+          'gh',
+          ['release', 'download', tag, '--repo', repository, '--pattern', asset.name, '--dir', directory],
+          {
+            stdio: ['ignore', 'pipe', 'pipe'],
+            maxBuffer: 32 * 1024 * 1024,
+            timeout: 90_000,
+          },
+        )
+        return readFileSync(join(directory, asset.name))
+      } finally {
+        rmSync(directory, { recursive: true, force: true })
+      }
+    },
+    upload: async (tag, tarballPath) => {
+      // No --clobber: duplicate-name races must stop rather than replace data.
+      execFileSync('gh', ['release', 'upload', tag, tarballPath, '--repo', repository], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        maxBuffer: 32 * 1024 * 1024,
+        timeout: 90_000,
+      })
+    },
+  }
 }
 
 export function assertRemoteTagMatchesLocal(tag: string, sha: string, github: Github): void {
@@ -195,6 +310,7 @@ async function main() {
   const source = JSON.parse(git('show', `${tag}:package.json`)) as Manifest
   const sha = git('rev-parse', `${tag}^{commit}`)
   assertRemoteTagMatchesLocal(tag, sha, github)
+  const tarballName = values.tarball ? assertNpmTarballFilename(values.tarball, source) : undefined
   const registry = await readRegistry(tag.slice(1))
   const { published, publishedAt } = validatePublished(
     tag,
@@ -224,6 +340,7 @@ async function main() {
     publishedAt,
     sha,
     previous,
+    tarballAsset: tarballName,
     highlights: changelogSection(changelog, source.version),
     commits,
   })
@@ -232,7 +349,15 @@ async function main() {
   const file = join(directory, `${tag}.md`)
   writeFileSync(file, body)
   console.log(`Release notes: ${file}`)
-  if (values.write) console.log(JSON.stringify(createRelease(tag, body, github)))
+  const writeResult = await writeReleaseIfEnabled(
+    Boolean(values.write),
+    tag,
+    body,
+    github,
+    githubReleaseAssets(github),
+    values.tarball && tarballName ? { path: values.tarball, name: tarballName } : undefined,
+  )
+  if (writeResult) console.log(JSON.stringify(writeResult))
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await main()

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { basename } from 'node:path'
 import {
   assertComposedDump,
+  assertAcpConfigSentinel,
   assertTarballEntries,
   parseArgs,
   parseAuthenticatedStartupUrl,
@@ -16,7 +17,30 @@ describe('DSH clean-install gate contracts', () => {
     expect(basename(parsed.hostRoot)).toBe('alpha')
     expect(parsed.tgz).toBeDefined()
     expect(basename(parsed.tgz!)).toBe('adapter.tgz')
+    expect(parsed.spec).toBeUndefined()
+    expect(parsed.updateSpec).toBeUndefined()
     expect(parsed.skipBoot).toBe(true)
+  })
+
+  it('accepts source specs and an optional explicit update spec without changing the tarball default', () => {
+    expect(parseArgs(['--spec', '@zaimokuza/dsh-acp-adapter@0.2.0-rc.2.3'])).toMatchObject({
+      tgz: undefined,
+      spec: '@zaimokuza/dsh-acp-adapter@0.2.0-rc.2.3',
+      updateSpec: undefined,
+    })
+    expect(
+      parseArgs([
+        '--spec',
+        '@zaimokuza/dsh-acp-adapter@0.2.0-rc.2.2',
+        '--update-spec',
+        '@zaimokuza/dsh-acp-adapter@next',
+      ]),
+    ).toMatchObject({
+      spec: '@zaimokuza/dsh-acp-adapter@0.2.0-rc.2.2',
+      updateSpec: '@zaimokuza/dsh-acp-adapter@next',
+    })
+    expect(() => parseArgs(['--tgz', './adapter.tgz', '--spec', 'plugin'])).toThrow(/mutually exclusive/)
+    expect(() => parseArgs(['--update-spec', '@zaimokuza/dsh-acp-adapter@next'])).toThrow(/requires --spec/)
   })
 
   it('requires the stock loop/picker rows and one additive adapter row', () => {
@@ -32,6 +56,18 @@ describe('DSH clean-install gate contracts', () => {
     expect(() => assertComposedDump(dump.replace('id: dsh-acp-adapter', 'id: other'))).toThrow(
       /additive dsh-acp-adapter row/,
     )
+  })
+
+  it('checks an explicit ACP setting in the composed profile', () => {
+    const dump = [
+      '- id: agent-loop\n  name: @deepseek-ai/dsh-agent-loop',
+      '- id: ui-model-selection\n  name: @deepseek-ai/dsh-client-ui-model-selection',
+      "- id: dsh-acp-adapter\n  name: '@zaimokuza/dsh-acp-adapter'\n  config:\n    toolApprovalDefault: ask",
+    ].join('\n')
+    expect(() => assertAcpConfigSentinel(dump)).not.toThrow()
+    expect(() =>
+      assertAcpConfigSentinel(dump.replace('toolApprovalDefault: ask', 'toolApprovalDefault: auto')),
+    ).toThrow(/sentinel was not preserved/)
   })
 
   it('rejects legacy and development files from a published tarball', () => {

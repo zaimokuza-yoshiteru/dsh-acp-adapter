@@ -1,144 +1,91 @@
-# ACP adapter
+# DSH-ACP-ADAPTER
 
 [English](README.en.md)
 
-[更新记录](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/main/CHANGELOG.md) · [版本发布与安装信息](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases)
+在 DSH 中使用 ACP Agent，沿用原生会话、工具审批和团队协作。
 
-在 DSH 会话页面使用 **Claude · Codex · Devin · Kimi**，也可从目录配置标准 CodeBuddy CLI。
+## 安装
 
-本版本仅支持 DSH `0.2.0-rc.2`。点击 ACP 成员或子会话会在原生侧栏打开，保留主会话；Teams 成员的请求仍可直接在主会话审批。
+当前插件版本 `0.2.0-rc.2.3` 兼容 DSH `0.2.0-rc.2`。其他版本见 [Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases)。
 
-`0.2.0-rc.2.3` 增强标准 CodeBuddy CLI 的 ACP runtime 兼容，并修复较长模式说明使已确认结果无法完成本地结算的问题。对显式 CodeBuddy runtime，收到确认的取消终态（包括原生工具请求被拒绝）后，下一条输入前会重新加载同一会话，不重发已取消的 prompt；刷新可能增加等待时间，这条正常路径无需手动恢复。已有自定义配置不会因 `catalogId` 被静默改成 CodeBuddy runtime；此 CLI 接入不代表 WorkBuddy 桌面端接入。真实运行范围见 [E2E 指南](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/main/test/e2e/README.md)。详见[更新记录](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/main/CHANGELOG.md)与[原生复用说明](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/main/docs/native-reuse.md)。
+**推荐：** 在 DSH Creator 模式中发送：
 
-升级后，已有 Agent 配置会从旧设置文件自动导入当前 DSH 配置；当前配置中已设置的 Agent 列表（包括空列表）会保留。主会话过程使用 DSH 原生的紧凑、标准、详细和完全展开模式，工具、思考和过程分组随宿主设置切换。
+> 请安装并启用 ACP 插件：`@zaimokuza/dsh-acp-adapter@next`。
 
-## <img src="assets/readme/icon-preview.svg" width="24" height="24" alt="" /> 功能预览
+按提示确认即可完成安装并启用。也可打开 **插件 → 添加插件**，粘贴 `@zaimokuza/dsh-acp-adapter@next`，安装后点 **立即启用**。
 
-以下截图来自此前版本中 **Devin · SWE-1.7 Medium** 的真实操作；当前版本的布局以 DSH 原生界面为准。
+<details>
+<summary>其他安装方式：命令行、Git 与压缩包</summary>
 
-在原生 **插件 → ACP adapter** 详情页添加 Agent、检查连接并管理配置。插件名称与版本由 DSH 原生详情页显示。
+命令行：Desktop 使用其自带的 `dsh` 命令；Web 使用 `npx` 运行官方 DSH CLI npm 包，无需全局安装。
 
-在 DSH 会话中使用 Agent 模型、推理强度和原生工具展示组件：
-
-![Devin 使用 SWE-1.7 Medium 实际修改文件](assets/readme/acp-session.zh-CN.png)
-
-ACP 审批复用 DSH 原生审批卡，批准前可查看完整命令：
-
-![ACP 命令在 DSH 原生审批卡中完整显示](assets/readme/acp-permission.zh-CN.png)
-
-**DSH 工具审批：** 在插件详情页设置新初始化会话的默认审批方式：自动批准或逐项询问。会话菜单也可单独调整当前 ACP 会话。自动批准适用于当前会话中可见的 DSH 原生工具读取与写入操作，不包括 Agent 自带工具或其他 MCP 服务；逐项询问沿用 DSH 原生审批，也适用于 Teams 协调工具。
-
-该设置只决定 Agent 已请求审批后的处理方式，无法让未请求审批的 Agent 主动询问。更改仅影响后续请求，已显示的待审批请求仍需手动处理。会话在第一次工具请求前保存插件默认值；更改全局默认值不会改写已初始化会话。升级后尚无策略的旧会话会在首次接入审批策略时保存当时的插件默认值，尚未处理的请求不会因此被自动批准。
-
-子代理的真实检查结果通过 DSH 原生只读详情展示：
-
-![ACP 子代理的原生只读详情](assets/readme/acp-subagent.zh-CN.png)
-
-“ACP 诊断”查看异常、操作与技术记录；点开详情查看已记录的原因，搜索范围为已加载记录。
-
-![ACP 诊断的操作记录与详情](assets/readme/acp-diagnostics.zh-CN.png)
-
-## <img src="assets/readme/icon-setup.svg" width="24" height="24" alt="" /> 前置：安装受支持的 DSH
-
-版本与运行要求以 [package.json](package.json) 的 `version`、`engines` 为准。以下从 npm `next` 包读取兼容的 DSH 版本：
+使用 Desktop CLI 前先完全退出应用，执行后重新打开。更新时再次运行对应命令即可，无需先卸载。
 
 ```bash
-DSH_VERSION="$(npm view @zaimokuza/dsh-acp-adapter@next engines.dsh)"
-npx "@deepseek-ai/dsh@$DSH_VERSION" web
+# Desktop
+dsh plugin --profile desktop add @zaimokuza/dsh-acp-adapter@next
+
+# Web
+npx @deepseek-ai/dsh@0.2.0-rc.2 plugin --profile web add @zaimokuza/dsh-acp-adapter@next
 ```
 
-插件开发直接安装锁定的 npm 依赖：
+Git 与压缩包安装示例：
 
-```bash
-pnpm install --frozen-lockfile
-```
+在插件管理器中，可将下方 Git 地址或 .tgz 包 URL 替换包名粘贴到输入框中。
 
-`pnpm typecheck` 同时检查源码、测试和开发脚本。复杂脚本及测试使用 TypeScript；少量启动脚本和加载器夹具保留 JavaScript，`lib/` 中的 JavaScript 是构建产物。
+| 来源              | 示例                                                                                                                                                   |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Git               | `git+https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter.git#v0.2.0-rc.2.3`                                                                         |
+| 预构建插件包 .tgz | [下载 0.2.0-rc.2.3](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/download/v0.2.0-rc.2.3/zaimokuza-dsh-acp-adapter-0.2.0-rc.2.3.tgz) |
 
-常规开发无需上游源码；浏览器回归的准备步骤见 [E2E 指南](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/main/test/e2e/README.md)。
+此包包含编译产物，与 npm 发布包一致。GitHub 自动生成的 Source code ZIP/TAR.GZ 是源码归档，不是构建后的插件包；未缓存的依赖仍需联网安装。
 
-## <img src="assets/readme/icon-start.svg" width="24" height="24" alt="" /> 三步接入
+</details>
 
-**1. 安装 Agent，并在终端登录。**
+**更新：** 插件管理器不会自动更新。使用插件管理器更新时，先卸载旧版，再按上方推荐方式安装新版。卸载插件不会卸载 Agent 或退出账号。
 
-Agent 目录来自随插件发布的 [ACP 官方 registry](https://agentclientprotocol.com) 快照，提供安装指引与配置预填。发布时自动尝试更新目录；同步或校验失败则沿用仓库中已验证的快照，不阻塞发布，详情记录在发布工作流摘要和 issue 中。运行时不联网刷新目录。列入目录不代表已经逐个验证。菜单区分「已验证适配」和「目录收录 · 未验证」；验证范围不覆盖每个目录版本或平台。接入示例：
+## 连接 Agent
 
-| Agent     | ACP 命令           | 终端登录           |
-| --------- | ------------------ | ------------------ |
-| Claude    | `claude-agent-acp` | `claude`           |
-| Codex     | `codex-acp`        | `codex login`¹     |
-| Devin     | `devin acp`        | `devin auth login` |
-| Kimi      | `kimi acp`         | `kimi login`       |
-| CodeBuddy | `codebuddy --acp`  | `codebuddy`        |
+插件附带一份 [ACP 官方 Agent 目录](https://agentclientprotocol.com/registry)快照，提供安装、登录指引和命令预填；也可手动添加目录外的 ACP Agent。Agent CLI 必须安装并登录在运行 DSH 的主机上。打开 **插件 → ACP adapter**，按目录指引添加 Agent 并检查连接，再在新会话选择 Agent 模型。插件不会替你安装 CLI 或登录账号。以下 Agent 已做过实际接入测试：
 
-¹ 使用 ChatGPT 登录需另装 Codex CLI。
+| Agent                      | ACP 命令           | 终端登录           |
+| -------------------------- | ------------------ | ------------------ |
+| Devin                      | `devin acp`        | `devin auth login` |
+| CodeBuddy CLI（WorkBuddy） | `codebuddy --acp`  | `codebuddy`        |
+| Claude                     | `claude-agent-acp` | `claude`           |
+| Codex                      | `codex-acp`        | `codex login`      |
+| Kimi                       | `kimi acp`         | `kimi login`       |
 
-`codebuddy` 会启动交互式 CLI；ACP 连接使用 `codebuddy --acp`。此配置只适用于 CodeBuddy CLI，不能据此推断 WorkBuddy 桌面端兼容。已有自定义配置不会仅因 `catalogId` 而被静默切换到 CodeBuddy runtime。当前目录项仍标为未验证；真实运行证据只适用于 E2E 指南记录的具体 CLI 版本、平台和模型。
+> CodeBuddy CLI 与 WorkBuddy 桌面端使用同一账号积分，无需分别订阅；通过 CodeBuddy CLI 接入 DSH。详见 [CodeBuddy 账号与订阅说明](https://www.codebuddy.cn/docs/ide/Account/pricing)及 [ACP 命令参考](https://www.codebuddy.cn/docs/cli/cli-reference)。
 
-在 **插件 → ACP adapter** 详情页选择「添加 agent」中的条目后可查看安装指引。npm/Python 条目预填已安装程序的命令、参数和环境变量；其他二进制条目需要按 Agent 所在主机的平台安装并填写命令路径，通用参数和环境变量仍会预填。插件不会自动下载或安装 Agent。
+各 Agent 的具体真实运行范围见 [E2E 验证记录](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/main/test/e2e/README.md)。
 
-**2. 安装插件。** 以下命令安装 npm 已发布的 `next` 版本。
+## 功能预览
 
-```bash
-npx "@deepseek-ai/dsh@$DSH_VERSION" plugin --profile web add @zaimokuza/dsh-acp-adapter@next
-```
+![Agent 在 DSH 原生会话中的操作示例](assets/readme/acp-session.zh-CN.png)
 
-**3. 打开原生「插件 → ACP adapter」详情页**，从目录添加 Agent，核对或补全连接设置，检查连接，再在新会话中选择 Agent 模型。
+<details>
+<summary>更多界面预览</summary>
 
-模型目录较长时，直接使用 DSH 原生模型选择器中的搜索框查找模型；模型发现、搜索、键盘选择和切换均由 DSH 管理。
+![DSH 原生审批卡](assets/readme/acp-permission.zh-CN.png)
 
-可执行文件路径可以包含空格，例如 `C:\Program Files\Agent Tools\agent.exe`。直接填写路径，不加外层引号；启动参数单独填写在「参数」中。
+![子代理只读详情](assets/readme/acp-subagent.zh-CN.png)
 
-Devin 连接 DSH 工具时，会通过原生 `devin mcp add` 自动注册或刷新同一个名为 `dsh` 的用户级 MCP 入口，确保启动命令和 `ELECTRON_RUN_AS_NODE=1` 配置正确。多个会话共用这一条配置，各自通过进程环境连接自己的工具桥，不会把会话地址写入配置，也不再需要软链接或硬链接。独立启动 Devin 时，该入口不提供工具；已运行的 Devin 需要重新启动才能发现首次注册的入口。如果已有其他同名 MCP，适配器会报错，不会覆盖它。
+![ACP 诊断记录](assets/readme/acp-diagnostics.zh-CN.png)
 
-需要 API key 时，在 Agent 编辑页的 **高级选项 → 环境变量** 中显式配置；不会自动继承父进程的密钥。高级选项默认收起，已配置项会显示数量。目录预填只影响新增配置，更新插件不会覆盖已有配置。登录指引自动展示，无需填写，也不会执行登录命令或更改 Agent 认证配置；已有自定义指引仍会保留。
+</details>
 
-目录版本仅用于参考，不同只表示与快照不一致，不代表过旧，也不阻断会话。目录配置保留独立的 `catalogId`，自定义配置 ID 后仍可关联版本与安装提示。升级后，旧绑定中已退役的版本参考字段不参与启动配置比较；命令、参数、环境、状态目录和工具配置的变化仍会触发恢复检查。
+**Auto** 自动批准当前会话的 DSH 原生工具请求；**Ask** 在 Agent 请求审批时显示原生审批卡。Agent 自带工具仍由 Agent 控制。**Stop** 停止当前轮次；按 Enter 可排队输入，支持的 Agent 会在同一 Agent 会话继续。开启 DSH 的实验性 Agent Teams 后，可在主会话查看成员进度并处理审批。
 
-## <img src="assets/readme/icon-connect.svg" width="24" height="24" alt="" /> 如何配合
+## 排障与反馈
 
-![DSH 管理会话与界面；适配器传递上下文、归一化活动；Agent 负责模型与自带工具，DSH 按会话策略处理 DSH 工具审批。外部子代理投影只读，后台任务不跨 DSH 重启恢复。](assets/readme/acp-overview.zh-CN.svg)
+| 现象                 | 先检查                                                         |
+| -------------------- | -------------------------------------------------------------- |
+| 命令无法启动         | 核对 Agent 可执行文件路径，尝试填写绝对路径。                  |
+| 登录或认证失败       | 在 Agent CLI 登录，并检查已配置的环境变量。                    |
+| 旧子代理详情无法打开 | 查看原生恢复提示；不兼容的旧详情会保留在本地记录中并显示错误。 |
+| 会话提示需要恢复     | 按输入栏提示和 **ACP 诊断** 操作，不要清空本地数据。           |
 
-**实验性 Agent Teams：** 跟随 DSH 的 Teams profile 启用，复用原生团队面板；成员从创建时的主会话继承 Agent、模型与推理配置。主会话切换模型后，新成员使用新模型，已有成员保持原模型；团队内使用同一 ACP Agent。仅支持新建上下文，共享任务使用原生任务板；主会话可直接处理成员审批，当前普通审批支持全部允许／拒绝，允许仅限本次。主会话右上角可查看成员状态与模型，单独或按 ACP 类型批量调整成员的 Agent 模式；休眠成员的设置在下次运行前应用。成员实时沿用 Lead 的 DSH 工具审批策略，Ask 也会对后续 Teams 工具请求使用原生审批；成员消息在 DSH 步骤边界送达。
+在 **ACP 诊断**中可导出安全摘要 JSON；其中不含消息正文、命令、路径、原始会话 ID 或 ACP 凭据。DSH 原生会话日志 ZIP 可能含提示词、工具参数、文件路径和附件；分享前请检查并移除敏感信息。
 
-成员管理中点击成员名可在原生侧栏查看会话；运行中仍可查看设置，禁用原因显示在菜单中。批量调整后可展开各成员的结果。团队名册的暂时读取故障会自动重试，不会显示成空名册；稳定的权限或配置错误会明确显示。恢复状态的暂时读取故障会自动重连，只有稳定错误才显示手动重试入口。
-
-**DSH 插件工具自动接入：** 当前会话可见的原生工具会自动通过 MCP 提供给 Agent，无需手填工具名，也不需要开启 Teams。例如，宿主提供 `present` 时可直接使用原生文件交付与预览。调用经过原生工具执行链，并按当前会话的 DSH 工具审批策略处理，同时保留工具自身规则。旧 `hostTools` 配置不再生效，编辑保存后移除。工具桥的能力边界见 [原生复用说明](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/main/docs/native-reuse.md)。
-
-运行中按 Enter 会排队；使用队列的插话操作可发送到当前执行。插件优先使用 Agent 声明的安全原生注入能力，否则取消当前执行，等其收尾后在同一 Agent 会话续发。Kimi 无需新增 SDK。取消超时不会盲目重发，权限与上下文仍由 Agent 管理。详见[插话能力与限制](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/main/docs/agent-input-capabilities.md)。
-
-远端执行完成后若本地结算暂时失败，适配器会在当前 Host 实例内自动退避重试；下一条请求先等待已有结果保存，不会重放已完成的工具。此结算队列保存在内存中，不承诺进程退出后续接。
-
-此自动补存仅适用于远端终态已确认、但本地写入暂时失败的结果。它不要求用户进入恢复流程；未知的远端执行结果仍按恢复状态处理。等待期间可停止当前显示中的轮次，后台本地补存仍会继续。
-
-## <img src="assets/readme/icon-update.svg" width="24" height="24" alt="" /> 更新与卸载
-
-沿用启动 DSH 时的 `DSH_HOME` 和 profile。`npx` 可替换为 `pnpm dlx`，宿主版本保持固定。
-
-```bash
-# 更新
-npx "@deepseek-ai/dsh@$DSH_VERSION" plugin --profile web update @zaimokuza/dsh-acp-adapter
-# 卸载
-npx "@deepseek-ai/dsh@$DSH_VERSION" plugin --profile web remove @zaimokuza/dsh-acp-adapter
-```
-
-**升级时保留本地数据。** 主会话迁移由 DSH 负责；可验证的 V3 子代理投影通过宿主迁移器恢复；不支持的格式和缺失的数据不会补造。当前轮次结束后重启 DSH、刷新页面，在原生「插件 → ACP adapter」详情页标题中确认加载的插件版本。
-
-不再使用适配器后，可执行 `devin mcp remove --scope user dsh` 移除其入口。
-
-## <img src="assets/readme/icon-help.svg" width="24" height="24" alt="" /> 遇到问题
-
-| 现象                   | 先检查                                                                 |
-| ---------------------- | ---------------------------------------------------------------------- |
-| 命令无法启动           | 核对可执行文件路径，尝试填写绝对路径。                                 |
-| 登录或认证失败         | 在 Agent CLI 登录，检查已配置的环境变量。                              |
-| 升级后旧子代理无法打开 | 遵循 DSH 的历史格式支持范围；不额外迁移旧投影，原文件与 ACP 记录保留。 |
-| 会话需要恢复           | 按输入栏提示与 **ACP 诊断** 处理，不要清空本地数据。                   |
-
-仍有问题时，在 [Issue](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/issues) 附上错误编号、插件/DSH 版本和相关宿主日志片段；分享前移除密钥。
-
-ACP 诊断的“操作记录”包含工具桥的自动审批判断及转交原因。选中记录后可复制脱敏记录与插件版本，用于远程排障；不会导出桥接凭证。普通审批卡的标题和按钮跟随页面语言，操作名称与参数保持 Agent 原文；通用问题卡和缺失命令提示使用宿主设置中的显式语言。
-
-点击“导出安全摘要”即可收集并下载 JSON，无需二次确认。文件只包含有界的固定诊断代码、状态和活动摘要，不包含消息正文、命令、路径或原始会话 ID；范围元数据会说明历史记录缺口、截断和损坏记录。恢复状态单独读取，因此不与诊断和活动构成跨表原子快照。Agent 提示词、用量、原生会话日志和跨成员关联目前不可用。此文件是 ACP 侧车记录的有限摘要，不是完整支持包。
-
-DSH 原生“下载会话日志”或 `/export` 会导出完整会话及子会话 JSONL 和引用附件，可能包含提示词、工具参数、文件路径与其他敏感内容；分享前请自行检查。原生导出不包含 ACP 侧车记录。不要把原生会话 ZIP 与 ACP 安全诊断 JSON 当作同一份数据。
+需要求助时，向 [Issue](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/issues) 附上错误编号、DSH/插件版本和已脱敏的日志片段。技术边界见[原生复用说明](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/main/docs/native-reuse.md)。

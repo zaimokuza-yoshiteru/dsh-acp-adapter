@@ -122,7 +122,7 @@ it('registers one persistent entry and keeps session endpoint out of native conf
     process.execPath,
     join(home, '.dsh/acp/mcp/dsh-mcp-launcher.mjs'),
   ])
-  expect(JSON.stringify(argv)).not.toContain('/private')
+  expect(JSON.stringify(argv)).not.toContain(lease.servers[0]!.url)
   expect(prepared.env).toEqual({ HOME: home, DSH_ACP_TEAM_MCP_URL: lease.servers[0]!.url })
   expect(prepared.lease.servers).toEqual([])
   expect(prepared.lease.beginPrompt).toBe(lease.beginPrompt)

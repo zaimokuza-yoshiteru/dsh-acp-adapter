@@ -1,16 +1,22 @@
 import { createHash } from 'node:crypto'
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { basename, join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import {
   assertRemoteTagMatchesLocal,
+  assertNpmTarballFilename,
   changelogSection,
   createRelease,
+  ensureReleaseTarball,
+  npmTarballFilename,
   previousPublishedTag,
   readRegistry,
   renderNotes,
   validatePublished,
+  writeReleaseIfEnabled,
 } from '../../scripts/github-release.ts'
-import type { Github, Manifest, Packument } from '../../scripts/github-release.ts'
+import type { Github, Manifest, Packument, ReleaseAssetIO } from '../../scripts/github-release.ts'
 
 const name = '@zaimokuza/dsh-acp-adapter'
 const version = '1.2.3-alpha.2'
@@ -25,6 +31,22 @@ const manifest: Manifest = {
   dist: { integrity: `sha512-${createHash('sha512').update(tarball).digest('base64')}` },
 }
 const registry: Packument = { versions: { [version]: manifest }, time: { [version]: '2026-09-18T01:00:00.000Z' } }
+
+function assetFixture(initial: { id: number; name: string; bytes: Uint8Array }[] = []) {
+  const files = [...initial]
+  const io: ReleaseAssetIO = {
+    list: vi.fn(async () => files.map(({ id, name }) => ({ id, name }))),
+    download: vi.fn(async (_tag, asset) => {
+      const found = files.find((file) => file.id === asset.id)
+      if (!found) throw new Error('asset missing')
+      return found.bytes
+    }),
+    upload: vi.fn(async (_tag, path) => {
+      files.push({ id: 2, name: basename(path), bytes: readFileSync(path) })
+    }),
+  }
+  return { files, io }
+}
 
 describe('GitHub release publication', () => {
   it('checks remote tag identity from a SHA-only CLI projection', () => {
@@ -63,6 +85,119 @@ describe('GitHub release publication', () => {
     expect(() =>
       validatePublished(tag, manifest, { ...registry, versions: { [version]: { ...manifest, dist: {} } } }, sha),
     ).toThrow('integrity is missing')
+  })
+
+  it('requires the standard npm package/version filename for a Release asset', () => {
+    const expected = 'zaimokuza-dsh-acp-adapter-1.2.3-alpha.2.tgz'
+    expect(npmTarballFilename(name, version)).toBe(expected)
+    expect(assertNpmTarballFilename(`/tmp/${expected}`, manifest)).toBe(expected)
+    expect(() => assertNpmTarballFilename('/tmp/rebuilt.tgz', manifest)).toThrow(`filename must be ${expected}`)
+  })
+
+  it('uploads a missing tarball without clobbering and verifies the uploaded bytes', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'release-asset-test-'))
+    try {
+      const path = join(directory, npmTarballFilename(name, version))
+      writeFileSync(path, tarball)
+      const { files, io } = assetFixture()
+      await expect(ensureReleaseTarball(tag, 9, path, basename(path), io)).resolves.toBe('uploaded')
+      expect(files).toHaveLength(1)
+      expect(files[0]?.bytes).toEqual(tarball)
+      expect(io.upload).toHaveBeenCalledOnce()
+      expect(io.list).toHaveBeenCalledTimes(2)
+      expect(io.download).toHaveBeenCalledOnce()
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('treats an identical existing asset as idempotent and never uploads it again', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'release-asset-test-'))
+    try {
+      const path = join(directory, npmTarballFilename(name, version))
+      writeFileSync(path, tarball)
+      const { io } = assetFixture([{ id: 1, name: basename(path), bytes: tarball }])
+      await expect(ensureReleaseTarball(tag, 9, path, basename(path), io)).resolves.toBe('already-present')
+      expect(io.upload).not.toHaveBeenCalled()
+      expect(io.download).toHaveBeenCalledOnce()
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses a conflicting existing asset and stops when its download fails', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'release-asset-test-'))
+    try {
+      const path = join(directory, npmTarballFilename(name, version))
+      writeFileSync(path, tarball)
+      const conflict = assetFixture([{ id: 1, name: basename(path), bytes: Buffer.from('different') }])
+      await expect(ensureReleaseTarball(tag, 9, path, basename(path), conflict.io)).rejects.toThrow('differs')
+      expect(conflict.io.upload).not.toHaveBeenCalled()
+      const unavailable = assetFixture([{ id: 1, name: basename(path), bytes: tarball }])
+      vi.mocked(unavailable.io.download).mockRejectedValueOnce(new Error('download failed'))
+      await expect(ensureReleaseTarball(tag, 9, path, basename(path), unavailable.io)).rejects.toThrow(
+        'download failed',
+      )
+      expect(unavailable.io.upload).not.toHaveBeenCalled()
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('fails if upload is absent or altered after upload, and never retries an upload error', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'release-asset-test-'))
+    try {
+      const path = join(directory, npmTarballFilename(name, version))
+      writeFileSync(path, tarball)
+      const missing = assetFixture()
+      vi.mocked(missing.io.upload).mockImplementationOnce(async () => {})
+      await expect(ensureReleaseTarball(tag, 9, path, basename(path), missing.io)).rejects.toThrow('did not create')
+      expect(missing.io.upload).toHaveBeenCalledOnce()
+
+      const altered = assetFixture()
+      vi.mocked(altered.io.upload).mockImplementationOnce(async () => {
+        altered.files.push({ id: 2, name: basename(path), bytes: Buffer.from('wrong bytes') })
+      })
+      await expect(ensureReleaseTarball(tag, 9, path, basename(path), altered.io)).rejects.toThrow(
+        'failed byte verification',
+      )
+      expect(altered.io.upload).toHaveBeenCalledOnce()
+
+      const uploadError = assetFixture()
+      vi.mocked(uploadError.io.upload).mockRejectedValueOnce(new Error('upload failed'))
+      await expect(ensureReleaseTarball(tag, 9, path, basename(path), uploadError.io)).rejects.toThrow('upload failed')
+      expect(uploadError.io.upload).toHaveBeenCalledOnce()
+      expect(uploadError.io.list).toHaveBeenCalledOnce()
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps metadata-only backfill behavior when no tarball is supplied', async () => {
+    const api = vi.fn((endpoint: string) =>
+      endpoint.startsWith('git/')
+        ? [{ ref: `refs/tags/${tag}` }]
+        : endpoint.startsWith('releases/tags/')
+          ? null
+          : { id: 8 },
+    )
+    const { io } = assetFixture()
+    await expect(writeReleaseIfEnabled(true, tag, 'notes', api as Github, io)).resolves.toEqual({
+      created: true,
+      id: 8,
+      url: undefined,
+    })
+    expect(io.list).not.toHaveBeenCalled()
+    expect(io.upload).not.toHaveBeenCalled()
+  })
+
+  it('leaves GitHub and assets untouched in dry-run mode', async () => {
+    const github = vi.fn() as unknown as Github
+    const { io } = assetFixture()
+    await expect(writeReleaseIfEnabled(false, tag, 'notes', github, io)).resolves.toBeUndefined()
+    expect(github).not.toHaveBeenCalled()
+    expect(io.list).not.toHaveBeenCalled()
+    expect(io.upload).not.toHaveBeenCalled()
   })
 
   it('uses npm publication order across squash merges, skipping failed tags and later publications', () => {
@@ -104,6 +239,11 @@ describe('GitHub release publication', () => {
     expect(notes).toContain(`compare/v1.2.2...${tag}`)
     expect(notes).toContain(registry.time[version])
     expect(notes).toContain(manifest.dist!.integrity)
+    const packaged = renderNotes({ ...input, tarballAsset: npmTarballFilename(name, version) })
+    expect(packaged).toContain('Prebuilt plugin package')
+    expect(packaged).toContain('CI tarball verified against npm')
+    expect(packaged).toContain('source archives contain source code')
+    expect(renderNotes(input)).not.toContain('Prebuilt plugin package')
     const generated = renderNotes(input)
     expect(generated).toContain('real commit title')
     expect(generated).toContain('original titles are preserved')
@@ -131,9 +271,9 @@ describe('GitHub release publication', () => {
         ? [{ ref: `refs/tags/${tag}` }]
         : endpoint.startsWith('releases/tags/')
           ? null
-          : { html_url: 'created-url' },
+          : { id: 8, html_url: 'created-url' },
     )
-    expect(createRelease(tag, '中英文 notes', api as Github)).toEqual({ created: true, url: 'created-url' })
+    expect(createRelease(tag, '中英文 notes', api as Github)).toEqual({ created: true, id: 8, url: 'created-url' })
     expect(api).toHaveBeenLastCalledWith('releases', {
       tag_name: tag,
       name: tag,
@@ -148,7 +288,11 @@ describe('GitHub release publication', () => {
     const api = vi.fn((endpoint: string) =>
       endpoint.startsWith('git/') ? [{ ref: `refs/tags/${tag}` }] : { id: 7, html_url: 'existing-url' },
     )
-    expect(createRelease(tag, 'replacement', api as Github)).toEqual({ created: false, url: 'existing-url' })
+    expect(createRelease(tag, 'replacement', api as Github)).toEqual({
+      created: false,
+      id: 7,
+      url: 'existing-url',
+    })
     expect(api).toHaveBeenCalledTimes(2)
     expect(() => createRelease(tag, 'notes', (() => []) as Github)).toThrow('Remote tag is missing')
     expect(() => createRelease(tag, 'notes', (() => [{ ref: `refs/tags/${tag}.1` }]) as Github)).toThrow(

@@ -1,12 +1,10 @@
 # 原生功能回归
 
-这组 E2E 的验收对象是 DSH 与 ACP 之间的产品行为：执行者可以不同，输入、消息、审批及详情仍应复用宿主公开能力。测试启动目标版本的完整 Loader 装配、真实 ACP 子进程和浏览器，浏览器加载构建后的插件与 DSH UI。它不使用现有单元测试的 React 或 UI primitive stub。
+这组 E2E 验证 DSH 与 ACP 的集成行为：测试启动目标版本的 Loader、真实 ACP 子进程和浏览器，并加载构建后的插件与 DSH UI。协议夹具提供可控 ACP 输入，覆盖 UI 与宿主集成；真实 Agent 行为另由 opt-in 检查验证。Web scaffold 或 Electron 窗口中的适配器检查不等于完整桌面产品的打包、preload、升级或跨平台验收。运行真实 Agent 会使用本机登录和模型额度。
 
-原有更广的协议与 Teams 等场景继续覆盖 Claude、Codex、Devin、Kimi 四种 ACP 配置。CodeBuddy 目前仅新增 Agent controls 与权限隔离专项；Agent 目录由通用 catalog 测试覆盖，不表示 CodeBuddy 已通过 Teams、成员管理或其他完整矩阵。每次运行的结果以对应 PR／CI 与测试输出为准。夹具只是可控的协议输入，不代表真实 Agent 或具体模型已经通过验收；真实 Agent 的升级仍需独立冒烟。
+较广的协议与 Teams 场景覆盖 Claude、Codex、Devin、Kimi 四种 ACP 配置。CodeBuddy 目前仅覆盖 Agent controls 与权限隔离；其目录读取由通用 catalog 测试覆盖，不包含 Teams、成员管理或其他矩阵。真实 Agent 的升级需独立检查。
 
 CodeBuddy CLI 的真实运行检查属于本机 opt-in 验证，不纳入普通协议夹具或 CI 的通过声明。本次已完成 macOS CodeBuddy CLI `2.161.2`、模型 `minimax-m2.7` 的 Agent controls 三种场景，每种各运行两轮：Auto 自动批准并恰好执行一次工具；Ask 拒绝一次且工具执行为零；Stop 中止正在等待的工具，确认收到 abort 且无写入副作用。Ask 和 Stop 随后均以同一 ACP session 恢复，完成精确 follow-up；两种场景的 mode 与三个非模型配置值保持，workspace、模型和 MCP scope 匹配，刷新没有重新派发事件或 prompt。此结果仅覆盖记录的本机 CLI、平台、模型与 controls/权限隔离场景，不表示 CodeBuddy Teams、其他平台或 WorkBuddy 桌面应用已通过。已有配置也不会仅凭 `catalogId` 自动切换 runtime。本地 opt-in 检查不是稳定公共命令或 CI 门禁。
-
-无密钥的 mock-agent／协议夹具验证适配器如何处理给定的 ACP 事件，以及 DSH UI 和宿主服务的集成；它们不验证真实 Agent 是否遵循提示、真实模型是否成功执行任务或真实服务配额，也不能作为真实 Teams 运行的签收。真实 Agent 运行会使用本机登录与模型额度，单独选择性运行。此处 Web scaffold 或 Electron 窗口中的适配器检查也不等同于完整桌面产品的打包、preload、升级或跨平台验收。
 
 | 场景               | 必须保持的行为                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -89,7 +87,7 @@ pnpm test:e2e
 
 当前验证版本的 `dsh-client-store` Node 入口仍引用 `zustand`、`immer`，但上游只将它们声明为开发依赖。本项目暂时精确声明这两项 devDependencies，供普通 Node 测试加载真实 Store；浏览器继续使用宿主模块表，插件运行时 dependencies 不增加。上游修复 Node 入口依赖闭包后可移除该补偿。
 
-宿主目标以 `package.json` 的 `engines.dsh` 为准，开发脚本和 CI 源码标签从这里读取；依赖声明通过一致性检查，文档不再重复声明当前版本。发布时 `npm pack` 的 prepack 完整执行类型检查、测试和构建，再由安装门禁验证同一个 tarball。
+依赖声明通过一致性检查。发布时 `npm pack` 的 prepack 执行类型检查、测试和构建，再由安装门禁验证同一个 tarball。
 
 CI 的产品命令以普通用户运行。Windows hosted runner 的管理员身份仅用于准备独立普通账号及目录权限；安装、类型检查、测试、构建和打包交给该账号执行。macOS / Windows 使用同版本真实 Devin 检查配置发现和固定 MCP 入口，无需登录；需要凭据的调用工具及创建 teammate 由独立 `Real Devin integration` 工作流验证。Linux/macOS 检查实际 UID 非 root；浏览器依赖和系统沙箱准备可使用 sudo。这些检查不替代 Windows 桌面安装包的完整验收。
 
@@ -137,8 +135,8 @@ Persistence 替身使用真实 `SessionHandle` 类型，分别覆盖 `detached` 
 
 `test/unit/host/external-subagent-projector.spec.ts` 覆盖写句柄释放、flush 失败、前缀续写和重复投影。新投影直接写入 V3，stream 使用上游 accumulator；时间表示结果被观察到的时间，不补造外部 Agent 的 token 时间线。宿主拒绝的旧 V1/V2 投影不做专用迁移；夹具验证原日志与 sidecar 不被修改，也不阻塞新投影。写句柄使用原生异步释放，flush 或释放失败均不能发布完成状态。退出宽限为零时仍在下一次定时器触发后终止等待，不使用宿主 deadline 的零值（禁用超时）语义。
 
-活动归属使用稳定的 ACP 会话/轮次标识和原生 Step data，不再依赖迁移前的事件序号。系统指令覆盖从历史首条 system message 读取、A → B 更新和清空；ACP 不声明它无法原样支持的 in-history system 更新能力。
+ACP v1 没有 system 角色；宿主指令通过带标注的请求上下文传递，无法强制它高于外部指令。活动归属使用稳定的 ACP 会话／轮次标识和原生 Step data，不再依赖迁移前的事件序号。系统指令覆盖从历史首条 system message 读取、A → B 更新和清空；ACP 不声明它无法原样支持的 in-history system 更新能力。
 
-ACP v1 没有 system 消息角色，宿主指令以有标注的请求上下文传递；无法强制改变外部 Agent 的指令优先级。外部 Agent 自己执行的工具、技能加载和 MCP 不会自动进入 DSH 的工具 hooks，工具活动通知也不是执行请求。DSH 工具桥自动发现当前会话作用域中的原生工具，无需配置工具名单；Teams 工具仍要求原生成员身份。桥接工具通过真实 ToolRuntime 和 hooks 执行，但 Agent 自己执行的其他工具不因此经过宿主管线。
+ACP 与 DSH 的桥接边界见[原生复用说明](../../docs/native-reuse.md)；工具桥回归验证其通过 ToolRuntime 和 hooks 执行 DSH 工具。
 
 真实主信息流专项：`DSH_E2E_LIVE_STREAM=1 DSH_E2E_LIVE_CODEX_MODEL=<已选择的模型> pnpm test:e2e live-main-stream`。在隔离工作区让真实 Codex ACP 执行一次 `printf`，验证原生 Bash、调用计数、结果详情及刷新恢复；不读写用户文件。需要本机已有登录，会消耗该 Agent 的用量，默认跳过。

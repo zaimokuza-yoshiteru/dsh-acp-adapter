@@ -161,7 +161,7 @@ jobs:
         with:
           name: npm-release-tarball
           path: dist/npm
-      - name: Publish release notes for the verified package
+      - name: Attach the verified npm tarball to the GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/github-release.ts --tarball "dist/npm/${{ needs.pack.outputs.tarball }}" --write
