@@ -3,7 +3,13 @@
 
 import { PassThrough } from 'node:stream'
 import type { Readable, Writable } from 'node:stream'
-import { DEFAULT_STDERR_MAX_BYTES, DEFAULT_STDERR_MAX_LINES, StderrRing, defaultRedactStderrLine } from './stderr.ts'
+import {
+  DEFAULT_STDERR_MAX_BYTES,
+  DEFAULT_STDERR_MAX_LINES,
+  StderrPrivateKeyScanner,
+  StderrRing,
+  defaultRedactStderrLine,
+} from './stderr.ts'
 import type { AcpSubprocessHandle, SubprocessSeam } from './subprocess.ts'
 import { stopSubprocess } from './cleanup.ts'
 import { isSubprocessLaunchFailure } from './subprocess.ts'
@@ -52,8 +58,14 @@ export class AcpAgentProcess {
   /** 进程半的响亮告警通道（缺省落 console.error——无 hook 也要响亮）。 */
   private readonly onWarn: (message: string) => void
   private readonly stderrRing: StderrRing
-  private stderrLeftover = ''
   private readonly stderrLeftoverCap: number
+  private stderrFrame = ''
+  private stderrFrameBytes = 0
+  private stderrFrameOverflow = false
+  private stderrLineScanner: StderrPrivateKeyScanner | undefined
+  private stderrVisibleFrameStartMarker: string | undefined
+  private stderrPendingCarriageReturn = false
+  private stderrLineActive = false
   private processFailureError: Error | undefined
   private syncSpawnFailure: Error | undefined
   private exitInfo: AcpProcessExit | null = null
@@ -88,7 +100,7 @@ export class AcpAgentProcess {
       options.stderrMaxBytes ?? DEFAULT_STDERR_MAX_BYTES,
       options.redactStderrLine ?? defaultRedactStderrLine,
     )
-    this.stderrLeftoverCap = options.stderrMaxBytes ?? DEFAULT_STDERR_MAX_BYTES
+    this.stderrLeftoverCap = Math.max(0, (options.stderrMaxBytes ?? DEFAULT_STDERR_MAX_BYTES) - 1)
 
     // 结构化 spawn：argv 直达 seam，不经 shell（堵注入面； 经 spawnPlan/wrapArgv
     // 包 confine——spawnPlan 存在时其 env 整体替换 spec.env，由连接层在传入前解析）。
@@ -240,25 +252,99 @@ export class AcpAgentProcess {
   }
 
   private ingestStderr(chunk: string): void {
-    const lines = (this.stderrLeftover + chunk).split('\n')
-    this.stderrLeftover = lines.pop() ?? ''
-    for (const raw of lines) this.stderrRing.push(lastCarriageSegment(raw.endsWith('\r') ? raw.slice(0, -1) : raw))
-    // A trailing lone CR may still become CRLF; otherwise progress redraws keep only their latest frame.
-    const pending = this.stderrLeftover.endsWith('\r')
-    const frame = lastCarriageSegment(pending ? this.stderrLeftover.slice(0, -1) : this.stderrLeftover)
-    this.stderrLeftover = frame.length > this.stderrLeftoverCap ? frame.slice(-this.stderrLeftoverCap) : frame
-    if (pending) this.stderrLeftover += '\r'
+    let index = 0
+    if (this.stderrPendingCarriageReturn) {
+      this.stderrPendingCarriageReturn = false
+      if (chunk.startsWith('\n')) {
+        this.finishStderrLine()
+        index = 1
+      } else {
+        this.startStderrFrameAfterCarriageReturn()
+      }
+    }
+
+    while (index < chunk.length) {
+      const lf = chunk.indexOf('\n', index)
+      const cr = chunk.indexOf('\r', index)
+      const next = lf < 0 ? cr : cr < 0 ? lf : Math.min(lf, cr)
+      if (next < 0) {
+        this.appendStderrText(chunk.slice(index))
+        return
+      }
+      this.appendStderrText(chunk.slice(index, next))
+      if (chunk[next] === '\n') {
+        this.finishStderrLine()
+        index = next + 1
+        continue
+      }
+      this.stderrLineActive = true
+      if (next + 1 === chunk.length) {
+        this.stderrPendingCarriageReturn = true
+        return
+      }
+      if (chunk[next + 1] === '\n') {
+        this.finishStderrLine()
+        index = next + 2
+      } else {
+        this.startStderrFrameAfterCarriageReturn()
+        index = next + 1
+      }
+    }
   }
 
   private flushStderrLeftover(): void {
-    if (this.stderrLeftover === '') return
-    this.stderrRing.push(this.stderrLeftover)
-    this.stderrLeftover = ''
+    if (this.stderrPendingCarriageReturn || this.stderrLineActive) this.finishStderrLine()
   }
-}
 
-/** Terminal semantics: a bare CR rewinds the line, so only the last redraw is visible. */
-function lastCarriageSegment(line: string): string {
-  const index = line.lastIndexOf('\r')
-  return index < 0 ? line : line.slice(index + 1)
+  private scannerForStderrLine(): StderrPrivateKeyScanner {
+    if (this.stderrLineScanner === undefined) {
+      this.stderrLineScanner = new StderrPrivateKeyScanner(this.stderrRing.privateKeyEndMarker)
+      this.stderrVisibleFrameStartMarker = this.stderrRing.privateKeyEndMarker
+    }
+    return this.stderrLineScanner
+  }
+
+  private appendStderrText(text: string): void {
+    if (text.length === 0) return
+    this.stderrLineActive = true
+    this.scannerForStderrLine().push(text)
+    if (this.stderrFrameOverflow) return
+    const textBytes = Buffer.byteLength(text, 'utf8')
+    if (this.stderrFrameBytes + textBytes > this.stderrLeftoverCap) {
+      this.stderrFrame = ''
+      this.stderrFrameBytes = 0
+      this.stderrFrameOverflow = true
+      return
+    }
+    this.stderrFrame += text
+    this.stderrFrameBytes += textBytes
+  }
+
+  private startStderrFrameAfterCarriageReturn(): void {
+    this.stderrLineActive = true
+    const scanner = this.scannerForStderrLine()
+    scanner.clearCarry()
+    this.stderrVisibleFrameStartMarker = scanner.openEndMarker
+    this.stderrFrame = ''
+    this.stderrFrameBytes = 0
+    this.stderrFrameOverflow = false
+  }
+
+  private finishStderrLine(): void {
+    const scanner = this.scannerForStderrLine()
+    if (this.stderrFrameOverflow) {
+      this.stderrRing.pushTruncatedLine(scanner.openEndMarker)
+    } else {
+      this.stderrRing.setPrivateKeyEndMarker(this.stderrVisibleFrameStartMarker)
+      this.stderrRing.push(this.stderrFrame)
+      this.stderrRing.setPrivateKeyEndMarker(scanner.openEndMarker)
+    }
+    this.stderrFrame = ''
+    this.stderrFrameBytes = 0
+    this.stderrFrameOverflow = false
+    this.stderrLineScanner = undefined
+    this.stderrVisibleFrameStartMarker = undefined
+    this.stderrPendingCarriageReturn = false
+    this.stderrLineActive = false
+  }
 }

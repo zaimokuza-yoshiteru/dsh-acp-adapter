@@ -58,4 +58,26 @@ describe('StderrRing private-key redaction', () => {
     expect(text.match(/<redacted-private-key>/g)).toHaveLength(2)
     expect(text).toContain('visible after both blocks')
   })
+
+  it('drops an oversized line instead of retaining the tail after its redaction key was truncated', () => {
+    const ring = new StderrRing(20, 64, defaultRedactStderrLine)
+    ring.push(`password=${'x'.repeat(64 * 1024)}SYNTHETIC_SECRET_TAIL`)
+    ring.push('ordinary diagnostic')
+
+    expect(ring.snapshot()).toEqual(['<stderr line truncated>', 'ordinary diagnostic'])
+    expect(ring.snapshot().join('\n')).not.toContain('SYNTHETIC_SECRET_TAIL')
+  })
+
+  it('carries PEM protection across an oversized discarded line', () => {
+    const ring = new StderrRing(20, 64, defaultRedactStderrLine)
+    ring.push(`-----BEGIN OPENSSH PRIVATE KEY-----${'x'.repeat(100)}`)
+    ring.push('secret body')
+    ring.push('-----END OPENSSH PRIVATE KEY-----')
+    ring.push('visible after key')
+
+    const lines = ring.snapshot()
+    expect(lines).toContain('<stderr line truncated>')
+    expect(lines.join('\n')).not.toContain('secret body')
+    expect(lines).toContain('visible after key')
+  })
 })

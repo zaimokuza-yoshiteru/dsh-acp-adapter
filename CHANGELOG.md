@@ -4,6 +4,26 @@
 
 User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for publication dates, exact installation instructions, and checksums. Historical entries were reconstructed from tag diffs; npm packages were not republished.
 
+## 0.2.0-rc.2.4
+
+### 中文
+
+- 增强 Agent 日志脱敏，补齐 JSON 凭据与 Basic 认证信息处理；限制无换行日志缓冲，超长行显示截断标记，避免截断后残留敏感值。
+- 修复文件范围读取：行数与单行长度限制作用于请求的内容范围；读取前拒绝非普通文件，继续保留文件总大小限制。
+- 改善审计写入可靠性：单条失败不再丢弃整批记录，写入回滚后不重复分配已预留的序号。旧活动记录迁移使用事务，冲突原始数据保留供排查，不覆盖现有记录。
+- 恢复状态连接稳定后重置重连等待时间，避免历史断线让后续恢复持续等待最长退避时间。
+- 精简中英文安装说明；GitHub Release 提供与 npm 发布包一致的预构建 `.tgz`。
+- 兼容 DSH `0.2.0-rc.2`，无需新增配置或手动恢复操作。
+
+### English
+
+- Improve Agent log redaction for JSON credentials and Basic authentication. Bound unterminated log buffering and replace oversized lines with a truncation marker so truncation cannot expose sensitive tails.
+- Apply file-read line-count and line-length limits to the requested window. Reject non-regular files before opening them and retain the whole-file size limit.
+- Improve audit persistence: isolate failed records instead of discarding a whole batch, and retain reserved sequence numbers after a rollback. Migrate legacy activities transactionally and preserve conflicting original records for diagnosis without overwriting current records.
+- Reset recovery-status reconnect backoff after a healthy connection, so earlier disconnects do not leave subsequent recovery at the longest delay.
+- Simplify Chinese and English installation instructions. GitHub Releases now include the same prebuilt `.tgz` published to npm.
+- Continue to support DSH `0.2.0-rc.2`, with no new configuration or manual recovery steps.
+
 ## 0.2.0-rc.2.3
 
 ### 中文

@@ -3,7 +3,7 @@ const JWT = /eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}/g
 const GITHUB = /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,}/g
 const OPENAI = /\bsk-[A-Za-z0-9_-]{16,}/g
 const BEARER = /\bBearer[ \t]+[A-Za-z0-9._~+/=-]{8,}/gi
-const BASIC = /\bBasic[ \t]+[A-Za-z0-9+/=]{8,}/gi
+const BASIC = /\bBasic[ \t]+[A-Za-z0-9+/=]{4,}/gi
 const AWS_ACCESS_KEY_ID = /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g
 const SLACK = /\bxox[bparsce]-[A-Za-z0-9-]{16,}\b/g
 const GOOGLE_API_KEY = /\bAIza[0-9A-Za-z_-]{35}\b/g

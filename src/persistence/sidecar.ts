@@ -116,7 +116,7 @@ import {
 import { createHash } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, readdirSync } from 'node:fs'
 import path from 'node:path'
-import { DatabaseSync, type StatementSync } from 'node:sqlite'
+import { DatabaseSync, type SQLInputValue, type SQLOutputValue, type StatementSync } from 'node:sqlite'
 import type { Context } from '@deepseek-ai/cordis'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import type {
@@ -978,6 +978,93 @@ CREATE INDEX IF NOT EXISTS activity_session_anchor_id_revision_desc
   ON activity_journal(dsh_session_id, prompt_anchor_message_id, activity_id, revision_seq DESC);
 `
 
+const ACTIVITY_JOURNAL_CURRENT_SCHEMA = `CREATE TABLE activity_journal (
+  dsh_session_id TEXT NOT NULL,
+  activity_id TEXT NOT NULL,
+  owner_dsh_session_id TEXT NOT NULL,
+  prompt_anchor_message_id TEXT NOT NULL,
+  activity_seq INTEGER NOT NULL,
+  revision_seq INTEGER NOT NULL,
+  time INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  status TEXT NOT NULL,
+  presentation TEXT NOT NULL,
+  raw_detail TEXT,
+  raw_detail_ref TEXT,
+  PRIMARY KEY (dsh_session_id, revision_seq)
+) STRICT`
+
+const ACTIVITY_JOURNAL_BASE_COLUMNS = [
+  'dsh_session_id',
+  'activity_id',
+  'owner_dsh_session_id',
+  'prompt_anchor_message_id',
+  'activity_seq',
+  'revision_seq',
+  'time',
+  'kind',
+  'status',
+  'presentation',
+  'raw_detail',
+  'raw_detail_ref',
+] as const
+const ACTIVITY_JOURNAL_OPTIONAL_COLUMNS = ['content_index', 'display_detail'] as const
+
+function tableColumns(db: DatabaseSync, table: string): Set<string> {
+  return new Set(
+    (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: string }>).flatMap((row) =>
+      typeof row.name === 'string' ? [row.name] : [],
+    ),
+  )
+}
+
+function ensureActivityJournalOptionalColumns(db: DatabaseSync): void {
+  const columns = tableColumns(db, 'activity_journal')
+  if (!columns.has('display_detail')) db.exec('ALTER TABLE activity_journal ADD COLUMN display_detail TEXT')
+  if (!columns.has('content_index')) db.exec('ALTER TABLE activity_journal ADD COLUMN content_index INTEGER')
+}
+
+/**
+ * Import one legacy journal while the caller holds BEGIN IMMEDIATE. Existing
+ * primary keys are accepted only when every source field maps to the same
+ * stored value; conflicting history stays in the legacy table for later
+ * diagnosis/retry. This function never logs row contents.
+ */
+function copyLegacyActivityRows(db: DatabaseSync): number {
+  const legacyColumns = tableColumns(db, 'activity_journal_legacy')
+  const targetColumns = [
+    ...ACTIVITY_JOURNAL_BASE_COLUMNS,
+    ...ACTIVITY_JOURNAL_OPTIONAL_COLUMNS.filter((column) => legacyColumns.has(column)),
+  ]
+  const source = targetColumns.map((column) => {
+    let expression: string = column
+    if (column === 'revision_seq' && !legacyColumns.has('revision_seq')) expression = 'activity_seq'
+    if (column === 'time' && !legacyColumns.has('time')) expression = '0'
+    if ((column === 'raw_detail' || column === 'raw_detail_ref') && !legacyColumns.has(column)) expression = 'NULL'
+    return `${expression} AS ${column}`
+  })
+  const rows = db.prepare(`SELECT ${source.join(', ')} FROM activity_journal_legacy`).iterate() as IterableIterator<
+    Record<string, SQLOutputValue>
+  >
+  const insert = db.prepare(
+    `INSERT OR IGNORE INTO activity_journal (${targetColumns.join(', ')}) VALUES (${targetColumns.map(() => '?').join(', ')})`,
+  )
+  const selectExisting = db.prepare(
+    `SELECT ${targetColumns.join(', ')} FROM activity_journal WHERE dsh_session_id = ? AND revision_seq = ?`,
+  )
+  let conflicts = 0
+  for (const row of rows) {
+    const values = targetColumns.map((column) => row[column] ?? null) as SQLInputValue[]
+    insert.run(...values)
+    const existing = selectExisting.get(row.dsh_session_id ?? null, row.revision_seq ?? null) as
+      Record<string, SQLOutputValue> | undefined
+    if (existing === undefined || !targetColumns.every((column, index) => Object.is(existing[column], values[index]))) {
+      conflicts += 1
+    }
+  }
+  return conflicts
+}
+
 class SidecarStore implements AcpSidecar {
   readonly root: string
   private readonly now: () => number
@@ -1072,45 +1159,30 @@ class SidecarStore implements AcpSidecar {
         (db.prepare('PRAGMA table_info(dispatch_ledger)').all() as Array<{ name?: string }>).map((row) => row.name),
       )
       if (!dispatchColumns.has('provenance')) db.exec('ALTER TABLE dispatch_ledger ADD COLUMN provenance TEXT')
+      let activityLegacyConflictCount = 0
       const activitySql = (
         db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'activity_journal'").get() as
           { sql?: unknown } | undefined
       )?.sql
       if (typeof activitySql === 'string' && !activitySql.includes('PRIMARY KEY (dsh_session_id, revision_seq)')) {
-        // Perform the legacy -> new activity_journal migration atomically so a crash
-        // during migration cannot leave a stranded activity_journal_legacy while
-        // activity_journal has been partially or fully recreated by another actor.
         db.exec('BEGIN IMMEDIATE')
         try {
-          // Re-check under the write lock: another process may have migrated already.
           const activitySqlNow = (
             db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'activity_journal'").get() as
               { sql?: unknown } | undefined
           )?.sql
           if (
             typeof activitySqlNow === 'string' &&
-            activitySqlNow.includes('PRIMARY KEY (dsh_session_id, revision_seq)')
+            !activitySqlNow.includes('PRIMARY KEY (dsh_session_id, revision_seq)')
           ) {
-            // Already migrated by a concurrent actor; nothing to do.
+            db.exec('ALTER TABLE activity_journal RENAME TO activity_journal_legacy')
+            db.exec(ACTIVITY_JOURNAL_CURRENT_SCHEMA)
+            ensureActivityJournalOptionalColumns(db)
+            const conflicts = copyLegacyActivityRows(db)
+            if (conflicts === 0) db.exec('DROP TABLE activity_journal_legacy')
+            activityLegacyConflictCount = conflicts
             db.exec('COMMIT')
           } else {
-            db.exec('ALTER TABLE activity_journal RENAME TO activity_journal_legacy')
-            db.exec(`CREATE TABLE activity_journal (
-          dsh_session_id TEXT NOT NULL, activity_id TEXT NOT NULL, owner_dsh_session_id TEXT NOT NULL,
-          prompt_anchor_message_id TEXT NOT NULL, activity_seq INTEGER NOT NULL, revision_seq INTEGER NOT NULL,
-          time INTEGER NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL, presentation TEXT NOT NULL,
-          raw_detail TEXT, raw_detail_ref TEXT, PRIMARY KEY (dsh_session_id, revision_seq)
-        ) STRICT`)
-            const columns = new Set(
-              (db.prepare('PRAGMA table_info(activity_journal_legacy)').all() as Array<{ name?: string }>).map(
-                (row) => row.name,
-              ),
-            )
-            const time = columns.has('time') ? 'time' : '0'
-            const revision = columns.has('revision_seq') ? 'revision_seq' : 'activity_seq'
-            db.exec(`INSERT INTO activity_journal (dsh_session_id, activity_id, owner_dsh_session_id, prompt_anchor_message_id, activity_seq, revision_seq, time, kind, status, presentation, raw_detail, raw_detail_ref)
-          SELECT dsh_session_id, activity_id, owner_dsh_session_id, prompt_anchor_message_id, activity_seq, ${revision}, ${time}, kind, status, presentation, raw_detail, raw_detail_ref FROM activity_journal_legacy`)
-            db.exec('DROP TABLE activity_journal_legacy')
             db.exec('COMMIT')
           }
         } catch (error) {
@@ -1122,9 +1194,9 @@ class SidecarStore implements AcpSidecar {
           throw error
         }
       }
-      // Recovery: if a previous run crashed after renaming but another actor
-      // recreated the new activity_journal, migrate remaining legacy rows without
-      // altering the already-created table (INSERT OR IGNORE then DROP legacy).
+      // Recovery after a prior interrupted migration. Check under the write lock
+      // again before copying or dropping the retained legacy table.
+      ensureActivityJournalOptionalColumns(db)
       const legacyRow = db
         .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'activity_journal_legacy'")
         .get()
@@ -1139,17 +1211,26 @@ class SidecarStore implements AcpSidecar {
       ) {
         db.exec('BEGIN IMMEDIATE')
         try {
-          const columns = new Set(
-            (db.prepare('PRAGMA table_info(activity_journal_legacy)').all() as Array<{ name?: string }>).map(
-              (row) => row.name,
-            ),
-          )
-          const time = columns.has('time') ? 'time' : '0'
-          const revision = columns.has('revision_seq') ? 'revision_seq' : 'activity_seq'
-          db.exec(`INSERT OR IGNORE INTO activity_journal (dsh_session_id, activity_id, owner_dsh_session_id, prompt_anchor_message_id, activity_seq, revision_seq, time, kind, status, presentation, raw_detail, raw_detail_ref)
-            SELECT dsh_session_id, activity_id, owner_dsh_session_id, prompt_anchor_message_id, activity_seq, ${revision}, ${time}, kind, status, presentation, raw_detail, raw_detail_ref FROM activity_journal_legacy`)
-          db.exec('DROP TABLE activity_journal_legacy')
-          db.exec('COMMIT')
+          const legacyExists = db
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'activity_journal_legacy'")
+            .get()
+          const currentSql = (
+            db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'activity_journal'").get() as
+              { sql?: unknown } | undefined
+          )?.sql
+          if (
+            legacyExists !== undefined &&
+            typeof currentSql === 'string' &&
+            currentSql.includes('PRIMARY KEY (dsh_session_id, revision_seq)')
+          ) {
+            ensureActivityJournalOptionalColumns(db)
+            const conflicts = copyLegacyActivityRows(db)
+            if (conflicts === 0) db.exec('DROP TABLE activity_journal_legacy')
+            activityLegacyConflictCount = conflicts
+            db.exec('COMMIT')
+          } else {
+            db.exec('COMMIT')
+          }
         } catch (error) {
           try {
             db.exec('ROLLBACK')
@@ -1159,12 +1240,12 @@ class SidecarStore implements AcpSidecar {
           throw error
         }
       }
-      const activityColumns = new Set(
-        (db.prepare('PRAGMA table_info(activity_journal)').all() as Array<{ name?: string }>).map((row) => row.name),
-      )
-      if (!activityColumns.has('display_detail')) db.exec('ALTER TABLE activity_journal ADD COLUMN display_detail TEXT')
-      if (!activityColumns.has('content_index'))
-        db.exec('ALTER TABLE activity_journal ADD COLUMN content_index INTEGER')
+      ensureActivityJournalOptionalColumns(db)
+      if (activityLegacyConflictCount > 0) {
+        this.warn(
+          `dsh-acp sidecar: retained ${String(activityLegacyConflictCount)} conflicting legacy activity journal row(s); original rows remain available`,
+        )
+      }
     } catch (error: unknown) {
       try {
         db?.close()

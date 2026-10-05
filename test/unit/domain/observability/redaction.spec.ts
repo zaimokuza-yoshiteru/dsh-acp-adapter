@@ -77,5 +77,15 @@ describe('shared secret redaction', () => {
     const redacted = redactSecretText(header)
     expect(redacted).not.toContain('dXNlcjpwYXNz')
     expect(redacted).toContain('Authorization')
+
+    const shortHeader = 'Authorization: Basic dTpw'
+    const shortRedacted = redactSecretText(shortHeader)
+    expect(shortRedacted).toContain('<redacted>')
+    expect(shortRedacted).not.toContain('dTpw')
+    for (const token of ['OnA=', 'dTo=', 'Og==']) {
+      const result = redactSecretText(`Authorization: Basic ${token}`)
+      expect(result).toContain('<redacted>')
+      expect(result).not.toContain(token)
+    }
   })
 })
