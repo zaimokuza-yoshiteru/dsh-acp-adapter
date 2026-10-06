@@ -239,6 +239,14 @@ it('keeps long teammate cards and reserved notices aligned in both languages and
     expect(await page.locator('[data-acp-team-panel]').evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true)
     const narrow = await Promise.all((await cards.all()).map((card) => card.boundingBox()))
     expect(required(narrow[1]).y).toBeGreaterThanOrEqual(required(narrow[0]).y + required(narrow[0]).height)
+    if (screenshotDir !== undefined) {
+      mkdirSync(screenshotDir, { recursive: true })
+      await page.screenshot({
+        path: join(screenshotDir, 'team-members.narrow.png'),
+        fullPage: true,
+        animations: 'disabled',
+      })
+    }
     setStage('test assertions passed')
     passed = true
   } catch (error) {

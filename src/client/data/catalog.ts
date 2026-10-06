@@ -64,7 +64,7 @@ const INSTALLED_BINARY_COMMANDS: Readonly<Record<string, string>> = { devin: 'de
 /** Curated adapter regression/live-smoke coverage, not certification of registry versions.
  * Keep this explicit: adding a runtime binding does not establish verification.
  */
-const VERIFIED_ADAPTER_IDS: readonly string[] = ['devin', 'codex-acp', 'kimi', 'claude-acp']
+const VERIFIED_ADAPTER_IDS: readonly string[] = ['devin', 'codebuddy-code', 'codex-acp', 'kimi', 'claude-acp']
 
 // ---------- catalog 合成 ----------
 

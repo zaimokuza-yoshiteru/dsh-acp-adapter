@@ -43,6 +43,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { Remote, RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import type * as acp from '@agentclientprotocol/sdk'
 import { acpRouteId, ACP_AGENT_ID_PATTERN } from '../domain/session/agent-config.ts'
+import { ACP_CONFIG_IDENTIFIER_MAX } from '../contract/config-options.ts'
 import { acpProbeConfigKey, acpVersionCompatibility, catalogIdOf } from '../domain/session/agent-config.ts'
 import { registryVersionOf } from '../domain/session/registry-versions.ts'
 import type { AcpAgentConfig } from '../domain/session/agent-config.ts'
@@ -960,7 +961,8 @@ export class AcpRemoteService extends TypertRemoteService {
     const member = members.find((member) => member.sessionId === sessionId)
     if (member?.profileId === null || member === undefined || member.status !== 'inactive')
       throw badRequest('The ACP member must be inactive')
-    if (typeof modeId !== 'string' || !modeId || modeId.length > 128) throw badRequest('Invalid member mode')
+    if (typeof modeId !== 'string' || !modeId || modeId.length > ACP_CONFIG_IDENTIFIER_MAX)
+      throw badRequest('Invalid member mode')
     await this.requireOwnedSessionAccess(sessionId)
     const adapter = await this.agentSessionControlFor(sessionId)
     if (!adapter.setTeamMemberMode) throw badRequest('Member modes are unavailable')

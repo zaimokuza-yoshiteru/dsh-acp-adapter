@@ -26,9 +26,11 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+import { Worker } from 'node:worker_threads'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { SessionId } from '@deepseek-ai/dsh-session'
+import { ACP_CONFIG_IDENTIFIER_MAX } from '../../../src/contract/config-options.ts'
 import {
   ACP_SIDECAR_AUDIT_QUEUE_LIMIT,
   ACP_SIDECAR_DB_FILENAME,
@@ -1317,8 +1319,9 @@ describe(' option 快照（acpOptionsSnapshotOf 有界标准化 + option_snapsho
     expect(await store.readOptionSnapshot(SessionId('ghost'))).toBeUndefined()
   })
 
-  it('硬上限：字段截断 128 字符、values 截断 64 条、选项数截断 32 项', () => {
-    const longId = 'x'.repeat(ACP_SNAPSHOT_FIELD_MAX + 50)
+  it('硬上限：展示字段截断，opaque IDs 完整保留或整项跳过，values 截断 64 条', () => {
+    const longId = 'x'.repeat(135)
+    const overLimitId = 'z'.repeat(513)
     const manyValues = Array.from({ length: ACP_SNAPSHOT_VALUES_LIMIT + 10 }, (_, index) => ({
       value: `v${String(index)}`,
       name: `v${String(index)}`,
@@ -1331,7 +1334,15 @@ describe(' option 快照（acpOptionsSnapshotOf 有界标准化 + option_snapsho
     }))
     const record = acpOptionsSnapshotOf(
       [
-        { type: 'select', id: longId, name: 'Model', currentValue: 'm1', options: manyValues } as never,
+        {
+          type: 'select',
+          id: longId,
+          category: `cat-${longId}`,
+          name: 'M'.repeat(200),
+          currentValue: longId,
+          options: [{ value: longId, name: 'long' }, ...manyValues],
+        } as never,
+        { type: 'select', id: overLimitId, name: 'Too long', currentValue: 'x', options: [] } as never,
         ...(manyOptions as never[]),
       ],
       undefined,
@@ -1339,9 +1350,63 @@ describe(' option 快照（acpOptionsSnapshotOf 有界标准化 + option_snapsho
       TIME_BASE,
     )
     expect(record.options).toHaveLength(ACP_SNAPSHOT_OPTION_LIMIT)
-    expect(record.options[0]?.id).toHaveLength(ACP_SNAPSHOT_FIELD_MAX)
+    expect(record.options[0]).toMatchObject({ id: longId, category: `cat-${longId}`, value: longId })
+    expect(record.options[0]?.name).toHaveLength(ACP_SNAPSHOT_FIELD_MAX)
+    expect(record.options[0]?.values?.[0]).toBe(longId)
     expect(record.options[0]?.values).toHaveLength(ACP_SNAPSHOT_VALUES_LIMIT)
     expect(record.currentModeId).toBeNull()
+  })
+
+  it('preserves exact 511/512-character identifiers within the existing 16 KiB storage budget', () => {
+    const id511 = 'a'.repeat(ACP_CONFIG_IDENTIFIER_MAX - 1)
+    const id512 = 'b'.repeat(ACP_CONFIG_IDENTIFIER_MAX)
+    const id513 = 'c'.repeat(ACP_CONFIG_IDENTIFIER_MAX + 1)
+    const record = acpOptionsSnapshotOf(
+      [
+        {
+          type: 'select',
+          id: id511,
+          name: 'Mode',
+          category: 'mode',
+          currentValue: id511,
+          options: [{ value: id511, name: 'A' }],
+        },
+        {
+          type: 'select',
+          id: id512,
+          name: 'Mode',
+          category: 'mode',
+          currentValue: id512,
+          options: [{ value: id512, name: 'B' }],
+        },
+        {
+          type: 'select',
+          id: id513,
+          name: 'Mode',
+          category: 'mode',
+          currentValue: 'safe',
+          options: [{ value: 'safe', name: 'C' }],
+        },
+        {
+          type: 'select',
+          id: 'too-long-current',
+          name: 'Mode',
+          category: 'mode',
+          currentValue: id513,
+          options: [{ value: 'safe', name: 'D' }],
+        },
+      ] as never,
+      id512,
+      'fp-opaque-boundary',
+      TIME_BASE,
+    )
+    expect(record.options.map((option) => [option.id, option.value, option.values])).toEqual([
+      [id511, id511, [id511]],
+      [id512, id512, [id512]],
+    ])
+    expect(record.currentModeId).toBe(id512)
+    expect(JSON.stringify(record).length).toBeLessThanOrEqual(ACP_SNAPSHOT_TOTAL_BYTES)
+    expect(toOptionsSnapshotRecord(record)).toEqual(record)
   })
 
   it('总字节超限：先丢尾部非 model 类选项（model 保底），再剥 values；产物恒 ≤ 16384 字节', () => {
@@ -1482,12 +1547,18 @@ describe(' option 快照（acpOptionsSnapshotOf 有界标准化 + option_snapsho
     expect(record.modes?.availableModes.every((mode) => mode.description?.length === 224)).toBe(true)
     expect(record.currentModeId).toBe(activeModeId)
 
-    const tooLongModeId = 'm'.repeat(ACP_SNAPSHOT_FIELD_MAX + 1)
-    expect(() =>
-      acpOptionsSnapshotOf([], tooLongModeId, 'fp-invalid-mode-id', TIME_BASE, {
-        modes: { currentModeId: tooLongModeId, availableModes: [{ id: tooLongModeId, name: 'Invalid' }] },
-      }),
-    ).toThrow(TypeError)
+    const longModeId = 'm'.repeat(135)
+    const longModeRecord = acpOptionsSnapshotOf([], longModeId, 'fp-long-mode-id', TIME_BASE, {
+      modes: { currentModeId: longModeId, availableModes: [{ id: longModeId, name: 'Long mode' }] },
+    })
+    expect(longModeRecord.currentModeId).toBe(longModeId)
+    expect(longModeRecord.modes?.availableModes[0]?.id).toBe(longModeId)
+    const tooLongModeId = 'm'.repeat(513)
+    const overLimitModeRecord = acpOptionsSnapshotOf([], tooLongModeId, 'fp-invalid-mode-id', TIME_BASE, {
+      modes: { currentModeId: tooLongModeId, availableModes: [{ id: tooLongModeId, name: 'Invalid' }] },
+    })
+    expect(overLimitModeRecord.currentModeId).toBeNull()
+    expect(overLimitModeRecord.modes).toBeUndefined()
     const invalidUsage = acpOptionsSnapshotOf([], 'active', 'fp-invalid-usage', TIME_BASE, {
       modes: { currentModeId: 'active', availableModes: [{ id: 'active', name: 'Active' }] },
       contextUsage: { used: Number.POSITIVE_INFINITY, size: 100 },
@@ -1564,14 +1635,21 @@ describe('pending member mode storage', () => {
     await store.clearModeIntent(id, latest)
     expect(await store.readModeIntent(id)).toBeUndefined()
   })
+
+  it('accepts protocol-sized mode IDs without truncation and rejects IDs above the shared limit', async () => {
+    const id = SessionId('mode-id-bound')
+    const longModeId = 'm'.repeat(135)
+    const intent = { bindingKey: 'original', modeId: longModeId }
+    await store.writeModeIntent(id, intent)
+    expect(await store.readModeIntent(id)).toEqual(intent)
+    await expect(store.writeModeIntent(id, { ...intent, modeId: 'm'.repeat(513) })).rejects.toThrow(TypeError)
+  })
 })
 
 // Hardening tests for recent fixes
 describe('hardening: seq reuse, batch drain fallback, activity_journal migration', () => {
-  it('preserves in-memory seq reservation after binding rollback so queued audit does not get duplicate seq', async () => {
+  it('drains queued audit before a failed binding transaction and does not reserve a missing row seq', async () => {
     const sid = 'sess-seq-reuse'
-    // Reserve one queued seq, then fail a synchronous binding transaction before
-    // the queue-drain microtask can persist the first entry.
     const queuedBeforeFailure = store.append(SessionId(sid), {
       kind: 'replay-assessment',
       data: { status: 'not-compared' },
@@ -1587,7 +1665,6 @@ describe('hardening: seq reuse, batch drain fallback, activity_journal migration
       triggerDb.close()
     }
 
-    // The binding audit reserves a later seq before its transaction rolls back.
     const failedBinding = store.append(SessionId(sid), { kind: 'binding', data: BINDING_A })
     const queuedAfterFailure = store.append(SessionId(sid), {
       kind: 'replay-assessment',
@@ -1596,13 +1673,81 @@ describe('hardening: seq reuse, batch drain fallback, activity_journal migration
     await expect(failedBinding).rejects.toThrow()
     await Promise.all([queuedBeforeFailure, queuedAfterFailure])
 
-    // Flush queued audits (microtask drain may have been scheduled); ensure queued audit persisted
     await store.flush()
     const lines = await readEnvelopes(sid)
     const replayRows = lines.filter((line) => line.kind === 'replay-assessment')
     expect(replayRows).toHaveLength(2)
-    expect(replayRows.map((line) => line.seq)).toEqual([1, 3])
+    expect(replayRows.map((line) => line.seq)).toEqual([1, 2])
+    expect(lines.some((line) => line.kind === 'binding')).toBe(false)
     expect(new Set(lines.map((line) => line.seq)).size).toBe(lines.length)
+  })
+
+  it('allocates audit sequence from SQLite across two long-lived sidecar instances', async () => {
+    const sid = SessionId('sess-cross-instance-seq')
+    const second = createAcpSidecar({ root, now: () => TIME_BASE + 1 })
+    extraStores.push(second)
+    await store.append(sid, { kind: 'binding', data: BINDING_A })
+    await second.append(sid, {
+      kind: 'binding',
+      data: bindingData({ dshCommittedSeq: 9, committedPromptOrdinal: 1 }),
+    })
+    await store.append(sid, {
+      kind: 'binding',
+      data: bindingData({ dshCommittedSeq: 10, committedPromptOrdinal: 2 }),
+    })
+    expect((await readEnvelopes(String(sid))).map((line) => line.seq)).toEqual([1, 2, 3])
+  })
+
+  it('waits for another SQLite worker holding the write lock and allocates after its committed MAX(seq)', async () => {
+    const sid = 'sess-cross-process-seq'
+    await store.append(SessionId(sid), { kind: 'binding', data: BINDING_A })
+    const worker = new Worker(new URL('../../fixtures/sidecar-lock-worker.mjs', import.meta.url), {
+      workerData: { dbPath: dbFile(), sessionId: sid, time: TIME_BASE + 1 },
+    })
+    const receive = (type: string) =>
+      new Promise<void>((resolve, reject) => {
+        const onMessage = (message: { type?: string; error?: string }) => {
+          if (message.type === 'error') {
+            worker.off('message', onMessage)
+            reject(new Error(message.error))
+          }
+          if (message.type === type) {
+            worker.off('message', onMessage)
+            resolve()
+          }
+        }
+        worker.on('message', onMessage)
+        worker.once('error', reject)
+      })
+    try {
+      await receive('locked')
+      worker.postMessage({ type: 'release' })
+      await store.append(SessionId(sid), {
+        kind: 'binding',
+        data: bindingData({ dshCommittedSeq: 9, committedPromptOrdinal: 1 }),
+      })
+      await receive('committed')
+      expect((await readEnvelopes(sid)).map((line) => line.seq)).toEqual([1, 2, 3])
+    } finally {
+      await worker.terminate().catch(() => 0)
+    }
+  })
+
+  it('keeps queued and synchronous append order and exposes newly committed rows to a second cursor', async () => {
+    const sid = SessionId('sess-queued-sync-order')
+    const second = createAcpSidecar({ root, now: () => TIME_BASE + 1 })
+    extraStores.push(second)
+    const queuedAppend = store.append(sid, { kind: 'replay-assessment', data: { status: 'not-compared' } })
+    const externalCommit = second.append(sid, { kind: 'binding', data: BINDING_A })
+    const headPage = second.listPage(sid, 0, 10, 1)
+    const syncAppend = store.append(sid, { kind: 'permission', data: permissionData('queued-sync-order') })
+    await Promise.all([queuedAppend, externalCommit, syncAppend])
+    expect((await headPage).map((entry) => [entry.seq, entry.kind])).toEqual([[1, 'binding']])
+    const continuation = await second.listPage(sid, 1, 10)
+    expect(continuation.map((entry) => [entry.seq, entry.kind])).toEqual([
+      [2, 'replay-assessment'],
+      [3, 'permission'],
+    ])
   })
 
   it('on batch flush failure falls back to per-item writes and counts dropped items', async () => {

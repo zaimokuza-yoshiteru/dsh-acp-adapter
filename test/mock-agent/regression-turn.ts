@@ -202,6 +202,9 @@ export async function regressionTurn(
         kind: 'other',
         status: 'in_progress',
         rawInput: { prompt: `Inspect ${key} fixture` },
+        ...(externalChildScenario === 'SUCCESS'
+          ? { content: [{ type: 'content', content: { type: 'text', text: 'Success child tool output fixture.' } }] }
+          : {}),
         _meta: {
           'cognition.ai/subagent_started': {
             agentId,
@@ -211,6 +214,17 @@ export async function regressionTurn(
         },
       })
       fs.writeFileSync(join(directory, startedFile), 'ready')
+      if (externalChildScenario === 'SUCCESS') {
+        sendUpdate(session.id, {
+          sessionUpdate: 'tool_call',
+          toolCallId: `${toolCallId}:0:content`,
+          title: 'Parent validation',
+          kind: 'other',
+          status: 'completed',
+          rawInput: { file_path: '/work/fixture/parent-check.ts' },
+          rawOutput: { result: 'Parent validation completed.' },
+        })
+      }
       if (!(await waitForFileGate(directory, releaseLaunch, 'external child launch tool', turnAbort.signal)))
         return respond(msg.id, { stopReason: 'cancelled' })
       sendUpdate(session.id, {

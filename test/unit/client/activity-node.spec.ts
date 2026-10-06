@@ -1023,7 +1023,7 @@ describe('ACP activity conversation node', () => {
     expect(rows[0]?.projectedChild).toBeUndefined()
   })
 
-  it('keeps one delegation row while suppressing interleaved child tools and failed projection metadata', () => {
+  it('keeps one delegation row while suppressing real normalized content and failed projection metadata', () => {
     const base = {
       dshSessionId: 'parent',
       ownerDshSessionId: 'parent',
@@ -1048,7 +1048,13 @@ describe('ACP activity conversation node', () => {
         kind: 'tool',
         presentation: 'Agent tool activity',
       },
-      { ...base, activityId: 'user-1:tool:child-read', activitySeq: 9, kind: 'tool', presentation: 'Read file' },
+      {
+        ...base,
+        activityId: 'user-1:tool:child-root:0:content',
+        activitySeq: 9,
+        kind: 'other',
+        presentation: 'Tool output',
+      },
       {
         ...base,
         activityId: 'user-1:delegated-record:child-1',

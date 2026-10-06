@@ -195,9 +195,10 @@ describe('常量：与宿主侧契约逐字对齐', () => {
     })
   })
 
-  it('ACP_CATALOG_ENTRIES 钉版：override 四条排前（devin/codex-acp/kimi/claude-acp），其余按 registry 顺序', () => {
-    expect(ACP_CATALOG_ENTRIES.slice(0, 4).map((entry) => entry.id)).toEqual([
+  it('ACP_CATALOG_ENTRIES 钉版：已验证的五条排前，其余按 registry 顺序', () => {
+    expect(ACP_CATALOG_ENTRIES.slice(0, 5).map((entry) => entry.id)).toEqual([
       'devin',
+      'codebuddy-code',
       'codex-acp',
       'kimi',
       'claude-acp',
@@ -609,14 +610,13 @@ describe('草稿种子：emptyDraft / draftFromCatalogEntry / draftFromAgent', (
       catalogId: 'kimi',
     })
 
-    // CodeBuddy is explicitly bound for its deferred-MCP wire shape, while
-    // remaining unverified in the catalog until separate adapter coverage exists.
+    // CodeBuddy has explicit adapter coverage and keeps its catalog runtime binding.
     const codebuddy = catalogEntryOf('codebuddy-code')
     expect(codebuddy).toMatchObject({
       runtime: 'codebuddy',
       loginHint: 'codebuddy',
       args: ['--acp'],
-      verification: 'unverified',
+      verification: 'adapter-tested',
     })
     const codebuddyDraft = draftFromCatalogEntry('codebuddy-code')
     expect(codebuddyDraft).toMatchObject({ runtime: 'codebuddy', catalogId: 'codebuddy-code', argsText: '--acp' })

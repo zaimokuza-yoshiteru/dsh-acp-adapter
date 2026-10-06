@@ -6,7 +6,7 @@ Use ACP Agents in DSH with native sessions, tool approvals, and team collaborati
 
 ## Install
 
-Plugin version `0.2.0-rc.2.5` supports DSH `0.2.0-rc.2`. See [Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for other versions.
+Plugin version `0.2.0-rc.2.6` supports DSH `0.2.0-rc.2`. See [Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for other versions.
 
 **Recommended:** In DSH Creator mode, send:
 
@@ -33,14 +33,14 @@ Git and archive examples. In the plugin manager, paste the Git address or .tgz U
 
 | Source                         | Example                                                                                                                                                    |
 | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Git                            | `git+https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter.git#v0.2.0-rc.2.5`                                                                             |
-| Prebuilt plugin archive (.tgz) | [Download 0.2.0-rc.2.5](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/download/v0.2.0-rc.2.5/zaimokuza-dsh-acp-adapter-0.2.0-rc.2.5.tgz) |
+| Git                            | `git+https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter.git#v0.2.0-rc.2.6`                                                                             |
+| Prebuilt plugin archive (.tgz) | [Download 0.2.0-rc.2.6](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/download/v0.2.0-rc.2.6/zaimokuza-dsh-acp-adapter-0.2.0-rc.2.6.tgz) |
 
 This archive includes compiled output and matches the npm package. GitHub's automatically generated Source code ZIP/TAR.GZ files are source archives, not built plugin packages. Uncached dependencies still require network access.
 
 </details>
 
-**Updates:** The plugin manager does not update plugins automatically. To update through the plugin manager, uninstall the old version, then install the new version using the recommended method above. Uninstalling the plugin does not uninstall an Agent or sign out of its account.
+**Updates:** The plugin manager does not update plugins automatically. To update through the plugin manager, uninstall the old version, then install the new version using the recommended method above. Uninstalling the plugin does not uninstall an Agent or sign out of its account. To ensure the updated plugin is loaded, fully quit and reopen DSH Desktop after the current task finishes; for Web, restart the DSH service and refresh the page. You do not need to sign in again.
 
 ## Connect an Agent
 

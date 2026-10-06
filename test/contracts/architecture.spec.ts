@@ -168,6 +168,12 @@ const ALLOWED_CROSS_FILE_EDGES = new Set([
   'protocol/v1/connection.ts->contract/redaction.ts',
   'domain/observability/redaction.ts->contract/redaction.ts',
   'runtime/session/session-runtime.ts->contract/live-diagnostic-trace.ts',
+  // Shared opaque config-identifier limit; this dependency-free contract leaf
+  // keeps live, persisted, remote, and runtime validation on one boundary.
+  'persistence/options-snapshot.ts->contract/config-options.ts',
+  'persistence/sidecar.ts->contract/config-options.ts',
+  'protocol/v1/config-options.ts->contract/config-options.ts',
+  'runtime/session/session-runtime.ts->contract/config-options.ts',
 ])
 
 const IMPORT_FROM_RE = /(?:import|export)\s[^'"]*?from\s+['"]([^'"]+)['"]/g

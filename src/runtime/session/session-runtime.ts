@@ -28,6 +28,7 @@ import {
 import { AcpClientError } from '../../protocol/v1/errors.ts'
 import { performance } from 'node:perf_hooks'
 import { generatedContextBlock } from '../text-block-boundary.ts'
+import { ACP_CONFIG_IDENTIFIER_MAX } from '../../contract/config-options.ts'
 
 const safeAcpErrorCodes = new Set([
   'ACP_ABORTED',
@@ -336,6 +337,15 @@ export class AcpSessionRuntime {
   private replayHandler: ((notification: AcpSessionNotification) => void) | undefined
   private restoringSessionId: string | undefined
   private connectionAbort: AbortController | undefined
+  private sessionCreationGeneration = 0
+  private sessionCreation:
+    | {
+        readonly generation: number
+        readonly connection: AcpClientConnection
+        readonly connectionAbort: AbortController
+        readonly updates: Map<string, { configOptions?: acp.SessionConfigOption[]; currentModeId?: string }>
+      }
+    | undefined
   private promptAbort: AbortController | undefined
   private promptSignal: AbortSignal | undefined
   private configSnapshot: acp.SessionConfigOption[] | undefined
@@ -946,6 +956,9 @@ export class AcpSessionRuntime {
   }
 
   private closeInternal(refreshOwner?: AbortController): Promise<void> {
+    this.sessionCreationGeneration += 1
+    this.sessionCreation?.updates.clear()
+    this.sessionCreation = undefined
     if (this.cancelledRefreshController !== undefined && this.cancelledRefreshController !== refreshOwner)
       this.cancelledRefreshController.abort(new Error('ACP session runtime closed during cancelled-session refresh'))
     if (this.closing !== undefined) return this.closing
@@ -1028,17 +1041,75 @@ export class AcpSessionRuntime {
   private async createSession(signal?: AbortSignal): Promise<void> {
     const connection = this.connection
     if (connection === undefined) throw new Error('ACP connection is not started')
+    const connectionAbort = this.connectionAbort
+    if (connectionAbort === undefined) throw new Error('ACP connection is not active')
+    const generation = ++this.sessionCreationGeneration
+    const creation = {
+      generation,
+      connection,
+      connectionAbort,
+      updates: new Map<string, { configOptions?: acp.SessionConfigOption[]; currentModeId?: string }>(),
+    }
+    this.sessionCreation = creation
     try {
       const session = await connection.newSession(
         { cwd: this.options.cwd, mcpServers: this.mcpLease?.servers ?? [] },
         signal === undefined ? {} : { signal },
       )
+      signal?.throwIfAborted()
+      connectionAbort.signal.throwIfAborted()
+      if (
+        generation !== this.sessionCreationGeneration ||
+        this.connection !== connection ||
+        this.connectionAbort !== connectionAbort
+      )
+        throw new Error('ACP session creation generation changed')
+      const staged = creation.updates.get(session.sessionId)
+      if (staged?.configOptions !== undefined) this.configSnapshot = staged.configOptions
+      if (staged?.currentModeId !== undefined) this.currentMode = staged.currentModeId
       this.applySessionSnapshot(session)
       this.sessionId = session.sessionId
     } catch (error) {
-      await this.close().catch(() => undefined)
+      if (this.connection === connection && this.connectionAbort === connectionAbort)
+        await this.close().catch(() => undefined)
       throw error
+    } finally {
+      if (this.sessionCreation === creation) {
+        creation.updates.clear()
+        this.sessionCreation = undefined
+      }
     }
+  }
+
+  private stageSessionCreationUpdate(
+    connection: AcpClientConnection,
+    connectionAbort: AbortController,
+    notification: AcpSessionNotification,
+  ): void {
+    const creation = this.sessionCreation
+    if (
+      creation === undefined ||
+      creation.connection !== connection ||
+      creation.connectionAbort !== connectionAbort ||
+      creation.generation !== this.sessionCreationGeneration ||
+      connectionAbort.signal.aborted
+    )
+      return
+    const update = notification.update
+    if (update.sessionUpdate !== 'config_option_update' && update.sessionUpdate !== 'current_mode_update') return
+    let staged = creation.updates.get(notification.sessionId)
+    if (staged === undefined) {
+      if (creation.updates.size >= 32) return
+      staged = {}
+    }
+    if (update.sessionUpdate === 'config_option_update') {
+      const configOptions = acpConfigOptionsSnapshot(update.configOptions)
+      if (configOptions !== undefined) staged.configOptions = configOptions
+    } else {
+      if (update.currentModeId.length > ACP_CONFIG_IDENTIFIER_MAX) return
+      staged.currentModeId = update.currentModeId
+    }
+    creation.updates.set(notification.sessionId, staged)
   }
 
   private async createConnection(signal?: AbortSignal): Promise<void> {
@@ -1138,6 +1209,7 @@ export class AcpSessionRuntime {
           }),
       onSessionUpdate: (notification) => {
         if (connectionAbort.signal.aborted) return
+        this.stageSessionCreationUpdate(connection, connectionAbort, notification)
         this.applyUpdate(notification)
         this.replayHandler?.(notification)
         this.options.onSessionUpdate?.(notification)
@@ -1165,7 +1237,10 @@ export class AcpSessionRuntime {
   }): void {
     if (snapshot.configOptions !== undefined && snapshot.configOptions !== null)
       this.configSnapshot = acpConfigOptionsSnapshot(snapshot.configOptions)
-    if (snapshot.modes?.currentModeId !== undefined) {
+    if (
+      snapshot.modes?.currentModeId !== undefined &&
+      snapshot.modes.currentModeId.length <= ACP_CONFIG_IDENTIFIER_MAX
+    ) {
       this.currentMode = snapshot.modes.currentModeId
       this.modeSnapshot = structuredClone(snapshot.modes)
     }
@@ -1237,9 +1312,11 @@ export class AcpSessionRuntime {
     if (update.sessionUpdate === 'config_option_update')
       this.configSnapshot = acpConfigOptionsSnapshot(update.configOptions)
     if (update.sessionUpdate === 'current_mode_update') {
-      this.currentMode = update.currentModeId
-      if (this.modeSnapshot !== undefined)
-        this.modeSnapshot = { ...this.modeSnapshot, currentModeId: update.currentModeId }
+      if (update.currentModeId.length <= ACP_CONFIG_IDENTIFIER_MAX) {
+        this.currentMode = update.currentModeId
+        if (this.modeSnapshot !== undefined)
+          this.modeSnapshot = { ...this.modeSnapshot, currentModeId: update.currentModeId }
+      }
     }
     if (update.sessionUpdate === 'usage_update') {
       const cost = update.cost

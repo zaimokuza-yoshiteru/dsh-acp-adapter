@@ -1,8 +1,9 @@
 /** Bounded detached copies of ACP session configuration options. */
 import type * as acp from '@agentclientprotocol/sdk'
+import { ACP_CONFIG_IDENTIFIER_MAX } from '../../contract/config-options.ts'
 
 const MAX_SELECTABLE_VALUES = 4_096
-const MAX_ID = 512
+const MAX_ID = ACP_CONFIG_IDENTIFIER_MAX
 const MAX_LABEL = 1_024
 const boundedLabel = (value: string): string => (value.length > MAX_LABEL ? `${value.slice(0, MAX_LABEL)}…` : value)
 

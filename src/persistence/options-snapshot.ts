@@ -8,6 +8,7 @@
 /// <reference types="node" />
 
 import type { SessionConfigOption } from '@agentclientprotocol/sdk'
+import { ACP_CONFIG_IDENTIFIER_MAX } from '../contract/config-options.ts'
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -17,7 +18,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 /** 快照的选项数硬上限（超出从尾部丢弃，model 类选项保底保留）。 */
 export const ACP_SNAPSHOT_OPTION_LIMIT = 32 as const
-/** 快照单个字符串字段（id/name/category/当前值/可选值）的字符数硬上限（超出截断）。 */
+/** 展示字段的字符数硬上限（超出截断）。 */
 export const ACP_SNAPSHOT_FIELD_MAX = 128 as const
 /** Mode descriptions are explanatory UI text, separate from compact option labels. */
 export const ACP_SNAPSHOT_MODE_DESCRIPTION_MAX = 1024 as const
@@ -78,11 +79,13 @@ function snapshotField(value: string): string {
 
 /** 标准化单条目；类型/形态不合格 → undefined（跳过该项，协议 SHOULD-ignore 同款口径）。 */
 function snapshotOptionOf(option: SessionConfigOption): AcpOptionsSnapshotOption | undefined {
-  if (typeof option.id !== 'string' || option.id === '') return undefined
+  if (typeof option.id !== 'string' || option.id === '' || option.id.length > ACP_CONFIG_IDENTIFIER_MAX)
+    return undefined
   if (typeof option.name !== 'string') return undefined
+  if (option.category != null && option.category.length > ACP_CONFIG_IDENTIFIER_MAX) return undefined
   const base = {
-    id: snapshotField(option.id),
-    category: typeof option.category === 'string' && option.category !== '' ? snapshotField(option.category) : null,
+    id: option.id,
+    category: typeof option.category === 'string' && option.category !== '' ? option.category : null,
     name: snapshotField(option.name),
   }
   if (option.type === 'select') {
@@ -91,13 +94,14 @@ function snapshotOptionOf(option: SessionConfigOption): AcpOptionsSnapshotOption
     for (const entry of option.options) {
       const nested = 'options' in entry ? entry.options : [entry]
       for (const item of nested) {
-        if (typeof item.value !== 'string') continue
+        if (typeof item.value !== 'string' || item.value.length > ACP_CONFIG_IDENTIFIER_MAX) continue
         if (values.length >= ACP_SNAPSHOT_VALUES_LIMIT) break
-        values.push(snapshotField(item.value))
+        values.push(item.value)
       }
       if (values.length >= ACP_SNAPSHOT_VALUES_LIMIT) break
     }
-    return { ...base, value: snapshotField(option.currentValue), values }
+    if (option.currentValue.length > ACP_CONFIG_IDENTIFIER_MAX) return undefined
+    return { ...base, value: option.currentValue, values }
   }
   if (option.type === 'boolean') {
     if (typeof option.currentValue !== 'boolean') return undefined
@@ -112,12 +116,9 @@ type SnapshotContextUsage = NonNullable<AcpOptionsSnapshotRecord['contextUsage']
 /** Keep stable mode ids intact; trim only display labels and descriptions. */
 function snapshotModesOf(modes: SnapshotModes | null | undefined): SnapshotModes | null | undefined {
   if (modes == null) return modes
-  if (
-    typeof modes.currentModeId !== 'string' ||
-    modes.currentModeId.length > ACP_SNAPSHOT_FIELD_MAX ||
-    !Array.isArray(modes.availableModes)
-  )
+  if (typeof modes.currentModeId !== 'string' || !Array.isArray(modes.availableModes))
     throw new TypeError('ACP mode snapshot contains an invalid active mode or mode list')
+  if (modes.currentModeId.length > ACP_CONFIG_IDENTIFIER_MAX) return undefined
 
   const availableModes: NonNullable<SnapshotModes['availableModes']>[number][] = []
   const seen = new Set<string>()
@@ -125,7 +126,7 @@ function snapshotModesOf(modes: SnapshotModes | null | undefined): SnapshotModes
     if (
       typeof mode.id !== 'string' ||
       mode.id.length === 0 ||
-      mode.id.length > ACP_SNAPSHOT_FIELD_MAX ||
+      mode.id.length > ACP_CONFIG_IDENTIFIER_MAX ||
       typeof mode.name !== 'string' ||
       (mode.description !== undefined && mode.description !== null && typeof mode.description !== 'string') ||
       seen.has(mode.id)
@@ -206,7 +207,7 @@ export function acpOptionsSnapshotOf(
   const normalizedModes = snapshotModesOf(extras?.modes)
   const normalizedUsage = snapshotContextUsageOf(extras?.contextUsage)
   const stableCurrentModeId =
-    typeof currentModeId === 'string' && currentModeId.length <= ACP_SNAPSHOT_FIELD_MAX ? currentModeId : null
+    typeof currentModeId === 'string' && currentModeId.length <= ACP_CONFIG_IDENTIFIER_MAX ? currentModeId : null
   const build = (
     list: readonly AcpOptionsSnapshotOption[],
     modes: SnapshotModes | null | undefined,
@@ -264,20 +265,24 @@ export function toOptionsSnapshotRecord(raw: unknown): AcpOptionsSnapshotRecord 
   const options: AcpOptionsSnapshotOption[] = []
   for (const entry of raw.options as unknown[]) {
     if (!isPlainObject(entry)) return undefined
-    if (typeof entry.id !== 'string' || entry.id.length === 0 || entry.id.length > ACP_SNAPSHOT_FIELD_MAX)
+    if (typeof entry.id !== 'string' || entry.id.length === 0 || entry.id.length > ACP_CONFIG_IDENTIFIER_MAX)
       return undefined
     if (typeof entry.name !== 'string' || entry.name.length > ACP_SNAPSHOT_FIELD_MAX) return undefined
     if (
       entry.category !== null &&
-      (typeof entry.category !== 'string' || entry.category.length > ACP_SNAPSHOT_FIELD_MAX)
+      (typeof entry.category !== 'string' || entry.category.length > ACP_CONFIG_IDENTIFIER_MAX)
     )
       return undefined
-    if (typeof entry.value !== 'string' && typeof entry.value !== 'boolean') return undefined
+    if (
+      (typeof entry.value !== 'string' && typeof entry.value !== 'boolean') ||
+      (typeof entry.value === 'string' && entry.value.length > ACP_CONFIG_IDENTIFIER_MAX)
+    )
+      return undefined
     if (
       entry.values !== null &&
       (!Array.isArray(entry.values) ||
         entry.values.length > ACP_SNAPSHOT_VALUES_LIMIT ||
-        !(entry.values as unknown[]).every((v) => typeof v === 'string'))
+        !(entry.values as unknown[]).every((v) => typeof v === 'string' && v.length <= ACP_CONFIG_IDENTIFIER_MAX))
     )
       return undefined
     options.push({
@@ -288,7 +293,11 @@ export function toOptionsSnapshotRecord(raw: unknown): AcpOptionsSnapshotRecord 
       values: entry.values as readonly string[] | null,
     })
   }
-  if (raw.currentModeId !== null && typeof raw.currentModeId !== 'string') return undefined
+  if (
+    raw.currentModeId !== null &&
+    (typeof raw.currentModeId !== 'string' || raw.currentModeId.length > ACP_CONFIG_IDENTIFIER_MAX)
+  )
+    return undefined
   if (typeof raw.updatedAt !== 'number' || !Number.isFinite(raw.updatedAt)) return undefined
   if (typeof raw.fingerprint !== 'string' || raw.fingerprint.length === 0) return undefined
   let contextUsage: AcpOptionsSnapshotRecord['contextUsage']
@@ -331,6 +340,7 @@ export function toOptionsSnapshotRecord(raw: unknown): AcpOptionsSnapshotRecord 
     if (
       !isPlainObject(raw.modes) ||
       typeof raw.modes.currentModeId !== 'string' ||
+      raw.modes.currentModeId.length > ACP_CONFIG_IDENTIFIER_MAX ||
       !Array.isArray(raw.modes.availableModes) ||
       raw.modes.availableModes.length > ACP_SNAPSHOT_OPTION_LIMIT
     )
@@ -341,7 +351,7 @@ export function toOptionsSnapshotRecord(raw: unknown): AcpOptionsSnapshotRecord 
         !isPlainObject(rawMode) ||
         typeof rawMode.id !== 'string' ||
         typeof rawMode.name !== 'string' ||
-        rawMode.id.length > ACP_SNAPSHOT_FIELD_MAX ||
+        rawMode.id.length > ACP_CONFIG_IDENTIFIER_MAX ||
         rawMode.name.length > ACP_SNAPSHOT_FIELD_MAX
       )
         return undefined

@@ -96,9 +96,11 @@ it('shows external Devin children live, then persists only successful terminal c
         page.getByRole('button', {
           name: new RegExp(`External agent.*${key} research.*${status}.*Inspect fixture`, 'i'),
         })
+      const parentValidation = page.getByRole('button', { name: /Parent validation/ })
       const running = rowFor('Running')
       try {
         await expectExactlyOneToolRow(running)
+        if (scenario === 'SUCCESS') await expectExactlyOneToolRow(parentValidation)
       } catch (error) {
         await page.screenshot({ path: join(evidence, 'external-subagent-failure-running-dom.png'), fullPage: true })
         writeFileSync(join(evidence, 'external-subagent-failure-running-dom.html'), await page.content())
@@ -154,12 +156,14 @@ it('shows external Devin children live, then persists only successful terminal c
       await expect.poll(async () => (await externalChildren()).length).toBe(scenario === 'SUCCESS' ? 0 : 1)
       const unconfirmed = rowFor('State unconfirmed')
       await expectExactlyOneToolRow(unconfirmed)
+      if (scenario === 'SUCCESS') await expectExactlyOneToolRow(parentValidation)
       await capturePassEvidence(page, `${key}-unconfirmed`)
       await expectNoChildControlForRow(page, unconfirmed)
-      return { key, rowFor, settled }
+      return { key, rowFor, parentValidation, settled }
     }
 
     const success = await send('SUCCESS')
+    await expectExactlyOneToolRow(success.parentValidation)
     expect((await externalChildren()).length).toBe(0)
     writeFileSync(gate('release-success-child-terminal'), 'release')
     await waitForGate('success-child-terminal.ready')
@@ -168,6 +172,7 @@ it('shows external Devin children live, then persists only successful terminal c
     await expandLastTurnProcess(page)
     const completed = success.rowFor('Completed')
     await expectExactlyOneToolRow(completed)
+    await expectExactlyOneToolRow(success.parentValidation)
     await capturePassEvidence(page, 'success-completed')
     await expect.poll(async () => (await externalChildren()).length).toBe(1)
     const successfulChild = required((await externalChildren())[0])
@@ -210,7 +215,7 @@ it('shows external Devin children live, then persists only successful terminal c
       await childHandle.close()
     }
 
-    const expectPersistedSuccessRecord = async () => {
+    const expectPersistedSuccessRecord = async (keepExpanded = false) => {
       try {
         expect((await externalChildren()).map((item) => item.header.id)).toEqual([successfulChild.header.id])
         const successStep = page.locator('[data-step-process][data-chat-turn="1"]')
@@ -225,17 +230,18 @@ it('shows external Devin children live, then persists only successful terminal c
         if (!stepWasExpanded) await stepToggle.click()
 
         await expectExactlyOneToolRow(completed)
+        await expectExactlyOneToolRow(page.getByRole('button', { name: /Parent validation/ }))
         const owner = completed.locator(
           'xpath=ancestor::*[@data-chat-flow-kind="acp-activity" or @data-chat-flow-kind="tool-call"][1]',
         )
         await expect.poll(() => owner.getByRole('button', { name: /Open read-only record/ }).count()).toBe(1)
         await expect.poll(() => page.getByRole('button', { name: /Open read-only record/ }).count()).toBe(1)
 
-        if (!stepWasExpanded) {
+        if (!keepExpanded && !stepWasExpanded) {
           await stepToggle.click()
           await expect.poll(() => stepToggle.getAttribute('aria-expanded')).toBe('false')
         }
-        if (!turnWasExpanded) {
+        if (!keepExpanded && !turnWasExpanded) {
           await successProcess.click()
           await expect.poll(() => successProcess.getAttribute('aria-expanded')).toBe('false')
         }
@@ -278,6 +284,9 @@ it('shows external Devin children live, then persists only successful terminal c
     await expectNoChildControlForRow(page, failed)
     expect((await externalChildren()).map((item) => item.header.id)).toEqual([successfulChild.header.id])
     await expectPersistedSuccessRecord()
+    await page.reload()
+    await expectPersistedSuccessRecord(true)
+    await capturePassEvidence(page, 'success-reloaded')
 
     const cancelled = await send('PARENT_CANCELLED')
     await page.getByRole('button', { name: 'Stop generating', exact: true }).click()

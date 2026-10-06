@@ -55,6 +55,7 @@ export interface AcpFileSystemOptions {
   readonly io?: {
     readonly beforeRead?: () => Promise<void>
     readonly beforeWrite?: () => Promise<void>
+    readonly open?: typeof fs.promises.open
     readonly writeFile?: typeof fs.promises.writeFile
     readonly rename?: typeof fs.promises.rename
   }
@@ -86,7 +87,10 @@ function assertNotAborted(signal: AbortSignal | undefined): void {
  */
 async function abortable<T>(operation: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
   if (signal === undefined) return await operation
-  assertNotAborted(signal)
+  if (signal.aborted) {
+    void operation.catch(() => undefined)
+    assertNotAborted(signal)
+  }
   let onAbort: (() => void) | undefined
   const aborted = new Promise<never>((_, reject) => {
     onAbort = () => reject(new Error('ACP fs operation aborted'))
@@ -210,6 +214,7 @@ export function createAcpFileSystemHandlers(options: AcpFileSystemOptions): AcpF
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1) throw new TypeError('ACP fs: timeoutMs must be positive')
   if (!Number.isInteger(maxBytes) || maxBytes < 1) throw new TypeError('ACP fs: maxBytes must be positive')
   const writeFile = options.io?.writeFile ?? fs.promises.writeFile
+  const openFile = options.io?.open ?? fs.promises.open
   const rename = options.io?.rename ?? fs.promises.rename
   const readTextFile = async (params: acp.ReadTextFileRequest): Promise<acp.ReadTextFileResponse> => {
     const timeoutSignal = AbortSignal.timeout(timeoutMs)
@@ -226,7 +231,15 @@ export function createAcpFileSystemHandlers(options: AcpFileSystemOptions): AcpF
       // other non-regular files. Keep the post-open stat as a TOCTOU defense.
       const pre = await abortable(fs.promises.stat(target), requestSignal)
       if (!pre.isFile()) throw new Error('target is not a regular file')
-      handle = await abortable(fs.promises.open(target, 'r'), requestSignal)
+      const opening = openFile(target, 'r')
+      try {
+        handle = await abortable(opening, requestSignal)
+      } catch (error: unknown) {
+        if (requestSignal.aborted) {
+          void opening.then((lateHandle) => lateHandle.close()).catch(() => undefined)
+        }
+        throw error
+      }
       const stat = await abortable(handle.stat(), requestSignal)
       if (!stat.isFile()) throw new Error('target is not a regular file')
       if (stat.size > maxBytes) throw new Error(`file exceeds ${String(maxBytes)} bytes`)
@@ -254,7 +267,10 @@ export function createAcpFileSystemHandlers(options: AcpFileSystemOptions): AcpF
         `ACP fs/read_text_file failed for ${target}: ${error instanceof Error ? error.message : String(error)}`,
       )
     } finally {
-      await handle?.close().catch(() => {})
+      if (handle !== undefined) {
+        if (requestSignal.aborted) void handle.close().catch(() => {})
+        else await handle.close().catch(() => {})
+      }
     }
     const beforeHash = hash(bytes)
     let content: string
@@ -370,7 +386,20 @@ export function createAcpFileSystemHandlers(options: AcpFileSystemOptions): AcpF
     }
     const temp = path.join(parent, `.dsh-acp-${path.basename(target)}-${randomUUID()}.tmp`)
     try {
-      await abortable(writeFile(temp, bytes, { flag: 'wx', mode }), requestSignal)
+      const writing = writeFile(temp, bytes, { flag: 'wx', mode })
+      try {
+        await abortable(writing, requestSignal)
+      } catch (error: unknown) {
+        if (requestSignal.aborted) {
+          void writing
+            .then(
+              () => fs.promises.rm(temp, { force: true }),
+              () => fs.promises.rm(temp, { force: true }),
+            )
+            .catch(() => undefined)
+        }
+        throw error
+      }
       await abortable(fs.promises.chmod(temp, mode), requestSignal)
       if (beforeHash !== null) {
         const currentHash = await hashFile(target, requestSignal)
@@ -403,7 +432,8 @@ export function createAcpFileSystemHandlers(options: AcpFileSystemOptions): AcpF
       })
       return {}
     } catch (error: unknown) {
-      await fs.promises.rm(temp, { force: true }).catch(() => {})
+      if (requestSignal.aborted) void fs.promises.rm(temp, { force: true }).catch(() => {})
+      else await fs.promises.rm(temp, { force: true }).catch(() => {})
       const concurrent = error instanceof Error && error.message === 'concurrent file change'
       await emit(options.audit, {
         operation: 'write',

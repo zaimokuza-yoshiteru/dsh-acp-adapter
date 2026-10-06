@@ -18,6 +18,9 @@ async function fixture(
   diagnosticDshSessionId?: string,
   mcpLease?: AcpMcpLease,
   echoPrompt = false,
+  sessionNewUpdates: 'none' | 'both' | 'child' = 'none',
+  responseConfig: 'code' | 'empty' | 'omitted' = 'code',
+  responseMode: 'code' | 'null' | 'omitted' = 'code',
 ) {
   const script = `
     const send = value => process.stdout.write(JSON.stringify(value)+'\\n');
@@ -27,7 +30,18 @@ async function fixture(
     require('node:readline').createInterface({input:process.stdin}).on('line', line => {
       const r = JSON.parse(line), reply = result => send({jsonrpc:'2.0',id:r.id,result});
       if(r.method==='initialize') reply({protocolVersion:1,agentCapabilities:{}});
-      if(r.method==='session/new') reply({sessionId:'parent',configOptions:option('code'),modes:{currentModeId:'code',availableModes:[{id:'code',name:'Code'},{id:'plan',name:'Plan'}]}});
+      if(r.method==='session/new') {
+        if(${sessionNewUpdates !== 'none'}) {
+          update('child',{sessionUpdate:'config_option_update',configOptions:option('child')});
+          update('child',{sessionUpdate:'current_mode_update',currentModeId:'child-mode'});
+        }
+        if(${sessionNewUpdates === 'both'}) {
+          update('parent',{sessionUpdate:'config_option_update',configOptions:option('plan')});
+          update('parent',{sessionUpdate:'current_mode_update',currentModeId:'plan'});
+        }
+        const result={sessionId:'parent',${responseConfig === 'omitted' ? '' : `configOptions:${responseConfig === 'empty' ? '[]' : "option('code')"},`}${responseMode === 'omitted' ? '' : `modes:${responseMode === 'null' ? 'null' : "{currentModeId:'code',availableModes:[{id:'code',name:'Code'},{id:'plan',name:'Plan'}]}"}`}};
+        reply(result);
+      }
       if(r.method==='session/set_config_option' || r.method==='session/set_mode') {
         writing=true; setTimeout(()=>{writing=false; reply(r.method==='session/set_config_option'?{configOptions:option('plan')}:{})},80);
       }
@@ -95,6 +109,73 @@ it('does not let external child notifications overwrite the parent controls or u
   expect(runtime.configOptions?.[0]?.currentValue).toBe('code')
   expect(runtime.currentModeId).toBe('code')
   expect(runtime.contextUsage?.used).toBe(100)
+})
+
+it.each([
+  ['omitted', 'null', 'plan', 'plan'],
+  ['code', 'code', 'code', 'code'],
+  ['empty', 'code', 'empty', 'code'],
+] as const)(
+  'keeps parent config/mode pushes during session/new with response config=%s and modes=%s',
+  async (config, mode, expectedConfig, expectedMode) => {
+    const runtime = await fixture(false, undefined, undefined, false, 'both', config, mode)
+    await runtime.prompt([{ type: 'text', text: 'test' }], () => {})
+    expect(runtime.configOptions?.[0]?.currentValue).toBe(expectedConfig === 'empty' ? undefined : expectedConfig)
+    expect(runtime.currentModeId).toBe(expectedMode)
+  },
+)
+
+it('ignores session/new config and mode pushes for another session ID', async () => {
+  const runtime = await fixture(false, undefined, undefined, false, 'child', 'omitted', 'omitted')
+  await runtime.prompt([{ type: 'text', text: 'test' }], () => {})
+  expect(runtime.configOptions).toBeUndefined()
+  expect(runtime.currentModeId).toBeUndefined()
+})
+
+it('does not reuse staged controls after a closed session/new when the next generation uses the same ID', async () => {
+  const staged = Promise.withResolvers<void>()
+  let launchCount = 0
+  const runtime = new AcpSessionRuntime({
+    profileId: 'fixture',
+    cwd: process.cwd(),
+    config: { command: process.execPath, args: [], env: {} },
+    subprocess: (await sharedTestSubprocess()).seam,
+    prepareLaunch: async () => {
+      launchCount += 1
+      const script = `
+        const send = value => process.stdout.write(JSON.stringify(value)+'\\n');
+        const update = (sessionId, update) => send({jsonrpc:'2.0',method:'session/update',params:{sessionId,update}});
+        const option = [{id:'mode',name:'Mode',type:'select',currentValue:'plan',options:[{value:'plan',name:'Plan'}]}];
+        require('node:readline').createInterface({input:process.stdin}).on('line', line => {
+          const r=JSON.parse(line), reply=result=>send({jsonrpc:'2.0',id:r.id,result});
+          if(r.method==='initialize') reply({protocolVersion:1,agentCapabilities:{}});
+          if(r.method==='session/new') {
+            ${launchCount === 1 ? "update('same-id',{sessionUpdate:'config_option_update',configOptions:option}); update('same-id',{sessionUpdate:'current_mode_update',currentModeId:'plan'});" : ''}
+            ${launchCount === 1 ? '' : "reply({sessionId:'same-id'});"}
+          }
+          if(r.method==='session/prompt') reply({stopReason:'end_turn'});
+        });`
+      const argv = [process.execPath, '-e', script]
+      return { argv, env: {}, spawnPlan: { argv, env: {} } }
+    },
+    onSessionUpdate(notification) {
+      if (notification.sessionId === 'same-id' && notification.update.sessionUpdate === 'config_option_update')
+        staged.resolve()
+    },
+  })
+  runtimes.push(runtime)
+  await runtime.initialize()
+
+  const firstPrompt = runtime.prompt([{ type: 'text', text: 'first' }], () => {})
+  const firstPromptFailure = expect(firstPrompt).rejects.toThrow()
+  await staged.promise
+  await runtime.close()
+  await firstPromptFailure
+
+  await runtime.prompt([{ type: 'text', text: 'second' }], () => {})
+  expect(launchCount).toBe(2)
+  expect(runtime.configOptions).toBeUndefined()
+  expect(runtime.currentModeId).toBeUndefined()
 })
 
 it.each(['config', 'mode'])('finishes an admitted %s write before dispatching a prompt', async (kind) => {

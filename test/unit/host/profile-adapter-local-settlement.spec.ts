@@ -556,4 +556,159 @@ describe('ACP adapter local terminal settlement', () => {
     expect(promptCount.value).toBe(1)
     await instance.close()
   })
+
+  it('restores the confirmed mode when Stop interrupts a known cancelled response settlement', async () => {
+    const { sidecar } = tempSidecar()
+    const sessionId = 'review-mode-settle'
+    const messages = ['first', 'cancel', 'continue'].map(user)
+    let events: Array<{ type: string; seq: number; data: unknown }> = [
+      { type: 'step/start', seq: 1, data: { turn: 1, step: 0 } },
+      { type: 'user/message', seq: 2, data: messages[0] },
+    ]
+    const live = withSessionFacts({
+      id: sessionId,
+      header: { cwd: os.tmpdir() },
+      snapshotEvents: () => events,
+    })
+    let mode = 'default'
+    let refreshPending = false
+    let feedbackAvailable = true
+    let promptCount = 0
+    const runtimeFactoryCalls = { value: 0 }
+    const closeCount = { value: 0 }
+    const modesAtPrompt: string[] = []
+    const flushFailed = Promise.withResolvers<void>()
+    const controller = new AbortController()
+    const runtimeFactory = (): AcpProfileRuntime => {
+      runtimeFactoryCalls.value += 1
+      return {
+        acpSessionId: 'remote-review',
+        get cancelledSessionRefreshPending() {
+          return refreshPending
+        },
+        get cancelledSessionRefreshBindingId() {
+          return 'remote-review'
+        },
+        get currentModeId() {
+          return mode
+        },
+        get modes() {
+          return {
+            currentModeId: mode,
+            availableModes: [
+              { id: 'default', name: 'Default' },
+              { id: 'plan', name: 'Plan' },
+            ],
+          }
+        },
+        get configOptions() {
+          return [
+            {
+              id: 'model',
+              category: 'model',
+              name: 'Model',
+              type: 'select' as const,
+              currentValue: 'm',
+              options: [{ value: 'm', name: 'M' }],
+            },
+          ]
+        },
+        setMode: async (id: string) => {
+          mode = id
+        },
+        hasUncommittedHostFeedback: () => !feedbackAvailable,
+        hasRetainedHostFeedback: () => !feedbackAvailable,
+        flushHostFeedback: async () => {
+          if (!feedbackAvailable) {
+            flushFailed.resolve()
+            throw new AcpHostSettlementError('ACP_HOST_FEEDBACK_COMMIT_FAILED', { remoteOutcomeKnown: true })
+          }
+        },
+        start: async () => undefined,
+        restore: async () => {
+          if (!refreshPending) return 'reused'
+          refreshPending = false
+          mode = 'default'
+          return 'loaded'
+        },
+        prompt: async (_prompt, onUpdate) => {
+          modesAtPrompt.push(mode)
+          promptCount += 1
+          if (promptCount === 2) {
+            refreshPending = true
+            feedbackAvailable = false
+            throw new AcpHostSettlementError('ACP_HOST_FEEDBACK_COMMIT_FAILED', {
+              remoteOutcomeKnown: true,
+              remoteResponse: { stopReason: 'cancelled' } as never,
+            })
+          }
+          onUpdate({
+            sessionId: 'remote-review',
+            update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'ok' } },
+          } as never)
+          return { stopReason: 'end_turn' } as never
+        },
+        close: async () => {
+          closeCount.value += 1
+        },
+      }
+    }
+    const instance = new AcpProfileAdapter(
+      'review',
+      () => ({ ...profile(), runtime: 'codebuddy' }),
+      seam(),
+      () => live,
+      ledgerFor(sidecar),
+      undefined,
+      runtimeFactory,
+      sidecar,
+    )
+    const makeRequest = (index: number, signal?: AbortSignal) =>
+      markAgentLoopRequest({
+        sessionId: sessionId as never,
+        provider: 'acp-review',
+        model: 'm',
+        messages: [messages[index]!],
+        ...(signal === undefined ? {} : { signal }),
+      })
+    try {
+      await collect(instance, makeRequest(0))
+      await instance.setAgentSessionOption(sessionId, { kind: 'mode', id: 'plan' })
+      const bindingBefore = await sidecar.readLatestBinding(sessionId as never)
+      if (bindingBefore?.status !== 'ok') throw new Error('missing binding before cancelled response')
+      events = [
+        ...events,
+        { type: 'step/start', seq: 3, data: { turn: 2, step: 0 } },
+        { type: 'user/message', seq: 4, data: messages[1] },
+      ]
+      const cancelled = collect(instance, makeRequest(1, controller.signal))
+      const cancelledResult = cancelled.then(
+        () => undefined,
+        (error) => error,
+      )
+      await flushFailed.promise
+      controller.abort(new DOMException('Stopped', 'AbortError'))
+      await expect(cancelledResult).resolves.toMatchObject({ name: 'AbortError' })
+      feedbackAvailable = true
+      events = [
+        ...events,
+        { type: 'step/start', seq: 5, data: { turn: 3, step: 0 } },
+        { type: 'user/message', seq: 6, data: messages[2] },
+      ]
+      await collect(instance, makeRequest(2))
+      expect(modesAtPrompt).toEqual(['default', 'plan', 'plan'])
+      const bindingAfter = await sidecar.readLatestBinding(sessionId as never)
+      expect(bindingAfter?.status === 'ok' ? bindingAfter.binding : undefined).toMatchObject({
+        profileId: bindingBefore.binding.profileId,
+        provider: bindingBefore.binding.provider,
+        agentSessionId: bindingBefore.binding.agentSessionId,
+        generation: bindingBefore.binding.generation,
+      })
+      expect(runtimeFactoryCalls.value).toBe(1)
+      expect(closeCount.value).toBe(0)
+    } finally {
+      await instance.close()
+    }
+    expect(closeCount.value).toBe(1)
+  })
 })

@@ -66,6 +66,287 @@ async function drain(iterable: AsyncIterable<unknown>): Promise<void> {
 }
 
 describe('provider activity bridge', () => {
+  it.each([
+    ['config', 'unsupported'],
+    ['legacy', 'unsupported'],
+    ['config', 'vendor-update'],
+    ['legacy', 'vendor-update'],
+    ['config', 'restore-retry'],
+    ['legacy', 'restore-retry'],
+    ['config', 'new-choice'],
+    ['legacy', 'new-choice'],
+    ['config', 'user-stop'],
+    ['legacy', 'user-stop'],
+  ] as const)('handles explicitly selected %s mode after cancellation (%s)', async (modeKind, scenario) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), `dsh-acp-mode-refresh-${modeKind}-`))
+    roots.push(root)
+    const sidecar = testSidecar(root)
+    const sessionId = `mode-refresh-${modeKind}`
+    const messages = [user('first'), user('cancel'), user('continue')]
+    let events = [
+      { type: 'step/start', seq: 1, data: { turn: 1, step: 0 } },
+      { type: 'user/message', seq: 2, data: messages[0]! },
+    ]
+    const live = withSessionFacts({
+      header: { cwd: os.tmpdir() },
+      inheritedEventCount: 0,
+      snapshotEvents: () => events,
+      id: sessionId,
+    })
+    const calls: string[] = []
+    const stopController = scenario === 'user-stop' ? new AbortController() : undefined
+    const stoppedPromptStarted = Promise.withResolvers<void>()
+    let mode = 'default'
+    let availableModes = [
+      { id: 'default', name: 'Default' },
+      { id: 'plan', name: 'Plan' },
+    ]
+    let closed = false
+    let refreshPending = false
+    let promptCount = 0
+    let failNextModeWrite = false
+    const runtimeFactory = (): AcpProfileRuntime => ({
+      get acpSessionId() {
+        return closed ? undefined : 'agent-mode-refresh'
+      },
+      get cancelledSessionRefreshPending() {
+        return refreshPending
+      },
+      get cancelledSessionRefreshBindingId() {
+        return 'agent-mode-refresh'
+      },
+      get isBusy() {
+        return false
+      },
+      get currentModeId() {
+        return mode
+      },
+      get modes() {
+        return {
+          currentModeId: mode,
+          availableModes,
+        }
+      },
+      get configOptions() {
+        return [
+          {
+            id: 'model',
+            name: 'Model',
+            type: 'select',
+            category: 'model',
+            currentValue: 'model-a',
+            options: [{ value: 'model-a', name: 'Model A' }],
+          },
+          ...(modeKind === 'config'
+            ? [
+                {
+                  id: 'mode',
+                  name: 'Mode',
+                  type: 'select' as const,
+                  category: 'mode',
+                  currentValue: mode,
+                  options: availableModes.map(({ id, name }) => ({ value: id, name })),
+                },
+              ]
+            : []),
+        ] satisfies readonly acp.SessionConfigOption[]
+      },
+      start: async () => {
+        calls.push('new')
+        closed = false
+      },
+      restore: async () => {
+        if (!closed && !refreshPending) return 'reused'
+        calls.push('load')
+        mode = 'default' // The Agent's session/load snapshot reset reproduces CodeBuddy behavior.
+        closed = false
+        refreshPending = false
+        return 'loaded'
+      },
+      setMode: async (id) => {
+        calls.push(`legacy:${id}`)
+        if (failNextModeWrite) {
+          failNextModeWrite = false
+          throw new Error('transient mode restore failure')
+        }
+        mode = id
+      },
+      setConfigOption: async (id, value) => {
+        if (id !== 'mode') throw new Error(`unexpected config option: ${id}`)
+        calls.push(`config:${String(value)}`)
+        if (failNextModeWrite) {
+          failNextModeWrite = false
+          throw new Error('transient mode restore failure')
+        }
+        mode = String(value)
+      },
+      prompt: async (_content, onUpdate, signal) => {
+        promptCount++
+        calls.push(`prompt:${promptCount}:${mode}`)
+        if (promptCount === 2) {
+          if (scenario === 'vendor-update') {
+            availableModes = [
+              { id: 'default', name: 'Default' },
+              { id: 'review', name: 'Review' },
+            ]
+            mode = 'review' // A newer vendor update must supersede the remembered user choice.
+          }
+          if (scenario === 'user-stop') {
+            stoppedPromptStarted.resolve()
+            if (!signal?.aborted)
+              await new Promise<void>((resolve) => signal?.addEventListener('abort', () => resolve(), { once: true }))
+          }
+          refreshPending = true
+          return { stopReason: 'cancelled' }
+        }
+        onUpdate({
+          sessionId: 'agent-mode-refresh',
+          update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'ok' } },
+        })
+        return { stopReason: 'end_turn' }
+      },
+      retireCancelledSession: async () => {
+        calls.push('retire')
+        closed = true
+      },
+      close: async () => undefined,
+    })
+    const adapter = new AcpProfileAdapter(
+      'mode-refresh',
+      () => ({ ...profile(), runtime: 'codebuddy' }),
+      seam(),
+      () => live,
+      ledgerFor(sidecar),
+      undefined,
+      runtimeFactory,
+      sidecar,
+    )
+    const requestFor = (message: ReturnType<typeof user>, signal?: AbortSignal) =>
+      markAgentLoopRequest({
+        ...request(sessionId, message),
+        provider: 'acp-mode-refresh',
+        ...(signal === undefined ? {} : { signal }),
+      })
+    try {
+      await drain(adapter.stream(requestFor(messages[0]!)))
+      await adapter.setAgentSessionOption(
+        sessionId,
+        modeKind === 'legacy' ? { kind: 'mode', id: 'plan' } : { kind: 'config', id: 'mode', value: 'plan' },
+      )
+      events = [
+        ...events,
+        { type: 'step/start', seq: 3, data: { turn: 2, step: 0 } },
+        { type: 'user/message', seq: 4, data: messages[1]! },
+      ]
+      if (scenario === 'user-stop') {
+        const stopped = drain(adapter.stream(requestFor(messages[1]!, stopController!.signal)))
+        await stoppedPromptStarted.promise
+        stopController!.abort()
+        await stopped
+      } else {
+        await drain(adapter.stream(requestFor(messages[1]!)))
+      }
+      const nextTurn = [
+        ...events,
+        { type: 'step/start', seq: 5, data: { turn: 3, step: 0 } },
+        { type: 'user/message', seq: 6, data: messages[2]! },
+      ]
+      availableModes =
+        scenario === 'restore-retry' || scenario === 'new-choice' || scenario === 'user-stop'
+          ? [
+              { id: 'default', name: 'Default' },
+              { id: 'plan', name: 'Plan' },
+              { id: 'review', name: 'Review' },
+            ]
+          : [
+              { id: 'default', name: 'Default' },
+              { id: 'review', name: 'Review' },
+            ]
+      events = nextTurn
+      if (scenario === 'vendor-update') {
+        await drain(adapter.stream(requestFor(messages[2]!)))
+        expect(promptCount).toBe(3)
+        expect(calls).toEqual([
+          'new',
+          'prompt:1:default',
+          ...(modeKind === 'legacy' ? ['legacy:plan'] : ['config:plan']),
+          'prompt:2:plan',
+          'retire',
+          'load',
+          'prompt:3:default',
+        ])
+      } else if (scenario === 'unsupported') {
+        await expect(drain(adapter.stream(requestFor(messages[2]!)))).rejects.toMatchObject({
+          code: 'ACP_CONFIG_UNSUPPORTED',
+        })
+        expect(promptCount).toBe(2)
+        await adapter.setAgentSessionOption(
+          sessionId,
+          modeKind === 'legacy' ? { kind: 'mode', id: 'review' } : { kind: 'config', id: 'mode', value: 'review' },
+        )
+        await drain(adapter.stream(requestFor(messages[2]!)))
+        expect(promptCount).toBe(3)
+        expect(calls).toEqual([
+          'new',
+          'prompt:1:default',
+          ...(modeKind === 'legacy' ? ['legacy:plan'] : ['config:plan']),
+          'prompt:2:plan',
+          'retire',
+          'load',
+          ...(modeKind === 'legacy' ? ['legacy:review'] : ['config:review']),
+          'prompt:3:review',
+        ])
+      } else if (scenario === 'restore-retry' || scenario === 'new-choice') {
+        failNextModeWrite = true
+        await expect(drain(adapter.stream(requestFor(messages[2]!)))).rejects.toMatchObject({
+          code: 'ACP_CONFIG_SYNC_FAILED',
+        })
+        expect(promptCount).toBe(2)
+        if (scenario === 'new-choice') {
+          await adapter.setAgentSessionOption(
+            sessionId,
+            modeKind === 'legacy' ? { kind: 'mode', id: 'review' } : { kind: 'config', id: 'mode', value: 'review' },
+          )
+        }
+        await drain(adapter.stream(requestFor(messages[2]!)))
+        expect(promptCount).toBe(3)
+        expect(calls).toEqual([
+          'new',
+          'prompt:1:default',
+          ...(modeKind === 'legacy' ? ['legacy:plan'] : ['config:plan']),
+          'prompt:2:plan',
+          'retire',
+          'load',
+          ...(modeKind === 'legacy'
+            ? scenario === 'new-choice'
+              ? ['legacy:plan']
+              : ['legacy:plan', 'legacy:plan']
+            : scenario === 'new-choice'
+              ? ['config:plan']
+              : ['config:plan', 'config:plan']),
+          ...(scenario === 'new-choice'
+            ? [modeKind === 'legacy' ? 'legacy:review' : 'config:review', 'prompt:3:review']
+            : ['prompt:3:plan']),
+        ])
+      } else {
+        await drain(adapter.stream(requestFor(messages[2]!)))
+        expect(promptCount).toBe(3)
+        expect(calls).toEqual([
+          'new',
+          'prompt:1:default',
+          ...(modeKind === 'legacy' ? ['legacy:plan'] : ['config:plan']),
+          'prompt:2:plan',
+          'retire',
+          'load',
+          ...(modeKind === 'legacy' ? ['legacy:plan'] : ['config:plan']),
+          'prompt:3:plan',
+        ])
+      }
+    } finally {
+      await adapter.close()
+    }
+  })
+
   it('keeps CodeBuddy controls after retiring a cancelled runtime and restores the same binding only on write', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-codebuddy-controls-refresh-'))
     roots.push(root)
@@ -1119,7 +1400,7 @@ describe('provider activity bridge', () => {
       activities.map((item) => [item.activityId.slice(item.activityId.indexOf(':') + 1), item.kind, item.status]),
     ).toEqual([
       ['tool:tool-1', 'tool', 'completed'],
-      ['tool:tool-1:0:diff', 'diff', 'completed'],
+      ['part:tool-1:0:diff', 'diff', 'completed'],
     ])
     expect(chunks.filter((chunk) => (chunk as { type: string }).type === 'text-delta')).toEqual([
       { type: 'text-delta', index: 0, text: 'work' },
@@ -1154,6 +1435,85 @@ describe('provider activity bridge', () => {
     ) as { replayState?: { response?: { committedActivitySeq?: number } } } | undefined
     expect(finish?.replayState?.response?.committedActivitySeq).toBe(5)
   })
+
+  it.each([false, true])(
+    'keeps tool IDs distinct from normalized content IDs when collision-first=%s',
+    async (collisionFirst) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-content-identity-'))
+      roots.push(root)
+      const sidecar = testSidecar(root)
+      const message = user('inspect tool output')
+      const sessions = new Map<string, SessionLike>([['content-identity-session', session(message)]])
+      const runtimeFactory = (): AcpProfileRuntime => ({
+        acpSessionId: 'agent-content-identity',
+        start: async () => undefined,
+        prompt: async (_content, onUpdate) => {
+          const send = (update: unknown) => onUpdate({ sessionId: 'agent-content-identity', update } as never)
+          const sourceTool = {
+            sessionUpdate: 'tool_call',
+            toolCallId: 'a',
+            title: 'Source tool a',
+            kind: 'other',
+            status: 'completed',
+            content: [{ type: 'content', content: { type: 'text', text: 'source output' } }],
+          }
+          const collidingTool = {
+            sessionUpdate: 'tool_call',
+            toolCallId: 'a:0:content',
+            title: 'Independent tool a:0:content',
+            kind: 'other',
+            status: 'completed',
+          }
+          if (collisionFirst) {
+            send(collidingTool)
+            send(sourceTool)
+          } else {
+            send(sourceTool)
+            send(collidingTool)
+          }
+          return { stopReason: 'end_turn' } as never
+        },
+        close: async () => undefined,
+      })
+      const adapter = new AcpProfileAdapter(
+        'activity',
+        profile,
+        seam(),
+        (id) => sessions.get(id),
+        ledgerFor(sidecar),
+        undefined,
+        runtimeFactory,
+        sidecar,
+      )
+      try {
+        await drain(adapter.stream(request('content-identity-session', message)))
+        const activities = await sidecar.activitySnapshot('content-identity-session' as never)
+        const anchor = activities[0]?.promptAnchorMessageId
+        expect(anchor).toBeDefined()
+        expect(activities.map((row) => row.activityId).sort()).toEqual(
+          [`${anchor}:tool:a`, `${anchor}:part:a:0:content`, `${anchor}:tool:a:0:content`].sort(),
+        )
+        expect(activities).toHaveLength(3)
+        expect(activities.find((row) => row.activityId === `${anchor}:tool:a`)).toMatchObject({
+          kind: 'tool',
+          presentation: 'Source tool a',
+        })
+        expect(activities.find((row) => row.activityId === `${anchor}:part:a:0:content`)).toMatchObject({
+          kind: 'other',
+          presentation: 'Tool output',
+        })
+        expect(activities.find((row) => row.activityId === `${anchor}:part:a:0:content`)?.rawDetail).toContain(
+          'source output',
+        )
+        expect(activities.find((row) => row.activityId === `${anchor}:tool:a:0:content`)).toMatchObject({
+          kind: 'tool',
+          presentation: 'Independent tool a:0:content',
+        })
+      } finally {
+        await adapter.close()
+      }
+    },
+  )
 
   it('shows Devin external child identity on its source tool row while the child is held', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-live-external-child-'))
@@ -1752,7 +2112,7 @@ describe('provider activity bridge', () => {
     const rows = await sidecar.activitySnapshot('session-3' as never)
     expect(rows.map((row) => [row.activityId.slice(row.activityId.indexOf(':') + 1), row.kind, row.status])).toEqual([
       ['tool:tool-3', 'tool', 'completed'],
-      ['tool:tool-3:0:terminal', 'terminal', 'completed'],
+      ['part:tool-3:0:terminal', 'terminal', 'completed'],
     ])
     expect(rows[0]?.presentation).toBe('Run')
     expect(rows.some((row) => row.presentation === 'Agent activity')).toBe(false)

@@ -334,6 +334,35 @@ export function usesNativeActivityToolProjection(row: Pick<AcpActivityView, 'kin
   return row.kind === 'tool' && row.status !== 'unfinished'
 }
 
+function sameActivityOwner(left: AcpActivityView, right: AcpActivityView): boolean {
+  return (
+    left.dshSessionId === right.dshSessionId &&
+    left.ownerDshSessionId === right.ownerDshSessionId &&
+    left.promptAnchorMessageId === right.promptAnchorMessageId
+  )
+}
+
+function toolCallIdOfRoot(row: AcpActivityView): string | undefined {
+  const anchoredPrefix = `${row.promptAnchorMessageId}:tool:`
+  if (row.activityId.startsWith(anchoredPrefix)) return row.activityId.slice(anchoredPrefix.length)
+  if (row.activityId.startsWith('tool:')) return row.activityId.slice('tool:'.length)
+  return undefined
+}
+
+function toolContentIdentity(row: AcpActivityView): { readonly toolCallId: string } | undefined {
+  const anchoredPrefix = `${row.promptAnchorMessageId}:`
+  const relativeId = row.activityId.startsWith(anchoredPrefix)
+    ? row.activityId.slice(anchoredPrefix.length)
+    : row.activityId
+  const contentPrefix = relativeId.startsWith('part:') ? 'part:' : relativeId.startsWith('tool:') ? 'tool:' : undefined
+  if (contentPrefix === undefined) return undefined
+  const match = /^([\s\S]*):(0|[1-9]\d*):(diff|terminal|resource|content)$/.exec(relativeId.slice(contentPrefix.length))
+  if (match === null) return undefined
+  const expectedKind =
+    match[3] === 'diff' ? 'diff' : match[3] === 'terminal' ? 'terminal' : match[3] === 'resource' ? 'resource' : 'other'
+  return row.kind === expectedKind ? { toolCallId: match[1]! } : undefined
+}
+
 /**
  * A projected child is navigation metadata for its source Tool call, not a
  * second operation in the parent transcript. Keep the source call, suppress
@@ -345,18 +374,25 @@ export function visibleActivityRows(rows: readonly AcpActivityView[]): readonly 
   const delegationWindows = projectionRows.flatMap((projectionRow) => {
     const detail = detailValue(projectionRow)
     if (!projectionMetadata(detail) || typeof detail.sourceToolCallId !== 'string') return []
+    const anchoredRootId = `${projectionRow.promptAnchorMessageId}:tool:${detail.sourceToolCallId}`
+    const legacyRootId = `tool:${detail.sourceToolCallId}`
     const root = rows.find(
       (row) =>
         row.kind === 'tool' &&
-        (row.activityId === `tool:${detail.sourceToolCallId}` ||
-          row.activityId.endsWith(`:tool:${detail.sourceToolCallId}`)),
+        sameActivityOwner(row, projectionRow) &&
+        (row.activityId === anchoredRootId || row.activityId === legacyRootId),
     )
-    return root === undefined ? [] : [{ root, projectionRow }]
+    return root === undefined ? [] : [{ root, projectionRow, toolCallId: detail.sourceToolCallId }]
   })
   // ACP tool content is a child asset of its tool call, not another operation.
   // The parent row already retains the update detail, while the sidecar keeps
   // every child revision for audit. Keep only one top-level Chat row per tool.
-  const visibleToolRoots = new Set(rows.filter((row) => row.kind === 'tool').map((row) => row.activityId))
+  const visibleToolRoots = rows
+    .filter((row) => row.kind === 'tool')
+    .flatMap((row) => {
+      const toolCallId = toolCallIdOfRoot(row)
+      return toolCallId === undefined ? [] : [{ row, toolCallId }]
+    })
   return rows
     .filter((row) => {
       // Devin can publish an id-only child lifecycle row before the actual
@@ -372,14 +408,14 @@ export function visibleActivityRows(rows: readonly AcpActivityView[]): readonly 
         )
       )
         return false
+      const contentIdentity = row.kind === 'tool' ? undefined : toolContentIdentity(row)
       if (
-        delegationWindows.some(
-          ({ root, projectionRow }) =>
-            row.activitySeq > root.activitySeq && row.activitySeq < projectionRow.activitySeq,
+        contentIdentity !== undefined &&
+        visibleToolRoots.some(
+          (root) => sameActivityOwner(root.row, row) && root.toolCallId === contentIdentity.toolCallId,
         )
       )
         return false
-      if ([...visibleToolRoots].some((root) => row.activityId.startsWith(`${root}:`))) return false
       return true
     })
     .map((row) => {

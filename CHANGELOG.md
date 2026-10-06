@@ -4,6 +4,24 @@
 
 User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for publication dates, exact installation instructions, and checksums. Historical entries were reconstructed from tag diffs; npm packages were not republished.
 
+## 0.2.0-rc.2.6
+
+### 中文
+
+- CodeBuddy CLI 加入添加 Agent 时的已验证列表。对显式 CodeBuddy CLI runtime，DSH 未重启且 ACP 会话绑定不变时收到已确认的取消结果后，自动恢复用户已确认的模式；不重发已取消的输入，也不需要人工恢复。真实 CLI 检查仍限 E2E 指南记录的 CodeBuddy CLI 2.161.2、macOS、minimax-m2.7 与 controls 场景，不代表其他平台、WorkBuddy 桌面端或所有功能均已验证。
+- 保留完整 ACP 配置和模式标识符，避免休眠成员把长标识符误写成相同前缀；此前已截断的标识符不会由本次更新自动还原。
+- 修复会话创建期间配置更新丢失、取消后晚完成的文件 I/O 清理，以及多 SQLite 连接间的审计序号冲突。
+- 精确关联委派子会话与源工具，保留独立的活动记录，并防止带分隔符的工具标识符与内容记录碰撞。
+- 支持 DSH `0.2.0-rc.2`，无需新增配置或人工恢复操作。
+
+### English
+
+- Add CodeBuddy CLI to the verified list shown when adding Agents. For the explicit CodeBuddy CLI runtime, automatically restore a user-confirmed mode after a confirmed cancellation while the same DSH host process and ACP binding remain active. Do not resend the cancelled input or require manual recovery. Real CLI checks remain limited to the CodeBuddy CLI 2.161.2, macOS, minimax-m2.7, and controls scenarios recorded in the E2E guide; this does not verify other platforms, the WorkBuddy desktop app, or every feature.
+- Preserve complete ACP configuration and mode identifiers so a sleeping member cannot write a long identifier as a matching prefix. Previously truncated identifiers are not reconstructed by this update.
+- Fix configuration updates lost during session creation, cleanup of file I/O that completes after cancellation, and audit sequence conflicts across SQLite connections.
+- Match delegated sessions to their exact source tools, retain independent activity records, and prevent delimiter-bearing tool identifiers from colliding with content records.
+- Support DSH `0.2.0-rc.2` with no new configuration or manual recovery steps.
+
 ## 0.2.0-rc.2.5
 
 ### 中文

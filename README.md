@@ -6,7 +6,7 @@
 
 ## 安装
 
-当前插件版本 `0.2.0-rc.2.5` 兼容 DSH `0.2.0-rc.2`。其他版本见 [Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases)。
+当前插件版本 `0.2.0-rc.2.6` 兼容 DSH `0.2.0-rc.2`。其他版本见 [Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases)。
 
 **推荐：** 在 DSH Creator 模式中发送：
 
@@ -35,14 +35,14 @@ Git 与压缩包安装示例：
 
 | 来源              | 示例                                                                                                                                                   |
 | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Git               | `git+https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter.git#v0.2.0-rc.2.5`                                                                         |
-| 预构建插件包 .tgz | [下载 0.2.0-rc.2.5](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/download/v0.2.0-rc.2.5/zaimokuza-dsh-acp-adapter-0.2.0-rc.2.5.tgz) |
+| Git               | `git+https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter.git#v0.2.0-rc.2.6`                                                                         |
+| 预构建插件包 .tgz | [下载 0.2.0-rc.2.6](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/download/v0.2.0-rc.2.6/zaimokuza-dsh-acp-adapter-0.2.0-rc.2.6.tgz) |
 
 此包包含编译产物，与 npm 发布包一致。GitHub 自动生成的 Source code ZIP/TAR.GZ 是源码归档，不是构建后的插件包；未缓存的依赖仍需联网安装。
 
 </details>
 
-**更新：** 插件管理器不会自动更新。使用插件管理器更新时，先卸载旧版，再按上方推荐方式安装新版。卸载插件不会卸载 Agent 或退出账号。
+**更新：** 插件管理器不会自动更新。使用插件管理器更新时，先卸载旧版，再按上方推荐方式安装新版。卸载插件不会卸载 Agent 或退出账号。安装完成后，为确保加载新版：桌面端请在当前任务结束后完全退出并重新打开 DSH；Web 端请重启 DSH 服务并刷新页面。无需重新登录。
 
 ## 连接 Agent
 

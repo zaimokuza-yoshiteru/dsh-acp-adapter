@@ -126,6 +126,7 @@ import type {
   AcpSessionForkAuditData,
 } from '../domain/policy/events.ts'
 import { ACP_SNAPSHOT_TOTAL_BYTES, acpOptionsSnapshotOf, toOptionsSnapshotRecord } from './options-snapshot.ts'
+import { ACP_CONFIG_IDENTIFIER_MAX } from '../contract/config-options.ts'
 import type { AcpOptionsSnapshotRecord } from './options-snapshot.ts'
 import { isSensitiveActivityField, redactSecretText } from '../domain/observability/redaction.ts'
 
@@ -891,11 +892,10 @@ interface ActivityRow {
   readonly raw_detail_ref?: unknown
 }
 
-/** 排队中的非审批审计（seq 在入队时分配——与同步写的 seq 分配同源，保追加序）。 */
+/** 排队中的非审批审计；seq 与 record id 在写事务中按数据库事实分配。 */
 interface QueuedAudit {
   readonly sessionId: string
   readonly entry: StampedEntry
-  readonly seq: number
 }
 
 const SCHEMA_SQL = `
@@ -1120,8 +1120,6 @@ class SidecarStore implements AcpSidecar {
   private stmtUpsertRecoveryState: StatementSync | undefined
   private stmtGetMemberModelSelection: StatementSync | undefined
   private stmtUpsertMemberModelSelection: StatementSync | undefined
-  /** per-session 下一个 seq（懒种子 = 库里 MAX(seq)+1；含队列已占号）。 */
-  private readonly seqCounters = new Map<string, number>()
   private queue: QueuedAudit[] = []
   private queueDrainScheduled = false
   private queueFullWarned = false
@@ -1381,136 +1379,76 @@ class SidecarStore implements AcpSidecar {
     }
   }
 
-  /** 下一个 per-session seq（懒种子 = 库里 MAX(seq)+1）。 */
+  /** 下一个 per-session seq；调用方须已持有 SQLite 写事务。 */
   private nextSeq(sessionId: string): number {
-    let next = this.seqCounters.get(sessionId)
-    if (next === undefined) {
-      const row = this.stmtMaxSeq?.get(sessionId) as { max_seq: number | null } | undefined
-      next = (row?.max_seq ?? 0) + 1
-    }
-    this.seqCounters.set(sessionId, next + 1)
-    return next
-  }
-
-  /** Permission writes serialize through SQLite and account for local queued seq reservations. */
-  private nextPermissionSeq(sessionId: string): number {
     const row = this.stmtMaxSeq?.get(sessionId) as { max_seq: number | null } | undefined
-    const databaseNext = (row?.max_seq ?? 0) + 1
-    const localNext = this.seqCounters.get(sessionId)
-    const next = Math.max(databaseNext, localNext ?? databaseNext)
-    this.seqCounters.set(sessionId, next + 1)
-    return next
+    return (row?.max_seq ?? 0) + 1
   }
 
   /**
-   * 同步落库（binding/permission 专用路径）：decided 先去重预检（已存在 → 跳过并
-   * 正常返回， 幂等语义）；非 decided 的 recordId 撞名追加 -2/-3… 序号（先查
-   * 后插，同进程同步执行无竞争）。binding 同时 upsert 最新索引表。
+   * 同步落库：序号、内容 ID 与 decided 去重都在数据库写锁内分配；binding
+   * 同时 upsert 最新索引表。
    */
   private insertSync(sessionId: string, entry: StampedEntry): void {
     const db = this.ensureDb()
     const ids = deriveAcpIds(entry.kind, entry.data)
     const dedupeKey = decidedDedupeKeyOf(entry.kind, entry.data)
     const payload = stableStringify(entry.data)
-    if (entry.kind === 'permission') {
-      // Approval audit is low volume. Serialize dedupe inspection and durable
-      // sequence allocation so a stale per-connection counter cannot drop a
-      // distinct decision through an unrelated UNIQUE(seq) conflict.
-      db.exec('BEGIN IMMEDIATE')
-      try {
-        if (dedupeKey !== undefined && this.stmtHasDedupe?.get(sessionId, dedupeKey) !== undefined) {
-          db.exec('COMMIT')
-          return // 重连重放：已存在即跳过
-        }
-        const seq = this.nextPermissionSeq(sessionId)
-        const recordId = dedupeKey ?? this.nextAuditIdentityWithSeq(sessionId, entry, seq).recordId
-        const result =
-          dedupeKey === undefined
-            ? this.stmtInsert?.run(
-                recordId,
-                sessionId,
-                seq,
-                entry.time,
-                entry.kind,
-                ids.acpProviderId ?? null,
-                ids.acpSessionId ?? null,
-                null,
-                payload,
-              )
-            : this.stmtInsertIgnore?.run(
-                recordId,
-                sessionId,
-                seq,
-                entry.time,
-                entry.kind,
-                ids.acpProviderId ?? null,
-                ids.acpSessionId ?? null,
-                dedupeKey,
-                payload,
-              )
-        // This targeted conflict can only mean the exact decided dedupe index.
-        if (result !== undefined && Number(result.changes) === 0) {
-          db.exec('COMMIT')
-          return
-        }
+    db.exec('BEGIN IMMEDIATE')
+    let transactionOpen = true
+    try {
+      if (entry.kind === 'permission' && dedupeKey !== undefined && this.stmtHasDedupe?.get(sessionId, dedupeKey)) {
         db.exec('COMMIT')
-      } catch (error) {
+        transactionOpen = false
+        return
+      }
+      if (entry.kind === 'binding') this.assertBindingTransition(sessionId, entry)
+      const identity = this.nextAuditIdentity(sessionId, entry)
+      const seq = identity.seq
+      const recordId = dedupeKey ?? identity.recordId
+      const result =
+        entry.kind === 'permission' && dedupeKey !== undefined
+          ? this.stmtInsertIgnore?.run(
+              recordId,
+              sessionId,
+              seq,
+              entry.time,
+              entry.kind,
+              ids.acpProviderId ?? null,
+              ids.acpSessionId ?? null,
+              dedupeKey,
+              payload,
+            )
+          : this.stmtInsert?.run(
+              recordId,
+              sessionId,
+              seq,
+              entry.time,
+              entry.kind,
+              ids.acpProviderId ?? null,
+              ids.acpSessionId ?? null,
+              null,
+              payload,
+            )
+      if (result !== undefined && Number(result.changes) === 0) {
+        db.exec('COMMIT')
+        transactionOpen = false
+        return
+      }
+      if (entry.kind === 'binding')
+        this.stmtUpsertBinding?.run(sessionId, entry.time, ids.acpProviderId ?? null, ids.acpSessionId ?? null, payload)
+      db.exec('COMMIT')
+      transactionOpen = false
+    } catch (error: unknown) {
+      if (transactionOpen) {
         try {
           db.exec('ROLLBACK')
         } catch {
           /* preserve original */
         }
-        // Keep the local reservation after rollback; a queued non-approval audit may own an earlier seq.
-        throw error
       }
-      return
+      throw error
     }
-    if (entry.kind === 'binding') {
-      // binding 是恢复索引，不是可被任意最新写覆盖的普通审计行。把迁移校验、
-      // audit 追加和最新索引更新放进同一个 IMMEDIATE 事务：错误 provider 或错误
-      // generation 即使来自另一进程，也不能先污染 audit 或覆盖正确索引。
-      db.exec('BEGIN IMMEDIATE')
-      try {
-        this.assertBindingTransition(sessionId, entry)
-        const { seq, recordId } = this.nextAuditIdentity(sessionId, entry)
-        this.stmtInsert?.run(
-          recordId,
-          sessionId,
-          seq,
-          entry.time,
-          entry.kind,
-          ids.acpProviderId ?? null,
-          ids.acpSessionId ?? null,
-          null,
-          payload,
-        )
-        this.stmtUpsertBinding?.run(sessionId, entry.time, ids.acpProviderId ?? null, ids.acpSessionId ?? null, payload)
-        db.exec('COMMIT')
-      } catch (error: unknown) {
-        try {
-          db.exec('ROLLBACK')
-        } catch {
-          /* 原错误优先 */
-        }
-        // Keep the local reservation after rollback; a queued non-approval audit may own an earlier seq.
-        // A gap in seq is harmless — avoid reseeding from DB MAX which could hand out
-        // a duplicate seq already reserved by an in-memory queued audit.
-        throw error
-      }
-      return
-    }
-    const { seq, recordId } = this.nextAuditIdentity(sessionId, entry)
-    this.stmtInsert?.run(
-      recordId,
-      sessionId,
-      seq,
-      entry.time,
-      entry.kind,
-      ids.acpProviderId ?? null,
-      ids.acpSessionId ?? null,
-      null,
-      payload,
-    )
   }
 
   /** 为一条非去重审计分配 seq 与无碰撞 record id。 */
@@ -1608,7 +1546,7 @@ class SidecarStore implements AcpSidecar {
       }
       return
     }
-    this.queue.push({ sessionId, entry, seq: this.nextSeq(sessionId) })
+    this.queue.push({ sessionId, entry })
     if (!this.queueDrainScheduled) {
       this.queueDrainScheduled = true
       queueMicrotask(() => {
@@ -1621,34 +1559,44 @@ class SidecarStore implements AcpSidecar {
   /** 队列批量落库（单事务）；失败 → 逐条重试，仅丢弃仍失败的条目 + warn 计数（非审批审计不阻塞主链路）。 */
   private drainQueue(): void {
     if (this.queue.length === 0) return
+    const db = this.ensureDb()
     const batch = this.queue
     this.queue = []
     this.queueFullWarned = false
-    const db = this.ensureDb()
-    db.exec('BEGIN')
+    let transactionOpen = false
     try {
+      db.exec('BEGIN IMMEDIATE')
+      transactionOpen = true
       for (const item of batch) this.insertQueuedAudit(item)
       db.exec('COMMIT')
+      transactionOpen = false
     } catch (error: unknown) {
-      try {
-        db.exec('ROLLBACK')
-      } catch {
-        /* 连接级失败时 ROLLBACK 也可能抛，尽力而为 */
+      if (transactionOpen) {
+        try {
+          db.exec('ROLLBACK')
+        } catch {
+          /* preserve original */
+        }
       }
       // Fall back to per-item writes so a single poisoned item doesn't drop the
       // whole batch. Each item gets its own BEGIN/COMMIT; failures cause a
       // ROLLBACK for that item only and are counted as dropped.
       let dropped = 0
       for (const item of batch) {
+        let itemTransactionOpen = false
         try {
-          db.exec('BEGIN')
+          db.exec('BEGIN IMMEDIATE')
+          itemTransactionOpen = true
           this.insertQueuedAudit(item)
           db.exec('COMMIT')
+          itemTransactionOpen = false
         } catch {
-          try {
-            db.exec('ROLLBACK')
-          } catch {
-            /* best effort */
+          if (itemTransactionOpen) {
+            try {
+              db.exec('ROLLBACK')
+            } catch {
+              /* best effort */
+            }
           }
           dropped += 1
         }
@@ -1664,6 +1612,7 @@ class SidecarStore implements AcpSidecar {
   private insertQueuedAudit(item: QueuedAudit): void {
     const ids = deriveAcpIds(item.entry.kind, item.entry.data)
     const base = contentRecordIdBase(item.entry.kind, item.entry.time, item.entry.data)
+    const seq = this.nextSeq(item.sessionId)
     let recordId = base
     for (let suffix = 2; ; suffix += 1) {
       if (this.stmtHasRecordId?.get(item.sessionId, recordId) === undefined) break
@@ -1672,7 +1621,7 @@ class SidecarStore implements AcpSidecar {
     this.stmtInsert?.run(
       recordId,
       item.sessionId,
-      item.seq,
+      seq,
       item.entry.time,
       item.entry.kind,
       ids.acpProviderId ?? null,
@@ -1702,8 +1651,10 @@ class SidecarStore implements AcpSidecar {
       data: entry.data,
     } as StampedEntry
     try {
-      if (ACP_SIDECAR_SYNC_KINDS.includes(entry.kind)) this.insertSync(sessionId as string, stamped)
-      else this.enqueueAudit(sessionId as string, stamped)
+      if (ACP_SIDECAR_SYNC_KINDS.includes(entry.kind)) {
+        if (this.queue.length > 0) this.drainQueue()
+        this.insertSync(sessionId as string, stamped)
+      } else this.enqueueAudit(sessionId as string, stamped)
       return Promise.resolve()
     } catch (error: unknown) {
       return Promise.reject(error instanceof Error ? error : new Error(errorMessage(error)))
@@ -2430,7 +2381,12 @@ class SidecarStore implements AcpSidecar {
 
   async writeModeIntent(sessionId: SessionId, intent: AcpModeIntent): Promise<void> {
     assertSafeSessionId(sessionId)
-    if (!intent.modeId || intent.modeId.length > 128 || !intent.bindingKey || intent.bindingKey.length > 8192)
+    if (
+      !intent.modeId ||
+      intent.modeId.length > ACP_CONFIG_IDENTIFIER_MAX ||
+      !intent.bindingKey ||
+      intent.bindingKey.length > 8192
+    )
       throw new TypeError('Invalid ACP mode intent')
     this.ensureDb()
       .prepare(

@@ -429,7 +429,7 @@ function activitiesForNotification(
     ]
     if (Array.isArray(detail.content)) {
       for (const [index, content] of detail.content.entries()) {
-        const normalized = normalizeActivityContent(`tool:${toolId}:${String(index)}`, content, status)
+        const normalized = normalizeActivityContent(`part:${toolId}:${String(index)}`, content, status)
         if (normalized !== undefined) result.push(normalized)
       }
     }
@@ -688,6 +688,19 @@ export interface AcpNativeQuestionBinding {
   readonly locale?: string
 }
 
+interface UserModeChoice {
+  readonly kind: 'legacy' | 'config'
+  readonly id: string
+  readonly value?: string | boolean
+}
+
+interface ConfirmedUserModeSelection extends UserModeChoice {
+  readonly bindingKey: string
+  readonly agentSessionId: string
+  readonly owner: object
+  readonly needsRestore: boolean
+}
+
 /** One independent adapter and runtime per configured ACP profile. */
 export class AcpProfileAdapter extends LlmAdapter {
   private probeGeneration: ProfileGeneration | undefined
@@ -696,6 +709,8 @@ export class AcpProfileAdapter extends LlmAdapter {
   private readonly nextGenerations = new Map<string, number>()
   private readonly admittedToolSchemas = new Map<string, readonly ToolSchema[] | undefined>()
   private readonly admittedToolSchemaOwners = new Map<string, object>()
+  /** Explicit user choices survive a same-process CodeBuddy cancel/reload only. */
+  private readonly confirmedUserModes = new Map<string, ConfirmedUserModeSelection>()
   private claudeDraftDegradationReported = false
   private readonly ledger: DispatchLedger
   private readonly settlementSink: AcpLocalSettlementSink
@@ -992,6 +1007,14 @@ export class AcpProfileAdapter extends LlmAdapter {
         throw new LlmError('Agent did not confirm the saved member mode', 'ACP_CONFIG_SYNC_FAILED')
     }
     await this.persistRuntimeSnapshot(sessionId, runtime)
+    this.rememberConfirmedUserMode(
+      sessionId,
+      runtime,
+      choice.write.kind === 'mode'
+        ? { kind: 'legacy', id: choice.write.id }
+        : { kind: 'config', id: choice.write.id, value: choice.write.value },
+      binding.binding,
+    )
     // Consume only the confirmed choice. A later user selection must survive this completion.
     await this.sidecar?.clearModeIntent(sessionId as never, intent)
     this.controlsChanged?.(sessionId)
@@ -1008,21 +1031,21 @@ export class AcpProfileAdapter extends LlmAdapter {
     if (snapshot === undefined)
       throw new LlmError('No last-known Agent session controls are available', 'ACP_SESSION_OPTIONS_UNAVAILABLE')
     const configOptions = snapshot.options.map((option) =>
-      option.values === null
+      typeof option.value === 'boolean'
         ? {
             type: 'boolean' as const,
             id: option.id,
             name: option.name,
             ...(option.category === null ? {} : { category: option.category }),
-            currentValue: typeof option.value === 'boolean' ? option.value : false,
+            currentValue: option.value,
           }
         : {
             type: 'select' as const,
             id: option.id,
             name: option.name,
             ...(option.category === null ? {} : { category: option.category }),
-            currentValue: typeof option.value === 'string' ? option.value : '',
-            options: option.values.map((value) => ({
+            currentValue: option.value,
+            options: (option.values ?? []).map((value) => ({
               value,
               name:
                 (normalizeAcpConfigOptionKey(option.id) === 'mode' ||
@@ -1067,6 +1090,11 @@ export class AcpProfileAdapter extends LlmAdapter {
           'Agent session changed or started running; retry after it settles',
           'ACP_SESSION_OPTIONS_READ_ONLY',
         )
+      const selectionBeforeWrite = this.modeSelectionForRequest(runtime, request)
+      const selectionBindingBefore =
+        selectionBeforeWrite === undefined ? undefined : await this.readBindingForUserMode(sessionId)
+      if (selectionBeforeWrite !== undefined && selectionBindingBefore === undefined)
+        throw new LlmError('The ACP session binding is unavailable for this mode change', 'ACP_BINDING_UNAVAILABLE')
       if (request.kind === 'mode') {
         if (runtime.setMode === undefined)
           throw new LlmError('This Agent does not expose mode controls', 'ACP_CONFIG_UNSUPPORTED')
@@ -1105,8 +1133,129 @@ export class AcpProfileAdapter extends LlmAdapter {
         if (intent !== undefined) await this.sidecar?.clearModeIntent(sessionId as never, intent)
       }
       await this.persistRuntimeSnapshot(sessionId, runtime)
+      if (selectionBeforeWrite !== undefined) {
+        if (!this.confirmedModeSelection(runtime, selectionBeforeWrite))
+          throw new LlmError('Agent did not confirm the selected mode', 'ACP_CONFIG_SYNC_FAILED')
+        const bindingAfter = await this.readBindingForUserMode(sessionId)
+        if (
+          bindingAfter === undefined ||
+          modeIntentBindingKey(bindingAfter) !== modeIntentBindingKey(selectionBindingBefore!)
+        )
+          throw new LlmError('The ACP session binding changed while saving its mode', 'ACP_BINDING_UNAVAILABLE')
+        this.rememberConfirmedUserMode(sessionId, runtime, selectionBeforeWrite, bindingAfter)
+      }
       return this.liveAgentSessionSnapshot(sessionId, runtime)
     })
+  }
+
+  private modeSelectionForRequest(
+    runtime: AcpProfileRuntime,
+    request: AgentSessionOptionWrite,
+  ): UserModeChoice | undefined {
+    if (request.kind === 'mode') return { kind: 'legacy', id: request.id }
+    const option = runtime.configOptions?.find((candidate) => candidate.id === request.id)
+    if (
+      option === undefined ||
+      (normalizeAcpConfigOptionKey(option.id) !== 'mode' &&
+        normalizeAcpConfigOptionKey(option.category ?? '') !== 'mode')
+    )
+      return undefined
+    if (typeof request.value !== 'string') return undefined
+    return { kind: 'config', id: request.id, value: request.value }
+  }
+
+  private async readBindingForUserMode(sessionId: string): Promise<AcpBindingData | undefined> {
+    const lookup = await this.sidecar?.readLatestBinding(sessionId as never)
+    if (
+      lookup?.status !== 'ok' ||
+      lookup.binding.provider !== `acp-${this.profileId}` ||
+      lookup.binding.profileId !== this.profileId
+    )
+      return undefined
+    return lookup.binding
+  }
+
+  private rememberConfirmedUserMode(
+    sessionId: string,
+    runtime: AcpProfileRuntime,
+    selection: UserModeChoice,
+    binding: AcpBindingData,
+  ): void {
+    const owner = this.runtimeOwners.get(runtime)
+    if (owner === undefined) {
+      this.confirmedUserModes.delete(sessionId)
+      return
+    }
+    this.confirmedUserModes.set(sessionId, {
+      ...selection,
+      bindingKey: modeIntentBindingKey(binding),
+      agentSessionId: binding.agentSessionId,
+      owner,
+      needsRestore: false,
+    })
+  }
+
+  private markConfirmedUserModeForRestore(sessionId: string, runtime: AcpProfileRuntime): void {
+    if (runtime.cancelledSessionRefreshPending !== true) return
+    const selection = this.confirmedUserModes.get(sessionId)
+    if (
+      selection === undefined ||
+      selection.agentSessionId !== runtime.cancelledSessionRefreshBindingId ||
+      selection.owner !== this.runtimeOwners.get(runtime)
+    )
+      return
+    // A vendor may change modes while handling the turn. Preserve only the
+    // last mode the user explicitly selected; never overwrite a newer Agent
+    // mode update with that older choice after the cancelled session reloads.
+    if (!this.confirmedModeSelection(runtime, selection)) {
+      this.confirmedUserModes.delete(sessionId)
+      return
+    }
+    this.confirmedUserModes.set(sessionId, { ...selection, needsRestore: true })
+  }
+
+  private confirmedModeSelection(runtime: AcpProfileRuntime, selection: UserModeChoice): boolean {
+    if (selection.kind === 'legacy') return (runtime.currentModeId ?? runtime.modes?.currentModeId) === selection.id
+    return (
+      runtime.configOptions?.some((option) => option.id === selection.id && option.currentValue === selection.value) ===
+      true
+    )
+  }
+
+  private async restoreConfirmedUserMode(
+    sessionId: string,
+    runtime: AcpProfileRuntime,
+    binding: AcpBindingData,
+  ): Promise<boolean> {
+    const selection = this.confirmedUserModes.get(sessionId)
+    if (selection === undefined) return true
+    if (
+      selection.bindingKey !== modeIntentBindingKey(binding) ||
+      selection.agentSessionId !== binding.agentSessionId ||
+      selection.owner !== this.runtimeOwners.get(runtime)
+    ) {
+      this.confirmedUserModes.delete(sessionId)
+      return true
+    }
+    if (!selection.needsRestore) return true
+    if (selection.kind === 'legacy') {
+      if (!runtime.modes?.availableModes.some((mode) => mode.id === selection.id)) return false
+      if ((runtime.currentModeId ?? runtime.modes.currentModeId) !== selection.id) {
+        if (runtime.setMode === undefined) return false
+        await runtime.setMode(selection.id)
+      }
+    } else {
+      const option = runtime.configOptions?.find((candidate) => candidate.id === selection.id)
+      if (option === undefined || option.type !== 'select' || !this.selectValues(option).has(String(selection.value)))
+        return false
+      if (option.currentValue !== selection.value) {
+        if (runtime.setConfigOption === undefined) return false
+        await runtime.setConfigOption(selection.id, selection.value!)
+      }
+    }
+    if (!this.confirmedModeSelection(runtime, selection)) return false
+    this.confirmedUserModes.set(sessionId, { ...selection, needsRestore: false })
+    return true
   }
 
   private async restoreCancelledRuntimeForControl(sessionId: string, runtime: AcpProfileRuntime): Promise<void> {
@@ -1719,6 +1868,7 @@ export class AcpProfileAdapter extends LlmAdapter {
       if (session !== undefined) self.runtimeOwners.set(runtime, session.identity ?? session)
       let retainHealthyRuntimeAfterNotDispatched = false
       let retainCancelledRuntimeForRefreshRetry = false
+      let bindingForModeRestore: AcpBindingData | undefined
       let terminalSettlementLifetime: (() => void) | undefined
       try {
         let validatedPrompt: acp.ContentBlock[]
@@ -1789,6 +1939,8 @@ export class AcpProfileAdapter extends LlmAdapter {
           )
         }
         const binding = existingBinding?.status === 'ok' ? existingBinding.binding : undefined
+        bindingForModeRestore = binding
+        if (binding === undefined) self.confirmedUserModes.delete(sessionKey)
         const currentFingerprint = await self.launchFingerprint(profile)
         const canonicalCwd = self.canonicalCwd(session?.header?.cwd)
         if (binding !== undefined) {
@@ -2059,6 +2211,7 @@ export class AcpProfileAdapter extends LlmAdapter {
             }
             try {
               await self.sidecar.append(sessionKey as never, { kind: 'binding', data: bindingData })
+              bindingForModeRestore = bindingData
               if (forkOutcome !== undefined && forkReason !== undefined) {
                 await self.sidecar.append(sessionKey as never, {
                   kind: 'session-fork',
@@ -2095,12 +2248,36 @@ export class AcpProfileAdapter extends LlmAdapter {
         // only after setup/restore has established the session, but before the
         // dispatch WAL: a rejected or unconfirmed change must cause zero WAL and
         // zero prompt, never a silent request with a different model/effort.
+        const savedMode = self.confirmedUserModes.get(sessionKey)
+        const restoreSavedMode =
+          savedMode?.needsRestore === true &&
+          bindingForModeRestore !== undefined &&
+          savedMode.bindingKey === modeIntentBindingKey(bindingForModeRestore) &&
+          savedMode.agentSessionId === bindingForModeRestore.agentSessionId
+        if (
+          savedMode !== undefined &&
+          bindingForModeRestore !== undefined &&
+          (savedMode.bindingKey !== modeIntentBindingKey(bindingForModeRestore) ||
+            savedMode.agentSessionId !== bindingForModeRestore.agentSessionId)
+        )
+          self.confirmedUserModes.delete(sessionKey)
         try {
           await self.convergeConfig(runtime, options)
           await self.applyMemberMode(sessionKey, runtime)
+          if (restoreSavedMode) {
+            // A mode is restored only after the same-bound session was loaded.
+            // If it disappeared from the Agent's supported choices, keep the
+            // live controls available and send no prompt under a different mode.
+            retainHealthyRuntimeAfterNotDispatched = true
+            if (!(await self.restoreConfirmedUserMode(sessionKey, runtime, bindingForModeRestore!)))
+              throw new LlmError(
+                'The Agent no longer supports the selected mode. Choose a supported mode to continue; no prompt was sent.',
+                'ACP_CONFIG_UNSUPPORTED',
+              )
+          }
           await self.persistRuntimeSnapshot(sessionKey, runtime)
         } catch (error: unknown) {
-          await self.releaseRuntime(runtimeKey, runtime)
+          if (!restoreSavedMode) await self.releaseRuntime(runtimeKey, runtime)
           if (error instanceof LlmError) throw error
           throw new LlmError(
             `ACP session configuration could not be applied: ${error instanceof Error ? error.message : String(error)}`,
@@ -2476,7 +2653,7 @@ export class AcpProfileAdapter extends LlmAdapter {
             const status = activityStatus(toolCall.status)
             if (Array.isArray(toolCall.content)) {
               for (const [index, item] of toolCall.content.entries()) {
-                const child = normalizeActivityContent(`tool:${toolId}:${String(index)}`, item, status)
+                const child = normalizeActivityContent(`part:${toolId}:${String(index)}`, item, status)
                 if (child !== undefined) nextChildren.set(index, child)
               }
             }
@@ -2765,6 +2942,7 @@ export class AcpProfileAdapter extends LlmAdapter {
         ): Promise<void> => {
           remoteSettled = true
           stopWatchingInput?.()
+          if (response.stopReason === 'cancelled') self.markConfirmedUserModeForRestore(sessionKey, runtime)
           const confirmedRemoteCancellation =
             response.stopReason === 'cancelled' &&
             options.signal?.aborted !== true &&
@@ -3027,6 +3205,7 @@ export class AcpProfileAdapter extends LlmAdapter {
           ) {
             const response = settlementFailure.remoteResponse
             if (response !== undefined) {
+              if (response.stopReason === 'cancelled') self.markConfirmedUserModeForRestore(sessionKey, runtime)
               try {
                 await settleKnownRemoteTerminalAndWait()
                 await handlePromptResponse(response, true)
@@ -3497,6 +3676,7 @@ export class AcpProfileAdapter extends LlmAdapter {
     }
     this.handoffs.clear()
     this.inMemoryRecoveryRequired.clear()
+    this.confirmedUserModes.clear()
     this.admittedToolSchemas.clear()
     this.admittedToolSchemaOwners.clear()
     const keys = [...this.runtimes.keys()]
@@ -3569,6 +3749,7 @@ export class AcpProfileAdapter extends LlmAdapter {
       if (waiters.size === 0) this.settlementSessionWaitControllers.delete(session.id)
     }
     await this.closeSessionRuntime(session.id, owner)
+    if (this.confirmedUserModes.get(session.id)?.owner === owner) this.confirmedUserModes.delete(session.id)
     if (this.admittedToolSchemaOwners.get(session.id) === owner) {
       this.admittedToolSchemaOwners.delete(session.id)
       this.admittedToolSchemas.delete(session.id)

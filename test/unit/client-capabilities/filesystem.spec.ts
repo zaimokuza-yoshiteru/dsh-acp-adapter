@@ -221,9 +221,100 @@ describe('ACP native filesystem handlers', () => {
     await expect(handlers.writeTextFile({ sessionId: 'acp-1', path: file, content: 'new' })).rejects.toThrow(/failed/)
     expect(audit.at(-1)?.outcome).toBe('timeout')
     expect(fs.readFileSync(file, 'utf8')).toBe('old')
-    expect(fs.readdirSync(dir).filter((entry) => entry.includes('.dsh-acp-'))).toEqual([])
+    await vi.waitFor(() => expect(fs.readdirSync(dir).filter((entry) => entry.includes('.dsh-acp-'))).toEqual([]))
     fs.rmSync(dir, { recursive: true, force: true })
   })
+
+  it('closes a file handle that opens after the aborted read has returned', async () => {
+    const dir = root()
+    const file = path.join(dir, 'late-open.txt')
+    fs.writeFileSync(file, 'late open')
+    const controller = new AbortController()
+    const openStarted = Promise.withResolvers<void>()
+    const releaseOpen = Promise.withResolvers<void>()
+    const closed = Promise.withResolvers<void>()
+    let lateHandle: Awaited<ReturnType<typeof fs.promises.open>> | undefined
+    const handlers = createAcpFileSystemHandlers({
+      profileId: 'test',
+      signal: controller.signal,
+      io: {
+        open: async (target, flags) => {
+          const handle = await fs.promises.open(target, flags)
+          lateHandle = handle
+          const close = handle.close.bind(handle)
+          vi.spyOn(handle, 'close').mockImplementation(async () => {
+            const result = await close()
+            closed.resolve()
+            return result
+          })
+          openStarted.resolve()
+          await releaseOpen.promise
+          return handle
+        },
+      },
+    })
+    try {
+      const read = handlers.readTextFile({ sessionId: 's', path: file })
+      await openStarted.promise
+      controller.abort(new DOMException('Stopped', 'AbortError'))
+      await expect(read).rejects.toThrow(/aborted/)
+      releaseOpen.resolve()
+      await closed.promise
+      await expect(lateHandle!.stat()).rejects.toMatchObject({ code: 'EBADF' })
+    } finally {
+      releaseOpen.resolve()
+      await lateHandle?.close().catch(() => undefined)
+      handlers.dispose()
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it.each([false, true])(
+    'cleans a late temporary write after cancellation (partial reject=%s)',
+    async (rejectAfterWrite) => {
+      const dir = root()
+      const file = path.join(dir, 'late-write.txt')
+      fs.writeFileSync(file, 'original')
+      const controller = new AbortController()
+      const writeStarted = Promise.withResolvers<void>()
+      const releaseWrite = Promise.withResolvers<void>()
+      const writeFinished = Promise.withResolvers<void>()
+      let writerStarted = false
+      const handlers = createAcpFileSystemHandlers({
+        profileId: 'test',
+        signal: controller.signal,
+        io: {
+          writeFile: async (target, data, options) => {
+            writerStarted = true
+            writeStarted.resolve()
+            await releaseWrite.promise
+            try {
+              await fs.promises.writeFile(target, data, options)
+              if (rejectAfterWrite) throw new Error('partial write failed')
+            } finally {
+              writeFinished.resolve()
+            }
+          },
+        },
+      })
+      try {
+        const write = handlers.writeTextFile({ sessionId: 's', path: file, content: 'replacement' })
+        await writeStarted.promise
+        controller.abort(new DOMException('Stopped', 'AbortError'))
+        await expect(write).rejects.toThrow(/aborted/)
+        releaseWrite.resolve()
+        await writeFinished.promise
+        await vi.waitFor(() => expect(fs.readdirSync(dir).filter((name) => name.includes('.dsh-acp-'))).toEqual([]))
+        expect(fs.readFileSync(file, 'utf8')).toBe('original')
+      } finally {
+        releaseWrite.resolve()
+        if (writerStarted) await writeFinished.promise
+        await vi.waitFor(() => expect(fs.readdirSync(dir).filter((name) => name.includes('.dsh-acp-'))).toEqual([]))
+        handlers.dispose()
+        fs.rmSync(dir, { recursive: true, force: true })
+      }
+    },
+  )
 })
 
 it('streams oversized old files while retaining exact hashes and atomic replacement', async () => {
@@ -392,7 +483,7 @@ it.each([1, 2])('aborts and closes old-file hash stream %i without replacing the
     )
     expect(stalled?.destroyed).toBe(true)
     expect(fs.readFileSync(file, 'utf8')).toBe('original')
-    expect(fs.readdirSync(dir)).toEqual(['file.txt'])
+    await vi.waitFor(() => expect(fs.readdirSync(dir)).toEqual(['file.txt']))
     expect(audits.at(-1)?.outcome).toBe('aborted')
   } finally {
     spy.mockRestore()
