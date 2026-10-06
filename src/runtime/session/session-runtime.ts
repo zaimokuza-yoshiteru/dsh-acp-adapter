@@ -366,6 +366,18 @@ export class AcpSessionRuntime {
   get acpSessionId(): string | undefined {
     return this.sessionId
   }
+  /** Close a vendor process after a cancelled response and its local settlement
+   * complete, keeping the same-session refresh marker for the next user input.
+   * This is deliberately not a prompt retry. */
+  async retireCancelledSession(): Promise<void> {
+    if (
+      this.options.refreshSessionAfterCancelledPrompt !== true ||
+      !this.refreshBeforeRestore ||
+      this.refreshBindingSessionId === undefined
+    )
+      return
+    await this.close()
+  }
   get agentCapabilities(): acp.AgentCapabilities | undefined {
     return this.connection?.agentCapabilities
   }

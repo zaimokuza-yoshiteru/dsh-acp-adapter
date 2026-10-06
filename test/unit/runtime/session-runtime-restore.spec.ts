@@ -143,6 +143,8 @@ it.each([
     try {
       await runtime.start()
       await expect(runtime.prompt([], () => {})).resolves.toMatchObject({ stopReason: 'cancelled' })
+      await runtime.retireCancelledSession()
+      expect(runtime.acpSessionId).toBe(refresh ? undefined : 'saved')
       await expect(runtime.restore({ agentSessionId: 'saved' })).resolves.toBe(expectedRestore)
       expect(runtime.lastRestoreRefreshedCancelledSession).toBe(refresh)
       if (refresh) {

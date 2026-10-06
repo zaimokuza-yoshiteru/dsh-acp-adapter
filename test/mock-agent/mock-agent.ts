@@ -675,6 +675,9 @@ async function runPermissionTurn(session: MockSession, msg: PromptMessage) {
       })
     } else {
       sendUpdate(session.id, { sessionUpdate: 'tool_call_update', toolCallId: 'mock-tool-perm-1', status: 'failed' })
+      // Recorded vendor behavior: a selected reject can terminate the ACP
+      // prompt despite the client never sending session/cancel.
+      if (process.env.MOCK_CANCEL_AFTER_REJECT === '1') return respond(msg.id, { stopReason: 'cancelled' })
       await sleep(STEP_DELAY_MS)
       sendUpdate(session.id, {
         sessionUpdate: 'agent_message_chunk',

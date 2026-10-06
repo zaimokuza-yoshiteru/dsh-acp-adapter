@@ -39,6 +39,39 @@ it('keeps one pending pull across a native step and preserves later output once'
   expect(disposed).toHaveBeenCalledOnce()
 })
 
+it('does not acknowledge a synthetic handoff finish as the cancelled response finish', async () => {
+  const release = Promise.withResolvers<void>()
+  const onTerminal = vi.fn()
+  const handoff = new StreamHandoff()
+  handoff.attach(
+    (async function* (): AsyncGenerator<StreamChunk> {
+      yield { type: 'text-delta', index: 0, text: 'answer' }
+      await release.promise
+      yield {
+        type: 'finish',
+        reason: { kind: 'aborted', failure: { code: 'ACP_ABORTED', message: 'ACP prompt was cancelled' } },
+      }
+    })(),
+  )
+
+  const first = handoff.segment()
+  await first.next()
+  const pending = first.next()
+  handoff.request()
+  expect(await pending).toMatchObject({ value: { type: 'finish', reason: { kind: 'stop' } } })
+  handoff.afterTerminalFinish(onTerminal)
+  await handoff.acknowledgeTerminalFinish()
+  expect(onTerminal).not.toHaveBeenCalled()
+
+  await first.next()
+  release.resolve()
+  const resumed = handoff.segment()
+  expect(await resumed.next()).toMatchObject({ value: { type: 'finish', reason: { kind: 'aborted' } } })
+  await handoff.acknowledgeTerminalFinish()
+  expect(onTerminal).toHaveBeenCalledOnce()
+  await resumed.next()
+})
+
 it('cancels and drains a suspended execution when native admission rejects the next step', async () => {
   const release = Promise.withResolvers<void>()
   const handoff = new StreamHandoff()

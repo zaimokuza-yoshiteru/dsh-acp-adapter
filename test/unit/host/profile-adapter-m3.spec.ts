@@ -598,6 +598,7 @@ describe('M3a binding-first ACP provider', () => {
       let factoryCalls = 0
       let prompts = 0
       let restores = 0
+      let retirements = 0
       const runtime: AcpProfileRuntime = {
         acpSessionId: 'agent-session-1',
         agentInfo: { name: 'fake-agent', version: '1' },
@@ -627,6 +628,9 @@ describe('M3a binding-first ACP provider', () => {
             else signal?.addEventListener('abort', onAbort, { once: true })
           })
           return await cancellationSettled.promise
+        },
+        retireCancelledSession: async () => {
+          retirements += 1
         },
         close: async () => undefined,
       }
@@ -669,6 +673,7 @@ describe('M3a binding-first ACP provider', () => {
 
       cancellationSettled.resolve({ stopReason: 'cancelled' })
       await expect(returning).resolves.toMatchObject({ done: true })
+      expect(retirements).toBe(1)
       const firstDispatchKey = acpCanonicalHash16({
         provider: 'acp-test',
         model: 'model-a',

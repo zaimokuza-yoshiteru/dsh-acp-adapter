@@ -4,6 +4,22 @@
 
 User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for publication dates, exact installation instructions, and checksums. Historical entries were reconstructed from tag diffs; npm packages were not republished.
 
+## 0.2.0-rc.2.5
+
+### 中文
+
+- 拒绝审批只拒绝当前工具；如果 Agent 随后明确取消整轮，已输出内容会保留并显示为中断，不会作为普通处理失败丢失，也不会自动重发输入或要求手动恢复。
+- 对显式 CodeBuddy CLI runtime，确认取消终态后关闭旧进程；下一条输入会重新加载同一 ACP 会话，不重发已取消的输入。
+- 本轮终止后拒绝新的 ACP 文件读写和终端创建请求，同时允许已有终端的输出读取、等待与清理。
+- 已知边界：DSH 发送输入后立即 Stop 时，该输入可能不会保留；本版不改变宿主此行为。CodeBuddy 在 Stop 后收到新的明确输入时，仍可能请求执行先前工具；本版不消除这一厂商行为。
+
+### English
+
+- Rejecting an approval rejects only the current tool. If the Agent then explicitly cancels the whole prompt, preserve emitted content and show it as interrupted instead of losing it as an ordinary processing failure; do not automatically resend the input or require manual recovery.
+- For the explicit CodeBuddy CLI runtime, retire the old process after a confirmed cancelled terminal result. The next input reloads the same ACP session without resubmitting the cancelled input.
+- After a prompt terminates, reject new ACP file operations and terminal creation while still allowing output reads, waits, and cleanup for existing terminals.
+- Known limitations: input may not be retained if DSH is stopped immediately after sending it; this release does not change that host behavior. After Stop, CodeBuddy may still request a previously issued tool when given new explicit input; this vendor behavior is not eliminated here.
+
 ## 0.2.0-rc.2.4
 
 ### 中文

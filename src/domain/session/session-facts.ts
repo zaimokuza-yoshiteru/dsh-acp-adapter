@@ -90,6 +90,14 @@ export interface SessionLike {
   /** Release a suspended execution if native admission ends its owning turn. */
   watchTurnEnd?(listener: () => void): () => void
   watchRouteChange?(provider: string, listener: () => Promise<void>): () => void
+  /** Capture a native Agent cancellation action for the exact admitted DSH step.
+   * ACP uses it only after a confirmed remote `cancelled` response and after
+   * the partial response has crossed the stream consumer boundary. */
+  captureRemoteCancelledTurn?(scope: {
+    readonly turn: number
+    readonly step: number
+    readonly startSeq: number
+  }): (() => boolean) | undefined
   /** Publish an observed Agent plan through the optional native todo projection. */
   publishPlan?(plan: NonNullable<AcpActivityPresentation['plan']>): void
   /** Original host object used to match disposal, even when this read face is recreated. */

@@ -14,6 +14,7 @@ export class StreamHandoff {
   private requested = false
   private wake: (() => void) | undefined
   private draining: Promise<void> | undefined
+  private terminalConsumerCallback: (() => Promise<void> | void) | undefined
   private readonly incompleteBlocks = new Set<number>()
   private readonly remainder: StreamChunk[] = []
   suspended = false
@@ -28,6 +29,18 @@ export class StreamHandoff {
 
   attach(stream: AsyncIterable<StreamChunk>): void {
     this.iterator = stream[Symbol.asyncIterator]()
+  }
+
+  /** Run after the outer DSH consumer has received a terminal finish chunk. */
+  afterTerminalFinish(callback: () => Promise<void> | void): void {
+    this.terminalConsumerCallback = callback
+  }
+
+  async acknowledgeTerminalFinish(): Promise<void> {
+    if (!this.ended) return
+    const callback = this.terminalConsumerCallback
+    this.terminalConsumerCallback = undefined
+    await callback?.()
   }
 
   request(): void {

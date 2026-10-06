@@ -637,6 +637,8 @@ export interface AcpProfileRuntime {
     signal?: AbortSignal,
     onReplay?: (notification: AcpSessionNotification) => void,
   ): Promise<'reused' | 'resumed' | 'loaded'>
+  /** Retire a cancelled vendor process after its response and local settlement complete. */
+  retireCancelledSession?(): Promise<void>
   readonly acpSessionId?: string | undefined
   readonly agentInfo?: acp.Implementation | null | undefined
   readonly agentCapabilities?: acp.AgentCapabilities | undefined
@@ -1489,11 +1491,19 @@ export class AcpProfileAdapter extends LlmAdapter {
           }
         }
       }
+      const segment = owner.stream.segment()[Symbol.asyncIterator]()
       try {
-        yield* owner.stream.segment()
+        for (;;) {
+          const next = await segment.next()
+          if (next.done) break
+          yield next.value
+          if (next.value.type === 'finish') await owner.stream.acknowledgeTerminalFinish()
+        }
       } finally {
-        if (!owner.stream.suspended) {
-          self.detachHandoffOwner(key, owner)
+        try {
+          await segment.return?.(undefined)
+        } finally {
+          if (!owner.stream.suspended) self.detachHandoffOwner(key, owner)
         }
       }
     })()
@@ -1543,6 +1553,11 @@ export class AcpProfileAdapter extends LlmAdapter {
         if (error instanceof AcpAdmissionError) throw new LlmError(error.message, error.code)
         throw error
       }
+      const captureRemoteCancellationHook = (proof: CurrentStepProof | undefined) =>
+        proof === undefined
+          ? undefined
+          : session?.captureRemoteCancelledTurn?.({ turn: proof.turn, step: proof.step, startSeq: proof.startSeq })
+      let remoteCancellationHook = captureRemoteCancellationHook(admissionProof)
       // Only admitted model requests may change the native tool directory.
       // Missing schemas are retained as missing and therefore fail closed.
       self.admittedToolSchemas.set(sessionKey, options.tools)
@@ -2195,6 +2210,7 @@ export class AcpProfileAdapter extends LlmAdapter {
         let wake: (() => void) | undefined
         let done = false
         let failure: unknown
+        let cancelledRuntimeRetirement: Promise<void> | undefined
         let visibleContentEmitted = false
         const unsupportedChunkContents: Array<{ type: string; reason: string }> = []
         let unsupportedChunkContentsTruncated = false
@@ -2514,11 +2530,13 @@ export class AcpProfileAdapter extends LlmAdapter {
           const previousTurnConclusionConfirmed = turnConclusionConfirmed
           const previousSuccessfulToolResultEligible = successfulToolResultEligible
           const previousSuccessfulToolResultConfirmed = successfulToolResultConfirmed
+          const previousRemoteCancellationHook = remoteCancellationHook
           let projectedAtDispatch = false
           let segmentBoundaryVersion = contentBreakVersion
           let segmentBoundaryIndex = nextContentIndex
           const applyProjectionAtDispatch = (): void => {
             projectedAtDispatch = true
+            remoteCancellationHook = captureRemoteCancellationHook(nextProof)
             currentAnchor = nextProof!.anchorMessageId
             // A pending pull may contain the old segment's final text. It will
             // occupy a block in the next native reply before injected output.
@@ -2538,6 +2556,7 @@ export class AcpProfileAdapter extends LlmAdapter {
             successfulToolResultConfirmed = false
           }
           const restoreProjection = (): void => {
+            remoteCancellationHook = previousRemoteCancellationHook
             currentAnchor = previousAnchor
             activityIndexOffset = previousOffset
             teammateReportEligible = previousReportEligible
@@ -2628,6 +2647,11 @@ export class AcpProfileAdapter extends LlmAdapter {
         ): Promise<void> => {
           remoteSettled = true
           stopWatchingInput?.()
+          const confirmedRemoteCancellation =
+            response.stopReason === 'cancelled' &&
+            options.signal?.aborted !== true &&
+            !promptSignal.aborted &&
+            !interruptedForInput
           const unresolvedActivityStatus =
             response.stopReason === 'cancelled' || options.signal?.aborted === true ? 'cancelled' : 'unfinished'
           try {
@@ -2642,18 +2666,13 @@ export class AcpProfileAdapter extends LlmAdapter {
               ? committedBindingAfterSettle
               : await settleKnownRemoteTerminalAndWait()
             const projectAfterFinish = async (): Promise<void> => {
-              if (
-                committedBinding === undefined ||
-                runtime.acpSessionId === undefined ||
-                self.projectExternalDelegation === undefined
-              )
-                return
+              if (committedBinding === undefined || self.projectExternalDelegation === undefined) return
               for (const delegation of externalDelegations) {
                 try {
                   const childSessionId = await self.projectExternalDelegation(delegation, {
                     profileId: self.profileId,
                     bindingGeneration: committedBinding.generation,
-                    rootAcpSessionId: runtime.acpSessionId,
+                    rootAcpSessionId: committedBinding.agentSessionId,
                     parentDshSessionId: sessionKey,
                     parentCwd: canonicalCwd,
                     ...(session?.header?.delegationDepth === undefined
@@ -2718,9 +2737,9 @@ export class AcpProfileAdapter extends LlmAdapter {
             }
             await writeUnsupportedChunkAudit()
             const replayPayload =
-              response.stopReason === 'cancelled' ||
+              (response.stopReason === 'cancelled' && !confirmedRemoteCancellation) ||
               committedBinding === undefined ||
-              runtime.acpSessionId === undefined
+              committedBinding.agentSessionId.length === 0
                 ? undefined
                 : {
                     kind: 'dsh-acp' as const,
@@ -2728,7 +2747,7 @@ export class AcpProfileAdapter extends LlmAdapter {
                     ownerDshSessionId: sessionKey,
                     profileId: self.profileId,
                     profileGeneration: committedBinding.generation,
-                    agentSessionId: runtime.acpSessionId,
+                    agentSessionId: committedBinding.agentSessionId,
                     bindingEpoch: committedBinding.bindingEpoch ?? committedBinding.generation,
                     launchFingerprint: acpCanonicalHash16(committedBinding.launchFingerprint),
                     committedPromptOrdinal: committedBinding.committedPromptOrdinal ?? 0,
@@ -2795,11 +2814,42 @@ export class AcpProfileAdapter extends LlmAdapter {
             // this finish and durably closes the parent turn. Projection is an
             // additive record and must never delay or rewrite the Agent answer.
             void projectAfterFinish()
+            if (response.stopReason === 'cancelled') {
+              handoff.afterTerminalFinish(async () => {
+                // Only a vendor-initiated cancellation is mirrored into the
+                // native AgentLoop. User Stop and normal input steering already
+                // own their native cancellation boundary.
+                if (
+                  confirmedRemoteCancellation &&
+                  options.signal?.aborted !== true &&
+                  !promptSignal.aborted &&
+                  !interruptedForInput
+                )
+                  remoteCancellationHook?.()
+                await cancelledRuntimeRetirement
+              })
+            }
             pushChunk({
               type: 'finish',
               reason: finalReason,
               ...(replayPayload === undefined ? {} : { replayState: { response: replayPayload } }),
             })
+            if (response.stopReason === 'cancelled') {
+              // Retire the vendor process after response settlement. This also
+              // runs for native Stop, whose aborted consumer may never request
+              // another iterator item to acknowledge the finish callback.
+              cancelledRuntimeRetirement = (async () => {
+                try {
+                  await runtime.retireCancelledSession?.()
+                } catch {
+                  try {
+                    self.log?.('ACP cancelled runtime cleanup failed')
+                  } catch {
+                    /* cleanup diagnostics cannot change persisted output */
+                  }
+                }
+              })()
+            }
           } catch (error: unknown) {
             settleRunningActivities(unresolvedActivityStatus)
             await activityWriteTail
@@ -3016,7 +3066,10 @@ export class AcpProfileAdapter extends LlmAdapter {
           // final ACP update. Keep return() pending until the matching prompt has
           // confirmed cancellation and its dispatch record is durably settled;
           // otherwise an immediate next turn can see a false uncertain outcome.
-          if (options.signal?.aborted === true) await prompting
+          if (options.signal?.aborted === true) {
+            await prompting
+            await cancelledRuntimeRetirement
+          }
         }
       } catch (error: unknown) {
         terminalSettlementLifetime?.()

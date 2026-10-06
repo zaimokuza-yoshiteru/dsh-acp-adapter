@@ -45,6 +45,27 @@ export function acpSessionView(ctx: Context, session: Session | undefined): Sess
     get facts() {
       return readSessionFacts(ctx, session)
     },
+    captureRemoteCancelledTurn: (scope) => {
+      const registry = ctx.get('agents', false)
+      const owner = registry?.get(session.id)
+      const matchesScope = () => {
+        const facts = readSessionFacts(ctx, session)
+        return (
+          facts.turnOpen &&
+          facts.openSteps.some(
+            (step) => step.turn === scope.turn && step.step === scope.step && step.startSeq === scope.startSeq,
+          )
+        )
+      }
+      if (owner?.session !== session || owner.status !== 'running' || !matchesScope()) return undefined
+      return () => {
+        const current = ctx.get('agents', false)?.get(session.id)
+        if (current !== owner || current.session !== session || current.status !== 'running' || !matchesScope())
+          return false
+        current.cancel({ kind: 'hook', reason: 'acp-remote-cancelled' }, { keepInbox: true })
+        return true
+      }
+    },
     currentModelContextSnapshots: () => {
       const agent = ctx.get('agents', false)?.get(session.id)
       const tools = ctx.get('tools', false)

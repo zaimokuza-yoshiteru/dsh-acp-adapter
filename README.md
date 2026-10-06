@@ -6,7 +6,7 @@
 
 ## 安装
 
-当前插件版本 `0.2.0-rc.2.4` 兼容 DSH `0.2.0-rc.2`。其他版本见 [Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases)。
+当前插件版本 `0.2.0-rc.2.5` 兼容 DSH `0.2.0-rc.2`。其他版本见 [Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases)。
 
 **推荐：** 在 DSH Creator 模式中发送：
 
@@ -35,8 +35,8 @@ Git 与压缩包安装示例：
 
 | 来源              | 示例                                                                                                                                                   |
 | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Git               | `git+https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter.git#v0.2.0-rc.2.4`                                                                         |
-| 预构建插件包 .tgz | [下载 0.2.0-rc.2.4](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/download/v0.2.0-rc.2.4/zaimokuza-dsh-acp-adapter-0.2.0-rc.2.4.tgz) |
+| Git               | `git+https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter.git#v0.2.0-rc.2.5`                                                                         |
+| 预构建插件包 .tgz | [下载 0.2.0-rc.2.5](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/download/v0.2.0-rc.2.5/zaimokuza-dsh-acp-adapter-0.2.0-rc.2.5.tgz) |
 
 此包包含编译产物，与 npm 发布包一致。GitHub 自动生成的 Source code ZIP/TAR.GZ 是源码归档，不是构建后的插件包；未缓存的依赖仍需联网安装。
 

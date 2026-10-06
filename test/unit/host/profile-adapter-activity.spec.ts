@@ -220,21 +220,23 @@ describe('provider activity bridge', () => {
     const sessionId = 'response-projection-failure'
     const beginDispatch = vi.spyOn(sidecar, 'beginDispatch')
     const firstMessage = user('return an image and finish')
-    const sessions = new Map<string, SessionLike>([[sessionId, session(firstMessage)]])
     let promptCount = 0
     let runtimeCount = 0
     let promptFinished = false
     let failProjectionOnce = true
+    const sessionView = Object.assign(session(firstMessage), {
+      publishPlan: () => {
+        if (promptFinished && failProjectionOnce) {
+          failProjectionOnce = false
+          throw new Error('injected response presentation failure')
+        }
+      },
+    }) as SessionLike
+    const sessions = new Map<string, SessionLike>([[sessionId, sessionView]])
     const runtimeFactory = (): AcpProfileRuntime => {
       runtimeCount++
       return {
-        get acpSessionId() {
-          if (promptFinished && failProjectionOnce) {
-            failProjectionOnce = false
-            throw new Error('injected response presentation failure')
-          }
-          return 'agent-response-projection-failure'
-        },
+        acpSessionId: 'agent-response-projection-failure',
         start: async () => undefined,
         prompt: async (_content, onUpdate) => {
           promptCount++
@@ -247,6 +249,13 @@ describe('provider activity bridge', () => {
                 title: 'Inspect fixture',
                 kind: 'read',
                 status: 'in_progress',
+              },
+            } as never)
+            onUpdate({
+              sessionId: 'agent-response-projection-failure',
+              update: {
+                sessionUpdate: 'plan',
+                entries: [{ content: 'Inspect fixture', status: 'in_progress' }],
               },
             } as never)
             onUpdate({
@@ -1718,6 +1727,7 @@ describe('provider activity bridge', () => {
     let promptCount = 0
     let restoreCount = 0
     let closeCount = 0
+    let retirementCount = 0
     let refreshed = false
     const runtimeFactory = vi.fn((options: AcpSessionRuntimeOptions): AcpProfileRuntime => {
       expect(options.refreshSessionAfterCancelledPrompt).toBe(true)
@@ -1758,6 +1768,10 @@ describe('provider activity bridge', () => {
           } as never)
           return { stopReason: 'end_turn' } as never
         },
+        retireCancelledSession: async () => {
+          retirementCount += 1
+          closeCount += 1
+        },
         close: async () => {
           closeCount += 1
         },
@@ -1779,6 +1793,7 @@ describe('provider activity bridge', () => {
       const firstChunks: unknown[] = []
       for await (const chunk of adapter.stream(requestFor(firstMessage))) firstChunks.push(chunk)
       expect(firstChunks.at(-1)).toMatchObject({ type: 'finish', reason: { kind: 'aborted' } })
+      expect(retirementCount).toBe(1)
       expect(await sidecar.readRecoveryState(sessionId as never)).toMatchObject({ kind: 'healthy' })
 
       const failedRefreshMessage = user('continue after the cancellation')
@@ -1790,7 +1805,7 @@ describe('provider activity bridge', () => {
       }).rejects.toMatchObject({ code: 'ACP_SESSION_REFRESH_FAILED' })
       expect(await sidecar.readRecoveryState(sessionId as never)).toMatchObject({ kind: 'healthy' })
       expect(runtimeFactory).toHaveBeenCalledOnce()
-      expect(closeCount).toBe(0)
+      expect(closeCount).toBe(1)
       expect(promptCount).toBe(1)
 
       const retryMessage = user('continue after the temporary refresh failure')
@@ -1801,11 +1816,11 @@ describe('provider activity bridge', () => {
       expect(runtimeFactory).toHaveBeenCalledOnce()
       expect(restoreCount).toBe(2)
       expect(promptCount).toBe(2)
-      expect(closeCount).toBe(0)
+      expect(closeCount).toBe(1)
       expect(await sidecar.readRecoveryState(sessionId as never)).toMatchObject({ kind: 'healthy' })
     } finally {
       await adapter.close()
-      expect(closeCount).toBe(1)
+      expect(closeCount).toBe(2)
     }
   })
 
