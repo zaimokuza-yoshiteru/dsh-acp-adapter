@@ -5,6 +5,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createUserMessage, markAgentLoopRequest } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
+import type * as acp from '@agentclientprotocol/sdk'
 import { Context } from '@deepseek-ai/cordis'
 import { AcpProfileAdapter } from '../../../src/host/composition/profile-adapter.ts'
 import type { AcpProfileRuntime } from '../../../src/host/composition/profile-adapter.ts'
@@ -58,7 +59,233 @@ function ledgerFor(sidecar: AcpSidecar) {
   }
 }
 
+async function drain(iterable: AsyncIterable<unknown>): Promise<void> {
+  for await (const _chunk of iterable) {
+    // Consume the stream through its terminal settlement.
+  }
+}
+
 describe('provider activity bridge', () => {
+  it('keeps CodeBuddy controls after retiring a cancelled runtime and restores the same binding only on write', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-codebuddy-controls-refresh-'))
+    roots.push(root)
+    const sidecar = testSidecar(root)
+    const sessionId = 'codebuddy-controls-refresh'
+    const firstMessage = user('continue the existing CodeBuddy session')
+    const nextMessage = user('continue after changing the mode')
+    const finalMessage = user('continue after the second mode change')
+    let events = [
+      { type: 'step/start', seq: 1, data: { turn: 1, step: 0 } },
+      { type: 'user/message', seq: 2, data: firstMessage },
+    ]
+    const live = withSessionFacts({
+      header: { cwd: os.tmpdir() },
+      inheritedEventCount: 0,
+      snapshotEvents: () => events,
+      id: sessionId,
+    })
+    const calls: string[] = []
+    let closed = false
+    let refreshPending = false
+    let promptCount = 0
+    let mode = 'plan'
+    let bindingId = 'agent-codebuddy-controls'
+    const restoreEntered = [Promise.withResolvers<void>(), Promise.withResolvers<void>()]
+    const finishRestore = [Promise.withResolvers<void>(), Promise.withResolvers<void>()]
+    let restoreCount = 0
+    const runtimeFactory = (): AcpProfileRuntime => ({
+      get acpSessionId() {
+        return closed ? undefined : 'agent-codebuddy-controls'
+      },
+      get cancelledSessionRefreshPending() {
+        return refreshPending
+      },
+      get cancelledSessionRefreshBindingId() {
+        return bindingId
+      },
+      get isBusy() {
+        return false
+      },
+      get modes() {
+        return {
+          currentModeId: mode,
+          availableModes: [
+            { id: 'plan', name: 'Plan' },
+            { id: 'review', name: 'Review' },
+          ],
+        }
+      },
+      get currentModeId() {
+        return mode
+      },
+      get configOptions() {
+        return [
+          {
+            id: 'model',
+            name: 'Model',
+            type: 'select',
+            category: 'model',
+            currentValue: 'model-a',
+            options: [{ value: 'model-a', name: 'Model A' }],
+          },
+          {
+            id: 'mode',
+            name: 'Mode',
+            type: 'select',
+            category: 'mode',
+            currentValue: mode,
+            options: [
+              { value: 'plan', name: 'Plan' },
+              { value: 'review', name: 'Review' },
+            ],
+          },
+        ] satisfies readonly acp.SessionConfigOption[]
+      },
+      start: async () => {
+        calls.push('new')
+        closed = false
+      },
+      restore: async (binding) => {
+        if (!closed && !refreshPending) return 'reused'
+        const index = restoreCount++
+        calls.push(`restore:${binding.agentSessionId}`)
+        restoreEntered[index]?.resolve()
+        await finishRestore[index]?.promise
+        closed = false
+        refreshPending = false
+        return 'loaded'
+      },
+      setMode: async (value) => {
+        if (closed) throw new Error('cannot write to the retired CodeBuddy process')
+        calls.push(`mode:${value}`)
+        mode = value
+      },
+      setConfigOption: async (id, value) => {
+        if (closed) throw new Error('cannot write to the retired CodeBuddy process')
+        if (id !== 'mode') throw new Error(`unexpected option ${id}`)
+        calls.push(`mode:${String(value)}`)
+        mode = String(value)
+      },
+      prompt: async (_content, onUpdate) => {
+        promptCount += 1
+        calls.push(`prompt:${promptCount}`)
+        if (promptCount <= 2) {
+          refreshPending = true
+          return { stopReason: 'cancelled' }
+        }
+        onUpdate({
+          sessionId: 'agent-codebuddy-controls',
+          update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'continued' } },
+        })
+        return { stopReason: 'end_turn' }
+      },
+      retireCancelledSession: async () => {
+        calls.push('retire')
+        closed = true
+      },
+      close: async () => undefined,
+    })
+    const adapter = new AcpProfileAdapter(
+      'codebuddy-controls',
+      () => ({ ...profile(), runtime: 'codebuddy' }),
+      seam(),
+      () => live,
+      ledgerFor(sidecar),
+      undefined,
+      runtimeFactory,
+      sidecar,
+    )
+    const requestFor = (message: ReturnType<typeof user>) =>
+      markAgentLoopRequest({ ...request(sessionId, message), provider: 'acp-codebuddy-controls' })
+    try {
+      await drain(adapter.stream(requestFor(firstMessage)))
+      expect(calls).toEqual(['new', 'prompt:1', 'retire'])
+
+      const snapshot = await adapter.agentSessionSnapshot(sessionId)
+      expect(snapshot).toMatchObject({
+        currentModeId: 'plan',
+        modes: [{ id: 'plan' }, { id: 'review' }],
+        freshness: 'live',
+        editable: true,
+      })
+      expect(calls).toEqual(['new', 'prompt:1', 'retire']) // A read neither reconnects nor sends input.
+
+      bindingId = 'wrong-session'
+      await expect(adapter.setAgentSessionOption(sessionId, { kind: 'mode', id: 'review' })).rejects.toMatchObject({
+        code: 'ACP_BINDING_UNAVAILABLE',
+      })
+      expect(calls).toEqual(['new', 'prompt:1', 'retire'])
+      bindingId = 'agent-codebuddy-controls'
+
+      await sidecar.writeRecoveryState({
+        dshSessionId: sessionId,
+        kind: 'outcome-unknown',
+        detail: 'test recovery gate',
+        updatedAt: Date.now(),
+      })
+      await expect(adapter.setAgentSessionOption(sessionId, { kind: 'mode', id: 'review' })).rejects.toMatchObject({
+        code: 'ACP_RECOVERY_REQUIRED',
+      })
+      expect(calls).toEqual(['new', 'prompt:1', 'retire'])
+      await sidecar.writeRecoveryState({ dshSessionId: sessionId, kind: 'healthy', updatedAt: Date.now() + 1 })
+
+      const changeMode = adapter.setTeamMemberMode(sessionId, 'review')
+      await restoreEntered[0]!.promise
+      const concurrentModeChange = adapter.setTeamMemberMode(sessionId, 'plan')
+      finishRestore[0]!.resolve()
+      await Promise.all([changeMode, concurrentModeChange])
+      expect(calls).toEqual([
+        'new',
+        'prompt:1',
+        'retire',
+        'restore:agent-codebuddy-controls',
+        'mode:review',
+        'mode:plan',
+      ])
+      expect(promptCount).toBe(1)
+
+      events = [
+        ...events,
+        { type: 'step/start', seq: 3, data: { turn: 2, step: 0 } },
+        { type: 'user/message', seq: 4, data: nextMessage },
+      ]
+      await drain(adapter.stream(requestFor(nextMessage)))
+      expect(promptCount).toBe(2)
+      expect(calls.at(-1)).toBe('retire')
+
+      const secondModeChange = adapter.setTeamMemberMode(sessionId, 'review')
+      await restoreEntered[1]!.promise
+      events = [
+        ...events,
+        { type: 'step/start', seq: 5, data: { turn: 3, step: 0 } },
+        { type: 'user/message', seq: 6, data: finalMessage },
+      ]
+      const finalPrompt = drain(adapter.stream(requestFor(finalMessage)))
+      expect(promptCount).toBe(2)
+      finishRestore[1]!.resolve()
+      await secondModeChange
+      await finalPrompt
+      expect(calls).toEqual([
+        'new',
+        'prompt:1',
+        'retire',
+        'restore:agent-codebuddy-controls',
+        'mode:review',
+        'mode:plan',
+        'prompt:2',
+        'retire',
+        'restore:agent-codebuddy-controls',
+        'mode:review',
+        'prompt:3',
+      ])
+      expect(promptCount).toBe(3)
+    } finally {
+      finishRestore[0]!.resolve()
+      finishRestore[1]!.resolve()
+      await adapter.close()
+    }
+  })
+
   it.each(['end_turn', 'refusal', 'max_tokens', 'max_turn_requests'] as const)(
     'keeps a tool without a reported terminal state unfinished after %s',
     async (stopReason) => {

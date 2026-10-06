@@ -248,6 +248,14 @@ describe.each(profiles)('Agent controls: %s', (profile) => {
         // layout update. Wait for native idle UI before clicking the menu anchor.
         await stop.waitFor({ state: 'hidden' })
         await page.getByRole('button', { name: 'Send message', exact: true }).waitFor()
+        if (profile === 'codebuddy') {
+          // CodeBuddy retires its process after a confirmed cancellation. A
+          // renderer reload must still show the same-session controls, and an
+          // explicit mode change must reconnect that binding without a prompt.
+          await page.reload()
+          await controls().waitFor()
+          await expect.poll(() => controls().innerText()).toMatch(/plan/i)
+        }
         phase = 'stopped options'
         await openControls()
         await expect.poll(() => ask.isDisabled()).toBe(false)

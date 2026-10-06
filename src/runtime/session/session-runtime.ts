@@ -411,6 +411,9 @@ export class AcpSessionRuntime {
   get cancelledSessionRefreshPending(): boolean {
     return this.refreshBeforeRestore
   }
+  get cancelledSessionRefreshBindingId(): string | undefined {
+    return this.refreshBindingSessionId
+  }
   get isBusy(): boolean {
     return this.promptClaimed
   }
@@ -993,10 +996,16 @@ export class AcpSessionRuntime {
         this.mcpLease = undefined
         this.sessionId = undefined
         this.launch = undefined
-        this.configSnapshot = undefined
-        this.currentMode = undefined
-        this.modeSnapshot = undefined
-        this.usageSnapshot = undefined
+        // A confirmed cancelled response keeps the same durable ACP binding for
+        // the next explicit user action. Preserve its last-known controls while
+        // the process is retired so a passive UI refresh can still render them;
+        // the next prompt/control write must restore the binding before use.
+        if (!this.refreshBeforeRestore) {
+          this.configSnapshot = undefined
+          this.currentMode = undefined
+          this.modeSnapshot = undefined
+          this.usageSnapshot = undefined
+        }
       }
       if (this.connectionAbort === connectionAbort) this.connectionAbort = undefined
 

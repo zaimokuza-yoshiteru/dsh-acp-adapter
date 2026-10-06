@@ -118,7 +118,11 @@ it.each([
         if (request.method === 'initialize') send({ jsonrpc: '2.0', id: request.id, result: {
           protocolVersion: 1, agentCapabilities: { loadSession: true }
         }});
-        else if (request.method === 'session/new') send({ jsonrpc: '2.0', id: request.id, result: { sessionId: 'saved' }});
+        else if (request.method === 'session/new') send({ jsonrpc: '2.0', id: request.id, result: {
+          sessionId: 'saved',
+          modes: { currentModeId: 'review', availableModes: [{ id: 'review', name: 'Review' }] },
+          configOptions: [{ id: 'model', name: 'Model', type: 'select', category: 'model', currentValue: 'minimax-m2.7', options: [{ value: 'minimax-m2.7', name: 'MiniMax M2.7' }] }]
+        }});
         else if (request.method === 'session/prompt') send({ jsonrpc: '2.0', id: request.id, result: { stopReason: 'cancelled' }});
         else if (request.method === 'session/load') send({ jsonrpc: '2.0', id: request.id, result: {
           modes: { currentModeId: 'review', availableModes: [{ id: 'review', name: 'Review' }] },
@@ -145,6 +149,15 @@ it.each([
       await expect(runtime.prompt([], () => {})).resolves.toMatchObject({ stopReason: 'cancelled' })
       await runtime.retireCancelledSession()
       expect(runtime.acpSessionId).toBe(refresh ? undefined : 'saved')
+      if (refresh) {
+        // Retiring the process keeps this same logical session's controls
+        // available to passive UI reads until its next explicit restore.
+        expect(runtime.currentModeId).toBe('review')
+        expect(runtime.modes?.availableModes).toEqual([{ id: 'review', name: 'Review' }])
+        expect(runtime.configOptions?.find((option) => option.id === 'model')).toMatchObject({
+          currentValue: 'minimax-m2.7',
+        })
+      }
       await expect(runtime.restore({ agentSessionId: 'saved' })).resolves.toBe(expectedRestore)
       expect(runtime.lastRestoreRefreshedCancelledSession).toBe(refresh)
       if (refresh) {
