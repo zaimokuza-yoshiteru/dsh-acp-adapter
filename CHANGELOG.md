@@ -4,6 +4,20 @@
 
 User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for publication dates, exact installation instructions, and checksums. Historical entries were reconstructed from tag diffs; npm packages were not republished.
 
+## 0.2.0-rc.2.7
+
+### 中文
+
+- 新增默认跳过的重大版本真实 ACP 长任务手动回归，覆盖固定公开源码查阅、Teams、Ask 审批及 Stop／刷新／队列恢复，并记录测试专用预算与会话归属证据。仅增加测试和指南，不改变产品执行行为、不新增生产限额或用户操作。
+- 当前 CodeBuddy 长任务记录仍有续聊摘要错误描述 Reject 结果，以及 Stop 后出现新的同命令执行请求；原因尚未定位，不能据此归因于适配器或 Agent。完整 DSH Teams、成员审批和同任务原生对照尚未签收，详见 [E2E 指南](test/e2e/README.md)。
+- 继续支持 DSH `0.2.0-rc.2`。
+
+### English
+
+- Add a major-release, real-ACP long-task regression that is skipped by default. It covers reading pinned public source, Teams, Ask approvals, and Stop/refresh/queued-input recovery, with test-only budgets and session-attribution evidence. This adds tests and guidance only; product execution behavior, production limits, and user actions do not change.
+- Current CodeBuddy long-task records still show a follow-up summary that misstates a Reject result and a new request for the same command after Stop. The cause is unresolved and is not attributed to the adapter or Agent. Full DSH Teams, member approvals, and a same-task native comparison remain unverified; see the [E2E guide](test/e2e/README.md).
+- Continue to support DSH `0.2.0-rc.2`.
+
 ## 0.2.0-rc.2.6
 
 ### 中文

@@ -140,3 +140,26 @@ ACP v1 没有 system 角色；宿主指令通过带标注的请求上下文传�
 ACP 与 DSH 的桥接边界见[原生复用说明](../../docs/native-reuse.md)；工具桥回归验证其通过 ToolRuntime 和 hooks 执行 DSH 工具。
 
 真实主信息流专项：`DSH_E2E_LIVE_STREAM=1 DSH_E2E_LIVE_CODEX_MODEL=<已选择的模型> pnpm test:e2e live-main-stream`。在隔离工作区让真实 Codex ACP 执行一次 `printf`，验证原生 Bash、调用计数、结果详情及刷新恢复；不读写用户文件。需要本机已有登录，会消耗该 Agent 的用量，默认跳过。
+
+## 重大版本的真实长任务回归
+
+这是重大版本手动 opt-in 的真实 Agent 专项，默认跳过且不属于 CI 门禁。A–D 使用官方 `devin acp` 或 `codebuddy --acp`，每次只选一个精确模型；模型缺失时停止、不回退。记录中的实测环境为 macOS Electron 44、DSH `0.2.0-rc.2`（公开源码 commit `639ed015397290b3745d163aafe02ffee4aa3f84`）、插件 `0.2.0-rc.2.6`、6 个只读源码文件共 61,463 bytes；Devin CLI `3000.11.3` / `swe-2-high`，CodeBuddy CLI `2.161.2` / `minimax-m2.7`。新版本的长任务回归只增加测试和指南。
+
+现有结果不构成完整矩阵签收：Devin 的 A 六轮源码查阅通过，B 未证明两个成员任务均完成，C 仅有 Lead controls 证据，独立 D Host-job 场景通过。CodeBuddy 的 Lead Allow/Reject 有执行证据，但续聊摘要错误描述 Reject；Stop 后又出现相同命令的新 call ID 请求，触发严格的重复请求测试保护并使 D 失败。证据不能区分模型新请求与 CLI 内部重试，也不证明适配器重放。CodeBuddy A 没有足够 Host read 证据，B 使用 vendor 自有 Team，不是 DSH Teams 签收；成员审批及同任务原生对照均未完成。按 Agent 分别记录，不能互相代替；措辞或工具数量不同本身不判为 bug。详细记录保存在本机 `.local/live-long-task/<agent>/<run-id>/`。
+
+较早记录中的 `LONG_TASK_NATIVE_EXECUTE_REPLAY` 是当时的测试错误码；现在改称 `LONG_TASK_NATIVE_EXECUTE_DUPLICATE_REQUEST`。该守卫会对同一注册命令的任意第二次请求 fail closed，不论新 call ID 或先前请求状态；它是严格的测试保护，不说明请求来自模型还是供应商重试。早期 fixture 的拒绝取消关联、marker 分隔符和 FIFO 失败优先问题已修复，但不改变真实运行记录。CodeBuddy 的两项真实异常尚未定位或修复。
+
+| 场景          | 真实交互与验收                                                                                                                                                                                           |
+| ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A：源码长任务 | 单 Agent 对固定公开 commit 连续 6–8 轮查阅模块、给出源码依据、接受追问并修订。核验本轮实际读取、路径和结论；不要求固定措辞或 token 数。                                                                  |
+| B：Team 协作  | Lead 与两个成员分别查阅 session/runtime 和 Teams，真实创建和分配任务、成员发送结果、Lead 收件后汇总。以 DSH Host/Session 事实核验；vendor 自有 Team 不算 DSH Teams。                                     |
+| C：Ask 审批   | 在测试 workspace 使用唯一操作 ID 执行小写入，Lead 与成员各做 Allow once 和 Reject。核验审批归属、允许恰好一次写入、拒绝零副作用和同一 ACP session 后续交互。绑定及事件历史可观察不代表模型语义记忆正确。 |
+| D：中断与恢复 | 长任务中执行 Stop、刷新并排队输入；核验取消、会话状态、FIFO 及副作用。只有观测到 Host job settlement 才能签收该执行路径；provider-native 工具路径可能只能记为 partial。                                  |
+
+运行示例：`DSH_E2E_LIVE_LONG_TASK=1 DSH_E2E_LIVE_LONG_TASK_PROFILE=devin pnpm test:e2e -- test/e2e/live-long-task.e2e.ts`；CodeBuddy 将 profile 改为 `codebuddy`。默认执行 A–D。`DSH_E2E_LIVE_LONG_TASK_SCENARIOS=teams` 跳过 A 并执行 B–D；`controls` 只运行 Lead 的 C controls 与完整 D，C 为 partial；`stop-only` 只运行 D。跳过场景会明确记录为 `not-run`，不能将 partial 或跳过的结果当作全矩阵通过；未知选择在启动 Host 前失败。最多创建两个成员，场景串行执行。
+
+runner 保存场景截图、Session 事件摘要、脱敏后的结构化 ACP trace 和本地私有的模型回答审查文件。公开源码测试证据可保存在本机；分享截图或事件摘要前先检查并脱敏，因为它们可能显示正文或其他敏感信息。测试 workspace 只是测试数据隔离，不是 OS 沙箱；Host guard 只在 DSH 工具 body 前生效，不能限制 CLI 自有工具，provider 活动计数是事后软停止信号。CLI 工具可能在取消前已执行；测试不限制模型 token/费用或远端已开始的请求。
+
+测试 guard 对整个 run 限制 Host 工具准入最多 96 次、每场景最多 48 次、总时限 20 分钟；单场景最多 6 分钟，普通阶段最多 90 秒，B 初始化及成员结果等待最多 180 秒，最多两个成员。Ask 请求单独计数（总计 24、C 场景最多 16）；provider 工具活动最多 128 次是事后软停止。重复副作用限制仅作用于测试，不是生产限额或费用上限。
+
+既有短程浏览器 helpers 不具备本专项的主动预算；本回归由独立 runner 和预算 guard 执行。
