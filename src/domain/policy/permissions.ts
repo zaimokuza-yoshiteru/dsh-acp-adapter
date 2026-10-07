@@ -29,6 +29,7 @@ export interface AcpNativeApprovalService {
   request(req: {
     readonly agent: unknown
     readonly toolName: string
+    readonly callId?: unknown
     readonly reason?: string
     readonly signal?: AbortSignal
   }): Promise<'allowed-once' | 'rejected' | 'cancelled' | 'unavailable'>
@@ -84,7 +85,13 @@ function visibleCommand(value: string): string {
 }
 function commandOf(tool: acp.RequestPermissionRequest['toolCall']): string | undefined {
   if (typeof tool.rawInput === 'string') return tool.rawInput
-  return firstString(recordValue(tool.rawInput), ['command', 'cmd', 'argv'])
+  const record = recordValue(tool.rawInput)
+  const str = firstString(record, ['command', 'cmd', 'CommandLine', 'commandLine', 'argv'])
+  if (str !== undefined) return str
+  if (Array.isArray(record?.argv) && record.argv.every((arg) => typeof arg === 'string')) {
+    return record.argv.join(' ')
+  }
+  return undefined
 }
 function markdownCodeBlock(value: string): string {
   let longestFence = 0
@@ -114,7 +121,18 @@ function permissionDetail(tool: acp.RequestPermissionRequest['toolCall'], copy: 
   }
   if (tool.kind === 'read' || tool.kind === 'edit' || tool.kind === 'delete' || tool.kind === 'move') {
     const path =
-      firstString(record, ['file_path', 'filePath', 'path', 'target', 'source', 'destination']) ??
+      firstString(record, [
+        'file_path',
+        'filePath',
+        'path',
+        'target',
+        'source',
+        'destination',
+        'AbsolutePath',
+        'absolutePath',
+        'TargetFile',
+        'targetFile',
+      ]) ??
       tool.locations?.find((location) => typeof location.path === 'string')?.path
     return path === undefined ? undefined : `${copy.target}: ${safeText(path, 160)}`
   }
@@ -253,6 +271,7 @@ export function createAcpNativePermissionHandler(
         const outcome = await deps.approval.request({
           agent,
           toolName: params.toolCall.name ?? params.toolCall.kind ?? copy.acpTool,
+          callId: params.toolCall.toolCallId,
           reason: nativePermissionReason(params.toolCall, copy),
           ...(signal === undefined ? {} : { signal }),
         })

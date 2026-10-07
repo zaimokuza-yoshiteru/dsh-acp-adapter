@@ -56,6 +56,7 @@ const LOGIN_HINTS: Readonly<Record<AcpAgentId, string>> = {
   // The public CLI starts the interactive CodeBuddy session with `codebuddy`;
   // its ACP guide documents `--acp` as the server mode, not a separate login command.
   codebuddy: 'codebuddy',
+  antigravity: 'agy auth login',
 }
 
 /** Known installed CLI names for binary distributions; never archive paths. */
@@ -64,7 +65,7 @@ const INSTALLED_BINARY_COMMANDS: Readonly<Record<string, string>> = { devin: 'de
 /** Curated adapter regression/live-smoke coverage, not certification of registry versions.
  * Keep this explicit: adding a runtime binding does not establish verification.
  */
-const VERIFIED_ADAPTER_IDS: readonly string[] = ['devin', 'codebuddy-code', 'codex-acp', 'kimi', 'claude-acp']
+const VERIFIED_ADAPTER_IDS: readonly string[] = ['devin', 'codebuddy-code', 'codex-acp', 'kimi', 'claude-acp', 'antigravity-acp']
 
 // ---------- catalog 合成 ----------
 

@@ -3,7 +3,7 @@ import type * as acp from '@agentclientprotocol/sdk'
 import type { AcpAgentId } from '../../contract/agent-config.ts'
 
 export function executableOverrideEnvFor(runtime: AcpAgentId | undefined): string | undefined {
-  return runtime === 'claude' ? 'CLAUDE_CODE_EXECUTABLE' : undefined
+  return runtime === 'claude' ? 'CLAUDE_CODE_EXECUTABLE' : runtime === 'antigravity' ? 'AGY_ACP_EXECUTABLE' : undefined
 }
 
 /** Devin owns reasoning internally; exposing the option would promise unsupported control. */
@@ -13,7 +13,7 @@ export function exposesReasoningControl(runtime: AcpAgentId | undefined): boolea
 
 /** These Agents advertise different reasoning choices after selecting each model. */
 export function modelProbeOptions(runtime: AcpAgentId | undefined): { probeModelConfigOptions: boolean } {
-  return { probeModelConfigOptions: runtime === 'kimi' || runtime === 'codex' }
+  return { probeModelConfigOptions: runtime === 'kimi' || runtime === 'codex' || runtime === 'antigravity' }
 }
 
 /** Opt into Claude's draft subagent notifications only for an explicitly bound runtime. */

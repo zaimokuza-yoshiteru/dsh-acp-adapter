@@ -13,7 +13,15 @@ export interface AcpPermissionCheck {
     | 'allow-once-unavailable'
   readonly toolName?: string
   readonly identitySource?:
-    'codex-input' | 'codebuddy-deferred-input' | 'name' | 'claude-meta' | 'devin-meta' | 'devin-title' | 'kimi-title'
+    | 'codex-input'
+    | 'codebuddy-deferred-input'
+    | 'name'
+    | 'claude-meta'
+    | 'devin-meta'
+    | 'devin-title'
+    | 'kimi-title'
+    | 'antigravity-meta'
+    | 'antigravity-title'
   readonly structuredIdentityPresent?: boolean
   readonly titleMatchesCurrentTool?: boolean
 }

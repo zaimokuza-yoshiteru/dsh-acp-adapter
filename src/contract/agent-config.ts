@@ -58,10 +58,10 @@ export type AcpAgentConfig = AcpStubAgentConfig
 // Runtime identities are shared; their trusted execution behavior stays host-side.
 
 /** Explicitly supported ACP backend identity bindings. */
-export type AcpAgentId = 'devin' | 'codex' | 'kimi' | 'claude' | 'codebuddy'
+export type AcpAgentId = 'devin' | 'codex' | 'kimi' | 'claude' | 'codebuddy' | 'antigravity'
 
 /** 所有可显式绑定的合法 runtime（settings schema 使用）。 */
-export const ACP_AGENT_IDS: readonly AcpAgentId[] = ['devin', 'codex', 'kimi', 'claude', 'codebuddy']
+export const ACP_AGENT_IDS: readonly AcpAgentId[] = ['devin', 'codex', 'kimi', 'claude', 'codebuddy', 'antigravity']
 
 /** Profile-ID fallback predates explicit runtime bindings and is limited to the original four IDs. */
 const LEGACY_RUNTIME_IDS: readonly AcpAgentId[] = ['devin', 'codex', 'kimi', 'claude']
@@ -72,11 +72,19 @@ export const RUNTIME_REGISTRY_IDS: Readonly<Record<AcpAgentId, string>> = {
   kimi: 'kimi',
   claude: 'claude-acp',
   codebuddy: 'codebuddy-code',
+  antigravity: 'antigravity-acp',
 }
 
 /** Explicit binding wins; only the original built-in profile IDs retain legacy fallback. */
 export function effectiveRuntimeOf(id: string, config?: { readonly runtime?: AcpAgentId }): AcpAgentId | undefined {
-  return config?.runtime ?? (LEGACY_RUNTIME_IDS.includes(id as AcpAgentId) ? (id as AcpAgentId) : undefined)
+  return (
+    config?.runtime ??
+    (id === 'antigravity-acp' || id === 'antigravity'
+      ? 'antigravity'
+      : LEGACY_RUNTIME_IDS.includes(id as AcpAgentId)
+        ? (id as AcpAgentId)
+        : undefined)
+  )
 }
 
 /** Catalog metadata does not participate in execution identity. */

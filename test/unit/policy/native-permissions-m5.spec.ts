@@ -107,8 +107,38 @@ describe('native ACP permission bridge', () => {
         ],
       }),
     ).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'once' } })
-    expect(approval.request).toHaveBeenCalledWith(expect.objectContaining({ reason: expect.stringContaining(command) }))
+    expect(approval.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        callId: 'acp-call',
+        reason: expect.stringContaining(command),
+      }),
+    )
     expect(ask).not.toHaveBeenCalled()
+  })
+
+  it('extracts command details from Antigravity CommandLine property without unknownCommand copy', async () => {
+    const approval = { request: vi.fn(async () => 'allowed-once' as const) }
+    const handler = createAcpNativePermissionHandler({
+      approval,
+      getAgent: () => ({ id: 'live-agent' }),
+    })
+    await handler({
+      ...params([]),
+      toolCall: {
+        ...params([]).toolCall,
+        kind: 'execute',
+        title: 'git remote -v',
+        rawInput: { CommandLine: 'git remote -v', Cwd: '/workspace' },
+      },
+      options: [option('allow', 'Allow', 'allow_once')],
+    })
+    expect(approval.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reason: expect.stringContaining('git remote -v'),
+      }),
+    )
+    const reason = (approval.request.mock.calls[0] as unknown as [{ reason: string }])[0].reason
+    expect(reason).not.toContain('Command details were not provided')
   })
 
   it('preserves exact Agent option ids and all four kinds through native questions', async () => {
