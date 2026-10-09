@@ -350,7 +350,7 @@
   overflow: auto;
   overflow-wrap: anywhere;
   word-break: break-word;
-  font: 11px/17px var(--ds-font-family-code, monospace);
+  font: var(--dsw-font-markdown-code-block-small);
 }
 
 .more {

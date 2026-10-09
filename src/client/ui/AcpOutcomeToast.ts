@@ -10,6 +10,8 @@ const copy: Record<AcpUiOutcome, AcpLocaleKey> = {
   'save-failed': 'toastProfileSaveFailed',
   deleted: 'toastProfileDeleted',
   'delete-failed': 'toastProfileDeleteFailed',
+  'session-option-failed': 'actionSaveFailed',
+  'tool-approval-failed': 'toolApprovalChangeFailed',
 }
 
 export function AcpOutcomeToast({
@@ -21,7 +23,7 @@ export function AcpOutcomeToast({
   const success = snapshot.outcome === 'saved' || snapshot.outcome === 'deleted'
   return h(Toast, {
     key: `acp-outcome-${snapshot.sequence}`,
-    text: t(copy[snapshot.outcome]),
+    text: t(copy[snapshot.outcome], snapshot.outcome === 'session-option-failed' ? { reference: '' } : undefined),
     ...(success ? { tone: 'success' as const } : { icon: h(IconWarningOutlineRegular) }),
     onDone: () => feedback.dismiss(snapshot.sequence),
   })

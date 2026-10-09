@@ -1,4 +1,5 @@
-export type AcpUiOutcome = 'saved' | 'save-failed' | 'deleted' | 'delete-failed'
+export type AcpUiOutcome =
+  'saved' | 'save-failed' | 'deleted' | 'delete-failed' | 'session-option-failed' | 'tool-approval-failed'
 
 export interface AcpUiOutcomeSnapshot {
   readonly outcome: AcpUiOutcome

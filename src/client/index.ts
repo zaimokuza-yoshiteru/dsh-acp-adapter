@@ -382,10 +382,12 @@ async function registerUi(ctx: ClientContext): Promise<void> {
           readonly ownsRoute: typeof managedRoutes.owns
           readonly getDefaultProvider: () => Promise<string | undefined>
           readonly watchDefaultProvider: (changed: () => void) => () => void
+          readonly feedback: Pick<AcpUiFeedback, 'report'>
         } => ({
           remote: acpRemote,
           streamFactory: ctx.remote,
           ownsRoute: managedRoutes.owns,
+          feedback,
           getDefaultProvider: async () => {
             const result = await ctx.remote.session.modelCatalog()
             return result.ok ? result.value.default.provider : undefined

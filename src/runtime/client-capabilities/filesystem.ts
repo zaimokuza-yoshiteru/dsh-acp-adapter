@@ -26,6 +26,17 @@ export type AcpFileAuditReason =
   | 'content-too-large'
   | 'invalid-content'
 
+/** An adapter refusal whose audit identity is independent of its display text. */
+class AcpFileFailure extends Error {
+  constructor(
+    readonly reason: AcpFileAuditReason,
+    message: string,
+  ) {
+    super(message)
+    this.name = 'AcpFileFailure'
+  }
+}
+
 export interface AcpFileOperationAudit {
   readonly operation: 'read' | 'write'
   readonly path: string
@@ -70,8 +81,8 @@ export interface AcpFileSystemHandlers {
 
 function assertPath(value: string): string {
   if (typeof value !== 'string' || value.length === 0 || value.includes('\0'))
-    throw new TypeError('ACP fs: path must be a non-empty absolute path without NUL')
-  if (!path.isAbsolute(value)) throw new TypeError('ACP fs: path must be absolute')
+    throw new AcpFileFailure('invalid-path', 'ACP fs: path must be a non-empty absolute path without NUL')
+  if (!path.isAbsolute(value)) throw new AcpFileFailure('invalid-path', 'ACP fs: path must be absolute')
   return path.normalize(value)
 }
 
@@ -142,15 +153,7 @@ function readWindowFields(params: acp.ReadTextFileRequest): { readonly line?: nu
 function readFailureReason(error: unknown, signal: AbortSignal, timeoutSignal: AbortSignal): AcpFileAuditReason {
   if (timeoutSignal.aborted) return 'timeout'
   if (signal.aborted) return 'aborted'
-  const message = error instanceof Error ? error.message : String(error)
-  if (message.includes('path must')) return 'invalid-path'
-  if (message.includes('not a regular file')) return 'not-regular-file'
-  if (message.includes('exceeds') && message.includes('bytes')) return 'file-too-large'
-  if (message.includes('line limits exceeded')) return 'line-limit-exceeded'
-  if (message.includes('content is not valid UTF-8')) return 'invalid-utf8'
-  if (message.includes('line must')) return 'invalid-line'
-  if (message.includes('limit must')) return 'invalid-limit'
-  return 'io-error'
+  return error instanceof AcpFileFailure ? error.reason : 'io-error'
 }
 
 async function emitRead(
@@ -169,13 +172,13 @@ function checkReadWindow(text: string, line: number | null | undefined, limit: n
   // line (the same compatibility behavior used by the reference clients),
   // while a zero limit intentionally returns an empty window.
   if (line !== undefined && line !== null && (!Number.isSafeInteger(line) || line < 0))
-    throw new TypeError('ACP fs: line must be a safe non-negative integer')
+    throw new AcpFileFailure('invalid-line', 'ACP fs: line must be a safe non-negative integer')
   // The request window is a presentation bound, not an additional file-size
   // limit.  Accept an oversized safe limit and clamp it to the host's maximum
   // instead of rejecting otherwise valid files (some ACP agents use a very
   // large sentinel/default here).
   if (limit !== undefined && limit !== null && (!Number.isSafeInteger(limit) || limit < 0))
-    throw new TypeError('ACP fs: limit must be a safe non-negative integer')
+    throw new AcpFileFailure('invalid-limit', 'ACP fs: limit must be a safe non-negative integer')
   if ((line === undefined || line === null) && (limit === undefined || limit === null)) return text
   const rows = text.split('\n')
   const start = line === undefined || line === null ? 0 : Math.max(0, line - 1)
@@ -230,7 +233,7 @@ export function createAcpFileSystemHandlers(options: AcpFileSystemOptions): AcpF
       // Prefer stat before open to avoid blocking libuv worker threads on FIFOs and
       // other non-regular files. Keep the post-open stat as a TOCTOU defense.
       const pre = await abortable(fs.promises.stat(target), requestSignal)
-      if (!pre.isFile()) throw new Error('target is not a regular file')
+      if (!pre.isFile()) throw new AcpFileFailure('not-regular-file', 'target is not a regular file')
       const opening = openFile(target, 'r')
       try {
         handle = await abortable(opening, requestSignal)
@@ -241,8 +244,8 @@ export function createAcpFileSystemHandlers(options: AcpFileSystemOptions): AcpF
         throw error
       }
       const stat = await abortable(handle.stat(), requestSignal)
-      if (!stat.isFile()) throw new Error('target is not a regular file')
-      if (stat.size > maxBytes) throw new Error(`file exceeds ${String(maxBytes)} bytes`)
+      if (!stat.isFile()) throw new AcpFileFailure('not-regular-file', 'target is not a regular file')
+      if (stat.size > maxBytes) throw new AcpFileFailure('file-too-large', `file exceeds ${String(maxBytes)} bytes`)
       bytes = Buffer.alloc(stat.size)
       let offset = 0
       while (offset < bytes.length) {
@@ -294,7 +297,7 @@ export function createAcpFileSystemHandlers(options: AcpFileSystemOptions): AcpF
       const result = checkReadWindow(content, params.line, params.limit)
       const lines = result.split('\n')
       if (lines.length > ACP_FS_MAX_LINES || lines.some((row) => row.length > ACP_FS_MAX_LINE)) {
-        throw new Error('line limits exceeded')
+        throw new AcpFileFailure('line-limit-exceeded', 'line limits exceeded')
       }
       await emitRead(
         options,
@@ -403,7 +406,7 @@ export function createAcpFileSystemHandlers(options: AcpFileSystemOptions): AcpF
       await abortable(fs.promises.chmod(temp, mode), requestSignal)
       if (beforeHash !== null) {
         const currentHash = await hashFile(target, requestSignal)
-        if (currentHash !== beforeHash) throw new Error('concurrent file change')
+        if (currentHash !== beforeHash) throw new AcpFileFailure('concurrent-change', 'concurrent file change')
       }
       assertNotAborted(requestSignal)
       if (beforeHash === null) {
@@ -412,7 +415,8 @@ export function createAcpFileSystemHandlers(options: AcpFileSystemOptions): AcpF
         try {
           await abortable(fs.promises.link(temp, target), requestSignal)
         } catch (error: unknown) {
-          if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new Error('concurrent file change')
+          if ((error as NodeJS.ErrnoException).code === 'EEXIST')
+            throw new AcpFileFailure('concurrent-change', 'concurrent file change')
           throw error
         }
         // The target is committed; cleanup failure must not invite a retry.
@@ -434,7 +438,7 @@ export function createAcpFileSystemHandlers(options: AcpFileSystemOptions): AcpF
     } catch (error: unknown) {
       if (requestSignal.aborted) void fs.promises.rm(temp, { force: true }).catch(() => {})
       else await fs.promises.rm(temp, { force: true }).catch(() => {})
-      const concurrent = error instanceof Error && error.message === 'concurrent file change'
+      const concurrent = error instanceof AcpFileFailure && error.reason === 'concurrent-change'
       await emit(options.audit, {
         operation: 'write',
         path: target,

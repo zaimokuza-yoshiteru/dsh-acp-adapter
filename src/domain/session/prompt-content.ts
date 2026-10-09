@@ -1,6 +1,7 @@
 import { Buffer } from 'node:buffer'
 import type { AttachmentStore, ImageAttachmentLimits, ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type * as acp from '@agentclientprotocol/sdk'
+import type { RequestMessage } from '@deepseek-ai/dsh-llm'
 import type { UserMessage } from '@deepseek-ai/dsh-session'
 import type { ModelContextSnapshot } from './model-context-snapshots.ts'
 import { generatedContextBlock, generatedContextSeparator } from '../../runtime/text-block-boundary.ts'
@@ -21,6 +22,40 @@ export function skillRouteForTools(tools: readonly { readonly name: string }[] |
   if (tools?.some((tool) => tool.name === 'skill') === true) return 'direct'
   if (tools?.some((tool) => tool.name === 'run_code') === true) return 'ptc'
   return 'disabled'
+}
+
+/**
+ * Restore DSH-owned instructions only when explicitly creating a blank remote
+ * session. The frozen request projection is authoritative: retain its ordered
+ * baseline, replacement and removal messages without reading shadowed history
+ * or replaying ordinary users. Already admitted messages are excluded.
+ */
+export function reboundAgentInstructions(
+  admitted: readonly UserMessage[],
+  projected: readonly RequestMessage[],
+): readonly UserMessage[] {
+  const seen = new Set(admitted.map((message) => String(message.id)))
+  const instructions: UserMessage[] = []
+  const eligible = projected.filter((message): message is UserMessage => {
+    if (message.role !== 'user' || typeof message.id !== 'string' || message.id.length === 0) return false
+    const source: unknown = message.source
+    return (
+      typeof source === 'object' &&
+      source !== null &&
+      'kind' in source &&
+      source.kind === 'agent-instructions' &&
+      'form' in source &&
+      source.form === 'instructions' &&
+      message.content.length > 0 &&
+      message.content.every((block) => block.type === 'text' && typeof block.text === 'string')
+    )
+  })
+  for (const message of eligible) {
+    if (seen.has(String(message.id))) continue
+    seen.add(String(message.id))
+    instructions.push(message)
+  }
+  return instructions
 }
 
 const PTC_SKILL_ROUTE_NOTICE =
@@ -68,6 +103,8 @@ export async function toAcpPrompt(
     readonly system?: string
     /** Current DSH-owned model context snapshots, already source-allow-listed. */
     readonly modelContextSnapshots?: readonly ModelContextSnapshot[]
+    /** Effective frozen request history, supplied only for an explicit blank rebind. */
+    readonly reboundAgentInstructions?: readonly RequestMessage[]
     /** Route exposed by the final tool presentation for this model request. */
     readonly skillRoute?: SkillRoute
     /** Whether the current Agent scope has the Skill tool used by either route. */
@@ -203,6 +240,18 @@ export async function toAcpPrompt(
     throw new AcpPromptContentError(
       'dsh-acp: the claimed message(s) carry no supported content; nothing to send to the ACP agent',
     )
+  }
+  if (options.reboundAgentInstructions !== undefined) {
+    const instructions = reboundAgentInstructions(admittedMessages, options.reboundAgentInstructions)
+    const instructionBlocks: acp.ContentBlock[] = []
+    for (const message of instructions) {
+      instructionBlocks.push({ type: 'text', text: generatedContextSeparator })
+      for (const block of message.content) {
+        if (block.type === 'text') instructionBlocks.push({ type: 'text', text: block.text })
+      }
+      instructionBlocks.push({ type: 'text', text: generatedContextSeparator })
+    }
+    blocks.unshift(...instructionBlocks)
   }
   if (options.system !== undefined) {
     blocks.unshift({

@@ -46,6 +46,7 @@ describe.each(profiles)('Agent controls: %s', (profile) => {
         await host.ctx.agentDefaultModel.saveSelection({ provider, model: 'mock-model-a' })
         let failInitialPolicyRead = profile === 'codex' && delivery === 'response'
         let failNextPolicyWrite = false
+        let failNextOptionWrite = false
         if (profile === 'codex' && delivery === 'response') {
           const service = host.ctx.get('dshAcp') as AcpRemoteService
           const follow = service.toolApprovalPolicyFollow.bind(service)
@@ -63,6 +64,14 @@ describe.each(profiles)('Agent controls: %s', (profile) => {
               throw new Error('test policy write failure')
             }
             return await write(sessionId, request)
+          })
+          const writeOption = service.setAgentSessionOption.bind(service)
+          vi.spyOn(service, 'setAgentSessionOption').mockImplementation(async (sessionId, request) => {
+            if (failNextOptionWrite) {
+              failNextOptionWrite = false
+              throw new Error('test session option write failure')
+            }
+            return await writeOption(sessionId, request)
           })
         }
         browser = await launchBrowser({
@@ -87,6 +96,7 @@ describe.each(profiles)('Agent controls: %s', (profile) => {
             exact: true,
           })
           await retryPolicyRead.waitFor()
+          expect(await page.getByRole('alert').count()).toBe(0)
           const directory = join(root, '.local/ui-review')
           mkdirSync(directory, { recursive: true })
           await page.screenshot({ path: join(directory, 'tool-approval-read-error.png') })
@@ -136,11 +146,22 @@ describe.each(profiles)('Agent controls: %s', (profile) => {
           await page.getByRole('menuitem', { name: /^DSH tool approval/ }).click()
           failNextPolicyWrite = true
           await page.getByRole('menuitem', { name: /^Auto approve/ }).click()
+          // The failed selection must announce while the menu remains closed.
+          await expect.poll(() => policyMenu.getAttribute('aria-expanded')).toBe('false')
+          const policyFailureToast = page
+            .getByRole('alert')
+            .getByText('Could not save the DSH tool approval setting. Please retry.', { exact: true })
+          await policyFailureToast.waitFor()
+          expect(await page.getByRole('menuitem').count()).toBe(0)
+          const directory = join(root, '.local/ui-review')
+          await page.screenshot({ path: join(directory, 'tool-approval-write-error-closed-menu.png') })
           await page.getByRole('button', { name: 'DSH tool approval', exact: true }).waitFor()
           await page.getByRole('button', { name: 'DSH tool approval', exact: true }).click()
           await page.getByRole('menuitem', { name: /^DSH tool approval/ }).click()
-          await page.getByText('Could not save the DSH tool approval setting. Please retry.', { exact: true }).waitFor()
-          const directory = join(root, '.local/ui-review')
+          await page
+            .getByRole('menu')
+            .getByText('Could not save the DSH tool approval setting. Please retry.', { exact: true })
+            .waitFor()
           await page.screenshot({ path: join(directory, 'tool-approval-write-error.png') })
           await page.setViewportSize({ width: 420, height: 900 })
           await page.screenshot({ path: join(directory, 'tool-approval-write-error-narrow.png') })
@@ -184,6 +205,7 @@ describe.each(profiles)('Agent controls: %s', (profile) => {
         const ask = page.getByRole('menuitem', { name: /^Ask(?:\s|$)/ })
         const openControls = async () => {
           await expect.poll(() => controls().getAttribute('aria-expanded')).toBe('false')
+          await expect.poll(() => controls().isEnabled()).toBe(true)
           await controls().click()
           await expect.poll(() => controls().getAttribute('aria-expanded')).toBe('true')
           if (profile === 'codex' && delivery === 'response') {
@@ -259,6 +281,27 @@ describe.each(profiles)('Agent controls: %s', (profile) => {
         phase = 'stopped options'
         await openControls()
         await expect.poll(() => ask.isDisabled()).toBe(false)
+        if (profile === 'codex' && delivery === 'response') {
+          failNextOptionWrite = true
+          await ask.click()
+          await expect.poll(() => controls().getAttribute('aria-expanded')).toBe('false')
+          const optionFailureToast = page.getByRole('alert').getByText('Saving failed. Try again.', { exact: true })
+          await optionFailureToast.waitFor()
+          expect(await page.getByRole('menuitem').count()).toBe(0)
+          expect(await controls().innerText()).toMatch(/plan/i)
+          await page.screenshot({ path: join(root, '.local/ui-review/session-option-write-error-closed-menu.png') })
+          await openControls()
+          await page.getByRole('menu').getByText('test session option write failure', { exact: true }).waitFor()
+          expect(
+            await page
+              .getByRole('menuitem', { name: /^Plan(?:\s|$)/ })
+              .locator('svg')
+              .count(),
+          ).toBe(1)
+          expect(await ask.isEnabled()).toBe(true)
+          expect(await optionFailureToast.innerText()).not.toContain('test session option write failure')
+          await optionFailureToast.waitFor({ state: 'hidden' })
+        }
         await page.getByRole('menuitem', { name: 'Back to session settings', exact: true }).click()
         await expect.poll(() => ask.count()).toBe(0)
         await page.getByRole('menuitem', { name: /^Session Mode/ }).click()
@@ -266,6 +309,7 @@ describe.each(profiles)('Agent controls: %s', (profile) => {
         await ask.waitFor({ state: 'hidden' })
         await expect.poll(() => controls().getAttribute('aria-expanded')).toBe('false')
         await expect.poll(() => controls().innerText()).toMatch(/ask/i)
+        if (profile === 'codex' && delivery === 'response') expect(await page.getByRole('alert').count()).toBe(0)
         await controls().click()
         await page.getByRole('menuitem', { name: /^DSH tool approval/ }).click()
         await page.getByRole('menuitem', { name: /^Auto approve/ }).click()

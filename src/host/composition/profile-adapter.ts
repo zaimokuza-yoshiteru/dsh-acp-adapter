@@ -1864,6 +1864,8 @@ export class AcpProfileAdapter extends LlmAdapter {
       let terminalSettlementLifetime: (() => void) | undefined
       try {
         let validatedPrompt: acp.ContentBlock[]
+        let persistedRecovery: AcpRecoveryState | undefined
+        let forceBlank = false
         // Capability negotiation is deliberately before session/new, restore,
         // WAL, or prompt. Invalid/unsupported input therefore cannot create an
         // ACP session or a durable dispatch record.
@@ -1873,10 +1875,13 @@ export class AcpProfileAdapter extends LlmAdapter {
           // create session/new, and doing it before fork/restore both duplicates
           // setup and makes a fork look like a blank session.
           if (runtime.initialize !== undefined) await runtime.initialize(options.signal)
+          persistedRecovery = await durableSidecar.readRecoveryState(sessionKey as never)
+          forceBlank = persistedRecovery?.lastUserAction === 'rebind-blank'
           const modelContextSnapshots = session?.currentModelContextSnapshots?.()
           const prompt = await toAcpPrompt(messages, {
             system: hostSystemPrompt(options),
             ...(modelContextSnapshots === undefined ? {} : { modelContextSnapshots }),
+            ...(forceBlank ? { reboundAgentInstructions: options.messages } : {}),
             skillRoute: skillRouteForTools(options.tools),
             imageEnabled: runtime.agentCapabilities?.promptCapabilities?.image === true,
             ...(self.attachments === undefined ? {} : { attachments: self.attachments }),
@@ -1908,11 +1913,9 @@ export class AcpProfileAdapter extends LlmAdapter {
         // Read it before any ACP prompt and fail closed on a durable recovery
         // gate. A blank session may establish a new binding; an existing binding
         // must restore that exact remote session and never silently create one.
-        const persistedRecovery = await self.sidecar?.readRecoveryState(sessionKey as never)
         // A rebind request is a durable, explicit instruction to establish a
         // new blank ACP session on the next turn while retaining the old binding
         // as audit history. This also survives a host restart between clicks.
-        const forceBlank = persistedRecovery?.lastUserAction === 'rebind-blank'
         const priorBindingForRebind = forceBlank
           ? await self.sidecar?.readLatestBinding(sessionKey as never)
           : undefined

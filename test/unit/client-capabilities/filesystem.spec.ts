@@ -140,6 +140,62 @@ describe('ACP native filesystem handlers', () => {
     fs.rmSync(dir, { recursive: true, force: true })
   })
 
+  it.each(['path must be absolute', 'file exceeds 1 bytes', 'line limits exceeded'])(
+    'does not classify an I/O failure from its message: %s',
+    async (message) => {
+      const dir = root()
+      const file = path.join(dir, 'a.txt')
+      const audit: Array<{ reason?: string }> = []
+      const handlers = createAcpFileSystemHandlers({
+        profileId: 'codex',
+        audit: (event) => {
+          audit.push(event)
+        },
+        io: {
+          beforeRead: async () => {
+            throw new Error(message)
+          },
+        },
+      })
+      try {
+        await expect(handlers.readTextFile({ sessionId: 'acp-1', path: file })).rejects.toThrow(message)
+        expect(audit).toMatchObject([{ reason: 'io-error' }])
+      } finally {
+        handlers.dispose()
+        fs.rmSync(dir, { recursive: true, force: true })
+      }
+    },
+  )
+
+  it('keeps an I/O failure distinct from a confirmed concurrent write conflict', async () => {
+    const dir = root()
+    const file = path.join(dir, 'a.txt')
+    fs.writeFileSync(file, 'old')
+    const audit: Array<{ outcome: string }> = []
+    const handlers = createAcpFileSystemHandlers({
+      profileId: 'codex',
+      audit: (event) => {
+        audit.push(event)
+      },
+      io: {
+        writeFile: async () => {
+          throw new Error('concurrent file change')
+        },
+      },
+    })
+    try {
+      await expect(handlers.writeTextFile({ sessionId: 'acp-1', path: file, content: 'new' })).rejects.toThrow(
+        'concurrent file change',
+      )
+      expect(audit).toMatchObject([{ outcome: 'error' }])
+      expect(fs.readFileSync(file, 'utf8')).toBe('old')
+      expect(fs.readdirSync(dir)).toEqual(['a.txt'])
+    } finally {
+      handlers.dispose()
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('uses a deterministic request deadline and preserves successful write semantics if audit storage fails', async () => {
     const dir = root()
     const file = path.join(dir, 'a.txt')

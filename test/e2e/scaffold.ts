@@ -13,7 +13,6 @@ type ToolsMode = NonNullable<Parameters<typeof launchWebScaffold>[0]>['toolsMode
 /** Install through real profile bundles so ConfigEditor owns writable configuration. */
 export async function launchAdapterWorld({
   teams = false,
-  schedule = false,
   timedAskUser,
   teamMembers,
   terminalShell,
@@ -21,7 +20,6 @@ export async function launchAdapterWorld({
   toolsMode,
 }: {
   teams?: boolean
-  schedule?: boolean
   timedAskUser?: { timeout: number }
   teamMembers?: number
   terminalShell?: { path: string; name: string; args: string[] }
@@ -41,7 +39,6 @@ export async function launchAdapterWorld({
       { dir: root, enabled: true },
       ...(renderProbe ? [{ dir: join(root, 'test/e2e/fixtures/render-probe'), enabled: true }] : []),
       ...(teams ? [{ dir: join(upstream, 'packages/experimental/agent-team-profile'), enabled: true }] : []),
-      ...(schedule ? [{ dir: join(upstream, 'packages/experimental/schedule-bundle'), enabled: true }] : []),
     ]
     const patches: string[] = []
     if (teamMembers !== undefined) patches.push(`- id: agent-team\n  config:\n    maxMembers: ${teamMembers}\n`)

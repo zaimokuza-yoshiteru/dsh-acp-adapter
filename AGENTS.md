@@ -2,6 +2,8 @@
 
 This repository adapts external ACP Agents to DSH. DSH owns native input admission, tools and presentation; each Agent owns its model loop and native tools. Read [native reuse](docs/native-reuse.md) before changing that division. The compatibility target is the exact published DSH version in `package.json`; `reference/deepseek-harness` is a source scaffold, not a replacement dependency.
 
+Prefer official features and logic when they preserve existing capabilities without adding user configuration, operations or migration work. For affected business domains, trace both the adapter and the pinned upstream's real producer/consumer paths before refactoring; identify maintenance removed, behavior retained, and native UI conflicts. Use the [source alignment review](docs/dsh-0.2.1-optimization.md) for the current domain map and decisions. Keep necessary ACP permissions, continuity and persistence adaptations when upstream semantics differ.
+
 Use these workflows when their scope applies:
 
 - [adapter-validation](.agents/skills/adapter-validation/SKILL.md): select checks, reuse evidence and investigate test failures.
@@ -16,4 +18,4 @@ Keep real Agent calls within the user's authorized authentication, model and usa
 
 Keep local test logs, isolated profiles and candidate artifacts in gitignored `.local/`; never commit credentials. Never delete user history or authentication to repair a test. Report observed passing, failing, skipped and pending results separately, with Agent/platform/scenario limits. Compare relevant inputs before reusing historical evidence for a new revision.
 
-These workflows selectively adapt DSH's [agent workflows at `639ed015`](https://github.com/deepseek-ai/deepseek-harness/tree/639ed015397290b3745d163aafe02ffee4aa3f84/.agents/skills). DSH monorepo commands, organization approvals and unrelated rules are not inherited.
+These workflows selectively adapt DSH's [agent workflows at `d743267`](https://github.com/deepseek-ai/deepseek-harness/tree/d743267388641bc76f17c45ce8b4c231aed1d32c/.agents/skills). DSH monorepo commands, organization approvals and unrelated rules are not inherited.

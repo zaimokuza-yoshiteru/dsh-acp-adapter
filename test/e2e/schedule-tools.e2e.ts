@@ -2,6 +2,8 @@ import type {} from '@deepseek-ai/dsh-schedule'
 import type {} from '@deepseek-ai/dsh-experimental-agent-team'
 import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import type { ToolExecutionToken } from '@deepseek-ai/dsh-tools'
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
+import { createTeamBridge } from '../../src/host/teams/bridge.ts'
 import { required } from './required.ts'
 import { connectFreshWorkspace, writeComposerDraft } from '#host-support'
 import { launchAdapterWorld, root } from './scaffold.ts'
@@ -12,14 +14,14 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect, it, vi } from 'vitest'
 
-const SCHEDULE_BUNDLE = '@deepseek-ai/dsh-experimental-schedule-bundle'
 const TOOLS = ['schedule_create', 'schedule_list', 'schedule_update', 'schedule_delete'] as const
 
 async function setup() {
   let host: AdapterWorld | undefined
   let browser: TestBrowser | undefined
   try {
-    const ownedHost = await launchAdapterWorld({ teams: true, schedule: true })
+    // web-app supplies Schedule; its standard preset owns the native tools.
+    const ownedHost = await launchAdapterWorld({ teams: true })
     host = ownedHost
     const fixtureLog = join(ownedHost.workspaceCwd, 'schedule-agent.jsonl')
     const activeDueFile = join(ownedHost.workspaceCwd, 'schedule-active-due')
@@ -98,12 +100,27 @@ it('discovers and calls all four native Schedule tools through the ACP session M
       signal: new AbortController().signal,
     })
     const teammate = required(host.ctx.agents.get(member.member.id))
-    expect(TOOLS.map((name) => host.ctx.tools.get(name, teammate))).toEqual([
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-    ])
+    // The default preset mounts the tools for every Agent; native execution
+    // refuses delegated callers before reading or mutating the Schedule store.
+    const beforeRefusedCalls = await host.ctx.schedule.catalog()
+    for (const [name, args] of [
+      ['schedule_create', { title: 'Refused teammate reminder', prompt: 'never create this', after_seconds: 60 }],
+      ['schedule_list', {}],
+      ['schedule_update', { id: 'foreign-task', title: 'never update this' }],
+      ['schedule_delete', { id: 'foreign-task' }],
+    ] as const) {
+      expect(host.ctx.tools.get(name, teammate)).toBeDefined()
+      const refused = await host.ctx.tools.execute({
+        callId: ToolCallId(`schedule-child-${name}`),
+        name,
+        arguments: args,
+        agent: teammate,
+        signal: new AbortController().signal,
+      })
+      expect(refused.isError).toBe(false)
+      expect(refused.value).toMatchObject({ code: 'subagent_session' })
+    }
+    expect(await host.ctx.schedule.catalog()).toEqual(beforeRefusedCalls)
     expect(
       (await host.ctx.schedule.catalog()).some(
         (task) => task.sessionId === sessionId && task.title === 'ACP updated fixture',
@@ -209,7 +226,7 @@ it('delivers reminders into the owning ACP Session while idle and while a turn i
   }
 }, 90_000)
 
-it('preserves a pending Schedule task when the official bundle is disabled and remounted', async () => {
+it('preserves a pending Schedule task when the native plugin is disabled and remounted', async () => {
   const { host, browser, page, fixtureLog, send } = await setup()
   try {
     const recoverySessionId = await send('E2E_SCHEDULE_PERSIST')
@@ -229,12 +246,53 @@ it('preserves a pending Schedule task when the official bundle is disabled and r
     const scheduledAt = Date.parse(pendingTask.scheduledAt)
     expect(scheduledAt).toBeGreaterThan(Date.now())
     const scheduleManager = host.ctx.pluginManager
-    const bundle = required((await scheduleManager.listBundles()).find((row) => row.name === SCHEDULE_BUNDLE))
-    expect(bundle).toMatchObject({ enabled: true, optional: true })
+    const plugin = required(
+      (await scheduleManager.listPlugins()).find((row) => row.moduleName === '@deepseek-ai/dsh-schedule'),
+    )
+    expect(plugin).toMatchObject({ enabled: true, patchId: 'schedule' })
+    expect(plugin.readOnlyReason).toBeUndefined()
     const lead = required(host.ctx.agents.get(recoverySessionId))
     const staleDelete = required(host.ctx.tools.get('schedule_delete', lead))
-    expect(await scheduleManager.setBundleEnabled(bundle.name, false)).toMatchObject({ application: 'applied' })
-    await vi.waitFor(() => expect(host.ctx.get('schedule')).toBeUndefined())
+    const lease = required(
+      await createTeamBridge(
+        host.ctx,
+        recoverySessionId,
+        { mcpCapabilities: { http: true } },
+        'devin',
+        undefined,
+        undefined,
+        host.ctx.tools.schemas(lead),
+      ),
+    )
+    const client = new Client({ name: 'schedule-remount-e2e', version: '1' })
+    try {
+      const server = required(lease.servers[0])
+      if (!('type' in server) || server.type !== 'http')
+        throw new Error('Schedule remount fixture requires its HTTP MCP transport')
+      await client.connect(new StreamableHTTPClientTransport(new URL(server.url)))
+      expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(expect.arrayContaining([...TOOLS]))
+      lease.beginPrompt(new AbortController().signal)
+      expect(await scheduleManager.setPluginEnabled(plugin.entryId, false)).toMatchObject({ application: 'applied' })
+      await vi.waitFor(() => expect(host.ctx.get('schedule')).toBeUndefined())
+      // Removing a captured tool closes the bridge's entire capability lease;
+      // the old client cannot query a smaller catalog or dispatch another call.
+      expect(lease.signal.aborted).toBe(true)
+      expect(lease.signal.reason).toMatchObject({ message: 'ACP DSH tools connection closed' })
+      // Native invalidation has already started close; await its idempotent
+      // completion rather than racing the transport teardown.
+      await lease.close()
+      await expect(client.listTools()).rejects.toMatchObject({ cause: { code: 'ECONNREFUSED' } })
+      await expect(client.callTool({ name: 'schedule_delete', arguments: { id: taskId } })).rejects.toMatchObject({
+        cause: { code: 'ECONNREFUSED' },
+      })
+    } finally {
+      lease.endPrompt()
+      try {
+        await client.close()
+      } finally {
+        await lease.close()
+      }
+    }
     expect(TOOLS.map((name) => host.ctx.tools.get(name, lead))).toEqual([undefined, undefined, undefined, undefined])
     const staleArgs = { id: 'schedule-stale-tool-after-disable' }
     const staleResult = await staleDelete.execute(staleArgs, {
@@ -253,8 +311,15 @@ it('preserves a pending Schedule task when the official bundle is disabled and r
     expect(disabledAt).toBeLessThan(scheduledAt)
     await new Promise((resolve) => setTimeout(resolve, scheduledAt - Date.now() + 100))
     expect(Date.now()).toBeGreaterThan(scheduledAt)
+    expect(
+      readFileSync(fixtureLog, 'utf8')
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as Record<string, unknown>)
+        .filter((row) => row.kind === 'delivery-consumed'),
+    ).toEqual([])
 
-    expect(await scheduleManager.setBundleEnabled(bundle.name, true)).toMatchObject({ application: 'applied' })
+    expect(await scheduleManager.setPluginEnabled(plugin.entryId, true)).toMatchObject({ application: 'applied' })
     await vi.waitFor(() => expect(host.ctx.get('schedule')).toBeDefined())
     await vi.waitFor(() => expect(TOOLS.every((name) => host.ctx.tools.get(name, lead) !== undefined)).toBe(true))
     await vi.waitFor(
@@ -264,6 +329,13 @@ it('preserves a pending Schedule task when the official bundle is disabled and r
       { timeout: 15_000, interval: 100 },
     )
     const recovered = required((await host.ctx.schedule.catalog()).find((task) => task.id === taskId))
+    expect(recovered).toMatchObject({
+      id: taskId,
+      sessionId: recoverySessionId,
+      title: pendingTask.title,
+      prompt: pendingTask.prompt,
+      scheduledAt: pendingTask.scheduledAt,
+    })
     expect(Date.parse(required(recovered.lastDelivery).deliveredAt)).toBeGreaterThanOrEqual(disabledAt)
     const recoveryConversation = page.locator(`[data-conversation-session="${recovered.sessionId}"]`)
     await recoveryConversation.getByText('E2E_SCHEDULE_DELIVERED_ACTIVE', { exact: true }).waitFor()

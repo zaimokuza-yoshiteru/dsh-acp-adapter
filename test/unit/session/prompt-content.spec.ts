@@ -3,6 +3,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { UserMessage } from '@deepseek-ai/dsh-session'
 import {
   AcpPromptContentError,
+  reboundAgentInstructions,
   skillRouteForTools,
   toAcpPrompt,
   validImageLimits,
@@ -31,6 +32,88 @@ const skillCatalog = (value: string): UserMessage => {
     source: { kind: 'skill-catalog', form: 'catalog', entries: [{ name: 'review', description: 'Review code' }] },
   })
 }
+
+const instructions = (value: string, source: Record<string, unknown> = {}): UserMessage =>
+  asContextUserMessage({
+    ...text(value),
+    source: { kind: 'agent-instructions', form: 'instructions', changes: [], ...source },
+  })
+
+describe('blank rebind instruction context', () => {
+  it('retains the effective instruction sequence, including scopes before a later baseline, and deduplicates current input', () => {
+    const baseline = instructions('baseline A', { baseline: true })
+    const nested = instructions('nested B', { changes: [{ action: 'set', scope: 'nested', path: 'nested/AGENTS.md' }] })
+    const replacement = instructions('baseline A2 replaces the earlier baseline', { baseline: true })
+    const changed = instructions('changed A', { changes: [{ action: 'replace', scope: '.', path: 'AGENTS.md' }] })
+    const removed = instructions('removed B', {
+      changes: [{ action: 'remove', scope: 'nested', path: 'nested/AGENTS.md' }],
+    })
+    const current = instructions('current C')
+    const history = [baseline, text('old user secret'), nested, replacement, changed, removed, current]
+
+    expect(reboundAgentInstructions([text('Continue'), current], history)).toEqual([
+      baseline,
+      nested,
+      replacement,
+      changed,
+      removed,
+    ])
+  })
+
+  it('uses only the supplied projected text instructions and rejects other source forms, roles and block types', () => {
+    const original = instructions('unprojected original')
+    const projected = { ...original, content: [{ type: 'text' as const, text: 'effective projected guidance' }] }
+    const mixed = instructions('not a text-only instruction')
+    const history = [
+      text('source.kind=agent-instructions is ordinary user text'),
+      instructions('wrong form', { form: 'notice' }),
+      instructions('wrong source', { kind: 'runtime-context' }),
+      { role: 'user', content: [{ type: 'text', text: 'request-only input has no durable source' }] },
+      { ...instructions('missing stable id'), id: '' },
+      { ...instructions('wrong role'), role: 'assistant' },
+      { ...mixed, content: [...mixed.content, { type: 'reasoning', text: 'private' }] },
+      projected,
+      projected,
+    ] as Parameters<typeof reboundAgentInstructions>[1]
+
+    expect(reboundAgentInstructions([], history)).toEqual([projected])
+    expect(reboundAgentInstructions([], [projected])).not.toContain(original)
+    expect(reboundAgentInstructions([], [])).toEqual([])
+  })
+
+  it('adds historical instructions only through the explicit rebind option without making empty current input dispatchable', async () => {
+    const baseline = instructions('retained baseline')
+    const current = instructions('current delta')
+    const task = text('Continue')
+    const history = [text('old private user'), baseline, task, current]
+    const options = { imageEnabled: false, signal: new AbortController().signal }
+    const rebound = await toAcpPrompt([task, current], { ...options, reboundAgentInstructions: history })
+    const reboundText = rebound.filter((block) => block.type === 'text').map((block) => block.text)
+    expect(reboundText.filter((value) => value.trim() !== '')).toEqual([
+      'retained baseline',
+      'Continue',
+      'current delta',
+    ])
+    const ordinary = await toAcpPrompt([task, current], options)
+    expect(ordinary).toEqual([
+      { type: 'text', text: 'Continue' },
+      { type: 'text', text: 'current delta' },
+    ])
+    await expect(
+      toAcpPrompt([createUserMessage({ content: [], source: { kind: 'user' } })], {
+        ...options,
+        reboundAgentInstructions: history,
+      }),
+    ).rejects.toThrow('no supported content')
+    await expect(
+      toAcpPrompt([skillCatalog('old skills')], {
+        ...options,
+        skillRoute: 'disabled',
+        reboundAgentInstructions: history,
+      }),
+    ).rejects.toThrow('no supported content')
+  })
+})
 
 describe('prompt content conversion', () => {
   it('forwards the native child closing answer without turning its reasoning into prompt text', async () => {

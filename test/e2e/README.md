@@ -62,18 +62,25 @@ Teams 只在原生 profile 提供服务与九个成员工具时接入；调用�
 
 ## 运行
 
-宿主目标读取 `package.json` 的 `engines.dsh`。常规开发、构建和发布直接使用锁定的 npm 依赖；浏览器 E2E 单独复用准确源码标签的 Web scaffold，默认布局仍为同级 `dsh-acp-adapter/` 与 `reference/deepseek-harness/`。`DSH_UPSTREAM_CHECKOUT` 仅定位 scaffold，不会替换 npm 依赖或改写 node_modules。正式 npm 宿主安装检查使用开发依赖中的 CLI 和临时 DSH_HOME：`node scripts/install-gate.ts --tgz <本地插件包>`。
+宿主目标读取 `package.json` 的 `engines.dsh`。常规开发、构建和发布直接使用锁定的 npm 依赖；浏览器 E2E 单独复用准确源码标签的 Web scaffold，默认目录为 `<工作区>/dsh-acp-adapter/` 与 `<工作区>/reference/deepseek-harness/`。以下命令从插件根目录执行，宿主路径因此是 `../reference/deepseek-harness/`。`DSH_UPSTREAM_CHECKOUT` 仅定位 scaffold，不会替换 npm 依赖或改写 node_modules。正式 npm 宿主安装检查使用开发依赖中的 CLI 和临时 DSH_HOME：`node scripts/install-gate.ts --tgz <本地插件包>`。
 
 ```sh
 # reference/deepseek-harness 必须检出以下命令输出的标签
 node --input-type=module -e 'import { DSH_SOURCE_TAG } from "./scripts/dsh-target.ts"; console.log(DSH_SOURCE_TAG)'
-# 在各自目录使用 packageManager 指定的 pnpm（宿主 11.7.0，插件 10.7.0）
-(cd ../reference/deepseek-harness && corepack pnpm install --frozen-lockfile && npm run build:native-system && npm run build:lib:host && npm run build:lib:client && npm --prefix apps/web run build)
+# 在各自目录使用 packageManager 指定的 pnpm（宿主 11.28.5，插件 10.7.0）
+# 与 CI 一致，检查并构建引用的包项目，避免编译上游测试和脚本的聚合程序。
+(
+  cd ../reference/deepseek-harness &&
+  corepack pnpm install --frozen-lockfile &&
+  corepack pnpm run build:native-system &&
+  corepack pnpm exec tsx scripts/compile-referenced-projects.ts libraries &&
+  corepack pnpm --dir apps/web run build &&
+  corepack pnpm --dir apps/web exec playwright install --with-deps chromium
+)
 pnpm install --frozen-lockfile
 pnpm typecheck
 pnpm test
 pnpm build
-pnpm --dir ../reference/deepseek-harness/apps/web exec playwright install chromium
 pnpm test:e2e
 ```
 

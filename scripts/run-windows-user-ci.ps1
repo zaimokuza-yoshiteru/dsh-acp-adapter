@@ -14,6 +14,17 @@ $createdUser = $false
 $grantedWorkspace = $false
 $traceCopyFailed = $false
 $traceRunSucceeded = $false
+$primaryFailure = $null
+$cleanupFailures = [System.Collections.Generic.List[string]]::new()
+function Invoke-AuditCleanup([string]$Operation, [scriptblock]$Action) {
+  try {
+    & $Action
+    Write-Host "Audit cleanup ${Operation}: succeeded"
+  } catch {
+    $cleanupFailures.Add("${Operation}: $($_.Exception.Message)")
+    Write-Warning "Audit cleanup ${Operation}: failed: $($_.Exception.Message)"
+  }
+}
 try {
   New-Item -ItemType Directory -Path $auditRoot | Out-Null
   if ($Live) {
@@ -32,11 +43,15 @@ try {
     Add-LocalGroupMember -Group $usersGroup -Member $account
   }
   if (Get-LocalGroupMember -Group (Get-LocalGroup -SID 'S-1-5-32-544') | Where-Object { $_.SID -eq $account.SID }) { throw 'CI account must not be an administrator' }
-  & icacls $auditRoot /grant ('*' + $account.SID.Value + ':(OI)(CI)M') /T /Q | Out-Null
+  # One inheritable ACE covers existing and newly created children. Explicitly
+  # stamping every descendant would require traversing pnpm's long paths again
+  # at cleanup, including paths that did not exist when access was granted.
+  & icacls $auditRoot /grant ('*' + $account.SID.Value + ':(OI)(CI)M') /Q | Out-Null
   if ($LASTEXITCODE -ne 0) { throw 'Failed to grant toolchain directory access' }
-  & icacls $workspace /grant ('*' + $account.SID.Value + ':(OI)(CI)M') /T /Q | Out-Null
-  if ($LASTEXITCODE -ne 0) { throw 'Failed to grant workspace access' }
+  # Revoke even when a grant fails after partially applying its change.
   $grantedWorkspace = $true
+  & icacls $workspace /grant ('*' + $account.SID.Value + ':(OI)(CI)M') /Q | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw 'Failed to grant workspace access' }
   if (!(Test-Path $developerKey)) { New-Item -Path $developerKey -Force | Out-Null }
   New-ItemProperty -Path $developerKey -Name $developerProperty -Value 0 -PropertyType DWord -Force | Out-Null
   $credentials = [pscredential]::new(($env:COMPUTERNAME + '\' + $auditUser), $auditPassword)
@@ -49,6 +64,7 @@ try {
   $child = Start-Process -FilePath (Get-Command pwsh).Source -ArgumentList $arguments -WorkingDirectory $workspace -Credential $credentials -LoadUserProfile -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
   if (!$child.WaitForExit(1800000)) { $child.Kill(); throw 'Ordinary-user CI timed out' }
   $child.WaitForExit()
+  Write-Host "Ordinary-user CI exit code: $($child.ExitCode)"
   Get-Content $stdout
   Get-Content $stderr
   $summary = Join-Path $auditRoot 'summary.md'
@@ -57,6 +73,8 @@ try {
   }
   if ($child.ExitCode -ne 0) { throw "Ordinary-user CI failed: $($child.ExitCode)" }
   $traceRunSucceeded = $true
+} catch {
+  $primaryFailure = $_
 } finally {
   if ($Live) {
     try {
@@ -74,13 +92,32 @@ try {
       Write-Warning 'Could not copy the safe Devin live JSONL trace before audit cleanup'
     }
   }
-  if ($null -eq $previousDeveloperMode) {
-    Remove-ItemProperty -Path $developerKey -Name $developerProperty -ErrorAction SilentlyContinue
-  } else {
-    Set-ItemProperty -Path $developerKey -Name $developerProperty -Value $previousDeveloperMode
+  Invoke-AuditCleanup 'developer mode' {
+    if ($null -eq $previousDeveloperMode) {
+      if (Get-ItemProperty -Path $developerKey -Name $developerProperty -ErrorAction SilentlyContinue) {
+        Remove-ItemProperty -Path $developerKey -Name $developerProperty
+      }
+    } else {
+      Set-ItemProperty -Path $developerKey -Name $developerProperty -Value $previousDeveloperMode
+    }
   }
-  if ($grantedWorkspace) { & icacls $workspace /remove:g ('*' + $account.SID.Value) /T /Q | Out-Null }
-  if ($createdUser) { Remove-LocalUser -Name $auditUser }
-  Remove-Item -LiteralPath $auditRoot -Recurse -Force -ErrorAction SilentlyContinue
-  if ($Live -and $traceRunSucceeded -and $traceCopyFailed) { throw 'Failed to preserve safe Devin live diagnostics' }
+  if ($grantedWorkspace) {
+    Invoke-AuditCleanup 'workspace access' {
+      & icacls $workspace /remove:g ('*' + $account.SID.Value) /Q | Out-Null
+      if ($LASTEXITCODE -ne 0) { throw "Failed to revoke workspace access: icacls exit $LASTEXITCODE" }
+      $remaining = (Get-Acl -LiteralPath $workspace).Access | Where-Object {
+        $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -eq $account.SID.Value
+      }
+      if ($remaining) { throw 'Audit account still has a workspace access entry after revocation' }
+    }
+  }
+  if ($createdUser) { Invoke-AuditCleanup 'ordinary-user account' { Remove-LocalUser -Name $auditUser } }
+  Invoke-AuditCleanup 'audit directory' {
+    if (Test-Path -LiteralPath $auditRoot) { Remove-Item -LiteralPath $auditRoot -Recurse -Force }
+  }
+  if ($Live -and $traceRunSucceeded -and $traceCopyFailed) {
+    $cleanupFailures.Add('Failed to preserve safe Devin live diagnostics')
+  }
 }
+if ($null -ne $primaryFailure) { throw $primaryFailure }
+if ($cleanupFailures.Count -gt 0) { throw ('Audit cleanup failed: ' + ($cleanupFailures -join '; ')) }

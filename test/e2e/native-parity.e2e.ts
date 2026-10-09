@@ -540,7 +540,60 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
       await panel.getByRole('button', { name: 'Refresh', exact: true }).click()
       await panel.getByText('Recovery status at last refresh', { exact: true }).waitFor()
       await panel.getByRole('status').locator('summary').click()
-      await panel.getByText('E2E_RECORDED_RECOVERY_CAUSE', { exact: true }).waitFor()
+      const rawDiagnostic = panel.getByText('E2E_RECORDED_RECOVERY_CAUSE', { exact: true })
+      await rawDiagnostic.waitFor()
+      const originalCodeSize = await page.evaluate(() =>
+        Number.parseFloat(getComputedStyle(document.body).getPropertyValue('--dsh-code-font-size')),
+      )
+      const originalScheme = await page.evaluate(() => document.documentElement.style.colorScheme)
+      try {
+        for (const theme of ['light', 'dark']) {
+          for (const size of [11, 16]) {
+            await host.ctx.settings.replace('ui-theme', {
+              preference: theme,
+              fontSize: 14,
+              codeFontSize: size,
+              codeFontFamily: 'monospace',
+            })
+            await expect.poll(() => page.evaluate(() => document.documentElement.style.colorScheme)).toBe(theme)
+            await expect
+              .poll(() =>
+                rawDiagnostic.evaluate((element) => {
+                  const style = getComputedStyle(element)
+                  return {
+                    size: style.fontSize,
+                    height: style.lineHeight,
+                    family: style.fontFamily.split(',').map((family) => family.trim().replace(/^["']|["']$/g, '')),
+                  }
+                }),
+              )
+              .toEqual({
+                size: `${size}px`,
+                height: `${size + 5}px`,
+                // Native code roles prepend the user's choice and retain the
+                // pinned theme's fallback stack, including its CJK families.
+                family: [
+                  'monospace',
+                  'SF Mono',
+                  'JetBrains Mono',
+                  'Fira Code',
+                  'Consolas',
+                  'Liberation Mono',
+                  'Menlo',
+                  'Courier',
+                  'PingFang SC',
+                  'Microsoft YaHei',
+                ],
+              })
+            expect(await panel.locator('table').evaluate((element) => getComputedStyle(element).fontSize)).toBe('12px')
+            expect(await panel.evaluate((element) => element.scrollWidth - element.clientWidth)).toBeLessThanOrEqual(1)
+          }
+          mkdirSync(join(root, '.local/ui-review'), { recursive: true })
+          await panel.screenshot({ path: join(root, `.local/ui-review/audit-code-font-${theme}-${profile}.png`) })
+        }
+      } finally {
+        await host.ctx.settings.replace('ui-theme', { preference: originalScheme, codeFontSize: originalCodeSize })
+      }
       expect(await panel.locator('tbody tr').count()).toBe(1)
       await sidecar.writeRecoveryState({ dshSessionId: id, kind: 'healthy', provider, updatedAt: Date.now() })
       await panel.getByRole('button', { name: 'Refresh', exact: true }).click()

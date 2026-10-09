@@ -52,7 +52,10 @@ describe.each(['devin', 'kimi', 'claude', 'codex'])('catalog recovery: %s', (pro
       const catalog = await host.ctx.sessionController.modelCatalog()
       expect(catalog.failures.some((failure) => failure.id === provider)).toBe(true)
       await page.getByRole('button', { name: /^Select model/ }).click()
-      await page.getByRole('menuitem', { name: /^Model/ }).click()
+      // A missing current choice opens the native model pane directly.
+      const picker = page.getByRole('group', { name: 'Model and reasoning effort', exact: true })
+      await picker.waitFor()
+      await expect.poll(() => picker.getByRole('menuitem', { name: /^Model/ }).count()).toBe(0)
       await expect.poll(() => page.getByRole('menuitemradio', { name: 'Mock Model A', exact: true }).count()).toBe(0)
       // Network return may itself reload a failed catalogue; recheck must still update it afterwards.
       try {

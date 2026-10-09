@@ -15,6 +15,7 @@ import type { RemoteStreamFactory } from '@deepseek-ai/dsh-api-gateway/client'
 import { agentSessionStream } from '../data/agent-session-stream.ts'
 import { toolApprovalPolicyStream, type ToolApprovalPolicySnapshot } from '../data/tool-approval-policy-stream.ts'
 import { toolApprovalPolicyGroup } from './agent-session-controls.ts'
+import type { AcpUiFeedback } from '../data/feedback.ts'
 
 type AgentControlProps = PropsRuntime<'conversation.input.left'> &
   PropsLocale<'acpActivity'> & {
@@ -23,6 +24,7 @@ type AgentControlProps = PropsRuntime<'conversation.input.left'> &
     readonly ownsRoute: OwnsAcpRoute
     readonly getDefaultProvider: () => Promise<string | undefined>
     readonly watchDefaultProvider: (changed: () => void) => () => void
+    readonly feedback: Pick<AcpUiFeedback, 'report'>
   }
 
 function providerOf(value: unknown): string | undefined {
@@ -55,6 +57,7 @@ export function AcpAgentControl({
   ownsRoute,
   getDefaultProvider,
   watchDefaultProvider,
+  feedback,
 }: AgentControlProps): ReactNode {
   const projection = useProjection('modelSelection')
   const running = useSession((state) => state.running)
@@ -90,6 +93,7 @@ export function AcpAgentControl({
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [readFailed, setReadFailed] = useState(false)
   const epoch = useRef(0)
   const [retry, setRetry] = useState(0)
 
@@ -98,6 +102,7 @@ export function AcpAgentControl({
     setOpen(false)
     setBusy(false)
     setError(null)
+    setReadFailed(false)
     setSnapshot(null)
     setPolicySnapshot(null)
     setPolicyError(null)
@@ -112,11 +117,13 @@ export function AcpAgentControl({
         if (current !== epoch.current) return
         setSnapshot(value)
         setError(null)
+        setReadFailed(false)
       },
       () => {
         if (current !== epoch.current) return
         setSnapshot((value) => (value === null ? null : { ...value, editable: false, freshness: 'stale' }))
         setError(t('agentControlUnavailable'))
+        setReadFailed(true)
       },
     )
     stream.start()
@@ -213,10 +220,16 @@ export function AcpAgentControl({
       void remote
         .setToolApprovalPolicy(sessionId, { policy: item.write.policy })
         .then((result) => {
-          if (current === epoch.current && !result.ok) setPolicyError(t('toolApprovalChangeFailed'))
+          if (current === epoch.current && !result.ok) {
+            setPolicyError(t('toolApprovalChangeFailed'))
+            feedback.report('tool-approval-failed')
+          }
         })
         .catch(() => {
-          if (current === epoch.current) setPolicyError(t('toolApprovalChangeFailed'))
+          if (current === epoch.current) {
+            setPolicyError(t('toolApprovalChangeFailed'))
+            feedback.report('tool-approval-failed')
+          }
         })
         .finally(() => {
           if (current === epoch.current) setBusy(false)
@@ -231,10 +244,16 @@ export function AcpAgentControl({
     void remote
       .setAgentSessionOption(sessionId, item.write)
       .then((result) => {
-        if (current === epoch.current && !result.ok) setError(result.error.message)
+        if (current === epoch.current && !result.ok) {
+          setError(result.error.message)
+          feedback.report('session-option-failed')
+        }
       })
       .catch((reason) => {
-        if (current === epoch.current) setError(reason instanceof Error ? reason.message : String(reason))
+        if (current === epoch.current) {
+          setError(reason instanceof Error ? reason.message : String(reason))
+          feedback.report('session-option-failed')
+        }
       })
       .finally(() => {
         if (current === epoch.current) setBusy(false)
@@ -249,7 +268,7 @@ export function AcpAgentControl({
     disabled: busy,
     side: 'top',
     onOpenChange: (value) => {
-      if (value && (error !== null || policyReadFailed)) setRetry((current) => current + 1)
+      if (value && (readFailed || policyReadFailed)) setRetry((current) => current + 1)
       setOpen(value)
     },
     onSelect: select,
