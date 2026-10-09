@@ -23,18 +23,20 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
     const addButton = detail.getByRole('button', { name: 'Add agent', exact: true })
     await addButton.click()
     const menu = page.getByRole('menu')
-    await menu.getByText('Verified adapters · 5', { exact: true }).waitFor()
+    await menu.getByText('Verified adapters · 6', { exact: true }).waitFor()
     await menu.getByText(/^Catalog entries · Unverified ·/).waitFor()
     expect(await detail.getByRole('textbox').count()).toBe(0)
     expect(await menu.getByRole('textbox').count()).toBe(0)
     const items = await menu.getByRole('menuitem').allTextContents()
-    expect(items.slice(0, 5).map((text) => text.split(' · ')[0])).toEqual([
+    expect(items.slice(0, 6).map((text) => text.split(' · ')[0])).toEqual([
       'Devin',
       'Codebuddy Code',
       'Codex',
       'Kimi CLI',
       'Claude Agent',
+      'Google Antigravity',
     ])
+    await menu.getByRole('menuitem', { name: /^Google Antigravity · 1\.1\.1$/ }).waitFor()
     const evidence = join(root, '.local/plugin-panel-v2')
     mkdirSync(evidence, { recursive: true })
     const observedSides = new Set<'top' | 'bottom'>()
@@ -184,7 +186,11 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
     await page.getByRole('button', { name: '关闭', exact: true }).click()
     detail = await openAcpPluginDetail(page, 'zh')
     await detail.getByRole('button', { name: '添加 agent', exact: true }).click()
-    await page.getByRole('menu').getByText('已验证适配 · 5', { exact: true }).waitFor()
+    await page.getByRole('menu').getByText('已验证适配 · 6', { exact: true }).waitFor()
+    await page
+      .getByRole('menu')
+      .getByRole('menuitem', { name: /^Google Antigravity · 1\.1\.1$/ })
+      .waitFor()
     await page
       .getByRole('menu')
       .getByText(/^目录收录 · 未验证 ·/)
