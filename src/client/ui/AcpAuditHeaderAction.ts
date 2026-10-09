@@ -51,6 +51,8 @@ export interface AcpAuditViewProps extends ConvViewProps {
   jsonStringWrapping?: AcpJsonStringWrapping
 }
 
+type LoadedAcpAuditViewProps = Omit<AcpAuditViewProps, 't'> & { readonly t: Translate }
+
 export function auditHeaderVisible(
   backend: { readonly state: string; readonly provider?: string } | null | undefined,
   ownsRoute: OwnsAcpRoute,
@@ -95,7 +97,7 @@ export function auditEntryMatchesFilter(entry: AcpAuditTimelineEntry, filter: Fi
 }
 
 /** Search only user-meaningful audit facts; compact raw JSON stays in details. */
-export function auditEntryMatchesQuery(t: Translate | undefined, entry: AcpAuditTimelineEntry, query: string): boolean {
+export function auditEntryMatchesQuery(t: Translate, entry: AcpAuditTimelineEntry, query: string): boolean {
   const normalized = query.trim().toLocaleLowerCase()
   if (normalized === '') return true
   return [
@@ -158,8 +160,8 @@ const summaryKeys: Record<AcpAuditSummaryCode, AcpLocaleKey> = {
   'agent.event': 'auditSummaryAgentEvent',
 }
 
-export function auditSummaryOf(t: Translate | undefined, entry: AcpAuditTimelineEntry): string {
-  const base = textOf(t, summaryKeys[entry.summaryCode], 'Agent event recorded')
+export function auditSummaryOf(t: Translate, entry: AcpAuditTimelineEntry): string {
+  const base = t(summaryKeys[entry.summaryCode])
   const subject =
     entry.subject !== null && entry.summaryCode === 'session-fork.completed'
       ? auditStatusOf(t, entry.subject)
@@ -168,7 +170,7 @@ export function auditSummaryOf(t: Translate | undefined, entry: AcpAuditTimeline
   return [base, subject, status].filter((value): value is string => value !== null && value !== '').join(' · ')
 }
 
-function auditStatusOf(t: Translate | undefined, status: string): string {
+function auditStatusOf(t: Translate, status: string): string {
   const key: Partial<Record<string, AcpLocaleKey>> = {
     'auto-approved': 'auditAutoApproved',
     'approval-required': 'auditApprovalRequired',
@@ -213,31 +215,21 @@ function auditStatusOf(t: Translate | undefined, status: string): string {
     'candidate-not-available': 'auditForkCandidateUnavailable',
   }
   const localeKey = key[status]
-  return localeKey === undefined ? status : textOf(t, localeKey, status)
+  return localeKey === undefined ? status : t(localeKey)
 }
 
-function categoryLabel(t: Translate | undefined, category: AcpAuditTimelineEntry['category']): string {
+function categoryLabel(t: Translate, category: AcpAuditTimelineEntry['category']): string {
   const key: Record<AcpAuditTimelineEntry['category'], AcpLocaleKey> = {
     recovery: 'auditCategoryRecovery',
     permission: 'auditCategoryPermission',
     agent: 'auditCategoryAgent',
     files: 'auditCategoryFiles',
   }
-  return textOf(t, key[category], category)
+  return t(key[category])
 }
 
 function entryTone(entry: AcpAuditTimelineEntry): TagTone {
   return entry.severity === 'info' ? 'neutral' : entry.severity === 'error' ? 'danger' : 'warning'
-}
-
-function textOf(
-  t: Translate | undefined,
-  key: AcpLocaleKey,
-  fallback: string,
-  params?: Record<string, string | number>,
-): string {
-  const result = t?.(key, params)
-  return result === undefined || result.trim() === '' ? fallback : result
 }
 
 function timeOf(epoch: number): string {
@@ -312,6 +304,11 @@ export function AcpAuditVisibilityGate(props: AcpAuditVisibilityGateProps): Reac
 
 /** 与轨迹同级的全高会话视图；筛选和详情均在页面内完成。 */
 function AcpAuditView(props: AcpAuditViewProps): ReactNode {
+  if (props.t === undefined) return null
+  return h(AcpAuditLoadedView, { ...props, t: props.t })
+}
+
+function AcpAuditLoadedView(props: LoadedAcpAuditViewProps): ReactNode {
   const { sessionId, remote, t, jsonStringWrapping } = props
   const [loading, setLoading] = useState(false)
   const [entries, setEntries] = useState<readonly AcpAuditTimelineEntry[]>([])
@@ -367,7 +364,7 @@ function AcpAuditView(props: AcpAuditViewProps): ReactNode {
         .then((result) => {
           if (epoch !== requestEpoch.current) return
           if (!result.ok) {
-            setError(textOf(t, 'auditUnavailable', 'Could not read or refresh ACP diagnostic records.'))
+            setError(t('auditUnavailable'))
             return
           }
           setEntries((previous) => (reset ? result.value.entries : [...previous, ...result.value.entries]))
@@ -375,8 +372,7 @@ function AcpAuditView(props: AcpAuditViewProps): ReactNode {
           setHasMore(result.value.hasMore)
         })
         .catch(() => {
-          if (epoch === requestEpoch.current)
-            setError(textOf(t, 'auditUnavailable', 'Could not read or refresh ACP diagnostic records.'))
+          if (epoch === requestEpoch.current) setError(t('auditUnavailable'))
         })
         .finally(() => {
           if (epoch === requestEpoch.current) {
@@ -493,11 +489,11 @@ function AcpAuditView(props: AcpAuditViewProps): ReactNode {
     {
       className: css.root,
       'data-conversation-composer-overlay': '',
-      'aria-label': textOf(t, 'auditTitle', 'ACP Diagnostics'),
+      'aria-label': t('auditTitle'),
     },
     h(
       'div',
-      { className: css.toolbar, role: 'toolbar', 'aria-label': textOf(t, 'auditTitle', 'ACP Diagnostics') },
+      { className: css.toolbar, role: 'toolbar', 'aria-label': t('auditTitle') },
       h(
         'div',
         { className: css.toolbarInner },
@@ -514,7 +510,7 @@ function AcpAuditView(props: AcpAuditViewProps): ReactNode {
                 'aria-pressed': value === filter,
                 onClick: () => setFilter(value),
               },
-              textOf(t, key, value),
+              t(key),
             ),
           ),
         ),
@@ -524,7 +520,7 @@ function AcpAuditView(props: AcpAuditViewProps): ReactNode {
           h(
             'button',
             { type: 'button', className: css.refresh, disabled: loading, onClick: () => load(true) },
-            textOf(t, loading ? 'auditLoadingShort' : 'auditRefresh', loading ? 'Loading…' : 'Refresh'),
+            t(loading ? 'auditLoadingShort' : 'auditRefresh'),
           ),
           h(
             'button',
@@ -534,15 +530,15 @@ function AcpAuditView(props: AcpAuditViewProps): ReactNode {
               disabled: sessionId === undefined || remote === undefined || exportState === 'loading',
               onClick: () => void startSupportExport(),
             },
-            textOf(t, 'auditExport', 'Export safe summary'),
+            t('auditExport'),
           ),
           h(Input, {
             icon: h(IconSearchOutlineMedium, { size: 16 }),
             type: 'search',
             className: css.search!,
             value: query,
-            placeholder: textOf(t, 'auditSearchPlaceholder', 'Search'),
-            'aria-label': textOf(t, 'auditSearch', 'Search loaded records'),
+            placeholder: t('auditSearchPlaceholder'),
+            'aria-label': t('auditSearch'),
             onChange: (event: { currentTarget: { value: string } }) => setQuery(event.currentTarget.value),
           }),
         ),
@@ -554,69 +550,45 @@ function AcpAuditView(props: AcpAuditViewProps): ReactNode {
       h(
         'div',
         { className: css.tablePane, 'data-audit-scroll': true },
-        h(
-          'p',
-          { className: css.muted },
-          textOf(t, 'auditScope', 'Only information recorded by the ACP adapter is shown.'),
-        ),
-        recoveryUnavailable
-          ? h(
-              'p',
-              { className: css.error, role: 'alert' },
-              textOf(t, 'auditRecoveryUnavailable', 'Current recovery status could not be read.'),
-            )
-          : null,
+        h('p', { className: css.muted }, t('auditScope')),
+        recoveryUnavailable ? h('p', { className: css.error, role: 'alert' }, t('auditRecoveryUnavailable')) : null,
         recovery === null
           ? null
           : h(
               'div',
               { className: css.currentIssue, role: 'status' },
-              h('strong', null, textOf(t, 'auditCurrentState', 'Recovery status at last refresh')),
+              h('strong', null, t('auditCurrentState')),
               h(
                 'p',
                 null,
-                recoveryText((key) => textOf(t, key, recovery.kind), recovery),
+                recoveryText((key) => t(key), recovery),
               ),
-              h(
-                'p',
-                null,
-                textOf(
-                  t,
-                  'auditRecoveryAction',
-                  'Use the recovery notice beside the composer to choose the next step.',
-                ),
-              ),
+              h('p', null, t('auditRecoveryAction')),
               h(
                 'details',
                 null,
-                h('summary', null, textOf(t, 'auditTechnical', 'Technical records')),
-                h(
-                  'pre',
-                  { className: css.detailPayload },
-                  recovery.detail ?? recovery.cause ?? textOf(t, 'auditNoCause', 'No specific cause was recorded.'),
-                ),
+                h('summary', null, t('auditTechnical')),
+                h('pre', { className: css.detailPayload }, recovery.detail ?? recovery.cause ?? t('auditNoCause')),
               ),
             ),
-        loading && entries.length === 0
-          ? h('p', { className: css.muted }, textOf(t, 'auditLoading', 'Loading diagnostic records…'))
-          : null,
+        loading && entries.length === 0 ? h('p', { className: css.muted }, t('auditLoading')) : null,
         error === null ? null : h('p', { className: css.error, role: 'alert' }, error),
         !loading && error === null && visible.length === 0
           ? h(
               'p',
               { className: css.muted },
               query.trim() !== ''
-                ? textOf(t, 'auditNoMatch', 'No matching loaded records.')
+                ? t('auditNoMatch')
                 : hasMore
-                  ? textOf(t, 'auditScanMore', 'No matching records in the checked range; more records remain.')
+                  ? t('auditScanMore')
                   : filter === 'issues'
-                    ? textOf(t, 'auditNoIssues', 'No recorded ACP issues.')
-                    : textOf(t, 'auditEmpty', 'No records in this view.'),
+                    ? t('auditNoIssues')
+                    : t('auditEmpty'),
             )
           : null,
         h(
           'table',
-          { className: css.table, 'aria-label': textOf(t, 'auditTimeline', 'ACP diagnostic records') },
+          { className: css.table, 'aria-label': t('auditTimeline') },
           h('colgroup', null, h('col', { className: css.eventColumn }), h('col', { className: css.contentColumn })),
           h(
             'tbody',
@@ -673,18 +645,16 @@ function AcpAuditView(props: AcpAuditViewProps): ReactNode {
           ? h(
               'button',
               { type: 'button', className: css.more, disabled: loading, onClick: () => load(false) },
-              textOf(t, 'auditLoadMore', 'Load more'),
+              t('auditLoadMore'),
             )
           : null,
-        !hasMore && entries.length > 0
-          ? h('p', { className: css.end }, textOf(t, 'auditPageEnd', 'All records in this view are shown'))
-          : null,
+        !hasMore && entries.length > 0 ? h('p', { className: css.end }, t('auditPageEnd')) : null,
       ),
       selected === null
         ? null
         : h(
             'aside',
-            { className: css.details, 'aria-label': textOf(t, 'auditDetails', 'Event details') },
+            { className: css.details, 'aria-label': t('auditDetails') },
             h(
               'div',
               { className: css.detailsHeader },
@@ -701,18 +671,16 @@ function AcpAuditView(props: AcpAuditViewProps): ReactNode {
                       void copySelected()
                     },
                   },
-                  textOf(t, copyState === 'copied' ? 'auditCopied' : 'auditCopy', 'Copy selected record'),
+                  t(copyState === 'copied' ? 'auditCopied' : 'auditCopy'),
                 ),
-                copyState === 'failed'
-                  ? h('span', { role: 'status' }, textOf(t, 'auditCopyFailed', 'Copy failed'))
-                  : null,
+                copyState === 'failed' ? h('span', { role: 'status' }, t('auditCopyFailed')) : null,
               ),
               h(
                 'button',
                 {
                   type: 'button',
                   className: css.close,
-                  'aria-label': textOf(t, 'auditClose', 'Close'),
+                  'aria-label': t('auditClose'),
                   onClick: () => setSelectedSeq(null),
                 },
                 h(IconCloseOutlineMedium, { size: 14 }),
@@ -723,53 +691,28 @@ function AcpAuditView(props: AcpAuditViewProps): ReactNode {
               { key: selected.seq, className: css.detailsBody, 'data-audit-detail-scroll': true },
               h('p', { className: css.detailsSummary }, auditSummaryOf(t, selected)),
               selected.severity !== 'info'
-                ? h(
-                    'p',
-                    { className: css.detailsSummary },
-                    auditRecordedCause(selected) ?? textOf(t, 'auditNoCause', 'No specific cause was recorded.'),
-                  )
+                ? h('p', { className: css.detailsSummary }, auditRecordedCause(selected) ?? t('auditNoCause'))
                 : null,
               selected.status === 'exit-unverified'
-                ? h(
-                    'p',
-                    { className: css.detailsSummary },
-                    textOf(
-                      t,
-                      'auditLegacyExitExplanation',
-                      'Termination intent was not recorded; cancellation and process failure cannot be distinguished.',
-                    ),
-                  )
+                ? h('p', { className: css.detailsSummary }, t('auditLegacyExitExplanation'))
                 : null,
               selected.summaryCode === 'replay.not-compared'
-                ? h(
-                    'p',
-                    { className: css.detailsSummary },
-                    textOf(
-                      t,
-                      'auditReplayExplanation',
-                      'This record does not distinguish connection reuse from restoration.',
-                    ),
-                  )
+                ? h('p', { className: css.detailsSummary }, t('auditReplayExplanation'))
                 : null,
               h(
                 'dl',
                 { className: css.overview },
-                h('div', null, h('dt', null, textOf(t, 'auditTime', 'Time')), h('dd', null, timeOf(selected.time))),
-                h(
-                  'div',
-                  null,
-                  h('dt', null, textOf(t, 'auditSequence', 'Sequence')),
-                  h('dd', null, String(selected.seq)),
-                ),
+                h('div', null, h('dt', null, t('auditTime')), h('dd', null, timeOf(selected.time))),
+                h('div', null, h('dt', null, t('auditSequence')), h('dd', null, String(selected.seq))),
               ),
               selected.detail === null
-                ? h('p', { className: css.noDetails }, textOf(t, 'auditNoDetails', 'No additional details.'))
+                ? h('p', { className: css.noDetails }, t('auditNoDetails'))
                 : (() => {
                     const detail = auditDetailOf(selected.detail)
                     return detail.kind === 'json'
                       ? h(JsonTree, {
                           data: detail.value,
-                          label: textOf(t, 'auditDetailJson', 'Diagnostic record JSON'),
+                          label: t('auditDetailJson'),
                           className: css.jsonPayload,
                           labels: acpJsonTreeLabels(t),
                           ...(jsonStringWrapping === undefined
@@ -777,7 +720,7 @@ function AcpAuditView(props: AcpAuditViewProps): ReactNode {
                             : {
                                 stringWrapping: {
                                   ...jsonStringWrapping,
-                                  label: textOf(t, 'auditWrapLines', 'Wrap lines'),
+                                  label: t('auditWrapLines'),
                                 },
                               }),
                           expandTopLevel: true,
@@ -788,50 +731,28 @@ function AcpAuditView(props: AcpAuditViewProps): ReactNode {
           ),
     ),
     exportState === 'loading'
-      ? h('p', { role: 'status' }, textOf(t, 'auditExportLoading', 'Collecting and downloading a bounded snapshot…'))
+      ? h('p', { role: 'status' }, t('auditExportLoading'))
       : exportState === 'failed'
         ? h(
             'p',
             { role: 'alert', className: css.error },
-            textOf(
-              t,
-              exportError === 'session-changed' ? 'auditExportSessionChanged' : 'auditExportFailed',
-              exportError === 'session-changed'
-                ? 'The session changed. Reopen diagnostics and try again.'
-                : 'The diagnostic export could not be created. Click Export safe summary to try again.',
-            ),
+            t(exportError === 'session-changed' ? 'auditExportSessionChanged' : 'auditExportFailed'),
           )
         : exportState === 'downloaded' && supportExport !== null
           ? h(
               'div',
               { className: css.hint, 'data-support-export-summary': true },
-              h('p', { role: 'status' }, textOf(t, 'auditExportComplete', 'The JSON download has started.')),
+              h('p', { role: 'status' }, t('auditExportComplete')),
+              h('p', null, t('auditExportPrivacy')),
               h(
                 'p',
                 null,
-                textOf(
-                  t,
-                  'auditExportPrivacy',
-                  'The file contains a bounded snapshot of fixed diagnostic codes, statuses, and activity summaries. It excludes message text, commands, paths, and raw session IDs.',
-                ),
-              ),
-              h(
-                'p',
-                null,
-                textOf(t, 'auditExportCounts', 'Audit records: {audit}; activity revisions: {activity}.', {
+                t('auditExportCounts', {
                   audit: supportExport.audit.rows.length,
                   activity: supportExport.activity.rows.length,
                 }),
               ),
-              h(
-                'p',
-                null,
-                textOf(
-                  t,
-                  'auditExportScopeNote',
-                  'Detailed scope and snapshot limits are included in the downloaded JSON.',
-                ),
-              ),
+              h('p', null, t('auditExportScopeNote')),
             )
           : null,
   )

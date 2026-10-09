@@ -11,6 +11,7 @@ User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/
 - 新增显式 Antigravity ACP runtime。工具桥仅在 MCP 身份与当前 DSH 连接的已注册工具匹配时调用宿主工具；原生权限请求继续使用 DSH 审批或固定选项卡片，用户必须明确选择并提交。
 - 固定选项卡片支持键盘选择、窄屏布局和中英文；按会话保留选项，不提供自由输入。
 - 修复 ACP 表单请求说明与字段说明相同时的重复显示，并对齐插件固定选项卡片的说明正文；Teams 正常加载提示不再重复显示为红色错误，切换后端时也不再重复提示历史保留信息。
+- 统一 ACP 诊断与管理界面的双语文案及主题样式；成员读取失败时保留已有列表并明确提示错误，避免重复刷新。修正 Agent 目录菜单随窗口和锚点变化的定位，保留原生滚动及键盘操作。
 - 修复外部 Stop 期间原生工具报告失败后，已中止调用显示为失败的问题；仅当此前观察到调用正在执行且外部取消信号有效时，将其界面状态归为取消，并保留原始 provider 失败详情。
 - 在真实 macOS 环境使用官方 raw ACP server 1.3.0 和 `gemini-3.8-flash-low` 验证五阶段原生交互及 DSH MCP 续聊。具体范围见 [E2E 指南](test/e2e/README.md)；未验收 wrapper、Teams 或 Windows，也不代表完整 OAuth 首次引导。
 - 继续支持 DSH `0.2.0-rc.2`。
@@ -20,6 +21,7 @@ User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/
 - Add an explicit Antigravity ACP runtime. The bridge invokes host tools only when MCP identity matches a tool registered for the current DSH connection. Native permission requests continue through DSH approval or a fixed-choice card that requires an explicit user selection and submission.
 - Fixed-choice cards support keyboard selection, narrow screens, and Chinese and English. Choices persist per session, and free-text input is not offered.
 - Fix duplicate ACP form details when the request and field descriptions match, align detail text in the plugin's fixed-choice card, keep normal Teams loading feedback out of the red error notice, and remove the redundant history-retention notice when switching backends.
+- Align bilingual ACP diagnostic and management copy and theme styling. Keep the existing member list and show an error when a membership read fails, without an immediate duplicate refresh. Correct Agent catalog positioning as the window or anchor moves while retaining native scrolling and keyboard interaction.
 - Fix native tool calls appearing failed when they report failure during an external Stop. Only a previously observed running call with an active external cancellation signal is presented as cancelled; the original provider failure details are retained.
 - Verify five native interaction phases and DSH MCP continuation on macOS with the official raw ACP server 1.3.0 and `gemini-3.8-flash-low`. See the [E2E guide](test/e2e/README.md) for scope. The wrapper, Teams and Windows are not verified, and this does not certify the full OAuth first-run flow.
 - Continue to support DSH `0.2.0-rc.2`.

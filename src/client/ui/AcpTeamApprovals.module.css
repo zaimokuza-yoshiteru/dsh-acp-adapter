@@ -4,7 +4,7 @@
   min-width: 0;
   margin: 0 auto 8px;
   border: 1px solid var(--dsw-alias-state-warn-secondary);
-  border-radius: 20px;
+  border-radius: var(--dsw-radius-xl);
   background: var(--dsw-specific-input-major);
   color: var(--dsw-alias-label-primary);
   box-shadow: var(--dsw-shadow-lv2);
@@ -35,6 +35,7 @@
   height: 18px;
   border: 1px solid currentColor;
   border-radius: 50%;
+  corner-shape: round;
   color: var(--dsw-alias-state-warn-primary);
 }
 .body {

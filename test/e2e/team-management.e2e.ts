@@ -82,7 +82,14 @@ it(
       // gate, which can outlast the mock's deliberate startup delay.
       await panel.getByRole('button', { name: 'Manage members · 1', exact: true }).click()
       const row = panel.locator('[data-acp-managed-member="calculator"]')
+      const managementPanel = page.locator('[data-acp-team-panel]')
       await row.waitFor()
+      await managementPanel.getByText('Manage members', { exact: true }).click()
+      await expect.poll(() => managementPanel.count()).toBe(1)
+      await page.locator('[data-composer-input]').first().click()
+      await expect.poll(() => managementPanel.count()).toBe(0)
+      await panel.getByRole('button', { name: 'Manage members · 1', exact: true }).click()
+      await managementPanel.waitFor()
       expect(await row.getByRole('button', { name: 'Choose a model for calculator', exact: true }).isDisabled()).toBe(
         true,
       )
@@ -374,13 +381,56 @@ it(
         expect(batchBox.height).toBe(24)
         const firstCardBox = required(await panel.locator('[data-acp-managed-member]').first().boundingBox())
         expect(firstCardBox.y - (batchBox.y + batchBox.height)).toBeGreaterThanOrEqual(12)
+        const dshAcp = host.ctx.get('dshAcp') as AcpRemoteService
+        const initialReadFailure = vi
+          .spyOn(dshAcp, 'teamMembers')
+          .mockRejectedValueOnce(new Error('fixture read failure'))
         const interruptSpy = vi.spyOn(host.ctx.subagents, 'interruptByParent')
+        const failedLookupCount = initialReadFailure.mock.calls.length
         await interrupt.click()
-        await panel.getByRole('status').filter({ hasText: '已向 2 个成员发送中断' }).waitFor()
+        const teamPanel = page.locator('[data-acp-team-panel]')
+        await teamPanel.getByText('无法读取成员状态，未发送中断，请重试。', { exact: true }).waitFor()
+        await expect.poll(() => initialReadFailure.mock.calls.length).toBe(failedLookupCount + 1)
+        expect(initialReadFailure.mock.calls).toHaveLength(failedLookupCount + 1)
+        expect(interruptSpy).not.toHaveBeenCalled()
+        expect(await teamPanel.locator('[data-acp-managed-member]').count()).toBe(2)
+        initialReadFailure.mockRestore()
+
+        const readMembers = dshAcp.teamMembers.bind(dshAcp)
+        let membershipReads = 0
+        let finishMetadataRefresh: () => void = () => undefined
+        const metadataRefreshGate = new Promise<void>((resolve) => {
+          finishMetadataRefresh = resolve
+        })
+        let allowMetadataRefresh = false
+        let explicitRefreshReads = 0
+        const refreshReadFailure = vi.spyOn(dshAcp, 'teamMembers').mockImplementation(async (leadId) => {
+          membershipReads++
+          if (membershipReads === 1) return readMembers(leadId)
+          if (!allowMetadataRefresh) throw new Error('fixture refresh failure')
+          explicitRefreshReads++
+          await metadataRefreshGate
+          return readMembers(leadId)
+        })
+        await interrupt.click()
+        await teamPanel.getByRole('status').filter({ hasText: '已向 2 个成员发送中断' }).waitFor()
+        await teamPanel.getByRole('alert').filter({ hasText: '无法读取成员状态，请刷新重试。' }).waitFor()
+        await expect.poll(() => membershipReads > 1).toBe(true)
+        expect(await teamPanel.getByRole('status').filter({ hasText: '已向 2 个成员发送中断' }).count()).toBe(1)
+        expect(await teamPanel.getByRole('alert').filter({ hasText: '无法读取成员状态，请刷新重试。' }).count()).toBe(1)
         const demoMembers = host.ctx.agentTeams.listMembers(demoLead).filter((m) => m.role === 'teammate')
         expect(interruptSpy.mock.calls.map((args) => args[0]).sort()).toEqual(demoMembers.map((m) => m.id).sort())
         expect(interruptSpy.mock.calls.every((args) => args[1] === demoLead.id && args[2] === 'continuable')).toBe(true)
         interruptSpy.mockRestore()
+        allowMetadataRefresh = true
+        await teamPanel.getByRole('button', { name: '刷新', exact: true }).click()
+        await teamPanel.getByText('正在读取 ACP 成员设置…', { exact: true }).waitFor()
+        await expect.poll(() => explicitRefreshReads > 0).toBe(true)
+        expect(membershipReads).toBeGreaterThan(2)
+        finishMetadataRefresh()
+        await teamPanel.getByText('正在读取 ACP 成员设置…', { exact: true }).waitFor({ state: 'detached' })
+        await expect.poll(() => teamPanel.getByRole('alert').count()).toBe(0)
+        refreshReadFailure.mockRestore()
         await expect.poll(() => approvals.locator('[data-team-pending-member]').count()).toBe(0)
         await expect(
           (host.ctx.get('dshAcp') as AcpRemoteService).setTeamMemberMode(lead.id, demoMembers[0].id, 'plan'),

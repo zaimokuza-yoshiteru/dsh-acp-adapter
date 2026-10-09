@@ -7,22 +7,18 @@ export type AcpJsonStringWrapping = Omit<NonNullable<JsonTreeProps['stringWrappi
 type Translate = (key: AcpLocaleKey, params?: Record<string, string | number>) => string
 
 /** Shared copy for all ACP JSON inspectors. */
-export function acpJsonTreeLabels(t: Translate | undefined): JsonTreeLabels {
-  const text = (key: AcpLocaleKey, fallback: string, params?: Record<string, string | number>): string => {
-    const value = t?.(key, params)
-    return value === undefined || value.trim() === '' ? fallback : value
-  }
+export function acpJsonTreeLabels(t: Translate): JsonTreeLabels {
   return {
-    copyValue: text('auditCopyValue', 'Copy value'),
-    copyJson: text('auditCopyJson', 'Copy JSON'),
-    copyPath: text('auditCopyPath', 'Copy path'),
-    copyPrettyJson: text('auditCopyPrettyJson', 'Copy formatted JSON'),
-    copyCompactJson: text('auditCopyCompactJson', 'Copy compact JSON'),
-    copied: text('auditCopied', 'Copied'),
-    copyFailed: text('auditCopyFailed', 'Copy failed'),
-    collapseNode: text('auditCollapseNode', 'Collapse node'),
-    expandNode: text('auditExpandNode', 'Expand node'),
-    copyButtonTitle: (action) => text('auditCopyOptions', `Copy options: ${action}`, { action }),
+    copyValue: t('auditCopyValue'),
+    copyJson: t('auditCopyJson'),
+    copyPath: t('auditCopyPath'),
+    copyPrettyJson: t('auditCopyPrettyJson'),
+    copyCompactJson: t('auditCopyCompactJson'),
+    copied: t('auditCopied'),
+    copyFailed: t('auditCopyFailed'),
+    collapseNode: t('auditCollapseNode'),
+    expandNode: t('auditExpandNode'),
+    copyButtonTitle: (action) => t('auditCopyOptions', { action }),
   }
 }
 

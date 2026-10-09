@@ -17,7 +17,7 @@ import { catalogIdOf } from '../../contract/agent-config.ts'
  * @module @zaimokuza/dsh-acp-adapter/client/AcpSection
  */
 
-import { createElement as h, useCallback, useEffect, useId, useRef, useState } from 'react'
+import { createElement as h, Fragment, useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import {
   Button,
@@ -48,14 +48,6 @@ import css from './AcpSection.module.css'
 
 /** The section's translate seat (slot renderer binds it from the entry's `locale` declaration). */
 export type AcpTranslate = (key: AcpLocaleKey, params?: Record<string, string | number>) => string
-
-/** Keep catalog placement in step with the host's overlayTopMargin contract. */
-function catalogOverlayTopMargin(margin: number): number {
-  const root = document.documentElement
-  const clearance = Number.parseFloat(getComputedStyle(root).getPropertyValue('--dsh-frame-top-clearance'))
-  if (Number.isNaN(clearance)) return margin
-  return Math.max(margin, (root.hasAttribute('data-fullscreen') ? 0 : clearance) + 20)
-}
 
 /** The framework-synthesized selector hook over the entry's store (PropsStore share). */
 export type UsePanelStore = <S>(selector: (snapshot: AcpPanelSnapshot) => S, equal?: (a: S, b: S) => boolean) => S
@@ -101,6 +93,140 @@ export function AcpSection(props: AcpSectionProps): ReactNode {
   return h(Loaded, { t, useStore, panel })
 }
 
+interface CatalogAnchorProps {
+  open: boolean
+  disabled: boolean
+  menuId: string
+  className: string
+  probeClassName: string
+  icon: ReactNode
+  label: string
+  onToggle(): void
+  onMeasure(rect: DOMRect, side: 'bottom' | 'top', sideChanged: boolean): void
+  onClear(): void
+}
+
+/**
+ * Owns only the catalog anchor's measurement lifecycle. The actual menu stays
+ * the native Menu primitive; this Fragment adds a zero-layout probe so the
+ * resolved frame overlay token, rather than a copied host formula, drives its
+ * available height.
+ */
+function CatalogAnchor({
+  open,
+  disabled,
+  menuId,
+  className,
+  probeClassName,
+  icon,
+  label,
+  onToggle,
+  onMeasure,
+  onClear,
+}: CatalogAnchorProps): ReactNode {
+  const buttonRef = useRef<HTMLButtonElement | null>(null)
+  const probeRef = useRef<HTMLDivElement | null>(null)
+  const lastSide = useRef<'bottom' | 'top' | null>(null)
+
+  useLayoutEffect(() => {
+    if (!open) return
+    const button = buttonRef.current
+    const probe = probeRef.current
+    if (button === null || probe === null) return
+
+    let eventFrame: number | undefined
+    let animationFrame: number | undefined
+    let stopped = false
+    let lastWidth = ''
+    let lastHeight = ''
+    let lastList: HTMLElement | null = null
+    const measure = (): void => {
+      const rect = button.getBoundingClientRect()
+      const resolvedOverlayTop = Number.parseFloat(getComputedStyle(probe).height)
+      const overlayTop = Number.isFinite(resolvedOverlayTop) ? resolvedOverlayTop : 12
+      const below = Math.max(0, window.innerHeight - rect.bottom - 16)
+      const above = Math.max(0, rect.top - overlayTop - 4)
+      // Equal space keeps the menu below the anchor, matching native placement.
+      const side = below >= above ? 'bottom' : 'top'
+      const width = `${rect.width}px`
+      const height = `${side === 'bottom' ? below : above}px`
+      if (lastList !== null && !lastList.isConnected) lastList = null
+      const list = lastList ?? (document.getElementsByClassName(menuId).item(0) as HTMLElement | null)
+      if (list !== null) {
+        if (list !== lastList) {
+          lastWidth = ''
+          lastHeight = ''
+          lastList = list
+        }
+        if (width !== lastWidth) {
+          if (list.style.getPropertyValue('--acp-catalog-menu-width') !== width)
+            list.style.setProperty('--acp-catalog-menu-width', width)
+          lastWidth = width
+        }
+        if (height !== lastHeight) {
+          if (list.style.getPropertyValue('--acp-catalog-menu-max-height') !== height)
+            list.style.setProperty('--acp-catalog-menu-max-height', height)
+          lastHeight = height
+        }
+      }
+      const sideChanged = lastSide.current !== side
+      if (sideChanged) lastSide.current = side
+      onMeasure(rect, side, sideChanged)
+    }
+    const schedule = (): void => {
+      if (eventFrame === undefined)
+        eventFrame = window.requestAnimationFrame(() => {
+          eventFrame = undefined
+          measure()
+        })
+    }
+    const tick = (): void => {
+      if (stopped) return
+      measure()
+      animationFrame = window.requestAnimationFrame(tick)
+    }
+
+    // The child layout effect runs before Menu's placement effect. Seed its
+    // portal sizing and anchor rect synchronously for the first open frame.
+    measure()
+    animationFrame = window.requestAnimationFrame(tick)
+    const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(schedule)
+    observer?.observe(button)
+    observer?.observe(probe)
+    window.addEventListener('scroll', schedule, true)
+    window.addEventListener('resize', schedule)
+    return () => {
+      stopped = true
+      if (eventFrame !== undefined) window.cancelAnimationFrame(eventFrame)
+      if (animationFrame !== undefined) window.cancelAnimationFrame(animationFrame)
+      observer?.disconnect()
+      window.removeEventListener('scroll', schedule, true)
+      window.removeEventListener('resize', schedule)
+      onClear()
+    }
+  }, [menuId, onClear, onMeasure, open])
+
+  return h(
+    Fragment,
+    null,
+    h('div', { ref: probeRef, className: probeClassName, 'aria-hidden': true }),
+    h(
+      'button',
+      {
+        type: 'button',
+        className,
+        ref: buttonRef,
+        disabled,
+        'aria-haspopup': 'menu',
+        'aria-expanded': open,
+        onClick: onToggle,
+      },
+      icon,
+      label,
+    ),
+  )
+}
+
 function Loaded({
   t,
   useStore,
@@ -119,38 +245,16 @@ function Loaded({
   // Delegate placement, scrolling, focus and keyboard interaction to the native Menu.
   const [addMenuOpen, setAddMenuOpen] = useState(false)
   const [addMenuSide, setAddMenuSide] = useState<'bottom' | 'top'>('bottom')
-  const addMenuSideRef = useRef<'bottom' | 'top'>('bottom')
-  const addButtonRef = useRef<HTMLButtonElement | null>(null)
+  const addAnchorRect = useRef<DOMRect | null>(null)
   const catalogMenuId = `acp-catalog-${useId().replaceAll(':', '')}`
-  const getCatalogAnchorRect = useCallback((): DOMRect | null => {
-    const button = addButtonRef.current
-    if (button === null) return null
-    const rect = button.getBoundingClientRect()
-    // `listClassName` is Menu's public portal styling hook. A per-instance
-    // class prevents a second ACP panel from receiving this menu's sizing.
-    const list = document.getElementsByClassName(catalogMenuId).item(0) as HTMLElement | null
-    // The overlay token is a CSS `calc()` and cannot be parsed with parseFloat.
-    // Mirror the upstream Menu's numeric clearance/fullscreen contract instead.
-    const overlayTop = catalogOverlayTopMargin(12)
-    const below = Math.max(0, window.innerHeight - rect.bottom - 16)
-    const above = Math.max(0, rect.top - overlayTop - 4)
-    // Prefer the lower half of the viewport for the menu; anchors with more
-    // usable room above open upward. Long catalogs still scroll within either side.
-    const nextSide = below >= above ? 'bottom' : 'top'
-    const width = `${rect.width}px`
-    const height = `${nextSide === 'bottom' ? below : above}px`
-    if (list !== null) {
-      if (list.style.getPropertyValue('--acp-catalog-menu-width') !== width)
-        list.style.setProperty('--acp-catalog-menu-width', width)
-      if (list.style.getPropertyValue('--acp-catalog-menu-max-height') !== height)
-        list.style.setProperty('--acp-catalog-menu-max-height', height)
-    }
-    if (addMenuSideRef.current !== nextSide) {
-      addMenuSideRef.current = nextSide
-      setAddMenuSide(nextSide)
-    }
-    return rect
-  }, [catalogMenuId])
+  const getCatalogAnchorRect = useCallback((): DOMRect | null => addAnchorRect.current, [])
+  const onCatalogMeasure = useCallback((rect: DOMRect, side: 'bottom' | 'top', sideChanged: boolean): void => {
+    addAnchorRect.current = rect
+    if (sideChanged) setAddMenuSide(side)
+  }, [])
+  const clearCatalogAnchor = useCallback((): void => {
+    addAnchorRect.current = null
+  }, [])
   // Opening the panel reads saved health facts; only an explicit recheck probes.
   useEffect(() => {
     panel.refreshHealth()
@@ -351,22 +455,18 @@ function Loaded({
           const seed = draftFromCatalogEntry(id)
           if (seed !== undefined) openAdd(seed)
         },
-        anchor: h(
-          'button',
-          {
-            type: 'button',
-            className: css.addButton,
-            ref: addButtonRef,
-            disabled: readOnly,
-            'aria-haspopup': 'menu',
-            'aria-expanded': addMenuOpen,
-            onClick: () => {
-              setAddMenuOpen((previous) => !previous)
-            },
-          },
-          h(IconPlusOutlineMedium, { size: 14 }),
-          t('addAgent'),
-        ),
+        anchor: h(CatalogAnchor, {
+          open: addMenuOpen,
+          disabled: readOnly,
+          menuId: catalogMenuId,
+          className: css.addButton ?? '',
+          probeClassName: css.catalogGeometryProbe ?? '',
+          icon: h(IconPlusOutlineMedium, { size: 14 }),
+          label: t('addAgent'),
+          onToggle: () => setAddMenuOpen((previous) => !previous),
+          onMeasure: onCatalogMeasure,
+          onClear: clearCatalogAnchor,
+        }),
       }),
       h(
         'button',

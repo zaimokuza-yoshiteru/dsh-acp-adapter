@@ -43,6 +43,9 @@ type Actions = {
   openMember(parent: SessionId, child: SessionId): Promise<void>
 }
 type ManagedMember = AcpTeamMemberView & { readonly phase: TeamMemberPhase; readonly runtimeKnown: boolean }
+type InterruptFeedback =
+  | { key: 'teamInterruptResult'; params: { accepted: number; skipped: number; failed: number }; isError: boolean }
+  | { key: 'teamInterruptFailed'; isError: true }
 export function AcpTeamManagement({
   sessionId,
   useSession,
@@ -126,12 +129,12 @@ export function AcpTeamManagement({
   const [error, setError] = useState(false)
   const [metadataLoading, setMetadataLoading] = useState(false)
   const [interrupting, setInterrupting] = useState(false)
-  const [interruptFeedback, setInterruptFeedback] = useState('')
+  const [interruptFeedback, setInterruptFeedback] = useState<InterruptFeedback | null>(null)
   const interruptLock = useRef(false)
   const activeSession = useRef<SessionId | null>(sessionId)
   useEffect(() => {
     activeSession.current = sessionId
-    setInterruptFeedback('')
+    setInterruptFeedback(null)
     return () => {
       activeSession.current = null
     }
@@ -140,8 +143,9 @@ export function AcpTeamManagement({
     if (interruptLock.current || view?.id !== sessionId || view.revision !== revision || roster.kind !== 'ready') return
     interruptLock.current = true
     setInterrupting(true)
-    setInterruptFeedback('')
+    setInterruptFeedback(null)
     const current = () => activeSession.current === sessionId && actions.isCurrent(sessionId)
+    let membershipReadSucceeded = false
     try {
       const result = await interruptTeam({
         lead: sessionId,
@@ -152,18 +156,19 @@ export function AcpTeamManagement({
         members: async () => {
           const result = await actions.remote.teamMembers(sessionId)
           if (!result.ok) throw new Error(result.error.message)
+          membershipReadSucceeded = true
           return result.value
         },
         interrupt: (id) => actions.interruptMember(sessionId, id as SessionId),
       })
-      if (current()) setInterruptFeedback(t('teamInterruptResult', result))
+      if (current()) setInterruptFeedback({ key: 'teamInterruptResult', params: result, isError: result.failed > 0 })
     } catch {
-      if (current()) setInterruptFeedback(t('teamInterruptFailed'))
+      if (current()) setInterruptFeedback({ key: 'teamInterruptFailed', isError: true })
     } finally {
       interruptLock.current = false
       if (activeSession.current !== null) {
         setInterrupting(false)
-        setRefresh((n) => n + 1)
+        if (membershipReadSucceeded) setRefresh((n) => n + 1)
       }
     }
   }
@@ -292,10 +297,10 @@ export function AcpTeamManagement({
               ),
             ),
             roster.kind === 'failed'
-              ? h('p', { role: 'status', className: css.hint }, t('teamProjectionFailed'))
+              ? h('p', { role: 'alert', className: css.error }, t('teamProjectionFailed'))
               : null,
             metadataLoading ? h('p', { role: 'status', className: css.hint }, t('teamMetadataLoading')) : null,
-            error ? h('p', { role: 'status', className: css.hint }, t('teamManageError')) : null,
+            error ? h('p', { role: 'alert', className: css.error }, t('teamManageError')) : null,
             ...[...groups].map(([profileId, members], index) =>
               h(ModeGroup, {
                 key: `${sessionId}:${profileId}`,
@@ -324,7 +329,16 @@ export function AcpTeamManagement({
                 ...actions,
               }),
             ),
-            interruptFeedback ? h('p', { role: 'status', className: css.hint }, interruptFeedback) : null,
+            interruptFeedback
+              ? h(
+                  'p',
+                  {
+                    role: interruptFeedback.isError ? 'alert' : 'status',
+                    className: interruptFeedback.isError ? css.error : css.hint,
+                  },
+                  t(interruptFeedback.key, 'params' in interruptFeedback ? interruptFeedback.params : undefined),
+                )
+              : null,
           ),
           document.body,
         )

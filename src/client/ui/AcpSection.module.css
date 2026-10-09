@@ -69,6 +69,17 @@
   flex: 1 1 0;
   min-width: 180px;
 }
+/* Reads the resolved frame clearance without taking space or participating in hit testing. */
+.catalogGeometryProbe {
+  position: fixed;
+  top: 0;
+  left: -10000px;
+  width: 0;
+  height: max(12px, var(--dsh-frame-overlay-top, 12px));
+  visibility: hidden;
+  pointer-events: none;
+  contain: strict;
+}
 /* The native Menu owns material, keyboard interaction, and its pinned footer.
    Its public listClassName hook scopes sizing to this catalog card in portal mode. */
 .catalogMenu {
@@ -106,7 +117,7 @@
   height: 40px;
   padding: 0 12px;
   border: 1px dashed var(--dsw-alias-border-l3);
-  border-radius: 12px;
+  border-radius: var(--dsw-radius-md);
   background: transparent;
   color: var(--dsw-alias-label-primary);
   font: inherit;
@@ -127,7 +138,7 @@
 }
 .addButton:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px var(--dsw-alias-border-l3);
+  box-shadow: 0 0 0 2px var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
 }
 .approvalButton {
   display: inline-flex;
@@ -153,7 +164,7 @@
 }
 .approvalButton:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px var(--dsw-alias-border-l3);
+  box-shadow: 0 0 0 2px var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
 }
 .approvalButton:disabled {
   opacity: 0.5;
@@ -181,7 +192,7 @@
 }
 .rowCard {
   border: 0.5px solid var(--dsw-alias-border-l2);
-  border-radius: 12px;
+  border-radius: var(--dsw-radius-md);
   padding: 12px 14px;
   display: flex;
   flex-direction: column;
@@ -239,7 +250,7 @@
   overflow-wrap: anywhere;
 }
 .editor {
-  border-radius: 12px;
+  border-radius: var(--dsw-radius-md);
   background: var(--dsw-alias-bg-module-platform);
   padding: 14px 16px;
   display: flex;
@@ -280,7 +291,7 @@
 }
 .advancedToggle:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px var(--dsw-alias-border-l3);
+  box-shadow: 0 0 0 2px var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
 }
 .advancedFields {
   display: flex;
@@ -310,7 +321,7 @@
   min-height: 64px;
   padding: 6px 10px;
   border: 0.5px solid var(--dsw-alias-border-l2);
-  border-radius: 8px;
+  border-radius: var(--dsw-radius-sm);
   font-family: var(--ds-font-family-code, monospace);
   font-size: 12px;
   line-height: 18px;
@@ -319,7 +330,6 @@
   resize: vertical;
 }
 .textarea:focus {
-  outline: none;
   border-color: var(--dsw-alias-brand-primary);
 }
 .textarea:disabled {
@@ -347,7 +357,7 @@
   gap: 8px;
   padding: 8px 10px;
   border: 0.5px solid var(--dsw-alias-border-l2);
-  border-radius: 8px;
+  border-radius: var(--dsw-radius-sm);
 }
 .deleteText {
   flex: 1 1 100%;

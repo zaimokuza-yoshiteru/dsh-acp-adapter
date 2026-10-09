@@ -8,8 +8,10 @@ import {
   auditSessionRefreshKeyOf,
   auditSummaryOf,
   auditRecordedCause,
+  createAcpAuditView,
 } from '../../../src/client/ui/AcpAuditHeaderAction.ts'
 import { en, zh } from '../../../src/client/ui/locales.ts'
+import { acpJsonTreeLabels } from '../../../src/client/ui/json-tree.ts'
 
 const entry = (partial: Partial<AcpAuditTimelineEntry>): AcpAuditTimelineEntry => ({
   seq: 1,
@@ -113,6 +115,37 @@ describe('ACP audit header utility behavior', () => {
         entry({ summaryCode: 'permission.decided', subject: 'allow_once', status: 'allow_once' }),
       ),
     ).toBe('权限决定已记录 · allow_once · 已允许本次操作')
+  })
+
+  it('preserves unknown status values verbatim', () => {
+    expect(auditSummaryOf((key) => en[key], entry({ status: 'provider-new-state' }))).toBe(
+      'Permission decision recorded · provider-new-state',
+    )
+  })
+
+  it('does not render the audit view without its locale seat', () => {
+    const element = createAcpAuditView({} as never)({} as never)
+    expect(element).not.toBeNull()
+    const wrapped = element as { type: (props: unknown) => unknown; props: unknown }
+    expect(typeof wrapped.type).toBe('function')
+    expect(wrapped.type(wrapped.props)).toBeNull()
+  })
+
+  it('uses the locale dictionary for JSON inspector labels and action parameters', () => {
+    const labels = (dictionary: typeof en) =>
+      acpJsonTreeLabels((key, params) => {
+        let text: string = dictionary[key]
+        for (const [name, value] of Object.entries(params ?? {})) text = text.replaceAll(`{${name}}`, String(value))
+        return text
+      })
+    expect(labels(en)).toMatchObject({
+      copyValue: 'Copy value',
+      copyFailed: 'Copy failed',
+      copyButtonTitle: expect.any(Function),
+    })
+    expect(labels(en).copyButtonTitle('copy JSON')).toBe('Copy options: copy JSON')
+    expect(labels(zh).copyValue).toBe('复制值')
+    expect(labels(zh).copyButtonTitle('复制 JSON')).toBe('复制选项：复制 JSON')
   })
 
   it('distinguishes a terminal output read from the process exit in the visible timeline', () => {

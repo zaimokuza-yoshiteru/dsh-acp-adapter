@@ -42,13 +42,20 @@ it('shows external Devin children live, then persists only successful terminal c
     await expect.poll(() => row.count(), { timeout: 8_000 }).toBe(1)
     await row.waitFor({ state: 'visible' })
   }
-  const expandLastTurnProcess = async (page: Page) => {
-    const control = page.locator('[data-turn-process-tool-calls]').last()
+  const expandTurnProcess = async (page: Page, turn: number) => {
+    const control = page.locator(`[data-turn-process="${turn}"][data-turn-process-tool-calls]`)
     await control.waitFor({ state: 'visible' })
-    if ((await control.getAttribute('aria-expanded')) === 'false') await control.click()
-    const stepProcess = page.locator('[data-step-process] > div > button').last()
+    if ((await control.getAttribute('aria-expanded')) === 'false') {
+      expect(await control.isEnabled()).toBe(true)
+      await control.click()
+    }
+    await expect.poll(() => control.getAttribute('aria-expanded')).toBe('true')
+    const stepProcess = page.locator(`[data-step-process][data-chat-turn="${turn}"] > div > button`)
     await stepProcess.waitFor({ state: 'visible' })
-    if ((await stepProcess.getAttribute('aria-expanded')) === 'false') await stepProcess.click()
+    if ((await stepProcess.getAttribute('aria-expanded')) === 'false') {
+      expect(await stepProcess.isEnabled()).toBe(true)
+      await stepProcess.click()
+    }
     await expect.poll(() => stepProcess.getAttribute('aria-expanded')).toBe('true')
   }
   const expectNoChildControlForRow = async (page: Page, row: Locator) => {
@@ -169,7 +176,7 @@ it('shows external Devin children live, then persists only successful terminal c
     await waitForGate('success-child-terminal.ready')
     await page.getByText('E2E_EXTERNAL_CHILD_SUCCESS_DONE', { exact: true }).waitFor()
     const successfulParentId = await success.settled
-    await expandLastTurnProcess(page)
+    await expandTurnProcess(page, 1)
     const completed = success.rowFor('Completed')
     await expectExactlyOneToolRow(completed)
     await expectExactlyOneToolRow(success.parentValidation)
@@ -277,7 +284,7 @@ it('shows external Devin children live, then persists only successful terminal c
     await waitForGate('failure-child-terminal.ready')
     await page.getByText('E2E_EXTERNAL_CHILD_FAILURE_DONE', { exact: true }).waitFor()
     await failure.settled
-    await expandLastTurnProcess(page)
+    await expandTurnProcess(page, 2)
     const failed = failure.rowFor('Failed')
     await expectExactlyOneToolRow(failed)
     await capturePassEvidence(page, 'failure-failed')
@@ -291,7 +298,7 @@ it('shows external Devin children live, then persists only successful terminal c
     const cancelled = await send('PARENT_CANCELLED')
     await page.getByRole('button', { name: 'Stop generating', exact: true }).click()
     await cancelled.settled
-    await expandLastTurnProcess(page)
+    await expandTurnProcess(page, 3)
     const cancelledRow = cancelled.rowFor('State unconfirmed')
     await expectExactlyOneToolRow(cancelledRow)
     await capturePassEvidence(page, 'parent-cancelled-unconfirmed')
