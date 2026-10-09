@@ -30,6 +30,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        id: node
         with:
           node-version-file: .nvmrc
           package-manager-cache: false
@@ -70,8 +71,13 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 90
+      - name: Cache published dependency store
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/pnpm-store-plugin
+          key: plugin-store-${{ runner.os }}-${{ runner.arch }}-node${{ steps.node.outputs.node-version }}-pnpm10.7.0-${{ hashFiles('pnpm-lock.yaml') }}
       - name: Install exact published dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --store-dir "$RUNNER_TEMP/pnpm-store-plugin"
       # npm pack runs prepack: typecheck, tests, build and bundle verification once.
       - name: Test and pack exact release artifact
         run: mkdir -p dist/npm && npm pack --pack-destination dist/npm
@@ -145,7 +151,7 @@ jobs:
     name: Verify npm publication and create GitHub Release
     needs: [pack, publish]
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 12
     permissions:
       contents: write
     steps:

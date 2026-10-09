@@ -4,6 +4,20 @@
 
 User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for publication dates, exact installation instructions, and checksums. Historical entries were reconstructed from tag diffs; npm packages were not republished.
 
+## 0.2.0-rc.2.9
+
+### 中文
+
+- 引入适配插件的开发、审阅和发布技能，根据变更范围选择验证，并明确已有证据的复用条件。
+- 减少重复 CI 触发，将原生界面回归拆到三个独立 runner，并缓存依赖与浏览器下载。保留平台检查、冷安装及最终包校验；延长 npm 发布后可见性等待，避免处理延迟使 Release 提前失败。
+- 继续支持 DSH `0.2.0-rc.2`。此前真实 Devin macOS Teams 冒烟中的第二次消息调用仍未解决；本版未修改该测试守卫或生产消息规则。
+
+### English
+
+- Add adapter-specific development, review and release skills with scoped validation and explicit evidence reuse criteria.
+- Reduce duplicate CI triggers, split native UI regression across three isolated runners, and cache dependency and browser downloads. Retain platform, cold-install and final-artifact checks; allow more time for npm processing before creating the GitHub Release.
+- Continue to support DSH `0.2.0-rc.2`. The earlier real Devin macOS Teams smoke failure on a second message remains unresolved; this release changes neither that test guard nor production messaging rules.
+
 ## 0.2.0-rc.2.8
 
 ### 中文

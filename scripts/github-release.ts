@@ -255,20 +255,26 @@ export function assertRemoteTagMatchesLocal(tag: string, sha: string, github: Gi
   if (remoteSha !== sha) throw new Error('Local and remote tag commits differ')
 }
 
+export const NPM_PROPAGATION_TIMEOUT_MS = 8 * 60_000
+
 export async function readRegistry(
   version: string,
   fetcher: typeof fetch = fetch,
   wait: (ms: number) => Promise<void> = delay,
+  now: () => number = Date.now,
 ): Promise<Packument> {
-  for (let attempt = 0; attempt < 6; attempt++) {
+  const deadline = now() + NPM_PROPAGATION_TIMEOUT_MS
+  for (let attempt = 0; now() < deadline; attempt++) {
     const response = await fetcher(`https://registry.npmjs.org/${encodeURIComponent(packageName)}`, {
       headers: { 'cache-control': 'no-cache' },
-      signal: AbortSignal.timeout(20_000),
+      signal: AbortSignal.timeout(Math.max(1, Math.min(20_000, deadline - now()))),
     })
     if (!response.ok) throw new Error(`npm registry returned HTTP ${response.status}`)
     const registry = (await response.json()) as Packument
     if (registry.versions[version] && registry.time[version]) return registry
-    if (attempt < 5) await wait(5_000)
+    const remaining = deadline - now()
+    if (remaining <= 0) break
+    await wait(Math.min(5_000 * 2 ** Math.min(attempt, 3), 30_000, remaining))
   }
   throw new Error(`Not published on npm: ${version}`)
 }

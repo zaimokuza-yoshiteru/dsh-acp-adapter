@@ -12,6 +12,7 @@ import {
   npmTarballFilename,
   previousPublishedTag,
   readRegistry,
+  NPM_PROPAGATION_TIMEOUT_MS,
   renderNotes,
   validatePublished,
   writeReleaseIfEnabled,
@@ -314,15 +315,55 @@ describe('GitHub release publication', () => {
       .fn<typeof fetch>()
       .mockResolvedValueOnce(Response.json({ versions: {}, time: {} }))
       .mockResolvedValue(Response.json(registry))
-    const wait = vi.fn(async () => {})
-    expect(await readRegistry(version, fetcher, wait)).toEqual(registry)
+    let elapsed = 0
+    const now = () => elapsed
+    const wait = vi.fn(async (ms: number) => {
+      elapsed += ms
+    })
+    expect(await readRegistry(version, fetcher, wait, now)).toEqual(registry)
     expect(wait).toHaveBeenCalledOnce()
+    expect(wait).toHaveBeenCalledWith(5_000)
+    elapsed = 0
+    wait.mockClear()
     const missing = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({ versions: {}, time: {} }))
-    await expect(readRegistry(version, missing, wait)).rejects.toThrow('Not published on npm')
-    expect(missing).toHaveBeenCalledTimes(6)
+    await expect(readRegistry(version, missing, wait, now)).rejects.toThrow('Not published on npm')
+    expect(elapsed).toBe(NPM_PROPAGATION_TIMEOUT_MS)
+    expect(wait.mock.calls.slice(0, 4).map(([ms]) => ms)).toEqual([5_000, 10_000, 20_000, 30_000])
+    expect(wait.mock.calls.every(([ms]) => ms <= 30_000)).toBe(true)
+    expect(missing.mock.calls.length).toBeGreaterThan(6)
     await expect(
-      readRegistry(version, vi.fn<typeof fetch>().mockResolvedValue(new Response('', { status: 500 })), wait),
+      readRegistry(version, vi.fn<typeof fetch>().mockResolvedValue(new Response('', { status: 500 })), wait, now),
     ).rejects.toThrow('HTTP 500')
+  })
+
+  it('waits through several minutes of accepted-publication processing without publishing npm again', async () => {
+    let elapsed = 0
+    const wait = async (ms: number) => {
+      elapsed += ms
+    }
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockImplementation(async () => Response.json(elapsed < 4 * 60_000 ? { versions: {}, time: {} } : registry))
+    expect(await readRegistry(version, fetcher, wait, () => elapsed)).toEqual(registry)
+    expect(elapsed).toBeGreaterThanOrEqual(4 * 60_000)
+    expect(elapsed).toBeLessThan(NPM_PROPAGATION_TIMEOUT_MS)
+    expect(fetcher.mock.calls.every(([, options]) => options?.headers && 'cache-control' in options.headers)).toBe(true)
+  })
+
+  it('charges request time to the propagation deadline and preserves real network errors', async () => {
+    let elapsed = 0
+    const wait = vi.fn(async () => {})
+    const slow = vi.fn<typeof fetch>().mockImplementation(async () => {
+      elapsed += NPM_PROPAGATION_TIMEOUT_MS
+      return Response.json({ versions: {}, time: {} })
+    })
+    await expect(readRegistry(version, slow, wait, () => elapsed)).rejects.toThrow('Not published on npm')
+    expect(slow).toHaveBeenCalledOnce()
+    expect(wait).not.toHaveBeenCalled()
+    const network = vi.fn<typeof fetch>().mockRejectedValue(new Error('network unavailable'))
+    await expect(readRegistry(version, network, wait, () => elapsed)).rejects.toThrow('network unavailable')
+    expect(network).toHaveBeenCalledOnce()
+    expect(wait).not.toHaveBeenCalled()
   })
 
   it('gates GitHub writes on npm success and limits write permission to the Release job', () => {

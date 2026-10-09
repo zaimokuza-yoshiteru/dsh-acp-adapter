@@ -4,7 +4,7 @@
 
 ## 仅修改文档
 
-通过 PR 合并并遵守分支要求的检查即可；不修改版本，不创建发布标签，也不运行发布工作流。普通 push 或 PR 仍会运行仓库配置的 CI，但不会发布 npm 包。
+通过 PR 合并并遵守分支要求的检查即可；不修改版本，不创建发布标签，也不运行发布工作流。普通 CI 由 PR、main push 或手动运行触发；功能分支 push 和发布 tag 不再重复触发普通 CI。
 
 ## 发布适配器
 
@@ -12,6 +12,8 @@
 2. 从合并后的目标提交创建与 `package.json` 版本完全一致的 `v<version>` 标签并推送。不要重新使用已发布的版本或移动发布标签。
 3. 标签触发 [publish npm 工作流](../.github/workflows/publish.yml)。工作流校验版本与官方 DSH 依赖，尝试同步并冻结 Registry 快照，再执行测试、构建、`npm pack` 和干净安装门禁；`npm-publish` 环境批准后通过 OIDC 发布同一份 CI tarball。手动运行也必须选择对应标签。Registry 同步失败不增加审批，也不阻塞发布；已有发布环境保护保持不变。
 4. npm 成功后，独立的 `github-release` job 自动核对精确版本与 CI tarball 的 SHA-512，再创建或复用对应 GitHub Release，并附加同一份已验证 tarball。它不重新打包。如果同名资产已存在，脚本下载并逐字节比较；相同则幂等成功，不同则失败且不覆盖。发布通道由版本推导：alpha 使用 `alpha`，RC 使用 `next`，稳定版使用 `latest`；GitHub 预发行标记由版本推导，创建 Release 不修改 npm 通道。
+
+普通 CI 会取消同一 PR 或分支已过时的运行；发布工作流继续排队执行，不自动取消。main 仍验证精确合并提交。Native UI 在三个独立 runner 上分片，片内串行，全部成功才通过原有 `Native UI parity (exact source scaffold)` 必需检查。依赖内容 store 与 Chromium 二进制按平台、工具链和锁文件缓存；Host 仍从目标源码构建，干净安装门禁仍使用独立冷 store。不会缓存 profiles、会话、认证或运行时目录。发布仍冻结本次 Registry、完整 prepack 并检查最终 tarball，不能用同一 Git SHA 的旧验证包替代刷新后的产物。
 
 ```sh
 # 发布后查询；将 <version> 替换为本次精确版本
@@ -24,7 +26,7 @@ npm view '@zaimokuza/dsh-acp-adapter@<version>' version dist.integrity dist.tarb
 
 Release 自动包含 npm 实际发布时间、兼容声明、精确安装方式、包校验值、变更链接，以及普通发布所用的预构建插件 tarball。Release 中的 `.tgz` 与 npm 包是同一份 CI artifact；GitHub 自动生成的 Source code ZIP/TAR 是源码归档，不是可直接安装的预构建插件包。该 tarball 不缓存其依赖，首次安装仍需联网。中文、英文功能摘要维护在 `CHANGELOG.md` 的 `## <version>` 条目中，按发布标签读取，不单独维护另一份 Release 文案。没有该版本摘要时自动列出原始提交标题，不声称这些标题已翻译或经过用户影响分析；这不会新增发布审批。对比基线选择 npm 发布时间早于当前版本的最近一个已发布标签，跳过失败标签，也不使用 GitHub 补录时间排序。仓库历史有 squash 合并，因此上一次发行不一定是当前标签的 Git 祖先；跨分支发布时，完整对比可能包含分支差异。
 
-GitHub Release 创建失败会使工作流显示失败，但已发布的 npm 包不回滚。使用 Actions 的 **Re-run failed jobs** 只重试失败的说明发布 job；不要重跑整个发布流程，否则会再次尝试发布不可覆盖的 npm 版本。重复运行说明脚本会保留已有 Release 的文案，不覆盖人工编辑。历史补录和该脚本均不设置 GitHub Latest 标记。
+GitHub Release 创建失败会使工作流显示失败，但已发布的 npm 包不回滚。npm 接受发布后可能需要数分钟才能在 Registry 查询到版本；Release job 使用最多八分钟的有界退避等待，查询可见后继续核对版本与校验值。超时或其他错误后，使用 Actions 的 **Re-run failed jobs** 只重试失败的说明发布 job；不要重跑整个发布流程，否则会再次尝试发布不可覆盖的 npm 版本。重复运行说明脚本会保留已有 Release 的文案，不覆盖人工编辑。历史补录和该脚本均不设置 GitHub Latest 标记。
 
 历史补录在当前分支运行脚本，并显式提供已有标签和更新记录。先默认生成 `.local/releases/<tag>.md`，需要写入 GitHub 时加 `--write`：
 

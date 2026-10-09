@@ -22,8 +22,9 @@ import { connectFreshWorkspace, writeComposerDraft } from '#host-support'
 import { launchAdapterWorld, root } from './scaffold.ts'
 import { backToPluginList, openAcpPluginDetail, returnToConversation } from './plugin-panel.helpers.ts'
 import { createAcpSidecar } from '../../src/persistence/sidecar.ts'
+import { nativeParityProfiles } from '../../scripts/e2e-shards.ts'
 
-const profiles = ['claude', 'codex', 'devin', 'kimi']
+const profiles = nativeParityProfiles(process.env.DSH_E2E_NATIVE_PARITY_PROFILES)
 
 class NativeControl extends LlmAdapter {
   constructor(private readonly nativeQuestionMode: () => boolean = () => false) {

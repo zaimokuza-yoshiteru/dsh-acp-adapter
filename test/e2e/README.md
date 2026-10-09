@@ -79,6 +79,8 @@ pnpm test:e2e
 
 `pnpm typecheck` 检查产品源码、单元测试、开发/发布脚本和模拟 Agent；`pnpm typecheck:e2e` 单独检查浏览器测试，并从所选宿主源码提取测试接口声明。`pnpm test:e2e` 会先执行该检查，再启动 Web 或 Electron。开发脚本和模拟 Agent 使用 Node 原生运行可擦除类型的 TypeScript，无需预编译。
 
+普通 CI 将全部协议夹具分配给三个独立 runner，片内仍串行且不重试。`scripts/e2e-shards.ts` 从实际文件清单生成分组，新增 `.e2e.ts` 自动纳入；较大的 native parity 夹具按 Claude、Codex、Devin、Kimi 分配，各 profile 恰好运行一次。三个分片全部成功才通过原有 Native UI 必需检查，opt-in 真实 Agent 场景继续按原规则跳过。`node scripts/e2e-shards.ts` 可查看完整分配；`pnpm test:e2e --ci-shard 1/3` 可顺序复现某片，该模式不接受额外文件或名称过滤。默认 `pnpm test:e2e` 仍运行完整清单。依赖 store 与 Chromium 缓存只保存下载内容，Host 每片仍从准确源码标签构建，不复用用户 profile 或认证。
+
 `DSH_UPSTREAM_CHECKOUT` 可指定其他源码目录。`pnpm test:e2e -t 'claude'` 可只运行一种协议夹具。默认使用 Playwright Chromium；`DSH_E2E_BROWSER_CHANNEL=chrome` 可使用本机已安装 Chrome。`DSH_E2E_NODE` 可指定宿主支持的另一份 Node 运行时，但原生依赖必须针对该 Node ABI 构建。插件构建与常规测试仍遵循 `.nvmrc`。
 
 `DSH_E2E_ELECTRON=/绝对路径/Electron pnpm test:e2e` 将同一组场景运行在真实 Electron 窗口中，使用独立临时用户目录，以及与桌面端一致的 sandbox、contextIsolation 和禁用 nodeIntegration 设置。它覆盖适配器在 Electron 中的渲染、交互和宿主通信，不替代桌面仓库对打包、preload、专有协议、升级和跨平台成品的测试；不支持保留窗口模式。
