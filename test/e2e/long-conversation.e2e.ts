@@ -5,6 +5,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { LlmAdapter, ToolCallId } from '@deepseek-ai/dsh-llm'
+import { SessionId } from '@deepseek-ai/dsh-session'
 import { connectFreshWorkspace, writeComposerDraft } from '#host-support'
 import { launchBrowser, newEnglishPage } from './browser.ts'
 import type { TestBrowser } from './browser.ts'
@@ -69,7 +70,10 @@ interface RunEvidence {
       afterSettledCount: number
     }
   >
-  readonly toolKinds: Record<string, { visible: boolean; output?: string; isError?: boolean }>
+  readonly toolKinds: Record<
+    string,
+    { visible: boolean; presentedTools: readonly string[]; output?: string; isError?: boolean }
+  >
   readonly limitations: string[]
   readonly events: SessionEvent[]
   readonly performanceBaseline: {
@@ -191,6 +195,8 @@ function toolArgs(kind: LongTurnKind, workspaceFile = LONG_FLOW_FILE) {
 }
 
 class NativeControl extends LlmAdapter {
+  readonly presentedTools = new Map<number, readonly string[]>()
+
   providerInfo(provider: string) {
     return { id: provider, name: 'Long flow native control' }
   }
@@ -209,6 +215,7 @@ class NativeControl extends LlmAdapter {
     const turnCount = Number(/\btotal=(\d+)/.exec(prompt)?.[1] ?? TURN_COUNT)
     const historyResume = prompt.includes('resume=history-read')
     const spec = longTurnSpec(index, turnCount)
+    this.presentedTools.set(index, options.tools?.map((tool) => tool.name) ?? [])
     const latestUserIndex = options.messages.findLastIndex((message) => message.source?.kind === 'user')
     const currentStepResults = options.messages
       .slice(latestUserIndex + 1)
@@ -274,12 +281,19 @@ describe('long conversation native renderer comparison', () => {
   const allEventRecords: { sessionId: string; event: SessionEvent }[] = []
   const nativeProvider = 'native-control'
   const acpProvider = 'acp-devin'
+  const nativeControl = new NativeControl()
+  let releaseToolPresentation: (() => void) | undefined
+  const restoreToolPresentation = (): void => {
+    const release = releaseToolPresentation
+    releaseToolPresentation = undefined
+    release?.()
+  }
 
   beforeAll(async () => {
     mkdirSync(EVIDENCE, { recursive: true })
     host = await startupPhase(
       'host launch',
-      () => launchAdapterWorld({ renderProbe: true, toolsMode: 'both' }),
+      () => launchAdapterWorld({ renderProbe: true, toolsMode: 'native' }),
       (lateHost) => lateHost.close(),
     )
     await startupPhase('ACP settings', () =>
@@ -308,7 +322,7 @@ describe('long conversation native renderer comparison', () => {
       ),
     )
     console.info('[long-flow startup] native tool registration: start')
-    host.ctx.effect(() => host.ctx.llm.registerAdapter([nativeProvider], new NativeControl()))
+    host.ctx.effect(() => host.ctx.llm.registerAdapter([nativeProvider], nativeControl))
     host.ctx.effect(() =>
       host.ctx.tools.register({
         name: 'long_fixture',
@@ -335,6 +349,7 @@ describe('long conversation native renderer comparison', () => {
   }, 120_000)
 
   afterAll(async () => {
+    restoreToolPresentation()
     await browser?.close()
     await host?.close()
   })
@@ -488,6 +503,7 @@ describe('long conversation native renderer comparison', () => {
       }
       throw error
     } finally {
+      restoreToolPresentation()
       activeWaiterCancel?.()
       await cdp.detach()
       await page.close()
@@ -557,6 +573,13 @@ describe('long conversation native renderer comparison', () => {
     for (let index = 1; index <= turnCount; index++) {
       reportPhase(index, 'draft')
       const spec = longTurnSpec(index, turnCount)
+      if (spec.kind === 'run-code') {
+        const agent = host.ctx.agents.get(SessionId(sessionId))
+        if (agent === undefined) throw new Error(`Long-flow Agent ${sessionId} is not active before its PTC turn`)
+        // One legal presentation at a time: the real PTC turn temporarily
+        // replaces native tools, then the same session resumes native calls.
+        releaseToolPresentation = agent.ctx.tools.presentAs('ptc')
+      }
       const prompt = `E2E_LONG_CONVERSATION turn=${index} total=${turnCount} kind=${spec.kind} ${spec.marker}; preserve earlier requirements and summarize this step.`
       const composer = conversation.locator('[data-composer-input][contenteditable="true"]')
       await composer.waitFor({ state: 'visible' })
@@ -629,7 +652,7 @@ describe('long conversation native renderer comparison', () => {
         }
         writeFileSync(provider === nativeProvider ? NATIVE_FINISH_RELEASE : ACP_FINISH_RELEASE, 'release')
       }
-      const settlement = await settled.promise
+      const settlement = await settled.promise.finally(restoreToolPresentation)
       registerWaiterCancel(undefined)
       if (settlement.kind === 'failed') throw settlement.error
       if (settlement.kind === 'cancelled') throw new Error(`Turn-end wait cancelled for ${sessionId}`)
@@ -708,7 +731,11 @@ describe('long conversation native renderer comparison', () => {
         let resultOutput = ''
         let resultIsError: boolean | undefined
         let callId: string | undefined
+        let presentedTools: readonly string[]
         if (provider === nativeProvider) {
+          const tools = nativeControl.presentedTools.get(index)
+          if (tools === undefined) throw new Error(`Native turn ${index} did not capture its model tool catalog`)
+          presentedTools = tools
           const call = callEvents.at(-1)
           const result = resultEvents.at(-1)
           if (call === undefined || !('name' in call.data) || call.data.name !== expectedName)
@@ -721,9 +748,14 @@ describe('long conversation native renderer comparison', () => {
         } else {
           // ACP tool executions are confirmed by the actual MCP call result logged by the fixture;
           // ACP activity rows do not become native Session tool/call or tool/result events.
-          const logLine = readFileSync(MOCK_LOG, 'utf8')
-            .split('\n')
-            .find((line) => line.includes(`long-flow tool=${expectedName} turn=${index} `))
+          const logLines = readFileSync(MOCK_LOG, 'utf8').split('\n')
+          const catalogLine = logLines.find((line) => line.includes(`long-flow catalog turn=${index} tools=`))
+          if (catalogLine === undefined) throw new Error(`ACP turn ${index} did not capture its MCP tool catalog`)
+          const catalog: unknown = JSON.parse(catalogLine.split(`long-flow catalog turn=${index} tools=`)[1]!)
+          if (!Array.isArray(catalog) || !catalog.every((name): name is string => typeof name === 'string'))
+            throw new Error(`ACP turn ${index} recorded an invalid MCP tool catalog`)
+          presentedTools = catalog
+          const logLine = logLines.find((line) => line.includes(`long-flow tool=${expectedName} turn=${index} `))
           if (logLine === undefined) {
             throw new Error(`ACP fixture did not log a real ${expectedName} MCP result for turn ${index}`)
           }
@@ -733,6 +765,8 @@ describe('long conversation native renderer comparison', () => {
           resultOutput = fields[2]!
           callId = `long-flow-tool-${index}`
         }
+        if (spec.kind === 'run-code') expect(presentedTools).toEqual(['run_code'])
+        else expect(presentedTools).not.toContain('run_code')
         const turnToggle = page.locator(`[data-turn-process="${index}"]`)
         if ((await turnToggle.count()) > 0 && (await turnToggle.getAttribute('aria-expanded')) === 'false') {
           await turnToggle.click()
@@ -756,6 +790,7 @@ describe('long conversation native renderer comparison', () => {
         const visible = await row.isVisible()
         toolKinds[spec.kind] = {
           visible,
+          presentedTools,
           output: resultOutput,
           ...(resultIsError === undefined ? {} : { isError: resultIsError }),
         }

@@ -159,6 +159,7 @@ describe('AcpProfileAdapter generation and dispatch boundaries', () => {
       ctx.sessionProjections.register(acpExecutionProjection)
       try {
         const native = ctx.sessions.create(SessionId('native-before-acp'), { meta: { cwd: '/workspace' } })
+        ctx.provide('workingDirectory', { get: () => '/workspace' } as never)
         const appendContext = (kind: string, text: string) => {
           const message = createUserMessage({
             content: [{ type: 'text', text }],

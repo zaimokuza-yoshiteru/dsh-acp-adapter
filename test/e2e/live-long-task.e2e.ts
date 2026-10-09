@@ -303,14 +303,16 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
         scene: LongTaskScene
         session: string
         messageId: string
-        senderId?: string
+        senderId: string
+        reportMarker?: string
         eventIndex: number
+        seq: number
       }[] = []
       const memberSessionIds = new Set<string>()
       const teamMemberFacts: { id: string; name: string; role: string }[] = []
       const turns: { scene: LongTaskScene; session: string; turn?: number; reason: string }[] = []
       const claimedTurnByMarker = new Map<string, number>()
-      const answers: { scene: LongTaskScene; session: string; text: string }[] = []
+      const answers: { scene: LongTaskScene; session: string; text: string; eventIndex: number }[] = []
       const errorTexts: string[] = []
       let stickyViolation: string | undefined
       let expectingDStop = false
@@ -604,7 +606,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
             .filter((block) => block.type === 'text')
             .map((block) => block.text)
             .join('')
-          if (text.length > 0) answers.push({ scene, session: safeId(scope), text })
+          if (text.length > 0) answers.push({ scene, session: safeId(scope), text, eventIndex: events.length - 1 })
         }
         if (event.type === 'approval/asked') {
           const violation = recordLongTaskApprovalRequest(budget, scene)
@@ -613,39 +615,43 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
         if (event.type === 'approval/decided') {
           approvals.push({ scene, session: safeId(scope), outcome: event.data.outcome })
         }
-        if (event.type === 'team/message/queued')
-          teamMessages.push({
-            scene,
-            session: safeId(scope),
-            type: event.type,
-            eventIndex: events.length - 1,
-            messageId: String(event.data.message.id),
-            targetId: String(event.data.message.targetId),
-            senderId: String(event.data.message.senderId),
-            reportMarker: ['B_REPORT_RUNTIME', 'B_REPORT_TEAMS'].find((marker) =>
-              event.data.message.content.some(
-                (block) => block.type === 'text' && block.text.includes(`${marker}_${runId.slice(0, 8)}`),
+        // Inbox acceptance and later user/message admission are distinct native
+        // facts. Neither a send tool result nor acceptance proves model processing.
+        if (event.type === 'agent/inbox/spliced') {
+          for (const message of event.data.inserted) {
+            const source = message.source
+            if (source.kind !== 'agent-message' || source.form !== 'relay') continue
+            teamMessages.push({
+              scene,
+              session: safeId(scope),
+              type: event.type,
+              eventIndex: events.length - 1,
+              messageId: message.id,
+              targetId: scope,
+              senderId: source.senderSessionId,
+              reportMarker: ['B_REPORT_RUNTIME', 'B_REPORT_TEAMS'].find((marker) =>
+                message.content.some(
+                  (block) => block.type === 'text' && block.text.includes(`${marker}_${runId.slice(0, 8)}`),
+                ),
               ),
-            ),
-          })
-        if (event.type === 'team/message/delivered')
-          teamMessages.push({
-            scene,
-            session: safeId(scope),
-            type: event.type,
-            eventIndex: events.length - 1,
-            messageId: String(event.data.messageId),
-            targetId: String(event.data.targetId),
-          })
+            })
+          }
+        }
         if (event.type === 'user/message') {
-          const data = event.data as unknown as { source?: { kind?: string; messageId?: string; senderId?: string } }
-          if (data.source?.kind === 'team-message' && typeof data.source.messageId === 'string')
+          const source = event.data.source
+          if (source.kind === 'agent-message' && source.form === 'relay')
             teamReceipts.push({
               scene,
               session: safeId(scope),
-              messageId: data.source.messageId,
-              senderId: data.source.senderId,
+              messageId: event.data.id,
+              senderId: source.senderSessionId,
+              reportMarker: ['B_REPORT_RUNTIME', 'B_REPORT_TEAMS'].find((marker) =>
+                event.data.content.some(
+                  (block) => block.type === 'text' && block.text.includes(`${marker}_${runId.slice(0, 8)}`),
+                ),
+              ),
               eventIndex: events.length - 1,
+              seq: event.seq,
             })
         }
       }
@@ -1484,34 +1490,32 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
                       .filter((task) => ['runtime-reader', 'teams-reader'].includes(task.ownerName ?? ''))
                       .every((task) => task.status === 'completed'),
                   ).toBe(true)
-                  const queued = teamMessages.filter(
+                  const accepted = teamMessages.filter(
                     (message) =>
                       message.scene === 'B' &&
                       message.session === safeId(String(leadSessionId)) &&
-                      message.type === 'team/message/queued' &&
+                      message.type === 'agent/inbox/spliced' &&
                       message.reportMarker !== undefined,
                   )
-                  const delivered = teamMessages.filter(
-                    (message) =>
-                      message.scene === 'B' &&
-                      message.session === safeId(String(leadSessionId)) &&
-                      message.type === 'team/message/delivered' &&
-                      queued.some((entry) => entry.messageId === message.messageId),
-                  )
                   const receipts = teamReceipts.filter(
-                    (receipt) => receipt.scene === 'B' && queued.some((entry) => entry.messageId === receipt.messageId),
+                    (receipt) =>
+                      receipt.scene === 'B' && accepted.some((entry) => entry.messageId === receipt.messageId),
                   )
-                  expect(queued).toHaveLength(2)
-                  expect(delivered).toHaveLength(2)
+                  expect(accepted).toHaveLength(2)
                   expect(receipts).toHaveLength(2)
-                  expect(delivered.map((message) => message.messageId).sort()).toEqual(
-                    queued.map((message) => message.messageId).sort(),
-                  )
                   expect(receipts.map((receipt) => receipt.messageId).sort()).toEqual(
-                    queued.map((message) => message.messageId).sort(),
+                    accepted.map((message) => message.messageId).sort(),
                   )
                   expect(receipts.every((receipt) => receipt.session === safeId(String(leadSessionId)))).toBe(true)
-                  expect(new Set(queued.map((message) => message.senderId))).toEqual(new Set(memberIds.map(String)))
+                  expect(new Set(accepted.map((message) => message.senderId))).toEqual(new Set(memberIds.map(String)))
+                  expect(new Set(accepted.map((message) => message.reportMarker))).toEqual(
+                    new Set(['B_REPORT_RUNTIME', 'B_REPORT_TEAMS']),
+                  )
+                  for (const [sender, marker] of [
+                    [runtimeReader.id, 'B_REPORT_RUNTIME'],
+                    [teamsReader.id, 'B_REPORT_TEAMS'],
+                  ] as const)
+                    expect(accepted.find((message) => message.senderId === sender)?.reportMarker).toBe(marker)
                   expect(
                     memberIds.every((id) =>
                       turns.some(
@@ -1522,20 +1526,18 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
                   ).toBe(true)
                   expect(
                     receipts.every((receipt) =>
-                      queued.some(
-                        (message) => message.messageId === receipt.messageId && message.senderId === receipt.senderId,
+                      accepted.some(
+                        (message) =>
+                          message.messageId === receipt.messageId &&
+                          message.senderId === receipt.senderId &&
+                          message.reportMarker === receipt.reportMarker,
                       ),
                     ),
                   ).toBe(true)
-                  expect(new Set(queued.map((message) => message.targetId))).toEqual(new Set([String(leadSessionId)]))
-                  expect(new Set(delivered.map((message) => message.targetId))).toEqual(
-                    new Set([String(leadSessionId)]),
-                  )
-                  for (const queuedMessage of queued) {
-                    const receipt = required(receipts.find((entry) => entry.messageId === queuedMessage.messageId))
-                    const delivery = required(delivered.find((entry) => entry.messageId === queuedMessage.messageId))
-                    expect(queuedMessage.eventIndex).toBeLessThan(receipt.eventIndex)
-                    expect(receipt.eventIndex).toBeLessThan(delivery.eventIndex)
+                  expect(new Set(accepted.map((message) => message.targetId))).toEqual(new Set([String(leadSessionId)]))
+                  for (const acceptedMessage of accepted) {
+                    const receipt = required(receipts.find((entry) => entry.messageId === acceptedMessage.messageId))
+                    expect(acceptedMessage.eventIndex).toBeLessThan(receipt.eventIndex)
                   }
                 },
                 { timeout: Math.max(1, phaseDeadlineAt - Date.now()), interval: 500 },
@@ -1586,15 +1588,24 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
           const bConsumeStart = events.length
           await withPhase('B:lead-consumes-reports', async () => {
             await sendPrompt(
-              `Use the task list tool to confirm both assigned tasks are completed, then use the task get tool for each task to inspect its result. Retrieve both member reports and compare their source-based findings. Cite actual module paths and explain one relationship between session/runtime and Teams. Do not run shell or alter files. Marker ${teamMarker}_CONSUME.`,
+              `Use the task list tool to confirm both assigned tasks are completed, then use the task get tool for each task to inspect its result. Retrieve both member reports and compare their source-based findings. Quote both reports' B_REPORT markers exactly in your answer. Cite actual module paths and explain one relationship between session/runtime and Teams. Do not run shell or alter files. Marker ${teamMarker}_CONSUME.`,
               `${teamMarker}_CONSUME`,
               leadSessionId,
             )
           })
-          const bConsumeEnd = events.findIndex(
-            (event, index) => index >= bConsumeStart && event.sessionId === lead.id && event.type === 'turn/end',
+          const bConsumeUserIndex = events.findIndex(
+            (event, index) =>
+              index >= bConsumeStart &&
+              event.sessionId === lead.id &&
+              event.type === 'user/message' &&
+              event.data.source.kind === 'user' &&
+              event.data.content.some((block) => block.type === 'text' && block.text.includes(`${teamMarker}_CONSUME`)),
           )
-          expect(bConsumeEnd).toBeGreaterThan(bConsumeStart)
+          expect(bConsumeUserIndex).toBeGreaterThanOrEqual(bConsumeStart)
+          const bConsumeEnd = events.findIndex(
+            (event, index) => index > bConsumeUserIndex && event.sessionId === lead.id && event.type === 'turn/end',
+          )
+          expect(bConsumeEnd).toBeGreaterThan(bConsumeUserIndex)
           const consumedLeadExecutions = tools.filter(
             (tool) => tool.session === safeId(String(leadSessionId)) && !tool.isError,
           )
@@ -1605,17 +1616,46 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
               .filter((receipt) => receipt.scene === 'B')
               .every((receipt) => receipt.eventIndex < bConsumeEnd),
           ).toBe(true)
+          const consumedAnswer = required(
+            answers.findLast(
+              (answer) =>
+                answer.scene === 'B' &&
+                answer.session === safeId(String(leadSessionId)) &&
+                answer.eventIndex > bConsumeUserIndex &&
+                answer.eventIndex < bConsumeEnd,
+            ),
+            'Expected the Lead model to answer after receiving both member reports',
+          )
+          const reportReceipts = teamReceipts.filter(
+            (receipt) =>
+              receipt.scene === 'B' &&
+              receipt.session === safeId(String(leadSessionId)) &&
+              receipt.reportMarker !== undefined,
+          )
+          expect(reportReceipts).toHaveLength(2)
+          for (const receipt of reportReceipts) {
+            expect(receipt.eventIndex).toBeLessThan(consumedAnswer.eventIndex)
+            expect(consumedAnswer.text).toContain(`${receipt.reportMarker}_${runId.slice(0, 8)}`)
+          }
           const leadLog = await host.ctx.sessionPersistence.open(lead.id, 'read')
           try {
             const log = (await leadLog.read()).events
             expect(log.some((event) => event.type === 'assistant/message')).toBe(true)
             const lastAssistant = log.findLast((event) => event.type === 'assistant/message')
+            for (const receipt of reportReceipts) {
+              expect(log.some((event) => event.type === 'user/message' && event.data.id === receipt.messageId)).toBe(
+                true,
+              )
+              expect(required(lastAssistant).seq).toBeGreaterThan(receipt.seq)
+            }
             const answer = lastAssistant?.data.message.content
               .filter((block) => block.type === 'text')
               .map((block) => block.text)
               .join('')
             expect(answer).toContain('inbox.ts')
             expect(answer).toContain('mailbox.ts')
+            for (const receipt of reportReceipts)
+              expect(answer).toContain(`${receipt.reportMarker}_${runId.slice(0, 8)}`)
           } finally {
             await leadLog.close()
           }
@@ -2515,13 +2555,16 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
             ...(message.targetId === undefined ? {} : { target: safeId(message.targetId) }),
             ...(message.senderId === undefined ? {} : { sender: safeId(message.senderId) }),
             ...(message.reportMarker === undefined ? {} : { reportMarker: message.reportMarker }),
+            eventIndex: message.eventIndex,
           })),
           teamReceipts: teamReceipts.map((receipt) => ({
             scene: receipt.scene,
             session: receipt.session,
             messageId: safeId(receipt.messageId),
             sender: receipt.senderId === undefined ? 'unavailable' : safeId(receipt.senderId),
+            ...(receipt.reportMarker === undefined ? {} : { reportMarker: receipt.reportMarker }),
             eventIndex: receipt.eventIndex,
+            seq: receipt.seq,
           })),
           turns,
           teamMembers: teamMemberFacts.map((member) => ({ ...member, id: safeId(member.id) })),
@@ -2586,12 +2629,19 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
                 session: message.session,
                 type: message.type,
                 ...(message.messageId === undefined ? {} : { messageId: safeId(message.messageId) }),
+                ...(message.targetId === undefined ? {} : { target: safeId(message.targetId) }),
+                ...(message.senderId === undefined ? {} : { sender: safeId(message.senderId) }),
+                ...(message.reportMarker === undefined ? {} : { reportMarker: message.reportMarker }),
+                eventIndex: message.eventIndex,
               })),
               teamReceipts: teamReceipts.map((receipt) => ({
                 scene: receipt.scene,
                 session: receipt.session,
                 messageId: safeId(receipt.messageId),
+                sender: safeId(receipt.senderId),
+                ...(receipt.reportMarker === undefined ? {} : { reportMarker: receipt.reportMarker }),
                 eventIndex: receipt.eventIndex,
+                seq: receipt.seq,
               })),
               turns,
               teamMembers: teamMemberFacts.map((member) => ({ ...member, id: safeId(member.id) })),

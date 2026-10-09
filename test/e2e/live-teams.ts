@@ -27,7 +27,8 @@ export async function verifyLiveTeam({
 }) {
   const token = `TEAM_${randomUUID().slice(0, 8)}`
   const executions: { name: string; sessionId: SessionId; isError: boolean; error: unknown }[] = []
-  const messages: (ObservedEvent | { sessionId: SessionId; type: 'assistant/message'; text: string })[] = []
+  const messages: (ObservedEvent | { sessionId: SessionId; type: 'assistant/message'; seq: number; text: string })[] =
+    []
   host.ctx.on('tools/result', (execution, result) => {
     if (execution.agent?.options.provider === provider)
       executions.push({
@@ -38,12 +39,13 @@ export async function verifyLiveTeam({
       })
   })
   host.ctx.on('session/event', (session, event) => {
-    if (event.type.startsWith('team/message/')) messages.push({ sessionId: session.id, ...event })
-    if (event.type === 'turn/end') messages.push({ sessionId: session.id, ...event })
+    if (event.type === 'agent/inbox/spliced' || event.type === 'user/message' || event.type === 'turn/end')
+      messages.push({ sessionId: session.id, ...event })
     if (event.type === 'assistant/message')
       messages.push({
         sessionId: session.id,
         type: event.type,
+        seq: event.seq,
         text: event.data.message.content
           .filter((block) => block.type === 'text')
           .map((block) => block.text)
@@ -77,9 +79,29 @@ Wait for its message. Get/list the shared tasks, confirm the compute task is com
   expect(child.session.header.cwd).toBe(lead.session.header.cwd)
   await vi.waitFor(
     () => {
-      expect(
-        messages.some((event) => event.type === 'team/message/queued' && JSON.stringify(event.data).includes(token)),
-      ).toBe(true)
+      const receipt = required(
+        messages
+          .filter((event) => event.type === 'user/message')
+          .find(
+            (event) =>
+              event.sessionId === lead.id &&
+              event.data.source.kind === 'agent-message' &&
+              event.data.source.form === 'relay' &&
+              event.data.source.senderSessionId === child.id &&
+              event.data.content.some((block) => block.type === 'text' && block.text.includes(token)),
+          ),
+        'Expected the Lead to receive the new teammate relay',
+      )
+      const accepted = required(
+        messages
+          .filter((event) => event.type === 'agent/inbox/spliced')
+          .find(
+            (event) =>
+              event.sessionId === lead.id && event.data.inserted.some((message) => message.id === receipt.data.id),
+          ),
+        'Expected the relay to be accepted into the Lead inbox',
+      )
+      expect(accepted.seq).toBeLessThan(receipt.seq)
       expect(host.ctx.agentTeams.listMembers(lead).every((member) => member.status === 'inactive')).toBe(true)
     },
     { timeout: 180_000, interval: 500 },
@@ -112,12 +134,25 @@ Wait for its message. Get/list the shared tasks, confirm the compute task is com
     await vi.waitFor(
       async () => {
         const events = (await handle.read()).events
+        const receipt = required(
+          events
+            .filter((event) => event.type === 'user/message')
+            .find(
+              (event) =>
+                event.data.source.kind === 'agent-message' &&
+                event.data.source.form === 'relay' &&
+                event.data.source.senderSessionId === child.id &&
+                event.data.content.some((block) => block.type === 'text' && block.text.includes(token)),
+            ),
+          'Expected the received teammate relay in the durable Lead history',
+        )
         const final = events.findLast((event) => event.type === 'assistant/message')
         const reply = final?.data.message.content
           .filter((block) => block.type === 'text')
           .map((block) => block.text)
           .join('')
         evidence.reply = reply
+        expect(required(final, 'Expected a Lead model response after the relay').seq).toBeGreaterThan(receipt.seq)
         expect(reply).toContain(token)
         expect(reply).toContain('2')
       },

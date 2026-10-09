@@ -84,6 +84,21 @@ function checkpointSeq(rows: ReturnType<Context['sessionProjections']['checkpoin
 }
 
 describe('ACP execution SessionProjection integration', () => {
+  it('reads the live directory service without rewriting or falling back to the project header', async () => {
+    const ctx = await harness()
+    const session = ctx.sessions.create(SessionId('facts-directory'), { meta: { cwd: '/project-origin' } })
+    const view = acpSessionView(ctx, session)!
+    expect(view.workingDirectory).toBeUndefined()
+    let directory = '/effective-work'
+    const get = vi.fn(() => directory)
+    ctx.provide('workingDirectory', { get } as never)
+    expect(view.workingDirectory).toBe('/effective-work')
+    directory = '/changed-work'
+    expect(view.workingDirectory).toBe('/changed-work')
+    expect(get).toHaveBeenLastCalledWith(session)
+    expect(view.header?.cwd).toBe('/project-origin')
+  })
+
   it('tracks live append facts without retaining message content', async () => {
     const ctx = await harness()
     const session = ctx.sessions.create(SessionId('facts-live'))

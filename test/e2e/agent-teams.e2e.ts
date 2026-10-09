@@ -209,14 +209,47 @@ describe.each([
         await vi.waitFor(() => expect(readFileSync(log, 'utf8')).toContain('E2E_TEAM_LEAD_RECEIVED'), {
           timeout: 30_000,
         })
-        expect(
-          events.some(
-            (event) =>
-              event.sessionId === lead.id &&
-              event.type === 'team/message/queued' &&
-              JSON.stringify(event.data).includes('E2E_TEAM_REPLY'),
-          ),
-        ).toBe(true)
+        await vi.waitFor(
+          () => {
+            const receipt = required(
+              events
+                .filter((event) => event.type === 'user/message')
+                .find(
+                  (event) =>
+                    event.sessionId === lead.id &&
+                    event.data.source.kind === 'agent-message' &&
+                    event.data.source.form === 'relay' &&
+                    event.data.source.senderSessionId === child.id &&
+                    event.data.content.some((block) => block.type === 'text' && block.text.includes('E2E_TEAM_REPLY')),
+                ),
+              'Expected the Lead to receive the calculator relay',
+            )
+            const accepted = required(
+              events
+                .filter((event) => event.type === 'agent/inbox/spliced')
+                .find(
+                  (event) =>
+                    event.sessionId === lead.id &&
+                    event.data.inserted.some((message) => message.id === receipt.data.id),
+                ),
+              'Expected the relay to be accepted into the Lead inbox',
+            )
+            expect(accepted.seq).toBeLessThan(receipt.seq)
+            expect(
+              events.some(
+                (event) =>
+                  event.sessionId === lead.id &&
+                  event.type === 'assistant/message' &&
+                  event.seq > receipt.seq &&
+                  event.data.message.content.some(
+                    (block) => block.type === 'text' && block.text.includes('E2E_TEAM_LEAD_RECEIVED'),
+                  ),
+              ),
+              'Expected the Lead model to process the accepted relay',
+            ).toBe(true)
+          },
+          { timeout: 30_000 },
+        )
         // Native steering while viewing the child verifies background Team continuation.
         const { createUserMessage } = await import('@deepseek-ai/dsh-llm')
         lead.steer(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'E2E_TEAM_WAKE' }] }))

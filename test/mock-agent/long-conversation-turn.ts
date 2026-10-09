@@ -105,6 +105,12 @@ export async function longConversationTurn(
             }),
       )
       const tools = (await client.listTools()).tools
+      const names = tools.map((tool) => tool.name)
+      log(`long-flow catalog turn=${index} tools=${JSON.stringify(names)}`)
+      if (spec.kind === 'run-code' && (names.length !== 1 || names[0] !== 'run_code'))
+        throw new Error(`PTC turn must expose only run_code: ${JSON.stringify(names)}`)
+      if (spec.kind !== 'run-code' && names.includes('run_code'))
+        throw new Error(`Native turn must not expose run_code: ${JSON.stringify(names)}`)
       const tool = tools.find((item) => item.name === toolName)
       if (!tool) throw new Error(`Native DSH tool ${toolName} is not available in this session`)
       const result = CallToolResultSchema.parse(await client.callTool({ name: tool.name, arguments: rawInput }))

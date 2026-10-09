@@ -11,7 +11,8 @@ import {
 } from '@deepseek-ai/dsh-session'
 import { createSessionFormatCatalogWithChildren } from '@deepseek-ai/dsh-session-format-catalog'
 import { releasedV3SessionFormatCodec } from '@deepseek-ai/dsh-session-format-v3-to-v4'
-import { snapshotSubagentDescriptor } from '@deepseek-ai/dsh-subagent'
+import { foldSubagentDescriptor, SUBAGENT_DESCRIPTOR_VERSION } from '@deepseek-ai/dsh-subagent'
+import type { OneShotSubagentDescriptorData } from '@deepseek-ai/dsh-subagent'
 import type { AssistantMessage, UserMessage } from '@deepseek-ai/dsh-llm'
 import { AssistantStreamAccumulator } from '@deepseek-ai/dsh-llm'
 import { MessageId } from '@deepseek-ai/dsh-llm/brand'
@@ -198,7 +199,14 @@ function transcriptLog(
       type: 'subagent/descriptor',
       seq: SessionSeq(0),
       time: startedAt,
-      data: snapshotSubagentDescriptor({ mode: 'one-shot', provider: EXTERNAL_SUBAGENT_DESCRIPTOR_PROVIDER, label }),
+      // This is a read-only local transcript, not a resumable activation or an
+      // external catalog leaf. The released historical descriptor remains readable.
+      data: {
+        version: SUBAGENT_DESCRIPTOR_VERSION,
+        mode: 'one-shot',
+        provider: EXTERNAL_SUBAGENT_DESCRIPTOR_PROVIDER,
+        label,
+      } satisfies OneShotSubagentDescriptorData,
     },
     { type: 'turn/start', seq: SessionSeq(1), time: startedAt, data: { turn: 1 } },
     { type: 'step/start', seq: SessionSeq(2), time: startedAt, data: { turn: 1, step: 1 } },
@@ -219,6 +227,8 @@ function transcriptLog(
     { type: 'step/end', seq: SessionSeq(5), time: completedAt, data: { turn: 1, step: 1 } },
     { type: 'turn/end', seq: SessionSeq(6), time: completedAt, data: { turn: 1, reason: { kind: 'completed' } } },
   ]
+  if (foldSubagentDescriptor(events)?.mode !== 'one-shot')
+    throw new Error('ACP_SUBAGENT_TRANSCRIPT_INVALID: projected child must remain read-only')
   if (header.version === SESSION_FORMAT_VERSION) {
     const validated = Session.fromRestore(header.id, events, header, SessionLogOffset(0), 'detached')
     if (validated.deriveMessages().length !== 2)

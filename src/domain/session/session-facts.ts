@@ -102,6 +102,9 @@ export interface SessionLike {
   publishPlan?(plan: NonNullable<AcpActivityPresentation['plan']>): void
   /** Original host object used to match disposal, even when this read face is recreated. */
   readonly identity?: object
+  /** Effective execution directory owned by DSH's workingDirectory service.
+   * Missing directory state must fail closed; header.cwd is the immutable project origin. */
+  readonly workingDirectory?: string | undefined
   readonly header?: {
     readonly id?: string
     readonly cwd?: string

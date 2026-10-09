@@ -1,4 +1,5 @@
 import type { PropsRenderFactories } from '@deepseek-ai/dsh-client-ui-slots'
+import { PartialArguments } from '@deepseek-ai/dsh-util-values'
 import { activityDiffsOf } from '../../contract/activity-diffs.ts'
 import {
   createElement as h,
@@ -260,6 +261,7 @@ function diffLabels(t: ActivityNodeProps['t']) {
 
 function terminalLabels(t: ActivityNodeProps['t']): TerminalBlockLabels {
   return {
+    commandLine: (line) => t('activity.terminal.commandLine', { line }),
     signal: (signal) => t('activity.terminal.signal', { signal }),
     exitCode: (code) => t('activity.terminal.exitCode', { code }),
     noExitCode: t('activity.terminal.noExitCode'),
@@ -973,8 +975,9 @@ export function nativeActivityToolBlock(
   }
   const callId = `acp:${row.ownerDshSessionId}:${row.promptAnchorMessageId}:${row.activityId}`
   const argsRaw = input === undefined ? '{}' : typeof input === 'string' ? input : JSON.stringify(input)
+  const args = PartialArguments.fromText(argsRaw)
   if (row.status === 'running')
-    return { callId, name, phase: 'start', argsRaw, turn: 0, step: 0, time: row.time, subCalls: [] }
+    return { callId, name, phase: 'start', args, argsRaw, turn: 0, step: 0, time: row.time, subCalls: [] }
   let output = contentText(detail.rawOutput ?? detail.content)
   if (name === 'read' && read !== undefined && meta !== undefined) {
     output = `<path>${read.label}</path>\n<type>file</type>\n<content>\n${output}\n</content>`
@@ -987,6 +990,8 @@ export function nativeActivityToolBlock(
   return {
     kind: 'tool-result',
     callId,
+    name,
+    args,
     seq: row.activitySeq,
     time: row.time,
     callTime: null,

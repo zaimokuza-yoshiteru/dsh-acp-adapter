@@ -4,6 +4,8 @@
 
 在 DSH 中使用 ACP Agent，沿用原生会话、工具审批和团队协作。
 
+> **开发分支 `0.2.1-alpha`：** 正在适配 DSH `0.2.1-alpha.2`，尚未发布；下一个稳定桌面版本验收前不合并 main。兼容改动、可采用能力与 UI/UX 评估见[开发记录](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/0.2.1-alpha/docs/dsh-0.2.1-alpha.md)。以下安装说明仍对应已发布版本。
+
 ## 安装
 
 当前插件版本 [`0.2.0-rc.2.9`](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/tag/v0.2.0-rc.2.9) 兼容 DSH `0.2.0-rc.2`。其他版本见 [Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases)。
@@ -56,8 +58,6 @@ Git 与压缩包安装示例：
 | Claude                     | `claude-agent-acp`                       | `claude`           |
 | Codex                      | `codex-acp`                              | `codex login`      |
 | Kimi                       | `kimi acp`                               | `kimi login`       |
-
-Antigravity 的本机检查使用官方 raw ACP server 1.3.0，覆盖原生权限问答、工具审批和同会话续聊，以及 DSH MCP 工具续聊。Antigravity 应用认证与 ACP 账号彼此独立，插件不迁移登录状态；wrapper、Teams 和 Windows 尚未验收。具体范围见下方的 E2E 验证记录。
 
 > CodeBuddy CLI 与 WorkBuddy 桌面端使用同一账号积分，无需分别订阅；通过 CodeBuddy CLI 接入 DSH。详见 [CodeBuddy 账号与订阅说明](https://www.codebuddy.cn/docs/ide/Account/pricing)及 [ACP 命令参考](https://www.codebuddy.cn/docs/cli/cli-reference)。
 

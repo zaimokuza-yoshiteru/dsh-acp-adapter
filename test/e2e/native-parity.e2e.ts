@@ -14,7 +14,7 @@ import type { ObservedEvent } from './types.ts'
 import type { AdapterWorld } from './scaffold.ts'
 import type { Page } from 'playwright'
 import { randomUUID } from 'node:crypto'
-import { mkdirSync, readFileSync, existsSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, existsSync, writeFileSync, rmSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createUserMessage, LlmAdapter } from '@deepseek-ai/dsh-llm'
@@ -924,6 +924,7 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
 
   it('presents ACP outputs through the native delivery card and preview, including after reload', async () => {
     writeFileSync(join(workspace, 'delivery.txt'), 'NATIVE_ACP_DELIVERY_CONTENT\n')
+    const deliveryPath = realpathSync(join(workspace, 'delivery.txt'))
     const { settled } = await send('E2E_PRESENT')
     const approval = page.locator('[data-question-key], [data-approval-key]')
     await approval.waitFor()
@@ -963,9 +964,12 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
       await approval.getByRole('button', { name: /Submit|Send/ }).click()
     } else await approval.getByRole('button', { name: 'Allow once', exact: true }).click()
     const id = await settled
-    expect(
-      events.filter((event) => event.type === 'deliverables/presented').filter((event) => event.sessionId === id),
-    ).toHaveLength(1)
+    const deliveries = events
+      .filter((event) => event.type === 'deliverables/presented')
+      .filter((event) => event.sessionId === id)
+    expect(deliveries).toHaveLength(1)
+    expect(deliveries[0]?.data.files).toEqual([{ path: deliveryPath, description: 'ACP delivery through native DSH' }])
+    expect(readFileSync(deliveryPath, 'utf8')).toBe('NATIVE_ACP_DELIVERY_CONTENT\n')
     for (let round = 0; round < 2; round++) {
       if (round) await page.reload()
       const card = page.locator('[data-presented-file]').filter({ hasText: 'delivery.txt' })

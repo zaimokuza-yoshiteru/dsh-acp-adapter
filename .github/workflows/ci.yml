@@ -121,7 +121,7 @@ jobs:
           persist-credentials: false
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
-          version: 11.7.0
+          version: 11.28.5
           package_json_file: reference/deepseek-harness/package.json
       - name: Verify ordinary Unix user
         run: node scripts/check-ci-user.mjs
@@ -129,10 +129,11 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ runner.temp }}/pnpm-store-host
-          key: host-store-${{ runner.os }}-${{ runner.arch }}-node${{ steps.node.outputs.node-version }}-pnpm11.7.0-${{ steps.dsh-target.outputs.tag }}-${{ hashFiles('reference/deepseek-harness/pnpm-lock.yaml') }}
+          key: host-store-${{ runner.os }}-${{ runner.arch }}-node${{ steps.node.outputs.node-version }}-pnpm11.28.5-${{ steps.dsh-target.outputs.tag }}-${{ hashFiles('reference/deepseek-harness/pnpm-lock.yaml') }}
       - name: Build exact host scaffold
         working-directory: reference/deepseek-harness
-        run: pnpm install --frozen-lockfile --store-dir "$RUNNER_TEMP/pnpm-store-host" && npm run build:native-system && npm run build:lib:host && npm run build:lib:client && npm --prefix apps/web run build
+        # Build checked package artifacts without upstream test/script aggregate programs.
+        run: pnpm install --frozen-lockfile --store-dir "$RUNNER_TEMP/pnpm-store-host" && pnpm run build:native-system && pnpm exec tsx scripts/compile-referenced-projects.ts libraries && pnpm --dir apps/web run build
       - name: Cache pinned Chromium
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:

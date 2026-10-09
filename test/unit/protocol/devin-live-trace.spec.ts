@@ -16,6 +16,45 @@ afterEach(() => {
 })
 
 describe('Devin live diagnostic trace', () => {
+  it('records native relay acceptance separately from historical mailbox delivery and model processing', () => {
+    const trace = new DevinLiveTrace({ directory: directory() })
+    trace.record('tool/settled', { tool: 'send_message', sendStatus: 'sent', resultStatus: 'success' })
+    trace.record('agent-message/accepted', {
+      hostEvent: 'user/message',
+      messageId: trace.id('team-message', 'private-native-id'),
+      senderId: trace.id('dsh-session', 'private-sender'),
+      nativeReceiptStatus: 'accepted',
+      uniqueAcceptedMessages: 1,
+      rawContent: 'private body',
+      modelProcessed: true,
+    })
+    trace.finish('pass', { acceptedMessages: 1, queuedMessages: 0, deliveredMessages: 0 })
+    const text = readFileSync(trace.filePath, 'utf8')
+    const rows = text
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+    expect(rows.find((row) => row.event === 'tool/settled')).toMatchObject({ sendStatus: 'sent' })
+    const accepted = rows.find((row) => row.event === 'agent-message/accepted')
+    expect(accepted).toMatchObject({
+      hostEvent: 'user/message',
+      nativeReceiptStatus: 'accepted',
+      uniqueAcceptedMessages: 1,
+    })
+    expect(accepted).not.toHaveProperty('modelProcessed')
+    expect(rows.some((row) => row.event === 'team/message/queued' || row.event === 'team/message/delivered')).toBe(
+      false,
+    )
+    expect(rows.find((row) => row.event === 'run/summary')).toMatchObject({
+      acceptedMessages: 1,
+      queuedMessages: 0,
+      deliveredMessages: 0,
+    })
+    expect(text).not.toContain('private-native-id')
+    expect(text).not.toContain('private-sender')
+    expect(text).not.toContain('private body')
+  })
+
   it('HMACs identities and canonical arguments without persisting raw IDs, text, or unapproved fields', () => {
     const trace = new DevinLiveTrace({ directory: directory(), key: Buffer.alloc(32, 7) })
     const message = 'private-message-never-store'

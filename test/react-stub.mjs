@@ -16,4 +16,13 @@ export const useId = () => ':test-id:'
 export const useMemo = (factory) => factory()
 export const useSyncExternalStore = (_subscribe, getSnapshot) => getSnapshot()
 
+// Keep Context as an element-tree value. Tests that walk a Provider restore
+// its previous value after visiting the child, matching a scoped render.
+export const createContext = (value) => {
+  const context = { _currentValue: value }
+  context.Provider = { $$typeof: Symbol.for('react.provider'), _context: context }
+  return context
+}
+export const useContext = (context) => context._currentValue
+
 export const useCallback = (callback) => callback

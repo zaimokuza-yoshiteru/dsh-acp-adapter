@@ -95,6 +95,133 @@ async function drain(iterable: AsyncIterable<unknown>): Promise<void> {
 }
 
 describe('M3a binding-first ACP provider', () => {
+  it('binds to the effective directory and blocks continuation or retry after cd without changing the project', async () => {
+    const { sidecar, root } = sidecarAt()
+    const origin = path.join(root, 'project')
+    const work = path.join(root, 'work')
+    const changed = path.join(root, 'changed')
+    for (const directory of [origin, work, changed]) fs.mkdirSync(directory)
+    let effective = work
+    const message = user('hello')
+    const live = withSessionFacts({
+      ...session(message),
+      header: { cwd: origin },
+      get workingDirectory() {
+        return effective
+      },
+    })
+    const records = { starts: 0, prompts: 0, restores: 0 }
+    const factory = vi.fn(runtimeFactory(records))
+    const adapter = new AcpProfileAdapter(
+      'test',
+      profile,
+      seam(),
+      () => live,
+      ledgerFor(sidecar),
+      undefined,
+      factory,
+      sidecar,
+    )
+    try {
+      await drain(adapter.stream(request('directory-binding', message)))
+      expect(factory.mock.calls[0]?.[0]).toMatchObject({ cwd: fs.realpathSync.native(work) })
+      const original = await sidecar.readLatestBinding('directory-binding' as never)
+      expect(original?.status === 'ok' && original.binding.canonicalCwd).toBe(fs.realpathSync.native(work))
+
+      effective = changed
+      await expect(drain(adapter.stream(request('directory-binding', message)))).rejects.toMatchObject({
+        code: 'ACP_RECONCILIATION_REQUIRED',
+      })
+      expect(records).toEqual({ starts: 1, prompts: 1, restores: 0 })
+      expect(await sidecar.readLatestBinding('directory-binding' as never)).toEqual(original)
+      expect(await sidecar.readRecoveryState('directory-binding' as never)).toMatchObject({ cause: 'cwd-changed' })
+      await expect(adapter.retryOriginal('directory-binding')).rejects.toMatchObject({
+        code: 'ACP_RECONCILIATION_REQUIRED',
+      })
+      expect(records.restores).toBe(0)
+      effective = work
+      await adapter.retryOriginal('directory-binding')
+      expect(records.restores).toBe(1)
+      expect(live.header.cwd).toBe(origin)
+    } finally {
+      await adapter.close()
+      await sidecar.dispose()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects a missing effective directory instead of launching in the immutable project origin', async () => {
+    const { sidecar, root } = sidecarAt()
+    const message = user('hello')
+    const live = withSessionFacts({ ...session(message), workingDirectory: undefined })
+    const factory = vi.fn(runtimeFactory({ starts: 0, prompts: 0, restores: 0 }))
+    const adapter = new AcpProfileAdapter(
+      'test',
+      profile,
+      seam(),
+      () => live,
+      ledgerFor(sidecar),
+      undefined,
+      factory,
+      sidecar,
+    )
+    try {
+      await expect(drain(adapter.stream(request('directory-missing', message)))).rejects.toMatchObject({
+        code: 'ACP_SESSION_CWD_UNAVAILABLE',
+      })
+      expect(factory).not.toHaveBeenCalled()
+      expect(await sidecar.readLatestBinding('directory-missing' as never)).toBeUndefined()
+    } finally {
+      await adapter.close()
+      await sidecar.dispose()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('blocks a directory change during capability negotiation before session creation or prompt dispatch', async () => {
+    const { sidecar, root } = sidecarAt()
+    const message = user('hello')
+    let effective = os.tmpdir()
+    const live = withSessionFacts({
+      ...session(message),
+      get workingDirectory() {
+        return effective
+      },
+    })
+    const start = vi.fn(async () => undefined)
+    const prompt = vi.fn(async () => ({ stopReason: 'end_turn' }) as never)
+    const adapter = new AcpProfileAdapter(
+      'test',
+      profile,
+      seam(),
+      () => live,
+      ledgerFor(sidecar),
+      undefined,
+      () => ({
+        initialize: async () => {
+          effective = root
+        },
+        start,
+        prompt,
+        close: async () => undefined,
+      }),
+      sidecar,
+    )
+    try {
+      await expect(drain(adapter.stream(request('directory-race', message)))).rejects.toMatchObject({
+        code: 'ACP_RECONCILIATION_REQUIRED',
+      })
+      expect(start).not.toHaveBeenCalled()
+      expect(prompt).not.toHaveBeenCalled()
+      expect(await sidecar.readLatestBinding('directory-race' as never)).toBeUndefined()
+      expect(await sidecar.readRecoveryState('directory-race' as never)).toMatchObject({ cause: 'cwd-changed' })
+    } finally {
+      await adapter.close()
+      await sidecar.dispose()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('fails closed before any ACP runtime work when the sidecar is absent', async () => {
     const records = { starts: 0, prompts: 0, restores: 0 }
     const message = user('hello')

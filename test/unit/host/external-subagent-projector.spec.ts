@@ -13,6 +13,7 @@ import { SessionId, SessionLogOffset, snapshotSessionEvent } from '@deepseek-ai/
 import type { SessionHeader, SessionEvent, SessionSeedEventState } from '@deepseek-ai/dsh-session'
 import { createAcpSidecar } from '../../../src/persistence/sidecar.ts'
 import { BlockAssembler, expandAssistantStream } from '@deepseek-ai/dsh-llm'
+import { foldSubagentDescriptor, SUBAGENT_DESCRIPTOR_VERSION } from '@deepseek-ai/dsh-subagent'
 
 function handleStorage(
   records = new Map<string, { meta: SessionHeader; events: SessionEvent[] }>(),
@@ -117,6 +118,12 @@ describe('external subagent projector', () => {
       expect(order).toEqual(['flush', 'create', 'append', 'child-flush', 'write-close'])
       expect(result?.childSessionId).toMatch(/^session-dsh-acp-/)
       const stored = records.get(result!.childSessionId)!
+      expect(foldSubagentDescriptor(stored.events)).toEqual({
+        version: SUBAGENT_DESCRIPTOR_VERSION,
+        mode: 'one-shot',
+        provider: 'dsh-acp-adapter',
+        label: 'Code inspection',
+      })
       expect(stored.events.map((event) => (event as { type: string }).type)).toEqual([
         'subagent/descriptor',
         'turn/start',
@@ -275,59 +282,73 @@ describe('external subagent projector', () => {
     },
   )
 
-  it('repairs a staged transaction from its canonical payload and fails closed on a conflicting child', async () => {
-    const records = new Map<string, { meta: SessionHeader; events: SessionEvent[] }>()
-    records.set('parent', { meta: { id: 'parent', cwd: '/tmp' } as never, events: [] })
-    const activities = new Map<string, Record<string, unknown>>()
-    const sidecar = {
-      upsertActivity: vi.fn(async (row: Record<string, unknown>) => {
-        const previous = activities.get(row.dshSessionId as string)
-        const committed = {
-          activitySeq: previous?.activitySeq ?? 1,
-          revisionSeq: Number(previous?.revisionSeq ?? 0) + 1,
-          ...previous,
-          ...row,
-        }
-        activities.set(row.dshSessionId as string, committed)
-        return committed as never
-      }),
-      listProjectedSubagentActivities: vi.fn(async () => [...activities.values()] as never),
-    }
-    const persistence = handleStorage(records)
-    const projector = new ExternalSubagentProjector(persistence, sidecar as never)
-    const context = {
-      profileId: 'claude',
-      bindingGeneration: 1,
-      rootAcpSessionId: 'root',
-      parentDshSessionId: 'parent',
-      parentCwd: '/tmp',
-      flushParent: async () => false,
-    }
+  it.each(['metadata', 'descriptor'] as const)(
+    'repairs a staged transaction and rejects conflicting child %s',
+    async (conflict) => {
+      const records = new Map<string, { meta: SessionHeader; events: SessionEvent[] }>()
+      records.set('parent', { meta: { id: 'parent', cwd: '/tmp' } as never, events: [] })
+      const activities = new Map<string, Record<string, unknown>>()
+      const sidecar = {
+        upsertActivity: vi.fn(async (row: Record<string, unknown>) => {
+          const previous = activities.get(row.dshSessionId as string)
+          const committed = {
+            activitySeq: previous?.activitySeq ?? 1,
+            revisionSeq: Number(previous?.revisionSeq ?? 0) + 1,
+            ...previous,
+            ...row,
+          }
+          activities.set(row.dshSessionId as string, committed)
+          return committed as never
+        }),
+        listProjectedSubagentActivities: vi.fn(async () => [...activities.values()] as never),
+      }
+      const persistence = handleStorage(records)
+      const projector = new ExternalSubagentProjector(persistence, sidecar as never)
+      const context = {
+        profileId: 'claude',
+        bindingGeneration: 1,
+        rootAcpSessionId: 'root',
+        parentDshSessionId: 'parent',
+        parentCwd: '/tmp',
+        flushParent: async () => false,
+      }
 
-    await expect(projector.project(observation, context)).rejects.toThrow('PARENT_NOT_DURABLE')
-    const [staged] = [...activities.values()]
-    expect(staged?.status).toBe('failed')
-    const stagedDetail = JSON.parse(staged?.rawDetail as string) as {
-      version: number
-      projectionHeader: { parentSession: string }
-      projectionLabel: string
-      projectionDigest: string
-    }
-    expect(stagedDetail.version).toBe(5)
-    expect(stagedDetail.projectionHeader.parentSession).toBe('parent')
-    expect(stagedDetail.projectionLabel).toBe('Code inspection')
-    expect(stagedDetail.projectionDigest).toMatch(/^[a-f0-9]{64}$/)
+      await expect(projector.project(observation, context)).rejects.toThrow('PARENT_NOT_DURABLE')
+      const [staged] = [...activities.values()]
+      expect(staged?.status).toBe('failed')
+      const stagedDetail = JSON.parse(staged?.rawDetail as string) as {
+        version: number
+        projectionHeader: { parentSession: string }
+        projectionLabel: string
+        projectionDigest: string
+      }
+      expect(stagedDetail.version).toBe(5)
+      expect(stagedDetail.projectionHeader.parentSession).toBe('parent')
+      expect(stagedDetail.projectionLabel).toBe('Code inspection')
+      expect(stagedDetail.projectionDigest).toMatch(/^[a-f0-9]{64}$/)
 
-    await expect(projector.repairInterrupted()).resolves.toEqual({ committed: 1, repaired: 1, conflicted: 0 })
-    expect(activities.get(staged!.dshSessionId as string)?.status).toBe('completed')
+      await expect(projector.repairInterrupted()).resolves.toEqual({ committed: 1, repaired: 1, conflicted: 0 })
+      expect(activities.get(staged!.dshSessionId as string)?.status).toBe('completed')
 
-    records.set(staged!.dshSessionId as string, {
-      meta: { id: staged!.dshSessionId, cwd: '/different' } as never,
-      events: [],
-    })
-    await expect(projector.repairInterrupted()).resolves.toEqual({ committed: 0, repaired: 0, conflicted: 1 })
-    expect(activities.get(staged!.dshSessionId as string)?.status).toBe('failed')
-  })
+      const id = staged!.dshSessionId as string
+      const original = records.get(id)!
+      const conflicting =
+        conflict === 'metadata'
+          ? { meta: { id, cwd: '/different' } as never, events: [] }
+          : {
+              ...original,
+              events: original.events.map((event) =>
+                event.type === 'subagent/descriptor'
+                  ? { ...event, data: { ...event.data, mode: 'continuable' as const, label: 'Changed lifecycle' } }
+                  : event,
+              ),
+            }
+      records.set(id, conflicting)
+      await expect(projector.repairInterrupted()).resolves.toEqual({ committed: 0, repaired: 0, conflicted: 1 })
+      expect(activities.get(staged!.dshSessionId as string)?.status).toBe('failed')
+      expect(records.get(id)).toEqual(conflicting)
+    },
+  )
 
   it('migrates authenticated V3 sidecar transactions through the released catalog and publishes discovery after commit', async () => {
     const records = new Map<string, { meta: SessionHeader; events: SessionEvent[] }>()

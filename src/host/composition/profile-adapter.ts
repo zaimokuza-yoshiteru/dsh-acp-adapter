@@ -1853,18 +1853,9 @@ export class AcpProfileAdapter extends LlmAdapter {
           'ACP_PROFILE_CHANGED',
         )
       }
+      const runtimeCwd = self.canonicalCwd(session?.workingDirectory)
       const runtime =
-        self.runtimes.get(runtimeKey) ??
-        self.runtimeFactory(
-          self.runtimeOptionsFor(
-            sessionKey,
-            profile,
-            session?.header?.cwd ??
-              (() => {
-                throw new LlmError('ACP requires the DSH session working directory', 'ACP_SESSION_CWD_UNAVAILABLE')
-              })(),
-          ),
-        )
+        self.runtimes.get(runtimeKey) ?? self.runtimeFactory(self.runtimeOptionsFor(sessionKey, profile, runtimeCwd))
       self.runtimes.set(runtimeKey, runtime)
       if (session !== undefined) self.runtimeOwners.set(runtime, session.identity ?? session)
       let retainHealthyRuntimeAfterNotDispatched = false
@@ -1943,7 +1934,18 @@ export class AcpProfileAdapter extends LlmAdapter {
         bindingForModeRestore = binding
         if (binding === undefined) self.confirmedUserModes.delete(sessionKey)
         const currentFingerprint = await self.launchFingerprint(profile)
-        const canonicalCwd = self.canonicalCwd(session?.header?.cwd)
+        const canonicalCwd = self.canonicalCwd(session?.workingDirectory)
+        if (canonicalCwd !== runtimeCwd) {
+          await self.blockRecovery(
+            sessionKey,
+            {
+              kind: 'reconciliation-required',
+              cause: 'cwd-changed',
+              detail: `The session working directory changed from ${runtimeCwd} to ${canonicalCwd} during ACP setup`,
+            },
+            binding,
+          )
+        }
         if (binding !== undefined) {
           if (binding.provider !== options.provider || binding.profileId !== self.profileId) {
             await self.blockRecovery(
@@ -2971,7 +2973,8 @@ export class AcpProfileAdapter extends LlmAdapter {
                     bindingGeneration: committedBinding.generation,
                     rootAcpSessionId: committedBinding.agentSessionId,
                     parentDshSessionId: sessionKey,
-                    parentCwd: canonicalCwd,
+                    // Child transcript metadata retains the immutable parent project.
+                    parentCwd: self.canonicalCwd(session?.header?.cwd),
                     ...(session?.header?.delegationDepth === undefined
                       ? {}
                       : { parentDelegationDepth: session.header.delegationDepth }),
@@ -3592,7 +3595,7 @@ export class AcpProfileAdapter extends LlmAdapter {
     const session = this.sessionOf(sessionId)
     if (profile === undefined || session === undefined)
       throw new LlmError('The original ACP profile or DSH session is unavailable', 'ACP_RECONCILIATION_REQUIRED')
-    const cwd = this.canonicalCwd(session.header?.cwd)
+    const cwd = this.canonicalCwd(session.workingDirectory)
     const fingerprint = await this.launchFingerprint(profile)
     if (binding.canonicalCwd !== cwd || !acpLaunchFingerprintsCompatible(binding.launchFingerprint, fingerprint)) {
       throw new LlmError(

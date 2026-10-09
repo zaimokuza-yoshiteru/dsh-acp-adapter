@@ -93,7 +93,9 @@ function diagnosticInboxCounts(agent: NonNullable<ReturnType<typeof bridgeDefini
       const counts = { user: 0, 'team-message': 0, system: 0, other: 0 }
       for (const message of messages) {
         const kind = message.source?.kind
-        if (kind === 'user' || kind === 'team-message' || kind === 'system') counts[kind] += 1
+        // Keep the diagnostic wire bucket stable across the Host's mailbox → inbox migration.
+        if (isPendingPeerMessage(message)) counts['team-message'] += 1
+        else if (kind === 'user' || kind === 'system') counts[kind] += 1
         else counts.other += 1
       }
       return counts
@@ -118,6 +120,13 @@ function hasSourceKind(value: unknown, kind: string): boolean {
   if (typeof value !== 'object' || value === null || !('source' in value)) return false
   const source = (value as { readonly source?: unknown }).source
   return typeof source === 'object' && source !== null && 'kind' in source && source.kind === kind
+}
+/** Current Agent inbox relay attribution, plus already persisted Team mailbox messages. */
+function isPendingPeerMessage(value: unknown): boolean {
+  if (hasSourceKind(value, 'team-message')) return true
+  if (!hasSourceKind(value, 'agent-message')) return false
+  const source = (value as { readonly source: { readonly form?: unknown; readonly senderSessionId?: unknown } }).source
+  return source.form === 'relay' && typeof source.senderSessionId === 'string' && source.senderSessionId.length > 0
 }
 type FeedbackMessage = { readonly id?: unknown; readonly source?: unknown; readonly content?: unknown }
 type FeedbackAgent = NonNullable<ReturnType<typeof bridgeDefinitions>>['agent']
@@ -1043,9 +1052,7 @@ export async function createTeamBridge(
                 }
               : undefined
           if (diagnosticBase !== undefined) diagnosticHandlerBase = diagnosticBase
-          const queuedTeamMessage =
-            definition.name === 'wait_agent' &&
-            agent.inbox.nextStep.some((message) => hasSourceKind(message, 'team-message'))
+          const queuedTeamMessage = definition.name === 'wait_agent' && agent.inbox.nextStep.some(isPendingPeerMessage)
           if (queuedTeamMessage) {
             const text =
               'DSH_WAIT_DEFERRED_TEAM_MESSAGE: A Team message is already queued for this caller, so DSH did not execute wait_agent. End this ACP response now; DSH will deliver the queued message for you to handle.'

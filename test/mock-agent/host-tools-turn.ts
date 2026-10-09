@@ -1,7 +1,10 @@
 import type { MockSession, PromptMessage, MockPeer } from './types.ts'
+import { readFileSync, realpathSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { Client } from '@modelcontextprotocol/client'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio'
+import { CallToolResultSchema } from '@modelcontextprotocol/core'
 
 export async function hostToolsTurn(
   session: MockSession,
@@ -93,18 +96,30 @@ export async function hostToolsTurn(
       })
       if (answer.outcome?.optionId !== 'allow') throw new Error('Fixture permission rejected')
     }
-    const result = await client.callTool({
-      name: tool.name,
-      ...(shell
-        ? { arguments: shellArgs }
-        : present
-          ? { arguments: { files: [{ path: 'delivery.txt', description: 'ACP delivery through native DSH' }] } }
-          : {}),
-    })
-    if (
-      result.isError ||
-      !JSON.stringify(result).includes(shell ? 'E2E_DSH_BASH_OK' : present ? 'Presented delivery.txt' : 'E2E_HOST_POST')
+    const result = CallToolResultSchema.parse(
+      await client.callTool({
+        name: tool.name,
+        ...(shell
+          ? { arguments: shellArgs }
+          : present
+            ? { arguments: { files: [{ path: 'delivery.txt', description: 'ACP delivery through native DSH' }] } }
+            : {}),
+      }),
     )
+    if (result.isError) throw new Error(`Native tool failed: ${JSON.stringify(result)}`)
+    if (present) {
+      // Alpha.2 present reports the canonical absolute path; the bridge exposes rendered MCP content.
+      const expectedPath = realpathSync(resolve(session.cwd, 'delivery.txt'))
+      const presented = result.content
+        .flatMap((block) => (block.type === 'text' ? block.text.split('\n') : []))
+        .filter((line) => line.startsWith('Presented '))
+      if (
+        presented.length !== 1 ||
+        presented[0] !== `Presented ${expectedPath}` ||
+        readFileSync(expectedPath, 'utf8') !== 'NATIVE_ACP_DELIVERY_CONTENT\n'
+      )
+        throw new Error(`Unexpected native delivery result: ${JSON.stringify(result)}`)
+    } else if (!JSON.stringify(result).includes(shell ? 'E2E_DSH_BASH_OK' : 'E2E_HOST_POST'))
       throw new Error(`Native hook output missing: ${JSON.stringify(result)}`)
     sendUpdate(session.id, {
       sessionUpdate: 'tool_call_update',

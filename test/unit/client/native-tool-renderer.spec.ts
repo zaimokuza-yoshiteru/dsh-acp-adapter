@@ -1,6 +1,16 @@
 import { expect, it } from 'vitest'
 import { SlotCore } from '@deepseek-ai/dsh-client-ui-slots'
-import { installNativeToolRenderer } from '../../../src/client/ui/native-tool-renderer.ts'
+import { installNativeToolRenderer, nativeOwner } from '../../../src/client/ui/native-tool-renderer.ts'
+
+it('forwards the native viewport group action with the node disclosure hook', () => {
+  const useDisclosure = () => ({ open: true, toggle() {} })
+  const useGroupAction = () => ({ current: null })
+  const node = { key: 'tool' }
+  const owner = nativeOwner({ useDisclosure, useGroupAction, node } as never)
+  expect(owner.useDisclosure).toBe(useDisclosure)
+  expect(owner.useGroupAction).toBe(useGroupAction)
+  expect(owner.node).toBe(node)
+})
 
 it('preserves native registration dependencies, follows child plugins and releases all aliases', async () => {
   const slots = new SlotCore()

@@ -177,7 +177,7 @@ describe('native assistant renderer composition', () => {
     expect(finalAnswerStart(blocks, new Map())).toBe(1)
   })
 
-  it('composes the native Chat and header trees without redeclaring their child slots', async () => {
+  it('composes the native Chat, flow and header trees without redeclaring their child slots', async () => {
     const slots = new SlotCore()
     const root = slots.register(
       {
@@ -197,8 +197,16 @@ describe('native assistant renderer composition', () => {
         id: 'chat',
         inject,
         children: {
-          'conversation.chat.node': { kind: 'keyed', scope: 'session' },
+          'conversation.chat.flow': { kind: 'single', scope: 'session' },
         },
+      } as never,
+      Native as never,
+    )
+    slots.register(
+      {
+        name: 'conversation.chat.flow',
+        inject,
+        children: { 'conversation.chat.node': { kind: 'keyed', scope: 'session' } },
       } as never,
       Native as never,
     )
@@ -224,10 +232,14 @@ describe('native assistant renderer composition', () => {
     const chat = slots.entriesOfSlot('conversation.view')[0]!
     expect(chat.inject).toBe(inject)
     const child = Object.keys(chat.children!)[0]!
-    expect(child).not.toBe('conversation.chat.node')
+    expect(child).not.toBe('conversation.chat.flow')
+    const flow = slots.entriesOfSlot(child)[0]!
+    expect(flow.inject).toBe(inject)
+    const nodes = Object.keys(flow.children!)[0]!
+    expect(nodes).not.toBe('conversation.chat.node')
     expect(
       slots
-        .entriesOfSlot(child)
+        .entriesOfSlot(nodes)
         .map((entry) => entry.options.key)
         .sort(),
     ).toEqual(['acp-inline-activity', 'tool-call'])
@@ -237,6 +249,7 @@ describe('native assistant renderer composition', () => {
     releases.reverse().forEach((release) => release())
     expect(slots.entriesOfSlot('conversation.view')[0]!.component).toBe(Native)
     expect(slots.entriesOfSlot(child)).toEqual([])
+    expect(slots.entriesOfSlot(nodes)).toEqual([])
     root()
   })
 

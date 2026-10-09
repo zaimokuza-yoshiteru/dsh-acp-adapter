@@ -4,6 +4,8 @@
 
 Use ACP Agents in DSH with native sessions, tool approvals, and team collaboration.
 
+> **Development branch `0.2.1-alpha`:** targets DSH `0.2.1-alpha.2` and is unpublished. It will stay off main until validation against the next stable desktop release. See the [compatibility and UI/UX assessment](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/0.2.1-alpha/docs/dsh-0.2.1-alpha.md). Installation instructions below describe the published version.
+
 ## Install
 
 Plugin version [`0.2.0-rc.2.9`](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/tag/v0.2.0-rc.2.9) supports DSH `0.2.0-rc.2`. See [Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for other versions.
@@ -54,8 +56,6 @@ The plugin ships with a snapshot of the [official ACP Agent catalog](https://age
 | Claude                    | `claude-agent-acp`                          | `claude`             |
 | Codex                     | `codex-acp`                                 | `codex login`        |
 | Kimi                      | `kimi acp`                                  | `kimi login`         |
-
-Antigravity's local checks use the official raw ACP server 1.3.0 and cover native permission questions, tool approvals and same-session continuation, plus DSH MCP continuation. Antigravity app authentication is separate from its ACP account; the plugin does not migrate sign-in state. The wrapper, Teams and Windows are not verified. See the E2E verification record below for scope.
 
 > CodeBuddy CLI and the WorkBuddy desktop app share account credits, with no separate subscription required. Connect DSH through the CodeBuddy CLI. See [CodeBuddy account and subscription details](https://www.codebuddy.cn/docs/ide/Account/pricing) and the [ACP CLI reference](https://www.codebuddy.cn/docs/cli/cli-reference).
 

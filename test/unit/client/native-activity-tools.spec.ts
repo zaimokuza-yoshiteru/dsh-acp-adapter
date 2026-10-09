@@ -22,6 +22,17 @@ const normalize = (detail: unknown, patch: Partial<AcpActivityView> = {}) =>
   })
 
 describe('ACP presentation normalization into native tool blocks', () => {
+  it.each(['running', 'completed'] as const)('provides native argument readers for %s activity', (status) => {
+    const block = normalize(
+      { toolKind: 'execute', rawInput: { command: 'npm test', cwd: '/work' }, rawOutput: 'done' },
+      { status },
+    )
+    expect(block.name).toBe('bash')
+    expect(block.args.text('command')).toBe('npm test')
+    expect(block.args.text('workdir')).toBe('/work')
+    expect(block.args.isSealed).toBe(true)
+  })
+
   it('unwraps MCP arguments without mistaking execute-kind tools for shell commands', () => {
     const block = normalize({
       toolKind: 'execute',

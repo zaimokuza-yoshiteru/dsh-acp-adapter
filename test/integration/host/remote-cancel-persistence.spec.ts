@@ -10,6 +10,8 @@ import ToolRuntime from '@deepseek-ai/dsh-tools'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
+import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
+import WorkingDirectory from '@deepseek-ai/dsh-working-directory'
 import { AcpProfileAdapter, type AcpProfileRuntime } from '../../../src/host/composition/profile-adapter.ts'
 import { acpExecutionProjection, acpSessionView } from '../../../src/host/composition/session-facts.ts'
 import { createAcpSidecar } from '../../../src/persistence/sidecar.ts'
@@ -34,6 +36,8 @@ async function harness(cancelAt = 1, emitText = true, atomicSteering = false) {
   await ctx.plugin(SessionStore)
   await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(SystemPrompt, {})
+  await ctx.plugin(LocalFileSystem, { cwd: root })
+  await ctx.plugin(WorkingDirectory, { defaultDirectory: root })
   await ctx.plugin(ToolRuntime)
   await ctx.plugin(AgentRegistry)
   await ctx.plugin(AgentLoop, { agents: [] })

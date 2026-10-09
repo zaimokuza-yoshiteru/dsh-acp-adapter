@@ -15,7 +15,7 @@ export async function openAcpPluginDetail(page: Page, locale: 'en' | 'zh' = 'en'
 
 /** Return to the real Plugins inventory while retaining the current session. */
 export async function backToPluginList(detail: Locator, locale: 'en' | 'zh' = 'en'): Promise<void> {
-  await detail.getByRole('button', { name: locale === 'en' ? 'Back to plugins' : '返回插件列表', exact: true }).click()
+  await detail.getByRole('button', { name: locale === 'en' ? 'Back to plugins' : '返回插件', exact: true }).click()
 }
 
 /** Return to the same visible chat after using the app's Plugins navigation. */

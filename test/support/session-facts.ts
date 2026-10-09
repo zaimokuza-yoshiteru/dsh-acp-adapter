@@ -8,6 +8,11 @@ export function withSessionFacts<
   },
 >(session: T): T & SessionLike {
   return Object.defineProperties(session, {
+    ...(Object.hasOwn(session, 'workingDirectory')
+      ? {}
+      : {
+          workingDirectory: { get: () => (session as { header?: { cwd?: string } }).header?.cwd },
+        }),
     facts: {
       get: () =>
         session

@@ -16,6 +16,7 @@ import { classifyDevinWaitResult } from './devin-live-wait.ts'
 import { settleDevinLiveResult } from './devin-live-result.ts'
 import type { DevinLiveActorRole, DevinLivePhase, DevinLiveToolKind } from './devin-live-budget.ts'
 import { DevinLiveTrace } from './devin-live-trace.ts'
+import { devinPeerMessageOf } from './devin-live-messages.ts'
 import {
   collectLiveDiagnostic,
   installLiveDiagnosticTrace,
@@ -91,6 +92,7 @@ const lastSendBySession = new Map<string, { target: unknown; message: string }>(
 const cancellationQueuedFor = new Set<string>()
 let observedToolResults = 0
 const queuedMessageIds = new Set<string>()
+const acceptedMessageIds = new Set<string>()
 const receiptMessageIds = new Set<string>()
 const deliveredMessageIds = new Set<string>()
 const queuedMarkerMessageIds = new Set<string>()
@@ -185,7 +187,8 @@ const safeInboxCounts = (agent: {
       const counts = { user: 0, 'team-message': 0, system: 0, other: 0 }
       for (const message of messages) {
         const source = isRecord(message) && isRecord(message.source) ? message.source.kind : undefined
-        if (source === 'user' || source === 'team-message' || source === 'system') counts[source] += 1
+        if (devinPeerMessageOf(message) !== undefined) counts['team-message'] += 1
+        else if (source === 'user' || source === 'system') counts[source] += 1
         else counts.other += 1
       }
       return counts
@@ -535,7 +538,9 @@ try {
         ? 'error'
         : resultRecord?.status === 'accepted' || resultRecord?.status === 'queued'
           ? resultRecord.status
-          : 'unknown'
+          : resultRecord?.sent === true
+            ? 'sent'
+            : 'unknown'
       const hostCallId = typeof execution.callId === 'string' ? execution.callId : undefined
       const messageId = typeof resultRecord?.messageId === 'string' ? resultRecord.messageId : undefined
       const messageFingerprint =
@@ -715,25 +720,33 @@ try {
         uniqueDeliveredMessages: deliveredMessageIds.size,
       })
     }
-    if (event.type === 'user/message' && event.data.source.kind === 'team-message') {
-      const source = event.data.source
-      receipts.set(source.messageId, { sessionId: _session.id, seq: event.seq })
-      receiptMessageIds.add(source.messageId)
-      const senderRole = safeRole(source.senderId)
+    const peer = event.type === 'user/message' ? devinPeerMessageOf(event.data) : undefined
+    if (peer !== undefined) {
+      // Native user/message is target-side accepted input. It does not prove
+      // model processing; the later assistant event/sequence assertion does.
+      if (peer.kind === 'agent-message' && !acceptedMessageIds.has(peer.id)) {
+        acceptedMessageIds.add(peer.id)
+        received.push({ id: peer.id, senderId: peer.senderId, targetId: _session.id, text: peer.text })
+        bodyFingerprintsByMessageId.set(peer.id, trace.fingerprint('team-message-body', peer.text))
+        countRolePair(messageRolePairs, safeRole(peer.senderId), safeRole(_session.id))
+      }
+      receipts.set(peer.id, { sessionId: _session.id, seq: event.seq })
+      receiptMessageIds.add(peer.id)
+      const senderRole = safeRole(peer.senderId)
       const targetRole = safeRole(_session.id)
       countRolePair(receiptRolePairs, senderRole, targetRole)
-      const message = received.find((candidate) => candidate.id === source.messageId)
+      const message = received.find((candidate) => candidate.id === peer.id)
       const exactExpectedMarker = message === undefined ? false : hasExactMarker(message.text)
-      if (exactExpectedMarker) receiptMarkerMessageIds.add(source.messageId)
+      if (exactExpectedMarker) receiptMarkerMessageIds.add(peer.id)
       if (targetRole !== 'unknown') phases.set(_session.id, 'mailbox')
-      const bodyFingerprint = bodyFingerprintsByMessageId.get(source.messageId)
-      traceEvent('team-message/receipt', {
+      const bodyFingerprint = bodyFingerprintsByMessageId.get(peer.id)
+      traceEvent(peer.kind === 'agent-message' ? 'agent-message/accepted' : 'team-message/receipt', {
         ...eventFields,
-        messageId: trace.id('team-message', source.messageId),
-        senderId: trace.id('dsh-session', source.senderId),
+        messageId: trace.id('team-message', peer.id),
+        senderId: trace.id('dsh-session', peer.senderId),
         targetId: trace.id('dsh-session', _session.id),
         senderRole,
-        senderLabel: safeActorLabel(source.senderId),
+        senderLabel: safeActorLabel(peer.senderId),
         targetRole,
         targetLabel: safeActorLabel(_session.id),
         ...(bodyFingerprint === undefined
@@ -743,7 +756,9 @@ try {
               bodyBytes: bodyFingerprint.bytes,
               bodyFingerprintComplete: bodyFingerprint.complete,
             }),
-        matchedQueuedMessage: queuedMessageIds.has(source.messageId),
+        ...(peer.kind === 'agent-message'
+          ? { nativeReceiptStatus: 'accepted', uniqueAcceptedMessages: acceptedMessageIds.size }
+          : { matchedQueuedMessage: queuedMessageIds.has(peer.id) }),
         exactExpectedMarker,
         uniqueReceipts: receiptMessageIds.size,
       })
@@ -808,12 +823,8 @@ try {
       traceEvent('session/event', eventFields)
   })
   ctx.on('agent/inbox/claimed', ({ agent, message, turn }) => {
-    const source = collectLiveDiagnostic(() => {
-      const rawSource = (message as unknown as { readonly source?: unknown }).source
-      return isRecord(rawSource) ? rawSource : undefined
-    })
-    const rawMessageId =
-      source?.kind === 'team-message' && typeof source.messageId === 'string' ? source.messageId : undefined
+    const peer = collectLiveDiagnostic(() => devinPeerMessageOf(message))
+    const rawMessageId = peer?.id
     const bodyFingerprint = rawMessageId === undefined ? undefined : bodyFingerprintsByMessageId.get(rawMessageId)
     traceEvent('agent/inbox/claimed', {
       actorId: trace.id('dsh-session', agent.id),
@@ -822,10 +833,7 @@ try {
       actorLabel: safeActorLabel(agent.id),
       turn,
       messageId: rawMessageId === undefined ? 'unavailable' : trace.id('team-message', rawMessageId),
-      senderId:
-        source?.kind === 'team-message' && typeof source.senderId === 'string'
-          ? trace.id('dsh-session', source.senderId)
-          : 'unavailable',
+      senderId: peer === undefined ? 'unavailable' : trace.id('dsh-session', peer.senderId),
       nativeReceiptStatus: rawMessageId === undefined ? 'unavailable' : 'claimed',
       ...(bodyFingerprint === undefined
         ? { bodyHmac: 'unavailable', bodyBytes: null, bodyFingerprintComplete: false }
@@ -1075,6 +1083,7 @@ try {
       deniedDispatches: toolBudget.deniedDispatches,
       observedToolResults,
       queuedMessages: queuedMessageIds.size,
+      acceptedMessages: acceptedMessageIds.size,
       deliveredMessages: deliveredMessageIds.size,
       receipts: receiptMessageIds.size,
       receiptsMatchingQueued: [...receiptMessageIds].filter((id) => queuedMessageIds.has(id)).length,
