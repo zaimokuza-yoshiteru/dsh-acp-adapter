@@ -49,6 +49,7 @@ const question = (
 ): AskUserQuestionItem => ({
   id: 'acp-permission:ui-control',
   question: title,
+  detail: '请结合当前工作区说明需要保留的文件和操作范围，确保这段补充信息在窄屏中仍可阅读，并与问题标题左侧对齐。',
   options: labels.map((label) => ({ label })),
 })
 
@@ -64,6 +65,8 @@ async function geometry(card: Locator) {
     return {
       card: { x, y, width, height },
       header: rect('header'),
+      heading: rect('h2'),
+      detail: rect('[data-question-detail] p'),
       body: rect('[data-question-scroll]'),
       footer: rect('footer'),
       actions: rect('footer > div'),
@@ -80,6 +83,7 @@ async function assertFits(page: Page, card: Locator) {
   expect(box.card.y + box.card.height).toBeLessThanOrEqual(viewport.height + 1)
   expect(box.footer.y + box.footer.height).toBeLessThanOrEqual(box.card.y + box.card.height + 1)
   expect(box.body.height).toBeGreaterThan(0)
+  expect(Math.abs(box.heading.x - box.detail.x)).toBeLessThanOrEqual(1)
   expect(await card.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true)
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
 }

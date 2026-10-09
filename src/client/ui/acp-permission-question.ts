@@ -223,16 +223,20 @@ function PermissionQuestionSurface(props: Props) {
           'div',
           { className: css.question, key: question.id },
           question.detail
-            ? h(MarkdownText, {
-                text: question.detail,
-                labels: {
-                  code: {
-                    copyLabel: props.t('acpQuestionCopy'),
-                    copiedLabel: props.t('acpQuestionCopied'),
+            ? h(
+                'div',
+                { className: css.detail, 'data-question-detail': '' },
+                h(MarkdownText, {
+                  text: question.detail,
+                  labels: {
+                    code: {
+                      copyLabel: props.t('acpQuestionCopy'),
+                      copiedLabel: props.t('acpQuestionCopied'),
+                    },
+                    footnotes: props.t('acpQuestionFootnotes'),
                   },
-                  footnotes: props.t('acpQuestionFootnotes'),
-                },
-              })
+                }),
+              )
             : null,
           h(
             'div',

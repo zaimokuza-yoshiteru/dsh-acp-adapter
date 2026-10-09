@@ -212,16 +212,10 @@ export function AcpTeamApprovals({
   const batch = (outcome: 'allowed-once' | 'rejected'): void => {
     void run(approvals.map((request) => ({ pending: request, answer: () => request.answer(outcome) })))
   }
-  const rosterMessage =
-    pendingKeys !== ''
-      ? allowedIds === undefined
-        ? t('teamPendingLoading')
-        : undefined
-      : failedTeamHasPending
-        ? t('teamProjectionFailed')
-        : undefined
+  const rosterMessage = pendingKeys === '' && failedTeamHasPending ? t('teamProjectionFailed') : undefined
   const error = actionError ?? rosterMessage
-  if (!enabled || (waiting.length === 0 && error === undefined)) return null
+  const loading = pendingKeys !== '' && allowedIds === undefined
+  if (!enabled || (waiting.length === 0 && error === undefined && !loading)) return null
   const pendingTitle =
     (pendingKeys !== '' || failedTeamHasPending) && allowedIds === undefined
       ? eligibleMatches && eligible !== undefined && 'failed' in eligible

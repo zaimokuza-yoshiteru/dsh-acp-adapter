@@ -8,10 +8,11 @@ import {
 const form = (
   properties: Record<string, unknown>,
   required: string[] = Object.keys(properties),
+  message = 'Please provide the release settings.',
 ): acp.CreateElicitationRequest =>
   ({
     mode: 'form',
-    message: 'Please provide the release settings.',
+    message,
     requestedSchema: { type: 'object', properties, required },
   }) as acp.CreateElicitationRequest
 
@@ -81,6 +82,94 @@ describe('native ACP form elicitation bridge (M5c)', () => {
     expect(questions.map((item) => item.id)).toEqual(['name', 'channel', 'enabled', 'ratio', 'count', 'tags'])
     expect(questions[0]).toMatchObject({ id: 'name', detail: 'Please provide the release settings.' })
     expect(questions.at(-1)).toMatchObject({ id: 'tags', multiSelect: true })
+  })
+
+  it('removes only exact trimmed duplicates from question detail and preserves other fields', async () => {
+    const message = '请确认本地改动应该如何处理，并说明选择依据。'
+    const questions: { id: string; question: string; detail?: string }[] = []
+    const handler = createAcpNativeElicitationHandler({
+      userQuestions: {
+        ask: async ({ questions: requested }) => {
+          questions.push(...requested)
+          return {
+            answers: requested.map((item) => ({ id: item.id, selected: [], custom: `value:${item.id}` })),
+          }
+        },
+      },
+      getAgent: () => ({}),
+    })
+
+    const response = await handler(
+      form(
+        {
+          local_action: {
+            type: 'string',
+            title: '本地改动',
+            description: `  ${message}\n`,
+          },
+          follow_up: {
+            type: 'string',
+            title: '补充说明',
+            description: '第二项的独立说明必须保留。',
+          },
+        },
+        ['local_action', 'follow_up'],
+        message,
+      ),
+    )
+
+    expect(questions).toEqual([
+      { id: 'local_action', question: '本地改动', detail: message },
+      { id: 'follow_up', question: '补充说明', detail: '第二项的独立说明必须保留。' },
+    ])
+    expect(response).toEqual({
+      action: 'accept',
+      content: { local_action: `value:local_action`, follow_up: `value:follow_up` },
+    })
+  })
+
+  it('does not repeat detail that matches the question title after trimming', async () => {
+    const sameText = '本地改动应该如何处理？'
+    let requested: { id: string; question: string; detail?: string } | undefined
+    const handler = createAcpNativeElicitationHandler({
+      userQuestions: {
+        ask: async ({ questions }) => {
+          requested = questions[0]
+          return { answers: [{ id: 'local_action', selected: [], custom: '保留' }] }
+        },
+      },
+      getAgent: () => ({}),
+    })
+
+    const response = await handler(
+      form(
+        { local_action: { type: 'string', title: sameText, description: ` ${sameText} ` } },
+        ['local_action'],
+        sameText,
+      ),
+    )
+
+    expect(requested).toEqual({ id: 'local_action', question: sameText })
+    expect(response).toEqual({ action: 'accept', content: { local_action: '保留' } })
+  })
+
+  it('keeps distinct request and field details complete and ordered', async () => {
+    const message = '请先说明本次操作的总体目标。'
+    const description = `${message} 此字段还补充了不同的额外条件。`
+    let requested: { id: string; question: string; detail?: string } | undefined
+    const handler = createAcpNativeElicitationHandler({
+      userQuestions: {
+        ask: async ({ questions }) => {
+          requested = questions[0]
+          return { answers: [{ id: 'reason', selected: [], custom: '已确认' }] }
+        },
+      },
+      getAgent: () => ({}),
+    })
+
+    await handler(form({ reason: { type: 'string', title: message, description } }, ['reason'], message))
+
+    expect(requested).toEqual({ id: 'reason', question: message, detail: description })
   })
 
   it('declines URL and unsupported, nested, sensitive or malformed schemas before asking', async () => {

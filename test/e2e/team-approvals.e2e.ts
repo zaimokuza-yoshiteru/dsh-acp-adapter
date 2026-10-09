@@ -6,6 +6,7 @@ import type { Page } from 'playwright'
 import { join } from 'node:path'
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { expect, it, vi } from 'vitest'
+import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
 import { connectFreshWorkspace, writeComposerDraft } from '#host-support'
 import { launchAdapterWorld, root } from './scaffold.ts'
 import type { AcpRemoteService } from '../../src/remote/service.js'
@@ -75,8 +76,16 @@ it.each(['devin', 'codex'].flatMap((profile) => ['allow', 'reject'].map((decisio
       await remote.setToolApprovalPolicy(lead.id, { policy: 'ask' })
       const readTeamMembers = remote.teamMembers.bind(remote)
       let rosterReads = 0
+      let failNextRosterRead = false
       vi.spyOn(remote, 'teamMembers').mockImplementation(async (session) => {
         rosterReads++
+        if (failNextRosterRead) {
+          failNextRosterRead = false
+          throw new RemoteError('dsh-acp/user-rejected', 'E2E_STABLE_TEAM_ROSTER_FAILURE', {
+            kind: null,
+            correlationId: null,
+          })
+        }
         if (rosterReads === 1) throw new Error('E2E_TEMPORARY_TEAM_ROSTER_FAILURE')
         if (rosterReads >= 2) {
           if (rosterReads === 2) notifySecondRosterReadStarted()
@@ -89,8 +98,18 @@ it.each(['devin', 'codex'].flatMap((profile) => ['allow', 'reject'].map((decisio
       const card = page.locator('[data-acp-team-approvals]')
       await secondRosterReadStarted
       await expect.poll(() => card.locator('strong[role="status"]').innerText()).toBe('Loading pending requests…')
+      expect(await card.locator('strong[role="status"]').count()).toBe(1)
+      expect(await card.locator('p[role="status"]').count()).toBe(0)
       expect(await card.locator('[data-team-pending-member]').count()).toBe(0)
       expect(await card.innerText()).not.toContain('Members needing your attention · 0')
+      const collapseLoading = card.getByRole('button', { name: 'Collapse', exact: true })
+      await collapseLoading.click()
+      const expandLoading = card.getByRole('button', { name: 'Expand', exact: true })
+      expect(await expandLoading.getAttribute('aria-expanded')).toBe('false')
+      await expandLoading.click()
+      expect(await card.getByRole('button', { name: 'Collapse', exact: true }).getAttribute('aria-expanded')).toBe(
+        'true',
+      )
       releaseSecondRosterRead()
       await expect.poll(() => card.locator('[data-team-pending-member]').count(), { timeout: 30000 }).toBe(8)
       expect(rosterReads).toBeGreaterThanOrEqual(2)
@@ -98,6 +117,16 @@ it.each(['devin', 'codex'].flatMap((profile) => ['allow', 'reject'].map((decisio
       mkdirSync(join(root, '.local/team-approvals'), { recursive: true })
       await page.screenshot({ path: join(root, `.local/team-approvals/eight-${profile}-${decision}.png`) })
       expect(await card.innerText()).toContain('echo E2E_TEAM_PERMISSION')
+      failNextRosterRead = true
+      await card
+        .locator('[data-team-pending-member="worker-8"]')
+        .getByRole('button', { name: 'Reject', exact: true })
+        .click()
+      await expect
+        .poll(() => card.getByText('Team pending requests are temporarily unavailable.', { exact: true }).count())
+        .toBe(1)
+      expect(await card.locator('strong[role="status"]').count()).toBe(1)
+      expect(await events.filter((event) => event.type === 'approval/decided')).toHaveLength(0)
       const outcome = decision === 'allow' ? 'allowed-once' : 'rejected'
       // One inline action plus the batch proves both paths without opening a member.
       await card

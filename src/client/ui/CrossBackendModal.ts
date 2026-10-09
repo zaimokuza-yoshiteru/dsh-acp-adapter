@@ -89,7 +89,7 @@ export function CrossBackendModal({
       ),
     },
     error === null
-      ? h('p', { className: css.note }, t('crossBackendHistory'))
+      ? null
       : h(
           'div',
           null,

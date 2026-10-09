@@ -444,9 +444,17 @@ export function createAcpNativeElicitationHandler(
           : zh
             ? `允许 Agent 调用 DSH 工具“${deps.hostToolName}”吗？`
             : `Allow the Agent to use the DSH tool "${deps.hostToolName}"?`
-      const detail = [index === 0 ? introduction : undefined, field.description]
-        .filter((value): value is string => value !== undefined && value.length > 0)
-        .join('\n\n')
+      const questionText = field.question.trim()
+      const detailParts: string[] = []
+      const seenDetails = new Set<string>()
+      for (const part of [index === 0 ? introduction : undefined, field.description]) {
+        if (part === undefined || part.length === 0) continue
+        const comparable = part.trim()
+        if (comparable === questionText || seenDetails.has(comparable)) continue
+        seenDetails.add(comparable)
+        detailParts.push(part)
+      }
+      const detail = detailParts.join('\n\n')
       return {
         id: field.name,
         question: field.question,
