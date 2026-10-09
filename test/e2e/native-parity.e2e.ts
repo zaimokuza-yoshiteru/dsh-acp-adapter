@@ -152,6 +152,39 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
               errors,
               observed,
               events,
+              processDisclosure: await page.evaluate(() => {
+                const controls = [...document.querySelectorAll<HTMLElement>('[data-turn-process-tool-calls]')]
+                const control = controls.at(-1)
+                const turn = control?.getAttribute('data-turn-process') ?? null
+                const groups = [
+                  ...document.querySelectorAll<HTMLElement>('[data-step-process][data-chat-turn]'),
+                ].filter((group) => group.getAttribute('data-chat-turn') === turn)
+                return {
+                  turn,
+                  expanded: control?.getAttribute('aria-expanded') ?? null,
+                  dataOpen: control?.getAttribute('data-open') ?? null,
+                  disabled: control === undefined ? null : (control as HTMLButtonElement).disabled,
+                  groups: groups.map((group) => ({
+                    activity:
+                      group.querySelector('[data-process-activity]')?.getAttribute('data-process-activity') ?? null,
+                    expanded: group.querySelector('[data-process-activity]')?.getAttribute('aria-expanded') ?? null,
+                    hiddenAncestors: (() => {
+                      const result: string[] = []
+                      for (let parent: HTMLElement | null = group; parent !== null; parent = parent.parentElement) {
+                        if (
+                          parent.hidden ||
+                          parent.hasAttribute('hidden') ||
+                          getComputedStyle(parent).display === 'none'
+                        )
+                          result.push(
+                            `${parent.tagName}[turn=${parent.getAttribute('data-turn-process') ?? ''},chatTurn=${parent.getAttribute('data-chat-turn') ?? ''},expanded=${parent.getAttribute('aria-expanded') ?? ''}]`,
+                          )
+                      }
+                      return result
+                    })(),
+                  })),
+                }
+              }),
               agent: existsSync(agentLog) ? readFileSync(agentLog, 'utf8') : '',
             },
             null,
@@ -191,10 +224,36 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
   })
 
   async function expandProcess() {
-    const control = page.locator('[data-turn-process-tool-calls]').last()
-    await control.waitFor()
-    if ((await control.getAttribute('aria-expanded')) === 'false') await control.click()
-    for (const button of await page.locator('[data-step-process] > div > button').all()) {
+    const candidate = page.locator('[data-turn-process-tool-calls]').last()
+    await candidate.waitFor({ state: 'visible' })
+    const targetTurn = await candidate.getAttribute('data-turn-process')
+    expect(targetTurn).toMatch(/^\d+$/)
+    const control = page.locator(`[data-turn-process-tool-calls][data-turn-process="${targetTurn}"]`)
+    await control.waitFor({ state: 'visible' })
+    await expect
+      .poll(
+        async () => {
+          const expanded = await control.getAttribute('aria-expanded')
+          const dataOpen = await control.getAttribute('data-open')
+          return (
+            expanded === 'true' ||
+            (expanded === 'false' && (await control.isEnabled())) ||
+            (expanded === null && !(await control.isEnabled()) && dataOpen === 'true')
+          )
+        },
+        { timeout: 30_000 },
+      )
+      .toBe(true)
+    if ((await control.getAttribute('aria-expanded')) === 'false') {
+      await control.click()
+    }
+    await expect.poll(() => control.getAttribute('data-open')).toBe('true')
+    const finalExpanded = await control.getAttribute('aria-expanded')
+    if (finalExpanded !== null) {
+      await expect.poll(() => control.getAttribute('aria-expanded')).toBe('true')
+    }
+    const stepControls = page.locator(`[data-step-process][data-chat-turn="${targetTurn}"] > div > button`)
+    for (const button of await stepControls.all()) {
       await button.waitFor({ state: 'visible' })
       if ((await button.getAttribute('aria-expanded')) === 'false') await button.click()
       await expect.poll(() => button.getAttribute('aria-expanded')).toBe('true')
