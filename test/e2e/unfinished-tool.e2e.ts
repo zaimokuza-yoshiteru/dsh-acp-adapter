@@ -51,13 +51,14 @@ it('shows a tool without a terminal update as unfinished and accepts the next pr
     await send.click()
     await page.getByText('E2E_UNFINISHED_FIRST_DONE', { exact: true }).waitFor()
     await firstSettled
-    const firstProcess = page.locator('[data-turn-process-tool-calls]').last()
-    await firstProcess.waitFor()
+    const firstProcess = page.locator('[data-turn-process="1"][data-turn-process-tool-calls]')
+    await firstProcess.waitFor({ state: 'visible', timeout: 15_000 })
     if ((await firstProcess.getAttribute('aria-expanded')) === 'false') await firstProcess.click()
-    for (const stepButton of await page.locator('[data-step-process] > div > button').all()) {
-      await stepButton.waitFor({ state: 'visible' })
+    await expect.poll(() => firstProcess.getAttribute('aria-expanded'), { timeout: 15_000 }).toBe('true')
+    for (const stepButton of await page.locator('[data-step-process][data-chat-turn="1"] > div > button').all()) {
+      await stepButton.waitFor({ state: 'visible', timeout: 15_000 })
       if ((await stepButton.getAttribute('aria-expanded')) === 'false') await stepButton.click()
-      await expect.poll(() => stepButton.getAttribute('aria-expanded')).toBe('true')
+      await expect.poll(() => stepButton.getAttribute('aria-expanded'), { timeout: 15_000 }).toBe('true')
     }
     await page.getByText('Tool did not report a result', { exact: true }).waitFor()
     const nativeToolResultCount = await page.locator('[data-chat-call-id$=":tool:unfinished-fixture"]').count()
@@ -91,13 +92,14 @@ it('shows a tool without a terminal update as unfinished and accepts the next pr
     }
     await nextSettled
     expect(await page.getByRole('button', { name: 'Resolve recovery issue', exact: true }).count()).toBe(0)
-    const nextProcess = page.locator('[data-turn-process-tool-calls]').last()
-    await nextProcess.waitFor()
+    const nextProcess = page.locator('[data-turn-process="2"][data-turn-process-tool-calls]')
+    await nextProcess.waitFor({ state: 'visible', timeout: 15_000 })
     if ((await nextProcess.getAttribute('aria-expanded')) === 'false') await nextProcess.click()
-    for (const stepButton of await page.locator('[data-step-process] > div > button').all()) {
-      await stepButton.waitFor({ state: 'visible' })
+    await expect.poll(() => nextProcess.getAttribute('aria-expanded'), { timeout: 15_000 }).toBe('true')
+    for (const stepButton of await page.locator('[data-step-process][data-chat-turn="2"] > div > button').all()) {
+      await stepButton.waitFor({ state: 'visible', timeout: 15_000 })
       if ((await stepButton.getAttribute('aria-expanded')) === 'false') await stepButton.click()
-      await expect.poll(() => stepButton.getAttribute('aria-expanded')).toBe('true')
+      await expect.poll(() => stepButton.getAttribute('aria-expanded'), { timeout: 15_000 }).toBe('true')
     }
     try {
       const terminalTool = page.locator('[data-tool="Next turn terminal tool"][data-state="ok"]')

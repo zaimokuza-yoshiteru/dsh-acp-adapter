@@ -95,7 +95,7 @@ CI 的产品命令以普通用户运行。Windows hosted runner 的管理员身�
 
 ## 真实 Agent 冒烟
 
-`test/e2e/long-conversation.e2e.ts` 默认的 12 轮是确定性 scripted ACP/Native composer 负载与渲染回归，不代表真实模型长会话；100 轮 opt-in 分支本轮未执行、未签收。它们都不能替代下面的真实 Agent/Teams 验证。
+`test/e2e/long-conversation.e2e.ts` 默认的 12 轮是确定性 scripted ACP/Native composer 负载与渲染回归，不代表真实模型长会话。100 轮 opt-in 分支会在同一会话重新加载后验证分页、历史渲染与续聊持久化。它们都不能替代下面的真实 Agent/Teams 验证。
 
 以下浏览器真实连接测试默认跳过，不在普通 CI 中运行；带凭据的 Devin 专项见独立 `Real Devin integration` 工作流。明确授权使用现有 Agent 登录和模型额度后，可执行：
 

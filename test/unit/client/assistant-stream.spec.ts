@@ -5,6 +5,7 @@ import {
   activityData,
   activityWindowKey,
 } from '../../../src/client/ui/acp-chat-normalization.ts'
+import type { AcpNormalizationCacheEntry } from '../../../src/client/ui/acp-chat-normalization.ts'
 import type { ChatConversationViewNode, ChatNode, ChatSnapshot } from '@deepseek-ai/dsh-client-ui-chat/client'
 import type {
   ConversationGroupDefinition,
@@ -924,7 +925,15 @@ describe('native assistant renderer composition', () => {
       visibility: 'visible',
       anchorSeq: 10,
       location,
-      data: { status: 'settled', turn: 1, step: 1, blocks: [{ kind: 'text', text: 'ACP result' }] },
+      data: {
+        status: 'settled',
+        turn: 1,
+        step: 1,
+        blocks: [
+          { kind: 'reasoning', text: 'ACP reasoning' },
+          { kind: 'text', text: 'ACP result' },
+        ],
+      },
     } as unknown as ChatConversationViewNode
     const process = {
       ...assistant,
@@ -957,5 +966,90 @@ describe('native assistant renderer composition', () => {
       inlineReasoning: true,
       toolCallCount: 3,
     })
+  })
+
+  it('preserves the host inline-reasoning flag in cold and warm ACP process projections', () => {
+    const makeProjection = (
+      key: string,
+      inlineReasoning: boolean,
+      blocks: readonly { kind: 'reasoning' | 'text'; text: string }[],
+    ) => {
+      const data: AcpActivityNodeData = {
+        ownerDshSessionId: 'owner',
+        promptAnchorMessageId: key,
+        profileId: 'devin',
+        agentSessionId: 'agent',
+        committedActivitySeq: 1,
+      }
+      const location = {
+        kind: 'step',
+        turn: { turn: 2 },
+        step: { step: 1, data: { get: (name: string) => (name === 'acp-activity' ? data : undefined) } },
+      }
+      const assistant = {
+        key: `assistant-${key}`,
+        id: `assistant-${key}`,
+        kind: 'assistant-step',
+        target: 'chat',
+        visibility: 'visible',
+        anchorSeq: 10,
+        location,
+        data: { status: 'settled', turn: 2, step: 1, blocks },
+      } as unknown as ChatConversationViewNode
+      const marker = {
+        ...assistant,
+        key: `marker-${key}`,
+        id: `input:${key}`,
+        kind: 'acp-activity',
+        data,
+      } as ChatConversationViewNode
+      const process = {
+        ...assistant,
+        key: `process-${key}`,
+        id: `process-${key}`,
+        kind: 'turn-process',
+        data: {
+          turn: 2,
+          answerStep: 1,
+          answerAnchorSeq: 10,
+          inlineReasoning,
+          toolCallCount: 0,
+        },
+      } as ChatConversationViewNode
+      const window = { rows: [], unavailable: false }
+      return {
+        nodes: [process, assistant, marker],
+        windows: new Map([[activityWindowKey(data), window]]),
+      }
+    }
+    const processData = (nodes: readonly ChatConversationViewNode[]) =>
+      nodes.find((node) => node.kind === 'turn-process')!.data as { inlineReasoning: boolean }
+    const cache = new Map<string, AcpNormalizationCacheEntry>()
+    const nonempty = makeProjection('reasoning', true, [
+      { kind: 'reasoning', text: 'A real private reasoning step.' },
+      { kind: 'text', text: 'Visible answer.' },
+    ])
+
+    const cold = normalizeAcpChatNodes(nonempty.nodes, nonempty.windows, cache)
+    expect(processData(cold).inlineReasoning).toBe(true)
+    expect(
+      cold.some(
+        (node) =>
+          node.kind === 'assistant-step' &&
+          (node as ChatNode<'assistant-step'>).data.blocks.some(
+            (block) => block.kind === 'reasoning' && block.text === 'A real private reasoning step.',
+          ),
+      ),
+    ).toBe(true)
+
+    const warm = normalizeAcpChatNodes(nonempty.nodes, nonempty.windows, cache)
+    expect(processData(warm).inlineReasoning).toBe(true)
+
+    const empty = makeProjection('empty-reasoning', false, [
+      { kind: 'reasoning', text: ' \n ' },
+      { kind: 'text', text: 'Visible answer.' },
+    ])
+    const noReasoning = normalizeAcpChatNodes(empty.nodes, empty.windows)
+    expect(processData(noReasoning).inlineReasoning).toBe(false)
   })
 })

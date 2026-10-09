@@ -2,7 +2,7 @@ import type { ToolCallBlock } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type { CDPSession, Page } from 'playwright'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { LlmAdapter, ToolCallId } from '@deepseek-ai/dsh-llm'
 import { connectFreshWorkspace, writeComposerDraft } from '#host-support'
@@ -106,6 +106,44 @@ async function waitForRelease(path: string): Promise<void> {
     if (Date.now() >= deadline) throw new Error(`Long-flow release gate timed out: ${path}`)
     await new Promise((resolve) => setTimeout(resolve, 20))
   }
+}
+
+type TurnEndResult =
+  | { readonly kind: 'settled'; readonly sessionId: string }
+  | { readonly kind: 'failed'; readonly error: unknown }
+  | { readonly kind: 'cancelled' }
+
+function observeTurnEnd(
+  host: AdapterWorld,
+  sessionId: string,
+  timeoutMs = 30_000,
+): { promise: Promise<TurnEndResult>; cancel(): void } {
+  let resolveResult!: (result: TurnEndResult) => void
+  let off: (() => void) | undefined
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let finished = false
+  const promise = new Promise<TurnEndResult>((resolve) => {
+    resolveResult = resolve
+  })
+  const finish = (result: TurnEndResult): void => {
+    if (finished) return
+    finished = true
+    if (timer !== undefined) clearTimeout(timer)
+    off?.()
+    resolveResult(result)
+  }
+  off = host.ctx.on('session/event', (session, event) => {
+    if (String(session.id) !== sessionId || event.type !== 'turn/end') return
+    void host.ctx.sessions.flush(session).then(
+      () => finish({ kind: 'settled', sessionId: String(session.id) }),
+      (error: unknown) => finish({ kind: 'failed', error }),
+    )
+  })
+  timer = setTimeout(
+    () => finish({ kind: 'failed', error: new Error(`No turn/end for session ${sessionId} within ${timeoutMs}ms`) }),
+    timeoutMs,
+  )
+  return { promise, cancel: () => finish({ kind: 'cancelled' }) }
 }
 
 async function startupPhase<T>(
@@ -233,6 +271,7 @@ describe('long conversation native renderer comparison', () => {
   let host!: AdapterWorld
   let browser!: TestBrowser
   const allEvents: SessionEvent[] = []
+  const allEventRecords: { sessionId: string; event: SessionEvent }[] = []
   const nativeProvider = 'native-control'
   const acpProvider = 'acp-devin'
 
@@ -280,7 +319,10 @@ describe('long conversation native renderer comparison', () => {
       }),
     )
     console.info('[long-flow startup] native tool registration: complete')
-    host.ctx.on('session/event', (_session, event) => allEvents.push(event))
+    host.ctx.on('session/event', (session, event) => {
+      allEvents.push(event)
+      allEventRecords.push({ sessionId: String(session.id), event })
+    })
     browser = await startupPhase(
       'browser launch',
       () =>
@@ -331,6 +373,11 @@ describe('long conversation native renderer comparison', () => {
     const cdp = await page.context().newCDPSession(page)
     await cdp.send('Performance.enable')
     const runs: RunEvidence[] = []
+    let activeWaiterCancel: (() => void) | undefined
+    let failureContext: { provider: string; sessionId?: string; turn?: number; phase: string } = {
+      provider: 'setup',
+      phase: 'workspace-connection',
+    }
     try {
       await startupPhase('authenticated browser navigation', () =>
         page.goto(host.authenticatedUrl, { waitUntil: 'load' }).then(() => undefined),
@@ -339,21 +386,61 @@ describe('long conversation native renderer comparison', () => {
       const workspace = join(host.workspaceCwd, 'workspace')
 
       for (const provider of [nativeProvider, acpProvider]) {
+        failureContext = { provider, phase: 'model-selection' }
         await host.ctx.agentDefaultModel.saveSelection({
           provider,
           model: provider === nativeProvider ? 'long-flow-model' : 'mock-model-a',
         })
+        const activeConversation = page.locator('[data-conversation-session]').last()
         if (runs.length > 0) {
+          const previousSessionId = runs.at(-1)!.sessionId
+          failureContext = { provider, sessionId: previousSessionId, phase: 'new-session-transition' }
+          await activeConversation.waitFor({ state: 'visible' })
+          await expect
+            .poll(() => activeConversation.getAttribute('data-conversation-session'), { timeout: 30_000 })
+            .toBe(previousSessionId)
           await page.getByRole('button', { name: 'New session', exact: true }).last().click()
-          await page.locator('[data-composer-input][contenteditable="true"]').last().waitFor()
+          await expect
+            .poll(
+              async () => {
+                const id = await activeConversation.getAttribute('data-conversation-session')
+                return id !== null && id.length > 0 && id !== previousSessionId
+              },
+              { timeout: 30_000 },
+            )
+            .toBe(true)
         }
+        await activeConversation.waitFor({ state: 'visible' })
+        const sessionId = await activeConversation.getAttribute('data-conversation-session')
+        if (sessionId === null || sessionId.length === 0)
+          throw new Error(`${provider} did not bind the active conversation to a session`)
+        const conversation = page.locator(`[data-conversation-session="${sessionId}"]`)
+        failureContext = { provider, sessionId, phase: 'session-composer-ready' }
+        await expect
+          .poll(() => conversation.locator('[data-composer-input][contenteditable="true"]').count(), {
+            timeout: 30_000,
+          })
+          .toBe(1)
         writeFileSync(join(workspace, LONG_FLOW_FILE), 'LONG_FLOW_SEED\n')
         writeFileSync(join(workspace, LONG_FLOW_DELIVERY), 'LONG_FLOW_DELIVERY_CONTENT\n')
         writeFileSync(MOCK_LOG, '')
         rmSync(provider === nativeProvider ? NATIVE_RELEASE : ACP_RELEASE, { force: true })
         rmSync(provider === nativeProvider ? NATIVE_FINISH_RELEASE : ACP_FINISH_RELEASE, { force: true })
         rmSync(provider === nativeProvider ? NATIVE_HISTORY_RELEASE : ACP_HISTORY_RELEASE, { force: true })
-        const record = await runProvider(page, cdp, provider, turnCount, workspace, runs.at(-1)?.sessionId)
+        const record = await runProvider(
+          page,
+          cdp,
+          provider,
+          turnCount,
+          workspace,
+          sessionId,
+          (turn, phase) => {
+            failureContext = { provider, sessionId, ...(turn === null ? {} : { turn }), phase }
+          },
+          (cancel) => {
+            activeWaiterCancel = cancel
+          },
+        )
         runs.push(record)
       }
 
@@ -362,7 +449,12 @@ describe('long conversation native renderer comparison', () => {
       expect(runs.map((run) => run.turns)).toEqual([turnCount, turnCount])
       expect(runs[0]!.sessionId).not.toBe(runs[1]!.sessionId)
     } catch (error) {
+      activeWaiterCancel?.()
+      activeWaiterCancel = undefined
       const failurePath = join(EVIDENCE, `failure-${turnCount}.json`)
+      const failureDirectory = join(root, '.local/e2e-failures/long-conversation')
+      const phaseName = failureContext.phase.replaceAll(/[^a-zA-Z0-9_-]/g, '-')
+      const failurePrefix = `long-conversation-${failureContext.provider}-turn-${failureContext.turn ?? 'setup'}-${phaseName}-${turnCount}`
       const dom = await page
         .evaluate(() => ({
           callIds: [...document.querySelectorAll<HTMLElement>('[data-chat-call-id]')].map((element) => ({
@@ -372,24 +464,31 @@ describe('long conversation native renderer comparison', () => {
           bodyHtml: document.body.outerHTML,
         }))
         .catch((domError: unknown) => ({ error: String(domError) }))
-      await page
-        .screenshot({ path: join(EVIDENCE, `failure-${turnCount}.png`), fullPage: true, animations: 'disabled' })
-        .catch(() => undefined)
-      writeFileSync(
-        failurePath,
-        JSON.stringify(
-          {
-            error: error instanceof Error ? error.stack : String(error),
-            consoleErrors: errors,
-            hostEvents: allEvents,
-            dom,
-          },
-          null,
-          2,
-        ),
-      )
+      const localScreenshot = join(EVIDENCE, `failure-${turnCount}.png`)
+      const screenshotCaptured = await page
+        .screenshot({ path: localScreenshot, fullPage: true, animations: 'disabled' })
+        .then(
+          () => true,
+          () => false,
+        )
+      const diagnostic = {
+        error: error instanceof Error ? error.stack : String(error),
+        run: failureContext,
+        consoleErrors: errors,
+        hostEvents: allEventRecords,
+        dom,
+      }
+      try {
+        mkdirSync(failureDirectory, { recursive: true })
+        writeFileSync(failurePath, JSON.stringify(diagnostic, null, 2))
+        writeFileSync(join(failureDirectory, `${failurePrefix}.json`), JSON.stringify(diagnostic, null, 2))
+        if (screenshotCaptured) copyFileSync(localScreenshot, join(failureDirectory, `${failurePrefix}.png`))
+      } catch (evidenceError) {
+        console.error('[long-flow failure evidence] capture failed', evidenceError)
+      }
       throw error
     } finally {
+      activeWaiterCancel?.()
       await cdp.detach()
       await page.close()
     }
@@ -401,10 +500,14 @@ describe('long conversation native renderer comparison', () => {
     provider: string,
     turnCount: number,
     workspace: string,
-    previousSessionId?: string,
+    sessionId: string,
+    reportPhase: (turn: number | null, phase: string) => void,
+    registerWaiterCancel: (cancel?: () => void) => void,
   ): Promise<RunEvidence> {
     const eventOffset = allEvents.length
-    const sessionIdPromise = host.whenTurnSettled(600_000)
+    const conversation = page.locator(`[data-conversation-session="${sessionId}"]`)
+    reportPhase(null, 'conversation-bound')
+    await expect.poll(() => conversation.count(), { timeout: 30_000 }).toBe(1)
     const checkpoints: Metrics[] = []
     const snapshots: Record<string, string> = {}
     const earlyRenderCounts: Record<string, number> = {}
@@ -452,13 +555,21 @@ describe('long conversation native renderer comparison', () => {
     }
 
     for (let index = 1; index <= turnCount; index++) {
+      reportPhase(index, 'draft')
       const spec = longTurnSpec(index, turnCount)
       const prompt = `E2E_LONG_CONVERSATION turn=${index} total=${turnCount} kind=${spec.kind} ${spec.marker}; preserve earlier requirements and summarize this step.`
-      const composer = page.locator('[data-composer-input][contenteditable="true"]').last()
+      const composer = conversation.locator('[data-composer-input][contenteditable="true"]')
+      await composer.waitFor({ state: 'visible' })
       await writeComposerDraft(page, composer, prompt)
-      const settled = host.whenTurnSettled(30_000)
-      await page.getByRole('button', { name: /^(Send message|发送消息)$/ }).click()
-      await page.getByText(`${spec.marker}_FIRST`, { exact: false }).last().waitFor({ timeout: 20_000 })
+      await expect.poll(() => composer.innerText(), { timeout: 15_000 }).toBe(prompt)
+      const sendButton = conversation.getByRole('button', { name: /^(Send message|发送消息)$/ })
+      await expect.poll(() => sendButton.isEnabled(), { timeout: 15_000 }).toBe(true)
+      const settled = observeTurnEnd(host, sessionId, 30_000)
+      registerWaiterCancel(settled.cancel)
+      reportPhase(index, 'send')
+      await sendButton.click()
+      reportPhase(index, 'await-first-delta')
+      await conversation.getByText(`${spec.marker}_FIRST`, { exact: false }).last().waitFor({ timeout: 20_000 })
       if (index === turnCount) {
         const releasePath = provider === nativeProvider ? NATIVE_RELEASE : ACP_RELEASE
         try {
@@ -495,7 +606,7 @@ describe('long conversation native renderer comparison', () => {
           writeFileSync(releasePath, 'release')
         }
       }
-      await page.getByText(`${spec.marker}_DONE`, { exact: false }).last().waitFor({ timeout: 20_000 })
+      await conversation.getByText(`${spec.marker}_DONE`, { exact: false }).last().waitFor({ timeout: 20_000 })
       if (index === turnCount) {
         await capture('tail-before-finish')
         for (const [key, baseline] of Object.entries(tailStreamingBaseline)) {
@@ -518,7 +629,12 @@ describe('long conversation native renderer comparison', () => {
         }
         writeFileSync(provider === nativeProvider ? NATIVE_FINISH_RELEASE : ACP_FINISH_RELEASE, 'release')
       }
-      const settledId = await settled
+      const settlement = await settled.promise
+      registerWaiterCancel(undefined)
+      if (settlement.kind === 'failed') throw settlement.error
+      if (settlement.kind === 'cancelled') throw new Error(`Turn-end wait cancelled for ${sessionId}`)
+      const settledId = settlement.sessionId
+      reportPhase(index, 'turn-settled')
       if (index === turnCount) {
         for (const key of Object.keys(tailStreamingBaseline)) {
           const afterSettled = await page.evaluate((renderKey) => {
@@ -534,8 +650,7 @@ describe('long conversation native renderer comparison', () => {
           }
         }
       }
-      expect(settledId).toBe(await sessionIdPromise)
-      if (index === 1 && previousSessionId !== undefined) expect(String(settledId)).not.toBe(previousSessionId)
+      expect(settledId).toBe(sessionId)
       const transcript = allEvents.slice(eventOffset)
       const matchingEvents = transcript.filter((event) => {
         if (event.type === 'user/message')
@@ -689,7 +804,6 @@ describe('long conversation native renderer comparison', () => {
       }
     }
 
-    const sessionId = await sessionIdPromise
     const sessionEvents = allEvents.slice(eventOffset)
     const toolCalls = sessionEvents.filter((event) => event.type === 'tool/call')
     const ptcDispatchEvents = sessionEvents.filter(
@@ -739,6 +853,16 @@ describe('long conversation native renderer comparison', () => {
       return artifacts
     }
 
+    reportPhase(turnCount, 'history-reload')
+    await page.reload({ waitUntil: 'load' })
+    await expect.poll(() => conversation.count(), { timeout: 30_000 }).toBe(1)
+    await expect.poll(() => conversation.getAttribute('data-conversation-session'), { timeout: 30_000 }).toBe(sessionId)
+    await conversation
+      .getByText(`LONG_FLOW_${String(turnCount).padStart(3, '0')}_DONE`, { exact: false })
+      .last()
+      .waitFor({ timeout: 30_000 })
+
+    reportPhase(turnCount, 'history-pagination')
     await page.getByRole('button', { name: 'Load earlier', exact: true }).waitFor()
     let previous = await page.locator('[data-chat-flow-kind="user"]').count()
     let pages = 0
@@ -750,12 +874,31 @@ describe('long conversation native renderer comparison', () => {
       previous = await page.locator('[data-chat-flow-kind="user"]').count()
     }
     expect(previous).toBe(turnCount)
+    reportPhase(turnCount, 'history-navigation')
     const navigation = page.getByRole('navigation', { name: 'Turn navigation', exact: true })
-    await navigation.getByRole('button', { name: 'Jump to turn 1', exact: true }).click()
+    const railScroller = navigation.locator(':scope > div').first()
+    await expect
+      .poll(() => railScroller.evaluate((element) => element.scrollHeight > element.clientHeight), { timeout: 15_000 })
+      .toBe(true)
+    await railScroller.evaluate((element) => {
+      element.scrollTop = 0
+    })
+    const firstTurnMark = navigation.getByRole('button', { name: 'Jump to turn 1', exact: true })
+    await firstTurnMark.waitFor({ state: 'visible', timeout: 15_000 })
+    await firstTurnMark.click()
     const firstTurn = page.locator('[data-chat-turn="1"]').first()
     await firstTurn.waitFor()
+    reportPhase(turnCount, 'history-reasoning')
+    const secondTurnProcess = page.locator('[data-turn-process="2"][data-turn-process-tool-calls]')
+    await secondTurnProcess.waitFor({ state: 'visible', timeout: 15_000 })
+    if ((await secondTurnProcess.getAttribute('aria-expanded')) === 'false') await secondTurnProcess.click()
+    await expect.poll(() => secondTurnProcess.getAttribute('aria-expanded'), { timeout: 15_000 }).toBe('true')
+    const secondTurnStep = page.locator('[data-step-process][data-chat-turn="2"] > div > button')
+    await secondTurnStep.waitFor({ state: 'visible', timeout: 15_000 })
+    if ((await secondTurnStep.getAttribute('aria-expanded')) === 'false') await secondTurnStep.click()
+    await expect.poll(() => secondTurnStep.getAttribute('aria-expanded'), { timeout: 15_000 }).toBe('true')
     const reasoning = page.locator('[data-variant="think"]').filter({ hasText: 'LONG_FLOW_002_THOUGHT' }).first()
-    await reasoning.waitFor()
+    await reasoning.waitFor({ state: 'visible', timeout: 15_000 })
     const reasoningToggle = reasoning.getByRole('button').first()
     const expanded = await reasoningToggle.getAttribute('aria-expanded')
     if (expanded !== 'true') {
@@ -794,14 +937,19 @@ describe('long conversation native renderer comparison', () => {
     earlyRenderCounts[historicalKey!] = historyRenderBefore
     const extra = longTurnSpec(turnCount + 1, turnCount)
     rmSync(provider === nativeProvider ? NATIVE_HISTORY_RELEASE : ACP_HISTORY_RELEASE, { force: true })
-    await writeComposerDraft(
-      page,
-      page.locator('[data-composer-input][contenteditable="true"]').last(),
-      `E2E_LONG_CONVERSATION turn=${turnCount + 1} total=${turnCount} kind=${extra.kind} ${extra.marker} resume=history-read; continue after reviewing turn one.`,
-    )
-    const continued = host.whenTurnSettled(30_000)
-    await page.getByRole('button', { name: /^(Send message|发送消息)$/ }).click()
-    await page.getByText(`${extra.marker}_FIRST`, { exact: false }).last().waitFor({ timeout: 20_000 })
+    reportPhase(turnCount + 1, 'history-continuation-draft')
+    const continuationPrompt = `E2E_LONG_CONVERSATION turn=${turnCount + 1} total=${turnCount} kind=${extra.kind} ${extra.marker} resume=history-read; continue after reviewing turn one.`
+    const composer = conversation.locator('[data-composer-input][contenteditable="true"]')
+    await writeComposerDraft(page, composer, continuationPrompt)
+    await expect.poll(() => composer.innerText(), { timeout: 15_000 }).toBe(continuationPrompt)
+    const sendButton = conversation.getByRole('button', { name: /^(Send message|发送消息)$/ })
+    await expect.poll(() => sendButton.isEnabled(), { timeout: 15_000 }).toBe(true)
+    const continued = observeTurnEnd(host, sessionId, 30_000)
+    registerWaiterCancel(continued.cancel)
+    reportPhase(turnCount + 1, 'history-continuation-send')
+    await sendButton.click()
+    reportPhase(turnCount + 1, 'history-continuation-first-delta')
+    await conversation.getByText(`${extra.marker}_FIRST`, { exact: false }).last().waitFor({ timeout: 20_000 })
     const afterSendAnchorTop = await anchorHandle!.evaluate((element) => element.getBoundingClientRect().top)
     // A deliberate composer send may invoke the native request-follow policy. Record that separately;
     // once the user moves back to an older turn, appending deltas must preserve the chosen anchor.
@@ -821,9 +969,15 @@ describe('long conversation native renderer comparison', () => {
     )
     expect(historyRenderDuring).toBe(historyRenderBefore)
     await capture('history-during-stream')
+    reportPhase(turnCount + 1, 'history-continuation-release')
     writeFileSync(provider === nativeProvider ? NATIVE_HISTORY_RELEASE : ACP_HISTORY_RELEASE, 'release')
-    await page.getByText(`${extra.marker}_DONE`, { exact: false }).last().waitFor()
-    await continued
+    await conversation.getByText(`${extra.marker}_DONE`, { exact: false }).last().waitFor()
+    reportPhase(turnCount + 1, 'history-continuation-turn-end')
+    const continuedResult = await continued.promise
+    registerWaiterCancel(undefined)
+    if (continuedResult.kind === 'failed') throw continuedResult.error
+    if (continuedResult.kind === 'cancelled') throw new Error(`History turn-end wait cancelled for ${sessionId}`)
+    expect(continuedResult.sessionId).toBe(sessionId)
     const afterStreamAnchorTop = await anchorHandle!.evaluate((element) => {
       if (!element.isConnected)
         throw new Error('The historical scroll anchor was replaced after releasing stream deltas')
@@ -844,11 +998,14 @@ describe('long conversation native renderer comparison', () => {
     }
     const historyRecord = { ...artifacts, events: allEvents.slice(eventOffset), earlyRenderCounts, historyScroll }
     await capture('continued')
+    reportPhase(turnCount + 1, 'history-continuation-reload')
     await page.reload()
-    await page
+    await expect.poll(() => conversation.count(), { timeout: 30_000 }).toBe(1)
+    await expect.poll(() => conversation.getAttribute('data-conversation-session'), { timeout: 30_000 }).toBe(sessionId)
+    await conversation
       .getByText(`LONG_FLOW_${String(turnCount + 1).padStart(3, '0')}_DONE`, { exact: false })
       .last()
-      .waitFor()
+      .waitFor({ timeout: 30_000 })
     await capture('reloaded')
     await page.evaluate(() => window.__LONG_FLOW_METRICS__?.observer?.disconnect())
     return { ...historyRecord, limitations, snapshots }

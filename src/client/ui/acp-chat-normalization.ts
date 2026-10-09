@@ -203,7 +203,7 @@ export function normalizeAcpChatNodes(
     const key = activityWindowKey(data, fallbackSessionId)
     owners.set(key, (owners.get(key) ?? 0) + 1)
   }
-  const turns = new Map<number, { tools: number; answer: number | null; step: number; inlineReasoning: boolean }>()
+  const turns = new Map<number, { tools: number; answer: number | null; step: number }>()
   const seenCache = new Set<string>()
   for (const base of nodes) {
     if (base.kind !== 'assistant-step') continue
@@ -234,7 +234,6 @@ export function normalizeAcpChatNodes(
         tools: (old?.tools ?? 0) + cached.contribution.tools,
         answer: cached.contribution.answer ?? old?.answer ?? null,
         step: cached.contribution.step,
-        inlineReasoning: false,
       })
       continue
     }
@@ -317,7 +316,6 @@ export function normalizeAcpChatNodes(
       tools: (old?.tools ?? 0) + placed.filter((segment) => segment.kind === 'tool-call').length,
       answer: final?.anchorSeq ?? old?.answer ?? null,
       step: node.data.step,
-      inlineReasoning: false,
     })
     cache?.set(node.key, {
       source: base,
@@ -352,12 +350,11 @@ export function normalizeAcpChatNodes(
               data: {
                 ...process.data,
                 toolCallCount: process.data.toolCallCount + turn.tools,
-                // A native follow-up step can close the same Turn. Its answer boundary
-                // remains authoritative; only split the ACP step that owns the answer.
+                // A native follow-up step can close the same Turn. Keep the host's
+                // inline-reasoning flag authoritative; only split the ACP answer step.
                 ...(process.data.answerStep === turn.step
                   ? {
                       answerAnchorSeq: turn.answer,
-                      inlineReasoning: turn.inlineReasoning,
                     }
                   : {}),
               },

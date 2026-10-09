@@ -24,6 +24,7 @@ import {
 } from './AcpActivityNode.ts'
 import type { ActivityNodeProps, ActivityPresentationRow } from './AcpActivityNode.ts'
 import { mountNativeEntry, type EntryProps } from './native-tool-renderer.ts'
+import { ActivityAnchorSubscriptions } from './activity-anchor-subscriptions.ts'
 import {
   activityData,
   activityWindowKey,
@@ -243,12 +244,14 @@ function NormalizedChat({
     [selectedChat.nodes, selectedChat.timeline],
   )
   const [windows, setWindows] = useState<ReadonlyMap<string, ActivityWindow>>(new Map())
-  const generation = useRef(0)
   const projectionRef = useRef<ChatProjection | undefined>(undefined)
   const projectionModeRef = useRef<SnapshotSource<number> | undefined>(undefined)
   if (projectionModeRef.current === undefined) projectionModeRef.current = new SnapshotSource(0)
   const projectionModeSource = projectionModeRef.current
   const nativePropsRef = useRef(props)
+  const subscriptionsRef = useRef<ActivityAnchorSubscriptions | undefined>(undefined)
+  if (subscriptionsRef.current === undefined) subscriptionsRef.current = new ActivityAnchorSubscriptions()
+  const subscriptions = subscriptionsRef.current
   const anchors = new Map(
     original.nodes.values().flatMap((node) => {
       const data = activityData(node)
@@ -259,17 +262,21 @@ function NormalizedChat({
     [...anchors].map(([key, data]) => [key, data.ownerDshSessionId, data.promptAnchorMessageId]),
   )
   useEffect(() => {
-    let disposed = false
-    const currentGeneration = ++generation.current
     const activeKeys = new Set(anchors.keys())
     setWindows((current) => {
       const next = new Map([...current].filter(([key]) => activeKeys.has(key)))
       return next.size === current.size ? current : next
     })
-    const releases = [...anchors].map(([key, data]) => {
-      const owner = activityJournalSessionId(data, props.sessionId)
-      const publish = (): void => {
-        if (disposed || generation.current !== currentGeneration || !activeKeys.has(key)) return
+    subscriptions.reconcile(
+      dependencies.journalHub,
+      props.sessionId,
+      dependencies,
+      [...anchors].map(([key, data]) => ({
+        key,
+        ownerDshSessionId: activityJournalSessionId(data, props.sessionId),
+        promptAnchorMessageId: data.promptAnchorMessageId,
+      })),
+      (key, handle) => {
         const rows = handle.snapshot()
         setWindows((current) => {
           const nextWindow = {
@@ -292,16 +299,10 @@ function NormalizedChat({
           const child = completedProjectedChild(row)
           if (child !== undefined) dependencies.onProjectedChild?.(child.parentSessionId, child.childSessionId)
         }
-      }
-      const handle = dependencies.journalHub.acquire(owner, owner, data.promptAnchorMessageId, publish)
-      publish()
-      return handle.release
-    })
-    return () => {
-      disposed = true
-      releases.forEach((release) => release())
-    }
-  }, [signature, props.sessionId, dependencies])
+      },
+    )
+  }, [signature, props.sessionId, dependencies, subscriptions])
+  useEffect(() => () => subscriptions.dispose(), [subscriptions])
   const visibleWindows = useMemo(() => new Map([...windows].filter(([key]) => anchors.has(key))), [windows, signature])
   const view = ctx.uiConversation.views.entries().find((value) => value.target === 'chat')
   const group = ctx.uiConversation.groups.forTarget('chat')
