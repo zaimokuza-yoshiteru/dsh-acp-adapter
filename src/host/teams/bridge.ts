@@ -15,6 +15,7 @@ import { AcpHostSettlementError } from '../../runtime/session/mcp-lease.ts'
 import type { AcpMcpLease } from '../../runtime/session/mcp-lease.ts'
 import type { AcpPermissionCheck } from '../../domain/policy/permission-check.ts'
 import { ACP_PERMISSION_ID_MAX_BYTES, ACP_PERMISSION_OPTIONS_MAX } from '../../domain/policy/permissions.ts'
+import { isAntigravityInteractionCall } from '../../domain/policy/antigravity-question.ts'
 import { toolContent } from './tool-content.ts'
 import { generatedContextBlock } from '../../runtime/text-block-boundary.ts'
 import { ToolExecutionScheduler } from './tool-execution-scheduler.ts'
@@ -33,13 +34,7 @@ import type {
   LiveDiagnosticTool,
 } from '../../contract/live-diagnostic-trace.ts'
 import { performance } from 'node:perf_hooks'
-import {
-  type BridgedToolDefinition,
-  createAntigravityAskQuestionDefinition,
-  isAntigravityDuplicateTool,
-  normalizeAntigravityPresentation,
-  resolveAntigravityNativeTool,
-} from './antigravity.ts'
+import { normalizeAntigravityPresentation, resolveAntigravityNativeTool } from './antigravity.ts'
 
 const TEAM_TOOLS = [
   'spawn_teammate',
@@ -364,12 +359,7 @@ function schemaValueKey(schemas: readonly ToolSchema[]): string {
   )
 }
 
-function bridgeDefinitions(
-  ctx: Context,
-  sessionId: string,
-  schemas: readonly ToolSchema[] | undefined,
-  wireProfile?: string,
-) {
+function bridgeDefinitions(ctx: Context, sessionId: string, schemas: readonly ToolSchema[] | undefined) {
   if (schemas === undefined) return undefined
   const teams = ctx.get('agentTeams')
   const agent = ctx.get('agents', false)?.get(sessionId as never)
@@ -389,34 +379,16 @@ function bridgeDefinitions(
     const visibleSchema = visible.get(schema.name)
     if (visibleSchema === undefined || duplicates.has(schema.name)) continue
     if (isTeamTool(schema.name) && !hasTeams) continue
-    if (wireProfile === 'antigravity' && isAntigravityDuplicateTool(schema.name)) {
-      continue
-    }
     const definition = tools.get(schema.name, agent)
     if (definition !== undefined) definitions.set(schema.name, definition)
-  }
-  const dshAskUser = tools.get('ask_user_question', agent)
-  if (wireProfile === 'antigravity' && dshAskUser !== undefined) {
-    const askDef = createAntigravityAskQuestionDefinition(dshAskUser)
-    definitions.set(askDef.name, askDef)
-    visible.set(askDef.name, {
-      name: askDef.name,
-      description: askDef.description,
-      parameters: askDef.parameters as never,
-    })
   }
   const currentSchemaKey = schemaValueKey([...definitions.keys()].map((name) => visible.get(name)!))
   return definitions.size === 0 ? undefined : { agent, tools, teams, hasTeams, definitions, visible, currentSchemaKey }
 }
 
 /** Changes when the optional host feature or its scoped tool owner changes. */
-export function teamBridgeKey(
-  ctx: Context,
-  sessionId: string,
-  schemas?: readonly ToolSchema[],
-  wireProfile?: string,
-): unknown {
-  const bridge = bridgeDefinitions(ctx, sessionId, schemas, wireProfile)
+export function teamBridgeKey(ctx: Context, sessionId: string, schemas?: readonly ToolSchema[]): unknown {
+  const bridge = bridgeDefinitions(ctx, sessionId, schemas)
   return bridge === undefined
     ? undefined
     : JSON.stringify([
@@ -437,7 +409,7 @@ export async function createTeamBridge(
   schemas?: readonly ToolSchema[],
 ): Promise<AcpMcpLease | undefined> {
   const agents = ctx.get('agents', false)
-  const bridge = bridgeDefinitions(ctx, sessionId, schemas, wireProfile)
+  const bridge = bridgeDefinitions(ctx, sessionId, schemas)
   if (bridge === undefined || agents === undefined) return undefined
   const { tools, agent, teams, hasTeams, definitions, visible } = bridge
   const initialMembership = hasTeams ? teams?.tryMembership(agent) : undefined
@@ -566,6 +538,58 @@ export async function createTeamBridge(
     }
   }
   const identityOf = (call: acp.ToolCallUpdate): { tool?: string; source?: AcpPermissionCheck['identitySource'] } => {
+    if (wireProfile === 'antigravity') {
+      if (isAntigravityInteractionCall(call)) return {}
+      const metadata = plainRecord(call._meta)
+      const mcp = plainRecord(metadata?.mcp)
+      const hasMetadataIdentity =
+        metadata !== undefined &&
+        ['mcp', 'is_mcp_tool_call', 'server', 'serverName', 'tool', 'toolName'].some((key) =>
+          Object.hasOwn(metadata, key),
+        )
+      if (metadata === undefined || mcp === undefined) {
+        return {
+          ...(call.name == null ? {} : { source: 'name' }),
+          ...(hasMetadataIdentity ? { source: 'antigravity-meta' } : {}),
+        }
+      }
+
+      const server = mcp.server
+      const tool = mcp.tool
+      if (typeof server !== 'string' || server.length === 0 || server !== serverName)
+        return { source: 'antigravity-meta' }
+      if (typeof tool !== 'string' || tool.length === 0) return { source: 'antigravity-meta' }
+      const metaMatches = (record: Record<string, unknown>, key: string, expected: string): boolean =>
+        !Object.hasOwn(record, key) || record[key] === expected
+      const nameMatches =
+        call.name == null ||
+        call.name === tool ||
+        call.name === `mcp__${serverName}__${tool}` ||
+        call.name === `${serverName}_${tool}`
+      const claudeCode = plainRecord(metadata.claudeCode)
+      const claudeIdentityValid =
+        !Object.hasOwn(metadata, 'claudeCode') ||
+        (claudeCode !== undefined &&
+          Object.hasOwn(claudeCode, 'toolName') &&
+          qualifiedTool(claudeCode.toolName) === tool)
+      const devinIdentityValid =
+        !Object.hasOwn(metadata, 'cognition.ai/toolName') || qualifiedTool(metadata['cognition.ai/toolName']) === tool
+
+      if (
+        !nameMatches ||
+        (Object.hasOwn(metadata, 'is_mcp_tool_call') && metadata.is_mcp_tool_call !== true) ||
+        !metaMatches(metadata, 'server', server) ||
+        !metaMatches(metadata, 'serverName', server) ||
+        !metaMatches(metadata, 'tool', tool) ||
+        !metaMatches(metadata, 'toolName', tool) ||
+        !metaMatches(mcp, 'serverName', server) ||
+        !metaMatches(mcp, 'toolName', tool) ||
+        !claudeIdentityValid ||
+        !devinIdentityValid
+      )
+        return { source: 'antigravity-meta' }
+      return { tool, source: 'antigravity-meta' }
+    }
     const qualified = qualifiedTool
     const input = plainRecord(call.rawInput)
     const meta = call._meta?.claudeCode as { toolName?: unknown } | undefined
@@ -595,28 +619,8 @@ export async function createTeamBridge(
     if (meta?.toolName != null) candidates.push({ tool: qualified(meta.toolName), source: 'claude-meta' })
     if (call._meta?.['cognition.ai/toolName'] != null)
       candidates.push({ tool: qualified(call._meta['cognition.ai/toolName']), source: 'devin-meta' })
-    const antigravityMeta = call._meta?.mcp as { server?: unknown; tool?: unknown } | undefined
-    if (
-      (wireProfile === 'antigravity' || call._meta?.is_mcp_tool_call === true) &&
-      antigravityMeta !== undefined
-    ) {
-      candidates.push({
-        tool:
-          antigravityMeta.server === serverName && typeof antigravityMeta.tool === 'string'
-            ? antigravityMeta.tool
-            : undefined,
-        source: 'antigravity-meta',
-      })
-    }
     if (typeof call.name === 'string' && call.name.startsWith('mcp__'))
       candidates.push({ tool: qualified(call.name), source: 'name' })
-    if (
-      wireProfile === 'antigravity' &&
-      typeof call.name === 'string' &&
-      call.name.startsWith(`${serverName}_`)
-    ) {
-      candidates.push({ tool: call.name.slice(serverName.length + 1), source: 'name' })
-    }
     // Only runtime-specific, complete labels identify a server. A bare native
     // name alone never grants approval; Devin may also repeat the exact native
     // name alongside its complete server label, which must agree byte-for-byte.
@@ -628,14 +632,6 @@ export async function createTeamBridge(
         }
       } else if (wireProfile === 'kimi') {
         candidates.push({ tool: qualified(call.title), source: 'kimi-title' })
-      } else if (wireProfile === 'antigravity' && typeof call.title === 'string') {
-        const prefix = `${serverName}_`
-        if (call.title.startsWith(prefix)) {
-          const toolName = call.title.slice(prefix.length)
-          if (call.name == null || call.name === toolName) {
-            candidates.push({ tool: toolName, source: 'antigravity-title' })
-          }
-        }
       }
     }
     const first = candidates[0]
@@ -655,7 +651,6 @@ export async function createTeamBridge(
       (call.name != null &&
         call.name !== first.tool &&
         qualified(call.name) !== first.tool &&
-        !(wireProfile === 'antigravity' && call.name === `${serverName}_${first.tool}`) &&
         !(wireProfile === 'codebuddy' && deferred !== undefined && call.name === 'DeferExecuteTool'))
     )
       return { source: first.source }
@@ -665,14 +660,26 @@ export async function createTeamBridge(
     const tool = identityOf(call).tool
     return tool === undefined ? undefined : names.get(tool)
   }
+  const antigravityPresentationTool = (call: acp.ToolCallUpdate): string | undefined => {
+    if (wireProfile !== 'antigravity' || typeof call.title !== 'string') return undefined
+    const prefix = `${serverName}_`
+    if (!call.title.startsWith(prefix)) return undefined
+    const name = call.title.slice(prefix.length)
+    if (!names.has(name)) return undefined
+    if (
+      call.name != null &&
+      call.name !== name &&
+      call.name !== `mcp__${serverName}__${name}` &&
+      call.name !== `${serverName}_${name}`
+    )
+      return undefined
+    return name
+  }
   // Freeze a durable session default before the first prompt. Failure stays
   // fail-closed in each permission resolver below.
   if (resolveApprovalPolicy !== undefined) await resolveApprovalPolicy().catch(() => undefined)
   // Cordis returns a caller-context proxy for each service lookup, so proxy identity is not service identity.
-    const isDefinitionLive = (name: string, definition: ToolDefinition): boolean => {
-    const underlying = (definition as BridgedToolDefinition).underlyingName
-    return underlying !== undefined ? tools.get(underlying, agent) !== undefined : tools.get(name, agent) === definition
-  }
+  const isDefinitionLive = (name: string, definition: ToolDefinition): boolean => tools.get(name, agent) === definition
   const live = (): boolean =>
     !lifetime.signal.aborted &&
     agents.get(sessionId as never) === agent &&
@@ -724,9 +731,7 @@ export async function createTeamBridge(
     if (!live()) return { ...facts, reason: 'inactive-connection' }
     if (capturedPrompt === undefined || capturedPrompt.aborted) return { ...facts, reason: 'inactive-prompt' }
     const definition = definitionOf(call)
-    const nativeTool =
-      definition === undefined && wireProfile === 'antigravity' ? resolveAntigravityNativeTool(call) : undefined
-    if (definition === undefined && nativeTool === undefined) {
+    if (definition === undefined) {
       // An identified call to our own server with an unknown name cannot
       // execute, even after approval. Do not ask a user to repair a protocol
       // error, and never strip markup or guess arguments to make it runnable.
@@ -743,13 +748,10 @@ export async function createTeamBridge(
       }
       return { ...facts, reason: 'identity-unmatched' }
     }
-    const toolName = definition?.name ?? nativeTool!
+    const toolName = definition.name
     const identified = {
       ...facts,
       toolName,
-      ...(nativeTool !== undefined
-        ? { identitySource: 'name' as const, structuredIdentityPresent: true, titleMatchesCurrentTool: true }
-        : {}),
     }
     const policy = resolveApprovalPolicy === undefined ? 'ask' : await resolveApprovalPolicy().catch(() => undefined)
     if (prompt !== capturedPrompt || promptGeneration !== capturedGeneration || capturedPrompt.aborted || !live())
@@ -1083,28 +1085,13 @@ export async function createTeamBridge(
           }
           let result: Awaited<ReturnType<typeof tools.execute>>
           try {
-            const bridged = definition as BridgedToolDefinition
-            if (bridged.executeBridged !== undefined) {
-              result = (await bridged.executeBridged(
-                (name, mappedArgs) =>
-                  tools.execute({
-                    callId: hostCallId as never,
-                    name,
-                    arguments: mappedArgs,
-                    agent,
-                    signal: bodySignal,
-                  }),
-                args,
-              )) as typeof result
-            } else {
-              result = await tools.execute({
-                callId: hostCallId as never,
-                name: definition.name,
-                arguments: args,
-                agent,
-                signal: bodySignal,
-              })
-            }
+            result = await tools.execute({
+              callId: hostCallId as never,
+              name: definition.name,
+              arguments: args,
+              agent,
+              signal: bodySignal,
+            })
             if (toolErrorInfoCode(result.error) === TOOL_ABORTED_BEFORE_DISPATCH)
               callRecord.abortedBeforeDispatch = true
             if (diagnosticEnabled && diagnosticBase !== undefined) {
@@ -1466,6 +1453,7 @@ export async function createTeamBridge(
       while (calls.size > 0) await Promise.allSettled([...calls])
     },
     presentTool(call) {
+      if (wireProfile === 'antigravity' && isAntigravityInteractionCall(call)) return call
       const identity = identityOf(call)
       const deferred = codebuddyDeferredInput(call)
       const acceptedDeferred =
@@ -1475,10 +1463,20 @@ export async function createTeamBridge(
       const wrapperCall = deferred !== undefined
       let name = definitionOf(call)?.name ?? (wrapperCall ? undefined : presented.get(call.toolCallId))
       if (name === undefined && wireProfile === 'antigravity') {
-        name = resolveAntigravityNativeTool(call)
+        name = antigravityPresentationTool(call) ?? resolveAntigravityNativeTool(call)
       }
       if (name === undefined) return call
       presented.set(call.toolCallId, name)
+
+      if (wireProfile !== 'antigravity') {
+        return {
+          ...call,
+          ...(acceptedDeferred && deferred.params !== undefined ? { rawInput: deferred.params } : {}),
+          title: name,
+          name,
+          ...(name === 'bash' ? { kind: 'execute' as const } : {}),
+        }
+      }
 
       let rawInput = acceptedDeferred && deferred.params !== undefined ? deferred.params : call.rawInput
       let rawOutput = call.rawOutput
@@ -1521,9 +1519,6 @@ export async function createTeamBridge(
         fence.prompt.aborted
       )
         return false
-      if (wireProfile === 'antigravity' && resolveAntigravityNativeTool(request.toolCall) !== undefined) {
-        return true
-      }
       const definition = definitionOf(request.toolCall)
       return (
         definition !== undefined &&
@@ -1537,7 +1532,7 @@ export async function createTeamBridge(
     elicitationToolName(request, toolCall) {
       const form = request as { toolCallId?: unknown }
       if (
-        (wireProfile !== 'codex' && wireProfile !== 'antigravity') ||
+        wireProfile !== 'codex' ||
         !live() ||
         prompt === undefined ||
         prompt.aborted ||
@@ -1546,18 +1541,14 @@ export async function createTeamBridge(
         form.toolCallId !== toolCall.toolCallId
       )
         return undefined
-      if (wireProfile === 'codex') {
-        if (request._meta?.codex_approval_kind !== 'mcp_tool_call' || toolCall._meta?.is_mcp_tool_call !== true)
-          return undefined
-        const input = toolCall.rawInput as { server?: unknown; tool?: unknown } | undefined
-        if (input?.server !== serverName || typeof input.tool !== 'string') return undefined
-        // Presentation only: don't rewrite arbitrary messages or infer authority
-        // by stripping a prefix. Preserve additional context from other requests.
-        if (request.message !== `Allow the ${serverName} MCP server to run tool "${input.tool}"?`) return undefined
-        return names.get(input.tool)?.name
-      }
-      const tool = identityOf(toolCall).tool
-      return tool !== undefined ? names.get(tool)?.name : undefined
+      if (request._meta?.codex_approval_kind !== 'mcp_tool_call' || toolCall._meta?.is_mcp_tool_call !== true)
+        return undefined
+      const input = toolCall.rawInput as { server?: unknown; tool?: unknown } | undefined
+      if (input?.server !== serverName || typeof input.tool !== 'string') return undefined
+      // Presentation only: don't rewrite arbitrary messages or infer authority
+      // by stripping a prefix. Preserve additional context from other requests.
+      if (request.message !== `Allow the ${serverName} MCP server to run tool "${input.tool}"?`) return undefined
+      return names.get(input.tool)?.name
     },
     async elicitation(request, toolCall) {
       const form = request as {

@@ -122,6 +122,17 @@ describe('acpLaunchFingerprint（Native 会话连续性）', () => {
     })
     expect(acpCanonicalHash16(fp)).not.toBe(acpCanonicalHash16({ command: 'plain-acp', args: ['--x'], envKeys: [] }))
   })
+
+  it('legacy Antigravity-named generic profiles keep a generic launch identity', () => {
+    const config: AcpStubAgentConfig = { name: 'Custom', command: 'custom-acp', args: [], env: {} }
+    const legacyId = acpLaunchFingerprint({ profileId: 'antigravity-acp', config, env: {} })
+    expect(legacyId).toMatchObject({ descriptorId: null, executableOverride: null })
+    expect(acpLaunchFingerprintsCompatible({ ...legacyId, adapterVersion: '1.6.2' }, legacyId)).toBe(true)
+    expect(acpLaunchFingerprint({ profileId: 'antigravity', config, env: {} })).toMatchObject({
+      descriptorId: null,
+      executableOverride: null,
+    })
+  })
 })
 
 describe('effective launch environment identity', () => {

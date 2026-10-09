@@ -422,6 +422,7 @@ function activitiesForNotification(
             rawOutput: detail.rawOutput,
             locations: detail.locations,
             content: detail.content,
+            ...(detail.providerStatus === undefined ? {} : { providerStatus: detail.providerStatus }),
           },
           externalDelegations,
         ),
@@ -2635,7 +2636,7 @@ export class AcpProfileAdapter extends LlmAdapter {
               ...(update.locations === undefined ? {} : { locations: update.locations }),
               ...(update.content === undefined ? {} : { content: update.content }),
             }
-            toolCall = toolCallReducer.apply(patch)
+            toolCall = toolCallReducer.apply(patch, { externalSignalAborted: options.signal?.aborted === true })
             const terminal = isTerminalActivityStatus(activityStatus(toolCall.status))
             const previousTerminal = toolContentBoundaries.get(toolId)
             if (previousTerminal === undefined || (previousTerminal && !terminal)) {
@@ -3836,6 +3837,7 @@ export class AcpProfileAdapter extends LlmAdapter {
       return await createAcpNativePermissionHandler({
         ...(binding.userQuestions === undefined ? {} : { userQuestions: binding.userQuestions }),
         ...(binding.approval === undefined ? {} : { approval: binding.approval }),
+        ...(runtime === 'antigravity' ? { nativeQuestionProfile: 'antigravity' as const } : {}),
         getAgent: binding.getAgent,
         ...(binding.locale === undefined ? {} : { locale: binding.locale }),
         ...(audit === undefined ? {} : { audit }),

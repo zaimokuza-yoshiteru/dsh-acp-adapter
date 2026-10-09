@@ -6,7 +6,7 @@
 
 ## 安装
 
-当前插件版本 [`0.2.0-rc.2.7`](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/tag/v0.2.0-rc.2.7) 兼容 DSH `0.2.0-rc.2`。其他版本见 [Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases)。
+当前插件版本 [`0.2.0-rc.2.8`](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/tag/v0.2.0-rc.2.8) 兼容 DSH `0.2.0-rc.2`。其他版本见 [Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases)。
 
 **推荐：** 在 DSH Creator 模式中发送：
 
@@ -35,8 +35,8 @@ Git 与压缩包安装示例：
 
 | 来源              | 示例                                                                                                                                                   |
 | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Git               | `git+https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter.git#v0.2.0-rc.2.7`                                                                         |
-| 预构建插件包 .tgz | [下载 0.2.0-rc.2.7](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/download/v0.2.0-rc.2.7/zaimokuza-dsh-acp-adapter-0.2.0-rc.2.7.tgz) |
+| Git               | `git+https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter.git#v0.2.0-rc.2.8`                                                                         |
+| 预构建插件包 .tgz | [下载 0.2.0-rc.2.8](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/download/v0.2.0-rc.2.8/zaimokuza-dsh-acp-adapter-0.2.0-rc.2.8.tgz) |
 
 此包包含编译产物，与 npm 发布包一致。GitHub 自动生成的 Source code ZIP/TAR.GZ 是源码归档，不是构建后的插件包；未缓存的依赖仍需联网安装。
 
@@ -48,13 +48,16 @@ Git 与压缩包安装示例：
 
 插件附带一份 [ACP 官方 Agent 目录](https://agentclientprotocol.com/registry)快照，提供安装、登录指引和命令预填；也可手动添加目录外的 ACP Agent。Agent CLI 必须安装并登录在运行 DSH 的主机上。打开 **插件 → ACP adapter**，按目录指引添加 Agent 并检查连接，再在新会话选择 Agent 模型。插件不会替你安装 CLI 或登录账号。以下 Agent 已做过实际接入测试：
 
-| Agent                      | ACP 命令           | 终端登录           |
-| -------------------------- | ------------------ | ------------------ |
-| Devin                      | `devin acp`        | `devin auth login` |
-| CodeBuddy CLI（WorkBuddy） | `codebuddy --acp`  | `codebuddy`        |
-| Claude                     | `claude-agent-acp` | `claude`           |
-| Codex                      | `codex-acp`        | `codex login`      |
-| Kimi                       | `kimi acp`         | `kimi login`       |
+| Agent                      | ACP 命令                                 | 认证               |
+| -------------------------- | ---------------------------------------- | ------------------ |
+| Devin                      | `devin acp`                              | `devin auth login` |
+| CodeBuddy CLI（WorkBuddy） | `codebuddy --acp`                        | `codebuddy`        |
+| Antigravity                | `agy_acp_server.par`（官方 raw `1.3.0`） | ACP 独立登录       |
+| Claude                     | `claude-agent-acp`                       | `claude`           |
+| Codex                      | `codex-acp`                              | `codex login`      |
+| Kimi                       | `kimi acp`                               | `kimi login`       |
+
+Antigravity 的本机检查使用官方 raw ACP server 1.3.0，覆盖原生权限问答、工具审批和同会话续聊，以及 DSH MCP 工具续聊。Antigravity 应用认证与 ACP 账号彼此独立，插件不迁移登录状态；wrapper、Teams 和 Windows 尚未验收。具体范围见下方的 E2E 验证记录。
 
 > CodeBuddy CLI 与 WorkBuddy 桌面端使用同一账号积分，无需分别订阅；通过 CodeBuddy CLI 接入 DSH。详见 [CodeBuddy 账号与订阅说明](https://www.codebuddy.cn/docs/ide/Account/pricing)及 [ACP 命令参考](https://www.codebuddy.cn/docs/cli/cli-reference)。
 

@@ -15,9 +15,16 @@ export interface AcpToolCallPatch {
   readonly status?: AcpToolCallPatchStatus | null
 }
 
+export interface AcpToolCallCancellationContext {
+  /** True only when the caller's external Stop signal was already aborted. */
+  readonly externalSignalAborted?: boolean
+}
+
 export interface AcpToolCallSnapshot extends AcpToolCallPatch {
   readonly provenanceId: string
   readonly status: AcpToolCallStatus
+  /** Original provider status when an external Stop caused a running call to fail. */
+  readonly providerStatus?: 'failed'
 }
 
 const terminalStatuses = new Set<AcpToolCallStatus>(['completed', 'failed', 'cancelled'])
@@ -38,13 +45,19 @@ export class AcpToolCallReducer {
 
   constructor(private readonly turnId: string) {}
 
-  apply(patch: AcpToolCallPatch): AcpToolCallSnapshot {
+  apply(patch: AcpToolCallPatch, context: AcpToolCallCancellationContext = {}): AcpToolCallSnapshot {
     const previous = this.calls.get(patch.callId)
     const patchStatus = normalizedStatus(patch.status)
+    const failedDuringExternalStop =
+      context.externalSignalAborted === true &&
+      patchStatus === 'failed' &&
+      (previous?.status === 'pending' || previous?.status === 'running')
     const status =
       previous !== undefined && terminalStatuses.has(previous.status)
         ? previous.status
-        : (patchStatus ?? previous?.status ?? 'pending')
+        : failedDuringExternalStop
+          ? 'cancelled'
+          : (patchStatus ?? previous?.status ?? 'pending')
     const next: AcpToolCallSnapshot = {
       ...(previous ?? {
         callId: patch.callId,
@@ -59,6 +72,7 @@ export class AcpToolCallReducer {
           ([key, value]) => value !== undefined && !((key === 'name' || key === 'title') && value === null),
         ),
       ),
+      ...(failedDuringExternalStop ? { providerStatus: 'failed' as const } : {}),
       status,
     } as AcpToolCallSnapshot
     this.calls.set(patch.callId, next)

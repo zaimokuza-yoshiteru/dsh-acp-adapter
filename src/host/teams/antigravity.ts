@@ -1,25 +1,4 @@
 import type * as acp from '@agentclientprotocol/sdk'
-import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
-
-export const ANTIGRAVITY_DUPLICATE_MCP_TOOLS = new Set([
-  'bash',
-  'pwsh',
-  'read',
-  'read_image',
-  'write',
-  'edit',
-  'str_replace_editor',
-  'web_search',
-  'web_fetch',
-  'job_list',
-  'job_output',
-  'job_kill',
-  'ask_user_question',
-])
-
-export function isAntigravityDuplicateTool(name: string): boolean {
-  return ANTIGRAVITY_DUPLICATE_MCP_TOOLS.has(name) || name.startsWith('terminal_')
-}
 
 export function toPlainRecord(value: unknown): Record<string, unknown> | undefined {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -33,55 +12,28 @@ export function resolveAntigravityNativeTool(
   call: Pick<acp.ToolCallUpdate, 'kind' | 'name' | 'title' | 'rawInput'>,
 ): AntigravityNativeToolName | undefined {
   const input = toPlainRecord(call.rawInput)
-  if (call.name === 'ask_question' || call.title === 'ask_question' || (input !== undefined && 'questions' in input)) {
+  // Exact displayed names win before any presentation-only inference. In
+  // particular, an edit named explicitly by Antigravity stays an edit even if
+  // its payload happens to include fields used by another presentation hint.
+  if (call.name === 'bash') return 'bash'
+  if (call.name === 'read' || call.name === 'view_file') return 'read'
+  if (
+    call.name === 'edit' ||
+    call.name === 'client_edit_file' ||
+    call.name === 'write_to_file' ||
+    call.name === 'replace_file_content' ||
+    call.name === 'multi_replace'
+  )
+    return 'edit'
+  if (call.name === 'ask_question') return 'ask_question'
+  if (call.title === 'ask_question' || (input !== undefined && 'questions' in input)) {
     return 'ask_question'
   }
   if (call.kind === 'execute' || (input !== undefined && 'CommandLine' in input)) return 'bash'
   if (call.kind === 'read' || (input !== undefined && 'AbsolutePath' in input)) return 'read'
-  if (call.kind === 'edit' || (input !== undefined && ('TargetFile' in input || 'TargetContent' in input))) return 'edit'
+  if (call.kind === 'edit' || (input !== undefined && ('TargetFile' in input || 'TargetContent' in input)))
+    return 'edit'
   return undefined
-}
-
-export interface DshQuestionItem {
-  id: string
-  question: string
-  header?: string
-  options?: { label: string }[]
-  multi_select: boolean
-}
-
-export function parseAntigravityQuestions(args: unknown): DshQuestionItem[] {
-  const input = toPlainRecord(args)
-  if (input === undefined || !Array.isArray(input.questions)) return []
-  return input.questions.map((raw, index) => {
-    const q = toPlainRecord(raw)
-    if (q === undefined) {
-      return { id: `q${index + 1}`, question: '', multi_select: false }
-    }
-    const id = typeof q.id === 'string' && q.id.length > 0 ? q.id : `q${index + 1}`
-    const question = typeof q.question === 'string' ? q.question : ''
-    const header = typeof q.header === 'string' ? q.header : undefined
-    let options: { label: string }[] | undefined
-    if (Array.isArray(q.options)) {
-      options = q.options.map((opt) => {
-        if (typeof opt === 'string') return { label: opt }
-        const optRec = toPlainRecord(opt)
-        return { label: String(optRec?.label ?? opt) }
-      })
-    }
-    const multi_select =
-      q.is_multi_select === true ||
-      q.IsMultiSelect === true ||
-      q.multi_select === true ||
-      q.multiSelect === true
-    return {
-      id,
-      question,
-      ...(header !== undefined ? { header } : {}),
-      ...(options !== undefined ? { options } : {}),
-      multi_select,
-    }
-  })
 }
 
 function formatAnswers(answers: unknown): string | undefined {
@@ -101,94 +53,56 @@ export function formatAntigravityAskQuestionResult(result: unknown): string {
   if (result == null) return ''
   if (typeof result === 'string') {
     try {
-      const parsed = JSON.parse(result)
-      const formatted = formatAnswers(toPlainRecord(parsed)?.answers)
-      if (formatted !== undefined) return formatted
+      const parsed = toPlainRecord(JSON.parse(result))
+      if (parsed !== undefined) return formatQuestionResultRecord(parsed, result)
     } catch {
       return result
     }
     return result
   }
   if (typeof result !== 'object') return String(result)
-
-  const directFormatted = formatAnswers(toPlainRecord(result)?.answers)
-  if (directFormatted !== undefined) return directFormatted
-
-  const record = result as Record<string, unknown>
-  if (Array.isArray(record.content)) {
-    const textBlocks = record.content
-      .filter(
-        (block): block is { type: 'text'; text: string } =>
-          typeof block === 'object' && block !== null && block.type === 'text' && typeof block.text === 'string',
-      )
-      .map((block) => block.text)
-    const first = textBlocks[0]
-    if (first !== undefined) {
-      try {
-        const parsed = JSON.parse(first)
-        const formatted = formatAnswers(toPlainRecord(parsed)?.answers)
-        if (formatted !== undefined) return formatted
-      } catch {
-        return textBlocks.join('\n')
-      }
-      return textBlocks.join('\n')
-    }
-  }
-  if (typeof record.text === 'string') return record.text
-  return ''
+  return formatQuestionResultRecord(result as Record<string, unknown>, '')
 }
 
-export interface BridgedToolDefinition extends ToolDefinition {
-  readonly underlyingName?: string
-  executeBridged?(
-    executeHost: (name: string, args: unknown) => Promise<unknown>,
-    args: unknown,
-  ): Promise<unknown>
-}
-
-const askQuestionDefinitions = new WeakMap<ToolDefinition, BridgedToolDefinition>()
-
-export function createAntigravityAskQuestionDefinition(dshAskUser: ToolDefinition): BridgedToolDefinition {
-  let existing = askQuestionDefinitions.get(dshAskUser)
-  if (existing === undefined) {
-    existing = {
-      name: 'ask_question',
-      underlyingName: 'ask_user_question',
-      description: 'Use this tool to ask the user one or more multiple-choice questions.',
-      parameters: {
-        type: 'object',
-        required: ['questions'],
-        properties: {
-          questions: {
-            type: 'array',
-            items: {
-              type: 'object',
-              required: ['question', 'options'],
-              properties: {
-                question: { type: 'string' },
-                options: { type: 'array', items: { type: 'string' } },
-                is_multi_select: { type: 'boolean' },
-              },
-            },
-          },
-        },
-      },
-      output: dshAskUser.output,
-      execute: dshAskUser.execute,
-      async executeBridged(executeHost, args) {
-        const hostResult = (await executeHost('ask_user_question', {
-          questions: parseAntigravityQuestions(args),
-        })) as Record<string, unknown>
-        const text = formatAntigravityAskQuestionResult(hostResult)
-        return {
-          ...hostResult,
-          content: [{ type: 'text' as const, text }],
+function formatQuestionResultRecord(record: Record<string, unknown>, fallback: string): string {
+  const hasError = record.isError === true || (record.error !== undefined && record.error !== null)
+  const error = typeof record.error === 'string' ? record.error : toPlainRecord(record.error)?.message
+  const textBlocks = Array.isArray(record.content)
+    ? record.content.flatMap((block) => {
+        if (typeof block !== 'object' || block === null || block.type !== 'text' || typeof block.text !== 'string')
+          return []
+        const rawText = block.text
+        if (hasError) return [rawText]
+        try {
+          const parsed = toPlainRecord(JSON.parse(rawText))
+          if (parsed === undefined) return [rawText]
+          if (Object.keys(parsed).some((key) => !['answers', 'text', 'isError', 'error'].includes(key)))
+            return [rawText]
+          const hasNestedError = parsed.isError === true || (parsed.error !== undefined && parsed.error !== null)
+          if (hasNestedError) {
+            const nestedError = typeof parsed.error === 'string' ? parsed.error : toPlainRecord(parsed.error)?.message
+            const details = [parsed.text, nestedError].filter(
+              (part): part is string => typeof part === 'string' && part.length > 0,
+            )
+            return details.length === 0 ? [rawText] : details
+          }
+          const answer = formatAnswers(parsed.answers)
+          const nested = [answer, typeof parsed.text === 'string' ? parsed.text : undefined].filter(
+            (part): part is string => part !== undefined && part.length > 0,
+          )
+          return nested.length === 0 ? [rawText] : nested
+        } catch {
+          return [rawText]
         }
-      },
-    }
-    askQuestionDefinitions.set(dshAskUser, existing)
-  }
-  return existing
+      })
+    : []
+  const visible = [
+    ...(hasError ? [] : [formatAnswers(record.answers)]),
+    typeof record.text === 'string' ? record.text : undefined,
+    ...textBlocks,
+    typeof error === 'string' ? error : undefined,
+  ].filter((part): part is string => part !== undefined && part.length > 0)
+  return visible.length > 0 ? visible.join('\n') : fallback
 }
 
 function firstString(record: Record<string, unknown> | undefined, keys: string[]): string | undefined {
@@ -272,13 +186,6 @@ export function normalizeAntigravityPresentation(
         nextContent = [{ type: 'content' as const, content: { type: 'text' as const, text: formatted } }]
       }
     }
-  }
-
-  if (
-    typeof nextOutput === 'string' &&
-    /^(Encountered retryable error from model provider|Agent execution terminated due to error)/i.test(nextOutput)
-  ) {
-    nextOutput = undefined
   }
 
   return {

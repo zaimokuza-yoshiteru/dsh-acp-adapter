@@ -56,6 +56,8 @@ ACP 计划被投影到已有 `todos` 状态和 DSH 原生计划面板，同时�
 
 标准 CodeBuddy CLI 使用显式 `codebuddy` runtime 和 `codebuddy --acp` 命令；桥接会把 CLI 的 Host 工具授权请求与本连接注册的工具身份关联，不从裸工具名或 `catalogId` 推断身份。已有自定义配置不自动重分类。该 runtime 不覆盖 WorkBuddy 桌面应用。保存的 Agent 模式快照会规范化展示元数据：模式说明最多 1024 个字符，当前模式在数量与总序列化长度预算内优先保留；原有总长度预算不变。
 
+Antigravity 使用显式 `antigravity` runtime 和官方 raw ACP server。只有匹配当前 DSH MCP 连接身份的已注册工具才通过桥接执行；其他原生权限请求仍进入 DSH 的权限验证与审批流程。`request_permission` 的固定选项问题使用本插件的原生卡片，用户必须明确选项并提交；不提供自由输入，也不自动批准。外部 Stop 时，只有此前已观察到正在执行且外部取消信号已生效的工具调用，才会把随后的失败状态呈现为已取消；原始 provider 结果仍保留。真实验证限 macOS 官方 raw ACP server 1.3.0、`gemini-3.8-flash-low` 及 E2E 指南所列场景；Antigravity 应用认证与 ACP 账号独立，不由插件迁移。wrapper、Teams、Windows 和完整 OAuth 首次引导均未验收。
+
 当显式 CodeBuddy runtime 返回确认的取消终态（包括原生工具请求被拒绝）时，适配器会记住该结果，并在下一条输入前重新加载同一个已绑定的 ACP 会话。它不会重发已取消的 prompt，也不要求用户为这一正常刷新手动进入恢复流程；刷新可能增加等待时间。该行为依赖确认的取消结果，不适用于远端结果未知或未完成的 Host 调用。
 
 恢复诊断区分当前连接复用、实际 `session/resume` 和实际 `session/load`。旧记录缺少方式字段时保留未知，不根据零条回放猜测。回放仍仅作诊断，不覆盖 DSH 可见历史。

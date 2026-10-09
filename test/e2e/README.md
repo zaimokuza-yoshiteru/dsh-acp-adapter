@@ -141,6 +141,42 @@ ACP 与 DSH 的桥接边界见[原生复用说明](../../docs/native-reuse.md)�
 
 真实主信息流专项：`DSH_E2E_LIVE_STREAM=1 DSH_E2E_LIVE_CODEX_MODEL=<已选择的模型> pnpm test:e2e live-main-stream`。在隔离工作区让真实 Codex ACP 执行一次 `printf`，验证原生 Bash、调用计数、结果详情及刷新恢复；不读写用户文件。需要本机已有登录，会消耗该 Agent 的用量，默认跳过。
 
+## ACP live continuation opt-in
+
+以下两个浏览器夹具默认跳过。测试使用隔离的 Host、workspace 与 DSH profile，不读取或改写用户的 DSH 配置；ACP 子进程仍按正常方式使用已有登录和用户配置，测试不迁移 CLI 与 ACP 账号的认证状态。均须提供绝对命令路径；模型缺失时停止，不回退到其他模型。原生 Antigravity 夹具默认使用 `gemini-3.8-flash-low`，可显式指定其他可用模型；MCP continuation 夹具必须提供精确模型 ID。只通过 `*_ENV_KEYS` 继承显式列出的、当前进程中已存在的环境变量。Antigravity 使用显式 `antigravity` runtime 和官方 raw ACP server 1.3.0，应用认证与 ACP 账号独立；文档不提供未经证实的 CLI 登录命令。可选的 Antigravity harness 路径会以 `ANTIGRAVITY_HARNESS_PATH` 传给 ACP server，不作为命令参数。
+
+```sh
+DSH_E2E_LIVE_ANTIGRAVITY=1 \
+DSH_E2E_LIVE_ANTIGRAVITY_COMMAND=/absolute/path/to/agy_acp_server.par \
+DSH_E2E_LIVE_ANTIGRAVITY_ENV_KEYS=NAME1,NAME2 \
+pnpm test:e2e -- test/e2e/live-antigravity.e2e.ts
+```
+
+Antigravity 使用 `gemini-3.8-flash-low`，也可用 `DSH_E2E_LIVE_ANTIGRAVITY_MODEL` 指定目录中实际存在的精确模型；可用 `DSH_E2E_LIVE_ANTIGRAVITY_HARNESS=/absolute/path/to/localharness_external` 指定 harness。该五阶段检查覆盖原生固定选项问答、Allow once、Reject、Stop 与同 session 继续；Host 工具全部拒绝，交互请求最多 12 次，provider 工具活动超过 16 次会触发测试软停止。该保护不限制模型费用或 token 使用。
+
+```sh
+DSH_E2E_LIVE_MCP_CONTINUATION=1 \
+DSH_E2E_LIVE_MCP_PROFILE=devin \
+DSH_E2E_LIVE_MCP_MODEL=exact-model-id \
+DSH_E2E_LIVE_MCP_COMMAND=/absolute/path/to/agent \
+DSH_E2E_LIVE_MCP_ARGS='[]' \
+DSH_E2E_LIVE_MCP_ENV_KEYS=NAME1,NAME2 \
+pnpm test:e2e -- test/e2e/live-mcp-continuation.e2e.ts
+```
+
+`DSH_E2E_LIVE_MCP_PROFILE` 可选 `devin`、`codebuddy` 或 `antigravity`；Antigravity 可另设 `DSH_E2E_LIVE_MCP_ANTIGRAVITY_HARNESS=/absolute/path/to/localharness_external`。夹具严格检查实际 request 与 session 当前 provider/model、每轮已发布 `read` 和 `todo_write` schema、精确 Host 参数与结果；只允许一次 marker 文件读取和一项 todo 写入，Host 分发上限为 8，provider 工具活动超过 16 次会触发测试软停止。这是测试范围守卫，不是 token、费用或生产限额。
+
+本机 macOS 的有限 live 结果如下；这些记录只证明表内场景与配置：
+
+| Profile / 场景               | 环境与模型                                                                             | 脱敏证据                                                                 |
+| ---------------------------- | -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| Antigravity 原生 5 阶段      | 官方 raw ACP server 1.3.0、独立 sidecar binary、`gemini-3.8-flash-low`；未使用 wrapper | `.local/e2e-live-antigravity/ee295ce6-5d36-4055-91f2-715e8645a48f/`      |
+| Devin MCP continuation       | Devin CLI `3000.11.3`、`swe-2-high`                                                    | `.local/e2e-live-mcp-continuation/3f4f66f5-042c-43a9-ad2b-3743684cc989/` |
+| CodeBuddy MCP continuation   | CodeBuddy CLI `2.161.2`、`minimax-m2.7`                                                | `.local/e2e-live-mcp-continuation/48a0ed2d-cfaa-4265-9ccd-9f3f98404815/` |
+| Antigravity MCP continuation | 官方 raw ACP server 1.3.0、`gemini-3.8-flash-low`                                      | `.local/e2e-live-mcp-continuation/fabba4ce-21aa-4d93-b837-a817893f0ebc/` |
+
+这些有限检查不构成完整 wrapper／安装包认证、Teams 验收或 Windows 验证；工具和交互预算是测试守卫，不限制模型费用或 token 使用。
+
 ## 重大版本的真实长任务回归
 
 这是重大版本手动 opt-in 的真实 Agent 专项，默认跳过且不属于 CI 门禁。A–D 使用官方 `devin acp` 或 `codebuddy --acp`，每次只选一个精确模型；模型缺失时停止、不回退。记录中的实测环境为 macOS Electron 44、DSH `0.2.0-rc.2`（公开源码 commit `639ed015397290b3745d163aafe02ffee4aa3f84`）、插件 `0.2.0-rc.2.6`、6 个只读源码文件共 61,463 bytes；Devin CLI `3000.11.3` / `swe-2-high`，CodeBuddy CLI `2.161.2` / `minimax-m2.7`。新版本的长任务回归只增加测试和指南。

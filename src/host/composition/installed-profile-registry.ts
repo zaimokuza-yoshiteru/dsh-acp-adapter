@@ -7,7 +7,7 @@ import { createTeamBridge, teamBridgeKey } from '../teams/bridge.ts'
 import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
 import type { AdapterRegistrationHandle } from '@deepseek-ai/dsh-llm'
 import type { AcpProbeOptions } from '../../protocol/v1/types.ts'
-import { acpAgentIdFromRoute, acpRouteId, effectiveRuntimeOf } from '../../domain/session/agent-config.ts'
+import { acpAgentIdFromRoute, acpRouteId } from '../../domain/session/agent-config.ts'
 import type { AcpAgentConfig, AcpResolvedAgent } from '../../domain/session/agent-config.ts'
 import { createTeamManagement } from '../teams/management.ts'
 import { createAcpLogger } from '../../domain/observability/logging.ts'
@@ -733,7 +733,7 @@ export function installInstalledProfileRegistry(
                 notifyPolicySubscribers,
                 schemas,
               ),
-            (sessionId, schemas) => teamBridgeKey(ctx, sessionId, schemas, effectiveRuntimeOf(id, activeAgents[id])),
+            (sessionId, schemas) => teamBridgeKey(ctx, sessionId, schemas),
             controlsChanged,
             ctx.root,
           )

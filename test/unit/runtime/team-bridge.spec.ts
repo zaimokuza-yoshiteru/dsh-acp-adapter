@@ -14,8 +14,10 @@ import { fileURLToPath } from 'node:url'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio'
 import { createTeamBridge, teamBridgeKey } from '../../../src/host/teams/bridge.ts'
+import { AcpClientConnection } from '../../../src/protocol/v1/connection.ts'
 import { installLiveDiagnosticTrace } from '../../../src/contract/live-diagnostic-trace.ts'
 import type { LiveDiagnosticEvent } from '../../../src/contract/live-diagnostic-trace.ts'
+import { sharedTestSubprocess } from '../../fixtures/subprocess-seam-testing.ts'
 
 const cleanup: Array<() => Promise<unknown>> = []
 const diagnosticRemovers: Array<() => void> = []
@@ -2195,8 +2197,8 @@ describe('session-owned native Teams MCP bridge', () => {
     expect(lease.elicitationToolName!(request, call)).toBeUndefined()
   })
 
-  it('omits duplicate MCP tools, auto-approves native tools under auto policy, and normalizes presentation', async () => {
-    const { ctx, lease, server, tools, permission, client, execute } = await setup('antigravity', [
+  it('keeps DSH tools admitted and separates native presentation from DSH permission', async () => {
+    const { ctx, lease, server, tools, permission } = await setup('antigravity', [
       'read',
       'bash',
       'glob',
@@ -2209,19 +2211,17 @@ describe('session-owned native Teams MCP bridge', () => {
     ])
     lease.beginPrompt(new AbortController().signal)
 
-    // Verify duplicate tools are omitted from MCP listing
-    expect(tools.map((tool) => tool.name)).not.toContain('read')
-    expect(tools.map((tool) => tool.name)).not.toContain('bash')
-    expect(tools.map((tool) => tool.name)).not.toContain('web_fetch')
-    expect(tools.map((tool) => tool.name)).not.toContain('web_search')
-    expect(tools.map((tool) => tool.name)).not.toContain('job_list')
-    expect(tools.map((tool) => tool.name)).not.toContain('job_output')
-    expect(tools.map((tool) => tool.name)).not.toContain('job_kill')
-    expect(tools.map((tool) => tool.name)).not.toContain('ask_user_question')
+    expect(tools.map((tool) => tool.name)).toContain('read')
+    expect(tools.map((tool) => tool.name)).toContain('bash')
+    expect(tools.map((tool) => tool.name)).toContain('web_fetch')
+    expect(tools.map((tool) => tool.name)).toContain('web_search')
+    expect(tools.map((tool) => tool.name)).toContain('job_list')
+    expect(tools.map((tool) => tool.name)).toContain('job_output')
+    expect(tools.map((tool) => tool.name)).toContain('job_kill')
+    expect(tools.map((tool) => tool.name)).toContain('ask_user_question')
     expect(tools.map((tool) => tool.name)).toContain('glob')
-    expect(tools.map((tool) => tool.name)).toContain('ask_question')
 
-    // Native execute (run_command) with CommandLine
+    // Native execute details are presentation-only and cannot receive DSH MCP auto approval.
     const nativeBashCall: RequestPermissionRequest = {
       ...permission(),
       toolCall: {
@@ -2231,15 +2231,37 @@ describe('session-owned native Teams MCP bridge', () => {
         rawInput: { CommandLine: 'git status', Cwd: '/workspace' },
       },
     }
-    expect(await lease.inspectPermission!(nativeBashCall)).toMatchObject({
-      reason: 'auto-approved',
-      toolName: 'bash',
-      identitySource: 'name',
-      structuredIdentityPresent: true,
-      titleMatchesCurrentTool: true,
+    expect(await lease.inspectPermission!(nativeBashCall)).toMatchObject({ reason: 'identity-unmatched' })
+    expect(await lease.permission(nativeBashCall)).toBeUndefined()
+    expect(lease.validatePermissionDecision!(nativeBashCall)).toBe(false)
+
+    const foreignMcpCall: RequestPermissionRequest = {
+      ...permission(),
+      toolCall: {
+        toolCallId: 'agy-foreign-mcp-native-shaped',
+        name: 'mcp__foreign__delete_file',
+        kind: 'execute',
+        rawInput: { command: 'synthetic-action' },
+        _meta: { is_mcp_tool_call: true, mcp: { server: 'foreign', tool: 'delete_file' } },
+      },
+    }
+    expect(await lease.inspectPermission!(foreignMcpCall)).toMatchObject({ reason: 'identity-unmatched' })
+    expect(await lease.permission(foreignMcpCall)).toBeUndefined()
+
+    const unknownOwnMcpCall: RequestPermissionRequest = {
+      ...permission(),
+      toolCall: {
+        toolCallId: 'agy-unknown-own-mcp',
+        name: `${server.name}_unknown_tool`,
+        kind: 'execute',
+        rawInput: { CommandLine: 'synthetic-action' },
+        _meta: { is_mcp_tool_call: true, mcp: { server: server.name, tool: 'unknown_tool' } },
+      },
+    }
+    expect(await lease.inspectPermission!(unknownOwnMcpCall)).toMatchObject({
+      reason: 'invalid-tool-name',
+      response: { outcome: { outcome: 'cancelled' } },
     })
-    expect(await lease.permission(nativeBashCall)).toEqual({ outcome: { outcome: 'selected', optionId: 'yes' } })
-    expect(lease.validatePermissionDecision!(nativeBashCall)).toBe(true)
     const presentedBash = lease.presentTool!(nativeBashCall.toolCall)
     expect(presentedBash).toMatchObject({
       title: 'git status',
@@ -2283,14 +2305,9 @@ describe('session-owned native Teams MCP bridge', () => {
         rawInput: { AbsolutePath: '/workspace/src/index.ts' },
       },
     }
-    expect(await lease.inspectPermission!(nativeReadCall)).toMatchObject({
-      reason: 'auto-approved',
-      toolName: 'read',
-      identitySource: 'name',
-      structuredIdentityPresent: true,
-      titleMatchesCurrentTool: true,
-    })
-    expect(await lease.permission(nativeReadCall)).toEqual({ outcome: { outcome: 'selected', optionId: 'yes' } })
+    expect(await lease.inspectPermission!(nativeReadCall)).toMatchObject({ reason: 'identity-unmatched' })
+    expect(await lease.permission(nativeReadCall)).toBeUndefined()
+    expect(lease.validatePermissionDecision!(nativeReadCall)).toBe(false)
     const presentedRead = lease.presentTool!(nativeReadCall.toolCall)
     expect(presentedRead).toMatchObject({
       name: 'read',
@@ -2302,12 +2319,13 @@ describe('session-owned native Teams MCP bridge', () => {
       },
     })
 
-    // Spurious retryable provider error string is dropped
+    // Retryable provider errors remain visible as evidence.
     const retryErrorRead = lease.presentTool!({
       ...nativeReadCall.toolCall,
-      rawOutput: 'Encountered retryable error from model provider: Agent execution terminated due to error. ("Error 503...")',
+      rawOutput:
+        'Encountered retryable error from model provider: Agent execution terminated due to error. ("Error 503...")',
     })
-    expect(retryErrorRead.rawOutput).toBeUndefined()
+    expect(retryErrorRead.rawOutput).toContain('Encountered retryable error from model provider')
 
     // Native edit (write_to_file) with TargetFile
     const nativeEditCall: RequestPermissionRequest = {
@@ -2319,14 +2337,9 @@ describe('session-owned native Teams MCP bridge', () => {
         rawInput: { TargetFile: '/workspace/src/index.ts', CodeContent: 'test' },
       },
     }
-    expect(await lease.inspectPermission!(nativeEditCall)).toMatchObject({
-      reason: 'auto-approved',
-      toolName: 'edit',
-      identitySource: 'name',
-      structuredIdentityPresent: true,
-      titleMatchesCurrentTool: true,
-    })
-    expect(await lease.permission(nativeEditCall)).toEqual({ outcome: { outcome: 'selected', optionId: 'yes' } })
+    expect(await lease.inspectPermission!(nativeEditCall)).toMatchObject({ reason: 'identity-unmatched' })
+    expect(await lease.permission(nativeEditCall)).toBeUndefined()
+    expect(lease.validatePermissionDecision!(nativeEditCall)).toBe(false)
     const presentedEdit = lease.presentTool!(nativeEditCall.toolCall)
     expect(presentedEdit).toMatchObject({
       name: 'edit',
@@ -2361,6 +2374,64 @@ describe('session-owned native Teams MCP bridge', () => {
     })
     expect(await lease.permission(mcpGlobCall)).toEqual({ outcome: { outcome: 'selected', optionId: 'yes' } })
 
+    const fullyQualifiedMcpGlob: RequestPermissionRequest = {
+      ...permission(),
+      toolCall: {
+        toolCallId: 'agy-glob-qualified',
+        name: `mcp__${server.name}__${globName}`,
+        title: `${server.name}_${globName}`,
+        kind: 'other',
+        _meta: {
+          is_mcp_tool_call: true,
+          server: server.name,
+          serverName: server.name,
+          tool: globName,
+          toolName: globName,
+          mcp: { server: server.name, serverName: server.name, tool: globName, toolName: globName },
+        },
+      },
+    }
+    expect(await lease.inspectPermission!(fullyQualifiedMcpGlob)).toMatchObject({
+      reason: 'auto-approved',
+      toolName: globName,
+      identitySource: 'antigravity-meta',
+    })
+
+    const conflictingMetadata = [
+      { is_mcp_tool_call: false, mcp: { server: server.name, tool: globName } },
+      { server: 'dshteam_foreign', mcp: { server: server.name, tool: globName } },
+      { tool: 'read', mcp: { server: server.name, tool: globName } },
+      { mcp: { server: server.name, serverName: 'dshteam_foreign', tool: globName } },
+      { mcp: { server: server.name, tool: globName, toolName: 'read' } },
+      { 'cognition.ai/toolName': 'mcp__dshteam_foreign__glob', mcp: { server: server.name, tool: globName } },
+    ]
+    for (const [index, metadata] of conflictingMetadata.entries()) {
+      const conflict: RequestPermissionRequest = {
+        ...permission(),
+        toolCall: {
+          toolCallId: `agy-meta-conflict-${index}`,
+          title: `${server.name}_${globName}`,
+          kind: 'other',
+          _meta: metadata,
+        },
+      }
+      expect(await lease.inspectPermission!(conflict)).toMatchObject({ reason: 'identity-unmatched' })
+      expect(await lease.permission(conflict)).toBeUndefined()
+      expect(lease.validatePermissionDecision!(conflict)).toBe(false)
+    }
+
+    const conflictingName: RequestPermissionRequest = {
+      ...permission(),
+      toolCall: {
+        toolCallId: 'agy-meta-name-conflict',
+        name: `mcp__${server.name}__read`,
+        title: `${server.name}_${globName}`,
+        kind: 'other',
+        _meta: { mcp: { server: server.name, tool: globName } },
+      },
+    }
+    expect(await lease.inspectPermission!(conflictingName)).toMatchObject({ reason: 'identity-unmatched' })
+
     // Rejects foreign server in metadata
     const foreignCall: RequestPermissionRequest = {
       ...permission(),
@@ -2377,27 +2448,92 @@ describe('session-owned native Teams MCP bridge', () => {
       reason: 'identity-unmatched',
     })
 
-    // Resolves tool name for Antigravity form elicitation
+    // Antigravity native questions use request_permission, not an inferred
+    // host-tool identity from an elicitation form.
+    expect(lease.elicitationToolName!({ mode: 'form', toolCallId: 'agy-glob-1' } as never, mcpGlobCall.toolCall)).toBe(
+      undefined,
+    )
+
+    const interactionWithOwnToolTitle = {
+      toolCallId: 'interaction_30c0e13e',
+      status: 'pending' as const,
+      title: `${server.name}_${globName}`,
+      rawInput: {},
+    }
+    expect(lease.presentTool!(interactionWithOwnToolTitle)).toEqual(interactionWithOwnToolTitle)
+    const interactionPermission: RequestPermissionRequest = {
+      ...permission(),
+      toolCall: interactionWithOwnToolTitle,
+    }
+    expect(await lease.inspectPermission!(interactionPermission)).toMatchObject({ reason: 'identity-unmatched' })
+    expect(await lease.permission(interactionPermission)).toBeUndefined()
     expect(
       lease.elicitationToolName!(
-        { mode: 'form', toolCallId: 'agy-glob-1' } as never,
-        mcpGlobCall.toolCall,
+        { mode: 'form', toolCallId: interactionWithOwnToolTitle.toolCallId } as never,
+        {
+          ...interactionWithOwnToolTitle,
+          _meta: { mcp: { server: server.name, tool: globName } },
+        } as never,
       ),
-    ).toBe(globName)
+    ).toBeUndefined()
+
+    for (const invalidMeta of [null, 'invalid', undefined]) {
+      const invalidMetaCall: RequestPermissionRequest = {
+        ...permission(),
+        toolCall: {
+          toolCallId: `agy-invalid-meta-${String(invalidMeta)}`,
+          title: `${server.name}_glob`,
+          kind: 'other',
+          _meta: invalidMeta === undefined ? { is_mcp_tool_call: true } : { mcp: invalidMeta },
+        },
+      }
+      expect(await lease.inspectPermission!(invalidMetaCall)).toMatchObject({ reason: 'identity-unmatched' })
+      expect(await lease.permission(invalidMetaCall)).toBeUndefined()
+    }
 
     // Normalizes extended tool kinds
-    expect(
-      lease.presentTool!({ toolCallId: 'agy-glob', title: `${server.name}_glob`, kind: 'other' }),
-    ).toMatchObject({
+    const presentationOnlyTitle = {
+      toolCallId: 'agy-glob',
+      title: `${server.name}_glob`,
+      kind: 'other' as const,
+    }
+    expect(await lease.inspectPermission!({ ...permission(), toolCall: presentationOnlyTitle })).toMatchObject({
+      reason: 'identity-unmatched',
+    })
+    expect(await lease.permission({ ...permission(), toolCall: presentationOnlyTitle })).toBeUndefined()
+    expect(lease.validatePermissionDecision!({ ...permission(), toolCall: presentationOnlyTitle })).toBe(false)
+    expect(lease.presentTool!(presentationOnlyTitle)).toMatchObject({
       name: 'glob',
       title: 'glob',
       kind: 'search',
     })
-    expect(
-      lease.presentTool!({ toolCallId: 'agy-ask', title: `${server.name}_ask_question`, kind: 'other' }),
-    ).toMatchObject({
-      name: 'ask_question',
-      title: 'ask_question',
+    expect(tools.map((tool) => tool.name)).not.toContain('ask_question')
+    const askAlias = { toolCallId: 'agy-ask-alias', title: `${server.name}_ask_question`, kind: 'other' as const }
+    expect(lease.presentTool!(askAlias)).toEqual(askAlias)
+    const askAliasPermission: RequestPermissionRequest = {
+      ...permission(),
+      toolCall: { ...askAlias, toolCallId: 'agy-ask-alias-permission' },
+    }
+    expect(await lease.inspectPermission!(askAliasPermission)).toMatchObject({
+      reason: 'identity-unmatched',
+    })
+    const askUserTool = tools.find((tool) => tool.name === 'ask_user_question')!
+    const dshAskUserCall: RequestPermissionRequest = {
+      ...permission(),
+      toolCall: {
+        toolCallId: 'agy-dsh-ask-user',
+        name: `mcp__${server.name}__${askUserTool.name}`,
+        kind: 'other',
+        _meta: { is_mcp_tool_call: true, mcp: { server: server.name, tool: askUserTool.name } },
+      },
+    }
+    expect(await lease.inspectPermission!(dshAskUserCall)).toMatchObject({
+      reason: 'auto-approved',
+      toolName: 'ask_user_question',
+    })
+    expect(lease.presentTool!(dshAskUserCall.toolCall)).toMatchObject({
+      name: 'ask_user_question',
+      title: 'ask_user_question',
     })
     expect(
       lease.presentTool!({
@@ -2420,7 +2556,7 @@ describe('session-owned native Teams MCP bridge', () => {
       content: [{ type: 'content', content: { type: 'text', text: 'A1: Yes' } }],
     })
 
-    // Native ask_question auto-approved under auto policy
+    // Native ask_question is outside this DSH MCP lease and cannot receive its auto decision.
     const nativeAskCall: RequestPermissionRequest = {
       ...permission(),
       toolCall: {
@@ -2429,45 +2565,8 @@ describe('session-owned native Teams MCP bridge', () => {
         rawInput: { questions: [{ question: 'Continue?', options: ['Yes', 'No'] }] },
       },
     }
-    expect(await lease.inspectPermission!(nativeAskCall)).toMatchObject({
-      reason: 'auto-approved',
-      toolName: 'ask_question',
-    })
-    expect(lease.validatePermissionDecision!(nativeAskCall)).toBe(true)
-
-    // Verify calling bridged ask_question executes ask_user_question and formats answers
-    execute.mockResolvedValueOnce({
-      content: [{ type: 'text', text: JSON.stringify({ answers: [{ id: 'q1', selected: ['(Recommended) Yes'] }] }) }],
-      isError: false,
-    })
-    const askCallResult = await client.callTool({
-      name: 'ask_question',
-      arguments: {
-        questions: [
-          {
-            question: 'Proceed with changes?',
-            options: ['(Recommended) Yes', 'No'],
-            is_multi_select: false,
-          },
-        ],
-      },
-    })
-    expect(execute).toHaveBeenCalledWith(
-      expect.objectContaining({
-        name: 'ask_user_question',
-        arguments: {
-          questions: [
-            {
-              id: 'q1',
-              question: 'Proceed with changes?',
-              options: [{ label: '(Recommended) Yes' }, { label: 'No' }],
-              multi_select: false,
-            },
-          ],
-        },
-      }),
-    )
-    expect(askCallResult.content).toEqual([{ type: 'text', text: 'A1: (Recommended) Yes' }])
+    expect(await lease.inspectPermission!(nativeAskCall)).toMatchObject({ reason: 'identity-unmatched' })
+    expect(lease.validatePermissionDecision!(nativeAskCall)).toBe(false)
 
     // Verify teamBridgeKey stability for Antigravity wireProfile
     const agySchemas = [
@@ -2475,15 +2574,98 @@ describe('session-owned native Teams MCP bridge', () => {
       { name: 'read', description: 'read', parameters: { type: 'object' } },
       { name: 'glob', description: 'glob', parameters: { type: 'object' } },
     ]
-    const agyKey = teamBridgeKey(ctx, 'lead', agySchemas, 'antigravity')
-    expect(teamBridgeKey(ctx, 'lead', agySchemas, 'antigravity')).toBe(agyKey)
+    const agyKey = teamBridgeKey(ctx, 'lead', agySchemas)
+    expect(teamBridgeKey(ctx, 'lead', agySchemas)).toBe(agyKey)
   })
+
+  it('does not auto-approve Antigravity title-only calls after the SDK drops malformed MCP metadata', async () => {
+    const { lease, server } = await setup('antigravity', ['glob'], false)
+    const lifetime = new AbortController()
+    lease.beginPrompt(lifetime.signal)
+    const subprocess = await sharedTestSubprocess()
+    const observed: Array<{
+      meta: unknown
+      inspection: unknown
+    }> = []
+    const script = `
+let buffer = '';
+let promptId;
+const send = (message) => process.stdout.write(JSON.stringify(message) + '\\n');
+process.stdin.on('data', (chunk) => {
+  buffer += chunk;
+  let index;
+  while ((index = buffer.indexOf('\\n')) >= 0) {
+    const line = buffer.slice(0, index);
+    buffer = buffer.slice(index + 1);
+    if (!line.trim()) continue;
+    const message = JSON.parse(line);
+    if (message.method === 'initialize') {
+      send({ jsonrpc: '2.0', id: message.id, result: { protocolVersion: 1, agentInfo: { name: 'agy-malformed-meta', version: '1' }, agentCapabilities: {} } });
+    } else if (message.method === 'session/new') {
+      send({ jsonrpc: '2.0', id: message.id, result: { sessionId: 'agy-malformed-session' } });
+    } else if (message.method === 'session/prompt') {
+      promptId = message.id;
+      send({
+        jsonrpc: '2.0',
+        id: 41,
+        method: 'session/request_permission',
+        params: {
+          sessionId: 'agy-malformed-session',
+          toolCall: {
+            toolCallId: 'agy-malformed-meta',
+            title: ${JSON.stringify(`${server.name}_glob`)},
+            kind: 'other',
+            rawInput: { arguments: {} },
+            _meta: [],
+          },
+          options: [
+            { optionId: 'allow', name: 'Allow', kind: 'allow_once' },
+            { optionId: 'deny', name: 'Deny', kind: 'reject_once' },
+          ],
+        },
+      });
+    } else if (message.id === 41) {
+      const stopReason = message.result?.outcome?.outcome === 'selected' ? 'end_turn' : 'cancelled';
+      send({ jsonrpc: '2.0', id: promptId, result: { stopReason } });
+    }
+  }
+});
+setInterval(() => {}, 1 << 30);
+`
+    const connection = new AcpClientConnection(
+      {
+        argv: [process.execPath, '-e', script],
+        cwd: process.cwd(),
+        env: {},
+        subprocess: subprocess.seam,
+      },
+      {
+        onPermissionRequest: async (request) => {
+          const inspection = await lease.inspectPermission!(request)
+          observed.push({ meta: request.toolCall._meta, inspection })
+          return inspection?.response ?? { outcome: { outcome: 'cancelled' } }
+        },
+      },
+    )
+    cleanup.push(() => connection.close())
+
+    await connection.initialize()
+    const session = await connection.newSession()
+    const result = await connection.prompt(session.sessionId, [{ type: 'text', text: 'exercise parser' }])
+    expect(result.stopReason).toBe('cancelled')
+    expect(observed).toMatchObject([
+      {
+        meta: undefined,
+        inspection: { reason: 'identity-unmatched' },
+      },
+    ])
+  }, 15_000)
 
   it('keeps Antigravity Ask policy when configured', async () => {
     const ask = await setup('antigravity', ['glob'], true, 'lead', async () => 'ask')
     ask.lease.beginPrompt(new AbortController().signal)
 
-    // Native execute under Ask policy
+    // Native execute is left to the native ACP permission handler.
     const nativeBashAsk: RequestPermissionRequest = {
       ...ask.permission(),
       toolCall: {
@@ -2493,11 +2675,7 @@ describe('session-owned native Teams MCP bridge', () => {
         rawInput: { CommandLine: 'git status' },
       },
     }
-    expect(await ask.lease.inspectPermission!(nativeBashAsk)).toMatchObject({
-      reason: 'approval-required',
-      toolName: 'bash',
-      identitySource: 'name',
-    })
+    expect(await ask.lease.inspectPermission!(nativeBashAsk)).toMatchObject({ reason: 'identity-unmatched' })
     expect(await ask.lease.permission(nativeBashAsk)).toBeUndefined()
 
     // MCP tool under Ask policy
@@ -2520,5 +2698,36 @@ describe('session-owned native Teams MCP bridge', () => {
       identitySource: 'antigravity-meta',
     })
     expect(await ask.lease.permission(mcpGlobAsk)).toBeUndefined()
+  })
+
+  it('keeps Antigravity metadata and presentation rules scoped to Antigravity', async () => {
+    const devin = await setup('devin', ['glob', 'write'], false)
+    devin.lease.beginPrompt(new AbortController().signal)
+
+    const foreignProtocolMeta: RequestPermissionRequest = {
+      ...devin.permission(),
+      toolCall: {
+        toolCallId: 'devin-unknown-mcp-meta',
+        kind: 'other',
+        _meta: { is_mcp_tool_call: true, mcp: { server: devin.server.name, tool: 'glob' } },
+      },
+    }
+    expect(await devin.lease.inspectPermission!(foreignProtocolMeta)).toMatchObject({ reason: 'identity-unmatched' })
+
+    const originalRawInput = { path: '/workspace/a.ts', extra: 'preserve' }
+    const presented = devin.lease.presentTool!({
+      toolCallId: 'devin-write-presentation',
+      name: `mcp__${devin.server.name}__write`,
+      kind: 'other',
+      rawInput: originalRawInput,
+      rawOutput: 'original output',
+    })
+    expect(presented).toMatchObject({
+      name: 'write',
+      title: 'write',
+      kind: 'other',
+      rawInput: originalRawInput,
+      rawOutput: 'original output',
+    })
   })
 })

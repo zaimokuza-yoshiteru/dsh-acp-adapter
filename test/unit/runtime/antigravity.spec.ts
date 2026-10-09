@@ -1,30 +1,19 @@
 import { describe, expect, it } from 'vitest'
+import { executableOverrideEnvFor } from '../../../src/domain/session/agent-compatibility.ts'
 import {
   formatAntigravityAskQuestionResult,
-  isAntigravityDuplicateTool,
   normalizeAntigravityPresentation,
-  parseAntigravityQuestions,
   resolveAntigravityNativeTool,
 } from '../../../src/host/teams/antigravity.ts'
+import { isAntigravityInteractionCall } from '../../../src/domain/policy/antigravity-question.ts'
 
 describe('antigravity MCP adapter and schema parsing', () => {
-  describe('duplicate tool filtering', () => {
-    it('identifies native Antigravity duplicate tools and terminal capabilities', () => {
-      expect(isAntigravityDuplicateTool('bash')).toBe(true)
-      expect(isAntigravityDuplicateTool('read')).toBe(true)
-      expect(isAntigravityDuplicateTool('edit')).toBe(true)
-      expect(isAntigravityDuplicateTool('web_search')).toBe(true)
-      expect(isAntigravityDuplicateTool('ask_user_question')).toBe(true)
-      expect(isAntigravityDuplicateTool('terminal_bash')).toBe(true)
-
-      expect(isAntigravityDuplicateTool('glob')).toBe(false)
-      expect(isAntigravityDuplicateTool('ask_question')).toBe(false)
-      expect(isAntigravityDuplicateTool('custom_tool')).toBe(false)
-    })
+  it('fingerprints the executable variable consumed by the confirmed wrapper', () => {
+    expect(executableOverrideEnvFor('antigravity')).toBe('REFINED_AGY_ACP_BIN')
   })
 
   describe('native tool resolution', () => {
-    it('resolves tool names from kind, name, title, or structured input', () => {
+    it('uses exact native names before presentation-only kind and input hints', () => {
       expect(resolveAntigravityNativeTool({ kind: 'execute' })).toBe('bash')
       expect(resolveAntigravityNativeTool({ rawInput: { CommandLine: 'echo 1' } })).toBe('bash')
 
@@ -36,63 +25,53 @@ describe('antigravity MCP adapter and schema parsing', () => {
       expect(resolveAntigravityNativeTool({ rawInput: { TargetContent: 'code' } })).toBe('edit')
 
       expect(resolveAntigravityNativeTool({ name: 'ask_question' })).toBe('ask_question')
+      expect(resolveAntigravityNativeTool({ name: 'view_file', kind: 'edit' })).toBe('read')
+      expect(resolveAntigravityNativeTool({ name: 'write_to_file', kind: 'read' })).toBe('edit')
+      expect(resolveAntigravityNativeTool({ name: 'replace_file_content', kind: 'read' })).toBe('edit')
+      expect(resolveAntigravityNativeTool({ name: 'multi_replace', kind: 'read' })).toBe('edit')
+      expect(resolveAntigravityNativeTool({ name: 'client_edit_file', kind: 'read', rawInput: { path: '/a' } })).toBe(
+        'edit',
+      )
       expect(resolveAntigravityNativeTool({ title: 'ask_question' })).toBe('ask_question')
       expect(resolveAntigravityNativeTool({ rawInput: { questions: [] } })).toBe('ask_question')
+      expect(
+        resolveAntigravityNativeTool({ name: 'edit', kind: 'execute', rawInput: { questions: [], path: '/a' } }),
+      ).toBe('edit')
 
       expect(resolveAntigravityNativeTool({ kind: 'other', title: 'random' })).toBeUndefined()
     })
   })
 
-  describe('parseAntigravityQuestions', () => {
-    it('parses questions and maps to DSH format with default IDs and options', () => {
-      const parsed = parseAntigravityQuestions({
-        questions: [
-          {
-            question: 'Proceed?',
-            options: ['Yes', 'No'],
-            is_multi_select: false,
-          },
-          {
-            id: 'custom_2',
-            question: 'Which files?',
-            options: [{ label: 'File A' }, { label: 'File B' }],
-            IsMultiSelect: true,
-          },
-        ],
-      })
+  describe('observed interaction question identity', () => {
+    const question = {
+      toolCallId: 'interaction_30c0e13e',
+      status: 'pending',
+      title: 'dshteam_123_glob',
+      rawInput: {},
+    }
 
-      expect(parsed).toEqual([
-        {
-          id: 'q1',
-          question: 'Proceed?',
-          options: [{ label: 'Yes' }, { label: 'No' }],
-          multi_select: false,
-        },
-        {
-          id: 'custom_2',
-          question: 'Which files?',
-          options: [{ label: 'File A' }, { label: 'File B' }],
-          multi_select: true,
-        },
-      ])
+    it('recognizes the exact id/title/empty-input shape without using option kinds', () => {
+      expect(isAntigravityInteractionCall(question)).toBe(true)
+      expect(isAntigravityInteractionCall({ ...question, title: 'glob' })).toBe(true)
     })
 
-    it('handles empty or malformed inputs gracefully', () => {
-      expect(parseAntigravityQuestions(null)).toEqual([])
-      expect(parseAntigravityQuestions({})).toEqual([])
-      expect(parseAntigravityQuestions({ questions: ['not an object'] })).toEqual([
-        { id: 'q1', question: '', multi_select: false },
+    it('rejects calls with explicit MCP identity or native tool fields', () => {
+      for (const impostor of [
+        { ...question, name: 'dshteam_123_unknown' },
+        { ...question, kind: 'execute' },
+        { ...question, _meta: { mcp: null } },
+        { ...question, _meta: { serverName: 'dshteam_123', toolName: 'unknown' } },
+        { ...question, rawInput: { command: 'printf nope' } },
+        { ...question, toolCallId: 'interaction_bad' },
       ])
+        expect(isAntigravityInteractionCall(impostor)).toBe(false)
     })
   })
 
   describe('formatAntigravityAskQuestionResult', () => {
     it('formats direct answers payload', () => {
       const formatted = formatAntigravityAskQuestionResult({
-        answers: [
-          { selected: ['Option 1'] },
-          { selected: ['Option 2'], custom: 'Custom text' },
-        ],
+        answers: [{ selected: ['Option 1'] }, { selected: ['Option 2'], custom: 'Custom text' }],
       })
       expect(formatted).toBe('A1: Option 1\nA2: Option 2, Custom text')
     })
@@ -114,6 +93,81 @@ describe('antigravity MCP adapter and schema parsing', () => {
         ],
       }
       expect(formatAntigravityAskQuestionResult(result)).toBe('A1: Yes')
+    })
+
+    it('preserves additional text and provider errors after an answer block', () => {
+      expect(
+        formatAntigravityAskQuestionResult({
+          content: [
+            { type: 'text', text: JSON.stringify({ answers: [{ selected: ['BETA'] }] }) },
+            { type: 'text', text: 'Provider follow-up detail' },
+          ],
+        }),
+      ).toBe('A1: BETA\nProvider follow-up detail')
+      expect(
+        formatAntigravityAskQuestionResult({
+          isError: true,
+          content: [{ type: 'text', text: 'Encountered retryable error from model provider' }],
+          answers: [{ selected: ['BETA'] }],
+        }),
+      ).toBe('Encountered retryable error from model provider')
+      expect(formatAntigravityAskQuestionResult({ isError: true, error: { message: 'Provider unavailable' } })).toBe(
+        'Provider unavailable',
+      )
+    })
+
+    it('preserves direct and stringified result text alongside answers', () => {
+      expect(
+        formatAntigravityAskQuestionResult({ answers: [{ selected: ['BETA'] }], text: 'Provider follow-up detail' }),
+      ).toBe('A1: BETA\nProvider follow-up detail')
+      expect(
+        formatAntigravityAskQuestionResult(
+          JSON.stringify({
+            answers: [{ selected: ['BETA'] }],
+            content: [{ type: 'text', text: 'Provider follow-up detail' }],
+          }),
+        ),
+      ).toBe('A1: BETA\nProvider follow-up detail')
+    })
+
+    it('does not turn nested provider-error answer payloads into successful answers', () => {
+      expect(
+        formatAntigravityAskQuestionResult({
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({ answers: [{ selected: ['BETA'] }], isError: true, error: 'Provider unavailable' }),
+            },
+          ],
+        }),
+      ).toBe('Provider unavailable')
+      expect(
+        formatAntigravityAskQuestionResult({
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                answers: [{ selected: ['BETA'] }],
+                isError: true,
+                text: 'Retry detail',
+                error: 'Provider unavailable',
+              }),
+            },
+          ],
+        }),
+      ).toBe('Retry detail\nProvider unavailable')
+    })
+
+    it('preserves unknown nested answer payloads as their original text', () => {
+      const rawText = JSON.stringify({ answers: [{ selected: ['BETA'] }], content: [{ type: 'text', text: 'extra' }] })
+      expect(formatAntigravityAskQuestionResult({ content: [{ type: 'text', text: rawText }] })).toBe(rawText)
+      const rawError = JSON.stringify({
+        isError: true,
+        text: 'Retry',
+        error: 'Denied',
+        content: [{ type: 'text', text: 'more context' }],
+      })
+      expect(formatAntigravityAskQuestionResult({ content: [{ type: 'text', text: rawError }] })).toBe(rawError)
     })
 
     it('falls back to string or empty representation for non-answer payloads', () => {
@@ -145,18 +199,11 @@ describe('antigravity MCP adapter and schema parsing', () => {
         exitCode: 0,
         exit_code: 0,
       })
-      expect(normalized.content).toEqual([
-        { type: 'content', content: { type: 'text', text: 'Clean\n' } },
-      ])
+      expect(normalized.content).toEqual([{ type: 'content', content: { type: 'text', text: 'Clean\n' } }])
     })
 
     it('extracts command title from output when input command is absent', () => {
-      const normalized = normalizeAntigravityPresentation(
-        {},
-        { commandLine: 'pnpm test' },
-        undefined,
-        'bash',
-      )
+      const normalized = normalizeAntigravityPresentation({}, { commandLine: 'pnpm test' }, undefined, 'bash')
       expect(normalized.title).toBe('pnpm test')
     })
 
@@ -188,14 +235,16 @@ describe('antigravity MCP adapter and schema parsing', () => {
       })
     })
 
-    it('strips spurious retryable provider error messages from rawOutput', () => {
+    it('preserves retryable provider error messages in rawOutput', () => {
       const normalized = normalizeAntigravityPresentation(
         {},
         'Encountered retryable error from model provider: Agent execution terminated due to error',
         undefined,
         'read',
       )
-      expect(normalized.rawOutput).toBeUndefined()
+      expect(normalized.rawOutput).toBe(
+        'Encountered retryable error from model provider: Agent execution terminated due to error',
+      )
     })
   })
 })

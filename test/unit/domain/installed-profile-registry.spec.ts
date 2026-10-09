@@ -578,6 +578,14 @@ describe('acpSettingsSchema', () => {
         },
       }),
     ).not.toThrow()
+    const genericAntigravityIds = acpSettingsSchema({
+      agents: {
+        antigravity: { name: 'Custom A', command: 'custom-a-acp' },
+        'antigravity-acp': { name: 'Custom B', command: 'custom-b-acp' },
+      },
+    })
+    expect(effectiveRuntimeOf('antigravity', genericAntigravityIds.agents.antigravity)).toBeUndefined()
+    expect(effectiveRuntimeOf('antigravity-acp', genericAntigravityIds.agents['antigravity-acp'])).toBeUndefined()
   })
 })
 

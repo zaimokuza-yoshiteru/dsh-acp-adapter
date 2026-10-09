@@ -7,6 +7,14 @@
  */
 
 const zh = {
+  acpQuestionSubmit: '提交选择',
+  acpQuestionSubmitting: '提交中',
+  acpQuestionCancel: '取消请求',
+  acpQuestionUnavailable: '问题已不能回答',
+  acpQuestionFailed: '提交失败，请重试',
+  acpQuestionCopy: '复制',
+  acpQuestionCopied: '已复制',
+  acpQuestionFootnotes: '脚注',
   auditSummaryPermissionBridge: '工具桥审批判断',
   auditAutoApproved: '已自动批准 DSH 工具请求',
   auditBridgeUnavailable: '没有工具桥连接',
@@ -390,6 +398,14 @@ const zh = {
 export type AcpLocaleKey = keyof typeof zh
 
 const en: Record<AcpLocaleKey, string> = {
+  acpQuestionSubmit: 'Submit',
+  acpQuestionSubmitting: 'Sending…',
+  acpQuestionCancel: 'Cancel',
+  acpQuestionUnavailable: 'This question is no longer available',
+  acpQuestionFailed: 'Could not submit; try again',
+  acpQuestionCopy: 'Copy',
+  acpQuestionCopied: 'Copied',
+  acpQuestionFootnotes: 'Footnotes',
   auditSummaryPermissionBridge: 'Tool bridge permission check',
   auditAutoApproved: 'DSH tool request approved automatically',
   auditBridgeUnavailable: 'No tool bridge connection',

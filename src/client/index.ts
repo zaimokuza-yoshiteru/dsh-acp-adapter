@@ -4,7 +4,7 @@ import type {} from '@deepseek-ai/dsh-api-remotes/client'
 import type {} from '@deepseek-ai/dsh-api-session-controller/client'
 import type {} from '@deepseek-ai/dsh-api-workspace-controller/client'
 import type {} from '@deepseek-ai/dsh-client-ui-chat/client'
-import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
+import type { ComposerChainProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
@@ -41,6 +41,11 @@ import { ProjectedSubagentCatalog } from './data/projected-subagents.ts'
 import { createAcpPanelStore } from './data/stores/panel-store.ts'
 import type { AcpPanelStoreActions } from './data/stores/panel-store.ts'
 import { AcpSection } from './ui/AcpSection.ts'
+import {
+  AcpPermissionQuestion,
+  createAcpPermissionQuestionStore,
+  isAcpPermissionQuestion,
+} from './ui/acp-permission-question.ts'
 import type { AcpSectionWire, AcpTranslate } from './ui/AcpSection.ts'
 import { ACP_SETTINGS_NS } from './data/logic.ts'
 import type { AcpSettings } from './data/logic.ts'
@@ -127,6 +132,19 @@ async function registerUi(ctx: ClientContext): Promise<void> {
   ctx.uiConversation.events.register(createAcpActivityDefinition(managedRoutes.owns))
   ctx.effect(() => ctx.locale.register('acpActivity', { zh, en }), 'dsh-acp: activity dictionaries')
   ctx.effect(() => ctx.locale.register('settings.acp', { zh, en }), 'dsh-acp: settings dictionaries')
+  ctx.slots.inject('conversation.composer', () =>
+    ctx.slots.register(
+      {
+        name: 'conversation.composer',
+        priority: -1,
+        select: ({ pendingInteraction }: ComposerChainProps) =>
+          isAcpPermissionQuestion(pendingInteraction) ? pendingInteraction : null,
+        locale: 'acpActivity',
+        store: createAcpPermissionQuestionStore,
+      },
+      AcpPermissionQuestion,
+    ),
+  )
   ctx.effect(
     () => () => {
       panelController.dispose()

@@ -77,14 +77,7 @@ export const RUNTIME_REGISTRY_IDS: Readonly<Record<AcpAgentId, string>> = {
 
 /** Explicit binding wins; only the original built-in profile IDs retain legacy fallback. */
 export function effectiveRuntimeOf(id: string, config?: { readonly runtime?: AcpAgentId }): AcpAgentId | undefined {
-  return (
-    config?.runtime ??
-    (id === 'antigravity-acp' || id === 'antigravity'
-      ? 'antigravity'
-      : LEGACY_RUNTIME_IDS.includes(id as AcpAgentId)
-        ? (id as AcpAgentId)
-        : undefined)
-  )
+  return config?.runtime ?? (LEGACY_RUNTIME_IDS.includes(id as AcpAgentId) ? (id as AcpAgentId) : undefined)
 }
 
 /** Catalog metadata does not participate in execution identity. */

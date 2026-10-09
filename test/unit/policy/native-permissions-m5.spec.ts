@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type * as acp from '@agentclientprotocol/sdk'
 import {
   createAcpNativePermissionHandler,
+  type AcpNativeApprovalService,
   type AcpPermissionAuditRecord,
 } from '../../../src/domain/policy/permissions.ts'
 import type { AcpNativeUserQuestionService } from '../../../src/domain/policy/elicitation.ts'
@@ -14,6 +15,16 @@ const params = (options: acp.PermissionOption[]): acp.RequestPermissionRequest =
     kind: 'execute',
     status: 'pending',
     rawInput: { command: 'echo hello' },
+  },
+  options,
+})
+const antigravityInteractionQuestion = (options: acp.PermissionOption[]): acp.RequestPermissionRequest => ({
+  sessionId: 'acp-session',
+  toolCall: {
+    toolCallId: 'interaction_30c0e13e',
+    status: 'pending',
+    title: 'Which test label should we use?',
+    rawInput: {},
   },
   options,
 })
@@ -116,6 +127,217 @@ describe('native ACP permission bridge', () => {
     expect(ask).not.toHaveBeenCalled()
   })
 
+  it('keeps Codex additional permission scope on the approval path when two options are allow-once', async () => {
+    const approvalRequest = vi.fn<AcpNativeApprovalService['request']>(async () => 'rejected' as const)
+    const approval = { request: approvalRequest }
+    const ask = vi.fn<AcpNativeUserQuestionService['ask']>()
+    const request: acp.RequestPermissionRequest = {
+      ...params([
+        option('turn', 'Yes, grant these permissions for this turn', 'allow_once'),
+        option('turn-strict', 'Yes, grant for this turn with strict auto review', 'allow_once'),
+        option('session', 'Yes, grant these permissions for this session', 'allow_always'),
+        option('reject', 'No, continue without permissions', 'reject_once'),
+      ]),
+      toolCall: {
+        toolCallId: 'codex-additional-permissions',
+        title: 'Additional sandbox permissions',
+        kind: 'other',
+        rawInput: {
+          permissions: { fileSystem: { write: ['/workspace/private-report'] }, network: { enabled: true } },
+          cwd: '/workspace',
+        },
+      },
+    }
+    const handler = createAcpNativePermissionHandler({ approval, userQuestions: { ask }, getAgent: () => ({}) })
+
+    await expect(handler(request)).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'reject' } })
+    expect(approvalRequest).toHaveBeenCalledOnce()
+    expect(approvalRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        callId: 'codex-additional-permissions',
+        toolName: 'other',
+        reason: expect.stringContaining('Additional sandbox permissions'),
+      }),
+    )
+    const reason = approvalRequest.mock.calls[0]?.[0].reason ?? ''
+    expect(reason).toContain('/workspace/private-report')
+    expect(reason).toContain('"enabled": true')
+    expect(ask).not.toHaveBeenCalled()
+  })
+
+  it('routes the exact Antigravity interaction payload to DSH and returns the selected option id', async () => {
+    const approval = { request: vi.fn(async () => 'rejected' as const) }
+    const question: AcpNativeUserQuestionService['ask'] = vi.fn(async ({ questions }) => ({
+      answers: [{ id: questions[0]!.id, selected: ['BETA'] }],
+    }))
+    const records: AcpPermissionAuditRecord[] = []
+    const handler = createAcpNativePermissionHandler({
+      nativeQuestionProfile: 'antigravity',
+      approval,
+      userQuestions: { ask: question },
+      getAgent: () => ({ id: 'live-agent' }),
+      audit: { append: async (record) => void records.push(record) },
+    })
+
+    await expect(
+      handler(antigravityInteractionQuestion([option('1', 'ALPHA', 'allow_once'), option('2', 'BETA', 'allow_once')])),
+    ).resolves.toEqual({ outcome: { outcome: 'selected', optionId: '2' } })
+    expect(approval.request).not.toHaveBeenCalled()
+    expect(question).toHaveBeenCalledWith(
+      expect.objectContaining({
+        questions: [
+          expect.objectContaining({
+            question: 'Which test label should we use?',
+            options: [{ label: 'ALPHA' }, { label: 'BETA' }],
+          }),
+        ],
+      }),
+    )
+    expect(records.map((record) => record.data.phase)).toEqual(['asked', 'decided'])
+    expect(records.at(-1)?.data).toMatchObject({ selectedOptionKind: 'allow_once', decisionVia: 'native-question' })
+  })
+
+  it('routes an interaction with one allow-once option to DSH and disambiguates labels', async () => {
+    const approval = { request: vi.fn(async () => 'rejected' as const) }
+    const askOne = vi.fn<AcpNativeUserQuestionService['ask']>(async ({ questions }) => ({
+      answers: [{ id: questions[0]!.id, selected: ['Proceed'] }],
+    }))
+    const oneAllowOnce = createAcpNativePermissionHandler({
+      nativeQuestionProfile: 'antigravity',
+      approval,
+      userQuestions: { ask: askOne },
+      getAgent: () => ({}),
+    })
+    await expect(
+      oneAllowOnce(antigravityInteractionQuestion([option('yes', 'Proceed', 'allow_once')])),
+    ).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'yes' } })
+    expect(approval.request).not.toHaveBeenCalled()
+
+    const askDuplicate = vi.fn<AcpNativeUserQuestionService['ask']>(async ({ questions }) => ({
+      answers: [{ id: questions[0]!.id, selected: ['ALPHA · option 2'] }],
+    }))
+    const duplicateLabels = createAcpNativePermissionHandler({
+      nativeQuestionProfile: 'antigravity',
+      userQuestions: { ask: askDuplicate },
+      getAgent: () => ({}),
+    })
+    await expect(
+      duplicateLabels(
+        antigravityInteractionQuestion([
+          option('first', 'ALPHA', 'allow_once'),
+          option('second', 'ALPHA', 'allow_once'),
+        ]),
+      ),
+    ).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'second' } })
+    expect(askDuplicate.mock.calls[0]?.[0].questions[0]?.options).toEqual([
+      { label: 'ALPHA · option 1' },
+      { label: 'ALPHA · option 2' },
+    ])
+  })
+
+  it('keeps Antigravity trust and deny options on approval instead of treating them as questions', async () => {
+    const approvalRequest = vi.fn<AcpNativeApprovalService['request']>(async () => 'rejected' as const)
+    const ask = vi.fn<AcpNativeUserQuestionService['ask']>()
+    const handler = createAcpNativePermissionHandler({
+      nativeQuestionProfile: 'antigravity',
+      approval: { request: approvalRequest },
+      userQuestions: { ask },
+      getAgent: () => ({ id: 'live-agent' }),
+    })
+    const request = antigravityInteractionQuestion([
+      option('trust', 'Trust', 'allow_once'),
+      option('deny', 'Deny', 'reject_once'),
+    ])
+
+    await expect(handler(request)).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'deny' } })
+    expect(approvalRequest).toHaveBeenCalledOnce()
+    expect(ask).not.toHaveBeenCalled()
+
+    const askWithoutApproval = vi.fn<AcpNativeUserQuestionService['ask']>()
+    const noApproval = createAcpNativePermissionHandler({
+      nativeQuestionProfile: 'antigravity',
+      userQuestions: { ask: askWithoutApproval },
+      getAgent: () => ({ id: 'live-agent' }),
+    })
+    await expect(noApproval(request)).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
+    expect(askWithoutApproval).not.toHaveBeenCalled()
+
+    const askAfterApprovalError = vi.fn<AcpNativeUserQuestionService['ask']>()
+    const failedApproval = createAcpNativePermissionHandler({
+      nativeQuestionProfile: 'antigravity',
+      approval: {
+        request: async () => {
+          throw new Error('approval service unavailable')
+        },
+      },
+      userQuestions: { ask: askAfterApprovalError },
+      getAgent: () => ({ id: 'live-agent' }),
+    })
+    await expect(failedApproval(request)).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
+    expect(askAfterApprovalError).not.toHaveBeenCalled()
+  })
+
+  it('cancels an unanswered Antigravity interaction and asks the user rather than auto-allowing', async () => {
+    const approval = { request: vi.fn(async () => 'allowed-once' as const) }
+    const ask = vi.fn<AcpNativeUserQuestionService['ask']>(async () => ({ answers: [] }))
+    const handler = createAcpNativePermissionHandler({
+      nativeQuestionProfile: 'antigravity',
+      approval,
+      userQuestions: { ask },
+      getAgent: () => ({}),
+    })
+    await expect(handler(antigravityInteractionQuestion([option('1', 'ALPHA', 'allow_once')]))).resolves.toEqual({
+      outcome: { outcome: 'cancelled' },
+    })
+    expect(ask).toHaveBeenCalledOnce()
+    expect(approval.request).not.toHaveBeenCalled()
+  })
+
+  it('keeps non-Antigravity profiles and MCP-shaped interaction impostors on native approval', async () => {
+    const exactPayload = antigravityInteractionQuestion([
+      option('yes', 'Proceed', 'allow_once'),
+      option('no', 'Stop', 'reject_once'),
+    ])
+    const approval = { request: vi.fn(async () => 'rejected' as const) }
+    const ask = vi.fn<AcpNativeUserQuestionService['ask']>(async () => ({ answers: [] }))
+    const genericProfile = createAcpNativePermissionHandler({
+      approval,
+      userQuestions: { ask },
+      getAgent: () => ({}),
+    })
+    await genericProfile(exactPayload)
+    expect(approval.request).toHaveBeenCalledOnce()
+    expect(ask).not.toHaveBeenCalled()
+
+    approval.request.mockClear()
+    const antigravityProfile = createAcpNativePermissionHandler({
+      nativeQuestionProfile: 'antigravity',
+      approval,
+      userQuestions: { ask },
+      getAgent: () => ({}),
+    })
+    const impostors: acp.RequestPermissionRequest[] = [
+      {
+        ...exactPayload,
+        toolCall: { ...exactPayload.toolCall, kind: 'execute', rawInput: { command: 'echo unsafe' } },
+      },
+      {
+        ...exactPayload,
+        toolCall: {
+          ...exactPayload.toolCall,
+          _meta: { is_mcp_tool_call: true, mcp: { server: 'foreign', tool: 'delete_file' } },
+        },
+      },
+      {
+        ...exactPayload,
+        toolCall: { ...exactPayload.toolCall, _meta: { serverName: 'dshteam_foreign', toolName: 'unknown_tool' } },
+      },
+    ]
+    for (const impostor of impostors) await antigravityProfile(impostor)
+    expect(approval.request).toHaveBeenCalledTimes(impostors.length)
+    expect(ask).not.toHaveBeenCalled()
+  })
+
   it('extracts command details from Antigravity CommandLine property without unknownCommand copy', async () => {
     const approval = { request: vi.fn(async () => 'allowed-once' as const) }
     const handler = createAcpNativePermissionHandler({
@@ -139,6 +361,37 @@ describe('native ACP permission bridge', () => {
     )
     const reason = (approval.request.mock.calls[0] as unknown as [{ reason: string }])[0].reason
     expect(reason).not.toContain('Command details were not provided')
+  })
+
+  it('omits an exactly duplicated execute title while keeping the complete command', async () => {
+    const approval = { request: vi.fn(async () => 'allowed-once' as const) }
+    const command = 'printf ANTIGRAVITY_ALLOW_ONCE_MARKER'
+    const handler = createAcpNativePermissionHandler({ approval, getAgent: () => ({ id: 'live-agent' }) })
+    await handler({
+      ...params([]),
+      toolCall: { ...params([]).toolCall, kind: 'execute', title: command, rawInput: { CommandLine: command } },
+      options: [option('allow', 'Allow once', 'allow_once')],
+    })
+    expect(approval.request).toHaveBeenCalledWith(expect.objectContaining({ reason: command }))
+  })
+
+  it('keeps a distinct title and complete multiline execute command', async () => {
+    const approval = { request: vi.fn(async () => 'allowed-once' as const) }
+    const command = 'printf first\nprintf second'
+    const handler = createAcpNativePermissionHandler({ approval, getAgent: () => ({ id: 'live-agent' }) })
+    await handler({
+      ...params([]),
+      toolCall: {
+        ...params([]).toolCall,
+        kind: 'execute',
+        title: 'Run Antigravity command',
+        rawInput: { CommandLine: command },
+      },
+      options: [option('allow', 'Allow once', 'allow_once')],
+    })
+    expect(approval.request).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: `Run Antigravity command\n${command}` }),
+    )
   })
 
   it('preserves exact Agent option ids and all four kinds through native questions', async () => {

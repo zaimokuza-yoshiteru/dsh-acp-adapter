@@ -195,13 +195,14 @@ describe('常量：与宿主侧契约逐字对齐', () => {
     })
   })
 
-  it('ACP_CATALOG_ENTRIES 钉版：已验证的五条排前，其余按 registry 顺序', () => {
-    expect(ACP_CATALOG_ENTRIES.slice(0, 5).map((entry) => entry.id)).toEqual([
+  it('ACP_CATALOG_ENTRIES 钉版：已验证的六条排前，其余按 registry 顺序', () => {
+    expect(ACP_CATALOG_ENTRIES.slice(0, 6).map((entry) => entry.id)).toEqual([
       'devin',
       'codebuddy-code',
       'codex-acp',
       'kimi',
       'claude-acp',
+      'antigravity-acp',
     ])
     expect(new Set(ACP_CATALOG_ENTRIES.map((entry) => entry.id))).toEqual(
       new Set(registrySnapshot.agents.map((agent) => agent.id)),
@@ -456,6 +457,9 @@ describe('validateAgentDraft', () => {
   it('effectiveRuntimeOf：显式 runtime 优先，内置 id 回退，generic 归 undefined（与 host 共用规则）', () => {
     expect(effectiveRuntimeOf('foo', { runtime: 'codex' })).toBe('codex')
     expect(effectiveRuntimeOf('kimi', {})).toBe('kimi')
+    expect(effectiveRuntimeOf('antigravity', {})).toBeUndefined()
+    expect(effectiveRuntimeOf('antigravity-acp', {})).toBeUndefined()
+    expect(effectiveRuntimeOf('antigravity-acp', { runtime: 'antigravity' })).toBe('antigravity')
     expect(effectiveRuntimeOf('foo', {})).toBeUndefined()
   })
 
@@ -644,6 +648,17 @@ describe('草稿种子：emptyDraft / draftFromCatalogEntry / draftFromAgent', (
       loginHint: '',
     })
     expect('runtime' in (draft ?? {})).toBe(false)
+  })
+
+  it('does not suggest CLI login for Antigravity ACP accounts', () => {
+    expect(catalogEntryOf('antigravity-acp')).toMatchObject({
+      id: 'antigravity-acp',
+      runtime: 'antigravity',
+      verification: 'adapter-tested',
+    })
+    const draft = draftFromCatalogEntry('antigravity-acp')
+    expect(draft?.runtime).toBe('antigravity')
+    expect(draft?.loginHint).toBe('')
   })
 
   it('draftFromAgent：args/env 渲染成逐行文本，loginHint 缺席补空串', () => {

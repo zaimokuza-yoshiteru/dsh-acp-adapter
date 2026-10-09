@@ -2,6 +2,7 @@
 import { randomUUID } from 'node:crypto'
 import { Buffer } from 'node:buffer'
 import type * as acp from '@agentclientprotocol/sdk'
+import { isAntigravityInteractionCall } from './antigravity-question.ts'
 import type { AcpNativeUserQuestionService } from './elicitation.ts'
 import { permissionCopy, type PermissionCopy } from './permission-copy.ts'
 import {
@@ -25,6 +26,7 @@ export interface AcpPermissionAuditRecord {
 export interface AcpPermissionAuditChannel {
   append(record: AcpPermissionAuditRecord): Promise<void>
 }
+export type AcpNativeQuestionProfile = 'antigravity'
 export interface AcpNativeApprovalService {
   request(req: {
     readonly agent: unknown
@@ -37,6 +39,7 @@ export interface AcpNativeApprovalService {
 export interface AcpNativePermissionBridgeDeps {
   readonly userQuestions?: AcpNativeUserQuestionService
   readonly approval?: AcpNativeApprovalService
+  readonly nativeQuestionProfile?: AcpNativeQuestionProfile
   readonly getAgent: () => unknown
   readonly locale?: string
   readonly log?: (message: string) => void
@@ -85,13 +88,7 @@ function visibleCommand(value: string): string {
 }
 function commandOf(tool: acp.RequestPermissionRequest['toolCall']): string | undefined {
   if (typeof tool.rawInput === 'string') return tool.rawInput
-  const record = recordValue(tool.rawInput)
-  const str = firstString(record, ['command', 'cmd', 'CommandLine', 'commandLine', 'argv'])
-  if (str !== undefined) return str
-  if (Array.isArray(record?.argv) && record.argv.every((arg) => typeof arg === 'string')) {
-    return record.argv.join(' ')
-  }
-  return undefined
+  return firstString(recordValue(tool.rawInput), ['command', 'cmd', 'CommandLine', 'argv'])
 }
 function markdownCodeBlock(value: string): string {
   let longestFence = 0
@@ -132,8 +129,7 @@ function permissionDetail(tool: acp.RequestPermissionRequest['toolCall'], copy: 
         'absolutePath',
         'TargetFile',
         'targetFile',
-      ]) ??
-      tool.locations?.find((location) => typeof location.path === 'string')?.path
+      ]) ?? tool.locations?.find((location) => typeof location.path === 'string')?.path
     return path === undefined ? undefined : `${copy.target}: ${safeText(path, 160)}`
   }
   if (tool.rawInput === undefined) return undefined
@@ -157,6 +153,7 @@ export interface AcpPermissionReasonOptions {
 function nativePermissionReason(tool: acp.RequestPermissionRequest['toolCall'], copy: PermissionCopy): string {
   const title = tool.title ?? tool.name ?? tool.kind ?? 'ACP'
   const command = tool.kind === 'execute' ? commandOf(tool) : undefined
+  const displayTitle = command !== undefined && title === command ? undefined : safeText(title)
   const detail =
     command ??
     (tool.rawInput === undefined
@@ -165,7 +162,7 @@ function nativePermissionReason(tool: acp.RequestPermissionRequest['toolCall'], 
         ? tool.rawInput
         : JSON.stringify(tool.rawInput, null, 2))
   return [
-    safeText(title),
+    displayTitle,
     detail === undefined ? undefined : visibleCommand(detail),
     tool.kind === 'execute' && command === undefined ? copy.unknownCommand : undefined,
   ]
@@ -265,8 +262,18 @@ export function createAcpNativePermissionHandler(
     if (agent === undefined) return decide({ outcome: 'cancelled', note: 'agent-unavailable' })
     const allowOnce = params.options.find((option) => option.kind === 'allow_once')
     const reject = params.options.find((option) => option.kind === 'reject_once')
+    const nativeInteractionCall =
+      deps.nativeQuestionProfile === 'antigravity' && isAntigravityInteractionCall(params.toolCall)
+    const nativeInteractionQuestion =
+      nativeInteractionCall &&
+      params.options.length > 0 &&
+      params.options.every((option) => option.kind === 'allow_once')
 
-    if (deps.approval !== undefined && allowOnce !== undefined) {
+    if (
+      !nativeInteractionQuestion &&
+      deps.approval !== undefined &&
+      (allowOnce !== undefined || nativeInteractionCall)
+    ) {
       try {
         const outcome = await deps.approval.request({
           agent,
@@ -275,7 +282,7 @@ export function createAcpNativePermissionHandler(
           reason: nativePermissionReason(params.toolCall, copy),
           ...(signal === undefined ? {} : { signal }),
         })
-        if (outcome === 'allowed-once')
+        if (outcome === 'allowed-once' && allowOnce !== undefined)
           return decide(
             { outcome: 'selected', optionId: allowOnce.optionId, selectedOptionKind: allowOnce.kind },
             'native-approval',
@@ -293,6 +300,8 @@ export function createAcpNativePermissionHandler(
         // plugin-owned permission surface.
       }
     }
+    if (nativeInteractionCall && !nativeInteractionQuestion)
+      return decide({ outcome: 'cancelled', note: 'native-approval-unavailable' }, 'native-approval')
     if (deps.userQuestions === undefined) return decide({ outcome: 'cancelled', note: 'question-service-unavailable' })
     const questionId = `acp-permission:${id}`
     const renderedLabels = optionLabels(params.options, copy)
@@ -306,8 +315,10 @@ export function createAcpNativePermissionHandler(
             id: questionId,
             // Keep the header compact and put the exact command in the native
             // card's scrollable Markdown detail area, which preserves line
-            // breaks and does not require a second custom permission UI.
-            question: buildPermissionReason(params, copy, { includeExecuteDetails: false }),
+            // breaks; the client renders only the fixed choices supplied here.
+            question: nativeInteractionQuestion
+              ? params.toolCall.title!
+              : buildPermissionReason(params, copy, { includeExecuteDetails: false }),
             ...(detail === undefined ? {} : { detail }),
             options: renderedLabels.map((label) => ({ label })),
           },

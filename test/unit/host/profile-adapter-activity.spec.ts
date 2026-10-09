@@ -2486,4 +2486,69 @@ describe('provider activity bridge', () => {
     expect(await sidecar.readDispatch(sessionId as never, dispatchKey!)).toBeUndefined()
     expect(fallbackAdapter.recoveryStateFallback(sessionId)).toBeUndefined()
   })
+
+  it('projects a tool failure after external Stop as cancelled while retaining the provider result', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-stop-tool-status-'))
+    roots.push(root)
+    const sidecar = testSidecar(root)
+    const sessionId = 'stop-tool-status'
+    const message = user('run a long command')
+    const controller = new AbortController()
+    const toolStarted = Promise.withResolvers<void>()
+    const runtimeFactory = (): AcpProfileRuntime => ({
+      acpSessionId: 'agent-stop-tool-status',
+      start: async () => undefined,
+      prompt: async (_content, onUpdate, signal) => {
+        onUpdate({
+          sessionId: 'agent-stop-tool-status',
+          update: { sessionUpdate: 'tool_call', toolCallId: 'stop-call', title: 'Run', status: 'pending' },
+        } as never)
+        onUpdate({
+          sessionId: 'agent-stop-tool-status',
+          update: { sessionUpdate: 'tool_call_update', toolCallId: 'stop-call', status: 'in_progress' },
+        } as never)
+        toolStarted.resolve()
+        if (!signal?.aborted)
+          await new Promise<void>((resolve) => signal?.addEventListener('abort', () => resolve(), { once: true }))
+        onUpdate({
+          sessionId: 'agent-stop-tool-status',
+          update: {
+            sessionUpdate: 'tool_call_update',
+            toolCallId: 'stop-call',
+            status: 'failed',
+            rawOutput: { error: 'command interrupted by Stop' },
+            content: [{ type: 'text', text: 'provider cancellation detail' }],
+          },
+        } as never)
+        return { stopReason: 'cancelled' } as never
+      },
+      close: async () => undefined,
+    })
+    const adapter = new AcpProfileAdapter(
+      'stop-tool-status',
+      profile,
+      seam(),
+      () => session(message),
+      ledgerFor(sidecar),
+      undefined,
+      runtimeFactory,
+      sidecar,
+    )
+    try {
+      const stopped = drain(adapter.stream({ ...request(sessionId, message), signal: controller.signal }))
+      await toolStarted.promise
+      controller.abort(new DOMException('Stopped', 'AbortError'))
+      await stopped
+
+      const activity = (await sidecar.activitySnapshot(sessionId as never)).find((row) =>
+        row.activityId.endsWith(':tool:stop-call'),
+      )
+      expect(activity).toMatchObject({ status: 'cancelled' })
+      expect(activity?.rawDetail).toContain('"providerStatus":"failed"')
+      expect(activity?.rawDetail).toContain('"rawOutput":{"error":"command interrupted by Stop"}')
+      expect(activity?.rawDetail).toContain('provider cancellation detail')
+    } finally {
+      await adapter.close()
+    }
+  })
 })

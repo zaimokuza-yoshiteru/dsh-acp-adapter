@@ -4,6 +4,24 @@
 
 User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for publication dates, exact installation instructions, and checksums. Historical entries were reconstructed from tag diffs; npm packages were not republished.
 
+## 0.2.0-rc.2.8
+
+### 中文
+
+- 新增显式 Antigravity ACP runtime。工具桥仅在 MCP 身份与当前 DSH 连接的已注册工具匹配时调用宿主工具；原生权限请求继续使用 DSH 审批或固定选项卡片，用户必须明确选择并提交。
+- 固定选项卡片支持键盘选择、窄屏布局和中英文；按会话保留选项，不提供自由输入。
+- 修复外部 Stop 期间原生工具报告失败后，已中止调用显示为失败的问题；仅当此前观察到调用正在执行且外部取消信号有效时，将其界面状态归为取消，并保留原始 provider 失败详情。
+- 在真实 macOS 环境使用官方 raw ACP server 1.3.0 和 `gemini-3.8-flash-low` 验证五阶段原生交互及 DSH MCP 续聊。具体范围见 [E2E 指南](test/e2e/README.md)；未验收 wrapper、Teams 或 Windows，也不代表完整 OAuth 首次引导。
+- 继续支持 DSH `0.2.0-rc.2`。
+
+### English
+
+- Add an explicit Antigravity ACP runtime. The bridge invokes host tools only when MCP identity matches a tool registered for the current DSH connection. Native permission requests continue through DSH approval or a fixed-choice card that requires an explicit user selection and submission.
+- Fixed-choice cards support keyboard selection, narrow screens, and Chinese and English. Choices persist per session, and free-text input is not offered.
+- Fix native tool calls appearing failed when they report failure during an external Stop. Only a previously observed running call with an active external cancellation signal is presented as cancelled; the original provider failure details are retained.
+- Verify five native interaction phases and DSH MCP continuation on macOS with the official raw ACP server 1.3.0 and `gemini-3.8-flash-low`. See the [E2E guide](test/e2e/README.md) for scope. The wrapper, Teams and Windows are not verified, and this does not certify the full OAuth first-run flow.
+- Continue to support DSH `0.2.0-rc.2`.
+
 ## 0.2.0-rc.2.7
 
 ### 中文

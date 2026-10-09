@@ -933,6 +933,8 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
         await page.getByRole('button', { name: 'Send message', exact: true }).click()
         const question = page.locator('[data-question-key]')
         await question.waitFor({ state: 'visible', timeout: 15_000 })
+        const freeAnswer = question.getByPlaceholder(/Type your answer/i)
+        await freeAnswer.waitFor({ state: 'visible' })
         const readGeometry = async () =>
           await question.locator('section').evaluate((card) => {
             const heading = card.querySelector('h1, h2, h3, h4')
@@ -956,11 +958,13 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
         expect(await manager.setPluginEnabled(adapterEntry.entryId, false)).toMatchObject({ application: 'applied' })
         await vi.waitFor(() => expect(host.ctx.llm.listProviders().some((item) => item.id === provider)).toBe(false))
         await expect.poll(() => question.isVisible()).toBe(true)
+        await freeAnswer.waitFor({ state: 'visible' })
         expect(await readGeometry()).toEqual(enabledGeometry)
         await question.screenshot({ path: join(root, '.local/ui-review/native-question-acp-disabled.png') })
 
         expect(await manager.setPluginEnabled(adapterEntry.entryId, true)).toMatchObject({ application: 'applied' })
         await vi.waitFor(() => expect(host.ctx.llm.listProviders().some((item) => item.id === provider)).toBe(true))
+        await freeAnswer.waitFor({ state: 'visible' })
         await question.getByRole('radio', { name: 'Allow once', exact: true }).click()
         await question.getByRole('button', { name: /Submit|Send/ }).click()
         const sessionId = await settled

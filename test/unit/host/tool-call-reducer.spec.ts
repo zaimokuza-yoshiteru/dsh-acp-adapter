@@ -38,6 +38,43 @@ describe('ACP tool-call reducer', () => {
     expect(reducer.apply({ callId: 'x', status: 'in_progress' }).status).toBe('completed')
   })
 
+  it('marks only a previously live call cancelled when failure arrives after external Stop', () => {
+    const reducer = new AcpToolCallReducer('turn-stop')
+    reducer.apply({ callId: 'x', title: 'Run', status: 'pending' })
+    reducer.apply({ callId: 'x', status: 'in_progress' })
+    expect(
+      reducer.apply(
+        { callId: 'x', status: 'failed', rawOutput: { error: 'interrupted' } },
+        { externalSignalAborted: true },
+      ),
+    ).toMatchObject({
+      status: 'cancelled',
+      providerStatus: 'failed',
+      rawOutput: { error: 'interrupted' },
+    })
+  })
+
+  it('keeps unknown-first, pre-Stop failed, and post-Stop completed calls unchanged', () => {
+    const unknown = new AcpToolCallReducer('turn-unknown')
+    expect(unknown.apply({ callId: 'x', status: 'failed' }, { externalSignalAborted: true })).toMatchObject({
+      status: 'failed',
+    })
+    expect(unknown.apply({ callId: 'x', status: 'failed' }).providerStatus).toBeUndefined()
+
+    const failed = new AcpToolCallReducer('turn-failed')
+    failed.apply({ callId: 'x', status: 'running' })
+    failed.apply({ callId: 'x', status: 'failed' })
+    expect(failed.apply({ callId: 'x', status: 'failed' }, { externalSignalAborted: true })).toMatchObject({
+      status: 'failed',
+    })
+
+    const completed = new AcpToolCallReducer('turn-completed')
+    completed.apply({ callId: 'x', status: 'running' })
+    expect(completed.apply({ callId: 'x', status: 'completed' }, { externalSignalAborted: true })).toMatchObject({
+      status: 'completed',
+    })
+  })
+
   it.each(['failed', 'cancelled'] as const)('keeps prior fields when settling as %s', (status) => {
     const reducer = new AcpToolCallReducer('turn-crash')
     reducer.apply({ callId: 'x', name: 'Terminal', content: [{ type: 'terminal' }], status: 'running' })
