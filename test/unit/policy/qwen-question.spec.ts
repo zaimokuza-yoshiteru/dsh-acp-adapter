@@ -115,6 +115,18 @@ describe('Qwen background-task helpers', () => {
     expect(isQwenTaskWakeStep([native])).toBe(false)
   })
 
+  it('adopts RC1 opaque job ids without admitting user text or partial identities', () => {
+    const text = 'background job acp-qwen-task-98cf10ad5d714fc6 (acp-qwen-task: npm test) finished [status: completed].'
+    expect(qwenTaskWakeInput([message('tool-jobs', text)])).toEqual([])
+    expect(qwenTaskWakeInput([message('user', text)])).toBeUndefined()
+    expect(
+      qwenTaskWakeInput([message('tool-jobs', text.replace('98cf10ad5d714fc6', '98cf10ad5d714fc6f'))]),
+    ).toBeUndefined()
+    expect(
+      qwenTaskWakeInput([message('tool-jobs', text.replace('98cf10ad5d714fc6', '98cf10ad5d714fcX'))]),
+    ).toBeUndefined()
+  })
+
   it('omits only native context replacements known to have been delivered unchanged', () => {
     const context = message('runtime-context', 'current workspace')
     const changed = message('runtime-context', 'new workspace')

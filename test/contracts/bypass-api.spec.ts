@@ -25,6 +25,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
+import ts from 'typescript'
 
 const TEST_DIR = path.dirname(fileURLToPath(import.meta.url))
 const SRC_DIR = path.resolve(TEST_DIR, '..', '..', 'src')
@@ -99,14 +100,30 @@ describe(' 旁路 API 消除门', () => {
   })
 
   it('Remote 调用面钉版：@Remote 装饰器只暴露当前公开面（无旁路增删）', () => {
-    const text = stripComments(fs.readFileSync(path.join(SRC_DIR, 'remote', 'service.ts'), 'utf8'))
-    const named = [...text.matchAll(/@Remote\(\s*['"]([^'"]+)['"]\s*\)/g)].map((m) => m[1]!)
-    const streamed = [
-      ...text.matchAll(/@Remote\(\s*\{\s*mode:\s*['"]stream['"]\s*\}\s*\)\s*\n\s*async\s+\*\s*(\w+)/g),
-    ].map((m) => m[1]!)
-    // 裸 @Remote：方法名即 invocation 名（health）
-    const bare = [...text.matchAll(/@Remote\s*\n\s*async\s+(\w+)/g)].map((m) => m[1]!)
-    expect([...named, ...bare, ...streamed].sort()).toEqual([...PINNED_REMOTE_METHODS].sort())
+    const filename = path.join(SRC_DIR, 'remote', 'service.ts')
+    const source = ts.createSourceFile(filename, fs.readFileSync(filename, 'utf8'), ts.ScriptTarget.Latest, true)
+    const methods: string[] = []
+    const visit = (node: ts.Node): void => {
+      if (ts.isMethodDeclaration(node)) {
+        for (const decorator of ts.getDecorators(node) ?? []) {
+          const call = ts.isCallExpression(decorator.expression) ? decorator.expression : undefined
+          const identifier = call?.expression ?? decorator.expression
+          if (!ts.isIdentifier(identifier) || identifier.text !== 'Remote') continue
+          const option = call?.arguments[0]
+          const name =
+            option && ts.isObjectLiteralExpression(option)
+              ? option.properties.find(
+                  (property) => ts.isPropertyAssignment(property) && property.name.getText(source) === 'name',
+                )
+              : undefined
+          const alias = name && ts.isPropertyAssignment(name) ? name.initializer : option
+          methods.push(alias && ts.isStringLiteral(alias) ? alias.text : node.name.getText(source))
+        }
+      }
+      ts.forEachChild(node, visit)
+    }
+    visit(source)
+    expect(methods.sort()).toEqual([...PINNED_REMOTE_METHODS].sort())
   })
 
   it('wire 类型收窄钉版：contract 无 _meta/credential 形态字段、无 unknown 字段', () => {

@@ -40,6 +40,8 @@
 import os from 'node:os'
 import type { Context } from '@deepseek-ai/cordis'
 import { Remote, RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
+import { SessionId } from '@deepseek-ai/dsh-session'
+import type {} from '@deepseek-ai/dsh-api-remote-access'
 import type * as acp from '@agentclientprotocol/sdk'
 import { acpRouteId, ACP_AGENT_ID_PATTERN } from '../domain/session/agent-config.ts'
 import { ACP_CONFIG_IDENTIFIER_MAX } from '../contract/config-options.ts'
@@ -875,14 +877,14 @@ export class AcpRemoteService extends TypertRemoteService {
     return access !== null && (await access(sessionId))
   }
 
-  @Remote
+  @Remote({ resources: { session: (lead) => SessionId(lead) } })
   async teamMembers(lead: string): Promise<readonly AcpTeamMemberView[]> {
     await this.requireOwnedSessionAccess(lead)
     if (this.resolved.teamManagement === undefined) throw badRequest('ACP Teams is unavailable')
     return await this.resolved.teamManagement.members(lead)
   }
 
-  @Remote
+  @Remote({ resources: { session: (lead, sessionId) => [SessionId(lead), SessionId(sessionId)] } })
   async teamMemberModels(lead: string, sessionId: string): Promise<AcpTeamMemberModelsView> {
     await this.teamMembers(lead)
     await this.requireOwnedSessionAccess(sessionId)
@@ -891,7 +893,7 @@ export class AcpRemoteService extends TypertRemoteService {
     return await preserveAcpFailure(() => management.models!(lead, sessionId))
   }
 
-  @Remote
+  @Remote({ resources: { session: (lead, sessionId) => [SessionId(lead), SessionId(sessionId)] } })
   async setTeamMemberModel(lead: string, sessionId: string, model: string): Promise<AcpTeamMemberModelsView> {
     await this.teamMembers(lead)
     await this.requireOwnedSessionAccess(sessionId)
@@ -901,7 +903,7 @@ export class AcpRemoteService extends TypertRemoteService {
     return await preserveAcpFailure(() => management.selectModel!(lead, sessionId, model))
   }
 
-  @Remote
+  @Remote({ resources: { session: (lead, sessionId) => [SessionId(lead), SessionId(sessionId)] } })
   async setTeamMemberMode(lead: string, sessionId: string, modeId: string): Promise<AcpAgentSessionSnapshotView> {
     const members = await this.teamMembers(lead)
     const member = members.find((member) => member.sessionId === sessionId)
@@ -932,7 +934,22 @@ export class AcpRemoteService extends TypertRemoteService {
 
   @Remote('projectedSubagentIds')
   async projectedSubagentIds(): Promise<AcpProjectedSubagentsView> {
-    return { sessionIds: this.resolved.projectedSubagentIds === null ? [] : await this.resolved.projectedSubagentIds() }
+    const sessionIds = this.resolved.projectedSubagentIds === null ? [] : await this.resolved.projectedSubagentIds()
+    return { sessionIds: sessionIds.filter((id) => this.callerCanReadSession(id)) }
+  }
+
+  /** Global discovery carries only the sessions allowed for this actual Remote caller. */
+  private callerCanReadSession(sessionId: string): boolean {
+    // Direct in-process consumers have no Remote caller. Gateway compositions
+    // always mount remoteAccess; an invoked method without it fails closed.
+    if (this.ctx.invocation === undefined) return true
+    const access = this.ctx.get('remoteAccess')
+    return (
+      access !== undefined &&
+      'allows' in access &&
+      typeof access.allows === 'function' &&
+      access.allows({ kind: 'session', id: SessionId(sessionId) }) === true
+    )
   }
 
   /**
@@ -1031,6 +1048,7 @@ export class AcpRemoteService extends TypertRemoteService {
         ? null
         : this.resolved
             .listLiveSessions()
+            .filter((entry) => this.callerCanReadSession(entry.sessionId))
             .map((entry) => ({ sessionId: entry.sessionId, continuity: entry.continuity }))
     return {
       providers,

@@ -13,7 +13,7 @@ interface Descriptor {
   result: Codec
 }
 
-describe('generated RPC codecs from the alpha.2 factory generator', () => {
+describe('generated RPC codecs from the published factory generator', () => {
   const host = TYPERT as { schemas: unknown[]; invocations: Descriptor[] }
   const remote = TYPERT_REMOTE as unknown as { descriptors: Descriptor[] }
 

@@ -10,6 +10,8 @@ export const PLATFORM_EXTERNALS = Object.freeze([
   'react/jsx-runtime',
   'react-dom',
   'react-dom/client',
+  'zod',
+  '@tanstack/react-virtual',
   '@deepseek-ai/cordis',
   '@deepseek-ai/dsh-client-store',
   '@deepseek-ai/dsh-client-ui-slots',

@@ -1,13 +1,17 @@
 name: Real Devin integration
 
 on:
-  push:
-    branches: [feature/ZAI-43, feature/0.1.6.alpha, main]
   workflow_dispatch:
     inputs:
+      allow_model_usage:
+        description: Authorize this run to use the configured Devin account and model quota
+        type: boolean
+        required: true
+        default: false
       devin_version:
         description: Pinned Devin release to verify
         type: choice
+        required: true
         default: '3000.10.31'
         options: ['3000.10.31', '3000.11.3', '3000.3.27']
 
@@ -22,7 +26,7 @@ concurrency:
 
 jobs:
   real-devin:
-    if: github.repository == 'zaimokuza-yoshiteru/dsh-acp-adapter'
+    if: github.event_name == 'workflow_dispatch' && inputs.allow_model_usage == true && github.repository == 'zaimokuza-yoshiteru/dsh-acp-adapter'
     environment: devin-e2e
     env:
       DEVIN_TEST_VERSION: ${{ inputs.devin_version || '3000.10.31' }}

@@ -16,6 +16,7 @@ import { agentSessionStream } from '../data/agent-session-stream.ts'
 import { toolApprovalPolicyStream, type ToolApprovalPolicySnapshot } from '../data/tool-approval-policy-stream.ts'
 import { toolApprovalPolicyGroup } from './agent-session-controls.ts'
 import type { AcpUiFeedback } from '../data/feedback.ts'
+import type { SessionAccessSource } from './session-action-access.ts'
 
 type AgentControlProps = PropsRuntime<'conversation.input.left'> &
   PropsLocale<'acpActivity'> & {
@@ -25,6 +26,7 @@ type AgentControlProps = PropsRuntime<'conversation.input.left'> &
     readonly getDefaultProvider: () => Promise<string | undefined>
     readonly watchDefaultProvider: (changed: () => void) => () => void
     readonly feedback: Pick<AcpUiFeedback, 'report'>
+    readonly sessionAccessSource: SessionAccessSource
   }
 
 function providerOf(value: unknown): string | undefined {
@@ -51,6 +53,7 @@ export function AcpAgentControl({
   sessionId,
   useProjection,
   useSession,
+  useAccess,
   t,
   remote,
   streamFactory,
@@ -58,9 +61,12 @@ export function AcpAgentControl({
   getDefaultProvider,
   watchDefaultProvider,
   feedback,
+  sessionAccessSource,
 }: AgentControlProps): ReactNode {
   const projection = useProjection('modelSelection')
   const running = useSession((state) => state.running)
+  const optionWriteAllowed = useAccess('dshAcp/setAgentSessionOption')
+  const policyWriteAllowed = useAccess('dshAcp/setToolApprovalPolicy')
   const [defaultProvider, setDefaultProvider] = useState<string | undefined>()
   const [defaultGeneration, setDefaultGeneration] = useState(0)
   useEffect(
@@ -192,17 +198,20 @@ export function AcpAgentControl({
     )
   }
   // The native running projection also locks the small interval before ACP prompt begins.
-  const visibleSnapshot = snapshot === null ? null : running ? { ...snapshot, editable: false } : snapshot
+  const visibleSnapshot =
+    snapshot === null ? null : { ...snapshot, editable: snapshot.editable && !running && optionWriteAllowed }
   const label = snapshot === null ? t('toolApprovalSession') : agentControlLabel(snapshot, t)
   const groups = [
-    ...(policySnapshot === null || policyStale ? [] : [toolApprovalPolicyGroup(policySnapshot, t)]),
+    ...(policySnapshot === null || policyStale
+      ? []
+      : [toolApprovalPolicyGroup({ ...policySnapshot, editable: policySnapshot.editable && policyWriteAllowed }, t)]),
     ...(visibleSnapshot === null ? [] : agentControlMenuGroups(visibleSnapshot, t)),
   ]
   const footer = [...(snapshot === null ? [] : agentControlFooter(snapshot, t))]
   // A read-only explanation must not create an empty menu before controls arrive.
   if (groups.length === 0 && footer.length === 0 && snapshot?.note == null && error === null && policyError === null)
     return null
-  if (snapshot !== null && (running || (!snapshot.editable && snapshot.freshness === 'live')))
+  if (snapshot !== null && (running || (!visibleSnapshot?.editable && snapshot.freshness === 'live')))
     footer.push({ type: 'label', id: 'read-only', text: t(running ? 'agentControlRunning' : 'agentControlReadOnly') })
   if (error !== null) footer.push({ type: 'label', id: 'error', text: error })
   if (policyError !== null) footer.push({ type: 'label', id: 'policy-error', text: policyError })
@@ -212,7 +221,13 @@ export function AcpAgentControl({
     setOpen(false)
     setBusy(true)
     if (item.write.kind === 'tool-approval-policy') {
-      if (policySnapshot === null || policyStale || !policySnapshot.editable) {
+      if (
+        policySnapshot === null ||
+        policyStale ||
+        !policySnapshot.editable ||
+        !policyWriteAllowed ||
+        sessionAccessSource(sessionId, 'dshAcp/setToolApprovalPolicy')?.getSnapshot() !== true
+      ) {
         setBusy(false)
         return
       }
@@ -236,7 +251,14 @@ export function AcpAgentControl({
         })
       return
     }
-    if (snapshot === null || visibleSnapshot === null || !visibleSnapshot.editable || snapshot.freshness !== 'live') {
+    if (
+      snapshot === null ||
+      visibleSnapshot === null ||
+      !visibleSnapshot.editable ||
+      snapshot.freshness !== 'live' ||
+      !optionWriteAllowed ||
+      sessionAccessSource(sessionId, 'dshAcp/setAgentSessionOption')?.getSnapshot() !== true
+    ) {
       setBusy(false)
       return
     }

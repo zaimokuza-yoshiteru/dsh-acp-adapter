@@ -24,6 +24,8 @@ ACP file writes preserve bytes, reject final symlinks, and retain concurrent has
 
 User-facing official optional bundles are enabled through native DSH Plugins; the adapter adds no second switch. Installation, code import, service activation, and availability in the current session are distinct states. The Teams UI entry follows its official contribution when enabled or disabled. ACP image capability reaches native tools only when the current caller, Session, runtime generation, confirmed model, and live connection match; unknown capability is not mislabeled text-only. The official `appendPluginRecord` write surface does not include this plugin and cannot replace the Sidecar.
 
+Remote UI operations use DSH caller and Session resource authorization. Team management checks both Lead and member scopes when it accesses both, and cross-session lists return only entries currently readable by that caller. This operates separately from Agent tool approval and adds no ACP login or permission configuration. Team creation policy and identity context come from native instructions; the adapter retains actual capability limits such as a shared workspace and fresh-only context.
+
 ## Presentation and observability limits
 
 ACP notifications are normalized before native DSH Assistant, tool tree, Diff, plan, and process-group presentation; native sessions retain their renderer. If an exit status, file line count, or historical content position is absent, the UI shows known facts or generic details instead of inventing numbers, order, or Host execution events. Truncated diagnostics cannot become a complete Diff. ACP plans are projected for observation only; the adapter does not call `todo_write` in response or force unfinished tasks to completion.

@@ -2,7 +2,7 @@
 
 这组 E2E 验证 DSH 与 ACP 的集成行为：测试启动目标版本的 Loader、真实 ACP 子进程和浏览器，并加载构建后的插件与 DSH UI。协议夹具提供可控 ACP 输入，覆盖 UI 与宿主集成；真实 Agent 行为另由 opt-in 检查验证。Web scaffold 或 Electron 窗口中的适配器检查不等于完整桌面产品的打包、preload、升级或跨平台验收。运行真实 Agent 会使用本机登录和模型额度。
 
-当前运行目标由 `package.json` 的 `engines.dsh` 决定。下文既有真实 Agent 记录只适用于各自记录的版本、平台和场景，不能作为当前 alpha.2 的 live 验收。
+当前运行目标由 `package.json` 的 `engines.dsh` 决定。下文既有真实 Agent 记录只适用于各自记录的版本、平台和场景，不能作为当前 RC.1 的 live 验收。
 
 较广的协议与 Teams 场景覆盖 Claude、Codex、Devin、Kimi 四种 ACP 配置。CodeBuddy 目前仅覆盖 Agent controls 与权限隔离；其目录读取由通用 catalog 测试覆盖，不包含 Teams、成员管理或其他矩阵。真实 Agent 的升级需独立检查。
 
@@ -76,13 +76,11 @@ Teams 只在原生 profile 提供服务与九个成员工具时接入；调用�
 # reference/deepseek-harness 必须检出以下命令输出的标签
 node --input-type=module -e 'import { DSH_SOURCE_TAG } from "./scripts/dsh-target.ts"; console.log(DSH_SOURCE_TAG)'
 # 在各自目录使用 packageManager 指定的 pnpm（宿主 11.28.5，插件 10.7.0）
-# 与 CI 一致，检查并构建引用的包项目，避免编译上游测试和脚本的聚合程序。
+# 与 CI 一致，使用官方产物链；包项目经过类型检查，上游测试/脚本聚合程序不在此范围。
 (
   cd ../reference/deepseek-harness &&
   corepack pnpm install --frozen-lockfile &&
-  corepack pnpm run build:native-system &&
-  corepack pnpm exec tsx scripts/compile-referenced-projects.ts libraries &&
-  corepack pnpm --dir apps/web run build &&
+  corepack pnpm run build:artifacts &&
   corepack pnpm --dir apps/web exec playwright install --with-deps chromium
 )
 pnpm install --frozen-lockfile
@@ -93,6 +91,8 @@ pnpm test:e2e
 ```
 
 `pnpm typecheck` 检查产品源码、单元测试、开发/发布脚本和模拟 Agent；`pnpm typecheck:e2e` 单独检查浏览器测试，并从所选宿主源码提取测试接口声明。`pnpm test:e2e` 会先执行该检查，再启动 Web 或 Electron。开发脚本和模拟 Agent 使用 Node 原生运行可擦除类型的 TypeScript，无需预编译。
+
+RC.1 的 `build:artifacts` 生成 Host、client 与 Web 可运行产物，不能代替上游完整类型门禁；需要检查上游测试/脚本聚合程序时，在最新产物之后单独运行 `build:check`。后者不重建、不验证已有产物的新鲜度。只修改插件测试时，无需重复构建未变的官方 scaffold；共享本地 checkout 的构建、打包与 Host/browser 测试仍须串行。
 
 普通 CI 将全部协议夹具分配给三个独立 runner，片内仍串行且不重试。`scripts/e2e-shards.ts` 从实际文件清单生成分组，新增 `.e2e.ts` 自动纳入；较大的 native parity 夹具按 Claude、Codex、Devin、Kimi 分配，各 profile 恰好运行一次。三个分片全部成功才通过原有 Native UI 必需检查，opt-in 真实 Agent 场景继续按原规则跳过。`node scripts/e2e-shards.ts` 可查看完整分配；`pnpm test:e2e --ci-shard 1/3` 可顺序复现某片，该模式不接受额外文件或名称过滤。默认 `pnpm test:e2e` 仍运行完整清单。依赖 store 与 Chromium 缓存只保存下载内容，Host 每片仍从准确源码标签构建，不复用用户 profile 或认证。
 
@@ -119,7 +119,7 @@ CI 的产品命令以普通用户运行。Windows hosted runner 的管理员身�
 真实运行证据只适用于对应 Agent、模型、认证与当次宿主环境。协议夹具通过不代表真实 Agent 通过；普通 live smoke 也不构成 Agent Teams 的真实运行签收。仓库既有的短程真实 Devin CI 集成只覆盖其自身范围；本轮真实模型驱动的复杂 Teams 长会话对照尚未完成，不能由短程集成或协议夹具推定通过，也不能据此声称当前新 head 已通过。实验性本机审计不作为稳定公共命令或 CI 门禁。不要据此推断完整桌面安装包已经验证。
 
 ```sh
-DSH_E2E_LIVE=1 pnpm test:e2e -t 'live ACP smoke'
+DSH_E2E_LIVE=1 DSH_E2E_LIVE_PROFILES=codex pnpm test:e2e -t 'live ACP smoke'
 ```
 
 测试从实际目录选择预设的小模型：Claude Haiku、Codex Mini / Spark、Devin SWE-1.7 Medium / Mini Low / Flash、Kimi Coding。没有匹配项就失败，不回退到默认模型；可用 `DSH_E2E_LIVE_<PROFILE>_MODEL` 指定精确 ID，例如 `DSH_E2E_LIVE_DEVIN_MODEL=swe-1-7-medium`。模型别名仍使用该 Agent 已配置的服务路由。
@@ -128,7 +128,7 @@ DSH_E2E_LIVE=1 pnpm test:e2e -t 'live ACP smoke'
 
 若 Agent 通过环境变量认证，需要显式指定要放入临时 ACP profile 的变量名，例如 `DSH_E2E_LIVE_CLAUDE_ENV_KEYS=ANTHROPIC_AUTH_TOKEN`。测试只读取列出的变量，值不写入测试结果；临时 profile 随宿主清理。生产环境同样需要在连接设置中显式配置凭据，父进程密钥不会自动继承。
 
-独立的 `Real Devin integration` 工作流会使用真实 Devin 创建两个 Lead 和两个 teammate，并验证消息往返及后续响应。要在本机运行，先完成依赖安装与 `pnpm build`，再在当前 shell 临时提供 `WINDSURF_API_KEY`，执行：
+独立的 `Real Devin integration` 工作流仅接受手动触发，并要求显式勾选 `allow_model_usage`；推送、合并和发布不会自动启动它。该专项会使用真实 Devin 创建两个 Lead 和两个 teammate，并验证消息往返及后续响应。普通 CI 中无凭据的 MCP 配置发现不调用模型，不属于这项带凭据验证。若本轮不使用 Devin 账号或额度，不触发该工作流，并显式设置其他 live 测试的 profile；未过滤的 `live ACP smoke` 会包含 Devin。要在本机运行 Devin 专项，先完成依赖安装与 `pnpm build`，再在当前 shell 临时提供 `WINDSURF_API_KEY`，执行：
 
 ```sh
 DEVIN_TEST_MODEL=swe-2-high node scripts/check-devin-live.ts "$(command -v devin)"

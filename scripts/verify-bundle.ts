@@ -10,7 +10,7 @@
 // packages/client/web/src/platform.ts（baseline）、scripts/verify-client-packages.ts（门禁）。
 import { execFileSync } from 'node:child_process'
 import ts from 'typescript'
-import { existsSync, globSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, globSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -413,29 +413,50 @@ if (packOutput !== null) {
 // Validate the shipped public entry, without source paths or skipLibCheck.
 // The generator's staging entry alone cannot prove the package exports its payloads.
 {
-  const program = ts.createProgram([join(root, pkg.exports['./remote'].types)], {
-    noEmit: true,
-    strict: true,
-    skipLibCheck: false,
-    types: [],
-    module: ts.ModuleKind.NodeNext,
-    target: ts.ScriptTarget.ES2024,
-    // DSH Typert ownership and Session references expose Disposable.
-    lib: ['lib.es2024.d.ts', 'lib.dom.d.ts', 'lib.esnext.disposable.d.ts'],
-  })
-  const diagnostics = ts.getPreEmitDiagnostics(program)
-  if (diagnostics.length > 0) {
-    fail(
-      `public remote declarations fail strict consumer checking:\n${ts.formatDiagnosticsWithColorAndContext(
-        diagnostics,
-        {
-          getCurrentDirectory: () => root,
-          getCanonicalFileName: (file) => file,
-          getNewLine: () => '\n',
-        },
-      )}`,
-    )
-  } else console.log('[verify-bundle] public remote declarations: strict consumer passed')
+  const scratch = join(root, '.local')
+  mkdirSync(scratch, { recursive: true })
+  const directory = mkdtempSync(join(scratch, 'remote-consumer-'))
+  const consumer = join(directory, 'consumer.mts')
+  writeFileSync(
+    consumer,
+    `import type {} from '${pkg.name}/remote'
+import type { TypertRemoteNamespace } from '@deepseek-ai/dsh-typert-protocol'
+declare const api: TypertRemoteNamespace<'dshAcp'>
+api.backendOf('session')
+api.setTeamMemberModel('lead', 'member', 'model')
+// @ts-expect-error Session arguments remain wire identities, not Host objects.
+api.backendOf({ sessionId: 'session' })
+// @ts-expect-error Model choices remain strings across the public entry.
+api.setTeamMemberModel('lead', 'member', 42)
+`,
+  )
+  try {
+    const program = ts.createProgram([consumer], {
+      noEmit: true,
+      strict: true,
+      skipLibCheck: false,
+      types: [],
+      module: ts.ModuleKind.NodeNext,
+      target: ts.ScriptTarget.ES2024,
+      // DSH Typert ownership and Session references expose Disposable.
+      lib: ['lib.es2024.d.ts', 'lib.dom.d.ts', 'lib.esnext.disposable.d.ts'],
+    })
+    const diagnostics = ts.getPreEmitDiagnostics(program)
+    if (diagnostics.length > 0) {
+      fail(
+        `public remote declarations fail strict consumer checking:\n${ts.formatDiagnosticsWithColorAndContext(
+          diagnostics,
+          {
+            getCurrentDirectory: () => root,
+            getCanonicalFileName: (file) => file,
+            getNewLine: () => '\n',
+          },
+        )}`,
+      )
+    } else console.log('[verify-bundle] public remote declarations: strict consumer passed')
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
 }
 
 // ---------------------------------------------------------------------------

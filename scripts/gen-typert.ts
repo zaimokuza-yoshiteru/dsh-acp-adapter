@@ -5,8 +5,8 @@
 // The analyzer requires a workspace with packages/ roots. .typert/ stages
 // only the service's relative-import closure, avoiding Host-wide
 // TypertLookupMap merges. Bare imports resolve from this package's node_modules.
-// A declaration facade gives Typert symbols one analysis-program identity;
-// it does not replace the runtime protocol package.
+// Staging the exact published protocol declarations gives Typert symbols one
+// analysis-program identity without maintaining a second protocol definition.
 //
 // The staged ./client entry exports payload types without importing generated
 // runtime files. Its export matches src/client/index.ts; the generated public
@@ -35,7 +35,7 @@ validateSnapshot(
 const LIB_DIR = join(PACKAGE_DIR, 'lib')
 const SRC_DIR = join(PACKAGE_DIR, 'src')
 const STAGE_DIR = join(PACKAGE_DIR, '.typert')
-const PROTOCOL_FACADE = join(PACKAGE_DIR, 'scripts/typert-protocol-facade.d.ts')
+const PROTOCOL_MANIFEST = fileURLToPath(import.meta.resolve('@deepseek-ai/dsh-typert-protocol/package.json'))
 
 // Package identity and method IDs use the manifest name, not the staging directory.
 const REAL_PKG = JSON.parse(readFileSync(join(PACKAGE_DIR, 'package.json'), 'utf8'))
@@ -108,8 +108,9 @@ function stage() {
 
   // Bind all analyzer references to the same protocol declarations.
   const protocolRoot = join(STAGE_DIR, 'packages', 'typert-protocol')
-  mkdirSync(join(protocolRoot, 'src'), { recursive: true })
-  cpSync(PROTOCOL_FACADE, join(protocolRoot, 'src', 'index.d.ts'))
+  const protocolPackage = JSON.parse(readFileSync(PROTOCOL_MANIFEST, 'utf8'))
+  const protocolTypes = resolve(dirname(PROTOCOL_MANIFEST), protocolPackage.types)
+  cpSync(dirname(protocolTypes), join(protocolRoot, 'src'), { recursive: true })
   writeJson(join(protocolRoot, 'package.json'), {
     name: '@deepseek-ai/dsh-typert-protocol',
     version: DSH_SOURCE_VERSION,

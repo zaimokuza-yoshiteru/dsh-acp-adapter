@@ -74,6 +74,17 @@ afterEach(async () => {
   )
 })
 
+it('leaves Team creation policy to native instructions while preserving the ACP context boundary', async () => {
+  const fixture = await setup()
+  const instructions = fixture.client.getInstructions() ?? ''
+  for (const text of [instructions, fixture.lease.instructions]) {
+    expect(text).toContain('members share the workspace and only fresh context is supported')
+    expect(text).not.toContain('explicit user request for a team')
+    expect(text).not.toContain('Create teams only when explicitly requested')
+  }
+  expect(fixture.lease.instructions).toContain('Team target names resolve within the caller’s Team')
+})
+
 it('records actual MCP-to-Host execution correlation and isolates a throwing trace sink', async () => {
   const events: LiveDiagnosticEvent[] = []
   const remove = installLiveDiagnosticTrace(

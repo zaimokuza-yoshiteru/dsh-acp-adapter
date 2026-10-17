@@ -449,7 +449,10 @@ it.skipIf(!optedIn)(
       )
       expect(diagnosticModule.liveDiagnosticTraceEnabled()).toBe(true)
 
-      browser = await launchBrowser({ headless: true })
+      browser = await launchBrowser({
+        headless: true,
+        ...(process.env.DSH_E2E_BROWSER_CHANNEL ? { channel: process.env.DSH_E2E_BROWSER_CHANNEL } : {}),
+      })
       page = await newEnglishPage(browser)
       page.setDefaultTimeout(10_000)
       page.on('pageerror', (error) => pageErrors.push(error.message))

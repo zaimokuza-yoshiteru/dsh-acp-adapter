@@ -8,6 +8,7 @@ describe('client contribution', () => {
       'slots',
       'locale',
       'remote',
+      'remoteAccess',
       'sessions',
       'workspaces',
       'uiWorkspace',

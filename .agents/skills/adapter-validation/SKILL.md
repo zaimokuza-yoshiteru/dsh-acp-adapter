@@ -18,6 +18,10 @@ Choose evidence by the surface reached:
 
 Before using a command, inspect whether it builds, cleans, starts a Host or consumes model quota. `npm pack` runs `prepack`; `check:stale-build` builds as part of its probe. Coordinate shared local resources as required by [AGENTS.md](../../../AGENTS.md).
 
+For the RC.1 source scaffold, `build:artifacts` produces checked package and Host/client/Web artifacts; it does not check upstream aggregate test/script programs. `build:check` checks those aggregates against existing artifacts without rebuilding or validating their freshness. Use the official artifact command for a runnable scaffold and the adapter's own typechecks for its tests; do not restore the removed `compile-referenced-projects.ts libraries` mode or describe an artifact build as a full upstream gate.
+
+Select real Agent profiles explicitly. Inspect defaults before enabling any live suite, since an unfiltered suite can include Devin. The credentialed Devin workflow is manual-only and requires explicit model-usage opt-in; ordinary CI's isolated, no-credential Devin MCP discovery is a separate coverage boundary. A request excluding an Agent's account or quota must not be worked around by starting and then cancelling its live workflow.
+
 Reuse passing evidence only after comparing its actual inputs: source tree and affected paths, lockfile, Node/package-manager versions, exact published Host, source scaffold, test/configuration inputs and, for release artifacts, the frozen Registry snapshot. Live evidence also depends on the recorded Agent CLI, model and authenticated environment; never record credential values. A new commit OID alone need not invalidate identical inputs. Conversely, an unchanged OID does not certify a changed generated file, Registry snapshot or environment. Rerun only the checks whose validity changed; do not rehearse the full suite by default.
 
 For asynchronous failures, identify the resource owner, worker/job topology, readiness signal and completion signal. Prefer private temporary roots, atomic port allocation, explicit state/barriers and awaited cleanup. Do not prescribe retries, longer timeouts or global serialization without evidence of the awaited work and contention; shared local build serialization is an artifact constraint, not a substitute for fixture isolation.
@@ -26,4 +30,4 @@ Separate protocol/routing correctness, the test's requested behavior, its budget
 
 Report exact commands, input identity, results and missing coverage. Do not describe skipped/pending checks, an eventual retry success or historical live evidence as a current pass.
 
-Adapted from DSH [`dsh-pre-push-checks`](https://github.com/deepseek-ai/deepseek-harness/blob/d743267388641bc76f17c45ce8b4c231aed1d32c/.agents/skills/dsh-pre-push-checks/SKILL.md) and [`dsh-ci-test-reliability`](https://github.com/deepseek-ai/deepseek-harness/blob/d743267388641bc76f17c45ce8b4c231aed1d32c/.agents/skills/dsh-ci-test-reliability/SKILL.md).
+Adapted from DSH [`dsh-pre-push-checks`](https://github.com/deepseek-ai/deepseek-harness/blob/1600d8a1e140dcde43a1a0941940a0480712c011/.agents/skills/dsh-pre-push-checks/SKILL.md) and [`dsh-ci-test-reliability`](https://github.com/deepseek-ai/deepseek-harness/blob/1600d8a1e140dcde43a1a0941940a0480712c011/.agents/skills/dsh-ci-test-reliability/SKILL.md).

@@ -1,11 +1,12 @@
 import { createElement as h, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { IconChevronDownOutlineMedium, Menu } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
+import type { GlobalStandardProps, PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { AcpRemoteLike, AcpTeamMemberModelsView, AcpTeamMemberView } from '../data/acp-remote.ts'
 import css from './AcpTeamManagement.module.css'
 import agentControlCss from './AcpAgentControl.module.css'
+import type { SessionAccessSource } from './session-action-access.ts'
 
 type Copy = PropsLocale<'acpActivity'>['t']
 type Model = { readonly id: string; readonly name: string }
@@ -20,6 +21,8 @@ type Props = {
   readonly t: Copy
   readonly isCurrent: (sessionId: SessionId) => boolean
   readonly onMenuOpen: (owner: string, value: boolean) => void
+  readonly useSessionAccess: GlobalStandardProps['useSessionAccess']
+  readonly sessionAccessSource: SessionAccessSource
 }
 type MemberModelFacts = AcpTeamMemberView
 
@@ -49,7 +52,11 @@ export function TeamMemberModelControl({
   t,
   isCurrent,
   onMenuOpen,
+  useSessionAccess,
+  sessionAccessSource,
 }: Props): ReactNode {
+  const leadWriteAllowed = useSessionAccess(lead, 'dshAcp/setTeamMemberModel')
+  const memberWriteAllowed = useSessionAccess(member.sessionId as SessionId, 'dshAcp/setTeamMemberModel')
   const [open, setOpen] = useState(false)
   const [view, setView] = useState<ModelView | null>(null)
   const [loading, setLoading] = useState(false)
@@ -71,7 +78,12 @@ export function TeamMemberModelControl({
 
   const memberFacts = member
   const canWrite =
-    sessionReady && !saving && member.status === 'inactive' && (memberFacts.modelWritable ?? view?.writable ?? false)
+    leadWriteAllowed &&
+    memberWriteAllowed &&
+    sessionReady &&
+    !saving &&
+    member.status === 'inactive' &&
+    (memberFacts.modelWritable ?? view?.writable ?? false)
   const pendingModel = view === null ? (member.pendingModel ?? null) : view.pendingModel
   const currentModel = view?.currentModel ?? initialModel ?? member.model
   const selectedModel = pendingModel ?? currentModel
@@ -157,6 +169,11 @@ export function TeamMemberModelControl({
 
   const choose = (id: string): void => {
     if (!canWrite || writeInFlight.current || !isCurrent(lead)) return
+    if (
+      sessionAccessSource(lead, 'dshAcp/setTeamMemberModel')?.getSnapshot() !== true ||
+      sessionAccessSource(member.sessionId, 'dshAcp/setTeamMemberModel')?.getSnapshot() !== true
+    )
+      return
     const chosen = (view?.models ?? []).find((model) => model.id === id)
     if (chosen === undefined) return
     const currentEpoch = epoch.current

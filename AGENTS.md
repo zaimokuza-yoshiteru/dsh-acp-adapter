@@ -18,4 +18,4 @@ Keep real Agent calls within the user's authorized authentication, model and usa
 
 Keep local test logs, isolated profiles and candidate artifacts in gitignored `.local/`; never commit credentials. Never delete user history or authentication to repair a test. Report observed passing, failing, skipped and pending results separately, with Agent/platform/scenario limits. Compare relevant inputs before reusing historical evidence for a new revision.
 
-These workflows selectively adapt DSH's [agent workflows at `d743267`](https://github.com/deepseek-ai/deepseek-harness/tree/d743267388641bc76f17c45ce8b4c231aed1d32c/.agents/skills). DSH monorepo commands, organization approvals and unrelated rules are not inherited.
+These workflows selectively adapt DSH's [agent workflows at RC.1 `1600d8a`](https://github.com/deepseek-ai/deepseek-harness/tree/1600d8a1e140dcde43a1a0941940a0480712c011/.agents/skills) and relevant implemented notes. Read the owning upstream requirements and source for changed contracts; proposed cleanup designs and historical notes are not shipped guarantees. DSH monorepo commands, organization approvals and unrelated rules are not inherited.

@@ -49,7 +49,7 @@ for (const relative of requiredPackages) {
 for (const relative of requiredBuildArtifacts) {
   if (!existsSync(join(reference, relative))) {
     throw new Error(
-      `DSH reference is not fully built: missing ${relative}; run pnpm build in the reference checkout first`,
+      `DSH reference is not fully built: missing ${relative}; run pnpm run build:artifacts in the reference checkout first`,
     )
   }
 }

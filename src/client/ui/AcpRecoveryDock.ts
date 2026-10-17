@@ -8,6 +8,9 @@ import { recoveringRecoveryStream } from '../data/recovery-stream.ts'
 import type { OwnsAcpRoute } from '../coordinator/cross-backend-coordinator.ts'
 import type { AcpLocaleKey } from './locales.ts'
 import css from './AcpRecoveryDock.module.css'
+import type { SessionAccessSource } from './session-action-access.ts'
+import type { WorkspaceId } from '@deepseek-ai/dsh-api-workspace-controller/client'
+import { resolveCrossBackendLocation } from '../data/cross-backend-controller.ts'
 
 type RecoveryDockProps = PropsRuntime<'conversation.input.dock'> &
   PropsLocale<'acpActivity'> & {
@@ -15,6 +18,7 @@ type RecoveryDockProps = PropsRuntime<'conversation.input.dock'> &
     readonly streamFactory: RemoteStreamFactory
     readonly createNewSession: (sourceSessionId: string) => Promise<void>
     readonly ownsRoute: OwnsAcpRoute
+    readonly sessionAccessSource: SessionAccessSource
   }
 
 type Translate = (key: AcpLocaleKey, params?: Record<string, unknown>) => string
@@ -104,12 +108,29 @@ export function AcpRecoveryDock({
   sessionId,
   useSession,
   useProjection,
+  useAccess,
+  useSessions,
+  useWorkspaces,
+  useRemoteAccess,
+  useWorkspaceAccess,
   t,
   remote,
   streamFactory,
   createNewSession,
   ownsRoute,
+  sessionAccessSource,
 }: RecoveryDockProps): ReactNode {
+  const reconnectAllowed = useAccess('dshAcp/retryOriginal')
+  const rebindAllowed = useAccess('dshAcp/rebindRecoveryBlank')
+  const workspaces = useWorkspaces((snapshot) => snapshot.items)
+  const cwd = useSessions((snapshot) => snapshot.byId[sessionId]?.cwd)
+  const destination = resolveCrossBackendLocation(sessionId, workspaces, cwd)
+  const globalCreateAllowed = useRemoteAccess('session/create')
+  const workspaceCreateAllowed = useWorkspaceAccess((destination?.workspaceId ?? '') as WorkspaceId, 'session/create')
+  const createAllowed =
+    destination !== undefined && (destination.workspaceId === undefined ? globalCreateAllowed : workspaceCreateAllowed)
+  const creationAccess = useRef(createAllowed)
+  creationAccess.current = createAllowed
   const lifecycleKey = useSession((snapshot) =>
     [snapshot.openState, snapshot.running, snapshot.promptAttempted, snapshot.lastAgentError ?? ''].join('|'),
   )
@@ -221,6 +242,14 @@ export function AcpRecoveryDock({
   const busy = busyAction !== null
   const run = async (actionName: RecoveryAction, action: () => Promise<AcpRecoveryView | void>): Promise<void> => {
     if (inFlight.current?.sessionId === sessionId || activeSession.current !== sessionId) return
+    if (actionName === 'new-session' && !creationAccess.current) return
+    const endpoint =
+      actionName === 'reconnect'
+        ? 'dshAcp/retryOriginal'
+        : actionName === 'rebind'
+          ? 'dshAcp/rebindRecoveryBlank'
+          : null
+    if (endpoint !== null && sessionAccessSource(sessionId, endpoint)?.getSnapshot() !== true) return
     const operation: RecoveryOperation = { sessionId, action: actionName, token: Symbol(actionName) }
     const actionEpoch = epoch.current
     inFlight.current = operation
@@ -319,7 +348,7 @@ export function AcpRecoveryDock({
           t('recoveryReconnect'),
           t('recoveryReconnectExplanation'),
           t('recoveryBusy'),
-          busy,
+          busy || !reconnectAllowed,
           busyAction,
           () => {
             void run('reconnect', async () => {
@@ -335,7 +364,7 @@ export function AcpRecoveryDock({
           t('recoveryRebind'),
           t('recoveryRebindExplanation'),
           t('recoveryBusy'),
-          busy,
+          busy || !rebindAllowed,
           busyAction,
           () => {
             void run('rebind', async () => {
@@ -351,7 +380,7 @@ export function AcpRecoveryDock({
           t('recoveryNew'),
           t('recoveryNewExplanation'),
           t('recoveryBusy'),
-          busy,
+          busy || !createAllowed,
           busyAction,
           () => {
             void run('new-session', () => createNewSession(sessionId))

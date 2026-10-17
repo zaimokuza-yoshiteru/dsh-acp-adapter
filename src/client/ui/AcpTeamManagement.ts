@@ -12,7 +12,7 @@ import {
   useDismissOnOutsidePointer,
   focusWithoutRing,
 } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { HostObservable, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+import type { GlobalStandardProps, HostObservable, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SessionStatusSnapshot } from '@deepseek-ai/dsh-client-ui-session/client'
 import type { RemoteStreamFactory } from '@deepseek-ai/dsh-api-gateway/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
@@ -30,6 +30,7 @@ import { TeamMemberModelControl } from './TeamMemberModelControl.ts'
 import { interruptTeam } from './team-interrupt.ts'
 import { projectionRevision, teamRoster } from './team-projection.ts'
 import css from './AcpTeamManagement.module.css'
+import { useSessionActionAccess, type SessionAccessSource } from './session-action-access.ts'
 
 type Copy = PropsLocale<'acpActivity'>['t']
 type Actions = {
@@ -41,6 +42,7 @@ type Actions = {
   status: HostObservable<SessionStatusSnapshot>
   loadMembers(sessionId: SessionId): Promise<readonly AcpTeamMemberView[]>
   openMember(parent: SessionId, child: SessionId): Promise<void>
+  sessionAccessSource: SessionAccessSource
 }
 type ManagedMember = AcpTeamMemberView & { readonly phase: TeamMemberPhase; readonly runtimeKnown: boolean }
 type InterruptFeedback =
@@ -51,9 +53,14 @@ export function AcpTeamManagement({
   useSession,
   useSessions,
   useProjection,
+  useSessionAccess,
+  useRemoteAccess,
   t,
   ...actions
 }: PropsRuntime<'conversation.session.header.utilities'> & PropsLocale<'acpActivity'> & Actions): ReactNode {
+  const interruptAllowed = useRemoteAccess('subagents/interruptByParent')
+  const interruptAccess = useRef(interruptAllowed)
+  interruptAccess.current = interruptAllowed
   const child = useSession((state) => state.subagent?.address?.parentSessionId !== undefined)
   const team = useProjection('agentTeam') as TeamProjection | undefined
   const sessionOpening = useSession((state) => state.openState === 'loading')
@@ -140,7 +147,14 @@ export function AcpTeamManagement({
     }
   }, [sessionId])
   const interruptAll = async (): Promise<void> => {
-    if (interruptLock.current || view?.id !== sessionId || view.revision !== revision || roster.kind !== 'ready') return
+    if (
+      !interruptAccess.current ||
+      interruptLock.current ||
+      view?.id !== sessionId ||
+      view.revision !== revision ||
+      roster.kind !== 'ready'
+    )
+      return
     interruptLock.current = true
     setInterrupting(true)
     setInterruptFeedback(null)
@@ -152,7 +166,7 @@ export function AcpTeamManagement({
         targets: members
           .filter((member) => member.status === 'running' && member.runtimeKnown)
           .map((member) => member.sessionId),
-        isCurrent: current,
+        isCurrent: () => current() && interruptAccess.current,
         members: async () => {
           const result = await actions.remote.teamMembers(sessionId)
           if (!result.ok) throw new Error(result.error.message)
@@ -310,6 +324,7 @@ export function AcpTeamManagement({
                 metadataCurrent: metadataReady,
                 t,
                 onMenuOpen: reportMenuOpen,
+                useSessionAccess,
                 interruptAction:
                   index === 0
                     ? h(
@@ -317,7 +332,12 @@ export function AcpTeamManagement({
                         {
                           variant: 'ghost',
                           className: css.batchButton,
-                          disabled: interrupting || !canInterrupt || !metadataReady || roster.kind !== 'ready',
+                          disabled:
+                            !interruptAllowed ||
+                            interrupting ||
+                            !canInterrupt ||
+                            !metadataReady ||
+                            roster.kind !== 'ready',
                           title: t('teamInterruptHint'),
                           onClick: () => {
                             void interruptAll()
@@ -358,6 +378,8 @@ function ModeGroup({
   isCurrent,
   interruptAction,
   openMember,
+  useSessionAccess,
+  sessionAccessSource,
 }: {
   interruptAction: ReactNode
   lead: SessionId
@@ -366,7 +388,14 @@ function ModeGroup({
   metadataCurrent: boolean
   t: Copy
   onMenuOpen(owner: string, value: boolean): void
+  useSessionAccess: GlobalStandardProps['useSessionAccess']
 } & Actions): ReactNode {
+  const modeAccess = useSessionActionAccess(
+    sessionAccessSource,
+    [lead, ...members.map((member) => member.sessionId)],
+    'dshAcp/setTeamMemberMode',
+  )
+  const modeAllowed = (id: string): boolean => modeAccess.allows(lead) && modeAccess.allows(id)
   const [snapshots, setSnapshots] = useState<Record<string, AcpAgentSessionSnapshotView | null>>({})
   const [menu, setMenu] = useState<string | null>(null)
   const menuOwner = `mode:${String(lead)}:${profileId ?? 'unknown'}`
@@ -417,6 +446,7 @@ function ModeGroup({
     }
   }, [ids, remote, streamFactory])
   const editable = (member: ManagedMember) =>
+    modeAllowed(member.sessionId) &&
     metadataCurrent &&
     member.status === 'inactive' &&
     member.runtimeKnown &&
@@ -451,6 +481,7 @@ function ModeGroup({
         profileId,
         mode,
         isCurrent: () => alive.current && isCurrent(lead),
+        canWrite: modeAllowed,
         members: async () => unwrap(await remote.teamMembers(lead)),
         snapshot: async (id) => unwrap(await remote.agentSessionSnapshot(id)),
         write: async (id, value) => {
@@ -609,6 +640,8 @@ function ModeGroup({
                   t,
                   isCurrent,
                   onMenuOpen,
+                  useSessionAccess,
+                  sessionAccessSource,
                 }),
               ),
             ),

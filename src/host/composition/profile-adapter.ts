@@ -709,7 +709,7 @@ export function qwenTaskWakeInput(messages: readonly UserMessage[]): readonly Us
       const notice =
         source.kind === 'tool-jobs' &&
         block.type === 'text' &&
-        new RegExp(`^background job ${QWEN_TASK_JOB_KIND}-\\d+(?:[\\s(]|$)`).test(block.text)
+        new RegExp(`^background job ${QWEN_TASK_JOB_KIND}-(?:[0-9a-f]{16}|\\d+)(?:[\\s(]|$)`).test(block.text)
       wake ||= notice
       return !notice
     })

@@ -41,6 +41,7 @@ export async function applyTeamMode(input: {
   profileId: string
   mode: string
   isCurrent(): boolean
+  canWrite?(id: string): boolean
   members(): Promise<readonly AcpTeamMemberView[]>
   snapshot(id: string): Promise<AcpAgentSessionSnapshotView>
   write(id: string, value: AcpAgentSessionOptionWrite): Promise<unknown>
@@ -56,6 +57,10 @@ export async function applyTeamMode(input: {
         skip(id, 'Changed')
         continue
       }
+      if (input.canWrite?.(id) === false) {
+        skip(id, 'Stale')
+        continue
+      }
       const member = (await input.members()).find(
         (member) => member.sessionId === id && member.profileId === input.profileId,
       )
@@ -65,6 +70,10 @@ export async function applyTeamMode(input: {
       }
       if (member.status !== 'inactive') {
         skip(id, 'Inactive')
+        continue
+      }
+      if (input.canWrite?.(id) === false) {
+        skip(id, 'Stale')
         continue
       }
       const snapshot = await input.snapshot(id)
@@ -89,6 +98,10 @@ export async function applyTeamMode(input: {
       }
       if (selected === input.mode) {
         skip(id, 'Selected')
+        continue
+      }
+      if (input.canWrite?.(id) === false) {
+        skip(id, 'Stale')
         continue
       }
       await input.write(id, choice.write)

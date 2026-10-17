@@ -7,8 +7,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import LlmRuntime, { createUserMessage } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
+import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
+import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
+import WorkingDirectory from '@deepseek-ai/dsh-working-directory'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
@@ -26,6 +29,7 @@ import type * as acp from '@agentclientprotocol/sdk'
 const requireDsh = createRequire(import.meta.resolve('@deepseek-ai/dsh/package.json'))
 const JobsLocal = await import(pathToFileURL(requireDsh.resolve('@deepseek-ai/dsh-jobs-local')).href)
 const ToolJobs = await import(pathToFileURL(requireDsh.resolve('@deepseek-ai/dsh-tool-jobs')).href)
+const TeamTools = await import(pathToFileURL(requireDsh.resolve('@deepseek-ai/dsh-experimental-tool-agent-team')).href)
 
 declare module '@deepseek-ai/dsh-jobs' {
   interface JobKindMap {
@@ -53,11 +57,17 @@ async function harness(holdFirst = false) {
   await ctx.plugin(SessionStore)
   await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(SystemPrompt, {})
+  await ctx.plugin(LocalFileSystem, { cwd: root })
+  await ctx.plugin(WorkingDirectory, { defaultDirectory: root })
   await ctx.plugin(ToolRuntime)
   await ctx.plugin(AgentRegistry)
   await ctx.plugin(AgentLoop, { agents: [] })
   await ctx.plugin(JobsLocal.default, {})
   await ctx.plugin(ToolJobs, {})
+  const events: SessionEvent[] = []
+  ctx.on('session/event', (_session, event) => {
+    events.push(event)
+  })
   ctx.sessionProjections.register(acpExecutionProjection)
   const firstEntered = Promise.withResolvers<void>()
   const firstRelease = Promise.withResolvers<void>()
@@ -127,22 +137,54 @@ async function harness(holdFirst = false) {
     jobs,
     job,
     calls,
+    events,
     firstEntered: firstEntered.promise,
     releaseFirst: () => firstRelease.resolve(),
   }
 }
 
 describe('Qwen jobs through the published registry, reporter and AgentLoop', () => {
+  it('carries the native Team policy and required identity through the admitted ACP request', async () => {
+    const h = await harness()
+    // Keep Team membership narrow; policy, scoped registrations, assembly,
+    // native context admission and ACP prompt conversion are the real producers.
+    h.ctx.provide('agentTeams', {
+      tryMembership: () => ({ role: 'lead', name: 'lead' }),
+      membership: () => ({ role: 'lead', name: 'lead' }),
+    } as never)
+    await h.ctx.plugin(TeamTools, { interrupt: false })
+    h.agent.followup(user('Review this project'))
+    await h.agent.whenIdle()
+    expect(h.calls).toHaveLength(1)
+    const prompt = text(h.calls[0]!.content)
+    expect(prompt).toContain('Agent Teams is available in this session')
+    expect(prompt).toContain('The Team Lead and all teammates share the same working directory and filesystem.')
+    expect(prompt).toContain('The Lead must wait for required teammates before giving the final answer.')
+    expect(prompt).toContain('You are the Team Lead named "lead".')
+    expect(prompt).not.toContain('only when the user explicitly asks')
+    expect(h.agent.session.requestHeader()?.tools?.some((tool) => tool.name === 'interrupt_agent')).toBe(false)
+  })
+
   it('automatically wakes an idle owner and requests adoption without an extra prompt for unchanged context', async () => {
     const h = await harness()
     h.agent.followup(user('initial task'))
     await h.agent.whenIdle()
+    expect(h.calls).toHaveLength(1)
     const task = h.job('Qwen task')
+    const id = h.jobs.list(h.agent.id)[0]!.id
+    expect(id).toMatch(/^acp-qwen-task-[0-9a-f]{16}$/)
+    expect(h.events.filter((event) => event.type === 'job/registered')).toMatchObject([
+      { data: { jobId: id, owner: h.agent.id, kind: 'acp-qwen-task', label: 'Qwen task' } },
+    ])
     task.finish({ status: 'completed', detail: 'completed', silent: false })
     await vi.waitFor(() => expect(h.calls).toHaveLength(2))
     await h.agent.whenIdle()
-    expect(h.calls[1]!.options).toEqual({ adoptAgentTurn: true })
+    expect(h.calls[1]!.options).toMatchObject({ adoptAgentTurn: true })
+    expect(h.calls[1]!.options.followupContent).toBeUndefined()
     expect(h.jobs.list(h.agent.id)[0]?.status).toBe('completed')
+    expect(h.events.filter((event) => event.type === 'job/settled')).toMatchObject([
+      { data: { jobId: id, owner: h.agent.id, status: 'completed', producerReported: true } },
+    ])
   })
 
   it('collects silent completions before native notice delivery and maps a native kill to the producer', async () => {
@@ -205,7 +247,8 @@ describe('Qwen jobs through the published registry, reporter and AgentLoop', () 
     h.job('Qwen task two').finish({ status: 'completed', detail: 'completed', silent: false })
     await vi.waitFor(() => expect(h.calls).toHaveLength(3))
     await h.agent.whenIdle()
-    expect(h.calls[2]!.options).toEqual({ adoptAgentTurn: true })
+    expect(h.calls[2]!.options).toMatchObject({ adoptAgentTurn: true })
+    expect(h.calls[2]!.options.followupContent).toBeUndefined()
   })
 
   it('carries changed host instructions explicitly when the wake has no other admitted input', async () => {

@@ -4,7 +4,7 @@
 
 Use ACP Agents in DSH with native sessions, tool approvals, and team collaboration.
 
-> **Development branch `0.2.1-alpha`:** targets DSH `0.2.1-alpha.2` and is unpublished. It will stay off main until validation against the next stable desktop release. Installation instructions below describe the published version.
+> **Development branch `0.2.1-alpha`:** targets DSH `0.2.1-rc.1` and is unpublished. It will stay off main until validation against the next stable desktop release. Installation instructions below describe the published version.
 
 ## Install
 

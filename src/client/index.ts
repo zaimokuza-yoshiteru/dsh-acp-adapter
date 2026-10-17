@@ -10,6 +10,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
 import type {} from '@deepseek-ai/dsh-client-ui-session/client'
+import type { ClientRemoteAccess } from '@deepseek-ai/dsh-api-remote-access/client'
 import type {} from '@deepseek-ai/dsh-client-ui-workspace/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
 import { isMainSession, openSubagentAside } from './coordinator/native-session-navigation.ts'
@@ -31,6 +32,7 @@ import { CrossBackendModal } from './ui/CrossBackendModal.ts'
 import { AcpOutcomeToast } from './ui/AcpOutcomeToast.ts'
 import { AcpRecoveryDock } from './ui/AcpRecoveryDock.ts'
 import { AcpAgentControl } from './ui/AcpAgentControl.ts'
+import type { SessionAccessSource } from './ui/session-action-access.ts'
 import { AcpTeamManagement } from './ui/AcpTeamManagement.ts'
 import { AcpTeamApprovals } from './ui/AcpTeamApprovals.ts'
 import type { AcpTeamApprovalActions } from './ui/AcpTeamApprovals.ts'
@@ -71,6 +73,7 @@ export const inject = [
   'slots',
   'locale',
   'remote',
+  'remoteAccess',
   'sessions',
   'workspaces',
   'uiWorkspace',
@@ -83,6 +86,12 @@ export const inject = [
 /** Normalize ACP presentation facts and compose the registered native UI. */
 async function registerUi(ctx: ClientContext): Promise<void> {
   const acpRemote: AcpRemoteLike = ctx.remote.dshAcp
+  const sessionAccessSource: SessionAccessSource = (sessionId, action) => {
+    // Host and Client merge different RemoteAccess faces into Cordis Context.
+    // This UI reads only the published Client source, and never grants on absence.
+    const access = ctx.get('remoteAccess') as unknown as ClientRemoteAccess | undefined
+    return typeof access?.source === 'function' ? access.source('session', sessionId, action) : undefined
+  }
   const journalHub = new AcpActivityJournalHub(acpRemote, ctx.remote)
   const sessions = ctx.get('sessions') as unknown as ISessions
   const workspaces = ctx.get('workspaces') as unknown as IWorkspaces
@@ -285,6 +294,7 @@ async function registerUi(ctx: ClientContext): Promise<void> {
                     isCurrent: actions.isCurrent,
                     status: actions.status,
                     openMember: actions.openMember,
+                    sessionAccessSource,
                     async interruptMember(lead: SessionId, member: SessionId) {
                       const result = await teamCtx.remote.subagents.interruptByParent(member, lead, 'continuable')
                       if (!result.ok) throw new Error(result.error.message)
@@ -348,9 +358,11 @@ async function registerUi(ctx: ClientContext): Promise<void> {
           readonly remote: AcpRemoteLike
           readonly streamFactory: RemoteStreamFactory
           readonly createNewSession: (sourceSessionId: string) => Promise<void>
+          readonly sessionAccessSource: SessionAccessSource
           readonly ownsRoute: typeof managedRoutes.owns
         } => ({
           remote: acpRemote,
+          sessionAccessSource,
           streamFactory: ctx.remote,
           ownsRoute: managedRoutes.owns,
           createNewSession: async (sourceSessionId) => {
@@ -382,8 +394,10 @@ async function registerUi(ctx: ClientContext): Promise<void> {
           readonly getDefaultProvider: () => Promise<string | undefined>
           readonly watchDefaultProvider: (changed: () => void) => () => void
           readonly feedback: Pick<AcpUiFeedback, 'report'>
+          readonly sessionAccessSource: SessionAccessSource
         } => ({
           remote: acpRemote,
+          sessionAccessSource,
           streamFactory: ctx.remote,
           ownsRoute: managedRoutes.owns,
           feedback,

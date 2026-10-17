@@ -132,8 +132,9 @@ jobs:
           key: host-store-${{ runner.os }}-${{ runner.arch }}-node${{ steps.node.outputs.node-version }}-pnpm11.28.5-${{ steps.dsh-target.outputs.tag }}-${{ hashFiles('reference/deepseek-harness/pnpm-lock.yaml') }}
       - name: Build exact host scaffold
         working-directory: reference/deepseek-harness
-        # Build checked package artifacts without upstream test/script aggregate programs.
-        run: pnpm install --frozen-lockfile --store-dir "$RUNNER_TEMP/pnpm-store-host" && pnpm run build:native-system && pnpm exec tsx scripts/compile-referenced-projects.ts libraries && pnpm --dir apps/web run build
+        # RC.1's official artifact chain checks package projects and produces the
+        # Host/client/Web outputs; upstream test/script aggregates are separate.
+        run: pnpm install --frozen-lockfile --store-dir "$RUNNER_TEMP/pnpm-store-host" && pnpm run build:artifacts
       - name: Cache pinned Chromium
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:

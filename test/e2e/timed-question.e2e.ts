@@ -135,6 +135,12 @@ it('times out the native timed question and steers its late answer into the acti
     )
     if (reply === undefined || reply.type !== 'user/message') throw new Error('missing admitted timed question reply')
     expect(JSON.stringify(reply.data)).toContain('E2E_INPUT_REWRITTEN')
+    // RC.1's question Definition claims this event on the Chat target. The
+    // ACP live marker must not bring back the generic trigger presentation.
+    await expect.poll(() => page.locator(`[data-question-reply=${JSON.stringify(callId)}]`).count()).toBe(1)
+    expect(
+      await page.locator('[data-chat-flow-kind="turn-trigger"]').filter({ hasText: 'E2E_INPUT_REWRITTEN' }).count(),
+    ).toBe(0)
     expect(userQuestions.answer(agent, callId, answer)).toBe(false)
     expect(events.filter((event) => event.type === 'turn/start' && event.sessionId === agent.id)).toHaveLength(1)
     expect(events.filter((event) => event.type === 'step/start' && event.sessionId === agent.id)).toHaveLength(2)
