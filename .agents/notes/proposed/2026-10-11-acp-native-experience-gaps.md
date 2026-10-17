@@ -1,6 +1,6 @@
 # ACP 原生体验待处理事项
 
-状态：待处理。范围：适配器 `0.2.1-alpha` 与精确 DSH `0.2.1-rc.1`（上游 `1600d8a1e140dcde43a1a0941940a0480712c011`），核对日期 2026-10-17。下列结论用于后续设计复核，不是当前版本的测试通过记录。升级 DSH 或修改相关入口后，须重新核对源码与实际交互。
+状态：待处理。范围：适配器 `0.2.1-alpha` 与精确 DSH `0.2.1-rc.2`（上游 `687f282e8625c6b8d11ff58211a90524be2e4317`），核对日期 2026-10-17。下列结论用于后续设计复核，不是当前版本的测试通过记录。升级 DSH 或修改相关入口后，须重新核对源码与实际交互。
 
 长期职责边界见 [原生复用说明](../../../docs/native-reuse.md)。完整迁移库存与历史 CI 留在对应 Git/PR 记录；这里仅保留尚未解决、不能从功能清单看出的用户成本。
 
@@ -14,6 +14,6 @@
 
 固定上游复核入口（源码依据，不代表运行验收）：
 
-- 可选加载：[profile 组合](https://github.com/deepseek-ai/deepseek-harness/blob/1600d8a1e140dcde43a1a0941940a0480712c011/packages/boot/app-boot/src/profile.ts)、[Loader](https://github.com/deepseek-ai/deepseek-harness/blob/1600d8a1e140dcde43a1a0941940a0480712c011/vendor/loader/src/config/entry.ts)。安装、导入与服务激活不能混作一项能力。
-- 辅助模型与权限：[Auto Review](https://github.com/deepseek-ai/deepseek-harness/blob/1600d8a1e140dcde43a1a0941940a0480712c011/packages/experimental/auto-review/src/index.ts)、[preset catalog](https://github.com/deepseek-ai/deepseek-harness/blob/1600d8a1e140dcde43a1a0941940a0480712c011/packages/interaction/permission-presets/src/index.ts)、[自动标题](https://github.com/deepseek-ai/deepseek-harness/blob/1600d8a1e140dcde43a1a0941940a0480712c011/packages/session/session-title-llm/src/index.ts)、[`/compact`](https://github.com/deepseek-ai/deepseek-harness/blob/1600d8a1e140dcde43a1a0941940a0480712c011/packages/compaction/command-compact/src/index.ts)、[summarizer 默认路由](https://github.com/deepseek-ai/deepseek-harness/blob/1600d8a1e140dcde43a1a0941940a0480712c011/packages/compaction/compaction-basic/src/summarizer.ts)。
-- 数据写入：[Session plugin record 限制](https://github.com/deepseek-ai/deepseek-harness/blob/1600d8a1e140dcde43a1a0941940a0480712c011/packages/core/session/README.zh.md)；它不提供 ACP Sidecar 所需的公开写入与事务边界。
+- 可选加载：[profile 组合](https://github.com/deepseek-ai/deepseek-harness/blob/687f282e8625c6b8d11ff58211a90524be2e4317/packages/boot/app-boot/src/profile.ts)、[Loader](https://github.com/deepseek-ai/deepseek-harness/blob/687f282e8625c6b8d11ff58211a90524be2e4317/vendor/loader/src/config/entry.ts)。安装、导入与服务激活不能混作一项能力。
+- 辅助模型与权限：[Auto Review](https://github.com/deepseek-ai/deepseek-harness/blob/687f282e8625c6b8d11ff58211a90524be2e4317/packages/experimental/auto-review/src/index.ts)、[preset catalog](https://github.com/deepseek-ai/deepseek-harness/blob/687f282e8625c6b8d11ff58211a90524be2e4317/packages/interaction/permission-presets/src/index.ts)、[自动标题](https://github.com/deepseek-ai/deepseek-harness/blob/687f282e8625c6b8d11ff58211a90524be2e4317/packages/session/session-title-llm/src/index.ts)、[`/compact`](https://github.com/deepseek-ai/deepseek-harness/blob/687f282e8625c6b8d11ff58211a90524be2e4317/packages/compaction/command-compact/src/index.ts)、[summarizer 默认路由](https://github.com/deepseek-ai/deepseek-harness/blob/687f282e8625c6b8d11ff58211a90524be2e4317/packages/compaction/compaction-basic/src/summarizer.ts)。
+- 数据写入：[Session plugin record 限制](https://github.com/deepseek-ai/deepseek-harness/blob/687f282e8625c6b8d11ff58211a90524be2e4317/packages/core/session/README.zh.md)；它不提供 ACP Sidecar 所需的公开写入与事务边界。

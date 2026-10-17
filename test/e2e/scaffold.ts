@@ -9,7 +9,8 @@ import { fileURLToPath } from 'node:url'
 import { launchWebScaffold } from '#host-scaffold'
 
 export const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
-type ToolsMode = NonNullable<Parameters<typeof launchWebScaffold>[0]>['toolsMode']
+type NativeScaffoldOptions = NonNullable<Parameters<typeof launchWebScaffold>[0]>
+type ToolsMode = NativeScaffoldOptions['toolsMode']
 
 /** Names from the pinned Host's optional bundle inventory, resolved from its npm installation. */
 export type OptionalBundle =
@@ -47,6 +48,9 @@ export async function launchAdapterWorld({
   terminalShell,
   renderProbe = false,
   toolsMode,
+  replayFixture,
+  replayProviders,
+  replayProvidersOnly,
   optionalBundles = [],
   extraPatches = [],
 }: {
@@ -56,6 +60,10 @@ export async function launchAdapterWorld({
   terminalShell?: { path: string; name: string; args: string[] }
   renderProbe?: boolean
   toolsMode?: ToolsMode
+  /** Official catalog-only fixtures for zero-inference native UI checks. */
+  replayFixture?: NativeScaffoldOptions['replayFixture']
+  replayProviders?: NativeScaffoldOptions['replayProviders']
+  replayProvidersOnly?: NativeScaffoldOptions['replayProvidersOnly']
   optionalBundles?: readonly OptionalBundle[]
   /** Fixture-owned Loader patches, appended after the real bundle layers. */
   extraPatches?: readonly string[]
@@ -108,6 +116,9 @@ export async function launchAdapterWorld({
             },
           }),
       ...(toolsMode === undefined ? {} : { toolsMode }),
+      ...(replayFixture === undefined ? {} : { replayFixture }),
+      ...(replayProviders === undefined ? {} : { replayProviders }),
+      ...(replayProvidersOnly === undefined ? {} : { replayProvidersOnly }),
     })
     return {
       ...host,

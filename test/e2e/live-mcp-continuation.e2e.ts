@@ -91,6 +91,11 @@ function compact(value: unknown): string {
   return redactSecretText(JSON.stringify(value) ?? String(value)).slice(0, 6000)
 }
 
+/** Markdown presentation does not change the exact returned marker content. */
+function markerReply(text: string): string {
+  return text.trim().replace(/^```(?:text|plaintext)?\r?\n([^\r\n]+)\r?\n```$/, '$1')
+}
+
 function safeDiagnostic(event: LiveDiagnosticEvent, hash: (value: string) => string): LiveDiagnosticEvent {
   return {
     ...event,
@@ -502,10 +507,14 @@ it.skipIf(!optedIn)(
       await evidenceShot('start')
       const firstMainRequestCount = mainRequests.length
       const initialHostToolCount = hostToolCount
+      const discovery =
+        profile === 'codebuddy'
+          ? ' CodeBuddy defers MCP schemas: first use ToolSearch to discover read and todo_write on the exact server named in "Current DSH tools connection". Invoke those returned fully qualified MCP tool names through DeferExecuteTool with {toolName,params}. These two discovery/dispatch wrappers are allowed solely to reach the current DSH MCP tools; private Read, TaskCreate, TaskUpdate and other native tools are forbidden.'
+          : ''
       await writeComposerDraft(
         page,
         page.locator('[data-composer-input]').first(),
-        `For this isolated verification, use only the current DSH MCP connection tools listed by tools/list: read and todo_write. Do not use native agent tools, shell, bash, Python, or any other tools. Call read exactly once with arguments {"file_path":${JSON.stringify(markerPath)}} and no other arguments. Then call todo_write exactly once with a complete one-item todo list: [{"content":"Read the temporary marker file","status":"completed"}]. Reply with the exact file contents only.`,
+        `For this isolated verification, use only the current DSH MCP connection tools listed by tools/list: read and todo_write.${discovery} Do not use shell, bash, Python, or tools outside this route. Call the DSH read exactly once with arguments {"file_path":${JSON.stringify(markerPath)}} and no other arguments. Also call the DSH todo_write exactly once with arguments {"todos":[{"content":"Read the temporary marker file","status":"completed"}]}. These are independent read and persistence probes; their completion order does not matter. Reply with the exact file contents only.`,
       )
       const settled = host.whenTurnSettled(PHASE_TIMEOUT_MS)
       void settled.catch(() => undefined)
@@ -530,7 +539,7 @@ it.skipIf(!optedIn)(
       expect(todoResult?.isError).toBe(false)
       const todoArgs = asRecord(todoResult?.args)
       expect(todoArgs?.todos).toEqual([{ content: 'Read the temporary marker file', status: 'completed' }])
-      expect(observedResults.map((result) => result.name)).toEqual(['read', 'todo_write'])
+      expect(observedResults.map((result) => result.name).sort()).toEqual(['read', 'todo_write'])
       const firstAssistant = completed.filter((event) => event.type === 'assistant/message').at(-1)
       const firstAssistantText =
         firstAssistant?.type === 'assistant/message'
@@ -539,12 +548,7 @@ it.skipIf(!optedIn)(
               .map((block) => block.text)
               .join('\n')
           : ''
-      const finalAssistantLine = firstAssistantText
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter(Boolean)
-        .at(-1)
-      expect(finalAssistantLine).toBe(marker)
+      expect(markerReply(firstAssistantText)).toBe(marker)
       expect(hostToolCount).toBeLessThanOrEqual(HOST_TOOL_LIMIT)
       expect(stickyViolation).toBeUndefined()
       expect(pageErrors).toEqual([])
@@ -598,13 +602,13 @@ it.skipIf(!optedIn)(
               .map((block) => block.text)
               .join('\n')
           : ''
-      expect(lastAssistantText.trim()).toBe(followupMarker)
+      expect(markerReply(lastAssistantText)).toBe(followupMarker)
       expect(continued.filter((event) => event.type === 'todo/write').at(-1)).toMatchObject({
         type: 'todo/write',
         data: { todos: [{ content: 'Read the temporary marker file', status: 'completed' }] },
       })
       expect(observedResults).toHaveLength(2)
-      expect(observedResults.map((result) => result.name)).toEqual(['read', 'todo_write'])
+      expect(observedResults.map((result) => result.name).sort()).toEqual(['read', 'todo_write'])
       expect(hostToolCount).toBe(2)
       expect(providerToolStatuses.size).toBeLessThanOrEqual(16)
       expect(mainRequests.length).toBeGreaterThanOrEqual(2)
