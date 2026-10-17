@@ -69,6 +69,9 @@ import type {
   AcpRpcOptions,
   ElicitationRequestHandler,
   PermissionRequestHandler,
+  QwenTurnEndParams,
+  QwenTurnStartParams,
+  QwenActiveWorkSnapshot,
   SessionUpdateListener,
 } from './types.ts'
 
@@ -96,8 +99,80 @@ export class AcpSteeringRequestError extends Error {
 
 const CLAUDE_NATIVE_SUBAGENT_CAPABILITY = 'nativeSubagentSessions'
 
+function qwenTurnStartParams(value: unknown): QwenTurnStartParams | undefined {
+  if (!record(value) || typeof value.sessionId !== 'string' || typeof value.turnId !== 'string') return undefined
+  const text = (key: string): string | undefined =>
+    typeof value[key] === 'string' ? (value[key] as string) : undefined
+  const optional = (key: string): Record<string, string> => {
+    const v = text(key)
+    return v === undefined ? {} : { [key]: v }
+  }
+  return {
+    sessionId: value.sessionId,
+    turnId: value.turnId,
+    source: text('source') ?? '',
+    ...optional('taskId'),
+    ...optional('kind'),
+    ...optional('toolUseId'),
+    ...optional('label'),
+  }
+}
+
+function qwenTurnEndParams(value: unknown): QwenTurnEndParams | undefined {
+  if (!record(value) || typeof value.sessionId !== 'string' || typeof value.turnId !== 'string') return undefined
+  return {
+    sessionId: value.sessionId,
+    turnId: value.turnId,
+    ...(typeof value.reason === 'string' ? { reason: value.reason } : {}),
+    ...(typeof value.source === 'string' ? { source: value.source } : {}),
+  }
+}
+
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+const QWEN_ACTIVE_WORK_META = 'qwen.daemon.activeWorkHeartbeat'
+const QWEN_ACTIVE_WORK_CATEGORIES = new Set(['agent', 'notification', 'shell', 'session', 'workflow', 'tool'])
+
+function qwenActiveWorkSnapshot(value: unknown): QwenActiveWorkSnapshot | undefined {
+  if (
+    !record(value) ||
+    value.v !== 1 ||
+    !Number.isSafeInteger(value.seq) ||
+    (value.seq as number) < 1 ||
+    !Array.isArray(value.sessions) ||
+    value.sessions.length > 1024
+  )
+    return undefined
+  const sessions: QwenActiveWorkSnapshot['sessions'][number][] = []
+  const seen = new Set<string>()
+  for (const session of value.sessions) {
+    if (
+      !record(session) ||
+      typeof session.sessionId !== 'string' ||
+      session.sessionId === '' ||
+      seen.has(session.sessionId) ||
+      !Array.isArray(session.holds) ||
+      session.holds.length > 1024
+    )
+      return undefined
+    const holds: { category: string; id: string }[] = []
+    for (const hold of session.holds) {
+      if (
+        !record(hold) ||
+        typeof hold.category !== 'string' ||
+        !QWEN_ACTIVE_WORK_CATEGORIES.has(hold.category) ||
+        typeof hold.id !== 'string' ||
+        hold.id === ''
+      )
+        return undefined
+      holds.push({ category: hold.category, id: hold.id })
+    }
+    seen.add(session.sessionId)
+    sessions.push({ sessionId: session.sessionId, holds })
+  }
+  return { v: 1, seq: value.seq as number, sessions }
 }
 
 /** Preserve standard ACP notifications plus the two negotiated Claude native
@@ -296,6 +371,7 @@ export class AcpClientConnection {
   private readonly command: string
   private readonly process: AcpAgentProcess
   private readonly conn: acp.ClientConnection
+  private readonly connectionFailure: Promise<never>
   private readonly clientInfo: acp.Implementation
   private readonly initializeTimeoutMs: number
   private readonly onPermissionRequest: PermissionRequestHandler | undefined
@@ -304,6 +380,13 @@ export class AcpClientConnection {
   private readonly terminalHandlers: AcpConnectionOptions['terminalHandlers']
   private readonly enableClaudeDraftSubagents: boolean
   private readonly onCapabilityDegraded: AcpConnectionOptions['onCapabilityDegraded']
+  private readonly onQwenTurnStart: AcpConnectionOptions['onQwenTurnStart']
+  private readonly onQwenTurnEnd: AcpConnectionOptions['onQwenTurnEnd']
+  private readonly onQwenActiveWork: AcpConnectionOptions['onQwenActiveWork']
+  private qwenWorkSnapshot: QwenActiveWorkSnapshot | undefined
+  /** Sessions running an Agent-initiated turn (Qwen background/cron) that the
+   * host has adopted; permission requests and host operations are valid there too. */
+  private readonly agentTurnSessionIds = new Set<string>()
   private readonly onProcessWarn: NonNullable<AcpConnectionOptions['onProcessWarn']>
   private readonly activeSessionIds = new Set<string>()
   /** Known session ids currently being restored. Some Agents consult host FS
@@ -377,6 +460,9 @@ export class AcpClientConnection {
     this.terminalHandlers = options.terminalHandlers
     this.enableClaudeDraftSubagents = options.enableClaudeDraftSubagents === true
     this.onCapabilityDegraded = options.onCapabilityDegraded
+    this.onQwenTurnStart = options.onQwenTurnStart
+    this.onQwenTurnEnd = options.onQwenTurnEnd
+    this.onQwenActiveWork = options.onQwenActiveWork
     this.onProcessWarn = options.onProcessWarn ?? ((message) => console.error(message))
     if (options.onSessionUpdate !== undefined) this.updateListeners.add(options.onSessionUpdate)
 
@@ -400,11 +486,45 @@ export class AcpClientConnection {
       Readable.toWeb(this.process.stdout) as unknown as ReadableStream<Uint8Array>,
     )
     this.conn = this.buildClientApp().connect(stream)
+    this.connectionFailure = Promise.race([
+      this.process.failureArm,
+      this.conn.closed.then((): never => {
+        throw new AcpClientError('crash', `ACP agent "${this.command}" connection closed`)
+      }),
+    ])
+    void this.connectionFailure.catch(() => undefined)
   }
 
   /** 退出事实；进程仍在运行（或 spawn 失败从未存在）时为 null。 */
   get exited(): AcpProcessExit | null {
     return this.process.exited
+  }
+
+  /** Rejects once the Agent process fails or exits; never resolves. */
+  get failed(): Promise<never> {
+    return this.connectionFailure
+  }
+
+  /** Negotiated reporting cadence; absent means session activity is not covered. */
+  get qwenActiveWorkIntervalMs(): number | undefined {
+    if (this.onQwenActiveWork === undefined || this.agentInfo?.name !== 'qwen-code') return undefined
+    const capability = this.negotiated?._meta?.[QWEN_ACTIVE_WORK_META]
+    if (
+      !record(capability) ||
+      capability.v !== 1 ||
+      !Array.isArray(capability.categories) ||
+      !capability.categories.includes('session') ||
+      typeof capability.intervalMs !== 'number' ||
+      !Number.isSafeInteger(capability.intervalMs) ||
+      capability.intervalMs < 5000 ||
+      capability.intervalMs > 60_000
+    )
+      return undefined
+    return capability.intervalMs
+  }
+
+  get qwenActiveWorkSnapshot(): QwenActiveWorkSnapshot | undefined {
+    return this.qwenWorkSnapshot
   }
 
   /** close 是否已发起。 */
@@ -751,6 +871,34 @@ export class AcpClientConnection {
     await Promise.all([...pending])
   }
 
+  /** An autonomous turn has the same admitted native FS/terminal tail as a wire prompt. */
+  async drainAgentTurnHostOperations(sessionId: string): Promise<void> {
+    await this.drainPromptHostOperations(sessionId)
+  }
+
+  /** Mark an adopted Agent-initiated turn: it owns permission requests and
+   * reopens the Host-operation generation like a prompt does. */
+  setAgentTurnActive(sessionId: string, active: boolean): void {
+    if (active) {
+      this.agentTurnSessionIds.add(sessionId)
+      this.terminalPromptSessionIds.delete(sessionId)
+      return
+    }
+    this.agentTurnSessionIds.delete(sessionId)
+    if (this.activeSessionIds.has(sessionId) && !this.activePromptSessionIds.has(sessionId))
+      this.terminalPromptSessionIds.add(sessionId)
+  }
+
+  /** Agent-private extension request (e.g. Qwen `qwen/status/session/tasks`). */
+  async extRequest(method: string, params: Record<string, unknown>, options: AcpRpcOptions = {}): Promise<unknown> {
+    return await this.rpc(
+      method,
+      (agent) => agent.request(method as never, params as never),
+      options,
+      DEFAULT_SESSION_WRITE_TIMEOUT_MS,
+    )
+  }
+
   /** 发送 `session/cancel` 通知。 */
   async cancel(sessionId: string): Promise<void> {
     this.terminalHandlers?.cancelSession?.(sessionId)
@@ -829,7 +977,9 @@ export class AcpClientConnection {
       }
       const initialConfigOptions = session.configOptions ?? pushedConfigOptions
       let modelConfigOptions: Record<string, readonly acp.SessionConfigOption[]> | undefined
-      if (probeModelConfigOptions) {
+      // Qwen Code offers a different reasoning catalogue per model (toggle-only,
+      // none|low|medium|xhigh, or none at all); capture each like Kimi/Codex.
+      if (probeModelConfigOptions || init.agentInfo?.name === 'qwen-code') {
         const modelOption = initialConfigOptions?.find(
           (option) => option.type === 'select' && (option.category === 'model' || option.id === 'model'),
         )
@@ -906,6 +1056,12 @@ export class AcpClientConnection {
                 : {}),
             },
             clientInfo: this.clientInfo,
+            ...(this.onQwenActiveWork === undefined
+              ? {}
+              : {
+                  // A request for optional vendor reporting, never a standard client capability.
+                  _meta: { [QWEN_ACTIVE_WORK_META]: { v: 1, intervalMs: 5000, categories: ['session'] } },
+                }),
           }),
           this.process.failureArm,
         ]),
@@ -935,16 +1091,74 @@ export class AcpClientConnection {
         'Claude draft subagent notifications are unavailable with this ACP SDK; continuing with standard ACP capabilities',
       )
     }
+    // The SDK dispatches different notifications concurrently while traversing
+    // registered handlers. Put ordinary updates before vendor terminal markers
+    // so a same-frame end marker cannot overtake the preceding output chunk.
+    app.onNotification('session/update', ({ params }) => {
+      this.deliverSessionNotification(params)
+    })
+    // Qwen Code announces background-notification turns with a private
+    // request it waits on for at most ~2 s. Unregistered (no host seam) keeps
+    // the SDK's -32601 answer, which Qwen treats as "run it anyway".
+    const turnStart = this.onQwenTurnStart
+    if (turnStart !== undefined) {
+      app.onRequest(
+        '_qwencode/start_turn',
+        (params: unknown) => qwenTurnStartParams(params),
+        async ({ params }) => {
+          if (params === undefined || !this.activeSessionIds.has(params.sessionId)) return { accepted: false }
+          try {
+            return { accepted: (await turnStart(params)).accepted === true }
+          } catch (error) {
+            // A deliberate method-not-found keeps Qwen's unannounced fallback.
+            if (error instanceof acp.RequestError) throw error
+            return { accepted: false }
+          }
+        },
+      )
+    }
+    const turnEnd = this.onQwenTurnEnd
+    if (turnEnd !== undefined) {
+      app.onNotification(
+        '_qwencode/end_turn',
+        (params: unknown) => qwenTurnEndParams(params),
+        ({ params }) => {
+          if (params === undefined) return
+          try {
+            turnEnd(params)
+          } catch {
+            /* notification handlers must not poison the stream */
+          }
+        },
+      )
+    }
+    if (this.onQwenActiveWork !== undefined) {
+      app.onNotification(
+        'qwen/notify/channel/active-work',
+        (params: unknown) => qwenActiveWorkSnapshot(params),
+        ({ params }) => {
+          if (
+            params === undefined ||
+            this.isClosed ||
+            this.qwenActiveWorkIntervalMs === undefined ||
+            params.seq <= (this.qwenWorkSnapshot?.seq ?? 0)
+          )
+            return
+          this.qwenWorkSnapshot = params
+          this.onQwenActiveWork?.(params)
+        },
+      )
+    }
     return (
       app
-        .onNotification('session/update', ({ params }) => {
-          this.deliverSessionNotification(params)
-        })
         .onRequest('session/request_permission', ({ params }) => {
           // Permission is a turn-scoped capability, not a connection-scoped UI
           // channel. Fail closed for initialize/idle requests and for a session
           // id that this connection does not own.
-          if (!this.activeSessionIds.has(params.sessionId) || !this.activePromptSessionIds.has(params.sessionId)) {
+          if (
+            !this.activeSessionIds.has(params.sessionId) ||
+            (!this.activePromptSessionIds.has(params.sessionId) && !this.agentTurnSessionIds.has(params.sessionId))
+          ) {
             return { outcome: { outcome: 'cancelled' } }
           }
           const handler = this.onPermissionRequest

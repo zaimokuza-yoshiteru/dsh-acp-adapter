@@ -158,6 +158,10 @@ ACP 与 DSH 的桥接边界见[原生复用说明](../../docs/native-reuse.md)�
 
 真实主信息流专项：`DSH_E2E_LIVE_STREAM=1 DSH_E2E_LIVE_CODEX_MODEL=<已选择的模型> pnpm test:e2e live-main-stream`。在隔离工作区让真实 Codex ACP 执行一次 `printf`，验证原生 Bash、调用计数、结果详情及刷新恢复；不读写用户文件。需要本机已有登录，会消耗该 Agent 的用量，默认跳过。
 
+真实 Qwen Code 专项默认跳过：`DSH_E2E_LIVE_QWEN=1 DSH_E2E_LIVE_QWEN_COMMAND=/absolute/path/to/@qwen-code/qwen-code/cli-entry.js pnpm exec vitest run test/integration/process/qwen-live.spec.ts`。它不经过浏览器与 Host，直接驱动 `AcpSessionRuntime`，在临时工作区验证 `ask_user_question` 问答、后台 shell 任务完成后承接 `_qwencode/start_turn` 轮次，以及 `cron` 定时轮次。Agent 进程只继承系统基础变量和 `DSH_E2E_LIVE_QWEN_ENV_KEYS` 显式列出的变量；Qwen 使用本机已有的认证配置，会消耗所配置模型服务的用量。协议回归见 `test/unit/runtime/session-runtime-qwen.spec.ts` 与 `test/fixtures/fake-qwen-agent.mjs`。
+
+Qwen 的无密钥 Host 与界面回归独立于上述 live 检查：`pnpm test:e2e qwen-code` 通过真实 Loader 加载构建插件，验证原生问答卡的单选、多选、自定义、翻页、取消和 Host cancellation，以及模型切换后的推理目录和实际 ACP 配置值。它使用确定性 ACP 子进程，不读取认证或调用模型。后台 jobs 的原生注册、通知和 AgentLoop 接线另由 `test/integration/host/qwen-task-jobs.spec.ts` 验证；运行时协议夹具覆盖取消未确认、慢工具前置等待和混合消息的顺序发送。测试替身通过不能推定真实 Qwen CLI 或全部平台已验收。
+
 ## ACP live continuation opt-in
 
 以下两个浏览器夹具默认跳过。测试使用隔离的 Host、workspace 与 DSH profile，不读取或改写用户的 DSH 配置；ACP 子进程仍按正常方式使用已有登录和用户配置，测试不迁移 CLI 与 ACP 账号的认证状态。均须提供绝对命令路径；模型缺失时停止，不回退到其他模型。原生 Antigravity 夹具默认使用 `gemini-3.8-flash-low`，可显式指定其他可用模型；MCP continuation 夹具必须提供精确模型 ID。只通过 `*_ENV_KEYS` 继承显式列出的、当前进程中已存在的环境变量。Antigravity 使用显式 `antigravity` runtime 和官方 raw ACP server 1.3.0，应用认证与 ACP 账号独立；文档不提供未经证实的 CLI 登录命令。可选的 Antigravity harness 路径会以 `ANTIGRAVITY_HARNESS_PATH` 传给 ACP server，不作为命令参数。

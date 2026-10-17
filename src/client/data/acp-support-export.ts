@@ -339,7 +339,7 @@ export async function collectAcpSupportExport(
     if (page.sessionId !== sessionId || page.activities.length > ACP_SUPPORT_EXPORT_PAGE_SIZE)
       throw new AcpSupportExportError('invalid-page')
     if (activityHead === undefined) activityHead = page.head
-    if (page.head !== activityHead) throw new AcpSupportExportError('invalid-page')
+    if (activityHead === undefined || page.head !== activityHead) throw new AcpSupportExportError('invalid-page')
     let previousActivityRevision = activityCursor
     for (const entry of page.activities) {
       if (entry.revisionSeq <= previousActivityRevision || entry.revisionSeq > activityHead)

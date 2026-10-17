@@ -155,7 +155,7 @@ describe('live ACP input-image proof', () => {
         undefined,
         undefined,
         undefined,
-        distinctBodySignal ? userStop.signal : undefined,
+        distinctBodySignal ? { hostBodySignal: userStop.signal } : undefined,
       )
       await promptStarted.promise
       expect(admissionSignal?.aborted).toBe(false)

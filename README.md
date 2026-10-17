@@ -8,7 +8,7 @@
 
 ## 安装
 
-当前插件版本 [`0.2.0-rc.2.9`](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/tag/v0.2.0-rc.2.9) 兼容 DSH `0.2.0-rc.2`。其他版本见 [Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases)。
+当前插件版本 [`0.2.0-rc.2.10`](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/tag/v0.2.0-rc.2.10) 兼容 DSH `0.2.0-rc.2`。其他版本见 [Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases)。
 
 **推荐：** 在 DSH Creator 模式中发送：
 
@@ -35,10 +35,10 @@ Git 与压缩包安装示例：
 
 在插件管理器中，可将下方 Git 地址或 .tgz 包 URL 替换包名粘贴到输入框中。
 
-| 来源              | 示例                                                                                                                                                   |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Git               | `git+https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter.git#v0.2.0-rc.2.9`                                                                         |
-| 预构建插件包 .tgz | [下载 0.2.0-rc.2.9](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/download/v0.2.0-rc.2.9/zaimokuza-dsh-acp-adapter-0.2.0-rc.2.9.tgz) |
+| 来源              | 示例                                                                                                                                                      |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Git               | `git+https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter.git#v0.2.0-rc.2.10`                                                                           |
+| 预构建插件包 .tgz | [下载 0.2.0-rc.2.10](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/download/v0.2.0-rc.2.10/zaimokuza-dsh-acp-adapter-0.2.0-rc.2.10.tgz) |
 
 此包包含编译产物，与 npm 发布包一致。GitHub 自动生成的 Source code ZIP/TAR.GZ 是源码归档，不是构建后的插件包；未缓存的依赖仍需联网安装。
 

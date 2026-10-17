@@ -8,7 +8,7 @@ Use ACP Agents in DSH with native sessions, tool approvals, and team collaborati
 
 ## Install
 
-Plugin version [`0.2.0-rc.2.9`](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/tag/v0.2.0-rc.2.9) supports DSH `0.2.0-rc.2`. See [Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for other versions.
+Plugin version [`0.2.0-rc.2.10`](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/tag/v0.2.0-rc.2.10) supports DSH `0.2.0-rc.2`. See [Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for other versions.
 
 **Recommended:** In DSH Creator mode, send:
 
@@ -33,10 +33,10 @@ npx @deepseek-ai/dsh@0.2.0-rc.2 plugin --profile web add @zaimokuza/dsh-acp-adap
 
 Git and archive examples. In the plugin manager, paste the Git address or .tgz URL below in place of the package name:
 
-| Source                         | Example                                                                                                                                                    |
-| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Git                            | `git+https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter.git#v0.2.0-rc.2.9`                                                                             |
-| Prebuilt plugin archive (.tgz) | [Download 0.2.0-rc.2.9](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/download/v0.2.0-rc.2.9/zaimokuza-dsh-acp-adapter-0.2.0-rc.2.9.tgz) |
+| Source                         | Example                                                                                                                                                       |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Git                            | `git+https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter.git#v0.2.0-rc.2.10`                                                                               |
+| Prebuilt plugin archive (.tgz) | [Download 0.2.0-rc.2.10](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/download/v0.2.0-rc.2.10/zaimokuza-dsh-acp-adapter-0.2.0-rc.2.10.tgz) |
 
 This archive includes compiled output and matches the npm package. GitHub's automatically generated Source code ZIP/TAR.GZ files are source archives, not built plugin packages. Uncached dependencies still require network access.
 

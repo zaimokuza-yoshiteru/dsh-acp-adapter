@@ -98,7 +98,7 @@ async function fixture(
           id = 'forked-agent'
           return { sessionId: id }
         },
-        prompt: async (_content, onUpdate, signal, _report, _concluded, _success, hostBodySignal) => {
+        prompt: async (_content, onUpdate, signal, _report, _concluded, _success, promptOptions) => {
           calls.push({ kind: 'prompt', cwd: launch.cwd })
           if (ordinal > 1) {
             onUpdate({
@@ -123,9 +123,9 @@ async function fixture(
           cwd = target
           observer?.(target)
           expect(signal?.aborted).toBe(true)
-          expect(hostBodySignal?.aborted).toBe(false)
+          expect(promptOptions?.hostBodySignal?.aborted).toBe(false)
           if (options.stop) controller.abort(new Error('User Stop'))
-          if (options.stop) expect(hostBodySignal?.aborted).toBe(true)
+          if (options.stop) expect(promptOptions?.hostBodySignal?.aborted).toBe(true)
           return { stopReason: 'cancelled' }
         },
       }

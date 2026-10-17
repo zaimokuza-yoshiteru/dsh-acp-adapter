@@ -4,6 +4,22 @@
 
 User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for publication dates, exact installation instructions, and checksums. Historical entries were reconstructed from tag diffs; npm packages were not republished.
 
+## 0.2.0-rc.2.10
+
+### 中文
+
+- 接入 Qwen Code 的原生问答协议，支持单选、多选、自定义答案及取消；按模型发现推理强度选项，沿用 DSH 原生设置入口。
+- 将 Qwen 后台任务接入 DSH jobs，并承接后台完成及定时任务发起的回合；同批到达的其他任务通知和消息继续按顺序交给 Agent。
+- 取消未获确认时保留结果未知状态，避免继续复用仍在执行的连接；定时回合按协商后的执行状态确认结束，不再以模型 usage 后的短暂静默推断完成。
+- 增加确定性协议、宿主接线和原生界面回归；真实 Qwen 模型验证仍为默认关闭的独立检查。继续支持 DSH `0.2.0-rc.2`。
+
+### English
+
+- Support Qwen Code's native question protocol, including single and multiple choices, custom answers and cancellation. Discover reasoning options per model through the existing DSH controls.
+- Mirror Qwen background tasks as DSH jobs and adopt background-completion and scheduled turns. Preserve other task notices and messages received in the same step and deliver them in order.
+- Keep unconfirmed cancellation outcomes unknown rather than reusing a connection that may still be running. Confirm scheduled-turn completion through negotiated execution state instead of inferring completion from silence after model usage.
+- Add deterministic protocol, Host integration and native UI regression coverage. Real Qwen model checks remain a separate opt-in workflow. Continue to support DSH `0.2.0-rc.2`.
+
 ## 0.2.0-rc.2.9
 
 ### 中文

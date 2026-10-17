@@ -14,6 +14,8 @@ DSH 原生 inbox、pre-step 和 Session 消息持久化负责输入准入。适�
 
 ## 工具、权限与可选能力
 
+Qwen Code 的后台任务与定时轮次通过原生 jobs 和 AgentLoop 承接。后台任务完成通知只唤醒并承接 Qwen 已开始的轮次；同批其他输入在该轮确认结束后顺序发送。未宣告的定时轮次使用协商后的 active-work 快照确认结束，模型 usage 或静默不代表完成。Stop 未获远端确认时关闭连接并保留未知结果。Qwen 问答使用原生问题面板；私有扩展只应用于已确认的 Qwen Agent。协议夹具与真实 Agent 的覆盖范围见 [E2E 指南](../test/e2e/README.md)。
+
 工具桥只暴露 DSH 为当前已准入请求组装、且在会话作用域内仍有效的工具，按宿主选择的 native 或 PTC 模式执行。调用经过原生 `tools.execute` 的参数检查、钩子和工具规则；工具被移除或作用域收窄后，旧连接不能继续使用。已确认来自当前桥但名称未注册的工具请求直接拒绝，不让用户批准无法执行的调用。Agent 自带的 shell、文件和模型调用仍归 Agent 所有，不会因桥接而变成 DSH 工具事件；依赖原生模型调用、PTC 内部调用身份或 loop 控制权的插件仍须单独适配。宿主 MCP client 或一次性外部子任务也不能替代交互式 ACP 会话与 Teams 通信桥。
 
 ACP 的 Auto/Ask 只决定 DSH 工具请求是否再经人工审批，Agent 自有权限仍由 Agent 管理；它不等于原生 Auto Review 的 LLM 风险评审。团队成员实时继承已认证 Lead 的策略，普通 fork 在首次 ACP 初始化时保存独立策略。原生审批卡无法表达 Agent 提供的本会话或持续授权范围时，适配器保留明确选项问答，不把授权降为“仅本次”或默认批准。子会话不能直接发起问答时，也只有已核实工具身份且选项仅涉及授权范围的“仅本次”请求可转为原生一次性审批。原生 Auto Review、自动标题和 `/compact` 的辅助模型调用目前没有完整的 ACP 会话准入身份，不能承诺与普通 ACP prompt 等价；[待处理缺口](../.agents/notes/proposed/2026-10-11-acp-native-experience-gaps.md)记录后续条件。
