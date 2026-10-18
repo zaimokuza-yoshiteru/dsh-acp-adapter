@@ -58,8 +58,7 @@ import { AcpAgentProcess } from '../../runtime/process/agent-process.ts'
 import { ACP_SUBPROCESS_UNAVAILABLE_MESSAGE } from '../../runtime/process/subprocess.ts'
 import type { AcpConnectionSpec, AcpProcessExit } from '../../runtime/process/types.ts'
 import { redactSecretText } from '../../contract/redaction.ts'
-import { normalizeAcpConfigOptionKey } from '../../contract/config-options.ts'
-import { acpConfigOptionsSnapshot } from './config-options.ts'
+import { acpConfigOptionsSnapshot, advertisesIndependentModelControls, isModelConfigOption } from './config-options.ts'
 import { AcpClientError } from './errors.ts'
 import type {
   AcpSessionNotification,
@@ -393,27 +392,6 @@ async function probeSessionCleanup(
     }
   }
   return { close: closeStep, delete: deleteStep, ...(failures.length === 0 ? {} : { message: failures.join('; ') }) }
-}
-
-function isModelConfigOption(option: acp.SessionConfigOption): boolean {
-  return [option.category ?? '', option.id].some((key) => normalizeAcpConfigOptionKey(key) === 'model')
-}
-
-function advertisesIndependentModelControls(options: readonly acp.SessionConfigOption[] | undefined): boolean {
-  return (
-    options?.some((option) => {
-      if (option.type !== 'select') return false
-      const category = normalizeAcpConfigOptionKey(option.category ?? '')
-      const id = normalizeAcpConfigOptionKey(option.id)
-      return (
-        category === 'model_config' ||
-        category === 'thought_level' ||
-        category === 'reasoning_effort' ||
-        id === 'thought_level' ||
-        id === 'reasoning_effort'
-      )
-    }) ?? false
-  )
 }
 
 /** The Agent may capture a response after another concurrent write to the
