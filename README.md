@@ -60,7 +60,7 @@ Git 与压缩包安装示例：
 
 > CodeBuddy CLI 与 WorkBuddy 桌面端使用同一账号积分，无需分别订阅；通过 CodeBuddy CLI 接入 DSH。详见 [CodeBuddy 账号与订阅说明](https://www.codebuddy.cn/docs/ide/Account/pricing)及 [ACP 命令参考](https://www.codebuddy.cn/docs/cli/cli-reference)。
 
-[Qwen Code](test/e2e/README.md#qwen-code) 使用官方 `@qwen-code/qwen-code` CLI；已在 macOS 的 `0.25.2` 验证后台任务续接，真实 Windows 验证待补。
+[Qwen Code](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/main/test/e2e/README.md#qwen-code) 使用官方 `@qwen-code/qwen-code` CLI；已在 macOS 的 `0.25.2` 验证后台任务续接，真实 Windows 验证待补。
 
 测试范围与限制见 [E2E 验证说明](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/v0.2.1-rc.2.1/test/e2e/README.md)。
 

@@ -138,6 +138,8 @@ DEVIN_TEST_MODEL=swe-2-high node scripts/check-devin-live.ts "$(command -v devin
 
 2026-10-18 的[真实 Devin CI 运行](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/actions/runs/39097343182)在 `main@943e4d6`、DSH `0.2.1-rc.2`、Devin CLI `3000.11.3`、`swe-2-high` 下通过 `macos-15` 和 `windows-2022` 两个平台。Windows 使用普通账户 `dsh-acp-ci`，测试时关闭开发者模式，结束后恢复设置、撤销目录权限并删除账户与临时目录。两平台均验证两个并发 Lead 各创建一个真实 teammate、团队隔离、消息接收后回复和同会话显式续聊，输出 `LIVE_TEST_PASS`，且安全 trace 的最终结果及清理均通过；这是短程原生 Teams 验证，不代替 Windows 桌面安装／升级、审批拒绝、Qwen Code 或长任务 B 的验收。
 
+同日的[旧版 Devin `3000.3.27` 补验](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/actions/runs/39097845881)保持相同 main、DSH 和模型，macOS 通过，Windows 未通过。Windows 的原生 MCP 发现与注册、两次成员创建和首次消息发送已通过，随后同成员再次发送相同消息，被测试专用 `LIVE_TEAMMATE_MESSAGE_BUDGET_EXCEEDED` 守卫在工具执行前拒绝，完整 Teams 与显式续聊尚未验收；普通账户的四项清理均成功。现有证据不能区分模型新请求与 CLI 重试，不能据此认定工具桥重放；保留本次失败。
+
 每个 live 测试会尝试在 `DEVIN_LIVE_TRACE_DIR` 写入一个 `real-devin-live-<24位十六进制>.jsonl`。CI 只从专用 `devin-live-diagnostics` 目录上传这类文件，保留 7 天；文件包含每次运行独立密钥 HMAC 处理的关联 ID、固定枚举、布尔值和数字，不含原始消息、prompt、参数、凭据、stdout、stderr、profile、transcript 或 Devin CLI 原生日志。Windows 普通用户先写入审计临时目录，启动器在删除该目录前复制符合文件名的 trace 到 runner 专用目录。工作流级硬超时或 runner 被强制终止时，`always()` 上传步骤也可能没有机会执行，因此不能保证每次运行都有 artifact；缺少文件时 CI 会显示 warning。
 
 查看 trace 时需区分事件层级：`run/start` 与 `run/summary` 描述一次检查，`phase/completed` 描述一个阶段完成，tool 事件描述单次工具分发或结果。`test/assertions-passed` 只表示脚本断言通过；终态还要求 trace 完成写入且进程输出 `LIVE_TEST_PASS`。ACP call、团队 message、step 和 prompt 是不同对象，不能把数量互相当作对方的数量。Host 的工具调用 ID 与成功 `send_message` 返回的 messageId 通过 trace 中显式记录的关联字段连接，不能靠相邻日志行推断。ACP provider 内部发出的模型请求数量及传输重试可能不可观察；`context used` 是上下文使用量，不是计费 token 数。

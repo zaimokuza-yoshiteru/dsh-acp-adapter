@@ -58,7 +58,7 @@ The plugin ships with a snapshot of the [official ACP Agent catalog](https://age
 
 > CodeBuddy CLI and the WorkBuddy desktop app share account credits, with no separate subscription required. Connect DSH through the CodeBuddy CLI. See [CodeBuddy account and subscription details](https://www.codebuddy.cn/docs/ide/Account/pricing) and the [ACP CLI reference](https://www.codebuddy.cn/docs/cli/cli-reference).
 
-[Qwen Code](test/e2e/README.md#qwen-code) uses the official `@qwen-code/qwen-code` CLI. Background-task continuation was verified with `0.25.2` on macOS; real Windows checks remain pending.
+[Qwen Code](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/main/test/e2e/README.md#qwen-code) uses the official `@qwen-code/qwen-code` CLI. Background-task continuation was verified with `0.25.2` on macOS; real Windows checks remain pending.
 
 For test coverage and limitations, see the [E2E verification guide](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/v0.2.1-rc.2.1/test/e2e/README.md).
 
