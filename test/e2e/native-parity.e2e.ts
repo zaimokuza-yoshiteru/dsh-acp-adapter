@@ -101,7 +101,13 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
           name: `Fixture ${profile}`,
           command: process.execPath,
           args: [join(root, 'test/mock-agent/mock-agent.ts')],
-          env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: profile, MOCK_LOG: agentLog },
+          env: {
+            HOME: host.workspaceCwd,
+            MOCK_SCENARIO: 'regression',
+            MOCK_PROFILE: profile,
+            MOCK_LOG: agentLog,
+            MOCK_RICH_MIXED_GATE_DIR: host.workspaceCwd,
+          },
         },
       },
     })
@@ -925,9 +931,12 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
     const activity = page.locator('[data-chat-call-id^="acp:"]')
     await expect.poll(() => activity.count()).toBeGreaterThan(0)
     await activity.getByRole('button', { name: /^Read.*fixture\.txt/ }).click()
-    await activity.locator('[data-read]').getByText('E2E_READ_LINE', { exact: true }).first().waitFor()
+    const readActivity = activity.locator('[data-tool=read]')
+    await readActivity.getByText('1\tE2E_READ_LINE', { exact: true }).waitFor()
+    expect(await readActivity.locator('[data-read]').count()).toBe(0)
     await activity.getByRole('button', { name: /^Edit.*fixture\.txt/ }).click()
     await activity.locator('[data-diff]').getByText('E2E_NEW_LINE', { exact: true }).first().waitFor()
+    expect(await activity.getByRole('button', { name: /^(View|查看)$/, exact: true }).count()).toBe(0)
     for (const [locale, theme, label] of [
       ['en', 'light', 'Wrap lines'],
       ['zh', 'dark', '自动换行'],
@@ -935,12 +944,13 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
       await host.ctx.settings.replace('locale', { preference: locale })
       await host.ctx.settings.replace('ui-theme', { preference: theme })
       await expect.poll(() => page.evaluate(() => document.documentElement.style.colorScheme)).toBe(theme)
+      expect(await activity.getByRole('button', { name: /^(View|查看)$/, exact: true }).count()).toBe(0)
       await expect
         .poll(() =>
           picture.first().evaluate((img) => img instanceof HTMLImageElement && img.complete && img.naturalWidth > 0),
         )
         .toBe(true)
-      for (const selector of ['[data-read]', '[data-diff]']) {
+      for (const selector of ['[data-diff]']) {
         const card = activity.locator(selector)
         const wrap = card.getByRole('button', { name: label, exact: true }).first()
         const previous = await wrap.getAttribute('aria-pressed')
@@ -1159,6 +1169,171 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
     },
   )
 
+  it.each(['generic', 'diff'] as const)(
+    'retains mixed %s tool content with one native disclosure across completion and reload at 390px',
+    async (variant) => {
+      const previousPreferences = host.ctx.settings.describe().find((entry) => entry.ns === 'ui-chat')?.value
+      const previousTheme = host.ctx.settings.describe().find((entry) => entry.ns === 'ui-theme')?.value
+      const gate = join(host.workspaceCwd, `rich-mixed-${variant}-finish`)
+      rmSync(gate, { force: true })
+      // Completion must retain the manually opened card; the subsequent native
+      // outer-process collapse is what resets it in this preference mode.
+      await host.ctx.settings.replace('ui-chat', { transcriptView: 'standard', collapseTiming: 'next-input' })
+      await page.setViewportSize({ width: 390, height: 900 })
+      let settlement: Promise<unknown> | undefined
+      try {
+        const { settled } = await send(`E2E_RICH_MIXED ${variant}`)
+        settlement = settled
+        // Register a handler while the fixture is deliberately gated. Awaiting
+        // this same promise below still reports a settlement failure normally.
+        void settled.catch(() => {})
+        // This fixture has one owning request step. Its first tool must already
+        // occupy the native process group before any assistant text arrives.
+        const owner = page.locator(`[data-acp-tool-supplement-owner]:has([data-chat-call-id*="rich-mixed-${variant}"])`)
+        const tool = owner.locator('[data-tool]')
+        const toggle = tool.locator('[aria-expanded]').first()
+        // The file summary is a separate native preview button. Click the
+        // observed leading icon so the pointer action targets the disclosure.
+        const clickDisclosure = () => toggle.locator(':scope > span').first().click()
+        const runningGroup = page.locator(`[data-step-process]:has([data-chat-call-id*="rich-mixed-${variant}"])`)
+        const header = runningGroup.locator('[data-process-activity]')
+        await header.waitFor({ state: 'visible' })
+        if ((await header.getAttribute('aria-expanded')) === 'false') await header.click()
+        await expect.poll(() => header.getAttribute('aria-expanded')).toBe('true')
+        await toggle.waitFor()
+        expect(await owner.locator('[data-chat-call-id]').count()).toBe(1)
+        await expect.poll(() => toggle.getAttribute('aria-expanded')).toBe('false')
+        await clickDisclosure()
+        await expect.poll(() => toggle.getAttribute('aria-expanded')).toBe('true')
+        const runningSeat = await owner.evaluate((element) =>
+          element.closest('[data-chat-node-key]')?.getAttribute('data-chat-node-key'),
+        )
+        const runningRow = required(await toggle.elementHandle())
+        writeFileSync(gate, 'finish')
+        await settled
+        await page.getByText(`E2E_RICH_MIXED_DONE ${variant}`, { exact: true }).waitFor()
+        // Same native tree and disclosure survive the running -> completed update.
+        await expect.poll(() => toggle.getAttribute('aria-expanded')).toBe('true')
+        expect(await runningRow.evaluate((element) => element.isConnected)).toBe(true)
+        expect(
+          await owner.evaluate((element) =>
+            element.closest('[data-chat-node-key]')?.getAttribute('data-chat-node-key'),
+          ),
+        ).toBe(runningSeat)
+        await runningRow.dispose()
+        const assertContent = async () => {
+          await expect.poll(() => owner.innerText()).toContain('E2E_MIXED_REPORT')
+          const text = await owner.innerText()
+          expect(text.split('E2E_MIXED_CAPTION')).toHaveLength(2)
+          expect(text).toContain('This tool record contains a resource reference that cannot be opened here.')
+          expect(text).toContain('text/plain · https://example.test/report')
+          expect(text).toContain('This image cannot be previewed in this tool record. image/png')
+          expect(text).toContain('E2E_MIXED_UNSAFE_REFERENCE')
+          expect(text).not.toMatch(/PRIVATE_QUERY|data:text|UEFZTE9B|File difference:/)
+          expect(await owner.locator('[data-chat-call-id]').count()).toBe(1)
+          expect(await owner.getByRole('button', { name: /^(View|查看)$/, exact: true }).count()).toBe(0)
+          expect(await owner.locator('[data-acp-tool-supplement]').count()).toBe(variant === 'diff' ? 1 : 0)
+          expect(await owner.locator('a[href*="example.test"]').count()).toBe(0)
+          if (variant === 'diff')
+            await owner.locator('[data-diff]').getByText('E2E_MIXED_NEW', { exact: true }).first().waitFor()
+          const overflow = await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)
+          expect(overflow).toBeLessThanOrEqual(1)
+        }
+        await assertContent()
+        await clickDisclosure()
+        await expect.poll(() => toggle.getAttribute('aria-expanded')).toBe('false')
+        expect(await owner.getByText(/E2E_MIXED_REPORT/).isVisible()).toBe(false)
+        await clickDisclosure()
+        await assertContent()
+        // The shared native reset still clears both the diff and its supplement.
+        const processToggle = page.locator('[data-turn-process-tool-calls]').last()
+        await processToggle.click()
+        await expandProcess()
+        await expect.poll(() => toggle.getAttribute('aria-expanded')).toBe('false')
+        expect(await owner.getByText(/E2E_MIXED_REPORT/).isVisible()).toBe(false)
+        await page.reload()
+        await page.getByText(`E2E_RICH_MIXED_DONE ${variant}`, { exact: true }).waitFor()
+        await expandProcess()
+        await expect.poll(() => toggle.getAttribute('aria-expanded')).toBe('false')
+        await clickDisclosure()
+        await assertContent()
+        if (process.env.DSH_E2E_SCREENSHOTS) {
+          mkdirSync(process.env.DSH_E2E_SCREENSHOTS, { recursive: true })
+          const measureGeometry = () =>
+            owner.evaluate((element) => {
+              const measure = (selector: string) => {
+                const target = element.querySelector<HTMLElement>(selector)
+                if (target === null) return null
+                const rect = target.getBoundingClientRect()
+                const style = getComputedStyle(target)
+                return {
+                  x: rect.x,
+                  y: rect.y,
+                  width: rect.width,
+                  height: rect.height,
+                  fontSize: style.fontSize,
+                  lineHeight: style.lineHeight,
+                  whiteSpace: style.whiteSpace,
+                }
+              }
+              return {
+                viewport: { width: innerWidth, height: innerHeight },
+                scrollWidth: document.documentElement.scrollWidth,
+                tool: measure('[data-tool]'),
+                diff: measure('[data-diff]'),
+                supplement: measure('[data-acp-tool-supplement]'),
+              }
+            })
+          writeFileSync(
+            join(process.env.DSH_E2E_SCREENSHOTS, `${profile}-mixed-${variant}-390.geometry.json`),
+            JSON.stringify(await measureGeometry(), null, 2),
+          )
+          await page.screenshot({
+            path: join(process.env.DSH_E2E_SCREENSHOTS, `${profile}-mixed-${variant}-390.png`),
+            fullPage: true,
+          })
+          if (variant === 'diff') {
+            await host.ctx.settings.replace('ui-theme', { preference: 'dark' })
+            await expect.poll(() => page.evaluate(() => document.documentElement.style.colorScheme)).toBe('dark')
+            await assertContent()
+            writeFileSync(
+              join(process.env.DSH_E2E_SCREENSHOTS, `${profile}-mixed-${variant}-390-dark.geometry.json`),
+              JSON.stringify(await measureGeometry(), null, 2),
+            )
+            await page.screenshot({
+              path: join(process.env.DSH_E2E_SCREENSHOTS, `${profile}-mixed-${variant}-390-dark.png`),
+              fullPage: true,
+            })
+          }
+        }
+      } catch (error) {
+        const evidence = join(root, '.local/uiux-validation')
+        mkdirSync(evidence, { recursive: true })
+        const id = events.findLast((event) => event.type === 'turn/start')?.sessionId
+        writeFileSync(
+          join(evidence, `mixed-${variant}-interaction-failure.json`),
+          JSON.stringify(
+            {
+              body: await page.locator('body').innerText(),
+              dom: await page.locator('body').innerHTML(),
+              snapshot:
+                id === undefined ? null : await (host.ctx.get('dshAcp') as AcpRemoteService).activitySnapshot(id),
+            },
+            null,
+            2,
+          ),
+        )
+        await page.screenshot({ path: join(evidence, `mixed-${variant}-interaction-failure.png`), fullPage: true })
+        throw error
+      } finally {
+        writeFileSync(gate, 'cleanup')
+        await Promise.allSettled(settlement === undefined ? [] : [settlement])
+        await host.ctx.settings.replace('ui-chat', previousPreferences ?? {})
+        await host.ctx.settings.replace('ui-theme', previousTheme ?? {})
+      }
+    },
+  )
+
   it('preserves full native diffs and an unfinished native plan after reload', async () => {
     const details = vi.spyOn(host.ctx.get('dshAcp') as AcpRemoteService, 'activityDetail')
     details.mockRejectedValueOnce(new Error('test: detail temporarily unavailable'))
@@ -1182,7 +1357,10 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
             .getByText('Could not load details. Your conversation is unaffected.', { exact: true })
             .waitFor()
           // The sidecar loader owns retry alongside the native tool component.
-          await activity.locator('..').getByRole('button', { name: 'Retry', exact: true }).click()
+          await activity
+            .locator('xpath=ancestor::*[@data-chat-node-key][1]')
+            .getByRole('button', { name: 'Retry', exact: true })
+            .click()
         }
         await activity.locator('[data-diff]').getByText('E2E_NEW_TAIL', { exact: true }).first().waitFor()
         if (process.env.DSH_E2E_SCREENSHOTS && round === 1) {

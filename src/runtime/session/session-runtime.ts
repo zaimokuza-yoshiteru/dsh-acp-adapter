@@ -590,9 +590,6 @@ export class AcpSessionRuntime {
   get protocolVersion(): number | undefined {
     return (this.connection ?? this.agentTurnFailure?.turn.connection)?.protocolVersion
   }
-  get launchInfo(): AcpRuntimeLaunch | undefined {
-    return this.launch
-  }
   /** Latest detached options advertised by this ACP session. */
   get configOptions(): readonly acp.SessionConfigOption[] | undefined {
     return this.configSnapshot

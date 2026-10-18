@@ -1,13 +1,7 @@
 // Structural component stubs for element-tree tests; browser E2E uses real primitives.
-export const IconChevronDownOutline14 = () => ({})
-export const IconPlusOutline16 = () => ({})
-export const IconRefreshOutline16 = () => ({})
-export const IconApiOutline14 = () => ({})
-export const IconSearchOutline16 = () => ({})
 export const DisclosureRow = () => ({})
 export const StateDot = () => ({})
 export const DiffBlock = () => ({})
-export const ReadBlock = () => ({})
 export const TerminalBlock = () => ({})
 export const Button = () => ({})
 export const Input = () => ({})

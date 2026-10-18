@@ -36,7 +36,7 @@ const effortOption = (
 })
 
 describe('ACP catalog reasoning metadata', () => {
-  it.each(['codex', 'claude', 'kimi'])('maps %s thought_level to DSH reasoning metadata', (profileId) => {
+  it.each(['codex', 'claude', 'kimi', 'devin'])('maps %s thought_level to DSH reasoning metadata', (profileId) => {
     const info = reasoningInfoFromConfigOptions(profileId, config, [effortOption()])
     expect(info?.efforts.map((effort) => effort.id)).toEqual(['low', 'high', 'max'])
     expect(info?.defaultEffort).toBe('high')
@@ -51,8 +51,22 @@ describe('ACP catalog reasoning metadata', () => {
     expect(info?.efforts.map((effort) => effort.name)).toEqual(['Low', 'High', 'Max'])
   })
 
-  it('omits Devin reasoning because its model ids encode the effort', () => {
-    expect(reasoningInfoFromConfigOptions('devin', config, [effortOption()])).toBeUndefined()
+  it('does not invent reasoning controls for legacy Devin model variants', () => {
+    expect(
+      reasoningInfoFromConfigOptions('devin', config, [
+        {
+          id: 'model',
+          name: 'Model',
+          category: 'model',
+          type: 'select',
+          currentValue: 'swe-medium',
+          options: [
+            { value: 'swe-medium', name: 'SWE Medium' },
+            { value: 'swe-high', name: 'SWE High' },
+          ],
+        },
+      ]),
+    ).toBeUndefined()
   })
 
   it('omits an empty or unknown option and does not invent a default', () => {

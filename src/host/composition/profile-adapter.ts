@@ -1066,7 +1066,9 @@ export class AcpProfileAdapter extends LlmAdapter {
     const reasoning = reasoningInfoFromConfigOptions(
       this.profileId,
       generation.config,
-      generation.probe.configOptionsForModel?.(provider, model) ?? generation.probe.configOptions?.(provider),
+      generation.probe.configOptionsForModel === undefined
+        ? generation.probe.configOptions?.(provider)
+        : generation.probe.configOptionsForModel(provider, model),
     )
     const { inputModalities: _probeModalities, ...identity } = found ?? { provider, id: model, name: model }
     const inputModalities = this.currentInputModalities(provider, model, generation)
@@ -1163,7 +1165,9 @@ export class AcpProfileAdapter extends LlmAdapter {
     const reasoning = reasoningInfoFromConfigOptions(
       this.profileId,
       generation.config,
-      generation.probe.configOptionsForModel?.(provider, model) ?? generation.probe.configOptions?.(provider),
+      generation.probe.configOptionsForModel === undefined
+        ? generation.probe.configOptions?.(provider)
+        : generation.probe.configOptionsForModel(provider, model),
     )
     const { inputModalities: _probeModalities, ...identity } = found ?? { provider, id: model, name: model }
     const inputModalities = this.currentInputModalities(provider, model, generation)

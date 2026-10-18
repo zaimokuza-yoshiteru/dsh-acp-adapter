@@ -308,6 +308,7 @@ export function createAcpActivityDefinition(ownsRoute: OwnsAcpRoute): Conversati
         anchorSeq: context.state.seq,
         location: context.state.location,
         visibility: 'visible',
+        groupTree: 'process',
         data: activityNodeData(context.state),
       }
     },
@@ -352,9 +353,12 @@ export function createAcpLiveActivityDefinition(ownsRoute: OwnsAcpRoute): Conver
         kind: 'acp-activity',
         id: context.id,
         target: 'chat',
-        anchorSeq: state.seq,
+        // The native Turn control sits after opening inputs. Keep this
+        // additive journal marker on the process side of that input.
+        anchorSeq: state.seq + 0.1,
         location: state.location,
         visibility: state.profileId === '' ? 'hidden' : 'visible',
+        groupTree: 'process',
         data: activityNodeData(state),
       }
     },

@@ -137,6 +137,24 @@ function reuseProjectedNode(
   return old.data === node.data ? old : node
 }
 
+function projectActivityRow(
+  owner: ChatConversationViewNode,
+  row: ActivityPresentationRow,
+  windowKey: string,
+): ChatConversationViewNode {
+  // The same journal row can precede its first assistant chunk. Its seat must
+  // survive the move from the admitted request to that assistant's content.
+  const key = JSON.stringify(['acp-activity', windowKey, row.activityId])
+  const nativeTool = usesNativeActivityToolProjection(row)
+  return {
+    ...owner,
+    key,
+    id: key,
+    kind: nativeTool ? 'tool-call' : 'acp-inline-activity',
+    data: nativeTool ? { root: nativeActivityToolBlock(row), acpActivity: row } : row,
+  } as ChatConversationViewNode
+}
+
 export function normalizeAcpChatNodes(
   nodes: readonly ChatConversationViewNode[],
   windows: ReadonlyMap<string, ActivityWindow>,
@@ -204,6 +222,55 @@ export function normalizeAcpChatNodes(
     owners.set(key, (owners.get(key) ?? 0) + 1)
   }
   const turns = new Map<number, { tools: number; answer: number | null; step: number }>()
+  const earlyCandidates = new Map<string, { marker: ChatConversationViewNode; window: ActivityWindow }>()
+  const earlySteps = new Map<string, number>()
+  for (const [windowKey, markers] of markersByWindow) {
+    if (owners.has(windowKey)) continue
+    const window = windows.get(windowKey)
+    // Without an assistant, only a known prefix can be placed without moving
+    // a tool ahead of content that has not reached the native stream yet.
+    if (
+      window === undefined ||
+      window.unavailable ||
+      window.rows.length === 0 ||
+      window.rows.some((row) => row.contentIndex !== 0)
+    )
+      continue
+    if (!markers.some((marker) => marker.visibility !== 'hidden' && !duplicateMarkers.has(marker.key))) continue
+    const requests = markers.filter(
+      (marker) => marker.visibility !== 'hidden' && marker.id.startsWith('request:') && marker.location.kind === 'step',
+    )
+    if (requests.length !== 1) continue
+    const marker = requests[0]!
+    const step = stepKey(marker)!
+    earlyCandidates.set(windowKey, { marker, window })
+    earlySteps.set(step, (earlySteps.get(step) ?? 0) + 1)
+  }
+  for (const [windowKey, { marker, window }] of earlyCandidates) {
+    if (earlySteps.get(stepKey(marker)!) !== 1 || marker.location.kind !== 'step') continue
+    // Empty marker seats stay outside step runs. Actual activity joins the
+    // native run immediately, so its group and member parent need not change
+    // when the first assistant response arrives.
+    const { groupTree: _markerPosition, ...owner } = marker
+    const placed = window.rows.map((row, index) =>
+      reuseProjectedNode(
+        {
+          ...projectActivityRow(owner, row, windowKey),
+          anchorSeq: marker.anchorSeq + index / (window.rows.length + 1),
+        },
+        previous,
+      ),
+    )
+    replaced.set(marker.key, placed)
+    owned.add(windowKey)
+    const turn = marker.location.turn.turn
+    const old = turns.get(turn)
+    turns.set(turn, {
+      tools: (old?.tools ?? 0) + placed.filter((node) => node.kind === 'tool-call').length,
+      answer: old?.answer ?? null,
+      step: marker.location.step.step,
+    })
+  }
   const seenCache = new Set<string>()
   for (const base of nodes) {
     if (base.kind !== 'assistant-step') continue
@@ -250,20 +317,7 @@ export function normalizeAcpChatNodes(
     const segments: ChatConversationViewNode[] = []
     let hasAnchor = false
     const emitRow = (row: ActivityPresentationRow): void => {
-      const key = `${node.key}:acp:${row.activityId}`
-      const nativeTool = usesNativeActivityToolProjection(row)
-      segments.push(
-        reuseProjectedNode(
-          {
-            ...node,
-            key,
-            id: key,
-            kind: nativeTool ? 'tool-call' : 'acp-inline-activity',
-            data: nativeTool ? { root: nativeActivityToolBlock(row), acpActivity: row } : row,
-          },
-          previous,
-        ),
-      )
+      segments.push(reuseProjectedNode(projectActivityRow(node, row, windowKey), previous))
     }
     for (let index = 0; index <= blocks.length; index++) {
       for (const row of boundaries.get(index) ?? []) emitRow(row)

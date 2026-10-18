@@ -14,7 +14,6 @@ export const LONG_TASK_BUDGET = {
 } as const
 
 export type LongTaskScene = 'A' | 'B' | 'C' | 'D'
-export type LongTaskRole = 'lead' | 'member'
 
 export type LongTaskBudget = {
   startedAt: number

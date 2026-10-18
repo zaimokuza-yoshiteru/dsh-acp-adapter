@@ -6,14 +6,16 @@ export function executableOverrideEnvFor(runtime: AcpAgentId | undefined): strin
   return runtime === 'claude' ? 'CLAUDE_CODE_EXECUTABLE' : runtime === 'antigravity' ? 'REFINED_AGY_ACP_BIN' : undefined
 }
 
-/** Devin owns reasoning internally; exposing the option would promise unsupported control. */
-export function exposesReasoningControl(runtime: AcpAgentId | undefined): boolean {
-  return runtime !== 'devin'
-}
-
 /** These Agents advertise different reasoning choices after selecting each model. */
-export function modelProbeOptions(runtime: AcpAgentId | undefined): { probeModelConfigOptions: boolean } {
-  return { probeModelConfigOptions: runtime === 'kimi' || runtime === 'codex' || runtime === 'antigravity' }
+export function modelProbeOptions(runtime: AcpAgentId | undefined): {
+  probeModelConfigOptions: boolean
+  probeModelConfigConcurrency: number
+} {
+  return {
+    probeModelConfigOptions:
+      runtime === 'devin' || runtime === 'kimi' || runtime === 'codex' || runtime === 'antigravity',
+    probeModelConfigConcurrency: runtime === 'devin' ? 8 : 1,
+  }
 }
 
 /** Opt into Claude's draft subagent notifications only for an explicitly bound runtime. */

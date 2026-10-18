@@ -153,6 +153,7 @@ describe('probe 模型目录与缓存', () => {
   it.each([
     ['Kimi', 'acp-kimi', 'kimi'],
     ['Codex', 'acp-codex', 'codex'],
+    ['Devin', 'acp-devin', 'devin'],
   ] as const)('%s 路由保留每个模型自己确认的推理目录和默认值', async (_label, route, runtime) => {
     const handle = mockAgent('happy', {
       MOCK_MODEL_THOUGHT_LEVELS: JSON.stringify({
@@ -172,6 +173,44 @@ describe('probe 模型目录与缓存', () => {
     expect(
       adapter.configOptionsForModel(route, 'mock-model-c')?.find((option) => option.id === 'thought_level'),
     ).toMatchObject({ currentValue: 'on' })
+  })
+
+  it('captures the entire advertised model catalog without truncating at 32 or sending prompts', async () => {
+    const choices = Array.from({ length: 123 }, (_, index) => ({ value: `model-${index}`, name: `Model ${index}` }))
+    const handle = mockAgent('happy', {
+      MOCK_MODEL_OPTIONS: JSON.stringify(choices),
+      MOCK_MODEL_THOUGHT_LEVELS: JSON.stringify(
+        Object.fromEntries(choices.map((choice, index) => [choice.value, index === 0 ? ['high'] : ['low', 'max']])),
+      ),
+    })
+    const route = 'acp-codex'
+    const { adapter } = makeAdapter({ [route]: { ...handle.config, runtime: 'codex' } })
+    expect(await adapter.listModels(route)).toHaveLength(123)
+    expect(
+      adapter.configOptionsForModel(route, 'model-122')?.find((option) => option.id === 'thought_level'),
+    ).toMatchObject({
+      currentValue: 'low',
+      options: [
+        { value: 'low', name: 'Low' },
+        { value: 'max', name: 'Max' },
+      ],
+    })
+    const log = fs.readFileSync(handle.logPath, 'utf8')
+    expect(log).toContain('value="model-122"')
+    expect(log).not.toContain('--> session/prompt')
+  })
+
+  it('does not borrow the initial model reasoning after a model configuration probe is rejected', async () => {
+    const handle = mockAgent('config-write-fail', {
+      MOCK_MODEL_THOUGHT_LEVELS: JSON.stringify({ 'mock-model-a': ['high'], 'mock-model-b': ['low'] }),
+    })
+    const route = 'acp-codex'
+    const { adapter } = makeAdapter({ [route]: { ...handle.config, runtime: 'codex' } })
+    await adapter.listModels(route)
+    expect(adapter.configOptionsForModel(route, 'mock-model-a')).toBeDefined()
+    expect(adapter.configOptionsForModel(route, 'mock-model-b')).toBeUndefined()
+    expect(adapter.configOptionsForModel(route, 'mock-model-c')).toBeUndefined()
+    expect(adapter.configOptionsForModel(route, 'toString')).toBeUndefined()
   })
 
   it('失败隔离：一路 probe 失败进缓存不重 spawn，另一路照常返回模型', async () => {

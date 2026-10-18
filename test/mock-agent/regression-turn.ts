@@ -8,12 +8,16 @@ import { settlementTurn } from './settlement-turn.ts'
 import { scheduleTurn } from './schedule-turn.ts'
 import { longConversationTurn } from './long-conversation-turn.ts'
 import { optionalToolsTurn } from './optional-tools-turn.ts'
+import { workDetailsTurn } from './work-details-turn.ts'
+import { richMixedTurn } from './rich-mixed-turn.ts'
 
 export async function regressionTurn(
   session: MockSession,
   msg: PromptMessage,
   { sendUpdate, sendAgentRequest, respond, log }: MockPeer,
 ) {
+  if (await richMixedTurn(session, msg, { sendUpdate, sendAgentRequest, respond, log })) return
+  if (await workDetailsTurn(session, msg, { sendUpdate, sendAgentRequest, respond, log })) return
   if (await optionalToolsTurn(session, msg, { sendUpdate, sendAgentRequest, respond, log })) return
   if (await teamTurn(session, msg, { sendUpdate, sendAgentRequest, respond, log })) return
   if (await scheduleTurn(session, msg, { sendUpdate, sendAgentRequest, respond, log })) return

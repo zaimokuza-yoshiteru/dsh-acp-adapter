@@ -24,6 +24,152 @@ import {
 } from '../../../src/client/ui/AcpAssistantStream.ts'
 
 describe('native assistant renderer composition', () => {
+  it('keeps a first tool in the same native seat from its request through the durable answer', () => {
+    const data: AcpActivityNodeData = {
+      ownerDshSessionId: '',
+      promptAnchorMessageId: 'prompt',
+      profileId: 'codex',
+      agentSessionId: '',
+      committedActivitySeq: 0,
+    }
+    const location = {
+      kind: 'step',
+      turn: { turn: 1 },
+      step: { step: 1, data: { get: () => undefined } },
+    }
+    const marker = (key: string, id: string, patch = {}) =>
+      ({
+        key,
+        id,
+        kind: 'acp-activity',
+        target: 'chat',
+        visibility: 'visible',
+        groupTree: 'process',
+        anchorSeq: 10,
+        location,
+        data,
+        ...patch,
+      }) as unknown as ChatConversationViewNode
+    const live = marker('live', 'input:prompt', { location: { kind: 'turn', turn: location.turn } })
+    const request = marker('request', 'request:10')
+    const row = {
+      activityId: 'tool:first',
+      kind: 'tool',
+      status: 'running',
+      contentIndex: 0,
+      rawDetail: JSON.stringify({ toolName: 'export_report', rawInput: {} }),
+    } as AcpActivityView
+    const key = activityWindowKey(data, 'owner')
+    const running = normalizeAcpChatNodes(
+      [live, request],
+      new Map([[key, { rows: [row], unavailable: false }]]),
+      undefined,
+      undefined,
+      'owner',
+    )
+    expect(running).toHaveLength(1)
+    expect(running[0]!.kind).toBe('tool-call')
+    expect(running[0]!.groupTree).toBeUndefined()
+    expect(running[0]!.location).toBe(location)
+    const settledData = { ...data, ownerDshSessionId: 'owner', settled: true, committedActivitySeq: 1 }
+    const assistant = {
+      key: 'assistant',
+      id: 'assistant',
+      kind: 'assistant-step',
+      target: 'chat',
+      visibility: 'visible',
+      anchorSeq: 11,
+      location: { ...location, step: { ...location.step, data: { get: () => settledData } } },
+      data: { status: 'settled', turn: 1, step: 1, blocks: [{ kind: 'text', text: 'Done' }] },
+    } as unknown as ChatConversationViewNode
+    const durable = normalizeAcpChatNodes(
+      [live, request, assistant, marker('durable', 'answer:1', { data: settledData })],
+      new Map([[key, { rows: [{ ...row, status: 'completed' }], unavailable: false }]]),
+      undefined,
+      new Map(running.map((node) => [node.key, node])),
+      'owner',
+    )
+    expect(durable.map((node) => node.kind)).toEqual(['tool-call', 'assistant-step'])
+    expect(durable[0]!.key).toBe(running[0]!.key)
+    expect(durable[0]!.id).toBe(running[0]!.id)
+  })
+
+  it.each(['empty', 'unavailable', 'legacy', 'future', 'two requests', 'turn only', 'hidden route'])(
+    'keeps the first-tool fallback when ownership is not confirmed: %s',
+    (scenario) => {
+      const data = {
+        ownerDshSessionId: 'owner',
+        promptAnchorMessageId: 'prompt',
+        profileId: 'codex',
+        agentSessionId: '',
+        committedActivitySeq: 0,
+      }
+      const location = { kind: 'step', turn: { turn: 1 }, step: { step: 1 } }
+      const marker = (key: string, id: string) =>
+        ({
+          key,
+          id,
+          kind: 'acp-activity',
+          target: 'chat',
+          visibility: 'visible',
+          groupTree: 'process',
+          anchorSeq: 10,
+          location,
+          data,
+        }) as unknown as ChatConversationViewNode
+      const live = marker('live', 'input:prompt')
+      const requests = scenario === 'turn only' ? [] : [marker('request', 'request:10')]
+      if (scenario === 'two requests') requests.push(marker('request-2', 'request:11'))
+      const nodes =
+        scenario === 'hidden route' ? [{ ...live, visibility: 'hidden' as const }, ...requests] : [live, ...requests]
+      const row = {
+        activityId: 'tool:first',
+        kind: 'tool',
+        status: 'running',
+        ...(scenario === 'legacy' ? {} : { contentIndex: scenario === 'future' ? 1 : 0 }),
+      } as AcpActivityView
+      const result = normalizeAcpChatNodes(
+        nodes,
+        new Map([
+          [
+            activityWindowKey(data),
+            {
+              rows: scenario === 'empty' ? [] : [row],
+              unavailable: scenario === 'unavailable',
+            },
+          ],
+        ]),
+      )
+      expect(result.some((node) => node.kind === 'tool-call')).toBe(false)
+      expect(result).toEqual(scenario === 'hidden route' ? [] : [live])
+    },
+  )
+
+  it('does not assign two executed prompt windows to the same request step', () => {
+    const location = { kind: 'step', turn: { turn: 1 }, step: { step: 1 } }
+    const markers = ['one', 'two'].map((prompt) => ({
+      key: prompt,
+      id: `request:${prompt}`,
+      kind: 'acp-activity',
+      target: 'chat',
+      visibility: 'visible',
+      groupTree: 'process',
+      anchorSeq: 10,
+      location,
+      data: { ownerDshSessionId: 'owner', promptAnchorMessageId: prompt },
+    })) as unknown as ChatConversationViewNode[]
+    const windows = new Map(
+      markers.map((marker) => [
+        activityWindowKey(marker.data as AcpActivityNodeData),
+        {
+          rows: [{ activityId: 'tool:first', kind: 'tool', status: 'running', contentIndex: 0 } as AcpActivityView],
+          unavailable: false,
+        },
+      ]),
+    )
+    expect(normalizeAcpChatNodes(markers, windows)).toEqual(markers)
+  })
+
   it('keeps one live or settled marker per prompt window and ignores hidden live markers', () => {
     const data: AcpActivityNodeData = {
       ownerDshSessionId: 'owner',

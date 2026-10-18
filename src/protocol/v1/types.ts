@@ -256,9 +256,8 @@ export interface AcpProbeResult {
    * `config_option_update` 推送兜底（devin 实测流量顺序）。
    */
   configOptions: acp.SessionConfigOption[] | undefined
-  /** Per-model snapshots captured in the same disposable probe session.  This
-   * is opt-in because only Agents whose reasoning catalogue changes with the
-   * selected model need the extra bounded config writes. */
+  /** Detached per-model configuration, excluding the repeated model catalog.
+   * Only an exact Agent-confirmed model response authorizes these controls. */
   modelConfigOptions?: Readonly<Record<string, readonly acp.SessionConfigOption[]>>
   /** 拆除前抓取的脱敏 stderr 尾。 */
   stderrTail: string[]
@@ -272,4 +271,8 @@ export interface AcpProbeOptions extends AcpConnectionOptions {
   /** Capture the confirmed config snapshot after selecting each advertised
    * model. No prompt is sent and the disposable session is deleted normally. */
   probeModelConfigOptions?: boolean
+  /** Maximum disposable probe sessions in one connection (1 by default, at
+   * most 8). Extra sessions are created only after independent thought/model
+   * controls are advertised; each session's configuration writes stay serial. */
+  probeModelConfigConcurrency?: number
 }

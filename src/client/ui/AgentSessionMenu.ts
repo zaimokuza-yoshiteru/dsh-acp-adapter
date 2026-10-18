@@ -64,7 +64,7 @@ export function AgentSessionMenu({
           label: h(
             'span',
             {
-              className: `${css.menuContent} ${css.settingRow}`,
+              className: css.settingRow,
               ref: index === 0 ? firstContent : undefined,
               title: item.description ?? undefined,
             },
@@ -77,7 +77,7 @@ export function AgentSessionMenu({
       : [
           {
             id: 'back',
-            label: h('span', { className: css.menuContent, ref: firstContent }, t('agentControlBack')),
+            label: h('span', { ref: firstContent }, t('agentControlBack')),
             icon: h(IconChevronLeftOutlineMedium, null),
           },
           { type: 'label', id: 'setting-title', text: group.name },
@@ -93,7 +93,7 @@ export function AgentSessionMenu({
               disabled: choice.disabled,
               label: h(
                 'span',
-                { className: `${css.menuContent} ${css.choice}` },
+                { className: css.choice },
                 choice.label,
                 choice.description ? h('span', { className: css.choiceDescription }, choice.description) : null,
               ),
@@ -103,7 +103,7 @@ export function AgentSessionMenu({
   if (items.length === 0)
     items.push({
       id: 'unavailable',
-      label: h('span', { className: css.menuContent }, t('agentControlUnavailable')),
+      label: h('span', null, t('agentControlUnavailable')),
       disabled: true,
     })
   return h(

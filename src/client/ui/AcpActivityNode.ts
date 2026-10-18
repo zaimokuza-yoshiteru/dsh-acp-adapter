@@ -1,32 +1,20 @@
 import type { PropsRenderFactories } from '@deepseek-ai/dsh-client-ui-slots'
 import { PartialArguments } from '@deepseek-ai/dsh-util-values'
+import { isAbsoluteWorkspacePath } from '@deepseek-ai/dsh-util-workspace-path'
 import { activityDiffsOf } from '../../contract/activity-diffs.ts'
-import {
-  createElement as h,
-  Fragment,
-  useEffect,
-  useRef,
-  useState,
-  useSyncExternalStore,
-  useMemo,
-  useCallback,
-} from 'react'
+import { createElement as h, useCallback, useEffect, useRef, useState, useSyncExternalStore, useMemo } from 'react'
 import type { ReactNode } from 'react'
 import type { ToolCallBlock, ChatNodeViewProps, ChatConversationViewNode } from '@deepseek-ai/dsh-client-ui-chat/client'
 import {
   Button,
   DiffBlock,
   DisclosureRow,
-  Modal,
   JsonTree,
-  ReadBlock,
   StateDot,
   TerminalBlock,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type {
   DiffHunk,
-  ReadBlockLabels,
-  ReadBlockProps,
   StateDotState,
   TerminalBlockLabels,
   TerminalBlockProps,
@@ -46,6 +34,7 @@ import { AcpActivityJournalHub } from '../data/activity-journal.ts'
 import css from './AcpActivityNode.module.css'
 import { nativeOwner, type NativeToolOwner } from './native-tool-renderer.ts'
 import type { AcpLocaleKey } from './locales.ts'
+import { activityToolOutput, joinActivityToolOutput } from './activity-tool-output.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
@@ -66,7 +55,7 @@ export type ActivityNodeProps = {
   readonly onOpenProjectedChild?: (parentSessionId: string, childSessionId: string) => void
   readonly jsonStringWrapping?: AcpJsonStringWrapping
   readonly renderTool?: (row: AcpActivityView) => ReactNode
-} & Pick<import('@deepseek-ai/dsh-client-ui-chat/client').ChatNodeOwnerProps, 'openFile'>
+} & Pick<ChatNodeViewProps, 'openFile' | 'useDisclosure'>
 
 /**
  * Activity is owned by the DSH session that committed the ACP replay payload.
@@ -203,45 +192,22 @@ function activityDiffs(row: AcpActivityView, detail: unknown): DiffHunk[] {
   return activityDiffsOf(detail)
 }
 
-type ReadDetail = Pick<ReadBlockProps, 'label' | 'lines' | 'totalLines' | 'lang'>
-
-/** Project Kimi's numbered read output (`line<TAB>text`) onto DSH ReadBlock. */
-function readDetail(value: unknown): ReadDetail | undefined {
-  if (!record(value) || value.toolKind !== 'read' || !record(value.rawInput) || typeof value.rawOutput !== 'string')
+/** Use one recorded absolute location only when it identifies the tool's file target. */
+function operationFilePath(detail: Record<string, unknown>, target: unknown): string | undefined {
+  if (typeof target !== 'string' || target === '' || !Array.isArray(detail.locations) || detail.locations.length !== 1)
     return undefined
-  // Kimi also classifies Grep as read. A search result is not a file window.
-  if (value.rawInput.pattern !== undefined || value.rawInput.query !== undefined) return undefined
-  const label =
-    typeof value.rawInput.path === 'string'
-      ? value.rawInput.path
-      : typeof value.rawInput.file_path === 'string'
-        ? value.rawInput.file_path
-        : undefined
-  if (label === undefined || label.trim() === '' || value.rawOutput === '') return undefined
-  const normalized = value.rawOutput
-    .replace(/\r\n/g, '\n')
-    .replace(/\n<system>[\s\S]*<\/system>\s*$/, '')
-    .replace(/\n$/, '')
-  if (normalized === '') return undefined
-  const lines = normalized.split('\n').map((line) => {
-    const match = /^(\d+)\t(.*)$/.exec(line)
-    if (match?.[1] === undefined || match[2] === undefined) return undefined
-    const number = Number(match[1])
-    return Number.isSafeInteger(number) && number > 0 ? { number, text: match[2] } : undefined
-  })
-  if (lines.some((line) => line === undefined)) return undefined
-  const numbered = lines as { readonly number: number; readonly text: string }[]
-  if (numbered.some((line, index) => index > 0 && line.number !== numbered[index - 1]!.number + 1)) return undefined
-  const extension = /\.([A-Za-z0-9]+)$/.exec(label)?.[1]?.toLowerCase()
-  return {
-    label,
-    lines: numbered,
-    // ACP does not expose the whole file's line count here. Using the returned
-    // window length suppresses a fabricated "N of M" claim while preserving
-    // the Agent-provided file line numbers in the gutter.
-    totalLines: lines.length,
-    ...(extension === undefined ? {} : { lang: extension }),
-  }
+  const location = detail.locations[0]
+  if (!record(location) || typeof location.path !== 'string' || !isAbsoluteWorkspacePath(location.path))
+    return undefined
+  const windows = /^[A-Za-z]:[/\\]/.test(location.path) || location.path.startsWith('\\\\')
+  const normalize = (path: string) => (windows ? path.replaceAll('\\', '/') : path)
+  const absolute = normalize(location.path)
+  const file = normalize(target)
+  if (isAbsoluteWorkspacePath(target)) return absolute === file ? location.path : undefined
+  const parts = file.split('/').filter((part) => part !== '.')
+  if (parts.length === 0 || parts.some((part) => part === '' || part === '..' || /[*?\[\]]/.test(part)))
+    return undefined
+  return absolute.endsWith(`/${parts.join('/')}`) ? location.path : undefined
 }
 
 function diffLabels(t: ActivityNodeProps['t']) {
@@ -273,21 +239,6 @@ function terminalLabels(t: ActivityNodeProps['t']): TerminalBlockLabels {
     collapseAria: t('activity.terminal.collapseAria'),
     collapse: t('activity.collapse'),
     expandAria: (hidden) => t('activity.terminal.expandAria', { count: hidden }),
-    expand: (hidden) => t('activity.expandCount', { count: hidden }),
-  }
-}
-
-function readLabels(t: ActivityNodeProps['t']): ReadBlockLabels {
-  return {
-    codeLabel: t('activity.code'),
-    wrapLabel: t('activity.wrap'),
-    unwrapLabel: t('activity.unwrap'),
-    window: (shown, total) => t('activity.read.window', { shown, total }),
-    copy: t('activity.copy'),
-    copied: t('activity.copied'),
-    collapseAria: t('activity.collapse'),
-    expandAria: (hidden) => t('activity.expandCount', { count: hidden }),
-    collapse: t('activity.collapse'),
     expand: (hidden) => t('activity.expandCount', { count: hidden }),
   }
 }
@@ -463,21 +414,18 @@ export function activityRowElement({
     record(detail) && typeof detail.projectedChildSessionId === 'string' ? detail.projectedChildSessionId : undefined
   const diffs = activityDiffs(row, detail)
   const terminal = terminalDetail(row, detail)
-  const read = readDetail(detail)
   const showRawDetail =
     hasMeaningfulDetail(detail) &&
     external === undefined &&
     !projectionLinkOnly(detail) &&
     diffs.length === 0 &&
-    terminal === undefined &&
-    read === undefined
+    terminal === undefined
   const expandable =
     external !== undefined ||
     projectedChildSessionId !== undefined ||
     showRawDetail ||
     diffs.length > 0 ||
     terminal !== undefined ||
-    read !== undefined ||
     row.display?.unavailable !== undefined
   const body = h(
     'div',
@@ -540,7 +488,6 @@ export function activityRowElement({
     terminal === undefined
       ? null
       : h(TerminalBlock, { ...terminal, labels: terminalLabels(t), className: css.nativeBlock }),
-    read === undefined ? null : h(ReadBlock, { ...read, labels: readLabels(t), className: css.nativeBlock }),
     !showRawDetail
       ? null
       : typeof detail === 'object' && detail !== null
@@ -588,8 +535,9 @@ export function ActivityRow(props: {
   readonly onOpenProjectedChild?: (parentSessionId: string, childSessionId: string) => void
   readonly jsonStringWrapping?: AcpJsonStringWrapping
   readonly renderTool?: (row: AcpActivityView) => ReactNode
+  readonly useDisclosure: ChatNodeViewProps['useDisclosure']
 }): ReactNode {
-  const [open, setOpen] = useState(false)
+  const { expanded: open, setExpanded: setOpen, toggle } = props.useDisclosure()
   const [loaded, setLoaded] = useState<AcpActivityView | undefined>(undefined)
   const [failed, setFailed] = useState(false)
   const [attempt, setAttempt] = useState(0)
@@ -637,9 +585,6 @@ export function ActivityRow(props: {
     current,
     attempt,
   ])
-  const toggle = (): void => {
-    setOpen((value) => !value)
-  }
   if (row.detailDeferred === true && current === undefined) {
     const pendingDetail = open
       ? h(
@@ -759,19 +704,33 @@ function planRowElement(
       ? h('p', null, t(row.display?.unavailable === 'invalid' ? 'activity.detailInvalid' : 'activity.detailTooLarge'))
       : h(
           'ul',
-          null,
+          { className: css.planList },
           ...entries.map((entry, index) =>
             h(
               'li',
-              { key: index },
-              h(StateDot, {
-                state: entry.status === 'completed' ? 'done' : entry.status === 'in_progress' ? 'ongoing' : 'idle',
-              }),
-              entry.content,
+              { key: index, className: css.planItem, 'data-status': entry.status },
               h(
                 'span',
-                null,
-                ` · ${t(entry.status === 'completed' ? 'activity.status.completed' : entry.status === 'in_progress' ? 'activity.status.running' : 'activity.status.pending')}`,
+                { className: css.planGlyph, 'aria-hidden': true },
+                h(StateDot, {
+                  state: entry.status === 'completed' ? 'done' : entry.status === 'in_progress' ? 'ongoing' : 'idle',
+                }),
+              ),
+              h(
+                'span',
+                { className: css.planContent },
+                h('span', null, entry.content),
+                h(
+                  'span',
+                  { className: css.planStatus },
+                  ` · ${t(
+                    entry.status === 'completed'
+                      ? 'activity.status.completed'
+                      : entry.status === 'in_progress'
+                        ? 'activity.status.running'
+                        : 'activity.status.pending',
+                  )}`,
+                ),
               ),
             ),
           ),
@@ -802,6 +761,7 @@ export function AcpActivityContent({
   onOpenProjectedChild,
   jsonStringWrapping,
   renderTool,
+  useDisclosure,
 }: ActivityNodeProps): ReactNode {
   const [rows, setRows] = useState<readonly ActivityPresentationRow[]>([])
   const [unavailable, setUnavailable] = useState(false)
@@ -845,6 +805,7 @@ export function AcpActivityContent({
         t,
         openFile,
         journalHub,
+        useDisclosure,
         ...(renderTool === undefined ? {} : { renderTool }),
         ...(jsonStringWrapping === undefined ? {} : { jsonStringWrapping }),
         ...(onOpenProjectedChild === undefined ? {} : { onOpenProjectedChild }),
@@ -888,6 +849,7 @@ export function nativeActivityToolBlock(
   row: AcpActivityView,
   externalAgentLabel?: string,
   externalAgentStatusLabel?: (status: string) => string,
+  translateOutput?: ActivityNodeProps['t'],
 ): ToolCallBlock {
   if (row.status === 'unfinished')
     throw new Error('An ACP activity without a reported result cannot be projected as a native tool result')
@@ -913,7 +875,6 @@ export function nativeActivityToolBlock(
   name = name.replace(/^mcp__.+?__/, '').replace(/^[a-f0-9]{8,}_/, '')
   const command = record(input) ? (input.command ?? input.cmd) : undefined
   const terminal = terminalDetail(row, value)
-  const read = readDetail(value)
   const diffs = activityDiffs(row, value)
   const file = record(input) ? (input.file_path ?? input.path) : undefined
   let meta: unknown
@@ -939,26 +900,23 @@ export function nativeActivityToolBlock(
     }
     meta = { diffs }
   } else if (
-    read !== undefined ||
-    (detail.toolKind === 'read' &&
-      typeof file === 'string' &&
-      record(input) &&
-      input.pattern === undefined &&
-      input.query === undefined)
+    detail.toolKind === 'read' &&
+    typeof file === 'string' &&
+    record(input) &&
+    input.pattern === undefined &&
+    input.query === undefined
   ) {
     name = 'read'
-    input = { ...(record(input) ? input : {}), file_path: file ?? read?.label }
-    // Without a file total, an offset window cannot satisfy native Read's
-    // whole-file contract. Keep its original output in the native IO card.
-    if (read !== undefined && read.lines[0]?.number === 1)
-      meta = {
-        path: read.label,
-        offset: read.lines[0]?.number ?? 1,
-        lines: read.lines,
-        totalLines: read.totalLines,
-        lang: read.lang,
-      }
+    input = { ...(record(input) ? input : {}), file_path: file }
+    // Numbered output does not report the file total, even when it starts at 1.
+    // Keep that output in the native IO body instead of fabricating Read metadata.
   }
+  const target = record(input) ? (input.file_path ?? input.path) : undefined
+  const path =
+    diffs.length <= 1 && (name === 'read' || name === 'write' || name === 'edit')
+      ? operationFilePath(detail, target)
+      : undefined
+  if (path !== undefined) meta = { ...(record(meta) ? meta : {}), path }
   if (externalAgentLabel !== undefined && externalDelegations.length > 0) {
     const labels = externalDelegations.map((item) =>
       externalAgentStatusLabel === undefined
@@ -972,12 +930,18 @@ export function nativeActivityToolBlock(
   const args = PartialArguments.fromText(argsRaw)
   if (row.status === 'running')
     return { callId, name, phase: 'start', args, argsRaw, turn: 0, step: 0, time: row.time, subCalls: [] }
-  let output = contentText(detail.rawOutput ?? detail.content)
-  if (name === 'read' && read !== undefined && meta !== undefined) {
-    output = `<path>${read.label}</path>\n<type>file</type>\n<content>\n${output}\n</content>`
-  }
+  const shell = name === 'bash' || name === 'pwsh'
+  let output =
+    translateOutput === undefined
+      ? contentText(detail.rawOutput ?? detail.content)
+      : activityToolOutput(
+          shell ? (terminal?.output ?? detail.rawOutput) : detail.rawOutput,
+          detail.content,
+          translateOutput,
+          shell ? terminal : undefined,
+        ).text
   if ((name === 'bash' || name === 'pwsh') && terminal !== undefined) {
-    output = terminal.output ?? output
+    if (translateOutput === undefined) output = terminal.output ?? output
     if (terminal.signal !== undefined) output += `\n[killed by signal: ${terminal.signal}]`
     else if (terminal.exitCode !== undefined) output += `\n[exit code: ${terminal.exitCode}]`
   }
@@ -1015,49 +979,80 @@ function NativeActivityTool({
   row: AcpActivityView
   t: ActivityNodeProps['t']
 }): ReactNode {
-  const [inspecting, setInspecting] = useState(false)
   const block = useMemo(
     () =>
-      nativeActivityToolBlock(row, t('activity.externalAgent'), (status) => {
-        const statusKey =
-          status === 'running' || status === 'completed' || status === 'failed' || status === 'cancelled'
-            ? status
-            : 'unfinished'
-        return t(`activity.externalAgentStatus.${statusKey}` as AcpLocaleKey)
-      }),
+      nativeActivityToolBlock(
+        row,
+        t('activity.externalAgent'),
+        (status) => {
+          const statusKey =
+            status === 'running' || status === 'completed' || status === 'failed' || status === 'cancelled'
+              ? status
+              : 'unfinished'
+          return t(`activity.externalAgentStatus.${statusKey}` as AcpLocaleKey)
+        },
+        t,
+      ),
     [row, t],
   )
-  const inspectCall = useCallback(() => setInspecting(true), [])
   const props: NativeToolOwner = {
     ...nativeOwner(owner),
-    // ACP calls are sidecar facts, so the native event-log inspector cannot
-    // resolve their IDs. Inspect the recorded ACP payload in a native Modal.
-    inspectCall,
+    // Sidecar call IDs have no native trajectory event to inspect.
+    inspectCall: undefined,
     node: { ...owner.node, kind: 'tool-call', data: { root: block } },
   }
+  const supplement = useMemo(() => {
+    // Only a successful adapter-projected root diff suppresses generic output.
+    // Read has no invented lines metadata; Bash renders the mapped output text.
+    // Match the normalized arguments consumed by the pinned native Diff card.
+    if (
+      !('kind' in block) ||
+      block.isError ||
+      (block.name !== 'write' && block.name !== 'edit') ||
+      !record(block.meta) ||
+      !Array.isArray(block.meta.diffs) ||
+      block.meta.diffs.length === 0 ||
+      (block.args.text('file_path') ?? '').trim() === '' ||
+      (block.name === 'edit' && block.args.has('replace_all') && typeof block.args.value('replace_all') !== 'boolean')
+    )
+      return ''
+    const detail = detailValue(row)
+    if (!record(detail)) return ''
+    const output = activityToolOutput(detail.rawOutput, detail.content, t)
+    const hasDisplayCaption = textContent(detail.content).some((text) => text.trim() !== '')
+    return output.hasUnrepresentedSupplement || hasDisplayCaption
+      ? joinActivityToolOutput(output.items.filter((item) => item.kind !== 'diff'))
+      : ''
+  }, [block, row, t])
+  // Keep this owner stable as streamed or deferred content arrives. Changing
+  // between the direct tree and this wrapper would discard a user's open state.
+  if (block.subCalls.length === 0) return h(NativeToolWithSupplement, { owner, props, supplement })
+  return owner.renderFactorySlot('acp.native-tool', props)
+}
+
+/** One disclosure invocation owns both the native row and its extra content.
+ * Calling the bound hook twice creates independent states. This is confined to
+ * an ACP root with no subcalls; ordinary native trees retain their own hooks. */
+function NativeToolWithSupplement({
+  owner,
+  props,
+  supplement,
+}: {
+  owner: Omit<ChatNodeViewProps, 't'> & PropsRenderFactories
+  props: NativeToolOwner
+  supplement: string
+}): ReactNode {
+  const disclosure = owner.useDisclosure()
+  const useSharedDisclosure = useCallback(() => disclosure, [disclosure])
   return h(
-    Fragment,
-    null,
-    owner.renderFactorySlot('acp.native-tool', props),
-    inspecting
-      ? h(
-          Modal,
-          {
-            open: true,
-            onClose: () => setInspecting(false),
-            title: row.presentation,
-            closeLabel: t('auditClose'),
-            ...(css.inspection === undefined ? {} : { contentClassName: css.inspection }),
-          },
-          row.detailDeferred === true
-            ? h('p', { role: 'status' }, t('activity.detailLoading'))
-            : h(JsonTree, {
-                data: { activity: detailValue(row) },
-                label: t('auditDetails'),
-                labels: acpJsonTreeLabels(t),
-                expandTopLevel: true,
-              }),
-        )
+    'div',
+    {
+      className: `${css.nativeToolOwner}${supplement === '' ? '' : ` ${css.hasSupplement}`}`,
+      'data-acp-tool-supplement-owner': true,
+    },
+    owner.renderFactorySlot('acp.native-tool', { ...props, useDisclosure: useSharedDisclosure }),
+    disclosure.expanded && supplement !== ''
+      ? h('pre', { className: `${css.raw} ${css.toolSupplement}`, 'data-acp-tool-supplement': true }, supplement)
       : null,
   )
 }

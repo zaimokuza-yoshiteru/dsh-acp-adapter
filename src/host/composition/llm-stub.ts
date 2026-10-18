@@ -35,7 +35,7 @@ import type * as acp from '@agentclientprotocol/sdk'
 import { acpProbeConfigKey, acpProbeFresh } from '../../domain/session/agent-config.ts'
 import type { AcpStubAgentConfig } from '../../domain/session/agent-config.ts'
 import { effectiveRuntimeOf } from '../../contract/agent-config.ts'
-import { exposesReasoningControl, modelProbeOptions } from '../../domain/session/agent-compatibility.ts'
+import { modelProbeOptions } from '../../domain/session/agent-compatibility.ts'
 import { acpConfigOptionsSnapshot } from '../../domain/session/acp-config-options.ts'
 import { acpCanonicalHash16 } from '../../persistence/sidecar.ts'
 import { AcpClientConnection } from '../../protocol/v1/connection.ts'
@@ -170,11 +170,10 @@ export interface AcpProbeCacheEntry {
 /** Extract the `category: 'model'` select options from a probe, flattening grouped options. */
 /** Resolve ACP thought-level metadata into DSH's adapter-owned reasoning shape. */
 export function reasoningInfoFromConfigOptions(
-  profileId: string,
-  config: AcpStubAgentConfig,
+  _profileId: string,
+  _config: AcpStubAgentConfig,
   configOptions: readonly acp.SessionConfigOption[] | undefined,
 ): LlmModelReasoningInfo | undefined {
-  if (!exposesReasoningControl(effectiveRuntimeOf(profileId, config))) return undefined
   const option = configOptions?.find((candidate) => {
     if (candidate.type !== 'select') return false
     const id = candidate.id.toLowerCase().replaceAll('-', '_')
@@ -299,7 +298,7 @@ function acpProbeFailure(
       case 'timeout':
         return wrap(
           error.kind,
-          `ACP agent "${config.command}" did not answer initialize/session/new before the probe timeout. Verify the command, then re-check it in ACP settings${ref}`,
+          `ACP agent "${config.command}" did not answer initialization or session configuration discovery before the probe timeout. Verify the command, then re-check it in ACP settings${ref}`,
         )
       case 'aborted':
         // 调用方中止（连接层 aborted kind，taxonomy user-rejected）
@@ -422,11 +421,17 @@ export class AcpStubAdapter extends LlmAdapter {
   }
 
   /** Configuration confirmed after selecting one model in the disposable
-   * probe session. Falls back to the initial session snapshot. */
+   * probe session. A missing model-specific result cannot borrow another
+   * model's reasoning choices. Agents without model-specific discovery keep
+   * their original session-scoped snapshot. */
   configOptionsForModel(provider: string, model: string): readonly acp.SessionConfigOption[] | undefined {
     const entry = this.cache.get(provider)
     if (entry?.result.kind !== 'ok') return undefined
-    return entry.result.modelConfigOptions?.[model] ?? entry.result.configOptions
+    return entry.result.modelConfigOptions === undefined
+      ? entry.result.configOptions
+      : Object.hasOwn(entry.result.modelConfigOptions, model)
+        ? entry.result.modelConfigOptions[model]
+        : undefined
   }
 
   private async probeAndCache(
@@ -455,7 +460,7 @@ export class AcpStubAdapter extends LlmAdapter {
       // the confirmed options from the disposable probe session so DSH does not
       // offer a level (for example Codex Mini + Ultra) that the live session
       // would immediately reject.
-      const { probeModelConfigOptions } = modelProbeOptions(runtimeId)
+      const modelDiscovery = modelProbeOptions(runtimeId)
       const probe = await AcpClientConnection.probe(
         preparation === undefined
           ? { argv, cwd: os.tmpdir(), env: { ...config.env }, subprocess: resolution.seam }
@@ -471,12 +476,12 @@ export class AcpStubAdapter extends LlmAdapter {
         preparation?.cwd === undefined
           ? {
               ...this.probeOptions,
-              probeModelConfigOptions,
+              ...modelDiscovery,
             }
           : {
               ...this.probeOptions,
               cwd: preparation.cwd,
-              probeModelConfigOptions,
+              ...modelDiscovery,
             },
       )
       const models = probeModels(provider, probe.configOptions)

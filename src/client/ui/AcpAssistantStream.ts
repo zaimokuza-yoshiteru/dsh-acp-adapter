@@ -570,6 +570,7 @@ export function installAcpAssistantStream(ctx: Context, dependencies: Dependenci
             ...dependencies,
             row,
             openFile: owner.openFile,
+            useDisclosure: owner.useDisclosure,
             renderTool: (full) => renderNativeActivityTool(owner, full, dependencies.t),
           })
     },
@@ -582,7 +583,12 @@ export function installAcpAssistantStream(ctx: Context, dependencies: Dependenci
         locale: 'acpActivity',
       },
       (props: Omit<ChatNodeViewProps<'acp-inline-activity'>, 't'>) =>
-        h(ActivityRow, { ...dependencies, row: props.node.data, openFile: props.openFile }),
+        h(ActivityRow, {
+          ...dependencies,
+          row: props.node.data,
+          openFile: props.openFile,
+          useDisclosure: props.useDisclosure,
+        }),
     ),
   )
   // Standalone ACP markers remain the fallback for unavailable journals or turns

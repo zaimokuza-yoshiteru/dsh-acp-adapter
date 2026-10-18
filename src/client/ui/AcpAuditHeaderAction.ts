@@ -741,7 +741,7 @@ function AcpAuditLoadedView(props: LoadedAcpAuditViewProps): ReactNode {
         : exportState === 'downloaded' && supportExport !== null
           ? h(
               'div',
-              { className: css.hint, 'data-support-export-summary': true },
+              { 'data-support-export-summary': true },
               h('p', { role: 'status' }, t('auditExportComplete')),
               h('p', null, t('auditExportPrivacy')),
               h(

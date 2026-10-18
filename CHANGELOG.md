@@ -4,6 +4,26 @@
 
 User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for publication dates, exact installation instructions, and checksums. Historical entries were reconstructed from tag diffs; npm packages were not republished.
 
+## 0.2.1-rc.2.3
+
+### 中文
+
+- 恢复新版 Devin 的逐模型推理强度选项，同时保留旧版按模型变体提供选项的兼容方式；目录探测使用独立会话，避免并发切换模型相互覆盖。
+- 修复消息刚发出便显示“已完成分析”的问题。工作步骤沿用 DSH 原生展示与收起设置，保留首个工具从运行到完成时的手动展开状态，并对齐信息流间距。
+- 保留工具输出中的补充正文和资源说明，Diff 与补充内容共享折叠状态；没有原生轨迹记录的工具不再显示无效的“查看”入口。
+- 修正文件读取范围与历史文件打开：缺少文件总行数时不冒称完整读取，明确匹配的绝对路径不随当前工作目录改变。
+- 统一中英文提示和成员中断的操作范围，清理无效代码与样式引用；README 安装示例固定到本版，无需新增配置。
+- 继续支持 DSH `0.2.1-rc.2`。单次工具 Diff 与整轮文件改动摘要分别处理，后者仍受宿主记录接口限制。
+
+### English
+
+- Restore per-model reasoning options in newer Devin versions while preserving older model-variant catalogs. Probe models in separate sessions to prevent concurrent model changes from overwriting one another.
+- Fix a completed-analysis indicator appearing immediately after sending a message. Follow native DSH work-detail and collapse settings, preserve the first tool’s manual expansion through completion, and align conversation spacing.
+- Preserve supplemental tool text and resource descriptions, with shared disclosure state for a Diff and its supplemental content. Omit the ineffective View action when a tool has no native trajectory record.
+- Correct file-read scope and historical file opening: do not imply a complete read without a known file line count, and keep a matched absolute path independent of the current working directory.
+- Align Chinese and English copy and the scope of member interruption, remove unused code and style references, and pin README installation examples to this release without additional configuration.
+- Continue to support DSH `0.2.1-rc.2`. Per-tool Diffs and per-turn changed-file summaries remain separate; the latter still depends on Host recording interfaces.
+
 ## 0.2.1-rc.2.2
 
 ### 中文

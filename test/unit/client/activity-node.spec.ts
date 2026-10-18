@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   activityJournalSessionId,
   activityRowElement,
+  ActivityRow,
   completedProjectedChild,
   usesNativeActivityToolProjection,
   visibleActivityRows,
@@ -11,6 +12,7 @@ import { AcpActivityJournalStore } from '../../../src/client/data/activity-journ
 import { AcpActivityJournalHub } from '../../../src/client/data/activity-journal.ts'
 import { acpReplayPayloadOf } from '../../../src/client/data/acp-replay-payload.ts'
 import type { ConversationLocation } from '@deepseek-ai/dsh-client-ui-conversation/client'
+import type { ReactElement } from 'react'
 
 const payload = {
   kind: 'dsh-acp' as const,
@@ -77,6 +79,49 @@ function activityStreamFactory(hooks: { accept?: () => void; dispose?: () => voi
 }
 
 describe('ACP activity conversation node', () => {
+  it.each([
+    { kind: 'plan' as const, rawDetail: JSON.stringify([{ content: 'Review changes', status: 'pending' }]) },
+    { kind: 'other' as const, rawDetail: JSON.stringify({ detail: 'Agent activity detail' }) },
+    { kind: 'other' as const, detailDeferred: true as const },
+  ])('follows native disclosure resets for $kind cards with deferred=$detailDeferred', (detail) => {
+    let expanded = false
+    const toggle = vi.fn(() => {
+      expanded = !expanded
+    })
+    const setExpanded = vi.fn((value: boolean) => {
+      expanded = value
+    })
+    const useDisclosure = vi.fn(() => ({ expanded, toggle, setExpanded }))
+    const props: Parameters<typeof ActivityRow>[0] = {
+      row: {
+        dshSessionId: 's',
+        ownerDshSessionId: 's',
+        promptAnchorMessageId: 'u',
+        activityId: 'activity-1',
+        activitySeq: 1,
+        revisionSeq: 1,
+        time: 1,
+        status: 'completed',
+        presentation: 'Agent activity',
+        ...detail,
+      },
+      t: (key) => key,
+      openFile: () => {},
+      useDisclosure,
+    }
+    const render = () => ActivityRow(props) as ReactElement<{ open: boolean; onToggle: () => void }>
+    expect(render().props.open).toBe(false)
+    render().props.onToggle()
+    expect(toggle).toHaveBeenCalledExactlyOnceWith()
+    expect(render().props.open).toBe(true)
+    // A native presentation change leaves the disclosure snapshot intact.
+    expect(render().props.open).toBe(true)
+    // The enclosing native Turn publishes a closed snapshot only after it hides.
+    expanded = false
+    expect(render().props.open).toBe(false)
+    expect(setExpanded).not.toHaveBeenCalled()
+  })
+
   it('keeps unfinished tools in the generic activity surface without a native tool result', () => {
     expect(usesNativeActivityToolProjection({ kind: 'tool', status: 'unfinished' })).toBe(false)
     expect(usesNativeActivityToolProjection({ kind: 'tool', status: 'completed' })).toBe(true)
@@ -761,7 +806,7 @@ describe('ACP activity conversation node', () => {
     expect(rendered).not.toContain('toolKind')
   })
 
-  it('projects Kimi numbered reads through the native ReadBlock primitive', () => {
+  it('preserves Kimi numbered read output when the total file length is unknown', () => {
     const element = activityRowElement({
       row: {
         dshSessionId: 'dsh-1',
@@ -784,14 +829,14 @@ describe('ACP activity conversation node', () => {
       open: true,
     })
     const rendered = JSON.stringify(element)
-    expect(rendered).toContain('"label":"/workspace/fixture.ts"')
-    expect(rendered).toContain('"number":41')
+    expect(rendered).toContain('/workspace/fixture.ts')
+    expect(rendered).toContain('41\\tconst marker = true')
     expect(rendered).toContain('const marker = true')
-    expect(rendered).toContain('"lang":"ts"')
-    expect(rendered).not.toContain('toolKind')
+    expect(rendered).toContain('rawOutput')
+    expect(rendered).not.toContain('totalLines')
   })
 
-  it('accepts a trailing newline and omits Kimi read status metadata', () => {
+  it('preserves the original numbered read window and provider status without claiming a total', () => {
     const element = activityRowElement({
       row: {
         dshSessionId: 'dsh-1',
@@ -814,9 +859,10 @@ describe('ACP activity conversation node', () => {
       open: true,
     })
     const rendered = JSON.stringify(element)
-    expect(rendered).toContain('"number":7')
+    expect(rendered).toContain('7\\tvisible')
     expect(rendered).toContain('visible')
-    expect(rendered).not.toContain('status metadata')
+    expect(rendered).toContain('status metadata')
+    expect(rendered).not.toContain('totalLines')
   })
 
   it('does not misclassify Kimi Grep or malformed line windows as file reads', () => {

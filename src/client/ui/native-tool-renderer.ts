@@ -1,4 +1,4 @@
-import { createElement as h, useMemo } from 'react'
+import { createElement as h, useLayoutEffect, useMemo } from 'react'
 import type { ComponentType, ReactNode } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
 import type {
@@ -58,6 +58,57 @@ type Register = (options: Registration, component: ComponentType<EntryProps>) =>
 
 let generation = 0
 
+/** Preserve pinned DSH's semantic DOM anchors while private slots keep their
+ * registry identities. DSH currently derives data-slot from the dispatch key;
+ * its public render options expose no separate DOM name. This adapter depends
+ * on that renderer detail and never changes dispatch, declarations or owners.
+ * @param document - document receiving this native composition.
+ * @param aliases - private dispatch keys owned by one mount and their native names.
+ * @returns layout flushing and lifetime cleanup for this mount's observer.
+ */
+export function observeNativeSlotAnchors(document: Document, aliases: ReadonlyMap<string, string>) {
+  let disposed = false
+  let initialized = false
+  const correctElement = (element: Element): void => {
+    const name = aliases.get(element.getAttribute('data-slot') ?? '')
+    if (name !== undefined) element.setAttribute('data-slot', name)
+  }
+  const correctSubtree = (node: Node): void => {
+    if (node.nodeType !== 1) return
+    const element = node as Element
+    correctElement(element)
+    for (const child of element.querySelectorAll('[data-slot]')) correctElement(child)
+  }
+  const correct = (records: readonly MutationRecord[]): void => {
+    if (disposed) return
+    for (const record of records) {
+      if (record.type === 'attributes') correctElement(record.target as Element)
+      else for (const node of record.addedNodes) correctSubtree(node)
+    }
+  }
+  const observer = new MutationObserver(correct)
+  observer.observe(document.documentElement, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['data-slot'],
+  })
+  return {
+    flush(): void {
+      if (disposed) return
+      if (!initialized) {
+        initialized = true
+        correctSubtree(document.documentElement)
+      }
+      correct(observer.takeRecords())
+    },
+    dispose(): void {
+      disposed = true
+      observer.disconnect()
+    },
+  }
+}
+
 /** Compose a registered native component with its complete injection and child tree. */
 export function mountNativeEntry(
   ctx: Context,
@@ -72,10 +123,14 @@ export function mountNativeEntry(
   const register = ctx.slots.register.bind(ctx.slots) as unknown as Register
   const factory = ctx.slots.registerFactory.bind(ctx.slots) as unknown as Register
   const sourceEntries = (name: string) => ctx.slots.entriesOfSlot(name as never)
+  const semanticAliases = new Map<string, string>()
+  const anchors = typeof document === 'undefined' ? undefined : observeNativeSlotAnchors(document, semanticAliases)
   const mount = (entry: StoredEntry, destination: string, root: boolean): (() => void) => {
     const aliases = new Map(Object.keys(entry.children ?? {}).map((key) => [key, `acp.native.${++generation}.${key}`]))
+    for (const [name, alias] of aliases) semanticAliases.set(alias, name)
     const Native = entry.component as ComponentType<EntryProps>
     const Component = (props: EntryProps): ReactNode => {
+      useLayoutEffect(() => anchors?.flush())
       const renderSlot = useMemo(
         () =>
           props.renderSlot === undefined
@@ -149,11 +204,24 @@ export function mountNativeEntry(
       }
     })
     return () => {
+      anchors?.flush()
       children.forEach((release) => release())
       dispose()
+      for (const alias of aliases.values()) semanticAliases.delete(alias)
     }
   }
-  return mount(entry, destination, true)
+  let release: () => void
+  try {
+    release = mount(entry, destination, true)
+  } catch (error) {
+    anchors?.dispose()
+    throw error
+  }
+  return () => {
+    anchors?.dispose()
+    semanticAliases.clear()
+    release()
+  }
 }
 
 /** Reuse the registered native Tool tree including its injected hooks, stores,

@@ -243,7 +243,7 @@ it(
       expect(await typography(row.getByRole('button', { name: /^(?:Session|会话) ·/ }))).toEqual(
         await typography(row.getByText('Mode', { exact: true })),
       )
-      expect(await panel.getByRole('button', { name: 'Interrupt all sessions', exact: true }).isDisabled()).toBe(true)
+      expect(await panel.getByRole('button', { name: 'Interrupt all members', exact: true }).isDisabled()).toBe(true)
       mkdirSync(join(root, '.local/team-management'), { recursive: true })
       await page.screenshot({ path: join(root, '.local/team-management/mode-pending.en.png') })
       await group.getByRole('button', { name: 'Change modes together', exact: true }).click()
@@ -373,7 +373,7 @@ it(
       await expect.poll(() => panel.getByRole('button', { name: /^(?:Session|会话) ·/ }).count()).toBe(2)
       expect(errors).toEqual([])
       if (!retain) {
-        const interrupt = panel.getByRole('button', { name: '中断所有会话', exact: true })
+        const interrupt = panel.getByRole('button', { name: '中断所有成员', exact: true })
         const interruptBox = required(await interrupt.boundingBox())
         const batchBox = required(await panel.getByRole('button', { name: '批量调整模式', exact: true }).boundingBox())
         expect(interruptBox.x + interruptBox.width).toBeLessThanOrEqual(batchBox.x)

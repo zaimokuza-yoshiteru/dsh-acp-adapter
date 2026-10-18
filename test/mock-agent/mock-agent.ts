@@ -12,7 +12,7 @@ import type {
 // (default happy); regression delegates product flows to regression-turn.ts.
 // Optional test inputs: MOCK_LOG, MOCK_STEP_DELAY_MS, MOCK_SLOW_INIT_MS, MOCK_SESSION_NEW_DELAY_MS,
 // MOCK_ADVERTISE_RESUME, MOCK_ADVERTISE_FORK, MOCK_EMIT_NATIVE_SUBAGENT,
-// MOCK_NEVER_METHODS, and MOCK_MODEL_THOUGHT_LEVELS.
+// MOCK_NEVER_METHODS, MOCK_MODEL_OPTIONS, and MOCK_MODEL_THOUGHT_LEVELS.
 import readline from 'node:readline'
 import { regressionTurn } from './regression-turn.ts'
 import fs from 'node:fs'
@@ -139,6 +139,32 @@ const MODEL_THOUGHT_LEVELS: Record<string, unknown> = (() => {
     return {}
   }
 })()
+const MODEL_OPTIONS: { value: string; name: string }[] = (() => {
+  try {
+    const parsed: unknown = JSON.parse(process.env.MOCK_MODEL_OPTIONS ?? 'null')
+    if (
+      Array.isArray(parsed) &&
+      parsed.length > 0 &&
+      parsed.every(
+        (value: unknown) =>
+          typeof value === 'object' &&
+          value !== null &&
+          'value' in value &&
+          typeof value.value === 'string' &&
+          'name' in value &&
+          typeof value.name === 'string',
+      )
+    )
+      return parsed as { value: string; name: string }[]
+  } catch {
+    // A malformed optional fixture input keeps the standard three models.
+  }
+  return [
+    { value: 'mock-model-a', name: 'Mock Model A' },
+    { value: 'mock-model-b', name: 'Mock Model B' },
+    { value: 'mock-model-c', name: 'Mock Model C' },
+  ]
+})()
 
 function thoughtLevelsForModel(model: string) {
   const values = MODEL_THOUGHT_LEVELS[model]
@@ -171,7 +197,7 @@ function freshModes() {
 }
 
 function freshConfigOptions() {
-  // SessionConfigOption[]：mode(5 项) + model(3 项)；真机只有这两类（全 select）
+  // Default fixture: mode (five choices), model (three choices), optional thought level.
   const options: MockConfigOption[] = [
     {
       id: 'mode',
@@ -187,15 +213,11 @@ function freshConfigOptions() {
       description: 'AI model to use',
       category: 'model',
       type: 'select',
-      currentValue: 'mock-model-a',
-      options: [
-        { value: 'mock-model-a', name: 'Mock Model A' },
-        { value: 'mock-model-b', name: 'Mock Model B' },
-        { value: 'mock-model-c', name: 'Mock Model C' },
-      ],
+      currentValue: MODEL_OPTIONS[0].value,
+      options: MODEL_OPTIONS,
     },
   ]
-  const initialThoughtLevels = thoughtLevelsForModel('mock-model-a')
+  const initialThoughtLevels = thoughtLevelsForModel(MODEL_OPTIONS[0].value)
   if (initialThoughtLevels !== undefined) {
     const levels = initialThoughtLevels
     options.push({

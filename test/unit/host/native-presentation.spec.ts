@@ -227,6 +227,7 @@ describe('native ACP activity presentation', () => {
       },
       t: (key) => key,
       openFile: () => {},
+      useDisclosure: () => ({ expanded: false, setExpanded: () => {}, toggle: () => {} }),
     })
     expect(JSON.stringify(element)).toContain('PLAN_ENTRY_MUST_BE_VISIBLE')
   })

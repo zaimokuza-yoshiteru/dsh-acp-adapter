@@ -10,6 +10,7 @@ tmp/
 
 # local-only plans, research notes, raw evidence, and generated release material
 .local/
+.agents/notes/proposed/2026-10-11-acp-native-experience-gaps.md
 
 # optional read-only DSH checkout used by upstream compatibility tests
 reference/

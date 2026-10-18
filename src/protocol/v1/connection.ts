@@ -58,6 +58,8 @@ import { AcpAgentProcess } from '../../runtime/process/agent-process.ts'
 import { ACP_SUBPROCESS_UNAVAILABLE_MESSAGE } from '../../runtime/process/subprocess.ts'
 import type { AcpConnectionSpec, AcpProcessExit } from '../../runtime/process/types.ts'
 import { redactSecretText } from '../../contract/redaction.ts'
+import { normalizeAcpConfigOptionKey } from '../../contract/config-options.ts'
+import { acpConfigOptionsSnapshot } from './config-options.ts'
 import { AcpClientError } from './errors.ts'
 import type {
   AcpSessionNotification,
@@ -391,6 +393,123 @@ async function probeSessionCleanup(
     }
   }
   return { close: closeStep, delete: deleteStep, ...(failures.length === 0 ? {} : { message: failures.join('; ') }) }
+}
+
+function isModelConfigOption(option: acp.SessionConfigOption): boolean {
+  return [option.category ?? '', option.id].some((key) => normalizeAcpConfigOptionKey(key) === 'model')
+}
+
+function advertisesIndependentModelControls(options: readonly acp.SessionConfigOption[] | undefined): boolean {
+  return (
+    options?.some((option) => {
+      if (option.type !== 'select') return false
+      const category = normalizeAcpConfigOptionKey(option.category ?? '')
+      const id = normalizeAcpConfigOptionKey(option.id)
+      return (
+        category === 'model_config' ||
+        category === 'thought_level' ||
+        category === 'reasoning_effort' ||
+        id === 'thought_level' ||
+        id === 'reasoning_effort'
+      )
+    }) ?? false
+  )
+}
+
+/** The Agent may capture a response after another concurrent write to the
+ * same session. Isolate workers by session, then verify every returned model
+ * identity before retaining its detached controls. */
+async function probeModelConfigurations(
+  conn: AcpClientConnection,
+  session: acp.NewSessionResponse,
+  initialOptions: readonly acp.SessionConfigOption[] | undefined,
+  options: { cwd: string; timeoutMs: number; concurrency: number; canCleanup: boolean },
+  created: (sessionId: string) => void,
+): Promise<Readonly<Record<string, readonly acp.SessionConfigOption[]>> | undefined> {
+  // Apply the authority-size bound before issuing any directory writes.
+  const initial = acpConfigOptionsSnapshot(initialOptions)
+  const model = initial?.find((option) => option.type === 'select' && isModelConfigOption(option))
+  if (model?.type !== 'select') return undefined
+  const values = [
+    ...new Set(
+      model.options.flatMap((entry) => ('options' in entry ? entry.options : [entry])).map((entry) => entry.value),
+    ),
+  ]
+  const captured: Record<string, readonly acp.SessionConfigOption[]> = Object.create(null) as Record<
+    string,
+    readonly acp.SessionConfigOption[]
+  >
+  const isRejectedOption = (error: unknown): boolean =>
+    conn.isTransportAvailable &&
+    error instanceof AcpClientError &&
+    error.kind === 'protocol-error' &&
+    error.cause instanceof acp.RequestError
+  let fatal: unknown
+  const capture = async (sessionId: string, value: string): Promise<boolean> => {
+    let snapshot: readonly acp.SessionConfigOption[] | undefined
+    if (sessionId === session.sessionId && value === model.currentValue) snapshot = initial
+    else {
+      try {
+        snapshot = (await conn.setConfigOption(sessionId, model.id, value, { timeoutMs: options.timeoutMs }))
+          .configOptions
+      } catch (error) {
+        // A stale directory entry may reject selection. It grants no fallback
+        // to the current or any other model's controls.
+        if (isRejectedOption(error)) return false
+        throw error
+      }
+    }
+    const confirmed = snapshot?.find((option) => option.type === 'select' && isModelConfigOption(option))
+    if (confirmed?.type !== 'select' || confirmed.currentValue !== value)
+      throw new AcpClientError('protocol-error', 'ACP model configuration response did not confirm the requested model')
+    // The 123-entry catalog otherwise repeats in every response and cache row.
+    captured[value] = acpConfigOptionsSnapshot(snapshot?.filter((option) => !isModelConfigOption(option))) ?? []
+    return advertisesIndependentModelControls(snapshot)
+  }
+  let next = 0
+  let controls = advertisesIndependentModelControls(initial)
+  // Legacy Devin exposes variants only, with inexpensive model writes. Do not
+  // create extra sessions until an actual independent control is discovered.
+  while (next < values.length && !controls) controls = await capture(session.sessionId, values[next++]!)
+  const workers = [session.sessionId]
+  const concurrency = options.canCleanup ? Math.min(8, Math.max(1, Math.floor(options.concurrency))) : 1
+  if (controls && next < values.length && concurrency > 1) {
+    const additions = await Promise.allSettled(
+      Array.from({ length: Math.min(concurrency - 1, values.length - next) }, async () => {
+        try {
+          const added = await conn.newSession({ cwd: options.cwd }, { timeoutMs: options.timeoutMs })
+          created(added.sessionId)
+          return added.sessionId
+        } catch (error) {
+          if (!isRejectedOption(error) && fatal === undefined) fatal = error
+          throw error
+        }
+      }),
+    )
+    if (fatal !== undefined) throw fatal
+    for (const added of additions) {
+      // Extra sessions are optional; a rejected creation leaves fewer workers.
+      if (added.status === 'rejected') continue
+      if (workers.includes(added.value))
+        throw new AcpClientError('protocol-error', 'ACP probe sessions did not have distinct identities')
+      workers.push(added.value)
+    }
+  }
+  const outcomes = await Promise.allSettled(
+    workers.map(async (sessionId) => {
+      while (next < values.length && fatal === undefined) {
+        try {
+          await capture(sessionId, values[next++]!)
+        } catch (error) {
+          if (fatal === undefined) fatal = error
+          throw fatal
+        }
+      }
+    }),
+  )
+  const failed = outcomes.find((outcome) => outcome.status === 'rejected')
+  if (failed?.status === 'rejected') throw fatal ?? failed.reason
+  return captured
 }
 
 /**
@@ -1009,24 +1128,46 @@ export class AcpClientConnection {
    * session 阶段即证明 initialize 已通过）。
    */
   static async probe(spec: AcpConnectionSpec, options: AcpProbeOptions = {}): Promise<AcpProbeResult> {
-    const { cwd, timeoutMs, probeModelConfigOptions = false, ...connectionOptions } = options
+    const {
+      cwd,
+      timeoutMs,
+      probeModelConfigOptions = false,
+      probeModelConfigConcurrency = 1,
+      ...connectionOptions
+    } = options
     const timeout = timeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS
     const probeCwd = cwd ?? fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-probe-'))
     const ownsCwd = cwd === undefined
     // devin 实测在 session/new 响应前推送 config_option_update 快照；响应缺字段时以推送兜底
-    let pushedConfigOptions: acp.SessionConfigOption[] | undefined
+    const pushedConfigOptions = new Map<string, acp.SessionConfigOption[]>()
     const callerOnUpdate = connectionOptions.onSessionUpdate
     connectionOptions.onSessionUpdate = (notification) => {
       if (notification.update.sessionUpdate === 'config_option_update') {
-        pushedConfigOptions = notification.update.configOptions
+        pushedConfigOptions.set(notification.sessionId, notification.update.configOptions)
       }
       callerOnUpdate?.(notification)
     }
     const conn = new AcpClientConnection(spec, { initializeTimeoutMs: timeout, ...connectionOptions })
+    const createdSessions: string[] = []
+    let capabilities: acp.AgentCapabilities | undefined
+    const cleanupResults: AcpProbeCleanup[] = []
+    const cleanupSessions = async (): Promise<AcpProbeCleanup> => {
+      while (cleanupResults.length < createdSessions.length) {
+        cleanupResults.push(await probeSessionCleanup(conn, capabilities, createdSessions[cleanupResults.length]!))
+      }
+      const first = cleanupResults[0] ?? { close: 'not-advertised' as const, delete: 'not-advertised' as const }
+      const messages = cleanupResults.flatMap((cleanup) => (cleanup.message === undefined ? [] : [cleanup.message]))
+      return {
+        close: cleanupResults.some((cleanup) => cleanup.close === 'failed') ? 'failed' : first.close,
+        delete: cleanupResults.some((cleanup) => cleanup.delete === 'failed') ? 'failed' : first.delete,
+        ...(messages.length === 0 ? {} : { message: messages.join('; ') }),
+      }
+    }
     try {
       let init: acp.InitializeResponse
       try {
         init = await conn.initialize()
+        capabilities = init.agentCapabilities
       } catch (error: unknown) {
         throw markProbePhase(error, 'initialize')
       }
@@ -1035,36 +1176,36 @@ export class AcpClientConnection {
         // session/new 的预算并入连接层单笔 deadline（同一套 RPC 定时器，
         // 不再自卷第二套 withTimeout）；超时错误经 markProbePhase 归 session 阶段
         session = await conn.newSession({ cwd: probeCwd }, { timeoutMs: timeout })
+        createdSessions.push(session.sessionId)
       } catch (error: unknown) {
         throw markProbePhase(error, 'session')
       }
-      const initialConfigOptions = session.configOptions ?? pushedConfigOptions
+      const initialConfigOptions = session.configOptions ?? pushedConfigOptions.get(session.sessionId)
       let modelConfigOptions: Record<string, readonly acp.SessionConfigOption[]> | undefined
       // Qwen Code offers a different reasoning catalogue per model (toggle-only,
       // none|low|medium|xhigh, or none at all); capture each like Kimi/Codex.
       if (probeModelConfigOptions || init.agentInfo?.name === 'qwen-code') {
-        const modelOption = initialConfigOptions?.find(
-          (option) => option.type === 'select' && (option.category === 'model' || option.id === 'model'),
-        )
-        if (modelOption?.type === 'select') {
-          modelConfigOptions = {}
-          const values = modelOption.options.flatMap((entry) => ('options' in entry ? entry.options : [entry]))
-          for (const value of values.slice(0, 32)) {
-            try {
-              const snapshot =
-                value.value === modelOption.currentValue
-                  ? initialConfigOptions
-                  : (await conn.setConfigOption(session.sessionId, modelOption.id, value.value, { timeoutMs: timeout }))
-                      .configOptions
-              if (snapshot !== undefined) modelConfigOptions[value.value] = snapshot
-            } catch {
-              // A single stale model entry must not hide the remaining Agent
-              // catalogue. Runtime convergence still validates every choice.
-            }
-          }
+        const sessionCaps = init.agentCapabilities?.sessionCapabilities
+        try {
+          modelConfigOptions = await probeModelConfigurations(
+            conn,
+            session,
+            initialConfigOptions,
+            {
+              cwd: probeCwd,
+              timeoutMs: timeout,
+              concurrency: probeModelConfigConcurrency,
+              canCleanup: sessionCaps?.close != null || sessionCaps?.delete != null,
+            },
+            (sessionId) => {
+              if (!createdSessions.includes(sessionId)) createdSessions.push(sessionId)
+            },
+          )
+        } catch (error) {
+          throw markProbePhase(error, 'session')
         }
       }
-      const cleanup = await probeSessionCleanup(conn, init.agentCapabilities, session.sessionId)
+      const cleanup = await cleanupSessions()
       return {
         sessionId: session.sessionId,
         cleanup,
@@ -1079,6 +1220,7 @@ export class AcpClientConnection {
         stderrTail: conn.stderrLines(),
       }
     } finally {
+      await cleanupSessions()
       await conn.close()
       if (ownsCwd) fs.rmSync(probeCwd, { recursive: true, force: true })
     }
