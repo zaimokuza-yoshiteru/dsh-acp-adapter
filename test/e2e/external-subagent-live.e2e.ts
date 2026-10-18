@@ -295,10 +295,27 @@ it('shows external Devin children live, then persists only successful terminal c
     await expectPersistedSuccessRecord(true)
     await capturePassEvidence(page, 'success-reloaded')
 
+    const cancelledEventsStart = sessionEvents.length
     const cancelled = await send('PARENT_CANCELLED')
     await page.getByRole('button', { name: 'Stop generating', exact: true }).click()
     await cancelled.settled
-    await expandTurnProcess(page, 3)
+    // Cancellation before any assistant message keeps the lossless ACP journal
+    // fallback flat. Native stopped turns stay open and have no step disclosure.
+    const stopped = page.locator('[data-turn-process="3"]')
+    await stopped.waitFor({ state: 'visible' })
+    expect(await stopped.innerText()).toBe('Stopped')
+    expect(await stopped.isDisabled()).toBe(true)
+    expect(await stopped.getAttribute('aria-expanded')).toBe('true')
+    expect(await page.locator('[data-step-process][data-chat-turn="3"]').count()).toBe(0)
+    expect(await page.locator('[data-chat-flow-kind="acp-activity"][data-chat-turn="3"]').count()).toBe(1)
+    const cancelledEvents = sessionEvents
+      .slice(cancelledEventsStart)
+      .filter((event) => event.sessionId === successfulParentId)
+    expect(cancelledEvents.some((event) => event.type === 'assistant/message')).toBe(false)
+    expect(cancelledEvents.find((event) => event.type === 'assistant/attempt')?.data).toMatchObject({ stream: [] })
+    expect(cancelledEvents.find((event) => event.type === 'turn/end')?.data).toMatchObject({
+      reason: { kind: 'aborted' },
+    })
     const cancelledRow = cancelled.rowFor('State unconfirmed')
     await expectExactlyOneToolRow(cancelledRow)
     await capturePassEvidence(page, 'parent-cancelled-unconfirmed')

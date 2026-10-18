@@ -162,7 +162,7 @@ it('keeps native Search/Fetch settings and Flash labels independent of the loade
     const acp = await openAcpPluginDetail(page)
     await acp.locator('[data-dsh-acp-panel]').waitFor()
     expect(await acp.locator('[data-dsh-acp-panel]').count()).toBe(1)
-    expect(await acp.getByRole('button', { name: 'Add agent', exact: true }).count()).toBe(1)
+    expect(await acp.getByRole('button', { name: 'Add Agent', exact: true }).count()).toBe(1)
     expect(await acp.getByRole('switch', { name: 'Use the new Web Search API', exact: true }).count()).toBe(0)
     expect(await acp.locator('#plugin-config-web-search-endpoint').count()).toBe(0)
     await backToPluginList(acp)

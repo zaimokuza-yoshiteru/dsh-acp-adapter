@@ -102,7 +102,7 @@ it('hosts ACP configuration on the native bundle detail page', async () => {
     await panel.getByRole('button', { name: 'Cancel', exact: true }).click()
     await card.waitFor()
 
-    await panel.getByRole('button', { name: 'Add agent', exact: true }).click()
+    await panel.getByRole('button', { name: 'Add Agent', exact: true }).click()
     const menu = page.getByRole('menu')
     await menu.waitFor()
     await page.screenshot({ path: join(evidence, 'menu.png'), fullPage: true, animations: 'disabled' })
@@ -244,7 +244,7 @@ it('ignores stale bound-session counts after cancelling, switching agents, and u
     await expect.poll(() => pending.length).toBe(2)
     expect(pending.map((request) => request.agentId)).toEqual(['devin', 'devin'])
     pending[1]!.resolve({ agentId: 'devin', count: 23 })
-    await devin.getByText(/23 existing session\(s\)/).waitFor()
+    await devin.getByText(/23 existing sessions/).waitFor()
     const firstResponse = waitForBoundSessionsCount(page, 'devin', 11)
     pending[0]!.resolve({ agentId: 'devin', count: 11 })
     await pending[0]!.returned
@@ -252,8 +252,8 @@ it('ignores stale bound-session counts after cancelling, switching agents, and u
     await page.evaluate(
       () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))),
     )
-    await devin.getByText(/23 existing session\(s\)/).waitFor()
-    expect(await devin.getByText(/11 existing session\(s\)/).count()).toBe(0)
+    await devin.getByText(/23 existing sessions/).waitFor()
+    expect(await devin.getByText(/11 existing sessions/).count()).toBe(0)
 
     await devin.getByRole('button', { name: 'Cancel', exact: true }).click()
     await devin.getByRole('button', { name: 'Delete', exact: true }).click()
@@ -262,7 +262,7 @@ it('ignores stale bound-session counts after cancelling, switching agents, and u
     await codex.getByRole('button', { name: 'Delete', exact: true }).click()
     await expect.poll(() => pending.length).toBe(4)
     pending[3]!.resolve({ agentId: 'codex', count: 31 })
-    await codex.getByText(/31 existing session\(s\)/).waitFor()
+    await codex.getByText(/31 existing sessions/).waitFor()
     const switchedResponse = waitForBoundSessionsCount(page, 'devin', 17)
     pending[2]!.resolve({ agentId: 'devin', count: 17 })
     await pending[2]!.returned
@@ -270,8 +270,8 @@ it('ignores stale bound-session counts after cancelling, switching agents, and u
     await page.evaluate(
       () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))),
     )
-    await codex.getByText(/31 existing session\(s\)/).waitFor()
-    expect(await codex.getByText(/17 existing session\(s\)/).count()).toBe(0)
+    await codex.getByText(/31 existing sessions/).waitFor()
+    expect(await codex.getByText(/17 existing sessions/).count()).toBe(0)
 
     await codex.getByRole('button', { name: 'Cancel', exact: true }).click()
     await devin.getByRole('button', { name: 'Delete', exact: true }).click()
