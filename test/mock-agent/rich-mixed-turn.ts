@@ -1,7 +1,7 @@
 import { join } from 'node:path'
-import { existsSync, watchFile, unwatchFile } from 'node:fs'
 import type { ToolCallContent } from '@agentclientprotocol/sdk'
 import type { MockPeer, MockSession, PromptMessage } from './types.ts'
+import { waitForFileGate } from './file-gate.ts'
 
 /** Legal mixed tool content, distinct from model images saved as DSH attachments. */
 export async function richMixedTurn(session: MockSession, message: PromptMessage, peer: MockPeer): Promise<boolean> {
@@ -58,29 +58,7 @@ export async function richMixedTurn(session: MockSession, message: PromptMessage
     content: content.filter((item) => item.type === 'diff'),
   })
   try {
-    const released = await new Promise<boolean>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        cleanup()
-        reject(new Error(`Mixed output fixture did not receive ${gate}`))
-      }, 45_000)
-      const cleanup = () => {
-        clearTimeout(timeout)
-        unwatchFile(gate, changed)
-        cancellation.signal.removeEventListener('abort', abort)
-      }
-      const finish = (value: boolean) => {
-        cleanup()
-        resolve(value)
-      }
-      const changed = () => {
-        if (existsSync(gate)) finish(true)
-      }
-      const abort = () => finish(false)
-      watchFile(gate, { interval: 20 }, changed)
-      cancellation.signal.addEventListener('abort', abort, { once: true })
-      if (cancellation.signal.aborted) abort()
-      else changed()
-    })
+    const released = await waitForFileGate(gate, cancellation.signal, `Mixed output fixture did not receive ${gate}`)
     if (!released) {
       peer.respond(message.id, { stopReason: 'cancelled' })
       return true

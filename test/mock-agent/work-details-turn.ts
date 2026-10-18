@@ -1,6 +1,7 @@
-import { existsSync, unwatchFile, watchFile, writeFileSync } from 'node:fs'
+import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { MockPeer, MockSession, PromptMessage } from './types.ts'
+import { waitForFileGate } from './file-gate.ts'
 
 /** Hold each presentation phase until the browser has observed the preceding one. */
 export async function workDetailsTurn(session: MockSession, message: PromptMessage, peer: MockPeer): Promise<boolean> {
@@ -33,33 +34,8 @@ export async function workDetailsTurn(session: MockSession, message: PromptMessa
     },
   }
   const gate = (phase: string) => join(directory, `${id}-${phase}`)
-  const wait = (phase: string): Promise<boolean> => {
-    if (cancellation.signal.aborted) return Promise.resolve(false)
-    if (existsSync(gate(phase))) return Promise.resolve(true)
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        cleanup()
-        reject(new Error(`Work-details fixture did not receive its ${phase} gate`))
-      }, 45_000)
-      const cleanup = () => {
-        unwatchFile(gate(phase), changed)
-        clearTimeout(timer)
-        cancellation.signal.removeEventListener('abort', abort)
-      }
-      const finish = (released: boolean) => {
-        cleanup()
-        resolve(released)
-      }
-      const abort = () => finish(false)
-      const changed = () => {
-        if (existsSync(gate(phase))) finish(true)
-      }
-      watchFile(gate(phase), { interval: 20 }, changed)
-      cancellation.signal.addEventListener('abort', abort, { once: true })
-      if (cancellation.signal.aborted) finish(false)
-      else if (existsSync(gate(phase))) finish(true)
-    })
-  }
+  const wait = (phase: string) =>
+    waitForFileGate(gate(phase), cancellation.signal, `Work-details fixture did not receive its ${phase} gate`)
   try {
     writeFileSync(gate('ready'), 'ready')
     if (!(await wait('output'))) {
