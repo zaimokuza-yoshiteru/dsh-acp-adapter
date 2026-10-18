@@ -4,6 +4,7 @@ import { isAbsolute, join, relative, resolve } from 'node:path'
 import { userInfo } from 'node:os'
 import { DatabaseSync } from 'node:sqlite'
 import { Worker } from 'node:worker_threads'
+import { isDeepStrictEqual } from 'node:util'
 import type { DevinLiveTrace } from './devin-live-trace.ts'
 
 export const DEVIN_HISTORY_TIMEOUT_MS = 5_000
@@ -31,10 +32,20 @@ type HistoryReason =
   | 'database-unavailable'
   | 'session-unavailable'
   | 'schema-unavailable'
+  | 'query-failed'
+  | 'node-identity-invalid'
+  | 'node-parent-cycle'
+  | 'send-arguments-invalid'
+  | 'send-identity-invalid'
+  | 'send-call-ambiguous'
+  | 'send-unavailable'
+  | 'generation-identity-unavailable'
   | 'history-limit'
   | 'receipt-unavailable'
   | 'worker-timeout'
   | 'worker-failed'
+type HistoryStage =
+  'scope' | 'binding' | 'database' | 'session' | 'nodes' | 'sends' | 'receipts' | 'complete' | 'worker'
 
 interface HistoryNode {
   readonly id: string
@@ -48,6 +59,7 @@ interface HistorySend {
   readonly node: string
   readonly call: string
   readonly args: Record<string, unknown>
+  readonly duplicateSnapshotCount: number
 }
 interface HistoryReceipt {
   readonly node: string
@@ -66,11 +78,13 @@ interface HistorySession {
 export interface DevinHistorySnapshot {
   readonly status: HistoryStatus
   readonly reason: HistoryReason
+  readonly stage: HistoryStage
   readonly sessions: readonly HistorySession[]
 }
-const snapshot = (status: HistoryStatus, reason: HistoryReason): DevinHistorySnapshot => ({
+const snapshot = (status: HistoryStatus, reason: HistoryReason, stage: HistoryStage): DevinHistorySnapshot => ({
   status,
   reason,
+  stage,
   sessions: [],
 })
 const record = (value: unknown): value is Record<string, unknown> =>
@@ -155,7 +169,7 @@ export function readDevinHistory(scope: DevinHistoryScope): DevinHistorySnapshot
     scope.databasePaths.length > 5 ||
     scope.databaseRoots.length > 5
   )
-    return snapshot('unavailable', 'scope-rejected')
+    return snapshot('unavailable', 'scope-rejected', 'scope')
   const selected: Array<{ dshSession: string; acpSession: string; label: string }> = []
   let sidecar: DatabaseSync | undefined
   try {
@@ -166,26 +180,32 @@ export function readDevinHistory(scope: DevinHistoryScope): DevinHistorySnapshot
     for (const actor of scope.actors) {
       const row = lookup.get(actor.sessionId, 'acp-devin')
       const acpSession = identity(row?.acp_session_id)
-      if (acpSession === undefined) return snapshot('unavailable', 'binding-unavailable')
+      if (acpSession === undefined) return snapshot('unavailable', 'binding-unavailable', 'binding')
       selected.push({ dshSession: actor.sessionId, acpSession, label: actor.label })
     }
     if (new Set(selected.map((actor) => actor.acpSession)).size !== selected.length)
-      return snapshot('unavailable', 'binding-unavailable')
+      return snapshot('unavailable', 'binding-unavailable', 'binding')
   } catch {
-    return snapshot('unavailable', 'binding-unavailable')
+    return snapshot('unavailable', 'binding-unavailable', 'binding')
   } finally {
     sidecar?.close()
   }
   const sessions: HistorySession[] = []
   let status: HistoryStatus = 'unavailable'
   let reason: HistoryReason = 'database-unavailable'
+  let stage: HistoryStage = 'database'
   for (const path of scope.databasePaths) {
     let database: DatabaseSync | undefined
+    let currentStage: HistoryStage = 'database'
     try {
       database = checkedDatabase(path, scope.databaseRoots, scope.isolatedRoot, true)
-      reason = 'session-unavailable'
+      if (reason === 'database-unavailable') {
+        reason = 'session-unavailable'
+        stage = 'session'
+      }
       for (const actor of selected) {
         if (sessions.some((session) => session.acpSession === actor.acpSession)) continue
+        currentStage = 'session'
         const session = database.prepare('SELECT working_directory FROM sessions WHERE id = ?').get(actor.acpSession)
         if (session === undefined) continue
         if (
@@ -195,11 +215,12 @@ export function readDevinHistory(scope: DevinHistoryScope): DevinHistorySnapshot
             (expected) => relative(expected, resolve(session.working_directory as string)) === '',
           )
         )
-          return snapshot('unavailable', 'scope-rejected')
+          return snapshot('unavailable', 'scope-rejected', 'session')
+        currentStage = 'nodes'
         const oversized = database
           .prepare('SELECT 1 FROM message_nodes WHERE session_id = ? AND length(chat_message) > ? LIMIT 1')
           .get(actor.acpSession, DEVIN_HISTORY_MAX_PROJECTED_BYTES)
-        if (oversized !== undefined) return snapshot('limited', 'history-limit')
+        if (oversized !== undefined) return snapshot('limited', 'history-limit', 'nodes')
         // Do not select chat_message itself: prompts, reasoning and ordinary output stay inside SQLite.
         const rawNodes = database
           .prepare(
@@ -211,7 +232,7 @@ export function readDevinHistory(scope: DevinHistoryScope): DevinHistorySnapshot
             FROM message_nodes WHERE session_id = ? ORDER BY node_id LIMIT ?`,
           )
           .all(actor.acpSession, DEVIN_HISTORY_MAX_NODES + 1)
-        if (rawNodes.length > DEVIN_HISTORY_MAX_NODES) return snapshot('limited', 'history-limit')
+        if (rawNodes.length > DEVIN_HISTORY_MAX_NODES) return snapshot('limited', 'history-limit', 'nodes')
         const nodes: HistoryNode[] = rawNodes.map((node) => ({
           id: nodeId(node.node_id) ?? '',
           parent: nodeId(node.parent_node_id),
@@ -224,16 +245,17 @@ export function readDevinHistory(scope: DevinHistoryScope): DevinHistorySnapshot
         }))
         if (nodes.length === 0) continue
         if (nodes.some((node) => node.id === '') || new Set(nodes.map((node) => node.id)).size !== nodes.length)
-          return snapshot('unsupported', 'schema-unavailable')
+          return snapshot('unsupported', 'node-identity-invalid', 'nodes')
         for (const node of nodes) {
           const seen = new Set<string>()
           let current: HistoryNode | undefined = node
           while (current !== undefined) {
-            if (seen.has(current.id)) return snapshot('unsupported', 'schema-unavailable')
+            if (seen.has(current.id)) return snapshot('unsupported', 'node-parent-cycle', 'nodes')
             seen.add(current.id)
             current = nodes.find((candidate) => candidate.id === current?.parent)
           }
         }
+        currentStage = 'sends'
         const rawSends = database
           .prepare(
             `SELECT mn.node_id, json_extract(tc.value, '$.id') AS call_id,
@@ -243,73 +265,102 @@ export function readDevinHistory(scope: DevinHistoryScope): DevinHistorySnapshot
             AND json_extract(tc.value, '$.arguments.tool_name') = 'send_message' LIMIT ?`,
           )
           .all(actor.acpSession, MAX_CALLS + 1)
-        if (rawSends.length > MAX_CALLS) return snapshot('limited', 'history-limit')
-        const sends: HistorySend[] = []
+        if (rawSends.length > MAX_CALLS) return snapshot('limited', 'history-limit', 'sends')
+        const candidates: HistorySend[] = []
         for (const send of rawSends) {
-          if (typeof send.arguments !== 'string') return snapshot('unsupported', 'schema-unavailable')
-          if (Buffer.byteLength(send.arguments) > MAX_VALUE_BYTES) return snapshot('limited', 'history-limit')
-          const args: unknown = JSON.parse(send.arguments)
+          if (typeof send.arguments !== 'string') return snapshot('unsupported', 'send-arguments-invalid', 'sends')
+          if (Buffer.byteLength(send.arguments) > MAX_VALUE_BYTES) return snapshot('limited', 'history-limit', 'sends')
+          let args: unknown
+          try {
+            args = JSON.parse(send.arguments)
+          } catch {
+            return snapshot('unsupported', 'send-arguments-invalid', 'sends')
+          }
           const call = identity(send.call_id)
           const node = nodeId(send.node_id)
-          if (
-            call === undefined ||
-            node === undefined ||
-            !record(args) ||
-            typeof args.target !== 'string' ||
-            typeof args.message !== 'string'
-          )
-            return snapshot('unsupported', 'schema-unavailable')
-          sends.push({ node, call, args })
+          if (call === undefined || node === undefined) return snapshot('unsupported', 'send-identity-invalid', 'sends')
+          if (!record(args) || typeof args.target !== 'string' || typeof args.message !== 'string')
+            return snapshot('unsupported', 'send-arguments-invalid', 'sends')
+          candidates.push({ node, call, args, duplicateSnapshotCount: 0 })
         }
-        if (new Set(sends.map((send) => send.call)).size !== sends.length)
-          return snapshot('unsupported', 'schema-unavailable')
+        currentStage = 'receipts'
+        const sends: HistorySend[] = []
         const receipts: HistoryReceipt[] = []
         const receiptQuery = database.prepare(`SELECT node_id,
           json_extract(chat_message, '$.content') AS content
           FROM message_nodes WHERE session_id = ? AND json_extract(chat_message, '$.role') = 'tool'
           AND json_extract(chat_message, '$.tool_call_id') = ? LIMIT 2`)
-        for (const send of sends) {
-          const matches = receiptQuery.all(actor.acpSession, send.call)
-          if (matches.length !== 1) continue
-          const receipt = matches[0]!
-          const node = nodeId(receipt.node_id)
-          if (node === undefined || typeof receipt.content !== 'string') continue
-          if (Buffer.byteLength(receipt.content) > MAX_VALUE_BYTES) return snapshot('limited', 'history-limit')
+        for (const call of new Set(candidates.map((send) => send.call))) {
+          const copies = candidates.filter((candidate) => candidate.call === call)
+          const matches = receiptQuery.all(actor.acpSession, call)
+          const receipt = matches.length === 1 ? matches[0] : undefined
+          const receiptNode = nodeId(receipt?.node_id)
+          const receiptParent = nodes.find((node) => node.id === receiptNode)?.parent
+          let send = copies[0]!
+          if (copies.length > 1) {
+            const firstNode = nodes.find((node) => node.id === send.node)
+            // Devin can persist multiple history snapshots of one generation call.
+            // Only its unique stored result can select the actual parent node;
+            // another generation, arguments or ancestry remains ambiguous.
+            const anchored = copies.filter((candidate) => candidate.node === receiptParent)
+            if (
+              receipt === undefined ||
+              typeof receipt.content !== 'string' ||
+              firstNode?.request === undefined ||
+              anchored.length !== 1 ||
+              copies.some((candidate) => {
+                const node = nodes.find((node) => node.id === candidate.node)
+                return (
+                  node?.request !== firstNode.request ||
+                  node?.parent !== firstNode.parent ||
+                  !isDeepStrictEqual(candidate.args, send.args)
+                )
+              })
+            )
+              return snapshot('unsupported', 'send-call-ambiguous', 'receipts')
+            send = { ...anchored[0]!, duplicateSnapshotCount: copies.length - 1 }
+          }
+          sends.push(send)
+          if (receiptNode === undefined || typeof receipt?.content !== 'string') continue
+          if (Buffer.byteLength(receipt.content) > MAX_VALUE_BYTES)
+            return snapshot('limited', 'history-limit', 'receipts')
           // A result joins only to the exact call and its actual parent node.
-          if (!nodes.some((candidate) => candidate.id === node && candidate.parent === send.node)) continue
-          receipts.push({ node, call: send.call, content: receipt.content })
+          if (receiptParent !== send.node) continue
+          receipts.push({ node: receiptNode, call, content: receipt.content })
         }
         sessions.push({ ...actor, nodes, sends, receipts })
         if (Buffer.byteLength(JSON.stringify(sessions)) > DEVIN_HISTORY_MAX_PROJECTED_BYTES)
-          return snapshot('limited', 'history-limit')
+          return snapshot('limited', 'history-limit', 'complete')
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        stage = currentStage
         if (error instanceof Error && error.message === 'scope-rejected') {
           status = 'unavailable'
           reason = 'scope-rejected'
         } else {
           status = error instanceof Error && error.message === 'history-limit' ? 'limited' : 'unsupported'
-          reason = status === 'limited' ? 'history-limit' : 'schema-unavailable'
+          reason = status === 'limited' ? 'history-limit' : 'query-failed'
         }
       }
     } finally {
       database?.close()
     }
   }
-  if (sessions.length !== selected.length) return { status, reason, sessions }
+  if (sessions.length !== selected.length) return { status, reason, stage, sessions }
   const sendCount = sessions.reduce((total, session) => total + session.sends.length, 0)
   const receiptCount = sessions.reduce((total, session) => total + session.receipts.length, 0)
+  if (sendCount === 0) return { status: 'unsupported', reason: 'send-unavailable', stage: 'complete', sessions }
   if (
-    sendCount === 0 ||
     sessions.some((session) =>
       session.sends.some((send) => session.nodes.find((node) => node.id === send.node)?.request === undefined),
     )
   )
-    return { status: 'unsupported', reason: 'schema-unavailable', sessions }
+    return { status: 'unsupported', reason: 'generation-identity-unavailable', stage: 'complete', sessions }
   return {
     status: sendCount === receiptCount ? 'captured' : 'unavailable',
     reason: sendCount === receiptCount ? 'none' : 'receipt-unavailable',
+    stage: 'complete',
     sessions,
   }
 }
@@ -331,13 +382,16 @@ export async function collectDevinHistory(
       clearTimeout(timer)
       void worker.terminate().then(
         () => resolveCapture(result),
-        () => resolveCapture(snapshot('unsupported', 'worker-failed')),
+        () => resolveCapture(snapshot('unsupported', 'worker-failed', 'worker')),
       )
     }
-    const timer = setTimeout(() => finish(snapshot('timed-out', 'worker-timeout')), Math.min(timeoutMs, 5_000))
+    const timer = setTimeout(
+      () => finish(snapshot('timed-out', 'worker-timeout', 'worker')),
+      Math.min(timeoutMs, 5_000),
+    )
     worker.once('message', (result: DevinHistorySnapshot) => finish(result))
-    worker.once('error', () => finish(snapshot('unsupported', 'worker-failed')))
-    worker.once('exit', () => finish(snapshot('unsupported', 'worker-failed')))
+    worker.once('error', () => finish(snapshot('unsupported', 'worker-failed', 'worker')))
+    worker.once('exit', () => finish(snapshot('unsupported', 'worker-failed', 'worker')))
   })
 }
 
@@ -357,6 +411,7 @@ export function emitDevinHistory(trace: DevinLiveTrace, result: DevinHistorySnap
   let sends = 0
   let receipts = 0
   let nodes = 0
+  let duplicateSnapshots = 0
   for (const session of result.sessions) {
     const base = {
       sessionId: trace.id('dsh-session', session.dshSession),
@@ -382,6 +437,7 @@ export function emitDevinHistory(trace: DevinLiveTrace, result: DevinHistorySnap
     }
     for (const send of session.sends) {
       sends += 1
+      duplicateSnapshots += send.duplicateSnapshotCount
       const node = session.nodes.find((candidate) => candidate.id === send.node)
       const parent = session.receipts.find((candidate) => candidate.node === node?.parent)
       const previous = parent === undefined ? undefined : session.sends.find((call) => call.call === parent.call)
@@ -409,6 +465,7 @@ export function emitDevinHistory(trace: DevinLiveTrace, result: DevinHistorySnap
             ? node.request !== previousNode.request
             : null,
         historySameArguments: previousArgs?.complete === true && args.complete ? previousArgs.hmac === args.hmac : null,
+        historyDuplicateSnapshotCount: send.duplicateSnapshotCount,
       })
     }
     for (const receipt of session.receipts) {
@@ -429,10 +486,12 @@ export function emitDevinHistory(trace: DevinLiveTrace, result: DevinHistorySnap
   trace.record('devin-history/status', {
     historyStatus: result.status,
     historyReason: result.reason,
+    historyStage: result.stage,
     historySessionCount: result.sessions.length,
     historyNodeCount: nodes,
     historySendCount: sends,
     historyReceiptCount: receipts,
+    historyDuplicateSnapshotCount: duplicateSnapshots,
     historySource: 'isolated-sqlite',
     clientReceiptStatus: 'unavailable',
   })

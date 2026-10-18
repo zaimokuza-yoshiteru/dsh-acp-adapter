@@ -170,17 +170,109 @@ describe('isolated Devin history evidence', () => {
       ],
     })
     missing.receipt(2, 1, 'call')
-    expect(readDevinHistory(missing.scope)).toMatchObject({ status: 'unsupported', reason: 'schema-unavailable' })
+    expect(readDevinHistory(missing.scope)).toMatchObject({
+      status: 'unsupported',
+      reason: 'generation-identity-unavailable',
+      stage: 'complete',
+    })
     const cycle = fixture()
     cycle.generation(1, 2, 'request', 'call')
     cycle.receipt(2, 1, 'call')
-    expect(readDevinHistory(cycle.scope)).toMatchObject({ status: 'unsupported', reason: 'schema-unavailable' })
+    expect(readDevinHistory(cycle.scope)).toMatchObject({
+      status: 'unsupported',
+      reason: 'node-parent-cycle',
+      stage: 'nodes',
+    })
     const duplicate = fixture()
     duplicate.insert(1, null, { role: 'user', content: secret })
     duplicate.generation(2, 1, 'request1', 'same-call')
     duplicate.receipt(3, 2, 'same-call')
     duplicate.generation(4, 3, 'request2', 'same-call')
-    expect(readDevinHistory(duplicate.scope)).toMatchObject({ status: 'unsupported', reason: 'schema-unavailable' })
+    expect(readDevinHistory(duplicate.scope)).toMatchObject({
+      status: 'unsupported',
+      reason: 'send-call-ambiguous',
+      stage: 'receipts',
+    })
+  })
+
+  it('anchors duplicate history snapshots to the unique receipt without hiding a later distinct generation', () => {
+    const test = fixture()
+    test.insert(1, null, { role: 'user', content: secret })
+    test.generation(2, 1, 'request-one', 'call-one')
+    test.generation(6, 1, 'request-one', 'call-one')
+    test.receipt(3, 6, 'call-one')
+    test.generation(7, 3, 'request-two', 'call-two')
+    test.receipt(8, 7, 'call-two', 'Cancelled by test guard')
+    const result = readDevinHistory(test.scope)
+    expect(result).toMatchObject({ status: 'captured', reason: 'none', stage: 'complete' })
+    expect(result.sessions[0]?.nodes).toHaveLength(6)
+    expect(result.sessions[0]?.sends).toMatchObject([
+      { node: '6', duplicateSnapshotCount: 1 },
+      { node: '7', duplicateSnapshotCount: 0 },
+    ])
+    const trace = new DevinLiveTrace({ directory: join(test.root, 'safe-trace'), key: Buffer.alloc(32, 8) })
+    emitDevinHistory(trace, result)
+    trace.finish('pass', {})
+    const rows = readFileSync(trace.filePath, 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+    expect(rows.filter((row) => row.event === 'devin-history/node')).toHaveLength(6)
+    const sends = rows.filter((row) => row.event === 'devin-history/send')
+    expect(sends).toHaveLength(2)
+    expect(sends[0]).toMatchObject({ historyDuplicateSnapshotCount: 1 })
+    expect(sends[1]).toMatchObject({
+      historyParentIsReceipt: true,
+      historyParentReceiptSaysSent: true,
+      historyDistinctRequests: true,
+      historySameArguments: true,
+    })
+    expect(rows.find((row) => row.event === 'devin-history/status')).toMatchObject({
+      historyStage: 'complete',
+      historyDuplicateSnapshotCount: 1,
+    })
+    expect(readFileSync(trace.filePath, 'utf8')).not.toContain(secret)
+  })
+
+  it.each(['request', 'args', 'parent', 'missing-receipt', 'multiple-receipts'] as const)(
+    'does not guess a canonical snapshot with %s ambiguity',
+    (mismatch) => {
+      const test = fixture()
+      test.insert(1, null, { role: 'user', content: secret })
+      test.generation(2, 1, 'request-one', 'call-one')
+      test.insert(4, mismatch === 'parent' ? 2 : 1, {
+        role: 'assistant',
+        metadata: { request_id: mismatch === 'request' ? 'request-two' : 'request-one' },
+        tool_calls: [
+          {
+            id: 'call-one',
+            arguments: {
+              tool_name: 'send_message',
+              arguments: { target: 'lead', message: mismatch === 'args' ? 'other-synthetic-marker' : rawMarker },
+            },
+          },
+        ],
+      })
+      if (mismatch !== 'missing-receipt') test.receipt(5, 4, 'call-one')
+      if (mismatch === 'multiple-receipts') test.receipt(6, 2, 'call-one')
+      expect(readDevinHistory(test.scope)).toMatchObject({
+        status: 'unsupported',
+        reason: 'send-call-ambiguous',
+        stage: 'receipts',
+      })
+    },
+  )
+
+  it('retains captured successful receipts when a final denied send has no stored result', () => {
+    const test = fixture()
+    test.insert(1, null, { role: 'user', content: secret })
+    test.generation(2, 1, 'request-one', 'call-one')
+    test.receipt(3, 2, 'call-one')
+    test.generation(4, 3, 'request-two', 'call-two')
+    const result = readDevinHistory(test.scope)
+    expect(result).toMatchObject({ status: 'unavailable', reason: 'receipt-unavailable', stage: 'complete' })
+    expect(result.sessions[0]?.sends).toHaveLength(2)
+    expect(result.sessions[0]?.receipts).toHaveLength(1)
   })
 
   it('marks absent and unsupported databases explicitly rather than reporting capture success', () => {
@@ -190,7 +282,19 @@ describe('isolated Devin history evidence', () => {
     const database = new DatabaseSync(test.databasePath)
     database.exec('CREATE TABLE unsupported(value TEXT)')
     database.close()
-    expect(readDevinHistory(test.scope)).toMatchObject({ status: 'unsupported', reason: 'schema-unavailable' })
+    expect(readDevinHistory(test.scope)).toMatchObject({
+      status: 'unsupported',
+      reason: 'query-failed',
+      stage: 'session',
+    })
+  })
+
+  it('reports the failing query stage without exposing SQLite errors or malformed history', () => {
+    const test = fixture()
+    test.insert(1, null, 'not-json-private-history')
+    const result = readDevinHistory(test.scope)
+    expect(result).toMatchObject({ status: 'unsupported', reason: 'query-failed', stage: 'nodes' })
+    expect(JSON.stringify(result)).not.toContain('not-json-private-history')
   })
 
   it('does not open a database outside the test-owned locations', () => {

@@ -138,11 +138,15 @@ DEVIN_TEST_MODEL=swe-2-high node scripts/check-devin-live.ts "$(command -v devin
 
 2026-10-18 的[真实 Devin CI 运行](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/actions/runs/39097343182)在 `main@943e4d6`、DSH `0.2.1-rc.2`、Devin CLI `3000.11.3`、`swe-2-high` 下通过 `macos-15` 和 `windows-2022` 两个平台。Windows 使用普通账户 `dsh-acp-ci`，测试时关闭开发者模式，结束后恢复设置、撤销目录权限并删除账户与临时目录。两平台均验证两个并发 Lead 各创建一个真实 teammate、团队隔离、消息接收后回复和同会话显式续聊，输出 `LIVE_TEST_PASS`，且安全 trace 的最终结果及清理均通过；这是短程原生 Teams 验证，不代替 Windows 桌面安装／升级、审批拒绝、Qwen Code 或长任务 B 的验收。
 
-同日的[旧版 Devin `3000.3.27` 补验](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/actions/runs/39097845881)保持相同 main、DSH 和模型，macOS 通过，Windows 未通过。Windows 的原生 MCP 发现与注册、两次成员创建和首次消息发送已通过，随后同成员再次发送相同消息，被测试专用 `LIVE_TEAMMATE_MESSAGE_BUDGET_EXCEEDED` 守卫在工具执行前拒绝，完整 Teams 与显式续聊尚未验收；普通账户的四项清理均成功。现有证据不能区分模型新请求与 CLI 重试，不能据此认定工具桥重放；保留本次失败。
+同日的[旧版 Devin `3000.3.27` 补验](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/actions/runs/39097845881)保持相同 main、DSH 和模型，macOS 通过，Windows 未通过。Windows 的原生 MCP 发现与注册、两次成员创建和首次消息发送已通过，随后同成员再次发送相同消息，被测试专用 `LIVE_TEAMMATE_MESSAGE_BUDGET_EXCEEDED` 守卫在工具执行前拒绝，该次完整 Teams 与显式续聊未验收；普通账户的四项清理均成功。现有证据不能区分模型新请求与 CLI 重试，不能据此认定工具桥重放；保留本次失败。
+
+随后在 `v0.2.1-rc.2.2@8756e13` 的[单次真实复测](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/actions/runs/39100744366)中，继续使用 Devin `3000.3.27`、DSH `0.2.1-rc.2` 和 `swe-2-high`：两平台的成员创建、各一次发送、Lead 接受与回复、显式续聊均通过，`scenarioResult: pass`、各四次工具准入且无拒绝，没有复现重复；Windows 四项清理成功。工作流仍失败，因为新增历史采集器在两平台均报 `unsupported/schema-unavailable`，未取得历史父子链。业务通过不替代采证成功，也不证明此前的间歇性重复已修复。
 
 每个 live 测试会尝试在 `DEVIN_LIVE_TRACE_DIR` 写入一个 `real-devin-live-<24位十六进制>.jsonl`。CI 只从专用 `devin-live-diagnostics` 目录上传这类文件，保留 7 天；文件包含每次运行独立密钥 HMAC 处理的关联 ID、固定枚举、布尔值和数字，不含原始消息、prompt、参数、凭据、stdout、stderr、profile、transcript 或 Devin CLI 原生日志。Windows 普通用户先写入审计临时目录，启动器在删除该目录前复制符合文件名的 trace 到 runner 专用目录。工作流级硬超时或 runner 被强制终止时，`always()` 上传步骤也可能没有机会执行，因此不能保证每次运行都有 artifact；缺少文件时 CI 会显示 warning。
 
-后续诊断在 Agent 进程退出后、隔离目录删除前，通过本轮 sidecar binding 精确选取合成测试会话，从 Devin 本地 SQLite 提取发送调用、成功结果与后续生成的关联事实。读取在无环境变量的独立 worker 中执行，最多 5 秒，并限制数据库、节点与投影字节；仅现有安全 trace 中的 HMAC、枚举、计数和布尔值进入 artifact。`historyReceiptStatus: stored` 表示 CLI 历史保存了对应工具结果，不等同传输层实时确认；只有实际父节点、调用与不同生成请求 ID 都匹配时，才能认定某次重复来自后续生成。路径、schema 或关联不可用时单独记录诊断失败；`scenarioResult` 与 `historyCaptureComplete` 分别描述业务场景和采证结果，不用一项替代另一项。
+后续诊断在 Agent 进程退出后、隔离目录删除前，通过本轮 sidecar binding 精确选取合成测试会话，从 Devin 本地 SQLite 提取发送调用、工具结果与后续生成的关联事实。读取在无环境变量的独立 worker 中执行，最多 5 秒，并限制数据库、节点与投影字节；仅现有安全 trace 中的 HMAC、枚举、计数和布尔值进入 artifact。`historyReceiptStatus: stored` 表示 CLI 历史保存了对应工具结果，不等同传输层实时确认；只有实际父节点、调用与不同生成请求 ID 都匹配时，才能认定某次重复来自后续生成。路径、schema 或关联不可用时单独记录诊断失败；`scenarioResult` 与 `historyCaptureComplete` 分别描述业务场景和采证结果，不用一项替代另一项。
+
+同一工具调用可能有多个历史快照；仅当 call ID、生成请求、完整参数及父节点一致，并由唯一工具结果指向其中一个快照时，采集器才选择该父节点关联结果。全部节点的安全标识仍输出，额外快照数记为 `historyDuplicateSnapshotCount`。不同请求或参数等歧义记录明确原因，不合并为一次调用；不同 call ID 的后续生成仍逐条保留。这只处理测试证据，不改变生产调用或准入规则。
 
 查看 trace 时需区分事件层级：`run/start` 与 `run/summary` 描述一次检查，`phase/completed` 描述一个阶段完成，tool 事件描述单次工具分发或结果。`test/assertions-passed` 只表示脚本断言通过；终态还要求 trace 完成写入且进程输出 `LIVE_TEST_PASS`。ACP call、团队 message、step 和 prompt 是不同对象，不能把数量互相当作对方的数量。Host 的工具调用 ID 与成功 `send_message` 返回的 messageId 通过 trace 中显式记录的关联字段连接，不能靠相邻日志行推断。ACP provider 内部发出的模型请求数量及传输重试可能不可观察；`context used` 是上下文使用量，不是计费 token 数。
 
