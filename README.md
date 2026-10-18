@@ -48,19 +48,17 @@ Git 与压缩包安装示例：
 
 插件附带一份 [ACP 官方 Agent 目录](https://agentclientprotocol.com/registry)快照，提供安装、登录指引和命令预填；也可手动添加目录外的 ACP Agent。Agent CLI 必须安装并登录在运行 DSH 的主机上。打开 **插件 → ACP adapter**，按目录指引添加 Agent 并检查连接，再在新会话选择 Agent 模型。插件不会替你安装 CLI 或登录账号。以下 Agent 已做过实际接入测试：
 
-| Agent                      | ACP 命令                                 | 认证                   |
-| -------------------------- | ---------------------------------------- | ---------------------- |
-| Devin                      | `devin acp`                              | `devin auth login`     |
-| CodeBuddy CLI（WorkBuddy） | `codebuddy --acp`                        | `codebuddy`            |
-| Antigravity                | `agy_acp_server.par`（官方 raw `1.3.0`） | ACP 独立登录           |
-| Claude                     | `claude-agent-acp`                       | `claude`               |
-| Codex                      | `codex-acp`                              | `codex login`          |
-| Kimi                       | `kimi acp`                               | `kimi login`           |
-| Qwen Code                  | `qwen --acp`                             | `qwen`，会话中 `/auth` |
+| Agent                      | ACP 命令                                 | 认证               |
+| -------------------------- | ---------------------------------------- | ------------------ |
+| Devin                      | `devin acp`                              | `devin auth login` |
+| CodeBuddy CLI（WorkBuddy） | `codebuddy --acp`                        | `codebuddy`        |
+| Antigravity                | `agy_acp_server.par`（官方 raw `1.3.0`） | ACP 独立登录       |
+| Claude                     | `claude-agent-acp`                       | `claude`           |
+| Codex                      | `codex-acp`                              | `codex login`      |
+| Kimi                       | `kimi acp`                               | `kimi login`       |
+| Qwen Code                  | `qwen --acp`                             | `qwen`             |
 
 > CodeBuddy CLI 与 WorkBuddy 桌面端使用同一账号积分，无需分别订阅；通过 CodeBuddy CLI 接入 DSH。详见 [CodeBuddy 账号与订阅说明](https://www.codebuddy.cn/docs/ide/Account/pricing)及 [ACP 命令参考](https://www.codebuddy.cn/docs/cli/cli-reference)。
-
-[Qwen Code](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/main/test/e2e/README.md#qwen-code) 使用官方 `@qwen-code/qwen-code` CLI；已在 macOS 的 `0.25.2` 验证后台任务续接，真实 Windows 验证待补。
 
 测试范围与限制见 [E2E 验证说明](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/v0.2.1-rc.2.1/test/e2e/README.md)。
 
