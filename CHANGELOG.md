@@ -4,6 +4,24 @@
 
 User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for publication dates, exact installation instructions, and checksums. Historical entries were reconstructed from tag diffs; npm packages were not republished.
 
+## 0.2.1-rc.2.2
+
+### 中文
+
+- 补齐 Qwen 自动回合的缺终态保护：在缺少结束通知时保留已有输出和结果未知状态，阻止自动重发输入；正常长任务、问答等待及先结束后承接仍沿用原有流程。
+- 保留自动回合超时后的恢复门禁，避免关闭连接、重新初始化或重启适配器时丢失未确认结果。
+- Qwen Code 加入添加 Agent 菜单的已验证适配组，补齐中英文连接命令；详细测试范围统一保留在 E2E 指南。
+- 为 Devin 真实回归补充隔离测试会话的结果与后续生成关联证据。生产消息规则保持原样，重复请求仍按实际证据定位。
+- 继续支持 DSH `0.2.1-rc.2`，无需新增用户配置。
+
+### English
+
+- Guard Qwen automatic turns that omit their terminal notification. Preserve existing output and the unknown outcome without redispatching input, while retaining normal long-running work, questions and completion before host adoption.
+- Preserve recovery gates after an automatic-turn timeout across connection closure, initialization and adapter restart.
+- Include Qwen Code in the tested-adapter group of the Agent menu and complete the Chinese and English connection commands. Keep detailed validation scope in the E2E guide.
+- Add result-to-generation evidence from isolated Devin test sessions to real regressions. Production messaging rules remain unchanged; investigate repeated requests using their recorded evidence.
+- Continue to support DSH `0.2.1-rc.2` without additional user configuration.
+
 ## 0.2.1-rc.2.1
 
 ### 中文

@@ -24,8 +24,12 @@ const HASHED_ID_FIELDS = new Set([
   'parentSessionId',
   'senderId',
   'targetId',
+  'historyNodeId',
+  'historyParentNodeId',
+  'historyToolCallId',
+  'historyParentRequestId',
 ])
-const DIGEST_FIELDS = new Set(['argsHmac', 'bodyHmac'])
+const DIGEST_FIELDS = new Set(['argsHmac', 'bodyHmac', 'historyResultHmac'])
 const ALLOWED_EVENTS = new Set([
   'run/start',
   'run/summary',
@@ -66,6 +70,10 @@ const ALLOWED_EVENTS = new Set([
   'test/wait/end',
   'run/metadata',
   'agent/created',
+  'devin-history/status',
+  'devin-history/node',
+  'devin-history/send',
+  'devin-history/receipt',
 ])
 const SAFE_STRINGS = new Set([
   'acp-devin',
@@ -160,6 +168,7 @@ const SAFE_STRINGS = new Set([
   'LIVE_TRACE_WRITE_FAILED',
   'LIVE_TRACE_OBSERVER_FAILED',
   'LIVE_TRACE_INCOMPLETE',
+  'LIVE_HISTORY_CAPTURE_UNAVAILABLE',
   'HOST_BOOT',
   'PROVIDER_REGISTERED',
   'MODEL_DISCOVERED',
@@ -319,6 +328,24 @@ const SAFE_FIELD_NAMES = new Set([
   'acceptedMessages',
   'deliveredMessages',
   'receipts',
+  'historyStatus',
+  'historyReason',
+  'historySource',
+  'historyFinishReason',
+  'historyReceiptStatus',
+  'historySessionCount',
+  'historyNodeCount',
+  'historyRole',
+  'historySendCount',
+  'historyReceiptCount',
+  'historyResultBytes',
+  'historyParentIsReceipt',
+  'historyParentReceiptSaysSent',
+  'historyDistinctRequests',
+  'historySameArguments',
+  'historyCaptureComplete',
+  'budgetViolation',
+  'scenarioResult',
 ])
 const SAFE_ENUM_FIELDS: Record<string, ReadonlySet<string>> = {
   event: ALLOWED_EVENTS,
@@ -426,6 +453,26 @@ const SAFE_ENUM_FIELDS: Record<string, ReadonlySet<string>> = {
   inboxCountStatus: new Set(['available', 'unavailable']),
   rejectionReason: new Set(['request-id-collision', 'prompt-inactive', 'tool-unavailable']),
   providerErrorKind: new Set(['resource_exhausted', 'unavailable']),
+  historyStatus: new Set(['captured', 'unavailable', 'unsupported', 'limited', 'timed-out']),
+  historyReason: new Set([
+    'none',
+    'scope-rejected',
+    'binding-unavailable',
+    'database-unavailable',
+    'session-unavailable',
+    'schema-unavailable',
+    'history-limit',
+    'receipt-unavailable',
+    'worker-timeout',
+    'worker-failed',
+  ]),
+  historySource: new Set(['isolated-sqlite']),
+  historyFinishReason: new Set(['tool_calls', 'unknown']),
+  historyReceiptStatus: new Set(['stored', 'unavailable']),
+  historyRole: new Set(['assistant', 'tool', 'user', 'system', 'unknown']),
+  scenarioResult: new Set(['pass', 'fail']),
+  budgetViolation: new Set(['none']),
+  errorSource: new Set(['structured-code-only', 'trace-write', 'trace-observer', 'cleanup', 'history-capture']),
 }
 
 function stableJson(value: unknown): string {
@@ -529,7 +576,7 @@ export class DevinLiveTrace {
   }
 
   get diagnosticIncomplete(): boolean {
-    return this.incompleteFingerprints > 0
+    return this.incompleteFingerprints > 0 || this.truncated
   }
 
   id(kind: string, value: unknown): string {

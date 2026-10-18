@@ -181,6 +181,8 @@ export interface QwenActiveWorkSnapshot {
   readonly seq: number
   readonly sessions: readonly {
     readonly sessionId: string
+    /** Qwen execution owner released this turn; it does not encode a successful outcome. */
+    readonly finishedBackgroundTurnId?: string
     readonly holds: readonly { readonly category: string; readonly id: string }[]
   }[]
 }

@@ -170,8 +170,10 @@ export interface AcpSessionRuntimeOptions {
   readonly qwenTaskJobs?: QwenTaskJobStarter
   /** How long an adopting host call waits for Qwen to announce its turn. */
   readonly agentTurnWaitMs?: number
-  /** Unannounced (cron) turn: bound without authoritative activity reports, never a success deadline. */
+  /** Internal automatic-turn reporting watchdog seam; never a total execution deadline. */
   readonly unannouncedIdleMs?: number
+  /** Internal seam for an automatic turn that no Host call has adopted. */
+  readonly agentTurnAdoptionMs?: number
 }
 
 export type AcpForkPreDispatchCode = 'ACP_FORK_UNSUPPORTED' | 'ACP_FORK_PRECONDITION_FAILED' | 'ACP_FORK_INTENT_FAILED'
@@ -216,9 +218,19 @@ export class AcpAgentTurnOutcomeError extends AcpClientError {
 
 type AgentTurnOutcome = { readonly stopReason: acp.StopReason } | { readonly error: AcpAgentTurnOutcomeError }
 
+/** A failed automatic turn must reach native settlement before this owner can be discarded. */
+export interface AcpPendingAgentTurnFailure {
+  readonly acpSessionId: string
+  readonly turnId: string
+  readonly error: AcpAgentTurnOutcomeError
+}
+
 /** One Agent-initiated (Qwen `_qwencode/start_turn`) turn. */
 interface AgentTurn {
   readonly turnId: string
+  readonly sessionId: string
+  readonly connection: AcpClientConnection
+  readonly taskId?: string
   /** false = inferred from out-of-turn updates (Qwen cron/loop turns carry no start/end markers). */
   readonly announced: boolean
   /** Qwen can report an incomplete response before sending an ordinary end_turn. */
@@ -228,9 +240,18 @@ interface AgentTurn {
   ended: AgentTurnOutcome | undefined
   readonly endedPromise: Promise<AgentTurnOutcome>
   readonly end: (outcome: AgentTurnOutcome) => void
-  /** Full-snapshot watermark and activity evidence for unannounced turns. */
+  /** Activity is meaningful only for this turn's owner, never a terminal outcome. */
   workSeq: number
+  workReported: boolean
+  workFinished: boolean
+  readonly shellTools: Map<string, 'pending' | 'running' | 'settled'>
   idleTimer?: ReturnType<typeof setTimeout> | undefined
+  adoptionTimer?: ReturnType<typeof setTimeout> | undefined
+}
+
+function isOwnedQwenTurnUpdate(update: AcpSessionNotification['update'], turnId: string): boolean {
+  const turn = update._meta?.backgroundTurn
+  return typeof turn === 'object' && turn !== null && !Array.isArray(turn) && 'turnId' in turn && turn.turnId === turnId
 }
 
 function isIncompleteQwenTurnUpdate(update: AcpSessionNotification['update'], turnId: string): boolean {
@@ -531,7 +552,10 @@ export class AcpSessionRuntime {
   }
 
   get acpSessionId(): string | undefined {
-    return this.sessionId
+    return this.sessionId ?? this.agentTurnFailure?.view.acpSessionId
+  }
+  get pendingAgentTurnFailure(): AcpPendingAgentTurnFailure | undefined {
+    return this.agentTurnFailure?.view
   }
   /** Close a vendor process after a cancelled response and its local settlement
    * complete, keeping the same-session refresh marker for the next user input.
@@ -546,7 +570,7 @@ export class AcpSessionRuntime {
     await this.close()
   }
   get agentCapabilities(): acp.AgentCapabilities | undefined {
-    return this.connection?.agentCapabilities
+    return (this.connection ?? this.agentTurnFailure?.turn.connection)?.agentCapabilities
   }
   /** Positive image-input proof belongs to the current live connection only. */
   get inputImageSupported(): boolean | undefined {
@@ -561,10 +585,10 @@ export class AcpSessionRuntime {
     return this.connection.agentCapabilities?.promptCapabilities?.image
   }
   get agentInfo(): acp.Implementation | null | undefined {
-    return this.connection?.agentInfo
+    return (this.connection ?? this.agentTurnFailure?.turn.connection)?.agentInfo
   }
   get protocolVersion(): number | undefined {
-    return this.connection?.protocolVersion
+    return (this.connection ?? this.agentTurnFailure?.turn.connection)?.protocolVersion
   }
   get launchInfo(): AcpRuntimeLaunch | undefined {
     return this.launch
@@ -649,6 +673,10 @@ export class AcpSessionRuntime {
   private pendingQuestions = 0
   /** Qwen-initiated turns, oldest first; the last one may still be live. */
   private agentTurns: AgentTurn[] = []
+  /** Sticky for this owner, including transport teardown; only its Host can settle/discard it. */
+  private agentTurnFailure:
+    | { readonly view: AcpPendingAgentTurnFailure; readonly turn: AgentTurn; readonly prefix: readonly AgentTurn[] }
+    | undefined
   private readonly agentTurnWaiters = new Set<() => void>()
   /** A host prompt() is waiting to adopt an Agent-initiated turn. */
   private awaitingAgentTurn = false
@@ -666,6 +694,7 @@ export class AcpSessionRuntime {
 
   async start(signal?: AbortSignal): Promise<void> {
     await this.initialize(signal)
+    if (this.agentTurnFailure !== undefined) return
     if (this.sessionId !== undefined) return
     const starting = this.starting ?? this.beginStartup((owner) => this.createSession(owner, signal))
     try {
@@ -677,6 +706,9 @@ export class AcpSessionRuntime {
 
   /** Initialize and negotiate capabilities without creating session/new. */
   async initialize(signal?: AbortSignal): Promise<void> {
+    // Retain failed automatic output for the normal Host/WAL settlement path.
+    // A closed transport here must never create a new session or replay its wake.
+    if (this.agentTurnFailure !== undefined) return
     if (this.closing !== undefined) await this.closing
     if (
       this.connection !== undefined &&
@@ -718,6 +750,12 @@ export class AcpSessionRuntime {
   ): Promise<'reused' | 'resumed' | 'loaded'> {
     this.lastRestoreRefreshedCancelledSessionValue = false
     if (this.promptClaimed) throw new Error('ACP_PROMPT_ALREADY_ACTIVE')
+    if (this.agentTurnFailure !== undefined) {
+      if (binding.agentSessionId !== this.agentTurnFailure.view.acpSessionId)
+        throw new Error('ACP binding session id does not match the failed automatic turn')
+      // Failure presentation only: prompt() consumes its prefix/error without RPC.
+      return 'reused'
+    }
     if (this.refreshBeforeRestore) {
       if (this.refreshBindingSessionId !== binding.agentSessionId)
         throw new Error('ACP binding session id does not match the cancelled runtime session')
@@ -849,6 +887,7 @@ export class AcpSessionRuntime {
     },
     beforeDispatch?: () => Promise<void>,
   ): Promise<acp.ForkSessionResponse> {
+    if (this.agentTurnFailure !== undefined) throw this.agentTurnFailure.view.error
     if (this.sessionId !== undefined) throw new Error('ACP runtime already owns a session')
     await this.initialize(signal)
     const connection = this.connection
@@ -906,6 +945,7 @@ export class AcpSessionRuntime {
     this.promptAbort = promptAbort
     const setupSignal = signal === undefined ? promptAbort.signal : AbortSignal.any([signal, promptAbort.signal])
     try {
+      this.throwPendingAgentTurnFailure(onUpdate)
       await this.flushHostFeedback()
       if (this.hasPendingHostCalls() || this.hasUncommittedHostFeedback())
         throw new AcpHostSettlementError('ACP_HOST_GENERATION_STILL_ACTIVE')
@@ -915,7 +955,9 @@ export class AcpSessionRuntime {
       // already admitted setting changes before sending this turn.
       await this.configWrite
       if (setupSignal.aborted) return { stopReason: 'cancelled' }
+      this.throwPendingAgentTurnFailure(onUpdate)
       await this.start(setupSignal)
+      this.throwPendingAgentTurnFailure(onUpdate)
       const connection = this.connection
       const sessionId = this.sessionId
       if (connection === undefined || sessionId === undefined) throw new Error('ACP session is not started')
@@ -923,6 +965,7 @@ export class AcpSessionRuntime {
       // A turn woken by a Qwen background/cron notice runs the turn Qwen has
       // already started instead of dispatching a new session/prompt.
       const adoptedTurn = promptOptions.adoptAgentTurn === true ? await this.nextAgentTurn(setupSignal) : undefined
+      this.throwPendingAgentTurnFailure(onUpdate)
       if (isAborted(signal)) return { stopReason: 'cancelled' }
       const promptToolSnapshots =
         adoptedTurn === undefined ? new Map<string, acp.ToolCallUpdate>() : (this.promptToolSnapshots ?? new Map())
@@ -1160,6 +1203,7 @@ export class AcpSessionRuntime {
 
   /** Set one ACP option for this runtime's session; writes are serialized and never cross sessions. */
   async setConfigOption(configId: string, value: string | boolean, signal?: AbortSignal): Promise<void> {
+    if (this.agentTurnFailure !== undefined) throw this.agentTurnFailure.view.error
     if (this.promptClaimed) throw new Error('ACP_CONFIG_CHANGE_DURING_PROMPT')
     const connection = this.connection
     const sessionId = this.sessionId
@@ -1184,6 +1228,7 @@ export class AcpSessionRuntime {
 
   /** Set a legacy ACP mode for this runtime's session. */
   async setMode(modeId: string, signal?: AbortSignal): Promise<void> {
+    if (this.agentTurnFailure !== undefined) throw this.agentTurnFailure.view.error
     if (this.promptClaimed) throw new Error('ACP_CONFIG_CHANGE_DURING_PROMPT')
     const connection = this.connection
     const sessionId = this.sessionId
@@ -1299,7 +1344,7 @@ export class AcpSessionRuntime {
       // the next explicit user action. Preserve its last-known controls while
       // the process is retired so a passive UI refresh can still render them;
       // the next prompt/control write must restore the binding before use.
-      if (!this.refreshBeforeRestore) {
+      if (!this.refreshBeforeRestore && this.agentTurnFailure === undefined) {
         this.configSnapshot = undefined
         this.currentMode = undefined
         this.modeSnapshot = undefined
@@ -1681,6 +1726,7 @@ export class AcpSessionRuntime {
       throw RequestError.methodNotFound('_qwencode/start_turn')
     }
     if (params.sessionId !== this.sessionId) return { accepted: false }
+    if (this.agentTurnFailure !== undefined) return { accepted: false }
     // Only background notification turns are adopted; others keep Qwen's own fallback.
     if (params.source !== 'background_notification') return notFound()
     // A host prompt owns the session; Qwen retries the notification after it.
@@ -1688,24 +1734,32 @@ export class AcpSessionRuntime {
     if (this.liveAgentTurn() !== undefined) return { accepted: false }
     const tasks = this.ensureQwenTasks()
     if (tasks === undefined) return notFound()
-    const turn = this.createAgentTurn(params.turnId, true)
+    const turn = this.createAgentTurn(params.turnId, true, params.taskId)
     // A host call already waiting adopts it directly; otherwise the task's
     // native job settles unawaited and DSH wakes the idle agent.
     if (!this.awaitingAgentTurn && !tasks.wake(params)) return notFound()
     this.agentTurns.push(turn)
+    this.armAgentTurnWatchdog(turn)
+    this.armAgentTurnAdoptionWatchdog(turn)
     this.promptToolSnapshots ??= new Map()
     this.connection?.setAgentTurnActive(params.sessionId, true)
     this.notifyAgentTurnWaiters()
     return { accepted: true }
   }
 
-  private createAgentTurn(turnId: string, announced: boolean): AgentTurn {
+  private createAgentTurn(turnId: string, announced: boolean, taskId?: string): AgentTurn {
+    const connection = this.connection
+    const sessionId = this.sessionId
+    if (connection === undefined || sessionId === undefined) throw new Error('ACP automatic turn has no owner')
     let resolveEnded!: (outcome: AgentTurnOutcome) => void
     const endedPromise = new Promise<AgentTurnOutcome>((resolve) => {
       resolveEnded = resolve
     })
     const turn: AgentTurn = {
       turnId,
+      sessionId,
+      connection,
+      ...(taskId === undefined ? {} : { taskId }),
       announced,
       incomplete: false,
       buffer: [],
@@ -1713,10 +1767,14 @@ export class AcpSessionRuntime {
       ended: undefined,
       endedPromise,
       workSeq: this.connection?.qwenActiveWorkSnapshot?.seq ?? 0,
+      workReported: false,
+      workFinished: false,
+      shellTools: new Map(),
       end: (outcome) => {
         if (turn.ended !== undefined) return
         turn.ended = outcome
         if (turn.idleTimer !== undefined) clearTimeout(turn.idleTimer)
+        if (turn.adoptionTimer !== undefined) clearTimeout(turn.adoptionTimer)
         resolveEnded(outcome)
       },
     }
@@ -1742,6 +1800,14 @@ export class AcpSessionRuntime {
   private finishAgentTurn(turn: AgentTurn, outcome: AgentTurnOutcome): void {
     if (turn.ended !== undefined) return
     turn.end(outcome)
+    if ('error' in outcome && this.agentTurnFailure === undefined)
+      this.agentTurnFailure = {
+        view: { acpSessionId: turn.sessionId, turnId: turn.turnId, error: outcome.error },
+        turn,
+        // Earlier fast-ended turns may also still be waiting for the Host.
+        // Preserve their ordered prefix rather than losing it on transport close.
+        prefix: this.agentTurns.filter((candidate) => candidate.listener === undefined || candidate === turn),
+      }
     const sessionId = this.sessionId
     if (sessionId !== undefined && this.liveAgentTurn() === undefined)
       this.connection?.setAgentTurnActive(sessionId, false)
@@ -1757,6 +1823,7 @@ export class AcpSessionRuntime {
 
   private routeAgentTurnUpdate(notification: AcpSessionNotification): void {
     if (
+      this.agentTurnFailure !== undefined ||
       notification.sessionId !== this.sessionId ||
       this.connection?.isClosed === true ||
       this.connection?.agentInfo?.name !== QWEN_AGENT_NAME
@@ -1783,7 +1850,9 @@ export class AcpSessionRuntime {
     // A cancellation can carry the same marker. Latch it without settling so
     // the explicit terminal receipt retains its own non-success semantics.
     if (turn.announced && isIncompleteQwenTurnUpdate(notification.update, turn.turnId)) turn.incomplete = true
-    if (!turn.announced) this.trackUnannouncedTurn(turn)
+    if (!turn.announced || isOwnedQwenTurnUpdate(notification.update, turn.turnId)) {
+      this.trackAgentTurnUpdate(turn, notification.update)
+    }
     if (turn.listener !== undefined) turn.listener(notification)
     else if (turn.buffer.length < AGENT_TURN_BUFFER_MAX) turn.buffer.push(notification)
   }
@@ -1802,6 +1871,7 @@ export class AcpSessionRuntime {
     )
       return undefined
     this.agentTurns.push(turn)
+    this.armAgentTurnAdoptionWatchdog(turn)
     this.promptToolSnapshots ??= new Map()
     this.connection?.setAgentTurnActive(sessionId, true)
     this.notifyAgentTurnWaiters()
@@ -1809,26 +1879,69 @@ export class AcpSessionRuntime {
   }
 
   /** Request/usage markers end model rounds, not the tool/Stop-hook work after them. */
-  private trackUnannouncedTurn(turn: AgentTurn): void {
-    turn.workSeq = this.connection?.qwenActiveWorkSnapshot?.seq ?? turn.workSeq
-    this.armUnannouncedTurnWatchdog(turn)
+  private trackAgentTurnUpdate(turn: AgentTurn, update: AcpSessionNotification['update']): void {
+    if (turn.workFinished) return
+    if (update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update') {
+      const known = turn.shellTools.get(update.toolCallId)
+      const shell = update.kind === 'execute' || update._meta?.toolName === 'run_shell_command' || known !== undefined
+      if (shell && known !== 'settled') {
+        const status = update.status
+        turn.shellTools.set(
+          update.toolCallId,
+          status === 'completed' || status === 'failed'
+            ? 'settled'
+            : status === 'in_progress'
+              ? 'running'
+              : (known ?? 'pending'),
+        )
+      }
+    }
+    this.armAgentTurnWatchdog(turn)
   }
 
-  private armUnannouncedTurnWatchdog(turn: AgentTurn): void {
+  private ownsAgentTurn(turn: AgentTurn): boolean {
+    return this.connection === turn.connection && this.sessionId === turn.sessionId && turn.ended === undefined
+  }
+
+  private agentTurnHasHostWork(turn: AgentTurn): boolean {
+    return (
+      this.pendingQuestions > 0 ||
+      this.hasPendingHostCalls() ||
+      turn.connection.hasPendingAgentTurnHostOperations(turn.sessionId)
+    )
+  }
+
+  private failAgentTurnReporting(turn: AgentTurn): void {
+    if (!this.ownsAgentTurn(turn)) return
+    this.finishAgentTurn(turn, { error: new AcpAgentTurnOutcomeError('missing-terminal') })
+    // Capture this generation; an old timer may never close a replacement connection.
+    void turn.connection.close().catch(() => undefined)
+  }
+
+  private armAgentTurnAdoptionWatchdog(turn: AgentTurn): void {
+    if (turn.adoptionTimer !== undefined) clearTimeout(turn.adoptionTimer)
+    turn.adoptionTimer = setTimeout(() => {
+      if (!this.ownsAgentTurn(turn) || turn.listener !== undefined) return
+      if (this.agentTurnHasHostWork(turn) || this.promptActive || this.awaitingAgentTurn)
+        this.armAgentTurnAdoptionWatchdog(turn)
+      else this.failAgentTurnReporting(turn)
+    }, this.options.agentTurnAdoptionMs ?? AGENT_TURN_ADOPTION_MAX_MS)
+    turn.adoptionTimer.unref?.()
+  }
+
+  private armAgentTurnWatchdog(turn: AgentTurn): void {
     if (turn.idleTimer !== undefined) clearTimeout(turn.idleTimer)
-    const interval = this.connection?.qwenActiveWorkIntervalMs
+    const interval = turn.connection.qwenActiveWorkIntervalMs
     turn.idleTimer = setTimeout(
       () => {
-        if (turn.ended !== undefined) return
+        if (!this.ownsAgentTurn(turn)) return
         // An unanswered human question can legitimately remain open. Missing
         // reporting otherwise makes the outcome unknown, never end_turn.
-        if (this.pendingQuestions > 0) this.armUnannouncedTurnWatchdog(turn)
-        else {
-          this.finishAgentTurn(turn, { error: new AcpAgentTurnOutcomeError('missing-terminal') })
-          void this.connection?.close().catch(() => undefined)
-        }
+        if (this.agentTurnHasHostWork(turn)) this.armAgentTurnWatchdog(turn)
+        else this.failAgentTurnReporting(turn)
       },
-      this.options.unannouncedIdleMs ?? (interval === undefined ? 180_000 : interval * 3),
+      this.options.unannouncedIdleMs ??
+        (interval === undefined || (turn.announced && !turn.workReported) ? 180_000 : interval * 3),
     )
     turn.idleTimer.unref?.()
   }
@@ -1837,22 +1950,31 @@ export class AcpSessionRuntime {
     const turn = this.liveAgentTurn()
     const snapshot = this.connection?.qwenActiveWorkSnapshot
     const interval = this.connection?.qwenActiveWorkIntervalMs
-    if (
-      turn === undefined ||
-      turn.announced ||
-      snapshot === undefined ||
-      interval === undefined ||
-      snapshot.seq <= turn.workSeq
-    )
-      return
+    if (turn === undefined || snapshot === undefined || interval === undefined || snapshot.seq <= turn.workSeq) return
     turn.workSeq = snapshot.seq
-    const active = snapshot.sessions.some(
-      (session) =>
-        session.sessionId === this.sessionId &&
-        session.holds.some((hold) => hold.category === 'session' && hold.id === 'session:active-turn'),
-    )
+    const session = snapshot.sessions.find((candidate) => candidate.sessionId === turn.sessionId)
+    if (turn.workFinished) return
+    if (turn.announced && session?.finishedBackgroundTurnId === turn.turnId) {
+      // An explicit finished execution is not a stop reason. Give its ordered
+      // terminal receipt a reporting window; missing receipt stays unknown.
+      turn.workFinished = true
+      turn.workReported = true
+      this.armAgentTurnWatchdog(turn)
+      return
+    }
+    const active =
+      session?.holds.some(
+        (hold) =>
+          (!turn.announced && hold.category === 'session' && hold.id === 'session:active-turn') ||
+          (turn.announced && hold.category === 'notification' && hold.id === turn.taskId) ||
+          (turn.announced &&
+            hold.category === 'shell' &&
+            hold.id === 'background-shells' &&
+            [...turn.shellTools.values()].includes('running')),
+      ) === true
     if (active) {
-      this.armUnannouncedTurnWatchdog(turn)
+      turn.workReported = true
+      this.armAgentTurnWatchdog(turn)
       return
     }
     // Even a fresh active -> idle transition says nothing about success, failure,
@@ -1895,6 +2017,7 @@ export class AcpSessionRuntime {
     turn: AgentTurn,
     deliver: (notification: AcpSessionNotification) => void,
   ): Promise<acp.PromptResponse> {
+    if (turn.adoptionTimer !== undefined) clearTimeout(turn.adoptionTimer)
     for (const notification of turn.buffer.splice(0)) deliver(notification)
     turn.listener = deliver
     this.notifyAgentTurnWaiters()
@@ -1905,9 +2028,22 @@ export class AcpSessionRuntime {
   }
 
   private releaseAgentTurn(connection: AcpClientConnection, sessionId: string, turn: AgentTurn): void {
+    if (turn.idleTimer !== undefined) clearTimeout(turn.idleTimer)
+    if (turn.adoptionTimer !== undefined) clearTimeout(turn.adoptionTimer)
     turn.listener = () => undefined
     this.agentTurns = this.agentTurns.filter((candidate) => candidate !== turn)
     if (this.liveAgentTurn() === undefined) connection.setAgentTurnActive(sessionId, false)
+  }
+
+  private throwPendingAgentTurnFailure(deliver: (notification: AcpSessionNotification) => void): void {
+    const failed = this.agentTurnFailure
+    if (failed === undefined) return
+    for (const turn of failed.prefix) {
+      for (const notification of turn.buffer.splice(0)) deliver(notification)
+      turn.listener = () => undefined
+    }
+    this.agentTurns = this.agentTurns.filter((turn) => !failed.prefix.includes(turn))
+    throw failed.view.error
   }
 
   private permissionSignal(): AbortSignal | undefined {

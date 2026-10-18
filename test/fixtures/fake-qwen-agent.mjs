@@ -17,6 +17,7 @@ const cancelled = []
 let backgroundTurn
 let activeWorkSeq = 0
 let activeWorkEnabled = false
+let activeWorkCategories = []
 let cronActive = false
 let cronCancelled = false
 const activeWork = () => {
@@ -34,6 +35,36 @@ const activeWork = () => {
             cronActive && process.env.FAKE_QWEN_IDLE_ONLY !== '1'
               ? [{ category: 'session', id: 'session:active-turn' }]
               : [],
+        },
+      ],
+    },
+  })
+}
+const backgroundWork = (turnId, mode, finished = false) => {
+  if (!activeWorkEnabled) return
+  const holds =
+    mode === 'notification'
+      ? [{ category: 'notification', id: 'bg-1' }]
+      : mode === 'foreign-task'
+        ? [{ category: 'notification', id: 'unrelated-task' }]
+        : mode === 'session'
+          ? [{ category: 'session', id: 'session:active-turn' }]
+          : mode === 'idle'
+            ? []
+            : [{ category: 'shell', id: 'background-shells' }]
+  send({
+    jsonrpc: '2.0',
+    method: 'qwen/notify/channel/active-work',
+    params: {
+      v: 1,
+      seq: ++activeWorkSeq,
+      sessions: [
+        {
+          sessionId: mode === 'foreign-session' ? 'other-session' : SESSION,
+          holds: holds.filter((hold) => activeWorkCategories.includes(hold.category)),
+          ...(finished
+            ? { finishedBackgroundTurnId: process.env.FAKE_QWEN_FINISHED_MARKER_SHAPE === 'number' ? 7 : turnId }
+            : {}),
         },
       ],
     },
@@ -159,6 +190,20 @@ async function runBackground(withQuestion) {
   if (process.env.FAKE_QWEN_BACKGROUND_FS === '1') {
     void request('fs/write_text_file', { sessionId: SESSION, path: '/fixture/output.txt', content: 'result' })
   }
+  const activity = process.env.FAKE_QWEN_BACKGROUND_ACTIVITY
+  const activityMeta =
+    activity === 'wrong-turn-shell' ? { backgroundTurn: { ...meta.backgroundTurn, turnId: 'other-turn' } } : meta
+  if (activity === 'shell' || activity === 'wrong-turn-shell' || activity === 'foreign-session')
+    update({
+      sessionUpdate: 'tool_call',
+      toolCallId: 'background-tool',
+      title: 'Silent command',
+      kind: 'execute',
+      status: 'in_progress',
+      _meta: activityMeta,
+    })
+  const ticker = activity === undefined ? undefined : setInterval(() => backgroundWork(turnId, activity), 20)
+  ticker?.unref()
   if (process.env.FAKE_QWEN_WRONG_END !== undefined) {
     send({
       jsonrpc: '2.0',
@@ -170,8 +215,16 @@ async function runBackground(withQuestion) {
       },
     })
   }
-  await new Promise((resolve) => setTimeout(resolve, 20))
+  await new Promise((resolve) => setTimeout(resolve, Number(process.env.FAKE_QWEN_BACKGROUND_DELAY_MS ?? 20)))
+  if (ticker !== undefined) clearInterval(ticker)
   if (backgroundTurn.ended) return
+  if (activity === 'shell' || activity === 'wrong-turn-shell' || activity === 'foreign-session')
+    update({
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'background-tool',
+      status: 'completed',
+      _meta: activityMeta,
+    })
   text('The background command printed done.', { ...meta, source: 'background_notification_response' })
   if (process.env.FAKE_QWEN_PARTIAL_MARKER_ORDER !== 'after-end') partialMarker(turnId)
   backgroundTurn.ended = true
@@ -192,10 +245,18 @@ async function runBackground(withQuestion) {
       source: 'background_notification',
     },
   }
-  send(terminal)
+  if (process.env.FAKE_QWEN_DROP_END !== '1') send(terminal)
   if (process.env.FAKE_QWEN_PARTIAL_MARKER_ORDER === 'after-end') {
     partialMarker(turnId)
     send(terminal)
+  }
+  if (process.env.FAKE_QWEN_DROP_END === '1' && process.env.FAKE_QWEN_NO_FINISHED_MARKER !== '1')
+    backgroundWork(turnId, 'unrelated-shell', true)
+  const postActivity = process.env.FAKE_QWEN_POST_TERMINAL_ACTIVITY
+  if (postActivity !== undefined) {
+    const postTicker = setInterval(() => backgroundWork(turnId, postActivity), 20)
+    postTicker.unref()
+    setTimeout(() => clearInterval(postTicker), 1000).unref()
   }
 }
 
@@ -353,6 +414,9 @@ process.stdin.on('data', (chunk) => {
         activeWorkEnabled =
           process.env.FAKE_QWEN_NO_ACTIVE_WORK !== '1' &&
           message.params._meta?.['qwen.daemon.activeWorkHeartbeat']?.v === 1
+        activeWorkCategories = (message.params._meta?.['qwen.daemon.activeWorkHeartbeat']?.categories ?? []).filter(
+          (category) => ['session', 'notification', 'shell'].includes(category),
+        )
         if (activeWorkEnabled && process.env.FAKE_QWEN_IDLE_ONLY === '1') setInterval(activeWork, 20).unref()
         send({
           jsonrpc: '2.0',
@@ -362,7 +426,15 @@ process.stdin.on('data', (chunk) => {
             agentInfo: { name: process.env.FAKE_QWEN_AGENT_NAME ?? 'qwen-code', title: 'Qwen Code', version: '0.25.1' },
             agentCapabilities: { loadSession: true },
             ...(activeWorkEnabled
-              ? { _meta: { 'qwen.daemon.activeWorkHeartbeat': { v: 1, intervalMs: 5000, categories: ['session'] } } }
+              ? {
+                  _meta: {
+                    'qwen.daemon.activeWorkHeartbeat': {
+                      v: 1,
+                      intervalMs: 5000,
+                      categories: activeWorkCategories,
+                    },
+                  },
+                }
               : {}),
           },
         })

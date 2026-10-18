@@ -17,6 +17,7 @@ import { settleDevinLiveResult } from './devin-live-result.ts'
 import type { DevinLiveActorRole, DevinLivePhase, DevinLiveToolKind } from './devin-live-budget.ts'
 import { DevinLiveTrace } from './devin-live-trace.ts'
 import { devinPeerMessageOf } from './devin-live-messages.ts'
+import { collectDevinHistory, devinHistoryLocations, emitDevinHistory } from './devin-live-history.ts'
 import {
   collectLiveDiagnostic,
   installLiveDiagnosticTrace,
@@ -72,6 +73,8 @@ const home = join(root, 'home')
 const workspace = join(root, 'workspace')
 const profileDir = join(home, 'profiles', 'devin-e2e')
 let host: Awaited<ReturnType<typeof runProfile>> | undefined
+let historySidecarPath: string | undefined
+let historyCaptureComplete = false
 let removeLiveToolGuard: (() => void) | undefined
 let liveDeadlineAt: number | undefined
 let liveDeadlineTimer: ReturnType<typeof setTimeout> | undefined
@@ -164,6 +167,15 @@ const safeErrorCode = (error: unknown): string => {
       'LIVE_CONFIG_EXECUTABLE_REQUIRED',
       'LIVE_CONFIG_TOKEN_REQUIRED',
       'LIVE_CONFIG_WINDOWS_USER_INVALID',
+      'LIVE_TOTAL_TOOL_BUDGET_EXCEEDED',
+      'LIVE_TOOL_ACTOR_UNCLASSIFIED',
+      'LIVE_TOOL_PHASE_UNCLASSIFIED',
+      'LIVE_FOLLOWUP_TOOL_CALL_UNEXPECTED',
+      'LIVE_LEAD_MESSAGE_UNEXPECTED',
+      'LIVE_LEAD_SPAWN_BUDGET_EXCEEDED',
+      'LIVE_TEAMMATE_MESSAGE_BUDGET_EXCEEDED',
+      'LIVE_TIME_BUDGET_EXCEEDED',
+      'LIVE_HISTORY_CAPTURE_UNAVAILABLE',
     ])
     return typeof message === 'string' && fixedMessages.has(message) ? message : 'unavailable'
   } catch {
@@ -366,6 +378,7 @@ try {
   traceEvent('phase/completed', { phaseCode: 'HOST_BOOT' })
   currentStage = 'PROVIDER_SETUP'
   const ctx = host.ctx
+  historySidecarPath = join(ctx.dshHomePath!('dsh-acp'), 'sidecar.sqlite')
   removeLiveToolGuard = ctx.tools.guard((execution) => {
     const agent = execution.agent
     if (agent?.options.provider !== 'acp-devin') return undefined
@@ -991,6 +1004,7 @@ try {
   })
   process.exitCode = 1
 } finally {
+  const scenarioResult = finalTestResult
   traceEvent('cleanup/start', { exitCode: process.exitCode ?? 0 })
   try {
     if (process.exitCode === 1) cancelActiveDevinAgents('LIVE_TEST_CLEANUP')
@@ -1018,6 +1032,34 @@ try {
         stageCode: 'CLEANUP',
         errorCode: 'unavailable',
         errorSource: 'cleanup',
+      })
+    }
+    // CLI processes have settled; inspect only exact bindings from this fresh
+    // synthetic Host before its isolated root (and Windows audit account) is removed.
+    if (historySidecarPath !== undefined) {
+      try {
+        const history = await collectDevinHistory({
+          isolatedRoot: root,
+          workspace,
+          sidecarPath: historySidecarPath,
+          ...devinHistoryLocations(root, process.platform, process.env, userInfo().username),
+          actors: [...roles].map(([sessionId, label]) => ({ sessionId, label })),
+        })
+        emitDevinHistory(trace, history)
+        historyCaptureComplete = history.status === 'captured'
+      } catch {
+        traceEvent('devin-history/status', { historyStatus: 'unsupported', historyReason: 'worker-failed' })
+      }
+    } else {
+      traceEvent('devin-history/status', { historyStatus: 'unavailable', historyReason: 'binding-unavailable' })
+    }
+    if (!historyCaptureComplete) {
+      finalTestResult = 'fail'
+      process.exitCode = 1
+      traceEvent('test/fail', {
+        stageCode: 'DIAGNOSTICS',
+        errorCode: 'LIVE_HISTORY_CAPTURE_UNAVAILABLE',
+        errorSource: 'history-capture',
       })
     }
     traceEvent('cleanup/end', { exitCode: process.exitCode ?? 0 })
@@ -1074,7 +1116,12 @@ try {
     }
     trace.finish(finalTestResult, {
       diagnosticComplete:
-        traceObserverFailures === 0 && !trace.writeFailed && !traceWriteFailure && !trace.diagnosticIncomplete,
+        historyCaptureComplete &&
+        traceObserverFailures === 0 &&
+        !trace.writeFailed &&
+        !traceWriteFailure &&
+        !trace.diagnosticIncomplete,
+      scenarioResult,
       failureCount: failures.length,
       writeFailureCount: traceObserverFailures + Number(trace.writeFailed || traceWriteFailure),
       incompleteReasons: trace.diagnosticIncomplete ? 1 : 0,
@@ -1082,6 +1129,8 @@ try {
       allowedDispatches: toolBudget.allowedDispatches,
       deniedDispatches: toolBudget.deniedDispatches,
       observedToolResults,
+      historyCaptureComplete,
+      budgetViolation: toolBudget.violation ?? 'none',
       queuedMessages: queuedMessageIds.size,
       acceptedMessages: acceptedMessageIds.size,
       deliveredMessages: deliveredMessageIds.size,

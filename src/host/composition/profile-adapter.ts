@@ -34,7 +34,7 @@ import {
   AcpSessionRefreshRetryError,
   AcpSessionRuntime,
 } from '../../runtime/session/session-runtime.ts'
-import type { AcpRuntimeContextUsage } from '../../runtime/session/session-runtime.ts'
+import type { AcpPendingAgentTurnFailure, AcpRuntimeContextUsage } from '../../runtime/session/session-runtime.ts'
 import {
   acpLaunchEnvironment,
   acpLaunchFingerprint,
@@ -663,6 +663,8 @@ export interface AcpProfileRuntime {
   readonly modes?: acp.SessionModeState | undefined
   readonly contextUsage?: AcpRuntimeContextUsage | undefined
   readonly lastRestoreRefreshedCancelledSession?: boolean | undefined
+  /** A failed automatic turn retained by this exact runtime until Host settlement. */
+  readonly pendingAgentTurnFailure?: AcpPendingAgentTurnFailure | undefined
   readonly cancelledSessionRefreshPending?: boolean | undefined
   readonly cancelledSessionRefreshBindingId?: string | undefined
   readonly isBusy?: boolean
@@ -769,6 +771,7 @@ export class AcpProfileAdapter extends LlmAdapter {
   private probeGeneration: ProfileGeneration | undefined
   private readonly runtimes = new Map<string, AcpProfileRuntime>()
   private readonly runtimeOwners = new WeakMap<AcpProfileRuntime, object>()
+  private readonly runtimeBindings = new WeakMap<AcpProfileRuntime, AcpBindingData>()
   private readonly nextGenerations = new Map<string, number>()
   private readonly admittedToolSchemas = new Map<string, readonly ToolSchema[] | undefined>()
   private readonly admittedToolSchemaOwners = new Map<string, object>()
@@ -2166,7 +2169,11 @@ export class AcpProfileAdapter extends LlmAdapter {
           // Legacy test/embedding runtimes must not be started here: start() may
           // create session/new, and doing it before fork/restore both duplicates
           // setup and makes a fork look like a blank session.
-          if (runtime.initialize !== undefined) await runtime.initialize(options.signal)
+          // A failed automatic turn already belongs to the saved session. Its
+          // buffered answer must enter the ordinary dispatch/attempt settlement,
+          // never a newly initialized transport or another session/prompt.
+          if (runtime.pendingAgentTurnFailure === undefined && runtime.initialize !== undefined)
+            await runtime.initialize(options.signal)
           persistedRecovery = await durableSidecar.readRecoveryState(sessionKey as never)
           forceBlank = persistedRecovery?.lastUserAction === 'rebind-blank'
           const modelContextSnapshots = session?.currentModelContextSnapshots?.()
@@ -2193,10 +2200,10 @@ export class AcpProfileAdapter extends LlmAdapter {
             snapshots: snapshots.map(({ source, text }) => ({ source, text })),
           })
           const wakeInput = qwenTaskWakeInput(messages)
-          if (wakeInput !== undefined) {
+          if (wakeInput !== undefined || runtime.pendingAgentTurnFailure !== undefined) {
             const delivered = self.deliveredQwenContexts.get(runtime)
             const contextUnchanged = delivered?.sessionId === runtime.acpSessionId && delivered?.key === qwenContextKey
-            let followup = qwenTaskFollowupInput(wakeInput, snapshots, contextUnchanged)
+            let followup = qwenTaskFollowupInput(wakeInput ?? messages, snapshots, contextUnchanged)
             if (followup.length === 0 && !contextUnchanged) {
               // A native snapshot can change without contributing a new message
               // to this step. Carry its replacement as generated Host context,
@@ -2275,6 +2282,19 @@ export class AcpProfileAdapter extends LlmAdapter {
             'ACP_RECOVERY_REQUIRED',
           )
         }
+        if (runtime.pendingAgentTurnFailure !== undefined && binding === undefined) {
+          await self.blockRecovery(
+            sessionKey,
+            {
+              kind: 'outcome-unknown',
+              cause: 'binding-outdated',
+              detail: 'The failed ACP automatic turn has no valid saved Agent binding',
+              acpSessionId: runtime.pendingAgentTurnFailure.acpSessionId,
+            },
+            undefined,
+            'ACP_RECOVERY_REQUIRED',
+          )
+        }
         bindingForModeRestore = binding
         if (binding === undefined) self.confirmedUserModes.delete(sessionKey)
         const currentFingerprint = await self.launchFingerprint(profile)
@@ -2342,6 +2362,20 @@ export class AcpProfileAdapter extends LlmAdapter {
               binding,
             )
           }
+          if (
+            runtime.pendingAgentTurnFailure !== undefined &&
+            runtime.pendingAgentTurnFailure.acpSessionId !== binding.agentSessionId
+          ) {
+            await self.blockRecovery(
+              sessionKey,
+              {
+                kind: 'reconciliation-required',
+                cause: 'backend-conflict',
+                detail: 'The failed ACP automatic turn does not belong to the saved Agent session',
+              },
+              binding,
+            )
+          }
           if (typeof runtime.restore !== 'function') {
             await self.blockRecovery(
               sessionKey,
@@ -2353,6 +2387,7 @@ export class AcpProfileAdapter extends LlmAdapter {
               binding,
             )
           }
+          self.runtimeBindings.set(runtime, binding)
           let replayUpdates = 0
           let replayChars = 0
           try {
@@ -2574,6 +2609,7 @@ export class AcpProfileAdapter extends LlmAdapter {
             }
             try {
               await self.sidecar.append(sessionKey as never, { kind: 'binding', data: bindingData })
+              self.runtimeBindings.set(runtime, bindingData)
               bindingForModeRestore = bindingData
               if (forkOutcome !== undefined && forkReason !== undefined) {
                 await self.sidecar.append(sessionKey as never, {
@@ -2625,9 +2661,15 @@ export class AcpProfileAdapter extends LlmAdapter {
         )
           self.confirmedUserModes.delete(sessionKey)
         try {
-          await self.convergeConfig(runtime, options)
-          await self.applyMemberMode(sessionKey, runtime)
-          if (restoreSavedMode) {
+          const pendingAutomaticFailure = runtime.pendingAgentTurnFailure !== undefined
+          // No configuration write can repair an already failed remote turn.
+          // Keep binding/recovery validation above, then consume its retained
+          // output and typed failure before any independently admitted input.
+          if (!pendingAutomaticFailure) {
+            await self.convergeConfig(runtime, options)
+            await self.applyMemberMode(sessionKey, runtime)
+          }
+          if (restoreSavedMode && !pendingAutomaticFailure) {
             // A mode is restored only after the same-bound session was loaded.
             // If it disappeared from the Agent's supported choices, keep the
             // live controls available and send no prompt under a different mode.
@@ -4166,6 +4208,7 @@ export class AcpProfileAdapter extends LlmAdapter {
         await retireSettlement
         await Promise.all(
           runtimes.map(async ([key, runtime]) => {
+            await this.preservePendingAgentTurnFailure(key, runtime, true)
             if (this.hostRoot !== undefined)
               retainHostExecutionOwner(this.hostRoot, key.slice(0, key.lastIndexOf(':')), runtime)
             await runtime.close()
@@ -4186,11 +4229,82 @@ export class AcpProfileAdapter extends LlmAdapter {
   private async releaseRuntime(key: string, runtime: AcpProfileRuntime): Promise<void> {
     // An old asynchronous failure must not evict a replacement with the same key.
     if (this.runtimes.get(key) !== runtime) return
+    await this.preservePendingAgentTurnFailure(key, runtime)
+    if (this.runtimes.get(key) !== runtime) return
     if (this.hostRoot !== undefined)
       retainHostExecutionOwner(this.hostRoot, key.slice(0, key.lastIndexOf(':')), runtime)
     this.runtimes.delete(key)
     this.controlsChanged?.(key.slice(0, key.lastIndexOf(':')))
     await runtime.close().catch(() => undefined)
+  }
+
+  /** Preserve an unconsumed failure before retiring its only in-memory owner. */
+  private async preservePendingAgentTurnFailure(
+    key: string,
+    runtime: AcpProfileRuntime,
+    retiring = false,
+  ): Promise<void> {
+    const sessionId = key.slice(0, key.lastIndexOf(':'))
+    const pending = runtime.pendingAgentTurnFailure
+    const expected = this.runtimeBindings.get(runtime)
+    if (pending === undefined || expected === undefined || expected.agentSessionId !== pending.acpSessionId) return
+    const owner = this.runtimeOwners.get(runtime)
+    const stillOwned = (): boolean => {
+      const current = this.runtimes.get(key)
+      if (retiring) {
+        // close() captured this tuple before clearing admission. A replacement
+        // runtime in the same adapter revokes that retirement authorization.
+        if (current !== undefined || [...this.runtimes.keys()].some((entry) => entry.startsWith(`${sessionId}:`)))
+          return false
+      } else if (current !== runtime) return false
+      const currentSession = this.sessionOf(sessionId)
+      return (
+        this.runtimeOwners.get(runtime) === owner &&
+        this.runtimeBindings.get(runtime) === expected &&
+        runtime.pendingAgentTurnFailure === pending &&
+        (owner === undefined || currentSession === undefined || owner === (currentSession.identity ?? currentSession))
+      )
+    }
+    if (!stillOwned()) return
+    const matches = (binding: AcpBindingData): boolean =>
+      binding.profileId === expected.profileId &&
+      binding.provider === expected.provider &&
+      binding.agentSessionId === expected.agentSessionId &&
+      binding.generation === expected.generation &&
+      (binding.bindingEpoch ?? binding.generation) === (expected.bindingEpoch ?? expected.generation)
+    const recovery: AcpRecoveryState = {
+      dshSessionId: sessionId,
+      kind: 'outcome-unknown',
+      cause: 'load-failed',
+      detail: pending.error.message,
+      provider: expected.provider,
+      acpSessionId: pending.acpSessionId,
+      generation: expected.generation,
+      updatedAt: Date.now(),
+    }
+    try {
+      if (this.sidecar === undefined) throw new Error('ACP sidecar unavailable')
+      const binding = await this.sidecar.readLatestBinding(sessionId as never)
+      if (!stillOwned() || binding?.status !== 'ok' || !matches(binding.binding)) return
+      const existing = await this.sidecar.readRecoveryState(sessionId as never)
+      // Normal failure settlement or another validated recovery gate already
+      // owns this session. Retiring a runtime must never overwrite that state.
+      if (existing !== undefined && existing.kind !== 'healthy') return
+      if (
+        existing !== undefined &&
+        ((existing.provider !== undefined && existing.provider !== expected.provider) ||
+          (existing.acpSessionId !== undefined && existing.acpSessionId !== expected.agentSessionId) ||
+          (existing.generation !== undefined && existing.generation !== expected.generation))
+      )
+        return
+      // A read may have yielded while a different binding epoch was published.
+      // Verify again immediately before the synchronous durable write boundary.
+      const latest = await this.sidecar.readLatestBinding(sessionId as never)
+      if (!stillOwned() || latest?.status !== 'ok' || !matches(latest.binding)) return
+      await this.sidecar.writeRecoveryState(recovery)
+    } catch {
+      if (stillOwned()) this.rememberRecoveryFallback(recovery)
+    }
   }
 
   private assertNoQuarantinedHostCalls(sessionId: string, recoveryAction = false): void {

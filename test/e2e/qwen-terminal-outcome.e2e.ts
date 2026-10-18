@@ -10,21 +10,44 @@ import { launchAdapterWorld, root } from './scaffold.ts'
 
 // Real Loader -> built ACP plugin -> subprocess wire -> official jobs wake ->
 // native AgentLoop and persisted turn/end. Only the external Agent is keyless.
-it.each([
-  { name: 'unknown terminal reason', endReason: 'failed', partialMarker: undefined, expectedUnknown: true },
-  { name: 'explicit successful terminal', endReason: 'end_turn', partialMarker: undefined, expectedUnknown: false },
-  { name: 'partial marker and end_turn', endReason: 'end_turn', partialMarker: 'matching', expectedUnknown: true },
-  { name: 'nonpartial marker and end_turn', endReason: 'end_turn', partialMarker: 'false', expectedUnknown: false },
-] as const)(
+it.each(
+  [
+    { name: 'unknown terminal reason', endReason: 'failed', partialMarker: undefined, expectedUnknown: true },
+    { name: 'explicit successful terminal', endReason: 'end_turn', partialMarker: undefined, expectedUnknown: false },
+    { name: 'partial marker and end_turn', endReason: 'end_turn', partialMarker: 'matching', expectedUnknown: true },
+    { name: 'nonpartial marker and end_turn', endReason: 'end_turn', partialMarker: 'false', expectedUnknown: false },
+    {
+      name: 'missing terminal after adoption',
+      endReason: 'end_turn',
+      partialMarker: undefined,
+      expectedUnknown: true,
+      dropTerminal: true,
+    },
+    {
+      name: 'missing terminal before delayed adoption',
+      endReason: 'end_turn',
+      partialMarker: undefined,
+      expectedUnknown: true,
+      dropTerminal: true,
+      adoptionDelayMs: 17_000,
+    },
+  ].map((entry) => ({ dropTerminal: false, adoptionDelayMs: 0, ...entry })),
+)(
   'settles a Qwen automatic turn with $name truthfully in native history',
-  async ({ name, endReason, partialMarker, expectedUnknown }) => {
+  async ({ name, endReason, partialMarker, expectedUnknown, dropTerminal, adoptionDelayMs }) => {
     const host = await launchAdapterWorld()
     const directory = join(root, '.local/e2e-qwen-terminal-outcome', randomUUID())
     mkdirSync(directory, { recursive: true })
     const promptLog = join(host.workspaceCwd, 'qwen-prompts.jsonl')
     const prompts = () =>
       existsSync(promptLog) ? readFileSync(promptLog, 'utf8').trim().split('\n').filter(Boolean) : []
-    const facts: Record<string, unknown> = { scenario: name, endReason, partialMarker: partialMarker ?? null }
+    const facts: Record<string, unknown> = {
+      scenario: name,
+      endReason,
+      partialMarker: partialMarker ?? null,
+      dropTerminal,
+      adoptionDelayMs,
+    }
     try {
       await host.ctx.settings.replace('dsh-acp-adapter', {
         agents: {
@@ -38,6 +61,7 @@ it.each([
               FAKE_QWEN_END_REASON: endReason,
               FAKE_QWEN_PROMPT_LOG: promptLog,
               ...(partialMarker ? { FAKE_QWEN_PARTIAL_MARKER: partialMarker } : {}),
+              ...(dropTerminal ? { FAKE_QWEN_DROP_END: '1' } : {}),
             },
           },
         },
@@ -48,6 +72,22 @@ it.each([
       const resolved = await host.ctx.sessionController.resolveAgent(sessionId)
       if ('error' in resolved) throw new Error(resolved.error.message)
       const session = resolved.agent.session
+      if (adoptionDelayMs > 0)
+        host.ctx.on('agent/pre-step', async (payload, next) => {
+          const decision = await next()
+          if (
+            decision.kind !== 'reject' &&
+            payload.agent.id === sessionId &&
+            payload.messages.some((message) => String(message.source.kind) === 'tool-jobs')
+          ) {
+            // Delay native admission beyond the real negotiated 15s reporting
+            // window. The closed transport's failed turn must survive the next
+            // initialize/restore and enter this native turn as an attempt.
+            facts.delayedNativeWake = true
+            await new Promise<void>((resolve) => setTimeout(resolve, adoptionDelayMs))
+          }
+          return decision
+        })
       const observedEvents: SessionEvent[] = []
       facts.observedEvents = observedEvents
       host.ctx.on('session/event', (owner, event) => {
@@ -71,6 +111,7 @@ it.each([
         : { kind: 'completed' }
       expect(endings()[0]?.data.reason).toMatchObject({ kind: 'completed' })
       expect(endings()[1]?.data.reason).toMatchObject(expectedAutomaticReason)
+      if (adoptionDelayMs > 0) expect(facts.delayedNativeWake).toBe(true)
       // Adoption must consume the Agent's existing turn, not replay the task
       // through a second session/prompt even when the terminal reason is bad.
       expect(prompts()).toHaveLength(1)

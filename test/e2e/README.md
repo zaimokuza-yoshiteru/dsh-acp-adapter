@@ -142,6 +142,8 @@ DEVIN_TEST_MODEL=swe-2-high node scripts/check-devin-live.ts "$(command -v devin
 
 每个 live 测试会尝试在 `DEVIN_LIVE_TRACE_DIR` 写入一个 `real-devin-live-<24位十六进制>.jsonl`。CI 只从专用 `devin-live-diagnostics` 目录上传这类文件，保留 7 天；文件包含每次运行独立密钥 HMAC 处理的关联 ID、固定枚举、布尔值和数字，不含原始消息、prompt、参数、凭据、stdout、stderr、profile、transcript 或 Devin CLI 原生日志。Windows 普通用户先写入审计临时目录，启动器在删除该目录前复制符合文件名的 trace 到 runner 专用目录。工作流级硬超时或 runner 被强制终止时，`always()` 上传步骤也可能没有机会执行，因此不能保证每次运行都有 artifact；缺少文件时 CI 会显示 warning。
 
+后续诊断在 Agent 进程退出后、隔离目录删除前，通过本轮 sidecar binding 精确选取合成测试会话，从 Devin 本地 SQLite 提取发送调用、成功结果与后续生成的关联事实。读取在无环境变量的独立 worker 中执行，最多 5 秒，并限制数据库、节点与投影字节；仅现有安全 trace 中的 HMAC、枚举、计数和布尔值进入 artifact。`historyReceiptStatus: stored` 表示 CLI 历史保存了对应工具结果，不等同传输层实时确认；只有实际父节点、调用与不同生成请求 ID 都匹配时，才能认定某次重复来自后续生成。路径、schema 或关联不可用时单独记录诊断失败；`scenarioResult` 与 `historyCaptureComplete` 分别描述业务场景和采证结果，不用一项替代另一项。
+
 查看 trace 时需区分事件层级：`run/start` 与 `run/summary` 描述一次检查，`phase/completed` 描述一个阶段完成，tool 事件描述单次工具分发或结果。`test/assertions-passed` 只表示脚本断言通过；终态还要求 trace 完成写入且进程输出 `LIVE_TEST_PASS`。ACP call、团队 message、step 和 prompt 是不同对象，不能把数量互相当作对方的数量。Host 的工具调用 ID 与成功 `send_message` 返回的 messageId 通过 trace 中显式记录的关联字段连接，不能靠相邻日志行推断。ACP provider 内部发出的模型请求数量及传输重试可能不可观察；`context used` 是上下文使用量，不是计费 token 数。
 
 诊断日志只覆盖启用后的运行；离线检查不能替代真实端到端验证。之后生成的 trace 无法还原既有运行中调用数量的成因。脚本中的工具准入预算只约束该测试，不保护生产环境。
@@ -171,6 +173,8 @@ ACP 与 DSH 的桥接边界见[原生复用说明](../../docs/native-reuse.md)�
 Qwen 的无密钥 Host 与界面回归独立于上述 live 检查：`pnpm test:e2e qwen-code` 通过真实 Loader 加载构建插件，验证原生问答卡的单选、多选、自定义、翻页、取消和 Host cancellation，以及模型切换后的推理目录和实际 ACP 配置值。它使用确定性 ACP 子进程，不读取认证或调用模型。后台 jobs 的原生注册、通知和 AgentLoop 接线另由 `test/integration/host/qwen-task-jobs.spec.ts` 验证；运行时协议夹具覆盖取消未确认、慢工具前置等待和混合消息的顺序发送。测试替身通过不能推定真实 Qwen CLI 或全部平台已验收。
 
 `test/e2e/qwen-terminal-outcome.e2e.ts` 单独验证构建插件的原生 AgentLoop 与持久化：未知结束原因、匹配轮次的 `turnComplete:true, partial:true` 后接 `end_turn` 均保留部分输出并进入结果未知，阻止后续请求派发；普通 `end_turn` 和 `partial:false` 为正常结算对照。此无密钥协议夹具不经过浏览器，也不证明真实模型会产生这些异常；partial／未知原因的异常路径未做真实模型故障注入。上游错误若没有任何机器可读的不完整标记，适配器仍无法可靠识别。
+
+缺结束通知的回归另覆盖已宣布的自动轮次：已经承接时缺少 end，以及 end 缺失导致连接关闭后宿主才承接。运行时按当前轮次的通知／工具活动判断缺报告，正在执行的 Host 工具与人类问答不会被固定总时限截断；已结束但尚未承接的输出与终态继续保留。超时沿原生 attempt、WAL 和结果未知门禁结算，不能初始化新连接后把唤醒或保留输入重新发送。整体关闭时尚未承接的失败保存 durable gate；没有原生轮次 owner 的前缀不伪造为成功历史，亦不承诺跨 Host 重启恢复。
 
 ## ACP live continuation opt-in
 

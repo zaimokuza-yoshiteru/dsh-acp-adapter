@@ -170,7 +170,14 @@ function qwenActiveWorkSnapshot(value: unknown): QwenActiveWorkSnapshot | undefi
       holds.push({ category: hold.category, id: hold.id })
     }
     seen.add(session.sessionId)
-    sessions.push({ sessionId: session.sessionId, holds })
+    const finished = session.finishedBackgroundTurnId
+    if (finished !== undefined && (typeof finished !== 'string' || finished === '' || finished.length > 256))
+      return undefined
+    sessions.push({
+      sessionId: session.sessionId,
+      holds,
+      ...(finished === undefined ? {} : { finishedBackgroundTurnId: finished }),
+    })
   }
   return { v: 1, seq: value.seq as number, sessions }
 }
@@ -927,6 +934,11 @@ export class AcpClientConnection {
     await this.drainPromptHostOperations(sessionId)
   }
 
+  /** Actual admitted work in this session, independent of provider liveness claims. */
+  hasPendingAgentTurnHostOperations(sessionId: string): boolean {
+    return (this.pendingPromptHostOperations.get(sessionId)?.size ?? 0) > 0
+  }
+
   /** Mark an adopted Agent-initiated turn: it owns permission requests and
    * reopens the Host-operation generation like a prompt does. */
   setAgentTurnActive(sessionId: string, active: boolean): void {
@@ -1111,7 +1123,13 @@ export class AcpClientConnection {
               ? {}
               : {
                   // A request for optional vendor reporting, never a standard client capability.
-                  _meta: { [QWEN_ACTIVE_WORK_META]: { v: 1, intervalMs: 5000, categories: ['session'] } },
+                  _meta: {
+                    [QWEN_ACTIVE_WORK_META]: {
+                      v: 1,
+                      intervalMs: 5000,
+                      categories: ['session', 'notification', 'shell'],
+                    },
+                  },
                 }),
           }),
           this.process.failureArm,

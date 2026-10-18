@@ -120,6 +120,7 @@ describe('Devin live diagnostic trace', () => {
     expect(rows.some((row) => row.event === 'trace/truncated' && row.truncated === true)).toBe(true)
     expect(rows.at(-1)).toMatchObject({ event: 'trace/final', testResult: 'fail', truncated: true })
     expect(rows.at(-1)?.omittedEvents).toBeGreaterThan(0)
+    expect(trace.diagnosticIncomplete).toBe(true)
     expect(DEVIN_LIVE_TRACE_MAX_BYTES).toBeGreaterThan(4096)
   })
 

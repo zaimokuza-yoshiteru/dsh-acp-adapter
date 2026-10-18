@@ -174,6 +174,318 @@ describe('Qwen Code ask_user_question', () => {
 })
 
 describe('Qwen Code background tasks', () => {
+  it('fails a live announced turn without a terminal, retains its prefix, and never dispatches retained input', async () => {
+    const jobs = recordingJobs()
+    const prompts = promptRequests()
+    const runtime = createRuntime(
+      { qwenTaskJobs: jobs.starter, unannouncedIdleMs: 80 },
+      { FAKE_QWEN_DROP_END: '1', FAKE_QWEN_NO_FINISHED_MARKER: '1', ...prompts.env },
+    )
+    const mirrored = jobs.next()
+    await runtime.prompt([{ type: 'text', text: 'background' }], () => undefined)
+    await (
+      await mirrored
+    ).outcome
+    const updates: AcpSessionNotification[] = []
+    await expect(
+      runtime.prompt(
+        [{ type: 'text', text: 'wake' }],
+        (n) => updates.push(n),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { adoptAgentTurn: true, followupContent: [{ type: 'text', text: 'must not dispatch' }] },
+      ),
+    ).rejects.toMatchObject({ code: 'ACP_PROTOCOL_ERROR', reason: 'missing-terminal' })
+    expect(texts(updates)).toContain('The background command printed done.')
+    expect(prompts.read()).toEqual(['background'])
+    await expect(runtime.prompt([{ type: 'text', text: 'later user input' }], () => undefined)).rejects.toMatchObject({
+      reason: 'missing-terminal',
+    })
+    expect(prompts.read()).toEqual(['background'])
+  })
+
+  it('preserves an unadopted timeout through close, initialize, restore, and a later ordinary Host prompt', async () => {
+    const jobs = recordingJobs()
+    const prompts = promptRequests()
+    let spawned = 0
+    const runtime = createRuntime(
+      {
+        qwenTaskJobs: jobs.starter,
+        unannouncedIdleMs: 80,
+        subprocess: {
+          resolveExecutable: (...args) => subprocess.resolveExecutable(...args),
+          spawn: (spec) => {
+            spawned++
+            return subprocess.spawn(spec)
+          },
+        },
+      },
+      { FAKE_QWEN_DROP_END: '1', FAKE_QWEN_NO_FINISHED_MARKER: '1', ...prompts.env },
+    )
+    const mirrored = jobs.next()
+    await runtime.prompt([{ type: 'text', text: 'background' }], () => undefined)
+    await (
+      await mirrored
+    ).outcome
+    await expect.poll(() => runtime.pendingAgentTurnFailure?.error.reason).toBe('missing-terminal')
+    const sessionId = runtime.acpSessionId!
+    expect(runtime.pendingAgentTurnFailure).toMatchObject({
+      acpSessionId: sessionId,
+      turnId: `${sessionId}########notification1`,
+    })
+    await runtime.close()
+    await runtime.initialize()
+    await runtime.start()
+    expect(await runtime.restore({ agentSessionId: sessionId })).toBe('reused')
+    await expect(runtime.restore({ agentSessionId: 'other-session' })).rejects.toThrow('does not match')
+    const updates: AcpSessionNotification[] = []
+    await expect(
+      runtime.prompt([{ type: 'text', text: 'user already queued' }], (n) => updates.push(n)),
+    ).rejects.toMatchObject({ reason: 'missing-terminal' })
+    expect(texts(updates)).toContain('The background command printed done.')
+    expect(runtime.agentInfo?.name).toBe('qwen-code')
+    expect(spawned).toBe(1)
+    expect(prompts.read()).toEqual(['background'])
+    const repeated: AcpSessionNotification[] = []
+    await expect(runtime.prompt([{ type: 'text', text: 'retry' }], (n) => repeated.push(n))).rejects.toMatchObject({
+      reason: 'missing-terminal',
+    })
+    expect(repeated).toEqual([])
+    expect(spawned).toBe(1)
+  })
+
+  it('bounds a live automatic turn with no Host consumer independently of matching activity', async () => {
+    const jobs = recordingJobs()
+    const runtime = createRuntime(
+      { qwenTaskJobs: jobs.starter, unannouncedIdleMs: 80, agentTurnAdoptionMs: 120 },
+      {
+        FAKE_QWEN_BACKGROUND_ACTIVITY: 'notification',
+        FAKE_QWEN_BACKGROUND_DELAY_MS: '1000',
+      },
+    )
+    const mirrored = jobs.next()
+    await runtime.prompt([{ type: 'text', text: 'background' }], () => undefined)
+    await (
+      await mirrored
+    ).outcome
+    await expect.poll(() => runtime.pendingAgentTurnFailure?.error.reason).toBe('missing-terminal')
+    await expect(
+      runtime.prompt([{ type: 'text', text: 'wake' }], () => undefined, undefined, undefined, undefined, undefined, {
+        adoptAgentTurn: true,
+      }),
+    ).rejects.toMatchObject({ reason: 'missing-terminal' })
+  })
+
+  it.each(['shell', 'notification'])(
+    'keeps a silent announced turn alive across reporting windows with matching %s activity',
+    async (activity) => {
+      const jobs = recordingJobs()
+      const runtime = createRuntime(
+        { qwenTaskJobs: jobs.starter, unannouncedIdleMs: 80 },
+        {
+          FAKE_QWEN_BACKGROUND_ACTIVITY: activity,
+          FAKE_QWEN_BACKGROUND_DELAY_MS: '350',
+        },
+      )
+      const mirrored = jobs.next()
+      await runtime.prompt([{ type: 'text', text: 'background' }], () => undefined)
+      await (
+        await mirrored
+      ).outcome
+      const updates: AcpSessionNotification[] = []
+      const start = Date.now()
+      const response = await runtime.prompt(
+        [{ type: 'text', text: 'wake' }],
+        (n) => updates.push(n),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { adoptAgentTurn: true },
+      )
+      expect(response.stopReason).toBe('end_turn')
+      expect(Date.now() - start).toBeGreaterThan(250)
+      expect(texts(updates)).toContain('The background command printed done.')
+      expect(runtime.pendingAgentTurnFailure).toBeUndefined()
+    },
+  )
+
+  it.each(['foreign-task', 'foreign-session', 'idle', 'unrelated-shell', 'wrong-turn-shell', 'session'])(
+    'does not let %s snapshots keep an announced turn alive',
+    async (activity) => {
+      const jobs = recordingJobs()
+      const runtime = createRuntime(
+        { qwenTaskJobs: jobs.starter, unannouncedIdleMs: 80 },
+        {
+          FAKE_QWEN_BACKGROUND_ACTIVITY: activity,
+          FAKE_QWEN_BACKGROUND_DELAY_MS: '350',
+        },
+      )
+      const mirrored = jobs.next()
+      await runtime.prompt([{ type: 'text', text: 'background' }], () => undefined)
+      await (
+        await mirrored
+      ).outcome
+      await expect(
+        runtime.prompt([{ type: 'text', text: 'wake' }], () => undefined, undefined, undefined, undefined, undefined, {
+          adoptAgentTurn: true,
+        }),
+      ).rejects.toMatchObject({ reason: 'missing-terminal' })
+    },
+  )
+
+  it.each([
+    { marker: '1', activity: 'shell', later: 'unrelated-shell' },
+    { marker: undefined, activity: 'notification', later: 'notification' },
+  ])(
+    'does not let later $later activity pin a finished automatic turn (no marker=$marker)',
+    async ({ marker, activity, later }) => {
+      const jobs = recordingJobs()
+      const runtime = createRuntime(
+        { qwenTaskJobs: jobs.starter, unannouncedIdleMs: 80 },
+        {
+          FAKE_QWEN_BACKGROUND_ACTIVITY: activity,
+          FAKE_QWEN_BACKGROUND_DELAY_MS: '200',
+          FAKE_QWEN_DROP_END: '1',
+          ...(marker === undefined ? {} : { FAKE_QWEN_NO_FINISHED_MARKER: marker }),
+          FAKE_QWEN_POST_TERMINAL_ACTIVITY: later,
+        },
+      )
+      const mirrored = jobs.next()
+      await runtime.prompt([{ type: 'text', text: 'background' }], () => undefined)
+      await (
+        await mirrored
+      ).outcome
+      const updates: AcpSessionNotification[] = []
+      await expect(
+        runtime.prompt(
+          [{ type: 'text', text: 'wake' }],
+          (n) => updates.push(n),
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          { adoptAgentTurn: true },
+        ),
+      ).rejects.toMatchObject({ reason: 'missing-terminal' })
+      expect(texts(updates)).toContain('The background command printed done.')
+    },
+  )
+
+  it('does not cut off a pending human answer or a later adoption because their reporting timers elapsed', async () => {
+    const jobs = recordingJobs()
+    let answer!: () => void
+    const answered = new Promise<void>((resolve) => {
+      answer = resolve
+    })
+    const runtime = createRuntime({
+      qwenTaskJobs: jobs.starter,
+      unannouncedIdleMs: 60,
+      agentTurnAdoptionMs: 60,
+      onQwenQuestion: async () => {
+        await answered
+        return { answers: { '0': 'B' } } as never
+      },
+    })
+    const mirrored = jobs.next()
+    await runtime.prompt([{ type: 'text', text: 'background-ask' }], () => undefined)
+    await (
+      await mirrored
+    ).outcome
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    expect(runtime.pendingAgentTurnFailure).toBeUndefined()
+    const adopting = runtime.prompt(
+      [{ type: 'text', text: 'wake' }],
+      () => undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { adoptAgentTurn: true },
+    )
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    expect(runtime.pendingAgentTurnFailure).toBeUndefined()
+    answer()
+    expect((await adopting).stopReason).toBe('end_turn')
+  })
+
+  it('keeps a native Host body alive past the reporting window and drains it before retained input', async () => {
+    const jobs = recordingJobs()
+    let release!: () => void
+    let entered!: () => void
+    const body = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const started = new Promise<void>((resolve) => {
+      entered = resolve
+    })
+    const runtime = createRuntime(
+      {
+        qwenTaskJobs: jobs.starter,
+        unannouncedIdleMs: 60,
+        createFileSystemHandlers: () => ({
+          dispose: () => undefined,
+          readTextFile: async () => ({ content: '' }),
+          writeTextFile: async () => {
+            entered()
+            await body
+            return {}
+          },
+        }),
+      },
+      { FAKE_QWEN_BACKGROUND_FS: '1', FAKE_QWEN_BACKGROUND_DELAY_MS: '250' },
+    )
+    const mirrored = jobs.next()
+    await runtime.prompt([{ type: 'text', text: 'background' }], () => undefined)
+    await (
+      await mirrored
+    ).outcome
+    const adopting = runtime.prompt(
+      [{ type: 'text', text: 'wake' }],
+      () => undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { adoptAgentTurn: true, followupContent: [{ type: 'text', text: 'retained' }] },
+    )
+    await started
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    expect(runtime.pendingAgentTurnFailure).toBeUndefined()
+    release()
+    expect((await adopting).stopReason).toBe('end_turn')
+  })
+
+  it('consumes a successful terminal received before adoption instead of sending the wake again', async () => {
+    const jobs = recordingJobs()
+    const prompts = promptRequests()
+    const runtime = createRuntime({ qwenTaskJobs: jobs.starter, unannouncedIdleMs: 80 }, prompts.env)
+    const mirrored = jobs.next()
+    await runtime.prompt([{ type: 'text', text: 'background' }], () => undefined)
+    await (
+      await mirrored
+    ).outcome
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    const updates: AcpSessionNotification[] = []
+    expect(
+      (
+        await runtime.prompt(
+          [{ type: 'text', text: 'wake' }],
+          (n) => updates.push(n),
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          { adoptAgentTurn: true },
+        )
+      ).stopReason,
+    ).toBe('end_turn')
+    expect(texts(updates)).toContain('The background command printed done.')
+    expect(prompts.read()).toEqual(['background'])
+  })
+
   it('retains an empty partial response marker received before adoption and rejects a matching end_turn', async () => {
     const jobs = recordingJobs()
     const marker = Promise.withResolvers<AcpSessionNotification>()
