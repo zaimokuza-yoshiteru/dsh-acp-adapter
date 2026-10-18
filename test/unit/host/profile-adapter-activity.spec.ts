@@ -10,7 +10,7 @@ import { Context } from '@deepseek-ai/cordis'
 import { AcpProfileAdapter } from '../../../src/host/composition/profile-adapter.ts'
 import type { AcpProfileRuntime } from '../../../src/host/composition/profile-adapter.ts'
 import { AcpHostSettlementError } from '../../../src/runtime/session/mcp-lease.ts'
-import { AcpSessionRefreshRetryError } from '../../../src/runtime/session/session-runtime.ts'
+import { AcpAgentTurnOutcomeError, AcpSessionRefreshRetryError } from '../../../src/runtime/session/session-runtime.ts'
 import type { AcpSessionRuntimeOptions } from '../../../src/runtime/session/session-runtime.ts'
 import type { AcpAgentConfig } from '../../../src/domain/session/agent-config.ts'
 import type { SessionLike } from '../../../src/domain/session/current-step-admission.ts'
@@ -1271,9 +1271,11 @@ describe('provider activity bridge', () => {
       sidecar,
       undefined,
       undefined,
-      async (observation) => {
-        projected.push(observation)
-        return 'projected-child-session'
+      async (operation) => {
+        await operation(async (observation) => {
+          projected.push(observation)
+          return 'projected-child-session'
+        })
       },
     )
     const chunks: unknown[] = []
@@ -1766,6 +1768,139 @@ describe('provider activity bridge', () => {
       ),
     ).toBe(true)
     expect((await sidecar.activitySnapshot('session-2' as never))[0]?.presentation).toBe('Agent activity')
+  })
+
+  it.each(['unrecognized-end-reason', 'missing-terminal', 'incomplete-turn'] as const)(
+    'keeps a Qwen automatic turn with partial output and %s behind a durable recovery gate',
+    async (reason) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), `dsh-acp-qwen-unknown-${reason}-`))
+      roots.push(root)
+      const sidecar = testSidecar(root)
+      const sessionId = `qwen-unknown-${reason}`
+      const agentSessionId = `agent-${sessionId}`
+      const firstMessage = user('Continue the background task.')
+      const sessions = new Map<string, SessionLike>([[sessionId, session(firstMessage)]])
+      const beginDispatch = vi.spyOn(sidecar, 'beginDispatch')
+      const prompt = vi.fn<AcpProfileRuntime['prompt']>(async (_content, onUpdate) => {
+        onUpdate({
+          sessionId: agentSessionId,
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            content: { type: 'text', text: 'Partial task output; completion is unconfirmed.' },
+          },
+        })
+        throw new AcpAgentTurnOutcomeError(reason)
+      })
+      const close = vi.fn(async () => undefined)
+      const runtimeFactory = (): AcpProfileRuntime => ({
+        acpSessionId: agentSessionId,
+        agentInfo: { name: 'qwen-code', version: 'test' },
+        start: async () => undefined,
+        prompt,
+        close,
+      })
+      const makeAdapter = (durableSidecar: AcpSidecar) =>
+        new AcpProfileAdapter(
+          'qwen-unknown',
+          () => ({ ...profile(), command: 'qwen' }),
+          seam(),
+          (id) => sessions.get(id),
+          ledgerFor(durableSidecar),
+          undefined,
+          runtimeFactory,
+          durableSidecar,
+        )
+      const adapter = makeAdapter(sidecar)
+      try {
+        const chunks: unknown[] = []
+        await expect(async () => {
+          for await (const chunk of adapter.stream(request(sessionId, firstMessage))) chunks.push(chunk)
+        }).rejects.toMatchObject({ code: 'ACP_PROTOCOL_ERROR' })
+        expect(chunks).toContainEqual({
+          type: 'text-delta',
+          index: 0,
+          text: 'Partial task output; completion is unconfirmed.',
+        })
+        expect(chunks).not.toContainEqual(expect.objectContaining({ type: 'finish' }))
+        expect(chunks).not.toContainEqual(expect.objectContaining({ replayState: expect.anything() }))
+        expect(close).toHaveBeenCalledOnce()
+        const dispatchKey = beginDispatch.mock.calls[0]?.[0].key
+        expect(dispatchKey).toBeDefined()
+
+        // Reopen the actual SQLite store and replace the adapter, so this proves
+        // a durable gate rather than the first adapter's in-memory failure state.
+        await sidecar.flush()
+        const reopened = testSidecar(root)
+        const reopenedBeginDispatch = vi.spyOn(reopened, 'beginDispatch')
+        expect(await reopened.readRecoveryState(sessionId as never)).toMatchObject({
+          kind: 'outcome-unknown',
+          acpSessionId: agentSessionId,
+        })
+        expect(await reopened.readDispatch(sessionId as never, dispatchKey!)).toMatchObject({
+          state: 'dispatch-uncertain',
+        })
+        const nextMessage = user('Continue without replaying the prior task.')
+        sessions.set(sessionId, session(nextMessage))
+        const replacement = makeAdapter(reopened)
+        try {
+          await expect(drain(replacement.stream(request(sessionId, nextMessage)))).rejects.toMatchObject({
+            code: 'ACP_RECOVERY_REQUIRED',
+          })
+          expect(prompt).toHaveBeenCalledOnce()
+          expect(beginDispatch).toHaveBeenCalledOnce()
+          expect(reopenedBeginDispatch).not.toHaveBeenCalled()
+          expect(await reopened.readDispatch(sessionId as never, dispatchKey!)).toMatchObject({
+            state: 'dispatch-uncertain',
+          })
+        } finally {
+          await replacement.close()
+        }
+      } finally {
+        await adapter.close()
+      }
+    },
+  )
+
+  it('settles an explicitly successful Qwen terminal with visible output normally', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-qwen-known-terminal-'))
+    roots.push(root)
+    const sidecar = testSidecar(root)
+    const sessionId = 'qwen-known-terminal'
+    const message = user('Continue the background task.')
+    const beginDispatch = vi.spyOn(sidecar, 'beginDispatch')
+    const adapter = new AcpProfileAdapter(
+      'qwen-known',
+      () => ({ ...profile(), command: 'qwen' }),
+      seam(),
+      () => session(message),
+      ledgerFor(sidecar),
+      undefined,
+      () => ({
+        acpSessionId: 'agent-qwen-known-terminal',
+        agentInfo: { name: 'qwen-code', version: 'test' },
+        start: async () => undefined,
+        prompt: async (_content, onUpdate) => {
+          onUpdate({
+            sessionId: 'agent-qwen-known-terminal',
+            update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Task completed.' } },
+          })
+          return { stopReason: 'end_turn' }
+        },
+        close: async () => undefined,
+      }),
+      sidecar,
+    )
+    try {
+      const chunks: unknown[] = []
+      for await (const chunk of adapter.stream(request(sessionId, message))) chunks.push(chunk)
+      expect(chunks.at(-1)).toMatchObject({ type: 'finish', reason: { kind: 'stop' } })
+      const dispatchKey = beginDispatch.mock.calls[0]?.[0].key
+      expect(dispatchKey).toBeDefined()
+      expect(await sidecar.readDispatch(sessionId as never, dispatchKey!)).toMatchObject({ state: 'settled' })
+      expect(await sidecar.readRecoveryState(sessionId as never)).toMatchObject({ kind: 'healthy' })
+    } finally {
+      await adapter.close()
+    }
   })
 
   it('fails a successful ACP turn that emitted reasoning but no visible answer', async () => {

@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url'
 import type { SessionId, SessionEvent } from '@deepseek-ai/dsh-session'
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
 import type { Page } from 'playwright'
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { connectFreshWorkspace, writeComposerDraft } from '#host-support'
 import type { TestBrowser } from './browser.ts'
 import { launchBrowser, newEnglishPage } from './browser.ts'
@@ -24,8 +24,13 @@ import {
   recordLongTaskToolResult,
 } from './live-long-task-budget.ts'
 import { createNativeReadObserver, wrapObservedCallback } from './live-long-task-native-read.ts'
-import type { NativeReadEvidence, NativeReadSource } from './live-long-task-native-read.ts'
-import { classifyExecutionRoute, createNativeExecuteObserver } from './live-long-task-native-execute.ts'
+import type { NativeReadDiagnostic, NativeReadEvidence, NativeReadSource } from './live-long-task-native-read.ts'
+import {
+  classifyExecutionRoute,
+  createNativeExecuteObserver,
+  nativeExecuteRefusalResponse,
+} from './live-long-task-native-execute.ts'
+import { isMemberApprovalCoordination, memberCoordinationArguments } from './live-long-task-coordination.ts'
 import type { ExecuteRegistration, ExecutionRoute } from './live-long-task-native-execute.ts'
 import {
   confirmsRejectedCancellation,
@@ -35,6 +40,14 @@ import {
 } from './live-long-task-rejection-cancel.ts'
 import type { LiveDiagnosticEvent, LiveDiagnosticTraceSink } from '../../src/contract/live-diagnostic-trace.ts'
 import type { AcpRemoteService } from '../../src/remote/service.js'
+import { waitForLongTask } from './live-long-task-wait.ts'
+import {
+  finalLongTaskFailure,
+  longTaskFailure,
+  longTaskOutcome,
+  settleLongTaskAction,
+} from './live-long-task-lifecycle.ts'
+import type { LongTaskFailure, LongTaskSettlement } from './live-long-task-lifecycle.ts'
 
 const SOURCE_COMMIT = '639ed015397290b3745d163aafe02ffee4aa3f84'
 const UPSTREAM = process.env.DSH_UPSTREAM_CHECKOUT ?? resolve(root, '../reference/deepseek-harness')
@@ -69,12 +82,21 @@ const agentProfiles = {
   },
 } as const
 type ProfileName = keyof typeof agentProfiles
-type ScenarioSelection = 'all' | 'teams' | 'controls' | 'stop-only'
+type ScenarioSelection = 'all' | 'teams' | 'teams-only' | 'controls' | 'approvals' | 'stop-only'
 
 function selectedScenarios(): ScenarioSelection {
   const selected = process.env.DSH_E2E_LIVE_LONG_TASK_SCENARIOS ?? 'all'
-  if (selected !== 'all' && selected !== 'teams' && selected !== 'controls' && selected !== 'stop-only')
-    throw new Error('DSH_E2E_LIVE_LONG_TASK_SCENARIOS must be all, teams, controls, or stop-only')
+  if (
+    selected !== 'all' &&
+    selected !== 'teams' &&
+    selected !== 'teams-only' &&
+    selected !== 'controls' &&
+    selected !== 'approvals' &&
+    selected !== 'stop-only'
+  )
+    throw new Error(
+      'DSH_E2E_LIVE_LONG_TASK_SCENARIOS must be all, teams, teams-only, controls, approvals, or stop-only',
+    )
   return selected
 }
 
@@ -84,11 +106,20 @@ type ToolEvidence = {
   readonly session: string
   readonly callId: string
   readonly isError: boolean
+  readonly eventCount: number
+  readonly taskId?: string
   readonly readPath?: string
   readonly readOffset?: number
   readonly readLimit?: number
   readonly readLines?: number
   readonly operationId?: string
+  readonly assignment?: {
+    readonly descriptionIdentity: string
+    readonly sourcePaths: readonly string[]
+    readonly reportMarkers: readonly string[]
+    readonly requiresRead: boolean
+    readonly requiresOwnDiscovery: boolean
+  }
 }
 type RuntimePrompt = (
   this: {
@@ -232,8 +263,21 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
       let nativeTraceEvents = 0
       let nativeDiagnosticModule: NativeDiagnosticModule | undefined
       let primaryFailure: unknown
+      let primaryFailureRecord: LongTaskFailure | undefined
+      let evidenceFailure: unknown
+      const evidenceOutcomes: LongTaskSettlement[] = []
+      const recordEvidenceFailure = (owner: string, error: unknown): void => {
+        evidenceFailure ??= error
+        const outcome: LongTaskSettlement = { owner, status: 'rejected', failure: longTaskFailure(error, activePhase) }
+        evidenceOutcomes.push(outcome)
+        console.error(JSON.stringify({ longTaskEvidenceFailure: outcome }))
+      }
       let nativeReadSources: NativeReadSource[] = []
       const nativeReadEvidence: (NativeReadEvidence & { readonly scene: LongTaskScene })[] = []
+      const nativeReadDiagnostics: (NativeReadDiagnostic & {
+        readonly scene: LongTaskScene
+        readonly phase: string
+      })[] = []
       let completedRunRecord: Record<string, unknown> | undefined
       let runFailed = false
       let leadSessionId: SessionId | undefined
@@ -246,9 +290,9 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
       const budget: LongTaskBudget = createLongTaskBudget(startedAt)
       const scenarioStatuses: Record<'A' | 'B' | 'C' | 'D', 'pending' | 'passed' | 'partial' | 'not-run'> = {
         A: scenarios === 'all' ? 'pending' : 'not-run',
-        B: scenarios === 'controls' || scenarios === 'stop-only' ? 'not-run' : 'pending',
-        C: scenarios === 'stop-only' ? 'not-run' : 'pending',
-        D: 'pending',
+        B: scenarios === 'controls' || scenarios === 'approvals' || scenarios === 'stop-only' ? 'not-run' : 'pending',
+        C: scenarios === 'stop-only' || scenarios === 'teams-only' ? 'not-run' : 'pending',
+        D: scenarios === 'teams-only' ? 'not-run' : 'pending',
       }
       let runtimeReaderId: SessionId | undefined
       const events: SessionEventRow[] = []
@@ -318,29 +362,50 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
       let expectingDStop = false
       let expectedDAbortTurn: number | undefined
       let cancelPromise: Promise<void> | undefined
+      const cancellationOutcomes: LongTaskSettlement[] = []
+      const failureController = new AbortController()
       const modeBySession = new Map<string, string | null>()
 
       const cancelAll = (reason: string): Promise<void> => {
-        stickyViolation ??= reason
-        budget.violation ??= reason
         if (cancelPromise !== undefined) return cancelPromise
-        cancelPromise = Promise.allSettled(
-          host.ctx.agents
-            .list()
-            .filter((agent) => agent.options.provider === profile.provider)
-            .map((agent) => agent.cancel({ kind: 'hook', reason }, { keepInbox: true })),
-        ).then(() => undefined)
+        cancelPromise = (async () => {
+          const enumeration = await settleLongTaskAction(
+            'agent-enumeration',
+            async () => {
+              const agents = (host?.ctx.agents.list() ?? []).filter(
+                (agent) => agent.options.provider === profile.provider,
+              )
+              cancellationOutcomes.push(
+                ...(await Promise.all(
+                  agents.map((agent) =>
+                    settleLongTaskAction(
+                      safeId(String(agent.id)),
+                      () => agent.cancel({ kind: 'hook', reason }, { keepInbox: true }),
+                      'cancel',
+                    ),
+                  ),
+                )),
+              )
+            },
+            'cancel',
+          )
+          if (enumeration.status === 'rejected') cancellationOutcomes.push(enumeration)
+        })()
         return cancelPromise
       }
 
       const violate = (reason: string): void => {
         if (stickyViolation !== undefined) return
         stickyViolation = reason
+        budget.violation ??= reason
+        failureController.abort(new Error(reason))
         for (const waiter of [...eventChangeWaiters]) waiter(new Error(reason))
         queueMicrotask(() => void cancelAll(reason))
       }
 
       const assertHealthy = (): void => {
+        if (stickyViolation !== undefined) throw new Error(stickyViolation)
+        if (failureController.signal.aborted) throw failureController.signal.reason
         if (screenshotFailures.length > 0) {
           violate('LONG_TASK_SCREENSHOT_FAILURE')
           throw new Error('LONG_TASK_SCREENSHOT_FAILURE')
@@ -353,7 +418,6 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
           violate('LONG_TASK_DIAGNOSTIC_TRACE_FAILURE')
           throw new Error('LONG_TASK_DIAGNOSTIC_TRACE_FAILURE')
         }
-        if (stickyViolation !== undefined) throw new Error(stickyViolation)
         if (Date.now() - startedAt >= LONG_TASK_BUDGET.totalMs) {
           violate('LONG_TASK_TOTAL_DEADLINE')
           throw new Error('LONG_TASK_TOTAL_DEADLINE')
@@ -367,6 +431,17 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
           throw new Error(`LONG_TASK_PHASE_DEADLINE_${activePhase}`)
         }
       }
+
+      const waitFor = <T>(
+        action: () => T | Promise<T>,
+        options?: { timeout?: number; interval?: number },
+      ): Promise<T> =>
+        waitForLongTask(action, {
+          timeout: options?.timeout ?? Math.max(1, phaseDeadlineAt - Date.now()),
+          interval: options?.interval ?? 100,
+          checkHealth: assertHealthy,
+          signal: failureController.signal,
+        })
 
       const waitForEventChange = (): Promise<void> =>
         new Promise((resolve, reject) => {
@@ -406,15 +481,25 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
         )
         assertHealthy()
         let timer: ReturnType<typeof setTimeout> | undefined
-        const work = action()
+        let removeFailureListener = (): void => {}
         try {
           return await Promise.race([
-            work,
+            new Promise<never>((_, reject) => {
+              const failed = (): void => reject(failureController.signal.reason)
+              failureController.signal.addEventListener('abort', failed, { once: true })
+              removeFailureListener = () => failureController.signal.removeEventListener('abort', failed)
+              if (failureController.signal.aborted) failed()
+            }),
+            Promise.resolve().then(() => {
+              assertHealthy()
+              return action()
+            }),
             new Promise<never>((_, reject) => {
               timer = setTimeout(
                 () => {
-                  violate(`LONG_TASK_PHASE_DEADLINE_${phase}`)
-                  reject(new Error(`LONG_TASK_PHASE_DEADLINE_${phase}`))
+                  const failure = stickyViolation ?? `LONG_TASK_PHASE_DEADLINE_${phase}`
+                  violate(failure)
+                  reject(new Error(failure))
                 },
                 Math.max(0, phaseDeadlineAt - Date.now()),
               )
@@ -422,6 +507,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
           ])
         } finally {
           if (timer !== undefined) clearTimeout(timer)
+          removeFailureListener()
         }
       }
 
@@ -732,7 +818,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
         await required(page).getByRole('button', { name: 'Send message', exact: true }).click()
         let userIndex = -1
         let sessionId: SessionId | undefined
-        await vi.waitFor(
+        await waitFor(
           () => {
             const candidate = events.findIndex(
               (event, index) =>
@@ -753,23 +839,25 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
       }
 
       const waitForTurn = async (sessionId: SessionId, userIndex: number): Promise<void> => {
-        await vi.waitFor(
-          () => {
-            assertHealthy()
-            const ending = events.find(
-              (event, index) => index > userIndex && event.sessionId === sessionId && event.type === 'turn/end',
-            )
-            expect(ending, 'Expected the prompt to end on its own session').toBeDefined()
-            if (ending?.type === 'turn/end') expect(ending.data.reason.kind).toBe('completed')
+        // Polling assertions retry every thrown error, including fatal scope violations.
+        // Session events already wake this waiter; violate() rejects it and clears its timer.
+        while (true) {
+          assertHealthy()
+          const ending = events.find(
+            (event, index) => index > userIndex && event.sessionId === sessionId && event.type === 'turn/end',
+          )
+          if (ending?.type === 'turn/end') {
+            expect(ending.data.reason.kind).toBe('completed')
             expect(
               events.some(
                 (event, index) =>
                   index > userIndex && event.sessionId === sessionId && event.type === 'assistant/message',
               ),
             ).toBe(true)
-          },
-          { timeout: Math.max(1, phaseDeadlineAt - Date.now()), interval: 150 },
-        )
+            break
+          }
+          await waitForEventChange()
+        }
         await checkModelSnapshot(String(sessionId), 'after-turn')
       }
 
@@ -910,13 +998,15 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
             const wrappedPermissionRequest = function (this: unknown, ...callbackArgs: unknown[]): Promise<unknown> {
               const params = callbackArgs[0]
               try {
-                nativeExecuteObserver.observePermission(params, {
+                const decision = nativeExecuteObserver.observePermission(params, {
                   scene: activeScene,
                   ownerDshSessionId: runtimeDshSessionId,
                   activeAcpSessionId: runtimeState.acpSessionId,
                 })
+                if (decision.kind === 'refuse') return Promise.resolve(decision.response)
               } catch {
                 violate('LONG_TASK_NATIVE_EXECUTE_OBSERVER_FAILURE')
+                return Promise.resolve(nativeExecuteRefusalResponse(params))
               }
               const result = originalPermissionRequest.apply(this, callbackArgs)
               return result.then((response: unknown) => {
@@ -986,18 +1076,17 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
                 scene: activeScene,
                 ownerDshSessionId: runtimeDshSessionId,
               })
-              if (
-                activeAcpSessionId !== undefined &&
-                typeof notification === 'object' &&
-                notification !== null &&
-                'sessionId' in notification &&
-                notification.sessionId === activeAcpSessionId
-              ) {
+              if (activeAcpSessionId !== undefined) {
                 observeNativeRead ??= createNativeReadObserver({
                   activeSessionId: activeAcpSessionId,
                   ...(typeof runtimeDshSessionId === 'string' ? { sessionEvidenceId: runtimeDshSessionId } : {}),
                   sources: nativeReadSources,
                   hashIdentifier: (kind, value) => safeId(`${kind}:${value}`),
+                  onDiagnostic: (diagnostic) => {
+                    if (nativeReadDiagnostics.length < 2048)
+                      nativeReadDiagnostics.push({ ...diagnostic, scene: activeScene, phase: activePhase })
+                    else violate('LONG_TASK_NATIVE_READ_DIAGNOSTIC_LIMIT')
+                  },
                 })
                 nativeReadEvidence.push(
                   ...observeNativeRead(notification).map((read) => ({ ...read, scene: activeScene })),
@@ -1069,7 +1158,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
           toolApprovalDefault: 'auto',
           agents: { [profile.id]: agentConfig },
         })
-        await vi.waitFor(() =>
+        await waitFor(() =>
           expect(host.ctx.llm.listProviders().some((entry) => entry.id === profile.provider)).toBe(true),
         )
         const models = await host.ctx.llm.listModels(profile.provider)
@@ -1085,6 +1174,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
         )
         const operationCommands = new Map<string, string>()
         const operationOwners = new Map<string, string>()
+        const successfulMemberRelays = new Set<string>()
         const dLongCallIds = new Set<string>()
         let taskCreateAttempts = 0
         let dLongAdmissions = 0
@@ -1149,6 +1239,16 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
               return 'LIVE_LONG_TASK_OPERATION_DUPLICATE_DISPATCH'
             }
             allowed =
+              isMemberApprovalCoordination({
+                scene,
+                phase: activePhase,
+                owner: actorId,
+                lead: leadSessionId === undefined ? undefined : String(leadSessionId),
+                member: runtimeReaderId === undefined ? undefined : String(runtimeReaderId),
+                toolName,
+                args,
+                relaySucceeded: successfulMemberRelays.has(activePhase.slice(2)),
+              }) ||
               (toolName === 'send_message' &&
                 ((actorId === String(leadSessionId) && args?.target === 'runtime-reader' && expectedRelay) ||
                   (memberSessionIds.has(actorId) && args?.target === 'lead' && operationRelay))) ||
@@ -1207,6 +1307,20 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
           if (execution.agent?.options.provider !== profile.provider) return
           const sessionId = String(execution.agent.id)
           const args = execution.arguments as Record<string, unknown> | undefined
+          const currentMemberOperation = activePhase.slice(2)
+          const relayedCommand = operationCommands.get(currentMemberOperation)
+          if (
+            activeScene === 'C' &&
+            ['member-allow', 'member-reject'].includes(currentMemberOperation) &&
+            sessionId === String(leadSessionId) &&
+            execution.name === 'send_message' &&
+            args?.target === 'runtime-reader' &&
+            typeof args.message === 'string' &&
+            relayedCommand !== undefined &&
+            args.message.includes(relayedCommand) &&
+            !result.isError
+          )
+            successfulMemberRelays.add(currentMemberOperation)
           const readPath = execution.name === 'read' && typeof args?.file_path === 'string' ? args.file_path : undefined
           const readResult = result as unknown as { value?: { lines?: unknown } }
           const readLines = Array.isArray(readResult.value?.lines) ? readResult.value.lines.length : undefined
@@ -1215,16 +1329,37 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
             new RegExp(`(lead-allow|member-allow|lead-reject|member-reject)-${runId}`, 'u'),
           )
           const operationId = command === operationCommands.get('D:long-running') ? 'D:long-running' : operation?.[1]
+          const assignmentText =
+            activeScene === 'B' && ['spawn_teammate', 'team_task_create'].includes(execution.name)
+              ? [args?.prompt, args?.description]
+                  .filter((value): value is string => typeof value === 'string')
+                  .join('\n')
+              : undefined
           const evidence: ToolEvidence = {
             name: execution.name,
             session: safeId(sessionId),
             callId: safeId(String(execution.callId)),
             isError: result.isError,
+            eventCount: events.length,
+            ...(typeof args?.task_id === 'string' ? { taskId: safeId(args.task_id) } : {}),
             ...(readPath === undefined ? {} : { readPath }),
             ...(typeof args?.offset === 'number' ? { readOffset: args.offset } : {}),
             ...(typeof args?.limit === 'number' ? { readLimit: args.limit } : {}),
             ...(readLines === undefined ? {} : { readLines }),
             ...(operationId === undefined ? {} : { operationId }),
+            ...(assignmentText === undefined
+              ? {}
+              : {
+                  assignment: {
+                    descriptionIdentity: safeId(assignmentText),
+                    sourcePaths: SOURCE_FILES.filter((path) => assignmentText.includes(path)),
+                    reportMarkers: ['B_REPORT_RUNTIME', 'B_REPORT_TEAMS'].filter((marker) =>
+                      assignmentText.includes(marker),
+                    ),
+                    requiresRead: /\bread\b/iu.test(assignmentText),
+                    requiresOwnDiscovery: /discover/iu.test(assignmentText),
+                  },
+                }),
           }
           tools.push(evidence)
           recordLongTaskToolResult(budget, `${sessionId}:${String(execution.callId)}`, result.isError)
@@ -1437,7 +1572,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
           )
         }
 
-        if (scenarios === 'controls' || scenarios === 'stop-only') {
+        if (scenarios === 'controls' || scenarios === 'approvals' || scenarios === 'stop-only') {
           writePrivate(
             join(evidenceDir, 'B-not-run.json'),
             JSON.stringify({ status: 'not-run', reason: `DSH_E2E_LIVE_LONG_TASK_SCENARIOS=${scenarios}` }),
@@ -1453,7 +1588,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
             'B:team',
             async () => {
               await sendPrompt(
-                `Use only the DSH Agent Teams tools shown by the current DSH MCP connection. Create two shared tasks and exactly two members named runtime-reader and teams-reader. Then use task update to assign each task to its named owner. Assign runtime-reader to read these exact files with the DSH filesystem read tool: ${teamSourcePaths.slice(0, 3).join(', ')}. Assign teams-reader to read: ${teamSourcePaths.slice(3).join(', ')}. Each member must actually use read, update its task to completed, and send the Lead one concise source-based report with file paths; the runtime-reader report must include B_REPORT_RUNTIME_${runId.slice(0, 8)}, and the teams-reader report must include B_REPORT_TEAMS_${runId.slice(0, 8)}. After assigning both tasks, finish this turn without waiting for the reports; I will ask you to inspect and consume them in a follow-up. Do not use external subagents or shell to read source. Reference marker ${teamMarker}.`,
+                `Use only the current DSH tools MCP connection identified in the latest host instructions. Discover exact names and complete input schemas only for these tools needed by this task: read, spawn_teammate, send_message, list_agents, wait_agent, team_task_create, team_task_get, team_task_list, team_task_update. If discovery is truncated, narrow discovery using the discovery capabilities actually available to you; do not use execute, terminal, or shell to read an overflow file. If complete required schemas cannot be discovered, report the limitation and end the turn. Create two shared tasks and exactly two members named runtime-reader and teams-reader. Then use task update to assign each task to its named owner. Assign runtime-reader to read these exact files with the DSH filesystem read tool: ${teamSourcePaths.slice(0, 3).join(', ')}. Assign teams-reader to read: ${teamSourcePaths.slice(3).join(', ')}. In each member's task, require it to discover its own current DSH connection's exact names and schemas only for read, team_task_get, team_task_update, and send_message; never pass your connection's tool names to it, and forbid execute, terminal, or shell for discovery and reading. Put the full file paths and this ordered checklist in both the spawn prompt and the shared task description: (1) get the assigned task; (2) discover the member's own current DSH read tool and actually call it for each of the three assigned files; (3) only after receiving all three read results, update the task to completed with source findings; (4) send the Lead one concise source-based report with file paths. A task description, another member's summary, or prior knowledge does not substitute for the member's own read calls. If any file cannot be read, leave the task incomplete and report that limitation. The runtime-reader report must include B_REPORT_RUNTIME_${runId.slice(0, 8)}, and the teams-reader report must include B_REPORT_TEAMS_${runId.slice(0, 8)}. After assigning both tasks, finish this turn without waiting for the reports; I will ask you to inspect and consume them in a follow-up. Do not use external subagents or shell to read source. Reference marker ${teamMarker}.`,
                 teamMarker,
                 leadSessionId,
               )
@@ -1478,7 +1613,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
           await withPhase(
             'B:members-and-receipts',
             async () => {
-              await vi.waitFor(
+              await waitFor(
                 () => {
                   assertHealthy()
                   const tasks = host.ctx.agentTeams.listTasks(lead)
@@ -1607,10 +1742,24 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
           )
           expect(bConsumeEnd).toBeGreaterThan(bConsumeUserIndex)
           const consumedLeadExecutions = tools.filter(
-            (tool) => tool.session === safeId(String(leadSessionId)) && !tool.isError,
+            (tool) =>
+              tool.session === safeId(String(leadSessionId)) &&
+              !tool.isError &&
+              tool.eventCount > bConsumeUserIndex &&
+              tool.eventCount <= bConsumeEnd,
           )
-          for (const toolName of ['team_task_list', 'team_task_get', 'team_task_update'])
+          expect(leadExecutions.some((tool) => tool.name === 'team_task_update')).toBe(true)
+          for (const toolName of ['team_task_list', 'team_task_get'])
             expect(consumedLeadExecutions.some((tool) => tool.name === toolName)).toBe(true)
+          for (const task of host.ctx.agentTeams
+            .listTasks(lead)
+            .filter((task) => ['runtime-reader', 'teams-reader'].includes(task.ownerName ?? '')))
+            expect(
+              consumedLeadExecutions.some(
+                (tool) => tool.name === 'team_task_get' && tool.taskId === safeId(String(task.id)),
+              ),
+              'Lead follow-up must inspect each completed task',
+            ).toBe(true)
           expect(
             teamReceipts
               .filter((receipt) => receipt.scene === 'B')
@@ -1667,816 +1816,911 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
           scenarioStatuses.B = 'passed'
         }
 
-        // C: Ask controls run either Lead-only or Lead-and-member according to the selected lane.
-        resetScene('C')
-        const controlsLane = scenarios === 'controls' || scenarios === 'stop-only'
-        const operationIds =
-          scenarios === 'stop-only'
-            ? ([] as const)
-            : controlsLane
-              ? (['lead-allow', 'lead-reject'] as const)
-              : (['lead-allow', 'member-allow', 'lead-reject', 'member-reject'] as const)
-        await capture('C', 'start', {
-          coverage:
-            scenarios === 'stop-only'
-              ? 'not-run'
-              : controlsLane
-                ? 'lead-only-2-decisions'
-                : 'lead-and-member-4-decisions',
-          requiredDecisions: operationIds.length,
-          memberDecisions: controlsLane ? 'not-run' : 'included',
-        })
-        if (controlsLane) {
-          writePrivate(
-            join(evidenceDir, 'C-members-not-run.json'),
-            JSON.stringify({
-              status: 'not-run',
-              reason:
-                scenarios === 'stop-only'
-                  ? 'stop-only lane skips all C approvals'
-                  : 'controls lane covers Lead approvals only',
-            }),
-          )
-          await withPhase('C:lead-warmup', async () => {
-            const toolCount = tools.length
-            const dispatchCount = budget.totalDispatches
-            const marker = `LONGTASK_CONTROLS_WARMUP_${runId.slice(0, 8)}`
-            await sendPrompt(`Reply exactly READY without using any tools. Marker ${marker}.`, marker)
-            expect(leadSessionId).toBeDefined()
-            expect(leadAgent).toBeDefined()
-            expect(tools).toHaveLength(toolCount)
-            expect(budget.totalDispatches).toBe(dispatchCount)
-          })
-        }
-        if (scenarios === 'stop-only')
-          writePrivate(
-            join(evidenceDir, 'C-not-run.json'),
-            JSON.stringify({ status: 'not-run', reason: 'stop-only lane validates D without C approvals' }),
-          )
-        const operationDir = join(host.workspaceCwd, 'workspace', 'long-task-operations')
-        mkdirSync(operationDir, { recursive: true, mode: 0o700 })
-        const destinations = new Map(operationIds.map((id) => [id, join(operationDir, `${id}-${runId}.txt`)]))
-        for (const target of destinations.values()) expect(existsSync(target)).toBe(false)
-        await (host.ctx.get('dshAcp') as AcpRemoteService).setToolApprovalPolicy(required(leadAgent).id, {
-          policy: 'ask',
-        })
-
-        const handleApproval = async (
-          actor: 'lead' | 'member',
-          operation: (typeof operationIds)[number],
-          outcome: 'Allow once' | 'Reject',
-        ): Promise<void> => {
-          const memberId = runtimeReaderId
-          if (actor === 'member' && memberId === undefined) throw new Error('LONG_TASK_MEMBER_CONTROLS_NOT_RUN')
-          const owner = actor === 'lead' ? String(leadSessionId) : String(required(memberId))
-          const destination = required(destinations.get(operation))
-          const command = `printf '%s' '${operation}-${runId}' >> '${destination}'`
-          const operationMarker = `${operation}-${runId}`
-          operationCommands.set(operation, command)
-          operationOwners.set(operation, owner)
-          registerNativeExecute({ scene: 'C', ownerDshSessionId: owner, operation, command })
-          const start = events.length
-          const posted = await postPrompt(
-            actor === 'lead'
-              ? `Use the native DSH bash tool to run exactly this command once: ${command}. It writes only a unique file under the test workspace. Do not use a different tool. Wait for DSH Ask approval. If rejected, do not retry; report the rejection and complete the turn. Marker LONGTASK_C_${operation}_${runId.slice(0, 8)}.`
-              : `Use the DSH send_message tool to ask runtime-reader to run exactly this command once using its normal bash tool: ${command}. Tell it not to retry if rejected and to report the result to you, including operation ID ${operationMarker}. Wait for its result and report the outcome. Marker LONGTASK_C_${operation}_${runId.slice(0, 8)}.`,
-            `LONGTASK_C_${operation}_${runId.slice(0, 8)}`,
-            leadSessionId,
-          )
-          const handledRequestIds = new Set<string>()
-          let targetDecisionSeen = false
-          let operationActorCompleted = false
-          while (!operationActorCompleted) {
-            assertHealthy()
-            const ownerEnd =
-              actor === 'member'
-                ? events.find(
-                    (event, index) =>
-                      index >= start && event.sessionId === required(runtimeReaderId) && event.type === 'turn/end',
-                  )
-                : undefined
-            const leadEnd = events.find(
-              (event, index) =>
-                index >= posted.userIndex && event.sessionId === posted.sessionId && event.type === 'turn/end',
+        if (scenarios === 'teams-only') {
+          for (const scene of ['C', 'D'] as const)
+            writePrivate(
+              join(evidenceDir, `${scene}-not-run.json`),
+              JSON.stringify({ status: 'not-run', reason: 'teams-only lane' }),
             )
-            operationActorCompleted =
-              targetDecisionSeen &&
-              (actor === 'member'
-                ? ownerEnd?.type === 'turn/end' && ownerEnd.data.reason.kind === 'completed'
-                : (leadEnd?.type === 'turn/end' && leadEnd.data.reason.kind === 'completed') ||
-                  (profileName === 'codebuddy' &&
-                    actor === 'lead' &&
-                    operation === 'lead-reject' &&
-                    rejectionCancellation?.confirmed === true))
-            if (operationActorCompleted) break
-            const pendingAsk = events
-              .slice(start)
-              .find(
+        } else {
+          // C: Ask controls run either Lead-only or Lead-and-member according to the selected lane.
+          resetScene('C')
+          const controlsLane = scenarios === 'controls' || scenarios === 'stop-only'
+          const operationIds =
+            scenarios === 'stop-only'
+              ? ([] as const)
+              : controlsLane
+                ? (['lead-allow', 'lead-reject'] as const)
+                : (['lead-allow', 'member-allow', 'lead-reject', 'member-reject'] as const)
+          await capture('C', 'start', {
+            coverage:
+              scenarios === 'stop-only'
+                ? 'not-run'
+                : controlsLane
+                  ? 'lead-only-2-decisions'
+                  : 'lead-and-member-4-decisions',
+            requiredDecisions: operationIds.length,
+            memberDecisions: controlsLane ? 'not-run' : 'included',
+          })
+          if (controlsLane) {
+            writePrivate(
+              join(evidenceDir, 'C-members-not-run.json'),
+              JSON.stringify({
+                status: 'not-run',
+                reason:
+                  scenarios === 'stop-only'
+                    ? 'stop-only lane skips all C approvals'
+                    : 'controls lane covers Lead approvals only',
+              }),
+            )
+          }
+          if (controlsLane || scenarios === 'approvals') {
+            await withPhase('C:lead-warmup', async () => {
+              const toolCount = tools.length
+              const dispatchCount = budget.totalDispatches
+              const marker = `LONGTASK_CONTROLS_WARMUP_${runId.slice(0, 8)}`
+              await sendPrompt(`Reply exactly READY without using any tools. Marker ${marker}.`, marker)
+              expect(leadSessionId).toBeDefined()
+              expect(leadAgent).toBeDefined()
+              expect(tools).toHaveLength(toolCount)
+              expect(budget.totalDispatches).toBe(dispatchCount)
+            })
+          }
+          if (scenarios === 'approvals') {
+            // A real native child is fixture setup here, independent of B's source-reading task.
+            // This lane does not certify an Agent invocation of spawn_teammate.
+            const setupController = new AbortController()
+            try {
+              await withPhase('C:member-setup', async () => {
+                const lead = required(leadAgent)
+                expect(host.ctx.agentTeams.listMembers(lead)).toHaveLength(1)
+                const before = events.length
+                const toolCount = tools.length
+                const dispatchCount = budget.totalDispatches
+                const approvalCount = approvalEvidence.length
+                const marker = `LONGTASK_MEMBER_READY_${runId.slice(0, 8)}`
+                const { member } = await host.ctx.agentTeams.spawnTeammate(lead, {
+                  name: 'runtime-reader',
+                  description: 'Isolated member approval regression',
+                  prompt: [{ type: 'text', text: `Reply exactly ${marker} without using any tools.` }],
+                  context: 'fresh',
+                  provider: 'spawn',
+                  signal: setupController.signal,
+                })
+                runtimeReaderId = member.id
+                memberSessionIds.add(String(member.id))
+                teamMemberFacts.push({ id: String(member.id), name: member.name, role: String(member.role) })
+                expect(member).toMatchObject({ name: 'runtime-reader', provider: 'spawn', context: 'fresh' })
+                const child = required(host.ctx.agents.get(member.id))
+                expect(child.options).toMatchObject({ provider: profile.provider, model: profile.model })
+                expect(child.session.header.cwd).toBe(lead.session.header.cwd)
+                await waitForTurn(member.id, before - 1)
+                expect(
+                  answers.some(
+                    (answer) => answer.session === safeId(String(member.id)) && answer.text.includes(marker),
+                  ),
+                ).toBe(true)
+                expect(host.ctx.agentTeams.listMembers(lead)).toHaveLength(2)
+                await waitFor(
+                  () =>
+                    expect(
+                      host.ctx.agentTeams
+                        .listMembers(lead)
+                        .every((entry) => ['idle', 'inactive'].includes(entry.status)),
+                    ).toBe(true),
+                  { timeout: Math.max(1, Math.min(10_000, phaseDeadlineAt - Date.now())), interval: 100 },
+                )
+                expect(tools).toHaveLength(toolCount)
+                expect(budget.totalDispatches).toBe(dispatchCount)
+                expect(approvalEvidence).toHaveLength(approvalCount)
+                expect(events.filter((event) => event.type === 'approval/asked')).toHaveLength(0)
+                await capture('C', 'member-setup', {
+                  setupRoute: 'host-service',
+                  agentSpawnToolVerified: false,
+                  members: 2,
+                  member: safeId(String(member.id)),
+                  context: 'fresh',
+                  model: child.options.model,
+                })
+              })
+            } catch (error) {
+              setupController.abort(error)
+              throw error
+            }
+          }
+          if (scenarios === 'stop-only')
+            writePrivate(
+              join(evidenceDir, 'C-not-run.json'),
+              JSON.stringify({ status: 'not-run', reason: 'stop-only lane validates D without C approvals' }),
+            )
+          const operationDir = join(host.workspaceCwd, 'workspace', 'long-task-operations')
+          mkdirSync(operationDir, { recursive: true, mode: 0o700 })
+          const destinations = new Map(operationIds.map((id) => [id, join(operationDir, `${id}-${runId}.txt`)]))
+          for (const target of destinations.values()) expect(existsSync(target)).toBe(false)
+          await (host.ctx.get('dshAcp') as AcpRemoteService).setToolApprovalPolicy(required(leadAgent).id, {
+            policy: 'ask',
+          })
+          if (scenarios === 'approvals')
+            expect(
+              await (host.ctx.get('dshAcp') as AcpRemoteService).toolApprovalPolicy(String(required(runtimeReaderId))),
+            ).toMatchObject({ policy: 'ask', source: 'lead', editable: false })
+
+          const handleApproval = async (
+            actor: 'lead' | 'member',
+            operation: (typeof operationIds)[number],
+            outcome: 'Allow once' | 'Reject',
+          ): Promise<void> => {
+            const memberId = runtimeReaderId
+            if (actor === 'member' && memberId === undefined) throw new Error('LONG_TASK_MEMBER_CONTROLS_NOT_RUN')
+            const owner = actor === 'lead' ? String(leadSessionId) : String(required(memberId))
+            const destination = required(destinations.get(operation))
+            const command = `printf '%s' '${operation}-${runId}' >> '${destination}'`
+            const operationMarker = `${operation}-${runId}`
+            operationCommands.set(operation, command)
+            operationOwners.set(operation, owner)
+            registerNativeExecute({ scene: 'C', ownerDshSessionId: owner, operation, command })
+            const start = events.length
+            const posted = await postPrompt(
+              actor === 'lead'
+                ? `Use the native DSH bash tool to run exactly this command once: ${command}. It writes only a unique file under the test workspace. Do not use a different tool. Wait for DSH Ask approval. If rejected, do not retry; report the rejection and complete the turn. Marker LONGTASK_C_${operation}_${runId.slice(0, 8)}.`
+                : `Use the DSH send_message tool to ask runtime-reader to run exactly this command once using its normal bash tool: ${command}. Tell it not to retry if rejected and to report the result to you, including operation ID ${operationMarker}. Wait for its result and report the outcome. For this bounded test phase, if you use the DSH wait_agent tool, pass only {"timeout_ms":30000}; do not pass target or any other arguments. Use list_agents({}) before waiting as required by the current DSH instructions. Marker LONGTASK_C_${operation}_${runId.slice(0, 8)}.`,
+              `LONGTASK_C_${operation}_${runId.slice(0, 8)}`,
+              leadSessionId,
+            )
+            const handledRequestIds = new Set<string>()
+            let targetDecisionSeen = false
+            let operationActorCompleted = false
+            while (!operationActorCompleted) {
+              assertHealthy()
+              const ownerEnd =
+                actor === 'member'
+                  ? events.find(
+                      (event, index) =>
+                        index >= start && event.sessionId === required(runtimeReaderId) && event.type === 'turn/end',
+                    )
+                  : undefined
+              const leadEnd = events.find(
+                (event, index) =>
+                  index >= posted.userIndex && event.sessionId === posted.sessionId && event.type === 'turn/end',
+              )
+              operationActorCompleted =
+                targetDecisionSeen &&
+                (actor === 'member'
+                  ? ownerEnd?.type === 'turn/end' && ownerEnd.data.reason.kind === 'completed'
+                  : (leadEnd?.type === 'turn/end' && leadEnd.data.reason.kind === 'completed') ||
+                    (profileName === 'codebuddy' &&
+                      actor === 'lead' &&
+                      operation === 'lead-reject' &&
+                      rejectionCancellation?.confirmed === true))
+              if (operationActorCompleted) break
+              const pendingAsk = events
+                .slice(start)
+                .find(
+                  (event) =>
+                    event.type === 'approval/asked' &&
+                    !handledRequestIds.has(event.data.id) &&
+                    !events.some(
+                      (candidate) =>
+                        candidate.type === 'approval/decided' &&
+                        candidate.sessionId === event.sessionId &&
+                        candidate.data.id === event.data.id,
+                    ),
+                )
+              if (pendingAsk === undefined) {
+                await waitForEventChange()
+                continue
+              }
+              const asked = pendingAsk
+              if (asked?.type !== 'approval/asked') throw new Error('LONG_TASK_APPROVAL_REQUEST_MISSING')
+              handledRequestIds.add(asked.data.id)
+              const requestEventIndex = events.findIndex(
                 (event) =>
                   event.type === 'approval/asked' &&
-                  !handledRequestIds.has(event.data.id) &&
-                  !events.some(
-                    (candidate) =>
-                      candidate.type === 'approval/decided' &&
-                      candidate.sessionId === event.sessionId &&
-                      candidate.data.id === event.data.id,
-                  ),
+                  event.sessionId === asked.sessionId &&
+                  event.data.id === asked.data.id,
               )
-            if (pendingAsk === undefined) {
-              await waitForEventChange()
-              continue
-            }
-            const asked = pendingAsk
-            if (asked?.type !== 'approval/asked') throw new Error('LONG_TASK_APPROVAL_REQUEST_MISSING')
-            handledRequestIds.add(asked.data.id)
-            const requestEventIndex = events.findIndex(
-              (event) =>
-                event.type === 'approval/asked' &&
-                event.sessionId === asked.sessionId &&
-                event.data.id === asked.data.id,
-            )
-            expect(requestEventIndex).toBeGreaterThan(posted.userIndex)
-            const requestOwner = String(asked.sessionId)
-            expect(JSON.stringify(asked.data)).toContain(operationMarker)
-            const card =
-              requestOwner === String(leadSessionId)
-                ? required(page).locator('[data-approval-key]').filter({ hasText: operationMarker })
-                : required(page)
-                    .locator('[data-acp-team-approvals] [data-team-pending-member="runtime-reader"]')
-                    .filter({ hasText: operationMarker })
-            await card.waitFor({ state: 'visible', timeout: Math.max(1, phaseDeadlineAt - Date.now()) })
-            expect(await card.count()).toBe(1)
-            const cardText = await card.innerText()
-            const nativeApproval = nativeExecuteObserver.matchApproval({
-              scene: 'C',
-              ownerDshSessionId: requestOwner,
-              operation,
-              reason: asked.data.reason,
-              cardText,
-            })
-            const isHostOperation = asked.data.toolName === 'bash' && requestOwner === owner
-            const isNativeOperation = nativeApproval !== undefined
-            const isOperation = isHostOperation || isNativeOperation
-            const isCoordinationAsk = !isOperation && actor === 'member' && asked.data.toolName === 'send_message'
-            const permissionRoute =
-              isNativeOperation && isHostOperation
-                ? 'both'
-                : isNativeOperation
-                  ? 'native-permission'
-                  : isHostOperation
-                    ? 'host-approval'
-                    : 'team-coordination'
-            assertHealthy()
-            expect(isOperation || isCoordinationAsk).toBe(true)
-            if (isNativeOperation) {
-              const command = required(operationCommands.get(operation))
-              expect(asked.data.reason).toContain(command)
-              expect(cardText).toContain(command)
-              expect(asked.data.reason).toContain(operationMarker)
-              expect(cardText).toContain(operationMarker)
-            }
-            if (
-              profileName === 'codebuddy' &&
-              actor === 'lead' &&
-              operation === 'lead-reject' &&
-              outcome === 'Reject' &&
-              isOperation &&
-              isNativeOperation
-            ) {
-              if (rejectionCancellation !== undefined) throw new Error('LONG_TASK_REJECTION_GATE_ALREADY_ACTIVE')
-              const diagnosticOwner = nativeDiagnosticModule?.liveDiagnosticId('dsh-session', requestOwner)
-              const prompt = [...promptTraces]
-                .reverse()
-                .find(
-                  (candidate) =>
-                    candidate.scene === 'C' &&
-                    candidate.phase === activePhase &&
-                    candidate.owner === diagnosticOwner &&
-                    candidate.promptOrdinal !== undefined &&
-                    candidate.leaseId !== undefined &&
-                    candidate.stopReason === undefined,
-                )
-              const promptOrdinal = prompt?.promptOrdinal
-              const leaseId = prompt?.leaseId
-              const marker = `LONGTASK_C_${operation}_${runId.slice(0, 8)}`
-              const turn = claimedTurnByMarker.get(marker)
-              if (
-                prompt === undefined ||
-                diagnosticOwner === undefined ||
-                turn === undefined ||
-                promptOrdinal === undefined ||
-                leaseId === undefined ||
-                nativeApproval === undefined
-              )
-                throw new Error('LONG_TASK_REJECTION_GATE_EVIDENCE_UNAVAILABLE')
-              rejectionCancellation = {
-                expected: {
-                  profile: 'codebuddy',
-                  scene: 'C',
-                  phase: activePhase,
-                  operation,
-                  owner: diagnosticOwner,
-                  acpSession: prompt.acpSession,
-                  requestId: safeId(`approval-request:${asked.data.id}`),
-                  promptOrdinal,
-                  leaseId,
-                  turn,
-                  callId: nativeApproval.callId,
-                },
-                prompt,
-                requestIdRaw: asked.data.id,
-                requestEventIndex,
-                destination,
-                confirmed: false,
-                consumed: false,
+              expect(requestEventIndex).toBeGreaterThan(posted.userIndex)
+              const requestOwner = String(asked.sessionId)
+              const isReadOnlyCoordinationAsk = isMemberApprovalCoordination({
+                scene: 'C',
+                phase: activePhase,
+                owner: requestOwner,
+                lead: leadSessionId === undefined ? undefined : String(leadSessionId),
+                member: runtimeReaderId === undefined ? undefined : String(runtimeReaderId),
+                toolName: asked.data.toolName,
+                args: memberCoordinationArguments(asked.data.toolName, asked.data.reason),
+                relaySucceeded: successfulMemberRelays.has(operation),
+              })
+              if (!isReadOnlyCoordinationAsk) expect(JSON.stringify(asked.data)).toContain(operationMarker)
+              const card =
+                requestOwner === String(leadSessionId)
+                  ? required(page)
+                      .locator('[data-approval-key]')
+                      .filter({ hasText: isReadOnlyCoordinationAsk ? asked.data.toolName : operationMarker })
+                  : required(page)
+                      .locator('[data-acp-team-approvals] [data-team-pending-member="runtime-reader"]')
+                      .filter({ hasText: isReadOnlyCoordinationAsk ? asked.data.toolName : operationMarker })
+              await card.waitFor({ state: 'visible', timeout: Math.max(1, phaseDeadlineAt - Date.now()) })
+              expect(await card.count()).toBe(1)
+              const cardText = await card.innerText()
+              const nativeApproval = nativeExecuteObserver.matchApproval({
+                scene: 'C',
+                ownerDshSessionId: requestOwner,
+                operation,
+                reason: asked.data.reason,
+                cardText,
+              })
+              const isHostOperation = asked.data.toolName === 'bash' && requestOwner === owner
+              const isNativeOperation = nativeApproval !== undefined
+              const isOperation = isHostOperation || isNativeOperation
+              const isCoordinationAsk =
+                !isOperation &&
+                actor === 'member' &&
+                (asked.data.toolName === 'send_message' || isReadOnlyCoordinationAsk)
+              const permissionRoute =
+                isNativeOperation && isHostOperation
+                  ? 'both'
+                  : isNativeOperation
+                    ? 'native-permission'
+                    : isHostOperation
+                      ? 'host-approval'
+                      : 'team-coordination'
+              assertHealthy()
+              expect(isOperation || isCoordinationAsk).toBe(true)
+              if (isNativeOperation) {
+                const command = required(operationCommands.get(operation))
+                expect(asked.data.reason).toContain(command)
+                expect(cardText).toContain(command)
+                expect(asked.data.reason).toContain(operationMarker)
+                expect(cardText).toContain(operationMarker)
               }
-            }
-            if (isOperation) expect(existsSync(destination)).toBe(false)
-            await capture('C', `${operation}-pending-${handledRequestIds.size}`, {
-              actor,
-              session: safeId(requestOwner),
-              expectedOutcome: isOperation ? outcome : 'Allow once',
-              approvalTool: asked.data.toolName,
-              permissionRoute,
-            })
-            await card.getByRole('button', { name: isOperation ? outcome : 'Allow once', exact: true }).click()
-            const expectedDecision = isOperation
-              ? outcome === 'Allow once'
-                ? 'allowed-once'
-                : 'rejected'
-              : 'allowed-once'
-            await vi.waitFor(
-              () => {
-                assertHealthy()
-                const decided = events.find(
-                  (event) =>
-                    event.type === 'approval/decided' &&
-                    String(event.sessionId) === requestOwner &&
-                    event.data.id === asked.data.id,
-                )
-                expect(decided?.type === 'approval/decided' ? decided.data.outcome : undefined).toBe(expectedDecision)
-              },
-              { timeout: Math.max(1, phaseDeadlineAt - Date.now()), interval: 150 },
-            )
-            approvalEvidence.push({
-              operation,
-              session: safeId(requestOwner),
-              request: safeId(asked.data.id),
-              requestEventIndex,
-              toolName: asked.data.toolName,
-              outcome: expectedDecision,
-              permissionRoute,
-            })
-            if (isNativeOperation) {
-              const remoteCancelledReject =
+              if (
                 profileName === 'codebuddy' &&
                 actor === 'lead' &&
                 operation === 'lead-reject' &&
                 outcome === 'Reject' &&
-                rejectionCancellation !== undefined
-              if (!remoteCancelledReject) {
-                const terminal = outcome === 'Allow once' ? ['completed'] : ['failed', 'cancelled']
-                await vi.waitFor(
-                  () => {
-                    assertHealthy()
-                    const matching = nativeExecuteObserver
-                      .evidence()
-                      .filter(
-                        (entry) =>
-                          entry.scene === 'C' &&
-                          entry.owner === safeId(`dsh-session:${requestOwner}`) &&
-                          entry.operation === operation,
-                      )
-                    expect(matching).toHaveLength(1)
-                    expect(terminal).toContain(matching[0]?.status)
+                isOperation &&
+                isNativeOperation
+              ) {
+                if (rejectionCancellation !== undefined) throw new Error('LONG_TASK_REJECTION_GATE_ALREADY_ACTIVE')
+                const diagnosticOwner = nativeDiagnosticModule?.liveDiagnosticId('dsh-session', requestOwner)
+                const prompt = [...promptTraces]
+                  .reverse()
+                  .find(
+                    (candidate) =>
+                      candidate.scene === 'C' &&
+                      candidate.phase === activePhase &&
+                      candidate.owner === diagnosticOwner &&
+                      candidate.promptOrdinal !== undefined &&
+                      candidate.leaseId !== undefined &&
+                      candidate.stopReason === undefined,
+                  )
+                const promptOrdinal = prompt?.promptOrdinal
+                const leaseId = prompt?.leaseId
+                const marker = `LONGTASK_C_${operation}_${runId.slice(0, 8)}`
+                const turn = claimedTurnByMarker.get(marker)
+                if (
+                  prompt === undefined ||
+                  diagnosticOwner === undefined ||
+                  turn === undefined ||
+                  promptOrdinal === undefined ||
+                  leaseId === undefined ||
+                  nativeApproval === undefined
+                )
+                  throw new Error('LONG_TASK_REJECTION_GATE_EVIDENCE_UNAVAILABLE')
+                rejectionCancellation = {
+                  expected: {
+                    profile: 'codebuddy',
+                    scene: 'C',
+                    phase: activePhase,
+                    operation,
+                    owner: diagnosticOwner,
+                    acpSession: prompt.acpSession,
+                    requestId: safeId(`approval-request:${asked.data.id}`),
+                    promptOrdinal,
+                    leaseId,
+                    turn,
+                    callId: nativeApproval.callId,
                   },
-                  { timeout: Math.max(1, phaseDeadlineAt - Date.now()), interval: 150 },
-                )
+                  prompt,
+                  requestIdRaw: asked.data.id,
+                  requestEventIndex,
+                  destination,
+                  confirmed: false,
+                  consumed: false,
+                }
               }
-            }
-            if (isOperation) operationPermissionRoutes.set(operation, permissionRoute)
-            if (isOperation) targetDecisionSeen = true
-          }
-          expect(
-            approvalEvidence.filter(
-              (entry) => entry.operation === operation && entry.permissionRoute !== 'team-coordination',
-            ),
-          ).toHaveLength(1)
-          if (outcome === 'Allow once') {
-            await vi.waitFor(() => expect(readFileSync(destination, 'utf8')).toBe(`${operation}-${runId}`), {
-              timeout: Math.max(1, phaseDeadlineAt - Date.now()),
-            })
-          } else expect(existsSync(destination)).toBe(false)
-          if (actor === 'lead') {
-            if (rejectionCancellation?.expected.operation !== operation || !rejectionCancellation.confirmed)
-              await waitForTurn(posted.sessionId, posted.userIndex)
-          } else {
-            await vi.waitFor(
-              () => {
-                assertHealthy()
-                const memberEnd = events.find(
-                  (event, index) =>
-                    index >= start && event.sessionId === required(runtimeReaderId) && event.type === 'turn/end',
-                )
-                expect(memberEnd?.type === 'turn/end' ? memberEnd.data.reason.kind : undefined).toBe('completed')
-              },
-              { timeout: Math.max(1, phaseDeadlineAt - Date.now()), interval: 150 },
-            )
-            await waitForTurn(posted.sessionId, posted.userIndex)
-          }
-          await capture('C', `${operation}-settled`, { actor, outcome, fileWritten: outcome === 'Allow once' })
-          const nativeCalls = nativeExecuteObserver
-            .evidence()
-            .filter((entry) => entry.scene === 'C' && entry.operation === operation)
-          const operationTools = tools.filter((tool) => tool.operationId === operation)
-          const classifiedExecutionRoute = classifyExecutionRoute({
-            decision: outcome === 'Allow once' ? 'allow' : 'reject',
-            hostAdmissions: operationAdmissions.get(operation) ?? 0,
-            hostResults: operationTools,
-            nativeCalls,
-            fileExists: existsSync(destination),
-            fileContents: existsSync(destination) ? readFileSync(destination, 'utf8') : undefined,
-            expectedContents: `${operation}-${runId}`,
-          })
-          const executionRoute =
-            profileName === 'codebuddy' &&
-            actor === 'lead' &&
-            operation === 'lead-reject' &&
-            rejectionCancellation?.confirmed === true
-              ? 'not-dispatched'
-              : classifiedExecutionRoute
-          operationExecutionRoutes.set(operation, executionRoute)
-          if (outcome === 'Allow once') expect(['host-tool', 'native-execute']).toContain(executionRoute)
-          else expect(executionRoute).toBe('not-dispatched')
-        }
-        const approvalPlan =
-          scenarios === 'stop-only'
-            ? ([] as const)
-            : controlsLane
-              ? ([
-                  ['lead', 'lead-allow', 'Allow once'],
-                  ['lead', 'lead-reject', 'Reject'],
-                ] as const)
-              : ([
-                  ['lead', 'lead-allow', 'Allow once'],
-                  ['member', 'member-allow', 'Allow once'],
-                  ['lead', 'lead-reject', 'Reject'],
-                  ['member', 'member-reject', 'Reject'],
-                ] as const)
-        for (const [actor, operation, outcome] of approvalPlan)
-          await withPhase(`C:${operation}`, () => handleApproval(actor, operation, outcome))
-        for (const operation of operationIds) {
-          const allowed = operation.endsWith('-allow')
-          if (allowed) expect(readFileSync(required(destinations.get(operation)), 'utf8')).toBe(`${operation}-${runId}`)
-          else expect(existsSync(required(destinations.get(operation)))).toBe(false)
-          const route = required(operationExecutionRoutes.get(operation))
-          if (allowed) expect(['host-tool', 'native-execute']).toContain(route)
-          else expect(route).toBe('not-dispatched')
-        }
-        if (operationIds.length > 0) {
-          const resumeMarker = `LONGTASK_C_RESUME_${runId.slice(0, 8)}`
-          const resumeStartIndex = events.length
-          const resumedSession = await withPhase('C:resume-summary', () =>
-            sendPrompt(
-              `Continue the same session. Summarize these approval outcomes using their operation IDs: ${operationIds.join(', ')}. Do not run more tools. Marker LONGTASK_C_RESUME_${runId.slice(0, 8)}.`,
-              resumeMarker,
-              leadSessionId,
-            ),
-          )
-          await checkModelSnapshot(String(resumedSession), 'after-approval-resume')
-          if (rejectionCancellation !== undefined) {
-            const resumeOwner = nativeDiagnosticModule?.liveDiagnosticId('dsh-session', String(resumedSession))
-            const resumePrompt = [...promptTraces]
-              .reverse()
-              .find(
-                (candidate) =>
-                  candidate.scene === 'C' &&
-                  candidate.phase === 'C:resume-summary' &&
-                  candidate.owner === resumeOwner &&
-                  candidate.stopReason !== undefined,
+              if (isOperation) expect(existsSync(destination)).toBe(false)
+              await capture('C', `${operation}-pending-${handledRequestIds.size}`, {
+                actor,
+                session: safeId(requestOwner),
+                expectedOutcome: isOperation ? outcome : 'Allow once',
+                approvalTool: asked.data.toolName,
+                permissionRoute,
+              })
+              await card.getByRole('button', { name: isOperation ? outcome : 'Allow once', exact: true }).click()
+              const expectedDecision = isOperation
+                ? outcome === 'Allow once'
+                  ? 'allowed-once'
+                  : 'rejected'
+                : 'allowed-once'
+              await waitFor(
+                () => {
+                  assertHealthy()
+                  const decided = events.find(
+                    (event) =>
+                      event.type === 'approval/decided' &&
+                      String(event.sessionId) === requestOwner &&
+                      event.data.id === asked.data.id,
+                  )
+                  expect(decided?.type === 'approval/decided' ? decided.data.outcome : undefined).toBe(expectedDecision)
+                },
+                { timeout: Math.max(1, phaseDeadlineAt - Date.now()), interval: 150 },
               )
-            expect(resumePrompt, 'Expected the follow-up to use a real ACP prompt').toBeDefined()
-            expect(resumePrompt?.acpSession).toBe(rejectionCancellation.expected.acpSession)
-            expect(resumePrompt?.stopReason).toBe('end_turn')
-            const resumeUserIndex = events.findIndex(
-              (event) =>
-                event.sessionId === resumedSession &&
-                event.type === 'user/message' &&
-                JSON.stringify(event.data.content).includes(resumeMarker),
-            )
-            expect(resumeUserIndex).toBeGreaterThanOrEqual(0)
-            const previousOperationMarker = `LONGTASK_C_lead-reject_${runId.slice(0, 8)}`
+              approvalEvidence.push({
+                operation,
+                session: safeId(requestOwner),
+                request: safeId(asked.data.id),
+                requestEventIndex,
+                toolName: asked.data.toolName,
+                outcome: expectedDecision,
+                permissionRoute,
+              })
+              if (isNativeOperation) {
+                const remoteCancelledReject =
+                  profileName === 'codebuddy' &&
+                  actor === 'lead' &&
+                  operation === 'lead-reject' &&
+                  outcome === 'Reject' &&
+                  rejectionCancellation !== undefined
+                if (!remoteCancelledReject) {
+                  const terminal = outcome === 'Allow once' ? ['completed'] : ['failed', 'cancelled']
+                  await waitFor(
+                    () => {
+                      assertHealthy()
+                      const matching = nativeExecuteObserver
+                        .evidence()
+                        .filter(
+                          (entry) =>
+                            entry.scene === 'C' &&
+                            entry.owner === safeId(`dsh-session:${requestOwner}`) &&
+                            entry.operation === operation,
+                        )
+                      expect(matching).toHaveLength(1)
+                      expect(terminal).toContain(matching[0]?.status)
+                    },
+                    { timeout: Math.max(1, phaseDeadlineAt - Date.now()), interval: 150 },
+                  )
+                }
+              }
+              if (isOperation) operationPermissionRoutes.set(operation, permissionRoute)
+              if (isOperation) targetDecisionSeen = true
+            }
             expect(
-              events.some(
-                (event, index) =>
-                  index < resumeUserIndex &&
+              approvalEvidence.filter(
+                (entry) => entry.operation === operation && entry.permissionRoute !== 'team-coordination',
+              ),
+            ).toHaveLength(1)
+            if (outcome === 'Allow once') {
+              await waitFor(() => expect(readFileSync(destination, 'utf8')).toBe(`${operation}-${runId}`), {
+                timeout: Math.max(1, phaseDeadlineAt - Date.now()),
+              })
+            } else expect(existsSync(destination)).toBe(false)
+            if (actor === 'lead') {
+              if (rejectionCancellation?.expected.operation !== operation || !rejectionCancellation.confirmed)
+                await waitForTurn(posted.sessionId, posted.userIndex)
+            } else {
+              await waitFor(
+                () => {
+                  assertHealthy()
+                  const memberEnd = events.find(
+                    (event, index) =>
+                      index >= start && event.sessionId === required(runtimeReaderId) && event.type === 'turn/end',
+                  )
+                  expect(memberEnd?.type === 'turn/end' ? memberEnd.data.reason.kind : undefined).toBe('completed')
+                },
+                { timeout: Math.max(1, phaseDeadlineAt - Date.now()), interval: 150 },
+              )
+              await waitForTurn(posted.sessionId, posted.userIndex)
+            }
+            await capture('C', `${operation}-settled`, { actor, outcome, fileWritten: outcome === 'Allow once' })
+            const nativeCalls = nativeExecuteObserver
+              .evidence()
+              .filter((entry) => entry.scene === 'C' && entry.operation === operation)
+            const operationTools = tools.filter((tool) => tool.operationId === operation)
+            const classifiedExecutionRoute = classifyExecutionRoute({
+              decision: outcome === 'Allow once' ? 'allow' : 'reject',
+              hostAdmissions: operationAdmissions.get(operation) ?? 0,
+              hostResults: operationTools,
+              nativeCalls,
+              fileExists: existsSync(destination),
+              fileContents: existsSync(destination) ? readFileSync(destination, 'utf8') : undefined,
+              expectedContents: `${operation}-${runId}`,
+            })
+            const executionRoute =
+              profileName === 'codebuddy' &&
+              actor === 'lead' &&
+              operation === 'lead-reject' &&
+              rejectionCancellation?.confirmed === true
+                ? 'not-dispatched'
+                : classifiedExecutionRoute
+            operationExecutionRoutes.set(operation, executionRoute)
+            if (outcome === 'Allow once') expect(['host-tool', 'native-execute']).toContain(executionRoute)
+            else expect(executionRoute).toBe('not-dispatched')
+          }
+          const approvalPlan =
+            scenarios === 'stop-only'
+              ? ([] as const)
+              : controlsLane
+                ? ([
+                    ['lead', 'lead-allow', 'Allow once'],
+                    ['lead', 'lead-reject', 'Reject'],
+                  ] as const)
+                : ([
+                    ['lead', 'lead-allow', 'Allow once'],
+                    ['member', 'member-allow', 'Allow once'],
+                    ['lead', 'lead-reject', 'Reject'],
+                    ['member', 'member-reject', 'Reject'],
+                  ] as const)
+          for (const [actor, operation, outcome] of approvalPlan)
+            await withPhase(`C:${operation}`, () => handleApproval(actor, operation, outcome))
+          for (const operation of operationIds) {
+            const allowed = operation.endsWith('-allow')
+            if (allowed)
+              expect(readFileSync(required(destinations.get(operation)), 'utf8')).toBe(`${operation}-${runId}`)
+            else expect(existsSync(required(destinations.get(operation)))).toBe(false)
+            const route = required(operationExecutionRoutes.get(operation))
+            if (allowed) expect(['host-tool', 'native-execute']).toContain(route)
+            else expect(route).toBe('not-dispatched')
+          }
+          if (operationIds.length > 0) {
+            const resumeMarker = `LONGTASK_C_RESUME_${runId.slice(0, 8)}`
+            const resumeStartIndex = events.length
+            const resumedSession = await withPhase('C:resume-summary', () =>
+              sendPrompt(
+                `Continue the same session. Summarize these approval outcomes using their operation IDs: ${operationIds.join(', ')}. Do not run more tools. Marker LONGTASK_C_RESUME_${runId.slice(0, 8)}.`,
+                resumeMarker,
+                leadSessionId,
+              ),
+            )
+            await checkModelSnapshot(String(resumedSession), 'after-approval-resume')
+            if (rejectionCancellation !== undefined) {
+              const resumeOwner = nativeDiagnosticModule?.liveDiagnosticId('dsh-session', String(resumedSession))
+              const resumePrompt = [...promptTraces]
+                .reverse()
+                .find(
+                  (candidate) =>
+                    candidate.scene === 'C' &&
+                    candidate.phase === 'C:resume-summary' &&
+                    candidate.owner === resumeOwner &&
+                    candidate.stopReason !== undefined,
+                )
+              expect(resumePrompt, 'Expected the follow-up to use a real ACP prompt').toBeDefined()
+              expect(resumePrompt?.acpSession).toBe(rejectionCancellation.expected.acpSession)
+              expect(resumePrompt?.stopReason).toBe('end_turn')
+              const resumeUserIndex = events.findIndex(
+                (event) =>
                   event.sessionId === resumedSession &&
                   event.type === 'user/message' &&
-                  JSON.stringify(event.data.content).includes(previousOperationMarker),
-              ),
-            ).toBe(true)
-            const endIndex = rejectionCancellation.turnEndEventIndex
-            if (controlsLane && rejectionCancellation.confirmed) {
-              expect(endIndex).toBeDefined()
-              const recoveryMessages = events.filter(
-                (event, index) =>
-                  index > required(endIndex) && event.sessionId === resumedSession && event.type === 'user/message',
+                  JSON.stringify(event.data.content).includes(resumeMarker),
               )
-              expect(recoveryMessages).toHaveLength(1)
+              expect(resumeUserIndex).toBeGreaterThanOrEqual(0)
+              const previousOperationMarker = `LONGTASK_C_lead-reject_${runId.slice(0, 8)}`
               expect(
-                recoveryMessages.some(
-                  (event) => event.type === 'user/message' && JSON.stringify(event.data.content).includes(resumeMarker),
+                events.some(
+                  (event, index) =>
+                    index < resumeUserIndex &&
+                    event.sessionId === resumedSession &&
+                    event.type === 'user/message' &&
+                    JSON.stringify(event.data.content).includes(previousOperationMarker),
                 ),
               ).toBe(true)
-            }
-            await capture(
-              'C',
-              rejectionCancellation.confirmed ? 'after-rejected-cancel-resume' : 'after-approval-resume',
-              {
-                sameAcpBinding: true,
-                rejectedCancellationConfirmed: rejectionCancellation.confirmed,
-                priorOperationRetainedInSessionEvents: true,
-                followupAssistantObserved: events.some(
+              const endIndex = rejectionCancellation.turnEndEventIndex
+              if (controlsLane && rejectionCancellation.confirmed) {
+                expect(endIndex).toBeDefined()
+                const recoveryMessages = events.filter(
                   (event, index) =>
-                    index >= resumeStartIndex &&
-                    event.sessionId === resumedSession &&
-                    event.type === 'assistant/message',
-                ),
-                followupMarker: resumeMarker,
-                followupUserCount: controlsLane ? 1 : 'not-counted',
-              },
-            )
-          }
-        }
-        const cModelSnapshots = modelSnapshots.filter((entry) => entry.session === safeId(String(leadSessionId)))
-        if (cModelSnapshots.some((entry) => entry.modeObserved))
-          expect(
-            cModelSnapshots.filter((entry) => entry.modeObserved).every((entry) => entry.modePreserved !== false),
-          ).toBe(true)
-        await capture('C', scenarios === 'stop-only' ? 'not-run' : 'end', {
-          coverage:
-            scenarios === 'stop-only'
-              ? 'not-run'
-              : controlsLane
-                ? 'lead-only-2-decisions'
-                : 'lead-and-member-4-decisions',
-          memberDecisions: controlsLane ? 'not-run' : 'completed',
-          allowed: operationIds.filter((operation) => operation.endsWith('-allow')).length,
-          rejected: operationIds.filter((operation) => operation.endsWith('-reject')).length,
-          acpExecutePermissions: nativeExecuteObserver.evidence().filter((entry) => entry.scene === 'C'),
-          rejectedCancellation: rejectionCancellationEvidence,
-          permissionRoutes: Object.fromEntries(operationPermissionRoutes),
-          executionRoutes: Object.fromEntries(operationExecutionRoutes),
-          sideEffects: {
-            allowed: operationIds.filter((operation) => operation.endsWith('-allow')).length,
-            rejected: 0,
-          },
-        })
-        scenarioStatuses.C = scenarios === 'stop-only' ? 'not-run' : controlsLane ? 'partial' : 'passed'
-
-        // D: a genuine shell process is interrupted, the page reloads, and queued input remains unsent.
-        resetScene('D')
-        await capture('D', 'start', { session: safeId(String(leadSessionId)) })
-        const longStarted = join(operationDir, `long-start-${runId}.txt`)
-        const longFinished = join(operationDir, `long-finished-${runId}.txt`)
-        const queuedMarker = `LONGTASK_D_QUEUED_${runId.slice(0, 8)}`
-        const longMarker = `LONGTASK_D_RUNNING_${runId.slice(0, 8)}`
-        const resumeMarker = `LONGTASK_D_RESUME_${runId.slice(0, 8)}`
-        const shellCommand = `printf '%s' '${longMarker}' >> '${longStarted}'; sleep 120; printf '%s' '${runId}' > '${longFinished}'`
-        registeredLongCommand = shellCommand
-        operationCommands.set('D:long-running', shellCommand)
-        registerNativeExecute({
-          scene: 'D',
-          ownerDshSessionId: String(leadSessionId),
-          operation: 'D:long-running',
-          command: shellCommand,
-        })
-        await (host.ctx.get('dshAcp') as AcpRemoteService).setToolApprovalPolicy(required(leadAgent).id, {
-          policy: 'ask',
-        })
-        const turnBefore = events.filter(
-          (event) => event.sessionId === leadSessionId && event.type === 'user/message',
-        ).length
-        const dText = `Use the native DSH bash tool to run exactly this long shell command once: ${shellCommand}. Set timeoutMs to 120000 and run_in_background to false. Do not cancel it yourself and do not run another command. Marker ${longMarker}.`
-        await withPhase('D:stop-refresh-queue-resume', async () => {
-          await writeComposerDraft(required(page), required(page).locator('[data-composer-input]').first(), dText)
-          const dBefore = events.length
-          await required(page).getByRole('button', { name: 'Send message', exact: true }).click()
-          await vi.waitFor(
-            () =>
-              expect(
-                events
-                  .slice(dBefore)
-                  .some(
-                    (event) => event.type === 'user/message' && JSON.stringify(event.data.content).includes(longMarker),
+                    index > required(endIndex) && event.sessionId === resumedSession && event.type === 'user/message',
+                )
+                expect(recoveryMessages).toHaveLength(1)
+                expect(
+                  recoveryMessages.some(
+                    (event) =>
+                      event.type === 'user/message' && JSON.stringify(event.data.content).includes(resumeMarker),
                   ),
-              ).toBe(true),
-            {
-              timeout: Math.max(1, phaseDeadlineAt - Date.now()),
+                ).toBe(true)
+              }
+              await capture(
+                'C',
+                rejectionCancellation.confirmed ? 'after-rejected-cancel-resume' : 'after-approval-resume',
+                {
+                  sameAcpBinding: true,
+                  rejectedCancellationConfirmed: rejectionCancellation.confirmed,
+                  priorOperationRetainedInSessionEvents: true,
+                  followupAssistantObserved: events.some(
+                    (event, index) =>
+                      index >= resumeStartIndex &&
+                      event.sessionId === resumedSession &&
+                      event.type === 'assistant/message',
+                  ),
+                  followupMarker: resumeMarker,
+                  followupUserCount: controlsLane ? 1 : 'not-counted',
+                },
+              )
+            }
+          }
+          const cModelSnapshots = modelSnapshots.filter((entry) => entry.session === safeId(String(leadSessionId)))
+          if (cModelSnapshots.some((entry) => entry.modeObserved))
+            expect(
+              cModelSnapshots.filter((entry) => entry.modeObserved).every((entry) => entry.modePreserved !== false),
+            ).toBe(true)
+          await capture('C', scenarios === 'stop-only' ? 'not-run' : 'end', {
+            coverage:
+              scenarios === 'stop-only'
+                ? 'not-run'
+                : controlsLane
+                  ? 'lead-only-2-decisions'
+                  : 'lead-and-member-4-decisions',
+            memberDecisions: controlsLane ? 'not-run' : 'completed',
+            allowed: operationIds.filter((operation) => operation.endsWith('-allow')).length,
+            rejected: operationIds.filter((operation) => operation.endsWith('-reject')).length,
+            acpExecutePermissions: nativeExecuteObserver.evidence().filter((entry) => entry.scene === 'C'),
+            rejectedCancellation: rejectionCancellationEvidence,
+            permissionRoutes: Object.fromEntries(operationPermissionRoutes),
+            executionRoutes: Object.fromEntries(operationExecutionRoutes),
+            sideEffects: {
+              allowed: operationIds.filter((operation) => operation.endsWith('-allow')).length,
+              rejected: 0,
             },
-          )
-          const dUserIndex = events.findIndex(
-            (event, index) =>
-              index >= dBefore &&
-              event.type === 'user/message' &&
-              JSON.stringify(event.data.content).includes(longMarker),
-          )
-          const approval = required(page).locator('[data-approval-key]')
-          await approval.waitFor({ timeout: Math.max(1, phaseDeadlineAt - Date.now()) })
-          const dAsked = events
-            .slice(dBefore)
-            .find(
-              (event) =>
-                event.type === 'approval/asked' &&
-                event.sessionId === leadSessionId &&
-                event.data.reason?.includes(shellCommand),
-            )
-          const dNativeMatch = nativeExecuteObserver.matchApproval({
+          })
+          scenarioStatuses.C = scenarios === 'stop-only' ? 'not-run' : controlsLane ? 'partial' : 'passed'
+
+          // D: a genuine shell process is interrupted, the page reloads, and queued input remains unsent.
+          resetScene('D')
+          await capture('D', 'start', { session: safeId(String(leadSessionId)) })
+          const longStarted = join(operationDir, `long-start-${runId}.txt`)
+          const longFinished = join(operationDir, `long-finished-${runId}.txt`)
+          const queuedMarker = `LONGTASK_D_QUEUED_${runId.slice(0, 8)}`
+          const longMarker = `LONGTASK_D_RUNNING_${runId.slice(0, 8)}`
+          const resumeMarker = `LONGTASK_D_RESUME_${runId.slice(0, 8)}`
+          const shellCommand = `printf '%s' '${longMarker}' >> '${longStarted}'; sleep 120; printf '%s' '${runId}' > '${longFinished}'`
+          registeredLongCommand = shellCommand
+          operationCommands.set('D:long-running', shellCommand)
+          registerNativeExecute({
             scene: 'D',
             ownerDshSessionId: String(leadSessionId),
             operation: 'D:long-running',
-            reason: dAsked?.type === 'approval/asked' ? dAsked.data.reason : undefined,
-            cardText: await approval.innerText(),
+            command: shellCommand,
           })
-          assertHealthy()
-          const dHostApproval = dAsked?.type === 'approval/asked' && dAsked.data.toolName === 'bash'
-          const dPermissionRoute =
-            dNativeMatch !== undefined && dHostApproval
-              ? 'both'
-              : dNativeMatch !== undefined
-                ? 'native-permission'
-                : 'host-approval'
-          operationPermissionRoutes.set('D:long-running', dPermissionRoute)
-          expect(dNativeMatch !== undefined || dHostApproval).toBe(true)
-          if (dNativeMatch !== undefined) {
-            expect(dAsked?.type === 'approval/asked' ? dAsked.data.reason : undefined).toContain(shellCommand)
-            expect(await approval.innerText()).toContain(shellCommand)
-            expect(dAsked?.type === 'approval/asked' ? dAsked.data.reason : undefined).toContain(longMarker)
-            expect(await approval.innerText()).toContain(longMarker)
-          }
-          await approval.getByRole('button', { name: 'Allow once', exact: true }).click()
-          if (dAsked?.type === 'approval/asked') {
-            const requestEventIndex = events.findIndex(
-              (event) =>
-                event.type === 'approval/asked' &&
-                event.sessionId === dAsked.sessionId &&
-                event.data.id === dAsked.data.id,
-            )
-            approvalEvidence.push({
-              operation: 'D:long-running',
-              session: safeId(String(leadSessionId)),
-              request: safeId(dAsked.data.id),
-              requestEventIndex,
-              toolName: dAsked.data.toolName,
-              outcome: 'allowed-once',
-              permissionRoute: dPermissionRoute,
-            })
-          }
-          await vi.waitFor(() => expect(readFileSync(longStarted, 'utf8')).toBe(longMarker), {
-            timeout: Math.max(1, phaseDeadlineAt - Date.now()),
+          await (host.ctx.get('dshAcp') as AcpRemoteService).setToolApprovalPolicy(required(leadAgent).id, {
+            policy: 'ask',
           })
-          dExecutionRoute =
-            dLongAdmissions === 1 && dLongCallIds.size === 1
-              ? 'host-tool'
-              : dLongAdmissions === 0 && dLongCallIds.size === 0 && dNativeMatch !== undefined
-                ? 'native-execute'
-                : 'unknown'
-          operationExecutionRoutes.set('D:long-running', dExecutionRoute)
-          expect(dExecutionRoute).not.toBe('unknown')
-          const composer = required(page).locator('[data-composer-input]').first()
-          await writeComposerDraft(required(page), composer, queuedMarker)
-          await required(page).getByRole('button', { name: 'Queue message', exact: true }).click()
-          const queued = required(page)
-            .locator('[data-queue-dock]')
-            .getByRole('listitem')
-            .filter({ hasText: queuedMarker })
-          await queued.waitFor()
-          await vi.waitFor(
-            async () => {
-              assertHealthy()
-              expect(await queued.getAttribute('data-submission-echo')).toBeNull()
-            },
-            { timeout: Math.max(1, phaseDeadlineAt - Date.now()), interval: 150 },
-          )
-          expect(
-            events.find(
-              (event, index) => index >= dUserIndex && event.sessionId === leadSessionId && event.type === 'turn/end',
-            ),
-          ).toBeUndefined()
-          await capture('D', 'running-queued', {
-            startedMarker: true,
-            queued: true,
-            acpExecutePermissions: nativeExecuteObserver.evidence().filter((entry) => entry.scene === 'D'),
-            jobs: jobSnapshot(),
-          })
-          await required(page).reload()
-          await queued.waitFor()
-          await vi.waitFor(
-            async () => {
-              assertHealthy()
-              expect(await queued.getAttribute('data-submission-echo')).toBeNull()
-            },
-            { timeout: Math.max(1, phaseDeadlineAt - Date.now()), interval: 150 },
-          )
-          await capture('D', 'after-refresh', {
-            queued: true,
-            acpExecutePermissions: nativeExecuteObserver.evidence().filter((entry) => entry.scene === 'D'),
-            jobs: jobSnapshot(),
-          })
-          expect(
-            events.find(
-              (event, index) => index > dUserIndex && event.sessionId === leadSessionId && event.type === 'turn/end',
-            ),
-          ).toBeUndefined()
-          expect(tools.filter((tool) => tool.operationId === 'D:long-running')).toHaveLength(0)
-          expect(expectedDAbortTurn).toBe(claimedTurnByMarker.get(longMarker))
-          expectingDStop = true
-          await required(page).getByRole('button', { name: 'Stop generating', exact: true }).click()
-          await vi.waitFor(
-            () => {
-              assertHealthy()
-              const end = events.find(
-                (event, index) =>
-                  index > dUserIndex &&
-                  event.sessionId === leadSessionId &&
-                  event.type === 'turn/end' &&
-                  event.data.turn === expectedDAbortTurn,
-              )
-              expect(end?.type === 'turn/end' ? end.data.reason.kind : undefined).toBe('aborted')
-            },
-            { timeout: Math.max(1, phaseDeadlineAt - Date.now()), interval: 150 },
-          )
-          expectingDStop = false
-          expect(readFileSync(longStarted, 'utf8')).toBe(longMarker)
-          expect(existsSync(longFinished)).toBe(false)
-          if (dNativeMatch !== undefined) {
-            await vi.waitFor(
-              () => {
-                assertHealthy()
-                const matching = nativeExecuteObserver
-                  .evidence()
-                  .filter((entry) => entry.scene === 'D' && entry.operation === 'D:long-running')
-                expect(matching).toHaveLength(1)
-                expect(['completed', 'failed', 'cancelled']).toContain(matching[0]?.status)
-                if (dExecutionRoute === 'native-execute') expect(['failed', 'cancelled']).toContain(matching[0]?.status)
+          const turnBefore = events.filter(
+            (event) => event.sessionId === leadSessionId && event.type === 'user/message',
+          ).length
+          const dText = `Use the native DSH bash tool to run exactly this long shell command once: ${shellCommand}. Set timeoutMs to 120000 and run_in_background to false. Do not cancel it yourself and do not run another command. Marker ${longMarker}.`
+          await withPhase('D:stop-refresh-queue-resume', async () => {
+            await writeComposerDraft(required(page), required(page).locator('[data-composer-input]').first(), dText)
+            const dBefore = events.length
+            await required(page).getByRole('button', { name: 'Send message', exact: true }).click()
+            await waitFor(
+              () =>
+                expect(
+                  events
+                    .slice(dBefore)
+                    .some(
+                      (event) =>
+                        event.type === 'user/message' && JSON.stringify(event.data.content).includes(longMarker),
+                    ),
+                ).toBe(true),
+              {
+                timeout: Math.max(1, phaseDeadlineAt - Date.now()),
               },
-              { timeout: Math.max(1, phaseDeadlineAt - Date.now()), interval: 150 },
             )
-          }
-          const expectedJobOwner = safeId(`dsh-session:${String(leadSessionId)}`)
-          const matchingJobEvents = () =>
-            jobEvidence.filter(
-              (entry) => entry.label === shellCommand && entry.owner === expectedJobOwner && entry.kind === 'bash',
-            )
-          if (matchingJobEvents().length > 0) {
-            await vi.waitFor(
-              () => {
-                assertHealthy()
-                const settledByHost = matchingJobEvents().some(
-                  (entry) => entry.event === 'settled' && entry.cause === 'kill' && entry.awaited === true,
-                )
-                expect(settledByHost).toBe(true)
-                expect(jobSnapshot().exactCommandActiveCount).toBe(0)
-              },
-              { timeout: Math.max(1, phaseDeadlineAt - Date.now()), interval: 150 },
-            )
-            dJobQuiescence = 'host-job-settlement'
-          }
-          const dNativeEvidence = nativeExecuteObserver
-            .evidence()
-            .filter((entry) => entry.scene === 'D' && entry.operation === 'D:long-running')
-          if (dExecutionRoute === 'host-tool') {
-            expect(dLongAdmissions).toBe(1)
-            expect(dLongCallIds.size).toBe(1)
-            expect(tools.filter((tool) => tool.operationId === 'D:long-running')).toHaveLength(1)
-            expect(required(tools.find((tool) => tool.operationId === 'D:long-running')).isError).toBe(true)
-          } else {
-            expect(tools.filter((tool) => tool.operationId === 'D:long-running')).toHaveLength(0)
-            expect(dNativeEvidence).toHaveLength(1)
-            expect(['failed', 'cancelled']).toContain(dNativeEvidence[0]?.status)
-          }
-          expect(
-            events.filter(
+            const dUserIndex = events.findIndex(
               (event, index) =>
-                index > dUserIndex &&
-                event.sessionId === leadSessionId &&
+                index >= dBefore &&
                 event.type === 'user/message' &&
-                JSON.stringify(event.data.content).includes(queuedMarker),
-            ),
-          ).toHaveLength(0)
-          await queued.waitFor()
-          await capture('D', 'stopped-queued', {
-            turnAborted: true,
-            queued: true,
-            acpExecutePermissions: nativeExecuteObserver.evidence().filter((entry) => entry.scene === 'D'),
-            jobs: jobSnapshot(),
-          })
-          await writeComposerDraft(
-            required(page),
-            composer,
-            `Resume queued input once, then reply without tools. Marker ${resumeMarker}`,
-          )
-          await required(page).getByRole('button', { name: 'Send message', exact: true }).click()
-          while (true) {
+                JSON.stringify(event.data.content).includes(longMarker),
+            )
+            const approval = required(page).locator('[data-approval-key]')
+            await approval.waitFor({ timeout: Math.max(1, phaseDeadlineAt - Date.now()) })
+            const dAsked = events
+              .slice(dBefore)
+              .find(
+                (event) =>
+                  event.type === 'approval/asked' &&
+                  event.sessionId === leadSessionId &&
+                  event.data.reason?.includes(shellCommand),
+              )
+            const dNativeMatch = nativeExecuteObserver.matchApproval({
+              scene: 'D',
+              ownerDshSessionId: String(leadSessionId),
+              operation: 'D:long-running',
+              reason: dAsked?.type === 'approval/asked' ? dAsked.data.reason : undefined,
+              cardText: await approval.innerText(),
+            })
             assertHealthy()
-            try {
-              expect(
-                events.filter(
-                  (event) =>
+            const dHostApproval = dAsked?.type === 'approval/asked' && dAsked.data.toolName === 'bash'
+            const dPermissionRoute =
+              dNativeMatch !== undefined && dHostApproval
+                ? 'both'
+                : dNativeMatch !== undefined
+                  ? 'native-permission'
+                  : 'host-approval'
+            operationPermissionRoutes.set('D:long-running', dPermissionRoute)
+            expect(dNativeMatch !== undefined || dHostApproval).toBe(true)
+            if (dNativeMatch !== undefined) {
+              expect(dAsked?.type === 'approval/asked' ? dAsked.data.reason : undefined).toContain(shellCommand)
+              expect(await approval.innerText()).toContain(shellCommand)
+              expect(dAsked?.type === 'approval/asked' ? dAsked.data.reason : undefined).toContain(longMarker)
+              expect(await approval.innerText()).toContain(longMarker)
+            }
+            await approval.getByRole('button', { name: 'Allow once', exact: true }).click()
+            if (dAsked?.type === 'approval/asked') {
+              const requestEventIndex = events.findIndex(
+                (event) =>
+                  event.type === 'approval/asked' &&
+                  event.sessionId === dAsked.sessionId &&
+                  event.data.id === dAsked.data.id,
+              )
+              approvalEvidence.push({
+                operation: 'D:long-running',
+                session: safeId(String(leadSessionId)),
+                request: safeId(dAsked.data.id),
+                requestEventIndex,
+                toolName: dAsked.data.toolName,
+                outcome: 'allowed-once',
+                permissionRoute: dPermissionRoute,
+              })
+            }
+            await waitFor(() => expect(readFileSync(longStarted, 'utf8')).toBe(longMarker), {
+              timeout: Math.max(1, phaseDeadlineAt - Date.now()),
+            })
+            dExecutionRoute =
+              dLongAdmissions === 1 && dLongCallIds.size === 1
+                ? 'host-tool'
+                : dLongAdmissions === 0 && dLongCallIds.size === 0 && dNativeMatch !== undefined
+                  ? 'native-execute'
+                  : 'unknown'
+            operationExecutionRoutes.set('D:long-running', dExecutionRoute)
+            expect(dExecutionRoute).not.toBe('unknown')
+            const composer = required(page).locator('[data-composer-input]').first()
+            await writeComposerDraft(required(page), composer, queuedMarker)
+            await required(page).getByRole('button', { name: 'Queue message', exact: true }).click()
+            const queued = required(page)
+              .locator('[data-queue-dock]')
+              .getByRole('listitem')
+              .filter({ hasText: queuedMarker })
+            await queued.waitFor()
+            await waitFor(
+              async () => {
+                assertHealthy()
+                expect(await queued.getAttribute('data-submission-echo')).toBeNull()
+              },
+              { timeout: Math.max(1, phaseDeadlineAt - Date.now()), interval: 150 },
+            )
+            expect(
+              events.find(
+                (event, index) => index >= dUserIndex && event.sessionId === leadSessionId && event.type === 'turn/end',
+              ),
+            ).toBeUndefined()
+            await capture('D', 'running-queued', {
+              startedMarker: true,
+              queued: true,
+              acpExecutePermissions: nativeExecuteObserver.evidence().filter((entry) => entry.scene === 'D'),
+              jobs: jobSnapshot(),
+            })
+            await required(page).reload()
+            await queued.waitFor()
+            await waitFor(
+              async () => {
+                assertHealthy()
+                expect(await queued.getAttribute('data-submission-echo')).toBeNull()
+              },
+              { timeout: Math.max(1, phaseDeadlineAt - Date.now()), interval: 150 },
+            )
+            await capture('D', 'after-refresh', {
+              queued: true,
+              acpExecutePermissions: nativeExecuteObserver.evidence().filter((entry) => entry.scene === 'D'),
+              jobs: jobSnapshot(),
+            })
+            expect(
+              events.find(
+                (event, index) => index > dUserIndex && event.sessionId === leadSessionId && event.type === 'turn/end',
+              ),
+            ).toBeUndefined()
+            expect(tools.filter((tool) => tool.operationId === 'D:long-running')).toHaveLength(0)
+            expect(expectedDAbortTurn).toBe(claimedTurnByMarker.get(longMarker))
+            expectingDStop = true
+            await required(page).getByRole('button', { name: 'Stop generating', exact: true }).click()
+            await waitFor(
+              () => {
+                assertHealthy()
+                const end = events.find(
+                  (event, index) =>
+                    index > dUserIndex &&
                     event.sessionId === leadSessionId &&
-                    event.type === 'user/message' &&
-                    JSON.stringify(event.data.content).includes(queuedMarker),
-                ),
-              ).toHaveLength(1)
-              expect(
-                events.filter(
-                  (event) =>
-                    event.sessionId === leadSessionId &&
-                    event.type === 'user/message' &&
-                    JSON.stringify(event.data.content).includes(resumeMarker),
-                ),
-              ).toHaveLength(1)
-              const queuedIndex = events.findIndex(
+                    event.type === 'turn/end' &&
+                    event.data.turn === expectedDAbortTurn,
+                )
+                expect(end?.type === 'turn/end' ? end.data.reason.kind : undefined).toBe('aborted')
+              },
+              { timeout: Math.max(1, phaseDeadlineAt - Date.now()), interval: 150 },
+            )
+            expectingDStop = false
+            expect(readFileSync(longStarted, 'utf8')).toBe(longMarker)
+            expect(existsSync(longFinished)).toBe(false)
+            if (dNativeMatch !== undefined) {
+              await waitFor(
+                () => {
+                  assertHealthy()
+                  const matching = nativeExecuteObserver
+                    .evidence()
+                    .filter((entry) => entry.scene === 'D' && entry.operation === 'D:long-running')
+                  expect(matching).toHaveLength(1)
+                  expect(['completed', 'failed', 'cancelled']).toContain(matching[0]?.status)
+                  if (dExecutionRoute === 'native-execute')
+                    expect(['failed', 'cancelled']).toContain(matching[0]?.status)
+                },
+                { timeout: Math.max(1, phaseDeadlineAt - Date.now()), interval: 150 },
+              )
+            }
+            const expectedJobOwner = safeId(`dsh-session:${String(leadSessionId)}`)
+            const matchingJobEvents = () =>
+              jobEvidence.filter(
+                (entry) => entry.label === shellCommand && entry.owner === expectedJobOwner && entry.kind === 'bash',
+              )
+            if (matchingJobEvents().length > 0) {
+              await waitFor(
+                () => {
+                  assertHealthy()
+                  const settledByHost = matchingJobEvents().some(
+                    (entry) => entry.event === 'settled' && entry.cause === 'kill' && entry.awaited === true,
+                  )
+                  expect(settledByHost).toBe(true)
+                  expect(jobSnapshot().exactCommandActiveCount).toBe(0)
+                },
+                { timeout: Math.max(1, phaseDeadlineAt - Date.now()), interval: 150 },
+              )
+              dJobQuiescence = 'host-job-settlement'
+            }
+            const dNativeEvidence = nativeExecuteObserver
+              .evidence()
+              .filter((entry) => entry.scene === 'D' && entry.operation === 'D:long-running')
+            if (dExecutionRoute === 'host-tool') {
+              expect(dLongAdmissions).toBe(1)
+              expect(dLongCallIds.size).toBe(1)
+              expect(tools.filter((tool) => tool.operationId === 'D:long-running')).toHaveLength(1)
+              expect(required(tools.find((tool) => tool.operationId === 'D:long-running')).isError).toBe(true)
+            } else {
+              expect(tools.filter((tool) => tool.operationId === 'D:long-running')).toHaveLength(0)
+              expect(dNativeEvidence).toHaveLength(1)
+              expect(['failed', 'cancelled']).toContain(dNativeEvidence[0]?.status)
+            }
+            expect(
+              events.filter(
                 (event, index) =>
                   index > dUserIndex &&
                   event.sessionId === leadSessionId &&
                   event.type === 'user/message' &&
                   JSON.stringify(event.data.content).includes(queuedMarker),
-              )
-              const resumeIndex = events.findIndex(
-                (event, index) =>
-                  index > dUserIndex &&
-                  event.sessionId === leadSessionId &&
-                  event.type === 'user/message' &&
-                  JSON.stringify(event.data.content).includes(resumeMarker),
-              )
-              expect(queuedIndex).toBeGreaterThan(dUserIndex)
-              expect(resumeIndex).toBeGreaterThan(queuedIndex)
-              expect(
-                events.filter(
-                  (event, index) =>
-                    index > dUserIndex &&
-                    event.sessionId === leadSessionId &&
-                    event.type === 'turn/end' &&
-                    event.data.reason.kind === 'completed',
-                ),
-              ).toHaveLength(2)
-              const queuedTurn = claimedTurnByMarker.get(queuedMarker)
-              const resumeTurn = claimedTurnByMarker.get(resumeMarker)
-              expect(queuedTurn).toBeDefined()
-              expect(resumeTurn).toBeDefined()
-              expect(queuedTurn).not.toBe(resumeTurn)
-              const completedTurns = events
-                .filter(
-                  (event, index) =>
-                    index > dUserIndex &&
-                    event.sessionId === leadSessionId &&
-                    event.type === 'turn/end' &&
-                    event.data.reason.kind === 'completed',
-                )
-                .map((event) => (event.type === 'turn/end' ? event.data.turn : undefined))
-              expect(completedTurns).toContain(queuedTurn)
-              expect(completedTurns).toContain(resumeTurn)
-              break
-            } catch {
+              ),
+            ).toHaveLength(0)
+            await queued.waitFor()
+            await capture('D', 'stopped-queued', {
+              turnAborted: true,
+              queued: true,
+              acpExecutePermissions: nativeExecuteObserver.evidence().filter((entry) => entry.scene === 'D'),
+              jobs: jobSnapshot(),
+            })
+            await writeComposerDraft(
+              required(page),
+              composer,
+              `Resume queued input once, then reply without tools. Marker ${resumeMarker}`,
+            )
+            await required(page).getByRole('button', { name: 'Send message', exact: true }).click()
+            while (true) {
               assertHealthy()
-              await waitForEventChange()
+              try {
+                expect(
+                  events.filter(
+                    (event) =>
+                      event.sessionId === leadSessionId &&
+                      event.type === 'user/message' &&
+                      JSON.stringify(event.data.content).includes(queuedMarker),
+                  ),
+                ).toHaveLength(1)
+                expect(
+                  events.filter(
+                    (event) =>
+                      event.sessionId === leadSessionId &&
+                      event.type === 'user/message' &&
+                      JSON.stringify(event.data.content).includes(resumeMarker),
+                  ),
+                ).toHaveLength(1)
+                const queuedIndex = events.findIndex(
+                  (event, index) =>
+                    index > dUserIndex &&
+                    event.sessionId === leadSessionId &&
+                    event.type === 'user/message' &&
+                    JSON.stringify(event.data.content).includes(queuedMarker),
+                )
+                const resumeIndex = events.findIndex(
+                  (event, index) =>
+                    index > dUserIndex &&
+                    event.sessionId === leadSessionId &&
+                    event.type === 'user/message' &&
+                    JSON.stringify(event.data.content).includes(resumeMarker),
+                )
+                expect(queuedIndex).toBeGreaterThan(dUserIndex)
+                expect(resumeIndex).toBeGreaterThan(queuedIndex)
+                expect(
+                  events.filter(
+                    (event, index) =>
+                      index > dUserIndex &&
+                      event.sessionId === leadSessionId &&
+                      event.type === 'turn/end' &&
+                      event.data.reason.kind === 'completed',
+                  ),
+                ).toHaveLength(2)
+                const queuedTurn = claimedTurnByMarker.get(queuedMarker)
+                const resumeTurn = claimedTurnByMarker.get(resumeMarker)
+                expect(queuedTurn).toBeDefined()
+                expect(resumeTurn).toBeDefined()
+                expect(queuedTurn).not.toBe(resumeTurn)
+                const completedTurns = events
+                  .filter(
+                    (event, index) =>
+                      index > dUserIndex &&
+                      event.sessionId === leadSessionId &&
+                      event.type === 'turn/end' &&
+                      event.data.reason.kind === 'completed',
+                  )
+                  .map((event) => (event.type === 'turn/end' ? event.data.turn : undefined))
+                expect(completedTurns).toContain(queuedTurn)
+                expect(completedTurns).toContain(resumeTurn)
+                break
+              } catch {
+                assertHealthy()
+                await waitForEventChange()
+              }
             }
-          }
-          assertHealthy()
-          expect(
-            events.filter((event) => event.sessionId === leadSessionId && event.type === 'user/message'),
-          ).toHaveLength(turnBefore + 3)
-          const finalDRoute = required(operationExecutionRoutes.get('D:long-running'))
-          expect(dLongAdmissions).toBe(finalDRoute === 'host-tool' ? 1 : 0)
-          expect(tools.filter((tool) => tool.operationId === 'D:long-running')).toHaveLength(
-            finalDRoute === 'host-tool' ? 1 : 0,
-          )
-          await checkModelSnapshot(String(leadSessionId), 'after-stop-queue-resume')
-          const dModelSnapshots = modelSnapshots.filter((entry) => entry.session === safeId(String(leadSessionId)))
-          if (dModelSnapshots.some((entry) => entry.modeObserved))
+            assertHealthy()
             expect(
-              dModelSnapshots.filter((entry) => entry.modeObserved).every((entry) => entry.modePreserved !== false),
-            ).toBe(true)
-          await capture('D', 'end', {
-            turnAborted: true,
-            longCommandFinished: false,
-            queuedInputDeliveredOnce: true,
-            acpExecutePermissions: nativeExecuteObserver.evidence().filter((entry) => entry.scene === 'D'),
-            jobs: jobSnapshot(),
-            jobQuiescence: {
-              hostJobSettlement: dJobQuiescence,
-              managedRangeExit: 'not-observed',
-            },
-            acpExecutePermissionFacts: {
-              executionRoute: dExecutionRoute,
-              permissionRoute: dPermissionRoute,
-              count: dNativeEvidence.length,
-              status: dNativeEvidence[0]?.status ?? 'not-observed',
-            },
+              events.filter((event) => event.sessionId === leadSessionId && event.type === 'user/message'),
+            ).toHaveLength(turnBefore + 3)
+            const finalDRoute = required(operationExecutionRoutes.get('D:long-running'))
+            expect(dLongAdmissions).toBe(finalDRoute === 'host-tool' ? 1 : 0)
+            expect(tools.filter((tool) => tool.operationId === 'D:long-running')).toHaveLength(
+              finalDRoute === 'host-tool' ? 1 : 0,
+            )
+            await checkModelSnapshot(String(leadSessionId), 'after-stop-queue-resume')
+            const dModelSnapshots = modelSnapshots.filter((entry) => entry.session === safeId(String(leadSessionId)))
+            if (dModelSnapshots.some((entry) => entry.modeObserved))
+              expect(
+                dModelSnapshots.filter((entry) => entry.modeObserved).every((entry) => entry.modePreserved !== false),
+              ).toBe(true)
+            await capture('D', 'end', {
+              turnAborted: true,
+              longCommandFinished: false,
+              queuedInputDeliveredOnce: true,
+              acpExecutePermissions: nativeExecuteObserver.evidence().filter((entry) => entry.scene === 'D'),
+              jobs: jobSnapshot(),
+              jobQuiescence: {
+                hostJobSettlement: dJobQuiescence,
+                managedRangeExit: 'not-observed',
+              },
+              acpExecutePermissionFacts: {
+                executionRoute: dExecutionRoute,
+                permissionRoute: dPermissionRoute,
+                count: dNativeEvidence.length,
+                status: dNativeEvidence[0]?.status ?? 'not-observed',
+              },
+            })
           })
-        })
-        scenarioStatuses.D = dJobSettled() && dUsesHostTool() ? 'passed' : 'partial'
+          scenarioStatuses.D = dJobSettled() && dUsesHostTool() ? 'passed' : 'partial'
+        }
 
         expect(stickyViolation).toBeUndefined()
         expect(errorTexts).toEqual([])
@@ -2506,6 +2750,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
           scenarios: scenarioStatuses,
           scenarioSelection: scenarios,
           nativeReads: nativeReadEvidence,
+          nativeReadDiagnostics,
           acpExecutePermissions: nativeExecuteObserver.evidence(),
           permissionRoutes: Object.fromEntries(operationPermissionRoutes),
           executionRoutes: Object.fromEntries(operationExecutionRoutes),
@@ -2579,127 +2824,172 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
         writePrivate(join(evidenceDir, 'model-review.json'), JSON.stringify(answers, null, 2))
       } catch (error) {
         primaryFailure = error
+        primaryFailureRecord = longTaskFailure(error, activePhase)
+        failureController.abort(error)
         runFailed = true
+        const cancelling = cancelAll(stickyViolation ?? 'LONG_TASK_PRIMARY_FAILURE')
         await capture(activeScene, 'failed', {
           phase: activePhase,
-          failure: error instanceof Error ? error.name : 'UnknownError',
+          failure: primaryFailureRecord,
           violation: stickyViolation,
-        }).catch(() => undefined)
-        writePrivate(join(evidenceDir, 'model-review.json'), JSON.stringify(answers, null, 2))
-        writePrivate(
-          join(evidenceDir, 'run.json'),
-          JSON.stringify(
-            {
-              status: 'failed',
-              scenarios: scenarioStatuses,
-              scenarioSelection: scenarios,
-              nativeReads: nativeReadEvidence,
-              acpExecutePermissions: nativeExecuteObserver.evidence(),
-              rejectedCancellation: rejectionCancellationEvidence,
-              permissionRoutes: Object.fromEntries(operationPermissionRoutes),
-              executionRoutes: Object.fromEntries(operationExecutionRoutes),
-              jobQuiescence: {
-                hostJobSettlement: dJobQuiescence,
-                managedRangeExit: 'not-observed',
+        }).catch((captureError: unknown) => recordEvidenceFailure('failure-screenshot', captureError))
+        try {
+          writePrivate(join(evidenceDir, 'model-review.json'), JSON.stringify(answers, null, 2))
+          writePrivate(
+            join(evidenceDir, 'run.json'),
+            JSON.stringify(
+              {
+                status: 'failed',
+                primaryFailure: primaryFailureRecord,
+                scenarios: scenarioStatuses,
+                scenarioSelection: scenarios,
+                nativeReads: nativeReadEvidence,
+                nativeReadDiagnostics,
+                acpExecutePermissions: nativeExecuteObserver.evidence(),
+                rejectedCancellation: rejectionCancellationEvidence,
+                permissionRoutes: Object.fromEntries(operationPermissionRoutes),
+                executionRoutes: Object.fromEntries(operationExecutionRoutes),
+                jobQuiescence: {
+                  hostJobSettlement: dJobQuiescence,
+                  managedRangeExit: 'not-observed',
+                },
+                jobEvents: jobEvidence.map(
+                  ({ event, id, owner, kind, status, startedAt, finishedAt, cause, awaited }) => ({
+                    event,
+                    id,
+                    ...(owner === undefined ? {} : { owner }),
+                    kind,
+                    status,
+                    startedAt,
+                    ...(finishedAt === undefined ? {} : { finishedAt }),
+                    ...(cause === undefined ? {} : { cause }),
+                    ...(awaited === undefined ? {} : { awaited }),
+                  }),
+                ),
+                agent: profileName,
+                provider: profile.provider,
+                model: profile.model,
+                phase: activePhase,
+                violation: stickyViolation,
+                dispatches: budget.totalDispatches,
+                approvals: budget.approvalRequests,
+                tools,
+                approvalEvidence,
+                teamMessages: teamMessages.map((message) => ({
+                  scene: message.scene,
+                  session: message.session,
+                  type: message.type,
+                  ...(message.messageId === undefined ? {} : { messageId: safeId(message.messageId) }),
+                  ...(message.targetId === undefined ? {} : { target: safeId(message.targetId) }),
+                  ...(message.senderId === undefined ? {} : { sender: safeId(message.senderId) }),
+                  ...(message.reportMarker === undefined ? {} : { reportMarker: message.reportMarker }),
+                  eventIndex: message.eventIndex,
+                })),
+                teamReceipts: teamReceipts.map((receipt) => ({
+                  scene: receipt.scene,
+                  session: receipt.session,
+                  messageId: safeId(receipt.messageId),
+                  sender: safeId(receipt.senderId),
+                  ...(receipt.reportMarker === undefined ? {} : { reportMarker: receipt.reportMarker }),
+                  eventIndex: receipt.eventIndex,
+                  seq: receipt.seq,
+                })),
+                turns,
+                teamMembers: teamMemberFacts.map((member) => ({ ...member, id: safeId(member.id) })),
+                modelSnapshots,
+                modelRouteObservations,
+                runtimePromptObservations,
+                pageErrors: errorTexts,
+                modelReviewFile: 'model-review.json',
+                nativeRuntimePromptChecks: runtimePromptChecks,
+                nativeTraceEvents,
+                errorName: error instanceof Error ? error.name : 'UnknownError',
               },
-              jobEvents: jobEvidence.map(
-                ({ event, id, owner, kind, status, startedAt, finishedAt, cause, awaited }) => ({
-                  event,
-                  id,
-                  ...(owner === undefined ? {} : { owner }),
-                  kind,
-                  status,
-                  startedAt,
-                  ...(finishedAt === undefined ? {} : { finishedAt }),
-                  ...(cause === undefined ? {} : { cause }),
-                  ...(awaited === undefined ? {} : { awaited }),
-                }),
-              ),
-              agent: profileName,
-              provider: profile.provider,
-              model: profile.model,
-              phase: activePhase,
-              violation: stickyViolation,
-              dispatches: budget.totalDispatches,
-              approvals: budget.approvalRequests,
-              tools,
-              approvalEvidence,
-              teamMessages: teamMessages.map((message) => ({
-                scene: message.scene,
-                session: message.session,
-                type: message.type,
-                ...(message.messageId === undefined ? {} : { messageId: safeId(message.messageId) }),
-                ...(message.targetId === undefined ? {} : { target: safeId(message.targetId) }),
-                ...(message.senderId === undefined ? {} : { sender: safeId(message.senderId) }),
-                ...(message.reportMarker === undefined ? {} : { reportMarker: message.reportMarker }),
-                eventIndex: message.eventIndex,
-              })),
-              teamReceipts: teamReceipts.map((receipt) => ({
-                scene: receipt.scene,
-                session: receipt.session,
-                messageId: safeId(receipt.messageId),
-                sender: safeId(receipt.senderId),
-                ...(receipt.reportMarker === undefined ? {} : { reportMarker: receipt.reportMarker }),
-                eventIndex: receipt.eventIndex,
-                seq: receipt.seq,
-              })),
-              turns,
-              teamMembers: teamMemberFacts.map((member) => ({ ...member, id: safeId(member.id) })),
-              modelSnapshots,
-              modelRouteObservations,
-              runtimePromptObservations,
-              pageErrors: errorTexts,
-              modelReviewFile: 'model-review.json',
-              nativeRuntimePromptChecks: runtimePromptChecks,
-              nativeTraceEvents,
-              errorName: error instanceof Error ? error.name : 'UnknownError',
-            },
-            null,
-            2,
+              null,
+              2,
+            ),
+          )
+        } catch (writeError: unknown) {
+          recordEvidenceFailure('failure-record', writeError)
+        }
+        await cancelling
+        throw primaryFailure
+      } finally {
+        const cleanup: LongTaskSettlement[] = []
+        cleanup.push(
+          await settleLongTaskAction('screenshots', () => Promise.all([...pendingScreenshotPromises]), 'cleanup'),
+        )
+        if (runFailed || stickyViolation !== undefined) await cancelAll(stickyViolation ?? 'LONG_TASK_PRIMARY_FAILURE')
+        cleanup.push(await settleLongTaskAction('host', host === undefined ? undefined : () => host.close(), 'cleanup'))
+        cleanup.push(await settleLongTaskAction('job-observer', removeJobEvents, 'cleanup'))
+        for (const [index, restorePermissionHandler] of restoreRuntimePermissionHandlers.reverse().entries())
+          cleanup.push(await settleLongTaskAction(`permission-observer-${index}`, restorePermissionHandler, 'cleanup'))
+        cleanup.push(await settleLongTaskAction('prompt-observer', restoreRuntimePrompt, 'cleanup'))
+        cleanup.push(await settleLongTaskAction('trace-observer', removeTrace, 'cleanup'))
+        cleanup.push(
+          await settleLongTaskAction(
+            'browser',
+            browser === undefined ? undefined : () => required(browser).close(),
+            'cleanup',
           ),
         )
-        await cancelAll('LONG_TASK_PRIMARY_FAILURE')
-        throw error
-      } finally {
-        let cleanupFailure: unknown
+        // A scope violation remains a test failure even when every resource closes.
+        // It is never relabelled as a cleanup failure merely because it was sticky.
+        if (primaryFailureRecord === undefined) {
+          const lateFailure =
+            stickyViolation ??
+            (screenshotFailures.length > 0
+              ? 'LONG_TASK_SCREENSHOT_FAILURE'
+              : errorTexts.length > 0
+                ? 'LONG_TASK_PAGE_ERROR'
+                : (nativeDiagnosticModule?.liveDiagnosticTraceFailureCount() ?? 0) > 0
+                  ? 'LONG_TASK_DIAGNOSTIC_TRACE_FAILURE'
+                  : undefined)
+          if (lateFailure !== undefined) {
+            primaryFailure = new Error(lateFailure)
+            primaryFailureRecord = longTaskFailure(primaryFailure, activePhase)
+            runFailed = true
+          }
+        }
+        const lifecycle = {
+          ...longTaskOutcome(primaryFailureRecord, cancellationOutcomes, cleanup),
+          evidence: evidenceOutcomes,
+        }
         try {
-          if (host) {
-            await Promise.all([...pendingScreenshotPromises])
-            if (screenshotFailures.length > 0) cleanupFailure = new Error('LONG_TASK_SCREENSHOT_FAILURE')
-            if (stickyViolation !== undefined) await cancelAll(stickyViolation)
-            await host.close()
-            if (
-              stickyViolation !== undefined ||
-              errorTexts.length > 0 ||
-              (nativeDiagnosticModule?.liveDiagnosticTraceFailureCount() ?? 0) > 0
+          writePrivate(join(evidenceDir, 'lifecycle.json'), JSON.stringify(lifecycle, null, 2))
+          if (lifecycle.cleanupFailed)
+            writePrivate(join(evidenceDir, 'cleanup.json'), JSON.stringify(lifecycle, null, 2))
+          if (runFailed && existsSync(join(evidenceDir, 'run.json'))) {
+            const failedRecord = JSON.parse(readFileSync(join(evidenceDir, 'run.json'), 'utf8')) as Record<
+              string,
+              unknown
+            >
+            writePrivate(join(evidenceDir, 'run.json'), JSON.stringify({ ...failedRecord, lifecycle }, null, 2))
+          } else if (completedRunRecord !== undefined) {
+            writePrivate(
+              join(evidenceDir, 'run.json'),
+              JSON.stringify(
+                {
+                  ...completedRunRecord,
+                  ...(runFailed || lifecycle.finalizationFailed
+                    ? { status: 'failed', primaryFailure: primaryFailureRecord }
+                    : {}),
+                  lifecycle,
+                },
+                null,
+                2,
+              ),
             )
-              cleanupFailure = new Error(stickyViolation ?? 'LONG_TASK_FAILURE_DURING_CLEANUP')
           }
-        } catch (error) {
-          cleanupFailure = error
-        } finally {
-          removeJobEvents?.()
-          for (const restorePermissionHandler of restoreRuntimePermissionHandlers.reverse()) restorePermissionHandler()
-          restoreRuntimePrompt?.()
-          removeTrace?.()
-          try {
-            await browser?.close()
-          } catch (error) {
-            cleanupFailure ??= error
-          }
+        } catch (writeError: unknown) {
+          recordEvidenceFailure('final-record', writeError)
         }
-        if (!runFailed && cleanupFailure === undefined && completedRunRecord !== undefined)
-          writePrivate(join(evidenceDir, 'run.json'), JSON.stringify(completedRunRecord, null, 2))
-        if (cleanupFailure !== undefined) {
-          if (primaryFailure === undefined) throw cleanupFailure
-          writePrivate(
-            join(evidenceDir, 'cleanup.json'),
-            JSON.stringify({
-              errorName: cleanupFailure instanceof Error ? cleanupFailure.name : 'UnknownError',
-              violation: stickyViolation,
-            }),
-          )
-        }
+        const finalFailure = finalLongTaskFailure(
+          primaryFailureRecord === undefined ? undefined : { error: primaryFailure },
+          evidenceOutcomes.length === 0 ? undefined : { error: evidenceFailure },
+          lifecycle.finalizationFailed,
+        )
+        if (finalFailure !== undefined) throw finalFailure.error
       }
     },
     22 * 60_000,

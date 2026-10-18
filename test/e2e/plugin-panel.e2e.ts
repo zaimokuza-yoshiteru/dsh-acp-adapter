@@ -7,7 +7,7 @@ import { launchBrowser, newEnglishPage } from './browser.ts'
 import type { TestBrowser } from './browser.ts'
 import { connectFreshWorkspace } from '#host-support'
 import { launchAdapterWorld, root } from './scaffold.ts'
-import { backToPluginList, openAcpPluginDetail } from './plugin-panel.helpers.ts'
+import { backToPluginList, openAcpPluginDetail, openNativeSettings } from './plugin-panel.helpers.ts'
 
 function waitForBoundSessionsCount(page: Page, agentId: string, count: number) {
   return page.waitForResponse(async (response) => {
@@ -56,8 +56,7 @@ it('hosts ACP configuration on the native bundle detail page', async () => {
     await page.goto(host.authenticatedUrl)
     await connectFreshWorkspace(page, host.workspaceCwd)
 
-    await page.getByRole('button', { name: 'Settings', exact: true }).click()
-    const nativeSettings = page.getByRole('dialog', { name: 'Settings', exact: true })
+    const nativeSettings = await openNativeSettings(page)
     expect(await nativeSettings.getByRole('button', { name: 'ACP adapter', exact: true }).count()).toBe(0)
     await nativeSettings.getByRole('button', { name: 'Close', exact: true }).click()
 

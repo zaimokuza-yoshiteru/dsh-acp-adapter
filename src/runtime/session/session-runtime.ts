@@ -206,20 +206,49 @@ export interface AcpPromptOptions {
   readonly followupContent?: acp.ContentBlock[]
 }
 
+/** An automatic turn must retain uncertainty until an explicit terminal outcome. */
+export class AcpAgentTurnOutcomeError extends AcpClientError {
+  constructor(readonly reason: 'unrecognized-end-reason' | 'missing-terminal' | 'incomplete-turn') {
+    super('protocol-error', 'Qwen automatic turn ended without a recognized terminal outcome')
+    this.name = 'AcpAgentTurnOutcomeError'
+  }
+}
+
+type AgentTurnOutcome = { readonly stopReason: acp.StopReason } | { readonly error: AcpAgentTurnOutcomeError }
+
 /** One Agent-initiated (Qwen `_qwencode/start_turn`) turn. */
 interface AgentTurn {
   readonly turnId: string
   /** false = inferred from out-of-turn updates (Qwen cron/loop turns carry no start/end markers). */
   readonly announced: boolean
+  /** Qwen can report an incomplete response before sending an ordinary end_turn. */
+  incomplete: boolean
   readonly buffer: AcpSessionNotification[]
   listener: ((notification: AcpSessionNotification) => void) | undefined
-  ended: string | undefined
-  readonly endedPromise: Promise<string>
-  readonly end: (reason: string) => void
+  ended: AgentTurnOutcome | undefined
+  readonly endedPromise: Promise<AgentTurnOutcome>
+  readonly end: (outcome: AgentTurnOutcome) => void
   /** Full-snapshot watermark and activity evidence for unannounced turns. */
   workSeq: number
-  workActive: boolean
   idleTimer?: ReturnType<typeof setTimeout> | undefined
+}
+
+function isIncompleteQwenTurnUpdate(update: AcpSessionNotification['update'], turnId: string): boolean {
+  if (update.sessionUpdate !== 'agent_message_chunk') return false
+  const meta = update._meta
+  if (meta?.source !== 'background_notification_response') return false
+  const task = meta.backgroundTask
+  return (
+    typeof task === 'object' &&
+    task !== null &&
+    !Array.isArray(task) &&
+    'turnId' in task &&
+    task.turnId === turnId &&
+    'turnComplete' in task &&
+    task.turnComplete === true &&
+    'partial' in task &&
+    task.partial === true
+  )
 }
 
 /** Updates that describe Agent work (as opposed to session metadata). */
@@ -286,6 +315,13 @@ const ACP_CANCEL_SETTLE_GRACE_MS = 5_000
 
 function isAborted(signal: AbortSignal | undefined): boolean {
   return signal?.aborted === true
+}
+
+interface RuntimeStartup {
+  readonly controller: AbortController
+  readonly task: Promise<void>
+  connection: AcpClientConnection | undefined
+  cleanup: Promise<void> | undefined
 }
 
 function waitForRefreshRetry(signal: AbortSignal | undefined, delayMs: number): Promise<void> {
@@ -448,7 +484,7 @@ export class AcpSessionRuntime {
   private mcpLease: AcpMcpLease | undefined
   private mcpKey: unknown
   private sessionId: string | undefined
-  private starting: Promise<void> | undefined
+  private starting: RuntimeStartup | undefined
   /** Keep restore/new initialization behind process teardown. Lease shutdown is
    * allowed its own grace, but must not shorten the subprocess close ladder. */
   private closing: Promise<void> | undefined
@@ -631,11 +667,11 @@ export class AcpSessionRuntime {
   async start(signal?: AbortSignal): Promise<void> {
     await this.initialize(signal)
     if (this.sessionId !== undefined) return
-    this.starting ??= this.createSession(signal)
+    const starting = this.starting ?? this.beginStartup((owner) => this.createSession(owner, signal))
     try {
-      await this.starting
+      await starting.task
     } finally {
-      this.starting = undefined
+      if (this.starting === starting) this.starting = undefined
     }
   }
 
@@ -648,12 +684,25 @@ export class AcpSessionRuntime {
     )
       await this.close()
     if (this.connection !== undefined) return
-    this.starting ??= this.createConnection(signal)
+    const starting = this.starting ?? this.beginStartup((owner) => this.createConnection(owner, signal))
     try {
-      await this.starting
+      await starting.task
     } finally {
-      this.starting = undefined
+      if (this.starting === starting) this.starting = undefined
     }
+  }
+
+  private beginStartup(operation: (owner: RuntimeStartup) => Promise<void>): RuntimeStartup {
+    const completion = Promise.withResolvers<void>()
+    const owner: RuntimeStartup = {
+      controller: new AbortController(),
+      task: completion.promise,
+      connection: undefined,
+      cleanup: undefined,
+    }
+    this.starting = owner
+    void operation(owner).then(completion.resolve, completion.reject)
+    return owner
   }
 
   /**
@@ -1152,6 +1201,7 @@ export class AcpSessionRuntime {
     await run
   }
 
+  /** Cancel initialization and await acquired resources and late setup cleanup before reuse. */
   close(): Promise<void> {
     return this.closeInternal()
   }
@@ -1167,88 +1217,114 @@ export class AcpSessionRuntime {
     // Capture one generation before signalling it. A concurrent restore waits
     // for this promise, and cleanup below only clears fields still owned by
     // this generation.
-    const connection = this.connection
+    const starting = this.starting
+    const connection = this.connection ?? starting?.connection
     const lease = this.mcpLease
     const launch = this.launch
     const connectionAbort = this.connectionAbort
+    const completion = Promise.withResolvers<void>()
+    const closing = completion.promise
+    this.closing = closing
     const operation = (async () => {
-      this.promptAbort?.abort(new Error('ACP session runtime closed'))
-      for (const turn of this.agentTurns) turn.end('cancelled')
-      this.agentTurns = []
-      this.notifyAgentTurnWaiters()
-      this.qwenTasks?.close()
-      this.qwenTasks = undefined
-      this.promptToolSnapshots?.clear()
-      this.promptToolSnapshots = undefined
-      connectionAbort?.abort()
-
-      // MCP teardown is bounded independently. The subprocess owns a separate
-      // bounded EOF/terminate ladder; wrapping both in cancelGraceMs could
-      // abandon that ladder and let restore spawn while the old child lives.
-      const leaseClose =
-        lease === undefined
-          ? Promise.resolve(undefined)
-          : waitWithin(
-              Promise.resolve().then(() => lease.close(this.cancelGraceMs)),
-              this.cancelGraceMs,
-            )
-      const connectionClose = connection?.close()
-      const results = await Promise.allSettled([leaseClose, connectionClose])
-
-      if (lease?.hasPendingCalls?.() === true || lease?.hasRetainedFeedback?.() === true) {
-        this.retiredMcpLeases.add(lease)
-        const settled = lease.waitForCallsSettled?.()
-        if (settled !== undefined)
-          void settled.then(
-            () => {
-              if (lease.hasPendingCalls?.() !== true && lease.hasRetainedFeedback?.() !== true)
-                this.retiredMcpLeases.delete(lease)
-            },
-            () => {
-              /* keep the lease reachable when settlement cannot be observed */
-            },
-          )
-      }
-
-      if (this.connection === connection && this.mcpLease === lease && this.launch === launch) {
-        this.connection = undefined
-        this.mcpLease = undefined
-        this.sessionId = undefined
-        this.launch = undefined
-        // A confirmed cancelled response keeps the same durable ACP binding for
-        // the next explicit user action. Preserve its last-known controls while
-        // the process is retired so a passive UI refresh can still render them;
-        // the next prompt/control write must restore the binding before use.
-        if (!this.refreshBeforeRestore) {
-          this.configSnapshot = undefined
-          this.currentMode = undefined
-          this.modeSnapshot = undefined
-          this.usageSnapshot = undefined
-        }
-      }
-      if (this.connectionAbort === connectionAbort) this.connectionAbort = undefined
-
-      const errors: unknown[] = []
-      for (const result of results) if (result.status === 'rejected') errors.push(result.reason)
-      if (errors.length > 0) throw new AggregateError(errors, 'ACP runtime cleanup failed')
+      starting?.controller.abort(new Error('ACP session runtime closed during setup'))
+      const closeResources = (): Promise<void> => this.closeResources(connection, lease, launch, connectionAbort)
+      const cleanup = starting === undefined ? closeResources() : (starting.cleanup ??= closeResources())
+      // Startup owns resources that may still be acquired after cancellation,
+      // such as a pending MCP lease. Its failure cleanup must settle as well.
+      const [closed] = await Promise.allSettled([cleanup, starting?.task])
+      if (closed.status === 'rejected') throw closed.reason
     })()
-    this.closing = operation
-    void operation.then(
+    void operation.then(completion.resolve, completion.reject)
+    void closing.then(
       () => {
-        if (this.closing === operation) this.closing = undefined
+        if (this.closing === closing) this.closing = undefined
       },
       () => {
-        if (this.closing === operation) this.closing = undefined
+        if (this.closing === closing) this.closing = undefined
       },
     )
-    return operation
+    return closing
   }
 
-  private async createSession(signal?: AbortSignal): Promise<void> {
+  private async closeResources(
+    connection: AcpClientConnection | undefined,
+    lease: AcpMcpLease | undefined,
+    launch: AcpRuntimeLaunch | undefined,
+    connectionAbort: AbortController | undefined,
+  ): Promise<void> {
+    this.promptAbort?.abort(new Error('ACP session runtime closed'))
+    for (const turn of this.agentTurns) turn.end({ error: new AcpAgentTurnOutcomeError('missing-terminal') })
+    this.agentTurns = []
+    this.notifyAgentTurnWaiters()
+    this.qwenTasks?.close()
+    this.qwenTasks = undefined
+    this.promptToolSnapshots?.clear()
+    this.promptToolSnapshots = undefined
+    connectionAbort?.abort()
+
+    // MCP teardown is bounded independently. The subprocess owns a separate
+    // bounded EOF/terminate ladder; wrapping both in cancelGraceMs could
+    // abandon that ladder and let restore spawn while the old child lives.
+    const leaseClose =
+      lease === undefined
+        ? Promise.resolve(undefined)
+        : waitWithin(
+            Promise.resolve().then(() => lease.close(this.cancelGraceMs)),
+            this.cancelGraceMs,
+          )
+    const connectionClose = connection?.close()
+    const results = await Promise.allSettled([leaseClose, connectionClose])
+
+    if (lease?.hasPendingCalls?.() === true || lease?.hasRetainedFeedback?.() === true) {
+      this.retiredMcpLeases.add(lease)
+      const settled = lease.waitForCallsSettled?.()
+      if (settled !== undefined)
+        void settled.then(
+          () => {
+            if (lease.hasPendingCalls?.() !== true && lease.hasRetainedFeedback?.() !== true)
+              this.retiredMcpLeases.delete(lease)
+          },
+          () => {
+            /* keep the lease reachable when settlement cannot be observed */
+          },
+        )
+    }
+
+    if (this.connection === connection && this.mcpLease === lease && this.launch === launch) {
+      this.connection = undefined
+      this.mcpLease = undefined
+      this.sessionId = undefined
+      this.launch = undefined
+      // A confirmed cancelled response keeps the same durable ACP binding for
+      // the next explicit user action. Preserve its last-known controls while
+      // the process is retired so a passive UI refresh can still render them;
+      // the next prompt/control write must restore the binding before use.
+      if (!this.refreshBeforeRestore) {
+        this.configSnapshot = undefined
+        this.currentMode = undefined
+        this.modeSnapshot = undefined
+        this.usageSnapshot = undefined
+      }
+    }
+    if (this.connectionAbort === connectionAbort) this.connectionAbort = undefined
+
+    const errors: unknown[] = []
+    for (const result of results) if (result.status === 'rejected') errors.push(result.reason)
+    if (errors.length > 0) throw new AggregateError(errors, 'ACP runtime cleanup failed')
+  }
+
+  private async createSession(starting: RuntimeStartup, signal?: AbortSignal): Promise<void> {
     const connection = this.connection
     if (connection === undefined) throw new Error('ACP connection is not started')
+    starting.connection = connection
     const connectionAbort = this.connectionAbort
     if (connectionAbort === undefined) throw new Error('ACP connection is not active')
+    const setupSignal = AbortSignal.any([
+      starting.controller.signal,
+      connectionAbort.signal,
+      ...(signal === undefined ? [] : [signal]),
+    ])
+    setupSignal.throwIfAborted()
     const generation = ++this.sessionCreationGeneration
     const creation = {
       generation,
@@ -1260,9 +1336,9 @@ export class AcpSessionRuntime {
     try {
       const session = await connection.newSession(
         { cwd: this.options.cwd, mcpServers: this.mcpLease?.servers ?? [] },
-        signal === undefined ? {} : { signal },
+        { signal: setupSignal },
       )
-      signal?.throwIfAborted()
+      setupSignal.throwIfAborted()
       connectionAbort.signal.throwIfAborted()
       if (
         generation !== this.sessionCreationGeneration ||
@@ -1277,7 +1353,9 @@ export class AcpSessionRuntime {
       this.sessionId = session.sessionId
     } catch (error) {
       if (this.connection === connection && this.connectionAbort === connectionAbort)
-        await this.close().catch(() => undefined)
+        await (starting.cleanup ??= this.closeResources(connection, this.mcpLease, this.launch, connectionAbort)).catch(
+          () => undefined,
+        )
       throw error
     } finally {
       if (this.sessionCreation === creation) {
@@ -1318,12 +1396,12 @@ export class AcpSessionRuntime {
     creation.updates.set(notification.sessionId, staged)
   }
 
-  private async createConnection(signal?: AbortSignal): Promise<void> {
+  private async createConnection(starting: RuntimeStartup, signal?: AbortSignal): Promise<void> {
     signal?.throwIfAborted()
     // Teardown can arrive while prepareLaunch/initialize is still pending.
     // Own its cancellation before awaiting either, so a disposed session cannot
     // publish a newly initialized child after close() has returned.
-    const connectionAbort = new AbortController()
+    const connectionAbort = starting.controller
     this.connectionAbort = connectionAbort
     const setupSignal =
       signal === undefined ? connectionAbort.signal : AbortSignal.any([signal, connectionAbort.signal])
@@ -1431,6 +1509,7 @@ export class AcpSessionRuntime {
         this.options.onSessionUpdate?.(notification)
       },
     })
+    starting.connection = connection
     try {
       await connection.initialize({ signal: setupSignal })
       this.mcpKey = this.options.mcpKey?.()
@@ -1621,29 +1700,24 @@ export class AcpSessionRuntime {
   }
 
   private createAgentTurn(turnId: string, announced: boolean): AgentTurn {
-    let resolveEnded!: (reason: string) => void
-    const endedPromise = new Promise<string>((resolve) => {
+    let resolveEnded!: (outcome: AgentTurnOutcome) => void
+    const endedPromise = new Promise<AgentTurnOutcome>((resolve) => {
       resolveEnded = resolve
     })
     const turn: AgentTurn = {
       turnId,
       announced,
+      incomplete: false,
       buffer: [],
       listener: undefined,
       ended: undefined,
       endedPromise,
       workSeq: this.connection?.qwenActiveWorkSnapshot?.seq ?? 0,
-      workActive:
-        this.connection?.qwenActiveWorkSnapshot?.sessions.some(
-          (session) =>
-            session.sessionId === this.sessionId &&
-            session.holds.some((hold) => hold.category === 'session' && hold.id === 'session:active-turn'),
-        ) === true,
-      end: (reason) => {
+      end: (outcome) => {
         if (turn.ended !== undefined) return
-        turn.ended = reason
+        turn.ended = outcome
         if (turn.idleTimer !== undefined) clearTimeout(turn.idleTimer)
-        resolveEnded(reason)
+        resolveEnded(outcome)
       },
     }
     return turn
@@ -1653,12 +1727,21 @@ export class AcpSessionRuntime {
     if (params.sessionId !== this.sessionId) return
     const turn = this.agentTurns.find((candidate) => candidate.turnId === params.turnId)
     if (turn === undefined) return
-    this.finishAgentTurn(turn, params.reason ?? 'end_turn')
+    if (params.reason === 'end_turn' && turn.incomplete) {
+      this.finishAgentTurn(turn, { error: new AcpAgentTurnOutcomeError('incomplete-turn') })
+      return
+    }
+    this.finishAgentTurn(
+      turn,
+      params.reason !== undefined && ACP_STOP_REASONS.has(params.reason)
+        ? { stopReason: params.reason as acp.StopReason }
+        : { error: new AcpAgentTurnOutcomeError('unrecognized-end-reason') },
+    )
   }
 
-  private finishAgentTurn(turn: AgentTurn, reason: string): void {
+  private finishAgentTurn(turn: AgentTurn, outcome: AgentTurnOutcome): void {
     if (turn.ended !== undefined) return
-    turn.end(reason)
+    turn.end(outcome)
     const sessionId = this.sessionId
     if (sessionId !== undefined && this.liveAgentTurn() === undefined)
       this.connection?.setAgentTurnActive(sessionId, false)
@@ -1697,6 +1780,9 @@ export class AcpSessionRuntime {
       turn = this.startUnannouncedTurn(notification)
       if (turn === undefined) return
     }
+    // A cancellation can carry the same marker. Latch it without settling so
+    // the explicit terminal receipt retains its own non-success semantics.
+    if (turn.announced && isIncompleteQwenTurnUpdate(notification.update, turn.turnId)) turn.incomplete = true
     if (!turn.announced) this.trackUnannouncedTurn(turn)
     if (turn.listener !== undefined) turn.listener(notification)
     else if (turn.buffer.length < AGENT_TURN_BUFFER_MAX) turn.buffer.push(notification)
@@ -1737,7 +1823,10 @@ export class AcpSessionRuntime {
         // An unanswered human question can legitimately remain open. Missing
         // reporting otherwise makes the outcome unknown, never end_turn.
         if (this.pendingQuestions > 0) this.armUnannouncedTurnWatchdog(turn)
-        else void this.connection?.close().catch(() => undefined)
+        else {
+          this.finishAgentTurn(turn, { error: new AcpAgentTurnOutcomeError('missing-terminal') })
+          void this.connection?.close().catch(() => undefined)
+        }
       },
       this.options.unannouncedIdleMs ?? (interval === undefined ? 180_000 : interval * 3),
     )
@@ -1763,14 +1852,12 @@ export class AcpSessionRuntime {
         session.holds.some((hold) => hold.category === 'session' && hold.id === 'session:active-turn'),
     )
     if (active) {
-      turn.workActive = true
       this.armUnannouncedTurnWatchdog(turn)
       return
     }
-    // Sequence numbers reject reordered snapshots; they do not date a snapshot
-    // queued behind another send. Idle without observed work is not completion.
-    if (!turn.workActive) return
-    this.finishAgentTurn(turn, this.promptSignal?.aborted === true ? 'cancelled' : 'end_turn')
+    // Even a fresh active -> idle transition says nothing about success, failure,
+    // or cancellation. Keep waiting for an explicit terminal outcome; if it never
+    // arrives, the watchdog preserves uncertainty instead of admitting follow-up.
   }
 
   private async waitForAdoption(): Promise<void> {
@@ -1811,9 +1898,10 @@ export class AcpSessionRuntime {
     for (const notification of turn.buffer.splice(0)) deliver(notification)
     turn.listener = deliver
     this.notifyAgentTurnWaiters()
-    return Promise.race([turn.endedPromise, connection.failed]).then((reason) => ({
-      stopReason: (ACP_STOP_REASONS.has(reason) ? reason : 'end_turn') as acp.StopReason,
-    }))
+    return Promise.race([turn.endedPromise, connection.failed]).then((outcome) => {
+      if ('error' in outcome) throw outcome.error
+      return { stopReason: outcome.stopReason }
+    })
   }
 
   private releaseAgentTurn(connection: AcpClientConnection, sessionId: string, turn: AgentTurn): void {

@@ -39,8 +39,8 @@ type ActivitySnapshot = {
 }
 
 const upstreamAssemblerPath = resolve(
-  process.cwd(),
-  '../reference/deepseek-harness/packages/client/ui-conversation/src/client/conversation/assembler.ts',
+  process.env.DSH_UPSTREAM_CHECKOUT ?? resolve(process.cwd(), '../reference/deepseek-harness'),
+  'packages/client/ui-conversation/src/client/conversation/assembler.ts',
 )
 const { ConversationNodeAssembler } = (await import(pathToFileURL(upstreamAssemblerPath).href)) as {
   readonly ConversationNodeAssembler: typeof ConversationNodeAssemblerType

@@ -2,6 +2,16 @@ import type { Page, Locator } from 'playwright'
 
 export const ACP_PACKAGE = '@zaimokuza/dsh-acp-adapter'
 
+/** Open native Settings through the RC.2 account menu launcher. */
+export async function openNativeSettings(page: Page, locale: 'en' | 'zh' = 'en'): Promise<Locator> {
+  const settingsLabel = locale === 'en' ? 'Settings' : '设置'
+  await page.getByRole('button', { name: locale === 'en' ? 'Account menu' : '账号菜单', exact: true }).click()
+  await page.getByRole('menuitem', { name: settingsLabel, exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: settingsLabel, exact: true })
+  await dialog.waitFor({ state: 'visible' })
+  return dialog
+}
+
 /** Open ACP through the real Plugins inventory and bundle detail page. */
 export async function openAcpPluginDetail(page: Page, locale: 'en' | 'zh' = 'en'): Promise<Locator> {
   await page.getByRole('button', { name: locale === 'en' ? 'Plugins' : '插件', exact: true }).click()

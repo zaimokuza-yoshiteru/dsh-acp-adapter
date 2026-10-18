@@ -1,3 +1,4 @@
+import type { RequestPermissionResponse } from '@agentclientprotocol/sdk'
 import type { LongTaskScene } from './live-long-task-budget.ts'
 
 export type ExecuteRegistration = {
@@ -77,8 +78,34 @@ type ObserverOptions = {
   readonly onViolation: (code: string) => void
 }
 
+export type NativeExecutePermissionDecision =
+  | { readonly kind: 'delegate' }
+  | {
+      readonly kind: 'refuse'
+      readonly violationCode: string
+      readonly response: RequestPermissionResponse
+    }
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/** Test-only refusal: select an offered rejection; never invent an option ID. */
+export function nativeExecuteRefusalResponse(params: unknown): RequestPermissionResponse {
+  const options = isRecord(params) && Array.isArray(params.options) ? params.options : []
+  for (const kind of ['reject_once', 'reject_always']) {
+    const option = options.find(
+      (candidate: unknown) =>
+        isRecord(candidate) &&
+        candidate.kind === kind &&
+        typeof candidate.optionId === 'string' &&
+        candidate.optionId.length > 0 &&
+        options.filter((other: unknown) => isRecord(other) && other.optionId === candidate.optionId).length === 1,
+    )
+    if (isRecord(option) && typeof option.optionId === 'string')
+      return { outcome: { outcome: 'selected', optionId: option.optionId } }
+  }
+  return { outcome: { outcome: 'cancelled' } }
 }
 
 /** Mirrors the adapter's finite command/cmd/argv extraction; never serializes raw input. */
@@ -109,18 +136,22 @@ export function createNativeExecuteObserver(options: ObserverOptions) {
       readonly ownerDshSessionId: string | undefined
       readonly activeAcpSessionId: string | undefined
     },
-  ): void => {
-    if (!isRecord(params) || !isRecord(params.toolCall)) return
+  ): NativeExecutePermissionDecision => {
+    const refuse = (violationCode: string): NativeExecutePermissionDecision => {
+      violation(violationCode)
+      return { kind: 'refuse', violationCode, response: nativeExecuteRefusalResponse(params) }
+    }
+    if (!isRecord(params) || !isRecord(params.toolCall)) return refuse('LONG_TASK_NATIVE_EXECUTE_REQUEST_MALFORMED')
     const toolCall = params.toolCall
-    if (toolCall.kind !== 'execute') return
+    // Read and other native permissions retain the normal Agent/Host flow.
+    if (toolCall.kind !== 'execute') return { kind: 'delegate' }
     const sessionId = typeof params.sessionId === 'string' ? params.sessionId : undefined
-    if (sessionId === undefined || sessionId !== context.activeAcpSessionId) return
+    if (sessionId === undefined || sessionId.length === 0) return refuse('LONG_TASK_NATIVE_EXECUTE_REQUEST_MALFORMED')
+    if (sessionId !== context.activeAcpSessionId) return refuse('LONG_TASK_NATIVE_EXECUTE_SESSION_MISMATCH')
     const callId = typeof toolCall.toolCallId === 'string' ? toolCall.toolCallId : undefined
     const command = nativeExecuteCommand(toolCall.rawInput)
-    if (callId === undefined || callId.length === 0 || command === undefined) {
-      violation('LONG_TASK_NATIVE_EXECUTE_REQUEST_MALFORMED')
-      return
-    }
+    if (callId === undefined || callId.length === 0 || command === undefined)
+      return refuse('LONG_TASK_NATIVE_EXECUTE_REQUEST_MALFORMED')
     const owner = context.ownerDshSessionId
     const registration = options
       .registrations()
@@ -148,10 +179,11 @@ export function createNativeExecuteObserver(options: ObserverOptions) {
       ownerDshSessionId: owner ?? '',
       acpSessionId: sessionId,
     }
-    if (registration === undefined) violation('LONG_TASK_NATIVE_EXECUTE_UNREGISTERED')
-    else if (repeatedCall || repeatedOperation) violation('LONG_TASK_NATIVE_EXECUTE_DUPLICATE_REQUEST')
     if (!repeatedCall) evidenceByKey.set(key, entry)
     if (opKey !== undefined) requestedOperations.add(opKey)
+    if (registration === undefined) return refuse('LONG_TASK_NATIVE_EXECUTE_UNREGISTERED')
+    if (repeatedCall || repeatedOperation) return refuse('LONG_TASK_NATIVE_EXECUTE_DUPLICATE_REQUEST')
+    return { kind: 'delegate' }
   }
 
   const observeUpdate = (

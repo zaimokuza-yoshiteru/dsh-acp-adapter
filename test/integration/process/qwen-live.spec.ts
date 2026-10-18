@@ -5,7 +5,9 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { randomUUID } from 'node:crypto'
+import { fileURLToPath } from 'node:url'
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import type * as acp from '@agentclientprotocol/sdk'
 import { AcpSessionRuntime, type AcpSessionRuntimeOptions } from '../../../src/runtime/session/session-runtime.ts'
 import type { SubprocessSeam } from '../../../src/runtime/process/subprocess.ts'
@@ -39,13 +41,77 @@ let subprocess: SubprocessSeam
 const runtimes: AcpSessionRuntime[] = []
 const roots: string[] = []
 const asked: string[] = []
+let liveFacts: Record<string, unknown> = {}
+const scheduleCalls = new Map<string, { tool?: string; input?: Record<string, unknown>; status?: string }>()
+
+beforeEach(({ task }) => {
+  liveFacts = { test: task.name, startedAt: new Date().toISOString() }
+  scheduleCalls.clear()
+})
+
+function observeSchedule(notification: AcpSessionNotification): void {
+  const update = notification.update
+  if (update.sessionUpdate !== 'tool_call' && update.sessionUpdate !== 'tool_call_update') return
+  const raw = update.rawInput as Record<string, unknown> | undefined
+  const prior = scheduleCalls.get(update.toolCallId)
+  if (prior === undefined && (raw === undefined || raw === null || typeof raw !== 'object' || !('cron' in raw))) return
+  const snapshot = prior ?? {}
+  const meta = update._meta as Record<string, unknown> | undefined
+  if (meta?.toolName === 'cron_create') snapshot.tool = 'cron_create'
+  if (raw !== undefined && raw !== null && typeof raw === 'object' && 'cron' in raw) {
+    // Only schedule fields from this public test task; never persist arbitrary
+    // native tool input, output, commands, credentials or user configuration.
+    snapshot.input = {
+      cron: typeof raw.cron === 'string' && /^[\d*,/ -]{1,100}$/.test(raw.cron) ? raw.cron : 'unsupported',
+      recurring: typeof raw.recurring === 'boolean' ? raw.recurring : 'missing',
+      durable: typeof raw.durable === 'boolean' ? raw.durable : 'missing',
+      sessionMode: raw.sessionMode === 'current' || raw.sessionMode === 'unbound' ? raw.sessionMode : 'omitted',
+      expectedPrompt: raw.prompt === 'Reply with exactly CRONFIRED',
+    }
+  }
+  if (typeof update.status === 'string') snapshot.status = update.status
+  if (scheduleCalls.size < 16 || prior !== undefined) scheduleCalls.set(update.toolCallId, snapshot)
+}
 
 beforeAll(async () => {
   subprocess = (await sharedTestSubprocess()).seam
 })
 afterEach(async () => {
-  await Promise.allSettled(runtimes.splice(0).map(async (runtime) => await runtime.close()))
+  const current = runtimes.splice(0)
+  const metadata = current.map((runtime) => ({
+    agent: runtime.agentInfo,
+    model: runtime.configOptions?.find(
+      (option) => option.type === 'select' && (option.id === 'model' || option.category === 'model'),
+    )?.currentValue,
+  }))
+  const closed = await Promise.allSettled(current.map(async (runtime) => await runtime.close()))
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true })
+  if (LIVE) {
+    const evidence = fileURLToPath(new URL('../../../.local/e2e-live-qwen/', import.meta.url))
+    fs.mkdirSync(evidence, { recursive: true, mode: 0o700 })
+    fs.writeFileSync(
+      path.join(evidence, `${randomUUID()}.json`),
+      JSON.stringify(
+        {
+          ...liveFacts,
+          metadata,
+          schedules: [...scheduleCalls.values()],
+          cleanup: closed.map((result) => ({
+            status: result.status,
+            ...(result.status === 'rejected'
+              ? { errorName: result.reason instanceof Error ? result.reason.name : 'UnknownError' }
+              : {}),
+          })),
+          endedAt: new Date().toISOString(),
+        },
+        null,
+        2,
+      ),
+      { mode: 0o600 },
+    )
+  }
+  const failures = closed.flatMap((result) => (result.status === 'rejected' ? [result.reason] : []))
+  if (failures.length > 0) throw new AggregateError(failures, 'Qwen live runtime cleanup failed')
 })
 
 function runtime(extra: Partial<AcpSessionRuntimeOptions> = {}): AcpSessionRuntime {
@@ -182,7 +248,7 @@ describe.skipIf(!LIVE)('live Qwen Code ACP', () => {
     expect(text(adopted)).not.toContain('background job notice')
   }, 240_000)
 
-  it('adopts a Qwen cron turn (no start/end markers) when the schedule fires', async () => {
+  it('keeps a Qwen cron turn without an explicit terminal outcome unknown', async () => {
     const jobs: Array<{ label: string; done: Promise<QwenTaskJobOutcome> }> = []
     const starter: QwenTaskJobStarter = (label, run) => {
       const hooks = run()
@@ -193,13 +259,20 @@ describe.skipIf(!LIVE)('live Qwen Code ACP', () => {
     const first: AcpSessionNotification[] = []
     await live.prompt(
       prompt(
-        'Use the cron_create tool to schedule a one-shot (non-recurring) task that fires at the next whole minute, with the prompt: "Reply with exactly CRONFIRED". Then reply with exactly SCHEDULED.',
+        'Call cron_create with exactly these arguments: {"cron":"* * * * *","prompt":"Reply with exactly CRONFIRED","recurring":false,"durable":false}. Omit sessionMode. This is a single session-only task; do not calculate a clock time or use shell scheduling. After the tool confirms creation, reply with exactly SCHEDULED. If creation fails or the tool is unavailable, report the failure instead.',
       ),
       (n) => {
         first.push(n)
+        observeSchedule(n)
       },
     )
     console.log('first reply:', text(first).trim().slice(-200))
+    liveFacts.firstReply = text(first).trim().slice(-200)
+    expect([...scheduleCalls.values()]).toContainEqual({
+      tool: 'cron_create',
+      input: { cron: '* * * * *', recurring: false, durable: false, sessionMode: 'omitted', expectedPrompt: true },
+      status: 'completed',
+    })
     const deadline = Date.now() + 150_000
     let wake: { label: string; done: Promise<QwenTaskJobOutcome> } | undefined
     while (wake === undefined && Date.now() < deadline) {
@@ -207,22 +280,28 @@ describe.skipIf(!LIVE)('live Qwen Code ACP', () => {
       wake = jobs.find((job) => job.label.startsWith('cron:'))
     }
     console.log('wake job:', wake?.label)
+    liveFacts.wakeObserved = wake !== undefined
     expect(wake).toBeDefined()
     expect((await wake!.done).silent).toBe(false)
     const adopted: AcpSessionNotification[] = []
-    const response = await live.prompt(
-      prompt('cron notice'),
-      (n) => {
-        adopted.push(n)
-      },
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      { adoptAgentTurn: true },
-    )
-    console.log('adopted stop:', response.stopReason, '\nadopted reply:', text(adopted).trim().slice(-300))
-    expect(response.stopReason).toBe('end_turn')
+    await expect(
+      live.prompt(
+        prompt('cron notice'),
+        (n) => {
+          adopted.push(n)
+        },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { adoptAgentTurn: true, followupContent: prompt('RETAINED_INPUT_MUST_NOT_DISPATCH') },
+      ),
+    ).rejects.toMatchObject({ code: 'ACP_PROTOCOL_ERROR', reason: 'missing-terminal' })
+    liveFacts.outcome = 'unknown-missing-terminal'
+    liveFacts.expectedReplyObserved = text(adopted).includes('CRONFIRED')
+    liveFacts.retainedInputObserved = text(adopted).includes('RETAINED_INPUT_MUST_NOT_DISPATCH')
+    console.log('adopted outcome: unknown; reply:', text(adopted).trim().slice(-300))
     expect(text(adopted)).toContain('CRONFIRED')
+    expect(text(adopted)).not.toContain('RETAINED_INPUT_MUST_NOT_DISPATCH')
   }, 300_000)
 })

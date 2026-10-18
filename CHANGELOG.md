@@ -4,6 +4,34 @@
 
 User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for publication dates, exact installation instructions, and checksums. Historical entries were reconstructed from tag diffs; npm packages were not republished.
 
+## 0.2.1-rc.2.1
+
+### 中文
+
+- 升级兼容目标至 DSH `0.2.1-rc.2`。沿用原生输入准入、模型／推理强度／搜索选择器和会话展示，将生效的宿主上下文与 skill 目录传给 ACP Agent；续聊和恢复保留 ACP 会话绑定。
+- 对接官方可选的会话搜索、持久终端、思考翻译、语音输入及 Ralph 工作流，沿用 DSH Plugins 的启停和原生界面，不增加第二套开关；Teams 入口随官方插件启停撤销或恢复。
+- 对齐当前会话的工具、图片和远程访问权限边界。原生工具继续经过 DSH 的参数检查、钩子与审批；Worktree／目录交接要求 Agent 支持保留上下文的 `session/fork`，不支持时在产生副作用前拒绝；Ralph 子会话保持 fresh-only。
+- 修复 ACP 连接初始化期间关闭或重载时清理提前结束的问题，等待已开始的初始化及其连接、进程清理完成，避免关闭后仍留下活动连接。
+- 修复禁用插件或撤销持久化服务时，外部子任务投影与启动恢复尚未完成便释放存储的问题。保留同批委派结果、原生子会话目录及最终活动记录；正常回答结束仍不等待后台投影。
+- 修复切换会话或语言后，会话选项和 DSH 工具审批策略的保存失败提示消失的问题；迟到的失败标明来源会话，长标题在窄屏中自然换行。
+- 修复团队成员空闲后被释放时，审批策略无法读取的问题；通过原生持久化元数据确认会话归属，继续只读继承 Lead 策略，无需唤醒成员。
+- 修复 Qwen 自动回合把未知结束原因、已标记不完整的 `end_turn` 或 active-work 空闲快照当作成功的问题。保留部分输出并进入结果未知恢复，不继续派发保留输入；未提供整轮终态的 cron／loop 不再签作正常完成。
+- 加固安装门禁：使用宿主实际分配的端口，并等待验证宿主真正退出，必要时强制终止，避免端口抢占或残留进程影响验证结果。
+- Auto／Ask 仍只控制 DSH 工具请求的人工审批，Agent 自带工具权限独立管理；原生 Auto Review、自动标题及 `/compact` 的辅助模型调用尚不能等同普通 ACP 对话。协议夹具与原生界面回归不代表所有真实 Agent、完整桌面安装包或全部平台均已通过。
+
+### English
+
+- Target DSH `0.2.1-rc.2`. Reuse native input admission, model/reasoning/search controls and session rendering; pass effective host context and the skill catalog to ACP Agents while preserving ACP bindings across continuation and recovery.
+- Integrate the official optional session search, persistent terminal, reasoning translation, voice input and Ralph workflow through DSH Plugins and native UI, without a second set of switches. Teams entry points follow the official plugin's enable/disable lifecycle.
+- Align tool, image and remote-access availability with the current session's permissions. Native tools retain DSH validation, hooks and approvals. Worktree and directory handoffs require context-preserving `session/fork` support and fail before side effects otherwise; Ralph children remain fresh-only.
+- Fix shutdown and reload completing cleanup before ACP initialization finishes. Wait for accepted initialization and its connection/process cleanup so active connections are not left behind after shutdown.
+- Fix external child projection and startup recovery losing their storage dependency during plugin disable or persistence-service withdrawal. Preserve all delegations in an accepted batch, native child catalog entries and final activity records, while keeping normal answer completion independent of background projection.
+- Keep failed session-option and DSH tool-approval-policy submissions visible after switching sessions or languages. Identify the source session and wrap long titles on narrow screens.
+- Read tool-approval policy after an idle teammate is released, using native persisted session metadata. Keep the teammate's policy inherited from its Lead and read-only without waking the teammate.
+- Keep Qwen automatic turns with unknown terminal reasons, an incomplete-response marker followed by `end_turn`, or only idle active-work snapshots behind outcome-unknown recovery. Preserve partial output without dispatching retained input; cron/loop turns without a whole-turn terminal receipt no longer appear successfully completed.
+- Harden installation checks by using the port actually assigned by the host and waiting for that host to exit, escalating termination when necessary. Avoid port races and leftover processes affecting validation.
+- Auto/Ask still controls human approval for DSH tool requests; Agent-owned tool permissions remain separate. Native Auto Review, automatic titles and `/compact` auxiliary model calls do not yet provide ordinary ACP conversation semantics. Protocol fixtures and native UI regressions do not certify every real Agent, the complete desktop distribution or all platforms.
+
 ## 0.2.0-rc.2.10
 
 ### 中文

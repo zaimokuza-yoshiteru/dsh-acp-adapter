@@ -83,3 +83,30 @@ it('serializes concurrent publications and retries a failed flush without duplic
   expect(f.rows).toEqual([{ id: 'one' }, { id: 'two' }])
   f.dispose()
 })
+
+it('awaits an accepted catalog flush before disposing its publication owner', async () => {
+  const f = fixture()
+  f.load()
+  f.enable()
+  const entered = Promise.withResolvers<void>()
+  const release = Promise.withResolvers<boolean>()
+  f.flush.mockImplementationOnce(async () => {
+    entered.resolve()
+    return await release.promise
+  })
+  const publishing = f.publish(f.header('accepted'), 'Accepted')
+  await entered.promise
+  let disposed = false
+  const closing = Promise.resolve(f.dispose()).then(() => {
+    disposed = true
+  })
+  try {
+    await Promise.resolve()
+    expect(disposed).toBe(false)
+  } finally {
+    release.resolve(true)
+  }
+  await publishing
+  await closing
+  expect(f.events).toHaveLength(1)
+})

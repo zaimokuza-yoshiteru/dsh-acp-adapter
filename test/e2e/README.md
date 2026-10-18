@@ -2,7 +2,7 @@
 
 这组 E2E 验证 DSH 与 ACP 的集成行为：测试启动目标版本的 Loader、真实 ACP 子进程和浏览器，并加载构建后的插件与 DSH UI。协议夹具提供可控 ACP 输入，覆盖 UI 与宿主集成；真实 Agent 行为另由 opt-in 检查验证。Web scaffold 或 Electron 窗口中的适配器检查不等于完整桌面产品的打包、preload、升级或跨平台验收。运行真实 Agent 会使用本机登录和模型额度。
 
-当前运行目标由 `package.json` 的 `engines.dsh` 决定。下文既有真实 Agent 记录只适用于各自记录的版本、平台和场景，不能作为当前 RC.1 的 live 验收。
+当前运行目标由 `package.json` 的 `engines.dsh` 决定。下文既有真实 Agent 记录只适用于各自记录的版本、平台和场景，不能直接作为当前目标版本的 live 验收。
 
 较广的协议与 Teams 场景覆盖 Claude、Codex、Devin、Kimi 四种 ACP 配置。CodeBuddy 目前仅覆盖 Agent controls 与权限隔离；其目录读取由通用 catalog 测试覆盖，不包含 Teams、成员管理或其他矩阵。真实 Agent 的升级需独立检查。
 
@@ -158,9 +158,11 @@ ACP 与 DSH 的桥接边界见[原生复用说明](../../docs/native-reuse.md)�
 
 真实主信息流专项：`DSH_E2E_LIVE_STREAM=1 DSH_E2E_LIVE_CODEX_MODEL=<已选择的模型> pnpm test:e2e live-main-stream`。在隔离工作区让真实 Codex ACP 执行一次 `printf`，验证原生 Bash、调用计数、结果详情及刷新恢复；不读写用户文件。需要本机已有登录，会消耗该 Agent 的用量，默认跳过。
 
-真实 Qwen Code 专项默认跳过：`DSH_E2E_LIVE_QWEN=1 DSH_E2E_LIVE_QWEN_COMMAND=/absolute/path/to/@qwen-code/qwen-code/cli-entry.js pnpm exec vitest run test/integration/process/qwen-live.spec.ts`。它不经过浏览器与 Host，直接驱动 `AcpSessionRuntime`，在临时工作区验证 `ask_user_question` 问答、后台 shell 任务完成后承接 `_qwencode/start_turn` 轮次，以及 `cron` 定时轮次。Agent 进程只继承系统基础变量和 `DSH_E2E_LIVE_QWEN_ENV_KEYS` 显式列出的变量；Qwen 使用本机已有的认证配置，会消耗所配置模型服务的用量。协议回归见 `test/unit/runtime/session-runtime-qwen.spec.ts` 与 `test/fixtures/fake-qwen-agent.mjs`。
+真实 Qwen Code 专项需要官方 `@qwen-code/qwen-code`（命令 `qwen`）；千问桌面应用或 `@qianwenai/qianwen-cli` 的 `qianwen` 命令不提供此 ACP 接口。专项默认跳过：`DSH_E2E_LIVE_QWEN=1 DSH_E2E_LIVE_QWEN_COMMAND=/absolute/path/to/@qwen-code/qwen-code/cli-entry.js pnpm exec vitest run test/integration/process/qwen-live.spec.ts`。它不经过浏览器与 Host，直接驱动 `AcpSessionRuntime`，在临时工作区验证 `ask_user_question` 问答、后台 shell 任务完成后承接 `_qwencode/start_turn` 轮次，以及无整轮终态标记的 `cron` 输出进入结果未知、保留输入不派发的路径。未知／缺失原因和 hold 丢失的确定性负向场景由协议夹具覆盖；不能用模型自述或快照空闲替代终态。Agent 进程只继承系统基础变量和 `DSH_E2E_LIVE_QWEN_ENV_KEYS` 显式列出的变量；Qwen 使用本机已有的认证配置，会消耗所配置模型服务的用量。协议回归见 `test/unit/runtime/session-runtime-qwen.spec.ts` 与 `test/fixtures/fake-qwen-agent.mjs`。
 
 Qwen 的无密钥 Host 与界面回归独立于上述 live 检查：`pnpm test:e2e qwen-code` 通过真实 Loader 加载构建插件，验证原生问答卡的单选、多选、自定义、翻页、取消和 Host cancellation，以及模型切换后的推理目录和实际 ACP 配置值。它使用确定性 ACP 子进程，不读取认证或调用模型。后台 jobs 的原生注册、通知和 AgentLoop 接线另由 `test/integration/host/qwen-task-jobs.spec.ts` 验证；运行时协议夹具覆盖取消未确认、慢工具前置等待和混合消息的顺序发送。测试替身通过不能推定真实 Qwen CLI 或全部平台已验收。
+
+`test/e2e/qwen-terminal-outcome.e2e.ts` 单独验证构建插件的原生 AgentLoop 与持久化：未知结束原因、匹配轮次的 `turnComplete:true, partial:true` 后接 `end_turn` 均保留部分输出并进入结果未知，阻止后续请求派发；普通 `end_turn` 和 `partial:false` 为正常结算对照。此无密钥协议夹具不经过浏览器，也不证明真实模型会产生这些异常。
 
 ## ACP live continuation opt-in
 
@@ -202,7 +204,9 @@ pnpm test:e2e -- test/e2e/live-mcp-continuation.e2e.ts
 
 这是重大版本手动 opt-in 的真实 Agent 专项，默认跳过且不属于 CI 门禁。A–D 使用官方 `devin acp` 或 `codebuddy --acp`，每次只选一个精确模型；模型缺失时停止、不回退。记录中的实测环境为 macOS Electron 44、DSH `0.2.0-rc.2`（公开源码 commit `639ed015397290b3745d163aafe02ffee4aa3f84`）、插件 `0.2.0-rc.2.6`、6 个只读源码文件共 61,463 bytes；Devin CLI `3000.11.3` / `swe-2-high`，CodeBuddy CLI `2.161.2` / `minimax-m2.7`。新版本的长任务回归只增加测试和指南。
 
-现有结果不构成完整矩阵签收：Devin 的 A 六轮源码查阅通过，B 未证明两个成员任务均完成，C 仅有 Lead controls 证据，独立 D Host-job 场景通过。CodeBuddy 的 Lead Allow/Reject 有执行证据，但续聊摘要错误描述 Reject；Stop 后又出现相同命令的新 call ID 请求，触发严格的重复请求测试保护并使 D 失败。证据不能区分模型新请求与 CLI 内部重试，也不证明适配器重放。CodeBuddy A 没有足够 Host read 证据，B 使用 vendor 自有 Team，不是 DSH Teams 签收；成员审批及同任务原生对照均未完成。按 Agent 分别记录，不能互相代替；措辞或工具数量不同本身不判为 bug。详细记录保存在本机 `.local/live-long-task/<agent>/<run-id>/`。
+上述旧环境结果不构成完整矩阵签收：Devin 的 A 六轮源码查阅通过，B 未证明两个成员任务均完成，C 仅有 Lead controls 证据，独立 D Host-job 场景通过。CodeBuddy 的 Lead Allow/Reject 有执行证据，但续聊摘要错误描述 Reject；Stop 后又出现相同命令的新 call ID 请求，触发严格的重复请求测试保护并使 D 失败。证据不能区分模型新请求与 CLI 内部重试，也不证明适配器重放。CodeBuddy A 没有足够 Host read 证据，B 使用 vendor 自有 Team，不是 DSH Teams 签收；成员审批及同任务原生对照均未完成。按 Agent 分别记录，不能互相代替；措辞或工具数量不同本身不判为 bug。详细记录保存在本机 `.local/live-long-task/<agent>/<run-id>/`。
+
+2026-10-18 的后续 Devin 回归使用 DSH `0.2.1-rc.2`、插件 `0.2.1-rc.2.1`、CLI `3000.11.92` 和 `swe-2-high`，任务数据仍固定为上述公开 commit。B 独立专项通过：两个成员各自的实际 Host read 覆盖各自三个文件，完成任务并送达两份报告，Lead 在后续回合分别 get 两个任务并汇总，源码校验及 Host/browser 关闭均通过。另一次 `approvals` 专项完成 C 的四项审批与 D 的 Host job 停止/FIFO 恢复。A 的六轮通过记录来自先前因 C 夹具失败而退出的运行；这些分场景证据没有合写成一次 A–D 全程成功，也不扩展到其他 Agent 或 Windows。此前失败保留在本机报告。
 
 较早记录中的 `LONG_TASK_NATIVE_EXECUTE_REPLAY` 是当时的测试错误码；现在改称 `LONG_TASK_NATIVE_EXECUTE_DUPLICATE_REQUEST`。该守卫会对同一注册命令的任意第二次请求 fail closed，不论新 call ID 或先前请求状态；它是严格的测试保护，不说明请求来自模型还是供应商重试。早期 fixture 的拒绝取消关联、marker 分隔符和 FIFO 失败优先问题已修复，但不改变真实运行记录。CodeBuddy 的两项真实异常尚未定位或修复。
 
@@ -213,10 +217,12 @@ pnpm test:e2e -- test/e2e/live-mcp-continuation.e2e.ts
 | C：Ask 审批   | 在测试 workspace 使用唯一操作 ID 执行小写入，Lead 与成员各做 Allow once 和 Reject。核验审批归属、允许恰好一次写入、拒绝零副作用和同一 ACP session 后续交互。绑定及事件历史可观察不代表模型语义记忆正确。 |
 | D：中断与恢复 | 长任务中执行 Stop、刷新并排队输入；核验取消、会话状态、FIFO 及副作用。只有观测到 Host job settlement 才能签收该执行路径；provider-native 工具路径可能只能记为 partial。                                  |
 
-运行示例：`DSH_E2E_LIVE_LONG_TASK=1 DSH_E2E_LIVE_LONG_TASK_PROFILE=devin pnpm test:e2e -- test/e2e/live-long-task.e2e.ts`；CodeBuddy 将 profile 改为 `codebuddy`。默认执行 A–D。`DSH_E2E_LIVE_LONG_TASK_SCENARIOS=teams` 跳过 A 并执行 B–D；`controls` 只运行 Lead 的 C controls 与完整 D，C 为 partial；`stop-only` 只运行 D。跳过场景会明确记录为 `not-run`，不能将 partial 或跳过的结果当作全矩阵通过；未知选择在启动 Host 前失败。最多创建两个成员，场景串行执行。
+运行示例：`DSH_E2E_LIVE_LONG_TASK=1 DSH_E2E_LIVE_LONG_TASK_PROFILE=devin pnpm test:e2e -- test/e2e/live-long-task.e2e.ts`；CodeBuddy 将 profile 改为 `codebuddy`。默认执行 A–D。`DSH_E2E_LIVE_LONG_TASK_SCENARIOS=teams` 跳过 A 并执行 B–D；`teams-only` 仅运行 B，独立核验两个成员各自读取、任务、收件和 Lead 汇总，不重复已验收的 C/D；`controls` 只运行 Lead 的 C controls 与完整 D，C 为 partial；`stop-only` 只运行 D。`approvals` 跳过 A/B，通过官方 Team service 建立一个 fresh 成员作为夹具前置，再运行原 C 的 Lead/member Allow/Reject 四格与 D；前置明确记录为 `setupRoute=host-service`，不认证 Agent 的 spawn 工具调用。跳过场景会明确记录为 `not-run`，不能将 partial 或跳过的结果当作全矩阵通过；未知选择在启动 Host 前失败。最多创建两个成员，场景串行执行。
 
 runner 保存场景截图、Session 事件摘要、脱敏后的结构化 ACP trace 和本地私有的模型回答审查文件。公开源码测试证据可保存在本机；分享截图或事件摘要前先检查并脱敏，因为它们可能显示正文或其他敏感信息。测试 workspace 只是测试数据隔离，不是 OS 沙箱；Host guard 只在 DSH 工具 body 前生效，不能限制 CLI 自有工具，provider 活动计数是事后软停止信号。CLI 工具可能在取消前已执行；测试不限制模型 token/费用或远端已开始的请求。
 
 测试 guard 对整个 run 限制 Host 工具准入最多 96 次、每场景最多 48 次、总时限 20 分钟；单场景最多 6 分钟，普通阶段最多 90 秒，B 初始化及成员结果等待最多 180 秒，最多两个成员。Ask 请求单独计数（总计 24、C 场景最多 16）；provider 工具活动最多 128 次是事后软停止。重复副作用限制仅作用于测试，不是生产限额或费用上限。
+
+C 的成员审批 prompt 明确要求 `wait_agent` 仅传 `{"timeout_ms":30000}`，不传目标或其他参数；测试协调守卫最多接受 60 秒等待。这是为了配合本测试的阶段预算，不是官方工具的最大等待时长。Lead 空参 `list_agents` 可在消息转交前发现成员；等待仍要求当前精确转交已成功。
 
 既有短程浏览器 helpers 不具备本专项的主动预算；本回归由独立 runner 和预算 guard 执行。

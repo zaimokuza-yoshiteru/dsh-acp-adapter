@@ -64,6 +64,7 @@ export function AcpAgentControl({
   sessionAccessSource,
 }: AgentControlProps): ReactNode {
   const projection = useProjection('modelSelection')
+  const sessionTitle = useProjection('title')
   const running = useSession((state) => state.running)
   const optionWriteAllowed = useAccess('dshAcp/setAgentSessionOption')
   const policyWriteAllowed = useAccess('dshAcp/setToolApprovalPolicy')
@@ -218,6 +219,8 @@ export function AcpAgentControl({
   const select = (item: AgentControlChoice): void => {
     if (sessionId === undefined) return
     const current = epoch.current
+    // Submitted operations outlive this view; only their local error state is generation-scoped.
+    const sourceSession = { id: sessionId, title: sessionTitle ?? null }
     setOpen(false)
     setBusy(true)
     if (item.write.kind === 'tool-approval-policy') {
@@ -235,16 +238,13 @@ export function AcpAgentControl({
       void remote
         .setToolApprovalPolicy(sessionId, { policy: item.write.policy })
         .then((result) => {
-          if (current === epoch.current && !result.ok) {
-            setPolicyError(t('toolApprovalChangeFailed'))
-            feedback.report('tool-approval-failed')
-          }
+          if (result.ok) return
+          feedback.report('tool-approval-failed', current === epoch.current ? undefined : sourceSession)
+          if (current === epoch.current) setPolicyError(t('toolApprovalChangeFailed'))
         })
         .catch(() => {
-          if (current === epoch.current) {
-            setPolicyError(t('toolApprovalChangeFailed'))
-            feedback.report('tool-approval-failed')
-          }
+          feedback.report('tool-approval-failed', current === epoch.current ? undefined : sourceSession)
+          if (current === epoch.current) setPolicyError(t('toolApprovalChangeFailed'))
         })
         .finally(() => {
           if (current === epoch.current) setBusy(false)
@@ -266,16 +266,13 @@ export function AcpAgentControl({
     void remote
       .setAgentSessionOption(sessionId, item.write)
       .then((result) => {
-        if (current === epoch.current && !result.ok) {
-          setError(result.error.message)
-          feedback.report('session-option-failed')
-        }
+        if (result.ok) return
+        feedback.report('session-option-failed', current === epoch.current ? undefined : sourceSession)
+        if (current === epoch.current) setError(result.error.message)
       })
       .catch((reason) => {
-        if (current === epoch.current) {
-          setError(reason instanceof Error ? reason.message : String(reason))
-          feedback.report('session-option-failed')
-        }
+        feedback.report('session-option-failed', current === epoch.current ? undefined : sourceSession)
+        if (current === epoch.current) setError(reason instanceof Error ? reason.message : String(reason))
       })
       .finally(() => {
         if (current === epoch.current) setBusy(false)

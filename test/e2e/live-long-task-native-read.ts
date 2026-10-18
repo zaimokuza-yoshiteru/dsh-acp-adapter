@@ -12,11 +12,61 @@ export type NativeReadEvidence = {
   readonly verified: true
 }
 
+type SafeKind =
+  'read' | 'edit' | 'delete' | 'move' | 'search' | 'execute' | 'think' | 'fetch' | 'switch_mode' | 'other' | 'missing'
+type SafeStatus = 'pending' | 'in_progress' | 'completed' | 'failed' | 'other' | 'missing'
+type SafeShape = 'missing' | 'array' | 'text' | 'content' | 'resource' | 'diff' | 'resource_link' | 'record' | 'scalar'
+
+export type NativeReadDiagnostic = {
+  readonly session: string
+  readonly activeAcpSession?: string
+  readonly observedAcpSession?: string
+  readonly callId?: string
+  readonly decision: 'ignored' | 'pending' | 'declined' | 'verified' | 'duplicate' | 'limit'
+  readonly reason:
+    | 'active-session-missing'
+    | 'notification-shape'
+    | 'foreign-session'
+    | 'update-shape'
+    | 'call-id-missing'
+    | 'kind-not-read'
+    | 'status-not-completed'
+    | 'tool-failed'
+    | 'path-missing'
+    | 'path-conflict'
+    | 'path-not-allowlisted'
+    | 'typed-text-missing'
+    | 'source-lines-insufficient'
+    | 'verified-source-lines'
+    | 'already-verified'
+    | 'diagnostic-limit'
+  readonly kind: SafeKind
+  readonly status: SafeStatus
+  readonly rawInputShape: SafeShape
+  readonly rawOutputShape: SafeShape
+  readonly contentShape: SafeShape
+  readonly outputFormats: readonly SafeShape[]
+  readonly paths: readonly {
+    readonly source: 'input' | 'location'
+    readonly identity: string
+    readonly allowlisted: boolean
+  }[]
+  readonly declaredPathCount: number
+  readonly textCharacters: number
+  readonly textLimitReached: boolean
+  readonly matches: readonly {
+    readonly path: string
+    readonly matchedLines: number
+    readonly alreadyVerified: boolean
+  }[]
+}
+
 type ReadObserverOptions = {
   readonly activeSessionId: string | undefined
   readonly sessionEvidenceId?: string
   readonly sources: readonly NativeReadSource[]
   readonly hashIdentifier: (kind: string, value: string) => string
+  readonly onDiagnostic?: (diagnostic: NativeReadDiagnostic) => void
 }
 
 type CallSnapshot = {
@@ -26,10 +76,53 @@ type CallSnapshot = {
   inputPaths: Set<string>
   locationPaths: Set<string>
   outputText: string
+  rawInputShape: SafeShape
+  rawOutputShape: SafeShape
+  contentShape: SafeShape
+  outputFormats: Set<SafeShape>
+  textLimitReached: boolean
 }
 
 const MAX_UPDATE_TEXT_BYTES = 64 * 1024
 const MAX_TYPED_TEXT_NODES = 64
+export const MAX_NATIVE_READ_DIAGNOSTICS = 256
+
+function safeKind(value: unknown): SafeKind {
+  if (value === undefined) return 'missing'
+  return typeof value === 'string' &&
+    ['read', 'edit', 'delete', 'move', 'search', 'execute', 'think', 'fetch', 'switch_mode'].includes(value)
+    ? (value as SafeKind)
+    : 'other'
+}
+
+function safeStatus(value: unknown): SafeStatus {
+  if (value === undefined) return 'missing'
+  return typeof value === 'string' && ['pending', 'in_progress', 'completed', 'failed'].includes(value)
+    ? (value as SafeStatus)
+    : 'other'
+}
+
+function safeShape(value: unknown): SafeShape {
+  if (value === undefined || value === null) return 'missing'
+  if (Array.isArray(value)) return 'array'
+  if (!isRecord(value)) return 'scalar'
+  return typeof value.type === 'string' && ['text', 'content', 'resource', 'diff', 'resource_link'].includes(value.type)
+    ? (value.type as SafeShape)
+    : 'record'
+}
+
+function outputFormats(value: unknown, formats: Set<SafeShape>): void {
+  const pending = [value]
+  const visited = new Set<unknown>()
+  for (let index = 0; pending.length > 0 && index < MAX_TYPED_TEXT_NODES; index += 1) {
+    const current = pending.shift()
+    if (visited.has(current)) continue
+    visited.add(current)
+    formats.add(safeShape(current))
+    if (Array.isArray(current)) pending.push(...current.slice(0, 32))
+    else if (isRecord(current) && current.type === 'content') pending.push(current.content)
+  }
+}
 
 export function wrapObservedCallback<Args extends unknown[], Result>(
   original: (this: unknown, ...args: Args) => Result,
@@ -155,17 +248,95 @@ export function createNativeReadObserver(
   )
   const calls = new Map<string, CallSnapshot>()
   const evidenceByCall = new Map<string, Set<string>>()
+  let diagnosticCount = 0
+  const diagnosticSession = options.hashIdentifier('dsh-session', options.sessionEvidenceId ?? activeSessionId ?? '')
+  const activeAcpSession =
+    activeSessionId === undefined ? undefined : options.hashIdentifier('acp-session', activeSessionId)
+  const emitDiagnostic = (
+    notification: unknown,
+    decision: NativeReadDiagnostic['decision'],
+    reason: NativeReadDiagnostic['reason'],
+    snapshot?: CallSnapshot,
+    declaredPaths: readonly string[] = [],
+    matches: NativeReadDiagnostic['matches'] = [],
+  ): void => {
+    if (options.onDiagnostic === undefined || diagnosticCount > MAX_NATIVE_READ_DIAGNOSTICS) return
+    const atLimit = diagnosticCount === MAX_NATIVE_READ_DIAGNOSTICS
+    diagnosticCount += 1
+    const envelope = isRecord(notification) ? notification : undefined
+    const update = envelope !== undefined && isRecord(envelope.update) ? envelope.update : undefined
+    const observedSessionId = typeof envelope?.sessionId === 'string' ? envelope.sessionId : undefined
+    const callId = typeof update?.toolCallId === 'string' ? update.toolCallId : undefined
+    const paths: NativeReadDiagnostic['paths'][number][] = []
+    for (const [source, known] of [
+      ['input', snapshot?.inputPaths],
+      ['location', snapshot?.locationPaths],
+    ] as const) {
+      for (const path of [...(known ?? [])].slice(0, 32)) {
+        const allowedSource = sources.get(path)
+        paths.push({
+          source,
+          identity: allowedSource?.relativePath ?? options.hashIdentifier('native-read-path', path),
+          allowlisted: allowedSource !== undefined,
+        })
+      }
+    }
+    options.onDiagnostic({
+      session: diagnosticSession,
+      ...(activeAcpSession === undefined ? {} : { activeAcpSession }),
+      ...(observedSessionId === undefined
+        ? {}
+        : { observedAcpSession: options.hashIdentifier('acp-session', observedSessionId) }),
+      ...(callId === undefined ? {} : { callId: options.hashIdentifier('acp-tool-call', callId) }),
+      decision: atLimit ? 'limit' : decision,
+      reason: atLimit ? 'diagnostic-limit' : reason,
+      kind: safeKind(snapshot?.kind ?? update?.kind),
+      status: safeStatus(snapshot?.status ?? update?.status),
+      rawInputShape: snapshot?.rawInputShape ?? safeShape(update?.rawInput),
+      rawOutputShape: snapshot?.rawOutputShape ?? safeShape(update?.rawOutput),
+      contentShape: snapshot?.contentShape ?? safeShape(update?.content),
+      outputFormats: [...(snapshot?.outputFormats ?? [])],
+      paths,
+      declaredPathCount: declaredPaths.length,
+      textCharacters: snapshot?.outputText.length ?? 0,
+      textLimitReached: snapshot?.textLimitReached ?? false,
+      matches: matches.slice(0, 32),
+    })
+  }
 
   return (notification: unknown): NativeReadEvidence[] => {
-    if (!isRecord(notification) || notification.sessionId !== activeSessionId || !isRecord(notification.update))
-      return []
-    const update = notification.update
+    // Non-tool session traffic, including other sessions' messages, is not a read candidate.
     if (
-      (update.sessionUpdate !== 'tool_call' && update.sessionUpdate !== 'tool_call_update') ||
-      typeof update.toolCallId !== 'string' ||
-      update.toolCallId.length === 0
+      isRecord(notification) &&
+      isRecord(notification.update) &&
+      typeof notification.update.sessionUpdate === 'string' &&
+      notification.update.sessionUpdate !== 'tool_call' &&
+      notification.update.sessionUpdate !== 'tool_call_update'
     )
       return []
+    if (activeSessionId === undefined) {
+      emitDiagnostic(notification, 'ignored', 'active-session-missing')
+      return []
+    }
+    if (!isRecord(notification)) {
+      emitDiagnostic(notification, 'ignored', 'notification-shape')
+      return []
+    }
+    if (notification.sessionId !== activeSessionId) {
+      emitDiagnostic(notification, 'ignored', 'foreign-session')
+      return []
+    }
+    if (!isRecord(notification.update)) {
+      emitDiagnostic(notification, 'ignored', 'update-shape')
+      return []
+    }
+    const update = notification.update
+    // Non-tool session traffic is not a read candidate and must not consume the diagnostic allowance.
+    if (update.sessionUpdate !== 'tool_call' && update.sessionUpdate !== 'tool_call_update') return []
+    if (typeof update.toolCallId !== 'string' || update.toolCallId.length === 0) {
+      emitDiagnostic(notification, 'ignored', 'call-id-missing')
+      return []
+    }
     const callId = update.toolCallId
     let snapshot = calls.get(callId)
     if (snapshot === undefined) {
@@ -174,6 +345,11 @@ export function createNativeReadObserver(
         inputPaths: new Set(),
         locationPaths: new Set(),
         outputText: '',
+        rawInputShape: 'missing',
+        rawOutputShape: 'missing',
+        contentShape: 'missing',
+        outputFormats: new Set(),
+        textLimitReached: false,
       }
       calls.set(callId, snapshot)
     }
@@ -181,6 +357,7 @@ export function createNativeReadObserver(
     if (typeof update.status === 'string') snapshot.status = update.status
     if (update.rawInput !== undefined && update.rawInput !== null) {
       snapshot.inputPaths = new Set([...snapshot.inputPaths, ...knownPaths(update.rawInput)])
+      snapshot.rawInputShape = safeShape(update.rawInput)
     }
     if (update.locations !== undefined && update.locations !== null) {
       snapshot.locationPaths = new Set([...snapshot.locationPaths, ...knownLocationPaths(update.locations)])
@@ -188,11 +365,32 @@ export function createNativeReadObserver(
     if (update.isError === true || update.error !== undefined) snapshot.failed = true
     if (isRecord(update.rawOutput) && update.rawOutput.isError === true) snapshot.failed = true
     const textParts: string[] = []
-    if (update.content !== undefined && update.content !== null) typedText(update.content, textParts)
-    if (update.rawOutput !== undefined && update.rawOutput !== null) typedText(update.rawOutput, textParts)
-    if (textParts.length > 0)
+    if (update.content !== undefined && update.content !== null) {
+      typedText(update.content, textParts)
+      snapshot.contentShape = safeShape(update.content)
+      outputFormats(update.content, snapshot.outputFormats)
+    }
+    if (update.rawOutput !== undefined && update.rawOutput !== null) {
+      typedText(update.rawOutput, textParts)
+      snapshot.rawOutputShape = safeShape(update.rawOutput)
+      outputFormats(update.rawOutput, snapshot.outputFormats)
+    }
+    if (textParts.length > 0) {
       snapshot.outputText = `${snapshot.outputText}\n${textParts.join('\n')}`.slice(0, MAX_UPDATE_TEXT_BYTES)
-    if (snapshot.kind !== 'read' || snapshot.status !== 'completed' || snapshot.failed) return []
+      snapshot.textLimitReached ||= snapshot.outputText.length >= MAX_UPDATE_TEXT_BYTES
+    }
+    if (snapshot.failed || snapshot.status === 'failed') {
+      emitDiagnostic(notification, 'declined', 'tool-failed', snapshot)
+      return []
+    }
+    if (snapshot.kind !== 'read') {
+      emitDiagnostic(notification, snapshot.status === 'completed' ? 'declined' : 'pending', 'kind-not-read', snapshot)
+      return []
+    }
+    if (snapshot.status !== 'completed') {
+      emitDiagnostic(notification, 'pending', 'status-not-completed', snapshot)
+      return []
+    }
 
     const callEvidence = evidenceByCall.get(callId) ?? new Set<string>()
     evidenceByCall.set(callId, callEvidence)
@@ -203,8 +401,9 @@ export function createNativeReadObserver(
         : snapshot.inputPaths.size > 0
           ? [...snapshot.inputPaths]
           : [...snapshot.locationPaths]
+    const matches: NativeReadDiagnostic['matches'][number][] = []
     for (const path of declaredPaths) {
-      if (!allowed.has(path) || callEvidence.has(path)) continue
+      if (!allowed.has(path)) continue
       const source = sources.get(path)
       if (source === undefined) continue
       const matchedLines = matchedSourceLines(
@@ -212,6 +411,8 @@ export function createNativeReadObserver(
         snapshot.outputText,
         uniqueLinesByPath.get(path) ?? new Set(),
       )
+      matches.push({ path: source.relativePath, matchedLines, alreadyVerified: callEvidence.has(path) })
+      if (callEvidence.has(path)) continue
       if (matchedLines < 2) continue
       callEvidence.add(path)
       result.push({
@@ -222,6 +423,28 @@ export function createNativeReadObserver(
         verified: true,
       })
     }
+    const reason: NativeReadDiagnostic['reason'] =
+      result.length > 0
+        ? 'verified-source-lines'
+        : declaredPaths.length === 0
+          ? snapshot.inputPaths.size > 0 && snapshot.locationPaths.size > 0
+            ? 'path-conflict'
+            : 'path-missing'
+          : matches.length === 0
+            ? 'path-not-allowlisted'
+            : matches.every((match) => match.alreadyVerified)
+              ? 'already-verified'
+              : snapshot.outputText.length === 0
+                ? 'typed-text-missing'
+                : 'source-lines-insufficient'
+    emitDiagnostic(
+      notification,
+      result.length > 0 ? 'verified' : reason === 'already-verified' ? 'duplicate' : 'declined',
+      reason,
+      snapshot,
+      declaredPaths,
+      matches,
+    )
     return result
   }
 }

@@ -209,8 +209,57 @@ function parseSessionNotification(value: unknown): AcpSessionNotification {
 }
 
 interface SdkHandlerView {
-  handleMessage(message: unknown): unknown
+  handleMessage(message: unknown, context: unknown): unknown
   describe(): string
+}
+
+/** Keep update/terminal callbacks at the same SDK dispatch depth. The SDK
+ * traverses handlers concurrently per message, so a later update otherwise
+ * overtakes an earlier terminal while that terminal skips the update handler.
+ * Reuse both SDK-generated handlers, including standard ACP validation. This
+ * private SDK 1.5.1 seam is exact-pinned and covered by subprocess wire tests. */
+function registerOrderedQwenNotifications(
+  app: acp.ClientApp,
+  deliver: (notification: acp.SessionNotification) => void,
+  end: (params: QwenTurnEndParams) => void,
+): void {
+  const internals = app as unknown as { readonly builder?: { readonly handlers?: SdkHandlerView[] } }
+  const handlers = internals.builder?.handlers
+  if (!Array.isArray(handlers))
+    throw new AcpClientError('protocol-error', 'ACP SDK cannot preserve Qwen automatic-turn notification order')
+  const first = handlers.length
+  app.onNotification('session/update', ({ params }) => deliver(params))
+  app.onNotification(
+    '_qwencode/end_turn',
+    (params: unknown) => qwenTurnEndParams(params),
+    ({ params }) => {
+      if (params === undefined) return
+      try {
+        end(params)
+      } catch {
+        /* notification handlers must not poison the stream */
+      }
+    },
+  )
+  const updates = handlers[first]
+  const terminal = handlers[first + 1]
+  if (
+    handlers.length !== first + 2 ||
+    updates === undefined ||
+    terminal === undefined ||
+    updates === terminal ||
+    typeof updates.handleMessage !== 'function' ||
+    typeof terminal.handleMessage !== 'function'
+  )
+    throw new AcpClientError('protocol-error', 'ACP SDK cannot preserve Qwen automatic-turn notification order')
+  handlers.splice(first, 2, {
+    handleMessage(message, context) {
+      return record(message) && message.kind === 'notification' && message.method === '_qwencode/end_turn'
+        ? terminal.handleMessage(message, context)
+        : updates.handleMessage(message, context)
+    },
+    describe: () => 'dsh-acp-qwen-ordered-notifications',
+  })
 }
 
 /** SDK 1.5.1 installs a closed-union session router before public app
@@ -465,6 +514,8 @@ export class AcpClientConnection {
     this.onQwenActiveWork = options.onQwenActiveWork
     this.onProcessWarn = options.onProcessWarn ?? ((message) => console.error(message))
     if (options.onSessionUpdate !== undefined) this.updateListeners.add(options.onSessionUpdate)
+    // Validate the pinned SDK dispatch seam before acquiring a child process.
+    const app = this.buildClientApp()
 
     // 结构化 spawn：argv 直达 seam，不经 shell（堵注入面； 经 spawnPlan/wrapArgv 包
     // confine）。spawnPlan 存在时其 env 整体替换 spec.env（计划在组装期已含全量 env）。
@@ -485,7 +536,7 @@ export class AcpClientConnection {
       Writable.toWeb(this.process.stdin) as unknown as WritableStream<Uint8Array>,
       Readable.toWeb(this.process.stdout) as unknown as ReadableStream<Uint8Array>,
     )
-    this.conn = this.buildClientApp().connect(stream)
+    this.conn = app.connect(stream)
     this.connectionFailure = Promise.race([
       this.process.failureArm,
       this.conn.closed.then((): never => {
@@ -1091,12 +1142,9 @@ export class AcpClientConnection {
         'Claude draft subagent notifications are unavailable with this ACP SDK; continuing with standard ACP capabilities',
       )
     }
-    // The SDK dispatches different notifications concurrently while traversing
-    // registered handlers. Put ordinary updates before vendor terminal markers
-    // so a same-frame end marker cannot overtake the preceding output chunk.
-    app.onNotification('session/update', ({ params }) => {
-      this.deliverSessionNotification(params)
-    })
+    const deliver = (params: acp.SessionNotification) => this.deliverSessionNotification(params)
+    if (this.onQwenTurnEnd === undefined) app.onNotification('session/update', ({ params }) => deliver(params))
+    else registerOrderedQwenNotifications(app, deliver, this.onQwenTurnEnd)
     // Qwen Code announces background-notification turns with a private
     // request it waits on for at most ~2 s. Unregistered (no host seam) keeps
     // the SDK's -32601 answer, which Qwen treats as "run it anyway".
@@ -1113,21 +1161,6 @@ export class AcpClientConnection {
             // A deliberate method-not-found keeps Qwen's unannounced fallback.
             if (error instanceof acp.RequestError) throw error
             return { accepted: false }
-          }
-        },
-      )
-    }
-    const turnEnd = this.onQwenTurnEnd
-    if (turnEnd !== undefined) {
-      app.onNotification(
-        '_qwencode/end_turn',
-        (params: unknown) => qwenTurnEndParams(params),
-        ({ params }) => {
-          if (params === undefined) return
-          try {
-            turnEnd(params)
-          } catch {
-            /* notification handlers must not poison the stream */
           }
         },
       )

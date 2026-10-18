@@ -13,9 +13,10 @@ export function installExternalChildCatalog(
   const pending = new Map<string, Map<string, { header: SessionHeader; label: string }>>()
   const publishing = new Map<string, Promise<void>>()
   let disposed = false
-  ctx.effect(() => () => {
+  ctx.effect(() => async () => {
     disposed = true
     pending.clear()
+    await Promise.allSettled([...publishing.values()])
   })
   const publishPending = async (parent: Session): Promise<void> => {
     const children = pending.get(parent.id)

@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { describe, it, expect, vi } from 'vitest'
 import type { AcpRemoteService } from '../../src/remote/service.js'
+import { SessionId } from '@deepseek-ai/dsh-session'
 import { connectFreshWorkspace, writeComposerDraft } from '#host-support'
 import { launchAdapterWorld, root } from './scaffold.ts'
 
@@ -377,3 +378,166 @@ describe.each(profiles)('Agent controls: %s', (profile) => {
     },
   )
 })
+
+it.each([
+  { titleKind: 'ordinary', sourceTitle: 'Late outcome source', evidencePrefix: 'late' },
+  { titleKind: 'unbroken', sourceTitle: 'W'.repeat(80), evidencePrefix: 'late-long' },
+])(
+  'keeps failed option and policy outcomes after navigation or locale changes ($titleKind title)',
+  async ({ sourceTitle, evidencePrefix }) => {
+    const host = await launchAdapterWorld()
+    let browser!: TestBrowser
+    let releaseWrite: (() => void) | undefined
+    const restorers: (() => void)[] = []
+    try {
+      await host.ctx.settings.replace('dsh-acp-adapter', {
+        toolApprovalDefault: 'auto',
+        agents: {
+          codex: {
+            name: 'Late outcome fixture',
+            command: process.execPath,
+            args: [join(root, 'test/mock-agent/mock-agent.ts')],
+            runtime: 'codex',
+            env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: 'codex' },
+          },
+        },
+      })
+      await vi.waitFor(() =>
+        expect(host.ctx.llm.listProviders().some((provider) => provider.id === 'acp-codex')).toBe(true),
+      )
+      await host.ctx.agentDefaultModel.saveSelection({ provider: 'acp-codex', model: 'mock-model-a' })
+      browser = await launchBrowser({ headless: true, channel: process.env.DSH_E2E_BROWSER_CHANNEL })
+      const page = await newEnglishPage(browser)
+      await page.goto(host.authenticatedUrl)
+      await connectFreshWorkspace(page, host.workspaceCwd)
+      const settled = host.whenTurnSettled(30000)
+      await writeComposerDraft(page, page.locator('[data-composer-input]').first(), 'E2E_MESSAGE')
+      await page.getByRole('button', { name: 'Send message', exact: true }).click()
+      await settled
+      const conversation = page.locator('[data-conversation-session]').last()
+      const sourceId = await conversation.getAttribute('data-conversation-session')
+      if (sourceId === null) throw new Error('The source conversation did not publish its Session ID')
+      await host.ctx.sessionController.rename({ sessionId: SessionId(sourceId), title: sourceTitle })
+      await page.getByText(sourceTitle, { exact: true }).first().waitFor()
+      const controls = () => page.getByRole('button', { name: /^(?:Session|会话) ·/ })
+      await controls().waitFor()
+      const service = host.ctx.get('dshAcp') as AcpRemoteService
+      let held: { operation: 'option' | 'policy'; entered(): void; wait: Promise<void> } | undefined
+      const option = service.setAgentSessionOption.bind(service)
+      const policy = service.setToolApprovalPolicy.bind(service)
+      const waitForFailure = async (operation: 'option' | 'policy'): Promise<void> => {
+        const pending = held
+        if (pending?.operation !== operation) return
+        held = undefined
+        pending.entered()
+        await pending.wait
+        throw new Error(`PRIVATE_LATE_${operation.toUpperCase()}_FAILURE`)
+      }
+      const optionSpy = vi.spyOn(service, 'setAgentSessionOption').mockImplementation(async (sessionId, request) => {
+        await waitForFailure('option')
+        return await option(sessionId, request)
+      })
+      const policySpy = vi.spyOn(service, 'setToolApprovalPolicy').mockImplementation(async (sessionId, request) => {
+        await waitForFailure('policy')
+        return await policy(sessionId, request)
+      })
+      restorers.push(
+        () => optionSpy.mockRestore(),
+        () => policySpy.mockRestore(),
+      )
+
+      for (const operation of ['option', 'policy'] as const) {
+        for (const change of ['session', 'locale'] as const) {
+          const before = await service.agentSessionSnapshot(sourceId)
+          let entered!: () => void
+          const started = new Promise<void>((resolve) => {
+            entered = resolve
+          })
+          const wait = new Promise<void>((resolve) => {
+            releaseWrite = resolve
+          })
+          held = { operation, entered, wait }
+          await expect.poll(() => controls().isEnabled()).toBe(true)
+          await controls().click()
+          await page
+            .getByRole('menuitem', { name: operation === 'option' ? /^Session Mode/ : /^DSH tool approval/ })
+            .click()
+          await page
+            .getByRole('menuitem', { name: operation === 'option' ? /^Plan(?:\s|$)/ : /^Ask each time/ })
+            .click()
+          await started
+          expect(await page.getByRole('alert').count()).toBe(0)
+
+          if (change === 'session') {
+            await page.getByRole('button', { name: 'New session', exact: true }).last().click()
+            await expect.poll(() => conversation.getAttribute('data-conversation-session')).not.toBe(sourceId)
+            await expect.poll(() => controls().count()).toBe(0)
+          } else {
+            await host.ctx.settings.replace('locale', { preference: 'zh' })
+            await host.ctx.settings.replace('ui-theme', { preference: 'dark' })
+            await page.getByRole('button', { name: /^会话 ·/ }).waitFor()
+          }
+          releaseWrite!()
+          releaseWrite = undefined
+          const toast = page.getByRole('alert').filter({ hasText: sourceTitle })
+          await toast.waitFor()
+          expect(await toast.count()).toBe(1)
+          const text = await toast.innerText()
+          expect(text).toContain(change === 'locale' ? '请重试' : operation === 'option' ? 'Try again' : 'Please retry')
+          expect(text).not.toContain('PRIVATE_LATE_')
+          await page.setViewportSize({ width: 390, height: 900 })
+          // Capture the native Toast's full-opacity hold, not its entrance/fade frame.
+          await expect.poll(() => toast.evaluate((element) => getComputedStyle(element).opacity)).toBe('1')
+          const geometry = await toast.evaluate((element) => {
+            const box = element.getBoundingClientRect()
+            const text = element.lastElementChild as HTMLElement
+            const range = document.createRange()
+            range.selectNodeContents(text)
+            return {
+              left: box.left,
+              right: box.right,
+              viewport: innerWidth,
+              textWidth: text.clientWidth,
+              textScrollWidth: text.scrollWidth,
+              textRight: range.getBoundingClientRect().right,
+              overflowWrap: getComputedStyle(text).overflowWrap,
+            }
+          })
+          mkdirSync(join(root, '.local/ui-review'), { recursive: true })
+          const evidence = join(root, `.local/ui-review/${evidencePrefix}-${operation}-${change}-390`)
+          writeFileSync(`${evidence}.json`, JSON.stringify(geometry, null, 2))
+          await page.screenshot({ path: `${evidence}.png` })
+          expect(geometry.left).toBeGreaterThanOrEqual(0)
+          expect(geometry.right).toBeLessThanOrEqual(geometry.viewport)
+          expect(geometry.textScrollWidth).toBeLessThanOrEqual(geometry.textWidth + 1)
+          expect(geometry.textRight).toBeLessThanOrEqual(geometry.viewport)
+          expect((await service.agentSessionSnapshot(sourceId)).configOptions).toEqual(before.configOptions)
+          expect((await service.agentSessionSnapshot(sourceId)).currentModeId).toBe(before.currentModeId)
+          expect((await service.toolApprovalPolicy(sourceId)).policy).toBe('auto')
+          await page.setViewportSize({ width: 1280, height: 900 })
+          await toast.waitFor({ state: 'hidden' })
+          if (change === 'session') {
+            await page.getByText(sourceTitle, { exact: true }).first().click()
+            await expect.poll(() => conversation.getAttribute('data-conversation-session')).toBe(sourceId)
+          } else {
+            await host.ctx.settings.replace('locale', { preference: 'en' })
+            await host.ctx.settings.replace('ui-theme', { preference: 'light' })
+          }
+          await page.getByRole('button', { name: /^Session ·/ }).waitFor()
+          await expect.poll(() => controls().isEnabled()).toBe(true)
+          await controls().click()
+          expect(await page.getByRole('menu').innerText()).not.toContain('PRIVATE_LATE_')
+          await page.keyboard.press('Escape')
+        }
+      }
+    } finally {
+      releaseWrite?.()
+      for (const restore of restorers) restore()
+      try {
+        await browser?.close()
+      } finally {
+        await host.close()
+      }
+    }
+  },
+)

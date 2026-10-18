@@ -3,6 +3,7 @@ import {
   classifyExecutionRoute,
   createNativeExecuteObserver,
   nativeExecuteCommand,
+  nativeExecuteRefusalResponse,
 } from '../../e2e/live-long-task-native-execute.ts'
 import { wrapObservedCallback } from '../../e2e/live-long-task-native-read.ts'
 import type { ExecuteRegistration } from '../../e2e/live-long-task-native-execute.ts'
@@ -14,6 +15,144 @@ const registrations: ExecuteRegistration[] = [
   { scene: 'C', ownerDshSessionId: lead, operation: 'lead-allow', command: allowedCommand },
 ]
 const hashIdentifier = (kind: string, value: string): string => `${kind}:h:${value.length}`
+
+it('selects only a supplied rejection option, preferring reject-once and falling back to cancelled', () => {
+  const options = [
+    { kind: 'allow_once', optionId: 'allow' },
+    { kind: 'reject_always', optionId: 'reject-persistent' },
+    { kind: 'reject_once', optionId: 'reject-one' },
+  ]
+  expect(nativeExecuteRefusalResponse({ options })).toEqual({
+    outcome: { outcome: 'selected', optionId: 'reject-one' },
+  })
+  expect(nativeExecuteRefusalResponse({ options: options.slice(0, 2) })).toEqual({
+    outcome: { outcome: 'selected', optionId: 'reject-persistent' },
+  })
+  for (const params of [
+    undefined,
+    { options: [] },
+    { options: [{ kind: 'allow_once', optionId: 'allow' }] },
+    { options: [{ kind: 'reject_once' }, { kind: 'reject_always', optionId: '' }] },
+    { options: [null, 'reject_once', { kind: 'reject_once', optionId: 1 }] },
+    {
+      options: [
+        { kind: 'allow_once', optionId: 'ambiguous' },
+        { kind: 'reject_once', optionId: 'ambiguous' },
+      ],
+    },
+  ])
+    expect(nativeExecuteRefusalResponse(params)).toEqual({ outcome: { outcome: 'cancelled' } })
+})
+
+it.each([
+  [
+    'unknown command',
+    { sessionId: acp, toolCall: { kind: 'execute', toolCallId: 'call', rawInput: 'echo unrelated' } },
+    lead,
+    'LONG_TASK_NATIVE_EXECUTE_UNREGISTERED',
+  ],
+  [
+    'unknown owner',
+    { sessionId: acp, toolCall: { kind: 'execute', toolCallId: 'call', rawInput: allowedCommand } },
+    'other-owner',
+    'LONG_TASK_NATIVE_EXECUTE_UNREGISTERED',
+  ],
+  [
+    'missing owner',
+    { sessionId: acp, toolCall: { kind: 'execute', toolCallId: 'call', rawInput: allowedCommand } },
+    undefined,
+    'LONG_TASK_NATIVE_EXECUTE_UNREGISTERED',
+  ],
+  [
+    'foreign ACP session',
+    { sessionId: 'foreign', toolCall: { kind: 'execute', toolCallId: 'call', rawInput: allowedCommand } },
+    lead,
+    'LONG_TASK_NATIVE_EXECUTE_SESSION_MISMATCH',
+  ],
+  [
+    'missing ACP session',
+    { toolCall: { kind: 'execute', toolCallId: 'call', rawInput: allowedCommand } },
+    lead,
+    'LONG_TASK_NATIVE_EXECUTE_REQUEST_MALFORMED',
+  ],
+  [
+    'missing call ID',
+    { sessionId: acp, toolCall: { kind: 'execute', rawInput: allowedCommand } },
+    lead,
+    'LONG_TASK_NATIVE_EXECUTE_REQUEST_MALFORMED',
+  ],
+  [
+    'missing command',
+    { sessionId: acp, toolCall: { kind: 'execute', toolCallId: 'call' } },
+    lead,
+    'LONG_TASK_NATIVE_EXECUTE_REQUEST_MALFORMED',
+  ],
+  [
+    'invalid command shape',
+    { sessionId: acp, toolCall: { kind: 'execute', toolCallId: 'call', rawInput: { argv: ['echo', 'unrelated'] } } },
+    lead,
+    'LONG_TASK_NATIVE_EXECUTE_REQUEST_MALFORMED',
+  ],
+  ['missing tool call', { sessionId: acp }, lead, 'LONG_TASK_NATIVE_EXECUTE_REQUEST_MALFORMED'],
+  ['invalid request', undefined, lead, 'LONG_TASK_NATIVE_EXECUTE_REQUEST_MALFORMED'],
+] as const)('refuses %s instead of delegating native execution', (_name, params, ownerDshSessionId, violationCode) => {
+  const violations: string[] = []
+  const observer = createNativeExecuteObserver({
+    registrations: () => registrations,
+    hashIdentifier,
+    onViolation: (code) => violations.push(code),
+  })
+  const decision = observer.observePermission(params, { scene: 'C', ownerDshSessionId, activeAcpSessionId: acp })
+  expect(decision).toEqual({ kind: 'refuse', violationCode, response: { outcome: { outcome: 'cancelled' } } })
+  expect(violations).toEqual([violationCode])
+})
+
+it('returns an offered rejection for an unregistered request before native approval can accept it', () => {
+  const observer = createNativeExecuteObserver({
+    registrations: () => registrations,
+    hashIdentifier,
+    onViolation: () => {},
+  })
+  expect(
+    observer.observePermission(
+      {
+        sessionId: acp,
+        toolCall: { kind: 'execute', toolCallId: 'unknown', rawInput: 'echo unrelated' },
+        options: [
+          { kind: 'allow_once', optionId: 'allow' },
+          { kind: 'reject_once', optionId: 'reject' },
+        ],
+      },
+      { scene: 'B', ownerDshSessionId: lead, activeAcpSessionId: acp },
+    ),
+  ).toEqual({
+    kind: 'refuse',
+    violationCode: 'LONG_TASK_NATIVE_EXECUTE_UNREGISTERED',
+    response: { outcome: { outcome: 'selected', optionId: 'reject' } },
+  })
+})
+
+it('delegates an exact registered execute and non-execute permission to normal native approval', () => {
+  const violations: string[] = []
+  const observer = createNativeExecuteObserver({
+    registrations: () => registrations,
+    hashIdentifier,
+    onViolation: (code) => violations.push(code),
+  })
+  for (const toolCall of [
+    { kind: 'execute', toolCallId: 'registered', rawInput: { command: allowedCommand } },
+    { kind: 'read', toolCallId: 'read', rawInput: { path: '/tmp/public-source.ts' } },
+    // ACP ToolCallUpdate legally omits kind; this guard does not infer execution from a title.
+    { toolCallId: 'unknown-kind', title: 'Inspect a source file' },
+  ])
+    expect(
+      observer.observePermission(
+        { sessionId: acp, toolCall },
+        { scene: 'C', ownerDshSessionId: lead, activeAcpSessionId: acp },
+      ),
+    ).toEqual({ kind: 'delegate' })
+  expect(violations).toEqual([])
+})
 
 it('extracts only explicit command fields and rejects unknown input shapes', () => {
   expect(nativeExecuteCommand(allowedCommand)).toBe(allowedCommand)
@@ -118,7 +257,7 @@ it('records native terminal status for the caller to validate against its decisi
   }
 })
 
-it('ignores child and historical permissions plus non-tool updates sharing a call ID', () => {
+it('refuses foreign child and historical execute permissions and ignores non-tool updates sharing a call ID', () => {
   const violations: string[] = []
   const observer = createNativeExecuteObserver({
     registrations: () => registrations,
@@ -142,7 +281,7 @@ it('ignores child and historical permissions plus non-tool updates sharing a cal
     { scene: 'C', ownerDshSessionId: lead },
   )
   expect(observer.evidence()).toMatchObject([{ callId: hashIdentifier('acp-tool-call', 'live'), status: 'pending' }])
-  expect(violations).toEqual([])
+  expect(violations).toEqual(['LONG_TASK_NATIVE_EXECUTE_SESSION_MISMATCH', 'LONG_TASK_NATIVE_EXECUTE_SESSION_MISMATCH'])
 })
 
 it('keeps equal ACP call IDs isolated by DSH owner identity', () => {

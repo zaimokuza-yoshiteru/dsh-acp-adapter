@@ -375,12 +375,58 @@ export interface ExternalProjectionRepairSummary {
 
 /** Idempotent read-only transcript projection for evidence-complete external delegations. */
 export class ExternalSubagentProjector {
+  private accepting = true
+  private readonly pending = new Set<Promise<unknown>>()
+  private closing: Promise<void> | undefined
+
+  /** Stop new transactions and retain their dependencies through the final status write.
+   * @returns resolves after every accepted transaction and borrowed batch settles.
+   */
+  close(): Promise<void> {
+    this.accepting = false
+    return (this.closing ??= (async () => {
+      while (this.pending.size > 0) await Promise.allSettled([...this.pending])
+    })())
+  }
+
+  private run<T>(operation: () => Promise<T>): Promise<T> {
+    if (!this.accepting) return Promise.reject(new Error('ACP_SUBAGENT_PERSISTENCE_UNAVAILABLE'))
+    // Reserve ownership before synchronous staging can notify a reentrant disposer.
+    const completion = Promise.withResolvers<T>()
+    this.pending.add(completion.promise)
+    const release = (): void => {
+      this.pending.delete(completion.promise)
+    }
+    void completion.promise.then(release, release)
+    try {
+      void operation().then(completion.resolve, completion.reject)
+    } catch (error) {
+      completion.reject(error)
+    }
+    return completion.promise
+  }
+
   constructor(
     private readonly persistence: Pick<SessionPersistence, 'create' | 'open'>,
     private readonly sidecar: Pick<AcpSidecar, 'upsertActivity'> &
       Partial<Pick<AcpSidecar, 'listProjectedSubagentActivities'>>,
     private readonly publishChild?: (header: SessionHeader, label: string) => Promise<void>,
   ) {}
+
+  /** Borrow one admitted batch; shutdown waits through every transaction and caller writeback.
+   * @param operation - uses the supplied projector only within its awaited batch.
+   * @returns resolves after the batch and its final caller writeback settle.
+   */
+  withProjection(
+    operation: (
+      project: (
+        observation: ExternalDelegationObservation,
+        context: ExternalProjectionContext,
+      ) => Promise<ExternalProjectionResult | undefined>,
+    ) => Promise<void>,
+  ): Promise<void> {
+    return this.run(() => operation((observation, context) => this.projectAccepted(observation, context)))
+  }
 
   private async inspect(
     id: string,
@@ -436,7 +482,11 @@ export class ExternalSubagentProjector {
   }
 
   /** Converge interrupted projection transactions after the persistence seam mounts. */
-  async repairInterrupted(): Promise<ExternalProjectionRepairSummary> {
+  repairInterrupted(): Promise<ExternalProjectionRepairSummary> {
+    return this.run(() => this.repairAccepted())
+  }
+
+  private async repairAccepted(): Promise<ExternalProjectionRepairSummary> {
     const rows = (await this.sidecar.listProjectedSubagentActivities?.()) ?? []
     let committed = 0
     let repaired = 0
@@ -476,7 +526,14 @@ export class ExternalSubagentProjector {
     return { committed, repaired, conflicted }
   }
 
-  async project(
+  project(
+    observation: ExternalDelegationObservation,
+    context: ExternalProjectionContext,
+  ): Promise<ExternalProjectionResult | undefined> {
+    return this.run(() => this.projectAccepted(observation, context))
+  }
+
+  private async projectAccepted(
     observation: ExternalDelegationObservation,
     context: ExternalProjectionContext,
   ): Promise<ExternalProjectionResult | undefined> {

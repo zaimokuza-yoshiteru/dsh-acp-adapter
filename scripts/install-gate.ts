@@ -11,9 +11,8 @@
  * so a warm checkout cannot mask omissions.
  */
 
-import { spawn, spawnSync } from 'node:child_process'
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
-import { createServer } from 'node:http'
 import os from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -303,30 +302,55 @@ export function assertComposedDump(dump: string) {
   if (/^\s*- (?:disable|replace):/m.test(dump)) fail('plugin composition must not disable or replace stock rows')
 }
 
-function getFreePort() {
-  return new Promise<number>((resolvePort, reject) => {
-    const server = createServer()
-    server.once('error', reject)
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address()
-      if (address === null || typeof address === 'string') {
-        server.close(() => reject(new Error('failed to allocate a loopback port')))
-        return
-      }
-      server.close((error) => (error === undefined ? resolvePort(address.port) : reject(error)))
+/** Register before startup checks so an early exit or spawn error cannot be missed. */
+export function ownInstallHost(child: ChildProcess, gracefulTimeoutMs = 5_000) {
+  let closed = false
+  let spawnError: Error | undefined
+  const completion = new Promise<void>((resolveClose) => {
+    child.once('error', (error) => {
+      spawnError = error
+    })
+    child.once('close', () => {
+      closed = true
+      resolveClose()
     })
   })
+  async function waitForClose(timeoutMs: number) {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      return await Promise.race([
+        completion.then(() => true),
+        new Promise<false>((resolveTimeout) => {
+          timer = setTimeout(() => resolveTimeout(false), timeoutMs)
+        }),
+      ])
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+  return {
+    isAlive: () => !closed && spawnError === undefined && child.exitCode === null && child.signalCode === null,
+    async close() {
+      if (closed) return
+      if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) child.kill('SIGTERM')
+      if (await waitForClose(gracefulTimeoutMs)) return
+      if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
+      if (!(await waitForClose(5_000)))
+        fail('DSH host did not close after forced termination; retaining install evidence')
+    },
+  }
 }
 
-async function bootAndCheck(hostRoot: string, dshHome: string) {
+export async function bootAndCheck(hostRoot: string, dshHome: string) {
   const bin = hostCli(hostRoot)
   if (!existsSync(bin)) fail(`DSH CLI not found at ${bin}; build the source reference first`)
-  const port = await getFreePort()
-  const child = spawn(process.execPath, [bin, '--profile', profileName, '--port', String(port), '--no-open'], {
+  // DSH binds its own ephemeral port and prints the actual authenticated URL.
+  const child = spawn(process.execPath, [bin, '--profile', profileName, '--port', '0', '--no-open'], {
     cwd: root,
     env: { ...process.env, DSH_HOME: dshHome, DSH_TELEMETRY_DISABLED: '1', NO_COLOR: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
+  const host = ownInstallHost(child)
   let output = ''
   child.stdout.on('data', (chunk) => {
     output += String(chunk)
@@ -337,7 +361,7 @@ async function bootAndCheck(hostRoot: string, dshHome: string) {
   try {
     const result = await waitForAuthenticatedBootstrap({
       readOutput: () => output,
-      isAlive: () => child.exitCode === null,
+      isAlive: host.isAlive,
       timeoutMs: 30_000,
       intervalMs: 250,
     })
@@ -349,12 +373,7 @@ async function bootAndCheck(hostRoot: string, dshHome: string) {
     const detail = error instanceof Error ? error.message : 'unknown boot error'
     fail(`${detail}\n${redactGateOutput(output.slice(-4000))}`)
   } finally {
-    if (child.exitCode === null) child.kill('SIGTERM')
-    await new Promise<void>((resolveExit) => {
-      if (child.exitCode !== null) resolveExit()
-      else child.once('exit', resolveExit)
-      setTimeout(resolveExit, 5_000)
-    })
+    await host.close()
   }
 }
 

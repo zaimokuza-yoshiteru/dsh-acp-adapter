@@ -1,6 +1,6 @@
 {
   "name": "@zaimokuza/dsh-acp-adapter",
-  "version": "0.2.1-alpha",
+  "version": "0.2.1-rc.2.1",
   "description": "Use AI agents from the DSH session UI.",
   "icon": "./icon.svg",
   "keywords": [
@@ -105,8 +105,8 @@
     "@deepseek-ai/cordis": "4.0.5",
     "@deepseek-ai/dsh-agent": "0.2.1-rc.2",
     "@deepseek-ai/dsh-api-gateway": "0.2.1-rc.2",
-    "@deepseek-ai/dsh-api-remotes": "0.2.1-rc.2",
     "@deepseek-ai/dsh-api-remote-access": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-api-remotes": "0.2.1-rc.2",
     "@deepseek-ai/dsh-api-session-controller": "0.2.1-rc.2",
     "@deepseek-ai/dsh-api-settings-controller": "0.2.1-rc.2",
     "@deepseek-ai/dsh-api-workspace-controller": "0.2.1-rc.2",
@@ -319,6 +319,7 @@
     "@deepseek-ai/dsh-deepseek-account": "0.2.1-rc.2",
     "@deepseek-ai/dsh-experimental-agent-team": "0.2.1-rc.2",
     "@deepseek-ai/dsh-experimental-speech-to-text": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-experimental-worktree": "0.2.1-rc.2",
     "@deepseek-ai/dsh-fs": "0.2.1-rc.2",
     "@deepseek-ai/dsh-fs-local": "0.2.1-rc.2",
     "@deepseek-ai/dsh-hook-protocol": "0.2.1-rc.2",

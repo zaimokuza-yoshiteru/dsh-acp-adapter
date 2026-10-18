@@ -6,6 +6,8 @@
 //   "background-ask" -> as background, but the Qwen-initiated turn asks a question first
 //   anything else -> plain reply
 // FAKE_QWEN_START_TIMEOUT_MS bounds the wait for the start_turn answer (Qwen: 2 s).
+import { appendFileSync } from 'node:fs'
+
 let buffer = ''
 let nextId = 1000
 const pending = new Map()
@@ -51,6 +53,37 @@ const text = (value, meta) =>
     content: { type: 'text', text: value },
     ...(meta === undefined ? {} : { _meta: meta }),
   })
+
+// Qwen emits this empty response segment when a background response was only
+// partially produced. Keep it separate from visible text and explicit endings.
+const partialMarker = (turnId) => {
+  const mode = process.env.FAKE_QWEN_PARTIAL_MARKER
+  if (mode === undefined) return
+  const backgroundTask = { taskId: 'bg-1', turnId, turnComplete: true, partial: true }
+  if (mode === 'false') backgroundTask.partial = false
+  if (mode === 'wrong-turn') backgroundTask.turnId = 'other-turn'
+  if (mode === 'nonboolean-partial') backgroundTask.partial = 'true'
+  if (mode === 'nonboolean-complete') backgroundTask.turnComplete = 'true'
+  if (mode === 'missing-turn') delete backgroundTask.turnId
+  if (mode === 'missing-complete') delete backgroundTask.turnComplete
+  if (mode === 'missing-partial') delete backgroundTask.partial
+  send({
+    jsonrpc: '2.0',
+    method: 'session/update',
+    params: {
+      sessionId: mode === 'wrong-session' ? 'other-session' : SESSION,
+      update: {
+        sessionUpdate: mode === 'non-message' ? 'agent_thought_chunk' : 'agent_message_chunk',
+        content: { type: 'text', text: '' },
+        _meta: {
+          source: mode === 'wrong-source' ? 'other-source' : 'background_notification_response',
+          qwenDiscreteMessage: true,
+          backgroundTask: mode === 'array-task' ? [] : mode === 'null-task' ? null : backgroundTask,
+        },
+      },
+    },
+  })
+}
 
 const QUESTIONS = [
   {
@@ -126,20 +159,44 @@ async function runBackground(withQuestion) {
   if (process.env.FAKE_QWEN_BACKGROUND_FS === '1') {
     void request('fs/write_text_file', { sessionId: SESSION, path: '/fixture/output.txt', content: 'result' })
   }
+  if (process.env.FAKE_QWEN_WRONG_END !== undefined) {
+    send({
+      jsonrpc: '2.0',
+      method: '_qwencode/end_turn',
+      params: {
+        sessionId: process.env.FAKE_QWEN_WRONG_END === 'session' ? 'other-session' : SESSION,
+        turnId: process.env.FAKE_QWEN_WRONG_END === 'turn' ? 'other-turn' : turnId,
+        reason: 'end_turn',
+      },
+    })
+  }
   await new Promise((resolve) => setTimeout(resolve, 20))
   if (backgroundTurn.ended) return
   text('The background command printed done.', { ...meta, source: 'background_notification_response' })
+  if (process.env.FAKE_QWEN_PARTIAL_MARKER_ORDER !== 'after-end') partialMarker(turnId)
   backgroundTurn.ended = true
-  send({
+  const terminal = {
     jsonrpc: '2.0',
     method: '_qwencode/end_turn',
     params: {
       sessionId: SESSION,
-      reason: process.env.FAKE_QWEN_END_REASON ?? 'end_turn',
+      ...(process.env.FAKE_QWEN_END_REASON_SHAPE === 'missing'
+        ? {}
+        : {
+            reason:
+              process.env.FAKE_QWEN_END_REASON_SHAPE === 'number'
+                ? 7
+                : (process.env.FAKE_QWEN_END_REASON ?? 'end_turn'),
+          }),
       turnId,
       source: 'background_notification',
     },
-  })
+  }
+  send(terminal)
+  if (process.env.FAKE_QWEN_PARTIAL_MARKER_ORDER === 'after-end') {
+    partialMarker(turnId)
+    send(terminal)
+  }
 }
 
 // Qwen cron/loop turn: no start/end markers, only the echoed prompt and
@@ -162,6 +219,13 @@ async function runCron(respond, slowHook = false) {
   })
   text('cron working')
   usage()
+  if (process.env.FAKE_QWEN_TRANSIENT_IDLE === '1') {
+    cronActive = false
+    activeWork()
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    cronActive = true
+    activeWork()
+  }
   if (process.env.FAKE_QWEN_STALE_WORK === '1') {
     send({
       jsonrpc: '2.0',
@@ -224,6 +288,8 @@ async function runCron(respond, slowHook = false) {
 
 async function onPrompt(message) {
   const prompt = message.params.prompt.map((block) => block.text ?? '').join(' ')
+  if (process.env.FAKE_QWEN_PROMPT_LOG !== undefined)
+    appendFileSync(process.env.FAKE_QWEN_PROMPT_LOG, `${JSON.stringify(prompt)}\n`)
   if (prompt.includes('ask') && !prompt.includes('background')) {
     const response = await ask()
     text(
@@ -302,7 +368,27 @@ process.stdin.on('data', (chunk) => {
         })
         break
       case 'session/new':
-        send({ jsonrpc: '2.0', id: message.id, result: { sessionId: SESSION } })
+        send({
+          jsonrpc: '2.0',
+          id: message.id,
+          result: {
+            sessionId: SESSION,
+            ...(process.env.FAKE_QWEN_HOST_MODEL === '1'
+              ? {
+                  configOptions: [
+                    {
+                      id: 'model',
+                      name: 'Model',
+                      category: 'model',
+                      type: 'select',
+                      currentValue: 'qwen-fixture',
+                      options: [{ value: 'qwen-fixture', name: 'Qwen fixture' }],
+                    },
+                  ],
+                }
+              : {}),
+          },
+        })
         break
       case 'session/prompt':
         void onPrompt(message)

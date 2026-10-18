@@ -1,0 +1,5 @@
+/* Toast is a body portal. Its public icon marks only our source-session outcome;
+   inherit wrapping through the native alert without changing other app toasts. */
+:global([role='alert']):has(.sourceSessionToast) {
+  overflow-wrap: anywhere;
+}

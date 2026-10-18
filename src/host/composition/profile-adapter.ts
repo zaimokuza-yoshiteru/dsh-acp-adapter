@@ -775,6 +775,8 @@ export class AcpProfileAdapter extends LlmAdapter {
   /** Explicit user choices survive a same-process CodeBuddy cancel/reload only. */
   private readonly confirmedUserModes = new Map<string, ConfirmedUserModeSelection>()
   private claudeDraftDegradationReported = false
+  private projectionAdmissionClosed = false
+  private readonly pendingExternalProjections = new Set<Promise<void>>()
   private readonly ledger: DispatchLedger
   private readonly settlementSink: AcpLocalSettlementSink
   private settlementOwnerDisposer: (() => Promise<void>) | undefined
@@ -807,16 +809,20 @@ export class AcpProfileAdapter extends LlmAdapter {
     private readonly attachments?: AcpAttachmentStore,
     private readonly resolveQuestions?: (dshSessionId: string) => AcpNativeQuestionBinding | undefined,
     private readonly projectExternalDelegation?: (
-      observation: ExternalDelegationObservation,
-      context: {
-        readonly profileId: string
-        readonly bindingGeneration: number
-        readonly rootAcpSessionId: string
-        readonly parentDshSessionId: string
-        readonly parentCwd: string
-        readonly parentDelegationDepth?: number
-      },
-    ) => Promise<string | undefined>,
+      operation: (
+        project: (
+          observation: ExternalDelegationObservation,
+          context: {
+            readonly profileId: string
+            readonly bindingGeneration: number
+            readonly rootAcpSessionId: string
+            readonly parentDshSessionId: string
+            readonly parentCwd: string
+            readonly parentDelegationDepth?: number
+          },
+        ) => Promise<string | undefined>,
+      ) => Promise<void>,
+    ) => Promise<void>,
     private readonly log?: (message: string) => void,
     private readonly terminalJobs?: (sessionId: string) => AcpTerminalJobStarter | undefined,
     private readonly createMcpLease?: (
@@ -3385,52 +3391,70 @@ export class AcpProfileAdapter extends LlmAdapter {
               )
             }
             const projectAfterFinish = async (): Promise<void> => {
-              if (committedBinding === undefined || self.projectExternalDelegation === undefined) return
-              for (const delegation of externalDelegations) {
-                try {
-                  const childSessionId = await self.projectExternalDelegation(delegation, {
-                    profileId: self.profileId,
-                    bindingGeneration: committedBinding.generation,
-                    rootAcpSessionId: committedBinding.agentSessionId,
-                    parentDshSessionId: sessionKey,
-                    // Child transcript metadata retains the immutable parent project.
-                    parentCwd: self.canonicalCwd(session?.header?.cwd),
-                    ...(session?.header?.delegationDepth === undefined
-                      ? {}
-                      : { parentDelegationDepth: session.header.delegationDepth }),
-                  })
-                  if (childSessionId !== undefined) {
+              if (
+                externalDelegations.length === 0 ||
+                committedBinding === undefined ||
+                self.projectExternalDelegation === undefined
+              )
+                return
+              const binding = committedBinding
+              const projectBatch: Parameters<NonNullable<typeof self.projectExternalDelegation>>[0] = async (
+                project,
+              ) => {
+                for (const delegation of externalDelegations) {
+                  try {
+                    const childSessionId = await project(delegation, {
+                      profileId: self.profileId,
+                      bindingGeneration: binding.generation,
+                      rootAcpSessionId: binding.agentSessionId,
+                      parentDshSessionId: sessionKey,
+                      // Child transcript metadata retains the immutable parent project.
+                      parentCwd: self.canonicalCwd(session?.header?.cwd),
+                      ...(session?.header?.delegationDepth === undefined
+                        ? {}
+                        : { parentDelegationDepth: session.header.delegationDepth }),
+                    })
+                    if (childSessionId !== undefined) {
+                      scheduleActivity({
+                        activityId: `delegated-record:${delegation.vendorDelegationKey}`,
+                        kind: 'delegated',
+                        status: 'completed',
+                        presentation: delegation.label,
+                        rawDetail: activityRawDetail({
+                          projectedChildSessionId: childSessionId,
+                          resultCompleteness: delegation.result.completeness,
+                          ...(delegation.sourceToolCallId === undefined
+                            ? {}
+                            : { sourceToolCallId: delegation.sourceToolCallId }),
+                        }),
+                      })
+                    }
+                  } catch (error) {
                     scheduleActivity({
                       activityId: `delegated-record:${delegation.vendorDelegationKey}`,
                       kind: 'delegated',
-                      status: 'completed',
+                      status: 'failed',
                       presentation: delegation.label,
                       rawDetail: activityRawDetail({
-                        projectedChildSessionId: childSessionId,
-                        resultCompleteness: delegation.result.completeness,
+                        projection: 'unavailable',
+                        reason: error instanceof Error ? error.message : String(error),
                         ...(delegation.sourceToolCallId === undefined
                           ? {}
                           : { sourceToolCallId: delegation.sourceToolCallId }),
                       }),
                     })
                   }
-                } catch (error) {
-                  scheduleActivity({
-                    activityId: `delegated-record:${delegation.vendorDelegationKey}`,
-                    kind: 'delegated',
-                    status: 'failed',
-                    presentation: delegation.label,
-                    rawDetail: activityRawDetail({
-                      projection: 'unavailable',
-                      reason: error instanceof Error ? error.message : String(error),
-                      ...(delegation.sourceToolCallId === undefined
-                        ? {}
-                        : { sourceToolCallId: delegation.sourceToolCallId }),
-                    }),
-                  })
                 }
+                await activityWriteTail
               }
-              await activityWriteTail
+              try {
+                await self.projectExternalDelegation(projectBatch)
+              } catch (error) {
+                // An unavailable owner records the same per-child failure without using persistence.
+                await projectBatch(async () => {
+                  throw error
+                })
+              }
             }
             let committedActivitySeq = 0
             if (typeof durableSidecar.activityHead === 'function') {
@@ -3533,7 +3557,7 @@ export class AcpProfileAdapter extends LlmAdapter {
             // The projector then waits at its parent barrier until DSH consumes
             // this finish and durably closes the parent turn. Projection is an
             // additive record and must never delay or rewrite the Agent answer.
-            void projectAfterFinish()
+            self.startExternalProjection(projectAfterFinish)
             if (response.stopReason === 'cancelled') {
               handoff.afterTerminalFinish(async () => {
                 // Only a vendor-initiated cancellation is mirrored into the
@@ -4091,7 +4115,30 @@ export class AcpProfileAdapter extends LlmAdapter {
     }
   }
 
+  private startExternalProjection(operation: () => Promise<void>): void {
+    if (this.projectionAdmissionClosed) return
+    const completion = Promise.withResolvers<void>()
+    this.pendingExternalProjections.add(completion.promise)
+    const release = () => {
+      this.pendingExternalProjections.delete(completion.promise)
+    }
+    void completion.promise.then(release, (error) => {
+      release()
+      try {
+        this.log?.(`ACP external subagent projection did not finish: ${String(error)}`)
+      } catch {
+        /* reporting cannot outlive or reject the owned projection task */
+      }
+    })
+    try {
+      void operation().then(completion.resolve, completion.reject)
+    } catch (error) {
+      completion.reject(error)
+    }
+  }
+
   close(): Promise<void> {
+    this.projectionAdmissionClosed = true
     this.settlementCloseController.abort(new DOMException('Adapter closed', 'AbortError'))
     this.settlementSessionWaitControllers.clear()
     const retireSettlement = this.settlementOwnerDisposer?.() ?? Promise.resolve()
@@ -4115,20 +4162,24 @@ export class AcpProfileAdapter extends LlmAdapter {
     this.runtimes.clear()
     for (const key of keys) this.controlsChanged?.(key.slice(0, key.lastIndexOf(':')))
     return (async () => {
-      await retireSettlement
-      await Promise.all(
-        runtimes.map(async ([key, runtime]) => {
-          if (this.hostRoot !== undefined)
-            retainHostExecutionOwner(this.hostRoot, key.slice(0, key.lastIndexOf(':')), runtime)
-          await runtime.close()
-        }),
-      )
-      await Promise.all(
-        handoffs
-          .map(([, owner]) => owner)
-          .filter((owner) => owner.stream.suspended)
-          .map((owner) => owner.stream.drain()),
-      )
+      try {
+        await retireSettlement
+        await Promise.all(
+          runtimes.map(async ([key, runtime]) => {
+            if (this.hostRoot !== undefined)
+              retainHostExecutionOwner(this.hostRoot, key.slice(0, key.lastIndexOf(':')), runtime)
+            await runtime.close()
+          }),
+        )
+        await Promise.all(
+          handoffs
+            .map(([, owner]) => owner)
+            .filter((owner) => owner.stream.suspended)
+            .map((owner) => owner.stream.drain()),
+        )
+      } finally {
+        while (this.pendingExternalProjections.size > 0) await Promise.allSettled([...this.pendingExternalProjections])
+      }
     })()
   }
 

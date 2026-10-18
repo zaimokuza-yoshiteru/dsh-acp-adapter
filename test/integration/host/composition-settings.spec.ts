@@ -1,10 +1,12 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { PassThrough } from 'node:stream'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
+import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
+import type { SessionHeader } from '@deepseek-ai/dsh-session'
 import { apply, inject } from '../../../src/host/composition/index.ts'
 import { acpSettingsSchema } from '../../../src/host/composition/installed-profile-registry.ts'
 import type { AcpSettings } from '../../../src/host/composition/installed-profile-registry.ts'
@@ -57,6 +59,214 @@ function agent(name: string, command: string): AcpAgentConfig {
 }
 
 describe('real Cordis ACP composition settings lifecycle', () => {
+  it('reads an evicted teammate policy through durable metadata without activating its Agent', async () => {
+    const ctx = new Context()
+    const home = mkdtempSync(path.join(tmpdir(), 'dsh-acp-cold-policy-'))
+    const persisted = createAcpSidecar({ root: path.join(home, 'dsh-acp') })
+    try {
+      await ctx.plugin(SessionStore)
+      await ctx.plugin(SessionProjectionRegistry)
+      const settings = new SettingsDocument({ agents: { codex: agent('Codex', 'codex-acp') } })
+      ctx.provide('settings', settings)
+      ctx.provide('agentDefaultModel', {
+        currentSelection: () => ({ provider: 'acp-codex', model: 'test-model' }),
+      })
+      ctx.provide('permissionPresets', {})
+      ctx.provide('llm', {
+        registerAdapter: () => Object.assign(() => {}, { replace: () => {} }),
+      })
+      ctx.provide('dshHomePath', (...segments: string[]) => path.join(home, ...segments))
+      const spawn = vi.fn(() => {
+        throw new Error('Policy reads must not spawn an Agent process')
+      })
+      ctx.provide('subprocess', { resolveExecutable: async (command: string) => command, spawn })
+      ctx.provide('attachments', {
+        imageLimits: {
+          maxImageBytes: 1024,
+          maxImagesPerMessage: 4,
+          maxMessageImageBytes: 4096,
+          maxImagePixels: 1_000_000,
+          maxImageDimension: 4096,
+          mediaTypes: ['image/png'],
+        },
+        readImage: async () => {
+          throw new Error('not used by this policy test')
+        },
+      })
+      // Persistence and live SessionStore are independent: a detached Session
+      // remains observable through the official metadata-only stat contract.
+      const headers = new Map<string, SessionHeader>()
+      let statFailure: Error | undefined
+      const stat = vi.fn(async (id: string) => {
+        if (statFailure !== undefined) throw statFailure
+        const header = headers.get(id)
+        return header === undefined ? undefined : { header, revision: 'test-revision' }
+      })
+      ctx.provide('sessionPersistence', { stat })
+      const leadSession = ctx.sessions.prepare(SessionId('evicted-policy-lead'))
+      const detachLead = ctx.sessions.enter(leadSession)
+      ctx.sessions.announce(leadSession)
+      const lead = { id: leadSession.id, options: { provider: 'acp-codex' } }
+      const liveAgents = new Map([[lead.id, lead]])
+      const create = vi.fn(() => {
+        throw new Error('Policy reads must not create an Agent')
+      })
+      const resolveAgent = vi.fn(() => {
+        throw new Error('Policy reads must not activate an Agent')
+      })
+      ctx.provide('agents', {
+        get: (id: typeof lead.id) => liveAgents.get(id),
+        list: () => [...liveAgents.values()],
+        create,
+      })
+      ctx.provide('sessionController', { resolveAgent })
+      const childId = SessionId('evicted-policy-member')
+      let rosterPresent = true
+      ctx.provide('agentTeams', {
+        tryMembership: (candidate: object) =>
+          candidate === lead ? { id: 'evicted-policy-team', role: 'lead', root: lead } : undefined,
+        listMembers: () => (rosterPresent ? [{ id: childId, role: 'teammate' }] : []),
+      })
+      const fiber = ctx.plugin({
+        name: 'composition-cold-policy-test',
+        inject: [...inject],
+        apply: (scope: Context) => apply(scope, settings.config),
+      })
+      await fiber.await()
+      const remote = ctx.get('dshAcp' as never) as unknown as {
+        toolApprovalPolicy(sessionId: string): Promise<{ policy: 'auto' | 'ask'; source: string; editable: boolean }>
+        setToolApprovalPolicy(sessionId: string, request: { policy: 'auto' | 'ask' }): Promise<unknown>
+      }
+      const seedBinding = async (sessionId: string): Promise<void> => {
+        const binding: AcpBindingData = {
+          provider: 'acp-codex',
+          agentSessionId: `agent-${sessionId}`,
+          profileId: 'codex',
+          canonicalCwd: '/tmp/work',
+          launchFingerprint: { command: 'codex-acp', args: ['acp'], envKeys: [] },
+          agent: { name: 'Codex', version: '1.6.2' },
+          protocolVersion: 1,
+          capabilityHash: 'a1b2c3d4e5f60708',
+          configHash: '0817f6e5d4c3b2a1',
+          generation: 1,
+          bindingEpoch: 1,
+          committedPromptOrdinal: 0,
+          historyBaseSeq: 0,
+          establishedAt: Date.now(),
+          dshCommittedSeq: 0,
+        }
+        await persisted.append(sessionId as never, { kind: 'binding', data: binding })
+      }
+      await seedBinding(lead.id)
+      await seedBinding(childId)
+      await remote.setToolApprovalPolicy(lead.id, { policy: 'ask' })
+
+      const child = ctx.sessions.prepare(childId, { meta: { origin: 'subagent', parentSession: lead.id } })
+      headers.set(childId, child.header)
+      const detachChild = ctx.sessions.enter(child)
+      ctx.sessions.announce(child)
+      expect(ctx.sessions.get(childId)).toBe(child)
+      detachChild()
+      expect(ctx.sessions.get(childId)).toBeUndefined()
+      expect(liveAgents.has(childId)).toBe(false)
+      const expectNoChildPolicy = async (): Promise<void> => {
+        await expect(persisted.readToolApprovalPolicy(childId)).resolves.toBeUndefined()
+        expect(create).not.toHaveBeenCalled()
+        expect(resolveAgent).not.toHaveBeenCalled()
+        expect(spawn).not.toHaveBeenCalled()
+        expect(ctx.sessions.get(childId)).toBeUndefined()
+      }
+
+      await expect(remote.toolApprovalPolicy(childId)).resolves.toMatchObject({
+        policy: 'ask',
+        source: 'lead',
+        editable: false,
+      })
+      expect(stat).toHaveBeenCalledWith(childId)
+      await expect(remote.setToolApprovalPolicy(childId, { policy: 'auto' })).rejects.toThrow(
+        'ACP_TOOL_APPROVAL_POLICY_INHERITED',
+      )
+      await expectNoChildPolicy()
+      // An ordinary fork copies the dormant parent's effective Lead policy;
+      // it never grants that parent a separate writable session policy.
+      const forkId = SessionId('evicted-policy-ordinary-fork')
+      const fork = ctx.sessions.prepare(forkId, { meta: { parentSession: childId } })
+      headers.set(forkId, fork.header)
+      const detachFork = ctx.sessions.enter(fork)
+      ctx.sessions.announce(fork)
+      detachFork()
+      await seedBinding(forkId)
+      await expect(remote.toolApprovalPolicy(forkId)).resolves.toMatchObject({
+        policy: 'ask',
+        source: 'session',
+        editable: true,
+      })
+      expect(ctx.sessions.get(forkId)).toBeUndefined()
+      await expectNoChildPolicy()
+      await remote.setToolApprovalPolicy(lead.id, { policy: 'auto' })
+      await expect(remote.toolApprovalPolicy(childId)).resolves.toMatchObject({
+        policy: 'auto',
+        source: 'lead',
+        editable: false,
+      })
+      await expect(remote.toolApprovalPolicy(forkId)).resolves.toMatchObject({
+        policy: 'ask',
+        source: 'session',
+        editable: true,
+      })
+
+      // Activity ownership permits the Remote read, but the current default
+      // model cannot turn unrelated durable native metadata into an ACP route.
+      const nativeId = SessionId('evicted-policy-native')
+      const native = ctx.sessions.prepare(nativeId)
+      headers.set(nativeId, native.header)
+      const detachNative = ctx.sessions.enter(native)
+      ctx.sessions.announce(native)
+      detachNative()
+      await persisted.upsertActivity({
+        dshSessionId: nativeId,
+        ownerDshSessionId: nativeId,
+        promptAnchorMessageId: 'native-policy-user',
+        activityId: 'native-policy-tool',
+        time: 1,
+        kind: 'tool',
+        status: 'completed',
+        presentation: 'Completed tool',
+      })
+      await expect(remote.toolApprovalPolicy(nativeId)).rejects.toThrow('ACP_TOOL_APPROVAL_SESSION_NOT_ACP')
+      await expect(persisted.readToolApprovalPolicy(nativeId)).resolves.toBeUndefined()
+      expect(ctx.sessions.get(nativeId)).toBeUndefined()
+      await expectNoChildPolicy()
+
+      await seedBinding('evicted-policy-binding-only')
+      await expect(remote.toolApprovalPolicy('evicted-policy-binding-only')).rejects.toThrow(
+        'ACP_TOOL_APPROVAL_SESSION_UNAVAILABLE',
+      )
+      await expect(remote.toolApprovalPolicy('evicted-policy-unknown')).rejects.toThrow(
+        'DSH tool approval access is not authorized',
+      )
+      await expect(persisted.readToolApprovalPolicy(SessionId('evicted-policy-binding-only'))).resolves.toBeUndefined()
+      rosterPresent = false
+      await expect(remote.toolApprovalPolicy(childId)).rejects.toThrow('ACP_TOOL_APPROVAL_LEAD_UNAVAILABLE')
+      await expectNoChildPolicy()
+      rosterPresent = true
+      liveAgents.delete(lead.id)
+      // The Lead is fully unavailable; this is not the separate native path
+      // that can resume an attached ordinary parent on explicit access.
+      detachLead()
+      await expect(remote.toolApprovalPolicy(childId)).rejects.toThrow('ACP_TOOL_APPROVAL_LEAD_UNAVAILABLE')
+      await expectNoChildPolicy()
+      liveAgents.set(lead.id, lead)
+      statFailure = new Error('durable metadata unavailable')
+      await expect(remote.toolApprovalPolicy(childId)).rejects.toBe(statFailure)
+      await expectNoChildPolicy()
+    } finally {
+      await ctx.fiber.dispose()
+      await persisted.dispose()
+      rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
+    }
+  })
+
   it('registers initial settings and follows later mutations through the real injected plugin', async () => {
     expect(inject).not.toContain('settings')
     const ctx = new Context()

@@ -73,6 +73,21 @@ function texts(notifications: readonly AcpSessionNotification[]): string[] {
   })
 }
 
+function promptRequests() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-qwen-prompts-'))
+  roots.push(root)
+  const file = path.join(root, 'prompts.jsonl')
+  return {
+    env: { FAKE_QWEN_PROMPT_LOG: file },
+    read: () =>
+      fs
+        .readFileSync(file, 'utf8')
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as string),
+  }
+}
+
 interface RecordedJob {
   label: string
   hooks: QwenTaskJobHooks
@@ -159,15 +174,85 @@ describe('Qwen Code ask_user_question', () => {
 })
 
 describe('Qwen Code background tasks', () => {
-  it('settles a fast cron from ordered activity snapshots without needing a quiet timer', async () => {
+  it('retains an empty partial response marker received before adoption and rejects a matching end_turn', async () => {
     const jobs = recordingJobs()
-    const runtime = createRuntime({ qwenTaskJobs: jobs.starter }, { FAKE_QWEN_FAST_CRON: '1' })
-    await runtime.prompt([{ type: 'text', text: 'schedule' }], () => undefined)
-    await expect.poll(() => jobs.jobs.some((job) => job.label.startsWith('cron:'))).toBe(true)
+    const marker = Promise.withResolvers<AcpSessionNotification>()
+    const prompts = promptRequests()
+    const runtime = createRuntime(
+      {
+        qwenTaskJobs: jobs.starter,
+        onSessionUpdate: (notification) => {
+          if (
+            notification.update._meta?.source === 'background_notification_response' &&
+            notification.update.sessionUpdate === 'agent_message_chunk' &&
+            notification.update.content.type === 'text' &&
+            notification.update.content.text === ''
+          )
+            marker.resolve(notification)
+        },
+      },
+      { FAKE_QWEN_PARTIAL_MARKER: 'matching', ...prompts.env },
+    )
+    const mirrored = jobs.next()
+    await runtime.prompt([{ type: 'text', text: 'background' }], () => undefined)
+    await (
+      await mirrored
+    ).outcome
+    expect(await marker.promise).toMatchObject({
+      sessionId: 'qwen-session',
+      update: {
+        content: { type: 'text', text: '' },
+        _meta: {
+          source: 'background_notification_response',
+          backgroundTask: { turnId: 'qwen-session########notification1', turnComplete: true, partial: true },
+        },
+      },
+    })
+
     const updates: AcpSessionNotification[] = []
+    await expect(
+      runtime.prompt(
+        [{ type: 'text', text: 'wake' }],
+        (notification) => updates.push(notification),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { adoptAgentTurn: true },
+      ),
+    ).rejects.toMatchObject({
+      name: 'AcpAgentTurnOutcomeError',
+      code: 'ACP_PROTOCOL_ERROR',
+      reason: 'incomplete-turn',
+    })
+    expect(texts(updates)).toContain('The background command printed done.')
+    expect(prompts.read()).toEqual(['background'])
+  })
+
+  it.each([
+    'false',
+    'wrong-session',
+    'wrong-turn',
+    'wrong-source',
+    'nonboolean-partial',
+    'nonboolean-complete',
+    'missing-turn',
+    'missing-complete',
+    'missing-partial',
+    'non-message',
+    'array-task',
+    'null-task',
+  ])('does not invent an incomplete outcome from a %s marker', async (mode) => {
+    const jobs = recordingJobs()
+    const runtime = createRuntime({ qwenTaskJobs: jobs.starter }, { FAKE_QWEN_PARTIAL_MARKER: mode })
+    const mirrored = jobs.next()
+    await runtime.prompt([{ type: 'text', text: 'background' }], () => undefined)
+    await (
+      await mirrored
+    ).outcome
     const response = await runtime.prompt(
       [{ type: 'text', text: 'wake' }],
-      (n) => updates.push(n),
+      () => undefined,
       undefined,
       undefined,
       undefined,
@@ -175,13 +260,180 @@ describe('Qwen Code background tasks', () => {
       { adoptAgentTurn: true },
     )
     expect(response.stopReason).toBe('end_turn')
-    expect(texts(updates)).toEqual(expect.arrayContaining(['cron working', 'cron done']))
-    expect(texts(updates).some((text) => text.startsWith('echo:'))).toBe(false)
   })
 
-  it('uses a confirmed cron release on Stop and never dispatches retained input', async () => {
+  it.each(['max_tokens', 'max_turn_requests', 'refusal', 'cancelled'] as const)(
+    'preserves an explicit %s after the matching partial marker',
+    async (reason) => {
+      const jobs = recordingJobs()
+      const runtime = createRuntime(
+        { qwenTaskJobs: jobs.starter },
+        { FAKE_QWEN_PARTIAL_MARKER: 'matching', FAKE_QWEN_END_REASON: reason },
+      )
+      const mirrored = jobs.next()
+      await runtime.prompt([{ type: 'text', text: 'background' }], () => undefined)
+      await (
+        await mirrored
+      ).outcome
+      const response = await runtime.prompt(
+        [{ type: 'text', text: 'wake' }],
+        () => undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { adoptAgentTurn: true },
+      )
+      expect(response.stopReason).toBe(reason)
+    },
+  )
+
+  it('keeps the first confirmed terminal when a partial marker and duplicate ending arrive afterwards', async () => {
     const jobs = recordingJobs()
-    const runtime = createRuntime({ qwenTaskJobs: jobs.starter, cancelGraceMs: 100 })
+    const runtime = createRuntime(
+      { qwenTaskJobs: jobs.starter },
+      { FAKE_QWEN_PARTIAL_MARKER: 'matching', FAKE_QWEN_PARTIAL_MARKER_ORDER: 'after-end' },
+    )
+    const mirrored = jobs.next()
+    await runtime.prompt([{ type: 'text', text: 'background' }], () => undefined)
+    await (
+      await mirrored
+    ).outcome
+    const response = await runtime.prompt(
+      [{ type: 'text', text: 'wake' }],
+      () => undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { adoptAgentTurn: true },
+    )
+    expect(response.stopReason).toBe('end_turn')
+    const next: AcpSessionNotification[] = []
+    expect(
+      (await runtime.prompt([{ type: 'text', text: 'continue afterwards' }], (notification) => next.push(notification)))
+        .stopReason,
+    ).toBe('end_turn')
+    expect(texts(next)).toContain('echo:continue afterwards')
+    expect(texts(next)).not.toContain('The background command printed done.')
+  })
+
+  it.each(['end_turn', 'max_tokens', 'max_turn_requests', 'refusal', 'cancelled'] as const)(
+    'preserves an explicitly confirmed %s after visible automatic output',
+    async (reason) => {
+      const jobs = recordingJobs()
+      const runtime = createRuntime({ qwenTaskJobs: jobs.starter }, { FAKE_QWEN_END_REASON: reason })
+      const mirrored = jobs.next()
+      await runtime.prompt([{ type: 'text', text: 'background' }], () => undefined)
+      await (
+        await mirrored
+      ).outcome
+      const updates: AcpSessionNotification[] = []
+      const response = await runtime.prompt(
+        [{ type: 'text', text: 'wake' }],
+        (n) => updates.push(n),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { adoptAgentTurn: true },
+      )
+      expect(response.stopReason).toBe(reason)
+      expect(texts(updates)).toContain('The background command printed done.')
+    },
+  )
+
+  it.each(['session', 'turn'])(
+    'ignores a successful terminal for another %s before the owned turn fails',
+    async (mismatch) => {
+      const jobs = recordingJobs()
+      const runtime = createRuntime(
+        { qwenTaskJobs: jobs.starter },
+        { FAKE_QWEN_WRONG_END: mismatch, FAKE_QWEN_END_REASON: 'failed' },
+      )
+      const mirrored = jobs.next()
+      await runtime.prompt([{ type: 'text', text: 'background' }], () => undefined)
+      await (
+        await mirrored
+      ).outcome
+      const updates: AcpSessionNotification[] = []
+      await expect(
+        runtime.prompt(
+          [{ type: 'text', text: 'wake' }],
+          (n) => updates.push(n),
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          { adoptAgentTurn: true },
+        ),
+      ).rejects.toMatchObject({
+        name: 'AcpAgentTurnOutcomeError',
+        code: 'ACP_PROTOCOL_ERROR',
+        reason: 'unrecognized-end-reason',
+      })
+      expect(texts(updates)).toContain('The background command printed done.')
+    },
+  )
+
+  it('keeps an active automatic turn unknown when the local runtime closes', async () => {
+    const jobs = recordingJobs()
+    const runtime = createRuntime({ qwenTaskJobs: jobs.starter }, { FAKE_QWEN_IGNORE_CANCEL: '1' })
+    const mirrored = jobs.next()
+    await runtime.prompt([{ type: 'text', text: 'background' }], () => undefined)
+    await (
+      await mirrored
+    ).outcome
+    const updates: AcpSessionNotification[] = []
+    const outcome = runtime
+      .prompt([{ type: 'text', text: 'wake' }], (n) => updates.push(n), undefined, undefined, undefined, undefined, {
+        adoptAgentTurn: true,
+      })
+      .then(
+        (response) => ({ response }),
+        (error: unknown) => ({ error }),
+      )
+    await expect.poll(() => texts(updates)).toContain('background still running')
+    await runtime.close()
+    expect(await outcome).toMatchObject({
+      error: { name: 'AcpAgentTurnOutcomeError', code: 'ACP_PROTOCOL_ERROR', reason: 'missing-terminal' },
+    })
+  })
+
+  it('keeps fast cron output unknown when ordered activity snapshots lose the active hold', async () => {
+    const jobs = recordingJobs()
+    const prompts = promptRequests()
+    const runtime = createRuntime(
+      { qwenTaskJobs: jobs.starter, unannouncedIdleMs: 800 },
+      { FAKE_QWEN_FAST_CRON: '1', ...prompts.env },
+    )
+    await runtime.prompt([{ type: 'text', text: 'schedule' }], () => undefined)
+    await expect.poll(() => jobs.jobs.some((job) => job.label.startsWith('cron:'))).toBe(true)
+    const updates: AcpSessionNotification[] = []
+    await expect(
+      runtime.prompt(
+        [{ type: 'text', text: 'wake' }],
+        (n) => updates.push(n),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { adoptAgentTurn: true, followupContent: [{ type: 'text', text: 'must not dispatch' }] },
+      ),
+    ).rejects.toMatchObject({
+      name: 'AcpAgentTurnOutcomeError',
+      code: 'ACP_PROTOCOL_ERROR',
+      reason: 'missing-terminal',
+    })
+    expect(texts(updates)).toEqual(expect.arrayContaining(['cron working', 'cron done']))
+    expect(texts(updates).some((text) => text.startsWith('echo:'))).toBe(false)
+    expect(prompts.read()).toEqual(['schedule'])
+  })
+
+  it('keeps a cron hold release unknown on Stop and never dispatches retained input', async () => {
+    const jobs = recordingJobs()
+    const prompts = promptRequests()
+    const runtime = createRuntime({ qwenTaskJobs: jobs.starter, cancelGraceMs: 100 }, prompts.env)
     await runtime.prompt([{ type: 'text', text: 'schedule' }], () => undefined)
     await expect.poll(() => jobs.jobs.some((job) => job.label.startsWith('cron:'))).toBe(true)
     const controller = new AbortController()
@@ -196,9 +448,9 @@ describe('Qwen Code background tasks', () => {
       { adoptAgentTurn: true, followupContent: [{ type: 'text', text: 'must not dispatch' }] },
     )
     setTimeout(() => controller.abort(), 10)
-    expect((await adopted).stopReason).toBe('cancelled')
+    await expect(adopted).rejects.toThrow()
     expect(texts(updates).some((text) => text.includes('must not dispatch'))).toBe(false)
-    expect((await runtime.prompt([{ type: 'text', text: 'next user' }], () => undefined)).stopReason).toBe('end_turn')
+    expect(prompts.read()).toEqual(['schedule'])
   })
 
   it.each(['FAKE_QWEN_NO_ACTIVE_WORK', 'FAKE_QWEN_IDLE_ONLY'])(
@@ -219,7 +471,11 @@ describe('Qwen Code background tasks', () => {
           undefined,
           { adoptAgentTurn: true, followupContent: [{ type: 'text', text: 'must not dispatch' }] },
         ),
-      ).rejects.toThrow()
+      ).rejects.toMatchObject({
+        name: 'AcpAgentTurnOutcomeError',
+        code: 'ACP_PROTOCOL_ERROR',
+        reason: 'missing-terminal',
+      })
       expect(texts(updates).some((text) => text.includes('must not dispatch'))).toBe(false)
     },
   )
@@ -308,26 +564,32 @@ describe('Qwen Code background tasks', () => {
     const runtime = createRuntime(
       {
         qwenTaskJobs: jobs.starter,
+        unannouncedIdleMs: 800,
         onPermissionRequest: async () => {
           approvals++
           return { outcome: { outcome: 'selected', optionId: 'allow' } }
         },
       },
-      { FAKE_QWEN_STALE_WORK: '1' },
+      { FAKE_QWEN_STALE_WORK: '1', FAKE_QWEN_TRANSIENT_IDLE: '1' },
     )
     await runtime.prompt([{ type: 'text', text: 'schedule-slow-hook' }], () => undefined)
     await expect.poll(() => jobs.jobs.find((job) => job.label.startsWith('cron:'))).toBeDefined()
     const updates: AcpSessionNotification[] = []
-    const response = await runtime.prompt(
-      [{ type: 'text', text: 'wake' }],
-      (n) => updates.push(n),
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      { adoptAgentTurn: true },
-    )
-    expect(response.stopReason).toBe('end_turn')
+    await expect(
+      runtime.prompt(
+        [{ type: 'text', text: 'wake' }],
+        (n) => updates.push(n),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { adoptAgentTurn: true },
+      ),
+    ).rejects.toMatchObject({
+      name: 'AcpAgentTurnOutcomeError',
+      code: 'ACP_PROTOCOL_ERROR',
+      reason: 'missing-terminal',
+    })
     expect(approvals).toBe(1)
     expect(texts(updates)).toContain('cron-permission:selected')
     expect(texts(updates)).toContain('cron done')
@@ -421,48 +683,44 @@ describe('Qwen Code background tasks', () => {
     expect((await runtime.prompt([{ type: 'text', text: 'hello' }], () => undefined)).stopReason).toBe('end_turn')
   })
 
-  it('adopts an unannounced Qwen cron turn and ends it after a tool-free round', async () => {
+  it('preserves cron text and completed tool evidence without inferring a successful terminal', async () => {
     const jobs = recordingJobs()
-    const runtime = createRuntime({ qwenTaskJobs: jobs.starter })
-    const wake = new Promise<RecordedJob>((resolve) => {
-      const poll = setInterval(() => {
-        const job = jobs.jobs.find((candidate) => candidate.label.startsWith('cron:'))
-        if (job !== undefined) {
-          clearInterval(poll)
-          resolve(job)
-        }
-      }, 10)
-    })
+    const runtime = createRuntime({ qwenTaskJobs: jobs.starter, unannouncedIdleMs: 800 })
     await runtime.prompt([{ type: 'text', text: 'schedule' }], () => undefined)
-    const job = await wake
+    await expect.poll(() => jobs.jobs.find((candidate) => candidate.label.startsWith('cron:'))).toBeDefined()
+    const job = jobs.jobs.find((candidate) => candidate.label.startsWith('cron:'))!
     expect(job.label).toBe('cron: check the build')
     expect(await job.outcome).toMatchObject({ silent: false })
     const adopted: AcpSessionNotification[] = []
     const started = Date.now()
-    const response = await runtime.prompt(
-      [{ type: 'text', text: 'wake' }],
-      (notification) => {
-        adopted.push(notification)
-      },
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      { adoptAgentTurn: true },
-    )
-    expect(response.stopReason).toBe('end_turn')
+    await expect(
+      runtime.prompt(
+        [{ type: 'text', text: 'wake' }],
+        (notification) => {
+          adopted.push(notification)
+        },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { adoptAgentTurn: true },
+      ),
+    ).rejects.toMatchObject({
+      name: 'AcpAgentTurnOutcomeError',
+      code: 'ACP_PROTOCOL_ERROR',
+      reason: 'missing-terminal',
+    })
     expect(texts(adopted)).toEqual(expect.arrayContaining(['cron working', 'cron done']))
     // The first round's usage chunk is followed by a tool call: no early end.
     expect(adopted.some((n) => n.update.sessionUpdate === 'tool_call_update' && n.update.status === 'completed')).toBe(
       true,
     )
     expect(Date.now() - started).toBeLessThan(5_000)
-    expect((await runtime.prompt([{ type: 'text', text: 'hello' }], () => undefined)).stopReason).toBe('end_turn')
   })
 
-  it('splits a cron turn that Qwen starts before answering the current prompt', async () => {
+  it('separates an ordinary prompt response from an inline cron with an unknown terminal', async () => {
     const jobs = recordingJobs()
-    const runtime = createRuntime({ qwenTaskJobs: jobs.starter })
+    const runtime = createRuntime({ qwenTaskJobs: jobs.starter, unannouncedIdleMs: 800 })
     const first: AcpSessionNotification[] = []
     await runtime.prompt([{ type: 'text', text: 'schedule-inline' }], (notification) => {
       first.push(notification)
@@ -471,18 +729,23 @@ describe('Qwen Code background tasks', () => {
     const job = jobs.jobs.find((candidate) => candidate.label === 'cron: check the build')
     expect(job).toBeDefined()
     const adopted: AcpSessionNotification[] = []
-    const response = await runtime.prompt(
-      [{ type: 'text', text: 'wake' }],
-      (notification) => {
-        adopted.push(notification)
-      },
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      { adoptAgentTurn: true },
-    )
-    expect(response.stopReason).toBe('end_turn')
+    await expect(
+      runtime.prompt(
+        [{ type: 'text', text: 'wake' }],
+        (notification) => {
+          adopted.push(notification)
+        },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { adoptAgentTurn: true },
+      ),
+    ).rejects.toMatchObject({
+      name: 'AcpAgentTurnOutcomeError',
+      code: 'ACP_PROTOCOL_ERROR',
+      reason: 'missing-terminal',
+    })
     expect(texts(adopted)).toEqual(expect.arrayContaining(['cron working', 'cron done']))
   })
 

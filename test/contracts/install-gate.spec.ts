@@ -1,14 +1,21 @@
 import { describe, expect, it } from 'vitest'
-import { basename } from 'node:path'
+import { spawn } from 'node:child_process'
+import { once } from 'node:events'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { basename, join } from 'node:path'
 import {
   assertComposedDump,
   assertAcpConfigSentinel,
   assertTarballEntries,
+  bootAndCheck,
+  ownInstallHost,
   parseArgs,
   parseAuthenticatedStartupUrl,
   redactGateOutput,
   waitForAuthenticatedBootstrap,
 } from '../../scripts/install-gate.ts'
+import { DSH_SOURCE_TAG } from '../../scripts/dsh-target.ts'
 import { findMissingRelativeRuntimeImports } from '../../scripts/verify-runtime-closure.ts'
 
 describe('DSH clean-install gate contracts', () => {
@@ -145,5 +152,81 @@ describe('DSH clean-install gate contracts', () => {
     expect(result.status).toBe(200)
     expect(requests).toHaveLength(4)
     expect(fetchedBeforeUrl).toBe(false)
+  })
+
+  it('boots concurrent hosts on their own ephemeral ports and closes both before returning', async () => {
+    const fixture = mkdtempSync(join(tmpdir(), 'dsh-install-host-contract-'))
+    try {
+      mkdirSync(join(fixture, 'lib'))
+      writeFileSync(
+        join(fixture, 'package.json'),
+        JSON.stringify({ name: '@deepseek-ai/dsh', version: DSH_SOURCE_TAG.slice(5) }),
+      )
+      writeFileSync(
+        join(fixture, 'lib', 'bin.js'),
+        `const { createServer } = require('node:http')
+if (process.argv[process.argv.indexOf('--port') + 1] !== '0') process.exit(2)
+const server = createServer((req, res) => {
+  if (req.url.startsWith('/?token=')) {
+    res.writeHead(303, { 'set-cookie': 'fixture=session; Path=/', location: '/' }).end()
+  } else if (req.headers.cookie === 'fixture=session') {
+    res.end('<__DSH_BOOT__>')
+  } else res.writeHead(401).end()
+})
+server.listen(0, '127.0.0.1', () => {
+  console.log('dsh web: http://127.0.0.1:' + server.address().port + '/?token=fixture-secret')
+})
+process.on('SIGTERM', () => server.close(() => process.exit(0)))
+`,
+      )
+      const results = await Promise.all([bootAndCheck(fixture, fixture), bootAndCheck(fixture, fixture)])
+      const ports = results.map((result) => {
+        expect(result.status).toBe(200)
+        expect(result.output).not.toContain('fixture-secret')
+        return Number(/127\.0\.0\.1:(\d+)/u.exec(result.output)?.[1])
+      })
+      expect(ports.every((port) => port > 0)).toBe(true)
+      expect(new Set(ports).size).toBe(2)
+      for (const port of ports) {
+        await expect(fetch(`http://127.0.0.1:${port}/`)).rejects.toThrow()
+      }
+    } finally {
+      rmSync(fixture, { recursive: true, force: true })
+    }
+  })
+
+  it.skipIf(process.platform === 'win32')(
+    'forces a host that ignores SIGTERM and waits for its close event',
+    async () => {
+      const child = spawn(
+        process.execPath,
+        ['-e', "process.on('SIGTERM', () => {}); console.log('ready'); setInterval(() => {}, 1000)"],
+        { stdio: ['ignore', 'pipe', 'pipe'] },
+      )
+      const host = ownInstallHost(child, 25)
+      let observedClose = false
+      child.once('close', () => {
+        observedClose = true
+      })
+      try {
+        await once(child.stdout!, 'data')
+        expect(host.isAlive()).toBe(true)
+        await host.close()
+        expect(observedClose).toBe(true)
+        expect(child.signalCode).toBe('SIGKILL')
+        expect(host.isAlive()).toBe(false)
+        expect(() => process.kill(child.pid!, 0)).toThrow()
+        await host.close()
+      } finally {
+        await host.close()
+      }
+    },
+  )
+
+  it('owns a failed spawn without leaving an unhandled error or a pending close', async () => {
+    const child = spawn(join(tmpdir(), 'missing-dsh-install-host', 'node'), [], { stdio: 'ignore' })
+    const host = ownInstallHost(child, 25)
+    await host.close()
+    expect(host.isAlive()).toBe(false)
   })
 })

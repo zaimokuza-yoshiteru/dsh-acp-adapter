@@ -7,7 +7,7 @@ import { mkdirSync } from 'node:fs'
 import { it, expect } from 'vitest'
 import { connectFreshWorkspace, writeComposerDraft } from '#host-support'
 import { launchAdapterWorld, root } from './scaffold.ts'
-import { backToPluginList, openAcpPluginDetail } from './plugin-panel.helpers.ts'
+import { backToPluginList, openAcpPluginDetail, openNativeSettings } from './plugin-panel.helpers.ts'
 
 it('adds catalog presets, preserves edited defaults, and runs a generic Agent through native UI', async () => {
   const host = await launchAdapterWorld()
@@ -256,8 +256,7 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
     )
     await detail.getByRole('button', { name: 'Cancel', exact: true }).click()
     await backToPluginList(detail)
-    await page.getByRole('button', { name: 'Settings', exact: true }).click()
-    const settings = page.getByRole('dialog', { name: 'Settings', exact: true })
+    const settings = await openNativeSettings(page)
     await settings.getByRole('button', { name: 'General', exact: true }).click()
     await settings.getByRole('button', { name: 'English', exact: true }).click()
     await page.getByRole('menuitem', { name: '中文', exact: true }).click()
@@ -283,8 +282,7 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
     await page.screenshot({ path: join(root, '.local/registry-ui/manual-zh.png'), fullPage: true })
     await detail.getByRole('button', { name: '取消', exact: true }).click()
     await backToPluginList(detail, 'zh')
-    await page.getByRole('button', { name: '设置', exact: true }).click()
-    const currentSettings = page.getByRole('dialog', { name: '设置', exact: true })
+    const currentSettings = await openNativeSettings(page, 'zh')
     await currentSettings.getByRole('button', { name: '通用设置', exact: true }).click()
     await currentSettings.getByRole('button', { name: '中文', exact: true }).click()
     await page.getByRole('menuitem', { name: 'English', exact: true }).click()
