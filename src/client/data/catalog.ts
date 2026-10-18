@@ -71,6 +71,7 @@ const VERIFIED_ADAPTER_IDS: readonly string[] = [
   'kimi',
   'claude-acp',
   'antigravity-acp',
+  'qwen-code',
 ]
 
 // ---------- catalog 合成 ----------

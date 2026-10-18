@@ -136,6 +136,8 @@ DEVIN_TEST_MODEL=swe-2-high node scripts/check-devin-live.ts "$(command -v devin
 
 `DEVIN_TEST_MODEL` 未设置时默认为 `swe-2-high`（SWE-2）；显式空值或当前 Devin 模型目录中不存在的 ID 会在发送 prompt 前失败，不会回退到任意目录项。可用它指定目录中另一确切模型。真实运行会产生 Devin 服务用量，费用与可用额度按运行时账户套餐和当前计费条件为准；运行前请自行核对。脚本有专用的 16 次 Host 工具分发准入上限，角色违规或超限调用会在 Host 工具函数执行前拒绝并取消该轮；此预算只保护该测试，不限制模型 token 生成或 Devin 原生工具使用，也不是生产限额。4 分钟模型交互计时从首个 Lead prompt 发出前开始，到期会请求取消本地 ACP turns；远端已经开始的请求仍可能继续结算。单阶段等待最多 90 秒。启动准备和关闭时间不计入模型交互计时。脚本将 HOME、XDG 目录与 DSH profile 指向临时目录，不改 Devin 的用户级配置。Actions 为 macOS 和 Windows 普通用户步骤固定同一模型；Windows 启动器会显式把该值传给凭据登录的普通用户进程。
 
+2026-10-18 的[真实 Devin CI 运行](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/actions/runs/39097343182)在 `main@943e4d6`、DSH `0.2.1-rc.2`、Devin CLI `3000.11.3`、`swe-2-high` 下通过 `macos-15` 和 `windows-2022` 两个平台。Windows 使用普通账户 `dsh-acp-ci`，测试时关闭开发者模式，结束后恢复设置、撤销目录权限并删除账户与临时目录。两平台均验证两个并发 Lead 各创建一个真实 teammate、团队隔离、消息接收后回复和同会话显式续聊，输出 `LIVE_TEST_PASS`，且安全 trace 的最终结果及清理均通过；这是短程原生 Teams 验证，不代替 Windows 桌面安装／升级、审批拒绝、Qwen Code 或长任务 B 的验收。
+
 每个 live 测试会尝试在 `DEVIN_LIVE_TRACE_DIR` 写入一个 `real-devin-live-<24位十六进制>.jsonl`。CI 只从专用 `devin-live-diagnostics` 目录上传这类文件，保留 7 天；文件包含每次运行独立密钥 HMAC 处理的关联 ID、固定枚举、布尔值和数字，不含原始消息、prompt、参数、凭据、stdout、stderr、profile、transcript 或 Devin CLI 原生日志。Windows 普通用户先写入审计临时目录，启动器在删除该目录前复制符合文件名的 trace 到 runner 专用目录。工作流级硬超时或 runner 被强制终止时，`always()` 上传步骤也可能没有机会执行，因此不能保证每次运行都有 artifact；缺少文件时 CI 会显示 warning。
 
 查看 trace 时需区分事件层级：`run/start` 与 `run/summary` 描述一次检查，`phase/completed` 描述一个阶段完成，tool 事件描述单次工具分发或结果。`test/assertions-passed` 只表示脚本断言通过；终态还要求 trace 完成写入且进程输出 `LIVE_TEST_PASS`。ACP call、团队 message、step 和 prompt 是不同对象，不能把数量互相当作对方的数量。Host 的工具调用 ID 与成功 `send_message` 返回的 messageId 通过 trace 中显式记录的关联字段连接，不能靠相邻日志行推断。ACP provider 内部发出的模型请求数量及传输重试可能不可观察；`context used` 是上下文使用量，不是计费 token 数。
@@ -158,11 +160,15 @@ ACP 与 DSH 的桥接边界见[原生复用说明](../../docs/native-reuse.md)�
 
 真实主信息流专项：`DSH_E2E_LIVE_STREAM=1 DSH_E2E_LIVE_CODEX_MODEL=<已选择的模型> pnpm test:e2e live-main-stream`。在隔离工作区让真实 Codex ACP 执行一次 `printf`，验证原生 Bash、调用计数、结果详情及刷新恢复；不读写用户文件。需要本机已有登录，会消耗该 Agent 的用量，默认跳过。
 
+### Qwen Code
+
 真实 Qwen Code 专项需要官方 `@qwen-code/qwen-code`（命令 `qwen`）；千问桌面应用或 `@qianwenai/qianwen-cli` 的 `qianwen` 命令不提供此 ACP 接口。专项默认跳过：`DSH_E2E_LIVE_QWEN=1 DSH_E2E_LIVE_QWEN_COMMAND=/absolute/path/to/@qwen-code/qwen-code/cli-entry.js pnpm exec vitest run test/integration/process/qwen-live.spec.ts`。它不经过浏览器与 Host，直接驱动 `AcpSessionRuntime`，在临时工作区验证 `ask_user_question` 问答、后台 shell 任务完成后承接 `_qwencode/start_turn` 轮次，以及无整轮终态标记的 `cron` 输出进入结果未知、保留输入不派发的路径。未知／缺失原因和 hold 丢失的确定性负向场景由协议夹具覆盖；不能用模型自述或快照空闲替代终态。Agent 进程只继承系统基础变量和 `DSH_E2E_LIVE_QWEN_ENV_KEYS` 显式列出的变量；Qwen 使用本机已有的认证配置，会消耗所配置模型服务的用量。协议回归见 `test/unit/runtime/session-runtime-qwen.spec.ts` 与 `test/fixtures/fake-qwen-agent.mjs`。
+
+2026-10-18 的 macOS arm64 实测使用官方 Qwen Code `0.25.2`：后台 shell 完成后承接已有轮次并返回 `end_turn` 通过；另一次精确参数的 `cron_create` 已确认创建、触发并承接 `CRONFIRED` 输出，随后因上游缺少整轮终态，以 `ACP_PROTOCOL_ERROR / missing-terminal` 保留结果未知，不能记为 cron 成功完成。该次 cron 运行记录了公开模型配置快照 `qwen3.6-plus(openai)`，并非每个内部请求的模型路由证明；后台测试没有独立模型快照。先前一次未观察到 cron 唤醒的失败仍保留，不能据后一次结果补猜其原因。真实问答本轮未运行，Qwen Code 的真实 Windows 验证仍待补充；这些结果不扩展到所有 Qwen 服务、平台或浏览器界面。
 
 Qwen 的无密钥 Host 与界面回归独立于上述 live 检查：`pnpm test:e2e qwen-code` 通过真实 Loader 加载构建插件，验证原生问答卡的单选、多选、自定义、翻页、取消和 Host cancellation，以及模型切换后的推理目录和实际 ACP 配置值。它使用确定性 ACP 子进程，不读取认证或调用模型。后台 jobs 的原生注册、通知和 AgentLoop 接线另由 `test/integration/host/qwen-task-jobs.spec.ts` 验证；运行时协议夹具覆盖取消未确认、慢工具前置等待和混合消息的顺序发送。测试替身通过不能推定真实 Qwen CLI 或全部平台已验收。
 
-`test/e2e/qwen-terminal-outcome.e2e.ts` 单独验证构建插件的原生 AgentLoop 与持久化：未知结束原因、匹配轮次的 `turnComplete:true, partial:true` 后接 `end_turn` 均保留部分输出并进入结果未知，阻止后续请求派发；普通 `end_turn` 和 `partial:false` 为正常结算对照。此无密钥协议夹具不经过浏览器，也不证明真实模型会产生这些异常。
+`test/e2e/qwen-terminal-outcome.e2e.ts` 单独验证构建插件的原生 AgentLoop 与持久化：未知结束原因、匹配轮次的 `turnComplete:true, partial:true` 后接 `end_turn` 均保留部分输出并进入结果未知，阻止后续请求派发；普通 `end_turn` 和 `partial:false` 为正常结算对照。此无密钥协议夹具不经过浏览器，也不证明真实模型会产生这些异常；partial／未知原因的异常路径未做真实模型故障注入。上游错误若没有任何机器可读的不完整标记，适配器仍无法可靠识别。
 
 ## ACP live continuation opt-in
 

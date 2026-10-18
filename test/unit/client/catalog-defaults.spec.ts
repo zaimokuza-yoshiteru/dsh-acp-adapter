@@ -2,6 +2,25 @@ import { describe, expect, it } from 'vitest'
 import { buildCatalogEntries } from '../../../src/client/data/catalog.ts'
 
 describe('snapshot-owned launch defaults', () => {
+  it('marks Qwen adapter coverage independently of registry version and generic runtime identity', () => {
+    const entries = buildCatalogEntries(
+      [
+        { id: 'future-agent', name: 'Future Agent', version: '99' },
+        { id: 'qwen-code', name: 'Qwen Code', version: '99' },
+      ],
+      {
+        'qwen-code': { kind: 'npx', version: '100', command: 'qwen', args: ['--acp'], env: {} },
+      },
+    )
+    expect(entries.map((entry) => [entry.id, entry.verification])).toEqual([
+      ['qwen-code', 'adapter-tested'],
+      ['future-agent', 'unverified'],
+    ])
+    expect(entries[0]).toMatchObject({ version: '100', command: 'qwen', args: ['--acp'] })
+    expect(entries[0]?.runtime).toBeUndefined()
+    expect(entries[1]?.runtime).toBeUndefined()
+  })
+
   it.each(['codex-acp', 'claude-acp', 'devin', 'kimi', 'future-agent'])(
     'uses new snapshot args/env and package command for %s',
     (id) => {

@@ -195,15 +195,18 @@ describe('常量：与宿主侧契约逐字对齐', () => {
     })
   })
 
-  it('ACP_CATALOG_ENTRIES 钉版：已验证的六条排前，其余按 registry 顺序', () => {
-    expect(ACP_CATALOG_ENTRIES.slice(0, 6).map((entry) => entry.id)).toEqual([
+  it('ACP_CATALOG_ENTRIES 钉版：已验证的七条排前，其余按 registry 顺序', () => {
+    expect(ACP_CATALOG_ENTRIES.slice(0, 7).map((entry) => entry.id)).toEqual([
       'devin',
       'codebuddy-code',
       'codex-acp',
       'kimi',
       'claude-acp',
       'antigravity-acp',
+      'qwen-code',
     ])
+    expect(ACP_CATALOG_ENTRIES.slice(0, 7).every((entry) => entry.verification === 'adapter-tested')).toBe(true)
+    expect(ACP_CATALOG_ENTRIES.slice(7).every((entry) => entry.verification === 'unverified')).toBe(true)
     expect(new Set(ACP_CATALOG_ENTRIES.map((entry) => entry.id))).toEqual(
       new Set(registrySnapshot.agents.map((agent) => agent.id)),
     )
