@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { AcpSessionRuntime, type AcpSessionRuntimeOptions } from '../../../src/runtime/session/session-runtime.ts'
 import type { SubprocessSeam } from '../../../src/runtime/process/subprocess.ts'
 import { sharedTestSubprocess } from '../../fixtures/subprocess-seam-testing.ts'
@@ -380,35 +380,109 @@ describe('Qwen Code background tasks', () => {
     const answered = new Promise<void>((resolve) => {
       answer = resolve
     })
+    let entered!: () => void
+    const questionEntered = new Promise<void>((resolve) => {
+      entered = resolve
+    })
+    let delivered!: () => void
+    const bufferedPrefixDelivered = new Promise<void>((resolve) => {
+      delivered = resolve
+    })
     const runtime = createRuntime({
       qwenTaskJobs: jobs.starter,
       unannouncedIdleMs: 60,
       agentTurnAdoptionMs: 60,
       onQwenQuestion: async () => {
+        entered()
         await answered
         return { answers: { '0': 'B' } } as never
       },
     })
-    const mirrored = jobs.next()
-    await runtime.prompt([{ type: 'text', text: 'background-ask' }], () => undefined)
-    await (
-      await mirrored
-    ).outcome
-    await new Promise((resolve) => setTimeout(resolve, 150))
-    expect(runtime.pendingAgentTurnFailure).toBeUndefined()
-    const adopting = runtime.prompt(
-      [{ type: 'text', text: 'wake' }],
-      () => undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      { adoptAgentTurn: true },
-    )
-    await new Promise((resolve) => setTimeout(resolve, 150))
-    expect(runtime.pendingAgentTurnFailure).toBeUndefined()
-    answer()
-    expect((await adopting).stopReason).toBe('end_turn')
+    // Read-only phase observation avoids advancing the reporting clock before
+    // the real child permission request has reached its runtime owner.
+    const controls = runtime as unknown as {
+      pendingQuestions: number
+      armAgentTurnWatchdog(turn: unknown): void
+      armAgentTurnAdoptionWatchdog(turn: unknown): void
+    }
+    const idleArms = vi.spyOn(controls, 'armAgentTurnWatchdog')
+    const adoptionArms = vi.spyOn(controls, 'armAgentTurnAdoptionWatchdog')
+    const wallSetTimeout = setTimeout
+    const wallClearTimeout = clearTimeout
+    const wirePhase = async <T>(operation: Promise<T>): Promise<T> => {
+      let timer: ReturnType<typeof setTimeout> | undefined
+      try {
+        return await Promise.race([
+          operation,
+          new Promise<never>((_, reject) => {
+            timer = wallSetTimeout(() => reject(new Error('Qwen fixture did not reach its next wire phase')), 2_000)
+          }),
+        ])
+      } finally {
+        wallClearTimeout(timer)
+      }
+    }
+    let adopting: ReturnType<AcpSessionRuntime['prompt']> | undefined
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const mirrored = jobs.next()
+      await wirePhase(runtime.prompt([{ type: 'text', text: 'background-ask' }], () => undefined))
+      await wirePhase(mirrored.then((job) => job.outcome))
+      const arrivalDeadline = performance.now() + 2_000
+      while (controls.pendingQuestions === 0 && performance.now() < arrivalDeadline)
+        await new Promise<void>((resolve) => setImmediate(resolve))
+      expect(controls.pendingQuestions).toBe(1)
+      const idleBeforeAdoption = idleArms.mock.calls.length
+      const adoptionBeforeAdoption = adoptionArms.mock.calls.length
+      await vi.advanceTimersByTimeAsync(180)
+      expect(idleArms.mock.calls.length).toBeGreaterThanOrEqual(idleBeforeAdoption + 3)
+      expect(adoptionArms.mock.calls.length).toBeGreaterThanOrEqual(adoptionBeforeAdoption + 3)
+      expect(runtime.pendingAgentTurnFailure).toBeUndefined()
+
+      adopting = runtime.prompt(
+        [{ type: 'text', text: 'wake' }],
+        (notification) => {
+          const update = notification.update
+          if (
+            update.sessionUpdate === 'agent_message_chunk' &&
+            update.content.type === 'text' &&
+            update.content.text.startsWith('start_turn:')
+          )
+            delivered()
+        },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { adoptAgentTurn: true },
+      )
+      // Observe rejections immediately, including failures before either barrier.
+      const outcome = adopting.then(
+        (response) => ({ response }),
+        (error: unknown) => ({ error }),
+      )
+      await wirePhase(Promise.all([questionEntered, bufferedPrefixDelivered]))
+      const idleAfterAdoption = idleArms.mock.calls.length
+      const adoptionAfterAdoption = adoptionArms.mock.calls.length
+      await vi.advanceTimersByTimeAsync(180)
+      expect(idleArms.mock.calls.length).toBeGreaterThanOrEqual(idleAfterAdoption + 3)
+      expect(adoptionArms.mock.calls.length).toBe(adoptionAfterAdoption)
+      expect(runtime.pendingAgentTurnFailure).toBeUndefined()
+      answer()
+      // Do not advance the parent reporting clock while the real child sends
+      // its answer and end receipt; Windows IPC latency is not this assertion.
+      expect(await wirePhase(outcome)).toMatchObject({ response: { stopReason: 'end_turn' } })
+    } finally {
+      vi.useRealTimers()
+      answer()
+      try {
+        await runtime.close()
+        await adopting?.catch(() => undefined)
+      } finally {
+        idleArms.mockRestore()
+        adoptionArms.mockRestore()
+      }
+    }
   })
 
   it('keeps a native Host body alive past the reporting window and drains it before retained input', async () => {

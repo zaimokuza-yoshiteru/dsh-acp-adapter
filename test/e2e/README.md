@@ -142,6 +142,8 @@ DEVIN_TEST_MODEL=swe-2-high node scripts/check-devin-live.ts "$(command -v devin
 
 随后在 `v0.2.1-rc.2.2@8756e13` 的[单次真实复测](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/actions/runs/39100744366)中，继续使用 Devin `3000.3.27`、DSH `0.2.1-rc.2` 和 `swe-2-high`：两平台的成员创建、各一次发送、Lead 接受与回复、显式续聊均通过，`scenarioResult: pass`、各四次工具准入且无拒绝，没有复现重复；Windows 四项清理成功。工作流仍失败，因为新增历史采集器在两平台均报 `unsupported/schema-unavailable`，未取得历史父子链。业务通过不替代采证成功，也不证明此前的间歇性重复已修复。
 
+历史采集修复后的[真实运行 `39101252210`](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/actions/runs/39101252210)使用 `b5d6019`，生产输入与上述发布标签一致，只改测试采集和说明，CLI／DSH／模型保持相同。两平台的业务与采证均通过：各四个测试会话、两次发送和两条对应工具结果，发送参数／正文 HMAC 与 Host 准入、Lead 接受对齐；额外快照有明确计数。两成员对应工具结果节点后的新生成均未再次发送，原有续聊、预算、诊断与清理通过；没有复现此前间歇性重复，不能据此宣称其根因已消除。
+
 每个 live 测试会尝试在 `DEVIN_LIVE_TRACE_DIR` 写入一个 `real-devin-live-<24位十六进制>.jsonl`。CI 只从专用 `devin-live-diagnostics` 目录上传这类文件，保留 7 天；文件包含每次运行独立密钥 HMAC 处理的关联 ID、固定枚举、布尔值和数字，不含原始消息、prompt、参数、凭据、stdout、stderr、profile、transcript 或 Devin CLI 原生日志。Windows 普通用户先写入审计临时目录，启动器在删除该目录前复制符合文件名的 trace 到 runner 专用目录。工作流级硬超时或 runner 被强制终止时，`always()` 上传步骤也可能没有机会执行，因此不能保证每次运行都有 artifact；缺少文件时 CI 会显示 warning。
 
 后续诊断在 Agent 进程退出后、隔离目录删除前，通过本轮 sidecar binding 精确选取合成测试会话，从 Devin 本地 SQLite 提取发送调用、工具结果与后续生成的关联事实。读取在无环境变量的独立 worker 中执行，最多 5 秒，并限制数据库、节点与投影字节；仅现有安全 trace 中的 HMAC、枚举、计数和布尔值进入 artifact。`historyReceiptStatus: stored` 表示 CLI 历史保存了对应工具结果，不等同传输层实时确认；只有实际父节点、调用与不同生成请求 ID 都匹配时，才能认定某次重复来自后续生成。路径、schema 或关联不可用时单独记录诊断失败；`scenarioResult` 与 `historyCaptureComplete` 分别描述业务场景和采证结果，不用一项替代另一项。
