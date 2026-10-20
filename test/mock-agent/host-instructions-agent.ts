@@ -123,7 +123,8 @@ async function handle(request: Request): Promise<void> {
   const content = request.params?.prompt ?? []
   const match = /E2E_HOST_CASE ([a-z0-9-]+) ([a-z0-9-]+)/.exec(contentText(content))
   if (match === null) throw new Error('A host-instruction fixture prompt must identify its case and phase')
-  const [, caseId, phase] = match as [string, string, string]
+  const caseId = match[1]!
+  const phase = match[2]!
   const supplied = instruction(content)
   record({ type: 'received', sessionId: session.id, operation: request.method, caseId, phase, supplied, content })
   if (request.method === '_session/steering' && session.active?.phase === 'hold-refused') {

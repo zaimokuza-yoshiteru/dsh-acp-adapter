@@ -4,6 +4,20 @@
 
 User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for publication dates, exact installation instructions, and checksums. Historical entries were reconstructed from tag diffs; npm packages were not republished.
 
+## 未发布 / Unreleased
+
+### 中文
+
+- 模型目录自动重检失败时，保留相同配置下已验证的模型和推理选项，让仍可用的会话继续；设置页如实显示最近的探测失败及时间，重新检查仍沿用原有刷新流程。
+- 连续会话省略未变化的宿主指令；运行中切换指令、插话被拒绝后的普通消息补发，以及失败轮次后的续聊均保留必要的指令，不把尚未确认的发送记为成功。
+- 继续支持 DSH `0.2.1-rc.2`，无需新增用户配置。
+
+### English
+
+- Preserve verified models and reasoning options for the same configuration when an automatic catalog refresh fails, allowing usable sessions to continue. Settings reports the latest probe failure and its actual time; Re-check retains its existing refresh behavior.
+- Omit unchanged host instructions in continuing sessions while retaining required updates during steering, ordinary-message fallback after refused steering, and continuation after a failed turn. Unconfirmed delivery is not recorded as successful.
+- Continue to support DSH `0.2.1-rc.2` without additional user configuration.
+
 ## 0.2.1-rc.2.3
 
 ### 中文

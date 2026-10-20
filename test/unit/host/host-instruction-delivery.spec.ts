@@ -9,7 +9,11 @@ import type { DispatchLedgerStore, DispatchRecord } from '../../../src/runtime/s
 import { withSessionFacts } from '../../support/session-facts.ts'
 
 const user = (text: string) => createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })
-const system = (text: string) => ({ ...user(text), role: 'system' as const })
+const system = (text: string) => ({
+  ...user(text),
+  role: 'system' as const,
+  source: { kind: 'system-prompt' as const },
+})
 const textOf = (prompt: readonly acp.ContentBlock[]) =>
   prompt.flatMap((block) => (block.type === 'text' ? [block.text] : [])).join('\n')
 const consume = async (stream: AsyncIterable<StreamChunk>) => {

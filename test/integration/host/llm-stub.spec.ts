@@ -533,29 +533,33 @@ describe(' 缓存 TTL（acpProbeFresh；ok 10min / error 30s）', () => {
     expect(adapter.configOptionsForModel(ROUTE, 'mock-model-a')).toBeUndefined()
   })
 
-  it.each(['one', 'all'] as const)('explicit invalidation (%s) discards the retained catalog', async (scope) => {
-    const unavailablePath = path.join(logDir, `invalidated-catalog-${scope}-unavailable`)
-    const { config, logPath } = mockAgent('happy', { MOCK_UNAVAILABLE_FILE: unavailablePath })
-    const { adapter } = makeAdapter({ [ROUTE]: config })
-    const clock = fakeClock()
-    try {
-      const initial = await adapter.listModels(ROUTE)
-      fs.writeFileSync(unavailablePath, 'unavailable')
-      clock.advance(ACP_PROBE_CACHE_OK_TTL_MS)
-      expect(await adapter.listModels(ROUTE)).toEqual(initial)
-      adapter.invalidateProbe(scope === 'one' ? ROUTE : undefined)
-      expect(adapter.probeSnapshot(ROUTE)).toBeUndefined()
-      expect(adapter.configOptions(ROUTE)).toBeUndefined()
-      expect(adapter.configOptionsForModel(ROUTE, 'mock-model-a')).toBeUndefined()
+  it.each(['one', 'all'] as const)(
+    'explicit invalidation (%s) discards the retained catalog',
+    async (scope) => {
+      const unavailablePath = path.join(logDir, `invalidated-catalog-${scope}-unavailable`)
+      const { config, logPath } = mockAgent('happy', { MOCK_UNAVAILABLE_FILE: unavailablePath })
+      const { adapter } = makeAdapter({ [ROUTE]: config })
+      const clock = fakeClock()
+      try {
+        const initial = await adapter.listModels(ROUTE)
+        fs.writeFileSync(unavailablePath, 'unavailable')
+        clock.advance(ACP_PROBE_CACHE_OK_TTL_MS)
+        expect(await adapter.listModels(ROUTE)).toEqual(initial)
+        adapter.invalidateProbe(scope === 'one' ? ROUTE : undefined)
+        expect(adapter.probeSnapshot(ROUTE)).toBeUndefined()
+        expect(adapter.configOptions(ROUTE)).toBeUndefined()
+        expect(adapter.configOptionsForModel(ROUTE, 'mock-model-a')).toBeUndefined()
 
-      const failure = await expectListModelsError(adapter, ROUTE)
-      expect(await expectListModelsError(adapter, ROUTE)).toBe(failure)
-      expect(probeCount(logPath)).toBe(3)
-      expect(adapter.probeSnapshot(ROUTE)?.result.kind).toBe('error')
-    } finally {
-      vi.useRealTimers()
-    }
-  }, 15_000)
+        const failure = await expectListModelsError(adapter, ROUTE)
+        expect(await expectListModelsError(adapter, ROUTE)).toBe(failure)
+        expect(probeCount(logPath)).toBe(3)
+        expect(adapter.probeSnapshot(ROUTE)?.result.kind).toBe('error')
+      } finally {
+        vi.useRealTimers()
+      }
+    },
+    15_000,
+  )
 })
 
 describe('probe 失败文案（AcpClientError.kind → 面向用户 message）', () => {

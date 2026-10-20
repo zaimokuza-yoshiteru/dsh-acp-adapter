@@ -1062,17 +1062,7 @@ export class AcpProfileAdapter extends LlmAdapter {
     const generation = this.currentProbeGeneration()
     if (generation === undefined)
       throw new LlmError(`ACP profile "${this.profileId}" is no longer configured`, 'ACP_UNKNOWN_PROFILE')
-    let models: readonly LlmModelInfo[]
-    try {
-      models = await generation.probe.listModels(provider)
-    } catch (error: unknown) {
-      const snapshot = generation.probe.probeSnapshot?.(provider)
-      if (snapshot?.result.kind === 'ok') {
-        models = snapshot.result.models
-      } else {
-        throw error
-      }
-    }
+    const models = await generation.probe.listModels(provider)
     const found = models.find((entry) => entry.id === model)
     const reasoning = reasoningInfoFromConfigOptions(
       this.profileId,
@@ -3191,6 +3181,18 @@ export class AcpProfileAdapter extends LlmAdapter {
         let interruptedForInput = false
         let changedWorkingDirectory: string | undefined
         let remoteSettled = false
+        let steeringInstructionsPending = false
+        let hostInstructionOutcome: 'pending' | 'succeeded' | 'failed' = 'pending'
+        const updateDeliveredHostInstructions = (): void => {
+          if (
+            hostInstructionOutcome === 'succeeded' &&
+            !steeringInstructionsPending &&
+            !promptSignal.aborted &&
+            promptSystem !== undefined
+          )
+            self.deliveredHostInstructions.set(runtime, promptSystem)
+          else self.deliveredHostInstructions.delete(runtime)
+        }
         let teammateReportEligible = true
         let teammateReportConfirmed = false
         let turnConclusionEligible = true
@@ -3236,9 +3238,8 @@ export class AcpProfileAdapter extends LlmAdapter {
             if (nextProof?.turn !== admissionProof?.turn) return false
             const modelContextSnapshots = session?.currentModelContextSnapshots?.()
             nextSystem = hostSystemPrompt(nextOptions)
-            const deliveredSystem = self.deliveredHostInstructions.get(runtime)
             nextPrompt = await toAcpPrompt(nextMessages, {
-              ...(deliveredSystem === nextSystem ? {} : { system: nextSystem }),
+              ...(promptSystem === nextSystem ? {} : { system: nextSystem }),
               ...(modelContextSnapshots === undefined ? {} : { modelContextSnapshots }),
               skillRoute: skillRouteForTools(nextOptions.tools),
               imageEnabled: runtime.agentCapabilities?.promptCapabilities?.image === true,
@@ -3265,6 +3266,7 @@ export class AcpProfileAdapter extends LlmAdapter {
           const previousSuccessfulToolResultEligible = successfulToolResultEligible
           const previousSuccessfulToolResultConfirmed = successfulToolResultConfirmed
           const previousRemoteCancellationHook = remoteCancellationHook
+          const previousSystem = promptSystem
           let projectedAtDispatch = false
           let segmentBoundaryVersion = contentBreakVersion
           let segmentBoundaryIndex = nextContentIndex
@@ -3274,7 +3276,10 @@ export class AcpProfileAdapter extends LlmAdapter {
             // attempt settles. Do not certify its original context as current.
             self.deliveredQwenContexts.delete(runtime)
             qwenContextKey = undefined
-            promptSystem = nextSystem
+            // Dispatch owns output projection, but only the ACK establishes
+            // whether the Agent accepted these replacement instructions.
+            steeringInstructionsPending = true
+            self.deliveredHostInstructions.delete(runtime)
             remoteCancellationHook = captureRemoteCancellationHook(nextProof)
             currentAnchor = nextProof!.anchorMessageId
             // A pending pull may contain the old segment's final text. It will
@@ -3295,6 +3300,9 @@ export class AcpProfileAdapter extends LlmAdapter {
             successfulToolResultConfirmed = false
           }
           const restoreProjection = (): void => {
+            promptSystem = previousSystem
+            steeringInstructionsPending = false
+            updateDeliveredHostInstructions()
             remoteCancellationHook = previousRemoteCancellationHook
             currentAnchor = previousAnchor
             activityIndexOffset = previousOffset
@@ -3323,14 +3331,26 @@ export class AcpProfileAdapter extends LlmAdapter {
             // connection marker can prove it failed before SDK dispatch.
             const remoteRequestSent = !(error instanceof AcpSteeringRequestError) || error.remoteRequestSent
             if (!remoteRequestSent) restoreProjection()
+            else {
+              hostInstructionOutcome = 'failed'
+              updateDeliveredHostInstructions()
+            }
             throw new SteeringFailure(error, remoteRequestSent)
           }
-          if (result === 'injected' && !projectedAtDispatch)
+          if (result === 'injected' && !projectedAtDispatch) {
+            hostInstructionOutcome = 'failed'
+            updateDeliveredHostInstructions()
             throw new SteeringFailure(new Error('ACP steering runtime did not confirm its dispatch boundary'), true)
+          }
           if (result !== 'injected') {
             restoreProjection()
             return false
           }
+          promptSystem = nextSystem
+          steeringInstructionsPending = false
+          // The old prompt may have completed while this ACK was in flight.
+          // Its settlement never waits for the steering response.
+          updateDeliveredHostInstructions()
           // A racing later insertion gets its own native admission boundary.
           stopWatchingInput?.()
           stopWatchingInput = watchInput()
@@ -3399,10 +3419,10 @@ export class AcpProfileAdapter extends LlmAdapter {
             })
           else if (response.stopReason !== 'end_turn' || promptSignal.aborted)
             self.deliveredQwenContexts.delete(runtime)
-          if (response.stopReason === 'end_turn' && !promptSignal.aborted && promptSystem !== undefined)
-            self.deliveredHostInstructions.set(runtime, promptSystem)
-          else if (response.stopReason !== 'end_turn' || promptSignal.aborted)
-            self.deliveredHostInstructions.delete(runtime)
+          if (response.stopReason !== 'end_turn' || promptSignal.aborted) {
+            hostInstructionOutcome = 'failed'
+            updateDeliveredHostInstructions()
+          }
           if (response.stopReason === 'cancelled') self.markConfirmedUserModeForRestore(sessionKey, runtime)
           const confirmedRemoteCancellation =
             response.stopReason === 'cancelled' &&
@@ -3662,7 +3682,16 @@ export class AcpProfileAdapter extends LlmAdapter {
                 }
               })()
             }
+            // A raw end_turn can still fail projection or produce an error
+            // finish. Reuse requires the complete successful response path as
+            // well as an acknowledged instruction replacement.
+            if (hostInstructionOutcome !== 'failed')
+              hostInstructionOutcome =
+                response.stopReason === 'end_turn' && finalReason.kind === 'stop' ? 'succeeded' : 'failed'
+            updateDeliveredHostInstructions()
           } catch (error: unknown) {
+            hostInstructionOutcome = 'failed'
+            updateDeliveredHostInstructions()
             settleRunningActivities(unresolvedActivityStatus)
             await activityWriteTail
             if (changedWorkingDirectory !== undefined && error instanceof LlmError) {
@@ -3718,7 +3747,8 @@ export class AcpProfileAdapter extends LlmAdapter {
         const prompting = promptResult.then(handlePromptResponse, async (error: unknown) => {
           remoteSettled = true
           self.deliveredQwenContexts.delete(runtime)
-          self.deliveredHostInstructions.delete(runtime)
+          hostInstructionOutcome = 'failed'
+          updateDeliveredHostInstructions()
           stopWatchingInput?.()
           stopWatchingDirectory?.()
           const settlementFailure = error instanceof AcpHostSettlementError ? error : undefined

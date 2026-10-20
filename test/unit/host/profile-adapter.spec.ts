@@ -160,8 +160,12 @@ describe('AcpProfileAdapter generation and dispatch boundaries', () => {
       () => ({
         acpSessionId: 'strip-redundant-request',
         start: async () => undefined,
-        prompt: async (prompt) => {
+        prompt: async (prompt, onUpdate) => {
           sent.push(prompt)
+          onUpdate({
+            sessionId: 'strip-redundant-request',
+            update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Completed' } },
+          })
           return { stopReason: 'end_turn' } as never
         },
         close: async () => undefined,

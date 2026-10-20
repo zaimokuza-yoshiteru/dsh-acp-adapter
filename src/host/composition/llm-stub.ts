@@ -7,8 +7,9 @@
  * is a probe: spawn the agent, read the `model` config option, tear down：
  * capability-aware session cleanup first — close then delete when advertised);
  * the result (success OR failure) is cached by config hash with a TTL (ok 10min /
- * error 30s, agent-config.ts `acpProbeFresh`) so the model selector
- * never re-spawns on reopen, and the panel refreshes via {@link AcpStubAdapter.invalidateProbe}.
+ * error 30s, agent-config.ts `acpProbeFresh`). Failed automatic refreshes keep
+ * the last verified catalog for the same config without hiding the failure
+ * from health. The panel refreshes via {@link AcpStubAdapter.invalidateProbe}.
  *
  * The adapter owns no registration: ./installed-profile-registry.ts registers/replaces routes and
  * directory entries. This module is deliberately free of cordis imports so the
@@ -32,7 +33,7 @@ import type {
   StreamChunk,
 } from '@deepseek-ai/dsh-llm'
 import type * as acp from '@agentclientprotocol/sdk'
-import { ACP_PROBE_CACHE_OK_TTL_MS, acpProbeConfigKey, acpProbeFresh } from '../../domain/session/agent-config.ts'
+import { acpProbeConfigKey, acpProbeFresh } from '../../domain/session/agent-config.ts'
 import type { AcpStubAgentConfig } from '../../domain/session/agent-config.ts'
 import { effectiveRuntimeOf } from '../../contract/agent-config.ts'
 import { modelProbeOptions } from '../../domain/session/agent-compatibility.ts'
@@ -166,6 +167,12 @@ export interface AcpProbeCacheEntry {
         readonly probePhase: AcpProbePhase | undefined
       }
 }
+
+/** Verified selection metadata is independent of the latest probe's health outcome. */
+type AcpVerifiedModelCatalog = Pick<
+  Extract<AcpProbeCacheEntry['result'], { kind: 'ok' }>,
+  'models' | 'configOptions' | 'modelConfigOptions'
+> & { readonly key: string }
 
 /** Extract the `category: 'model'` select options from a probe, flattening grouped options. */
 /** Resolve ACP thought-level metadata into DSH's adapter-owned reasoning shape. */
@@ -334,16 +341,15 @@ function acpProbeFailure(
 /**
  * Probe helper owned by one ACP profile adapter. `stream()` throws guidance;
  * `listModels` serves that profile's shared ModelPicker/Settings probe cache.
- * Both success and failure are cached by config hash — a selector
- * reopen must never re-spawn the agent, and a cached failure is exactly what
- * Settings/health consumes cached failure diagnostics; the profile route
- * suppresses known ACP failures from the stock picker rather than producing
- * persistent provider error rows.
+ * Both success and failure are cached by config hash. Settings/health consumes
+ * the latest outcome, while model selection can retain the last verified
+ * catalog after an automatic refresh failure for the same configuration.
  */
 export class AcpStubAdapter extends LlmAdapter {
   private readonly options: AcpStubAdapterOptions
   private readonly probeOptions: AcpProbeOptions
   private readonly cache = new Map<string, AcpProbeCacheEntry>()
+  private readonly lastGoodCatalog = new Map<string, AcpVerifiedModelCatalog>()
   /** In-flight probes, so concurrent catalog builds share one spawn per route. */
   private readonly inflight = new Map<string, { key: string; promise: Promise<readonly LlmModelInfo[]> }>()
 
@@ -374,6 +380,8 @@ export class AcpStubAdapter extends LlmAdapter {
     // （ok 10min / error 30s TTL）才算命中；过期条目按 miss 重 probe。
     if (cached !== undefined && acpProbeFresh(cached, key, Date.now())) {
       if (cached.result.kind === 'ok') return cached.result.models
+      const catalog = this.lastGoodCatalog.get(provider)
+      if (catalog?.key === key) return catalog.models
       throw cached.result.error
     }
     const pending = this.inflight.get(provider)
@@ -400,13 +408,15 @@ export class AcpStubAdapter extends LlmAdapter {
     )
   }
 
-  /** Drop one cached probe (or all), forcing the next `listModels` to re-probe. Panel 刷新按钮走这里。 */
+  /** Drop probe outcomes and retained catalogs so an explicit re-check starts fresh. */
   invalidateProbe(provider?: string): void {
     if (provider === undefined) {
       this.cache.clear()
+      this.lastGoodCatalog.clear()
       return
     }
     this.cache.delete(provider)
+    this.lastGoodCatalog.delete(provider)
   }
 
   /** Last cached probe outcome for the health endpoint; undefined when never probed. */
@@ -414,10 +424,9 @@ export class AcpStubAdapter extends LlmAdapter {
     return this.cache.get(provider)
   }
 
-  /** Session configuration captured by the most recent successful probe. */
+  /** Session configuration from the last verified catalog for the current config. */
   configOptions(provider: string): readonly acp.SessionConfigOption[] | undefined {
-    const entry = this.cache.get(provider)
-    return entry?.result.kind === 'ok' ? entry.result.configOptions : undefined
+    return this.currentCatalog(provider)?.configOptions
   }
 
   /** Configuration confirmed after selecting one model in the disposable
@@ -425,13 +434,19 @@ export class AcpStubAdapter extends LlmAdapter {
    * model's reasoning choices. Agents without model-specific discovery keep
    * their original session-scoped snapshot. */
   configOptionsForModel(provider: string, model: string): readonly acp.SessionConfigOption[] | undefined {
-    const entry = this.cache.get(provider)
-    if (entry?.result.kind !== 'ok') return undefined
-    return entry.result.modelConfigOptions === undefined
-      ? entry.result.configOptions
-      : Object.hasOwn(entry.result.modelConfigOptions, model)
-        ? entry.result.modelConfigOptions[model]
+    const catalog = this.currentCatalog(provider)
+    if (catalog === undefined) return undefined
+    return catalog.modelConfigOptions === undefined
+      ? catalog.configOptions
+      : Object.hasOwn(catalog.modelConfigOptions, model)
+        ? catalog.modelConfigOptions[model]
         : undefined
+  }
+
+  private currentCatalog(provider: string): AcpVerifiedModelCatalog | undefined {
+    const config = this.options.agents().get(provider)
+    const catalog = this.lastGoodCatalog.get(provider)
+    return config !== undefined && catalog?.key === acpProbeConfigKey(config) ? catalog : undefined
   }
 
   private async probeAndCache(
@@ -485,7 +500,7 @@ export class AcpStubAdapter extends LlmAdapter {
             },
       )
       const models = probeModels(provider, probe.configOptions)
-      this.cache.set(provider, {
+      const entry = {
         key,
         at: Date.now(),
         result: {
@@ -516,31 +531,36 @@ export class AcpStubAdapter extends LlmAdapter {
                 ),
               }),
         },
+      } satisfies AcpProbeCacheEntry
+      this.cache.set(provider, entry)
+      this.lastGoodCatalog.set(provider, {
+        key,
+        models,
+        configOptions: entry.result.configOptions,
+        ...(entry.result.modelConfigOptions === undefined
+          ? {}
+          : { modelConfigOptions: entry.result.modelConfigOptions }),
       })
       return models
     } catch (error: unknown) {
       const failure = acpProbeFailure(error, config)
-      const previous = this.cache.get(provider)
-      if (previous?.key === key && previous.result.kind === 'ok') {
+      this.cache.set(provider, {
+        key,
+        at: Date.now(),
+        result: { kind: 'error', failureKind: failure.kind, error: failure.error, probePhase: failure.phase },
+      })
+      const catalog = this.lastGoodCatalog.get(provider)
+      if (catalog?.key === key) {
         const warn =
           this.options.onWarn ??
           ((message: string) => {
             process.stderr.write(`dsh-acp: ${message}\n`)
           })
         warn(
-          `probe re-check failed for "${provider}" (${failure.error.message}); preserving previous verified model catalog`,
+          `probe refresh failed for "${provider}" (${failure.error.message}); preserving previous verified model catalog`,
         )
-        this.cache.set(provider, {
-          ...previous,
-          at: Date.now() - (ACP_PROBE_CACHE_OK_TTL_MS - 60_000),
-        })
-        return previous.result.models
+        return catalog.models
       }
-      this.cache.set(provider, {
-        key,
-        at: Date.now(),
-        result: { kind: 'error', failureKind: failure.kind, error: failure.error, probePhase: failure.phase },
-      })
       throw failure.error
     } finally {
       if (preparation !== undefined) {

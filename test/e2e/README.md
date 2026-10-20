@@ -99,6 +99,10 @@ pnpm test:e2e
 
 `pnpm typecheck` 检查产品源码、单元测试、开发/发布脚本和模拟 Agent；`pnpm typecheck:e2e` 单独检查本目录中的测试，并从所选宿主源码提取测试接口声明。`pnpm test:e2e` 会先执行该检查，再运行所选场景。开发脚本和模拟 Agent 使用 Node 原生运行可擦除类型的 TypeScript，无需预编译。
 
+目录重检与宿主指令交付可单独运行：`pnpm test:e2e test/e2e/probe-refresh-health.e2e.ts test/e2e/host-instruction-delivery.e2e.ts`。前者让真实 ACP 测试子进程在外部登录状态变化后拒绝新探测，核对模型保留、原会话续聊、设置页诊断和重新检查恢复；仅提前老化缓存时间戳，避免等待十分钟。后者从原生输入栏发送及插入消息，核对未变指令去重、运行中替换，以及旧轮次先结算、插话后被拒绝时的普通消息补发；协议文件门控和持久化结算状态决定顺序，不靠固定延时触发竞态。
+
+比较修复前后时，使用相同的测试源码、DSH 目标与源码 scaffold，分别设置 `DSH_E2E_EVIDENCE_LABEL=before` 和 `after`。协议记录、界面截图、原生事件与浏览器 trace 只写入 gitignored `.local/probe-refresh-health/` 和 `.local/host-instruction-delivery/`。这些场景不读取用户认证或调用真实模型，不能据此声明某个真实 Agent 或 Windows 桌面产品已验收。
+
 锁定宿主的 `build:artifacts` 生成 Host、client 与 Web 可运行产物，不能代替上游完整类型门禁；需要检查上游测试/脚本聚合程序时，在最新产物之后单独运行 `build:check`。后者不重建、不验证已有产物的新鲜度。只修改插件测试时，无需重复构建未变的官方 scaffold；共享本地 checkout 的构建、打包与 Host/browser 测试仍须串行。
 
 普通 CI 将全部协议夹具分配给三个独立 runner，片内仍串行且不重试。`scripts/e2e-shards.ts` 从实际文件清单生成分组，新增 `.e2e.ts` 自动纳入；较大的 native parity 夹具按 Claude、Codex、Devin、Kimi 分配，各 profile 恰好运行一次。三个分片全部成功才通过原有 Native UI 必需检查，opt-in 真实 Agent 场景继续按原规则跳过。`node scripts/e2e-shards.ts` 可查看完整分配；`pnpm test:e2e --ci-shard 1/3` 可顺序复现某片，该模式不接受额外文件或名称过滤。默认 `pnpm test:e2e` 仍运行完整清单。依赖 store 与 Chromium 缓存只保存下载内容，Host 每片仍从准确源码标签构建，不复用用户 profile 或认证。
