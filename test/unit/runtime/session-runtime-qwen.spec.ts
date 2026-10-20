@@ -73,6 +73,44 @@ function texts(notifications: readonly AcpSessionNotification[]): string[] {
   })
 }
 
+// The child and its IPC remain on wall time while the parent reporting clock
+// is controlled. Await an observed wire phase before advancing that clock.
+const wallSetTimeout = setTimeout
+const wallClearTimeout = clearTimeout
+async function wirePhase<T>(operation: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_, reject) => {
+        timer = wallSetTimeout(() => reject(new Error('Qwen fixture did not reach its next wire phase')), 2_000)
+      }),
+    ])
+  } finally {
+    wallClearTimeout(timer)
+  }
+}
+
+async function waitForWireState(observed: () => boolean): Promise<void> {
+  const deadline = performance.now() + 2_000
+  while (!observed()) {
+    if (performance.now() >= deadline) throw new Error('Qwen fixture did not reach its next wire phase')
+    await new Promise<void>((resolve) => setImmediate(resolve))
+  }
+}
+
+function observedAgentTurns(runtime: AcpSessionRuntime) {
+  return (
+    runtime as unknown as {
+      readonly agentTurns: readonly {
+        readonly buffer: readonly AcpSessionNotification[]
+        readonly listener: unknown
+        readonly ended: { readonly stopReason?: string } | undefined
+      }[]
+    }
+  ).agentTurns
+}
+
 function promptRequests() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-qwen-prompts-'))
   roots.push(root)
@@ -181,29 +219,50 @@ describe('Qwen Code background tasks', () => {
       { qwenTaskJobs: jobs.starter, unannouncedIdleMs: 80 },
       { FAKE_QWEN_DROP_END: '1', FAKE_QWEN_NO_FINISHED_MARKER: '1', ...prompts.env },
     )
-    const mirrored = jobs.next()
-    await runtime.prompt([{ type: 'text', text: 'background' }], () => undefined)
-    await (
-      await mirrored
-    ).outcome
-    const updates: AcpSessionNotification[] = []
-    await expect(
-      runtime.prompt(
+    let adopting: ReturnType<AcpSessionRuntime['prompt']> | undefined
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const mirrored = jobs.next()
+      await wirePhase(runtime.prompt([{ type: 'text', text: 'background' }], () => undefined))
+      await wirePhase(mirrored.then((job) => job.outcome))
+      const updates: AcpSessionNotification[] = []
+      const prefixDelivered = Promise.withResolvers<void>()
+      adopting = runtime.prompt(
         [{ type: 'text', text: 'wake' }],
-        (n) => updates.push(n),
+        (notification) => {
+          updates.push(notification)
+          if (texts([notification]).includes('The background command printed done.')) prefixDelivered.resolve()
+        },
         undefined,
         undefined,
         undefined,
         undefined,
         { adoptAgentTurn: true, followupContent: [{ type: 'text', text: 'must not dispatch' }] },
-      ),
-    ).rejects.toMatchObject({ code: 'ACP_PROTOCOL_ERROR', reason: 'missing-terminal' })
-    expect(texts(updates)).toContain('The background command printed done.')
-    expect(prompts.read()).toEqual(['background'])
-    await expect(runtime.prompt([{ type: 'text', text: 'later user input' }], () => undefined)).rejects.toMatchObject({
-      reason: 'missing-terminal',
-    })
-    expect(prompts.read()).toEqual(['background'])
+      )
+      const outcome = adopting.then(
+        (response) => ({ response }),
+        (error: unknown) => ({ error }),
+      )
+      await wirePhase(prefixDelivered.promise)
+      await vi.advanceTimersByTimeAsync(79)
+      expect(runtime.pendingAgentTurnFailure).toBeUndefined()
+      await vi.advanceTimersByTimeAsync(1)
+      expect(await wirePhase(outcome)).toMatchObject({
+        error: { code: 'ACP_PROTOCOL_ERROR', reason: 'missing-terminal' },
+      })
+      expect(texts(updates)).toContain('The background command printed done.')
+      expect(prompts.read()).toEqual(['background'])
+      await expect(runtime.prompt([{ type: 'text', text: 'later user input' }], () => undefined)).rejects.toMatchObject(
+        {
+          reason: 'missing-terminal',
+        },
+      )
+      expect(prompts.read()).toEqual(['background'])
+    } finally {
+      vi.useRealTimers()
+      await runtime.close()
+      await adopting?.catch(() => undefined)
+    }
   })
 
   it('preserves an unadopted timeout through close, initialize, restore, and a later ordinary Host prompt', async () => {
@@ -224,12 +283,24 @@ describe('Qwen Code background tasks', () => {
       },
       { FAKE_QWEN_DROP_END: '1', FAKE_QWEN_NO_FINISHED_MARKER: '1', ...prompts.env },
     )
-    const mirrored = jobs.next()
-    await runtime.prompt([{ type: 'text', text: 'background' }], () => undefined)
-    await (
-      await mirrored
-    ).outcome
-    await expect.poll(() => runtime.pendingAgentTurnFailure?.error.reason).toBe('missing-terminal')
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const mirrored = jobs.next()
+      await wirePhase(runtime.prompt([{ type: 'text', text: 'background' }], () => undefined))
+      await wirePhase(mirrored.then((job) => job.outcome))
+      // Observe the buffered prefix without adopting or consuming this turn.
+      await waitForWireState(() =>
+        observedAgentTurns(runtime).some(
+          (turn) => turn.listener === undefined && texts(turn.buffer).includes('The background command printed done.'),
+        ),
+      )
+      await vi.advanceTimersByTimeAsync(79)
+      expect(runtime.pendingAgentTurnFailure).toBeUndefined()
+      await vi.advanceTimersByTimeAsync(1)
+      expect(runtime.pendingAgentTurnFailure?.error.reason).toBe('missing-terminal')
+    } finally {
+      vi.useRealTimers()
+    }
     const sessionId = runtime.acpSessionId!
     expect(runtime.pendingAgentTurnFailure).toMatchObject({
       acpSessionId: sessionId,
@@ -407,21 +478,6 @@ describe('Qwen Code background tasks', () => {
     }
     const idleArms = vi.spyOn(controls, 'armAgentTurnWatchdog')
     const adoptionArms = vi.spyOn(controls, 'armAgentTurnAdoptionWatchdog')
-    const wallSetTimeout = setTimeout
-    const wallClearTimeout = clearTimeout
-    const wirePhase = async <T>(operation: Promise<T>): Promise<T> => {
-      let timer: ReturnType<typeof setTimeout> | undefined
-      try {
-        return await Promise.race([
-          operation,
-          new Promise<never>((_, reject) => {
-            timer = wallSetTimeout(() => reject(new Error('Qwen fixture did not reach its next wire phase')), 2_000)
-          }),
-        ])
-      } finally {
-        wallClearTimeout(timer)
-      }
-    }
     let adopting: ReturnType<AcpSessionRuntime['prompt']> | undefined
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     try {
@@ -536,28 +592,38 @@ describe('Qwen Code background tasks', () => {
     const jobs = recordingJobs()
     const prompts = promptRequests()
     const runtime = createRuntime({ qwenTaskJobs: jobs.starter, unannouncedIdleMs: 80 }, prompts.env)
-    const mirrored = jobs.next()
-    await runtime.prompt([{ type: 'text', text: 'background' }], () => undefined)
-    await (
-      await mirrored
-    ).outcome
-    await new Promise((resolve) => setTimeout(resolve, 150))
-    const updates: AcpSessionNotification[] = []
-    expect(
-      (
-        await runtime.prompt(
-          [{ type: 'text', text: 'wake' }],
-          (n) => updates.push(n),
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          { adoptAgentTurn: true },
-        )
-      ).stopReason,
-    ).toBe('end_turn')
-    expect(texts(updates)).toContain('The background command printed done.')
-    expect(prompts.read()).toEqual(['background'])
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const mirrored = jobs.next()
+      await wirePhase(runtime.prompt([{ type: 'text', text: 'background' }], () => undefined))
+      await wirePhase(mirrored.then((job) => job.outcome))
+      await waitForWireState(() =>
+        observedAgentTurns(runtime).some(
+          (turn) => turn.listener === undefined && turn.ended?.stopReason === 'end_turn',
+        ),
+      )
+      const updates: AcpSessionNotification[] = []
+      expect(
+        (
+          await wirePhase(
+            runtime.prompt(
+              [{ type: 'text', text: 'wake' }],
+              (n) => updates.push(n),
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              { adoptAgentTurn: true },
+            ),
+          )
+        ).stopReason,
+      ).toBe('end_turn')
+      expect(texts(updates)).toContain('The background command printed done.')
+      expect(prompts.read()).toEqual(['background'])
+    } finally {
+      vi.useRealTimers()
+      await runtime.close()
+    }
   })
 
   it('retains an empty partial response marker received before adoption and rejects a matching end_turn', async () => {
