@@ -5,7 +5,7 @@ import { launchBrowser, newEnglishPage } from './browser.ts'
 import type { ObservedEvent } from './types.ts'
 import type { Page } from 'playwright'
 import { join } from 'node:path'
-import { readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { expect, it, vi } from 'vitest'
 import { connectFreshWorkspace, writeComposerDraft } from '#host-support'
 import { launchAdapterWorld, root } from './scaffold.ts'
@@ -251,7 +251,18 @@ it('persists teammate model selection, applies it on wake, and protects Team bou
         .map((event) => event.data.header.config.model),
     ).toEqual(['mock-model-b', 'mock-model-b'])
     await send('E2E_TEAM_SECOND')
-    await page.getByText('E2E_TEAM_SECOND_READY', { exact: true }).waitFor()
+    // A teammate's settlement notice can continue the same native Turn and
+    // fold this earlier reply. Readiness is its durable message plus the
+    // visible management entry, not whether process text remains expanded.
+    const secondReady = () =>
+      events.find(
+        (event) =>
+          event.sessionId === lead.id &&
+          event.type === 'assistant/message' &&
+          event.data.message.content.some((block) => block.type === 'text' && block.text === 'E2E_TEAM_SECOND_READY'),
+      )
+    await expect.poll(secondReady, { timeout: 30000 }).toBeDefined()
+    await panel.getByRole('button', { name: 'Manage members · 2', exact: true }).waitFor()
     const sibling = required(host.ctx.agentTeams.listMembers(lead).find((member) => member.name === 'calculator-b'))
     await expect
       .poll(
@@ -307,6 +318,34 @@ it('persists teammate model selection, applies it on wake, and protects Team bou
     await page.keyboard.press('Escape')
     await expect.poll(() => managementPanel.count()).toBe(0)
     await expect.poll(() => manageMembersButton.evaluate((button) => button === document.activeElement)).toBe(true)
+  } catch (error) {
+    const directory = join(root, '.local/team-model-selection')
+    mkdirSync(directory, { recursive: true })
+    writeFileSync(join(directory, 'events.json'), JSON.stringify(events, null, 2))
+    if (page) {
+      await page.screenshot({ path: join(directory, 'failure.png'), fullPage: true }).catch(() => {})
+      const state = await page
+        .getByText('E2E_TEAM_SECOND_READY', { exact: true })
+        .evaluateAll((elements) =>
+          elements.map((element) => {
+            const ancestors = []
+            for (let parent: Element | null = element; parent !== null; parent = parent.parentElement) {
+              const style = getComputedStyle(parent)
+              ancestors.push({
+                tag: parent.tagName,
+                attributes: Object.fromEntries([...parent.attributes].map(({ name, value }) => [name, value])),
+                display: style.display,
+                visibility: style.visibility,
+                contentVisibility: style.contentVisibility,
+              })
+            }
+            return ancestors
+          }),
+        )
+        .catch(() => [])
+      writeFileSync(join(directory, 'marker-ancestors.json'), JSON.stringify(state, null, 2))
+    }
+    throw error
   } finally {
     await browser?.close()
     await host.close()
