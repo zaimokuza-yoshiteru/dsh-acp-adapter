@@ -13,11 +13,12 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { LlmError } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
 import { AcpStubAdapter, acpProbeConfigKey } from '../../../src/host/composition/llm-stub.ts'
+import { ACP_PROBE_CACHE_ERROR_TTL_MS, ACP_PROBE_CACHE_OK_TTL_MS } from '../../../src/domain/session/agent-config.ts'
 import type { AcpStubAgentConfig } from '../../../src/domain/session/agent-config.ts'
 import type { SubprocessSeam } from '../../../src/runtime/process/subprocess.ts'
 import { sharedTestSubprocess } from '../../fixtures/subprocess-seam-testing.ts'
@@ -68,6 +69,31 @@ function mockAgent(scenario: string, extraEnv: Record<string, string> = {}): Moc
       args: [MOCK_AGENT_PATH, `${SPEC_TAG}-m${String(seq)}`],
       env: { MOCK_SCENARIO: scenario, MOCK_LOG: logPath, ...extraEnv },
     },
+  }
+}
+
+/** Change the real Agent's external state without changing its launch configuration. */
+function mutableMockAgent(extraEnv: Record<string, string> = {}) {
+  const handle = mockAgent('happy', extraEnv)
+  const statePath = `${handle.logPath}.json`
+  const setState = (env: Record<string, string>) => fs.writeFileSync(statePath, JSON.stringify(env))
+  setState({})
+  return {
+    ...handle,
+    config: {
+      ...handle.config,
+      args: [
+        '--input-type=module',
+        '-e',
+        `import { readFileSync } from 'node:fs';
+Object.assign(process.env, JSON.parse(readFileSync(process.env.MOCK_DYNAMIC_ENV_FILE, 'utf8')));
+await import(${JSON.stringify(pathToFileURL(MOCK_AGENT_PATH).href)});`,
+        '--',
+        `${SPEC_TAG}-dynamic`,
+      ],
+      env: { ...handle.config.env, MOCK_DYNAMIC_ENV_FILE: statePath },
+    },
+    setState,
   }
 }
 
@@ -390,55 +416,146 @@ describe(' 缓存 TTL（acpProbeFresh；ok 10min / error 30s）', () => {
     }
   })
 
-  it('ok 条目过期后重 probe 失败时保留原模型列表，不击毁缓存', async () => {
-    const script = `
-let buf = '';
-process.stdin.on('data', (d) => {
-  buf += d;
-  let i;
-  while ((i = buf.indexOf('\\n')) >= 0) {
-    const line = buf.slice(0, i);
-    buf = buf.slice(i + 1);
-    if (!line.trim()) continue;
-    let msg;
-    try { msg = JSON.parse(line); } catch { continue; }
-    if (msg.id === undefined || msg.method === undefined) continue;
-    if (process.env.MOCK_DYNAMIC_FAIL === '1') {
-      process.exit(1);
+  it('records repeated refresh failures while retaining the verified catalog and model-specific reasoning', async () => {
+    const unavailablePath = path.join(logDir, 'retained-catalog-unavailable')
+    const { config, logPath } = mockAgent('happy', {
+      MOCK_UNAVAILABLE_FILE: unavailablePath,
+      MOCK_MODEL_THOUGHT_LEVELS: JSON.stringify({
+        'mock-model-a': ['high'],
+        'mock-model-b': ['low', 'high', 'max'],
+        'mock-model-c': ['on'],
+      }),
+    })
+    const { adapter } = makeAdapter({ [ROUTE]: { ...config, runtime: 'codex' } })
+    const clock = fakeClock()
+    try {
+      const initial = await adapter.listModels(ROUTE)
+      const options = adapter.configOptions(ROUTE)
+      const modelOptions = initial.map((model) => adapter.configOptionsForModel(ROUTE, model.id))
+      expect(initial.map((model) => model.id)).toEqual(['mock-model-a', 'mock-model-b', 'mock-model-c'])
+      expect(modelOptions[0]?.find((option) => option.id === 'thought_level')).toMatchObject({
+        currentValue: 'high',
+      })
+      expect(modelOptions[1]?.find((option) => option.id === 'thought_level')).toMatchObject({
+        currentValue: 'low',
+        options: [
+          { value: 'low', name: 'Low' },
+          { value: 'high', name: 'High' },
+          { value: 'max', name: 'Max' },
+        ],
+      })
+      fs.writeFileSync(unavailablePath, 'unavailable')
+      clock.advance(ACP_PROBE_CACHE_OK_TTL_MS)
+
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const [first, concurrent] = await Promise.all([adapter.listModels(ROUTE), adapter.listModels(ROUTE)])
+        expect(first).toEqual(initial)
+        expect(concurrent).toEqual(initial)
+        expect(probeCount(logPath)).toBe(attempt + 2)
+        const failure = adapter.probeSnapshot(ROUTE)
+        expect(failure).toMatchObject({
+          at: Date.now(),
+          result: { kind: 'error', failureKind: 'auth_required', probePhase: 'initialize' },
+        })
+        expect(adapter.configOptions(ROUTE)).toEqual(options)
+        expect(initial.map((model) => adapter.configOptionsForModel(ROUTE, model.id))).toEqual(modelOptions)
+        expect(adapter.configOptionsForModel(ROUTE, 'toString')).toBeUndefined()
+        clock.advance(ACP_PROBE_CACHE_ERROR_TTL_MS - 1)
+        expect(await adapter.listModels(ROUTE)).toEqual(initial)
+        expect(adapter.probeSnapshot(ROUTE)).toBe(failure)
+        expect(probeCount(logPath)).toBe(attempt + 2)
+        clock.advance(1)
+      }
+    } finally {
+      vi.useRealTimers()
     }
-    if (msg.method === 'initialize') {
-      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: 1, agentCapabilities: {} } }) + '\\n');
-    } else if (msg.method === 'session/new') {
-      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { sessionId: 's1', configOptions: [{ type: 'select', id: 'model', name: 'Model', category: 'model', currentValue: 'm1', options: [{ value: 'm1', name: 'Model 1' }] }] } }) + '\\n');
+  }, 15_000)
+
+  it('replaces the retained models and reasoning after the same configuration recovers', async () => {
+    const unavailablePath = path.join(logDir, 'recovered-catalog-unavailable')
+    const { config, logPath, setState } = mutableMockAgent({ MOCK_UNAVAILABLE_FILE: unavailablePath })
+    const { adapter } = makeAdapter({ [ROUTE]: { ...config, runtime: 'codex' } })
+    const clock = fakeClock()
+    try {
+      const initial = await adapter.listModels(ROUTE)
+      fs.writeFileSync(unavailablePath, 'unavailable')
+      clock.advance(ACP_PROBE_CACHE_OK_TTL_MS)
+      expect(await adapter.listModels(ROUTE)).toEqual(initial)
+      expect(adapter.probeSnapshot(ROUTE)?.result.kind).toBe('error')
+
+      setState({
+        MOCK_MODEL_OPTIONS: JSON.stringify([{ value: 'replacement-model', name: 'Replacement Model' }]),
+        MOCK_MODEL_THOUGHT_LEVELS: JSON.stringify({ 'replacement-model': ['low', 'max'] }),
+      })
+      fs.rmSync(unavailablePath)
+      clock.advance(ACP_PROBE_CACHE_ERROR_TTL_MS)
+      const recovered = await adapter.listModels(ROUTE)
+      expect(recovered).toEqual([{ provider: ROUTE, id: 'replacement-model', name: 'Replacement Model' }])
+      expect(adapter.probeSnapshot(ROUTE)).toMatchObject({ at: Date.now(), result: { kind: 'ok' } })
+      expect(adapter.configOptionsForModel(ROUTE, 'mock-model-a')).toBeUndefined()
+      expect(
+        adapter.configOptionsForModel(ROUTE, 'replacement-model')?.find((option) => option.id === 'thought_level'),
+      ).toMatchObject({ currentValue: 'low' })
+
+      fs.writeFileSync(unavailablePath, 'unavailable')
+      clock.advance(ACP_PROBE_CACHE_OK_TTL_MS)
+      expect(await adapter.listModels(ROUTE)).toEqual(recovered)
+      expect(adapter.probeSnapshot(ROUTE)?.result.kind).toBe('error')
+      expect(probeCount(logPath)).toBe(4)
+    } finally {
+      vi.useRealTimers()
     }
-  }
-});
-setInterval(() => {}, 1 << 30);
-`
-    const config: AcpStubAgentConfig = {
-      name: 'DynamicAgent',
-      command: process.execPath,
-      args: ['-e', script],
-      env: {},
-    }
+  }, 15_000)
+
+  it('does not expose retained models or reasoning after the launch configuration changes', async () => {
+    const unavailablePath = path.join(logDir, 'changed-catalog-unavailable')
+    const handle = mockAgent('happy', { MOCK_UNAVAILABLE_FILE: unavailablePath })
+    const config = { ...handle.config, runtime: 'codex' as const }
+    const { adapter, set } = makeAdapter({ [ROUTE]: config })
+    await adapter.listModels(ROUTE)
+    expect(adapter.configOptionsForModel(ROUTE, 'mock-model-a')).toBeDefined()
+    const changed = { ...config, env: { ...config.env, CHANGED: '1' } }
+    set({ [ROUTE]: changed })
+    expect(adapter.configOptions(ROUTE)).toBeUndefined()
+    expect(adapter.configOptionsForModel(ROUTE, 'mock-model-a')).toBeUndefined()
+    fs.writeFileSync(unavailablePath, 'unavailable')
+
+    const failure = await expectListModelsError(adapter, ROUTE)
+    expect(await expectListModelsError(adapter, ROUTE)).toBe(failure)
+    expect(probeCount(handle.logPath)).toBe(2)
+    expect(adapter.probeSnapshot(ROUTE)).toMatchObject({
+      key: acpProbeConfigKey(changed),
+      result: { kind: 'error' },
+    })
+    expect(adapter.configOptionsForModel(ROUTE, 'mock-model-a')).toBeUndefined()
+    set({})
+    expect(adapter.configOptions(ROUTE)).toBeUndefined()
+    expect(adapter.configOptionsForModel(ROUTE, 'mock-model-a')).toBeUndefined()
+  })
+
+  it.each(['one', 'all'] as const)('explicit invalidation (%s) discards the retained catalog', async (scope) => {
+    const unavailablePath = path.join(logDir, `invalidated-catalog-${scope}-unavailable`)
+    const { config, logPath } = mockAgent('happy', { MOCK_UNAVAILABLE_FILE: unavailablePath })
     const { adapter } = makeAdapter({ [ROUTE]: config })
     const clock = fakeClock()
     try {
       const initial = await adapter.listModels(ROUTE)
-      expect(initial).toHaveLength(1)
-      expect(initial[0]?.id).toBe('m1')
+      fs.writeFileSync(unavailablePath, 'unavailable')
+      clock.advance(ACP_PROBE_CACHE_OK_TTL_MS)
+      expect(await adapter.listModels(ROUTE)).toEqual(initial)
+      adapter.invalidateProbe(scope === 'one' ? ROUTE : undefined)
+      expect(adapter.probeSnapshot(ROUTE)).toBeUndefined()
+      expect(adapter.configOptions(ROUTE)).toBeUndefined()
+      expect(adapter.configOptionsForModel(ROUTE, 'mock-model-a')).toBeUndefined()
 
-      clock.advance(10 * 60_000 + 1)
-      process.env.MOCK_DYNAMIC_FAIL = '1'
-
-      const fallback = await adapter.listModels(ROUTE)
-      expect(fallback).toHaveLength(1)
-      expect(fallback[0]?.id).toBe('m1')
+      const failure = await expectListModelsError(adapter, ROUTE)
+      expect(await expectListModelsError(adapter, ROUTE)).toBe(failure)
+      expect(probeCount(logPath)).toBe(3)
+      expect(adapter.probeSnapshot(ROUTE)?.result.kind).toBe('error')
     } finally {
-      delete process.env.MOCK_DYNAMIC_FAIL
       vi.useRealTimers()
     }
-  })
+  }, 15_000)
 })
 
 describe('probe 失败文案（AcpClientError.kind → 面向用户 message）', () => {
