@@ -6,7 +6,7 @@
 //   "background-ask" -> as background, but the Qwen-initiated turn asks a question first
 //   anything else -> plain reply
 // FAKE_QWEN_START_TIMEOUT_MS bounds the wait for the start_turn answer (Qwen: 2 s).
-import { appendFileSync } from 'node:fs'
+import { appendFileSync, readFileSync } from 'node:fs'
 
 let buffer = ''
 let nextId = 1000
@@ -351,6 +351,13 @@ async function onPrompt(message) {
   const prompt = message.params.prompt.map((block) => block.text ?? '').join(' ')
   if (process.env.FAKE_QWEN_PROMPT_LOG !== undefined)
     appendFileSync(process.env.FAKE_QWEN_PROMPT_LOG, `${JSON.stringify(prompt)}\n`)
+  if (prompt === 'finish-task') {
+    tasks[0].status = 'completed'
+    text('LATE_TASK_SUCCESS', {
+      source: 'background_task_completed',
+      backgroundTask: { taskId: 'bg-1', kind: 'shell', status: 'completed' },
+    })
+  }
   if (prompt.includes('ask') && !prompt.includes('background')) {
     const response = await ask()
     text(
@@ -487,10 +494,43 @@ process.stdin.on('data', (chunk) => {
         }
         break
       case 'qwen/status/session/tasks':
+        if (process.env.FAKE_QWEN_TASK_STATE_FILE !== undefined)
+          tasks[0].status = JSON.parse(readFileSync(process.env.FAKE_QWEN_TASK_STATE_FILE, 'utf8')).status
+        if (process.env.FAKE_QWEN_TASK_EVENT_LOG !== undefined)
+          appendFileSync(
+            process.env.FAKE_QWEN_TASK_EVENT_LOG,
+            `${JSON.stringify({ event: 'snapshot', status: tasks[0].status })}\n`,
+          )
         send({ jsonrpc: '2.0', id: message.id, result: { v: 1, sessionId: SESSION, now: Date.now(), tasks } })
         break
       case 'qwen/control/session/task/cancel':
         cancelled.push(message.params)
+        if (process.env.FAKE_QWEN_TASK_EVENT_LOG !== undefined)
+          appendFileSync(
+            process.env.FAKE_QWEN_TASK_EVENT_LOG,
+            `${JSON.stringify({ event: 'cancel', ...message.params })}\n`,
+          )
+        if (process.env.FAKE_QWEN_TASK_CANCEL_MODE === 'reject') {
+          send({ jsonrpc: '2.0', id: message.id, error: { code: -32000, message: 'INJECTED_CANCEL_REJECTED' } })
+          break
+        }
+        if (process.env.FAKE_QWEN_TASK_CANCEL_MODE === 'unknown-notification') {
+          text('Task cancellation is still pending', {
+            source: 'background_task_completed',
+            backgroundTask: { taskId: message.params.taskId, status: 'unknown', kind: message.params.taskKind },
+          })
+          send({ jsonrpc: '2.0', id: message.id, result: { cancelled: true, status: 'running' } })
+          break
+        }
+        if (process.env.FAKE_QWEN_TASK_CANCEL_MODE === 'running') {
+          send({ jsonrpc: '2.0', id: message.id, result: { cancelled: true, status: 'running' } })
+          break
+        }
+        if (process.env.FAKE_QWEN_TASK_CANCEL_MODE === 'snapshot') {
+          tasks[0].status = 'cancelled'
+          send({ jsonrpc: '2.0', id: message.id, result: { cancelled: true, status: 'cancelled' } })
+          break
+        }
         tasks[0].status = 'cancelled'
         send({ jsonrpc: '2.0', id: message.id, result: { ok: true } })
         text('Background shell bg-1 cancelled', {

@@ -75,6 +75,7 @@ export class AcpAgentProcess {
    * 与之竞速。构造时已挂兜底 catch，未被竞速消费不触发 unhandledRejection。
    */
   readonly failureArm: Promise<never>
+  private cleanupConfirmed = false
   private closing = false
   private closePromise: Promise<void> | undefined
 
@@ -197,6 +198,11 @@ export class AcpAgentProcess {
     return this.exitInfo
   }
 
+  /** True only after the provider confirms that the entire managed range exited. */
+  get isCleanupConfirmed(): boolean {
+    return this.cleanupConfirmed
+  }
+
   /** close 是否已发起。 */
   get isClosed(): boolean {
     return this.closePromise !== undefined
@@ -242,7 +248,7 @@ export class AcpAgentProcess {
     this.closing = true
     if (this.handle !== undefined) {
       // A settled command (including provider failure) may leave live range members.
-      await stopSubprocess(this.handle, {
+      this.cleanupConfirmed = await stopSubprocess(this.handle, {
         eofGraceMs: this.eofGraceMs,
         exitWaitMs: this.exitWaitMs,
         warn: this.onWarn,

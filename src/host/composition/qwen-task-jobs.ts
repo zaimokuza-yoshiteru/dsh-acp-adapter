@@ -27,8 +27,8 @@ export function resolveQwenTaskJobs(ctx: Context, sessionId: string): QwenTaskJo
         kind: QWEN_TASK_JOB_KIND,
         label,
         owner,
-        run: () => {
-          const producer = run()
+        run: (handle) => {
+          const producer = run((line) => handle.updateProgress(line))
           return {
             cancel: () => {
               producer.cancel()

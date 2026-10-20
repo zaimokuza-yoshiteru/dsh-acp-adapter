@@ -1231,6 +1231,139 @@ describe('Qwen Code background tasks', () => {
     expect(outcome).toMatchObject({ status: 'killed', silent: true })
   })
 
+  it('collects Qwen cancellation from its terminal snapshot without a completion notification', async () => {
+    const jobs = recordingJobs()
+    const runtime = createRuntime({ qwenTaskJobs: jobs.starter }, { FAKE_QWEN_TASK_CANCEL_MODE: 'snapshot' })
+    const mirrored = jobs.next()
+    await runtime.prompt([{ type: 'text', text: 'hello' }], () => undefined)
+    const job = await mirrored
+    job.hooks.cancel()
+    await expect(wirePhase(job.outcome)).resolves.toMatchObject({ status: 'killed', silent: true })
+  })
+
+  it.each(['reject', 'running', 'unknown-notification'])(
+    'retains a live job after a %s cancellation reply and accepts a later real completion',
+    async (mode) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-qwen-cancel-wire-'))
+      roots.push(root)
+      const eventLog = path.join(root, 'events.jsonl')
+      const events = (): Array<{ event: string; status?: string }> =>
+        fs.existsSync(eventLog)
+          ? fs
+              .readFileSync(eventLog, 'utf8')
+              .trim()
+              .split('\n')
+              .map((line) => JSON.parse(line))
+          : []
+      const jobs = recordingJobs()
+      const runtime = createRuntime(
+        { qwenTaskJobs: jobs.starter },
+        {
+          FAKE_QWEN_TASK_CANCEL_MODE: mode,
+          FAKE_QWEN_TASK_EVENT_LOG: eventLog,
+        },
+      )
+      const mirrored = jobs.next()
+      await runtime.prompt([{ type: 'text', text: 'hello' }], () => undefined)
+      const job = await mirrored
+      let outcome: QwenTaskJobOutcome | undefined
+      void job.outcome.then((value) => {
+        outcome = value
+      })
+      job.hooks.cancel()
+      await waitForWireState(() => events().filter((event) => event.event === 'snapshot').length >= 2)
+      expect(events().filter((event) => event.event === 'cancel')).toHaveLength(1)
+      expect(events().at(-1)).toMatchObject({ event: 'snapshot', status: 'running' })
+      expect(outcome).toBeUndefined()
+      expect(jobs.jobs).toHaveLength(1)
+      expect(observedAgentTurns(runtime)).toHaveLength(0)
+      await runtime.prompt([{ type: 'text', text: 'finish-task' }], () => undefined)
+      await expect(job.outcome).resolves.toMatchObject({
+        status: 'completed',
+        result: 'LATE_TASK_SUCCESS',
+        silent: true,
+      })
+    },
+  )
+
+  it('polls Qwen task snapshots until the remote task actually ends', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-qwen-cancel-state-'))
+    roots.push(root)
+    const stateFile = path.join(root, 'state.json')
+    fs.writeFileSync(stateFile, JSON.stringify({ status: 'running' }))
+    const jobs = recordingJobs()
+    const runtime = createRuntime(
+      { qwenTaskJobs: jobs.starter },
+      {
+        FAKE_QWEN_TASK_CANCEL_MODE: 'running',
+        FAKE_QWEN_TASK_STATE_FILE: stateFile,
+      },
+    )
+    const mirrored = jobs.next()
+    await runtime.prompt([{ type: 'text', text: 'hello' }], () => undefined)
+    const job = await mirrored
+    job.hooks.cancel()
+    const nextState = path.join(root, 'state-next.json')
+    fs.writeFileSync(nextState, JSON.stringify({ status: 'completed' }))
+    fs.renameSync(nextState, stateFile)
+    await expect(wirePhase(job.outcome)).resolves.toMatchObject({ status: 'completed', silent: true })
+  })
+
+  it.each([true, false])('waits for managed-range cleanup and reports its confirmation=%s', async (confirmed) => {
+    const entered = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    const controlled: SubprocessSeam = {
+      resolveExecutable: (...args) => subprocess.resolveExecutable(...args),
+      spawn(spec) {
+        const child = subprocess.spawn(spec)
+        return {
+          ...child,
+          stdin: child.stdin,
+          stdout: child.stdout,
+          stderr: child.stderr,
+          done: child.done,
+          terminate: () => child.terminate(),
+          async waitForExit(signal) {
+            entered.resolve()
+            await release.promise
+            const exited = await child.waitForExit(signal)
+            return confirmed && exited
+          },
+        }
+      },
+    }
+    const jobs = recordingJobs()
+    const runtime = createRuntime({ qwenTaskJobs: jobs.starter, subprocess: controlled })
+    const mirrored = jobs.next()
+    await runtime.prompt([{ type: 'text', text: 'hello' }], () => undefined)
+    const job = await mirrored
+    let outcome: QwenTaskJobOutcome | undefined
+    void job.outcome.then((value) => {
+      outcome = value
+    })
+    const closing = runtime.close()
+    try {
+      await wirePhase(entered.promise)
+      expect(outcome).toBeUndefined()
+    } finally {
+      release.resolve()
+      await closing
+    }
+    await expect(job.outcome).resolves.toMatchObject(
+      confirmed
+        ? {
+            status: 'killed',
+            detail: 'ACP session closed; managed process exit confirmed',
+            silent: true,
+          }
+        : {
+            status: 'failed',
+            detail: 'ACP session cleanup unconfirmed; background work may still be running',
+            silent: true,
+          },
+    )
+  })
+
   it("leaves Qwen's unannounced fallback in place without a job registry", async () => {
     const runtime = createRuntime()
     const seen: AcpSessionNotification[] = []

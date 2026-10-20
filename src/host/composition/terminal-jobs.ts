@@ -21,8 +21,8 @@ export function resolveTerminalJobs(ctx: Context, sessionId: string): AcpTermina
       kind: 'acp-terminal',
       label,
       owner,
-      run: () => {
-        const producer = run()
+      run: (job) => {
+        const producer = run((text, channel) => job.append(text, { channel }))
         return {
           ...producer,
           done: producer.done.then((outcome) => {

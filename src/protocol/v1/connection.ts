@@ -682,6 +682,11 @@ export class AcpClientConnection {
     return this.qwenWorkSnapshot
   }
 
+  /** Managed-range exit evidence, separate from merely starting close(). */
+  get isCleanupConfirmed(): boolean {
+    return this.process.isCleanupConfirmed
+  }
+
   /** close 是否已发起。 */
   get isClosed(): boolean {
     return this.process.isClosed

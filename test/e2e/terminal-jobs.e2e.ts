@@ -27,6 +27,7 @@ describe.each(['claude', 'codex', 'devin', 'kimi'])('native terminal jobs: %s', 
     const observed: GenerateOptions[] = []
     const provider = `acp-${profile}`
     const agentLog = join(host.workspaceCwd, 'jobs-agent.log')
+    const evidenceDirectory = join(root, '.local/e2e-terminal-jobs', profile)
     try {
       await host.ctx.settings.replace('dsh-acp-adapter', {
         agents: {
@@ -84,7 +85,22 @@ describe.each(['claude', 'codex', 'devin', 'kimi'])('native terminal jobs: %s', 
       await running.click()
       const list = page.getByRole('list', { name: 'Background jobs', exact: true })
       expect(await list.innerText()).toContain('acp-terminal')
-      expect(await list.innerText()).toContain('E2E_JOB_TICK')
+      expect(first.label).not.toContain('E2E_JOB_TICK')
+      await list.getByRole('button', { name: `Show live output of ${first.label}`, exact: true }).click()
+      await expect.poll(() => list.innerText()).toContain('E2E_JOB_TICK')
+      expect(host.ctx.jobs.get(first.id, owner).output.total).toBeGreaterThan(0)
+      const modelRead = host.ctx.jobs.read(first.id, owner)
+      expect(modelRead.chunks.map((chunk) => chunk.text).join('')).toContain('E2E_JOB_TICK')
+      expect(host.ctx.jobs.read(first.id, owner).chunks).toEqual([])
+      // UI observation must retain output even after the model consumes it.
+      expect(
+        host.ctx.jobs
+          .readAt(first.id, 0, owner)
+          .chunks.map((chunk) => chunk.text)
+          .join(''),
+      ).toContain('E2E_JOB_TICK')
+      mkdirSync(evidenceDirectory, { recursive: true })
+      await page.screenshot({ path: join(evidenceDirectory, 'running-output.png'), fullPage: true })
       await page.reload()
       await running.waitFor()
       expect(jobs().map((job) => job.id)).toEqual([first.id])
@@ -121,6 +137,23 @@ describe.each(['claude', 'codex', 'devin', 'kimi'])('native terminal jobs: %s', 
       await page.reload()
       await page.getByRole('button', { name: '1 background job', exact: true }).click()
       expect(await list.innerText()).toContain('exit code: 0')
+      await list.getByRole('button', { name: `Show live output of ${first.label}`, exact: true }).click()
+      await expect.poll(() => list.innerText()).toContain('E2E_JOB_TICK')
+      expect(host.ctx.jobs.read(first.id, owner).result).toBeUndefined()
+      writeFileSync(
+        join(evidenceDirectory, 'output.json'),
+        JSON.stringify(
+          {
+            job: host.ctx.jobs.get(first.id, owner),
+            modelRead,
+            observerAfterModelRead: host.ctx.jobs.readAt(first.id, 0, owner),
+            nativePanel: await list.innerText(),
+          },
+          null,
+          2,
+        ),
+      )
+      await page.screenshot({ path: join(evidenceDirectory, 'completed-output.png'), fullPage: true })
       expect(observed).toHaveLength(sent)
       await send(page, 'E2E_JOB_READ')
       await expect.poll(() => page.locator('body').innerText()).toContain('E2E_JOB_OUTPUT {"output":"E2E_JOB_TICK')
@@ -163,6 +196,12 @@ describe.each(['claude', 'codex', 'devin', 'kimi'])('native terminal jobs: %s', 
       await page.getByRole('button', { name: '5 background jobs', exact: true }).click()
       expect(await list.locator('li').filter({ hasText: 'acp-terminal' }).count()).toBe(5)
       expect(await list.innerText()).toContain('signal:')
+      await page.getByRole('button', { name: 'Clear', exact: true }).click()
+      await expect.poll(() => page.getByRole('button', { name: '5 background jobs', exact: true }).count()).toBe(0)
+      expect(jobs()).toHaveLength(5)
+      await page.reload()
+      await page.getByRole('button', { name: '5 background jobs', exact: true }).click()
+      expect(await list.locator('li').filter({ hasText: 'acp-terminal' }).count()).toBe(5)
       expect(observed).toHaveLength(sent)
       expect(errors).toEqual([])
     } catch (error) {

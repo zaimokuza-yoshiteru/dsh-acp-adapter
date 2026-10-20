@@ -1298,8 +1298,8 @@ export class AcpSessionRuntime {
     for (const turn of this.agentTurns) turn.end({ error: new AcpAgentTurnOutcomeError('missing-terminal') })
     this.agentTurns = []
     this.notifyAgentTurnWaiters()
-    this.qwenTasks?.close()
-    this.qwenTasks = undefined
+    const qwenTasks = this.qwenTasks
+    qwenTasks?.beginClose()
     this.promptToolSnapshots?.clear()
     this.promptToolSnapshots = undefined
     connectionAbort?.abort()
@@ -1316,6 +1316,10 @@ export class AcpSessionRuntime {
           )
     const connectionClose = connection?.close()
     const results = await Promise.allSettled([leaseClose, connectionClose])
+    // A close request does not prove the Agent's private work has stopped.
+    // Release native job waiters only after cleanup reports its actual result.
+    qwenTasks?.close(connection?.isCleanupConfirmed === true)
+    if (this.qwenTasks === qwenTasks) this.qwenTasks = undefined
 
     if (lease?.hasPendingCalls?.() === true || lease?.hasRetainedFeedback?.() === true) {
       this.retiredMcpLeases.add(lease)
@@ -1681,13 +1685,14 @@ export class AcpSessionRuntime {
       return undefined
     this.qwenTasks = new QwenBackgroundTasks({
       startJob,
+      log: (message) => console.warn(`dsh-acp: ${message}`),
       listTasks: async () => {
         if (connection !== this.connection || connection.isClosed) return undefined
         return qwenTaskSnapshots(await connection.extRequest('qwen/status/session/tasks', { sessionId }))
       },
       cancelTask: async (taskId, taskKind) => {
-        if (connection !== this.connection || connection.isClosed) return
-        await connection.extRequest('qwen/control/session/task/cancel', { sessionId, taskId, taskKind })
+        if (connection !== this.connection || connection.isClosed) throw new Error('Qwen connection is unavailable')
+        return await connection.extRequest('qwen/control/session/task/cancel', { sessionId, taskId, taskKind })
       },
     })
     return this.qwenTasks

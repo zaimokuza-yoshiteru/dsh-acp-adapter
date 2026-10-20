@@ -106,7 +106,8 @@ describe('real Cordis ACP composition settings lifecycle', () => {
       const leadSession = ctx.sessions.prepare(SessionId('evicted-policy-lead'))
       const detachLead = ctx.sessions.enter(leadSession)
       ctx.sessions.announce(leadSession)
-      const lead = { id: leadSession.id, options: { provider: 'acp-codex' } }
+      // This fixture's sole live Agent shares the test's real owner scope.
+      const lead = { id: leadSession.id, ctx, session: leadSession, options: { provider: 'acp-codex' } }
       const liveAgents = new Map([[lead.id, lead]])
       const create = vi.fn(() => {
         throw new Error('Policy reads must not create an Agent')

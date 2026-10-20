@@ -4,9 +4,14 @@ export interface AcpTerminalJobHooks {
   done: Promise<{
     status: 'completed' | 'killed' | 'failed'
     detail: string
-    output: string
   }>
 }
 
+/** Incremental output owned and retained by the host's native job registry. */
+export type AcpTerminalJobOutput = (text: string, channel: 'stdout' | 'stderr') => void
+
 /** Registration preflights admission before invoking the synchronous starter. */
-export type AcpTerminalJobStarter = (label: string, run: () => AcpTerminalJobHooks) => { cancel(): void }
+export type AcpTerminalJobStarter = (
+  label: string,
+  run: (output: AcpTerminalJobOutput) => AcpTerminalJobHooks,
+) => { cancel(): void }

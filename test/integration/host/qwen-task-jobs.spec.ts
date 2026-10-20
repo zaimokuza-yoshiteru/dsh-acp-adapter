@@ -18,9 +18,10 @@ import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import type { JobRegistry } from '@deepseek-ai/dsh-jobs'
 import { AcpProfileAdapter, type AcpProfileRuntime } from '../../../src/host/composition/profile-adapter.ts'
 import { resolveQwenTaskJobs } from '../../../src/host/composition/qwen-task-jobs.ts'
+import { installAcpSessionRuntimeCleanup } from '../../../src/host/composition/installed-profile-registry.ts'
 import { acpExecutionProjection, acpSessionView } from '../../../src/host/composition/session-facts.ts'
 import { createAcpSidecar } from '../../../src/persistence/sidecar.ts'
-import type { QwenTaskJobOutcome } from '../../../src/runtime/session/qwen-background.ts'
+import { QwenBackgroundTasks, type QwenTaskJobOutcome } from '../../../src/runtime/session/qwen-background.ts'
 import type { AcpPromptOptions } from '../../../src/runtime/session/session-runtime.ts'
 import type * as acp from '@agentclientprotocol/sdk'
 
@@ -46,7 +47,7 @@ const user = (text: string) => createUserMessage({ content: [{ type: 'text', tex
 const text = (blocks: readonly acp.ContentBlock[]) =>
   blocks.flatMap((block) => (block.type === 'text' ? [block.text] : [])).join('\n')
 
-async function harness(holdFirst = false) {
+async function harness(holdFirst = false, lateCleanup = false) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'acp-qwen-host-jobs-'))
   cleanup.push(() => fs.rmSync(root, { recursive: true, force: true }))
   const sidecar = createAcpSidecar({ root })
@@ -116,11 +117,19 @@ async function harness(holdFirst = false) {
     sidecar,
   )
   ctx.llm.registerAdapter(['acp-qwen-host'], adapter)
-  const agent = await ctx.agentLoop.create(
-    SessionId('qwen-host-owner'),
-    { provider: 'acp-qwen-host', model: 'scripted' },
-    { cwd: root },
-  )
+  let disposeRuntimeCleanup!: () => Promise<void>
+  const installCleanup = () => {
+    disposeRuntimeCleanup = installAcpSessionRuntimeCleanup(ctx, (session) => adapter.disposeSession(session))
+    cleanup.push(disposeRuntimeCleanup)
+  }
+  if (!lateCleanup) installCleanup()
+  const owner = await ctx.agents.create({
+    sessionId: SessionId('qwen-host-owner'),
+    agentOptions: { provider: 'acp-qwen-host', model: 'scripted' },
+    meta: { cwd: root },
+  })
+  const agent = owner.agent
+  if (lateCleanup) installCleanup()
   cleanup.push(() => adapter.disposeSession({ id: agent.id, identity: agent.session }))
   const jobs = ctx.get('jobs') as JobRegistry
   const start = resolveQwenTaskJobs(ctx, agent.id)!
@@ -140,10 +149,75 @@ async function harness(holdFirst = false) {
     events,
     firstEntered: firstEntered.promise,
     releaseFirst: () => firstRelease.resolve(),
+    runtime,
+    disposeOwner: () => owner.dispose(),
+    disposeRuntimeCleanup: () => disposeRuntimeCleanup(),
   }
 }
 
 describe('Qwen jobs through the published registry, reporter and AgentLoop', () => {
+  it.each([false, true])('closes the runtime within owner disposal (cleanup installed late=%s)', async (late) => {
+    const h = await harness(false, late)
+    h.agent.followup(user('initial task'))
+    await h.agent.whenIdle()
+    const cleanupEntered = Promise.withResolvers<void>()
+    const cleanupReleased = Promise.withResolvers<void>()
+    const cancel = vi.fn(async () => {
+      throw new Error('remote cancellation rejected')
+    })
+    const tasks = new QwenBackgroundTasks({
+      startJob: resolveQwenTaskJobs(h.ctx, h.agent.id)!,
+      listTasks: async () => [{ id: 'shell-1', kind: 'shell', label: 'still running', status: 'running' }],
+      cancelTask: cancel,
+    })
+    await tasks.refresh()
+    const job = h.jobs.list(h.agent.id)[0]!
+    h.jobs.kill(job.id, h.agent.id)
+    await vi.waitFor(() => expect(cancel).toHaveBeenCalledOnce())
+    expect(h.jobs.get(job.id, h.agent.id).status).toBe('stopping')
+    h.runtime.close = async () => {
+      tasks.beginClose()
+      cleanupEntered.resolve()
+      await cleanupReleased.promise
+      tasks.close(true)
+    }
+    let disposed = false
+    let hooksDisposed = false
+    let disposingHooks: Promise<void> | undefined
+    const disposing = h.disposeOwner().then(() => {
+      disposed = true
+    })
+    try {
+      await Promise.race([
+        cleanupEntered.promise,
+        new Promise<never>((_, reject) => {
+          const timer = setTimeout(() => reject(new Error('owner cleanup never reached ACP runtime')), 1_000)
+          timer.unref()
+          void cleanupEntered.promise.then(() => clearTimeout(timer))
+        }),
+      ])
+      disposingHooks = h.disposeRuntimeCleanup().then(() => {
+        hooksDisposed = true
+      })
+      // Give an incorrectly unjoined disposer a chance to finish while the
+      // actual runtime close remains held behind the explicit barrier.
+      await new Promise<void>((resolve) => setImmediate(resolve))
+      expect(disposed).toBe(false)
+      expect(hooksDisposed).toBe(false)
+      expect(h.jobs.get(job.id, h.agent.id).status).toBe('stopping')
+    } finally {
+      cleanupReleased.resolve()
+      // A regression must not leave the native owner's teardown pending.
+      await h.runtime.close()
+      await disposing
+      await disposingHooks
+    }
+    expect(disposed).toBe(true)
+    expect(hooksDisposed).toBe(true)
+    expect(h.ctx.agents.get(h.agent.id)).toBeUndefined()
+    expect(h.jobs.list(h.agent.id)).toEqual([])
+  })
+
   it('carries the native Team policy and required identity through the admitted ACP request', async () => {
     const h = await harness()
     // Keep Team membership narrow; policy, scoped registrations, assembly,

@@ -630,7 +630,6 @@ describe('installInstalledProfileRegistry：注册/替换调用序列', () => {
     const { ctx, settings, listeners } = fakeHarness()
     installInstalledProfileRegistry(ctx, settings.config)
     await settings.replace({ agents: { devin: devinAgent } })
-    expect(listeners.has('agent/created')).toBe(false)
     const claimed = listeners.get('agent/inbox/claimed')!
     const session = () => {
       const events: Array<{ type: string; data: unknown }> = [
@@ -645,10 +644,15 @@ describe('installInstalledProfileRegistry：注册/替换调用序列', () => {
       })
     }
     const acp = session()
-    claimed({ agent: { options: { provider: 'acp-devin' }, session: acp } })
+    const member = { id: 'resumed-member', ctx, options: { provider: 'acp-devin' }, session: acp }
+    listeners.get('agent/created')?.({ agent: member })
+    // Owner-lifecycle listeners may attach at creation, but policy projection
+    // must wait for admitted input rather than rewriting delegated history.
+    expect(acp.events).toEqual([{ type: 'approval/policy', data: { policy: 'never', source: 'delegation' } }])
+    claimed({ agent: member })
     expect(acp.events.at(-1)).toEqual({ type: 'approval/policy', data: { policy: 'ask' } })
     const size = acp.events.length
-    claimed({ agent: { options: { provider: 'acp-devin' }, session: acp } })
+    claimed({ agent: member })
     expect(acp.events).toHaveLength(size)
     for (const provider of ['deepseek', 'acp-unknown', undefined]) {
       const untouched = session()

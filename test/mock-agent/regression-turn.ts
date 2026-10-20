@@ -421,8 +421,12 @@ export async function regressionTurn(
     } else if (prompt.includes('E2E_JOB_START')) {
       const stopFile = `${session.cwd}/job-stop-${Date.now()}`
       const readyFile = `${stopFile}.ready`
+      const outputFile = `${stopFile}.output`
+      // Keep the output marker out of the command label so the native UI test
+      // cannot mistake the command text for received process output.
+      fs.writeFileSync(outputFile, 'E2E_JOB_TICK\n')
       const immediate = prompt.includes('E2E_JOB_START_IMMEDIATE')
-      const script = `const fs=require('node:fs'); fs.writeFileSync(${JSON.stringify(readyFile)},'ready'); console.log('E2E_JOB_TICK'); ${immediate ? 'process.exit(0)' : `setInterval(()=>{if(fs.existsSync(${JSON.stringify(stopFile)})) process.exit(Number(fs.readFileSync(${JSON.stringify(stopFile)},'utf8')));},25)`}`
+      const script = `const fs=require('node:fs'); process.stdout.write(fs.readFileSync(${JSON.stringify(outputFile)})); fs.writeFileSync(${JSON.stringify(readyFile)},'ready'); ${immediate ? 'process.exit(0)' : `setInterval(()=>{if(fs.existsSync(${JSON.stringify(stopFile)})) process.exit(Number(fs.readFileSync(${JSON.stringify(stopFile)},'utf8')));},25)`}`
       const created = await sendAgentRequest('terminal/create', {
         sessionId: session.id,
         command: process.execPath,

@@ -34,7 +34,10 @@ export interface QwenTaskJobHooks {
 }
 
 /** Host seam over `ctx.jobs`; undefined result = registration refused. */
-export type QwenTaskJobStarter = (label: string, run: () => QwenTaskJobHooks) => { cancel(): void } | undefined
+export type QwenTaskJobStarter = (
+  label: string,
+  run: (updateProgress?: (line: string) => void) => QwenTaskJobHooks,
+) => { cancel(): void } | undefined
 
 export interface QwenTaskSnapshot {
   readonly id: string
@@ -64,7 +67,7 @@ export interface QwenBackgroundDeps {
   /** `qwen/status/session/tasks`; resolves undefined when unavailable. */
   readonly listTasks: () => Promise<readonly QwenTaskSnapshot[] | undefined>
   /** `qwen/control/session/task/cancel`. */
-  readonly cancelTask: (taskId: string, kind: string) => Promise<void>
+  readonly cancelTask: (taskId: string, kind: string) => Promise<unknown>
   /** How long a completion waits for `_qwencode/start_turn` before settling silently. */
   readonly turnWaitMs?: number
   readonly log?: (message: string) => void
@@ -72,15 +75,18 @@ export interface QwenBackgroundDeps {
 
 const TASK_KINDS = new Set(['agent', 'shell', 'monitor', 'workflow'])
 const MAX_RESULT = 16 * 1024
+const CANCEL_OBSERVE_MS = 1_000
 
 function plain(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function jobStatus(status: unknown): QwenTaskJobOutcome['status'] {
+/** A missing task or an unfamiliar status never proves its work has stopped. */
+function snapshotOutcome(status: unknown): QwenTaskJobOutcome['status'] | undefined {
+  if (status === 'completed') return 'completed'
   if (status === 'failed' || status === 'error') return 'failed'
   if (status === 'cancelled' || status === 'killed' || status === 'aborted') return 'killed'
-  return 'completed'
+  return undefined
 }
 
 function firstLine(text: string): string | undefined {
@@ -93,10 +99,14 @@ function bounded(text: string): string {
   return text.length > MAX_RESULT ? `${text.slice(0, MAX_RESULT)}\n[truncated]` : text
 }
 
-/** Parse a `background_task_completed` notification; undefined for anything else. */
+/** Parse a task notice; undefined means another notification type. An unknown
+ * status retains the notice identity so routing cannot mistake it for an
+ * automatic model turn, but it is not evidence that the task finished. */
 export function qwenTaskCompletion(
   notification: AcpSessionNotification,
-): { taskId: string; kind?: string; status: QwenTaskJobOutcome['status']; label?: string; text: string } | undefined {
+):
+  | { taskId: string; kind?: string; status: QwenTaskJobOutcome['status'] | undefined; label?: string; text: string }
+  | undefined {
   const update = notification.update as { sessionUpdate?: string; content?: unknown; _meta?: unknown }
   if (update.sessionUpdate !== 'agent_message_chunk' || !plain(update._meta)) return undefined
   // `background_notification` is the same display line re-emitted when Qwen
@@ -105,6 +115,7 @@ export function qwenTaskCompletion(
     return undefined
   const task = update._meta.backgroundTask
   if (!plain(task) || typeof task.taskId !== 'string' || task.taskId.length === 0) return undefined
+  const status = snapshotOutcome(task.status)
   const content = update.content
   const text = plain(content) && content.type === 'text' && typeof content.text === 'string' ? content.text : ''
   return {
@@ -115,7 +126,7 @@ export function qwenTaskCompletion(
       : typeof task.description === 'string'
         ? { label: task.description }
         : {}),
-    status: jobStatus(task.status),
+    status,
     text,
   }
 }
@@ -142,17 +153,24 @@ export class QwenBackgroundTasks {
   private readonly tasks = new Map<string, MirroredTask>()
   private refreshing: Promise<void> | undefined
   private closed = false
+  private closing = false
+  private cancelObservation: ReturnType<typeof setTimeout> | undefined
 
   constructor(private readonly deps: QwenBackgroundDeps) {}
 
-  /** Mirror every running Qwen task not yet registered. Never throws. */
+  /** Mirror running tasks and collect explicit cancelled-task outcomes. Never throws. */
   async refresh(): Promise<void> {
-    if (this.closed) return
+    if (this.closed || this.closing) return
     this.refreshing ??= (async () => {
       try {
         const snapshot = await this.deps.listTasks()
-        if (snapshot === undefined || this.closed) return
+        if (snapshot === undefined || this.closed || this.closing) return
         for (const task of snapshot) {
+          const mirrored = this.tasks.get(task.id)
+          if (mirrored?.cancelRequested === true && !mirrored.settled && mirrored.kind === task.kind) {
+            const status = snapshotOutcome(task.status)
+            if (status !== undefined) this.settle(mirrored, { status, detail: status, silent: true })
+          }
           if ((task.status === 'running' || task.status === 'paused') && !this.tasks.has(task.id))
             this.mirror(task.id, task.kind, task.label)
         }
@@ -171,12 +189,15 @@ export class QwenBackgroundTasks {
    * @param promptActive - a host prompt is running; Qwen folds the result there.
    */
   complete(completion: NonNullable<ReturnType<typeof qwenTaskCompletion>>, promptActive: boolean): void {
-    if (this.closed) return
+    if (this.closed || completion.status === undefined) return
+    const status = completion.status
+    const existing = this.tasks.get(completion.taskId)
+    if (existing !== undefined && completion.kind !== undefined && existing.kind !== completion.kind) return
     // Started and finished inside the same prompt: Qwen folds it into that
     // turn and nothing outlives it, so there is nothing to mirror.
-    if (promptActive && !this.tasks.has(completion.taskId)) return
+    if (promptActive && existing === undefined) return
     const task =
-      this.tasks.get(completion.taskId) ??
+      existing ??
       this.mirror(
         completion.taskId,
         completion.kind ?? 'agent',
@@ -186,8 +207,8 @@ export class QwenBackgroundTasks {
     const text = bounded(completion.text)
     if (promptActive || task.cancelRequested === true) {
       this.settle(task, {
-        status: completion.status,
-        detail: completion.status,
+        status,
+        detail: status,
         ...(text === '' ? {} : { result: text }),
         silent: true,
       })
@@ -196,14 +217,14 @@ export class QwenBackgroundTasks {
     const timer = setTimeout(() => {
       if (task.completion?.timer !== timer) return
       this.settle(task, {
-        status: completion.status,
-        detail: completion.status,
+        status,
+        detail: status,
         ...(text === '' ? {} : { result: text }),
         silent: true,
       })
     }, this.deps.turnWaitMs ?? 3_000)
     timer.unref?.()
-    task.completion = { status: completion.status, text, timer }
+    task.completion = { status, text, timer }
   }
 
   /**
@@ -212,9 +233,13 @@ export class QwenBackgroundTasks {
    * registry is available, i.e. nothing will adopt the turn.
    */
   wake(turn: { readonly taskId?: string; readonly kind?: string; readonly label?: string }): boolean {
-    if (this.closed) return false
+    if (this.closed || this.closing) return false
     const existing = turn.taskId === undefined ? undefined : this.tasks.get(turn.taskId)
-    if (existing !== undefined && !existing.settled) {
+    if (
+      existing !== undefined &&
+      !existing.settled &&
+      (existing.cancelRequested !== true || existing.completion !== undefined)
+    ) {
       const completion = existing.completion
       if (completion !== undefined) clearTimeout(completion.timer)
       this.settle(existing, {
@@ -235,17 +260,53 @@ export class QwenBackgroundTasks {
     return started !== undefined
   }
 
-  close(): void {
+  /** Stop observation/admission while the owning connection performs its bounded cleanup. */
+  beginClose(): void {
+    this.closing = true
+    if (this.cancelObservation !== undefined) clearTimeout(this.cancelObservation)
+    this.cancelObservation = undefined
+  }
+
+  /** Called after managed-range cleanup, never merely after requesting cancellation. */
+  close(exitConfirmed: boolean): void {
+    this.beginClose()
     this.closed = true
     for (const task of this.tasks.values()) {
-      if (task.completion !== undefined) clearTimeout(task.completion.timer)
-      // Owner teardown: the Agent process is going away with its tasks.
-      this.settle(task, { status: 'killed', detail: 'ACP session closed', silent: true })
+      const completion = task.completion
+      this.settle(
+        task,
+        completion === undefined
+          ? {
+              status: exitConfirmed ? 'killed' : 'failed',
+              detail: exitConfirmed
+                ? 'ACP session closed; managed process exit confirmed'
+                : 'ACP session cleanup unconfirmed; background work may still be running',
+              silent: true,
+            }
+          : {
+              status: completion.status,
+              detail: completion.status,
+              ...(completion.text === '' ? {} : { result: completion.text }),
+              silent: true,
+            },
+      )
     }
     this.tasks.clear()
   }
 
+  private observeCancellation(): void {
+    if (this.closed || this.closing || this.cancelObservation !== undefined) return
+    if (![...this.tasks.values()].some((task) => task.cancelRequested === true && !task.settled)) return
+    this.cancelObservation = setTimeout(() => {
+      this.cancelObservation = undefined
+      // This timer only schedules observation. Elapsed time never settles a job.
+      void this.refresh().finally(() => this.observeCancellation())
+    }, CANCEL_OBSERVE_MS)
+    this.cancelObservation.unref?.()
+  }
+
   private mirror(id: string, kind: string, label: string): MirroredTask | undefined {
+    if (this.closing || this.closed) return undefined
     const task: MirroredTask = { id, kind, label, settled: false }
     let resolve!: (outcome: QwenTaskJobOutcome) => void
     const done = new Promise<QwenTaskJobOutcome>((r) => {
@@ -254,19 +315,30 @@ export class QwenBackgroundTasks {
     task.settle = resolve
     let started: { cancel(): void } | undefined
     try {
-      started = this.deps.startJob(label, () => ({
+      started = this.deps.startJob(label, (updateProgress) => ({
         cancel: () => {
-          if (task.settled || !TASK_KINDS.has(task.kind)) return
+          if (task.settled || task.cancelRequested === true || this.closing || this.closed) return
+          if (!TASK_KINDS.has(task.kind)) throw new Error(`Qwen task kind cannot be cancelled: ${task.kind}`)
           task.cancelRequested = true
-          void this.deps.cancelTask(task.id, task.kind).catch((error: unknown) => {
-            this.deps.log?.(`Qwen task cancel failed: ${error instanceof Error ? error.message : String(error)}`)
-          })
-          // Qwen reports the cancellation as a completion; do not hang the job if it never does.
-          const fallback = setTimeout(
-            () => this.settle(task, { status: 'killed', detail: 'cancelled', silent: true }),
-            10_000,
-          )
-          fallback.unref?.()
+          updateProgress?.('Cancellation requested; awaiting task status')
+          // Acceptance is not completion (shell cancellation can reply while
+          // still running). Preserve native "stopping" until an explicit fact.
+          this.observeCancellation()
+          void Promise.resolve()
+            .then(() => this.deps.cancelTask(task.id, task.kind))
+            .then((response) => {
+              if (plain(response) && response.cancelled === false)
+                throw new Error('Qwen did not accept the task cancellation request')
+            })
+            .catch((error: unknown) => {
+              if (!task.settled && !this.closed)
+                updateProgress?.('Cancellation could not be confirmed; awaiting task status')
+              this.deps.log?.(`Qwen task cancel failed: ${error instanceof Error ? error.message : String(error)}`)
+            })
+            .finally(async () => {
+              await this.refresh()
+              this.observeCancellation()
+            })
         },
         done,
       }))

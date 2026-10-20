@@ -4,6 +4,7 @@
 import { resolveTerminalJobs } from './terminal-jobs.ts'
 import { resolveQwenTaskJobs } from './qwen-task-jobs.ts'
 import type { Context } from '@deepseek-ai/cordis'
+import type { Agent } from '@deepseek-ai/dsh-agent'
 import { createTeamBridge, teamBridgeKey } from '../teams/bridge.ts'
 import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
 import type { AdapterRegistrationHandle } from '@deepseek-ai/dsh-llm'
@@ -174,6 +175,61 @@ export interface InstalledProfileRegistryOptions {
    * spawn）。缺席 = 未接线，probe 以 spawn-failure fail closed。
    */
   subprocess?: SubprocessSeamResolution
+}
+
+/** Release ACP producers alongside native jobs during owner-scope disposal.
+ * session/disposed follows that scope's cleanup, so waiting for it alone
+ * deadlocks when jobs are still waiting for the Agent process to stop. */
+export function installAcpSessionRuntimeCleanup(
+  ctx: Context,
+  disposeSession: (session: { readonly id: string; readonly identity?: object }) => Promise<void>,
+): () => Promise<void> {
+  const owners = new Map<Agent, () => void>()
+  const pendingCleanups = new Set<Promise<void>>()
+  let closed = false
+  let closing: Promise<void> | undefined
+  const attach = (agent: Agent): void => {
+    if (closed || owners.has(agent)) return
+    const detach = agent.ctx.effect(
+      () => () => {
+        const operation = Promise.resolve().then(() => disposeSession({ id: agent.id, identity: agent.session }))
+        pendingCleanups.add(operation)
+        const release = () => {
+          pendingCleanups.delete(operation)
+          owners.delete(agent)
+        }
+        void operation.then(release, release)
+        return operation
+      },
+      'ACP session runtime owner cleanup',
+    )
+    owners.set(agent, detach)
+  }
+  ctx.on('agent/created', ({ agent }) => {
+    attach(agent)
+    return undefined
+  })
+  // A plugin can be enabled after the owner was created.
+  for (const agent of ctx.get('agents', false)?.list() ?? []) attach(agent)
+  ctx.on('session/disposed', disposeSession)
+  return () => {
+    if (closing !== undefined) return closing
+    closed = true
+    return (closing = (async () => {
+      const failures = new Set<unknown>()
+      const detaching = [...owners.values()].map(async (detach) => {
+        await detach()
+      })
+      // Cordis detachers are single-shot. A second call does not join an
+      // owner-initiated cleanup, so retain and await its actual operation.
+      while (detaching.length > 0 || pendingCleanups.size > 0) {
+        const results = await Promise.allSettled([...detaching.splice(0), ...pendingCleanups])
+        for (const result of results) if (result.status === 'rejected') failures.add(result.reason)
+      }
+      owners.clear()
+      if (failures.size > 0) throw new AggregateError([...failures], 'ACP session runtime cleanup failed')
+    })())
+  }
 }
 
 /** Keep ACP routes synchronized with Loader-owned volatile Agent configuration. */
@@ -498,7 +554,7 @@ export function installInstalledProfileRegistry(
   }
   // A turn finishing or a browser leaving the conversation does not dispose
   // the host session. Its actual teardown releases ACP processes and jobs.
-  ctx.on('session/disposed', async (session) => {
+  const disposeSessionRuntimeCleanup = installAcpSessionRuntimeCleanup(ctx, async (session) => {
     await Promise.all([...profileAdapters.values()].map((adapter) => adapter.disposeSession(session)))
   })
   const ownedSidecar = sidecar
@@ -855,6 +911,7 @@ export function installInstalledProfileRegistry(
       }
     })
     if (persistenceFiber !== undefined) yield persistenceFiber.dispose
+    yield disposeSessionRuntimeCleanup
     yield ctx.effect(() => async () => {
       disposed = true
       externalSubagentProjector = undefined

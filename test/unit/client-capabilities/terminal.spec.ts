@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { PassThrough } from 'node:stream'
+import { PassThrough, Writable } from 'node:stream'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
   ACP_TERMINAL_MAX_ACTIVE,
@@ -501,6 +501,7 @@ describe('ACP terminal native job lifecycle', () => {
       terminate() {},
     }
     let hooks!: import('../../../src/runtime/client-capabilities/terminal-job.ts').AcpTerminalJobHooks
+    const output: { text: string; channel: 'stdout' | 'stderr' }[] = []
     const terminals = createAcpTerminalHandlers({
       subprocess: { ...subprocess, spawn: () => handle },
       profileId: 'devin',
@@ -508,7 +509,7 @@ describe('ACP terminal native job lifecycle', () => {
       cwd: root,
       env: {},
       startJob: (_label, run) => {
-        hooks = run()
+        hooks = run((text, channel) => output.push({ text, channel }))
         return { cancel: () => hooks.cancel() }
       },
     })
@@ -522,12 +523,172 @@ describe('ACP terminal native job lifecycle', () => {
       settled = true
     })
     stdout.write('retained ACP output')
+    expect(output).toEqual([{ text: 'retained ACP output', channel: 'stdout' }])
+    expect((await terminals.terminalOutput({ sessionId: 'acp', terminalId })).output).toBe('retained ACP output')
     finishCommand({ exitCode: 0, signal: null })
     await terminals.waitForExit({ sessionId: 'acp', terminalId })
     expect(settled).toBe(false)
+    stdout.write(' and final chunk')
     finishRange(true)
-    await expect(hooks.done).resolves.toMatchObject({ status: 'completed', output: 'retained ACP output' })
-    expect((await terminals.terminalOutput({ sessionId: 'acp', terminalId })).output).toBe('retained ACP output')
+    await expect(hooks.done).resolves.toEqual({ status: 'completed', detail: 'exit code: 0' })
+    expect(output).toEqual([
+      { text: 'retained ACP output', channel: 'stdout' },
+      { text: ' and final chunk', channel: 'stdout' },
+    ])
+    expect((await terminals.terminalOutput({ sessionId: 'acp', terminalId })).output).toBe(
+      'retained ACP output and final chunk',
+    )
+    await terminals.dispose()
+  })
+
+  it('forwards output emitted inside the admitted starter before it returns', async () => {
+    const stdout = new PassThrough()
+    const chunks: string[] = []
+    let hooks!: import('../../../src/runtime/client-capabilities/terminal-job.ts').AcpTerminalJobHooks
+    const terminals = createAcpTerminalHandlers({
+      subprocess: {
+        ...subprocess,
+        spawn: () => ({
+          stdin: new Writable({
+            final(callback) {
+              stdout.write('admitted output')
+              callback()
+            },
+          }),
+          stdout,
+          stderr: undefined,
+          done: Promise.resolve({ exitCode: 0, signal: null }),
+          waitForExit: async () => true,
+          terminate() {},
+        }),
+      },
+      profileId: 'devin',
+      dshSessionId: 'owner',
+      cwd: root,
+      env: {},
+      startJob: (_label, run) => {
+        hooks = run((text) => chunks.push(text))
+        expect(chunks).toEqual(['admitted output'])
+        return { cancel: () => hooks.cancel() }
+      },
+    })
+    const { terminalId } = await terminals.createTerminal({ sessionId: 'acp', command: 'fixture' })
+    await expect(hooks.done).resolves.toMatchObject({ status: 'completed' })
+    expect(chunks).toEqual(['admitted output'])
+    await expect(terminals.terminalOutput({ sessionId: 'acp', terminalId })).resolves.toHaveProperty(
+      'output',
+      'admitted output',
+    )
+    await terminals.dispose()
+  })
+
+  it('streams both decoded pipes independently of ACP snapshot reads and its byte limit', async () => {
+    const command = Promise.withResolvers<{ exitCode: number; signal: null }>()
+    const stdout = new PassThrough()
+    const stderr = new PassThrough()
+    const chunks: { text: string; channel: 'stdout' | 'stderr' }[] = []
+    let hooks!: import('../../../src/runtime/client-capabilities/terminal-job.ts').AcpTerminalJobHooks
+    const terminals = createAcpTerminalHandlers({
+      subprocess: {
+        ...subprocess,
+        spawn: () => ({
+          stdin: new PassThrough(),
+          stdout,
+          stderr,
+          done: command.promise,
+          waitForExit: async () => true,
+          terminate() {},
+        }),
+      },
+      profileId: 'devin',
+      dshSessionId: 'owner',
+      cwd: root,
+      env: {},
+      startJob: (_label, run) => {
+        hooks = run((text, channel) => chunks.push({ text, channel }))
+        return { cancel: () => hooks.cancel() }
+      },
+    })
+    const { terminalId } = await terminals.createTerminal({
+      sessionId: 'acp',
+      command: 'fixture',
+      outputByteLimit: 4,
+    })
+    stdout.write('prefix|')
+    const chinese = Buffer.from('中')
+    stdout.write(chinese.subarray(0, 1))
+    expect(chunks).toEqual([{ text: 'prefix|', channel: 'stdout' }])
+    stdout.write(chinese.subarray(1))
+    const emoji = Buffer.from('😀')
+    stderr.write(emoji.subarray(0, 2))
+    stderr.write(emoji.subarray(2))
+    stdout.write('tail')
+    expect(chunks).toEqual([
+      { text: 'prefix|', channel: 'stdout' },
+      { text: '中', channel: 'stdout' },
+      { text: '😀', channel: 'stderr' },
+      { text: 'tail', channel: 'stdout' },
+    ])
+    const read = () => terminals.terminalOutput({ sessionId: 'acp', terminalId })
+    await expect(read()).resolves.toMatchObject({ output: 'tail', truncated: true, exitStatus: null })
+    // A native consumer taking its chunks cannot advance or empty ACP's snapshot.
+    chunks.splice(0)
+    await expect(read()).resolves.toMatchObject({ output: 'tail', truncated: true })
+    stdout.write('last')
+    // Even without an end/close event, the terminal outcome flushes the decoder
+    // before the job ring settles; otherwise the incomplete last byte is lost.
+    stderr.write(Buffer.from([0xe4]))
+    command.resolve({ exitCode: 0, signal: null })
+    await expect(hooks.done).resolves.toMatchObject({ status: 'completed' })
+    expect(chunks).toEqual([
+      { text: 'last', channel: 'stdout' },
+      { text: '�', channel: 'stderr' },
+    ])
+    await terminals.dispose()
+  })
+
+  it.each(['end', 'close'] as const)('flushes each native decoder once at pipe %s before settlement', async (event) => {
+    const command = Promise.withResolvers<{ exitCode: number; signal: null }>()
+    const stdout = new PassThrough()
+    const chunks: string[] = []
+    let hooks!: import('../../../src/runtime/client-capabilities/terminal-job.ts').AcpTerminalJobHooks
+    const terminals = createAcpTerminalHandlers({
+      subprocess: {
+        ...subprocess,
+        spawn: () => ({
+          stdin: new PassThrough(),
+          stdout,
+          stderr: undefined,
+          done: command.promise,
+          waitForExit: async () => true,
+          terminate() {},
+        }),
+      },
+      profileId: 'devin',
+      dshSessionId: 'owner',
+      cwd: root,
+      env: {},
+      startJob: (_label, run) => {
+        hooks = run((text) => chunks.push(text))
+        return { cancel: () => hooks.cancel() }
+      },
+    })
+    const { terminalId } = await terminals.createTerminal({ sessionId: 'acp', command: 'fixture' })
+    expect(stdout.listenerCount('data')).toBe(2)
+    stdout.write(Buffer.from([0x61, 0xe4]))
+    expect(chunks).toEqual(['a'])
+    const ended = new Promise<void>((resolve) => stdout.once(event, resolve))
+    if (event === 'end') stdout.end()
+    else stdout.destroy()
+    await ended
+    expect(chunks).toEqual(['a', '�'])
+    expect(stdout.listenerCount('data')).toBe(1)
+    expect(stdout.listenerCount('end')).toBe(0)
+    expect(stdout.listenerCount('close')).toBe(0)
+    command.resolve({ exitCode: 0, signal: null })
+    await expect(hooks.done).resolves.toMatchObject({ status: 'completed' })
+    expect(chunks).toEqual(['a', '�'])
+    await expect(terminals.terminalOutput({ sessionId: 'acp', terminalId })).resolves.toHaveProperty('output', 'a�')
     await terminals.dispose()
   })
 
@@ -556,7 +717,7 @@ describe('ACP terminal native job lifecycle', () => {
       cwd: root,
       env: {},
       startJob: (_label, run) => {
-        hooks = run()
+        hooks = run(() => {})
         return { cancel: () => hooks.cancel() }
       },
     })
@@ -593,7 +754,7 @@ describe('ACP terminal native job lifecycle', () => {
       env: {},
       releaseWaitMs: 20,
       startJob: (_label, run) => {
-        hooks = run()
+        hooks = run(() => {})
         activeJobs += 1
         void hooks.done.finally(() => {
           activeJobs -= 1
@@ -632,7 +793,7 @@ describe('ACP terminal native job lifecycle', () => {
       cwd: root,
       env: {},
       startJob: (_label, run) => {
-        hooks = run()
+        hooks = run(() => {})
         return { cancel: () => hooks.cancel() }
       },
     })

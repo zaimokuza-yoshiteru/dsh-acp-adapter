@@ -13,12 +13,13 @@ import { stopSubprocess } from '../process/cleanup.ts'
 /// <reference types="node" />
 
 import { randomUUID } from 'node:crypto'
+import { StringDecoder } from 'node:string_decoder'
 import type { Readable } from 'node:stream'
 import type * as acp from '@agentclientprotocol/sdk'
 import type { AcpSubprocessExitFact, AcpSubprocessHandle, SubprocessSeam } from '../../runtime/process/subprocess.ts'
 import type { AcpTerminalHandlers } from '../../protocol/v1/types.ts'
 import type { AcpTerminalAuditData } from '../../domain/policy/events.ts'
-import type { AcpTerminalJobHooks, AcpTerminalJobStarter } from './terminal-job.ts'
+import type { AcpTerminalJobHooks, AcpTerminalJobOutput, AcpTerminalJobStarter } from './terminal-job.ts'
 
 /** Keep individual terminal snapshots bounded even when an agent omits a limit. */
 export const ACP_TERMINAL_DEFAULT_OUTPUT_BYTES = 1_048_576
@@ -102,6 +103,7 @@ interface TerminalRecord {
   readonly cwd: string
   handle: AcpSubprocessHandle
   readonly output: TerminalOutputRing
+  readonly flushJobOutput: () => void
   done: Promise<AcpSubprocessExitFact | undefined>
   exit: AcpSubprocessExitFact | null
   released: boolean
@@ -182,6 +184,32 @@ function attachOutput(stream: Readable | undefined, append: (chunk: unknown) => 
   stream?.on('error', () => {})
 }
 
+/** Decode each pipe independently; native readers never consume ACP's ring. */
+function attachJobOutput(stream: Readable | undefined, append: (text: string) => void): () => void {
+  if (stream === undefined) return () => {}
+  const decoder = new StringDecoder('utf8')
+  let flushed = false
+  const write = (text: string): void => {
+    if (text.length > 0) append(text)
+  }
+  const onData = (chunk: unknown): void => {
+    const bytes = Buffer.isBuffer(chunk) || chunk instanceof Uint8Array ? chunk : Buffer.from(String(chunk), 'utf8')
+    write(decoder.write(bytes))
+  }
+  const flush = (): void => {
+    if (flushed) return
+    flushed = true
+    stream.off('data', onData)
+    stream.off('end', flush)
+    stream.off('close', flush)
+    write(decoder.end())
+  }
+  stream.on('data', onData)
+  stream.once('end', flush)
+  stream.once('close', flush)
+  return flush
+}
+
 /** Create a per-connection ACP v1 terminal host. */
 export function createAcpTerminalHandlers(options: AcpTerminalHandlersOptions): AcpTerminalHandlers {
   const active = new Map<string, TerminalRecord>()
@@ -248,6 +276,9 @@ export function createAcpTerminalHandlers(options: AcpTerminalHandlersOptions): 
     const failure =
       [record.error?.message, cleanupError].filter((detail): detail is string => detail !== undefined).join('; ') ||
       undefined
+    // Flush a trailing partial UTF-8 sequence before the native registry seals
+    // its ring. ACP retains its independent byte snapshot until release.
+    record.flushJobOutput()
     return {
       status:
         failure !== undefined
@@ -259,7 +290,6 @@ export function createAcpTerminalHandlers(options: AcpTerminalHandlersOptions): 
               : 'failed',
       detail:
         failure ?? (fact?.signal ? `signal: ${fact.signal}` : `exit code: ${String(fact?.exitCode ?? 'unknown')}`),
-      output: record.output.text(),
     }
   }
 
@@ -286,7 +316,7 @@ export function createAcpTerminalHandlers(options: AcpTerminalHandlersOptions): 
     } as const
     const canShellFallback = args.length === 0
     const id = `term_${randomUUID().replaceAll('-', '')}`
-    const start = (): TerminalRecord => {
+    const start = (jobOutput?: AcpTerminalJobOutput): TerminalRecord => {
       let handle: AcpSubprocessHandle
       try {
         handle = options.subprocess.spawn(spawnSpec)
@@ -294,6 +324,7 @@ export function createAcpTerminalHandlers(options: AcpTerminalHandlersOptions): 
         if (!canShellFallback || !isSpawnNotFound(error)) throw error
         handle = options.subprocess.spawn({ ...spawnSpec, argv: shellFallbackArgv(params.command, args) })
       }
+      const outputFlushers: (() => void)[] = []
       const record = {
         id,
         acpSessionId: params.sessionId,
@@ -302,6 +333,9 @@ export function createAcpTerminalHandlers(options: AcpTerminalHandlersOptions): 
         cwd,
         handle,
         output,
+        flushJobOutput: () => {
+          for (const flush of outputFlushers) flush()
+        },
         exit: null,
         released: false,
         killRequested: false,
@@ -319,6 +353,12 @@ export function createAcpTerminalHandlers(options: AcpTerminalHandlersOptions): 
         attachOutput(nextHandle.stderr, (chunk) => {
           record.output.append(chunk)
         })
+        if (jobOutput !== undefined) {
+          outputFlushers.push(
+            attachJobOutput(nextHandle.stdout, (text) => jobOutput(text, 'stdout')),
+            attachJobOutput(nextHandle.stderr, (text) => jobOutput(text, 'stderr')),
+          )
+        }
         // ACP v1 exposes no terminal stdin method. Closing stdin prevents commands
         // that read input from remaining alive forever while the Agent only polls output.
         try {
@@ -359,8 +399,8 @@ export function createAcpTerminalHandlers(options: AcpTerminalHandlersOptions): 
     let record!: TerminalRecord
     if (options.startJob === undefined) record = start()
     else {
-      const job = options.startJob([params.command, ...args].join(' '), () => {
-        record = start()
+      const job = options.startJob([params.command, ...args].join(' '), (jobOutput) => {
+        record = start(jobOutput)
         return { cancel: () => requestKill(record), done: jobDone(record) }
       })
       record.job = job
