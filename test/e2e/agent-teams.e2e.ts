@@ -1,3 +1,11 @@
+import { acpPermissionAudit } from './acp-permission-audit.ts'
+import {
+  installTeamFixtureApprovals,
+  teamMemberSetupSteps,
+  teamReplySteps,
+  teamStartSteps,
+  type TeamFixtureApprovalStep,
+} from './team-fixture-approval.ts'
 import { required } from './required.ts'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { Locator } from 'playwright'
@@ -29,6 +37,25 @@ describe.each([
       const errors: string[] = []
       const events: ObservedEvent[] = []
       const executions: { name: string; isError: boolean }[] = []
+      const drivers: ReturnType<typeof installTeamFixtureApprovals>[] = []
+      const setupDecisions = (entries: TeamFixtureApprovalStep[], lead?: Agent, initialPrompt?: string) => {
+        if (profile !== 'devin') return undefined
+        const driver = installTeamFixtureApprovals(host, { root: lead, initialPrompt, entries })
+        drivers.push(driver)
+        return driver
+      }
+      const finishSetup = (driver: ReturnType<typeof installTeamFixtureApprovals> | undefined) => {
+        driver?.finish()
+      }
+      const memberAudit = <P extends 'asked' | 'decided'>(phase: P, memberId: string) =>
+        acpPermissionAudit(host, phase).filter((entry) => {
+          const requestId = 'requestId' in entry.data ? entry.data.requestId : undefined
+          return (
+            entry.sessionId === memberId &&
+            requestId !== undefined &&
+            !drivers.some((driver) => driver.requestIds.has(requestId))
+          )
+        })
       try {
         host = await launchAdapterWorld({ teams: true })
         host.ctx.on('session/event', (session, event) => {
@@ -72,7 +99,13 @@ describe.each([
           await writeComposerDraft(page, page.locator('[data-composer-input]').first(), text)
           await page.getByRole('button', { name: 'Send message', exact: true }).click()
         }
-        await send('E2E_TEAM_START: explicitly create an Agent Team to compute 1+1')
+        const initialPrompt = 'E2E_TEAM_START: explicitly create an Agent Team to compute 1+1'
+        const bootstrap = setupDecisions(
+          [...teamStartSteps(host), ...teamMemberSetupSteps('calculator')],
+          undefined,
+          initialPrompt,
+        )
+        await send(initialPrompt)
         await page.getByText('E2E_TEAM_READY', { exact: true }).waitFor({ timeout: 30_000 })
         const spawn = page.locator('[data-tool="spawn_teammate"]').first()
         await spawn.waitFor({ state: 'attached' })
@@ -94,6 +127,7 @@ describe.each([
             ).toHaveLength(1),
           { timeout: 30000 },
         )
+        finishSetup(bootstrap)
         // Inspect inherited policy while the child composer is still available.
         // Once a permission card replaces the composer, its input-left menu is
         // intentionally absent; the policy remains available again afterwards.
@@ -140,16 +174,26 @@ describe.each([
               'form' in event.data.source &&
               event.data.source.form === 'snapshot',
           )
-          expect(JSON.stringify(initial)).toContain('Approval policy: ask.')
-          expect(JSON.stringify(initial)).not.toContain('Approval prompts are disabled in this session')
+          expect(JSON.stringify(initial)).toContain('Approval prompts are disabled in this session')
+          expect(JSON.stringify(initial)).toContain('Your own Agent tools use your normal permission request mechanism')
           expect(JSON.stringify(initial)).not.toContain('operations that require approval are rejected automatically')
         })
         const child = required(host.ctx.agents.get(member.id))
         expect(child.options).toMatchObject({ provider, model: 'mock-model-a' })
         expect(child.session.header.cwd).toBe(lead.session.header.cwd)
-        await page
-          .getByRole('button', { name: 'calculator · Pending request', exact: true })
-          .waitFor({ timeout: 20_000 })
+        const scopeQuestion = page.locator('[data-question-key]').filter({ hasText: 'Approval scope' })
+        if (profile === 'codex') {
+          await scopeQuestion.waitFor({ timeout: 20_000 })
+          expect(await scopeQuestion.getByRole('radio').count()).toBe(3)
+          for (const label of ['Allow once', 'Allow for this session', "Always allow, don't ask again"])
+            expect(await scopeQuestion.getByRole('radio', { name: label, exact: true }).count()).toBe(1)
+          expect(await scopeQuestion.innerText()).toContain('Source child session: calculator')
+          expect(await scopeQuestion.innerText()).toContain('DSH tool "bash"')
+          expect(readFileSync(log, 'utf8')).not.toContain('member elicitation ')
+        } else
+          await page
+            .getByRole('button', { name: 'calculator · Pending request', exact: true })
+            .waitFor({ timeout: 20_000 })
         const action = page.locator('[data-team-action]')
         await action.getByRole('button', { name: /Agent Team/ }).click()
         const panel = page.getByRole('dialog', { name: 'Agent Team', exact: true })
@@ -157,22 +201,57 @@ describe.each([
         await panel.getByText('calculator', { exact: true }).first().waitFor()
         if (profile === 'devin' && decision === 'allow') await verifyTaskBoard(panel, host, lead)
         await action.getByRole('button', { name: /Agent Team/ }).click()
-        await page.getByRole('button', { name: 'calculator · Pending request', exact: true }).click()
+        if (profile !== 'codex') {
+          await page.getByRole('button', { name: 'calculator · Pending request', exact: true }).click()
+          await page.locator('[data-acp-team-approvals]').waitFor()
+        }
         await sidebar.waitFor()
-        await page.locator('[data-acp-team-approvals]').waitFor()
-        const approval = sidebar.locator('[data-approval-key]')
+        const approval = profile === 'codex' ? scopeQuestion : sidebar.locator('[data-approval-key]')
         await approval.waitFor()
-        expect(await approval.innerText()).toContain('echo E2E_TEAM_PERMISSION')
-        // All decision paths exercise this original Ask-created request. Keep
-        // subsequent Lead completion/cancel coordination on Auto to avoid
-        // unrelated approval cards, while proving this card stays pending.
+        if (profile !== 'codex') expect(await approval.innerText()).toContain('echo E2E_TEAM_PERMISSION')
+        // Switching to Auto must not answer this original Ask-created request.
+        // Devin's later coordination uses only the finite, explicit fixture
+        // decisions below; its independent requests are not auto-approved.
         await (host.ctx.get('dshAcp') as AcpRemoteService).setToolApprovalPolicy(lead.id, { policy: 'auto' })
-        expect(await approval.getByRole('button', { name: 'Allow once', exact: true }).isVisible()).toBe(true)
+        expect(
+          await approval
+            .getByRole(profile === 'codex' ? 'radio' : 'button', { name: 'Allow once', exact: true })
+            .isVisible(),
+        ).toBe(true)
         // Native addressed children expose no model-switch control or /model entry.
         expect(await sidebar.getByRole('button', { name: /Select model/ }).count()).toBe(0)
-        expect(await page.locator('[data-composer-input]').count()).toBeGreaterThanOrEqual(2)
+        if (profile === 'codex') {
+          // The native multi-scope overlay hides the parent's fallback composer
+          // without unmounting it. Only the child's composer remains visible.
+          expect(await scopeQuestion.isVisible()).toBe(true)
+          expect(await scopeQuestion.evaluate((element) => element.closest('[data-sidebar-chat]') === null)).toBe(true)
+          expect(readFileSync(log, 'utf8')).not.toContain('member elicitation ')
+          expect(await page.locator('[data-composer-input]:visible').count()).toBe(1)
+          const parentFallback = page
+            .locator(`[data-conversation-session="${lead.id}"]`)
+            .locator('[data-chain-overlay-fallback="conversation.composer"]')
+          expect(await parentFallback.count()).toBe(1)
+          expect(await parentFallback.isVisible()).toBe(false)
+          const childComposer = sidebar.locator('[data-composer-input]')
+          expect(await childComposer.count()).toBe(1)
+          expect(await childComposer.isVisible()).toBe(true)
+          expect(await childComposer.isEditable()).toBe(true)
+        } else expect(await page.locator('[data-composer-input]').count()).toBeGreaterThanOrEqual(2)
+        const finishDecision =
+          decision === 'allow'
+            ? undefined
+            : setupDecisions(
+                decision === 'cancel'
+                  ? [
+                      { owner: 'lead', callId: 'team-1', tool: 'list_agents', args: {} },
+                      { owner: 'lead', callId: 'team-2', tool: 'interrupt_agent', args: { target: 'calculator' } },
+                      { owner: 'lead', callId: 'team-1', tool: 'list_agents', args: {}, optional: true },
+                    ]
+                  : [{ owner: 'lead', callId: 'team-1', tool: 'list_agents', args: {} }],
+                lead,
+              )
         if (decision === 'deny') {
-          await approval.getByRole('button', { name: 'Reject', exact: true }).click()
+          await approval.getByRole('button', { name: profile === 'codex' ? 'Skip' : 'Reject', exact: true }).click()
           await page.getByText('E2E_TEAM_MEMBER_DENIED', { exact: true }).waitFor()
         } else if (decision === 'cancel') {
           const { createUserMessage } = await import('@deepseek-ai/dsh-llm')
@@ -194,8 +273,32 @@ describe.each([
             { timeout: 20_000 },
           )
           expect(readFileSync(log, 'utf8')).not.toContain('E2E_TEAM_MEMBER_DONE')
-          expect(events.filter((event) => event.type === 'approval/asked').map((event) => event.data.toolName)).toEqual(
-            ['bash'],
+          if (profile === 'devin') {
+            await vi.waitFor(
+              () =>
+                expect(readFileSync(log, 'utf8')).toContain(
+                  decision === 'cancel' ? 'E2E_TEAM_INTERRUPTED' : 'E2E_TEAM_NOTICE_RECEIVED',
+                ),
+              { timeout: 20_000 },
+            )
+            await lead.whenIdle()
+          }
+          finishSetup(finishDecision)
+          if (profile === 'codex') {
+            if (decision === 'deny')
+              expect(readFileSync(log, 'utf8')).toContain('member elicitation {"action":"cancel"}')
+            expect(await scopeQuestion.count()).toBe(0)
+            expect(errors).toEqual([])
+            return
+          }
+          const asked = memberAudit('asked', child.id)
+          expect(asked).toHaveLength(1)
+          expect(asked[0]?.data.toolCall).toMatchObject({ kind: 'execute' })
+          expect(asked[0]?.data.toolCall.rawInputSummary).toContain('E2E_TEAM_PERMISSION')
+          const decided = memberAudit('decided', child.id)
+          expect(decided).toHaveLength(1)
+          expect(decided[0]?.data).toMatchObject(
+            decision === 'deny' ? { outcome: 'selected', selectedOptionKind: 'reject_once' } : { outcome: 'cancelled' },
           )
           expect(errors).toEqual([])
           return
@@ -203,9 +306,41 @@ describe.each([
         writeFileSync(`${policyGate}.continue`, 'ready')
         // Changing the session policy after this request is already pending does
         // not dismiss or auto-answer its native approval card.
-        expect(await approval.getByRole('button', { name: 'Allow once', exact: true }).isVisible()).toBe(true)
-        await approval.getByRole('button', { name: 'Allow once', exact: true }).click()
+        expect(
+          await approval
+            .getByRole(profile === 'codex' ? 'radio' : 'button', { name: 'Allow once', exact: true })
+            .isVisible(),
+        ).toBe(true)
+        const completion = setupDecisions(
+          [
+            {
+              owner: 'calculator',
+              callId: 'team-3',
+              tool: 'send_message',
+              args: { target: 'lead', message: 'E2E_TEAM_REPLY result=2' },
+            },
+            ...teamReplySteps(),
+          ],
+          lead,
+        )
+        if (profile === 'codex') {
+          await approval.getByRole('radio', { name: 'Allow once', exact: true }).click()
+          await approval.getByRole('button', { name: 'Submit', exact: true }).click()
+        } else await approval.getByRole('button', { name: 'Allow once', exact: true }).click()
         await page.getByText('E2E_TEAM_MEMBER_DONE', { exact: true }).waitFor({ timeout: 30_000 })
+        const decidedAudit = memberAudit('decided', child.id)
+        if (profile === 'codex') {
+          expect(readFileSync(log, 'utf8')).toContain(
+            'member elicitation {"action":"accept","content":{"persist":"once"}}',
+          )
+          expect(await scopeQuestion.count()).toBe(0)
+        } else {
+          expect(decidedAudit).toHaveLength(1)
+          expect(decidedAudit[0]?.data).toMatchObject({ outcome: 'selected', selectedOptionKind: 'allow_once' })
+          expect(memberAudit('asked', child.id).map((entry) => entry.data.requestId)).toEqual(
+            decidedAudit.map((entry) => entry.data.requestId),
+          )
+        }
         await vi.waitFor(() => expect(readFileSync(log, 'utf8')).toContain('E2E_TEAM_LEAD_RECEIVED'), {
           timeout: 30_000,
         })
@@ -252,18 +387,53 @@ describe.each([
         )
         // Native steering while viewing the child verifies background Team continuation.
         const { createUserMessage } = await import('@deepseek-ai/dsh-llm')
+        await lead.whenIdle()
+        finishSetup(completion)
+        const wake = setupDecisions(
+          [
+            { owner: 'lead', callId: 'team-1', tool: 'list_agents', args: {} },
+            {
+              owner: 'lead',
+              callId: 'team-2',
+              tool: 'send_message',
+              args: { target: 'calculator', message: 'E2E_TEAM_CONTINUE' },
+            },
+            { owner: 'calculator', callId: 'team-1', tool: 'list_agents', args: {} },
+            {
+              owner: 'calculator',
+              callId: 'team-2',
+              tool: 'send_message',
+              args: { target: 'lead', message: 'E2E_TEAM_REPLY continued' },
+            },
+            ...teamReplySteps(),
+          ],
+          lead,
+        )
         lead.steer(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'E2E_TEAM_WAKE' }] }))
         await vi.waitFor(() => expect(readFileSync(log, 'utf8')).toContain('E2E_TEAM_MEMBER_CONTINUED'), {
           timeout: 30_000,
         })
+        await child.whenIdle()
+        await lead.whenIdle()
+        finishSetup(wake)
+        const interrupt = setupDecisions(
+          [
+            { owner: 'lead', callId: 'team-1', tool: 'list_agents', args: {} },
+            { owner: 'lead', callId: 'team-2', tool: 'interrupt_agent', args: { target: 'calculator' } },
+          ],
+          lead,
+        )
         lead.steer(
           createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'E2E_TEAM_INTERRUPT' }] }),
         )
         await vi.waitFor(() => expect(readFileSync(log, 'utf8')).toContain('E2E_TEAM_INTERRUPTED'), { timeout: 30_000 })
         expect(new Set(executions.filter((item) => !item.isError).map((item) => item.name)).size).toBe(9)
-        expect(events.filter((event) => event.type === 'approval/asked').map((event) => event.data.toolName)).toEqual([
-          'bash',
-        ])
+        await lead.whenIdle()
+        finishSetup(interrupt)
+        const finalAsked = memberAudit('asked', child.id)
+        expect(finalAsked).toHaveLength(profile === 'codex' ? 0 : 1)
+        if (profile !== 'codex') expect(finalAsked[0]?.data.toolCall.rawInputSummary).toContain('E2E_TEAM_PERMISSION')
+        expect(memberAudit('decided', child.id)).toEqual(decidedAudit)
         expect(readFileSync(log, 'utf8')).not.toContain('team failed')
         expect(errors).toEqual([])
       } catch (error) {
@@ -277,6 +447,7 @@ describe.each([
               errors,
               events,
               body: await page?.locator('body').innerText(),
+              dom: await page?.locator('body').innerHTML(),
               log: log && existsSync(log) ? readFileSync(log, 'utf8') : '',
             },
             null,
@@ -286,6 +457,7 @@ describe.each([
         if (page) await page.screenshot({ path: join(directory, `teams-${profile}-${decision}.png`), fullPage: true })
         throw error
       } finally {
+        for (const driver of drivers) driver.dispose()
         await browser?.close()
         await host?.close()
       }

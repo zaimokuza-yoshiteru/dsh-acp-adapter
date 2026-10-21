@@ -73,6 +73,37 @@ describe('ACP v1 terminal host', () => {
     await terminals.dispose()
   })
 
+  it('does not turn a presentation observer failure into a failed process result', async () => {
+    const terminals = createAcpTerminalHandlers({
+      subprocess: {
+        resolveExecutable: async (command) => command,
+        spawn: () => ({
+          stdin: new PassThrough(),
+          stdout: new PassThrough(),
+          stderr: new PassThrough(),
+          done: Promise.resolve({ exitCode: 17, signal: null }),
+          terminate: () => {},
+          waitForExit: async () => true,
+        }),
+      },
+      profileId: 'observer',
+      dshSessionId: 'observer-owner',
+      cwd: root,
+      env: {},
+      onExit: () => {
+        throw new Error('presentation unavailable')
+      },
+    })
+    try {
+      const created = await terminals.createTerminal({ sessionId: 'observer-session', command: 'fake' })
+      await expect(
+        terminals.waitForExit({ sessionId: 'observer-session', terminalId: created.terminalId }),
+      ).resolves.toEqual({ exitCode: 17, signal: null })
+    } finally {
+      await terminals.dispose()
+    }
+  })
+
   it('rejects cross-session access and keeps a killed terminal ID valid until release', async () => {
     const terminals = host()
     const created = await terminals.createTerminal({
@@ -510,7 +541,7 @@ describe('ACP terminal native job lifecycle', () => {
       env: {},
       startJob: (_label, run) => {
         hooks = run((text, channel) => output.push({ text, channel }))
-        return { cancel: () => hooks.cancel() }
+        return { cancel: () => hooks.cancel(), release: () => {} }
       },
     })
     const { terminalId } = await terminals.createTerminal({
@@ -569,7 +600,7 @@ describe('ACP terminal native job lifecycle', () => {
       startJob: (_label, run) => {
         hooks = run((text) => chunks.push(text))
         expect(chunks).toEqual(['admitted output'])
-        return { cancel: () => hooks.cancel() }
+        return { cancel: () => hooks.cancel(), release: () => {} }
       },
     })
     const { terminalId } = await terminals.createTerminal({ sessionId: 'acp', command: 'fixture' })
@@ -606,7 +637,7 @@ describe('ACP terminal native job lifecycle', () => {
       env: {},
       startJob: (_label, run) => {
         hooks = run((text, channel) => chunks.push({ text, channel }))
-        return { cancel: () => hooks.cancel() }
+        return { cancel: () => hooks.cancel(), release: () => {} }
       },
     })
     const { terminalId } = await terminals.createTerminal({
@@ -670,7 +701,7 @@ describe('ACP terminal native job lifecycle', () => {
       env: {},
       startJob: (_label, run) => {
         hooks = run((text) => chunks.push(text))
-        return { cancel: () => hooks.cancel() }
+        return { cancel: () => hooks.cancel(), release: () => {} }
       },
     })
     const { terminalId } = await terminals.createTerminal({ sessionId: 'acp', command: 'fixture' })
@@ -718,7 +749,7 @@ describe('ACP terminal native job lifecycle', () => {
       env: {},
       startJob: (_label, run) => {
         hooks = run(() => {})
-        return { cancel: () => hooks.cancel() }
+        return { cancel: () => hooks.cancel(), release: () => {} }
       },
     })
     const { terminalId } = await terminals.createTerminal({
@@ -759,7 +790,7 @@ describe('ACP terminal native job lifecycle', () => {
         void hooks.done.finally(() => {
           activeJobs -= 1
         })
-        return { cancel: () => hooks.cancel() }
+        return { cancel: () => hooks.cancel(), release: () => {} }
       },
     })
     const { terminalId } = await terminals.createTerminal({ sessionId: 'acp', command: 'fixture' })
@@ -794,7 +825,7 @@ describe('ACP terminal native job lifecycle', () => {
       env: {},
       startJob: (_label, run) => {
         hooks = run(() => {})
-        return { cancel: () => hooks.cancel() }
+        return { cancel: () => hooks.cancel(), release: () => {} }
       },
     })
     try {

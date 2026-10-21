@@ -10,8 +10,11 @@ beforeEach(() => {
   // Windows' native env object aliases key casing. A plain dictionary models
   // both routing keys independently without mutating that original object.
   process.env = { ...originalEnvironment }
-  vi.stubEnv('NO_PROXY', undefined)
-  vi.stubEnv('no_proxy', undefined)
+  for (const name of ['http', 'https', 'all', 'no', 'ftp', 'ws', 'wss']) {
+    vi.stubEnv(`${name}_proxy`, undefined)
+    vi.stubEnv(`${name.toUpperCase()}_PROXY`, undefined)
+  }
+  vi.stubEnv('REQUEST_METHOD', undefined)
 })
 afterEach(() => {
   try {
@@ -138,7 +141,7 @@ describe('Codex subprocess loopback MCP routing', () => {
     )
   })
 
-  it.each(['devin', 'claude', 'kimi', 'codebuddy', 'antigravity', undefined] as const)(
+  it.each(['devin', 'claude', 'kimi', 'codebuddy', undefined] as const)(
     'leaves runtime %s environment unchanged',
     async (runtime) => {
       vi.stubEnv('NO_PROXY', 'parent.internal')
@@ -147,4 +150,96 @@ describe('Codex subprocess loopback MCP routing', () => {
       expect(launch.env).toEqual(profile.env)
     },
   )
+})
+
+describe('Antigravity local harness routing', () => {
+  it('preserves implicit OS proxy discovery when there is no explicit proxy environment', async () => {
+    const profile = config({ ANTIGRAVITY_HARNESS_PATH: '/official/localharness_external' })
+    expect((await prepare(profile, 'antigravity')).env).toEqual(profile.env)
+  })
+
+  it.each([
+    'HTTP_PROXY',
+    'http_proxy',
+    'HTTPS_PROXY',
+    'https_proxy',
+    'ALL_PROXY',
+    'all_proxy',
+    'WS_PROXY',
+    'ws_proxy',
+    'WSS_PROXY',
+    'wss_proxy',
+  ])('recognizes an existing %s route without copying or replacing its value', async (key) => {
+    vi.stubEnv(key, 'http://existing-proxy.invalid')
+    expect((await prepare(config(), 'antigravity')).env).toEqual({
+      NO_PROXY: 'localhost,127.0.0.1',
+      no_proxy: 'localhost,127.0.0.1',
+    })
+    expect(process.env[key]).toBe('http://existing-proxy.invalid')
+  })
+
+  it('does not treat Python-ignored uppercase CGI HTTP_PROXY as an explicit route', async () => {
+    vi.stubEnv('HTTP_PROXY', 'http://cgi-proxy.invalid')
+    vi.stubEnv('REQUEST_METHOD', 'GET')
+    expect((await prepare(config(), 'antigravity')).env).toEqual({})
+    vi.stubEnv('http_proxy', 'http://explicit-lowercase.invalid')
+    expect((await prepare(config(), 'antigravity')).env).toEqual({
+      NO_PROXY: 'localhost,127.0.0.1',
+      no_proxy: 'localhost,127.0.0.1',
+    })
+  })
+
+  it('honors an empty lowercase override of an inherited uppercase proxy', async () => {
+    vi.stubEnv('HTTPS_PROXY', 'http://superseded.invalid')
+    const profile = config({ https_proxy: '' })
+    expect((await prepare(profile, 'antigravity')).env).toEqual(profile.env)
+  })
+
+  it('exempts only the two hosts used by the official local harness when proxy routing is explicit', async () => {
+    vi.stubEnv('HTTPS_PROXY', 'http://existing-proxy.invalid')
+    const profile = { ...config(), name: 'Official Antigravity', runtime: 'antigravity' as const }
+    const before = structuredClone(profile)
+    const identity = acpLaunchFingerprint({ profileId: 'antigravity', config: profile })
+    const launch = await prepare(profile, 'antigravity')
+    expect(launch.env).toEqual({ NO_PROXY: 'localhost,127.0.0.1', no_proxy: 'localhost,127.0.0.1' })
+    expect(launch.spawnPlan?.env).toEqual(launch.env)
+    expect(profile).toEqual(before)
+    expect(acpLaunchFingerprint({ profileId: 'antigravity', config: profile })).toEqual(identity)
+    expect(process.env.NO_PROXY).toBeUndefined()
+    expect(process.env.no_proxy).toBeUndefined()
+  })
+
+  it('retains effective exclusions and explicit external proxy configuration without forwarding credentials', async () => {
+    vi.stubEnv('NO_PROXY', 'superseded.internal')
+    vi.stubEnv('no_proxy', '.retained.internal')
+    vi.stubEnv('UNRELATED_TOKEN', 'parent-secret-never-forward')
+    vi.stubEnv('HTTPS_PROXY', 'http://parent-proxy.invalid')
+    const profile = config({
+      NO_PROXY: 'profile.internal,localhost',
+      HTTPS_PROXY: 'http://profile-proxy.invalid',
+      ALL_PROXY: 'socks5://profile-socks.invalid',
+      ANTIGRAVITY_HARNESS_PATH: '/official/localharness_external',
+    })
+    const expected = 'profile.internal,localhost,.retained.internal,127.0.0.1'
+    const launch = await prepare(profile, 'antigravity')
+    expect(launch.env).toEqual({ ...profile.env, NO_PROXY: expected, no_proxy: expected })
+    expect(launch.env).not.toHaveProperty('UNRELATED_TOKEN')
+    expect(process.env.HTTPS_PROXY).toBe('http://parent-proxy.invalid')
+  })
+
+  it('does not duplicate existing local hosts or add a wider loopback network exemption', async () => {
+    vi.stubEnv('NO_PROXY', 'localhost,127.0.0.1,.corp.internal')
+    vi.stubEnv('no_proxy', '127.0.0.1, localhost')
+    const expected = 'localhost,127.0.0.1,.corp.internal'
+    expect((await prepare(config(), 'antigravity')).env).toEqual({ NO_PROXY: expected, no_proxy: expected })
+  })
+
+  it('preserves explicit empty overrides and keeps generic profiles untouched', async () => {
+    vi.stubEnv('NO_PROXY', 'overridden.internal')
+    vi.stubEnv('no_proxy', 'also-overridden.internal')
+    const profile = { ...config({ NO_PROXY: '', no_proxy: '' }), runtime: 'antigravity' as const }
+    expect((await prepare(profile, 'antigravity')).env).toEqual(profile.env)
+    const generic = await prepareAgentLaunch(undefined, profile, '/workspace', subprocess, undefined)
+    expect(generic.env).toEqual(profile.env)
+  })
 })

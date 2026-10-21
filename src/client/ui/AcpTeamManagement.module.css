@@ -9,18 +9,25 @@
   color: var(--dsw-alias-label-secondary);
 }
 .panel {
+  display: flex;
+  flex-direction: column;
   position: fixed;
   z-index: 110;
   box-sizing: border-box;
   width: min(560px, calc(100vw - 32px));
   max-height: min(680px, calc(100dvh - 120px));
   padding: 10px;
-  overflow: auto;
+  overflow: hidden;
   color: var(--dsw-alias-label-primary);
   --dsw-elevation-stroke-color: var(--dsw-alias-border-l1);
   box-shadow: var(--dsw-elevation-prominent);
   --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);
   --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);
+}
+.body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
 }
 .toolbar,
 .memberHeader,
@@ -30,6 +37,7 @@
   gap: 8px;
 }
 .toolbar {
+  flex: none;
   margin-bottom: 10px;
   min-height: 28px;
 }
@@ -89,8 +97,11 @@
   overflow-wrap: anywhere;
   margin: 6px 0;
 }
-.memberDescription {
+.memberSummary {
   grid-row: 2;
+  min-width: 0;
+}
+.memberDescription {
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
@@ -101,6 +112,13 @@
   line-height: 16px;
   overflow-wrap: anywhere;
   margin: 0 0 8px;
+}
+.memberError {
+  margin: 0;
+  color: var(--dsw-alias-state-error-primary);
+  font-size: 13px;
+  line-height: 18px;
+  overflow-wrap: anywhere;
 }
 .settings {
   display: grid;

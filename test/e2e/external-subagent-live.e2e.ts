@@ -322,6 +322,62 @@ it('shows external Devin children live, then persists only successful terminal c
     await expectNoChildControlForRow(page, cancelledRow)
     expect((await externalChildren()).map((item) => item.header.id)).toEqual([successfulChild.header.id])
     await expectPersistedSuccessRecord()
+    await expectPersistedSuccessRecord(true)
+    await page.getByRole('button', { name: /Open read-only record/ }).click()
+    const sidebar = page.locator('[data-sidebar-chat]')
+    const notice = sidebar.locator('[data-acp-external-record-notice]')
+    const expectReadOnlyRecord = async (name: string) => {
+      // The native overlay chain keeps its draft DOM mounted under display:none.
+      // Assert the actual user capability and retained fallback, not DOM absence.
+      const fallback = sidebar.locator('[data-chain-overlay-fallback="conversation.composer"]')
+      const state = await sidebar.evaluate((element) => ({
+        composerFallbacks: Array.from(
+          element.querySelectorAll<HTMLElement>('[data-chain-overlay-fallback="conversation.composer"]'),
+        ).map((node) => ({ display: getComputedStyle(node).display })),
+        inputs: Array.from(element.querySelectorAll<HTMLElement>('[data-composer-input]')).map((node) => ({
+          editable: node.contentEditable,
+          visible: node.getClientRects().length > 0,
+          role: node.getAttribute('role'),
+        })),
+      }))
+      if (evidenceDirectory !== undefined) {
+        writeFileSync(join(evidenceDirectory, `external-subagent-${name}.dom.json`), JSON.stringify(state, null, 2))
+      }
+      expect(await fallback.count()).toBe(1)
+      expect(await fallback.isVisible()).toBe(false)
+      expect(await sidebar.locator('[data-composer-input][contenteditable="true"]:visible').count()).toBe(0)
+      expect(await sidebar.getByRole('textbox').count()).toBe(0)
+      expect(await sidebar.getByRole('button', { name: /^(Send message|发送消息)$/ }).count()).toBe(0)
+    }
+    await notice.waitFor()
+    await page.setViewportSize({ width: 390, height: 900 })
+    for (const locale of ['en', 'zh']) {
+      for (const theme of ['light', 'dark']) {
+        await host.ctx.settings.replace('locale', { preference: locale })
+        await host.ctx.settings.replace('ui-theme', { preference: theme })
+        await expect.poll(() => page.evaluate(() => document.documentElement.style.colorScheme)).toBe(theme)
+        await notice
+          .getByText(locale === 'en' ? 'External Agent record' : '外部 Agent 只读记录', { exact: true })
+          .waitFor()
+        expect(await notice.innerText()).toContain(
+          locale === 'en' ? 'not its full internal history' : '不包含完整的内部执行过程',
+        )
+        expect(await sidebar.getByText(/review the full execution record here|查看完整执行记录/).count()).toBe(0)
+        await expectReadOnlyRecord(`read-only-summary.${locale}.${theme}.390`)
+        expect(
+          await notice.evaluate((el) => el.scrollWidth <= el.clientWidth && el.scrollHeight <= el.clientHeight),
+        ).toBe(true)
+        const box = required(await notice.boundingBox())
+        expect(box.x).toBeGreaterThanOrEqual(0)
+        expect(box.x + box.width).toBeLessThanOrEqual(391)
+        await capturePassEvidence(page, `read-only-summary.${locale}.${theme}.390`)
+      }
+    }
+    await page.reload()
+    await notice.waitFor()
+    expect(await notice.innerText()).toContain('不包含完整的内部执行过程')
+    await expectReadOnlyRecord('read-only-summary.reloaded.zh.dark.390')
+    await capturePassEvidence(page, 'read-only-summary.reloaded.zh.dark.390')
   } finally {
     for (const name of releaseGates) writeFileSync(gate(name), 'release')
     await browser?.close()

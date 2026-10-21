@@ -10,7 +10,7 @@ import WebRuntime from '@deepseek-ai/dsh-web'
 import * as webApi from '@deepseek-ai/dsh-web-deepseek-api'
 import * as toolWeb from '@deepseek-ai/dsh-tool-web'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import { createTeamBridge } from '../../../src/host/teams/bridge.ts'
+import { createDshToolBridge } from '../../../src/host/tools/bridge.ts'
 
 const apiBase = 'https://deepseek-web.invalid/v1/tools'
 const cleanup: Array<() => unknown | Promise<unknown>> = []
@@ -119,7 +119,7 @@ async function harness(baseSelection = false) {
     } as unknown as Agent
     await ctx.agents.register(agent)
     const assembly = await ctx.systemPrompt.assemble({ scope: agent })
-    const lease = await createTeamBridge(
+    const lease = await createDshToolBridge(
       ctx,
       id,
       { mcpCapabilities: { http: true } },

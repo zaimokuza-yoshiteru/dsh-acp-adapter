@@ -126,7 +126,7 @@ describe('real Cordis ACP composition settings lifecycle', () => {
       ctx.provide('agentTeams', {
         tryMembership: (candidate: object) =>
           candidate === lead ? { id: 'evicted-policy-team', role: 'lead', root: lead } : undefined,
-        listMembers: () => (rosterPresent ? [{ id: childId, role: 'teammate' }] : []),
+        listMembers: () => [{ id: childId, role: 'teammate', status: rosterPresent ? 'inactive' : 'failed' }],
       })
       const fiber = ctx.plugin({
         name: 'composition-cold-policy-test',
@@ -314,12 +314,15 @@ describe('real Cordis ACP composition settings lifecycle', () => {
           : { agent: liveAgents.get(id) }
       },
     })
+    let rosterFailure: Error | undefined
     ctx.provide('agentTeams', {
       tryMembership: (agent: object) => memberships.get(agent),
-      listMembers: (lead: object) =>
-        [...memberships.entries()]
+      listMembers: (lead: object) => {
+        if (rosterFailure !== undefined) throw rosterFailure
+        return [...memberships.entries()]
           .filter(([, membership]) => membership.role === 'teammate' && membership.root === lead)
-          .map(([agent]) => ({ id: (agent as { id: string }).id, role: 'teammate' as const })),
+          .map(([agent]) => ({ id: (agent as { id: string }).id, role: 'teammate' as const }))
+      },
     })
     // Use the actual host subprocess seam shape.  The health service and the
     // ACP probe must share this seam; otherwise a successful probe can still
@@ -523,10 +526,11 @@ describe('real Cordis ACP composition settings lifecycle', () => {
       source: 'session',
       editable: true,
     })
-    // A subagent with no verified Lead roster must fail closed without creating
-    // an independent row from the global default.
-    memberships.delete(teammate)
-    await expect(remote.toolApprovalPolicy(teammate.id)).rejects.toThrow('ACP_TOOL_APPROVAL_LEAD_UNAVAILABLE')
+    // An unreadable authoritative roster cannot be treated as an empty one
+    // and initialize an independent child preference.
+    rosterFailure = new Error('Team roster unavailable')
+    await expect(remote.toolApprovalPolicy(teammate.id)).rejects.toBe(rosterFailure)
+    rosterFailure = undefined
     await expect(persisted.readToolApprovalPolicy(teammate.id as never)).resolves.toBeUndefined()
     memberships.set(teammate, { id: teamId, role: 'teammate', root: lead })
     memberships.set(lead, { id: teamId, role: 'lead', root: lead })

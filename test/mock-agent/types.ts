@@ -30,6 +30,8 @@ export interface MockSession {
   mcpServers?: ((McpServerHttp & { type: 'http' }) | (McpServerStdio & { type?: 'stdio' }))[]
   recordedHistory?: WireUpdate[]
   backgroundTerminal?: string
+  /** Accepted native-tool / external-Agent policy context, retained across same-session prompts. */
+  teamPermissionContextVerified?: boolean
 }
 export interface MockRequest {
   id: RpcId

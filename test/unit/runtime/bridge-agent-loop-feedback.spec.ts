@@ -12,7 +12,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import { createTeamBridge } from '../../../src/host/teams/bridge.ts'
+import { createDshToolBridge } from '../../../src/host/tools/bridge.ts'
 
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
@@ -167,7 +167,7 @@ async function createHarness(sessionId: string) {
     model: 'scripted',
   })
   const assembly = await ctx.systemPrompt.assemble({ scope: agent })
-  const lease = (await createTeamBridge(
+  const lease = (await createDshToolBridge(
     ctx as never,
     agent.id,
     { mcpCapabilities: { http: true } },

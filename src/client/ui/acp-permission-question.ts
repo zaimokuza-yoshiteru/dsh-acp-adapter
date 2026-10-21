@@ -1,6 +1,6 @@
 /** Fixed-choice composer for ACP permission questions carried by DSH. */
 import { createElement as h, useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { Button, MarkdownText } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, DisclosureRow, IconInfoOutlineMedium, MarkdownText } from '@deepseek-ai/dsh-client-ui-primitives'
 import { defineStore, type EngineStoreHandle } from '@deepseek-ai/dsh-client-store'
 import type { PropsLocale, PropsRuntime, PropsStore } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SessionPendingInteractionBase } from '@deepseek-ai/dsh-client-ui-session/client'
@@ -13,6 +13,7 @@ interface AcpPermissionQuestionOption {
 interface AcpPermissionQuestionItem {
   readonly id: string
   readonly question: string
+  readonly header?: string
   readonly detail?: string
   readonly options?: readonly AcpPermissionQuestionOption[]
   readonly multiSelect?: boolean
@@ -35,7 +36,6 @@ interface AcpPermissionPendingQuestion extends SessionPendingInteractionBase {
   readonly review: unknown
   subscribe(listener: () => void): () => void
   snapshot(): AcpPermissionSnapshot
-  liveKeys(): readonly string[]
   answer(answer: AcpPermissionAnswer): Promise<void>
   dismiss(): Promise<void>
 }
@@ -49,12 +49,13 @@ interface PermissionQuestionState {
 }
 
 type PermissionQuestionActions = {
-  select: (draft: PermissionQuestionState, requestKey: string, questionId: string, label: string) => void
-  clear: (draft: PermissionQuestionState, requestKey: string) => void
-  prune: (draft: PermissionQuestionState, keep: readonly string[]) => void
+  select: (draft: PermissionQuestionState, questionId: string, label: string) => void
+  clear: (draft: PermissionQuestionState, questionId: string) => void
 }
 
-/** Keep choices while the user switches between DSH sessions. */
+const MAX_PERMISSION_DRAFTS = 128
+
+/** Session-scoped choices keyed by the Host request ID, which survives client reconnects. */
 export function createAcpPermissionQuestionStore(): EngineStoreHandle<
   PermissionQuestionState,
   PermissionQuestionActions
@@ -63,17 +64,16 @@ export function createAcpPermissionQuestionStore(): EngineStoreHandle<
     init: (): PermissionQuestionState => ({ byRequest: {} }),
     persist: 'dsh.acp-permission.questions.v1',
     actions: {
-      select: (draft, requestKey, questionId, label) => {
-        const request = draft.byRequest[requestKey] ?? { selectedByQuestion: {} }
-        request.selectedByQuestion[questionId] = label
-        draft.byRequest[requestKey] = request
+      select: (draft, questionId, label) => {
+        // Native unnamed card keys change on reload. Drop those legacy entries;
+        // retain bounded drafts for requests whose closure the client missed.
+        const recent = Object.entries(draft.byRequest)
+          .filter(([key]) => key.startsWith('acp-permission:') && key !== questionId)
+          .slice(-(MAX_PERMISSION_DRAFTS - 1))
+        draft.byRequest = Object.fromEntries([...recent, [questionId, { selectedByQuestion: { [questionId]: label } }]])
       },
-      clear: (draft, requestKey) => {
-        delete draft.byRequest[requestKey]
-      },
-      prune: (draft, keep) => {
-        const live = new Set(keep)
-        draft.byRequest = Object.fromEntries(Object.entries(draft.byRequest).filter(([key]) => live.has(key)))
+      clear: (draft, questionId) => {
+        delete draft.byRequest[questionId]
       },
     },
   })
@@ -105,8 +105,7 @@ export function isAcpPermissionQuestion(value: unknown): value is AcpPermissionP
     typeof pending.subscribe === 'function' &&
     typeof pending.snapshot === 'function' &&
     typeof pending.answer === 'function' &&
-    typeof pending.dismiss === 'function' &&
-    typeof pending.liveKeys === 'function'
+    typeof pending.dismiss === 'function'
   )
 }
 
@@ -121,19 +120,28 @@ function answerable(pending: AcpPermissionPendingQuestion): boolean {
 
 /** An explicit, fixed-option answer surface; no free-text or implicit choice. */
 export function AcpPermissionQuestion(props: Props) {
-  return h('div', { className: css.frame }, h(PermissionQuestionSurface, { ...props, key: props.matched.key }))
+  // A native slot may present a different request; temporary UI state belongs
+  // to the Host question, just like its persisted selection.
+  return h(
+    'div',
+    { className: css.frame },
+    h(PermissionQuestionSurface, { ...props, key: props.matched.questions[0]!.id }),
+  )
 }
 
 function PermissionQuestionSurface(props: Props) {
   const pending = props.matched
+  const question = pending.questions[0]!
   const snapshot = useSyncExternalStore(pending.subscribe, pending.snapshot, pending.snapshot)
-  const draft = props.useStore((state) => state.byRequest[pending.key])
+  const draft = props.useStore((state) => state.byRequest[question.id])
   const [busy, setBusy] = useState(false)
   const [failed, setFailed] = useState(false)
   const canAnswer = snapshot.channel !== 'none' && !snapshot.closed && pending.review === undefined
   const selected = draft?.selectedByQuestion ?? {}
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([])
-  const question = pending.questions[0]!
+  // Older in-flight questions carry the operation only in detail. Keep that
+  // content open; current producers put the complete operation in question.
+  const [detailsOpen, setDetailsOpen] = useState(question.header === undefined)
   const options = question.options ?? []
   const selectedIndex = options.findIndex((option) => selected[question.id] === option.label)
   const [focusedIndex, setFocusedIndex] = useState(selectedIndex >= 0 ? selectedIndex : 0)
@@ -143,11 +151,10 @@ function PermissionQuestionSurface(props: Props) {
 
   useEffect(() => {
     if (snapshot.closed) {
-      props.actions.clear(pending.key)
+      props.actions.clear(question.id)
       setBusy(false)
     }
-    props.actions.prune(pending.liveKeys())
-  }, [pending, props.actions, snapshot.closed])
+  }, [question.id, props.actions, snapshot.closed])
 
   const submit = async (): Promise<void> => {
     if (busy || !complete || !answerable(pending)) return
@@ -159,6 +166,7 @@ function PermissionQuestionSurface(props: Props) {
     setFailed(false)
     try {
       await pending.answer({ answers })
+      props.actions.clear(question.id)
     } catch {
       setFailed(true)
       setBusy(false)
@@ -171,6 +179,7 @@ function PermissionQuestionSurface(props: Props) {
     setFailed(false)
     try {
       await pending.dismiss()
+      props.actions.clear(question.id)
     } catch {
       setFailed(true)
       setBusy(false)
@@ -183,7 +192,7 @@ function PermissionQuestionSurface(props: Props) {
     const next = (index + options.length) % options.length
     const option = options[next]!
     setFocusedIndex(next)
-    props.actions.select(pending.key, question.id, option.label)
+    props.actions.select(question.id, option.label)
     setFailed(false)
     optionRefs.current[next]?.focus()
   }
@@ -211,10 +220,17 @@ function PermissionQuestionSurface(props: Props) {
     'section',
     {
       className: css.card,
-      'aria-label': pending.questions[0]!.question,
+      'aria-label': question.header ?? question.question,
       'data-question-key': pending.key,
     },
-    h('header', { className: css.header }, h('h2', { className: css.heading }, question.question)),
+    h(
+      'header',
+      { className: css.header },
+      question.header === undefined
+        ? null
+        : h('h2', { className: css.source, 'data-question-source': '' }, question.header),
+      h('div', { className: css.heading, 'data-question-operation': '' }, question.question),
+    ),
     h(
       'div',
       { className: css.content, 'data-question-scroll': '' },
@@ -224,23 +240,36 @@ function PermissionQuestionSurface(props: Props) {
           { className: css.question, key: question.id },
           question.detail
             ? h(
-                'div',
-                { className: css.detail, 'data-question-detail': '' },
-                h(MarkdownText, {
-                  text: question.detail,
-                  labels: {
-                    code: {
-                      copyLabel: props.t('acpQuestionCopy'),
-                      copiedLabel: props.t('acpQuestionCopied'),
+                DisclosureRow,
+                {
+                  className: css.detail,
+                  icon: h(IconInfoOutlineMedium),
+                  title: props.t('acpQuestionDetails'),
+                  open: detailsOpen,
+                  expandable: true,
+                  expandOnRowClick: true,
+                  onToggle: () => setDetailsOpen((open) => !open),
+                },
+                h(
+                  'div',
+                  { 'data-question-detail': '' },
+                  h(MarkdownText, {
+                    text: question.detail,
+                    variant: 'compact',
+                    labels: {
+                      code: {
+                        copyLabel: props.t('acpQuestionCopy'),
+                        copiedLabel: props.t('acpQuestionCopied'),
+                      },
+                      footnotes: props.t('acpQuestionFootnotes'),
                     },
-                    footnotes: props.t('acpQuestionFootnotes'),
-                  },
-                }),
+                  }),
+                ),
               )
             : null,
           h(
             'div',
-            { className: css.options, role: 'radiogroup', 'aria-label': question.question },
+            { className: css.options, role: 'radiogroup', 'aria-label': props.t('acpQuestionChoices') },
             ...(question.options ?? []).map((option, optionIndex) => {
               const checked = selected[question.id] === option.label
               return h(
@@ -259,7 +288,7 @@ function PermissionQuestionSurface(props: Props) {
                   disabled: !canAnswer || busy,
                   onClick: () => {
                     setFocusedIndex(optionIndex)
-                    props.actions.select(pending.key, question.id, option.label)
+                    props.actions.select(question.id, option.label)
                     setFailed(false)
                   },
                   onFocus: () => setFocusedIndex(optionIndex),

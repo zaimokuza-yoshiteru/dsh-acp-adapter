@@ -3,7 +3,7 @@ import type { SessionRequestId } from '@deepseek-ai/dsh-api-session-controller'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { AcpRemoteService } from '../../src/remote/service.ts'
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, watch, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect, vi } from 'vitest'
 import { launchAdapterWorld, root } from './scaffold.ts'
@@ -67,24 +67,98 @@ export async function launchOptionalToolWorld(
       (existsSync(resultsPath) ? readFileSync(resultsPath, 'utf8').trim().split('\n').filter(Boolean) : [])
         .map((line) => JSON.parse(line) as OptionalToolRecord)
         .filter((record) => record.label === label)
+    const waitForRecordedCalls = (label: string, count: number, execution: Promise<OptionalToolRecord[]>) =>
+      new Promise<void>((resolve, reject) => {
+        let finished = false
+        const watcher = watch(host.workspaceCwd, (_event, filename) => {
+          if (filename === null || filename.toString() === 'optional-tools-results.jsonl') inspect()
+        })
+        const finish = (error?: unknown) => {
+          if (finished) return
+          finished = true
+          watcher.close()
+          if (error === undefined) resolve()
+          else reject(error)
+        }
+        const inspect = () => {
+          if (finished) return
+          try {
+            if (
+              records(label).filter((record) => record.kind === 'call' || record.kind === 'cancelled').length >= count
+            ) {
+              finish()
+            }
+          } catch (error) {
+            finish(error)
+          }
+        }
+        watcher.on('error', finish)
+        // The existing run owns the 30s turn budget; do not introduce a fresh
+        // per-operation timeout or let a pending watcher outlive that execution.
+        void execution.then(
+          () => {
+            inspect()
+            if (!finished) finish(new Error(`Optional tool execution settled before ${count} call results: ${label}`))
+          },
+          (error: unknown) => finish(error),
+        )
+        inspect()
+      })
     const create = async (cwd = host.workspaceCwd): Promise<Agent> => {
       const { sessionId } = await host.ctx.sessionController.create({ cwd })
       const resolved = await host.ctx.sessionController.resolveAgent(sessionId)
       if ('error' in resolved) throw new Error(resolved.error.message)
       return resolved.agent
     }
+    const captureFailure = (
+      agent: Agent,
+      plan: OptionalToolPlan,
+      phase: 'execution' | 'approval',
+      details: unknown,
+    ) => {
+      const directory = join(root, '.local/optional-host-tools-evidence')
+      mkdirSync(directory, { recursive: true })
+      const path = join(directory, `${plan.label.replaceAll(/[^A-Za-z0-9_-]/g, '_')}.${phase}.json`)
+      writeFileSync(
+        path,
+        JSON.stringify(
+          {
+            plan,
+            sessionId: agent.id,
+            status: agent.status,
+            approvalPolicy: host.ctx.approval.overrideOf(agent.session),
+            details,
+            records: records(plan.label),
+            events: agent.session.snapshotEvents(),
+            nativeCalls: nativeCalls.filter((call) => call.owner === agent.id),
+          },
+          (_key, value: unknown) => {
+            if (value instanceof Error) {
+              return { name: value.name, message: value.message, stack: value.stack, cause: value.cause }
+            }
+            // Even this isolated fixture's temporary authenticated URL must not
+            // become part of retained evidence. Never serialize ctx or settings.
+            return typeof value === 'string' ? value.replaceAll(/https?:\/\/[^\s"'<>]+/g, '[redacted-url]') : value
+          },
+          2,
+        ),
+      )
+      return path
+    }
     const run = async (agent: Agent, plan: OptionalToolPlan): Promise<OptionalToolRecord[]> => {
       const before = agent.session.snapshotEvents().filter((event) => event.type === 'turn/end').length
-      await host.ctx.sessionController.prompt(
-        {
-          requestId: randomUUID() as SessionRequestId,
-          sessionId: agent.id,
-          mode: 'queue',
-          content: [{ type: 'text', text: `${OPTIONAL_TOOL_PLAN}${JSON.stringify(plan)}` }],
-        },
-        new AbortController().signal,
-      )
+      let stage = 'prompt'
       try {
+        await host.ctx.sessionController.prompt(
+          {
+            requestId: randomUUID() as SessionRequestId,
+            sessionId: agent.id,
+            mode: 'queue',
+            content: [{ type: 'text', text: `${OPTIONAL_TOOL_PLAN}${JSON.stringify(plan)}` }],
+          },
+          new AbortController().signal,
+        )
+        stage = 'wait-turn-end'
         await vi.waitFor(
           () =>
             expect(agent.session.snapshotEvents().filter((event) => event.type === 'turn/end').length).toBeGreaterThan(
@@ -92,41 +166,35 @@ export async function launchOptionalToolWorld(
             ),
           { timeout: 30_000 },
         )
+        stage = 'assert-turn-end'
+        expect(
+          required(agent.session.snapshotEvents().findLast((event) => event.type === 'turn/end')).data.reason,
+        ).toMatchObject({ kind: 'completed' })
+        const result = records(plan.label)
+        stage = 'assert-no-fixture-failure'
+        expect(result.filter((record) => record.kind === 'failure')).toEqual([])
+        stage = 'assert-fixture-complete'
+        expect(result.filter((record) => record.kind === 'complete')).toHaveLength(1)
+        return result
       } catch (error) {
-        const directory = join(root, '.local/optional-host-tools-evidence')
-        mkdirSync(directory, { recursive: true })
-        writeFileSync(
-          join(directory, `${plan.label.replaceAll(/[^A-Za-z0-9_-]/g, '_')}.json`),
-          JSON.stringify(
-            {
-              plan,
-              sessionId: agent.id,
-              status: agent.status,
-              before,
-              approvalPolicy: host.ctx.approval.overrideOf(agent.session),
-              records: records(plan.label),
-              events: agent.session.snapshotEvents(),
-              agentLog: existsSync(agentLog) ? readFileSync(agentLog, 'utf8') : '',
-            },
-            null,
-            2,
-          ),
-        )
-        throw error
+        let diagnostic = ''
+        try {
+          diagnostic = captureFailure(agent, plan, 'execution', { stage, before, error })
+        } catch {
+          diagnostic = 'evidence capture failed'
+        }
+        throw new Error(`Optional tools execution failed: label=${plan.label}, stage=${stage}; ${diagnostic}`, {
+          cause: error,
+        })
       }
-      expect(
-        required(agent.session.snapshotEvents().findLast((event) => event.type === 'turn/end')).data.reason,
-      ).toMatchObject({ kind: 'completed' })
-      const result = records(plan.label)
-      expect(result.filter((record) => record.kind === 'failure')).toEqual([])
-      expect(result.filter((record) => record.kind === 'complete')).toHaveLength(1)
-      return result
     }
     return {
       ...host,
       create,
       run,
       records,
+      waitForRecordedCalls,
+      captureFailure,
       nativeCalls,
       controls: host.ctx.get('dshAcp') as AcpRemoteService,
     }

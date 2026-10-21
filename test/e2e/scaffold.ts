@@ -42,6 +42,7 @@ function optionalBundleDirectory(bundle: OptionalBundle): string {
 
 /** Install through real profile bundles so ConfigEditor owns writable configuration. */
 export async function launchAdapterWorld({
+  adapterDirectory = root,
   teams = false,
   timedAskUser,
   teamMembers,
@@ -54,6 +55,8 @@ export async function launchAdapterWorld({
   optionalBundles = [],
   extraPatches = [],
 }: {
+  /** A frozen candidate package for before/after checks; does not replace shared lib/. */
+  adapterDirectory?: string
   teams?: boolean
   timedAskUser?: { timeout: number }
   teamMembers?: number
@@ -78,7 +81,7 @@ export async function launchAdapterWorld({
         shell: process.platform === 'win32',
       })
     const packages = [
-      { dir: root, enabled: true },
+      { dir: adapterDirectory, enabled: true },
       ...(renderProbe ? [{ dir: join(root, 'test/e2e/fixtures/render-probe'), enabled: true }] : []),
       ...(teams && !optionalBundles.includes('agent-team-profile')
         ? [{ dir: join(upstream, 'packages/experimental/agent-team-profile'), enabled: true }]

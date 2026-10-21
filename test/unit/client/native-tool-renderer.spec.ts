@@ -4,7 +4,51 @@ import {
   installNativeToolRenderer,
   mountNativeEntry,
   nativeOwner,
+  NativeTerminalOutputNotice,
 } from '../../../src/client/ui/native-tool-renderer.ts'
+
+it('limits an absent-output label to one ACP context without changing native payloads or other translations', () => {
+  const slots = new SlotCore()
+  const releaseRoot = slots.register(
+    { name: 'root', children: { 'conversation.chat.node': { kind: 'keyed', scope: 'session' } } } as never,
+    (() => null) as never,
+  )
+  const releaseNative = slots.register(
+    { name: 'conversation.chat.node', key: 'tool-call', locale: 'conversation' } as never,
+    (() => null) as never,
+  )
+  const source = slots.entries('conversation.chat.node')[0]!
+  const releaseMirror = mountNativeEntry({ slots } as never, source, 'acp.test-terminal-notice', { factory: true })
+  const ctx = NativeTerminalOutputNotice as unknown as { _currentValue: string | undefined }
+  const original = ctx._currentValue
+  const t = vi.fn((key: string, params?: unknown) => `${key}:${JSON.stringify(params)}`)
+  const node = { result: { content: [{ type: 'text', text: '\n[exit code: 17]' }] } }
+  const render = () =>
+    (
+      slots.factory('acp.test-terminal-notice')!.component as (props: unknown) => {
+        props: { t: typeof t; node: typeof node }
+      }
+    )({ t, node })
+  try {
+    ctx._currentValue = undefined
+    expect(render().props.t).toBe(t)
+    ctx._currentValue = 'Output was not provided in this tool record.'
+    const scoped = render().props
+    expect(scoped.t('terminal.noOutput')).toBe(ctx._currentValue)
+    expect(scoped.t('terminal.exitCode', { code: 17 })).toBe('terminal.exitCode:{"code":17}')
+    expect(scoped.t('copy')).toBe('copy:undefined')
+    expect(scoped.node).toBe(node)
+    expect(node.result.content[0]!.text).toBe('\n[exit code: 17]')
+    ctx._currentValue = undefined
+    expect(render().props.t).toBe(t)
+    expect(t('terminal.noOutput')).toBe('terminal.noOutput:undefined')
+  } finally {
+    ctx._currentValue = original
+    releaseMirror()
+    releaseNative()
+    releaseRoot()
+  }
+})
 
 it('forwards the native viewport group action with the node disclosure hook', () => {
   const useDisclosure = () => ({ open: true, toggle() {} })

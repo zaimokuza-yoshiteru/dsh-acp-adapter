@@ -1,10 +1,14 @@
 import { z } from 'zod'
+import { SUBAGENT_DESCRIPTOR_VERSION } from '@deepseek-ai/dsh-subagent'
 import type { AcpActivityPresentation } from '../policy/activity-presentation.ts'
 import { acpReplayPayloadOf, acpReplayPayloadSchema } from './acp-replay-payload.ts'
 import type { ModelContextSnapshot } from './model-context-snapshots.ts'
+import { EXTERNAL_SUBAGENT_DESCRIPTOR_PROVIDER } from '../../contract/external-subagent.ts'
 
 export interface SessionEventLike {
   readonly type: string
+  /** Exact native inherited prefix length; absence must not be inferred as an empty seed. */
+  readonly inheritedEventCount?: number
   readonly seq: number
   readonly data: unknown
 }
@@ -24,6 +28,7 @@ export const sessionFactsSchema = z.object({
   priorSemanticHistory: z.boolean(),
   openSteps: z.array(stepSchema),
   inheritedRemaining: z.number().int().nonnegative(),
+  externalSubagent: z.boolean(),
   forkReplay: acpReplayPayloadSchema.nullable(),
 })
 export type SessionFacts = z.infer<typeof sessionFactsSchema>
@@ -36,6 +41,7 @@ export function initialSessionFacts(inheritedEventCount = 0): SessionFacts {
     priorSemanticHistory: false,
     openSteps: [],
     inheritedRemaining: inheritedEventCount,
+    externalSubagent: false,
     forkReplay: null,
   }
 }
@@ -53,6 +59,14 @@ export function applySessionFact(previous: SessionFacts, event: SessionEventLike
     return { ...state, turnOpen: true, turnSeen: true, priorSemanticHistory: state.hasSemanticHistory }
   if (event.type === 'turn/end') return { ...state, turnOpen: false }
   const data = typeof event.data === 'object' && event.data !== null ? (event.data as Record<string, unknown>) : {}
+  if (event.type === 'subagent/descriptor' && previous.inheritedRemaining === 0)
+    return {
+      ...state,
+      externalSubagent:
+        data.version === SUBAGENT_DESCRIPTOR_VERSION &&
+        data.mode === 'one-shot' &&
+        data.provider === EXTERNAL_SUBAGENT_DESCRIPTOR_PROVIDER,
+    }
   if (
     (event.type === 'step/start' || event.type === 'step/end') &&
     typeof data.turn === 'number' &&
@@ -111,8 +125,12 @@ export interface SessionLike {
     readonly id?: string
     readonly cwd?: string
     readonly parentSession?: string
+    readonly origin?: string
+    readonly isSeeded?: boolean
     readonly delegationDepth?: number
   }
+  /** Exact native inherited prefix length; absence must not be inferred as an empty seed. */
+  readonly inheritedEventCount?: number
   readonly seq: number
   readonly facts: SessionFacts
   /** Current effective DSH model-facing snapshots, without replaying ordinary history. */

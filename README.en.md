@@ -77,7 +77,7 @@ For test coverage and limitations, see the [E2E verification guide](https://gith
 
 </details>
 
-**Auto** automatically approves DSH native tool requests for the current session. **Ask** shows the native approval card when the Agent requests approval. The Agent controls its own tools. **Stop** stops the current turn; press Enter to queue a message, which supported Agents continue in the same Agent session. With DSH's experimental Agent Teams enabled, you can view member progress and handle approvals from the main conversation.
+**Auto** can automatically confirm Agent requests to use the current session's DSH tools, without changing DSH's sandbox or tool permissions. Permission requests from Devin still require your choice from the original options. **Ask** shows the native approval card when the Agent requests approval. The Agent controls its own tools. **Stop** stops the current turn; press Enter to queue a message, which supported Agents continue in the same Agent session. With DSH's experimental Agent Teams enabled, you can view member progress and handle approvals from the main conversation.
 
 ## Troubleshooting and feedback
 

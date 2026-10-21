@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
-import { installNativeAgentAccess } from '../../../src/host/composition/native-agent-access.ts'
+import { installExternalAgentContext } from '../../../src/host/composition/external-agent-context.ts'
 
 describe('ACP delegation context at Host request admission', () => {
   it.each(['acp-test', 'deepseek', 'acp-unknown'])(
@@ -17,17 +17,20 @@ describe('ACP delegation context at Host request admission', () => {
         text: 'Native delegated children cannot request interactive approval.',
       })
       ctx.systemPrompt.context({
-        name: 'other-plugin',
+        name: 'approval:policy',
         order: ctx.systemPrompt.getContextOrder('APPROVAL_POLICY'),
         text: () => policy,
       })
-      installNativeAgentAccess(ctx, (route) => route === 'acp-test')
+      installExternalAgentContext(ctx, (route) => route === 'acp-test')
       try {
         const accepted = await ctx.systemPrompt.assemble()
         policy = 'after'
         const refreshed = ctx.systemPrompt.refreshContext(accepted)
-        expect(refreshed.contexts.find((entry) => entry.name === 'other-plugin')?.text).toBe('after')
+        expect(refreshed.contexts.find((entry) => entry.name === 'approval:policy')?.text).toBe('after')
         if (provider === 'acp-test') {
+          expect(refreshed.contexts.find((entry) => entry.name === 'dsh-acp:tool-policy-scope')?.text).toContain(
+            'applies only to DSH tools',
+          )
           expect(accepted.contexts.find((entry) => entry.name === 'dsh-acp:delegation')?.text).toContain(
             'wait for the host decision before proceeding',
           )

@@ -5,6 +5,7 @@ import {
   readTeamMembersUntilAvailable,
   teamApproval,
   type TeamApproval,
+  pendingChildCandidates,
 } from '../../../src/client/ui/team-approval-actions.ts'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { AcpTeamMemberView } from '../../../src/client/data/acp-remote.ts'
@@ -14,6 +15,40 @@ function approval(id: string, answer: TeamApproval['answer'] = async () => {}): 
   return { key: id, sessionId: sid(id), kind: 'approval', toolName: 'bash', answer }
 }
 describe('Team approval settlement', () => {
+  it('uses only subagent lineage candidates and excludes ordinary forks, unrelated and observed records', () => {
+    const ids = ['direct', 'nested', 'fork', 'fork-child', 'unrelated', 'observed', 'cycle']
+    const current = new Map(
+      ids.map((id) => [sid(id), { running: true, pendingInteraction: approval(id), completionUnread: false }]),
+    )
+    const summaries = {
+      direct: { parentId: sid('parent'), origin: 'subagent' as const },
+      nested: { parentId: sid('direct'), origin: 'subagent' as const },
+      fork: { parentId: sid('parent') },
+      'fork-child': { parentId: sid('fork'), origin: 'subagent' as const },
+      unrelated: { parentId: sid('other'), origin: 'subagent' as const },
+      observed: { parentId: sid('parent'), origin: 'subagent' as const },
+      cycle: { parentId: sid('cycle'), origin: 'subagent' as const },
+    }
+    expect(pendingChildCandidates(sid('parent'), summaries, current, new Set([sid('observed')]))).toEqual([
+      sid('direct'),
+      sid('nested'),
+    ])
+  })
+  it('never answers a native carrier already settled in another view', async () => {
+    const answer = vi.fn(async () => {})
+    const pending = { ...approval('worker', answer), answerable: false }
+    const current = new Map([
+      [pending.sessionId, { running: true, pendingInteraction: pending, completionUnread: false }],
+    ])
+    await answerTeamRequests(
+      [{ pending, answer }],
+      () => current,
+      new Set([pending.sessionId]),
+      () => true,
+      new Set(),
+    )
+    expect(answer).not.toHaveBeenCalled()
+  })
   it('automatically retries only the roster read for the same live session', async () => {
     vi.useFakeTimers()
     try {

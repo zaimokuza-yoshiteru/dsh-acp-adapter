@@ -44,7 +44,11 @@ type Actions = {
   openMember(parent: SessionId, child: SessionId): Promise<void>
   sessionAccessSource: SessionAccessSource
 }
-type ManagedMember = AcpTeamMemberView & { readonly phase: TeamMemberPhase; readonly runtimeKnown: boolean }
+type ManagedMember = AcpTeamMemberView & {
+  readonly phase: TeamMemberPhase
+  readonly runtimeKnown: boolean
+  readonly error?: string
+}
 type InterruptFeedback =
   | { key: 'teamInterruptResult'; params: { accepted: number; skipped: number; failed: number }; isError: boolean }
   | { key: 'teamInterruptFailed'; isError: true }
@@ -246,6 +250,7 @@ export function AcpTeamManagement({
             ...(facts?.modelWritable === undefined ? {} : { modelWritable: facts.modelWritable }),
             description: facts?.description ?? null,
             phase: projected.phase,
+            ...(projected.error === undefined ? {} : { error: projected.error }),
             runtimeKnown: running !== undefined,
           }
         })
@@ -284,7 +289,7 @@ export function AcpTeamManagement({
             panelProps,
             h(
               'div',
-              { className: css.toolbar },
+              { className: css.toolbar, 'data-acp-team-toolbar': '' },
               h('strong', null, t('teamManage')),
               h(
                 Button,
@@ -310,55 +315,59 @@ export function AcpTeamManagement({
                 h(IconCloseOutlineMedium),
               ),
             ),
-            roster.kind === 'failed'
-              ? h('p', { role: 'alert', className: css.error }, t('teamProjectionFailed'))
-              : null,
-            metadataLoading ? h('p', { role: 'status', className: css.hint }, t('teamMetadataLoading')) : null,
-            error ? h('p', { role: 'alert', className: css.error }, t('teamManageError')) : null,
-            ...[...groups].map(([profileId, members], index) =>
-              h(ModeGroup, {
-                key: `${sessionId}:${profileId}`,
-                lead: sessionId,
-                profileId,
-                members,
-                metadataCurrent: metadataReady,
-                t,
-                onMenuOpen: reportMenuOpen,
-                useSessionAccess,
-                interruptAction:
-                  index === 0
-                    ? h(
-                        Button,
-                        {
-                          variant: 'ghost',
-                          className: css.batchButton,
-                          disabled:
-                            !interruptAllowed ||
-                            interrupting ||
-                            !canInterrupt ||
-                            !metadataReady ||
-                            roster.kind !== 'ready',
-                          title: t('teamInterruptHint'),
-                          onClick: () => {
-                            void interruptAll()
+            h(
+              'div',
+              { className: css.body, 'data-acp-team-scroll-body': '' },
+              roster.kind === 'failed'
+                ? h('p', { role: 'alert', className: css.error }, t('teamProjectionFailed'))
+                : null,
+              metadataLoading ? h('p', { role: 'status', className: css.hint }, t('teamMetadataLoading')) : null,
+              error ? h('p', { role: 'alert', className: css.error }, t('teamManageError')) : null,
+              ...[...groups].map(([profileId, members], index) =>
+                h(ModeGroup, {
+                  key: `${sessionId}:${profileId}`,
+                  lead: sessionId,
+                  profileId,
+                  members,
+                  metadataCurrent: metadataReady,
+                  t,
+                  onMenuOpen: reportMenuOpen,
+                  useSessionAccess,
+                  interruptAction:
+                    index === 0
+                      ? h(
+                          Button,
+                          {
+                            variant: 'ghost',
+                            className: css.batchButton,
+                            disabled:
+                              !interruptAllowed ||
+                              interrupting ||
+                              !canInterrupt ||
+                              !metadataReady ||
+                              roster.kind !== 'ready',
+                            title: t('teamInterruptHint'),
+                            onClick: () => {
+                              void interruptAll()
+                            },
                           },
-                        },
-                        t(interrupting ? 'teamInterrupting' : 'teamInterruptAll'),
-                      )
-                    : null,
-                ...actions,
-              }),
+                          t(interrupting ? 'teamInterrupting' : 'teamInterruptAll'),
+                        )
+                      : null,
+                  ...actions,
+                }),
+              ),
+              interruptFeedback
+                ? h(
+                    'p',
+                    {
+                      role: interruptFeedback.isError ? 'alert' : 'status',
+                      className: interruptFeedback.isError ? css.error : css.hint,
+                    },
+                    t(interruptFeedback.key, 'params' in interruptFeedback ? interruptFeedback.params : undefined),
+                  )
+                : null,
             ),
-            interruptFeedback
-              ? h(
-                  'p',
-                  {
-                    role: interruptFeedback.isError ? 'alert' : 'status',
-                    className: interruptFeedback.isError ? css.error : css.hint,
-                  },
-                  t(interruptFeedback.key, 'params' in interruptFeedback ? interruptFeedback.params : undefined),
-                )
-              : null,
           ),
           document.body,
         )
@@ -582,9 +591,7 @@ function ModeGroup({
                     ? 'error'
                     : member.status === 'provisioning'
                       ? 'ongoing'
-                      : member.runtimeKnown
-                        ? 'done'
-                        : 'idle',
+                      : 'idle',
             }),
             h(
               Button,
@@ -592,6 +599,7 @@ function ModeGroup({
                 variant: 'ghost',
                 className: css.memberName,
                 'aria-label': t('teamMemberOpen', { name: member.name }),
+                disabled: member.phase !== 'active',
                 onClick: () => {
                   void openMember(lead, member.sessionId as SessionId).catch(() => {
                     if (alive.current) setFeedback(t('teamApprovalOpenFailed'))
@@ -614,9 +622,14 @@ function ModeGroup({
               ),
             ),
           ),
-          member.description
-            ? h('p', { className: css.memberDescription, title: member.description }, member.description)
-            : null,
+          h(
+            'div',
+            { className: css.memberSummary },
+            member.description
+              ? h('p', { className: css.memberDescription, title: member.description }, member.description)
+              : null,
+            member.error === undefined ? null : h('p', { role: 'alert', className: css.memberError }, member.error),
+          ),
           h(
             'div',
             { className: css.settings },

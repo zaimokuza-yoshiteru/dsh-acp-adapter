@@ -6,7 +6,7 @@ import { once } from 'node:events'
 import { setTimeout as delay } from 'node:timers/promises'
 import { PassThrough } from 'node:stream'
 import { afterEach, expect, it, vi } from 'vitest'
-import { prepareDevinMcp } from '../../../src/host/teams/devin-config.ts'
+import { prepareDevinMcp } from '../../../src/host/tools/devin-config.ts'
 import type { SubprocessSeam } from '../../../src/runtime/process/subprocess.ts'
 
 vi.mock('node:fs/promises', async (original) => {

@@ -96,7 +96,55 @@ function contentItems(value: unknown, t: Translate): ActivityToolOutputItem[] {
   return []
 }
 
+function mcpContent(value: unknown): boolean {
+  if (!record(value)) return false
+  switch (value.type) {
+    case 'text':
+      return typeof value.text === 'string'
+    case 'image':
+    case 'audio':
+      return typeof value.mimeType === 'string' && typeof value.data === 'string'
+    case 'resource_link':
+      return typeof value.name === 'string' && typeof value.uri === 'string'
+    case 'resource':
+      return (
+        record(value.resource) &&
+        typeof value.resource.uri === 'string' &&
+        (typeof value.resource.text === 'string' || typeof value.resource.blob === 'string')
+      )
+    default:
+      return false
+  }
+}
+
+/** Codex wraps MCP content in a transport result. Unwrap only its known shape:
+ * unknown result fields and meaningful metadata/errors retain their raw view.
+ * This is display decoding, never evidence of execution or a successful status.
+ */
+function mcpEnvelopeContent(value: unknown): readonly unknown[] | undefined {
+  if (
+    !record(value) ||
+    value.error !== null ||
+    Object.keys(value).some((key) => key !== 'result' && key !== 'error') ||
+    !record(value.result)
+  )
+    return undefined
+  const result = value.result
+  if (
+    Object.keys(result).some((key) => !['content', 'structuredContent', '_meta', 'isError'].includes(key)) ||
+    result.structuredContent != null ||
+    result._meta != null ||
+    (result.isError !== undefined && typeof result.isError !== 'boolean') ||
+    !Array.isArray(result.content) ||
+    !result.content.every(mcpContent)
+  )
+    return undefined
+  return result.content
+}
+
 function rawItems(value: unknown, t: Translate): ActivityToolOutputItem[] {
+  const envelope = mcpEnvelopeContent(value)
+  if (envelope !== undefined) return contentItems(envelope, t)
   const items = contentItems(record(value) && Array.isArray(value.content) ? value.content : value, t)
   if (items.length > 0) return items
   if (value === undefined || value === null) return []
@@ -122,7 +170,7 @@ export function joinActivityToolOutput(items: readonly ActivityToolOutputItem[])
 
 /** ACP text content is the user-facing representation. Raw output is its fallback,
  * not a second copy; resource-only content still retains the raw textual result.
- * MCP raw results may themselves carry a content array.
+ * MCP raw results may themselves carry a content array or a known Codex envelope.
  * A dedicated native card must additionally render the returned resource atoms
  * inside the same tool row, because its body bypasses generic output text.
  */

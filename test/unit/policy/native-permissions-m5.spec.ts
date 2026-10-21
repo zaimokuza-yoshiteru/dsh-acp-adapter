@@ -54,7 +54,7 @@ function bridge(
 
 describe('native ACP permission bridge', () => {
   it.each([undefined, 'en', 'zh', 'zh-CN'])(
-    'leaves native approval chrome to the client for locale %s',
+    'preserves operation and choice facts in the native approval reason for locale %s',
     async (locale) => {
       const approval = { request: vi.fn(async () => 'allowed-once' as const) }
       const handler = createAcpNativePermissionHandler({
@@ -65,7 +65,7 @@ describe('native ACP permission bridge', () => {
       await handler(params([option('exact-id', 'Allow', 'allow_once')]))
       expect(approval.request).toHaveBeenCalledWith(
         expect.objectContaining({
-          reason: 'Run command\necho hello',
+          reason: `Run command\necho hello\n${locale?.startsWith('zh') ? '本次允许' : 'Allow once'}: Allow`,
         }),
       )
     },
@@ -80,8 +80,9 @@ describe('native ACP permission bridge', () => {
       handler(params([option('a', 'Same', 'allow_always'), option('r', 'Same', 'reject_once')])),
     ).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'r' } })
     expect(ask.mock.calls[0]?.[0].questions[0]).toMatchObject({
-      question: 'ACP Agent 请求执行命令的权限。\n工具: Run command',
-      detail: '命令:\n\n```\necho hello\n```',
+      header: '授权请求',
+      question: 'Run command\n命令: echo hello',
+      detail: '```\n{\n  "rawInput": {\n    "command": "echo hello"\n  }\n}\n```',
       options: [{ label: 'Same · 选项 1' }, { label: 'Same · 选项 2' }],
     })
   })
@@ -111,11 +112,7 @@ describe('native ACP permission bridge', () => {
       handler({
         ...params([]),
         toolCall: { ...params([]).toolCall, rawInput: { command } },
-        options: [
-          option('once', 'Allow once', 'allow_once'),
-          option('always', 'Always', 'allow_always'),
-          option('reject', 'Reject', 'reject_once'),
-        ],
+        options: [option('once', 'Allow once', 'allow_once'), option('reject', 'Reject', 'reject_once')],
       }),
     ).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'once' } })
     expect(approval.request).toHaveBeenCalledWith(
@@ -127,10 +124,102 @@ describe('native ACP permission bridge', () => {
     expect(ask).not.toHaveBeenCalled()
   })
 
-  it('keeps Codex additional permission scope on the approval path when two options are allow-once', async () => {
+  it('presents execute descriptions as text while retaining the complete command, targets and unknown scope', async () => {
+    const approval = { request: vi.fn<AcpNativeApprovalService['request']>(async () => 'allowed-once') }
+    const handler = createAcpNativePermissionHandler({ approval, getAgent: () => ({}) })
+    const command = `printf '${'x'.repeat(600)}'\nprintf 'Authorization: Bearer exact-value'`
+    const description = 'Verify native command approval\nKeep the full requested operation visible'
+    const toolCall: acp.RequestPermissionRequest['toolCall'] = {
+      toolCallId: 'bash-description',
+      title: 'bash',
+      kind: 'execute',
+      rawInput: { command, description, cwd: '/workspace/current', permissions: { network: { enabled: true } } },
+      locations: [{ path: '/workspace/exact-target.txt', line: 19 }],
+    }
+    const original = structuredClone(toolCall)
+    await expect(
+      handler({ ...params([option('once', 'Allow this operation', 'allow_once')]), toolCall }),
+    ).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'once' } })
+    const reason = approval.request.mock.calls[0]![0].reason!
+    expect(reason).toContain(description)
+    expect(reason).not.toContain('"description"')
+    expect(reason).toContain(command)
+    expect(reason).toContain('/workspace/current')
+    expect(reason).toContain('/workspace/exact-target.txt')
+    expect(reason).toContain('"line": 19')
+    expect(reason).toContain('"permissions"')
+    expect(reason).toContain('"enabled": true')
+    expect(reason).toContain('Allow once: Allow this operation')
+    expect(toolCall).toEqual(original)
+  })
+
+  it.each(['allowed-once', 'rejected'] as const)(
+    'compacts binary fact separators without changing multiline commands, original choice labels or %s scope',
+    async (outcome) => {
+      const approval = { request: vi.fn<AcpNativeApprovalService['request']>(async () => outcome) }
+      const handler = createAcpNativePermissionHandler({ approval, getAgent: () => ({}) })
+      const command = 'printf first\n\nprintf second'
+      const allowLabel = 'Permit this operation\n\nOnly the requested files'
+      const rejectLabel = 'Decline this operation\nKeep the current state'
+      const options = [
+        option('provider-once-exact', allowLabel, 'allow_once'),
+        option('provider-reject-exact', rejectLabel, 'reject_once'),
+      ]
+      const original = structuredClone(options)
+      await expect(
+        handler({ ...params(options), toolCall: { ...params([]).toolCall, rawInput: { command } } }),
+      ).resolves.toEqual({
+        outcome: {
+          outcome: 'selected',
+          optionId: outcome === 'allowed-once' ? 'provider-once-exact' : 'provider-reject-exact',
+        },
+      })
+      expect(approval.request.mock.calls[0]![0].reason).toBe(
+        `Run command\n${command}\nAllow once: ${allowLabel}\nReject once: ${rejectLabel}`,
+      )
+      expect(options).toEqual(original)
+    },
+  )
+
+  it.each([
+    ['read', 'Description belongs to this different input contract'],
+    ['execute', { scope: '/workspace/extra-target' }],
+  ] as const)('keeps unrecognized %s description facts in the native approval detail', async (kind, description) => {
+    const approval = { request: vi.fn<AcpNativeApprovalService['request']>(async () => 'rejected') }
+    const handler = createAcpNativePermissionHandler({ approval, getAgent: () => ({}) })
+    const rawInput = { command: 'printf exact-command', description }
+    await handler({
+      ...params([option('once', 'Allow', 'allow_once')]),
+      toolCall: { toolCallId: 'other-description', kind, rawInput },
+    })
+    const reason = approval.request.mock.calls[0]![0].reason!
+    expect(reason).toContain('"description"')
+    expect(reason).toContain(typeof description === 'string' ? description : description.scope)
+  })
+
+  it('shows execute description prose and retains its raw field in complete-choice request details', async () => {
+    const { handler, ask } = bridge('Allow this session')
+    await handler({
+      ...params([option('once', 'Allow once', 'allow_once'), option('session', 'Allow this session', 'allow_always')]),
+      toolCall: {
+        toolCallId: 'question-description',
+        kind: 'execute',
+        rawInput: { command: 'printf exact-command', description: 'Verify native command approval' },
+      },
+    })
+    const question = ask.mock.calls[0]![0].questions[0]!
+    expect(question.question).toContain('Verify native command approval')
+    expect(question.question).not.toContain('"description"')
+    expect(question.detail).toContain('"description": "Verify native command approval"')
+    expect(question.detail).toContain('"command": "printf exact-command"')
+  })
+
+  it('keeps every Codex additional permission scope on the native question and returns the chosen scope', async () => {
     const approvalRequest = vi.fn<AcpNativeApprovalService['request']>(async () => 'rejected' as const)
     const approval = { request: approvalRequest }
-    const ask = vi.fn<AcpNativeUserQuestionService['ask']>()
+    const ask = vi.fn<AcpNativeUserQuestionService['ask']>(async ({ questions }) => ({
+      answers: [{ id: questions[0]!.id, selected: ['Yes, grant for this turn with strict auto review'] }],
+    }))
     const request: acp.RequestPermissionRequest = {
       ...params([
         option('turn', 'Yes, grant these permissions for this turn', 'allow_once'),
@@ -150,19 +239,16 @@ describe('native ACP permission bridge', () => {
     }
     const handler = createAcpNativePermissionHandler({ approval, userQuestions: { ask }, getAgent: () => ({}) })
 
-    await expect(handler(request)).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'reject' } })
-    expect(approvalRequest).toHaveBeenCalledOnce()
-    expect(approvalRequest).toHaveBeenCalledWith(
-      expect.objectContaining({
-        callId: 'codex-additional-permissions',
-        toolName: 'other',
-        reason: expect.stringContaining('Additional sandbox permissions'),
-      }),
-    )
-    const reason = approvalRequest.mock.calls[0]?.[0].reason ?? ''
-    expect(reason).toContain('/workspace/private-report')
-    expect(reason).toContain('"enabled": true')
-    expect(ask).not.toHaveBeenCalled()
+    await expect(handler(request)).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'turn-strict' } })
+    expect(approvalRequest).not.toHaveBeenCalled()
+    expect(ask).toHaveBeenCalledOnce()
+    const question = ask.mock.calls[0]?.[0].questions[0]
+    expect(question?.question).toContain('Additional sandbox permissions')
+    expect(question?.question).toContain('/workspace/private-report')
+    expect(question?.question).toContain('"enabled": true')
+    expect(question?.options).toEqual(request.options.map((option) => ({ label: option.name })))
+    expect(question?.detail).toContain('/workspace/private-report')
+    expect(question?.detail).toContain('"enabled": true')
   })
 
   it('routes the exact Antigravity interaction payload to DSH and returns the selected option id', async () => {
@@ -372,7 +458,9 @@ describe('native ACP permission bridge', () => {
       toolCall: { ...params([]).toolCall, kind: 'execute', title: command, rawInput: { CommandLine: command } },
       options: [option('allow', 'Allow once', 'allow_once')],
     })
-    expect(approval.request).toHaveBeenCalledWith(expect.objectContaining({ reason: command }))
+    expect(approval.request).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: `${command}\nAllow once: Allow once` }),
+    )
   })
 
   it('keeps a distinct title and complete multiline execute command', async () => {
@@ -390,7 +478,7 @@ describe('native ACP permission bridge', () => {
       options: [option('allow', 'Allow once', 'allow_once')],
     })
     expect(approval.request).toHaveBeenCalledWith(
-      expect.objectContaining({ reason: `Run Antigravity command\n${command}` }),
+      expect.objectContaining({ reason: `Run Antigravity command\n${command}\nAllow once: Allow once` }),
     )
   })
 
@@ -464,7 +552,7 @@ describe('native ACP permission bridge', () => {
     expect(ask).not.toHaveBeenCalled()
   })
 
-  it('shows names by default, uses short ordinal disambiguation, and bounds long names', async () => {
+  it('shows complete names and uses short ordinal disambiguation', async () => {
     const longName = 'x'.repeat(500)
     const { handler, ask } = bridge('Same · option 2')
     await expect(
@@ -474,11 +562,11 @@ describe('native ACP permission bridge', () => {
     ).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'second-secret-id' } })
     const question = ask.mock.calls[0]?.[0]
     expect(question?.questions[0]?.options).toEqual([{ label: 'Same · option 1' }, { label: 'Same · option 2' }])
-    const long = bridge(`${'x'.repeat(119)}…`)
+    const long = bridge(longName)
     await expect(long.handler(params([option('long-id', longName, 'allow_always')]))).resolves.toEqual({
       outcome: { outcome: 'selected', optionId: 'long-id' },
     })
-    expect(long.ask.mock.calls[0]?.[0].questions[0]?.options?.[0]?.label.length).toBeLessThan(130)
+    expect(long.ask.mock.calls[0]?.[0].questions[0]?.options?.[0]?.label).toBe(longName)
   })
 
   it.each(['en', 'zh'] as const)(
@@ -541,7 +629,7 @@ describe('native ACP permission bridge', () => {
     ).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
   })
 
-  it('shows the complete command in the native multi-line detail without executing controls', async () => {
+  it('shows the complete command before the optional raw details without executing controls', async () => {
     const command = `printf '${'x'.repeat(600)}'\nprintf 'Authorization: Bearer visible-to-approver'\u001b[31m`
     const { handler, ask } = bridge('Allow once')
     await expect(
@@ -552,11 +640,11 @@ describe('native ACP permission bridge', () => {
     ).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'allow' } })
 
     const question = ask.mock.calls[0]?.[0].questions[0]
-    expect(question?.question).not.toContain(command)
-    expect(question?.detail).toContain(command.slice(0, -5))
-    expect(question?.detail).toContain('\\x1b[31m')
-    expect(question?.detail).not.toContain('\u001b')
-    expect(question?.detail).not.toContain('…')
+    expect(question?.header).toBe('Permission request')
+    expect(question?.question).toContain(command.slice(0, -5))
+    expect(question?.question).toContain('\\x1b[31m')
+    expect(question?.question).not.toContain('\u001b')
+    expect(question?.question).not.toContain('…')
   })
 })
 
@@ -564,10 +652,11 @@ it.each([
   { rejectKind: 'reject_once' as const, expected: { outcome: 'selected', optionId: 'r' } },
   { rejectKind: 'reject_always' as const, expected: { outcome: 'cancelled' } },
 ])('never upgrades a native one-time rejection to $rejectKind', async ({ rejectKind, expected }) => {
-  const ask = vi.fn<AcpNativeUserQuestionService['ask']>()
+  const ask = vi.fn<AcpNativeUserQuestionService['ask']>(async () => ({ answers: [] }))
+  const approvalRequest = vi.fn<AcpNativeApprovalService['request']>(async () => 'rejected')
   const records: AcpPermissionAuditRecord[] = []
   const handler = createAcpNativePermissionHandler({
-    approval: { request: async () => 'rejected' },
+    approval: { request: approvalRequest },
     userQuestions: { ask },
     getAgent: () => ({}),
     audit: {
@@ -579,6 +668,7 @@ it.each([
   await expect(
     handler(params([option('a', 'Allow once', 'allow_once'), option('r', 'Reject', rejectKind)])),
   ).resolves.toEqual({ outcome: expected })
-  expect(ask).not.toHaveBeenCalled()
+  expect(ask).toHaveBeenCalledTimes(rejectKind === 'reject_always' ? 1 : 0)
+  expect(approvalRequest).toHaveBeenCalledTimes(rejectKind === 'reject_once' ? 1 : 0)
   expect(records.at(-1)?.data).not.toMatchObject({ selectedOptionKind: 'reject_always' })
 })

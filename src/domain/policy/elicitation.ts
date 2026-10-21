@@ -5,6 +5,8 @@
  * 这部分协议标记为不稳定，因此未知或格式错误的变体会被拒绝，不做猜测性兼容。
  */
 import type * as acp from '@agentclientprotocol/sdk'
+import { permissionCopy } from './permission-copy.ts'
+import type { AcpPermissionPresentation } from './events.ts'
 
 const SENSITIVE_FIELD =
   /(?:password|passwd|token|secret|credential|api[\s_-]*key|authorization|private[\s_-]*key|passphrase)/i
@@ -371,8 +373,24 @@ export interface AcpNativeUserQuestionService {
   }>
 }
 
+/** Native question presentation with optional Host-only attribution; never sent on the wire. */
+export interface AcpPermissionQuestionService {
+  ask(
+    request: Parameters<AcpNativeUserQuestionService['ask']>[0],
+    onPresentation?: (presentation: AcpPermissionPresentation) => void,
+  ): ReturnType<AcpNativeUserQuestionService['ask']>
+}
+
+/** A host interaction limitation, distinct from a user's rejection or cancellation. */
+export interface AcpNativeQuestionUnavailable {
+  readonly code: 'ACP_DELEGATED_QUESTION_UNAVAILABLE'
+  readonly message: string
+}
+
 export interface AcpNativeElicitationDeps {
   readonly userQuestions?: AcpNativeUserQuestionService
+  /** Available only for verified external permission forms, never arbitrary questions. */
+  readonly permissionQuestions?: AcpPermissionQuestionService
   readonly getAgent: () => unknown
   readonly locale?: string
   /** Supplied only by the live host bridge after exact request/call correlation. */
@@ -380,6 +398,7 @@ export interface AcpNativeElicitationDeps {
   /** Native child approval for an exactly correlated DSH tool; never answers arbitrary forms. */
   readonly approveDelegatedOnce?: (signal?: AbortSignal) => Promise<boolean>
   readonly log?: (message: string) => void
+  readonly onUnavailable?: (issue: AcpNativeQuestionUnavailable) => void | Promise<void>
 }
 
 /** DSH returns labels, so every displayed choice must map unambiguously to its wire value. */
@@ -473,7 +492,19 @@ export function createAcpNativeElicitationHandler(
     try {
       const agent = deps.getAgent()
       if (agent === undefined) return { action: 'cancel' }
-      const answer = await deps.userQuestions.ask({ questions, agent, ...(signal === undefined ? {} : { signal }) })
+      const scope = schema.fields[0]
+      const permissionScope =
+        deps.hostToolName !== undefined &&
+        params._meta?.codex_approval_kind === 'mcp_tool_call' &&
+        schema.fields.length === 1 &&
+        scope?.name === 'persist' &&
+        scope.type === 'string' &&
+        scope.options !== undefined &&
+        scope.options.length > 0 &&
+        // Keep the established singleton once carrier and its batch action.
+        !(scope.options.length === 1 && scope.options[0]?.value === 'once')
+      const presenter = permissionScope ? (deps.permissionQuestions ?? deps.userQuestions) : deps.userQuestions
+      const answer = await presenter.ask({ questions, agent, ...(signal === undefined ? {} : { signal }) })
       if (signal?.aborted) return { action: 'cancel' }
       const values: { name: string; value: string | number | boolean | readonly string[] }[] = []
       for (const field of fields) {
@@ -510,8 +541,9 @@ export function createAcpNativeElicitationHandler(
       return content === undefined ? { action: 'cancel' } : { action: 'accept', content }
     } catch (error: unknown) {
       // Native questions intentionally reject owned children. Preserve that
-      // boundary for questions, but a verified tool-approval scope can use the
-      // native approval service, which supports the original child ownership.
+      // boundary for questions. Only a verified tool request offering solely
+      // the once scope can use the child-owned native approval service. Never
+      // select one scope on behalf of the user from a multi-scope form.
       const once = validateValues(params, [{ name: 'persist', value: 'once' }])
       if (plain(error) || error instanceof Error) {
         const code = (error as { code?: unknown }).code
@@ -524,7 +556,8 @@ export function createAcpNativeElicitationHandler(
           schema.fields.length === 1 &&
           schema.fields[0]?.name === 'persist' &&
           schema.fields[0].type === 'string' &&
-          schema.fields[0].options?.some((option) => option.value === 'once') &&
+          schema.fields[0].options?.length === 1 &&
+          schema.fields[0].options[0]?.value === 'once' &&
           once !== undefined
         ) {
           try {
@@ -532,6 +565,20 @@ export function createAcpNativeElicitationHandler(
             return allowed && !signal?.aborted ? { action: 'accept', content: once } : { action: 'cancel' }
           } catch {
             return { action: 'cancel' }
+          }
+        }
+        if (code === 'DELEGATED_CALLER' && !signal?.aborted) {
+          const copy = permissionCopy(deps.locale)
+          try {
+            await deps.onUnavailable?.({
+              code: 'ACP_DELEGATED_QUESTION_UNAVAILABLE',
+              message:
+                params._meta?.codex_approval_kind === 'mcp_tool_call'
+                  ? copy.delegatedPermissionUnavailable
+                  : copy.delegatedQuestionUnavailable,
+            })
+          } catch (reportError: unknown) {
+            deps.log?.(`dsh-acp unavailable question reporting failed: ${String(reportError)}`)
           }
         }
       }

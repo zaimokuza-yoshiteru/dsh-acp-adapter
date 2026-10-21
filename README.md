@@ -77,7 +77,7 @@ Git 与压缩包安装示例：
 
 </details>
 
-**Auto** 自动批准当前会话的 DSH 原生工具请求；**Ask** 在 Agent 请求审批时显示原生审批卡。Agent 自带工具仍由 Agent 控制。**Stop** 停止当前轮次；按 Enter 可排队输入，支持的 Agent 会在同一 Agent 会话继续。开启 DSH 的实验性 Agent Teams 后，可在主会话查看成员进度并处理审批。
+**Auto** 可自动确认当前会话中 Agent 调用 DSH 工具的申请，不改变 DSH 的沙箱与工具授权。Devin 发出的授权请求仍需按原始选项确认。**Ask** 在 Agent 请求审批时显示原生审批卡。Agent 自带工具仍由 Agent 控制。**Stop** 停止当前轮次；按 Enter 可排队输入，支持的 Agent 会在同一 Agent 会话继续。开启 DSH 的实验性 Agent Teams 后，可在主会话查看成员进度并处理审批。
 
 ## 排障与反馈
 

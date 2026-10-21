@@ -19,7 +19,13 @@ import type * as acp from '@agentclientprotocol/sdk'
 import type { AcpSubprocessExitFact, AcpSubprocessHandle, SubprocessSeam } from '../../runtime/process/subprocess.ts'
 import type { AcpTerminalHandlers } from '../../protocol/v1/types.ts'
 import type { AcpTerminalAuditData } from '../../domain/policy/events.ts'
-import type { AcpTerminalJobHooks, AcpTerminalJobOutput, AcpTerminalJobStarter } from './terminal-job.ts'
+import { terminalFailureFacts } from './terminal-failure.ts'
+import type {
+  AcpTerminalJobHandle,
+  AcpTerminalJobHooks,
+  AcpTerminalJobOutput,
+  AcpTerminalJobStarter,
+} from './terminal-job.ts'
 
 /** Keep individual terminal snapshots bounded even when an agent omits a limit. */
 export const ACP_TERMINAL_DEFAULT_OUTPUT_BYTES = 1_048_576
@@ -34,6 +40,8 @@ export interface AcpTerminalHandlersOptions {
   readonly cwd: string
   readonly env: Readonly<Record<string, string>>
   readonly audit?: (event: AcpTerminalAuditData) => Promise<void>
+  /** In-memory process fact; must not wait behind durable audit I/O. */
+  readonly onExit?: (event: AcpTerminalAuditData) => void
   readonly onAuditError?: (error: unknown, event: AcpTerminalAuditData) => void
   readonly releaseWaitMs?: number
   readonly startJob?: AcpTerminalJobStarter | undefined
@@ -109,9 +117,10 @@ interface TerminalRecord {
   released: boolean
   killRequested: boolean
   error?: Error
+  failure?: AcpTerminalAuditData['failure']
   auditTail: Promise<void>
   releasePromise?: Promise<boolean>
-  job?: { cancel(): void }
+  job?: AcpTerminalJobHandle
 }
 
 function isAbsolutePath(value: string): boolean {
@@ -135,12 +144,31 @@ function isSpawnNotFound(error: unknown): boolean {
   return isSubprocessLaunchFailure(error) && (error as { code: string }).code === 'ENOENT'
 }
 
+function isShellCommandLaunchFailure(error: unknown, command: string): boolean {
+  if (isSpawnNotFound(error)) return true
+  if (typeof error !== 'object' || error === null) return false
+  const { code, syscall } = error as { code?: unknown; syscall?: unknown }
+  if (
+    code !== 'ENAMETOOLONG' ||
+    typeof syscall !== 'string' ||
+    !(syscall === 'spawn' || syscall.startsWith('spawn ') || syscall === 'execve') ||
+    Buffer.byteLength(command, 'utf8') <= 255
+  )
+    return false
+  // A long `node -e "..."` can exceed the executable-name limit before ENOENT.
+  // Admit only an ordinary bare program followed by argument text. A real
+  // executable path, an overlong first token or an ambiguous quoted prefix
+  // must keep its launch error rather than become shell syntax.
+  const program = /^([A-Za-z0-9_][A-Za-z0-9_.+-]*)[ \t\r\n]+\S/.exec(command)?.[1]
+  return program !== undefined && program.length <= 255
+}
+
 /**
  * A few ACP clients send a shell command in `command` while leaving `args`
- * empty (for example `uname -s`). Try the structured executable first; only a
- * launch-level ENOENT may fall back to the platform shell. An exited command
- * (including shell exit 127) is never retried, so this cannot duplicate an
- * already-running process or hide an agent command failure.
+ * empty (for example `uname -s`). Try the structured executable first; a
+ * launch-level ENOENT or an unambiguous long command's ENAMETOOLONG may fall
+ * back once to the platform shell. An exited command (including shell exit
+ * 127) is never retried, so this cannot duplicate an already-running process.
  */
 function shellFallbackArgv(command: string, args: readonly string[]): readonly string[] {
   const commandLine = [command, ...args].join(' ')
@@ -175,6 +203,7 @@ function auditEvent(
     outcome,
     terminationRequested: record.killRequested,
     ...(record.exit === null ? {} : { exitCode: record.exit.exitCode, signal: record.exit.signal }),
+    ...(record.failure === undefined ? {} : { failure: record.failure }),
   }
   return event
 }
@@ -316,13 +345,24 @@ export function createAcpTerminalHandlers(options: AcpTerminalHandlersOptions): 
     } as const
     const canShellFallback = args.length === 0
     const id = `term_${randomUUID().replaceAll('-', '')}`
+    let attempt: 'direct' | 'shell-fallback' = 'direct'
+    let phase: 'spawn' | 'completion' = 'spawn'
+    let spawnAttempted = false
+    const spawn = (argv: readonly string[], nextAttempt: typeof attempt): AcpSubprocessHandle => {
+      attempt = nextAttempt
+      phase = 'spawn'
+      spawnAttempted = true
+      const handle = options.subprocess.spawn({ ...spawnSpec, argv })
+      phase = 'completion'
+      return handle
+    }
     const start = (jobOutput?: AcpTerminalJobOutput): TerminalRecord => {
       let handle: AcpSubprocessHandle
       try {
-        handle = options.subprocess.spawn(spawnSpec)
+        handle = spawn(spawnSpec.argv, 'direct')
       } catch (error) {
-        if (!canShellFallback || !isSpawnNotFound(error)) throw error
-        handle = options.subprocess.spawn({ ...spawnSpec, argv: shellFallbackArgv(params.command, args) })
+        if (!canShellFallback || !isShellCommandLaunchFailure(error, params.command)) throw error
+        handle = spawn(shellFallbackArgv(params.command, args), 'shell-fallback')
       }
       const outputFlushers: (() => void)[] = []
       const record = {
@@ -373,11 +413,12 @@ export function createAcpTerminalHandlers(options: AcpTerminalHandlersOptions): 
           return await handle.done
         } catch (error) {
           // A process that was accepted by the OS and later exits with an error
-          // must not be retried. Only the launch-level ENOENT path is eligible.
-          if (!canShellFallback || !isSpawnNotFound(error)) throw error
+          // must not be retried. The shell itself is never retried either.
+          if (!canShellFallback || attempt !== 'direct' || !isShellCommandLaunchFailure(error, params.command))
+            throw error
           if (!(await stopSubprocess(handle, { eofGraceMs: 0, exitWaitMs: releaseWaitMs }))) throw error
           if (record.released || record.killRequested || disposed) throw error
-          const fallback = options.subprocess.spawn({ ...spawnSpec, argv: shellFallbackArgv(params.command, args) })
+          const fallback = spawn(shellFallbackArgv(params.command, args), 'shell-fallback')
           attachHandle(fallback)
           return await fallback.done
         }
@@ -385,11 +426,17 @@ export function createAcpTerminalHandlers(options: AcpTerminalHandlersOptions): 
       record.done = settleProcess().then(
         (fact) => {
           record.exit = fact
+          try {
+            options.onExit?.(auditEvent(record, 'exit', 'exited'))
+          } catch {
+            // Presentation observers must never change the process result.
+          }
           void recordAudit(record, 'exit', 'exited')
           return fact
         },
         (error: unknown) => {
           record.error = error instanceof Error ? error : new Error(String(error))
+          record.failure = terminalFailureFacts(error, params.command, args, attempt, phase)
           void recordAudit(record, 'exit', 'error')
           return undefined
         },
@@ -397,13 +444,42 @@ export function createAcpTerminalHandlers(options: AcpTerminalHandlersOptions): 
       return record
     }
     let record!: TerminalRecord
-    if (options.startJob === undefined) record = start()
-    else {
-      const job = options.startJob([params.command, ...args].join(' '), (jobOutput) => {
-        record = start(jobOutput)
-        return { cancel: () => requestKill(record), done: jobDone(record) }
-      })
-      record.job = job
+    try {
+      if (options.startJob === undefined) record = start()
+      else {
+        const job = options.startJob([params.command, ...args].join(' '), (jobOutput) => {
+          record = start(jobOutput)
+          return { cancel: () => requestKill(record), done: jobDone(record) }
+        })
+        record.job = job
+      }
+    } catch (error) {
+      if (spawnAttempted && options.audit !== undefined) {
+        const event: AcpTerminalAuditData = {
+          operation: 'create',
+          terminalId: id,
+          dshSessionId: options.dshSessionId,
+          profileId: options.profileId,
+          acpSessionId: params.sessionId,
+          command: '[omitted]',
+          argCount: args.length,
+          cwd,
+          outputBytes: 0,
+          truncated: false,
+          outcome: 'error',
+          failure: terminalFailureFacts(error, params.command, args, attempt, phase),
+        }
+        try {
+          await options.audit(event)
+        } catch (auditError) {
+          try {
+            options.onAuditError?.(auditError, event)
+          } catch {
+            /* keep the original launch error */
+          }
+        }
+      }
+      throw error
     }
     await recordAudit(record, 'create', 'started')
     return { terminalId: id }
@@ -453,6 +529,7 @@ export function createAcpTerminalHandlers(options: AcpTerminalHandlersOptions): 
       // A durable release audit is the final operation.
       await recordAudit(record, 'release', 'released')
       await record.auditTail
+      record.job?.release()
       return true
     })()
     return await record.releasePromise

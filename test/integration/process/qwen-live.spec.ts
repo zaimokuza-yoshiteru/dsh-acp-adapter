@@ -18,6 +18,7 @@ import type { AcpSessionNotification } from '../../../src/protocol/v1/types.ts'
 
 const LIVE = process.env.DSH_E2E_LIVE_QWEN === '1'
 const CLI = process.env.DSH_E2E_LIVE_QWEN_COMMAND ?? ''
+const MODEL = process.env.DSH_E2E_LIVE_QWEN_MODEL
 // Only OS basics plus explicitly listed variables reach the Agent process.
 const BASE_ENV_KEYS = [
   'PATH',
@@ -165,6 +166,22 @@ function runtime(extra: Partial<AcpSessionRuntimeOptions> = {}): AcpSessionRunti
   return created
 }
 
+async function selectLiveModel(live: AcpSessionRuntime): Promise<void> {
+  if (MODEL === undefined) return
+  liveFacts.requestedModel = MODEL
+  await live.start()
+  const option = live.configOptions?.find(
+    (entry) => entry.type === 'select' && (entry.category === 'model' || entry.id === 'model'),
+  )
+  if (option?.type !== 'select') throw new Error('Qwen live session did not provide a model selector')
+  const available = option.options.flatMap((entry) => ('options' in entry ? entry.options : [entry]))
+  if (!available.some((entry) => entry.value === MODEL))
+    throw new Error(`Exact Qwen live model is absent from the session catalog: ${MODEL}`)
+  await live.setConfigOption(option.id, MODEL)
+  const selected = live.configOptions?.find((entry) => entry.id === option.id)
+  expect(selected?.type === 'select' ? selected.currentValue : undefined).toBe(MODEL)
+}
+
 const text = (updates: readonly AcpSessionNotification[]): string =>
   updates
     .map((notification) => {
@@ -179,12 +196,15 @@ describe.skipIf(!LIVE)('live Qwen Code ACP', () => {
   beforeAll(() => {
     if (!path.isAbsolute(CLI) || !fs.existsSync(CLI))
       throw new Error('DSH_E2E_LIVE_QWEN_COMMAND must be an absolute path to the Qwen Code cli-entry.js')
+    if (MODEL !== undefined && MODEL.trim() === '')
+      throw new Error('DSH_E2E_LIVE_QWEN_MODEL must be an exact non-empty model ID when provided')
     for (const key of ENV_KEYS)
       if (process.env[key] === undefined) throw new Error(`DSH_E2E_LIVE_QWEN_ENV_KEYS lists unset variable ${key}`)
   })
 
   it('answers ask_user_question through the native question bridge', async () => {
     const live = runtime()
+    await selectLiveModel(live)
     const updates: AcpSessionNotification[] = []
     const response = await live.prompt(
       prompt(
@@ -215,6 +235,7 @@ describe.skipIf(!LIVE)('live Qwen Code ACP', () => {
       return { cancel: () => hooks.cancel() }
     }
     const live = runtime({ qwenTaskJobs: starter })
+    await selectLiveModel(live)
     const first: AcpSessionNotification[] = []
     await live.prompt(
       prompt(
@@ -256,6 +277,7 @@ describe.skipIf(!LIVE)('live Qwen Code ACP', () => {
       return { cancel: () => hooks.cancel() }
     }
     const live = runtime({ qwenTaskJobs: starter })
+    await selectLiveModel(live)
     const first: AcpSessionNotification[] = []
     await live.prompt(
       prompt(

@@ -6,11 +6,18 @@ import { launchBrowser, newEnglishPage } from './browser.ts'
 import type { ObservedEvent } from './types.ts'
 import type { Page } from 'playwright'
 import { LlmAdapter } from '@deepseek-ai/dsh-llm'
+import type { Agent } from '@deepseek-ai/dsh-agent'
 import { join } from 'node:path'
 import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { it, expect, vi } from 'vitest'
 import { connectFreshWorkspace, writeComposerDraft } from '#host-support'
 import { launchAdapterWorld, root } from './scaffold.ts'
+import {
+  installTeamFixtureApprovals,
+  teamMemberSetupSteps,
+  teamReplySteps,
+  teamStartSteps,
+} from './team-fixture-approval.ts'
 
 it(
   'shows per-profile mode menus with dormant mode persistence and approval protection and preserves Lead approval layout',
@@ -23,6 +30,30 @@ it(
     host.ctx.on('session/event', (session, event) => events.push({ sessionId: session.id, ...event }))
     const retain = process.env.DSH_E2E_RETAIN_MANAGEMENT === '1'
     const policyGate = join(host.workspaceCwd, 'team-management-policy-ready')
+    type SetupCall = {
+      owner: string
+      callId: string
+      tool: string
+      args: Record<string, unknown> | ((agent: Agent) => Record<string, unknown>)
+    }
+    const calls = (owner: string, entries: readonly [string, SetupCall['args']][]): SetupCall[] =>
+      entries.map(([tool, args], index) => ({ owner, callId: `team-${index + 1}`, tool, args }))
+    const memberContinuation = (owner: string) =>
+      calls(owner, [
+        ['list_agents', {}],
+        ['send_message', { target: 'lead', message: 'E2E_TEAM_REPLY continued' }],
+      ])
+    const tasks = new Map<string, ReturnType<typeof host.ctx.agentTeams.listTasks>[number]>()
+    const originalTask = (agent: Agent, subject: string) => {
+      const key = `${agent.id}:${subject}`
+      if (!tasks.has(key))
+        tasks.set(
+          key,
+          structuredClone(required(host.ctx.agentTeams.listTasks(agent).find((task) => task.subject === subject))),
+        )
+      return required(tasks.get(key))
+    }
+    let setupAnswers: ReturnType<typeof installTeamFixtureApprovals> | undefined
     try {
       await host.ctx.settings.replace('dsh-acp-adapter', {
         toolApprovalDefault: 'auto',
@@ -66,6 +97,10 @@ it(
         await expect.poll(() => input.innerText()).toBe(text)
         await page.getByRole('button', { name: 'Send message', exact: true }).click()
       }
+      setupAnswers = installTeamFixtureApprovals(host, {
+        initialPrompt: 'E2E_TEAM_START',
+        entries: [...teamStartSteps(host), ...teamMemberSetupSteps('calculator')],
+      })
       await send('E2E_TEAM_START')
       await page.getByText('E2E_TEAM_READY', { exact: true }).waitFor()
       const lead = required(host.ctx.agents.list().find((a) => host.ctx.agentTeams.tryMembership(a)?.role === 'lead'))
@@ -102,6 +137,8 @@ it(
           ).toHaveLength(1),
         { timeout: 30000 },
       )
+      setupAnswers.finish()
+      setupAnswers = undefined
       await (host.ctx.get('dshAcp') as AcpRemoteService).setToolApprovalPolicy(lead.id, { policy: 'ask' })
       writeFileSync(policyGate, 'ready')
       // The catalog must load automatically once the child's binding is ready.
@@ -270,6 +307,18 @@ it(
         .waitFor()
       await row.getByRole('button', { name: /^(?:Session|会话) · Ask$/ }).waitFor()
       await panel.getByRole('button', { name: 'Close member management', exact: true }).click()
+      setupAnswers = installTeamFixtureApprovals(host, {
+        root: lead,
+        entries: [
+          ...calls('lead', [
+            ['list_agents', {}],
+            ['send_message', { target: 'calculator', message: 'E2E_TEAM_CONTINUE' }],
+          ]),
+          ...memberContinuation('calculator'),
+          ...teamReplySteps(),
+        ],
+      })
+      const wakeStart = events.length
       await send('E2E_TEAM_WAKE')
       await page.getByText('E2E_TEAM_WOKEN', { exact: true }).waitFor()
       await expect
@@ -284,6 +333,37 @@ it(
           { timeout: 15000 },
         )
         .toBe(true)
+      await expect
+        .poll(
+          () =>
+            events
+              .slice(wakeStart)
+              .some(
+                (event) =>
+                  event.sessionId === lead.id &&
+                  event.type === 'assistant/message' &&
+                  JSON.stringify(event).includes('E2E_TEAM_LEAD_RECEIVED'),
+              ),
+          { timeout: 15000 },
+        )
+        .toBe(true)
+      // Dormant children release their Agent runtime. Observe this wake's
+      // actual completion rather than retaining the already-disposed instance.
+      await expect
+        .poll(
+          () =>
+            events
+              .slice(wakeStart)
+              .some(
+                (event) =>
+                  event.sessionId === childId && event.type === 'turn/end' && event.data.reason.kind === 'completed',
+              ),
+          { timeout: 15000 },
+        )
+        .toBe(true)
+      await lead.whenIdle()
+      setupAnswers.finish()
+      setupAnswers = undefined
       await panel.getByRole('button', { name: 'Manage members · 1', exact: true }).click()
       await row.getByRole('button', { name: /^(?:Session|会话) · Ask$/ }).waitFor()
       expect(await row.locator('[data-member-pending-mode]').count()).toBe(0)
@@ -301,6 +381,43 @@ it(
           '[data-composer-input][contenteditable="true"][data-placeholder="Describe what you want to build, / commands, @ files or sessions"]',
         )
         .waitFor()
+      setupAnswers = installTeamFixtureApprovals(host, {
+        initialPrompt: '演示成员管理与集中审批 E2E_TEAM_DEMO',
+        entries: [
+          ...calls('lead', [
+            ['list_agents', {}],
+            ['team_task_create', { subject: '整理需求', description: '梳理成员管理和集中审批的验收要点' }],
+            [
+              'team_task_create',
+              (agent) => ({
+                subject: '复核方案',
+                description: '等待需求整理完成，再检查边界',
+                blocked_by: [originalTask(agent, '整理需求').id],
+              }),
+            ],
+            [
+              'spawn_teammate',
+              {
+                name: 'analyst',
+                description: '整理需求与验收要点',
+                prompt: 'E2E_TEAM_MEMBER calculate 1+1',
+                context: 'fresh',
+              },
+            ],
+            [
+              'spawn_teammate',
+              {
+                name: 'reviewer',
+                description: '检查实现与审批边界',
+                prompt: 'E2E_TEAM_MEMBER calculate 1+1',
+                context: 'fresh',
+              },
+            ],
+          ]),
+          ...teamMemberSetupSteps('analyst'),
+          ...teamMemberSetupSteps('reviewer'),
+        ],
+      })
       await send('演示成员管理与集中审批 E2E_TEAM_DEMO')
       await page.getByText('团队演示已就绪。', { exact: false }).waitFor()
       await vi.waitFor(
@@ -315,6 +432,8 @@ it(
       const demoLead = required(
         host.ctx.agents.list().find((a) => a.id !== lead.id && host.ctx.agentTeams.tryMembership(a)?.role === 'lead'),
       )
+      setupAnswers.finish()
+      setupAnswers = undefined
       await (host.ctx.get('dshAcp') as AcpRemoteService).setToolApprovalPolicy(demoLead.id, { policy: 'ask' })
       writeFileSync(policyGate, 'ready')
       expect(
@@ -337,10 +456,9 @@ it(
       await host.ctx.settings.replace('locale', { preference: 'zh' })
       await panel.getByRole('button', { name: '成员管理 · 2', exact: true }).waitFor()
       const approvals = page.locator('[data-acp-team-approvals]')
-      await approvals.getByText('需要你处理 · 2 位成员', { exact: true }).waitFor()
+      await approvals.getByText('需要你处理 · 2 个子会话', { exact: true }).waitFor()
       await expect.poll(() => approvals.locator('[data-team-pending-member]').count()).toBe(2)
-      // Both member requests were issued under Ask; subsequent Lead coordination
-      // uses Auto so it does not create unrelated approval cards during cleanup.
+      // Changing the Lead's policy must not decide either pending child request.
       await (host.ctx.get('dshAcp') as AcpRemoteService).setToolApprovalPolicy(demoLead.id, { policy: 'auto' })
       expect(await approvals.locator('[data-team-pending-member]').count()).toBe(2)
       const triggerBox = required(await panel.getByRole('button', { name: '成员管理 · 2', exact: true }).boundingBox())
@@ -480,6 +598,12 @@ it(
         await panel.getByRole('button', { name: 'Close member management', exact: true }).click()
         await page.getByRole('button', { name: 'Stop generating', exact: true }).click()
         await expect.poll(() => demoLead.status).toBe('idle')
+        setupAnswers = installTeamFixtureApprovals(host, {
+          root: demoLead,
+          entries: [...memberContinuation('analyst'), ...teamReplySteps()],
+        })
+        const analystId = required(demoMembers.find((member) => member.name === 'analyst')).id
+        const analystWakeStart = events.length
         await host.ctx.agentTeams.sendMessage(demoLead, {
           target: 'analyst',
           content: [{ type: 'text', text: 'E2E_TEAM_CONTINUE' }],
@@ -488,15 +612,56 @@ it(
         await expect
           .poll(
             () =>
-              events.some(
-                (event) =>
-                  event.sessionId === required(demoMembers.find((m) => m.name === 'analyst')).id &&
-                  event.type === 'assistant/message' &&
-                  JSON.stringify(event).includes('E2E_TEAM_MEMBER_MODE plan'),
-              ),
+              events
+                .slice(analystWakeStart)
+                .some(
+                  (event) =>
+                    event.sessionId === analystId &&
+                    event.type === 'assistant/message' &&
+                    JSON.stringify(event).includes('E2E_TEAM_MEMBER_MODE plan'),
+                ),
             { timeout: 15000 },
           )
           .toBe(true)
+        await expect
+          .poll(
+            () =>
+              events
+                .slice(analystWakeStart)
+                .some(
+                  (event) =>
+                    event.sessionId === demoLead.id &&
+                    event.type === 'assistant/message' &&
+                    JSON.stringify(event).includes('E2E_TEAM_LEAD_RECEIVED'),
+                ),
+            { timeout: 15000 },
+          )
+          .toBe(true)
+        // The interrupted child may already have released its runtime. Require
+        // this wake's new native turn to complete on the same durable session.
+        await expect
+          .poll(
+            () => {
+              const wakeEvents = events.slice(analystWakeStart)
+              const started = wakeEvents.find((event) => event.sessionId === analystId && event.type === 'turn/start')
+              return (
+                started?.type === 'turn/start' &&
+                wakeEvents.some(
+                  (event) =>
+                    event.sessionId === analystId &&
+                    event.type === 'turn/end' &&
+                    event.data.turn === started.data.turn &&
+                    event.seq > started.seq &&
+                    event.data.reason.kind === 'completed',
+                )
+              )
+            },
+            { timeout: 15000 },
+          )
+          .toBe(true)
+        await demoLead.whenIdle()
+        setupAnswers.finish()
+        setupAnswers = undefined
         await host.ctx.agentDefaultModel.saveSelection({ provider: 'native-mode-control', model: 'native-model' })
         await page.getByRole('button', { name: 'New session', exact: true }).last().click()
         await page.getByText('Into the Unknown', { exact: true }).waitFor()
@@ -560,6 +725,7 @@ it(
       }
       throw error
     } finally {
+      setupAnswers?.dispose()
       await browser?.close()
       await host.close()
     }

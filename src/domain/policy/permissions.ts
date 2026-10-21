@@ -3,20 +3,42 @@ import { randomUUID } from 'node:crypto'
 import { Buffer } from 'node:buffer'
 import type * as acp from '@agentclientprotocol/sdk'
 import { isAntigravityInteractionCall } from './antigravity-question.ts'
-import type { AcpNativeUserQuestionService } from './elicitation.ts'
+import type {
+  AcpNativeQuestionUnavailable,
+  AcpNativeUserQuestionService,
+  AcpPermissionQuestionService,
+} from './elicitation.ts'
 import { permissionCopy, type PermissionCopy } from './permission-copy.ts'
 import {
   ACP_PERMISSION_AUDIT_KIND,
   createPermissionAskedAudit,
   createPermissionDecidedAudit,
   redactSecretText,
-  summarizeRawInputForAudit,
   type AcpPermissionAuditData,
+  type AcpPermissionPresentation,
 } from './events.ts'
 
 export type { AcpApprovalOutcome } from './events.ts'
 export const ACP_PERMISSION_OPTIONS_MAX = 128
 export const ACP_PERMISSION_ID_MAX_BYTES = 512
+
+const dshTeamPresentation = Symbol('dsh-team-permission-presentation')
+interface DshTeamPermissionPresentation {
+  readonly tool: 'spawn_teammate' | 'send_message'
+  readonly workspace?: string
+}
+
+/**
+ * Only the live DSH bridge may attach this presentation hint after resolving
+ * its own tool definition. Wire metadata and cached display names cannot forge
+ * the symbol. It grants no authority and is deliberately absent from JSON.
+ */
+export function withDshTeamPermissionPresentation<T extends acp.ToolCallUpdate>(
+  call: T,
+  presentation: DshTeamPermissionPresentation,
+): T {
+  return Object.defineProperty({ ...call }, dshTeamPresentation, { value: Object.freeze({ ...presentation }) })
+}
 
 export interface AcpPermissionAuditRecord {
   readonly kind: typeof ACP_PERMISSION_AUDIT_KIND
@@ -38,11 +60,14 @@ export interface AcpNativeApprovalService {
 }
 export interface AcpNativePermissionBridgeDeps {
   readonly userQuestions?: AcpNativeUserQuestionService
+  /** External permission-only presentation; ordinary interaction calls keep their native owner. */
+  readonly permissionQuestions?: AcpPermissionQuestionService
   readonly approval?: AcpNativeApprovalService
   readonly nativeQuestionProfile?: AcpNativeQuestionProfile
   readonly getAgent: () => unknown
   readonly locale?: string
   readonly log?: (message: string) => void
+  readonly onUnavailable?: (issue: AcpNativeQuestionUnavailable) => void | Promise<void>
   readonly audit?: AcpPermissionAuditChannel
   readonly now?: () => number
 }
@@ -86,9 +111,10 @@ function visibleCommand(value: string): string {
     return `\\x${code.toString(16).padStart(2, '0')}`
   })
 }
+const commandKeys = ['command', 'cmd', 'CommandLine', 'argv'] as const
 function commandOf(tool: acp.RequestPermissionRequest['toolCall']): string | undefined {
   if (typeof tool.rawInput === 'string') return tool.rawInput
-  return firstString(recordValue(tool.rawInput), ['command', 'cmd', 'CommandLine', 'argv'])
+  return firstString(recordValue(tool.rawInput), commandKeys)
 }
 function markdownCodeBlock(value: string): string {
   let longestFence = 0
@@ -110,77 +136,145 @@ function firstString(record: Record<string, unknown> | undefined, keys: readonly
   }
   return undefined
 }
-function permissionDetail(tool: acp.RequestPermissionRequest['toolCall'], copy: PermissionCopy): string | undefined {
-  const record = recordValue(tool.rawInput)
-  if (tool.kind === 'execute') {
-    const command = commandOf(tool)
-    return command === undefined ? copy.unknownCommand : `${copy.command}: ${visibleCommand(command)}`
+/** Keep both input and target facts; neither is a replacement for the other. */
+function permissionInputDetail(tool: acp.RequestPermissionRequest['toolCall']): string | undefined {
+  let input = tool.rawInput
+  const command = tool.kind === 'execute' ? commandOf(tool) : undefined
+  if (command !== undefined) {
+    const record = recordValue(input)
+    if (record === undefined)
+      input = undefined // The string command is displayed separately.
+    else {
+      const commandKey = commandKeys.find((key) => record[key] === command)
+      const remaining = Object.fromEntries(Object.entries(record).filter(([key]) => key !== commandKey))
+      input = Object.keys(remaining).length === 0 ? undefined : remaining
+    }
   }
-  if (tool.kind === 'read' || tool.kind === 'edit' || tool.kind === 'delete' || tool.kind === 'move') {
-    const path =
-      firstString(record, [
-        'file_path',
-        'filePath',
-        'path',
-        'target',
-        'source',
-        'destination',
-        'AbsolutePath',
-        'absolutePath',
-        'TargetFile',
-        'targetFile',
-      ]) ?? tool.locations?.find((location) => typeof location.path === 'string')?.path
-    return path === undefined ? undefined : `${copy.target}: ${safeText(path, 160)}`
-  }
-  if (tool.rawInput === undefined) return undefined
-  const summary = summarizeRawInputForAudit(tool.rawInput).summary
-  return summary === '{}' ? undefined : `${copy.details}: ${safeText(summary)}`
+  const details =
+    tool.locations === undefined
+      ? input
+      : input === undefined
+        ? tool.locations
+        : { rawInput: input, locations: tool.locations }
+  if (details === undefined) return undefined
+  return visibleCommand(typeof details === 'string' ? details : JSON.stringify(details, null, 2))
 }
 function permissionQuestionDetail(
   tool: acp.RequestPermissionRequest['toolCall'],
   copy: PermissionCopy,
 ): string | undefined {
-  if (tool.kind !== 'execute') return undefined
-  const command = commandOf(tool)
-  return command === undefined
-    ? copy.unknownCommand
-    : `${copy.command}:\n\n${markdownCodeBlock(visibleCommand(command))}`
-}
-export interface AcpPermissionReasonOptions {
-  readonly includeExecuteDetails?: boolean
+  const parts: string[] = []
+  if (tool.kind === 'execute') {
+    const command = commandOf(tool)
+    parts.push(
+      command === undefined ? copy.unknownCommand : `${copy.command}:\n\n${markdownCodeBlock(visibleCommand(command))}`,
+    )
+  }
+  const detail = permissionInputDetail(tool)
+  if (detail !== undefined) parts.push(`${copy.details}:\n\n${markdownCodeBlock(detail)}`)
+  return parts.length === 0 ? undefined : parts.join('\n\n')
 }
 /** Native approval owns localized chrome. Only Agent-supplied operation facts cross to its reason field. */
 function nativePermissionReason(tool: acp.RequestPermissionRequest['toolCall'], copy: PermissionCopy): string {
   const title = tool.title ?? tool.name ?? tool.kind ?? 'ACP'
   const command = tool.kind === 'execute' ? commandOf(tool) : undefined
   const displayTitle = command !== undefined && title === command ? undefined : safeText(title)
-  const detail =
-    command ??
-    (tool.rawInput === undefined
-      ? undefined
-      : typeof tool.rawInput === 'string'
-        ? tool.rawInput
-        : JSON.stringify(tool.rawInput, null, 2))
+  const input = recordValue(tool.rawInput)
+  const description = tool.kind === 'execute' && typeof input?.description === 'string' ? input.description : undefined
+  // Execute descriptions are prose, while unknown fields remain complete input
+  // evidence. Keep the original payload unchanged for questions and audit.
+  const detailTool =
+    description === undefined
+      ? tool
+      : { ...tool, rawInput: Object.fromEntries(Object.entries(input!).filter(([key]) => key !== 'description')) }
   return [
     displayTitle,
-    detail === undefined ? undefined : visibleCommand(detail),
+    description === undefined ? undefined : visibleCommand(description),
+    command === undefined ? undefined : visibleCommand(command),
+    permissionInputDetail(detailTool),
     tool.kind === 'execute' && command === undefined ? copy.unknownCommand : undefined,
   ]
     .filter((value) => value !== undefined)
     .join('\n')
 }
-function buildPermissionReason(
-  params: acp.RequestPermissionRequest,
-  copy: PermissionCopy,
-  options: AcpPermissionReasonOptions = {},
-): string {
-  const kind = params.toolCall.kind ?? ''
-  const lines = [copy.request(copy.actions[kind] ?? copy.restrictedOperation)]
-  const title = params.toolCall.title ?? params.toolCall.name
-  if (typeof title === 'string' && title.trim() !== '') lines.push(`${copy.tool}: ${safeText(title)}`)
-  const detail = permissionDetail(params.toolCall, copy)
-  if (detail !== undefined && (kind !== 'execute' || options.includeExecuteDetails !== false)) lines.push(detail)
+/** Keep targets and unknown scope visible; verified Team task prose stays in raw-request details. */
+function permissionQuestionFacts(tool: acp.RequestPermissionRequest['toolCall'], copy: PermissionCopy): string {
+  const command = tool.kind === 'execute' ? commandOf(tool) : undefined
+  const title = tool.title ?? tool.name
+  const lines: string[] = []
+  if (typeof title === 'string' && title.trim() !== '' && title !== command) lines.push(visibleCommand(title))
+  else if (command === undefined) lines.push(copy.actions[tool.kind ?? ''] ?? copy.restrictedOperation)
+  if (tool.kind === 'execute') {
+    lines.push(command === undefined ? copy.unknownCommand : `${copy.command}: ${visibleCommand(command)}`)
+  }
+
+  let input = tool.rawInput
+  const record = recordValue(input)
+  if (record !== undefined) {
+    const team = (tool as { readonly [dshTeamPresentation]?: DshTeamPermissionPresentation })[dshTeamPresentation]
+    const presented = new Set<string>()
+    if (tool.kind === 'execute' && typeof record.description === 'string') {
+      lines.push(visibleCommand(record.description))
+      presented.add('description')
+    }
+    const field = (key: string, label: string): boolean => {
+      const value = record[key]
+      if (typeof value !== 'string' || value.trim() === '') return false
+      lines.push(`${label}: ${visibleCommand(value)}`)
+      presented.add(key)
+      return true
+    }
+    if (team?.tool === 'spawn_teammate' && field('name', copy.member)) {
+      field('description', copy.responsibility)
+      if (!field('context', copy.context) && record.context === undefined) lines.push(`${copy.context}: fresh`)
+      field('provider', copy.provider)
+      field('model', copy.model)
+      field('agent', copy.agent)
+      if (team.workspace !== undefined) lines.push(`${copy.workspace}: ${visibleCommand(team.workspace)}`)
+      if (typeof record.prompt === 'string') presented.add('prompt')
+    } else if (team?.tool === 'send_message' && field('target', copy.recipient)) {
+      if (typeof record.message === 'string') presented.add('message')
+    }
+    const commandKey = command === undefined ? undefined : commandKeys.find((key) => record[key] === command)
+    const directory = typeof record.cwd === 'string' ? record.cwd : undefined
+    if (directory !== undefined) lines.push(`${copy.directory}: ${visibleCommand(directory)}`)
+    const fileContent = typeof record.file_path === 'string' && typeof record.content === 'string'
+    if (fileContent) {
+      lines.push(`${copy.filePath}: ${visibleCommand(record.file_path as string)}`)
+      lines.push(`${copy.content}: ${visibleCommand(record.content as string)}`)
+    }
+    const remaining = Object.fromEntries(
+      Object.entries(record).filter(
+        ([key]) =>
+          key !== commandKey &&
+          !presented.has(key) &&
+          !(key === 'cwd' && directory !== undefined) &&
+          !(fileContent && (key === 'file_path' || key === 'content')),
+      ),
+    )
+    input = Object.keys(remaining).length === 0 ? undefined : remaining
+  } else if (command !== undefined) {
+    input = undefined
+  }
+  if (tool.locations != null && tool.locations.length > 0) {
+    lines.push(
+      `${copy.locations}: ${tool.locations
+        .map((location) => visibleCommand(`${location.path}${location.line == null ? '' : `:${location.line}`}`))
+        .join('\n')}`,
+    )
+  }
+  // Unknown input can itself be the requested scope (for example Codex's
+  // additional sandbox permissions). Never move it exclusively into a disclosure.
+  if (input !== undefined)
+    lines.push(`${copy.input}: ${visibleCommand(typeof input === 'string' ? input : JSON.stringify(input, null, 2))}`)
   return lines.join('\n')
+}
+
+function permissionRequestDetail(tool: acp.RequestPermissionRequest['toolCall']): string | undefined {
+  if (tool.rawInput === undefined && tool.locations === undefined) return undefined
+  return markdownCodeBlock(
+    visibleCommand(JSON.stringify({ rawInput: tool.rawInput, locations: tool.locations }, null, 2)),
+  )
 }
 function requestId(): string {
   return `dsh-acp-permission-${randomUUID()}`
@@ -188,7 +282,9 @@ function requestId(): string {
 
 /** Render names as user-facing text while keeping the response map exact. */
 function optionLabels(options: readonly acp.PermissionOption[], copy: PermissionCopy): readonly string[] {
-  const names = options.map((option) => safeText(option.name, 120) || copy.agentOption)
+  // Option names can specify different authority at their end. Keep the complete
+  // choice; audit redaction and display truncation must not erase that scope.
+  const names = options.map((option) => visibleCommand(option.name).trim() || copy.agentOption)
   const counts = new Map<string, number>()
   for (const name of names) counts.set(name, (counts.get(name) ?? 0) + 1)
   const seen = new Map<string, number>()
@@ -201,6 +297,21 @@ function optionLabels(options: readonly acp.PermissionOption[], copy: Permission
   // An Agent name can equal another option's generated disambiguator. Prefix
   // the complete set on collision so every response still maps to one option.
   return new Set(labels).size === labels.length ? labels : labels.map((label, index) => `${index + 1}. ${label}`)
+}
+
+/** The native binary card must not discard an offered decision or authorization scope. */
+function binaryApprovalOptions(options: readonly acp.PermissionOption[]):
+  | {
+      allow: acp.PermissionOption
+      reject?: acp.PermissionOption
+    }
+  | undefined {
+  const allows = options.filter((option) => option.kind === 'allow_once')
+  const rejects = options.filter((option) => option.kind === 'reject_once')
+  if (allows.length !== 1 || rejects.length > 1 || options.length !== allows.length + rejects.length) return undefined
+  const names = options.map((option) => visibleCommand(option.name).trim())
+  if (names.some((name) => name === '') || new Set(names).size !== names.length) return undefined
+  return { allow: allows[0]!, ...(rejects[0] === undefined ? {} : { reject: rejects[0] }) }
 }
 
 export function createAcpNativePermissionHandler(
@@ -236,6 +347,7 @@ export function createAcpNativePermissionHandler(
       ))
     )
       return cancelled()
+    let presentation: AcpPermissionPresentation | undefined
     const decide = async (
       init: {
         readonly outcome: 'selected' | 'cancelled'
@@ -252,6 +364,7 @@ export function createAcpNativePermissionHandler(
           toolCallId: params.toolCall.toolCallId,
           ...init,
           decisionVia,
+          ...(presentation === undefined ? {} : { presentation }),
         }),
       )
       if (!ok || init.outcome === 'cancelled') return cancelled()
@@ -260,8 +373,7 @@ export function createAcpNativePermissionHandler(
     if (signal !== undefined && signal.aborted) return decide({ outcome: 'cancelled', note: 'cancelled' })
     const agent = deps.getAgent()
     if (agent === undefined) return decide({ outcome: 'cancelled', note: 'agent-unavailable' })
-    const allowOnce = params.options.find((option) => option.kind === 'allow_once')
-    const reject = params.options.find((option) => option.kind === 'reject_once')
+    const binary = binaryApprovalOptions(params.options)
     const nativeInteractionCall =
       deps.nativeQuestionProfile === 'antigravity' && isAntigravityInteractionCall(params.toolCall)
     const nativeInteractionQuestion =
@@ -269,27 +381,27 @@ export function createAcpNativePermissionHandler(
       params.options.length > 0 &&
       params.options.every((option) => option.kind === 'allow_once')
 
-    if (
-      !nativeInteractionQuestion &&
-      deps.approval !== undefined &&
-      (allowOnce !== undefined || nativeInteractionCall)
-    ) {
+    if (!nativeInteractionQuestion && deps.approval !== undefined && binary !== undefined) {
       try {
         const outcome = await deps.approval.request({
           agent,
           toolName: params.toolCall.name ?? params.toolCall.kind ?? copy.acpTool,
           callId: params.toolCall.toolCallId,
-          reason: nativePermissionReason(params.toolCall, copy),
+          reason: [
+            nativePermissionReason(params.toolCall, copy),
+            `${copy.allowOnce}: ${visibleCommand(binary.allow.name)}`,
+            ...(binary.reject === undefined ? [] : [`${copy.rejectOnce}: ${visibleCommand(binary.reject.name)}`]),
+          ].join('\n'),
           ...(signal === undefined ? {} : { signal }),
         })
-        if (outcome === 'allowed-once' && allowOnce !== undefined)
+        if (outcome === 'allowed-once')
           return decide(
-            { outcome: 'selected', optionId: allowOnce.optionId, selectedOptionKind: allowOnce.kind },
+            { outcome: 'selected', optionId: binary.allow.optionId, selectedOptionKind: binary.allow.kind },
             'native-approval',
           )
-        if (outcome === 'rejected' && reject !== undefined)
+        if (outcome === 'rejected' && binary.reject !== undefined)
           return decide(
-            { outcome: 'selected', optionId: reject.optionId, selectedOptionKind: reject.kind },
+            { outcome: 'selected', optionId: binary.reject.optionId, selectedOptionKind: binary.reject.kind },
             'native-approval',
           )
         return decide({ outcome: 'cancelled', note: outcome }, 'native-approval')
@@ -300,31 +412,38 @@ export function createAcpNativePermissionHandler(
         // plugin-owned permission surface.
       }
     }
-    if (nativeInteractionCall && !nativeInteractionQuestion)
+    if (nativeInteractionCall && !nativeInteractionQuestion && binary !== undefined)
       return decide({ outcome: 'cancelled', note: 'native-approval-unavailable' }, 'native-approval')
-    if (deps.userQuestions === undefined) return decide({ outcome: 'cancelled', note: 'question-service-unavailable' })
+    const questions = nativeInteractionCall ? deps.userQuestions : (deps.permissionQuestions ?? deps.userQuestions)
+    if (questions === undefined) return decide({ outcome: 'cancelled', note: 'question-service-unavailable' })
     const questionId = `acp-permission:${id}`
     const renderedLabels = optionLabels(params.options, copy)
     const labels = new Map(renderedLabels.map((label, index) => [label, params.options[index]!]))
     try {
-      const detail = permissionQuestionDetail(params.toolCall, copy)
-      const answer = await deps.userQuestions.ask({
+      const detail = nativeInteractionQuestion
+        ? permissionQuestionDetail(params.toolCall, copy)
+        : permissionRequestDetail(params.toolCall)
+      const questionRequest = {
         agent,
         questions: [
           {
             id: questionId,
-            // Keep the header compact and put the exact command in the native
-            // card's scrollable Markdown detail area, which preserves line
-            // breaks; the client renders only the fixed choices supplied here.
             question: nativeInteractionQuestion
               ? params.toolCall.title!
-              : buildPermissionReason(params, copy, { includeExecuteDetails: false }),
+              : permissionQuestionFacts(params.toolCall, copy),
+            ...(nativeInteractionQuestion ? {} : { header: copy.permission }),
             ...(detail === undefined ? {} : { detail }),
             options: renderedLabels.map((label) => ({ label })),
           },
         ],
         ...(signal === undefined ? {} : { signal }),
-      })
+      }
+      const answer =
+        questions === deps.permissionQuestions
+          ? await deps.permissionQuestions.ask(questionRequest, (value) => {
+              presentation = value
+            })
+          : await questions.ask(questionRequest)
       if (signal !== undefined && signal.aborted) return decide({ outcome: 'cancelled', note: 'cancelled' })
       const selected = answer.answers.find((item) => item.id === questionId)
       if (selected === undefined || selected.custom !== undefined || selected.selected.length !== 1)
@@ -336,6 +455,20 @@ export function createAcpNativePermissionHandler(
       if (option === undefined) return decide({ outcome: 'cancelled', note: 'invalid-option-id' })
       return decide({ outcome: 'selected', optionId: option.optionId, selectedOptionKind: option.kind })
     } catch (error: unknown) {
+      if (signal?.aborted) return decide({ outcome: 'cancelled', note: 'cancelled' })
+      if (recordValue(error)?.code === 'DELEGATED_CALLER') {
+        try {
+          await deps.onUnavailable?.({
+            code: 'ACP_DELEGATED_QUESTION_UNAVAILABLE',
+            message: nativeInteractionQuestion
+              ? copy.delegatedQuestionUnavailable
+              : copy.delegatedPermissionUnavailable,
+          })
+        } catch (reportError: unknown) {
+          deps.log?.(`dsh-acp unavailable permission reporting failed: ${errorMessage(reportError)}`)
+        }
+        return decide({ outcome: 'cancelled', note: 'delegated-question-unavailable' })
+      }
       deps.log?.(`dsh-acp native permission question cancelled: ${errorMessage(error)}`)
       return decide({ outcome: 'cancelled', note: 'question-error' })
     }

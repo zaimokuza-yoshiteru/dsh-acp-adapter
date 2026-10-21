@@ -30,6 +30,9 @@ export async function teamTurn(
   const permissionGate = process.env.MOCK_TEAM_PERMISSION_GATE
   const policyGate = process.env.MOCK_TEAM_POLICY_GATE
   const approvalGate = permissionGate ?? policyGate
+  // Batch approval fixtures explicitly request one-time authorization. Keep the
+  // default schema broad so scope-preservation scenarios still cover it.
+  const approvalScopes = process.env.MOCK_TEAM_APPROVAL_ONCE_ONLY === '1' ? ['once'] : ['once', 'session', 'always']
   const say = (text: string) => {
     log(text)
     sendUpdate(session.id, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } })
@@ -42,7 +45,7 @@ export async function teamTurn(
   const settledNotice =
     permissionGate !== undefined &&
     !actionableTeamPrompt &&
-    /Background subagent [a-z0-9-]+ finished and will do no further work unless you send it more\.\nIts closing message:\nE2E_TEAM_(?:MEMBER_(?:DONE|DENIED|CANCELLED)|LATE_DENIED)\b/i.test(
+    /Background subagent [a-z0-9-]+ finished and will do no further work unless you send it more\.\nIts closing message:\nE2E_TEAM_(?:MEMBER_(?:DONE|DENIED|CANCELLED|CONTINUED)|LATE_DENIED)\b/i.test(
       prompt,
     )
   if (settledNotice) {
@@ -55,13 +58,28 @@ export async function teamTurn(
   const server = session.mcpServers?.[0]
   let ordinal = 0
   try {
-    if (
-      /\bE2E_TEAM_(?:MEMBER|CONTINUE)\b/.test(prompt) &&
-      /Approval prompts are disabled in this session|operations that require approval are rejected automatically/.test(
-        prompt,
-      )
-    )
-      throw new Error('Member first prompt incorrectly disables approval')
+    if (/\bE2E_TEAM_(?:MEMBER|CONTINUE)\b/.test(prompt)) {
+      // The native delegated policy applies to DSH tools. The external Agent's
+      // own requests still require the actual Host answer below. Unchanged
+      // instructions are not resent on every continuation, so retain this
+      // accepted context per ACP session and recheck any replacement notice.
+      if (
+        !session.teamPermissionContextVerified ||
+        /Approval (?:policy:|prompts are)|You are a delegated ACP Agent/.test(prompt)
+      ) {
+        if (!prompt.includes('Approval prompts are disabled in this session'))
+          throw new Error('Member prompt lost the native DSH delegated approval policy')
+        if (
+          !prompt.includes('DSH tools retain this session’s native sandbox and approval policy') ||
+          !prompt.includes('Your own Agent tools use your normal permission request mechanism') ||
+          !prompt.includes('wait for the host decision before proceeding') ||
+          !prompt.includes('An ACP approval does not change DSH tool permissions')
+        )
+          throw new Error('Member prompt does not separate native DSH tool policy from external ACP approvals')
+        session.teamPermissionContextVerified = true
+        log('member permission context verified: DSH policy retained; external ACP waits for Host answer')
+      }
+    }
     if (!server) throw new Error('No Teams MCP server provided')
     const transport =
       server.type === 'http'
@@ -109,7 +127,7 @@ export async function teamTurn(
           _meta: { codex_approval_kind: 'mcp_tool_call' },
           requestedSchema: {
             type: 'object',
-            properties: { persist: { type: 'string', enum: ['once', 'session', 'always'] } },
+            properties: { persist: { type: 'string', enum: approvalScopes } },
             required: ['persist'],
           },
         })
@@ -256,7 +274,7 @@ export async function teamTurn(
             requestedSchema: {
               type: 'object',
               properties: {
-                persist: { type: 'string', enum: ['once', 'session', 'always'] },
+                persist: { type: 'string', enum: approvalScopes },
               },
               required: ['persist'],
             },
@@ -276,6 +294,7 @@ export async function teamTurn(
         })
       }
       const response = await requestMemberPermission('member-shell', 'echo E2E_TEAM_PERMISSION')
+      log(`member external permission answer ${JSON.stringify(response)}`)
       if (prompt.includes('E2E_TEAM_FOLLOWUP_PERMISSION')) {
         const answer = await requestMemberPermission('member-late-shell', 'echo E2E_TEAM_LATE_PERMISSION')
         if (answer.outcome?.optionId !== 'deny')

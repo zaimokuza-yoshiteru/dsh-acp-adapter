@@ -5,39 +5,41 @@ import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsLocale, PropsRuntime, HostObservable } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SessionStatusSnapshot } from '@deepseek-ai/dsh-client-ui-session/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
-import type { TeamProjection } from '@deepseek-ai/dsh-experimental-agent-team/client'
-import type { AcpTeamMemberView } from '../data/acp-remote.ts'
-import type { OwnsAcpRoute } from '../coordinator/cross-backend-coordinator.ts'
+import type { AcpApprovalChildView } from '../data/acp-remote.ts'
 import {
   answerTeamRequests,
   isStableTeamMemberReadError,
   readTeamMembersUntilAvailable,
   teamApproval,
+  pendingChildCandidates,
 } from './team-approval-actions.ts'
 import type { SessionPendingInteractionBase } from '@deepseek-ai/dsh-client-ui-session/client'
-import { projectionIsAcp } from './AcpRecoveryDock.ts'
-import { projectionRevision, teamRoster } from './team-projection.ts'
 
 export interface AcpTeamApprovalActions {
   readonly status: HostObservable<SessionStatusSnapshot>
-  readonly ownsRoute: OwnsAcpRoute
-  loadMembers(sessionId: SessionId): Promise<readonly AcpTeamMemberView[]>
+  loadChildren(sessionId: SessionId): Promise<readonly AcpApprovalChildView[]>
   isCurrent(sessionId: SessionId): boolean
-  openMember(parent: SessionId, child: SessionId): Promise<void>
+  openMember(parent: SessionId, child: AcpApprovalChildView): Promise<void>
+  resolveReason(reason: NonNullable<ReturnType<typeof teamApproval>>['displayReason']): string | undefined
+}
+
+// Match the collision-safe identity shown by the native full-choice permission card.
+function shortSessionId(id: string, ids: readonly string[]): string {
+  let length = Math.min(8, id.length)
+  while (length < id.length && ids.some((other) => other !== id && other.startsWith(id.slice(0, length)))) length++
+  return id.slice(0, length)
 }
 
 /** Present and answer the original member-owned carriers without changing the active conversation. */
 export function AcpTeamApprovals({
   sessionId,
-  useSession,
   useSessions,
-  useProjection,
   t,
   status,
-  ownsRoute,
-  loadMembers,
+  loadChildren,
   openMember,
   isCurrent,
+  resolveReason,
 }: PropsRuntime<'conversation.input.dock'> & PropsLocale<'acpActivity'> & AcpTeamApprovalActions): ReactNode {
   const inFlight = useRef(new Set<SessionPendingInteractionBase>())
   const epoch = useRef(0)
@@ -58,22 +60,18 @@ export function AcpTeamApprovals({
   const [expanded, setExpanded] = useState(true)
   const seen = useRef(new Set<string>())
   const snapshot = useSyncExternalStore(status.subscribe, status.getSnapshot)
-  const selection = useProjection('modelSelection')
-  const isChild = useSession((session) => session.subagent?.address?.parentSessionId !== undefined)
-  const enabled = !isChild && projectionIsAcp(selection, ownsRoute)
+  const summaries = useSessions((sessions) => sessions.byId)
+  const projections = useSessions((sessions) => sessions.projectionsBySession)
+  const readOnly = new Set(
+    Object.entries(projections)
+      .filter(([, projection]) => projection.values.acpExecution?.externalSubagent === true)
+      .map(([id]) => id as SessionId),
+  )
+  const enabled = isCurrent(sessionId) && !readOnly.has(sessionId)
+  const candidates = pendingChildCandidates(sessionId, summaries, snapshot, readOnly)
+  const revision = JSON.stringify(candidates.map((id) => [id, summaries[id]?.parentId]))
   const [actionError, setActionError] = useState<string | undefined>(undefined)
-  const team = useProjection('agentTeam') as TeamProjection | undefined
-  const sessionOpening = useSession((session) => session.openState === 'loading')
-  const sessionsLoading = useSessions((sessions) => sessions.phase === 'pending')
-  const roster = teamRoster(team, sessionOpening || sessionsLoading)
-  const revision = projectionRevision(team)
-  const pendingCarriers =
-    roster.kind === 'ready'
-      ? roster.members.flatMap((member) => {
-          const pending = snapshot.get(member.id)?.pendingInteraction
-          return pending === undefined ? [] : [{ sessionId: member.id, pending }]
-        })
-      : []
+  const pendingCarriers = candidates.map((id) => ({ sessionId: id, pending: snapshot.get(id)!.pendingInteraction! }))
   const pendingKeys = pendingCarriers
     .map(({ sessionId: memberId, pending }) => {
       const identity = requestIdentity.current!
@@ -85,10 +83,8 @@ export function AcpTeamApprovals({
       return JSON.stringify([memberId, pending.key, id])
     })
     .join('\n')
-  const failedTeamHasPending =
-    roster.kind === 'failed' && roster.memberIds.some((id) => snapshot.get(id)?.pendingInteraction !== undefined)
   const [eligible, setEligible] = useState<
-    | { sessionId: SessionId; revision: string; pendingKeys: string; ids: ReadonlySet<string> }
+    | { sessionId: SessionId; revision: string; pendingKeys: string; children: readonly AcpApprovalChildView[] }
     | { sessionId: SessionId; revision: string; pendingKeys: string; loading: true }
     | { sessionId: SessionId; revision: string; pendingKeys: string; failed: true }
     | undefined
@@ -96,7 +92,7 @@ export function AcpTeamApprovals({
   useEffect(() => {
     let cancelled = false
     setActionError(undefined)
-    if (!enabled || pendingKeys === '' || roster.kind !== 'ready') {
+    if (!enabled || pendingKeys === '') {
       setEligible(undefined)
       return () => {
         cancelled = true
@@ -115,14 +111,14 @@ export function AcpTeamApprovals({
       isCurrent(sessionId) &&
       capturedPendingIsCurrent()
     setEligible({ sessionId, revision, pendingKeys, loading: true })
-    void readTeamMembersUntilAvailable(sessionId, loadMembers, active, { signal: controller.signal })
+    void readTeamMembersUntilAvailable(sessionId, loadChildren, active, { signal: controller.signal })
       .then((members) => {
         if (!active()) return
         if (members === undefined) {
           setEligible(undefined)
           return
         }
-        setEligible({ sessionId, revision, pendingKeys, ids: new Set(members.map((member) => member.sessionId)) })
+        setEligible({ sessionId, revision, pendingKeys, children: members })
       })
       .catch((error: unknown) => {
         if (!active() || !isStableTeamMemberReadError(error)) return
@@ -133,26 +129,27 @@ export function AcpTeamApprovals({
       cancelled = true
       controller.abort()
     }
-  }, [enabled, pendingKeys, sessionId, revision, roster.kind, loadMembers, isCurrent, status])
+  }, [enabled, pendingKeys, sessionId, revision, loadChildren, isCurrent, status])
   const eligibleMatches =
     eligible !== undefined &&
     eligible.sessionId === sessionId &&
     eligible.revision === revision &&
     eligible.pendingKeys === pendingKeys
-  const allowedIds = eligibleMatches && eligible !== undefined && 'ids' in eligible ? eligible.ids : undefined
-  const waiting = (roster.kind === 'ready' && allowedIds !== undefined ? roster.members : []).filter(
+  const children = eligibleMatches && eligible !== undefined && 'children' in eligible ? eligible.children : undefined
+  const sessionIds = Object.keys(summaries)
+  const waiting = (children ?? []).filter(
     (member) =>
-      member.id !== sessionId &&
-      allowedIds?.has(member.id) === true &&
-      snapshot.get(member.id)?.pendingInteraction !== undefined,
+      member.sessionId !== sessionId &&
+      candidates.includes(member.sessionId as SessionId) &&
+      snapshot.get(member.sessionId as SessionId)?.pendingInteraction !== undefined,
   )
-  const keys = waiting.map((member) => snapshot.get(member.id)!.pendingInteraction!.key)
+  const keys = waiting.map((member) => snapshot.get(member.sessionId as SessionId)!.pendingInteraction!.key)
   useEffect(() => {
     if (keys.some((key) => !seen.current.has(key))) setExpanded(true)
     seen.current = new Set(keys)
   }, [keys.join('|')])
   const approvals = waiting.flatMap((member) => {
-    const value = teamApproval(snapshot.get(member.id)!.pendingInteraction!)
+    const value = teamApproval(snapshot.get(member.sessionId as SessionId)!.pendingInteraction!)
     return value === undefined ? [] : [value]
   })
   const run = async (
@@ -176,7 +173,7 @@ export function AcpTeamApprovals({
     try {
       const members = await readTeamMembersUntilAvailable(
         sessionId,
-        loadMembers,
+        loadChildren,
         () => active() && requestSetIsCurrent(),
         {
           onFailure: () => {
@@ -212,12 +209,11 @@ export function AcpTeamApprovals({
   const batch = (outcome: 'allowed-once' | 'rejected'): void => {
     void run(approvals.map((request) => ({ pending: request, answer: () => request.answer(outcome) })))
   }
-  const rosterMessage = pendingKeys === '' && failedTeamHasPending ? t('teamProjectionFailed') : undefined
-  const error = actionError ?? rosterMessage
-  const loading = pendingKeys !== '' && allowedIds === undefined
+  const error = actionError
+  const loading = pendingKeys !== '' && children === undefined
   if (!enabled || (waiting.length === 0 && error === undefined && !loading)) return null
   const pendingTitle =
-    (pendingKeys !== '' || failedTeamHasPending) && allowedIds === undefined
+    pendingKeys !== '' && children === undefined
       ? eligibleMatches && eligible !== undefined && 'failed' in eligible
         ? t('teamPendingUncounted')
         : t('teamPendingLoading')
@@ -227,6 +223,7 @@ export function AcpTeamApprovals({
     {
       className: css.card,
       'data-acp-team-approvals': '',
+      'data-acp-child-approvals': '',
       'aria-label': pendingTitle,
     },
     h(
@@ -234,7 +231,7 @@ export function AcpTeamApprovals({
       { className: css.header },
       h('span', { className: css.icon, 'aria-hidden': true }, '!'),
       h('strong', { role: 'status', 'aria-live': 'polite' }, pendingTitle),
-      approvals.length === 0
+      approvals.length <= 1
         ? null
         : h(
             'div',
@@ -253,23 +250,35 @@ export function AcpTeamApprovals({
           'div',
           { className: css.body },
           h('p', { className: css.hint }, t('teamPendingHint')),
-          approvals.length === 0
+          approvals.length <= 1
             ? null
             : h('p', { className: css.hint }, t('teamBatchHint', { count: approvals.length })),
           h(
             'ul',
             { className: css.members },
             ...waiting.map((member) => {
-              const request = snapshot.get(member.id)!.pendingInteraction!
+              const request = snapshot.get(member.sessionId as SessionId)!.pendingInteraction!
               const approval = teamApproval(request)
               const kind = request.kind
+              const source = member.path.map((part) => `${part.name} (${part.sessionId})`).join(' › ')
               return h(
                 'li',
-                { key: member.id, className: css.member, 'data-team-pending-member': member.name },
+                {
+                  key: member.sessionId,
+                  className: css.member,
+                  'data-team-pending-member': member.name,
+                  'aria-label': source,
+                },
                 h(
                   'div',
                   { className: css.memberHeader },
-                  h('span', { className: css.name }, member.name),
+                  h(
+                    'span',
+                    { className: css.name, title: source },
+                    member.path
+                      .map((part) => `${part.name} · ${shortSessionId(part.sessionId, sessionIds)}`)
+                      .join(' › '),
+                  ),
                   h(
                     'div',
                     { className: css.actions },
@@ -290,7 +299,7 @@ export function AcpTeamApprovals({
                         variant: 'outline',
                         'aria-label': t('teamApprovalEntry', { name: member.name }),
                         onClick: () => {
-                          void openMember(sessionId, member.id).catch(() => setActionError(t('teamApprovalOpenFailed')))
+                          void openMember(sessionId, member).catch(() => setActionError(t('teamApprovalOpenFailed')))
                         },
                       },
                       t('teamPendingOpen'),
@@ -328,7 +337,7 @@ export function AcpTeamApprovals({
                   : h(
                       'div',
                       { className: css.reason, 'data-team-approval-reason': '', tabIndex: 0 },
-                      approval.reason ?? approval.toolName,
+                      resolveReason(approval.displayReason) ?? approval.reason ?? approval.toolName,
                     ),
               )
             }),

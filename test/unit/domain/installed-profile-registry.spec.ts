@@ -626,72 +626,33 @@ describe('纯函数：registration facts / probe 配置 hash', () => {
 })
 
 describe('installInstalledProfileRegistry：注册/替换调用序列', () => {
-  it('projects access on claimed input only for currently registered ACP routes, including resumed members', async () => {
+  it('preserves delegated Host policy across admission, restore and route removal', async () => {
     const { ctx, settings, listeners } = fakeHarness()
     installInstalledProfileRegistry(ctx, settings.config)
     await settings.replace({ agents: { devin: devinAgent } })
-    const claimed = listeners.get('agent/inbox/claimed')!
-    const session = () => {
-      const events: Array<{ type: string; data: unknown }> = [
-        { type: 'approval/policy', data: { policy: 'never', source: 'delegation' } },
-      ]
-      return withSessionFacts({
-        header: { origin: 'subagent' },
-        requestHeader: () => undefined,
-        events,
-        snapshotEvents: () => [...events],
-        append: (type: string, data: unknown) => events.push({ type, data }),
-      })
-    }
-    const acp = session()
-    const member = { id: 'resumed-member', ctx, options: { provider: 'acp-devin' }, session: acp }
-    listeners.get('agent/created')?.({ agent: member })
-    // Owner-lifecycle listeners may attach at creation, but policy projection
-    // must wait for admitted input rather than rewriting delegated history.
-    expect(acp.events).toEqual([{ type: 'approval/policy', data: { policy: 'never', source: 'delegation' } }])
-    claimed({ agent: member })
-    expect(acp.events.at(-1)).toEqual({ type: 'approval/policy', data: { policy: 'ask' } })
-    const size = acp.events.length
-    claimed({ agent: member })
-    expect(acp.events).toHaveLength(size)
-    for (const provider of ['deepseek', 'acp-unknown', undefined]) {
-      const untouched = session()
-      claimed({ agent: { options: { provider }, session: untouched } })
-      expect(untouched.events).toHaveLength(1)
-    }
-    await settings.replace({ agents: {} })
-    const removed = session()
-    claimed({ agent: { options: { provider: 'acp-devin' }, session: removed } })
-    expect(removed.events).toHaveLength(1)
-  })
-
-  it('defers an access veto to the awaited pre-step gate and allows a later retry', async () => {
-    const { ctx, settings, listeners } = fakeHarness()
-    installInstalledProfileRegistry(ctx, settings.config)
-    await settings.replace({ agents: { devin: devinAgent } })
-    const claimed = listeners.get('agent/inbox/claimed')!
-    const preStep = listeners.get('agent/pre-step')!
-    let blocked = true
-    const events: Array<{ type: string; data: unknown }> = []
+    const events = [
+      { type: 'sandbox/mode', data: { mode: 'workspace-write', source: 'delegation' } },
+      { type: 'approval/policy', data: { policy: 'never', source: 'delegation' } },
+    ]
+    const append = vi.fn(() => {
+      throw new Error('policy must not be rewritten')
+    })
     const session = withSessionFacts({
       header: { origin: 'subagent' },
       requestHeader: () => undefined,
       snapshotEvents: () => [...events],
-      append: (type: string, data: unknown) => {
-        if (blocked) throw new Error('Session policy write failed')
-        events.push({ type, data })
-      },
+      append,
     })
-    const payload = { agent: { options: { provider: 'acp-devin' }, session } }
+    const payload = { agent: { id: 'resumed-member', ctx, options: { provider: 'acp-devin' }, session } }
+    listeners.get('agent/created')?.(payload)
+    listeners.get('agent/inbox/claimed')?.(payload)
     const next = vi.fn(async () => ({ kind: 'enter' }))
-    expect(() => claimed(payload)).not.toThrow()
-    await expect(preStep(payload, next)).rejects.toThrow('Session policy write failed')
-    expect(next).not.toHaveBeenCalled()
-    expect(events).toEqual([])
-    blocked = false
-    claimed(payload)
-    await expect(preStep(payload, next)).resolves.toEqual({ kind: 'enter' })
-    expect(events.at(-1)).toEqual({ type: 'approval/policy', data: { policy: 'ask' } })
+    const gate = listeners.get('agent/pre-step')
+    if (gate !== undefined) await gate(payload, next)
+    await settings.replace({ agents: {} })
+    listeners.get('agent/inbox/claimed')?.(payload)
+    expect(append).not.toHaveBeenCalled()
+    expect(session.snapshotEvents()).toEqual(events)
   })
 
   it('replaces only ACP delegation context after downstream assembly, leaving native policy and other plugins intact', async () => {
@@ -722,7 +683,8 @@ describe('installInstalledProfileRegistry：注册/替换调用序列', () => {
     }))
     expect(result.contexts[0].text).toContain('wait for the host decision before proceeding')
     expect(result.contexts[0].name).toBe('dsh-acp:delegation')
-    expect(result.contexts.slice(1)).toEqual(original.contexts.slice(1))
+    expect(result.contexts.slice(1, 3)).toEqual(original.contexts.slice(1))
+    expect(result.contexts[3].text).toContain('applies only to DSH tools')
     expect(original.contexts[0]!.text).toBe('native fixed delegation')
     expect(result.sections).toBe(original.sections)
     expect(result.tools).toBe(original.tools)

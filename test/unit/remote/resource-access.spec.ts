@@ -30,6 +30,7 @@ afterEach(async () => {
 
 const actions: readonly RemoteAccessAction[] = [
   'dshAcp/teamMembers',
+  'dshAcp/approvalChildren',
   'dshAcp/teamMemberModels',
   'dshAcp/setTeamMemberModel',
   'dshAcp/health',
@@ -71,6 +72,25 @@ async function fixture() {
     queryVersion: async () => null,
     ownedSessionReadGate: async () => true,
     teamManagement: { members, models, selectModel },
+    approvalChildren: () => [
+      {
+        sessionId: 'member',
+        parentSessionId: 'lead',
+        name: 'worker',
+        mode: 'continuable',
+        path: [{ sessionId: 'member', name: 'worker' }],
+      },
+      {
+        sessionId: 'nested',
+        parentSessionId: 'middle',
+        name: 'nested worker',
+        mode: 'continuable',
+        path: [
+          { sessionId: 'middle', name: 'middle' },
+          { sessionId: 'nested', name: 'nested worker' },
+        ],
+      },
+    ],
     projectedSubagentIds: async () => ['lead', 'member', 'other'],
     listLiveSessions: () =>
       ['lead', 'member', 'other'].map((sessionId) => ({
@@ -103,6 +123,24 @@ async function fixture() {
 }
 
 describe('ACP resources through the published RC1 Gateway and Peer', () => {
+  it('filters child approvals by every current path resource and permits native parent discovery', async () => {
+    const h = await fixture()
+    h.hold(['lead'])
+    await expect(h.call(h.restricted, 'approvalChildren', { parent: 'lead' })).resolves.toEqual([])
+    h.hold(['lead', 'member', 'nested'])
+    await expect(h.call(h.restricted, 'approvalChildren', { parent: 'lead' })).resolves.toMatchObject([
+      { sessionId: 'member' },
+    ])
+    h.hold(['lead', 'middle', 'nested'])
+    await expect(h.call(h.restricted, 'approvalChildren', { parent: 'lead' })).resolves.toMatchObject([
+      { sessionId: 'nested' },
+    ])
+    h.hold(['member'])
+    await expect(h.call(h.restricted, 'approvalChildren', { parent: 'lead' })).rejects.toMatchObject({
+      code: 'remote-access/denied',
+    })
+    await expect(h.call(h.owner, 'approvalChildren', { parent: 'native-parent' })).resolves.toHaveLength(2)
+  })
   it('keeps owner defaults and complete discovery without consulting non-owner policies', async () => {
     const h = await fixture()
     await expect(h.call(h.owner, 'teamMembers', { lead: 'lead' })).resolves.toEqual([member])

@@ -4,6 +4,8 @@ import type { AcpSidecar } from '../../persistence/sidecar.ts'
 import { modeIntentBindingKey } from '../../persistence/sidecar.ts'
 import type { AcpProfileAdapter } from '../composition/profile-adapter.ts'
 import { normalizeAcpConfigOptionKey } from '../../contract/config-options.ts'
+import { readMemberRequestModel } from './member-model-facts.ts'
+import { installTeamMemberModelFacts } from './member-model-tools.ts'
 
 export interface MemberModelDependencies {
   sidecar: AcpSidecar
@@ -64,26 +66,43 @@ export function createMemberModels(ctx: Context, { sidecar, adapterFor }: Member
   })
   for (const agent of ctx.get('agents', false)?.list() ?? []) install(agent)
 
+  const facts = async (id: string, provider: string) => {
+    const child = ctx.get('agents', false)?.get(id as never)
+    const adapter = adapterFor(provider)
+    const snapshot = await adapter?.agentSessionSnapshot(id).catch(() => undefined)
+    const reported = snapshot?.configOptions?.find(
+      (option) =>
+        normalizeAcpConfigOptionKey(option.id) === 'model' ||
+        normalizeAcpConfigOptionKey(option.category ?? '') === 'model',
+    )
+    const currentModel =
+      (await readMemberRequestModel(ctx, id, provider).catch(() => undefined)) ??
+      (reported?.type === 'select' ? reported.currentValue : null)
+    const selected = await selectionFor(id, provider)
+    return {
+      currentModel,
+      pendingModel: selected !== undefined && selected.model !== currentModel ? selected.model : null,
+      writable: snapshot?.modeWritable === true && child?.status !== 'running',
+    }
+  }
+  installTeamMemberModelFacts(ctx, async (id, signal) => {
+    const binding = await sidecar.readLatestBinding(id as never)
+    if (binding?.status !== 'ok') return undefined
+    const adapter = adapterFor(binding.binding.provider)
+    if (adapter === undefined) return undefined
+    const model = await readMemberRequestModel(ctx, id, binding.binding.provider, signal)
+    const current = await sidecar.readLatestBinding(id as never)
+    if (
+      current?.status !== 'ok' ||
+      modeIntentBindingKey(current.binding) !== modeIntentBindingKey(binding.binding) ||
+      adapterFor(binding.binding.provider) !== adapter
+    )
+      return undefined
+    return model === undefined ? undefined : { currentModel: model }
+  })
+
   return {
-    async facts(id: string, provider: string) {
-      const child = ctx.get('agents', false)?.get(id as never)
-      const session = child?.session ?? ctx.get('sessions')?.get(id as never)
-      const adapter = adapterFor(provider)
-      const snapshot = await adapter?.agentSessionSnapshot(id).catch(() => undefined)
-      const reported = snapshot?.configOptions?.find(
-        (option) =>
-          normalizeAcpConfigOptionKey(option.id) === 'model' ||
-          normalizeAcpConfigOptionKey(option.category ?? '') === 'model',
-      )
-      const currentModel =
-        session?.requestHeader()?.config.model ?? (reported?.type === 'select' ? reported.currentValue : null)
-      const selected = await selectionFor(id, provider)
-      return {
-        currentModel,
-        pendingModel: selected !== undefined && selected.model !== currentModel ? selected.model : null,
-        writable: snapshot?.modeWritable === true && child?.status !== 'running',
-      }
-    },
+    facts,
     async catalog(provider: string) {
       return (await llm.listModels(provider)).map((model) => ({ id: model.id, name: model.name }))
     },

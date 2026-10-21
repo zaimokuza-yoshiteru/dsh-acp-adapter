@@ -22,10 +22,16 @@ export function AcpOutcomeToast({
   const snapshot = useSyncExternalStore(feedback.subscribe, feedback.getSnapshot, feedback.getSnapshot)
   if (snapshot === null) return null
   const success = snapshot.outcome === 'saved' || snapshot.outcome === 'deleted'
-  const message = t(
-    copy[snapshot.outcome],
-    snapshot.outcome === 'session-option-failed' ? { reference: '' } : undefined,
-  )
+  const message =
+    snapshot.outcome === 'delegated-question-unavailable'
+      ? snapshot.message
+      : t(copy[snapshot.outcome], snapshot.outcome === 'session-option-failed' ? { reference: '' } : undefined)
+  const source = snapshot.sourceSession
+  const sourceLabel = source?.title ?? source?.id
+  const sessionLabel =
+    snapshot.outcome === 'delegated-question-unavailable' && source?.title != null && source.title !== source.id
+      ? `${source.title} (${source.id})`
+      : sourceLabel
   return h(Toast, {
     key: `acp-outcome-${snapshot.sequence}`,
     text:
@@ -33,7 +39,7 @@ export function AcpOutcomeToast({
         ? message
         : t('toastSessionOutcome', {
             message,
-            session: snapshot.sourceSession.title ?? snapshot.sourceSession.id,
+            session: sessionLabel!,
           }),
     ...(success
       ? { tone: 'success' as const }

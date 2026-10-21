@@ -3,7 +3,7 @@ import type {} from '@deepseek-ai/dsh-experimental-agent-team'
 import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import type { ToolExecutionToken } from '@deepseek-ai/dsh-tools'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import { createTeamBridge } from '../../src/host/teams/bridge.ts'
+import { createDshToolBridge } from '../../src/host/tools/bridge.ts'
 import { required } from './required.ts'
 import { connectFreshWorkspace, writeComposerDraft } from '#host-support'
 import { launchAdapterWorld, root } from './scaffold.ts'
@@ -254,7 +254,7 @@ it('preserves a pending Schedule task when the native plugin is disabled and rem
     const lead = required(host.ctx.agents.get(recoverySessionId))
     const staleDelete = required(host.ctx.tools.get('schedule_delete', lead))
     const lease = required(
-      await createTeamBridge(
+      await createDshToolBridge(
         host.ctx,
         recoverySessionId,
         { mcpCapabilities: { http: true } },

@@ -28,7 +28,7 @@ class NativeControl extends LlmAdapter {
 const profiles = ['kimi', 'devin', 'codex', 'claude', 'codebuddy'] as const
 
 describe.each(profiles)('permission isolation: %s', (profile) => {
-  it('preserves native choices on blank sessions and applies ACP policy only on execution', async () => {
+  it('preserves native DSH tool policies when selecting and executing ACP', async () => {
     const host = await launchAdapterWorld()
     try {
       const native = new NativeControl()
@@ -118,21 +118,23 @@ describe.each(profiles)('permission isolation: %s', (profile) => {
       await prompt(custom)
       expect(policyEvents(custom)).toEqual(customEvents)
 
-      // A blank native constructor can actually execute ACP; its first prompt must allow approval.
+      // ACP execution preserves the chosen DSH tool authority; external ACP approvals use their own channel.
       await host.ctx.settings.replace('permission', { defaultPreset: 'danger-full-access' })
       const agent = await create(model)
       await select(agent, acp)
       expect(preset(agent)).toBe('danger-full-access')
+      const nativeAuthority = policyEvents(agent)
       await prompt(agent)
-      expect(preset(agent)).toBe('custom')
+      expect(preset(agent)).toBe('danger-full-access')
+      expect(policyEvents(agent)).toEqual(nativeAuthority)
       const snapshot = agent
         .snapshotEvents()
         .find(
           (event) =>
             event.type === 'user/message' && 'form' in event.data.source && event.data.source.form === 'snapshot',
         )
-      expect(JSON.stringify(snapshot)).toContain('Approval policy: ask.')
-      expect(JSON.stringify(snapshot)).not.toContain('Approval prompts are disabled in this session')
+      expect(JSON.stringify(snapshot)).toContain('Approval prompts are disabled in this session')
+      expect(JSON.stringify(snapshot)).not.toContain('Approval policy: ask.')
       const applied = policyEvents(agent)
       await prompt(agent)
       expect(policyEvents(agent)).toEqual(applied)
@@ -147,7 +149,7 @@ describe.each(profiles)('permission isolation: %s', (profile) => {
       const implicitAcp = await create(model)
       await host.ctx.agentDefaultModel.saveSelection(acp)
       await prompt(implicitAcp)
-      expect(preset(implicitAcp)).toBe('custom')
+      expect(preset(implicitAcp)).toBe('danger-full-access')
     } finally {
       await host.close()
     }

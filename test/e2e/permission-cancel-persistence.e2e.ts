@@ -41,12 +41,14 @@ it.each([false, true])('retains the answer after Reject and reload (remote cance
     const settled = host.whenTurnSettled(30_000)
     void settled.catch(() => undefined)
     await page.getByRole('button', { name: 'Send message', exact: true }).click()
-    const approval = page.locator('[data-approval-key]').filter({ hasText: 'echo hello' }).first()
+    const approval = page.locator('section[data-question-key]').filter({ hasText: 'echo hello' }).first()
     await approval.waitFor({ state: 'visible' })
     const evidence = join(root, '.local/reject-persistence-2026-10-06', remoteCancels ? 'cancelled' : 'continued')
     mkdirSync(evidence, { recursive: true })
     await page.screenshot({ path: join(evidence, 'before-reject.png'), fullPage: true })
-    await approval.getByRole('button', { name: 'Reject', exact: true }).click()
+    expect(await approval.getByRole('radio').count()).toBe(4)
+    await approval.getByRole('radio', { name: 'Reject once', exact: true }).click()
+    await approval.getByRole('button', { name: 'Submit', exact: true }).click()
     const sessionId = await settled
     const session = host.ctx.sessions.get(sessionId)!
     const events = session.snapshotEvents()
@@ -74,7 +76,7 @@ it.each([false, true])('retains the answer after Reject and reload (remote cance
       await page.getByText('I need to run a shell command.', { exact: false }).first().waitFor({ state: 'visible' })
       expect(await page.getByText('ACP prompt was cancelled', { exact: false }).count()).toBe(0)
       expect(await page.getByText('This turn failed', { exact: false }).count()).toBe(0)
-      expect(await page.locator('[data-approval-key]').count()).toBe(0)
+      expect(await page.locator('[data-approval-key], section[data-question-key]').count()).toBe(0)
       await page.screenshot({ path: join(evidence, reload ? 'after-reload.png' : 'after-reject.png'), fullPage: true })
     }
   } finally {

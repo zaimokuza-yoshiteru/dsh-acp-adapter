@@ -500,6 +500,16 @@ export const ACP_AGENT_CONFIG_STATES = [
 ] as const
 export type AcpAgentConfigState = (typeof ACP_AGENT_CONFIG_STATES)[number]
 
+/** A live ACP descendant whose exact runtime ownership was verified by the Host. */
+export interface AcpApprovalChildView {
+  readonly sessionId: string
+  readonly parentSessionId: string
+  readonly name: string
+  readonly mode: 'continuable' | 'one-shot'
+  /** Direct-child to descendant path; never includes unrelated or inherited history. */
+  readonly path: readonly { readonly sessionId: string; readonly name: string }[]
+}
+
 /** ACP team management facts; unknown model state is explicit, never inherited from the Lead. */
 export interface AcpTeamMemberView {
   readonly profileId: string | null

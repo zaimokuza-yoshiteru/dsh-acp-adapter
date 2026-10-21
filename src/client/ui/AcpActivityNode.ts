@@ -2,6 +2,8 @@ import type { PropsRenderFactories } from '@deepseek-ai/dsh-client-ui-slots'
 import { PartialArguments } from '@deepseek-ai/dsh-util-values'
 import { isAbsoluteWorkspacePath } from '@deepseek-ai/dsh-util-workspace-path'
 import { activityDiffsOf } from '../../contract/activity-diffs.ts'
+import { activityHostTerminalOutcome } from '../../contract/terminal-outcome.ts'
+import { activityHostToolControlOutcome } from '../../contract/tool-control-outcome.ts'
 import { createElement as h, useCallback, useEffect, useRef, useState, useSyncExternalStore, useMemo } from 'react'
 import type { ReactNode } from 'react'
 import type { ToolCallBlock, ChatNodeViewProps, ChatConversationViewNode } from '@deepseek-ai/dsh-client-ui-chat/client'
@@ -32,7 +34,7 @@ export {
 export type { AcpActivityNodeData } from './activity-definitions.ts'
 import { AcpActivityJournalHub } from '../data/activity-journal.ts'
 import css from './AcpActivityNode.module.css'
-import { nativeOwner, type NativeToolOwner } from './native-tool-renderer.ts'
+import { nativeOwner, NativeTerminalOutputNotice, type NativeToolOwner } from './native-tool-renderer.ts'
 import type { AcpLocaleKey } from './locales.ts'
 import { activityToolOutput, joinActivityToolOutput } from './activity-tool-output.ts'
 
@@ -125,6 +127,27 @@ function integer(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isSafeInteger(value) ? value : undefined
 }
 
+/** The official Claude producer emits a display fence alongside raw output.
+ * Only unwrap that proven pair, never a fence inferred from terminal text. */
+function toolDisplayContent(value: Record<string, unknown>, failed: boolean): unknown {
+  if (
+    !['claude:Bash', 'claude:Edit', 'claude:Write'].includes(String(value.toolSource)) ||
+    typeof value.rawOutput !== 'string' ||
+    !Array.isArray(value.content) ||
+    value.content.length !== 1
+  )
+    return value.content
+  const atom = value.content[0]
+  if (!record(atom) || atom.type !== 'content' || !record(atom.content) || atom.content.type !== 'text')
+    return value.content
+  const stdout = value.rawOutput
+  const wrapped = atom.content.text
+  const consoleWrapper = value.toolSource === 'claude:Bash' && wrapped === `\`\`\`console\n${stdout.trimEnd()}\n\`\`\``
+  const errorWrapper = failed && wrapped === `\`\`\`\n${stdout}\n\`\`\``
+  if (!consoleWrapper && !errorWrapper) return value.content
+  return [{ ...atom, content: { ...atom.content, text: stdout } }]
+}
+
 /**
  * Project the common ACP execute shapes onto DSH's native terminal surface.
  * Codex reports formatted_output; Devin reports standard ACP text blocks and
@@ -132,6 +155,7 @@ function integer(value: unknown): number | undefined {
  */
 function terminalDetail(row: AcpActivityView, value: unknown): TerminalDetail | undefined {
   if (!record(value)) return undefined
+  const hostOutcome = activityHostTerminalOutcome(value, row.ownerDshSessionId)
   const rawInput = record(value.rawInput) ? value.rawInput : undefined
   const rawOutput = record(value.rawOutput) ? value.rawOutput : undefined
   const command = typeof rawInput?.command === 'string' ? rawInput.command : undefined
@@ -144,7 +168,7 @@ function terminalDetail(row: AcpActivityView, value: unknown): TerminalDetail | 
 
   let nestedExitCode: number | undefined
   const nestedOutput: string[] = []
-  for (const part of textContent(value.content)) {
+  for (const part of textContent(toolDisplayContent(value, row.status === 'failed' || row.status === 'cancelled'))) {
     const exit = /^Exited with code (-?\d+)$/.exec(part.trim())
     if (exit?.[1] !== undefined) {
       const parsed = Number(exit[1])
@@ -156,24 +180,33 @@ function terminalDetail(row: AcpActivityView, value: unknown): TerminalDetail | 
   if (value.toolKind !== 'execute' && command === undefined && formatted === undefined && nestedExitCode === undefined)
     return undefined
   if (nestedOutput.length === 0) nestedOutput.push(...textContent(value.rawOutput))
-  const output = formatted ?? joinTextContent(nestedOutput)
+  const output =
+    formatted ??
+    joinTextContent(nestedOutput) ??
+    (nestedOutput.length > 0 ? '' : typeof value.rawOutput === 'string' ? value.rawOutput : undefined)
   const exitCode =
-    integer(value.exitCode) ??
-    integer(value.exit_code) ??
-    integer(rawOutput?.exitCode) ??
-    integer(rawOutput?.exit_code) ??
-    nestedExitCode
+    hostOutcome === undefined
+      ? (integer(value.exitCode) ??
+        integer(value.exit_code) ??
+        integer(rawOutput?.exitCode) ??
+        integer(rawOutput?.exit_code) ??
+        nestedExitCode)
+      : (hostOutcome.exitCode ?? undefined)
+  const signal =
+    hostOutcome === undefined
+      ? typeof value.signal === 'string'
+        ? value.signal
+        : typeof rawOutput?.signal === 'string'
+          ? rawOutput.signal
+          : undefined
+      : (hostOutcome.signal ?? undefined)
 
   return {
     command: command ?? row.presentation,
     ...(typeof rawInput?.cwd === 'string' ? { cwd: rawInput.cwd } : {}),
     ...(output === undefined ? {} : { output }),
     ...(exitCode === undefined ? {} : { exitCode }),
-    ...(typeof value.signal === 'string'
-      ? { signal: value.signal }
-      : typeof rawOutput?.signal === 'string'
-        ? { signal: rawOutput.signal }
-        : {}),
+    ...(signal === undefined ? {} : { signal }),
     running: row.status === 'running',
   }
 }
@@ -224,7 +257,7 @@ function diffLabels(t: ActivityNodeProps['t']) {
   }
 }
 
-function terminalLabels(t: ActivityNodeProps['t']): TerminalBlockLabels {
+function terminalLabels(t: ActivityNodeProps['t'], outputNotProvided = false): TerminalBlockLabels {
   return {
     commandLine: (line) => t('activity.terminal.commandLine', { line }),
     signal: (signal) => t('activity.terminal.signal', { signal }),
@@ -235,7 +268,7 @@ function terminalLabels(t: ActivityNodeProps['t']): TerminalBlockLabels {
     done: t('activity.status.completed'),
     copy: t('activity.copy'),
     copied: t('activity.copied'),
-    noOutput: t('activity.terminal.noOutput'),
+    noOutput: t(outputNotProvided ? 'activity.terminal.outputNotProvided' : 'activity.terminal.noOutput'),
     collapseAria: t('activity.terminal.collapseAria'),
     collapse: t('activity.collapse'),
     expandAria: (hidden) => t('activity.terminal.expandAria', { count: hidden }),
@@ -487,7 +520,11 @@ export function activityRowElement({
     diffs.length === 0 ? null : h(DiffBlock, { diffs, labels: diffLabels(t), className: css.nativeBlock }),
     terminal === undefined
       ? null
-      : h(TerminalBlock, { ...terminal, labels: terminalLabels(t), className: css.nativeBlock }),
+      : h(TerminalBlock, {
+          ...terminal,
+          labels: terminalLabels(t, terminal.output === undefined && !terminal.running),
+          className: css.nativeBlock,
+        }),
     !showRawDetail
       ? null
       : typeof detail === 'object' && detail !== null
@@ -871,6 +908,8 @@ export function nativeActivityToolBlock(
   const mcp = record(raw) && typeof raw.tool === 'string' && record(raw.arguments)
   let input: unknown = mcp ? raw.arguments : raw
   let name = typeof detail.toolName === 'string' ? detail.toolName : row.presentation
+  if (detail.toolSource === 'claude:Edit') name = 'edit'
+  else if (detail.toolSource === 'claude:Write') name = 'write'
   if (mcp) name = String(raw.tool)
   name = name.replace(/^mcp__.+?__/, '').replace(/^[a-f0-9]{8,}_/, '')
   const command = record(input) ? (input.command ?? input.cmd) : undefined
@@ -931,12 +970,16 @@ export function nativeActivityToolBlock(
   if (row.status === 'running')
     return { callId, name, phase: 'start', args, argsRaw, turn: 0, step: 0, time: row.time, subCalls: [] }
   const shell = name === 'bash' || name === 'pwsh'
+  const hostOutcome = shell ? activityHostTerminalOutcome(value, row.ownerDshSessionId) : undefined
+  const hostProcessFailed =
+    hostOutcome !== undefined &&
+    (hostOutcome.signal !== null || (hostOutcome.exitCode !== null && hostOutcome.exitCode !== 0))
   let output =
     translateOutput === undefined
       ? contentText(detail.rawOutput ?? detail.content)
       : activityToolOutput(
           shell ? (terminal?.output ?? detail.rawOutput) : detail.rawOutput,
-          detail.content,
+          toolDisplayContent(detail, row.status === 'failed' || row.status === 'cancelled'),
           translateOutput,
           shell ? terminal : undefined,
         ).text
@@ -955,7 +998,7 @@ export function nativeActivityToolBlock(
     callTime: null,
     call: { name, argsRaw },
     content: output === '' ? [] : [{ type: 'text', text: output }],
-    isError: row.status === 'failed' || row.status === 'cancelled',
+    isError: row.status === 'failed' || row.status === 'cancelled' || hostProcessFailed,
     subCalls: [],
     ...(row.status === 'cancelled' ? { error: { name: 'Interrupted', code: 'interrupted' } } : {}),
     ...(meta === undefined ? {} : { meta }),
@@ -1024,9 +1067,40 @@ function NativeActivityTool({
       ? joinActivityToolOutput(output.items.filter((item) => item.kind !== 'diff'))
       : ''
   }, [block, row, t])
+  const deferredWait = useMemo(() => {
+    const detail = detailValue(row)
+    return (
+      activityHostToolControlOutcome(detail, row) !== undefined &&
+      record(detail) &&
+      !(Array.isArray(detail.content) && detail.content.length > 0)
+    )
+  }, [row])
+  // locale.bind() retains identity across native locale changes. Cache only
+  // protocol facts; resolve human copy on every render. The authenticated
+  // control message and receipt remain in the journal/diagnostics, not the card.
+  const control = deferredWait
+    ? {
+        title: t('activity.control.waitTitle'),
+        status: t('activity.control.notExecuted'),
+        explanation: t('activity.control.teamReplyQueued'),
+      }
+    : undefined
   // Keep this owner stable as streamed or deferred content arrives. Changing
   // between the direct tree and this wrapper would discard a user's open state.
-  if (block.subCalls.length === 0) return h(NativeToolWithSupplement, { owner, props, supplement })
+  if (block.subCalls.length === 0) {
+    const card = h(NativeToolWithSupplement, { owner, props, supplement, control })
+    const terminal = terminalDetail(row, detailValue(row))
+    return h(
+      NativeTerminalOutputNotice.Provider,
+      {
+        value:
+          terminal !== undefined && !terminal.running && terminal.output === undefined
+            ? t('activity.terminal.outputNotProvided')
+            : undefined,
+      },
+      card,
+    )
+  }
   return owner.renderFactorySlot('acp.native-tool', props)
 }
 
@@ -1037,10 +1111,12 @@ function NativeToolWithSupplement({
   owner,
   props,
   supplement,
+  control,
 }: {
   owner: Omit<ChatNodeViewProps, 't'> & PropsRenderFactories
   props: NativeToolOwner
   supplement: string
+  control?: { title: string; status: string; explanation: string } | undefined
 }): ReactNode {
   const disclosure = owner.useDisclosure()
   const useSharedDisclosure = useCallback(() => disclosure, [disclosure])
@@ -1050,7 +1126,34 @@ function NativeToolWithSupplement({
       className: `${css.nativeToolOwner}${supplement === '' ? '' : ` ${css.hasSupplement}`}`,
       'data-acp-tool-supplement-owner': true,
     },
-    owner.renderFactorySlot('acp.native-tool', { ...props, useDisclosure: useSharedDisclosure }),
+    control === undefined
+      ? owner.renderFactorySlot('acp.native-tool', { ...props, useDisclosure: useSharedDisclosure })
+      : h(
+          DisclosureRow,
+          {
+            className: css.row,
+            rowClassName: css.rowSummary,
+            titleClassName: css.presentation,
+            title: control.title,
+            icon: h(StateDot, { state: 'idle' }),
+            open: disclosure.expanded,
+            onToggle: disclosure.toggle,
+            expandable: true,
+            expandOnRowClick: true,
+            keepContentWhenOpen: true,
+            collapsedContent: h(
+              'span',
+              { className: css.status },
+              h('span', { className: css.separator, 'aria-hidden': true }),
+              control.status,
+            ),
+          },
+          h(
+            'div',
+            { className: css.body, 'data-acp-host-control': 'deferred-team-message' },
+            h('p', { className: css.externalText }, control.explanation),
+          ),
+        ),
     disclosure.expanded && supplement !== ''
       ? h('pre', { className: `${css.raw} ${css.toolSupplement}`, 'data-acp-tool-supplement': true }, supplement)
       : null,

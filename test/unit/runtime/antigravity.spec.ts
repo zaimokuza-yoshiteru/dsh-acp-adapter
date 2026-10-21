@@ -4,7 +4,7 @@ import {
   formatAntigravityAskQuestionResult,
   normalizeAntigravityPresentation,
   resolveAntigravityNativeTool,
-} from '../../../src/host/teams/antigravity.ts'
+} from '../../../src/host/tools/antigravity.ts'
 import { isAntigravityInteractionCall } from '../../../src/domain/policy/antigravity-question.ts'
 
 describe('antigravity MCP adapter and schema parsing', () => {

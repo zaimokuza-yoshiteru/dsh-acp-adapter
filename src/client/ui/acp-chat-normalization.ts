@@ -101,6 +101,7 @@ function reuseProjectedNode(
     old.id !== node.id ||
     old.target !== node.target ||
     old.visibility !== node.visibility ||
+    old.groupTree !== node.groupTree ||
     old.anchorSeq !== node.anchorSeq ||
     old.location !== node.location
   )
@@ -281,20 +282,24 @@ export function normalizeAcpChatNodes(
     // The public activity contract identifies a prompt window, not the owning
     // assistant step. Keep its marker as the lossless fallback while ownership
     // is ambiguous instead of repeating rows under every step.
-    if (owners.get(windowKey) !== 1) {
+    const window = owners.get(windowKey) === 1 ? windows.get(windowKey) : undefined
+    const journalReady = window !== undefined && !window.unavailable
+    // A committed ACP response remains a reply when a later native step admits
+    // an automatic notification. The native finalNode, not content or the last
+    // step in a Turn, establishes that this response was actually committed.
+    const committedReply = data.settled === true && node.data.finalNode?.messageId !== undefined
+    // Keep the additive journal fallback until its sidecar is available. A
+    // persisted response can still retain its native reply seat independently.
+    if (!journalReady && !committedReply) {
       cache?.delete(node.key)
       continue
     }
-    const window = windows.get(windowKey)
-    // Keep the additive fallback until the sidecar is available, including failures.
-    if (window === undefined || window.unavailable) {
-      cache?.delete(node.key)
-      continue
-    }
-    owned.add(windowKey)
-    seenCache.add(node.key)
+    if (journalReady) {
+      owned.add(windowKey)
+      seenCache.add(node.key)
+    } else cache?.delete(node.key)
     const cached = cache?.get(node.key)
-    if (cached?.source === base && cached.window === window) {
+    if (journalReady && cached?.source === base && cached.window === window) {
       replaced.set(node.key, cached.nodes)
       const old = turns.get(cached.contribution.turn)
       turns.set(cached.contribution.turn, {
@@ -307,7 +312,7 @@ export function normalizeAcpChatNodes(
     const blocks = node.data.blocks.map((block) =>
       block.kind === 'reasoning' ? { ...block, text: block.text.replace(/^\s*\n/, '') } : block,
     )
-    const rows = window.rows
+    const rows = journalReady ? window.rows : []
     const boundaries = activityBoundaries(rows, blocks.length, node.data.status !== 'running')
     const answer = finalAnswerStart(blocks, boundaries)
     const firstVisibleBlock = blocks.findIndex(
@@ -324,24 +329,47 @@ export function normalizeAcpChatNodes(
       if (index === blocks.length) break
       const start = index
       const group = [blocks[index]!]
-      while (index + 1 < blocks.length && !boundaries.has(index + 1) && index + 1 !== answer)
+      while (
+        index + 1 < blocks.length &&
+        !boundaries.has(index + 1) &&
+        index + 1 !== answer &&
+        // A later answer must not merge earlier prose and reasoning into a new
+        // native Node: its reasoning part owns the already mounted process group.
+        (blocks[index]!.kind === 'reasoning') === (blocks[index + 1]!.kind === 'reasoning') &&
+        // A reply seat must never pull trailing reasoning into the visible reply.
+        !(start === answer && blocks[index + 1]!.kind !== 'text' && blocks[index + 1]!.kind !== 'image')
+      )
         group.push(blocks[++index]!)
       // Preserve native Node identity on the final answer segment so collapsed
       // process content cannot hide the key used by navigation and scrolling.
       const ownsAnchor: boolean =
         (stableAnchorIndex >= start && stableAnchorIndex <= index) || (stableAnchorIndex < 0 && !hasAnchor)
-      const key = ownsAnchor ? node.key : `${node.key}:content:${start}`
+      // A reasoning-only live segment must not borrow the future reply's key:
+      // moving it later would replace the native process parent and its open tools.
+      // Keep that identity through a no-reply cancellation too. Native navigation
+      // is rebuilt from these projected nodes; finalNode stays on its owning segment.
+      const key = ownsAnchor && stableAnchorIndex >= 0 ? node.key : `${node.key}:content:${start}`
       hasAnchor ||= ownsAnchor
       const { finalNode, ...message } = node.data
       segments.push({
         ...node,
         key,
         id: key,
+        ...(committedReply && start === answer ? { groupTree: 'turn' as const } : {}),
         data: {
           ...message,
           blocks: group,
-          ...(index === blocks.length - 1 && finalNode !== undefined ? { finalNode } : {}),
-          status: index === blocks.length - 1 ? node.data.status : 'settled',
+          ...(ownsAnchor && finalNode !== undefined ? { finalNode } : {}),
+          // Keep the native interruption marker on the retained reply, even
+          // when a later reasoning block belongs in the folded process.
+          status:
+            node.data.status === 'interrupted'
+              ? ownsAnchor
+                ? 'interrupted'
+                : 'settled'
+              : index === blocks.length - 1
+                ? node.data.status
+                : 'settled',
         },
       })
     }
@@ -371,17 +399,18 @@ export function normalizeAcpChatNodes(
       answer: final?.anchorSeq ?? old?.answer ?? null,
       step: node.data.step,
     })
-    cache?.set(node.key, {
-      source: base,
-      window,
-      nodes: placed,
-      contribution: {
-        turn: node.data.turn,
-        tools: placed.filter((segment) => segment.kind === 'tool-call').length,
-        answer: final?.anchorSeq ?? null,
-        step: node.data.step,
-      },
-    })
+    if (journalReady)
+      cache?.set(node.key, {
+        source: base,
+        window,
+        nodes: placed,
+        contribution: {
+          turn: node.data.turn,
+          tools: placed.filter((segment) => segment.kind === 'tool-call').length,
+          answer: final?.anchorSeq ?? null,
+          step: node.data.step,
+        },
+      })
   }
   if (cache !== undefined) for (const key of cache.keys()) if (!seenCache.has(key)) cache.delete(key)
   return nodes.flatMap((node) => {

@@ -3,6 +3,7 @@ import type { MockSession, PromptMessage, MockPeer } from './types.ts'
 import fs from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { teamTurn } from './team-turn.ts'
+import { teamWaitTurn } from './team-wait-turn.ts'
 import { hostToolsTurn } from './host-tools-turn.ts'
 import { settlementTurn } from './settlement-turn.ts'
 import { scheduleTurn } from './schedule-turn.ts'
@@ -10,12 +11,17 @@ import { longConversationTurn } from './long-conversation-turn.ts'
 import { optionalToolsTurn } from './optional-tools-turn.ts'
 import { workDetailsTurn } from './work-details-turn.ts'
 import { richMixedTurn } from './rich-mixed-turn.ts'
+import { committedRepliesTurn } from './committed-replies-turn.ts'
+import { permissionOptionsTurn } from './permission-options-turn.ts'
 
 export async function regressionTurn(
   session: MockSession,
   msg: PromptMessage,
   { sendUpdate, sendAgentRequest, respond, log }: MockPeer,
 ) {
+  if (await teamWaitTurn(session, msg, { sendUpdate, sendAgentRequest, respond, log })) return
+  if (await permissionOptionsTurn(session, msg, { sendUpdate, sendAgentRequest, respond, log })) return
+  if (await committedRepliesTurn(session, msg, { sendUpdate, sendAgentRequest, respond, log })) return
   if (await richMixedTurn(session, msg, { sendUpdate, sendAgentRequest, respond, log })) return
   if (await workDetailsTurn(session, msg, { sendUpdate, sendAgentRequest, respond, log })) return
   if (await optionalToolsTurn(session, msg, { sendUpdate, sendAgentRequest, respond, log })) return
@@ -321,6 +327,7 @@ export async function regressionTurn(
         receive(text)
       }
       say('E2E_STEERING_RUNNING')
+      log(`regression steering-held session=${session.id}`)
       const input = await Promise.race([steered, cancelled.then(() => null)])
       if (input === null) {
         log(`regression steering-cancelled session=${session.id}`)

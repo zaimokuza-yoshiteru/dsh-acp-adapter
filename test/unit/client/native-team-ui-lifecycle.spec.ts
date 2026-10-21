@@ -26,10 +26,8 @@ function fixture(slots: SlotCore) {
       { name: 'conversation.session.header.utilities', id: 'acp-team-management' },
       Native,
     )
-    const approvals = slots.register({ name: 'conversation.input.dock', id: 'acp-team-approvals' }, Native)
     return () => {
       released()
-      approvals()
       management()
     }
   })
@@ -52,7 +50,7 @@ it('follows default off, late enable, hot disable and remount without a user set
 
   let releaseTeam = nativeTeam(slots)
   await Promise.resolve()
-  expect(active()).toEqual(['acp-team-management', 'acp-team-approvals'])
+  expect(active()).toEqual(['acp-team-management'])
   unrelated()
   await Promise.resolve()
   expect(mount).toHaveBeenCalledTimes(1)
@@ -63,7 +61,7 @@ it('follows default off, late enable, hot disable and remount without a user set
 
   releaseTeam = nativeTeam(slots)
   await Promise.resolve()
-  expect(active()).toEqual(['acp-team-management', 'acp-team-approvals'])
+  expect(active()).toEqual(['acp-team-management'])
   expect(mount).toHaveBeenCalledTimes(2)
   stop()
   stop()
@@ -89,7 +87,7 @@ it('replaces controls when the native owner is hot replaced within one notificat
   await Promise.resolve()
   expect(released).toHaveBeenCalledTimes(1)
   expect(mount).toHaveBeenCalledTimes(2)
-  expect(active()).toEqual(['acp-team-management', 'acp-team-approvals'])
+  expect(active()).toEqual(['acp-team-management'])
   stop()
   replacement()
   releaseRoot()
@@ -109,7 +107,7 @@ it('releases subscriptions and controls when the native conversation declaration
   nativeTeam(slots)
   await Promise.resolve()
   expect(mount).toHaveBeenCalledTimes(2)
-  expect(active()).toEqual(['acp-team-management', 'acp-team-approvals'])
+  expect(active()).toEqual(['acp-team-management'])
   stop()
   releaseRoot()
 })

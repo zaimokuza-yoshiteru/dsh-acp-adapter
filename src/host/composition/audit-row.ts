@@ -63,6 +63,7 @@ export function auditTimelineRowOf(entry: AcpSidecarEntry): AcpAuditTimelineEntr
           'custom-option-unsupported',
           'invalid-option-id',
           'question-error',
+          'delegated-question-unavailable',
         ].includes(String(data['note']))
       )
         severity = 'warning'

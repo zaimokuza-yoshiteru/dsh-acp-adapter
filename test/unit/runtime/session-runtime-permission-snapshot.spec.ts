@@ -351,10 +351,9 @@ describe('AcpSessionRuntime prompt-scoped permission snapshots', () => {
       inspectPermission(request) {
         checked.push(request.toolCall)
         return {
-          reason: 'auto-approved',
+          reason: 'approval-required',
           toolName: 'jira_get_issue',
           identitySource: 'devin-title',
-          response: { outcome: { outcome: 'selected', optionId: 'allow' } },
         }
       },
     }
@@ -370,7 +369,7 @@ describe('AcpSessionRuntime prompt-scoped permission snapshots', () => {
 
     await runtime.prompt(PROMPT, () => undefined)
 
-    expect(nativeRequests).toBe(0)
+    expect(nativeRequests).toBe(1)
     expect(checked[0]).toMatchObject({
       toolCallId: 'shared-call',
       name: 'jira_get_issue',

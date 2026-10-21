@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
@@ -142,16 +142,25 @@ describe('DSH clean-install gate contracts', () => {
       rootAttempts += 1
       return rootAttempts === 1 ? new Response(null, { status: 401 }) : new Response('<__DSH_BOOT__>', { status: 200 })
     }
-    const result = await waitForAuthenticatedBootstrap({
-      readOutput: () => outputs[Math.min(outputIndex++, outputs.length - 1)] ?? '',
-      fetchImpl,
-      isAlive: () => true,
-      timeoutMs: 100,
-      intervalMs: 0,
-    })
-    expect(result.status).toBe(200)
-    expect(requests).toHaveLength(4)
-    expect(fetchedBeforeUrl).toBe(false)
+    // This is a deterministic fetch protocol test, not a 100 ms CPU race
+    // against other workers and the browser suite.
+    vi.useFakeTimers()
+    try {
+      const pending = waitForAuthenticatedBootstrap({
+        readOutput: () => outputs[Math.min(outputIndex++, outputs.length - 1)] ?? '',
+        fetchImpl,
+        isAlive: () => true,
+        timeoutMs: 100,
+        intervalMs: 1,
+      })
+      await vi.runAllTimersAsync()
+      const result = await pending
+      expect(result.status).toBe(200)
+      expect(requests).toHaveLength(4)
+      expect(fetchedBeforeUrl).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('boots concurrent hosts on their own ephemeral ports and closes both before returning', async () => {

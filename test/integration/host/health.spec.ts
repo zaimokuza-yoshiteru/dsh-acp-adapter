@@ -330,6 +330,7 @@ describe('AcpRemoteService current public surface', () => {
       'activitySnapshot',
       'agentSessionFollow',
       'agentSessionSnapshot',
+      'approvalChildren',
       'auditTimeline',
       'backendOf',
       'boundSessions',

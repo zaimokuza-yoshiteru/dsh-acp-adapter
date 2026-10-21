@@ -11,6 +11,7 @@ import { connectFreshWorkspace, writeComposerDraft } from '#host-support'
 import type { TestBrowser } from './browser.ts'
 import { launchBrowser, newEnglishPage } from './browser.ts'
 import { required } from './required.ts'
+import { observeLiveExternalApprovals, type ExternalApprovalObservation } from './live-external-approval-observer.ts'
 import { launchAdapterWorld, root } from './scaffold.ts'
 import type { AdapterWorld } from './scaffold.ts'
 import type { LongTaskBudget, LongTaskScene } from './live-long-task-budget.ts'
@@ -100,7 +101,17 @@ function selectedScenarios(): ScenarioSelection {
   return selected
 }
 
-type SessionEventRow = SessionEvent & { readonly sessionId: SessionId }
+type SessionEventRow = (SessionEvent | ExternalApprovalObservation) & { readonly sessionId: SessionId }
+function isApprovalAsked(
+  event: SessionEventRow | undefined,
+): event is Extract<SessionEventRow, { type: 'approval/asked' | 'acp-approval/asked' }> {
+  return event?.type === 'approval/asked' || event?.type === 'acp-approval/asked'
+}
+function isApprovalDecided(
+  event: SessionEventRow | undefined,
+): event is Extract<SessionEventRow, { type: 'approval/decided' | 'acp-approval/decided' }> {
+  return event?.type === 'approval/decided' || event?.type === 'acp-approval/decided'
+}
 type ToolEvidence = {
   readonly name: string
   readonly session: string
@@ -326,6 +337,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
         requestEventIndex: number
         toolName: string
         outcome: string
+        auditOwner: 'native-session' | 'acp-sidecar'
         permissionRoute?: 'host-approval' | 'native-permission' | 'both' | 'team-coordination'
       }[] = []
       const operationPermissionRoutes = new Map<
@@ -584,7 +596,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
         modePreserved?: boolean
       }[] = []
 
-      const addEvent = (sessionId: SessionId, event: SessionEvent): void => {
+      const addEvent = (sessionId: SessionId, event: SessionEvent | ExternalApprovalObservation): void => {
         events.push({ sessionId, ...event })
         for (const waiter of [...eventChangeWaiters]) waiter()
         const scope = String(sessionId)
@@ -620,7 +632,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
             const decisionRow = events.find(
               (candidate, index) =>
                 index > cancelState.requestEventIndex &&
-                candidate.type === 'approval/decided' &&
+                isApprovalDecided(candidate) &&
                 candidate.sessionId === sessionId &&
                 candidate.data.id === cancelState.requestIdRaw,
             )
@@ -632,7 +644,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
               owner: nativeDiagnosticModule?.liveDiagnosticId('dsh-session', String(sessionId)) ?? 'unavailable',
               acpSession: cancelState.prompt.acpSession,
               requestId: safeId(`approval-request:${cancelState.requestIdRaw}`),
-              decidedOutcome: decisionRow?.type === 'approval/decided' ? decisionRow.data.outcome : '',
+              decidedOutcome: isApprovalDecided(decisionRow) ? decisionRow.data.outcome : '',
               promptOrdinal: cancelState.prompt.promptOrdinal ?? -1,
               leaseId: cancelState.prompt.leaseId ?? '',
               stopReason: cancelState.prompt.stopReason ?? 'unknown',
@@ -694,11 +706,11 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
             .join('')
           if (text.length > 0) answers.push({ scene, session: safeId(scope), text, eventIndex: events.length - 1 })
         }
-        if (event.type === 'approval/asked') {
+        if (event.type === 'approval/asked' || event.type === 'acp-approval/asked') {
           const violation = recordLongTaskApprovalRequest(budget, scene)
           if (violation !== undefined) violate(violation)
         }
-        if (event.type === 'approval/decided') {
+        if (event.type === 'approval/decided' || event.type === 'acp-approval/decided') {
           approvals.push({ scene, session: safeId(scope), outcome: event.data.outcome })
         }
         // Inbox acceptance and later user/message admission are distinct native
@@ -1365,6 +1377,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
           recordLongTaskToolResult(budget, `${sessionId}:${String(execution.callId)}`, result.isError)
         })
         host.ctx.on('session/event', (session, event) => addEvent(session.id, event))
+        observeLiveExternalApprovals(host, addEvent)
         host.ctx.on('agent/inbox/claimed', (value: unknown) => {
           const claim = value as {
             agent?: { id?: string }
@@ -1913,7 +1926,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
                 expect(tools).toHaveLength(toolCount)
                 expect(budget.totalDispatches).toBe(dispatchCount)
                 expect(approvalEvidence).toHaveLength(approvalCount)
-                expect(events.filter((event) => event.type === 'approval/asked')).toHaveLength(0)
+                expect(events.filter((event) => isApprovalAsked(event))).toHaveLength(0)
                 await capture('C', 'member-setup', {
                   setupRoute: 'host-service',
                   agentSpawnToolVerified: false,
@@ -1997,11 +2010,11 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
                 .slice(start)
                 .find(
                   (event) =>
-                    event.type === 'approval/asked' &&
+                    isApprovalAsked(event) &&
                     !handledRequestIds.has(event.data.id) &&
                     !events.some(
                       (candidate) =>
-                        candidate.type === 'approval/decided' &&
+                        isApprovalDecided(candidate) &&
                         candidate.sessionId === event.sessionId &&
                         candidate.data.id === event.data.id,
                     ),
@@ -2011,13 +2024,11 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
                 continue
               }
               const asked = pendingAsk
-              if (asked?.type !== 'approval/asked') throw new Error('LONG_TASK_APPROVAL_REQUEST_MISSING')
+              if (!isApprovalAsked(asked)) throw new Error('LONG_TASK_APPROVAL_REQUEST_MISSING')
               handledRequestIds.add(asked.data.id)
               const requestEventIndex = events.findIndex(
                 (event) =>
-                  event.type === 'approval/asked' &&
-                  event.sessionId === asked.sessionId &&
-                  event.data.id === asked.data.id,
+                  isApprovalAsked(event) && event.sessionId === asked.sessionId && event.data.id === asked.data.id,
               )
               expect(requestEventIndex).toBeGreaterThan(posted.userIndex)
               const requestOwner = String(asked.sessionId)
@@ -2050,7 +2061,8 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
                 reason: asked.data.reason,
                 cardText,
               })
-              const isHostOperation = asked.data.toolName === 'bash' && requestOwner === owner
+              const isHostOperation =
+                asked.type === 'approval/asked' && asked.data.toolName === 'bash' && requestOwner === owner
               const isNativeOperation = nativeApproval !== undefined
               const isOperation = isHostOperation || isNativeOperation
               const isCoordinationAsk =
@@ -2149,11 +2161,11 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
                   assertHealthy()
                   const decided = events.find(
                     (event) =>
-                      event.type === 'approval/decided' &&
+                      isApprovalDecided(event) &&
                       String(event.sessionId) === requestOwner &&
                       event.data.id === asked.data.id,
                   )
-                  expect(decided?.type === 'approval/decided' ? decided.data.outcome : undefined).toBe(expectedDecision)
+                  expect(isApprovalDecided(decided) ? decided.data.outcome : undefined).toBe(expectedDecision)
                 },
                 { timeout: Math.max(1, phaseDeadlineAt - Date.now()), interval: 150 },
               )
@@ -2164,6 +2176,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
                 requestEventIndex,
                 toolName: asked.data.toolName,
                 outcome: expectedDecision,
+                auditOwner: asked.type === 'acp-approval/asked' ? 'acp-sidecar' : 'native-session',
                 permissionRoute,
               })
               if (isNativeOperation) {
@@ -2429,7 +2442,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
               .slice(dBefore)
               .find(
                 (event) =>
-                  event.type === 'approval/asked' &&
+                  isApprovalAsked(event) &&
                   event.sessionId === leadSessionId &&
                   event.data.reason?.includes(shellCommand),
               )
@@ -2437,7 +2450,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
               scene: 'D',
               ownerDshSessionId: String(leadSessionId),
               operation: 'D:long-running',
-              reason: dAsked?.type === 'approval/asked' ? dAsked.data.reason : undefined,
+              reason: isApprovalAsked(dAsked) ? dAsked.data.reason : undefined,
               cardText: await approval.innerText(),
             })
             assertHealthy()
@@ -2451,18 +2464,16 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
             operationPermissionRoutes.set('D:long-running', dPermissionRoute)
             expect(dNativeMatch !== undefined || dHostApproval).toBe(true)
             if (dNativeMatch !== undefined) {
-              expect(dAsked?.type === 'approval/asked' ? dAsked.data.reason : undefined).toContain(shellCommand)
+              expect(isApprovalAsked(dAsked) ? dAsked.data.reason : undefined).toContain(shellCommand)
               expect(await approval.innerText()).toContain(shellCommand)
-              expect(dAsked?.type === 'approval/asked' ? dAsked.data.reason : undefined).toContain(longMarker)
+              expect(isApprovalAsked(dAsked) ? dAsked.data.reason : undefined).toContain(longMarker)
               expect(await approval.innerText()).toContain(longMarker)
             }
             await approval.getByRole('button', { name: 'Allow once', exact: true }).click()
-            if (dAsked?.type === 'approval/asked') {
+            if (isApprovalAsked(dAsked)) {
               const requestEventIndex = events.findIndex(
                 (event) =>
-                  event.type === 'approval/asked' &&
-                  event.sessionId === dAsked.sessionId &&
-                  event.data.id === dAsked.data.id,
+                  isApprovalAsked(event) && event.sessionId === dAsked.sessionId && event.data.id === dAsked.data.id,
               )
               approvalEvidence.push({
                 operation: 'D:long-running',
@@ -2471,6 +2482,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
                 requestEventIndex,
                 toolName: dAsked.data.toolName,
                 outcome: 'allowed-once',
+                auditOwner: dAsked.type === 'acp-approval/asked' ? 'acp-sidecar' : 'native-session',
                 permissionRoute: dPermissionRoute,
               })
             }

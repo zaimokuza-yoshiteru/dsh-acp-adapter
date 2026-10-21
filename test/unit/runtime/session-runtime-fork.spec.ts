@@ -126,6 +126,36 @@ describe('runtime fork dispatch classification', () => {
     },
   )
 
+  it('preserves a typed parent precondition refusal before RPC dispatch', async () => {
+    const world = await fixture()
+    const refusal = new AcpForkPreDispatchError('ACP_FORK_PRECONDITION_FAILED')
+    await expect(
+      world.runtime.fork('agent-parent', undefined, undefined, async () => {
+        throw refusal
+      }),
+    ).rejects.toBe(refusal)
+    expect(world.calls()).toEqual(['initialize'])
+  })
+
+  it('rechecks synchronous parent state after intent persistence, before RPC dispatch', async () => {
+    const world = await fixture()
+    let changed = false
+    await expect(
+      world.runtime.fork(
+        'agent-parent',
+        undefined,
+        undefined,
+        async () => {
+          changed = true
+        },
+        () => {
+          if (changed) throw new AcpForkPreDispatchError('ACP_FORK_PRECONDITION_FAILED')
+        },
+      ),
+    ).rejects.toMatchObject({ code: 'ACP_FORK_PRECONDITION_FAILED' })
+    expect(world.calls()).toEqual(['initialize'])
+  })
+
   it('owns the forked child without first creating an unrelated session', async () => {
     const world = await fixture()
     await expect(world.runtime.fork('agent-parent')).resolves.toMatchObject({ sessionId: 'agent-child' })

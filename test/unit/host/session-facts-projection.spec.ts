@@ -6,6 +6,8 @@ import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
 import type { Session } from '@deepseek-ai/dsh-session'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
+import { SUBAGENT_DESCRIPTOR_VERSION } from '@deepseek-ai/dsh-subagent'
+import { EXTERNAL_SUBAGENT_DESCRIPTOR_PROVIDER } from '../../../src/contract/external-subagent.ts'
 import {
   acpExecutionProjection,
   acpSessionView,
@@ -84,6 +86,58 @@ function checkpointSeq(rows: ReturnType<Context['sessionProjections']['checkpoin
 }
 
 describe('ACP execution SessionProjection integration', () => {
+  it('publishes only an own external-record descriptor and restores it from an old checkpoint', async () => {
+    const ctx = await harness()
+    const parent = ctx.sessions.create(SessionId('external-record-parent'))
+    parent.append('subagent/descriptor', {
+      version: SUBAGENT_DESCRIPTOR_VERSION,
+      mode: 'one-shot',
+      provider: EXTERNAL_SUBAGENT_DESCRIPTOR_PROVIDER,
+    })
+    appendUserStep(parent, 1, 0, 'private task body')
+    expect(ctx.sessionProjections.snapshot(parent).values).toEqual({ acpExecution: { externalSubagent: true } })
+    const checkpoint = ctx.sessionProjections.checkpoint(parent)
+    const old = { acpExecution: { ...checkpoint.acpExecution!, ver: 1 } }
+    expect(ctx.sessionProjections.restoreFloor(old)).toBe(0)
+    const restored = ctx.sessionProjections.restore(
+      old,
+      parent.snapshotEvents(),
+      SessionLogOffset(0),
+      parent.header,
+      parent.inheritedEventCount,
+    )
+    expect(restored.snapshot.values).toEqual({ acpExecution: { externalSubagent: true } })
+    expect(JSON.stringify(restored.snapshot)).not.toContain('private task body')
+    expect(JSON.stringify(restored.snapshot)).not.toContain('openSteps')
+
+    const fork = ctx.sessions.fork(parent, undefined, SessionId('external-record-fork'))
+    expect(ctx.sessionProjections.snapshot(fork).values).toEqual({ acpExecution: { externalSubagent: false } })
+    fork.append('subagent/descriptor', {
+      version: SUBAGENT_DESCRIPTOR_VERSION,
+      mode: 'one-shot',
+      provider: EXTERNAL_SUBAGENT_DESCRIPTOR_PROVIDER,
+    })
+    expect(ctx.sessionProjections.snapshot(fork).values).toEqual({ acpExecution: { externalSubagent: true } })
+    fork.append('subagent/descriptor', { version: SUBAGENT_DESCRIPTOR_VERSION, mode: 'one-shot', provider: 'native' })
+    expect(ctx.sessionProjections.snapshot(fork).values).toEqual({ acpExecution: { externalSubagent: false } })
+  })
+
+  it.each([
+    { version: SUBAGENT_DESCRIPTOR_VERSION, mode: 'one-shot', provider: 'native' },
+    { version: SUBAGENT_DESCRIPTOR_VERSION + 1, mode: 'one-shot', provider: EXTERNAL_SUBAGENT_DESCRIPTOR_PROVIDER },
+    {
+      version: SUBAGENT_DESCRIPTOR_VERSION,
+      mode: 'continuable',
+      provider: EXTERNAL_SUBAGENT_DESCRIPTOR_PROVIDER,
+      label: 'native continuation',
+    },
+  ] as const)('does not replace native or unsupported descriptor copy: %j', async (descriptor) => {
+    const ctx = await harness()
+    const session = ctx.sessions.create(SessionId('non-external-record'))
+    session.append('subagent/descriptor', descriptor)
+    expect(ctx.sessionProjections.snapshot(session).values).toEqual({ acpExecution: { externalSubagent: false } })
+  })
+
   it('reads the live directory service without rewriting or falling back to the project header', async () => {
     const ctx = await harness()
     const session = ctx.sessions.create(SessionId('facts-directory'), { meta: { cwd: '/project-origin' } })
@@ -97,6 +151,17 @@ describe('ACP execution SessionProjection integration', () => {
     expect(view.workingDirectory).toBe('/changed-work')
     expect(get).toHaveBeenLastCalledWith(session)
     expect(view.header?.cwd).toBe('/project-origin')
+  })
+
+  it('preserves exact zero inherited events from an empty native SessionStore fork', async () => {
+    const ctx = await harness()
+    const parent = ctx.sessions.create(SessionId('empty-fork-source'))
+    const child = ctx.sessions.fork(parent)
+    expect(child.header.isSeeded).toBe(true)
+    expect(child.inheritedEventCount).toBe(0)
+    const view = acpSessionView(ctx, child)
+    expect(view?.header?.isSeeded).toBe(true)
+    expect(view?.inheritedEventCount).toBe(0)
   })
 
   it('tracks live append facts without retaining message content', async () => {
@@ -226,7 +291,7 @@ describe('ACP execution SessionProjection integration', () => {
     expect(restored.snapshot.asOfSeq).toBe(session.seq - 1)
     expect(restored.checkpoint.acpExecution?.seq).toBe(session.seq - 1)
     expect(restored.checkpoint.acpExecution?.val).toEqual(readSessionFacts(ctx, session))
-    expect(restored.snapshot.values).toEqual({})
+    expect(restored.snapshot.values).toEqual({ acpExecution: { externalSubagent: false } })
   })
 
   it('keeps fork replay markers to the inherited prefix and admits only child step ids', async () => {

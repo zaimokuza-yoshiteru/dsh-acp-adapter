@@ -16,6 +16,7 @@
 import type { TypertRemoteNamespace } from '@deepseek-ai/dsh-typert-protocol'
 
 export type {
+  AcpApprovalChildView,
   AcpTeamMemberView,
   AcpTeamMemberModelsView,
   AcpActivityView,

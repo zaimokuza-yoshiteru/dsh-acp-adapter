@@ -4,7 +4,6 @@
 import { activityPresentation, type AcpActivityPresentation } from '../../domain/policy/activity-presentation.ts'
 import { ACP_ACTIVITY_RAW_MAX, modeIntentBindingKey } from '../../persistence/sidecar.ts'
 import { teamModeChoices } from '../../contract/session-modes.ts'
-import { projectNativeAgentAccess } from './native-agent-access.ts'
 
 import fs from 'node:fs'
 import path from 'node:path'
@@ -75,6 +74,8 @@ import { currentModelContextSnapshots } from '../../domain/session/model-context
 import { generatedContextBlock } from '../../runtime/text-block-boundary.ts'
 import { createAcpFileSystemHandlers } from '../../runtime/client-capabilities/filesystem.ts'
 import { createAcpTerminalHandlers } from '../../runtime/client-capabilities/terminal.ts'
+import { HostTerminalOutcomes } from './terminal-outcomes.ts'
+import { activityHostToolControlOutcome, type AcpHostToolControlOutcome } from '../../contract/tool-control-outcome.ts'
 import type { AcpTerminalJobStarter } from '../../runtime/client-capabilities/terminal-job.ts'
 import { createAcpNativePermissionHandler, type AcpNativeApprovalService } from '../../domain/policy/permissions.ts'
 import { createPermissionCheckAudit } from '../../domain/policy/events.ts'
@@ -83,7 +84,7 @@ import { createAcpNativeElicitationHandler } from '../../domain/policy/elicitati
 import { createQwenQuestionHandler } from '../../domain/policy/qwen-question.ts'
 import { QWEN_TASK_JOB_KIND, type QwenTaskJobStarter } from '../../runtime/session/qwen-background.ts'
 import type { AcpPromptOptions } from '../../runtime/session/session-runtime.ts'
-import type { AcpNativeUserQuestionService } from '../../domain/policy/elicitation.ts'
+import type { AcpNativeQuestionUnavailable, AcpNativeUserQuestionService } from '../../domain/policy/elicitation.ts'
 import { isAcpModelOrReasoningOption, normalizeAcpConfigOptionKey } from '../../contract/config-options.ts'
 import { AcpClientError } from '../../protocol/v1/errors.ts'
 import {
@@ -397,6 +398,8 @@ function activitiesForNotification(
   fallbackId: string,
   toolCall?: AcpToolCallSnapshot,
   externalDelegations: readonly ExternalDelegationLiveFact[] = [],
+  toolSource?: 'claude:Bash' | 'claude:Edit' | 'claude:Write',
+  hostControlOutcome?: AcpHostToolControlOutcome,
 ): readonly NormalizedActivity[] {
   const update = notification.update as unknown as Record<string, unknown>
   const type = update.sessionUpdate
@@ -425,6 +428,8 @@ function activitiesForNotification(
           {
             toolKind: detail.kind,
             toolName: detail.name,
+            ...(toolSource === undefined ? {} : { toolSource }),
+            ...(hostControlOutcome === undefined ? {} : { hostControlOutcome }),
             rawInput: detail.rawInput,
             rawOutput: detail.rawOutput,
             locations: detail.locations,
@@ -634,14 +639,15 @@ export interface AcpProfileRuntime {
   start(signal?: AbortSignal): Promise<void>
   /**
    * Fork a parent ACP session; absent means the Agent cannot fork.
-   * Only AcpForkPreDispatchError permits a known pre-dispatch fallback;
-   * the runtime wraps beforeDispatch failures once and preserves their cause.
+   * AcpForkPreDispatchError establishes that no remote fork was dispatched.
+   * validateBeforeDispatch runs synchronously after durable intent persistence.
    */
   fork?(
     parentSessionId: string,
     signal?: AbortSignal,
     expected?: { readonly agent?: AcpBindingData['agent']; readonly protocolVersion?: number },
     beforeDispatch?: () => Promise<void>,
+    validateBeforeDispatch?: () => void,
   ): Promise<acp.ForkSessionResponse>
   /** Restore an existing binding; absent implementations fail closed. */
   restore?(
@@ -669,6 +675,7 @@ export interface AcpProfileRuntime {
   readonly cancelledSessionRefreshBindingId?: string | undefined
   readonly isBusy?: boolean
   hasPendingHostCalls?(): boolean
+  toolControlOutcome?(toolCallId: string): AcpHostToolControlOutcome | undefined
   hasUncommittedHostFeedback?(): boolean
   hasRetainedHostFeedback?(): boolean
   waitForHostCallsSettled?(): Promise<void>
@@ -748,9 +755,11 @@ export function qwenTaskFollowupInput(
 /** Host-owned DSH user-question seam resolved for the current DSH session. */
 export interface AcpNativeQuestionBinding {
   readonly userQuestions?: AcpNativeUserQuestionService
+  readonly permissionQuestions?: import('../../domain/policy/elicitation.ts').AcpPermissionQuestionService
   readonly approval?: AcpNativeApprovalService
   readonly getAgent: () => unknown
   readonly locale?: string
+  readonly onUnavailable?: (issue: AcpNativeQuestionUnavailable) => void | Promise<void>
 }
 
 interface UserModeChoice {
@@ -770,6 +779,7 @@ interface ConfirmedUserModeSelection extends UserModeChoice {
 export class AcpProfileAdapter extends LlmAdapter {
   private probeGeneration: ProfileGeneration | undefined
   private readonly runtimes = new Map<string, AcpProfileRuntime>()
+  private readonly terminalOutcomes = new WeakMap<AcpProfileRuntime, HostTerminalOutcomes>()
   private readonly runtimeOwners = new WeakMap<AcpProfileRuntime, object>()
   private readonly runtimeBindings = new WeakMap<AcpProfileRuntime, AcpBindingData>()
   private readonly nextGenerations = new Map<string, number>()
@@ -950,7 +960,7 @@ export class AcpProfileAdapter extends LlmAdapter {
     })
     signal.throwIfAborted()
     await this.releaseRuntime(runtimeKey, runtime)
-    const next = this.runtimeFactory(this.runtimeOptionsFor(sessionKey, profile, cwd))
+    const next = this.createRuntime(sessionKey, profile, cwd)
     this.runtimes.set(runtimeKey, next)
     this.runtimeOwners.set(next, session.identity ?? session)
     let forkDispatched = false
@@ -2151,14 +2161,14 @@ export class AcpProfileAdapter extends LlmAdapter {
         )
       }
       const runtimeCwd = self.canonicalCwd(session?.workingDirectory)
-      let runtime =
-        self.runtimes.get(runtimeKey) ?? self.runtimeFactory(self.runtimeOptionsFor(sessionKey, profile, runtimeCwd))
+      let runtime = self.runtimes.get(runtimeKey) ?? self.createRuntime(sessionKey, profile, runtimeCwd)
       self.runtimes.set(runtimeKey, runtime)
       if (session !== undefined) self.runtimeOwners.set(runtime, session.identity ?? session)
       let retainHealthyRuntimeAfterNotDispatched = false
       let retainCancelledRuntimeForRefreshRetry = false
       let bindingForModeRestore: AcpBindingData | undefined
       let terminalSettlementLifetime: (() => void) | undefined
+      let stopWatchingTerminalOutcomes: (() => void) | undefined
       try {
         let validatedPrompt: acp.ContentBlock[]
         let persistedRecovery: AcpRecoveryState | undefined
@@ -2457,10 +2467,6 @@ export class AcpProfileAdapter extends LlmAdapter {
               missing ? 'ACP_SESSION_NOT_FOUND' : capability ? 'ACP_RECONCILIATION_REQUIRED' : 'ACP_RECONNECT_REQUIRED',
             )
           }
-          // Sessions established by an older adapter build may not yet carry
-          // the display-only Native Agent Access facts. Idempotently migrate
-          // them after the exact ACP binding has been restored.
-          projectNativeAgentAccess(session)
         } else {
           let forkOutcome: 'inherited' | 'blank' | undefined
           let forkReason: AcpSessionForkReason | undefined
@@ -2469,7 +2475,9 @@ export class AcpProfileAdapter extends LlmAdapter {
           let forkParentBinding: AcpBindingData | undefined
           let forked = false
           const parentSessionId = session?.header?.parentSession
-          if (parentSessionId !== undefined) {
+          // Explicit blank recovery abandons ACP history; it must not retry the
+          // original delegated fork or require that old parent to remain live.
+          if (!forceBlank && parentSessionId !== undefined) {
             forkParentSessionId = parentSessionId
             const parentLookup = await self.sidecar.readLatestBinding(parentSessionId as never)
             const parentBinding = parentLookup?.status === 'ok' ? parentLookup.binding : undefined
@@ -2497,15 +2505,38 @@ export class AcpProfileAdapter extends LlmAdapter {
               } else if (typeof runtime.fork !== 'function') {
                 forkReason = 'agent-does-not-advertise-fork'
               } else {
+                const parent = self.sessionOf(parentSessionId)!
+                const parentOwner = parent.identity ?? parent
+                const parentSeq = parent.seq
+                let intentWritten = false
+                const assertParentUnchanged = (): void => {
+                  const current = self.sessionOf(parentSessionId)
+                  if (
+                    current === undefined ||
+                    (current.identity ?? current) !== parentOwner ||
+                    current.seq !== parentSeq ||
+                    current.facts.turnOpen ||
+                    self.canonicalCwd(current.workingDirectory) !== parentBinding.canonicalCwd ||
+                    self.generationOfSnapshot(snapshotProfile(self.readConfig()))?.id !== generation.id
+                  )
+                    throw new AcpForkPreDispatchError('ACP_FORK_PRECONDITION_FAILED')
+                }
                 try {
                   await runtime.fork(
                     parentBinding.agentSessionId,
                     options.signal,
                     { agent: parentBinding.agent, protocolVersion: parentBinding.protocolVersion },
                     async () => {
-                      // The runtime has initialized and completed all pre-RPC
-                      // checks. Persist intent immediately before session/fork so
-                      // unsupported/precondition failures cannot leave a false gate.
+                      const latest = await durableSidecar.readLatestBinding(parentSessionId as never)
+                      const recovery = await durableSidecar.readRecoveryState(parentSessionId as never)
+                      if (
+                        latest?.status !== 'ok' ||
+                        acpCanonicalHash16(latest.binding) !== acpCanonicalHash16(parentBinding) ||
+                        (recovery !== undefined && recovery.kind !== 'healthy') ||
+                        !isLatestForkCut(session, parentSessionId, latest.binding)
+                      )
+                        throw new AcpForkPreDispatchError('ACP_FORK_PRECONDITION_FAILED')
+                      assertParentUnchanged()
                       await durableSidecar.writeRecoveryState({
                         dshSessionId: sessionKey as never,
                         kind: 'outcome-unknown',
@@ -2516,12 +2547,32 @@ export class AcpProfileAdapter extends LlmAdapter {
                         generation: parentBinding.generation,
                         updatedAt: Date.now(),
                       })
+                      intentWritten = true
                     },
+                    assertParentUnchanged,
                   )
                   forked = true
                   forkOutcome = 'inherited'
                   forkReason = 'inherited'
                 } catch (error: unknown) {
+                  if (intentWritten && error instanceof AcpForkPreDispatchError) {
+                    try {
+                      await durableSidecar.writeRecoveryState({
+                        dshSessionId: sessionKey as never,
+                        kind: 'healthy',
+                        cause: 'fork-not-dispatched',
+                        detail: 'The source changed before dispatch; no remote fork was sent.',
+                        updatedAt: Date.now(),
+                      })
+                    } catch (cleanupError) {
+                      await self.releaseRuntime(runtimeKey, runtime)
+                      throw new LlmError(
+                        'The undispatched fork intent could not be cleared; retry recovery before continuing.',
+                        'ACP_FORK_INTENT_FAILED',
+                        { cause: cleanupError },
+                      )
+                    }
+                  }
                   if (error instanceof AcpForkPreDispatchError && error.code === 'ACP_FORK_UNSUPPORTED') {
                     forkReason = 'agent-does-not-advertise-fork'
                   } else if (
@@ -2551,6 +2602,14 @@ export class AcpProfileAdapter extends LlmAdapter {
             }
             if (!forked) forkOutcome = 'blank'
           }
+          if (!forceBlank && !forked && session?.header?.isSeeded === true && session.inheritedEventCount !== 0) {
+            await self.releaseRuntime(runtimeKey, runtime)
+            const delegated = session.header.origin === 'subagent'
+            throw new LlmError(
+              `This ACP fork cannot preserve the selected conversation history (${forkReason ?? 'candidate-not-available'}). Start a separate session with fresh context.`,
+              delegated ? 'ACP_DELEGATED_FORK_UNAVAILABLE' : 'ACP_FORK_UNAVAILABLE',
+            )
+          }
           // Runtime startup has no prompt side effect; do it before the WAL so a
           // missing executable/login/session creation does not poison recovery.
           if (!forked) {
@@ -2566,12 +2625,6 @@ export class AcpProfileAdapter extends LlmAdapter {
           }
           if (self.sidecar !== undefined) {
             const agent = runtime.agentInfo
-            // The permission chip is a derived presentation fact for an already
-            // established ACP runtime. Append it before taking the first binding
-            // head so the durable binding covers the exact DSH event prefix it
-            // created; a restart can never observe two uncommitted display-only
-            // events after an otherwise healthy binding.
-            projectNativeAgentAccess(session)
             const dshHead = Math.max((session?.seq ?? 0) - 1, admissionProof?.startSeq ?? 0)
             const bindingData: AcpBindingData = {
               provider: options.provider,
@@ -2871,8 +2924,25 @@ export class AcpProfileAdapter extends LlmAdapter {
         let currentAnchor = admissionProof?.anchorMessageId ?? `prompt:${dispatchKey}`
         let activityIndexOffset = 0
         const activityOwners = new Map<string, { anchor: string; offset: number }>()
+        const terminalOutcomes = self.terminalOutcomes.get(runtime)
+        const withTerminalOutcome = (activity: NormalizedActivity): NormalizedActivity => {
+          if (activity.kind !== 'tool' || activity.rawDetail === undefined || terminalOutcomes === undefined)
+            return activity
+          try {
+            const detail = JSON.parse(activity.rawDetail) as Record<string, unknown>
+            const outcome = terminalOutcomes.resolve(runtime.acpSessionId, detail.content)
+            if (outcome === undefined) return activity
+            const rawDetail = JSON.stringify({ ...detail, hostTerminalOutcome: outcome })
+            return rawDetail === activity.rawDetail || rawDetail.length > ACP_ACTIVITY_RAW_MAX
+              ? activity
+              : { ...activity, rawDetail }
+          } catch {
+            return activity
+          }
+        }
         const scheduleActivity = (activity: NormalizedActivity): void => {
           if (typeof durableSidecar.upsertActivity !== 'function') return
+          activity = withTerminalOutcome(activity)
           currentActivities.set(activity.activityId, activity)
           let activityOwner = activityOwners.get(activity.activityId)
           if (activityOwner === undefined) {
@@ -2909,6 +2979,14 @@ export class AcpProfileAdapter extends LlmAdapter {
           })
           activityFallbackSeq += 1
         }
+        // Terminal exits may precede the tool's terminal reference or arrive
+        // after it. Subscribe only while this exact prompt owns its projection.
+        stopWatchingTerminalOutcomes = terminalOutcomes?.subscribe(() => {
+          for (const activity of currentActivities.values()) {
+            const enriched = withTerminalOutcome(activity)
+            if (enriched !== activity) scheduleActivity(enriched)
+          }
+        })
         const settleRunningActivities = (status: 'completed' | 'failed' | 'cancelled' | 'unfinished'): void => {
           for (const activity of currentActivities.values()) {
             if (activity.kind !== 'plan' && !isTerminalActivityStatus(activity.status))
@@ -2920,6 +2998,18 @@ export class AcpProfileAdapter extends LlmAdapter {
         let failure: unknown
         let cancelledRuntimeRetirement: Promise<void> | undefined
         let visibleContentEmitted = false
+        // ACP has no final-vs-progress text marker. For the observed Devin
+        // preamble-only failure, retain ordering evidence rather than guessing
+        // from prose. A late terminal patch must not invalidate a reply sent
+        // after the tool was first observed.
+        let responseObservationSeq = 0
+        const lastVisibleResponseByAnchor = new Map<string, number>()
+        const toolStartObservations = new Map<string, { anchor: string; seq: number }>()
+        const deliveredHostConclusionByAnchor = new Map<string, number>()
+        const noteVisibleResponse = (observation: { anchor: string; seq: number }): void => {
+          visibleContentEmitted = true
+          lastVisibleResponseByAnchor.set(observation.anchor, observation.seq)
+        }
         const unsupportedChunkContents: Array<{ type: string; reason: string }> = []
         let unsupportedChunkContentsTruncated = false
         let contentBreakVersion = 0
@@ -2950,7 +3040,10 @@ export class AcpProfileAdapter extends LlmAdapter {
           if (unsupportedChunkContents.length < 32) unsupportedChunkContents.push({ type, reason })
           else unsupportedChunkContentsTruncated = true
         }
-        const pushNonTextFallback = (content: AcpNonTextContent): void => {
+        const pushNonTextFallback = (
+          content: AcpNonTextContent,
+          observation: { anchor: string; seq: number },
+        ): void => {
           breakContent()
           noteUnsupportedChunk(content.type, 'non-text ACP answer content was rendered with a safe text fallback')
           pushChunk({
@@ -2958,16 +3051,20 @@ export class AcpProfileAdapter extends LlmAdapter {
             index: contentIndex('text'),
             text: `\n\n${nonTextContentFallback(content)}\n\n`,
           })
-          visibleContentEmitted = true
+          noteVisibleResponse(observation)
           // Keep the fallback as its own block in ACP content order.
           breakContent()
         }
-        const emitAgentContent = async (content: acp.ContentBlock, messageId?: string | null): Promise<void> => {
+        const emitAgentContent = async (
+          content: acp.ContentBlock,
+          observation: { anchor: string; seq: number },
+          messageId?: string | null,
+        ): Promise<void> => {
           if (content.type === 'text') {
             // DSH treats whitespace-only assistant content as non-visible. Keep
             // the same terminal-response rule here so formatting whitespace
             // cannot mask ACP_NO_VISIBLE_RESPONSE.
-            if (content.text.trim().length > 0) visibleContentEmitted = true
+            if (content.text.trim().length > 0) noteVisibleResponse(observation)
             pushChunk({ type: 'text-delta', index: contentIndex('text', messageId), text: content.text })
             return
           }
@@ -2985,14 +3082,14 @@ export class AcpProfileAdapter extends LlmAdapter {
               nextContentIndex += 1
               pushChunk({ type: 'block-start', index, blockType: 'image' })
               pushChunk({ type: 'block-end', index, block: { type: 'image', attachment } })
-              visibleContentEmitted = true
+              noteVisibleResponse(observation)
               return
             } catch {
               // Invalid/unsupported image bytes and storage failures remain
               // visible without exposing the raw base64 payload.
             }
           }
-          pushNonTextFallback(content)
+          pushNonTextFallback(content, observation)
         }
         const writeUnsupportedChunkAudit = async (): Promise<void> => {
           if (unsupportedChunkContents.length === 0 || self.sidecar === undefined) return
@@ -3029,6 +3126,7 @@ export class AcpProfileAdapter extends LlmAdapter {
           // Native child notifications are evidence for the projected child,
           // never assistant/tool output of the root DSH turn.
           if (runtime.acpSessionId !== undefined && notification.sessionId !== runtime.acpSessionId) return
+          const responseObservation = { anchor: currentAnchor, seq: ++responseObservationSeq }
           if (completedFact !== undefined) rememberExternalFact(completedFact)
           const isToolUpdate = update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update'
           const toolId =
@@ -3052,6 +3150,13 @@ export class AcpProfileAdapter extends LlmAdapter {
             const terminal = isTerminalActivityStatus(activityStatus(toolCall.status))
             const previousTerminal = toolContentBoundaries.get(toolId)
             if (previousTerminal === undefined || (previousTerminal && !terminal)) {
+              // A first-seen terminal patch may be late; only an observed
+              // active lifecycle proves where the operation began.
+              if (!terminal)
+                toolStartObservations.set(toolId, {
+                  anchor: activityOwners.get(`tool:${toolId}`)?.anchor ?? responseObservation.anchor,
+                  seq: responseObservation.seq,
+                })
               // A tool's first observation (or a new active lifecycle after a
               // terminal one) marks its insertion point in the answer stream.
               // A late terminal notification only updates activity state; it
@@ -3104,11 +3209,28 @@ export class AcpProfileAdapter extends LlmAdapter {
             })
           }
           const externalFacts = toolCall === undefined ? [] : factsForTool(toolId)
+          const claudeMeta = notification.update._meta?.claudeCode
+          const claudeTool =
+            profileKind === 'claude' &&
+            runtime.agentInfo?.name === '@agentclientprotocol/claude-agent-acp' &&
+            typeof claudeMeta === 'object' &&
+            claudeMeta !== null &&
+            'toolName' in claudeMeta
+              ? claudeMeta.toolName
+              : undefined
+          const toolSource =
+            (claudeTool === 'Bash' || claudeTool === 'Edit' || claudeTool === 'Write') &&
+            toolCall?.kind === (claudeTool === 'Bash' ? 'execute' : 'edit') &&
+            (toolCall?.name == null || toolCall.name === claudeTool)
+              ? (`claude:${claudeTool}` as const)
+              : undefined
           const normalized = activitiesForNotification(
             notification,
             `${String(notification.sessionId)}:${String(activityFallbackSeq + 1)}`,
             toolCall,
             externalFacts,
+            toolSource,
+            isToolUpdate ? runtime.toolControlOutcome?.(toolId) : undefined,
           )
           scheduleContent(() => {
             const plan = normalized.find((activity) => activity.kind === 'plan')?.display?.plan
@@ -3130,7 +3252,7 @@ export class AcpProfileAdapter extends LlmAdapter {
           })
           if (update.sessionUpdate === 'agent_message_chunk') {
             scheduleContent(async () => {
-              await emitAgentContent(update.content, update.messageId)
+              await emitAgentContent(update.content, responseObservation, update.messageId)
             })
           } else if (update.sessionUpdate === 'agent_thought_chunk') {
             const thought = update.content
@@ -3358,18 +3480,32 @@ export class AcpProfileAdapter extends LlmAdapter {
         }
         // This callback is host-owned evidence from a completed native send_message.
         // Steering a newly admitted request disables the evidence for this prompt.
+        const noteDeliveredHostConclusion = (): void => {
+          // Callback signatures carry no anchor. Only the original admitted
+          // anchor, before steering disables eligibility, is provable here.
+          if (admissionProof?.anchorMessageId === currentAnchor)
+            deliveredHostConclusionByAnchor.set(currentAnchor, ++responseObservationSeq)
+        }
         const promptResult = runtime.prompt(
           prompt,
           onUpdate,
           promptSignal,
           () => {
-            if (teammateReportEligible) teammateReportConfirmed = true
+            if (teammateReportEligible) {
+              teammateReportConfirmed = true
+              noteDeliveredHostConclusion()
+            }
           },
           () => {
-            if (turnConclusionEligible) turnConclusionConfirmed = true
+            if (turnConclusionEligible) {
+              turnConclusionConfirmed = true
+              noteDeliveredHostConclusion()
+            }
           },
           () => {
-            if (successfulToolResultEligible) successfulToolResultConfirmed = true
+            if (successfulToolResultEligible) {
+              successfulToolResultConfirmed = true
+            }
           },
           { ...qwenPromptOptions, hostBodySignal },
         )
@@ -3589,7 +3725,11 @@ export class AcpProfileAdapter extends LlmAdapter {
                       : { activityAnchorMessageId: admissionProof.anchorMessageId }),
                   }
             let responseLocale: string | undefined
-            if (response.stopReason === 'refusal' || response.stopReason === 'max_turn_requests') {
+            if (
+              response.stopReason === 'refusal' ||
+              response.stopReason === 'max_turn_requests' ||
+              (response.stopReason === 'end_turn' && (!visibleContentEmitted || profileKind === 'devin'))
+            ) {
               try {
                 responseLocale = self.resolveQuestions?.(sessionKey)?.locale
               } catch {
@@ -3624,6 +3764,44 @@ export class AcpProfileAdapter extends LlmAdapter {
               successfulToolResultConfirmed &&
               !promptSignal.aborted &&
               options.signal?.aborted !== true
+            // A failed tool explains an empty reply, but cannot turn it into a
+            // successful answer or prove that a permission rule caused it.
+            // Use current typed activity state, never words in vendor output.
+            const failedTools = [...currentActivities.values()].filter((activity) => {
+              if (activity.kind !== 'tool' || activity.status !== 'failed') return false
+              const anchor = activityOwners.get(activity.activityId)?.anchor
+              if (anchor === undefined || activity.rawDetail === undefined) return true
+              try {
+                // A Host-proven deferred wait is a control reply, not a tool
+                // failure. It still cannot satisfy the visible-answer guard.
+                return (
+                  activityHostToolControlOutcome(JSON.parse(activity.rawDetail), {
+                    ownerDshSessionId: sessionKey,
+                    promptAnchorMessageId: anchor,
+                    activityId: `${anchor}:${activity.activityId}`,
+                    status: activity.status,
+                  }) === undefined
+                )
+              } catch {
+                return true
+              }
+            })
+            const hasFailedTool = failedTools.length > 0
+            const hasMissingDevinFollowUp =
+              visibleContentEmitted &&
+              response.stopReason === 'end_turn' &&
+              profileKind === 'devin' &&
+              failedTools.some((activity) => {
+                const owner = activityOwners.get(activity.activityId)?.anchor
+                if (owner !== currentAnchor || !activity.activityId.startsWith('tool:')) return false
+                const start = toolStartObservations.get(activity.activityId.slice('tool:'.length))
+                if (start === undefined || start.anchor !== owner) return false
+                return (
+                  start.seq > (lastVisibleResponseByAnchor.get(owner) ?? 0) &&
+                  start.seq > (deliveredHostConclusionByAnchor.get(owner) ?? 0)
+                )
+              })
+            const isChinese = responseLocale !== undefined && /^zh(?:[-_]|$)/i.test(responseLocale)
             // This records a delivered Host tool result, not completion of the user's broader task.
             const finalReason =
               responseFinish.kind === 'stop' &&
@@ -3636,10 +3814,26 @@ export class AcpProfileAdapter extends LlmAdapter {
                     kind: 'error' as const,
                     failure: {
                       code: 'ACP_NO_VISIBLE_RESPONSE',
-                      message: 'ACP agent completed without a visible response',
+                      message: hasFailedTool
+                        ? isChinese
+                          ? '工具调用失败，ACP 智能体结束本轮时未返回可见回复。请查看失败步骤的详情。'
+                          : 'A tool call failed, and the ACP agent ended this turn without a visible response. See the failed step for details.'
+                        : isChinese
+                          ? 'ACP 智能体结束本轮时未返回可见回复。'
+                          : 'ACP agent completed without a visible response',
                     },
                   }
-                : responseFinish
+                : responseFinish.kind === 'stop' && !interruptedForInput && hasMissingDevinFollowUp
+                  ? {
+                      kind: 'error' as const,
+                      failure: {
+                        code: 'ACP_INCOMPLETE_TOOL_RESPONSE',
+                        message: isChinese
+                          ? '工具调用失败后，Devin 未返回后续回复。请查看失败步骤的详情。'
+                          : 'A tool call failed, and Devin ended this turn without a follow-up response. See the failed step for details.',
+                      },
+                    }
+                  : responseFinish
             // Start the projection transaction before publishing finish so its
             // canonical sidecar payload is already durable if the host exits.
             // The projector then waits at its parent barrier until DSH consumes
@@ -3929,6 +4123,8 @@ export class AcpProfileAdapter extends LlmAdapter {
         if (!retainHealthyRuntimeAfterNotDispatched && !retainCancelledRuntimeForRefreshRetry)
           await self.releaseRuntime(runtimeKey, runtime)
         throw error
+      } finally {
+        stopWatchingTerminalOutcomes?.()
       }
     })()
   }
@@ -4164,7 +4360,7 @@ export class AcpProfileAdapter extends LlmAdapter {
       probe: this.probeFactory(profile),
     }
     const runtimeKey = `${sessionId}:${generation.id}`
-    const runtime = this.runtimeFactory(this.runtimeOptionsFor(sessionId, profile, cwd))
+    const runtime = this.createRuntime(sessionId, profile, cwd)
     this.runtimes.set(runtimeKey, runtime)
     this.runtimeOwners.set(runtime, session.identity ?? session)
     try {
@@ -4442,10 +4638,18 @@ export class AcpProfileAdapter extends LlmAdapter {
   }
 
   /** Build one immutable native launch/capability surface for every lifecycle path. */
+  private createRuntime(sessionId: string, profile: AcpStubAgentConfig, cwd: string): AcpProfileRuntime {
+    const outcomes = new HostTerminalOutcomes(sessionId, this.profileId)
+    const runtime = this.runtimeFactory(this.runtimeOptionsFor(sessionId, profile, cwd, outcomes))
+    this.terminalOutcomes.set(runtime, outcomes)
+    return runtime
+  }
+
   private runtimeOptionsFor(
     sessionId: string,
     profile: AcpStubAgentConfig,
     cwd: string,
+    terminalOutcomes: HostTerminalOutcomes,
   ): ConstructorParameters<typeof AcpSessionRuntime>[0] {
     if (!this.subprocess.ok) throw new LlmError(this.subprocess.message, 'ACP_SPAWN_FAILURE')
     const processSeam = this.subprocess.seam
@@ -4466,16 +4670,13 @@ export class AcpProfileAdapter extends LlmAdapter {
               /* best effort after external I/O */
             }
           }
-    const appendTerminalAudit =
-      this.sidecar === undefined
-        ? undefined
-        : async (event: AcpTerminalAuditData): Promise<void> => {
-            try {
-              await this.sidecar!.append(sessionId as never, { kind: 'terminal', data: event })
-            } catch {
-              /* best effort after external process */
-            }
-          }
+    const appendTerminalAudit = async (event: AcpTerminalAuditData): Promise<void> => {
+      try {
+        await this.sidecar?.append(sessionId as never, { kind: 'terminal', data: event })
+      } catch {
+        /* best effort after external process */
+      }
+    }
     const handlePermission = async (
       params: acp.RequestPermissionRequest,
       signal?: AbortSignal,
@@ -4488,11 +4689,13 @@ export class AcpProfileAdapter extends LlmAdapter {
           : { append: (record) => this.sidecar!.append(sessionId as never, record) }
       return await createAcpNativePermissionHandler({
         ...(binding.userQuestions === undefined ? {} : { userQuestions: binding.userQuestions }),
+        ...(binding.permissionQuestions === undefined ? {} : { permissionQuestions: binding.permissionQuestions }),
         ...(binding.approval === undefined ? {} : { approval: binding.approval }),
         ...(runtime === 'antigravity' ? { nativeQuestionProfile: 'antigravity' as const } : {}),
         getAgent: binding.getAgent,
         ...(binding.locale === undefined ? {} : { locale: binding.locale }),
         ...(audit === undefined ? {} : { audit }),
+        ...(binding.onUnavailable === undefined ? {} : { onUnavailable: binding.onUnavailable }),
       })(params, signal)
     }
     return {
@@ -4546,7 +4749,8 @@ export class AcpProfileAdapter extends LlmAdapter {
           cwd: launchCwd,
           env,
           ...(this.terminalJobs === undefined ? {} : { startJob: this.terminalJobs(sessionId) }),
-          ...(appendTerminalAudit === undefined ? {} : { audit: appendTerminalAudit }),
+          audit: appendTerminalAudit,
+          onExit: (event) => terminalOutcomes.observe(event),
         }),
       onPermissionRequest: handlePermission,
       onPermissionCheck: async (check, request) => {
@@ -4584,7 +4788,9 @@ export class AcpProfileAdapter extends LlmAdapter {
         if (binding?.userQuestions === undefined) return { action: 'cancel' }
         return await createAcpNativeElicitationHandler({
           userQuestions: binding.userQuestions,
+          ...(binding.permissionQuestions === undefined ? {} : { permissionQuestions: binding.permissionQuestions }),
           getAgent: binding.getAgent,
+          ...(binding.onUnavailable === undefined ? {} : { onUnavailable: binding.onUnavailable }),
           ...(binding.locale === undefined ? {} : { locale: binding.locale }),
           ...(hostToolName === undefined ? {} : { hostToolName }),
           ...(hostToolName === undefined || hostToolCall === undefined || binding.approval === undefined

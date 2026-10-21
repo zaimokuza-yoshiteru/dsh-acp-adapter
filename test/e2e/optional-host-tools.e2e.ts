@@ -1,11 +1,15 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect, it, vi } from 'vitest'
+import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { Page } from 'playwright'
 import { connectFreshWorkspace, writeComposerDraft } from '#host-support'
-import { OPTIONAL_TOOL_PLAN } from '../mock-agent/optional-tools-turn.ts'
+import { OPTIONAL_TOOL_PLAN, type OptionalToolPlan } from '../mock-agent/optional-tools-turn.ts'
 import { launchBrowser, newEnglishPage, type TestBrowser } from './browser.ts'
 import { callResult, launchOptionalToolWorld } from './optional-tool-world.ts'
 import { required } from './required.ts'
+import { acpPermissionAudit } from './acp-permission-audit.ts'
+import { summarizeRawInputForAudit } from '../../src/domain/policy/events.ts'
 
 const SEARCH_TOOLS = [
   'session_search',
@@ -31,19 +35,154 @@ function nodeCommand(script: string): string {
   return `${process.platform === 'win32' ? '& ' : ''}${shellQuote(process.execPath)} -e ${shellQuote(script)}`
 }
 
+type OptionalWorld = Awaited<ReturnType<typeof launchOptionalToolWorld>>
+
+async function bootstrap(world: OptionalWorld, page: Page, label: string): Promise<Agent> {
+  await writeComposerDraft(
+    page,
+    page.locator('[data-composer-input]').first(),
+    `${OPTIONAL_TOOL_PLAN}${JSON.stringify({ label, calls: [] })}`,
+  )
+  const settled = world.whenTurnSettled()
+  void settled.catch(() => undefined)
+  await page.getByRole('button', { name: 'Send message', exact: true }).click()
+  const resolved = await world.ctx.sessionController.resolveAgent(await settled)
+  if ('error' in resolved) throw new Error(resolved.error.message)
+  await expect
+    .poll(() => page.locator('[data-conversation-session]').last().getAttribute('data-conversation-session'))
+    .toBe(resolved.agent.id)
+  return resolved.agent
+}
+
+/** Each target operation is approved through its real native UI, including Auto.
+ * This is an explicit user decision for an exact request, never a setup answerer. */
+async function runApproved(
+  world: OptionalWorld,
+  page: Page,
+  owner: Agent,
+  plan: OptionalToolPlan,
+  afterApprovals?: () => Promise<void>,
+) {
+  expect(await page.locator('[data-conversation-session]').last().getAttribute('data-conversation-session')).toBe(
+    owner.id,
+  )
+  const pending = world.run(owner, plan)
+  const execution: { status: 'pending' | 'fulfilled' | 'rejected'; error?: unknown } = { status: 'pending' }
+  // Observe the execution while the UI handles approvals. A rejected turn must
+  // remain the primary failure, rather than disappearing behind a missing audit.
+  void pending.then(
+    () => {
+      execution.status = 'fulfilled'
+    },
+    (error: unknown) => {
+      execution.status = 'rejected'
+      execution.error = error
+    },
+  )
+  let stage = 'await-asked-audit'
+  let callId: string | undefined
+  try {
+    for (const [index, step] of plan.calls.entries()) {
+      callId = `optional-${plan.label}-${index}`
+      // Native terminal_close waits for process-tree teardown. Its approval is
+      // not completion, so the next request cannot be expected until its actual
+      // MCP result arrives. This shares the existing execution's turn budget.
+      if (index > 0) {
+        stage = 'await-previous-call-result'
+        await world.waitForRecordedCalls(plan.label, index, pending)
+      }
+      stage = 'await-asked-audit'
+      await expect
+        .poll(() =>
+          acpPermissionAudit(world, 'asked').find(
+            (entry) => entry.sessionId === owner.id && entry.data.toolCall.toolCallId === callId,
+          ),
+        )
+        .toBeDefined()
+      stage = 'assert-asked-audit'
+      const asked = required(
+        acpPermissionAudit(world, 'asked').find(
+          (entry) => entry.sessionId === owner.id && entry.data.toolCall.toolCallId === callId,
+        ),
+      )
+      expect(asked.data.toolCall.title).toBe(step.name)
+      // The readable audit summary is redacted and bounded; its original-input
+      // hash still binds the complete command and every argument without truncation.
+      expect(asked.data.toolCall.rawInputHash).toBe(summarizeRawInputForAudit(step.arguments ?? {}).hash)
+      expect(asked.data.options).toEqual([
+        { optionId: 'allow', kind: 'allow_once', name: 'Allow this operation' },
+        { optionId: 'deny', kind: 'reject_once', name: 'Reject this operation' },
+      ])
+      stage = 'await-approval-ui'
+      const approval = page.locator('[data-approval-key]').filter({ hasText: step.name })
+      await approval.waitFor({ state: 'visible' })
+      expect(world.records(plan.label).filter((record) => record.kind === 'call')).toHaveLength(index)
+      expect(
+        acpPermissionAudit(world, 'decided').filter((entry) => entry.data.requestId === asked.data.requestId),
+      ).toEqual([])
+      stage = 'approve-once'
+      await approval.getByRole('button', { name: 'Allow once', exact: true }).click()
+      stage = 'await-decided-audit'
+      await expect
+        .poll(() => acpPermissionAudit(world, 'decided').find((entry) => entry.data.requestId === asked.data.requestId))
+        .toMatchObject({
+          sessionId: owner.id,
+          data: {
+            toolCallId: callId,
+            outcome: 'selected',
+            optionId: 'allow',
+            selectedOptionKind: 'allow_once',
+            decisionVia: 'native-approval',
+          },
+        })
+    }
+    stage = 'after-approvals'
+    await afterApprovals?.()
+    stage = 'await-execution'
+    return await pending
+  } catch (error) {
+    let diagnostic = ''
+    try {
+      diagnostic = world.captureFailure(owner, plan, 'approval', {
+        stage,
+        callId,
+        execution,
+        error,
+        asked: acpPermissionAudit(world, 'asked').filter((entry) => entry.sessionId === owner.id),
+        decided: acpPermissionAudit(world, 'decided').filter((entry) => entry.sessionId === owner.id),
+      })
+    } catch {
+      diagnostic = 'evidence capture failed'
+    }
+    throw new Error(
+      `Optional tools approval failed: label=${plan.label}, callId=${callId ?? 'none'}, stage=${stage}; ${diagnostic}`,
+      {
+        cause: execution.status === 'rejected' ? execution.error : error,
+      },
+    )
+  }
+}
+
 it('mounts official session search and reads only prior history authorized by the caller workspace', async () => {
   const world = await launchOptionalToolWorld(['session-search'])
+  let browser: TestBrowser | undefined
   try {
+    browser = await launchBrowser({ headless: true })
+    const page = await newEnglishPage(browser)
+    await page.goto(world.authenticatedUrl)
+    await connectFreshWorkspace(page, world.workspaceCwd)
+    const owner = await bootstrap(world, page, 'search-bootstrap')
+    const ownerCwd = required(owner.session.header.cwd)
     const needle = 'OPTIONALSEARCHNEEDLE'
     const foreignSecret = 'FOREIGNHISTORYPRIVATE'
-    const prior = await world.create()
+    const prior = await world.create(ownerCwd)
     await world.run(prior, { label: needle, calls: [] })
     const priorEvent = required(
       prior.session
         .snapshotEvents()
         .find((event) => event.type === 'user/message' && JSON.stringify(event.data.content).includes(needle)),
     )
-    const foreignCwd = join(world.workspaceCwd, 'foreign-workspace')
+    const foreignCwd = join(ownerCwd, 'foreign-workspace')
     mkdirSync(foreignCwd)
     const foreign = await world.create(foreignCwd)
     await world.run(foreign, { label: `${needle} ${foreignSecret}`, calls: [] })
@@ -52,8 +191,7 @@ it('mounts official session search and reads only prior history authorized by th
         .snapshotEvents()
         .find((event) => event.type === 'user/message' && JSON.stringify(event.data.content).includes(foreignSecret)),
     )
-    const owner = await world.create()
-    const result = await world.run(owner, {
+    const result = await runApproved(world, page, owner, {
       label: 'search-authorized-history',
       calls: [
         { name: 'session_search', arguments: { query: needle } },
@@ -79,7 +217,7 @@ it('mounts official session search and reads only prior history authorized by th
     expect(world.nativeCalls.filter((call) => call.owner === owner.id).map((call) => call.name)).toEqual(SEARCH_TOOLS)
 
     // An explicit id cannot cross the same authorization boundary enforced by search.
-    const denied = await world.run(owner, {
+    const denied = await runApproved(world, page, owner, {
       label: 'search-foreign-denied',
       calls: [{ name: 'session_event_read', arguments: { session_id: foreign.id, seq: foreignEvent.seq } }],
     })
@@ -88,7 +226,7 @@ it('mounts official session search and reads only prior history authorized by th
     expect(callResult(denied, 'session_event_read').text).not.toContain(foreignSecret)
 
     // The current prompt is persisted, but the native current-step boundary excludes it.
-    const current = await world.run(owner, {
+    const current = await runApproved(world, page, owner, {
       label: 'CURRENTSTEPSEARCHPRIVATE',
       calls: [{ name: 'session_event_search', arguments: { query: 'CURRENTSTEPSEARCHPRIVATE' } }],
     })
@@ -97,6 +235,7 @@ it('mounts official session search and reads only prior history authorized by th
     expect(prior.session.header.cwd).toBe(owner.session.header.cwd)
     expect(foreign.session.header.cwd).not.toBe(owner.session.header.cwd)
   } finally {
+    await browser?.close()
     await world.close()
   }
 }, 90_000)
@@ -109,17 +248,7 @@ it('executes official persistent terminal tools with native approval, exact owne
     const page = await newEnglishPage(browser)
     await page.goto(world.authenticatedUrl)
     await connectFreshWorkspace(page, world.workspaceCwd)
-    await writeComposerDraft(
-      page,
-      page.locator('[data-composer-input]').first(),
-      `${OPTIONAL_TOOL_PLAN}${JSON.stringify({ label: 'terminal-bootstrap', calls: [] })}`,
-    )
-    const bootstrap = world.whenTurnSettled()
-    void bootstrap.catch(() => undefined)
-    await page.getByRole('button', { name: 'Send message', exact: true }).click()
-    const resolved = await world.ctx.sessionController.resolveAgent(await bootstrap)
-    if ('error' in resolved) throw new Error(resolved.error.message)
-    const owner = resolved.agent
+    const owner = await bootstrap(world, page, 'terminal-bootstrap')
     await world.controls.setToolApprovalPolicy(owner.id, { policy: 'ask' })
     const rejecting = world.run(owner, {
       label: 'terminal-native-rejection',
@@ -143,7 +272,7 @@ it('executes official persistent terminal tools with native approval, exact owne
     ).toBe(true)
 
     await world.controls.setToolApprovalPolicy(owner.id, { policy: 'auto' })
-    const opened = await world.run(owner, {
+    const opened = await runApproved(world, page, owner, {
       label: 'terminal-open',
       calls: [{ name: 'terminal_open', arguments: { type: 'shell', name: 'official-state' } }],
     })
@@ -160,11 +289,11 @@ it('executes official persistent terminal tools with native approval, exact owne
       process.platform === 'win32'
         ? "$env:DSH_OPTIONAL_STATE='PERSISTENT_NATIVE_SECRET'"
         : "export DSH_OPTIONAL_STATE='PERSISTENT_NATIVE_SECRET'"
-    await world.run(owner, {
+    await runApproved(world, page, owner, {
       label: 'terminal-set-state',
       calls: [{ name: 'terminal_send', arguments: { sessionId: terminalId, text: setState } }],
     })
-    const state = await world.run(owner, {
+    const state = await runApproved(world, page, owner, {
       label: 'terminal-read-state',
       calls: [
         {
@@ -179,9 +308,16 @@ it('executes official persistent terminal tools with native approval, exact owne
     expect(callResult(state, 'terminal_read').text).toContain('PERSISTENT_NATIVE_SECRET')
     expect(callResult(state, 'terminal_list').text).toContain(terminalId)
 
-    const other = await world.create()
+    const otherPage = await newEnglishPage(browser)
+    await otherPage.goto(world.authenticatedUrl)
+    await otherPage.locator('[data-conversation-session]').last().waitFor()
+    await otherPage.getByRole('button', { name: 'New session', exact: true }).last().click()
+    await otherPage.getByText('Into the Unknown', { exact: true }).waitFor()
+    const other = await bootstrap(world, otherPage, 'terminal-foreign-bootstrap')
+    expect(other.id).not.toBe(owner.id)
+    expect(other.session.header.cwd).toBe(owner.session.header.cwd)
     const forbiddenWrite = join(world.workspaceCwd, 'foreign-terminal-write')
-    const foreign = await world.run(other, {
+    const foreign = await runApproved(world, otherPage, other, {
       label: 'terminal-foreign-denied',
       calls: [
         { name: 'terminal_list' },
@@ -209,21 +345,30 @@ it('executes official persistent terminal tools with native approval, exact owne
     const stopped = join(world.workspaceCwd, 'terminal-foreground.stopped')
     const cancel = join(world.workspaceCwd, 'terminal-mcp.cancel')
     const script = `const fs=require('node:fs');process.on('SIGINT',()=>{fs.writeFileSync(${JSON.stringify(stopped)},'interrupted');process.exit(0)});fs.writeFileSync(${JSON.stringify(ready)},String(process.pid));setInterval(()=>{},1000)`
-    const pending = world.run(owner, {
-      label: 'terminal-cancel-call',
-      calls: [
-        { name: 'terminal_send', arguments: { sessionId: terminalId, text: nodeCommand(script) }, cancelFile: cancel },
-      ],
-    })
-    void pending.catch(() => undefined)
-    await vi.waitFor(() => expect(existsSync(ready)).toBe(true), { timeout: 15_000 })
-    const childPid = Number(readFileSync(ready, 'utf8'))
-    expect(childPid).toBeGreaterThan(0)
-    writeFileSync(cancel, 'cancel this one MCP request')
-    const cancelled = await pending
+    const cancelled = await runApproved(
+      world,
+      page,
+      owner,
+      {
+        label: 'terminal-cancel-call',
+        calls: [
+          {
+            name: 'terminal_send',
+            arguments: { sessionId: terminalId, text: nodeCommand(script) },
+            cancelFile: cancel,
+          },
+        ],
+      },
+      async () => {
+        await vi.waitFor(() => expect(existsSync(ready)).toBe(true), { timeout: 15_000 })
+        const childPid = Number(readFileSync(ready, 'utf8'))
+        expect(childPid).toBeGreaterThan(0)
+        writeFileSync(cancel, 'cancel this one MCP request')
+      },
+    )
     expect(cancelled.filter((record) => record.kind === 'cancelled')).toMatchObject([{ name: 'terminal_send' }])
     await vi.waitFor(() => expect(existsSync(stopped)).toBe(true), { timeout: 10_000 })
-    const after = await world.run(owner, {
+    const after = await runApproved(world, page, owner, {
       label: 'terminal-after-cancel',
       calls: [
         {

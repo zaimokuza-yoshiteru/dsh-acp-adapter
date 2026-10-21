@@ -56,6 +56,7 @@ const [{ ConversationNodeAssembler }, { chatViewDefinition }, { processGroupDefi
     chatModule('assistant'),
     chatModule('turn-process'),
     chatModule('tool'),
+    chatModule('turn-tail'),
   ])) as [
     { ConversationNodeAssembler: typeof NativeAssembler },
     { chatViewDefinition: ConversationViewDefinition<ChatConversationViewNode, ChatSnapshot> },
@@ -87,6 +88,7 @@ function harness(acp = true, normalize = false) {
     nativeDefinitions[1]!.assistantDefinition!,
     nativeDefinitions[2]!.turnProcessDefinition!,
     nativeDefinitions[3]!.toolDefinition!,
+    nativeDefinitions[4]!.turnTailDefinition!,
     ...(acp
       ? [
           createAcpEffectiveRouteDefinition(),
@@ -134,8 +136,8 @@ function harness(acp = true, normalize = false) {
   return {
     start,
     append,
-    chunk(type: 'reasoning-delta' | 'text-delta', text: string, turn = 1, step = 1) {
-      append('assistant/live-chunk', { turn, step, chunk: { type, index: 0, text } })
+    chunk(type: 'reasoning-delta' | 'text-delta', text: string, turn = 1, step = 1, index = 0) {
+      append('assistant/live-chunk', { turn, step, chunk: { type, index, text } })
     },
     restore() {
       assembler.replaceWindow(events, false)
@@ -143,6 +145,15 @@ function harness(acp = true, normalize = false) {
     },
     nodes: () => (assembler.snapshot('chat') as ChatSnapshot).nodes.values(),
     projectedNodes: () => rendered.nodes.values(),
+    navigation: () => rendered.navigation.items(),
+    contentOnlyNavigation: () =>
+      chatViewDefinition
+        .create()
+        .replace({
+          nodes: rendered.nodes.values().filter((node) => node.kind === 'assistant-step' || node.kind === 'tool-call'),
+          timeline: rendered.timeline,
+        })
+        .navigation.items(),
     activities: (rows: readonly AcpActivityView[]) => {
       windows.set(activityWindowKey(markerData), { rows, unavailable: false })
       project()
@@ -162,6 +173,239 @@ function harness(acp = true, normalize = false) {
 }
 
 describe('ACP markers through the native Chat builder and ProcessState', () => {
+  it.each([false, true])('retains the process parent after visible progress with reasoning=%s', (reasoning) => {
+    const current = harness(true, true)
+    current.start()
+    current.chunk('text-delta', 'I will inspect the files first.')
+    if (reasoning) current.chunk('reasoning-delta', 'Plan the inspection', 1, 1, 1)
+    const contentIndex = reasoning ? 2 : 1
+    current.activities([
+      {
+        ...markerData,
+        dshSessionId: 'session',
+        activityId: 'tool:after-visible-progress',
+        activitySeq: 1,
+        revisionSeq: 1,
+        kind: 'tool',
+        status: 'completed',
+        contentIndex,
+        time: 1,
+        presentation: 'Inspect files',
+        rawDetail: JSON.stringify({ toolKind: 'read', rawInput: { path: 'records.mjs' } }),
+      } as AcpActivityView,
+    ])
+    const processKeys = current.groupKeys()
+    expect(processKeys).toHaveLength(1)
+    const original = current.nodes().find((node) => node.kind === 'assistant-step')!
+    const toolKey = current.projectedNodes().find((node) => node.kind === 'tool-call')!.key
+    current.chunk('text-delta', 'FINAL_AFTER_VISIBLE_PROGRESS', 1, 1, contentIndex)
+    expect(current.groupKeys()).toEqual(processKeys)
+    expect(current.projectedNodes().find((node) => node.kind === 'tool-call')!.key).toBe(toolKey)
+    expect(current.projectedNodes().find((node) => node.key === original.key)?.data).toMatchObject({
+      blocks: [{ kind: 'text', text: 'FINAL_AFTER_VISIBLE_PROGRESS' }],
+    })
+  })
+
+  it.each(['interrupted', 'settled'] as const)(
+    'retains the native process parent when reasoning and tools end %s without a reply',
+    (status) => {
+      const current = harness(true, true)
+      current.start()
+      current.chunk('reasoning-delta', 'Inspect before running the command')
+      const tool = {
+        ...markerData,
+        dshSessionId: 'session',
+        activityId: 'tool:reasoning-only',
+        activitySeq: 1,
+        revisionSeq: 1,
+        kind: 'tool',
+        status: 'running',
+        contentIndex: 1,
+        time: 1,
+        presentation: 'Run inspection',
+        rawDetail: JSON.stringify({ toolKind: 'execute', rawInput: { command: 'inspect' } }),
+      } as AcpActivityView
+      current.activities([tool])
+      const processKeys = current.groupKeys()
+      const reasoningKey = current.projectedNodes().find((node) => node.kind === 'assistant-step')!.key
+      const toolKey = current.projectedNodes().find((node) => node.kind === 'tool-call')!.key
+      current.activities([{ ...tool, status: status === 'interrupted' ? 'cancelled' : 'completed', revisionSeq: 2 }])
+      current.append('assistant/message', {
+        turn: 1,
+        step: 1,
+        ...(status === 'interrupted' ? { interrupted: true } : {}),
+        stream: [
+          { type: 'reasoning-chunks', time0: 1, index: 0, dt: [0], texts: ['Inspect before running the command'] },
+        ],
+        message: {
+          id: 'reasoning-only-final',
+          role: 'assistant',
+          content: [{ type: 'reasoning', text: 'Inspect before running the command' }],
+          source: { kind: 'model', provider: 'acp-codex', model: 'fixture', replayState: { response: replay } },
+        },
+      })
+      const final = current.projectedNodes().find((node) => node.kind === 'assistant-step')!
+      expect(current.groupKeys()).toEqual(processKeys)
+      expect(final.key).toBe(reasoningKey)
+      expect(final.data).toMatchObject({ status, finalNode: { messageId: 'reasoning-only-final' } })
+      expect(current.projectedNodes().filter((node) => node.kind === 'assistant-step')).toHaveLength(1)
+      expect(current.projectedNodes().find((node) => node.kind === 'tool-call')!.key).toBe(toolKey)
+      const reason = { kind: status === 'interrupted' ? 'interrupted' : 'completed' }
+      current.append('step/end', { turn: 1, step: 1, reason })
+      current.append('turn/end', { turn: 1, reason })
+      expect(current.groupKeys()).toEqual(processKeys)
+      expect(
+        current.navigation().every((item) => current.projectedNodes().some((node) => node.key === item.anchorKey)),
+      ).toBe(true)
+      // With the opening input outside a loaded window, native navigation must
+      // still address the actual retained reasoning Node, not its former base key.
+      expect(current.contentOnlyNavigation().map((item) => item.anchorKey)).toEqual([reasoningKey])
+      current.restore()
+      expect(current.groupKeys()).toEqual(processKeys)
+      expect(current.projectedNodes().find((node) => node.key === reasoningKey)?.data).toMatchObject({ status })
+    },
+  )
+
+  it('retains the native process parent when reasoning precedes tools and the final reply arrives later', () => {
+    const current = harness(true, true)
+    current.start()
+    current.chunk('reasoning-delta', 'Inspect before running the command')
+    const tool = {
+      ...markerData,
+      dshSessionId: 'session',
+      activityId: 'tool:after-reasoning',
+      activitySeq: 1,
+      revisionSeq: 1,
+      kind: 'tool',
+      status: 'running',
+      contentIndex: 1,
+      time: 1,
+      presentation: 'Run inspection',
+      rawDetail: JSON.stringify({ toolKind: 'execute', rawInput: { command: 'inspect' } }),
+    } as AcpActivityView
+    current.activities([tool])
+    const processKeys = current.groupKeys()
+    const toolKey = current.projectedNodes().find((node) => node.kind === 'tool-call')!.key
+    const reasoningKey = current.projectedNodes().find((node) => node.kind === 'assistant-step')!.key
+    expect(processKeys).toHaveLength(1)
+    current.activities([{ ...tool, status: 'failed', revisionSeq: 2 }])
+    expect(current.groupKeys()).toEqual(processKeys)
+    current.chunk('text-delta', 'FINAL_SUMMARY [report](./report.html)', 1, 1, 1)
+    // React keys of both the process parent and tool seat must survive. Keeping
+    // only the tool key does not preserve a reader's disclosure if its parent moves.
+    expect(current.groupKeys()).toEqual(processKeys)
+    expect(current.projectedNodes().find((node) => node.kind === 'tool-call')!.key).toBe(toolKey)
+    expect(current.projectedNodes().find((node) => node.key === reasoningKey)).toBeDefined()
+    current.append('assistant/message', {
+      turn: 1,
+      step: 1,
+      stream: [
+        { type: 'reasoning-chunks', time0: 1, index: 0, dt: [0], texts: ['Inspect before running the command'] },
+        { type: 'text-chunks', time0: 2, index: 1, dt: [0], texts: ['FINAL_SUMMARY [report](./report.html)'] },
+        { type: 'chunk', time: 3, chunk: { type: 'finish', reason: { kind: 'stop' } } },
+      ],
+      message: {
+        id: 'final-summary',
+        role: 'assistant',
+        content: [
+          { type: 'reasoning', text: 'Inspect before running the command' },
+          { type: 'text', text: 'FINAL_SUMMARY [report](./report.html)' },
+        ],
+        source: { kind: 'model', provider: 'acp-codex', model: 'fixture', replayState: { response: replay } },
+      },
+    })
+    current.append('step/end', { turn: 1, step: 1, reason: { kind: 'completed' } })
+    current.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+    expect(current.groupKeys()).toEqual(processKeys)
+    expect(current.projectedNodes().find((node) => node.kind === 'tool-call')!.key).toBe(toolKey)
+    const reply = current
+      .projectedNodes()
+      .find((node) => node.kind === 'assistant-step' && JSON.stringify(node.data).includes('FINAL_SUMMARY'))!
+    expect(reply.groupTree).toBe('turn')
+    expect(reply.data).toMatchObject({ finalNode: { messageId: 'final-summary' } })
+    current.restore()
+    expect(current.groupKeys()).toEqual(processKeys)
+  })
+
+  it('keeps an earlier committed ACP report outside the process after a legitimate settlement notice', () => {
+    const before = harness(true, false)
+    const after = harness(true, true)
+    for (const current of [before, after]) {
+      current.start()
+      current.chunk('reasoning-delta', 'Inspect the files')
+      current.append('assistant/message', {
+        turn: 1,
+        step: 1,
+        stream: [
+          { type: 'reasoning-chunks', time0: 1, index: 0, dt: [0], texts: ['Inspect the files'] },
+          { type: 'text-chunks', time0: 2, index: 1, dt: [0], texts: ['REPORT [file](./report.html)'] },
+          { type: 'chunk', time: 3, chunk: { type: 'finish', reason: { kind: 'stop' } } },
+        ],
+        message: {
+          id: 'main-report',
+          role: 'assistant',
+          content: [
+            { type: 'reasoning', text: 'Inspect the files' },
+            { type: 'text', text: 'REPORT [file](./report.html)' },
+          ],
+          source: { kind: 'model', provider: 'acp-codex', model: 'fixture', replayState: { response: replay } },
+        },
+      })
+      current.append('step/end', { turn: 1, step: 1, reason: { kind: 'completed' } })
+      current.append('step/start', { turn: 1, step: 2 })
+      current.append('user/message', {
+        id: 'settlement-1',
+        source: { kind: 'subagent-settled', form: 'notice', senderSessionId: 'child', summary: 'Finished' },
+        content: [{ type: 'text', text: 'Member finished its cleanup' }],
+      })
+      current.append('assistant/message', {
+        turn: 1,
+        step: 2,
+        stream: [
+          { type: 'text-chunks', time0: 4, index: 0, dt: [0], texts: ['RECEIPT'] },
+          { type: 'chunk', time: 5, chunk: { type: 'finish', reason: { kind: 'stop' } } },
+        ],
+        message: {
+          id: 'receipt',
+          role: 'assistant',
+          content: [{ type: 'text', text: 'RECEIPT' }],
+          source: {
+            kind: 'model',
+            provider: 'acp-codex',
+            model: 'fixture',
+            replayState: {
+              response: {
+                ...replay,
+                activityAnchorMessageId: 'settlement-1',
+                committedPromptOrdinal: 2,
+              },
+            },
+          },
+        },
+      })
+      current.append('step/end', { turn: 1, step: 2, reason: { kind: 'completed' } })
+      current.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+    }
+    const nodeFor = (current: ReturnType<typeof harness>, text: string) =>
+      current
+        .projectedNodes()
+        .find((node) => node.kind === 'assistant-step' && JSON.stringify(node.data).includes(text))!
+    expect(nodeFor(before, 'REPORT').groupTree).toBeUndefined()
+    expect(nodeFor(after, 'REPORT').groupTree).toBe('turn')
+    expect(nodeFor(after, 'RECEIPT').groupTree).toBe('turn')
+    expect(nodeFor(after, 'Inspect the files').groupTree).toBeUndefined()
+    const process = after.projectedNodes().find((node) => node.kind === 'turn-process')!
+    expect(process.data).toMatchObject({ answerStep: 2 })
+    const tail = after.projectedNodes().find((node) => node.kind === 'turn-tail')!
+    expect(tail.data).toMatchObject({ closing: { finalNode: { messageId: 'receipt' } }, branchUnavailable: false })
+    const key = nodeFor(after, 'REPORT').key
+    after.restore()
+    expect(nodeFor(after, 'REPORT')).toMatchObject({ key, groupTree: 'turn' })
+    expect(after.projectedNodes().filter((node) => node.kind === 'context' && node.id === 'settlement-1')).toHaveLength(
+      1,
+    )
+  })
+
   it('retains the native process group and tool seat when the first tool precedes every assistant chunk', () => {
     const current = harness(true, true)
     current.start()

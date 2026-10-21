@@ -1,4 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis'
+import { z } from 'zod'
+import type { AcpExecutionView } from '../../contract/external-subagent.ts'
 import type { Session, SessionEventMap } from '@deepseek-ai/dsh-session'
 import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection'
 import type {} from '@deepseek-ai/dsh-permission-presets'
@@ -20,12 +22,19 @@ declare module '@deepseek-ai/dsh-session-projection' {
   }
 }
 
+const externalRecordView: AcpExecutionView = { externalSubagent: true }
+const ordinarySessionView: AcpExecutionView = { externalSubagent: false }
+
 export const acpExecutionProjection = {
   key: 'acpExecution',
-  stateVersion: 1,
+  stateVersion: 2,
   stateSchema: sessionFactsSchema,
   init: (_header, inheritedEventCount) => initialSessionFacts(inheritedEventCount),
   apply: applySessionFact,
+  wire: {
+    viewSchema: z.object({ externalSubagent: z.boolean() }),
+    view: (state) => (state.externalSubagent ? externalRecordView : ordinarySessionView),
+  },
 } satisfies ProjectionDefinition<'acpExecution'>
 
 export function readSessionFacts(ctx: Context, session: Session): SessionFacts {
@@ -40,6 +49,7 @@ export function acpSessionView(ctx: Context, session: Session | undefined): Sess
   return {
     identity: session,
     header: session.header,
+    inheritedEventCount: session.inheritedEventCount,
     get workingDirectory() {
       return ctx.get('workingDirectory')?.get(session)
     },

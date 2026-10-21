@@ -17,6 +17,22 @@ export function resolveTerminalJobs(ctx: Context, sessionId: string): AcpTermina
   return (label, run) => {
     const owner = sessionId as SessionId
     let id!: ReturnType<JobRegistry['start']>
+    let settled = false
+    let released = false
+    const retireReleased = (): void => {
+      if (!settled || !released) return
+      // Owner disposal may have already removed the row. A live or unconsumed
+      // terminal stays observable; ACP's durable audit is independent of this
+      // native presentation record.
+      try {
+        if (!jobs.list(owner).some((job) => job.id === id)) return
+        jobs.remove(id, owner)
+      } catch (error: unknown) {
+        // A presentation cleanup failure must not undo a released ACP handle.
+        // Leave the native row in place and retain a Host diagnostic.
+        ctx.logger.warn(`ACP terminal job record could not be retired: ${String(error)}`)
+      }
+    }
     id = jobs.start({
       kind: 'acp-terminal',
       label,
@@ -30,9 +46,15 @@ export function resolveTerminalJobs(ctx: Context, sessionId: string): AcpTermina
             // registry. Settlement marks it reported before tool-jobs listeners
             // run, so ACP remains the sole completion recipient. No background
             // polling or timer-renewal gap can cause an extra model turn.
-            void jobs.wait(id, 30_000, owner).catch((error: unknown) => {
-              ctx.logger.warn(`ACP terminal job completion could not be observed: ${String(error)}`)
-            })
+            void jobs
+              .wait(id, 30_000, owner)
+              .then((view) => {
+                settled = view.status !== 'running' && view.status !== 'stopping'
+                retireReleased()
+              })
+              .catch((error: unknown) => {
+                ctx.logger.warn(`ACP terminal job completion could not be observed: ${String(error)}`)
+              })
             return outcome
           }),
         }
@@ -41,6 +63,10 @@ export function resolveTerminalJobs(ctx: Context, sessionId: string): AcpTermina
     return {
       cancel: () => {
         jobs.kill(id, owner, 'ACP terminal cancellation')
+      },
+      release: () => {
+        released = true
+        retireReleased()
       },
     }
   }

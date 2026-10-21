@@ -26,12 +26,17 @@ import {
 import { installNativeToolRenderer } from './ui/native-tool-renderer.ts'
 import { installAcpAssistantStream } from './ui/AcpAssistantStream.ts'
 import { AcpActivityJournalHub } from './data/activity-journal.ts'
-import { AcpUiFeedback } from './data/feedback.ts'
+import { AcpUiFeedback, followAcpQuestionLimitations } from './data/feedback.ts'
 import { CrossBackendCoordinator } from './coordinator/cross-backend-coordinator.ts'
 import { CrossBackendModal } from './ui/CrossBackendModal.ts'
 import { AcpOutcomeToast } from './ui/AcpOutcomeToast.ts'
 import { AcpRecoveryDock } from './ui/AcpRecoveryDock.ts'
 import { AcpAgentControl } from './ui/AcpAgentControl.ts'
+import {
+  AcpExternalSubagentComposer,
+  followExternalSubagentRecords,
+  selectExternalSubagentRecord,
+} from './ui/AcpExternalSubagentComposer.ts'
 import type { SessionAccessSource } from './ui/session-action-access.ts'
 import { AcpTeamManagement } from './ui/AcpTeamManagement.ts'
 import { AcpTeamApprovals } from './ui/AcpTeamApprovals.ts'
@@ -115,6 +120,18 @@ async function registerUi(ctx: ClientContext): Promise<void> {
     remote: acpRemote,
   })
   const feedback = new AcpUiFeedback()
+  ctx.effect(
+    () =>
+      followAcpQuestionLimitations(
+        (listener) => ctx.remote.$on('api-session/error', listener),
+        feedback,
+        (id) => {
+          const summary = sessions.list.getSnapshot().byId[id as SessionId]
+          return summary?.title ?? summary?.displayTitle ?? null
+        },
+      ),
+    'dsh-acp: child question limitation feedback',
+  )
   const jsonStringWrapping = createAcpJsonStringWrapping()
   const panelWire: AcpSectionWire = {
     refreshHealth: (recheck) => {
@@ -136,6 +153,19 @@ async function registerUi(ctx: ClientContext): Promise<void> {
   ctx.uiConversation.events.register(createAcpActivityDefinition(managedRoutes.owns))
   ctx.effect(() => ctx.locale.register('acpActivity', { zh, en }), 'dsh-acp: activity dictionaries')
   ctx.effect(() => ctx.locale.register('settings.acp', { zh, en }), 'dsh-acp: settings dictionaries')
+  ctx.slots.inject('conversation.composer', () =>
+    followExternalSubagentRecords(sessions.list, (records) =>
+      ctx.slots.register(
+        {
+          name: 'conversation.composer',
+          priority: -11,
+          select: (owner: ComposerChainProps) => selectExternalSubagentRecord(owner, records),
+          locale: 'acpActivity',
+        },
+        AcpExternalSubagentComposer,
+      ),
+    ),
+  )
   ctx.slots.inject('conversation.composer', () =>
     ctx.slots.register(
       {
@@ -261,16 +291,16 @@ async function registerUi(ctx: ClientContext): Promise<void> {
   // DSH publishes team identity through the shared Session projection. The ACP
   // Remote remains responsible for ACP-specific metadata and authorized writes.
   ctx.inject(['remote.subagents', 'uiSession'], (teamCtx) => {
-    const actions: AcpTeamApprovalActions = {
+    const actions = {
       status: teamCtx.uiSession.sessionStatus,
-      isCurrent: (sessionId) => isMainSession(sessions, sessionId),
+      isCurrent: (sessionId: SessionId) => isMainSession(sessions, sessionId),
       ownsRoute: managedRoutes.owns,
-      async loadMembers(sessionId) {
+      async loadMembers(sessionId: SessionId) {
         const result = await acpRemote.teamMembers(sessionId)
         if (!result.ok) throw Object.assign(new Error(result.error.message), { code: result.error.code })
         return result.value
       },
-      async openMember(parentSessionId, childSessionId) {
+      async openMember(parentSessionId: SessionId, childSessionId: SessionId) {
         if (!isMainSession(sessions, parentSessionId)) return
         openSubagentAside(ctx.sidebarRight, { parentSessionId, childSessionId, mode: 'continuable' })
       },
@@ -304,24 +334,52 @@ async function registerUi(ctx: ClientContext): Promise<void> {
                 AcpTeamManagement,
               ),
             )
-            yield teamCtx.slots.inject('conversation.input.dock', () =>
-              teamCtx.slots.register(
-                {
-                  name: 'conversation.input.dock',
-                  id: 'acp-team-approvals',
-                  order: 95,
-                  locale: 'acpActivity',
-                  inject: () => actions,
-                },
-                AcpTeamApprovals,
-              ),
-            )
           }, 'dsh-acp: active native Team controls')
           return () => {
             void unmount()
           }
         }),
       'dsh-acp: native Team UI lifecycle',
+    )
+  })
+  ctx.inject(['uiSession'], (approvalCtx) => {
+    const actions: AcpTeamApprovalActions = {
+      status: approvalCtx.uiSession.sessionStatus,
+      isCurrent: (sessionId) => isMainSession(sessions, sessionId),
+      async loadChildren(parent) {
+        const result = await acpRemote.approvalChildren(parent)
+        if (!result.ok) throw Object.assign(new Error(result.error.message), { code: result.error.code })
+        return result.value
+      },
+      async openMember(parent, child) {
+        if (!isMainSession(sessions, parent)) return
+        const children = await actions.loadChildren(parent)
+        const current = children.find(
+          (entry) =>
+            entry.sessionId === child.sessionId &&
+            entry.parentSessionId === child.parentSessionId &&
+            entry.mode === child.mode,
+        )
+        if (!isMainSession(sessions, parent) || current === undefined) return
+        openSubagentAside(ctx.sidebarRight, {
+          parentSessionId: current.parentSessionId as SessionId,
+          childSessionId: current.sessionId as SessionId,
+          mode: current.mode,
+        })
+      },
+      resolveReason: (reason) => (reason === undefined ? undefined : ctx.locale.resolveText(reason)),
+    }
+    approvalCtx.slots.inject('conversation.input.dock', () =>
+      approvalCtx.slots.register(
+        {
+          name: 'conversation.input.dock',
+          id: 'acp-team-approvals',
+          order: 95,
+          locale: 'acpActivity',
+          inject: () => actions,
+        },
+        AcpTeamApprovals,
+      ),
     )
   })
   ctx.effect(() => coordinator.start(), 'dsh-acp: model transition coordinator')

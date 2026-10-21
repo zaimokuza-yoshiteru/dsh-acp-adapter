@@ -9,7 +9,7 @@
   flex-direction: column;
   width: 100%;
   max-width: var(--dsh-chat-content-width);
-  max-height: min(60vh, 520px);
+  max-height: min(70vh, 640px);
   padding: 0 0 10px;
   overflow: hidden;
   border: 0;
@@ -30,7 +30,7 @@
 .header {
   flex: 0 0 auto;
   min-width: 0;
-  max-height: min(18vh, 132px);
+  max-height: min(24vh, 240px);
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: 16px 16px 8px 24px;
@@ -39,11 +39,20 @@
 .heading {
   margin: 0;
   color: var(--dsw-alias-label-primary);
-  font-size: 16px;
-  font-weight: 500;
+  font-size: 14px;
+  font-weight: 400;
   line-height: 22px;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+}
+
+.source {
+  margin: 0 0 6px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 20px;
+  overflow-wrap: anywhere;
 }
 
 .content {
@@ -60,6 +69,21 @@
 .detail {
   min-width: 0;
   margin-left: 12px;
+}
+
+.detail [data-disclosure-row] {
+  color: var(--dsw-alias-label-secondary);
+}
+
+/* Permission evidence must stay readable; compact keeps the native spacing
+   and non-sticky code toolbar, while this surface uses the normal text ink. */
+.detail [data-markdown-variant='compact'] {
+  color: var(--dsw-alias-label-primary);
+}
+
+.detail [data-markdown-variant='compact'] pre {
+  font-size: var(--dsh-content-font-size-secondary, 13px);
+  line-height: calc(20px + var(--dsh-content-font-delta-secondary, 0px));
 }
 
 .question {
@@ -102,9 +126,14 @@
     border-color 120ms ease;
 }
 
-.card .option:hover:not(:disabled),
 .card .option[aria-checked='true'] {
   background: var(--dsw-alias-interactive-bg-hover);
+}
+
+@media (hover: hover) {
+  .card .option:hover:not(:disabled) {
+    background: var(--dsw-alias-interactive-bg-hover);
+  }
 }
 
 .card .option[aria-checked='true'] {

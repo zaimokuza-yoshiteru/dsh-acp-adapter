@@ -1,6 +1,14 @@
 import { beforeEach, expect, it, vi } from 'vitest'
 
-const stateUpdates = vi.hoisted(() => ({ hookIndex: 0, values: [] as { slot: number; value: unknown }[] }))
+const stateUpdates = vi.hoisted(() => ({
+  hookIndex: 0,
+  values: [] as { slot: number; value: unknown }[],
+  effects: [] as (() => void)[],
+}))
+const nativeViews = vi.hoisted(() => ({
+  disclosures: [] as Record<string, unknown>[],
+  markdown: [] as Record<string, unknown>[],
+}))
 
 vi.mock('react', () => ({
   createElement: (type: unknown, props: Record<string, unknown> | null, ...children: unknown[]) => ({
@@ -10,7 +18,7 @@ vi.mock('react', () => ({
       ...(children.length === 0 ? {} : { children: children.length === 1 ? children[0] : children }),
     },
   }),
-  useEffect: () => undefined,
+  useEffect: (effect: () => void) => stateUpdates.effects.push(effect),
   useRef: (current: unknown) => ({ current }),
   useState: (initial: unknown) => {
     const slot = stateUpdates.hookIndex++
@@ -24,7 +32,13 @@ vi.mock('@deepseek-ai/dsh-client-ui-primitives', () => ({
     return { type: 'button', props }
   },
   MarkdownText: function MarkdownText(props: Record<string, unknown>) {
+    nativeViews.markdown.push(props)
     return { type: 'markdown', props }
+  },
+  IconInfoOutlineMedium: () => null,
+  DisclosureRow: function DisclosureRow(props: Record<string, unknown>) {
+    nativeViews.disclosures.push(props)
+    return { type: 'div', props: { children: props.open ? props.children : null } }
   },
 }))
 
@@ -81,29 +95,82 @@ function buttons(tree: unknown): Array<{ props: Record<string, unknown>; text: s
   return found
 }
 
-function renderQuestion(pending: ReturnType<typeof candidate>, chosen?: string) {
-  const actions = { select: vi.fn(), clear: vi.fn(), prune: vi.fn() }
+type DraftState = { byRequest: Record<string, { selectedByQuestion: Record<string, string | undefined> }> }
+
+function storeSpec() {
+  return createAcpPermissionQuestionStore() as unknown as {
+    init: () => DraftState
+    actions: {
+      select: (draft: DraftState, id: string, label: string) => void
+      clear: (draft: DraftState, id: string) => void
+    }
+  }
+}
+
+function renderQuestion(pending: ReturnType<typeof candidate>, chosen?: string, stored?: DraftState) {
+  const store = storeSpec()
+  const state: DraftState = stored ?? {
+    byRequest:
+      chosen === undefined
+        ? {}
+        : { [pending.questions[0]!.id]: { selectedByQuestion: { [pending.questions[0]!.id]: chosen } } },
+  }
+  const actions = {
+    select: vi.fn((id: string, label: string) => store.actions.select(state, id, label)),
+    clear: vi.fn((id: string) => store.actions.clear(state, id)),
+  }
   const tree = AcpPermissionQuestion({
     matched: pending,
     t: (key: string) => key,
-    useStore: (select: (state: { byRequest: Record<string, unknown> }) => unknown) =>
-      select({
-        byRequest:
-          chosen === undefined
-            ? {}
-            : {
-                [pending.key]: { selectedByQuestion: { [pending.questions[0]!.id]: chosen } },
-              },
-      }),
+    useStore: (select: (state: { byRequest: Record<string, unknown> }) => unknown) => select(state),
     actions,
   } as never)
-  return { tree, actions }
+  return { tree, actions, state }
 }
 
 beforeEach(() => {
   vi.clearAllMocks()
   stateUpdates.hookIndex = 0
   stateUpdates.values.length = 0
+  stateUpdates.effects.length = 0
+  nativeViews.disclosures.length = 0
+  nativeViews.markdown.length = 0
+})
+
+it('keeps current request details secondary without hiding legacy operations', () => {
+  const detail = 'Command:\n\n```\nprintf exact-operation\n```'
+  const pending = candidate('acp-permission:permission-1', {
+    questions: [
+      {
+        id: 'acp-permission:permission-1',
+        question: 'printf exact-operation',
+        detail,
+        header: 'Worker',
+        options: [{ label: 'ALPHA' }],
+      },
+    ],
+  })
+  buttons(renderQuestion(pending).tree)
+  expect(nativeViews.disclosures[0]).toMatchObject({ open: false, title: 'acpQuestionDetails', expandOnRowClick: true })
+  expect(nativeViews.markdown).toEqual([])
+  const legacy = candidate('acp-permission:permission-2', {
+    questions: [
+      { id: 'acp-permission:permission-2', question: 'Permission required', detail, options: [{ label: 'ALPHA' }] },
+    ],
+  })
+  buttons(renderQuestion(legacy).tree)
+  expect(nativeViews.disclosures[1]).toMatchObject({ open: true })
+  expect(nativeViews.markdown[0]).toMatchObject({ text: detail, variant: 'compact' })
+})
+
+it('keys transient card state by the actual Host question when a native presentation slot is reused', () => {
+  const root = candidate('acp-permission:root-spawn')
+  const child = candidate('acp-permission:child-command', { key: root.key })
+  const surfaceKey = (pending: ReturnType<typeof candidate>) =>
+    (renderQuestion(pending).tree as unknown as { props: { children: { props: { key: string } } } }).props.children
+      .props.key
+  expect(surfaceKey(root)).toBe('acp-permission:root-spawn')
+  expect(surfaceKey(child)).toBe('acp-permission:child-command')
 })
 
 it('claims only blocking ACP fixed-choice questions and leaves ordinary DSH questions to the native composer', () => {
@@ -131,27 +198,117 @@ it('claims only blocking ACP fixed-choice questions and leaves ordinary DSH ques
       }),
     ),
   ).toBe(false)
-  expect(isAcpPermissionQuestion(candidate('acp-permission:permission-1', { liveKeys: undefined }))).toBe(false)
+  expect(isAcpPermissionQuestion(candidate('acp-permission:permission-1', { liveKeys: undefined }))).toBe(true)
 })
 
-it('keeps drafts separate by pending key and prunes requests that are no longer live', () => {
-  type Draft = { byRequest: Record<string, { selectedByQuestion: Record<string, string | undefined> }> }
-  const store = createAcpPermissionQuestionStore() as unknown as {
-    init: () => Draft
-    actions: {
-      select: (draft: Draft, key: string, id: string, label: string) => void
-      prune: (draft: Draft, keep: readonly string[]) => void
-    }
-  }
+it('keeps concurrent drafts separate by Host request ID and clears only the settled request', () => {
+  const store = storeSpec()
   const draft = store.init()
-  store.actions.select(draft, 'session-a:request', 'acp-permission:a', 'ALPHA')
-  store.actions.select(draft, 'session-b:request', 'acp-permission:b', 'BETA')
-  expect(draft.byRequest['session-a:request']?.selectedByQuestion['acp-permission:a']).toBe('ALPHA')
-  expect(draft.byRequest['session-b:request']?.selectedByQuestion['acp-permission:b']).toBe('BETA')
-  store.actions.prune(draft, ['session-b:request'])
+  store.actions.select(draft, 'acp-permission:a', 'ALPHA')
+  store.actions.select(draft, 'acp-permission:b', 'BETA')
+  expect(draft.byRequest['acp-permission:a']?.selectedByQuestion['acp-permission:a']).toBe('ALPHA')
+  expect(draft.byRequest['acp-permission:b']?.selectedByQuestion['acp-permission:b']).toBe('BETA')
+  store.actions.clear(draft, 'acp-permission:a')
   expect(draft.byRequest).toEqual({
-    'session-b:request': { selectedByQuestion: { 'acp-permission:b': 'BETA' } },
+    'acp-permission:b': { selectedByQuestion: { 'acp-permission:b': 'BETA' } },
   })
+})
+
+it('restores the same Host request after a new native card key without answering or sharing its choice', () => {
+  const store = storeSpec()
+  const draft = store.init()
+  store.actions.select(draft, 'acp-permission:a', 'ALPHA')
+  store.actions.select(draft, 'acp-permission:b', 'BETA')
+  const rehydrated = JSON.parse(JSON.stringify(draft)) as DraftState
+  for (const [id, label] of [
+    ['a', 'ALPHA'],
+    ['b', 'BETA'],
+  ]) {
+    const pending = candidate(`acp-permission:${id}`, { key: `question:new-client:${id}` })
+    const rendered = buttons(renderQuestion(pending, undefined, rehydrated).tree)
+    expect(rendered.find((button) => button.props['aria-label'] === label)?.props['aria-checked']).toBe(true)
+    expect(pending.answer).not.toHaveBeenCalled()
+  }
+  const unrelated = candidate('acp-permission:c', { key: 'question:new-client:a' })
+  const rendered = buttons(renderQuestion(unrelated, undefined, rehydrated).tree)
+  expect(
+    rendered.filter((button) => button.props.role === 'radio').map((button) => button.props['aria-checked']),
+  ).toEqual([false, false])
+  expect(rendered.find((button) => button.text === 'acpQuestionSubmit')?.props.disabled).toBe(true)
+  expect(unrelated.answer).not.toHaveBeenCalled()
+})
+
+it('retains only 128 most recently selected stable requests and drops legacy render-key records', () => {
+  const store = storeSpec()
+  const draft = store.init()
+  draft.byRequest['question:old-client:1'] = { selectedByQuestion: { 'acp-permission:legacy': 'ALPHA' } }
+  for (let index = 0; index < 128; index++) store.actions.select(draft, `acp-permission:${index}`, 'ALPHA')
+  store.actions.select(draft, 'acp-permission:0', 'BETA')
+  store.actions.select(draft, 'acp-permission:new', 'ALPHA')
+  expect(Object.keys(draft.byRequest)).toHaveLength(128)
+  expect(draft.byRequest).not.toHaveProperty('question:old-client:1')
+  expect(draft.byRequest).not.toHaveProperty('acp-permission:1')
+  expect(draft.byRequest['acp-permission:0']?.selectedByQuestion['acp-permission:0']).toBe('BETA')
+  expect(Object.keys(draft.byRequest).at(-1)).toBe('acp-permission:new')
+})
+
+it('does not transfer a root choice to a child card with identical labels, even when its presentation key is reused', async () => {
+  const root = candidate('acp-permission:root-spawn')
+  const child = candidate('acp-permission:child-command', { key: root.key })
+  const rootView = renderQuestion(root, 'BETA')
+  const rootSubmit = buttons(rootView.tree).find((button) => button.text === 'acpQuestionSubmit')!
+  const childView = renderQuestion(child, undefined, rootView.state)
+  const childButtons = buttons(childView.tree)
+  expect(
+    childButtons.filter((button) => button.props.role === 'radio').map((button) => button.props['aria-checked']),
+  ).toEqual([false, false])
+  expect(childButtons.find((button) => button.text === 'acpQuestionSubmit')?.props.disabled).toBe(true)
+  ;(rootSubmit.props.onClick as () => void)()
+  await Promise.resolve()
+  expect(root.answer).toHaveBeenCalledExactlyOnceWith({
+    answers: [{ id: 'acp-permission:root-spawn', selected: ['BETA'] }],
+  })
+  expect(child.answer).not.toHaveBeenCalled()
+  expect(child.dismiss).not.toHaveBeenCalled()
+})
+
+it('does not restore a saved label that the same request no longer offers', () => {
+  const pending = candidate('acp-permission:a')
+  const rendered = buttons(renderQuestion(pending, 'UNRECOGNIZED').tree)
+  expect(
+    rendered
+      .filter((button) => button.props.role === 'radio')
+      .every((button) => button.props['aria-checked'] === false),
+  ).toBe(true)
+  expect(rendered.find((button) => button.text === 'acpQuestionSubmit')?.props.disabled).toBe(true)
+  expect(pending.answer).not.toHaveBeenCalled()
+})
+
+it.each(['submit', 'cancel'] as const)(
+  'clears a successfully %s request before a subsequent request can restore a draft',
+  async (action) => {
+    const pending = candidate('acp-permission:a')
+    const view = renderQuestion(pending, 'ALPHA')
+    const rendered = buttons(view.tree)
+    const label = action === 'submit' ? 'acpQuestionSubmit' : 'acpQuestionCancel'
+    ;(rendered.find((button) => button.text === label)?.props.onClick as () => void)()
+    await Promise.resolve()
+    expect(view.actions.clear).toHaveBeenCalledWith('acp-permission:a')
+    expect(view.state.byRequest).toEqual({})
+    const next = candidate('acp-permission:new', { key: pending.key })
+    const nextButtons = buttons(renderQuestion(next, undefined, view.state).tree)
+    expect(nextButtons.find((button) => button.text === 'acpQuestionSubmit')?.props.disabled).toBe(true)
+    expect(next.answer).not.toHaveBeenCalled()
+  },
+)
+
+it('clears an observed closed request by its Host ID rather than its native presentation key', () => {
+  const pending = candidate('acp-permission:a', { snapshot: () => ({ channel: 'none', closed: true }) })
+  const view = renderQuestion(pending, 'ALPHA')
+  buttons(view.tree)
+  for (const effect of stateUpdates.effects) effect()
+  expect(view.actions.clear).toHaveBeenCalledExactlyOnceWith('acp-permission:a')
+  expect(view.state.byRequest).toEqual({})
 })
 
 it('waits for an explicit option and submits its exact offered label', async () => {
@@ -197,13 +354,13 @@ it('uses one roving radio tab stop and moves focus/selection with arrows, Home, 
 
   expect(press(radios[0]!, 'ArrowDown')).toBe(true)
   expect(betaFocus).toHaveBeenCalledOnce()
-  expect(actions.select).toHaveBeenLastCalledWith(pending.key, 'acp-permission:permission-1', 'BETA')
+  expect(actions.select).toHaveBeenLastCalledWith('acp-permission:permission-1', 'BETA')
   expect(press(radios[1]!, 'ArrowRight')).toBe(true)
   expect(alphaFocus).toHaveBeenCalledOnce()
-  expect(actions.select).toHaveBeenLastCalledWith(pending.key, 'acp-permission:permission-1', 'ALPHA')
+  expect(actions.select).toHaveBeenLastCalledWith('acp-permission:permission-1', 'ALPHA')
   expect(press(radios[1]!, 'Home')).toBe(true)
   expect(press(radios[0]!, 'End')).toBe(true)
-  expect(actions.select).toHaveBeenLastCalledWith(pending.key, 'acp-permission:permission-1', 'BETA')
+  expect(actions.select).toHaveBeenLastCalledWith('acp-permission:permission-1', 'BETA')
   expect(pending.answer).not.toHaveBeenCalled()
 })
 

@@ -330,7 +330,7 @@ describe('native ACP form elicitation bridge (M5c)', () => {
   )
 
   it.each([true, false])(
-    'uses a child-owned native approval only after delegated rejection (allowed=%s)',
+    'uses child-owned approval for a singleton once scope after delegated rejection (allowed=%s)',
     async (allowed) => {
       const controller = new AbortController()
       const approveDelegatedOnce = vi.fn(async (signal?: AbortSignal) => {
@@ -348,7 +348,7 @@ describe('native ACP form elicitation bridge (M5c)', () => {
         },
       })
       const params = {
-        ...form({ persist: { type: 'string', enum: ['once', 'session', 'always'] } }),
+        ...form({ persist: { type: 'string', enum: ['once'] } }),
         _meta: { codex_approval_kind: 'mcp_tool_call' },
       }
       expect(await handler(params, controller.signal)).toEqual(
@@ -363,6 +363,7 @@ describe('native ACP form elicitation bridge (M5c)', () => {
     'ordinary-form',
     'extra-field',
     'persistent-only',
+    'multiple-scopes',
     'other-error',
     'aborted',
     'approval-error',
@@ -389,7 +390,15 @@ describe('native ACP form elicitation bridge (M5c)', () => {
     })
     const params = {
       ...form({
-        persist: { type: 'string', enum: scenario === 'persistent-only' ? ['session', 'always'] : ['once', 'always'] },
+        persist: {
+          type: 'string',
+          enum:
+            scenario === 'persistent-only'
+              ? ['session', 'always']
+              : scenario === 'multiple-scopes'
+                ? ['once', 'always']
+                : ['once'],
+        },
         ...(scenario === 'extra-field' ? { note: { type: 'string' } } : {}),
       }),
       ...(scenario === 'ordinary-form' ? {} : { _meta: { codex_approval_kind: 'mcp_tool_call' } }),

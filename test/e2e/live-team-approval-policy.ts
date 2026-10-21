@@ -2,12 +2,13 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ToolCallId } from '@deepseek-ai/dsh-llm'
 import { setSandboxMode } from '@deepseek-ai/dsh-sandbox-policy'
+import { setApprovalPolicy } from '@deepseek-ai/dsh-user-approval'
 import type { SandboxMode } from '@deepseek-ai/dsh-sandbox'
 import type {} from '@deepseek-ai/dsh-experimental-agent-team'
 import type {} from '@deepseek-ai/dsh-shell'
 import type {} from '@deepseek-ai/dsh-tools'
 
-/** A test-local sandbox precondition, not an approval answerer or a production permission setting. */
+/** Exact-call native escalation preconditions, never an approval answerer or a production policy. */
 export function installLiveTeamApprovalPolicy(
   ctx: Context,
   { lead, memberName, command, token }: { lead: Agent; memberName: string; command: string; token: string },
@@ -24,15 +25,16 @@ export function installLiveTeamApprovalPolicy(
   let member: Agent | undefined
   let admittedCallId: ToolCallId | undefined
   let admissionPolicy: { previous: SandboxMode; effective: SandboxMode } | undefined
+  let originalApproval: 'ask' | 'never' | null | undefined
+  let approvalAtAdmission: 'ask' | 'never' | null | undefined
   const violations: string[] = []
   const disposeCreated = ctx.on('agent/created', ({ agent }) => {
     const membership = ctx.agentTeams.tryMembership(agent)
     if (membership?.role !== 'teammate' || membership.root !== lead || membership.name !== memberName) return
     if (member !== undefined) throw new Error('LIVE_TEAM_APPROVAL_DUPLICATE_MEMBER')
-    // Identify the real child before its queued work starts. Its ACP setup can
-    // still synchronize inherited Lead policy after this boundary, so the test
-    // sandbox precondition belongs at exact tool admission below.
+    // Record native delegation before any explicit test-only escalation setup.
     member = agent
+    originalApproval = ctx.approval.overrideOf(agent.session)
   })
   const disposeGuard = ctx.tools.guard((execution) => {
     const args = execution.arguments as Record<string, unknown> | undefined
@@ -62,6 +64,11 @@ export function installLiveTeamApprovalPolicy(
       violations.push(`unexpected-member-call:${execution.name}`)
       return 'LIVE_TEAM_APPROVAL_EXPECTED_ONE_EXACT_ESCALATED_BASH'
     }
+    // This opt-in scenario specifically tests native interactive escalation,
+    // rather than the production delegated `never` default. Only this verified
+    // member's one exact admitted command receives the test-owned ask intent.
+    if (ctx.approval.overrideOf(member.session) === 'never') setApprovalPolicy(member.session, 'ask')
+    approvalAtAdmission = ctx.approval.overrideOf(member.session)
     const previous = ctx.sandboxPolicy.resolve({ session: member.session }).mode
     if (previous !== 'read-only') setSandboxMode(member.session, 'read-only')
     const effective = ctx.sandboxPolicy.resolve({ session: member.session }).mode
@@ -85,6 +92,12 @@ export function installLiveTeamApprovalPolicy(
     },
     get admissionPolicy() {
       return admissionPolicy
+    },
+    get originalApproval() {
+      return originalApproval
+    },
+    get approvalAtAdmission() {
+      return approvalAtAdmission
     },
     violations,
     dispose() {

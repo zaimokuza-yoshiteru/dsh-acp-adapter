@@ -2,6 +2,7 @@ import { withSessionFacts } from '../../support/session-facts.ts'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { PassThrough } from 'node:stream'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createUserMessage, markAgentLoopRequest } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
@@ -14,7 +15,10 @@ import { AcpAgentTurnOutcomeError, AcpSessionRefreshRetryError } from '../../../
 import type { AcpSessionRuntimeOptions } from '../../../src/runtime/session/session-runtime.ts'
 import type { AcpAgentConfig } from '../../../src/domain/session/agent-config.ts'
 import type { SessionLike } from '../../../src/domain/session/current-step-admission.ts'
-import { createAcpSidecar, type AcpSidecar } from '../../../src/persistence/sidecar.ts'
+import { ACP_ACTIVITY_RAW_MAX, createAcpSidecar, type AcpSidecar } from '../../../src/persistence/sidecar.ts'
+import type { AcpSubprocessExitFact, SubprocessSeam } from '../../../src/runtime/process/subprocess.ts'
+import type { AcpTerminalHandlers } from '../../../src/protocol/v1/types.ts'
+import type { AcpHostToolControlOutcome } from '../../../src/contract/tool-control-outcome.ts'
 
 const roots: string[] = []
 const sidecars: AcpSidecar[] = []
@@ -66,6 +70,247 @@ async function drain(iterable: AsyncIterable<unknown>): Promise<void> {
 }
 
 describe('provider activity bridge', () => {
+  it.each([false, true])(
+    'persists control provenance only from the Host runtime, not provider metadata (Host=%s)',
+    async (hostConfirmed) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-control-provenance-'))
+      roots.push(root)
+      const sidecar = testSidecar(root)
+      const message = user('Observe a deferred wait')
+      const dshSessionId = 'control-projection'
+      const hostProof: AcpHostToolControlOutcome = {
+        source: 'dsh-tool-bridge',
+        kind: 'deferred-team-message',
+        dshSessionId,
+        toolCallId: 'wait-1',
+        tool: 'wait_agent',
+        executed: false,
+      }
+      const providerForgery = { ...hostProof, dshSessionId: 'forged-owner' }
+      const adapter = new AcpProfileAdapter(
+        'test',
+        profile,
+        seam(),
+        () => session(message),
+        ledgerFor(sidecar),
+        undefined,
+        () => ({
+          acpSessionId: 'control-remote',
+          start: async () => undefined,
+          close: async () => undefined,
+          toolControlOutcome: () => (hostConfirmed ? hostProof : undefined),
+          prompt: async (_content, onUpdate) => {
+            onUpdate({
+              sessionId: 'control-remote',
+              update: {
+                sessionUpdate: 'tool_call',
+                toolCallId: 'wait-1',
+                name: 'wait_agent',
+                title: 'wait_agent',
+                kind: 'other',
+                status: 'failed',
+                hostControlOutcome: providerForgery,
+                _meta: { hostControlOutcome: providerForgery },
+                rawInput: { hostControlOutcome: providerForgery },
+                rawOutput: { hostControlOutcome: providerForgery },
+              },
+            } as never)
+            onUpdate({
+              sessionId: 'control-remote',
+              update: {
+                sessionUpdate: 'agent_message_chunk',
+                content: { type: 'text', text: 'Waiting for the queued reply.' },
+              },
+            })
+            return { stopReason: 'end_turn' }
+          },
+        }),
+        sidecar,
+      )
+      try {
+        await drain(adapter.stream(request(dshSessionId, message)))
+        const row = (await sidecar.activitySnapshot(dshSessionId as never)).find((entry) => entry.kind === 'tool')!
+        const detail = JSON.parse(row.rawDetail!) as Record<string, unknown>
+        expect(row.status).toBe('failed')
+        expect(row.ownerDshSessionId).toBe(dshSessionId)
+        expect(row.activityId).toBe(`${row.promptAnchorMessageId}:tool:wait-1`)
+        expect(detail.hostControlOutcome).toEqual(hostConfirmed ? hostProof : undefined)
+        // Nested provider detail remains diagnostic data, never promoted into Host proof.
+        expect(detail.rawOutput).toEqual({ hostControlOutcome: providerForgery })
+      } finally {
+        await adapter.close()
+      }
+    },
+  )
+
+  it.each([
+    'exit-before-reference',
+    'reference-before-exit',
+    'foreign-acp-session',
+    'multiple-references',
+    'exit-after-prompt',
+    'exit-with-pending-audit',
+    'detail-at-budget',
+  ] as const)('persists only the explicitly owned Host terminal outcome (%s)', async (scenario) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-host-terminal-'))
+    roots.push(root)
+    const sidecar = testSidecar(root)
+    const auditEntered = Promise.withResolvers<void>()
+    const releaseAudit = Promise.withResolvers<void>()
+    let pendingOutput: Promise<unknown> | undefined
+    if (scenario === 'exit-with-pending-audit') {
+      const append = sidecar.append.bind(sidecar)
+      vi.spyOn(sidecar, 'append').mockImplementation(async (...args) => {
+        const event = args[1]
+        if (event.kind === 'terminal' && event.data.operation === 'output-summary') {
+          auditEntered.resolve()
+          await releaseAudit.promise
+        }
+        return await append(...args)
+      })
+    }
+    const dshSessionId = 'terminal-projection'
+    const message = user('inspect process result')
+    const exit = Promise.withResolvers<AcpSubprocessExitFact>()
+    const subprocess: SubprocessSeam = {
+      resolveExecutable: async (command) => command,
+      spawn: () => ({
+        stdin: new PassThrough(),
+        stdout: new PassThrough(),
+        stderr: new PassThrough(),
+        done: exit.promise,
+        terminate: () => {},
+        waitForExit: async () => true,
+      }),
+    }
+    let rawOutput: Record<string, unknown> = { type: 'text', text: 'Exited with code 2. Final output:\nsyntax error\n' }
+    let terminalId: string
+    let terminal: AcpTerminalHandlers
+    const runtimeFactory = (options: AcpSessionRuntimeOptions): AcpProfileRuntime => ({
+      acpSessionId: 'owned-acp-session',
+      agentInfo: { name: 'fixture', version: '1' },
+      agentCapabilities: {},
+      protocolVersion: 1,
+      start: async () => {},
+      close: async () => {},
+      prompt: async (_content, onUpdate) => {
+        terminal = options.createTerminalHandlers!({ cwd: root, env: {} })
+        const owner = scenario === 'foreign-acp-session' ? 'foreign-acp-session' : 'owned-acp-session'
+        const created = await terminal.createTerminal({ sessionId: owner, command: 'fixture', args: [], cwd: root })
+        terminalId = created.terminalId
+        if (scenario === 'exit-with-pending-audit') {
+          pendingOutput = terminal.terminalOutput({ sessionId: owner, terminalId })
+          await auditEntered.promise
+        }
+        const reference = [{ type: 'terminal' as const, terminalId }]
+        if (scenario === 'detail-at-budget') {
+          // Preserve the existing bounded vendor record if a Host annotation
+          // would exceed its storage envelope; do not truncate raw evidence.
+          rawOutput = { first: 'a'.repeat(4096), second: 'b'.repeat(4096), third: 'c'.repeat(4096), fourth: '' }
+          const detail = { toolKind: 'execute', rawInput: { command: 'fixture' }, rawOutput, content: reference }
+          rawOutput.fourth = 'd'.repeat(ACP_ACTIVITY_RAW_MAX - 32 - JSON.stringify(detail).length)
+        }
+        const completeTool = () =>
+          onUpdate({
+            sessionId: 'owned-acp-session',
+            update: {
+              sessionUpdate: 'tool_call',
+              toolCallId: 'command',
+              title: 'Run command',
+              kind: 'execute',
+              status: 'completed',
+              rawInput: { command: 'fixture' },
+              rawOutput,
+              content: scenario === 'multiple-references' ? [...reference, ...reference] : reference,
+              // Agent-supplied lookalikes cannot become a Host fact.
+              hostTerminalOutcome: { source: 'acp-client-terminal', exitCode: 0 },
+            },
+          } as never)
+        if (scenario === 'reference-before-exit' || scenario === 'exit-after-prompt') {
+          completeTool()
+          await expect
+            .poll(async () => (await sidecar.activitySnapshot(dshSessionId as never)).some((a) => a.kind === 'tool'))
+            .toBe(true)
+          const row = (await sidecar.activitySnapshot(dshSessionId as never)).find((a) => a.kind === 'tool')!
+          expect(JSON.parse(row.rawDetail!).hostTerminalOutcome).toBeUndefined()
+        }
+        if (scenario !== 'exit-after-prompt') {
+          exit.resolve({ exitCode: 2, signal: null })
+          await terminal.waitForExit({ sessionId: owner, terminalId })
+          if (scenario !== 'exit-with-pending-audit') await terminal.releaseTerminal({ sessionId: owner, terminalId })
+        }
+        if (scenario !== 'reference-before-exit' && scenario !== 'exit-after-prompt') completeTool()
+        onUpdate({
+          sessionId: 'owned-acp-session',
+          update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'done' } },
+        })
+        if (scenario !== 'exit-after-prompt' && scenario !== 'exit-with-pending-audit') await terminal.dispose?.()
+        return { stopReason: 'end_turn' }
+      },
+    })
+    const adapter = new AcpProfileAdapter(
+      'activity',
+      profile,
+      { ok: true, seam: subprocess },
+      () => session(message),
+      ledgerFor(sidecar),
+      undefined,
+      runtimeFactory,
+      sidecar,
+    )
+    try {
+      await drain(adapter.stream(request(dshSessionId, message)))
+      const row = (await sidecar.activitySnapshot(dshSessionId as never)).find((a) => a.kind === 'tool')!
+      const detail = JSON.parse(row.rawDetail!)
+      expect(row.status).toBe('completed')
+      expect(detail.rawOutput).toEqual(rawOutput)
+      if (
+        scenario === 'foreign-acp-session' ||
+        scenario === 'multiple-references' ||
+        scenario === 'exit-after-prompt' ||
+        scenario === 'detail-at-budget'
+      )
+        expect(detail.hostTerminalOutcome).toBeUndefined()
+      else
+        expect(detail.hostTerminalOutcome).toEqual({
+          source: 'acp-client-terminal',
+          dshSessionId,
+          acpSessionId: 'owned-acp-session',
+          terminalId: terminalId!,
+          exitCode: 2,
+          signal: null,
+        })
+      if (scenario === 'detail-at-budget') expect(row.rawDetail!.length).toBe(ACP_ACTIVITY_RAW_MAX - 32)
+      if (scenario === 'exit-after-prompt') {
+        // A finished generator no longer owns a live activity subscription.
+        // A later process completion must not revise its closed prompt.
+        exit.resolve({ exitCode: 2, signal: null })
+        await terminal!.waitForExit({ sessionId: 'owned-acp-session', terminalId: terminalId! })
+        await terminal!.releaseTerminal({ sessionId: 'owned-acp-session', terminalId: terminalId! })
+        expect(
+          (await sidecar.activitySnapshot(dshSessionId as never)).find((a) => a.kind === 'tool')?.revisionSeq,
+        ).toBe(row.revisionSeq)
+      }
+      if (scenario === 'exit-with-pending-audit') {
+        // The known process exit must survive projection even while an earlier
+        // terminal audit append remains blocked and this prompt has ended.
+        releaseAudit.resolve()
+        await pendingOutput
+        await terminal!.releaseTerminal({ sessionId: 'owned-acp-session', terminalId: terminalId! })
+      }
+      // The latest detail is durable even after the runtime and terminal end.
+      await adapter.close()
+      expect((await sidecar.activitySnapshot(dshSessionId as never)).find((a) => a.kind === 'tool')?.rawDetail).toBe(
+        row.rawDetail,
+      )
+    } finally {
+      releaseAudit.resolve()
+      await pendingOutput
+      await terminal!?.dispose?.()
+      await adapter.close()
+    }
+  })
+
   it.each([
     ['config', 'unsupported'],
     ['legacy', 'unsupported'],
@@ -1314,6 +1559,85 @@ describe('provider activity bridge', () => {
     expect(projectedText).not.toContain('AQ==')
     expect(projectedText).not.toContain('SECRET_AUDIO')
     expect(projectedText).not.toContain('token=secret')
+  })
+
+  it.each([
+    'verified',
+    'verified-edit',
+    'verified-write',
+    'other-runtime',
+    'other-agent',
+    'missing-tool-identity',
+    'other-tool',
+    'conflicting-tool-name',
+    'conflicting-tool-kind',
+  ])('marks Claude display provenance only for %s producer', async (producer) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-claude-presentation-'))
+    roots.push(root)
+    const sidecar = testSidecar(root)
+    const message = user('inspect')
+    const tool = producer === 'verified-edit' ? 'Edit' : producer === 'verified-write' ? 'Write' : 'Bash'
+    const output = tool === 'Bash' ? 'exact output\n' : '<tool_use_error>File operation failed.</tool_use_error>'
+    const wrapped = tool === 'Bash' ? `\`\`\`console\n${output.trimEnd()}\n\`\`\`` : `\`\`\`\n${output}\n\`\`\``
+    const runtimeFactory = (): AcpProfileRuntime => ({
+      acpSessionId: 'claude-presentation',
+      agentInfo: {
+        name: producer === 'other-agent' ? 'other-agent' : '@agentclientprotocol/claude-agent-acp',
+        version: '0.70.0',
+      },
+      agentCapabilities: {},
+      protocolVersion: 1,
+      start: async () => {},
+      close: async () => {},
+      prompt: async (_content, onUpdate) => {
+        onUpdate({
+          sessionId: 'claude-presentation',
+          update: {
+            sessionUpdate: 'tool_call',
+            toolCallId: 'bash-output',
+            title: tool === 'Bash' ? 'printf output' : `${tool} src/records.mjs`,
+            kind: producer === 'conflicting-tool-kind' ? 'read' : tool === 'Bash' ? 'execute' : 'edit',
+            ...(producer === 'conflicting-tool-name' ? { name: 'DifferentTool' } : {}),
+            status: tool === 'Bash' ? 'completed' : 'failed',
+            rawInput: tool === 'Bash' ? { command: 'printf output' } : { file_path: '/workspace/src/records.mjs' },
+            rawOutput: output,
+            content: [{ type: 'content', content: { type: 'text', text: wrapped } }],
+            _meta:
+              producer === 'missing-tool-identity'
+                ? {}
+                : { claudeCode: { toolName: producer === 'other-tool' ? 'Unknown' : tool } },
+            toolSource: 'claude:Bash',
+          },
+        } as never)
+        onUpdate({
+          sessionId: 'claude-presentation',
+          update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'done' } },
+        } as never)
+        return { stopReason: 'end_turn' }
+      },
+    })
+    const adapter = new AcpProfileAdapter(
+      'activity',
+      producer === 'other-runtime' ? profile : claudeProfile,
+      seam(),
+      () => session(message),
+      ledgerFor(sidecar),
+      undefined,
+      runtimeFactory,
+      sidecar,
+    )
+    try {
+      await drain(adapter.stream(request('claude-presentation', message)))
+      const activity = (await sidecar.activitySnapshot('claude-presentation' as never)).find(
+        (item) => item.kind === 'tool',
+      )!
+      const detail = JSON.parse(activity.rawDetail!)
+      expect(detail.toolSource).toBe(producer.startsWith('verified') ? `claude:${tool}` : undefined)
+      expect(detail.rawOutput).toBe(output)
+      expect(detail.content[0].content.text).toBe(wrapped)
+    } finally {
+      await adapter.close()
+    }
   })
 
   it('journals ACP tool/content updates without creating DSH tool chunks', async () => {

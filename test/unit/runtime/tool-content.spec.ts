@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { toolContent } from '../../../src/host/teams/tool-content.ts'
+import { toolContent } from '../../../src/host/tools/tool-content.ts'
 
 const image = { attachmentId: 'att-1' as never, mediaType: 'image/png' as const, bytes: 3, width: 1, height: 1 }
 const limits = {

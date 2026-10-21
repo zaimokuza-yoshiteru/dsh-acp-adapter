@@ -447,15 +447,19 @@ describe('native assistant renderer composition', () => {
       new Map([[key, { rows: [row], unavailable: false }]]),
     )
     expect(result[0]).toBe(native)
-    expect(result.map((node) => node.kind)).toEqual(['assistant-step', 'assistant-step', 'tool-call', 'assistant-step'])
+    expect(result.map((node) => node.kind)).toEqual([
+      'assistant-step',
+      'assistant-step',
+      'assistant-step',
+      'tool-call',
+      'assistant-step',
+    ])
     expect(result[1]!.data).toMatchObject({
-      blocks: [
-        { kind: 'reasoning', text: 'Think' },
-        { kind: 'text', text: 'Progress' },
-      ],
+      blocks: [{ kind: 'reasoning', text: 'Think' }],
     })
-    expect(result[2]!.data).toMatchObject({ root: { call: { name: 'send_message' } } })
-    expect(result[3]!.data).toMatchObject({
+    expect(result[2]!.data).toMatchObject({ blocks: [{ kind: 'text', text: 'Progress' }] })
+    expect(result[3]!.data).toMatchObject({ root: { call: { name: 'send_message' } } })
+    expect(result[4]!.data).toMatchObject({
       blocks: [
         { kind: 'text', text: 'Answer one' },
         { kind: 'text', text: 'Answer two' },
@@ -465,8 +469,13 @@ describe('native assistant renderer composition', () => {
       [assistant, marker],
       new Map([[key, { rows: [{ ...row, status: 'unfinished' }], unavailable: false }]]),
     )
-    expect(unfinished.map((node) => node.kind)).toEqual(['assistant-step', 'acp-inline-activity', 'assistant-step'])
-    expect(unfinished[1]!.data).toMatchObject({ status: 'unfinished' })
+    expect(unfinished.map((node) => node.kind)).toEqual([
+      'assistant-step',
+      'assistant-step',
+      'acp-inline-activity',
+      'assistant-step',
+    ])
+    expect(unfinished[2]!.data).toMatchObject({ status: 'unfinished' })
     expect(normalizeAcpChatNodes([assistant, marker], new Map([[key, { rows: [], unavailable: true }]]))).toEqual([
       assistant,
       marker,

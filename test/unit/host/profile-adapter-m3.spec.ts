@@ -271,7 +271,7 @@ describe('M3a binding-first ACP provider', () => {
     expect(records.prompts).toBe(0)
   })
 
-  it('projects an established ACP session as DSH Custom without changing native sessions', async () => {
+  it('preserves Host policy while establishing an ACP binding', async () => {
     const { sidecar, root } = sidecarAt()
     try {
       const records = { starts: 0, prompts: 0, restores: 0 }
@@ -300,12 +300,9 @@ describe('M3a binding-first ACP provider', () => {
       )
       await drain(adapter.stream(request('custom-permission', message)))
       expect(events.slice(0, 2)).toEqual(session(message).events)
-      expect(events.slice(2)).toEqual([
-        { type: 'sandbox/mode', seq: 3, data: { mode: 'danger-full-access' } },
-        { type: 'approval/policy', seq: 4, data: { policy: 'ask' } },
-      ])
+      expect(events.slice(2)).toEqual([])
       const binding = await sidecar.readLatestBinding('custom-permission' as never)
-      expect(binding?.status === 'ok' ? binding.binding.dshCommittedSeq : undefined).toBe(4)
+      expect(binding?.status === 'ok' ? binding.binding.dshCommittedSeq : undefined).toBe(2)
       expect(records.prompts).toBe(1)
 
       const nativeEvents = [...session(message).events]
@@ -436,12 +433,8 @@ describe('M3a binding-first ACP provider', () => {
       expect(second.restores).toBe(1)
       expect(second.starts).toBe(0)
       expect(second.prompts).toBe(1)
-      expect(events.filter((event) => event.type === 'sandbox/mode')).toEqual([
-        { type: 'sandbox/mode', seq: 5, data: { mode: 'danger-full-access' } },
-      ])
-      expect(events.filter((event) => event.type === 'approval/policy')).toEqual([
-        { type: 'approval/policy', seq: 6, data: { policy: 'ask' } },
-      ])
+      expect(events.filter((event) => event.type === 'sandbox/mode')).toEqual([])
+      expect(events.filter((event) => event.type === 'approval/policy')).toEqual([])
     } finally {
       await sidecar.dispose()
       fs.rmSync(root, { recursive: true, force: true })

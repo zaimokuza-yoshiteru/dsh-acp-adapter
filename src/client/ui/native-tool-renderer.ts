@@ -1,4 +1,4 @@
-import { createElement as h, useLayoutEffect, useMemo } from 'react'
+import { createContext, createElement as h, useContext, useLayoutEffect, useMemo } from 'react'
 import type { ComponentType, ReactNode } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
 import type {
@@ -13,6 +13,9 @@ type NativeOwner = ChatNodeOwnerProps &
     node: ChatConversationViewNode
   }
 export type NativeToolOwner = NativeOwner & { node: ChatNodeViewProps<'tool-call'>['node'] }
+/** Copy for one ACP card whose result omitted output. Kept outside tool data
+ * so native copy controls and persisted results retain their exact payload. */
+export const NativeTerminalOutputNotice = createContext<string | undefined>(undefined)
 export function nativeOwner(props: NativeOwner): NativeOwner {
   const {
     useDisclosure,
@@ -131,6 +134,16 @@ export function mountNativeEntry(
     const Native = entry.component as ComponentType<EntryProps>
     const Component = (props: EntryProps): ReactNode => {
       useLayoutEffect(() => anchors?.flush())
+      const outputNotice = useContext(NativeTerminalOutputNotice)
+      const sourceTranslate = props.t
+      const translate = useMemo(
+        () =>
+          outputNotice !== undefined && entry.locale === 'conversation' && typeof sourceTranslate === 'function'
+            ? (key: unknown, ...args: unknown[]) =>
+                key === 'terminal.noOutput' ? outputNotice : sourceTranslate(key, ...args)
+            : sourceTranslate,
+        [outputNotice, sourceTranslate],
+      )
       const renderSlot = useMemo(
         () =>
           props.renderSlot === undefined
@@ -153,6 +166,7 @@ export function mountNativeEntry(
           : (component: ComponentType<EntryProps>, value: EntryProps) => h(component, value)
       return render(Native, {
         ...props,
+        ...(translate === sourceTranslate ? {} : { t: translate }),
         ...(renderSlot === undefined
           ? {}
           : {

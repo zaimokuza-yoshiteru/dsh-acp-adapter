@@ -24,9 +24,10 @@ import {
   type ExternalDelegationObservation,
 } from '../../domain/subagent/external-delegation.ts'
 import { redactSecretText } from '../../domain/observability/redaction.ts'
+import { EXTERNAL_SUBAGENT_DESCRIPTOR_PROVIDER } from '../../contract/external-subagent.ts'
 
 export const EXTERNAL_SUBAGENT_ACTIVITY_ANCHOR = 'external-subagent-record'
-export const EXTERNAL_SUBAGENT_DESCRIPTOR_PROVIDER = 'dsh-acp-adapter'
+export { EXTERNAL_SUBAGENT_DESCRIPTOR_PROVIDER } from '../../contract/external-subagent.ts'
 
 export interface ExternalProjectionContext {
   readonly profileId: string

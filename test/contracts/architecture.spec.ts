@@ -92,6 +92,7 @@ function layerOf(srcRel: string): Layer | undefined {
   if (srcRel.startsWith('host/composition/')) return 'hostComposition'
   if (srcRel.startsWith('host/subagent/')) return 'hostComposition'
   if (srcRel.startsWith('host/teams/')) return 'hostComposition'
+  if (srcRel.startsWith('host/tools/')) return 'hostComposition'
   if (srcRel === 'client/index.ts' || srcRel.startsWith('client/react.')) return 'clientEntry'
   if (srcRel.startsWith('client/coordinator/')) return 'clientEntry'
   if (srcRel.startsWith('client/data/')) return 'clientData'
@@ -168,6 +169,9 @@ const ALLOWED_CROSS_FILE_EDGES = new Set([
   'protocol/v1/connection.ts->contract/redaction.ts',
   'domain/observability/redaction.ts->contract/redaction.ts',
   'runtime/session/session-runtime.ts->contract/live-diagnostic-trace.ts',
+  // The MCP lease passes Host-owned non-execution evidence through the runtime.
+  // This is a type-only shared leaf, not a runtime dependency on Host policy/UI.
+  'runtime/session/mcp-lease.ts->contract/tool-control-outcome.ts',
   // Shared config classification and opaque identifier limit; this dependency-free
   // contract leaf keeps live, persisted, remote, and runtime validation consistent.
   'persistence/options-snapshot.ts->contract/config-options.ts',

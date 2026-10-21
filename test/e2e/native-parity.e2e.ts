@@ -1169,8 +1169,8 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
     },
   )
 
-  it.each(['generic', 'diff'] as const)(
-    'retains mixed %s tool content with one native disclosure across completion and reload at 390px',
+  it.each(['generic', 'diff', 'reasoning-first', 'reasoning-cancel', 'progress-reasoning'] as const)(
+    'retains mixed %s tool content and native disclosure state across completion and history at 390px',
     async (variant) => {
       const previousPreferences = host.ctx.settings.describe().find((entry) => entry.ns === 'ui-chat')?.value
       const previousTheme = host.ctx.settings.describe().find((entry) => entry.ns === 'ui-theme')?.value
@@ -1187,8 +1187,8 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
         // Register a handler while the fixture is deliberately gated. Awaiting
         // this same promise below still reports a settlement failure normally.
         void settled.catch(() => {})
-        // This fixture has one owning request step. Its first tool must already
-        // occupy the native process group before any assistant text arrives.
+        // One owning request step: a tool-first or reasoning-first process must
+        // retain its mounted tool when the final visible reply arrives later.
         const owner = page.locator(`[data-acp-tool-supplement-owner]:has([data-chat-call-id*="rich-mixed-${variant}"])`)
         const tool = owner.locator('[data-tool]')
         const toggle = tool.locator('[aria-expanded]').first()
@@ -1209,18 +1209,30 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
           element.closest('[data-chat-node-key]')?.getAttribute('data-chat-node-key'),
         )
         const runningRow = required(await toggle.elementHandle())
-        writeFileSync(gate, 'finish')
+        const runningProcess = required(await runningGroup.elementHandle())
+        if (variant === 'reasoning-cancel') {
+          await page.getByRole('button', { name: 'Stop generating', exact: true }).click()
+        } else writeFileSync(gate, 'finish')
         await settled
-        await page.getByText(`E2E_RICH_MIXED_DONE ${variant}`, { exact: true }).waitFor()
+        if (variant !== 'reasoning-cancel') {
+          await page.getByText(`E2E_RICH_MIXED_DONE ${variant}`, { exact: true }).waitFor()
+        }
         // Same native tree and disclosure survive the running -> completed update.
         await expect.poll(() => toggle.getAttribute('aria-expanded')).toBe('true')
         expect(await runningRow.evaluate((element) => element.isConnected)).toBe(true)
+        expect(await runningProcess.evaluate((element) => element.isConnected)).toBe(true)
         expect(
           await owner.evaluate((element) =>
             element.closest('[data-chat-node-key]')?.getAttribute('data-chat-node-key'),
           ),
         ).toBe(runningSeat)
         await runningRow.dispose()
+        await runningProcess.dispose()
+        if (variant === 'reasoning-cancel') {
+          expect(readFileSync(agentLog, 'utf8')).toContain('rich-mixed reasoning-cancel cancelled')
+          expect(await page.getByText(`E2E_RICH_MIXED_DONE ${variant}`, { exact: true }).count()).toBe(0)
+          return
+        }
         const assertContent = async () => {
           await expect.poll(() => owner.innerText()).toContain('E2E_MIXED_REPORT')
           const text = await owner.innerText()
@@ -1240,6 +1252,30 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
           expect(overflow).toBeLessThanOrEqual(1)
         }
         await assertContent()
+        if (variant === 'reasoning-first' || variant === 'progress-reasoning') {
+          // A new input, rather than the preceding answer settling, owns the
+          // native next-input collapse and disclosure reset. Keep targeting the
+          // original turn after the follow-up creates another one.
+          const firstTurn = await runningGroup.getAttribute('data-chat-turn')
+          expect(firstTurn).toMatch(/^\d+$/)
+          const firstProcessToggle = page.locator(`[data-turn-process-tool-calls][data-turn-process="${firstTurn}"]`)
+          expect(await firstProcessToggle.getAttribute('aria-expanded')).toBe('true')
+          expect(await toggle.getAttribute('aria-expanded')).toBe('true')
+          const followup = await send('E2E_RICH_MIXED_FOLLOWUP')
+          settlement = followup.settled
+          await followup.settled
+          await page.getByText('E2E_RICH_MIXED_FOLLOWUP_DONE', { exact: true }).waitFor()
+          await expect.poll(() => firstProcessToggle.getAttribute('aria-expanded')).toBe('false')
+          await expect.poll(() => owner.isVisible()).toBe(false)
+          expect(await page.getByText(`E2E_RICH_MIXED_DONE ${variant}`, { exact: true }).isVisible()).toBe(true)
+          await firstProcessToggle.click()
+          await expect.poll(() => firstProcessToggle.getAttribute('aria-expanded')).toBe('true')
+          await header.waitFor({ state: 'visible' })
+          if ((await header.getAttribute('aria-expanded')) === 'false') await header.click()
+          await expect.poll(() => toggle.getAttribute('aria-expanded')).toBe('false')
+          expect(await owner.getByText(/E2E_MIXED_REPORT/).isVisible()).toBe(false)
+          return
+        }
         await clickDisclosure()
         await expect.poll(() => toggle.getAttribute('aria-expanded')).toBe('false')
         expect(await owner.getByText(/E2E_MIXED_REPORT/).isVisible()).toBe(false)
@@ -2478,7 +2514,7 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
     for (let round = 0; round < 2; round++) {
       if (round) await page.reload()
       await sidebar.getByText('E2E_CHILD_RESULT', { exact: profile === 'claude' }).waitFor()
-      await sidebar.getByText('One-shot subagent record', { exact: true }).waitFor()
+      await sidebar.getByText('External Agent record', { exact: true }).waitFor()
       expect(await sidebar.locator('[data-composer-input][contenteditable="true"]:visible').count()).toBe(0)
       expect(await page.locator('[data-composer-input][contenteditable="true"]:visible').count()).toBe(1)
       await page.getByRole('tab', { name: 'ACP Diagnostics', exact: true }).waitFor()

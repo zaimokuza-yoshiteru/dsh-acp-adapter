@@ -57,7 +57,17 @@ async function harness(options: HarnessOptions = {}) {
     list: vi.fn(() => (live === undefined ? [] : [live])),
   }
   const teams = {
-    tryMembership: vi.fn(() => ({ role: options.role ?? 'teammate' })),
+    tryMembership: vi.fn(() => ({ role: options.role ?? 'teammate', root: agent, id: agent.id })),
+    listMembers: vi.fn(() => [
+      {
+        id: agent.id,
+        name: 'worker',
+        role: 'teammate',
+        status: 'inactive',
+        model: 'model-default',
+        diagnostics: [],
+      },
+    ]),
   }
   const llm = {
     listModels: vi.fn(async () => [
@@ -173,6 +183,37 @@ describe('createMemberModels()', () => {
     expect(assembled.variables).toEqual({ preserved: 'yes' })
     expect(llm.resolveCallConfig).not.toHaveBeenCalled()
   })
+
+  it.each(['valid', 'outdated', 'rebound'] as const)(
+    'projects only current request facts while the ACP binding stays %s',
+    async (state) => {
+      const { ctx, agent, teams, sidecar } = await harness()
+      ctx.provide('sessionProjections', {
+        stateOf: () => ({
+          lastUsed: { provider: 'acp-demo', model: 'model-used' },
+          pending: { provider: 'acp-demo', model: 'model-pending' },
+        }),
+      } as never)
+      if (state === 'outdated') sidecar.readLatestBinding.mockResolvedValue({ status: 'outdated' })
+      if (state === 'rebound') {
+        sidecar.readLatestBinding
+          .mockResolvedValueOnce({ status: 'ok', binding: binding() })
+          .mockResolvedValueOnce({ status: 'ok', binding: { ...binding(), bindingEpoch: 2 } })
+      }
+      const value = teams.listMembers().map(({ id: _id, name, ...row }) => ({ target: name, ...row }))
+      const decision = await ctx.waterfall(
+        'tools/post-execute',
+        { name: 'list_agents', arguments: {}, agent, signal: new AbortController().signal } as never,
+        { isError: false, value, content: [] } as never,
+        async () => ({ kind: 'accept' as const }),
+      )
+      expect(decision).toEqual(
+        state === 'valid' ? { kind: 'accept', value: [{ ...value[0], model: 'model-used' }] } : { kind: 'accept' },
+      )
+      expect(agent.options.model).toBe('model-default')
+      expect(sidecar.writeMemberModelSelection).not.toHaveBeenCalled()
+    },
+  )
 
   it('keeps team permission and busy checks in the real management facade', async () => {
     const ctx = new Context()

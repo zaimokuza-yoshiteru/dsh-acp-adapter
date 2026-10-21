@@ -678,6 +678,33 @@ describe('ACP activity conversation node', () => {
     expect(rendered).toContain('"running":false')
     expect(rendered).not.toContain('Exited with code 0')
     expect(rendered).not.toContain('"type":"text"')
+    expect(rendered).toContain('"noOutput":"activity.terminal.outputNotProvided"')
+  })
+
+  it.each([
+    { rawOutput: '' },
+    { rawOutput: { formatted_output: '' } },
+    { content: [{ type: 'content', content: { type: 'text', text: '' } }] },
+  ])('keeps explicitly empty terminal output distinct from missing output: %j', (output) => {
+    const element = activityRowElement({
+      row: {
+        dshSessionId: 'dsh-1',
+        ownerDshSessionId: 'dsh-1',
+        promptAnchorMessageId: 'user-3',
+        activityId: 'tool-explicit-empty',
+        activitySeq: 1,
+        revisionSeq: 2,
+        time: 2,
+        kind: 'tool',
+        status: 'completed',
+        presentation: 'silent command',
+        rawDetail: JSON.stringify({ toolKind: 'execute', rawInput: { command: 'true' }, ...output }),
+      },
+      t: (key) => key,
+      open: true,
+    })
+    expect(JSON.stringify(element)).toContain('"output":""')
+    expect(JSON.stringify(element)).toContain('"noOutput":"activity.terminal.noOutput"')
   })
 
   it('keeps other Devin nested content readable as settled terminal output', () => {

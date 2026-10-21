@@ -67,6 +67,7 @@ export async function verifyLiveTeamApproval({
     violations: policy.violations,
     approvalRoute: 'native-dsh-bash-sandbox-escalation',
     fixtureSandbox: 'read-only-at-exact-tool-admission',
+    fixtureNativeApproval: 'explicit-test-only-ask-at-exact-tool-admission',
     requestedSandbox: 'danger-full-access',
   })
   let completed = false
@@ -77,7 +78,7 @@ export async function verifyLiveTeamApproval({
       .locator('[data-team-action]')
       .getByRole('button', { name: /Agent Team/ })
       .click()
-    const prompt = `This is an authorized approval regression in this empty temporary workspace. Use the DSH Teams MCP spawn_teammate tool to create exactly one fresh member named permission-review. This test applies a read-only DSH file policy to its exact marker tool call at admission. Tell it to call the DSH MCP bash tool exactly once with command ${JSON.stringify(command)}, description "Write the isolated approval marker", sandbox_permissions "danger-full-access", justification "Allow the single temporary workspace marker ${token}", and no workdir or background execution. This is a one-shot native sandbox escalation: wait for the human approval before execution. Do not use the Agent's private shell, another tool, an editing API, or a command without these escalation arguments. The command writes only the unique temporary workspace file ${fileName}. After successful execution send the lead ${token} using DSH send_message, then finish. Do not execute the command yourself or create any other members. End your response after creating the member so the human can handle its approval.`
+    const prompt = `This is an authorized approval regression in this empty temporary workspace. Use the DSH Teams MCP spawn_teammate tool to create exactly one fresh member named permission-review. This test explicitly switches only its exact marker tool call to native Ask approval and a read-only DSH file policy at admission; other delegated calls keep their native policy. Tell it to call the DSH MCP bash tool exactly once with command ${JSON.stringify(command)}, description "Write the isolated approval marker", sandbox_permissions "danger-full-access", justification "Allow the single temporary workspace marker ${token}", and no workdir or background execution. This is a one-shot native sandbox escalation: wait for the human approval before execution. Do not use the Agent's private shell, another tool, an editing API, or a command without these escalation arguments. The command writes only the unique temporary workspace file ${fileName}. After successful execution send the lead ${token} using DSH send_message, then finish. Do not execute the command yourself or create any other members. End your response after creating the member so the human can handle its approval.`
     await writeComposerDraft(page, page.locator('[data-composer-input]').first(), prompt)
     await page.getByRole('button', { name: 'Send message', exact: true }).click()
     const card = page.locator('[data-acp-team-approvals]')
@@ -119,6 +120,8 @@ export async function verifyLiveTeamApproval({
       },
     })
     expect(asked[0]?.data).toMatchObject({ reason: expect.stringContaining(token) })
+    expect(policy.originalApproval).toBe('never')
+    expect(policy.approvalAtAdmission).toBe('ask')
     expect(policy.admissionPolicy).toMatchObject({ effective: 'read-only' })
     expect(sandboxWhenAsked).toBe('read-only')
     expect(absentWhenAsked, 'No file effect may precede the native approval request').toBe(true)
@@ -132,8 +135,8 @@ export async function verifyLiveTeamApproval({
         (event) =>
           event.type === 'user/message' && 'form' in event.data.source && event.data.source.form === 'snapshot',
       )
-      expect(JSON.stringify(firstPrompt)).toContain('Approval policy: ask.')
-      expect(JSON.stringify(firstPrompt)).not.toContain('Approval prompts are disabled in this session')
+      expect(JSON.stringify(firstPrompt)).toContain('Approval prompts are disabled in this session')
+      expect(JSON.stringify(firstPrompt)).toContain('Your own Agent tools use your normal permission request mechanism')
       expect(JSON.stringify(firstPrompt)).not.toContain('operations that require approval are rejected automatically')
     } finally {
       await handle.close()
@@ -179,6 +182,8 @@ export async function verifyLiveTeamApproval({
       approvedFromLead: true,
       absentWhenAsked,
       absentWhenDecided,
+      originalDelegatedApproval: policy.originalApproval,
+      nativeApprovalAtAdmission: policy.approvalAtAdmission,
       admissionPolicy: policy.admissionPolicy,
       sandboxWhenAsked,
       sandboxWhenDecided,

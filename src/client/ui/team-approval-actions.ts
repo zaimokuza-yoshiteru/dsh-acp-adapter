@@ -1,6 +1,28 @@
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { SessionPendingInteractionBase, SessionStatusSnapshot } from '@deepseek-ai/dsh-client-ui-session/client'
-import type { AcpTeamMemberView } from '../data/acp-remote.ts'
+import type { SessionSummary } from '@deepseek-ai/dsh-api-session-controller/client'
+
+/** Cached lineage only selects candidates; Host runtime ownership still authorizes every action. */
+export function pendingChildCandidates(
+  parent: SessionId,
+  summaries: Readonly<Record<SessionId, Pick<SessionSummary, 'parentId' | 'origin'>>>,
+  snapshot: SessionStatusSnapshot,
+  readOnly: ReadonlySet<SessionId> = new Set(),
+): SessionId[] {
+  return [...snapshot].flatMap(([id, status]) => {
+    if (id === parent || status.pendingInteraction === undefined || readOnly.has(id)) return []
+    const visited = new Set<SessionId>()
+    let current: SessionId | undefined = id
+    while (current !== undefined && current !== parent) {
+      if (visited.has(current) || readOnly.has(current)) return []
+      visited.add(current)
+      const row: Pick<SessionSummary, 'parentId' | 'origin'> | undefined = summaries[current]
+      if (row?.origin !== 'subagent') return []
+      current = row.parentId
+    }
+    return current === parent ? [id] : []
+  })
+}
 
 const memberReadRetryDelays = [500, 1_000, 2_000, 4_000, 8_000] as const
 const stableMemberReadErrorCodes = new Set([
@@ -10,6 +32,7 @@ const stableMemberReadErrorCodes = new Set([
   'dsh-acp/protocol-incompatible',
   'dsh-acp/user-rejected',
   'gateway/bad-request',
+  'remote-access/denied',
 ])
 
 export function isStableTeamMemberReadError(error: unknown): boolean {
@@ -38,16 +61,16 @@ async function waitForMemberReadRetry(delayMs: number, signal?: AbortSignal): Pr
 }
 
 /** Retry only the read while its captured session/request remains live. */
-export async function readTeamMembersUntilAvailable(
+export async function readTeamMembersUntilAvailable<T>(
   sessionId: SessionId,
-  loadMembers: (sessionId: SessionId) => Promise<readonly AcpTeamMemberView[]>,
+  loadMembers: (sessionId: SessionId) => Promise<readonly T[]>,
   active: () => boolean,
   options: {
     readonly signal?: AbortSignal
     readonly onAttempt?: () => void
     readonly onFailure?: () => void
   } = {},
-): Promise<readonly AcpTeamMemberView[] | undefined> {
+): Promise<readonly T[] | undefined> {
   let attempt = 0
   while (!options.signal?.aborted && active()) {
     options.onAttempt?.()
@@ -71,6 +94,8 @@ export interface TeamApproval extends SessionPendingInteractionBase {
   readonly kind: 'approval'
   readonly reason?: string
   readonly toolName: string
+  readonly answerable?: boolean
+  readonly displayReason?: { readonly en: string; readonly [locale: string]: string }
   answer(outcome: 'allowed-once' | 'rejected'): Promise<void>
 }
 export function teamApproval(value: SessionPendingInteractionBase): TeamApproval | undefined {
@@ -97,6 +122,7 @@ export async function answerTeamRequests(
         !active() ||
         !allowedMembers.has(pending.sessionId) ||
         current().get(pending.sessionId)?.pendingInteraction !== pending ||
+        ('answerable' in pending && pending.answerable === false) ||
         inFlight.has(pending)
       )
         return

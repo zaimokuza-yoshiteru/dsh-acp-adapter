@@ -60,6 +60,7 @@ import type { AcpSubprocessHandle, SubprocessSeam, SubprocessSeamResolution } fr
 import { AcpClientError } from '../protocol/v1/errors.ts'
 import { matchesDiagnosticView } from '../contract/diagnostics.ts'
 import type {
+  AcpApprovalChildView,
   AcpTeamMemberView,
   AcpTeamMemberModelsView,
   AcpAuthMethod,
@@ -267,6 +268,8 @@ export interface AcpAgentSessionControlLike {
 }
 
 export interface AcpRemoteServiceDeps {
+  /** Live runtime ownership; deliberately accepts native as well as ACP parents. */
+  approvalChildren?: (parent: string) => readonly AcpApprovalChildView[]
   teamManagement?: {
     members(lead: string): Promise<readonly AcpTeamMemberView[]>
     models?(lead: string, member: string): Promise<AcpTeamMemberModelsView>
@@ -472,6 +475,7 @@ function firstLine(text: string): string | null {
 // ---------- Remote service ----------
 
 interface ResolvedDeps {
+  readonly approvalChildren: AcpRemoteServiceDeps['approvalChildren']
   readonly teamManagement: AcpRemoteServiceDeps['teamManagement']
 
   readonly registry: AcpHealthRegistryLike
@@ -524,6 +528,7 @@ export class AcpRemoteService extends TypertRemoteService {
     const subprocess = deps.subprocess ?? { ok: false as const, message: ACP_SUBPROCESS_UNAVAILABLE_MESSAGE }
     this.resolved = {
       registry: deps.registry,
+      approvalChildren: deps.approvalChildren,
       teamManagement: deps.teamManagement,
       // host 未接线结构门事实时按兼容处理（纯模块单测路径；生产恒注入）
       hostCompatible: deps.hostCompatible ?? (() => true),
@@ -882,6 +887,21 @@ export class AcpRemoteService extends TypertRemoteService {
     await this.requireOwnedSessionAccess(lead)
     if (this.resolved.teamManagement === undefined) throw badRequest('ACP Teams is unavailable')
     return await this.resolved.teamManagement.members(lead)
+  }
+
+  /** Authoritative eligible descendants; no approval is recreated or answered here. */
+  @Remote({ resources: { session: (parent) => SessionId(parent) } })
+  async approvalChildren(parent: string): Promise<readonly AcpApprovalChildView[]> {
+    if (typeof parent !== 'string' || parent.length === 0 || parent.length > 256)
+      throw badRequest('Invalid parent session id')
+    const read = this.resolved.approvalChildren
+    if (read === undefined) throw badRequest('Child approval discovery is unavailable')
+    return read(parent).filter(
+      (child) =>
+        child.sessionId !== parent &&
+        child.path.length > 0 &&
+        child.path.every((entry) => this.callerCanReadSession(entry.sessionId)),
+    )
   }
 
   @Remote({ resources: { session: (lead, sessionId) => [SessionId(lead), SessionId(sessionId)] } })

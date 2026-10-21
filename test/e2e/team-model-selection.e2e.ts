@@ -1,23 +1,89 @@
 import type { AcpRemoteService } from '../../src/remote/service.js'
 import { required } from './required.ts'
+import { acpPermissionAudit } from './acp-permission-audit.ts'
+import { waitForTeamSettlement } from './team-settlement.ts'
+import {
+  installTeamFixtureApprovals,
+  teamMemberSetupSteps,
+  teamReplySteps,
+  teamStartSteps,
+} from './team-fixture-approval.ts'
 import type { TestBrowser } from './browser.ts'
 import { launchBrowser, newEnglishPage } from './browser.ts'
 import type { ObservedEvent } from './types.ts'
 import type { Page } from 'playwright'
 import { join } from 'node:path'
-import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { expect, it, vi } from 'vitest'
 import { connectFreshWorkspace, writeComposerDraft } from '#host-support'
 import { launchAdapterWorld, root } from './scaffold.ts'
 
-it('persists teammate model selection, applies it on wake, and protects Team boundaries', async () => {
+it('persists teammate model selection, applies it on wake, and protects Team boundaries', async ({
+  onTestFinished,
+}) => {
   const host = await launchAdapterWorld({ teams: true })
   let browser!: TestBrowser
   let page!: Page
   const log = join(host.workspaceCwd, 'team-model-selection.log')
   const policyGate = join(host.workspaceCwd, 'team-model-policy-ready')
   const events: ObservedEvent[] = []
+  const drivers: ReturnType<typeof installTeamFixtureApprovals>[] = []
+  const setupDecisions = (options: Parameters<typeof installTeamFixtureApprovals>[1]) => {
+    const driver = installTeamFixtureApprovals(host, options)
+    drivers.push(driver)
+    return driver
+  }
   host.ctx.on('session/event', (session, event) => events.push({ sessionId: session.id, ...event }))
+  const diagnosticDirectory = join(root, '.local/team-model-selection')
+  let stage = 'setup'
+  const audit = (phase: 'asked' | 'decided') => {
+    try {
+      return acpPermissionAudit(host, phase)
+    } catch {
+      return { unavailable: true }
+    }
+  }
+  const capture = (nextStage = stage, name = 'progress.json') => {
+    stage = nextStage
+    mkdirSync(diagnosticDirectory, { recursive: true })
+    writeFileSync(
+      join(diagnosticDirectory, name),
+      JSON.stringify(
+        {
+          stage,
+          at: Date.now(),
+          workspaceCwd: host.workspaceCwd,
+          events,
+          approvals: audit('asked'),
+          decisions: audit('decided'),
+        },
+        null,
+        2,
+      ),
+    )
+    if (existsSync(log)) writeFileSync(join(diagnosticDirectory, 'mock.log'), readFileSync(log))
+  }
+  let cleanupPromise: Promise<void> | undefined
+  const cleanup = () =>
+    (cleanupPromise ??= (async () => {
+      for (const driver of drivers) driver.dispose()
+      try {
+        await browser?.close()
+      } finally {
+        await host.close()
+      }
+    })())
+  // A test timeout does not reject the body await. Preserve the actual wait
+  // stage and dispose this fixture through the runner's lifecycle as well.
+  onTestFinished(async () => {
+    if (!cleanupPromise) {
+      try {
+        capture(stage, 'runner-finished.json')
+      } finally {
+        await cleanup()
+      }
+    }
+  })
   try {
     await host.ctx.settings.replace('dsh-acp-adapter', {
       toolApprovalDefault: 'auto',
@@ -51,6 +117,11 @@ it('persists teammate model selection, applies it on wake, and protects Team bou
       await page.getByRole('button', { name: 'Send message', exact: true }).click()
     }
 
+    const bootstrap = setupDecisions({
+      initialPrompt: 'E2E_TEAM_START',
+      entries: [...teamStartSteps(host), ...teamMemberSetupSteps('calculator')],
+    })
+    capture('bootstrap-send')
     await send('E2E_TEAM_START')
     await page.getByText('E2E_TEAM_READY', { exact: true }).waitFor()
     const lead = required(
@@ -65,6 +136,7 @@ it('persists teammate model selection, applies it on wake, and protects Team bou
         ).toHaveLength(1),
       { timeout: 30000 },
     )
+    bootstrap.finish()
     await (host.ctx.get('dshAcp') as AcpRemoteService).setToolApprovalPolicy(lead.id, { policy: 'ask' })
     writeFileSync(policyGate, 'ready')
     const child = required(host.ctx.agentTeams.listMembers(lead).find((member) => member.role === 'teammate'))
@@ -85,6 +157,7 @@ it('persists teammate model selection, applies it on wake, and protects Team bou
 
     // Settle the approval and wait until the member has become dormant. A
     // dormant selection must be persisted without starting another request.
+    const initialSettlementAfter = events.length
     await approvals
       .locator('[data-team-pending-member="calculator"]')
       .getByRole('button', { name: 'Allow once', exact: true })
@@ -94,6 +167,8 @@ it('persists teammate model selection, applies it on wake, and protects Team bou
         timeout: 30000,
       })
       .toSatisfy((status) => status === 'idle' || status === 'inactive')
+    capture('initial-member-settlement')
+    await waitForTeamSettlement(events, { parentId: lead.id, childId: child.id, after: initialSettlementAfter })
     await (host.ctx.get('dshAcp') as AcpRemoteService).setToolApprovalPolicy(lead.id, { policy: 'auto' })
     await expect(
       (host.ctx.get('dshAcp') as AcpRemoteService).setTeamMemberModel(lead.id, child.id, 'unknown-model'),
@@ -199,6 +274,7 @@ it('persists teammate model selection, applies it on wake, and protects Team bou
     await panel.getByRole('button', { name: 'Close member management', exact: true }).click()
 
     // A transport reload restores current A plus pending B from the sidecar.
+    capture('reload-model-picker')
     await page.reload()
     await panel.getByRole('button', { name: 'Manage members · 1', exact: true }).click()
     await row
@@ -214,6 +290,30 @@ it('persists teammate model selection, applies it on wake, and protects Team bou
     // team-turn logs configOptions.model for each request. This is the request
     // header evidence: the first wake must carry B and the second must retain it.
     const countModelB = () => (readFileSync(log, 'utf8').match(/team model=mock-model-b/g) ?? []).length
+    const wakeDecisions = () =>
+      setupDecisions({
+        root: lead,
+        entries: [
+          { owner: 'lead', callId: 'team-1', tool: 'list_agents', args: {} },
+          {
+            owner: 'lead',
+            callId: 'team-2',
+            tool: 'send_message',
+            args: { target: 'calculator', message: 'E2E_TEAM_CONTINUE' },
+          },
+          { owner: 'calculator', callId: 'team-1', tool: 'list_agents', args: {} },
+          {
+            owner: 'calculator',
+            callId: 'team-2',
+            tool: 'send_message',
+            args: { target: 'lead', message: 'E2E_TEAM_REPLY continued' },
+          },
+          ...teamReplySteps(),
+        ],
+      })
+    capture('first-wake')
+    const firstWakeAfter = events.length
+    const firstWake = wakeDecisions()
     const firstBCount = countModelB()
     await send('E2E_TEAM_WAKE')
     await expect.poll(() => readFileSync(log, 'utf8'), { timeout: 30000 }).toContain('team model=mock-model-b')
@@ -231,6 +331,13 @@ it('persists teammate model selection, applies it on wake, and protects Team bou
       .poll(() => (host.ctx.get('dshAcp') as AcpRemoteService).teamMemberModels(lead.id, child.id), { timeout: 30000 })
       .toMatchObject({ currentModel: 'mock-model-b', pendingModel: null, writable: true })
 
+    capture('first-wake-native-settlement')
+    await waitForTeamSettlement(events, { parentId: lead.id, childId: child.id, after: firstWakeAfter })
+    await lead.whenIdle()
+    firstWake.finish()
+    capture('second-wake')
+    const secondWakeAfter = events.length
+    const secondWake = wakeDecisions()
     const secondBCount = countModelB()
     await send('E2E_TEAM_WAKE')
     await expect.poll(countModelB, { timeout: 30000 }).toBeGreaterThan(secondBCount)
@@ -238,6 +345,10 @@ it('persists teammate model selection, applies it on wake, and protects Team bou
       .poll(() => (host.ctx.get('dshAcp') as AcpRemoteService).teamMemberModels(lead.id, child.id), { timeout: 30000 })
       .toMatchObject({ currentModel: 'mock-model-b', pendingModel: null, writable: true })
 
+    capture('second-wake-native-settlement')
+    await waitForTeamSettlement(events, { parentId: lead.id, childId: child.id, after: secondWakeAfter })
+    await lead.whenIdle()
+    secondWake.finish()
     expect(required(host.ctx.get('agentDefaultModel')).currentSelection()).toMatchObject({
       provider: 'acp-devin',
       model: 'mock-model-a',
@@ -250,6 +361,25 @@ it('persists teammate model selection, applies it on wake, and protects Team bou
         .slice(-2)
         .map((event) => event.data.header.config.model),
     ).toEqual(['mock-model-b', 'mock-model-b'])
+    const siblingSetup = setupDecisions({
+      root: lead,
+      entries: [
+        { owner: 'lead', callId: 'team-1', tool: 'list_agents', args: {} },
+        {
+          owner: 'lead',
+          callId: 'team-2',
+          tool: 'spawn_teammate',
+          args: {
+            name: 'calculator-b',
+            description: 'Model B member',
+            prompt: 'E2E_TEAM_MEMBER calculate 1+1',
+            context: 'fresh',
+          },
+        },
+        ...teamMemberSetupSteps('calculator-b'),
+      ],
+    })
+    capture('second-member-send')
     await send('E2E_TEAM_SECOND')
     // A teammate's settlement notice can continue the same native Turn and
     // fold this earlier reply. Readiness is its durable message plus the
@@ -262,8 +392,19 @@ it('persists teammate model selection, applies it on wake, and protects Team bou
           event.data.message.content.some((block) => block.type === 'text' && block.text === 'E2E_TEAM_SECOND_READY'),
       )
     await expect.poll(secondReady, { timeout: 30000 }).toBeDefined()
+    capture('second-member-management-ready')
     await panel.getByRole('button', { name: 'Manage members · 2', exact: true }).waitFor()
     const sibling = required(host.ctx.agentTeams.listMembers(lead).find((member) => member.name === 'calculator-b'))
+    await expect
+      .poll(
+        () =>
+          acpPermissionAudit(host, 'asked').filter(
+            (entry) => entry.sessionId === sibling.id && entry.data.toolCall.toolCallId === 'member-shell',
+          ),
+        { timeout: 30000 },
+      )
+      .toHaveLength(1)
+    siblingSetup.finish()
     await expect
       .poll(
         () =>
@@ -289,6 +430,21 @@ it('persists teammate model selection, applies it on wake, and protects Team bou
     )
     const countModelA = () => (readFileSync(log, 'utf8').match(/team model=mock-model-a/g) ?? []).length
     const secondACount = countModelA()
+    capture('final-model-a-continuation')
+    const continuationAfter = events.length
+    const continuation = setupDecisions({
+      root: lead,
+      entries: [
+        { owner: 'calculator', callId: 'team-1', tool: 'list_agents', args: {} },
+        {
+          owner: 'calculator',
+          callId: 'team-2',
+          tool: 'send_message',
+          args: { target: 'lead', message: 'E2E_TEAM_REPLY continued' },
+        },
+        ...teamReplySteps(),
+      ],
+    })
     await host.ctx.agentTeams.sendMessage(lead, {
       target: 'calculator',
       content: [{ type: 'text', text: 'E2E_TEAM_CONTINUE' }],
@@ -303,6 +459,10 @@ it('persists teammate model selection, applies it on wake, and protects Team bou
     await expect
       .poll(() => (host.ctx.get('dshAcp') as AcpRemoteService).teamMemberModels(lead.id, child.id), { timeout: 30000 })
       .toMatchObject({ currentModel: 'mock-model-a', pendingModel: null, writable: true })
+    capture('final-continuation-native-settlement')
+    await waitForTeamSettlement(events, { parentId: lead.id, childId: child.id, after: continuationAfter })
+    await lead.whenIdle()
+    continuation.finish()
     await expect.poll(() => modelButton.textContent(), { timeout: 30000 }).toBe('Mock Model A')
     await expect.poll(() => row.locator('[data-member-model-notice]').textContent(), { timeout: 30000 }).toBe('')
     await expect.poll(() => modelButton.isEnabled(), { timeout: 30000 }).toBe(true)
@@ -318,7 +478,9 @@ it('persists teammate model selection, applies it on wake, and protects Team bou
     await page.keyboard.press('Escape')
     await expect.poll(() => managementPanel.count()).toBe(0)
     await expect.poll(() => manageMembersButton.evaluate((button) => button === document.activeElement)).toBe(true)
+    capture('completed')
   } catch (error) {
+    capture()
     const directory = join(root, '.local/team-model-selection')
     mkdirSync(directory, { recursive: true })
     writeFileSync(join(directory, 'events.json'), JSON.stringify(events, null, 2))
@@ -347,7 +509,6 @@ it('persists teammate model selection, applies it on wake, and protects Team bou
     }
     throw error
   } finally {
-    await browser?.close()
-    await host.close()
+    await cleanup()
   }
 }, 120000)

@@ -3,7 +3,6 @@ import { Buffer } from 'node:buffer'
 import { createServer } from 'node:http'
 import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
-import type {} from '@deepseek-ai/dsh-experimental-agent-team'
 import type {} from '@deepseek-ai/dsh-tools'
 import { RUN_CODE_NAME, TOOL_ABORTED_BEFORE_DISPATCH } from '@deepseek-ai/dsh-tools'
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
@@ -14,7 +13,11 @@ import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node'
 import { AcpHostSettlementError } from '../../runtime/session/mcp-lease.ts'
 import type { AcpMcpLease } from '../../runtime/session/mcp-lease.ts'
 import type { AcpPermissionCheck } from '../../domain/policy/permission-check.ts'
-import { ACP_PERMISSION_ID_MAX_BYTES, ACP_PERMISSION_OPTIONS_MAX } from '../../domain/policy/permissions.ts'
+import {
+  ACP_PERMISSION_ID_MAX_BYTES,
+  ACP_PERMISSION_OPTIONS_MAX,
+  withDshTeamPermissionPresentation,
+} from '../../domain/policy/permissions.ts'
 import { isAntigravityInteractionCall } from '../../domain/policy/antigravity-question.ts'
 import { toolContent } from './tool-content.ts'
 import { generatedContextBlock } from '../../runtime/text-block-boundary.ts'
@@ -35,6 +38,8 @@ import type {
 } from '../../contract/live-diagnostic-trace.ts'
 import { performance } from 'node:perf_hooks'
 import { normalizeAntigravityPresentation, resolveAntigravityNativeTool } from './antigravity.ts'
+import { createTeamToolContext } from '../teams/tool-context.ts'
+import { DEFERRED_WAIT_TEXT, DeferredWaitReceipts } from './deferred-wait-receipts.ts'
 
 const TEAM_TOOLS = [
   'spawn_teammate',
@@ -53,9 +58,8 @@ function bridgeInstructions(names: ReadonlyMap<string, ToolDefinition>, hasTeams
     : names.has(RUN_CODE_NAME)
       ? `No direct DSH skill tool is listed. If DSH skill access is exposed through the generated SDK, call it inside "${RUN_CODE_NAME}" using the host-provided SDK instructions and listed schema; do not invent a direct skill tool.`
       : 'No DSH skill-loading entry point is listed. Do not claim DSH skill-catalog entries are available through an Agent-native skill tool; explain that this DSH connection has no listed skill entry point.'
-  return `These are native DSH tools available to this session. Use the exact tool names and schemas from tools/list. Tools and skills discovered in DSH context, including skill-catalog entries, must use this session's DSH MCP tools; do not route them through the Agent's native skill invocation or private skill directory, and do not copy DSH skill files into that directory. This does not replace or modify the Agent's own skills. Do not assume or expose tools or permissions absent from this DSH connection. ${skillRoute}${hasTeams ? ' Team members share the workspace and only fresh context is supported.' : ''}`
+  return `These are native DSH tools available to this session. DSH sandbox and approval policies apply to these tools; your own Agent tools retain their separate policies. Use the exact tool names and schemas from tools/list. Tools and skills discovered in DSH context, including skill-catalog entries, must use this session's DSH MCP tools; do not route them through the Agent's native skill invocation or private skill directory, and do not copy DSH skill files into that directory. This does not replace or modify the Agent's own skills. Do not assume or expose tools or permissions absent from this DSH connection. ${skillRoute}${hasTeams ? ' Team members share the workspace and only fresh context is supported.' : ''}`
 }
-const isTeamTool = (name: string): boolean => (TEAM_TOOLS as readonly string[]).includes(name)
 const diagnosticTools = new Set<string>(TEAM_TOOLS)
 const diagnosticErrorKinds = new Set<LiveDiagnosticErrorKind>([
   'ACP_PROTOCOL_ERROR',
@@ -342,17 +346,6 @@ function observeFeedbackAcceptance(
   }
 }
 
-const identities = new WeakMap<object, number>()
-let nextIdentity = 0
-function identity(value: object): number {
-  let id = identities.get(value)
-  if (id === undefined) {
-    id = ++nextIdentity
-    identities.set(value, id)
-  }
-  return id
-}
-
 function schemaValueKey(schemas: readonly ToolSchema[]): string {
   const stable = (value: unknown): unknown => {
     if (Array.isArray(value)) return value.map(stable)
@@ -370,11 +363,10 @@ function schemaValueKey(schemas: readonly ToolSchema[]): string {
 
 function bridgeDefinitions(ctx: Context, sessionId: string, schemas: readonly ToolSchema[] | undefined) {
   if (schemas === undefined) return undefined
-  const teams = ctx.get('agentTeams')
   const agent = ctx.get('agents', false)?.get(sessionId as never)
   const tools = ctx.get('tools', false)
   if (agent === undefined || tools === undefined) return undefined
-  const hasTeams = teams !== undefined && teams.tryMembership(agent) !== undefined
+  const teamContext = createTeamToolContext(ctx, agent)
   const visible = new Map<string, ToolSchema>()
   const duplicates = new Set<string>()
   for (const schema of schemas) {
@@ -387,28 +379,39 @@ function bridgeDefinitions(ctx: Context, sessionId: string, schemas: readonly To
   for (const schema of tools.schemas(agent).sort((left, right) => left.name.localeCompare(right.name))) {
     const visibleSchema = visible.get(schema.name)
     if (visibleSchema === undefined || duplicates.has(schema.name)) continue
-    if (isTeamTool(schema.name) && !hasTeams) continue
     const definition = tools.get(schema.name, agent)
     if (definition !== undefined) definitions.set(schema.name, definition)
   }
   const currentSchemaKey = schemaValueKey([...definitions.keys()].map((name) => visible.get(name)!))
-  return definitions.size === 0 ? undefined : { agent, tools, teams, hasTeams, definitions, visible, currentSchemaKey }
+  return definitions.size === 0 ? undefined : { agent, tools, teamContext, definitions, visible, currentSchemaKey }
 }
 
-/** Changes when the optional host feature or its scoped tool owner changes. */
-export function teamBridgeKey(ctx: Context, sessionId: string, schemas?: readonly ToolSchema[]): unknown {
-  const bridge = bridgeDefinitions(ctx, sessionId, schemas)
-  return bridge === undefined
-    ? undefined
-    : JSON.stringify([
-        identity(bridge.agent),
-        bridge.currentSchemaKey,
-        ...[...bridge.definitions].map(([name, definition]) => [name, identity(definition)]),
-      ])
+/** Registry-owned identity keys track scoped tool and visible schema changes. */
+export function createDshToolBridgeKey() {
+  const identities = new WeakMap<object, number>()
+  let nextIdentity = 0
+  const identity = (value: object): number => {
+    let id = identities.get(value)
+    if (id === undefined) {
+      id = ++nextIdentity
+      identities.set(value, id)
+    }
+    return id
+  }
+  return (ctx: Context, sessionId: string, schemas?: readonly ToolSchema[]): unknown => {
+    const bridge = bridgeDefinitions(ctx, sessionId, schemas)
+    return bridge === undefined
+      ? undefined
+      : JSON.stringify([
+          identity(bridge.agent),
+          bridge.currentSchemaKey,
+          ...[...bridge.definitions].map(([name, definition]) => [name, identity(definition)]),
+        ])
+  }
 }
 
 /** Discover native session tools without enabling any host plugin or Teams service. */
-export async function createTeamBridge(
+export async function createDshToolBridge(
   ctx: Context,
   sessionId: string,
   capabilities: acp.AgentCapabilities | undefined,
@@ -420,9 +423,12 @@ export async function createTeamBridge(
   const agents = ctx.get('agents', false)
   const bridge = bridgeDefinitions(ctx, sessionId, schemas)
   if (bridge === undefined || agents === undefined) return undefined
-  const { tools, agent, teams, hasTeams, definitions, visible } = bridge
-  const initialMembership = hasTeams ? teams?.tryMembership(agent) : undefined
+  const { tools, agent, teamContext, definitions, visible } = bridge
+  const hasTeams = teamContext !== undefined
   const lifetime = new AbortController()
+  const deferredWaitReceipts = new DeferredWaitReceipts(sessionId)
+  const identifiedWaitCalls = new Set<string>()
+  const waitCallsWithOtherContent = new Set<string>()
   const diagnosticLeaseId = liveDiagnosticTraceEnabled()
     ? (liveDiagnosticId('mcp-lease', randomUUID()) ?? 'unavailable')
     : undefined
@@ -692,26 +698,7 @@ export async function createTeamBridge(
   const live = (): boolean =>
     !lifetime.signal.aborted &&
     agents.get(sessionId as never) === agent &&
-    (!hasTeams ||
-      (() => {
-        const current = ctx.get('agentTeams') === undefined ? undefined : teams?.tryMembership(agent)
-        if (
-          current === undefined ||
-          initialMembership === undefined ||
-          current.id !== initialMembership.id ||
-          current.root !== initialMembership.root ||
-          current.role !== initialMembership.role
-        )
-          return false
-        const root = initialMembership.root
-        const lead = teams?.tryMembership(root)
-        return (
-          agents.get(root.id as never) === root &&
-          lead?.role === 'lead' &&
-          lead.root === root &&
-          lead.id === initialMembership.id
-        )
-      })()) &&
+    (teamContext?.isLive() ?? true) &&
     [...definitions].every(([name, definition]) => isDefinitionLive(name, definition))
   const inspectPermission: NonNullable<AcpMcpLease['inspectPermission']> = async (request) => {
     const capturedPrompt = prompt
@@ -770,7 +757,10 @@ export async function createTeamBridge(
     if (policy === undefined) {
       return { ...identified, reason: 'policy-unavailable', response: { outcome: { outcome: 'cancelled' } } }
     }
-    if (policy !== 'auto') return { ...identified, reason: 'approval-required' }
+    // Devin does not identify whether its request is required by enterprise
+    // policy. Recognizing a DSH tool proves its target, not that Auto may answer
+    // the independent Agent's permission request on the user's behalf.
+    if (policy !== 'auto' || wireProfile === 'devin') return { ...identified, reason: 'approval-required' }
     if (!live() || prompt !== capturedPrompt || promptGeneration !== capturedGeneration || capturedPrompt.aborted)
       return { ...identified, reason: 'inactive-prompt' }
     const allows = request.options.filter((option) => option.kind === 'allow_once')
@@ -828,19 +818,7 @@ export async function createTeamBridge(
           inputSchema: {
             ...visible.get(name)!.parameters,
             type: 'object' as const,
-            ...(definition.name !== 'spawn_teammate'
-              ? {}
-              : {
-                  additionalProperties: false,
-                  properties: {
-                    ...(definition.parameters.properties as Record<string, unknown>),
-                    context: {
-                      type: 'string',
-                      enum: ['fresh'],
-                      description: 'Fresh ACP session; history fork is unsupported.',
-                    },
-                  },
-                }),
+            ...teamContext?.spawnSchema(definition),
           },
         })),
     }))
@@ -900,14 +878,8 @@ export async function createTeamBridge(
         if (definition === undefined || !isDefinitionLive(definition.name, definition))
           throw new Error('ACP_TEAM_TOOL_UNAVAILABLE')
         const args = request.params.arguments ?? {}
-        if (
-          definition.name === 'spawn_teammate' &&
-          Object.keys(args).some((key) => !['name', 'description', 'prompt', 'context'].includes(key))
-        )
-          throw new Error('ACP_TEAM_ROUTE_OVERRIDE_UNSUPPORTED: teammates inherit the lead Agent and model')
-        if (definition.name === 'spawn_teammate' && args.context !== undefined && args.context !== 'fresh')
-          throw new Error('ACP_TEAM_FORK_UNSUPPORTED: use fresh context')
-        const membership = definition.name === 'send_message' ? teams?.tryMembership(agent) : undefined
+        teamContext?.validateArguments(definition, args)
+        const membership = definition.name === 'send_message' ? teamContext?.membership() : undefined
         const membershipRole = membership?.role
         const membershipId = membership?.id
         const membershipRoot = membership?.root
@@ -981,8 +953,8 @@ export async function createTeamBridge(
                 args.target === 'lead'
                   ? 'lead'
                   : typeof args.target === 'string' &&
-                      teams
-                        ?.listMembers(agent)
+                      teamContext
+                        ?.listMembers()
                         .some((member) => member.name === args.target && member.role === 'teammate')
                     ? 'teammate'
                     : 'unknown'
@@ -1054,8 +1026,7 @@ export async function createTeamBridge(
           if (diagnosticBase !== undefined) diagnosticHandlerBase = diagnosticBase
           const queuedTeamMessage = definition.name === 'wait_agent' && agent.inbox.nextStep.some(isPendingPeerMessage)
           if (queuedTeamMessage) {
-            const text =
-              'DSH_WAIT_DEFERRED_TEAM_MESSAGE: A Team message is already queued for this caller, so DSH did not execute wait_agent. End this ACP response now; DSH will deliver the queued message for you to handle.'
+            const text = DEFERRED_WAIT_TEXT
             if (diagnosticEnabled && diagnosticBase !== undefined) {
               // This is an MCP-level deferred error, not a Host call; omit hostCallId and host-execute events.
               const { hostCallId: notExecutedHostCall, ...withoutHostCall } = diagnosticBase
@@ -1071,7 +1042,12 @@ export async function createTeamBridge(
                 handlerIsError: true,
               })
             }
-            return { isError: true, content: [{ type: 'text' as const, text }] }
+            const receipt = wireProfile === 'codex' ? deferredWaitReceipts.issue() : undefined
+            return {
+              isError: true,
+              content: [{ type: 'text' as const, text }],
+              ...(receipt === undefined ? {} : { _meta: receipt }),
+            }
           }
           const dispatchStartedAt = performance.now()
           let cancellationObserved = false
@@ -1168,7 +1144,7 @@ export async function createTeamBridge(
             live()
           )
             onSuccessfulToolResult?.()
-          const currentMembership = teams?.tryMembership(agent)
+          const currentMembership = teamContext?.membership()
           if (
             definition.name === 'send_message' &&
             args.target === 'lead' &&
@@ -1319,7 +1295,7 @@ export async function createTeamBridge(
   const listeners: Array<() => unknown> = []
   const lease: AcpMcpLease = {
     signal: lifetime.signal,
-    instructions: `Current DSH tools connection: MCP server ${serverName}. ${scopedInstructions} Each session has its own connection and caller identity. Do not copy a connection address or server identity to another session.${hasTeams ? ' Team target names resolve within the caller’s Team.' : ''} Pending DSH messages are delivered after you end the current response; give a brief progress update when asked to yield.`,
+    instructions: `Current DSH tools connection: MCP server ${serverName}. When discovering this connection's tools in a shared catalog, first select the exact server namespace ${serverName} and list only tool names, then inspect the definitions of the tools you need. A truncated or partial catalog is not evidence that a tool is unavailable; narrow the lookup before deciding. ${scopedInstructions} Each session has its own connection and caller identity. Do not copy a connection address or server identity to another session.${hasTeams ? ' Team target names resolve within the caller’s Team.' : ''} Pending DSH messages are delivered after you end the current response; give a brief progress update when asked to yield.`,
     servers,
     ...(diagnosticLeaseId === undefined ? {} : { diagnosticLeaseId }),
     beginPrompt(signal, reportCallback, promptOrdinal, concludedCallback, bodySignal, successfulToolResultCallback) {
@@ -1333,6 +1309,9 @@ export async function createTeamBridge(
       if (liveDiagnosticTraceEnabled()) leasePromptOrdinal++
       adapterPromptOrdinal = promptOrdinal
       presented.clear()
+      deferredWaitReceipts.clear()
+      identifiedWaitCalls.clear()
+      waitCallsWithOtherContent.clear()
       promptExecution = {
         generation: promptGeneration,
         calls: new Set(),
@@ -1470,21 +1449,67 @@ export async function createTeamBridge(
         identity.source === 'codebuddy-deferred-input' &&
         identity.tool === deferred.tool
       const wrapperCall = deferred !== undefined
-      let name = definitionOf(call)?.name ?? (wrapperCall ? undefined : presented.get(call.toolCallId))
+      const definition = definitionOf(call)
+      if (wireProfile === 'codex') {
+        const input = plainRecord(call.rawInput)
+        const conflictingInput =
+          (input !== undefined &&
+            ((Object.hasOwn(input, 'server') && input.server !== serverName) ||
+              (Object.hasOwn(input, 'tool') && input.tool !== 'wait_agent'))) ||
+          (call._meta != null && Object.hasOwn(call._meta, 'is_mcp_tool_call') && call._meta.is_mcp_tool_call !== true)
+        // Nonempty ACP content may contain new diagnostics independent of the
+        // prior rawOutput. Never hide it behind a remembered control receipt.
+        if (call.content != null) {
+          if (call.content.length > 0) waitCallsWithOtherContent.add(call.toolCallId)
+          else waitCallsWithOtherContent.delete(call.toolCallId)
+        }
+        if (conflictingInput) {
+          identifiedWaitCalls.delete(call.toolCallId)
+          deferredWaitReceipts.revoke(call.toolCallId)
+        } else if (definition?.name === 'wait_agent' && live() && prompt !== undefined && !prompt.aborted) {
+          identifiedWaitCalls.add(call.toolCallId)
+        } else if (identity.source !== undefined && !(identity.source === 'name' && call.name === 'wait_agent')) {
+          identifiedWaitCalls.delete(call.toolCallId)
+          deferredWaitReceipts.revoke(call.toolCallId)
+        }
+        if (
+          call.rawOutput !== undefined &&
+          live() &&
+          prompt !== undefined &&
+          !prompt.aborted &&
+          identifiedWaitCalls.has(call.toolCallId)
+        ) {
+          deferredWaitReceipts.observe(call.toolCallId, call.rawOutput)
+        }
+        if (waitCallsWithOtherContent.has(call.toolCallId)) deferredWaitReceipts.revoke(call.toolCallId)
+      }
+      let name = definition?.name ?? (wrapperCall ? undefined : presented.get(call.toolCallId))
       if (name === undefined && wireProfile === 'antigravity') {
         name = antigravityPresentationTool(call) ?? resolveAntigravityNativeTool(call)
       }
       if (name === undefined) return call
       presented.set(call.toolCallId, name)
+      const presentTeam = (result: acp.ToolCallUpdate): acp.ToolCallUpdate =>
+        teamContext !== undefined &&
+        definition !== undefined &&
+        (definition.name === 'spawn_teammate' || definition.name === 'send_message') &&
+        live() &&
+        prompt !== undefined &&
+        !prompt.aborted
+          ? withDshTeamPermissionPresentation(result, {
+              tool: definition.name,
+              ...(typeof agent.session?.header.cwd === 'string' ? { workspace: agent.session.header.cwd } : {}),
+            })
+          : result
 
       if (wireProfile !== 'antigravity') {
-        return {
+        return presentTeam({
           ...call,
           ...(acceptedDeferred && deferred.params !== undefined ? { rawInput: deferred.params } : {}),
           title: name,
           name,
           ...(name === 'bash' ? { kind: 'execute' as const } : {}),
-        }
+        })
       }
 
       let rawInput = acceptedDeferred && deferred.params !== undefined ? deferred.params : call.rawInput
@@ -1503,7 +1528,7 @@ export async function createTeamBridge(
       }
 
       // Same tool title as the native host. Transport capability names stay out of the conversation row.
-      return {
+      return presentTeam({
         ...call,
         rawInput,
         rawOutput,
@@ -1515,7 +1540,10 @@ export async function createTeamBridge(
         ...(name === 'edit' || name === 'write' || name === 'str_replace_editor' ? { kind: 'edit' as const } : {}),
         ...(name === 'glob' || name === 'grep' ? { kind: 'search' as const } : {}),
         ...(name === 'web_fetch' || name === 'web_search' ? { kind: 'fetch' as const } : {}),
-      }
+      })
+    },
+    toolControlOutcome(toolCallId) {
+      return live() && prompt !== undefined && !prompt.aborted ? deferredWaitReceipts.outcome(toolCallId) : undefined
     },
     inspectPermission,
     validatePermissionDecision(request) {
@@ -1617,6 +1645,9 @@ export async function createTeamBridge(
     close(graceMs = 5_000) {
       closing ??= (async () => {
         lifetime.abort(new Error('ACP DSH tools connection closed'))
+        deferredWaitReceipts.clear()
+        identifiedWaitCalls.clear()
+        waitCallsWithOtherContent.clear()
         for (const dispose of listeners.splice(0)) dispose()
         if (promptExecution !== undefined) {
           promptExecution.accepting = false

@@ -620,6 +620,9 @@ export class AcpSessionRuntime {
   get hostSettlementPending(): boolean {
     return this.hostSettlementPendingValue
   }
+  toolControlOutcome(toolCallId: string) {
+    return this.mcpLease?.toolControlOutcome?.(toolCallId)
+  }
   private setHostSettlementPending(pending: boolean): void {
     if (this.hostSettlementPendingValue === pending) return
     this.hostSettlementPendingValue = pending
@@ -874,6 +877,8 @@ export class AcpSessionRuntime {
    * must never first create an unrelated session/new.
    * AcpForkPreDispatchError proves no fork RPC was sent; every other failure
    * retains an unknown remote outcome. The runtime owns intent-error wrapping.
+   * The final synchronous validator runs after intent persistence and directly
+   * before dispatch; it must throw AcpForkPreDispatchError for a known refusal.
    */
   async fork(
     parentSessionId: string,
@@ -883,6 +888,7 @@ export class AcpSessionRuntime {
       readonly protocolVersion?: number
     },
     beforeDispatch?: () => Promise<void>,
+    validateBeforeDispatch?: () => void,
   ): Promise<acp.ForkSessionResponse> {
     if (this.agentTurnFailure !== undefined) throw this.agentTurnFailure.view.error
     if (this.sessionId !== undefined) throw new Error('ACP runtime already owns a session')
@@ -901,8 +907,10 @@ export class AcpSessionRuntime {
       try {
         await beforeDispatch?.()
       } catch (error) {
+        if (error instanceof AcpForkPreDispatchError) throw error
         throw new AcpForkPreDispatchError('ACP_FORK_INTENT_FAILED', error)
       }
+      validateBeforeDispatch?.()
       const response = await connection.forkSession(
         parentSessionId,
         { cwd: this.options.cwd, mcpServers },

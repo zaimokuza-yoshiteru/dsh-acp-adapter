@@ -1,8 +1,17 @@
+import { acpPermissionAudit } from './acp-permission-audit.ts'
+import { teamBoundaryDiagnostics } from './team-boundary-diagnostics.ts'
+import { waitForTeamSettlement } from './team-settlement.ts'
+import {
+  installTeamFixtureApprovals,
+  teamMemberSetupSteps,
+  teamReplySteps,
+  teamStartSteps,
+} from './team-fixture-approval.ts'
 import type { SessionRequestId } from '@deepseek-ai/dsh-api-session-controller'
 import { required } from './required.ts'
 import { launchBrowser, newEnglishPage } from './browser.ts'
 import type { ObservedEvent } from './types.ts'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { LlmAdapter } from '@deepseek-ai/dsh-llm'
 import { expect, it, vi } from 'vitest'
@@ -32,13 +41,19 @@ class NativeTeamControl extends LlmAdapter {
   }
 }
 
-async function setup(teams: boolean, native = false) {
+async function setup(teams: boolean, native = false, mockLog?: string) {
   const host = await launchAdapterWorld({ teams })
   const profile = (id: string) => ({
     name: `Fixture ${id}`,
     command: process.execPath,
     args: [join(root, 'test/mock-agent/mock-agent.ts')],
-    env: { HOME: host.workspaceCwd, MOCK_SCENARIO: 'regression', MOCK_PROFILE: id, MOCK_MCP_HTTP: '1' },
+    env: {
+      HOME: host.workspaceCwd,
+      MOCK_SCENARIO: 'regression',
+      MOCK_PROFILE: id,
+      MOCK_MCP_HTTP: '1',
+      ...(mockLog === undefined ? {} : { MOCK_LOG: mockLog }),
+    },
   })
   await host.ctx.settings.replace('dsh-acp-adapter', {
     toolApprovalDefault: 'auto',
@@ -74,19 +89,73 @@ it('does not expose Teams UI or services when the native profile is off', async 
   }
 })
 
-it('keeps one ACP Agent across multiple models, isolates approvals and prevents cross-Agent teams', async () => {
-  const { host, browser, page, send } = await setup(true)
-  mkdirSync(join(root, '.local/teams-review'), { recursive: true })
+it('keeps one ACP Agent across multiple models, isolates approvals and prevents cross-Agent teams', async (context) => {
+  const diagnostics = teamBoundaryDiagnostics(join(root, '.local/teams-review'), context.signal)
+  const { host, browser, page, send } = await setup(true, false, diagnostics.logPath)
+  const drivers: ReturnType<typeof installTeamFixtureApprovals>[] = []
+  const setupDecisions = (options: Parameters<typeof installTeamFixtureApprovals>[1]) => {
+    const driver = installTeamFixtureApprovals(host, options)
+    drivers.push(driver)
+    return driver
+  }
+  const memberAudit = <P extends 'asked' | 'decided'>(phase: P) =>
+    acpPermissionAudit(host, phase).filter((entry) => {
+      const requestId = 'requestId' in entry.data ? entry.data.requestId : undefined
+      return requestId !== undefined && !drivers.some((driver) => driver.requestIds.has(requestId))
+    })
   const evidence: Record<string, unknown> = {},
     events: ObservedEvent[] = []
-  host.ctx.on('session/event', (session, event) => events.push({ sessionId: session.id, ...event }))
+  diagnostics.attach(host, () => new Set(drivers.flatMap((driver) => [...driver.requestIds])))
+  const stopEvents = host.ctx.on('session/event', (session, event) => {
+    const observed = { sessionId: session.id, ...event }
+    events.push(observed)
+    diagnostics.event(observed)
+  })
+  let cleanupPromise: Promise<void> | undefined
+  const cleanup = () =>
+    (cleanupPromise ??= (async () => {
+      try {
+        diagnostics.capture('teardown')
+        diagnostics.dispose()
+        stopEvents()
+        for (const driver of drivers) driver.dispose()
+        writeFileSync(join(root, '.local/teams-review/routing.json'), JSON.stringify({ ...evidence, events }, null, 2))
+      } finally {
+        try {
+          await browser.close()
+        } finally {
+          await host.close()
+        }
+      }
+    })())
+  // Vitest's deadline does not unwind a pending body promise. Preserve the
+  // same fixture teardown even when its ordinary finally cannot be reached.
+  context.onTestFinished(cleanup)
   try {
+    diagnostics.stage('bootstrap-send')
+    const bootstrap = setupDecisions({
+      initialPrompt: 'E2E_TEAM_START',
+      entries: [...teamStartSteps(host), ...teamMemberSetupSteps('calculator')],
+    })
     await send('E2E_TEAM_START')
+    diagnostics.stage('bootstrap-ready')
     await page.getByText('E2E_TEAM_READY', { exact: true }).waitFor()
     const lead = required(
       host.ctx.agents.list().find((agent) => host.ctx.agentTeams.tryMembership(agent)?.role === 'lead'),
     )
     const childAId = required(host.ctx.agentTeams.listMembers(lead).find((member) => member.role === 'teammate')).id
+    diagnostics.stage('bootstrap-member-permission')
+    await expect
+      .poll(
+        () =>
+          memberAudit('asked').filter(
+            (entry) => entry.sessionId === childAId && entry.data.toolCall.toolCallId === 'member-shell',
+          ),
+        { timeout: 30000 },
+      )
+      .toHaveLength(1)
+    bootstrap.finish()
+    diagnostics.stage('lead-select-model-b')
     await page.getByRole('button', { name: /^Select model/ }).click()
     await page.getByRole('menuitem', { name: /^Model/ }).click()
     await page
@@ -99,9 +168,41 @@ it('keeps one ACP Agent across multiple models, isolates approvals and prevents 
     await pendingCard.getByRole('button', { name: 'Collapse', exact: true }).click()
     expect(await pendingCard.getByRole('button', { name: 'calculator · Pending request', exact: true }).count()).toBe(0)
     // A waiting child must not disable the lead, and ordinary messages must not approve it.
+    const siblingSetup = setupDecisions({
+      root: lead,
+      entries: [
+        { owner: 'lead', callId: 'team-1', tool: 'list_agents', args: {} },
+        {
+          owner: 'lead',
+          callId: 'team-2',
+          tool: 'spawn_teammate',
+          args: {
+            name: 'calculator-b',
+            description: 'Model B member',
+            prompt: 'E2E_TEAM_MEMBER calculate 1+1',
+            context: 'fresh',
+          },
+        },
+        ...teamMemberSetupSteps('calculator-b'),
+      ],
+    })
+    diagnostics.stage('sibling-send')
     await send('E2E_TEAM_SECOND')
+    diagnostics.stage('sibling-ready')
     await page.getByText('E2E_TEAM_SECOND_READY', { exact: true }).waitFor()
     const childBId = required(host.ctx.agentTeams.listMembers(lead).find((member) => member.name === 'calculator-b')).id
+    diagnostics.stage('sibling-member-permission')
+    await expect
+      .poll(
+        () =>
+          memberAudit('asked').filter(
+            (entry) => entry.sessionId === childBId && entry.data.toolCall.toolCallId === 'member-shell',
+          ),
+        { timeout: 30000 },
+      )
+      .toHaveLength(1)
+    siblingSetup.finish()
+    diagnostics.stage('two-pending-layout')
     expect(required(host.ctx.agents.get(childBId)).options).toMatchObject({
       provider: 'acp-devin',
       model: 'mock-model-b',
@@ -116,26 +217,29 @@ it('keeps one ACP Agent across multiple models, isolates approvals and prevents 
     expect(await pendingCard.getByRole('button', { name: 'Collapse', exact: true }).getAttribute('aria-expanded')).toBe(
       'true',
     )
-    expect(events.filter((event) => event.type === 'approval/decided')).toHaveLength(0)
+    expect(memberAudit('decided')).toHaveLength(0)
     const cardBox = required(await pendingCard.boundingBox())
     const composerBox = required(await page.locator('[data-composer-input]').first().boundingBox())
     expect(cardBox.y + cardBox.height).toBeLessThanOrEqual(composerBox.y + 1)
     await page.reload()
+    diagnostics.stage('reload-pending')
     await pendingCard.getByRole('button', { name: 'calculator-b · Pending request', exact: true }).waitFor()
     expect(await pendingCard.locator('[data-team-pending-member]').count()).toBe(2)
     await host.ctx.settings.replace('locale', { preference: 'zh' })
+    diagnostics.stage('locale-zh-pending')
     // The locale-bound translate function causes the component to revalidate
     // member eligibility, briefly removing rows while its fresh read settles.
     await expect
       .poll(async () => {
         const [title, approvals, members] = await Promise.all([
-          pendingCard.getByText('需要你处理 · 2 位成员', { exact: true }).count(),
+          pendingCard.getByText('需要你处理 · 2 个子会话', { exact: true }).count(),
           pendingCard.getByText('等待审批', { exact: true }).count(),
           pendingCard.locator('[data-team-pending-member]').count(),
         ])
         return { title, approvals, members }
       })
       .toEqual({ title: 1, approvals: 2, members: 2 })
+    diagnostics.stage('locale-zh-layout')
     await page.setViewportSize({ width: 680, height: 720 })
     const narrow = required(await pendingCard.boundingBox())
     expect(narrow.x).toBeGreaterThanOrEqual(0)
@@ -145,8 +249,10 @@ it('keeps one ACP Agent across multiple models, isolates approvals and prevents 
     await pendingCard.getByRole('button', { name: '展开', exact: true }).click()
     await page.setViewportSize({ width: 1680, height: 1000 })
     await host.ctx.settings.replace('locale', { preference: 'en' })
+    diagnostics.stage('locale-en-restored')
     const leadUrl = page.url()
     for (const name of ['calculator-b', 'calculator']) {
+      diagnostics.stage(`${name}-open-approval`)
       await page.getByRole('button', { name: `${name} · Pending request`, exact: true }).click()
       // The native sidebar can keep both children visible in separate panes.
       // Resolve the member's own conversation, including after approval settles.
@@ -162,18 +268,40 @@ it('keeps one ACP Agent across multiple models, isolates approvals and prevents 
       expect(await sidebar.getByRole('button', { name: /^Select model/ }).count()).toBe(0)
       expect(page.url()).toBe(leadUrl)
       const id = name === 'calculator' ? childAId : childBId
+      const completion = setupDecisions({
+        root: lead,
+        entries: [
+          {
+            owner: name,
+            callId: 'team-3',
+            tool: 'send_message',
+            args: { target: 'lead', message: 'E2E_TEAM_REPLY result=2' },
+          },
+          ...teamReplySteps(),
+        ],
+      })
+      const completionStart = events.length
       await sidebar.locator('[data-approval-key]').getByRole('button', { name: 'Allow once', exact: true }).click()
+      diagnostics.stage(`${name}-member-done`)
       await sidebar.getByText('E2E_TEAM_MEMBER_DONE', { exact: true }).waitFor()
+      diagnostics.stage(`${name}-member-turn-end`)
       await vi.waitFor(
         () => expect(events.some((event) => event.sessionId === id && event.type === 'turn/end')).toBe(true),
         { timeout: 20_000 },
       )
+      diagnostics.stage(`${name}-parent-settlement`)
+      await waitForTeamSettlement(events, { parentId: lead.id, childId: id, after: completionStart })
+      diagnostics.stage(`${name}-lead-idle`)
+      await lead.whenIdle()
+      diagnostics.stage(`${name}-completion-plan`)
+      completion.finish()
       expect(page.url()).toBe(leadUrl)
       if (name === 'calculator-b') {
         await page.getByRole('button', { name: 'calculator · Pending request', exact: true }).waitFor()
         expect(events.some((event) => event.sessionId === childAId && event.type === 'turn/end')).toBe(false)
       }
     }
+    diagnostics.stage('all-members-idle')
     await vi.waitFor(async () => expect(await pendingCard.count()).toBe(0))
     await vi.waitFor(
       () =>
@@ -186,11 +314,27 @@ it('keeps one ACP Agent across multiple models, isolates approvals and prevents 
     const before = events
       .filter((event) => event.type === 'request/header')
       .filter((event) => event.sessionId === childAId).length
+    const continuation = setupDecisions({
+      root: lead,
+      entries: [
+        { owner: 'calculator', callId: 'team-1', tool: 'list_agents', args: {} },
+        {
+          owner: 'calculator',
+          callId: 'team-2',
+          tool: 'send_message',
+          args: { target: 'lead', message: 'E2E_TEAM_REPLY continued' },
+        },
+        ...teamReplySteps(),
+      ],
+    })
+    const continuationStart = events.length
+    diagnostics.stage('continuation-send')
     await host.ctx.agentTeams.sendMessage(lead, {
       target: 'calculator',
       content: [{ type: 'text', text: 'E2E_TEAM_CONTINUE' }],
       signal: new AbortController().signal,
     })
+    diagnostics.stage('continuation-header')
     await vi.waitFor(
       () =>
         expect(
@@ -204,6 +348,15 @@ it('keeps one ACP Agent across multiple models, isolates approvals and prevents 
         events.filter((event) => event.type === 'request/header').findLast((event) => event.sessionId === childAId),
       ).data.header.config,
     ).toMatchObject({ provider: 'acp-devin', model: 'mock-model-a' })
+    diagnostics.stage('continuation-child-idle')
+    await required(host.ctx.agents.get(childAId)).whenIdle()
+    diagnostics.stage('continuation-parent-settlement')
+    await waitForTeamSettlement(events, { parentId: lead.id, childId: childAId, after: continuationStart })
+    diagnostics.stage('continuation-lead-idle')
+    await lead.whenIdle()
+    diagnostics.stage('continuation-plan')
+    continuation.finish()
+    diagnostics.stage('cross-agent-restore-dialog')
     const selectModel = host.ctx.sessionController.selectModel.bind(host.ctx.sessionController)
     let failSourceRestore = true
     const failedSourceRestore = vi
@@ -245,12 +398,13 @@ it('keeps one ACP Agent across multiple models, isolates approvals and prevents 
       childBId,
       selected,
       roster: host.ctx.agentTeams.listMembers(lead),
-      ordinaryApprovals: events
-        .filter((event) => event.type === 'approval/asked')
-        .map((event) => ({ sessionId: event.sessionId, tool: event.data.toolName })),
+      ordinaryApprovals: memberAudit('asked')
+        .filter((entry) => entry.sessionId === childAId || entry.sessionId === childBId)
+        .map((entry) => ({ sessionId: entry.sessionId, tool: entry.data.toolCall })),
     })
     expect(evidence.ordinaryApprovals).toHaveLength(2)
     await page.screenshot({ path: join(root, '.local/teams-review/multiple-models.png'), fullPage: true })
+    diagnostics.stage('cross-agent-new-session')
     await page.getByRole('button', { name: /^Select model/ }).click()
     await page.getByRole('menuitem', { name: /^Model/ }).click()
     await page
@@ -259,6 +413,7 @@ it('keeps one ACP Agent across multiple models, isolates approvals and prevents 
       .click()
     await dialog.getByRole('button', { name: 'Continue', exact: true }).click()
     await send('E2E_MESSAGE')
+    diagnostics.stage('cross-agent-new-session-done')
     await page.getByText('E2E_DONE mock-model-b', { exact: true }).waitFor()
     const destinationId = required(
       events.findLast((event) => event.type === 'request/header' && event.data.header.config.provider === 'acp-codex'),
@@ -269,8 +424,10 @@ it('keeps one ACP Agent across multiple models, isolates approvals and prevents 
     evidence.crossAgentDestinationId = destinationId
     // No browser coordinator is present: a direct Remote selection must not bypass host execution policy.
     await page.goto('about:blank')
+    diagnostics.stage('cross-agent-negative-idle')
     await vi.waitFor(() => expect(lead.status).toBe('idle'), { timeout: 30_000 })
     await host.ctx.sessionController.selectModel({ sessionId: lead.id, provider: 'acp-codex', model: 'mock-model-a' })
+    diagnostics.stage('cross-agent-negative-prompt')
     await host.ctx.sessionController.prompt(
       {
         requestId: 'cross-agent-negative' as SessionRequestId,
@@ -280,6 +437,7 @@ it('keeps one ACP Agent across multiple models, isolates approvals and prevents 
       },
       new AbortController().signal,
     )
+    diagnostics.stage('cross-agent-negative-error')
     await vi.waitFor(
       () =>
         expect(
@@ -302,11 +460,9 @@ it('keeps one ACP Agent across multiple models, isolates approvals and prevents 
       ),
     ).toBe(false)
     evidence.crossAgentExecutionRejected = true
+    diagnostics.stage('complete')
   } finally {
-    mkdirSync(join(root, '.local/teams-review'), { recursive: true })
-    writeFileSync(join(root, '.local/teams-review/routing.json'), JSON.stringify({ ...evidence, events }, null, 2))
-    await browser.close()
-    await host.close()
+    await cleanup()
   }
 }, 120_000)
 

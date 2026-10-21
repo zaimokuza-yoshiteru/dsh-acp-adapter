@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { expect, it, vi } from 'vitest'
 import { launchAdapterWorld, root } from './scaffold.ts'
 
-it('keeps user terminals running when the first ACP prompt projects Agent permissions', async () => {
+it('keeps user terminals running and preserves native permissions across ACP prompts', async () => {
   // Exercise a real PTY without running the developer's shell startup scripts,
   // which may keep spawning unrelated processes while the test closes it.
   const host = await launchAdapterWorld({
@@ -65,16 +65,19 @@ it('keeps user terminals running when the first ACP prompt projects Agent permis
       const reason = required(session.snapshotEvents().findLast((event) => event.type === 'turn/end')).data.reason
       return reason
     }
-    // Alpha.2 user terminals have independent system-user permissions. Changing
-    // Agent policy must neither block its prompt nor replace the user's shell.
+    // User terminals have independent system-user permissions. Starting ACP
+    // must preserve both the native Agent policy and the user's running shell.
+    const initialPolicy = policyEvents()
     expect(await prompt()).toMatchObject({ kind: 'completed' })
     expect(host.ctx.terminalController.list(sessionId)).toEqual([terminal])
-    expect(host.ctx.permissionPresets.current(session)).toBe('custom')
+    expect(host.ctx.permissionPresets.current(session)).toBe('workspace-write')
+    expect(policyEvents()).toEqual(initialPolicy)
     expect(existsSync(log) ? readFileSync(log, 'utf8') : '').toContain('--> session/prompt')
     expect(session.snapshotEvents().some((event) => event.type === 'request/header')).toBe(true)
     await host.ctx.terminalController.close(agent, terminal.id)
     expect(await prompt()).toMatchObject({ kind: 'completed' })
-    expect(host.ctx.permissionPresets.current(session)).toBe('custom')
+    expect(host.ctx.permissionPresets.current(session)).toBe('workspace-write')
+    expect(policyEvents()).toEqual(initialPolicy)
     // An established ACP session can use a browser terminal without changing
     // its access mode again; neither terminal presence nor retries reset it.
     const acpTerminal = await host.ctx.terminalController.create(

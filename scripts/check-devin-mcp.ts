@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url'
 import { Context } from '@deepseek-ai/cordis'
 import LocalSubprocess from '@deepseek-ai/dsh-subprocess-local'
 import { narrowSubprocessSeam } from '../src/runtime/process/subprocess.ts'
-import { prepareDevinMcp } from '../src/host/teams/devin-config.ts'
+import { prepareDevinMcp } from '../src/host/tools/devin-config.ts'
 
 const executable = process.argv[2]
 assert.ok(executable, 'Pass the real Devin executable path')

@@ -14,7 +14,7 @@ import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { AcpProfileAdapter } from '../../../src/host/composition/profile-adapter.ts'
-import { createTeamBridge } from '../../../src/host/teams/bridge.ts'
+import { createDshToolBridge } from '../../../src/host/tools/bridge.ts'
 import type { AcpSidecar } from '../../../src/persistence/sidecar.ts'
 import type { DispatchLedgerStore, DispatchRecord } from '../../../src/runtime/session/dispatch-ledger.ts'
 import { withSessionFacts } from '../../support/session-facts.ts'
@@ -318,7 +318,7 @@ describe('session-scoped ACP image capability', () => {
     )
     const connect = async (agent: Agent, imageSupported = true) => {
       const assembly = await h.ctx.systemPrompt.assemble({ scope: agent })
-      const lease = (await createTeamBridge(
+      const lease = (await createDshToolBridge(
         h.ctx as never,
         agent.id,
         { mcpCapabilities: { http: true }, promptCapabilities: { image: imageSupported } },

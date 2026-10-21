@@ -30,8 +30,15 @@ describe('client contribution', () => {
       ['conversation.input.model', [{ name: 'conversation.input.model', priority: 0, id: 'native-model-selector' }]],
     ])
     const lifecycle: string[] = []
+    const sessions = {
+      list: {
+        getSnapshot: () => ({ byId: {}, projectionsBySession: {} }),
+        subscribe: () => () => {},
+      },
+    }
     const ctx = {
       remote: {
+        $on: () => () => {},
         $mount: async () => {
           lifecycle.push('mount')
           return async () => {
@@ -58,7 +65,7 @@ describe('client contribution', () => {
           subscribe: () => () => {},
         }),
       },
-      sessions: {},
+      sessions,
       workspaces: {},
       effect: (fn: () => unknown) => {
         void fn()
@@ -75,7 +82,7 @@ describe('client contribution', () => {
         register: (value: unknown) => value,
         registerFactory: () => () => {},
       },
-      get: () => ({}),
+      get: (name: string) => (name === 'sessions' ? sessions : {}),
     }
     const uiInjects: string[][] = []
     Object.assign(ctx, {
@@ -92,10 +99,7 @@ describe('client contribution', () => {
     })
     const dispose = await apply(ctx as never)
     expect(lifecycle).toEqual(['mount'])
-    expect(uiInjects).toEqual([
-      [...inject, 'remote.dshAcp'],
-      ['remote.subagents', 'uiSession'],
-    ])
+    expect(uiInjects).toEqual([[...inject, 'remote.dshAcp'], ['remote.subagents', 'uiSession'], ['uiSession']])
     expect(definitions).toHaveLength(4)
     expect(injections).toEqual(
       expect.arrayContaining([
@@ -106,6 +110,10 @@ describe('client contribution', () => {
       ]),
     )
     expect(injections).not.toContainEqual(expect.objectContaining({ name: 'settings.section' }))
+    // No native Team contribution is mounted in this fixture. Child approvals
+    // still register once; only Team management follows that optional surface.
+    expect(injections.filter((entry) => (entry as { id?: string }).id === 'acp-team-approvals')).toHaveLength(1)
+    expect(injections).not.toContainEqual(expect.objectContaining({ id: 'acp-team-management' }))
     expect(slotEntries.get('shell.overlay')).toEqual([
       { name: 'shell.overlay', id: 'third-party-overlay' },
       expect.objectContaining({ id: 'dsh-acp-cross-backend-confirmation' }),

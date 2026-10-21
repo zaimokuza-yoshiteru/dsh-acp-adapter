@@ -52,6 +52,21 @@ export interface AcpSessionForkAuditData {
   readonly agentSessionId?: string
 }
 
+/** Allowlisted launch evidence. Sizes describe the original ACP request, not expanded shell argv. */
+export interface AcpTerminalFailureFacts {
+  readonly phase: 'spawn' | 'completion'
+  readonly attempt: 'direct' | 'shell-fallback'
+  readonly code:
+    'ENOENT' | 'EACCES' | 'ENOEXEC' | 'ENAMETOOLONG' | 'E2BIG' | 'ENOMEM' | 'EMFILE' | 'ENFILE' | 'EINVAL' | 'other'
+  readonly syscall: 'spawn' | 'execve' | 'other'
+  readonly platform: 'win32' | 'darwin' | 'linux' | 'other'
+  readonly commandBytes: number
+  readonly commandMaxPathComponentBytes: number
+  readonly argCount: number
+  readonly argBytes: number
+  readonly maxArgBytes: number
+}
+
 /** Durable terminal lifecycle summary; command environment values are never included. */
 export interface AcpTerminalAuditData {
   readonly operation: 'create' | 'output-summary' | 'exit' | 'kill' | 'release'
@@ -69,6 +84,7 @@ export interface AcpTerminalAuditData {
   readonly signal?: string | null
   /** Recorded cancellation intent; a requested stop is not a command failure. */
   readonly terminationRequested?: boolean
+  readonly failure?: AcpTerminalFailureFacts
 }
 
 /**
@@ -244,6 +260,14 @@ export interface AcpPermissionAskedAuditData {
 }
 
 /** `decided` phase payload: what the bridge answered, and why. */
+export interface AcpPermissionPresentation {
+  /** Native root that presented the external child permission. It receives no grant. */
+  readonly rootSessionId: string
+  /** Exact managed child path, excluding the root and ending at the decision owner. */
+  readonly path: readonly string[]
+}
+
+/** `decided` phase payload: what the bridge answered, and why. */
 export interface AcpPermissionDecidedAuditData {
   readonly phase: 'decided'
   /**
@@ -269,10 +293,11 @@ export interface AcpPermissionDecidedAuditData {
   readonly selectedOptionKind?: PermissionOption['kind']
   /** Which answerer produced the decision; the first two values are legacy. */
   readonly decisionVia?: 'acp-ui' | 'native-fallback' | 'native-question' | 'native-approval'
+  readonly presentation?: AcpPermissionPresentation
   /**
    * Current vocabulary includes `cancelled`, `question-service-unavailable`,
    * `agent-unavailable`, `custom-option-unsupported`, `invalid-option-id` and
-   * `question-error`. Older approval bridge causes remain valid when reading
+   * `question-error`, `delegated-question-unavailable`. Older approval bridge causes remain valid when reading
    * legacy rows.
    */
   readonly note?: string
@@ -330,6 +355,7 @@ export interface PermissionDecidedAuditInit {
   readonly approvalOutcome?: AcpApprovalOutcome
   readonly selectedOptionKind?: PermissionOption['kind']
   readonly decisionVia?: 'acp-ui' | 'native-fallback' | 'native-question' | 'native-approval'
+  readonly presentation?: AcpPermissionPresentation
   readonly note?: string
 }
 
@@ -393,6 +419,14 @@ export function createPermissionDecidedAudit(init: PermissionDecidedAuditInit): 
     ...(init.approvalOutcome === undefined ? {} : { approvalOutcome: init.approvalOutcome }),
     ...(init.selectedOptionKind === undefined ? {} : { selectedOptionKind: init.selectedOptionKind }),
     ...(init.decisionVia === undefined ? {} : { decisionVia: init.decisionVia }),
+    ...(init.presentation === undefined
+      ? {}
+      : {
+          presentation: {
+            rootSessionId: init.presentation.rootSessionId,
+            path: [...init.presentation.path],
+          },
+        }),
     ...(init.note === undefined ? {} : { note: init.note }),
   }
 }

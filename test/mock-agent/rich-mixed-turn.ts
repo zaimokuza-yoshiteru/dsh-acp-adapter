@@ -9,7 +9,15 @@ export async function richMixedTurn(session: MockSession, message: PromptMessage
     .filter((block) => block.type === 'text')
     .map((block) => block.text)
     .join('\n')
-  const match = /E2E_RICH_MIXED (generic|diff)/.exec(prompt)
+  if (message.params.prompt.some((block) => block.type === 'text' && block.text === 'E2E_RICH_MIXED_FOLLOWUP')) {
+    peer.sendUpdate(session.id, {
+      sessionUpdate: 'agent_message_chunk',
+      content: { type: 'text', text: 'E2E_RICH_MIXED_FOLLOWUP_DONE' },
+    })
+    peer.respond(message.id, { stopReason: 'end_turn' })
+    return true
+  }
+  const match = /E2E_RICH_MIXED (generic|diff|reasoning-first|reasoning-cancel|progress-reasoning)/.exec(prompt)
   if (match === null) return false
   const variant = match[1]!
   const path = join(session.cwd, 'mixed-report.txt')
@@ -48,6 +56,18 @@ export async function richMixedTurn(session: MockSession, message: PromptMessage
       cancellation.abort()
     },
   }
+  if (variant === 'progress-reasoning') {
+    peer.sendUpdate(session.id, {
+      sessionUpdate: 'agent_message_chunk',
+      content: { type: 'text', text: 'E2E_MIXED_PROGRESS I will inspect the files first.' },
+    })
+  }
+  if (variant === 'reasoning-first' || variant === 'reasoning-cancel' || variant === 'progress-reasoning') {
+    peer.sendUpdate(session.id, {
+      sessionUpdate: 'agent_thought_chunk',
+      content: { type: 'text', text: 'E2E_MIXED_REASONING Inspect before exporting the report.' },
+    })
+  }
   peer.sendUpdate(session.id, {
     sessionUpdate: 'tool_call',
     toolCallId: `rich-mixed-${variant}`,
@@ -60,6 +80,7 @@ export async function richMixedTurn(session: MockSession, message: PromptMessage
   try {
     const released = await waitForFileGate(gate, cancellation.signal, `Mixed output fixture did not receive ${gate}`)
     if (!released) {
+      peer.log(`rich-mixed ${variant} cancelled`)
       peer.respond(message.id, { stopReason: 'cancelled' })
       return true
     }

@@ -9,7 +9,7 @@ import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import SandboxPolicyService, { setSandboxMode } from '@deepseek-ai/dsh-sandbox-policy'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
-import ApprovalService from '@deepseek-ai/dsh-user-approval'
+import ApprovalService, { setApprovalPolicy } from '@deepseek-ai/dsh-user-approval'
 import type { ApprovalOutcome, ApprovalRequest } from '@deepseek-ai/dsh-user-approval'
 import { installLiveTeamApprovalPolicy } from '../../e2e/live-team-approval-policy.ts'
 
@@ -160,6 +160,25 @@ describe('live Team approval native sandbox precondition', () => {
     expect(f.lead.session.snapshotEvents().filter((event) => event.type.startsWith('approval/'))).toEqual([])
     expect(policy.violations).toEqual([])
     expect(policy.admittedCallId).toBe('native-bash')
+  })
+
+  it('requires an explicit test-owned ask transition for native escalation from a delegated never policy', async () => {
+    const f = await fixture()
+    setApprovalPolicy(f.member.session, 'never')
+    const policy = f.install()
+    await f.announce()
+    expect(policy.originalApproval).toBe('never')
+    expect(f.ctx.approval.overrideOf(f.member.session)).toBe('never')
+    const answer = vi.fn(async (): Promise<ApprovalOutcome> => 'allowed-once')
+    f.ctx.on('approval/request', answer)
+    expect((await f.call(f.member)).isError).toBe(false)
+    expect(policy.approvalAtAdmission).toBe('ask')
+    expect(answer).toHaveBeenCalledTimes(1)
+    expect(f.executed).toHaveLength(1)
+    expect(f.member.session.snapshotEvents().filter((event) => event.type === 'approval/asked')).toHaveLength(1)
+    expect(f.member.session.snapshotEvents().filter((event) => event.type === 'approval/decided')).toHaveLength(1)
+    expect(f.ctx.approval.overrideOf(f.lead.session)).toBeUndefined()
+    expect(f.ctx.approval.overrideOf(f.unrelated.session)).toBeUndefined()
   })
 
   it.each(['rejected', 'cancelled', 'unavailable'] as const)(

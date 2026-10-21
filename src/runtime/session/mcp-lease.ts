@@ -1,5 +1,6 @@
 import type * as acp from '@agentclientprotocol/sdk'
 import type { AcpPermissionCheck } from '../../domain/policy/permission-check.ts'
+import type { AcpHostToolControlOutcome } from '../../contract/tool-control-outcome.ts'
 
 export type AcpHostSettlementFailure =
   | 'ACP_HOST_CALL_DRAIN_TIMEOUT'
@@ -75,5 +76,7 @@ export interface AcpMcpLease {
     toolCall: acp.ToolCallUpdate | undefined,
   ): string | undefined
   presentTool?(toolCall: acp.ToolCallUpdate): acp.ToolCallUpdate
+  /** Host-proven non-execution for an exactly correlated tool reply, not a successful tool result. */
+  toolControlOutcome?(toolCallId: string): AcpHostToolControlOutcome | undefined
   close(graceMs?: number): Promise<void>
 }

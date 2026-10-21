@@ -62,6 +62,7 @@ const PINNED_REMOTE_METHODS: readonly string[] = [
   'activitySnapshot',
   'agentSessionFollow',
   'agentSessionSnapshot',
+  'approvalChildren',
   'auditTimeline',
   'backendOf',
   'boundSessions',
@@ -93,9 +94,9 @@ describe(' 旁路 API 消除门', () => {
       }
     }
     expect(violations, `旁路 API 回归：\n  ${violations.join('\n  ')}`).toEqual([
-      'host/teams/bridge.ts: createServer',
-      'host/teams/bridge.ts: .listen(',
-      'host/teams/bridge.ts: node:http(s)/node:net import',
+      'host/tools/bridge.ts: createServer',
+      'host/tools/bridge.ts: .listen(',
+      'host/tools/bridge.ts: node:http(s)/node:net import',
     ])
   })
 

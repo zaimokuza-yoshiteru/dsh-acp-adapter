@@ -151,13 +151,9 @@ export function installAcpBackendGuard(ctx: Context, options: AcpBackendGuardOpt
         )
         throw error
       }
-      // DSH's native fork creates a new session whose model-selection
-      // projection may inherit the parent's ACP route, but whose ACP binding
-      // is intentionally absent until the child sends its first turn. The
-      // provider adapter will establish a fresh Agent session (or use a
-      // proven ACP fork) and record the child binding. Treating this as a
-      // same-session recovery failure would prevent the documented blank
-      // context fallback before the adapter is reached.
+      // A native fork has no child ACP binding until its first dispatch. The
+      // provider proves the inherited boundary before forking; a seeded child
+      // that cannot preserve its history must fail instead of starting blank.
       if (binding === undefined && session.header.parentSession !== undefined && previousProfile === targetProfile) {
         return resolved
       }

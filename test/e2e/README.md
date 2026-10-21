@@ -19,6 +19,7 @@ CodeBuddy CLI 的真实运行检查属于本机 opt-in 验证，不纳入普通�
 | 文件、消息与恢复   | 原生输入栏上传；ACP 收到文件文本句柄；主会话以 Session V4 保存 stream；刷新后消息、附件、原生 TerminalBlock 可见                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | 消息分段           | 思考与回答交替、思考开头空行、不同 messageId 和工具边界；实时、停止及刷新后顺序一致；原生 Bash/工具调用及参数摘要、去重计数、折叠保留完整结尾回答、紧凑/详细/展开设置、浏览器查找展开                                                                                                                                                                                                                                                                                                                                               |
 | 过程分组归属       | `activity-grouping.e2e.ts` 只驱动 scaffold 原生 assembler、Chat builder 与 ProcessState，不启动 Host 或浏览器；空 marker 不生成完成组，保留首段思考／正文／工具、真实分组结束、多 Step、恢复及路由切换语义                                                                                                                                                                                                                                                                                                                          |
+| 已提交回答与通知   | `committed-replies.e2e.ts` 通过真实 inbox 排入后续通知，验证主报告在原生过程收起后仍可见，通知与正文不重复，复制归属、文件预览和刷新保持；覆盖四种展示模式、两种收起时机及 390 px 明暗布局。`DSH_E2E_REPLY_BASELINE=1` 配合 `DSH_E2E_ADAPTER_DIRECTORY` 只用于封存旧包的缺陷对照，不代表修复验收                                                                                                                                                                                                                                    |
 | 原生 slot 语义锚点 | `native-slot-anchors.e2e.ts` 使用 scaffold 的真实 jsdom，不启动 Host 或浏览器；覆盖初始与晚到空 outlet、属性更新、多 owner 隔离、重挂载与卸载，保留私有注册身份及原有 DOM 层级                                                                                                                                                                                                                                                                                                                                                      |
 | 工作步骤原生偏好   | `native-work-details.e2e.ts` 以构建插件和确定性 ACP 夹具验证四种展示模式 × 两种收起时机；覆盖多轮、刷新、详情重置、无伪完成组，以及原生语义锚点、空占位和实际行间距；不代表真实 Agent 或完整桌面产品验收                                                                                                                                                                                                                                                                                                                            |
 | 宿主扩展           | system prompt、动态上下文与 pre-step 插件输入真正到达 ACP；插件触发的后续步骤正常运行；旧用户输入不重复发送；卸载插件后不再携带其指令                                                                                                                                                                                                                                                                                                                                                                                               |
@@ -67,13 +68,59 @@ Teams 专项：`pnpm test:e2e test/e2e/agent-teams.e2e.ts test/e2e/teams-boundar
 
 真实双模型检查增加 `DSH_E2E_LIVE_TEAMS_MULTIMODEL=1 DSH_E2E_LIVE_PROFILES=devin`，分别使用 SWE-1.7 Medium 与 GPT-5.4 Mini Low 创建成员。`DSH_E2E_RETAIN=1 DSH_E2E_BROWSER_CHANNEL=chrome` 打开并保留随窗口大小自适应的本机 Chrome；该模式要求只选一个 Agent，完成断言后暂停测试退出，不能作为 CI 完成信号。实例地址、重新打开所需的 `authenticatedUrl` 与专属停止文件写入仅当前用户可读写的 `.local/e2e-live-teams/review-instance.json`；其中登录链接仅供本地查看，不要分享。需要关闭时创建其中的 `stopFile`，才会清理对应宿主和浏览器。
 
-`DSH_E2E_LIVE_TEAMS_APPROVAL=1` 额外创建一个真实新成员，验证首次系统提示词为 `ask`、写文件前主会话出现待处理卡。测试直接在主会话的成员卡上点击“允许一次”，确认决定归属子会话，批准后才产生临时文件，且页面始终停留在主会话。建议限定 `DSH_E2E_LIVE_PROFILES=devin`；模型不可用时，通过 `DSH_E2E_LIVE_DEVIN_MODEL` 指定当前目录中的精确 ID。
+`DSH_E2E_LIVE_TEAMS_APPROVAL=1` 额外创建一个真实新成员，验证其初始 DSH 审批策略保留原生委派的 `never`。为了单独验证原生 DSH 工具的沙箱升权，测试夹具只在指定文件写入命令准入时显式设置原生 `ask` 与只读沙箱；这不是生产默认行为。测试直接在主会话的成员卡上点击“允许一次”，核对原生 `approval/asked` 与 `approval/decided` 均归属子会话，批准前无文件副作用、批准后产生临时文件，且页面始终停留在主会话。建议限定 `DSH_E2E_LIVE_PROFILES=devin`；模型不可用时，通过 `DSH_E2E_LIVE_DEVIN_MODEL` 指定当前目录中的精确 ID。
+
+ACP 自有工具的审批另行验收：原生委派的 `never` 继续约束 DSH 工具，ACP 请求通过原生审批卡回答，并在 Sidecar 保留独立审计。对应回归核对实际问答、请求与决定的关联及后续执行，不要求这条路径生成原生 Session 的审批事件；不能用上述原生 DSH 升权专项替代 ACP 自有工具审批验收。
 
 RC 的原生 Teams 名单从成员的 `modelSelection.next` 显示下次选择；这与已经执行的模型不同。多模型执行以成员持久化的 `request/header` 为准，ACP 管理控件区分当前与待生效模型。本插件不复制原生面板或修改宿主展示数据。原生完成通知中的 reasoning 展示与成员详情分别验证。
 
-集中审批调用宿主原有 pending approval 的一次性回答接口。通用提问／表单不参与批量操作；目标宿主的 `userQuestions.ask()` 会以 `DELEGATED_CALLER` 拒绝由另一个存活 Agent 管理的子会话。普通问题仍保留该限制。只有当前 DSH 工具身份核实、表单仅包含 persist 且提供 once 的 Codex 子会话请求，才转为子会话持有的原生一次性审批；需要用户明确允许，不授予 session/always，也不回答额外字段。
+二元一次性集中审批调用子会话原有 pending approval 的回答接口；原生或 ACP 父会话均可使用，不依赖 Teams 开启。Host 核实存活 runtime 的逐层 ownership 与来源路径权限，排除普通独立分支和只读外部子任务投影，并保留原生委派的 `never` 策略。完整多作用域权限请求由原生 root 问题卡代呈，原始 option ID、执行身份和决定记录仍归属子会话；不会缩成一次性选项，也不参与批量允许。普通子会话提问和计划仍保留上游 `DELEGATED_CALLER` 边界。Codex 仅在已核实当前 DSH 工具身份、表单只包含 `persist` 时进入权限专用路径：唯一 `once` 选项使用原生一次性审批，多选项完整代呈。`team-approvals.e2e.ts` 显式设置 `MOCK_TEAM_APPROVAL_ONCE_ONLY=1` 验证原有批量路径；其通过不能替代完整选项专项验收。
 
 Teams 只在原生 profile 提供服务与九个成员工具时接入；调用仍经过 DSH ToolRuntime 的 hooks 和校验。HTTP/stdio 服务、临时能力地址随会话生命周期撤销。为兼容包括 `3000.3.27` 在内的 Devin 版本，适配器通过 `devin mcp add` 注册固定的用户级 `dsh` stdio 入口。每个进程通过环境变量绑定独立会话能力，退出后能力撤销，用户级入口保留；无需文件链接。Codex 通过关联工具调用的 MCP 审批表单选择仅本次允许；Kimi 只接受当前连接的完整工具标题。这些兼容处理均不放行普通表单或其他工具。
+
+## Fork 与通用子会话审批专项
+
+`fork-approval-contracts.e2e.ts` 使用构建插件、目标 Loader、确定性 ACP 子进程与浏览器，不读取 Agent 登录或调用真实模型。普通分支场景核对继承历史、ACP dispatch 和错误：未声明 fork 时拒绝；声明 fork 但拒绝源会话时保留失败，两者均不得回退 `session/new`。这不表示原生菜单已经隐藏或 DSH 分支记录不会先创建；完整目标路由解析、菜单与创建前能力预检仍需上游接口支持。`subagent_fork` 的 guard 仅提前拒绝明确 ACP 目标且父会话已有完成历史并正在运行的调用，不根据父会话类型隐藏整项工具。显式原生目标、未知默认路由、scope 本地同名工具、PTC 调用与最终准入边界另由 `fork-tools.spec.ts`、`profile-adapter-fork.spec.ts` 覆盖。
+
+同一专项通过原生 spawn 建立受管 ACP 子会话，分别使用原生与 ACP 父会话且关闭 Teams，核验父页面审批、刷新、390px 明暗布局、批准前无副作用、决定归属子会话、原始 carrier 只结算一次及原生 `never` 不变。root 选项场景在原生问题卡选择原始授权 ID；多作用域子请求场景核对父页面原生选项、原始授权 ID 与子会话审计归属。该专项不认证完整桌面产品或真实 Agent 的能力。
+
+```sh
+pnpm test:e2e test/e2e/fork-approval-contracts.e2e.ts
+# 仅用于封存旧包的缺陷对照；不作为修复验收
+DSH_E2E_FORK_APPROVAL_BASELINE=1 \
+DSH_E2E_ADAPTER_DIRECTORY=/absolute/path/to/archived-plugin \
+pnpm test:e2e test/e2e/fork-approval-contracts.e2e.ts
+```
+
+`live-managed-approval.e2e.ts` 默认跳过，需要明确启用本机真实 Devin。两项测试均使用隔离 Host/workspace 和精确模型 `swe-2-high`，不回退其他模型。子会话测试使用脚本化原生父模型和真实 `devin acp` 子会话，关闭 Teams，要求通过 DSH MCP write 写入临时 marker，核对真实请求、父页面一次允许、文件内容及子会话原生 `never`；父模型不参与真实推理。根会话测试核对原始授权选项全部出现在原生问题卡中，选择一次授权后精确返回其 option ID，并检查文件内容。子会话实际发出多范围授权时，在父页面原生问题卡选择一次授权，并核对展示选项数量与原始请求一致，不将取消或缩减选项记作通过。Devin 使用本机已有认证并消耗模型用量；可通过 `DSH_E2E_LIVE_DEVIN_ENV_KEYS` 传入逗号分隔的显式环境变量名。
+
+```sh
+DSH_E2E_LIVE_MANAGED_APPROVAL=1 \
+pnpm test:e2e test/e2e/live-managed-approval.e2e.ts
+```
+
+上述专项证据写入 gitignored `.local/fork-approval-fix-20261021/`：协议对照分别使用 `before/` 与 `after/`，真实子会话使用 `live/<run-id>/`，真实根会话使用 `live-root/<run-id>/`。每次运行独立核验其结果；保留截图或文件不能代替请求、决定与实际副作用的断言。
+
+`parent-permission-options.e2e.ts` 使用真实 Loader、浏览器和确定性 ACP 子进程，覆盖原生／ACP 父会话、完整七选项、刷新、父自身问题与两个子请求并发、取消后的迟到答复，以及嵌套受管子会话。宽屏截图与请求／副作用对照保存在 `.local/parent-approval-20261021/`；协议夹具不代表真实企业策略验收。
+
+```sh
+pnpm test:e2e test/e2e/parent-permission-options.e2e.ts
+DSH_E2E_PARENT_APPROVAL_BASELINE=1 \
+DSH_E2E_ADAPTER_DIRECTORY=/absolute/path/to/archived-plugin \
+pnpm test:e2e test/e2e/parent-permission-options.e2e.ts
+```
+
+`live-parent-permission.e2e.ts` 默认跳过，显式启用后使用本机 Devin、精确模型 `swe-2-high` 与隔离 marker 文件。原生父使用脚本化控制，子会话是真实 Devin；验证 Ask／Auto 下完整选项、刷新与嵌套并发取消，并在临时项目配置中核验显式 Deny 不被转成批准或替代工具写入。项目 Deny 不是企业管理策略。旧包对照分别核对 Ask 子请求被取消、Auto 未经人工选择执行。测试不改变企业策略，也不能用非企业账号证明企业 Ask／Deny 已生效。
+
+```sh
+DSH_E2E_LIVE_PARENT_PERMISSION=1 \
+pnpm test:e2e test/e2e/live-parent-permission.e2e.ts
+# 同输入旧包对照；成功表示已复现旧行为
+DSH_E2E_LIVE_PARENT_PERMISSION=1 \
+DSH_E2E_PARENT_PERMISSION_BASELINE=1 \
+DSH_E2E_ADAPTER_DIRECTORY=/absolute/path/to/archived-plugin \
+pnpm test:e2e test/e2e/live-parent-permission.e2e.ts
+```
 
 ## 运行
 
@@ -183,7 +230,7 @@ ACP 与 DSH 的桥接边界见[原生复用说明](../../docs/native-reuse.md)�
 
 ### Qwen Code
 
-真实 Qwen Code 专项需要官方 `@qwen-code/qwen-code`（命令 `qwen`）；千问桌面应用或 `@qianwenai/qianwen-cli` 的 `qianwen` 命令不提供此 ACP 接口。专项默认跳过：`DSH_E2E_LIVE_QWEN=1 DSH_E2E_LIVE_QWEN_COMMAND=/absolute/path/to/@qwen-code/qwen-code/cli-entry.js pnpm exec vitest run test/integration/process/qwen-live.spec.ts`。它不经过浏览器与 Host，直接驱动 `AcpSessionRuntime`，在临时工作区验证 `ask_user_question` 问答、后台 shell 任务完成后承接 `_qwencode/start_turn` 轮次，以及无整轮终态标记的 `cron` 输出进入结果未知、保留输入不派发的路径。未知／缺失原因和 hold 丢失的确定性负向场景由协议夹具覆盖；不能用模型自述或快照空闲替代终态。Agent 进程只继承系统基础变量和 `DSH_E2E_LIVE_QWEN_ENV_KEYS` 显式列出的变量；Qwen 使用本机已有的认证配置，会消耗所配置模型服务的用量。协议回归见 `test/unit/runtime/session-runtime-qwen.spec.ts` 与 `test/fixtures/fake-qwen-agent.mjs`。
+真实 Qwen Code 专项需要官方 `@qwen-code/qwen-code`（命令 `qwen`）；千问桌面应用或 `@qianwenai/qianwen-cli` 的 `qianwen` 命令不提供此 ACP 接口。专项默认跳过：`DSH_E2E_LIVE_QWEN=1 DSH_E2E_LIVE_QWEN_COMMAND=/absolute/path/to/@qwen-code/qwen-code/cli-entry.js pnpm exec vitest run test/integration/process/qwen-live.spec.ts`。可用 `DSH_E2E_LIVE_QWEN_MODEL` 指定当前会话目录中的精确模型 ID；每个新会话在首个 prompt 前校验并选择，缺失或空值即失败，未设置时沿用原行为，不修改用户 CLI 默认配置。它不经过浏览器与 Host，直接驱动 `AcpSessionRuntime`，在临时工作区验证 `ask_user_question` 问答、后台 shell 任务完成后承接 `_qwencode/start_turn` 轮次，以及无整轮终态标记的 `cron` 输出进入结果未知、保留输入不派发的路径。未知／缺失原因和 hold 丢失的确定性负向场景由协议夹具覆盖；不能用模型自述或快照空闲替代终态。Agent 进程只继承系统基础变量和 `DSH_E2E_LIVE_QWEN_ENV_KEYS` 显式列出的变量；Qwen 使用本机已有的认证配置，会消耗所配置模型服务的用量。协议回归见 `test/unit/runtime/session-runtime-qwen.spec.ts` 与 `test/fixtures/fake-qwen-agent.mjs`。
 
 2026-10-18 的 macOS arm64 实测使用官方 Qwen Code `0.25.2`：后台 shell 完成后承接已有轮次并返回 `end_turn` 通过；另一次精确参数的 `cron_create` 已确认创建、触发并承接 `CRONFIRED` 输出，随后因上游缺少整轮终态，以 `ACP_PROTOCOL_ERROR / missing-terminal` 保留结果未知，不能记为 cron 成功完成。该次 cron 运行记录了公开模型配置快照 `qwen3.6-plus(openai)`，并非每个内部请求的模型路由证明；后台测试没有独立模型快照。先前一次未观察到 cron 唤醒的失败仍保留，不能据后一次结果补猜其原因。真实问答本轮未运行，Qwen Code 的真实 Windows 验证仍待补充；这些结果不扩展到所有 Qwen 服务、平台或浏览器界面。
 
@@ -201,7 +248,7 @@ Qwen 的无密钥 Host 与界面回归独立于上述 live 检查：`pnpm test:e
 DSH_E2E_LIVE_ANTIGRAVITY=1 \
 DSH_E2E_LIVE_ANTIGRAVITY_COMMAND=/absolute/path/to/agy_acp_server.par \
 DSH_E2E_LIVE_ANTIGRAVITY_ENV_KEYS=NAME1,NAME2 \
-pnpm test:e2e -- test/e2e/live-antigravity.e2e.ts
+pnpm test:e2e test/e2e/live-antigravity.e2e.ts
 ```
 
 Antigravity 使用 `gemini-3.8-flash-low`，也可用 `DSH_E2E_LIVE_ANTIGRAVITY_MODEL` 指定目录中实际存在的精确模型；可用 `DSH_E2E_LIVE_ANTIGRAVITY_HARNESS=/absolute/path/to/localharness_external` 指定 harness。该五阶段检查覆盖原生固定选项问答、Allow once、Reject、Stop 与同 session 继续；Host 工具全部拒绝，交互请求最多 12 次，provider 工具活动超过 16 次会触发测试软停止。该保护不限制模型费用或 token 使用。
@@ -213,7 +260,7 @@ DSH_E2E_LIVE_MCP_MODEL=exact-model-id \
 DSH_E2E_LIVE_MCP_COMMAND=/absolute/path/to/agent \
 DSH_E2E_LIVE_MCP_ARGS='[]' \
 DSH_E2E_LIVE_MCP_ENV_KEYS=NAME1,NAME2 \
-pnpm test:e2e -- test/e2e/live-mcp-continuation.e2e.ts
+pnpm test:e2e test/e2e/live-mcp-continuation.e2e.ts
 ```
 
 `DSH_E2E_LIVE_MCP_PROFILE` 可选 `devin`、`codebuddy` 或 `antigravity`；Antigravity 可另设 `DSH_E2E_LIVE_MCP_ANTIGRAVITY_HARNESS=/absolute/path/to/localharness_external`。夹具严格检查实际 request 与 session 当前 provider/model、每轮已发布 `read` 和 `todo_write` schema、精确 Host 参数与结果；只允许一次 marker 文件读取和一项 todo 写入，Host 分发上限为 8，provider 工具活动超过 16 次会触发测试软停止。这是测试范围守卫，不是 token、费用或生产限额。
@@ -246,7 +293,7 @@ pnpm test:e2e -- test/e2e/live-mcp-continuation.e2e.ts
 | C：Ask 审批   | 在测试 workspace 使用唯一操作 ID 执行小写入，Lead 与成员各做 Allow once 和 Reject。核验审批归属、允许恰好一次写入、拒绝零副作用和同一 ACP session 后续交互。绑定及事件历史可观察不代表模型语义记忆正确。 |
 | D：中断与恢复 | 长任务中执行 Stop、刷新并排队输入；核验取消、会话状态、FIFO 及副作用。只有观测到 Host job settlement 才能签收该执行路径；provider-native 工具路径可能只能记为 partial。                                  |
 
-运行示例：`DSH_E2E_LIVE_LONG_TASK=1 DSH_E2E_LIVE_LONG_TASK_PROFILE=devin pnpm test:e2e -- test/e2e/live-long-task.e2e.ts`；CodeBuddy 将 profile 改为 `codebuddy`。默认执行 A–D。`DSH_E2E_LIVE_LONG_TASK_SCENARIOS=teams` 跳过 A 并执行 B–D；`teams-only` 仅运行 B，独立核验两个成员各自读取、任务、收件和 Lead 汇总，不重复已验收的 C/D；`controls` 只运行 Lead 的 C controls 与完整 D，C 为 partial；`stop-only` 只运行 D。`approvals` 跳过 A/B，通过官方 Team service 建立一个 fresh 成员作为夹具前置，再运行原 C 的 Lead/member Allow/Reject 四格与 D；前置明确记录为 `setupRoute=host-service`，不认证 Agent 的 spawn 工具调用。跳过场景会明确记录为 `not-run`，不能将 partial 或跳过的结果当作全矩阵通过；未知选择在启动 Host 前失败。最多创建两个成员，场景串行执行。
+运行示例：`DSH_E2E_LIVE_LONG_TASK=1 DSH_E2E_LIVE_LONG_TASK_PROFILE=devin pnpm test:e2e test/e2e/live-long-task.e2e.ts`；CodeBuddy 将 profile 改为 `codebuddy`。默认执行 A–D。`DSH_E2E_LIVE_LONG_TASK_SCENARIOS=teams` 跳过 A 并执行 B–D；`teams-only` 仅运行 B，独立核验两个成员各自读取、任务、收件和 Lead 汇总，不重复已验收的 C/D；`controls` 只运行 Lead 的 C controls 与完整 D，C 为 partial；`stop-only` 只运行 D。`approvals` 跳过 A/B，通过官方 Team service 建立一个 fresh 成员作为夹具前置，再运行原 C 的 Lead/member Allow/Reject 四格与 D；前置明确记录为 `setupRoute=host-service`，不认证 Agent 的 spawn 工具调用。跳过场景会明确记录为 `not-run`，不能将 partial 或跳过的结果当作全矩阵通过；未知选择在启动 Host 前失败。最多创建两个成员，场景串行执行。
 
 runner 保存场景截图、Session 事件摘要、脱敏后的结构化 ACP trace 和本地私有的模型回答审查文件。公开源码测试证据可保存在本机；分享截图或事件摘要前先检查并脱敏，因为它们可能显示正文或其他敏感信息。测试 workspace 只是测试数据隔离，不是 OS 沙箱；Host guard 只在 DSH 工具 body 前生效，不能限制 CLI 自有工具，provider 活动计数是事后软停止信号。CLI 工具可能在取消前已执行；测试不限制模型 token/费用或远端已开始的请求。
 

@@ -157,7 +157,9 @@ describe.each(['claude', 'codex', 'devin', 'kimi'])('native terminal jobs: %s', 
       expect(observed).toHaveLength(sent)
       await send(page, 'E2E_JOB_READ')
       await expect.poll(() => page.locator('body').innerText()).toContain('E2E_JOB_OUTPUT {"output":"E2E_JOB_TICK')
-      expect(host.ctx.jobs.get(first.id, owner).status).toBe('completed')
+      await expect.poll(() => jobs().length).toBe(0)
+      expect(() => host.ctx.jobs.get(first.id, owner)).toThrow()
+      await expect.poll(() => page.getByRole('button', { name: /background job/ }).count()).toBe(0)
 
       // Nonzero exit is failure, not completion, and uses the same native row.
       await send(page, 'E2E_JOB_START')
@@ -168,6 +170,7 @@ describe.each(['claude', 'codex', 'devin', 'kimi'])('native terminal jobs: %s', 
       await expect.poll(() => host.ctx.jobs.get(failed.id, owner).status).toBe('failed')
       expect(host.ctx.jobs.get(failed.id, owner).detail).toContain('7')
       await send(page, 'E2E_JOB_READ')
+      await expect.poll(() => jobs().length).toBe(0)
 
       // Native cancellation operates on the same terminal still owned by ACP.
       await send(page, 'E2E_JOB_START')
@@ -177,6 +180,7 @@ describe.each(['claude', 'codex', 'devin', 'kimi'])('native terminal jobs: %s', 
       expect(host.ctx.jobs.get(nativeKilled.id, owner).status).toBe('stopping')
       await expect.poll(() => host.ctx.jobs.get(nativeKilled.id, owner).status).toBe('killed')
       await send(page, 'E2E_JOB_READ')
+      await expect.poll(() => jobs().length).toBe(0)
 
       // ACP cancellation publishes the same stopping/terminal lifecycle.
       await send(page, 'E2E_JOB_START')
@@ -185,23 +189,31 @@ describe.each(['claude', 'codex', 'devin', 'kimi'])('native terminal jobs: %s', 
       await send(page, 'E2E_JOB_STOP')
       await expect.poll(() => host.ctx.jobs.get(acpKilled.id, owner).status).toBe('killed')
       await send(page, 'E2E_JOB_READ')
+      await expect.poll(() => jobs().length).toBe(0)
 
       // A foreground terminal can finish while the parent prompt is still
       // active. It must not inject a second step into that turn either.
       await send(page, 'E2E_JOB_START_IMMEDIATE')
       const immediate = required(jobs().at(-1))
       await expect.poll(() => host.ctx.jobs.get(immediate.id, owner).status).toBe('completed')
-      await send(page, 'E2E_JOB_READ')
+      // An exited but unreleased ACP handle still owns readable output. The
+      // native Clear button only hides it; reload restores that same record.
       await page.reload()
-      await page.getByRole('button', { name: '5 background jobs', exact: true }).click()
-      expect(await list.locator('li').filter({ hasText: 'acp-terminal' }).count()).toBe(5)
-      expect(await list.innerText()).toContain('signal:')
+      await page.getByRole('button', { name: '1 background job', exact: true }).click()
+      expect(await list.locator('li').filter({ hasText: 'acp-terminal' }).count()).toBe(1)
+      expect(await list.innerText()).toContain('exit code: 0')
       await page.getByRole('button', { name: 'Clear', exact: true }).click()
-      await expect.poll(() => page.getByRole('button', { name: '5 background jobs', exact: true }).count()).toBe(0)
-      expect(jobs()).toHaveLength(5)
+      await expect.poll(() => page.getByRole('button', { name: '1 background job', exact: true }).count()).toBe(0)
+      expect(jobs()).toHaveLength(1)
       await page.reload()
-      await page.getByRole('button', { name: '5 background jobs', exact: true }).click()
-      expect(await list.locator('li').filter({ hasText: 'acp-terminal' }).count()).toBe(5)
+      await page.getByRole('button', { name: '1 background job', exact: true }).click()
+      expect(await list.locator('li').filter({ hasText: 'acp-terminal' }).count()).toBe(1)
+      await send(page, 'E2E_JOB_READ')
+      await expect.poll(() => jobs().length).toBe(0)
+      await expect.poll(() => page.getByRole('button', { name: /background job/ }).count()).toBe(0)
+      await page.reload()
+      expect(jobs()).toHaveLength(0)
+      expect(await page.getByRole('button', { name: /background job/ }).count()).toBe(0)
       expect(observed).toHaveLength(sent)
       expect(errors).toEqual([])
     } catch (error) {
