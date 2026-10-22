@@ -1,10 +1,14 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, watch, writeFileSync } from 'node:fs'
+import { basename, dirname, join } from 'node:path'
 import { expect, it, vi } from 'vitest'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { Page } from 'playwright'
 import { connectFreshWorkspace, writeComposerDraft } from '#host-support'
-import { OPTIONAL_TOOL_PLAN, type OptionalToolPlan } from '../mock-agent/optional-tools-turn.ts'
+import {
+  OPTIONAL_TOOL_PLAN,
+  type OptionalToolPlan,
+  type OptionalToolRecord,
+} from '../mock-agent/optional-tools-turn.ts'
 import { launchBrowser, newEnglishPage, type TestBrowser } from './browser.ts'
 import { callResult, launchOptionalToolWorld } from './optional-tool-world.ts'
 import { required } from './required.ts'
@@ -35,6 +39,58 @@ function nodeCommand(script: string): string {
   return `${process.platform === 'win32' ? '& ' : ''}${shellQuote(process.execPath)} -e ${shellQuote(script)}`
 }
 
+/** The ready file and the existing MCP execution jointly own this start barrier. */
+function waitForTerminalReady(file: string, execution: Promise<OptionalToolRecord[]>, workspaceRoot: string) {
+  return new Promise<void>((resolve, reject) => {
+    let finished = false
+    const watcher = watch(dirname(file), (_event, filename) => {
+      if (filename === null || filename.toString() === basename(file)) inspect()
+    })
+    const timeout = setTimeout(() => finish(new Error('Terminal foreground did not become ready within 15s')), 15_000)
+    const finish = (error?: unknown) => {
+      if (finished) return
+      finished = true
+      clearTimeout(timeout)
+      watcher.close()
+      if (error === undefined) resolve()
+      else reject(error)
+    }
+    const inspect = () => {
+      if (finished) return
+      // A create event can precede writeFileSync's bytes reaching the file.
+      // Require the complete PID, rather than treating an empty file as ready.
+      try {
+        if (existsSync(file) && /^[1-9]\d*$/.test(readFileSync(file, 'utf8'))) finish()
+      } catch (error) {
+        finish(error)
+      }
+    }
+    watcher.on('error', finish)
+    void execution.then(
+      (records) => {
+        if (finished) return
+        // Keep the actual result visible if the command fails or settles before
+        // readiness. Full events and audits remain in the local-only capture.
+        try {
+          const result = records.some((record) => record.kind === 'call' && record.name === 'terminal_send')
+            ? callResult(records, 'terminal_send')
+            : { kinds: records.map((record) => record.kind) }
+          const detail = JSON.stringify(result)
+            .replaceAll(workspaceRoot, '[fixture-workspace]')
+            .replaceAll(process.execPath, '[node]')
+            .replaceAll(/https?:\/\/[^\s"'<>]+/g, '[redacted-url]')
+            .slice(0, 1_500)
+          finish(new Error(`Terminal MCP execution settled before foreground readiness: ${detail}`))
+        } catch (error) {
+          finish(error)
+        }
+      },
+      (error: unknown) => finish(error),
+    )
+    inspect()
+  })
+}
+
 type OptionalWorld = Awaited<ReturnType<typeof launchOptionalToolWorld>>
 
 async function bootstrap(world: OptionalWorld, page: Page, label: string): Promise<Agent> {
@@ -61,7 +117,7 @@ async function runApproved(
   page: Page,
   owner: Agent,
   plan: OptionalToolPlan,
-  afterApprovals?: () => Promise<void>,
+  afterApprovals?: (execution: Promise<OptionalToolRecord[]>) => Promise<void>,
 ) {
   expect(await page.locator('[data-conversation-session]').last().getAttribute('data-conversation-session')).toBe(
     owner.id,
@@ -137,7 +193,7 @@ async function runApproved(
         })
     }
     stage = 'after-approvals'
-    await afterApprovals?.()
+    await afterApprovals?.(pending)
     stage = 'await-execution'
     return await pending
   } catch (error) {
@@ -249,6 +305,7 @@ it('executes official persistent terminal tools with native approval, exact owne
     await page.goto(world.authenticatedUrl)
     await connectFreshWorkspace(page, world.workspaceCwd)
     const owner = await bootstrap(world, page, 'terminal-bootstrap')
+    const ownerCwd = required(owner.session.header.cwd)
     await world.controls.setToolApprovalPolicy(owner.id, { policy: 'ask' })
     const rejecting = world.run(owner, {
       label: 'terminal-native-rejection',
@@ -316,7 +373,7 @@ it('executes official persistent terminal tools with native approval, exact owne
     const other = await bootstrap(world, otherPage, 'terminal-foreign-bootstrap')
     expect(other.id).not.toBe(owner.id)
     expect(other.session.header.cwd).toBe(owner.session.header.cwd)
-    const forbiddenWrite = join(world.workspaceCwd, 'foreign-terminal-write')
+    const forbiddenWrite = join(ownerCwd, 'foreign-terminal-write')
     const foreign = await runApproved(world, otherPage, other, {
       label: 'terminal-foreign-denied',
       calls: [
@@ -341,10 +398,15 @@ it('executes official persistent terminal tools with native approval, exact owne
     }
     expect(existsSync(forbiddenWrite)).toBe(false)
 
-    const ready = join(world.workspaceCwd, 'terminal-foreground.ready')
-    const stopped = join(world.workspaceCwd, 'terminal-foreground.stopped')
-    const cancel = join(world.workspaceCwd, 'terminal-mcp.cancel')
-    const script = `const fs=require('node:fs');process.on('SIGINT',()=>{fs.writeFileSync(${JSON.stringify(stopped)},'interrupted');process.exit(0)});fs.writeFileSync(${JSON.stringify(ready)},String(process.pid));setInterval(()=>{},1000)`
+    // connectFreshWorkspace selects <scaffold root>/workspace. Linux bwrap
+    // replaces /tmp and only rebinds that actual session workspace: a gate in
+    // its parent is private to the PTY and cannot be observed by the Host.
+    const ready = join(ownerCwd, 'terminal-foreground.ready')
+    const stopped = join(ownerCwd, 'terminal-foreground.stopped')
+    const cancel = join(ownerCwd, 'terminal-mcp.cancel')
+    // Keep this foreground operation active until the explicit cancellation;
+    // otherwise the native output-silence heuristic can settle it first.
+    const script = `const fs=require('node:fs');process.on('SIGINT',()=>{fs.writeFileSync(${JSON.stringify(stopped)},'interrupted');process.exit(0)});fs.writeFileSync(${JSON.stringify(ready)},String(process.pid));setInterval(()=>console.log('TERMINAL_CANCEL_PENDING'),1000)`
     const cancelled = await runApproved(
       world,
       page,
@@ -359,10 +421,15 @@ it('executes official persistent terminal tools with native approval, exact owne
           },
         ],
       },
-      async () => {
-        await vi.waitFor(() => expect(existsSync(ready)).toBe(true), { timeout: 15_000 })
+      async (execution) => {
+        await waitForTerminalReady(ready, execution, world.workspaceCwd)
         const childPid = Number(readFileSync(ready, 'utf8'))
         expect(childPid).toBeGreaterThan(0)
+        expect(
+          world
+            .records('terminal-cancel-call')
+            .filter((record) => record.kind === 'call' || record.kind === 'cancelled'),
+        ).toEqual([])
         writeFileSync(cancel, 'cancel this one MCP request')
       },
     )

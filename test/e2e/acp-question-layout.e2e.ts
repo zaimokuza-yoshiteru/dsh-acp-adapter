@@ -65,7 +65,7 @@ async function geometry(card: Locator) {
     return {
       card: { x, y, width, height },
       header: rect('header'),
-      heading: rect('h2'),
+      operation: rect('[data-question-operation]'),
       detail: rect('[data-question-detail] p'),
       body: rect('[data-question-scroll]'),
       footer: rect('footer'),
@@ -83,7 +83,7 @@ async function assertFits(page: Page, card: Locator) {
   expect(box.card.y + box.card.height).toBeLessThanOrEqual(viewport.height + 1)
   expect(box.footer.y + box.footer.height).toBeLessThanOrEqual(box.card.y + box.card.height + 1)
   expect(box.body.height).toBeGreaterThan(0)
-  expect(Math.abs(box.heading.x - box.detail.x)).toBeLessThanOrEqual(1)
+  expect(Math.abs(box.operation.x - box.detail.x)).toBeLessThanOrEqual(1)
   expect(await card.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true)
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
 }
@@ -152,6 +152,14 @@ it('keeps ACP fixed choices usable across keyboard, themes, narrow windows, fail
       activePage.screenshot({ path: join(directory, `${name}.png`), animations: 'disabled' })
 
     const first = await start('Question keyboard control')
+    // Legacy questions have no source header. Their operation and evidence
+    // remain visible even though the current card no longer renders an h2.
+    expect(await card.locator('[data-question-source]').count()).toBe(0)
+    expect(await card.locator('[data-question-operation]').innerText()).toBe(spec.question)
+    expect(await card.getByRole('button', { name: 'Request details', exact: true }).getAttribute('aria-expanded')).toBe(
+      'true',
+    )
+    expect(await card.locator('[data-question-detail]').innerText()).toBe(spec.detail)
     stage = 'keyboard'
     expect(await card.locator('[role="radio"][aria-checked="true"]').count()).toBe(0)
     expect(await submit().isDisabled()).toBe(true)
@@ -204,7 +212,7 @@ it('keeps ACP fixed choices usable across keyboard, themes, narrow windows, fail
         materials.push(
           await card.evaluate((el) => ({
             background: getComputedStyle(el).backgroundColor,
-            color: getComputedStyle(el.querySelector('h2')!).color,
+            color: getComputedStyle(el.querySelector('[data-question-operation]')!).color,
           })),
         )
         await capture(`${theme}-${width}-selected`)
@@ -282,13 +290,13 @@ it('keeps ACP fixed choices usable across keyboard, themes, narrow windows, fail
     expect(await submit().isDisabled()).toBe(true)
     await radio('GAMMA').click()
     await page.evaluate((id) => window.__DSH_ACP_QUESTION_PROBE__!.openSession(id), sessionA)
-    await card.getByRole('heading', { name: 'Session A choices' }).waitFor()
+    await expect.poll(() => card.locator('[data-question-operation]').innerText()).toBe('Session A choices')
     expect(await radio('BETA').getAttribute('aria-checked')).toBe('true')
     const aSettled = host.whenTurnSettled(30_000)
     await cancel().click()
     await aSettled
     await page.evaluate((id) => window.__DSH_ACP_QUESTION_PROBE__!.openSession(id), sessionB)
-    await card.getByRole('heading', { name: 'Session B choices' }).waitFor()
+    await expect.poll(() => card.locator('[data-question-operation]').innerText()).toBe('Session B choices')
     expect(await radio('GAMMA').getAttribute('aria-checked')).toBe('true')
     const bSettled = host.whenTurnSettled(30_000)
     await submit().click()
