@@ -724,6 +724,11 @@ export async function createDshToolBridge(
         source === 'antigravity-meta',
       titleMatchesCurrentTool: titleName !== undefined && names.has(titleName),
     }
+    // This lease owns only its advertised DSH tools. A native Agent tool has
+    // the ACP prompt/connection lifetime even when an unrelated Host tool
+    // registration has retired this bridge. A matching DSH title remains
+    // ambiguous evidence and must not bypass the bridge's liveness fence.
+    if (identity.tool === undefined && !facts.titleMatchesCurrentTool) return { ...facts, reason: 'identity-unmatched' }
     if (!live()) return { ...facts, reason: 'inactive-connection' }
     if (capturedPrompt === undefined || capturedPrompt.aborted) return { ...facts, reason: 'inactive-prompt' }
     const definition = definitionOf(call)
@@ -783,6 +788,9 @@ export async function createDshToolBridge(
   }
   const sessions = new Set<Server>()
   const calls = new Set<Promise<unknown>>()
+  // MCP GET streams can stay open indefinitely. Only admitted POST response
+  // tails carry a request result that must drain before transport disposal.
+  const responseTails = new Set<Promise<void>>()
   const executionScheduler = new ToolExecutionScheduler()
   // Legacy cancellation is a separate stateless HTTP request handled by another Server instance.
   // Keep only active lease-local calls here so that notification can reach the executing request.
@@ -796,6 +804,21 @@ export async function createDshToolBridge(
     ) {
       response.writeHead(403).end()
       return
+    }
+    if (request.method === 'POST') {
+      let resolve!: () => void
+      const tail = new Promise<void>((done) => {
+        resolve = done
+      })
+      responseTails.add(tail)
+      const settled = (): void => {
+        response.off('finish', settled)
+        response.off('close', settled)
+        responseTails.delete(tail)
+        resolve()
+      }
+      response.once('finish', settled)
+      response.once('close', settled)
     }
     const server = new Server(
       { name: 'DSH tools', version: '1.0.0' },
@@ -1656,13 +1679,16 @@ export async function createDshToolBridge(
         }
         prompt = undefined
         presented.clear()
+        // Revoke execution and stop admission immediately, but keep admitted
+        // HTTP responses alive until their handlers have delivered settlement.
+        // Destroying sockets first loses the cancellation/result tail even
+        // when the native tool has already observed the revoked lifetime.
+        const closed = new Promise<void>((resolve) => {
+          http.close(() => resolve())
+        })
+        await waitWithin(Promise.allSettled([...responseTails]), graceMs)
         http.closeAllConnections()
-        await waitWithin(
-          new Promise<void>((resolve) => {
-            http.close(() => resolve())
-          }),
-          graceMs,
-        )
+        await waitWithin(closed, graceMs)
         await waitWithin(Promise.allSettled([...sessions].map((server) => server.close())), graceMs)
         await waitWithin(lease.waitForCallsSettled!(), graceMs)
       })()

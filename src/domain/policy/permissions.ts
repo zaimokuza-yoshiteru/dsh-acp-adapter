@@ -56,6 +56,10 @@ export interface AcpNativeApprovalService {
     readonly callId?: unknown
     readonly reason?: string
     readonly signal?: AbortSignal
+    /** Tool input at the approval boundary, after runtime normalization; absent when not supplied here. */
+    readonly toolArgs?: unknown
+    /** Recognized string command from execute input at this boundary; absent for other or unrecognized inputs. */
+    readonly commandLine?: string
   }): Promise<'allowed-once' | 'rejected' | 'cancelled' | 'unavailable'>
 }
 export interface AcpNativePermissionBridgeDeps {
@@ -383,10 +387,13 @@ export function createAcpNativePermissionHandler(
 
     if (!nativeInteractionQuestion && deps.approval !== undefined && binary !== undefined) {
       try {
+        const commandLine = params.toolCall.kind === 'execute' ? commandOf(params.toolCall) : undefined
         const outcome = await deps.approval.request({
           agent,
           toolName: params.toolCall.name ?? params.toolCall.kind ?? copy.acpTool,
           callId: params.toolCall.toolCallId,
+          ...(params.toolCall.rawInput === undefined ? {} : { toolArgs: params.toolCall.rawInput }),
+          ...(commandLine === undefined ? {} : { commandLine }),
           reason: [
             nativePermissionReason(params.toolCall, copy),
             `${copy.allowOnce}: ${visibleCommand(binary.allow.name)}`,

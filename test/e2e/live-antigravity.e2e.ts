@@ -126,6 +126,7 @@ it.skipIf(!optedIn)(
     let primaryFailure: unknown
     const providerToolCalls = new Map<string, string | undefined>()
     const nativeCommandToolCallIds = new Map<string, string>()
+    const nativeCommandOptions = new Map<string, { optionId: string; name: string; kind: string }[]>()
     const nativeCommandRows: {
       phase: string
       commandFingerprint: string
@@ -244,6 +245,7 @@ it.skipIf(!optedIn)(
               providerToolCalls: [...providerToolCalls].map(([id, status]) => ({ id, status })),
               permissionRequests,
               verifiedNativeCommands,
+              nativeCommandOptions: [...nativeCommandOptions],
               nativeCommandRows,
               runtimeConfigModels,
               mainRequests,
@@ -332,6 +334,36 @@ it.skipIf(!optedIn)(
       expect(await page.locator('[data-approval-key]').count()).toBe(0)
       expect(await question.innerText()).toContain(title)
       return question
+    }
+
+    // The actual Agent chooses its option vocabulary. A three-choice tool gate
+    // must retain its persistent choice, even when this test selects only once.
+    const answerNativePermission = async (command: string, kind: 'allow_once' | 'reject_once', phaseName: string) => {
+      await expect.poll(() => nativeCommandOptions.has(command), { timeout: PHASE_TIMEOUT_MS }).toBe(true)
+      const options = nativeCommandOptions.get(command)!
+      const selected = options.filter((option) => option.kind === kind)
+      expect(selected).toHaveLength(1)
+      if (options.some((option) => option.kind !== 'allow_once' && option.kind !== 'reject_once')) {
+        const question = await pendingQuestion(command)
+        expect(await question.getByRole('radio').count()).toBe(options.length)
+        for (const option of options) await question.getByRole('radio', { name: option.name, exact: true }).waitFor()
+        await capture(phaseName, 'pending')
+        await question.getByRole('radio', { name: selected[0]!.name, exact: true }).click()
+        await question.getByRole('button', { name: /Submit|Send/ }).click()
+        return 'native-question' as const
+      }
+      const approval = page!.locator('[data-approval-key]')
+      await approval.waitFor({ state: 'visible', timeout: PHASE_TIMEOUT_MS })
+      interactionCards += 1
+      if (interactionCards > INTERACTION_LIMIT) {
+        cancelRun('INTERACTION_LIMIT')
+        throw new Error('ANTIGRAVITY_LIVE_INTERACTION_LIMIT')
+      }
+      expect(await page!.locator('[data-question-key]').count()).toBe(0)
+      expect(await approval.innerText()).toContain(command)
+      await capture(phaseName, 'pending')
+      await approval.getByRole('button', { name: kind === 'allow_once' ? 'Allow once' : 'Reject', exact: true }).click()
+      return 'native-approval' as const
     }
 
     const waitForAssistant = async (text: string): Promise<void> => {
@@ -628,6 +660,25 @@ it.skipIf(!optedIn)(
                 return { outcome: { outcome: 'cancelled' } }
               }
               nativeCommandToolCallIds.set(expectedNativeCommand, toolCallId)
+              const offered = Array.isArray(params?.options) ? params.options.map(record) : []
+              if (
+                offered.length === 0 ||
+                offered.some(
+                  (option) =>
+                    typeof option?.optionId !== 'string' ||
+                    typeof option.name !== 'string' ||
+                    typeof option.kind !== 'string',
+                )
+              )
+                throw new Error('ANTIGRAVITY_LIVE_INVALID_PERMISSION_OPTIONS')
+              nativeCommandOptions.set(
+                expectedNativeCommand,
+                offered.map((option) => ({
+                  optionId: option!.optionId as string,
+                  name: option!.name as string,
+                  kind: option!.kind as string,
+                })),
+              )
               verifiedNativeCommands.push({
                 sessionId: hash(
                   String(params?.sessionId ?? runtimeState.options?.diagnosticDshSessionId ?? 'unavailable'),
@@ -759,19 +810,9 @@ it.skipIf(!optedIn)(
         const allowCommand = 'printf ANTIGRAVITY_ALLOW_ONCE_MARKER'
         expectedNativeCommand = allowCommand
         const { settled, mainRequestCountBefore } = await send(
-          `Use your native run_command tool exactly once to execute this exact command: \`${allowCommand}\`. Then report its output. Do not use DSH bash or any other tool.`,
+          `Use your native run_command tool exactly once to execute this exact command: \`${allowCommand}\`. Set Cwd to exactly ${workspace}. Then report its output. Do not use DSH bash or any other tool.`,
         )
-        const approval = page!.locator('[data-approval-key]')
-        await approval.waitFor({ state: 'visible', timeout: PHASE_TIMEOUT_MS })
-        interactionCards += 1
-        if (interactionCards > INTERACTION_LIMIT) {
-          cancelRun('INTERACTION_LIMIT')
-          throw new Error('ANTIGRAVITY_LIVE_INTERACTION_LIMIT')
-        }
-        expect(await page!.locator('[data-question-key]').count()).toBe(0)
-        expect(await approval.innerText()).toContain('ANTIGRAVITY_ALLOW_ONCE_MARKER')
-        await capture('allow-once', 'pending')
-        await approval.getByRole('button', { name: 'Allow once', exact: true }).click()
+        await answerNativePermission(allowCommand, 'allow_once', 'allow-once')
         const allowSessionId = await acceptSettled(settled, mainRequestCountBefore)
         expectedNativeCommand = undefined
         expectTurnReason(allowSessionId, 'completed')
@@ -809,18 +850,9 @@ it.skipIf(!optedIn)(
         const shellCommand = `printf ANTIGRAVITY_REJECTED_WRITE_MARKER > ${JSON.stringify(rejectedFile)}`
         expectedNativeCommand = shellCommand
         const { settled, mainRequestCountBefore } = await send(
-          `Use your native run_command tool exactly once to execute this exact command: \`${shellCommand}\`. Do not use DSH bash or any other tool.`,
+          `Use your native run_command tool exactly once to execute this exact command: \`${shellCommand}\`. Set Cwd to exactly ${workspace}. Do not use DSH bash or any other tool.`,
         )
-        const approval = page!.locator('[data-approval-key]')
-        await approval.waitFor({ state: 'visible', timeout: PHASE_TIMEOUT_MS })
-        interactionCards += 1
-        if (interactionCards > INTERACTION_LIMIT) {
-          cancelRun('INTERACTION_LIMIT')
-          throw new Error('ANTIGRAVITY_LIVE_INTERACTION_LIMIT')
-        }
-        expect(await approval.innerText()).toContain('ANTIGRAVITY_REJECTED_WRITE_MARKER')
-        await capture('reject-write', 'pending')
-        await approval.getByRole('button', { name: 'Reject', exact: true }).click()
+        const decisionVia = await answerNativePermission(shellCommand, 'reject_once', 'reject-write')
         const rejectedSessionId = await acceptSettled(settled, mainRequestCountBefore)
         expectedNativeCommand = undefined
         expectTurnReason(rejectedSessionId, 'completed')
@@ -844,7 +876,7 @@ it.skipIf(!optedIn)(
         expect(rejectDecision?.kind === 'permission' ? rejectDecision.data : undefined).toMatchObject({
           outcome: 'selected',
           selectedOptionKind: 'reject_once',
-          decisionVia: 'native-approval',
+          decisionVia,
         })
         const providerFailure = [...providerToolCalls]
           .filter(([id]) => !providerCallsBefore.has(id))
@@ -873,18 +905,9 @@ it.skipIf(!optedIn)(
         const command = `printf ANTIGRAVITY_STOP_STARTED > ${JSON.stringify(stopSentinel)}; sleep 20; printf ANTIGRAVITY_STOP_FINISHED`
         expectedNativeCommand = command
         const { settled, mainRequestCountBefore } = await send(
-          `Use your native run_command tool exactly once to execute this exact command: \`${command}\`. Do not use DSH bash or any other tool.`,
+          `Use your native run_command tool exactly once to execute this exact command: \`${command}\`. Set Cwd to exactly ${workspace}. Do not use DSH bash or any other tool.`,
         )
-        const approval = page!.locator('[data-approval-key]')
-        await approval.waitFor({ state: 'visible', timeout: PHASE_TIMEOUT_MS })
-        interactionCards += 1
-        if (interactionCards > INTERACTION_LIMIT) {
-          cancelRun('INTERACTION_LIMIT')
-          throw new Error('ANTIGRAVITY_LIVE_INTERACTION_LIMIT')
-        }
-        expect(await approval.innerText()).toContain('ANTIGRAVITY_STOP_FINISHED')
-        await capture('stop-command', 'pending')
-        await approval.getByRole('button', { name: 'Allow once', exact: true }).click()
+        await answerNativePermission(command, 'allow_once', 'stop-command')
         await expect
           .poll(
             () => {

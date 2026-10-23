@@ -2117,10 +2117,12 @@ export class AcpSessionRuntime {
         return cancelled()
       }
     }
+    // A matching DSH title alone grants no identity or Auto approval, but it
+    // is ambiguous ownership and must retain the bridge's revocation fence.
+    const ownedByBridge = inspected?.reason !== 'identity-unmatched' || inspected.titleMatchesCurrentTool === true
     if (
       isAborted(signal) ||
-      lease !== this.mcpLease ||
-      lease?.signal.aborted ||
+      (ownedByBridge && (lease !== this.mcpLease || lease?.signal.aborted)) ||
       (inspected?.reason === 'auto-approved' && lease?.validatePermissionDecision?.(request) === false)
     )
       return cancelled()
@@ -2130,26 +2132,37 @@ export class AcpSessionRuntime {
     if (bridgeDecision !== undefined) return bridgeDecision
     // Resolve bridge decisions against the original wire identity first; normalize
     // only the request shown by the native approval surface.
+    // Native Agent permissions outlive an unrelated MCP bridge. A permission
+    // for this bridge instead remains revocable while the user is answering;
+    // a late answer cannot authorize a retired capability.
+    const approvalSignal =
+      ownedByBridge && lease !== undefined
+        ? AbortSignal.any(signal === undefined ? [lease.signal] : [signal, lease.signal])
+        : signal
     const pending = handler(
-      { ...request, toolCall: this.mcpLease?.presentTool?.(request.toolCall) ?? request.toolCall },
-      signal,
+      { ...request, toolCall: lease?.presentTool?.(request.toolCall) ?? request.toolCall },
+      approvalSignal,
     )
-    if (signal === undefined) return await pending
+    if (approvalSignal === undefined) return await pending
     let onAbort: (() => void) | undefined
     const aborted = new Promise<acp.RequestPermissionResponse>((resolve) => {
       onAbort = () => {
         resolve(cancelled())
       }
-      if (isAborted(signal)) onAbort()
-      else signal.addEventListener('abort', onAbort, { once: true })
+      if (isAborted(approvalSignal)) onAbort()
+      else approvalSignal.addEventListener('abort', onAbort, { once: true })
     })
     try {
       // The native question service receives the same signal, but the ACP RPC
       // must still settle if a host implementation fails to honor it. The race
       // also observes a late handler rejection, avoiding an unhandled promise.
-      return await Promise.race([pending, aborted])
+      const response = await Promise.race([pending, aborted])
+      // A resolved answer can win the race before cancellation's microtask
+      // runs. Recheck the owning lifetime at the actual RPC reply boundary.
+      if (isAborted(approvalSignal) || (ownedByBridge && lease !== this.mcpLease)) return cancelled()
+      return response
     } finally {
-      if (onAbort !== undefined) signal.removeEventListener('abort', onAbort)
+      if (onAbort !== undefined) approvalSignal.removeEventListener('abort', onAbort)
     }
   }
 }

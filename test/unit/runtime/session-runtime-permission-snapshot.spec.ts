@@ -25,7 +25,7 @@ afterEach(async () => {
 })
 
 function createRuntime(
-  onPermissionRequest: (params: acp.RequestPermissionRequest) => Promise<acp.RequestPermissionResponse>,
+  onPermissionRequest: NonNullable<AcpSessionRuntimeOptions['onPermissionRequest']>,
   mode:
     | 'raw-input'
     | 'content-json'
@@ -37,6 +37,7 @@ function createRuntime(
   mcpLease?: AcpMcpLease,
   onPermissionCheck?: AcpSessionRuntimeOptions['onPermissionCheck'],
   cancelGraceMs = 5_000,
+  echoPermissionResult = false,
 ): AcpSessionRuntime {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-runtime-permission-snapshot-'))
   roots.push(root)
@@ -63,7 +64,10 @@ function createRuntime(
     mode === 'raw-input'
       ? ''
       : `,content:[{type:'content',content:{type:'text',text:'Requesting approval to run the visible command'}}]`
-  const script = `let b='';let promptSeq=0;const promptIds=new Map();const send=(m)=>process.stdout.write(JSON.stringify(m)+'\\n');const permission=(id)=>send({jsonrpc:'2.0',id,method:'session/request_permission',params:{sessionId:'permission-snapshot-session',toolCall:{toolCallId:'${permissionCallId}'${permissionKind}${requestContent}},options:[{optionId:'allow',name:'Allow',kind:'allow_once'}]}});process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const l=b.slice(0,i);b=b.slice(i+1);if(!l.trim())continue;const m=JSON.parse(l);if(m.method==='initialize')send({jsonrpc:'2.0',id:m.id,result:{protocolVersion:1,agentInfo:{name:'permission-snapshot',version:'1'},agentCapabilities:{}}});else if(m.method==='session/new')send({jsonrpc:'2.0',id:m.id,result:{sessionId:'permission-snapshot-session'}});else if(m.method==='session/prompt'){promptSeq+=1;const permissionId=100+promptSeq;promptIds.set(permissionId,m.id);if(promptSeq===1){${firstPrompt}}else permission(permissionId)}else if(promptIds.has(m.id)){send({jsonrpc:'2.0',id:promptIds.get(m.id),result:{stopReason:'end_turn'}})}}});process.stdin.on('end',()=>process.exit(0));setInterval(()=>{},1<<30);`
+  const permissionEcho = echoPermissionResult
+    ? `send({jsonrpc:'2.0',method:'session/update',params:{sessionId:'${updateSessionId}',update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:JSON.stringify(m.result)}}}});`
+    : ''
+  const script = `let b='';let promptSeq=0;const promptIds=new Map();const send=(m)=>process.stdout.write(JSON.stringify(m)+'\\n');const permission=(id)=>send({jsonrpc:'2.0',id,method:'session/request_permission',params:{sessionId:'permission-snapshot-session',toolCall:{toolCallId:'${permissionCallId}'${permissionKind}${requestContent}},options:[{optionId:'allow',name:'Allow',kind:'allow_once'}]}});process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const l=b.slice(0,i);b=b.slice(i+1);if(!l.trim())continue;const m=JSON.parse(l);if(m.method==='initialize')send({jsonrpc:'2.0',id:m.id,result:{protocolVersion:1,agentInfo:{name:'permission-snapshot',version:'1'},agentCapabilities:{}}});else if(m.method==='session/new')send({jsonrpc:'2.0',id:m.id,result:{sessionId:'permission-snapshot-session'}});else if(m.method==='session/prompt'){promptSeq+=1;const permissionId=100+promptSeq;promptIds.set(permissionId,m.id);if(promptSeq===1){${firstPrompt}}else permission(permissionId)}else if(promptIds.has(m.id)){${permissionEcho}send({jsonrpc:'2.0',id:promptIds.get(m.id),result:{stopReason:'end_turn'}})}}});process.stdin.on('end',()=>process.exit(0));setInterval(()=>{},1<<30);`
   const argv = [process.execPath, '-e', script]
   const env: Record<string, string> = {}
   const runtime = new AcpSessionRuntime({
@@ -295,6 +299,150 @@ describe('AcpSessionRuntime prompt-scoped permission snapshots', () => {
     expect(nativeRequests).toBe(1)
     expect(legacyResolutions).toBe(0)
     expect(records[0]).toMatchObject({ phase: 'bridge', reason: 'approval-required' })
+  })
+
+  it.each([
+    ['identity-unmatched', false, 'inspection'],
+    ['approval-required', false, 'inspection'],
+    ['identity-unmatched', false, 'audit'],
+    ['identity-unmatched', true, 'audit'],
+  ] as const)(
+    'fences a closed MCP lease for %s permission (matching title: %s, closed during %s)',
+    async (reason, titleMatchesCurrentTool, phase) => {
+      const leaseAbort = new AbortController()
+      const shown = vi.fn(async () => ({ outcome: { outcome: 'selected' as const, optionId: 'allow' } }))
+      const lease: AcpMcpLease = {
+        signal: leaseAbort.signal,
+        servers: [],
+        beginPrompt() {},
+        endPrompt() {},
+        async close() {},
+        permission: () => undefined,
+        inspectPermission: () => {
+          if (phase === 'inspection') leaseAbort.abort()
+          return { reason, titleMatchesCurrentTool }
+        },
+      }
+      const received: string[] = []
+      const runtime = createRuntime(
+        shown,
+        'raw-input',
+        'in_progress',
+        lease,
+        async () => {
+          if (phase === 'audit') leaseAbort.abort()
+        },
+        5_000,
+        true,
+      )
+      await runtime.prompt(PROMPT, ({ update }) => {
+        if (update.sessionUpdate === 'agent_message_chunk' && update.content.type === 'text')
+          received.push(update.content.text)
+      })
+      const independent = reason === 'identity-unmatched' && !titleMatchesCurrentTool
+      expect(shown).toHaveBeenCalledTimes(independent ? 1 : 0)
+      expect(JSON.parse(received.join(''))).toEqual({
+        outcome: independent ? { outcome: 'selected', optionId: 'allow' } : { outcome: 'cancelled' },
+      })
+    },
+  )
+
+  it.each([
+    ['identity-unmatched', 'before-answer', false],
+    ['identity-unmatched', 'after-answer', false],
+    ['approval-required', 'before-answer', false],
+    ['approval-required', 'after-answer', false],
+    ['identity-unmatched', 'before-answer', true],
+    ['identity-unmatched', 'after-answer', true],
+  ] as const)(
+    'keeps the %s approval lifetime correctly scoped when its MCP lease closes %s (matching title: %s)',
+    async (reason, timing, titleMatchesCurrentTool) => {
+      const leaseAbort = new AbortController()
+      const pending = Promise.withResolvers<acp.RequestPermissionResponse>()
+      const shown = Promise.withResolvers<AbortSignal | undefined>()
+      const lease: AcpMcpLease = {
+        signal: leaseAbort.signal,
+        servers: [],
+        beginPrompt() {},
+        endPrompt() {},
+        async close() {},
+        permission: () => undefined,
+        inspectPermission: () => ({ reason, titleMatchesCurrentTool }),
+      }
+      const received: string[] = []
+      const runtime = createRuntime(
+        (_request, signal) => {
+          shown.resolve(signal)
+          return pending.promise
+        },
+        'raw-input',
+        'in_progress',
+        lease,
+        undefined,
+        5_000,
+        true,
+      )
+      const prompt = runtime.prompt(PROMPT, ({ update }) => {
+        if (update.sessionUpdate === 'agent_message_chunk' && update.content.type === 'text')
+          received.push(update.content.text)
+      })
+      const approvalSignal = await shown.promise
+      if (timing === 'after-answer') pending.resolve({ outcome: { outcome: 'selected', optionId: 'allow' } })
+      leaseAbort.abort()
+      const independent = reason === 'identity-unmatched' && !titleMatchesCurrentTool
+      expect.soft(approvalSignal?.aborted).toBe(!independent)
+      // A late answer must not revive a revoked bridge operation. The same
+      // closure is irrelevant to an independently owned native Agent tool.
+      pending.resolve({ outcome: { outcome: 'selected', optionId: 'allow' } })
+      await prompt
+      expect(JSON.parse(received.join(''))).toEqual({
+        outcome: independent ? { outcome: 'selected', optionId: 'allow' } : { outcome: 'cancelled' },
+      })
+    },
+  )
+
+  it('still cancels native approval on prompt cancellation after an unrelated MCP lease has closed', async () => {
+    const leaseAbort = new AbortController()
+    const promptAbort = new AbortController()
+    const shown = Promise.withResolvers<AbortSignal | undefined>()
+    const pending = Promise.withResolvers<acp.RequestPermissionResponse>()
+    const lease: AcpMcpLease = {
+      signal: leaseAbort.signal,
+      servers: [],
+      beginPrompt() {},
+      endPrompt() {},
+      async close() {},
+      permission: () => undefined,
+      inspectPermission: () => ({ reason: 'identity-unmatched' }),
+    }
+    const received: string[] = []
+    const runtime = createRuntime(
+      (_request, signal) => {
+        shown.resolve(signal)
+        return pending.promise
+      },
+      'raw-input',
+      'in_progress',
+      lease,
+      undefined,
+      5_000,
+      true,
+    )
+    const prompt = runtime.prompt(
+      PROMPT,
+      ({ update }) => {
+        if (update.sessionUpdate === 'agent_message_chunk' && update.content.type === 'text')
+          received.push(update.content.text)
+      },
+      promptAbort.signal,
+    )
+    const approvalSignal = await shown.promise
+    leaseAbort.abort()
+    promptAbort.abort()
+    pending.resolve({ outcome: { outcome: 'selected', optionId: 'allow' } })
+    await prompt
+    expect(approvalSignal?.aborted).toBe(true)
+    expect(JSON.parse(received.join(''))).toEqual({ outcome: { outcome: 'cancelled' } })
   })
 
   it('checks wire identity before presenting a normalized native approval without changing arguments', async () => {

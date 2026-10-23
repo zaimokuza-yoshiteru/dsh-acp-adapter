@@ -1465,6 +1465,81 @@ describe('session-owned native Teams MCP bridge', () => {
     await expect(client.callTool({ name })).rejects.toThrow()
   })
 
+  it.each([undefined, 'antigravity'])(
+    'classifies unrelated native %s permissions independently from a closed bridge',
+    async (wireProfile) => {
+      const fixture = await setup(wireProfile, ['present'], false)
+      fixture.lease.beginPrompt(new AbortController().signal)
+      await fixture.lease.close()
+      const native = {
+        ...fixture.permission(),
+        toolCall: {
+          toolCallId: 'native-command',
+          kind: 'execute' as const,
+          title: 'Run command',
+          rawInput: { CommandLine: 'printf native', Cwd: '/workspace' },
+        },
+      }
+      expect(await fixture.lease.inspectPermission!(native)).toMatchObject({ reason: 'identity-unmatched' })
+      const owned =
+        wireProfile === 'antigravity'
+          ? {
+              ...native,
+              toolCall: { ...native.toolCall, _meta: { mcp: { server: fixture.server.name, tool: 'present' } } },
+            }
+          : fixture.permission('present')
+      expect(await fixture.lease.inspectPermission!(owned)).toMatchObject({ reason: 'inactive-connection' })
+    },
+  )
+
+  it.each(['tool-restriction', 'teams-unload', 'definition-replacement'] as const)(
+    'cancels immediately on %s while delivering an admitted MCP call response before transport closure',
+    async (cause) => {
+      const fixture = await setup('antigravity', ['present'], true)
+      fixture.lease.beginPrompt(new AbortController().signal)
+      const started = Promise.withResolvers<AbortSignal>()
+      const released = Promise.withResolvers<void>()
+      fixture.execute.mockImplementationOnce(async (input) => {
+        started.resolve(input.signal)
+        await released.promise
+        return { content: [{ type: 'text', text: 'Host observed cancellation' }], isError: true }
+      })
+      const call = fixture.client.callTool({ name: 'present', arguments: {} })
+      const observedCall = call.then(
+        (result) => ({ result }),
+        (error: unknown) => ({ error }),
+      )
+      const bodySignal = await started.promise
+      if (cause === 'tool-restriction') {
+        fixture.hidden.add('present')
+        fixture.listeners.get('tools/change')!()
+      } else if (cause === 'teams-unload') {
+        delete fixture.services.agentTeams
+        fixture.listeners.get('internal/service')!('agentTeams')
+      } else {
+        // An unchanged public schema is not proof of the same executing owner.
+        fixture.definitions.set('present', { ...fixture.definitions.get('present') })
+        fixture.listeners.get('tools/change')!()
+      }
+      expect.soft(fixture.lease.signal.aborted).toBe(true)
+      expect.soft(bodySignal.aborted).toBe(true)
+      let closed = false
+      const closing = fixture.lease.close().then(() => {
+        closed = true
+      })
+      expect(closed).toBe(false)
+      released.resolve()
+      expect(await observedCall).toMatchObject({
+        result: { isError: true, content: [{ type: 'text', text: 'Host observed cancellation' }] },
+      })
+      await closing
+      expect(closed).toBe(true)
+      expect(fixture.execute).toHaveBeenCalledOnce()
+      await expect(fixture.client.callTool({ name: 'present', arguments: {} })).rejects.toThrow()
+      expect(fixture.execute).toHaveBeenCalledOnce()
+    },
+  )
+
   it('does not expose global tools hidden from this agent or team tools to non-members', async () => {
     const { ctx, definitions, hidden, services } = await setup(undefined, ['present', 'spawn_teammate'], false)
     hidden.add('present')
@@ -2788,6 +2863,7 @@ describe('session-owned native Teams MCP bridge', () => {
     }
     expect(await lease.inspectPermission!({ ...permission(), toolCall: presentationOnlyTitle })).toMatchObject({
       reason: 'identity-unmatched',
+      titleMatchesCurrentTool: true,
     })
     expect(await lease.permission({ ...permission(), toolCall: presentationOnlyTitle })).toBeUndefined()
     expect(lease.validatePermissionDecision!({ ...permission(), toolCall: presentationOnlyTitle })).toBe(false)

@@ -8,6 +8,8 @@ import ApprovalService from '@deepseek-ai/dsh-user-approval'
 import { externalAgentApproval } from '../../../src/host/composition/external-agent-approval.ts'
 import { createAcpNativePermissionHandler } from '../../../src/domain/policy/permissions.ts'
 import type { AcpPermissionAuditRecord } from '../../../src/domain/policy/permissions.ts'
+import type { AcpNativeUserQuestionService } from '../../../src/domain/policy/elicitation.ts'
+import type * as acp from '@agentclientprotocol/sdk'
 
 async function fixture() {
   const ctx = new Context()
@@ -81,29 +83,39 @@ it.each(['allowed-once', 'rejected'] as const)(
   },
 )
 
-it('cancels the ACP wait, rejects late answers, and never grants to a replaced Agent', async () => {
-  const f = await fixture()
-  const gate = Promise.withResolvers<'allowed-once'>()
-  const called = Promise.withResolvers<void>()
-  f.ctx.on('approval/request', () => {
-    called.resolve()
-    return gate.promise
-  })
-  try {
-    const abort = new AbortController()
-    const pending = f.approval.request({ agent: f.agent, toolName: 'external', signal: abort.signal })
-    await called.promise
-    abort.abort()
-    expect(await pending).toBe('cancelled')
-    gate.resolve('allowed-once')
-    const next = f.approval.request({ agent: f.agent, toolName: 'external' })
-    f.disposeAgent()
-    expect(await next).toBe('cancelled')
-    expect(await f.approval.request({ agent: f.agent, toolName: 'external' })).toBe('unavailable')
-  } finally {
-    await f.ctx.fiber.dispose()
-  }
-})
+it.each(['ask', 'never'] as const)(
+  'cancels the ACP wait, rejects late answers, and never grants to a replaced Agent under %s',
+  async (policy) => {
+    const f = await fixture()
+    if (policy === 'ask') f.session.append('approval/policy', { policy })
+    const gate = Promise.withResolvers<'allowed-once'>()
+    const called = Promise.withResolvers<void>()
+    f.ctx.on('approval/request', () => {
+      called.resolve()
+      return gate.promise
+    })
+    try {
+      const abort = new AbortController()
+      const request = {
+        agent: f.agent,
+        toolName: 'external',
+        toolArgs: { command: 'printf pending' },
+        commandLine: 'printf pending',
+      }
+      const pending = f.approval.request({ ...request, signal: abort.signal })
+      await called.promise
+      abort.abort()
+      expect(await pending).toBe('cancelled')
+      gate.resolve('allowed-once')
+      const next = f.approval.request(request)
+      f.disposeAgent()
+      expect(await next).toBe('cancelled')
+      expect(await f.approval.request(request)).toBe('unavailable')
+    } finally {
+      await f.ctx.fiber.dispose()
+    }
+  },
+)
 
 it('fails closed without an answerer, for a throwing answerer or a foreign Agent', async () => {
   const f = await fixture()
@@ -169,3 +181,170 @@ it('uses the same external approval path for configured and session-level never'
     await ctx.fiber.dispose()
   }
 })
+
+// Preserve input shapes from the approval-handler boundary through the published
+// Host service. Runtime presentTool normalization happens before this boundary.
+// Paths/content are portable fixtures, not user workspaces or secrets.
+const approvalInputs: readonly {
+  name: string
+  kind: acp.ToolKind
+  rawInput?: unknown
+  commandLine?: string
+}[] = [
+  {
+    name: 'Antigravity file arguments',
+    kind: 'edit',
+    rawInput: {
+      TargetFile: '/workspace/probe.txt',
+      CodeContent: 'approval probe\n',
+      Description: 'Create disposable approval test file',
+      Overwrite: true,
+    },
+  },
+  {
+    name: 'Antigravity command arguments',
+    kind: 'execute',
+    rawInput: { CommandLine: 'printf APPROVAL_PROBE', Cwd: '/workspace', WaitMsBeforeAsync: 5000 },
+    commandLine: 'printf APPROVAL_PROBE',
+  },
+  {
+    name: 'command with unknown scope',
+    kind: 'execute',
+    rawInput: { command: 'printf exact', cwd: '/workspace', permissions: { network: ['example.test'] } },
+    commandLine: 'printf exact',
+  },
+  {
+    name: 'string command',
+    kind: 'execute',
+    rawInput: 'printf "literal; argument"',
+    commandLine: 'printf "literal; argument"',
+  },
+  { name: 'argv without shell synthesis', kind: 'execute', rawInput: { argv: ['printf', 'two words', '$HOME'] } },
+  { name: 'non-command string', kind: 'edit', rawInput: 'file body, not a command' },
+  { name: 'non-command command field', kind: 'other', rawInput: { command: 'a requested policy value' } },
+  { name: 'array scope', kind: 'other', rawInput: ['scope-a', { path: '/workspace/probe.txt' }] },
+  { name: 'null input', kind: 'read', rawInput: null },
+  { name: 'absent input', kind: 'read' },
+]
+
+for (const policy of ['ask', 'never'] as const) {
+  it.each(approvalInputs)(`forwards exact $name to native answerers under ${policy}`, async (input) => {
+    const f = await fixture()
+    if (policy === 'ask') f.session.append('approval/policy', { policy })
+    const audit: AcpPermissionAuditRecord[] = []
+    const answer = vi.fn(async (_request: unknown) => 'allowed-once' as const)
+    f.ctx.on('approval/request', answer)
+    const controller = new AbortController()
+    try {
+      const response = await createAcpNativePermissionHandler({
+        getAgent: () => f.agent,
+        approval: f.approval,
+        audit: { append: async (record) => void audit.push(record) },
+      })(
+        {
+          sessionId: 'acp-metadata-session',
+          toolCall: {
+            toolCallId: 'metadata-call',
+            title: input.name,
+            kind: input.kind,
+            ...(input.rawInput === undefined ? {} : { rawInput: input.rawInput }),
+          },
+          options: [
+            { optionId: 'allow', kind: 'allow_once', name: 'Allow' },
+            { optionId: 'deny', kind: 'reject_once', name: 'Deny' },
+          ],
+        },
+        controller.signal,
+      )
+      expect(response).toEqual({ outcome: { outcome: 'selected', optionId: 'allow' } })
+      expect(answer).toHaveBeenCalledOnce()
+      const event = answer.mock.calls[0]![0] as unknown as {
+        agent: Agent
+        callId: string
+        signal: AbortSignal
+        toolArgs?: unknown
+        commandLine?: string
+      }
+      expect(event.agent).toBe(f.agent)
+      expect(event.callId).toBe('metadata-call')
+      expect(event.signal).toBe(controller.signal)
+      if (input.rawInput === undefined) expect(event).not.toHaveProperty('toolArgs')
+      else expect(event.toolArgs).toEqual(input.rawInput)
+      if (input.commandLine === undefined) expect(event).not.toHaveProperty('commandLine')
+      else expect(event.commandLine).toBe(input.commandLine)
+      expect(audit.at(-1)?.data).toMatchObject({
+        decisionVia: 'native-approval',
+        optionId: 'allow',
+        selectedOptionKind: 'allow_once',
+      })
+      expect(f.ctx.approval.overrideOf(f.session)).toBe(policy)
+      expect(f.ctx.sandboxPolicy.resolve({ session: f.session }).mode).toBe('workspace-write')
+      const nativeAsked = f.session.snapshotEvents().filter((event) => event.type === 'approval/asked')
+      expect(nativeAsked).toHaveLength(policy === 'ask' ? 1 : 0)
+      for (const event of nativeAsked) {
+        expect(event.data).not.toHaveProperty('toolArgs')
+        expect(event.data).not.toHaveProperty('commandLine')
+      }
+      if (policy === 'never') {
+        // External facts do not relax the child's separate DSH execution policy.
+        expect(await f.ctx.approval.request({ agent: f.agent, toolName: 'bash' })).toBe('rejected')
+        expect(answer).toHaveBeenCalledOnce()
+      }
+    } finally {
+      await f.ctx.fiber.dispose()
+    }
+  })
+
+  it.each([
+    { optionId: 'allow_always', name: 'Allow Always (risky)', kind: 'allow_always' },
+    { optionId: 'allow', name: 'Allow', kind: 'allow_once' },
+    { optionId: 'deny', name: 'Deny', kind: 'reject_once' },
+  ] as const)(`keeps Antigravity $kind selectable without binary approval under ${policy}`, async (selected) => {
+    const f = await fixture()
+    if (policy === 'ask') f.session.append('approval/policy', { policy })
+    const nativeAnswer = vi.fn(async () => 'allowed-once' as const)
+    const audit: AcpPermissionAuditRecord[] = []
+    f.ctx.on('approval/request', nativeAnswer)
+    const options: acp.PermissionOption[] = [
+      { optionId: 'allow_always', name: 'Allow Always (risky)', kind: 'allow_always' },
+      { optionId: 'allow', name: 'Allow', kind: 'allow_once' },
+      { optionId: 'deny', name: 'Deny', kind: 'reject_once' },
+    ]
+    const ask = vi.fn<AcpNativeUserQuestionService['ask']>(async ({ agent, questions }) => {
+      expect(agent).toBe(f.agent)
+      expect(questions[0]!.options).toEqual(options.map(({ name }) => ({ label: name })))
+      expect(questions[0]!.question).toContain('printf APPROVAL_PROBE')
+      expect(questions[0]!.question).toContain('/workspace')
+      return { answers: [{ id: questions[0]!.id, selected: [selected.name] }] }
+    })
+    try {
+      const response = await createAcpNativePermissionHandler({
+        getAgent: () => f.agent,
+        approval: f.approval,
+        userQuestions: { ask },
+        nativeQuestionProfile: 'antigravity',
+        audit: { append: async (record) => void audit.push(record) },
+      })({
+        sessionId: 'acp-complete-options',
+        toolCall: {
+          toolCallId: 'antigravity-command',
+          kind: 'execute',
+          rawInput: { CommandLine: 'printf APPROVAL_PROBE', Cwd: '/workspace', WaitMsBeforeAsync: 5000 },
+        },
+        options,
+      })
+      expect(response).toEqual({ outcome: { outcome: 'selected', optionId: selected.optionId } })
+      expect(ask).toHaveBeenCalledOnce()
+      expect(nativeAnswer).not.toHaveBeenCalled()
+      expect(audit.at(-1)?.data).toMatchObject({
+        decisionVia: 'native-question',
+        optionId: selected.optionId,
+        selectedOptionKind: selected.kind,
+      })
+      expect(f.ctx.approval.overrideOf(f.session)).toBe(policy)
+      expect(f.ctx.sandboxPolicy.resolve({ session: f.session }).mode).toBe('workspace-write')
+    } finally {
+      await f.ctx.fiber.dispose()
+    }
+  })
+}
