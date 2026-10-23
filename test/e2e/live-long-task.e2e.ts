@@ -4,9 +4,14 @@ import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, writeFi
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type { SessionId, SessionEvent } from '@deepseek-ai/dsh-session'
+import type { RequestPermissionRequest } from '@agentclientprotocol/sdk'
+import type { AcpNativeUserQuestionService } from '../../src/domain/policy/elicitation.ts'
+import { summarizeRawInputForAudit } from '../../src/domain/policy/events.ts'
+import { acpPermissionAudit } from './acp-permission-audit.ts'
+import { permitsTeamReviewTool } from './live-long-task-team-scope.ts'
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
 import type { Page } from 'playwright'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { connectFreshWorkspace, writeComposerDraft } from '#host-support'
 import type { TestBrowser } from './browser.ts'
 import { launchBrowser, newEnglishPage } from './browser.ts'
@@ -269,6 +274,13 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
       let restoreRuntimePrompt: (() => void) | undefined
       const restoreRuntimePermissionHandlers: Array<() => void> = []
       const wrappedPermissionOptions = new WeakSet<object>()
+      const bPermissionRequests = new Map<string, RequestPermissionRequest>()
+      const bQuestionViews = new Map<string, Parameters<AcpNativeUserQuestionService['ask']>[0]>()
+      const bPermissionEvidence: Record<string, unknown>[] = []
+      const countedApprovalRequests = new Set<string>()
+      const answeredBPermissions = new Set<string>()
+      let restoreBQuestionObserver: (() => void) | undefined
+      let answerBPermissions: (() => Promise<void>) | undefined
       let removeJobEvents: (() => void) | undefined
       let runtimePromptChecks = 0
       let nativeTraceEvents = 0
@@ -494,8 +506,24 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
         assertHealthy()
         let timer: ReturnType<typeof setTimeout> | undefined
         let removeFailureListener = (): void => {}
+        let pumping = true
+        const permissions = phase.startsWith('B:')
+          ? (async () => {
+              try {
+                while (pumping) {
+                  assertHealthy()
+                  await required(answerBPermissions, 'B permission responder must be installed')()
+                  await new Promise<void>((resolve) => setTimeout(resolve, 50))
+                }
+              } catch (error: unknown) {
+                violate('LONG_TASK_B_PERMISSION_RESPONSE_FAILED')
+                throw error
+              }
+            })()
+          : undefined
         try {
           return await Promise.race([
+            ...(permissions === undefined ? [] : [permissions.then(() => new Promise<never>(() => {}))]),
             new Promise<never>((_, reject) => {
               const failed = (): void => reject(failureController.signal.reason)
               failureController.signal.addEventListener('abort', failed, { once: true })
@@ -518,8 +546,10 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
             }),
           ])
         } finally {
+          pumping = false
           if (timer !== undefined) clearTimeout(timer)
           removeFailureListener()
+          await permissions?.catch(() => {})
         }
       }
 
@@ -707,8 +737,12 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
           if (text.length > 0) answers.push({ scene, session: safeId(scope), text, eventIndex: events.length - 1 })
         }
         if (event.type === 'approval/asked' || event.type === 'acp-approval/asked') {
-          const violation = recordLongTaskApprovalRequest(budget, scene)
-          if (violation !== undefined) violate(violation)
+          const key = `${scope}:${event.data.id}`
+          if (!countedApprovalRequests.has(key)) {
+            countedApprovalRequests.add(key)
+            const violation = recordLongTaskApprovalRequest(budget, scene)
+            if (violation !== undefined) violate(violation)
+          }
         }
         if (event.type === 'approval/decided' || event.type === 'acp-approval/decided') {
           approvals.push({ scene, session: safeId(scope), outcome: event.data.outcome })
@@ -1009,6 +1043,19 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
           if (typeof originalPermissionRequest === 'function' && !wrappedPermissionOptions.has(runtimeState.options)) {
             const wrappedPermissionRequest = function (this: unknown, ...callbackArgs: unknown[]): Promise<unknown> {
               const params = callbackArgs[0]
+              if (
+                activeScene === 'B' &&
+                typeof runtimeDshSessionId === 'string' &&
+                isRecord(params) &&
+                typeof params.sessionId === 'string' &&
+                isRecord(params.toolCall) &&
+                typeof params.toolCall.toolCallId === 'string'
+              ) {
+                bPermissionRequests.set(
+                  `${runtimeDshSessionId}:${params.sessionId}:${params.toolCall.toolCallId}`,
+                  params as unknown as RequestPermissionRequest,
+                )
+              }
               try {
                 const decision = nativeExecuteObserver.observePermission(params, {
                   scene: activeScene,
@@ -1179,6 +1226,164 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
           `Exact candidate ${profile.model} is absent from live catalog`,
         ).toBe(true)
         await host.ctx.agentDefaultModel.saveSelection({ provider: profile.provider, model: profile.model })
+
+        // Observe the native question owner and exact request ID without answering or changing policy.
+        const nativeQuestions = host.ctx.get('userQuestions') as AcpNativeUserQuestionService
+        const originalAsk = nativeQuestions.ask.bind(nativeQuestions)
+        const questionObserver = vi.spyOn(nativeQuestions, 'ask').mockImplementation((request) => {
+          if (activeScene === 'B')
+            for (const question of request.questions) {
+              if (question.id.startsWith('acp-permission:'))
+                bQuestionViews.set(question.id.slice('acp-permission:'.length), request)
+            }
+          return originalAsk(request)
+        })
+        restoreBQuestionObserver = () => questionObserver.mockRestore()
+        answerBPermissions = async () => {
+          if (bPermissionRequests.size === 0) return
+          const decided = acpPermissionAudit(host, 'decided')
+          const pending = acpPermissionAudit(host, 'asked').filter(
+            (row) =>
+              bPermissionRequests.has(`${row.sessionId}:${row.data.agentSessionId}:${row.data.toolCall.toolCallId}`) &&
+              !decided.some((entry) => entry.data.requestId === row.data.requestId) &&
+              !answeredBPermissions.has(row.data.requestId),
+          )
+          if (pending.length > 0)
+            writePrivate(
+              join(evidenceDir, 'B-permission-audit.json'),
+              JSON.stringify(
+                {
+                  asked: pending,
+                  decided,
+                  bridge: acpPermissionAudit(host, 'bridge'),
+                },
+                null,
+                2,
+              ),
+            )
+          for (const asked of pending) {
+            assertHealthy()
+            const owner = required(host.ctx.agents.get(asked.sessionId as SessionId), 'B approval owner must be live')
+            const membership = host.ctx.agentTeams.tryMembership(owner)
+            expect(String(membership?.root.id)).toBe(String(leadSessionId))
+            const role = membership?.role === 'lead' ? 'lead' : membership?.name
+            expect(['lead', 'runtime-reader', 'teams-reader']).toContain(role)
+            expect(owner.options).toMatchObject({ provider: profile.provider, model: profile.model })
+            const original = required(
+              bPermissionRequests.get(
+                `${asked.sessionId}:${asked.data.agentSessionId}:${asked.data.toolCall.toolCallId}`,
+              ),
+            )
+            expect(asked.data.options).toEqual(original.options)
+            expect(asked.data.optionCount).toBe(original.options.length)
+            expect(asked.data.omittedOptionCount ?? 0).toBe(0)
+            expect(asked.data.toolCall.rawInputHash).toBe(summarizeRawInputForAudit(original.toolCall.rawInput).hash)
+            const bridge = acpPermissionAudit(host, 'bridge').filter(
+              (row) =>
+                row.sessionId === asked.sessionId &&
+                row.data.agentSessionId === asked.data.agentSessionId &&
+                row.data.toolCallId === asked.data.toolCall.toolCallId,
+            )
+            expect(bridge).toHaveLength(1)
+            const checked = required(bridge[0]).data
+            expect(checked.reason).toBe('approval-required')
+            expect(checked.structuredIdentityPresent).toBe(true)
+            expect(profileName === 'devin' ? ['devin-meta'] : ['name', 'codebuddy-deferred-input']).toContain(
+              checked.identitySource,
+            )
+            const paths = SOURCE_FILES.map((path) => sourcePathFor(join(host.workspaceCwd, 'workspace'), path))
+            expect(
+              permitsTeamReviewTool(required(checked.toolName), original.toolCall.rawInput, {
+                role: role as 'lead' | 'runtime-reader' | 'teams-reader',
+                sources: { 'runtime-reader': paths.slice(0, 3), 'teams-reader': paths.slice(3) },
+                reportMarkers: {
+                  'runtime-reader': `B_REPORT_RUNTIME_${runId.slice(0, 8)}`,
+                  'teams-reader': `B_REPORT_TEAMS_${runId.slice(0, 8)}`,
+                },
+                tasks: host.ctx.agentTeams.listTasks(required(leadAgent)),
+              }),
+              'Only the assigned Team coordination and public source reads may receive a once decision',
+            ).toBe(true)
+            const budgetKey = `${asked.sessionId}:${asked.data.requestId}`
+            if (!countedApprovalRequests.has(budgetKey)) {
+              countedApprovalRequests.add(budgetKey)
+              const violation = recordLongTaskApprovalRequest(budget, 'B')
+              if (violation !== undefined) {
+                violate(violation)
+                throw new Error(violation)
+              }
+            }
+            const view = bQuestionViews.get(asked.data.requestId)
+            // The asked audit precedes native rendering; retry until this exact question is registered.
+            if (view === undefined) continue
+            expect(view.agent).toBe(leadAgent)
+            expect(view.questions).toHaveLength(1)
+            const question = required(view.questions[0])
+            expect(question.id).toBe(`acp-permission:${asked.data.requestId}`)
+            expect(question.options?.map((option) => option.label)).toEqual(
+              original.options.map((option) => option.name),
+            )
+            const choices = original.options.filter((option) => option.kind === 'allow_once')
+            expect(choices).toHaveLength(1)
+            let card = required(page)
+              .locator('[data-question-key]')
+              .filter({ visible: true })
+              .filter({ hasText: question.question })
+            if (question.header !== undefined) card = card.filter({ hasText: question.header })
+            if ((await card.count()) === 0) continue
+            expect(
+              await card.count(),
+              'Concurrent permission cards must have an unambiguous request/owner projection',
+            ).toBe(1)
+            expect(await card.getByRole('radio').count()).toBe(original.options.length)
+            for (const option of original.options)
+              await card.getByRole('radio', { name: option.name, exact: true }).waitFor()
+            const evidence = {
+              owner: safeId(asked.sessionId),
+              root: safeId(String(leadSessionId)),
+              agentSession: safeId(asked.data.agentSessionId),
+              request: safeId(asked.data.requestId),
+              callId: safeId(asked.data.toolCall.toolCallId),
+              toolName: checked.toolName,
+              identitySource: checked.identitySource,
+              rawInputHash: asked.data.toolCall.rawInputHash,
+              options: original.options,
+              optionId: required(choices[0]).optionId,
+              status: 'pending',
+              admissionsBefore: budget.sceneDispatches.B,
+            }
+            bPermissionEvidence.push(evidence)
+            await capture('B', `permission-${bPermissionEvidence.length}-pending`, evidence)
+            assertHealthy()
+            await card.getByRole('radio', { name: required(choices[0]).name, exact: true }).click()
+            assertHealthy()
+            await card.getByRole('button', { name: /^(Submit|Send)$/ }).click()
+            answeredBPermissions.add(asked.data.requestId)
+            await waitFor(() => {
+              const result = acpPermissionAudit(host, 'decided').filter(
+                (row) => row.data.requestId === asked.data.requestId,
+              )
+              expect(result).toHaveLength(1)
+              expect(result[0]).toMatchObject({
+                sessionId: asked.sessionId,
+                data: {
+                  agentSessionId: asked.data.agentSessionId,
+                  toolCallId: asked.data.toolCall.toolCallId,
+                  outcome: 'selected',
+                  selectedOptionKind: 'allow_once',
+                  optionId: required(choices[0]).optionId,
+                },
+              })
+              if (role !== 'lead')
+                expect(required(result[0]).data.presentation).toMatchObject({
+                  rootSessionId: String(leadSessionId),
+                  path: [asked.sessionId],
+                })
+            })
+            evidence.status = 'allowed-once'
+            writePrivate(join(evidenceDir, 'B-permissions.json'), JSON.stringify(bPermissionEvidence, null, 2))
+          }
+        }
 
         const allowedTeamTools = new Set(['spawn_teammate', 'wait_agent', 'list_agents'])
         const sourcePaths = new Set(
@@ -2764,6 +2969,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
           nativeReads: nativeReadEvidence,
           nativeReadDiagnostics,
           acpExecutePermissions: nativeExecuteObserver.evidence(),
+          teamPermissionEvidence: bPermissionEvidence,
           permissionRoutes: Object.fromEntries(operationPermissionRoutes),
           executionRoutes: Object.fromEntries(operationExecutionRoutes),
           rejectedCancellation: rejectionCancellationEvidence,
@@ -2858,6 +3064,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
                 nativeReads: nativeReadEvidence,
                 nativeReadDiagnostics,
                 acpExecutePermissions: nativeExecuteObserver.evidence(),
+                teamPermissionEvidence: bPermissionEvidence,
                 rejectedCancellation: rejectionCancellationEvidence,
                 permissionRoutes: Object.fromEntries(operationPermissionRoutes),
                 executionRoutes: Object.fromEntries(operationExecutionRoutes),
@@ -2934,6 +3141,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
         if (runFailed || stickyViolation !== undefined) await cancelAll(stickyViolation ?? 'LONG_TASK_PRIMARY_FAILURE')
         cleanup.push(await settleLongTaskAction('host', host === undefined ? undefined : () => host.close(), 'cleanup'))
         cleanup.push(await settleLongTaskAction('job-observer', removeJobEvents, 'cleanup'))
+        cleanup.push(await settleLongTaskAction('B-question-observer', restoreBQuestionObserver, 'cleanup'))
         for (const [index, restorePermissionHandler] of restoreRuntimePermissionHandlers.reverse().entries())
           cleanup.push(await settleLongTaskAction(`permission-observer-${index}`, restorePermissionHandler, 'cleanup'))
         cleanup.push(await settleLongTaskAction('prompt-observer', restoreRuntimePrompt, 'cleanup'))

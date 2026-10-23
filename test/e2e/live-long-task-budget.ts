@@ -10,6 +10,9 @@ export const LONG_TASK_BUDGET = {
   repeatedEffects: 2,
   approvalRequests: 24,
   sceneApprovalRequests: 16,
+  // B needs at least 21 independent permissions; full-option questions were previously uncounted.
+  // Keep other scenes' allowance and all execution/time limits unchanged.
+  teamSceneApprovalRequests: 32,
   providerToolCalls: 128,
 } as const
 
@@ -103,10 +106,13 @@ export function recordLongTaskToolResult(budget: LongTaskBudget, callId: string,
 /** ACP permission requests bypass the Host tool guard, so count them independently. */
 export function recordLongTaskApprovalRequest(budget: LongTaskBudget, scene: LongTaskScene): string | undefined {
   if (budget.violation) return budget.violation
-  if (budget.approvalRequests >= LONG_TASK_BUDGET.approvalRequests)
-    return failClosed(budget, 'LONG_TASK_APPROVAL_REQUEST_BUDGET')
-  if (budget.sceneApprovalRequests[scene] >= LONG_TASK_BUDGET.sceneApprovalRequests)
+  const sceneLimit = scene === 'B' ? LONG_TASK_BUDGET.teamSceneApprovalRequests : LONG_TASK_BUDGET.sceneApprovalRequests
+  if (budget.sceneApprovalRequests[scene] >= sceneLimit)
     return failClosed(budget, 'LONG_TASK_SCENE_APPROVAL_REQUEST_BUDGET')
+  const nextTeamCount = budget.sceneApprovalRequests.B + (scene === 'B' ? 1 : 0)
+  const actualTeamExtra = Math.max(0, nextTeamCount - LONG_TASK_BUDGET.sceneApprovalRequests)
+  if (budget.approvalRequests + 1 > LONG_TASK_BUDGET.approvalRequests + actualTeamExtra)
+    return failClosed(budget, 'LONG_TASK_APPROVAL_REQUEST_BUDGET')
   budget.approvalRequests += 1
   budget.sceneApprovalRequests[scene] += 1
   return undefined

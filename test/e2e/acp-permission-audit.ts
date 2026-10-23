@@ -6,7 +6,7 @@ import type { AcpPermissionAuditData } from '../../src/domain/policy/events.ts'
 import { required } from './required.ts'
 
 /** Observe the durable ACP audit owner; native UI answerers need not rewrite Session policy or audit. */
-export function acpPermissionAudit<P extends 'asked' | 'decided'>(host: { ctx: Context }, phase: P) {
+export function acpPermissionAudit<P extends AcpPermissionAuditData['phase']>(host: { ctx: Context }, phase: P) {
   const database = new DatabaseSync(join(required(host.ctx.dshHomePath)('dsh-acp'), 'sidecar.sqlite'), {
     readOnly: true,
   })
