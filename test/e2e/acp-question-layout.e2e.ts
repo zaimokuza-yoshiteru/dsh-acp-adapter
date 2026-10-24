@@ -10,6 +10,8 @@ import { launchAdapterWorld, root } from './scaffold.ts'
 import { launchBrowser, newEnglishPage, type TestBrowser } from './browser.ts'
 import { required } from './required.ts'
 import type { QuestionProbe } from './fixtures/render-probe/client.ts'
+import type * as acp from '@agentclientprotocol/sdk'
+import { pathToFileURL } from 'node:url'
 
 declare global {
   interface Window {
@@ -332,3 +334,157 @@ it('keeps ACP fixed choices usable across keyboard, themes, narrow windows, fail
     await host.close()
   }
 }, 120_000)
+
+it.each(['en', 'zh'] as const)(
+  'keeps Antigravity command summaries compact and complete on the native question card (%s)',
+  async (locale) => {
+    const host = await launchAdapterWorld()
+    let browser: TestBrowser | undefined
+    let page: Page | undefined
+    const directory = join(root, '.local/permission-command-summary', locale)
+    mkdirSync(directory, { recursive: true })
+    const errors: string[] = []
+    const responses: acp.RequestPermissionResponse[] = []
+    const wireInput = {
+      CommandLine: 'printf ANTIGRAVITY_SUMMARY_MARKER',
+      Cwd: host.workspaceCwd,
+      WaitMsBeforeAsync: 5_000,
+    }
+    const options: acp.PermissionOption[] = [
+      { optionId: 'always-id', kind: 'allow_always', name: 'Allow Always (risky)' },
+      { optionId: 'once-id', kind: 'allow_once', name: 'Allow' },
+      { optionId: 'deny-id', kind: 'reject_once', name: 'Deny' },
+    ]
+    try {
+      // Reuse the built normalizer and permission producer. The model is a
+      // scripted control; real-provider coverage belongs to live-antigravity.
+      const permission: typeof import('../../src/domain/policy/permissions.ts') = await host.ctx.loader.import(
+        pathToFileURL(join(root, 'lib/domain/policy/permissions.js')).href,
+      )
+      const antigravity: typeof import('../../src/host/tools/antigravity.ts') = await host.ctx.loader.import(
+        pathToFileURL(join(root, 'lib/host/tools/antigravity.js')).href,
+      )
+      const normalized = antigravity.normalizeAntigravityPresentation(wireInput, undefined, undefined, 'bash')
+      const original = structuredClone(normalized.rawInput)
+      host.ctx.effect(() =>
+        host.ctx.llm.registerAdapter(
+          ['permission-summary-control'],
+          new QuestionControl(async (request) => {
+            const agent = required(host.ctx.agents.get(required(request.sessionId)))
+            const service = host.ctx.get('userQuestions') as AcpNativeUserQuestionService
+            responses.push(
+              await permission.createAcpNativePermissionHandler({
+                userQuestions: service,
+                getAgent: () => agent,
+                locale,
+                nativeQuestionProfile: 'antigravity',
+              })(
+                {
+                  sessionId: 'summary-control-session',
+                  toolCall: {
+                    toolCallId: 'summary-command',
+                    title: wireInput.CommandLine,
+                    kind: 'execute',
+                    rawInput: normalized.rawInput,
+                  },
+                  options,
+                },
+                request.signal,
+              ),
+            )
+          }),
+        ),
+      )
+      await host.ctx.agentDefaultModel.saveSelection({
+        provider: 'permission-summary-control',
+        model: 'question-model',
+      })
+      await host.ctx.settings.replace('locale', { preference: 'en' })
+      browser = await launchBrowser({ headless: true })
+      page = await newEnglishPage(browser)
+      page.setDefaultTimeout(10_000)
+      page.on('pageerror', (error) => errors.push(error.message))
+      await page.goto(host.authenticatedUrl)
+      await connectFreshWorkspace(page, host.workspaceCwd)
+      await host.ctx.settings.replace('locale', { preference: locale })
+      await writeComposerDraft(page, page.locator('[data-composer-input]').first(), 'Permission summary control')
+      const settled = host.whenTurnSettled(30_000)
+      await page.getByRole('button', { name: locale === 'zh' ? '发送消息' : 'Send message', exact: true }).click()
+      const card = page.locator('section[data-question-key]')
+      await card.waitFor()
+      const operation = card.locator('[data-question-operation]')
+      const expected = [
+        `${locale === 'zh' ? '命令' : 'Command'}: ${wireInput.CommandLine}`,
+        `${locale === 'zh' ? '工作目录' : 'Working directory'}: ${wireInput.Cwd}`,
+        locale === 'zh' ? '转入后台前等待: 5000 毫秒' : 'Wait before backgrounding: 5000 ms',
+      ].join('\n')
+      await expect.poll(() => operation.innerText()).toBe(expected)
+      const disclosure = card.getByRole('button', {
+        name: locale === 'zh' ? '请求详情' : 'Request details',
+        exact: true,
+      })
+      expect(await disclosure.getAttribute('aria-expanded')).toBe('false')
+      expect(
+        await card
+          .getByRole('radio')
+          .evaluateAll((elements) => elements.map((element) => element.getAttribute('aria-label'))),
+      ).toEqual(options.map(({ name }) => name))
+      expect(await card.locator('[role="radio"][aria-checked="true"]').count()).toBe(0)
+      expect(
+        await card.getByRole('button', { name: locale === 'zh' ? '提交选择' : 'Submit', exact: true }).isDisabled(),
+      ).toBe(true)
+      expect(responses).toEqual([])
+      for (const theme of ['light', 'dark']) {
+        await host.ctx.settings.replace('ui-theme', { preference: theme })
+        await expect.poll(() => page!.evaluate(() => document.documentElement.style.colorScheme)).toBe(theme)
+        await page.setViewportSize({ width: 1680, height: 1000 })
+        await page.screenshot({ path: join(directory, `${theme}-1680-pending.png`), animations: 'disabled' })
+      }
+      await disclosure.click()
+      expect(await disclosure.getAttribute('aria-expanded')).toBe('true')
+      expect(JSON.parse(await card.locator('[data-question-detail] code').innerText())).toEqual({ rawInput: original })
+      await page.screenshot({ path: join(directory, 'details-1680.png'), animations: 'disabled' })
+      await page.setViewportSize({ width: 390, height: 800 })
+      const bounds = await card.evaluate((element) => {
+        const box = element.getBoundingClientRect()
+        const footer = element.querySelector('footer')!.getBoundingClientRect()
+        return {
+          left: box.left,
+          right: box.right,
+          top: box.top,
+          bottom: box.bottom,
+          footerBottom: footer.bottom,
+          noOverflow: element.scrollWidth <= element.clientWidth,
+        }
+      })
+      expect(bounds.left).toBeGreaterThanOrEqual(0)
+      expect(bounds.right).toBeLessThanOrEqual(391)
+      expect(bounds.top).toBeGreaterThanOrEqual(0)
+      expect(bounds.bottom).toBeLessThanOrEqual(801)
+      expect(bounds.footerBottom).toBeLessThanOrEqual(bounds.bottom + 1)
+      expect(bounds.noOverflow).toBe(true)
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+      await page.setViewportSize({ width: 1680, height: 1000 })
+      await disclosure.click()
+      await card.getByRole('radio', { name: 'Allow', exact: true }).click()
+      await card.getByRole('button', { name: locale === 'zh' ? '提交选择' : 'Submit', exact: true }).click()
+      await settled
+      expect(responses).toEqual([{ outcome: { outcome: 'selected', optionId: 'once-id' } }])
+      expect(normalized.rawInput).toEqual(original)
+      expect(wireInput).toEqual({
+        CommandLine: 'printf ANTIGRAVITY_SUMMARY_MARKER',
+        Cwd: host.workspaceCwd,
+        WaitMsBeforeAsync: 5_000,
+      })
+      expect(errors).toEqual([])
+    } catch (error) {
+      if (page !== undefined)
+        await page.screenshot({ path: join(directory, 'failure.png'), animations: 'disabled' }).catch(() => undefined)
+      throw error
+    } finally {
+      await browser?.close()
+      await host.close()
+    }
+  },
+  60_000,
+)

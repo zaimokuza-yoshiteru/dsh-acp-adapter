@@ -202,7 +202,11 @@ function nativePermissionReason(tool: acp.RequestPermissionRequest['toolCall'], 
     .join('\n')
 }
 /** Keep targets and unknown scope visible; verified Team task prose stays in raw-request details. */
-function permissionQuestionFacts(tool: acp.RequestPermissionRequest['toolCall'], copy: PermissionCopy): string {
+function permissionQuestionFacts(
+  tool: acp.RequestPermissionRequest['toolCall'],
+  copy: PermissionCopy,
+  profile?: AcpNativeQuestionProfile,
+): string {
   const command = tool.kind === 'execute' ? commandOf(tool) : undefined
   const title = tool.title ?? tool.name
   const lines: string[] = []
@@ -242,6 +246,20 @@ function permissionQuestionFacts(tool: acp.RequestPermissionRequest['toolCall'],
     const commandKey = command === undefined ? undefined : commandKeys.find((key) => record[key] === command)
     const directory = typeof record.cwd === 'string' ? record.cwd : undefined
     if (directory !== undefined) lines.push(`${copy.directory}: ${visibleCommand(directory)}`)
+    if (profile === 'antigravity' && tool.kind === 'execute') {
+      // Presentation normalization retains the wire fields beside command/cwd.
+      // Only remove exact duplicates; conflicting values remain approval facts.
+      if (command !== undefined && record.command === command && record.CommandLine === command)
+        presented.add('CommandLine')
+      if (directory !== undefined && directory.trim() !== '' && record.Cwd === directory) presented.add('Cwd')
+      const wait = record.WaitMsBeforeAsync
+      // Antigravity's run_command schema defines a synchronous wait before
+      // backgrounding, up to 10000 ms; this is not a command execution deadline.
+      if (typeof wait === 'number' && Number.isInteger(wait) && wait >= 0 && wait <= 10_000) {
+        lines.push(copy.backgroundWait(wait))
+        presented.add('WaitMsBeforeAsync')
+      }
+    }
     const fileContent = typeof record.file_path === 'string' && typeof record.content === 'string'
     if (fileContent) {
       lines.push(`${copy.filePath}: ${visibleCommand(record.file_path as string)}`)
@@ -437,7 +455,7 @@ export function createAcpNativePermissionHandler(
             id: questionId,
             question: nativeInteractionQuestion
               ? params.toolCall.title!
-              : permissionQuestionFacts(params.toolCall, copy),
+              : permissionQuestionFacts(params.toolCall, copy, deps.nativeQuestionProfile),
             ...(nativeInteractionQuestion ? {} : { header: copy.permission }),
             ...(detail === undefined ? {} : { detail }),
             options: renderedLabels.map((label) => ({ label })),

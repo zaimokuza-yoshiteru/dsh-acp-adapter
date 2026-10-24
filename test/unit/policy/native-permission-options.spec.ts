@@ -9,6 +9,8 @@ import {
   createAcpNativeElicitationHandler,
   type AcpNativeUserQuestionService,
 } from '../../../src/domain/policy/elicitation.ts'
+import { summarizeRawInputForAudit } from '../../../src/domain/policy/events.ts'
+import { normalizeAntigravityPresentation } from '../../../src/host/tools/antigravity.ts'
 
 const option = (optionId: string, name: string, kind: acp.PermissionOption['kind']): acp.PermissionOption => ({
   optionId,
@@ -22,6 +24,174 @@ const request = (options: acp.PermissionOption[]): acp.RequestPermissionRequest 
 })
 
 describe('complete ACP permission choices', () => {
+  it.each(['en', 'zh'] as const)(
+    'summarizes Antigravity command aliases without exposing duplicate input (%s)',
+    async (locale) => {
+      for (const wait of [0, 5_000, 10_000]) {
+        const wireInput = { CommandLine: 'printf exact-marker', Cwd: '/workspace/current', WaitMsBeforeAsync: wait }
+        const input = normalizeAntigravityPresentation(wireInput, undefined, undefined, 'bash').rawInput
+        const original = structuredClone(input)
+        const fingerprint = summarizeRawInputForAudit(input).hash
+        const options = [
+          option('always-id', 'Allow Always (risky)', 'allow_always'),
+          option('once-id', 'Allow', 'allow_once'),
+          option('deny-id', 'Deny', 'reject_once'),
+        ]
+        const audit: AcpPermissionAuditRecord[] = []
+        const ask = vi.fn<AcpNativeUserQuestionService['ask']>(async ({ questions }) => ({
+          answers: [{ id: questions[0]!.id, selected: ['Allow'] }],
+        }))
+        const response = await createAcpNativePermissionHandler({
+          userQuestions: { ask },
+          getAgent: () => ({}),
+          locale,
+          nativeQuestionProfile: 'antigravity',
+          audit: {
+            append: async (entry) => {
+              audit.push(entry)
+            },
+          },
+        })({
+          ...request(options),
+          toolCall: {
+            toolCallId: 'antigravity-aliases',
+            kind: 'execute',
+            title: wireInput.CommandLine,
+            rawInput: input,
+          },
+        })
+        const question = ask.mock.calls[0]![0].questions[0]!
+        expect(question.question).toBe(
+          [
+            `${locale === 'zh' ? '命令' : 'Command'}: ${wireInput.CommandLine}`,
+            `${locale === 'zh' ? '工作目录' : 'Working directory'}: ${wireInput.Cwd}`,
+            locale === 'zh' ? `转入后台前等待: ${wait} 毫秒` : `Wait before backgrounding: ${wait} ms`,
+          ].join('\n'),
+        )
+        expect(question.detail).toBe(`\`\`\`\n${JSON.stringify({ rawInput: original }, null, 2)}\n\`\`\``)
+        expect(question.options!.map(({ label }) => label)).toEqual(options.map(({ name }) => name))
+        expect(response).toEqual({ outcome: { outcome: 'selected', optionId: 'once-id' } })
+        expect(wireInput).toEqual({
+          CommandLine: 'printf exact-marker',
+          Cwd: '/workspace/current',
+          WaitMsBeforeAsync: wait,
+        })
+        expect(input).toEqual(original)
+        expect(summarizeRawInputForAudit(input).hash).toBe(fingerprint)
+        expect(audit.find(({ data }) => data.phase === 'asked')?.data).toMatchObject({
+          toolCall: { rawInputHash: fingerprint },
+        })
+      }
+    },
+  )
+
+  it.each(['en', 'zh'] as const)(
+    'keeps conflicting Antigravity aliases and unknown permission scope visible (%s)',
+    async (locale) => {
+      const input = {
+        command: 'printf canonical',
+        CommandLine: 'rm conflicting-target',
+        cwd: '/workspace/current',
+        Cwd: '/other/workspace',
+        WaitMsBeforeAsync: 5_000,
+        permissions: { network: { domains: ['private.example'] } },
+      }
+      const ask = vi.fn<AcpNativeUserQuestionService['ask']>(async () => ({ answers: [] }))
+      await createAcpNativePermissionHandler({
+        userQuestions: { ask },
+        getAgent: () => ({}),
+        locale,
+        nativeQuestionProfile: 'antigravity',
+      })({
+        ...request([option('once', 'Allow once', 'allow_once'), option('always', 'Always allow', 'allow_always')]),
+        toolCall: { toolCallId: 'conflicting-aliases', kind: 'execute', rawInput: input },
+      })
+      const question = ask.mock.calls[0]![0].questions[0]!
+      expect(question.question).toContain('printf canonical')
+      expect(question.question).toContain('/workspace/current')
+      expect(question.question).toContain('"CommandLine": "rm conflicting-target"')
+      expect(question.question).toContain('"Cwd": "/other/workspace"')
+      expect(question.question).toContain('"permissions"')
+      expect(question.question).toContain('private.example')
+      expect(question.detail).toBe(`\`\`\`\n${JSON.stringify({ rawInput: input }, null, 2)}\n\`\`\``)
+    },
+  )
+
+  it.each([-1, 10_001, 1.5, '5000', null, { milliseconds: 5000 }])(
+    'keeps unrecognized Antigravity wait value visible: %j',
+    async (wait) => {
+      const input = { command: 'printf exact-marker', cwd: '/workspace', WaitMsBeforeAsync: wait }
+      const ask = vi.fn<AcpNativeUserQuestionService['ask']>(async () => ({ answers: [] }))
+      await createAcpNativePermissionHandler({
+        userQuestions: { ask },
+        getAgent: () => ({}),
+        nativeQuestionProfile: 'antigravity',
+      })({
+        ...request([option('once', 'Allow once', 'allow_once')]),
+        toolCall: { toolCallId: 'unknown-wait-value', kind: 'execute', rawInput: input },
+      })
+      const question = ask.mock.calls[0]![0].questions[0]!
+      expect(question.question).toContain(JSON.stringify({ WaitMsBeforeAsync: wait }, null, 2))
+      expect(question.question).not.toContain('Wait before backgrounding')
+    },
+  )
+
+  it('keeps Antigravity whitespace-different aliases, argv and unrelated equal values visible', async () => {
+    const input = {
+      command: 'printf exact',
+      CommandLine: 'printf exact ',
+      cwd: '/workspace',
+      Cwd: '/workspace ',
+      argv: ['printf', 'exact'],
+      unrelated: 'printf exact',
+    }
+    const ask = vi.fn<AcpNativeUserQuestionService['ask']>(async () => ({ answers: [] }))
+    await createAcpNativePermissionHandler({
+      userQuestions: { ask },
+      getAgent: () => ({}),
+      nativeQuestionProfile: 'antigravity',
+    })({
+      ...request([option('once', 'Allow once', 'allow_once')]),
+      toolCall: { toolCallId: 'distinct-facts', kind: 'execute', rawInput: input },
+    })
+    const text = ask.mock.calls[0]![0].questions[0]!.question
+    expect(text).toContain('"CommandLine": "printf exact "')
+    expect(text).toContain('"Cwd": "/workspace "')
+    expect(text).toContain('"argv": [')
+    expect(text).toContain('"unrelated": "printf exact"')
+  })
+
+  it.each(['other-profile', 'non-execute'] as const)(
+    'keeps unrecognized Antigravity-shaped scope visible (%s)',
+    async (scope) => {
+      const input = {
+        command: 'printf exact',
+        CommandLine: 'printf exact',
+        cwd: '/workspace',
+        Cwd: '/workspace',
+        WaitMsBeforeAsync: 5000,
+      }
+      const ask = vi.fn<AcpNativeUserQuestionService['ask']>(async () => ({ answers: [] }))
+      await createAcpNativePermissionHandler({
+        userQuestions: { ask },
+        getAgent: () => ({}),
+        ...(scope === 'non-execute' ? { nativeQuestionProfile: 'antigravity' as const } : {}),
+      })({
+        ...request([option('once', 'Allow once', 'allow_once')]),
+        toolCall: {
+          toolCallId: 'unrecognized-provider-facts',
+          kind: scope === 'non-execute' ? 'other' : 'execute',
+          rawInput: input,
+        },
+      })
+      const text = ask.mock.calls[0]![0].questions[0]!.question
+      expect(text).toContain('"CommandLine": "printf exact"')
+      expect(text).toContain('"Cwd": "/workspace"')
+      expect(text).toContain('"WaitMsBeforeAsync": 5000')
+      expect(text).not.toContain('Wait before backgrounding')
+    },
+  )
+
   it('shows execute descriptions as prose while keeping command and unknown scope in a multi-choice request', async () => {
     const input = {
       command: 'find src -type f -print',
