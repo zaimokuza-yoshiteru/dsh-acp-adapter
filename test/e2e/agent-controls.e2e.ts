@@ -136,12 +136,12 @@ describe.each(profiles)('Agent controls: %s', (profile) => {
         await expect.poll(() => policyMenu.getAttribute('aria-expanded')).toBe('false')
         await policyMenu.click()
         await page.getByRole('menuitem', { name: /^DSH tool approval/ }).click()
-        await expect.poll(() => page.getByRole('menuitem', { name: /^Ask each time/ }).count()).toBe(1)
+        await expect.poll(() => page.getByRole('menuitem', { name: /^Ask(?:\s|$)/ }).count()).toBe(1)
         if (profile === 'codex' && delivery === 'response') {
           const directory = join(root, '.local/ui-review')
           await page.screenshot({ path: join(directory, 'tool-approval-session-override.png') })
         }
-        await page.getByRole('menuitem', { name: /^Ask each time/ }).click()
+        await page.getByRole('menuitem', { name: /^Ask(?:\s|$)/ }).click()
         if (profile === 'codex' && delivery === 'response') {
           await policyMenu.click()
           await page.getByRole('menuitem', { name: /^DSH tool approval/ }).click()
@@ -169,7 +169,7 @@ describe.each(profiles)('Agent controls: %s', (profile) => {
           await page.setViewportSize({ width: 1280, height: 900 })
           expect(
             await page
-              .getByRole('menuitem', { name: /^Ask each time/ })
+              .getByRole('menuitem', { name: /^Ask(?:\s|$)/ })
               .locator('svg')
               .count(),
           ).toBe(1)
@@ -184,16 +184,16 @@ describe.each(profiles)('Agent controls: %s', (profile) => {
                 .count(),
             )
             .toBe(1)
-          await page.getByRole('menuitem', { name: /^Ask each time/ }).click()
+          await page.getByRole('menuitem', { name: /^Ask(?:\s|$)/ }).click()
         }
         await policyMenu.click()
         const policyGroup = page.getByRole('menuitem', { name: /^DSH tool approval/ })
-        await expect.poll(() => policyGroup.innerText()).toContain('Ask each time')
+        await expect.poll(() => policyGroup.innerText()).toContain('Ask')
         await policyGroup.click()
         await expect
           .poll(() =>
             page
-              .getByRole('menuitem', { name: /^Ask each time/ })
+              .getByRole('menuitem', { name: /^Ask(?:\s|$)/ })
               .locator('svg')
               .count(),
           )
@@ -334,7 +334,7 @@ describe.each(profiles)('Agent controls: %s', (profile) => {
         await policyMenu.waitFor()
         await policyMenu.click()
         await page.getByRole('menuitem', { name: /^DSH tool approval/ }).click()
-        const newSessionAsk = page.getByRole('menuitem', { name: /^Ask each time/ })
+        const newSessionAsk = page.getByRole('menuitem', { name: /^Ask(?:\s|$)/ })
         await newSessionAsk.waitFor()
         await expect.poll(() => newSessionAsk.locator('svg').count()).toBe(1)
         await page.keyboard.press('Escape')
@@ -462,9 +462,7 @@ it.each([
           await page
             .getByRole('menuitem', { name: operation === 'option' ? /^Session Mode/ : /^DSH tool approval/ })
             .click()
-          await page
-            .getByRole('menuitem', { name: operation === 'option' ? /^Plan(?:\s|$)/ : /^Ask each time/ })
-            .click()
+          await page.getByRole('menuitem', { name: operation === 'option' ? /^Plan(?:\s|$)/ : /^Ask(?:\s|$)/ }).click()
           await started
           expect(await page.getByRole('alert').count()).toBe(0)
 

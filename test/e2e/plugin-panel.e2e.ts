@@ -84,8 +84,8 @@ it('hosts ACP configuration on the native bundle detail page', async () => {
     const approvalDefault = panel.getByRole('button', { name: 'Default DSH tool approval', exact: true })
     await expect.poll(() => approvalDefault.innerText()).toContain('Auto approve')
     await approvalDefault.click()
-    await page.getByRole('menuitem', { name: 'Ask each time', exact: true }).click()
-    await expect.poll(() => approvalDefault.innerText()).toContain('Ask each time')
+    await page.getByRole('menuitem', { name: 'Ask', exact: true }).click()
+    await expect.poll(() => approvalDefault.innerText()).toContain('Ask')
     expect(
       (
         host.ctx.settings.describe().find((row) => row.ns === 'dsh-acp-adapter')?.value as {
@@ -171,7 +171,7 @@ it('hosts ACP configuration on the native bundle detail page', async () => {
     await chinesePanel.getByRole('heading', { name: 'DSH 工具默认审批', exact: true }).waitFor()
     await chinesePanel
       .getByRole('button', { name: 'DSH 工具默认审批', exact: true })
-      .getByText('逐项询问', { exact: true })
+      .getByText('询问', { exact: true })
       .waitFor()
     await chineseDetail
       .locator('p')

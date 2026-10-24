@@ -146,7 +146,7 @@ describe.each([
         await policyRow.click()
         const policyOptions = page.getByRole('menu')
         expect(await policyOptions.innerText()).toContain('Following the Lead’s current policy; read-only.')
-        const inheritedAsk = policyOptions.getByRole('menuitem', { name: /^Ask each time/ })
+        const inheritedAsk = policyOptions.getByRole('menuitem', { name: /^Ask(?:\s|$)/ })
         await inheritedAsk.waitFor()
         expect(await inheritedAsk.isDisabled()).toBe(true)
         await (host.ctx.get('dshAcp') as AcpRemoteService).setToolApprovalPolicy(lead.id, { policy: 'auto' })
@@ -160,7 +160,7 @@ describe.each([
           )
           .toBe(1)
         await (host.ctx.get('dshAcp') as AcpRemoteService).setToolApprovalPolicy(lead.id, { policy: 'ask' })
-        await expect.poll(() => policyOptions.innerText()).toContain('Ask each time')
+        await expect.poll(() => policyOptions.innerText()).toContain('Ask')
         await expect.poll(() => inheritedAsk.locator('svg').count()).toBe(1)
         await page.keyboard.press('Escape')
         // Coordination setup itself produced no cards before the gated tool request.
