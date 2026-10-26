@@ -24,6 +24,88 @@ import {
 } from '../../../src/client/ui/AcpAssistantStream.ts'
 
 describe('native assistant renderer composition', () => {
+  it.each(['request', 'settled', 'interrupted'] as const)(
+    'keeps unfinished warnings outside completed analysis groups for a %s owner',
+    (phase) => {
+      const data: AcpActivityNodeData = {
+        ownerDshSessionId: 'owner',
+        promptAnchorMessageId: 'prompt',
+        profileId: 'codex',
+        agentSessionId: 'agent',
+        committedActivitySeq: phase === 'request' ? 0 : 3,
+        ...(phase === 'request' ? {} : { settled: true }),
+      }
+      const location = {
+        kind: 'step',
+        turn: { turn: 1 },
+        step: { step: 1, data: { get: () => (phase === 'request' ? undefined : data) } },
+      }
+      const marker = {
+        key: 'marker',
+        id: phase === 'request' ? 'request:10' : 'answer:1',
+        kind: 'acp-activity',
+        target: 'chat',
+        visibility: 'visible',
+        groupTree: 'process',
+        anchorSeq: 10,
+        location,
+        data,
+      } as unknown as ChatConversationViewNode
+      const assistant = {
+        key: 'assistant',
+        id: 'assistant',
+        kind: 'assistant-step',
+        target: 'chat',
+        visibility: 'visible',
+        anchorSeq: 11,
+        location,
+        data: {
+          status: phase === 'interrupted' ? 'interrupted' : 'settled',
+          turn: 1,
+          step: 1,
+          blocks: [{ kind: 'text', text: 'Current response' }],
+        },
+      } as unknown as ChatConversationViewNode
+      const input = phase === 'request' ? [marker] : [assistant, marker]
+      const rows = [
+        {
+          activityId: 'tool:unknown',
+          kind: 'tool',
+          status: 'unfinished',
+          contentIndex: 0,
+          rawDetail: JSON.stringify({ toolName: 'exec_command', rawInput: { command: 'task' } }),
+        },
+        {
+          activityId: 'tool:complete',
+          kind: 'tool',
+          status: 'completed',
+          contentIndex: 0,
+          rawDetail: JSON.stringify({ toolName: 'read', rawInput: { path: 'completed.txt' } }),
+        },
+        { activityId: 'plan', kind: 'plan', status: 'completed', contentIndex: 0 },
+      ] as AcpActivityView[]
+      const windows = new Map([[activityWindowKey(data), { rows, unavailable: false }]])
+      const cache = new Map<string, AcpNormalizationCacheEntry>()
+      const cold = normalizeAcpChatNodes(input, windows, cache)
+      const unknown = cold.find((node) => node.kind === 'acp-inline-activity' && node.data === rows[0])!
+      expect(unknown).toBeDefined()
+      // The public native position retains whole-turn folding but excludes
+      // this unknown outcome from the closed step's "Analysis completed" group.
+      expect(unknown.groupTree).toBe('process')
+      expect(unknown.data).toMatchObject({ kind: 'tool', status: 'unfinished' })
+      expect(unknown.data).not.toHaveProperty('root')
+      const complete = cold.find((node) => node.kind === 'tool-call')!
+      expect(complete.groupTree).toBeUndefined()
+      expect(complete.data).toMatchObject({ root: { call: { name: 'read' } } })
+      const plan = cold.find((node) => node.kind === 'acp-inline-activity' && node.data === rows[2])!
+      expect(plan.groupTree).toBeUndefined()
+      const warm = normalizeAcpChatNodes(input, windows, cache, new Map(cold.map((node) => [node.key, node])))
+      expect(warm.find((node) => node.key === unknown.key)).toBe(unknown)
+      // Reloaded history must retain the same honest outcome and native layout.
+      expect(normalizeAcpChatNodes(input, windows)).toEqual(cold)
+    },
+  )
+
   it('keeps a first tool in the same native seat from its request through the durable answer', () => {
     const data: AcpActivityNodeData = {
       ownerDshSessionId: '',

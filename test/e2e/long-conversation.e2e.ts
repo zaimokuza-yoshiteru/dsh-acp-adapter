@@ -865,7 +865,7 @@ describe('long conversation native renderer comparison', () => {
       )
     if (
       (toolKinds.read?.visible === true || toolKinds.edit?.visible === true) &&
-      !sessionEvents.some((event) => String(event.type).startsWith('workspace-changes/'))
+      !sessionEvents.some((event) => String(event.type) === 'workspace/changes')
     )
       limitations.push(
         'Real read/edit executions are checked against workspace bytes; workspace-change history is unavailable through the current official Host recorder interface.',

@@ -35,6 +35,8 @@ const en = {
   delegatedPermissionUnavailable:
     'The host does not yet support these authorization options for child sessions; no permission was granted.',
   delegatedQuestionUnavailable: 'The host does not yet support questions for child sessions; no answer was submitted.',
+  permissionPolicyUnavailable:
+    'The automatic approval rule failed. This operation was not authorized. Try again after the rule is available.',
 }
 
 const zh: typeof en = {
@@ -72,6 +74,7 @@ const zh: typeof en = {
   rejectOnce: '本次拒绝',
   delegatedPermissionUnavailable: '宿主暂不支持子会话的此类授权选项；本次未授权。',
   delegatedQuestionUnavailable: '宿主暂不支持子会话的此类问答；本次未提交答案。',
+  permissionPolicyUnavailable: '自动审批规则暂不可用，本次操作未获授权。请在规则恢复后重试。',
 }
 
 export type PermissionCopy = typeof en

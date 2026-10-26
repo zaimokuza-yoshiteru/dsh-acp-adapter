@@ -153,6 +153,10 @@ function projectActivityRow(
     id: key,
     kind: nativeTool ? 'tool-call' : 'acp-inline-activity',
     data: nativeTool ? { root: nativeActivityToolBlock(row), acpActivity: row } : row,
+    // Native step groups cannot classify an unknown external tool outcome and
+    // otherwise label it "Analysis completed". Keep its existing warning in
+    // the turn's process disclosure, outside those completed step groups.
+    ...(row.kind === 'tool' && row.status === 'unfinished' ? { groupTree: 'process' as const } : {}),
   } as ChatConversationViewNode
 }
 

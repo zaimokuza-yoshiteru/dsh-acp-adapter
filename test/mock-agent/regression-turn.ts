@@ -105,6 +105,18 @@ export async function regressionTurn(
     return waitForFileGate(directory, 'release-steering-ack', 'steering acknowledgement', signal)
   }
   try {
+    if (prompt.includes('E2E_UNFINISHED_TOOL_STOP')) {
+      sendUpdate(session.id, {
+        sessionUpdate: 'tool_call',
+        toolCallId: 'unfinished-fixture',
+        title: 'Scripted tool without terminal update',
+        kind: 'execute',
+        status: 'in_progress',
+      })
+      say('E2E_UNFINISHED_STOP_RUNNING')
+      await cancelled
+      return respond(msg.id, { stopReason: 'cancelled' })
+    }
     if (prompt.includes('E2E_UNFINISHED_TOOL_FIRST')) {
       sendUpdate(session.id, {
         sessionUpdate: 'tool_call',

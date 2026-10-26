@@ -3,6 +3,7 @@ import { agentEvents, type Agent } from '@deepseek-ai/dsh-agent'
 import type { ToolCallId } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-user-approval'
 import type { AcpNativeApprovalService } from '../../domain/policy/permissions.ts'
+import type {} from './external-permission-policy.ts'
 
 /**
  * ACP owns these requests and their durable audit. Reuse the public native
@@ -11,6 +12,15 @@ import type { AcpNativeApprovalService } from '../../domain/policy/permissions.t
  */
 export function externalAgentApproval(ctx: Context, getAgent: () => Agent | undefined): AcpNativeApprovalService {
   return {
+    async evaluateExternal(request) {
+      const agent = getAgent()
+      if (agent === undefined || request.agent !== agent || agent.status !== 'running' || request.signal?.aborted)
+        return 'cancelled'
+      const policy = ctx.get('acpPermissionPolicy')
+      if (policy === undefined) return 'not-applicable'
+      const outcome = await policy.evaluate({ ...request, agent })
+      return request.signal?.aborted || getAgent() !== agent || agent.status !== 'running' ? 'cancelled' : outcome
+    },
     async request(request) {
       const agent = getAgent()
       if (agent === undefined || request.agent !== agent || agent.status !== 'running') return 'unavailable'

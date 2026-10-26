@@ -2987,10 +2987,13 @@ export class AcpProfileAdapter extends LlmAdapter {
             if (enriched !== activity) scheduleActivity(enriched)
           }
         })
-        const settleRunningActivities = (status: 'completed' | 'failed' | 'cancelled' | 'unfinished'): void => {
+        const settleRunningActivities = (): void => {
+          // A prompt terminal (including cancellation) does not establish that
+          // an Agent-owned tool stopped. Preserve reported tool terminals and
+          // leave missing results explicit instead of inferring execution exit.
           for (const activity of currentActivities.values()) {
             if (activity.kind !== 'plan' && !isTerminalActivityStatus(activity.status))
-              scheduleActivity({ ...activity, status })
+              scheduleActivity({ ...activity, status: 'unfinished' })
           }
         }
         let wake: (() => void) | undefined
@@ -3565,12 +3568,10 @@ export class AcpProfileAdapter extends LlmAdapter {
             options.signal?.aborted !== true &&
             !promptSignal.aborted &&
             !interruptedForInput
-          const unresolvedActivityStatus =
-            response.stopReason === 'cancelled' || options.signal?.aborted === true ? 'cancelled' : 'unfinished'
           try {
             await contentDeliveryTail
             finishExternalDelegations()
-            settleRunningActivities(unresolvedActivityStatus)
+            settleRunningActivities()
             await activityWriteTail
             // Keep the native turn open until the known terminal response has
             // been durably settled. A local write failure waits on its retained
@@ -3886,7 +3887,7 @@ export class AcpProfileAdapter extends LlmAdapter {
           } catch (error: unknown) {
             hostInstructionOutcome = 'failed'
             updateDeliveredHostInstructions()
-            settleRunningActivities(unresolvedActivityStatus)
+            settleRunningActivities()
             await activityWriteTail
             if (changedWorkingDirectory !== undefined && error instanceof LlmError) {
               failure = error
@@ -3968,7 +3969,7 @@ export class AcpProfileAdapter extends LlmAdapter {
                 await contentDeliveryTail.catch(() => undefined)
                 await writeUnsupportedChunkAudit()
                 finishExternalDelegations()
-                settleRunningActivities(options.signal?.aborted === true ? 'cancelled' : 'unfinished')
+                settleRunningActivities()
                 await activityWriteTail
                 retainHealthyRuntimeAfterNotDispatched = true
                 failure = new LlmError(
@@ -4010,7 +4011,7 @@ export class AcpProfileAdapter extends LlmAdapter {
           await contentDeliveryTail.catch(() => undefined)
           await writeUnsupportedChunkAudit()
           finishExternalDelegations()
-          settleRunningActivities(options.signal?.aborted === true ? 'cancelled' : 'unfinished')
+          settleRunningActivities()
           await activityWriteTail
           // `auth_required` is a definitive JSON-RPC rejection, not an
           // ambiguous transport loss: the Agent confirmed that it did not run
@@ -4691,6 +4692,7 @@ export class AcpProfileAdapter extends LlmAdapter {
         ...(binding.userQuestions === undefined ? {} : { userQuestions: binding.userQuestions }),
         ...(binding.permissionQuestions === undefined ? {} : { permissionQuestions: binding.permissionQuestions }),
         ...(binding.approval === undefined ? {} : { approval: binding.approval }),
+        ...(runtime === undefined ? {} : { permissionProfile: runtime }),
         ...(runtime === 'antigravity' ? { nativeQuestionProfile: 'antigravity' as const } : {}),
         getAgent: binding.getAgent,
         ...(binding.locale === undefined ? {} : { locale: binding.locale }),
