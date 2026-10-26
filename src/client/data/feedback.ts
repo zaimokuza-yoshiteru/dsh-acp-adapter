@@ -42,7 +42,7 @@ export class AcpUiFeedback {
   }
 }
 
-/** Follow only the adapter's stable child-question limitation event. */
+/** Follow only the adapter's stable permission/question failure markers. */
 export function followAcpQuestionLimitations(
   subscribe: (listener: (sessionId: string, message: string) => void) => () => void,
   feedback: AcpUiFeedback,
@@ -50,9 +50,10 @@ export function followAcpQuestionLimitations(
 ): () => void {
   // api-session/error is a string channel. Recognize only the exact terminal
   // marker emitted by our Host callback; generic Agent errors stay native.
-  const suffix = ' (ACP_DELEGATED_QUESTION_UNAVAILABLE)'
+  const suffixes = [' (ACP_DELEGATED_QUESTION_UNAVAILABLE)', ' (ACP_PERMISSION_POLICY_UNAVAILABLE)']
   return subscribe((sessionId, error) => {
-    if (sessionId === '' || !error.endsWith(suffix)) return
+    const suffix = suffixes.find((value) => error.endsWith(value))
+    if (sessionId === '' || suffix === undefined) return
     const message = error.slice(0, -suffix.length).trim()
     if (message === '') return
     feedback.reportQuestionLimitation(message, { id: sessionId, title: titleOf(sessionId) })

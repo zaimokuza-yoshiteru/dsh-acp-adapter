@@ -292,13 +292,13 @@ export interface AcpPermissionDecidedAuditData {
   /** Exact option kind selected, without collapsing allow_once/allow_always. */
   readonly selectedOptionKind?: PermissionOption['kind']
   /** Which answerer produced the decision; the first two values are legacy. */
-  readonly decisionVia?: 'acp-ui' | 'native-fallback' | 'native-question' | 'native-approval'
+  readonly decisionVia?: 'acp-ui' | 'native-fallback' | 'native-question' | 'native-approval' | 'external-policy'
   readonly presentation?: AcpPermissionPresentation
   /**
    * Current vocabulary includes `cancelled`, `question-service-unavailable`,
    * `agent-unavailable`, `custom-option-unsupported`, `invalid-option-id` and
-   * `question-error`, `delegated-question-unavailable`. Older approval bridge causes remain valid when reading
-   * legacy rows.
+   * `question-error`, `delegated-question-unavailable`, `policy-cancelled`,
+   * `policy-failed`, `policy-deny-unrepresentable`. Older causes remain valid when reading legacy rows.
    */
   readonly note?: string
 }
@@ -354,7 +354,7 @@ export interface PermissionDecidedAuditInit {
   readonly optionId?: string
   readonly approvalOutcome?: AcpApprovalOutcome
   readonly selectedOptionKind?: PermissionOption['kind']
-  readonly decisionVia?: 'acp-ui' | 'native-fallback' | 'native-question' | 'native-approval'
+  readonly decisionVia?: 'acp-ui' | 'native-fallback' | 'native-question' | 'native-approval' | 'external-policy'
   readonly presentation?: AcpPermissionPresentation
   readonly note?: string
 }

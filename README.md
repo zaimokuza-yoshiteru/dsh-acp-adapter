@@ -6,13 +6,13 @@
 
 ## 安装
 
-当前插件版本 [`0.2.1-rc.2.4`](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/tag/v0.2.1-rc.2.4) 兼容 DSH `0.2.1-rc.2`。其他版本见 [Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases)。
+当前插件版本 [`0.2.1-rc.3.1`](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/tag/v0.2.1-rc.3.1) 兼容 DSH `0.2.1-rc.3`。安装前请确认宿主已升级到该版本。其他版本见 [Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases)。
 
 **推荐：** 在 DSH Creator 模式中发送：
 
-> 请安装并启用 ACP 插件：`@zaimokuza/dsh-acp-adapter@0.2.1-rc.2.4`。
+> 请安装并启用 ACP 插件：`@zaimokuza/dsh-acp-adapter@0.2.1-rc.3.1`。
 
-按提示确认安装，新插件默认启用。也可打开 **插件 → 添加插件**，粘贴 `@zaimokuza/dsh-acp-adapter@0.2.1-rc.2.4`，安装后点 **立即启用**。
+按提示确认安装，新插件默认启用。也可打开 **插件 → 添加插件**，粘贴 `@zaimokuza/dsh-acp-adapter@0.2.1-rc.3.1`，安装后点 **立即启用**。
 
 <details>
 <summary>其他安装方式：命令行、Git 与压缩包</summary>
@@ -23,10 +23,10 @@
 
 ```bash
 # Desktop
-dsh plugin --profile desktop add @zaimokuza/dsh-acp-adapter@0.2.1-rc.2.4
+dsh plugin --profile desktop add @zaimokuza/dsh-acp-adapter@0.2.1-rc.3.1
 
 # Web
-npx @deepseek-ai/dsh@0.2.1-rc.2 plugin --profile web add @zaimokuza/dsh-acp-adapter@0.2.1-rc.2.4
+npx @deepseek-ai/dsh@0.2.1-rc.3 plugin --profile web add @zaimokuza/dsh-acp-adapter@0.2.1-rc.3.1
 ```
 
 Git 与压缩包安装示例：
@@ -35,8 +35,8 @@ Git 与压缩包安装示例：
 
 | 来源              | 示例                                                                                                                                                   |
 | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Git               | `git+https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter.git#v0.2.1-rc.2.4`                                                                         |
-| 预构建插件包 .tgz | [下载 0.2.1-rc.2.4](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/download/v0.2.1-rc.2.4/zaimokuza-dsh-acp-adapter-0.2.1-rc.2.4.tgz) |
+| Git               | `git+https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter.git#v0.2.1-rc.3.1`                                                                         |
+| 预构建插件包 .tgz | [下载 0.2.1-rc.3.1](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/download/v0.2.1-rc.3.1/zaimokuza-dsh-acp-adapter-0.2.1-rc.3.1.tgz) |
 
 此包包含编译产物，与 npm 发布包一致。GitHub 自动生成的 Source code ZIP/TAR.GZ 是源码归档，不是构建后的插件包；未缓存的依赖仍需联网安装。
 
@@ -60,7 +60,7 @@ Git 与压缩包安装示例：
 
 > CodeBuddy CLI 与 WorkBuddy 桌面端使用同一账号积分，无需分别订阅；通过 CodeBuddy CLI 接入 DSH。详见 [CodeBuddy 账号与订阅说明](https://www.codebuddy.cn/docs/ide/Account/pricing)及 [ACP 命令参考](https://www.codebuddy.cn/docs/cli/cli-reference)。
 
-测试范围与限制见 [E2E 验证说明](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/v0.2.1-rc.2.4/test/e2e/README.md)。
+测试范围与限制见 [E2E 验证说明](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/v0.2.1-rc.3.1/test/e2e/README.md)。
 
 ## 功能预览
 
@@ -77,7 +77,7 @@ Git 与压缩包安装示例：
 
 </details>
 
-**Auto** 可自动确认当前会话中 Agent 调用 DSH 工具的申请，不改变 DSH 的沙箱与工具授权。Devin 发出的授权请求仍需按原始选项确认。**Ask** 在 Agent 请求审批时显示原生审批卡。Agent 自带工具仍由 Agent 控制。**Stop** 停止当前轮次；按 Enter 可排队输入，支持的 Agent 会在同一 Agent 会话继续。开启 DSH 的实验性 Agent Teams 后，可在主会话查看成员进度并处理审批。
+**Auto** 可自动确认当前会话中 Agent 调用 DSH 工具的申请，不改变 DSH 的沙箱与工具授权。Devin 发出的授权请求仍需按原始选项确认。**Ask** 在 Agent 请求审批时显示原生审批卡。Agent 自带工具仍由 Agent 控制。**Stop** 取消当前轮次；Agent 自带工具是否停止仍由 Agent 管理，未报告结果的工具保留未完成状态。按 Enter 可排队输入，支持的 Agent 会在同一 Agent 会话继续。开启 DSH 的实验性 Agent Teams 后，可在主会话查看成员进度并处理审批。
 
 ## 排障与反馈
 
@@ -90,4 +90,4 @@ Git 与压缩包安装示例：
 
 在 **ACP 诊断**中可导出安全摘要 JSON；其中不含消息正文、命令、路径、原始会话 ID 或 ACP 凭据。DSH 原生会话日志 ZIP 可能含提示词、工具参数、文件路径和附件；分享前请检查并移除敏感信息。
 
-需要求助时，向 [Issue](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/issues) 附上错误编号、DSH/插件版本和已脱敏的日志片段。技术边界见[原生复用说明](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/v0.2.1-rc.2.4/docs/native-reuse.md)。
+需要求助时，向 [Issue](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/issues) 附上错误编号、DSH/插件版本和已脱敏的日志片段。技术边界见[原生复用说明](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/v0.2.1-rc.3.1/docs/native-reuse.md)。

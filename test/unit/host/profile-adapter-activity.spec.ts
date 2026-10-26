@@ -812,7 +812,7 @@ describe('provider activity bridge', () => {
     }
   })
 
-  it.each(['end_turn', 'refusal', 'max_tokens', 'max_turn_requests'] as const)(
+  it.each(['end_turn', 'refusal', 'max_tokens', 'max_turn_requests', 'cancelled'] as const)(
     'keeps a tool without a reported terminal state unfinished after %s',
     async (stopReason) => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-unfinished-tool-'))
@@ -870,6 +870,76 @@ describe('provider activity bridge', () => {
       expect(promptCount).toBe(1)
       expect(runtimeCount).toBe(1)
       await adapter.close()
+    },
+  )
+
+  it.each(['cancelled', 'transport-error'] as const)(
+    'does not infer an executing tool stopped from user Stop followed by %s',
+    async (outcome) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-stop-unconfirmed-tool-'))
+      roots.push(root)
+      const sidecar = testSidecar(root)
+      const sessionId = `stop-unconfirmed-${outcome}`
+      const message = user('run the owned command')
+      const controller = new AbortController()
+      const started = Promise.withResolvers<void>()
+      const runtimeFactory = (): AcpProfileRuntime => ({
+        acpSessionId: `agent-${sessionId}`,
+        start: async () => undefined,
+        close: async () => undefined,
+        prompt: async (_content, onUpdate, signal) => {
+          for (const [toolCallId, status] of [
+            ['still-running', 'in_progress'],
+            ['already-finished', 'completed'],
+          ] as const)
+            onUpdate({
+              sessionId: `agent-${sessionId}`,
+              update: {
+                sessionUpdate: 'tool_call',
+                toolCallId,
+                kind: 'execute',
+                title: toolCallId,
+                status,
+                rawInput: { command: 'owned fixture command' },
+              },
+            } as never)
+          started.resolve()
+          if (!signal?.aborted)
+            await new Promise<void>((resolve) => signal?.addEventListener('abort', () => resolve(), { once: true }))
+          if (outcome === 'transport-error') throw new Error('fixture transport closed without a tool terminal')
+          return { stopReason: 'cancelled' } as never
+        },
+      })
+      const adapter = new AcpProfileAdapter(
+        'stop-unconfirmed',
+        profile,
+        seam(),
+        () => session(message),
+        ledgerFor(sidecar),
+        undefined,
+        runtimeFactory,
+        sidecar,
+      )
+      try {
+        const pending = drain(adapter.stream({ ...request(sessionId, message), signal: controller.signal }))
+        const settled = pending.then(
+          () => undefined,
+          (error: unknown) => error,
+        )
+        await started.promise
+        controller.abort(new DOMException('Stopped', 'AbortError'))
+        await settled
+        const activities = await sidecar.activitySnapshot(sessionId as never)
+        expect(activities.find((row) => row.activityId.endsWith(':tool:still-running'))).toMatchObject({
+          status: 'unfinished',
+          presentation: 'still-running',
+        })
+        expect(activities.find((row) => row.activityId.endsWith(':tool:already-finished'))).toMatchObject({
+          status: 'completed',
+        })
+      } finally {
+        await adapter.close()
+      }
     },
   )
 

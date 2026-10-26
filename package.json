@@ -1,6 +1,6 @@
 {
   "name": "@zaimokuza/dsh-acp-adapter",
-  "version": "0.2.1-rc.2.4",
+  "version": "0.2.1-rc.3.1",
   "description": "Use AI agents from the DSH session UI.",
   "icon": "./icon.svg",
   "keywords": [
@@ -46,7 +46,11 @@
       "default": "./lib/typert.remote-client.js"
     },
     "./package.json": "./package.json",
-    "./locale/*.json": "./locale/*.json"
+    "./locale/*.json": "./locale/*.json",
+    "./permission-policy": {
+      "types": "./lib/types/host/composition/external-permission-policy.d.ts",
+      "default": "./lib/host/composition/external-permission-policy.js"
+    }
   },
   "dsh": {
     "bundle": {
@@ -406,7 +410,9 @@
     "README.md",
     "README.en.md",
     "LICENSE",
-    "locale/*.json"
+    "locale/*.json",
+    "docs/permission-policy.md",
+    "docs/permission-policy.en.md"
   ],
   "packageManager": "pnpm@10.7.0"
 }

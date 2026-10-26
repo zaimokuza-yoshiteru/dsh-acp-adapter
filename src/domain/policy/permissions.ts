@@ -2,6 +2,7 @@
 import { randomUUID } from 'node:crypto'
 import { Buffer } from 'node:buffer'
 import type * as acp from '@agentclientprotocol/sdk'
+import type { AcpExternalPolicyDecision, AcpExternalPolicyRequest } from '../../contract/permission-policy.ts'
 import { isAntigravityInteractionCall } from './antigravity-question.ts'
 import type {
   AcpNativeQuestionUnavailable,
@@ -49,7 +50,12 @@ export interface AcpPermissionAuditChannel {
   append(record: AcpPermissionAuditRecord): Promise<void>
 }
 export type AcpNativeQuestionProfile = 'antigravity'
+/** The Host boundary validates the live Agent before entering the public policy service. */
+export interface AcpExternalPermissionPolicyRequest extends Omit<AcpExternalPolicyRequest, 'agent'> {
+  readonly agent: unknown
+}
 export interface AcpNativeApprovalService {
+  evaluateExternal?(request: AcpExternalPermissionPolicyRequest): Promise<AcpExternalPolicyDecision>
   request(req: {
     readonly agent: unknown
     readonly toolName: string
@@ -68,6 +74,8 @@ export interface AcpNativePermissionBridgeDeps {
   readonly permissionQuestions?: AcpPermissionQuestionService
   readonly approval?: AcpNativeApprovalService
   readonly nativeQuestionProfile?: AcpNativeQuestionProfile
+  /** Resolved by the adapter runtime, never from Agent-supplied metadata. */
+  readonly permissionProfile?: string
   readonly getAgent: () => unknown
   readonly locale?: string
   readonly log?: (message: string) => void
@@ -342,8 +350,25 @@ export function createAcpNativePermissionHandler(
   const copy = permissionCopy(deps.locale)
   return async (params, signal) => {
     const id = requestId()
+    const nativeInteractionCall =
+      deps.nativeQuestionProfile === 'antigravity' && isAntigravityInteractionCall(params.toolCall)
+    const useExternalPolicy =
+      !nativeInteractionCall &&
+      deps.permissionProfile !== 'devin' &&
+      deps.approval?.evaluateExternal !== undefined &&
+      binaryApprovalOptions(params.options) === undefined
+    let agent = useExternalPolicy ? deps.getAgent() : undefined
     try {
       assertBounds(params.toolCall.toolCallId, params.options)
+      if (useExternalPolicy) {
+        // Keep the policy facts, audit and eventual option mapping on the same
+        // snapshot, including while the first durable append is pending.
+        const team = (params.toolCall as { readonly [dshTeamPresentation]?: DshTeamPermissionPresentation })[
+          dshTeamPresentation
+        ]
+        params = structuredClone(params)
+        if (team !== undefined) params.toolCall = withDshTeamPermissionPresentation(params.toolCall, team)
+      }
     } catch (error: unknown) {
       deps.log?.(`dsh-acp native permission rejected by bounds: ${errorMessage(error)}`)
       return cancelled()
@@ -377,7 +402,7 @@ export function createAcpNativePermissionHandler(
         readonly selectedOptionKind?: acp.PermissionOption['kind']
         readonly note?: string
       },
-      decisionVia: 'native-question' | 'native-approval' = 'native-question',
+      decisionVia: 'native-question' | 'native-approval' | 'external-policy' = 'native-question',
     ): Promise<acp.RequestPermissionResponse> => {
       const ok = await append(
         createPermissionDecidedAudit({
@@ -389,19 +414,62 @@ export function createAcpNativePermissionHandler(
           ...(presentation === undefined ? {} : { presentation }),
         }),
       )
-      if (!ok || init.outcome === 'cancelled') return cancelled()
+      if (!ok || init.outcome === 'cancelled' || (useExternalPolicy && (signal?.aborted || deps.getAgent() !== agent)))
+        return cancelled()
       return { outcome: { outcome: 'selected', optionId: init.optionId! } }
     }
     if (signal !== undefined && signal.aborted) return decide({ outcome: 'cancelled', note: 'cancelled' })
-    const agent = deps.getAgent()
-    if (agent === undefined) return decide({ outcome: 'cancelled', note: 'agent-unavailable' })
+    if (!useExternalPolicy) agent = deps.getAgent()
+    if (agent === undefined || (useExternalPolicy && deps.getAgent() !== agent))
+      return decide({ outcome: 'cancelled', note: 'agent-unavailable' })
     const binary = binaryApprovalOptions(params.options)
-    const nativeInteractionCall =
-      deps.nativeQuestionProfile === 'antigravity' && isAntigravityInteractionCall(params.toolCall)
     const nativeInteractionQuestion =
       nativeInteractionCall &&
       params.options.length > 0 &&
       params.options.every((option) => option.kind === 'allow_once')
+
+    if (useExternalPolicy) {
+      let outcome: AcpExternalPolicyDecision
+      try {
+        outcome = await deps.approval!.evaluateExternal!({
+          agent,
+          requestId: id,
+          profile: deps.permissionProfile ?? 'generic',
+          params,
+          ...(signal === undefined ? {} : { signal }),
+        })
+      } catch {
+        outcome = 'failed'
+      }
+      // Defensive normalization also covers non-TypeScript policy integrations.
+      if (!['allow-once', 'deny-once', 'not-applicable', 'cancelled', 'failed'].includes(outcome)) outcome = 'failed'
+      if (signal?.aborted || deps.getAgent() !== agent) outcome = 'cancelled'
+      if (outcome === 'failed') {
+        try {
+          await deps.onUnavailable?.({
+            code: 'ACP_PERMISSION_POLICY_UNAVAILABLE',
+            message: copy.permissionPolicyUnavailable,
+          })
+        } catch {
+          deps.log?.('dsh-acp permission policy failure reporting unavailable')
+        }
+      }
+      if (outcome === 'cancelled' || outcome === 'failed')
+        return decide({ outcome: 'cancelled', note: `policy-${outcome}` }, 'external-policy')
+      if (outcome === 'allow-once' || outcome === 'deny-once') {
+        const kind = outcome === 'allow-once' ? 'allow_once' : 'reject_once'
+        const options = params.options.filter((option) => option.kind === kind)
+        if (options.length === 1)
+          return decide(
+            { outcome: 'selected', optionId: options[0]!.optionId, selectedOptionKind: kind },
+            'external-policy',
+          )
+        // An ambiguous allow needs the full human choice; an unrepresentable
+        // denial must never offer a later human grant as a fallback.
+        if (outcome === 'deny-once')
+          return decide({ outcome: 'cancelled', note: 'policy-deny-unrepresentable' }, 'external-policy')
+      }
+    }
 
     if (!nativeInteractionQuestion && deps.approval !== undefined && binary !== undefined) {
       try {

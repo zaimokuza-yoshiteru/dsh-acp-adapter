@@ -1208,15 +1208,65 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
         const runningSeat = await owner.evaluate((element) =>
           element.closest('[data-chat-node-key]')?.getAttribute('data-chat-node-key'),
         )
+        const runningCallId = required(await owner.locator('[data-chat-call-id]').getAttribute('data-chat-call-id'))
         const runningRow = required(await toggle.elementHandle())
         const runningProcess = required(await runningGroup.elementHandle())
         if (variant === 'reasoning-cancel') {
           await page.getByRole('button', { name: 'Stop generating', exact: true }).click()
         } else writeFileSync(gate, 'finish')
-        await settled
-        if (variant !== 'reasoning-cancel') {
-          await page.getByText(`E2E_RICH_MIXED_DONE ${variant}`, { exact: true }).waitFor()
+        const sessionId = await settled
+        if (variant === 'reasoning-cancel') {
+          await runningRow.dispose()
+          await runningProcess.dispose()
+          // This fixture never reports a terminal tool update. Keep the same
+          // activity and input in the unfinished disclosure, outside step groups
+          // whose native completion label would imply a reported tool result.
+          const assertUnfinished = async () => {
+            await expandProcess()
+            const row = page.locator('[data-chat-flow-kind="acp-inline-activity"]').filter({
+              has: page.getByText('Export mixed report', { exact: true }),
+            })
+            await row.getByText('Tool did not report a result', { exact: true }).waitFor()
+            expect(await row.count()).toBe(1)
+            expect(await row.getAttribute('data-chat-node-key')).toBe(runningSeat)
+            expect(await row.evaluate((element) => element.closest('[data-step-process]') === null)).toBe(true)
+            expect(await owner.count()).toBe(0)
+            expect(await page.locator('[data-chat-call-id*="rich-mixed-reasoning-cancel"]').count()).toBe(0)
+            const snapshot = await (host.ctx.get('dshAcp') as AcpRemoteService).activitySnapshot(sessionId)
+            const activities = snapshot.activities.filter((activity) =>
+              activity.activityId.endsWith(':tool:rich-mixed-reasoning-cancel'),
+            )
+            expect(activities).toHaveLength(1)
+            const activity = required(activities[0])
+            expect(runningCallId.endsWith(`:${activity.activityId}`)).toBe(true)
+            expect(activity).toMatchObject({
+              kind: 'tool',
+              status: 'unfinished',
+              presentation: 'Export mixed report',
+            })
+            expect(JSON.parse(required(activity.rawDetail))).toEqual({
+              toolKind: 'other',
+              rawInput: { report: 'mixed' },
+              content: [],
+            })
+            const disclosure = row.locator('[data-disclosure-row="true"]')
+            if ((await disclosure.getAttribute('aria-expanded')) === 'false') await disclosure.click()
+            await expect.poll(() => disclosure.getAttribute('aria-expanded')).toBe('true')
+            const details = row.getByRole('tree')
+            await details.waitFor({ state: 'visible' })
+            const text = await details.innerText()
+            expect(text).toContain('rawInput')
+            expect(text).toContain('report')
+            expect(text).toContain('mixed')
+            expect(await page.getByText(`E2E_RICH_MIXED_DONE ${variant}`, { exact: true }).count()).toBe(0)
+          }
+          expect(readFileSync(agentLog, 'utf8')).toContain('rich-mixed reasoning-cancel cancelled')
+          await assertUnfinished()
+          await page.reload({ waitUntil: 'load' })
+          await assertUnfinished()
+          return
         }
+        await page.getByText(`E2E_RICH_MIXED_DONE ${variant}`, { exact: true }).waitFor()
         // Same native tree and disclosure survive the running -> completed update.
         await expect.poll(() => toggle.getAttribute('aria-expanded')).toBe('true')
         expect(await runningRow.evaluate((element) => element.isConnected)).toBe(true)
@@ -1228,11 +1278,6 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
         ).toBe(runningSeat)
         await runningRow.dispose()
         await runningProcess.dispose()
-        if (variant === 'reasoning-cancel') {
-          expect(readFileSync(agentLog, 'utf8')).toContain('rich-mixed reasoning-cancel cancelled')
-          expect(await page.getByText(`E2E_RICH_MIXED_DONE ${variant}`, { exact: true }).count()).toBe(0)
-          return
-        }
         const assertContent = async () => {
           await expect.poll(() => owner.innerText()).toContain('E2E_MIXED_REPORT')
           const text = await owner.innerText()
