@@ -4,6 +4,20 @@
 
 User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for publication dates, exact installation instructions, and checksums. Historical entries were reconstructed from tag diffs; npm packages were not republished.
 
+## 0.2.1-rc.3.2
+
+### 中文
+
+- 修复与 ds-bot 共存时会话头部反复注册导致界面卡住的问题；保留原生导航、视图去重和双方插件热启停能力。
+- 新建 ACP 会话等待首次绑定时，不再误显示“正在重新连接活动记录…”；首次读取失败、后续断线和稳定错误仍分别保留提示与恢复操作。
+- 继续兼容 DSH `0.2.1-rc.3`，无需新增用户配置。
+
+### English
+
+- Fix repeated conversation-header registration that could freeze the UI when running alongside ds-bot. Preserve native navigation, unique view tabs and hot enable/disable behavior for both plugins.
+- Keep the activity area quiet while a new ACP session establishes its initial binding instead of showing “Reconnecting to activity history…”. Retain distinct feedback and recovery controls for initial read failures, later disconnections and stable errors.
+- Continue to support DSH `0.2.1-rc.3` without additional user configuration.
+
 ## 0.2.1-rc.3.1
 
 ### 中文
