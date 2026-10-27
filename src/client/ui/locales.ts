@@ -339,6 +339,7 @@ const zh = {
   auditForkOlderBoundary: '分叉点不是最新语义边界',
   auditForkCandidateUnavailable: '缺少可验证的分叉信息',
   'activity.unavailable': 'Agent 活动暂时不可用。',
+  'activity.initialReadRetrying': '暂时无法读取活动记录，正在重试…',
   'activity.reconnecting': '正在重新连接活动记录…',
   'activity.retry': '重试',
   'activity.detailTooLarge': '内容过大，未显示完整详情；审计摘要不能用于比较完整文件。',
@@ -766,6 +767,7 @@ const en: Record<AcpLocaleKey, string> = {
   auditForkOlderBoundary: 'Fork point is not the latest semantic boundary',
   auditForkCandidateUnavailable: 'Verifiable fork information unavailable',
   'activity.unavailable': 'Agent activity is temporarily unavailable.',
+  'activity.initialReadRetrying': 'Activity history could not be read. Retrying…',
   'activity.reconnecting': 'Reconnecting to activity history…',
   'activity.retry': 'Retry',
   'activity.detailTooLarge':

@@ -33,6 +33,8 @@ import {
 } from './AcpActivityNode.ts'
 import type { ActivityNodeProps, ActivityPresentationRow } from './AcpActivityNode.ts'
 import { mountNativeEntry, type EntryProps } from './native-tool-renderer.ts'
+import { nativeHeaderViewRegistration, ownsNativeHeaderViews } from './native-header-views.ts'
+export { uniqueViewTabs } from './native-header-views.ts'
 import { ActivityAnchorSubscriptions } from './activity-anchor-subscriptions.ts'
 import {
   activityData,
@@ -483,6 +485,7 @@ function composeSlot(
   name: string,
   select: (entry: StoredEntry) => boolean,
   wrap: (Native: ComponentType<EntryProps>, props: EntryProps) => ReactNode,
+  registration?: (entry: StoredEntry) => Record<string, unknown>,
 ): void {
   ctx.slots.inject(name as never, () => {
     let current: StoredEntry | undefined
@@ -498,7 +501,11 @@ function composeSlot(
       oldRelease?.()
       if (next !== undefined)
         release = mountNativeEntry(ctx, next, name, {
-          registration: { priority: (next.options.priority ?? 0) - 1, registrant: 'acp-chat-normalization' },
+          registration: {
+            priority: (next.options.priority ?? 0) - 1,
+            registrant: 'acp-chat-normalization',
+            ...registration?.(next),
+          },
           wrap,
         })
     }
@@ -509,12 +516,6 @@ function composeSlot(
       release?.()
     }
   })
-}
-
-/** The conversation shell lists raw view registrations; slot rendering selects winners by id. */
-export function uniqueViewTabs<T extends { id: string }>(tabs: readonly T[]): readonly T[] {
-  const unique = tabs.filter((tab, index) => tabs.findIndex((value) => value.id === tab.id) === index)
-  return unique.length === tabs.length ? tabs : unique
 }
 
 export function installAcpAssistantStream(ctx: Context, dependencies: Dependencies): void {
@@ -540,20 +541,9 @@ export function installAcpAssistantStream(ctx: Context, dependencies: Dependenci
   composeSlot(
     ctx,
     'conversation.session.header',
-    () => true,
-    (Native, props) => {
-      const useViews = props.useConversationViews as (
-        selector: (tabs: readonly { id: string }[]) => unknown,
-        equal?: (left: unknown, right: unknown) => boolean,
-      ) => unknown
-      return h(Native, {
-        ...props,
-        useConversationViews: (
-          selector: (tabs: readonly { id: string }[]) => unknown,
-          equal?: (left: unknown, right: unknown) => boolean,
-        ) => useViews((tabs) => selector(uniqueViewTabs(tabs)), equal),
-      })
-    },
+    ownsNativeHeaderViews,
+    (Native, props) => h(Native, props),
+    nativeHeaderViewRegistration,
   )
   // Native tool nodes still use the native Tool tree. Only their sidecar detail
   // loader/inspector and external-child navigation belong to ACP.

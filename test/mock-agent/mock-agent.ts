@@ -11,6 +11,7 @@ import type {
 // Deterministic ACP protocol fixture. Scenarios are selected by MOCK_SCENARIO
 // (default happy); regression delegates product flows to regression-turn.ts.
 // Optional test inputs: MOCK_LOG, MOCK_STEP_DELAY_MS, MOCK_SLOW_INIT_MS, MOCK_SESSION_NEW_DELAY_MS,
+// MOCK_SESSION_NEW_GATE_DIR + MOCK_SESSION_NEW_GATE_CWD (only gate the target workspace, never catalog probes),
 // MOCK_ADVERTISE_RESUME, MOCK_ADVERTISE_FORK, MOCK_EMIT_NATIVE_SUBAGENT,
 // MOCK_NEVER_METHODS, MOCK_MODEL_OPTIONS, and MOCK_MODEL_THOUGHT_LEVELS.
 import readline from 'node:readline'
@@ -448,6 +449,14 @@ function sessionMcpServers(msg: MockRequest): NonNullable<MockSession['mcpServer
 }
 
 async function handleSessionNew(msg: MockRequest) {
+  const gateDirectory = process.env.MOCK_SESSION_NEW_GATE_DIR
+  const gateCwd = process.env.MOCK_SESSION_NEW_GATE_CWD
+  if (gateDirectory !== undefined && gateCwd !== undefined && msg.params?.cwd === gateCwd) {
+    fs.writeFileSync(join(gateDirectory, 'waiting'), String(process.pid))
+    log('session/new: waiting for the workspace binding gate')
+    while (!fs.existsSync(join(gateDirectory, 'continue'))) await new Promise((resolve) => setTimeout(resolve, 25))
+    log('session/new: workspace binding gate released')
+  }
   const delay = intEnv('MOCK_SESSION_NEW_DELAY_MS', 0)
   if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay))
   const session = createSession(`mock-session-${++state.sessionSeq}`, msg.params?.cwd ?? '/mock/cwd')

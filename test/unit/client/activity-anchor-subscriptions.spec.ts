@@ -33,6 +33,7 @@ function fakeHub() {
         canRetry: () => false,
         retrying: () => false,
         loading: () => false,
+        feedback: () => 'quiet' as const,
         retry: () => {},
         release: () => {
           if (released) return

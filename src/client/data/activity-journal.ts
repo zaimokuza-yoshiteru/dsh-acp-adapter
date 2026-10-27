@@ -185,6 +185,28 @@ type HubEntry = {
   initialLoading: boolean
 }
 
+export type ActivityJournalFeedback = 'quiet' | 'initial-read-retrying' | 'reconnecting' | 'unavailable'
+
+/** Only a recognized first-binding wait is silent; other read failures remain visible. */
+export function activityJournalFeedback(input: {
+  readonly ready: boolean
+  readonly error: unknown
+  readonly stableFailure: boolean
+  readonly retrying: boolean
+}): ActivityJournalFeedback {
+  if (input.error === undefined || input.retrying) return 'quiet'
+  if (input.stableFailure) return 'unavailable'
+  if (
+    !input.ready &&
+    typeof input.error === 'object' &&
+    input.error !== null &&
+    'code' in input.error &&
+    input.error.code === 'dsh-acp/activity-binding-pending'
+  )
+    return 'quiet'
+  return input.ready ? 'reconnecting' : 'initial-read-retrying'
+}
+
 const INITIAL_OPEN_RETRY_BASE_MS = 100
 const INITIAL_OPEN_RETRY_MAX_MS = 8_000
 
@@ -256,6 +278,7 @@ export class AcpActivityJournalHub {
     readonly canRetry: () => boolean
     readonly retrying: () => boolean
     readonly loading: () => boolean
+    readonly feedback: () => ActivityJournalFeedback
     readonly retry: () => void
     readonly release: () => void
   } {
@@ -275,6 +298,13 @@ export class AcpActivityJournalHub {
       canRetry: () => entry!.retryExhausted,
       retrying: () => entry!.retrying,
       loading: () => entry!.initialLoading,
+      feedback: () =>
+        activityJournalFeedback({
+          ready: entry!.ready,
+          error: entry!.error,
+          stableFailure: entry!.retryExhausted,
+          retrying: entry!.retrying,
+        }),
       retry: () => {
         if (
           this.entries.get(sessionId) !== entry ||
