@@ -32,7 +32,7 @@ export {
   createAcpLiveActivityDefinition,
 } from './activity-definitions.ts'
 export type { AcpActivityNodeData } from './activity-definitions.ts'
-import { AcpActivityJournalHub } from '../data/activity-journal.ts'
+import { AcpActivityJournalHub, type ActivityJournalFeedback } from '../data/activity-journal.ts'
 import css from './AcpActivityNode.module.css'
 import { nativeOwner, NativeTerminalOutputNotice, type NativeToolOwner } from './native-tool-renderer.ts'
 import type { AcpLocaleKey } from './locales.ts'
@@ -801,8 +801,7 @@ export function AcpActivityContent({
   useDisclosure,
 }: ActivityNodeProps): ReactNode {
   const [rows, setRows] = useState<readonly ActivityPresentationRow[]>([])
-  const [unavailable, setUnavailable] = useState(false)
-  const [reconnecting, setReconnecting] = useState(false)
+  const [feedback, setFeedback] = useState<ActivityJournalFeedback>('quiet')
   const [canRetry, setCanRetry] = useState(false)
   const [retrying, setRetrying] = useState(false)
   const retryRef = useRef<(() => void) | undefined>(undefined)
@@ -815,11 +814,7 @@ export function AcpActivityContent({
       setRows(next)
       setRetrying(handle.retrying())
       setCanRetry(handle.canRetry())
-      const hasError = handle.error() !== undefined
-      const stableFailure = handle.canRetry()
-      const isRetrying = handle.retrying()
-      setUnavailable(hasError && !handle.loading() && stableFailure)
-      setReconnecting(hasError && !stableFailure && !isRetrying)
+      setFeedback(handle.feedback())
     }
     const ownerSessionId = activityJournalSessionId(data, sessionId)
     handle = journalHub.acquire(ownerSessionId, ownerSessionId, data.promptAnchorMessageId, publish)
@@ -831,7 +826,7 @@ export function AcpActivityContent({
     }
   }, [data.ownerDshSessionId, data.promptAnchorMessageId, sessionId, journalHub])
 
-  if (rows.length === 0 && !unavailable && !reconnecting) return null
+  if (rows.length === 0 && feedback === 'quiet') return null
   return h(
     'section',
     { className: css.flow, 'data-acp-activity': true },
@@ -848,14 +843,14 @@ export function AcpActivityContent({
         ...(onOpenProjectedChild === undefined ? {} : { onOpenProjectedChild }),
       }),
     ),
-    reconnecting
+    feedback === 'reconnecting' || feedback === 'initial-read-retrying'
       ? h(
           'div',
           { className: css.status },
           h(StateDot, { state: 'ongoing' }),
-          h('span', null, t('activity.reconnecting')),
+          h('span', null, t(feedback === 'reconnecting' ? 'activity.reconnecting' : 'activity.initialReadRetrying')),
         )
-      : unavailable
+      : feedback === 'unavailable'
         ? h(
             'div',
             { className: css.unavailable },

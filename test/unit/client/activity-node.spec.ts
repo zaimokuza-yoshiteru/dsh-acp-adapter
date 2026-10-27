@@ -8,7 +8,7 @@ import {
   visibleActivityRows,
 } from '../../../src/client/ui/AcpActivityNode.ts'
 import { createAcpActivityDefinition } from '../../../src/client/ui/activity-definitions.ts'
-import { AcpActivityJournalStore } from '../../../src/client/data/activity-journal.ts'
+import { AcpActivityJournalStore, activityJournalFeedback } from '../../../src/client/data/activity-journal.ts'
 import { AcpActivityJournalHub } from '../../../src/client/data/activity-journal.ts'
 import { acpReplayPayloadOf } from '../../../src/client/data/acp-replay-payload.ts'
 import type { ConversationLocation } from '@deepseek-ai/dsh-client-ui-conversation/client'
@@ -79,6 +79,16 @@ function activityStreamFactory(hooks: { accept?: () => void; dispose?: () => voi
 }
 
 describe('ACP activity conversation node', () => {
+  it('silences only the typed first-binding wait, not a message match or a lost established binding', () => {
+    const pending = Object.assign(new Error('binding is not committed yet'), {
+      code: 'dsh-acp/activity-binding-pending',
+    })
+    const state = { ready: false, stableFailure: false, retrying: false }
+    expect(activityJournalFeedback({ ...state, error: pending })).toBe('quiet')
+    expect(activityJournalFeedback({ ...state, error: new Error(pending.message) })).toBe('initial-read-retrying')
+    expect(activityJournalFeedback({ ...state, ready: true, error: pending })).toBe('reconnecting')
+  })
+
   it.each([
     { kind: 'plan' as const, rawDetail: JSON.stringify([{ content: 'Review changes', status: 'pending' }]) },
     { kind: 'other' as const, rawDetail: JSON.stringify({ detail: 'Agent activity detail' }) },
@@ -1275,6 +1285,7 @@ describe('ACP activity conversation node', () => {
       expect(handle.ready()).toBe(false)
       expect(handle.loading()).toBe(false)
       expect(handle.canRetry()).toBe(true)
+      expect(handle.feedback()).toBe('unavailable')
       expect(notifications).toBeGreaterThan(0)
     } finally {
       handle.release()
@@ -1301,13 +1312,80 @@ describe('ACP activity conversation node', () => {
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(handle.loading()).toBe(true)
     expect((handle.error() as { code?: string } | undefined)?.code).toBe('dsh-acp/activity-binding-pending')
+    expect(handle.feedback()).toBe('quiet')
     for (let attempt = 0; attempt < 50 && starts < 2; attempt += 1)
       await new Promise((resolve) => setTimeout(resolve, 10))
     expect(starts).toBe(2)
     expect(handle.error()).toBeUndefined()
     expect(handle.ready()).toBe(true)
+    expect(handle.feedback()).toBe('quiet')
     handle.release()
     releaseStream?.()
+  })
+
+  it('shows a first-read network failure while automatically retrying and clears it on open', async () => {
+    vi.useFakeTimers()
+    let starts = 0
+    const failure = Object.assign(new Error('activity transport unavailable'), { code: 'gateway/internal' })
+    const remote = {
+      activityFollow: async function* (_sessionId: string, _request: unknown, signal: AbortSignal) {
+        if (++starts === 1) throw failure
+        yield { type: 'opened' as const, cursor: 0, head: 0, activities: [] }
+        await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }))
+      },
+    }
+    const hub = new AcpActivityJournalHub(remote as never, activityStreamFactory() as never)
+    const handle = hub.acquire('dsh-1', 'dsh-1', 'user-1', () => undefined)
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      expect(handle.loading()).toBe(true)
+      expect(handle.ready()).toBe(false)
+      expect(handle.error()).toBe(failure)
+      expect(handle.feedback()).toBe('initial-read-retrying')
+      await vi.advanceTimersByTimeAsync(100)
+      expect(starts).toBe(2)
+      expect(handle.ready()).toBe(true)
+      expect(handle.feedback()).toBe('quiet')
+    } finally {
+      handle.release()
+      vi.useRealTimers()
+    }
+  })
+
+  it('shows a new read failure after manually retrying a stable first-open failure', async () => {
+    vi.useFakeTimers()
+    let starts = 0
+    const failure = Object.assign(new Error('not authorized'), { code: 'dsh-acp/user-rejected' })
+    const remote = {
+      activityFollow: async function* (_sessionId: string, _request: unknown, signal: AbortSignal) {
+        starts++
+        if (starts === 1) throw failure
+        if (starts === 2) throw new Error('activity transport unavailable')
+        yield { type: 'opened' as const, cursor: 0, head: 0, activities: [] }
+        await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }))
+      },
+    }
+    const hub = new AcpActivityJournalHub(remote as never, activityStreamFactory() as never)
+    const handle = hub.acquire('dsh-1', 'dsh-1', 'user-1', () => undefined)
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      expect(handle.feedback()).toBe('unavailable')
+      await vi.advanceTimersByTimeAsync(1_000)
+      expect(starts).toBe(1)
+      handle.retry()
+      expect(handle.retrying()).toBe(true)
+      expect(handle.feedback()).toBe('quiet')
+      await vi.advanceTimersByTimeAsync(0)
+      expect(handle.loading()).toBe(true)
+      expect(handle.feedback()).toBe('initial-read-retrying')
+      await vi.advanceTimersByTimeAsync(100)
+      expect(starts).toBe(3)
+      expect(handle.feedback()).toBe('quiet')
+      expect(handle.ready()).toBe(true)
+    } finally {
+      handle.release()
+      vi.useRealTimers()
+    }
   })
 
   it('keeps waiting for a slow Agent binding beyond thirty seconds while subscribed', async () => {
@@ -1329,10 +1407,14 @@ describe('ACP activity conversation node', () => {
     const hub = new AcpActivityJournalHub(remote as never, activityStreamFactory() as never)
     const handle = hub.acquire('dsh-1', 'dsh-1', 'user-1', () => undefined)
     try {
-      await vi.advanceTimersByTimeAsync(45_000)
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(handle.ready()).toBe(false)
+      expect(handle.feedback()).toBe('quiet')
+      await vi.advanceTimersByTimeAsync(15_000)
       expect(starts).toBe(12)
       expect(handle.ready()).toBe(true)
       expect(handle.canRetry()).toBe(false)
+      expect(handle.feedback()).toBe('quiet')
     } finally {
       handle.release()
       releaseStream?.()
@@ -1371,7 +1453,9 @@ describe('ACP activity conversation node', () => {
     }
     const factory = activityStreamFactory({ dispose: () => (disposed += 1) })
     const hub = new AcpActivityJournalHub(remote as never, factory as never)
-    const handle = hub.acquire('dsh-1', 'dsh-1', 'anchor', () => undefined)
+    const feedback: string[] = []
+    let handle!: ReturnType<AcpActivityJournalHub['acquire']>
+    handle = hub.acquire('dsh-1', 'dsh-1', 'anchor', () => feedback.push(handle.feedback()))
     try {
       for (let attempt = 0; attempt < 100 && starts < 2; attempt += 1)
         await new Promise((resolve) => setTimeout(resolve, 10))
@@ -1379,6 +1463,9 @@ describe('ACP activity conversation node', () => {
       expect(disposed).toBe(1)
       expect(handle.ready()).toBe(true)
       expect(handle.error()).toBeUndefined()
+      expect(feedback).toContain('reconnecting')
+      expect(feedback).not.toContain('initial-read-retrying')
+      expect(handle.feedback()).toBe('quiet')
       expect(handle.snapshot().map((activity) => activity.activityId)).toEqual(['a-1', 'a-2', 'a-3'])
       await new Promise((resolve) => setTimeout(resolve, 150))
       expect(starts).toBe(2)

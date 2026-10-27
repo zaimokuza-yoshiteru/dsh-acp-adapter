@@ -438,7 +438,21 @@ describe('native assistant renderer composition', () => {
       } as never,
       Native as never,
     )
-    slots.register({ name: 'conversation.session.header' } as never, Native as never)
+    const headerViews = {
+      getSnapshot: () => [
+        { id: 'chat', label: 'Chat' },
+        { id: 'chat', label: 'Chat' },
+      ],
+      subscribe: () => () => {},
+    }
+    slots.register(
+      {
+        name: 'conversation.session.header',
+        children: { 'conversation.session.header.views.actions': { kind: 'list', scope: 'root' } },
+        inject: () => ({ hooks: { conversationViews: headerViews } }),
+      } as never,
+      Native as never,
+    )
     slots.register({ name: 'conversation.chat.node', key: 'tool-call' } as never, Native as never)
     const releases: Array<() => void> = []
     installAcpAssistantStream(
@@ -474,6 +488,9 @@ describe('native assistant renderer composition', () => {
     expect(uniqueViewTabs(slots.entries('conversation.view').map((entry) => ({ id: entry.options.id! })))).toEqual([
       { id: 'chat' },
     ])
+    const header = slots.entriesOfSlot('conversation.session.header')[0]!
+    expect(header.registrant).toBe('acp-chat-normalization')
+    expect(Object.keys(header.children!)[0]).not.toBe('conversation.session.header.views.actions')
     releases.reverse().forEach((release) => release())
     expect(slots.entriesOfSlot('conversation.view')[0]!.component).toBe(Native)
     expect(slots.entriesOfSlot(child)).toEqual([])
