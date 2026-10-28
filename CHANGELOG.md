@@ -4,6 +4,20 @@
 
 User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for publication dates, exact installation instructions, and checksums. Historical entries were reconstructed from tag diffs; npm packages were not republished.
 
+## 0.2.1-rc.4.1
+
+### 中文
+
+- 升级兼容目标及精确官方依赖至 DSH `0.2.1-rc.4`。安装本版前请升级 RC.4 宿主，无需新增用户配置。
+- 沿用 RC.4 原生会话标签提示和“更多会话视图”交互，保留 ds-bot 共存、插件热启停及首次 ACP 绑定等待的既有修复。
+- RC.4 修复了 DSH 自身 ACP 模式的 stdout 诊断输出污染。该模式把 DSH 作为 ACP Agent 提供给其他客户端；本插件继续负责在 DSH 内接入外部 ACP Agent。
+
+### English
+
+- Target DSH `0.2.1-rc.4` with exact published dependencies. Upgrade the host to RC.4 before installing this version; no additional user configuration is required.
+- Reuse RC.4's native conversation-tab tooltips and More conversation views interaction, preserving ds-bot coexistence, plugin hot reloads and quiet initial ACP binding waits.
+- RC.4 fixes diagnostic output contaminating stdout in DSH's own ACP mode, which exposes DSH as an ACP Agent to other clients. This plugin continues to bring external ACP Agents into DSH.
+
 ## 0.2.1-rc.3.2
 
 ### 中文
