@@ -25,7 +25,7 @@ async function openAcpFromNativeMore(page: Page): Promise<void> {
   expect(await detail.locator('[data-dsh-acp-panel]').count()).toBe(1)
 }
 
-it('keeps ACP drafts and diagnostics reachable through RC.3 native navigation without dispatching extra work', async () => {
+it('keeps ACP drafts and diagnostics reachable through RC.4 native navigation without dispatching extra work', async () => {
   const host = await launchAdapterWorld()
   let browser: TestBrowser | undefined
   const createdSessions: string[] = []
@@ -86,7 +86,7 @@ it('keeps ACP drafts and diagnostics reachable through RC.3 native navigation wi
     // durable approval history after the first turn below.
     expect(await page.locator('[data-question-key]:visible').count()).toBe(0)
 
-    // RC.3's New Session returns to the existing blank. ACP must not replace
+    // Native New Session returns to the existing blank. ACP must not replace
     // that native draft owner, create a duplicate session, or send the draft.
     await page
       .getByRole('navigation', { name: 'Global panels', exact: true })
@@ -130,12 +130,13 @@ it('keeps ACP drafts and diagnostics reachable through RC.3 native navigation wi
     // The native width budget folds later Views. The adapter's dynamically
     // registered View must remain selectable through More, without its own menu.
     await page.setViewportSize({ width: 390, height: 844 })
-    const moreViews = page.getByRole('button', { name: /^More conversation views/ })
+    const moreViews = page.getByRole('button', { name: 'More conversation views', exact: true })
     await moreViews.click()
     await page.getByRole('menuitem', { name: 'ACP Diagnostics', exact: true }).click()
     const diagnostics = page.getByRole('region', { name: 'ACP Diagnostics', exact: true })
     await diagnostics.waitFor({ state: 'visible' })
-    await expect.poll(() => moreViews.getAttribute('aria-label')).toBe('More conversation views · ACP Diagnostics')
+    // RC.4 keeps the launcher label fixed even while its active View is folded.
+    await expect.poll(() => moreViews.getAttribute('aria-label')).toBe('More conversation views')
     await page.setViewportSize({ width: 1680, height: 1000 })
     const diagnosticsTab = page.getByRole('tab', { name: 'ACP Diagnostics', exact: true })
     await diagnosticsTab.waitFor({ state: 'visible' })
