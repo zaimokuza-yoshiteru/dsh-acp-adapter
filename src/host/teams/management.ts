@@ -17,9 +17,7 @@ export function createTeamManagement(
     const agent = ctx.get('agents', false)?.get(id as never)
     if (teams === undefined || agent === undefined || teams.tryMembership(agent)?.role !== 'lead')
       throw new Error('ACP_TEAM_LEAD_UNAVAILABLE')
-    const selection = ctx.get('sessionProjections')?.stateOf(agent.session, 'modelSelection')
-    const provider =
-      selection?.pending?.provider ?? agent.session.requestHeader()?.config.provider ?? agent.options.provider
+    const provider = agent.model.current()?.provider
     if (provider === undefined || !owns(provider)) throw new Error('ACP_TEAM_LEAD_REQUIRED')
     return { teams, agent, provider }
   }
@@ -59,10 +57,8 @@ export function createTeamManagement(
           .map(async (row) => {
             const child = ctx.get('agents', false)?.get(row.id)
             const session = child?.session ?? ctx.get('sessions')?.get(row.id)
-            const selection =
-              session === undefined ? undefined : ctx.get('sessionProjections')?.stateOf(session, 'modelSelection')
             const provider =
-              selection?.pending?.provider ??
+              child?.model.current()?.provider ??
               session?.requestHeader()?.config.provider ??
               child?.options.provider ??
               (await readBindingProvider(row.id))

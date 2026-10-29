@@ -390,8 +390,8 @@ it('keeps one ACP Agent across multiple models, isolates approvals and prevents 
       failedSourceRestore.mockRestore()
       await host.ctx.settings.replace('locale', { preference: 'en' })
     }
-    const selected = required(host.ctx.sessionProjections.stateOf(lead.session, 'modelSelection'))
-    expect(selected.pending ?? selected.lastUsed).toMatchObject({ provider: 'acp-devin', model: 'mock-model-b' })
+    const selected = required(lead.model.current())
+    expect(selected).toMatchObject({ provider: 'acp-devin', model: 'mock-model-b' })
     Object.assign(evidence, {
       leadId: lead.id,
       childAId,

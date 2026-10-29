@@ -19,6 +19,17 @@ export interface AcpRemoteErrorDetails {
   readonly correlationId: string | null
 }
 
+export type AcpNativeForkRejection =
+  'unavailable' | 'invalid-seed' | 'source-conflict' | 'child-bound' | 'source-unavailable' | 'child-changed'
+
+/** A native child remains intact after registration is refused. */
+export interface AcpNativeForkErrorDetails {
+  readonly sessionId: string
+  readonly sourceSessionId: string
+  readonly atSeq: number
+  readonly reason: AcpNativeForkRejection
+}
+
 declare module '@deepseek-ai/dsh-typert-protocol' {
   interface RemoteErrorDetailsMap {
     'dsh-acp/config': AcpRemoteErrorDetails
@@ -31,6 +42,8 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
     'dsh-acp/user-rejected': AcpRemoteErrorDetails
     'dsh-acp/activity-binding-pending': AcpRemoteErrorDetails
     'dsh-acp/resume-conflict': AcpRemoteErrorDetails
+    'dsh-acp/native-fork-rejected': AcpNativeForkErrorDetails
+    'dsh-acp/native-fork-scope-unavailable': { readonly sessionId: string }
   }
 }
 

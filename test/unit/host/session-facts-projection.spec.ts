@@ -6,14 +6,16 @@ import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
 import type { Session } from '@deepseek-ai/dsh-session'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
+import { z } from 'zod'
 import { SUBAGENT_DESCRIPTOR_VERSION } from '@deepseek-ai/dsh-subagent'
 import { EXTERNAL_SUBAGENT_DESCRIPTOR_PROVIDER } from '../../../src/contract/external-subagent.ts'
 import {
-  acpExecutionProjection,
+  AcpSessionFacts,
   acpSessionView,
   readSessionFacts,
+  sessionFactsReader,
 } from '../../../src/host/composition/session-facts.ts'
-import { sessionFactsSchema } from '../../../src/domain/session/session-facts.ts'
+import { sessionFactsSchema, initialSessionFacts } from '../../../src/domain/session/session-facts.ts'
 import type { AcpReplayPayloadV1 } from '../../../src/domain/session/acp-replay-payload.ts'
 
 const replay = (owner: string, agent = `agent-${owner}`): AcpReplayPayloadV1 => ({
@@ -39,7 +41,7 @@ async function harness(): Promise<Context> {
   contexts.push(ctx)
   await ctx.plugin(SessionStore)
   await ctx.plugin(SessionProjectionRegistry)
-  ctx.sessionProjections.register(acpExecutionProjection)
+  await ctx.plugin(AcpSessionFacts)
   return ctx
 }
 
@@ -358,5 +360,108 @@ describe('ACP execution SessionProjection integration', () => {
     expect(Object.keys(facts.forkReplay ?? {}).sort()).toEqual(Object.keys(replay('facts-schema')).sort())
     expect(facts.forkReplay).toEqual(replay('facts-schema-parent'))
     expect(JSON.stringify(ctx.sessionProjections.checkpoint(session))).not.toContain('full response')
+  })
+})
+
+describe('ACP execution owner readiness', () => {
+  async function ownerHarness() {
+    const ctx = new Context()
+    contexts.push(ctx)
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(SessionProjectionRegistry)
+    return ctx
+  }
+
+  it('publishes readers only after registration, including events appended during readiness', async () => {
+    const ctx = await ownerHarness()
+    const entered = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    const register = SessionProjectionRegistry.prototype.register
+    const spy = vi.spyOn(SessionProjectionRegistry.prototype, 'register').mockImplementationOnce(
+      new Proxy(register, {
+        async apply(target, receiver, args) {
+          const handle = await Reflect.apply(target, receiver, args)
+          entered.resolve()
+          await release.promise
+          return handle
+        },
+      }),
+    )
+    const loading = ctx.plugin(AcpSessionFacts)
+    await entered.promise
+    expect(ctx.get('acpSessionFacts')).toBeUndefined()
+    const session = ctx.sessions.create(SessionId('facts-delayed'))
+    appendUserStep(session, 1, 1, 'during registration')
+    release.resolve()
+    await loading
+    expect(readSessionFacts(ctx, session)).toMatchObject({ turnOpen: true, hasSemanticHistory: true })
+    spy.mockRestore()
+  })
+
+  it('keeps an admitted reader current while its unpublished owner drains', async () => {
+    const ctx = await ownerHarness()
+    const owner = await ctx.plugin(AcpSessionFacts)
+    const session = ctx.sessions.create(SessionId('facts-draining'))
+    const read = sessionFactsReader(ctx)
+    const view = acpSessionView(ctx, session)!
+    appendUserStep(session, 1, 1, 'admitted work')
+    expect(read(session).turnOpen).toBe(true)
+
+    await owner.dispose()
+    expect(ctx.get('acpSessionFacts')).toBeUndefined()
+    expect(() => sessionFactsReader(ctx)).toThrow('ACP execution facts owner is unavailable')
+    closeStep(session, 1, 1)
+    expect(read(session).turnOpen).toBe(false)
+    expect(view.facts.turnOpen).toBe(false)
+  })
+
+  it('fails activation on an incompatible projection instead of reading its state', async () => {
+    const ctx = await ownerHarness()
+    const errors = vi.spyOn(ctx.logger, 'error').mockImplementation(() => {})
+    await ctx.sessionProjections.register({
+      key: 'acpExecution',
+      stateVersion: 99,
+      stateSchema: sessionFactsSchema,
+      init: () => initialSessionFacts(),
+      apply: (state) => state,
+      wire: {
+        viewSchema: z.object({ externalSubagent: z.boolean() }),
+        view: (state) => ({ externalSubagent: state.externalSubagent }),
+      },
+    })
+    const loading = ctx.plugin(AcpSessionFacts)
+    await expect(loading.await()).rejects.toThrow('already registered at stateVersion 99')
+    expect(ctx.get('acpSessionFacts')).toBeUndefined()
+    expect(errors).toHaveBeenCalled()
+    errors.mockRestore()
+  })
+
+  it('does not publish a service after disposal during registration and supports a fresh replacement', async () => {
+    const ctx = await ownerHarness()
+    const entered = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    const register = SessionProjectionRegistry.prototype.register
+    const spy = vi.spyOn(SessionProjectionRegistry.prototype, 'register').mockImplementationOnce(
+      new Proxy(register, {
+        async apply(target, receiver, args) {
+          const handle = await Reflect.apply(target, receiver, args)
+          entered.resolve()
+          await release.promise
+          return handle
+        },
+      }),
+    )
+    const loading = ctx.plugin(AcpSessionFacts)
+    await entered.promise
+    const disposal = loading.dispose()
+    release.resolve()
+    await disposal
+    expect(ctx.get('acpSessionFacts')).toBeUndefined()
+    const session = ctx.sessions.create(SessionId('facts-replacement'))
+    expect(ctx.sessionProjections.snapshot(session).values.acpExecution).toBeUndefined()
+    spy.mockRestore()
+    await ctx.plugin(AcpSessionFacts)
+    appendUserStep(session, 1, 1, 'after replacement')
+    expect(readSessionFacts(ctx, session).hasSemanticHistory).toBe(true)
   })
 })

@@ -26,8 +26,10 @@ import {
 import { installNativeToolRenderer } from './ui/native-tool-renderer.ts'
 import { installAcpAssistantStream } from './ui/AcpAssistantStream.ts'
 import { AcpActivityJournalHub } from './data/activity-journal.ts'
-import { AcpUiFeedback, followAcpQuestionLimitations } from './data/feedback.ts'
+import { AcpUiFeedback, followAcpQuestionLimitations, type AcpUiOutcome } from './data/feedback.ts'
 import { CrossBackendCoordinator } from './coordinator/cross-backend-coordinator.ts'
+import { AcpNativeForkCoordinator, type NativeForkFailure } from './coordinator/native-fork.ts'
+import { createNativeForkJournal } from './coordinator/native-fork-journal.ts'
 import { CrossBackendModal } from './ui/CrossBackendModal.ts'
 import { AcpOutcomeToast } from './ui/AcpOutcomeToast.ts'
 import { AcpRecoveryDock } from './ui/AcpRecoveryDock.ts'
@@ -57,6 +59,7 @@ import type { AcpSectionWire, AcpTranslate } from './ui/AcpSection.ts'
 import { ACP_SETTINGS_NS } from './data/logic.ts'
 import type { AcpSettings } from './data/logic.ts'
 import { AcpAuditVisibilityGate, createAcpAuditView } from './ui/AcpAuditHeaderAction.ts'
+import { AcpAuditViewVisibility } from './ui/audit-view-visibility.ts'
 import { createAcpJsonStringWrapping, type AcpJsonStringWrapping } from './ui/json-tree.ts'
 import { en, zh } from './ui/locales.ts'
 import type { AcpRemoteLike } from './data/acp-remote.ts'
@@ -87,6 +90,19 @@ export const inject = [
   'remote.settings',
   'remote.session',
 ] as const
+
+const forkOutcomes: Readonly<Record<NativeForkFailure, AcpUiOutcome>> = {
+  'workspace-attach': 'fork-workspace-attach-failed',
+  unknown: 'fork-unknown',
+  storage: 'fork-storage-failed',
+  'access-denied': 'fork-access-denied',
+  unavailable: 'fork-unavailable',
+  'invalid-seed': 'fork-invalid-seed',
+  'source-conflict': 'fork-source-conflict',
+  'child-bound': 'fork-child-bound',
+  'source-unavailable': 'fork-source-unavailable',
+  'child-changed': 'fork-child-changed',
+}
 
 /** Normalize ACP presentation facts and compose the registered native UI. */
 async function registerUi(ctx: ClientContext): Promise<void> {
@@ -120,6 +136,19 @@ async function registerUi(ctx: ClientContext): Promise<void> {
     remote: acpRemote,
   })
   const feedback = new AcpUiFeedback()
+  const nativeFork = new AcpNativeForkCoordinator({
+    sessions,
+    scope: (source) => acpRemote.nativeForkScope(source),
+    journal: (scope, source, atSeq) => createNativeForkJournal(() => sessionStorage, scope, source, atSeq),
+    register: (child, source, atSeq) => acpRemote.registerNativeFork(child, source, atSeq),
+    open: (child) => ctx.uiWorkspace.openSession(child),
+    failed: (source, child, reason) =>
+      feedback.report(reason === undefined ? 'fork-failed' : forkOutcomes[reason], {
+        id: child ?? source,
+        title: null,
+      }),
+  })
+  ctx.effect(() => nativeFork.dispose, 'dsh-acp: native fork coordinator')
   ctx.effect(
     () =>
       followAcpQuestionLimitations(
@@ -206,40 +235,25 @@ async function registerUi(ctx: ClientContext): Promise<void> {
       AcpSection,
     ),
   )
-  let setAuditViewVisible: (sessionId: string, visible: boolean) => void = () => undefined
-  ctx.slots.inject('conversation.view', () => {
-    let disposeView: (() => void) | undefined
-    let ownerSessionId: string | undefined
-    setAuditViewVisible = (sessionId, visible) => {
-      if (!visible) {
-        if (ownerSessionId !== sessionId) return
-        disposeView?.()
-        disposeView = undefined
-        ownerSessionId = undefined
-        return
-      }
-      if (ownerSessionId === sessionId && disposeView !== undefined) return
-      disposeView?.()
-      ownerSessionId = sessionId
-      disposeView = ctx.slots.register(
-        {
-          name: 'conversation.view',
-          id: 'dsh-acp-audit',
-          order: 20,
-          label: () => settingsT('auditOpen'),
-          locale: 'acpActivity',
-          inject: () => ({ remote: acpRemote }),
-        },
-        createAcpAuditView(acpRemote, jsonStringWrapping),
-      )
-    }
-    return () => {
-      setAuditViewVisible = () => undefined
-      disposeView?.()
-    }
-  })
-  // Keep the non-rendering session gate so only bound ACP sessions contribute
-  // the diagnostic tab; ordinary model sessions retain the native tab set.
+  const auditVisibility = new AcpAuditViewVisibility()
+  // The view registration follows the plugin, not a React session gate. A gate
+  // can unmount after Native has withdrawn its Session binding but before scope
+  // cleanup; changing the global view roster there re-enters all old bindings.
+  ctx.slots.inject('conversation.view', () =>
+    ctx.slots.register(
+      {
+        name: 'conversation.view',
+        id: 'dsh-acp-audit',
+        order: 20,
+        label: () => settingsT('auditOpen'),
+        locale: 'acpActivity',
+        inject: () => ({ remote: acpRemote }),
+      },
+      createAcpAuditView(acpRemote, jsonStringWrapping),
+    ),
+  )
+  // The same per-session source filters both native header navigation and body
+  // selection; ordinary model sessions retain the native view set and fallback.
   ctx.slots.inject('conversation.session.header.utilities', () =>
     ctx.slots.register(
       {
@@ -248,14 +262,12 @@ async function registerUi(ctx: ClientContext): Promise<void> {
         order: 100,
         inject: (): {
           readonly remote: AcpRemoteLike
-          readonly onVisibilityChange: typeof setAuditViewVisible
+          readonly onVisibilityChange: typeof auditVisibility.setVisible
           readonly ownsRoute: typeof managedRoutes.owns
         } => ({
           remote: acpRemote,
           ownsRoute: managedRoutes.owns,
-          onVisibilityChange: (sessionId, visible) => {
-            setAuditViewVisible(sessionId, visible)
-          },
+          onVisibilityChange: auditVisibility.setVisible,
         }),
       },
       AcpAuditVisibilityGate,
@@ -266,7 +278,11 @@ async function registerUi(ctx: ClientContext): Promise<void> {
     journalHub,
     t: ctx.locale.bind('acpActivity'),
     jsonStringWrapping,
+    auditVisibility,
     onOpenProjectedChild: openProjectedChild,
+    forkAt: (sessionId, seq) => {
+      void nativeFork.fork(sessionId as SessionId, seq)
+    },
   })
   ctx.slots.inject('conversation.chat.node', () =>
     ctx.slots.register(

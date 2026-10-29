@@ -4,6 +4,10 @@ import type { Context } from '@deepseek-ai/cordis'
 import { Context as CordisContext } from '@deepseek-ai/cordis'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime, { defineTool, RUN_CODE_NAME, TOOL_ABORTED_BEFORE_DISPATCH } from '@deepseek-ai/dsh-tools'
+import { NativeToolExecutor } from '@deepseek-ai/dsh-tool-executor-native'
+import { PtcExecutor } from '@deepseek-ai/dsh-tool-executor-ptc'
+import { ToolExecutionPipeline } from '@deepseek-ai/dsh-tools/pipeline'
+import { fakeToolBatch } from '../../fixtures/tool-batch-testing.ts'
 import { PtcRuntime } from '@deepseek-ai/dsh-ptc-runtime'
 import type { PtcRunRequest, PtcRunResult } from '@deepseek-ai/dsh-ptc-runtime'
 import { createUserMessage, ToolCallId } from '@deepseek-ai/dsh-llm'
@@ -17,12 +21,12 @@ import { createDshToolBridge, createDshToolBridgeKey } from '../../../src/host/t
 import { createAcpNativePermissionHandler } from '../../../src/domain/policy/permissions.ts'
 import type { AcpNativeUserQuestionService } from '../../../src/domain/policy/elicitation.ts'
 import { AcpClientConnection } from '../../../src/protocol/v1/connection.ts'
-import { installLiveDiagnosticTrace } from '../../../src/contract/live-diagnostic-trace.ts'
-import type { LiveDiagnosticEvent } from '../../../src/contract/live-diagnostic-trace.ts'
+import { createLiveDiagnosticTrace } from '../../../src/contract/live-diagnostic-trace.ts'
+import type { LiveDiagnosticEvent, LiveDiagnosticTrace } from '../../../src/contract/live-diagnostic-trace.ts'
 import { sharedTestSubprocess } from '../../fixtures/subprocess-seam-testing.ts'
 
 const cleanup: Array<() => Promise<unknown>> = []
-const diagnosticRemovers: Array<() => void> = []
+const diagnosticRemovers: Array<() => Promise<void>> = []
 
 class BridgeFakePtcRuntime extends PtcRuntime {
   readonly language = 'typescript'
@@ -67,7 +71,7 @@ function restoreFeedbackSession(
 }
 
 afterEach(async () => {
-  for (const remove of diagnosticRemovers.splice(0)) remove()
+  for (const remove of diagnosticRemovers.splice(0)) await remove()
   await Promise.allSettled(
     cleanup
       .splice(0)
@@ -102,7 +106,8 @@ it.each([undefined, 'devin'])(
 
 it('records actual MCP-to-Host execution correlation and isolates a throwing trace sink', async () => {
   const events: LiveDiagnosticEvent[] = []
-  const remove = installLiveDiagnosticTrace(
+  const diagnosticTrace = createLiveDiagnosticTrace()
+  const remove = diagnosticTrace.install(
     Object.assign(
       (event: LiveDiagnosticEvent) => {
         events.push(event)
@@ -125,7 +130,7 @@ it('records actual MCP-to-Host execution correlation and isolates a throwing tra
     ),
   )
   diagnosticRemovers.push(remove)
-  const fixture = await setup(undefined, [], true, 'teammate')
+  const fixture = await setup(undefined, [], true, 'teammate', undefined, undefined, false, undefined, diagnosticTrace)
   fixture.lease.beginPrompt(new AbortController().signal)
   const result = await fixture.client.callTool({
     name: 'send_message',
@@ -164,8 +169,8 @@ it('records actual MCP-to-Host execution correlation and isolates a throwing tra
     })
   }
 
-  remove()
-  const removeThrowing = installLiveDiagnosticTrace(
+  await remove()
+  const removeThrowing = diagnosticTrace.install(
     Object.assign(
       () => {
         throw new Error('private sink failure')
@@ -205,6 +210,7 @@ async function setup(
   onPolicyContextChange?: () => void,
   withSession = false,
   initialSession?: Session,
+  diagnosticTrace?: LiveDiagnosticTrace,
 ) {
   const createInbox = () => ({
     nextStep: [] as ReturnType<typeof createUserMessage>[],
@@ -251,7 +257,7 @@ async function setup(
   )
   const hidden = new Set<string>()
   const membership = { current: { role, id: 'member-1', root: rootAgent } }
-  const execute = vi.fn(async (input) => ({ content: [{ type: 'text', text: input.name }], isError: false }))
+  const execute = vi.fn(async (input) => ({ content: [{ type: 'text' as const, text: input.name }], isError: false }))
   const services: Record<string, unknown> = {
     agentTeams: {
       tryMembership: (value: unknown) =>
@@ -269,17 +275,24 @@ async function setup(
       schemas: (scope: unknown) =>
         scope === agent ? [...definitions.values()].filter((definition) => !hidden.has(definition.name)) : [],
       get: (name: string, scope: unknown) => (scope === agent && !hidden.has(name) ? definitions.get(name) : undefined),
-      executionMode: () => ({ kind: 'exclusive' }),
-      execute,
+      executable: (name: string, scope: unknown) =>
+        scope === agent && !hidden.has(name) ? definitions.get(name) : undefined,
+      execute: fakeToolBatch(execute),
     },
   }
+  if (diagnosticTrace !== undefined) services.acpLiveDiagnostics = diagnosticTrace
   if (withSession) services.sessions = { get: (id: string) => (id === 'lead' ? currentAgent.session : undefined) }
   const listeners = new Map<string, (...args: any[]) => void>()
   if (!hasTeams) delete services.agentTeams
   const getService = (name: string) => services[name]
+  const ownership = new CordisContext()
+  ownership.provide('tools', services.tools as never)
+  cleanup.push(() => ownership.fiber.dispose())
   const rootContext = { get: getService }
   const ctx = {
     get: getService,
+    tools: services.tools,
+    inject: ownership.inject.bind(ownership),
     root: rootContext,
     on: (name: string, listener: (...args: any[]) => void) => {
       listeners.set(name, listener)
@@ -454,6 +467,7 @@ describe('session-owned native Teams MCP bridge', () => {
     const dsh = new CordisContext()
     const systemPromptFiber = await dsh.plugin(SystemPrompt, {})
     const runtimeFiber = await dsh.plugin(ToolRuntime)
+    dsh.tools.setExecutor(new NativeToolExecutor(dsh))
     cleanup.push(async () => {
       await runtimeFiber.dispose()
       await systemPromptFiber.dispose()
@@ -502,6 +516,8 @@ describe('session-owned native Teams MCP bridge', () => {
     }
     const assembly = await dsh.systemPrompt.assemble({ scope: agent as never })
     const bridgeCtx = {
+      tools: dsh.tools,
+      inject: dsh.inject.bind(dsh),
       on: (name: string, listener: (...args: unknown[]) => void) => dsh.on(name as never, listener as never),
       get: (name: string) => {
         if (name === 'agents') return { get: (id: string) => (id === agent.id ? agent : undefined), withInitiator }
@@ -599,7 +615,7 @@ describe('session-owned native Teams MCP bridge', () => {
     newPrompt.abort()
     lease.endPrompt()
     expect(
-      dsh.tools.executionMode({
+      new ToolExecutionPipeline(dsh).executionMode({
         callId: 'mode-check' as never,
         name: 'work',
         arguments: { phase: 'exclusive' },
@@ -613,6 +629,7 @@ describe('session-owned native Teams MCP bridge', () => {
     const dsh = new CordisContext()
     const systemPromptFiber = await dsh.plugin(SystemPrompt, {})
     const runtimeFiber = await dsh.plugin(ToolRuntime)
+    dsh.tools.setExecutor(new NativeToolExecutor(dsh))
     cleanup.push(async () => {
       await runtimeFiber.dispose()
       await systemPromptFiber.dispose()
@@ -637,6 +654,8 @@ describe('session-owned native Teams MCP bridge', () => {
     }
     const assembly = await dsh.systemPrompt.assemble({ scope: agent as never })
     const bridgeCtx = {
+      tools: dsh.tools,
+      inject: dsh.inject.bind(dsh),
       on: (name: string, listener: (...args: unknown[]) => void) => dsh.on(name as never, listener as never),
       get: (name: string) => {
         if (name === 'agents') return { get: (id: string) => (id === agent.id ? agent : undefined), withInitiator }
@@ -1198,7 +1217,8 @@ describe('session-owned native Teams MCP bridge', () => {
     'defers wait_agent before Host execution when a peer message is queued (%j)',
     async (source) => {
       const events: LiveDiagnosticEvent[] = []
-      const remove = installLiveDiagnosticTrace(
+      const diagnosticTrace = createLiveDiagnosticTrace()
+      const remove = diagnosticTrace.install(
         Object.assign(
           (event: LiveDiagnosticEvent) => {
             events.push(event)
@@ -1210,7 +1230,17 @@ describe('session-owned native Teams MCP bridge', () => {
         ),
       )
       diagnosticRemovers.push(remove)
-      const { lease, client, execute, agent } = await setup()
+      const { lease, client, execute, agent } = await setup(
+        undefined,
+        [],
+        true,
+        'lead',
+        undefined,
+        undefined,
+        false,
+        undefined,
+        diagnosticTrace,
+      )
       lease.beginPrompt(new AbortController().signal)
       const queuedReply = createUserMessage({
         source: source as never,
@@ -1590,7 +1620,8 @@ describe('session-owned native Teams MCP bridge', () => {
       const dsh = new CordisContext()
       const systemPromptFiber = await dsh.plugin(SystemPrompt, {})
       const ptcFiber = mode === 'native' ? undefined : await dsh.plugin(BridgeFakePtcRuntime)
-      const runtimeFiber = await dsh.plugin(ToolRuntime, { mode })
+      const runtimeFiber = await dsh.plugin(ToolRuntime)
+      dsh.tools.setExecutor(mode === 'native' ? new NativeToolExecutor(dsh) : new PtcExecutor(dsh))
       dsh.provide('workingDirectory', { ensure: async () => process.cwd() } as never)
       cleanup.push(async () => {
         await runtimeFiber.dispose()
@@ -1621,6 +1652,8 @@ describe('session-owned native Teams MCP bridge', () => {
       const expected = mode === 'native' ? ['file_read'] : [RUN_CODE_NAME]
       expect(assembly.tools.map((schema) => schema.name).sort()).toEqual([...expected].sort())
       const bridgeCtx = {
+        tools: dsh.tools,
+        inject: dsh.inject.bind(dsh),
         on: (name: string, listener: (...args: unknown[]) => void) => dsh.on(name as never, listener as never),
         get: (name: string) => {
           if (name === 'agents') return { get: (id: string) => (id === agent.id ? agent : undefined), withInitiator }
@@ -1663,16 +1696,21 @@ describe('session-owned native Teams MCP bridge', () => {
       lease.beginPrompt(new AbortController().signal)
       const result = await runtime.execute({
         signal: new AbortController().signal,
-        callId: ToolCallId(`bridge-${mode}`),
-        name: 'file_read',
-        arguments: { path: '/tmp/file' },
+        calls: [
+          {
+            type: 'tool-call',
+            id: ToolCallId(`bridge-${mode}`),
+            name: 'file_read',
+            arguments: JSON.stringify({ path: '/tmp/file' }),
+          },
+        ],
         agent: agent as never,
       })
       if (mode === 'ptc') {
-        expect(result.isError).toBe(true)
+        expect(result.results[0]?.result.isError).toBe(true)
         expect(executions).toBe(0)
       } else {
-        expect(result.isError).toBe(false)
+        expect(result.results[0]?.result.isError).toBe(false)
         expect(executions).toBe(1)
         const mcpResult = await client.callTool({ name: 'file_read', arguments: { path: '/tmp/file' } })
         expect(mcpResult, JSON.stringify(mcpResult)).toMatchObject({ isError: false })

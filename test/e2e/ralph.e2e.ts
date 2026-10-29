@@ -34,7 +34,7 @@ it('runs native Ralph with distinct fresh ACP children, bounded handoff, structu
   const children: Agent[] = []
   const abort = new AbortController()
   try {
-    host = await launchAdapterWorld({ optionalBundles: ['ralph-bundle'], toolsMode: 'native' })
+    host = await launchAdapterWorld({ optionalBundles: ['ralph-bundle'], toolExecutor: 'native' })
     const owned = host
     await owned.ctx.settings.replace('dsh-acp-adapter', {
       toolApprovalDefault: 'auto',
@@ -69,13 +69,20 @@ it('runs native Ralph with distinct fresh ACP children, bounded handoff, structu
     expect(provider.capabilities.outputSchema).toBe(true)
     expect(provider.inheritsParentContext).toBe(false)
     owned.ctx.on('subagent/start', (child) => children.push(required(owned.ctx.agents.get(child.id))))
-    const result = await owned.ctx.tools.execute({
-      signal: new AbortController().signal,
-      callId: ToolCallId('ralph-acp-complete'),
-      name: 'ralph',
-      arguments: { objective: 'RALPH_COMPLETE_OBJECTIVE', maxRounds: 2 },
-      agent: parent,
-    })
+    const result = await owned.ctx.tools
+      .execute({
+        signal: new AbortController().signal,
+        calls: [
+          {
+            type: 'tool-call',
+            id: ToolCallId('ralph-acp-complete'),
+            name: 'ralph',
+            arguments: JSON.stringify({ objective: 'RALPH_COMPLETE_OBJECTIVE', maxRounds: 2 }),
+          },
+        ],
+        agent: parent,
+      })
+      .then((batch) => required(batch.results[0]).result)
     expect(result.isError).toBe(false)
     expect(JSON.stringify(result.content)).toContain('Ralph worker reported completion after 2 rounds.')
     expect(children).toHaveLength(2)
@@ -103,13 +110,20 @@ it('runs native Ralph with distinct fresh ACP children, bounded handoff, structu
     expect(completions.map((entry) => entry.report?.status)).toEqual(['continue', 'complete'])
     expect(completions.every((entry) => !entry.result?.isError)).toBe(true)
 
-    const pending = owned.ctx.tools.execute({
-      signal: abort.signal,
-      callId: ToolCallId('ralph-acp-cancel'),
-      name: 'ralph',
-      arguments: { objective: 'RALPH_CANCEL_OBJECTIVE', maxRounds: 2 },
-      agent: parent,
-    })
+    const pending = owned.ctx.tools
+      .execute({
+        signal: abort.signal,
+        calls: [
+          {
+            type: 'tool-call',
+            id: ToolCallId('ralph-acp-cancel'),
+            name: 'ralph',
+            arguments: JSON.stringify({ objective: 'RALPH_CANCEL_OBJECTIVE', maxRounds: 2 }),
+          },
+        ],
+        agent: parent,
+      })
+      .then((batch) => required(batch.results[0]).result)
     void pending.catch(() => {})
     try {
       await expect

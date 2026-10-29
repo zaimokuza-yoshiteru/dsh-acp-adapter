@@ -227,7 +227,7 @@ it('follows the native Teams bundle and UI lifecycle while retaining the same co
     await trigger.click()
     await page.locator('[data-acp-team-panel] [data-acp-managed-member="calculator"]').waitFor()
     await vi.waitFor(() => expect(memberReads).toHaveBeenCalled())
-    const roster = required(host.ctx.sessionProjections.stateOf(lead.session, 'agentTeam'))
+    const roster = required(host.ctx.sessionProjections.snapshot(lead.session, new Set(['agentTeam'])).values.agentTeam)
     expect(roster.members.some((member) => member.name === 'calculator')).toBe(true)
 
     // Isolate UI removal from Team domain removal: the native projection and
@@ -243,7 +243,9 @@ it('follows the native Teams bundle and UI lifecycle while retaining the same co
     await expect.poll(() => page.locator('[data-acp-team-panel]').count()).toBe(0)
     await expect.poll(() => approvals.count()).toBe(0)
     expect(host.ctx.agentTeams.listMembers(lead).some((member) => member.name === 'calculator')).toBe(true)
-    expect(host.ctx.sessionProjections.stateOf(lead.session, 'agentTeam')?.members).toEqual(roster.members)
+    expect(
+      host.ctx.sessionProjections.snapshot(lead.session, new Set(['agentTeam'])).values.agentTeam?.members,
+    ).toEqual(roster.members)
     const readsWhileDisabled = memberReads.mock.calls.length
     await page.locator('[data-composer-input]').first().click()
     await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())))

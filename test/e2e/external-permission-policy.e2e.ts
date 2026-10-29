@@ -42,7 +42,7 @@ class NativeParent extends LlmAdapter {
 }
 
 async function fixture() {
-  const host = await launchAdapterWorld({ toolsMode: 'native' })
+  const host = await launchAdapterWorld({ toolExecutor: 'native' })
   const browser = await launchBrowser({ headless: true })
   const page = await newEnglishPage(browser)
   page.setDefaultTimeout(15_000)

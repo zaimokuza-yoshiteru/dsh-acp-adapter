@@ -1,3 +1,4 @@
+import { NativeToolExecutor } from '@deepseek-ai/dsh-tool-executor-native'
 import { expect, it, vi } from 'vitest'
 import { Context as CordisContext } from '@deepseek-ai/cordis'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
@@ -139,6 +140,7 @@ it('uses the Host ToolRuntime guard to deny prohibited Lead messages before the 
   const ctx = new CordisContext()
   const systemPromptFiber = await ctx.plugin(SystemPrompt, {})
   const runtimeFiber = await ctx.plugin(ToolRuntime)
+  ctx.tools.setExecutor(new NativeToolExecutor(ctx))
   let bodyCalls = 0
   ctx.tools.register(
     defineTool({
@@ -166,13 +168,18 @@ it('uses the Host ToolRuntime guard to deny prohibited Lead messages before the 
   try {
     const result = await ctx.tools.execute({
       signal: new AbortController().signal,
-      callId: ToolCallId('prohibited-lead-message'),
-      name: 'send_message',
-      arguments: { target: 'lead', message: 'marker' },
+      calls: [
+        {
+          type: 'tool-call',
+          id: ToolCallId('prohibited-lead-message'),
+          name: 'send_message',
+          arguments: JSON.stringify({ target: 'lead', message: 'marker' }),
+        },
+      ],
       agent: { id: 'lead-0', options: { provider: 'acp-devin' } } as never,
     })
-    expect(result.isError).toBe(true)
-    expect(result.content).toEqual([{ type: 'text', text: 'Error: LIVE_TOOL_BUDGET' }])
+    expect(result.results[0]!.result.isError).toBe(true)
+    expect(result.results[0]!.result.content).toEqual([{ type: 'text', text: 'Error: LIVE_TOOL_BUDGET' }])
     expect(bodyCalls).toBe(0)
     expect(budget.allowedDispatches).toBe(0)
     expect(budget.deniedDispatches).toBe(1)
@@ -186,6 +193,7 @@ it('caps real concurrent Host tool bodies at sixteen admissions', async () => {
   const ctx = new CordisContext()
   const systemPromptFiber = await ctx.plugin(SystemPrompt, {})
   const runtimeFiber = await ctx.plugin(ToolRuntime)
+  ctx.tools.setExecutor(new NativeToolExecutor(ctx))
   let bodyCalls = 0
   ctx.tools.register(
     defineTool({
@@ -215,14 +223,12 @@ it('caps real concurrent Host tool bodies at sixteen admissions', async () => {
       Array.from({ length: MAX_DEVIN_LIVE_DISPATCH_ATTEMPTS + 4 }, (_, index) =>
         ctx.tools.execute({
           signal: new AbortController().signal,
-          callId: ToolCallId(`probe-${index}`),
-          name: 'probe',
-          arguments: {},
+          calls: [{ type: 'tool-call', id: ToolCallId(`probe-${index}`), name: 'probe', arguments: '{}' }],
           agent: { id: 'lead-0', options: { provider: 'acp-devin' } } as never,
         }),
       ),
     )
-    expect(results.filter((result) => result.isError)).toHaveLength(4)
+    expect(results.filter((result) => result.results[0]!.result.isError)).toHaveLength(4)
     expect(bodyCalls).toBe(MAX_DEVIN_LIVE_DISPATCH_ATTEMPTS)
     expect(budget.allowedDispatches).toBe(MAX_DEVIN_LIVE_DISPATCH_ATTEMPTS)
     expect(budget.deniedDispatches).toBe(4)

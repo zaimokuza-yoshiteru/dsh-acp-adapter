@@ -1,4 +1,4 @@
-/** ACP 诊断的会话视图与条件注册门。 */
+/** ACP diagnostics and session-scoped visibility for the native view list. */
 import { createElement as h, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-store'
@@ -42,7 +42,7 @@ export interface AcpAuditVisibilityGateProps {
   useProjection: UseProjection
   remote?: AcpRemoteLike
   ownsRoute: OwnsAcpRoute
-  onVisibilityChange(sessionId: string, visible: boolean): void
+  onVisibilityChange(sessionId: string, visible: boolean, owner: object): void
 }
 
 export interface AcpAuditViewProps extends ConvViewProps {
@@ -255,12 +255,13 @@ function auditDetailOf(detail: string): AuditDetail {
 }
 
 /**
- * 只由 mainView 决定 ACP 诊断 Tab；侧栏引用不能夺取或撤销主区域入口。
- * `conversation.view` 仍是全局 roster，以主区域的标准投影决定可见性，
- * 避免原生会话被插件增加无意义的 Tab。
+ * Main-view retention determines diagnostic visibility; sidebar references
+ * cannot claim or withdraw another view's entry. The global registration stays
+ * stable while the native header and body filter their per-session view source.
  */
 export function AcpAuditVisibilityGate(props: AcpAuditVisibilityGateProps): ReactNode {
   const { sessionId, useSession, useSessionRetainInfo, useProjection, remote, onVisibilityChange, ownsRoute } = props
+  const owner = useMemo(() => ({}), [])
   const mainView = useSessionRetainInfo((value) => (value?.retainedBy.mainView ?? 0) > 0)
   const sessionRefreshKey =
     useSession === undefined ? 'absent' : useSession((snapshot) => auditSessionRefreshKeyOf(snapshot))
@@ -294,11 +295,11 @@ export function AcpAuditVisibilityGate(props: AcpAuditVisibilityGateProps): Reac
 
   useEffect(() => {
     if (sessionId === undefined) return
-    onVisibilityChange(sessionId, visible)
+    onVisibilityChange(sessionId, visible, owner)
     return () => {
-      onVisibilityChange(sessionId, false)
+      onVisibilityChange(sessionId, false, owner)
     }
-  }, [sessionId, visible, onVisibilityChange])
+  }, [sessionId, visible, onVisibilityChange, owner])
   return null
 }
 

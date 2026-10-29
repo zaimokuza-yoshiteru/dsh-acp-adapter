@@ -1,3 +1,5 @@
+import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
+import { NativeToolExecutor } from '@deepseek-ai/dsh-tool-executor-native'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context, type Plugin } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
@@ -72,9 +74,11 @@ async function harness(baseSelection = false) {
   cleanup.push(() => ctx.fiber.dispose())
   await ctx.plugin(Loader)
   await ctx.plugin(SessionStore)
+  await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(AgentRegistry)
   await ctx.plugin(SystemPrompt, {})
-  await ctx.plugin(ToolRuntime, { mode: 'native' })
+  await ctx.plugin(ToolRuntime)
+  ctx.tools.setExecutor(new NativeToolExecutor(ctx))
   const selection = await livePlugin(ctx, WebRuntime, 'web', {
     searchProvider: baseSelection ? 'deepseek-official' : 'deepseek-search-api',
     fetchProvider: baseSelection ? 'http' : 'deepseek-fetch-api',
@@ -86,7 +90,10 @@ async function harness(baseSelection = false) {
   })
   // These two external credential seams contain only dummy values. The native
   // provider, not this fixture, chooses which seam the initiating Session may use.
-  ctx.provide('credentials', { resolve: resolveCredential } as never)
+  ctx.provide('credentials', {
+    resolve: resolveCredential,
+    describe: async () => ({ configured: apiKey !== undefined }),
+  } as never)
   const resolveAccountToken = vi.fn(async (_endpoint: string) => 'test-native-account-token')
   ctx.provide('deepseekAccount', { resolveToken: resolveAccountToken } as never)
   const provider = await livePlugin(ctx, webApi, 'web-deepseek-api', { baseURL: apiBase })
@@ -118,7 +125,20 @@ async function harness(baseSelection = false) {
       inject: vi.fn(),
     } as unknown as Agent
     await ctx.agents.register(agent)
-    const assembly = await ctx.systemPrompt.assemble({ scope: agent })
+    const signal = new AbortController().signal
+    const modelSelection = { provider: route, model: 'test-model' }
+    const toolSet = await ctx.tools.resolve({ agent, modelSelection, signal })
+    cleanup.push(() => toolSet.dispose())
+    const admission = {
+      agent,
+      toolSet,
+      signal,
+      turn: 1,
+      step: 1,
+      definitions: new Map(toolSet.view(agent)),
+      isActive: () => true,
+    }
+    const assembly = await ctx.systemPrompt.assemble({ scope: agent, agent, modelSelection, signal, toolSet })
     const lease = await createDshToolBridge(
       ctx,
       id,
@@ -127,8 +147,20 @@ async function harness(baseSelection = false) {
       async () => 'auto',
       undefined,
       assembly.tools,
+      (caller) => (caller === agent ? admission : undefined),
     )
-    if (lease === undefined) throw new Error('Expected native web tools on the ACP MCP bridge')
+    if (lease === undefined)
+      return {
+        session,
+        appendQuestion,
+        listedTools: [] as string[],
+        search: async (_query: string): Promise<never> => {
+          throw new Error('No admitted web search')
+        },
+        fetch: async (_url: string): Promise<never> => {
+          throw new Error('No admitted web fetch')
+        },
+      }
     cleanup.push(() => lease.close())
     const server = lease.servers[0]
     if (server === undefined || !('url' in server)) throw new Error('Expected a local HTTP MCP server')
@@ -159,7 +191,7 @@ async function harness(baseSelection = false) {
   }
 }
 
-describe('published RC.2 web providers through the ACP native-tool bridge', () => {
+describe('published web providers through the ACP native-tool bridge', () => {
   it('uses the current native Session human prompt and preserves native web tools and output', async () => {
     const h = await harness()
     const caller = await h.connect('current-question', 'Earlier question')
@@ -233,6 +265,8 @@ describe('published RC.2 web providers through the ACP native-tool bridge', () =
       expect(h.requests[1]?.body).toEqual({ url: 'https://requested.invalid/article' })
       if (route === 'deepseek-account') {
         expect(h.resolveAccountToken.mock.calls.map(([endpoint]) => endpoint)).toEqual([
+          apiBase,
+          apiBase,
           `${apiBase}/search`,
           `${apiBase}/fetch`,
         ])
@@ -260,11 +294,8 @@ describe('published RC.2 web providers through the ACP native-tool bridge', () =
     const h = await harness()
     h.setApiKey(undefined)
     const caller = await h.connect('missing-api-credential', 'Missing credential question')
-    const search = await caller.search('missing-key')
-    const fetched = await caller.fetch('https://requested.invalid/article')
-    expect(search.isError).toBe(true)
-    expect(fetched.isError).toBe(true)
-    expect(h.resolveCredential).toHaveBeenCalledTimes(2)
+    expect(caller.listedTools).toEqual([])
+    expect(h.resolveCredential).not.toHaveBeenCalled()
     expect(h.resolveAccountToken).not.toHaveBeenCalled()
     expect(h.requests).toEqual([])
   })

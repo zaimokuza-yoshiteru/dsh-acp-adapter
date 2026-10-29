@@ -110,13 +110,15 @@ it('discovers and calls all four native Schedule tools through the ACP session M
       ['schedule_delete', { id: 'foreign-task' }],
     ] as const) {
       expect(host.ctx.tools.get(name, teammate)).toBeDefined()
-      const refused = await host.ctx.tools.execute({
-        callId: ToolCallId(`schedule-child-${name}`),
-        name,
-        arguments: args,
-        agent: teammate,
-        signal: new AbortController().signal,
-      })
+      const refused = await host.ctx.tools
+        .execute({
+          calls: [
+            { type: 'tool-call', id: ToolCallId(`schedule-child-${name}`), name, arguments: JSON.stringify(args) },
+          ],
+          agent: teammate,
+          signal: new AbortController().signal,
+        })
+        .then((batch) => required(batch.results[0]).result)
       expect(refused.isError).toBe(false)
       expect(refused.value).toMatchObject({ code: 'subagent_session' })
     }

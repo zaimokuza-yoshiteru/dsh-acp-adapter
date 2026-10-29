@@ -1,3 +1,5 @@
+import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
+import { NativeToolExecutor } from '@deepseek-ai/dsh-tool-executor-native'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import AgentRegistry, { type Agent } from '@deepseek-ai/dsh-agent'
@@ -52,8 +54,10 @@ async function harness() {
     await ctx.plugin(LlmRuntime),
     await ctx.plugin(SystemPrompt, {}),
     await ctx.plugin(ToolRuntime),
+    await ctx.plugin(SessionProjectionRegistry),
     await ctx.plugin(AgentRegistry),
   ]
+  ctx.tools.setExecutor(new NativeToolExecutor(ctx))
   cleanup.push(async () => {
     for (const fiber of fibers.reverse()) await fiber.dispose()
   })

@@ -58,6 +58,7 @@ import { waitWithin } from '../runtime/process/timeout.ts'
 import { stopSubprocess } from '../runtime/process/cleanup.ts'
 import type { AcpSubprocessHandle, SubprocessSeam, SubprocessSeamResolution } from '../runtime/process/subprocess.ts'
 import { AcpClientError } from '../protocol/v1/errors.ts'
+import { AcpNativeForkError } from '../domain/session/native-fork-error.ts'
 import { matchesDiagnosticView } from '../contract/diagnostics.ts'
 import type {
   AcpApprovalChildView,
@@ -268,6 +269,10 @@ export interface AcpAgentSessionControlLike {
 }
 
 export interface AcpRemoteServiceDeps {
+  /** Read the identity initialized by the Sidecar owner; this callback never writes it. */
+  nativeForkScope?: () => string
+  /** Accept an explicit source only after the native child prefix is verified. */
+  nativeFork?: (sessionId: string, sourceSessionId: string, atSeq: number) => Promise<void>
   /** Live runtime ownership; deliberately accepts native as well as ACP parents. */
   approvalChildren?: (parent: string) => readonly AcpApprovalChildView[]
   teamManagement?: {
@@ -475,6 +480,8 @@ function firstLine(text: string): string | null {
 // ---------- Remote service ----------
 
 interface ResolvedDeps {
+  readonly nativeForkScope: AcpRemoteServiceDeps['nativeForkScope']
+  readonly nativeFork: AcpRemoteServiceDeps['nativeFork']
   readonly approvalChildren: AcpRemoteServiceDeps['approvalChildren']
   readonly teamManagement: AcpRemoteServiceDeps['teamManagement']
 
@@ -527,6 +534,8 @@ export class AcpRemoteService extends TypertRemoteService {
     // seam 解析产物只驱动缺省实现；显式注入的 deps 原样优先（测试全注入假实现）。
     const subprocess = deps.subprocess ?? { ok: false as const, message: ACP_SUBPROCESS_UNAVAILABLE_MESSAGE }
     this.resolved = {
+      nativeForkScope: deps.nativeForkScope,
+      nativeFork: deps.nativeFork,
       registry: deps.registry,
       approvalChildren: deps.approvalChildren,
       teamManagement: deps.teamManagement,
@@ -560,6 +569,49 @@ export class AcpRemoteService extends TypertRemoteService {
       activityReadStatus: deps.activityReadStatus ?? null,
       projectedSubagentIds: deps.projectedSubagentIds ?? null,
       imageInputAvailable: deps.imageInputAvailable ?? false,
+    }
+  }
+
+  /** Identify this Host's fork journal owner without exposing paths or granting access. */
+  @Remote({ resources: { session: (sessionId) => SessionId(sessionId) } })
+  nativeForkScope(sessionId: string): string {
+    if (!this.callerCanReadSession(sessionId))
+      throw acpRemoteFailure('user-rejected', 'ACP fork source access is not authorized')
+    try {
+      if (this.resolved.nativeForkScope === undefined) throw new Error('ACP native fork scope is unavailable')
+      return this.resolved.nativeForkScope()
+    } catch (error) {
+      throw new RemoteError(
+        'dsh-acp/native-fork-scope-unavailable',
+        'ACP fork recovery storage is unavailable; no fork was started',
+        { sessionId },
+        { cause: error },
+      )
+    }
+  }
+
+  /** Preserve native ordinary-fork provenance without introducing a parent relationship. */
+  @Remote({
+    resources: { session: (sessionId, sourceSessionId) => [SessionId(sessionId), SessionId(sourceSessionId)] },
+  })
+  async registerNativeFork(sessionId: string, sourceSessionId: string, atSeq: number): Promise<void> {
+    if (!Number.isSafeInteger(atSeq) || atSeq < 0 || sessionId === sourceSessionId)
+      throw badRequest('Invalid ACP native fork source or cut')
+    if (!this.callerCanReadSession(sessionId) || !this.callerCanReadSession(sourceSessionId))
+      throw acpRemoteFailure('user-rejected', 'ACP fork access is not authorized for both sessions')
+    try {
+      if (this.resolved.nativeFork === undefined)
+        throw new AcpNativeForkError('unavailable', 'ACP native fork registration is unavailable')
+      await this.resolved.nativeFork(sessionId, sourceSessionId, atSeq)
+    } catch (error) {
+      if (error instanceof AcpNativeForkError)
+        throw new RemoteError(
+          'dsh-acp/native-fork-rejected',
+          error.message,
+          { sessionId, sourceSessionId, atSeq, reason: error.reason },
+          { cause: error },
+        )
+      throw error
     }
   }
 

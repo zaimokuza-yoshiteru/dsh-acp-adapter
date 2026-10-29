@@ -21,6 +21,7 @@ function session(events: readonly string[], parentSession?: string, id = 'sessio
 function sidecar(binding: AcpBindingLookup | undefined, writes: unknown[] = []): AcpSidecar {
   return {
     readLatestBinding: vi.fn(async () => binding),
+    readNativeFork: vi.fn(async () => undefined),
     writeRecoveryState: vi.fn(async (state: unknown) => {
       writes.push(state)
     }),
@@ -28,7 +29,7 @@ function sidecar(binding: AcpBindingLookup | undefined, writes: unknown[] = []):
 }
 
 function install(
-  selection: unknown,
+  selection: { lastUsed: LlmCallConfig | null; pending: LlmCallConfig | null } | undefined,
   acpSidecar: AcpSidecar,
 ): { listener: RequestListener; reads: ReturnType<typeof vi.fn> } {
   let listener: RequestListener | undefined
@@ -36,9 +37,8 @@ function install(
   const context = {
     inject: (_keys: readonly string[], callback: (ctx: unknown) => void) =>
       callback({
-        sessionProjections: {
-          stateOf: (session: { facts: unknown }, key: string) => (key === 'acpExecution' ? session.facts : reads()),
-        },
+        get: (name: string) =>
+          name === 'acpSessionFacts' ? { read: (session: { facts: unknown }) => session.facts } : undefined,
         on: (_event: string, handler: RequestListener) => {
           listener = handler
           return () => undefined
@@ -47,7 +47,19 @@ function install(
   }
   installAcpBackendGuard(context as unknown as Context, { sidecar: acpSidecar })
   if (listener === undefined) throw new Error('guard listener was not installed')
-  return { listener, reads }
+  const installed = listener
+  return {
+    listener: (payload, next) => {
+      const owner = (payload as { agent: { session: Session } }).agent.session
+      if (typeof owner.requestHeader !== 'function')
+        owner.requestHeader = (() => {
+          const lastUsed = reads()?.lastUsed
+          return lastUsed == null ? undefined : { config: lastUsed }
+        }) as typeof owner.requestHeader
+      return installed(payload, next)
+    },
+    reads,
+  }
 }
 
 const validBinding = (profileId: string): AcpBindingLookup => ({
@@ -167,6 +179,28 @@ describe('M6b additive ACP backend guard', () => {
     )
     expect(acpSidecar.readLatestBinding).toHaveBeenCalledTimes(1)
     expect(acpSidecar.writeRecoveryState).not.toHaveBeenCalled()
+  })
+
+  it('admits an alpha ordinary fork only with its explicit exact-cut credential', async () => {
+    const acpSidecar = sidecar(undefined)
+    vi.mocked(acpSidecar.readNativeFork).mockResolvedValue({
+      dshSessionId: 'child-session',
+      sourceSessionId: 'parent-session',
+      atSeq: 7,
+    })
+    const { listener } = install({ lastUsed: config('acp-devin'), pending: null }, acpSidecar)
+    const child = Object.assign(session(['turn/start', 'user/message'], undefined, 'child-session'), {
+      inheritedEventCount: 8,
+    })
+    Object.assign(child.header, { isSeeded: true })
+    await expect(listener({ agent: { session: child } }, async () => config('acp-devin'))).resolves.toEqual(
+      config('acp-devin'),
+    )
+    expect(child.header.parentSession).toBeUndefined()
+    vi.mocked(acpSidecar.readNativeFork).mockResolvedValue(undefined)
+    await expect(listener({ agent: { session: child } }, async () => config('acp-devin'))).rejects.toMatchObject({
+      code: 'ACP_BACKEND_RECOVERY_REQUIRED',
+    })
   })
 
   it('records a backend conflict when the binding belongs to another ACP profile', async () => {

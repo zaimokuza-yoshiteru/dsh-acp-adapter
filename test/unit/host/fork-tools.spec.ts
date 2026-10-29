@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
+import * as NativeExecutor from '@deepseek-ai/dsh-tool-executor-native'
+import * as PtcExecutor from '@deepseek-ai/dsh-tool-executor-ptc'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
@@ -33,7 +35,8 @@ async function harness(mode: 'native' | 'ptc' = 'native') {
   await ctx.plugin(SessionStore)
   await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(SystemPrompt, {})
-  await ctx.plugin(ToolRuntime, { mode })
+  await ctx.plugin(ToolRuntime, {})
+  if (mode === 'native') await ctx.plugin(NativeExecutor)
   if (mode === 'ptc') {
     ctx.provide('workingDirectory', {
       defaultDirectory: process.cwd(),
@@ -41,6 +44,7 @@ async function harness(mode: 'native' | 'ptc' = 'native') {
       ensure: async () => process.cwd(),
     })
     await ctx.plugin(ForkTestPtcRuntime)
+    await ctx.plugin(PtcExecutor, {})
   }
   const activeAgents = new Map<SessionId, Agent>()
   ctx.provide('agents', { list: () => [...activeAgents.values()] })
@@ -93,14 +97,15 @@ async function harness(mode: 'native' | 'ptc' = 'native') {
     owner.session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
     owner.session.append('turn/start', { turn: 2 })
   }
-  const execute = (owner: Agent, name: string, args = {}) =>
-    ctx.tools.execute({
-      callId: ToolCallId(`${name}-call`),
-      name,
-      arguments: args,
+  const execute = async (owner: Agent, name: string, args = {}) => {
+    const result = await ctx.tools.execute({
+      calls: [{ type: 'tool-call', id: ToolCallId(`${name}-call`), name, arguments: JSON.stringify(args) }],
       agent: owner,
       signal: new AbortController().signal,
     })
+    return result.results[0]!.result
+  }
+
   return { ctx, bodies, register, removeFork, mount, agent, completed, execute }
 }
 

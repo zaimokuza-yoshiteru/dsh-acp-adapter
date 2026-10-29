@@ -18,12 +18,7 @@ import { waitWithin } from '../process/timeout.ts'
 import { AcpHostSettlementError } from './mcp-lease.ts'
 import type { AcpMcpLease } from './mcp-lease.ts'
 import type { AcpPermissionCheck } from '../../domain/policy/permission-check.ts'
-import {
-  collectLiveDiagnostic,
-  emitLiveDiagnostic,
-  liveDiagnosticId,
-  liveDiagnosticTraceEnabled,
-} from '../../contract/live-diagnostic-trace.ts'
+import type { LiveDiagnosticTrace } from '../../contract/live-diagnostic-trace.ts'
 import { AcpClientError } from '../../protocol/v1/errors.ts'
 import { performance } from 'node:perf_hooks'
 import { generatedContextBlock } from '../text-block-boundary.ts'
@@ -118,6 +113,8 @@ export interface AcpRuntimeContextUsage {
 }
 
 export interface AcpSessionRuntimeOptions {
+  /** Optional observer borrowed from the Host/run owner; the runtime never owns its sink. */
+  readonly diagnosticTrace?: LiveDiagnosticTrace
   /** DSH session id used only by the opt-in live-test diagnostic observer. */
   readonly diagnosticDshSessionId?: string
   readonly mcpKey?: () => unknown
@@ -981,18 +978,18 @@ export class AcpSessionRuntime {
       let phaseAbort = new AbortController()
       this.promptPhaseAbort = phaseAbort
       this.promptSignal = signal
-      const diagnosticsEnabled = liveDiagnosticTraceEnabled()
+      const diagnosticsEnabled = this.options.diagnosticTrace?.enabled() === true
       const promptOrdinal = diagnosticsEnabled ? ++this.promptOrdinal : undefined
       const promptStartedAt = diagnosticsEnabled ? performance.now() : 0
       const diagnosticLeaseId = diagnosticsEnabled ? this.mcpLease?.diagnosticLeaseId : undefined
       const diagnosticSessionId = diagnosticsEnabled
-        ? (liveDiagnosticId('dsh-session', this.options.diagnosticDshSessionId) ?? 'unavailable')
+        ? (this.options.diagnosticTrace?.id('dsh-session', this.options.diagnosticDshSessionId) ?? 'unavailable')
         : 'unavailable'
       const diagnosticAcpSessionId = diagnosticsEnabled
-        ? (liveDiagnosticId('acp-session', sessionId) ?? 'unavailable')
+        ? (this.options.diagnosticTrace?.id('acp-session', sessionId) ?? 'unavailable')
         : undefined
       if (diagnosticsEnabled)
-        emitLiveDiagnostic({
+        this.options.diagnosticTrace?.emit({
           type: 'adapter-prompt/start',
           sessionId: diagnosticSessionId,
           ...(diagnosticAcpSessionId === undefined ? {} : { acpSessionId: diagnosticAcpSessionId }),
@@ -1163,7 +1160,7 @@ export class AcpSessionRuntime {
           feedbackCommitFailure && promptError !== undefined ? promptError : (drainError ?? promptError)
         const structuredFailure =
           diagnosticsEnabled && structuredFailureError !== undefined
-            ? collectLiveDiagnostic(() => ({
+            ? this.options.diagnosticTrace?.collect(() => ({
                 operation: 'session/prompt' as const,
                 errorCode: structuredAcpErrorCode(structuredFailureError),
                 providerErrorKind: structuredProviderErrorKind(structuredFailureError),
@@ -1171,7 +1168,7 @@ export class AcpSessionRuntime {
               }))
             : undefined
         if (diagnosticsEnabled)
-          emitLiveDiagnostic({
+          this.options.diagnosticTrace?.emit({
             type: 'adapter-prompt/end',
             sessionId: diagnosticSessionId,
             ...(diagnosticAcpSessionId === undefined ? {} : { acpSessionId: diagnosticAcpSessionId }),
@@ -1601,12 +1598,12 @@ export class AcpSessionRuntime {
     // parent's model, mode, usage or permission snapshots.
     if (notification.sessionId !== (this.sessionId ?? this.restoringSessionId)) return
     const update = notification.update
-    const diagnosticsEnabled = liveDiagnosticTraceEnabled()
+    const diagnosticsEnabled = this.options.diagnosticTrace?.enabled() === true
     const diagnosticSessionId = diagnosticsEnabled
-      ? (liveDiagnosticId('dsh-session', this.options.diagnosticDshSessionId) ?? 'unavailable')
+      ? (this.options.diagnosticTrace?.id('dsh-session', this.options.diagnosticDshSessionId) ?? 'unavailable')
       : 'unavailable'
     const diagnosticAcpSessionId = diagnosticsEnabled
-      ? (liveDiagnosticId('acp-session', notification.sessionId) ?? 'unavailable')
+      ? (this.options.diagnosticTrace?.id('acp-session', notification.sessionId) ?? 'unavailable')
       : undefined
     if (diagnosticsEnabled && (update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update')) {
       const toolNames = new Set([
@@ -1622,13 +1619,13 @@ export class AcpSessionRuntime {
       ])
       const rawToolName = (update as { readonly name?: unknown }).name
       const rawStatus = update.status
-      emitLiveDiagnostic({
+      this.options.diagnosticTrace?.emit({
         type: 'acp-tool/update',
         sessionId: diagnosticSessionId,
         ...(diagnosticAcpSessionId === undefined ? {} : { acpSessionId: diagnosticAcpSessionId }),
         ...(this.mcpLease?.diagnosticLeaseId === undefined ? {} : { leaseId: this.mcpLease.diagnosticLeaseId }),
         ...(this.promptActive ? { adapterPromptOrdinal: this.promptOrdinal } : {}),
-        providerToolCallId: liveDiagnosticId('acp-tool-call', update.toolCallId) ?? 'unavailable',
+        providerToolCallId: this.options.diagnosticTrace?.id('acp-tool-call', update.toolCallId) ?? 'unavailable',
         tool: typeof rawToolName === 'string' && toolNames.has(rawToolName) ? (rawToolName as never) : 'other',
         providerToolStatus:
           rawStatus === 'pending' || rawStatus === 'in_progress' || rawStatus === 'completed' || rawStatus === 'failed'
@@ -1637,7 +1634,7 @@ export class AcpSessionRuntime {
       })
     }
     if (diagnosticsEnabled && update.sessionUpdate === 'usage_update') {
-      emitLiveDiagnostic({
+      this.options.diagnosticTrace?.emit({
         type: 'acp-usage/update',
         sessionId: diagnosticSessionId,
         ...(diagnosticAcpSessionId === undefined ? {} : { acpSessionId: diagnosticAcpSessionId }),

@@ -117,7 +117,7 @@ async function settled(run: Awaited<ReturnType<typeof startChild>>) {
 it.skipIf(!enabled).each(['ask', 'auto'] as const)(
   'real Devin %s keeps child identity and full parent choices across refresh',
   async (policy) => {
-    const host = await launchAdapterWorld({ adapterDirectory, toolsMode: 'native' })
+    const host = await launchAdapterWorld({ adapterDirectory, toolExecutor: 'native' })
     let browser: TestBrowser | undefined
     let run: Awaited<ReturnType<typeof startChild>> | undefined
     const directory = join(reportRoot, `${policy}-${randomUUID()}`)
@@ -255,7 +255,7 @@ it.skipIf(!enabled).each(['ask', 'auto'] as const)(
 it.skipIf(!enabled || before)(
   'real concurrent nested Devin approvals cancel only their original child',
   async () => {
-    const host = await launchAdapterWorld({ adapterDirectory, toolsMode: 'native' })
+    const host = await launchAdapterWorld({ adapterDirectory, toolExecutor: 'native' })
     let browser: TestBrowser | undefined
     let middle: SubagentActivation | undefined
     const hold = Promise.withResolvers<void>()
@@ -375,7 +375,7 @@ it.skipIf(!enabled || before)(
 it.skipIf(!enabled || before)(
   'real Devin project Deny preserves the native boundary and reports a missing summary truthfully',
   async () => {
-    const host = await launchAdapterWorld({ adapterDirectory, toolsMode: 'native' })
+    const host = await launchAdapterWorld({ adapterDirectory, toolExecutor: 'native' })
     let browser: TestBrowser | undefined
     let run: Awaited<ReturnType<typeof startChild>> | undefined
     let captureFailure: (() => Promise<void>) | undefined

@@ -129,8 +129,10 @@
   width: 100%;
   min-width: 0;
 }
-.addButton:hover:not(:disabled) {
-  background: var(--dsw-alias-interactive-bg-hover);
+@media (hover: hover) {
+  .addButton:hover:not(:disabled) {
+    background: var(--dsw-alias-interactive-bg-hover);
+  }
 }
 .addButton:disabled {
   opacity: 0.4;
@@ -159,8 +161,10 @@
   text-align: left;
   cursor: pointer;
 }
-.approvalButton:hover:not(:disabled) {
-  background: var(--dsw-alias-interactive-bg-hover);
+@media (hover: hover) {
+  .approvalButton:hover:not(:disabled) {
+    background: var(--dsw-alias-interactive-bg-hover);
+  }
 }
 .approvalButton:focus-visible {
   outline: none;
@@ -286,8 +290,10 @@
   line-height: 18px;
   cursor: pointer;
 }
-.advancedToggle:hover {
-  color: var(--dsw-alias-label-primary);
+@media (hover: hover) {
+  .advancedToggle:hover {
+    color: var(--dsw-alias-label-primary);
+  }
 }
 .advancedToggle:focus-visible {
   outline: none;
@@ -347,8 +353,10 @@
 .dangerButton {
   color: var(--dsw-alias-state-error-primary);
 }
-.dangerButton:hover:not(:disabled) {
-  background: var(--dsw-alias-interactive-bg-hover-danger);
+@media (hover: hover) {
+  .dangerButton:hover:not(:disabled) {
+    background: var(--dsw-alias-interactive-bg-hover-danger);
+  }
 }
 .deleteBlock {
   display: flex;

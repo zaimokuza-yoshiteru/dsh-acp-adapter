@@ -1,3 +1,4 @@
+import type {} from '@deepseek-ai/dsh-permission-presets'
 import type {} from '@deepseek-ai/dsh-api-terminal-controller'
 import type {} from '@deepseek-ai/dsh-agent-default-model'
 import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
@@ -10,7 +11,7 @@ import { launchWebScaffold } from '#host-scaffold'
 
 export const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 type NativeScaffoldOptions = NonNullable<Parameters<typeof launchWebScaffold>[0]>
-type ToolsMode = NativeScaffoldOptions['toolsMode']
+type ToolExecutor = 'native' | 'ptc'
 
 /** Names from the pinned Host's optional bundle inventory, resolved from its npm installation. */
 export type OptionalBundle =
@@ -48,7 +49,7 @@ export async function launchAdapterWorld({
   teamMembers,
   terminalShell,
   renderProbe = false,
-  toolsMode,
+  toolExecutor,
   replayFixture,
   replayProviders,
   replayProvidersOnly,
@@ -62,7 +63,7 @@ export async function launchAdapterWorld({
   teamMembers?: number
   terminalShell?: { path: string; name: string; args: string[] }
   renderProbe?: boolean
-  toolsMode?: ToolsMode
+  toolExecutor?: ToolExecutor
   /** Official catalog-only fixtures for zero-inference native UI checks. */
   replayFixture?: NativeScaffoldOptions['replayFixture']
   replayProviders?: NativeScaffoldOptions['replayProviders']
@@ -99,7 +100,7 @@ export async function launchAdapterWorld({
       profile: { packages },
       extraOverlayPath,
       ...(timedAskUser === undefined
-        ? {}
+        ? { agentPresets: { default: toolExecutor === 'ptc' ? 'ptc' : 'standard' } }
         : {
             agentPresets: {
               default: 'timed-ask-user',
@@ -118,7 +119,6 @@ export async function launchAdapterWorld({
               ],
             },
           }),
-      ...(toolsMode === undefined ? {} : { toolsMode }),
       ...(replayFixture === undefined ? {} : { replayFixture }),
       ...(replayProviders === undefined ? {} : { replayProviders }),
       ...(replayProvidersOnly === undefined ? {} : { replayProvidersOnly }),

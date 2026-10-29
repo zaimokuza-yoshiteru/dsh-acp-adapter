@@ -7,8 +7,10 @@ import { teamModeChoices } from '../../contract/session-modes.ts'
 
 import fs from 'node:fs'
 import path from 'node:path'
+import { isDeepStrictEqual } from 'node:util'
 import type * as acp from '@agentclientprotocol/sdk'
 import type { Context } from '@deepseek-ai/cordis'
+import type {} from './live-diagnostics.ts'
 import { admitEncodedImages } from '@deepseek-ai/dsh-attachment'
 import type { AttachmentStore, ImageMediaType } from '@deepseek-ai/dsh-attachment'
 import { LlmAdapter, LlmError } from '@deepseek-ai/dsh-llm'
@@ -87,14 +89,7 @@ import type { AcpPromptOptions } from '../../runtime/session/session-runtime.ts'
 import type { AcpNativeQuestionUnavailable, AcpNativeUserQuestionService } from '../../domain/policy/elicitation.ts'
 import { isAcpModelOrReasoningOption, normalizeAcpConfigOptionKey } from '../../contract/config-options.ts'
 import { AcpClientError } from '../../protocol/v1/errors.ts'
-import {
-  assertHostExecutionQuiescent,
-  clearHostExecutionOwners,
-  clearSharedRecoveryFallback,
-  getSharedRecoveryFallback,
-  retainHostExecutionOwner,
-  setSharedRecoveryFallback,
-} from './host-execution-owners.ts'
+import { AcpHostContinuity, ensureHostContinuity } from './host-continuity.ts'
 import { AcpHostSettlementError } from '../../runtime/session/mcp-lease.ts'
 import { AcpSteeringRequestError, supportsFork } from '../../protocol/v1/connection.ts'
 import type { AcpSessionNotification } from '../../protocol/v1/types.ts'
@@ -102,15 +97,7 @@ import { nonTextContentFallback } from '../../domain/session/assistant-content.t
 import type { AcpNonTextContent } from '../../domain/session/assistant-content.ts'
 import { AcpToolCallReducer } from './tool-call-reducer.ts'
 import type { AcpToolCallPatch, AcpToolCallSnapshot } from './tool-call-reducer.ts'
-import {
-  AcpLocalSettlementError,
-  localSettlementStatus as readLocalSettlementStatus,
-  observeLocalSettlement,
-  registerLocalSettlementSink,
-  settleLocally,
-  settlePendingLocally,
-  waitForLocalSettlement,
-} from './local-settlement.ts'
+import { AcpLocalSettlementError } from './local-settlement.ts'
 import type { AcpLocalSettlementStatus } from './local-settlement.ts'
 
 function abortReason(signal: AbortSignal): unknown {
@@ -728,10 +715,6 @@ export function qwenTaskWakeInput(messages: readonly UserMessage[]): readonly Us
   return wake ? remaining : undefined
 }
 
-export function isQwenTaskWakeStep(messages: readonly UserMessage[]): boolean {
-  return qwenTaskWakeInput(messages) !== undefined
-}
-
 /** Only an identical, previously delivered native replacement can be omitted. */
 export function qwenTaskFollowupInput(
   messages: readonly UserMessage[],
@@ -792,6 +775,9 @@ export class AcpProfileAdapter extends LlmAdapter {
   private readonly pendingExternalProjections = new Set<Promise<void>>()
   private readonly ledger: DispatchLedger
   private readonly settlementSink: AcpLocalSettlementSink
+  private readonly continuity: AcpHostContinuity
+  private readonly ownsContinuity: boolean
+  private closing: Promise<void> | undefined
   private settlementOwnerDisposer: (() => Promise<void>) | undefined
   private readonly settlementCloseController = new AbortController()
   private readonly settlementSessionWaitControllers = new Map<
@@ -849,16 +835,14 @@ export class AcpProfileAdapter extends LlmAdapter {
     private readonly controlsChanged?: (sessionId: string) => void,
     private readonly hostRoot?: Context,
     private readonly qwenTaskJobs?: (sessionId: string) => QwenTaskJobStarter | undefined,
+    continuity?: AcpHostContinuity,
   ) {
     super()
     this.ledger = new DispatchLedger(ledgerStore)
+    this.ownsContinuity = continuity === undefined && hostRoot === undefined
+    this.continuity = continuity ?? (hostRoot === undefined ? new AcpHostContinuity() : ensureHostContinuity(hostRoot))
     this.settlementSink = this.localSettlementSink()
-    this.settlementOwnerDisposer = registerLocalSettlementSink(
-      this.hostRoot ?? this,
-      this.profileId,
-      this,
-      this.settlementSink,
-    )
+    this.settlementOwnerDisposer = this.continuity.settlements.registerSink(this.profileId, this, this.settlementSink)
     this.probeGeneration = this.generationOfSnapshot(snapshotProfile(readConfig()))
   }
 
@@ -1224,7 +1208,7 @@ export class AcpProfileAdapter extends LlmAdapter {
 
   /** In-memory fail-closed fallback exposed through the existing recovery snapshot seam. */
   recoveryStateFallback(sessionId: string): AcpRecoveryState | undefined {
-    const shared = this.hostRoot === undefined ? undefined : getSharedRecoveryFallback(this.hostRoot, sessionId)
+    const shared = this.continuity.executionOwners.getRecoveryFallback(sessionId)
     if (shared !== undefined) return shared
     const retained = this.inMemoryRecoveryStates.get(sessionId)
     if (retained !== undefined) return retained
@@ -1241,9 +1225,8 @@ export class AcpProfileAdapter extends LlmAdapter {
 
   /** Read-only UI state for local writes after a confirmed remote terminal. */
   localSettlementStatus(sessionId: string): AcpLocalSettlementViewStatus | undefined {
-    const root = this.hostRoot ?? this
-    observeLocalSettlement(root, sessionId, this, () => this.controlsChanged?.(sessionId))
-    const localStatus = readLocalSettlementStatus(root, sessionId)
+    this.continuity.settlements.observe(sessionId, this, () => this.controlsChanged?.(sessionId))
+    const localStatus = this.continuity.settlements.status(sessionId)
     if (localStatus !== undefined) return localStatus
     const runtime = this.runtimeForSession(sessionId)
     if (runtime?.hostSettlementPending === true) return 'finishing-tools'
@@ -1927,35 +1910,33 @@ export class AcpProfileAdapter extends LlmAdapter {
         const settlementSignal = settlementWait.signal
         try {
           if (settlementSignal.aborted) throw abortReason(settlementSignal)
-          const settleExisting = settlePendingLocally(self.hostRoot ?? self, key, self.settlementSink, self.profileId)
+          const settleExisting = self.continuity.settlements.settlePending(key, self.settlementSink, self.profileId)
           try {
             await awaitWithSignal(settleExisting, settlementSignal)
           } catch (error) {
             if (settlementSignal.aborted) throw abortReason(settlementSignal)
             if (!(error instanceof AcpLocalSettlementError)) throw error
-            await waitForLocalSettlement(self.hostRoot ?? self, key, settlementSignal)
+            await self.continuity.settlements.wait(key, settlementSignal)
           }
           if (settlementSignal.aborted) throw abortReason(settlementSignal)
         } finally {
           settlementWait.dispose()
         }
       }
-      const sharedFallback = self.hostRoot === undefined ? undefined : getSharedRecoveryFallback(self.hostRoot, key)
+      const sharedFallback = self.continuity.executionOwners.getRecoveryFallback(key)
       if (sharedFallback !== undefined && sharedFallback.kind !== 'healthy')
         throw new LlmError(
           sharedFallback.detail ?? 'ACP session requires recovery before another prompt',
           'ACP_RECOVERY_REQUIRED',
         )
-      if (self.hostRoot !== undefined) {
-        try {
-          assertHostExecutionQuiescent(self.hostRoot, key)
-        } catch (error) {
-          throw new LlmError(
-            'ACP Host tool execution is still active; recovery must wait for it to settle',
-            'ACP_RECOVERY_REQUIRED',
-            { cause: error },
-          )
-        }
+      try {
+        self.continuity.executionOwners.assertQuiescent(key)
+      } catch (error) {
+        throw new LlmError(
+          'ACP Host tool execution is still active; recovery must wait for it to settle',
+          'ACP_RECOVERY_REQUIRED',
+          { cause: error },
+        )
       }
       if (self.inMemoryRecoveryRequired.has(key))
         throw new LlmError('ACP steering outcome requires explicit recovery before continuing', 'ACP_RECOVERY_REQUIRED')
@@ -1976,7 +1957,8 @@ export class AcpProfileAdapter extends LlmAdapter {
       if (owner !== undefined) {
         if (!owner.stream.suspended) throw new LlmError('ACP stream is already active', 'ACP_PROMPT_ALREADY_ACTIVE')
         const sameToolDirectory =
-          self.mcpKey === undefined || self.mcpKey(key, owner.options.tools) === self.mcpKey(key, options.tools)
+          isDeepStrictEqual(owner.options.tools, options.tools) &&
+          (self.mcpKey === undefined || self.mcpKey(key, owner.options.tools) === self.mcpKey(key, options.tools))
         const compatible =
           owner.generation === generation &&
           owner.options.provider === options.provider &&
@@ -2474,7 +2456,23 @@ export class AcpProfileAdapter extends LlmAdapter {
           let forkParentAgentSessionId: string | undefined
           let forkParentBinding: AcpBindingData | undefined
           let forked = false
-          const parentSessionId = session?.header?.parentSession
+          const ordinaryFork =
+            session?.header?.isSeeded && session.header.parentSession === undefined
+              ? await self.sidecar.readNativeFork(sessionKey as never)
+              : undefined
+          const parentSessionId = session?.header?.parentSession ?? ordinaryFork?.sourceSessionId
+          if (
+            !forceBlank &&
+            session?.header?.isSeeded &&
+            (parentSessionId === undefined ||
+              (ordinaryFork !== undefined && session.inheritedEventCount !== ordinaryFork.atSeq + 1))
+          ) {
+            await self.releaseRuntime(runtimeKey, runtime)
+            throw new LlmError(
+              'This ordinary ACP fork has no verified source; fork from the source conversation again or explicitly start blank.',
+              'ACP_FORK_SOURCE_REQUIRED',
+            )
+          }
           // Explicit blank recovery abandons ACP history; it must not retry the
           // original delegated fork or require that old parent to remain live.
           if (!forceBlank && parentSessionId !== undefined) {
@@ -2860,16 +2858,17 @@ export class AcpProfileAdapter extends LlmAdapter {
           }
           const task = localSettlementTask
           if (task === undefined) throw new Error('ACP local settlement task was not initialized')
-          return settleLocally(
-            self.hostRoot ?? self,
-            sessionKey,
-            dispatchKey,
-            task,
-            self,
-            () => self.controlsChanged?.(sessionKey),
-            self.settlementSink,
-            self.profileId,
-          ).then(() => committedBindingAfterSettle)
+          return self.continuity.settlements
+            .settle(
+              sessionKey,
+              dispatchKey,
+              task,
+              self,
+              () => self.controlsChanged?.(sessionKey),
+              self.settlementSink,
+              self.profileId,
+            )
+            .then(() => committedBindingAfterSettle)
         }
         const queue: StreamChunk[] = []
         let activityFallbackSeq = 0
@@ -3515,7 +3514,7 @@ export class AcpProfileAdapter extends LlmAdapter {
         self.controlsChanged?.(sessionKey)
         const waitForKnownTerminalSettlement = async (): Promise<void> => {
           try {
-            await waitForLocalSettlement(self.hostRoot ?? self, sessionKey, terminalSettlementSignal)
+            await self.continuity.settlements.wait(sessionKey, terminalSettlementSignal)
             if (terminalSettlementSignal.aborted) throw abortReason(terminalSettlementSignal)
           } catch (error) {
             // Record only an error proven to come from this local waiter. A
@@ -4318,10 +4317,8 @@ export class AcpProfileAdapter extends LlmAdapter {
         cause: error,
       })
     }
-    if (this.hostRoot !== undefined) {
-      clearHostExecutionOwners(this.hostRoot, sessionId)
-      clearSharedRecoveryFallback(this.hostRoot, sessionId)
-    }
+    this.continuity.executionOwners.clear(sessionId)
+    this.continuity.executionOwners.clearRecoveryFallback(sessionId)
     this.inMemoryRecoveryRequired.delete(sessionId)
     this.inMemoryRecoveryStates.delete(sessionId)
   }
@@ -4381,10 +4378,8 @@ export class AcpProfileAdapter extends LlmAdapter {
         updatedAt: Date.now(),
       }
       await this.sidecar.writeRecoveryState(healthyState, { clearDispatch: true })
-      if (this.hostRoot !== undefined) {
-        clearHostExecutionOwners(this.hostRoot, sessionId)
-        clearSharedRecoveryFallback(this.hostRoot, sessionId)
-      }
+      this.continuity.executionOwners.clear(sessionId)
+      this.continuity.executionOwners.clearRecoveryFallback(sessionId)
       this.inMemoryRecoveryRequired.delete(sessionId)
       this.inMemoryRecoveryStates.delete(sessionId)
     } catch (error: unknown) {
@@ -4434,6 +4429,15 @@ export class AcpProfileAdapter extends LlmAdapter {
   }
 
   close(): Promise<void> {
+    if (this.closing !== undefined) return this.closing
+    const completion = Promise.withResolvers<void>()
+    this.closing = completion.promise
+    void this.closeOwnedResources().then(completion.resolve, completion.reject)
+    return this.closing
+  }
+
+  private async closeOwnedResources(): Promise<void> {
+    const failures: unknown[] = []
     this.projectionAdmissionClosed = true
     this.settlementCloseController.abort(new DOMException('Adapter closed', 'AbortError'))
     this.settlementSessionWaitControllers.clear()
@@ -4456,28 +4460,40 @@ export class AcpProfileAdapter extends LlmAdapter {
     const keys = [...this.runtimes.keys()]
     const runtimes = [...this.runtimes.entries()]
     this.runtimes.clear()
-    for (const key of keys) this.controlsChanged?.(key.slice(0, key.lastIndexOf(':')))
-    return (async () => {
+    for (const key of keys) {
       try {
-        await retireSettlement
-        await Promise.all(
-          runtimes.map(async ([key, runtime]) => {
-            await this.preservePendingAgentTurnFailure(key, runtime, true)
-            if (this.hostRoot !== undefined)
-              retainHostExecutionOwner(this.hostRoot, key.slice(0, key.lastIndexOf(':')), runtime)
-            await runtime.close()
-          }),
-        )
-        await Promise.all(
-          handoffs
-            .map(([, owner]) => owner)
-            .filter((owner) => owner.stream.suspended)
-            .map((owner) => owner.stream.drain()),
-        )
-      } finally {
-        while (this.pendingExternalProjections.size > 0) await Promise.allSettled([...this.pendingExternalProjections])
+        this.controlsChanged?.(key.slice(0, key.lastIndexOf(':')))
+      } catch (error) {
+        failures.push(error)
       }
-    })()
+    }
+    const recordFailures = (results: PromiseSettledResult<void>[]): void => {
+      for (const result of results) if (result.status === 'rejected') failures.push(result.reason)
+    }
+    recordFailures(await Promise.allSettled([retireSettlement]))
+    recordFailures(
+      await Promise.allSettled(
+        runtimes.map(async ([key, runtime]) => {
+          try {
+            await this.preservePendingAgentTurnFailure(key, runtime, true)
+          } finally {
+            this.continuity.executionOwners.retain(key.slice(0, key.lastIndexOf(':')), runtime)
+            await runtime.close()
+          }
+        }),
+      ),
+    )
+    recordFailures(
+      await Promise.allSettled(
+        handoffs
+          .map(([, owner]) => owner)
+          .filter((owner) => owner.stream.suspended)
+          .map((owner) => owner.stream.drain()),
+      ),
+    )
+    while (this.pendingExternalProjections.size > 0) await Promise.allSettled([...this.pendingExternalProjections])
+    if (this.ownsContinuity) recordFailures(await Promise.allSettled([this.continuity.close()]))
+    if (failures.length > 0) throw new AggregateError(failures, 'ACP profile cleanup failed')
   }
 
   private async releaseRuntime(key: string, runtime: AcpProfileRuntime): Promise<void> {
@@ -4485,8 +4501,7 @@ export class AcpProfileAdapter extends LlmAdapter {
     if (this.runtimes.get(key) !== runtime) return
     await this.preservePendingAgentTurnFailure(key, runtime)
     if (this.runtimes.get(key) !== runtime) return
-    if (this.hostRoot !== undefined)
-      retainHostExecutionOwner(this.hostRoot, key.slice(0, key.lastIndexOf(':')), runtime)
+    this.continuity.executionOwners.retain(key.slice(0, key.lastIndexOf(':')), runtime)
     this.runtimes.delete(key)
     this.controlsChanged?.(key.slice(0, key.lastIndexOf(':')))
     await runtime.close().catch(() => undefined)
@@ -4562,9 +4577,8 @@ export class AcpProfileAdapter extends LlmAdapter {
   }
 
   private assertNoQuarantinedHostCalls(sessionId: string, recoveryAction = false): void {
-    if (this.hostRoot === undefined) return
     try {
-      assertHostExecutionQuiescent(this.hostRoot, sessionId, recoveryAction)
+      this.continuity.executionOwners.assertQuiescent(sessionId, recoveryAction)
     } catch (error) {
       throw new LlmError(
         'ACP Host tool execution is still active; wait for it to settle before recovery',
@@ -4577,7 +4591,7 @@ export class AcpProfileAdapter extends LlmAdapter {
   private rememberRecoveryFallback(state: AcpRecoveryState): void {
     this.inMemoryRecoveryRequired.set(state.dshSessionId, state.updatedAt)
     this.inMemoryRecoveryStates.set(state.dshSessionId, state)
-    if (this.hostRoot !== undefined) setSharedRecoveryFallback(this.hostRoot, state)
+    this.continuity.executionOwners.setRecoveryFallback(state)
     try {
       this.controlsChanged?.(state.dshSessionId)
     } catch {
@@ -4700,9 +4714,11 @@ export class AcpProfileAdapter extends LlmAdapter {
         ...(binding.onUnavailable === undefined ? {} : { onUnavailable: binding.onUnavailable }),
       })(params, signal)
     }
+    const diagnosticTrace = this.hostRoot?.get('acpLiveDiagnostics', false)
     return {
       profileId: this.profileId,
       diagnosticDshSessionId: sessionId,
+      ...(diagnosticTrace === undefined ? {} : { diagnosticTrace }),
       ...(runtime === 'codebuddy' ? { refreshSessionAfterCancelledPrompt: true } : {}),
       onHostSettlementChanged: () => this.controlsChanged?.(sessionId),
       ...sessionProtocolExtensions(runtime),

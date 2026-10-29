@@ -24,8 +24,11 @@ import { withSessionFacts } from '../../support/session-facts.ts'
 // 纯内存测试：不 spawn 进程（probe 行为在 llm-stub.spec.ts 用真 mock 覆盖）。
 
 import { Config } from '../../../src/host/composition/config.ts'
-import { describe, expect, it, vi } from 'vitest'
-import type { Context } from '@deepseek-ai/cordis'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { Context } from '@deepseek-ai/cordis'
+import { agentEvents, type Agent } from '@deepseek-ai/dsh-agent'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import type { AssembleContext, PromptPresentation } from '@deepseek-ai/dsh-system-prompt'
 import {
   acpAgentIdFromRoute,
   acpRouteId,
@@ -221,46 +224,35 @@ interface FakeHarness {
   /** ctx.logger.warn 收到的行（结构化后缀钉版用）。 */
   warnings: string[]
   errors: unknown[]
-  listeners: Map<string, (...args: any[]) => any>
 }
 
+const contexts: Context[] = []
+
+afterEach(async () => {
+  for (const ctx of contexts.splice(0)) await ctx.fiber.dispose()
+  vi.restoreAllMocks()
+})
+
 function fakeHarness(options: { failOnRoute?: string } = {}): FakeHarness {
+  const ctx = new Context()
+  contexts.push(ctx)
   const llm = new FakeLlm(options.failOnRoute)
   const settings = new FakeSettingsProvider()
   const warnings: string[] = []
   const errors: unknown[] = []
-  const listeners = new Map<string, (...args: any[]) => any>()
-  settings.onChange = () => listeners.get('loader/volatile-update')?.([])
-  const scopedCtx = {
-    get: (name: string): unknown => (name === 'settings' ? settings : undefined),
-  }
-  const ctx = {
-    on: (name: string, listener: (...args: any[]) => any) => {
-      listeners.set(name, listener)
-      return () => listeners.delete(name)
-    },
-    get: (name: string): unknown => (name === 'settings' ? settings : undefined),
-    inject: (deps: string[], callback: (sctx: unknown) => void): void => {
-      if (deps.every((name) => scopedCtx.get(name) !== undefined)) callback(scopedCtx)
-    },
-    effect: (_setup: () => () => void, _name?: string): void => {},
-    llm,
-    sessionProjections: {
-      register: () => () => {},
-      stateOf: (session: { facts: unknown; permissions: unknown }, key: string) =>
-        key === 'acpExecution' ? session.facts : key === 'permissions' ? session.permissions : undefined,
-    },
-    logger: {
-      warn: (line: string): void => {
-        warnings.push(line)
-      },
-      error: (...args: unknown[]): void => {
-        errors.push(args)
-      },
-    },
-    fiber: { state: 2 }, // FiberState.ACTIVE
-  }
-  return { ctx: ctx as unknown as Context, llm, settings, warnings, errors, listeners }
+  settings.onChange = () => ctx.emit('loader/volatile-update', [])
+  ctx.provide('settings', settings as never)
+  ctx.provide('llm', llm as never)
+  ctx.provide('sessionProjections', {
+    register: async () => ({ dispose: async () => {}, stateOf: (session: { facts: unknown }) => session.facts }),
+  } as never)
+  vi.spyOn(ctx.logger, 'warn').mockImplementation((line: string) => {
+    warnings.push(line)
+  })
+  vi.spyOn(ctx.logger, 'error').mockImplementation((...args: unknown[]) => {
+    errors.push(args)
+  })
+  return { ctx, llm, settings, warnings, errors }
 }
 
 const devinAgent: AcpAgentConfig = {
@@ -627,8 +619,8 @@ describe('纯函数：registration facts / probe 配置 hash', () => {
 
 describe('installInstalledProfileRegistry：注册/替换调用序列', () => {
   it('preserves delegated Host policy across admission, restore and route removal', async () => {
-    const { ctx, settings, listeners } = fakeHarness()
-    installInstalledProfileRegistry(ctx, settings.config)
+    const { ctx, settings } = fakeHarness()
+    await installInstalledProfileRegistry(ctx, settings.config)
     await settings.replace({ agents: { devin: devinAgent } })
     const events = [
       { type: 'sandbox/mode', data: { mode: 'workspace-write', source: 'delegation' } },
@@ -643,23 +635,41 @@ describe('installInstalledProfileRegistry：注册/替换调用序列', () => {
       snapshotEvents: () => [...events],
       append,
     })
-    const payload = { agent: { id: 'resumed-member', ctx, options: { provider: 'acp-devin' }, session } }
-    listeners.get('agent/created')?.(payload)
-    listeners.get('agent/inbox/claimed')?.(payload)
-    const next = vi.fn(async () => ({ kind: 'enter' }))
-    const gate = listeners.get('agent/pre-step')
-    if (gate !== undefined) await gate(payload, next)
+    const agent = { id: 'resumed-member', ctx, options: { provider: 'acp-devin' }, session } as unknown as Agent
+    const dispatch = agentEvents(ctx, agent)
+    const message = createUserMessage({ content: [{ type: 'text', text: 'Continue' }], source: { kind: 'user' } })
+    await dispatch.serial('agent/created', { source: 'resume' })
+    dispatch.emit('agent/inbox/claimed', { message, turn: 1 })
+    const next = vi.fn(async () => ({ kind: 'enter' as const, messages: [message] }))
+    await dispatch.waterfall(
+      'agent/pre-step',
+      {
+        messages: [message],
+        turn: 1,
+        step: 1,
+        signal: new AbortController().signal,
+        modelSelection: { provider: 'acp-devin', model: 'fixture' },
+      },
+      next,
+    )
+    expect(next).toHaveBeenCalledOnce()
     await settings.replace({ agents: {} })
-    listeners.get('agent/inbox/claimed')?.(payload)
+    dispatch.emit('agent/inbox/claimed', { message, turn: 2 })
     expect(append).not.toHaveBeenCalled()
     expect(session.snapshotEvents()).toEqual(events)
   })
 
   it('replaces only ACP delegation context after downstream assembly, leaving native policy and other plugins intact', async () => {
-    const { ctx, settings, listeners } = fakeHarness()
-    installInstalledProfileRegistry(ctx, settings.config)
+    const { ctx, settings } = fakeHarness()
+    await installInstalledProfileRegistry(ctx, settings.config)
     await settings.replace({ agents: { devin: devinAgent } })
-    const assemble = listeners.get('system-prompt/assemble')!
+    const assemble = (provider: string, next: () => Promise<PromptPresentation>) =>
+      ctx.waterfall(
+        'system-prompt/assemble',
+        { sections: [], contexts: [], variables: {} },
+        { agent: { options: { provider } } } as AssembleContext,
+        next,
+      )
     const original = {
       sections: [],
       contexts: [
@@ -667,43 +677,39 @@ describe('installInstalledProfileRegistry：注册/替换调用序列', () => {
         { name: 'approval:policy', text: 'ask' },
         { name: 'other-plugin', text: 'preserved contribution' },
       ],
-      tools: [],
       variables: {},
     }
     for (const provider of ['deepseek', 'acp-unknown', undefined]) {
       const downstream = { ...original, variables: { provider } }
       // A stale ACP constructor must not rewrite the selected native model's contexts.
-      expect(await assemble({}, { agent: { options: { provider: 'acp-devin' } } }, async () => downstream)).toBe(
-        downstream,
-      )
+      expect(await assemble('acp-devin', async () => downstream)).toBe(downstream)
     }
-    const result = await assemble({}, { agent: { options: { provider: 'deepseek' } } }, async () => ({
+    const result = await assemble('deepseek', async () => ({
       ...original,
       variables: { provider: 'acp-devin' },
     }))
-    expect(result.contexts[0].text).toContain('wait for the host decision before proceeding')
-    expect(result.contexts[0].name).toBe('dsh-acp:delegation')
+    expect(result.contexts[0]).toEqual({
+      name: 'dsh-acp:delegation',
+      text: expect.stringContaining('wait for the host decision before proceeding'),
+    })
     expect(result.contexts.slice(1, 3)).toEqual(original.contexts.slice(1))
-    expect(result.contexts[3].text).toContain('applies only to DSH tools')
+    expect(result.contexts[3]).toMatchObject({ text: expect.stringContaining('applies only to DSH tools') })
     expect(original.contexts[0]!.text).toBe('native fixed delegation')
     expect(result.sections).toBe(original.sections)
-    expect(result.tools).toBe(original.tools)
     const suppressed = { ...original, variables: { provider: 'acp-devin' }, contexts: [] }
-    expect(
-      (await assemble({}, { agent: { options: { provider: 'acp-devin' } } }, async () => suppressed)).contexts,
-    ).toEqual([])
+    expect((await assemble('acp-devin', async () => suppressed)).contexts).toEqual([])
   })
 
   it('空配置 dormant：启动不注册任何路由，初始 settings 快照后 ready', async () => {
     const { ctx, llm, settings } = fakeHarness()
-    const registry = installInstalledProfileRegistry(ctx, settings.config)
+    const registry = await installInstalledProfileRegistry(ctx, settings.config)
     await expect(registry.ready).resolves.toBeUndefined()
     expect(llm.calls).toEqual([])
   })
 
   it('首个 agent 注册独立 profile 路由（只 registerAdapter，不再有 configurable-provider 目录注册）', async () => {
     const { ctx, llm, settings } = fakeHarness()
-    installInstalledProfileRegistry(ctx, settings.config)
+    await installInstalledProfileRegistry(ctx, settings.config)
     await settings.mutate([{ op: 'set', path: ['agents', 'devin'], value: { ...devinAgent } }])
     expect(llm.calls).toEqual(['registerAdapter:acp-devin'])
     expect(llm.adapters).toHaveLength(1)
@@ -712,7 +718,7 @@ describe('installInstalledProfileRegistry：注册/替换调用序列', () => {
 
   it('模型选择器开关的 settings 更新不重新注册 ACP providers', async () => {
     const { ctx, llm, settings } = fakeHarness()
-    installInstalledProfileRegistry(ctx, settings.config)
+    await installInstalledProfileRegistry(ctx, settings.config)
     await settings.mutate([{ op: 'set', path: ['agents', 'devin'], value: { ...devinAgent } }])
     llm.calls.length = 0
     expect(llm.calls).toEqual([])
@@ -721,7 +727,7 @@ describe('installInstalledProfileRegistry：注册/替换调用序列', () => {
 
   it('增删 agent 维持每 profile 的独立注册并回收删除项', async () => {
     const { ctx, llm, settings } = fakeHarness()
-    installInstalledProfileRegistry(ctx, settings.config)
+    await installInstalledProfileRegistry(ctx, settings.config)
     await settings.mutate([{ op: 'set', path: ['agents', 'devin'], value: { ...devinAgent } }])
     await settings.mutate([{ op: 'set', path: ['agents', 'foo'], value: { ...fooAgent } }])
     await settings.mutate([{ op: 'unset', path: ['agents', 'devin'] }])
@@ -737,7 +743,7 @@ describe('installInstalledProfileRegistry：注册/替换调用序列', () => {
 
   it('改名是注册事实：replace 同一路由集以刷新选择器标签', async () => {
     const { ctx, llm, settings } = fakeHarness()
-    installInstalledProfileRegistry(ctx, settings.config)
+    await installInstalledProfileRegistry(ctx, settings.config)
     await settings.mutate([{ op: 'set', path: ['agents', 'devin'], value: { ...devinAgent } }])
     await settings.mutate([{ op: 'set', path: ['agents', 'devin', 'name'], value: 'Devin Pro' }])
     expect(llm.calls).toEqual(['registerAdapter:acp-devin', 'adapter.replace:acp-devin'])
@@ -745,7 +751,7 @@ describe('installInstalledProfileRegistry：注册/替换调用序列', () => {
 
   it('launch identity 变化刷新注册，loginHint 单独变化不刷新', async () => {
     const { ctx, llm, settings } = fakeHarness()
-    installInstalledProfileRegistry(ctx, settings.config)
+    await installInstalledProfileRegistry(ctx, settings.config)
     await settings.mutate([{ op: 'set', path: ['agents', 'devin'], value: { ...devinAgent } }])
     llm.calls.length = 0
     await settings.mutate([{ op: 'set', path: ['agents', 'devin', 'loginHint'], value: 'devin login --new' }])
@@ -755,7 +761,7 @@ describe('installInstalledProfileRegistry：注册/替换调用序列', () => {
 
   it('删空回收全部 profile 注册，后续添加重新创建独立注册', async () => {
     const { ctx, llm, settings } = fakeHarness()
-    installInstalledProfileRegistry(ctx, settings.config)
+    await installInstalledProfileRegistry(ctx, settings.config)
     await settings.mutate([{ op: 'set', path: ['agents', 'devin'], value: { ...devinAgent } }])
     await settings.replace({ agents: {} })
     expect(llm.calls).toEqual(['registerAdapter:acp-devin', 'adapter.dispose'])
@@ -767,7 +773,7 @@ describe('installInstalledProfileRegistry：注册/替换调用序列', () => {
 
   it('：删除 profile 后目录失效——路由撤下、resolveRoute 归 undefined、listModels 响亮拒绝（不静默改用其他 profile）', async () => {
     const { ctx, settings } = fakeHarness()
-    const registry = installInstalledProfileRegistry(ctx, settings.config)
+    const registry = await installInstalledProfileRegistry(ctx, settings.config)
     await settings.mutate([{ op: 'set', path: ['agents', 'devin'], value: { ...devinAgent } }])
     await settings.mutate([{ op: 'set', path: ['agents', 'foo'], value: { ...fooAgent } }])
     await settings.mutate([{ op: 'unset', path: ['agents', 'devin'] }])
@@ -779,7 +785,7 @@ describe('installInstalledProfileRegistry：注册/替换调用序列', () => {
 
   it('settings 文档键重排不触发任何注册动作', async () => {
     const { ctx, llm, settings } = fakeHarness()
-    installInstalledProfileRegistry(ctx, settings.config)
+    await installInstalledProfileRegistry(ctx, settings.config)
     await settings.mutate([
       { op: 'set', path: ['agents', 'devin'], value: { ...devinAgent } },
       { op: 'set', path: ['agents', 'foo'], value: { ...fooAgent } },
@@ -791,7 +797,7 @@ describe('installInstalledProfileRegistry：注册/替换调用序列', () => {
 
   it('非法写入被 schema 拒绝，既有路由不变', async () => {
     const { ctx, llm, settings } = fakeHarness()
-    installInstalledProfileRegistry(ctx, settings.config)
+    await installInstalledProfileRegistry(ctx, settings.config)
     await settings.mutate([{ op: 'set', path: ['agents', 'devin'], value: { ...devinAgent } }])
     llm.calls.length = 0
     await expect(settings.replace({ agents: { Broken: { name: 'B', command: 'b' } } })).rejects.toThrow(TypeError)
@@ -800,7 +806,7 @@ describe('installInstalledProfileRegistry：注册/替换调用序列', () => {
 
   it('resolveRoute：acp-<id> 命中，外部路由与未知 id 返回 undefined', async () => {
     const { ctx, settings } = fakeHarness()
-    const registry = installInstalledProfileRegistry(ctx, settings.config)
+    const registry = await installInstalledProfileRegistry(ctx, settings.config)
     expect(registry.resolveRoute('acp-devin')).toBeUndefined()
     await settings.mutate([{ op: 'set', path: ['agents', 'devin'], value: { ...devinAgent } }])
     // 解析结果携带 id+config，消费方使用共享 runtime 身份规则
@@ -814,7 +820,7 @@ describe('installInstalledProfileRegistry：注册/替换调用序列', () => {
 
   it('launch identity 快路径更新 active config 并刷新 route registration', async () => {
     const { ctx, llm, settings } = fakeHarness()
-    const registry = installInstalledProfileRegistry(ctx, settings.config)
+    const registry = await installInstalledProfileRegistry(ctx, settings.config)
     await settings.mutate([{ op: 'set', path: ['agents', 'devin'], value: { ...devinAgent } }])
     llm.calls.length = 0
     const next = { ...devinAgent, command: 'devin-next', env: { TOKEN: 'rotated' } }
@@ -827,7 +833,7 @@ describe('installInstalledProfileRegistry：注册/替换调用序列', () => {
 
   it('新 profile 注册冲突时回滚新增项并保留旧 active route', async () => {
     const { ctx, llm, settings } = fakeHarness({ failOnRoute: 'acp-foo' })
-    const registry = installInstalledProfileRegistry(ctx, settings.config)
+    const registry = await installInstalledProfileRegistry(ctx, settings.config)
     await settings.mutate([{ op: 'set', path: ['agents', 'devin'], value: { ...devinAgent } }])
     llm.calls.length = 0
     await settings
@@ -842,7 +848,7 @@ describe('installInstalledProfileRegistry：注册/替换调用序列', () => {
 
   it('rename 与冲突同批失败时恢复旧展示名称', async () => {
     const { ctx, settings } = fakeHarness({ failOnRoute: 'acp-foo' })
-    const registry = installInstalledProfileRegistry(ctx, settings.config)
+    const registry = await installInstalledProfileRegistry(ctx, settings.config)
     await settings.mutate([{ op: 'set', path: ['agents', 'devin'], value: { ...devinAgent } }])
     await settings
       .mutate([
@@ -874,8 +880,8 @@ describe('acpVersionCompatibility（readiness 的纯函数核心）', () => {
 })
 
 it('forwards actual host session disposal to all ACP adapters', async () => {
-  const { ctx, settings, listeners, llm } = fakeHarness()
-  installInstalledProfileRegistry(ctx, settings.config)
+  const { ctx, settings, llm } = fakeHarness()
+  await installInstalledProfileRegistry(ctx, settings.config)
   await settings.replace({
     agents: {
       devin: {
@@ -897,7 +903,7 @@ it('forwards actual host session disposal to all ACP adapters', async () => {
     }
   }
   const session = { id: 'disposed-session' }
-  await listeners.get('session/disposed')!(session)
+  await ctx.parallel('session/disposed', session as never)
   expect(closed).toEqual([session, session])
 })
 

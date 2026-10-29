@@ -72,6 +72,36 @@ it('forwards the native viewport group action with the node disclosure hook', ()
   expect(owner).not.toHaveProperty('renderMessageImages')
 })
 
+it('isolates aliases of concurrent mounts without module-lifetime counters', () => {
+  const slots = new SlotCore()
+  const root = slots.register(
+    { name: 'root', children: { owner: { kind: 'single', scope: 'session' } } } as never,
+    (() => null) as never,
+  )
+  const original = slots.register(
+    { name: 'owner', children: { child: { kind: 'single', scope: 'session' } } } as never,
+    (() => null) as never,
+  )
+  const child = slots.register({ name: 'child' } as never, (() => null) as never)
+  const entry = slots.entries('owner')[0]!
+  const first = mountNativeEntry({ slots } as never, entry, 'acp.mount-one', { factory: true })
+  const second = mountNativeEntry({ slots } as never, entry, 'acp.mount-two', { factory: true })
+  const firstChild = Object.keys(slots.factory('acp.mount-one')!.children!)[0]!
+  const secondChild = Object.keys(slots.factory('acp.mount-two')!.children!)[0]!
+  try {
+    expect(firstChild).not.toBe(secondChild)
+    first()
+    expect(slots.entriesOfSlot(firstChild)).toEqual([])
+    expect(slots.entriesOfSlot(secondChild)).toHaveLength(1)
+  } finally {
+    first()
+    second()
+    child()
+    original()
+    root()
+  }
+})
+
 it('keeps the native assistant image domain and caller loader through slot aliases and replacement', async () => {
   const slots = new SlotCore()
   const releaseRoot = slots.register(

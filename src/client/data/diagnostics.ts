@@ -7,7 +7,8 @@ export type DiagnosticTranslate<K extends string> = (key: K, params?: Record<str
 function diagnosticReference(message: string | undefined): string | undefined {
   if (message === undefined) return undefined
   return (
-    message.match(/acperr-\d{8}T\d{6}Z-[0-9a-z]+-[0-9a-f]{6,16}\b/i)?.[0] ?? message.match(/\bACP_[A-Z0-9_]+\b/)?.[0]
+    message.match(/\bacperr-\d{8}T\d{6}Z-(?:[0-9a-f]{32}|[0-9a-z]+-[0-9a-f]{6,16})\b/i)?.[0] ??
+    message.match(/\bACP_[A-Z0-9_]+\b/)?.[0]
   )
 }
 

@@ -9,11 +9,11 @@ import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
+import * as NativeExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import AgentRegistry, { type Agent } from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
-import SessionController from '@deepseek-ai/dsh-api-session-controller'
 import { createAcpSidecar, type AcpBindingData } from '../../../src/persistence/sidecar.ts'
-import { acpExecutionProjection } from '../../../src/host/composition/session-facts.ts'
+import { AcpSessionFacts } from '../../../src/host/composition/session-facts.ts'
 import { installAcpBackendGuard } from '../../../src/host/composition/backend-guard.ts'
 import { createToolApprovalPolicyReader } from '../../../src/host/subagent/tool-approval-policy.ts'
 
@@ -63,9 +63,10 @@ async function setup(residual: ResidualBinding) {
   await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(SystemPrompt, {})
   await ctx.plugin(ToolRuntime)
+  await ctx.plugin(NativeExecutor)
   await ctx.plugin(AgentRegistry)
   await ctx.plugin(AgentLoop, { agents: [] })
-  ctx.sessionProjections.register(acpExecutionProjection)
+  await ctx.plugin(AcpSessionFacts)
   const dispose = () => () => {}
   ctx.provide('typert', {
     lookups: { configure: dispose },
@@ -77,9 +78,6 @@ async function setup(residual: ResidualBinding) {
     currentSelection: () => ({ provider: 'deepseek', model: 'local' }),
     saveSelection: async () => {},
   } as never)
-  // The public Session Controller owns its model projection and delegates
-  // selectModel to the published SessionCommandController implementation.
-  const controller = new SessionController(ctx, {})
   const llm = new LocalAdapter()
   ctx.llm.registerAdapter(['acp-old', 'deepseek', 'acp-child'], llm)
   const mountGuard = (): Fiber => ctx.plugin((scope) => installAcpBackendGuard(scope, { sidecar }))
@@ -127,7 +125,7 @@ async function setup(residual: ResidualBinding) {
         meta: { parentSession: parent.id, origin: 'subagent' },
       })
     ).agent
-  return { ctx, sidecar, llm, parent, createChild, read, controller, firstGuard, mountGuard }
+  return { ctx, sidecar, llm, parent, createChild, read, firstGuard, mountGuard }
 }
 
 it.each(['owned', 'removed', 'outdated'] as const)(
@@ -137,10 +135,10 @@ it.each(['owned', 'removed', 'outdated'] as const)(
     // Simulate the request contribution's disable/remount lifecycle. This is
     // not a Plugin Manager UI or complete Loader integration test.
     await h.firstGuard.dispose()
-    await h.controller.selectModel({ sessionId: h.parent.id, provider: 'deepseek', model: 'local' })
+    h.parent.model.select({ provider: 'deepseek', model: 'local' })
     await send(h.parent)
     expect(h.llm.calls).toEqual(['acp-old', 'deepseek'])
-    expect(h.ctx.sessionProjections.stateOf(h.parent.session, 'modelSelection')?.lastUsed?.provider).toBe('deepseek')
+    expect(h.parent.session.requestHeader()?.config.provider).toBe('deepseek')
     await h.mountGuard()
     await send(h.parent)
     expect(h.llm.calls).toEqual(['acp-old', 'deepseek', 'deepseek'])
@@ -154,11 +152,9 @@ it.each(['owned', 'removed', 'outdated'] as const)(
   'does not treat a pending native selection as a completed switch with an %s ACP binding',
   async (residual) => {
     const h = await setup(residual)
-    await h.controller.selectModel({ sessionId: h.parent.id, provider: 'deepseek', model: 'local' })
-    expect(h.ctx.sessionProjections.stateOf(h.parent.session, 'modelSelection')).toMatchObject({
-      lastUsed: { provider: 'acp-old' },
-      pending: { provider: 'deepseek' },
-    })
+    h.parent.model.select({ provider: 'deepseek', model: 'local' })
+    expect(h.parent.session.requestHeader()?.config.provider).toBe('acp-old')
+    expect(h.parent.model.current()?.provider).toBe('deepseek')
     const child = await h.createChild()
     if (residual === 'owned') {
       await expect(h.read(child.id)).resolves.toMatchObject({ policy: 'auto' })

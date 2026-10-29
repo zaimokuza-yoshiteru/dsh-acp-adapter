@@ -271,6 +271,7 @@ async function steeringFixture(
   withVisiblePrefix = true,
   rejectOnCancel = false,
   sidecar: AcpSidecar = durableSidecar as never,
+  initialTools?: Parameters<AcpProfileAdapter['stream']>[0]['tools'],
 ) {
   const rows: AcpActivityInput[] = []
   const first = user('first'),
@@ -374,7 +375,9 @@ async function steeringFixture(
     undefined,
     controlsChanged,
   )
-  const stream = adapter.stream(request('steering-session', [first]))[Symbol.asyncIterator]()
+  const stream = adapter
+    .stream({ ...request('steering-session', [first]), ...(initialTools === undefined ? {} : { tools: initialTools }) })
+    [Symbol.asyncIterator]()
   if (withVisiblePrefix) expect((await stream.next()).value).toMatchObject({ text: 'before' })
   else expect((await stream.next()).value).toMatchObject({ type: 'reasoning-delta' })
   const pending = stream.next()
@@ -410,6 +413,26 @@ async function steeringFixture(
       adapter.stream(request('steering-session', messages)),
   }
 }
+
+it('retires a suspended prompt when its admitted tool declarations change', async () => {
+  const f = await steeringFixture(true, false, durableSidecar as never, [
+    {
+      name: 'conditional_tool',
+      description: 'Only in the previous step.',
+      parameters: { type: 'object', properties: {} },
+    },
+  ])
+  try {
+    const chunks = []
+    for await (const chunk of f.adapter.stream({ ...request('steering-session', [f.first, f.second]), tools: [] }))
+      chunks.push(chunk)
+    expect(f.runtime.steer).not.toHaveBeenCalled()
+    expect(f.runtime.prompt).toHaveBeenCalledTimes(2)
+    expect(chunks.some((chunk) => chunk.type === 'text-delta' && chunk.text === 'replacement')).toBe(true)
+  } finally {
+    await f.adapter.close()
+  }
+})
 
 it('assigns pre-ack tools to the new input, retaining late children under their original tool', async () => {
   const f = await steeringFixture()

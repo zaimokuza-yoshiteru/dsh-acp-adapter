@@ -7,6 +7,17 @@
  */
 
 const zh = {
+  nativeForkFailed: '未能完成 ACP 分叉。请在此页签重试，已记录的子会话会被沿用',
+  nativeForkWorkspaceAttachFailed: '子会话已创建，但工作区关联失败，已暂停此分叉。请检查工作区',
+  nativeForkUnknown: '此前分叉的创建结果未确认，已阻止重复创建。请检查会话列表，保留已有子会话',
+  nativeForkStorageFailed: '无法保存分叉恢复记录，已停止后续操作。请检查浏览器存储并保留已有子会话',
+  nativeForkAccessDenied: '此分叉所需权限不足。请检查会话访问权限',
+  nativeForkUnavailable: 'ACP 分叉服务暂不可用。请检查 Host 存储，并重新启用 ACP 插件后重试',
+  nativeForkInvalidSeed: '复制历史与所选分叉位置不符，已保留子会话。请检查历史并选择有效的分叉位置',
+  nativeForkSourceConflict: '子会话已记录其他分叉来源，不能覆盖。请查看已有子会话的历史',
+  nativeForkChildBound: '子会话已有独立 ACP 绑定，不能补录分叉来源。请直接查看该子会话',
+  nativeForkSourceUnavailable: '原会话的 ACP 绑定暂不可用。请先恢复原会话，再重试此分叉以沿用已有子会话',
+  nativeForkChildChanged: '子会话已有新活动，不能补录分叉来源。请查看子会话或选择新的分叉位置',
   acpQuestionSubmit: '提交选择',
   acpQuestionSubmitting: '提交中',
   acpQuestionCancel: '取消请求',
@@ -449,6 +460,26 @@ const en: Record<AcpLocaleKey, string> = {
     'This turn’s results have not been saved yet. Local saving will retry automatically when storage is available.',
   recoveryActionFailed: 'The recovery action failed. Please retry.',
   toastProfileSaved: 'Saved',
+  nativeForkFailed: 'Could not finish this ACP fork. Retry in this tab to reuse its recorded child.',
+  nativeForkWorkspaceAttachFailed:
+    'The child was created, but workspace attachment failed. This fork is paused. Check the workspace.',
+  nativeForkUnknown:
+    'The previous fork result is unconfirmed, so another child will not be created. Check the session list and keep any existing child.',
+  nativeForkStorageFailed:
+    'Could not save fork recovery information; further work stopped. Check browser storage and keep any existing child.',
+  nativeForkAccessDenied: 'This fork requires session access you do not have. Check the session access permissions.',
+  nativeForkUnavailable:
+    'The ACP fork service is unavailable. Check Host storage, then re-enable the ACP plugin and retry.',
+  nativeForkInvalidSeed:
+    'Copied history does not match the selected fork position. The child was kept; inspect history and choose a valid position.',
+  nativeForkSourceConflict:
+    'The child already has another fork source, which cannot be replaced. Inspect the existing child history.',
+  nativeForkChildBound:
+    'The child already has its own ACP binding, so its fork source cannot be added. Open that child directly.',
+  nativeForkSourceUnavailable:
+    'The source ACP binding is unavailable. Restore the source session, then retry this fork to reuse its child.',
+  nativeForkChildChanged:
+    'The child has new activity, so its fork source cannot be added. Inspect the child or choose a new fork position.',
   toastProfileSaveFailed: 'Could not save this Agent. Review the configuration details',
   toastProfileDeleted: 'Deleted',
   toastProfileDeleteFailed: 'Could not delete this Agent. Review the configuration details',

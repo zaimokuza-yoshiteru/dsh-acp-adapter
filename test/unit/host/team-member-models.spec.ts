@@ -25,18 +25,23 @@ function binding(provider = 'acp-demo'): AcpBindingData {
 }
 
 function session(model = 'model-default') {
-  return {
+  const value = {
+    seq: 0,
     requestHeader: () => ({ config: { provider: 'acp-demo', model } }),
-    append: vi.fn(),
+    append: vi.fn((_type: string, _data: unknown) => {
+      value.seq++
+    }),
   }
+  return value
 }
 
 type HarnessOptions = {
   binding?: { status: 'ok'; binding: AcpBindingData } | { status: 'outdated' }
-  saved?: { bindingKey: string; model: string }
+  saved?: { bindingKey: string; model: string; sessionSeq?: number; nativeSelectionKey?: string }
   status?: string
   role?: string
   initialList?: boolean
+  deferCreation?: boolean
 }
 
 async function harness(options: HarnessOptions = {}) {
@@ -44,11 +49,21 @@ async function harness(options: HarnessOptions = {}) {
   const agentCtx = new Context()
   contexts.push(ctx, agentCtx)
   const memberSession = session()
+  let selection = memberSession.requestHeader().config
+  const model = {
+    current: () => selection,
+    select: vi.fn((next: typeof selection) => {
+      if (selection.provider === next.provider && selection.model === next.model) return
+      selection = next
+      memberSession.append('model/selection', next)
+    }),
+  }
   const agent = {
     id: 'member-1',
     options: { provider: 'acp-demo', model: 'model-default' },
     status: options.status ?? 'idle',
     session: memberSession,
+    model,
     ctx: agentCtx,
   } as unknown as Agent
   let live = options.initialList === true ? agent : undefined
@@ -85,6 +100,7 @@ async function harness(options: HarnessOptions = {}) {
     readLatestBinding: vi.fn(async () => currentBinding),
     readMemberModelSelection: vi.fn(async () => options.saved),
     writeMemberModelSelection: vi.fn(async () => undefined),
+    clearMemberModelSelection: vi.fn(async () => undefined),
   }
   const adapter = {
     agentSessionSnapshot: vi.fn(async () => ({
@@ -95,33 +111,45 @@ async function harness(options: HarnessOptions = {}) {
   ctx.provide('llm', llm)
   ctx.provide('agents', agents)
   ctx.provide('agentTeams', teams)
+  ctx.provide('sessionProjections', {
+    snapshot: () => ({
+      values: { modelSelection: { next: selection, lastUsed: memberSession.requestHeader().config } },
+    }),
+  })
   const models = createMemberModels(ctx, {
     sidecar: sidecar as unknown as AcpSidecar,
     adapterFor: vi.fn(() => adapter as never),
   })
-  if (options.initialList !== true) {
+  const announce = async () => {
     live = agent
-    ctx.emit('agent/created', { agent, source: 'startup' })
+    await ctx.serial('agent/created', { agent, source: 'startup' })
   }
-  return { ctx, agentCtx, agent, memberSession, agents, teams, llm, sidecar, adapter, models }
+  if (options.initialList !== true && options.deferCreation !== true) await announce()
+  return { ctx, agentCtx, agent, memberSession, agents, teams, llm, sidecar, adapter, models, model, announce }
 }
 
 describe('createMemberModels()', () => {
-  it('hydrates the native helper from a valid binding and resolves the selected model defaults', async () => {
+  it('hydrates the owner selection before creation completes and leaves default resolution to the native loop', async () => {
     const current = binding()
-    const { agentCtx, llm, sidecar } = await harness({
+    const { agentCtx, agent, llm, sidecar } = await harness({
       binding: { status: 'ok', binding: current },
-      saved: { bindingKey: modeIntentBindingKey(current), model: 'model-next' },
+      saved: {
+        bindingKey: modeIntentBindingKey(current),
+        model: 'model-next',
+        sessionSeq: 0,
+        nativeSelectionKey: JSON.stringify(['acp-demo', 'model-default', null]),
+      },
     })
 
     const assembled = await agentCtx.waterfall(
       'system-prompt/assemble',
-      { sections: [], contexts: [], tools: [], variables: {} },
+      { sections: [], contexts: [], variables: {} },
       {},
       async (): Promise<PromptAssembly> => ({ sections: [], contexts: [], tools: [], variables: { preserved: 'yes' } }),
     )
-    expect(assembled.variables).toMatchObject({ preserved: 'yes', provider: 'acp-demo', model: 'model-next' })
-    expect(llm.resolveCallConfig).toHaveBeenCalledWith({ provider: 'acp-demo', model: 'model-next' })
+    expect(assembled.variables).toEqual({ preserved: 'yes' })
+    expect(agent.model.current()).toEqual({ provider: 'acp-demo', model: 'model-next' })
+    expect(llm.resolveCallConfig).not.toHaveBeenCalled()
     expect(sidecar.writeMemberModelSelection).not.toHaveBeenCalled()
 
     const routed = await agentCtx.waterfall(
@@ -134,7 +162,7 @@ describe('createMemberModels()', () => {
         temperature: 0.2,
       }),
     )
-    expect(routed).toEqual({ provider: 'acp-demo', model: 'model-next', reasoningEffort: 'medium', temperature: 0.2 })
+    expect(routed).toEqual({ provider: 'acp-demo', model: 'model-default', reasoningEffort: 'high', temperature: 0.2 })
   })
 
   it('ignores a selection whose binding is unavailable or belongs to another provider', async () => {
@@ -146,7 +174,7 @@ describe('createMemberModels()', () => {
 
     const assembled = await agentCtx.waterfall(
       'system-prompt/assemble',
-      { sections: [], contexts: [], tools: [], variables: {} },
+      { sections: [], contexts: [], variables: {} },
       {},
       async (): Promise<PromptAssembly> => ({ sections: [], contexts: [], tools: [], variables: { preserved: 'yes' } }),
     )
@@ -168,15 +196,30 @@ describe('createMemberModels()', () => {
     expect(sidecar.writeMemberModelSelection).toHaveBeenCalledWith('member-1', {
       bindingKey: modeIntentBindingKey(current),
       model: 'model-next',
+      sessionSeq: 0,
+      nativeSelectionKey: JSON.stringify(['acp-demo', 'model-default', null]),
     })
     expect(memberSession.append).toHaveBeenCalledWith('model/selection', { provider: 'acp-demo', model: 'model-next' })
+  })
+
+  it('records native pending selection if an admitted save races with the member starting', async () => {
+    const h = await harness()
+    h.sidecar.writeMemberModelSelection.mockImplementationOnce(async () => {
+      Object.assign(h.agent, { status: 'running' })
+    })
+    await h.models.save(h.agent.id, 'acp-demo', 'model-next', () => {})
+    expect(h.agent.model.current()?.model).toBe('model-next')
+    expect(h.memberSession.append).toHaveBeenCalledWith('model/selection', {
+      provider: 'acp-demo',
+      model: 'model-next',
+    })
   })
 
   it('does not install model selection for a non-teammate created agent', async () => {
     const { agentCtx, llm } = await harness({ role: 'lead' })
     const assembled = await agentCtx.waterfall(
       'system-prompt/assemble',
-      { sections: [], contexts: [], tools: [], variables: {} },
+      { sections: [], contexts: [], variables: {} },
       {},
       async (): Promise<PromptAssembly> => ({ sections: [], contexts: [], tools: [], variables: { preserved: 'yes' } }),
     )
@@ -188,12 +231,9 @@ describe('createMemberModels()', () => {
     'projects only current request facts while the ACP binding stays %s',
     async (state) => {
       const { ctx, agent, teams, sidecar } = await harness()
-      ctx.provide('sessionProjections', {
-        stateOf: () => ({
-          lastUsed: { provider: 'acp-demo', model: 'model-used' },
-          pending: { provider: 'acp-demo', model: 'model-pending' },
-        }),
-      } as never)
+      agent.session.requestHeader = (() => ({
+        config: { provider: 'acp-demo', model: 'model-used' },
+      })) as typeof agent.session.requestHeader
       if (state === 'outdated') sidecar.readLatestBinding.mockResolvedValue({ status: 'outdated' })
       if (state === 'rebound') {
         sidecar.readLatestBinding
@@ -215,6 +255,67 @@ describe('createMemberModels()', () => {
     },
   )
 
+  it('holds creation until saved selection resolves and ignores late completion after owner disposal', async () => {
+    const current = binding()
+    const h = await harness({ deferCreation: true })
+    const entered = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<{ bindingKey: string; model: string }>()
+    h.sidecar.readMemberModelSelection.mockImplementation(async () => {
+      entered.resolve()
+      return await release.promise
+    })
+    const creation = h.announce()
+    await entered.promise
+    expect(h.model.select).not.toHaveBeenCalled()
+    await h.ctx.fiber.dispose()
+    release.resolve({ bindingKey: modeIntentBindingKey(current), model: 'model-next' })
+    await creation
+    expect(h.model.select).not.toHaveBeenCalled()
+  })
+
+  it('does not use the sidecar again after disposal while its binding read was waiting', async () => {
+    const h = await harness({ deferCreation: true })
+    const entered = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<{ status: 'ok'; binding: AcpBindingData }>()
+    h.sidecar.readLatestBinding.mockImplementation(async () => {
+      entered.resolve()
+      return await release.promise
+    })
+    const creation = h.announce()
+    await entered.promise
+    await h.ctx.fiber.dispose()
+    release.resolve({ status: 'ok', binding: binding() })
+    await creation
+    expect(h.sidecar.readMemberModelSelection).not.toHaveBeenCalled()
+    expect(h.model.select).not.toHaveBeenCalled()
+  })
+
+  it('preserves a newer owner choice made while binding hydration was waiting', async () => {
+    const h = await harness({ deferCreation: true })
+    const entered = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<{ bindingKey: string; model: string }>()
+    h.sidecar.readMemberModelSelection.mockImplementation(async () => {
+      entered.resolve()
+      return await release.promise
+    })
+    const creation = h.announce()
+    await entered.promise
+    h.model.select({ provider: 'acp-demo', model: 'newer-choice' })
+    release.resolve({ bindingKey: modeIntentBindingKey(binding()), model: 'model-next' })
+    await creation
+    expect(h.agent.model.current()?.model).toBe('newer-choice')
+    expect(h.model.select).toHaveBeenCalledOnce()
+  })
+
+  it('preserves the durable owner selection of a member already live when the plugin mounts', async () => {
+    const h = await harness({
+      initialList: true,
+      saved: { bindingKey: modeIntentBindingKey(binding()), model: 'model-next' },
+    })
+    expect(h.agent.model.current()?.model).toBe('model-default')
+    expect(h.sidecar.readMemberModelSelection).not.toHaveBeenCalled()
+  })
+
   it('keeps team permission and busy checks in the real management facade', async () => {
     const ctx = new Context()
     contexts.push(ctx)
@@ -227,8 +328,15 @@ describe('createMemberModels()', () => {
       options: { provider: 'acp-demo' },
       session: session(),
       ctx: new Context(),
+      model: { current: () => ({ provider: 'acp-demo', model: 'model-default' }), select: vi.fn() },
     }
-    const lead = { id: 'lead-1', options: { provider: 'acp-demo' }, session: leadSession, ctx: new Context() }
+    const lead = {
+      id: 'lead-1',
+      options: { provider: 'acp-demo' },
+      session: leadSession,
+      ctx: new Context(),
+      model: { current: () => leadSession.requestHeader().config },
+    }
     contexts.push(member.ctx, lead.ctx)
     const agents = {
       get: vi.fn((id: string) => (id === 'lead-1' ? lead : id === 'member-1' ? member : undefined)),
@@ -257,6 +365,7 @@ describe('createMemberModels()', () => {
       }),
       readMemberModelSelection: vi.fn(async () => undefined),
       writeMemberModelSelection: vi.fn(async () => undefined),
+      clearMemberModelSelection: vi.fn(async () => undefined),
     }
     const adapter = {
       agentSessionSnapshot: vi.fn(async () => ({

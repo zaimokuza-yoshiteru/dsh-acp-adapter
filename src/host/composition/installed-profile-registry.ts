@@ -6,6 +6,9 @@ import { resolveQwenTaskJobs } from './qwen-task-jobs.ts'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { createDshToolBridge, createDshToolBridgeKey } from '../tools/bridge.ts'
+import { installStepToolAdmissions } from '../tools/step-tool-admissions.ts'
+import { ensureHostLiveDiagnostics } from './live-diagnostics.ts'
+import { ensureHostContinuity } from './host-continuity.ts'
 import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
 import type { AdapterRegistrationHandle } from '@deepseek-ai/dsh-llm'
 import type { AcpProbeOptions } from '../../protocol/v1/types.ts'
@@ -29,12 +32,13 @@ import type { AcpSidecar } from '../../persistence/sidecar.ts'
 import type { AcpNativeUserQuestionService } from '../../domain/policy/elicitation.ts'
 import type { AcpNativeQuestionBinding } from './profile-adapter.ts'
 import type { Session } from '@deepseek-ai/dsh-session'
-import { acpExecutionProjection, acpSessionView, readSessionFacts } from './session-facts.ts'
+import { AcpSessionFacts, acpSessionView, sessionFactsReader } from './session-facts.ts'
 import type { DispatchLedgerStore } from '../../runtime/session/dispatch-ledger.ts'
 import { resolveSubprocessSeam } from './subprocess.ts'
 import { AcpRemoteService } from '../../remote/service.ts'
 import { auditTimelineRowOf } from './audit-row.ts'
 import { installAcpBackendGuard } from './backend-guard.ts'
+import { createNativeForkRegistrar } from './native-fork.ts'
 import type { SessionPersistence } from '@deepseek-ai/dsh-session-persistence'
 import { installExternalChildCatalog } from '../subagent/catalog-publication.ts'
 import { ExternalSubagentProjector } from '../subagent/external-projector.ts'
@@ -238,13 +242,20 @@ export function installAcpSessionRuntimeCleanup(
 }
 
 /** Keep ACP routes synchronized with Loader-owned volatile Agent configuration. */
-export function installInstalledProfileRegistry(
+export async function installInstalledProfileRegistry(
   ctx: Context,
   config: Config,
   options: InstalledProfileRegistryOptions = {},
-): InstalledProfileRegistry {
-  const toolBridgeKey = createDshToolBridgeKey()
-  const disposeExecutionProjection = ctx.sessionProjections.register(acpExecutionProjection)
+): Promise<InstalledProfileRegistry> {
+  ensureHostLiveDiagnostics(ctx)
+  const continuity = ensureHostContinuity(ctx)
+  const executionFacts = await ctx.plugin(AcpSessionFacts)
+  ctx.fiber.assertActive()
+  await installAcpForkTools(ctx)
+  ctx.fiber.assertActive()
+  const readFacts = sessionFactsReader(ctx)
+  const readToolAdmission = installStepToolAdmissions(ctx)
+  const toolBridgeKey = createDshToolBridgeKey(readToolAdmission)
   let disposed = false
   const log = createAcpLogger(ctx.logger)
   const sidecar = installAcpSidecar(ctx)
@@ -444,7 +455,6 @@ export function installInstalledProfileRegistry(
     return completion.promise
   }
   installWorkingDirectoryGuard(ctx, (profileId) => profileAdapters.get(profileId))
-  installAcpForkTools(ctx)
   const controlSubscribers = new Map<string, Set<() => void>>()
   const policySubscribers = new Set<() => void>()
   const notifyPolicySubscribers = (): void => {
@@ -493,8 +503,27 @@ export function installInstalledProfileRegistry(
   } catch {
     existingRemote = undefined
   }
+  let nativeForkRegistrar: ReturnType<typeof createNativeForkRegistrar> | undefined
+  let initializeNativeForkScope: (() => void) | undefined
   if (options.installRemote === true && canRegisterRemote && sidecar !== undefined && existingRemote === undefined) {
+    const registrar = (nativeForkRegistrar = createNativeForkRegistrar(ctx, sidecar))
+    let nativeForkScope:
+      { readonly ok: true; readonly value: string } | { readonly ok: false; readonly error: unknown } | undefined
+    initializeNativeForkScope = () => {
+      try {
+        nativeForkScope = { ok: true, value: sidecar.initializeNativeForkScope() }
+      } catch (error) {
+        nativeForkScope = { ok: false, error }
+      }
+    }
     new AcpRemoteService(ctx, {
+      nativeForkScope: () => {
+        if (nativeForkScope === undefined) throw new Error('ACP fork scope has not been initialized')
+        if (!nativeForkScope.ok) throw nativeForkScope.error
+        return nativeForkScope.value
+      },
+      nativeFork: (sessionId, sourceSessionId, atSeq) =>
+        registrar.register({ dshSessionId: sessionId, sourceSessionId, atSeq }),
       registry: {
         // Remote health addresses a configured profile by its stable settings
         // id (`codex`), while the LLM registry addresses the execution route
@@ -693,7 +722,7 @@ export function installInstalledProfileRegistry(
             id,
             () => activeAgents[id],
             subprocess,
-            (sessionId) => acpSessionView(ctx, sessionStore?.get(sessionId)),
+            (sessionId) => acpSessionView(ctx, sessionStore?.get(sessionId), readFacts),
             ledgerStore,
             undefined,
             undefined,
@@ -718,7 +747,7 @@ export function installInstalledProfileRegistry(
                             store,
                             context.parentDshSessionId,
                             parent,
-                            () => readSessionFacts(ctx, parent).turnOpen,
+                            () => readFacts(parent).turnOpen,
                           ),
                       })
                       return result?.childSessionId
@@ -736,11 +765,13 @@ export function installInstalledProfileRegistry(
                 async () => (await readToolApprovalPolicy(sessionId)).policy,
                 notifyPolicySubscribers,
                 schemas,
+                readToolAdmission,
               ),
             (sessionId, schemas) => toolBridgeKey(ctx, sessionId, schemas),
             controlsChanged,
             ctx.root,
             (sessionId) => resolveQwenTaskJobs(ctx, sessionId),
+            continuity,
           )
           profileAdapters.set(id, routeAdapter)
         }
@@ -812,38 +843,64 @@ export function installInstalledProfileRegistry(
   // Capture the exact disposers: Cordis otherwise starts sibling cleanup concurrently.
   // Accepted projection/repair and final Activity writes retain their registry,
   // catalog, persistence scope and Sidecar until their final dependency use.
-  ctx.effect(function* () {
-    yield disposeExecutionProjection
+  const disposeResources = ctx.effect(function* () {
+    const resources: Array<() => void | Promise<void>> = []
+    const own = (dispose: () => void | Promise<void>) => {
+      resources.push(dispose)
+      return dispose
+    }
+    yield own(executionFacts.dispose)
+    yield own(ctx.effect(() => () => sidecar?.dispose()))
+    if (persistenceFiber !== undefined) yield own(persistenceFiber.dispose)
+    if (nativeForkRegistrar !== undefined) yield own(nativeForkRegistrar.releaseQuery)
+    yield own(disposeSessionRuntimeCleanup)
+    yield own(
+      ctx.effect(() => async () => {
+        disposed = true
+        await nativeForkRegistrar?.drain()
+        externalSubagentProjector = undefined
+        const projections = [...projectionOwners].map((projector) => projector.close())
+        for (const handle of registrations.values()) {
+          try {
+            handle()
+          } catch (error) {
+            log.warn(`dsh-acp: route disposal failed: ${String(error)}`)
+          }
+        }
+        registrations.clear()
+        const results = await Promise.allSettled([...profileAdapters.values()].map(closeProfile))
+        for (const result of results) {
+          if (result.status === 'rejected')
+            log.warn(`dsh-acp: profile runtime disposal failed: ${String(result.reason)}`)
+        }
+        profileAdapters.clear()
+        while (retiringProfiles.size > 0) await Promise.allSettled([...retiringProfiles])
+        await Promise.allSettled(projections)
+      }),
+    )
+    // Cordis serial effects skip later disposers on rejection. Attempt every
+    // owned cleanup in order before reporting a failure, including final storage release.
     yield ctx.effect(() => async () => {
-      try {
-        await sidecar?.dispose()
-      } catch (error) {
-        log.warn(`dsh-acp: sidecar disposal failed: ${String(error)}`)
-      }
-    })
-    if (persistenceFiber !== undefined) yield persistenceFiber.dispose
-    yield disposeSessionRuntimeCleanup
-    yield ctx.effect(() => async () => {
-      disposed = true
-      externalSubagentProjector = undefined
-      const projections = [...projectionOwners].map((projector) => projector.close())
-      for (const handle of registrations.values()) {
+      const failures: unknown[] = []
+      for (const dispose of resources.reverse()) {
         try {
-          handle()
+          await dispose()
         } catch (error) {
-          log.warn(`dsh-acp: route disposal failed: ${String(error)}`)
+          failures.push(error)
         }
       }
-      registrations.clear()
-      const results = await Promise.allSettled([...profileAdapters.values()].map(closeProfile))
-      for (const result of results) {
-        if (result.status === 'rejected') log.warn(`dsh-acp: profile runtime disposal failed: ${String(result.reason)}`)
-      }
-      profileAdapters.clear()
-      while (retiringProfiles.size > 0) await Promise.allSettled([...retiringProfiles])
-      await Promise.allSettled(projections)
+      if (failures.length > 0) throw new AggregateError(failures, 'ACP registry cleanup failed')
     })
   }, '@zaimokuza/dsh-acp-adapter: drain profile routes and projections before dependencies')
+  const continuityLease = continuity.borrow(disposeResources)
+  ctx.effect(function* () {
+    yield disposeResources
+    yield ctx.effect(() => () => continuityLease.close())
+  }, '@zaimokuza/dsh-acp-adapter: retain registry cleanup until Host shutdown')
+
+  // Initialize scope metadata only after its exact disposal chain is owned.
+  // This setup is synchronous; Remote reads never create or replace the scope.
+  initializeNativeForkScope?.()
 
   const refreshConfig = (): void => {
     if (disposed) return

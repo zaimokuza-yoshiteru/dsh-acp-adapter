@@ -163,6 +163,7 @@ it('keeps native approval auditing when the Session admits interactive approval'
 
 it('uses the same external approval path for configured and session-level never', async () => {
   const ctx = new Context()
+  await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(ApprovalService, { policy: 'never' })
   const session = Session.create(SessionId('configured-never'))
   session.append('turn/start', { turn: 1 })

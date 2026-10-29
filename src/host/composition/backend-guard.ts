@@ -104,13 +104,11 @@ export function installAcpBackendGuard(ctx: Context, options: AcpBackendGuardOpt
     projectionCtx.on('agent/request', async (payload, next): Promise<LlmCallConfig> => {
       const resolved = await next()
       const session = payload.agent.session
-      const projection = projectionCtx.sessionProjections.stateOf(session, 'modelSelection')
       const targetProfile = acpAgentIdFromRoute(resolved.provider)
       const priorHistory = readSessionFacts(projectionCtx, session).priorSemanticHistory
-      // The API controller contributes modelSelection for interactive hosts.
-      // Headless AgentLoop hosts retain the same committed route in the native
-      // Session request header. Do not require an API/UI plugin to continue ACP.
-      const previous = projection === undefined ? (session.requestHeader()?.config ?? null) : projection.lastUsed
+      // A committed request identifies the backend that owns the transcript.
+      // agent.model.current() is the future choice and must not stand in for it.
+      const previous = session.requestHeader()?.config ?? null
       if (targetProfile === undefined && (previous === null || acpAgentIdFromRoute(previous.provider) === undefined))
         return resolved
       const previousProfile = acpAgentIdFromRoute(previous?.provider ?? '')
@@ -154,8 +152,14 @@ export function installAcpBackendGuard(ctx: Context, options: AcpBackendGuardOpt
       // A native fork has no child ACP binding until its first dispatch. The
       // provider proves the inherited boundary before forking; a seeded child
       // that cannot preserve its history must fail instead of starting blank.
-      if (binding === undefined && session.header.parentSession !== undefined && previousProfile === targetProfile) {
-        return resolved
+      if (binding === undefined && previousProfile === targetProfile) {
+        // Real subagents and pre-alpha ordinary forks already have an explicit
+        // persisted parent. New ordinary forks use the separately verified source.
+        const recordedParent = session.header.parentSession !== undefined
+        const ordinary =
+          !recordedParent && session.header.isSeeded ? await options.sidecar.readNativeFork(session.id) : undefined
+        if (recordedParent || (ordinary !== undefined && session.inheritedEventCount === ordinary.atSeq + 1))
+          return resolved
       }
       const transition = classifyBackendTransition({
         ...baseInput,

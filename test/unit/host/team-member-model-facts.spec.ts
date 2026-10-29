@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
+import * as NativeExecutor from '@deepseek-ai/dsh-tool-executor-native'
+import * as PtcExecutor from '@deepseek-ai/dsh-tool-executor-ptc'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
@@ -42,8 +44,12 @@ async function harness(mode: 'native' | 'ptc' = 'native', project = true) {
   const ctx = new Context()
   cleanups.push(() => ctx.fiber.dispose())
   await ctx.plugin(SystemPrompt, {})
-  await ctx.plugin(ToolRuntime, { mode })
-  if (mode === 'ptc') await ctx.plugin(RosterPtcRuntime)
+  await ctx.plugin(ToolRuntime, {})
+  if (mode === 'native') await ctx.plugin(NativeExecutor)
+  if (mode === 'ptc') {
+    await ctx.plugin(RosterPtcRuntime)
+    await ctx.plugin(PtcExecutor, {})
+  }
   ctx.provide('workingDirectory', { ensure: async () => process.cwd() } as never)
   const agent = { id: 'lead', ctx, session: { append: vi.fn(), header: { cwd: process.cwd() } } } as unknown as Agent
   const rows: TeamMemberView[] = [
@@ -89,17 +95,26 @@ async function harness(mode: 'native' | 'ptc' = 'native', project = true) {
       execute: async () => ({ member: publicRows()[1]! }),
     }),
   )
-  const invoke = (name = mode === 'ptc' ? RUN_CODE_NAME : 'list_agents', args = {}) =>
-    ctx.tools.execute({
-      name,
-      arguments:
-        name === RUN_CODE_NAME
-          ? { code: 'return await tools.list_agents({})', description: 'Read current Team member model facts' }
-          : args,
+  const invoke = async (name = mode === 'ptc' ? RUN_CODE_NAME : 'list_agents', args = {}) => {
+    const result = await ctx.tools.execute({
+      calls: [
+        {
+          type: 'tool-call',
+          id: ToolCallId('model-facts'),
+          name,
+          arguments: JSON.stringify(
+            name === RUN_CODE_NAME
+              ? { code: 'return await tools.list_agents({})', description: 'Read current Team member model facts' }
+              : args,
+          ),
+        },
+      ],
       agent,
-      callId: ToolCallId('model-facts'),
       signal: new AbortController().signal,
     })
+    return result.results[0]!.result
+  }
+
   return { ctx, agent, rows, membership, readModel, execute, invoke, projectFiber }
 }
 
@@ -229,15 +244,9 @@ describe('native Team model facts', () => {
   it('reads actual use rather than pending intent and retains/releases a cold projection', async () => {
     const ctx = new Context()
     cleanups.push(() => ctx.fiber.dispose())
-    const session = { requestHeader: () => ({ config: { provider: 'acp-demo', model: 'model-a' } }) }
+    const session = { requestHeader: () => ({ config: { provider: 'acp-demo', model: 'model-b' } }) }
     const sessions = { get: vi.fn(() => session as never) }
     ctx.provide('sessions', sessions as never)
-    ctx.provide('sessionProjections', {
-      stateOf: () => ({
-        lastUsed: { provider: 'acp-demo', model: 'model-b' },
-        pending: { provider: 'acp-demo', model: 'model-c' },
-      }),
-    } as never)
     expect(await readMemberRequestModel(ctx, 'child', 'acp-demo')).toBe('model-b')
     sessions.get.mockReturnValue(undefined as never)
     const dispose = vi.fn()

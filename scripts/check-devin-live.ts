@@ -18,11 +18,8 @@ import type { DevinLiveActorRole, DevinLivePhase, DevinLiveToolKind } from './de
 import { DevinLiveTrace } from './devin-live-trace.ts'
 import { devinPeerMessageOf } from './devin-live-messages.ts'
 import { collectDevinHistory, devinHistoryLocations, emitDevinHistory } from './devin-live-history.ts'
-import {
-  collectLiveDiagnostic,
-  installLiveDiagnosticTrace,
-  liveDiagnosticTraceFailureCount,
-} from '../src/contract/live-diagnostic-trace.ts'
+import type { LiveDiagnosticTrace } from '../src/contract/live-diagnostic-trace.ts'
+import type {} from '../src/host/composition/live-diagnostics.ts'
 import { initProfile, loadProfileDirectory, loadLayeredEnv } from '@deepseek-ai/dsh-app-boot'
 import { runProfile } from '@deepseek-ai/dsh/profile-boot'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
@@ -45,14 +42,12 @@ const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 let traceWriteFailure = false
 const traceDirectory = process.env.DEVIN_LIVE_TRACE_DIR ?? join(packageRoot, '.local', 'devin-live-diagnostics')
 const trace = new DevinLiveTrace({ directory: traceDirectory, onWriteFailure: () => (traceWriteFailure = true) })
-const removeTraceObserver = installLiveDiagnosticTrace(
-  Object.assign(
-    (event: import('../src/contract/live-diagnostic-trace.ts').LiveDiagnosticEvent) => {
-      const { type, ...fields } = event
-      trace.record(type, fields)
-    },
-    { id: trace.id.bind(trace), fingerprint: trace.fingerprint.bind(trace) },
-  ),
+const traceObserver = Object.assign(
+  (event: import('../src/contract/live-diagnostic-trace.ts').LiveDiagnosticEvent) => {
+    const { type, ...fields } = event
+    trace.record(type, fields)
+  },
+  { id: trace.id.bind(trace), fingerprint: trace.fingerprint.bind(trace) },
 )
 const traceEvent = (event: string, fields: Record<string, unknown> = {}): void => trace.record(event, fields)
 const workflowNumber = (value: string | undefined): number | undefined => {
@@ -73,6 +68,8 @@ const home = join(root, 'home')
 const workspace = join(root, 'workspace')
 const profileDir = join(home, 'profiles', 'devin-e2e')
 let host: Awaited<ReturnType<typeof runProfile>> | undefined
+let diagnosticTrace: LiveDiagnosticTrace | undefined
+let removeTraceObserver: (() => Promise<void>) | undefined
 let historySidecarPath: string | undefined
 let historyCaptureComplete = false
 let removeLiveToolGuard: (() => void) | undefined
@@ -259,7 +256,7 @@ const expireLiveBudget = (): void => {
 }
 const diagnosticFailureCode = (): string | undefined => {
   if (trace.writeFailed || traceWriteFailure) return 'LIVE_TRACE_WRITE_FAILED'
-  if (liveDiagnosticTraceFailureCount() > 0) return 'LIVE_TRACE_OBSERVER_FAILED'
+  if ((diagnosticTrace?.failureCount() ?? 0) > 0) return 'LIVE_TRACE_OBSERVER_FAILED'
   if (trace.diagnosticIncomplete) return 'LIVE_TRACE_INCOMPLETE'
   return undefined
 }
@@ -374,6 +371,9 @@ try {
     patchFiles: [],
     args: [],
   })
+  diagnosticTrace = host.ctx.get('acpLiveDiagnostics')
+  if (diagnosticTrace === undefined) throw new Error('LIVE_DIAGNOSTIC_OWNER_UNAVAILABLE')
+  removeTraceObserver = diagnosticTrace.install(traceObserver)
   traceEvent('host/ready', { provider: 'other' })
   traceEvent('phase/completed', { phaseCode: 'HOST_BOOT' })
   currentStage = 'PROVIDER_SETUP'
@@ -578,7 +578,7 @@ try {
         ...(diagnostic === undefined ? {} : { diagnostic }),
       })
       const diagnosticError = result.isError ? safeFailureDiagnostic(result.error) : undefined
-      const argumentFingerprint = collectLiveDiagnostic(() =>
+      const argumentFingerprint = diagnosticTrace?.collect(() =>
         trace.fingerprint('host-tool-arguments', execution.arguments),
       ) ?? {
         hmac: 'unavailable',
@@ -836,7 +836,7 @@ try {
       traceEvent('session/event', eventFields)
   })
   ctx.on('agent/inbox/claimed', ({ agent, message, turn }) => {
-    const peer = collectLiveDiagnostic(() => devinPeerMessageOf(message))
+    const peer = diagnosticTrace?.collect(() => devinPeerMessageOf(message))
     const rawMessageId = peer?.id
     const bodyFingerprint = rawMessageId === undefined ? undefined : bodyFingerprintsByMessageId.get(rawMessageId)
     traceEvent('agent/inbox/claimed', {
@@ -1063,7 +1063,7 @@ try {
       })
     }
     traceEvent('cleanup/end', { exitCode: process.exitCode ?? 0 })
-    const traceObserverFailures = liveDiagnosticTraceFailureCount()
+    const traceObserverFailures = diagnosticTrace?.failureCount() ?? 0
     if (traceObserverFailures > 0 || trace.writeFailed || traceWriteFailure || trace.diagnosticIncomplete) {
       finalTestResult = 'fail'
       process.exitCode = 1
@@ -1079,7 +1079,7 @@ try {
               : 'trace-incomplete',
       })
     }
-    removeTraceObserver()
+    await removeTraceObserver?.()
     try {
       process.chdir(originalCwd)
       await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })

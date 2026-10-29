@@ -21,7 +21,7 @@ export async function launchOptionalToolWorld(
     env?: Record<string, string>
   } = {},
 ) {
-  const host = await launchAdapterWorld({ optionalBundles, toolsMode: 'native' })
+  const host = await launchAdapterWorld({ optionalBundles, toolExecutor: 'native' })
   try {
     const resultsPath = join(host.workspaceCwd, 'optional-tools-results.jsonl')
     const agentLog = join(host.workspaceCwd, 'optional-agent.log')

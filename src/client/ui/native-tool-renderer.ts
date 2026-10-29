@@ -59,8 +59,6 @@ export type EntryProps = Record<string, unknown> & {
 type Registration = Record<string, unknown>
 type Register = (options: Registration, component: ComponentType<EntryProps>) => () => void
 
-let generation = 0
-
 /** Preserve pinned DSH's semantic DOM anchors while private slots keep their
  * registry identities. DSH currently derives data-slot from the dispatch key;
  * its public render options expose no separate DOM name. This adapter depends
@@ -123,13 +121,17 @@ export function mountNativeEntry(
     wrap?: (Native: ComponentType<EntryProps>, props: EntryProps) => ReactNode
   } = {},
 ): () => void {
+  const mountId = [...crypto.getRandomValues(new Uint32Array(4))].map((value) => value.toString(16)).join('-')
+  let generation = 0
   const register = ctx.slots.register.bind(ctx.slots) as unknown as Register
   const factory = ctx.slots.registerFactory.bind(ctx.slots) as unknown as Register
   const sourceEntries = (name: string) => ctx.slots.entriesOfSlot(name as never)
   const semanticAliases = new Map<string, string>()
   const anchors = typeof document === 'undefined' ? undefined : observeNativeSlotAnchors(document, semanticAliases)
   const mount = (entry: StoredEntry, destination: string, root: boolean): (() => void) => {
-    const aliases = new Map(Object.keys(entry.children ?? {}).map((key) => [key, `acp.native.${++generation}.${key}`]))
+    const aliases = new Map(
+      Object.keys(entry.children ?? {}).map((key) => [key, `acp.native.${mountId}.${++generation}.${key}`]),
+    )
     for (const [name, alias] of aliases) semanticAliases.set(alias, name)
     const Native = entry.component as ComponentType<EntryProps>
     const Component = (props: EntryProps): ReactNode => {

@@ -172,6 +172,7 @@ function sidecarProxy(
   return {
     append: overrides.append ?? sidecar.append.bind(sidecar),
     readLatestBinding: sidecar.readLatestBinding.bind(sidecar),
+    readNativeFork: sidecar.readNativeFork.bind(sidecar),
     readModeIntent: async () => undefined,
     readRecoveryState: sidecar.readRecoveryState.bind(sidecar),
     writeRecoveryState: overrides.writeRecoveryState ?? sidecar.writeRecoveryState.bind(sidecar),
@@ -281,9 +282,14 @@ describe('provider adapter ACP fork boundary', () => {
     },
   )
 
-  it.each([false, true])(
-    'uses ACP fork only at first dispatch and gives the child an independent binding (legacy registry references: %s)',
-    async (legacy) => {
+  it.each([
+    { legacy: false, provenance: 'header' },
+    { legacy: true, provenance: 'header' },
+    { legacy: false, provenance: 'explicit' },
+    { legacy: false, provenance: 'missing' },
+  ])(
+    'uses the first-dispatch fork boundary with $provenance provenance (legacy registry: $legacy)',
+    async ({ legacy, provenance }) => {
       const { root, sidecar } = await harness()
       try {
         const sessions = new Map<string, FixtureSession>()
@@ -328,7 +334,16 @@ describe('provider adapter ACP fork boundary', () => {
         sessions.set('parent', parentWithMarker)
 
         const childMessage = user('child')
-        const child = childFromParent(parentWithMarker, 'parent', childMessage)
+        const seeded = childFromParent(parentWithMarker, 'parent', childMessage)
+        const child =
+          provenance === 'header'
+            ? seeded
+            : withSessionFacts({
+                ...seeded,
+                header: { cwd: os.tmpdir(), isSeeded: true },
+              })
+        if (provenance === 'explicit')
+          await sidecar.recordNativeFork({ dshSessionId: 'child', sourceSessionId: 'parent', atSeq: 2 })
         sessions.set('child', child)
         const childCounts = { starts: 0, forks: 0, prompts: 0 }
         const childAdapter = new AcpProfileAdapter(
@@ -343,6 +358,14 @@ describe('provider adapter ACP fork boundary', () => {
           }),
           sidecar,
         )
+        if (provenance === 'missing') {
+          await expect(drain(childAdapter.stream(request('child', childMessage)))).rejects.toMatchObject({
+            code: 'ACP_FORK_SOURCE_REQUIRED',
+          })
+          expect(childCounts).toEqual({ starts: 0, forks: 0, prompts: 0 })
+          expect(await sidecar.readLatestBinding('child' as never)).toBeUndefined()
+          return
+        }
         await drain(childAdapter.stream(request('child', childMessage)))
 
         expect(childCounts).toEqual({ starts: 0, forks: 1, prompts: 1 })

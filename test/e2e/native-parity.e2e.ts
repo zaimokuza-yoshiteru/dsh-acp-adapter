@@ -1449,7 +1449,7 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
           await page.screenshot({ path: join(process.env.DSH_E2E_SCREENSHOTS, `${profile}-native-plan-diff.png`) })
         }
         const current = required(host.ctx.agents.get(id))
-        expect(host.ctx.sessionProjections.stateOf(current.session, 'todos')).toEqual([
+        expect(host.ctx.sessionProjections.snapshot(current.session, ['todos']).values.todos).toEqual([
           { content: 'E2E_PLAN_REMAINS', status: 'in_progress' },
         ])
       }
