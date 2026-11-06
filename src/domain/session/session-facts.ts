@@ -135,6 +135,5 @@ export interface SessionLike {
   readonly facts: SessionFacts
   /** Current effective DSH model-facing snapshots, without replaying ordinary history. */
   currentModelContextSnapshots?(): readonly ModelContextSnapshot[]
-  readonly permissions: { readonly sandbox: string | null; readonly approval: string | null }
   append?(type: string, data: unknown): unknown
 }

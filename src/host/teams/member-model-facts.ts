@@ -12,8 +12,7 @@ export async function readMemberRequestModel(
   const child = ctx.get('agents', false)?.get(id as never)
   const session = child?.session ?? ctx.get('sessions')?.get(id as never)
   if (session !== undefined) {
-    const selection = ctx.get('sessionProjections')?.stateOf(session, 'modelSelection')?.lastUsed
-    const used = selection ?? session.requestHeader()?.config
+    const used = session.requestHeader()?.config
     return used?.provider === provider ? used.model : undefined
   }
   const query = ctx.get('sessionQuery', false)

@@ -2,6 +2,8 @@ import { expect, it, vi } from 'vitest'
 import { Context as CordisContext } from '@deepseek-ai/cordis'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime, { defineTool } from '@deepseek-ai/dsh-tools'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
+import { executeSingleTool } from '../../support/tool-call.ts'
 import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import {
   createDevinLiveToolBudget,
@@ -139,6 +141,7 @@ it('uses the Host ToolRuntime guard to deny prohibited Lead messages before the 
   const ctx = new CordisContext()
   const systemPromptFiber = await ctx.plugin(SystemPrompt, {})
   const runtimeFiber = await ctx.plugin(ToolRuntime)
+  await ctx.plugin(NativeToolExecutor)
   let bodyCalls = 0
   ctx.tools.register(
     defineTool({
@@ -164,8 +167,7 @@ it('uses the Host ToolRuntime guard to deny prohibited Lead messages before the 
     return violation === undefined ? undefined : 'LIVE_TOOL_BUDGET'
   })
   try {
-    const result = await ctx.tools.execute({
-      signal: new AbortController().signal,
+    const result = await executeSingleTool(ctx, {
       callId: ToolCallId('prohibited-lead-message'),
       name: 'send_message',
       arguments: { target: 'lead', message: 'marker' },
@@ -186,6 +188,7 @@ it('caps real concurrent Host tool bodies at sixteen admissions', async () => {
   const ctx = new CordisContext()
   const systemPromptFiber = await ctx.plugin(SystemPrompt, {})
   const runtimeFiber = await ctx.plugin(ToolRuntime)
+  await ctx.plugin(NativeToolExecutor)
   let bodyCalls = 0
   ctx.tools.register(
     defineTool({
@@ -213,8 +216,7 @@ it('caps real concurrent Host tool bodies at sixteen admissions', async () => {
   try {
     const results = await Promise.all(
       Array.from({ length: MAX_DEVIN_LIVE_DISPATCH_ATTEMPTS + 4 }, (_, index) =>
-        ctx.tools.execute({
-          signal: new AbortController().signal,
+        executeSingleTool(ctx, {
           callId: ToolCallId(`probe-${index}`),
           name: 'probe',
           arguments: {},

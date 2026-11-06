@@ -331,6 +331,8 @@ describe('isolated Devin history evidence', () => {
   })
 
   it('limits nodes, selected bytes and database bytes without silently returning partial success', () => {
+    // 513 autocommitted inserts plus the byte-limit fixtures exceed the default
+    // 5s budget on slow Windows filesystems; this test asserts the limits, not latency.
     const nodes = fixture()
     for (let id = 0; id <= DEVIN_HISTORY_MAX_NODES; id++) nodes.insert(id, null, { role: 'user', content: '' })
     expect(readDevinHistory(nodes.scope)).toMatchObject({ status: 'limited', reason: 'history-limit' })
@@ -359,7 +361,7 @@ describe('isolated Devin history evidence', () => {
       projection.receipt(node + 1, node, `call-${call}`)
     }
     expect(readDevinHistory(projection.scope)).toMatchObject({ status: 'limited', reason: 'history-limit' })
-  })
+  }, 20_000)
 
   it('reads entirely synthetic history through the real worker and enforces its deadline', async () => {
     const test = fixture()

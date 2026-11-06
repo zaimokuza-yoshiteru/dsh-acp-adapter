@@ -1,5 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection'
+import type { Session } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-tools'
 import { z } from 'zod'
 import { acpAgentIdFromRoute } from '../../domain/session/agent-config.ts'
@@ -24,7 +25,7 @@ const forkTurnProjection = {
       : event.type === 'turn/start'
         ? { ...state, active: true }
         : state,
-} satisfies ProjectionDefinition<'acpForkDelegation'>
+} satisfies ProjectionDefinition<'acpForkDelegation', ForkTurnState>
 
 /**
  * Reject a known ACP child target when an active parent can only offer a
@@ -35,7 +36,17 @@ const forkTurnProjection = {
  */
 export function installAcpForkTools(ctx: Context): void {
   ctx.inject(['tools', 'sessionProjections'], (child) => {
-    child.sessionProjections.register(forkTurnProjection)
+    // Registration is asynchronous and readiness must precede reads; the guard
+    // remains registered immediately and simply has no state until ready.
+    let readState: ((session: Session) => ForkTurnState) | undefined
+    child.effect(async () => {
+      const handle = await child.sessionProjections.register(forkTurnProjection)
+      const read = (session: Session): ForkTurnState => handle.stateOf(session)
+      readState = read
+      return () => {
+        if (readState === read) readState = undefined
+      }
+    }, '@zaimokuza/dsh-acp-adapter: fork-turn projection')
     child.tools.guard((exec) => {
       if (exec.agent === undefined || exec.name !== 'subagent_fork') return
       const args = exec.arguments
@@ -47,7 +58,7 @@ export function installAcpForkTools(ctx: Context): void {
         acpAgentIdFromRoute(args.provider) === undefined
       )
         return
-      const state = child.sessionProjections.stateOf(exec.agent.session, 'acpForkDelegation')
+      const state = readState?.(exec.agent.session)
       if (state?.completed === true && state.active)
         return 'ACP_DELEGATED_FORK_UNAVAILABLE: An ACP child cannot inherit the completed prefix of an active conversation. Use subagent with a complete, self-contained task or select a native child route.'
     })

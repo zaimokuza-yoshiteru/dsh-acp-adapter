@@ -2,7 +2,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { z } from 'zod'
 import type { AcpExecutionView } from '../../contract/external-subagent.ts'
 import type { Session, SessionEventMap } from '@deepseek-ai/dsh-session'
-import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection'
+import type { ProjectionDefinition, ProjectionHandle } from '@deepseek-ai/dsh-session-projection'
 import type {} from '@deepseek-ai/dsh-permission-presets'
 import type {} from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-tool-todo'
@@ -15,12 +15,6 @@ import {
   type SessionLike,
 } from '../../domain/session/session-facts.ts'
 import { currentModelContextSnapshots } from '../../domain/session/model-context-snapshots.ts'
-
-declare module '@deepseek-ai/dsh-session-projection' {
-  interface SessionProjectionStateMap {
-    acpExecution: SessionFacts
-  }
-}
 
 const externalRecordView: AcpExecutionView = { externalSubagent: true }
 const ordinarySessionView: AcpExecutionView = { externalSubagent: false }
@@ -35,12 +29,32 @@ export const acpExecutionProjection = {
     viewSchema: z.object({ externalSubagent: z.boolean() }),
     view: (state) => (state.externalSubagent ? externalRecordView : ordinarySessionView),
   },
-} satisfies ProjectionDefinition<'acpExecution'>
+} satisfies ProjectionDefinition<'acpExecution', SessionFacts>
 
-export function readSessionFacts(ctx: Context, session: Session): SessionFacts {
-  const state = ctx.sessionProjections.stateOf(session, 'acpExecution')
-  if (state === undefined) throw new Error('ACP execution projection is unavailable')
-  return state
+/**
+ * Reader retained from our awaited registration. One host composition owns the
+ * `acpExecution` projection key per process; a reload replaces the reader.
+ */
+let executionFactReader: ((session: Session) => SessionFacts) | undefined
+
+/**
+ * Retain the awaited ACP execution projection handle for this composition.
+ * Registration readiness is owned by the caller that awaited it, so a read
+ * before retention fails closed instead of folding an unregistered unit.
+ * @param handle - ready handle returned by `sessionProjections.register`.
+ * @returns disposer clearing this reader.
+ */
+export function retainAcpExecutionProjection(handle: ProjectionHandle<SessionFacts>): () => void {
+  const read = (session: Session): SessionFacts => handle.stateOf(session)
+  executionFactReader = read
+  return () => {
+    if (executionFactReader === read) executionFactReader = undefined
+  }
+}
+
+export function readSessionFacts(_ctx: Context, session: Session): SessionFacts {
+  if (executionFactReader === undefined) throw new Error('ACP execution projection is not ready')
+  return executionFactReader(session)
 }
 
 /** Accessors always read the host's current cut, including after a policy append. */
@@ -87,11 +101,6 @@ export function acpSessionView(ctx: Context, session: Session | undefined): Sess
         agent !== undefined && tools?.schemas(agent).some((schema) => schema.name === 'skill') === true
       return currentModelContextSnapshots(session.deriveMessages(), skillEntryPointAvailable)
     },
-    get permissions() {
-      const state = ctx.sessionProjections.stateOf(session, 'permissions')
-      if (state === undefined) throw new Error('DSH permission projection is unavailable')
-      return state
-    },
     append: (type, data) => session.append(type as keyof SessionEventMap, data as never),
     watchTurnEnd: (listener) =>
       ctx.on('session/event', (owner, event) => {
@@ -131,8 +140,9 @@ export function acpSessionView(ctx: Context, session: Session | undefined): Sess
       }
     },
     publishPlan: (todos) => {
-      // tool-todo is optional. Its projection owns current plan state and the native dock.
-      if (ctx.sessionProjections.stateOf(session, 'todos') === undefined) return
+      // tool-todo owns both the `todos` projection and the `todo_write` tool;
+      // a missing tool means the optional native plan surface is not mounted.
+      if (ctx.get('tools', false)?.get('todo_write') === undefined) return
       session.append('todo/write', { todos: [...todos] })
     },
   }

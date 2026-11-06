@@ -4,6 +4,8 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime, { defineTool, RUN_CODE_NAME, type PostToolDecision } from '@deepseek-ai/dsh-tools'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
+import * as PtcToolExecutor from '@deepseek-ai/dsh-tool-executor-ptc'
 import { PtcRuntime, type PtcRunRequest, type PtcRunResult } from '@deepseek-ai/dsh-ptc-runtime'
 import type { TeamMemberView } from '@deepseek-ai/dsh-experimental-agent-team'
 import { installTeamMemberModelFacts } from '../../../src/host/teams/member-model-tools.ts'
@@ -42,8 +44,13 @@ async function harness(mode: 'native' | 'ptc' = 'native', project = true) {
   const ctx = new Context()
   cleanups.push(() => ctx.fiber.dispose())
   await ctx.plugin(SystemPrompt, {})
-  await ctx.plugin(ToolRuntime, { mode })
-  if (mode === 'ptc') await ctx.plugin(RosterPtcRuntime)
+  await ctx.plugin(ToolRuntime)
+  if (mode === 'ptc') {
+    await ctx.plugin(RosterPtcRuntime)
+    await ctx.plugin(PtcToolExecutor, {})
+  } else {
+    await ctx.plugin(NativeToolExecutor)
+  }
   ctx.provide('workingDirectory', { ensure: async () => process.cwd() } as never)
   const agent = { id: 'lead', ctx, session: { append: vi.fn(), header: { cwd: process.cwd() } } } as unknown as Agent
   const rows: TeamMemberView[] = [
@@ -89,17 +96,27 @@ async function harness(mode: 'native' | 'ptc' = 'native', project = true) {
       execute: async () => ({ member: publicRows()[1]! }),
     }),
   )
-  const invoke = (name = mode === 'ptc' ? RUN_CODE_NAME : 'list_agents', args = {}) =>
-    ctx.tools.execute({
-      name,
-      arguments:
-        name === RUN_CODE_NAME
-          ? { code: 'return await tools.list_agents({})', description: 'Read current Team member model facts' }
-          : args,
+  const invoke = async (name = mode === 'ptc' ? RUN_CODE_NAME : 'list_agents', args = {}) => {
+    const batch = await ctx.tools.execute({
+      calls: [
+        {
+          type: 'tool-call',
+          id: ToolCallId('model-facts'),
+          name,
+          arguments: JSON.stringify(
+            name === RUN_CODE_NAME
+              ? { code: 'return await tools.list_agents({})', description: 'Read current Team member model facts' }
+              : args,
+          ),
+        },
+      ],
       agent,
-      callId: ToolCallId('model-facts'),
       signal: new AbortController().signal,
     })
+    const settled = batch.results[0]
+    if (settled === undefined) throw new Error('missing tool result')
+    return settled.result
+  }
   return { ctx, agent, rows, membership, readModel, execute, invoke, projectFiber }
 }
 
@@ -238,7 +255,7 @@ describe('native Team model facts', () => {
         pending: { provider: 'acp-demo', model: 'model-c' },
       }),
     } as never)
-    expect(await readMemberRequestModel(ctx, 'child', 'acp-demo')).toBe('model-b')
+    expect(await readMemberRequestModel(ctx, 'child', 'acp-demo')).toBe('model-a')
     sessions.get.mockReturnValue(undefined as never)
     const dispose = vi.fn()
     const observeSession = vi.fn(async () => ({

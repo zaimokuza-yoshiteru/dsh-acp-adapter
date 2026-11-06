@@ -4,8 +4,27 @@ import { createTeamManagement } from '../../../src/host/teams/management.ts'
 
 function fixture(provider = 'acp-devin') {
   const session = (model: string) => ({ requestHeader: () => ({ config: { model, provider } }) })
-  const lead = { id: 'lead', session: session('lead-current'), options: { provider, model: 'lead-old' } }
-  const child = { id: 'child', session: session('child-current'), options: { provider, model: 'child-old' } }
+  const modelControl = (target: ReturnType<typeof session>) => ({
+    current: () => {
+      const config = target.requestHeader().config
+      return { provider: config.provider, model: config.model }
+    },
+    select: vi.fn(),
+  })
+  const leadSession = session('lead-current')
+  const childSession = session('child-current')
+  const lead = {
+    id: 'lead',
+    session: leadSession,
+    options: { provider, model: 'lead-old' },
+    model: modelControl(leadSession),
+  }
+  const child = {
+    id: 'child',
+    session: childSession,
+    options: { provider, model: 'child-old' },
+    model: modelControl(childSession),
+  }
   const rows = [
     { id: 'lead', name: 'lead', role: 'lead', provider, status: 'inactive' },
     {

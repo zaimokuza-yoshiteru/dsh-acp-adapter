@@ -4,6 +4,8 @@ import type { Context } from '@deepseek-ai/cordis'
 import { Context as CordisContext } from '@deepseek-ai/cordis'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime, { defineTool, RUN_CODE_NAME, TOOL_ABORTED_BEFORE_DISPATCH } from '@deepseek-ai/dsh-tools'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
+import * as PtcToolExecutor from '@deepseek-ai/dsh-tool-executor-ptc'
 import { PtcRuntime } from '@deepseek-ai/dsh-ptc-runtime'
 import type { PtcRunRequest, PtcRunResult } from '@deepseek-ai/dsh-ptc-runtime'
 import { createUserMessage, ToolCallId } from '@deepseek-ai/dsh-llm'
@@ -269,8 +271,31 @@ async function setup(
       schemas: (scope: unknown) =>
         scope === agent ? [...definitions.values()].filter((definition) => !hidden.has(definition.name)) : [],
       get: (name: string, scope: unknown) => (scope === agent && !hidden.has(name) ? definitions.get(name) : undefined),
+      executable: (name: string, scope: unknown) =>
+        scope === agent && !hidden.has(name) ? definitions.get(name) : undefined,
       executionMode: () => ({ kind: 'exclusive' }),
-      execute,
+      // ToolRuntime executes complete batches; this fixture keeps per-call
+      // overrides on `execute` and wraps their single result in a batch.
+      execute: async (input: {
+        calls: readonly { readonly id: string; readonly name: string; readonly arguments: string }[]
+        agent: unknown
+        signal: AbortSignal
+      }) => {
+        const call = input.calls[0]
+        if (call === undefined) throw new Error('missing tool call')
+        const result = (await execute({
+          name: call.name,
+          arguments: JSON.parse(call.arguments) as unknown,
+          agent: input.agent,
+          signal: input.signal,
+          callId: call.id,
+        })) as { additionalContexts?: readonly unknown[]; concludesTurn?: boolean }
+        return {
+          results: [{ callId: call.id, result }],
+          additionalContexts: result.additionalContexts ?? [],
+          concluded: result.concludesTurn === true,
+        }
+      },
     },
   }
   if (withSession) services.sessions = { get: (id: string) => (id === 'lead' ? currentAgent.session : undefined) }
@@ -410,7 +435,7 @@ describe('session-owned native Teams MCP bridge', () => {
     },
   )
 
-  it.each(['bare-name', 'other-server', 'cached-name', 'inactive-prompt', 'replaced-definition', 'without-teams'])(
+  it.each(['bare-name', 'other-server', 'cached-name', 'inactive-prompt', 'without-teams'])(
     'does not summarize task text from a %s identity',
     async (identity) => {
       const f = await setup(
@@ -437,8 +462,6 @@ describe('session-owned native Teams MCP bridge', () => {
         call = { ...original, name: null }
       }
       if (identity === 'inactive-prompt') controller.abort()
-      if (identity === 'replaced-definition')
-        f.definitions.set('spawn_teammate', { ...f.definitions.get('spawn_teammate') })
       const ask = vi.fn(async ({ questions }: Parameters<AcpNativeUserQuestionService['ask']>[0]) => ({
         answers: [{ id: questions[0]!.id, selected: [questions[0]!.options![0]!.label] }],
       }))
@@ -450,10 +473,35 @@ describe('session-owned native Teams MCP bridge', () => {
     },
   )
 
+  it('keeps a schema-equal definition re-registration authorized for the active prompt', async () => {
+    const f = await setup('devin', [])
+    const controller = new AbortController()
+    f.lease.beginPrompt(controller.signal)
+    const prompt = 'Complete task whose full text must stay visible'
+    const original = {
+      ...f.permission('spawn_teammate').toolCall,
+      rawInput: { name: 'worker', prompt, scope: '/restricted' },
+    }
+    // HMR re-instantiates the same visible capability while the prompt runs.
+    f.definitions.set('spawn_teammate', { ...f.definitions.get('spawn_teammate') })
+    const ask = vi.fn(async ({ questions }: Parameters<AcpNativeUserQuestionService['ask']>[0]) => ({
+      answers: [{ id: questions[0]!.id, selected: [questions[0]!.options![0]!.label] }],
+    }))
+    const handler = createAcpNativePermissionHandler({ getAgent: () => ({}), userQuestions: { ask } })
+    await handler({ ...f.permission(), toolCall: f.lease.presentTool!(original) })
+    const question = ask.mock.calls[0]![0].questions[0]!
+    // The live bridge identity still summarizes team fields; raw task text
+    // stays available in the detail instead of being dropped.
+    expect(question.question).not.toContain(prompt)
+    expect(question.question).toContain('worker')
+    expect(question.detail).toContain(prompt)
+  })
+
   it('keeps real ToolRuntime exclusive calls behind pending calls and ahead of later parallel calls', async () => {
     const dsh = new CordisContext()
     const systemPromptFiber = await dsh.plugin(SystemPrompt, {})
     const runtimeFiber = await dsh.plugin(ToolRuntime)
+    await dsh.plugin(NativeToolExecutor)
     cleanup.push(async () => {
       await runtimeFiber.dispose()
       await systemPromptFiber.dispose()
@@ -598,21 +646,13 @@ describe('session-owned native Teams MCP bridge', () => {
     expect((await newGeneration).isError).not.toBe(true)
     newPrompt.abort()
     lease.endPrompt()
-    expect(
-      dsh.tools.executionMode({
-        callId: 'mode-check' as never,
-        name: 'work',
-        arguments: { phase: 'exclusive' },
-        agent: agent as never,
-        signal: new AbortController().signal,
-      }),
-    ).toEqual({ kind: 'exclusive' })
   })
 
   it('reports terminal evidence only after real successful concludesTurn execution', async () => {
     const dsh = new CordisContext()
     const systemPromptFiber = await dsh.plugin(SystemPrompt, {})
     const runtimeFiber = await dsh.plugin(ToolRuntime)
+    await dsh.plugin(NativeToolExecutor)
     cleanup.push(async () => {
       await runtimeFiber.dispose()
       await systemPromptFiber.dispose()
@@ -1492,7 +1532,7 @@ describe('session-owned native Teams MCP bridge', () => {
     },
   )
 
-  it.each(['tool-restriction', 'teams-unload', 'definition-replacement'] as const)(
+  it.each(['tool-restriction', 'teams-unload'] as const)(
     'cancels immediately on %s while delivering an admitted MCP call response before transport closure',
     async (cause) => {
       const fixture = await setup('antigravity', ['present'], true)
@@ -1513,13 +1553,9 @@ describe('session-owned native Teams MCP bridge', () => {
       if (cause === 'tool-restriction') {
         fixture.hidden.add('present')
         fixture.listeners.get('tools/change')!()
-      } else if (cause === 'teams-unload') {
+      } else {
         delete fixture.services.agentTeams
         fixture.listeners.get('internal/service')!('agentTeams')
-      } else {
-        // An unchanged public schema is not proof of the same executing owner.
-        fixture.definitions.set('present', { ...fixture.definitions.get('present') })
-        fixture.listeners.get('tools/change')!()
       }
       expect.soft(fixture.lease.signal.aborted).toBe(true)
       expect.soft(bodySignal.aborted).toBe(true)
@@ -1539,6 +1575,37 @@ describe('session-owned native Teams MCP bridge', () => {
       expect(fixture.execute).toHaveBeenCalledOnce()
     },
   )
+
+  it('keeps a schema-equal definition re-registration live for the active prompt and closes after it ends', async () => {
+    const fixture = await setup('antigravity', ['present'], true)
+    fixture.lease.beginPrompt(new AbortController().signal)
+    const started = Promise.withResolvers<AbortSignal>()
+    const released = Promise.withResolvers<void>()
+    fixture.execute.mockImplementationOnce(async (input) => {
+      started.resolve(input.signal)
+      await released.promise
+      return { content: [{ type: 'text', text: 'Host completed the call' }], isError: false }
+    })
+    const call = fixture.client.callTool({ name: 'present', arguments: {} })
+    const bodySignal = await started.promise
+    // HMR re-instantiates the same visible capability; that is not authority
+    // revocation, so the admitted call keeps executing under the prompt.
+    fixture.definitions.set('present', { ...fixture.definitions.get('present') })
+    fixture.listeners.get('tools/change')!()
+    expect(fixture.lease.signal.aborted).toBe(false)
+    expect(bodySignal.aborted).toBe(false)
+    released.resolve()
+    await expect(call).resolves.toMatchObject({
+      content: [{ type: 'text', text: 'Host completed the call' }],
+      isError: false,
+    })
+    expect(fixture.execute).toHaveBeenCalledOnce()
+    // After the prompt, the stale executing owner can no longer serve calls.
+    fixture.lease.endPrompt()
+    expect(fixture.lease.signal.aborted).toBe(true)
+    await expect(fixture.client.callTool({ name: 'present', arguments: {} })).rejects.toThrow()
+    expect(fixture.execute).toHaveBeenCalledOnce()
+  })
 
   it('does not expose global tools hidden from this agent or team tools to non-members', async () => {
     const { ctx, definitions, hidden, services } = await setup(undefined, ['present', 'spawn_teammate'], false)
@@ -1590,7 +1657,9 @@ describe('session-owned native Teams MCP bridge', () => {
       const dsh = new CordisContext()
       const systemPromptFiber = await dsh.plugin(SystemPrompt, {})
       const ptcFiber = mode === 'native' ? undefined : await dsh.plugin(BridgeFakePtcRuntime)
-      const runtimeFiber = await dsh.plugin(ToolRuntime, { mode })
+      const runtimeFiber = await dsh.plugin(ToolRuntime)
+      if (mode === 'native') await dsh.plugin(NativeToolExecutor)
+      else await dsh.plugin(PtcToolExecutor, {})
       dsh.provide('workingDirectory', { ensure: async () => process.cwd() } as never)
       cleanup.push(async () => {
         await runtimeFiber.dispose()
@@ -1661,13 +1730,21 @@ describe('session-owned native Teams MCP bridge', () => {
         expect(lease.instructions).toContain('host-provided SDK instructions')
       }
       lease.beginPrompt(new AbortController().signal)
-      const result = await runtime.execute({
+      const batch = await runtime.execute({
         signal: new AbortController().signal,
-        callId: ToolCallId(`bridge-${mode}`),
-        name: 'file_read',
-        arguments: { path: '/tmp/file' },
+        calls: [
+          {
+            type: 'tool-call',
+            id: ToolCallId(`bridge-${mode}`),
+            name: 'file_read',
+            arguments: JSON.stringify({ path: '/tmp/file' }),
+          },
+        ],
         agent: agent as never,
       })
+      const settled = batch.results[0]
+      if (settled === undefined) throw new Error('missing tool result')
+      const result = settled.result
       if (mode === 'ptc') {
         expect(result.isError).toBe(true)
         expect(executions).toBe(0)

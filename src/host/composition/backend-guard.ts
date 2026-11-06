@@ -104,13 +104,11 @@ export function installAcpBackendGuard(ctx: Context, options: AcpBackendGuardOpt
     projectionCtx.on('agent/request', async (payload, next): Promise<LlmCallConfig> => {
       const resolved = await next()
       const session = payload.agent.session
-      const projection = projectionCtx.sessionProjections.stateOf(session, 'modelSelection')
       const targetProfile = acpAgentIdFromRoute(resolved.provider)
       const priorHistory = readSessionFacts(projectionCtx, session).priorSemanticHistory
-      // The API controller contributes modelSelection for interactive hosts.
-      // Headless AgentLoop hosts retain the same committed route in the native
-      // Session request header. Do not require an API/UI plugin to continue ACP.
-      const previous = projection === undefined ? (session.requestHeader()?.config ?? null) : projection.lastUsed
+      // The committed request header is the durable last-used route. The
+      // registry-level projection read is retired in favor of owning services.
+      const previous = session.requestHeader()?.config ?? null
       if (targetProfile === undefined && (previous === null || acpAgentIdFromRoute(previous.provider) === undefined))
         return resolved
       const previousProfile = acpAgentIdFromRoute(previous?.provider ?? '')

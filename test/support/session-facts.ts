@@ -1,4 +1,11 @@
+import type { Context } from '@deepseek-ai/cordis'
 import { applySessionFact, initialSessionFacts, type SessionLike } from '../../src/domain/session/session-facts.ts'
+import { acpExecutionProjection, retainAcpExecutionProjection } from '../../src/host/composition/session-facts.ts'
+
+/** Register the ACP execution projection and retain its awaited reader. */
+export async function installAcpExecutionProjection(ctx: Context): Promise<void> {
+  retainAcpExecutionProjection(await ctx.sessionProjections.register(acpExecutionProjection))
+}
 
 /** Legacy event fixtures exercise the same fold; production never scans snapshots. */
 export function withSessionFacts<
@@ -23,15 +30,5 @@ export function withSessionFacts<
           ),
     },
     seq: { get: () => Math.max(-1, ...session.snapshotEvents().map((event, index) => event.seq ?? index)) + 1 },
-    permissions: {
-      get: () => {
-        const latest = (type: string, key: string): string | null => {
-          const data = session.snapshotEvents().findLast((event) => event.type === type)?.data as
-            Record<string, string> | undefined
-          return data?.[key] ?? null
-        }
-        return { sandbox: latest('sandbox/mode', 'mode'), approval: latest('approval/policy', 'policy') }
-      },
-    },
   }) as T & SessionLike
 }

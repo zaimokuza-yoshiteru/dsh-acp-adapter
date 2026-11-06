@@ -8,11 +8,8 @@ import type { Session } from '@deepseek-ai/dsh-session'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import { SUBAGENT_DESCRIPTOR_VERSION } from '@deepseek-ai/dsh-subagent'
 import { EXTERNAL_SUBAGENT_DESCRIPTOR_PROVIDER } from '../../../src/contract/external-subagent.ts'
-import {
-  acpExecutionProjection,
-  acpSessionView,
-  readSessionFacts,
-} from '../../../src/host/composition/session-facts.ts'
+import { acpSessionView, readSessionFacts } from '../../../src/host/composition/session-facts.ts'
+import { installAcpExecutionProjection } from '../../support/session-facts.ts'
 import { sessionFactsSchema } from '../../../src/domain/session/session-facts.ts'
 import type { AcpReplayPayloadV1 } from '../../../src/domain/session/acp-replay-payload.ts'
 
@@ -39,7 +36,7 @@ async function harness(): Promise<Context> {
   contexts.push(ctx)
   await ctx.plugin(SessionStore)
   await ctx.plugin(SessionProjectionRegistry)
-  ctx.sessionProjections.register(acpExecutionProjection)
+  await installAcpExecutionProjection(ctx)
   return ctx
 }
 

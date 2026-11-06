@@ -29,11 +29,11 @@ export const inject = [
   'permissionPresets',
 ]
 
-export function apply(ctx: Context, config: Config): void {
+export async function apply(ctx: Context, config: Config): Promise<void> {
   ctx.inject(['settings'], (child) => {
     child.effect(() => child.settings.configure({ auto: false }, ctx.fiber))
   })
-  installInstalledProfileRegistry(ctx, config, { installRemote: true })
+  await installInstalledProfileRegistry(ctx, config, { installRemote: true })
   installLegacySettingsImport(ctx)
 }
 

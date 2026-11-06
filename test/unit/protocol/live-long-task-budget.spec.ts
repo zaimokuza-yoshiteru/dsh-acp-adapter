@@ -2,6 +2,8 @@ import { expect, it, vi } from 'vitest'
 import { Context as CordisContext } from '@deepseek-ai/cordis'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime, { defineTool } from '@deepseek-ai/dsh-tools'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
+import { executeSingleTool } from '../../support/tool-call.ts'
 import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import {
   admitLongTaskTool,
@@ -47,6 +49,7 @@ it('reserves repeat-effect allowance before concurrent Host tool bodies start', 
   const ctx = new CordisContext()
   const systemPromptFiber = await ctx.plugin(SystemPrompt, {})
   const runtime = await ctx.plugin(ToolRuntime)
+  await ctx.plugin(NativeToolExecutor)
   const budget = createLongTaskBudget()
   let bodyCalls = 0
   let errorResults = 0
@@ -85,8 +88,7 @@ it('reserves repeat-effect allowance before concurrent Host tool bodies start', 
   })
   try {
     const calls = Array.from({ length: 3 }, (_, index) =>
-      ctx.tools.execute({
-        signal: new AbortController().signal,
+      executeSingleTool(ctx, {
         callId: ToolCallId(`parallel-${index}`),
         name: 'bash',
         arguments: { command: 'same side effect' },

@@ -13,13 +13,15 @@ import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
 import WorkingDirectory from '@deepseek-ai/dsh-working-directory'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import type { JobRegistry } from '@deepseek-ai/dsh-jobs'
 import { AcpProfileAdapter, type AcpProfileRuntime } from '../../../src/host/composition/profile-adapter.ts'
 import { resolveQwenTaskJobs } from '../../../src/host/composition/qwen-task-jobs.ts'
 import { installAcpSessionRuntimeCleanup } from '../../../src/host/composition/installed-profile-registry.ts'
-import { acpExecutionProjection, acpSessionView } from '../../../src/host/composition/session-facts.ts'
+import { acpSessionView } from '../../../src/host/composition/session-facts.ts'
+import { installAcpExecutionProjection } from '../../support/session-facts.ts'
 import { createAcpSidecar } from '../../../src/persistence/sidecar.ts'
 import { QwenBackgroundTasks, type QwenTaskJobOutcome } from '../../../src/runtime/session/qwen-background.ts'
 import type { AcpPromptOptions } from '../../../src/runtime/session/session-runtime.ts'
@@ -61,6 +63,7 @@ async function harness(holdFirst = false, lateCleanup = false) {
   await ctx.plugin(LocalFileSystem, { cwd: root })
   await ctx.plugin(WorkingDirectory, { defaultDirectory: root })
   await ctx.plugin(ToolRuntime)
+  await ctx.plugin(NativeToolExecutor)
   await ctx.plugin(AgentRegistry)
   await ctx.plugin(AgentLoop, { agents: [] })
   await ctx.plugin(JobsLocal.default, {})
@@ -69,7 +72,7 @@ async function harness(holdFirst = false, lateCleanup = false) {
   ctx.on('session/event', (_session, event) => {
     events.push(event)
   })
-  ctx.sessionProjections.register(acpExecutionProjection)
+  await installAcpExecutionProjection(ctx)
   const firstEntered = Promise.withResolvers<void>()
   const firstRelease = Promise.withResolvers<void>()
   const calls: Array<{ content: acp.ContentBlock[]; options: AcpPromptOptions }> = []
