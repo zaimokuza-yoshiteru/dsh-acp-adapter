@@ -29,9 +29,7 @@ export function createToolApprovalPolicyReader(
     const header = session?.header ?? (await ctx.get('sessionPersistence', false)?.stat(sessionId as never))?.header
     if (header === undefined) throw new Error('ACP_TOOL_APPROVAL_SESSION_UNAVAILABLE')
     if (nativeParent && session !== undefined) {
-      const committedProvider =
-        ctx.sessionProjections.stateOf(session, 'modelSelection')?.lastUsed?.provider ??
-        session.requestHeader?.()?.config.provider
+      const committedProvider = session.requestHeader?.()?.config.provider
       // A native request may have completed while this plugin was disabled.
       // Its old ACP binding and preference no longer govern a new child's
       // initialization. Pending selection alone does not establish that switch.
@@ -40,12 +38,10 @@ export function createToolApprovalPolicyReader(
     }
     const binding = await sidecar.readLatestBinding(sessionId as never)
     if (binding?.status === 'outdated') throw new Error('ACP_TOOL_APPROVAL_POLICY_UNAVAILABLE')
-    const selected = session === undefined ? undefined : ctx.sessionProjections.stateOf(session, 'modelSelection')
     const agent = ctx.get('agents', false)?.get(sessionId as never)
     const provider =
       binding?.binding.provider ??
-      selected?.pending?.provider ??
-      selected?.lastUsed?.provider ??
+      agent?.model.current()?.provider ??
       session?.requestHeader?.()?.config.provider ??
       agent?.options.provider ??
       (session !== undefined && header.origin !== 'subagent'

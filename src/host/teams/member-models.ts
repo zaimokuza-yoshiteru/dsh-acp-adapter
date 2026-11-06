@@ -1,5 +1,5 @@
 import type { Context } from '@deepseek-ai/cordis'
-import { installModelSelection, type Agent, type ModelSelectionRef } from '@deepseek-ai/dsh-agent'
+import { type Agent } from '@deepseek-ai/dsh-agent'
 import type { AcpSidecar } from '../../persistence/sidecar.ts'
 import { modeIntentBindingKey } from '../../persistence/sidecar.ts'
 import type { AcpProfileAdapter } from '../composition/profile-adapter.ts'
@@ -26,7 +26,9 @@ export function createMemberModels(ctx: Context, { sidecar, adapterFor }: Member
       : undefined
   }
   const installed = new WeakSet<Agent>()
-  const install = (agent: Agent): void => {
+  // Native agent creation awaits these listeners before releasing queued input,
+  // so the saved binding-scoped model is recorded before the member's first step.
+  const install = async (agent: Agent): Promise<void> => {
     const membership = ctx.get('agentTeams')?.tryMembership(agent)
     const provider = agent.options.provider
     if (
@@ -37,34 +39,14 @@ export function createMemberModels(ctx: Context, { sidecar, adapterFor }: Member
     )
       return
     installed.add(agent)
-    ctx.effect(() =>
-      agent.ctx.effect(() => {
-        const ref: ModelSelectionRef = { current: undefined, assembled: undefined }
-        // Load before the native helper captures its step selection, including
-        // after a rebind. Never retarget a step already assembling or running.
-        const hydrate = agent.ctx.on(
-          'system-prompt/assemble',
-          async (_assembly, _context, next) => {
-            const saved = await selectionFor(agent.id, provider)
-            ref.current =
-              saved === undefined ? undefined : await llm.resolveCallConfig({ provider, model: saved.model })
-            return await next()
-          },
-          { prepend: true },
-        )
-        const disposeSelection = installModelSelection(agent.ctx, ref)
-        return () => {
-          hydrate()
-          disposeSelection()
-        }
-      }),
-    )
+    const saved = await selectionFor(agent.id, provider)
+    if (saved !== undefined) agent.model.select({ provider, model: saved.model })
   }
-  ctx.on('agent/created', ({ agent }) => {
-    install(agent)
+  ctx.on('agent/created', async ({ agent }) => {
+    await install(agent)
     return undefined
   })
-  for (const agent of ctx.get('agents', false)?.list() ?? []) install(agent)
+  for (const agent of ctx.get('agents', false)?.list() ?? []) void install(agent)
 
   const facts = async (id: string, provider: string) => {
     const child = ctx.get('agents', false)?.get(id as never)
@@ -116,8 +98,7 @@ export function createMemberModels(ctx: Context, { sidecar, adapterFor }: Member
       // The host projection can advertise next-request intent for a live
       // member. Dormant members receive the same selection through hydration.
       const child = ctx.get('agents', false)?.get(id as never)
-      if (child !== undefined && child.status !== 'running')
-        child.session.append('model/selection', { provider, model })
+      if (child !== undefined && child.status !== 'running') child.model.select({ provider, model })
     },
   }
 }

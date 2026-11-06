@@ -302,7 +302,14 @@ describe('real Cordis ACP composition settings lifecycle', () => {
       }
     >()
     ctx.provide('sessions', { get: (id: string) => liveSessions.get(id) })
-    const liveAgents = new Map<string, { id: string; options: { provider: string } }>()
+    const liveAgents = new Map<
+      string,
+      {
+        id: string
+        options: { provider: string }
+        model?: { current: () => { provider: string; model: string } | undefined; select: () => void }
+      }
+    >()
     const memberships = new Map<object, { id: string; role: 'lead' | 'teammate'; root: object }>()
     const agentResolutionCalls: string[] = []
     ctx.provide('agents', { get: (id: string) => liveAgents.get(id), list: () => [...liveAgents.values()] })
@@ -467,7 +474,14 @@ describe('real Cordis ACP composition settings lifecycle', () => {
         permissions: {},
         requestHeader: () => ({ config: { provider: 'acp-codex' } }),
       })
-      liveAgents.set(id, { id, options: { provider: 'acp-codex' } })
+      liveAgents.set(id, {
+        id,
+        options: { provider: 'acp-codex' },
+        model: {
+          current: () => ({ provider: 'acp-codex', model: 'test-model' }),
+          select: () => {},
+        },
+      })
     }
     addSession('policy-root')
     await seedAcpBinding('policy-root')
@@ -486,7 +500,14 @@ describe('real Cordis ACP composition settings lifecycle', () => {
     await remote.setToolApprovalPolicy('policy-root', { policy: 'ask' })
 
     const lead = liveAgents.get('policy-root')!
-    const teammate = liveAgents.get('policy-member') ?? { id: 'policy-member', options: { provider: 'acp-codex' } }
+    const teammate = liveAgents.get('policy-member') ?? {
+      id: 'policy-member',
+      options: { provider: 'acp-codex' },
+      model: {
+        current: () => ({ provider: 'acp-codex', model: 'test-model' }),
+        select: () => {},
+      },
+    }
     liveAgents.set(teammate.id, teammate)
     liveSessions.set(teammate.id, {
       header: { origin: 'subagent', parentSession: lead.id },

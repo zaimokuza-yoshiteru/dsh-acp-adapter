@@ -2,6 +2,7 @@ import { withSessionFacts } from '../../support/session-facts.ts'
 import { describe, expect, it } from 'vitest'
 import { markAgentLoopRequest, createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
+import type {} from '@deepseek-ai/dsh-session-title-llm'
 import { admitCurrentStep, AcpAdmissionError } from '../../../src/domain/session/current-step-admission.ts'
 
 const user = (text: string) => createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })

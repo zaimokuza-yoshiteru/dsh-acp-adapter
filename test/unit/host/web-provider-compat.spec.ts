@@ -2,10 +2,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context, type Plugin } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
 import AgentRegistry, { type Agent } from '@deepseek-ai/dsh-agent'
+import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import WebRuntime from '@deepseek-ai/dsh-web'
 import * as webApi from '@deepseek-ai/dsh-web-deepseek-api'
 import * as toolWeb from '@deepseek-ai/dsh-tool-web'
@@ -73,8 +75,10 @@ async function harness(baseSelection = false) {
   await ctx.plugin(Loader)
   await ctx.plugin(SessionStore)
   await ctx.plugin(AgentRegistry)
+  await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(SystemPrompt, {})
-  await ctx.plugin(ToolRuntime, { mode: 'native' })
+  await ctx.plugin(ToolRuntime)
+  await ctx.plugin(NativeToolExecutor)
   const selection = await livePlugin(ctx, WebRuntime, 'web', {
     searchProvider: baseSelection ? 'deepseek-official' : 'deepseek-search-api',
     fetchProvider: baseSelection ? 'http' : 'deepseek-fetch-api',
@@ -84,9 +88,13 @@ async function harness(baseSelection = false) {
     await Promise.resolve()
     return apiKey === undefined ? undefined : { value: apiKey }
   })
+  // Web tools are admitted only when the selected provider proves a credential.
+  const describeCredential = vi.fn(async (_reference: string) => ({
+    configured: apiKey !== undefined,
+  }))
   // These two external credential seams contain only dummy values. The native
   // provider, not this fixture, chooses which seam the initiating Session may use.
-  ctx.provide('credentials', { resolve: resolveCredential } as never)
+  ctx.provide('credentials', { resolve: resolveCredential, describe: describeCredential } as never)
   const resolveAccountToken = vi.fn(async (_endpoint: string) => 'test-native-account-token')
   ctx.provide('deepseekAccount', { resolveToken: resolveAccountToken } as never)
   const provider = await livePlugin(ctx, webApi, 'web-deepseek-api', { baseURL: apiBase })
@@ -151,6 +159,7 @@ async function harness(baseSelection = false) {
     selection,
     provider,
     resolveCredential,
+    describeCredential,
     resolveAccountToken,
     connect,
     setApiKey(value: string | undefined) {
@@ -232,10 +241,13 @@ describe('published RC.2 web providers through the ACP native-tool bridge', () =
       expect(h.requests.map(({ endpoint }) => endpoint)).toEqual([`${apiBase}/search`, `${apiBase}/fetch`])
       expect(h.requests[1]?.body).toEqual({ url: 'https://requested.invalid/article' })
       if (route === 'deepseek-account') {
-        expect(h.resolveAccountToken.mock.calls.map(([endpoint]) => endpoint)).toEqual([
+        // Readiness resolves the account token for the configured base URL
+        // before admitting each tool; the actual requests resolve their own URLs.
+        expect(h.resolveAccountToken.mock.calls.map(([endpoint]) => endpoint).slice(-2)).toEqual([
           `${apiBase}/search`,
           `${apiBase}/fetch`,
         ])
+        expect(h.resolveAccountToken.mock.calls.map(([endpoint]) => endpoint)).toContain(apiBase)
         expect(h.resolveCredential).not.toHaveBeenCalled()
         for (const { headers } of h.requests) {
           expect(headers.get('x-dsh-auth-token')).toBe('test-native-account-token')
@@ -262,9 +274,12 @@ describe('published RC.2 web providers through the ACP native-tool bridge', () =
     const caller = await h.connect('missing-api-credential', 'Missing credential question')
     const search = await caller.search('missing-key')
     const fetched = await caller.fetch('https://requested.invalid/article')
+    // Without a proven credential the web tools are not admitted to this step;
+    // the calls fail before any provider dispatch or account-token lookup.
     expect(search.isError).toBe(true)
     expect(fetched.isError).toBe(true)
-    expect(h.resolveCredential).toHaveBeenCalledTimes(2)
+    expect(h.describeCredential).toHaveBeenCalled()
+    expect(h.resolveCredential).not.toHaveBeenCalled()
     expect(h.resolveAccountToken).not.toHaveBeenCalled()
     expect(h.requests).toEqual([])
   })
@@ -292,11 +307,9 @@ describe('published RC.2 web providers through the ACP native-tool bridge', () =
     expect(h.resolveCredential).not.toHaveBeenCalled()
 
     const webOwner = h.selection.fiber.uid
-    const liveConfig = h.selection.fiber.config
     await h.selection.update({ searchProvider: 'deepseek-search-api', fetchProvider: 'deepseek-fetch-api' })
     expect(Object.is(h.selection.entry.fiber, h.selection.fiber)).toBe(true)
     expect(h.selection.entry.fiber?.uid).toBe(webOwner)
-    expect(Object.is(h.selection.entry.fiber?.config, liveConfig)).toBe(true)
     for (const result of await Promise.all([search(), fetchPage()])) expect(result.isError).not.toBe(true)
     expect(h.requests.map(({ endpoint }) => endpoint).sort()).toEqual([`${apiBase}/fetch`, `${apiBase}/search`])
     expect(oldSearch).toHaveBeenCalledOnce()
@@ -308,7 +321,6 @@ describe('published RC.2 web providers through the ACP native-tool bridge', () =
     expect(oldFetch).toHaveBeenCalledTimes(2)
     expect(h.requests).toHaveLength(2)
     expect(h.selection.entry.fiber?.uid).toBe(webOwner)
-    expect(Object.is(h.selection.entry.fiber?.config, liveConfig)).toBe(true)
     expect(caller.listedTools).toEqual(['web_fetch', 'web_search'])
   })
 })

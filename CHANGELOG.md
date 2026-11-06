@@ -4,6 +4,24 @@
 
 User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for publication dates, exact installation instructions, and checksums. Historical entries were reconstructed from tag diffs; npm packages were not republished.
 
+## 0.2.2-rc.1.1
+
+### 中文
+
+- 升级兼容目标及精确官方依赖至 DSH `0.2.2-rc.1`，同步 Cordis 4.1 与 Node.js `>=24.9`。安装本版前请升级宿主，无需新增用户配置。
+- 适配新的批次工具执行接口：单次 ACP 调用按批次执行，并按当前轮次解析宿主工具准入，使按步骤启用的工具（如 Web 搜索与抓取）在 ACP 会话中继续可用；PTC 的 `run_code` 传输保持可用。
+- 适配异步会话投影注册：启动时等待注册完成并保留读取句柄。模型选择的读取与写入改用 Agent 模型接口，团队成员在创建时记录其绑定范围内保存的模型。
+- 保留 HMR 重注册同名工具时活动轮次的工具连接，仅在真实撤权、工具移除或定义变化时立即关闭；轮次结束后释放不再有效的连接。
+- 迁移测试与工具夹具到新的执行器、测试工具包与投影接口，并保持既有审批、团队与诊断覆盖。
+
+### English
+
+- Target DSH `0.2.2-rc.1` with exact published dependencies, Cordis 4.1 and Node.js `>=24.9`. Upgrade the host before installing this version; no additional user configuration is required.
+- Adapt to the batch tool-execution interface: one ACP call runs as a batch and resolves host tool admission for the current turn, so step-conditional tools such as Web search and fetch remain available in ACP sessions while the PTC `run_code` transport keeps working.
+- Adapt to asynchronous session-projection registration: activation awaits registration and retains its read handle. Model selection reads and writes use the Agent model API, and teammates record their binding-scoped saved model at creation.
+- Keep the tool connection for an active turn when HMR re-registers same-named tools, closing immediately only on real revocation, tool removal or definition changes; stale connections are released when the turn ends.
+- Migrate tests and tool fixtures to the new executors, test kit and projection interfaces while preserving approval, Teams and diagnostic coverage.
+
 ## 0.2.1-rc.4.1
 
 ### 中文

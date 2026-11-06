@@ -42,6 +42,9 @@ const prepare = (profile: AcpStubAgentConfig, runtime: AcpAgentId | undefined = 
 
 describe('Codex subprocess loopback MCP routing', () => {
   it('adds only the trusted MCP IP to both routing keys before MCP discovery exists', async () => {
+    // Isolate the assertion from the developer machine's proxy exclusions.
+    vi.stubEnv('NO_PROXY', '')
+    vi.stubEnv('no_proxy', '')
     const profile = config()
     const before = structuredClone(profile)
     const createMcpLease = vi.fn(async () => undefined)

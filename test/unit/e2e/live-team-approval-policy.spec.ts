@@ -9,6 +9,8 @@ import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import SandboxPolicyService, { setSandboxMode } from '@deepseek-ai/dsh-sandbox-policy'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
+import { executeSingleTool } from '../../support/tool-call.ts'
 import ApprovalService, { setApprovalPolicy } from '@deepseek-ai/dsh-user-approval'
 import type { ApprovalOutcome, ApprovalRequest } from '@deepseek-ai/dsh-user-approval'
 import { installLiveTeamApprovalPolicy } from '../../e2e/live-team-approval-policy.ts'
@@ -38,6 +40,7 @@ async function fixture() {
   await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(SandboxPolicyService, { mode: 'danger-full-access' })
   await ctx.plugin(ToolRuntime)
+  await ctx.plugin(NativeToolExecutor)
   await ctx.plugin(ApprovalService, { policy: 'ask' })
   const executed: { command: string; sandboxPolicy: { mode: string } }[] = []
   const shell = {
@@ -84,7 +87,7 @@ async function fixture() {
   const install = () => installLiveTeamApprovalPolicy(ctx, { lead, memberName: 'permission-review', command, token })
   const announce = (candidate = member) => ctx.serial('agent/created', { agent: candidate, source: 'startup' })
   const call = (candidate: Agent, callArgs: unknown = args, callId = 'native-bash') =>
-    ctx.tools.execute({
+    executeSingleTool(ctx, {
       name: 'bash',
       arguments: callArgs,
       callId: ToolCallId(callId),

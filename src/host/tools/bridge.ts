@@ -5,8 +5,9 @@ import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-tools'
 import { RUN_CODE_NAME, TOOL_ABORTED_BEFORE_DISPATCH } from '@deepseek-ai/dsh-tools'
-import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
-import type { ToolSchema } from '@deepseek-ai/dsh-llm'
+import type { ToolDefinition, ToolExecutionResult, ResolvedToolSet } from '@deepseek-ai/dsh-tools'
+import { ToolCallId } from '@deepseek-ai/dsh-llm'
+import type { ToolCallBlock, ToolSchema } from '@deepseek-ai/dsh-llm'
 import type * as acp from '@agentclientprotocol/sdk'
 import { Server } from '@modelcontextprotocol/server'
 import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node'
@@ -382,8 +383,16 @@ function bridgeDefinitions(ctx: Context, sessionId: string, schemas: readonly To
     const definition = tools.get(schema.name, agent)
     if (definition !== undefined) definitions.set(schema.name, definition)
   }
-  const currentSchemaKey = schemaValueKey([...definitions.keys()].map((name) => visible.get(name)!))
-  return definitions.size === 0 ? undefined : { agent, tools, teamContext, definitions, visible, currentSchemaKey }
+  // `run_code` is the selected executor's reserved transport, not a registry
+  // definition. Its assembled schema authorizes the executor-owned call.
+  const executorOwned = new Set<string>()
+  if (!definitions.has(RUN_CODE_NAME) && !duplicates.has(RUN_CODE_NAME) && visible.has(RUN_CODE_NAME))
+    executorOwned.add(RUN_CODE_NAME)
+  const schemaNames = [...definitions.keys(), ...executorOwned]
+  const currentSchemaKey = schemaValueKey(schemaNames.map((name) => visible.get(name)!))
+  return definitions.size === 0 && executorOwned.size === 0
+    ? undefined
+    : { agent, tools, teamContext, definitions, executorOwned, visible, currentSchemaKey }
 }
 
 /** Registry-owned identity keys track scoped tool and visible schema changes. */
@@ -423,7 +432,7 @@ export async function createDshToolBridge(
   const agents = ctx.get('agents', false)
   const bridge = bridgeDefinitions(ctx, sessionId, schemas)
   if (bridge === undefined || agents === undefined) return undefined
-  const { tools, agent, teamContext, definitions, visible } = bridge
+  const { tools, agent, teamContext, definitions, executorOwned, visible } = bridge
   const hasTeams = teamContext !== undefined
   const lifetime = new AbortController()
   const deferredWaitReceipts = new DeferredWaitReceipts(sessionId)
@@ -525,7 +534,19 @@ export async function createDshToolBridge(
   const path = `/${randomBytes(32).toString('hex')}`
   // The connection owns caller identity. Keep native tool names intact so
   // upstream prompts, descriptions and plugin instructions share one contract.
-  const names = definitions
+  const names = new Map<string, ToolDefinition>(definitions)
+  for (const name of executorOwned) {
+    const schema = visible.get(name)!
+    names.set(name, {
+      name,
+      description: schema.description ?? name,
+      parameters: schema.parameters,
+      output: { schema: { type: 'json' }, render: () => [] },
+      execute: async () => {
+        throw new Error('ACP_HOST_EXECUTOR_TRANSPORT')
+      },
+    } as unknown as ToolDefinition)
+  }
   const scopedInstructions = bridgeInstructions(names, hasTeams)
   const presented = new Map<string, string>()
   const permissionFences = new WeakMap<object, { generation: number; prompt: AbortSignal }>()
@@ -694,12 +715,81 @@ export async function createDshToolBridge(
   // fail-closed in each permission resolver below.
   if (resolveApprovalPolicy !== undefined) await resolveApprovalPolicy().catch(() => undefined)
   // Cordis returns a caller-context proxy for each service lookup, so proxy identity is not service identity.
-  const isDefinitionLive = (name: string, definition: ToolDefinition): boolean => tools.get(name, agent) === definition
+  // HMR may re-instantiate the same capability while an ACP prompt is active.
+  // An equal visible schema keeps the lease serving that prompt; after the
+  // prompt ends a changed definition closes the lease again.
+  const promptActive = (): boolean => prompt !== undefined && !prompt.aborted
+  const isDefinitionLive = (name: string, definition: ToolDefinition): boolean => {
+    // The selected executor owns this transport; its selection is revalidated
+    // when the call dispatches through `tools.execute`.
+    if (executorOwned.has(name)) return true
+    const current = tools.get(name, agent)
+    if (current === undefined) return false
+    if (current === definition) return true
+    if (!promptActive()) return false
+    const schema = (candidate: ToolDefinition): ToolSchema => ({
+      name: candidate.name,
+      description: candidate.description,
+      parameters: candidate.parameters,
+    })
+    return schemaValueKey([schema(current)]) === schemaValueKey([schema(definition)])
+  }
   const live = (): boolean =>
     !lifetime.signal.aborted &&
     agents.get(sessionId as never) === agent &&
     (teamContext?.isLive() ?? true) &&
     [...definitions].every(([name, definition]) => isDefinitionLive(name, definition))
+  // Native tools decide their own overlap; only an exact `true` opts into a
+  // parallel group, and a missing or throwing classifier stays exclusive.
+  const executionModeOf = (
+    name: string,
+    args: unknown,
+    toolSet: ResolvedToolSet | undefined,
+  ): 'exclusive' | 'parallel' => {
+    const definition = tools.executable(name, agent, toolSet)
+    if (definition?.isConcurrencySafe === undefined) return 'exclusive'
+    try {
+      return definition.isConcurrencySafe(args) === true ? 'parallel' : 'exclusive'
+    } catch {
+      return 'exclusive'
+    }
+  }
+  // One ACP prompt is one admission scope: resolve step conditions once and
+  // release the admitted set when that prompt ends (or the lease closes).
+  let admittedTools: { readonly generation: number; readonly set: Promise<ResolvedToolSet | undefined> } | undefined
+  const disposeAdmittedTools = (): void => {
+    const current = admittedTools
+    admittedTools = undefined
+    if (current !== undefined)
+      void current.set.then(
+        (set) => set?.dispose(),
+        () => undefined,
+      )
+  }
+  const admittedToolsForPrompt = async (): Promise<ResolvedToolSet | undefined> => {
+    const signal = prompt
+    if (signal === undefined || signal.aborted) return undefined
+    const options = agent.options
+    const selection =
+      agent.model?.current?.() ??
+      (options?.provider !== undefined && options.model !== undefined
+        ? { provider: options.provider, model: options.model }
+        : undefined)
+    if (selection === undefined) return undefined
+    if (admittedTools?.generation !== promptGeneration) {
+      const generation = promptGeneration
+      const set = tools.resolve({ agent, modelSelection: selection, signal })
+      admittedTools = { generation, set }
+      // A prompt that ended before resolution finished must not retain the set.
+      void set.then(
+        (resolved) => {
+          if (generation !== promptGeneration) resolved.dispose()
+        },
+        () => undefined,
+      )
+    }
+    return await admittedTools.set
+  }
   const inspectPermission: NonNullable<AcpMcpLease['inspectPermission']> = async (request) => {
     const capturedPrompt = prompt
     const capturedGeneration = promptGeneration
@@ -985,15 +1075,9 @@ export async function createDshToolBridge(
               diagnosticTargetRole = 'unknown'
             }
           }
+          const toolSet = await admittedToolsForPrompt()
           releaseExecution = await executionScheduler.acquire(
-            () =>
-              tools.executionMode({
-                callId: hostCallId as never,
-                name: definition.name,
-                arguments: args,
-                agent,
-                signal: dispatchSignal,
-              }).kind,
+            () => executionModeOf(definition.name, args, toolSet),
             dispatchSignal,
           )
           if (
@@ -1089,17 +1173,30 @@ export async function createDshToolBridge(
             bodySignal.addEventListener('abort', onDispatchAbort, { once: true })
             if (bodySignal.aborted) onDispatchAbort()
           }
-          let result: Awaited<ReturnType<typeof tools.execute>>
+          let result: ToolExecutionResult
+          let batchContexts: readonly unknown[] = []
           try {
-            result = await agents.withInitiator(agent, () =>
+            // The registry executes complete batches; a single ACP call is a
+            // one-element batch, and its deferred context belongs to the batch.
+            const call: ToolCallBlock = {
+              type: 'tool-call',
+              id: ToolCallId(hostCallId),
+              name: definition.name,
+              arguments: JSON.stringify(args ?? {}),
+            }
+            const batch = await agents.withInitiator(agent, () =>
               tools.execute({
-                callId: hostCallId as never,
-                name: definition.name,
-                arguments: args,
+                calls: [call],
                 agent,
                 signal: bodySignal,
+                ...(toolSet === undefined ? {} : { toolSet }),
               }),
             )
+            const settledCall = batch.results[0]
+            if (settledCall === undefined) throw new Error('ACP_HOST_TOOL_BATCH_EMPTY')
+            result = settledCall.result
+            batchContexts = batch.additionalContexts
+
             if (toolErrorInfoCode(result.error) === TOOL_ABORTED_BEFORE_DISPATCH)
               callRecord.abortedBeforeDispatch = true
             if (diagnosticEnabled && diagnosticBase !== undefined) {
@@ -1135,7 +1232,7 @@ export async function createDshToolBridge(
           } finally {
             bodySignal.removeEventListener('abort', onDispatchAbort)
           }
-          const additionalContexts = result.additionalContexts ?? []
+          const additionalContexts = batchContexts
           for (const context of additionalContexts) injectFeedback(context, callPrompt)
           if (callPrompt.feedbackCommitFailed)
             throw new AcpHostSettlementError('ACP_HOST_FEEDBACK_COMMIT_FAILED', {
@@ -1324,6 +1421,7 @@ export async function createDshToolBridge(
     beginPrompt(signal, reportCallback, promptOrdinal, concludedCallback, bodySignal, successfulToolResultCallback) {
       if (promptExecution?.accepting === true || calls.size > 0 || pendingFeedback.size > 0)
         throw new AcpHostSettlementError('ACP_HOST_GENERATION_STILL_ACTIVE')
+      disposeAdmittedTools()
       prompt = signal
       onTeamReport = reportCallback
       onTurnConcluded = concludedCallback
@@ -1365,6 +1463,10 @@ export async function createDshToolBridge(
       promptGeneration++
       adapterPromptOrdinal = undefined
       presented.clear()
+      disposeAdmittedTools()
+      // A definition reloaded during the prompt keeps it live there; once the
+      // prompt is over, the stale binding can no longer serve later calls.
+      if (!live()) void lease.close()
     },
     async drainPrompt() {
       const pending = [...drainingPrompts]
@@ -1668,6 +1770,7 @@ export async function createDshToolBridge(
     close(graceMs = 5_000) {
       closing ??= (async () => {
         lifetime.abort(new Error('ACP DSH tools connection closed'))
+        disposeAdmittedTools()
         deferredWaitReceipts.clear()
         identifiedWaitCalls.clear()
         waitCallsWithOtherContent.clear()
@@ -1697,6 +1800,8 @@ export async function createDshToolBridge(
   }
   listeners.push(
     ctx.on('tools/change', () => {
+      // A schema-equal re-registration stays live for the active prompt; any
+      // real restriction, removal or schema change still closes immediately.
       if (!live()) void lease.close()
     }),
   )
@@ -1707,7 +1812,8 @@ export async function createDshToolBridge(
   )
   listeners.push(
     ctx.on('internal/service', (name) => {
-      if (['agentTeams', 'agents', 'tools'].includes(name) && !live()) void lease.close()
+      if (!['agentTeams', 'agents', 'tools'].includes(name)) return
+      if (!live()) void lease.close()
     }),
   )
   return lease

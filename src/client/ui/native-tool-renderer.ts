@@ -17,19 +17,8 @@ export type NativeToolOwner = NativeOwner & { node: ChatNodeViewProps<'tool-call
  * so native copy controls and persisted results retain their exact payload. */
 export const NativeTerminalOutputNotice = createContext<string | undefined>(undefined)
 export function nativeOwner(props: NativeOwner): NativeOwner {
-  const {
-    useDisclosure,
-    useGroupAction,
-    groupPart,
-    cwd,
-    openFile,
-    inspectCall,
-    forkAt,
-    loadImage,
-    fileMentions,
-    turnProcess,
-    node,
-  } = props
+  const { useDisclosure, useGroupAction, groupPart, cwd, openFile, inspectCall, forkAt, loadImage, turnProcess, node } =
+    props
   return {
     useDisclosure,
     useGroupAction,
@@ -39,7 +28,6 @@ export function nativeOwner(props: NativeOwner): NativeOwner {
     inspectCall,
     forkAt,
     loadImage,
-    fileMentions,
     turnProcess,
     node,
   }

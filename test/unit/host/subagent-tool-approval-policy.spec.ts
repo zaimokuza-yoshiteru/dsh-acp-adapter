@@ -47,7 +47,15 @@ async function setup(teams = true) {
     })
     ctx.sessions.enter(session)
     ctx.sessions.announce(session)
-    const agent = { id, session, options: { provider } }
+    const agent = {
+      id,
+      session,
+      options: { provider },
+      model: {
+        current: () => (provider === undefined ? undefined : { provider, model: 'test' }),
+        select: vi.fn(),
+      },
+    }
     agents.set(id, agent)
     return agent
   }

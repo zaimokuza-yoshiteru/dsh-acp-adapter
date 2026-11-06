@@ -5,15 +5,20 @@ import type { LlmCallConfig } from '@deepseek-ai/dsh-llm'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { AcpSidecar, AcpBindingLookup } from '../../../src/persistence/sidecar.ts'
 import { installAcpBackendGuard } from '../../../src/host/composition/backend-guard.ts'
+import { retainAcpExecutionProjection } from '../../../src/host/composition/session-facts.ts'
 
 type RequestListener = (payload: unknown, next: () => Promise<LlmCallConfig>) => Promise<LlmCallConfig>
 
 const config = (provider: string, model = 'model-a'): LlmCallConfig => ({ provider, model })
 
+/** Last-used route supplied by the test's projection selection fixture. */
+let lastUsedSelection: unknown
+
 function session(events: readonly string[], parentSession?: string, id = 'session-test'): Session {
   return withSessionFacts({
     id,
     header: parentSession === undefined ? {} : { parentSession },
+    requestHeader: () => (lastUsedSelection == null ? undefined : { header: {}, config: lastUsedSelection }),
     snapshotEvents: () => events.map((type) => ({ type, data: {} })),
   }) as unknown as Session
 }
@@ -33,18 +38,26 @@ function install(
 ): { listener: RequestListener; reads: ReturnType<typeof vi.fn> } {
   let listener: RequestListener | undefined
   const reads = vi.fn(() => selection)
-  const context = {
-    inject: (_keys: readonly string[], callback: (ctx: unknown) => void) =>
-      callback({
-        sessionProjections: {
-          stateOf: (session: { facts: unknown }, key: string) => (key === 'acpExecution' ? session.facts : reads()),
-        },
-        on: (_event: string, handler: RequestListener) => {
-          listener = handler
-          return () => undefined
-        },
-      }),
+  lastUsedSelection = (selection as { lastUsed?: unknown } | undefined)?.lastUsed ?? undefined
+  const injected = {
+    sessionProjections: {
+      stateOf: () => reads(),
+    },
+    on: (_event: string, handler: RequestListener) => {
+      listener = handler
+      return () => undefined
+    },
   }
+  const context = {
+    inject: (_keys: readonly string[], callback: (ctx: unknown) => void) => callback(injected),
+  }
+  // The guard reads its own awaited ACP execution projection through the
+  // retained reader; this fixture supplies the same read face over fake sessions.
+  retainAcpExecutionProjection({
+    stateOf: (session: Session) => (session as Session & { facts: unknown }).facts,
+    readerFor: (session: Session) => () => (session as Session & { facts: unknown }).facts,
+    dispose: async () => undefined,
+  } as never)
   installAcpBackendGuard(context as unknown as Context, { sidecar: acpSidecar })
   if (listener === undefined) throw new Error('guard listener was not installed')
   return { listener, reads }

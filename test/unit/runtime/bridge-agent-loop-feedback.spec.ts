@@ -5,7 +5,9 @@ import LlmRuntime, { createUserMessage, LlmAdapter, ToolCallId } from '@deepseek
 import type { GenerateOptions, LlmResolvedModelInfo, StreamChunk } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
-import ToolRuntime, { defineContentToolFixture } from '@deepseek-ai/dsh-tools'
+import ToolRuntime from '@deepseek-ai/dsh-tools'
+import { defineContentToolFixture } from '@deepseek-ai/dsh-tool-testkit'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import type { PostToolDecision } from '@deepseek-ai/dsh-tools'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import type { Agent } from '@deepseek-ai/dsh-agent'
@@ -108,6 +110,7 @@ async function createHarness(sessionId: string) {
     await ctx.plugin(SessionProjectionRegistry),
     await ctx.plugin(SystemPrompt, {}),
     await ctx.plugin(ToolRuntime),
+    await ctx.plugin(NativeToolExecutor),
     await ctx.plugin(AgentRegistry),
     await ctx.plugin(AgentLoop, { agents: [] }),
   ]

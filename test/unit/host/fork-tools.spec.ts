@@ -5,6 +5,8 @@ import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime, { defineTool } from '@deepseek-ai/dsh-tools'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
+import * as PtcToolExecutor from '@deepseek-ai/dsh-tool-executor-ptc'
 import { createScope } from '@deepseek-ai/dsh-scope'
 import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import { PtcRuntime, type PtcRunRequest, type PtcRunResult, type PtcRunSpec } from '@deepseek-ai/dsh-ptc-runtime'
@@ -33,7 +35,7 @@ async function harness(mode: 'native' | 'ptc' = 'native') {
   await ctx.plugin(SessionStore)
   await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(SystemPrompt, {})
-  await ctx.plugin(ToolRuntime, { mode })
+  await ctx.plugin(ToolRuntime)
   if (mode === 'ptc') {
     ctx.provide('workingDirectory', {
       defaultDirectory: process.cwd(),
@@ -41,6 +43,9 @@ async function harness(mode: 'native' | 'ptc' = 'native') {
       ensure: async () => process.cwd(),
     })
     await ctx.plugin(ForkTestPtcRuntime)
+    await ctx.plugin(PtcToolExecutor, {})
+  } else {
+    await ctx.plugin(NativeToolExecutor)
   }
   const activeAgents = new Map<SessionId, Agent>()
   ctx.provide('agents', { list: () => [...activeAgents.values()] })
@@ -93,14 +98,16 @@ async function harness(mode: 'native' | 'ptc' = 'native') {
     owner.session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
     owner.session.append('turn/start', { turn: 2 })
   }
-  const execute = (owner: Agent, name: string, args = {}) =>
-    ctx.tools.execute({
-      callId: ToolCallId(`${name}-call`),
-      name,
-      arguments: args,
+  const execute = async (owner: Agent, name: string, args = {}) => {
+    const batch = await ctx.tools.execute({
+      calls: [{ type: 'tool-call', id: ToolCallId(`${name}-call`), name, arguments: JSON.stringify(args) }],
       agent: owner,
       signal: new AbortController().signal,
     })
+    const settled = batch.results[0]
+    if (settled === undefined) throw new Error('missing tool result')
+    return settled.result
+  }
   return { ctx, bodies, register, removeFork, mount, agent, completed, execute }
 }
 

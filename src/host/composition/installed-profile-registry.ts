@@ -29,7 +29,12 @@ import type { AcpSidecar } from '../../persistence/sidecar.ts'
 import type { AcpNativeUserQuestionService } from '../../domain/policy/elicitation.ts'
 import type { AcpNativeQuestionBinding } from './profile-adapter.ts'
 import type { Session } from '@deepseek-ai/dsh-session'
-import { acpExecutionProjection, acpSessionView, readSessionFacts } from './session-facts.ts'
+import {
+  acpExecutionProjection,
+  acpSessionView,
+  readSessionFacts,
+  retainAcpExecutionProjection,
+} from './session-facts.ts'
 import type { DispatchLedgerStore } from '../../runtime/session/dispatch-ledger.ts'
 import { resolveSubprocessSeam } from './subprocess.ts'
 import { AcpRemoteService } from '../../remote/service.ts'
@@ -238,13 +243,14 @@ export function installAcpSessionRuntimeCleanup(
 }
 
 /** Keep ACP routes synchronized with Loader-owned volatile Agent configuration. */
-export function installInstalledProfileRegistry(
+export async function installInstalledProfileRegistry(
   ctx: Context,
   config: Config,
   options: InstalledProfileRegistryOptions = {},
-): InstalledProfileRegistry {
+): Promise<InstalledProfileRegistry> {
   const toolBridgeKey = createDshToolBridgeKey()
-  const disposeExecutionProjection = ctx.sessionProjections.register(acpExecutionProjection)
+  const executionProjection = await ctx.sessionProjections.register(acpExecutionProjection)
+  const releaseExecutionReader = retainAcpExecutionProjection(executionProjection)
   let disposed = false
   const log = createAcpLogger(ctx.logger)
   const sidecar = installAcpSidecar(ctx)
@@ -813,7 +819,7 @@ export function installInstalledProfileRegistry(
   // Accepted projection/repair and final Activity writes retain their registry,
   // catalog, persistence scope and Sidecar until their final dependency use.
   ctx.effect(function* () {
-    yield disposeExecutionProjection
+    yield releaseExecutionReader
     yield ctx.effect(() => async () => {
       try {
         await sidecar?.dispose()

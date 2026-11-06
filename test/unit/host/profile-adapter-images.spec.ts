@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import AgentRegistry, { type Agent } from '@deepseek-ai/dsh-agent'
+import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import {
   AttachmentId,
   type AttachmentStore,
@@ -12,6 +13,7 @@ import { createMcpToolDefinition } from '@deepseek-ai/dsh-mcp-client'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { AcpProfileAdapter } from '../../../src/host/composition/profile-adapter.ts'
 import { createDshToolBridge } from '../../../src/host/tools/bridge.ts'
@@ -53,7 +55,9 @@ async function harness() {
     await ctx.plugin(SystemPrompt, {}),
     await ctx.plugin(ToolRuntime),
     await ctx.plugin(AgentRegistry),
+    await ctx.plugin(SessionProjectionRegistry),
   ]
+  await ctx.plugin(NativeToolExecutor)
   cleanup.push(async () => {
     for (const fiber of fibers.reverse()) await fiber.dispose()
   })

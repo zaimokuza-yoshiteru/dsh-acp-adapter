@@ -2,18 +2,18 @@ import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime, { defineTool } from '@deepseek-ai/dsh-tools'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { createDshToolBridge } from '../../../src/host/tools/bridge.ts'
 import { apply as installControl } from '@deepseek-ai/dsh-tool-subagent-control'
-import { apply as installList } from '@deepseek-ai/dsh-tool-subagent-control/list-agents'
 
 describe('published native subagent tools survive the ACP bridge', () => {
   it.each(['Teams absent', 'Teams present with independent child'])('%s', async (scenario) => {
     const ctx = new Context()
     await ctx.plugin(SystemPrompt, {})
-    await ctx.plugin(ToolRuntime, { mode: 'native' })
+    await ctx.plugin(ToolRuntime)
+    await ctx.plugin(NativeToolExecutor)
     installControl(ctx)
-    installList(ctx)
     ctx.tools.register(
       defineTool({
         name: 'probe_read',
