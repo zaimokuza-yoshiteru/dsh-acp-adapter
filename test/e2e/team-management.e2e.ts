@@ -669,7 +669,7 @@ it(
         await page.getByText('E2E_NATIVE_MODE_ONLY', { exact: true }).waitFor()
         expect(await panel.count()).toBe(0)
         expect(await page.getByRole('button', { name: /^(?:Session|会话) ·/ }).count()).toBe(0)
-        expect(await page.getByRole('button', { name: 'Agent Team', exact: true }).count()).toBeGreaterThan(0)
+        expect(await page.getByRole('button', { name: 'Agent team', exact: true }).count()).toBeGreaterThan(0)
       }
       if (retain) {
         await panel.getByRole('button', { name: '关闭成员管理', exact: true }).click()

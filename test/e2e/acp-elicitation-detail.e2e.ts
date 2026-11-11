@@ -73,7 +73,7 @@ async function geometry(card: Locator) {
       card: { x, y, width, height, clientWidth: element.clientWidth, scrollWidth: element.scrollWidth },
       header: rect('header'),
       heading: rect('h2'),
-      detail: rect('[data-question-scroll] > div:first-child p'),
+      detail: rect('[data-question-scroll] > div:nth-child(2) p'),
       body: rect('[data-question-scroll]'),
       footer: rect('footer'),
       footerActions: rect('footer > div:last-child'),

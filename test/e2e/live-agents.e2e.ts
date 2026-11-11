@@ -147,7 +147,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE !== '1')('live ACP smoke', () => {
             expect(second, 'The approved second small model must be in the current catalog').toBeDefined()
             await page
               .locator('[data-team-action]')
-              .getByRole('button', { name: /Agent Team/ })
+              .getByRole('button', { name: /Agent team/ })
               .click()
             await page.getByRole('button', { name: /^Select model/ }).click()
             await page.getByRole('menuitem', { name: /^Model/ }).click()

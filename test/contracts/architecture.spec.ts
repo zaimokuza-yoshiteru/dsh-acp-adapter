@@ -178,6 +178,10 @@ const ALLOWED_CROSS_FILE_EDGES = new Set([
   'persistence/sidecar.ts->contract/config-options.ts',
   'protocol/v1/config-options.ts->contract/config-options.ts',
   'runtime/session/session-runtime.ts->contract/config-options.ts',
+  // Model route framing shared with the client; the same dependency-free leaf
+  // keeps the protocol's model classification and the persisted route bound consistent.
+  'persistence/sidecar.ts->contract/model-selection.ts',
+  'protocol/v1/config-options.ts->contract/model-selection.ts',
 ])
 
 const IMPORT_FROM_RE = /(?:import|export)\s[^'"]*?from\s+['"]([^'"]+)['"]/g
