@@ -7,6 +7,7 @@ import { mkdirSync } from 'node:fs'
 import { it, expect } from 'vitest'
 import { connectFreshWorkspace, writeComposerDraft } from '#host-support'
 import { launchAdapterWorld, root } from './scaffold.ts'
+import { expectCatalogMenuFits } from './catalog-menu.helpers.ts'
 import { backToPluginList, openAcpPluginDetail, openNativeSettings } from './plugin-panel.helpers.ts'
 
 it('adds catalog presets, preserves edited defaults, and runs a generic Agent through native UI', async () => {
@@ -42,74 +43,23 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
     expect(menuText.indexOf('Qwen Code')).toBeLessThan(menuText.indexOf('Catalog entries · Unverified ·'))
     await menu.getByText('Adapter coverage does not certify every version or platform.', { exact: true }).waitFor()
     await menu.getByRole('menuitem', { name: /^Google Antigravity · 1\.1\.1$/ }).waitFor()
-    const initialViewport = await page.evaluate(() => ({ width: innerWidth, height: innerHeight }))
-    await expect
-      .poll(async () => {
-        const bounds = await menu.boundingBox()
-        const trigger = await addButton.boundingBox()
-        return (
-          bounds !== null &&
-          trigger !== null &&
-          Math.abs(bounds.width - trigger.width) < 1 &&
-          bounds.x >= 12 &&
-          bounds.x + bounds.width <= initialViewport.width - 12 &&
-          bounds.y >= 12 &&
-          bounds.y + bounds.height <= initialViewport.height - 12
-        )
-      })
-      .toBe(true)
-    const evidence = join(root, '.local/plugin-panel-v2')
+    const evidence = join(root, '.local/rc1-catalog-menu')
     mkdirSync(evidence, { recursive: true })
-    const observedSides = new Set<'top' | 'bottom'>()
+    mkdirSync(join(root, '.local/registry-ui'), { recursive: true })
     for (const viewport of [
       { width: 1680, height: 1000 },
       { width: 900, height: 600 },
       { width: 390, height: 500 },
     ]) {
       await page.setViewportSize(viewport)
-      await expect
-        .poll(async () => {
-          const bounds = await menu.boundingBox()
-          const trigger = await addButton.boundingBox()
-          return (
-            bounds !== null &&
-            trigger !== null &&
-            Math.abs(bounds.width - trigger.width) < 1 &&
-            bounds.x >= 12 &&
-            bounds.x + bounds.width <= viewport.width - 12 &&
-            bounds.y >= 12 &&
-            bounds.y + bounds.height <= viewport.height - 12
-          )
-        })
-        .toBe(true)
-      const box = required(await menu.boundingBox())
-      const trigger = required(await addButton.boundingBox())
-      const topClearance = await page.evaluate(() =>
-        Math.max(
-          12,
-          Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--dsh-frame-top-clearance')) ||
-            12,
-        ),
-      )
-      const below = Math.max(0, viewport.height - trigger.y - trigger.height - 16)
-      const above = Math.max(0, trigger.y - topClearance - 4)
-      if (above > below) {
-        observedSides.add('top')
-        expect(box.y + box.height).toBeLessThanOrEqual(trigger.y - 2)
-        expect(box.y).toBeGreaterThanOrEqual(topClearance)
-      } else {
-        observedSides.add('bottom')
-        expect(box.y).toBeGreaterThanOrEqual(trigger.y + trigger.height + 2)
-      }
-      expect(box.y + box.height).toBeLessThanOrEqual(viewport.height - 12)
+      await expectCatalogMenuFits(menu)
       const rowsViewport = menu.locator(':scope > [role="presentation"]').first()
-      const rowScroll = await rowsViewport.evaluate((element) => element.scrollHeight > element.clientHeight)
-      expect(rowScroll, `catalog rows should scroll within ${viewport.width}x${viewport.height}`).toBe(true)
-      const footerItem = menu.getByText('Add manually', { exact: true })
-      await footerItem.waitFor()
-      expect(await footerItem.isVisible()).toBe(true)
-      // Native keyboard navigation reaches the pinned custom entry
-      // without treating group headings as menu items.
+      expect(
+        await rowsViewport.evaluate((element) => element.scrollHeight > element.clientHeight),
+        `catalog rows should scroll within ${viewport.width}x${viewport.height}`,
+      ).toBe(true)
+      // Every entry stays in the native scrollport; its pinned footer remains
+      // reachable even when the viewport clamp places the card over its anchor.
       await menu.getByRole('menuitem').first().focus()
       await page.keyboard.press('End')
       expect(
@@ -118,94 +68,27 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
           .last()
           .evaluate((node) => node === document.activeElement),
       ).toBe(true)
-      expect(await menu.getByRole('menuitem').last().isVisible()).toBe(true)
+      await expectCatalogMenuFits(menu)
       await page.screenshot({
         path: join(evidence, `menu-${viewport.width}x${viewport.height}.png`),
-        fullPage: true,
         animations: 'disabled',
       })
     }
     await page.keyboard.press('Escape')
     await menu.waitFor({ state: 'hidden' })
+    expect(await addButton.evaluate((node) => node === document.activeElement)).toBe(true)
     await addButton.click()
     await menu.waitFor({ state: 'visible' })
-    await expect
-      .poll(async () => {
-        const bounds = await menu.boundingBox()
-        const trigger = await addButton.boundingBox()
-        return (
-          bounds !== null &&
-          trigger !== null &&
-          Math.abs(bounds.width - trigger.width) < 1 &&
-          bounds.x >= 12 &&
-          bounds.x + bounds.width <= 408 &&
-          bounds.y >= 12 &&
-          bounds.y + bounds.height <= 488
-        )
-      })
-      .toBe(true)
-    const beforeMove = {
-      anchor: required(await addButton.boundingBox()),
-      menu: required(await menu.boundingBox()),
-    }
-    const menuOpensAbove = beforeMove.menu.y + beforeMove.menu.height <= beforeMove.anchor.y
-    const anchorGapBefore = menuOpensAbove
-      ? beforeMove.anchor.y - beforeMove.menu.y - beforeMove.menu.height
-      : beforeMove.menu.y - beforeMove.anchor.y - beforeMove.anchor.height
-    await addButton.evaluate((element) => {
-      element.style.transform = 'translateY(12px)'
-    })
-    await expect
-      .poll(async () => {
-        const anchor = await addButton.boundingBox()
-        const bounds = await menu.boundingBox()
-        return (
-          anchor !== null &&
-          bounds !== null &&
-          Math.abs(anchor.y - beforeMove.anchor.y - 12) < 1 &&
-          Math.abs(
-            (menuOpensAbove ? anchor.y - bounds.y - bounds.height : bounds.y - anchor.y - anchor.height) -
-              anchorGapBefore,
-          ) < 1
-        )
-      })
-      .toBe(true)
-    await addButton.evaluate((element) => element.style.removeProperty('transform'))
-    await expect
-      .poll(async () => {
-        const anchor = await addButton.boundingBox()
-        const bounds = await menu.boundingBox()
-        return (
-          anchor !== null &&
-          bounds !== null &&
-          Math.abs(anchor.y - beforeMove.anchor.y) < 1 &&
-          Math.abs(
-            (menuOpensAbove ? anchor.y - bounds.y - bounds.height : bounds.y - anchor.y - anchor.height) -
-              anchorGapBefore,
-          ) < 1
-        )
-      })
-      .toBe(true)
-    expect(errors).toEqual([])
     await addButton.evaluate((element) => element.scrollIntoView({ block: 'end' }))
-    await expect
-      .poll(async () => {
-        const box = await menu.boundingBox()
-        const trigger = await addButton.boundingBox()
-        return box !== null && trigger !== null && box.y + box.height <= trigger.y - 2
-      })
-      .toBe(true)
-    observedSides.add('top')
-    expect(observedSides).toContain('bottom')
-    expect(observedSides).toContain('top')
-    await page.screenshot({ path: join(evidence, 'menu-near-bottom.png'), fullPage: true, animations: 'disabled' })
+    await expectCatalogMenuFits(menu)
+    await page.screenshot({ path: join(evidence, 'menu-after-scroll.png'), animations: 'disabled' })
     await page.keyboard.press('Escape')
     // Escape closes the foreground catalog menu; return to the Plugins inventory.
     await menu.waitFor({ state: 'hidden' })
     await detail.waitFor({ state: 'visible' })
+    await page.setViewportSize({ width: 1680, height: 1000 })
     await backToPluginList(detail)
     detail = await openAcpPluginDetail(page)
-    await page.setViewportSize({ width: 1680, height: 1000 })
     const select = async (name: string | RegExp) => {
       await detail.getByRole('button', { name: 'Add Agent', exact: true }).click()
       await page.getByRole('menuitem', { name }).click()

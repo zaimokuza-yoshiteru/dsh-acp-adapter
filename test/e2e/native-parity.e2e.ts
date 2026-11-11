@@ -965,7 +965,16 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
     }
     await host.ctx.settings.replace('locale', { preference: 'en' })
     await host.ctx.settings.replace('ui-theme', { preference: 'light' })
-    await activity.locator('[data-tool=read]').getByRole('button', { name: 'fixture.txt', exact: true }).press('Enter')
+    const file = activity.locator('[data-tool=read]').getByRole('button', { name: 'fixture.txt', exact: true })
+    // RC.1 resolves native file actions through the tool entry's injected
+    // session/path owner, including for an ACP card restored after reload.
+    await file.click({ button: 'right' })
+    const download = page.getByRole('menuitem', { name: 'Download', exact: true })
+    await download.waitFor()
+    await expect.poll(() => download.isEnabled()).toBe(true)
+    const downloaded = await browser.downloadFromClick(page, () => download.click())
+    expect(readFileSync(required(await downloaded.path()), 'utf8')).toBe('E2E_SIDEBAR_FILE\n')
+    await file.press('Enter')
     const preview = page.locator('[data-rightbar-col] [data-textpreview-state="text"]')
     await preview.waitFor()
     await expect.poll(() => preview.locator('[data-textpreview-line="1"]').textContent()).toBe('E2E_SIDEBAR_FILE\n')

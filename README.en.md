@@ -1,6 +1,6 @@
 # DSH-ACP-ADAPTER
 
-> Development branch `0.2.2-alpha` targets DSH `0.2.2-alpha.2` (unreleased adapter candidate `0.2.2-alpha.2.1`, Node >=24.9). The commands below still install the published RC.4 release. See the [migration assessment and implementation record](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/0.2.2-alpha/docs/assessments/dsh-0.2.2-alpha.2.md).
+> Development branch `0.2.2-alpha` targets DSH `0.2.2-rc.1` (unreleased adapter candidate `0.2.2-rc.1.1`, Node >=24.9). The commands below still install the published RC.4 release. See the [migration assessment and implementation record](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/0.2.2-alpha/docs/assessments/dsh-0.2.2-rc.1.md).
 
 [中文](README.md)
 

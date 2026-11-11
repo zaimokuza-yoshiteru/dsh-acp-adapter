@@ -1,6 +1,6 @@
 # DSH-ACP-ADAPTER
 
-> 开发分支 `0.2.2-alpha` 正在迁移至 DSH `0.2.2-alpha.2`（候选插件 `0.2.2-alpha.2.1`，尚未发布，Node >=24.9）。下列安装命令仍指向已发布的 RC.4 版本；迁移进展见[评估与实施记录](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/0.2.2-alpha/docs/assessments/dsh-0.2.2-alpha.2.md)。
+> 开发分支 `0.2.2-alpha` 正在迁移至 DSH `0.2.2-rc.1`（候选插件 `0.2.2-rc.1.1`，尚未发布，Node >=24.9）。下列安装命令仍指向已发布的 RC.4 版本；迁移进展见[评估与实施记录](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/0.2.2-alpha/docs/assessments/dsh-0.2.2-rc.1.md)。
 
 [English](README.en.md)
 

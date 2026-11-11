@@ -406,13 +406,26 @@ describe('ACP execution owner readiness', () => {
     const view = acpSessionView(ctx, session)!
     appendUserStep(session, 1, 1, 'admitted work')
     expect(read(session).turnOpen).toBe(true)
+    const checkpoint = ctx.sessionProjections.checkpoint(session).acpExecution
+    expect(checkpoint).toBeDefined()
 
     await owner.dispose()
     expect(ctx.get('acpSessionFacts')).toBeUndefined()
     expect(() => sessionFactsReader(ctx)).toThrow('ACP execution facts owner is unavailable')
+    expect(ctx.sessionProjections.snapshot(session).values.acpExecution).toBeUndefined()
+    expect(ctx.sessionProjections.checkpoint(session).acpExecution).toEqual(checkpoint)
+    const fresh = ctx.sessions.create(SessionId('facts-after-unload'))
+    expect(ctx.sessionProjections.checkpoint(fresh).acpExecution).toBeUndefined()
     closeStep(session, 1, 1)
+    // Released units stop automatic folding, but the accepted writer's retained
+    // reader must advance its checkpoint before the last durable write.
+    expect(ctx.sessionProjections.checkpoint(session).acpExecution).toEqual(checkpoint)
     expect(read(session).turnOpen).toBe(false)
     expect(view.facts.turnOpen).toBe(false)
+    expect(ctx.sessionProjections.checkpoint(session).acpExecution?.val).toMatchObject({ turnOpen: false })
+    await ctx.plugin(AcpSessionFacts)
+    expect(readSessionFacts(ctx, session).turnOpen).toBe(false)
+    expect(readSessionFacts(ctx, fresh).hasSemanticHistory).toBe(false)
   })
 
   it('fails activation on an incompatible projection instead of reading its state', async () => {

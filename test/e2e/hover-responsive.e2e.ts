@@ -108,7 +108,7 @@ it.skipIf(Boolean(process.env.DSH_E2E_ELECTRON))(
   async () => {
     const host = await launchAdapterWorld()
     let browser: TestBrowser | undefined
-    const directory = join(root, '.local/standards-debt-0.2.2-alpha.2/hover')
+    const directory = join(process.env.DSH_E2E_EVIDENCE_DIR ?? join(root, '.local/e2e-evidence'), 'hover')
     mkdirSync(directory, { recursive: true })
     const agentLog = join(host.workspaceCwd, 'hover-agent.log')
     const promptCount = (): number =>
@@ -170,20 +170,27 @@ it.skipIf(Boolean(process.env.DSH_E2E_ELECTRON))(
         [touch, false],
       ] as const) {
         activePage = page
+        await page.setViewportSize({ width: hoverCapable ? 1680 : 390, height: hoverCapable ? 1000 : 844 })
         expect(await page.evaluate(() => matchMedia('(hover: hover)').matches)).toBe(hoverCapable)
         expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(!hoverCapable)
         const activate = async (target: Locator): Promise<void> => {
           if (hoverCapable) await target.click()
           else await target.tap()
         }
+        const selectView = async (name: string): Promise<void> => {
+          const tab = page.getByRole('tab', { name, exact: true })
+          if (await tab.isVisible()) await activate(tab)
+          else {
+            await activate(page.getByRole('button', { name: 'More conversation views', exact: true }))
+            await activate(page.getByRole('menuitem', { name, exact: true }))
+          }
+        }
         for (const theme of ['light', 'dark'] as const) {
           stage = `${hoverCapable ? 'mouse' : 'touch'} ${theme}: session control`
           await host.ctx.settings.replace('ui-theme', { preference: theme })
           await expect.poll(() => page.evaluate(() => document.documentElement.style.colorScheme)).toBe(theme)
-          await page.setViewportSize({ width: 1680, height: 1000 })
           await returnToConversation(page, sessionId)
-          await page.getByRole('tab', { name: 'Chat', exact: true }).click()
-          if (!hoverCapable) await page.setViewportSize({ width: 390, height: 844 })
+          await selectView('Chat')
           const control = page.getByRole('button', { name: /^Session · / })
           await checkHover(page, control, hoverCapable, 'backgroundColor', evidence, theme, 'session trigger')
           await checkKeyboardFocus(page, control)
@@ -194,12 +201,8 @@ it.skipIf(Boolean(process.env.DSH_E2E_ELECTRON))(
           if (!hoverCapable) expect(await style(control, 'backgroundColor')).toBe(triggerBackground)
           await page.keyboard.press('Escape')
 
-          // Select through the native view owner, then retain the narrow viewport
-          // for all touch interactions inside the Diagnostics view.
           stage = `${hoverCapable ? 'mouse' : 'touch'} ${theme}: diagnostics`
-          await page.setViewportSize({ width: 1680, height: 1000 })
-          await page.getByRole('tab', { name: 'ACP Diagnostics', exact: true }).click()
-          if (!hoverCapable) await page.setViewportSize({ width: 390, height: 844 })
+          await selectView('ACP Diagnostics')
           const diagnostics = page.getByRole('region', { name: 'ACP Diagnostics', exact: true })
           const operations = diagnostics.getByRole('button', { name: 'Operations', exact: true })
           const issues = diagnostics.getByRole('button', { name: 'Issues', exact: true })
@@ -245,10 +248,8 @@ it.skipIf(Boolean(process.env.DSH_E2E_ELECTRON))(
           expect(await row.getAttribute('aria-selected')).toBe('false')
           if (!hoverCapable) expect(await style(row, 'backgroundColor')).toBe(unselected)
 
-          await page.setViewportSize({ width: 1680, height: 1000 })
           stage = `${hoverCapable ? 'mouse' : 'touch'} ${theme}: plugin settings`
           const detail = await openAcpPluginDetail(page)
-          if (!hoverCapable) await page.setViewportSize({ width: 390, height: 844 })
           const panel = detail.locator('[data-dsh-acp-panel]')
           const add = panel.getByRole('button', { name: 'Add Agent', exact: true })
           const approval = panel.getByRole('button', { name: 'Default DSH tool approval', exact: true })

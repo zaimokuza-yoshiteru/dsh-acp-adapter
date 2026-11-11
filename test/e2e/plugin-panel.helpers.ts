@@ -2,8 +2,15 @@ import type { Page, Locator } from 'playwright'
 
 export const ACP_PACKAGE = '@zaimokuza/dsh-acp-adapter'
 
+/** RC.1 keeps the closed narrow sidebar inert; enter it through its native opener. */
+export async function openNativeSidebar(page: Page): Promise<void> {
+  const opener = page.locator('[data-sidebar-collapsed] [data-sidebar-opener]:visible')
+  if ((await opener.count()) > 0) await opener.click()
+}
+
 /** Open native Settings through the RC.2 account menu launcher. */
 export async function openNativeSettings(page: Page, locale: 'en' | 'zh' = 'en'): Promise<Locator> {
+  await openNativeSidebar(page)
   const settingsLabel = locale === 'en' ? 'Settings' : '设置'
   await page.getByRole('button', { name: locale === 'en' ? 'Account menu' : '账号菜单', exact: true }).click()
   await page.getByRole('menuitem', { name: settingsLabel, exact: true }).click()
@@ -14,6 +21,7 @@ export async function openNativeSettings(page: Page, locale: 'en' | 'zh' = 'en')
 
 /** Open ACP through the real Plugins inventory and bundle detail page. */
 export async function openAcpPluginDetail(page: Page, locale: 'en' | 'zh' = 'en'): Promise<Locator> {
+  await openNativeSidebar(page)
   await page.getByRole('button', { name: locale === 'en' ? 'Plugins' : '插件', exact: true }).click()
   const card = page.locator(`[data-plugin-package="${ACP_PACKAGE}"]`)
   await card.waitFor({ state: 'visible' })
@@ -31,6 +39,7 @@ export async function backToPluginList(detail: Locator, locale: 'en' | 'zh' = 'e
 /** Return to the same visible chat after using the app's Plugins navigation. */
 export async function returnToConversation(page: Page, sessionId?: string): Promise<void> {
   if (sessionId !== undefined) {
+    await openNativeSidebar(page)
     await page.locator(`[data-row-key="session:${sessionId}"]`).click()
   } else {
     // Panel selection is in-memory and does not create a browser history entry.

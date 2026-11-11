@@ -861,7 +861,6 @@ export async function createDshToolBridge(
   const activeCalls = new Map<string | number, AbortController>()
   let retirePipelineConsumer: (() => Promise<void>) | undefined
   let pipelineOwnerClosing = false
-  let pipelineRetirement: Promise<void> | undefined
   let pipeline: ToolExecutionPipeline | undefined
   const pipelineOwner = await ctx.inject(['tools'], (child) => {
     pipeline = new ToolExecutionPipeline(child)
@@ -1822,17 +1821,13 @@ export async function createDshToolBridge(
       })()
       return closing.then(async () => {
         // Owner-triggered close must not await its own disposer. Ordinary
-        // transport close stays bounded, but leaves its tools dependency
-        // registered until the last accepted call settles. Disposing that
-        // fiber early would hide it from a subsequent tools-provider unload.
+        // transport close stays bounded. Cordis retains this consumer's
+        // committed tools dependency until its accepted-call drain completes,
+        // even when provider withdrawal starts after consumer disposal.
         if (pipelineOwnerClosing) return
-        if (calls.size === 0) return await pipelineOwner.dispose()
-        if (pipelineRetirement === undefined) {
-          pipelineRetirement = waitForAcceptedCalls().then(async () => {
-            if (!pipelineOwnerClosing) await pipelineOwner.dispose()
-          })
-          void pipelineRetirement.catch((error) => ctx.logger.error(error))
-        }
+        const retirement = pipelineOwner.dispose()
+        if (calls.size === 0) return await retirement
+        void retirement.catch((error) => ctx.logger.error(error))
       })
     },
   }

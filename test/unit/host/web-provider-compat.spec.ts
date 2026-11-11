@@ -1,7 +1,7 @@
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import { NativeToolExecutor } from '@deepseek-ai/dsh-tool-executor-native'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { Context, type Plugin } from '@deepseek-ai/cordis'
+import { Context, symbols, type Plugin } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
 import AgentRegistry, { type Agent } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
@@ -323,11 +323,21 @@ describe('published web providers through the ACP native-tool bridge', () => {
     expect(h.resolveCredential).not.toHaveBeenCalled()
 
     const webOwner = h.selection.fiber.uid
-    const liveConfig = h.selection.fiber.config
+    // Service reads return caller-traced proxies; compare their published origin.
+    const webService = Reflect.get(h.ctx.web, symbols.original)
+    expect(webService !== undefined).toBe(true)
+    // Cordis 4.1 keeps raw update input separately. Volatile-only saves retain
+    // the effective references consumed by the existing Web service instance.
+    const liveConfig = h.selection.fiber.effectiveConfig
     await h.selection.update({ searchProvider: 'deepseek-search-api', fetchProvider: 'deepseek-fetch-api' })
     expect(Object.is(h.selection.entry.fiber, h.selection.fiber)).toBe(true)
     expect(h.selection.entry.fiber?.uid).toBe(webOwner)
-    expect(Object.is(h.selection.entry.fiber?.config, liveConfig)).toBe(true)
+    expect(Object.is(Reflect.get(h.ctx.web, symbols.original), webService)).toBe(true)
+    expect(Object.is(h.selection.entry.fiber?.effectiveConfig, liveConfig)).toBe(true)
+    expect(h.selection.entry.fiber?.rawConfig).toEqual({
+      searchProvider: 'deepseek-search-api',
+      fetchProvider: 'deepseek-fetch-api',
+    })
     for (const result of await Promise.all([search(), fetchPage()])) expect(result.isError).not.toBe(true)
     expect(h.requests.map(({ endpoint }) => endpoint).sort()).toEqual([`${apiBase}/fetch`, `${apiBase}/search`])
     expect(oldSearch).toHaveBeenCalledOnce()
@@ -339,7 +349,9 @@ describe('published web providers through the ACP native-tool bridge', () => {
     expect(oldFetch).toHaveBeenCalledTimes(2)
     expect(h.requests).toHaveLength(2)
     expect(h.selection.entry.fiber?.uid).toBe(webOwner)
-    expect(Object.is(h.selection.entry.fiber?.config, liveConfig)).toBe(true)
+    expect(Object.is(Reflect.get(h.ctx.web, symbols.original), webService)).toBe(true)
+    expect(Object.is(h.selection.entry.fiber?.effectiveConfig, liveConfig)).toBe(true)
+    expect(h.selection.entry.fiber?.rawConfig).toEqual({ searchProvider: 'deepseek-official', fetchProvider: 'http' })
     expect(caller.listedTools).toEqual(['web_fetch', 'web_search'])
   })
 })

@@ -14,8 +14,8 @@
   position: fixed;
   z-index: 110;
   box-sizing: border-box;
-  width: min(560px, calc(100vw - 32px));
-  max-height: min(680px, calc(100dvh - 120px));
+  width: min(560px, var(--dsh-anchored-max-width, calc(100vw - 32px)));
+  max-height: min(680px, calc(100dvh - 120px), var(--dsh-anchored-max-height, 100dvh));
   padding: 10px;
   overflow: hidden;
   color: var(--dsw-alias-label-primary);

@@ -63,6 +63,7 @@ it('forwards the native viewport group action with the node disclosure hook', ()
     // An older caller must not reintroduce removed cross-domain callbacks.
     openSkill: () => undefined,
     renderMessageImages: () => null,
+    fileMentions: () => [],
   } as never)
   expect(owner.useDisclosure).toBe(useDisclosure)
   expect(owner.useGroupAction).toBe(useGroupAction)
@@ -70,6 +71,7 @@ it('forwards the native viewport group action with the node disclosure hook', ()
   expect(owner.loadImage).toBe(loadImage)
   expect(owner).not.toHaveProperty('openSkill')
   expect(owner).not.toHaveProperty('renderMessageImages')
+  expect(owner).not.toHaveProperty('fileMentions')
 })
 
 it('isolates aliases of concurrent mounts without module-lifetime counters', () => {
@@ -116,11 +118,17 @@ it('keeps the native assistant image domain and caller loader through slot alias
   type NativeProps = { loadImage: Owner['loadImage']; renderSlot: (name: string, owner: Owner) => null }
   const Native = ({ loadImage, renderSlot }: NativeProps) =>
     renderSlot('conversation.chat.message.images', { images, loadImage, align: 'start' })
+  // RC.1 gives file gestures to the assistant renderer's own injection face;
+  // they must survive composition without becoming Chat node owner currency.
+  const fileMentions = vi.fn()
+  const resolveFilePath = vi.fn((path: string) => `/workspace/${path}`)
+  const inject = () => ({ fileMentions, resolveFilePath })
   const releaseAssistant = slots.register(
     {
       name: 'conversation.chat.node',
       key: 'assistant-step',
       locale: 'chat',
+      inject,
       children: { 'conversation.chat.message.images': { kind: 'single', scope: 'session' } },
     } as never,
     Native as never,
@@ -134,6 +142,7 @@ it('keeps the native assistant image domain and caller loader through slot alias
   const releaseMirror = mountNativeEntry({ slots } as never, source, 'acp.test-native-assistant', { factory: true })
   try {
     const factory = slots.factory('acp.test-native-assistant')!
+    expect(factory.inject).toBe(inject)
     const imageSlot = Object.keys(factory.children!)[0]!
     expect(imageSlot).toMatch(/\.conversation\.chat\.message\.images$/)
     expect(slots.entriesOfSlot(imageSlot)[0]?.component).toBeDefined()

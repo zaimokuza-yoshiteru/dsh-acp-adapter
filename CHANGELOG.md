@@ -4,24 +4,26 @@
 
 User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for publication dates, exact installation instructions, and checksums. Historical entries were reconstructed from tag diffs; npm packages were not republished.
 
-## 0.2.2-alpha.2.1（未发布 / Unreleased）
+## 0.2.2-rc.1.1（未发布 / Unreleased）
 
-- 兼容目标迁移至 DSH `0.2.2-alpha.2`，Node 至少 `24.9.0`；工具桥使用官方 native/PTC 批次执行器和本步准入集合，投影与模型选择改用官方 owner API。
+- 兼容目标迁移至 DSH `0.2.2-rc.1`，Node 至少 `24.9.0`；工具桥使用官方 native/PTC 批次执行器和本步准入集合，投影与模型选择改用官方 owner API。
 - 删除强制展开回答及未使用权限投影的兼容补丁，沿用原生“全部／最后回复”与 Statistics 视图；普通会话 fork 保存经核验的来源，保留上下文安全边界。
 - 成员模型缓存不再覆盖较新的原生选择，应用并落盘后清除缓存。旧缓存缺少先后顺序证据时优先保留原生选择；升级前尚未应用的成员偏好可能需要重新选择一次。
 - 诊断视图改为稳定注册，通过原生标题栏和正文的会话数据控制显示，避免与 ds-bot 热启停时刷新已经撤销的会话绑定。
 - 工具卸载等待已受理调用完成结果与反馈收尾。普通 fork 中途停用后，重新启用插件并刷新同一页签可继续核验已创建的子会话；创建结果未知时停止重复创建，并区分来源拒绝、存储和工作区挂接失败。
 - 在途工具与本地补存改由各 Host 独立服务持有，保留插件热重装后的结算，最终关闭先停准入、等收尾再释放资源；显式诊断收集器也按 Host 或单次检查隔离。
 - 诊断视图、Agent 控件和插件配置页的悬停反馈只用于支持 hover 的设备，保留触屏选中态和键盘焦点；窄屏诊断工具栏分行排列，避免筛选入口被导出和搜索控件遮挡。
-- 已有 ACP 会话切换模型仍被上游缺少容量信息的自动压缩检查阻断，候选版尚不可发布。Forge 空闲时直接切回项目目录仍需在下一次输入时恢复 ACP 绑定；Auto Review 等辅助模型功能未宣称完整兼容。详见[迁移记录](docs/assessments/dsh-0.2.2-alpha.2.md)。
+- 复用 RC.1 原生目录菜单定位及浮层视口约束，删除重复的逐帧测量；工具桥改用 Cordis 4.1 的依赖卸载等待，保留已接纳工具的最终结算。
+- 已有 ACP 会话切换模型仍被上游缺少容量信息的自动压缩检查阻断，候选版尚不可发布。Forge 空闲时直接切回项目目录仍需在下一次输入时恢复 ACP 绑定；Auto Review 等辅助模型功能未宣称完整兼容。详见[迁移记录](docs/assessments/dsh-0.2.2-rc.1.md)。
 
-- Target DSH `0.2.2-alpha.2` and Node `>=24.9.0`; use native/PTC batch executors, the Host's admitted step tool set, and official projection/model owners.
+- Target DSH `0.2.2-rc.1` and Node `>=24.9.0`; use native/PTC batch executors, the Host's admitted step tool set, and official projection/model owners.
 - Remove forced reply elevation and unused permission projection reads. Reuse native All/Final replies and Statistics; preserve verified provenance for ordinary forks.
 - Do not overwrite newer native teammate model choices with cached preferences; consume an applied intent after native persistence succeeds. Legacy preferences without ordering evidence defer to the recorded native choice and may need to be selected again once.
 - Keep Diagnostics registered for the plugin lifetime and filter the native header/body view sources per session, avoiding view-roster refreshes against retired bindings during ds-bot hot reloads.
 - Drain accepted tool results and feedback before releasing their provider. After an interrupted ordinary fork, the same tab can retry provenance registration for the existing child; unknown creation outcomes block duplicate creation, with distinct provenance, storage and workspace-attachment feedback.
 - Give each Host explicit owners for pending tools and local settlement, preserving continuity across plugin reinstalls and draining accepted work before final resource release. Scope opt-in diagnostic collectors to one Host or check run.
 - Limit hover feedback in Diagnostics, Agent controls, and plugin settings to hover-capable devices, preserving touch selection and keyboard focus. Wrap the narrow Diagnostics toolbar so export and search controls cannot cover the filters.
+- Reuse RC.1 native catalog-menu positioning and overlay viewport limits, removing duplicate frame measurement. Use Cordis 4.1 dependency teardown while retaining accepted tool settlement.
 - Changing models in an established ACP session remains blocked by upstream compaction when capacity is unknown; this candidate is not ready to release. Forge's idle return-to-project action still requires ACP reconciliation on the next input. Auxiliary model features such as Auto Review are not certified by this migration.
 
 ## 0.2.1-rc.4.1

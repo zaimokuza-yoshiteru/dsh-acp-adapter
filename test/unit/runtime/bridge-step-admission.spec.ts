@@ -337,9 +337,13 @@ describe('Host admission reaches the MCP executor', () => {
     expect(f.execute).toHaveBeenCalledOnce()
   })
 
-  it.each([false, true])(
-    'retains accepted settlement past transport grace, including a prior bounded close (%s)',
-    async (closeTransportFirst) => {
+  it.each([
+    { closeTransportFirst: false, owner: 'provider' },
+    { closeTransportFirst: true, owner: 'provider' },
+    { closeTransportFirst: true, owner: 'root' },
+  ] as const)(
+    'retains accepted settlement past transport grace ($owner, prior close $closeTransportFirst)',
+    async ({ closeTransportFirst, owner }) => {
       const f = await fixture()
       const entered = Promise.withResolvers<void>()
       const release = Promise.withResolvers<void>()
@@ -350,15 +354,21 @@ describe('Host admission reaches the MCP executor', () => {
       })
       let bodySettled = false
       let resultSettled = false
+      let resourceClosed = false
+      f.toolsFiber.ctx.effect(() => () => {
+        resourceClosed = true
+      })
       let lease: AcpMcpLease | undefined
       f.execute.mockImplementationOnce(async () => {
         entered.resolve()
         await release.promise
+        expect(resourceClosed).toBe(false)
         bodySettled = true
         return 'settled after grace'
       })
-      f.ctx.on('tools/post-execute', async (_exec, _result, next) => {
+      f.toolsFiber.ctx.on('tools/post-execute', async (_exec, _result, next) => {
         const decision = await next()
+        expect(resourceClosed).toBe(false)
         resultSettled = true
         return { ...decision, additionalContexts: [...(decision.additionalContexts ?? []), feedback] }
       })
@@ -385,7 +395,7 @@ describe('Host admission reaches the MCP executor', () => {
           await transportClosing
           expect(lease!.hasPendingCalls?.()).toBe(true)
         }
-        disposing = f.toolsFiber.dispose().then(() => {
+        disposing = (owner === 'root' ? f.ctx.fiber.dispose() : f.toolsFiber.dispose()).then(() => {
           disposed = true
         })
         await vi.advanceTimersByTimeAsync(30_000)
@@ -393,6 +403,7 @@ describe('Host admission reaches the MCP executor', () => {
         expect(disposed).toBe(false)
         expect(bodySettled).toBe(false)
         expect(resultSettled).toBe(false)
+        expect(resourceClosed).toBe(false)
         expect(lease!.hasPendingCalls?.()).toBe(true)
       } finally {
         release.resolve()
@@ -404,6 +415,7 @@ describe('Host admission reaches the MCP executor', () => {
       await disposing
       expect(bodySettled).toBe(true)
       expect(resultSettled).toBe(true)
+      expect(resourceClosed).toBe(true)
       expect(lease!.hasPendingCalls?.()).toBe(false)
       expect(
         f.agent.session
