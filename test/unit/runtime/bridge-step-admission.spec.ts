@@ -191,7 +191,11 @@ describe('Host admission reaches the MCP executor', () => {
           expect(options.tools ?? []).toEqual([])
           expect(f.key(f.ctx, f.agent.id, options.tools)).toBeUndefined()
           lease.beginPrompt(options.signal!)
-          await expect(client.callTool({ name: 'conditional', arguments: {} })).rejects.toThrow()
+          // The step no longer admits this tool: the call is refused without reaching the executor.
+          expect(await client.callTool({ name: 'conditional', arguments: {} })).toMatchObject({
+            isError: true,
+            content: [{ type: 'text', text: 'ACP_TEAM_TOOL_UNAVAILABLE' }],
+          })
           lease.endPrompt()
           await lease.drainPrompt?.()
         }

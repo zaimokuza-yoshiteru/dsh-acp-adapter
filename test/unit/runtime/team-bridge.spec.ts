@@ -1432,7 +1432,12 @@ describe('session-owned native Teams MCP bridge', () => {
     expect(dshToolBridgeKey(ctx, 'lead', schemas)).toBe(key)
     definitions.set('project_lookup', { name: 'project_lookup' })
     expect(dshToolBridgeKey(ctx, 'lead', schemas)).not.toBe(key)
-    await expect(client.callTool({ name })).rejects.toThrow()
+    execute.mockClear()
+    expect(await client.callTool({ name })).toMatchObject({
+      isError: true,
+      content: [{ type: 'text', text: 'ACP_TEAM_TOOL_UNAVAILABLE' }],
+    })
+    expect(execute).not.toHaveBeenCalled()
   })
   it('does not retain the legacy Team auto-approval when no host policy resolver is wired', async () => {
     const fixture = await setup(undefined, ['file_write'], false)
@@ -1490,9 +1495,14 @@ describe('session-owned native Teams MCP bridge', () => {
     expect((await nextClient.listTools()).tools.map((tool) => tool.name)).toEqual(['new_plugin', 'present'])
     hidden.add('present')
     listeners.get('tools/change')!()
-    expect(next.signal.aborted).toBe(true)
+    // The newer connection keeps its remaining tool; the older one advertised nothing else.
+    expect(next.signal.aborted).toBe(false)
+    expect((await nextClient.listTools()).tools.map((tool) => tool.name)).toEqual(['new_plugin'])
     lease.beginPrompt(new AbortController().signal)
-    await expect(client.callTool({ name })).rejects.toThrow()
+    expect(await client.callTool({ name })).toMatchObject({
+      isError: true,
+      content: [{ type: 'text', text: 'ACP_TEAM_TOOL_UNAVAILABLE' }],
+    })
   })
 
   it.each([undefined, 'antigravity'])(
@@ -1522,7 +1532,67 @@ describe('session-owned native Teams MCP bridge', () => {
     },
   )
 
-  it.each(['tool-restriction', 'teams-unload', 'definition-replacement'] as const)(
+  it.each(['tool-restriction', 'definition-replacement', 'resync'] as const)(
+    'keeps the connection and accepted calls on %s, refusing only the changed tool',
+    async (cause) => {
+      const fixture = await setup(undefined, ['present', 'todo_write'], false)
+      fixture.lease.beginPrompt(new AbortController().signal)
+      const started = Promise.withResolvers<AbortSignal>()
+      const released = Promise.withResolvers<void>()
+      fixture.execute.mockImplementationOnce(async (input) => {
+        started.resolve(input.signal)
+        await released.promise
+        return { content: [{ type: 'text', text: 'accepted call settled' }], isError: false }
+      })
+      const call = fixture.client.callTool({ name: 'present', arguments: {} })
+      const bodySignal = await started.promise
+      if (cause === 'tool-restriction') {
+        fixture.hidden.add('present')
+        fixture.listeners.get('tools/change')!()
+      } else if (cause === 'definition-replacement') {
+        fixture.definitions.set('present', { ...fixture.definitions.get('present') })
+        fixture.listeners.get('tools/change')!()
+      } else {
+        // An MCP client resync withdraws a registration and publishes a new object, notifying each time.
+        fixture.hidden.add('present')
+        fixture.listeners.get('tools/change')!()
+        fixture.hidden.delete('present')
+        fixture.definitions.set('present', { ...fixture.definitions.get('present') })
+        fixture.listeners.get('tools/change')!()
+      }
+      expect(fixture.lease.signal.aborted).toBe(false)
+      expect(bodySignal.aborted).toBe(false)
+      released.resolve()
+      expect(await call).toMatchObject({ content: [{ type: 'text', text: 'accepted call settled' }] })
+      // The changed tool is unavailable for the rest of this connection and cannot be approved.
+      expect(await fixture.client.callTool({ name: 'present', arguments: {} })).toMatchObject({
+        isError: true,
+        content: [{ type: 'text', text: 'ACP_TEAM_TOOL_UNAVAILABLE' }],
+      })
+      expect(await fixture.lease.inspectPermission!(fixture.permission('present'))).toMatchObject({
+        reason: 'invalid-tool-name',
+        toolName: 'present',
+        response: { outcome: { outcome: 'cancelled' } },
+      })
+      expect(fixture.execute).toHaveBeenCalledOnce()
+      // Unrelated tools keep working and remain approvable.
+      expect((await fixture.client.callTool({ name: 'todo_write', arguments: {} })).isError).not.toBe(true)
+      expect(await fixture.lease.inspectPermission!(fixture.permission('todo_write'))).toMatchObject({
+        reason: 'auto-approved',
+      })
+      expect((await fixture.client.listTools()).tools.map((tool) => tool.name)).toEqual(['todo_write'])
+    },
+  )
+
+  it('closes the connection once every advertised tool has been withdrawn', async () => {
+    const fixture = await setup('antigravity', ['present'], false)
+    fixture.lease.beginPrompt(new AbortController().signal)
+    fixture.hidden.add('present')
+    fixture.listeners.get('tools/change')!()
+    expect(fixture.lease.signal.aborted).toBe(true)
+  })
+
+  it.each(['teams-unload'] as const)(
     'cancels immediately on %s while delivering an admitted MCP call response before transport closure',
     async (cause) => {
       const fixture = await setup('antigravity', ['present'], true)
@@ -1540,17 +1610,9 @@ describe('session-owned native Teams MCP bridge', () => {
         (error: unknown) => ({ error }),
       )
       const bodySignal = await started.promise
-      if (cause === 'tool-restriction') {
-        fixture.hidden.add('present')
-        fixture.listeners.get('tools/change')!()
-      } else if (cause === 'teams-unload') {
-        delete fixture.services.agentTeams
-        fixture.listeners.get('internal/service')!('agentTeams')
-      } else {
-        // An unchanged public schema is not proof of the same executing owner.
-        fixture.definitions.set('present', { ...fixture.definitions.get('present') })
-        fixture.listeners.get('tools/change')!()
-      }
+      expect(cause).toBe('teams-unload')
+      delete fixture.services.agentTeams
+      fixture.listeners.get('internal/service')!('agentTeams')
       expect.soft(fixture.lease.signal.aborted).toBe(true)
       expect.soft(bodySignal.aborted).toBe(true)
       let closed = false
@@ -2357,7 +2419,11 @@ describe('session-owned native Teams MCP bridge', () => {
     lease.beginPrompt(new AbortController().signal)
     expect((await fetch(server.url, { headers: { Origin: 'https://example.com' } })).status).toBe(403)
     definitions.set('list_agents', {})
-    await expect(client.callTool({ name })).rejects.toThrow()
+    expect(await client.callTool({ name })).toMatchObject({
+      isError: true,
+      content: [{ type: 'text', text: 'ACP_TEAM_TOOL_UNAVAILABLE' }],
+    })
+    expect(lease.signal.aborted).toBe(false)
     delete services.agentTeams
     expect((await fetch(server.url)).status).toBe(403)
   })

@@ -736,11 +736,18 @@ export async function createDshToolBridge(
     const admitted = admission.isActive() ? admission.toolSet.view(agent) : admission.definitions
     return admitted.get(name) === registered
   }
-  const live = (requireActive = true): boolean =>
-    !lifetime.signal.aborted &&
-    agents.get(sessionId as never) === agent &&
-    (teamContext?.isLive() ?? true) &&
-    [...definitions].every(([name, definition]) => isDefinitionLive(name, definition, requireActive))
+  // Connection liveness is separate from each tool's registration. A replaced
+  // or revoked definition makes only that tool unavailable (checked per call);
+  // it must not sever the prompt's other tools or cancel accepted executions.
+  const live = (requireActive = true): boolean => {
+    if (lifetime.signal.aborted || agents.get(sessionId as never) !== agent || !(teamContext?.isLive() ?? true))
+      return false
+    if (readAdmission === undefined) return true
+    const admission = readAdmission(agent)
+    return admission !== undefined && (!requireActive || admission.isActive())
+  }
+  const anyToolLive = (): boolean =>
+    [...definitions].some(([name, definition]) => isDefinitionLive(name, definition, false))
   const inspectPermission: NonNullable<AcpMcpLease['inspectPermission']> = async (request) => {
     const capturedPrompt = prompt
     const capturedGeneration = promptGeneration
@@ -793,6 +800,20 @@ export async function createDshToolBridge(
         }
       }
       return { ...facts, reason: 'identity-unmatched' }
+    }
+    // The tool was replaced or revoked after this connection advertised it.
+    // Approval could not make it executable, so refuse this one request and
+    // leave the connection's remaining tools usable.
+    if (!isDefinitionLive(definition.name, definition)) {
+      const reject = request.options.find((option) => option.kind === 'reject_once')
+      return {
+        ...facts,
+        toolName: definition.name,
+        reason: 'invalid-tool-name',
+        response: {
+          outcome: reject === undefined ? { outcome: 'cancelled' } : { outcome: 'selected', optionId: reject.optionId },
+        },
+      }
     }
     const toolName = definition.name
     const identified = {
@@ -1102,6 +1123,11 @@ export async function createDshToolBridge(
             // known non-execution rather than treating it as settled success.
             callRecord.abortedBeforeDispatch = true
             throw new Error('ACP_TEAM_PROMPT_INACTIVE')
+          }
+          if (!isDefinitionLive(definition.name, definition)) {
+            // Replaced or revoked while queued: a known non-execution of this tool only.
+            callRecord.abortedBeforeDispatch = true
+            throw new Error('ACP_TEAM_TOOL_UNAVAILABLE')
           }
           const inboxCounts = diagnosticEnabled ? diagnosticInboxCounts(agent) : undefined
           const diagnosticBase =
@@ -1614,7 +1640,13 @@ export async function createDshToolBridge(
         if (conflictingInput) {
           identifiedWaitCalls.delete(call.toolCallId)
           deferredWaitReceipts.revoke(call.toolCallId)
-        } else if (definition?.name === 'wait_agent' && live() && prompt !== undefined && !prompt.aborted) {
+        } else if (
+          definition?.name === 'wait_agent' &&
+          live() &&
+          isDefinitionLive(definition.name, definition) &&
+          prompt !== undefined &&
+          !prompt.aborted
+        ) {
           identifiedWaitCalls.add(call.toolCallId)
         } else if (identity.source !== undefined && !(identity.source === 'name' && call.name === 'wait_agent')) {
           identifiedWaitCalls.delete(call.toolCallId)
@@ -1642,6 +1674,7 @@ export async function createDshToolBridge(
         definition !== undefined &&
         (definition.name === 'spawn_teammate' || definition.name === 'send_message') &&
         live() &&
+        isDefinitionLive(definition.name, definition) &&
         prompt !== undefined &&
         !prompt.aborted
           ? withDshTeamPermissionPresentation(result, {
@@ -1735,7 +1768,8 @@ export async function createDshToolBridge(
       // Presentation only: don't rewrite arbitrary messages or infer authority
       // by stripping a prefix. Preserve additional context from other requests.
       if (request.message !== `Allow the ${serverName} MCP server to run tool "${input.tool}"?`) return undefined
-      return names.get(input.tool)?.name
+      const definition = names.get(input.tool)
+      return definition !== undefined && isDefinitionLive(definition.name, definition) ? definition.name : undefined
     },
     async elicitation(request, toolCall) {
       const form = request as {
@@ -1756,7 +1790,9 @@ export async function createDshToolBridge(
       )
         return undefined
       const input = toolCall.rawInput as { server?: unknown; tool?: unknown } | undefined
-      if (input?.server !== serverName || typeof input.tool !== 'string' || !names.has(input.tool)) return undefined
+      if (input?.server !== serverName || typeof input.tool !== 'string') return undefined
+      const target = names.get(input.tool)
+      if (target === undefined || !isDefinitionLive(target.name, target)) return undefined
       const capturedPrompt = prompt
       const capturedGeneration = promptGeneration
       const policy = resolveApprovalPolicy === undefined ? 'ask' : await resolveApprovalPolicy().catch(() => undefined)
@@ -1766,7 +1802,8 @@ export async function createDshToolBridge(
         capturedPrompt.aborted ||
         prompt !== capturedPrompt ||
         promptGeneration !== capturedGeneration ||
-        !live()
+        !live() ||
+        !isDefinitionLive(target.name, target)
       )
         return undefined
       // Codex may add the persistence selector to an otherwise empty tool-approval form.
@@ -1838,7 +1875,7 @@ export async function createDshToolBridge(
   }
   listeners.push(
     ctx.on('tools/change', () => {
-      if (!live(false)) void lease.close()
+      if (!live(false) || !anyToolLive()) void lease.close()
     }),
   )
   listeners.push(
@@ -1848,7 +1885,7 @@ export async function createDshToolBridge(
   )
   listeners.push(
     ctx.on('internal/service', (name) => {
-      if (['agentTeams', 'agents', 'tools'].includes(name) && !live(false)) void lease.close()
+      if (['agentTeams', 'agents', 'tools'].includes(name) && (!live(false) || !anyToolLive())) void lease.close()
     }),
   )
   return lease
