@@ -429,6 +429,17 @@ export function createDshToolBridgeKey(readAdmission?: ReadStepToolAdmission) {
  * callers pass the Host admission reader; omission permits only unconditional
  * registrations and executor-owned transport for standalone callers.
  */
+const TOOL_FAILURE_DETAIL_MAX = 1_000
+
+/** Report a batch failure by its cause; the wrapper message alone cannot be diagnosed. */
+function toolFailureText(error: unknown): string {
+  if (!(error instanceof Error)) return 'ACP_TEAM_TOOL_FAILED'
+  if (!(error instanceof ToolBatchExecutionError)) return error.message
+  const cause = error.cause
+  const detail = cause instanceof Error ? cause.message : typeof cause === 'string' ? cause : ''
+  return detail.length === 0 ? error.message : `${error.message}: ${detail.slice(0, TOOL_FAILURE_DETAIL_MAX)}`
+}
+
 export async function createDshToolBridge(
   ctx: Context,
   sessionId: string,
@@ -1252,6 +1263,17 @@ export async function createDshToolBridge(
             }
           } catch (error) {
             if (error instanceof ToolBatchExecutionError) {
+              // The wrapper's message is fixed; only its cause names the failure.
+              try {
+                ctx.logger?.warn(
+                  'acp-bridge: DSH tool batch failed (session %s, tool %s): %o',
+                  sessionId,
+                  definition.name,
+                  error.cause,
+                )
+              } catch {
+                // Logging cannot change the settlement of an accepted call.
+              }
               for (const context of error.partial.additionalContexts) injectFeedback(context, callPrompt)
               callPrompt.batchFailed = true
               callPrompt.accepting = false
@@ -1406,7 +1428,7 @@ export async function createDshToolBridge(
         }
         return {
           isError: true,
-          content: [{ type: 'text' as const, text: error instanceof Error ? error.message : 'ACP_TEAM_TOOL_FAILED' }],
+          content: [{ type: 'text' as const, text: toolFailureText(error) }],
         }
       } finally {
         calls.delete(call)

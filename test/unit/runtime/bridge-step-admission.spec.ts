@@ -454,7 +454,10 @@ describe('Host admission reaches the MCP executor', () => {
       })
       try {
         const first = await client.callTool({ name: 'conditional', arguments: {} })
-        expect(first.isError).toBe(true)
+        expect(first).toMatchObject({
+          isError: true,
+          content: [{ type: 'text', text: 'Tool batch execution failed: internal batch failure' }],
+        })
         const second = await client.callTool({ name: 'conditional', arguments: {} })
         expect(second.isError).toBe(true)
         expect(execute).toHaveBeenCalledOnce()

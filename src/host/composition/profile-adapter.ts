@@ -4078,7 +4078,7 @@ export class AcpProfileAdapter extends LlmAdapter {
               : settlementFailure?.code === 'ACP_HOST_FEEDBACK_COMMIT_FAILED'
                 ? 'The ACP tool feedback commit into the native Agent inbox could not be confirmed; inspect the Agent session before continuing.'
                 : reconciliationRequired
-                  ? 'The ACP Agent ended its response while a DSH Host tool was still executing; inspect both sides before continuing.'
+                  ? 'A DSH Host tool failed inside the Host before its result was recorded, or was still executing when the ACP Agent ended its response; inspect both sides before continuing.'
                   : settlementFailure?.code === 'ACP_HOST_CALL_DRAIN_TIMEOUT'
                     ? 'ACP prompt ended while a DSH Host tool was still active and its outcome could not be confirmed.'
                     : 'ACP prompt ended before its remote outcome was confirmed',
