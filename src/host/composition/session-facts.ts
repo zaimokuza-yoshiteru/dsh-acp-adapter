@@ -26,7 +26,7 @@ const ordinarySessionView: AcpExecutionView = { externalSubagent: false }
 
 const acpExecutionProjection = {
   key: 'acpExecution',
-  stateVersion: 2,
+  stateVersion: 3,
   stateSchema: sessionFactsSchema,
   init: (_header, inheritedEventCount) => initialSessionFacts(inheritedEventCount),
   apply: applySessionFact,

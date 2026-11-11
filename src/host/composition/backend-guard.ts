@@ -107,7 +107,8 @@ export function installAcpBackendGuard(ctx: Context, options: AcpBackendGuardOpt
       const resolved = await next()
       const session = payload.agent.session
       const targetProfile = acpAgentIdFromRoute(resolved.provider)
-      const priorHistory = readSessionFacts(projectionCtx, session).priorSemanticHistory
+      const facts = readSessionFacts(projectionCtx, session)
+      const priorHistory = facts.priorSemanticHistory
       // A committed request identifies the backend that owns the transcript.
       // agent.model.current() is the future choice and must not stand in for it.
       const previous = session.requestHeader()?.config ?? null
@@ -167,6 +168,34 @@ export function installAcpBackendGuard(ctx: Context, options: AcpBackendGuardOpt
           !recordedParent && session.header.isSeeded ? await options.sidecar.readNativeFork(session.id) : undefined
         if (recordedParent || (ordinary !== undefined && session.inheritedEventCount === ordinary.atSeq + 1))
           return resolved
+        // A committed request header records that this route was selected, not
+        // that ACP answered. Another plugin may serve the stream, or the first
+        // turn may fail before its binding is saved. Gate only a session with
+        // evidence of ACP execution whose binding is gone; a seeded child keeps
+        // the provider's fork-source gate.
+        if (!session.header.isSeeded) {
+          try {
+            const recovery = await options.sidecar.readRecoveryState(session.id)
+            if (recovery?.kind === 'healthy' && recovery.lastUserAction === 'rebind-blank') return resolved
+            // An earlier version of this guard gated such sessions itself; that gate is stale.
+            const staleGate = recovery?.kind === 'reconciliation-required' && recovery.cause === 'binding-missing'
+            if (
+              (recovery === undefined || recovery.kind === 'healthy' || staleGate) &&
+              !facts.acpReplaySeen &&
+              !(await options.sidecar.hasDurableActivityOwner(session.id))
+            ) {
+              if (staleGate)
+                await options.sidecar.writeRecoveryState({
+                  dshSessionId: sessionId,
+                  kind: 'healthy',
+                  updatedAt: Date.now(),
+                })
+              return resolved
+            }
+          } catch {
+            // Unreadable evidence stays fail-closed below.
+          }
+        }
       }
       const transition = classifyBackendTransition({
         ...baseInput,

@@ -30,6 +30,8 @@ export const sessionFactsSchema = z.object({
   inheritedRemaining: z.number().int().nonnegative(),
   externalSubagent: z.boolean(),
   forkReplay: acpReplayPayloadSchema.nullable(),
+  /** This session, not an inherited prefix, committed an ACP-produced answer. */
+  acpReplaySeen: z.boolean(),
 })
 export type SessionFacts = z.infer<typeof sessionFactsSchema>
 
@@ -43,6 +45,7 @@ export function initialSessionFacts(inheritedEventCount = 0): SessionFacts {
     inheritedRemaining: inheritedEventCount,
     externalSubagent: false,
     forkReplay: null,
+    acpReplaySeen: false,
   }
 }
 
@@ -55,6 +58,8 @@ export function applySessionFact(previous: SessionFacts, event: SessionEventLike
       inheritedRemaining: state.inheritedRemaining - 1,
       forkReplay: acpReplayPayloadOf(event) ?? state.forkReplay,
     }
+  if (previous.inheritedRemaining === 0 && !state.acpReplaySeen && acpReplayPayloadOf(event) !== undefined)
+    state = { ...state, acpReplaySeen: true }
   if (event.type === 'turn/start')
     return { ...state, turnOpen: true, turnSeen: true, priorSemanticHistory: state.hasSemanticHistory }
   if (event.type === 'turn/end') return { ...state, turnOpen: false }

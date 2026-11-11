@@ -11,18 +11,49 @@ type RequestListener = (payload: unknown, next: () => Promise<LlmCallConfig>) =>
 
 const config = (provider: string, model = 'model-a'): LlmCallConfig => ({ provider, model })
 
+const acpAnswer = {
+  message: {
+    source: {
+      replayState: {
+        response: {
+          kind: 'dsh-acp',
+          version: 1,
+          ownerDshSessionId: 'session-test',
+          profileId: 'codex',
+          profileGeneration: 1,
+          agentSessionId: 'agent-session',
+          bindingEpoch: 1,
+          launchFingerprint: 'fingerprint',
+          committedPromptOrdinal: 1,
+          committedActivitySeq: 0,
+        },
+      },
+    },
+  },
+}
+
+/** `acp:assistant/message` is an answer this adapter produced; other events carry no ACP evidence. */
 function session(events: readonly string[], parentSession?: string, id = 'session-test'): Session {
   return withSessionFacts({
     id,
     header: parentSession === undefined ? {} : { parentSession },
-    snapshotEvents: () => events.map((type) => ({ type, data: {} })),
+    snapshotEvents: () =>
+      events.map((type) =>
+        type === 'acp:assistant/message' ? { type: 'assistant/message', data: acpAnswer } : { type, data: {} },
+      ),
   }) as unknown as Session
 }
 
-function sidecar(binding: AcpBindingLookup | undefined, writes: unknown[] = []): AcpSidecar {
+function sidecar(
+  binding: AcpBindingLookup | undefined,
+  writes: unknown[] = [],
+  evidence: { recovery?: unknown; activityOwner?: boolean } = {},
+): AcpSidecar {
   return {
     readLatestBinding: vi.fn(async () => binding),
     readNativeFork: vi.fn(async () => undefined),
+    readRecoveryState: vi.fn(async () => evidence.recovery),
+    hasDurableActivityOwner: vi.fn(async () => evidence.activityOwner === true),
     writeRecoveryState: vi.fn(async (state: unknown) => {
       writes.push(state)
     }),
@@ -95,7 +126,7 @@ describe('M6b additive ACP backend guard', () => {
   it('does not let headless fallback adopt native history or bypass a missing binding', async () => {
     for (const previous of [config('native'), config('acp-codex'), undefined]) {
       const { listener } = install(undefined, sidecar(undefined))
-      const headless = Object.assign(session(['turn/start', 'assistant/message', 'turn/end', 'turn/start']), {
+      const headless = Object.assign(session(['turn/start', 'acp:assistant/message', 'turn/end', 'turn/start']), {
         requestHeader: () => (previous === undefined ? undefined : { config: previous }),
       })
       await expect(listener({ agent: { session: headless } }, async () => config('acp-codex'))).rejects.toThrow()
@@ -180,11 +211,60 @@ describe('M6b additive ACP backend guard', () => {
     expect(acpSidecar.writeRecoveryState).not.toHaveBeenCalled()
   })
 
-  it('persists recovery and blocks a same-profile continuation with a missing binding', async () => {
+  it.each([
+    ['another plugin answered the routed stream', ['turn/start', 'assistant/message', 'tool/call', 'turn/end']],
+    ['the first turn failed before a binding was saved', ['turn/start', 'user/message', 'turn/end']],
+  ] as const)('continues an unbound same-profile session when %s', async (_name, events) => {
     const acpSidecar = sidecar(undefined)
     const { listener } = install({ lastUsed: config('acp-codex'), pending: null }, acpSidecar)
     await expect(
+      listener({ agent: { session: session([...events, 'turn/start', 'user/message']) } }, async () =>
+        config('acp-codex'),
+      ),
+    ).resolves.toEqual(config('acp-codex'))
+    expect(acpSidecar.writeRecoveryState).not.toHaveBeenCalled()
+  })
+
+  it('clears a stale binding-missing gate left on a session ACP never executed', async () => {
+    const writes: unknown[] = []
+    const acpSidecar = sidecar(undefined, writes, {
+      recovery: { dshSessionId: 'session-test', kind: 'reconciliation-required', cause: 'binding-missing' },
+    })
+    const { listener } = install({ lastUsed: config('acp-codex'), pending: null }, acpSidecar)
+    await expect(
       listener({ agent: { session: session(['turn/start', 'user/message']) } }, async () => config('acp-codex')),
+    ).resolves.toEqual(config('acp-codex'))
+    expect(writes).toEqual([expect.objectContaining({ dshSessionId: 'session-test', kind: 'healthy' })])
+  })
+
+  it('honours an explicit blank rebind for a session whose ACP binding is gone', async () => {
+    const acpSidecar = sidecar(undefined, [], {
+      recovery: { dshSessionId: 'session-test', kind: 'healthy', lastUserAction: 'rebind-blank' },
+      activityOwner: true,
+    })
+    const { listener } = install({ lastUsed: config('acp-codex'), pending: null }, acpSidecar)
+    await expect(
+      listener(
+        { agent: { session: session(['turn/start', 'acp:assistant/message', 'turn/end', 'turn/start']) } },
+        async () => config('acp-codex'),
+      ),
+    ).resolves.toEqual(config('acp-codex'))
+    expect(acpSidecar.writeRecoveryState).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['an ACP answer in its own history', ['turn/start', 'acp:assistant/message', 'turn/end', 'turn/start'], {}],
+    ['ACP activity owned by the session', ['turn/start', 'user/message'], { activityOwner: true }],
+    [
+      'another pending recovery',
+      ['turn/start', 'user/message'],
+      { recovery: { dshSessionId: 'session-test', kind: 'outcome-unknown' } },
+    ],
+  ] as const)('persists recovery and blocks a missing binding with %s', async (_name, events, evidence) => {
+    const acpSidecar = sidecar(undefined, [], evidence)
+    const { listener } = install({ lastUsed: config('acp-codex'), pending: null }, acpSidecar)
+    await expect(
+      listener({ agent: { session: session([...events]) } }, async () => config('acp-codex')),
     ).rejects.toMatchObject({ code: 'ACP_BACKEND_RECOVERY_REQUIRED' })
     expect(acpSidecar.readLatestBinding).toHaveBeenCalledTimes(1)
     expect(acpSidecar.writeRecoveryState).toHaveBeenCalledWith(
