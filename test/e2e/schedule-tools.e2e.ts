@@ -309,17 +309,15 @@ it('preserves a pending Schedule task when the native plugin is disabled and rem
       lease.beginPrompt(new AbortController().signal)
       expect(await scheduleManager.setPluginEnabled(plugin.entryId, false)).toMatchObject({ application: 'applied' })
       await vi.waitFor(() => expect(host.ctx.get('schedule')).toBeUndefined())
-      // Removing a captured tool closes the bridge's entire capability lease;
-      // the old client cannot query a smaller catalog or dispatch another call.
-      expect(lease.signal.aborted).toBe(true)
-      expect(lease.signal.reason).toMatchObject({ message: 'ACP DSH tools connection closed' })
-      // Native invalidation has already started close; await its idempotent
-      // completion rather than racing the transport teardown.
-      await lease.close()
-      await expect(client.listTools()).rejects.toMatchObject({ cause: { code: 'ECONNREFUSED' } })
-      await expect(
-        client.callTool({ name: 'schedule_edit', arguments: { id: taskId, action: 'delete' } }),
-      ).rejects.toMatchObject({ cause: { code: 'ECONNREFUSED' } })
+      // Withdrawn tools become unavailable at once; the connection keeps serving
+      // the tools that remain and does not cancel their accepted work.
+      expect(lease.signal.aborted).toBe(false)
+      const remaining = (await client.listTools()).tools.map((tool) => tool.name)
+      expect(remaining.length).toBeGreaterThan(0)
+      for (const name of TOOLS) expect(remaining).not.toContain(name)
+      expect(
+        await client.callTool({ name: 'schedule_edit', arguments: { id: taskId, action: 'delete' } }),
+      ).toMatchObject({ isError: true, content: [{ type: 'text', text: 'ACP_TEAM_TOOL_UNAVAILABLE' }] })
     } finally {
       lease.endPrompt()
       try {
