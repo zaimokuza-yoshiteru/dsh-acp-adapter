@@ -9,6 +9,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import type * as acp from '@agentclientprotocol/sdk'
+import { RequestError } from '@agentclientprotocol/sdk'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from './live-diagnostics.ts'
 import { admitEncodedImages } from '@deepseek-ai/dsh-attachment'
@@ -4063,6 +4064,37 @@ export class AcpProfileAdapter extends LlmAdapter {
                 'ACP_HOST_TOOL_NOT_DISPATCHED',
                 { cause: error },
               )
+            } catch (settlementError) {
+              retainHealthyRuntimeAfterNotDispatched = true
+              failure = new LlmError(
+                settlementError instanceof Error
+                  ? settlementError.message
+                  : 'ACP results are not saved yet; local storage will retry automatically.',
+                'ACP_LOCAL_SETTLEMENT_FAILED',
+                { cause: settlementError },
+              )
+            }
+            done = true
+            wake?.()
+            wake = undefined
+            return
+          }
+          // The Agent answered this prompt with a JSON-RPC error (rate limit,
+          // quota, an internal failure). That is a known failed turn on a live
+          // connection, not a lost transport: settle it and keep the session
+          // usable instead of demanding recovery. A cancellation error keeps
+          // the cancellation path's own handling.
+          if (
+            settlementFailure === undefined &&
+            error instanceof AcpClientError &&
+            (error.kind === 'resource-exhausted' || error.kind === 'protocol-error') &&
+            error.cause instanceof RequestError &&
+            error.cause.code !== -32800
+          ) {
+            try {
+              await settleKnownRemoteTerminal()
+              retainHealthyRuntimeAfterNotDispatched = true
+              failure = new LlmError(error.message, error.code, { cause: error })
             } catch (settlementError) {
               retainHealthyRuntimeAfterNotDispatched = true
               failure = new LlmError(

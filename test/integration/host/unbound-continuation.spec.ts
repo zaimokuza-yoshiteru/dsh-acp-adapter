@@ -13,6 +13,8 @@ import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
 import WorkingDirectory from '@deepseek-ai/dsh-working-directory'
+import { RequestError } from '@agentclientprotocol/sdk'
+import { AcpClientError } from '../../../src/protocol/v1/errors.ts'
 import { installAcpBackendGuard } from '../../../src/host/composition/backend-guard.ts'
 import { AcpProfileAdapter } from '../../../src/host/composition/profile-adapter.ts'
 import { AcpSessionFacts, acpSessionView } from '../../../src/host/composition/session-facts.ts'
@@ -26,7 +28,7 @@ afterEach(async () => {
 const user = (text: string) => createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })
 
 // The published AgentLoop, session log, projections, guard, adapter and Sidecar are real; only the ACP wire is scripted.
-async function harness(options: { failFirstStart?: boolean } = {}) {
+async function harness(options: { failFirstStart?: boolean; failFirstPrompt?: () => Error } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'acp-unbound-'))
   cleanup.push(() => fs.rmSync(root, { recursive: true, force: true }))
   const sidecar = createAcpSidecar({ root })
@@ -69,6 +71,7 @@ async function harness(options: { failFirstStart?: boolean } = {}) {
       close: async () => undefined,
       prompt: async (input, onUpdate) => {
         prompts.push(JSON.stringify(input))
+        if (options.failFirstPrompt !== undefined && prompts.length === 1) throw options.failFirstPrompt()
         onUpdate({
           sessionId: 'remote-session',
           update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'agent answer' } },
@@ -181,5 +184,38 @@ describe('same-profile continuation of a session ACP never bound', () => {
     await expect(listener!({ agent: { session: h.agent.session } }, async () => config)).rejects.toMatchObject({
       code: 'ACP_BACKEND_RECOVERY_REQUIRED',
     })
+  })
+})
+
+describe('a prompt the Agent answered with an error', () => {
+  it('ends that turn with the Agent error and keeps the session usable without recovery', async () => {
+    const h = await harness({
+      failFirstPrompt: () =>
+        new AcpClientError('protocol-error', 'ACP agent rejected session/prompt: rate limited (JSON-RPC code 429)', {
+          cause: new RequestError(429, 'rate limited'),
+        }),
+    })
+    h.agent.followup(user('limited'))
+    await h.agent.whenIdle()
+    expect(h.lastTurnEnd()).toMatchObject({ data: { reason: { kind: 'error' } } })
+    expect(JSON.stringify(h.lastTurnEnd())).toContain('ACP_PROTOCOL_ERROR')
+    const recovery = await h.sidecar.readRecoveryState(h.agent.session.id)
+    expect(recovery === undefined || recovery.kind === 'healthy').toBe(true)
+
+    h.agent.followup(user('again'))
+    await h.agent.whenIdle()
+    expect(h.lastTurnEnd()).toMatchObject({ data: { reason: { kind: 'completed' } } })
+    expect(h.prompts).toHaveLength(2)
+  })
+
+  it('still requires recovery when the connection was lost instead', async () => {
+    const h = await harness({ failFirstPrompt: () => new AcpClientError('crash', 'ACP agent exited') })
+    h.agent.followup(user('lost'))
+    await h.agent.whenIdle()
+    expect(await h.sidecar.readRecoveryState(h.agent.session.id)).toMatchObject({ kind: 'outcome-unknown' })
+    h.agent.followup(user('again'))
+    await h.agent.whenIdle()
+    expect(h.lastTurnEnd()).toMatchObject({ data: { reason: { kind: 'error' } } })
+    expect(h.prompts).toHaveLength(1)
   })
 })
