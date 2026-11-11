@@ -105,7 +105,9 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
     await detail.getByRole('button', { name: 'Cancel', exact: true }).click()
     await select(/^VT Code ·/)
     expect(await detail.getByLabel('Executable', { exact: true }).inputValue()).toBe('')
-    expect(await detail.getByRole('button', { name: 'Save', exact: true }).isDisabled()).toBe(true)
+    // Save stays usable and names the missing command instead of being silently disabled.
+    await detail.getByRole('button', { name: 'Save', exact: true }).click()
+    await detail.getByText('Executable must not be empty.', { exact: true }).waitFor()
     expect(await detail.getByLabel('Environment', { exact: true }).count()).toBe(0)
     await detail.getByText('2 environment variables configured.', { exact: true }).waitFor()
     await detail.getByRole('button', { name: 'Advanced options', exact: true }).click()

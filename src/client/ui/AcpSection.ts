@@ -650,7 +650,10 @@ function AgentForm(props: {
   // Built-in templates work with their tested defaults. Keep implementation
   // details out of the common path, while manual profiles open the same fields
   // immediately because command and route identity are required there.
-  const [advancedOpen, setAdvancedOpen] = useState(() => props.initial.runtime === undefined)
+  // A template without a prefilled command needs that field at once.
+  const [advancedOpen, setAdvancedOpen] = useState(
+    () => props.initial.runtime === undefined || props.initial.command.trim() === '',
+  )
   const [optionsOpen, setOptionsOpen] = useState(false)
   const disabled = props.readOnly || busy
   const validation = validateAgentDraft(draft, props.agents, props.editingId)
@@ -662,7 +665,12 @@ function AgentForm(props: {
   }
   const save = (): void => {
     setAttempted(true)
-    if (validation.config === undefined) return
+    if (validation.config === undefined) {
+      // Reveal the section holding the first unmet field instead of leaving a silent, unusable Save.
+      if (validation.id !== undefined || validation.command !== undefined) setAdvancedOpen(true)
+      if (validation.env !== undefined) setOptionsOpen(true)
+      return
+    }
     setBusy(true)
     setFailure(undefined)
     void props.panel
@@ -904,7 +912,8 @@ function AgentForm(props: {
         Button,
         {
           variant: 'primary',
-          disabled: disabled || validation.config === undefined,
+          // Field errors are reported on click; only the block-level runtime conflict has no field to point at.
+          disabled: disabled || validation.runtime !== undefined,
           onClick: save,
         },
         t(busy ? 'saving' : 'save'),
