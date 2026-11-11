@@ -91,6 +91,34 @@ describe('AcpPanelController targeted health checks', () => {
     controller.dispose()
   })
 
+  it('carries a Host version mismatch into the panel and clears it when the Host no longer reports one', async () => {
+    const responses = [
+      { ...view([]), hostVersion: { required: '0.2.2-rc.1', running: '0.2.2-rc.2' } },
+      { ...view([]), hostVersion: { required: 1 } },
+    ]
+    const controller = new AcpPanelController({
+      scope: {
+        getSnapshot: () => ({ status: 'ready' as const, writable: true, revision: 1, value: { agents: {} } }),
+        subscribe: () => () => {},
+      },
+      mutate: vi.fn(),
+      refusedMessage: () => 'refused',
+      remote: {
+        health: vi.fn(() => Promise.resolve({ ok: true as const, value: responses.shift() })),
+        backendOf: vi.fn(),
+        boundSessions: vi.fn(),
+        activityFollow: async function* () {},
+      } as never,
+    })
+    const store = createAcpPanelStore().create()
+    controller.attach(store.actions)
+    await controller.refreshHealth()
+    expect(store.getSnapshot().health.hostVersion).toEqual({ required: '0.2.2-rc.1', running: '0.2.2-rc.2' })
+    await controller.refreshHealth()
+    expect(store.getSnapshot().health.hostVersion).toBeUndefined()
+    controller.dispose()
+  })
+
   it('keeps a targeted failure on that card without making the whole panel unreachable', async () => {
     const scope = {
       getSnapshot: () => ({ status: 'ready' as const, writable: true, revision: 1, value: { agents: {} } }),

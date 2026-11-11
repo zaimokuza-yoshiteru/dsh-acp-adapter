@@ -73,6 +73,7 @@ import type {
   AcpRecoveryView,
   AcpRecoveryFrame,
   AcpHealthView,
+  AcpHostVersionMismatchView,
   AcpHealthRequest,
   AcpLiveSessionContinuity,
   AcpProbeCleanupView,
@@ -299,6 +300,8 @@ export interface AcpRemoteServiceDeps {
    * ——test/contracts/architecture.spec.ts 白名单）。
    */
   hostCompatible?: () => boolean
+  /** Exact Host version this adapter is built for versus the running one; absent when they agree or cannot be read. */
+  hostVersion?: () => AcpHostVersionMismatchView | undefined
   /** 可执行存在性检查；缺省 `seam.resolveExecutable`（seam 缺席时恒 false）。 */
   checkExecutable?: (command: string) => Promise<boolean>
   /** 版本查询；缺省经 seam 的 `<command> --version` 尽力而为（seam 缺席时恒 null）。 */
@@ -496,6 +499,7 @@ interface ResolvedDeps {
 
   readonly registry: AcpHealthRegistryLike
   readonly hostCompatible: () => boolean
+  readonly hostVersion: () => AcpHostVersionMismatchView | undefined
   readonly checkExecutable: (command: string) => Promise<boolean>
   readonly queryVersion: (command: string) => Promise<string | null>
   /** 缺省 null（host 未接线时视图如实不带活体会话连续性清单）。 */
@@ -550,6 +554,7 @@ export class AcpRemoteService extends TypertRemoteService {
       teamManagement: deps.teamManagement,
       // host 未接线结构门事实时按兼容处理（纯模块单测路径；生产恒注入）
       hostCompatible: deps.hostCompatible ?? (() => true),
+      hostVersion: deps.hostVersion ?? (() => undefined),
       checkExecutable:
         deps.checkExecutable ??
         (subprocess.ok
@@ -1131,9 +1136,13 @@ export class AcpRemoteService extends TypertRemoteService {
             .listLiveSessions()
             .filter((entry) => this.callerCanReadSession(entry.sessionId))
             .map((entry) => ({ sessionId: entry.sessionId, continuity: entry.continuity }))
+    const hostVersion = this.resolved.hostVersion()
     return {
       providers,
       liveSessions,
+      ...(hostVersion === undefined
+        ? {}
+        : { hostVersion: { required: hostVersion.required, running: hostVersion.running } }),
     }
   }
 

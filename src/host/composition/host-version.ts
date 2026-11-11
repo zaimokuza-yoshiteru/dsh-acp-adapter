@@ -26,6 +26,20 @@ function readVersions(): HostVersionMismatch | undefined {
   return hostVersionMismatch(manifest, host.version)
 }
 
+let cached: { readonly mismatch: HostVersionMismatch | undefined } | undefined
+
+/** The mismatch for this process, read once; unreadable versions are no mismatch. */
+export function currentHostVersionMismatch(): HostVersionMismatch | undefined {
+  if (cached === undefined) {
+    try {
+      cached = { mismatch: readVersions() }
+    } catch {
+      cached = { mismatch: undefined }
+    }
+  }
+  return cached.mismatch
+}
+
 /**
  * The Host lets a user exempt an incompatible plugin version. Name that
  * situation once at activation, so later failures are not read as defects.
@@ -33,7 +47,7 @@ function readVersions(): HostVersionMismatch | undefined {
  */
 export function warnOnHostVersionMismatch(
   ctx: Context,
-  read: () => HostVersionMismatch | undefined = readVersions,
+  read: () => HostVersionMismatch | undefined = currentHostVersionMismatch,
 ): void {
   let mismatch: HostVersionMismatch | undefined
   try {

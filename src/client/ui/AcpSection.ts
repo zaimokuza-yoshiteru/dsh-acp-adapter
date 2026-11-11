@@ -170,6 +170,14 @@ function Loaded({
   }
 
   if (readOnly) children.push(h('p', { key: 'ro', className: css.notice }, t('readOnly')))
+  if (snapshot.health.hostVersion !== undefined)
+    children.push(
+      h(
+        'p',
+        { key: 'host-version', className: css.notice, role: 'alert' },
+        t('hostVersionMismatch', snapshot.health.hostVersion),
+      ),
+    )
   if (snapshot.health.status === 'unreachable') {
     children.push(h('p', { key: 'unreachable', className: css.notice }, t('healthUnreachable')))
     if (snapshot.health.message !== undefined) {

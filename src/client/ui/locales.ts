@@ -152,6 +152,8 @@ const zh = {
   settingsUnavailable: '当前环境不提供设置服务，ACP 面板不可用。',
   settingsInvalid: 'dsh-acp-adapter 配置无效，请检查配置文件后重试；面板已拒绝编辑无效配置。',
   readOnly: '当前设置文档为只读，无法保存修改。',
+  hostVersionMismatch:
+    '此插件版本为 DSH {required} 构建，当前运行的是 DSH {running}。ACP 会话和工具调用可能失败，请安装与当前 DSH 版本对应的插件版本。',
   healthUnreachable: '无法连接 ACP 插件的宿主服务，服务可能尚未加载。暂时无法读取 Agent 状态，仍可编辑配置',
   emptyAgents: '还没有配置任何 ACP Agent',
   addAgent: '添加 Agent',
@@ -614,6 +616,8 @@ const en: Record<AcpLocaleKey, string> = {
   settingsInvalid:
     'The dsh-acp-adapter configuration is invalid. Fix the config file and retry; the panel refuses to edit an invalid document.',
   readOnly: 'The settings document is read-only; changes cannot be saved.',
+  hostVersionMismatch:
+    'This plugin version is built for DSH {required}, but DSH {running} is running. ACP sessions and tool calls may fail. Install the plugin version that matches this DSH version.',
   healthUnreachable:
     'Cannot connect to the ACP plugin’s host service; it may not be loaded. Agent status is unavailable, but you can still edit the configuration.',
   emptyAgents: 'No ACP Agents configured yet.',

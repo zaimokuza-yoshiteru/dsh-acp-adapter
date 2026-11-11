@@ -1,6 +1,7 @@
 /** Live ACP routes derived from native volatile plugin configuration. */
 /// <reference types="node" />
 
+import { currentHostVersionMismatch } from './host-version.ts'
 import { resolveTerminalJobs } from './terminal-jobs.ts'
 import { resolveQwenTaskJobs } from './qwen-task-jobs.ts'
 import type { Context } from '@deepseek-ai/cordis'
@@ -549,6 +550,7 @@ export async function installInstalledProfileRegistry(
       // seam as the ACP probe.  Omitting this made a successful probe coexist
       // with executable=false/version=null in the Settings panel.
       subprocess,
+      hostVersion: currentHostVersionMismatch,
       approvalChildren: createApprovalChildrenReader(ctx, (provider) =>
         [...profileAdapters.keys()].some((id) => acpRouteId(id) === provider),
       ),

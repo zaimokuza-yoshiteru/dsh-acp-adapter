@@ -74,6 +74,14 @@ describe('AcpRemoteService current public surface', () => {
     })
   })
 
+  it('reports a Host version mismatch with health, and nothing when versions agree', async () => {
+    expect(await service().instance.health()).not.toHaveProperty('hostVersion')
+    const mismatch = { adapter: '0.2.2-rc.1.1', required: '0.2.2-rc.1', running: '0.2.2-rc.2' }
+    await expect(service({ hostVersion: () => mismatch }).instance.health()).resolves.toMatchObject({
+      hostVersion: { required: '0.2.2-rc.1', running: '0.2.2-rc.2' },
+    })
+  })
+
   it('health recheck is targeted and does not expose authentication RPCs', async () => {
     const { instance } = service()
     await expect(instance.health({ recheck: true, agentId: 'devin' })).resolves.toMatchObject({

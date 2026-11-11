@@ -449,6 +449,15 @@ export interface AcpProviderHealth {
  * payload is refused (undefined) rather than partially shown when any row
  * violates the contract.
  */
+/** The Host version mismatch of a health payload; anything malformed reads as none. */
+export function decodeHostVersionMismatch(body: unknown): { required: string; running: string } | undefined {
+  if (!isPlainObject(body) || !isPlainObject(body['hostVersion'])) return undefined
+  const { required, running } = body['hostVersion']
+  return typeof required === 'string' && typeof running === 'string' && required !== '' && running !== ''
+    ? { required, running }
+    : undefined
+}
+
 export function decodeHealthResponse(body: unknown): readonly AcpProviderHealth[] | undefined {
   if (!isPlainObject(body)) return undefined
   const providers = body['providers']

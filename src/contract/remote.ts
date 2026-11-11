@@ -228,6 +228,13 @@ export interface AcpHealthView {
   readonly providers: readonly AcpProviderHealth[]
   /** 活体 ACP 会话的连续性清单（未接线/无活体会话归 null 或空数组，如实区分）。 */
   readonly liveSessions: readonly AcpLiveSessionContinuity[] | null
+  /** Present only when this Host runs a DSH version other than the one the adapter is built for. */
+  readonly hostVersion?: AcpHostVersionMismatchView
+}
+
+export interface AcpHostVersionMismatchView {
+  readonly required: string
+  readonly running: string
 }
 
 /** Exact provider routes currently configured by this plugin or durably
