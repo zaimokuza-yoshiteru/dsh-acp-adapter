@@ -2198,10 +2198,26 @@ export class AcpProfileAdapter extends LlmAdapter {
           const modelContextSnapshots = session?.currentModelContextSnapshots?.()
           promptSystem = hostSystemPrompt(options)
           const deliveredSystem = forceBlank ? undefined : self.deliveredHostInstructions.get(runtime)
+          // A session that ACP never executed may already hold conversation:
+          // another plugin answered this route, or an earlier turn failed
+          // before any Agent session existed. Its first Agent session receives
+          // that conversation and the host instructions admitted back then.
+          // History from before this route was selected is never replayed.
+          const facts = session?.facts
+          const undeliveredStart =
+            !forceBlank &&
+            session !== undefined &&
+            session.header?.isSeeded !== true &&
+            session.header?.parentSession === undefined &&
+            facts?.priorSemanticHistory === true &&
+            !facts.acpReplaySeen &&
+            facts.soleRequestProvider === options.provider &&
+            (await durableSidecar.readLatestBinding(sessionKey as never)) === undefined
           const promptOptions = {
             ...(deliveredSystem === promptSystem ? {} : { system: promptSystem }),
             ...(modelContextSnapshots === undefined ? {} : { modelContextSnapshots }),
-            ...(forceBlank ? { reboundAgentInstructions: options.messages } : {}),
+            ...(forceBlank || undeliveredStart ? { reboundAgentInstructions: options.messages } : {}),
+            ...(undeliveredStart ? { undeliveredHistory: options.messages } : {}),
             skillRoute: skillRouteForTools(options.tools),
             imageEnabled: runtime.agentCapabilities?.promptCapabilities?.image === true,
             ...(self.attachments === undefined ? {} : { attachments: self.attachments }),

@@ -113,6 +113,19 @@ describe('same-profile continuation of a session ACP never bound', () => {
     expect(h.lastTurnEnd()).toMatchObject({ data: { reason: { kind: 'completed' } } })
     expect(h.prompts).toHaveLength(1)
     expect(h.prompts[0]).toContain('third round')
+    // The Agent's first session receives the conversation it never saw, in order, before the current request.
+    const order = ['not delivered to you', 'first round', 'relayed', 'second round', 'third round'].map((text) =>
+      h.prompts[0]!.indexOf(text),
+    )
+    expect(order.every((index) => index >= 0)).toBe(true)
+    expect(order).toEqual([...order].sort((a, b) => a - b))
+    // A bound session receives only its current input again.
+    h.agent.followup(user('fourth round'))
+    await h.agent.whenIdle()
+    expect(h.prompts).toHaveLength(2)
+    expect(h.prompts[1]).toContain('fourth round')
+    expect(h.prompts[1]).not.toContain('first round')
+    expect(h.prompts[1]).not.toContain('not delivered to you')
     expect(await h.sidecar.readLatestBinding(h.agent.session.id)).toMatchObject({ status: 'ok' })
   })
 
@@ -127,7 +140,18 @@ describe('same-profile continuation of a session ACP never bound', () => {
     await h.agent.whenIdle()
     expect(h.lastTurnEnd()).toMatchObject({ data: { reason: { kind: 'completed' } } })
     expect(h.prompts).toHaveLength(1)
+    expect(h.prompts[0]!.indexOf('first attempt')).toBeGreaterThanOrEqual(0)
+    expect(h.prompts[0]!.indexOf('first attempt')).toBeLessThan(h.prompts[0]!.indexOf('second attempt'))
     expect(await h.sidecar.readLatestBinding(h.agent.session.id)).toMatchObject({ status: 'ok' })
+  })
+
+  it('sends an ordinary first turn without any earlier-conversation preamble', async () => {
+    const h = await harness()
+    h.agent.followup(user('only message'))
+    await h.agent.whenIdle()
+    expect(h.prompts).toHaveLength(1)
+    expect(h.prompts[0]).toContain('only message')
+    expect(h.prompts[0]).not.toContain('not delivered to you')
   })
 
   it('still gates a session whose ACP binding disappeared after ACP answered', async () => {
