@@ -709,9 +709,15 @@ export class AcpSessionRuntime {
     // A closed transport here must never create a new session or replay its wake.
     if (this.agentTurnFailure !== undefined) return
     if (this.closing !== undefined) await this.closing
+    // An Agent that exited while idle leaves a connection object whose
+    // transport is gone. Replace it here, before any prompt is claimed, so the
+    // next input restores the saved session instead of failing as a crash.
     if (
       this.connection !== undefined &&
-      (this.connection.isClosed || this.mcpLease?.signal.aborted === true || this.mcpKey !== this.options.mcpKey?.())
+      (this.connection.isClosed ||
+        this.connection.isTransportAvailable === false ||
+        this.mcpLease?.signal.aborted === true ||
+        this.mcpKey !== this.options.mcpKey?.())
     )
       await this.close()
     if (this.connection !== undefined) return
@@ -765,7 +771,7 @@ export class AcpSessionRuntime {
     // remote session id is still cached. Clear local state before deciding
     // whether this binding can be reused; the caller's durable recovery guard
     // remains responsible for authorizing a resume after an unknown outcome.
-    if (this.connection?.isClosed === true) await this.close()
+    if (this.connection?.isClosed === true || this.connection?.isTransportAvailable === false) await this.close()
     if (this.sessionId !== undefined) {
       if (this.sessionId !== binding.agentSessionId)
         throw new Error('ACP binding session id does not match the active runtime')
