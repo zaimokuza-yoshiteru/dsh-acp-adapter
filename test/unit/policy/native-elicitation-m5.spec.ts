@@ -406,4 +406,142 @@ describe('native ACP form elicitation bridge (M5c)', () => {
     expect(await handler(params, controller.signal)).toEqual({ action: 'cancel' })
     expect(approveDelegatedOnce).toHaveBeenCalledTimes(['approval-error', 'late-abort'].includes(scenario) ? 1 : 0)
   })
+
+  describe('optional fields and free-text companions (#75)', () => {
+    type Answer = { id: string; selected: string[]; custom?: string }
+    const ask = (answers: (ids: readonly string[]) => Answer[]) => {
+      const seen: { id: string; header?: string; options?: readonly unknown[]; multiSelect?: boolean }[][] = []
+      const handler = createAcpNativeElicitationHandler({
+        getAgent: () => ({}),
+        userQuestions: {
+          ask: async ({ questions }) => {
+            seen.push([...questions])
+            return { answers: answers(questions.map((question) => question.id)) }
+          },
+        },
+      })
+      return { handler, seen }
+    }
+    // opencode's `question` tool: an enum plus an optional "(other)" text field.
+    const single = (required: string[] = []) =>
+      form(
+        {
+          pick: {
+            type: 'string',
+            title: 'Repro',
+            oneOf: [
+              { const: 'a', title: 'Option A' },
+              { const: 'b', title: 'Option B' },
+            ],
+          },
+          pick_custom: { type: 'string', title: 'Repro (other)', description: 'Type your own answer' },
+        },
+        required,
+      )
+
+    it.each([
+      ['a listed choice', { selected: ['Option A'] }, { pick: 'a' }],
+      ['the Other row', { selected: [], custom: 'my own' }, { pick_custom: 'my own' }],
+      ['Skip', { selected: [] }, {}],
+    ] as const)('asks one question for a choice with a companion and accepts %s', async (_name, answer, content) => {
+      const { handler, seen } = ask(() => [{ id: 'pick', ...answer, selected: [...answer.selected] }])
+      await expect(handler(single())).resolves.toEqual({ action: 'accept', content })
+      expect(seen[0]!.map((question) => question.id)).toEqual(['pick'])
+      expect(seen[0]![0]!.header).toBe('Optional')
+    })
+
+    it('parses a titled anyOf multi-select and keeps choices alongside the Other row', async () => {
+      const { handler, seen } = ask(() => [{ id: 'tags', selected: ['One', 'Two'], custom: 'three' }])
+      const params = form(
+        {
+          tags: {
+            type: 'array',
+            items: {
+              anyOf: [
+                { const: 'one', title: 'One' },
+                { const: 'two', title: 'Two' },
+              ],
+            },
+          },
+          tags_custom: { type: 'string', description: 'Add your own answer' },
+        },
+        [],
+      )
+      await expect(handler(params)).resolves.toEqual({
+        action: 'accept',
+        content: { tags: ['one', 'two'], tags_custom: 'three' },
+      })
+      expect(seen[0]).toHaveLength(1)
+      expect(seen[0]![0]!.multiSelect).toBe(true)
+    })
+
+    it('rejects a multi-select declaring both oneOf and anyOf', async () => {
+      const { handler, seen } = ask(() => [])
+      const choices = [{ const: 'one', title: 'One' }]
+      await expect(
+        handler(form({ tags: { type: 'array', items: { oneOf: choices, anyOf: choices } } })),
+      ).resolves.toEqual({ action: 'cancel' })
+      expect(seen).toHaveLength(0)
+    })
+
+    it('does not merge when the choice is required, and omits the skipped companion', async () => {
+      const { handler, seen } = ask(() => [
+        { id: 'pick', selected: ['Option B'] },
+        { id: 'pick_custom', selected: [] },
+      ])
+      await expect(handler(single(['pick']))).resolves.toEqual({ action: 'accept', content: { pick: 'b' } })
+      expect(seen[0]!.map((question) => question.id)).toEqual(['pick', 'pick_custom'])
+      expect(seen[0]!.map((question) => question.header)).toEqual([undefined, 'Optional'])
+    })
+
+    it.each([
+      ['a required companion', { a: { type: 'string', enum: ['x'] }, a_custom: { type: 'string' } }, ['a_custom']],
+      [
+        'a companion that is not adjacent',
+        { a: { type: 'string', enum: ['x'] }, note: { type: 'string' }, a_custom: { type: 'string' } },
+        [],
+      ],
+      ['a text field without choices', { a: { type: 'string' }, a_custom: { type: 'string' } }, []],
+    ] as const)('does not merge %s', async (_name, properties, required) => {
+      const { handler, seen } = ask((ids) => ids.map((id) => ({ id, selected: [] })))
+      await handler(form(properties, [...required]))
+      expect(seen[0]!.map((question) => question.id)).toEqual(Object.keys(properties))
+    })
+
+    it('still refuses free text for a choice without a companion', async () => {
+      const { handler } = ask(() => [{ id: 'pick', selected: [], custom: 'anything' }])
+      await expect(handler(form({ pick: { type: 'string', enum: ['a', 'b'] } }, []))).resolves.toEqual({
+        action: 'cancel',
+      })
+    })
+
+    it('omits skipped optional enum, number, boolean and constrained text fields', async () => {
+      const { handler } = ask((ids) => ids.map((id) => ({ id, selected: id === 'name' ? [] : [] })))
+      const params = form(
+        {
+          choice: { type: 'string', enum: ['a', 'b'] },
+          count: { type: 'integer', minimum: 1 },
+          enabled: { type: 'boolean' },
+          code: { type: 'string', minLength: 3 },
+          tags: { type: 'array', minItems: 1, items: { enum: ['one'] } },
+        },
+        [],
+      )
+      await expect(handler(params)).resolves.toEqual({ action: 'accept', content: {} })
+    })
+
+    it('cancels when a required field is skipped', async () => {
+      const { handler } = ask((ids) => ids.map((id) => ({ id, selected: [] })))
+      await expect(handler(form({ choice: { type: 'string', enum: ['a', 'b'] } }))).resolves.toEqual({
+        action: 'cancel',
+      })
+    })
+
+    it('validates the Other text against the companion constraints', async () => {
+      const { handler } = ask(() => [{ id: 'pick', selected: [], custom: 'x' }])
+      const params = single()
+      ;(params as any).requestedSchema.properties.pick_custom.minLength = 3
+      await expect(handler(params)).resolves.toEqual({ action: 'cancel' })
+    })
+  })
 })
