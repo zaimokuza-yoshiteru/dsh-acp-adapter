@@ -1,11 +1,13 @@
-# DSH RC.1：ACP 上游支持方案
+# DSH RC.1：ACP 能力限制与上游设计备忘
 
-本文是基于 DSH `dsh-v0.2.2-rc.1` 的待实施方案，说明五个尚未由基础版本兼容解决的问题。接口名称是设计建议，不是已发布 API；本文没有提交上游 issue 或 PR。兼容证据与迁移范围见[总评估](dsh-0.2.2-rc.1.md)，当前能力边界见[原生复用说明](../native-reuse.md)。
+本文保留基于 DSH `dsh-v0.2.2-rc.1` 的五项接口设计分析。当前决策是不修改上游，也不把上游合入作为本轮前提；下方接口名称只是备忘，不是待实施或已发布 API，未提交上游 issue 或 PR。
 
-| 问题           | 当前用户可见行为                                                                | 上游责任                                                                 | 适配器责任                                                   |
+当前插件侧落地边界：已有会话切模恢复原模型并提供独立新会话确认，Teams 拒绝不可执行的变更；已适配的 Chat 分叉入口补齐未知结果放弃与成功后清理恢复。其他原生分叉入口缺少可靠来源时继续拒绝，不伪造来源或补丁私有方法。Auto Review 完整兼容、Forge 所有入口的目录变更前准入、ConfigEditor 关闭事务保证暂不实施；保留现有安全门禁与能力限制。兼容证据与迁移范围见[总评估](dsh-0.2.2-rc.1.md)，当前能力边界见[原生复用说明](../native-reuse.md)。
+
+| 问题           | RC.1 受限能力                                                                   | 上游责任                                                                 | 适配器责任                                                   |
 | -------------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------ |
 | 原生分叉入口   | ACP Chat 节点已有来源登记；其他原生入口可能先创建 child，再在输入时拒绝缺少来源 | 统一动作与能力状态；提供创建时的真实 source/cut 和可等待的扩展完成边界   | 核验 ACP fork 能力、绑定和历史截点；持久登记、失败恢复与权限 |
-| 自动压缩       | 已有 ACP 请求的会话切模可能在发送 prompt 前失败                                 | 在自动压缩读容量或写历史前，允许 scope/route 策略决定是否执行            | 只为自身实际拥有的外部上下文路由跳过宿主自动压缩             |
+| 自动压缩       | 已建立会话不支持原地切模；插件恢复旧模并提供独立会话                            | 在自动压缩读容量或写历史前，允许 scope/route 策略决定是否执行            | 本轮不跳过压缩；使用插件 guard 与独立会话出口                |
 | Auto Review    | 宿主桥接工具缺审核日志身份；ACP 路由拒绝辅助请求                                | 明确独立 reviewer route 和审核可用性                                     | 记录真实 Host 工具调用，保留准入、取消和审批语义             |
 | Forge 工作目录 | 工具路径会检查 fork 能力；已绑定会话从 Forge 返回项目后仍可能进入恢复           | 在目录提交及 Git 建树副作用前提供统一准入                                | 检查 Agent 保留上下文的能力，结算旧执行后交接绑定            |
 | 旧设置导入收尾 | 自动导入保留，但插件停用后已接纳的配置编辑与标记写入可能继续                    | 拆分事务接纳、持久化与 Loader 激活等待，提供不会等待自身卸载的操作 owner | 停止接纳新导入，跟踪原生事务终态，成功后写幂等标记           |
@@ -84,7 +86,7 @@ Host 的 replay 历史和 token meter 不代表外部 Agent 的私有上下文�
 
 RC.1 给[审核请求](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.2.2-rc.1/packages/experimental/auto-review/src/index.ts#L678) 增加 `sessionId` 和 `purpose: 'auto-review'`，修复原生 OpenCode provider 的 header/路由等需求。这不是外部 OpenCode ACP CLI 的会话接入。
 
-审核仍要求当前 open step 中唯一的 native root `tool/call`；PTC 还要匹配 inner-start。当前 [ACP 工具桥](../../src/host/tools/bridge.ts) 调用官方 batch executor 时没有提供 `log`，因此通常在构造审核输入时已经失败。即使补齐日志，审核模型仍来自本会话 request header，ACP adapter 会拒绝辅助 purpose。此时外部 Agent 的 prompt 正等待工具结果，不能向同一会话再次发审核 prompt。
+审核仍要求当前 open step 中唯一的 native root `tool/call`，以及身份匹配的 `assistant/message`；PTC 还要匹配 inner-start。当前 [ACP 工具桥](../../src/host/tools/bridge.ts) 调用官方 batch executor 时没有提供 `log`，因此通常在构造审核输入时已经失败。即使补齐日志，审核模型仍来自本会话 request header，ACP adapter 会拒绝辅助 purpose。此时外部 Agent 的 prompt 正等待工具结果，不能向同一会话再次发审核 prompt。
 
 ### 上游建议
 
@@ -152,7 +154,7 @@ Auto Review 提供明确的 reviewer route 配置或 scoped 解析器，可为�
 
 因此两种简单收尾改动都不成立：
 
-- 在发起导入的 ACP 插件 disposer 中等待 edit：edit 引发该插件重装，reconcile 又等待旧插件 disposer，形成自身等待。
+- 在发起导入的 ACP 插件 disposer 中等待 edit：不能笼统认定正常导入必然重装 ACP：`agents` 和 `toolApprovalDefault` 是 volatile 配置。风险在并发的 entry/provider 重装或关闭；此时 reconcile 可能等待旧 fiber，旧 disposer 又等待 edit，形成等待环。
 - 将导入移到 `root.inject(['configEditor', 'profileContext'])` 后等待 edit：只能绕开目标 ACP entry 的一条环。[ConfigEditor 自身也是 Loader entry](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.2.2-rc.1/packages/bundle/base/cordis.patch.yml#L105)；它卸载时，[Cordis 4.1 会等待依赖它的任务退出](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.2.2-rc.1/vendor/cordis/src/fiber.ts#L712)，任务却可能在 edit 的 reconcile 中等待该 provider fiber。换到 root 不能消除这条环。
 
 ### 上游建议
@@ -181,10 +183,10 @@ Auto Review 提供明确的 reviewer route 配置或 scoped 解析器，可为�
 - 校验失败、overlay 冲突、写入失败、激活失败和回滚失败分别保留真实结果；未知结果不写成功标记。
 - 旧代次导入与新配置编辑并发、标记写入失败及重启重试均不覆盖用户显式配置，不泄漏源配置或凭据。
 
-目前的隔离证据使用真实 Cordis 4.1/Loader 1.1，加上与原生两处等待对应的可控 reconcile facade，建立了 provider 与 dependent 均处于卸载中的等待环。它用于否定简单 `root.inject` 修复，不是完整 ConfigEditor/Host 端到端验证；测试的解锁逻辑仅供 fixture 收尾，不是可发布方案。本轮没有修复这项旧债。
+目前的隔离证据使用真实 Cordis 4.1/Loader 1.1，加上与原生两处等待对应的可控 reconcile facade，展示了 provider 与 dependent 均处于卸载中的一种等待环。它用于否定简单 `root.inject` 修复，不是完整 ConfigEditor/Host 端到端验证；测试的解锁逻辑仅供 fixture 收尾，不是可发布方案。本轮没有修复这项旧债。
 
 ## 实施与证据边界
 
-五项可以分别讨论、实现和验收，不要求先扩大核心 LLM 或 Session 的通用接口。优先在 fork 动作、compaction、Auto Review、workingDirectory/worktree 和 ConfigEditor/app-boot 各自 owner 中增加扩展；适配器保留协议、绑定与恢复职责。
+五项分析分别保留，当前只实施可由插件公开接口可靠承担的部分。不会为保留功能而改写上游私有方法、伪造容量或工具日志；不能保证的能力明确放弃完整兼容声明。
 
 现有单测覆盖分叉来源缺失、exact-cut 不匹配、种子不匹配、权限检查、未知创建结果和重试不重复创建。本次补充 Sidecar 重开后的缺来源拒绝，观察零 `start/fork/prompt` 调用；这只是安全边界回归，不是 RC.1 标题、侧栏和快捷键的端到端认证。真实入口、热启停和桌面行为的结果由[总评估](dsh-0.2.2-rc.1.md)记录。

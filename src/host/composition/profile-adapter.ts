@@ -29,6 +29,7 @@ import { AcpStubAdapter, reasoningInfoFromConfigOptions } from './llm-stub.ts'
 import type { AcpProbeCacheEntry } from './llm-stub.ts'
 import type { AcpStubAgentConfig } from '../../domain/session/agent-config.ts'
 import type { SubprocessSeamResolution } from '../../runtime/process/subprocess.ts'
+import type { AcpLogFields } from '../../domain/observability/logging.ts'
 import {
   AcpForkPreDispatchError,
   AcpSessionRefreshAbortedError,
@@ -88,6 +89,7 @@ import { QWEN_TASK_JOB_KIND, type QwenTaskJobStarter } from '../../runtime/sessi
 import type { AcpPromptOptions } from '../../runtime/session/session-runtime.ts'
 import type { AcpNativeQuestionUnavailable, AcpNativeUserQuestionService } from '../../domain/policy/elicitation.ts'
 import { isAcpModelOrReasoningOption, normalizeAcpConfigOptionKey } from '../../contract/config-options.ts'
+import { acpModelConfigOption, acpModelSelection } from '../../contract/model-selection.ts'
 import { AcpClientError } from '../../protocol/v1/errors.ts'
 import { AcpHostContinuity, ensureHostContinuity } from './host-continuity.ts'
 import { AcpHostSettlementError } from '../../runtime/session/mcp-lease.ts'
@@ -233,10 +235,17 @@ function createNativeProfileProbe(
   profileId: string,
   subprocess: SubprocessSeamResolution,
   config: AcpStubAgentConfig,
+  log?: (message: string, fields?: AcpLogFields) => void,
 ): AcpStubAdapter {
   return new AcpStubAdapter({
     agents: () => new Map([[`acp-${profileId}`, config]]),
     subprocess,
+    ...(log === undefined
+      ? {}
+      : {
+          onProcessWarn: (provider: string, message: string) =>
+            log(message, { acpProvider: provider, operation: 'probe-process', result: 'warning' }),
+        }),
     prepareProbe: async ({ config: probeConfig, argv }) => {
       const env = await acpLaunchEnvironment({ config: probeConfig })
       const plan = buildAcpSpawnPlan({
@@ -773,6 +782,8 @@ export class AcpProfileAdapter extends LlmAdapter {
   private claudeDraftDegradationReported = false
   private projectionAdmissionClosed = false
   private readonly pendingExternalProjections = new Set<Promise<void>>()
+  /** Prompt response handlers can enqueue terminal writes after transport cancellation. */
+  private readonly pendingTerminalResponses = new Set<Promise<void>>()
   private readonly ledger: DispatchLedger
   private readonly settlementSink: AcpLocalSettlementSink
   private readonly continuity: AcpHostContinuity
@@ -801,7 +812,7 @@ export class AcpProfileAdapter extends LlmAdapter {
     private readonly sessionOf: (sessionId: string) => SessionLike | undefined = () => undefined,
     ledgerStore: DispatchLedgerStore,
     private readonly probeFactory: (config: AcpStubAgentConfig) => ProfileGeneration['probe'] = (config) =>
-      createNativeProfileProbe(profileId, subprocess, config),
+      createNativeProfileProbe(profileId, subprocess, config, log),
     private readonly runtimeFactory: (
       options: ConstructorParameters<typeof AcpSessionRuntime>[0],
     ) => AcpProfileRuntime = (options) => new AcpSessionRuntime(options),
@@ -823,7 +834,7 @@ export class AcpProfileAdapter extends LlmAdapter {
         ) => Promise<string | undefined>,
       ) => Promise<void>,
     ) => Promise<void>,
-    private readonly log?: (message: string) => void,
+    private readonly log?: (message: string, fields?: AcpLogFields) => void,
     private readonly terminalJobs?: (sessionId: string) => AcpTerminalJobStarter | undefined,
     private readonly createMcpLease?: (
       sessionId: string,
@@ -1098,7 +1109,12 @@ export class AcpProfileAdapter extends LlmAdapter {
     const route = agent.session.requestHeader()?.config
     if (route?.provider !== provider || route.model !== model) return undefined
     const confirmed = this.findSelectOption(runtime.configOptions ?? [], 'model')
-    if (confirmed?.currentValue !== model || runtime.inputImageSupported !== true) return undefined
+    const selection = acpModelSelection(model)
+    if (
+      (selection.kind === 'declared-model' && confirmed?.currentValue !== selection.value) ||
+      runtime.inputImageSupported !== true
+    )
+      return undefined
     return ['text', 'image']
   }
 
@@ -1769,19 +1785,15 @@ export class AcpProfileAdapter extends LlmAdapter {
     options: readonly acp.SessionConfigOption[],
     kind: 'model' | 'reasoning',
   ): Extract<acp.SessionConfigOption, { type: 'select' }> | undefined {
+    if (kind === 'model') return acpModelConfigOption(options)
     return options.find((option): option is Extract<acp.SessionConfigOption, { type: 'select' }> => {
       if (option.type !== 'select') return false
-      if (kind === 'model')
-        return (
-          normalizeAcpConfigOptionKey(option.category ?? '') === 'model' ||
-          normalizeAcpConfigOptionKey(option.id) === 'model'
-        )
       const id = normalizeAcpConfigOptionKey(option.id)
+      const category = normalizeAcpConfigOptionKey(option.category ?? '')
       return (
-        normalizeAcpConfigOptionKey(option.category ?? '') === 'thought_level' ||
-        normalizeAcpConfigOptionKey(option.category ?? '') === 'reasoning_effort' ||
-        id === 'thought_level' ||
-        id === 'reasoning_effort'
+        category === 'thought_level' ||
+        category === 'reasoning_effort' ||
+        (category === '' && (id === 'thought_level' || id === 'reasoning_effort'))
       )
     })
   }
@@ -1796,6 +1808,10 @@ export class AcpProfileAdapter extends LlmAdapter {
     // session implementation. Keep their existing contract; the real runtime
     // always declares configOptions, including an explicit undefined value.
     if (!('configOptions' in runtime)) return
+    const selection = acpModelSelection(options.model)
+    // This host-only route deliberately leaves Agent-owned model configuration
+    // untouched, including Agents that do not implement configuration options.
+    if (selection.kind === 'current-config' && options.reasoningEffort === undefined) return
     const snapshot = runtime.configOptions
     if (snapshot === undefined)
       throw new LlmError(
@@ -1809,13 +1825,14 @@ export class AcpProfileAdapter extends LlmAdapter {
     // when it has disappeared from the selectable catalog; only a requested
     // change must still be present in `options`.
     if (
-      modelOption === undefined ||
-      (modelOption.currentValue !== options.model && !this.selectValues(modelOption).has(options.model))
+      selection.kind === 'declared-model' &&
+      (modelOption === undefined ||
+        (modelOption.currentValue !== selection.value && !this.selectValues(modelOption).has(selection.value)))
     ) {
       throw new LlmError(`ACP session does not allow model "${options.model}"`, 'ACP_CONFIG_UNSUPPORTED')
     }
-    const previousModel = modelOption.currentValue
-    const modelChanged = previousModel !== options.model
+    const previousModel = modelOption?.currentValue
+    const modelChanged = selection.kind === 'declared-model' && previousModel !== selection.value
     const applyOption = async (
       option: Extract<acp.SessionConfigOption, { type: 'select' }>,
       value: string,
@@ -1836,7 +1853,7 @@ export class AcpProfileAdapter extends LlmAdapter {
       }
     }
     if (!modelChanged && options.reasoningEffort === undefined) return
-    if (modelChanged) await applyOption(modelOption, options.model)
+    if (modelChanged && selection.kind === 'declared-model') await applyOption(modelOption!, selection.value)
     if (options.reasoningEffort === undefined) return
     // A model change can change the available reasoning values. Always inspect
     // the confirmed response snapshot rather than the pre-change object.
@@ -1876,7 +1893,11 @@ export class AcpProfileAdapter extends LlmAdapter {
       // cannot surprise the next turn.
       try {
         const rollbackOption = this.findSelectOption(runtime.configOptions ?? [], 'model')
-        if (rollbackOption === undefined || !this.selectValues(rollbackOption).has(previousModel))
+        if (
+          rollbackOption === undefined ||
+          previousModel === undefined ||
+          !this.selectValues(rollbackOption).has(previousModel)
+        )
           throw new Error('previous model is no longer selectable')
         await applyOption(rollbackOption, previousModel)
       } catch (rollbackError) {
@@ -4084,7 +4105,9 @@ export class AcpProfileAdapter extends LlmAdapter {
           wake?.()
           wake = undefined
         })
-        void prompting
+        self.pendingTerminalResponses.add(prompting)
+        const releasePrompting = () => self.pendingTerminalResponses.delete(prompting)
+        void prompting.then(releasePrompting, releasePrompting)
         try {
           while (!done || queue.length > 0) {
             if (queue.length === 0)
@@ -4441,7 +4464,7 @@ export class AcpProfileAdapter extends LlmAdapter {
     this.projectionAdmissionClosed = true
     this.settlementCloseController.abort(new DOMException('Adapter closed', 'AbortError'))
     this.settlementSessionWaitControllers.clear()
-    const retireSettlement = this.settlementOwnerDisposer?.() ?? Promise.resolve()
+    const retireSettlement = this.settlementOwnerDisposer
     this.settlementOwnerDisposer = undefined
     const handoffs = [...this.handoffs.entries()]
     for (const [key, owner] of handoffs) {
@@ -4470,7 +4493,6 @@ export class AcpProfileAdapter extends LlmAdapter {
     const recordFailures = (results: PromiseSettledResult<void>[]): void => {
       for (const result of results) if (result.status === 'rejected') failures.push(result.reason)
     }
-    recordFailures(await Promise.allSettled([retireSettlement]))
     recordFailures(
       await Promise.allSettled(
         runtimes.map(async ([key, runtime]) => {
@@ -4478,11 +4500,20 @@ export class AcpProfileAdapter extends LlmAdapter {
             await this.preservePendingAgentTurnFailure(key, runtime, true)
           } finally {
             this.continuity.executionOwners.retain(key.slice(0, key.lastIndexOf(':')), runtime)
-            await runtime.close()
+            try {
+              await runtime.close()
+            } finally {
+              // Bounded transport teardown is not completion of accepted Host
+              // tools. Keep this profile's sink and writer until those finish.
+              await runtime.waitForHostCallsSettled?.()
+              this.continuity.executionOwners.retain(key.slice(0, key.lastIndexOf(':')), runtime)
+            }
           }
         }),
       ),
     )
+    while (this.pendingTerminalResponses.size > 0)
+      recordFailures(await Promise.allSettled([...this.pendingTerminalResponses]))
     recordFailures(
       await Promise.allSettled(
         handoffs
@@ -4492,6 +4523,13 @@ export class AcpProfileAdapter extends LlmAdapter {
       ),
     )
     while (this.pendingExternalProjections.size > 0) await Promise.allSettled([...this.pendingExternalProjections])
+    try {
+      await this.continuity.settlements.settleProfile(this.profileId, this)
+    } catch (error) {
+      failures.push(error)
+    } finally {
+      if (retireSettlement !== undefined) recordFailures(await Promise.allSettled([retireSettlement()]))
+    }
     if (this.ownsContinuity) recordFailures(await Promise.allSettled([this.continuity.close()]))
     if (failures.length > 0) throw new AggregateError(failures, 'ACP profile cleanup failed')
   }
@@ -4734,6 +4772,14 @@ export class AcpProfileAdapter extends LlmAdapter {
       ...(this.log === undefined
         ? {}
         : {
+            onProcessWarn: (message: string): void => {
+              this.log?.(message, {
+                dshSessionId: sessionId,
+                acpProvider: `acp-${this.profileId}`,
+                operation: 'session-process',
+                result: 'warning',
+              })
+            },
             onCapabilityDegraded: (message: string): void => {
               if (this.claudeDraftDegradationReported) return
               this.claudeDraftDegradationReported = true

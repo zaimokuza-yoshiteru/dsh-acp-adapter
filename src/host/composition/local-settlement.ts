@@ -12,6 +12,20 @@ export class AcpLocalSettlementError extends Error {
   }
 }
 
+/** Final shutdown could not save already completed work; retrying tools is unsafe. */
+export class AcpLocalSettlementShutdownError extends Error {
+  readonly code = 'ACP_LOCAL_SETTLEMENT_SHUTDOWN_FAILED'
+
+  constructor(
+    readonly pending: readonly { readonly sessionId: string; readonly profileId: string; readonly key: string }[],
+  ) {
+    super(
+      'ACP shutdown left completed results unsaved. Inspect the session recovery state before continuing; do not rerun completed tools.',
+    )
+    this.name = 'AcpLocalSettlementShutdownError'
+  }
+}
+
 interface SettlementTask {
   readonly key: string
   readonly profileId: string
@@ -114,8 +128,11 @@ export class LocalSettlementOwner {
   /** Called only after consumer cleanup; admitted writes finish before their queues are released. */
   close(): Promise<void> {
     this.beginShutdown()
-    this.closed = true
     return (this.closing ??= (async () => {
+      // Existing sinks remain legal for a bounded final attempt. Consumers
+      // normally drain their own profile before releasing its storage owner.
+      await Promise.allSettled([...this.owners].map(([profileId, owner]) => this.settleProfile(profileId, owner.token)))
+      this.closed = true
       for (;;) {
         const running = [...this.sessions.values()].flatMap((state) =>
           state.running === undefined ? [] : [state.running],
@@ -123,6 +140,9 @@ export class LocalSettlementOwner {
         if (running.length === 0) break
         await Promise.allSettled(running)
       }
+      const pending = [...this.sessions].flatMap(([sessionId, state]) =>
+        [...state.tasks.values()].map(({ profileId, key }) => ({ sessionId, profileId, key })),
+      )
       for (const state of this.sessions.values()) {
         state.closed = true
         clearRetry(state)
@@ -135,7 +155,27 @@ export class LocalSettlementOwner {
       this.sessions.clear()
       this.owners.clear()
       this.retiredOwnerTokens = new WeakSet()
+      if (pending.length > 0) throw new AcpLocalSettlementShutdownError(pending)
     })())
+  }
+
+  /** Finish accepted local work before this exact profile sink releases its writer. */
+  async settleProfile(profileId: string, ownerToken: object): Promise<void> {
+    this.assertOpen()
+    const owner = this.ownerFor(profileId)
+    // A replacement owns subsequent writes; an old disposer must not borrow
+    // or retire the replacement's resources.
+    if (owner?.token !== ownerToken) return
+    const sessions = [...this.sessions].filter(([, state]) =>
+      state.order.some((key) => state.tasks.get(key)?.profileId === profileId),
+    )
+    await Promise.allSettled(sessions.map(([sessionId]) => this.settlePending(sessionId, owner.sink, profileId)))
+    const pending = sessions.flatMap(([sessionId, state]) =>
+      [...state.tasks.values()]
+        .filter((task) => task.profileId === profileId)
+        .map(({ profileId: taskProfileId, key }) => ({ sessionId, profileId: taskProfileId, key })),
+    )
+    if (pending.length > 0) throw new AcpLocalSettlementShutdownError(pending)
   }
 
   private sessionState(sessionId: string, create: boolean): SessionSettlement | undefined {

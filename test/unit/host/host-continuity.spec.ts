@@ -175,7 +175,7 @@ describe('Host continuity owner', () => {
     await expect(owner.settlements.settlePending('session-a', {})).rejects.toThrow('ACP_LOCAL_SETTLEMENT_CLOSED')
   })
 
-  it('stops retry timers at final shutdown and releases retained queues and waiters', async () => {
+  it('stops retry timers and reports unsaved retained work at final shutdown', async () => {
     vi.useFakeTimers()
     const owner = new AcpHostContinuity()
     const token = {}
@@ -199,18 +199,26 @@ describe('Host continuity owner', () => {
       expect(vi.getTimerCount()).toBe(1)
       const waiting = expect(owner.settlements.wait('session-a')).rejects.toThrow('ACP_LOCAL_SETTLEMENT_CLOSED')
       const closing = owner.close()
+      const failedClose = expect(closing).rejects.toMatchObject({
+        errors: [
+          expect.objectContaining({
+            code: 'ACP_LOCAL_SETTLEMENT_SHUTDOWN_FAILED',
+            pending: [{ sessionId: 'session-a', profileId: 'profile-a', key: 'terminal-a' }],
+          }),
+        ],
+      })
       await entered.promise
       expect(vi.getTimerCount()).toBe(0)
       await vi.advanceTimersByTimeAsync(60_000)
       expect(write).toHaveBeenCalledTimes(3)
       release.resolve()
-      await closing
+      await failedClose
       await waiting
       expect(owner.settlements.status('session-a')).toBeUndefined()
       expect(vi.getTimerCount()).toBe(0)
     } finally {
       release.resolve()
-      await owner.close()
+      await owner.close().catch(() => undefined)
       vi.useRealTimers()
     }
   })

@@ -7,6 +7,7 @@ import type { AcpRemoteLike, AcpTeamMemberModelsView, AcpTeamMemberView } from '
 import css from './AcpTeamManagement.module.css'
 import agentControlCss from './AcpAgentControl.module.css'
 import type { SessionAccessSource } from './session-action-access.ts'
+import { isAcpCurrentConfigModel } from '../../contract/model-selection.ts'
 
 type Copy = PropsLocale<'acpActivity'>['t']
 type Model = { readonly id: string; readonly name: string }
@@ -28,16 +29,20 @@ type MemberModelFacts = AcpTeamMemberView
 
 export function reconcileMemberModelView(previous: ModelView | null, member: MemberModelFacts): ModelView | null {
   if (previous === null) return null
+  const { unavailableReason, ...rest } = previous
+  const reason = member.modelUnavailableReason === undefined ? unavailableReason : member.modelUnavailableReason
   return {
-    ...previous,
+    ...rest,
     currentModel: member.model ?? previous.currentModel,
     pendingModel: member.pendingModel === undefined ? previous.pendingModel : member.pendingModel,
     writable: member.modelWritable ?? previous.writable,
+    ...(reason == null ? {} : { unavailableReason: reason }),
   }
 }
 
-function modelName(models: readonly Model[], id: string | null | undefined): string | null {
+function modelName(models: readonly Model[], id: string | null | undefined, t: Copy): string | null {
   if (id === null || id === undefined || id === '') return null
+  if (isAcpCurrentConfigModel(id)) return t('agentCurrentConfiguration')
   return models.find((model) => model.id === id)?.name ?? id
 }
 
@@ -61,7 +66,7 @@ export function TeamMemberModelControl({
   const [view, setView] = useState<ModelView | null>(null)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [error, setError] = useState<'load' | 'save' | null>(null)
+  const [error, setError] = useState<'load' | 'save' | 'model-switch' | null>(null)
   const epoch = useRef(0)
   const factsRevision = useRef(0)
   const mutationSeq = useRef(0)
@@ -77,6 +82,8 @@ export function TeamMemberModelControl({
   }
 
   const memberFacts = member
+  const modelSwitchUnavailable =
+    member.modelUnavailableReason === 'model-switch' || view?.unavailableReason === 'model-switch'
   const canWrite =
     leadWriteAllowed &&
     memberWriteAllowed &&
@@ -110,7 +117,7 @@ export function TeamMemberModelControl({
   useEffect(() => {
     ++factsRevision.current
     setView((previous) => reconcileMemberModelView(previous, memberFacts))
-  }, [member.model, member.pendingModel, memberFacts.modelWritable])
+  }, [member.model, member.pendingModel, memberFacts.modelWritable, member.modelUnavailableReason])
   useEffect(() => {
     // Native team membership precedes the child's durable ACP binding. The
     // session stream tells us when ownership-checked catalog reads are ready.
@@ -162,13 +169,22 @@ export function TeamMemberModelControl({
         ? [{ id: '__error__', label: t('teamModelLoadFailed'), disabled: true }]
         : models.length === 0
           ? [{ id: '__empty__', label: t('teamModelEmpty'), disabled: true }]
-          : models.map((model) => ({ id: model.id, label: model.name, disabled: !canWrite }))
+          : models.map((model) => ({
+              id: model.id,
+              label: modelName(models, model.id, t)!,
+              disabled: !canWrite || (modelSwitchUnavailable && model.id !== currentModel),
+            }))
   const disabled = member.profileId === null || !sessionReady
-  const selectedLabel = modelName(view?.models ?? [], selectedModel) ?? selectedModel ?? t('teamModelUnknown')
-  const currentLabel = modelName(view?.models ?? [], currentModel) ?? currentModel ?? t('teamModelUnknown')
+  const selectedLabel = modelName(view?.models ?? [], selectedModel, t) ?? selectedModel ?? t('teamModelUnknown')
+  const currentLabel = modelName(view?.models ?? [], currentModel, t) ?? currentModel ?? t('teamModelUnknown')
 
   const choose = (id: string): void => {
     if (!canWrite || writeInFlight.current || !isCurrent(lead)) return
+    if (
+      (latestMember.current.modelUnavailableReason === 'model-switch' || modelSwitchUnavailable) &&
+      id !== (latestMember.current.model ?? currentModel)
+    )
+      return
     if (
       sessionAccessSource(lead, 'dshAcp/setTeamMemberModel')?.getSnapshot() !== true ||
       sessionAccessSource(member.sessionId, 'dshAcp/setTeamMemberModel')?.getSnapshot() !== true
@@ -200,7 +216,12 @@ export function TeamMemberModelControl({
           setView((previousView) =>
             previousView === null ? previousView : { ...previousView, pendingModel: previous },
           )
-          setError('save')
+          if (result.error.code === 'dsh-acp/model-switch-unavailable') {
+            setView((previousView) =>
+              previousView === null ? null : { ...previousView, unavailableReason: 'model-switch' },
+            )
+            setError('model-switch')
+          } else setError('save')
           return
         }
         setView(result.value)
@@ -237,13 +258,19 @@ export function TeamMemberModelControl({
       align: 'end',
       onClose: () => changeOpen(false),
       items,
-      ...(!canWrite && !saving
+      ...((!canWrite || modelSwitchUnavailable) && !saving
         ? {
             footer: [
               {
                 type: 'label' as const,
                 id: 'read-only',
-                text: t(member.status === 'running' ? 'agentControlRunning' : 'agentControlReadOnly'),
+                text: t(
+                  member.status === 'running'
+                    ? 'agentControlRunning'
+                    : modelSwitchUnavailable
+                      ? 'teamModelSwitchUnavailable'
+                      : 'agentControlReadOnly',
+                ),
               },
             ],
           }
@@ -271,7 +298,17 @@ export function TeamMemberModelControl({
       'div',
       { className: css.settingNotice, 'data-member-model-notice': '', role: 'status' },
       error !== null
-        ? h('span', { className: css.noticeError }, t(error === 'load' ? 'teamModelLoadFailed' : 'teamModelSaveFailed'))
+        ? h(
+            'span',
+            { className: css.noticeError },
+            t(
+              error === 'load'
+                ? 'teamModelLoadFailed'
+                : error === 'model-switch'
+                  ? 'teamModelSwitchUnavailable'
+                  : 'teamModelSaveFailed',
+            ),
+          )
         : pendingModel === null || pendingModel === currentModel
           ? null
           : h(

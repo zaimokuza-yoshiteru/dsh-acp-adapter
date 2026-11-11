@@ -57,10 +57,16 @@ export class HostExecutionOwners {
         )
       }
       this.closed = true
-      // A broken observer must not silently certify a still-running tool as drained.
+      // A completed tool can still own feedback that was never accepted by
+      // the native inbox. Neither fact is a successful final retirement.
       if (
         [...this.owners.values()].some((states) =>
-          [...states].some((state) => state.owner.hasPendingHostCalls?.() === true),
+          [...states].some(
+            (state) =>
+              state.owner.hasPendingHostCalls?.() === true ||
+              state.owner.hasUncommittedHostFeedback?.() === true ||
+              state.owner.hasRetainedHostFeedback?.() === true,
+          ),
         )
       )
         throw new Error('ACP_HOST_EXECUTION_STILL_ACTIVE')

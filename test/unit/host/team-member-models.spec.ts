@@ -7,6 +7,8 @@ import type { AcpBindingData, AcpSidecar } from '../../../src/persistence/sideca
 import { modeIntentBindingKey } from '../../../src/persistence/sidecar.ts'
 import { createMemberModels } from '../../../src/host/teams/member-models.ts'
 import { createTeamManagement } from '../../../src/host/teams/management.ts'
+import type { AcpConfigOption } from '../../../src/contract/remote.ts'
+import { ACP_CURRENT_CONFIG_MODEL_ID, acpDeclaredModelRoute } from '../../../src/contract/model-selection.ts'
 
 const contexts: Context[] = []
 
@@ -24,10 +26,10 @@ function binding(provider = 'acp-demo'): AcpBindingData {
   } as unknown as AcpBindingData
 }
 
-function session(model = 'model-default') {
+function session(model = 'model-default', requested = true) {
   const value = {
     seq: 0,
-    requestHeader: () => ({ config: { provider: 'acp-demo', model } }),
+    requestHeader: () => (requested ? { config: { provider: 'acp-demo', model } } : undefined),
     append: vi.fn((_type: string, _data: unknown) => {
       value.seq++
     }),
@@ -36,6 +38,8 @@ function session(model = 'model-default') {
 }
 
 type HarnessOptions = {
+  requested?: boolean
+  configOptions?: readonly AcpConfigOption[]
   binding?: { status: 'ok'; binding: AcpBindingData } | { status: 'outdated' }
   saved?: { bindingKey: string; model: string; sessionSeq?: number; nativeSelectionKey?: string }
   status?: string
@@ -48,8 +52,8 @@ async function harness(options: HarnessOptions = {}) {
   const ctx = new Context()
   const agentCtx = new Context()
   contexts.push(ctx, agentCtx)
-  const memberSession = session()
-  let selection = memberSession.requestHeader().config
+  const memberSession = session('model-default', options.requested === true)
+  let selection = { provider: 'acp-demo', model: 'model-default' }
   const model = {
     current: () => selection,
     select: vi.fn((next: typeof selection) => {
@@ -72,7 +76,7 @@ async function harness(options: HarnessOptions = {}) {
     list: vi.fn(() => (live === undefined ? [] : [live])),
   }
   const teams = {
-    tryMembership: vi.fn(() => ({ role: options.role ?? 'teammate', root: agent, id: agent.id })),
+    tryMembership: vi.fn((_agent: unknown) => ({ role: options.role ?? 'teammate', root: agent, id: agent.id })),
     listMembers: vi.fn(() => [
       {
         id: agent.id,
@@ -105,7 +109,9 @@ async function harness(options: HarnessOptions = {}) {
   const adapter = {
     agentSessionSnapshot: vi.fn(async () => ({
       modeWritable: true,
-      configOptions: [{ id: 'model', type: 'select', currentValue: 'model-default' }],
+      configOptions: options.configOptions ?? [
+        { id: 'model', name: 'Model', type: 'select', category: 'model', currentValue: 'model-default', options: [] },
+      ],
     })),
   }
   ctx.provide('llm', llm)
@@ -113,7 +119,7 @@ async function harness(options: HarnessOptions = {}) {
   ctx.provide('agentTeams', teams)
   ctx.provide('sessionProjections', {
     snapshot: () => ({
-      values: { modelSelection: { next: selection, lastUsed: memberSession.requestHeader().config } },
+      values: { modelSelection: { next: selection, lastUsed: memberSession.requestHeader()?.config } },
     }),
   })
   const models = createMemberModels(ctx, {
@@ -129,6 +135,246 @@ async function harness(options: HarnessOptions = {}) {
 }
 
 describe('createMemberModels()', () => {
+  it('restores the committed model after it disappears from discovery while refusing another model', async () => {
+    const h = await harness({ requested: true })
+    h.model.select({ provider: 'acp-demo', model: 'model-next' })
+    const lead = { id: 'lead-1', model: { current: () => ({ provider: 'acp-demo', model: 'model-default' }) } }
+    h.agents.get.mockImplementation((id) =>
+      id === 'lead-1' ? (lead as never) : id === h.agent.id ? h.agent : undefined,
+    )
+    h.teams.tryMembership.mockImplementation((agent: unknown) => ({
+      role: agent === lead ? 'lead' : 'teammate',
+      root: h.agent,
+      id: h.agent.id,
+    }))
+    h.llm.listModels.mockResolvedValue([{ id: 'model-next', name: 'Next' }])
+    const management = createTeamManagement(
+      h.ctx,
+      (provider) => provider === 'acp-demo',
+      async () => 'acp-demo',
+      {
+        sidecar: h.sidecar as unknown as AcpSidecar,
+        adapterFor: () => h.adapter as never,
+      },
+    )
+    await expect(management.models!('lead-1', h.agent.id)).resolves.toMatchObject({
+      currentModel: 'model-default',
+      pendingModel: 'model-next',
+      unavailableReason: 'model-switch',
+      models: [
+        { id: 'model-next', name: 'Next' },
+        { id: 'model-default', name: 'model-default' },
+      ],
+    })
+    await expect(management.selectModel!('lead-1', h.agent.id, 'model-next')).rejects.toMatchObject({
+      code: 'ACP_MODEL_SWITCH_UNAVAILABLE',
+    })
+    expect(h.sidecar.writeMemberModelSelection).not.toHaveBeenCalled()
+    await expect(management.selectModel!('lead-1', h.agent.id, 'model-default')).resolves.toMatchObject({
+      currentModel: 'model-default',
+      pendingModel: null,
+    })
+    expect(h.agent.model.current()?.model).toBe('model-default')
+    expect(h.sidecar.writeMemberModelSelection).toHaveBeenCalledExactlyOnceWith(
+      h.agent.id,
+      expect.objectContaining({ model: 'model-default' }),
+    )
+  })
+
+  it.each([undefined, 'agent-specific'])(
+    'does not infer a model from an opaque id with category %s',
+    async (category) => {
+      const h = await harness({
+        configOptions: [
+          {
+            id: 'model',
+            name: 'Agent setting',
+            type: 'select',
+            currentValue: 'unrelated-agent-value',
+            options: [],
+            ...(category === undefined ? {} : { category }),
+          },
+        ],
+      })
+      h.model.select({ provider: 'acp-demo', model: ACP_CURRENT_CONFIG_MODEL_ID })
+
+      await expect(h.models.facts(h.agent.id, 'acp-demo')).resolves.toMatchObject({
+        currentModel: ACP_CURRENT_CONFIG_MODEL_ID,
+        pendingModel: null,
+      })
+    },
+  )
+
+  it('uses the current-configuration route when the Agent exposes no model selector', async () => {
+    const h = await harness({ configOptions: [] })
+    h.model.select({ provider: 'acp-demo', model: ACP_CURRENT_CONFIG_MODEL_ID })
+
+    await expect(h.models.facts(h.agent.id, 'acp-demo')).resolves.toMatchObject({
+      currentModel: ACP_CURRENT_CONFIG_MODEL_ID,
+      pendingModel: null,
+    })
+  })
+
+  it.each([ACP_CURRENT_CONFIG_MODEL_ID, 'dsh-acp:model:custom'])(
+    'encodes the declared Agent value %s in member facts',
+    async (value) => {
+      const h = await harness({
+        configOptions: [
+          { id: 'engine', name: 'Model', category: 'model', type: 'select', currentValue: value, options: [] },
+        ],
+      })
+      const route = acpDeclaredModelRoute(value)
+      h.model.select({ provider: 'acp-demo', model: route })
+
+      await expect(h.models.facts(h.agent.id, 'acp-demo')).resolves.toMatchObject({
+        currentModel: route,
+        pendingModel: null,
+      })
+      expect(route).not.toBe(ACP_CURRENT_CONFIG_MODEL_ID)
+    },
+  )
+
+  it('keeps the committed request route ahead of a different reported Agent configuration', async () => {
+    const h = await harness({
+      requested: true,
+      configOptions: [
+        {
+          id: 'engine',
+          name: 'Model',
+          category: 'model',
+          type: 'select',
+          currentValue: ACP_CURRENT_CONFIG_MODEL_ID,
+          options: [],
+        },
+      ],
+    })
+
+    await expect(h.models.facts(h.agent.id, 'acp-demo')).resolves.toMatchObject({
+      currentModel: 'model-default',
+      pendingModel: null,
+      unavailableReason: 'model-switch',
+    })
+  })
+
+  it('rejects an existing member model change before saving intent or changing native selection', async () => {
+    const h = await harness({ requested: true })
+    await expect(h.models.facts(h.agent.id, 'acp-demo')).resolves.toMatchObject({
+      currentModel: 'model-default',
+      unavailableReason: 'model-switch',
+    })
+    await expect(h.models.save(h.agent.id, 'acp-demo', 'model-next', () => {})).rejects.toMatchObject({
+      code: 'ACP_MODEL_SWITCH_UNAVAILABLE',
+    })
+    expect(h.sidecar.writeMemberModelSelection).not.toHaveBeenCalled()
+    expect(h.model.select).not.toHaveBeenCalled()
+  })
+
+  it('rejects a model change if the first request finishes between the live cut and the save boundary', async () => {
+    const h = await harness()
+    vi.spyOn(h.memberSession, 'requestHeader').mockImplementationOnce(() => {
+      queueMicrotask(() => {
+        h.memberSession.requestHeader = () => ({ config: { provider: 'acp-demo', model: 'model-default' } })
+        h.memberSession.append('request', {})
+        Object.assign(h.agent, { status: 'idle' })
+      })
+      return undefined
+    })
+
+    await expect(h.models.save(h.agent.id, 'acp-demo', 'model-next', () => {})).rejects.toMatchObject({
+      code: 'ACP_MODEL_SWITCH_UNAVAILABLE',
+    })
+    expect(h.memberSession.seq).toBe(1)
+    expect(h.sidecar.writeMemberModelSelection).not.toHaveBeenCalled()
+    expect(h.model.select).not.toHaveBeenCalled()
+  })
+
+  it('preserves a native selection changed between the live cut and the save boundary', async () => {
+    const h = await harness()
+    vi.spyOn(h.memberSession, 'requestHeader').mockImplementationOnce(() => {
+      queueMicrotask(() => h.model.select({ provider: 'acp-demo', model: 'newer-choice' }))
+      return undefined
+    })
+
+    await expect(h.models.save(h.agent.id, 'acp-demo', 'model-next', () => {})).rejects.toThrow(
+      'ACP_TEAM_MODEL_SELECTION_CHANGED',
+    )
+    expect(h.sidecar.writeMemberModelSelection).not.toHaveBeenCalled()
+    expect(h.model.select).toHaveBeenCalledOnce()
+    expect(h.agent.model.current()?.model).toBe('newer-choice')
+  })
+
+  it('rejects a replacement native Session even when its sequence and selection match the observed cut', async () => {
+    const h = await harness()
+    vi.spyOn(h.memberSession, 'requestHeader').mockImplementationOnce(() => {
+      queueMicrotask(() =>
+        h.agents.get.mockReturnValue({ ...h.agent, session: session('model-default', false) } as unknown as Agent),
+      )
+      return undefined
+    })
+
+    await expect(h.models.save(h.agent.id, 'acp-demo', 'model-next', () => {})).rejects.toThrow(
+      'ACP_TEAM_MODEL_SELECTION_CHANGED',
+    )
+    expect(h.sidecar.writeMemberModelSelection).not.toHaveBeenCalled()
+    expect(h.model.select).not.toHaveBeenCalled()
+  })
+
+  it('rechecks a newly live member after the dormant observation was captured', async () => {
+    const h = await harness({ deferCreation: true })
+    const entered = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    const dispose = vi.fn()
+    h.ctx.provide('sessionQuery', {
+      observeSession: async () => {
+        const observation = {
+          cursor: -1,
+          projections: { values: { modelSelection: { next: { provider: 'acp-demo', model: 'model-default' } } } },
+          [Symbol.dispose]: dispose,
+        }
+        entered.resolve()
+        await release.promise
+        return observation
+      },
+    })
+    const saving = h.models.save(h.agent.id, 'acp-demo', 'model-next', () => {})
+    const rejected = expect(saving).rejects.toMatchObject({ code: 'ACP_MODEL_SWITCH_UNAVAILABLE' })
+    await entered.promise
+    h.memberSession.requestHeader = () => ({ config: { provider: 'acp-demo', model: 'model-default' } })
+    h.memberSession.append('request', {})
+    h.agents.get.mockReturnValue(h.agent)
+    release.resolve()
+
+    await rejected
+    expect(dispose).toHaveBeenCalledOnce()
+    expect(h.sidecar.writeMemberModelSelection).not.toHaveBeenCalled()
+    expect(h.model.select).not.toHaveBeenCalled()
+  })
+
+  it('does not hydrate an old pending model change into an already used member', async () => {
+    const current = binding()
+    const h = await harness({
+      requested: true,
+      binding: { status: 'ok', binding: current },
+      saved: {
+        bindingKey: modeIntentBindingKey(current),
+        model: 'model-next',
+        sessionSeq: 0,
+        nativeSelectionKey: JSON.stringify(['acp-demo', 'model-default', null]),
+      },
+    })
+    expect(h.model.select).not.toHaveBeenCalled()
+    expect(h.sidecar.clearMemberModelSelection).not.toHaveBeenCalled()
+    expect(await h.models.facts(h.agent.id, 'acp-demo')).toMatchObject({
+      currentModel: 'model-default',
+      pendingModel: 'model-next',
+      unavailableReason: 'model-switch',
+    })
+    await h.models.save(h.agent.id, 'acp-demo', 'model-default', () => {})
+    expect(h.sidecar.writeMemberModelSelection).toHaveBeenCalledWith(
+      h.agent.id,
+      expect.objectContaining({ model: 'model-default' }),
+    )
+  })
   it('hydrates the owner selection before creation completes and leaves default resolution to the native loop', async () => {
     const current = binding()
     const { agentCtx, agent, llm, sidecar } = await harness({
@@ -326,7 +572,7 @@ describe('createMemberModels()', () => {
       status: 'inactive',
       name: 'Member',
       options: { provider: 'acp-demo' },
-      session: session(),
+      session: session('model-default', false),
       ctx: new Context(),
       model: { current: () => ({ provider: 'acp-demo', model: 'model-default' }), select: vi.fn() },
     }
@@ -335,7 +581,7 @@ describe('createMemberModels()', () => {
       options: { provider: 'acp-demo' },
       session: leadSession,
       ctx: new Context(),
-      model: { current: () => leadSession.requestHeader().config },
+      model: { current: () => leadSession.requestHeader()!.config },
     }
     contexts.push(member.ctx, lead.ctx)
     const agents = {

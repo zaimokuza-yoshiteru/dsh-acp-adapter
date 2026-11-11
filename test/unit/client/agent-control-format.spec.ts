@@ -169,7 +169,14 @@ describe('ACP Agent control presentation', () => {
       snapshot({
         freshness: 'stale',
         configOptions: [
-          { id: 'model', name: 'Model', type: 'select', currentValue: 'm', options: [{ value: 'm', name: 'Model' }] },
+          {
+            id: 'model',
+            name: 'Model',
+            category: 'model',
+            type: 'select',
+            currentValue: 'm',
+            options: [{ value: 'm', name: 'Model' }],
+          },
           {
             id: 'collaboration',
             name: 'Collaboration mode',
@@ -200,4 +207,38 @@ describe('ACP Agent control presentation', () => {
       { label: 'On', current: false, write: { kind: 'config', id: 'fast', value: true } },
     ])
   })
+
+  it.each([undefined, 'vendor-choice'])(
+    'keeps generic model-named controls visible without a known category (%s)',
+    (category) => {
+      const groups = agentControlMenuGroups(
+        snapshot({
+          modes: [],
+          configOptions: [
+            {
+              id: 'model',
+              name: 'Vendor choice',
+              type: 'select',
+              ...(category === undefined ? {} : { category }),
+              currentValue: 'one',
+              options: [
+                { value: 'one', name: 'One' },
+                { value: 'two', name: 'Two' },
+              ],
+            },
+          ],
+        }),
+        (key) => en[key],
+      )
+      expect(groups).toMatchObject([
+        {
+          name: 'Vendor choice',
+          choices: [
+            { current: true, disabled: false, write: { kind: 'config', id: 'model', value: 'one' } },
+            { current: false, disabled: false, write: { kind: 'config', id: 'model', value: 'two' } },
+          ],
+        },
+      ])
+    },
+  )
 })

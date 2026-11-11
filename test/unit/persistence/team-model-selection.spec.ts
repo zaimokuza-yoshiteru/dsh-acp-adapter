@@ -5,6 +5,8 @@ import { DatabaseSync } from 'node:sqlite'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { ACP_SIDECAR_DB_FILENAME, createAcpSidecar, type AcpSidecar } from '../../../src/persistence/sidecar.ts'
+import { ACP_CONFIG_IDENTIFIER_MAX } from '../../../src/contract/config-options.ts'
+import { acpDeclaredModelRoute } from '../../../src/contract/model-selection.ts'
 
 let root = ''
 let store: AcpSidecar
@@ -24,6 +26,17 @@ afterEach(async () => {
 })
 
 describe('member model selection persistence', () => {
+  it('preserves an escaped maximum-length Agent model through close and reopen', async () => {
+    const model = acpDeclaredModelRoute('dsh-acp:'.padEnd(ACP_CONFIG_IDENTIFIER_MAX, 'x'))
+    const selection = { bindingKey: 'binding', model }
+    const id = SessionId('member-escaped')
+    await store.writeMemberModelSelection(id, selection)
+    await store.dispose()
+    store = createAcpSidecar({ root })
+    await expect(store.readMemberModelSelection(id)).resolves.toEqual(selection)
+    await expect(store.writeMemberModelSelection(id, { ...selection, model: `${model}x` })).rejects.toThrow(TypeError)
+  })
+
   it('keeps selections isolated by DSH session', async () => {
     await store.writeMemberModelSelection(SessionId('member-a'), { bindingKey: 'binding-a', model: 'model-a' })
 

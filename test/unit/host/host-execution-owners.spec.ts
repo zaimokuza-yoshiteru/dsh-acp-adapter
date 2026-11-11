@@ -2,6 +2,19 @@ import { describe, expect, it } from 'vitest'
 import { HostExecutionOwners } from '../../../src/host/composition/host-execution-owners.ts'
 
 describe('Host execution owner registry', () => {
+  it.each(['hasUncommittedHostFeedback', 'hasRetainedHostFeedback'] as const)(
+    'does not certify final shutdown while %s remains after calls have drained',
+    async (fact) => {
+      const owners = new HostExecutionOwners()
+      owners.retain('unsettled-session', {
+        hasPendingHostCalls: () => false,
+        [fact]: () => true,
+        waitForHostCallsSettled: async () => undefined,
+      })
+      await expect(owners.close()).rejects.toThrow('ACP_HOST_EXECUTION_STILL_ACTIVE')
+    },
+  )
+
   it('isolates owners with the same session id', async () => {
     const root = new HostExecutionOwners()
     const otherRoot = new HostExecutionOwners()

@@ -39,12 +39,14 @@
 
 import os from 'node:os'
 import type { Context } from '@deepseek-ai/cordis'
+import { LlmError } from '@deepseek-ai/dsh-llm'
 import { Remote, RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-api-remote-access'
 import type * as acp from '@agentclientprotocol/sdk'
 import { acpRouteId, ACP_AGENT_ID_PATTERN } from '../domain/session/agent-config.ts'
 import { ACP_CONFIG_IDENTIFIER_MAX } from '../contract/config-options.ts'
+import { isAcpCurrentConfigModel, isAcpModelRouteWithinBounds } from '../contract/model-selection.ts'
 import { acpProbeConfigKey, acpVersionCompatibility, catalogIdOf } from '../domain/session/agent-config.ts'
 import { registryVersionOf } from '../domain/session/registry-versions.ts'
 import type { AcpAgentConfig } from '../domain/session/agent-config.ts'
@@ -137,6 +139,13 @@ async function preserveAcpFailure<T>(operation: () => Promise<T>): Promise<T> {
     return await operation()
   } catch (error) {
     if (error instanceof AcpClientError) throw acpRemoteError(error)
+    if (error instanceof LlmError && error.code === 'ACP_MODEL_SWITCH_UNAVAILABLE')
+      throw new RemoteError(
+        'dsh-acp/model-switch-unavailable',
+        error.message,
+        { reason: 'existing-session' },
+        { cause: error },
+      )
     throw error
   }
 }
@@ -218,7 +227,7 @@ export interface AcpProbeSnapshotLike {
   readonly result:
     | {
         readonly kind: 'ok'
-        readonly models: readonly unknown[]
+        readonly models: readonly { readonly id: string }[]
         readonly authMethods?: readonly acp.AuthMethod[]
         /** initialize 握手原值（现在随缓存保留；缺失时 health 行归 null）。 */
         readonly agentInfo?: acp.Implementation | null | undefined
@@ -969,7 +978,7 @@ export class AcpRemoteService extends TypertRemoteService {
   async setTeamMemberModel(lead: string, sessionId: string, model: string): Promise<AcpTeamMemberModelsView> {
     await this.teamMembers(lead)
     await this.requireOwnedSessionAccess(sessionId)
-    if (typeof model !== 'string' || !model || model.length > 512) throw badRequest('Invalid member model')
+    if (typeof model !== 'string' || !isAcpModelRouteWithinBounds(model)) throw badRequest('Invalid member model')
     const management = this.resolved.teamManagement
     if (!management?.selectModel) throw badRequest('Member models are unavailable')
     return await preserveAcpFailure(() => management.selectModel!(lead, sessionId, model))
@@ -1470,7 +1479,7 @@ function probeStateView(snapshot: AcpProbeSnapshotLike): AcpAgentStateProbeView 
     ? {
         result: {
           kind: 'ok',
-          modelCount: result.models.length,
+          modelCount: result.models.filter((model) => !isAcpCurrentConfigModel(model.id)).length,
           hasModelConfigOption: result.hasModelConfigOption === true,
         },
       }
@@ -1501,7 +1510,7 @@ function probeRow(
     return {
       status: 'ok',
       at,
-      modelCount: result.models.length,
+      modelCount: result.models.filter((model) => !isAcpCurrentConfigModel(model.id)).length,
       authMethods: result.authMethods === undefined ? null : result.authMethods.map(contractAuthMethodOf),
       agentInfo: result.agentInfo == null ? null : { name: result.agentInfo.name, version: result.agentInfo.version },
       capabilities,

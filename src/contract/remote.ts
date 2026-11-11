@@ -44,6 +44,7 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
     'dsh-acp/resume-conflict': AcpRemoteErrorDetails
     'dsh-acp/native-fork-rejected': AcpNativeForkErrorDetails
     'dsh-acp/native-fork-scope-unavailable': { readonly sessionId: string }
+    'dsh-acp/model-switch-unavailable': { readonly reason: 'existing-session' }
   }
 }
 
@@ -532,6 +533,7 @@ export interface AcpTeamMemberView {
   readonly model: string | null
   readonly pendingModel?: string | null
   readonly modelWritable?: boolean
+  readonly modelUnavailableReason?: 'model-switch' | null
   readonly description: string | null
 }
 
@@ -541,4 +543,6 @@ export interface AcpTeamMemberModelsView {
   readonly pendingModel: string | null
   readonly models: readonly { readonly id: string; readonly name: string }[]
   readonly writable: boolean
+  /** Only restoring currentModel is supported after this member has started. */
+  readonly unavailableReason?: 'model-switch'
 }

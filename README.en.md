@@ -48,7 +48,13 @@ This archive includes compiled output and matches the npm package. GitHub's auto
 
 ## Connect an Agent
 
-The plugin ships with a snapshot of the [official ACP Agent catalog](https://agentclientprotocol.com/registry), with installation and sign-in guidance and command prefill. You can also add an ACP Agent manually. Install and sign in to the Agent CLI on the computer running DSH. Open **Plugins → ACP adapter**, follow the catalog guidance to add the Agent and check its connection, then choose its model in a new session. The plugin does not install CLIs or sign in to accounts. These Agents have completed real integration checks:
+The plugin ships with a snapshot of the [official ACP Agent catalog](https://agentclientprotocol.com/registry), with installation and sign-in guidance and command prefill. You can also add an ACP Agent manually. Install and sign in to the Agent CLI on the computer running DSH. Open **Plugins → ACP adapter**, follow the catalog guidance to add the Agent and check its connection, then choose its model in a new session. The plugin does not install CLIs or sign in to accounts.
+
+> The current development branch also accepts generic ACP Agents without a model catalog. After a successful connection check, choose **Agent current configuration** in the model picker. Categories enhance dedicated controls such as the model picker; options with absent or unknown categories remain available in the session menu. Authentication or connection failures still need to be resolved before the Agent is available.
+>
+> DSH RC.1 does not currently support changing the model of an existing ACP session. Choosing another model offers keeping the current model or creating an independent session; existing history is not transferred. Existing Teams members disable other models but allow restoring the original model to clear a pending selection. Reasoning effort can still change on the same model, and new sessions can choose their initial model normally. These changes belong to the unreleased development branch.
+
+These Agents have completed real integration checks:
 
 | Agent                     | ACP command                                 | Authentication       |
 | ------------------------- | ------------------------------------------- | -------------------- |

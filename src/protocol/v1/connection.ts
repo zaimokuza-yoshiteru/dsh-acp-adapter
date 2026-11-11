@@ -55,6 +55,7 @@ import { Readable, Writable } from 'node:stream'
 import { clearTimeout, setTimeout } from 'node:timers'
 import * as acp from '@agentclientprotocol/sdk'
 import { AcpAgentProcess } from '../../runtime/process/agent-process.ts'
+import { processWarningReporter } from '../../runtime/process/warnings.ts'
 import { ACP_SUBPROCESS_UNAVAILABLE_MESSAGE } from '../../runtime/process/subprocess.ts'
 import type { AcpConnectionSpec, AcpProcessExit } from '../../runtime/process/types.ts'
 import { redactSecretText } from '../../contract/redaction.ts'
@@ -616,7 +617,7 @@ export class AcpClientConnection {
     this.onQwenTurnStart = options.onQwenTurnStart
     this.onQwenTurnEnd = options.onQwenTurnEnd
     this.onQwenActiveWork = options.onQwenActiveWork
-    this.onProcessWarn = options.onProcessWarn ?? ((message) => console.error(message))
+    this.onProcessWarn = processWarningReporter(options.onProcessWarn)
     if (options.onSessionUpdate !== undefined) this.updateListeners.add(options.onSessionUpdate)
     // Validate the pinned SDK dispatch seam before acquiring a child process.
     const app = this.buildClientApp()

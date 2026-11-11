@@ -127,6 +127,7 @@ import type {
 } from '../domain/policy/events.ts'
 import { ACP_SNAPSHOT_TOTAL_BYTES, acpOptionsSnapshotOf, toOptionsSnapshotRecord } from './options-snapshot.ts'
 import { ACP_CONFIG_IDENTIFIER_MAX } from '../contract/config-options.ts'
+import { isAcpModelRouteWithinBounds } from '../contract/model-selection.ts'
 import type { AcpOptionsSnapshotRecord } from './options-snapshot.ts'
 import { isSensitiveActivityField, redactSecretText } from '../domain/observability/redaction.ts'
 import { nativeForkSourceSchema, type AcpNativeForkSource } from './native-fork-source.ts'
@@ -280,7 +281,6 @@ export interface AcpMemberModelSelection {
   readonly nativeSelectionKey?: string
 }
 
-const ACP_MEMBER_MODEL_MAX = 512
 const ACP_MEMBER_BINDING_KEY_MAX = 8192
 
 export function modeIntentBindingKey(binding: AcpBindingData): string {
@@ -2564,8 +2564,7 @@ class SidecarStore implements AcpSidecar {
       row.binding_key.length === 0 ||
       row.binding_key.length > ACP_MEMBER_BINDING_KEY_MAX ||
       typeof row.model_id !== 'string' ||
-      row.model_id.length === 0 ||
-      row.model_id.length > ACP_MEMBER_MODEL_MAX ||
+      !isAcpModelRouteWithinBounds(row.model_id) ||
       (row.session_seq != null && (!Number.isSafeInteger(row.session_seq) || Number(row.session_seq) < 0)) ||
       (row.native_selection_key != null &&
         (typeof row.native_selection_key !== 'string' || row.native_selection_key.length > ACP_MEMBER_BINDING_KEY_MAX))
@@ -2591,8 +2590,7 @@ class SidecarStore implements AcpSidecar {
       selection.bindingKey.length === 0 ||
       selection.bindingKey.length > ACP_MEMBER_BINDING_KEY_MAX ||
       typeof selection.model !== 'string' ||
-      selection.model.length === 0 ||
-      selection.model.length > ACP_MEMBER_MODEL_MAX ||
+      !isAcpModelRouteWithinBounds(selection.model) ||
       (selection.sessionSeq !== undefined &&
         (!Number.isSafeInteger(selection.sessionSeq) || selection.sessionSeq < 0)) ||
       (selection.nativeSelectionKey !== undefined &&

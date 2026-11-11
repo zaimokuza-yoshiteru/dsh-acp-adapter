@@ -2,6 +2,7 @@ import { withSessionFacts } from '../../support/session-facts.ts'
 import { describe, expect, it, vi } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
 import type { LlmCallConfig } from '@deepseek-ai/dsh-llm'
+import { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { AcpSidecar, AcpBindingLookup } from '../../../src/persistence/sidecar.ts'
 import { installAcpBackendGuard } from '../../../src/host/composition/backend-guard.ts'
@@ -31,6 +32,7 @@ function sidecar(binding: AcpBindingLookup | undefined, writes: unknown[] = []):
 function install(
   selection: { lastUsed: LlmCallConfig | null; pending: LlmCallConfig | null } | undefined,
   acpSidecar: AcpSidecar,
+  ownsProvider: (provider: string) => boolean = (provider) => provider === 'acp-codex' || provider === 'acp-kimi',
 ): { listener: RequestListener; reads: ReturnType<typeof vi.fn> } {
   let listener: RequestListener | undefined
   const reads = vi.fn(() => selection)
@@ -45,7 +47,7 @@ function install(
         },
       }),
   }
-  installAcpBackendGuard(context as unknown as Context, { sidecar: acpSidecar })
+  installAcpBackendGuard(context as unknown as Context, { sidecar: acpSidecar, ownsProvider })
   if (listener === undefined) throw new Error('guard listener was not installed')
   const installed = listener
   return {
@@ -126,12 +128,36 @@ describe('M6b additive ACP backend guard', () => {
   it('reads a same-profile binding once and allows a valid continuation', async () => {
     const acpSidecar = sidecar(validBinding('codex'))
     const { listener } = install({ lastUsed: config('acp-codex'), pending: null }, acpSidecar)
-    const next = config('acp-codex', 'model-b')
+    const next = { ...config('acp-codex'), reasoningEffort: ReasoningEffortId('high') }
     await expect(
       listener({ agent: { session: session(['turn/start', 'user/message']) } }, async () => next),
     ).resolves.toEqual(next)
     expect(acpSidecar.readLatestBinding).toHaveBeenCalledTimes(1)
     expect(acpSidecar.writeRecoveryState).not.toHaveBeenCalled()
+  })
+
+  it('rejects a changed model before binding I/O or the outer compaction listener can run', async () => {
+    const acpSidecar = sidecar(validBinding('codex'))
+    const { listener } = install({ lastUsed: config('acp-codex'), pending: null }, acpSidecar)
+    const compact = vi.fn()
+    const request = async () => {
+      const selected = await listener(
+        { agent: { session: session(['request/header', 'assistant/message']) } },
+        async () => config('acp-codex', 'model-b'),
+      )
+      compact(selected)
+    }
+    await expect(request()).rejects.toMatchObject({ code: 'ACP_MODEL_SWITCH_UNAVAILABLE' })
+    expect(compact).not.toHaveBeenCalled()
+    expect(acpSidecar.readLatestBinding).not.toHaveBeenCalled()
+    expect(acpSidecar.writeRecoveryState).not.toHaveBeenCalled()
+  })
+
+  it('does not apply the model-change restriction to an unowned provider with an ACP-looking name', async () => {
+    const acpSidecar = sidecar(validBinding('thirdparty'))
+    const { listener } = install({ lastUsed: config('acp-thirdparty'), pending: null }, acpSidecar, () => false)
+    const next = config('acp-thirdparty', 'model-b')
+    await expect(listener({ agent: { session: session(['request/header']) } }, async () => next)).resolves.toEqual(next)
   })
 
   it('blocks cross-backend transitions without reading or writing ACP state', async () => {

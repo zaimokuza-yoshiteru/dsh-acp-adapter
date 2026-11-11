@@ -191,7 +191,7 @@ describe('cross-backend coordinator', () => {
     },
   )
 
-  it('keeps same-profile ACP model changes in the current session', () => {
+  it('restores the used ACP model and waits for explicit independent-session confirmation', async () => {
     const f = fixture({
       projection: {
         lastUsed: { provider: 'acp-codex', model: 'old' },
@@ -199,7 +199,56 @@ describe('cross-backend coordinator', () => {
       },
     })
     const stop = f.coordinator.start()
-    expect(f.coordinator.getSnapshot().pending).toBeNull()
+    await settle()
+    expect(f.coordinator.getSnapshot().pending?.reason).toBe('model-switch')
+    expect(f.remote.session.selectModel).toHaveBeenCalledWith({
+      sessionId: 'session-1',
+      provider: 'acp-codex',
+      model: 'old',
+    })
+    expect(f.sessions.create).not.toHaveBeenCalled()
+    await f.coordinator.confirm()
+    expect(f.sessions.create).toHaveBeenCalledTimes(1)
+    expect(f.remote.session.selectModel).toHaveBeenLastCalledWith(
+      expect.objectContaining({ provider: 'acp-codex', model: 'new' }),
+    )
+    expect(f.sessions.open).toHaveBeenCalledTimes(1)
+    stop()
+  })
+
+  it('keeps reasoning-only changes and unowned routes outside the model-switch exit', () => {
+    expect(
+      shouldConfirmBackendTransition(
+        {
+          lastUsed: { provider: 'acp-codex', model: 'same' },
+          next: { provider: 'acp-codex', model: 'same', reasoningEffort: 'high' },
+          blank: false,
+        },
+        owns,
+      ),
+    ).toBe(false)
+    expect(
+      shouldConfirmBackendTransition(
+        { lastUsed: { provider: 'acp-other', model: 'a' }, next: { provider: 'acp-other', model: 'b' }, blank: false },
+        () => false,
+      ),
+    ).toBe(false)
+  })
+
+  it('does not restore a previously pending unsupported ACP model', async () => {
+    const f = fixture({
+      projection: { lastUsed: { provider: 'acp-codex', model: 'used' }, next: { provider: 'acp-codex', model: 'bad' } },
+    })
+    const stop = f.coordinator.start()
+    await settle()
+    await f.coordinator.cancel()
+    f.projection.set({
+      lastUsed: { provider: 'acp-codex', model: 'used' },
+      next: { provider: 'acp-codex', model: 'another' },
+    })
+    await settle()
+    expect(f.coordinator.getSnapshot().pending?.ticket.sourceSelection?.model).toBe('used')
+    expect(f.sessions.create).not.toHaveBeenCalled()
     stop()
   })
 

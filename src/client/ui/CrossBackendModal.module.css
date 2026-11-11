@@ -34,6 +34,14 @@
 .footer {
   display: flex;
   justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 8px;
   pointer-events: auto;
+}
+
+.footer > button {
+  max-width: 100%;
+  white-space: normal;
+  height: auto;
+  min-height: 36px;
 }

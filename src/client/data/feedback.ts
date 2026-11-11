@@ -7,7 +7,6 @@ export type AcpUiOutcome =
   | 'tool-approval-failed'
   | 'fork-failed'
   | 'fork-workspace-attach-failed'
-  | 'fork-unknown'
   | 'fork-storage-failed'
   | 'fork-access-denied'
   | 'fork-unavailable'

@@ -73,9 +73,10 @@ function adapter(
   sidecar: AcpSidecar,
   sessions: Map<string, SessionLike>,
   hostRoot: Context | undefined,
-  runtimeFactory: () => AcpProfileRuntime,
+  runtimeFactory: NonNullable<ConstructorParameters<typeof AcpProfileAdapter>[6]>,
   failSettles?: { remaining: number; calls: number },
   controlsChanged?: (sessionId: string) => void,
+  log?: ConstructorParameters<typeof AcpProfileAdapter>[11],
 ) {
   return new AcpProfileAdapter(
     'settlement',
@@ -89,7 +90,7 @@ function adapter(
     undefined,
     undefined,
     undefined,
-    undefined,
+    log,
     undefined,
     undefined,
     undefined,
@@ -142,6 +143,84 @@ async function collect(adapterInstance: AcpProfileAdapter, options: GenerateOpti
 }
 
 describe('ACP adapter local terminal settlement', () => {
+  it('keeps the final response writer alive when runtime teardown releases a terminal response', async () => {
+    const { sidecar } = tempSidecar()
+    const message = user('finish during shutdown')
+    const sessions = new Map([['local-session', session(message, 1)]])
+    const entered = Promise.withResolvers<void>()
+    const response = Promise.withResolvers<{ stopReason: 'end_turn' }>()
+    const writeEntered = Promise.withResolvers<void>()
+    const releaseWrite = Promise.withResolvers<void>()
+    const original = sidecar.writeOptionSnapshot.bind(sidecar)
+    let terminalWrite = false
+    vi.spyOn(sidecar, 'writeOptionSnapshot').mockImplementation(async (...args) => {
+      if (terminalWrite) {
+        writeEntered.resolve()
+        await releaseWrite.promise
+      }
+      return await original(...args)
+    })
+    const prompt = vi.fn(async () => {
+      entered.resolve()
+      return await response.promise
+    })
+    const instance = adapter(sidecar, sessions, undefined, () => ({
+      ...scriptedRuntime({ value: 0 })(),
+      prompt,
+      close: async () => {
+        terminalWrite = true
+        response.resolve({ stopReason: 'end_turn' })
+      },
+    }))
+    const turn = collect(instance, request('local-session', message))
+    void turn.catch(() => undefined)
+    await entered.promise
+    let closed = false
+    const closing = instance.close().then(() => {
+      closed = true
+    })
+    try {
+      await writeEntered.promise
+      expect(closed).toBe(false)
+      releaseWrite.resolve()
+      await closing
+      await turn.catch(() => undefined)
+      const binding = await sidecar.readLatestBinding('local-session' as never)
+      expect(binding?.status === 'ok' && binding.binding.committedPromptOrdinal).toBe(1)
+      expect(prompt).toHaveBeenCalledOnce()
+    } finally {
+      releaseWrite.resolve()
+      await Promise.allSettled([closing, turn])
+    }
+  })
+
+  it('routes process warnings to the Host logger with session and profile facts', async () => {
+    const { sidecar } = tempSidecar()
+    const message = user('observe teardown')
+    const sessions = new Map([['warn-session', session(message, 1)]])
+    const log = vi.fn()
+    const instance = adapter(
+      sidecar,
+      sessions,
+      undefined,
+      (options) => ({
+        ...scriptedRuntime({ value: 0 })(),
+        close: async () => options.onProcessWarn?.('managed-range exit was not confirmed'),
+      }),
+      undefined,
+      undefined,
+      log,
+    )
+    await collect(instance, request('warn-session', message))
+    await instance.close()
+    expect(log).toHaveBeenCalledWith('managed-range exit was not confirmed', {
+      dshSessionId: 'warn-session',
+      acpProvider: 'acp-settlement',
+      operation: 'session-process',
+      result: 'warning',
+    })
+  })
+
   it('drains the other runtime before reporting one failed close and releasing storage', async () => {
     const { sidecar } = tempSidecar()
     const message = user('two standalone sessions')
@@ -408,7 +487,7 @@ describe('ACP adapter local terminal settlement', () => {
     const first = user('first request')
     const second = user('second request')
     const sessions = new Map<string, SessionLike>([['local-session', session(first, 1)]])
-    const failures = { remaining: 3, calls: 0 }
+    const failures = { remaining: Number.POSITIVE_INFINITY, calls: 0 }
     const promptCount = { value: 0 }
     let oldAdapter!: AcpProfileAdapter
     let resolveStorageError!: () => void
@@ -427,7 +506,7 @@ describe('ACP adapter local terminal settlement', () => {
     expect(firstTurnFinished).toBe(false)
     expect(promptCount.value).toBe(1)
     expect(oldAdapter.localSettlementStatus('local-session')).toBe('storage-error')
-    await oldAdapter.close()
+    await expect(oldAdapter.close()).rejects.toThrow('ACP profile cleanup failed')
     await expect(firstTurn).rejects.toMatchObject({ name: 'AbortError' })
     await oldSidecar.dispose()
 

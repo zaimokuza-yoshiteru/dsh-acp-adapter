@@ -33,6 +33,7 @@ import { createNativeForkJournal } from './coordinator/native-fork-journal.ts'
 import { CrossBackendModal } from './ui/CrossBackendModal.ts'
 import { AcpOutcomeToast } from './ui/AcpOutcomeToast.ts'
 import { AcpRecoveryDock } from './ui/AcpRecoveryDock.ts'
+import { AcpNativeForkRecovery } from './ui/AcpNativeForkRecovery.ts'
 import { AcpAgentControl } from './ui/AcpAgentControl.ts'
 import {
   AcpExternalSubagentComposer,
@@ -93,7 +94,6 @@ export const inject = [
 
 const forkOutcomes: Readonly<Record<NativeForkFailure, AcpUiOutcome>> = {
   'workspace-attach': 'fork-workspace-attach-failed',
-  unknown: 'fork-unknown',
   storage: 'fork-storage-failed',
   'access-denied': 'fork-access-denied',
   unavailable: 'fork-unavailable',
@@ -399,13 +399,38 @@ async function registerUi(ctx: ClientContext): Promise<void> {
     )
   })
   ctx.effect(() => coordinator.start(), 'dsh-acp: model transition coordinator')
+  const transitionModelLabels = {
+    loadModelCatalog: async () => {
+      const result = await ctx.remote.session.modelCatalog()
+      return result.ok ? result.value : null
+    },
+    profileName: (provider: string) => {
+      const profiles = settingsScope.getSnapshot().value?.agents
+      const id = Object.keys(profiles ?? {}).find((candidate) => `acp-${candidate}` === provider)
+      return id === undefined ? undefined : profiles?.[id]?.name
+    },
+  }
+  ctx.slots.inject('shell.overlay', () =>
+    ctx.slots.register(
+      {
+        name: 'shell.overlay',
+        id: 'dsh-acp-native-fork-recovery',
+        locale: 'acpActivity',
+        inject: () => ({ coordinator: nativeFork }),
+      },
+      AcpNativeForkRecovery,
+    ),
+  )
   ctx.slots.inject('shell.overlay', () =>
     ctx.slots.register(
       {
         name: 'shell.overlay',
         id: 'dsh-acp-cross-backend-confirmation',
         locale: 'acpActivity',
-        inject: (): { readonly coordinator: CrossBackendCoordinator } => ({ coordinator }),
+        inject: () => ({
+          coordinator,
+          ...transitionModelLabels,
+        }),
       },
       CrossBackendModal,
     ),

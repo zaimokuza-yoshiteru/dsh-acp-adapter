@@ -4,7 +4,16 @@ import type { AcpNativeForkRejection } from '../../contract/remote.ts'
 import type { AcpRemoteLike } from '../data/acp-remote.ts'
 import { NativeForkJournalError, type NativeForkJournal } from './native-fork-journal.ts'
 
-export type NativeForkFailure = 'workspace-attach' | 'unknown' | 'storage' | 'access-denied' | AcpNativeForkRejection
+export type NativeForkFailure = 'workspace-attach' | 'storage' | 'access-denied' | AcpNativeForkRejection
+
+export interface NativeForkRecovery {
+  readonly kind: 'unknown' | 'abandoned' | 'cleanup'
+  readonly scope: string
+  readonly source: SessionId
+  readonly atSeq: number
+  readonly child?: SessionId
+  readonly storageFailed?: boolean
+}
 
 interface NativeForkDependencies {
   readonly sessions: Pick<ISessions, 'fork'>
@@ -19,8 +28,50 @@ interface NativeForkDependencies {
 export class AcpNativeForkCoordinator {
   private disposed = false
   private readonly pending = new Map<string, Promise<void>>()
+  private recovery: NativeForkRecovery | null = null
+  private readonly listeners = new Set<() => void>()
 
   constructor(private readonly deps: NativeForkDependencies) {}
+
+  readonly getSnapshot = (): NativeForkRecovery | null => this.recovery
+  readonly subscribe = (listener: () => void): (() => void) => {
+    this.listeners.add(listener)
+    return () => this.listeners.delete(listener)
+  }
+  readonly dismissRecovery = (): void => this.publishRecovery(null)
+
+  private publishRecovery(recovery: NativeForkRecovery | null): void {
+    if (this.disposed) return
+    this.recovery = recovery
+    for (const listener of this.listeners) listener()
+  }
+
+  abandon(expected: NativeForkRecovery): void {
+    if (this.disposed || this.recovery !== expected || expected.kind !== 'unknown') return
+    try {
+      this.deps.journal(expected.scope, expected.source, expected.atSeq).abandon()
+      this.publishRecovery({ ...expected, kind: 'abandoned', storageFailed: false })
+    } catch {
+      this.publishRecovery({ ...expected, storageFailed: true })
+    }
+  }
+
+  /** A separate explicit confirmation starts a new operation; abandonment itself never dispatches. */
+  restart(expected: NativeForkRecovery): Promise<void> {
+    if (this.disposed || this.recovery !== expected || expected.kind !== 'abandoned') return Promise.resolve()
+    this.publishRecovery(null)
+    return this.admit(expected.source, expected.atSeq, expected.scope)
+  }
+
+  retryCleanup(expected: NativeForkRecovery): void {
+    if (this.disposed || this.recovery !== expected || expected.kind !== 'cleanup') return
+    try {
+      this.deps.journal(expected.scope, expected.source, expected.atSeq).clear()
+      this.publishRecovery(null)
+    } catch {
+      this.publishRecovery({ ...expected, storageFailed: true })
+    }
+  }
 
   /**
    * Stop admission and await native calls already sent. Host/Remote withdrawal can
@@ -30,23 +81,29 @@ export class AcpNativeForkCoordinator {
   readonly dispose = async (): Promise<void> => {
     this.disposed = true
     await Promise.allSettled(this.pending.values())
+    this.listeners.clear()
   }
 
   fork(source: SessionId, atSeq: number): Promise<void> {
+    return this.admit(source, atSeq)
+  }
+
+  private admit(source: SessionId, atSeq: number, restartScope?: string): Promise<void> {
     if (this.disposed) return Promise.resolve()
     const key = JSON.stringify([source, atSeq])
     const pending = this.pending.get(key)
     if (pending !== undefined) return pending
-    const operation = this.perform(source, atSeq).finally(() => {
+    const operation = this.perform(source, atSeq, restartScope).finally(() => {
       this.pending.delete(key)
     })
     this.pending.set(key, operation)
     return operation
   }
 
-  private async perform(source: SessionId, atSeq: number): Promise<void> {
+  private async perform(source: SessionId, atSeq: number, restartScope?: string): Promise<void> {
     let child: SessionId | undefined
     let reason: NativeForkFailure | undefined
+    let outcomeUnknown = false
     const failed = (reason?: NativeForkFailure): void => {
       if (!this.disposed) this.deps.failed(source, child, reason)
     }
@@ -67,11 +124,17 @@ export class AcpNativeForkCoordinator {
       if (this.disposed) return
       const journal = this.deps.journal(scope.value, source, atSeq)
       const intent = journal.read()
-      if (intent?.phase === 'creating') {
-        failed('unknown')
+      if (intent?.phase === 'creating' || (intent?.phase === 'abandoned' && restartScope !== scope.value)) {
+        this.publishRecovery({
+          kind: intent.phase === 'creating' ? 'unknown' : 'abandoned',
+          scope: scope.value,
+          source,
+          atSeq,
+        })
         return
       }
-      if (intent !== undefined) child = intent.child as SessionId
+      if (restartScope !== undefined && (restartScope !== scope.value || intent?.phase !== 'abandoned')) return
+      if (intent !== undefined && 'child' in intent) child = intent.child as SessionId
       if (intent?.phase === 'workspace-attach') {
         failed('workspace-attach')
         return
@@ -116,7 +179,10 @@ export class AcpNativeForkCoordinator {
             if (rejected) {
               journal.clear()
               if (error.rpcError.code === 'remote-access/denied') reason = 'access-denied'
-            } else reason = 'unknown'
+            } else {
+              outcomeUnknown = true
+              this.publishRecovery({ kind: 'unknown', scope: scope.value, source, atSeq })
+            }
           }
           throw error
         }
@@ -134,10 +200,16 @@ export class AcpNativeForkCoordinator {
       }
       if (this.disposed) return
       this.deps.open(child)
-      journal.clear()
+      try {
+        journal.clear()
+      } catch {
+        // Creation, durable provenance and navigation already succeeded. Only
+        // recovery-record cleanup remains; retrying it must not create or open.
+        this.publishRecovery({ kind: 'cleanup', scope: scope.value, source, atSeq, child })
+      }
     } catch (error) {
       if (error instanceof NativeForkJournalError) reason = 'storage'
-      failed(reason)
+      if (!outcomeUnknown) failed(reason)
     }
   }
 }

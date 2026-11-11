@@ -3,10 +3,17 @@ import {
   localSettlementText,
   projectionIsAcp,
   publishRecoveryActionResult,
+  recoveryPrefersReconnect,
 } from '../../../src/client/ui/AcpRecoveryDock.ts'
 import type { AcpRecoveryView } from '../../../src/contract/remote.ts'
 
 describe('ACP recovery dock projection gate', () => {
+  it('prefers reconnect only while original context can still be recovered, never reset or new-session', () => {
+    for (const kind of ['reconnect-required', 'resumed-unverified', 'outcome-unknown'] as const)
+      expect(recoveryPrefersReconnect({ kind } as AcpRecoveryView)).toBe(true)
+    for (const kind of ['session-lost', 'local-history-damaged', 'reconciliation-required'] as const)
+      expect(recoveryPrefersReconnect({ kind } as AcpRecoveryView)).toBe(false)
+  })
   it('only reads recovery state for an ACP selection', () => {
     const owns = (provider: string | undefined): boolean => provider === 'acp-kimi' || provider === 'acp-codex'
     expect(projectionIsAcp({ lastUsed: { provider: 'openai' }, next: { provider: 'openai' } }, owns)).toBe(false)

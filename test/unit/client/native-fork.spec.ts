@@ -5,6 +5,7 @@ import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
 import { Context } from '@deepseek-ai/cordis'
 import { AcpNativeForkCoordinator } from '../../../src/client/coordinator/native-fork.ts'
 import { createNativeForkJournal } from '../../../src/client/coordinator/native-fork-journal.ts'
+import { AcpNativeForkRecovery } from '../../../src/client/ui/AcpNativeForkRecovery.ts'
 
 function fixture() {
   const child = SessionId('child')
@@ -46,6 +47,75 @@ function fixture() {
 }
 
 describe('ACP native fork coordinator', () => {
+  it('reports completed navigation separately from cleanup failure and retries only cleanup', async () => {
+    const h = fixture()
+    h.storage.removeItem.mockImplementationOnce(() => {
+      throw new Error('storage unavailable')
+    })
+    await h.coordinator.fork(SessionId('source'), 8)
+    expect(h.open).toHaveBeenCalledExactlyOnceWith('child')
+    expect(h.failed).not.toHaveBeenCalled()
+    const state = h.coordinator.getSnapshot()!
+    expect(state).toMatchObject({ kind: 'cleanup', child: 'child' })
+    const modal = AcpNativeForkRecovery({ coordinator: h.coordinator, t: (key: string) => key } as never) as {
+      props: { title: string }
+    }
+    expect(modal.props.title).toBe('nativeForkCleanupTitle')
+    h.coordinator.retryCleanup(state)
+    expect(h.coordinator.getSnapshot()).toBeNull()
+    expect(h.records.size).toBe(0)
+    expect(h.fork).toHaveBeenCalledOnce()
+    expect(h.register).toHaveBeenCalledOnce()
+    expect(h.open).toHaveBeenCalledOnce()
+  })
+
+  it('archives an unknown attempt without dispatch, then requires a separate confirmation after reload', async () => {
+    const h = fixture()
+    h.fork.mockRejectedValueOnce(new Error('response lost'))
+    await h.coordinator.fork(SessionId('source'), 8)
+    const unknown = h.coordinator.getSnapshot()!
+    expect(unknown.kind).toBe('unknown')
+    await h.coordinator.restart(unknown)
+    h.coordinator.abandon(unknown)
+    expect(h.coordinator.getSnapshot()?.kind).toBe('abandoned')
+    expect(h.fork).toHaveBeenCalledOnce()
+    expect([...h.records.keys()].filter((key) => key.includes(':abandoned:'))).toHaveLength(1)
+    const remounted = h.createCoordinator()
+    await remounted.fork(SessionId('source'), 8)
+    expect(remounted.getSnapshot()?.kind).toBe('abandoned')
+    expect(h.fork).toHaveBeenCalledOnce()
+    const abandoned = remounted.getSnapshot()!
+    await remounted.restart(abandoned)
+    await remounted.restart(abandoned)
+    expect(h.fork).toHaveBeenCalledTimes(2)
+    expect(h.open).toHaveBeenCalledExactlyOnceWith('child')
+    expect([...h.records.keys()].filter((key) => key.includes(':abandoned:'))).toHaveLength(1)
+  })
+
+  it('keeps unknown creation blocked when the abandonment archive cannot be written', async () => {
+    const h = fixture()
+    h.fork.mockRejectedValueOnce(new Error('response lost'))
+    await h.coordinator.fork(SessionId('source'), 8)
+    h.storage.setItem.mockImplementationOnce(() => {
+      throw new Error('quota')
+    })
+    h.coordinator.abandon(h.coordinator.getSnapshot()!)
+    expect(h.coordinator.getSnapshot()).toMatchObject({ kind: 'unknown', storageFailed: true })
+    await h.coordinator.restart(h.coordinator.getSnapshot()!)
+    expect(h.fork).toHaveBeenCalledOnce()
+    expect(h.journal('11111111-1111-4111-8111-111111111111', 'source', 8).read()).toEqual({ phase: 'creating' })
+  })
+
+  it('dismisses unknown-outcome recovery without clearing or starting another creation', async () => {
+    const h = fixture()
+    h.fork.mockRejectedValueOnce(new Error('response lost'))
+    await h.coordinator.fork(SessionId('source'), 8)
+    h.coordinator.dismissRecovery()
+    expect(h.coordinator.getSnapshot()).toBeNull()
+    await h.coordinator.fork(SessionId('source'), 8)
+    expect(h.coordinator.getSnapshot()?.kind).toBe('unknown')
+    expect(h.fork).toHaveBeenCalledOnce()
+  })
   it('retains native catalog/title handling and opens only after provenance is durable', async () => {
     const h = fixture()
     h.register.mockImplementation(async () => {
@@ -106,7 +176,8 @@ describe('ACP native fork coordinator', () => {
       ),
     )
     await h.coordinator.fork(SessionId('source'), 8)
-    expect(h.failed).toHaveBeenLastCalledWith('source', undefined, 'unknown')
+    expect(h.failed).not.toHaveBeenCalled()
+    expect(h.coordinator.getSnapshot()?.kind).toBe('unknown')
     await h.coordinator.fork(SessionId('source'), 8)
     expect(h.fork).toHaveBeenCalledOnce()
     expect(h.open).not.toHaveBeenCalled()
@@ -181,7 +252,8 @@ describe('ACP native fork coordinator', () => {
     await h.createCoordinator().fork(SessionId('source'), 8)
     expect(h.fork).toHaveBeenCalledOnce()
     expect(h.register).not.toHaveBeenCalled()
-    expect(h.failed).toHaveBeenLastCalledWith('source', undefined, 'unknown')
+    expect(h.failed).not.toHaveBeenCalled()
+    expect(h.coordinator.getSnapshot()?.kind).toBe('unknown')
   })
 
   it('permits a new attempt after a definitive pre-creation migration refusal', async () => {
@@ -219,9 +291,11 @@ describe('ACP native fork coordinator', () => {
     })
     await h.coordinator.fork(SessionId('source'), 8)
     expect(h.failed).toHaveBeenLastCalledWith('source', 'child', 'storage')
-    await h.createCoordinator().fork(SessionId('source'), 8)
+    const remounted = h.createCoordinator()
+    await remounted.fork(SessionId('source'), 8)
     expect(h.fork).toHaveBeenCalledOnce()
-    expect(h.failed).toHaveBeenLastCalledWith('source', undefined, 'unknown')
+    expect(h.failed).toHaveBeenCalledOnce()
+    expect(remounted.getSnapshot()?.kind).toBe('unknown')
   })
 
   it('does not adopt a recorded child from another Host scope with the same source and cut', async () => {

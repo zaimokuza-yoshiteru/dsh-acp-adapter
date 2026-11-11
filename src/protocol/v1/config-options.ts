@@ -1,6 +1,11 @@
 /** Classification and bounded detached copies of ACP session configuration options. */
 import type * as acp from '@agentclientprotocol/sdk'
-import { ACP_CONFIG_IDENTIFIER_MAX, normalizeAcpConfigOptionKey } from '../../contract/config-options.ts'
+import {
+  ACP_CONFIG_IDENTIFIER_MAX,
+  isAcpModelOrReasoningOption,
+  normalizeAcpConfigOptionKey,
+} from '../../contract/config-options.ts'
+import { acpModelConfigOption } from '../../contract/model-selection.ts'
 
 const MAX_SELECTABLE_VALUES = 4_096
 const MAX_ID = ACP_CONFIG_IDENTIFIER_MAX
@@ -70,7 +75,7 @@ export function acpConfigOptionsSnapshot(
 }
 
 export function isModelConfigOption(option: acp.SessionConfigOption): boolean {
-  return [option.category ?? '', option.id].some((key) => normalizeAcpConfigOptionKey(key) === 'model')
+  return acpModelConfigOption([option]) !== undefined
 }
 
 export function advertisesIndependentModelControls(options: readonly acp.SessionConfigOption[] | undefined): boolean {
@@ -78,14 +83,7 @@ export function advertisesIndependentModelControls(options: readonly acp.Session
     options?.some((option) => {
       if (option.type !== 'select') return false
       const category = normalizeAcpConfigOptionKey(option.category ?? '')
-      const id = normalizeAcpConfigOptionKey(option.id)
-      return (
-        category === 'model_config' ||
-        category === 'thought_level' ||
-        category === 'reasoning_effort' ||
-        id === 'thought_level' ||
-        id === 'reasoning_effort'
-      )
+      return category === 'model_config' || (isAcpModelOrReasoningOption(option) && !isModelConfigOption(option))
     }) ?? false
   )
 }

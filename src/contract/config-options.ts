@@ -10,22 +10,22 @@ export function normalizeAcpConfigOptionKey(value: string): string {
 
 /**
  * Model and reasoning controls remain owned by the stock DSH model picker.
- * ACP agents may spell their category/id with different casing or separators;
- * classification is normalized while the Agent-provided labels stay untouched.
+ * An absent or unknown category does not make an opaque id a model selector.
+ * Reasoning retains the existing recognized-id compatibility when no category is supplied.
  */
 export function isAcpModelOrReasoningOption(option: {
   readonly id: string
   readonly category?: string | null
+  readonly type?: string
 }): boolean {
+  if (option.type !== undefined && option.type !== 'select') return false
   const id = normalizeAcpConfigOptionKey(option.id)
   const category =
     option.category === undefined || option.category === null ? '' : normalizeAcpConfigOptionKey(option.category)
   return (
     category === 'model' ||
-    id === 'model' ||
     category === 'thought_level' ||
     category === 'reasoning_effort' ||
-    id === 'thought_level' ||
-    id === 'reasoning_effort'
+    (category === '' && (id === 'thought_level' || id === 'reasoning_effort'))
   )
 }

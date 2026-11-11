@@ -11,6 +11,7 @@ import type {} from '@deepseek-ai/dsh-session-projection'
 import { readSessionFacts } from './session-facts.ts'
 import type { AcpSidecar, AcpBindingLookup } from '../../persistence/sidecar.ts'
 import { acpAgentIdFromRoute } from '../../domain/session/agent-config.ts'
+import { requiresAcpModelSwitchExit } from '../../contract/model-transition.ts'
 
 export interface ModelSelectionValue {
   readonly provider: string
@@ -57,10 +58,11 @@ export function classifyBackendTransition(input: BackendTransitionInput): Backen
 
 export interface AcpBackendGuardOptions {
   readonly sidecar: AcpSidecar
+  readonly ownsProvider: (provider: string) => boolean
 }
 
 function transitionError(
-  code: 'ACP_BACKEND_NEW_SESSION_REQUIRED' | 'ACP_BACKEND_RECOVERY_REQUIRED',
+  code: 'ACP_BACKEND_NEW_SESSION_REQUIRED' | 'ACP_BACKEND_RECOVERY_REQUIRED' | 'ACP_MODEL_SWITCH_UNAVAILABLE',
   message: string,
   cause?: unknown,
 ): LlmError {
@@ -109,6 +111,11 @@ export function installAcpBackendGuard(ctx: Context, options: AcpBackendGuardOpt
       // A committed request identifies the backend that owns the transcript.
       // agent.model.current() is the future choice and must not stand in for it.
       const previous = session.requestHeader()?.config ?? null
+      if (requiresAcpModelSwitchExit(previous, resolved, options.ownsProvider))
+        throw transitionError(
+          'ACP_MODEL_SWITCH_UNAVAILABLE',
+          'This ACP session cannot change models on this Host. Restore its previous model or start an independent session with the selected model; the existing Agent context is unchanged.',
+        )
       if (targetProfile === undefined && (previous === null || acpAgentIdFromRoute(previous.provider) === undefined))
         return resolved
       const previousProfile = acpAgentIdFromRoute(previous?.provider ?? '')

@@ -18,7 +18,7 @@ import { expect, it, vi } from 'vitest'
 import { connectFreshWorkspace, writeComposerDraft } from '#host-support'
 import { launchAdapterWorld, root } from './scaffold.ts'
 
-it('persists teammate model selection, applies it on wake, and protects Team boundaries', async ({
+it('rejects unsupported teammate model changes without disturbing approvals, wake or Team boundaries', async ({
   onTestFinished,
 }) => {
   const host = await launchAdapterWorld({ teams: true })
@@ -155,8 +155,7 @@ it('persists teammate model selection, applies it on wake, and protects Team bou
     ).rejects.toThrow()
     await expect((host.ctx.get('dshAcp') as AcpRemoteService).teamMemberModels(lead.id, lead.id)).rejects.toThrow()
 
-    // Settle the approval and wait until the member has become dormant. A
-    // dormant selection must be persisted without starting another request.
+    // Settle approval before checking the idle member model restriction.
     const initialSettlementAfter = events.length
     await approvals
       .locator('[data-team-pending-member="calculator"]')
@@ -174,122 +173,40 @@ it('persists teammate model selection, applies it on wake, and protects Team bou
       (host.ctx.get('dshAcp') as AcpRemoteService).setTeamMemberModel(lead.id, child.id, 'unknown-model'),
     ).rejects.toThrow()
     const beforeSaveLog = readFileSync(log, 'utf8')
-    const saved = await (host.ctx.get('dshAcp') as AcpRemoteService).setTeamMemberModel(
-      lead.id,
-      child.id,
-      'mock-model-b',
-    )
-    expect(saved).toMatchObject({ currentModel: 'mock-model-a', pendingModel: 'mock-model-b', writable: true })
+    await expect(
+      (host.ctx.get('dshAcp') as AcpRemoteService).setTeamMemberModel(lead.id, child.id, 'mock-model-b'),
+    ).rejects.toMatchObject({ code: 'dsh-acp/model-switch-unavailable' })
     expect(readFileSync(log, 'utf8')).toBe(beforeSaveLog)
-
     const initial = await (host.ctx.get('dshAcp') as AcpRemoteService).teamMemberModels(lead.id, child.id)
-    expect(initial).toMatchObject({ currentModel: 'mock-model-a', pendingModel: 'mock-model-b', writable: true })
-    expect(initial.models).toEqual(
-      expect.arrayContaining([
-        { id: 'mock-model-a', name: 'Mock Model A' },
-        { id: 'mock-model-b', name: 'Mock Model B' },
-      ]),
-    )
-
+    expect(initial).toMatchObject({
+      currentModel: 'mock-model-a',
+      pendingModel: null,
+      unavailableReason: 'model-switch',
+    })
     const panel = page.locator('[data-acp-team-management], [data-acp-team-panel]')
-    const service = host.ctx.get('dshAcp') as AcpRemoteService
-    const catalog = await service.teamMemberModels(lead.id, child.id)
-    // Exercise the mounted picker with an opaque catalog id that resembles
-    // the menu's synthetic placeholder namespace. The host fixture does not
-    // advertise such an id, so adapt its catalog response and capture the
-    // actual write handler call, then remount against the real catalog.
-    const catalogSpy = vi.spyOn(service, 'teamMemberModels').mockResolvedValue({
-      ...catalog,
-      models: [...catalog.models, { id: '__vendor_model', name: 'Vendor model' }],
-    })
-    const writeSpy = vi.spyOn(service, 'setTeamMemberModel').mockImplementation(async (_lead, _member, model) => {
-      if (model === '__vendor_model') return { ...catalog, pendingModel: model }
-      return catalog
-    })
     await panel.getByRole('button', { name: 'Manage members · 1', exact: true }).click()
     const row = panel.locator('[data-acp-managed-member="calculator"]')
-    try {
-      const opaqueModelButton = row.getByRole('button', { name: 'Choose a model for calculator', exact: true })
-      await opaqueModelButton.waitFor()
-      await opaqueModelButton.click()
-      await page.getByRole('menu').getByRole('menuitem', { name: 'Vendor model', exact: true }).click()
-      await expect.poll(() => writeSpy.mock.calls.some((call) => call[2] === '__vendor_model')).toBe(true)
-    } finally {
-      writeSpy.mockRestore()
-      catalogSpy.mockRestore()
-    }
-    await panel.getByRole('button', { name: 'Close member management', exact: true }).click()
-    await panel.getByRole('button', { name: 'Manage members · 1', exact: true }).click()
-    await row
-      .getByRole('status')
-      .filter({ hasText: /mock[ -]model[ -]a/i })
-      .waitFor()
     const modelButton = row.getByRole('button', { name: 'Choose a model for calculator', exact: true })
-    await modelButton.waitFor()
-    // IDs stay lower-case on the wire; all visible labels use catalog names,
-    // including before the picker has ever been opened.
-    await expect.poll(() => modelButton.textContent()).toBe('Mock Model B')
-    expect(await row.locator('[data-member-model-notice]').textContent()).toBe(
-      'Applies next request; current: Mock Model A',
-    )
+    await expect.poll(() => modelButton.textContent()).toBe('Mock Model A')
     await modelButton.click()
     const modelMenu = page.getByRole('menu')
-    await modelMenu.getByRole('menuitem', { name: 'Mock Model A', exact: true }).waitFor()
     await modelMenu.getByRole('menuitem', { name: 'Mock Model B', exact: true }).waitFor()
-    await modelMenu.getByRole('menuitem', { name: 'Mock Model A', exact: true }).click()
-    await expect
-      .poll(() => (host.ctx.get('dshAcp') as AcpRemoteService).teamMemberModels(lead.id, child.id))
-      .toMatchObject({ pendingModel: null })
-    await expect.poll(() => row.locator('[data-member-model-notice]').textContent()).toBe('')
-    expect(await modelButton.textContent()).toBe('Mock Model A')
-    const beforeModelNotice = await row.boundingBox()
-    const beforeModeButton = await row.getByRole('button', { name: /^(?:Session|会话) ·/ }).boundingBox()
-    expect(required(await row.locator('[data-member-model-notice]').boundingBox()).height).toBeGreaterThanOrEqual(18)
-    await modelButton.click()
-    expect(await row.getByRole('searchbox').count()).toBe(0)
-    await modelMenu.getByRole('menuitem', { name: 'Mock Model B', exact: true }).click()
-    await row
-      .getByRole('status')
-      .filter({ hasText: /mock[ -]model[ -]a/i })
+    expect(await modelMenu.getByRole('menuitem', { name: 'Mock Model B', exact: true }).isEnabled()).toBe(false)
+    await modelMenu
+      .getByText(
+        'An ACP member that has started cannot switch models yet. Select its current model to cancel a pending change.',
+        { exact: true },
+      )
       .waitFor()
-    expect(await row.boundingBox()).toMatchObject({
-      x: beforeModelNotice!.x,
-      y: beforeModelNotice!.y,
-      width: beforeModelNotice!.width,
-    })
-    expect(await row.locator('[data-member-model-notice]').evaluate((el) => el.scrollHeight <= el.clientHeight)).toBe(
-      true,
-    )
-    expect(await row.getByRole('button', { name: /^(?:Session|会话) ·/ }).boundingBox()).toMatchObject({
-      x: beforeModeButton!.x,
-      width: beforeModeButton!.width,
-      height: beforeModeButton!.height,
-    })
+    await page.keyboard.press('Escape')
     await panel.getByRole('button', { name: 'Close member management', exact: true }).click()
-
-    // Closing and reopening remounts the card. Display names must not revert
-    // to IDs or depend on a previous click of the model selector.
-    await panel.getByRole('button', { name: 'Manage members · 1', exact: true }).click()
-    await expect.poll(() => modelButton.textContent()).toBe('Mock Model B')
-    await panel.getByRole('button', { name: 'Close member management', exact: true }).click()
-
-    // A transport reload restores current A plus pending B from the sidecar.
     capture('reload-model-picker')
     await page.reload()
     await panel.getByRole('button', { name: 'Manage members · 1', exact: true }).click()
-    await row
-      .getByRole('status')
-      .filter({ hasText: /mock[ -]model[ -]a/i })
-      .waitFor()
-    await expect.poll(() => modelButton.textContent()).toBe('Mock Model B')
-    expect(await row.locator('[data-member-model-notice]').textContent()).toBe(
-      'Applies next request; current: Mock Model A',
-    )
+    await expect.poll(() => modelButton.textContent()).toBe('Mock Model A')
     await panel.getByRole('button', { name: 'Close member management', exact: true }).click()
-
-    // team-turn logs configOptions.model for each request. This is the request
-    // header evidence: the first wake must carry B and the second must retain it.
-    const countModelB = () => (readFileSync(log, 'utf8').match(/team model=mock-model-b/g) ?? []).length
+    // A refused selection does not become a dormant intent. Both wakes retain A.
+    const countModelA = () => (readFileSync(log, 'utf8').match(/team model=mock-model-a/g) ?? []).length
     const wakeDecisions = () =>
       setupDecisions({
         root: lead,
@@ -314,10 +231,10 @@ it('persists teammate model selection, applies it on wake, and protects Team bou
     capture('first-wake')
     const firstWakeAfter = events.length
     const firstWake = wakeDecisions()
-    const firstBCount = countModelB()
+    const firstACount = countModelA()
     await send('E2E_TEAM_WAKE')
-    await expect.poll(() => readFileSync(log, 'utf8'), { timeout: 30000 }).toContain('team model=mock-model-b')
-    await expect.poll(countModelB, { timeout: 30000 }).toBeGreaterThan(firstBCount)
+    await expect.poll(() => readFileSync(log, 'utf8'), { timeout: 30000 }).toContain('team model=mock-model-a')
+    await expect.poll(countModelA, { timeout: 30000 }).toBeGreaterThan(firstACount)
     await expect
       .poll(
         () =>
@@ -329,7 +246,7 @@ it('persists teammate model selection, applies it on wake, and protects Team bou
       .toBeGreaterThan(0)
     await expect
       .poll(() => (host.ctx.get('dshAcp') as AcpRemoteService).teamMemberModels(lead.id, child.id), { timeout: 30000 })
-      .toMatchObject({ currentModel: 'mock-model-b', pendingModel: null, writable: true })
+      .toMatchObject({ currentModel: 'mock-model-a', pendingModel: null, writable: true })
 
     capture('first-wake-native-settlement')
     await waitForTeamSettlement(events, { parentId: lead.id, childId: child.id, after: firstWakeAfter })
@@ -338,12 +255,12 @@ it('persists teammate model selection, applies it on wake, and protects Team bou
     capture('second-wake')
     const secondWakeAfter = events.length
     const secondWake = wakeDecisions()
-    const secondBCount = countModelB()
+    const secondWakeACount = countModelA()
     await send('E2E_TEAM_WAKE')
-    await expect.poll(countModelB, { timeout: 30000 }).toBeGreaterThan(secondBCount)
+    await expect.poll(countModelA, { timeout: 30000 }).toBeGreaterThan(secondWakeACount)
     await expect
       .poll(() => (host.ctx.get('dshAcp') as AcpRemoteService).teamMemberModels(lead.id, child.id), { timeout: 30000 })
-      .toMatchObject({ currentModel: 'mock-model-b', pendingModel: null, writable: true })
+      .toMatchObject({ currentModel: 'mock-model-a', pendingModel: null, writable: true })
 
     capture('second-wake-native-settlement')
     await waitForTeamSettlement(events, { parentId: lead.id, childId: child.id, after: secondWakeAfter })
@@ -360,7 +277,7 @@ it('persists teammate model selection, applies it on wake, and protects Team bou
         .filter((event) => event.sessionId === child.id)
         .slice(-2)
         .map((event) => event.data.header.config.model),
-    ).toEqual(['mock-model-b', 'mock-model-b'])
+    ).toEqual(['mock-model-a', 'mock-model-a'])
     const siblingSetup = setupDecisions({
       root: lead,
       entries: [
@@ -413,22 +330,18 @@ it('persists teammate model selection, applies it on wake, and protects Team bou
       )
       .toBe('mock-model-a')
     expect((await (host.ctx.get('dshAcp') as AcpRemoteService).teamMemberModels(lead.id, child.id)).currentModel).toBe(
-      'mock-model-b',
+      'mock-model-a',
     )
 
-    // Keep the ACP controls mounted across a member turn. The live status
-    // transition refreshes metadata, while current and next model facts stay
-    // distinct until the pending choice is consumed.
+    // Keep controls mounted across a member turn; the model restriction and
+    // current model survive status refreshes and nested menu focus changes.
     const management = page.locator('[data-acp-team-management], [data-acp-team-panel]')
     const managementPanel = page.locator('[data-acp-team-panel]')
     const manageMembersButton = management.getByRole('button', { name: 'Manage members · 2', exact: true })
     await manageMembersButton.click()
     await modelButton.click()
     await page.getByRole('menu').getByRole('menuitem', { name: 'Mock Model A', exact: true }).click()
-    expect(await row.locator('[data-member-model-notice]').textContent()).toBe(
-      'Applies next request; current: Mock Model B',
-    )
-    const countModelA = () => (readFileSync(log, 'utf8').match(/team model=mock-model-a/g) ?? []).length
+    expect(await row.locator('[data-member-model-notice]').textContent()).toBe('')
     const secondACount = countModelA()
     capture('final-model-a-continuation')
     const continuationAfter = events.length
@@ -469,7 +382,7 @@ it('persists teammate model selection, applies it on wake, and protects Team bou
     await modelButton.click()
     await expect(
       page.getByRole('menu').getByRole('menuitem', { name: 'Mock Model B', exact: true }).isEnabled(),
-    ).resolves.toBe(true)
+    ).resolves.toBe(false)
     await page.keyboard.press('Escape')
     await expect.poll(() => page.getByRole('menu').count()).toBe(0)
     await expect.poll(() => managementPanel.count()).toBe(1)

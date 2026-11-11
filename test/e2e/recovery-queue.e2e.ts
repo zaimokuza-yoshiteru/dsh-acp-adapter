@@ -1,3 +1,4 @@
+import { confirmBlankRecovery } from './recovery-ui.helpers.ts'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -79,7 +80,7 @@ it('keeps native queued input operable across ACP crash recovery and closes pend
     await page.getByRole('button', { name: 'Resolve recovery issue', exact: true }).click()
     const dialog = page.getByRole('dialog')
     await dialog.waitFor({ state: 'visible' })
-    await dialog.getByRole('button', { name: 'Abandon context and continue', exact: true }).click()
+    await confirmBlankRecovery(page)
     await dialog.waitFor({ state: 'hidden' })
     await page.getByRole('button', { name: 'Resolve recovery issue', exact: true }).waitFor({ state: 'hidden' })
   }

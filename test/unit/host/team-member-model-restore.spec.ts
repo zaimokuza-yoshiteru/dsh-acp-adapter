@@ -136,7 +136,7 @@ describe('native teammate model restoration', () => {
 
   it('persists dormant intent without activation, then consumes it after native publication and flush', async () => {
     const h = await harness()
-    h.used('model-a')
+    h.sourceModel.select(h.route)
     await h.models.save(h.source.id, h.route.provider, 'model-b', () => {})
     expect(h.ctx.agents.get(h.source.id)).toBeUndefined()
     expect(h.saved).toEqual(h.intent('model-b', h.source.seq))
@@ -152,7 +152,7 @@ describe('native teammate model restoration', () => {
 
   it('rejects an obsolete exact cut after a native A to B to A sequence', async () => {
     const h = await harness()
-    h.used('model-a')
+    h.sourceModel.select(h.route)
     await h.models.save(h.source.id, h.route.provider, 'model-c', () => {})
     h.sourceModel.select({ provider: h.route.provider, model: 'model-b' })
     h.sourceModel.select(h.route)
@@ -160,14 +160,14 @@ describe('native teammate model restoration', () => {
     await restored.announce()
     expect(restored.model.current()?.model).toBe('model-a')
     expect(h.flush).not.toHaveBeenCalled()
-    expect(await h.models.facts(h.source.id, h.route.provider)).toMatchObject({ pendingModel: null })
+    expect(await h.models.facts(h.source.id, h.route.provider)).toMatchObject({ pendingModel: 'model-a' })
   })
 
   it.each(['model', 'request', 'activity'] as const)(
     'rejects a non-marker %s suffix even when the model value is unchanged',
     async (event) => {
       const h = await harness()
-      h.used('model-a')
+      h.sourceModel.select(h.route)
       await h.models.save(h.source.id, h.route.provider, 'model-b', () => {})
       if (event === 'model') h.source.append('model/selection', h.route)
       else if (event === 'request') h.used('model-a')
@@ -184,7 +184,7 @@ describe('native teammate model restoration', () => {
 
   it('rechecks native ownership and sequence after the suffix observation awaits', async () => {
     const h = await harness()
-    h.used('model-a')
+    h.sourceModel.select(h.route)
     await h.models.save(h.source.id, h.route.provider, 'model-b', () => {})
     const restored = h.restore()
     const observed = await h.observe()
@@ -206,7 +206,7 @@ describe('native teammate model restoration', () => {
 
   it.each(['select', 'flush'] as const)('retains the exact pending intent when native %s fails', async (failure) => {
     const h = await harness()
-    h.used('model-a')
+    h.sourceModel.select(h.route)
     const intent = h.intent('model-b', h.source.seq)
     h.saved = intent
     const restored = h.restore()
@@ -222,7 +222,7 @@ describe('native teammate model restoration', () => {
 
   it('retries an unapplied intent after a failed activation persisted its restore marker', async () => {
     const h = await harness()
-    h.used('model-a')
+    h.sourceModel.select(h.route)
     await h.models.save(h.source.id, h.route.provider, 'model-b', () => {})
     const pending = h.saved
     const first = h.restore()
@@ -246,7 +246,7 @@ describe('native teammate model restoration', () => {
 
   it('does not consume a newer intent written while native flush is pending', async () => {
     const h = await harness()
-    h.used('model-a')
+    h.sourceModel.select(h.route)
     h.saved = h.intent('model-b', h.source.seq)
     const entered = Promise.withResolvers<void>()
     const release = Promise.withResolvers<void>()

@@ -17,6 +17,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { LlmError } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
+import { ACP_CURRENT_CONFIG_MODEL_ID } from '../../../src/contract/model-selection.ts'
 import { AcpStubAdapter, acpProbeConfigKey } from '../../../src/host/composition/llm-stub.ts'
 import { ACP_PROBE_CACHE_ERROR_TTL_MS, ACP_PROBE_CACHE_OK_TTL_MS } from '../../../src/domain/session/agent-config.ts'
 import type { AcpStubAgentConfig } from '../../../src/domain/session/agent-config.ts'
@@ -333,10 +334,12 @@ describe('probe 模型目录与缓存', () => {
     expect(probeCount(logPath)).toBe(1)
   })
 
-  it('minimal-caps：agent 不提供 configOptions → 空目录（选择器 ACP 区块自然隐藏）', async () => {
+  it('keeps an Agent without configOptions selectable with its current configuration', async () => {
     const { config } = mockAgent('minimal-caps')
     const { adapter } = makeAdapter({ [ROUTE]: config })
-    await expect(adapter.listModels(ROUTE)).resolves.toEqual([])
+    await expect(adapter.listModels(ROUTE)).resolves.toEqual([
+      { provider: ROUTE, id: ACP_CURRENT_CONFIG_MODEL_ID, name: 'Agent current configuration' },
+    ])
   })
 
   it('invalidateProbe 后重新 probe（面板手动刷新通道）', async () => {

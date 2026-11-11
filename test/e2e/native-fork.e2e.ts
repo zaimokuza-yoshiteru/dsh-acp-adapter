@@ -180,6 +180,64 @@ it('forks from the native ACP footer without parentSession and restores its inde
       1,
     )
     expect(child.session.header.parentSession).toBeUndefined()
+    // Fault injection is scoped to this isolated tab's ACP journal. A child
+    // already opened must remain successful when only local cleanup fails.
+    await page.locator(`[data-row-key="session:${parentId}"]`).click()
+    await page.locator(`[data-conversation-session="${parentId}"] [data-composer-input]`).waitFor()
+    await page.evaluate(() => {
+      const remove = Storage.prototype.removeItem
+      Storage.prototype.removeItem = function (key: string) {
+        if (this === sessionStorage && key.startsWith('dsh.acp.native-fork.v1:')) {
+          Storage.prototype.removeItem = remove
+          sessionStorage.setItem('e2e-failed-fork-journal-key', key)
+          throw new Error('E2E_JOURNAL_CLEANUP_FAILED')
+        }
+        return remove.call(this, key)
+      }
+    })
+    const recoveryFork = vi.spyOn(host.ctx.sessionController, 'fork')
+    restoreNativeSpies = () => recoveryFork.mockRestore()
+    await page.getByRole('button', { name: 'Branch into a new conversation', exact: true }).last().click()
+    const cleanup = page.getByRole('dialog', { name: 'Fork created and opened', exact: true })
+    await cleanup.waitFor()
+    expect(recoveryFork).toHaveBeenCalledOnce()
+    const cleanupChild = await page
+      .locator('[data-conversation-session]')
+      .first()
+      .getAttribute('data-conversation-session')
+    expect(cleanupChild).not.toBe(parentId)
+    await page.setViewportSize({ width: 390, height: 844 })
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+    await page.screenshot({ path: join(evidence, 'cleanup-warning-390.png'), animations: 'disabled' })
+    await cleanup.getByRole('button', { name: 'Retry clearing recovery record', exact: true }).click()
+    await cleanup.waitFor({ state: 'hidden' })
+    expect(recoveryFork).toHaveBeenCalledOnce()
+    expect(await page.locator('[data-conversation-session]').first().getAttribute('data-conversation-session')).toBe(
+      cleanupChild,
+    )
+    await page.setViewportSize({ width: 1680, height: 1000 })
+    await page.locator(`[data-row-key="session:${parentId}"]`).click()
+    await page.evaluate(() => {
+      const key = sessionStorage.getItem('e2e-failed-fork-journal-key')
+      if (key === null) throw new Error('Missing fault-injection journal key')
+      sessionStorage.setItem(key, JSON.stringify({ phase: 'creating' }))
+    })
+    await page.getByRole('button', { name: 'Branch into a new conversation', exact: true }).last().click()
+    const unknown = page.getByRole('dialog', { name: 'Fork creation outcome is unconfirmed', exact: true })
+    await unknown.waitFor()
+    await unknown.getByRole('button', { name: 'Confirm abandoning recovery', exact: true }).click()
+    const abandoned = page.getByRole('dialog', { name: 'Recovery for this fork was abandoned', exact: true })
+    await abandoned.waitFor()
+    expect(recoveryFork).toHaveBeenCalledOnce()
+    expect(await page.evaluate(() => Object.keys(sessionStorage).some((key) => key.includes(':abandoned:')))).toBe(true)
+    await page.setViewportSize({ width: 390, height: 844 })
+    await page.screenshot({ path: join(evidence, 'abandoned-confirmation-390.png'), animations: 'disabled' })
+    await abandoned.getByRole('button', { name: 'Confirm creating another fork', exact: true }).click()
+    await abandoned.waitFor({ state: 'hidden' })
+    await expect.poll(() => recoveryFork.mock.calls.length).toBe(2)
+    await expect
+      .poll(() => page.locator('[data-conversation-session]').first().getAttribute('data-conversation-session'))
+      .not.toBe(parentId)
     expect(errors).toEqual([])
     writeFileSync(
       join(evidence, 'result.json'),

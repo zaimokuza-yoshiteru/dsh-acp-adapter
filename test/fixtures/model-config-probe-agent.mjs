@@ -3,7 +3,10 @@ import { appendFileSync } from 'node:fs'
 import { createInterface } from 'node:readline'
 
 const count = Number(process.env.PROBE_MODEL_COUNT ?? 123)
-const models = Array.from({ length: count }, (_, index) => ({ value: `model-${index}`, name: `Model ${index}` }))
+const models = Array.from({ length: count }, (_, index) => ({
+  value: `${process.env.PROBE_MODEL_PREFIX ?? ''}model-${index}`,
+  name: `Model ${index}`,
+}))
 const sessions = new Map()
 let nextSession = 0
 let activeWrites = 0
@@ -17,12 +20,13 @@ const configOptions = (session, mismatch = false) => [
   {
     id: 'model',
     name: 'Model',
-    category: 'model',
+    ...(process.env.PROBE_MODEL_CATEGORY === 'absent' ? {} : { category: process.env.PROBE_MODEL_CATEGORY ?? 'model' }),
     type: 'select',
     currentValue: mismatch ? 'wrong-model' : session.model,
     options: models,
   },
-  ...(process.env.PROBE_LEGACY === '1' || (session.model === 'model-0' && process.env.PROBE_INITIAL_CONTROLS !== '1')
+  ...(process.env.PROBE_LEGACY === '1' ||
+  (session.model === models[0].value && process.env.PROBE_INITIAL_CONTROLS !== '1')
     ? []
     : [
         {
@@ -64,7 +68,7 @@ async function receive(request) {
       return
     }
     const sessionId = `probe-session-${nextSession}`
-    const session = { model: 'model-0', busy: false }
+    const session = { model: models[0].value, busy: false }
     sessions.set(sessionId, session)
     log({ method, sessionId })
     send(id, { sessionId, configOptions: configOptions(session) })

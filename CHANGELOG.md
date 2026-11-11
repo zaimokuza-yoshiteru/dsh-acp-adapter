@@ -14,7 +14,11 @@ User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/
 - 在途工具与本地补存改由各 Host 独立服务持有，保留插件热重装后的结算，最终关闭先停准入、等收尾再释放资源；显式诊断收集器也按 Host 或单次检查隔离。
 - 诊断视图、Agent 控件和插件配置页的悬停反馈只用于支持 hover 的设备，保留触屏选中态和键盘焦点；窄屏诊断工具栏分行排列，避免筛选入口被导出和搜索控件遮挡。
 - 复用 RC.1 原生目录菜单定位及浮层视口约束，删除重复的逐帧测量；工具桥改用 Cordis 4.1 的依赖卸载等待，保留已接纳工具的最终结算。
-- 已有 ACP 会话切换模型仍被上游缺少容量信息的自动压缩检查阻断，候选版尚不可发布。Forge 空闲时直接切回项目目录仍需在下一次输入时恢复 ACP 绑定；Auto Review 等辅助模型功能未宣称完整兼容。详见[迁移记录](docs/assessments/dsh-0.2.2-rc.1.md)。
+- 没有 `category=model` 或完全不提供配置项的 ACP Agent 也可选择“Agent 当前配置”并开始会话；缺失或未知分类的配置保持通用控件，不猜测模型身份。
+- RC.1 已有 ACP 会话切模时自动恢复原模型，保留历史和草稿，并提供独立新会话确认；Teams 明确禁用已开始成员的其他模型，仍可选择当前模型取消旧待办。首次请求前选择和推理强度调整继续可用。
+- 分叉成功后的记录清理失败仅提示清理重试；创建结果未知时可明确放弃本次尝试，再单独确认新建，保留未知记录且不自动重复远端创建。
+- 关闭时检查仍保留的反馈，等已接纳调用和最终补存后再撤销写入接口；持续存储失败报告未完成项，进程拆除警告接入 Host 日志。没有新增跨进程持久补存队列。
+- 恢复页优先保留原上下文的重连操作；重置为空白上下文需二次确认，“新建独立会话”明确不继承上下文。Forge 空闲时直接切回项目目录仍需在下一次输入时恢复 ACP 绑定；Auto Review 等辅助功能未宣称完整兼容。详见[迁移记录](docs/assessments/dsh-0.2.2-rc.1.md)。
 
 - Target DSH `0.2.2-rc.1` and Node `>=24.9.0`; use native/PTC batch executors, the Host's admitted step tool set, and official projection/model owners.
 - Remove forced reply elevation and unused permission projection reads. Reuse native All/Final replies and Statistics; preserve verified provenance for ordinary forks.
@@ -24,7 +28,11 @@ User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/
 - Give each Host explicit owners for pending tools and local settlement, preserving continuity across plugin reinstalls and draining accepted work before final resource release. Scope opt-in diagnostic collectors to one Host or check run.
 - Limit hover feedback in Diagnostics, Agent controls, and plugin settings to hover-capable devices, preserving touch selection and keyboard focus. Wrap the narrow Diagnostics toolbar so export and search controls cannot cover the filters.
 - Reuse RC.1 native catalog-menu positioning and overlay viewport limits, removing duplicate frame measurement. Use Cordis 4.1 dependency teardown while retaining accepted tool settlement.
-- Changing models in an established ACP session remains blocked by upstream compaction when capacity is unknown; this candidate is not ready to release. Forge's idle return-to-project action still requires ACP reconciliation on the next input. Auxiliary model features such as Auto Review are not certified by this migration.
+- Allow Agents without a model-category selector or any configuration options through an Agent-current-configuration route; preserve generic controls with absent or unknown categories.
+- Restore the original model when switching an established ACP session on RC.1, preserving history and draft and offering an explicitly confirmed independent session. Teams disable other models after the first request while allowing the current model to clear old pending choices. Initial choices and reasoning effort remain available.
+- Distinguish successful fork creation with pending local cleanup from an unknown creation outcome. Cleanup retries never create again; abandoning an unknown attempt and starting another require separate explicit actions.
+- Drain retained feedback and accepted writes before retiring settlement sinks; report unsaved results and route process teardown warnings to Host diagnostics. This does not add a durable cross-process outbox.
+- Prefer context-preserving reconnect when applicable; confirm resetting to blank context and describe new sessions as independent. Forge idle return-to-project and auxiliary features such as Auto Review remain limited.
 
 ## 0.2.1-rc.4.1
 

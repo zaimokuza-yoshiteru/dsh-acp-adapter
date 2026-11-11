@@ -15,7 +15,6 @@ const copy: Record<AcpUiOutcome, AcpLocaleKey> = {
   'tool-approval-failed': 'toolApprovalChangeFailed',
   'fork-failed': 'nativeForkFailed',
   'fork-workspace-attach-failed': 'nativeForkWorkspaceAttachFailed',
-  'fork-unknown': 'nativeForkUnknown',
   'fork-storage-failed': 'nativeForkStorageFailed',
   'fork-access-denied': 'nativeForkAccessDenied',
   'fork-unavailable': 'nativeForkUnavailable',

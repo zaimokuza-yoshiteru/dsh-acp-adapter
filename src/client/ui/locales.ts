@@ -7,9 +7,22 @@
  */
 
 const zh = {
+  nativeForkUnknownTitle: '分叉创建结果尚未确认',
+  nativeForkUnknownDescription:
+    '请求可能已创建子会话。请先检查会话列表。放弃本次恢复只停止跟踪，不会删除或取消可能已创建的会话，也不会再次创建。',
+  nativeForkAbandonedTitle: '已放弃本次分叉恢复',
+  nativeForkAbandonedDescription:
+    '未确认结果的记录仍保留在此页签。若再次创建，将发起一个新的分叉，可能与此前已创建的子会话重复。关闭此窗口不会创建会话。',
+  nativeForkConfirmAbandon: '确认放弃本次恢复',
+  nativeForkConfirmNew: '确认创建另一个分叉',
+  nativeForkCleanupTitle: '分叉已创建并打开',
+  nativeForkCleanupDescription:
+    'ACP 来源已保存，但此页签的恢复记录尚未清理。可以继续使用子会话；重试清理不会再次创建或打开会话。',
+  nativeForkRetryCleanup: '重试清理恢复记录',
+  nativeForkRecoveryStorageFailed: '无法更新此页签的恢复记录，尚未执行下一步。请检查浏览器存储后重试。',
+  agentCurrentConfiguration: 'Agent 当前配置',
   nativeForkFailed: '未能完成 ACP 分叉。请在此页签重试，已记录的子会话会被沿用',
   nativeForkWorkspaceAttachFailed: '子会话已创建，但工作区关联失败，已暂停此分叉。请检查工作区',
-  nativeForkUnknown: '此前分叉的创建结果未确认，已阻止重复创建。请检查会话列表，保留已有子会话',
   nativeForkStorageFailed: '无法保存分叉恢复记录，已停止后续操作。请检查浏览器存储并保留已有子会话',
   nativeForkAccessDenied: '此分叉所需权限不足。请检查会话访问权限',
   nativeForkUnavailable: 'ACP 分叉服务暂不可用。请检查 Host 存储，并重新启用 ACP 插件后重试',
@@ -88,6 +101,7 @@ const zh = {
   teamModelLoading: '正在读取模型目录…',
   teamModelLoadFailed: '无法读取模型目录，请重试。',
   teamModelSaveFailed: '无法更改成员模型，请重试。',
+  teamModelSwitchUnavailable: '已开始的 ACP 成员暂不支持切换模型；可恢复当前模型以取消待生效选择。',
   teamModelEmpty: '暂无可选模型。',
   teamMemberModelPending: '下次请求生效；当前：{model}',
   teamStatusrunning: '运行中',
@@ -225,10 +239,15 @@ const zh = {
   recoveryClose: '关闭',
   recoveryReconnect: '重新连接原会话',
   recoveryReconnectExplanation: '继续使用原 Agent 上下文，不会重新发送上次的请求',
-  recoveryRebind: '放弃上下文并继续',
-  recoveryRebindExplanation: 'Agent 将从空白上下文开始，DSH 中已显示的历史会保留',
-  recoveryNew: '新建会话',
-  recoveryNewExplanation: '在新 DSH 会话中继续，当前会话保持不变',
+  recoveryRebind: '重置当前 Agent 上下文',
+  recoveryRebindExplanation: '需再次确认。Agent 将从空白上下文开始；此页历史只保留用于查看，不会自动交给 Agent',
+  recoveryRebindConfirmTitle: '确认放弃当前 Agent 上下文？',
+  recoveryRebindConfirmDescription:
+    '此操作会用空白 Agent 上下文替换当前绑定，不能据此恢复原上下文。DSH 历史仍可查看，但 Agent 不会继承这些历史；未确认的上次执行结果不会被撤销。',
+  recoveryRebindConfirm: '确认重置为空白上下文',
+  recoveryRebindCancel: '保留当前绑定',
+  recoveryNew: '新建独立会话',
+  recoveryNewExplanation: '从空白上下文开始，不继承本次对话或 Agent 状态；当前会话与记录保持不变',
   recoveryBusy: '处理中…',
   recoveryChoiceHelp: '选择一种继续方式',
   recoveryDiagnostics: '查看恢复诊断',
@@ -407,10 +426,16 @@ const zh = {
   'subagent.readOnlyBody': '这里仅保留 Agent 返回的任务和结果，不包含完整的内部执行过程，也不支持后续消息',
   'subagent.unavailable': '该信息不可用。',
   'subagent.observedTiming': '目录耗时是 DSH 观察到的委派时间，不代表模型或 Agent 自报耗时。',
-  crossBackendTitle: '需要新建会话',
-  crossBackendDescription: '当前会话将保持不变，新的后端将在新 DSH 会话中运行。',
+  crossBackendAgent: 'Agent',
+  crossBackendModelSwitchTitle: '已有 ACP 会话暂不支持切换模型',
+  crossBackendModelSwitchDescription:
+    '可保留原模型，或使用 {target} 新建独立会话。新会话不会继承当前 Agent 上下文；原会话的记录和草稿保持不变。',
+  crossBackendKeepModel: '保留当前模型',
+  crossBackendNewModelSession: '用所选模型新建独立会话',
+  crossBackendTitle: '切换 Agent 需要独立会话',
+  crossBackendDescription: '当前会话将保持不变，新 Agent 将从空白上下文开始，不继承当前对话。',
   crossBackendCancel: '取消',
-  crossBackendContinue: '继续',
+  crossBackendContinue: '新建独立会话',
   crossBackendWorking: '处理中…',
   crossBackendNoLocation: '找不到新会话的工作区或工作目录。',
   crossBackendFailureRestore: '无法恢复当前会话原先使用的模型',
@@ -428,6 +453,21 @@ const zh = {
 export type AcpLocaleKey = keyof typeof zh
 
 const en: Record<AcpLocaleKey, string> = {
+  nativeForkUnknownTitle: 'Fork creation outcome is unconfirmed',
+  nativeForkUnknownDescription:
+    'The request may already have created a session. Check the session list first. Abandoning recovery only stops tracking this attempt; it does not delete or cancel a possible session, or create another one.',
+  nativeForkAbandonedTitle: 'Recovery for this fork was abandoned',
+  nativeForkAbandonedDescription:
+    'The unconfirmed outcome is still recorded in this tab. Creating again starts a new fork that may duplicate an existing child. Closing this dialog creates nothing.',
+  nativeForkConfirmAbandon: 'Confirm abandoning recovery',
+  nativeForkConfirmNew: 'Confirm creating another fork',
+  nativeForkCleanupTitle: 'Fork created and opened',
+  nativeForkCleanupDescription:
+    'ACP provenance was saved, but this tab’s recovery record could not be cleared. The child is ready to use; retrying cleanup does not create or open a session again.',
+  nativeForkRetryCleanup: 'Retry clearing recovery record',
+  nativeForkRecoveryStorageFailed:
+    'This tab’s recovery record could not be updated. No next operation was started. Check browser storage and retry.',
+  agentCurrentConfiguration: 'Agent current configuration',
   acpQuestionSubmit: 'Submit',
   acpQuestionSubmitting: 'Sending…',
   acpQuestionCancel: 'Cancel',
@@ -463,8 +503,6 @@ const en: Record<AcpLocaleKey, string> = {
   nativeForkFailed: 'Could not finish this ACP fork. Retry in this tab to reuse its recorded child.',
   nativeForkWorkspaceAttachFailed:
     'The child was created, but workspace attachment failed. This fork is paused. Check the workspace.',
-  nativeForkUnknown:
-    'The previous fork result is unconfirmed, so another child will not be created. Check the session list and keep any existing child.',
   nativeForkStorageFailed:
     'Could not save fork recovery information; further work stopped. Check browser storage and keep any existing child.',
   nativeForkAccessDenied: 'This fork requires session access you do not have. Check the session access permissions.',
@@ -520,6 +558,8 @@ const en: Record<AcpLocaleKey, string> = {
   teamModelLoading: 'Loading model catalog…',
   teamModelLoadFailed: 'Could not load the model catalog. Retry.',
   teamModelSaveFailed: 'Could not change the member’s model. Please retry.',
+  teamModelSwitchUnavailable:
+    'An ACP member that has started cannot switch models yet. Select its current model to cancel a pending change.',
   teamModelEmpty: 'No models available.',
   teamMemberModelPending: 'Applies next request; current: {model}',
   teamStatusrunning: 'Running',
@@ -672,10 +712,17 @@ const en: Record<AcpLocaleKey, string> = {
   recoveryClose: 'Close',
   recoveryReconnect: 'Reconnect original session',
   recoveryReconnectExplanation: 'Reuse the original Agent context; the previous request will not be sent again.',
-  recoveryRebind: 'Abandon context and continue',
-  recoveryRebindExplanation: 'Start the Agent with blank context while keeping the DSH history shown here.',
-  recoveryNew: 'New session',
-  recoveryNewExplanation: 'Continue in a new DSH session; the current session stays unchanged.',
+  recoveryRebind: 'Reset the current Agent context',
+  recoveryRebindExplanation:
+    'Requires confirmation. The Agent starts blank; displayed history remains for reference and is not automatically sent to the Agent.',
+  recoveryRebindConfirmTitle: 'Abandon the current Agent context?',
+  recoveryRebindConfirmDescription:
+    'This replaces the current binding with blank Agent context and does not restore the original context. DSH history remains readable but is not inherited by the Agent. Any unconfirmed result of the previous operation is not undone.',
+  recoveryRebindConfirm: 'Confirm resetting to blank context',
+  recoveryRebindCancel: 'Keep the current binding',
+  recoveryNew: 'Create an independent session',
+  recoveryNewExplanation:
+    'Start with blank context, without inheriting this conversation or Agent state. The current session and its records stay unchanged.',
   recoveryBusy: 'Working…',
   recoveryChoiceHelp: 'Choose how to continue',
   recoveryDiagnostics: 'View recovery diagnostics',
@@ -860,10 +907,17 @@ const en: Record<AcpLocaleKey, string> = {
   'subagent.unavailable': 'This information is unavailable.',
   'subagent.observedTiming':
     'Catalog duration is the delegation wall time observed by DSH, not model or Agent-reported time.',
-  crossBackendTitle: 'New session required',
-  crossBackendDescription: 'The current session will stay unchanged; the new backend will run in a new DSH session.',
+  crossBackendAgent: 'Agent',
+  crossBackendModelSwitchTitle: 'Existing ACP sessions cannot switch models yet',
+  crossBackendModelSwitchDescription:
+    'Keep the original model, or create an independent session with {target}. The new session will not inherit the current Agent context. The original session history and draft stay unchanged.',
+  crossBackendKeepModel: 'Keep the current model',
+  crossBackendNewModelSession: 'Create an independent session with this model',
+  crossBackendTitle: 'Changing Agents requires an independent session',
+  crossBackendDescription:
+    'The current session stays unchanged. The new Agent starts with blank context and does not inherit this conversation.',
   crossBackendCancel: 'Cancel',
-  crossBackendContinue: 'Continue',
+  crossBackendContinue: 'Create an independent session',
   crossBackendWorking: 'Working…',
   crossBackendNoLocation: 'No workspace or working directory is available for the new session.',
   crossBackendFailureRestore: 'Could not restore the model used by the current session.',

@@ -1,7 +1,59 @@
 import { describe, expect, it, vi } from 'vitest'
-import { AcpLocalSettlementError, LocalSettlementOwner } from '../../../src/host/composition/local-settlement.ts'
+import {
+  AcpLocalSettlementError,
+  AcpLocalSettlementShutdownError,
+  LocalSettlementOwner,
+} from '../../../src/host/composition/local-settlement.ts'
 
 describe('local terminal settlement queue', () => {
+  it('makes a final local-only attempt before releasing an active sink', async () => {
+    const root = new LocalSettlementOwner()
+    const token = {}
+    const retire = root.registerSink('profile-a', token, {})
+    let writable = false
+    let writes = 0
+    await expect(
+      root.settle(
+        'session-a',
+        'terminal-a',
+        async () => {
+          writes++
+          if (!writable) throw new Error('storage unavailable')
+        },
+        token,
+        () => undefined,
+        {},
+        'profile-a',
+      ),
+    ).rejects.toBeInstanceOf(AcpLocalSettlementError)
+    writable = true
+    await root.close()
+    expect(writes).toBe(4)
+    expect(root.status('session-a')).toBeUndefined()
+    await retire()
+  })
+
+  it('reports every unsaved receipt when no sink remains instead of reporting successful shutdown', async () => {
+    const root = new LocalSettlementOwner()
+    const token = {}
+    const retire = root.registerSink('profile-a', token, {})
+    const write = vi.fn(async () => {
+      throw new Error('disk offline')
+    })
+    await expect(
+      root.settle('session-a', 'terminal-a', write, token, () => undefined, {}, 'profile-a'),
+    ).rejects.toBeInstanceOf(AcpLocalSettlementError)
+    await retire()
+    const closing = root.close()
+    expect(root.close()).toBe(closing)
+    await expect(closing).rejects.toMatchObject({
+      code: 'ACP_LOCAL_SETTLEMENT_SHUTDOWN_FAILED',
+      pending: [{ sessionId: 'session-a', profileId: 'profile-a', key: 'terminal-a' }],
+    })
+    await expect(closing).rejects.toBeInstanceOf(AcpLocalSettlementShutdownError)
+    expect(write).toHaveBeenCalledTimes(3)
+  })
+
   it('retries transient writes and clears status after success', async () => {
     const root = new LocalSettlementOwner()
     const owner = {}

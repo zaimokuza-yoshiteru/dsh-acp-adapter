@@ -248,6 +248,9 @@ export function AcpTeamManagement({
             model: facts?.model ?? null,
             ...(facts?.pendingModel === undefined ? {} : { pendingModel: facts.pendingModel }),
             ...(facts?.modelWritable === undefined ? {} : { modelWritable: facts.modelWritable }),
+            ...(facts?.modelUnavailableReason === undefined
+              ? {}
+              : { modelUnavailableReason: facts.modelUnavailableReason }),
             description: facts?.description ?? null,
             phase: projected.phase,
             ...(projected.error === undefined ? {} : { error: projected.error }),

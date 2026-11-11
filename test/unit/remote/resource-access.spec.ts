@@ -9,6 +9,8 @@ import type {} from '@deepseek-ai/dsh-api-gateway'
 import { AcpRemoteService } from '../../../src/remote/service.ts'
 import type { AcpTeamMemberView } from '../../../src/contract/remote.ts'
 import { AcpNativeForkError } from '../../../src/domain/session/native-fork-error.ts'
+import { ACP_CONFIG_IDENTIFIER_MAX } from '../../../src/contract/config-options.ts'
+import { acpDeclaredModelRoute } from '../../../src/contract/model-selection.ts'
 
 // Exercise the exact published Host dispatch and principal implementation,
 // without depending on generated plugin artifacts or starting an HTTP server.
@@ -143,6 +145,21 @@ async function fixture() {
 }
 
 describe('ACP resources through the published RC1 Gateway and Peer', () => {
+  it('accepts a framed maximum-length member model while rejecting oversized Agent values', async () => {
+    const h = await fixture()
+    h.hold(['lead', 'member'])
+    const model = acpDeclaredModelRoute('dsh-acp:'.padEnd(ACP_CONFIG_IDENTIFIER_MAX, 'x'))
+    await expect(
+      h.call(h.restricted, 'setTeamMemberModel', { lead: 'lead', sessionId: 'member', model }),
+    ).resolves.toMatchObject({ currentModel: 'test-model' })
+    expect(h.selectModel).toHaveBeenCalledExactlyOnceWith('lead', 'member', model)
+    for (const invalid of [`${model}x`, 'x'.repeat(ACP_CONFIG_IDENTIFIER_MAX + 1)])
+      await expect(
+        h.call(h.restricted, 'setTeamMemberModel', { lead: 'lead', sessionId: 'member', model: invalid }),
+      ).rejects.toMatchObject({ message: 'Invalid member model' })
+    expect(h.selectModel).toHaveBeenCalledOnce()
+  })
+
   it('gates the stable fork journal scope by source access and reports initialization failure', async () => {
     const h = await fixture()
     await expect(h.call(h.restricted, 'nativeForkScope', { sessionId: 'source' })).rejects.toMatchObject({

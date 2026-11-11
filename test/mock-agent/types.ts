@@ -7,7 +7,7 @@ export interface MockConfigOption {
   id: string
   name: string
   description?: string
-  category: string
+  category?: string
   type: 'select'
   currentValue: string
   options: { value: string; name: string; description?: string }[]

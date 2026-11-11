@@ -259,7 +259,15 @@ export async function installInstalledProfileRegistry(
   let disposed = false
   const log = createAcpLogger(ctx.logger)
   const sidecar = installAcpSidecar(ctx)
-  if (sidecar !== undefined) installAcpBackendGuard(ctx, { sidecar })
+  const profileAdapters = new Map<string, AcpProfileAdapter>()
+  if (sidecar !== undefined)
+    installAcpBackendGuard(ctx, {
+      sidecar,
+      ownsProvider: (provider) => {
+        const id = acpAgentIdFromRoute(provider)
+        return id !== undefined && profileAdapters.has(id)
+      },
+    })
   // The additive composition has no AgentLoop constructor to hand this seam
   // down. Resolve the host-owned service at the composition boundary instead;
   // keeping the explicit option is useful for isolated tests and embedders.
@@ -438,7 +446,6 @@ export async function installInstalledProfileRegistry(
   let activeAgents: Record<string, AcpAgentConfig> = {}
   // Adapters are also the owner of provider-composition recovery verbs. Keep
   // this map available before constructing the additive Remote service.
-  const profileAdapters = new Map<string, AcpProfileAdapter>()
   const retiringProfiles = new Set<Promise<void>>()
   const closeProfile = (adapter: AcpProfileAdapter): Promise<void> => {
     const completion = Promise.withResolvers<void>()
@@ -754,7 +761,7 @@ export async function installInstalledProfileRegistry(
                     })
                   })
                 },
-            (message) => log.warn(message, { operation: 'claude-draft-subagent-capability' }),
+            (message, fields) => log.warn(message, fields ?? { operation: 'claude-draft-subagent-capability' }),
             (sessionId) => resolveTerminalJobs(ctx, sessionId),
             (sessionId, capabilities, wireProfile, schemas) =>
               createDshToolBridge(

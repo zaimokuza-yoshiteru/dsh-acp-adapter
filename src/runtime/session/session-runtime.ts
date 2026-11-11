@@ -152,6 +152,8 @@ export interface AcpSessionRuntimeOptions {
   ) => Promise<acp.CreateElicitationResponse>
   /** One-shot diagnostic for optional private capability degradation. */
   readonly onCapabilityDegraded?: (message: string) => void
+  /** Host-owned structured process warning sink; teardown contains reporting failures. */
+  readonly onProcessWarn?: (message: string) => void
   /** Best-effort notification when a terminal ACP response is waiting on Host settlement. */
   readonly onHostSettlementChanged?: () => void
   /** Reopen a confirmed-cancelled native session before its next bound prompt. */
@@ -1473,6 +1475,7 @@ export class AcpSessionRuntime {
     const fileSystemHandlers = this.options.createFileSystemHandlers?.({ cwd: this.options.cwd, env: launch.env })
     const terminalHandlers = this.options.createTerminalHandlers?.({ cwd: this.options.cwd, env: launch.env })
     const connection = new AcpClientConnection(spec, {
+      ...(this.options.onProcessWarn === undefined ? {} : { onProcessWarn: this.options.onProcessWarn }),
       ...(this.options.enableClaudeDraftSubagents === true ? { enableClaudeDraftSubagents: true } : {}),
       ...(this.options.onCapabilityDegraded === undefined
         ? {}

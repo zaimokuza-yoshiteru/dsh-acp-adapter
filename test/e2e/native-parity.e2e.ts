@@ -23,6 +23,7 @@ import { launchAdapterWorld, root } from './scaffold.ts'
 import { backToPluginList, openAcpPluginDetail, returnToConversation } from './plugin-panel.helpers.ts'
 import { createAcpSidecar } from '../../src/persistence/sidecar.ts'
 import { nativeParityProfiles } from '../../scripts/e2e-shards.ts'
+import { confirmBlankRecovery } from './recovery-ui.helpers.ts'
 
 const profiles = nativeParityProfiles(process.env.DSH_E2E_NATIVE_PARITY_PROFILES)
 
@@ -1683,14 +1684,14 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
     recoveryLayoutEvidence.modalMotion = { normal: normalMotion, reduced: reducedMotion }
     let switchedToChinese = false
     try {
-      const rebind = dialog.getByRole('button', { name: 'Abandon context and continue', exact: true })
+      const rebind = dialog.getByRole('button', { name: 'Reset the current Agent context', exact: true })
       await rebind.click()
+      expect(heldRebind).not.toHaveBeenCalled()
+      await dialog.getByRole('button', { name: 'Confirm resetting to blank context', exact: true }).click()
       await expect.poll(() => dialog.getByRole('button', { name: 'Working…', exact: true }).count()).toBe(1)
-      expect(await dialog.getByRole('button', { name: 'Reconnect original session', exact: true }).isDisabled()).toBe(
-        true,
-      )
-      expect(await dialog.getByRole('button', { name: 'New session', exact: true }).isDisabled()).toBe(true)
-      const closeButtons = dialog.getByRole('button', { name: 'Close', exact: true })
+      expect(await dialog.getByRole('button', { name: 'Reconnect original session', exact: true }).count()).toBe(0)
+      expect(await dialog.getByRole('button', { name: 'Create an independent session', exact: true }).count()).toBe(0)
+      const closeButtons = dialog.getByRole('button', { name: 'Keep the current binding', exact: true })
       expect(await closeButtons.last().isDisabled()).toBe(true)
       await closeButtons.first().click({ force: true })
       expect(await dialog.isVisible()).toBe(true)
@@ -1793,7 +1794,7 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
       }
 
       const bodyViewport = required(await modalContent.boundingBox())
-      const newSession = dialog.getByRole('button', { name: 'New session', exact: true })
+      const newSession = dialog.getByRole('button', { name: 'Create an independent session', exact: true })
       await newSession.scrollIntoViewIfNeeded()
       const newSessionBounds = required(await newSession.boundingBox())
       expect(newSessionBounds.y).toBeGreaterThanOrEqual(bodyViewport.y)
@@ -1854,7 +1855,7 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
       await host.ctx.settings.replace('ui-theme', { preference: 'light' })
       await expect.poll(() => page.evaluate(() => document.documentElement.style.colorScheme)).toBe('light')
     }
-    await page.getByRole('button', { name: 'Abandon context and continue', exact: true }).click()
+    await confirmBlankRecovery(page)
     const next = await send('E2E_RECOVERED')
     await next.settled
     await page.getByText('E2E_RECOVERED_DONE', { exact: true }).waitFor()
@@ -1894,7 +1895,7 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
     const longDiagnostic = `E2E_ZOOM_RECOVERY_DIAGNOSTIC ${'readable recovery detail '.repeat(80)}`
     const heldRebind = vi.spyOn(service, 'rebindRecoveryBlank').mockRejectedValue(new Error(longDiagnostic))
     try {
-      await dialog.getByRole('button', { name: 'Abandon context and continue', exact: true }).click()
+      await confirmBlankRecovery(page)
       await dialog.getByText('The recovery action failed. Please retry.', { exact: true }).waitFor()
       const diagnostics = dialog.getByRole('button', { name: 'View recovery diagnostics', exact: true })
       await diagnostics.click()
@@ -1913,7 +1914,7 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
         .getByRole('heading', { name: 'ACP session recovery required', exact: true })
         .locator('..')
         .locator('..')
-      const newSession = dialog.getByRole('button', { name: 'New session', exact: true })
+      const newSession = dialog.getByRole('button', { name: 'Create an independent session', exact: true })
       await newSession.scrollIntoViewIfNeeded()
       const contentBounds = required(await content.boundingBox())
       const newSessionBounds = required(await newSession.boundingBox())
@@ -2020,7 +2021,7 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
         if (id === sessionId) runningStatuses.push(running)
       })
       try {
-        await dialog.getByRole('button', { name: 'Abandon context and continue', exact: true }).click()
+        await confirmBlankRecovery(page)
         await expect.poll(() => dialog.getByRole('button', { name: 'Working…', exact: true }).count()).toBe(1)
 
         const transitionedTurn = host.whenTurnSettled(60_000)
@@ -2096,7 +2097,7 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
       }
     })
     try {
-      await dialog.getByRole('button', { name: 'Abandon context and continue', exact: true }).click()
+      await confirmBlankRecovery(page)
       await expect.poll(() => dialog.getByRole('button', { name: 'Working…', exact: true }).count()).toBe(1)
       await host.ctx.agentDefaultModel.saveSelection({ provider: 'native-control', model: 'native-model' })
       // Use the Host's normal archive transition to clear the current view;

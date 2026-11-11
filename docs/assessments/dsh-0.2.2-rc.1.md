@@ -100,7 +100,7 @@ RC.1 `session/created` 只有 child，没有可验证的 source 和 exact cut，
 
 **#69 / Auto Review 没有因 OpenCode 修复而解决。** 官方新增的是[审核请求](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.2.2-rc.1/packages/experimental/auto-review/src/index.ts#L678)的 `sessionId` 和 `purpose: 'auto-review'`，针对原生 LLM provider 的路由、header 与缓存；不是外部 OpenCode ACP CLI 的会话支持。ACP 工具桥目前缺少审核要求的 native root `tool/call` 日志身份，审核路由又会命中明确拒绝 auxiliary call 的 ACP adapter。向正在等待工具审批的同一个 ACP 会话再发审核 prompt 还会造成并发/递归问题。
 
-可行专项是为真实桥接的 Host 工具接入官方 batch 日志，并给 ACP-origin Auto Review 配置独立的原生 reviewer route；这涉及日志/replay/可见历史、身份、取消、权限和模型费用，不是一处透传。Agent 自有工具权限不能靠伪造 native 调用日志实现兼容。
+可行专项是为真实桥接的 Host 工具接入官方 batch 日志，并给 ACP-origin Auto Review 配置独立的原生 reviewer route；还必须提供与 root tool-call 身份匹配的 assistant/message；这涉及日志/replay/可见历史、身份、取消、权限和模型费用，不是一处透传。Agent 自有工具权限不能靠伪造 native 调用日志实现兼容。
 
 ### 实验功能增量
 
@@ -125,7 +125,7 @@ RC.1 `session/created` 只有 child，没有可验证的 source 和 exact cut，
 - 补齐投影注销后的 checkpoint 保留、失活 snapshot 隐藏、旧 reader 最终推进及重新注册恢复；补齐缺来源 seeded child 在 Sidecar 重开后仍拒绝且不调用远端的回归。
 - 集成类型检查额外发现 Schedule API 变化：夹具迁移到 create/list/view/edit、一次 RRULE、显式目标、分页 list 和按 task 查询的 receipt，保留真实桥接、委派拒绝、活动/空闲投递及重装持久化。生产桥动态使用官方工具，无需另加 Schedule 适配分支。
 - 修正 Web provider 回归中过时的 `fiber.config` 身份断言：RC.1 区分 rawConfig/effectiveConfig；保留服务/有效配置身份、原始配置内容及真实 MCP 请求结果检查。
-- 旧设置导入没有加入简单 await：已验证 ConfigEditor 的重装/关闭等待环，不能用新死锁替换旧规范债。分叉共用入口、自动压缩、Auto Review、Forge 目录准入和 ConfigEditor 事务收尾共五项，单独记录在[上游方案](dsh-0.2.2-rc.1-upstream.md)，均未宣称已解决，也未对外发 issue/PR。
+- 旧设置导入没有加入简单 await：可控 facade 展示了 ConfigEditor 并发重装/关闭的等待环风险（普通 volatile 配置导入不必然触发 ACP 重装），不能用新死锁替换旧规范债。分叉共用入口、自动压缩、Auto Review、Forge 目录准入和 ConfigEditor 事务收尾共五项，单独记录在[上游方案](dsh-0.2.2-rc.1-upstream.md)，均未宣称已解决，也未对外发 issue/PR。
 
 ### 本次验证
 
@@ -150,3 +150,38 @@ RC.1 `session/created` 只有 child，没有可验证的 source 和 exact cut，
 - `desktop/rc1-lifecycle-result.json` 为 passed、rendererErrors 为空，16 张截图保存在同目录；验证后关闭本轮独立桌面。
 
 这是 macOS 独立桌面与可控协议验证，不是 Windows、签名安装包/更新、真实 Agent 或付费模型认证。首次加载与已建立会话切模是不同路径；上述成功不消除上游模型压缩和辅助请求限制。
+
+## 8. 插件侧收尾（2026-11-11，仍未发布）
+
+本轮按 P0-1、五项 P1、切模出口及恢复 UX 落地，继续提交到 `0.2.2-alpha`。未修改上游源码、版本或依赖；以下均使用插件公开接口，不以未来上游合入作为前提。
+
+### 行为与限制
+
+- **通用 Agent 入口**：成功探测但没有 `category=model` 目录时，原生模型位提供 `Agent current configuration`。没有 `configOptions`、缺失分类、未知分类均可开始会话；通用配置保持可见且后续 prompt 不擅自还原。`dsh-acp:current-config` 仅为 Host 路由，绝不作为模型值发送 Agent。真实值撞到保留前缀时可逆编码；协议探测和 Teams 也采用同一分类语义。认证、协议和进程启动失败没有被伪装成可用。
+- **切模出口**：RC.1 已开始的 ACP 会话不支持原地改变 Host 模型路由。原生 picker 改值后，插件自动恢复已提交模型；弹窗用 Agent 名称及模型名称解释，可保留当前模型或明确确认另开独立会话。原会话历史及草稿保留，新会话不继承 Agent 私有上下文。Host 在 compaction 的容量检查前以稳定错误码拒绝绕过 UI 的请求。首次请求前选择、同模型 reasoning 调整和其他 provider 不受此限制。即使某个自定义 preset 关闭了自动压缩，插件也保守采用同一能力边界，不猜测私有配置。
+- **Teams**：已开始成员禁用其他模型，成员事实流及时反映限制；旧的待切换意图不再自动应用。选择当前模型可取消旧意图。写入前同步核验实际 Session、原生选择、序号及最新请求，首次请求在异步读取期间完成也不会落入过期选择。缺少原模型目录项和路由编码长度的边界另有定向回归。
+- **P1-1**：原生分叉创建、登记并打开后，恢复记录清理失败显示“分叉已创建并打开”，只提供清理重试，不将成功误报为创建失败，也不重复创建。
+- **P1-2**：`creating` 表示远端结果未确认，可明确放弃该次恢复；原未知意图单独归档。放弃本身不创建、取消或删除远端会话，再次创建需第二次明确确认。关闭弹窗、重试与热重载不隐式重复创建，其他原生入口仍需可核验的 source/cut。
+- **P1-3**：Host 最终排空同时检查 pending calls、uncommitted feedback 和 retained feedback。已执行但尚未提交的反馈不再被当成清空。
+- **P1-4**：关闭先停新准入，等待已接纳工具、独立 prompt 终态处理和最终本地补存，再撤销 settlement sink。持续存储失败抛出含会话、profile、dispatch 身份的 `ACP_LOCAL_SETTLEMENT_SHUTDOWN_FAILED`，不静默清空或重做工具。此方案没有增加 durable outbox：进程最终退出后仍可能无法恢复未落盘的 payload，不能承诺零丢失。
+- **P1-5**：probe 与正常 runtime 的进程拆除警告接入结构化 Host logger；日志观察器故障不打断清理，独立 fallback 仍保留。
+- **恢复 UX**：可恢复状态优先显示“重新连接原会话”；“新建独立会话”不再为默认 primary，明确不会继承上下文。重置为空白 Agent 上下文需再次确认，并在提交时重查权限。390px 下切模/恢复动作换行，保留重要说明与操作。
+
+### 不实施的上游依赖能力
+
+不伪造 ACP 容量、不改写 compaction 或原生分叉私有方法、不仿造 assistant/tool 日志。完整原地切模、所有原生入口统一 fork、ACP Auto Review、Forge 所有入口的目录变更前准入、ConfigEditor 并发关闭的事务保证不在本轮实现；现有门禁与限制保留。上游设计仅作[分析备忘](dsh-0.2.2-rc.1-upstream.md)，不会要求用户等待或修改上游。
+
+### 本轮验证
+
+使用 Node `24.19.0`、pnpm `10.7.0`、精确 npm DSH `0.2.2-rc.1`。独立桌面仍采用第 7 节所述源码 shell/私有 Host glue 与正式 npm 公共库，使用全新 `.local/rc1-plugin-fixes/desktop/` profile、workspace、Electron user-data；未使用日常桌面资料、凭据或模型额度。协议夹具不等于真实 Agent 认证。
+
+- `pnpm typecheck`、`pnpm typecheck:e2e` 与最终 `pnpm build` 均通过；校验 101 个精确发布开发依赖、302 个包文件、121 个运行时 JavaScript 闭包。
+- `pnpm exec vitest run` 首轮 210 文件：2643 通过、1 个旧浮层数量断言失败、3 跳过；新增分叉恢复浮层纳入断言后，该注册文件 3/3 通过。后续 Teams 事实/竞态、协议探测分类、缺目录当前模型恢复及长路由边界分别定向 51/51、17/17、49/49 通过，覆盖有重叠，不相加宣称全量重跑。相关日志为 `unit.log`、`client-registration-final.log`、`.local/rc1-team-facts-routing.log` 和 `.local/rc1-followup-review/`。
+- 浏览器通过 8 个文件的 13 个不同场景：`generic-agent` 三变体，`native-model-picker`，`native-fork`，`recovery-queue`，`team-model-selection`，`teams-boundaries` 三场景，`qwen-code` 两场景，`team-card-layout`。没有运行整个 E2E/profile 矩阵。
+- 首轮浏览器 6/10 通过；4 个失败分别为 390px 导航浮层与业务弹窗的选择器重名、关闭与取消按钮重名、测试审批参数与协议夹具不一致、原生对照模型缺少容量声明。修正夹具后下一批 8/9 通过；剩余为固定日志路径累计旧 prompt，改为每次独立 Host 工作区后，切模用例最终 1/1 通过。原生对照模型的容量只定义在该测试适配器中，ACP 生产路由未伪造容量。日志为 `e2e.log`、`e2e-followup.log`、`e2e-model-exit-final.log`。
+- 分叉浏览器注入本页 journal 清理失败，核实 child 已打开、重试不重复创建；再模拟未知创建记录，经放弃归档及单独确认后才执行第二次创建。390px 恢复截图位于 `.local/native-fork-alpha2/web/`；该路径沿用测试既有约定，结果由本轮重新生成。
+- 新隔离 Electron 的 `desktop/rc1-lifecycle-result.json` 为 passed，7 组行为检查、23 张截图，`rendererErrors` 为空。首次 session/new 延迟 2241ms 后完成，MutationObserver 没有捕获重连活动提示；Chat/Trajectory/Diagnostics 各一份。
+- 通过真实 Plugins 开关分别热停启 ds-bot 与 ACP；活动 ACP 停用记录到 `session/cancel`，重新启用后新会话正常完成。通用 Agent 没有 configOptions 也可从原生 picker 进入，首次 prompt 没有任何模型配置写入。
+- 同 Agent 改模型时取消保留原会话与草稿，确认后独立 B 会话完成；返回原会话草稿仍在。崩溃恢复的空白重置先确认，取消保持恢复门禁，明确确认后后续请求成功。1440px 与 390px 明暗、切模/恢复/重置确认、诊断与抽屉截图已检查；无页面横向溢出，抽屉打开和关闭时 inert 状态正确。验证后已关闭该独立桌面。
+
+本轮没有调用真实模型或消耗模型额度，不构成 Windows、签名安装包/升级或真实 Agent 的兼容认证。上游 checkout 保持原状。

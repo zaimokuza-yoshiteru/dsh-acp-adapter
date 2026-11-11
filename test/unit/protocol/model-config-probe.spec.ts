@@ -64,6 +64,38 @@ function expectCleanup(events: Event[]) {
 }
 
 describe('disposable model configuration discovery', () => {
+  it.each(['absent', 'vendor-choice'])(
+    'does not mutate an opaque model id with category %s during optional discovery',
+    async (category) => {
+      const h = await setup({ PROBE_MODEL_CATEGORY: category })
+      const result = await AcpClientConnection.probe(h.spec, h.options)
+      expect(result.modelConfigOptions).toBeUndefined()
+      expect(result.configOptions?.[0]).toMatchObject({ id: 'model', currentValue: 'model-0' })
+      expect(h.events().some((event) => event.method === 'session/set_config_option')).toBe(false)
+      expect(expectCleanup(h.events())).toHaveLength(1)
+    },
+  )
+
+  it('keeps reserved-namespace Agent values unchanged on the wire and in discovered snapshots', async () => {
+    const h = await setup({ PROBE_MODEL_PREFIX: 'dsh-acp:', PROBE_MODEL_COUNT: '3' })
+    const result = await AcpClientConnection.probe(h.spec, h.options)
+    expect(Object.keys(result.modelConfigOptions ?? {})).toEqual([
+      'dsh-acp:model-0',
+      'dsh-acp:model-1',
+      'dsh-acp:model-2',
+    ])
+    expect(result.modelConfigOptions?.['dsh-acp:model-2']?.[0]).toMatchObject({
+      currentValue: 'effort-dsh-acp:model-2',
+    })
+    expect(
+      h
+        .events()
+        .filter((event) => event.phase === 'start')
+        .map((event) => event.value),
+    ).toEqual(['dsh-acp:model-1', 'dsh-acp:model-2'])
+    expectCleanup(h.events())
+  })
+
   it('discovers later controls, scans all 123 models, and keeps each worker session serial', async () => {
     const h = await setup()
     const result = await AcpClientConnection.probe(h.spec, h.options)

@@ -7,6 +7,7 @@ import type { AcpAgentConfig } from '../../../src/domain/session/agent-config.ts
 import type { AcpProfileRuntime } from '../../../src/host/composition/profile-adapter.ts'
 import type { AcpSidecar } from '../../../src/persistence/sidecar.ts'
 import type { DispatchLedgerStore, DispatchRecord } from '../../../src/runtime/session/dispatch-ledger.ts'
+import { ACP_CURRENT_CONFIG_MODEL_ID, acpDeclaredModelRoute } from '../../../src/contract/model-selection.ts'
 
 const profile: AcpAgentConfig = { name: 'Test', command: 'agent', args: ['acp'], env: {} }
 const message = createUserMessage({ content: [{ type: 'text', text: 'hello' }], source: { kind: 'user' } })
@@ -57,7 +58,7 @@ const session = () =>
 
 function runtimeFor(
   calls: Array<[string, string | boolean]>,
-  configOptions: NonNullable<AcpProfileRuntime['configOptions']>,
+  configOptions: AcpProfileRuntime['configOptions'],
   promptCount: { value: number },
   behavior: { throwOnSet?: boolean; confirm?: boolean; reasoningAfterModel?: string[]; failRollback?: boolean } = {},
 ): AcpProfileRuntime {
@@ -75,11 +76,11 @@ function runtimeFor(
         throw new Error('set_config_option failed')
       calls.push([id, value])
       if (behavior.confirm === false) return
-      currentOptions = currentOptions.map((option) =>
+      currentOptions = currentOptions?.map((option) =>
         option.id !== id ? option : option.type === 'select' ? { ...option, currentValue: String(value) } : option,
       )
       if (id === 'model' && behavior.reasoningAfterModel !== undefined) {
-        currentOptions = currentOptions.map((option) =>
+        currentOptions = currentOptions?.map((option) =>
           option.id !== 'thinking' || option.type !== 'select'
             ? option
             : {
@@ -133,6 +134,118 @@ async function drain(iterable: AsyncIterable<unknown>): Promise<void> {
 }
 
 describe('ACP M6a session configuration convergence', () => {
+  it.each([undefined, []].map((initial) => ({ initial })))(
+    'starts an Agent without model options using its current configuration ($initial)',
+    async ({ initial }) => {
+      const calls: Array<[string, string | boolean]> = []
+      const promptCount = { value: 0 }
+      const ledger = new Ledger()
+      const adapter = new AcpProfileAdapter(
+        'test',
+        () => profile,
+        seam(),
+        () => session(),
+        ledger,
+        undefined,
+        () => runtimeFor(calls, initial, promptCount),
+        sidecar,
+      )
+      await drain(adapter.stream(request('session-default', { model: ACP_CURRENT_CONFIG_MODEL_ID })))
+      expect(promptCount.value).toBe(1)
+      expect(calls).toEqual([])
+      expect(ledger.records[0]).toMatchObject({ model: ACP_CURRENT_CONFIG_MODEL_ID, state: 'settled' })
+    },
+  )
+
+  it.each([undefined, 'vendor-choice'])(
+    'keeps an uncategorized or unknown-category model id editable (%s)',
+    async (category) => {
+      const calls: Array<[string, string | boolean]> = []
+      const promptCount = { value: 0 }
+      const initial = [
+        {
+          id: 'model',
+          name: 'Vendor choice',
+          type: 'select' as const,
+          ...(category === undefined ? {} : { category }),
+          currentValue: 'one',
+          options: [
+            { value: 'one', name: 'One' },
+            { value: 'two', name: 'Two' },
+          ],
+        },
+      ]
+      const adapter = new AcpProfileAdapter(
+        'test',
+        () => profile,
+        seam(),
+        () => session(),
+        new Ledger(),
+        undefined,
+        () => runtimeFor(calls, initial, promptCount),
+        sidecar,
+      )
+      await drain(adapter.stream(request('session-generic-option', { model: ACP_CURRENT_CONFIG_MODEL_ID })))
+      expect(calls).toEqual([])
+      await adapter.setAgentSessionOption('session-generic-option', { kind: 'config', id: 'model', value: 'two' })
+      expect(calls).toEqual([['model', 'two']])
+      expect(promptCount.value).toBe(1)
+    },
+  )
+
+  it('decodes a declared model in the reserved namespace before calling the Agent', async () => {
+    const calls: Array<[string, string | boolean]> = []
+    const promptCount = { value: 0 }
+    const initial = options().map((option) =>
+      option.id !== 'model' || option.type !== 'select'
+        ? option
+        : {
+            ...option,
+            options: [
+              ...option.options.flatMap((entry) => ('options' in entry ? entry.options : [entry])),
+              { value: ACP_CURRENT_CONFIG_MODEL_ID, name: 'Actual model' },
+            ],
+          },
+    )
+    const adapter = new AcpProfileAdapter(
+      'test',
+      () => profile,
+      seam(),
+      () => session(),
+      new Ledger(),
+      undefined,
+      () => runtimeFor(calls, initial, promptCount),
+      sidecar,
+    )
+    await drain(
+      adapter.stream(request('session-reserved-model', { model: acpDeclaredModelRoute(ACP_CURRENT_CONFIG_MODEL_ID) })),
+    )
+    expect(calls).toEqual([['model', ACP_CURRENT_CONFIG_MODEL_ID]])
+    expect(promptCount.value).toBe(1)
+  })
+
+  it('does not silently turn an unavailable explicit model request into the default route', async () => {
+    const calls: Array<[string, string | boolean]> = []
+    const promptCount = { value: 0 }
+    const ledger = new Ledger()
+    const adapter = new AcpProfileAdapter(
+      'test',
+      () => profile,
+      seam(),
+      () => session(),
+      ledger,
+      undefined,
+      () => runtimeFor(calls, undefined, promptCount),
+      sidecar,
+    )
+    await expect(drain(adapter.stream(request('session-missing-explicit-model')))).rejects.toMatchObject({
+      code: 'ACP_CONFIG_UNSUPPORTED',
+    })
+    expect(promptCount.value).toBe(0)
+    expect(calls).toEqual([])
+    expect(ledger.records).toEqual([])
+  })
+
   it('exposes Agent-owned controls and context usage without duplicating model controls', async () => {
     const calls: Array<[string, string | boolean]> = []
     const promptCount = { value: 0 }

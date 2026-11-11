@@ -5,6 +5,7 @@ import type { ISessions, SessionBinding } from '@deepseek-ai/dsh-api-session-con
 import type { IWorkspaces } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { TypertClientRemote } from '@deepseek-ai/dsh-typert-protocol'
+import { requiresAcpModelSwitchExit } from '../../contract/model-transition.ts'
 import { CrossBackendTransactionController, resolveCrossBackendLocation } from '../data/cross-backend-controller.ts'
 import type {
   CrossBackendFailure,
@@ -18,6 +19,7 @@ type ModelProjection = {
 }
 
 export interface CrossBackendPending {
+  readonly reason: 'backend-change' | 'model-switch'
   readonly ticket: CrossBackendTicket
   readonly failure: CrossBackendFailure | null
   readonly blockingReason?: 'no-location'
@@ -60,7 +62,8 @@ export function shouldConfirmBackendTransition(
   const toAcp = isAcpRoute(input.next.provider, ownsRoute)
   if (!fromAcp && !toAcp) return false
   if (input.blank && input.lastUsed === null && toAcp) return false
-  if (fromAcp && toAcp && input.lastUsed?.provider === input.next.provider) return false
+  if (fromAcp && toAcp && input.lastUsed?.provider === input.next.provider)
+    return requiresAcpModelSwitchExit(input.lastUsed, input.next, ownsRoute)
   return true
 }
 
@@ -190,7 +193,15 @@ export class CrossBackendCoordinator {
     // same-profile reasoning change); if the user immediately chooses another
     // backend, cancellation must restore that visible pre-transition choice,
     // not the older committed model.
-    const sourceSelection = observed.lastProjection?.next ?? projection.lastUsed
+    const modelSwitch =
+      projection.next !== null && requiresAcpModelSwitchExit(projection.lastUsed, projection.next, this.ownsRoute)
+    const previousChoice = observed.lastProjection?.next
+    const sourceSelection =
+      modelSwitch &&
+      previousChoice != null &&
+      requiresAcpModelSwitchExit(projection.lastUsed, previousChoice, this.ownsRoute)
+        ? projection.lastUsed
+        : (previousChoice ?? projection.lastUsed)
     observed.lastProjection = projection
     if (sameSelection(observed.suppressed, projection.next) && observed.suppressed !== undefined) {
       observed.suppressed = undefined
@@ -259,6 +270,10 @@ export class CrossBackendCoordinator {
     if (this.disposed || this.observed.get(ticket.sourceSessionId as SessionId) !== observed) return
     const pending: CrossBackendPending = restored.ok
       ? {
+          reason:
+            source !== undefined && requiresAcpModelSwitchExit(source, ticket.targetSelection, this.ownsRoute)
+              ? 'model-switch'
+              : 'backend-change',
           ticket: {
             ...ticket,
             ...(source === undefined ? {} : { sourceAlreadyRestored: true }),
@@ -269,6 +284,10 @@ export class CrossBackendCoordinator {
           busy: false,
         }
       : {
+          reason:
+            source !== undefined && requiresAcpModelSwitchExit(source, ticket.targetSelection, this.ownsRoute)
+              ? 'model-switch'
+              : 'backend-change',
           ticket,
           failure: {
             phase: 'restore-source',

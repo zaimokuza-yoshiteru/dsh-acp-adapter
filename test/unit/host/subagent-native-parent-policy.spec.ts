@@ -80,7 +80,10 @@ async function setup(residual: ResidualBinding) {
   } as never)
   const llm = new LocalAdapter()
   ctx.llm.registerAdapter(['acp-old', 'deepseek', 'acp-child'], llm)
-  const mountGuard = (): Fiber => ctx.plugin((scope) => installAcpBackendGuard(scope, { sidecar }))
+  const mountGuard = (): Fiber =>
+    ctx.plugin((scope) =>
+      installAcpBackendGuard(scope, { sidecar, ownsProvider: (provider) => provider === 'acp-codex' }),
+    )
   const firstGuard = await mountGuard()
   const parent = await ctx.agentLoop.create(SessionId('parent'), { provider: 'acp-old', model: 'local' })
   await send(parent)
