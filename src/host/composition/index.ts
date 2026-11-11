@@ -10,6 +10,7 @@ import { installLegacySettingsImport } from './legacy-settings.ts'
 import { Config } from './config.ts'
 export { Config }
 import { installInstalledProfileRegistry } from './installed-profile-registry.ts'
+import { warnOnHostVersionMismatch } from './host-version.ts'
 
 export const name = 'dsh-acp-adapter'
 // Wait for the host-owned seams before creating routes. This avoids freezing a
@@ -21,6 +22,7 @@ export const name = 'dsh-acp-adapter'
 export const inject = ['llm', 'sessions', 'subprocess', 'dshHomePath', 'attachments', 'sessionProjections']
 
 export async function apply(ctx: Context, config: Config): Promise<void> {
+  warnOnHostVersionMismatch(ctx)
   ctx.inject(['settings'], (child) => {
     child.effect(() => child.settings.configure({ auto: false }, ctx.fiber))
   })
