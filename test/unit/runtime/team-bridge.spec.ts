@@ -1533,7 +1533,7 @@ describe('session-owned native Teams MCP bridge', () => {
   )
 
   it.each(['tool-restriction', 'definition-replacement', 'resync'] as const)(
-    'keeps the connection and accepted calls on %s, refusing only the changed tool',
+    'keeps the connection on %s, refusing only the changed tool and cancelling only revoked work',
     async (cause) => {
       const fixture = await setup(undefined, ['present', 'todo_write'], false)
       fixture.lease.beginPrompt(new AbortController().signal)
@@ -1560,8 +1560,10 @@ describe('session-owned native Teams MCP bridge', () => {
         fixture.definitions.set('present', { ...fixture.definitions.get('present') })
         fixture.listeners.get('tools/change')!()
       }
+      await Promise.resolve()
       expect(fixture.lease.signal.aborted).toBe(false)
-      expect(bodySignal.aborted).toBe(false)
+      // A revoked tool's accepted call is cancelled; a republished one keeps running.
+      expect(bodySignal.aborted).toBe(cause === 'tool-restriction')
       released.resolve()
       expect(await call).toMatchObject({ content: [{ type: 'text', text: 'accepted call settled' }] })
       // The changed tool is unavailable for the rest of this connection and cannot be approved.
@@ -1575,7 +1577,21 @@ describe('session-owned native Teams MCP bridge', () => {
         response: { outcome: { outcome: 'cancelled' } },
       })
       expect(fixture.execute).toHaveBeenCalledOnce()
-      // Unrelated tools keep working and remain approvable.
+      // Unrelated tools keep working and remain approvable; their accepted calls are never cancelled.
+      const other = Promise.withResolvers<AbortSignal>()
+      const otherReleased = Promise.withResolvers<void>()
+      fixture.execute.mockImplementationOnce(async (input) => {
+        other.resolve(input.signal)
+        await otherReleased.promise
+        return { content: [{ type: 'text', text: 'other settled' }], isError: false }
+      })
+      const otherCall = fixture.client.callTool({ name: 'todo_write', arguments: {} })
+      const otherSignal = await other.promise
+      fixture.listeners.get('tools/change')!()
+      await Promise.resolve()
+      expect(otherSignal.aborted).toBe(false)
+      otherReleased.resolve()
+      expect((await otherCall).isError).not.toBe(true)
       expect((await fixture.client.callTool({ name: 'todo_write', arguments: {} })).isError).not.toBe(true)
       expect(await fixture.lease.inspectPermission!(fixture.permission('todo_write'))).toMatchObject({
         reason: 'auto-approved',

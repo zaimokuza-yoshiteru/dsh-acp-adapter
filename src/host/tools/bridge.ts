@@ -891,6 +891,20 @@ export async function createDshToolBridge(
   // Legacy cancellation is a separate stateless HTTP request handled by another Server instance.
   // Keep only active lease-local calls here so that notification can reach the executing request.
   const activeCalls = new Map<string | number, AbortController>()
+  // Accepted calls by tool, so withdrawing one tool cancels its own work and nothing else.
+  const callsByTool = new Map<string, Set<AbortController>>()
+  // A replacement withdraws and republishes a name in one synchronous burst;
+  // judge after it settles. A name still absent then was revoked (restricted,
+  // or its provider removed) and its accepted calls must not keep running.
+  const cancelWithdrawnToolCalls = (): void => {
+    queueMicrotask(() => {
+      if (lifetime.signal.aborted) return
+      for (const [name, running] of callsByTool) {
+        if (name === RUN_CODE_NAME || tools.get(name, agent) !== undefined) continue
+        for (const cancellation of running) cancellation.abort(new Error('DSH tool withdrawn'))
+      }
+    })
+  }
   let retirePipelineConsumer: (() => Promise<void>) | undefined
   let pipelineOwnerClosing = false
   let pipeline: ToolExecutionPipeline | undefined
@@ -1022,6 +1036,8 @@ export async function createDshToolBridge(
           throw new Error('ACP_TEAM_PROMPT_INACTIVE')
         if (definition === undefined || !isDefinitionLive(definition.name, definition))
           throw new Error('ACP_TEAM_TOOL_UNAVAILABLE')
+        const running = callsByTool.get(definition.name) ?? new Set()
+        callsByTool.set(definition.name, running.add(cancellation))
         const args = request.params.arguments ?? {}
         const registered = registrations.get(definition.name)
         if (registered !== undefined) teamContext?.validateArguments(registered, args)
@@ -1434,6 +1450,7 @@ export async function createDshToolBridge(
         calls.delete(call)
         callPrompt.calls.delete(callRecord)
         if (activeCalls.get(requestId) === cancellation) activeCalls.delete(requestId)
+        callsByTool.get(request.params.name)?.delete(cancellation)
       }
     })
     const transport = new NodeStreamableHTTPServerTransport({ enableJsonResponse: true })
@@ -1898,6 +1915,7 @@ export async function createDshToolBridge(
   listeners.push(
     ctx.on('tools/change', () => {
       if (!live(false) || !anyToolLive()) void lease.close()
+      else cancelWithdrawnToolCalls()
     }),
   )
   listeners.push(
@@ -1907,7 +1925,9 @@ export async function createDshToolBridge(
   )
   listeners.push(
     ctx.on('internal/service', (name) => {
-      if (['agentTeams', 'agents', 'tools'].includes(name) && (!live(false) || !anyToolLive())) void lease.close()
+      if (!['agentTeams', 'agents', 'tools'].includes(name)) return
+      if (!live(false) || !anyToolLive()) void lease.close()
+      else cancelWithdrawnToolCalls()
     }),
   )
   return lease
