@@ -156,9 +156,21 @@ it.each(['claude', 'codex', 'devin', 'kimi'])(
         await control.waitFor()
         expect(await control.getAttribute('aria-expanded')).toBe('false')
         expect(await page.getByText('演示结束。', { exact: true }).isVisible()).toBe(true)
-        expect(await page.getByText('页面骨架已完成。', { exact: true }).isVisible()).toBe(false)
+        // DSH keeps every Assistant reply when work details fold (ui-chat.foldedReplies defaults to all).
+        expect(await page.getByText('页面骨架已完成。', { exact: true }).isVisible()).toBe(true)
         await verifyOrder()
       }
+      // "Final answer only" folds earlier replies with the process and keeps the closing answer.
+      await host.ctx.settings.replace('ui-chat', { foldedReplies: 'final' })
+      const processControl = page.locator('[data-turn-process-tool-calls="4"]')
+      // Changing the preference may reopen the latest process; fold it through its native control.
+      await expect.poll(() => page.getByText('页面骨架已完成。', { exact: true }).getAttribute('hidden')).toBeNull()
+      if ((await processControl.getAttribute('aria-expanded')) === 'true') await processControl.click()
+      await expect.poll(() => processControl.getAttribute('aria-expanded')).toBe('false')
+      await expect.poll(() => page.getByText('页面骨架已完成。', { exact: true }).isVisible()).toBe(false)
+      expect(await page.getByText('演示结束。', { exact: true }).isVisible()).toBe(true)
+      await host.ctx.settings.replace('ui-chat', { foldedReplies: 'all' })
+      await expect.poll(() => page.getByText('页面骨架已完成。', { exact: true }).isVisible()).toBe(true)
       const historicAnswer = page.getByText('页面骨架已完成。', { exact: true }).last()
       const historicKey = required(
         await historicAnswer.locator('xpath=ancestor::*[@data-chat-node-key][1]').getAttribute('data-chat-node-key'),

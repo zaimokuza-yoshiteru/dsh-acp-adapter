@@ -403,7 +403,8 @@ describe('native work-details preferences with the ACP protocol fixture', () => 
           .toBe(timing === 'next-input' ? 'true' : null)
       }
       // Native fold state and disclosure resets precede the shared frame-clock hidden commit.
-      await expect.poll(() => page.getByText(`E2E_PREF_PROGRESS ${id}`, { exact: true }).isVisible()).toBe(remainsOpen)
+      // A progress reply is an Assistant reply: DSH keeps it when work details fold (foldedReplies defaults to all).
+      await expect.poll(() => page.getByText(`E2E_PREF_PROGRESS ${id}`, { exact: true }).isVisible()).toBe(true)
       await verifyFlowGeometry(id, 'completed')
       await page.screenshot({ path: join(evidence, `${id}-completed.png`) })
       const next = await send(`E2E_WORK_DETAILS_NEXT ${id}`)
@@ -414,9 +415,7 @@ describe('native work-details preferences with the ACP protocol fixture', () => 
       await expect
         .poll(() => current.planButton.getAttribute('aria-expanded'))
         .toBe(mode === 'verbose' ? 'true' : 'false')
-      await expect
-        .poll(() => page.getByText(`E2E_PREF_PROGRESS ${id}`, { exact: true }).isVisible())
-        .toBe(mode === 'verbose')
+      await expect.poll(() => page.getByText(`E2E_PREF_PROGRESS ${id}`, { exact: true }).isVisible()).toBe(true)
       await verifyFlowGeometry(id, 'folded-after-next-input')
       if (mode === 'verbose') expect(await current.control.isDisabled()).toBe(true)
       else {
