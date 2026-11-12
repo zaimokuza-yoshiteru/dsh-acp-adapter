@@ -228,6 +228,7 @@ const zh = {
   openExisting: '打开已有配置',
   stateSavedUnverified: '未探测',
   stateReady: '协议可用',
+  stateLastCheckFailed: '上次检查未通过',
   'subagent.openRecord': '打开只读记录',
   incompatibleInstruction: 'ACP 路由已停用；请将 DSH 调整到插件支持的版本后重载插件。普通模型会话不受影响。',
   recoveryTitle: 'ACP 会话需要恢复',
@@ -700,6 +701,7 @@ const en: Record<AcpLocaleKey, string> = {
   openExisting: 'Open existing configuration',
   stateSavedUnverified: 'not probed',
   stateReady: 'protocol available',
+  stateLastCheckFailed: 'last check failed',
   'subagent.openRecord': 'Open read-only record',
   incompatibleInstruction:
     'ACP routes are disabled. Move DSH to a plugin-supported version and reload the plugin; native model sessions are unaffected.',

@@ -446,8 +446,15 @@ function AgentCard(props: {
 
   const healthRow = healthRowOf(props.health.rows, id)
   const state = healthRow?.state
-  const statusText = state === undefined ? t('stateSavedUnverified') : stateText(t, state)
-  const statusTone = state === 'ready' ? 'success' : 'neutral'
+  // A failed check is a fact about that check, shown apart from "never checked".
+  // It does not claim to track the Agent's login or installation afterwards.
+  const lastCheckFailed = state !== 'ready' && (healthRow?.probe.status === 'error' || checkError !== undefined)
+  const statusText = lastCheckFailed
+    ? t('stateLastCheckFailed')
+    : state === undefined
+      ? t('stateSavedUnverified')
+      : stateText(t, state)
+  const statusTone = state === 'ready' ? 'success' : lastCheckFailed ? 'warning' : 'neutral'
   const diagnostic = healthDiagnostic(t, config.command, healthRow, checkError)
 
   const children: ReactNode[] = [
