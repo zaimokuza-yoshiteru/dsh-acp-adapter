@@ -8,7 +8,7 @@
 export const ACP_SETTINGS_NS = 'dsh-acp-adapter'
 
 /** LLM route id prefix; agent `<id>` routes as `acp-<id>`. */
-export const ACP_ROUTE_PREFIX = 'acp-'
+const ACP_ROUTE_PREFIX = 'acp-'
 
 /**
  * Agent ids double as settings path segments, health-endpoint URL segments,
@@ -66,7 +66,7 @@ export const ACP_AGENT_IDS: readonly AcpAgentId[] = ['devin', 'codex', 'kimi', '
 /** Profile-ID fallback predates explicit runtime bindings and is limited to the original four IDs. */
 const LEGACY_RUNTIME_IDS: readonly AcpAgentId[] = ['devin', 'codex', 'kimi', 'claude']
 
-export const RUNTIME_REGISTRY_IDS: Readonly<Record<AcpAgentId, string>> = {
+const RUNTIME_REGISTRY_IDS: Readonly<Record<AcpAgentId, string>> = {
   devin: 'devin',
   codex: 'codex-acp',
   kimi: 'kimi',

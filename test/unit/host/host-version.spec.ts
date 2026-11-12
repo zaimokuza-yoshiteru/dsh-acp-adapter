@@ -1,6 +1,16 @@
 import { describe, expect, it, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
 import type { Context } from '@deepseek-ai/cordis'
-import { hostVersionMismatch, warnOnHostVersionMismatch } from '../../../src/host/composition/host-version.ts'
+import {
+  currentHostVersionMismatch,
+  hostVersionMismatch,
+  warnOnHostVersionMismatch,
+} from '../../../src/host/composition/host-version.ts'
+
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>()
+  return { ...actual, readFileSync: vi.fn(actual.readFileSync) }
+})
 
 const manifest = { version: '0.2.2-rc.1.1', engines: { dsh: '0.2.2-rc.1' } }
 
@@ -21,6 +31,21 @@ describe('Host version check', () => {
     const error = vi.fn()
     warnOnHostVersionMismatch({ logger: { error } } as unknown as Context)
     expect(error).not.toHaveBeenCalled()
+  })
+
+  it('reads versions again after a temporary manifest failure', () => {
+    const read = vi.mocked(readFileSync)
+    read.mockImplementationOnce(() => {
+      throw new Error('temporary read failure')
+    })
+    expect(currentHostVersionMismatch()).toBeUndefined()
+    read.mockReturnValueOnce(JSON.stringify({ ...manifest, engines: { dsh: '0.0.0' } }))
+    expect(currentHostVersionMismatch()).toEqual({
+      adapter: manifest.version,
+      required: '0.0.0',
+      running: manifest.engines.dsh,
+    })
+    expect(currentHostVersionMismatch()).toBeUndefined()
   })
 
   it('logs one actionable line on a mismatch and stays quiet when versions cannot be read', () => {

@@ -28,9 +28,9 @@ import type {
 } from './terminal-job.ts'
 
 /** Keep individual terminal snapshots bounded even when an agent omits a limit. */
-export const ACP_TERMINAL_DEFAULT_OUTPUT_BYTES = 1_048_576
+const ACP_TERMINAL_DEFAULT_OUTPUT_BYTES = 1_048_576
 export const ACP_TERMINAL_MAX_OUTPUT_BYTES = 8 * 1_024 * 1_024
-export const ACP_TERMINAL_RELEASE_WAIT_MS = 10_000
+const ACP_TERMINAL_RELEASE_WAIT_MS = 10_000
 export const ACP_TERMINAL_MAX_ACTIVE = 64
 
 export interface AcpTerminalHandlersOptions {

@@ -356,6 +356,106 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
     await returnToConversation(page)
   })
 
+  it('localizes adapter-owned activity titles at 390px while preserving Agent titles', async () => {
+    const { settled } = await send('E2E_RICH')
+    const id = await settled
+    const sidecar = createAcpSidecar({ root: required(host.ctx.dshHomePath)('dsh-acp') })
+    try {
+      const latest = required((await sidecar.activitySnapshot(id, 200)).at(-1))
+      const anchor = latest.promptAnchorMessageId
+      const base = {
+        dshSessionId: id,
+        ownerDshSessionId: id,
+        promptAnchorMessageId: anchor,
+        time: Date.now(),
+      }
+      // Historical orphan content remains visible without a parent tool row.
+      // Seed real persistence, then reopen the conversation through the Host.
+      await sidecar.upsertActivity({
+        ...base,
+        activityId: `${anchor}:part:locale-orphan:0:terminal`,
+        kind: 'terminal',
+        status: 'completed',
+        presentation: 'Terminal activity',
+        rawDetail: JSON.stringify({ type: 'terminal', terminalId: 'locale-terminal' }),
+      })
+      await sidecar.upsertActivity({
+        ...base,
+        activityId: `${anchor}:part:locale-orphan:1:diff`,
+        kind: 'diff',
+        status: 'completed',
+        presentation: 'File change · 本地化示例.ts',
+        rawDetail: JSON.stringify({
+          type: 'diff',
+          path: '/workspace/本地化示例.ts',
+          oldText: 'before',
+          newText: 'after',
+        }),
+      })
+      await sidecar.upsertActivity({
+        ...base,
+        activityId: `${anchor}:tool:locale-fallback`,
+        kind: 'tool',
+        status: 'completed',
+        presentation: 'Agent tool activity',
+        rawDetail: JSON.stringify({ titleSource: 'adapter-fallback', rawOutput: 'Fallback tool result' }),
+      })
+      await sidecar.upsertActivity({
+        ...base,
+        activityId: `${anchor}:tool:locale-real-agent-title`,
+        kind: 'tool',
+        status: 'unfinished',
+        presentation: 'Agent tool activity',
+        rawDetail: '{}',
+      })
+      await sidecar.flush()
+    } finally {
+      await sidecar.dispose()
+    }
+    const originalScheme = await page.evaluate(() => document.documentElement.style.colorScheme)
+    try {
+      await page.reload()
+      await page.getByText('E2E_RICH_DONE', { exact: true }).last().waitFor()
+      await expandProcess()
+      await page.setViewportSize({ width: 390, height: 900 })
+      // Keep the same mounted rows while changing locale; locale.bind is stable.
+      // Disclosure buttons include a status in their accessible name, while the
+      // native generic tool label also appends its argument summary.
+      await page.getByText('Terminal activity', { exact: true }).waitFor()
+      const fallbackLabel = page.getByText(/^Agent 工具活动(?:\s*·\s*\{\})?$/)
+      await host.ctx.settings.replace('locale', { preference: 'zh' })
+      for (const theme of ['light', 'dark']) {
+        await host.ctx.settings.replace('ui-theme', { preference: theme })
+        await expect.poll(() => page.evaluate(() => document.documentElement.style.colorScheme)).toBe(theme)
+        for (const title of ['终端活动', '文件变更 · 本地化示例.ts', 'Agent tool activity']) {
+          const label = page.getByText(title, { exact: true })
+          await label.waitFor()
+          const bounds = required(await label.boundingBox())
+          expect(bounds.x).toBeGreaterThanOrEqual(0)
+          expect(bounds.x + bounds.width).toBeLessThanOrEqual(391)
+        }
+        await fallbackLabel.waitFor()
+        expect(
+          await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth),
+        ).toBeLessThanOrEqual(1)
+        if (process.env.DSH_E2E_SCREENSHOTS) {
+          mkdirSync(process.env.DSH_E2E_SCREENSHOTS, { recursive: true })
+          await page.screenshot({
+            path: join(process.env.DSH_E2E_SCREENSHOTS, `${profile}-activity-locales-${theme}-390.png`),
+          })
+        }
+      }
+      await host.ctx.settings.replace('locale', { preference: 'en' })
+      await page.getByText('Terminal activity', { exact: true }).waitFor()
+      await page.getByText('File change · 本地化示例.ts', { exact: true }).waitFor()
+      await fallbackLabel.waitFor({ state: 'hidden' })
+      await page.getByText('Agent tool activity', { exact: true }).waitFor()
+      await page.getByText('Agent tool activity · {}', { exact: true }).waitFor()
+    } finally {
+      await host.ctx.settings.replace('ui-theme', { preference: originalScheme })
+    }
+  })
+
   it('keeps the audit ledger and wrapped details in the native trajectory viewport', async () => {
     page.setDefaultTimeout(10_000)
     const { settled } = await send('E2E_JOB_OTHER')

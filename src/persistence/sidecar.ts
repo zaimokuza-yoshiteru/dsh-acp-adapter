@@ -158,9 +158,9 @@ export const ACP_SIDECAR_DB_FILENAME = 'sidecar.sqlite'
 export const ACP_SIDECAR_AUDIT_QUEUE_LIMIT = 1024 as const
 
 /** Activity presentation/detail bounds keep the journal safe to render and page. */
-export const ACP_ACTIVITY_PRESENTATION_MAX = 2_048 as const
+const ACP_ACTIVITY_PRESENTATION_MAX = 2_048 as const
 export const ACP_ACTIVITY_RAW_MAX = 16_384 as const
-export const ACP_ACTIVITY_REF_MAX = 512 as const
+const ACP_ACTIVITY_REF_MAX = 512 as const
 
 /** Durable provider dispatch state. A committed `dispatch-uncertain` row is
  * intentionally visible after a host crash; a later request must not silently
@@ -599,7 +599,7 @@ export interface AcpSidecar {
   settleDispatch(sessionId: SessionId, key: string, settledAt?: number): Promise<void>
   /** Read a dispatch ledger row after restart. */
   readDispatch(sessionId: SessionId, key: string): Promise<AcpDispatchRecord | undefined>
-  /** Explicitly resolve a user-reviewed uncertain dispatch without replaying it. */
+  /** Clear a user-reviewed dispatch, or an exact key proven not to have crossed the RPC boundary. */
   clearDispatch(sessionId: SessionId, key?: string): Promise<void>
   /** Upsert one external ACP activity, preserving its first-seen sequence. */
   upsertActivity(record: AcpActivityInput): Promise<AcpActivityRecord>

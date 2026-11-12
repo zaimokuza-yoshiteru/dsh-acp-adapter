@@ -99,7 +99,7 @@ import type {
 export type { AcpAuditSummaryCode } from '../contract/remote.ts'
 
 /** `<command> --version` 尽力而为的短超时（毫秒）。 */
-export const DEFAULT_VERSION_PROBE_TIMEOUT_MS = 3_000
+const DEFAULT_VERSION_PROBE_TIMEOUT_MS = 3_000
 
 type AcpRemoteErrorCode = `dsh-acp/${AcpErrorCategory}`
 
@@ -157,7 +157,7 @@ async function preserveAcpFailure<T>(operation: () => Promise<T>): Promise<T> {
  * 把 initialize 响应的 `AgentCapabilities` 实际值归一化为展示事实；
  * 未握手/未广告（undefined/null）归 null（UI 显示「未知」，绝不编造）。
  */
-export function capabilityFactsOf(caps: acp.AgentCapabilities | null | undefined): AcpCapabilityFacts | null {
+function capabilityFactsOf(caps: acp.AgentCapabilities | null | undefined): AcpCapabilityFacts | null {
   if (caps === undefined || caps === null) return null
   return {
     loadSession: caps.loadSession === true,

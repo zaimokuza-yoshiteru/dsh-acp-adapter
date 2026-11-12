@@ -1,6 +1,6 @@
 import { expect, it, vi } from 'vitest'
 import { CrossBackendModal, crossBackendSelectionLabel } from '../../../src/client/ui/CrossBackendModal.ts'
-import { ACP_CURRENT_CONFIG_MODEL_ID } from '../../../src/contract/model-selection.ts'
+import { ACP_CURRENT_CONFIG_MODEL_ID, acpDeclaredModelRoute } from '../../../src/contract/model-selection.ts'
 import type { ModelCatalog } from '@deepseek-ai/dsh-api-session-controller/types'
 
 const t = (key: string, params?: Record<string, string | number>): string =>
@@ -20,6 +20,22 @@ it('shows configured Agent and catalog model names without exposing provider rou
   expect(crossBackendSelectionLabel({ ...selection, model: ACP_CURRENT_CONFIG_MODEL_ID }, catalog, 'My Agent', t)).toBe(
     'My Agent · agentCurrentConfiguration',
   )
+})
+
+it('preserves real Agent model names even when a wire model collides with the current-config sentinel', () => {
+  const model = acpDeclaredModelRoute(ACP_CURRENT_CONFIG_MODEL_ID)
+  const actualName = 'Agent current configuration'
+  expect(
+    crossBackendSelectionLabel(
+      { ...selection, model },
+      {
+        ...catalog,
+        groups: [{ id: selection.provider, name: 'Agent Name', models: [{ id: model, name: actualName }] }],
+      },
+      'My Agent',
+      t,
+    ),
+  ).toBe(`My Agent · ${actualName}`)
 })
 
 it('offers keeping the current model and explicitly creating an independent model-switch session', () => {

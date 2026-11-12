@@ -46,7 +46,7 @@ async function receive(request) {
     log({ method })
     send(id, {
       protocolVersion: 1,
-      agentInfo: { name: 'model-config-fixture', version: '1' },
+      agentInfo: { name: process.env.PROBE_AGENT_NAME ?? 'model-config-fixture', version: '1' },
       agentCapabilities: { sessionCapabilities: { close: {}, delete: {} } },
     })
     return

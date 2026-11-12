@@ -5,9 +5,9 @@ import path from 'node:path'
 import { randomUUID, createHash } from 'node:crypto'
 import type * as acp from '@agentclientprotocol/sdk'
 
-export const ACP_FS_MAX_BYTES = 8 * 1024 * 1024
+const ACP_FS_MAX_BYTES = 8 * 1024 * 1024
 export const ACP_FS_MAX_LINES = 20_000
-export const ACP_FS_MAX_LINE = 1_000_000
+const ACP_FS_MAX_LINE = 1_000_000
 const ACP_FS_DEFAULT_TIMEOUT_MS = 30_000
 
 /** Stable, content-free reason codes for failed filesystem requests. */

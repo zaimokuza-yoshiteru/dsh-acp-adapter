@@ -26,18 +26,13 @@ function readVersions(): HostVersionMismatch | undefined {
   return hostVersionMismatch(manifest, host.version)
 }
 
-let cached: { readonly mismatch: HostVersionMismatch | undefined } | undefined
-
-/** The mismatch for this process, read once; unreadable versions are no mismatch. */
+/** Read current installed versions; unreadable metadata is not evidence of a mismatch. */
 export function currentHostVersionMismatch(): HostVersionMismatch | undefined {
-  if (cached === undefined) {
-    try {
-      cached = { mismatch: readVersions() }
-    } catch {
-      cached = { mismatch: undefined }
-    }
+  try {
+    return readVersions()
+  } catch {
+    return undefined
   }
-  return cached.mismatch
 }
 
 /**

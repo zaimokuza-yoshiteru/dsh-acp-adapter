@@ -4,6 +4,7 @@ import {
   activityRowElement,
   ActivityRow,
   completedProjectedChild,
+  nativeActivityToolBlock,
   usesNativeActivityToolProjection,
   visibleActivityRows,
 } from '../../../src/client/ui/AcpActivityNode.ts'
@@ -13,6 +14,15 @@ import { AcpActivityJournalHub } from '../../../src/client/data/activity-journal
 import { acpReplayPayloadOf } from '../../../src/client/data/acp-replay-payload.ts'
 import type { ConversationLocation } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { ReactElement } from 'react'
+import { en, zh } from '../../../src/client/ui/locales.ts'
+import type { AcpActivityView } from '../../../src/contract/remote.ts'
+
+const activityTranslate = (locale: 'en' | 'zh') =>
+  ((key, params) => {
+    let text: string = (locale === 'zh' ? zh : en)[key]
+    for (const [name, value] of Object.entries(params ?? {})) text = text.replaceAll(`{${name}}`, String(value))
+    return text
+  }) as Parameters<typeof activityRowElement>[0]['t']
 
 const payload = {
   kind: 'dsh-acp' as const,
@@ -79,6 +89,119 @@ function activityStreamFactory(hooks: { accept?: () => void; dispose?: () => voi
 }
 
 describe('ACP activity conversation node', () => {
+  it.each([
+    {
+      kind: 'terminal' as const,
+      suffix: 'terminal',
+      rawDetail: '{"type":"terminal","terminalId":"t1"}',
+      title: '终端活动',
+    },
+    { kind: 'resource' as const, suffix: 'resource', rawDetail: '{"type":"resource"}', title: 'Agent 资源' },
+    { kind: 'other' as const, suffix: 'content', rawDetail: '{"type":"content"}', title: '工具输出' },
+    {
+      kind: 'diff' as const,
+      suffix: 'diff',
+      rawDetail: '{"type":"diff","path":"C:\\\\work\\\\示例.ts"}',
+      title: '文件变更 · 示例.ts',
+    },
+  ])(
+    'localizes adapter-owned $kind content from its identity without matching English text',
+    ({ kind, suffix, rawDetail, title }) => {
+      const row: AcpActivityView = {
+        dshSessionId: 's',
+        ownerDshSessionId: 's',
+        promptAnchorMessageId: 'u',
+        activityId: `u:part:call:0:${suffix}`,
+        activitySeq: 1,
+        revisionSeq: 1,
+        time: 1,
+        kind,
+        status: 'completed',
+        presentation: 'Persisted legacy caption',
+        rawDetail,
+      }
+      const render = (locale: 'en' | 'zh', value = row) =>
+        activityRowElement({ row: value, t: activityTranslate(locale) }) as ReactElement<{ title: string }>
+      expect(render('zh').props.title).toBe(title)
+      expect(render('en').props.title).not.toBe(title)
+      expect(render('zh', { ...row, activityId: 'unrecognized-content' }).props.title).toBe(row.presentation)
+      expect(render('zh', { ...row, kind: 'tool' }).props.title).toBe(row.presentation)
+    },
+  )
+
+  it('uses deferred structured paths for file titles and preserves Agent-authored English titles', () => {
+    const base: AcpActivityView = {
+      dshSessionId: 's',
+      ownerDshSessionId: 's',
+      promptAnchorMessageId: 'u',
+      activityId: 'u:part:edit:0:diff',
+      activitySeq: 1,
+      revisionSeq: 1,
+      time: 1,
+      kind: 'diff',
+      status: 'completed',
+      presentation: 'File change · obsolete.ts',
+      detailDeferred: true,
+      detailPaths: ['/work/实际.ts'],
+    }
+    const render = (row: AcpActivityView) =>
+      activityRowElement({ row, t: activityTranslate('zh') }) as ReactElement<{ title: string }>
+    expect(render(base).props.title).toBe('文件变更 · 实际.ts')
+    for (const presentation of ['Agent tool activity', 'Terminal activity', 'File change · example.ts']) {
+      const real = { ...base, kind: 'tool' as const, activityId: 'u:tool:real', presentation, rawDetail: '{}' }
+      expect(render(real).props.title).toBe(presentation)
+      expect(visibleActivityRows([real])).toEqual([real])
+    }
+    expect(
+      render({ ...base, kind: 'tool', rawDetail: '{"titleSource":"adapter-fallback","rawOutput":"kept"}' }).props.title,
+    ).toBe('Agent 工具活动')
+    const truncated = {
+      ...base,
+      kind: 'tool' as const,
+      activityId: 'u:tool:truncated',
+      presentation: 'Agent tool activity',
+      rawDetail: '{"titleSource":"adapter-fallback","rawOutput":"truncated',
+    }
+    expect(render(truncated).props.title).toBe('Agent tool activity')
+    expect(visibleActivityRows([truncated])).toEqual([truncated])
+  })
+
+  it('localizes native fallback presentation without translating a declared tool name or Agent title', () => {
+    const row: AcpActivityView = {
+      dshSessionId: 's',
+      ownerDshSessionId: 's',
+      promptAnchorMessageId: 'u',
+      activityId: 'u:tool:unnamed',
+      activitySeq: 1,
+      revisionSeq: 1,
+      time: 1,
+      kind: 'tool',
+      status: 'completed',
+      presentation: 'Agent tool activity',
+    }
+    const project = (detail: unknown) =>
+      nativeActivityToolBlock(
+        { ...row, rawDetail: JSON.stringify(detail) },
+        undefined,
+        undefined,
+        activityTranslate('zh'),
+      )
+    expect(project({ titleSource: 'adapter-fallback', rawOutput: 'Done' }).name).toBe('Agent 工具活动')
+    expect(project({ rawOutput: 'Done' }).name).toBe('Agent tool activity')
+    expect(project({ titleSource: 'adapter-fallback', toolName: 'Terminal activity', rawOutput: 'Done' }).name).toBe(
+      'Terminal activity',
+    )
+    const shell = project({
+      titleSource: 'adapter-fallback',
+      rawInput: { command: 'echo ok' },
+      rawOutput: { output: 'ok', exit_code: 0 },
+    })
+    expect(shell).toMatchObject({
+      name: 'bash',
+      call: { argsRaw: expect.stringContaining('"description":"Agent 工具活动"') },
+    })
+  })
+
   it('silences only the typed first-binding wait, not a message match or a lost established binding', () => {
     const pending = Object.assign(new Error('binding is not committed yet'), {
       code: 'dsh-acp/activity-binding-pending',
@@ -1130,6 +1253,7 @@ describe('ACP activity conversation node', () => {
         activitySeq: 8,
         kind: 'tool',
         presentation: 'Agent tool activity',
+        rawDetail: '{"titleSource":"adapter-fallback"}',
       },
       {
         ...base,
@@ -1190,7 +1314,7 @@ describe('ACP activity conversation node', () => {
         activityId: 'user-1:tool:opaque-child',
         kind: 'tool',
         presentation: 'Agent tool activity',
-        rawDetail: '{}',
+        rawDetail: '{"titleSource":"adapter-fallback"}',
       },
       {
         ...base,

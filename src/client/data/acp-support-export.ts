@@ -1,11 +1,11 @@
 import type { AcpAuditTimelineEntry, AcpRemoteLike } from './acp-remote.ts'
 import type { AcpActivityView, AcpRecoveryView } from '../../contract/remote.ts'
 
-export const ACP_SUPPORT_EXPORT_SCHEMA = 'dsh-acp-support'
-export const ACP_SUPPORT_EXPORT_SCHEMA_VERSION = 1
-export const ACP_SUPPORT_EXPORT_PAGE_SIZE = 100
+const ACP_SUPPORT_EXPORT_SCHEMA = 'dsh-acp-support'
+const ACP_SUPPORT_EXPORT_SCHEMA_VERSION = 1
+const ACP_SUPPORT_EXPORT_PAGE_SIZE = 100
 export const ACP_SUPPORT_EXPORT_MAX_AUDIT_ROWS = 5_000
-export const ACP_SUPPORT_EXPORT_MAX_ACTIVITY_ROWS = 5_000
+const ACP_SUPPORT_EXPORT_MAX_ACTIVITY_ROWS = 5_000
 const supportExportReadRetryDelays = [250, 500, 1_000, 2_000, 4_000, 8_000] as const
 const stableSupportExportReadCodes = new Set([
   'dsh-acp/config',
@@ -399,7 +399,7 @@ export async function collectAcpSupportExport(
 }
 
 /** JSON filename does not contain the host session id. */
-export function acpSupportExportFilename(at: number): string {
+function acpSupportExportFilename(at: number): string {
   return `dsh-acp-diagnostics-${new Date(at).toISOString().replace(/[:.]/gu, '-')}.json`
 }
 

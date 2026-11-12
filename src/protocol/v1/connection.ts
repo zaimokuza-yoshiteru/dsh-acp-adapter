@@ -310,7 +310,7 @@ function prependDraftSubagentHandler(
  * 会话清理类 RPC 的默认预算（session/close、session/delete）：probe 收尾
  * 的礼貌窗口——清理失败不阻塞进程强杀与临时目录删除，预算给得比建立类更紧。
  */
-export const DEFAULT_SESSION_CLEANUP_TIMEOUT_MS = 10_000
+const DEFAULT_SESSION_CLEANUP_TIMEOUT_MS = 10_000
 
 /** Whether the negotiated Agent advertises the ACP unstable fork capability. */
 export function supportsFork(capabilities: acp.AgentCapabilities | undefined): boolean {
@@ -1166,9 +1166,13 @@ export class AcpClientConnection {
       }
       const initialConfigOptions = session.configOptions ?? pushedConfigOptions.get(session.sessionId)
       let modelConfigOptions: Record<string, readonly acp.SessionConfigOption[]> | undefined
-      // Qwen Code offers a different reasoning catalogue per model (toggle-only,
-      // none|low|medium|xhigh, or none at all); capture each like Kimi/Codex.
-      if (probeModelConfigOptions || init.agentInfo?.name === 'qwen-code') {
+      // Qwen Code and CodeBuddy expose model-specific reasoning choices. Their
+      // initialize identity also enables discovery for manually configured profiles.
+      if (
+        probeModelConfigOptions ||
+        init.agentInfo?.name === 'qwen-code' ||
+        init.agentInfo?.name === 'codebuddy-code'
+      ) {
         const sessionCaps = init.agentCapabilities?.sessionCapabilities
         try {
           modelConfigOptions = await probeModelConfigurations(

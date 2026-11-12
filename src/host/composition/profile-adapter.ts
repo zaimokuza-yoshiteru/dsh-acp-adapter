@@ -33,6 +33,7 @@ import type { SubprocessSeamResolution } from '../../runtime/process/subprocess.
 import type { AcpLogFields } from '../../domain/observability/logging.ts'
 import {
   AcpForkPreDispatchError,
+  AcpPromptNotDispatchedError,
   AcpSessionRefreshAbortedError,
   AcpSessionRefreshRetryError,
   AcpSessionRuntime,
@@ -139,6 +140,7 @@ interface BindingSettlementCommit extends BindingSettlementTarget {
 
 interface AcpLocalSettlementSink {
   settleDispatch(sessionId: string, key: string): Promise<void>
+  clearUndispatchedDispatch(sessionId: string, key: string): Promise<void>
   readDispatch(sessionId: string, key: string): ReturnType<DispatchLedger['read']>
   writeRuntimeSnapshot(sessionId: string, snapshot: ReturnType<typeof acpOptionsSnapshotOf>): Promise<void>
   refreshBindingHead(
@@ -403,12 +405,12 @@ function activitiesForNotification(
   if (type === 'tool_call' || type === 'tool_call_update') {
     const toolId = toolCall?.callId ?? (typeof update.toolCallId === 'string' ? update.toolCallId : fallbackId)
     const status = activityStatus(toolCall?.status ?? update.status)
-    const title =
+    const agentTitle =
       typeof toolCall?.title === 'string' && toolCall.title.length > 0
         ? toolCall.title
         : typeof toolCall?.name === 'string' && toolCall.name.length > 0
           ? toolCall.name
-          : 'Agent tool activity'
+          : undefined
     const detail = toolCall ?? update
     const display = activityPresentation(
       { toolKind: detail.kind, rawInput: detail.rawInput, content: detail.content },
@@ -420,9 +422,10 @@ function activitiesForNotification(
         activityId: `tool:${toolId}`,
         kind: 'tool',
         status,
-        presentation: title,
+        presentation: agentTitle ?? 'Agent tool activity',
         rawDetail: toolActivityRawDetail(
           {
+            ...(agentTitle === undefined ? { titleSource: 'adapter-fallback' } : {}),
             toolKind: detail.kind,
             toolName: detail.name,
             ...(toolSource === undefined ? {} : { toolSource }),
@@ -556,6 +559,7 @@ function toolActivityRawDetail(
   if (rawDetail.length <= ACP_ACTIVITY_RAW_MAX) return rawDetail
   const compact = (labelLimit: number, toolNameLimit: number, toolKindLimit: number): string =>
     activityRawDetail({
+      ...(detail.titleSource === 'adapter-fallback' ? { titleSource: 'adapter-fallback' } : {}),
       ...(typeof detail.toolKind === 'string'
         ? { toolKind: boundedExternalPreview(detail.toolKind, toolKindLimit) }
         : {}),
@@ -575,6 +579,7 @@ function toolActivityRawDetail(
   // All bounded Agent-controlled strings can be omitted if escaping still made
   // the verbose fallback unexpectedly large; every child status remains.
   return activityRawDetail({
+    ...(detail.titleSource === 'adapter-fallback' ? { titleSource: 'adapter-fallback' } : {}),
     externalDelegations: compactExternalDelegationDetails(delegations, 0),
     detailsOmitted: true,
   })
@@ -4058,6 +4063,37 @@ export class AcpProfileAdapter extends LlmAdapter {
           finishExternalDelegations()
           settleRunningActivities()
           await activityWriteTail
+          if (error instanceof AcpPromptNotDispatchedError && settlementFailure === undefined) {
+            try {
+              // This input never reached ACP. Remove only its exact guard so
+              // the same input can be retried; do not advance the binding's
+              // consumed-history head or replace its last runtime snapshot.
+              await self.continuity.settlements.settle<AcpLocalSettlementSink>(
+                sessionKey,
+                dispatchKey,
+                (sink) => sink.clearUndispatchedDispatch(sessionKey, dispatchKey),
+                self,
+                () => self.controlsChanged?.(sessionKey),
+                self.settlementSink,
+                self.profileId,
+              )
+              failure = new LlmError(error.message, error.code, { cause: error })
+            } catch (settlementError) {
+              failure = new LlmError(
+                settlementError instanceof Error
+                  ? settlementError.message
+                  : 'ACP results are not saved yet; local storage will retry automatically.',
+                'ACP_LOCAL_SETTLEMENT_FAILED',
+                { cause: settlementError },
+              )
+            }
+            // Outer cleanup releases the stale runtime even when its local
+            // settlement is retained. The retry owns a fresh exact restore.
+            done = true
+            wake?.()
+            wake = undefined
+            return
+          }
           // `auth_required` is a definitive JSON-RPC rejection, not an
           // ambiguous transport loss: the Agent confirmed that it did not run
           // the prompt. Keep the binding for an explicit reconnect after login,
@@ -4323,6 +4359,16 @@ export class AcpProfileAdapter extends LlmAdapter {
   private localSettlementSink(): AcpLocalSettlementSink {
     return {
       settleDispatch: (sessionId, key) => this.ledger.settle(sessionId, key),
+      clearUndispatchedDispatch: async (sessionId, key) => {
+        if (this.sidecar === undefined) throw new Error('ACP sidecar is unavailable for undispatched input settlement')
+        try {
+          await this.sidecar.clearDispatch(sessionId as never, key)
+        } catch (error) {
+          if ((await this.ledger.read(sessionId, key)) !== undefined) throw error
+        }
+        if ((await this.ledger.read(sessionId, key)) !== undefined)
+          throw new Error('ACP undispatched input guard was not cleared')
+      },
       readDispatch: (sessionId, key) => this.ledger.read(sessionId, key),
       writeRuntimeSnapshot: async (sessionId, snapshot) => {
         if (this.sidecar === undefined) throw new Error('ACP sidecar is unavailable for terminal snapshot persistence')

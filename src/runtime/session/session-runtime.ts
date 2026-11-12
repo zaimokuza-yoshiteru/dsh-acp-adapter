@@ -193,6 +193,16 @@ export class AcpForkPreDispatchError extends Error {
   }
 }
 
+/** A stale connection was detected before this input could cross the RPC boundary. */
+export class AcpPromptNotDispatchedError extends Error {
+  readonly code = 'ACP_PROMPT_NOT_DISPATCHED'
+
+  constructor() {
+    super('The ACP connection changed before this request was sent. Retry to continue the original session.')
+    this.name = 'AcpPromptNotDispatchedError'
+  }
+}
+
 /** Options for one `prompt()` call. */
 export interface AcpPromptOptions {
   /** Host execution lifetime, distinct from directory/input handoff cancellation. */
@@ -717,15 +727,7 @@ export class AcpSessionRuntime {
     // An Agent that exited while idle leaves a connection object whose
     // transport is gone. Replace it here, before any prompt is claimed, so the
     // next input restores the saved session instead of failing as a crash.
-    if (
-      this.connection !== undefined &&
-      (this.connection.isClosed ||
-        this.connection.isTransportAvailable === false ||
-        this.mcpLease?.signal.aborted === true ||
-        this.mcpLease?.needsRefresh?.() === true ||
-        this.mcpKey !== this.options.mcpKey?.())
-    )
-      await this.close()
+    if (this.connectionNeedsRefresh()) await this.close()
     if (this.connection !== undefined) return
     const starting = this.starting ?? this.beginStartup((owner) => this.createConnection(owner, signal))
     try {
@@ -733,6 +735,17 @@ export class AcpSessionRuntime {
     } finally {
       if (this.starting === starting) this.starting = undefined
     }
+  }
+
+  private connectionNeedsRefresh(): boolean {
+    return (
+      this.connection !== undefined &&
+      (this.connection.isClosed ||
+        this.connection.isTransportAvailable === false ||
+        this.mcpLease?.signal.aborted === true ||
+        this.mcpLease?.needsRefresh?.() === true ||
+        this.mcpKey !== this.options.mcpKey?.())
+    )
   }
 
   private beginStartup(operation: (owner: RuntimeStartup) => Promise<void>): RuntimeStartup {
@@ -972,6 +985,12 @@ export class AcpSessionRuntime {
       await this.configWrite
       if (setupSignal.aborted) return { stopReason: 'cancelled' }
       this.throwPendingAgentTurnFailure(onUpdate)
+      // The Host may already have restored a binding and written its WAL.
+      // Let it retire this transport and retry that exact binding instead of
+      // initialize() aborting our setup and disguising non-dispatch as a crash.
+      // Automatic turns already belong to the Agent, even before adoption.
+      if (promptOptions.adoptAgentTurn !== true && this.agentTurns.length === 0 && this.connectionNeedsRefresh())
+        throw new AcpPromptNotDispatchedError()
       await this.start(setupSignal)
       this.throwPendingAgentTurnFailure(onUpdate)
       const connection = this.connection

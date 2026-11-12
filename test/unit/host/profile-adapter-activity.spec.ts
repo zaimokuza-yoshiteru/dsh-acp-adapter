@@ -70,6 +70,64 @@ async function drain(iterable: AsyncIterable<unknown>): Promise<void> {
 }
 
 describe('provider activity bridge', () => {
+  it.each([
+    { title: undefined, name: undefined, fallback: true },
+    { title: 'Agent tool activity', name: undefined, fallback: false },
+    { title: undefined, name: 'Agent tool activity', fallback: false },
+  ])(
+    'records fallback-title provenance without interpreting an Agent title ($fallback)',
+    async ({ title, name, fallback }) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-title-provenance-'))
+      roots.push(root)
+      const sidecar = testSidecar(root)
+      const message = user('Observe tool presentation')
+      const adapter = new AcpProfileAdapter(
+        'test',
+        profile,
+        seam(),
+        () => session(message),
+        ledgerFor(sidecar),
+        undefined,
+        () => ({
+          acpSessionId: 'title-remote',
+          start: async () => undefined,
+          close: async () => undefined,
+          prompt: async (_content, onUpdate) => {
+            onUpdate({
+              sessionId: 'title-remote',
+              update: {
+                sessionUpdate: 'tool_call_update',
+                toolCallId: 'title-1',
+                status: 'completed',
+                ...(title === undefined ? {} : { title }),
+                ...(name === undefined ? {} : { name }),
+                titleSource: 'adapter-fallback',
+                _meta: { titleSource: 'adapter-fallback' },
+              },
+            } as never)
+            onUpdate({
+              sessionId: 'title-remote',
+              update: {
+                sessionUpdate: 'agent_message_chunk',
+                content: { type: 'text', text: 'Done.' },
+              },
+            })
+            return { stopReason: 'end_turn' }
+          },
+        }),
+        sidecar,
+      )
+      try {
+        await drain(adapter.stream(request('title-session', message)))
+        const row = (await sidecar.activitySnapshot('title-session' as never)).find((entry) => entry.kind === 'tool')!
+        expect(row.presentation).toBe('Agent tool activity')
+        expect(JSON.parse(row.rawDetail!).titleSource).toBe(fallback ? 'adapter-fallback' : undefined)
+      } finally {
+        await adapter.close()
+      }
+    },
+  )
+
   it.each([false, true])(
     'persists control provenance only from the Host runtime, not provider metadata (Host=%s)',
     async (hostConfirmed) => {

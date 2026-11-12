@@ -216,3 +216,33 @@ RC.1 `session/created` 只有 child，没有可验证的 source 和 exact cut，
 - 同 Agent 切模取消保留原会话及草稿，确认后建立独立模型 B 会话；崩溃恢复取消保留门禁，明确空白重置后可继续。已检查 1440px 及 390px 明暗的会话、切模、恢复/重置确认、诊断、菜单与抽屉，无页面横向溢出，抽屉 inert 状态正确。验证后测试桌面已关闭。
 
 上述 UI 和协议结果来自免密夹具，不是实际模型、真实 Agent、Windows 或签名安装包的兼容认证。本轮未使用日常桌面数据或模型额度，未发布、打 tag 或推送远端。
+
+## 10. 迁入后复核修复（2026-11-12，未发布）
+
+以 `b727c35` 为基线，继续在 `0.2.2-alpha` 上修复复核确认的问题；保留已迁入的 21 个提交。依赖、包版本和上游 checkout 不变。本轮按本地 adapter-review / adapter-validation 与实际 RC.1 的官方规范检查。
+
+### 行为修复与清理
+
+- **目录刷新误触发恢复**：普通输入已经准入并写入派发保护、但尚未进入 `session/prompt` 时，连接关闭、目录 lease 失效或 key 变化现在产生窄类型 `ACP_PROMPT_NOT_DISPATCHED`。只清除此输入的精确 WAL key，保留 binding 和已消费历史位置，重试仍 resume/load 原 ACP ID；不进入未知结果恢复，也不创建空白会话。已派发请求、待接管或正在接管的 Qwen 自动回合不使用这个证明。清理写盘失败进入现有本地补存 owner，下一输入继续等待，不绕过保护。
+- **CodeBuddy 思考档发现（#80 的对应子项）**：识别真实 `codebuddy-code` 握手并复用现有逐模型探测。无有效 model 分类时仍使用当前配置入口；通用 Agent 或误标 runtime 不新增切模。模型探测失败不借用默认模型档位，探测串行且不发送 prompt，临时会话正常清理。该协议回归不宣称验证了实际 CodeBuddy CLI 或模型账号。
+- **插件活动标题本地化**：会话活动卡的插件生成终端、差异、资源、输出与工具占位标题使用中英 locale。文件名来自结构化路径；占位来源由 Host 自有 metadata 标记，压缩详情时保留。删除以英文 `Agent tool activity` 文案判断去重的分支，Agent 原始同名标题不再被误隐藏；旧记录缺少标记或普通超大明细被截断到不可解析时保守保留原文，不为翻译改写既有诊断截断语义。
+- **收窄表面与规范**：移除 25 个没有跨文件或公开入口消费者的内部 `export`，保留实现及所有公开入口；没有删除动态启动器或必要 ambient 声明。版本检测移除进程全局结果缓存，暂时读取失败后下一次可重新检测。AGENTS 和三份本地技能的规范链接更正到真实 RC.1 提交 `66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db`，不再把旧提交标成 RC.1。
+
+### 本地化方案的修正与保留限制
+
+复核时提出的原生模型 label slot 方案不能无副作用落地。精确 RC.1 的 `conversation.input.model.label` 是 `kind: single`；相同优先级的第二贡献会冲突，较高优先级组件即使返回 null 也不会回退其他贡献或原生标签。因此本轮不接管该插槽、不复制原生 name/badge renderer，也不增加全局按语言缓存的模型目录。原生 picker 的 `Agent current configuration`，及其 aria/title、`/model` 文案仍保留现状；插件自己的 Teams 和切模确认已有本地化。
+
+若未来存在官方的条件 resolver 或可回退 label chain，应由一个原生解析入口同时供 trigger/menu/option、aria/title 和 slash 使用，插件只处理自有 provider 的内部 sentinel；真实模型名称保留 Agent 原文。当前不修改或等待上游。此前已有会话切模、任意原生分叉入口、Auto Review、optional Other 页等边界不因本轮改变。
+
+### 本轮验证
+
+验证记录和新隔离桌面位于 gitignored `.local/fix-review-b727c35/`；定向开发回归另在 `.local/review-b727c35/`。使用 Node `24.19.0`、pnpm `10.7.0`、精确 npm DSH `0.2.2-rc.1`。所有 ACP 输入均来自免密协议夹具，没有调用真实模型或使用日常桌面数据。实际结果如下：
+
+- `pnpm build`、`pnpm typecheck`、`pnpm typecheck:e2e` 与最终测试 TypeScript 检查通过；构建校验 101 个精确开发依赖、304 个包文件、122 个运行时 JavaScript 闭包及公开 Remote 消费者类型。改动文件 Prettier 和 `git diff --check` 通过。
+- `DSH_E2E_LIVE_QWEN=0 pnpm exec vitest run`：215 个文件中 214 通过、1 跳过；2763 项通过、3 跳过。随后本地化增补断言的五个定向文件 155/155、活动 producer 最终文件 71/71 通过；这些与全量重叠，不相加宣称覆盖。最后的 `tsc --noEmit -p tsconfig.test.json` 通过。
+- 目录刷新回归使用真实 ACP 子进程、runtime 与磁盘 Sidecar：directory/key/lease 三类失效均保留同一 ACP ID，同输入重试无额外 `session/new`；写盘失败不发新 RPC；旧写入暂停时热卸载等待，失败任务由替换 sink 接管，旧 writer 释放后仍可完成且不重复派发。实际派发后崩溃与 Qwen 自动回合负例保留未知结果门禁。CodeBuddy 新增 7 项协议回归，修复前 3 失败、4 通过，修复后及原逐模型/Qwen 探测合计 22/22 通过；没有发送 prompt。
+- 新浏览器用例 `native-parity.e2e.ts -t 'localizes adapter-owned activity titles'` 在 codex 免密夹具下通过：1 场景通过，35 项因名称筛选未执行。英文→中文→英文切换保持同一挂载页面，生成标题翻译、Agent 原文保留，390px 明暗无横向溢出。首轮失败是 exact button locator 未包括原生状态文案；只修测试选择器后通过，没有用生产改动迎合断言。两张截图已目视检查。命令沿用 `.local/fix-review-b727c35/e2e.config.mjs` 的既有 include 包解析补偿，没有改上游。
+- 全新隔离 Electron 的 `desktop/rc1-lifecycle-result.json` 为 passed：7 组行为检查、23 张截图，rendererErrors 为空。ACP 与 ds-bot 分别热停启、活动请求取消、重新启用后首次请求成功；首次 session/new 延迟 2369ms，MutationObserver 没有观察到重连提示，Chat/Trajectory/Diagnostics 各一份。通用 Agent、切模取消/独立会话、崩溃恢复和 390px 明暗、抽屉均通过。关键窄屏截图已目视检查。
+- 最终本地化构建重新载入同一隔离桌面，用真实 `E2E_RICH` 轮次加四条可控历史孤立内容记录验证。`desktop/rc1-locales-result.json` 为 passed，新增两张 390px 明暗截图已检查：终端、差异及原生 fallback 工具标题中文显示，同名 Agent 标题保留英文，无渲染错误。总计 25 张桌面截图；验证后独立桌面正常关闭。
+
+本轮没有修改上游源码、依赖或现有工作区状态（上游原有 `.claude/skills` 删除保持不变）。没有发布、打 tag 或推送远端；以上结果不构成真实 CodeBuddy/其他 Agent、Windows 或签名安装包的认证。
