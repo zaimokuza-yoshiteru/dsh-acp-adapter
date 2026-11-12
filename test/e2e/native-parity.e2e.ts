@@ -2467,7 +2467,7 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
     expect(readFileSync(agentLog, 'utf8').split('regression prompt=').length).toBe(priorPrompts + 1)
   })
 
-  it('shows Sending and blocks queue actions until the host accepts the message', async () => {
+  it('keeps a queued message in the busy composer until the host accepts it', async () => {
     const active = await send('E2E_STOP')
     await page.getByText('E2E_RUNNING', { exact: true }).waitFor()
     const received = Promise.withResolvers<void>()
@@ -2486,15 +2486,14 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
       await writeComposerDraft(page, input, 'E2E_QUEUED')
       await input.press('Enter')
       await received.promise
-      const pending = page.locator('[data-queue-dock] [data-submission-echo]')
-      await pending.getByRole('status').waitFor()
-      expect(await pending.getByRole('status').textContent()).toBe('Sending…')
-      expect(await pending.getByRole('button').count()).toBe(3)
-      expect(
-        await pending
-          .getByRole('button')
-          .evaluateAll((buttons) => buttons.every((button) => button instanceof HTMLButtonElement && button.disabled)),
-      ).toBe(true)
+      // DSH shows a message only after the Host accepts it: the composer keeps the
+      // text read-only and busy, and the queue shows nothing yet.
+      const sending = page.getByRole('button', { name: 'Sending message', exact: true })
+      await sending.waitFor()
+      expect(await sending.getAttribute('aria-busy')).toBe('true')
+      expect(await input.textContent()).toBe('E2E_QUEUED')
+      expect(await input.getAttribute('contenteditable')).toBe('false')
+      expect(await page.locator('[data-queue-dock] [data-submission-echo]').count()).toBe(0)
     } finally {
       release.resolve()
     }
