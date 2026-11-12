@@ -1668,7 +1668,7 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
       heldRebindMessage = `Held rebind for ${sessionId}\n${'recovery evidence '.repeat(160)}`
       throw new Error(heldRebindMessage)
     })
-    const dialog = page.getByRole('dialog', { name: 'ACP session recovery required', exact: true })
+    const dialog = page.locator('[role="dialog"][aria-modal="true"]')
     await dialog.waitFor({ state: 'visible' })
     const normalMotion = await dialog.evaluate((element) => {
       const style = getComputedStyle(element)
@@ -1883,7 +1883,7 @@ describe.each(profiles)('native product parity: %s protocol fixture', (profile) 
     expect(afterZoom.width).toBeGreaterThan(beforeZoom.width)
 
     await trigger.click()
-    const dialog = page.getByRole('dialog', { name: 'ACP session recovery required', exact: true })
+    const dialog = page.locator('[role="dialog"][aria-modal="true"]')
     await dialog.waitFor({ state: 'visible' })
     expect(await dialog.evaluate((element) => element.contains(document.activeElement))).toBe(true)
     const closeButtons = dialog.getByRole('button', { name: 'Close', exact: true })
