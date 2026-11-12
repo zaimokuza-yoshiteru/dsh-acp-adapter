@@ -24,6 +24,7 @@ import type {
   LlmResolvedModelInfo,
   ResolvedRetryPolicy,
   StreamChunk,
+  TokenUsage,
   UserMessage,
 } from '@deepseek-ai/dsh-llm'
 import { AcpStubAdapter, reasoningInfoFromConfigOptions } from './llm-stub.ts'
@@ -769,6 +770,30 @@ interface ConfirmedUserModeSelection extends UserModeChoice {
 }
 
 /** One independent adapter and runtime per configured ACP profile. */
+/** Map a prompt response's token usage onto DSH's usage shape; malformed or absent counts yield nothing. */
+export function acpTurnUsage(response: acp.PromptResponse): TokenUsage | undefined {
+  const usage = (response as { usage?: unknown }).usage
+  if (typeof usage !== 'object' || usage === null) return undefined
+  const count = (key: string): number | undefined => {
+    const value = (usage as Record<string, unknown>)[key]
+    return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined
+  }
+  const inputTokens = count('inputTokens')
+  const outputTokens = count('outputTokens')
+  if (inputTokens === undefined || outputTokens === undefined) return undefined
+  const optional = {
+    totalTokens: count('totalTokens'),
+    cacheReadTokens: count('cachedReadTokens'),
+    cacheWriteTokens: count('cachedWriteTokens'),
+    reasoningTokens: count('thoughtTokens'),
+  }
+  return {
+    inputTokens,
+    outputTokens,
+    ...Object.fromEntries(Object.entries(optional).filter(([, value]) => value !== undefined)),
+  }
+}
+
 export class AcpProfileAdapter extends LlmAdapter {
   private probeGeneration: ProfileGeneration | undefined
   private readonly runtimes = new Map<string, AcpProfileRuntime>()
@@ -3893,6 +3918,11 @@ export class AcpProfileAdapter extends LlmAdapter {
                 await cancelledRuntimeRetirement
               })
             }
+            // Report the Agent's own token counts for this turn when it supplies
+            // them. Observed Agents report per-turn values; nothing is invented
+            // or estimated, and no context window is declared from them.
+            const turnUsage = acpTurnUsage(response)
+            if (turnUsage !== undefined) pushChunk({ type: 'usage', usage: turnUsage })
             pushChunk({
               type: 'finish',
               reason: finalReason,

@@ -28,7 +28,7 @@ afterEach(async () => {
 const user = (text: string) => createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })
 
 // The published AgentLoop, session log, projections, guard, adapter and Sidecar are real; only the ACP wire is scripted.
-async function harness(options: { failFirstStart?: boolean; failFirstPrompt?: () => Error } = {}) {
+async function harness(options: { failFirstStart?: boolean; failFirstPrompt?: () => Error; usage?: unknown } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'acp-unbound-'))
   cleanup.push(() => fs.rmSync(root, { recursive: true, force: true }))
   const sidecar = createAcpSidecar({ root })
@@ -76,7 +76,10 @@ async function harness(options: { failFirstStart?: boolean; failFirstPrompt?: ()
           sessionId: 'remote-session',
           update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'agent answer' } },
         })
-        return { stopReason: 'end_turn' }
+        return {
+          stopReason: 'end_turn',
+          ...(options.usage === undefined ? {} : { usage: options.usage }),
+        } as never
       },
     }),
     sidecar,
@@ -218,4 +221,31 @@ describe('a prompt the Agent answered with an error', () => {
     expect(h.lastTurnEnd()).toMatchObject({ data: { reason: { kind: 'error' } } })
     expect(h.prompts).toHaveLength(1)
   })
+})
+
+describe('token usage reported by the Agent', () => {
+  it('records the turn usage on the native assistant message', async () => {
+    // Shape observed from a real Devin turn.
+    const h = await harness({
+      usage: { totalTokens: 11260, inputTokens: 11227, outputTokens: 33, cachedReadTokens: 384 },
+    })
+    h.agent.followup(user('count'))
+    await h.agent.whenIdle()
+    const message = h.agent.session.snapshotEvents().findLast((event) => event.type === 'assistant/message')
+    expect(message).toMatchObject({
+      data: { usage: { inputTokens: 11227, outputTokens: 33, totalTokens: 11260, cacheReadTokens: 384 } },
+    })
+  })
+
+  it.each([undefined, null, { inputTokens: -1, outputTokens: 2 }, { inputTokens: 1 }])(
+    'records no usage for %j',
+    async (usage) => {
+      const h = await harness({ usage })
+      h.agent.followup(user('count'))
+      await h.agent.whenIdle()
+      const message = h.agent.session.snapshotEvents().findLast((event) => event.type === 'assistant/message')
+      expect(message).toBeDefined()
+      expect((message!.data as { usage?: unknown }).usage).toBeUndefined()
+    },
+  )
 })
