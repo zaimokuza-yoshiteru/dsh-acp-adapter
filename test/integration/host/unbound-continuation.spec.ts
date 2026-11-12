@@ -28,7 +28,9 @@ afterEach(async () => {
 const user = (text: string) => createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })
 
 // The published AgentLoop, session log, projections, guard, adapter and Sidecar are real; only the ACP wire is scripted.
-async function harness(options: { failFirstStart?: boolean; failFirstPrompt?: () => Error; usage?: unknown } = {}) {
+async function harness(
+  options: { failFirstStart?: boolean; failFirstPrompt?: () => Error; usageByTurn?: readonly unknown[] } = {},
+) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'acp-unbound-'))
   cleanup.push(() => fs.rmSync(root, { recursive: true, force: true }))
   const sidecar = createAcpSidecar({ root })
@@ -76,9 +78,10 @@ async function harness(options: { failFirstStart?: boolean; failFirstPrompt?: ()
           sessionId: 'remote-session',
           update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'agent answer' } },
         })
+        const usage = options.usageByTurn?.[prompts.length - 1]
         return {
           stopReason: 'end_turn',
-          ...(options.usage === undefined ? {} : { usage: options.usage }),
+          ...(usage === undefined ? {} : { usage }),
         } as never
       },
     }),
@@ -223,29 +226,48 @@ describe('a prompt the Agent answered with an error', () => {
   })
 })
 
-describe('token usage reported by the Agent', () => {
-  it('records the turn usage on the native assistant message', async () => {
-    // Shape observed from a real Devin turn.
-    const h = await harness({
-      usage: { totalTokens: 11260, inputTokens: 11227, outputTokens: 33, cachedReadTokens: 384 },
-    })
+describe('Agent usage without a confirmed native accounting contract', () => {
+  function expectNoNativeUsage(h: Awaited<ReturnType<typeof harness>>, messageCount: number): void {
+    const messages = h.agent.session.snapshotEvents().filter((event) => event.type === 'assistant/message')
+    expect(messages).toHaveLength(messageCount)
+    for (const event of h.agent.session.snapshotEvents()) {
+      if (event.type !== 'assistant/message' && event.type !== 'assistant/attempt') continue
+      if (event.type === 'assistant/message') {
+        expect(event.data.usage).toBeUndefined()
+        expect(event.data.message.content).toContainEqual({ type: 'text', text: 'agent answer' })
+      }
+      expect(event.data.stream.some((entry) => entry.type === 'chunk' && entry.chunk.type === 'usage')).toBe(false)
+    }
+    expect(h.lastTurnEnd()).toMatchObject({ data: { reason: { kind: 'completed' } } })
+  }
+
+  it.each([
+    ['input includes cache', { totalTokens: 11260, inputTokens: 11227, outputTokens: 33, cachedReadTokens: 384 }],
+    ['disjoint input and cache', { totalTokens: 15, inputTokens: 10, outputTokens: 2, cachedReadTokens: 3 }],
+    ['absent', undefined],
+    ['null', null],
+    ['invalid', { inputTokens: -1, outputTokens: 2 }],
+    ['incomplete', { inputTokens: 1 }],
+  ])('keeps native accounting absent and preserves the reply when usage is %s', async (_name, usage) => {
+    const h = await harness({ usageByTurn: [usage] })
     h.agent.followup(user('count'))
     await h.agent.whenIdle()
-    const message = h.agent.session.snapshotEvents().findLast((event) => event.type === 'assistant/message')
-    expect(message).toMatchObject({
-      data: { usage: { inputTokens: 11227, outputTokens: 33, totalTokens: 11260, cacheReadTokens: 384 } },
-    })
+    expectNoNativeUsage(h, 1)
   })
 
-  it.each([undefined, null, { inputTokens: -1, outputTokens: 2 }, { inputTokens: 1 }])(
-    'records no usage for %j',
-    async (usage) => {
-      const h = await harness({ usage })
+  it('does not count session-cumulative usage as two independent native attempts', async () => {
+    const h = await harness({
+      usageByTurn: [
+        { totalTokens: 100, inputTokens: 80, outputTokens: 20 },
+        { totalTokens: 250, inputTokens: 200, outputTokens: 50 },
+      ],
+    })
+    for (let turn = 1; turn <= 2; turn += 1) {
       h.agent.followup(user('count'))
       await h.agent.whenIdle()
-      const message = h.agent.session.snapshotEvents().findLast((event) => event.type === 'assistant/message')
-      expect(message).toBeDefined()
-      expect((message!.data as { usage?: unknown }).usage).toBeUndefined()
-    },
-  )
+      expectNoNativeUsage(h, turn)
+    }
+    expect(h.prompts).toHaveLength(2)
+    expect(await h.sidecar.readLatestBinding(h.agent.session.id)).toMatchObject({ status: 'ok' })
+  })
 })

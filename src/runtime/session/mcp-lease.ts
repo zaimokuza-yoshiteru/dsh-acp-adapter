@@ -35,6 +35,8 @@ export interface AcpMcpLease {
   readonly diagnosticLeaseId?: string
   readonly instructions?: string
   readonly servers: readonly acp.McpServer[]
+  /** A withdrawn directory must be rebuilt between prompts, even if the same names return. */
+  needsRefresh?(): boolean
   /** Host-only evidence callback for a successful native teammate report in this prompt. */
   beginPrompt(
     signal: AbortSignal,
@@ -65,8 +67,15 @@ export interface AcpMcpLease {
   ):
     | Promise<AcpPermissionCheck & { readonly response?: acp.RequestPermissionResponse }>
     | (AcpPermissionCheck & { readonly response?: acp.RequestPermissionResponse })
-  /** Revalidate the captured decision after audit I/O without resolving policy again. */
+  /** Captured target/prompt lifetime for both automatic and manual permission decisions. */
+  permissionSignal?(request: acp.RequestPermissionRequest): AbortSignal | undefined
+  /** Revalidate the captured target after audit or a manual answer without resolving policy again. */
   validatePermissionDecision?(request: acp.RequestPermissionRequest): boolean
+  /** Revocable lifetime of an identified Host tool approval carried by Codex elicitation. */
+  elicitationSignal?(
+    request: acp.CreateElicitationRequest,
+    toolCall: acp.ToolCallUpdate | undefined,
+  ): AbortSignal | undefined
   elicitation?(
     request: acp.CreateElicitationRequest,
     toolCall: acp.ToolCallUpdate | undefined,

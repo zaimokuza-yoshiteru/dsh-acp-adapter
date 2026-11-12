@@ -3,7 +3,12 @@ import { createHmac } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import { Context as CordisContext } from '@deepseek-ai/cordis'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
-import ToolRuntime, { defineTool, RUN_CODE_NAME, TOOL_ABORTED_BEFORE_DISPATCH } from '@deepseek-ai/dsh-tools'
+import ToolRuntime, {
+  defineTool,
+  RUN_CODE_NAME,
+  TOOL_ABORTED_BEFORE_DISPATCH,
+  ToolBatchExecutionError,
+} from '@deepseek-ai/dsh-tools'
 import { NativeToolExecutor } from '@deepseek-ai/dsh-tool-executor-native'
 import { PtcExecutor } from '@deepseek-ai/dsh-tool-executor-ptc'
 import { ToolExecutionPipeline } from '@deepseek-ai/dsh-tools/pipeline'
@@ -1600,12 +1605,185 @@ describe('session-owned native Teams MCP bridge', () => {
     },
   )
 
-  it('closes the connection once every advertised tool has been withdrawn', async () => {
+  it('keeps an empty withdrawn directory connected without admitting its old tools', async () => {
     const fixture = await setup('antigravity', ['present'], false)
     fixture.lease.beginPrompt(new AbortController().signal)
     fixture.hidden.add('present')
     fixture.listeners.get('tools/change')!()
-    expect(fixture.lease.signal.aborted).toBe(true)
+    expect(fixture.lease.signal.aborted).toBe(false)
+    expect((await fixture.client.listTools()).tools).toEqual([])
+    expect(await fixture.client.callTool({ name: 'present' })).toMatchObject({ isError: true })
+  })
+
+  it.each([['present'], ['present', 'todo_write']])(
+    'drains accepted work through a complete %j resync and admits replacements only on a fresh connection',
+    async (...names: string[]) => {
+      const f = await setup(undefined, names, false)
+      const key = createDshToolBridgeKey()
+      const schemas = [...f.definitions.values()]
+      const before = key(f.ctx, 'lead', schemas)
+      f.lease.beginPrompt(new AbortController().signal)
+      const started = Promise.withResolvers<AbortSignal>()
+      const released = Promise.withResolvers<void>()
+      f.execute.mockImplementationOnce(async (input) => {
+        started.resolve(input.signal)
+        await released.promise
+        return { content: [{ type: 'text', text: 'accepted before resync' }], isError: false }
+      })
+      const accepted = f.client.callTool({ name: 'present', arguments: {} })
+      const body = await started.promise
+      try {
+        for (const name of names) {
+          f.hidden.add(name)
+          f.listeners.get('tools/change')!()
+        }
+        for (const name of names) {
+          f.hidden.delete(name)
+          f.definitions.set(name, { ...f.definitions.get(name) })
+          f.listeners.get('tools/change')!()
+        }
+        await Promise.resolve()
+        expect(f.lease.signal.aborted).toBe(false)
+        expect(body.aborted).toBe(false)
+        expect(f.lease.hasPendingCalls!()).toBe(true)
+        expect((await f.client.listTools()).tools).toEqual([])
+        expect(key(f.ctx, 'lead', schemas)).not.toBe(before)
+      } finally {
+        released.resolve()
+      }
+      expect(await accepted).toMatchObject({ content: [{ type: 'text', text: 'accepted before resync' }] })
+      expect(await f.client.callTool({ name: 'present' })).toMatchObject({
+        isError: true,
+        content: [{ type: 'text', text: 'ACP_TEAM_TOOL_UNAVAILABLE' }],
+      })
+      expect(await f.lease.inspectPermission!(f.permission('present'))).toMatchObject({ reason: 'invalid-tool-name' })
+      f.lease.endPrompt({ stopReason: 'end_turn' })
+      await f.lease.drainPrompt!()
+      const next = (await createDshToolBridge(
+        f.ctx,
+        'lead',
+        { mcpCapabilities: { http: true } },
+        undefined,
+        undefined,
+        undefined,
+        schemas,
+      ))!
+      cleanup.push(() => next.close())
+      const server = next.servers[0]!
+      if (!('url' in server)) throw new Error('Expected HTTP')
+      const client = new Client({ name: 'refreshed-directory', version: '1' })
+      cleanup.push(() => client.close())
+      await client.connect(new StreamableHTTPClientTransport(new URL(server.url)))
+      next.beginPrompt(new AbortController().signal)
+      expect((await client.callTool({ name: 'present' })).isError).not.toBe(true)
+      expect(f.execute).toHaveBeenCalledTimes(2)
+    },
+  )
+
+  it('requires a fresh directory after a restriction is lifted with the same definition and schema', async () => {
+    const f = await setup(undefined, ['present'], false)
+    const key = createDshToolBridgeKey()
+    const schemas = [...f.definitions.values()]
+    const before = key(f.ctx, 'lead', schemas)
+    f.lease.beginPrompt(new AbortController().signal)
+    expect(f.lease.needsRefresh!()).toBe(false)
+    f.hidden.add('present')
+    f.listeners.get('tools/change')!()
+    f.hidden.delete('present')
+    f.listeners.get('tools/change')!()
+    expect(key(f.ctx, 'lead', schemas)).toBe(before)
+    expect(f.lease.signal.aborted).toBe(false)
+    expect(f.lease.needsRefresh!()).toBe(true)
+    expect((await f.client.callTool({ name: 'present' })).isError).toBe(true)
+    f.lease.endPrompt({ stopReason: 'end_turn' })
+    await f.lease.drainPrompt!()
+    const next = (await createDshToolBridge(
+      f.ctx,
+      'lead',
+      { mcpCapabilities: { http: true } },
+      undefined,
+      undefined,
+      undefined,
+      schemas,
+    ))!
+    cleanup.push(() => next.close())
+    expect(next.needsRefresh!()).toBe(false)
+    next.beginPrompt(new AbortController().signal)
+    expect(
+      await next.inspectPermission!({
+        ...f.permission(),
+        toolCall: { toolCallId: 'new-directory', name: `mcp__${next.servers[0]!.name}__present` },
+      }),
+    ).toMatchObject({ reason: 'approval-required' })
+  })
+
+  it.each(['tools', 'agents'] as const)(
+    'closes the transport when the owning %s service disappears',
+    async (service) => {
+      const f = await setup(undefined, ['present'], false)
+      f.lease.beginPrompt(new AbortController().signal)
+      delete f.services[service]
+      f.listeners.get('internal/service')!(service)
+      expect(f.lease.signal.aborted).toBe(true)
+    },
+  )
+
+  it.each(['ask', 'auto'] as const)(
+    'cancels a target withdrawn during the asynchronous %s policy read',
+    async (policy) => {
+      let armed = false
+      const entered = Promise.withResolvers<void>()
+      const pending = Promise.withResolvers<'ask' | 'auto'>()
+      const f = await setup(undefined, ['present', 'todo_write'], false, 'lead', async () => {
+        if (!armed) return policy
+        entered.resolve()
+        return pending.promise
+      })
+      f.lease.beginPrompt(new AbortController().signal)
+      armed = true
+      const request = f.permission('present')
+      const checked = f.lease.inspectPermission!(request)
+      await entered.promise
+      f.hidden.add('present')
+      f.listeners.get('tools/change')!()
+      expect(f.lease.signal.aborted).toBe(false)
+      expect(f.lease.permissionSignal!(request)?.aborted).toBe(true)
+      pending.resolve(policy)
+      expect(await checked).toMatchObject({
+        reason: 'invalid-tool-name',
+        response: { outcome: { outcome: 'cancelled' } },
+      })
+      expect(f.lease.validatePermissionDecision!(request)).toBe(false)
+    },
+  )
+
+  it('redacts and bounds batch diagnostics without serializing arbitrary cause properties', async () => {
+    const f = await setup(undefined, ['present'], false)
+    const warn = vi.fn()
+    Object.assign(f.ctx, { logger: { warn, error: vi.fn() } })
+    const cause = Object.assign(new Error(`Authorization: Bearer audit_secret_123\n${'x'.repeat(2000)}`), {
+      request: { env: { API_KEY: 'audit_env_secret_456' }, prompt: 'private prompt must not enter diagnostics' },
+    })
+    f.execute.mockRejectedValueOnce(
+      new ToolBatchExecutionError(cause, { results: [], additionalContexts: [], concluded: false }),
+    )
+    f.lease.beginPrompt(new AbortController().signal)
+    const result = await f.client.callTool({ name: 'present', arguments: {} })
+    expect(result).toMatchObject({ isError: true })
+    const content = result.content as Array<{ type: string; text: string }>
+    expect(content[0]!.text).toContain('Tool batch execution failed: Authorization:')
+    expect(content[0]!.text.length).toBeLessThanOrEqual(1000)
+    expect(warn).toHaveBeenCalledOnce()
+    expect(warn.mock.calls[0]).toHaveLength(1)
+    const logged = warn.mock.calls[0]![0] as string
+    expect(logged).toContain('operation=tool-execute result=batch-failed')
+    expect(logged.length).toBeLessThan(1200)
+    for (const text of [content[0]!.text, logged]) {
+      expect(text).not.toContain('audit_secret_123')
+      expect(text).not.toContain('audit_env_secret_456')
+      expect(text).not.toContain('private prompt')
+      expect(text).not.toContain('\n')
+    }
   })
 
   it.each(['teams-unload'] as const)(
@@ -2182,7 +2360,8 @@ describe('session-owned native Teams MCP bridge', () => {
         identitySource: identity === 'name' ? 'name' : identity === 'meta' ? 'devin-meta' : 'devin-title',
       })
       expect(await lease.permission(request)).toBeUndefined()
-      expect(lease.validatePermissionDecision!(request)).toBe(false)
+      expect(lease.validatePermissionDecision!(request)).toBe(true)
+      expect(lease.permissionSignal!(request)?.aborted).toBe(false)
       expect(request).toEqual(original)
       expect(execute).not.toHaveBeenCalled()
     },
@@ -2901,7 +3080,9 @@ describe('session-owned native Teams MCP bridge', () => {
       }
       expect(await lease.inspectPermission!(conflict)).toMatchObject({ reason: 'identity-unmatched' })
       expect(await lease.permission(conflict)).toBeUndefined()
-      expect(lease.validatePermissionDecision!(conflict)).toBe(false)
+      // The conflicting title remains manual, but its advertised target can still be revoked.
+      expect(lease.validatePermissionDecision!(conflict)).toBe(true)
+      expect(lease.permissionSignal!(conflict)?.aborted).toBe(false)
     }
 
     const conflictingName: RequestPermissionRequest = {

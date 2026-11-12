@@ -24,7 +24,6 @@ import type {
   LlmResolvedModelInfo,
   ResolvedRetryPolicy,
   StreamChunk,
-  TokenUsage,
   UserMessage,
 } from '@deepseek-ai/dsh-llm'
 import { AcpStubAdapter, reasoningInfoFromConfigOptions } from './llm-stub.ts'
@@ -628,6 +627,7 @@ interface HandoffOwner {
   stream: StreamHandoff
   generation: ProfileGeneration | undefined
   options: GenerateOptions
+  toolDirectoryKey: unknown
   off?: () => void
 }
 
@@ -770,30 +770,6 @@ interface ConfirmedUserModeSelection extends UserModeChoice {
 }
 
 /** One independent adapter and runtime per configured ACP profile. */
-/** Map a prompt response's token usage onto DSH's usage shape; malformed or absent counts yield nothing. */
-export function acpTurnUsage(response: acp.PromptResponse): TokenUsage | undefined {
-  const usage = (response as { usage?: unknown }).usage
-  if (typeof usage !== 'object' || usage === null) return undefined
-  const count = (key: string): number | undefined => {
-    const value = (usage as Record<string, unknown>)[key]
-    return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined
-  }
-  const inputTokens = count('inputTokens')
-  const outputTokens = count('outputTokens')
-  if (inputTokens === undefined || outputTokens === undefined) return undefined
-  const optional = {
-    totalTokens: count('totalTokens'),
-    cacheReadTokens: count('cachedReadTokens'),
-    cacheWriteTokens: count('cachedWriteTokens'),
-    reasoningTokens: count('thoughtTokens'),
-  }
-  return {
-    inputTokens,
-    outputTokens,
-    ...Object.fromEntries(Object.entries(optional).filter(([, value]) => value !== undefined)),
-  }
-}
-
 export class AcpProfileAdapter extends LlmAdapter {
   private probeGeneration: ProfileGeneration | undefined
   private readonly runtimes = new Map<string, AcpProfileRuntime>()
@@ -2005,7 +1981,7 @@ export class AcpProfileAdapter extends LlmAdapter {
         if (!owner.stream.suspended) throw new LlmError('ACP stream is already active', 'ACP_PROMPT_ALREADY_ACTIVE')
         const sameToolDirectory =
           isDeepStrictEqual(owner.options.tools, options.tools) &&
-          (self.mcpKey === undefined || self.mcpKey(key, owner.options.tools) === self.mcpKey(key, options.tools))
+          owner.toolDirectoryKey === self.mcpKey?.(key, options.tools)
         const compatible =
           owner.generation === generation &&
           owner.options.provider === options.provider &&
@@ -2049,7 +2025,9 @@ export class AcpProfileAdapter extends LlmAdapter {
       }
       if (owner === undefined) {
         const stream = new StreamHandoff()
-        owner = { stream, generation, options }
+        // Capture admission identity now: resolving both keys after a reload
+        // would compare the new registrations to themselves and permit stale steering.
+        owner = { stream, generation, options, toolDirectoryKey: self.mcpKey?.(key, options.tools) }
         const indices = new Map<number, number>()
         for (const chunk of carry) {
           if (chunk.type === 'finish') {
@@ -3918,11 +3896,11 @@ export class AcpProfileAdapter extends LlmAdapter {
                 await cancelledRuntimeRetirement
               })
             }
-            // Report the Agent's own token counts for this turn when it supplies
-            // them. Observed Agents report per-turn values; nothing is invented
-            // or estimated, and no context window is declared from them.
-            const turnUsage = acpTurnUsage(response)
-            if (turnUsage !== undefined) pushChunk({ type: 'usage', usage: turnUsage })
+            // ACP prompt usage has no confirmed cross-Agent accounting contract:
+            // counts may be cumulative and input may include cache traffic.
+            // DSH usage requires per-attempt, disjoint input/cache buckets. Keep
+            // native accounting absent until that translation is provable;
+            // Agent context occupancy remains available through usage_update.
             pushChunk({
               type: 'finish',
               reason: finalReason,

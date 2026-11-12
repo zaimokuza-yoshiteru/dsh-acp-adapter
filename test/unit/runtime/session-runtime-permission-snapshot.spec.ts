@@ -8,12 +8,16 @@ import type { SubprocessSeam } from '../../../src/runtime/process/subprocess.ts'
 import { sharedTestSubprocess } from '../../fixtures/subprocess-seam-testing.ts'
 import { createPermissionCheckAudit } from '../../../src/domain/policy/events.ts'
 import type { AcpMcpLease } from '../../../src/runtime/session/mcp-lease.ts'
+import { Context } from '@deepseek-ai/cordis'
+import { createDshToolBridge } from '../../../src/host/tools/bridge.ts'
+import { fakeToolBatch } from '../../fixtures/tool-batch-testing.ts'
 
 const PROMPT: acp.ContentBlock[] = [{ type: 'text', text: 'permission snapshot test' }]
 
 let subprocess: SubprocessSeam
 const runtimes: AcpSessionRuntime[] = []
 const roots: string[] = []
+const bridgeCleanups: Array<() => Promise<unknown>> = []
 
 beforeAll(async () => {
   subprocess = (await sharedTestSubprocess()).seam
@@ -21,6 +25,7 @@ beforeAll(async () => {
 
 afterEach(async () => {
   await Promise.allSettled(runtimes.splice(0).map(async (runtime) => await runtime.close()))
+  for (const close of bridgeCleanups.splice(0).reverse()) await close()
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true })
 })
 
@@ -32,7 +37,8 @@ function createRuntime(
     | 'content-json-prefixed'
     | 'content-json-unrelated'
     | 'content-json-late'
-    | 'devin-mcp-bare-name' = 'raw-input',
+    | 'devin-mcp-bare-name'
+    | 'bridge-tool' = 'raw-input',
   previousStatus: 'in_progress' | 'completed' = 'in_progress',
   mcpLease?: AcpMcpLease,
   onPermissionCheck?: AcpSessionRuntimeOptions['onPermissionCheck'],
@@ -54,7 +60,12 @@ function createRuntime(
   const permissionKind = mode === 'raw-input' ? '' : `,kind:'execute'`
   const updateSessionId = 'permission-snapshot-session'
   const updateTitle = mode === 'devin-mcp-bare-name' ? 'Calling jira_get_issue from dsh' : 'Run visible command'
-  const updateName = mode === 'devin-mcp-bare-name' ? 'jira_get_issue' : 'terminal'
+  const updateName =
+    mode === 'devin-mcp-bare-name'
+      ? 'jira_get_issue'
+      : mode === 'bridge-tool'
+        ? `mcp__${mcpLease!.servers[0]!.name}__present`
+        : 'terminal'
   const updates = `send({jsonrpc:'2.0',method:'session/update',params:{sessionId:'${updateSessionId}',update:{sessionUpdate:'tool_call',toolCallId:'shared-call',title:'${updateTitle}',name:'${updateName}',kind:'execute',status:'pending',${initialInput}locations:[{path:'/tmp/snapshot'}]}}});send({jsonrpc:'2.0',method:'session/update',params:{sessionId:'${updateSessionId}',update:{sessionUpdate:'tool_call_update',toolCallId:'shared-call',title:null,status:'${previousStatus}',rawOutput:{phase:'awaiting-permission'}}}});`
   const firstPrompt =
     mode === 'content-json-late'
@@ -89,7 +100,162 @@ function createRuntime(
   return runtime
 }
 
+async function permissionBridge(policy: () => Promise<'ask' | 'auto'>) {
+  const agent = { id: 'permission-snapshot-session', inbox: { nextStep: [], nextTurn: [] }, inject: vi.fn() }
+  const definitions = new Map(
+    ['present', 'todo_write'].map((name) => [
+      name,
+      {
+        name,
+        description: name,
+        parameters: { type: 'object', properties: {} },
+      },
+    ]),
+  )
+  const hidden = new Set<string>()
+  const tools = {
+    schemas: () => [...definitions.values()].filter((definition) => !hidden.has(definition.name)),
+    get: (name: string) => (hidden.has(name) ? undefined : definitions.get(name)),
+    executable: (name: string) => (hidden.has(name) ? undefined : definitions.get(name)),
+    execute: fakeToolBatch(async () => ({ content: [{ type: 'text', text: 'done' }] })),
+  }
+  const services: Record<string, unknown> = { tools, agents: { get: () => agent } }
+  const listeners = new Map<string, (...args: any[]) => void>()
+  const owner = new Context()
+  owner.provide('tools', tools as never)
+  bridgeCleanups.push(() => owner.fiber.dispose())
+  const ctx = {
+    get: (name: string) => services[name],
+    tools,
+    inject: owner.inject.bind(owner),
+    on: (name: string, listener: (...args: any[]) => void) => {
+      listeners.set(name, listener)
+      return () => listeners.delete(name)
+    },
+  } as unknown as Context
+  const lease = (await createDshToolBridge(
+    ctx,
+    agent.id,
+    { mcpCapabilities: { http: true } },
+    undefined,
+    policy,
+    undefined,
+    [...definitions.values()],
+  ))!
+  bridgeCleanups.push(() => lease.close())
+  return {
+    lease,
+    withdraw(name: string, notify = true) {
+      hidden.add(name)
+      if (notify) listeners.get('tools/change')!()
+    },
+  }
+}
+
 describe('AcpSessionRuntime prompt-scoped permission snapshots', () => {
+  it.each(['before-answer', 'after-answer', 'unrelated-tool', 'before-answer-without-event'] as const)(
+    'keeps a displayed Ask bound to its exact tool when withdrawn %s',
+    async (timing) => {
+      const bridge = await permissionBridge(async () => 'ask')
+      const shown = Promise.withResolvers<AbortSignal | undefined>()
+      const answer = Promise.withResolvers<acp.RequestPermissionResponse>()
+      const runtime = createRuntime(
+        (_request, signal) => {
+          shown.resolve(signal)
+          return answer.promise
+        },
+        'bridge-tool',
+        'in_progress',
+        bridge.lease,
+        undefined,
+        5000,
+        true,
+      )
+      const received: string[] = []
+      const prompting = runtime.prompt(PROMPT, ({ update }) => {
+        if (update.sessionUpdate === 'agent_message_chunk' && update.content.type === 'text')
+          received.push(update.content.text)
+      })
+      const signal = await shown.promise
+      const allow: acp.RequestPermissionResponse = { outcome: { outcome: 'selected', optionId: 'allow' } }
+      if (timing === 'after-answer') answer.resolve(allow)
+      bridge.withdraw(timing === 'unrelated-tool' ? 'todo_write' : 'present', timing !== 'before-answer-without-event')
+      expect(bridge.lease.signal.aborted).toBe(false)
+      expect(signal?.aborted).toBe(timing === 'before-answer' || timing === 'after-answer')
+      answer.resolve(allow)
+      await prompting
+      expect(JSON.parse(received.join(''))).toEqual(
+        timing === 'unrelated-tool' ? allow : { outcome: { outcome: 'cancelled' } },
+      )
+    },
+  )
+
+  it.each(['ask', 'auto'] as const)(
+    'settles withdrawal during a pending %s policy read before that read returns',
+    async (policy) => {
+      let armed = false
+      const entered = Promise.withResolvers<void>()
+      const resolved = Promise.withResolvers<'ask' | 'auto'>()
+      const bridge = await permissionBridge(async () => {
+        if (!armed) return policy
+        entered.resolve()
+        return resolved.promise
+      })
+      const shown = vi.fn(async (): Promise<acp.RequestPermissionResponse> => ({
+        outcome: { outcome: 'selected', optionId: 'allow' },
+      }))
+      const runtime = createRuntime(shown, 'bridge-tool', 'in_progress', bridge.lease, undefined, 5000, true)
+      const received: string[] = []
+      armed = true
+      const prompting = runtime.prompt(PROMPT, ({ update }) => {
+        if (update.sessionUpdate === 'agent_message_chunk' && update.content.type === 'text')
+          received.push(update.content.text)
+      })
+      await entered.promise
+      bridge.withdraw('present')
+      try {
+        await prompting
+        expect(shown).not.toHaveBeenCalled()
+        expect(JSON.parse(received.join(''))).toEqual({ outcome: { outcome: 'cancelled' } })
+      } finally {
+        resolved.resolve(policy)
+      }
+    },
+  )
+
+  it('revalidates an automatic target after asynchronous audit even without a directory event', async () => {
+    const bridge = await permissionBridge(async () => 'auto')
+    const audited = Promise.withResolvers<void>()
+    const completed = Promise.withResolvers<void>()
+    const shown = vi.fn(async (): Promise<acp.RequestPermissionResponse> => ({
+      outcome: { outcome: 'selected', optionId: 'allow' },
+    }))
+    const runtime = createRuntime(
+      shown,
+      'bridge-tool',
+      'in_progress',
+      bridge.lease,
+      async (check) => {
+        expect(check.reason).toBe('auto-approved')
+        audited.resolve()
+        await completed.promise
+      },
+      5000,
+      true,
+    )
+    const received: string[] = []
+    const prompting = runtime.prompt(PROMPT, ({ update }) => {
+      if (update.sessionUpdate === 'agent_message_chunk' && update.content.type === 'text')
+        received.push(update.content.text)
+    })
+    await audited.promise
+    bridge.withdraw('present', false)
+    completed.resolve()
+    await prompting
+    expect(shown).not.toHaveBeenCalled()
+    expect(JSON.parse(received.join(''))).toEqual({ outcome: { outcome: 'cancelled' } })
+  })
+
   it('keeps the stream claimed past the local drain grace and admits a new prompt only after settlement', async () => {
     let pending = true
     let releaseDrain!: () => void

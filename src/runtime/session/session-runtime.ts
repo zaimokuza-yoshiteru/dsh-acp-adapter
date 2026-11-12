@@ -578,6 +578,7 @@ export class AcpSessionRuntime {
       !this.connection.isTransportAvailable ||
       this.connectionAbort?.signal.aborted === true ||
       this.mcpLease?.signal.aborted === true ||
+      this.mcpLease?.needsRefresh?.() === true ||
       this.mcpKey !== this.options.mcpKey?.()
     )
       return undefined
@@ -683,7 +684,11 @@ export class AcpSessionRuntime {
   private wirePromptActive = false
   private qwenTasks: QwenBackgroundTasks | undefined
   get canSteer(): boolean {
-    return this.connection?.supportsSteering === true && this.pendingQuestions === 0
+    return (
+      this.connection?.supportsSteering === true &&
+      this.pendingQuestions === 0 &&
+      this.mcpLease?.needsRefresh?.() !== true
+    )
   }
 
   async steer(content: acp.ContentBlock[], onDispatch?: () => void): Promise<'injected' | 'promptRequired'> {
@@ -717,6 +722,7 @@ export class AcpSessionRuntime {
       (this.connection.isClosed ||
         this.connection.isTransportAvailable === false ||
         this.mcpLease?.signal.aborted === true ||
+        this.mcpLease?.needsRefresh?.() === true ||
         this.mcpKey !== this.options.mcpKey?.())
     )
       await this.close()
@@ -1508,7 +1514,7 @@ export class AcpSessionRuntime {
             onElicitationRequest: async (
               params: acp.CreateElicitationRequest,
             ): Promise<acp.CreateElicitationResponse> => {
-              const signal = this.permissionSignal()
+              let signal = this.permissionSignal()
               if (!this.promptActive || isAborted(signal)) return { action: 'cancel' }
               const scope = params as { sessionId?: unknown; toolCallId?: unknown }
               const toolCall =
@@ -1518,34 +1524,47 @@ export class AcpSessionRuntime {
               this.pendingQuestions += 1
               try {
                 const lease = this.mcpLease
+                const targetSignal = lease?.elicitationSignal?.(params, toolCall)
+                if (targetSignal !== undefined)
+                  signal = AbortSignal.any(signal === undefined ? [targetSignal] : [signal, targetSignal])
                 const automaticPromise = Promise.resolve(lease?.elicitation?.(params, toolCall))
                 let automatic: acp.CreateElicitationResponse | undefined
                 if (signal === undefined) automatic = await automaticPromise
                 else {
+                  const capturedSignal = signal
                   const abortToken = Symbol('abort')
                   let onAbort: (() => void) | undefined
                   const aborted = new Promise<typeof abortToken>((resolve) => {
                     onAbort = () => resolve(abortToken)
-                    if (isAborted(signal)) onAbort()
-                    else signal.addEventListener('abort', onAbort, { once: true })
+                    if (isAborted(capturedSignal)) onAbort()
+                    else capturedSignal.addEventListener('abort', onAbort, { once: true })
                   })
                   try {
                     const result = await Promise.race([automaticPromise, aborted])
                     if (result === abortToken) return { action: 'cancel' }
                     automatic = result
                   } finally {
-                    if (onAbort !== undefined) signal.removeEventListener('abort', onAbort)
+                    if (onAbort !== undefined) capturedSignal.removeEventListener('abort', onAbort)
                   }
                 }
                 if (isAborted(signal) || lease !== this.mcpLease || lease?.signal.aborted) return { action: 'cancel' }
                 if (automatic !== undefined) return automatic
                 const hostToolName = this.mcpLease?.elicitationToolName?.(params, toolCall)
-                return await this.options.onElicitationRequest!(
-                  params,
+                const response = await raceAbort(
+                  this.options.onElicitationRequest!(
+                    params,
+                    signal,
+                    hostToolName,
+                    hostToolName === undefined ? undefined : toolCall,
+                  ),
                   signal,
-                  hostToolName,
-                  hostToolName === undefined ? undefined : toolCall,
+                  () => ({ action: 'cancel' as const }),
                 )
+                return isAborted(signal) ||
+                  lease !== this.mcpLease ||
+                  lease?.elicitationSignal?.(params, toolCall)?.aborted === true
+                  ? { action: 'cancel' }
+                  : response
               } finally {
                 this.pendingQuestions -= 1
               }
@@ -2097,22 +2116,27 @@ export class AcpSessionRuntime {
     }
     const lease = this.mcpLease
     const inspectPromise = Promise.resolve(lease?.inspectPermission?.(request))
+    const targetSignal = lease?.permissionSignal?.(request)
+    const inspectionSignal =
+      targetSignal === undefined
+        ? signal
+        : AbortSignal.any(signal === undefined ? [targetSignal] : [signal, targetSignal])
     let inspected: Awaited<typeof inspectPromise>
-    if (signal === undefined) inspected = await inspectPromise
+    if (inspectionSignal === undefined) inspected = await inspectPromise
     else {
       const abortToken = Symbol('permission-abort')
       let onAbort: (() => void) | undefined
       const aborted = new Promise<typeof abortToken>((resolve) => {
         onAbort = () => resolve(abortToken)
-        if (isAborted(signal)) onAbort()
-        else signal.addEventListener('abort', onAbort, { once: true })
+        if (isAborted(inspectionSignal)) onAbort()
+        else inspectionSignal.addEventListener('abort', onAbort, { once: true })
       })
       try {
         const result = await Promise.race([inspectPromise, aborted])
         if (result === abortToken) return cancelled()
         inspected = result
       } finally {
-        if (onAbort !== undefined) signal.removeEventListener('abort', onAbort)
+        if (onAbort !== undefined) inspectionSignal.removeEventListener('abort', onAbort)
       }
     }
     if (this.options.onPermissionCheck !== undefined) {
@@ -2126,10 +2150,15 @@ export class AcpSessionRuntime {
     // A matching DSH title alone grants no identity or Auto approval, but it
     // is ambiguous ownership and must retain the bridge's revocation fence.
     const ownedByBridge = inspected?.reason !== 'identity-unmatched' || inspected.titleMatchesCurrentTool === true
+    const decisionRevoked = () =>
+      (targetSignal !== undefined ||
+        inspected?.reason === 'auto-approved' ||
+        inspected?.reason === 'approval-required') &&
+      lease?.validatePermissionDecision?.(request) === false
     if (
-      isAborted(signal) ||
+      isAborted(inspectionSignal) ||
       (ownedByBridge && (lease !== this.mcpLease || lease?.signal.aborted)) ||
-      (inspected?.reason === 'auto-approved' && lease?.validatePermissionDecision?.(request) === false)
+      decisionRevoked()
     )
       return cancelled()
     // Use the very policy resolution that was audited above. Re-reading here
@@ -2143,8 +2172,8 @@ export class AcpSessionRuntime {
     // a late answer cannot authorize a retired capability.
     const approvalSignal =
       ownedByBridge && lease !== undefined
-        ? AbortSignal.any(signal === undefined ? [lease.signal] : [signal, lease.signal])
-        : signal
+        ? AbortSignal.any(inspectionSignal === undefined ? [lease.signal] : [inspectionSignal, lease.signal])
+        : inspectionSignal
     const pending = handler(
       { ...request, toolCall: lease?.presentTool?.(request.toolCall) ?? request.toolCall },
       approvalSignal,
@@ -2165,7 +2194,8 @@ export class AcpSessionRuntime {
       const response = await Promise.race([pending, aborted])
       // A resolved answer can win the race before cancellation's microtask
       // runs. Recheck the owning lifetime at the actual RPC reply boundary.
-      if (isAborted(approvalSignal) || (ownedByBridge && lease !== this.mcpLease)) return cancelled()
+      if (isAborted(approvalSignal) || (ownedByBridge && lease !== this.mcpLease) || decisionRevoked())
+        return cancelled()
       return response
     } finally {
       if (onAbort !== undefined) approvalSignal.removeEventListener('abort', onAbort)

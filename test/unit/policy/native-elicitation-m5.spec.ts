@@ -36,7 +36,10 @@ describe('native ACP form elicitation bridge (M5c)', () => {
     expect(question?.options).toBeUndefined()
   })
 
-  it('maps string/enum, boolean, number/integer and multi-select answers to ACP content', async () => {
+  it.each([
+    { enabled: true, label: 'Yes', ratio: 1.5, count: 2 },
+    { enabled: false, label: 'No', ratio: 0, count: 0 },
+  ])('maps typed answers to ACP content, preserving false and zero: %j', async ({ enabled, label, ratio, count }) => {
     const agent = { id: 'root-agent' }
     const requests: unknown[] = []
     const userQuestions: AcpNativeUserQuestionService = {
@@ -46,9 +49,9 @@ describe('native ACP form elicitation bridge (M5c)', () => {
           answers: [
             { id: 'name', selected: [], custom: 'release-1' },
             { id: 'channel', selected: ['stable'] },
-            { id: 'enabled', selected: ['Yes'] },
-            { id: 'ratio', selected: [], custom: '1.5' },
-            { id: 'count', selected: [], custom: '2' },
+            { id: 'enabled', selected: [label] },
+            { id: 'ratio', selected: [], custom: String(ratio) },
+            { id: 'count', selected: [], custom: String(count) },
             { id: 'tags', selected: ['one', 'two'] },
           ],
         }
@@ -61,7 +64,7 @@ describe('native ACP form elicitation bridge (M5c)', () => {
         channel: { type: 'string', enum: ['stable', 'canary'] },
         enabled: { type: 'boolean' },
         ratio: { type: 'number', minimum: 0, maximum: 2 },
-        count: { type: 'integer', minimum: 1, maximum: 3 },
+        count: { type: 'integer', minimum: 0, maximum: 3 },
         tags: { type: 'array', items: { type: 'string', enum: ['one', 'two', 'three'] }, minItems: 1 },
       }),
     )
@@ -70,9 +73,9 @@ describe('native ACP form elicitation bridge (M5c)', () => {
       content: {
         name: 'release-1',
         channel: 'stable',
-        enabled: true,
-        ratio: 1.5,
-        count: 2,
+        enabled,
+        ratio,
+        count,
         tags: ['one', 'two'],
       },
     })
@@ -407,10 +410,10 @@ describe('native ACP form elicitation bridge (M5c)', () => {
     expect(approveDelegatedOnce).toHaveBeenCalledTimes(['approval-error', 'late-abort'].includes(scenario) ? 1 : 0)
   })
 
-  describe('optional fields and free-text companions (#75)', () => {
+  describe('optional fields without inferred companion relationships (#75)', () => {
     type Answer = { id: string; selected: string[]; custom?: string }
     const ask = (answers: (ids: readonly string[]) => Answer[]) => {
-      const seen: { id: string; header?: string; options?: readonly unknown[]; multiSelect?: boolean }[][] = []
+      const seen: Parameters<AcpNativeUserQuestionService['ask']>[0]['questions'][] = []
       const handler = createAcpNativeElicitationHandler({
         getAgent: () => ({}),
         userQuestions: {
@@ -440,18 +443,53 @@ describe('native ACP form elicitation bridge (M5c)', () => {
       )
 
     it.each([
-      ['a listed choice', { selected: ['Option A'] }, { pick: 'a' }],
-      ['the Other row', { selected: [], custom: 'my own' }, { pick_custom: 'my own' }],
-      ['Skip', { selected: [] }, {}],
-    ] as const)('asks one question for a choice with a companion and accepts %s', async (_name, answer, content) => {
-      const { handler, seen } = ask(() => [{ id: 'pick', ...answer, selected: [...answer.selected] }])
+      ['a listed choice', ['Option A'], undefined, { pick: 'a' }],
+      ['the independent text answer', [], 'my own', { pick_custom: 'my own' }],
+      ['both fields', ['Option B'], 'deployment notes', { pick: 'b', pick_custom: 'deployment notes' }],
+      ['Skip', [], undefined, {}],
+    ] as const)('preserves both questions and accepts %s', async (_name, selected, custom, content) => {
+      const { handler, seen } = ask(() => [
+        { id: 'pick', selected: [...selected] },
+        { id: 'pick_custom', selected: [], ...(custom === undefined ? {} : { custom }) },
+      ])
       await expect(handler(single())).resolves.toEqual({ action: 'accept', content })
-      expect(seen[0]!.map((question) => question.id)).toEqual(['pick'])
-      expect(seen[0]![0]!.header).toBe('Optional')
+      expect(seen[0]!.map((question) => question.id)).toEqual(['pick', 'pick_custom'])
+      expect(seen[0]!.map((question) => question.header)).toEqual(['Optional', 'Optional'])
+      expect(seen[0]![1]).toMatchObject({ question: 'Repro (other)', detail: 'Type your own answer' })
     })
 
-    it('parses a titled anyOf multi-select and keeps choices alongside the Other row', async () => {
-      const { handler, seen } = ask(() => [{ id: 'tags', selected: ['One', 'Two'], custom: 'three' }])
+    it('preserves an independent optional field whose name ends in _custom', async () => {
+      const { handler, seen } = ask(() => [
+        { id: 'plan', selected: ['pro'] },
+        { id: 'plan_custom', selected: [], custom: 'Use our existing deployment' },
+      ])
+      await expect(
+        handler(
+          form(
+            {
+              plan: { type: 'string', enum: ['basic', 'pro'] },
+              plan_custom: {
+                type: 'string',
+                title: 'Custom deployment notes',
+                description: 'Describe changes needed for the selected plan',
+              },
+            },
+            [],
+          ),
+        ),
+      ).resolves.toEqual({ action: 'accept', content: { plan: 'pro', plan_custom: 'Use our existing deployment' } })
+      expect(seen[0]![1]).toMatchObject({
+        id: 'plan_custom',
+        question: 'Custom deployment notes',
+        detail: 'Describe changes needed for the selected plan',
+      })
+    })
+
+    it('parses a titled anyOf multi-select and preserves the separate text field', async () => {
+      const { handler, seen } = ask(() => [
+        { id: 'tags', selected: ['One', 'Two'] },
+        { id: 'tags_custom', selected: [], custom: 'three' },
+      ])
       const params = form(
         {
           tags: {
@@ -471,7 +509,7 @@ describe('native ACP form elicitation bridge (M5c)', () => {
         action: 'accept',
         content: { tags: ['one', 'two'], tags_custom: 'three' },
       })
-      expect(seen[0]).toHaveLength(1)
+      expect(seen[0]).toHaveLength(2)
       expect(seen[0]![0]!.multiSelect).toBe(true)
     })
 
@@ -484,7 +522,7 @@ describe('native ACP form elicitation bridge (M5c)', () => {
       expect(seen).toHaveLength(0)
     })
 
-    it('does not merge when the choice is required, and omits the skipped companion', async () => {
+    it('preserves a required choice and omits the skipped optional text field', async () => {
       const { handler, seen } = ask(() => [
         { id: 'pick', selected: ['Option B'] },
         { id: 'pick_custom', selected: [] },
@@ -508,15 +546,20 @@ describe('native ACP form elicitation bridge (M5c)', () => {
       expect(seen[0]!.map((question) => question.id)).toEqual(Object.keys(properties))
     })
 
-    it('still refuses free text for a choice without a companion', async () => {
+    it.each([false, true])('refuses enum free text regardless of a following _custom field: %s', async (withCustom) => {
       const { handler } = ask(() => [{ id: 'pick', selected: [], custom: 'anything' }])
-      await expect(handler(form({ pick: { type: 'string', enum: ['a', 'b'] } }, []))).resolves.toEqual({
-        action: 'cancel',
-      })
+      await expect(
+        handler(
+          form(
+            { pick: { type: 'string', enum: ['a', 'b'] }, ...(withCustom ? { pick_custom: { type: 'string' } } : {}) },
+            [],
+          ),
+        ),
+      ).resolves.toEqual({ action: 'cancel' })
     })
 
     it('omits skipped optional enum, number, boolean and constrained text fields', async () => {
-      const { handler } = ask((ids) => ids.map((id) => ({ id, selected: id === 'name' ? [] : [] })))
+      const { handler } = ask((ids) => ids.map((id) => ({ id, selected: [] })))
       const params = form(
         {
           choice: { type: 'string', enum: ['a', 'b'] },
@@ -530,18 +573,62 @@ describe('native ACP form elicitation bridge (M5c)', () => {
       await expect(handler(params)).resolves.toEqual({ action: 'accept', content: {} })
     })
 
-    it('cancels when a required field is skipped', async () => {
-      const { handler } = ask((ids) => ids.map((id) => ({ id, selected: [] })))
-      await expect(handler(form({ choice: { type: 'string', enum: ['a', 'b'] } }))).resolves.toEqual({
-        action: 'cancel',
-      })
+    it.each([
+      { type: 'string' },
+      { type: 'string', enum: ['a', 'b'] },
+      { type: 'number' },
+      { type: 'boolean' },
+      { type: 'array', items: { enum: ['a'] } },
+    ])('cancels when a required field is missing or skipped: %j', async (field) => {
+      for (const answers of [[], [{ id: 'value', selected: [] }]]) {
+        const { handler } = ask(() => answers)
+        await expect(handler(form({ value: field }))).resolves.toEqual({ action: 'cancel' })
+      }
     })
 
-    it('validates the Other text against the companion constraints', async () => {
-      const { handler } = ask(() => [{ id: 'pick', selected: [], custom: 'x' }])
+    it('validates the independent text field constraints', async () => {
+      const { handler } = ask(() => [{ id: 'pick_custom', selected: [], custom: 'x' }])
       const params = single()
       ;(params as any).requestedSchema.properties.pick_custom.minLength = 3
       await expect(handler(params)).resolves.toEqual({ action: 'cancel' })
     })
+  })
+
+  it.each([
+    ['missing', []],
+    ['skipped', [{ id: 'persist', selected: [] }]],
+    ['blank', [{ id: 'persist', selected: [], custom: '  ' }]],
+  ] as const)('cancels an optional permission scope when its answer is %s', async (_name, answers) => {
+    const handler = createAcpNativeElicitationHandler({
+      getAgent: () => ({}),
+      hostToolName: 'bash',
+      userQuestions: { ask: async () => ({ answers }) },
+    })
+    for (const choices of [['once'], ['once', 'session', 'always']]) {
+      const params = {
+        ...form({ persist: { type: 'string', enum: choices } }, []),
+        _meta: { codex_approval_kind: 'mcp_tool_call' },
+      }
+      await expect(handler(params)).resolves.toEqual({ action: 'cancel' })
+    }
+  })
+
+  it('accepts an explicitly selected optional permission scope without answering it on the user behalf', async () => {
+    const handler = createAcpNativeElicitationHandler({
+      getAgent: () => ({}),
+      hostToolName: 'bash',
+      userQuestions: {
+        ask: async ({ questions }) => {
+          expect(questions[0]?.header).toBeUndefined()
+          return { answers: [{ id: 'persist', selected: [questions[0]!.options![1]!.label] }] }
+        },
+      },
+    })
+    await expect(
+      handler({
+        ...form({ persist: { type: 'string', enum: ['once', 'session', 'always'] } }, []),
+        _meta: { codex_approval_kind: 'mcp_tool_call' },
+      }),
+    ).resolves.toEqual({ action: 'accept', content: { persist: 'session' } })
   })
 })

@@ -185,3 +185,34 @@ RC.1 `session/created` 只有 child，没有可验证的 source 和 exact cut，
 - 同 Agent 改模型时取消保留原会话与草稿，确认后独立 B 会话完成；返回原会话草稿仍在。崩溃恢复的空白重置先确认，取消保持恢复门禁，明确确认后后续请求成功。1440px 与 390px 明暗、切模/恢复/重置确认、诊断与抽屉截图已检查；无页面横向溢出，抽屉打开和关闭时 inert 状态正确。验证后已关闭该独立桌面。
 
 本轮没有调用真实模型或消耗模型额度，不构成 Windows、签名安装包/升级或真实 Agent 的兼容认证。上游 checkout 保持原状。
+
+## 9. 保留 worktree 历史的完整迁入（2026-11-12，未发布）
+
+迁入来源为 `copilot-worktrees/dsh-devin/cartecho-refactored-pancake/dsh-acp-adapter` 的 `fix/review-batch-1`，不是此前检查的旧 worktree。从 `927b6dc` 到 `77d6450` 的 21 个提交通过 fast-forward 完整进入 `0.2.2-alpha`，没有 squash、重新生成提交或改写来源分支；下面的修复作为后续提交保留。依赖、包版本和发布状态均未改变。
+
+### 六处修复及保留边界
+
+| 复核问题                         | 迁入后的行为与回归                                                                                                                                                                                                         |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 可选授权表单的 Skip 被当作接受   | Codex 工具授权 `persist` 即使未被 schema 标为 required，空回答也返回 cancel；真正可选的普通字段仍可省略，必填字段空回答取消。覆盖 false、数值 0 与整数 0 的有效回答。                                                      |
+| `_custom` 名称猜测合并了独立字段 | 删除按后缀和相邻位置合并的逻辑，保留每个字段的标题、说明和值及 anyOf 选项。原生 Optional/Skip 分页仍存在，没有宣称实现无额外 Other 页的专用交互。                                                                          |
+| 用量缓存重叠、累计值重复入账     | 删除未经确认的 `acpTurnUsage` 映射及原生 usage emission。缺失、非法、缓存包含/不包含和累计 100→250 均不写入宿主计费统计；`usage_update` 上下文占用继续展示。只有各 Agent 的逐次计数及缓存口径可验证时才恢复映射。          |
+| 单工具撤权后审批仍可通过         | Ask、Auto、审计等待及 Codex elicitation 都绑定当前 prompt 和原工具目标，撤权立即取消，RPC 回复前再次校验。标题匹配只附加撤权检查，不赋予 Auto 或执行身份；无关工具及 Agent 自有权限不被误取消。                            |
+| 整目录刷新仍切断连接             | 空目录保留传输并排空已接纳调用，旧目标撤权不能绑定到新 owner；真正服务或 Agent 消失仍关闭连接。下一安全轮次刷新 lease，同一对象/相同 key 恢复也会刷新。流交接捕获原目录身份，不能在注册替换后通过两次读取新 key 绕过刷新。 |
+| 原始 batch cause 泄露诊断数据    | 回复及结构化 Host 日志只保留经现有规则脱敏、移除控制字符、总长最多 1000 字符的错误文本，不展开任意 cause 对象。                                                                                                            |
+
+同时更新中英文 native-reuse 说明，明确首次未绑定会话的受限历史交付条件、逐工具撤权、用量及原生问答的边界。未修改上游，也未扩大此前拒绝实现的原地切模、原生任意分叉或 Auto Review 能力。
+
+### 本轮验证与可复现证据
+
+使用 Node `24.19.0`、pnpm `10.7.0`、101 个精确 npm 开发依赖及 DSH `0.2.2-rc.1`。官方源码 scaffold 为 `66491b05e3`；其已有 `.claude/skills` 删除状态保持不变。日志、桌面脚本和隔离数据位于 gitignored `.local/merge-21-fixes/`。
+
+- `pnpm typecheck`、`pnpm build`、`pnpm typecheck:e2e` 通过；构建校验 304 个包文件和 122 个运行时 JavaScript 闭包。先刷新构建后执行 E2E 类型检查，避免迁入前的旧声明与新源码同时被解析。
+- `DSH_E2E_LIVE_QWEN=0 pnpm exec vitest run`：213 个文件中 212 通过、1 跳过；2736 项通过、3 跳过。工具桥、权限、准入和图像能力定向 149/149 与全量存在重叠，不相加计算覆盖。
+- 浏览器三项不同场景通过：目录导入、探测刷新、独立可选字段与授权 Skip。命令使用官方 `vitest.mjs run --config .local/merge-21-fixes/e2e.config.mjs`；该临时配置仅将 scaffold 缺少的 `@deepseek-ai/cordis-plugin-include` 指向插件依赖中已有的精确包，没有修改上游目录。未运行完整浏览器/profile 矩阵。
+- 新表单用例首次截图发现测试 helper 的第二参数是高度，已改为显式 `390×844` 并断言 `innerWidth === 390`；修正后重新通过。`.local/e2e-acp-elicitation-detail/web/` 的三张 Optional/Skip 明暗截图已检查，分别验证独立文本值、普通可选省略和授权取消。
+- 全新隔离 Electron 使用 RC.1 源码 shell、复制到隔离项目的私有 Host glue 与正式 npm 公共库；profile、workspace、user-data 均独立。`desktop/rc1-lifecycle-result.json` 为 passed，7 组行为检查、23 张截图，`rendererErrors` 为空。
+- ACP 与 ds-bot 分别通过原生 Plugins 开关热停启；活动 ACP 停用发出 `session/cancel`，重新启用后新会话完成。首次绑定人为延迟，2352ms 后完成，MutationObserver 未捕获重连活动提示；Chat/Trajectory/ACP Diagnostics 各一份。无 configOptions 的通用 Agent 也完成首次会话且没有模型配置写入。
+- 同 Agent 切模取消保留原会话及草稿，确认后建立独立模型 B 会话；崩溃恢复取消保留门禁，明确空白重置后可继续。已检查 1440px 及 390px 明暗的会话、切模、恢复/重置确认、诊断、菜单与抽屉，无页面横向溢出，抽屉 inert 状态正确。验证后测试桌面已关闭。
+
+上述 UI 和协议结果来自免密夹具，不是实际模型、真实 Agent、Windows 或签名安装包的兼容认证。本轮未使用日常桌面数据或模型额度，未发布、打 tag 或推送远端。

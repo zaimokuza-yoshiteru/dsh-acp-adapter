@@ -435,7 +435,7 @@ export function createAcpNativeElicitationHandler(
     const scopeTitles: Record<string, string> = zh
       ? { once: '仅允许一次', session: '在本次会话中允许', always: '始终允许，不再询问' }
       : { once: 'Allow once', session: 'Allow for this session', always: "Always allow, don't ask again" }
-    const allFields = schema.fields.map((field) => {
+    const fields = schema.fields.map((field) => {
       const scope =
         params._meta?.codex_approval_kind === 'mcp_tool_call' &&
         field.name === 'persist' &&
@@ -458,29 +458,8 @@ export function createAcpNativeElicitationHandler(
         options,
       }
     })
-    // An optional choice immediately followed by its optional `<name>_custom`
-    // free-text companion is one question: DSH's choice card already offers
-    // an "Other" row, which carries the companion's value.
-    const customOf = new Map<string, (typeof allFields)[number]>()
-    const companions = new Set<string>()
-    allFields.forEach((field, index) => {
-      const next = allFields[index + 1]
-      if (
-        field.options.length > 0 &&
-        (field.type === 'string' || field.type === 'array') &&
-        !field.required &&
-        !field.scope &&
-        next !== undefined &&
-        next.name === `${field.name}_custom` &&
-        next.type === 'string' &&
-        next.options.length === 0 &&
-        !next.required
-      ) {
-        customOf.set(field.name, next)
-        companions.add(next.name)
-      }
-    })
-    const fields = allFields.filter((field) => !companions.has(field.name))
+    // A schema names independent fields; a suffix cannot prove that one is
+    // another field's custom-answer channel. Preserve every field and its copy.
     const questions = fields.map((field, index) => {
       // Only a verified, exact Codex bridge message is replaced. Other agents'
       // explanations remain intact, including any additional approval context.
@@ -538,22 +517,23 @@ export function createAcpNativeElicitationHandler(
       const values: { name: string; value: string | number | boolean | readonly string[] }[] = []
       for (const field of fields) {
         const item = answer.answers.find((candidate) => candidate.id === field.name)
-        if (item === undefined) continue
-        const custom = item.custom?.trim() ? item.custom : undefined
-        // A skipped optional field is omitted. An empty placeholder would fail
-        // enum, number and length constraints and cancel the whole form.
-        if (!field.required && item.selected.length === 0 && custom === undefined) continue
-        const companion = customOf.get(field.name)
+        const custom = item?.custom?.trim() ? item.custom : undefined
+        if (item === undefined || (item.selected.length === 0 && custom === undefined)) {
+          // Permission scope always needs an explicit choice, even when the
+          // Agent's schema calls it optional. Skip must never become approval.
+          if (field.required || (params._meta?.codex_approval_kind === 'mcp_tool_call' && field.name === 'persist'))
+            return { action: 'cancel' }
+          // Omit ordinary optional fields instead of fabricating an empty value.
+          continue
+        }
         // Enum answers must be explicit displayed choices; never interpret free
         // text as a permission scope or guess from a protocol identifier.
         if (
           field.options.length > 0 &&
-          ((custom !== undefined && companion === undefined) ||
+          (custom !== undefined ||
             item.selected.some((label) => !field.options.some((option) => option.label === label)))
         )
           return { action: 'cancel' }
-        if (companion !== undefined && custom !== undefined) values.push({ name: companion.name, value: custom })
-        if (companion !== undefined && item.selected.length === 0) continue
         if (field.type !== 'array' && item.selected.length > 1) return { action: 'cancel' }
         const selected = item.selected.map(
           (label) => field.options.find((option) => option.label === label)?.value ?? label,

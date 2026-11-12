@@ -11,7 +11,13 @@ afterEach(async () => {
 
 async function fixture(
   image: boolean | undefined,
-  options: { lease?: AcpMcpLease; mcpKey?: () => unknown; subprocess?: SubprocessSeam; waitForCancel?: boolean } = {},
+  options: {
+    lease?: AcpMcpLease
+    createMcpLease?: () => Promise<AcpMcpLease>
+    mcpKey?: () => unknown
+    subprocess?: SubprocessSeam
+    waitForCancel?: boolean
+  } = {},
 ) {
   const script = `
     const send = value => process.stdout.write(JSON.stringify(value)+'\\n');
@@ -38,6 +44,7 @@ async function fixture(
     subprocess: options.subprocess ?? (await sharedTestSubprocess()).seam,
     prepareLaunch: async () => ({ argv, env: {}, spawnPlan: { argv, env: {} } }),
     ...(options.lease === undefined ? {} : { createMcpLease: async () => options.lease }),
+    ...(options.createMcpLease === undefined ? {} : { createMcpLease: options.createMcpLease }),
     ...(options.mcpKey === undefined ? {} : { mcpKey: options.mcpKey }),
   })
   runtimes.push(runtime)
@@ -81,6 +88,40 @@ describe('live ACP input-image proof', () => {
     expect(runtime.inputImageSupported).toBe(true)
     key = 'replacement-registration'
     expect(runtime.inputImageSupported).toBeUndefined()
+  })
+
+  it('rebuilds a revoked directory even when the restored definition leaves its key unchanged', async () => {
+    let withdrawn = false
+    let created = 0
+    let closed = 0
+    const runtime = await fixture(true, {
+      mcpKey: () => 'same-definition-and-schema',
+      createMcpLease: async () => {
+        const first = ++created === 1
+        const lifetime = new AbortController()
+        return {
+          signal: lifetime.signal,
+          servers: [],
+          needsRefresh: () => first && withdrawn,
+          beginPrompt() {},
+          endPrompt() {},
+          permission: () => undefined,
+          async close() {
+            closed++
+            lifetime.abort()
+          },
+        }
+      },
+    })
+    await runtime.start()
+    expect(created).toBe(1)
+    expect(runtime.inputImageSupported).toBe(true)
+    withdrawn = true
+    expect(runtime.inputImageSupported).toBeUndefined()
+    await runtime.initialize()
+    expect(created).toBe(2)
+    expect(closed).toBe(1)
+    expect(runtime.inputImageSupported).toBe(true)
   })
 
   it('invalidates proof after the negotiated connection dies without a clean close', async () => {
