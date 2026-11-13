@@ -186,6 +186,11 @@ it('isolates concurrent machine decisions while preserving the original full par
   const calls: { agentId: string; requestId: string; callId: string | undefined }[] = []
   let legacyCalls = 0
   const releaseConcurrent = Promise.withResolvers<void>()
+  const policyEntered = new Map<string, PromiseWithResolvers<void>>(
+    ['machine-allow', 'machine-deny', 'machine-failed', 'manual'].map(
+      (key) => [`parent-scope-${key}`, Promise.withResolvers<void>()] as const,
+    ),
+  )
   context.onTestFinished(async () => {
     releaseConcurrent.resolve()
     await world.close()
@@ -201,6 +206,7 @@ it('isolates concurrent machine decisions while preserving the original full par
   world.ctx.on('dsh-acp/permission-policy', async (request, next) => {
     const callId = request.params.toolCall.toolCallId
     calls.push({ agentId: request.agent.id, requestId: request.requestId, callId })
+    if (callId !== undefined) policyEntered.get(callId)?.resolve()
     if (callId?.startsWith('parent-scope-machine-')) await releaseConcurrent.promise
     if (callId === 'parent-scope-machine-allow') return 'allow-once'
     if (callId === 'parent-scope-machine-deny') return 'deny-once'
@@ -212,7 +218,10 @@ it('isolates concurrent machine decisions while preserving the original full par
     const deny = await world.spawn('machine-deny')
     const failed = await world.spawn('machine-failed')
     const manual = await world.spawn('manual')
-    await expect.poll(() => calls.length).toBe(4)
+    // Activation publication precedes ACP startup. Wait for each distinct
+    // policy callback before releasing any concurrent decision.
+    await Promise.all([...policyEntered.values()].map(({ promise }) => promise))
+    expect(calls).toHaveLength(4)
     expect(world.effects('machine-allow')).toEqual([])
     expect(acpPermissionAudit(world, 'decided')).toHaveLength(0)
     releaseConcurrent.resolve()

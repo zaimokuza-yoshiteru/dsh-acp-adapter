@@ -559,19 +559,19 @@ it(
         await expect(
           (host.ctx.get('dshAcp') as AcpRemoteService).setTeamMemberMode(demoLead.id, demoLead.id, 'plan'),
         ).rejects.toThrow()
-        await expect
-          .poll(async () =>
-            Promise.all(
-              demoMembers.map(async (m) => {
-                const snapshot = await (host.ctx.get('dshAcp') as AcpRemoteService).agentSessionSnapshot(m.id)
-                return { freshness: snapshot.freshness, modeWritable: snapshot.modeWritable }
-              }),
-            ),
-          )
-          .toEqual([
-            { freshness: 'stale', modeWritable: true },
-            { freshness: 'stale', modeWritable: true },
-          ])
+        // Interrupt acceptance does not include teardown; join the owners before checking dormant controls.
+        await host.ctx.subagents.waitForChildren(demoLead)
+        expect(
+          await Promise.all(
+            demoMembers.map(async (m) => {
+              const snapshot = await (host.ctx.get('dshAcp') as AcpRemoteService).agentSessionSnapshot(m.id)
+              return { freshness: snapshot.freshness, modeWritable: snapshot.modeWritable }
+            }),
+          ),
+        ).toEqual([
+          { freshness: 'stale', modeWritable: true },
+          { freshness: 'stale', modeWritable: true },
+        ])
         await expect.poll(() => interrupt.isDisabled()).toBe(true)
         expect(demoLead.status).toBe('running')
         await panel.getByRole('button', { name: '批量调整模式', exact: true }).click()

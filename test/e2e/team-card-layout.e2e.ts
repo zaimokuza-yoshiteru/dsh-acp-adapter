@@ -115,19 +115,19 @@ it('keeps long teammate cards and reserved notices aligned in both languages and
     setStage('reject teammate approvals')
     await approvals.getByRole('button', { name: 'Reject all', exact: true }).click()
     setStage('wait for teammate sessions to stop')
-    await expect
-      .poll(async () =>
-        Promise.all(
-          members.map(async (m) => {
-            const snapshot = await (host.ctx.get('dshAcp') as AcpRemoteService).agentSessionSnapshot(m.id)
-            return { freshness: snapshot.freshness, modeWritable: snapshot.modeWritable }
-          }),
-        ),
-      )
-      .toEqual([
-        { freshness: 'stale', modeWritable: true },
-        { freshness: 'stale', modeWritable: true },
-      ])
+    // A stale snapshot can precede process teardown; join the owning activations before checking writability.
+    await host.ctx.subagents.waitForChildren(lead)
+    expect(
+      await Promise.all(
+        members.map(async (m) => {
+          const snapshot = await (host.ctx.get('dshAcp') as AcpRemoteService).agentSessionSnapshot(m.id)
+          return { freshness: snapshot.freshness, modeWritable: snapshot.modeWritable }
+        }),
+      ),
+    ).toEqual([
+      { freshness: 'stale', modeWritable: true },
+      { freshness: 'stale', modeWritable: true },
+    ])
     await lead.whenIdle()
     notices.finish()
     for (const pending of pendingShells) {

@@ -25,7 +25,7 @@ describe('native work-details preferences with the ACP protocol fixture', () => 
   let errors: string[]
   let activeIds: Set<string>
   let settlements: Promise<unknown>[]
-  const evidence = join(root, '.local/native-work-details')
+  const evidence = join(root, '.local/e2e-failures/native-work-details')
 
   beforeAll(async () => {
     host = await launchAdapterWorld()
@@ -316,8 +316,13 @@ describe('native work-details preferences with the ACP protocol fixture', () => 
           if (!(actualGap > 0) || Math.abs(actualGap - nativeGap) > 2) violations.push('missing-plan-glyph-gap')
           if (lines.length < 2) violations.push('plan-did-not-wrap')
           if (lines.some((line) => Math.abs(line.left - contentBox.left) > 2)) violations.push('misaligned-plan-wrap')
+          if (textNode?.nodeType !== Node.TEXT_NODE || words.length === 0) violations.push('missing-plan-text-geometry')
+          // pre-wrap may hang unpainted line-end spaces beyond the content box.
+          // Check every non-whitespace Range fragment without relaxing its bounds.
           if (
-            fragments.some((fragment) => fragment.left < contentBox.left - 2 || fragment.right > contentBox.right + 2)
+            words.some((word) =>
+              word.boxes.some((box) => box.x < contentBox.left - 2 || box.x + box.width > contentBox.right + 2),
+            )
           )
             violations.push('plan-fragment-overflow')
           if (getComputedStyle(status).whiteSpace !== 'nowrap' || statusBox.right > contentBox.right + 2)
@@ -337,7 +342,11 @@ describe('native work-details preferences with the ACP protocol fixture', () => 
               fragments: fragments.map(box),
               words,
               text: text.textContent,
+              fontFamily: getComputedStyle(text).fontFamily,
+              fontSize: getComputedStyle(text).fontSize,
               whiteSpace: getComputedStyle(content).whiteSpace,
+              overflowWrap: getComputedStyle(content).overflowWrap,
+              contentWidth: { client: content.clientWidth, scroll: content.scrollWidth },
               fragmentOffsets: fragments.map((fragment) => ({
                 left: fragment.left - contentBox.left,
                 rightOverflow: fragment.right - contentBox.right,
