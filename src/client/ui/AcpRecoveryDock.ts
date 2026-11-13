@@ -370,7 +370,6 @@ export function AcpRecoveryDock({
           }
         },
         title: t('recoveryTitle'),
-        description: t('recoveryChoiceHelp'),
         closeLabel: t('recoveryClose'),
         backdropBlur: false,
         ...(css.dialog === undefined ? {} : { className: css.dialog }),

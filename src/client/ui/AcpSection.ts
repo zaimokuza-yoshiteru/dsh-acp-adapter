@@ -1,4 +1,3 @@
-import { catalogIdOf } from '../../contract/agent-config.ts'
 /**
  * The ACP plugin detail panel component tree.
  *
@@ -155,7 +154,6 @@ function Loaded({
   const agents = settings.agents
   const ids = sortedAgentIds(agents)
   children.push(h('h2', { key: 'agents-title', className: css.sectionTitle }, t('agentConfiguration')))
-  children.push(h('p', { key: 'preset-help', className: css.hint }, t('presetHelp')))
 
   const onApprovalDefaultChange = async (policy: unknown): Promise<void> => {
     if (policy !== 'auto' && policy !== 'ask') return
@@ -301,10 +299,7 @@ function Loaded({
               ]),
           ...unverified.map(catalogItem),
         ],
-        footer: [
-          { type: 'label', id: 'verification-scope', text: t('catalogVerificationScope') },
-          { id: customAgentItemId, label: h('span', { className: css.catalogEntry }, t('addCustom')) },
-        ],
+        footer: [{ id: customAgentItemId, label: h('span', { className: css.catalogEntry }, t('addCustom')) }],
         onClose: () => {
           setAddMenuOpen(false)
         },
@@ -524,19 +519,6 @@ function AgentCard(props: {
     ),
   ]
 
-  if (healthRow?.probe.status === 'ok' && healthRow.probe.versionCompatibility === 'different') {
-    const reference = catalogEntryOf(catalogIdOf(id, config))?.version
-    children.push(
-      h(
-        'p',
-        { key: 'version-reference', className: css.hint },
-        t('catalogVersionDifferent', {
-          actual: healthRow.probe.agentInfo?.version ?? healthRow.version ?? '—',
-          reference: reference ?? '—',
-        }),
-      ),
-    )
-  }
   if (diagnostic !== undefined) {
     children.push(h('p', { key: 'diagnostic', className: css.error, role: 'alert' }, diagnostic))
   }
@@ -644,7 +626,7 @@ function healthDiagnostic(
 }
 
 /**
- * 产品状态只承诺“未探测 / 协议可用”。失败类别仍通过下方诊断和登录
+ * 产品状态只反映上次检查结果，不承诺持续连接。失败类别仍通过下方诊断和登录
  * 指引展示，但不会伪装成可持续跟踪的外部登录状态。
  */
 function stateText(t: AcpTranslate, state: AcpProviderHealth['state']): string {

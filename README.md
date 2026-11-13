@@ -1,6 +1,6 @@
 # DSH-ACP-ADAPTER
 
-> 开发分支 `0.2.2-alpha` 正在迁移至 DSH `0.2.2-rc.1`（候选插件 `0.2.2-rc.1.1`，尚未发布，Node >=24.9）。下列安装命令仍指向已发布的 RC.4 版本；迁移进展见[评估与实施记录](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/0.2.2-alpha/docs/assessments/dsh-0.2.2-rc.1.md)。
+> 本分支适配 DSH `0.2.2-rc.1`，尚未发布。下方安装方式用于已发布版本；请按宿主版本选择[对应发布包](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases)。
 
 [English](README.en.md)
 
@@ -50,11 +50,11 @@ Git 与压缩包安装示例：
 
 插件附带一份 [ACP 官方 Agent 目录](https://agentclientprotocol.com/registry)快照，提供安装、登录指引和命令预填；也可手动添加目录外的 ACP Agent。Agent CLI 必须安装并登录在运行 DSH 的主机上。打开 **插件 → ACP 适配器**，按目录指引添加 Agent 并检查连接，再在新会话选择 Agent 模型。插件不会替你安装 CLI 或登录账号。
 
-> 当前开发分支也支持没有模型目录的通用 ACP Agent：连接检查成功后，在模型选择器选择 **Agent current configuration**，使用 Agent 当前配置。`category` 只用于增强模型等专用选择器；缺失或未知分类的配置项仍可在会话菜单操作。认证或连接失败仍须先解决，不会成为可用入口。
+> Agent 没有模型目录时，选择 **Agent current configuration** 使用其当前配置。
 >
-> DSH RC.1 暂不支持在已有 ACP 会话中更换模型。选择其他模型会提示保留当前模型或创建独立新会话，原会话历史不会转移。已有 Teams 成员禁用其他模型，但可恢复原模型以撤销待生效选择；同模型的推理强度仍可调整。首次会话可正常选模型。这些限制及通用 Agent 入口属于尚未发布的开发分支。
+> DSH RC.1 已有 ACP 会话暂不支持更换模型。需要换模型时，请新建独立会话；新会话不继承原会话的 Agent 上下文。原会话历史和草稿保留，同模型的推理强度仍可调整。
 
-以下 Agent 已做过实际接入测试：
+常用 Agent 的启动与登录方式：
 
 | Agent                      | ACP 命令                                 | 认证               |
 | -------------------------- | ---------------------------------------- | ------------------ |
@@ -67,17 +67,13 @@ Git 与压缩包安装示例：
 
 > CodeBuddy CLI 与 WorkBuddy 桌面端使用同一账号积分，无需分别订阅；通过 CodeBuddy CLI 接入 DSH。详见 [CodeBuddy 账号与订阅说明](https://www.codebuddy.cn/docs/ide/Account/pricing)及 [ACP 命令参考](https://www.codebuddy.cn/docs/cli/cli-reference)。
 
-测试范围与限制见 [E2E 验证说明](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/v0.2.1-rc.4.1/test/e2e/README.md)。
+## 选择模式
 
-## 可选 ACP 预设（开发原型）
+标准模式可直接使用 ACP Agent。需要通过对话创建插件时，选择**创造模式**。
 
-新会话的原生模式菜单新增 **ACP**；请另在模型菜单选择 Agent。预设的中英文说明位于 ACP 插件设置中，模式菜单仅保留通用名称。它不改变用户默认，不迁移旧会话，也不限制标准、PTC、极简或创造模式选择 ACP Agent。**创造插件仍使用原生创造模式**；ACP 预设是另一套可选工具组合，不是替代创造模式。
+本分支还提供可选 **ACP** 模式：使用 DSH 工具，由 Agent 管理对话上下文。它不加载 DSH 的插件管理、子代理和压缩工具；已有会话和默认选择保持不变。
 
-ACP 预设提供工作区指令、时间、文件读写与搜索、系统终端、后台任务、定时任务、技能读取、询问用户、待办、网页及展示工具。它不安装宿主压缩、`/compact`、宿主规划、子代理或插件管理工具；外部 Agent 管理自己的上下文与私有工具。预设不会改变审批策略，也不会解除已有会话的切模限制。原生模型仍会出现在全局模型选择器中；使用原生模型建议选择标准模式，以保留宿主压缩。
-
-本版移除 Kimi 支持：目录、专属适配及测试矩阵不再包含它。已保存的 Kimi 配置显示为不可用，不启动进程、不转成通用 Agent；用户可自行移除该条目。历史记录不删除。仅保留旧配置诊断和历史绑定指纹的格式兼容；历史验收文档及原始官方目录快照仍记录当时的数据，不代表当前支持。
-
-Agent 专属差异的开发入口见 [兼容模块指南](docs/agent-compatibility.md)。
+Kimi 已不再支持；已保存的配置和历史保留，可在设置中删除不再使用的配置。
 
 ## 功能预览
 

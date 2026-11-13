@@ -2,6 +2,6 @@
   "meta": {
     "title": "ACP 适配器",
     "description": "添加并管理通过 ACP 接入 DSH 会话页面的智能体。",
-    "detail": "README.md"
+    "detail": "docs/plugin-detail.md"
   }
 }

@@ -1,6 +1,6 @@
 # DSH-ACP-ADAPTER
 
-> Development branch `0.2.2-alpha` targets DSH `0.2.2-rc.1` (unreleased adapter candidate `0.2.2-rc.1.1`, Node >=24.9). The commands below still install the published RC.4 release. See the [migration assessment and implementation record](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/0.2.2-alpha/docs/assessments/dsh-0.2.2-rc.1.md).
+> This branch targets DSH `0.2.2-rc.1` and is not yet published. Installation below uses the published version; choose a [release matching your host](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases).
 
 [中文](README.md)
 
@@ -50,11 +50,11 @@ This archive includes compiled output and matches the npm package. GitHub's auto
 
 The plugin ships with a snapshot of the [official ACP Agent catalog](https://agentclientprotocol.com/registry), with installation and sign-in guidance and command prefill. You can also add an ACP Agent manually. Install and sign in to the Agent CLI on the computer running DSH. Open **Plugins → ACP adapter**, follow the catalog guidance to add the Agent and check its connection, then choose its model in a new session. The plugin does not install CLIs or sign in to accounts.
 
-> The current development branch also accepts generic ACP Agents without a model catalog. After a successful connection check, choose **Agent current configuration** in the model picker. Categories enhance dedicated controls such as the model picker; options with absent or unknown categories remain available in the session menu. Authentication or connection failures still need to be resolved before the Agent is available.
+> If an Agent has no model catalog, select **Agent current configuration** to use its current settings.
 >
-> DSH RC.1 does not currently support changing the model of an existing ACP session. Choosing another model offers keeping the current model or creating an independent session; existing history is not transferred. Existing Teams members disable other models but allow restoring the original model to clear a pending selection. Reasoning effort can still change on the same model, and new sessions can choose their initial model normally. These changes belong to the unreleased development branch.
+> DSH RC.1 cannot change models in an existing ACP session. To use another model, start an independent session; it does not inherit the original Agent context. Existing history and drafts are kept, and reasoning effort can still change on the same model.
 
-These Agents have completed real integration checks:
+Launch and sign-in commands for common Agents:
 
 | Agent                     | ACP command                                 | Authentication       |
 | ------------------------- | ------------------------------------------- | -------------------- |
@@ -67,17 +67,13 @@ These Agents have completed real integration checks:
 
 > CodeBuddy CLI and the WorkBuddy desktop app share account credits, with no separate subscription required. Connect DSH through the CodeBuddy CLI. See [CodeBuddy account and subscription details](https://www.codebuddy.cn/docs/ide/Account/pricing) and the [ACP CLI reference](https://www.codebuddy.cn/docs/cli/cli-reference).
 
-For test coverage and limitations, see the [E2E verification guide](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/v0.2.1-rc.4.1/test/e2e/README.md).
+## Choose a mode
 
-## Optional ACP preset (development prototype)
+Standard mode works with ACP Agents. Choose **Creator mode** to create plugins through conversation.
 
-The native new-session menu now includes **ACP**; select an Agent separately in the model menu. Localized preset guidance lives in the ACP plugin settings, while the mode menu keeps the language-neutral name. It does not change the user's default or migrate existing sessions. Standard, PTC, Minimal and Creator presets can still use ACP Agents. **Use the native Creator preset to create plugins**; the ACP preset is a separate optional tool composition.
+This branch also offers an optional **ACP** mode: use DSH tools while the Agent manages conversation context. It omits DSH plugin-management, subagent and compaction tools; existing sessions and default choices stay unchanged.
 
-It includes workspace instructions, time, file editing and search, the platform shell, jobs, scheduling, skills, questions, todos, web tools and presentation. It omits Host compaction, `/compact`, Host planning, delegation and plugin management. The external Agent owns its context and private tools. Approval policies and existing-session model-switch restrictions remain in effect. Native models remain visible in the global picker; use Standard for native-model sessions that need Host compaction.
-
-Kimi support is removed from the catalog, dedicated adapters and current test matrix. Saved Kimi configurations remain visible as unavailable, without launching a process or silently becoming generic Agents. Users can remove those entries themselves; history is retained. Only retired-configuration diagnostics and historical binding-fingerprint compatibility remain. Historical test records and the original upstream catalog snapshot retain their original data, not a claim of current support.
-
-See the [Agent compatibility guide](docs/agent-compatibility.en.md) for contribution boundaries.
+Kimi is no longer supported. Saved configurations and history are retained; remove unused configurations in settings.
 
 ## Preview
 

@@ -483,7 +483,9 @@
     "docs/permission-policy.md",
     "docs/permission-policy.en.md",
     "docs/agent-compatibility.md",
-    "docs/agent-compatibility.en.md"
+    "docs/agent-compatibility.en.md",
+    "docs/plugin-detail.md",
+    "docs/plugin-detail.en.md"
   ],
   "packageManager": "pnpm@10.7.0"
 }

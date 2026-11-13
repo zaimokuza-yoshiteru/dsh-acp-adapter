@@ -15,12 +15,12 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
   let browser!: TestBrowser
   try {
     for (const [language, path, heading] of [
-      ['en-US', 'README.en.md', 'Install'],
-      ['zh-CN', 'README.md', '安装'],
+      ['en-US', 'docs/plugin-detail.en.md', 'Get started'],
+      ['zh-CN', 'docs/plugin-detail.md', '开始使用'],
     ] as const) {
       const document = await host.ctx.pluginManager.readBundleDetail('@zaimokuza/dsh-acp-adapter', language)
       expect(document).toMatchObject({ status: 'found', origin: 'locale', path })
-      if (document.status === 'found') expect(document.markdown).toContain(`\n## ${heading}\n`)
+      if (document.status === 'found') expect(document.markdown).toContain(`## ${heading}\n`)
     }
     browser = await launchBrowser({ headless: true, channel: process.env.DSH_E2E_BROWSER_CHANNEL })
     const page = await newEnglishPage(browser)
@@ -29,9 +29,18 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
     await page.goto(host.authenticatedUrl)
     await connectFreshWorkspace(page, host.workspaceCwd)
     let detail = await openAcpPluginDetail(page)
-    await detail.getByRole('heading', { name: 'Install', exact: true }).waitFor()
-    expect(await detail.getByRole('heading', { name: '安装', exact: true }).count()).toBe(0)
+    await detail.getByRole('heading', { name: 'Get started', exact: true }).waitFor()
+    expect(await detail.getByRole('heading', { name: '开始使用', exact: true }).count()).toBe(0)
     const addButton = detail.getByRole('button', { name: 'Add Agent', exact: true })
+    await page.setViewportSize({ width: 390, height: 844 })
+    await page.locator('[data-sidebar-collapsed="true"]').waitFor()
+    // A fresh user can reach the primary task without scrolling past repository docs.
+    const addBounds = required(await addButton.boundingBox(), 'Add Agent bounds')
+    expect(addBounds.y).toBeGreaterThanOrEqual(0)
+    expect(addBounds.y + addBounds.height).toBeLessThanOrEqual(844)
+    mkdirSync(join(root, '.local/registry-ui'), { recursive: true })
+    await page.screenshot({ path: join(root, '.local/registry-ui/get-started-390-en.png'), animations: 'disabled' })
+    await page.setViewportSize({ width: 1680, height: 1000 })
     await addButton.click()
     const menu = page.getByRole('menu')
     await menu.getByText('Verified adapters · 6', { exact: true }).waitFor()
@@ -50,7 +59,6 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
     const menuText = await menu.innerText()
     expect(menuText.indexOf('Qwen Code')).toBeGreaterThan(menuText.indexOf('Verified adapters · 6'))
     expect(menuText.indexOf('Qwen Code')).toBeLessThan(menuText.indexOf('Catalog entries · Unverified ·'))
-    await menu.getByText('Adapter coverage does not certify every version or platform.', { exact: true }).waitFor()
     await menu.getByRole('menuitem', { name: /^Google Antigravity · 1\.1\.1$/ }).waitFor()
     const evidence = join(root, '.local/rc1-catalog-menu')
     mkdirSync(evidence, { recursive: true })
@@ -106,7 +114,7 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
     expect(await detail.getByLabel('Environment', { exact: true }).count()).toBe(0)
     expect(await detail.getByLabel('Login hint', { exact: true }).count()).toBe(0)
     await detail.getByRole('button', { name: 'Connection settings', exact: true }).click()
-    await detail.getByText(/If sign-in is needed.*codex login/).waitFor()
+    await detail.getByText(/If sign-in is required.*codex login/).waitFor()
     await page.screenshot({ path: join(root, '.local/registry-ui/login-guidance-en.png'), fullPage: true })
     await detail.getByRole('button', { name: 'Cancel', exact: true }).click()
     await select(/^Minion Code ·/)
@@ -124,7 +132,7 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
     expect(await detail.getByLabel('Environment', { exact: true }).inputValue()).toBe(
       'VT_ACP_ENABLED=1\nVT_ACP_ZED_ENABLED=1',
     )
-    await detail.getByText(/Install the binary for the Agent host/).waitFor()
+    await detail.getByText(/Install the executable for the machine running the Agent/).waitFor()
     mkdirSync(join(root, '.local/registry-ui'), { recursive: true })
     await page.screenshot({ path: join(root, '.local/registry-ui/manual-en.png'), fullPage: true })
     await detail.getByRole('button', { name: 'Cancel', exact: true }).click()
@@ -161,8 +169,8 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
     await page.getByRole('menuitem', { name: '中文', exact: true }).click()
     await page.getByRole('button', { name: '关闭', exact: true }).click()
     detail = await openAcpPluginDetail(page, 'zh')
-    await detail.getByRole('heading', { name: '安装', exact: true }).waitFor()
-    expect(await detail.getByRole('heading', { name: 'Install', exact: true }).count()).toBe(0)
+    await detail.getByRole('heading', { name: '开始使用', exact: true }).waitFor()
+    expect(await detail.getByRole('heading', { name: 'Get started', exact: true }).count()).toBe(0)
     await detail.getByRole('button', { name: '添加 Agent', exact: true }).click()
     await page.getByRole('menu').getByText('已验证适配 · 6', { exact: true }).waitFor()
     const chineseMenuText = await page.getByRole('menu').innerText()
@@ -177,7 +185,7 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
       .getByText(/^目录收录 · 未验证 ·/)
       .waitFor()
     await page.getByRole('menuitem', { name: /^VT Code ·/ }).click()
-    await detail.getByText(/请按 Agent 所在主机的平台安装二进制/).waitFor()
+    await detail.getByText(/请在运行 Agent 的主机安装对应平台的程序/).waitFor()
     expect(await detail.getByLabel('登录指引', { exact: true }).count()).toBe(0)
     expect(await detail.getByLabel('环境变量', { exact: true }).count()).toBe(0)
     await detail.getByRole('button', { name: '高级选项', exact: true }).click()
@@ -210,11 +218,11 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
       ).data.reason.kind,
     ).toBe('completed')
     detail = await openAcpPluginDetail(page)
-    await detail.getByRole('heading', { name: 'Install', exact: true }).waitFor()
-    expect(await detail.getByRole('heading', { name: '安装', exact: true }).count()).toBe(0)
+    await detail.getByRole('heading', { name: 'Get started', exact: true }).waitFor()
+    expect(await detail.getByRole('heading', { name: '开始使用', exact: true }).count()).toBe(0)
     const profile = page.locator('[data-dsh-acp-agent="my-fast"]')
     await profile.getByRole('button', { name: 'Delete', exact: true }).first().click()
-    await profile.getByText(/^Delete Agent ".+"\? Its model route is removed with it\.$/).waitFor()
+    await profile.getByText(/^Delete Agent ".+"\? It will no longer be available in the model menu\.$/).waitFor()
     await profile.getByRole('button', { name: 'Delete', exact: true }).last().click()
     await page.getByRole('alert').filter({ hasText: 'Deleted' }).waitFor()
     await backToPluginList(detail)

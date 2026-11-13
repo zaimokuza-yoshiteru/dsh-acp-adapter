@@ -21,12 +21,7 @@ import type { AcpLocaleKey } from './locales.ts'
 import type { OwnsAcpRoute } from '../coordinator/cross-backend-coordinator.ts'
 import type { AcpDiagnosticView, AcpRecoveryView } from '../../contract/remote.ts'
 import { matchesDiagnosticView } from '../../contract/diagnostics.ts'
-import {
-  AcpSupportExportError,
-  collectAcpSupportExport,
-  downloadAcpSupportExport,
-  type AcpSupportExport,
-} from '../data/acp-support-export.ts'
+import { AcpSupportExportError, collectAcpSupportExport, downloadAcpSupportExport } from '../data/acp-support-export.ts'
 import { recoveryText } from './AcpRecoveryDock.ts'
 import css from './AcpAuditHeaderAction.module.css'
 import { acpJsonTreeLabels, type AcpJsonStringWrapping } from './json-tree.ts'
@@ -322,7 +317,6 @@ function AcpAuditLoadedView(props: LoadedAcpAuditViewProps): ReactNode {
   const [query, setQuery] = useState('')
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
   const [exportState, setExportState] = useState<'idle' | 'loading' | 'downloaded' | 'failed'>('idle')
-  const [supportExport, setSupportExport] = useState<AcpSupportExport | null>(null)
   const [exportError, setExportError] = useState<'unavailable' | 'invalid-page' | 'session-changed' | null>(null)
   const exportEpoch = useRef(0)
   const exportLoading = useRef(false)
@@ -389,7 +383,6 @@ function AcpAuditLoadedView(props: LoadedAcpAuditViewProps): ReactNode {
     exportEpoch.current += 1
     exportLoading.current = false
     setExportState('idle')
-    setSupportExport(null)
     setExportError(null)
     setFilter('issues')
     return () => {
@@ -451,7 +444,6 @@ function AcpAuditLoadedView(props: LoadedAcpAuditViewProps): ReactNode {
     exportController.current = controller
     exportLoading.current = true
     setExportState('loading')
-    setSupportExport(null)
     setExportError(null)
     try {
       const result = await collectAcpSupportExport(
@@ -466,7 +458,6 @@ function AcpAuditLoadedView(props: LoadedAcpAuditViewProps): ReactNode {
       if (exportEpoch.current !== epoch || currentSessionId.current !== selectedSession || controller.signal.aborted)
         return
       downloadAcpSupportExport(result)
-      setSupportExport(result)
       setExportState('downloaded')
     } catch (error: unknown) {
       if (exportEpoch.current !== epoch || currentSessionId.current !== selectedSession || controller.signal.aborted)
@@ -739,21 +730,12 @@ function AcpAuditLoadedView(props: LoadedAcpAuditViewProps): ReactNode {
             { role: 'alert', className: css.error },
             t(exportError === 'session-changed' ? 'auditExportSessionChanged' : 'auditExportFailed'),
           )
-        : exportState === 'downloaded' && supportExport !== null
+        : exportState === 'downloaded'
           ? h(
               'div',
               { 'data-support-export-summary': true },
               h('p', { role: 'status' }, t('auditExportComplete')),
               h('p', null, t('auditExportPrivacy')),
-              h(
-                'p',
-                null,
-                t('auditExportCounts', {
-                  audit: supportExport.audit.rows.length,
-                  activity: supportExport.activity.rows.length,
-                }),
-              ),
-              h('p', null, t('auditExportScopeNote')),
             )
           : null,
   )

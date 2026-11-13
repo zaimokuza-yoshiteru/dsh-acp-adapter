@@ -150,7 +150,7 @@ it('hosts ACP configuration on the native bundle detail page', async () => {
         fullPage: true,
         animations: 'disabled',
       })
-      // Native source facts and Markdown tables own their overflow. Check the
+      // Native source facts own their overflow. Check the
       // detail's viewport bounds and keep strict checks for the adapter surface.
       const detailBounds = await detail.boundingBox()
       expect(detailBounds).not.toBeNull()
@@ -167,20 +167,6 @@ it('hosts ACP configuration on the native bundle detail page', async () => {
       ).toBe(true)
       expect(
         await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth),
-      ).toBe(true)
-      expect(
-        await detail
-          .getByRole('table')
-          .first()
-          .evaluate((table) => {
-            const scrollport = table.parentElement!
-            if (scrollport.scrollWidth <= scrollport.clientWidth) return true
-            const before = scrollport.scrollLeft
-            scrollport.scrollLeft = scrollport.scrollWidth
-            const reachable = scrollport.scrollLeft > 0
-            scrollport.scrollLeft = before
-            return reachable
-          }),
       ).toBe(true)
       await page.screenshot({ path: join(evidence, `narrow-${width}.png`), fullPage: true, animations: 'disabled' })
     }

@@ -131,6 +131,60 @@ it('translates a retained diagnostic read failure without rereading or clearing 
   expect(remote.recoverySnapshot).toHaveBeenCalledOnce()
 })
 
+it('keeps the export result localized without collecting or downloading it again', async () => {
+  const copy = locale()
+  const remote = {
+    auditTimeline: vi.fn(async () => ({
+      ok: true,
+      value: {
+        sessionId: 'session',
+        entries: [],
+        snapshotHead: 0,
+        scannedThrough: 0,
+        scannedRecords: 0,
+        unreadableRecords: 0,
+        nextCursor: null,
+        hasMore: false,
+      },
+    })),
+    activityPage: vi.fn(async () => ({
+      ok: true,
+      value: { sessionId: 'session', activities: [], head: 0, nextCursor: null, hasMore: false },
+    })),
+    recoverySnapshot: vi.fn(async () => ({ ok: true, value: { kind: 'healthy', updatedAt: 1 } })),
+  }
+  const anchor = { href: '', download: '', click: vi.fn() }
+  const blobUrl = vi.spyOn(URL, 'createObjectURL')
+  vi.stubGlobal('document', { createElement: () => anchor })
+  try {
+    const view = createAcpAuditView(remote as never)
+    const current = () => render(() => unwrap(() => view({ sessionId: 'session', t: copy.t } as never)))
+    const button = elements(current()).find((node) => node.type === 'button' && text(node) === en.auditExport)!
+    ;(button.props.onClick as () => void)()
+    await vi.waitFor(() => expect(text(current())).toContain(en.auditExportComplete))
+    expect(text(current())).toContain(en.auditExportPrivacy)
+    const payload = JSON.parse(await (blobUrl.mock.calls[0]![0] as Blob).text())
+    expect(payload).toMatchObject({
+      schema: 'dsh-acp-support',
+      sessionAlias: 'session-1',
+      audit: { rows: [], snapshotHead: 0 },
+      activity: { rows: [], snapshotHead: 0 },
+    })
+    copy.switch()
+    expect(text(current())).toContain(zh.auditExportComplete)
+    expect(text(current())).toContain(zh.auditExportPrivacy)
+    expect(text(current())).not.toContain(en.auditExportComplete)
+    expect(anchor.click).toHaveBeenCalledOnce()
+    expect(blobUrl).toHaveBeenCalledOnce()
+    expect(remote.auditTimeline).toHaveBeenCalledTimes(2)
+    expect(remote.activityPage).toHaveBeenCalledOnce()
+    expect(remote.recoverySnapshot).toHaveBeenCalledTimes(2)
+  } finally {
+    blobUrl.mockRestore()
+    vi.unstubAllGlobals()
+  }
+})
+
 it('translates an existing team approval error without restarting the member read', async () => {
   const copy = locale()
   const pending = { key: 'request', kind: 'approval', sessionId: 'child', toolName: 'bash', answer: vi.fn() }
