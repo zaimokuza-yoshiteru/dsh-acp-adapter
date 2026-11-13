@@ -132,11 +132,9 @@ it.skipIf(process.env.DSH_E2E_LIVE_CODEX_WAIT !== '1')(
             provider: 'spawn',
             label: 'Native wait courier',
             delivery: 'caller',
-            request: {
-              parent,
-              agentOptions: { provider: 'wait-courier', model: 'fixture' },
-              prompt: [{ type: 'text', text: 'Hold for native relay acceptance, then finish.' }],
-            },
+            parent,
+            agentOptions: { provider: 'wait-courier', model: 'fixture' },
+            prompt: [{ type: 'text', text: 'Hold for native relay acceptance, then finish.' }],
             signal: context.signal,
           })
           const child = required(activeHost.ctx.agents.get(activation.childId))

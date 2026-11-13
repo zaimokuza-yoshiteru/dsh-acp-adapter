@@ -112,20 +112,35 @@ export class SessionControls<Runtime extends SessionControlRuntime> {
   /** Mode changes for dormant members are durable settings; they never create a session or send a prompt. */
   async setTeamMemberMode(sessionId: string, modeId: string): Promise<AgentSessionSnapshotView> {
     if (this.access.storage === undefined)
-      throw new LlmError('This member mode cannot be changed', 'ACP_SESSION_OPTIONS_READ_ONLY')
+      throw LlmError.fromFailure({
+        message: 'This member mode cannot be changed',
+        code: 'ACP_SESSION_OPTIONS_READ_ONLY',
+      })
     await this.serializeSessionControlWrite(sessionId, async (owner) => {
       const current = await this.readAgentSessionSnapshotView(sessionId)
       const currentChoice = teamModeChoices(current).find((candidate) => candidate.id === modeId)
       if (!current.modeWritable || currentChoice === undefined)
-        throw new LlmError('This member mode cannot be changed', 'ACP_SESSION_OPTIONS_READ_ONLY')
+        throw LlmError.fromFailure({
+          message: 'This member mode cannot be changed',
+          code: 'ACP_SESSION_OPTIONS_READ_ONLY',
+        })
       if (this.access.handoffPending(sessionId))
-        throw new LlmError('Member started running; retry after it settles', 'ACP_SESSION_OPTIONS_READ_ONLY')
+        throw LlmError.fromFailure({
+          message: 'Member started running; retry after it settles',
+          code: 'ACP_SESSION_OPTIONS_READ_ONLY',
+        })
       const binding = await this.access.storage!.readLatestBinding(sessionId)
       if (binding?.status !== 'ok' || binding.binding.provider !== `acp-${this.profileId}`)
-        throw new LlmError('The original ACP binding is unavailable', 'ACP_BINDING_UNAVAILABLE')
+        throw LlmError.fromFailure({
+          message: 'The original ACP binding is unavailable',
+          code: 'ACP_BINDING_UNAVAILABLE',
+        })
       const currentRuntime = this.access.runtime(sessionId)
       if (currentRuntime?.isBusy || (current.freshness === 'stale' && currentRuntime !== undefined))
-        throw new LlmError('Member started running; retry after it settles', 'ACP_SESSION_OPTIONS_READ_ONLY')
+        throw LlmError.fromFailure({
+          message: 'Member started running; retry after it settles',
+          code: 'ACP_SESSION_OPTIONS_READ_ONLY',
+        })
       if (currentRuntime !== undefined) this.assertRuntime(sessionId, currentRuntime)
       this.assertSessionOwner(sessionId, owner)
       const intent = { bindingKey: modeIntentBindingKey(binding.binding), modeId }
@@ -156,17 +171,19 @@ export class SessionControls<Runtime extends SessionControlRuntime> {
       (choice) => choice.id === intent.modeId,
     )
     if (choice === undefined)
-      throw new LlmError(
-        'The saved member mode is no longer supported; choose another mode before continuing',
-        'ACP_CONFIG_UNSUPPORTED',
-      )
+      throw LlmError.fromFailure({
+        message: 'The saved member mode is no longer supported; choose another mode before continuing',
+        code: 'ACP_CONFIG_UNSUPPORTED',
+      })
     this.assertRuntimeOwner(sessionId, runtime)
     if (!choice.current) {
       if (choice.write.kind === 'mode') {
-        if (!runtime.setMode) throw new LlmError('Agent mode control is unavailable', 'ACP_CONFIG_UNSUPPORTED')
+        if (!runtime.setMode)
+          throw LlmError.fromFailure({ message: 'Agent mode control is unavailable', code: 'ACP_CONFIG_UNSUPPORTED' })
         await runtime.setMode(choice.write.id)
       } else {
-        if (!runtime.setConfigOption) throw new LlmError('Agent mode control is unavailable', 'ACP_CONFIG_UNSUPPORTED')
+        if (!runtime.setConfigOption)
+          throw LlmError.fromFailure({ message: 'Agent mode control is unavailable', code: 'ACP_CONFIG_UNSUPPORTED' })
         await runtime.setConfigOption(choice.write.id, choice.write.value)
       }
       if (
@@ -174,7 +191,10 @@ export class SessionControls<Runtime extends SessionControlRuntime> {
           (choice) => choice.id === intent.modeId && choice.current,
         )
       )
-        throw new LlmError('Agent did not confirm the saved member mode', 'ACP_CONFIG_SYNC_FAILED')
+        throw LlmError.fromFailure({
+          message: 'Agent did not confirm the saved member mode',
+          code: 'ACP_CONFIG_SYNC_FAILED',
+        })
     }
     this.assertRuntimeOwner(sessionId, runtime)
     await this.access.persistSnapshot(sessionId, runtime)
@@ -194,13 +214,20 @@ export class SessionControls<Runtime extends SessionControlRuntime> {
   private async readAgentSessionSnapshot(sessionId: string): Promise<AgentSessionSnapshotView> {
     const runtime = this.access.runtime(sessionId)
     if (runtime !== undefined) return this.liveAgentSessionSnapshot(sessionId, runtime)
-    if (this.access.storage === undefined) throw new LlmError('ACP sidecar is unavailable', 'ACP_BINDING_UNAVAILABLE')
+    if (this.access.storage === undefined)
+      throw LlmError.fromFailure({ message: 'ACP sidecar is unavailable', code: 'ACP_BINDING_UNAVAILABLE' })
     const lookup = await this.access.storage.readLatestBinding(sessionId)
     if (lookup?.status !== 'ok')
-      throw new LlmError('No established ACP Agent session is available', 'ACP_SESSION_UNAVAILABLE')
+      throw LlmError.fromFailure({
+        message: 'No established ACP Agent session is available',
+        code: 'ACP_SESSION_UNAVAILABLE',
+      })
     const snapshot = await this.access.storage.readOptionSnapshot(sessionId)
     if (snapshot === undefined)
-      throw new LlmError('No last-known Agent session controls are available', 'ACP_SESSION_OPTIONS_UNAVAILABLE')
+      throw LlmError.fromFailure({
+        message: 'No last-known Agent session controls are available',
+        code: 'ACP_SESSION_OPTIONS_UNAVAILABLE',
+      })
     const configOptions = snapshot.options.map((option) =>
       typeof option.value === 'boolean'
         ? {
@@ -254,7 +281,10 @@ export class SessionControls<Runtime extends SessionControlRuntime> {
     return await this.serializeSessionControlWrite(sessionId, async () => {
       const runtime = this.access.runtime(sessionId)
       if (runtime === undefined || this.access.handoffPending(sessionId))
-        throw new LlmError('Agent session is not live or is currently running', 'ACP_SESSION_OPTIONS_READ_ONLY')
+        throw LlmError.fromFailure({
+          message: 'Agent session is not live or is currently running',
+          code: 'ACP_SESSION_OPTIONS_READ_ONLY',
+        })
       this.assertRuntime(sessionId, runtime)
       await this.access.restoreCancelledRuntime(sessionId, runtime)
       this.assertRuntime(sessionId, runtime)
@@ -262,31 +292,49 @@ export class SessionControls<Runtime extends SessionControlRuntime> {
       const selectionBindingBefore =
         selectionBeforeWrite === undefined ? undefined : await this.readBindingForUserMode(sessionId)
       if (selectionBeforeWrite !== undefined && selectionBindingBefore === undefined)
-        throw new LlmError('The ACP session binding is unavailable for this mode change', 'ACP_BINDING_UNAVAILABLE')
+        throw LlmError.fromFailure({
+          message: 'The ACP session binding is unavailable for this mode change',
+          code: 'ACP_BINDING_UNAVAILABLE',
+        })
       this.assertRuntime(sessionId, runtime)
       if (request.kind === 'mode') {
         if (runtime.setMode === undefined)
-          throw new LlmError('This Agent does not expose mode controls', 'ACP_CONFIG_UNSUPPORTED')
+          throw LlmError.fromFailure({
+            message: 'This Agent does not expose mode controls',
+            code: 'ACP_CONFIG_UNSUPPORTED',
+          })
         if (runtime.modes === undefined || !runtime.modes.availableModes.some((mode) => mode.id === request.id))
-          throw new LlmError(`Agent mode "${request.id}" is not available`, 'ACP_CONFIG_UNSUPPORTED')
+          throw LlmError.fromFailure({
+            message: `Agent mode "${request.id}" is not available`,
+            code: 'ACP_CONFIG_UNSUPPORTED',
+          })
         await runtime.setMode(request.id)
       } else {
         const option = runtime.configOptions?.find((candidate) => candidate.id === request.id)
         if (option === undefined || isAcpModelOrReasoningOption(option)) {
-          throw new LlmError(
-            'Model and reasoning controls are managed by the DSH model picker',
-            'ACP_CONFIG_UNSUPPORTED',
-          )
+          throw LlmError.fromFailure({
+            message: 'Model and reasoning controls are managed by the DSH model picker',
+            code: 'ACP_CONFIG_UNSUPPORTED',
+          })
         }
         if (
           option.type === 'select' &&
           (typeof request.value !== 'string' || !acpSelectValues(option).has(request.value))
         )
-          throw new LlmError(`Agent option "${request.id}" does not allow that value`, 'ACP_CONFIG_UNSUPPORTED')
+          throw LlmError.fromFailure({
+            message: `Agent option "${request.id}" does not allow that value`,
+            code: 'ACP_CONFIG_UNSUPPORTED',
+          })
         if (option.type === 'boolean' && typeof request.value !== 'boolean')
-          throw new LlmError(`Agent option "${request.id}" expects a boolean`, 'ACP_CONFIG_UNSUPPORTED')
+          throw LlmError.fromFailure({
+            message: `Agent option "${request.id}" expects a boolean`,
+            code: 'ACP_CONFIG_UNSUPPORTED',
+          })
         if (runtime.setConfigOption === undefined)
-          throw new LlmError('This Agent does not expose session controls', 'ACP_CONFIG_UNSUPPORTED')
+          throw LlmError.fromFailure({
+            message: 'This Agent does not expose session controls',
+            code: 'ACP_CONFIG_UNSUPPORTED',
+          })
         await runtime.setConfigOption(request.id, request.value)
       }
       this.assertRuntimeOwner(sessionId, runtime)
@@ -305,13 +353,19 @@ export class SessionControls<Runtime extends SessionControlRuntime> {
       await this.access.persistSnapshot(sessionId, runtime)
       if (selectionBeforeWrite !== undefined) {
         if (!this.confirmedModeSelection(runtime, selectionBeforeWrite))
-          throw new LlmError('Agent did not confirm the selected mode', 'ACP_CONFIG_SYNC_FAILED')
+          throw LlmError.fromFailure({
+            message: 'Agent did not confirm the selected mode',
+            code: 'ACP_CONFIG_SYNC_FAILED',
+          })
         const bindingAfter = await this.readBindingForUserMode(sessionId)
         if (
           bindingAfter === undefined ||
           modeIntentBindingKey(bindingAfter) !== modeIntentBindingKey(selectionBindingBefore!)
         )
-          throw new LlmError('The ACP session binding changed while saving its mode', 'ACP_BINDING_UNAVAILABLE')
+          throw LlmError.fromFailure({
+            message: 'The ACP session binding changed while saving its mode',
+            code: 'ACP_BINDING_UNAVAILABLE',
+          })
         this.rememberConfirmedUserMode(sessionId, runtime, selectionBeforeWrite, bindingAfter)
       }
       return this.liveAgentSessionSnapshot(sessionId, runtime)
@@ -594,7 +648,10 @@ export class SessionControls<Runtime extends SessionControlRuntime> {
 
   private assertAdmission(owner: object | undefined): void {
     if (!this.admitsOwner(owner))
-      throw new LlmError('Agent session controls are closing', 'ACP_SESSION_OPTIONS_READ_ONLY')
+      throw LlmError.fromFailure({
+        message: 'Agent session controls are closing',
+        code: 'ACP_SESSION_OPTIONS_READ_ONLY',
+      })
   }
 
   private admitsOwner(owner: object | undefined): boolean {
@@ -611,17 +668,20 @@ export class SessionControls<Runtime extends SessionControlRuntime> {
 
   private assertSessionOwner(sessionId: string, owner: object | undefined): void {
     if (this.access.sessionOwner(sessionId) !== owner)
-      throw new LlmError(
-        'Agent session owner changed before its controls could be written',
-        'ACP_SESSION_OPTIONS_READ_ONLY',
-      )
+      throw LlmError.fromFailure({
+        message: 'Agent session owner changed before its controls could be written',
+        code: 'ACP_SESSION_OPTIONS_READ_ONLY',
+      })
   }
 
   /** Completion may drain after close, but never publish a choice under a replacement Host owner. */
   private assertRuntimeOwner(sessionId: string, runtime: Runtime): void {
     const owner = this.access.sessionOwner(sessionId)
     if (this.access.runtime(sessionId) !== runtime || (owner !== undefined && this.access.owner(runtime) !== owner))
-      throw new LlmError('Agent session owner changed while configuring its controls', 'ACP_SESSION_OPTIONS_READ_ONLY')
+      throw LlmError.fromFailure({
+        message: 'Agent session owner changed while configuring its controls',
+        code: 'ACP_SESSION_OPTIONS_READ_ONLY',
+      })
   }
 
   private assertRuntime(sessionId: string, runtime: Runtime): void {
@@ -632,10 +692,10 @@ export class SessionControls<Runtime extends SessionControlRuntime> {
       runtime.isBusy === true ||
       (owner !== undefined && this.access.owner(runtime) !== owner)
     )
-      throw new LlmError(
-        'Agent session changed or started running; retry after it settles',
-        'ACP_SESSION_OPTIONS_READ_ONLY',
-      )
+      throw LlmError.fromFailure({
+        message: 'Agent session changed or started running; retry after it settles',
+        code: 'ACP_SESSION_OPTIONS_READ_ONLY',
+      })
   }
 }
 

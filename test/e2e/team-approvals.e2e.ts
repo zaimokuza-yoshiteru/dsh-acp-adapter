@@ -1,3 +1,4 @@
+import { treeRoots, treeMember, isDirectChild, treeMembers } from './subagent-tree.ts'
 import { acpPermissionAudit } from './acp-permission-audit.ts'
 import { required } from './required.ts'
 import type { TestBrowser } from './browser.ts'
@@ -83,23 +84,23 @@ it.each(['devin', 'codex'].flatMap((profile) => ['allow', 'reject'].map((decisio
                   request.agent.options.provider !== 'acp-devin'
                 )
                   return next()
-                const isRoot = host.ctx.agents.roots().includes(request.agent)
+                const isRoot = treeRoots(host.ctx).includes(request.agent)
                 if (isRoot) {
                   if (bootstrapRoot !== undefined && request.agent !== bootstrapRoot) return next()
-                  const roots = host.ctx.agents.roots().filter((agent) => agent.options.provider === 'acp-devin')
+                  const roots = treeRoots(host.ctx).filter((agent) => agent.options.provider === 'acp-devin')
                   if (roots.length !== 1 || roots[0] !== request.agent) return next()
                 } else {
-                  const membership = host.ctx.agentTeams.tryMembership(request.agent)
+                  const membership = treeMember(host.ctx, request.agent)
                   if (
                     bootstrapRoot === undefined ||
                     host.ctx.agents.get(bootstrapRoot.id) !== bootstrapRoot ||
                     membership?.role !== 'teammate' ||
                     membership.root !== bootstrapRoot ||
                     !/^worker-[1-8]$/.test(membership.name) ||
-                    !host.ctx.agents.isOwnedBy(request.agent.id, bootstrapRoot) ||
-                    !host.ctx.agentTeams
-                      .listMembers(bootstrapRoot)
-                      .some((member) => member.id === request.agent.id && member.name === membership.name)
+                    !isDirectChild(host.ctx, request.agent.id, bootstrapRoot) ||
+                    !(await treeMembers(host.ctx, bootstrapRoot)).some(
+                      (member) => member.id === request.agent.id && member.name === membership.name,
+                    )
                   )
                     return next()
                   expect(host.ctx.approval.overrideOf(request.agent.session)).toBe('never')
@@ -109,7 +110,7 @@ it.each(['devin', 'codex'].flatMap((profile) => ['allow', 'reject'].map((decisio
                 const asked = acpPermissionAudit(host, 'asked').findLast(
                   (entry) => entry.sessionId === request.agent.id && entry.data.toolCall.toolCallId === request.callId,
                 )
-                if (asked?.data.toolCall.title !== (index === 0 ? 'list_agents' : 'spawn_teammate')) return next()
+                if (asked?.data.toolCall.title !== (index === 0 ? 'list_agents' : 'subagent')) return next()
                 expect(asked.data.options).toEqual([
                   { optionId: 'allow', kind: 'allow_once', name: 'Allow once' },
                   { optionId: 'deny', kind: 'reject_once', name: 'Reject' },
@@ -122,7 +123,6 @@ it.each(['devin', 'codex'].flatMap((profile) => ['allow', 'reject'].map((decisio
                           name: `worker-${index}`,
                           description: 'Batch approval member',
                           prompt: `E2E_TEAM_MEMBER calculate 1+1${index === 1 ? ' E2E_TEAM_FOLLOWUP_PERMISSION' : ''}`,
-                          context: 'fresh',
                         }
                       : { name: 'nested', description: 'Denied nested spawn', prompt: 'do nothing' },
                 )
@@ -155,14 +155,9 @@ it.each(['devin', 'codex'].flatMap((profile) => ['allow', 'reject'].map((decisio
       } finally {
         releaseBootstrap?.()
       }
-      const lead = required(
-        host.ctx.agents.list().find((agent) => host.ctx.agentTeams.tryMembership(agent)?.role === 'lead'),
-      )
+      const lead = required(host.ctx.agents.list().find((agent) => treeMember(host.ctx, agent)?.role === 'lead'))
       const memberIds = new Set<string>(
-        host.ctx.agentTeams
-          .listMembers(lead)
-          .filter((member) => member.role === 'teammate')
-          .map((member) => member.id),
+        (await treeMembers(host.ctx, lead)).filter((member) => member.role === 'teammate').map((member) => member.id),
       )
       expect(memberIds.size).toBe(8)
       if (profile === 'devin') {

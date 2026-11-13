@@ -23,7 +23,7 @@ describe('real B permission responder scope', () => {
       expect(
         permitsTeamReviewTool('team_task_update', { task_id: 'runtime-task', expected_revision: 2, action }, child),
       ).toBe(true)
-    expect(permitsTeamReviewTool('send_message', { target: 'lead', message: 'REPORT_RUNTIME /public/a' }, child)).toBe(
+    expect(permitsTeamReviewTool('send_message', { agent: 'lead', message: 'REPORT_RUNTIME /public/a' }, child)).toBe(
       true,
     )
   })
@@ -33,11 +33,12 @@ describe('real B permission responder scope', () => {
       description: 'Read runtime',
       prompt: '/public/a /public/b /public/c REPORT_RUNTIME',
     }
-    expect(permitsTeamReviewTool('spawn_teammate', args, scope)).toBe(true)
-    expect(permitsTeamReviewTool('spawn_teammate', { ...args, context: 'fork' }, scope)).toBe(false)
-    expect(permitsTeamReviewTool('spawn_teammate', args, child)).toBe(false)
-    expect(permitsTeamReviewTool('spawn_teammate', { ...args, prompt: 'Run unknown shell' }, scope)).toBe(false)
-    expect(permitsTeamReviewTool('spawn_teammate', { ...args, provider: 'other' }, scope)).toBe(false)
+    expect(permitsTeamReviewTool('subagent', args, scope)).toBe(true)
+    expect(permitsTeamReviewTool('subagent', { ...args, context: 'fork' }, scope)).toBe(false)
+    expect(permitsTeamReviewTool('subagent', { ...args, context: 'fresh' }, scope)).toBe(false)
+    expect(permitsTeamReviewTool('subagent', args, child)).toBe(false)
+    expect(permitsTeamReviewTool('subagent', { ...args, prompt: 'Run unknown shell' }, scope)).toBe(false)
+    expect(permitsTeamReviewTool('subagent', { ...args, provider: 'other' }, scope)).toBe(false)
   })
   it('refuses foreign owners, foreign paths, execution, writes and destructive task transitions', () => {
     expect(permitsTeamReviewTool('read', { file_path: '/public/d' }, child)).toBe(false)
@@ -57,7 +58,7 @@ describe('real B permission responder scope', () => {
         scope,
       ),
     ).toBe(false)
-    expect(permitsTeamReviewTool('send_message', { target: 'outside-member', message: 'hello' }, scope)).toBe(false)
+    expect(permitsTeamReviewTool('send_message', { agent: 'outside-member', message: 'hello' }, scope)).toBe(false)
   })
   it('does not approve an extra scope hidden in otherwise valid task arguments', () => {
     const args = { subject: 'Runtime', description: '/public/a /public/b /public/c REPORT_RUNTIME' }

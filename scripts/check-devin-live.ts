@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { createRequire } from 'node:module'
 import { mkdtemp, mkdir, writeFile, rm, symlink } from 'node:fs/promises'
-import { tmpdir, userInfo } from 'node:os'
+import { homedir, tmpdir, userInfo } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -24,18 +24,25 @@ import { initProfile, loadProfileDirectory, loadLayeredEnv } from '@deepseek-ai/
 import { runProfile } from '@deepseek-ai/dsh/profile-boot'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { SessionId } from '@deepseek-ai/dsh-session'
-import type {} from '@deepseek-ai/dsh-experimental-agent-team'
+import type {} from '@deepseek-ai/dsh-agent-team'
+import type {} from '@deepseek-ai/dsh-subagent'
+import { requireDevinLiveMember } from './devin-live-members.ts'
+import { copyDevinLiveCredentials, devinCredentialsPath } from './devin-live-auth.ts'
+import { DEVIN_LIVE_BUNDLES, devinLiveProfilePatch } from './devin-live-profile.ts'
+import { assertDevinLiveCatalog } from './devin-live-catalog.ts'
 import type {} from '@deepseek-ai/dsh-permission-presets'
 import type {} from '@deepseek-ai/dsh-settings'
 import type {} from '@deepseek-ai/dsh-tools'
 
 const executable = process.argv[2]
 if (typeof executable !== 'string' || executable.length === 0) throw new Error('LIVE_CONFIG_EXECUTABLE_REQUIRED')
-if (typeof process.env.WINDSURF_API_KEY !== 'string' || process.env.WINDSURF_API_KEY.length === 0)
+const existingAuth = process.env.DEVIN_LIVE_AUTH === 'existing'
+if (process.env.DEVIN_LIVE_AUTH !== undefined && !existingAuth) throw new Error('LIVE_AUTH_MODE_INVALID')
+if (!existingAuth && (typeof process.env.WINDSURF_API_KEY !== 'string' || process.env.WINDSURF_API_KEY.length === 0))
   throw new Error('LIVE_CONFIG_TOKEN_REQUIRED')
 if (process.platform === 'win32')
   if (userInfo().username !== 'dsh-acp-ci') throw new Error('LIVE_CONFIG_WINDOWS_USER_INVALID')
-const token = process.env.WINDSURF_API_KEY
+const token = process.env.WINDSURF_API_KEY ?? ''
 const originalCwd = process.cwd()
 const root = await mkdtemp(join(tmpdir(), 'dsh-devin-live-'))
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -88,18 +95,16 @@ const expectedReplyMarkers = new Map<string, Set<string>>()
 const replyEvidence = new Map<string, Map<string, { echoSeq?: number; exactSeq?: number; exactTurn?: number }>>()
 const phases = new Map<string, DevinLivePhase>()
 const toolBudget = createDevinLiveToolBudget()
-const lastSendBySession = new Map<string, { target: unknown; message: string }>()
+const lastSendBySession = new Map<string, { agent: unknown; message: string }>()
 const cancellationQueuedFor = new Set<string>()
 let observedToolResults = 0
 const queuedMessageIds = new Set<string>()
 const acceptedMessageIds = new Set<string>()
 const receiptMessageIds = new Set<string>()
 const deliveredMessageIds = new Set<string>()
-const queuedMarkerMessageIds = new Set<string>()
 const receiptMarkerMessageIds = new Set<string>()
 const messageRolePairs = new Map<string, number>()
 const receiptRolePairs = new Map<string, number>()
-const deliveryRolePairs = new Map<string, number>()
 const created = new Map<string, string>()
 const modelRoutes = new Map<
   string,
@@ -227,7 +232,6 @@ const spawnArgumentPresence = (args: Record<string, unknown> | undefined) => ({
   nameNonblank: typeof args?.name === 'string' && args.name.trim().length > 0,
   descriptionNonblank: typeof args?.description === 'string' && args.description.trim().length > 0,
   promptNonblank: typeof args?.prompt === 'string' && args.prompt.trim().length > 0,
-  contextFresh: args?.context === 'fresh',
 })
 const countRolePair = (counts: Map<string, number>, from: DevinLiveActorRole, to: DevinLiveActorRole): void => {
   const key = `${from}->${to}`
@@ -327,15 +331,12 @@ try {
   if (trace.writeFailed || traceWriteFailure) throw new Error('LIVE_TRACE_UNAVAILABLE')
   await mkdir(workspace, { recursive: true })
   await mkdir(profileDir, { recursive: true })
+  if (existingAuth) await copyDevinLiveCredentials(devinCredentialsPath(process.platform, homedir(), process.env), root)
   process.env.DSH_HOME = home
   process.env.DSH_TELEMETRY_DISABLED = '1'
   process.env.DSH_SKILL_ROOTS = join(root, 'skills')
   process.chdir(workspace)
-  const bundles = [
-    '@deepseek-ai/dsh-base',
-    '@deepseek-ai/dsh-experimental-agent-team-profile',
-    '@zaimokuza/dsh-acp-adapter',
-  ]
+  const bundles = DEVIN_LIVE_BUNDLES
   initProfile(profileDir, bundles)
   for (const name of bundles) {
     const directory = name.startsWith('@zaimokuza/')
@@ -346,22 +347,7 @@ try {
     await symlink(directory, link, 'junction')
   }
   // All services are native. Disable unrelated model calls, telemetry and workspace instruction discovery.
-  await writeFile(
-    join(profileDir, 'cordis.patch.yml'),
-    JSON.stringify([
-      ...[
-        'session-title-llm',
-        'llm-deepseek',
-        'llm-pi-ai',
-        'agent-instructions',
-        'skill-filesystem',
-        'session-telemetry-otel',
-      ].map((id) => ({ id, disabled: true })),
-      { id: 'agent-team', config: { maxMembers: 2, maxTasks: 8 } },
-      { id: 'permission', config: { defaultPreset: 'danger-full-access' } },
-      { id: 'sandbox-policy', config: { mode: 'danger-full-access', workspaceRoot: workspace } },
-    ]),
-  )
+  await writeFile(join(profileDir, 'cordis.patch.yml'), JSON.stringify(devinLiveProfilePatch(workspace)))
   const profile = loadProfileDirectory('devin-e2e', profileDir, installAnchor)
   currentStage = 'HOST_START'
   host = await runProfile({
@@ -390,7 +376,7 @@ try {
     const role = safeRole(sessionId)
     const phase = phases.get(sessionId) ?? 'unknown'
     const tool: DevinLiveToolKind =
-      execution.name === 'spawn_teammate' ||
+      execution.name === 'subagent' ||
       execution.name === 'send_message' ||
       execution.name === 'bash' ||
       execution.name === 'wait_agent'
@@ -398,15 +384,15 @@ try {
         : 'other'
     const violation = recordDevinLiveToolAttempt(toolBudget, { sessionKey: sessionId, role, phase, tool })
     const args = isRecord(execution.arguments) ? execution.arguments : undefined
-    const sendTarget = args?.target === 'lead' ? 'lead' : args?.target === 'checker' ? 'checker' : 'unknown'
+    const sendTarget = args?.agent === 'lead' ? 'lead' : args?.agent === 'checker' ? 'checker' : 'unknown'
     let repeatPrevious: boolean | undefined
     let exactExpectedMarker: boolean | undefined
     if (tool === 'send_message') {
       const message = typeof args?.message === 'string' ? args.message : ''
       const previous = lastSendBySession.get(sessionId)
-      repeatPrevious = previous !== undefined && previous.target === args?.target && previous.message === message
+      repeatPrevious = previous !== undefined && previous.agent === args?.agent && previous.message === message
       exactExpectedMarker = hasExactMarker(message)
-      lastSendBySession.set(sessionId, { target: args?.target, message })
+      lastSendBySession.set(sessionId, { agent: args?.agent, message })
     }
 
     const argsFingerprint = trace.fingerprint('host-tool-arguments', execution.arguments)
@@ -467,7 +453,7 @@ try {
             repeatPrevious,
           }
         : {}),
-      ...(tool === 'spawn_teammate' ? spawnArgumentPresence(args) : {}),
+      ...(tool === 'subagent' ? spawnArgumentPresence(args) : {}),
     })
 
     if (violation === undefined) {
@@ -484,7 +470,7 @@ try {
     return 'LIVE_TOOL_BUDGET'
   })
   const env = {
-    WINDSURF_API_KEY: token,
+    ...(!existingAuth ? { WINDSURF_API_KEY: token } : {}),
     HOME: join(root, 'native-home'),
     XDG_CONFIG_HOME: join(root, 'native-config'),
     XDG_DATA_HOME: join(root, 'native-data'),
@@ -500,6 +486,26 @@ try {
   traceEvent('provider/ready', { provider: 'acp-devin' })
   traceEvent('model/selected', { provider: 'acp-devin', model: safeModel(model.id) })
   currentStage = 'RUN_TEAMS'
+  ctx.on('subagent/start', (info) => {
+    const agent = ctx.agents.get(info.id)
+    if (agent?.options.provider !== 'acp-devin') return
+    const root = ctx.subagents.rootOf(agent)
+    const rootRole = roles.get(root.id)
+    assert.ok(typeof rootRole === 'string' && rootRole.startsWith('lead-'), 'The child must belong to an observed Lead')
+    assert.equal(info.parentSessionId, root.id, 'The test only permits direct children')
+    assert.equal(ctx.subagents.namesOf(agent).self, 'checker')
+    assertDevinModelRoute('teammate', model.id, agent.options.model)
+    roles.set(agent.id, `member-${rootRole.slice('lead-'.length)}`)
+    phases.set(agent.id, 'initial')
+    traceEvent('agent/created', {
+      actorId: trace.id('dsh-session', agent.id),
+      actorRole: safeRole(agent.id),
+      actorLabel: safeActorLabel(agent.id),
+      provider: 'acp-devin',
+      model: safeModel(agent.options.model),
+      parentSessionId: trace.id('dsh-session', info.parentSessionId),
+    })
+  })
   ctx.on('agent/created', ({ agent }) => {
     if (agent.options.provider === 'acp-devin') assertLiveBudget()
     const previousRoute = modelRoutes.get(agent.id)
@@ -508,25 +514,12 @@ try {
       requestModelIds: previousRoute?.requestModelIds ?? [],
     })
     if (agent.options.provider !== undefined) created.set(agent.id, agent.options.provider)
-    // Team membership is journaled before the child Agent is started. Resolve
-    // the parent Lead here so a fast teammate tool call is labeled correctly.
-    const parentRole =
-      agent.session.header.parentSession === undefined ? undefined : roles.get(agent.session.header.parentSession)
-    if (parentRole?.startsWith('lead-')) {
-      assertDevinModelRoute('teammate', model.id, agent.options.model)
-      roles.set(agent.id, `member-${parentRole.slice('lead-'.length)}`)
-      phases.set(agent.id, 'initial')
-    }
     traceEvent('agent/created', {
       actorId: trace.id('dsh-session', agent.id),
       actorRole: safeRole(agent.id),
       actorLabel: safeActorLabel(agent.id),
       provider: agent.options.provider === 'acp-devin' ? 'acp-devin' : 'other',
       model: safeModel(agent.options.model),
-      parentSessionId:
-        typeof agent.session.header.parentSession === 'string'
-          ? trace.id('dsh-session', agent.session.header.parentSession)
-          : 'unavailable',
     })
   })
   ctx.on('tools/result', (execution, result) => {
@@ -536,7 +529,7 @@ try {
       const role = safeRole(sessionId)
       const phase = phases.get(sessionId) ?? 'unknown'
       const tool: DevinLiveToolKind =
-        execution.name === 'spawn_teammate' ||
+        execution.name === 'subagent' ||
         execution.name === 'send_message' ||
         execution.name === 'bash' ||
         execution.name === 'wait_agent'
@@ -546,14 +539,16 @@ try {
       const argumentsRecord = isRecord(execution.arguments) ? execution.arguments : undefined
       const resultRecord = !result.isError && isRecord(result.value) ? result.value : undefined
       const sendTarget =
-        argumentsRecord?.target === 'lead' ? 'lead' : argumentsRecord?.target === 'checker' ? 'checker' : 'unknown'
+        argumentsRecord?.agent === 'lead' ? 'lead' : argumentsRecord?.agent === 'checker' ? 'checker' : 'unknown'
       const sendStatus = result.isError
         ? 'error'
         : resultRecord?.status === 'accepted' || resultRecord?.status === 'queued'
           ? resultRecord.status
-          : resultRecord?.sent === true
-            ? 'sent'
-            : 'unknown'
+          : typeof resultRecord?.messageId === 'string'
+            ? 'accepted'
+            : resultRecord?.sent === true
+              ? 'sent'
+              : 'unknown'
       const hostCallId = typeof execution.callId === 'string' ? execution.callId : undefined
       const messageId = typeof resultRecord?.messageId === 'string' ? resultRecord.messageId : undefined
       const messageFingerprint =
@@ -627,7 +622,7 @@ try {
               ),
             }
           : {}),
-        ...(tool === 'spawn_teammate' ? spawnArgumentPresence(argumentsRecord) : {}),
+        ...(tool === 'subagent' ? spawnArgumentPresence(argumentsRecord) : {}),
       })
     }
   })
@@ -668,70 +663,6 @@ try {
       hostRequestOrdinals.set(sessionId, ordinal)
       eventFields.requestModelOrdinal = ordinal
       eventFields.model = safeModel(event.data.header.config.model)
-    }
-    if (event.type === 'team/message/queued') {
-      const message = event.data.message
-      const text = message.content
-        .filter((c) => c.type === 'text')
-        .map((c) => c.text)
-        .join('')
-      queuedMessageIds.add(message.id)
-      if (hasExactMarker(text)) queuedMarkerMessageIds.add(message.id)
-      const senderRole = safeRole(message.senderId)
-      const targetRole = safeRole(message.targetId)
-      countRolePair(messageRolePairs, senderRole, targetRole)
-      received.push({
-        id: message.id,
-        senderId: message.senderId,
-        targetId: message.targetId,
-        text,
-      })
-      const bodyFingerprint = trace.fingerprint('team-message-body', text)
-      bodyFingerprintsByMessageId.set(message.id, bodyFingerprint)
-      traceEvent('team/message/queued', {
-        ...eventFields,
-        messageId: trace.id('team-message', message.id),
-        senderId: trace.id('dsh-session', message.senderId),
-        targetId: trace.id('dsh-session', message.targetId),
-        senderRole,
-        senderLabel: safeActorLabel(message.senderId),
-        targetRole,
-        targetLabel: safeActorLabel(message.targetId),
-        bodyHmac: bodyFingerprint.hmac,
-        bodyBytes: bodyFingerprint.bytes,
-        bodyFingerprintComplete: bodyFingerprint.complete,
-        exactExpectedMarker: hasExactMarker(text),
-        uniqueQueuedMessages: queuedMessageIds.size,
-        nativeReceiptStatus: 'pending',
-      })
-    }
-    if (event.type === 'team/message/delivered') {
-      const message = received.find((candidate) => candidate.id === event.data.messageId)
-      deliveredMessageIds.add(event.data.messageId)
-      const senderRole = message === undefined ? 'unknown' : safeRole(message.senderId)
-      const targetRole = safeRole(event.data.targetId)
-      countRolePair(deliveryRolePairs, senderRole, targetRole)
-      const bodyFingerprint = bodyFingerprintsByMessageId.get(event.data.messageId)
-      traceEvent('team/message/delivered', {
-        ...eventFields,
-        messageId: trace.id('team-message', event.data.messageId),
-        senderId: message === undefined ? 'unavailable' : trace.id('dsh-session', message.senderId),
-        targetId: trace.id('dsh-session', event.data.targetId),
-        senderRole,
-        senderLabel: message === undefined ? 'unknown' : safeActorLabel(message.senderId),
-        targetRole,
-        targetLabel: safeActorLabel(event.data.targetId),
-        ...(bodyFingerprint === undefined
-          ? { bodyHmac: 'unavailable', bodyBytes: null, bodyFingerprintComplete: false }
-          : {
-              bodyHmac: bodyFingerprint.hmac,
-              bodyBytes: bodyFingerprint.bytes,
-              bodyFingerprintComplete: bodyFingerprint.complete,
-            }),
-        matchedQueuedMessage: queuedMessageIds.has(event.data.messageId),
-        exactExpectedMarker: message === undefined ? false : hasExactMarker(message.text),
-        uniqueDeliveredMessages: deliveredMessageIds.size,
-      })
     }
     const peer = event.type === 'user/message' ? devinPeerMessageOf(event.data) : undefined
     if (peer !== undefined) {
@@ -826,13 +757,7 @@ try {
         acpFinishReason: 'unavailable',
       })
     }
-    if (
-      event.type !== 'assistant/message' &&
-      event.type !== 'turn/end' &&
-      event.type !== 'team/message/queued' &&
-      event.type !== 'team/message/delivered' &&
-      event.type !== 'user/message'
-    )
+    if (event.type !== 'assistant/message' && event.type !== 'turn/end' && event.type !== 'user/message')
       traceEvent('session/event', eventFields)
   })
   ctx.on('agent/inbox/claimed', ({ agent, message, turn }) => {
@@ -875,14 +800,31 @@ try {
       return { handle, marker, index }
     }),
   )
+  // Fail before inference if this exact composition cannot declare the RC.2 tools.
+  for (const { handle } of leads) {
+    const toolSet = await ctx.tools.resolve({
+      agent: handle.agent,
+      modelSelection: { provider: 'acp-devin', model: model.id },
+      signal: new AbortController().signal,
+    })
+    try {
+      const catalog = ctx.tools
+        .schemas(handle.agent, toolSet)
+        .map((tool) => ({ name: tool.name, schema: tool.parameters }))
+      assertDevinLiveCatalog(catalog, catalog)
+    } finally {
+      toolSet.dispose()
+    }
+  }
+  traceEvent('phase/completed', { phaseCode: 'NATIVE_CATALOG_VERIFIED' })
+  const membersByLead = new Map<SessionId, SessionId>()
   startLiveBudget()
   for (const { handle, marker } of leads) {
     assertLiveBudget()
-    const memberPrompt = `Call send_message exactly once with target "lead" and message "${marker}". Then stop. Do not call any more tools, send any other messages, or do extra work.`
+    const memberPrompt = `Call send_message exactly once with agent "lead" and message "${marker}". Then stop. Do not call any more tools, send any other messages, or do extra work.`
     const spawnArguments = JSON.stringify({
       name: 'checker',
       description: 'Report the exact marker to the Lead and stop.',
-      context: 'fresh',
       prompt: memberPrompt,
     })
     handle.agent.followup(
@@ -891,7 +833,7 @@ try {
         content: [
           {
             type: 'text',
-            text: `This is an explicitly authorized DSH Agent Teams test. Use only the DSH MCP server named dsh. Call spawn_teammate exactly once with this exact JSON argument object: ${spawnArguments}. Do not use send_message yourself. Do not use shell, files, web, or native subagent tools. After creating the teammate, end your response so DSH can deliver its reply. When the teammate's exact marker arrives, echo ${marker} as your response and stop; do not call any more tools or send any team messages.`,
+            text: `This is an explicitly authorized DSH Agent Teams test. Use only the DSH MCP server named dsh. Call subagent exactly once with this exact JSON argument object: ${spawnArguments}. Do not use send_message yourself. Do not use shell, files, web, or native subagent tools. After creating the teammate, end your response so DSH can deliver its reply. When the teammate's exact marker arrives, echo ${marker} as your response and stop; do not call any more tools or send any team messages.`,
           },
         ],
       }),
@@ -900,12 +842,11 @@ try {
   for (const { handle, index, marker } of leads) {
     const lead = handle.agent
     await wait(
-      () => executions.some((e) => e.sessionId === lead.id && e.name === 'spawn_teammate' && e.success),
+      () => executions.some((e) => e.sessionId === lead.id && e.name === 'subagent' && e.success),
       `lead ${index} spawn`,
     )
-    const members = ctx.agentTeams.listMembers(lead)
-    assert.equal(members.length, 2, 'Exactly one real teammate per lead')
-    const member = members.find((m) => m.role === 'teammate')!
+    const member = requireDevinLiveMember(await ctx.subagents.listDescendants(lead.id), lead.id)
+    membersByLead.set(lead.id, member.id)
     roles.set(member.id, `member-${index}`)
     assert.equal(member.name, 'checker', 'Same member name must resolve within its own Team')
     assert.equal(created.get(member.id), 'acp-devin', 'Native DSH must create a real ACP teammate')
@@ -936,7 +877,13 @@ try {
         }),
       `lead ${index} consumes teammate message and replies`,
     )
-    await wait(() => ctx.agentTeams.listMembers(lead).every((m) => m.status === 'inactive'), `team ${index} idle`)
+    await wait(
+      () =>
+        lead.status === 'idle' &&
+        ctx.agents.get(member.id)?.status !== 'running' &&
+        (completedTurns.get(member.id) ?? 0) > 0,
+      `team ${index} idle`,
+    )
     assert.ok(
       !received.some((m) => m.senderId === member.id && m.targetId !== lead.id),
       'Teammate must not send to another lead',
@@ -975,23 +922,22 @@ try {
   )
   for (const { handle, index } of leads) {
     const lead = handle.agent
-    const member = ctx.agentTeams.listMembers(lead).find((candidate) => candidate.role === 'teammate')!
+    const member = requireDevinLiveMember(await ctx.subagents.listDescendants(lead.id), lead.id)
+    assert.equal(member.id, membersByLead.get(lead.id))
     assert.ok(
       !received.some((message) => message.senderId === member.id && message.targetId !== lead.id),
       `Teammate ${index} must not message another Team`,
     )
   }
   for (const { handle } of leads) {
-    const member = ctx.agentTeams.listMembers(handle.agent).find((candidate) => candidate.role === 'teammate')!
+    const member = requireDevinLiveMember(await ctx.subagents.listDescendants(handle.agent.id), handle.agent.id)
+    assert.equal(member.id, membersByLead.get(handle.agent.id))
     assertDevinTeamModelRoutes(model.id, modelRoutes.get(handle.agent.id), modelRoutes.get(member.id))
   }
   assertLiveBudget()
   assert.equal(failures.length, 0, 'LIVE_TURN_FAILURES_PRESENT')
   assert.equal(toolBudget.violation, undefined)
-  assert.notEqual(
-    ctx.agentTeams.listMembers(leads[0]!.handle.agent)[1]!.id,
-    ctx.agentTeams.listMembers(leads[1]!.handle.agent)[1]!.id,
-  )
+  assert.notEqual(membersByLead.get(leads[0]!.handle.agent.id), membersByLead.get(leads[1]!.handle.agent.id))
   stopLiveBudget()
   for (const { handle } of leads) await handle.dispose()
   finalTestResult = 'pass'

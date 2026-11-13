@@ -66,7 +66,7 @@ function transitionError(
   message: string,
   cause?: unknown,
 ): LlmError {
-  return new LlmError(message, code, cause instanceof Error ? { cause } : undefined)
+  return LlmError.fromFailure({ message, code }, cause instanceof Error ? { cause } : undefined)
 }
 
 async function blockWithRecovery(

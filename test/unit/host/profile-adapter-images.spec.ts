@@ -182,7 +182,7 @@ async function harness(settings: { routeModel?: string; exposeModelConfig?: bool
       options: { provider, model: routeModel },
       inbox: { nextStep: [], nextTurn: [] },
     } as unknown as Agent
-    const detach = ctx.agents.enter(agent, undefined)
+    const detach = ctx.agents.enter(agent)
     cleanup.push(detach)
     views.set(
       id,

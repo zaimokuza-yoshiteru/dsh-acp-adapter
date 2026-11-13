@@ -5,15 +5,10 @@ import { createApprovalChildrenReader } from '../../../src/host/subagent/approva
 
 function harness() {
   const live = new Map<string, Agent>()
-  const owners = new Map<string, Agent>()
-  const teamNames = new Map<string, string>()
-  const facts = new Map<
-    string,
-    {
-      subagent: { mode: 'continuable' | 'one-shot'; label: string; seq: number } | null
-      acpExecution: { externalSubagent: boolean }
-    }
-  >()
+  const roots = new Map<Agent, Agent>()
+  const rows: any[] = []
+  const facts = new Map<string, any>()
+  let listing: (() => Promise<void>) | undefined
   const add = (
     id: string,
     parent?: string,
@@ -21,9 +16,9 @@ function harness() {
       provider?: string
       ordinary?: boolean
       observed?: boolean
-      inheritedDescriptor?: boolean
+      inherited?: boolean
       detached?: boolean
-      oneShot?: boolean
+      name?: string
     } = {},
   ) => {
     const agent = {
@@ -37,122 +32,120 @@ function harness() {
           ...(parent === undefined || options.ordinary ? {} : { origin: 'subagent' }),
         },
         requestHeader: () => ({ config: { provider: options.provider ?? 'acp-test' } }),
-        isOwnSeq: () => options.inheritedDescriptor !== true,
+        isOwnSeq: () => !options.inherited,
       },
     } as unknown as Agent
+    const parentAgent = parent === undefined ? undefined : live.get(parent)
+    roots.set(
+      agent,
+      parentAgent === undefined || options.detached || options.ordinary ? agent : roots.get(parentAgent)!,
+    )
     live.set(id, agent)
-    if (parent !== undefined && !options.detached) owners.set(id, live.get(parent)!)
     facts.set(id, {
-      subagent:
-        parent === undefined
-          ? null
-          : { mode: options.oneShot ? 'one-shot' : 'continuable', label: `label-${id}`, seq: 0 },
+      subagent: parent === undefined ? null : { mode: 'continuable', label: id, seq: 0 },
       acpExecution: { externalSubagent: options.observed === true },
     })
+    if (parent !== undefined)
+      rows.push({
+        kind: 'child',
+        id,
+        parentId: parent,
+        mode: options.observed ? 'external' : 'continuable',
+        name: options.name ?? id,
+        path: parentAgent === roots.get(parentAgent!) ? (options.name ?? id) : `${parent}/${options.name ?? id}`,
+        activity: 'inactive',
+        hasChildren: false,
+      })
     return agent
   }
-  const agents = {
-    list: () => [...live.values()],
-    get: (id: string) => live.get(id),
-    isOwnedBy: (id: string, owner: Agent) => owners.get(id) === owner,
+  const agents = { list: () => [...live.values()], get: (id: string) => live.get(id) }
+  const subagents = {
+    rootOf: (agent: Agent) => {
+      const root = roots.get(agent)
+      if (root === undefined || live.get(agent.id) !== agent || live.get(root.id) !== root)
+        throw new Error('UNAUTHORIZED')
+      return root
+    },
+    namesOf: (agent: Agent) => ({ self: rows.find((row) => row.id === agent.id)?.path ?? 'lead' }),
+    listDescendants: async () => {
+      await listing?.()
+      return rows
+    },
   }
   const projections = { snapshot: (session: Agent['session']) => ({ values: facts.get(session.id) }) }
-  const ctx = {
-    get: (name: string) =>
-      name === 'agents'
-        ? agents
-        : name === 'sessionProjections'
-          ? projections
-          : name === 'agentTeams'
-            ? {
-                tryMembership: (agent: Agent) =>
-                  teamNames.has(agent.id) ? { role: 'teammate', name: teamNames.get(agent.id) } : undefined,
-              }
-            : undefined,
-  } as unknown as Context
+  const services: Record<string, unknown> = {
+    agents,
+    subagents,
+    sessionProjections: projections,
+    agentTeams: { isEnabled: () => false },
+  }
+  const ctx = { get: (name: string) => services[name] } as unknown as Context
   return {
     add,
     live,
-    owners,
-    teamNames,
+    roots,
+    rows,
+    facts,
+    subagents,
+    setListing: (value: typeof listing) => {
+      listing = value
+    },
     read: createApprovalChildrenReader(ctx, (provider) => provider === 'acp-test'),
   }
 }
 
 describe('managed ACP approval descendants', () => {
-  it('keeps native Team display names and uses the active request route rather than a future selection', () => {
+  it.each(['native', 'acp-test'])('reads named descendants under a %s root while Team is off', async (provider) => {
     const h = harness()
-    h.add('parent')
-    h.add('team-child', 'parent')
-    h.teamNames.set('team-child', 'Researcher')
-    const native = h.add('native-request', 'parent')
-    Object.assign(native.session, { requestHeader: () => ({ config: { provider: 'native' } }) })
-    expect(h.read('parent')).toMatchObject([{ name: 'Researcher', path: [{ name: 'Researcher' }] }])
-    h.teamNames.clear()
-    expect(h.read('parent')).toMatchObject([{ name: 'label-team-child' }])
-  })
-  it.each(['native', 'acp-test'])(
-    'discovers direct and nested ACP children under a %s parent without Teams',
-    (provider) => {
-      const h = harness()
-      h.add('parent', undefined, { provider })
-      h.add('direct', 'parent')
-      h.add('native-child', 'parent', { provider: 'native' })
-      h.add('nested', 'native-child')
-      h.add('one-shot', 'parent', { oneShot: true })
-      expect(h.read('parent')).toEqual([
-        {
-          sessionId: 'direct',
-          parentSessionId: 'parent',
-          name: 'label-direct',
-          mode: 'continuable',
-          path: [{ sessionId: 'direct', name: 'label-direct' }],
-        },
-        {
-          sessionId: 'nested',
-          parentSessionId: 'native-child',
-          name: 'label-nested',
-          mode: 'continuable',
-          path: [
-            { sessionId: 'native-child', name: 'label-native-child' },
-            { sessionId: 'nested', name: 'label-nested' },
-          ],
-        },
-        {
-          sessionId: 'one-shot',
-          parentSessionId: 'parent',
-          name: 'label-one-shot',
-          mode: 'one-shot',
-          path: [{ sessionId: 'one-shot', name: 'label-one-shot' }],
-        },
-      ])
-    },
-  )
-
-  it('excludes ordinary forks, observed records, inherited descriptors and detached runtime roots', () => {
-    const h = harness()
-    h.add('parent')
-    h.add('ordinary', 'parent', { ordinary: true })
-    h.add('observed', 'parent', { observed: true })
-    h.add('inherited', 'parent', { inheritedDescriptor: true })
-    h.add('detached', 'parent', { detached: true })
-    for (const id of ['ordinary', 'observed', 'inherited', 'detached']) h.add(`${id}-descendant`, id)
-    expect(h.read('parent')).toEqual([])
+    h.add('root', undefined, { provider })
+    h.add('reviewer', 'root', { provider: 'native' })
+    h.add('checker', 'reviewer')
+    expect(await h.read('root')).toEqual([
+      {
+        sessionId: 'checker',
+        parentSessionId: 'reviewer',
+        name: 'reviewer/checker',
+        mode: 'continuable',
+        path: [
+          { sessionId: 'reviewer', name: 'reviewer' },
+          { sessionId: 'checker', name: 'checker' },
+        ],
+      },
+    ])
+    h.live.delete('reviewer')
+    expect(await h.read('root')).toHaveLength(1)
   })
 
-  it('rejects stale exact parent objects, vanished owners and ownership cycles', () => {
+  it('does not infer authority from names, ordinary forks, observed sessions or inherited descriptors', async () => {
     const h = harness()
-    h.add('parent')
-    h.add('child', 'parent')
-    h.add('parent')
-    expect(h.read('parent')).toEqual([])
-    h.live.delete('parent')
-    expect(h.read('parent')).toEqual([])
     h.add('root')
-    const first = h.add('first', 'root')
-    const second = h.add('second', 'first')
-    Object.assign(first.session.header, { parentSession: 'second' })
-    h.owners.set('first', second)
-    expect(h.read('root')).toEqual([])
+    h.add('other')
+    h.add('same-name', 'other', { name: 'reviewer' })
+    h.add('ordinary', 'root', { ordinary: true })
+    h.add('observed', 'root', { observed: true })
+    h.add('inherited', 'root', { inherited: true })
+    h.add('detached', 'root', { detached: true })
+    expect(await h.read('root')).toEqual([])
+  })
+
+  it('rejects replacement of a root while the native directory read is pending', async () => {
+    const h = harness()
+    h.add('root')
+    h.add('child', 'root')
+    h.setListing(async () => {
+      h.add('root')
+    })
+    await expect(h.read('root')).rejects.toMatchObject({ code: 'ACP_SUBAGENT_OWNER_CHANGED' })
+  })
+
+  it('rejects a child instance with an old root and does not expose incomplete catalog paths', async () => {
+    const h = harness()
+    h.add('root')
+    h.add('child', 'root')
+    h.rows[0].parentId = 'missing'
+    expect(await h.read('root')).toEqual([])
+    h.rows[0].parentId = 'root'
+    h.add('root')
+    expect(await h.read('root')).toEqual([])
   })
 })

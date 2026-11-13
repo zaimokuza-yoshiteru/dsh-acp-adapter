@@ -192,11 +192,12 @@ const REQUIRED_ARTIFACTS = [
   'lib/client.js.map',
   'lib/types/index.d.ts',
   'lib/types/client/index.d.ts',
-  // typert Remote 生成物（scripts/gen-typert.ts；.d.ts.map 不进 files 是故意的）
+  // Typert Remote declarations publish their source map beside the generated entry.
   'lib/typert.host.js',
   'lib/typert.host.d.ts',
   'lib/typert.remote-client.js',
   'lib/typert.remote-client.d.ts',
+  'lib/typert.remote-client.d.ts.map',
 ]
 for (const rel of REQUIRED_ARTIFACTS) {
   if (!existsSync(join(root, rel))) fail(`产物缺失: ${rel}（先跑 pnpm build）`)
@@ -360,7 +361,8 @@ if (packOutput !== null) {
       }
       if (path.startsWith('lib/client/'))
         fail(`tarball 含 tsc 版 client 半（浏览器只消费 lib/client.js bundle）: ${path}`)
-      if (path.endsWith('.d.ts.map')) fail(`tarball 含 declaration map（不进 payload）: ${path}`)
+      if (path.endsWith('.d.ts.map') && path !== 'lib/typert.remote-client.d.ts.map')
+        fail(`tarball 含非公开 Typert 的 declaration map（不进 payload）: ${path}`)
       if (path.endsWith('.js.map') && path !== 'lib/client.js.map')
         fail(`tarball 含宿主半 source map（仅 client bundle 需要）: ${path}`)
     }

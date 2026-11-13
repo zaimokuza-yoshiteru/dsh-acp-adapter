@@ -15,6 +15,7 @@ import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import { createAcpSidecar, type AcpBindingData } from '../../../src/persistence/sidecar.ts'
 import { AcpSessionFacts } from '../../../src/host/composition/session-facts.ts'
 import { installAcpBackendGuard } from '../../../src/host/composition/backend-guard.ts'
+import { subagentIdentityProjectionDefinition } from '@deepseek-ai/dsh-subagent/src/projection.ts'
 import { createToolApprovalPolicyReader } from '../../../src/host/subagent/tool-approval-policy.ts'
 
 const cleanups: Array<() => Promise<void>> = []
@@ -61,6 +62,7 @@ async function setup(residual: ResidualBinding) {
   await ctx.plugin(LlmRuntime)
   await ctx.plugin(SessionStore)
   await ctx.plugin(SessionProjectionRegistry)
+  await ctx.sessionProjections.register(subagentIdentityProjectionDefinition)
   await ctx.plugin(SystemPrompt, {})
   await ctx.plugin(ToolRuntime)
   await ctx.plugin(NativeExecutor)
@@ -86,6 +88,14 @@ async function setup(residual: ResidualBinding) {
     )
   const firstGuard = await mountGuard()
   const parent = await ctx.agentLoop.create(SessionId('parent'), { provider: 'acp-old', model: 'local' })
+  ctx.provide('subagents', {
+    rootOf: (agent: Agent) => {
+      if (ctx.agents.get(agent.id) !== agent || (agent !== parent && agent.session.header.parentSession !== parent.id))
+        throw new Error('UNAUTHORIZED')
+      return parent
+    },
+    namesOf: (agent: Agent) => ({ self: agent === parent ? 'lead' : 'child' }),
+  } as never)
   await send(parent)
   expect(llm.calls).toEqual(['acp-old'])
   const binding: AcpBindingData = {
@@ -120,14 +130,15 @@ async function setup(residual: ResidualBinding) {
     ownsProvider: (id) => id === 'child' || (residual !== 'removed' && id === 'old'),
     defaultPolicy: () => 'ask',
   })
-  const createChild = async () =>
-    (
-      await ctx.agents.create({
-        sessionId: SessionId('child'),
-        agentOptions: { provider: 'acp-child', model: 'local' },
-        meta: { parentSession: parent.id, origin: 'subagent' },
-      })
-    ).agent
+  const createChild = async () => {
+    const { agent } = await ctx.agents.create({
+      sessionId: SessionId('child'),
+      agentOptions: { provider: 'acp-child', model: 'local' },
+      meta: { parentSession: parent.id, origin: 'subagent' },
+    })
+    agent.session.append('subagent/descriptor', { version: 3, mode: 'continuable', provider: 'spawn', label: 'child' })
+    return agent
+  }
   return { ctx, sidecar, llm, parent, createChild, read, firstGuard, mountGuard }
 }
 
@@ -146,7 +157,7 @@ it.each(['owned', 'removed', 'outdated'] as const)(
     await send(h.parent)
     expect(h.llm.calls).toEqual(['acp-old', 'deepseek', 'deepseek'])
     const child = await h.createChild()
-    await expect(h.read(child.id)).resolves.toMatchObject({ policy: 'ask', source: 'session', editable: true })
+    await expect(h.read(child.id)).resolves.toMatchObject({ policy: 'ask', source: 'lead', editable: false })
     await expect(h.sidecar.readToolApprovalPolicy(h.parent.id)).resolves.toBe('auto')
   },
 )

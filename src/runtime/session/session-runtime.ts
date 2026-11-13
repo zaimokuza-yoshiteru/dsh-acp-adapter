@@ -1568,7 +1568,9 @@ export class AcpSessionRuntime {
       : undefined
     if (diagnosticsEnabled && (update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update')) {
       const toolNames = new Set([
-        'spawn_teammate',
+        'subagent',
+        'subagent_fork',
+        'subagent_oar',
         'send_message',
         'list_agents',
         'wait_agent',

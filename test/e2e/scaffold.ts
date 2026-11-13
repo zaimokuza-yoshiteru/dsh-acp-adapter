@@ -15,7 +15,6 @@ type ToolExecutor = 'native' | 'ptc'
 
 /** Names from the pinned Host's optional bundle inventory, resolved from its npm installation. */
 export type OptionalBundle =
-  | 'agent-team-profile'
   | 'voice-input-bundle'
   | 'auto-review'
   | 'inspector-profile'
@@ -74,7 +73,6 @@ export async function launchAdapterWorld({
 } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'dsh-acp-e2e-install-'))
   try {
-    const upstream = process.env.DSH_UPSTREAM_CHECKOUT ?? resolve(root, '../reference/deepseek-harness')
     if (renderProbe)
       execFileSync('pnpm', ['exec', 'tsdown', '--config', 'test/e2e/fixtures/render-probe/tsdown.config.ts'], {
         cwd: root,
@@ -84,13 +82,12 @@ export async function launchAdapterWorld({
     const packages = [
       { dir: adapterDirectory, enabled: true },
       ...(renderProbe ? [{ dir: join(root, 'test/e2e/fixtures/render-probe'), enabled: true }] : []),
-      ...(teams && !optionalBundles.includes('agent-team-profile')
-        ? [{ dir: join(upstream, 'packages/experimental/agent-team-profile'), enabled: true }]
-        : []),
       ...[...new Set(optionalBundles)].map((bundle) => ({ dir: optionalBundleDirectory(bundle), enabled: true })),
     ]
     const patches: string[] = []
-    if (teamMembers !== undefined) patches.push(`- id: agent-team\n  config:\n    maxMembers: ${teamMembers}\n`)
+    if (teams) patches.push('- id: agent-team\n  config:\n    defaultEnabled: true\n')
+    if (teamMembers !== undefined)
+      patches.push(`- id: subagent\n  config:\n    maxActiveSubagents: ${Math.max(1, teamMembers - 1)}\n`)
     if (terminalShell !== undefined)
       patches.push(`- id: terminal-controller\n  config:\n    shell: ${JSON.stringify(terminalShell)}\n`)
     patches.push(...extraPatches)

@@ -31,7 +31,8 @@ import type * as acp from '@agentclientprotocol/sdk'
 const requireDsh = createRequire(import.meta.resolve('@deepseek-ai/dsh/package.json'))
 const JobsLocal = await import(pathToFileURL(requireDsh.resolve('@deepseek-ai/dsh-jobs-local')).href)
 const ToolJobs = await import(pathToFileURL(requireDsh.resolve('@deepseek-ai/dsh-tool-jobs')).href)
-const TeamTools = await import(pathToFileURL(requireDsh.resolve('@deepseek-ai/dsh-experimental-tool-agent-team')).href)
+const SubagentControls = await import(pathToFileURL(requireDsh.resolve('@deepseek-ai/dsh-tool-subagent-control')).href)
+const TeamTools = await import(pathToFileURL(requireDsh.resolve('@deepseek-ai/dsh-tool-agent-team')).href)
 
 declare module '@deepseek-ai/dsh-jobs' {
   interface JobKindMap {
@@ -215,21 +216,20 @@ describe('Qwen jobs through the published registry, reporter and AgentLoop', () 
 
   it('carries the native Team policy and required identity through the admitted ACP request', async () => {
     const h = await harness()
-    // Keep Team membership narrow; policy, scoped registrations, assembly,
-    // native context admission and ACP prompt conversion are the real producers.
-    h.ctx.provide('agentTeams', {
-      tryMembership: () => ({ role: 'lead', name: 'lead' }),
-      membership: () => ({ role: 'lead', name: 'lead' }),
-    } as never)
-    await h.ctx.plugin(TeamTools, { interrupt: false })
+    // Keep tree selection narrow; native tools, required identity, assembly
+    // and ACP prompt conversion remain the real producers.
+    h.ctx.provide('agentTeams', { isEnabled: () => true } as never)
+    h.ctx.provide('subagents', { rootOf: () => h.agent, namesOf: () => ({ self: 'lead' }) } as never)
+    await h.ctx.plugin(TeamTools, {})
+    await h.ctx.plugin(SubagentControls, { interrupt: false })
     h.agent.followup(user('Review this project'))
     await h.agent.whenIdle()
     expect(h.calls).toHaveLength(1)
     const prompt = text(h.calls[0]!.content)
     expect(prompt).toContain('Agent Teams is available in this session')
     expect(prompt).toContain('The Team Lead and all teammates share the same working directory and filesystem.')
-    expect(prompt).toContain('The Lead must wait for required teammates before giving the final answer.')
-    expect(prompt).toContain('You are the Team Lead named "lead".')
+    expect(prompt).toContain('The root agent must wait for required teammates before giving the final answer.')
+    expect(prompt).toContain('You are the root agent. Your name is "lead".')
     expect(prompt).not.toContain('only when the user explicitly asks')
     expect(h.agent.session.requestHeader()?.tools?.some((tool) => tool.name === 'interrupt_agent')).toBe(false)
   })

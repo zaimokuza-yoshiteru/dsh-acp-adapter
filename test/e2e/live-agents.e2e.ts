@@ -14,6 +14,9 @@ import { launchAdapterWorld, root } from './scaffold.ts'
 import { verifyLiveTeam } from './live-teams.ts'
 import { verifyLiveTeamApproval } from './live-team-approval.ts'
 import { verifyLiveSteering } from './live-steering.ts'
+import { prepareLiveDevinEnvironment } from './live-devin-environment.ts'
+import type { AcpRemoteService } from '../../src/remote/service.ts'
+import { readLiveDevinCliVersion } from './live-devin-version.ts'
 
 const profiles = [
   { id: 'claude', command: 'claude-agent-acp', args: [] },
@@ -24,8 +27,11 @@ const selected = process.env.DSH_E2E_LIVE_PROFILES?.split(',')
 const retain = process.env.DSH_E2E_RETAIN === '1'
 if (retain && selected?.length !== 1) throw new Error('Retained review requires exactly one explicit live profile')
 const teams = process.env.DSH_E2E_LIVE_TEAMS === '1'
+const multimodel = process.env.DSH_E2E_LIVE_TEAMS_MULTIMODEL === '1'
 const steering = process.env.DSH_E2E_LIVE_STEERING === '1'
 if (teams && steering) throw new Error('Choose either the live Teams or live steering scenario')
+if (multimodel && (!teams || selected?.length !== 1 || selected[0] !== 'devin'))
+  throw new Error('The two-model scenario requires Teams and exactly the explicit Devin profile')
 
 // Explicitly opt in: these use the user's Agent login and may consume credits.
 describe.skipIf(process.env.DSH_E2E_LIVE !== '1')('live ACP smoke', () => {
@@ -36,6 +42,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE !== '1')('live ACP smoke', () => {
         ? '$id delivers steering after real generation begins'
         : '$id preserves host guidance and renders a real response',
     async (profile) => {
+      let devinEnvironment: Awaited<ReturnType<typeof prepareLiveDevinEnvironment>> | undefined
       let host!: AdapterWorld
       let browser!: TestBrowser
       let browserServer!: BrowserServer
@@ -56,31 +63,53 @@ describe.skipIf(process.env.DSH_E2E_LIVE !== '1')('live ACP smoke', () => {
       )
       mkdirSync(evidence, { recursive: true })
       try {
-        host = await launchAdapterWorld({ teams })
         const provider = `acp-${profile.id}`
+        const explicitModel = process.env[`DSH_E2E_LIVE_${profile.id.toUpperCase()}_MODEL`]
+        if (profile.id === 'devin' && (explicitModel === undefined || explicitModel.trim().length === 0))
+          throw new Error('Choose an exact Devin MODEL after checking the current authenticated catalog and price')
+        const secondModel = multimodel ? process.env.DSH_E2E_LIVE_TEAMS_SECOND_MODEL : undefined
+        if (
+          multimodel &&
+          (secondModel === undefined || secondModel.trim().length === 0 || secondModel === explicitModel)
+        )
+          throw new Error('Choose a different exact TEAMS_SECOND_MODEL within the authorized model scope')
+        host = await launchAdapterWorld({
+          teams,
+          ...(multimodel
+            ? {
+                extraPatches: [
+                  `- id: subagent-model-selection-settings\n  config:\n    enabled: true\n    allowedModels: ${JSON.stringify([required(explicitModel), required(secondModel)].map((model) => ({ provider, model })))}\n`,
+                ],
+              }
+            : {}),
+        })
         const envKeys = (process.env[`DSH_E2E_LIVE_${profile.id.toUpperCase()}_ENV_KEYS`] ?? '')
           .split(',')
           .filter(Boolean)
-        const env = Object.fromEntries(
+        let env = Object.fromEntries(
           envKeys.map((key) => {
-            if (process.env[key] === undefined)
-              throw new Error(`Explicit live-test environment variable is absent: ${key}`)
-            return [key, process.env[key]]
+            const value = process.env[key]
+            if (value === undefined) throw new Error(`Explicit live-test environment variable is absent: ${key}`)
+            return [key, value]
           }),
         )
+        if (profile.id === 'devin') {
+          devinEnvironment = await prepareLiveDevinEnvironment(process.env.DEVIN_LIVE_AUTH, env)
+          env = devinEnvironment.env
+        }
+        // Pin one resolved executable for both the CLI version check and the actual ACP process.
+        const command =
+          profile.id === 'devin' ? await host.ctx.subprocess.resolveExecutable(profile.command, env) : profile.command
+        const devinCliVersion =
+          teams && profile.id === 'devin' ? await readLiveDevinCliVersion(command, host.workspaceCwd, env) : undefined
+        if (devinCliVersion !== undefined) teamEvidence.manualApprovalCliVersion = devinCliVersion
         await host.ctx.settings.replace('dsh-acp-adapter', {
-          agents: { [profile.id]: { name: profile.id, command: profile.command, args: profile.args, env } },
+          agents: { [profile.id]: { name: profile.id, command, args: profile.args, env } },
         })
         await vi.waitFor(() => expect(host.ctx.llm.listProviders().some((entry) => entry.id === provider)).toBe(true))
         const models = await host.ctx.llm.listModels(provider)
         expect(models.length, 'Agent must return an authenticated model catalog').toBeGreaterThan(0)
-        const preferences =
-          profile.id === 'claude'
-            ? [/^haiku$/i]
-            : profile.id === 'devin'
-              ? [/^swe-1-7-medium$/i, /^gpt-5-4-mini-low$/i, /flash.*(?:low|minimal)$/i]
-              : [/mini/i, /spark/i]
-        const explicitModel = process.env[`DSH_E2E_LIVE_${profile.id.toUpperCase()}_MODEL`]
+        const preferences = profile.id === 'claude' ? [/^haiku$/i] : [/mini/i, /spark/i]
         const chosen =
           explicitModel === undefined
             ? preferences.map((pattern) => models.find((entry) => pattern.test(entry.id))).find(Boolean)
@@ -94,6 +123,12 @@ describe.skipIf(process.env.DSH_E2E_LIVE !== '1')('live ACP smoke', () => {
           chosen,
           'No approved small model found; specify an exact live-test MODEL instead of using an expensive default',
         ).toBeDefined()
+        // Validate every authorized route before the first model request.
+        if (multimodel)
+          expect(
+            models.some((entry) => entry.id === secondModel),
+            'The selected second model is unavailable',
+          ).toBe(true)
         model = required(chosen).id
         await host.ctx.agentDefaultModel.saveSelection({ provider, model })
         let token = `HOST_BRIDGE_${randomUUID()}`
@@ -137,29 +172,51 @@ describe.skipIf(process.env.DSH_E2E_LIVE !== '1')('live ACP smoke', () => {
           return
         }
         if (teams) {
-          await verifyLiveTeam({ host, page, provider, model, evidence: teamEvidence })
-          if (process.env.DSH_E2E_LIVE_TEAMS_MULTIMODEL === '1') {
-            expect(profile.id, 'The review uses two explicitly selected cheap Devin routes').toBe('devin')
-            const second = required(models.find((entry) => entry.id === 'gpt-5-4-mini-low'))
-            expect(second, 'The approved second small model must be in the current catalog').toBeDefined()
-            await page
-              .locator('[data-team-action]')
-              .getByRole('button', { name: /Agent team/ })
-              .click()
-            await page.getByRole('button', { name: /^Select model/ }).click()
-            await page.getByRole('menuitem', { name: /^Model/ }).click()
-            await page.getByRole('menuitemradio', { name: second.name, exact: true }).click()
+          // The cached ACP version is separate evidence; Devin currently reports 0.0.0-dev here.
+          const probe =
+            profile.id === 'devin'
+              ? (await (host.ctx.get('dshAcp') as AcpRemoteService).health()).providers.find(
+                  (entry) => entry.id === 'devin',
+                )?.probe
+              : undefined
+          const devinManualApproval =
+            devinCliVersion !== undefined && devinEnvironment !== undefined
+              ? {
+                  cliVersion: devinCliVersion,
+                  assertIsolatedDshRegistration: devinEnvironment.assertIsolatedDshRegistration,
+                }
+              : undefined
+          if (profile.id === 'devin')
+            teamEvidence.manualApprovalAcpVersion = probe?.status === 'ok' ? (probe.agentInfo?.version ?? null) : null
+          const firstTeam = await verifyLiveTeam({
+            host,
+            page,
+            provider,
+            model,
+            evidence: teamEvidence,
+            evidenceDirectory: evidence,
+            devinManualApproval,
+          })
+          if (multimodel) {
+            const second = required(models.find((entry) => entry.id === secondModel))
             teamEvidence.secondModel = second.id
             teamEvidence.secondRun = {}
-            await verifyLiveTeam({
+            const secondTeam = await verifyLiveTeam({
               host,
               page,
               provider,
               model: second.id,
+              selectChildModel: true,
               evidence: teamEvidence.secondRun,
+              evidenceDirectory: evidence,
+              devinManualApproval,
               memberName: 'checker',
               expectedMembers: 3,
             })
+            expect(secondTeam.lead).toBe(firstTeam.lead)
+            expect(secondTeam.child).not.toBe(firstTeam.child)
+            expect(firstTeam.lead.session.requestHeader()?.config).toMatchObject({ provider, model })
+            expect(firstTeam.child.session.requestHeader()?.config).toMatchObject({ provider, model })
           }
           if (process.env.DSH_E2E_LIVE_TEAMS_APPROVAL === '1') {
             teamEvidence.approval = { directory: evidence }
@@ -275,7 +332,11 @@ describe.skipIf(process.env.DSH_E2E_LIVE !== '1')('live ACP smoke', () => {
           await browser?.close()
           await browserServer?.close()
         } finally {
-          await host?.close()
+          try {
+            await host?.close()
+          } finally {
+            await devinEnvironment?.dispose()
+          }
         }
       }
     },

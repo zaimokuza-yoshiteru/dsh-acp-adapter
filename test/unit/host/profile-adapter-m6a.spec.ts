@@ -1,7 +1,14 @@
 import { withSessionFacts } from '../../support/session-facts.ts'
 import { describe, expect, it } from 'vitest'
-import { ReasoningEffortId, createUserMessage, markAgentLoopRequest } from '@deepseek-ai/dsh-llm'
+import {
+  HarnessError,
+  LlmError,
+  ReasoningEffortId,
+  createUserMessage,
+  markAgentLoopRequest,
+} from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
+import { ProviderRequestId } from '@deepseek-ai/dsh-llm/brand'
 import { AcpProfileAdapter } from '../../../src/host/composition/profile-adapter.ts'
 import type { AcpAgentConfig } from '../../../src/domain/session/agent-config.ts'
 import type { AcpProfileRuntime } from '../../../src/host/composition/profile-adapter.ts'
@@ -575,5 +582,69 @@ describe('ACP M6a session configuration convergence', () => {
     expect(calls).toEqual([['model', 'target-model']])
     expect(promptCount.value).toBe(0)
     expect(ledger.records).toEqual([])
+  })
+
+  it('preserves provider facts and the cause chain when a reasoning failure restores the previous model', async () => {
+    const cause = new Error('remote configuration request failed')
+    const nativeFailure = LlmError.fromFailure(
+      {
+        message: 'configuration rate limit',
+        code: 'RATE_LIMIT',
+        status: 429,
+        providerRetryAfterMs: 250,
+        requestId: ProviderRequestId('configuration-request'),
+      },
+      { cause },
+    )
+    const calls: Array<[string, string | boolean]> = []
+    const promptCount = { value: 0 }
+    const ledger = new Ledger()
+    const runtime = runtimeFor(calls, options(), promptCount)
+    const setConfigOption = runtime.setConfigOption!
+    runtime.setConfigOption = async (id, value, signal) => {
+      if (id === 'thinking') throw nativeFailure
+      await setConfigOption(id, value, signal)
+    }
+    const live = session()
+    const adapter = new AcpProfileAdapter(
+      'test',
+      () => profile,
+      seam(),
+      () => live,
+      ledger,
+      undefined,
+      () => runtime,
+      sidecar,
+    )
+    try {
+      const error = await drain(
+        adapter.stream(
+          request('session-rollback-facts', {
+            reasoningEffort: ReasoningEffortId('high'),
+          }),
+        ),
+      ).catch((error: unknown) => error)
+      expect(error).toBeInstanceOf(LlmError)
+      expect(error).toBeInstanceOf(HarnessError)
+      if (!(error instanceof LlmError)) throw new Error('expected the public LLM error boundary')
+      expect(error.failure).toEqual({
+        ...nativeFailure.failure,
+        code: 'ACP_CONFIG_SYNC_FAILED',
+        message: expect.stringContaining('previous model was restored'),
+      })
+      expect(Object.isFrozen(error.failure)).toBe(true)
+      expect(error.cause).toBeInstanceOf(LlmError)
+      if (!(error.cause instanceof LlmError)) throw new Error('expected the configuration failure cause')
+      expect(error.cause.cause).toBe(nativeFailure)
+      expect(nativeFailure.cause).toBe(cause)
+      expect(calls).toEqual([
+        ['model', 'target-model'],
+        ['model', 'old-model'],
+      ])
+      expect(promptCount.value).toBe(0)
+      expect(ledger.records).toEqual([])
+    } finally {
+      await adapter.close()
+    }
   })
 })

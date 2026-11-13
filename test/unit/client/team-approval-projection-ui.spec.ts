@@ -41,7 +41,7 @@ vi.mock('react', () => ({
 
 import { AcpTeamApprovals } from '../../../src/client/ui/AcpTeamApprovals.ts'
 import type { AcpApprovalChildView } from '../../../src/client/data/acp-remote.ts'
-import type { TeamProjection } from '@deepseek-ai/dsh-experimental-agent-team/client'
+import type { TeamProjection } from '@deepseek-ai/dsh-agent-team/client'
 import type { SessionStatusSnapshot } from '@deepseek-ai/dsh-client-ui-session/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 
@@ -67,15 +67,8 @@ function statusSnapshot(entries: readonly (readonly [string, ReturnType<typeof p
     ]),
   ) as never
 }
-function projection(
-  members: readonly { id: string; name: string; role: 'lead' | 'teammate'; phase: 'active' }[],
-  failure?: string,
-): TeamProjection {
-  return {
-    members: members.map((member) => ({ ...member, id: sid(member.id) })),
-    tasks: [],
-    ...(failure === undefined ? {} : { failure }),
-  }
+function projection(failure?: string): TeamProjection {
+  return { enabled: true, tasks: [], ...(failure === undefined ? {} : { failure }) }
 }
 function textContent(node: unknown): string[] {
   if (typeof node === 'string') return [node]
@@ -210,14 +203,8 @@ it('does not show another Team’s pending request on an ordinary ACP session wi
   expect(tree).toBeNull()
 })
 
-it('does not treat a stale Team roster as runtime child ownership', () => {
-  const team = projection(
-    [
-      { id: 'lead', name: 'Lead', role: 'lead', phase: 'active' },
-      { id: 'member', name: 'Member', role: 'teammate', phase: 'active' },
-    ],
-    'invalid persisted team record',
-  )
+it('does not treat a Team selection as runtime child ownership', () => {
+  const team = projection('invalid persisted team record')
   const tree = renderApprovals(team, statusSnapshot([['member', pending('member')]]))
   const content = textContent(tree)
   expect(tree).toBeNull()
@@ -226,10 +213,7 @@ it('does not treat a stale Team roster as runtime child ownership', () => {
 })
 
 it('does not use unrelated pending requests to surface a failed Team projection', () => {
-  const team = projection(
-    [{ id: 'lead', name: 'Lead', role: 'lead', phase: 'active' }],
-    'invalid persisted team record',
-  )
+  const team = projection('invalid persisted team record')
   const tree = renderApprovals(team, statusSnapshot([['other-team-member', pending('other-team-member')]]))
   expect(tree).toBeNull()
 })

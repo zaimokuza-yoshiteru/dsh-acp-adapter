@@ -1,5 +1,5 @@
 import type {} from '@deepseek-ai/dsh-schedule'
-import type {} from '@deepseek-ai/dsh-experimental-agent-team'
+import type {} from '@deepseek-ai/dsh-agent-team'
 import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import type { ToolExecutionToken } from '@deepseek-ai/dsh-tools'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -107,15 +107,16 @@ it('discovers and calls all four native Schedule tools through the ACP session M
 
     const lead = required(host.ctx.agents.get(sessionId))
     expect(TOOLS.every((name) => host.ctx.tools.get(name, lead) !== undefined)).toBe(true)
-    const member = await host.ctx.agentTeams.spawnTeammate(lead, {
+    const member = await host.ctx.subagents.startActivation({
+      parent: lead,
+      delivery: 'caller',
       name: 'schedule-scope-check',
-      description: 'Schedule tool scope regression',
+      label: 'Schedule tool scope regression',
       prompt: [{ type: 'text', text: 'Check your tool list, then finish.' }],
-      context: 'fresh',
       provider: 'spawn',
       signal: new AbortController().signal,
     })
-    const teammate = required(host.ctx.agents.get(member.member.id))
+    const teammate = required(host.ctx.agents.get(member.childId))
     // The default preset mounts the tools for every Agent; native execution
     // refuses delegated callers before reading or mutating the Schedule store.
     const beforeRefusedCalls = await host.ctx.schedule.catalog()

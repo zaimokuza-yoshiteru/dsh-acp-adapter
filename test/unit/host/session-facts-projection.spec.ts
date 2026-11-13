@@ -190,6 +190,59 @@ describe('ACP execution SessionProjection integration', () => {
     expect(facts.openSteps).toEqual([])
   })
 
+  it('reads one final committed batch through the ACP facade and its turn observer', async () => {
+    const ctx = await harness()
+    const session = ctx.sessions.create(SessionId('facts-batch'))
+    const view = acpSessionView(ctx, session)!
+    const current = { id: session.id, session, status: 'running', cancel: vi.fn() }
+    ctx.provide('agents', { get: (id: string) => (id === session.id ? current : undefined) } as never)
+    const notice = createUserMessage({
+      source: { kind: 'runtime-context' } as never,
+      content: [{ type: 'text', text: 'Mode: read-only.' }],
+    })
+    const read = () => ({
+      seq: view.seq,
+      turnOpen: view.facts.turnOpen,
+      openSteps: view.facts.openSteps.length,
+      contexts: view.currentModelContextSnapshots!(),
+    })
+    const observed: ReturnType<typeof read>[] = []
+    const starts: ReturnType<typeof read>[] = []
+    ctx.on('session/event', (owner, event) => {
+      if (owner === session && event.type === 'step/start') starts.push(read())
+    })
+    const stop = view.watchTurnEnd!(() => {
+      observed.push(read())
+    })
+    const base = session.seq
+    const events = session.append([
+      ['turn/start', { turn: 1 }],
+      ['step/start', { turn: 1, step: 1 }],
+      ['user/message', notice, { surfaceOp: 'append' }],
+      ['step/end', { turn: 1, step: 1 }],
+      ['turn/end', { turn: 1, reason: { kind: 'completed' } }],
+    ])
+    expect(events.map((event) => event.seq)).toEqual([base, base + 1, base + 2, base + 3, base + 4])
+    expect(observed).toEqual([
+      {
+        seq: base + 5,
+        turnOpen: false,
+        openSteps: 0,
+        contexts: [expect.objectContaining({ source: 'runtime-context', text: 'Mode: read-only.' })],
+      },
+    ])
+    // Even the first step callback sees the future-in-this-batch message and closed step.
+    expect(starts).toEqual(observed)
+    expect(view.facts).toMatchObject({ turnOpen: false, hasSemanticHistory: true, openSteps: [] })
+    expect(view.captureRemoteCancelledTurn!({ turn: 1, step: 1, startSeq: base + 1 })).toBeUndefined()
+    expect(current.cancel).not.toHaveBeenCalled()
+    stop()
+    // The adapter retains its single-record append facade for its own facts.
+    view.append!('turn/start', { turn: 2 })
+    expect(view.seq).toBe(base + 6)
+    expect(view.facts).toMatchObject({ turnOpen: true, priorSemanticHistory: true })
+  })
+
   it('projects current DSH snapshots from the effective surface without older history', async () => {
     const ctx = await harness()
     const session = ctx.sessions.create(SessionId('facts-model-context'))

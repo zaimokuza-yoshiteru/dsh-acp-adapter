@@ -1,3 +1,4 @@
+import { isDirectChild, treeRoots } from './subagent-tree.ts'
 /** Published Loader + real ACP subprocess + native browser UI; no model credentials. */
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
@@ -152,7 +153,7 @@ async function fixture(parentKind: 'native' | 'acp' = 'native', locale: 'en' | '
     const ready = host.whenTurnSettled(30_000)
     await page.getByRole('button', { name: locale === 'zh' ? '发送消息' : 'Send message', exact: true }).click()
     const parent = required(host.ctx.agents.get(await ready))
-    expect(host.ctx.get('agentTeams', false)).toBeUndefined()
+    expect(host.ctx.agentTeams.isEnabled(parent)).toBe(false)
     const url = page.url()
     const marker = (key: string) => join(required(parent.session.header.cwd), parentPermissionMarker(key))
     const effects = (key: string): { key: string; sessionId: string; optionId: string }[] =>
@@ -164,22 +165,24 @@ async function fixture(parentKind: 'native' | 'acp' = 'native', locale: 'en' | '
             .map((line) => JSON.parse(line))
         : []
     const spawn = async (key: string, owner = parent, native = false) => {
+      const name = native ? 'review-parent' : `permission-${key}`
       const activation = await host.ctx.subagents.startActivation({
         provider: 'spawn',
+        name,
         label: native ? 'Nested direct parent' : `Permission worker ${key}`,
         delivery: 'caller',
-        request: {
-          parent: owner,
-          prompt: [{ type: 'text', text: native ? 'E2E_HOLD_NATIVE_MIDDLE' : `E2E_PARENT_PERMISSION_OPTIONS:${key}` }],
-          agentOptions: {
-            provider: native ? 'parent-native' : 'acp-parent-options',
-            model: native ? 'fixture' : 'mock-model-a',
-          },
+        parent: owner,
+        prompt: [{ type: 'text', text: native ? 'E2E_HOLD_NATIVE_MIDDLE' : `E2E_PARENT_PERMISSION_OPTIONS:${key}` }],
+        agentOptions: {
+          provider: native ? 'parent-native' : 'acp-parent-options',
+          model: native ? 'fixture' : 'mock-model-a',
         },
         signal: new AbortController().signal,
       })
       activations.push(activation)
       const child = required(host.ctx.agents.get(activation.childId))
+      const parentName = host.ctx.subagents.namesOf(owner).self
+      expect(host.ctx.subagents.namesOf(child).self).toBe(parentName === 'lead' ? name : `${parentName}/${name}`)
       children.push(child)
       return { activation, child }
     }
@@ -284,8 +287,11 @@ async function assertChoices(
   for (const option of PARENT_PERMISSION_OPTIONS)
     expect(await card.getByRole('radio', { name: option.name, exact: true }).count()).toBe(1)
   const source = await card.locator('[data-question-source]').innerText()
+  expect(world.ctx.subagents.rootOf(child)).toBe(world.parent)
+  const childName = required(world.ctx.subagents.namesOf(child).self.split('/').at(-1))
+  expect(childName).toBe(`permission-${key}`)
   expect(source).toContain(child.id.slice(0, 8))
-  expect(source).toContain(`Permission worker ${key}`)
+  expect(source).toContain(`${childName} · ${child.id.slice(0, 8)}`)
   expect(await card.locator('[data-question-operation]').innerText()).toContain(expectedOperation)
   expect(world.effects(key)).toEqual([])
   expect(world.ctx.approval.overrideOf(child.session)).toBe('never')
@@ -748,10 +754,10 @@ it('presents a nested child at the true root while retaining its direct parent a
   const world = await fixture()
   try {
     const middle = await world.spawn('middle', world.parent, true)
-    expect(world.ctx.agents.isOwnedBy(middle.child.id, world.parent)).toBe(true)
+    expect(isDirectChild(world.ctx, middle.child.id, world.parent)).toBe(true)
     const leaf = await world.spawn('nested', middle.child)
-    expect(world.ctx.agents.isOwnedBy(leaf.child.id, middle.child)).toBe(true)
-    expect(world.ctx.agents.roots()).not.toContain(middle.child)
+    expect(isDirectChild(world.ctx, leaf.child.id, middle.child)).toBe(true)
+    expect(treeRoots(world.ctx)).not.toContain(middle.child)
     if (before) {
       await assertOldBoundary(world, leaf.activation, 'nested')
       await world.save('nested-baseline')
@@ -759,8 +765,11 @@ it('presents a nested child at the true root while retaining its direct parent a
     }
     const card = await assertChoices(world, 'nested', leaf.child)
     const source = await card.locator('[data-question-source]').innerText()
+    expect(world.ctx.subagents.namesOf(middle.child).self).toBe('review-parent')
+    expect(world.ctx.subagents.namesOf(leaf.child).self).toBe('review-parent/permission-nested')
     expect(source).toContain(middle.child.id.slice(0, 8))
-    expect(source).toContain('Nested direct parent')
+    expect(source).toContain(`review-parent · ${middle.child.id.slice(0, 8)}`)
+    expect(source.indexOf('review-parent')).toBeLessThan(source.indexOf(' → permission-nested'))
     expect(
       world.questions
         .filter((entry) => JSON.stringify(entry.questions).includes('External ACP marker nested'))

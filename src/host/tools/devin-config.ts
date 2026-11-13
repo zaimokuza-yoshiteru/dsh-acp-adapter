@@ -9,7 +9,9 @@ import { setTimeout as delay } from 'node:timers/promises'
 import type { AcpSubprocessHandle, SubprocessSeam } from '../../runtime/process/subprocess.ts'
 import { stopSubprocess } from '../../runtime/process/cleanup.ts'
 import { finished } from 'node:stream/promises'
+import { HarnessError } from '@deepseek-ai/dsh-llm'
 import type { AcpMcpLease } from '../../runtime/session/mcp-lease.ts'
+import { isSubprocessLaunchFailure } from '../../runtime/process/subprocess.ts'
 
 const DEVIN_MCP_NAME = 'dsh'
 
@@ -90,10 +92,27 @@ export async function prepareDevinMcp({
       }
       const index = args.lastIndexOf('acp')
       const prefix = index < 0 ? [...args] : args.slice(0, index)
-      const cli = async (parameters: string[]) => {
+      const cli = async (parameters: ['get' | 'add', ...string[]]) => {
+        type Failure = 'timeout' | 'cancelled' | 'output-limit' | 'spawn' | 'exit' | 'io'
+        let failure: Failure | undefined
+        const fail = (kind: Failure) => {
+          failure ??= kind
+        }
+        const started = Date.now()
         const abort = new AbortController()
-        const timer = setTimeout(() => abort.abort(), 10_000)
-        let handle: AcpSubprocessHandle
+        const timer = setTimeout(() => {
+          fail('timeout')
+          abort.abort()
+        }, 10_000)
+        const cancelled = () => fail('cancelled')
+        lease.signal.addEventListener('abort', cancelled, { once: true })
+        if (lease.signal.aborted) cancelled()
+        let handle: AcpSubprocessHandle | undefined
+        let outcome: { exitCode: number | null; signal: string | null } | undefined
+        let stdout = '',
+          stderr = '',
+          stdoutBytes = 0,
+          stderrBytes = 0
         try {
           handle = subprocess.spawn({
             argv: [command, ...prefix, 'mcp', ...parameters],
@@ -102,40 +121,76 @@ export async function prepareDevinMcp({
             graceMs: 500,
             signal: AbortSignal.any([abort.signal, lease.signal]),
           })
-        } catch {
-          clearTimeout(timer)
-          throw new Error('Cannot launch Devin MCP registration command')
-        }
-        let stdout = '',
-          stderr = ''
-        const collect = (chunk: Buffer, target: 'out' | 'err') => {
-          if (stdout.length + stderr.length > 1024 * 1024) {
-            abort.abort()
-            return
+          const collect = (chunk: Buffer, target: 'out' | 'err') => {
+            if (target === 'out') stdoutBytes += chunk.length
+            else stderrBytes += chunk.length
+            if (stdoutBytes + stderrBytes > 1024 * 1024) {
+              fail('output-limit')
+              abort.abort()
+              return
+            }
+            if (target === 'out') stdout += chunk.toString()
+            else stderr += chunk.toString()
           }
-          if (target === 'out') stdout += chunk.toString()
-          else stderr += chunk.toString()
-        }
-        handle.stdout?.on('data', (chunk) => collect(chunk, 'out'))
-        handle.stderr?.on('data', (chunk) => collect(chunk, 'err'))
-        try {
+          handle.stdout?.on('data', (chunk) => collect(chunk, 'out'))
+          handle.stderr?.on('data', (chunk) => collect(chunk, 'err'))
           handle.stdin?.end()
           const [result] = await Promise.all([
-            handle.done,
+            handle.done.then((result) => {
+              outcome = result
+              return result
+            }),
             ...[handle.stdout, handle.stderr]
               .filter((stream) => stream !== undefined)
               .map((stream) => finished(stream)),
           ])
-          if (result.exitCode === 0 && !abort.signal.aborted) return { stdout }
-          if (parameters[0] === 'get' && result.exitCode === 1 && stderr.includes("Server 'dsh' not found"))
+          if (failure === undefined && result.exitCode === 0) return { stdout }
+          if (
+            failure === undefined &&
+            parameters[0] === 'get' &&
+            result.exitCode === 1 &&
+            stderr.includes("Server 'dsh' not found")
+          )
             return undefined
+          fail('exit')
           throw new Error('command failed')
-        } catch {
-          // Never surface third-party argv/stdout/stderr: they may contain credentials.
-          throw new Error(`Devin MCP ${parameters[0]} failed; check the Devin executable and native config permissions`)
+        } catch (error) {
+          fail(handle === undefined || isSubprocessLaunchFailure(error) ? 'spawn' : 'io')
+          const kind = failure!
+          const elapsedMs = Math.max(0, Date.now() - started)
+          const exitCode = Number.isSafeInteger(outcome?.exitCode) ? outcome!.exitCode : null
+          const signal =
+            outcome?.signal == null
+              ? null
+              : ['SIGTERM', 'SIGKILL', 'SIGINT', 'SIGABRT', 'SIGHUP', 'SIGQUIT', 'SIGPIPE'].includes(outcome.signal)
+                ? outcome.signal
+                : 'other'
+          // Only our classifications and numeric observations cross the public boundary.
+          // Third-party errors, argv, output and abort reasons can contain credentials.
+          const facts = Object.freeze({
+            operation: parameters[0],
+            kind,
+            elapsedMs,
+            exitCode,
+            signal,
+            stdoutBytes,
+            stderrBytes,
+          })
+          const message =
+            kind === 'timeout'
+              ? "Preparing Devin's tool connection timed out; check that Devin CLI responds before sending your message again."
+              : kind === 'cancelled'
+                ? "Preparing Devin's tool connection was cancelled; send your message again when the session is ready."
+                : kind === 'spawn'
+                  ? 'Devin CLI could not start; check its executable path and permissions in ACP settings.'
+                  : kind === 'output-limit'
+                    ? 'Devin CLI returned too much output while preparing tools; check the CLI command in ACP settings.'
+                    : "Devin's tool connection could not be prepared; check that Devin CLI runs correctly and can read its configuration."
+          throw new HarnessError(message, `ACP_DEVIN_MCP_${kind.replace('-', '_').toUpperCase()}`, { cause: facts })
         } finally {
           clearTimeout(timer)
-          await stopSubprocess(handle, { eofGraceMs: 100, exitWaitMs: 1500 })
+          lease.signal.removeEventListener('abort', cancelled)
+          if (handle !== undefined) await stopSubprocess(handle, { eofGraceMs: 100, exitWaitMs: 1500 })
         }
       }
       const current = await cli(['get', DEVIN_MCP_NAME])

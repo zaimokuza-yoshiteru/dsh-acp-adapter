@@ -123,10 +123,11 @@ describe('real Cordis ACP composition settings lifecycle', () => {
       ctx.provide('sessionController', { resolveAgent })
       const childId = SessionId('evicted-policy-member')
       let rosterPresent = true
-      ctx.provide('agentTeams', {
-        tryMembership: (candidate: object) =>
-          candidate === lead ? { id: 'evicted-policy-team', role: 'lead', root: lead } : undefined,
-        listMembers: () => [{ id: childId, role: 'teammate', status: rosterPresent ? 'inactive' : 'failed' }],
+      ctx.provide('subagents', {
+        rootOf: (candidate: object) => (candidate === lead ? lead : undefined),
+        namesOf: () => ({ self: 'lead' }),
+        listDescendants: async () =>
+          rosterPresent ? [{ kind: 'child', id: childId, parentId: lead.id, mode: 'continuable' }] : [],
       })
       const fiber = ctx.plugin({
         name: 'composition-cold-policy-test',
@@ -295,7 +296,9 @@ describe('real Cordis ACP composition settings lifecycle', () => {
     const liveSessions = new Map<
       string,
       {
-        header: { origin?: string; parentSession?: string }
+        id?: string
+        isOwnSeq?: (seq: number) => boolean
+        header: { id?: string; origin?: string; parentSession?: string }
         facts: unknown
         permissions: unknown
         requestHeader?: () => { config: { provider: string } }
@@ -308,7 +311,15 @@ describe('real Cordis ACP composition settings lifecycle', () => {
     >()
     const memberships = new Map<object, { id: string; role: 'lead' | 'teammate'; root: object }>()
     const agentResolutionCalls: string[] = []
-    ctx.provide('agents', { get: (id: string) => liveAgents.get(id), list: () => [...liveAgents.values()] })
+    ctx.provide('agents', {
+      get: (id: string) => {
+        const agent = liveAgents.get(id)
+        if (agent !== undefined && !Object.hasOwn(agent, 'session'))
+          Object.defineProperty(agent, 'session', { get: () => liveSessions.get(id) })
+        return agent
+      },
+      list: () => [...liveAgents.values()],
+    })
     ctx.provide('sessionController', {
       resolveAgent: async (id: string) => {
         agentResolutionCalls.push(id)
@@ -318,15 +329,32 @@ describe('real Cordis ACP composition settings lifecycle', () => {
       },
     })
     let rosterFailure: Error | undefined
-    ctx.provide('agentTeams', {
-      tryMembership: (agent: object) => memberships.get(agent),
-      listMembers: (lead: object) => {
+    ctx.provide('subagents', {
+      rootOf: (agent: object) => memberships.get(agent)?.root ?? agent,
+      namesOf: (agent: { id: string }) => ({ self: agent.id }),
+      listDescendants: async (rootId: string) => {
         if (rosterFailure !== undefined) throw rosterFailure
         return [...memberships.entries()]
-          .filter(([, membership]) => membership.role === 'teammate' && membership.root === lead)
-          .map(([agent]) => ({ id: (agent as { id: string }).id, role: 'teammate' as const }))
+          .filter(([, membership]) => membership.role === 'teammate' && membership.root === liveAgents.get(rootId))
+          .map(([agent]) => ({
+            kind: 'child',
+            id: (agent as { id: string }).id,
+            parentId: rootId,
+            mode: 'continuable',
+          }))
       },
     })
+    const nativeSnapshot = ctx.sessionProjections.snapshot.bind(ctx.sessionProjections)
+    vi.spyOn(ctx.sessionProjections, 'snapshot').mockImplementation(((session: any, keys?: any) =>
+      session.facts === undefined
+        ? nativeSnapshot(session, keys)
+        : {
+            values: {
+              subagent:
+                session.header.origin === 'subagent' ? { seq: 0, mode: 'continuable', label: session.id } : null,
+              acpExecution: { externalSubagent: false },
+            },
+          }) as never)
     // Use the actual host subprocess seam shape.  The health service and the
     // ACP probe must share this seam; otherwise a successful probe can still
     // be reported as executable=false/version=null by the Remote constructor.
@@ -465,7 +493,9 @@ describe('real Cordis ACP composition settings lifecycle', () => {
     // session ownership, and live Team membership (not a bridge callback stub).
     const addSession = (id: string, parentSession?: string): void => {
       liveSessions.set(id, {
-        header: { ...(parentSession === undefined ? { origin: 'native' } : { parentSession }) },
+        id,
+        isOwnSeq: () => true,
+        header: { id, ...(parentSession === undefined ? { origin: 'native' } : { parentSession }) },
         facts: {},
         permissions: {},
         requestHeader: () => ({ config: { provider: 'acp-codex' } }),
@@ -500,7 +530,9 @@ describe('real Cordis ACP composition settings lifecycle', () => {
     }
     liveAgents.set(teammate.id, teammate)
     liveSessions.set(teammate.id, {
-      header: { origin: 'subagent', parentSession: lead.id },
+      id: teammate.id,
+      isOwnSeq: () => true,
+      header: { id: teammate.id, origin: 'subagent', parentSession: lead.id },
       facts: {},
       permissions: {},
       requestHeader: () => ({ config: { provider: 'acp-codex' } }),

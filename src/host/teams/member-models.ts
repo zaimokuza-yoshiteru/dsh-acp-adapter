@@ -6,7 +6,7 @@ import type { AcpProfileAdapter } from '../composition/profile-adapter.ts'
 import { normalizeAcpConfigOptionKey } from '../../contract/config-options.ts'
 import { ACP_CURRENT_CONFIG_MODEL_ID, acpDeclaredModelRoute } from '../../contract/model-selection.ts'
 import { readMemberRequestModel } from './member-model-facts.ts'
-import { installTeamMemberModelFacts } from './member-model-tools.ts'
+import { localSubagentIdentity } from '../subagent/tree.ts'
 import { requiresAcpModelSwitchExit } from '../../contract/model-transition.ts'
 import { LlmError } from '@deepseek-ai/dsh-llm'
 
@@ -106,8 +106,8 @@ export function createMemberModels(ctx: Context, { sidecar, adapterFor }: Member
   // retarget an assembling step from system-prompt/assemble or agent/request.
   ctx.on('agent/created', async ({ agent, signal }) => {
     const provider = agent.model.current()?.provider
-    const membership = ctx.get('agentTeams')?.tryMembership(agent)
-    if (membership?.role !== 'teammate' || provider === undefined || adapterFor(provider) === undefined) return
+    if (localSubagentIdentity(ctx, agent) === undefined || provider === undefined || adapterFor(provider) === undefined)
+      return
     const selected = agent.model.current()
     const selectedSeq = agent.session.seq
     const owns = () => active && !signal?.aborted && ctx.get('agents', false)?.get(agent.id) === agent
@@ -167,21 +167,6 @@ export function createMemberModels(ctx: Context, { sidecar, adapterFor }: Member
       ...(cut.lastUsed?.provider === provider ? { unavailableReason: 'model-switch' as const } : {}),
     }
   }
-  installTeamMemberModelFacts(ctx, async (id, signal) => {
-    const binding = await sidecar.readLatestBinding(id as never)
-    if (binding?.status !== 'ok') return undefined
-    const adapter = adapterFor(binding.binding.provider)
-    if (adapter === undefined) return undefined
-    const model = await readMemberRequestModel(ctx, id, binding.binding.provider, signal)
-    const current = await sidecar.readLatestBinding(id as never)
-    if (
-      current?.status !== 'ok' ||
-      modeIntentBindingKey(current.binding) !== modeIntentBindingKey(binding.binding) ||
-      adapterFor(binding.binding.provider) !== adapter
-    )
-      return undefined
-    return model === undefined ? undefined : { currentModel: model }
-  })
 
   return {
     facts,
@@ -201,10 +186,11 @@ export function createMemberModels(ctx: Context, { sidecar, adapterFor }: Member
       const live = liveCut(id)
       const cut = live ?? observed
       if (requiresAcpModelSwitchExit(cut.lastUsed, { provider, model }, (route) => adapterFor(route) !== undefined))
-        throw new LlmError(
-          'This ACP member cannot change models after its first request. Keep its current model or create an independent session.',
-          'ACP_MODEL_SWITCH_UNAVAILABLE',
-        )
+        throw LlmError.fromFailure({
+          message:
+            'This ACP member cannot change models after its first request. Keep its current model or create an independent session.',
+          code: 'ACP_MODEL_SWITCH_UNAVAILABLE',
+        })
       if (
         (observed.session !== undefined && observed.session !== live?.session) ||
         cut.sessionSeq !== observed.sessionSeq ||
@@ -218,12 +204,21 @@ export function createMemberModels(ctx: Context, { sidecar, adapterFor }: Member
         sessionSeq: cut.sessionSeq,
         nativeSelectionKey: cut.nativeSelectionKey,
       }
+      const admittedAgent = ctx.get('agents', false)?.get(id as never)
       await sidecar.writeMemberModelSelection(id as never, saved)
       // The host projection can advertise next-request intent for a live
       // member. Dormant members receive the same selection through hydration.
       const child = ctx.get('agents', false)?.get(id as never)
+      const current = liveCut(id)
+      if (
+        !active ||
+        child !== admittedAgent ||
+        current?.session !== cut.session ||
+        (current !== undefined &&
+          (current.sessionSeq !== saved.sessionSeq || current.nativeSelectionKey !== saved.nativeSelectionKey))
+      )
+        throw new Error('ACP_TEAM_MODEL_SELECTION_CHANGED')
       if (child !== undefined) {
-        if (child.session.seq !== saved.sessionSeq) throw new Error('ACP_TEAM_MODEL_SELECTION_CHANGED')
         child.model.select({ provider, model })
         await consume(child, saved)
       }

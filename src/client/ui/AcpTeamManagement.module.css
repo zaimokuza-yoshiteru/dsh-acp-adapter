@@ -1,53 +1,31 @@
-.root {
-  display: inline-flex;
-  position: relative;
-}
-.trigger {
-  width: 28px;
-  height: 28px;
-  padding: 4px;
-  color: var(--dsw-alias-label-secondary);
-}
-.panel {
+.entry {
   display: flex;
-  flex-direction: column;
-  position: fixed;
-  z-index: 110;
-  box-sizing: border-box;
-  width: min(560px, var(--dsh-anchored-max-width, calc(100vw - 32px)));
-  max-height: min(680px, calc(100dvh - 120px), var(--dsh-anchored-max-height, 100dvh));
-  padding: 10px;
-  overflow: hidden;
-  color: var(--dsw-alias-label-primary);
-  --dsw-elevation-stroke-color: var(--dsw-alias-border-l1);
-  box-shadow: var(--dsw-elevation-prominent);
-  --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);
-  --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);
+  padding: 8px 7px;
 }
-.body {
-  flex: 1 1 auto;
+.entry button {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.dialog {
+  width: min(600px, 100%);
+  max-height: 100%;
+}
+.content {
   min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
 }
-.toolbar,
+.footer {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
 .memberHeader,
 .groupHeader {
   display: flex;
   align-items: center;
   gap: 8px;
-}
-.toolbar {
-  flex: none;
-  margin-bottom: 10px;
-  min-height: 28px;
-}
-.toolbar strong {
-  flex: 1;
-}
-.iconButton {
-  width: 26px;
-  height: 26px;
-  padding: 4px;
 }
 .roster {
   display: grid;
@@ -56,10 +34,7 @@
 }
 .member {
   display: grid;
-  grid-template-rows: subgrid;
-  grid-row: span 4;
   min-width: 0;
-  min-height: 220px;
   box-sizing: border-box;
   padding: 14px 12px;
   border: 0.5px solid var(--dsw-alias-border-l1);
@@ -68,7 +43,6 @@
 }
 .memberHeader {
   flex-wrap: wrap;
-  grid-row: 1;
 }
 .memberName {
   padding: 0;
@@ -97,33 +71,8 @@
   overflow-wrap: anywhere;
   margin: 6px 0;
 }
-.memberSummary {
-  grid-row: 2;
-  min-width: 0;
-}
-.memberDescription {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
-  overflow: hidden;
-  min-height: 48px;
-  color: var(--dsw-alias-label-secondary);
-  font-size: 12px;
-  line-height: 16px;
-  overflow-wrap: anywhere;
-  margin: 0 0 8px;
-}
-.memberError {
-  margin: 0;
-  color: var(--dsw-alias-state-error-primary);
-  font-size: 13px;
-  line-height: 18px;
-  overflow-wrap: anywhere;
-}
 .settings {
   display: grid;
-  grid-template-rows: subgrid;
-  grid-row: 3 / span 2;
   gap: 0;
 }
 .settingRow {
@@ -164,15 +113,13 @@
 .settingNotice,
 .groupNotice {
   box-sizing: border-box;
-  height: 18px;
   min-height: 18px;
   width: 100%;
   color: var(--dsw-alias-label-secondary);
   font-size: 12px;
   line-height: 18px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .settingNotice {
   text-align: right;

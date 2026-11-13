@@ -17,4 +17,4 @@ If a required release gate fails or publication has an unknown outcome, inspect 
 
 Verify the externally observed version, dist-tag, release URL and artifact identity before reporting completion. Separate published npm state from GitHub Release state and any unresolved test limitation.
 
-The evidence-selection approach adapts DSH [`dsh-pre-push-checks` at RC.1 `66491b0`](https://github.com/deepseek-ai/deepseek-harness/blob/66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db/.agents/skills/dsh-pre-push-checks/SKILL.md); release behavior remains specific to this repository.
+The evidence-selection approach adapts DSH [`dsh-pre-push-checks` at RC.2 `ddac967`](https://github.com/deepseek-ai/deepseek-harness/blob/ddac96760b6edf8fa0fe17cbdcf0b512f4c12b2c/.agents/skills/dsh-pre-push-checks/SKILL.md); release behavior remains specific to this repository.

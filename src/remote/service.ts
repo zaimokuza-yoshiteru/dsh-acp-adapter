@@ -284,9 +284,10 @@ export interface AcpRemoteServiceDeps {
   /** Accept an explicit source only after the native child prefix is verified. */
   nativeFork?: (sessionId: string, sourceSessionId: string, atSeq: number) => Promise<void>
   /** Live runtime ownership; deliberately accepts native as well as ACP parents. */
-  approvalChildren?: (parent: string) => readonly AcpApprovalChildView[]
+  approvalChildren?: (parent: string) => readonly AcpApprovalChildView[] | Promise<readonly AcpApprovalChildView[]>
   teamManagement?: {
-    members(lead: string): Promise<readonly AcpTeamMemberView[]>
+    /** Internal resource ancestry; Remote filters it before exposing each member. */
+    members(lead: string): Promise<readonly (AcpTeamMemberView & { readonly resourcePath: readonly string[] })[]>
     models?(lead: string, member: string): Promise<AcpTeamMemberModelsView>
     selectModel?(lead: string, member: string, model: string): Promise<AcpTeamMemberModelsView>
   }
@@ -952,7 +953,14 @@ export class AcpRemoteService extends TypertRemoteService {
   async teamMembers(lead: string): Promise<readonly AcpTeamMemberView[]> {
     await this.requireOwnedSessionAccess(lead)
     if (this.resolved.teamManagement === undefined) throw badRequest('ACP Teams is unavailable')
-    return await this.resolved.teamManagement.members(lead)
+    return (await this.resolved.teamManagement.members(lead))
+      .filter(
+        (member) =>
+          member.resourcePath[0] === lead &&
+          member.resourcePath.at(-1) === member.sessionId &&
+          member.resourcePath.every((id) => this.callerCanReadSession(id)),
+      )
+      .map(({ resourcePath: _resourcePath, ...member }) => member)
   }
 
   /** Authoritative eligible descendants; no approval is recreated or answered here. */
@@ -962,8 +970,9 @@ export class AcpRemoteService extends TypertRemoteService {
       throw badRequest('Invalid parent session id')
     const read = this.resolved.approvalChildren
     if (read === undefined) throw badRequest('Child approval discovery is unavailable')
-    return read(parent).filter(
+    return (await read(parent)).filter(
       (child) =>
+        this.callerCanReadSession(parent) &&
         child.sessionId !== parent &&
         child.path.length > 0 &&
         child.path.every((entry) => this.callerCanReadSession(entry.sessionId)),
@@ -972,7 +981,9 @@ export class AcpRemoteService extends TypertRemoteService {
 
   @Remote({ resources: { session: (lead, sessionId) => [SessionId(lead), SessionId(sessionId)] } })
   async teamMemberModels(lead: string, sessionId: string): Promise<AcpTeamMemberModelsView> {
-    await this.teamMembers(lead)
+    const members = await this.teamMembers(lead)
+    if (!members.some((member) => member.sessionId === sessionId))
+      throw acpRemoteFailure('user-rejected', 'ACP member access is not authorized')
     await this.requireOwnedSessionAccess(sessionId)
     const management = this.resolved.teamManagement
     if (!management?.models) throw badRequest('Member models are unavailable')
@@ -981,7 +992,9 @@ export class AcpRemoteService extends TypertRemoteService {
 
   @Remote({ resources: { session: (lead, sessionId) => [SessionId(lead), SessionId(sessionId)] } })
   async setTeamMemberModel(lead: string, sessionId: string, model: string): Promise<AcpTeamMemberModelsView> {
-    await this.teamMembers(lead)
+    const members = await this.teamMembers(lead)
+    if (!members.some((member) => member.sessionId === sessionId))
+      throw acpRemoteFailure('user-rejected', 'ACP member access is not authorized')
     await this.requireOwnedSessionAccess(sessionId)
     if (typeof model !== 'string' || !isAcpModelRouteWithinBounds(model)) throw badRequest('Invalid member model')
     const management = this.resolved.teamManagement

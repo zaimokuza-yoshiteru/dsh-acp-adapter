@@ -149,9 +149,17 @@ it('keeps native Creator mode usable through ACP while installing, toggling and 
     const initial = await run({
       label: 'official-skill',
       fixtureAvailable: false,
-      calls: [{ name: 'skill', arguments: { name: 'cordis-plugin-development' } }, { name: 'cordis_inspect_list' }],
+      calls: [{ name: 'skill', arguments: { name: 'dsh-doc' } }, { name: 'cordis_inspect_list' }],
     })
     const initialRemote = initial[0]!.sessionId
+    const skill = initial.find((row) => row.kind === 'call' && row.name === 'skill')?.text
+    const skillDirectory = skill?.match(/Base directory for this skill: ([^\n]+)/)?.[1]
+    if (skillDirectory === undefined) throw new Error('Official skill did not identify its resource directory')
+    await run({
+      label: 'plugin-reference',
+      fixtureAvailable: false,
+      calls: [{ name: 'read', arguments: { file_path: join(skillDirectory, 'references/plugin-development.md') } }],
+    })
     await run({
       label: 'install',
       fixtureAvailable: false,

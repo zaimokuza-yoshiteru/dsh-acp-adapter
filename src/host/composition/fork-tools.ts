@@ -44,7 +44,11 @@ export async function installAcpForkTools(ctx: Context): Promise<void> {
         return
       const state = projection.stateOf(exec.agent.session)
       if (state?.completed === true && state.active)
-        return 'ACP_DELEGATED_FORK_UNAVAILABLE: An ACP child cannot inherit the completed prefix of an active conversation. Use subagent with a complete, self-contained task or select a native child route.'
+        return {
+          reason:
+            'ACP_DELEGATED_FORK_UNAVAILABLE: An ACP child cannot inherit the completed prefix of an active conversation. Use subagent with a complete, self-contained task or select a native child route.',
+          info: { name: 'HarnessError', code: 'ACP_DELEGATED_FORK_UNAVAILABLE' },
+        }
     })
   })
 }

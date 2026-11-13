@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { setTimeout as delay } from 'node:timers/promises'
 import { PassThrough } from 'node:stream'
+import { HarnessError } from '@deepseek-ai/dsh-llm'
 import { afterEach, expect, it, vi } from 'vitest'
 import { prepareDevinMcp } from '../../../src/host/tools/devin-config.ts'
 import type { SubprocessSeam } from '../../../src/runtime/process/subprocess.ts'
@@ -21,6 +22,7 @@ vi.mock('node:fs/promises', async (original) => {
 })
 const roots: string[] = []
 afterEach(async () => {
+  vi.useRealTimers()
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true })
 })
 
@@ -211,4 +213,93 @@ it('waits for another process and recovers its registration lock after a crash',
     child.kill('SIGKILL')
     await closed
   }
+})
+
+it.each(['timeout', 'cancelled', 'exit', 'io', 'spawn', 'provider-spawn', 'output-limit'] as const)(
+  'classifies %s registration failures without disclosing CLI or cancellation contents',
+  async (kind) => {
+    const { options, lease } = await setup()
+    const secret = 'PRIVATE_CLI_TOKEN_ARGV_ENV_AND_ABORT_REASON'
+    const controller = new AbortController()
+    const stdout = new PassThrough(),
+      stderr = new PassThrough(),
+      stdin = new PassThrough()
+    const spawned = Promise.withResolvers<void>()
+    const outcome = Promise.withResolvers<{ exitCode: number | null; signal: string | null }>()
+    const spawn = vi.fn<SubprocessSeam['spawn']>((spec) => {
+      spawned.resolve()
+      if (kind === 'spawn') throw new Error(secret)
+      const finish = () => {
+        if (kind === 'timeout') controller.abort(new Error(secret))
+        stdout.end()
+        stderr.end()
+        outcome.resolve({ exitCode: null, signal: 'SIGTERM' })
+      }
+      spec.signal?.addEventListener('abort', finish, { once: true })
+      return { stdin, stdout, stderr, done: outcome.promise, terminate: finish, waitForExit: async () => true }
+    })
+    vi.useFakeTimers()
+    const pending = prepareDevinMcp({
+      ...options,
+      command: secret,
+      args: [secret, 'acp'],
+      env: { ...options.env, PRIVATE_TOKEN: secret },
+      subprocess: { ...options.subprocess, spawn },
+      lease: { ...lease, signal: controller.signal },
+    }).catch((error: unknown) => error)
+    await spawned.promise
+    if (kind !== 'spawn') {
+      stderr.write(secret)
+      if (kind === 'timeout') await vi.advanceTimersByTimeAsync(10_000)
+      else if (kind === 'cancelled') controller.abort(new Error(secret))
+      else if (kind === 'output-limit') stdout.write(Buffer.alloc(1024 * 1024 + 1, 'x'))
+      else if (kind === 'io') {
+        stdout.destroy(new Error(secret))
+        stderr.end()
+        outcome.resolve({ exitCode: 0, signal: null })
+      } else if (kind === 'provider-spawn') {
+        stdout.end()
+        stderr.end()
+        outcome.reject(Object.assign(new Error(secret), { code: 'ENOENT', syscall: `spawn ${secret}` }))
+      } else {
+        stdout.write(secret)
+        stdout.end()
+        stderr.end()
+        outcome.resolve({ exitCode: 7, signal: secret })
+      }
+    }
+    const error = await pending
+    const expected = kind === 'provider-spawn' ? 'spawn' : kind
+    expect(error).toBeInstanceOf(HarnessError)
+    expect(error).toMatchObject({
+      code: `ACP_DEVIN_MCP_${expected.replace('-', '_').toUpperCase()}`,
+      cause: { operation: 'get', kind: expected, elapsedMs: kind === 'timeout' ? 10_000 : 0 },
+    })
+    if (error instanceof HarnessError) {
+      expect(`${error.stack}\n${JSON.stringify(error)}`).not.toContain(secret)
+      expect(error.message).not.toMatch(/10000|SIGTERM|stderr|elapsedMs|exit 7/)
+      if (kind === 'exit') expect(error.cause).toMatchObject({ exitCode: 7, signal: 'other' })
+      if (kind === 'timeout' || kind === 'cancelled')
+        expect(error.cause).toMatchObject({ exitCode: null, signal: 'SIGTERM' })
+    }
+    expect(spawn).toHaveBeenCalledOnce()
+    expect(lease.close).toHaveBeenCalledOnce()
+    expect(vi.getTimerCount()).toBe(0)
+  },
+)
+
+it('does not accept a missing-entry reply after the lease was cancelled', async () => {
+  const { options, lease } = await setup()
+  const controller = new AbortController()
+  const original = options.subprocess.spawn
+  options.subprocess.spawn = (spec) => {
+    const handle = original(spec)
+    // The CLI's ordinary exit-1 not-found response must not hide cancellation.
+    controller.abort(new Error('PRIVATE_ABORT_REASON'))
+    return handle
+  }
+  await expect(prepareDevinMcp({ ...options, lease: { ...lease, signal: controller.signal } })).rejects.toMatchObject({
+    code: 'ACP_DEVIN_MCP_CANCELLED',
+  })
+  expect(lease.close).toHaveBeenCalledOnce()
 })

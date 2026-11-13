@@ -29,6 +29,8 @@ function binding(provider = 'acp-demo'): AcpBindingData {
 function session(model = 'model-default', requested = true) {
   const value = {
     seq: 0,
+    header: { origin: 'subagent', parentSession: 'lead-1' },
+    isOwnSeq: () => true,
     requestHeader: () => (requested ? { config: { provider: 'acp-demo', model } } : undefined),
     append: vi.fn((_type: string, _data: unknown) => {
       value.seq++
@@ -75,19 +77,14 @@ async function harness(options: HarnessOptions = {}) {
     get: vi.fn((id: string) => (id === agent.id ? live : undefined)),
     list: vi.fn(() => (live === undefined ? [] : [live])),
   }
-  const teams = {
-    tryMembership: vi.fn((_agent: unknown) => ({ role: options.role ?? 'teammate', root: agent, id: agent.id })),
-    listMembers: vi.fn(() => [
-      {
-        id: agent.id,
-        name: 'worker',
-        role: 'teammate',
-        status: 'inactive',
-        model: 'model-default',
-        diagnostics: [],
-      },
+  const subagents = {
+    rootOf: vi.fn((_agent: unknown) => agent),
+    namesOf: vi.fn(() => ({ self: 'worker' })),
+    listDescendants: vi.fn(async () => [
+      { kind: 'child', id: agent.id, parentId: 'lead-1', mode: 'continuable', path: 'worker', label: 'worker' },
     ]),
   }
+  if (options.role === 'lead') Object.assign(memberSession.header, { origin: undefined })
   const llm = {
     listModels: vi.fn(async () => [
       { id: 'model-default', name: 'Default' },
@@ -116,10 +113,14 @@ async function harness(options: HarnessOptions = {}) {
   }
   ctx.provide('llm', llm)
   ctx.provide('agents', agents)
-  ctx.provide('agentTeams', teams)
+  ctx.provide('subagents', subagents as never)
   ctx.provide('sessionProjections', {
     snapshot: () => ({
-      values: { modelSelection: { next: selection, lastUsed: memberSession.requestHeader()?.config } },
+      values: {
+        modelSelection: { next: selection, lastUsed: memberSession.requestHeader()?.config },
+        subagent: { seq: 0, mode: 'continuable', label: 'worker' },
+        acpExecution: { externalSubagent: false },
+      },
     }),
   })
   const models = createMemberModels(ctx, {
@@ -131,7 +132,7 @@ async function harness(options: HarnessOptions = {}) {
     await ctx.serial('agent/created', { agent, source: 'startup' })
   }
   if (options.initialList !== true && options.deferCreation !== true) await announce()
-  return { ctx, agentCtx, agent, memberSession, agents, teams, llm, sidecar, adapter, models, model, announce }
+  return { ctx, agentCtx, agent, memberSession, agents, subagents, llm, sidecar, adapter, models, model, announce }
 }
 
 describe('createMemberModels()', () => {
@@ -142,11 +143,7 @@ describe('createMemberModels()', () => {
     h.agents.get.mockImplementation((id) =>
       id === 'lead-1' ? (lead as never) : id === h.agent.id ? h.agent : undefined,
     )
-    h.teams.tryMembership.mockImplementation((agent: unknown) => ({
-      role: agent === lead ? 'lead' : 'teammate',
-      root: h.agent,
-      id: h.agent.id,
-    }))
+    h.subagents.rootOf.mockImplementation(() => lead as never)
     h.llm.listModels.mockResolvedValue([{ id: 'model-next', name: 'Next' }])
     const management = createTeamManagement(
       h.ctx,
@@ -448,6 +445,29 @@ describe('createMemberModels()', () => {
     expect(memberSession.append).toHaveBeenCalledWith('model/selection', { provider: 'acp-demo', model: 'model-next' })
   })
 
+  it.each(['agent', 'session', 'selection'] as const)(
+    'retains saved intent without applying it after the admitted %s changes at the write await',
+    async (replacement) => {
+      const h = await harness()
+      const replacementSelect = vi.fn()
+      h.sidecar.writeMemberModelSelection.mockImplementationOnce(async () => {
+        if (replacement === 'agent') {
+          const next = { ...h.agent, model: { ...h.agent.model, select: replacementSelect } } as Agent
+          h.agents.get.mockImplementation((id) => (id === h.agent.id ? next : undefined))
+        } else if (replacement === 'session') {
+          Object.assign(h.agent, { session: { ...h.memberSession } })
+        } else h.model.select({ provider: 'acp-demo', model: 'model-newer' })
+      })
+      await expect(h.models.save(h.agent.id, 'acp-demo', 'model-next', () => {})).rejects.toThrow(
+        'ACP_TEAM_MODEL_SELECTION_CHANGED',
+      )
+      expect(h.sidecar.writeMemberModelSelection).toHaveBeenCalledOnce()
+      expect(h.sidecar.clearMemberModelSelection).not.toHaveBeenCalled()
+      expect(replacementSelect).not.toHaveBeenCalled()
+      expect(h.agent.model.current()?.model).toBe(replacement === 'selection' ? 'model-newer' : 'model-default')
+    },
+  )
+
   it('records native pending selection if an admitted save races with the member starting', async () => {
     const h = await harness()
     h.sidecar.writeMemberModelSelection.mockImplementationOnce(async () => {
@@ -472,34 +492,6 @@ describe('createMemberModels()', () => {
     expect(assembled.variables).toEqual({ preserved: 'yes' })
     expect(llm.resolveCallConfig).not.toHaveBeenCalled()
   })
-
-  it.each(['valid', 'outdated', 'rebound'] as const)(
-    'projects only current request facts while the ACP binding stays %s',
-    async (state) => {
-      const { ctx, agent, teams, sidecar } = await harness()
-      agent.session.requestHeader = (() => ({
-        config: { provider: 'acp-demo', model: 'model-used' },
-      })) as typeof agent.session.requestHeader
-      if (state === 'outdated') sidecar.readLatestBinding.mockResolvedValue({ status: 'outdated' })
-      if (state === 'rebound') {
-        sidecar.readLatestBinding
-          .mockResolvedValueOnce({ status: 'ok', binding: binding() })
-          .mockResolvedValueOnce({ status: 'ok', binding: { ...binding(), bindingEpoch: 2 } })
-      }
-      const value = teams.listMembers().map(({ id: _id, name, ...row }) => ({ target: name, ...row }))
-      const decision = await ctx.waterfall(
-        'tools/post-execute',
-        { name: 'list_agents', arguments: {}, agent, signal: new AbortController().signal } as never,
-        { isError: false, value, content: [] } as never,
-        async () => ({ kind: 'accept' as const }),
-      )
-      expect(decision).toEqual(
-        state === 'valid' ? { kind: 'accept', value: [{ ...value[0], model: 'model-used' }] } : { kind: 'accept' },
-      )
-      expect(agent.options.model).toBe('model-default')
-      expect(sidecar.writeMemberModelSelection).not.toHaveBeenCalled()
-    },
-  )
 
   it('holds creation until saved selection resolves and ignores late completion after owner disposal', async () => {
     const current = binding()
@@ -588,9 +580,12 @@ describe('createMemberModels()', () => {
       get: vi.fn((id: string) => (id === 'lead-1' ? lead : id === 'member-1' ? member : undefined)),
       list: vi.fn(() => [lead, member]),
     }
-    const teams = {
-      tryMembership: vi.fn((agent: unknown) => (agent === lead ? { role: 'lead' } : { role: 'teammate' })),
-      listMembers: vi.fn(() => [member]),
+    const subagents = {
+      rootOf: () => lead,
+      namesOf: () => ({ self: 'worker' }),
+      listDescendants: async () => [
+        { kind: 'child', id: member.id, parentId: lead.id, mode: 'continuable', path: 'worker' },
+      ],
     }
     const llm = {
       listModels: vi.fn(async () => [{ id: 'model-next', name: 'Next' }]),
@@ -600,7 +595,16 @@ describe('createMemberModels()', () => {
       })),
     }
     ctx.provide('agents', agents)
-    ctx.provide('agentTeams', teams)
+    ctx.provide('subagents', subagents as never)
+    ctx.provide('sessionProjections', {
+      snapshot: () => ({
+        values: {
+          subagent: { seq: 0, mode: 'continuable' },
+          acpExecution: { externalSubagent: false },
+          modelSelection: { next: null },
+        },
+      }),
+    } as never)
     ctx.provide('llm', llm)
     let bindingReads = 0
     const sidecar = {

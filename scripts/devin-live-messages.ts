@@ -38,7 +38,11 @@ export function devinPeerMessageOf(value: unknown): DevinPeerMessage | undefined
   // These are the exact native Team/adjacent-Agent framing blocks, separate
   // from the sender-authored content used by the test's reply-marker proof.
   if (kind === 'agent-message' && record(first) && first.type === 'text' && typeof first.text === 'string') {
-    if (/^Team message from [^\r\n]+:$/u.test(first.text) || first.text === `Agent ${senderId} sent a message: `)
+    if (
+      /^Team message from [^\r\n]+:$/u.test(first.text) ||
+      /^Agent [a-z][a-z0-9-]*(?:\/[a-z][a-z0-9-]*)* sent a message: $/u.test(first.text) ||
+      first.text === `Agent ${senderId} sent a message: `
+    )
       content = content.slice(1)
   }
   const text = content

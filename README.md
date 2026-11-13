@@ -6,7 +6,7 @@
 
 ## 安装
 
-当前插件版本 [`0.2.2-rc.1.2`](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/tag/v0.2.2-rc.1.2) 兼容 DSH `0.2.2-rc.1`。安装前请确认宿主版本一致。其他版本见 [Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases)。
+已发布版本 [`0.2.2-rc.1.2`](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/tag/v0.2.2-rc.1.2) 兼容 DSH `0.2.2-rc.1`。安装前请确认宿主版本一致。其他版本见 [Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases)。
 
 **推荐：** 在 DSH Creator 模式中发送：
 
@@ -50,7 +50,7 @@ Git 与压缩包安装示例：
 
 > Agent 没有模型目录时，选择 **Agent current configuration** 使用其当前配置。
 >
-> DSH RC.1 已有 ACP 会话暂不支持更换模型。需要换模型时，请新建独立会话；新会话不继承原会话的 Agent 上下文。原会话历史和草稿保留，同模型的推理强度仍可调整。
+> DSH RC.1 / RC.2 已有 ACP 会话暂不支持更换模型。需要换模型时，请新建独立会话；新会话不继承原会话的 Agent 上下文。原会话历史和草稿保留，同模型的推理强度仍可调整。
 
 常用 Agent 的启动与登录方式：
 

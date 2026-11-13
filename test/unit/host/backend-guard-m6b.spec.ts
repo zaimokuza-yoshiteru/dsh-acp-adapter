@@ -2,7 +2,7 @@ import { withSessionFacts } from '../../support/session-facts.ts'
 import { describe, expect, it, vi } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
 import type { LlmCallConfig } from '@deepseek-ai/dsh-llm'
-import { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
+import { HarnessError, LlmError, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { AcpSidecar, AcpBindingLookup } from '../../../src/persistence/sidecar.ts'
 import { installAcpBackendGuard } from '../../../src/host/composition/backend-guard.ts'
@@ -178,7 +178,13 @@ describe('M6b additive ACP backend guard', () => {
       )
       compact(selected)
     }
-    await expect(request()).rejects.toMatchObject({ code: 'ACP_MODEL_SWITCH_UNAVAILABLE' })
+    const error = await request().catch((error: unknown) => error)
+    expect(error).toBeInstanceOf(LlmError)
+    expect(error).toBeInstanceOf(HarnessError)
+    expect(error).toMatchObject({
+      code: 'ACP_MODEL_SWITCH_UNAVAILABLE',
+      failure: { code: 'ACP_MODEL_SWITCH_UNAVAILABLE' },
+    })
     expect(compact).not.toHaveBeenCalled()
     expect(acpSidecar.readLatestBinding).not.toHaveBeenCalled()
     expect(acpSidecar.writeRecoveryState).not.toHaveBeenCalled()

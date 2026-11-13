@@ -1,3 +1,5 @@
+import { openMemberSettings, closeMemberSettings, memberSettingsDialog } from './native-team-ui.ts'
+import { treeMember, treeMembers } from './subagent-tree.ts'
 import type { Locator } from 'playwright'
 import type { AcpRemoteService } from '../../src/remote/service.js'
 import { required } from './required.ts'
@@ -41,7 +43,7 @@ it(
     const memberContinuation = (owner: string) =>
       calls(owner, [
         ['list_agents', {}],
-        ['send_message', { target: 'lead', message: 'E2E_TEAM_REPLY continued' }],
+        ['send_message', { agent: 'lead', message: 'E2E_TEAM_REPLY continued' }],
       ])
     const tasks = new Map<string, ReturnType<typeof host.ctx.agentTeams.listTasks>[number]>()
     const originalTask = (agent: Agent, subject: string) => {
@@ -103,10 +105,10 @@ it(
       })
       await send('E2E_TEAM_START')
       await page.getByText('E2E_TEAM_READY', { exact: true }).waitFor()
-      const lead = required(host.ctx.agents.list().find((a) => host.ctx.agentTeams.tryMembership(a)?.role === 'lead'))
-      const childId = required(host.ctx.agentTeams.listMembers(lead).find((m) => m.role === 'teammate')).id
+      const lead = required(host.ctx.agents.list().find((a) => treeMember(host.ctx, a)?.role === 'lead'))
+      const childId = required((await treeMembers(host.ctx, lead)).find((m) => m.role === 'teammate')).id
       const url = page.url()
-      const panel = page.locator('[data-acp-team-management], [data-acp-team-panel]')
+      const panel = memberSettingsDialog(page)
       const modeMenu = page.getByRole('menu')
       const evidence = join(root, '.local/shared-session-menu')
       mkdirSync(evidence, { recursive: true })
@@ -115,15 +117,15 @@ it(
       }
       // Capture the pre-session/new window before waiting for the child approval
       // gate, which can outlast the mock's deliberate startup delay.
-      await panel.getByRole('button', { name: 'Manage members · 1', exact: true }).click()
+      await openMemberSettings(page)
       const row = panel.locator('[data-acp-managed-member="calculator"]')
-      const managementPanel = page.locator('[data-acp-team-panel]')
+      const managementPanel = memberSettingsDialog(page)
       await row.waitFor()
-      await managementPanel.getByText('Manage members', { exact: true }).click()
+      await panel.getByRole('heading', { name: 'ACP member settings', exact: true }).click()
       await expect.poll(() => managementPanel.count()).toBe(1)
-      await page.locator('[data-composer-input]').first().click()
+      await closeMemberSettings(page)
       await expect.poll(() => managementPanel.count()).toBe(0)
-      await panel.getByRole('button', { name: 'Manage members · 1', exact: true }).click()
+      await openMemberSettings(page)
       await managementPanel.waitFor()
       expect(await row.getByRole('button', { name: 'Choose a model for calculator', exact: true }).isDisabled()).toBe(
         true,
@@ -163,7 +165,7 @@ it(
         () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))),
       )
       await expect.poll(() => page.getByRole('menu').count()).toBe(0)
-      expect(await page.locator('[data-acp-team-panel]').count()).toBe(1)
+      expect(await memberSettingsDialog(page).count()).toBe(1)
       expect(
         await row.getByRole('button', { name: /^(?:Session|会话) ·/ }).evaluate((el) => el === document.activeElement),
       ).toBe(true)
@@ -187,7 +189,7 @@ it(
           .getByRole('button', { name: 'Change modes together', exact: true })
           .evaluate((el) => el === document.activeElement),
       ).toBe(true)
-      await panel.getByRole('button', { name: 'Close member management', exact: true }).click()
+      await closeMemberSettings(page)
       await expect(
         (host.ctx.get('dshAcp') as AcpRemoteService).setTeamMemberMode(lead.id, childId, 'plan'),
       ).rejects.toThrow()
@@ -217,7 +219,7 @@ it(
       ).rejects.toThrow()
       expect(page.url()).toBe(url)
       await page.reload()
-      await panel.getByRole('button', { name: 'Manage members · 1', exact: true }).click()
+      await openMemberSettings(page)
       await row.getByText('Mock Model A', { exact: true }).waitFor()
       const beforeModeNotice = await row.boundingBox()
       expect(required(await row.locator('[data-member-mode-notice]').boundingBox()).height).toBeGreaterThanOrEqual(18)
@@ -231,7 +233,6 @@ it(
         .waitFor()
       expect(await row.boundingBox()).toMatchObject({
         x: beforeModeNotice!.x,
-        y: beforeModeNotice!.y,
         width: beforeModeNotice!.width,
       })
       expect(await row.locator('[data-member-mode-notice]').evaluate((el) => el.scrollHeight <= el.clientHeight)).toBe(
@@ -240,7 +241,7 @@ it(
       const original = await (host.ctx.get('dshAcp') as AcpRemoteService).agentSessionSnapshot(childId)
       expect(original.pendingModeId).toBe('plan')
       expect(await modeMenu.count()).toBe(0)
-      expect(await page.locator('[data-acp-team-panel]').count()).toBe(1)
+      expect(await memberSettingsDialog(page).count()).toBe(1)
       await row.getByRole('button', { name: /^(?:Session|会话) · Plan$/ }).click()
       await modeMenu.screenshot({ path: join(evidence, 'member-settings.png') })
       await enterMode()
@@ -296,26 +297,25 @@ it(
       await row.getByRole('button', { name: /^(?:Session|会话) · Ask$/ }).waitFor()
       expect(await row.boundingBox()).toMatchObject({
         x: beforeModeNotice!.x,
-        y: beforeModeNotice!.y,
         width: beforeModeNotice!.width,
       })
       expect(await row.locator('[data-member-mode-notice]').evaluate((el) => el.scrollHeight <= el.clientHeight)).toBe(
         true,
       )
       await page.reload()
-      await panel.getByRole('button', { name: 'Manage members · 1', exact: true }).click()
+      await openMemberSettings(page)
       await row
         .locator('[data-member-pending-mode]')
         .getByText(/current: Code|当前：Code/)
         .waitFor()
       await row.getByRole('button', { name: /^(?:Session|会话) · Ask$/ }).waitFor()
-      await panel.getByRole('button', { name: 'Close member management', exact: true }).click()
+      await closeMemberSettings(page)
       setupAnswers = installTeamFixtureApprovals(host, {
         root: lead,
         entries: [
           ...calls('lead', [
             ['list_agents', {}],
-            ['send_message', { target: 'calculator', message: 'E2E_TEAM_CONTINUE' }],
+            ['send_message', { agent: 'calculator', message: 'E2E_TEAM_CONTINUE' }],
           ]),
           ...memberContinuation('calculator'),
           ...teamReplySteps(),
@@ -367,13 +367,18 @@ it(
       await lead.whenIdle()
       setupAnswers.finish()
       setupAnswers = undefined
-      await panel.getByRole('button', { name: 'Manage members · 1', exact: true }).click()
+      await openMemberSettings(page)
       await row.getByRole('button', { name: /^(?:Session|会话) · Ask$/ }).waitFor()
       expect(await row.locator('[data-member-pending-mode]').count()).toBe(0)
       if (!retain) await page.setViewportSize({ width: 680, height: 900 })
-      expect(await page.locator('[data-acp-team-panel]').evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true)
+      expect(await memberSettingsDialog(page).evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true)
+      // No child menu owns this key. The catalog behind the Modal must yield
+      // to the foreground dialog instead of consuming its first Escape.
+      expect(await page.getByRole('menu').count()).toBe(0)
+      expect(await page.locator('[data-subagent-panel]:visible').count()).toBe(1)
       await page.keyboard.press('Escape')
-      await expect.poll(() => page.locator('[data-acp-team-panel]').count()).toBe(0)
+      await expect.poll(() => memberSettingsDialog(page).count()).toBe(0)
+      expect(await page.locator('[data-subagent-panel]:visible').count()).toBe(1)
       if (!retain) await page.setViewportSize({ width: 1440, height: 719 })
       await page.getByRole('button', { name: 'New session', exact: true }).last().click()
       // Navigation replaces the old composer asynchronously. Do not type into
@@ -399,21 +404,19 @@ it(
               }),
             ],
             [
-              'spawn_teammate',
+              'subagent',
               {
                 name: 'analyst',
                 description: '整理需求与验收要点',
                 prompt: 'E2E_TEAM_MEMBER calculate 1+1',
-                context: 'fresh',
               },
             ],
             [
-              'spawn_teammate',
+              'subagent',
               {
                 name: 'reviewer',
                 description: '检查实现与审批边界',
                 prompt: 'E2E_TEAM_MEMBER calculate 1+1',
-                context: 'fresh',
               },
             ],
           ]),
@@ -433,7 +436,7 @@ it(
         { timeout: 30000 },
       )
       const demoLead = required(
-        host.ctx.agents.list().find((a) => a.id !== lead.id && host.ctx.agentTeams.tryMembership(a)?.role === 'lead'),
+        host.ctx.agents.list().find((a) => a.id !== lead.id && treeMember(host.ctx, a)?.role === 'lead'),
       )
       setupAnswers.finish()
       setupAnswers = undefined
@@ -455,25 +458,25 @@ it(
         await page.getByText('E2E_RUNNING', { exact: true }).waitFor()
         expect(demoLead.status).toBe('running')
       }
-      await panel.getByRole('button', { name: 'Manage members · 2', exact: true }).click()
+      await openMemberSettings(page)
       await host.ctx.settings.replace('locale', { preference: 'zh' })
-      await panel.getByRole('button', { name: '成员管理 · 2', exact: true }).waitFor()
+      await panel.getByRole('heading', { name: 'ACP 成员设置', exact: true }).waitFor()
       const approvals = page.locator('[data-acp-team-approvals]')
       await approvals.getByText('需要你处理 · 2 个子会话', { exact: true }).waitFor()
       await expect.poll(() => approvals.locator('[data-team-pending-member]').count()).toBe(2)
       // Changing the Lead's policy must not decide either pending child request.
       await (host.ctx.get('dshAcp') as AcpRemoteService).setToolApprovalPolicy(demoLead.id, { policy: 'auto' })
       expect(await approvals.locator('[data-team-pending-member]').count()).toBe(2)
-      const triggerBox = required(await panel.getByRole('button', { name: '成员管理 · 2', exact: true }).boundingBox())
-      expect(triggerBox.y).toBeLessThan(100)
-      expect(triggerBox.x).toBeGreaterThan((await page.evaluate(() => innerWidth)) / 2)
-      const popupBox = required(await page.locator('[data-acp-team-panel]').boundingBox())
+      expect(
+        await page.locator('[data-slot="conversation.session.header.utilities"] [data-acp-team-management]').count(),
+      ).toBe(0)
+      const popupBox = required(await memberSettingsDialog(page).boundingBox())
       expect(popupBox.x).toBeGreaterThanOrEqual(0)
       expect(popupBox.x + popupBox.width).toBeLessThanOrEqual(await page.evaluate(() => innerWidth))
       // Member cards contain only mode controls, with one batch entry for this ACP profile.
       expect(await panel.getByRole('textbox').count()).toBe(0)
       expect(await panel.getByRole('button', { name: '批量调整模式', exact: true }).count()).toBe(1)
-      await panel.getByRole('button', { name: '关闭成员管理', exact: true }).click()
+      await closeMemberSettings(page)
       const allowAll = required(await approvals.getByRole('button', { name: '全部允许', exact: true }).boundingBox())
       const collapse = required(await approvals.getByRole('button', { name: '收起', exact: true }).boundingBox())
       expect(allowAll.x).toBeLessThan(collapse.x)
@@ -490,7 +493,7 @@ it(
       }))
       expect(font).toMatchObject({ size: '15px', line: '24px' })
       expect(font.family).toBe(font.parentFamily)
-      await panel.getByRole('button', { name: '成员管理 · 2', exact: true }).click()
+      await openMemberSettings(page)
       await expect.poll(() => panel.getByRole('button', { name: /^(?:Session|会话) ·/ }).count()).toBe(2)
       expect(errors).toEqual([])
       if (!retain) {
@@ -506,10 +509,10 @@ it(
         const initialReadFailure = vi
           .spyOn(dshAcp, 'teamMembers')
           .mockRejectedValueOnce(new Error('fixture read failure'))
-        const interruptSpy = vi.spyOn(host.ctx.subagents, 'interruptByParent')
+        const interruptSpy = vi.spyOn(host.ctx.subagents, 'interruptByUser')
         const failedLookupCount = initialReadFailure.mock.calls.length
         await interrupt.click()
-        const teamPanel = page.locator('[data-acp-team-panel]')
+        const teamPanel = memberSettingsDialog(page)
         await teamPanel.getByText('无法读取成员状态，未发送中断，请重试。', { exact: true }).waitFor()
         await expect.poll(() => initialReadFailure.mock.calls.length).toBe(failedLookupCount + 1)
         expect(initialReadFailure.mock.calls).toHaveLength(failedLookupCount + 1)
@@ -539,9 +542,9 @@ it(
         await expect.poll(() => membershipReads > 1).toBe(true)
         expect(await teamPanel.getByRole('status').filter({ hasText: '已向 2 个成员发送中断' }).count()).toBe(1)
         expect(await teamPanel.getByRole('alert').filter({ hasText: '无法读取成员状态，请刷新重试。' }).count()).toBe(1)
-        const demoMembers = host.ctx.agentTeams.listMembers(demoLead).filter((m) => m.role === 'teammate')
+        const demoMembers = (await treeMembers(host.ctx, demoLead)).filter((m) => m.role === 'teammate')
         expect(interruptSpy.mock.calls.map((args) => args[0]).sort()).toEqual(demoMembers.map((m) => m.id).sort())
-        expect(interruptSpy.mock.calls.every((args) => args[1] === demoLead.id && args[2] === 'continuable')).toBe(true)
+        expect(interruptSpy.mock.calls.every((args) => args.length === 1)).toBe(true)
         interruptSpy.mockRestore()
         allowMetadataRefresh = true
         await teamPanel.getByRole('button', { name: '刷新', exact: true }).click()
@@ -560,7 +563,7 @@ it(
           (host.ctx.get('dshAcp') as AcpRemoteService).setTeamMemberMode(demoLead.id, demoLead.id, 'plan'),
         ).rejects.toThrow()
         // Interrupt acceptance does not include teardown; join the owners before checking dormant controls.
-        await host.ctx.subagents.waitForChildren(demoLead)
+        await host.ctx.subagents.waitForTreeWork(demoLead)
         expect(
           await Promise.all(
             demoMembers.map(async (m) => {
@@ -602,7 +605,7 @@ it(
         }
         host.ctx.effect(() => host.ctx.llm.registerAdapter(['native-mode-control'], new NativeFixture()))
         await host.ctx.settings.replace('locale', { preference: 'en' })
-        await panel.getByRole('button', { name: 'Close member management', exact: true }).click()
+        await closeMemberSettings(page)
         await page.getByRole('button', { name: 'Stop generating', exact: true }).click()
         await expect.poll(() => demoLead.status).toBe('idle')
         setupAnswers = installTeamFixtureApprovals(host, {
@@ -611,9 +614,7 @@ it(
         })
         const analystId = required(demoMembers.find((member) => member.name === 'analyst')).id
         const analystWakeStart = events.length
-        await host.ctx.agentTeams.sendMessage(demoLead, {
-          target: 'analyst',
-          content: [{ type: 'text', text: 'E2E_TEAM_CONTINUE' }],
+        await host.ctx.subagents.sendMessage(demoLead, analystId, [{ type: 'text', text: 'E2E_TEAM_CONTINUE' }], {
           signal: new AbortController().signal,
         })
         await expect
@@ -676,19 +677,24 @@ it(
         await page.getByText('E2E_NATIVE_MODE_ONLY', { exact: true }).waitFor()
         expect(await panel.count()).toBe(0)
         expect(await page.getByRole('button', { name: /^(?:Session|会话) ·/ }).count()).toBe(0)
-        expect(await page.getByRole('button', { name: 'Agent team', exact: true }).count()).toBeGreaterThan(0)
+        expect(
+          host.ctx.agentTeams.isEnabled(
+            required(host.ctx.agents.list().find((agent) => agent.options.provider === 'native-mode-control')),
+          ),
+        ).toBe(true)
+        expect(await page.locator('[data-acp-team-management]').count()).toBe(0)
       }
       if (retain) {
-        await panel.getByRole('button', { name: '关闭成员管理', exact: true }).click()
+        await closeMemberSettings(page)
         await approvals.getByRole('button', { name: '拒绝', exact: true }).first().click()
-        const demoChild = required(host.ctx.agentTeams.listMembers(demoLead).find((m) => m.name === 'analyst'))
+        const demoChild = required((await treeMembers(host.ctx, demoLead)).find((m) => m.name === 'analyst'))
         await expect
           .poll(
             async () =>
               (await (host.ctx.get('dshAcp') as AcpRemoteService).agentSessionSnapshot(demoChild.id)).freshness,
           )
           .toBe('stale')
-        await panel.getByRole('button', { name: '成员管理 · 2', exact: true }).click()
+        await openMemberSettings(page)
         await panel
           .locator('[data-acp-managed-member="analyst"]')
           .getByRole('button', { name: /^(?:Session|会话) ·/ })

@@ -1,3 +1,5 @@
+import { openMemberSettings, closeMemberSettings, memberSettingsDialog, openNativeMembers } from './native-team-ui.ts'
+import { treeMembers } from './subagent-tree.ts'
 import type { AcpRemoteService } from '../../src/remote/service.js'
 import { required } from './required.ts'
 import type { TestBrowser } from './browser.ts'
@@ -10,7 +12,7 @@ import { launchAdapterWorld, root } from './scaffold.ts'
 import { installTeamFixtureApprovals, teamMemberSetupSteps } from './team-fixture-approval.ts'
 import { acpPermissionAudit } from './acp-permission-audit.ts'
 
-it('keeps long teammate cards and reserved notices aligned in both languages and themes', async () => {
+it('keeps ACP member settings readable in native dialogs, with localized failure and narrow scrolling', async () => {
   let hostToClose: Awaited<ReturnType<typeof launchAdapterWorld>> | undefined
   let browser!: TestBrowser
   let passed = false
@@ -79,8 +81,8 @@ it('keeps long teammate cards and reserved notices aligned in both languages and
         ...names.map(([name, description], index) => ({
           owner: 'lead',
           callId: `team-${index + 2}`,
-          tool: 'spawn_teammate',
-          args: { name, description, prompt: 'E2E_TEAM_MEMBER calculate 1+1', context: 'fresh' },
+          tool: 'subagent',
+          args: { name, description, prompt: 'E2E_TEAM_MEMBER calculate 1+1' },
         })),
         ...names.flatMap(([name]) => teamMemberSetupSteps(name)),
       ],
@@ -105,7 +107,7 @@ it('keeps long teammate cards and reserved notices aligned in both languages and
       ],
     })
     drivers.push(notices)
-    const members = host.ctx.agentTeams.listMembers(lead).filter((m) => m.role === 'teammate')
+    const members = (await treeMembers(host.ctx, lead)).filter((m) => m.role === 'teammate')
     const memberIds = new Set<string>(members.map((member) => member.id))
     const pendingShells = acpPermissionAudit(host, 'asked').filter(
       (entry) => memberIds.has(entry.sessionId) && entry.data.toolCall.toolCallId === 'member-shell',
@@ -116,7 +118,7 @@ it('keeps long teammate cards and reserved notices aligned in both languages and
     await approvals.getByRole('button', { name: 'Reject all', exact: true }).click()
     setStage('wait for teammate sessions to stop')
     // A stale snapshot can precede process teardown; join the owning activations before checking writability.
-    await host.ctx.subagents.waitForChildren(lead)
+    await host.ctx.subagents.waitForTreeWork(lead)
     expect(
       await Promise.all(
         members.map(async (m) => {
@@ -143,30 +145,27 @@ it('keeps long teammate cards and reserved notices aligned in both languages and
         decisionVia: 'native-approval',
       })
     }
-    const panel = page.locator('[data-acp-team-management], [data-acp-team-panel]')
-    setStage('open team management panel')
-    await panel.getByRole('button', { name: 'Manage members · 2', exact: true }).click()
+    const panel = memberSettingsDialog(page)
+    setStage('open ACP settings through native catalog')
+    await openMemberSettings(page)
     const cards = panel.locator('[data-acp-managed-member]')
-    setStage('wait for teammate cards')
     await expect.poll(() => cards.count()).toBe(2)
     await page.getByText('Loading ACP member settings…', { exact: true }).waitFor({ state: 'hidden' })
-    const before = required(await cards.first().boundingBox())
-    const previousCardNames = await cards.evaluateAll((elements) =>
+    const previousNames = await cards.evaluateAll((elements) =>
       elements.map((element) => element.getAttribute('data-acp-managed-member')),
     )
-    // Electron and Chromium can round the two half-pixel borders differently.
-    expect(before.height + 1).toBeGreaterThanOrEqual(220)
-    setStage('configure teammate model and mode')
+    expect(previousNames).toEqual(names.map(([name]) => name))
+    expect(await cards.getByRole('button', { name: /Open .*session/ }).count()).toBe(0)
     const service = host.ctx.get('dshAcp') as AcpRemoteService
     await expect(service.setTeamMemberModel(lead.id, members[0].id, 'mock-model-b')).rejects.toMatchObject({
       code: 'dsh-acp/model-switch-unavailable',
     })
-    expect(await service.teamMemberModels(lead.id, members[0].id)).toMatchObject({
-      currentModel: 'mock-model-a',
-      pendingModel: null,
-      unavailableReason: 'model-switch',
-    })
     await service.setTeamMemberMode(lead.id, members[0].id, 'plan')
+    await panel.getByRole('button', { name: 'Refresh', exact: true }).click()
+    await cards
+      .first()
+      .getByRole('button', { name: /^(?:Session|会话) · Plan$/ })
+      .waitFor()
     const teamMembers = service.teamMembers.bind(service)
     let releaseRefresh!: () => void
     const refreshGate = new Promise<void>((resolve) => {
@@ -178,308 +177,139 @@ it('keeps long teammate cards and reserved notices aligned in both languages and
     })
     await panel.getByRole('button', { name: 'Refresh', exact: true }).click()
     try {
-      const loading = page.getByText('Loading ACP member settings…', { exact: true })
-      await loading.waitFor()
-      expect(await cards.count()).toBe(2)
+      await page.getByText('Loading ACP member settings…', { exact: true }).waitFor()
       expect(
         await cards.evaluateAll((elements) =>
           elements.map((element) => element.getAttribute('data-acp-managed-member')),
         ),
-      ).toEqual(previousCardNames)
+      ).toEqual(previousNames)
     } finally {
       releaseRefresh()
       heldRefresh.mockRestore()
     }
     await page.getByText('Loading ACP member settings…', { exact: true }).waitFor({ state: 'hidden' })
-    await cards
-      .first()
-      .getByRole('button', { name: /^(?:Session|会话) · Plan$/ })
-      .waitFor()
-    expect(await cards.first().boundingBox()).toMatchObject({ x: before.x, y: before.y, width: before.width })
-    const notice = cards.first().locator('[data-member-mode-notice]')
-    expect(await notice.evaluate((el) => getComputedStyle(el).fontSize)).toBe('12px')
-    expect(required(await notice.boundingBox()).height).toBeGreaterThanOrEqual(18)
-    expect(await notice.evaluate((el) => el.scrollHeight <= el.clientHeight)).toBe(true)
-    const modeBoxes = await Promise.all(
-      (await cards.getByRole('button', { name: /^(?:Session|会话) ·/ }).all()).map((b) => b.boundingBox()),
-    )
-    expect(required(modeBoxes[0]).y).toBe(required(modeBoxes[1]).y)
-    const verifyTooltips = async () => {
-      let tooltipIndex = 0
-      for (const button of await cards.getByRole('button', { name: /^(?:Session|会话) ·/ }).all()) {
-        setStage(`verify tooltip ${tooltipIndex} (${localeTheme})`)
-        await button.hover()
-        const tooltip = page.getByRole('tooltip').filter({ hasText: /Configure modes and options|设置当前 Agent 会话/ })
-        await tooltip.waitFor()
-        expect(await tooltip.evaluate((el) => el.parentElement === document.body)).toBe(true)
-        const anchor = required(await button.boundingBox())
-        const bubble = required(await tooltip.boundingBox())
-        const viewport = required(page.viewportSize())
-        expect(bubble.x).toBeGreaterThanOrEqual(0)
-        expect(bubble.x + bubble.width).toBeLessThanOrEqual(viewport.width)
-        expect(bubble.x).toBeLessThan(anchor.x + anchor.width)
-        expect(bubble.x + bubble.width).toBeGreaterThan(anchor.x)
-        expect(
-          Math.min(Math.abs(bubble.y + bubble.height - anchor.y), Math.abs(bubble.y - anchor.y - anchor.height)),
-        ).toBeLessThanOrEqual(9)
-        expect(await page.locator('[data-acp-team-panel]').evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(
-          true,
-        )
-        await page.mouse.move(0, 0)
-        await tooltip.waitFor({ state: 'hidden' })
-        tooltipIndex += 1
-      }
+    const verifyMenu = async () => {
+      const mode = cards.first().getByRole('button', { name: /^(?:Session|会话) ·/ })
+      await mode.click()
+      const menu = page.getByRole('menu')
+      await menu.waitFor()
+      const bounds = required(await menu.boundingBox())
+      expect(bounds.x).toBeGreaterThanOrEqual(0)
+      expect(bounds.x + bounds.width).toBeLessThanOrEqual(required(page.viewportSize()).width)
+      await page.keyboard.press('Escape')
+      await menu.waitFor({ state: 'hidden' })
+      expect(await panel.isVisible()).toBe(true)
+      expect(await mode.evaluate((element) => element === document.activeElement)).toBe(true)
     }
-    for (const [locale, theme, heading] of [
-      ['en', 'light', 'Manage members'],
-      ['en', 'dark', 'Manage members'],
-      ['zh', 'light', '成员管理'],
-      ['zh', 'dark', '成员管理'],
-    ]) {
+    const scrollEvidence: unknown[] = []
+    for (const [locale, theme] of [
+      ['en', 'light'],
+      ['en', 'dark'],
+      ['zh', 'light'],
+      ['zh', 'dark'],
+    ] as const) {
       localeTheme = `${locale}.${theme}`
-      setStage(`set locale and theme (${localeTheme})`)
       await host.ctx.settings.replace('locale', { preference: locale })
       await host.ctx.settings.replace('ui-theme', { preference: theme })
-      setStage(`wait for heading (${localeTheme})`)
-      await panel.getByText(heading, { exact: true }).waitFor()
-      setStage(`wait for color scheme (${localeTheme})`)
+      await panel
+        .getByRole('heading', { name: locale === 'en' ? 'ACP member settings' : 'ACP 成员设置', exact: true })
+        .waitFor()
       await expect.poll(() => page.evaluate(() => document.documentElement.style.colorScheme)).toBe(theme)
-      const panelSurface = page.locator('[data-acp-team-panel][data-menu-material="translucent"]')
-      const inspectSurface = (element: Element) => {
-        const material = element.querySelector<HTMLElement>(':scope > [aria-hidden="true"]')
-        if (material === null) throw new Error('native MenuSurface is missing its material layer')
-        const rootStyle = getComputedStyle(element)
-        const materialStyle = getComputedStyle(material)
-        return {
-          portal: element.parentElement === document.body,
-          materialContract: element.getAttribute('data-menu-material'),
-          materialTag: material.tagName,
-          materialAriaHidden: material.getAttribute('aria-hidden'),
-          rootFilter: rootStyle.backdropFilter,
-          rootBackground: rootStyle.backgroundColor,
-          rootRadius: rootStyle.borderRadius,
-          materialFilter: materialStyle.backdropFilter,
-          materialBackground: materialStyle.backgroundColor,
-          materialRadius: materialStyle.borderRadius,
-          materialPointerEvents: materialStyle.pointerEvents,
+      for (const width of [1440, 390]) {
+        setStage(`verify settings and menus ${width}px (${localeTheme})`)
+        await page.setViewportSize({ width, height: 640 })
+        expect(await panel.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true)
+        for (const card of await cards.all()) {
+          expect(await card.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true)
+          const notice = card.locator('[data-member-mode-notice]')
+          expect(await notice.evaluate((element) => element.scrollHeight <= element.clientHeight)).toBe(true)
+          const bounds = required(await card.boundingBox())
+          expect(bounds.width).toBeGreaterThan(0)
+        }
+        if (width === 390) {
+          const first = required(await cards.first().boundingBox())
+          const second = required(await cards.last().boundingBox())
+          expect(second.y).toBeGreaterThanOrEqual(first.y + first.height)
+        }
+        await verifyMenu()
+        const model = cards.first().locator('[data-acp-member-model] button')
+        await model.click()
+        const menu = page.getByRole('menu')
+        await menu.getByRole('menuitem', { name: 'Mock Model B', exact: true }).waitFor()
+        expect(await menu.getByRole('menuitem', { name: 'Mock Model B', exact: true }).isDisabled()).toBe(true)
+        await page.keyboard.press('Escape')
+        expect(await panel.isVisible()).toBe(true)
+        if (screenshotDir !== undefined) {
+          mkdirSync(screenshotDir, { recursive: true })
+          await page.screenshot({
+            path: join(screenshotDir, `team-settings.${locale}.${theme}.${width}.png`),
+            fullPage: true,
+            animations: 'disabled',
+          })
         }
       }
-      const modelMenuTrigger = cards.first().locator('[data-acp-member-model] button')
-      setStage(`open native model menu (${localeTheme})`)
-      await modelMenuTrigger.click()
-      const nativeModelMenu = page.getByRole('menu').last()
-      setStage(`wait for native model menu (${localeTheme})`)
-      await nativeModelMenu.waitFor()
-      setStage(`compare menu materials (${localeTheme})`)
-      const teamSurface = await panelSurface.evaluate(inspectSurface)
-      const modelSurface = await nativeModelMenu.evaluate(inspectSurface)
-      expect(teamSurface.portal).toBe(true)
-      expect(teamSurface).toEqual(modelSurface)
-      // Native MenuSurface puts blur on its material child; its positioning root remains unfiltered.
-      expect(teamSurface.rootFilter).toBe('none')
-      expect(teamSurface.materialFilter).toMatch(/blur\([1-9][\d.]*px\)/)
-      expect(teamSurface.materialBackground).not.toBe('rgba(0, 0, 0, 0)')
-      expect(teamSurface.materialPointerEvents).toBe('none')
-      if (screenshotDir !== undefined) {
-        setStage(`capture menu comparison (${localeTheme})`)
-        mkdirSync(screenshotDir, { recursive: true })
-        await page.screenshot({
-          path: join(screenshotDir, `team-members-native-model-menu.${locale}.${theme}.png`),
-          fullPage: true,
-          animations: 'disabled',
-        })
-      }
-      setStage(`close native model menu (${localeTheme})`)
-      await page.keyboard.press('Escape')
-      await nativeModelMenu.waitFor({ state: 'hidden' })
-      await expect.poll(() => panelSurface.isVisible()).toBe(true)
-      setStage(`verify tooltips (${localeTheme})`)
-      await verifyTooltips()
-      if (screenshotDir !== undefined) {
-        setStage(`capture team panel (${localeTheme})`)
-        await panelSurface.screenshot({
-          path: join(screenshotDir, `team-members.${locale}.${theme}.png`),
-          animations: 'disabled',
-        })
-      }
-    }
-    setStage('verify narrow layout')
-    await page.setViewportSize({ width: 390, height: 900 })
-    await verifyTooltips()
-    expect(await page.locator('[data-acp-team-panel]').evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true)
-    const narrow = await Promise.all((await cards.all()).map((card) => card.boundingBox()))
-    expect(required(narrow[1]).y).toBeGreaterThanOrEqual(required(narrow[0]).y + required(narrow[0]).height)
-    if (screenshotDir !== undefined) {
-      mkdirSync(screenshotDir, { recursive: true })
-      await page.screenshot({
-        path: join(screenshotDir, 'team-members.narrow.png'),
-        fullPage: true,
-        animations: 'disabled',
-      })
-    }
-
-    // Drive the real native roster through provisioning -> failed. Only the
-    // provider activation is gated: DSH owns events, persistence and projection.
-    const diagnostic = 'Fixture provider could not start: /workspace/a-very-long-directory-name/worker-entry-point.ts'
-    let releaseActivation!: () => void
-    const activationGate = new Promise<void>((resolve) => {
-      releaseActivation = resolve
-    })
-    const activation = vi.spyOn(host.ctx.subagents, 'startActivation').mockImplementationOnce(async () => {
-      await activationGate
-      throw new Error(diagnostic)
-    })
-    const spawn = host.ctx.agentTeams
-      .spawnTeammate(lead, {
-        name: 'unavailable-worker',
-        description: 'Native provisioning and failure diagnostics',
-        provider: 'acp:devin',
-        context: 'fresh',
-        prompt: [{ type: 'text', text: 'UI failure fixture; no model request should run.' }],
-        signal: new AbortController().signal,
-      })
-      .then(
-        () => {
-          throw new Error('Fixture activation unexpectedly succeeded')
-        },
-        (error: unknown) => error,
-      )
-    const unavailable = panel.locator('[data-acp-managed-member="unavailable-worker"]')
-    const scroller = page.locator('[data-acp-team-scroll-body]')
-    const inspectScrollSurface = () =>
-      page.locator('[data-acp-team-panel]').evaluate((element) => {
-        const material = element.querySelector<HTMLElement>(':scope > [aria-hidden="true"]')
-        const body = element.querySelector<HTMLElement>('[data-acp-team-scroll-body]')
-        const toolbar = element.querySelector<HTMLElement>('[data-acp-team-toolbar]')
-        if (material === null || body === null || toolbar === null) throw new Error('Missing team scroll surface')
-        const rect = (node: Element) => {
-          const box = node.getBoundingClientRect()
-          return { top: box.top, right: box.right, bottom: box.bottom, left: box.left }
-        }
-        return {
-          panel: rect(element),
-          material: rect(material),
-          toolbar: rect(toolbar),
-          body: rect(body),
-          rootScrollTop: element.scrollTop,
-          rootOverflow: getComputedStyle(element).overflowY,
-          bodyScrollTop: body.scrollTop,
-          bodyOverflow: getComputedStyle(body).overflowY,
-          bodyClientHeight: body.clientHeight,
-          bodyScrollHeight: body.scrollHeight,
-        }
-      })
-    const scrollEvidence: unknown[] = []
-    try {
-      setStage('verify native provisioning and failure states at 390px')
-      await unavailable.waitFor()
-      for (const phase of ['provisioning', 'failed'] as const) {
-        if (phase === 'failed') {
-          releaseActivation()
-          expect(await spawn).toMatchObject({ message: diagnostic })
-          await unavailable.getByRole('alert').waitFor()
-        }
-        for (const locale of ['en', 'zh']) {
-          for (const theme of ['light', 'dark']) {
-            localeTheme = `${locale}.${theme}`
-            await host.ctx.settings.replace('locale', { preference: locale })
-            await host.ctx.settings.replace('ui-theme', { preference: theme })
-            await expect.poll(() => page.evaluate(() => document.documentElement.style.colorScheme)).toBe(theme)
-            await unavailable
-              .getByText(
-                locale === 'en' ? (phase === 'failed' ? 'Failed' : 'Starting') : phase === 'failed' ? '失败' : '创建中',
-                { exact: true },
-              )
-              .waitFor()
-            expect(
-              await unavailable
-                .getByRole('button', {
-                  name: locale === 'en' ? 'Open unavailable-worker’s session' : '查看 unavailable-worker 的会话',
-                  exact: true,
-                })
-                .isDisabled(),
-            ).toBe(true)
-            expect(
-              await unavailable.locator(`[data-state="${phase === 'failed' ? 'error' : 'ongoing'}"]`).count(),
-            ).toBe(1)
-            expect(await cards.first().locator('[data-state="idle"]').count()).toBe(1)
-            expect(await cards.first().locator('[data-state="done"]').count()).toBe(0)
-            expect(await unavailable.getByRole('alert').count()).toBe(phase === 'failed' ? 1 : 0)
-            if (phase === 'failed') expect(await unavailable.getByRole('alert').innerText()).toBe(diagnostic)
-            expect(await unavailable.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true)
-            expect(await page.locator('[data-acp-team-panel]').evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(
-              true,
-            )
-            // The native material belongs to the stationary MenuSurface, while
-            // only its body scrolls. Computed colors alone miss a layer that
-            // scrolls offscreen and leaves the bottom of the panel transparent.
-            await scroller.evaluate((element) => {
-              element.scrollTop = 0
-            })
-            const initialSurface = await inspectScrollSurface()
-            expect(initialSurface.bodyScrollHeight).toBeGreaterThan(initialSurface.bodyClientHeight)
-            const verifyScrollSurface = (surface: Awaited<ReturnType<typeof inspectScrollSurface>>) => {
-              expect(surface.rootScrollTop).toBe(0)
-              expect(surface.rootOverflow).toBe('hidden')
-              expect(surface.bodyOverflow).toBe('auto')
-              for (const edge of ['top', 'right', 'bottom', 'left'] as const) {
-                expect(Math.abs(surface.material[edge] - surface.panel[edge])).toBeLessThanOrEqual(1)
-                expect(Math.abs(surface.toolbar[edge] - initialSurface.toolbar[edge])).toBeLessThanOrEqual(1)
-              }
-              expect(surface.toolbar.top).toBeGreaterThanOrEqual(surface.panel.top)
-              expect(surface.toolbar.bottom).toBeLessThanOrEqual(surface.body.top)
-              expect(surface.body.bottom).toBeLessThanOrEqual(surface.panel.bottom)
+      // Failed refresh preserves the visible settings but cannot leave stale controls writable.
+      const failedRead = vi
+        .spyOn(service, 'teamMembers')
+        .mockRejectedValue(new Error('E2E_MEMBER_SETTINGS_UNAVAILABLE'))
+      try {
+        await panel.getByRole('button', { name: locale === 'en' ? 'Refresh' : '刷新', exact: true }).click()
+        await panel.getByRole('alert').waitFor()
+        expect(
+          await cards.evaluateAll((elements) =>
+            elements.map((element) => element.getAttribute('data-acp-managed-member')),
+          ),
+        ).toEqual(previousNames)
+        await cards
+          .first()
+          .getByRole('button', { name: /^(?:Session|会话) ·/ })
+          .click()
+        const menu = page.getByRole('menu')
+        await menu.getByRole('menuitem', { name: /^(?:Session Mode|Mode|模式)(?:\s|$)/ }).click()
+        for (const option of await menu
+          .getByRole('menuitem')
+          .filter({ hasNotText: /Back to session settings|返回会话设置/ })
+          .all())
+          expect(await option.isDisabled()).toBe(true)
+        await page.keyboard.press('Escape')
+        await page.setViewportSize({ width: 390, height: 430 })
+        const footer = panel.getByRole('button', { name: locale === 'en' ? 'Close' : '关闭', exact: true }).last()
+        const footerBefore = required(await footer.boundingBox())
+        const scroll = await cards.last().evaluate((element) => {
+          let parent = element.parentElement
+          while (parent !== null && parent.getAttribute('role') !== 'dialog') {
+            if (getComputedStyle(parent).overflowY === 'auto' && parent.scrollHeight > parent.clientHeight) {
+              parent.scrollTop = parent.scrollHeight
+              return { top: parent.scrollTop, height: parent.clientHeight, total: parent.scrollHeight }
             }
-            verifyScrollSurface(initialSurface)
-            scrollEvidence.push({ phase, locale, theme, fraction: 0, ...initialSurface })
-            for (const fraction of [0.5, 1]) {
-              await scroller.evaluate((element, fraction) => {
-                element.scrollTop = (element.scrollHeight - element.clientHeight) * fraction
-              }, fraction)
-              const surface = await inspectScrollSurface()
-              expect(surface.bodyScrollTop).toBeGreaterThan(0)
-              verifyScrollSurface(surface)
-              if (fraction === 1) {
-                const memberBox = required(await unavailable.boundingBox())
-                expect(memberBox.y).toBeGreaterThanOrEqual(surface.body.top - 1)
-                expect(memberBox.y + memberBox.height).toBeLessThanOrEqual(surface.body.bottom + 1)
-              }
-              scrollEvidence.push({ phase, locale, theme, fraction, ...surface })
-            }
-            await scroller.evaluate((element) => {
-              element.scrollTop = 0
-            })
-            if (screenshotDir !== undefined) {
-              await page.screenshot({
-                path: join(screenshotDir, `team-members.${phase}.${locale}.${theme}.390.png`),
-                fullPage: true,
-                animations: 'disabled',
-              })
-              const scrollTop = await scroller.evaluate((element) => element.scrollTop)
-              try {
-                await unavailable.scrollIntoViewIfNeeded()
-                verifyScrollSurface(await inspectScrollSurface())
-                await page.screenshot({
-                  path: join(screenshotDir, `team-members.${phase}.${locale}.${theme}.390.detail.png`),
-                  fullPage: true,
-                  animations: 'disabled',
-                })
-              } finally {
-                await scroller.evaluate((element, top) => {
-                  element.scrollTop = top
-                }, scrollTop)
-              }
-            }
+            parent = parent.parentElement
           }
-        }
+          throw new Error('Native Modal content did not provide a scrollable surface')
+        })
+        expect(scroll.top).toBeGreaterThan(0)
+        expect(await footer.boundingBox()).toEqual(footerBefore)
+        expect(footerBefore.y + footerBefore.height).toBeLessThanOrEqual(430)
+        scrollEvidence.push({ locale, theme, scroll, footer: footerBefore })
+        if (screenshotDir !== undefined)
+          await page.screenshot({
+            path: join(screenshotDir, `team-settings.error.${locale}.${theme}.390.png`),
+            fullPage: true,
+            animations: 'disabled',
+          })
+      } finally {
+        failedRead.mockRestore()
       }
-      if (screenshotDir !== undefined) {
-        writeFileSync(join(screenshotDir, 'team-members.scroll-geometry.json'), JSON.stringify(scrollEvidence, null, 2))
-      }
-    } finally {
-      releaseActivation()
-      await spawn
-      activation.mockRestore()
+      await panel.getByRole('button', { name: locale === 'en' ? 'Refresh' : '刷新', exact: true }).click()
+      await panel.getByRole('alert').waitFor({ state: 'hidden' })
+    }
+    if (screenshotDir !== undefined)
+      writeFileSync(join(screenshotDir, 'team-settings.scroll-geometry.json'), JSON.stringify(scrollEvidence, null, 2))
+    await closeMemberSettings(page)
+    const native = await openNativeMembers(page)
+    for (const [name, description] of names) {
+      const row = native.getByRole('treeitem').filter({ hasText: name })
+      await row.waitFor()
+      expect(await row.innerText()).toContain(description)
     }
     setStage('test assertions passed')
     passed = true

@@ -463,7 +463,11 @@ export async function installInstalledProfileRegistry(
     }
     return completion.promise
   }
-  installWorkingDirectoryGuard(ctx, (profileId) => profileAdapters.get(profileId))
+  installWorkingDirectoryGuard(
+    ctx,
+    (profileId) => profileAdapters.get(profileId),
+    sidecar === undefined ? undefined : (sessionId) => sidecar.readLatestBinding(sessionId),
+  )
   const controlSubscribers = new Map<string, Set<() => void>>()
   const policySubscribers = new Set<() => void>()
   const notifyPolicySubscribers = (): void => {

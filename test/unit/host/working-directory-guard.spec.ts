@@ -81,13 +81,17 @@ describe('installWorkingDirectoryGuard()', () => {
 
     const first = await h.mount()
     await expect.poll(() => h.guards.size).toBe(1)
-    expect(h.check(execution('create_worktree', {}))).toContain('ACP_WORKING_DIRECTORY_UNSUPPORTED')
+    expect(h.check(execution('create_worktree', {}))).toMatchObject({
+      info: { name: 'HarnessError', code: 'ACP_WORKING_DIRECTORY_UNSUPPORTED' },
+    })
     await first.dispose()
     await expect.poll(() => h.guards.size).toBe(0)
 
     await h.mount()
     await expect.poll(() => h.guards.size).toBe(1)
-    expect(h.check(execution('create_worktree', {}))).toContain('ACP_WORKING_DIRECTORY_UNSUPPORTED')
+    expect(h.check(execution('create_worktree', {}))).toMatchObject({
+      info: { name: 'HarnessError', code: 'ACP_WORKING_DIRECTORY_UNSUPPORTED' },
+    })
   })
 
   it('does not consult an ACP adapter for native routes or calls without an initiator', async () => {
@@ -102,15 +106,18 @@ describe('installWorkingDirectoryGuard()', () => {
     expect(h.adapterFor).not.toHaveBeenCalled()
   })
 
-  it('vetoes both ACP directory-changing tools with the owning adapter denial', async () => {
+  it('vetoes checkout creation before Git effects with the owning adapter denial', async () => {
     const h = harness()
     await h.mount()
 
-    for (const call of [execution('create_worktree', {}), execution('working_directory', { cd: '/target' })]) {
-      expect(h.check(call)).toBe('ACP_WORKING_DIRECTORY_UNSUPPORTED: fork is unavailable')
+    for (const call of [execution('create_worktree', {})]) {
+      expect(h.check(call)).toEqual({
+        reason: 'ACP_WORKING_DIRECTORY_UNSUPPORTED: fork is unavailable',
+        info: { name: 'HarnessError', code: 'ACP_WORKING_DIRECTORY_UNSUPPORTED' },
+      })
       expect(h.workingDirectoryChangeDenial).toHaveBeenLastCalledWith(call.agent!.id, call.agent!.session)
     }
-    expect(h.adapterFor).toHaveBeenCalledTimes(2)
+    expect(h.adapterFor).toHaveBeenCalledTimes(1)
     expect(h.adapterFor).toHaveBeenLastCalledWith('demo')
   })
 
@@ -120,7 +127,9 @@ describe('installWorkingDirectoryGuard()', () => {
 
     const acp = execution('create_worktree', {}, 'acp-demo', false)
     expect(acp.agent!.session.requestHeader()).toBeUndefined()
-    expect(h.check(acp)).toContain('ACP_WORKING_DIRECTORY_UNSUPPORTED')
+    expect(h.check(acp)).toMatchObject({
+      info: { name: 'HarnessError', code: 'ACP_WORKING_DIRECTORY_UNSUPPORTED' },
+    })
     expect(h.workingDirectoryChangeDenial).toHaveBeenCalledWith(acp.agent!.id, acp.agent!.session)
     h.adapterFor.mockClear()
     expect(h.check(execution('create_worktree', {}, 'deepseek', false))).toBeUndefined()
@@ -136,14 +145,16 @@ describe('installWorkingDirectoryGuard()', () => {
     expect(h.check(execution('create_worktree', {}))).toBeUndefined()
     expect(h.check(execution('working_directory', { cd: '/target' }))).toBeUndefined()
     h.adapterFor.mockReturnValue(undefined)
-    expect(h.check(execution('create_worktree', {}))).toContain('ACP_WORKING_DIRECTORY_UNAVAILABLE')
+    expect(h.check(execution('create_worktree', {}))).toMatchObject({
+      info: { name: 'HarnessError', code: 'ACP_WORKING_DIRECTORY_UNAVAILABLE' },
+    })
   })
 
-  it('allows working_directory queries and malformed argument shapes without consulting the adapter', async () => {
+  it('leaves directory-tool admission and argument validation to the native directory service', async () => {
     const h = harness()
     await h.mount()
 
-    for (const args of [null, [], ['/target'], 42, 'target', {}, { cd: undefined }]) {
+    for (const args of [null, [], ['/target'], 42, 'target', {}, { cd: undefined }, { cd: '/target' }]) {
       expect(h.check(execution('working_directory', args))).toBeUndefined()
     }
     expect(h.check(execution('read_file', { path: '/file' }))).toBeUndefined()

@@ -6,6 +6,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { Worker } from 'node:worker_threads'
 import { isDeepStrictEqual } from 'node:util'
 import type { DevinLiveTrace } from './devin-live-trace.ts'
+import { classifyDevinCliTool, type DevinCliToolKind } from './devin-live-cli-tool.ts'
 
 export const DEVIN_HISTORY_TIMEOUT_MS = 5_000
 export const DEVIN_HISTORY_MAX_DATABASE_BYTES = 64 * 1024 * 1024
@@ -73,6 +74,7 @@ interface HistorySession {
   readonly nodes: readonly HistoryNode[]
   readonly sends: readonly HistorySend[]
   readonly receipts: readonly HistoryReceipt[]
+  readonly calls?: readonly { readonly node: string; readonly call: string; readonly kind: DevinCliToolKind }[]
 }
 /** Internal worker data stays in memory; only emitDevinHistory may publish it. */
 export interface DevinHistorySnapshot {
@@ -256,6 +258,23 @@ export function readDevinHistory(scope: DevinHistoryScope): DevinHistorySnapshot
           }
         }
         currentStage = 'sends'
+        const rawCalls = database
+          .prepare(
+            `SELECT mn.node_id,
+          json_extract(tc.value, '$.id') AS call_id,
+          COALESCE(json_extract(tc.value, '$.name'), json_extract(tc.value, '$.function.name')) AS name,
+          json_extract(tc.value, '$.arguments.tool_name') AS target,
+          COALESCE(json_extract(tc.value, '$.arguments.server'), json_extract(tc.value, '$.arguments.server_name')) AS server
+          FROM message_nodes mn, json_each(mn.chat_message, '$.tool_calls') tc
+          WHERE mn.session_id = ? AND json_extract(mn.chat_message, '$.role') = 'assistant' LIMIT ?`,
+          )
+          .all(actor.acpSession, MAX_CALLS + 1)
+        if (rawCalls.length > MAX_CALLS) return snapshot('limited', 'history-limit', 'sends')
+        const calls = rawCalls.map((call) => ({
+          node: nodeId(call.node_id) ?? '',
+          call: identity(call.call_id) ?? '',
+          kind: classifyDevinCliTool(call.name, call.target, call.server),
+        }))
         const rawSends = database
           .prepare(
             `SELECT mn.node_id, json_extract(tc.value, '$.id') AS call_id,
@@ -279,7 +298,7 @@ export function readDevinHistory(scope: DevinHistoryScope): DevinHistorySnapshot
           const call = identity(send.call_id)
           const node = nodeId(send.node_id)
           if (call === undefined || node === undefined) return snapshot('unsupported', 'send-identity-invalid', 'sends')
-          if (!record(args) || typeof args.target !== 'string' || typeof args.message !== 'string')
+          if (!record(args) || typeof args.agent !== 'string' || typeof args.message !== 'string')
             return snapshot('unsupported', 'send-arguments-invalid', 'sends')
           candidates.push({ node, call, args, duplicateSnapshotCount: 0 })
         }
@@ -328,7 +347,7 @@ export function readDevinHistory(scope: DevinHistoryScope): DevinHistorySnapshot
           if (receiptParent !== send.node) continue
           receipts.push({ node: receiptNode, call, content: receipt.content })
         }
-        sessions.push({ ...actor, nodes, sends, receipts })
+        sessions.push({ ...actor, nodes, sends, receipts, calls })
         if (Buffer.byteLength(JSON.stringify(sessions)) > DEVIN_HISTORY_MAX_PROJECTED_BYTES)
           return snapshot('limited', 'history-limit', 'complete')
       }
@@ -396,6 +415,8 @@ export async function collectDevinHistory(
 }
 
 const sendStatus = (content: string): 'sent' | 'queued' | 'accepted' | 'unknown' => {
+  // RC.2 renders this native receipt as text; older isolated evidence used JSON.
+  if (/^message delivered to agent [a-z][a-z0-9-]*(?:\/[a-z][a-z0-9-]*)*$/.test(content)) return 'accepted'
   try {
     const value: unknown = JSON.parse(content)
     if (!record(value)) return 'unknown'
@@ -433,6 +454,14 @@ export function emitDevinHistory(trace: DevinLiveTrace, result: DevinHistorySnap
         providerModelCallId: trace.id('devin-generation-request', node.request),
         model: node.model === 'swe-2-high' ? 'swe-2-high' : 'other',
         historyFinishReason: node.finish === 'tool_calls' ? 'tool_calls' : 'unknown',
+      })
+    }
+    for (const call of session.calls ?? []) {
+      trace.record('devin-history/tool', {
+        ...base,
+        historyNodeId: id(call.node),
+        historyToolCallId: trace.id('devin-history-tool-call', call.call),
+        cliToolKind: call.kind,
       })
     }
     for (const send of session.sends) {

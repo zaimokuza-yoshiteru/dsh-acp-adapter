@@ -37,7 +37,7 @@ class NativeParent extends LlmAdapter {
 
 async function fixture(teams: boolean) {
   const host = await launchAdapterWorld({
-    optionalBundles: teams ? ['agent-team-profile'] : [],
+    teams,
     toolExecutor: 'native',
   })
   try {
@@ -111,14 +111,13 @@ async function settled(agent: Agent, before: number) {
 function start(host: AdapterWorld, parent: Agent, provider: string, text: string, cwd?: string) {
   return host.ctx.subagents.startActivation({
     provider,
+    name: 'contract-child',
     label: 'native contract child',
     delivery: 'caller',
-    request: {
-      parent,
-      prompt: [{ type: 'text', text }],
-      agentOptions: { provider: 'acp-subagent-fixture', model: 'mock-model-a' },
-      ...(cwd === undefined ? {} : { cwd }),
-    },
+    parent,
+    prompt: [{ type: 'text', text }],
+    agentOptions: { provider: 'acp-subagent-fixture', model: 'mock-model-a' },
+    ...(cwd === undefined ? {} : { cwd }),
     signal: new AbortController().signal,
   })
 }
@@ -129,10 +128,18 @@ it.each([false, true])(
     const host = await fixture(teams)
     let activation: SubagentActivation | undefined
     let child: Agent | undefined
+    let liveIdentity: { child: Agent; root: Agent; name: string; teamsEnabled: boolean } | undefined
     const answers: string[] = []
     try {
       host.ctx.on('subagent/start', (entry) => {
         child = host.ctx.agents.get(entry.id)
+        const owner = required(child)
+        liveIdentity = {
+          child: owner,
+          root: host.ctx.subagents.rootOf(owner),
+          name: host.ctx.subagents.namesOf(owner).self,
+          teamsEnabled: host.ctx.agentTeams.isEnabled(owner),
+        }
       })
       host.ctx.on(
         'approval/request',
@@ -166,7 +173,7 @@ it.each([false, true])(
         label: `native-child-${teams}`,
         calls: [
           { name: 'list_agents', arguments: {} },
-          { name: 'send_message', arguments: { agent_id: parent.id, message: 'CHILD_TO_NATIVE_PARENT' } },
+          { name: 'send_message', arguments: { agent: 'lead', message: 'CHILD_TO_NATIVE_PARENT' } },
           { name: 'write', arguments: { file_path: allowed, content: 'NATIVE_CHILD_WRITE' } },
           { name: 'write', arguments: { file_path: denied, content: 'MUST_NOT_EXECUTE' } },
         ],
@@ -177,14 +184,33 @@ it.each([false, true])(
       expect(JSON.stringify(result.output)).toContain(`E2E_OPTIONAL_DONE ${plan.label}`)
       const owner = required(child)
       expect(owner.session.header).toMatchObject({ origin: 'subagent', isSeeded: false, parentSession: parent.id })
-      expect(host.ctx.get('agentTeams', false)?.tryMembership(owner)).toBeUndefined()
+      expect(required(liveIdentity).child).toBe(owner)
+      expect(required(liveIdentity).root).toBe(parent)
+      expect(required(liveIdentity).name).toBe('contract-child')
+      expect(required(liveIdentity).teamsEnabled).toBe(teams)
+      // Caller-delivered activation results arrive after the live handle is released.
+      expect(host.ctx.agents.get(owner.id)).toBeUndefined()
+      expect(await host.ctx.subagents.listDescendants(parent.id)).toContainEqual(
+        expect.objectContaining({
+          kind: 'child',
+          id: owner.id,
+          parentId: parent.id,
+          mode: 'continuable',
+          path: 'contract-child',
+          depth: 1,
+          activity: 'inactive',
+        }),
+      )
+      expect(host.ctx.agents.get(owner.id)).toBeUndefined()
       expect(host.ctx.approval.overrideOf(owner.session)).toBe('never')
       expect(host.ctx.sandboxPolicy.resolve({ session: owner.session }).mode).toBe('workspace-write')
       const records = host.records()
       expect(records.filter((entry) => entry.kind === 'failure')).toEqual([])
-      expect(required(records.find((entry) => entry.kind === 'directory')).names).toEqual(
-        expect.arrayContaining(['send_message', 'list_agents', 'interrupt_agent', 'write']),
-      )
+      const names = required(required(records.find((entry) => entry.kind === 'directory')).names)
+      expect(names).toEqual(expect.arrayContaining(['send_message', 'list_agents', 'wait_agent', 'write']))
+      expect(names).not.toContain('interrupt_agent')
+      for (const name of ['team_task_create', 'team_task_get', 'team_task_list', 'team_task_update'])
+        expect(names.includes(name)).toBe(teams)
       expect(callResult(records, 'list_agents').isError).toBe(false)
       expect(callResult(records, 'send_message').isError).toBe(false)
       const writes = records.filter((entry) => entry.kind === 'call' && entry.name === 'write')

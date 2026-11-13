@@ -21,7 +21,6 @@ type Props = {
   readonly remote: AcpRemoteLike
   readonly t: Copy
   readonly isCurrent: (sessionId: SessionId) => boolean
-  readonly onMenuOpen: (owner: string, value: boolean) => void
   readonly useSessionAccess: GlobalStandardProps['useSessionAccess']
   readonly sessionAccessSource: SessionAccessSource
 }
@@ -56,7 +55,6 @@ export function TeamMemberModelControl({
   remote,
   t,
   isCurrent,
-  onMenuOpen,
   useSessionAccess,
   sessionAccessSource,
 }: Props): ReactNode {
@@ -75,10 +73,8 @@ export function TeamMemberModelControl({
   const writeInFlight = useRef(false)
   const latestMember = useRef(member)
   latestMember.current = member
-  const menuOwner = `model:${String(member.sessionId)}`
   const changeOpen = (value: boolean): void => {
     setOpen(value)
-    onMenuOpen(menuOwner, value)
   }
 
   const memberFacts = member
@@ -102,18 +98,16 @@ export function TeamMemberModelControl({
       ++epoch.current
     }
   }, [])
-  useEffect(() => () => onMenuOpen(menuOwner, false), [menuOwner, onMenuOpen])
   useEffect(() => {
     ++epoch.current
     setOpen(false)
-    onMenuOpen(menuOwner, false)
     setView(null)
     setError(null)
     setLoading(false)
     setSaving(false)
     writeInFlight.current = false
     ++factsRevision.current
-  }, [lead, member.sessionId, menuOwner, onMenuOpen])
+  }, [lead, member.sessionId])
   useEffect(() => {
     ++factsRevision.current
     setView((previous) => reconcileMemberModelView(previous, memberFacts))

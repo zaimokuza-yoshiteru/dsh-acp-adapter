@@ -5,6 +5,7 @@ import SessionStore, { Session, SessionId } from '@deepseek-ai/dsh-session'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import type { AcpBindingData, AcpMemberModelSelection, AcpSidecar } from '../../../src/persistence/sidecar.ts'
 import { modeIntentBindingKey } from '../../../src/persistence/sidecar.ts'
+import { subagentIdentityProjectionDefinition } from '@deepseek-ai/dsh-subagent/src/projection.ts'
 import { createMemberModels } from '../../../src/host/teams/member-models.ts'
 
 const contexts: Context[] = []
@@ -20,7 +21,10 @@ async function harness() {
   await ctx.plugin(AgentRegistry)
   const projection = await ctx.sessionProjections.register(modelSelectionProjectionDefinition)
   const route = { provider: 'acp-demo', model: 'model-a' }
-  const source = Session.create(SessionId('model-cold-member'))
+  await ctx.sessionProjections.register(subagentIdentityProjectionDefinition)
+  const empty = Session.create(SessionId('model-cold-member'))
+  const source = Session.create(empty.id, [], { ...empty.header, origin: 'subagent', parentSession: SessionId('root') })
+  source.append('subagent/descriptor', { version: 3, mode: 'continuable', provider: 'spawn', label: 'member' })
   const sourceModel = new AgentModel(projection.readerFor(source), source, route)
   const used = (model: string) =>
     source.append('request/header', {
@@ -46,7 +50,6 @@ async function harness() {
     }),
   }
   ctx.provide('llm', { listModels: async () => [] })
-  ctx.provide('agentTeams', { tryMembership: () => ({ role: 'teammate' }) })
   // Query is a retained, immutable cut of the actual Session/projection. It never activates an Agent.
   const observe = vi.fn(async () => {
     const session = ctx.sessions.get(source.id) ?? source
@@ -73,7 +76,7 @@ async function harness() {
     expect(restored.seq).toBe(beforePublication)
     const model = new AgentModel(projection.readerFor(restored), restored, route)
     const agent = { id: restored.id, ctx, session: restored, model, options: route, status: 'idle' } as unknown as Agent
-    const detachAgent = ctx.agents.enter(agent, undefined)
+    const detachAgent = ctx.agents.enter(agent)
     return {
       agent,
       model,

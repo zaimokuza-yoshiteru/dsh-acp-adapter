@@ -158,19 +158,18 @@ it.each(['native', 'acp'])(
       const settled = host.whenTurnSettled(30_000)
       await page.getByRole('button', { name: 'Send message', exact: true }).click()
       const parent = required(host.ctx.agents.get(await settled))
-      expect(host.ctx.get('agentTeams', false)).toBeUndefined()
+      expect(host.ctx.agentTeams.isEnabled(parent)).toBe(false)
       host.ctx.on('subagent/start', (entry) => {
         child = host.ctx.agents.get(entry.id)
       })
       activation = await host.ctx.subagents.startActivation({
         provider: 'spawn',
+        name: 'approval-reviewer',
         label: 'Approval review worker',
         delivery: 'caller',
-        request: {
-          parent,
-          prompt: [{ type: 'text', text: 'E2E_PERMISSION' }],
-          agentOptions: { provider: 'acp-contract', model: 'mock-model-a' },
-        },
+        parent,
+        prompt: [{ type: 'text', text: 'E2E_PERMISSION' }],
+        agentOptions: { provider: 'acp-contract', model: 'mock-model-a' },
         signal: new AbortController().signal,
       })
       await vi.waitFor(() => expect(acpPermissionAudit(host, 'asked')).toHaveLength(1), { timeout: 30_000 })
@@ -322,13 +321,12 @@ it('presents full child authorization choices at the root without using binary a
     const marker = join(required(parent.session.header.cwd), 'exact-option.txt')
     activation = await host.ctx.subagents.startActivation({
       provider: 'spawn',
+      name: 'full-scope-child',
       label: 'Full scope child',
       delivery: 'caller',
-      request: {
-        parent,
-        prompt: [{ type: 'text', text: 'E2E_EXACT_PERMISSION_OPTIONS' }],
-        agentOptions: { provider: 'acp-contract', model: 'mock-model-a' },
-      },
+      parent,
+      prompt: [{ type: 'text', text: 'E2E_EXACT_PERMISSION_OPTIONS' }],
+      agentOptions: { provider: 'acp-contract', model: 'mock-model-a' },
       signal: new AbortController().signal,
     })
     if (!before) {
@@ -336,6 +334,12 @@ it('presents full child authorization choices at the root without using binary a
       const option = card.getByRole('radio', { name: 'Allow for this Agent session', exact: true })
       await option.waitFor({ state: 'visible' })
       expect(await card.getByRole('radio').count()).toBe(4)
+      const child = required(host.ctx.agents.get(activation.childId))
+      expect(host.ctx.subagents.rootOf(child)).toBe(parent)
+      expect(host.ctx.subagents.namesOf(child).self).toBe('full-scope-child')
+      expect(await card.locator('[data-question-source]').innerText()).toContain(
+        `full-scope-child · ${child.id.slice(0, 8)}`,
+      )
       expect(existsSync(marker)).toBe(false)
       await page.screenshot({ path: join(directory, 'child-options-presented.png') })
       await option.click()

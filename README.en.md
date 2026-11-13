@@ -6,7 +6,7 @@ Use ACP Agents in DSH with native sessions, tool approvals, and team collaborati
 
 ## Install
 
-Plugin version [`0.2.2-rc.1.2`](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/tag/v0.2.2-rc.1.2) supports DSH `0.2.2-rc.1`. Match that host version before installing. See [Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for other versions.
+Released plugin version [`0.2.2-rc.1.2`](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/tag/v0.2.2-rc.1.2) supports DSH `0.2.2-rc.1`. Match that host version before installing. See [Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for other versions.
 
 **Recommended:** In DSH Creator mode, send:
 
@@ -50,7 +50,7 @@ The plugin ships with a snapshot of the [official ACP Agent catalog](https://age
 
 > If an Agent has no model catalog, select **Agent current configuration** to use its current settings.
 >
-> DSH RC.1 cannot change models in an existing ACP session. To use another model, start an independent session; it does not inherit the original Agent context. Existing history and drafts are kept, and reasoning effort can still change on the same model.
+> DSH RC.1 / RC.2 cannot change models in an existing ACP session. To use another model, start an independent session; it does not inherit the original Agent context. Existing history and drafts are kept, and reasoning effort can still change on the same model.
 
 Launch and sign-in commands for common Agents:
 
