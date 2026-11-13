@@ -676,3 +676,14 @@ ACP 主会话的成员管理新增同 profile 原生模型下拉，保留按 pro
 - 真实 Devin `3000.12.43` / 目录标为 Free 的 `swe-2-high`，两轮宿主指令更新与刷新恢复通过。**真实 Teams 未通过**：最终请求已到 DSH 工具授权，但测试误把 ACP 握手 `0.0.0-dev` 当作 CLI 包版本，在批准前退出，0 Host 派发与成员；之后修正版本取证，相关 41 项单测与类型通过，并在空白隔离环境实读 CLI 版本成功；没有重跑 Teams 或继续调用模型，不能宣称 Teams 已验收。没有修改用户原认证或历史。
 
 仍保留宿主 Modal 关闭后的返回焦点限制：交互导致原生 footer trigger 卸载，焦点落 BODY；Tab 可用且无焦点陷阱，但不算理想返回。工程文档单列公开返回目标 API 方案，插件不改上游或依赖私有 DOM。已有会话切模压缩、原生分叉能力预检和辅助 ACP 调用的既有限制未解除。证据位于 gitignored `.local/upgrade-rc2/`；本次只提交，不发布。
+
+## 2026-11-13：Devin Teams 真实补验
+
+在 `141760b` 的 RC.2 生产产物上，使用 Devin CLI `3000.12.43` 和本次目录标为 Free 的 `swe-2-high`，两个独立真实浏览器场景各执行一次通过：
+
+- 共享任务/消息：Lead 创建两项依赖任务和一个真实成员；成员领取、完成计算并回信，Lead 收信后完成审核并回复。11 项原始一次授权对应 11 次成功 Host 工具执行，任务 owner、revision、消息入队与持久化顺序一致。
+- ACP 审批/取消：同一真实子会话分别 Allow once、Reject、待审批时从原生侧栏 Stop。允许恰好一次写入；拒绝和取消均无 Host 派发、无文件。Stop 同时记录原权限 cancelled、DSH aborted、ACP cancelled；随后同一 DSH/ACP session 成功继续，刷新不恢复旧审批。
+
+新增 11 项离线单测（含越界与错误决定反例）与 test/E2E 类型检查通过；旧 Devin native bash escalation 夹具缺少前置 ACP Ask 处理，已在启动 Host/模型前明确拒绝不适用组合，新专项不替代该场景。没有修改生产代码、上游或用户日常认证/配置；没有重跑无关全量。取消范围是待审批状态，未扩展声明到运行中 shell、Host 重启或 Windows。
+
+完整证据和限制见 [RC.2 补验记录](../../docs/assessments/dsh-0.2.2-rc.2.md#10-真实-devin-teams-补验基线-141760b)，原始日志/截图在 gitignored `.local/devin-teams-rc2/`。第 9 节首次验收中的真实 Teams 缺口已补齐，旧失败记录仍保留。本次提交到 `0.2.2-alpha`，不发布。

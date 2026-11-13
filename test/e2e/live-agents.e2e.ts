@@ -17,6 +17,7 @@ import { verifyLiveSteering } from './live-steering.ts'
 import { prepareLiveDevinEnvironment } from './live-devin-environment.ts'
 import type { AcpRemoteService } from '../../src/remote/service.ts'
 import { readLiveDevinCliVersion } from './live-devin-version.ts'
+import { verifyLiveDevinPermissionLifecycle } from './live-devin-permission-lifecycle.ts'
 
 const profiles = [
   { id: 'claude', command: 'claude-agent-acp', args: [] },
@@ -29,18 +30,31 @@ if (retain && selected?.length !== 1) throw new Error('Retained review requires 
 const teams = process.env.DSH_E2E_LIVE_TEAMS === '1'
 const multimodel = process.env.DSH_E2E_LIVE_TEAMS_MULTIMODEL === '1'
 const steering = process.env.DSH_E2E_LIVE_STEERING === '1'
+const devinPermissions = process.env.DSH_E2E_LIVE_DEVIN_PERMISSIONS === '1'
+const nativeTeamApproval = process.env.DSH_E2E_LIVE_TEAMS_APPROVAL === '1'
 if (teams && steering) throw new Error('Choose either the live Teams or live steering scenario')
+if (nativeTeamApproval && (!teams || devinPermissions))
+  throw new Error('Choose Teams native sandbox approval or Devin ACP permission lifecycle as separate scenarios')
+if (nativeTeamApproval && (selected === undefined || selected.includes('devin')))
+  throw new Error(
+    'The Devin native DSH bash sandbox escalation fixture does not handle the preceding ACP Ask request. ' +
+      'DSH_E2E_LIVE_DEVIN_PERMISSIONS covers ACP Allow/Reject/Stop/continue separately, not native sandbox escalation.',
+  )
+if (devinPermissions && (!teams || multimodel || selected?.length !== 1 || selected[0] !== 'devin'))
+  throw new Error('Devin permission lifecycle requires Teams and only the explicit Devin profile, without multimodel')
 if (multimodel && (!teams || selected?.length !== 1 || selected[0] !== 'devin'))
   throw new Error('The two-model scenario requires Teams and exactly the explicit Devin profile')
 
 // Explicitly opt in: these use the user's Agent login and may consume credits.
 describe.skipIf(process.env.DSH_E2E_LIVE !== '1')('live ACP smoke', () => {
   it.each(profiles.filter((profile) => selected === undefined || selected.includes(profile.id)))(
-    teams
-      ? '$id completes native shared tasks and member messaging'
-      : steering
-        ? '$id delivers steering after real generation begins'
-        : '$id preserves host guidance and renders a real response',
+    devinPermissions
+      ? '$id preserves member permission decisions and cancellation'
+      : teams
+        ? '$id completes native shared tasks and member messaging'
+        : steering
+          ? '$id delivers steering after real generation begins'
+          : '$id preserves host guidance and renders a real response',
     async (profile) => {
       let devinEnvironment: Awaited<ReturnType<typeof prepareLiveDevinEnvironment>> | undefined
       let host!: AdapterWorld
@@ -104,6 +118,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE !== '1')('live ACP smoke', () => {
           teams && profile.id === 'devin' ? await readLiveDevinCliVersion(command, host.workspaceCwd, env) : undefined
         if (devinCliVersion !== undefined) teamEvidence.manualApprovalCliVersion = devinCliVersion
         await host.ctx.settings.replace('dsh-acp-adapter', {
+          ...(devinPermissions ? { toolApprovalDefault: 'ask' } : {}),
           agents: { [profile.id]: { name: profile.id, command, args: profile.args, env } },
         })
         await vi.waitFor(() => expect(host.ctx.llm.listProviders().some((entry) => entry.id === provider)).toBe(true))
@@ -188,39 +203,52 @@ describe.skipIf(process.env.DSH_E2E_LIVE !== '1')('live ACP smoke', () => {
               : undefined
           if (profile.id === 'devin')
             teamEvidence.manualApprovalAcpVersion = probe?.status === 'ok' ? (probe.agentInfo?.version ?? null) : null
-          const firstTeam = await verifyLiveTeam({
-            host,
-            page,
-            provider,
-            model,
-            evidence: teamEvidence,
-            evidenceDirectory: evidence,
-            devinManualApproval,
-          })
-          if (multimodel) {
-            const second = required(models.find((entry) => entry.id === secondModel))
-            teamEvidence.secondModel = second.id
-            teamEvidence.secondRun = {}
-            const secondTeam = await verifyLiveTeam({
+          if (devinPermissions) {
+            const lifecycleEvidence = { directory: evidence }
+            teamEvidence.permissionLifecycle = lifecycleEvidence
+            await verifyLiveDevinPermissionLifecycle({
               host,
               page,
               provider,
-              model: second.id,
-              selectChildModel: true,
-              evidence: teamEvidence.secondRun,
+              model,
+              evidence: lifecycleEvidence,
+              context: required(devinManualApproval),
+            })
+          } else {
+            const firstTeam = await verifyLiveTeam({
+              host,
+              page,
+              provider,
+              model,
+              evidence: teamEvidence,
               evidenceDirectory: evidence,
               devinManualApproval,
-              memberName: 'checker',
-              expectedMembers: 3,
             })
-            expect(secondTeam.lead).toBe(firstTeam.lead)
-            expect(secondTeam.child).not.toBe(firstTeam.child)
-            expect(firstTeam.lead.session.requestHeader()?.config).toMatchObject({ provider, model })
-            expect(firstTeam.child.session.requestHeader()?.config).toMatchObject({ provider, model })
-          }
-          if (process.env.DSH_E2E_LIVE_TEAMS_APPROVAL === '1') {
-            teamEvidence.approval = { directory: evidence }
-            await verifyLiveTeamApproval({ host, page, provider, evidence: teamEvidence.approval })
+            if (multimodel) {
+              const second = required(models.find((entry) => entry.id === secondModel))
+              teamEvidence.secondModel = second.id
+              teamEvidence.secondRun = {}
+              const secondTeam = await verifyLiveTeam({
+                host,
+                page,
+                provider,
+                model: second.id,
+                selectChildModel: true,
+                evidence: teamEvidence.secondRun,
+                evidenceDirectory: evidence,
+                devinManualApproval,
+                memberName: 'checker',
+                expectedMembers: 3,
+              })
+              expect(secondTeam.lead).toBe(firstTeam.lead)
+              expect(secondTeam.child).not.toBe(firstTeam.child)
+              expect(firstTeam.lead.session.requestHeader()?.config).toMatchObject({ provider, model })
+              expect(firstTeam.child.session.requestHeader()?.config).toMatchObject({ provider, model })
+            }
+            if (nativeTeamApproval) {
+              teamEvidence.approval = { directory: evidence }
+              await verifyLiveTeamApproval({ host, page, provider, evidence: teamEvidence.approval })
+            }
           }
           expect(errors).toEqual([])
           await page.screenshot({ path: join(evidence, `${profile.id}.png`), fullPage: true })

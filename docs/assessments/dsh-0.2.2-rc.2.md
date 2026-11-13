@@ -1,8 +1,8 @@
 # DSH 0.2.2-rc.2 升级评估
 
-评估日期：2026-11-13。插件基线为 `0.2.2-alpha` 的 `328ef39fcd0ea8a6560d538c4e2757d29b779f98`，已发布版本 `0.2.2-rc.1.2`，该基线声明的宿主为 RC.1。第 1–8 节保留实施前评估；获授权后的 RC.2 迁移和验收见第 9 节，旧节中的“本轮”均指评估阶段。上游和原 RC.1 试用实例保持不变，未发布。
+评估日期：2026-11-13。插件基线为 `0.2.2-alpha` 的 `328ef39fcd0ea8a6560d538c4e2757d29b779f98`，已发布版本 `0.2.2-rc.1.2`，该基线声明的宿主为 RC.1。第 1–8 节保留实施前评估；获授权后的 RC.2 迁移和首次验收见第 9 节，后续真实 Devin Teams 补验见第 10 节，旧节中的“本轮”均指评估阶段。上游和原 RC.1 试用实例保持不变，未发布。
 
-**RC.2 的代码迁移与确定性回归已完成，真实 Devin 的分项结论见第 9 节。** 以下保留实施前的迁移判断：不能只升依赖。 最大变化是具名、多层子代理与按会话启用 Teams；可同步删除旧团队成员补丁、重复归属遍历和第二套团队弹层。ACP 连续性、审批、补存与首次绑定静默仍由插件负责。已有会话切模压缩、原生分叉的完整能力预检并未被 RC.2 解决。
+**RC.2 的代码迁移与确定性回归已完成；后续真实 Devin 共享任务、成员消息、ACP 审批和待审批取消/续接均通过，分项边界见第 9、10 节。** 以下保留实施前的迁移判断：不能只升依赖。 最大变化是具名、多层子代理与按会话启用 Teams；可同步删除旧团队成员补丁、重复归属遍历和第二套团队弹层。ACP 连续性、审批、补存与首次绑定静默仍由插件负责。已有会话切模压缩、原生分叉的完整能力预检并未被 RC.2 解决。
 
 ## 1. Devin 真实测试的准确状态
 
@@ -206,3 +206,38 @@ Devin 使用临时认证副本、HOME/XDG/profile/workspace，MCP 注册也发�
 `product-controls.e2e.ts` 在 `DSH_E2E_NATIVE_CATALOG_DIAGNOSTICS=1` 下完成全部观察后严格失败，严格失败日志为 `e2e-native-ui-diagnostic.log`；各次观察输出为 `.local/e2e-evidence/native-catalog/contracts.json`。Close 与 Escape 均落到 BODY；下一次 Tab 可到可用控件。普通回归验证菜单 Escape、Modal 焦点循环、退出后没有残留遮罩和键盘可用性，同时保留观察结果；不把 BODY 视为理想返回位置。
 
 原因是原生目录在 Modal 操作时卸载 footer 触发按钮，而公开 Modal 仅能尝试返回原先的 DOM 节点；footer 没有 triggerRef/dismiss，Modal 没有返回焦点回退参数。可落地的上游方案是给 Modal 增加公开的返回目标回调，并由 subagent footer 提供稳定目录触发器。插件不修改上游，不使用私有 DOM 定位、模拟 Escape 或复制原生焦点管理。强行聚焦 composer 会改变用户位置并可能弹出触屏键盘，因此不采用。这是保留的 UI 限制，不是已修复项。
+
+## 10. 真实 Devin Teams 补验（基线 141760b）
+
+用户再次明确授权后，继续使用同一 RC.2 生产构建、独立 Host/profile/workspace 和临时认证副本；没有修改上游。新证据位于 `.local/devin-teams-rc2/`，上一轮失败原样保留。当前 CLI 仍为 `3000.12.43`，ACP 握手版本为 `0.0.0-dev`；独立 CLI 版本和隔离注册取证均通过。实际 `models list --format json` 目录将精确 `swe-2-high` 标为 `Free`，没有改用其他模型。
+
+### 共享任务、成员消息与一次授权：通过
+
+`shared-1.log`：1 项真实浏览器测试通过，93.15 秒；结果、模型目录与截图保存在 `shared-1/`。真实 Devin Lead 创建两个共享任务和一个名为 calculator 的真实 Devin 子代理：子代理领取并完成 Compute，发送一次带本次 token 和计算结果的消息；Lead 收到并持久化该 relay 后领取、完成依赖的 Review，再生成最终回复。两个任务均为 completed、revision 3，owner 分别是 calculator 与 lead。
+
+11 次原始 `allow_once` 审批对应 11 次成功 Host 工具执行：两次创建任务、一次 subagent、两次获取任务、四次更新任务、一次 send_message 和一次任务列表。原始七选项在 native UI 完整展示，子会话请求转呈到 Lead；每项 owner、request、原文哈希和一次授权决定与结果关联，0 范围违规，没有改为会话授权或 bypass。截图确认原生子代理目录显示一个完成成员、两个完成共享任务和单一 ACP 成员设置入口。
+
+共享任务通过不代表审批拒绝、主动取消或所有原生 sandbox escalation 均通过；这些边界单独验证。
+
+### 审批拒绝与取消专项
+
+`permissions-1.log`：1 项真实浏览器测试通过，88.85 秒；结果、目录、分阶段截图和脱敏 trace 保存在 `permissions-1/`。专项使用 `DSH_E2E_LIVE_DEVIN_PERMISSIONS=1`，避免重复已通过的共享任务。它沿用同一精确 CLI、模型与隔离环境，显式设置 ACP Ask；测试经公开 `startActivation` 创建一个真实 Devin 子会话，创建动作由夹具控制，不能把此项计作模型自主创建成员。模型自主创建已由上一项覆盖。
+
+| 阶段       | 真实观察                                                                                                                                                                              |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Allow      | 在原生界面选择原始 `allow_once`，决定前无文件；仅 1 次 Host write 成功，内容精确匹配本阶段 marker，DSH turn completed                                                                 |
+| Reject     | 在原生界面选择原始 `reject_once`，0 Host 派发、文件不存在；Agent 正常结束该轮，没有替代工具或重试写入                                                                                 |
+| Stop       | 打开原生子会话侧栏，点击 Stop，经 `subagents.interruptByUser` 取消；原始权限请求 outcome=cancelled 且无 optionId，DSH turn=aborted，ACP stopReason=cancelled；0 Host 派发、文件不存在 |
+| 继续与刷新 | 在同一子会话输入无工具续聊，真实 ACP prompt 的 session ID 与原请求相同，返回 end_turn 和新回复；被拒绝/取消的文件仍不存在，旧请求没有再出现，页面刷新后仍无旧审批                     |
+
+三个请求均保留完整七选项与原文哈希；决定前重新验证 owner、root、请求与取消信号，实际工具执行还要匹配本阶段唯一请求和参数。同一执行的重复准入检查幂等，第二次写入不被接受。原生 standing approval 与 sandbox 没有因一次选择放宽，范围违规为 0。真实浏览器全程 renderer errors 为空。
+
+### 本轮修复、回归与限制
+
+本轮没有修改生产代码、包版本、锁文件或上游；沿用 `141760b` 的已验证 RC.2 产物。补齐独立 ACP 权限生命周期测试、11 项离线单测（含越界与错误决定反例）与入口文档。发现旧 `DSH_E2E_LIVE_TEAMS_APPROVAL` 只等待 DSH bash sandbox escalation、没有处理 Devin 更早的 ACP Ask，现对该不适用组合在 Host/模型启动前明确拒绝，并禁止与新专项混用；零推理前置拒绝验证通过（`native-approval-preflight.log`）。新专项不冒称覆盖原生 bash 升权。
+
+11 项离线测试以及 test/E2E 类型检查通过，日志为 `permission-unit-result.log`、`permission-types-final.log` 和 `permission-unit-types.log`。原有生产全量、构建和桌面证据仍按第 9 节的输入边界复用，没有把它们冒充本轮重新执行。两项真实测试本轮各执行一次即通过，之后没有继续重复调用模型。
+
+实测截图另确认一个原生标题限制：停止后的灰色工具分组仍可能显示 `Wrote files`，上方显示 `Stopped`。插件已将 cancelled 投为 `isError=true` 并附 Interrupted；上游 `process-activity` 只按工具名称分类，关闭分组一律取 `done.write`，并不读取取消/失败状态。因此该标题不是文件成功证据，本次实际取消仍为 0 派发、无文件。可落地的上游方案是让分组标题读取终态，取消/失败时改用中性工具名称或相应状态词；本轮不改上游，也不另造一套插件分组展示。
+
+本轮通过范围为 macOS 上的 RC.2 真实浏览器、上述单模型任务及**待 ACP 审批时**取消。没有验证运行中 shell 取消、Host 重启恢复、双模型或 Windows。第 9 节的首次真实 Teams 验收缺口已由这里的分项结果补齐；原生返回焦点、切模压缩、分叉预检等既有限制不因此解除。只提交到 `0.2.2-alpha`，不发布。

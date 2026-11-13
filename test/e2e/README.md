@@ -82,7 +82,7 @@ Teams 专项：`pnpm test:e2e test/e2e/agent-teams.e2e.ts test/e2e/teams-boundar
 
 真实双模型检查增加 `DSH_E2E_LIVE_TEAMS_MULTIMODEL=1 DSH_E2E_LIVE_PROFILES=devin`，必须同时显式提供两个不同的精确 ID：`DSH_E2E_LIVE_DEVIN_MODEL` 与 `DSH_E2E_LIVE_TEAMS_SECOND_MODEL`，首次 prompt 前均须在当前目录中找到。隔离 Host 的原生子代理模型设置只授权这两条路由；Lead 保持首模型，第二次为新的成员选择第二模型，不在已建立的 ACP 会话原地切模。须事先确认两种模型均在授权与额度范围内，名字不保证免费或低价。`DSH_E2E_RETAIN=1 DSH_E2E_BROWSER_CHANNEL=chrome` 打开并保留随窗口大小自适应的本机 Chrome；该模式要求只选一个 Agent，完成断言后暂停测试退出，不能作为 CI 完成信号。实例地址、重新打开所需的 `authenticatedUrl` 与专属停止文件写入仅当前用户可读写的 `.local/e2e-live-teams/review-instance.json`；其中登录链接仅供本地查看，不要分享。需要关闭时创建其中的 `stopFile`，才会清理对应宿主和浏览器。
 
-`DSH_E2E_LIVE_TEAMS_APPROVAL=1` 额外创建一个真实新成员，验证其初始 DSH 审批策略保留原生委派的 `never`。为了单独验证原生 DSH 工具的沙箱升权，测试夹具只在指定文件写入命令准入时显式设置原生 `ask` 与只读沙箱；这不是生产默认行为。测试直接在主会话的成员卡上点击“允许一次”，核对原生 `approval/asked` 与 `approval/decided` 均归属子会话，批准前无文件副作用、批准后产生临时文件，且页面始终停留在主会话。建议限定 `DSH_E2E_LIVE_PROFILES=devin`；模型不可用时，通过 `DSH_E2E_LIVE_DEVIN_MODEL` 指定当前目录中的精确 ID。
+`DSH_E2E_LIVE_TEAMS_APPROVAL=1` 额外创建一个真实新成员，验证其初始 DSH 审批策略保留原生委派的 `never`。为了单独验证原生 DSH 工具的沙箱升权，测试夹具只在指定文件写入命令准入时显式设置原生 `ask` 与只读沙箱；这不是生产默认行为。测试直接在主会话的成员卡上点击“允许一次”，核对原生 `approval/asked` 与 `approval/decided` 均归属子会话，批准前无文件副作用、批准后产生临时文件，且页面始终停留在主会话。该夹具目前没有处理 Devin 在此之前提出的独立 ACP Ask，因此对 Devin 在启动 Host/模型前明确拒绝，不能将一直等待目标卡片算作产品失败。Devin 的 `DSH_E2E_LIVE_DEVIN_PERMISSIONS` 是另一条 ACP 权限专项，不覆盖本段原生沙箱升权；两项 flag 不能混用。
 
 ACP 自有工具的审批另行验收：原生委派的 `never` 继续约束 DSH 工具，ACP 请求通过原生审批卡回答，并在 Sidecar 保留独立审计。对应回归核对实际问答、请求与决定的关联及后续执行，不要求这条路径生成原生 Session 的审批事件；不能用上述原生 DSH 升权专项替代 ACP 自有工具审批验收。
 
@@ -235,6 +235,10 @@ node scripts/check-devin-live.ts "$(command -v devin)"
 查看 trace 时需区分事件层级：`run/start` 与 `run/summary` 描述一次检查，`phase/completed` 描述一个阶段完成，tool 事件描述单次工具分发或结果。`test/assertions-passed` 只表示脚本断言通过；终态还要求 trace 完成写入且进程输出 `LIVE_TEST_PASS`。ACP call、团队 message、step 和 prompt 是不同对象，不能把数量互相当作对方的数量。Host 的工具调用 ID 与成功 `send_message` 返回的 messageId 通过 trace 中显式记录的关联字段连接，不能靠相邻日志行推断。ACP provider 内部发出的模型请求数量及传输重试可能不可观察；`context used` 是上下文使用量，不是计费 token 数。
 
 诊断日志只覆盖启用后的运行；离线检查不能替代真实端到端验证。之后生成的 trace 无法还原既有运行中调用数量的成因。脚本中的工具准入预算只约束该测试，不保护生产环境。
+
+RC.2 的真实浏览器共享任务验收使用 `live-agents.e2e.ts`，显式设置 `DSH_E2E_LIVE=1 DSH_E2E_LIVE_PROFILES=devin DSH_E2E_LIVE_TEAMS=1 DEVIN_LIVE_AUTH=existing DSH_E2E_LIVE_DEVIN_MODEL=<精确模型>`。它通过原生界面逐项回答本次两个任务和一个成员的原始一次授权，验证依赖任务、成员消息及收到消息后的主会话回复。CLI 发布版本由同一可执行文件的有界 `--version` 取得；ACP 握手版本单独记录，不能混用。
+
+在以上设置中加 `DSH_E2E_LIVE_DEVIN_PERMISSIONS=1`，改为单独验收真实子会话的 Allow、Reject、待审批时 Stop 和继续，避免重复执行共享任务。该专项明确使用隔离 Ask 配置，只有各阶段精确的临时 marker 写入属于授权范围；成员创建由测试调用公开原生接口控制，不能据此声称模型自己创建成员。它与旧 `DSH_E2E_LIVE_TEAMS_APPROVAL` 的 native bash sandbox escalation 是不同场景，不互相替代。两项入口均使用临时认证副本、HOME/XDG 和 profile，结束后清理，不修改用户日常配置。
 
 Claude 使用 DeepSeek 等第三方服务时，应同时核对 `ANTHROPIC_BASE_URL`、认证变量及模型映射，并通过 `DSH_E2E_LIVE_CLAUDE_ENV_KEYS` 传入所需配置。模型目录可返回不代表生成已认证，模型别名也不能证明实际供应商。遇到意外 OAuth 报错时，先检查临时 profile 的有效路由和认证配置，再判断是否需要登录。
 
