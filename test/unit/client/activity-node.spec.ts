@@ -937,13 +937,13 @@ describe('ACP activity conversation node', () => {
     expect(rendered).toContain('activity.copy')
   })
 
-  it('projects Kimi complete-file writes through the native DiffBlock primitive', () => {
+  it('projects generic complete-file writes through the native DiffBlock primitive', () => {
     const element = activityRowElement({
       row: {
         dshSessionId: 'dsh-1',
         ownerDshSessionId: 'dsh-1',
         promptAnchorMessageId: 'user-3',
-        activityId: 'kimi-write',
+        activityId: 'generic-write',
         activitySeq: 1,
         revisionSeq: 2,
         time: 2,
@@ -952,27 +952,27 @@ describe('ACP activity conversation node', () => {
         presentation: 'Write fixture',
         rawDetail: JSON.stringify({
           toolKind: 'edit',
-          rawInput: { path: '/workspace/kimi.txt', content: 'KIMI_UI_FILE_OK\n' },
-          rawOutput: 'Wrote 16 bytes to /workspace/kimi.txt',
+          rawInput: { path: '/workspace/generic.txt', content: 'FILE_WRITE_OK\n' },
+          rawOutput: 'Wrote 16 bytes to /workspace/generic.txt',
         }),
       },
       t: (key) => key,
       open: true,
     })
     const rendered = JSON.stringify(element)
-    expect(rendered).toContain('/workspace/kimi.txt')
-    expect(rendered).toContain('KIMI_UI_FILE_OK')
+    expect(rendered).toContain('/workspace/generic.txt')
+    expect(rendered).toContain('FILE_WRITE_OK')
     expect(rendered).not.toContain('Wrote 16 bytes')
     expect(rendered).not.toContain('toolKind')
   })
 
-  it('preserves Kimi numbered read output when the total file length is unknown', () => {
+  it('preserves generic numbered read output when the total file length is unknown', () => {
     const element = activityRowElement({
       row: {
         dshSessionId: 'dsh-1',
         ownerDshSessionId: 'dsh-1',
         promptAnchorMessageId: 'user-3',
-        activityId: 'kimi-read',
+        activityId: 'generic-read',
         activitySeq: 1,
         revisionSeq: 2,
         time: 2,
@@ -1002,7 +1002,7 @@ describe('ACP activity conversation node', () => {
         dshSessionId: 'dsh-1',
         ownerDshSessionId: 'dsh-1',
         promptAnchorMessageId: 'user-3',
-        activityId: 'kimi-read-status',
+        activityId: 'generic-read-status',
         activitySeq: 1,
         revisionSeq: 2,
         time: 2,
@@ -1025,14 +1025,14 @@ describe('ACP activity conversation node', () => {
     expect(rendered).not.toContain('totalLines')
   })
 
-  it('does not misclassify Kimi Grep or malformed line windows as file reads', () => {
+  it('does not misclassify generic Grep or malformed line windows as file reads', () => {
     const row = (rawInput: Record<string, unknown>, rawOutput: string) =>
       activityRowElement({
         row: {
           dshSessionId: 'dsh-1',
           ownerDshSessionId: 'dsh-1',
           promptAnchorMessageId: 'user-3',
-          activityId: 'kimi-read-shape',
+          activityId: 'generic-read-shape',
           activitySeq: 1,
           revisionSeq: 2,
           time: 2,
@@ -1048,7 +1048,7 @@ describe('ACP activity conversation node', () => {
     expect(JSON.stringify(row({ path: '/workspace/file' }, '1\tone\n3\tthree'))).toContain('rawOutput')
   })
 
-  it('maps an empty Kimi write but not a local replacement edit as a whole-file diff', () => {
+  it('maps an empty generic write but not a local replacement edit as a whole-file diff', () => {
     const render = (rawInput: Record<string, unknown>) =>
       JSON.stringify(
         activityRowElement({
@@ -1056,7 +1056,7 @@ describe('ACP activity conversation node', () => {
             dshSessionId: 'dsh-1',
             ownerDshSessionId: 'dsh-1',
             promptAnchorMessageId: 'user-3',
-            activityId: 'kimi-edit-shape',
+            activityId: 'generic-edit-shape',
             activitySeq: 1,
             revisionSeq: 2,
             time: 2,

@@ -1605,6 +1605,29 @@ describe('session-owned native Teams MCP bridge', () => {
     },
   )
 
+  it('never revives a withdrawn advertised owner when the same registration returns', async () => {
+    const fixture = await setup(undefined, ['present', 'other'], false)
+    fixture.lease.beginPrompt(new AbortController().signal)
+    const request = fixture.permission('present')
+    expect(await fixture.lease.inspectPermission!(request)).toMatchObject({ reason: 'auto-approved' })
+    const targetSignal = fixture.lease.permissionSignal!(request)!
+    const registration = fixture.definitions.get('present')
+    fixture.hidden.add('present')
+    fixture.listeners.get('tools/change')!()
+    fixture.hidden.delete('present')
+    fixture.listeners.get('tools/change')!()
+
+    expect(fixture.definitions.get('present')).toBe(registration)
+    expect(targetSignal.aborted).toBe(true)
+    expect(fixture.lease.validatePermissionDecision!(request)).toBe(false)
+    expect(fixture.lease.needsRefresh!()).toBe(true)
+    expect(fixture.lease.signal.aborted).toBe(false)
+    expect((await fixture.client.listTools()).tools.map((tool) => tool.name)).toEqual(['other'])
+    expect(await fixture.client.callTool({ name: 'present', arguments: {} })).toMatchObject({ isError: true })
+    expect((await fixture.client.callTool({ name: 'other', arguments: {} })).isError).not.toBe(true)
+    expect(fixture.execute).toHaveBeenCalledOnce()
+  })
+
   it('keeps an empty withdrawn directory connected without admitting its old tools', async () => {
     const fixture = await setup('antigravity', ['present'], false)
     fixture.lease.beginPrompt(new AbortController().signal)
@@ -2777,19 +2800,17 @@ describe('session-owned native Teams MCP bridge', () => {
     expect(second.lease.signal.aborted).toBe(true)
     expect(second.listeners.size).toBe(0)
   })
-  it('recognizes Kimi’s exact qualified title only on its runtime and current capability', async () => {
-    const { lease, server, name, permission } = await setup('kimi')
+  it('does not authorize a generic Agent from a qualified or bare display title', async () => {
+    const { lease, server, name, permission } = await setup('generic')
     lease.beginPrompt(new AbortController().signal)
     expect(
-      (
-        await lease.permission({
-          ...permission(),
-          toolCall: { toolCallId: 'kimi', title: `mcp__${server.name}__${name}` },
-        })
-      )?.outcome,
-    ).toEqual({ outcome: 'selected', optionId: 'yes' })
+      await lease.permission({
+        ...permission(),
+        toolCall: { toolCallId: 'generic', title: `mcp__${server.name}__${name}` },
+      }),
+    ).toBeUndefined()
     expect(
-      await lease.permission({ ...permission(), toolCall: { toolCallId: 'kimi', title: 'spawn_teammate' } }),
+      await lease.permission({ ...permission(), toolCall: { toolCallId: 'generic', title: 'spawn_teammate' } }),
     ).toBeUndefined()
   })
   it('answers only a correlated Codex MCP approval with once scope, never other forms or servers', async () => {

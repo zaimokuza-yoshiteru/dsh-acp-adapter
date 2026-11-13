@@ -25,7 +25,7 @@ class NativeControl extends LlmAdapter {
   }
 }
 
-const profiles = ['kimi', 'devin', 'codex', 'claude', 'codebuddy'] as const
+const profiles = ['devin', 'codex', 'claude', 'codebuddy'] as const
 
 describe.each(profiles)('permission isolation: %s', (profile) => {
   it('preserves native DSH tool policies when selecting and executing ACP', async () => {

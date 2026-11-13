@@ -89,15 +89,19 @@ it('revokes a title-only manual target without granting identity or cancelling i
   expect(lease.permissionSignal!(native)).toBeUndefined()
 })
 
-it.each([false, true])(
-  'rechecks Codex manual elicitation admission at reply time without a tools/change event (revoked: %s)',
-  async (revoke) => {
+it.each(['unchanged', 'ended', 'replaced'] as const)(
+  'rechecks the captured Codex manual elicitation admission at reply time without a tools/change event (%s)',
+  async (change) => {
     const target = new AbortController()
-    let admissionActive = true
+    let currentAdmission = { active: true }
+    let capturedAdmission: typeof currentAdmission | undefined
     const elicitationSignal = vi.fn(() => {
-      if (!admissionActive) target.abort(new Error('Host step admission closed'))
+      capturedAdmission = currentAdmission
       return target.signal
     })
+    const validateElicitationDecision = vi.fn(
+      () => capturedAdmission === currentAdmission && capturedAdmission?.active === true,
+    )
     const lease: AcpMcpLease = {
       signal: new AbortController().signal,
       servers: [],
@@ -106,6 +110,7 @@ it.each([false, true])(
       async close() {},
       permission: () => undefined,
       elicitationSignal,
+      validateElicitationDecision,
       elicitation: () => undefined,
     }
     const shown = Promise.withResolvers<AbortSignal | undefined>()
@@ -157,14 +162,16 @@ it.each([false, true])(
     })
     const signal = await shown.promise
     expect(signal?.aborted).toBe(false)
-    admissionActive = !revoke
+    if (change === 'ended') currentAdmission.active = false
+    else if (change === 'replaced') currentAdmission = { active: true }
     // No event or abort was emitted: the reply boundary must query the owner.
     expect(target.signal.aborted).toBe(false)
     answer.resolve({ action: 'accept', content: { persist: 'once' } })
     await prompt
-    expect(elicitationSignal.mock.calls.length).toBeGreaterThanOrEqual(2)
+    expect(elicitationSignal).toHaveBeenCalledOnce()
+    expect(validateElicitationDecision).toHaveBeenCalledTimes(2)
     expect(JSON.parse(received.join(''))).toEqual(
-      revoke ? { action: 'cancel' } : { action: 'accept', content: { persist: 'once' } },
+      change === 'unchanged' ? { action: 'accept', content: { persist: 'once' } } : { action: 'cancel' },
     )
   },
 )

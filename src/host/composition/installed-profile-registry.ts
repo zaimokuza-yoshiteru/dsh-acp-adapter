@@ -13,7 +13,7 @@ import { ensureHostContinuity } from './host-continuity.ts'
 import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
 import type { AdapterRegistrationHandle } from '@deepseek-ai/dsh-llm'
 import type { AcpProbeOptions } from '../../protocol/v1/types.ts'
-import { acpAgentIdFromRoute, acpRouteId } from '../../domain/session/agent-config.ts'
+import { acpAgentIdFromRoute, acpRouteId, retiredAgentReason } from '../../domain/session/agent-config.ts'
 import type { AcpAgentConfig, AcpResolvedAgent } from '../../domain/session/agent-config.ts'
 import { createTeamManagement } from '../teams/management.ts'
 import { createToolApprovalPolicyReader } from '../subagent/tool-approval-policy.ts'
@@ -148,6 +148,7 @@ export interface AcpRegistrationFact {
  */
 export function acpRegistrationFacts(agents: Record<string, AcpAgentConfig>): AcpRegistrationFact[] {
   return Object.entries(agents)
+    .filter(([id, config]) => retiredAgentReason(id, config) === undefined)
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([id, config]) => ({ provider: acpRouteId(id), displayName: config.name }))
 }
@@ -700,11 +701,14 @@ export async function installInstalledProfileRegistry(
   // canonical; a string compare replaces a deep-equal helper.
   let registeredKey = ''
   const ensureRegistration = (): void => {
-    const facts = acpRegistrationFacts(agents)
+    const availableAgents = Object.fromEntries(
+      Object.entries(agents).filter(([id, config]) => retiredAgentReason(id, config) === undefined),
+    )
+    const facts = acpRegistrationFacts(availableAgents)
     // Registration facts include the selector label, while the shared launch
     // identity additionally fences the model catalogue from command/args/env/
     // runtime edits. Values are hashed and never enter the registration key.
-    const identities = Object.entries(agents)
+    const identities = Object.entries(availableAgents)
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([id, config]) => [id, profileLaunchIdentityHash(id, config)])
     const key = JSON.stringify({ facts, identities })
@@ -712,7 +716,7 @@ export async function installInstalledProfileRegistry(
       // Registration facts intentionally ignore runtime settings such as env
       // and args. Still publish the new active snapshot so the route adapter
       // sees the next immutable generation on its next call.
-      activeAgents = { ...agents }
+      activeAgents = { ...availableAgents }
       return
     }
     const previousActive = activeAgents
@@ -720,10 +724,10 @@ export async function installInstalledProfileRegistry(
     const touched: string[] = []
     // Existing adapters resolve their config through this detached candidate
     // during replace/register; restore it if any registration fails.
-    activeAgents = { ...agents }
+    activeAgents = { ...availableAgents }
     try {
-      for (const id of Object.keys(agents)) {
-        const config = agents[id]
+      for (const id of Object.keys(availableAgents)) {
+        const config = availableAgents[id]
         if (config === undefined) continue
         let routeAdapter = profileAdapters.get(id)
         if (routeAdapter === undefined) {
@@ -819,7 +823,7 @@ export async function installInstalledProfileRegistry(
       throw error
     }
     for (const [id, handle] of registrations) {
-      if (agents[id] !== undefined) continue
+      if (availableAgents[id] !== undefined) continue
       handle()
       registrations.delete(id)
       const adapter = profileAdapters.get(id)

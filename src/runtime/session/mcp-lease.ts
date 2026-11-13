@@ -71,11 +71,16 @@ export interface AcpMcpLease {
   permissionSignal?(request: acp.RequestPermissionRequest): AbortSignal | undefined
   /** Revalidate the captured target after audit or a manual answer without resolving policy again. */
   validatePermissionDecision?(request: acp.RequestPermissionRequest): boolean
-  /** Revocable lifetime of an identified Host tool approval carried by Codex elicitation. */
+  /** Capture the target, prompt, and Host admission of a Codex tool approval once. */
   elicitationSignal?(
     request: acp.CreateElicitationRequest,
     toolCall: acp.ToolCallUpdate | undefined,
   ): AbortSignal | undefined
+  /** Revalidate the captured approval without rebinding it to a newer Host step. */
+  validateElicitationDecision?(
+    request: acp.CreateElicitationRequest,
+    toolCall: acp.ToolCallUpdate | undefined,
+  ): boolean | undefined
   elicitation?(
     request: acp.CreateElicitationRequest,
     toolCall: acp.ToolCallUpdate | undefined,

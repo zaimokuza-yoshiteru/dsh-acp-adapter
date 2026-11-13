@@ -27,19 +27,6 @@
   },
   {
     "input": {
-      "profileId": "kimi",
-      "config": {
-        "name": "kimi",
-        "command": "agent-cli",
-        "args": ["acp"],
-        "env": {}
-      },
-      "env": {}
-    },
-    "expectedHash": "069e7f83faf8fbb5"
-  },
-  {
-    "input": {
       "profileId": "claude",
       "config": {
         "name": "claude",
@@ -66,20 +53,6 @@
       "env": {}
     },
     "expectedHash": "12abd2b732bd4014"
-  },
-  {
-    "input": {
-      "profileId": "devin",
-      "config": {
-        "name": "Explicit Kimi",
-        "command": "agent-cli",
-        "args": [],
-        "env": {},
-        "runtime": "kimi"
-      },
-      "env": {}
-    },
-    "expectedHash": "659de16512c9d05e"
   },
   {
     "input": {

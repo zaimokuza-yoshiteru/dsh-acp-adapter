@@ -37,7 +37,7 @@ const effortOption = (
 })
 
 describe('ACP catalog reasoning metadata', () => {
-  it.each(['codex', 'claude', 'kimi', 'devin'])('maps %s thought_level to DSH reasoning metadata', (profileId) => {
+  it.each(['codex', 'claude', 'devin'])('maps %s thought_level to DSH reasoning metadata', (profileId) => {
     const info = reasoningInfoFromConfigOptions(profileId, config, [effortOption()])
     expect(info?.efforts.map((effort) => effort.id)).toEqual(['low', 'high', 'max'])
     expect(info?.defaultEffort).toBe('high')

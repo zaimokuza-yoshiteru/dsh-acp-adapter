@@ -18,7 +18,7 @@ function finishFixture(path: string, code: number) {
   renameSync(`${path}.pending`, path)
 }
 
-describe.each(['claude', 'codex', 'devin', 'kimi'])('native terminal jobs: %s', (profile) => {
+describe.each(['claude', 'codex', 'devin'])('native terminal jobs: %s', (profile) => {
   it('shows running jobs across reload, isolates owners, and settles without extra model turns', async () => {
     const host = await launchAdapterWorld()
     let browser!: TestBrowser

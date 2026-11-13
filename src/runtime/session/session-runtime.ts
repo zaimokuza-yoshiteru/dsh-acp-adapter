@@ -396,100 +396,13 @@ function mergeToolCallSnapshot(
   return structuredClone(next)
 }
 
-/**
- * Some ACP agents stream a complete JSON argument object through tool content
- * immediately before requesting permission, but omit `rawInput` from the
- * request itself.  Recover only a complete, bounded execute-command object;
- * partial JSON and arbitrary prose remain unusable rather than being guessed.
- */
-function executeInputFromContent(content: unknown): Record<string, unknown> | undefined {
-  const parts: string[] = []
-  const visit = (value: unknown): void => {
-    if (Array.isArray(value)) {
-      for (const item of value) visit(item)
-      return
-    }
-    if (typeof value !== 'object' || value === null) return
-    const block = value as Record<string, unknown>
-    if (block.type === 'text' && typeof block.text === 'string') parts.push(block.text)
-    else if (block.type === 'content') visit(block.content)
-  }
-  visit(content)
-  const serialized = parts.join('').trim()
-  if (serialized === '' || Buffer.byteLength(serialized, 'utf8') > 64 * 1024) return undefined
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(serialized)
-  } catch {
-    return undefined
-  }
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined
-  const input = parsed as Record<string, unknown>
-  const command = input.command ?? input.cmd
-  const argv = input.argv
-  if (
-    !(typeof command === 'string' && command.trim() !== '') &&
-    !(Array.isArray(argv) && argv.length > 0 && argv.every((item) => typeof item === 'string'))
-  )
-    return undefined
-  return structuredClone(input)
-}
-
-function permissionToolCall(prior: acp.ToolCallUpdate | undefined, request: acp.ToolCallUpdate): acp.ToolCallUpdate {
-  const toolCall = prior === undefined ? structuredClone(request) : mergeToolCallSnapshot(prior, request)
-  if (toolCall.kind === 'execute' && toolCall.rawInput === undefined) {
-    // Kimi replaces the streamed JSON argument content with human-readable
-    // approval prose on the request itself. Prefer the request when it still
-    // contains structured input, then fall back to the preceding snapshot.
-    const recovered = executeInputFromContent(toolCall.content) ?? executeInputFromContent(prior?.content)
-    if (recovered !== undefined) toolCall.rawInput = recovered
-  }
-  return toolCall
-}
-
-/** Kimi namespaces permission ids as `<turn>:<tool-id>` while its preceding
- * standard tool updates use the unprefixed id.  Accept that one documented
- * numeric namespace form only, and only when the candidate is unambiguous and
- * kind-compatible; all other opaque ids remain exact-match only. */
-function permissionPriorSnapshot(
+/** Permission requests may omit details already published for the same opaque call id. */
+function permissionToolCall(
   snapshots: ReadonlyMap<string, acp.ToolCallUpdate> | undefined,
   request: acp.ToolCallUpdate,
-): acp.ToolCallUpdate | undefined {
-  const exact = snapshots?.get(request.toolCallId)
-  if (exact !== undefined) return exact
-  const match = /^(\d+):(.+)$/.exec(request.toolCallId)
-  if (match?.[2] !== undefined) {
-    const candidate = snapshots?.get(match[2])
-    if (candidate !== undefined) {
-      if (request.kind !== undefined && candidate.kind !== undefined && request.kind !== candidate.kind)
-        return undefined
-      return candidate
-    }
-  }
-  // A sole candidate can belong to an earlier operation, including a completed
-  // one. Without a matching identity, keep the request's own details only.
-  return undefined
-}
-
-const ACP_PERMISSION_INPUT_GRACE_MS = 1_500
-
-async function completePermissionToolCall(
-  snapshots: ReadonlyMap<string, acp.ToolCallUpdate> | undefined,
-  request: acp.ToolCallUpdate,
-  signal: AbortSignal | undefined,
-): Promise<acp.ToolCallUpdate> {
-  const deadline = Date.now() + ACP_PERMISSION_INPUT_GRACE_MS
-  let toolCall = permissionToolCall(permissionPriorSnapshot(snapshots, request), request)
-  while (
-    toolCall.kind === 'execute' &&
-    toolCall.rawInput === undefined &&
-    Date.now() < deadline &&
-    !isAborted(signal)
-  ) {
-    await new Promise<void>((resolve) => setTimeout(resolve, 20))
-    toolCall = permissionToolCall(permissionPriorSnapshot(snapshots, request), request)
-  }
-  return toolCall
+): acp.ToolCallUpdate {
+  const prior = snapshots?.get(request.toolCallId)
+  return prior === undefined ? structuredClone(request) : mergeToolCallSnapshot(prior, request)
 }
 
 async function raceAbort<T>(pending: Promise<T>, signal: AbortSignal | undefined, onAbort: () => T): Promise<T> {
@@ -1546,6 +1459,11 @@ export class AcpSessionRuntime {
                 const targetSignal = lease?.elicitationSignal?.(params, toolCall)
                 if (targetSignal !== undefined)
                   signal = AbortSignal.any(signal === undefined ? [targetSignal] : [signal, targetSignal])
+                const decisionCurrent = () =>
+                  !isAborted(signal) &&
+                  lease === this.mcpLease &&
+                  lease?.signal.aborted !== true &&
+                  lease?.validateElicitationDecision?.(params, toolCall) !== false
                 const automaticPromise = Promise.resolve(lease?.elicitation?.(params, toolCall))
                 let automatic: acp.CreateElicitationResponse | undefined
                 if (signal === undefined) automatic = await automaticPromise
@@ -1566,7 +1484,7 @@ export class AcpSessionRuntime {
                     if (onAbort !== undefined) capturedSignal.removeEventListener('abort', onAbort)
                   }
                 }
-                if (isAborted(signal) || lease !== this.mcpLease || lease?.signal.aborted) return { action: 'cancel' }
+                if (!decisionCurrent()) return { action: 'cancel' }
                 if (automatic !== undefined) return automatic
                 const hostToolName = this.mcpLease?.elicitationToolName?.(params, toolCall)
                 const response = await raceAbort(
@@ -1579,11 +1497,7 @@ export class AcpSessionRuntime {
                   signal,
                   () => ({ action: 'cancel' as const }),
                 )
-                return isAborted(signal) ||
-                  lease !== this.mcpLease ||
-                  lease?.elicitationSignal?.(params, toolCall)?.aborted === true
-                  ? { action: 'cancel' }
-                  : response
+                return decisionCurrent() ? response : { action: 'cancel' }
               } finally {
                 this.pendingQuestions -= 1
               }
@@ -1695,7 +1609,7 @@ export class AcpSessionRuntime {
       notification.sessionId === this.sessionId &&
       (update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update')
     ) {
-      // Keep permission enrichment prompt- and session-scoped. Kimi streams
+      // Keep permission enrichment prompt- and session-scoped. Agents stream
       // tool arguments before requesting permission, so the map is cleared at
       // every turn boundary and can never authorize data from another turn.
       const snapshots = this.promptToolSnapshots
@@ -2131,7 +2045,7 @@ export class AcpSessionRuntime {
     }
     const request = {
       ...params,
-      toolCall: await completePermissionToolCall(this.promptToolSnapshots, params.toolCall, signal),
+      toolCall: permissionToolCall(this.promptToolSnapshots, params.toolCall),
     }
     const lease = this.mcpLease
     const inspectPromise = Promise.resolve(lease?.inspectPermission?.(request))

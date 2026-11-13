@@ -63,12 +63,21 @@ Git 与压缩包安装示例：
 | Antigravity                | `agy_acp_server.par`（官方 raw `1.3.0`） | ACP 独立登录       |
 | Claude                     | `claude-agent-acp`                       | `claude`           |
 | Codex                      | `codex-acp`                              | `codex login`      |
-| Kimi                       | `kimi acp`                               | `kimi login`       |
 | Qwen Code                  | `qwen --acp`                             | `qwen`             |
 
 > CodeBuddy CLI 与 WorkBuddy 桌面端使用同一账号积分，无需分别订阅；通过 CodeBuddy CLI 接入 DSH。详见 [CodeBuddy 账号与订阅说明](https://www.codebuddy.cn/docs/ide/Account/pricing)及 [ACP 命令参考](https://www.codebuddy.cn/docs/cli/cli-reference)。
 
 测试范围与限制见 [E2E 验证说明](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/v0.2.1-rc.4.1/test/e2e/README.md)。
+
+## 可选 ACP 预设（开发原型）
+
+新会话的原生模式菜单新增 **ACP**。它不改变用户默认，不迁移旧会话，也不限制标准、PTC、极简或创造模式选择 ACP Agent。**创造插件仍使用原生创造模式**；ACP 预设是另一套可选工具组合，不是替代创造模式。
+
+ACP 预设提供工作区指令、时间、文件读写与搜索、系统终端、后台任务、定时任务、技能读取、询问用户、待办、网页及展示工具。它不安装宿主压缩、`/compact`、宿主规划、子代理或插件管理工具；外部 Agent 管理自己的上下文与私有工具。预设不会改变审批策略，也不会解除已有会话的切模限制。原生模型仍会出现在全局模型选择器中；使用原生模型建议选择标准模式，以保留宿主压缩。
+
+本版移除 Kimi 支持：目录、专属适配及测试矩阵不再包含它。已保存的 Kimi 配置显示为不可用，不启动进程、不转成通用 Agent；用户可自行移除该条目。历史记录不删除。仅保留旧配置诊断和历史绑定指纹的格式兼容；历史验收文档及原始官方目录快照仍记录当时的数据，不代表当前支持。
+
+Agent 专属差异的开发入口见 [兼容模块指南](docs/agent-compatibility.md)。
 
 ## 功能预览
 

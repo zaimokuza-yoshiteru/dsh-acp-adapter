@@ -18,7 +18,9 @@ Host 连续性与诊断隔离另由受控生命周期回归验证：`acpHostCont
 
 `native-parity` 的 mixed generic / diff 两个场景使用合法 ACP 工具混合内容，检查 390px、运行中展开后完成、手动折叠与外层重置、刷新恢复。工具图片、音频和资源目前保留安全文本元信息及不能预览/打开的说明；这不是 assistant 图片附件的保存、播放或预览能力。Diff 补充正文共享原生工具折叠状态，普通工具和终端沿原生文本输出展示；危险 URI、查询凭据和媒体载荷不进入这些元信息。
 
-较广的协议与 Teams 场景覆盖 Claude、Codex、Devin、Kimi 四种 ACP 配置。CodeBuddy 目前仅覆盖 Agent controls 与权限隔离；其目录读取由通用 catalog 测试覆盖，不包含 Teams、成员管理或其他矩阵。真实 Agent 的升级需独立检查。
+较广的协议与 Teams 场景覆盖 Claude、Codex、Devin 三种 ACP 配置。CodeBuddy 目前仅覆盖 Agent controls 与权限隔离；其目录读取由通用 catalog 测试覆盖，不包含 Teams、成员管理或其他矩阵。真实 Agent 的升级需独立检查。
+
+`acp-preset.e2e.ts` 覆盖可选 ACP 预设的原生注册、默认不变、实际工具与压缩边界、390px 菜单及 entry／bundle 热停启。`creator-flow.e2e.ts` 从原生 Plugins 创造入口读取官方技能，经审批安装真实临时本地 bundle，验证目录更新、后续请求、停启和同绑定恢复，并保留原标准模式草稿。两者均只脚本化外部 ACP Agent，不替代真实 Agent 的创造能力验收。
 
 CodeBuddy CLI 的真实运行检查属于本机 opt-in 验证，不纳入普通协议夹具或 CI 的通过声明。本次已完成 macOS CodeBuddy CLI `2.161.2`、模型 `minimax-m2.7` 的 Agent controls 三种场景，每种各运行两轮：Auto 自动批准并恰好执行一次工具；Ask 拒绝一次且工具执行为零；Stop 中止正在等待的工具，确认收到 abort 且无写入副作用。Ask 和 Stop 随后均以同一 ACP session 恢复，完成精确 follow-up；两种场景的 mode 与三个非模型配置值保持，workspace、模型和 MCP scope 匹配，刷新没有重新派发事件或 prompt。此结果仅覆盖记录的本机 CLI、平台、模型与 controls/权限隔离场景，不表示 CodeBuddy Teams、其他平台或 WorkBuddy 桌面应用已通过。已有配置也不会仅凭 `catalogId` 自动切换 runtime。本地 opt-in 检查不是稳定公共命令或 CI 门禁。
 
@@ -55,7 +57,7 @@ CodeBuddy CLI 的真实运行检查属于本机 opt-in 验证，不纳入普通�
 | 原生用户终端       | 原生用户终端独立于 Agent 权限；已打开终端时首次 ACP 执行正常，策略投影不关闭或替换终端，后续请求不重复修改策略                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | 配置热更新         | 路由注册冲突保留原有目录、标签与可继续的 ACP 会话；修正配置后重新生效；移除 profile 后目录不残留路由                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | 权限隔离           | 空会话保留原生默认权限；选模型不改写用户权限（含 Custom）；真正执行 ACP 前才应用审批策略；原生历史被拒绝切换到 ACP 时不改变权限；ACP 会话不污染新会话默认值                                                                                                                                                                                                                                                                                                                                                                                                   |
-| subagent           | Claude / Devin 有完整证据时显示原生只读详情并可刷新；Codex / Kimi 的无证据活动不制造子会话                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| subagent           | Claude / Devin 有完整证据时显示原生只读详情并可刷新；Codex 的无证据活动不制造子会话                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | 原生文件交付       | 四种协议无需工具配置，通过 MCP 自动发现并调用原生 `present`；执行 hooks、文件卡片与预览保持原生行为                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | 插件生命周期       | 通过原生插件管理器在空闲与执行中禁用、重新启用；路由与客户端贡献回收并恢复，后续会话可用                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | 后台任务           | ACP 创建真实进程并显示原生 jobs 列表；刷新和离线期间完成后的重连；会话隔离；成功、失败、原生 registry 取消和 ACP 取消；父轮次内提前完成也不追加模型请求；ACP 仍可读取输出                                                                                                                                                                                                                                                                                                                                                                                     |
@@ -86,7 +88,7 @@ RC 的原生 Teams 名单从成员的 `modelSelection.next` 显示下次选择�
 
 二元一次性集中审批调用子会话原有 pending approval 的回答接口；原生或 ACP 父会话均可使用，不依赖 Teams 开启。Host 核实存活 runtime 的逐层 ownership 与来源路径权限，排除普通独立分支和只读外部子任务投影，并保留原生委派的 `never` 策略。完整多作用域权限请求由原生 root 问题卡代呈，原始 option ID、执行身份和决定记录仍归属子会话；不会缩成一次性选项，也不参与批量允许。普通子会话提问和计划仍保留上游 `DELEGATED_CALLER` 边界。Codex 仅在已核实当前 DSH 工具身份、表单只包含 `persist` 时进入权限专用路径：唯一 `once` 选项使用原生一次性审批，多选项完整代呈。`team-approvals.e2e.ts` 显式设置 `MOCK_TEAM_APPROVAL_ONCE_ONLY=1` 验证原有批量路径；其通过不能替代完整选项专项验收。
 
-Teams 只在原生 profile 提供服务与九个成员工具时接入；调用仍经过 DSH ToolRuntime 的 hooks 和校验。HTTP/stdio 服务、临时能力地址随会话生命周期撤销。为兼容包括 `3000.3.27` 在内的 Devin 版本，适配器通过 `devin mcp add` 注册固定的用户级 `dsh` stdio 入口。每个进程通过环境变量绑定独立会话能力，退出后能力撤销，用户级入口保留；无需文件链接。Codex 通过关联工具调用的 MCP 审批表单选择仅本次允许；Kimi 只接受当前连接的完整工具标题。这些兼容处理均不放行普通表单或其他工具。
+Teams 只在原生 profile 提供服务与九个成员工具时接入；调用仍经过 DSH ToolRuntime 的 hooks 和校验。HTTP/stdio 服务、临时能力地址随会话生命周期撤销。为兼容包括 `3000.3.27` 在内的 Devin 版本，适配器通过 `devin mcp add` 注册固定的用户级 `dsh` stdio 入口。每个进程通过环境变量绑定独立会话能力，退出后能力撤销，用户级入口保留；无需文件链接。Codex 通过关联工具调用的 MCP 审批表单选择仅本次允许。这些兼容处理均不放行普通表单或其他工具。
 
 ## Fork 与通用子会话审批专项
 
@@ -162,7 +164,7 @@ pnpm test:e2e
 
 锁定宿主的 `build:artifacts` 生成 Host、client 与 Web 可运行产物，不能代替上游完整类型门禁；需要检查上游测试/脚本聚合程序时，在最新产物之后单独运行 `build:check`。后者不重建、不验证已有产物的新鲜度。只修改插件测试时，无需重复构建未变的官方 scaffold；共享本地 checkout 的构建、打包与 Host/browser 测试仍须串行。
 
-普通 CI 将全部协议夹具分配给三个独立 runner，片内仍串行且不重试。`scripts/e2e-shards.ts` 从实际文件清单生成分组，新增 `.e2e.ts` 自动纳入；较大的 native parity 夹具按 Claude、Codex、Devin、Kimi 分配，各 profile 恰好运行一次。三个分片全部成功才通过原有 Native UI 必需检查，opt-in 真实 Agent 场景继续按原规则跳过。`node scripts/e2e-shards.ts` 可查看完整分配；`pnpm test:e2e --ci-shard 1/3` 可顺序复现某片，该模式不接受额外文件或名称过滤。默认 `pnpm test:e2e` 仍运行完整清单。依赖 store 与 Chromium 缓存只保存下载内容，Host 每片仍从准确源码标签构建，不复用用户 profile 或认证。
+普通 CI 将全部协议夹具分配给三个独立 runner，片内仍串行且不重试。`scripts/e2e-shards.ts` 从实际文件清单生成分组，新增 `.e2e.ts` 自动纳入；较大的 native parity 夹具按 Claude、Codex、Devin 分配，各 profile 恰好运行一次。三个分片全部成功才通过原有 Native UI 必需检查，opt-in 真实 Agent 场景继续按原规则跳过。`node scripts/e2e-shards.ts` 可查看完整分配；`pnpm test:e2e --ci-shard 1/3` 可顺序复现某片，该模式不接受额外文件或名称过滤。默认 `pnpm test:e2e` 仍运行完整清单。依赖 store 与 Chromium 缓存只保存下载内容，Host 每片仍从准确源码标签构建，不复用用户 profile 或认证。
 
 `DSH_UPSTREAM_CHECKOUT` 可指定其他源码目录。`pnpm test:e2e -t 'claude'` 可只运行一种协议夹具。默认使用 Playwright Chromium；`DSH_E2E_BROWSER_CHANNEL=chrome` 可使用本机已安装 Chrome。`DSH_E2E_NODE` 可指定宿主支持的另一份 Node 运行时，但原生依赖必须针对该 Node ABI 构建。插件构建与常规测试仍遵循 `.nvmrc`。
 
@@ -190,7 +192,7 @@ CI 的产品命令以普通用户运行。Windows hosted runner 的管理员身�
 DSH_E2E_LIVE=1 DSH_E2E_LIVE_PROFILES=codex pnpm test:e2e -t 'live ACP smoke'
 ```
 
-测试从实际目录选择预设的小模型：Claude Haiku、Codex Mini / Spark、Devin SWE-1.7 Medium / Mini Low / Flash、Kimi Coding。没有匹配项就失败，不回退到默认模型；可用 `DSH_E2E_LIVE_<PROFILE>_MODEL` 指定精确 ID，例如 `DSH_E2E_LIVE_DEVIN_MODEL=swe-1-7-medium`。模型别名仍使用该 Agent 已配置的服务路由。
+测试从实际目录选择预设的小模型：Claude Haiku、Codex Mini / Spark、Devin SWE-1.7 Medium / Mini Low / Flash。没有匹配项就失败，不回退到默认模型；可用 `DSH_E2E_LIVE_<PROFILE>_MODEL` 指定精确 ID，例如 `DSH_E2E_LIVE_DEVIN_MODEL=swe-1-7-medium`。模型别名仍使用该 Agent 已配置的服务路由。
 
 每个 Agent 在独立临时工作区的同一会话接收两条无工具请求；第二轮更新宿主指令中的随机标记，验证新指令到达模型、原生 stream 落盘，以及每轮刷新恢复。`DSH_E2E_LIVE_PROFILES=claude` 可限定 Agent；结果、实际模型目录和成功截图写入 gitignored `.local/e2e-live/`。测试会向配置的模型服务发送测试指令、宿主指令与临时工作区元数据，不把项目文件作为输入。登录或网络失败会使测试失败。这组真实连接冒烟不代替上面的工具、审批和 jobs 协议回归。
 
@@ -224,7 +226,7 @@ DEVIN_TEST_MODEL=swe-2-high node scripts/check-devin-live.ts "$(command -v devin
 
 Claude 使用 DeepSeek 等第三方服务时，应同时核对 `ANTHROPIC_BASE_URL`、认证变量及模型映射，并通过 `DSH_E2E_LIVE_CLAUDE_ENV_KEYS` 传入所需配置。模型目录可返回不代表生成已认证，模型别名也不能证明实际供应商。遇到意外 OAuth 报错时，先检查临时 profile 的有效路由和认证配置，再判断是否需要登录。
 
-真实运行中插话使用 `DSH_E2E_LIVE=1 DSH_E2E_LIVE_STEERING=1`，可用 `DSH_E2E_LIVE_PROFILES=codex,kimi,devin` 选择已登录的 Agent；模型仍通过对应的 `DSH_E2E_LIVE_<PROFILE>_MODEL` 指定。该专项先等待真实首段输出，再经原生 `agent.steer` 插话，验证一个 turn、两个 step、两条持久化输入与刷新后的追加回复。它不操作文件或工具。普通两轮宿主指令测试、Teams 测试与插话测试分别记录，不能互相替代。
+真实运行中插话使用 `DSH_E2E_LIVE=1 DSH_E2E_LIVE_STEERING=1`，可用 `DSH_E2E_LIVE_PROFILES=codex,devin` 选择已登录的 Agent；模型仍通过对应的 `DSH_E2E_LIVE_<PROFILE>_MODEL` 指定。该专项先等待真实首段输出，再经原生 `agent.steer` 插话，验证一个 turn、两个 step、两条持久化输入与刷新后的追加回复。它不操作文件或工具。普通两轮宿主指令测试、Teams 测试与插话测试分别记录，不能互相替代。
 
 ## 版本迁移的补充验证
 

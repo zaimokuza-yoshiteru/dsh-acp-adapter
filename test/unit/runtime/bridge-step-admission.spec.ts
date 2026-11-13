@@ -17,6 +17,7 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { createDshToolBridge, createDshToolBridgeKey } from '../../../src/host/tools/bridge.ts'
 import { installStepToolAdmissions } from '../../../src/host/tools/step-tool-admissions.ts'
 import type { AcpMcpLease } from '../../../src/runtime/session/mcp-lease.ts'
+import type { CreateElicitationRequest, CreateElicitationResponse } from '@agentclientprotocol/sdk'
 
 const cleanups: Array<() => unknown | Promise<unknown>> = []
 afterEach(async () => {
@@ -102,13 +103,13 @@ async function fixture(mode: 'native' | 'ptc' = 'native') {
   const adapter = new BridgeAdapter()
   ctx.llm.registerAdapter(['bridge-step'], adapter)
   const agent = await ctx.agentLoop.create(SessionId(`step-${mode}`), { provider: 'bridge-step', model: 'fixture' })
-  const connect = async (options: GenerateOptions) => {
+  const connect = async (options: GenerateOptions, wireProfile?: string, policy?: () => Promise<'auto' | 'ask'>) => {
     const lease = await createDshToolBridge(
       ctx,
       agent.id,
       { mcpCapabilities: { http: true } },
-      undefined,
-      async () => 'auto',
+      wireProfile,
+      policy ?? (async () => 'auto'),
       undefined,
       options.tools,
       readAdmission,
@@ -302,6 +303,79 @@ describe('Host admission reaches the MCP executor', () => {
     expect(f.execute).toHaveBeenCalledTimes(2)
     expect(sets).toHaveLength(2)
     expect(sets[0]).not.toBe(sets[1])
+  })
+
+  it('keeps an elicitation bound to its captured Host step for Auto and manual replies', async () => {
+    const f = await fixture()
+    const remotePrompt = new AbortController()
+    const policyEntered = Promise.withResolvers<void>()
+    const policyReleased = Promise.withResolvers<'auto'>()
+    const policy = vi
+      .fn<() => Promise<'auto' | 'ask'>>()
+      // The bridge freezes a durable default before its first prompt.
+      .mockResolvedValueOnce('auto')
+      .mockImplementationOnce(() => {
+        policyEntered.resolve()
+        return policyReleased.promise
+      })
+      .mockResolvedValue('auto')
+    let connection: Awaited<ReturnType<typeof f.connect>> | undefined
+    let pending: Promise<CreateElicitationResponse | undefined> | undefined
+    let approvalSignal: AbortSignal
+    let request: CreateElicitationRequest
+    let call: { toolCallId: string; _meta: { is_mcp_tool_call: boolean }; rawInput: { server: string; tool: string } }
+    let previousAdmission: ReturnType<typeof f.readAdmission>
+    f.adapter.run = async (options) => {
+      if (connection === undefined) {
+        connection = await f.connect(options, 'codex', policy)
+        connection.lease.beginPrompt(remotePrompt.signal)
+        previousAdmission = f.readAdmission(f.agent)
+        request = {
+          sessionId: 'remote',
+          toolCallId: 'cross-step',
+          mode: 'form',
+          message: 'Allow this MCP tool?',
+          _meta: { codex_approval_kind: 'mcp_tool_call' },
+          requestedSchema: {
+            type: 'object',
+            properties: { persist: { type: 'string', enum: ['once', 'session', 'always'] } },
+            required: ['persist'],
+          },
+        }
+        call = {
+          toolCallId: 'cross-step',
+          _meta: { is_mcp_tool_call: true },
+          rawInput: { server: connection.lease.servers[0]!.name, tool: 'conditional' },
+        }
+        approvalSignal = connection.lease.elicitationSignal!(request, call)!
+        expect(connection.lease.validateElicitationDecision!(request, call)).toBe(true)
+        pending = Promise.resolve(connection.lease.elicitation!(request, call))
+        await policyEntered.promise
+        return
+      }
+      expect(f.readAdmission(f.agent)).not.toBe(previousAdmission)
+      expect(previousAdmission?.isActive()).toBe(false)
+      expect(approvalSignal.aborted).toBe(false)
+      expect(connection.lease.validateElicitationDecision!(request, call)).toBe(false)
+      // Reading the old question's signal again must never capture the new admission.
+      expect(connection.lease.elicitationSignal!(request, call)).toBe(approvalSignal)
+      expect(connection.lease.validateElicitationDecision!(request, call)).toBe(false)
+      policyReleased.resolve('auto')
+      expect(await pending).toBeUndefined()
+      // The unchanged directory and remote prompt can still approve this step's own request.
+      const currentRequest = { ...request }
+      expect(connection.lease.elicitationSignal!(currentRequest, call)?.aborted).toBe(false)
+      expect(connection.lease.validateElicitationDecision!(currentRequest, call)).toBe(true)
+      expect(await connection.lease.elicitation!(currentRequest, call)).toEqual({
+        action: 'accept',
+        content: { persist: 'once' },
+      })
+      connection.lease.endPrompt({ stopReason: 'end_turn' })
+      await connection.lease.drainPrompt?.()
+    }
+    await f.send()
+    await f.send()
+    expect(policy).toHaveBeenCalledTimes(3)
   })
 
   it('keeps the injected tools provider until accepted work has settled on provider unload', async () => {

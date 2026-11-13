@@ -308,7 +308,7 @@ describe('native access revalidation at Team mode dispatch', () => {
       members: async () => [
         member('allowed'),
         member('denied'),
-        member('foreign', { profileId: 'kimi' }),
+        member('foreign', { profileId: 'generic' }),
         member('running', { status: 'running' }),
         member('late'),
       ],

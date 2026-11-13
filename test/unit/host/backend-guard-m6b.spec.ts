@@ -63,7 +63,7 @@ function sidecar(
 function install(
   selection: { lastUsed: LlmCallConfig | null; pending: LlmCallConfig | null } | undefined,
   acpSidecar: AcpSidecar,
-  ownsProvider: (provider: string) => boolean = (provider) => provider === 'acp-codex' || provider === 'acp-kimi',
+  ownsProvider: (provider: string) => boolean = (provider) => provider === 'acp-codex' || provider === 'acp-generic',
 ): { listener: RequestListener; reads: ReturnType<typeof vi.fn> } {
   let listener: RequestListener | undefined
   const reads = vi.fn(() => selection)
@@ -205,7 +205,7 @@ describe('M6b additive ACP backend guard', () => {
     const acpSidecar = sidecar(validBinding('codex'))
     const { listener } = install({ lastUsed: config('acp-codex'), pending: null }, acpSidecar)
     await expect(
-      listener({ agent: { session: session(['turn/start', 'user/message']) } }, async () => config('acp-kimi')),
+      listener({ agent: { session: session(['turn/start', 'user/message']) } }, async () => config('acp-generic')),
     ).rejects.toMatchObject({ code: 'ACP_BACKEND_NEW_SESSION_REQUIRED' })
     expect(acpSidecar.readLatestBinding).not.toHaveBeenCalled()
     expect(acpSidecar.writeRecoveryState).not.toHaveBeenCalled()
@@ -310,7 +310,7 @@ describe('M6b additive ACP backend guard', () => {
   })
 
   it('records a backend conflict when the binding belongs to another ACP profile', async () => {
-    const acpSidecar = sidecar(validBinding('kimi'))
+    const acpSidecar = sidecar(validBinding('generic'))
     const { listener } = install({ lastUsed: config('acp-codex'), pending: null }, acpSidecar)
     await expect(
       listener({ agent: { session: session(['turn/start', 'user/message']) } }, async () => config('acp-codex')),

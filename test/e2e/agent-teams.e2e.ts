@@ -25,7 +25,6 @@ describe.each([
   ['claude', false],
   ['devin', true],
   ['codex', true],
-  ['kimi', false],
 ])('native Teams over ACP: %s, HTTP=%s', (profile, http) => {
   it.each(['allow', 'deny', 'cancel'])(
     'creates matching members, uses native roster/tasks, routes %s on the original approval and continues messaging',
@@ -426,7 +425,9 @@ describe.each([
         lead.steer(
           createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'E2E_TEAM_INTERRUPT' }] }),
         )
-        await vi.waitFor(() => expect(readFileSync(log, 'utf8')).toContain('E2E_TEAM_INTERRUPTED'), { timeout: 30_000 })
+        await vi.waitFor(() => expect(readFileSync(log, 'utf8')).toContain('E2E_TEAM_INTERRUPTED'), {
+          timeout: 30_000,
+        })
         expect(new Set(executions.filter((item) => !item.isError).map((item) => item.name)).size).toBe(9)
         await lead.whenIdle()
         finishSetup(interrupt)

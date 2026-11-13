@@ -63,12 +63,21 @@ These Agents have completed real integration checks:
 | Antigravity               | `agy_acp_server.par` (official raw `1.3.0`) | Separate ACP sign-in |
 | Claude                    | `claude-agent-acp`                          | `claude`             |
 | Codex                     | `codex-acp`                                 | `codex login`        |
-| Kimi                      | `kimi acp`                                  | `kimi login`         |
 | Qwen Code                 | `qwen --acp`                                | `qwen`               |
 
 > CodeBuddy CLI and the WorkBuddy desktop app share account credits, with no separate subscription required. Connect DSH through the CodeBuddy CLI. See [CodeBuddy account and subscription details](https://www.codebuddy.cn/docs/ide/Account/pricing) and the [ACP CLI reference](https://www.codebuddy.cn/docs/cli/cli-reference).
 
 For test coverage and limitations, see the [E2E verification guide](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/v0.2.1-rc.4.1/test/e2e/README.md).
+
+## Optional ACP preset (development prototype)
+
+The native new-session menu now includes **ACP**. It does not change the user's default or migrate existing sessions. Standard, PTC, Minimal and Creator presets can still use ACP Agents. **Use the native Creator preset to create plugins**; the ACP preset is a separate optional tool composition.
+
+It includes workspace instructions, time, file editing and search, the platform shell, jobs, scheduling, skills, questions, todos, web tools and presentation. It omits Host compaction, `/compact`, Host planning, delegation and plugin management. The external Agent owns its context and private tools. Approval policies and existing-session model-switch restrictions remain in effect. Native models remain visible in the global picker; use Standard for native-model sessions that need Host compaction.
+
+Kimi support is removed from the catalog, dedicated adapters and current test matrix. Saved Kimi configurations remain visible as unavailable, without launching a process or silently becoming generic Agents. Users can remove those entries themselves; history is retained. Only retired-configuration diagnostics and historical binding-fingerprint compatibility remain. Historical test records and the original upstream catalog snapshot retain their original data, not a claim of current support.
+
+See the [Agent compatibility guide](docs/agent-compatibility.md) for contribution boundaries.
 
 ## Preview
 

@@ -134,17 +134,49 @@ async function drain(iterable: AsyncIterable<unknown>): Promise<void> {
 }
 
 describe('ACP M6a session configuration convergence', () => {
+  it.each([
+    { id: 'kimi', config: profile },
+    { id: 'saved-agent', config: { ...profile, runtime: 'kimi' as const } },
+  ])('keeps a retired configuration unavailable before creating a runtime ($id)', async ({ id, config }) => {
+    let created = false
+    const ledger = new Ledger()
+    const live = session()
+    const adapter = new AcpProfileAdapter(
+      id,
+      () => config,
+      seam(),
+      () => live,
+      ledger,
+      undefined,
+      () => {
+        created = true
+        throw new Error('retired runtime must never be created')
+      },
+      sidecar,
+    )
+    try {
+      await expect(drain(adapter.stream(request('retired-session', { provider: `acp-${id}` })))).rejects.toMatchObject({
+        code: 'ACP_AGENT_RETIRED',
+      })
+      expect(created).toBe(false)
+      expect(ledger.records).toEqual([])
+    } finally {
+      await adapter.close()
+    }
+  })
+
   it.each([undefined, []].map((initial) => ({ initial })))(
     'starts an Agent without model options using its current configuration ($initial)',
     async ({ initial }) => {
       const calls: Array<[string, string | boolean]> = []
       const promptCount = { value: 0 }
       const ledger = new Ledger()
+      const live = session()
       const adapter = new AcpProfileAdapter(
         'test',
         () => profile,
         seam(),
-        () => session(),
+        () => live,
         ledger,
         undefined,
         () => runtimeFor(calls, initial, promptCount),
@@ -175,11 +207,12 @@ describe('ACP M6a session configuration convergence', () => {
           ],
         },
       ]
+      const live = session()
       const adapter = new AcpProfileAdapter(
         'test',
         () => profile,
         seam(),
-        () => session(),
+        () => live,
         new Ledger(),
         undefined,
         () => runtimeFor(calls, initial, promptCount),
@@ -207,11 +240,12 @@ describe('ACP M6a session configuration convergence', () => {
             ],
           },
     )
+    const live = session()
     const adapter = new AcpProfileAdapter(
       'test',
       () => profile,
       seam(),
-      () => session(),
+      () => live,
       new Ledger(),
       undefined,
       () => runtimeFor(calls, initial, promptCount),
@@ -228,11 +262,12 @@ describe('ACP M6a session configuration convergence', () => {
     const calls: Array<[string, string | boolean]> = []
     const promptCount = { value: 0 }
     const ledger = new Ledger()
+    const live = session()
     const adapter = new AcpProfileAdapter(
       'test',
       () => profile,
       seam(),
-      () => session(),
+      () => live,
       ledger,
       undefined,
       () => runtimeFor(calls, undefined, promptCount),
@@ -253,11 +288,12 @@ describe('ACP M6a session configuration convergence', () => {
       ...options(),
       { id: 'auto_compact', name: 'Auto compact', type: 'boolean' as const, category: 'behavior', currentValue: true },
     ]
+    const live = session()
     const adapter = new AcpProfileAdapter(
       'test',
       () => profile,
       seam(),
-      () => session(),
+      () => live,
       new Ledger(),
       undefined,
       () => {
@@ -296,11 +332,12 @@ describe('ACP M6a session configuration convergence', () => {
   it('converges model and reasoning before prompt', async () => {
     const calls: Array<[string, string | boolean]> = []
     const promptCount = { value: 0 }
+    const live = session()
     const adapter = new AcpProfileAdapter(
       'test',
       () => profile,
       seam(),
-      () => session(),
+      () => live,
       new Ledger(),
       undefined,
       () => runtimeFor(calls, options(), promptCount),
@@ -320,11 +357,12 @@ describe('ACP M6a session configuration convergence', () => {
     const initial = options().map((option) =>
       option.type !== 'select' ? option : { ...option, currentValue: option.id === 'model' ? 'target-model' : 'high' },
     )
+    const live = session()
     const adapter = new AcpProfileAdapter(
       'test',
       () => profile,
       seam(),
-      () => session(),
+      () => live,
       new Ledger(),
       undefined,
       () => runtimeFor(calls, initial, promptCount),
@@ -345,11 +383,12 @@ describe('ACP M6a session configuration convergence', () => {
           ? { ...option, currentValue: 'target-model', options: [{ value: 'old-model', name: 'Old' }] }
           : { ...option, currentValue: 'high', options: [{ value: 'low', name: 'Low' }] },
     )
+    const live = session()
     const adapter = new AcpProfileAdapter(
       'test',
       () => profile,
       seam(),
-      () => session(),
+      () => live,
       new Ledger(),
       undefined,
       () => runtimeFor(calls, initial, promptCount),
@@ -360,37 +399,7 @@ describe('ACP M6a session configuration convergence', () => {
     expect(promptCount.value).toBe(1)
   })
 
-  it('accepts Kimi resumed `on` as the collapsed live form of a stale `high` route', async () => {
-    const calls: Array<[string, string | boolean]> = []
-    const promptCount = { value: 0 }
-    const kimiProfile: AcpAgentConfig = { name: 'Kimi', command: 'kimi', args: ['acp'], env: {}, runtime: 'kimi' }
-    const resumed = options().map((option) =>
-      option.type !== 'select'
-        ? option
-        : option.id === 'model'
-          ? { ...option, currentValue: 'target-model' }
-          : { ...option, currentValue: 'on', options: [{ value: 'on', name: 'Thinking On' }] },
-    )
-    const adapter = new AcpProfileAdapter(
-      'kimi',
-      () => kimiProfile,
-      seam(),
-      () => session(),
-      new Ledger(),
-      undefined,
-      () => runtimeFor(calls, resumed, promptCount),
-      sidecar,
-    )
-    await drain(
-      adapter.stream(
-        request('session-kimi-resume', { provider: 'acp-kimi', reasoningEffort: ReasoningEffortId('high') }),
-      ),
-    )
-    expect(calls).toEqual([])
-    expect(promptCount.value).toBe(1)
-  })
-
-  it('does not apply Kimi reasoning aliases to an arbitrary ACP profile', async () => {
+  it('rejects a requested reasoning value absent from the live choices', async () => {
     const calls: Array<[string, string | boolean]> = []
     const promptCount = { value: 0 }
     const resumed = options().map((option) =>
@@ -400,11 +409,12 @@ describe('ACP M6a session configuration convergence', () => {
           ? { ...option, currentValue: 'target-model' }
           : { ...option, currentValue: 'on', options: [{ value: 'on', name: 'Thinking On' }] },
     )
+    const live = session()
     const adapter = new AcpProfileAdapter(
       'test',
       () => profile,
       seam(),
-      () => session(),
+      () => live,
       new Ledger(),
       undefined,
       () => runtimeFor(calls, resumed, promptCount),
@@ -424,11 +434,12 @@ describe('ACP M6a session configuration convergence', () => {
     const initial = options().map((option) =>
       option.id === 'model' && option.type === 'select' ? { ...option, currentValue: 'target-model' } : option,
     )
+    const live = session()
     const adapter = new AcpProfileAdapter(
       'test',
       () => profile,
       seam(),
-      () => session(),
+      () => live,
       ledger,
       undefined,
       () => runtimeFor(calls, initial, promptCount),
@@ -449,11 +460,12 @@ describe('ACP M6a session configuration convergence', () => {
     const calls: Array<[string, string | boolean]> = []
     const promptCount = { value: 0 }
     const ledger = new Ledger()
+    const live = session()
     const adapter = new AcpProfileAdapter(
       'test',
       () => profile,
       seam(),
-      () => session(),
+      () => live,
       ledger,
       undefined,
       () => runtimeFor(calls, options(), promptCount, behavior),
@@ -472,11 +484,12 @@ describe('ACP M6a session configuration convergence', () => {
     const ledger = new Ledger()
     const controller = new AbortController()
     controller.abort()
+    const live = session()
     const adapter = new AcpProfileAdapter(
       'test',
       () => profile,
       seam(),
-      () => session(),
+      () => live,
       ledger,
       undefined,
       () => runtimeFor(calls, options(), promptCount),
@@ -496,11 +509,12 @@ describe('ACP M6a session configuration convergence', () => {
   it('uses the reasoning values returned after a model switch', async () => {
     const calls: Array<[string, string | boolean]> = []
     const promptCount = { value: 0 }
+    const live = session()
     const adapter = new AcpProfileAdapter(
       'test',
       () => profile,
       seam(),
-      () => session(),
+      () => live,
       new Ledger(),
       undefined,
       () => runtimeFor(calls, options(), promptCount, { reasoningAfterModel: ['low', 'ultra'] }),
@@ -518,11 +532,12 @@ describe('ACP M6a session configuration convergence', () => {
     const calls: Array<[string, string | boolean]> = []
     const promptCount = { value: 0 }
     const ledger = new Ledger()
+    const live = session()
     const adapter = new AcpProfileAdapter(
       'test',
       () => profile,
       seam(),
-      () => session(),
+      () => live,
       ledger,
       undefined,
       () => runtimeFor(calls, options(), promptCount, { reasoningAfterModel: ['low', 'ultra'] }),
@@ -543,11 +558,12 @@ describe('ACP M6a session configuration convergence', () => {
     const calls: Array<[string, string | boolean]> = []
     const promptCount = { value: 0 }
     const ledger = new Ledger()
+    const live = session()
     const adapter = new AcpProfileAdapter(
       'test',
       () => profile,
       seam(),
-      () => session(),
+      () => live,
       ledger,
       undefined,
       () => runtimeFor(calls, options(), promptCount, { reasoningAfterModel: ['low', 'ultra'], failRollback: true }),

@@ -15,9 +15,9 @@ describe('ACP recovery dock projection gate', () => {
       expect(recoveryPrefersReconnect({ kind } as AcpRecoveryView)).toBe(false)
   })
   it('only reads recovery state for an ACP selection', () => {
-    const owns = (provider: string | undefined): boolean => provider === 'acp-kimi' || provider === 'acp-codex'
+    const owns = (provider: string | undefined): boolean => provider === 'acp-generic' || provider === 'acp-codex'
     expect(projectionIsAcp({ lastUsed: { provider: 'openai' }, next: { provider: 'openai' } }, owns)).toBe(false)
-    expect(projectionIsAcp({ lastUsed: null, next: { provider: 'acp-kimi' } }, owns)).toBe(true)
+    expect(projectionIsAcp({ lastUsed: null, next: { provider: 'acp-generic' } }, owns)).toBe(true)
     expect(projectionIsAcp({ lastUsed: { provider: 'acp-codex' }, next: { provider: 'acp-codex' } }, owns)).toBe(true)
     expect(projectionIsAcp(undefined, owns)).toBe(false)
   })
@@ -53,7 +53,7 @@ describe('ACP recovery dock projection gate', () => {
       kind: 'healthy',
       cause: null,
       detail: null,
-      provider: 'acp-kimi',
+      provider: 'acp-generic',
       acpSessionId: 'agent-session',
       generation: 3,
       interruptedTurnId: null,

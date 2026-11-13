@@ -1,3 +1,4 @@
+import { hasModelSpecificConfiguration } from '../../agents/compatibility.ts'
 /**
  * ACP 协议连接（自 acp-client.ts 切出的协议半；进程半——spawn、stdio 泵、
  * stderr 环、拆除梯子、托管范围清理——见 src/runtime/process/agent-process.ts）：
@@ -1168,11 +1169,7 @@ export class AcpClientConnection {
       let modelConfigOptions: Record<string, readonly acp.SessionConfigOption[]> | undefined
       // Qwen Code and CodeBuddy expose model-specific reasoning choices. Their
       // initialize identity also enables discovery for manually configured profiles.
-      if (
-        probeModelConfigOptions ||
-        init.agentInfo?.name === 'qwen-code' ||
-        init.agentInfo?.name === 'codebuddy-code'
-      ) {
+      if (probeModelConfigOptions || hasModelSpecificConfiguration(init.agentInfo?.name)) {
         const sessionCaps = init.agentCapabilities?.sessionCapabilities
         try {
           modelConfigOptions = await probeModelConfigurations(

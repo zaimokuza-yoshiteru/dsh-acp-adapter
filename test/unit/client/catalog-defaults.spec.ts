@@ -21,7 +21,7 @@ describe('snapshot-owned launch defaults', () => {
     expect(entries[1]?.runtime).toBeUndefined()
   })
 
-  it.each(['codex-acp', 'claude-acp', 'devin', 'kimi', 'future-agent'])(
+  it.each(['codex-acp', 'claude-acp', 'devin', 'future-agent'])(
     'uses new snapshot args/env and package command for %s',
     (id) => {
       const agent = { id, name: id, version: '2', distribution: { npx: { package: `${id}@2` } } }
@@ -42,7 +42,6 @@ describe('snapshot-owned launch defaults', () => {
 
   it.each([
     ['devin', 'devin'],
-    ['kimi', 'kimi'],
     ['poolside', ''],
   ])('supplements only known installed binary commands for %s', (id, command) => {
     const agent = { id, name: id, version: '2', website: 'https://example.com/install', distribution: { binary: {} } }

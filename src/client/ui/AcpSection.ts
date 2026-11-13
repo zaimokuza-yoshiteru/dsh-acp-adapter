@@ -449,12 +449,15 @@ function AgentCard(props: {
   // A failed check is a fact about that check, shown apart from "never checked".
   // It does not claim to track the Agent's login or installation afterwards.
   const lastCheckFailed = state !== 'ready' && (healthRow?.probe.status === 'error' || checkError !== undefined)
-  const statusText = lastCheckFailed
-    ? t('stateLastCheckFailed')
-    : state === undefined
-      ? t('stateSavedUnverified')
-      : stateText(t, state)
-  const statusTone = state === 'ready' ? 'success' : lastCheckFailed ? 'warning' : 'neutral'
+  const retired = healthRow?.unavailableReason === 'agent-retired'
+  const statusText = retired
+    ? t('stateAgentRetired')
+    : lastCheckFailed
+      ? t('stateLastCheckFailed')
+      : state === undefined
+        ? t('stateSavedUnverified')
+        : stateText(t, state)
+  const statusTone = state === 'ready' ? 'success' : retired || lastCheckFailed ? 'warning' : 'neutral'
   const diagnostic = healthDiagnostic(t, config.command, healthRow, checkError)
 
   const children: ReactNode[] = [
@@ -475,7 +478,7 @@ function AgentCard(props: {
           {
             variant: 'outline',
             size: 'sm',
-            disabled: checking,
+            disabled: checking || retired,
             onClick: () => {
               panel.refreshAgentHealth(id)
             },
@@ -618,6 +621,7 @@ function healthDiagnostic(
   if (transportError !== undefined) {
     return localizedDiagnostic(t, 'healthCheckTransportFailed', transportError)
   }
+  if (health?.unavailableReason === 'agent-retired') return t('agentRetired')
   if (health?.probe.status !== 'error') return undefined
   const key: AcpLocaleKey =
     health.probe.failureKind === 'spawn-failure'

@@ -10,7 +10,7 @@ import { connectFreshWorkspace, writeComposerDraft } from '#host-support'
 import { launchAdapterWorld, root } from './scaffold.ts'
 
 // These use the real host and plugin UI. Only the ACP peer is deterministic/keyless.
-const profiles = ['kimi', 'devin', 'codex', 'claude', 'codebuddy'] as const
+const profiles = ['devin', 'codex', 'claude', 'codebuddy'] as const
 
 describe.each(profiles)('Agent controls: %s', (profile) => {
   it.each(['response', 'deferred'])(

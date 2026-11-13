@@ -44,10 +44,10 @@ export interface AcpStubAgentConfig {
   env: Record<string, string>
   /** Login guidance shown when a probe fails with auth_required. */
   loginHint?: string
-  /** Explicit specialized runtime; the original four built-in profile IDs remain a fallback.
+  /** Explicit specialized runtime; the original supported built-in profile IDs remain a fallback.
    * Catalog metadata never grants runtime behavior. Unknown profiles use generic ACP.
    */
-  runtime?: AcpAgentId
+  runtime?: AcpConfiguredRuntime
   /** Registry identity for display metadata only; never grants runtime behavior. */
   catalogId?: string
 }
@@ -58,32 +58,51 @@ export type AcpAgentConfig = AcpStubAgentConfig
 // Runtime identities are shared; their trusted execution behavior stays host-side.
 
 /** Explicitly supported ACP backend identity bindings. */
-export type AcpAgentId = 'devin' | 'codex' | 'kimi' | 'claude' | 'codebuddy' | 'antigravity'
+export type AcpAgentId = 'devin' | 'codex' | 'claude' | 'codebuddy' | 'antigravity'
+
+/** Read compatibility only: a retired binding remains unavailable until explicitly removed. */
+export type AcpConfiguredRuntime = AcpAgentId | 'kimi'
 
 /** 所有可显式绑定的合法 runtime（settings schema 使用）。 */
-export const ACP_AGENT_IDS: readonly AcpAgentId[] = ['devin', 'codex', 'kimi', 'claude', 'codebuddy', 'antigravity']
+export const ACP_AGENT_IDS: readonly AcpAgentId[] = ['devin', 'codex', 'claude', 'codebuddy', 'antigravity']
 
-/** Profile-ID fallback predates explicit runtime bindings and is limited to the original four IDs. */
-const LEGACY_RUNTIME_IDS: readonly AcpAgentId[] = ['devin', 'codex', 'kimi', 'claude']
+/** Profile-ID fallback predates explicit runtime bindings and is limited to the original supported IDs. */
+const LEGACY_RUNTIME_IDS: readonly AcpAgentId[] = ['devin', 'codex', 'claude']
 
 const RUNTIME_REGISTRY_IDS: Readonly<Record<AcpAgentId, string>> = {
   devin: 'devin',
   codex: 'codex-acp',
-  kimi: 'kimi',
   claude: 'claude-acp',
   codebuddy: 'codebuddy-code',
   antigravity: 'antigravity-acp',
 }
 
 /** Explicit binding wins; only the original built-in profile IDs retain legacy fallback. */
-export function effectiveRuntimeOf(id: string, config?: { readonly runtime?: AcpAgentId }): AcpAgentId | undefined {
-  return config?.runtime ?? (LEGACY_RUNTIME_IDS.includes(id as AcpAgentId) ? (id as AcpAgentId) : undefined)
+export function effectiveRuntimeOf(
+  id: string,
+  config?: { readonly runtime?: AcpConfiguredRuntime },
+): AcpAgentId | undefined {
+  if (retiredAgentReason(id, config) !== undefined) return undefined
+  return (
+    (config?.runtime as AcpAgentId | undefined) ??
+    (LEGACY_RUNTIME_IDS.includes(id as AcpAgentId) ? (id as AcpAgentId) : undefined)
+  )
+}
+
+/** Retained settings are never silently rebound to generic ACP or launched. */
+export function retiredAgentReason(
+  id: string,
+  config?: { readonly runtime?: AcpConfiguredRuntime },
+): string | undefined {
+  return config?.runtime === 'kimi' || (config?.runtime === undefined && id === 'kimi')
+    ? 'Kimi support has been removed. This saved configuration and its history are retained; remove the configuration explicitly when no longer needed.'
+    : undefined
 }
 
 /** Catalog metadata does not participate in execution identity. */
 export function catalogIdOf(
   id: string,
-  config: { readonly runtime?: AcpAgentId; readonly catalogId?: string },
+  config: { readonly runtime?: AcpConfiguredRuntime; readonly catalogId?: string },
 ): string {
   const runtime = effectiveRuntimeOf(id, config)
   return config.catalogId ?? (runtime === undefined ? id : RUNTIME_REGISTRY_IDS[runtime])

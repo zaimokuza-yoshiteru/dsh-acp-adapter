@@ -161,6 +161,8 @@ const zh = {
   refresh: '重新检查',
   refreshing: '检查中…',
   healthCheckTransportFailed: '检查请求失败，请重试。{reference}',
+  agentRetired: 'Kimi 支持已移除。已保存的配置和历史记录仍保留；不再需要时，可手动删除此配置。',
+  stateAgentRetired: '支持已移除',
   probeNotInstalled: '无法启动命令「{command}」；请检查是否已安装，以及可执行命令和参数是否正确。{reference}',
   probeAuthRequired: 'Agent 尚未登录；请先在终端完成登录，再重新检查。{reference}',
   probeResourceExhausted: 'Agent 的资源或使用配额已耗尽；请查看 Agent 的用量限制后再继续。{reference}',
@@ -633,6 +635,9 @@ const en: Record<AcpLocaleKey, string> = {
   refresh: 'Re-check',
   refreshing: 'Checking…',
   healthCheckTransportFailed: 'The check request failed. Try again.{reference}',
+  agentRetired:
+    'Kimi support has been removed. Your saved configuration and history remain; remove this configuration explicitly when no longer needed.',
+  stateAgentRetired: 'support removed',
   probeNotInstalled:
     'Cannot start "{command}". Check that it is installed and that its executable and arguments are correct.{reference}',
   probeAuthRequired: 'The Agent is not signed in. Complete login in your terminal, then re-check it.{reference}',

@@ -195,20 +195,19 @@ describe('常量：与宿主侧契约逐字对齐', () => {
     })
   })
 
-  it('ACP_CATALOG_ENTRIES 钉版：已验证的七条排前，其余按 registry 顺序', () => {
-    expect(ACP_CATALOG_ENTRIES.slice(0, 7).map((entry) => entry.id)).toEqual([
+  it('ACP_CATALOG_ENTRIES 钉版：已验证的六条排前，其余按 registry 顺序', () => {
+    expect(ACP_CATALOG_ENTRIES.slice(0, 6).map((entry) => entry.id)).toEqual([
       'devin',
       'codebuddy-code',
       'codex-acp',
-      'kimi',
       'claude-acp',
       'antigravity-acp',
       'qwen-code',
     ])
-    expect(ACP_CATALOG_ENTRIES.slice(0, 7).every((entry) => entry.verification === 'adapter-tested')).toBe(true)
-    expect(ACP_CATALOG_ENTRIES.slice(7).every((entry) => entry.verification === 'unverified')).toBe(true)
+    expect(ACP_CATALOG_ENTRIES.slice(0, 6).every((entry) => entry.verification === 'adapter-tested')).toBe(true)
+    expect(ACP_CATALOG_ENTRIES.slice(6).every((entry) => entry.verification === 'unverified')).toBe(true)
     expect(new Set(ACP_CATALOG_ENTRIES.map((entry) => entry.id))).toEqual(
-      new Set(registrySnapshot.agents.map((agent) => agent.id)),
+      new Set(registrySnapshot.agents.filter((agent) => agent.id !== 'kimi').map((agent) => agent.id)),
     )
     // 条目 id 即 profile id 预填值，均合法
     for (const entry of ACP_CATALOG_ENTRIES) {
@@ -275,14 +274,15 @@ describe('常量：与宿主侧契约逐字对齐', () => {
     })
   })
 
-  it('kimi 条目逐字段钉版（与 host 侧真源对齐）：runtime=kimi、command 为 kimi CLI 的 acp 子命令', () => {
-    expect(catalogEntryOf('kimi')).toMatchObject({
-      id: 'kimi',
-      name: 'Kimi CLI',
-      command: 'kimi',
-      args: ['acp'],
-      runtime: 'kimi',
-    })
+  it('round-trips a retired stored binding without silently turning it into generic ACP', () => {
+    const stored: AcpAgentConfig = { name: 'Retired', command: 'old-cli', args: [], env: {}, runtime: 'kimi' }
+    const draft = draftFromAgent('retired', stored)
+    expect(validateAgentDraft(draft, { retired: stored }, 'retired').config).toEqual(stored)
+  })
+
+  it('excludes the retired catalog preset', () => {
+    expect(catalogEntryOf('kimi')).toBeUndefined()
+    expect(draftFromCatalogEntry('kimi')).toBeUndefined()
   })
 
   it('catalog 预填纪律钉：全部条目的 command/args 无 shell 元字符（spawn 姿态写入闸口径），不含疑似 secret 值', () => {
@@ -436,14 +436,14 @@ describe('validateAgentDraft', () => {
     })
     expect(conflict.config).toBeUndefined()
     // id 回退相撞：草稿无 runtime 但 id 恰为内置 id，存量条目也无 runtime 按 id 回退
-    const kimiConfig: AcpAgentConfig = { name: 'K', command: 'kimi', args: [], env: {} }
-    const fallback = validateAgentDraft(validDraft(), { kimi: kimiConfig }, undefined)
-    // validDraft 的 id=devin 与存量 kimi 不撞 → 无 runtime 错误
+    const claudeConfig: AcpAgentConfig = { name: 'C', command: 'claude', args: [], env: {} }
+    const fallback = validateAgentDraft(validDraft(), { claude: claudeConfig }, undefined)
+    // validDraft 的 id=devin 与存量 claude 不撞 → 无 runtime 错误
     expect(fallback.runtime).toBeUndefined()
-    const fallbackHit = validateAgentDraft(validDraft({ id: 'kimi' }), { kimi: kimiConfig }, undefined)
+    const fallbackHit = validateAgentDraft(validDraft({ id: 'claude' }), { claude: claudeConfig }, undefined)
     expect(fallbackHit.runtime).toEqual({
       key: 'errorRuntimeTaken',
-      params: { runtime: 'kimi', id: 'kimi', name: 'K' },
+      params: { runtime: 'claude', id: 'claude', name: 'C' },
     })
   })
 
@@ -459,7 +459,8 @@ describe('validateAgentDraft', () => {
 
   it('effectiveRuntimeOf：显式 runtime 优先，内置 id 回退，generic 归 undefined（与 host 共用规则）', () => {
     expect(effectiveRuntimeOf('foo', { runtime: 'codex' })).toBe('codex')
-    expect(effectiveRuntimeOf('kimi', {})).toBe('kimi')
+    expect(effectiveRuntimeOf('kimi', {})).toBeUndefined()
+    expect(effectiveRuntimeOf('custom', { runtime: 'kimi' })).toBeUndefined()
     expect(effectiveRuntimeOf('antigravity', {})).toBeUndefined()
     expect(effectiveRuntimeOf('antigravity-acp', {})).toBeUndefined()
     expect(effectiveRuntimeOf('antigravity-acp', { runtime: 'antigravity' })).toBe('antigravity')
@@ -535,7 +536,7 @@ describe('草稿种子：emptyDraft / draftFromCatalogEntry / draftFromAgent', (
   it('derives display-only login guidance without changing saved custom hints or runtime identity', () => {
     expect(agentLoginHint('custom-codex', { catalogId: 'codex-acp' })).toBe('codex login')
     expect(agentLoginHint('claude', {})).toBe('claude')
-    expect(agentLoginHint('custom', { runtime: 'kimi', loginHint: 'company-login' })).toBe('company-login')
+    expect(agentLoginHint('custom', { runtime: 'codebuddy', loginHint: 'company-login' })).toBe('company-login')
     expect(agentLoginHint('unknown', {})).toBeUndefined()
     const config = { ...fooConfig, loginHint: 'company-login' }
     expect(validateAgentDraft(draftFromAgent('foo', config), { foo: config }, 'foo').config).toEqual(config)
@@ -593,28 +594,6 @@ describe('草稿种子：emptyDraft / draftFromCatalogEntry / draftFromAgent', (
       loginHint: 'codex login',
       runtime: 'codex',
       catalogId: 'codex-acp',
-    })
-
-    // kimi 预设：env 空，runtime 绑定随草稿过站
-    const kimiDraft = draftFromCatalogEntry('kimi')
-    expect(kimiDraft).toEqual({
-      id: 'kimi',
-      catalogId: 'kimi',
-      name: 'Kimi CLI',
-      command: 'kimi',
-      argsText: 'acp',
-      envText: '',
-      loginHint: 'kimi login',
-      runtime: 'kimi',
-    })
-    expect(validateAgentDraft(kimiDraft as AgentDraft, {}, undefined).config).toEqual({
-      name: 'Kimi CLI',
-      command: 'kimi',
-      args: ['acp'],
-      env: {},
-      loginHint: 'kimi login',
-      runtime: 'kimi',
-      catalogId: 'kimi',
     })
 
     // CodeBuddy has explicit adapter coverage and keeps its catalog runtime binding.
@@ -808,6 +787,12 @@ describe('panelSettingsOf', () => {
 // ---------- 健康响应解码 ----------
 
 describe('decodeHealthResponse', () => {
+  it('preserves the typed retirement diagnostic without inventing a failed probe', () => {
+    const retired = { ...neverRow, state: 'unavailable', unavailableReason: 'agent-retired' }
+    expect(decodeHealthResponse({ providers: [retired] })).toEqual([retired])
+    expect(decodeHealthResponse({ providers: [{ ...retired, unavailableReason: 'arbitrary-text' }] })).toBeUndefined()
+  })
+
   it('合法响应：三种 probe 分支逐字段解出；未知顶层/行键剥离', () => {
     const body = { providers: [okRow, neverRow, authErrorRow] }
     expect(decodeHealthResponse(body)).toEqual([okRow, neverRow, authErrorRow])
@@ -1115,7 +1100,7 @@ describe('decodeHealthResponse', () => {
 describe('decodeBoundSessions', () => {
   it('合法应答原样往返（count=0 也是合法计数）', () => {
     expect(decodeBoundSessions({ agentId: 'devin', count: 3 })).toEqual({ agentId: 'devin', count: 3 })
-    expect(decodeBoundSessions({ agentId: 'kimi', count: 0 })).toEqual({ agentId: 'kimi', count: 0 })
+    expect(decodeBoundSessions({ agentId: 'custom', count: 0 })).toEqual({ agentId: 'custom', count: 0 })
   })
 
   it('畸形/错型整体拒绝为 undefined（绝不拿解码失败冒充 0）', () => {

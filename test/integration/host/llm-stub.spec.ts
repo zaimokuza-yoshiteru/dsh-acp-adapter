@@ -143,6 +143,19 @@ describe('stream 门禁与 providerInfo', () => {
     expect(adapter.providerInfo(ROUTE).name).toBe('Renamed · ACP')
   })
 
+  it.each(['legacy', 'explicit'] as const)(
+    'rejects a retained %s retired binding before any subprocess probe',
+    async (kind) => {
+      const { config, logPath } = mockAgent('happy')
+      const route = kind === 'legacy' ? 'acp-kimi' : 'acp-renamed'
+      const { adapter } = makeAdapter({
+        [route]: { ...config, ...(kind === 'explicit' ? { runtime: 'kimi' as const } : {}) },
+      })
+      await expect(adapter.listModels(route)).rejects.toMatchObject({ code: 'ACP_AGENT_RETIRED' })
+      expect(probeCount(logPath)).toBe(0)
+    },
+  )
+
   it('已移除的 provider listModels 抛 ACP_UNKNOWN_PROVIDER', async () => {
     const { adapter } = makeAdapter({})
     const error = (await expectListModelsError(adapter, ROUTE)) as LlmError
@@ -178,7 +191,6 @@ describe('probe 模型目录与缓存', () => {
   })
 
   it.each([
-    ['Kimi', 'acp-kimi', 'kimi'],
     ['Codex', 'acp-codex', 'codex'],
     ['Devin', 'acp-devin', 'devin'],
   ] as const)('%s 路由保留每个模型自己确认的推理目录和默认值', async (_label, route, runtime) => {

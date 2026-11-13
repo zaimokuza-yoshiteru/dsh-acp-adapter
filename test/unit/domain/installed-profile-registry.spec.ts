@@ -348,39 +348,35 @@ describe('runtime 身份与配置兼容', () => {
     )
   })
 
-  it('：kimi 与 codex/claude 配置共存——各自解析到自己的 runtime，profile id（backend 身份）独立', () => {
-    // 手写配置经 schema 入 settings（catalog 预填的等价形状；runtime 显式绑定）
+  it('loads retired markers through the native Loader schema without accepting unknown runtime values', () => {
+    const valid = {
+      agents: {
+        old: { name: 'Old', command: 'old', runtime: 'kimi' },
+        generic: { name: 'Generic', command: 'generic' },
+      },
+    }
+    expect(Config(valid).agents.get()['old']?.runtime).toBe('kimi')
+    expect(() => Config({ agents: { old: { name: 'Old', command: 'old', runtime: 'unknown' } } })).toThrow(TypeError)
+  })
+
+  it('retains retired configurations without poisoning active or generic routes', () => {
     const resolved = acpSettingsSchema({
       agents: {
-        kimi: { name: 'Kimi CLI', command: 'kimi', args: ['acp'], env: {}, loginHint: 'kimi login', runtime: 'kimi' },
-        codex: { name: 'Codex', command: 'codex-acp', args: [], env: {}, loginHint: 'codex login', runtime: 'codex' },
-        'claude-acp': {
-          name: 'Claude Agent',
-          command: 'claude-agent-acp',
-          args: [],
-          env: {},
-          loginHint: 'claude',
-          runtime: 'claude',
-        },
+        kimi: { name: 'Retired legacy', command: 'kimi' },
+        old: { name: 'Retired explicit', command: 'kimi', runtime: 'kimi' },
+        codex: { name: 'Codex', command: 'codex-acp', runtime: 'codex' },
+        custom: { name: 'Custom', command: 'custom-acp' },
       },
     })
-    // runtime 字段明确绑定身份（kimi ↔ kimi、codex ↔ codex、claude ↔ claude），profile id 独立
-    // acp-kimi、acp-codex 与 acp-claude-acp 是不同 backend。
-    expect(effectiveRuntimeOf('kimi', resolved.agents['kimi'])).toBe('kimi')
-    expect(effectiveRuntimeOf('codex', resolved.agents['codex'])).toBe('codex')
-    expect(effectiveRuntimeOf('claude-acp', resolved.agents['claude-acp'])).toBe('claude')
-    expect(acpRouteId('kimi')).toBe('acp-kimi')
-    // 用户改 id 后 runtime 绑定不漂移
-    expect(effectiveRuntimeOf('my-kimi', { runtime: 'kimi' })).toBe('kimi')
-    // 三个 profile 的 probe 缓存键各自独立（command/args/env 键集合不同），互不串扰
-    const keys = [resolved.agents['kimi'], resolved.agents['codex'], resolved.agents['claude-acp']].map((config) =>
-      acpProbeConfigKey(config as AcpAgentConfig),
-    )
-    expect(new Set(keys).size).toBe(3)
+    expect(Object.keys(resolved.agents)).toEqual(['kimi', 'old', 'codex', 'custom'])
+    expect(resolved.agents['old']?.runtime).toBe('kimi')
+    expect(effectiveRuntimeOf('kimi', resolved.agents['kimi'])).toBeUndefined()
+    expect(effectiveRuntimeOf('old', resolved.agents['old'])).toBeUndefined()
+    expect(acpRegistrationFacts(resolved.agents).map((entry) => entry.provider)).toEqual(['acp-codex', 'acp-custom'])
   })
 
   it('acpSettingsSchema 收 runtime 字段：合法值保留，非法值/非 string 拒绝', () => {
-    for (const runtime of ['devin', 'codex', 'kimi', 'claude', 'codebuddy'] as const) {
+    for (const runtime of ['devin', 'codex', 'claude', 'codebuddy', 'antigravity'] as const) {
       const resolved = acpSettingsSchema({ agents: { my: { name: 'M', command: 'm', runtime } } })
       expect(resolved.agents['my']).toEqual({ name: 'M', command: 'm', args: [], env: {}, runtime })
     }
@@ -445,20 +441,20 @@ describe('acpSettingsSchema', () => {
   })
 
   it.each([
-    '/usr/local/bin/kimi',
-    '/Users/Test User/Agent Tools/kimi',
-    "/opt/Agent's Tools (local) & helpers/kimi",
-    String.raw`C:\Users\Test User\Agent Tools\kimi.exe`,
-    String.raw`C:\Program Files (x86)\Agent & Tools\kimi.exe`,
-    'C:/Users/测试 用户/Agent Tools/kimi.exe',
-    String.raw`\\server\Agent Tools\kimi.exe`,
-    String.raw`\\?\C:\Agent Tools\kimi.exe`,
-    String.raw`\\?\UNC\server\Agent Tools\kimi.exe`,
-    './Agent Tools/kimi',
-    String.raw`..\Agent Tools\kimi.exe`,
+    '/usr/local/bin/agent-cli',
+    '/Users/Test User/Agent Tools/agent-cli',
+    "/opt/Agent's Tools (local) & helpers/agent-cli",
+    String.raw`C:\Users\Test User\Agent Tools\agent-cli.exe`,
+    String.raw`C:\Program Files (x86)\Agent & Tools\agent-cli.exe`,
+    'C:/Users/测试 用户/Agent Tools/agent-cli.exe',
+    String.raw`\\server\Agent Tools\agent-cli.exe`,
+    String.raw`\\?\C:\Agent Tools\agent-cli.exe`,
+    String.raw`\\?\UNC\server\Agent Tools\agent-cli.exe`,
+    './Agent Tools/agent-cli',
+    String.raw`..\Agent Tools\agent-cli.exe`,
   ])('preserves an executable path as one command: %s', (command) => {
-    const resolved = acpSettingsSchema({ agents: { kimi: { name: 'Kimi', command, args: ['acp'] } } })
-    expect(resolved.agents['kimi']).toEqual({ name: 'Kimi', command, args: ['acp'], env: {} })
+    const resolved = acpSettingsSchema({ agents: { custom: { name: 'Custom', command, args: ['acp'] } } })
+    expect(resolved.agents['custom']).toEqual({ name: 'Custom', command, args: ['acp'], env: {} })
   })
 
   it.each([
@@ -467,7 +463,7 @@ describe('acpSettingsSchema', () => {
     String.raw`C:\Agent Tools\agent.exe` + '\r',
     '"C:\\Agent Tools\\agent.exe"',
   ])('rejects control characters and shell-quoted commands: %j', (command) => {
-    expect(() => acpSettingsSchema({ agents: { kimi: { name: 'Kimi', command } } })).toThrow(TypeError)
+    expect(() => acpSettingsSchema({ agents: { custom: { name: 'Custom', command } } })).toThrow(TypeError)
   })
 
   it('未知键被剥离；已删除的 profile MCP 与外部委派开关不会继续进入产品配置', () => {
@@ -554,13 +550,12 @@ describe('acpSettingsSchema', () => {
         devin: { name: 'Devin', command: 'devin', args: ['acp'], runtime: 'devin' },
         claude: { name: 'Claude', command: 'claude-agent-acp', runtime: 'claude' },
         codex: { name: 'Codex', command: 'codex-acp', runtime: 'codex' },
-        kimi: { name: 'Kimi', command: 'kimi', args: ['acp'], runtime: 'kimi' },
         codebuddy: { name: 'CodeBuddy', command: 'codebuddy-code', args: ['--acp'], runtime: 'codebuddy' },
         foo: { name: 'Foo', command: 'foo-cli' },
         bar: { name: 'Bar', command: 'bar-cli' },
       },
     })
-    expect(Object.keys(resolved.agents).sort()).toEqual(['bar', 'claude', 'codebuddy', 'codex', 'devin', 'foo', 'kimi'])
+    expect(Object.keys(resolved.agents).sort()).toEqual(['bar', 'claude', 'codebuddy', 'codex', 'devin', 'foo'])
     // generic profile 即便 command 相同也不受 singleton 约束（身份 = 稳定 profile id）
     expect(() =>
       acpSettingsSchema({
@@ -705,6 +700,22 @@ describe('installInstalledProfileRegistry：注册/替换调用序列', () => {
     const registry = await installInstalledProfileRegistry(ctx, settings.config)
     await expect(registry.ready).resolves.toBeUndefined()
     expect(llm.calls).toEqual([])
+  })
+
+  it('does not register retired profiles and withdraws a route when its binding is retired', async () => {
+    const { ctx, settings, llm } = fakeHarness()
+    const registry = await installInstalledProfileRegistry(ctx, settings.config)
+    const old = { ...fooAgent, runtime: 'kimi' as const }
+    await settings.replace({ agents: { kimi: fooAgent, old, foo: fooAgent } })
+    expect(llm.calls).toEqual(['registerAdapter:acp-foo'])
+    expect(registry.agents().size).toBe(3)
+    expect(registry.resolveRoute('acp-kimi')).toBeUndefined()
+    expect(registry.resolveRoute('acp-old')).toBeUndefined()
+    expect(registry.resolveRoute('acp-foo')?.id).toBe('foo')
+    await settings.replace({ agents: { kimi: fooAgent, old, foo: old } })
+    expect(llm.calls.at(-1)).toBe('adapter.dispose')
+    expect(registry.resolveRoute('acp-foo')).toBeUndefined()
+    expect(registry.agents().get('foo')?.runtime).toBe('kimi')
   })
 
   it('首个 agent 注册独立 profile 路由（只 registerAdapter，不再有 configurable-provider 目录注册）', async () => {

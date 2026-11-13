@@ -44,7 +44,7 @@ import { Remote, RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typer
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-api-remote-access'
 import type * as acp from '@agentclientprotocol/sdk'
-import { acpRouteId, ACP_AGENT_ID_PATTERN } from '../domain/session/agent-config.ts'
+import { acpRouteId, ACP_AGENT_ID_PATTERN, retiredAgentReason } from '../domain/session/agent-config.ts'
 import { ACP_CONFIG_IDENTIFIER_MAX } from '../contract/config-options.ts'
 import { isAcpCurrentConfigModel, isAcpModelRouteWithinBounds } from '../contract/model-selection.ts'
 import { acpProbeConfigKey, acpVersionCompatibility, catalogIdOf } from '../domain/session/agent-config.ts'
@@ -1066,6 +1066,20 @@ export class AcpRemoteService extends TypertRemoteService {
     const entries = targetAgentId === undefined ? allEntries : allEntries.filter(([id]) => id === targetAgentId)
     const providers: AcpProviderHealth[] = await Promise.all(
       entries.map(async ([id, config]) => {
+        if (retiredAgentReason(id, config) !== undefined) {
+          return {
+            id,
+            name: config.name,
+            command: config.command,
+            args: [...config.args],
+            loginHint: null,
+            executable: false,
+            version: null,
+            probe: { status: 'never', at: null },
+            state: 'unavailable',
+            unavailableReason: 'agent-retired',
+          }
+        }
         // The model picker and Settings health must address the same
         // registered profile adapter. A detached top-level stub would create
         // a second cache and can report a different readiness result.

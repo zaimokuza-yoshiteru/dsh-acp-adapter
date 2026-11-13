@@ -67,3 +67,9 @@ The batch API can log bridged Host calls with an admitted step identity; this ad
 Agent `usage_update` notifications still supply context occupancy. Token usage in a `session/prompt` response is not written into DSH's exact native accounting: no reliable contract across Agents establishes whether counts describe one turn or the whole session, and input may already include cache traffic. Cumulative baselines after restore, fork, or restart cannot be inferred either. Native accounting requires those semantics to be established and translated into DSH's per-attempt, disjoint input/cache buckets first.
 
 See the [E2E guide](../test/e2e/README.md) for verification scenarios and the [release guide](releasing.md) for publishing and rollback (both in Chinese).
+
+## Agent differences and the optional preset
+
+`src/agents/` contains stateless protocol differences and connection options. Generic ACP Agents need no module; transport, approval, dispatch and recovery remain shared. `SessionControls` owns snapshots, mode intents and serialized control writes, draining accepted writes before teardown. `ToolDirectoryOwner` owns one MCP lease's tool identities and permission validity. `AcpProfileAdapter` retains dispatch, settlement and recovery ordering; the bridge retains accepted execution and feedback draining. See the [compatibility guide](agent-compatibility.md) for contribution boundaries.
+
+The bundle adds the optional native `acp-adapter` preset, displayed as ACP, using public RC.1 plugins. The profile-scoped adapter runtime stays outside this composition. Standard, PTC, Minimal and Creator remain unchanged, as do existing sessions and user defaults. ACP omits Host compaction, `/compact`, Host planning, delegation and plugin management. It neither limits private Agent capabilities nor bypasses existing-session model-switch guards. The model catalog remains global; native-model sessions should select the Host preset they need.

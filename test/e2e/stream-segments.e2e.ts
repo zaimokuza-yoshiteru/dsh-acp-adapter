@@ -16,7 +16,7 @@ declare global {
   }
 }
 
-it.each(['claude', 'codex', 'devin', 'kimi'])(
+it.each(['claude', 'codex', 'devin'])(
   'preserves %s reasoning, message and tool boundaries live and after reload',
   async (profile) => {
     const host = await launchAdapterWorld({ renderProbe: true })

@@ -66,7 +66,7 @@ describe('public documentation contract', () => {
   it('covers the complete user installation path without defining the product by one Agent', () => {
     const zh = read('README.md')
     const en = read('README.en.md')
-    for (const token of ['@deepseek-ai/dsh', '@zaimokuza/dsh-acp-adapter', 'Devin', 'Codex', 'Kimi', 'Claude']) {
+    for (const token of ['@deepseek-ai/dsh', '@zaimokuza/dsh-acp-adapter', 'Devin', 'Codex', 'Claude']) {
       expect(zh).toContain(token)
       expect(en).toContain(token)
     }

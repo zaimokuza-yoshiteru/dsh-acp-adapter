@@ -1,3 +1,4 @@
+import { retiredAgentReason } from '../../contract/agent-config.ts'
 /**
  * ACP provider 使用的 stub LLM adapter。
  *
@@ -36,7 +37,7 @@ import type * as acp from '@agentclientprotocol/sdk'
 import { acpProbeConfigKey, acpProbeFresh } from '../../domain/session/agent-config.ts'
 import type { AcpStubAgentConfig } from '../../domain/session/agent-config.ts'
 import { effectiveRuntimeOf } from '../../contract/agent-config.ts'
-import { modelProbeOptions } from '../../domain/session/agent-compatibility.ts'
+import { modelProbeOptions } from '../../agents/compatibility.ts'
 import { acpConfigOptionsSnapshot } from '../../domain/session/acp-config-options.ts'
 import { acpCanonicalHash16 } from '../../persistence/sidecar.ts'
 import { AcpClientConnection } from '../../protocol/v1/connection.ts'
@@ -157,13 +158,13 @@ export interface AcpProbeCacheEntry {
         readonly protocolVersion: number | undefined
         /**
          * configOptions 是否含 `category=model` 项（ 五态目录口径的输入事实）：
-         * kimi 的模型目录只经 configOptions 提供（实际 ACP 行为 legacy `models` 为空），
+         * generic 的模型目录只经 configOptions 提供（实际 ACP 行为 legacy `models` 为空），
          * 此项在场即视为有目录。与 models 同为 probe 结果——进条目不进缓存键。
          */
         readonly hasModelConfigOption: boolean
         /** Bounded session-scoped configuration snapshot used for exact model resolution. */
         readonly configOptions: readonly acp.SessionConfigOption[] | undefined
-        /** Model-scoped snapshots for Agents such as Kimi whose reasoning
+        /** Model-scoped snapshots for Agents whose reasoning
          * catalogue changes when the selected model changes. */
         readonly modelConfigOptions?: Readonly<Record<string, readonly acp.SessionConfigOption[]>>
       }
@@ -382,6 +383,8 @@ export class AcpStubAdapter extends LlmAdapter {
         'ACP_UNKNOWN_PROVIDER',
       )
     }
+    const retired = retiredAgentReason(provider.replace(/^acp-/, ''), config)
+    if (retired !== undefined) throw new LlmError(retired, 'ACP_AGENT_RETIRED')
     const key = acpProbeConfigKey(config)
     const cached = this.cache.get(provider)
     // 新鲜度集中判定（agent-config.ts acpProbeFresh）：key 相等且未过期
@@ -480,7 +483,7 @@ export class AcpStubAdapter extends LlmAdapter {
       const preparer = this.options.prepareProbe
       preparation = preparer === undefined ? undefined : await preparer({ provider, config, argv })
       const runtimeId = effectiveRuntimeOf(provider.replace(/^acp-/, ''), config)
-      // Kimi and Codex both expose reasoning choices that vary by model. Capture
+      // Agents and Codex both expose reasoning choices that vary by model. Capture
       // the confirmed options from the disposable probe session so DSH does not
       // offer a level (for example Codex Mini + Ultra) that the live session
       // would immediately reject.
@@ -531,7 +534,7 @@ export class AcpStubAdapter extends LlmAdapter {
           capabilityHash: acpCanonicalHash16(probe.agentCapabilities ?? null),
           // readiness：协商的协议版本随缓存保留（health 行展示）
           protocolVersion: probe.protocolVersion,
-          // configOptions-only 目录事实（Kimi 形态），供五态派生放行。
+          // configOptions-only 目录事实（Agents 形态），供五态派生放行。
           hasModelConfigOption: acpModelConfigOption(probe.configOptions) !== undefined,
           configOptions: acpConfigOptionsSnapshot(probe.configOptions),
           ...(probe.modelConfigOptions === undefined

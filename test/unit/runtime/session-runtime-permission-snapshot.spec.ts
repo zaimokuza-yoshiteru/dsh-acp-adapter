@@ -48,7 +48,7 @@ function createRuntime(
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-acp-runtime-permission-snapshot-'))
   roots.push(root)
   const initialInput =
-    mode === 'raw-input'
+    mode === 'raw-input' || mode === 'devin-mcp-bare-name' || mode === 'bridge-tool'
       ? `rawInput:{command:'printf SNAPSHOT_OK'},`
       : `content:[{type:'content',content:{type:'text',text:'{\\"command\\":\\"printf SNAPSHOT_OK\\"}'}}],`
   const permissionCallId =
@@ -716,7 +716,7 @@ describe('AcpSessionRuntime prompt-scoped permission snapshots', () => {
     expect(requests[1]?.toolCall).toEqual({ toolCallId: 'shared-call' })
   })
 
-  it('recovers a complete execute command from streamed JSON content for an id-only permission request', async () => {
+  it('does not turn content text into executable permission input', async () => {
     const requests: acp.RequestPermissionRequest[] = []
     const runtime = createRuntime(async (params) => {
       requests.push(structuredClone(params))
@@ -726,10 +726,10 @@ describe('AcpSessionRuntime prompt-scoped permission snapshots', () => {
     await expect(runtime.prompt(PROMPT, () => undefined)).resolves.toMatchObject({ stopReason: 'end_turn' })
 
     expect(requests).toHaveLength(1)
-    expect(requests[0]?.toolCall.rawInput).toEqual({ command: 'printf SNAPSHOT_OK' })
+    expect(requests[0]?.toolCall.rawInput).toBeUndefined()
   })
 
-  it('joins Kimi numeric permission namespaces to the preceding unprefixed tool update', async () => {
+  it('treats numeric prefixes as part of an opaque permission id', async () => {
     const requests: acp.RequestPermissionRequest[] = []
     const runtime = createRuntime(async (params) => {
       requests.push(structuredClone(params))
@@ -740,9 +740,10 @@ describe('AcpSessionRuntime prompt-scoped permission snapshots', () => {
 
     expect(requests[0]?.toolCall).toMatchObject({
       toolCallId: '0:shared-call',
-      title: 'Run visible command',
-      rawInput: { command: 'printf SNAPSHOT_OK' },
+      kind: 'execute',
     })
+    expect(requests[0]?.toolCall.rawInput).toBeUndefined()
+    expect(requests[0]?.toolCall.title).toBeUndefined()
   })
 
   it.each(['in_progress', 'completed'] as const)(
@@ -770,7 +771,7 @@ describe('AcpSessionRuntime prompt-scoped permission snapshots', () => {
     },
   )
 
-  it('waits briefly for Kimi tool JSON that arrives after the permission request', async () => {
+  it('does not wait for late content text to become permission input', async () => {
     const requests: acp.RequestPermissionRequest[] = []
     const runtime = createRuntime(async (params) => {
       requests.push(structuredClone(params))
@@ -779,6 +780,6 @@ describe('AcpSessionRuntime prompt-scoped permission snapshots', () => {
 
     await expect(runtime.prompt(PROMPT, () => undefined)).resolves.toMatchObject({ stopReason: 'end_turn' })
 
-    expect(requests[0]?.toolCall.rawInput).toEqual({ command: 'printf SNAPSHOT_OK' })
+    expect(requests[0]?.toolCall.rawInput).toBeUndefined()
   })
 })

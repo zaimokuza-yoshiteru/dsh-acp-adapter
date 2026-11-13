@@ -33,7 +33,6 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
       'Devin',
       'Codebuddy Code',
       'Codex',
-      'Kimi CLI',
       'Claude Agent',
       'Google Antigravity',
       'Qwen Code',

@@ -8,7 +8,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { connectFreshWorkspace, writeComposerDraft } from '#host-support'
 import { launchAdapterWorld, root } from './scaffold.ts'
 
-describe.each(['devin', 'kimi', 'claude', 'codex'])('catalog recovery: %s', (profile) => {
+describe.each(['devin', 'claude', 'codex'])('catalog recovery: %s', (profile) => {
   it('updates the mounted picker after a failed probe and explicit recheck, keeping the original session', async () => {
     const host = await launchAdapterWorld()
     let browser!: TestBrowser

@@ -3,7 +3,7 @@
 import { nonTextContentFallback } from '../session/assistant-content.ts'
 import type { AcpNonTextContent } from '../session/assistant-content.ts'
 
-export type ExternalDelegationProfileKind = 'devin' | 'claude' | 'kimi' | 'codex' | string
+export type ExternalDelegationProfileKind = 'devin' | 'claude' | 'codex' | string
 
 export interface ExternalDelegationObservation {
   readonly profileKind: ExternalDelegationProfileKind
@@ -244,7 +244,6 @@ export class ExternalDelegationNormalizer {
     if (!record(updateValue)) return undefined
     if (this.profileKind === 'devin') return this.acceptDevin(updateValue, observedAt)
     if (this.profileKind === 'claude') return this.acceptClaude(updateValue, observedAt)
-    if (this.profileKind === 'kimi') return this.acceptKimi(updateValue, observedAt)
     return undefined
   }
 
@@ -352,41 +351,6 @@ export class ExternalDelegationNormalizer {
         source: duration === undefined ? 'client-observed' : 'mixed',
       },
       projectionEligible: response.status !== 'failed' && response.status !== 'cancelled',
-    }
-  }
-
-  private acceptKimi(update: Record<string, unknown>, observedAt: number): ExternalDelegationObservation | undefined {
-    const callId = text(update.toolCallId)
-    const rawInput = record(update.rawInput) ? update.rawInput : undefined
-    const title = text(update.title)
-    if (callId !== undefined && title?.startsWith('Launching ') === true && text(rawInput?.prompt) !== undefined) {
-      this.track(callId, {
-        startedAt: observedAt,
-        toolCallId: callId,
-        label: text(rawInput?.description) ?? title,
-        task: text(rawInput?.prompt)!,
-      })
-      return undefined
-    }
-    if (callId === undefined || update.status !== 'completed') return undefined
-    const pending = this.pending.get(callId)
-    const result = text(update.rawOutput)
-    const child = result === undefined ? undefined : /^agent_id:\s*(\S+)/m.exec(result)?.[1]
-    if (pending === undefined || result === undefined || child === undefined) return undefined
-    this.pending.delete(callId)
-    return {
-      profileKind: 'kimi',
-      vendorDelegationKey: callId,
-      sourceToolCallId: callId,
-      vendorChildId: child,
-      label: pending.label,
-      task: { text: pending.task, source: 'structured-tool-input' },
-      result: { text: result, source: 'tool-result', completeness: 'summary' },
-      status: 'completed',
-      timing: { observedStartedAt: pending.startedAt, observedCompletedAt: observedAt, source: 'client-observed' },
-      // Kimi changes the tool-call prefix on session/load. Until its collision
-      // gate passes, the observation remains Activity-only.
-      projectionEligible: false,
     }
   }
 }

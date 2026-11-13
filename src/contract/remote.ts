@@ -176,6 +176,8 @@ export interface AcpProviderHealth {
   readonly version: string | null
   /** 五态状态（派生规则见 src/domain/session/agent-state.ts）。 */
   readonly state: AcpAgentConfigState
+  /** Configuration refusal is not a protocol probe or process failure. */
+  readonly unavailableReason?: 'agent-retired'
   /**
    * 上次 probe 快照（llm-stub 缓存；首次目录构建前为 'never'）。成功分支携带
    * authMethods（收窄后）、agentInfo/capabilities（initialize 握手实际值）、

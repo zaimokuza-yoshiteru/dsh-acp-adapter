@@ -45,7 +45,7 @@ describe('ACP Agent control presentation', () => {
   it('labels config-only modes and prefers canonical config updates over a legacy mode snapshot', () => {
     const value = {
       sessionId: 's',
-      profileId: 'kimi',
+      profileId: 'generic',
       freshness: 'live' as const,
       editable: false,
       configOptions: [
