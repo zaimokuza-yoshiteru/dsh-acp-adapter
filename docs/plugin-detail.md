@@ -6,4 +6,4 @@
 
 标准模式可直接使用 ACP Agent。创建插件请选择**创造模式**；**ACP** 是由 Agent 管理对话上下文的可选模式。
 
-[使用帮助](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/0.2.2-alpha/README.md#连接-agent) · [反馈问题](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/issues)
+[使用帮助](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/v0.2.2-rc.1.1/README.md#连接-agent) · [反馈问题](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/issues)

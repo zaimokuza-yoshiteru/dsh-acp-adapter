@@ -4,47 +4,27 @@
 
 User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for publication dates, exact installation instructions, and checksums. Historical entries were reconstructed from tag diffs; npm packages were not republished.
 
-## 0.2.2-rc.1.1（未发布 / Unreleased）
+## 0.2.2-rc.1.1
 
-- 兼容目标迁移至 DSH `0.2.2-rc.1`，Node 至少 `24.9.0`；工具桥使用官方 native/PTC 批次执行器和本步准入集合，投影与模型选择改用官方 owner API。
-- 删除强制展开回答及未使用权限投影的兼容补丁，沿用原生“全部／最后回复”与 Statistics 视图；普通会话 fork 保存经核验的来源，保留上下文安全边界。
-- 成员模型缓存不再覆盖较新的原生选择，应用并落盘后清除缓存。旧缓存缺少先后顺序证据时优先保留原生选择；升级前尚未应用的成员偏好可能需要重新选择一次。
-- 诊断视图改为稳定注册，通过原生标题栏和正文的会话数据控制显示，避免与 ds-bot 热启停时刷新已经撤销的会话绑定。
-- 工具卸载等待已受理调用完成结果与反馈收尾。普通 fork 中途停用后，重新启用插件并刷新同一页签可继续核验已创建的子会话；创建结果未知时停止重复创建，并区分来源拒绝、存储和工作区挂接失败。
-- 在途工具与本地补存改由各 Host 独立服务持有，保留插件热重装后的结算，最终关闭先停准入、等收尾再释放资源；显式诊断收集器也按 Host 或单次检查隔离。
-- 诊断视图、Agent 控件和插件配置页的悬停反馈只用于支持 hover 的设备，保留触屏选中态和键盘焦点；窄屏诊断工具栏分行排列，避免筛选入口被导出和搜索控件遮挡。
-- 复用 RC.1 原生目录菜单定位及浮层视口约束，删除重复的逐帧测量；工具桥改用 Cordis 4.1 的依赖卸载等待，保留已接纳工具的最终结算。
-- 没有 `category=model` 或完全不提供配置项的 ACP Agent 也可选择“Agent 当前配置”并开始会话；缺失或未知分类的配置保持通用控件，不猜测模型身份。
-- RC.1 已有 ACP 会话切模时自动恢复原模型，保留历史和草稿，并提供独立新会话确认；Teams 明确禁用已开始成员的其他模型，仍可选择当前模型取消旧待办。首次请求前选择和推理强度调整继续可用。
-- 分叉成功后的记录清理失败仅提示清理重试；创建结果未知时可明确放弃本次尝试，再单独确认新建，保留未知记录且不自动重复远端创建。
-- 关闭时检查仍保留的反馈，等已接纳调用和最终补存后再撤销写入接口；持续存储失败报告未完成项，进程拆除警告接入 Host 日志。没有新增跨进程持久补存队列。
-- 恢复页优先保留原上下文的重连操作；重置为空白上下文需二次确认，“新建独立会话”明确不继承上下文。Forge 空闲时直接切回项目目录仍需在下一次输入时恢复 ACP 绑定；Auto Review 等辅助功能未宣称完整兼容。详见[迁移记录](docs/assessments/dsh-0.2.2-rc.1.md)。
-- 移除 Kimi 支持与添加入口。已保存的 Kimi 配置和历史保留，但不会再启动或探测；可在设置中手动删除配置。
-- 新增可选 ACP 预设，使用 DSH 工具，由外部 Agent 管理上下文与压缩；仍需在模型菜单选择 ACP Agent。保留标准、PTC、极简与创造预设，不更改默认选择或迁移已有会话；创造流程继续从原生创造入口使用。
-- 将 Agent 差异集中到独立模块，共享会话控件和工具目录管理；新增适配仍沿用现有配置、路由和会话绑定。
-- 修复休眠 Teams 成员在宿主会话被替换后仍保存过期模式选择的问题；正常关闭时已接受的模式选择继续保存。清理 Agent 运行实例期间阻止写入并同步控件可用状态，清理后允许仍保留的休眠会话继续保存模式。
-- ACP 预设菜单不再混排中英文说明，使用边界在插件设置中随语言显示。切换语言时保留会话控件、诊断、团队操作及配置保存／删除的当前反馈，并更新译文；会话设置失败显示本地化提示。原生插件详情按当前界面语言显示对应的中英文 README。
-- 安装门禁允许升级新增 ACP 预设，同时验证原生预设、默认选择和同名工具保持原样；卸载检查完整移除插件与预设入口。
+### 中文
 
-- Target DSH `0.2.2-rc.1` and Node `>=24.9.0`; use native/PTC batch executors, the Host's admitted step tool set, and official projection/model owners.
-- Remove forced reply elevation and unused permission projection reads. Reuse native All/Final replies and Statistics; preserve verified provenance for ordinary forks.
-- Do not overwrite newer native teammate model choices with cached preferences; consume an applied intent after native persistence succeeds. Legacy preferences without ordering evidence defer to the recorded native choice and may need to be selected again once.
-- Keep Diagnostics registered for the plugin lifetime and filter the native header/body view sources per session, avoiding view-roster refreshes against retired bindings during ds-bot hot reloads.
-- Drain accepted tool results and feedback before releasing their provider. After an interrupted ordinary fork, the same tab can retry provenance registration for the existing child; unknown creation outcomes block duplicate creation, with distinct provenance, storage and workspace-attachment feedback.
-- Give each Host explicit owners for pending tools and local settlement, preserving continuity across plugin reinstalls and draining accepted work before final resource release. Scope opt-in diagnostic collectors to one Host or check run.
-- Limit hover feedback in Diagnostics, Agent controls, and plugin settings to hover-capable devices, preserving touch selection and keyboard focus. Wrap the narrow Diagnostics toolbar so export and search controls cannot cover the filters.
-- Reuse RC.1 native catalog-menu positioning and overlay viewport limits, removing duplicate frame measurement. Use Cordis 4.1 dependency teardown while retaining accepted tool settlement.
-- Allow Agents without a model-category selector or any configuration options through an Agent-current-configuration route; preserve generic controls with absent or unknown categories.
-- Restore the original model when switching an established ACP session on RC.1, preserving history and draft and offering an explicitly confirmed independent session. Teams disable other models after the first request while allowing the current model to clear old pending choices. Initial choices and reasoning effort remain available.
-- Distinguish successful fork creation with pending local cleanup from an unknown creation outcome. Cleanup retries never create again; abandoning an unknown attempt and starting another require separate explicit actions.
-- Drain retained feedback and accepted writes before retiring settlement sinks; report unsaved results and route process teardown warnings to Host diagnostics. This does not add a durable cross-process outbox.
-- Prefer context-preserving reconnect when applicable; confirm resetting to blank context and describe new sessions as independent. Forge idle return-to-project and auxiliary features such as Auto Review remain limited.
-- Remove Kimi support and its add-menu entry. Retain saved Kimi configurations and history without launching or probing the Agent; configurations can be removed explicitly in settings.
-- Add an optional ACP preset with DSH tools and Agent-managed context and compression; select an ACP Agent separately in the model menu. Preserve Standard, PTC, Minimal and Creator without changing defaults or migrating existing sessions. Creator workflows remain available through the native Creator entry point.
-- Centralize Agent differences in individual modules and share session-control and tool-directory management. New adapters retain the existing configuration, route and session-binding formats.
-- Reject stale mode selections for dormant Teams members when their Host session is replaced; preserve accepted mode selections during normal shutdown. Keep controls read-only while cleaning up an Agent runtime, then notify the UI that the retained dormant session can save modes again.
-- Keep the ACP preset menu free of mixed-language descriptions and explain its scope in localized plugin settings. Preserve current session-control, diagnostic, team-action and configuration save/delete feedback when switching languages, updating its translation. Localize session-setting failure messages. Let the native plugin detail choose the English or Chinese README for the current interface language.
-- Allow installation checks to recognize the added ACP preset while preserving native presets, defaults and tools with matching IDs. Verify that uninstalling removes both the plugin and its preset entry.
+- 适配 DSH `0.2.2-rc.1`，修复该版本下的 DSH 工具调用失败，并显示 CodeBuddy 当前模型可用的推理档位。安装前请匹配 RC.1 宿主；本版不扩大到 RC.2。
+- 新增可选 **ACP** 模式：使用 DSH 工具，由 Agent 管理上下文。标准、PTC、极简和创造模式继续可用，不改变默认选择或已有会话；创建插件仍从原生创造入口开始。
+- 支持未提供模型目录的 ACP Agent，选择 **Agent current configuration** 即可开始会话。Kimi 已停止支持，不再启动或探测；已保存的配置和历史保留，配置可手动删除。
+- 已有 ACP 会话尝试更换模型时，保留原模型、历史和草稿，并提供独立新会话入口；新会话不继承原 Agent 上下文。同模型的推理强度仍可调整。实验性 **Auto Review** 尚未完整支持，**Auto** 审批不等于 Auto Review。
+- 恢复时优先重连原上下文，重置为空白上下文需确认。分叉已成功但记录清理失败时只重试清理；结果未知时可明确放弃该尝试，不自动重复创建。
+- 改善与 ds-bot 共存及插件热启停，停用时等待已受理工具结果和反馈收尾。修复 Teams 成员在会话重建后保存过期模式、以及中断后无法继续保存模式的问题；升级前尚未应用的旧成员偏好可能需要重选一次。
+- 精简中英文插件详情、设置和恢复提示，切换语言时保留当前操作并更新反馈文案；改善窄屏控件、触屏与键盘操作。
+
+### English
+
+- Target DSH `0.2.2-rc.1`, fixing DSH tool-call failures on that version and showing CodeBuddy reasoning options available for the current model. Match the RC.1 host before installing; this release does not extend compatibility to RC.2.
+- Add an optional **ACP** mode with DSH tools and Agent-managed context. Standard, PTC, Minimal and Creator remain available without changing defaults or existing sessions; start plugin creation through the native Creator entry point.
+- Support ACP Agents without a model catalog through **Agent current configuration**. Retire Kimi support: it is no longer launched or probed. Saved configurations and history remain; configurations can be deleted manually.
+- Keep the original model, history and draft when attempting to change models in an established ACP session, and offer an independent new session. The new session does not inherit the original Agent context. Reasoning effort can still change on the same model. Experimental **Auto Review** remains incompletely supported; **Auto** approval is a separate feature.
+- Prefer reconnecting to the original context and confirm resets to blank context. If a fork succeeds but record cleanup fails, retry only the cleanup. Unknown creation outcomes can be explicitly abandoned without automatically creating another session.
+- Improve ds-bot coexistence and plugin hot reloads, draining accepted tool results and feedback on disable. Fix stale Teams member mode selections after session replacement and modes remaining unsavable after interruption. Older, unapplied member preferences may need to be selected again once after upgrading.
+- Simplify bilingual plugin details, settings and recovery guidance. Keep current actions and translate their feedback when changing languages; improve narrow layouts, touch and keyboard interaction.
 
 ## 0.2.1-rc.4.1
 

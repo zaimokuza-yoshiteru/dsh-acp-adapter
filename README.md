@@ -1,20 +1,18 @@
 # DSH-ACP-ADAPTER
 
-> 本分支适配 DSH `0.2.2-rc.1`，尚未发布。下方安装方式用于已发布版本；请按宿主版本选择[对应发布包](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases)。
-
 [English](README.en.md)
 
 在 DSH 中使用 ACP Agent，沿用原生会话、工具审批和团队协作。
 
 ## 安装
 
-当前插件版本 [`0.2.1-rc.4.1`](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/tag/v0.2.1-rc.4.1) 兼容 DSH `0.2.1-rc.4`。安装前请确认宿主已升级到该版本。其他版本见 [Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases)。
+当前插件版本 [`0.2.2-rc.1.1`](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/tag/v0.2.2-rc.1.1) 兼容 DSH `0.2.2-rc.1`。安装前请确认宿主版本一致。其他版本见 [Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases)。
 
 **推荐：** 在 DSH Creator 模式中发送：
 
-> 请安装并启用 ACP 插件：`@zaimokuza/dsh-acp-adapter@0.2.1-rc.4.1`。
+> 请安装并启用 ACP 插件：`@zaimokuza/dsh-acp-adapter@0.2.2-rc.1.1`。
 
-按提示确认安装，新插件默认启用。也可打开 **插件 → 添加插件**，粘贴 `@zaimokuza/dsh-acp-adapter@0.2.1-rc.4.1`，安装后点 **立即启用**。
+按提示确认安装，新插件默认启用。也可打开 **插件 → 添加插件**，粘贴 `@zaimokuza/dsh-acp-adapter@0.2.2-rc.1.1`，安装后点 **立即启用**。
 
 <details>
 <summary>其他安装方式：命令行、Git 与压缩包</summary>
@@ -25,10 +23,10 @@
 
 ```bash
 # Desktop
-dsh plugin --profile desktop add @zaimokuza/dsh-acp-adapter@0.2.1-rc.4.1
+dsh plugin --profile desktop add @zaimokuza/dsh-acp-adapter@0.2.2-rc.1.1
 
 # Web
-npx @deepseek-ai/dsh@0.2.1-rc.4 plugin --profile web add @zaimokuza/dsh-acp-adapter@0.2.1-rc.4.1
+npx @deepseek-ai/dsh@0.2.2-rc.1 plugin --profile web add @zaimokuza/dsh-acp-adapter@0.2.2-rc.1.1
 ```
 
 Git 与压缩包安装示例：
@@ -37,14 +35,14 @@ Git 与压缩包安装示例：
 
 | 来源              | 示例                                                                                                                                                   |
 | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Git               | `git+https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter.git#v0.2.1-rc.4.1`                                                                         |
-| 预构建插件包 .tgz | [下载 0.2.1-rc.4.1](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/download/v0.2.1-rc.4.1/zaimokuza-dsh-acp-adapter-0.2.1-rc.4.1.tgz) |
+| Git               | `git+https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter.git#v0.2.2-rc.1.1`                                                                         |
+| 预构建插件包 .tgz | [下载 0.2.2-rc.1.1](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases/download/v0.2.2-rc.1.1/zaimokuza-dsh-acp-adapter-0.2.2-rc.1.1.tgz) |
 
 此包包含编译产物，与 npm 发布包一致。GitHub 自动生成的 Source code ZIP/TAR.GZ 是源码归档，不是构建后的插件包；未缓存的依赖仍需联网安装。
 
 </details>
 
-**更新：** 插件管理器不会自动更新。上方已发布版本对应的 DSH `0.2.1-rc.4` 可先卸载旧版，再按推荐方式安装新版；CLI 可直接再次执行 `add`。当前开发分支目标 DSH `0.2.2-rc.1` 已提供原生版本列表和更新操作，可选择与宿主兼容的已发布插件版本原地更新，无需先卸载；预发布版本需在版本列表中明确选择。卸载插件不会卸载 Agent 或退出账号。安装完成后，为确保加载新版：桌面端请在当前任务结束后完全退出并重新打开 DSH；Web 端请重启 DSH 服务并刷新页面。无需重新登录。
+**更新：** 在插件管理器的版本列表中选择与宿主匹配的版本，原地更新即可，无需先卸载；预发布版本需明确选择，插件不会自动更新。安装后，桌面端请在当前任务结束后完全退出并重新打开 DSH；Web 端请重启 DSH 服务并刷新页面。无需重新登录。卸载插件不会卸载 Agent 或退出账号。
 
 ## 连接 Agent
 
@@ -71,7 +69,7 @@ Git 与压缩包安装示例：
 
 标准模式可直接使用 ACP Agent。需要通过对话创建插件时，选择**创造模式**。
 
-本分支还提供可选 **ACP** 模式：使用 DSH 工具，由 Agent 管理对话上下文。它不加载 DSH 的插件管理、子代理和压缩工具；已有会话和默认选择保持不变。
+还可选择 **ACP** 模式：使用 DSH 工具，由 Agent 管理对话上下文。它不加载 DSH 的插件管理、子代理和压缩工具；已有会话和默认选择保持不变。
 
 Kimi 已不再支持；已保存的配置和历史保留，可在设置中删除不再使用的配置。
 
@@ -90,7 +88,7 @@ Kimi 已不再支持；已保存的配置和历史保留，可在设置中删除
 
 </details>
 
-**Auto** 可自动确认当前会话中 Agent 调用 DSH 工具的申请，不改变 DSH 的沙箱与工具授权。Devin 发出的授权请求仍需按原始选项确认。**Ask** 在 Agent 请求审批时显示原生审批卡。Agent 自带工具仍由 Agent 控制。**Stop** 取消当前轮次；Agent 自带工具是否停止仍由 Agent 管理，未报告结果的工具保留未完成状态。按 Enter 可排队输入，支持的 Agent 会在同一 Agent 会话继续。开启 DSH 的实验性 Agent Teams 后，可在主会话查看成员进度并处理审批。
+**Auto** 可自动确认当前会话中 Agent 调用 DSH 工具的申请，不改变 DSH 的沙箱与工具授权。Devin 发出的授权请求仍需按原始选项确认。**Ask** 在 Agent 请求审批时显示原生审批卡。Auto 不等于实验性 Auto Review；本版尚未完整支持 Auto Review。Agent 自带工具仍由 Agent 控制。**Stop** 取消当前轮次；Agent 自带工具是否停止仍由 Agent 管理，未报告结果的工具保留未完成状态。按 Enter 可排队输入，支持的 Agent 会在同一 Agent 会话继续。开启 DSH 的实验性 Agent Teams 后，可在主会话查看成员进度并处理审批。
 
 ## 排障与反馈
 
@@ -103,4 +101,4 @@ Kimi 已不再支持；已保存的配置和历史保留，可在设置中删除
 
 在 **ACP 诊断**中可导出安全摘要 JSON；其中不含消息正文、命令、路径、原始会话 ID 或 ACP 凭据。DSH 原生会话日志 ZIP 可能含提示词、工具参数、文件路径和附件；分享前请检查并移除敏感信息。
 
-需要求助时，向 [Issue](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/issues) 附上错误编号、DSH/插件版本和已脱敏的日志片段。技术边界见[原生复用说明](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/v0.2.1-rc.4.1/docs/native-reuse.md)。
+需要求助时，向 [Issue](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/issues) 附上错误编号、DSH/插件版本和已脱敏的日志片段。技术边界见[原生复用说明](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/v0.2.2-rc.1.1/docs/native-reuse.md)。
