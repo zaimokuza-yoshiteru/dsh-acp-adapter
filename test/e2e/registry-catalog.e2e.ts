@@ -1,4 +1,5 @@
 import type { AcpAgentConfig } from '../../src/contract/agent-config.ts'
+import registrySnapshot from '../../assets/registry/registry.json' with { type: 'json' }
 import { required } from './required.ts'
 import type { TestBrowser } from './browser.ts'
 import { launchBrowser, newEnglishPage } from './browser.ts'
@@ -59,7 +60,12 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
     const menuText = await menu.innerText()
     expect(menuText.indexOf('Qwen Code')).toBeGreaterThan(menuText.indexOf('Verified adapters · 6'))
     expect(menuText.indexOf('Qwen Code')).toBeLessThan(menuText.indexOf('Catalog entries · Unverified ·'))
-    await menu.getByRole('menuitem', { name: /^Google Antigravity · 1\.1\.1$/ }).waitFor()
+    const antigravity = required(
+      registrySnapshot.agents.find((agent) => agent.id === 'antigravity-acp'),
+      'Antigravity catalog entry',
+    )
+    await menu.getByRole('menuitem', { name: `Google Antigravity · ${antigravity.version}`, exact: true }).waitFor()
+    expect(items.some((text) => /^Kimi(?: CLI| Code)?(?: ·| \(Legacy\))/.test(text))).toBe(false)
     const evidence = join(root, '.local/rc1-catalog-menu')
     mkdirSync(evidence, { recursive: true })
     mkdirSync(join(root, '.local/registry-ui'), { recursive: true })
@@ -110,6 +116,17 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
       await detail.getByRole('button', { name: 'Add Agent', exact: true }).click()
       await page.getByRole('menuitem', { name }).click()
     }
+    await select(/^Claude Agent ·/)
+    await detail.getByRole('button', { name: 'Connection settings', exact: true }).click()
+    expect(await detail.getByLabel('Executable', { exact: true }).inputValue()).toBe('claude-agent-acp')
+    await detail.getByText(/https:\/\/github\.com\/agentclientprotocol\/claude-agent-acp/).waitFor()
+    expect(await detail.innerText()).not.toContain('claude-agent-acp-darwin-')
+    await page.setViewportSize({ width: 390, height: 844 })
+    await page.locator('[data-sidebar-collapsed="true"]').waitFor()
+    await detail.getByText(/https:\/\/github\.com\/agentclientprotocol\/claude-agent-acp/).scrollIntoViewIfNeeded()
+    await page.screenshot({ path: join(root, '.local/registry-ui/claude-binary-390-en.png'), animations: 'disabled' })
+    await detail.getByRole('button', { name: 'Cancel', exact: true }).click()
+    await page.setViewportSize({ width: 1680, height: 1000 })
     await select(/^Codex ·/)
     expect(await detail.getByLabel('Environment', { exact: true }).count()).toBe(0)
     expect(await detail.getByLabel('Login hint', { exact: true }).count()).toBe(0)
@@ -178,7 +195,7 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
     expect(chineseMenuText.indexOf('Qwen Code')).toBeLessThan(chineseMenuText.indexOf('目录收录 · 未验证 ·'))
     await page
       .getByRole('menu')
-      .getByRole('menuitem', { name: /^Google Antigravity · 1\.1\.1$/ })
+      .getByRole('menuitem', { name: `Google Antigravity · ${antigravity.version}`, exact: true })
       .waitFor()
     await page
       .getByRole('menu')

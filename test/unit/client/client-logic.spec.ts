@@ -207,7 +207,11 @@ describe('常量：与宿主侧契约逐字对齐', () => {
     expect(ACP_CATALOG_ENTRIES.slice(0, 6).every((entry) => entry.verification === 'adapter-tested')).toBe(true)
     expect(ACP_CATALOG_ENTRIES.slice(6).every((entry) => entry.verification === 'unverified')).toBe(true)
     expect(new Set(ACP_CATALOG_ENTRIES.map((entry) => entry.id))).toEqual(
-      new Set(registrySnapshot.agents.filter((agent) => agent.id !== 'kimi').map((agent) => agent.id)),
+      new Set(
+        registrySnapshot.agents
+          .filter((agent) => agent.id !== 'kimi' && agent.id !== 'kimi-code')
+          .map((agent) => agent.id),
+      ),
     )
     // 条目 id 即 profile id 预填值，均合法
     for (const entry of ACP_CATALOG_ENTRIES) {
@@ -280,9 +284,11 @@ describe('常量：与宿主侧契约逐字对齐', () => {
     expect(validateAgentDraft(draft, { retired: stored }, 'retired').config).toEqual(stored)
   })
 
-  it('excludes the retired catalog preset', () => {
+  it('excludes both retired Kimi catalog identities from entries and new drafts', () => {
     expect(catalogEntryOf('kimi')).toBeUndefined()
+    expect(catalogEntryOf('kimi-code')).toBeUndefined()
     expect(draftFromCatalogEntry('kimi')).toBeUndefined()
+    expect(draftFromCatalogEntry('kimi-code')).toBeUndefined()
   })
 
   it('catalog 预填纪律钉：全部条目的 command/args 无 shell 元字符（spawn 姿态写入闸口径），不含疑似 secret 值', () => {
@@ -533,6 +539,26 @@ describe('validateAgentDraft', () => {
 // ---------- 草稿种子 ----------
 
 describe('草稿种子：emptyDraft / draftFromCatalogEntry / draftFromAgent', () => {
+  it('preserves a saved Claude command, arguments and environment instead of reseeding catalog defaults', () => {
+    const config: AcpAgentConfig = {
+      name: 'Company Claude',
+      catalogId: 'claude-acp',
+      runtime: 'claude',
+      command: '/opt/company/claude-wrapper',
+      args: ['--profile', 'work profile'],
+      env: { CLAUDE_CONFIG_DIR: '/opt/company/config' },
+      loginHint: 'company-login',
+    }
+    const draft = draftFromAgent('company-claude', config)
+    expect(draft).toMatchObject({
+      command: config.command,
+      argsText: '--profile\nwork profile',
+      envText: 'CLAUDE_CONFIG_DIR=/opt/company/config',
+      loginHint: 'company-login',
+    })
+    expect(validateAgentDraft(draft, { 'company-claude': config }, 'company-claude').config).toEqual(config)
+  })
+
   it('derives display-only login guidance without changing saved custom hints or runtime identity', () => {
     expect(agentLoginHint('custom-codex', { catalogId: 'codex-acp' })).toBe('codex login')
     expect(agentLoginHint('claude', {})).toBe('claude')

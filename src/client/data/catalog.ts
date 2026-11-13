@@ -11,6 +11,7 @@ interface RegistryAgent {
   readonly name: string
   readonly version?: string | undefined
   readonly website?: string | undefined
+  readonly repository?: string | undefined
   readonly distribution?:
     | {
         readonly npx?:
@@ -58,7 +59,10 @@ const LOGIN_HINTS: Readonly<Partial<Record<AcpAgentId, string>>> = {
 }
 
 /** Known installed CLI names for binary distributions; never archive paths. */
-const INSTALLED_BINARY_COMMANDS: Readonly<Record<string, string>> = { devin: 'devin' }
+const INSTALLED_BINARY_COMMANDS: Readonly<Record<string, string>> = {
+  devin: 'devin',
+  'claude-acp': 'claude-agent-acp',
+}
 
 /** Curated adapter regression/live-smoke coverage, not certification of registry versions.
  * Keep this explicit: adding a runtime binding does not establish verification.
@@ -104,6 +108,7 @@ function installHintOf(agent: RegistryAgent): string {
   if (distribution?.binary !== undefined) {
     return (
       agent.website ??
+      agent.repository ??
       Object.entries(distribution.binary)
         .map(([platform, entry]) => `${platform}: ${entry?.archive ?? ''}`)
         .join('\n')
@@ -127,7 +132,7 @@ export function buildCatalogEntries(
   const entries: AcpCatalogEntry[] = []
   for (const agent of registryAgents) {
     // Keep the official snapshot intact while excluding the retired preset.
-    if (agent.id === 'kimi') continue
+    if (agent.id === 'kimi' || agent.id === 'kimi-code') continue
     const executable = executableEntries[agent.id]
     const runtime = runtimeForCatalogId(agent.id)
     const command =

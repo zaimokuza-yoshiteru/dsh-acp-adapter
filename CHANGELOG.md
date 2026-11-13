@@ -4,7 +4,7 @@
 
 User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for publication dates, exact installation instructions, and checksums. Historical entries were reconstructed from tag diffs; npm packages were not republished.
 
-## 0.2.2-rc.1.1
+## 0.2.2-rc.1.2
 
 ### 中文
 
@@ -15,6 +15,7 @@ User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/
 - 恢复时优先重连原上下文，重置为空白上下文需确认。分叉已成功但记录清理失败时只重试清理；结果未知时可明确放弃该尝试，不自动重复创建。
 - 改善与 ds-bot 共存及插件热启停，停用时等待已受理工具结果和反馈收尾。修复 Teams 成员在会话重建后保存过期模式、以及中断后无法继续保存模式的问题；升级前尚未应用的旧成员偏好可能需要重选一次。
 - 精简中英文插件详情、设置和恢复提示，切换语言时保留当前操作并更新反馈文案；改善窄屏控件、触屏与键盘操作。
+- 更新 Agent 目录，保留 Claude 二进制分发的启动命令预填；Kimi Code 也不再列入目录。
 
 ### English
 
@@ -25,6 +26,7 @@ User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/
 - Prefer reconnecting to the original context and confirm resets to blank context. If a fork succeeds but record cleanup fails, retry only the cleanup. Unknown creation outcomes can be explicitly abandoned without automatically creating another session.
 - Improve ds-bot coexistence and plugin hot reloads, draining accepted tool results and feedback on disable. Fix stale Teams member mode selections after session replacement and modes remaining unsavable after interruption. Older, unapplied member preferences may need to be selected again once after upgrading.
 - Simplify bilingual plugin details, settings and recovery guidance. Keep current actions and translate their feedback when changing languages; improve narrow layouts, touch and keyboard interaction.
+- Refresh the Agent catalog while preserving the launch command for Claude binary distributions. Kimi Code is also excluded from the catalog.
 
 ## 0.2.1-rc.4.1
 
