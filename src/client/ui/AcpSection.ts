@@ -155,6 +155,7 @@ function Loaded({
   const agents = settings.agents
   const ids = sortedAgentIds(agents)
   children.push(h('h2', { key: 'agents-title', className: css.sectionTitle }, t('agentConfiguration')))
+  children.push(h('p', { key: 'preset-help', className: css.hint }, t('presetHelp')))
 
   const onApprovalDefaultChange = async (policy: unknown): Promise<void> => {
     if (policy !== 'auto' && policy !== 'ask') return
@@ -430,14 +431,14 @@ function AgentCard(props: {
       .then((message) => {
         if (message !== undefined) {
           panel.notifyOutcome?.('delete-failed')
-          setFailure(localizedDiagnostic(t, 'actionDeleteFailed', message))
+          setFailure(message)
           return
         }
         props.onDeleted(id)
       })
       .catch((error: unknown) => {
         panel.notifyOutcome?.('delete-failed')
-        setFailure(localizedDiagnostic(t, 'actionDeleteFailed', errorMessageOf(error)))
+        setFailure(errorMessageOf(error))
       })
       .finally(() => {
         setDeleting(false)
@@ -564,7 +565,9 @@ function AgentCard(props: {
         boundCount === undefined || boundCount === 0
           ? null
           : h('p', { className: css.deleteText }, t('removeConfirmBound', { count: boundCount })),
-        failure === undefined ? null : h('p', { className: css.error }, failure),
+        failure === undefined
+          ? null
+          : h('p', { className: css.error }, localizedDiagnostic(t, 'actionDeleteFailed', failure)),
         h(
           Button,
           {
@@ -697,14 +700,14 @@ function AgentForm(props: {
       .then((message) => {
         if (message !== undefined) {
           props.panel.notifyOutcome?.('save-failed')
-          setFailure(localizedDiagnostic(t, 'actionSaveFailed', message))
+          setFailure(message)
           return
         }
         props.onClose(props.editorKey, true)
       })
       .catch((error: unknown) => {
         props.panel.notifyOutcome?.('save-failed')
-        setFailure(localizedDiagnostic(t, 'actionSaveFailed', errorMessageOf(error)))
+        setFailure(errorMessageOf(error))
       })
       .finally(() => {
         setBusy(false)
@@ -912,7 +915,9 @@ function AgentForm(props: {
             t('openExisting'),
           ),
         ),
-    failure === undefined ? null : h('p', { className: css.error }, failure),
+    failure === undefined
+      ? null
+      : h('p', { className: css.error }, localizedDiagnostic(t, 'actionSaveFailed', failure)),
     h(
       'div',
       { className: css.editorActions },

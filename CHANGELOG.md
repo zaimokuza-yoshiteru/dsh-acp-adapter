@@ -19,6 +19,12 @@ User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/
 - 分叉成功后的记录清理失败仅提示清理重试；创建结果未知时可明确放弃本次尝试，再单独确认新建，保留未知记录且不自动重复远端创建。
 - 关闭时检查仍保留的反馈，等已接纳调用和最终补存后再撤销写入接口；持续存储失败报告未完成项，进程拆除警告接入 Host 日志。没有新增跨进程持久补存队列。
 - 恢复页优先保留原上下文的重连操作；重置为空白上下文需二次确认，“新建独立会话”明确不继承上下文。Forge 空闲时直接切回项目目录仍需在下一次输入时恢复 ACP 绑定；Auto Review 等辅助功能未宣称完整兼容。详见[迁移记录](docs/assessments/dsh-0.2.2-rc.1.md)。
+- 移除 Kimi 支持与添加入口。已保存的 Kimi 配置和历史保留，但不会再启动或探测；可在设置中手动删除配置。
+- 新增可选 ACP 预设，使用 DSH 工具，由外部 Agent 管理上下文与压缩；仍需在模型菜单选择 ACP Agent。保留标准、PTC、极简与创造预设，不更改默认选择或迁移已有会话；创造流程继续从原生创造入口使用。
+- 将 Agent 差异集中到独立模块，共享会话控件和工具目录管理；新增适配仍沿用现有配置、路由和会话绑定。
+- 修复休眠 Teams 成员在宿主会话被替换后仍保存过期模式选择的问题；正常关闭时已接受的模式选择继续保存。清理 Agent 运行实例期间阻止写入并同步控件可用状态，清理后允许仍保留的休眠会话继续保存模式。
+- ACP 预设菜单不再混排中英文说明，使用边界在插件设置中随语言显示。切换语言时保留会话控件、诊断、团队操作及配置保存／删除的当前反馈，并更新译文；会话设置失败显示本地化提示。原生插件详情按当前界面语言显示对应的中英文 README。
+- 安装门禁允许升级新增 ACP 预设，同时验证原生预设、默认选择和同名工具保持原样；卸载检查完整移除插件与预设入口。
 
 - Target DSH `0.2.2-rc.1` and Node `>=24.9.0`; use native/PTC batch executors, the Host's admitted step tool set, and official projection/model owners.
 - Remove forced reply elevation and unused permission projection reads. Reuse native All/Final replies and Statistics; preserve verified provenance for ordinary forks.
@@ -33,6 +39,12 @@ User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/
 - Distinguish successful fork creation with pending local cleanup from an unknown creation outcome. Cleanup retries never create again; abandoning an unknown attempt and starting another require separate explicit actions.
 - Drain retained feedback and accepted writes before retiring settlement sinks; report unsaved results and route process teardown warnings to Host diagnostics. This does not add a durable cross-process outbox.
 - Prefer context-preserving reconnect when applicable; confirm resetting to blank context and describe new sessions as independent. Forge idle return-to-project and auxiliary features such as Auto Review remain limited.
+- Remove Kimi support and its add-menu entry. Retain saved Kimi configurations and history without launching or probing the Agent; configurations can be removed explicitly in settings.
+- Add an optional ACP preset with DSH tools and Agent-managed context and compression; select an ACP Agent separately in the model menu. Preserve Standard, PTC, Minimal and Creator without changing defaults or migrating existing sessions. Creator workflows remain available through the native Creator entry point.
+- Centralize Agent differences in individual modules and share session-control and tool-directory management. New adapters retain the existing configuration, route and session-binding formats.
+- Reject stale mode selections for dormant Teams members when their Host session is replaced; preserve accepted mode selections during normal shutdown. Keep controls read-only while cleaning up an Agent runtime, then notify the UI that the retained dormant session can save modes again.
+- Keep the ACP preset menu free of mixed-language descriptions and explain its scope in localized plugin settings. Preserve current session-control, diagnostic, team-action and configuration save/delete feedback when switching languages, updating its translation. Localize session-setting failure messages. Let the native plugin detail choose the English or Chinese README for the current interface language.
+- Allow installation checks to recognize the added ACP preset while preserving native presets, defaults and tools with matching IDs. Verify that uninstalling removes both the plugin and its preset entry.
 
 ## 0.2.1-rc.4.1
 

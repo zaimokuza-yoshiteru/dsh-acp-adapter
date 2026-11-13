@@ -8,7 +8,7 @@ import { AcpProfileAdapter, type AcpProfileRuntime } from '../../../src/host/com
 import { createAcpSidecar } from '../../../src/persistence/sidecar.ts'
 import { withSessionFacts } from '../../support/session-facts.ts'
 
-async function fixture() {
+async function fixture(cold = false) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'acp-control-owner-'))
   const sidecar = createAcpSidecar({ root })
   const message = createUserMessage({ content: [{ type: 'text', text: 'hello' }], source: { kind: 'user' } })
@@ -28,6 +28,7 @@ async function fixture() {
   let value = true
   let mode = 'code'
   const close = vi.fn(async () => undefined)
+  const changed = vi.fn<(sessionId: string) => void>()
   const set = vi.fn(async (_id: string, next: string | boolean) => {
     entered.resolve()
     await finish.promise
@@ -55,20 +56,30 @@ async function fixture() {
     setConfigOption: set,
     close,
   }
-  const adapter = new AcpProfileAdapter(
-    'test',
-    () => ({ name: 'Test', command: 'agent', args: [], env: {} }),
-    { ok: true, seam: undefined as never },
-    () => session,
-    {
-      begin: (record) => sidecar.beginDispatch(record),
-      settle: (id, key) => sidecar.settleDispatch(id as never, key),
-      read: (id, key) => sidecar.readDispatch(id as never, key),
-    },
-    undefined,
-    () => runtime,
-    sidecar,
-  )
+  const makeAdapter = () =>
+    new AcpProfileAdapter(
+      'test',
+      () => ({ name: 'Test', command: 'agent', args: [], env: {} }),
+      { ok: true, seam: undefined as never },
+      () => session,
+      {
+        begin: (record) => sidecar.beginDispatch(record),
+        settle: (id, key) => sidecar.settleDispatch(id as never, key),
+        read: (id, key) => sidecar.readDispatch(id as never, key),
+      },
+      undefined,
+      () => runtime,
+      sidecar,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      changed,
+    )
+  let adapter = makeAdapter()
   for await (const _ of adapter.stream(
     markAgentLoopRequest({
       provider: 'acp-test',
@@ -79,6 +90,10 @@ async function fixture() {
   )) {
     /* Establish a real binding and terminal snapshot before editing controls. */
   }
+  if (cold) {
+    await adapter.close()
+    adapter = makeAdapter()
+  }
   return {
     adapter,
     runtime,
@@ -86,7 +101,9 @@ async function fixture() {
     entered,
     finish,
     close,
+    changed,
     set,
+    session: () => session,
     replaceSession: () => {
       const previous = session
       session = makeSession()
@@ -102,6 +119,80 @@ async function fixture() {
 }
 
 describe('session control owner lifecycle', () => {
+  it('allows dormant modes after runtime disposal while keeping its retained Host session read-only during cleanup', async () => {
+    const f = await fixture()
+    const closeEntered = Promise.withResolvers<void>()
+    const closeFinish = Promise.withResolvers<void>()
+    f.close.mockImplementation(async () => {
+      closeEntered.resolve()
+      await closeFinish.promise
+    })
+    try {
+      const disposing = f.adapter.disposeSession(f.session())
+      await closeEntered.promise
+      expect(await f.adapter.agentSessionSnapshot('controls')).toMatchObject({
+        freshness: 'stale',
+        editable: false,
+        modeWritable: false,
+      })
+      const closeNotifications = f.changed.mock.calls.length
+      // A second cleanup sees no registered runtime, but must not reopen
+      // controls while the first cleanup still owns the process close.
+      await f.adapter.disposeSession(f.session())
+      expect(f.changed).toHaveBeenCalledTimes(closeNotifications)
+      await expect(f.adapter.setTeamMemberMode('controls', 'plan')).rejects.toMatchObject({
+        code: 'ACP_SESSION_OPTIONS_READ_ONLY',
+      })
+      closeFinish.resolve()
+      await disposing
+      expect(f.changed).toHaveBeenCalledTimes(closeNotifications + 1)
+      expect(await f.adapter.agentSessionSnapshot('controls')).toMatchObject({
+        freshness: 'stale',
+        modeWritable: true,
+      })
+      expect(await f.adapter.setTeamMemberMode('controls', 'plan')).toMatchObject({
+        freshness: 'stale',
+        pendingModeId: 'plan',
+      })
+      expect((await f.sidecar.readModeIntent('controls' as never))?.modeId).toBe('plan')
+      expect(f.runtime.setMode).not.toHaveBeenCalled()
+      expect(f.close).toHaveBeenCalledOnce()
+    } finally {
+      closeFinish.resolve()
+      await f.cleanup()
+    }
+  })
+
+  it('does not save a dormant Team mode for a replacement Host owner after an admitted storage read', async () => {
+    const f = await fixture(true)
+    const readEntered = Promise.withResolvers<void>()
+    const readFinish = Promise.withResolvers<void>()
+    const originalRead = f.sidecar.readLatestBinding.bind(f.sidecar)
+    const writeIntent = vi.spyOn(f.sidecar, 'writeModeIntent')
+    let reads = 0
+    vi.spyOn(f.sidecar, 'readLatestBinding').mockImplementation(async (...args) => {
+      if (++reads === 1) {
+        readEntered.resolve()
+        await readFinish.promise
+      }
+      return await originalRead(...args)
+    })
+    try {
+      const change = f.adapter.setTeamMemberMode('controls', 'plan')
+      const rejected = expect(change).rejects.toMatchObject({ code: 'ACP_SESSION_OPTIONS_READ_ONLY' })
+      await readEntered.promise
+      f.replaceSession()
+      readFinish.resolve()
+      await rejected
+      expect(writeIntent).not.toHaveBeenCalled()
+      expect(await f.sidecar.readModeIntent('controls' as never)).toBeUndefined()
+      expect(f.runtime.setMode).not.toHaveBeenCalled()
+    } finally {
+      readFinish.resolve()
+      await f.cleanup()
+    }
+  })
+
   it('does not dispatch a saved Team mode to the old runtime when its Host owner changes during a storage read', async () => {
     const f = await fixture()
     const readEntered = Promise.withResolvers<void>()
@@ -122,6 +213,41 @@ describe('session control owner lifecycle', () => {
       f.replaceSession()
       readFinish.resolve()
       await rejected
+      expect(f.runtime.setMode).not.toHaveBeenCalled()
+    } finally {
+      readFinish.resolve()
+      await f.cleanup()
+    }
+  })
+
+  it('drains an admitted dormant Team mode write during close while its Host owner remains unchanged', async () => {
+    const f = await fixture(true)
+    const readEntered = Promise.withResolvers<void>()
+    const readFinish = Promise.withResolvers<void>()
+    const originalRead = f.sidecar.readLatestBinding.bind(f.sidecar)
+    let reads = 0
+    vi.spyOn(f.sidecar, 'readLatestBinding').mockImplementation(async (...args) => {
+      if (++reads === 1) {
+        readEntered.resolve()
+        await readFinish.promise
+      }
+      return await originalRead(...args)
+    })
+    try {
+      const change = f.adapter.setTeamMemberMode('controls', 'plan')
+      await readEntered.promise
+      let closed = false
+      const closing = f.adapter.close().then(() => {
+        closed = true
+      })
+      await expect(f.adapter.setTeamMemberMode('controls', 'code')).rejects.toMatchObject({
+        code: 'ACP_SESSION_OPTIONS_READ_ONLY',
+      })
+      expect(closed).toBe(false)
+      readFinish.resolve()
+      expect(await change).toMatchObject({ pendingModeId: 'plan' })
+      await closing
+      expect((await f.sidecar.readModeIntent('controls' as never))?.modeId).toBe('plan')
       expect(f.runtime.setMode).not.toHaveBeenCalled()
     } finally {
       readFinish.resolve()

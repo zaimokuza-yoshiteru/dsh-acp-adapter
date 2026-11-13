@@ -21,6 +21,7 @@ it('adds an optional ACP preset without replacing defaults or native composition
       expect(roster.presets.find((row) => row.id === id)).toEqual(expect.objectContaining({ id }))
       expect(roster.presets.find((row) => row.id === id)?.broken).toBeUndefined()
     }
+    expect(roster.presets.find((row) => row.id === 'acp-adapter')).toMatchObject({ name: 'ACP', description: '' })
     expect(host.ctx.agentPresets.defaultId).toBe('standard')
     const composition = (await host.ctx.agentPresets.readDocument('acp-adapter')).content
     expect(composition).not.toMatch(/compaction|command-compact|tool-subagent|plugin-manager/)

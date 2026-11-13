@@ -421,7 +421,11 @@ function ModeGroup({
   const [busy, setBusy] = useState(false)
   const locked = useRef(false)
   const alive = useRef(true)
-  const [feedback, setFeedback] = useState('')
+  const [feedback, setFeedback] = useState<
+    | { key: 'teamModeResult'; applied: number; skipped: number; failed: number }
+    | { key: 'teamApprovalOpenFailed' }
+    | undefined
+  >(undefined)
   const [results, setResults] = useState<readonly TeamModeResult[]>([])
   const ids = members.map((member) => member.sessionId).join('|')
   useEffect(() => {
@@ -481,7 +485,7 @@ function ModeGroup({
     locked.current = true
     setBusy(true)
     updateMenu(null)
-    setFeedback('')
+    setFeedback(undefined)
     setResults([])
     const unwrap = <T>(result: { ok: true; value: T } | { ok: false; error: { message: string } }): T => {
       if (!result.ok) throw new Error(result.error.message)
@@ -504,7 +508,7 @@ function ModeGroup({
         },
       })
       if (alive.current) {
-        setFeedback(t('teamModeResult', result))
+        setFeedback({ key: 'teamModeResult', applied: result.applied, skipped: result.skipped, failed: result.failed })
         setResults(result.members)
       }
     } finally {
@@ -605,7 +609,7 @@ function ModeGroup({
                 disabled: member.phase !== 'active',
                 onClick: () => {
                   void openMember(lead, member.sessionId as SessionId).catch(() => {
-                    if (alive.current) setFeedback(t('teamApprovalOpenFailed'))
+                    if (alive.current) setFeedback({ key: 'teamApprovalOpenFailed' })
                   })
                 },
               },
@@ -711,7 +715,7 @@ function ModeGroup({
         )
       }),
     ),
-    h('div', { role: 'status', className: css.groupNotice }, feedback),
+    h('div', { role: 'status', className: css.groupNotice }, feedback === undefined ? '' : t(feedback.key, feedback)),
     results.length === 0
       ? null
       : h(

@@ -16,6 +16,7 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSy
 import os from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { parseDocument } from 'yaml'
 import { DSH_SOURCE_TAG } from './dsh-target.ts'
 
 export interface InstallGateArgs {
@@ -39,6 +40,45 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const packageJson = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
 const packageName = packageJson.name
 const profileName = 'web'
+
+function configRows(source: string): Record<string, unknown>[] {
+  // A dump contains unevaluated !!js expressions. Preserve their identity while
+  // comparing composition; never run profile expressions in this checker.
+  const document = parseDocument(source, {
+    customTags: [{ tag: 'tag:yaml.org,2002:js', resolve: (expression: string) => ({ expression, tag: '!!js' }) }],
+  })
+  if (document.errors.length > 0 || document.warnings.length > 0) fail('cannot parse composed profile YAML')
+  const value: unknown = document.toJS()
+  if (!Array.isArray(value) || !value.every((row) => row !== null && typeof row === 'object' && !Array.isArray(row)))
+    fail('composed profile must be an entry list')
+  return value as Record<string, unknown>[]
+}
+
+// Use the shipping bundle as the owner of its root rows. Nested preset plugin
+// ids can also occur in stock presets and must stay attached to their parent.
+const bundleRootIds = new Set(
+  configRows(readFileSync(join(root, packageJson.dsh.bundle.patch), 'utf8')).flatMap((patch) => {
+    if (!Array.isArray(patch.insert)) fail('install gate expects an additive bundle insert')
+    return patch.insert.map((row: unknown) => {
+      if (row === null || typeof row !== 'object' || !('id' in row) || typeof row.id !== 'string')
+        fail('bundle root entry must have an id')
+      return row.id
+    })
+  }),
+)
+
+/** Allow this bundle's rows to change while preserving the complete stock tree. */
+export function assertOnlyBundleCompositionChanged(beforeDump: string, afterDump: string) {
+  const stock = (dump: string) => configRows(dump).filter((row) => !bundleRootIds.has(String(row.id)))
+  if (JSON.stringify(stock(beforeDump)) !== JSON.stringify(stock(afterDump)))
+    fail('profile composition outside this bundle changed')
+}
+
+/** Removing the package must withdraw every root row it contributed. */
+export function assertBundleRemoved(dump: string) {
+  const retained = configRows(dump).find((row) => bundleRootIds.has(String(row.id)))
+  if (retained !== undefined) fail(`bundle row ${String(retained.id)} remains after removal`)
+}
 
 export function parseArgs(argv: readonly string[]) {
   const result: InstallGateArgs = {
@@ -411,6 +451,14 @@ async function main() {
     }
     writeFileSync(env.npm_config_userconfig, '')
     writeFileSync(env.npm_config_globalconfig, '')
+    const beforeInstallDump = run(
+      process.execPath,
+      [hostCli(args.hostRoot), '--profile', profileName, '--dump-config'],
+      {
+        env,
+        timeout: 30_000,
+      },
+    ).stdout
     const installSpec = args.spec ?? tgz!
     run(
       process.execPath,
@@ -443,6 +491,7 @@ async function main() {
       timeout: 30_000,
     }).stdout
     assertComposedDump(initialDump)
+    assertOnlyBundleCompositionChanged(beforeInstallDump, initialDump)
     if (args.updateSpec !== undefined) assertAcpConfigSentinel(initialDump)
 
     let update: { expectedVersion: string; installedVersion: string } | undefined
@@ -468,12 +517,7 @@ async function main() {
       }).stdout
       assertComposedDump(updatedDump)
       assertAcpConfigSentinel(updatedDump)
-      const withoutAdapter = (dump: string) =>
-        rowBlocks(dump)
-          .filter((block) => !/^\s*- id: dsh-acp-adapter(?:\s|$)/m.test(block))
-          .sort()
-      if (JSON.stringify(withoutAdapter(initialDump)) !== JSON.stringify(withoutAdapter(updatedDump)))
-        fail('profile composition changed while updating the plugin')
+      assertOnlyBundleCompositionChanged(initialDump, updatedDump)
     }
     let boot: { skipped: true } | { status: number; output: string } = { skipped: true }
     if (!args.skipBoot) boot = await bootAndCheck(args.hostRoot, dshHome)
@@ -486,8 +530,8 @@ async function main() {
       env,
       timeout: 30_000,
     }).stdout
-    if (rowBlocks(afterRemove).some((block) => block.includes(`id: dsh-acp-adapter`)))
-      fail('plugin row remains after removal')
+    assertBundleRemoved(afterRemove)
+    assertOnlyBundleCompositionChanged(beforeInstallDump, afterRemove)
     const profilePackage = JSON.parse(readFileSync(join(dshHome, 'profiles', profileName, 'package.json'), 'utf8'))
     if (Object.hasOwn(profilePackage.dependencies ?? {}, packageName))
       fail('profile manifest retains plugin dependency after removal')

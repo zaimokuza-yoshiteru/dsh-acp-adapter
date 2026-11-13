@@ -14,6 +14,14 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
   const host = await launchAdapterWorld()
   let browser!: TestBrowser
   try {
+    for (const [language, path, heading] of [
+      ['en-US', 'README.en.md', 'Install'],
+      ['zh-CN', 'README.md', '安装'],
+    ] as const) {
+      const document = await host.ctx.pluginManager.readBundleDetail('@zaimokuza/dsh-acp-adapter', language)
+      expect(document).toMatchObject({ status: 'found', origin: 'locale', path })
+      if (document.status === 'found') expect(document.markdown).toContain(`\n## ${heading}\n`)
+    }
     browser = await launchBrowser({ headless: true, channel: process.env.DSH_E2E_BROWSER_CHANNEL })
     const page = await newEnglishPage(browser)
     const errors: string[] = []
@@ -21,15 +29,17 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
     await page.goto(host.authenticatedUrl)
     await connectFreshWorkspace(page, host.workspaceCwd)
     let detail = await openAcpPluginDetail(page)
+    await detail.getByRole('heading', { name: 'Install', exact: true }).waitFor()
+    expect(await detail.getByRole('heading', { name: '安装', exact: true }).count()).toBe(0)
     const addButton = detail.getByRole('button', { name: 'Add Agent', exact: true })
     await addButton.click()
     const menu = page.getByRole('menu')
-    await menu.getByText('Verified adapters · 7', { exact: true }).waitFor()
+    await menu.getByText('Verified adapters · 6', { exact: true }).waitFor()
     await menu.getByText(/^Catalog entries · Unverified ·/).waitFor()
     expect(await detail.getByRole('textbox').count()).toBe(0)
     expect(await menu.getByRole('textbox').count()).toBe(0)
     const items = await menu.getByRole('menuitem').allTextContents()
-    expect(items.slice(0, 7).map((text) => text.split(' · ')[0])).toEqual([
+    expect(items.slice(0, 6).map((text) => text.split(' · ')[0])).toEqual([
       'Devin',
       'Codebuddy Code',
       'Codex',
@@ -38,7 +48,7 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
       'Qwen Code',
     ])
     const menuText = await menu.innerText()
-    expect(menuText.indexOf('Qwen Code')).toBeGreaterThan(menuText.indexOf('Verified adapters · 7'))
+    expect(menuText.indexOf('Qwen Code')).toBeGreaterThan(menuText.indexOf('Verified adapters · 6'))
     expect(menuText.indexOf('Qwen Code')).toBeLessThan(menuText.indexOf('Catalog entries · Unverified ·'))
     await menu.getByText('Adapter coverage does not certify every version or platform.', { exact: true }).waitFor()
     await menu.getByRole('menuitem', { name: /^Google Antigravity · 1\.1\.1$/ }).waitFor()
@@ -151,10 +161,12 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
     await page.getByRole('menuitem', { name: '中文', exact: true }).click()
     await page.getByRole('button', { name: '关闭', exact: true }).click()
     detail = await openAcpPluginDetail(page, 'zh')
+    await detail.getByRole('heading', { name: '安装', exact: true }).waitFor()
+    expect(await detail.getByRole('heading', { name: 'Install', exact: true }).count()).toBe(0)
     await detail.getByRole('button', { name: '添加 Agent', exact: true }).click()
-    await page.getByRole('menu').getByText('已验证适配 · 7', { exact: true }).waitFor()
+    await page.getByRole('menu').getByText('已验证适配 · 6', { exact: true }).waitFor()
     const chineseMenuText = await page.getByRole('menu').innerText()
-    expect(chineseMenuText.indexOf('Qwen Code')).toBeGreaterThan(chineseMenuText.indexOf('已验证适配 · 7'))
+    expect(chineseMenuText.indexOf('Qwen Code')).toBeGreaterThan(chineseMenuText.indexOf('已验证适配 · 6'))
     expect(chineseMenuText.indexOf('Qwen Code')).toBeLessThan(chineseMenuText.indexOf('目录收录 · 未验证 ·'))
     await page
       .getByRole('menu')
@@ -198,6 +210,8 @@ it('adds catalog presets, preserves edited defaults, and runs a generic Agent th
       ).data.reason.kind,
     ).toBe('completed')
     detail = await openAcpPluginDetail(page)
+    await detail.getByRole('heading', { name: 'Install', exact: true }).waitFor()
+    expect(await detail.getByRole('heading', { name: '安装', exact: true }).count()).toBe(0)
     const profile = page.locator('[data-dsh-acp-agent="my-fast"]')
     await profile.getByRole('button', { name: 'Delete', exact: true }).first().click()
     await profile.getByText(/^Delete Agent ".+"\? Its model route is removed with it\.$/).waitFor()

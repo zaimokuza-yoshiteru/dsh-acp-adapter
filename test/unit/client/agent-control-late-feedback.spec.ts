@@ -8,6 +8,9 @@ const runtime = vi.hoisted(() => ({
   cells: [] as unknown[],
   effects: [] as (() => void)[],
   cleanups: new Map<number, () => void>(),
+  streamEvents: [] as string[],
+  agentReadFailed: undefined as (() => void) | undefined,
+  policyReadFailed: undefined as (() => void) | undefined,
 }))
 
 // Run the component's actual handlers and effect cleanup around a held RPC.
@@ -60,9 +63,21 @@ const agentSnapshot = (sessionId: string): AcpAgentSessionSnapshotView => ({
 })
 
 vi.mock('../../../src/client/data/agent-session-stream.ts', () => ({
-  agentSessionStream: (_remote: unknown, _factory: unknown, sessionId: string, changed: (value: unknown) => void) => ({
-    start: () => changed(agentSnapshot(sessionId)),
-    dispose: async () => {},
+  agentSessionStream: (
+    _remote: unknown,
+    _factory: unknown,
+    sessionId: string,
+    changed: (value: unknown) => void,
+    failed: () => void,
+  ) => ({
+    start: () => {
+      runtime.streamEvents.push(`agent:start:${sessionId}`)
+      runtime.agentReadFailed = failed
+      changed(agentSnapshot(sessionId))
+    },
+    dispose: async () => {
+      runtime.streamEvents.push(`agent:dispose:${sessionId}`)
+    },
   }),
 }))
 vi.mock('../../../src/client/data/tool-approval-policy-stream.ts', () => ({
@@ -71,9 +86,16 @@ vi.mock('../../../src/client/data/tool-approval-policy-stream.ts', () => ({
     _factory: unknown,
     sessionId: string,
     changed: (value: unknown) => void,
+    failed: () => void,
   ) => ({
-    start: () => changed({ sessionId, policy: 'auto', source: 'session', editable: true }),
-    dispose: async () => {},
+    start: () => {
+      runtime.streamEvents.push(`policy:start:${sessionId}`)
+      runtime.policyReadFailed = failed
+      changed({ sessionId, policy: 'auto', source: 'session', editable: true })
+    },
+    dispose: async () => {
+      runtime.streamEvents.push(`policy:dispose:${sessionId}`)
+    },
   }),
 }))
 
@@ -86,6 +108,8 @@ type Props = ComponentProps<typeof AcpAgentControl>
 type Menu = {
   props: {
     disabled: boolean
+    open: boolean
+    onOpenChange(open: boolean): void
     footer: readonly { text: string }[]
     groups: readonly { choices: readonly AgentControlChoice[] }[]
     onSelect(choice: AgentControlChoice): void
@@ -172,6 +196,9 @@ beforeEach(() => {
   runtime.cells = []
   runtime.effects = []
   runtime.cleanups.clear()
+  runtime.streamEvents = []
+  runtime.agentReadFailed = undefined
+  runtime.policyReadFailed = undefined
 })
 afterEach(() => {
   for (const cleanup of runtime.cleanups.values()) cleanup()
@@ -201,7 +228,7 @@ describe.each(['option', 'policy'] as const)('late %s write feedback', (operatio
     ['session', 'rejection'],
     ['locale', 'response'],
     ['locale', 'rejection'],
-  ] as const)('survives a %s change and a %s failure without updating the new view', async (change, failure) => {
+  ] as const)('keeps a %s change and a %s failure scoped to the source session', async (change, failure) => {
     const fixture = setup()
     const initial = render(fixture.props)
     const selected = choice(initial, operation)
@@ -219,10 +246,14 @@ describe.each(['option', 'policy'] as const)('late %s write feedback', (operatio
             ...fixture.props,
             t: chinese,
           }
-    render(next)
+    const changedMenu = render(next)
+    expect(changedMenu.props.disabled).toBe(change === 'locale')
+    if (change === 'locale')
+      expect(runtime.streamEvents).toEqual(['agent:start:session-source', 'policy:start:session-source'])
     expect(fixture.report).not.toHaveBeenCalled()
-    if (failure === 'response') fixture.resolve({ ok: false, error: { message: 'PRIVATE_RPC_FAILURE' } })
-    else fixture.reject(new Error('PRIVATE_RPC_FAILURE'))
+    if (failure === 'response')
+      fixture.resolve({ ok: false, error: { message: 'PRIVATE_RPC_FAILURE ACP_SETTING_FAILED' } })
+    else fixture.reject(new Error('PRIVATE_RPC_FAILURE ACP_SETTING_FAILED'))
     await vi.waitFor(() => expect(fixture.report).toHaveBeenCalledOnce())
 
     const current = render(next)
@@ -231,10 +262,17 @@ describe.each(['option', 'policy'] as const)('late %s write feedback', (operatio
     expect(choice(current, operation).current).toBe(false)
     expect(fixture.feedback.getSnapshot()).toMatchObject({
       outcome: operation === 'option' ? 'session-option-failed' : 'tool-approval-failed',
-      sourceSession: { id: 'session-source', title: 'Source conversation' },
+      ...(change === 'session' ? { sourceSession: { id: 'session-source', title: 'Source conversation' } } : {}),
     })
+    if (change === 'locale') {
+      expect(fixture.feedback.getSnapshot()?.sourceSession).toBeUndefined()
+      expect(current.props.footer.some((entry) => entry.text.includes('请重试'))).toBe(true)
+      if (operation === 'option')
+        expect(current.props.footer.some((entry) => entry.text.includes('ACP_SETTING_FAILED'))).toBe(true)
+    }
     const toast = AcpOutcomeToast({ feedback: fixture.feedback, t: next.t }) as { props: { text: string } }
-    expect(toast.props.text).toContain('Source conversation')
+    if (change === 'session') expect(toast.props.text).toContain('Source conversation')
+    else expect(toast.props.text).not.toContain('Source conversation')
     expect(toast.props.text).toContain(
       change === 'locale' ? '请重试' : operation === 'option' ? 'Try again' : 'Please retry',
     )
@@ -252,4 +290,24 @@ describe.each(['option', 'policy'] as const)('late %s write feedback', (operatio
     expect(fixture.remote.setToolApprovalPolicy).not.toHaveBeenCalled()
     expect(fixture.report).not.toHaveBeenCalled()
   })
+})
+
+it('translates open control errors through a stable native translator without reconnecting either remote stream', () => {
+  const fixture = setup()
+  let locale = english
+  const props = { ...fixture.props, t: ((key, params) => locale(key, params)) as Props['t'] }
+  render(props).props.onOpenChange(true)
+  runtime.agentReadFailed?.()
+  runtime.policyReadFailed?.()
+  const before = render(props)
+  expect(before.props.open).toBe(true)
+  expect(before.props.footer.map((entry) => entry.text)).toContain(en.agentControlUnavailable)
+  expect(before.props.footer.map((entry) => entry.text)).toContain(en.toolApprovalUnavailable)
+  locale = chinese
+  const after = render(props)
+  expect(after.props.open).toBe(true)
+  expect(after.props.footer.map((entry) => entry.text)).toContain(zh.agentControlUnavailable)
+  expect(after.props.footer.map((entry) => entry.text)).toContain(zh.toolApprovalUnavailable)
+  expect(after.props.footer.map((entry) => entry.text)).not.toContain(en.agentControlUnavailable)
+  expect(runtime.streamEvents).toEqual(['agent:start:session-source', 'policy:start:session-source'])
 })

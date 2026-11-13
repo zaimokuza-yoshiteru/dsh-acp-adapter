@@ -118,12 +118,16 @@ it('keeps long teammate cards and reserved notices aligned in both languages and
     await expect
       .poll(async () =>
         Promise.all(
-          members.map(
-            async (m) => (await (host.ctx.get('dshAcp') as AcpRemoteService).agentSessionSnapshot(m.id)).freshness,
-          ),
+          members.map(async (m) => {
+            const snapshot = await (host.ctx.get('dshAcp') as AcpRemoteService).agentSessionSnapshot(m.id)
+            return { freshness: snapshot.freshness, modeWritable: snapshot.modeWritable }
+          }),
         ),
       )
-      .toEqual(['stale', 'stale'])
+      .toEqual([
+        { freshness: 'stale', modeWritable: true },
+        { freshness: 'stale', modeWritable: true },
+      ])
     await lead.whenIdle()
     notices.finish()
     for (const pending of pendingShells) {

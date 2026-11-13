@@ -4245,11 +4245,15 @@ export class AcpProfileAdapter extends LlmAdapter {
       }
       if (waiters.size === 0) this.settlementSessionWaitControllers.delete(session.id)
     }
-    await this.sessionControls.disposeSession(session.id, owner)
-    await this.closeSessionRuntime(session.id, owner)
-    if (this.admittedToolSchemaOwners.get(session.id) === owner) {
-      this.admittedToolSchemaOwners.delete(session.id)
-      this.admittedToolSchemas.delete(session.id)
+    const releaseControls = await this.sessionControls.retireSession(session.id, owner)
+    try {
+      await this.closeSessionRuntime(session.id, owner)
+      if (this.admittedToolSchemaOwners.get(session.id) === owner) {
+        this.admittedToolSchemaOwners.delete(session.id)
+        this.admittedToolSchemas.delete(session.id)
+      }
+    } finally {
+      releaseControls()
     }
   }
 

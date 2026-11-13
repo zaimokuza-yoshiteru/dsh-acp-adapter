@@ -20,9 +20,7 @@
       config:
         id: acp-adapter
         name: ACP
-        description: >-
-          宿主工具，由 Agent 管理上下文；请在模型菜单另选 ACP Agent。
-          DSH tools, Agent-managed context; select an ACP Agent in the model menu.
+        description: ''
         order: 5
         plugins:
           - id: agent-instructions

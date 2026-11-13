@@ -65,7 +65,7 @@ interface ConfirmedUserModeSelection extends UserModeChoice {
 export class SessionControls<Runtime extends SessionControlRuntime> {
   private readonly confirmedModes = new Map<string, ConfirmedUserModeSelection>()
   private readonly writes = new Map<string, Promise<void>>()
-  private readonly retiredOwners = new WeakSet<object>()
+  private readonly retiringOwners = new WeakMap<object, number>()
   private accepting = true
 
   constructor(
@@ -76,7 +76,13 @@ export class SessionControls<Runtime extends SessionControlRuntime> {
   /** Narrow session-scoped control/read surface for the additive Agent dock. */
   async agentSessionSnapshot(sessionId: string): Promise<AgentSessionSnapshotView> {
     await this.waitForSessionControlWrite(sessionId)
-    return await this.readAgentSessionSnapshotView(sessionId)
+    const snapshot = await this.readAgentSessionSnapshotView(sessionId)
+    const controlsWritable = this.admitsOwner(this.access.sessionOwner(sessionId))
+    return {
+      ...snapshot,
+      editable: snapshot.editable && controlsWritable,
+      modeWritable: snapshot.modeWritable === true && controlsWritable,
+    }
   }
 
   private async readAgentSessionSnapshotView(sessionId: string): Promise<AgentSessionSnapshotView> {
@@ -107,7 +113,7 @@ export class SessionControls<Runtime extends SessionControlRuntime> {
   async setTeamMemberMode(sessionId: string, modeId: string): Promise<AgentSessionSnapshotView> {
     if (this.access.storage === undefined)
       throw new LlmError('This member mode cannot be changed', 'ACP_SESSION_OPTIONS_READ_ONLY')
-    await this.serializeSessionControlWrite(sessionId, async () => {
+    await this.serializeSessionControlWrite(sessionId, async (owner) => {
       const current = await this.readAgentSessionSnapshotView(sessionId)
       const currentChoice = teamModeChoices(current).find((candidate) => candidate.id === modeId)
       if (!current.modeWritable || currentChoice === undefined)
@@ -121,6 +127,7 @@ export class SessionControls<Runtime extends SessionControlRuntime> {
       if (currentRuntime?.isBusy || (current.freshness === 'stale' && currentRuntime !== undefined))
         throw new LlmError('Member started running; retry after it settles', 'ACP_SESSION_OPTIONS_READ_ONLY')
       if (currentRuntime !== undefined) this.assertRuntime(sessionId, currentRuntime)
+      this.assertSessionOwner(sessionId, owner)
       const intent = { bindingKey: modeIntentBindingKey(binding.binding), modeId }
       // Save before contacting the Agent: a disconnected write remains visible and is retried before the next prompt.
       await this.access.storage!.writeModeIntent(sessionId, intent)
@@ -415,7 +422,10 @@ export class SessionControls<Runtime extends SessionControlRuntime> {
     return true
   }
 
-  private async serializeSessionControlWrite<T>(sessionId: string, operation: () => Promise<T>): Promise<T> {
+  private async serializeSessionControlWrite<T>(
+    sessionId: string,
+    operation: (owner: object | undefined) => Promise<T>,
+  ): Promise<T> {
     const owner = this.access.sessionOwner(sessionId)
     this.assertAdmission(owner)
     const previous = this.writes.get(sessionId) ?? Promise.resolve()
@@ -427,12 +437,8 @@ export class SessionControls<Runtime extends SessionControlRuntime> {
     await previous
     try {
       this.assertAdmission(owner)
-      if (this.access.sessionOwner(sessionId) !== owner)
-        throw new LlmError(
-          'Agent session owner changed before its controls could be written',
-          'ACP_SESSION_OPTIONS_READ_ONLY',
-        )
-      return await operation()
+      this.assertSessionOwner(sessionId, owner)
+      return await operation(owner)
     } finally {
       release()
       if (this.writes.get(sessionId) === tail) this.writes.delete(sessionId)
@@ -553,11 +559,30 @@ export class SessionControls<Runtime extends SessionControlRuntime> {
     this.confirmedModes.delete(sessionId)
   }
 
-  /** Retire only this Host session identity; a replacement can retain its own choices. */
-  async disposeSession(sessionId: string, owner: object): Promise<void> {
-    this.retiredOwners.add(owner)
-    await this.waitForSessionControlWrite(sessionId)
-    if (this.confirmedModes.get(sessionId)?.owner === owner) this.confirmedModes.delete(sessionId)
+  /** Fence this exact owner's controls until its runtime cleanup has finished.
+   * A dormant member can retain its Host Session after releasing its runtime. */
+  async retireSession(sessionId: string, owner: object): Promise<() => void> {
+    const previous = this.retiringOwners.get(owner) ?? 0
+    this.retiringOwners.set(owner, previous + 1)
+    if (previous === 0) this.notifyControlAvailability(sessionId)
+    let released = false
+    const release = (): void => {
+      if (released) return
+      released = true
+      const remaining = this.retiringOwners.get(owner)! - 1
+      if (remaining === 0) {
+        this.retiringOwners.delete(owner)
+        this.notifyControlAvailability(sessionId)
+      } else this.retiringOwners.set(owner, remaining)
+    }
+    try {
+      await this.waitForSessionControlWrite(sessionId)
+      if (this.confirmedModes.get(sessionId)?.owner === owner) this.confirmedModes.delete(sessionId)
+      return release
+    } catch (error) {
+      release()
+      throw error
+    }
   }
 
   /** Stop queued/future writes, then keep dependencies alive until accepted writes finish. */
@@ -568,8 +593,28 @@ export class SessionControls<Runtime extends SessionControlRuntime> {
   }
 
   private assertAdmission(owner: object | undefined): void {
-    if (!this.accepting || (owner !== undefined && this.retiredOwners.has(owner)))
+    if (!this.admitsOwner(owner))
       throw new LlmError('Agent session controls are closing', 'ACP_SESSION_OPTIONS_READ_ONLY')
+  }
+
+  private admitsOwner(owner: object | undefined): boolean {
+    return this.accepting && (owner === undefined || !this.retiringOwners.has(owner))
+  }
+
+  private notifyControlAvailability(sessionId: string): void {
+    try {
+      this.access.changed(sessionId)
+    } catch {
+      /* A UI observer cannot interrupt the owner's control or runtime cleanup. */
+    }
+  }
+
+  private assertSessionOwner(sessionId: string, owner: object | undefined): void {
+    if (this.access.sessionOwner(sessionId) !== owner)
+      throw new LlmError(
+        'Agent session owner changed before its controls could be written',
+        'ACP_SESSION_OPTIONS_READ_ONLY',
+      )
   }
 
   /** Completion may drain after close, but never publish a choice under a replacement Host owner. */

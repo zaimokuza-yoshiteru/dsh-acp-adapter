@@ -8,7 +8,7 @@ export async function openNativeSidebar(page: Page): Promise<void> {
   if ((await opener.count()) > 0) await opener.click()
 }
 
-/** Open native Settings through the RC.2 account menu launcher. */
+/** Open native Settings through the pinned Host account menu launcher. */
 export async function openNativeSettings(page: Page, locale: 'en' | 'zh' = 'en'): Promise<Locator> {
   await openNativeSidebar(page)
   const settingsLabel = locale === 'en' ? 'Settings' : '设置'

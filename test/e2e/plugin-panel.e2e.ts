@@ -113,43 +113,77 @@ it('hosts ACP configuration on the native bundle detail page', async () => {
     await expect.poll(() => page.evaluate(() => document.documentElement.style.colorScheme)).toBe('dark')
     await page.screenshot({ path: join(evidence, 'dark.png'), fullPage: true, animations: 'disabled' })
 
-    await page.setViewportSize({ width: 420, height: 900 })
-    await page.locator('[data-sidebar-collapsed="true"]').waitFor()
-    await expect.poll(() => detail.evaluate((element) => element.clientWidth)).toBeGreaterThan(300)
-    const geometry = await detail.evaluate((element) => {
-      const rows = [element, ...Array.from(element.querySelectorAll<HTMLElement>('*'))]
-        .map((node) => {
-          const rect = node.getBoundingClientRect()
-          return {
-            tag: node.tagName,
-            className: typeof node.className === 'string' ? node.className : '',
-            text: (node.textContent ?? '').slice(0, 120),
-            clientWidth: node.clientWidth,
-            scrollWidth: node.scrollWidth,
-            left: Math.round(rect.left),
-            right: Math.round(rect.right),
-          }
-        })
-        .filter(
-          (row) =>
-            row.scrollWidth > row.clientWidth + 1 || row.left < 0 || row.right > document.documentElement.clientWidth,
-        )
-      return {
-        detail: { clientWidth: element.clientWidth, scrollWidth: element.scrollWidth },
-        document: {
-          clientWidth: document.documentElement.clientWidth,
-          scrollWidth: document.documentElement.scrollWidth,
-        },
-        offenders: rows,
-      }
-    })
-    writeFileSync(join(evidence, 'narrow-geometry.json'), JSON.stringify(geometry, null, 2))
-    await page.screenshot({ path: join(evidence, 'narrow-before-assert.png'), fullPage: true, animations: 'disabled' })
-    expect(await detail.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true)
-    expect(
-      await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth),
-    ).toBe(true)
-    await page.screenshot({ path: join(evidence, 'narrow.png'), fullPage: true, animations: 'disabled' })
+    for (const width of [420, 390]) {
+      await page.setViewportSize({ width, height: 900 })
+      await page.locator('[data-sidebar-collapsed="true"]').waitFor()
+      await expect.poll(() => detail.evaluate((element) => element.clientWidth)).toBeGreaterThan(300)
+      const geometry = await detail.evaluate((element) => {
+        const rows = [element, ...Array.from(element.querySelectorAll<HTMLElement>('*'))]
+          .map((node) => {
+            const rect = node.getBoundingClientRect()
+            return {
+              tag: node.tagName,
+              className: typeof node.className === 'string' ? node.className : '',
+              text: (node.textContent ?? '').slice(0, 120),
+              clientWidth: node.clientWidth,
+              scrollWidth: node.scrollWidth,
+              left: Math.round(rect.left),
+              right: Math.round(rect.right),
+            }
+          })
+          .filter(
+            (row) =>
+              row.scrollWidth > row.clientWidth + 1 || row.left < 0 || row.right > document.documentElement.clientWidth,
+          )
+        return {
+          detail: { clientWidth: element.clientWidth, scrollWidth: element.scrollWidth },
+          document: {
+            clientWidth: document.documentElement.clientWidth,
+            scrollWidth: document.documentElement.scrollWidth,
+          },
+          offenders: rows,
+        }
+      })
+      writeFileSync(join(evidence, `narrow-${width}-geometry.json`), JSON.stringify(geometry, null, 2))
+      await page.screenshot({
+        path: join(evidence, `narrow-${width}-before-assert.png`),
+        fullPage: true,
+        animations: 'disabled',
+      })
+      // Native source facts and Markdown tables own their overflow. Check the
+      // detail's viewport bounds and keep strict checks for the adapter surface.
+      const detailBounds = await detail.boundingBox()
+      expect(detailBounds).not.toBeNull()
+      expect(detailBounds!.x).toBeGreaterThanOrEqual(0)
+      expect(detailBounds!.x + detailBounds!.width).toBeLessThanOrEqual(width)
+      expect(await panel.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true)
+      expect(
+        await panel.locator('button:visible').evaluateAll((buttons) =>
+          buttons.every((button) => {
+            const rect = button.getBoundingClientRect()
+            return rect.width > 0 && rect.left >= 0 && rect.right <= innerWidth
+          }),
+        ),
+      ).toBe(true)
+      expect(
+        await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth),
+      ).toBe(true)
+      expect(
+        await detail
+          .getByRole('table')
+          .first()
+          .evaluate((table) => {
+            const scrollport = table.parentElement!
+            if (scrollport.scrollWidth <= scrollport.clientWidth) return true
+            const before = scrollport.scrollLeft
+            scrollport.scrollLeft = scrollport.scrollWidth
+            const reachable = scrollport.scrollLeft > 0
+            scrollport.scrollLeft = before
+            return reachable
+          }),
+      ).toBe(true)
+      await page.screenshot({ path: join(evidence, `narrow-${width}.png`), fullPage: true, animations: 'disabled' })
+    }
 
     await host.ctx.settings.replace('dsh-acp-adapter', {
       toolApprovalDefault: 'ask',

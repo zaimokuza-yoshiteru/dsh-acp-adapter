@@ -482,7 +482,8 @@
     "locale/*.json",
     "docs/permission-policy.md",
     "docs/permission-policy.en.md",
-    "docs/agent-compatibility.md"
+    "docs/agent-compatibility.md",
+    "docs/agent-compatibility.en.md"
   ],
   "packageManager": "pnpm@10.7.0"
 }

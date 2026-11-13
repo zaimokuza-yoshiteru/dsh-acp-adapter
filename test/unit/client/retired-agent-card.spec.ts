@@ -68,6 +68,8 @@ it.each([zh, en])('shows a localized retired configuration and keeps explicit de
     countBoundSessions: vi.fn(),
   }
   const tree = expand(AcpSection({ t: (key) => locale[key], useStore: (selector) => selector(snapshot), panel }))
+  expect(text(tree)).toContain(locale.presetHelp)
+  expect(text(tree)).not.toContain(locale === en ? zh.presetHelp : en.presetHelp)
   expect(text(tree)).toContain(locale.agentRetired)
   expect(text(tree)).toContain(locale.stateAgentRetired)
   const row = nodes(tree).find((node) => node.props['data-dsh-acp-agent'] === 'old')

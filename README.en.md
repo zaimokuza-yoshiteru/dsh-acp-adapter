@@ -44,7 +44,7 @@ This archive includes compiled output and matches the npm package. GitHub's auto
 
 </details>
 
-**Updates:** The plugin manager does not update plugins automatically. To update through the plugin manager, uninstall the old version, then install the new version using the recommended method above. Uninstalling the plugin does not uninstall an Agent or sign out of its account. To ensure the updated plugin is loaded, fully quit and reopen DSH Desktop after the current task finishes; for Web, restart the DSH service and refresh the page. You do not need to sign in again.
+**Updates:** The plugin manager does not update plugins automatically. For DSH `0.2.1-rc.4`, which the published version above targets, uninstall the old plugin and reinstall using the recommended method; the CLI can rerun `add` directly. The current development target, DSH `0.2.2-rc.1`, provides a native version list and update action: choose a published plugin version compatible with the host and update in place without uninstalling. Prereleases require an explicit selection from the version list. Uninstalling the plugin does not uninstall an Agent or sign out of its account. To ensure the updated plugin is loaded, fully quit and reopen DSH Desktop after the current task finishes; for Web, restart the DSH service and refresh the page. You do not need to sign in again.
 
 ## Connect an Agent
 
@@ -71,13 +71,13 @@ For test coverage and limitations, see the [E2E verification guide](https://gith
 
 ## Optional ACP preset (development prototype)
 
-The native new-session menu now includes **ACP**. It does not change the user's default or migrate existing sessions. Standard, PTC, Minimal and Creator presets can still use ACP Agents. **Use the native Creator preset to create plugins**; the ACP preset is a separate optional tool composition.
+The native new-session menu now includes **ACP**; select an Agent separately in the model menu. Localized preset guidance lives in the ACP plugin settings, while the mode menu keeps the language-neutral name. It does not change the user's default or migrate existing sessions. Standard, PTC, Minimal and Creator presets can still use ACP Agents. **Use the native Creator preset to create plugins**; the ACP preset is a separate optional tool composition.
 
 It includes workspace instructions, time, file editing and search, the platform shell, jobs, scheduling, skills, questions, todos, web tools and presentation. It omits Host compaction, `/compact`, Host planning, delegation and plugin management. The external Agent owns its context and private tools. Approval policies and existing-session model-switch restrictions remain in effect. Native models remain visible in the global picker; use Standard for native-model sessions that need Host compaction.
 
 Kimi support is removed from the catalog, dedicated adapters and current test matrix. Saved Kimi configurations remain visible as unavailable, without launching a process or silently becoming generic Agents. Users can remove those entries themselves; history is retained. Only retired-configuration diagnostics and historical binding-fingerprint compatibility remain. Historical test records and the original upstream catalog snapshot retain their original data, not a claim of current support.
 
-See the [Agent compatibility guide](docs/agent-compatibility.md) for contribution boundaries.
+See the [Agent compatibility guide](docs/agent-compatibility.en.md) for contribution boundaries.
 
 ## Preview
 

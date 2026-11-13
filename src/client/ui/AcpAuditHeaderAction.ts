@@ -315,7 +315,7 @@ function AcpAuditLoadedView(props: LoadedAcpAuditViewProps): ReactNode {
   const [entries, setEntries] = useState<readonly AcpAuditTimelineEntry[]>([])
   const [cursor, setCursor] = useState<number | null>(0)
   const [hasMore, setHasMore] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState(false)
   const [filter, setFilter] = useState<Filter>('issues')
   const [recovery, setRecovery] = useState<AcpRecoveryView | null>(null)
   const [recoveryUnavailable, setRecoveryUnavailable] = useState(false)
@@ -342,7 +342,7 @@ function AcpAuditLoadedView(props: LoadedAcpAuditViewProps): ReactNode {
       const epoch = requestEpoch.current
       loadingRef.current = true
       setLoading(true)
-      setError(null)
+      setError(false)
       const afterSeq = reset ? 0 : (cursor ?? 0)
       if (reset) {
         const statusEpoch = ++recoveryEpoch.current
@@ -365,7 +365,7 @@ function AcpAuditLoadedView(props: LoadedAcpAuditViewProps): ReactNode {
         .then((result) => {
           if (epoch !== requestEpoch.current) return
           if (!result.ok) {
-            setError(t('auditUnavailable'))
+            setError(true)
             return
           }
           setEntries((previous) => (reset ? result.value.entries : [...previous, ...result.value.entries]))
@@ -373,7 +373,7 @@ function AcpAuditLoadedView(props: LoadedAcpAuditViewProps): ReactNode {
           setHasMore(result.value.hasMore)
         })
         .catch(() => {
-          if (epoch === requestEpoch.current) setError(t('auditUnavailable'))
+          if (epoch === requestEpoch.current) setError(true)
         })
         .finally(() => {
           if (epoch === requestEpoch.current) {
@@ -382,7 +382,7 @@ function AcpAuditLoadedView(props: LoadedAcpAuditViewProps): ReactNode {
           }
         })
     },
-    [sessionId, remote, cursor, t, filter],
+    [sessionId, remote, cursor, filter],
   )
 
   useEffect(() => {
@@ -405,7 +405,7 @@ function AcpAuditLoadedView(props: LoadedAcpAuditViewProps): ReactNode {
     setEntries([])
     setCursor(0)
     setHasMore(false)
-    setError(null)
+    setError(false)
     setRecovery(null)
     setRecoveryUnavailable(false)
     setQuery('')
@@ -419,9 +419,9 @@ function AcpAuditLoadedView(props: LoadedAcpAuditViewProps): ReactNode {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, remote, filter])
 
-  const visible = useMemo(
-    () => entries.filter((entry) => auditEntryMatchesFilter(entry, filter) && auditEntryMatchesQuery(t, entry, query)),
-    [entries, filter, query, t],
+  // Resolve localized search text at render time; direct locale bindings may retain identity.
+  const visible = entries.filter(
+    (entry) => auditEntryMatchesFilter(entry, filter) && auditEntryMatchesQuery(t, entry, query),
   )
   const selected = useMemo(() => entries.find((entry) => entry.seq === selectedSeq) ?? null, [entries, selectedSeq])
   useEffect(() => {
@@ -573,8 +573,8 @@ function AcpAuditLoadedView(props: LoadedAcpAuditViewProps): ReactNode {
               ),
             ),
         loading && entries.length === 0 ? h('p', { className: css.muted }, t('auditLoading')) : null,
-        error === null ? null : h('p', { className: css.error, role: 'alert' }, error),
-        !loading && error === null && visible.length === 0
+        !error ? null : h('p', { className: css.error, role: 'alert' }, t('auditUnavailable')),
+        !loading && !error && visible.length === 0
           ? h(
               'p',
               { className: css.muted },

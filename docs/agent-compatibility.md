@@ -1,5 +1,7 @@
 # ACP Agent 差异与贡献边界
 
+[English](agent-compatibility.en.md)
+
 普通 ACP Agent 无须新增 runtime、专用 client 或实现类。在设置里手动添加命令与参数，走同一个 ACP 握手、能力探测、会话生命周期、工具审批和活动投影即可。目录元数据只是安装与展示信息；新增目录条目不应自动获得专有行为。
 
 ## 新增差异的最小步骤

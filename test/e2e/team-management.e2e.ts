@@ -200,10 +200,13 @@ it(
       await memberApprovals.getByRole('button', { name: 'Allow once', exact: true }).click()
       await expect
         .poll(
-          async () => (await (host.ctx.get('dshAcp') as AcpRemoteService).agentSessionSnapshot(childId)).freshness,
+          async () => {
+            const snapshot = await (host.ctx.get('dshAcp') as AcpRemoteService).agentSessionSnapshot(childId)
+            return { freshness: snapshot.freshness, modeWritable: snapshot.modeWritable }
+          },
           { timeout: 15000 },
         )
-        .toBe('stale')
+        .toEqual({ freshness: 'stale', modeWritable: true })
       rmSync(policyGate, { force: true })
       await expect(
         (host.ctx.get('dshAcp') as AcpRemoteService).setAgentSessionOption(childId, {
@@ -559,12 +562,16 @@ it(
         await expect
           .poll(async () =>
             Promise.all(
-              demoMembers.map(
-                async (m) => (await (host.ctx.get('dshAcp') as AcpRemoteService).agentSessionSnapshot(m.id)).freshness,
-              ),
+              demoMembers.map(async (m) => {
+                const snapshot = await (host.ctx.get('dshAcp') as AcpRemoteService).agentSessionSnapshot(m.id)
+                return { freshness: snapshot.freshness, modeWritable: snapshot.modeWritable }
+              }),
             ),
           )
-          .toEqual(['stale', 'stale'])
+          .toEqual([
+            { freshness: 'stale', modeWritable: true },
+            { freshness: 'stale', modeWritable: true },
+          ])
         await expect.poll(() => interrupt.isDisabled()).toBe(true)
         expect(demoLead.status).toBe('running')
         await panel.getByRole('button', { name: '批量调整模式', exact: true }).click()

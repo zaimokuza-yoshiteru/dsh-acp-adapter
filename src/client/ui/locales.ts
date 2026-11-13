@@ -7,6 +7,7 @@
  */
 
 const zh = {
+  presetHelp: 'ACP 预设使用 DSH 工具，由 Agent 管理上下文。请在模型菜单选择 Agent；标准和创造模式仍可搭配 ACP',
   nativeForkUnknownTitle: '分叉创建结果尚未确认',
   nativeForkUnknownDescription:
     '请求可能已创建子会话。请先检查会话列表。放弃本次恢复只停止跟踪，不会删除或取消可能已创建的会话，也不会再次创建。',
@@ -464,6 +465,8 @@ const zh = {
 export type AcpLocaleKey = keyof typeof zh
 
 const en: Record<AcpLocaleKey, string> = {
+  presetHelp:
+    'The ACP preset uses DSH tools and lets the Agent manage context. Select an Agent in the model menu. Standard and Creator also work with ACP.',
   nativeForkUnknownTitle: 'Fork creation outcome is unconfirmed',
   nativeForkUnknownDescription:
     'The request may already have created a session. Check the session list first. Abandoning recovery only stops tracking this attempt; it does not delete or cancel a possible session, or create another one.',
