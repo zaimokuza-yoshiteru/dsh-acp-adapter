@@ -42,9 +42,17 @@ describe('snapshot-owned launch defaults', () => {
 
   it.each([
     ['devin', 'devin'],
+    ['claude-acp', 'claude-agent-acp'],
     ['poolside', ''],
   ])('supplements only known installed binary commands for %s', (id, command) => {
-    const agent = { id, name: id, version: '2', website: 'https://example.com/install', distribution: { binary: {} } }
+    const agent = {
+      id,
+      name: id,
+      version: '2',
+      website: 'https://example.com/install',
+      repository: 'https://example.com/source',
+      distribution: { binary: {} },
+    }
     const executable = {
       kind: 'binary',
       version: '2',
@@ -59,5 +67,77 @@ describe('snapshot-owned launch defaults', () => {
       requiresCommand: command === '',
       installHint: 'https://example.com/install',
     })
+  })
+
+  it('keeps the installed Claude command and one repository guide when binary archives are added alongside npx', () => {
+    const agent = {
+      id: 'claude-acp',
+      name: 'Claude Agent',
+      version: '0.106.0',
+      repository: 'https://github.com/agentclientprotocol/claude-agent-acp',
+      distribution: {
+        npx: { package: '@agentclientprotocol/claude-agent-acp@0.106.0' },
+        binary: {
+          'linux-x86_64': { archive: 'https://example.com/claude.tar.gz', cmd: './claude-agent-acp' },
+          'windows-x86_64': { archive: 'https://example.com/claude.zip', cmd: './claude-agent-acp.exe' },
+        },
+      },
+    }
+    const executable = {
+      kind: 'binary',
+      manualReason: 'host-platform-required',
+      version: '0.106.0',
+      command: '',
+      args: ['--new-acp'],
+      env: { ACP_MODE: '1' },
+    }
+    const entry = buildCatalogEntries([agent], { 'claude-acp': executable })[0]!
+    expect(entry).toMatchObject({
+      command: 'claude-agent-acp',
+      args: ['--new-acp'],
+      env: { ACP_MODE: '1' },
+      requiresCommand: false,
+      installHint: agent.repository,
+      runtime: 'claude',
+      loginHint: 'claude',
+    })
+    expect(entry.args).not.toBe(executable.args)
+    expect(entry.env).not.toBe(executable.env)
+  })
+
+  it('retains platform download guidance when a binary Agent has no website or repository', () => {
+    const entry = buildCatalogEntries(
+      [
+        {
+          id: 'future-agent',
+          name: 'Future Agent',
+          distribution: {
+            binary: {
+              'linux-x86_64': { archive: 'https://example.com/agent.tar.gz', cmd: './agent' },
+              'windows-x86_64': { archive: 'https://example.com/agent.zip', cmd: './agent.exe' },
+            },
+          },
+        },
+      ],
+      {},
+    )[0]!
+    expect(entry).toMatchObject({
+      command: '',
+      requiresCommand: true,
+      installHint: 'linux-x86_64: https://example.com/agent.tar.gz\nwindows-x86_64: https://example.com/agent.zip',
+    })
+  })
+
+  it('excludes both retired Kimi catalog identities without excluding unrelated Agents', () => {
+    const entries = buildCatalogEntries(
+      [
+        { id: 'kimi', name: 'Kimi Legacy' },
+        { id: 'kimi-code', name: 'Kimi Code' },
+        { id: 'kimchi', name: 'Kimchi' },
+        { id: 'claude-acp', name: 'Claude Agent' },
+      ],
+      {},
+    )
+    expect(entries.map((entry) => entry.id)).toEqual(['claude-acp', 'kimchi'])
   })
 })
