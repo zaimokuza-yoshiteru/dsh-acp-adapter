@@ -294,29 +294,21 @@ export function AcpTeamManagement({
           metadataCurrent: metadataReady,
           t,
           useSessionAccess,
-          interruptAction:
+          interrupt:
             index === 0
-              ? h(
-                  Button,
-                  {
-                    variant: 'ghost',
-                    className: css.batchButton,
-                    disabled:
-                      interrupting ||
-                      !metadataReady ||
-                      !members.some(
-                        (member) =>
-                          member.status === 'running' &&
-                          member.runtimeKnown &&
-                          interruptAccess.allows(member.sessionId),
-                      ),
-                    title: t('teamInterruptHint'),
-                    onClick: () => {
-                      void interruptAll()
-                    },
+              ? {
+                  busy: interrupting,
+                  disabled:
+                    interrupting ||
+                    !metadataReady ||
+                    !members.some(
+                      (member) =>
+                        member.status === 'running' && member.runtimeKnown && interruptAccess.allows(member.sessionId),
+                    ),
+                  run: () => {
+                    void interruptAll()
                   },
-                  t(interrupting ? 'teamInterrupting' : 'teamInterruptAll'),
-                )
+                }
               : null,
           ...actions,
         }),
@@ -344,11 +336,11 @@ function ModeGroup({
   remote,
   streamFactory,
   isCurrent,
-  interruptAction,
+  interrupt,
   useSessionAccess,
   sessionAccessSource,
 }: {
-  interruptAction: ReactNode
+  interrupt: { busy: boolean; disabled: boolean; run(): void } | null
   lead: SessionId
   profileId: string | null
   members: readonly ManagedMember[]
@@ -495,7 +487,19 @@ function ModeGroup({
       h(
         'div',
         { className: css.batchActions },
-        interruptAction,
+        interrupt === null
+          ? null
+          : h(
+              Button,
+              {
+                variant: 'ghost',
+                className: css.batchButton,
+                disabled: interrupt.disabled,
+                title: t('teamInterruptHint'),
+                onClick: interrupt.run,
+              },
+              t(interrupt.busy ? 'teamInterrupting' : 'teamInterruptAll'),
+            ),
         h(AgentSessionMenu, {
           groups: [batchGroup],
           label: t('teamBatchMode'),

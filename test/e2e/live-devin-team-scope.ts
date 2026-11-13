@@ -216,7 +216,7 @@ export function permitsDevinTeamTool(tool: string, raw: unknown, scope: DevinTea
       return (
         lead &&
         keys(args, ['timeout_ms']) &&
-        (args.timeout_ms === undefined || integer(args.timeout_ms, 10_000, 60_000))
+        (args.timeout_ms === undefined || integer(args.timeout_ms, 10_000, 300_000))
       )
     default:
       return false

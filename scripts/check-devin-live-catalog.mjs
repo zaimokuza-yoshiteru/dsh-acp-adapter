@@ -1,4 +1,4 @@
-/** Zero inference: boot the exact Teams profile and inspect its isolated registered MCP launcher. */
+/** Zero inference: boot the exact Teams profile and inspect both standard session MCP transports. */
 import assert from 'node:assert/strict'
 import { mkdtemp, mkdir, writeFile, symlink, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -8,18 +8,14 @@ import { fileURLToPath } from 'node:url'
 import { initProfile, loadLayeredEnv, loadProfileDirectory } from '@deepseek-ai/dsh-app-boot'
 import { runProfile } from '@deepseek-ai/dsh/profile-boot'
 import { SessionId } from '@deepseek-ai/dsh-session'
-import { Client } from '@modelcontextprotocol/client'
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio'
 import { DEVIN_LIVE_BUNDLES, devinLiveProfilePatch } from './devin-live-profile.ts'
 import { assertDevinLiveCatalog } from './devin-live-catalog.ts'
 
-// Inspect the exact built bridge/launcher used by the mounted plugin.
+// Inspect the exact built bridge and generic stdio transport used by the mounted plugin.
 const { createDshToolBridge } = await import(new URL('../lib/host/tools/bridge.js', import.meta.url).href)
-const { prepareDevinMcp } = await import(new URL('../lib/host/tools/devin-config.js', import.meta.url).href)
-const { resolveSubprocessSeam } = await import(new URL('../lib/host/composition/subprocess.js', import.meta.url).href)
 
-const executable = process.argv[2]
-assert.ok(executable, 'Pass the Devin executable; only isolated mcp registration commands are run')
 const root = await mkdtemp(join(tmpdir(), 'dsh-devin-catalog-'))
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const originalCwd = process.cwd()
@@ -81,62 +77,53 @@ try {
     step: 0,
     isActive: () => false,
   }
-  lease = await createDshToolBridge(
-    ctx,
-    agent.id,
-    { mcpCapabilities: { http: true } },
-    'devin',
-    async () => 'auto',
-    undefined,
-    schemas,
-    () => admission,
-  )
-  assert.ok(lease, 'LIVE_CATALOG_BRIDGE_UNAVAILABLE')
-  assert.equal(lease.servers[0]?.name, 'dsh')
-  const seam = resolveSubprocessSeam(ctx)
-  assert.ok(seam.ok, 'LIVE_CATALOG_SUBPROCESS_UNAVAILABLE')
-  const env = {
-    HOME: join(root, 'native-home'),
-    XDG_CONFIG_HOME: join(root, 'native-config'),
-    XDG_DATA_HOME: join(root, 'native-data'),
-    XDG_CACHE_HOME: join(root, 'native-cache'),
-    APPDATA: join(root, 'native-data'),
-    LOCALAPPDATA: join(root, 'native-cache'),
-    USERPROFILE: join(root, 'native-home'),
+  const transports = []
+  for (const http of [true, false]) {
+    lease = await createDshToolBridge(
+      ctx,
+      agent.id,
+      { mcpCapabilities: { http } },
+      'devin',
+      async () => 'auto',
+      undefined,
+      schemas,
+      () => admission,
+    )
+    assert.ok(lease, 'LIVE_CATALOG_BRIDGE_UNAVAILABLE')
+    const server = lease.servers[0]
+    assert.equal(server?.name, 'dsh')
+    assert.equal(lease.servers.length, 1)
+    client = new Client({ name: 'devin-session-catalog-audit', version: '1' })
+    const transport =
+      server.type === 'http'
+        ? new StreamableHTTPClientTransport(new URL(server.url))
+        : new StdioClientTransport({
+            command: server.command,
+            args: server.args,
+            cwd: workspace,
+            env: Object.fromEntries(server.env.map(({ name, value }) => [name, value])),
+            stderr: 'pipe',
+          })
+    await client.connect(transport)
+    const remote = await client.listTools()
+    assertDevinLiveCatalog(
+      schemas.map((tool) => ({ name: tool.name, schema: tool.parameters })),
+      remote.tools.map((tool) => ({ name: tool.name, schema: tool.inputSchema })),
+    )
+    transports.push({ type: http ? 'http' : 'stdio', mcpTools: remote.tools.length })
+    await client.close()
+    client = undefined
+    await lease.close()
+    lease = undefined
   }
-  const prepared = await prepareDevinMcp({
-    subprocess: seam.seam,
-    command: executable,
-    args: ['acp'],
-    cwd: workspace,
-    env,
-    lease,
-  })
-  lease = prepared.lease
-  client = new Client({ name: 'devin-isolated-catalog-audit', version: '1' })
-  await client.connect(
-    new StdioClientTransport({
-      command: process.execPath,
-      args: [join(env.HOME, '.dsh', 'acp', 'mcp', 'dsh-mcp-launcher.mjs')],
-      cwd: workspace,
-      env: { ...prepared.env, ELECTRON_RUN_AS_NODE: '1' },
-      stderr: 'pipe',
-    }),
-  )
-  const remote = await client.listTools()
-  assertDevinLiveCatalog(
-    schemas.map((tool) => ({ name: tool.name, schema: tool.parameters })),
-    remote.tools.map((tool) => ({ name: tool.name, schema: tool.inputSchema })),
-  )
   console.log(
     JSON.stringify({
       status: 'passed',
       inferenceRequests: 0,
       authenticatedAgentProcesses: 0,
       nativeTools: schemas.length,
-      mcpTools: remote.tools.length,
-      isolatedRegistration: true,
-      exactDevinLauncher: true,
+      transports,
+      nativeConfigWrites: 0,
     }),
   )
 } finally {

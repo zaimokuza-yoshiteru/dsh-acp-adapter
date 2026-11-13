@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AcpAgentId, AcpStubAgentConfig } from '../../../src/contract/agent-config.ts'
-import type { SubprocessSeam } from '../../../src/runtime/process/subprocess.ts'
 import { prepareAgentLaunch } from '../../../src/host/composition/agent-launch.ts'
 import { acpLaunchFingerprint, profileLaunchIdentityHash } from '../../../src/domain/session/launch-fingerprint.ts'
 
@@ -24,12 +23,6 @@ afterEach(() => {
   }
 })
 
-const subprocess: SubprocessSeam = {
-  spawn: () => {
-    throw new Error('Launch preparation must not spawn an Agent')
-  },
-  resolveExecutable: async (command) => command,
-}
 const config = (env: Record<string, string> = {}): AcpStubAgentConfig => ({
   name: 'Work Codex',
   command: 'custom-codex-acp',
@@ -38,20 +31,21 @@ const config = (env: Record<string, string> = {}): AcpStubAgentConfig => ({
   env,
 })
 const prepare = (profile: AcpStubAgentConfig, runtime: AcpAgentId | undefined = 'codex') =>
-  prepareAgentLaunch(runtime, profile, '/workspace', subprocess, undefined)
+  prepareAgentLaunch(runtime, profile)
 
-describe('Codex subprocess loopback MCP routing', () => {
-  it('adds only the trusted MCP IP to both routing keys before MCP discovery exists', async () => {
-    const profile = config()
-    const before = structuredClone(profile)
-    const createMcpLease = vi.fn(async () => undefined)
-    const launch = await prepareAgentLaunch('codex', profile, '/workspace', subprocess, createMcpLease)
-    expect(launch.env).toEqual({ NO_PROXY: '127.0.0.1', no_proxy: '127.0.0.1' })
-    expect(launch.spawnPlan?.env).toEqual(launch.env)
-    expect(launch.argv).toEqual(['custom-codex-acp', '--acp'])
-    expect(createMcpLease).not.toHaveBeenCalled()
-    expect(profile).toEqual(before)
-  })
+describe('session HTTP MCP loopback routing', () => {
+  it.each(['codex', 'devin'] as const)(
+    'adds only the trusted MCP IP for %s before MCP discovery exists',
+    async (runtime) => {
+      const profile = config()
+      const before = structuredClone(profile)
+      const launch = await prepareAgentLaunch(runtime, profile)
+      expect(launch.env).toEqual({ NO_PROXY: '127.0.0.1', no_proxy: '127.0.0.1' })
+      expect(launch.spawnPlan?.env).toEqual(launch.env)
+      expect(launch.argv).toEqual(['custom-codex-acp', '--acp'])
+      expect(profile).toEqual(before)
+    },
+  )
 
   it.each(['NO_PROXY', 'no_proxy'] as const)('preserves a sole inherited %s list in both cases', async (key) => {
     vi.stubEnv(key, 'intranet.example,.private.example,10.0.0.0/8')
@@ -141,15 +135,12 @@ describe('Codex subprocess loopback MCP routing', () => {
     )
   })
 
-  it.each(['devin', 'claude', 'codebuddy', undefined] as const)(
-    'leaves runtime %s environment unchanged',
-    async (runtime) => {
-      vi.stubEnv('NO_PROXY', 'parent.internal')
-      const profile = config({ NO_PROXY: 'profile.internal', no_proxy: 'profile-lower.internal', KEEP: 'yes' })
-      const launch = await prepareAgentLaunch(runtime, profile, '/workspace', subprocess, undefined)
-      expect(launch.env).toEqual(profile.env)
-    },
-  )
+  it.each(['claude', 'codebuddy', undefined] as const)('leaves runtime %s environment unchanged', async (runtime) => {
+    vi.stubEnv('NO_PROXY', 'parent.internal')
+    const profile = config({ NO_PROXY: 'profile.internal', no_proxy: 'profile-lower.internal', KEEP: 'yes' })
+    const launch = await prepareAgentLaunch(runtime, profile)
+    expect(launch.env).toEqual(profile.env)
+  })
 })
 
 describe('Antigravity local harness routing', () => {
@@ -239,7 +230,7 @@ describe('Antigravity local harness routing', () => {
     vi.stubEnv('no_proxy', 'also-overridden.internal')
     const profile = { ...config({ NO_PROXY: '', no_proxy: '' }), runtime: 'antigravity' as const }
     expect((await prepare(profile, 'antigravity')).env).toEqual(profile.env)
-    const generic = await prepareAgentLaunch(undefined, profile, '/workspace', subprocess, undefined)
+    const generic = await prepareAgentLaunch(undefined, profile)
     expect(generic.env).toEqual(profile.env)
   })
 })

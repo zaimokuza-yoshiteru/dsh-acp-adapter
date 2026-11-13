@@ -3,7 +3,6 @@ import type { AcpPermissionCheck } from '../../domain/policy/permission-check.ts
 import type { AcpHostToolControlOutcome } from '../../contract/tool-control-outcome.ts'
 
 export type AcpHostSettlementFailure =
-  | 'ACP_HOST_CALL_DRAIN_TIMEOUT'
   | 'ACP_HOST_TOOL_RECONCILIATION_REQUIRED'
   | 'ACP_HOST_TOOL_NOT_DISPATCHED'
   | 'ACP_HOST_GENERATION_STILL_ACTIVE'

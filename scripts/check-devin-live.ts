@@ -782,7 +782,7 @@ try {
           }),
     })
   })
-  // Two independent leads exercise a single shared native MCP entry concurrently.
+  // Two independent leads exercise their isolated session MCP servers concurrently.
   const leads = await Promise.all(
     [0, 1].map(async (index) => {
       assertLiveBudget()

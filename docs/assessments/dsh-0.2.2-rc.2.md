@@ -241,3 +241,54 @@ Devin 使用临时认证副本、HOME/XDG/profile/workspace，MCP 注册也发�
 实测截图另确认一个原生标题限制：停止后的灰色工具分组仍可能显示 `Wrote files`，上方显示 `Stopped`。插件已将 cancelled 投为 `isError=true` 并附 Interrupted；上游 `process-activity` 只按工具名称分类，关闭分组一律取 `done.write`，并不读取取消/失败状态。因此该标题不是文件成功证据，本次实际取消仍为 0 派发、无文件。可落地的上游方案是让分组标题读取终态，取消/失败时改用中性工具名称或相应状态词；本轮不改上游，也不另造一套插件分组展示。
 
 本轮通过范围为 macOS 上的 RC.2 真实浏览器、上述单模型任务及**待 ACP 审批时**取消。没有验证运行中 shell 取消、Host 重启恢复、双模型或 Windows。第 9 节的首次真实 Teams 验收缺口已由这里的分项结果补齐；原生返回焦点、切模压缩、分叉预检等既有限制不因此解除。只提交到 `0.2.2-alpha`，不发布。
+
+## 11. 新版 Devin MCP 与完整复核（基线 0b82e68，2026-11-14）
+
+按用户决定停止支持旧版 Devin MCP 配置路径；宿主仍精确固定 RC.2，不改上游、不发布。复核使用 RC.2 `ddac967` 的 `dsh-code-review`、`dsh-error-handling`、`dsh-find-simplifications`、Cordis、客户端 UI/UX、响应式与文案规范，并按本仓库 adapter-review / adapter-validation 调整验证范围。累计迁移对照发布基线 `328ef39`，本轮修改对照 `0b82e68`。
+
+### 已实施的修复与删债
+
+- **P1：恢复越过关闭边界。** `retryOriginal` 在读取绑定时暂停，profile close 完成后仍可创建并恢复新的 runtime；后续 close 只返回旧 promise，留下未被关闭流程收录的 Agent。恢复和重新绑定现在先登记任务，再在异步边界核对 adapter、原 Session 实例及 dispose 状态；关闭等待已准入任务结束，迟到结果不能清除替代实例的恢复门禁。受控 promise 回归同时覆盖读绑定、restore 和持久化写入阶段。
+- **新版 Devin 采用标准会话 MCP。** 删除 `devin mcp get/add` 用户级注册、SQLite 注册锁、专用打包/复制启动器及启动前预建 lease；lease 统一在 initialize 后按真实能力创建，交给 new/load 等标准会话请求。保留通用 stdio 传输及其打包检查，删除 mock 的旧 native 注册/环境绕行。HTTP 回环沿用代理排除合并，只追加 `127.0.0.1`；隔离探针已复现缺少排除时的 502。
+- **无来源的超时分支。** 删除已经没有生产构造点、也不参与历史反序列化的 `ACP_HOST_CALL_DRAIN_TIMEOUT`。对应回归改为真实的 transport crash 加待完成 Host 调用，仍核验远端结果不明、恢复拒绝与显式放弃后的 WAL 清理。
+- **客户端规范。** 成员管理的节点参数改为窄数据和回调；触屏配置字段补 16px 字号下限，桌面字号不变。未新增用户选项或测试记账文案。
+
+支持说明和 CI 统一为 Devin `3000.12.43` 或更新版本，以 `3000.12.43` 为本轮验证版本；更高版本不冒称已实测。官方[更新记录](https://docs.devin.ai/cli/changelog/stable)已记录会话级 MCP 支持修复。CI 删除旧版本选择项，保留真实模型用量的显式授权；macOS ARM64/x64 与 Windows x64 固定归档均实际流式下载并对照[官方 manifest](https://static.devin.ai/cli/3000.12.43/manifest.json)核验 SHA256。
+
+### 旧注册与权限边界
+
+不会自动删除用户已有的 `dsh` 注册或旧启动器。CLI 可能在 initialize 时预热旧用户级入口；早期探针没有观察到启动，固化测试却捕获了它，因此保留 `modern-script-1.log` 的严格失败，不再声称旧入口完全不启动。最终零推理夹具模拟旧入口没有会话端点时的空工具行为，验证新建/加载均连接本次 supplied HTTP/stdio、列表只保留当前定义，原 native 配置字节不变。通用 stdio 单测另外证明无端点时工具目录为空、旧工具调用被拒绝。
+
+零推理 `/mcp` 只证明连接和替换，不证明实际模型选择工具。真实测试使用只复制认证的空白配置；人工审批前拒绝任何 native MCP 条目、项目覆盖或配置导入，再核对已知 CLI、原始七选项、原文 hash、活跃 owner/tree 和实际 Host 派发。它不为生产 Auto 增加权限，Devin 的原生审批仍交给用户。
+
+### 复核范围与保留项
+
+运行时复核覆盖初始化、关闭、补存、sidecar 恢复、工具撤权、子代理树和权限归属；客户端复核覆盖首次绑定的静默等待、恢复选择、中英文、插件详情、成员菜单与窄屏。没有发现需要扩大权限或复制上游服务的理由。既有原地切模压缩、分叉预检、原生 Modal 返回 BODY 和取消后分组标题的问题仍按第 9–10 节保留。
+
+`AcpHostSettlementError` 等内部带 code 的错误类仍继承裸 `Error`，与官方统一基类规范不一致；本轮逐个追踪出站 owner 后，未发现丢失机器分类或错误重试，最终对宿主转换保留分类和 cause。基类迁移作为非阻塞规范债保留，不借本次 MCP 删债改变公开错误分类或新增依赖。
+
+### 本轮验证记录
+
+本轮日志和隔离证据位于 `.local/devin-modern-mcp/`。历史 Teams 通过记录仍保留，但不能代替本次传输变更后的实测。
+
+- `pnpm exec vitest run --no-file-parallelism`：229 文件通过、1 文件跳过，2900 项通过、3 项跳过（`unit-full.log`）。之后仅修改真实测试的等待/发现提示及守卫，相关 3 文件 42 项回归通过；生产代码未再改变。
+- 恢复生命周期专项 4 文件 91 项通过；activity 71 项通过。构建 `build-2.log` 通过，打包检查含 322 个文件、128 个运行时 JS 和严格类型消费者；专用 launcher 不再打包，通用 stdio 明确列入必需产物。源码、测试、工具、E2E 类型检查通过。
+- 零推理 CLI：new/load/stale_new/stale_load 四场景通过，8 次固定 `/mcp`、0 模型请求、0 工具执行（`modern-script-2.log`）。`catalog-2.log` 使用最终产物分别通过 HTTP/stdio 读取并对齐 28 项实际 DSH 工具 schema。初次 catalog 脚本使用了 SDK 未导出的路径，已修正为公共导出；失败保留在 `catalog-1.log`。
+- `hover-responsive.e2e.ts`、`team-management.e2e.ts` 两项通过（`ui-1.log`），已检查明暗 390px 触屏配置与成员菜单截图，renderer errors 为空。此处 build-1 与 build-2 的差异仅为无来源 timeout 分支删除，UI 输入相同。既有中英文、首次绑定、共存和创造模式桌面证据仅按未变输入复用，本轮不声称重跑了完整 Electron/Windows 矩阵。
+- `permissions-1.log`：真实 `3000.12.43` / `swe-2-high` 在最终标准 MCP 产物上通过，65.77 秒。Allow 仅一次成功写入，Reject/Stop 零 Host 派发且无对应文件，Stop 原始决定为 cancelled，随后同一 DSH/ACP 子会话续聊成功；0 范围违规。当前价格目录复核标为 Free（`model-preflight-2.log`）；首次只因临时 cwd 尚未创建而在 spawn 前失败，已保留日志。
+
+### 真实 Teams 目录发现限制
+
+共享任务前三次失败均保留于 `shared-1/2/3.log`，不改写为通过：第一次完成两个任务创建和一个真实子代理后，请求合法的 `wait_agent { timeout_ms: 300000 }`，被原测试的 60 秒上限拒绝。原生等待收到新输入立即返回；测试现允许最多 300 秒并在提示中说明，补齐上下界、非法类型、额外字段和成员角色反例，仍保留 32 次工具、24 次任务操作、24 次审批及原有阶段/整体超时。
+
+第二次全量 `mcp_list_tools` 输出溢出，Agent 请求 DSH read 读取私有临时目录，被测试范围守卫拒绝。第三次在提示中要求窄化发现后仍出现溢出，转为 Agent 私有 shell 请求，未获测试授权。当前官方文档没有按名/names-only 的 CLI 发现契约，不能将这条指导视为已实现能力，也不能把拒绝测试外行为归因为工具桥重放。完整目录传输正确不等于自主发现体验可靠；这仍需后续单独处理。可考虑 CLI 按名查询或更合理的目录输出，当前不新增插件私有文件访问旁路、不修改上游。
+
+执行专项现在通过测试级提示词 section，从本次 Host 原生准入的 ToolSet 为主会话提供 8 个、为成员提供 3 个实际 schema；MCP 目录正确性由独立检查承担，真实执行仍走当前 bridge、原生权限和 Host guard。这个条件必须随通过结论一起保留，不能冒称全量目录自动发现也通过。
+
+`shared-4.log` 和 `shared-5.log` 都在模型请求前失败：全局注册表及未挂原生预设的临时 Agent 缺少 `subagent`，不能代表真实回合。最终夹具改为原生工具解析完成后，通过非 complete、关闭变量插值的测试级 section 读取 `scope/toolSet`，只保留本次真实活跃 Agent 的定义，结束时撤销 section；不创建额外 catalog Agent，也不迁移生产路由。这两次前置失败不计为模型功能失败或通过。
+
+`shared-6.log` 的业务断言已观察到两个 revision 3 的 completed 任务、calculator 的成功回信与 Lead 的最终回复，13 次 Host 调用均成功、0 范围违规；原测试却额外要求 `team_task_list`，与任务文字允许 get/list 二选一不一致。该记录仍标为失败，因为断言后的持久化和面板检查尚未执行。夹具已移除此多余要求，保留实际任务状态、owner、get/update、原始权限决定及后续 UI 检查。
+
+最终 `shared-7.log`：1 项真实浏览器测试通过，61.39 秒；结果和截图归档 `shared-7/`。12 次原始一次授权对应 12 次成功 Host 调用，0 范围违规。真实 calculator 获取、领取、完成 Compute 并回信；Lead 等待被消息唤醒，查询任务后完成 Review；两个任务均 revision 3 / completed，owner 分别为 calculator 和 lead。持久化历史核对 relay 先于最终模型回复，原生面板显示一个完成成员、两个完成共享任务和单一 ACP 设置入口，renderer errors 为空。已查看最终面板及审批/停止截图。全量目录自主发现仍不在通过声明中。
+
+本轮通过范围为 macOS、DSH RC.2、Devin `3000.12.43` 和目录标为 Free 的 `swe-2-high`，以及上述任务与待审批取消场景。Windows、iOS 真机和更高 Devin 版本未实跑；既有上游限制及内部错误基类规范债仍保留。最后的 E2E/test/tools 类型、全仓格式及 diff 检查通过，只提交、不发布。

@@ -186,8 +186,9 @@ if (typeof zodRange !== 'string' || !/^\d+\.\d+\.\d+$/.test(zodRange)) {
 // ---------------------------------------------------------------------------
 
 const REQUIRED_ARTIFACTS = [
-  'lib/runtime/session/dsh-mcp-launcher.mjs',
   'lib/index.js',
+  // Spawned via new URL rather than a static import; require it in the packed artifact.
+  'lib/runtime/session/team-mcp-stdio.js',
   'lib/client.js',
   'lib/client.js.map',
   'lib/types/index.d.ts',

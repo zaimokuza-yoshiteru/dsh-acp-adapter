@@ -210,7 +210,7 @@ it('answers the captured title-only request only through the known CLI isolated 
   const isolated = vi.fn(async () => {})
   const f = fixture({
     recorded: devinManualPermission,
-    manualTitle: { cliVersion: '3000.12.43', assertIsolatedDshRegistration: isolated },
+    manualTitle: { cliVersion: '3000.12.43', assertIsolatedSessionMcp: isolated },
   })
   const response = f.askWithRealBuilder({})
   const native = await f.whenAsked
@@ -293,7 +293,7 @@ it.each([
       : {
           manualTitle: {
             cliVersion: kind === 'unknown-version' ? '3000.12.44' : '3000.12.43',
-            assertIsolatedDshRegistration: async () => {
+            assertIsolatedSessionMcp: async () => {
               if (kind === 'foreign-registration') throw new Error('LIVE_DEVIN_MANUAL_CONFIG_NOT_ISOLATED')
             },
           },

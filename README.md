@@ -56,7 +56,7 @@ Git 与压缩包安装示例：
 
 | Agent                      | ACP 命令                                 | 认证               |
 | -------------------------- | ---------------------------------------- | ------------------ |
-| Devin                      | `devin acp`                              | `devin auth login` |
+| Devin (3000.12.43+)        | `devin acp`                              | `devin auth login` |
 | CodeBuddy CLI（WorkBuddy） | `codebuddy --acp`                        | `codebuddy`        |
 | Antigravity                | `agy_acp_server.par`（官方 raw `1.3.0`） | ACP 独立登录       |
 | Claude                     | `claude-agent-acp`                       | `claude`           |

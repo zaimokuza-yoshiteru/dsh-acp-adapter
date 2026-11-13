@@ -64,51 +64,41 @@ async function manualConfiguration() {
   cleanups.push(() => rm(cwd, { recursive: true, force: true }))
   const config = join(live.env.XDG_CONFIG_HOME, 'devin', 'mcp_config.json')
   await mkdir(dirname(config), { recursive: true })
-  const dsh = {
-    command: process.execPath,
-    args: [join(live.env.HOME, '.dsh', 'acp', 'mcp', 'dsh-mcp-launcher.mjs')],
-    env: { ELECTRON_RUN_AS_NODE: '1' },
-  }
-  await writeFile(config, JSON.stringify({ mcpServers: { dsh } }))
-  return { live, cwd, config, dsh }
+  return { live, cwd, config }
 }
 
-it('proves the isolated manual server uses only the current DSH launcher without global config writes', async () => {
+it('requires no native MCP entry for the session-scoped DSH server', async () => {
   const f = await manualConfiguration()
-  await expect(f.live.assertIsolatedDshRegistration(f.cwd)).resolves.toBeUndefined()
-  expect(JSON.parse(await readFile(f.config, 'utf8'))).toEqual({ mcpServers: { dsh: f.dsh } })
+  await expect(f.live.assertIsolatedSessionMcp(f.cwd)).resolves.toBeUndefined()
+  await expect(stat(f.config)).rejects.toMatchObject({ code: 'ENOENT' })
+  await writeFile(f.config, JSON.stringify({ mcpServers: {} }))
+  await expect(f.live.assertIsolatedSessionMcp(f.cwd)).resolves.toBeUndefined()
 })
 
 it.each([
-  'extra-server',
-  'wrong-command',
-  'wrong-launcher',
-  'saved-endpoint',
+  'global-server',
+  'legacy-dsh-server',
   'project-server',
   'config-import',
-  'missing-config',
+  'mcp-config-import',
   'invalid-config',
 ])('rejects the manual title prerequisite with %s without exposing configuration content', async (kind) => {
   const f = await manualConfiguration()
-  if (kind === 'extra-server')
-    await writeFile(f.config, JSON.stringify({ mcpServers: { dsh: f.dsh, foreign: { command: 'private' } } }))
-  if (kind === 'wrong-command' || kind === 'wrong-launcher' || kind === 'saved-endpoint') {
-    const dsh = {
-      ...f.dsh,
-      ...(kind === 'wrong-command' ? { command: 'private' } : {}),
-      ...(kind === 'wrong-launcher' ? { args: ['private'] } : {}),
-      ...(kind === 'saved-endpoint' ? { env: { ...f.dsh.env, DSH_ACP_TEAM_MCP_URL: 'private' } } : {}),
-    }
-    await writeFile(f.config, JSON.stringify({ mcpServers: { dsh } }))
-  }
+  if (kind === 'global-server' || kind === 'legacy-dsh-server')
+    await writeFile(
+      f.config,
+      JSON.stringify({ mcpServers: { [kind === 'global-server' ? 'foreign' : 'dsh']: { command: 'private' } } }),
+    )
   if (kind === 'project-server' || kind === 'config-import') {
     await mkdir(join(f.cwd, '.devin'), { recursive: true })
     await writeFile(
       join(f.cwd, '.devin', kind === 'project-server' ? 'mcp_config.json' : 'config.json'),
-      JSON.stringify(kind === 'project-server' ? { mcpServers: { dsh: f.dsh } } : { read_config_from: 'private' }),
+      JSON.stringify(
+        kind === 'project-server' ? { mcpServers: { dsh: { command: 'private' } } } : { read_config_from: 'private' },
+      ),
     )
   }
-  if (kind === 'missing-config') await rm(f.config)
+  if (kind === 'mcp-config-import') await writeFile(f.config, JSON.stringify({ read_config_from: 'private' }))
   if (kind === 'invalid-config') await writeFile(f.config, 'private invalid configuration')
-  await expect(f.live.assertIsolatedDshRegistration(f.cwd)).rejects.toThrow(/^LIVE_DEVIN_MANUAL_/)
+  await expect(f.live.assertIsolatedSessionMcp(f.cwd)).rejects.toThrow(/^LIVE_DEVIN_MANUAL_/)
 })

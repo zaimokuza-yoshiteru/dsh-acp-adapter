@@ -293,6 +293,19 @@ it.skipIf(Boolean(process.env.DSH_E2E_ELECTRON))(
           await activate(advanced)
           expect(await advanced.getAttribute('aria-expanded')).toBe(expanded === 'true' ? 'false' : 'true')
           if (!hoverCapable) expect(await style(advanced, 'color')).toBe(color)
+          if ((await advanced.getAttribute('aria-expanded')) !== 'true') await activate(advanced)
+          await activate(card.getByRole('button', { name: 'Advanced options', exact: true }))
+          for (const [label, desktopSize] of [
+            ['Display name', '14px'],
+            ['Arguments', '12px'],
+            ['Environment', '12px'],
+          ] as const) {
+            const field = card.getByLabel(label, { exact: true })
+            await field.waitFor({ state: 'visible' })
+            expect(await field.evaluate((element) => getComputedStyle(element).fontSize)).toBe(
+              hoverCapable ? desktopSize : '16px',
+            )
+          }
           if (!hoverCapable)
             await page.screenshot({ path: join(directory, `touch-390-settings-${theme}.png`), animations: 'disabled' })
           await activate(card.getByRole('button', { name: 'Cancel', exact: true }))

@@ -5,7 +5,7 @@ import { sharedTestSubprocess } from '../../fixtures/subprocess-seam-testing.ts'
 import type { AcpMcpLease } from '../../../src/runtime/session/mcp-lease.ts'
 import type { AcpSubprocessHandle, SubprocessSeam } from '../../../src/runtime/process/subprocess.ts'
 
-it.each(['launch', 'initialize'])('closes resources if disposal races pending %s', async (phase) => {
+it.each(['launch', 'initialize', 'lease'])('closes resources if disposal races pending %s', async (phase) => {
   const entered = Promise.withResolvers<void>()
   const release = Promise.withResolvers<void>()
   const leaseClose = vi.fn(async () => {})
@@ -36,7 +36,12 @@ it.each(['launch', 'initialize'])('closes resources if disposal races pending %s
         entered.resolve()
         await release.promise
       }
-      return { argv, env: {}, spawnPlan: { argv, env: {} }, mcpLease: lease }
+      return { argv, env: {}, spawnPlan: { argv, env: {} } }
+    },
+    createMcpLease: async () => {
+      entered.resolve()
+      await release.promise
+      return lease
     },
   })
   try {
@@ -52,7 +57,8 @@ it.each(['launch', 'initialize'])('closes resources if disposal races pending %s
     release.resolve()
     await rejected
     await closing
-    expect(leaseClose).toHaveBeenCalled()
+    if (phase === 'lease') expect(leaseClose).toHaveBeenCalledOnce()
+    else expect(leaseClose).not.toHaveBeenCalled()
     if (phase === 'launch') expect(initialize).not.toHaveBeenCalled()
     else expect(connectionClose).toHaveBeenCalled()
     expect(runtime.agentCapabilities).toBeUndefined()

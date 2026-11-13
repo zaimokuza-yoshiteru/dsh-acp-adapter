@@ -29,7 +29,9 @@ interface ApprovalCard {
 
 export interface DevinManualApprovalContext {
   readonly cliVersion: string
-  assertIsolatedDshRegistration(cwd: string): Promise<void>
+  /** Fixture has no native MCP servers/imports: its only dsh endpoint is the session-owned bridge.
+   * This supports a known-CLI manual answer only; the bridge/owner/hash/scope checks still apply. */
+  assertIsolatedSessionMcp(cwd: string): Promise<void>
 }
 
 /** Only this opted-in real Devin task is answered, through the original native UI. */
@@ -270,8 +272,8 @@ export function installLiveDevinTeamApprovals({
       else {
         if (manualTitle === undefined || !isKnownDevinManualTitleRequest(manualTitle.cliVersion, row.data, bridge))
           return fail('LIVE_TEAM_MANUAL_PERMISSION_IDENTITY_UNPROVEN')
-        check.stage = 'isolated-registration'
-        await manualTitle.assertIsolatedDshRegistration(required(owner.session.header.cwd))
+        check.stage = 'isolated-session-mcp'
+        await manualTitle.assertIsolatedSessionMcp(required(owner.session.header.cwd))
         identity = 'known-cli-manual'
       }
       const tool = required(bridge.toolName)

@@ -46,7 +46,6 @@ const safeAcpErrorCodes = new Set([
   'ACP_STEERING_OUTCOME_UNKNOWN',
   'ACP_STEERING_FAILED',
   'ACP_TEAM_TOOL_FAILED',
-  'ACP_HOST_CALL_DRAIN_TIMEOUT',
   'ACP_HOST_GENERATION_STILL_ACTIVE',
   'ACP_HOST_TOOL_NOT_DISPATCHED',
   'ACP_HOST_FEEDBACK_COMMIT_FAILED',
@@ -100,7 +99,6 @@ export interface AcpRuntimeConfig {
 }
 
 export interface AcpRuntimeLaunch {
-  readonly mcpLease?: AcpMcpLease
   readonly argv: readonly string[]
   readonly env: Record<string, string>
   readonly spawnPlan: AcpSpawnPlanView
@@ -1403,12 +1401,8 @@ export class AcpSessionRuntime {
     const setupSignal =
       signal === undefined ? connectionAbort.signal : AbortSignal.any([signal, connectionAbort.signal])
     const launch = await this.options.prepareLaunch(this.options.config, this.options.cwd)
-    if (setupSignal.aborted) {
-      await launch.mcpLease?.close().catch(() => undefined)
-      setupSignal.throwIfAborted()
-    }
+    setupSignal.throwIfAborted()
     this.launch = launch
-    this.mcpLease = launch.mcpLease
     const spec: AcpConnectionSpec = {
       argv: [...launch.argv],
       cwd: this.options.cwd,
@@ -1524,8 +1518,9 @@ export class AcpSessionRuntime {
     starting.connection = connection
     try {
       await connection.initialize({ signal: setupSignal })
+      setupSignal.throwIfAborted()
       this.mcpKey = this.options.mcpKey?.()
-      this.mcpLease ??= await this.options.createMcpLease?.(connection.agentCapabilities)
+      this.mcpLease = await this.options.createMcpLease?.(connection.agentCapabilities)
       setupSignal.throwIfAborted()
       this.connection = connection
       this.connectionAbort = connectionAbort

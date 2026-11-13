@@ -726,6 +726,13 @@ export class AcpProfileAdapter extends LlmAdapter {
   private readonly pendingExternalProjections = new Set<Promise<void>>()
   /** Prompt response handlers can enqueue terminal writes after transport cancellation. */
   private readonly pendingTerminalResponses = new Set<Promise<void>>()
+  private readonly pendingRecoveries = new Set<{
+    readonly sessionId: string
+    readonly owner: object | undefined
+    readonly completion: Promise<void>
+    retired: boolean
+  }>()
+  private readonly retiringRecoveryOwners = new WeakMap<object, number>()
   private readonly ledger: DispatchLedger
   private readonly settlementSink: AcpLocalSettlementSink
   private readonly continuity: AcpHostContinuity
@@ -3753,9 +3760,7 @@ export class AcpProfileAdapter extends LlmAdapter {
                 ? 'The ACP tool feedback commit into the native Agent inbox could not be confirmed; inspect the Agent session before continuing.'
                 : reconciliationRequired
                   ? 'A DSH Host tool failed inside the Host before its result was recorded, or was still executing when the ACP Agent ended its response; inspect both sides before continuing.'
-                  : settlementFailure?.code === 'ACP_HOST_CALL_DRAIN_TIMEOUT'
-                    ? 'ACP prompt ended while a DSH Host tool was still active and its outcome could not be confirmed.'
-                    : 'ACP prompt ended before its remote outcome was confirmed',
+                  : 'ACP prompt ended before its remote outcome was confirmed',
             provider: options.provider,
             ...(runtime.acpSessionId === undefined ? {} : { acpSessionId: runtime.acpSessionId }),
             updatedAt: Date.now(),
@@ -3994,7 +3999,42 @@ export class AcpProfileAdapter extends LlmAdapter {
   }
 
   /** Explicitly discard only ACP-side continuity; DSH history is untouched. */
-  async rebindBlank(sessionId: string): Promise<void> {
+  rebindBlank(sessionId: string): Promise<void> {
+    return this.runRecoveryOperation(sessionId, (assertCurrent) => this.rebindBlankCurrent(sessionId, assertCurrent))
+  }
+
+  private async runRecoveryOperation(
+    sessionId: string,
+    operation: (assertCurrent: () => void) => Promise<void>,
+  ): Promise<void> {
+    const session = this.sessionOf(sessionId)
+    const owner = session?.identity ?? session
+    const completion = Promise.withResolvers<void>()
+    const pending = { sessionId, owner, completion: completion.promise, retired: false }
+    const assertCurrent = (): void => {
+      const current = this.sessionOf(sessionId)
+      if (
+        this.closing !== undefined ||
+        pending.retired ||
+        (owner !== undefined && this.retiringRecoveryOwners.has(owner)) ||
+        (current?.identity ?? current) !== owner
+      )
+        throw LlmError.fromFailure({
+          message: 'ACP recovery stopped because its session or adapter was closed or replaced.',
+          code: 'ACP_RECOVERY_REQUIRED',
+        })
+    }
+    assertCurrent()
+    this.pendingRecoveries.add(pending)
+    try {
+      await operation(assertCurrent)
+    } finally {
+      this.pendingRecoveries.delete(pending)
+      completion.resolve()
+    }
+  }
+
+  private async rebindBlankCurrent(sessionId: string, assertCurrent: () => void): Promise<void> {
     this.assertNoQuarantinedHostCalls(sessionId, true)
     if (this.sidecar === undefined)
       throw LlmError.fromFailure({
@@ -4002,9 +4042,11 @@ export class AcpProfileAdapter extends LlmAdapter {
         code: 'ACP_BINDING_UNAVAILABLE',
       })
     const binding = await this.sidecar.readLatestBinding(sessionId as never)
+    assertCurrent()
     const nextGeneration = binding?.status === 'ok' ? binding.binding.generation + 1 : 1
     this.nextGenerations.set(sessionId, nextGeneration)
     await this.closeSessionRuntime(sessionId)
+    assertCurrent()
     this.assertNoQuarantinedHostCalls(sessionId, true)
     // Explicitly abandoning the old Agent context also resolves any
     // dispatch-uncertain guard; no remote prompt is retried automatically.
@@ -4020,7 +4062,9 @@ export class AcpProfileAdapter extends LlmAdapter {
     }
     try {
       await this.sidecar.writeRecoveryState(healthyState, { clearDispatch: true })
+      assertCurrent()
     } catch (error) {
+      assertCurrent()
       this.rememberRecoveryFallback({
         ...healthyState,
         kind: 'outcome-unknown',
@@ -4042,7 +4086,11 @@ export class AcpProfileAdapter extends LlmAdapter {
   }
 
   /** Allow a user-selected retry to reuse the original durable ACP binding. */
-  async retryOriginal(sessionId: string): Promise<void> {
+  retryOriginal(sessionId: string): Promise<void> {
+    return this.runRecoveryOperation(sessionId, (assertCurrent) => this.retryOriginalCurrent(sessionId, assertCurrent))
+  }
+
+  private async retryOriginalCurrent(sessionId: string, assertCurrent: () => void): Promise<void> {
     this.assertNoQuarantinedHostCalls(sessionId, true)
     if (this.sidecar === undefined)
       throw LlmError.fromFailure({
@@ -4050,6 +4098,7 @@ export class AcpProfileAdapter extends LlmAdapter {
         code: 'ACP_BINDING_UNAVAILABLE',
       })
     const bindingResult = await this.sidecar.readLatestBinding(sessionId as never)
+    assertCurrent()
     if (bindingResult?.status !== 'ok')
       throw LlmError.fromFailure({
         message: 'The original ACP binding is unavailable',
@@ -4065,6 +4114,7 @@ export class AcpProfileAdapter extends LlmAdapter {
       })
     const cwd = this.canonicalCwd(session.workingDirectory)
     const fingerprint = await this.launchFingerprint(profile)
+    assertCurrent()
     if (binding.canonicalCwd !== cwd || !acpLaunchFingerprintsCompatible(binding.launchFingerprint, fingerprint)) {
       throw LlmError.fromFailure({
         message: 'The original ACP profile and working directory must be restored before retry',
@@ -4077,6 +4127,7 @@ export class AcpProfileAdapter extends LlmAdapter {
     // Retry only replaces runtimes owned by this DSH session. Other DSH
     // sessions must keep their live Agent processes untouched.
     await this.closeSessionRuntime(sessionId)
+    assertCurrent()
     this.assertNoQuarantinedHostCalls(sessionId, true)
     const generation: ProfileGeneration = {
       id: profileLaunchIdentityHash(this.profileId, profile),
@@ -4090,8 +4141,10 @@ export class AcpProfileAdapter extends LlmAdapter {
     try {
       if (typeof runtime.restore !== 'function') throw new Error('ACP runtime cannot restore the original session')
       await runtime.restore(binding)
+      assertCurrent()
       if (this.runtimes.get(runtimeKey) !== runtime) throw new Error('ACP session was disposed during recovery')
       await this.persistRuntimeSnapshot(sessionId, runtime)
+      assertCurrent()
       // The user explicitly reviewed the uncertain outcome. Remove only the
       // durable dispatch guard; the ACP binding and all DSH history remain.
       const healthyState: AcpRecoveryState = {
@@ -4104,12 +4157,16 @@ export class AcpProfileAdapter extends LlmAdapter {
         updatedAt: Date.now(),
       }
       await this.sidecar.writeRecoveryState(healthyState, { clearDispatch: true })
+      assertCurrent()
       this.continuity.executionOwners.clear(sessionId)
       this.continuity.executionOwners.clearRecoveryFallback(sessionId)
       this.inMemoryRecoveryRequired.delete(sessionId)
       this.inMemoryRecoveryStates.delete(sessionId)
     } catch (error: unknown) {
       await this.releaseRuntime(runtimeKey, runtime)
+      // A retired recovery has no authority to overwrite its replacement's
+      // durable state, even when the old restore finishes with an error.
+      assertCurrent()
       const detail = `ACP retry failed: ${error instanceof Error ? error.message : String(error)}`
       const missing = /(?:session[_ -]?)?(?:not[ -]?found|unknown[_ -]?session)|does not exist/i.test(detail)
       const capability = /cannot restore|does not advertise/i.test(detail)
@@ -4125,7 +4182,9 @@ export class AcpProfileAdapter extends LlmAdapter {
       }
       try {
         await this.sidecar.writeRecoveryState(recoveryFailure)
+        assertCurrent()
       } catch {
+        assertCurrent()
         this.rememberRecoveryFallback(recoveryFailure)
       }
       throw LlmError.fromFailure({ message: detail, code: missing ? 'ACP_SESSION_NOT_FOUND' : 'ACP_RETRY_FAILED' })
@@ -4217,6 +4276,8 @@ export class AcpProfileAdapter extends LlmAdapter {
     )
     while (this.pendingTerminalResponses.size > 0)
       recordFailures(await Promise.allSettled([...this.pendingTerminalResponses]))
+    while (this.pendingRecoveries.size > 0)
+      await Promise.all([...this.pendingRecoveries].map((operation) => operation.completion))
     recordFailures(
       await Promise.allSettled(
         handoffs
@@ -4345,6 +4406,24 @@ export class AcpProfileAdapter extends LlmAdapter {
   /** Release only the disposed host session's runtimes; keep its durable history. */
   async disposeSession(session: { readonly id: string; readonly identity?: object }): Promise<void> {
     const owner = session.identity ?? session
+    this.retiringRecoveryOwners.set(owner, (this.retiringRecoveryOwners.get(owner) ?? 0) + 1)
+    try {
+      await this.disposeSessionResources(session, owner)
+    } finally {
+      const remaining = this.retiringRecoveryOwners.get(owner)! - 1
+      if (remaining === 0) this.retiringRecoveryOwners.delete(owner)
+      else this.retiringRecoveryOwners.set(owner, remaining)
+    }
+  }
+
+  private async disposeSessionResources(
+    session: { readonly id: string; readonly identity?: object },
+    owner: object,
+  ): Promise<void> {
+    const recoveries = [...this.pendingRecoveries].filter(
+      (operation) => operation.sessionId === session.id && operation.owner === owner,
+    )
+    for (const operation of recoveries) operation.retired = true
     const waiters = this.settlementSessionWaitControllers.get(session.id)
     if (waiters !== undefined) {
       for (const waiter of [...waiters]) {
@@ -4358,6 +4437,7 @@ export class AcpProfileAdapter extends LlmAdapter {
     const releaseControls = await this.sessionControls.retireSession(session.id, owner)
     try {
       await this.closeSessionRuntime(session.id, owner)
+      await Promise.all(recoveries.map((operation) => operation.completion))
       if (this.admittedToolSchemaOwners.get(session.id) === owner) {
         this.admittedToolSchemaOwners.delete(session.id)
         this.admittedToolSchemas.delete(session.id)
@@ -4499,17 +4579,7 @@ export class AcpProfileAdapter extends LlmAdapter {
       config: profile,
       subprocess: processSeam,
       cwd,
-      prepareLaunch: (config, launchCwd) =>
-        prepareAgentLaunch(
-          runtime,
-          config as AcpStubAgentConfig,
-          launchCwd,
-          processSeam,
-          this.createMcpLease === undefined
-            ? undefined
-            : (capabilities) =>
-                this.createMcpLease!(sessionId, capabilities, runtime, this.admittedToolSchemas.get(sessionId)),
-        ),
+      prepareLaunch: (config) => prepareAgentLaunch(runtime, config as AcpStubAgentConfig),
       createFileSystemHandlers: () =>
         createAcpFileSystemHandlers({
           profileId: this.profileId,

@@ -198,7 +198,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE !== '1')('live ACP smoke', () => {
             devinCliVersion !== undefined && devinEnvironment !== undefined
               ? {
                   cliVersion: devinCliVersion,
-                  assertIsolatedDshRegistration: devinEnvironment.assertIsolatedDshRegistration,
+                  assertIsolatedSessionMcp: devinEnvironment.assertIsolatedSessionMcp,
                 }
               : undefined
           if (profile.id === 'devin')

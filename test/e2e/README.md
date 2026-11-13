@@ -90,7 +90,7 @@ RC.2 使用原生子代理树展示成员身份、状态与导航，`list_agents
 
 二元一次性集中审批调用子会话原有 pending approval 的回答接口；原生或 ACP 父会话均可使用，不依赖 Teams 开启。Host 核实存活 runtime 的逐层 ownership 与来源路径权限，排除普通独立分支和只读外部子任务投影，并保留原生委派的 `never` 策略。完整多作用域权限请求由原生 root 问题卡代呈，原始 option ID、执行身份和决定记录仍归属子会话；不会缩成一次性选项，也不参与批量允许。普通子会话提问和计划仍保留上游 `DELEGATED_CALLER` 边界。Codex 仅在已核实当前 DSH 工具身份、表单只包含 `persist` 时进入权限专用路径：唯一 `once` 选项使用原生一次性审批，多选项完整代呈。`team-approvals.e2e.ts` 显式设置 `MOCK_TEAM_APPROVAL_ONCE_ONLY=1` 验证原有批量路径；其通过不能替代完整选项专项验收。
 
-RC.2 原生子代理服务拥有创建、完整具名路径、消息和中断，Team 的会话开关只控制共享任务能力。适配器桥接当前实际准入的 `subagent`、`send_message` 及任务工具，不再依赖旧可选 Teams profile、固定九工具目录或 `spawn_teammate`／旧名册 API；调用仍经过 DSH ToolRuntime 的 hooks 和校验。关闭 Team 不应切断已有子会话的审批或管理。HTTP/stdio 服务、临时能力地址随会话生命周期撤销。为兼容包括 `3000.3.27` 在内的 Devin 版本，适配器通过 `devin mcp add` 注册固定的用户级 `dsh` stdio 入口。每个进程通过环境变量绑定独立会话能力，退出后能力撤销，用户级入口保留；无需文件链接。Codex 通过关联工具调用的 MCP 审批表单选择仅本次允许。这些兼容处理均不放行普通表单或其他工具。
+RC.2 原生子代理服务拥有创建、完整具名路径、消息和中断，Team 的会话开关只控制共享任务能力。适配器桥接当前实际准入的 `subagent`、`send_message` 及任务工具，不再依赖旧可选 Teams profile、固定九工具目录或 `spawn_teammate`／旧名册 API；调用仍经过 DSH ToolRuntime 的 hooks 和校验。关闭 Team 不应切断已有子会话的审批或管理。HTTP/stdio 服务、临时能力地址随会话生命周期撤销。Devin 要求 `3000.12.43` 或更新版本，通过标准 ACP `session/new`、`session/load` 的 `mcpServers` 接收当前会话的 `dsh` 工具桥；不再注册用户级 MCP、写入启动器或兼容旧版本。CI 固定 `3000.12.43` 验证，工具权限规则不变。 真实 Devin Teams 的执行专项由当前原生准入的 ToolSet 为主会话提供 8 项、为成员提供 3 项工具定义，目录传输另由零推理探针与 `check-devin-live-catalog.mjs` 检查；不将这个专项冒称为全量目录自主发现通过。Devin 全量列 schema 时可能生成私有溢出文件，测试不会为此批准私有文件或 shell。Codex 通过关联工具调用的 MCP 审批表单选择仅本次允许。这些兼容处理均不放行普通表单或其他工具。
 
 ## Fork 与通用子会话审批专项
 

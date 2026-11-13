@@ -3,7 +3,7 @@ import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { copyDevinLiveCredentials, devinCredentialsPath } from '../../scripts/devin-live-auth.ts'
 
-/** The CLI's user-scoped MCP registration must stay inside this disposable environment. */
+/** Isolate credentials, native configuration and history; DSH MCP belongs to each ACP session. */
 export async function prepareLiveDevinEnvironment<T extends Readonly<Record<string, string>>>(
   authMode: string | undefined,
   forwarded: T,
@@ -26,7 +26,7 @@ export async function prepareLiveDevinEnvironment<T extends Readonly<Record<stri
       XDG_DATA_HOME: join(root, 'native-data'),
       XDG_CACHE_HOME: join(root, 'native-cache'),
     }
-    const assertIsolatedDshRegistration = async (cwd: string) => {
+    const assertIsolatedSessionMcp = async (cwd: string) => {
       const read = async (path: string): Promise<Record<string, unknown> | undefined> => {
         let text: string
         try {
@@ -47,27 +47,18 @@ export async function prepareLiveDevinEnvironment<T extends Readonly<Record<stri
       }
       const configRoot = source.platform === 'win32' ? env.APPDATA : env.XDG_CONFIG_HOME
       const configuration = await read(join(configRoot, 'devin', 'mcp_config.json'))
-      const servers = configuration?.mcpServers
-      if (
-        servers === null ||
-        typeof servers !== 'object' ||
-        Array.isArray(servers) ||
-        Object.keys(servers).join(',') !== 'dsh'
-      )
-        throw new Error('LIVE_DEVIN_MANUAL_CONFIG_NOT_ISOLATED')
-      const dsh = (servers as { dsh: unknown }).dsh
-      const launcher = join(env.HOME, '.dsh', 'acp', 'mcp', 'dsh-mcp-launcher.mjs')
-      if (dsh === null || typeof dsh !== 'object' || Array.isArray(dsh))
-        throw new Error('LIVE_DEVIN_MANUAL_CONFIG_WRONG_SERVER')
-      const entry = dsh as Record<string, unknown>
-      if (
-        entry.command !== process.execPath ||
-        JSON.stringify(entry.args) !== JSON.stringify([launcher]) ||
-        entry.url !== undefined ||
-        entry.disabled === true ||
-        JSON.stringify(entry.env) !== JSON.stringify({ ELECTRON_RUN_AS_NODE: '1' })
-      )
-        throw new Error('LIVE_DEVIN_MANUAL_CONFIG_WRONG_SERVER')
+      if (configuration !== undefined) {
+        const servers = configuration.mcpServers
+        if (
+          configuration.read_config_from !== undefined ||
+          (servers !== undefined &&
+            (servers === null ||
+              typeof servers !== 'object' ||
+              Array.isArray(servers) ||
+              Object.keys(servers).length !== 0))
+        )
+          throw new Error('LIVE_DEVIN_MANUAL_CONFIG_NOT_ISOLATED')
+      }
       for (const name of ['mcp_config.json', 'mcp_config.local.json'])
         if ((await read(join(cwd, '.devin', name))) !== undefined) throw new Error('LIVE_DEVIN_MANUAL_PROJECT_OVERRIDE')
       for (const path of [
@@ -80,7 +71,7 @@ export async function prepareLiveDevinEnvironment<T extends Readonly<Record<stri
           throw new Error('LIVE_DEVIN_MANUAL_CONFIG_IMPORT')
       }
     }
-    return { env, dispose, assertIsolatedDshRegistration }
+    return { env, dispose, assertIsolatedSessionMcp }
   } catch (error) {
     await dispose()
     throw error

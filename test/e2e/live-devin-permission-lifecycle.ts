@@ -268,7 +268,7 @@ export async function verifyLiveDevinPermissionLifecycle({
         expected: phase.expected,
         cliVersion: context.cliVersion,
       })
-      await context.assertIsolatedDshRegistration(required(child.session.header.cwd))
+      await context.assertIsolatedSessionMcp(required(child.session.header.cwd))
       expect(question.options?.map((item) => item.label)).toEqual(asked.options.map((item) => item.name))
       const card = page.locator('[data-question-key]:visible').filter({ hasText: question.question })
       await card.waitFor()

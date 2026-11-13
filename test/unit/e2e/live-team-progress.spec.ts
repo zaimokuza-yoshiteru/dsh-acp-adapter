@@ -12,10 +12,10 @@ it('fails at the next observation of an error instead of waiting for the scenari
   const result = progress.wait(check, { timeout: 120_000, interval: 500 }).catch((error: unknown) => error)
   await vi.advanceTimersByTimeAsync(500)
   const checksBeforeFailure = check.mock.calls.length
-  progress.observe({ kind: 'error', error: { code: 'ACP_DEVIN_MCP_TIMEOUT', message: 'sensitive raw diagnostic' } })
+  progress.observe({ kind: 'error', error: { code: 'ACP_SPAWN_FAILURE', message: 'sensitive raw diagnostic' } })
   await vi.advanceTimersByTimeAsync(500)
   const error = await result
-  expect(error).toMatchObject({ message: 'Live Teams turn failed (ACP_DEVIN_MCP_TIMEOUT)' })
+  expect(error).toMatchObject({ message: 'Live Teams turn failed (ACP_SPAWN_FAILURE)' })
   expect(checksBeforeFailure).toBeGreaterThan(0)
   expect(check).toHaveBeenCalledTimes(checksBeforeFailure)
   expect(vi.getTimerCount()).toBe(0)

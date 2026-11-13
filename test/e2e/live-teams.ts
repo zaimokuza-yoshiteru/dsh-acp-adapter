@@ -99,11 +99,57 @@ export async function verifyLiveTeam({
         })
       : undefined
   const wait: typeof progress.wait = (check, options) => progress.wait(check, options, approvals?.answerPending)
+  // Observe the real admitted view: plain agents.create() does not mount the
+  // session-controller's preset, so its registry cannot certify this tool set.
+  const definitions: Record<string, string[]> = {}
+  if (provider === 'acp-devin') evidence.toolDefinitions = { source: 'admitted-native-toolset', sessions: definitions }
+  const stopDefinitions =
+    provider === 'acp-devin'
+      ? host.ctx.systemPrompt.section({
+          name: `live-team-definitions-${token}`,
+          order: 0,
+          interpolate: false,
+          text: ({ agent, scope, toolSet }) => {
+            if (
+              agent === undefined ||
+              host.ctx.agents.get(agent.id) !== agent ||
+              agent.options.provider !== provider ||
+              toolSet === undefined
+            )
+              return ''
+            const names =
+              agent.session.header.origin === 'subagent'
+                ? ['team_task_get', 'team_task_update', 'send_message']
+                : [
+                    'team_task_create',
+                    'team_task_get',
+                    'team_task_update',
+                    'team_task_list',
+                    'subagent',
+                    'send_message',
+                    'list_agents',
+                    'wait_agent',
+                  ]
+            const schemas = host.ctx.tools.schemas(scope, toolSet)
+            const selected = names.map((name) => {
+              const schema = schemas.find((tool) => tool.name === name)
+              expect(schema, `Admitted test tool ${name} must be available`).toBeDefined()
+              return { name, parameters: schema!.parameters }
+            })
+            definitions[agent.id] = names
+            return `For this isolated Teams execution test, these are your current DSH tool definitions: ${JSON.stringify(selected)}. Use them on your own DSH MCP connection. Do not request the full catalog or read overflow files; if your CLI automatically lists the server, continue using these definitions. They do not grant permission to perform other work.`
+          },
+        })
+      : undefined
   try {
+    const discovery =
+      provider === 'acp-devin'
+        ? "The host supplies the required current tool definitions in each session's instructions. Use those definitions directly on your own MCP connection, including in the child; do not read overflow files."
+        : 'Use the exact names and schemas supplied by your MCP client. Each teammate uses its own connection; never pass connection identities to it.'
     const prompt =
-      `Start a NEW independent Agent Teams task now. Earlier completed tasks and teammates do not satisfy this request: create the new tasks and the new teammate named below. Do the actual MCP tool calls before answering; a calculation or token-only reply is not completion. This is explicitly authorized in an empty temporary workspace. Use ONLY the current DSH tools MCP connection identified in the latest host instructions; do not use your own subagent tools, shell, web or files. Discover and use the exact tool names from tools/list. Each teammate must discover its own connection's tool names; never pass your connection names to it.
+      `Start a NEW independent Agent Teams task now. Earlier completed tasks and teammates do not satisfy this request: create the new tasks and the new teammate named below. Do the actual MCP tool calls before answering; a calculation or token-only reply is not completion. This is explicitly authorized in an empty temporary workspace. Use ONLY the current DSH tools MCP connection identified in the latest host instructions; do not use your own subagent tools, shell, web or files. ${discovery}
 Create a shared task with subject "Compute ${token}" and a second task "Review ${token}" blocked_by the compute task. Use DSH subagent to create exactly one fresh child named ${memberName}.${selectChildModel ? ` Set that new child's provider to ${JSON.stringify(provider)} and model to ${JSON.stringify(model)}; do not change the Lead's model or any existing child's model.` : ''} Give it the compute task ID and ask it to get the task, claim it with its current revision, calculate 1+1, get the latest revision and complete the task, then use DSH send_message with agent "lead" to send the lead the result and token ${token}, and end its response.
-Wait for its message. Get/list the shared tasks, confirm the compute task is completed and the review task unblocked, claim and complete the review task yourself using current revisions. Reply with the token and result. Do not claim or complete the member's compute task yourself. If a tool says DSH has pending input, end the current response with a brief progress update so DSH can deliver the message; the host will continue automatically. Do not resend accepted messages. Stop after both tasks are completed.`.replaceAll(
+Wait for its message. If using wait_agent, omit timeout_ms or set it to at most 300000; new input wakes the wait early. Get/list the shared tasks, confirm the compute task is completed and the review task unblocked, claim and complete the review task yourself using current revisions. Reply with the token and result. Do not claim or complete the member's compute task yourself. If a tool says DSH has pending input, end the current response with a brief progress update so DSH can deliver the message; the host will continue automatically. Do not resend accepted messages. Stop after both tasks are completed.`.replaceAll(
         '\n',
         ' ',
       )
@@ -168,7 +214,8 @@ Wait for its message. Get/list the shared tasks, confirm the compute task is com
       },
       { timeout: 120_000, interval: 500 },
     )
-    for (const name of ['team_task_create', 'team_task_get', 'team_task_list', 'team_task_update']) {
+    // The task permits get OR list; a successful exact get must not require a redundant list call.
+    for (const name of ['team_task_create', 'team_task_get', 'team_task_update']) {
       expect(executions.some((item) => item.name === name && !item.isError)).toBe(true)
     }
     expect(child.session.requestHeader()?.config).toMatchObject({ provider, model })
@@ -227,6 +274,7 @@ Wait for its message. Get/list the shared tasks, confirm the compute task is com
     approvals?.assertComplete()
     return { lead, child }
   } finally {
+    stopDefinitions?.()
     approvals?.dispose()
     disposeResults()
     disposeEvents()

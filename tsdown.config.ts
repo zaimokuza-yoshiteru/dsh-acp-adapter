@@ -66,16 +66,6 @@ const nodeEnv = process.env.NODE_ENV ?? 'production'
 
 export default defineConfig([
   {
-    entry: { 'dsh-mcp-launcher': 'src/runtime/session/team-mcp-stdio.ts' },
-    outDir: 'lib/runtime/session',
-    format: 'esm',
-    platform: 'node',
-    dts: false,
-    clean: false,
-    deps: { alwaysBundle: [/./] },
-    outputOptions: { entryFileNames: '[name].mjs', inlineDynamicImports: true },
-  },
-  {
     entry: { client: 'src/client/index.ts' },
     // The browser bundle lands next to the host half (single lib/ artifact dir);
     // clean stays off so the tsc-emitted host output survives.

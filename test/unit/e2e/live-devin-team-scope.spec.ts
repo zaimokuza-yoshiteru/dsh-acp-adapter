@@ -169,3 +169,17 @@ it('never authorizes native/private tools, alternate servers, file/shell operati
   expect(permitsDevinTeamTool('team_task_list', { owner: 'foreign' }, scope)).toBe(false)
   expect(permitsDevinTeamTool('wait_agent', { timeout_ms: Infinity }, scope)).toBe(false)
 })
+
+it('allows bounded Lead waits that wake early on input without authorizing other coordination', () => {
+  for (const input of [{}, { timeout_ms: 10_000 }, { timeout_ms: 60_000 }, { timeout_ms: 300_000 }])
+    expect(permitsDevinTeamTool('wait_agent', input, scope)).toBe(true)
+  expect(permitsDevinTeamTool('wait_agent', { timeout_ms: 300_000 }, { ...scope, role: 'member' })).toBe(false)
+  expect(permitsDevinTeamTool('wait_agent', { timeout_ms: 300_000, agent: 'foreign' }, scope)).toBe(false)
+})
+
+it.each([9999, 300001, 30000.5, Infinity, NaN, '30000', null])(
+  'rejects an invalid or over-budget wait: %s',
+  (timeout_ms) => {
+    expect(permitsDevinTeamTool('wait_agent', { timeout_ms }, scope)).toBe(false)
+  },
+)
