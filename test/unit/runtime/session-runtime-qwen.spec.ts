@@ -212,6 +212,60 @@ describe('Qwen Code ask_user_question', () => {
 })
 
 describe('Qwen Code background tasks', () => {
+  it.each([true, false])(
+    'does not classify directory refresh as non-dispatch when an automatic turn already exists (adopt=%s)',
+    async (adoptAgentTurn) => {
+      const jobs = recordingJobs()
+      const prompts = promptRequests()
+      let stale = false
+      const runtime = createRuntime(
+        {
+          qwenTaskJobs: jobs.starter,
+          unannouncedIdleMs: 10_000,
+          agentTurnAdoptionMs: 10_000,
+          createMcpLease: async () => ({
+            signal: new AbortController().signal,
+            servers: [],
+            needsRefresh: () => stale,
+            beginPrompt() {},
+            endPrompt() {},
+            permission: () => undefined,
+            async close() {},
+          }),
+        },
+        { FAKE_QWEN_DROP_END: '1', FAKE_QWEN_NO_FINISHED_MARKER: '1', ...prompts.env },
+      )
+      const mirrored = jobs.next()
+      await runtime.prompt([{ type: 'text', text: 'background' }], () => undefined)
+      await wirePhase(mirrored.then((job) => job.outcome))
+      await waitForWireState(() =>
+        observedAgentTurns(runtime).some(
+          (turn) => turn.ended === undefined && texts(turn.buffer).includes('The background command printed done.'),
+        ),
+      )
+      stale = true
+      const result = await runtime
+        .prompt(
+          [{ type: 'text', text: 'retained input' }],
+          () => undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          {
+            adoptAgentTurn,
+          },
+        )
+        .then(
+          (response) => ({ response }),
+          (error: unknown) => ({ error }),
+        )
+      expect(result).toHaveProperty('error')
+      expect(result).not.toMatchObject({ error: { code: 'ACP_PROMPT_NOT_DISPATCHED' } })
+      expect(prompts.read()).toEqual(['background'])
+    },
+  )
+
   it('fails a live announced turn without a terminal, retains its prefix, and never dispatches retained input', async () => {
     const jobs = recordingJobs()
     const prompts = promptRequests()

@@ -66,11 +66,21 @@ describe('public documentation contract', () => {
   it('covers the complete user installation path without defining the product by one Agent', () => {
     const zh = read('README.md')
     const en = read('README.en.md')
-    for (const token of ['@deepseek-ai/dsh', '@zaimokuza/dsh-acp-adapter', 'Devin', 'Codex', 'Kimi', 'Claude']) {
+    for (const token of ['@deepseek-ai/dsh', '@zaimokuza/dsh-acp-adapter', 'Devin', 'Codex', 'Claude']) {
       expect(zh).toContain(token)
       expect(en).toContain(token)
     }
   })
+
+  it('ships localized in-app guidance independently of the repository README', () => {
+    const packed = packedPaths()
+    for (const language of ['zh', 'en']) {
+      const metadata = JSON.parse(read(`locale/${language}.json`)) as { meta: { detail: string } }
+      expect(metadata.meta.detail).not.toMatch(/^README/)
+      expect(packed.has(metadata.meta.detail), `${language} detail must ship with the plugin`).toBe(true)
+      expect(read(metadata.meta.detail).trim()).not.toBe('')
+    }
+  }, 45_000)
 
   it('keeps every local README link resolvable', () => {
     for (const path of ['README.md', 'README.en.md']) {

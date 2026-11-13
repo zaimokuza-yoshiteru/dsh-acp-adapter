@@ -19,6 +19,17 @@ export interface AcpRemoteErrorDetails {
   readonly correlationId: string | null
 }
 
+export type AcpNativeForkRejection =
+  'unavailable' | 'invalid-seed' | 'source-conflict' | 'child-bound' | 'source-unavailable' | 'child-changed'
+
+/** A native child remains intact after registration is refused. */
+export interface AcpNativeForkErrorDetails {
+  readonly sessionId: string
+  readonly sourceSessionId: string
+  readonly atSeq: number
+  readonly reason: AcpNativeForkRejection
+}
+
 declare module '@deepseek-ai/dsh-typert-protocol' {
   interface RemoteErrorDetailsMap {
     'dsh-acp/config': AcpRemoteErrorDetails
@@ -31,6 +42,9 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
     'dsh-acp/user-rejected': AcpRemoteErrorDetails
     'dsh-acp/activity-binding-pending': AcpRemoteErrorDetails
     'dsh-acp/resume-conflict': AcpRemoteErrorDetails
+    'dsh-acp/native-fork-rejected': AcpNativeForkErrorDetails
+    'dsh-acp/native-fork-scope-unavailable': { readonly sessionId: string }
+    'dsh-acp/model-switch-unavailable': { readonly reason: 'existing-session' }
   }
 }
 
@@ -162,6 +176,8 @@ export interface AcpProviderHealth {
   readonly version: string | null
   /** 五态状态（派生规则见 src/domain/session/agent-state.ts）。 */
   readonly state: AcpAgentConfigState
+  /** Configuration refusal is not a protocol probe or process failure. */
+  readonly unavailableReason?: 'agent-retired'
   /**
    * 上次 probe 快照（llm-stub 缓存；首次目录构建前为 'never'）。成功分支携带
    * authMethods（收窄后）、agentInfo/capabilities（initialize 握手实际值）、
@@ -214,6 +230,13 @@ export interface AcpHealthView {
   readonly providers: readonly AcpProviderHealth[]
   /** 活体 ACP 会话的连续性清单（未接线/无活体会话归 null 或空数组，如实区分）。 */
   readonly liveSessions: readonly AcpLiveSessionContinuity[] | null
+  /** Present only when this Host runs a DSH version other than the one the adapter is built for. */
+  readonly hostVersion?: AcpHostVersionMismatchView
+}
+
+export interface AcpHostVersionMismatchView {
+  readonly required: string
+  readonly running: string
 }
 
 /** Exact provider routes currently configured by this plugin or durably
@@ -519,6 +542,7 @@ export interface AcpTeamMemberView {
   readonly model: string | null
   readonly pendingModel?: string | null
   readonly modelWritable?: boolean
+  readonly modelUnavailableReason?: 'model-switch' | null
   readonly description: string | null
 }
 
@@ -528,4 +552,6 @@ export interface AcpTeamMemberModelsView {
   readonly pendingModel: string | null
   readonly models: readonly { readonly id: string; readonly name: string }[]
   readonly writable: boolean
+  /** Only restoring currentModel is supported after this member has started. */
+  readonly unavailableReason?: 'model-switch'
 }

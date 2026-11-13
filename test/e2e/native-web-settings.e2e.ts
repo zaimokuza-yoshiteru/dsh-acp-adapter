@@ -49,10 +49,15 @@ it('keeps native Search/Fetch settings and Flash labels independent of the loade
   // Reuse the owner's header-only, call-free catalog fixture. The real replay
   // service rejects any unexpected generation instead of invoking a model.
   const host = await launchAdapterWorld({
-    replayFixture: join(upstream, 'apps/web/tests/fixtures/deepseek-model-label-1017/session.v4.jsonl'),
+    replayFixture: join(upstream, 'apps/web/tests/fixtures/model-badge/session.v4.jsonl'),
     replayProvidersOnly: true,
     replayProviders: [
-      { id: 'deepseek-official', name: 'DeepSeek', models: [{ id: MODEL_ID, name: FLASH }] },
+      // DSH 0.2.2 renders model badges from the catalog instead of a built-in Flash label.
+      {
+        id: 'deepseek-official',
+        name: 'DeepSeek',
+        models: [{ id: MODEL_ID, name: FLASH, badge: { text: '1017', tone: 'info' } }],
+      },
       { id: ACP_PROVIDER, name: 'ACP same-name fixture', models: [{ id: MODEL_ID, name: FLASH }] },
     ],
     extraPatches: [

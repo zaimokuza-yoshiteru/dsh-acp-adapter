@@ -25,6 +25,11 @@ class NativeTeamControl extends LlmAdapter {
   async listModels(provider: string) {
     return ['native-a', 'native-b'].map((id) => ({ provider, id, name: id }))
   }
+  override async resolveModel(provider: string, model: string) {
+    // This deterministic native fixture has its own bounded context. ACP Agents
+    // retain unknown capacity and are never assigned this value.
+    return { provider, id: model, name: model, context: { contextWindow: 128_000 } }
+  }
   providerRetryPolicy(): ReturnType<LlmAdapter['providerRetryPolicy']> {
     return { mode: 'normal', maxRetries: 0, retryableCodes: [], initialDelayMs: 0, maxDelayMs: 0, jitterRatio: 0 }
   }
@@ -162,7 +167,8 @@ it('keeps one ACP Agent across multiple models, isolates approvals and prevents 
       .getByLabel('Fixture devin · ACP', { exact: true })
       .getByRole('menuitemradio', { name: 'Mock Model B', exact: true })
       .click()
-    await page.getByRole('button', { name: /^Select model, current Mock Model B/ }).waitFor()
+    await page.getByRole('dialog').getByRole('button', { name: 'Keep the current model', exact: true }).last().click()
+    await page.getByRole('button', { name: /^Select model, current Mock Model A/ }).waitFor()
     expect(await page.getByRole('dialog').count()).toBe(0)
     const pendingCard = page.locator('[data-acp-team-approvals]')
     await pendingCard.getByRole('button', { name: 'Collapse', exact: true }).click()
@@ -205,7 +211,7 @@ it('keeps one ACP Agent across multiple models, isolates approvals and prevents 
     diagnostics.stage('two-pending-layout')
     expect(required(host.ctx.agents.get(childBId)).options).toMatchObject({
       provider: 'acp-devin',
-      model: 'mock-model-b',
+      model: 'mock-model-a',
     })
     expect(required(host.ctx.agents.get(childAId)).options).toMatchObject({
       provider: 'acp-devin',
@@ -376,7 +382,7 @@ it('keeps one ACP Agent across multiple models, isolates approvals and prevents 
       .click()
     const dialog = page.getByRole('dialog').last()
     try {
-      await dialog.getByText('New session required', { exact: true }).waitFor()
+      await dialog.getByText('Changing Agents requires an independent session', { exact: true }).waitFor()
       await host.ctx.settings.replace('locale', { preference: 'zh' })
       await expect.poll(() => dialog.getByText('无法恢复当前会话原先使用的模型', { exact: true }).count()).toBe(1)
       expect(await dialog.locator('pre').count()).toBe(0)
@@ -390,8 +396,8 @@ it('keeps one ACP Agent across multiple models, isolates approvals and prevents 
       failedSourceRestore.mockRestore()
       await host.ctx.settings.replace('locale', { preference: 'en' })
     }
-    const selected = required(host.ctx.sessionProjections.stateOf(lead.session, 'modelSelection'))
-    expect(selected.pending ?? selected.lastUsed).toMatchObject({ provider: 'acp-devin', model: 'mock-model-b' })
+    const selected = required(lead.model.current())
+    expect(selected).toMatchObject({ provider: 'acp-devin', model: 'mock-model-a' })
     Object.assign(evidence, {
       leadId: lead.id,
       childAId,
@@ -411,7 +417,7 @@ it('keeps one ACP Agent across multiple models, isolates approvals and prevents 
       .getByLabel('Fixture codex · ACP', { exact: true })
       .getByRole('menuitemradio', { name: 'Mock Model B', exact: true })
       .click()
-    await dialog.getByRole('button', { name: 'Continue', exact: true }).click()
+    await dialog.getByRole('button', { name: 'Create an independent session', exact: true }).click()
     await send('E2E_MESSAGE')
     diagnostics.stage('cross-agent-new-session-done')
     await page.getByText('E2E_DONE mock-model-b', { exact: true }).waitFor()

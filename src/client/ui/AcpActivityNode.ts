@@ -348,6 +348,33 @@ function toolContentIdentity(row: AcpActivityView): { readonly toolCallId: strin
   return row.kind === expectedKind ? { toolCallId: match[1]! } : undefined
 }
 
+/** Only adapter-owned metadata identifies a fallback; Agent titles remain wire data. */
+function emptyToolPlaceholder(row: AcpActivityView): boolean {
+  const detail = detailValue(row)
+  if (row.kind !== 'tool' || !record(detail) || detail.titleSource !== 'adapter-fallback') return false
+  const { titleSource: _titleSource, ...content } = detail
+  return !hasMeaningfulDetail(content)
+}
+
+function activityTitle(row: AcpActivityView, t: ActivityNodeProps['t']): string {
+  const detail = detailValue(row)
+  if (row.kind === 'tool' && record(detail) && detail.titleSource === 'adapter-fallback')
+    return t('activity.title.tool')
+  if (toolContentIdentity(row) === undefined) return row.presentation
+  if (row.kind === 'terminal') return t('activity.title.terminal')
+  if (row.kind === 'resource') return t('activity.title.resource')
+  if (row.kind === 'other') return t('activity.title.output')
+  if (row.kind === 'diff') {
+    const path =
+      record(detail) && typeof detail.path === 'string'
+        ? detail.path
+        : (row.display?.diffs?.[0]?.path ?? row.detailPaths?.[0])
+    const file = path?.split(/[\\/]/).at(-1)
+    return file ? t('activity.title.fileNamed', { file }) : t('activity.title.file')
+  }
+  return row.presentation
+}
+
 /**
  * A projected child is navigation metadata for its source Tool call, not a
  * second operation in the parent transcript. Keep the source call, suppress
@@ -383,16 +410,8 @@ export function visibleActivityRows(rows: readonly AcpActivityView[]): readonly 
       // Devin can publish an id-only child lifecycle row before the actual
       // delegation evidence arrives. It has no user-visible operation or data;
       // showing the adapter's fallback title would create a transient duplicate.
-      if (row.kind === 'tool' && row.presentation === 'Agent tool activity' && !hasMeaningfulDetail(detailValue(row)))
-        return false
+      if (emptyToolPlaceholder(row)) return false
       if (projectionRows.includes(row)) return false
-      if (
-        delegationWindows.some(
-          ({ root }) =>
-            row === root && root.presentation === 'Agent tool activity' && !hasMeaningfulDetail(detailValue(root)),
-        )
-      )
-        return false
       const contentIdentity = row.kind === 'tool' ? undefined : toolContentIdentity(row)
       if (
         contentIdentity !== undefined &&
@@ -547,7 +566,7 @@ export function activityRowElement({
       rowClassName: css.rowSummary,
       titleClassName: css.presentation,
       icon: h(StateDot, { state: dotState(row.status) }),
-      title: row.presentation,
+      title: activityTitle(row, t),
       open,
       expandable,
       expandOnRowClick: true,
@@ -674,7 +693,7 @@ export function ActivityRow(props: {
       DisclosureRow,
       {
         className: css.row,
-        title: row.kind === 'plan' ? props.t('activity.tool.plan') : row.presentation,
+        title: row.kind === 'plan' ? props.t('activity.tool.plan') : activityTitle(row, props.t),
         icon: h(StateDot, { state: dotState(row.status) }),
         open,
         expandable: true,
@@ -789,7 +808,7 @@ export function AcpActivityNode(
 }
 
 /** Additive ACP activity renderer. Agent-provided presentation is never translated. */
-export function AcpActivityContent({
+function AcpActivityContent({
   node,
   sessionId,
   journalHub,
@@ -902,7 +921,8 @@ export function nativeActivityToolBlock(
   const raw = detail.rawInput
   const mcp = record(raw) && typeof raw.tool === 'string' && record(raw.arguments)
   let input: unknown = mcp ? raw.arguments : raw
-  let name = typeof detail.toolName === 'string' ? detail.toolName : row.presentation
+  const presentation = translateOutput === undefined ? row.presentation : activityTitle(row, translateOutput)
+  let name = typeof detail.toolName === 'string' ? detail.toolName : presentation
   if (detail.toolSource === 'claude:Edit') name = 'edit'
   else if (detail.toolSource === 'claude:Write') name = 'write'
   if (mcp) name = String(raw.tool)
@@ -920,7 +940,7 @@ export function nativeActivityToolBlock(
       ...(terminal?.cwd === undefined ? {} : { workdir: terminal.cwd }),
       // Native shell results with unknown exit status use the generic body;
       // do not fabricate a successful exit just to obtain a terminal card.
-      ...(terminal?.exitCode === undefined && terminal?.signal === undefined ? {} : { description: row.presentation }),
+      ...(terminal?.exitCode === undefined && terminal?.signal === undefined ? {} : { description: presentation }),
     }
   } else if (diffs.length > 0) {
     name = diffs.every((diff) => diff.oldText === null) ? 'write' : 'edit'
@@ -1017,21 +1037,19 @@ function NativeActivityTool({
   row: AcpActivityView
   t: ActivityNodeProps['t']
 }): ReactNode {
-  const block = useMemo(
-    () =>
-      nativeActivityToolBlock(
-        row,
-        t('activity.externalAgent'),
-        (status) => {
-          const statusKey =
-            status === 'running' || status === 'completed' || status === 'failed' || status === 'cancelled'
-              ? status
-              : 'unfinished'
-          return t(`activity.externalAgentStatus.${statusKey}` as AcpLocaleKey)
-        },
-        t,
-      ),
-    [row, t],
+  // locale.bind() keeps its identity when the language changes. Resolve this
+  // presentation on every render; the disclosure owner below remains stable.
+  const block = nativeActivityToolBlock(
+    row,
+    t('activity.externalAgent'),
+    (status) => {
+      const statusKey =
+        status === 'running' || status === 'completed' || status === 'failed' || status === 'cancelled'
+          ? status
+          : 'unfinished'
+      return t(`activity.externalAgentStatus.${statusKey}` as AcpLocaleKey)
+    },
+    t,
   )
   const props: NativeToolOwner = {
     ...nativeOwner(owner),

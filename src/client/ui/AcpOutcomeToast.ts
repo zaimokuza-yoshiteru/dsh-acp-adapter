@@ -13,6 +13,16 @@ const copy: Record<AcpUiOutcome, AcpLocaleKey> = {
   'delete-failed': 'toastProfileDeleteFailed',
   'session-option-failed': 'actionSaveFailed',
   'tool-approval-failed': 'toolApprovalChangeFailed',
+  'fork-failed': 'nativeForkFailed',
+  'fork-workspace-attach-failed': 'nativeForkWorkspaceAttachFailed',
+  'fork-storage-failed': 'nativeForkStorageFailed',
+  'fork-access-denied': 'nativeForkAccessDenied',
+  'fork-unavailable': 'nativeForkUnavailable',
+  'fork-invalid-seed': 'nativeForkInvalidSeed',
+  'fork-source-conflict': 'nativeForkSourceConflict',
+  'fork-child-bound': 'nativeForkChildBound',
+  'fork-source-unavailable': 'nativeForkSourceUnavailable',
+  'fork-child-changed': 'nativeForkChildChanged',
 }
 
 export function AcpOutcomeToast({

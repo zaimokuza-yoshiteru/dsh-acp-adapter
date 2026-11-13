@@ -501,6 +501,18 @@ it('allows reading a window from a huge file but rejects whole-file reads that e
     expect(res.content.split('\n')).toHaveLength(10)
     // full read should fail with line limits exceeded
     await expect(handlers.readTextFile({ sessionId: 'acp-1', path: file })).rejects.toThrow(/line limits exceeded/)
+    // A sentinel limit asks for the same oversized window; it must fail too, not return a shortened file.
+    await expect(
+      handlers.readTextFile({ sessionId: 'acp-1', path: file, line: 1, limit: Number.MAX_SAFE_INTEGER }),
+    ).rejects.toThrow(/line limits exceeded/)
+    // The same sentinel is fine once the remaining window fits.
+    const tail = await handlers.readTextFile({
+      sessionId: 'acp-1',
+      path: file,
+      line: 11,
+      limit: Number.MAX_SAFE_INTEGER,
+    })
+    expect(tail.content.split('\n')).toHaveLength(ACP_FS_MAX_LINES)
   } finally {
     handlers.dispose()
     fs.rmSync(dir, { recursive: true, force: true })

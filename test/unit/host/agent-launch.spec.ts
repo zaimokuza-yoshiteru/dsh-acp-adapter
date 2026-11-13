@@ -141,7 +141,7 @@ describe('Codex subprocess loopback MCP routing', () => {
     )
   })
 
-  it.each(['devin', 'claude', 'kimi', 'codebuddy', undefined] as const)(
+  it.each(['devin', 'claude', 'codebuddy', undefined] as const)(
     'leaves runtime %s environment unchanged',
     async (runtime) => {
       vi.stubEnv('NO_PROXY', 'parent.internal')

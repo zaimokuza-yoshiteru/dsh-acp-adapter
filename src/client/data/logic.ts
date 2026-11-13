@@ -12,16 +12,11 @@ import { catalogEntryOf } from './catalog.ts'
 // Shared profile shape and runtime binding rules; no imports of host implementations.
 
 import { ACP_AGENT_ID_PATTERN, effectiveRuntimeOf, catalogIdOf } from '../../contract/agent-config.ts'
-import type { AcpAgentConfig, AcpAgentId as AcpAgentRuntimeId } from '../../contract/agent-config.ts'
+import type { AcpAgentConfig, AcpConfiguredRuntime } from '../../contract/agent-config.ts'
 import { ACP_AGENT_CONFIG_STATES } from '../../contract/remote.ts'
 import type { AcpAgentConfigState } from '../../contract/remote.ts'
-export {
-  ACP_AGENT_IDS as ACP_AGENT_RUNTIME_IDS,
-  ACP_AGENT_ID_PATTERN,
-  ACP_SETTINGS_NS,
-  effectiveRuntimeOf,
-} from '../../contract/agent-config.ts'
-export type { AcpAgentConfig, AcpAgentId as AcpAgentRuntimeId } from '../../contract/agent-config.ts'
+export { ACP_AGENT_ID_PATTERN, ACP_SETTINGS_NS, effectiveRuntimeOf } from '../../contract/agent-config.ts'
+export type { AcpAgentConfig } from '../../contract/agent-config.ts'
 export type { AcpAgentConfigState } from '../../contract/remote.ts'
 
 /** Resolved `dsh-acp-adapter` settings section. */
@@ -39,7 +34,7 @@ export const ACP_ENV_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/
  * `maskedEnv` and are preserved on save unless explicitly replaced or removed.
  * This display rule does not control the Host subprocess environment.
  */
-export const ACP_SECRET_ENV_KEY_PATTERN = /KEY|PASSWORD|SECRET|TOKEN/i
+const ACP_SECRET_ENV_KEY_PATTERN = /KEY|PASSWORD|SECRET|TOKEN/i
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
@@ -72,7 +67,7 @@ export interface AgentDraft {
    * 字段，但保存时必须挂回——否则面板保存会静默解除 runtime 绑定。
    * 仅「编辑存量 agent 且其配置带 runtime」路径携带本字段。
    */
-  runtime?: AcpAgentRuntimeId
+  runtime?: AcpConfiguredRuntime
   catalogId?: string
 }
 
@@ -421,6 +416,7 @@ export interface AcpProviderHealth {
   version: string | null
   /** Configuration state derived by the Host. */
   state: AcpAgentConfigState
+  unavailableReason?: 'agent-retired'
   probe:
     | { status: 'never'; at: null }
     | {
@@ -449,6 +445,15 @@ export interface AcpProviderHealth {
  * payload is refused (undefined) rather than partially shown when any row
  * violates the contract.
  */
+/** The Host version mismatch of a health payload; anything malformed reads as none. */
+export function decodeHostVersionMismatch(body: unknown): { required: string; running: string } | undefined {
+  if (!isPlainObject(body) || !isPlainObject(body['hostVersion'])) return undefined
+  const { required, running } = body['hostVersion']
+  return typeof required === 'string' && typeof running === 'string' && required !== '' && running !== ''
+    ? { required, running }
+    : undefined
+}
+
 export function decodeHealthResponse(body: unknown): readonly AcpProviderHealth[] | undefined {
   if (!isPlainObject(body)) return undefined
   const providers = body['providers']
@@ -464,7 +469,10 @@ export function decodeHealthResponse(body: unknown): readonly AcpProviderHealth[
 
 function decodeHealthRow(raw: unknown): AcpProviderHealth | undefined {
   if (!isPlainObject(raw)) return undefined
-  const { id, name, command, args, loginHint, executable, version, state, probe } = raw as Record<string, unknown>
+  const { id, name, command, args, loginHint, executable, version, state, probe, unavailableReason } = raw as Record<
+    string,
+    unknown
+  >
   if (typeof id !== 'string' || typeof name !== 'string' || typeof command !== 'string') return undefined
   if (!Array.isArray(args) || !args.every((arg) => typeof arg === 'string')) return undefined
   if (!(typeof loginHint === 'string' || loginHint === null)) return undefined
@@ -472,6 +480,7 @@ function decodeHealthRow(raw: unknown): AcpProviderHealth | undefined {
   if (!(typeof version === 'string' || version === null)) return undefined
   // 五态：词表外一律整行拒绝（health 响应整体失格，与 decodeHealthResponse 口径一致）
   if (typeof state !== 'string' || !(ACP_AGENT_CONFIG_STATES as readonly string[]).includes(state)) return undefined
+  if (unavailableReason !== undefined && unavailableReason !== 'agent-retired') return undefined
   const probeRow = decodeProbeRow(probe)
   if (probeRow === undefined) return undefined
   return {
@@ -484,6 +493,7 @@ function decodeHealthRow(raw: unknown): AcpProviderHealth | undefined {
     version,
     state: state as AcpAgentConfigState,
     probe: probeRow,
+    ...(unavailableReason === undefined ? {} : { unavailableReason }),
   }
 }
 

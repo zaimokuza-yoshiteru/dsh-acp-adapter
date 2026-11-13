@@ -1,8 +1,5 @@
 /**
- * @zaimokuza/dsh-acp-adapter host entry, root face（package.json `exports["."]` →
- * lib/index.js，不能变）。 分层起瘦身为组合根 re-export：插件入口面在
- * src/host/composition/，ACP 路由由 per-profile provider composition 注册，
- * 不替换 DSH 原生 AgentLoop、ModelPicker 或 Chat。
+ * Public Host plugin entry; profile providers are registered by the composition root.
  * @module @zaimokuza/dsh-acp-adapter
  */
 

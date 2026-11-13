@@ -1,31 +1,9 @@
 /**
- * Client bundle build: emits lib/client.js in the exact shape the dsh module
- * loader consumes — a `window.__ModuleLoader__.load({ id, factory })`
- * registration whose factory resolves externals through the injected `require`
- * (loader module table, no globals). The wrapper form is verified against the reference
- * preset: reference/deepseek-harness/packages/client/tsdown.client.ts
- * (replicated locally because the preset is not a public package export).
- *
- * Alignment with the checked-in DSH web platform snapshot:
- * - The banner id IS the package.json name (the loader keys registrations by
- * package name; the package name is read live below.
- * - `sourcemap: true` — the host serves /plugins/<id>/client.js.map
- *   (packages/client/modules/src/index.ts map route).
- * - The external set is exactly the platform snapshot (PLATFORM_MODULES +
- *   PRELOADED_CLIENT_EXTERNALS from packages/client/web/src/platform.ts)
- *   plus this package's own `dsh.client.external` requests; everything else
- *   inlines (alwaysBundle) so no require() lands on a row the module table
- *   cannot answer.
- * - The define triple (process.env.NODE_ENV / import.meta.env.MODE /
- *   import.meta.env) keeps node-idiom deps (zustand/immer class) bootable in
- *   a CJS browser bundle.
- * - The dsh-client-bundle-purity plugin mirrors the preset's build-time gate:
- *   an @deepseek-ai/* value import that is neither a requested module-table
- *   row nor an inline-safe wire layer (or vendored/generated contribution)
- *   fails the build — cross-plugin collaboration goes through cordis services.
- * - The dsh-css-modules-inline plugin replicates the preset's
- *   `.module.css` arm: lightningcss-compiled hashed classes, one tagged
- *   `<style data-plugin>` injection per sheet at factory execution.
+ * Browser bundle compatible with the DSH module loader. The official preset at
+ * packages/client/tsdown.client.ts is not a public package export, so its loader
+ * wrapper, inline CSS and bundle-purity gates are maintained here. The external
+ * module table comes from scripts/dsh-platform-snapshot.ts and is checked by
+ * verify-dsh-reference.ts against the pinned source scaffold.
  */
 import { readFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'

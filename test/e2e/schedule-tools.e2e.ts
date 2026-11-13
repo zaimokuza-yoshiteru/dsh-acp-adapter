@@ -14,7 +14,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect, it, vi } from 'vitest'
 
-const TOOLS = ['schedule_create', 'schedule_list', 'schedule_update', 'schedule_delete'] as const
+const TOOLS = ['schedule_create', 'schedule_list', 'schedule_view', 'schedule_edit'] as const
 
 async function setup() {
   let host: AdapterWorld | undefined
@@ -81,13 +81,29 @@ it('discovers and calls all four native Schedule tools through the ACP session M
     expect(fixture.records.map((record) => record.name)).toEqual([
       'schedule_create',
       'schedule_list',
-      'schedule_update',
+      'schedule_view',
+      'schedule_edit',
       'schedule_list',
-      'schedule_delete',
+      'schedule_edit',
     ])
-    expect(fixture.records[0]?.result).toMatchObject({ title: 'ACP CRUD fixture', kind: 'after' })
-    expect(fixture.records[2]?.result).toMatchObject({ title: 'ACP updated fixture' })
-    expect(fixture.records[4]?.result).toMatchObject({ deleted: true })
+    const created = required(fixture.records[0]).result
+    expect(created).toMatchObject({
+      title: 'ACP CRUD fixture',
+      kind: 'rrule',
+      target: { kind: 'session', sessionId },
+    })
+    expect(fixture.records[2]?.result).toMatchObject({ id: created.id, title: 'ACP CRUD fixture' })
+    expect(fixture.records[3]?.result).toMatchObject({
+      id: created.id,
+      title: 'ACP updated fixture',
+      target: { kind: 'session', sessionId },
+    })
+    expect(fixture.records[4]?.result).toMatchObject({
+      items: expect.arrayContaining([expect.objectContaining({ id: created.id, title: 'ACP updated fixture' })]),
+      shown: expect.any(Number),
+      total: expect.any(Number),
+    })
+    expect(fixture.records[5]?.result).toMatchObject({ id: created.id, deleted: true })
 
     const lead = required(host.ctx.agents.get(sessionId))
     expect(TOOLS.every((name) => host.ctx.tools.get(name, lead) !== undefined)).toBe(true)
@@ -104,28 +120,35 @@ it('discovers and calls all four native Schedule tools through the ACP session M
     // refuses delegated callers before reading or mutating the Schedule store.
     const beforeRefusedCalls = await host.ctx.schedule.catalog()
     for (const [name, args] of [
-      ['schedule_create', { title: 'Refused teammate reminder', prompt: 'never create this', after_seconds: 60 }],
+      [
+        'schedule_create',
+        {
+          title: 'Refused teammate reminder',
+          prompt: 'never create this',
+          rrule: 'DTSTART:20990101T000000Z\nRRULE:FREQ=DAILY;COUNT=1',
+          target: 'this_session',
+        },
+      ],
       ['schedule_list', {}],
-      ['schedule_update', { id: 'foreign-task', title: 'never update this' }],
-      ['schedule_delete', { id: 'foreign-task' }],
+      ['schedule_view', { id: 'foreign-task' }],
+      ['schedule_edit', { id: 'foreign-task', action: 'update', title: 'never update this' }],
+      ['schedule_edit', { id: 'foreign-task', action: 'delete' }],
     ] as const) {
       expect(host.ctx.tools.get(name, teammate)).toBeDefined()
-      const refused = await host.ctx.tools.execute({
-        callId: ToolCallId(`schedule-child-${name}`),
-        name,
-        arguments: args,
-        agent: teammate,
-        signal: new AbortController().signal,
-      })
+      const refused = await host.ctx.tools
+        .execute({
+          calls: [
+            { type: 'tool-call', id: ToolCallId(`schedule-child-${name}`), name, arguments: JSON.stringify(args) },
+          ],
+          agent: teammate,
+          signal: new AbortController().signal,
+        })
+        .then((batch) => required(batch.results[0]).result)
       expect(refused.isError).toBe(false)
       expect(refused.value).toMatchObject({ code: 'subagent_session' })
     }
     expect(await host.ctx.schedule.catalog()).toEqual(beforeRefusedCalls)
-    expect(
-      (await host.ctx.schedule.catalog()).some(
-        (task) => task.sessionId === sessionId && task.title === 'ACP updated fixture',
-      ),
-    ).toBe(false)
+    expect((await host.ctx.schedule.catalog()).some((task) => task.id === created.id)).toBe(false)
   } finally {
     try {
       await browser.close()
@@ -143,18 +166,27 @@ it('delivers reminders into the owning ACP Session while idle and while a turn i
     const idleTask = await vi.waitFor(
       async () => {
         const found = (await host.ctx.schedule.catalog()).find(
-          (task) => task.sessionId === idleSessionId && task.title === 'ACP idle delivery',
+          (task) =>
+            task.target.kind === 'session' &&
+            task.target.sessionId === idleSessionId &&
+            task.title === 'ACP idle delivery',
         )
         expect(found?.lastDelivery).toBeDefined()
         return required(found)
       },
       { timeout: 15_000, interval: 100 },
     )
-    expect(idleTask.lastDelivery).toMatchObject({ scheduledAt: expect.any(String), deliveredAt: expect.any(String) })
-    const idleHistory = await host.ctx.schedule.history({ id: idleTask.id, sessionId: idleSessionId, limit: 5 })
+    expect(idleTask.lastDelivery).toMatchObject({
+      scheduledAt: expect.any(String),
+      deliveredAt: expect.any(String),
+      targetSessionId: idleSessionId,
+    })
+    // History is task-wide in RC.1; the receipt, not the caller/creator, names
+    // the Session that actually acknowledged this delivery.
+    const idleHistory = await host.ctx.schedule.history({ id: idleTask.id, limit: 5 })
     expect(idleHistory).toMatchObject({
       id: idleTask.id,
-      records: [expect.objectContaining({ prompt: 'E2E_SCHEDULE_DELIVERY_IDLE' })],
+      records: [expect.objectContaining({ prompt: 'E2E_SCHEDULE_DELIVERY_IDLE', targetSessionId: idleSessionId })],
     })
     await page.getByText('E2E_SCHEDULE_DELIVERED_IDLE', { exact: true }).waitFor()
     const fixtureRows = readFileSync(fixtureLog, 'utf8')
@@ -169,7 +201,7 @@ it('delivers reminders into the owning ACP Session while idle and while a turn i
       prompt: expect.stringContaining('E2E_SCHEDULE_DELIVERY_IDLE'),
     })
     expect(idleDelivery[0]?.prompt).toContain('This is a scheduled message from the user')
-    const idleConversation = page.locator(`[data-conversation-session="${idleTask.sessionId}"]`)
+    const idleConversation = page.locator(`[data-conversation-session="${idleSessionId}"]`)
     await idleConversation.getByText('E2E_SCHEDULE_DELIVERED_IDLE', { exact: true }).waitFor()
 
     const activeSettled = send('E2E_SCHEDULE_ACTIVE')
@@ -185,7 +217,10 @@ it('delivers reminders into the owning ACP Session while idle and while a turn i
     const activeTask = await vi.waitFor(
       async () => {
         const found = (await host.ctx.schedule.catalog()).find(
-          (task) => task.sessionId === activeSessionId && task.title === 'ACP active delivery',
+          (task) =>
+            task.target.kind === 'session' &&
+            task.target.sessionId === activeSessionId &&
+            task.title === 'ACP active delivery',
         )
         expect(found?.lastDelivery).toBeDefined()
         expect(activeLead.status).toBe('running')
@@ -193,11 +228,12 @@ it('delivers reminders into the owning ACP Session while idle and while a turn i
       },
       { timeout: 15_000, interval: 100 },
     )
-    expect(activeTask.sessionId).toBe(activeSessionId)
-    const activeHistory = await host.ctx.schedule.history({ id: activeTask.id, sessionId: activeSessionId, limit: 5 })
+    expect(activeTask.target).toEqual({ kind: 'session', sessionId: activeSessionId })
+    expect(activeTask.lastDelivery).toMatchObject({ targetSessionId: activeSessionId })
+    const activeHistory = await host.ctx.schedule.history({ id: activeTask.id, limit: 5 })
     expect(activeHistory).toMatchObject({
       id: activeTask.id,
-      records: [expect.objectContaining({ prompt: 'E2E_SCHEDULE_DELIVERY_ACTIVE' })],
+      records: [expect.objectContaining({ prompt: 'E2E_SCHEDULE_DELIVERY_ACTIVE', targetSessionId: activeSessionId })],
     })
     expect(activeLead.status).toBe('running')
     expect(await activeSettled).toBe(activeSessionId)
@@ -215,7 +251,7 @@ it('delivers reminders into the owning ACP Session while idle and while a turn i
       prompt: expect.stringContaining('E2E_SCHEDULE_DELIVERY_ACTIVE'),
     })
     expect(activeDelivery[0]?.prompt).toContain('This is a scheduled message from the user')
-    const activeConversation = page.locator(`[data-conversation-session="${activeTask.sessionId}"]`)
+    const activeConversation = page.locator(`[data-conversation-session="${activeSessionId}"]`)
     await activeConversation.getByText('E2E_SCHEDULE_DELIVERED_ACTIVE', { exact: true }).waitFor()
   } finally {
     try {
@@ -240,9 +276,8 @@ it('preserves a pending Schedule task when the native plugin is disabled and rem
       )
     const persistLog = required(log.findLast((item) => item.scenario === 'E2E_SCHEDULE_PERSIST'))
     const taskId = String(required(persistLog.records?.[0]).result.id)
-    const pendingTask = required(
-      (await host.ctx.schedule.catalog()).find((task) => task.id === taskId && task.sessionId === recoverySessionId),
-    )
+    const pendingTask = required((await host.ctx.schedule.catalog()).find((task) => task.id === taskId))
+    expect(pendingTask.target).toEqual({ kind: 'session', sessionId: recoverySessionId })
     const scheduledAt = Date.parse(pendingTask.scheduledAt)
     expect(scheduledAt).toBeGreaterThan(Date.now())
     const scheduleManager = host.ctx.pluginManager
@@ -252,7 +287,7 @@ it('preserves a pending Schedule task when the native plugin is disabled and rem
     expect(plugin).toMatchObject({ enabled: true, patchId: 'schedule' })
     expect(plugin.readOnlyReason).toBeUndefined()
     const lead = required(host.ctx.agents.get(recoverySessionId))
-    const staleDelete = required(host.ctx.tools.get('schedule_delete', lead))
+    const staleEdit = required(host.ctx.tools.get('schedule_edit', lead))
     const lease = required(
       await createDshToolBridge(
         host.ctx,
@@ -274,17 +309,15 @@ it('preserves a pending Schedule task when the native plugin is disabled and rem
       lease.beginPrompt(new AbortController().signal)
       expect(await scheduleManager.setPluginEnabled(plugin.entryId, false)).toMatchObject({ application: 'applied' })
       await vi.waitFor(() => expect(host.ctx.get('schedule')).toBeUndefined())
-      // Removing a captured tool closes the bridge's entire capability lease;
-      // the old client cannot query a smaller catalog or dispatch another call.
-      expect(lease.signal.aborted).toBe(true)
-      expect(lease.signal.reason).toMatchObject({ message: 'ACP DSH tools connection closed' })
-      // Native invalidation has already started close; await its idempotent
-      // completion rather than racing the transport teardown.
-      await lease.close()
-      await expect(client.listTools()).rejects.toMatchObject({ cause: { code: 'ECONNREFUSED' } })
-      await expect(client.callTool({ name: 'schedule_delete', arguments: { id: taskId } })).rejects.toMatchObject({
-        cause: { code: 'ECONNREFUSED' },
-      })
+      // Withdrawn tools become unavailable at once; the connection keeps serving
+      // the tools that remain and does not cancel their accepted work.
+      expect(lease.signal.aborted).toBe(false)
+      const remaining = (await client.listTools()).tools.map((tool) => tool.name)
+      expect(remaining.length).toBeGreaterThan(0)
+      for (const name of TOOLS) expect(remaining).not.toContain(name)
+      expect(
+        await client.callTool({ name: 'schedule_edit', arguments: { id: taskId, action: 'delete' } }),
+      ).toMatchObject({ isError: true, content: [{ type: 'text', text: 'ACP_TEAM_TOOL_UNAVAILABLE' }] })
     } finally {
       lease.endPrompt()
       try {
@@ -294,12 +327,12 @@ it('preserves a pending Schedule task when the native plugin is disabled and rem
       }
     }
     expect(TOOLS.map((name) => host.ctx.tools.get(name, lead))).toEqual([undefined, undefined, undefined, undefined])
-    const staleArgs = { id: 'schedule-stale-tool-after-disable' }
-    const staleResult = await staleDelete.execute(staleArgs, {
+    const staleArgs = { id: 'schedule-stale-tool-after-disable', action: 'delete' }
+    const staleResult = await staleEdit.execute(staleArgs, {
       callId: ToolCallId('schedule-stale-call'),
       rootCallId: ToolCallId('schedule-stale-call'),
       token: Symbol('schedule-stale-tool-after-disable') as ToolExecutionToken,
-      name: 'schedule_delete',
+      name: 'schedule_edit',
       arguments: staleArgs,
       agent: lead,
       signal: new AbortController().signal,
@@ -331,13 +364,21 @@ it('preserves a pending Schedule task when the native plugin is disabled and rem
     const recovered = required((await host.ctx.schedule.catalog()).find((task) => task.id === taskId))
     expect(recovered).toMatchObject({
       id: taskId,
-      sessionId: recoverySessionId,
+      target: { kind: 'session', sessionId: recoverySessionId },
       title: pendingTask.title,
       prompt: pendingTask.prompt,
       scheduledAt: pendingTask.scheduledAt,
     })
     expect(Date.parse(required(recovered.lastDelivery).deliveredAt)).toBeGreaterThanOrEqual(disabledAt)
-    const recoveryConversation = page.locator(`[data-conversation-session="${recovered.sessionId}"]`)
+    expect(recovered.lastDelivery).toMatchObject({ targetSessionId: recoverySessionId })
+    const recoveryHistory = await host.ctx.schedule.history({ id: recovered.id, limit: 5 })
+    expect(recoveryHistory).toMatchObject({
+      id: recovered.id,
+      records: [
+        expect.objectContaining({ prompt: 'E2E_SCHEDULE_DELIVERY_ACTIVE', targetSessionId: recoverySessionId }),
+      ],
+    })
+    const recoveryConversation = page.locator(`[data-conversation-session="${recoverySessionId}"]`)
     await recoveryConversation.getByText('E2E_SCHEDULE_DELIVERED_ACTIVE', { exact: true }).waitFor()
     const recoveryRows = readFileSync(fixtureLog, 'utf8')
       .trim()

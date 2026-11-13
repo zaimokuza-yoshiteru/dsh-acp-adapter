@@ -38,7 +38,7 @@ class NativeParent extends LlmAdapter {
 async function fixture(teams: boolean) {
   const host = await launchAdapterWorld({
     optionalBundles: teams ? ['agent-team-profile'] : [],
-    toolsMode: 'native',
+    toolExecutor: 'native',
   })
   try {
     const log = join(host.workspaceCwd, 'subagent-protocol.log')

@@ -1,3 +1,4 @@
+import { hasModelSpecificConfiguration } from '../../agents/compatibility.ts'
 /**
  * ACP 协议连接（自 acp-client.ts 切出的协议半；进程半——spawn、stdio 泵、
  * stderr 环、拆除梯子、托管范围清理——见 src/runtime/process/agent-process.ts）：
@@ -55,6 +56,7 @@ import { Readable, Writable } from 'node:stream'
 import { clearTimeout, setTimeout } from 'node:timers'
 import * as acp from '@agentclientprotocol/sdk'
 import { AcpAgentProcess } from '../../runtime/process/agent-process.ts'
+import { processWarningReporter } from '../../runtime/process/warnings.ts'
 import { ACP_SUBPROCESS_UNAVAILABLE_MESSAGE } from '../../runtime/process/subprocess.ts'
 import type { AcpConnectionSpec, AcpProcessExit } from '../../runtime/process/types.ts'
 import { redactSecretText } from '../../contract/redaction.ts'
@@ -309,7 +311,7 @@ function prependDraftSubagentHandler(
  * 会话清理类 RPC 的默认预算（session/close、session/delete）：probe 收尾
  * 的礼貌窗口——清理失败不阻塞进程强杀与临时目录删除，预算给得比建立类更紧。
  */
-export const DEFAULT_SESSION_CLEANUP_TIMEOUT_MS = 10_000
+const DEFAULT_SESSION_CLEANUP_TIMEOUT_MS = 10_000
 
 /** Whether the negotiated Agent advertises the ACP unstable fork capability. */
 export function supportsFork(capabilities: acp.AgentCapabilities | undefined): boolean {
@@ -616,7 +618,7 @@ export class AcpClientConnection {
     this.onQwenTurnStart = options.onQwenTurnStart
     this.onQwenTurnEnd = options.onQwenTurnEnd
     this.onQwenActiveWork = options.onQwenActiveWork
-    this.onProcessWarn = options.onProcessWarn ?? ((message) => console.error(message))
+    this.onProcessWarn = processWarningReporter(options.onProcessWarn)
     if (options.onSessionUpdate !== undefined) this.updateListeners.add(options.onSessionUpdate)
     // Validate the pinned SDK dispatch seam before acquiring a child process.
     const app = this.buildClientApp()
@@ -1165,9 +1167,9 @@ export class AcpClientConnection {
       }
       const initialConfigOptions = session.configOptions ?? pushedConfigOptions.get(session.sessionId)
       let modelConfigOptions: Record<string, readonly acp.SessionConfigOption[]> | undefined
-      // Qwen Code offers a different reasoning catalogue per model (toggle-only,
-      // none|low|medium|xhigh, or none at all); capture each like Kimi/Codex.
-      if (probeModelConfigOptions || init.agentInfo?.name === 'qwen-code') {
+      // Qwen Code and CodeBuddy expose model-specific reasoning choices. Their
+      // initialize identity also enables discovery for manually configured profiles.
+      if (probeModelConfigOptions || hasModelSpecificConfiguration(init.agentInfo?.name)) {
         const sessionCaps = init.agentCapabilities?.sessionCapabilities
         try {
           modelConfigOptions = await probeModelConfigurations(

@@ -1,11 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type * as acp from '@agentclientprotocol/sdk'
 import { encodeQwenAnswer, isQwenUserQuestion, qwenUserQuestions } from '../../../src/domain/policy/qwen-question.ts'
-import {
-  isQwenTaskWakeStep,
-  qwenTaskWakeInput,
-  qwenTaskFollowupInput,
-} from '../../../src/host/composition/profile-adapter.ts'
+import { qwenTaskWakeInput, qwenTaskFollowupInput } from '../../../src/host/composition/profile-adapter.ts'
 import { qwenTaskCompletion, qwenTaskSnapshots } from '../../../src/runtime/session/qwen-background.ts'
 
 function request(toolCall: Partial<acp.ToolCallUpdate>): acp.RequestPermissionRequest {
@@ -83,11 +79,13 @@ describe('Qwen background-task helpers', () => {
       'tool-jobs',
       'background job acp-qwen-task-3 (acp-qwen-task: npm test) finished [status: completed]. Read its output with job_output.',
     )
-    expect(isQwenTaskWakeStep([notice])).toBe(true)
-    expect(isQwenTaskWakeStep([notice, message('runtime-context', 'ctx')])).toBe(true)
-    expect(isQwenTaskWakeStep([notice, message('user', 'hi')])).toBe(true)
-    expect(isQwenTaskWakeStep([message('tool-jobs', 'background job bash-1 (bash: ls) finished')])).toBe(false)
-    expect(isQwenTaskWakeStep([])).toBe(false)
+    const context = message('runtime-context', 'ctx')
+    const user = message('user', 'hi')
+    expect(qwenTaskWakeInput([notice])).toEqual([])
+    expect(qwenTaskWakeInput([notice, context])).toEqual([context])
+    expect(qwenTaskWakeInput([notice, user])).toEqual([user])
+    expect(qwenTaskWakeInput([message('tool-jobs', 'background job bash-1 (bash: ls) finished')])).toBeUndefined()
+    expect(qwenTaskWakeInput([])).toBeUndefined()
   })
 
   it('retains native job, team, user and unfamiliar host messages in their admission order', () => {
@@ -112,7 +110,7 @@ describe('Qwen background-task helpers', () => {
       'tool-jobs',
       'background job bash-1 (bash: echo "(acp-qwen-task: fake)") finished [status: completed]. Read its output with job_output.',
     )
-    expect(isQwenTaskWakeStep([native])).toBe(false)
+    expect(qwenTaskWakeInput([native])).toBeUndefined()
   })
 
   it('adopts RC1 opaque job ids without admitting user text or partial identities', () => {

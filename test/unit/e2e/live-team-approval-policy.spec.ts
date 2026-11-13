@@ -1,3 +1,4 @@
+import { NativeToolExecutor } from '@deepseek-ai/dsh-tool-executor-native'
 import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -38,6 +39,7 @@ async function fixture() {
   await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(SandboxPolicyService, { mode: 'danger-full-access' })
   await ctx.plugin(ToolRuntime)
+  ctx.tools.setExecutor(new NativeToolExecutor(ctx))
   await ctx.plugin(ApprovalService, { policy: 'ask' })
   const executed: { command: string; sandboxPolicy: { mode: string } }[] = []
   const shell = {
@@ -84,13 +86,13 @@ async function fixture() {
   const install = () => installLiveTeamApprovalPolicy(ctx, { lead, memberName: 'permission-review', command, token })
   const announce = (candidate = member) => ctx.serial('agent/created', { agent: candidate, source: 'startup' })
   const call = (candidate: Agent, callArgs: unknown = args, callId = 'native-bash') =>
-    ctx.tools.execute({
-      name: 'bash',
-      arguments: callArgs,
-      callId: ToolCallId(callId),
-      agent: candidate,
-      signal: new AbortController().signal,
-    })
+    ctx.tools
+      .execute({
+        calls: [{ type: 'tool-call', id: ToolCallId(callId), name: 'bash', arguments: JSON.stringify(callArgs) }],
+        agent: candidate,
+        signal: new AbortController().signal,
+      })
+      .then((batch) => batch.results[0]!.result)
   return { ctx, lead, member, unrelated, shell, executed, install, announce, call }
 }
 

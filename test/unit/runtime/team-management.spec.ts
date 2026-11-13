@@ -6,6 +6,8 @@ function fixture(provider = 'acp-devin') {
   const session = (model: string) => ({ requestHeader: () => ({ config: { model, provider } }) })
   const lead = { id: 'lead', session: session('lead-current'), options: { provider, model: 'lead-old' } }
   const child = { id: 'child', session: session('child-current'), options: { provider, model: 'child-old' } }
+  Object.assign(lead, { model: { current: () => lead.session.requestHeader().config } })
+  Object.assign(child, { model: { current: () => child.session.requestHeader().config } })
   const rows = [
     { id: 'lead', name: 'lead', role: 'lead', provider, status: 'inactive' },
     {

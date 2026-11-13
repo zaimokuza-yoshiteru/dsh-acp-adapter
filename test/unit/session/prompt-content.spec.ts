@@ -7,6 +7,7 @@ import {
   skillRouteForTools,
   toAcpPrompt,
   validImageLimits,
+  undeliveredHistoryText,
 } from '../../../src/domain/session/prompt-content.ts'
 
 const limits = {
@@ -462,5 +463,46 @@ describe('prompt content conversion', () => {
     expect(validImageLimits(limits)).toBe(true)
     expect(validImageLimits({ ...limits, maxImageBytes: 0 })).toBe(false)
     expect(validImageLimits({ ...limits, mediaTypes: ['text/plain'] as never })).toBe(false)
+  })
+})
+
+describe('undelivered conversation for a first Agent session', () => {
+  const message = (role: 'user' | 'assistant', id: string, text: string, kind = 'user') =>
+    ({ role, id, source: { kind }, content: [{ type: 'text', text }] }) as never
+
+  it('keeps user and assistant text in order and excludes current input and host-supplied context', () => {
+    const current = message('user', 'now', 'present input')
+    const text = undeliveredHistoryText(
+      [current],
+      [
+        message('user', 'i', 'AGENTS rules', 'agent-instructions'),
+        message('user', 'c', 'runtime facts', 'runtime-context'),
+        message('user', 'a', 'first question'),
+        message('assistant', 'b', 'relayed answer'),
+        { role: 'tool', id: 't', content: [{ type: 'text', text: 'tool output' }] } as never,
+        current,
+      ],
+    )
+    expect(text).toContain('[User]\nfirst question\n\n[Assistant]\nrelayed answer')
+    for (const absent of ['AGENTS rules', 'runtime facts', 'tool output', 'present input'])
+      expect(text).not.toContain(absent)
+  })
+
+  it('returns nothing when only the current input exists', () => {
+    const current = message('user', 'now', 'present input')
+    expect(undeliveredHistoryText([current], [current])).toBeUndefined()
+  })
+
+  it('names attachments it cannot carry and keeps the newest entries within the bound', () => {
+    const image = { role: 'user', id: 'img', source: { kind: 'user' }, content: [{ type: 'image' }] } as never
+    expect(undeliveredHistoryText([], [image])).toContain('[image attachment not included]')
+    const many = Array.from({ length: 12 }, (_, index) =>
+      message('user', `m${index}`, `${index}:${'x'.repeat(11_000)}`),
+    )
+    const text = undeliveredHistoryText([], many)!
+    expect(text).toContain('earlier message(s) omitted')
+    expect(text).toContain('11:')
+    expect(text).not.toContain('\n0:')
+    expect(text.length).toBeLessThan(70_000)
   })
 })

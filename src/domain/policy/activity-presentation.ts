@@ -10,7 +10,7 @@ export const activityPresentationSchema = z.object({
 export type AcpActivityPresentation = z.infer<typeof activityPresentationSchema>
 
 /** Bound one presentation atomically; truncated file sides must never become a diff. */
-export const ACTIVITY_PRESENTATION_BYTES = 2 * 1024 * 1024
+const ACTIVITY_PRESENTATION_BYTES = 2 * 1024 * 1024
 
 export function boundedActivityPresentation(value: AcpActivityPresentation): AcpActivityPresentation {
   return new TextEncoder().encode(JSON.stringify(value)).byteLength > ACTIVITY_PRESENTATION_BYTES

@@ -1,3 +1,5 @@
+import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
+import { NativeToolExecutor } from '@deepseek-ai/dsh-tool-executor-native'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import AgentRegistry, { type Agent } from '@deepseek-ai/dsh-agent'
@@ -14,6 +16,7 @@ import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { AcpProfileAdapter } from '../../../src/host/composition/profile-adapter.ts'
+import { ACP_CURRENT_CONFIG_MODEL_ID } from '../../../src/contract/model-selection.ts'
 import { createDshToolBridge } from '../../../src/host/tools/bridge.ts'
 import type { AcpSidecar } from '../../../src/persistence/sidecar.ts'
 import type { DispatchLedgerStore, DispatchRecord } from '../../../src/runtime/session/dispatch-ledger.ts'
@@ -46,14 +49,17 @@ interface RuntimeState {
   prompts: unknown[]
 }
 
-async function harness() {
+async function harness(settings: { routeModel?: string; exposeModelConfig?: boolean } = {}) {
+  const routeModel = settings.routeModel ?? 'model-a'
   const ctx = new Context()
   const fibers = [
     await ctx.plugin(LlmRuntime),
     await ctx.plugin(SystemPrompt, {}),
     await ctx.plugin(ToolRuntime),
+    await ctx.plugin(SessionProjectionRegistry),
     await ctx.plugin(AgentRegistry),
   ]
+  ctx.tools.setExecutor(new NativeToolExecutor(ctx))
   cleanup.push(async () => {
     for (const fiber of fibers.reverse()) await fiber.dispose()
   })
@@ -120,7 +126,7 @@ async function harness() {
           return state.live ? state.image : undefined
         },
         get configOptions() {
-          return configOptions()
+          return settings.exposeModelConfig === false ? undefined : configOptions()
         },
         initialize: async () => {
           state.live = true
@@ -168,12 +174,12 @@ async function harness() {
     session.append('step/start', { turn: 1, step: 0 })
     const message = createUserMessage({ source: { kind: 'user' }, content })
     session.append('user/message', message, { surfaceOp: 'append' })
-    session.append('request/header', { header: { config: { provider, model: 'model-a' } }, reason: 'initial' })
+    session.append('request/header', { header: { config: { provider, model: routeModel } }, reason: 'initial' })
     const agent = {
       id: session.id,
       session,
       ctx,
-      options: { provider, model: 'model-a' },
+      options: { provider, model: routeModel },
       inbox: { nextStep: [], nextTurn: [] },
     } as unknown as Agent
     const detach = ctx.agents.enter(agent, undefined)
@@ -194,7 +200,7 @@ async function harness() {
       await ctx.agents.withInitiator(agent, async () => {
         let stopped = false
         for await (const chunk of ctx.llm.stream(
-          markAgentLoopRequest({ provider, model: 'model-a', sessionId: session.id, messages: [message] }),
+          markAgentLoopRequest({ provider, model: routeModel, sessionId: session.id, messages: [message] }),
         )) {
           if (chunk.type === 'finish') {
             expect(chunk.reason, JSON.stringify(chunk.reason)).toMatchObject({ kind: 'stop' })
@@ -220,6 +226,19 @@ async function harness() {
 }
 
 describe('session-scoped ACP image capability', () => {
+  it('admits images for a confirmed current-config route without requiring a model selector', async () => {
+    const h = await harness({ routeModel: ACP_CURRENT_CONFIG_MODEL_ID, exposeModelConfig: false })
+    const owner = h.add('generic-image-owner', true)
+    const resolve = () =>
+      h.ctx.agents.withInitiator(owner.agent, () => h.ctx.llm.resolveModelInfo(provider, ACP_CURRENT_CONFIG_MODEL_ID))
+    expect((await resolve()).inputModalities).toBeUndefined()
+    await owner.initialize()
+    expect((await resolve()).inputModalities).toEqual(['text', 'image'])
+    expect(owner.state.model).toBe('model-a')
+    owner.state.live = false
+    expect((await resolve()).inputModalities).toBeUndefined()
+  })
+
   it('admits images only for an exact live caller, confirmed route and launch generation', async () => {
     const h = await harness()
     const owner = h.add('owner', true)

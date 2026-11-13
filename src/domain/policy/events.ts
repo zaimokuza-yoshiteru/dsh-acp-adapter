@@ -132,15 +132,15 @@ export interface AcpPermissionToolCallSnapshot {
 }
 
 /** rawInput 审计摘要按字段名脱敏的 key 词表（命中键的值替换为 `<redacted>`，永不落盘）。 */
-export const AUDIT_SECRET_KEY_PATTERN =
+const AUDIT_SECRET_KEY_PATTERN =
   /(?:token|secret|password|passwd|api[-_]?key|authorization|credential|private[-_]?key)/i
 
 /** rawInput 审计摘要的截断上限（单行可读性；与审批 reason 摘要同口径）。 */
-export const RAW_INPUT_AUDIT_SUMMARY_MAX_CHARS = 300
+const RAW_INPUT_AUDIT_SUMMARY_MAX_CHARS = 300
 
 /** Bounds for ACP permission audit fields supplied by an external Agent. */
-export const ACP_PERMISSION_AUDIT_OPTIONS_MAX = 32
-export const ACP_PERMISSION_AUDIT_FIELD_MAX_CHARS = 512
+const ACP_PERMISSION_AUDIT_OPTIONS_MAX = 32
+const ACP_PERMISSION_AUDIT_FIELD_MAX_CHARS = 512
 
 /** 脱敏遍历界限：嵌套深度 / 数组条数 / 单字符串长度（防巨型 rawInput 放大审计体积）。 */
 const REDACT_DEPTH_MAX = 6

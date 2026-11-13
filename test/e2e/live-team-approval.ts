@@ -76,7 +76,7 @@ export async function verifyLiveTeamApproval({
     // verifyLiveTeam leaves the native team panel open.
     await page
       .locator('[data-team-action]')
-      .getByRole('button', { name: /Agent Team/ })
+      .getByRole('button', { name: /Agent team/ })
       .click()
     const prompt = `This is an authorized approval regression in this empty temporary workspace. Use the DSH Teams MCP spawn_teammate tool to create exactly one fresh member named permission-review. This test explicitly switches only its exact marker tool call to native Ask approval and a read-only DSH file policy at admission; other delegated calls keep their native policy. Tell it to call the DSH MCP bash tool exactly once with command ${JSON.stringify(command)}, description "Write the isolated approval marker", sandbox_permissions "danger-full-access", justification "Allow the single temporary workspace marker ${token}", and no workdir or background execution. This is a one-shot native sandbox escalation: wait for the human approval before execution. Do not use the Agent's private shell, another tool, an editing API, or a command without these escalation arguments. The command writes only the unique temporary workspace file ${fileName}. After successful execution send the lead ${token} using DSH send_message, then finish. Do not execute the command yourself or create any other members. End your response after creating the member so the human can handle its approval.`
     await writeComposerDraft(page, page.locator('[data-composer-input]').first(), prompt)
@@ -192,7 +192,7 @@ export async function verifyLiveTeamApproval({
     })
     await page
       .locator('[data-team-action]')
-      .getByRole('button', { name: /Agent Team/ })
+      .getByRole('button', { name: /Agent team/ })
       .click()
     completed = true
   } finally {

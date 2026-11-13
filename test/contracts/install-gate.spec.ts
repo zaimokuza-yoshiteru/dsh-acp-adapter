@@ -7,6 +7,8 @@ import { basename, join } from 'node:path'
 import {
   assertComposedDump,
   assertAcpConfigSentinel,
+  assertOnlyBundleCompositionChanged,
+  assertBundleRemoved,
   assertTarballEntries,
   bootAndCheck,
   ownInstallHost,
@@ -19,6 +21,59 @@ import { DSH_SOURCE_TAG } from '../../scripts/dsh-target.ts'
 import { findMissingRelativeRuntimeImports } from '../../scripts/verify-runtime-closure.ts'
 
 describe('DSH clean-install gate contracts', () => {
+  const stockPreset = `- id: preset-standard
+  name: '@deepseek-ai/dsh-agent-preset'
+  config:
+    id: standard
+    plugins:
+      - id: tool-bash
+        name: '@deepseek-ai/dsh-tool-bash'
+        disabled: !!js process.platform === 'win32'
+- id: default-preset
+  config:
+    preset: standard
+`
+  const adapterRow = `- id: dsh-acp-adapter
+  name: '@zaimokuza/dsh-acp-adapter'
+  config:
+    toolApprovalDefault: ask
+`
+  const acpPreset = `- id: preset-acp-adapter
+  name: '@deepseek-ai/dsh-agent-preset'
+  config:
+    id: acp-adapter
+    plugins:
+      - id: tool-bash
+        name: '@deepseek-ai/dsh-tool-bash'
+        disabled: !!js process.platform === 'win32'
+      - id: tool-skill
+        name: '@deepseek-ai/dsh-tool-skill'
+`
+
+  it('allows an upgrade to add the optional preset without treating its nested tools as stock rows', () => {
+    const before = stockPreset + adapterRow
+    const after = stockPreset + adapterRow + acpPreset
+    expect(() => assertOnlyBundleCompositionChanged(before, after)).not.toThrow()
+    expect(() => assertOnlyBundleCompositionChanged(stockPreset, after)).not.toThrow()
+    expect(() => assertOnlyBundleCompositionChanged(after, stockPreset)).not.toThrow()
+  })
+
+  it('still rejects changes to the user default or a same-id tool in a native preset', () => {
+    const before = stockPreset + adapterRow
+    const changedTool = stockPreset.replace("process.platform === 'win32'", 'true') + adapterRow + acpPreset
+    const changedDefault = stockPreset.replace('preset: standard', 'preset: acp-adapter') + adapterRow + acpPreset
+    expect(() => assertOnlyBundleCompositionChanged(before, changedTool)).toThrow(/outside this bundle/)
+    expect(() => assertOnlyBundleCompositionChanged(before, changedDefault)).toThrow(/outside this bundle/)
+    const changedTag = stockPreset.replace("!!js process.platform === 'win32'", '"process.platform === \'win32\'"')
+    expect(() => assertOnlyBundleCompositionChanged(stockPreset, changedTag)).toThrow(/outside this bundle/)
+  })
+
+  it('requires both the runtime row and the optional preset to be absent after uninstall', () => {
+    expect(() => assertBundleRemoved(stockPreset)).not.toThrow()
+    expect(() => assertBundleRemoved(stockPreset + adapterRow)).toThrow(/dsh-acp-adapter remains/)
+    expect(() => assertBundleRemoved(stockPreset + acpPreset)).toThrow(/preset-acp-adapter remains/)
+  })
+
   it('parses an isolated host and tarball without touching user profile state', () => {
     const parsed = parseArgs(['--host-root', '../alpha', '--tgz', './adapter.tgz', '--skip-boot'])
     expect(basename(parsed.hostRoot)).toBe('alpha')

@@ -30,6 +30,10 @@ export const sessionFactsSchema = z.object({
   inheritedRemaining: z.number().int().nonnegative(),
   externalSubagent: z.boolean(),
   forkReplay: acpReplayPayloadSchema.nullable(),
+  /** This session, not an inherited prefix, committed an ACP-produced answer. */
+  acpReplaySeen: z.boolean(),
+  /** The only provider this session's own requests were routed to; null before any, '' once they differ. */
+  soleRequestProvider: z.string().nullable(),
 })
 export type SessionFacts = z.infer<typeof sessionFactsSchema>
 
@@ -43,6 +47,8 @@ export function initialSessionFacts(inheritedEventCount = 0): SessionFacts {
     inheritedRemaining: inheritedEventCount,
     externalSubagent: false,
     forkReplay: null,
+    acpReplaySeen: false,
+    soleRequestProvider: null,
   }
 }
 
@@ -55,6 +61,14 @@ export function applySessionFact(previous: SessionFacts, event: SessionEventLike
       inheritedRemaining: state.inheritedRemaining - 1,
       forkReplay: acpReplayPayloadOf(event) ?? state.forkReplay,
     }
+  if (previous.inheritedRemaining === 0 && !state.acpReplaySeen && acpReplayPayloadOf(event) !== undefined)
+    state = { ...state, acpReplaySeen: true }
+  if (event.type === 'request/header' && previous.inheritedRemaining === 0 && state.soleRequestProvider !== '') {
+    const header = (event.data as { header?: { config?: { provider?: unknown } } } | null)?.header
+    const provider = typeof header?.config?.provider === 'string' ? header.config.provider : ''
+    if (state.soleRequestProvider !== provider)
+      state = { ...state, soleRequestProvider: state.soleRequestProvider === null ? provider : '' }
+  }
   if (event.type === 'turn/start')
     return { ...state, turnOpen: true, turnSeen: true, priorSemanticHistory: state.hasSemanticHistory }
   if (event.type === 'turn/end') return { ...state, turnOpen: false }
@@ -135,6 +149,5 @@ export interface SessionLike {
   readonly facts: SessionFacts
   /** Current effective DSH model-facing snapshots, without replaying ordinary history. */
   currentModelContextSnapshots?(): readonly ModelContextSnapshot[]
-  readonly permissions: { readonly sandbox: string | null; readonly approval: string | null }
   append?(type: string, data: unknown): unknown
 }

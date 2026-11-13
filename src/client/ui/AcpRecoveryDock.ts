@@ -70,6 +70,15 @@ function visibleRecovery(view: AcpRecoveryView): AcpRecoveryView | null {
   return view.kind === 'healthy' && view.localStatus === undefined ? null : view
 }
 
+/** Prefer preserving the original context only where reconnect is a meaningful recovery. */
+export function recoveryPrefersReconnect(recovery: AcpRecoveryView): boolean {
+  return (
+    recovery.kind === 'reconnect-required' ||
+    recovery.kind === 'resumed-unverified' ||
+    recovery.kind === 'outcome-unknown'
+  )
+}
+
 /** Publish the recovery view returned by the completed action without a second snapshot read. */
 export function publishRecoveryActionResult(
   result: AcpRecoveryView | void,
@@ -150,6 +159,7 @@ export function AcpRecoveryDock({
   const [reconnecting, setReconnecting] = useState(false)
   const [recoveryRefreshReady, setRecoveryRefreshReady] = useState(false)
   const [retry, setRetry] = useState(0)
+  const [confirmRebind, setConfirmRebind] = useState(false)
   const epoch = useRef(0)
   const inFlight = useRef<RecoveryOperation | null>(null)
   const activeSession = useRef(sessionId)
@@ -159,6 +169,7 @@ export function AcpRecoveryDock({
     const currentEpoch = ++epoch.current
     let cancelled = false
     setOpen(false)
+    setConfirmRebind(false)
     if (inFlight.current?.sessionId === sessionId) setBusyAction(inFlight.current.action)
     else setBusyAction(null)
     setActionError(null)
@@ -282,6 +293,51 @@ export function AcpRecoveryDock({
   const detail = [recovery.kind, recovery.cause, recovery.detail, actionError]
     .filter((part): part is string => typeof part === 'string' && part.length > 0)
     .join('\n\n')
+  if (confirmRebind)
+    return h(Modal, {
+      open: true,
+      title: t('recoveryRebindConfirmTitle'),
+      description: t('recoveryRebindConfirmDescription'),
+      closeLabel: t('recoveryRebindCancel'),
+      onClose: () => {
+        if (!busy && inFlight.current?.sessionId !== sessionId) setConfirmRebind(false)
+      },
+      backdropBlur: false,
+      ...(css.dialog === undefined ? {} : { className: css.dialog }),
+      ...(css.content === undefined ? {} : { contentClassName: css.content }),
+      footer: h(
+        'div',
+        { className: css.footer },
+        h(
+          Button,
+          {
+            variant: 'outline',
+            disabled: busy,
+            onClick: () => {
+              if (inFlight.current?.sessionId !== sessionId) setConfirmRebind(false)
+            },
+          },
+          t('recoveryRebindCancel'),
+        ),
+        h(
+          Button,
+          {
+            variant: 'primary',
+            disabled: busy || !rebindAllowed,
+            onClick: () => {
+              void run('rebind', async () => {
+                const result = await remote.rebindRecoveryBlank(sessionId)
+                if (!result.ok) throw new Error(result.error.message)
+                return result.value
+              }).finally(() => {
+                if (activeSession.current === sessionId) setConfirmRebind(false)
+              })
+            },
+          },
+          busy ? t('recoveryBusy') : t('recoveryRebindConfirm'),
+        ),
+      ),
+    })
   return h(
     'div',
     { className: css.dock, role: 'status' },
@@ -314,7 +370,6 @@ export function AcpRecoveryDock({
           }
         },
         title: t('recoveryTitle'),
-        description: t('recoveryChoiceHelp'),
         closeLabel: t('recoveryClose'),
         backdropBlur: false,
         ...(css.dialog === undefined ? {} : { className: css.dialog }),
@@ -344,7 +399,7 @@ export function AcpRecoveryDock({
         { className: css.choices },
         recoveryChoice(
           'reconnect',
-          'outline',
+          recoveryPrefersReconnect(recovery) ? 'primary' : 'outline',
           t('recoveryReconnect'),
           t('recoveryReconnectExplanation'),
           t('recoveryBusy'),
@@ -367,16 +422,13 @@ export function AcpRecoveryDock({
           busy || !rebindAllowed,
           busyAction,
           () => {
-            void run('rebind', async () => {
-              const result = await remote.rebindRecoveryBlank(sessionId)
-              if (!result.ok) throw new Error(result.error.message)
-              return result.value
-            })
+            if (!busy && sessionAccessSource(sessionId, 'dshAcp/rebindRecoveryBlank')?.getSnapshot() === true)
+              setConfirmRebind(true)
           },
         ),
         recoveryChoice(
           'new-session',
-          'primary',
+          'outline',
           t('recoveryNew'),
           t('recoveryNewExplanation'),
           t('recoveryBusy'),

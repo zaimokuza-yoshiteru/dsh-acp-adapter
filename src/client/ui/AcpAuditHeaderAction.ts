@@ -1,4 +1,4 @@
-/** ACP 诊断的会话视图与条件注册门。 */
+/** ACP diagnostics and session-scoped visibility for the native view list. */
 import { createElement as h, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-store'
@@ -21,12 +21,7 @@ import type { AcpLocaleKey } from './locales.ts'
 import type { OwnsAcpRoute } from '../coordinator/cross-backend-coordinator.ts'
 import type { AcpDiagnosticView, AcpRecoveryView } from '../../contract/remote.ts'
 import { matchesDiagnosticView } from '../../contract/diagnostics.ts'
-import {
-  AcpSupportExportError,
-  collectAcpSupportExport,
-  downloadAcpSupportExport,
-  type AcpSupportExport,
-} from '../data/acp-support-export.ts'
+import { AcpSupportExportError, collectAcpSupportExport, downloadAcpSupportExport } from '../data/acp-support-export.ts'
 import { recoveryText } from './AcpRecoveryDock.ts'
 import css from './AcpAuditHeaderAction.module.css'
 import { acpJsonTreeLabels, type AcpJsonStringWrapping } from './json-tree.ts'
@@ -42,7 +37,7 @@ export interface AcpAuditVisibilityGateProps {
   useProjection: UseProjection
   remote?: AcpRemoteLike
   ownsRoute: OwnsAcpRoute
-  onVisibilityChange(sessionId: string, visible: boolean): void
+  onVisibilityChange(sessionId: string, visible: boolean, owner: object): void
 }
 
 export interface AcpAuditViewProps extends ConvViewProps {
@@ -255,12 +250,13 @@ function auditDetailOf(detail: string): AuditDetail {
 }
 
 /**
- * 只由 mainView 决定 ACP 诊断 Tab；侧栏引用不能夺取或撤销主区域入口。
- * `conversation.view` 仍是全局 roster，以主区域的标准投影决定可见性，
- * 避免原生会话被插件增加无意义的 Tab。
+ * Main-view retention determines diagnostic visibility; sidebar references
+ * cannot claim or withdraw another view's entry. The global registration stays
+ * stable while the native header and body filter their per-session view source.
  */
 export function AcpAuditVisibilityGate(props: AcpAuditVisibilityGateProps): ReactNode {
   const { sessionId, useSession, useSessionRetainInfo, useProjection, remote, onVisibilityChange, ownsRoute } = props
+  const owner = useMemo(() => ({}), [])
   const mainView = useSessionRetainInfo((value) => (value?.retainedBy.mainView ?? 0) > 0)
   const sessionRefreshKey =
     useSession === undefined ? 'absent' : useSession((snapshot) => auditSessionRefreshKeyOf(snapshot))
@@ -294,11 +290,11 @@ export function AcpAuditVisibilityGate(props: AcpAuditVisibilityGateProps): Reac
 
   useEffect(() => {
     if (sessionId === undefined) return
-    onVisibilityChange(sessionId, visible)
+    onVisibilityChange(sessionId, visible, owner)
     return () => {
-      onVisibilityChange(sessionId, false)
+      onVisibilityChange(sessionId, false, owner)
     }
-  }, [sessionId, visible, onVisibilityChange])
+  }, [sessionId, visible, onVisibilityChange, owner])
   return null
 }
 
@@ -314,14 +310,13 @@ function AcpAuditLoadedView(props: LoadedAcpAuditViewProps): ReactNode {
   const [entries, setEntries] = useState<readonly AcpAuditTimelineEntry[]>([])
   const [cursor, setCursor] = useState<number | null>(0)
   const [hasMore, setHasMore] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState(false)
   const [filter, setFilter] = useState<Filter>('issues')
   const [recovery, setRecovery] = useState<AcpRecoveryView | null>(null)
   const [recoveryUnavailable, setRecoveryUnavailable] = useState(false)
   const [query, setQuery] = useState('')
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
   const [exportState, setExportState] = useState<'idle' | 'loading' | 'downloaded' | 'failed'>('idle')
-  const [supportExport, setSupportExport] = useState<AcpSupportExport | null>(null)
   const [exportError, setExportError] = useState<'unavailable' | 'invalid-page' | 'session-changed' | null>(null)
   const exportEpoch = useRef(0)
   const exportLoading = useRef(false)
@@ -341,7 +336,7 @@ function AcpAuditLoadedView(props: LoadedAcpAuditViewProps): ReactNode {
       const epoch = requestEpoch.current
       loadingRef.current = true
       setLoading(true)
-      setError(null)
+      setError(false)
       const afterSeq = reset ? 0 : (cursor ?? 0)
       if (reset) {
         const statusEpoch = ++recoveryEpoch.current
@@ -364,7 +359,7 @@ function AcpAuditLoadedView(props: LoadedAcpAuditViewProps): ReactNode {
         .then((result) => {
           if (epoch !== requestEpoch.current) return
           if (!result.ok) {
-            setError(t('auditUnavailable'))
+            setError(true)
             return
           }
           setEntries((previous) => (reset ? result.value.entries : [...previous, ...result.value.entries]))
@@ -372,7 +367,7 @@ function AcpAuditLoadedView(props: LoadedAcpAuditViewProps): ReactNode {
           setHasMore(result.value.hasMore)
         })
         .catch(() => {
-          if (epoch === requestEpoch.current) setError(t('auditUnavailable'))
+          if (epoch === requestEpoch.current) setError(true)
         })
         .finally(() => {
           if (epoch === requestEpoch.current) {
@@ -381,14 +376,13 @@ function AcpAuditLoadedView(props: LoadedAcpAuditViewProps): ReactNode {
           }
         })
     },
-    [sessionId, remote, cursor, t, filter],
+    [sessionId, remote, cursor, filter],
   )
 
   useEffect(() => {
     exportEpoch.current += 1
     exportLoading.current = false
     setExportState('idle')
-    setSupportExport(null)
     setExportError(null)
     setFilter('issues')
     return () => {
@@ -404,7 +398,7 @@ function AcpAuditLoadedView(props: LoadedAcpAuditViewProps): ReactNode {
     setEntries([])
     setCursor(0)
     setHasMore(false)
-    setError(null)
+    setError(false)
     setRecovery(null)
     setRecoveryUnavailable(false)
     setQuery('')
@@ -418,9 +412,9 @@ function AcpAuditLoadedView(props: LoadedAcpAuditViewProps): ReactNode {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, remote, filter])
 
-  const visible = useMemo(
-    () => entries.filter((entry) => auditEntryMatchesFilter(entry, filter) && auditEntryMatchesQuery(t, entry, query)),
-    [entries, filter, query, t],
+  // Resolve localized search text at render time; direct locale bindings may retain identity.
+  const visible = entries.filter(
+    (entry) => auditEntryMatchesFilter(entry, filter) && auditEntryMatchesQuery(t, entry, query),
   )
   const selected = useMemo(() => entries.find((entry) => entry.seq === selectedSeq) ?? null, [entries, selectedSeq])
   useEffect(() => {
@@ -450,7 +444,6 @@ function AcpAuditLoadedView(props: LoadedAcpAuditViewProps): ReactNode {
     exportController.current = controller
     exportLoading.current = true
     setExportState('loading')
-    setSupportExport(null)
     setExportError(null)
     try {
       const result = await collectAcpSupportExport(
@@ -465,7 +458,6 @@ function AcpAuditLoadedView(props: LoadedAcpAuditViewProps): ReactNode {
       if (exportEpoch.current !== epoch || currentSessionId.current !== selectedSession || controller.signal.aborted)
         return
       downloadAcpSupportExport(result)
-      setSupportExport(result)
       setExportState('downloaded')
     } catch (error: unknown) {
       if (exportEpoch.current !== epoch || currentSessionId.current !== selectedSession || controller.signal.aborted)
@@ -572,8 +564,8 @@ function AcpAuditLoadedView(props: LoadedAcpAuditViewProps): ReactNode {
               ),
             ),
         loading && entries.length === 0 ? h('p', { className: css.muted }, t('auditLoading')) : null,
-        error === null ? null : h('p', { className: css.error, role: 'alert' }, error),
-        !loading && error === null && visible.length === 0
+        !error ? null : h('p', { className: css.error, role: 'alert' }, t('auditUnavailable')),
+        !loading && !error && visible.length === 0
           ? h(
               'p',
               { className: css.muted },
@@ -738,21 +730,12 @@ function AcpAuditLoadedView(props: LoadedAcpAuditViewProps): ReactNode {
             { role: 'alert', className: css.error },
             t(exportError === 'session-changed' ? 'auditExportSessionChanged' : 'auditExportFailed'),
           )
-        : exportState === 'downloaded' && supportExport !== null
+        : exportState === 'downloaded'
           ? h(
               'div',
               { 'data-support-export-summary': true },
               h('p', { role: 'status' }, t('auditExportComplete')),
               h('p', null, t('auditExportPrivacy')),
-              h(
-                'p',
-                null,
-                t('auditExportCounts', {
-                  audit: supportExport.audit.rows.length,
-                  activity: supportExport.activity.rows.length,
-                }),
-              ),
-              h('p', null, t('auditExportScopeNote')),
             )
           : null,
   )

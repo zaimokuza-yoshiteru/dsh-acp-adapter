@@ -116,6 +116,7 @@ describe('client contribution', () => {
     expect(injections).not.toContainEqual(expect.objectContaining({ id: 'acp-team-management' }))
     expect(slotEntries.get('shell.overlay')).toEqual([
       { name: 'shell.overlay', id: 'third-party-overlay' },
+      expect.objectContaining({ id: 'dsh-acp-native-fork-recovery' }),
       expect.objectContaining({ id: 'dsh-acp-cross-backend-confirmation' }),
       expect.objectContaining({ id: 'dsh-acp-operation-outcomes' }),
     ])

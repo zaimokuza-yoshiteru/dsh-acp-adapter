@@ -1,5 +1,5 @@
 /**
- * Opt-in, process-local diagnostics for authenticated live-test runs. The
+ * Opt-in diagnostics owned by one Host or authenticated live-test run. The
  * normal application has no sink and writes no additional logs.
  */
 export type LiveDiagnosticTool =
@@ -129,104 +129,129 @@ export interface LiveDiagnosticTraceSink {
   ) => { readonly hmac: string; readonly bytes: number | null; readonly complete: boolean }
 }
 
-const stateKey = Symbol.for('@zaimokuza/dsh-acp-adapter/live-diagnostic-trace/v1')
+/** A run-owned observer; passing it explicitly also works across source and built module graphs. */
+export interface LiveDiagnosticTrace {
+  /** Replace the current sink; its disposer stops admission immediately and drains accepted writes. */
+  install(sink: LiveDiagnosticTraceSink): () => Promise<void>
+  enabled(): boolean
+  id(kind: string, value: unknown): string | undefined
+  fingerprint(
+    kind: string,
+    value: unknown,
+  ): { readonly hmac: string; readonly bytes: number | null; readonly complete: boolean } | undefined
+  collect<T>(factory: () => T): T | undefined
+  emit(event: LiveDiagnosticEvent): void
+  noteFailure(): void
+  /** Failures remain visible after a sink is replaced or the owner is disposed. */
+  failureCount(): number
+  /** Revoke all sinks and wait for writes accepted before revocation. */
+  dispose(): Promise<void>
+}
+
 interface TraceState {
   readonly sink: LiveDiagnosticTraceSink
-  failures: number
+  readonly pending: Set<Promise<void>>
+  closed: boolean
 }
 
-type TraceGlobal = typeof globalThis & Record<symbol, unknown>
-
-function currentState(): TraceState | undefined {
-  return (globalThis as TraceGlobal)[stateKey] as TraceState | undefined
-}
-
-/** Install an explicit test-owned sink. It is not enabled by default. */
-export function installLiveDiagnosticTrace(sink: LiveDiagnosticTraceSink): () => void {
-  const target = globalThis as TraceGlobal
-  const state: TraceState = { sink, failures: 0 }
-  target[stateKey] = state
-  return () => {
-    if (target[stateKey] === state) delete target[stateKey]
+/** Create a disabled observer with no process-wide state; the caller owns its disposal. */
+export function createLiveDiagnosticTrace(): LiveDiagnosticTrace {
+  const states = new Set<TraceState>()
+  let current: TraceState | undefined
+  let failures = 0
+  let disposed = false
+  let disposing: Promise<void> | undefined
+  const closeState = (state: TraceState): Promise<void> => {
+    state.closed = true
+    if (current === state) current = undefined
+    if (state.pending.size === 0) states.delete(state)
+    return Promise.all(state.pending).then(() => {
+      states.delete(state)
+    })
   }
-}
-
-/** Hash through the currently installed test sink; raw IDs never enter its event stream. */
-export function liveDiagnosticId(kind: string, value: unknown): string | undefined {
-  if (value === undefined || value === null) return 'unavailable'
-  try {
-    const id = currentState()?.sink.id(kind, value)
-    return typeof id === 'string' && (/^h:[a-f0-9]{24}$/.test(id) || id === 'unavailable') ? id : 'unavailable'
-  } catch {
-    noteFailure()
-    return undefined
+  return {
+    install(sink) {
+      if (disposed) throw new Error('Live diagnostic owner has been disposed')
+      if (current !== undefined) void closeState(current)
+      const state: TraceState = { sink, pending: new Set(), closed: false }
+      states.add(state)
+      current = state
+      return () => closeState(state)
+    },
+    enabled() {
+      return current !== undefined
+    },
+    id(kind, value) {
+      const state = current
+      if (state === undefined) return undefined
+      if (value === undefined || value === null) return 'unavailable'
+      try {
+        const id = state.sink.id(kind, value)
+        return typeof id === 'string' && (/^h:[a-f0-9]{24}$/.test(id) || id === 'unavailable') ? id : 'unavailable'
+      } catch {
+        failures += 1
+        return undefined
+      }
+    },
+    fingerprint(kind, value) {
+      const state = current
+      if (state === undefined) return undefined
+      try {
+        const fingerprint = state.sink.fingerprint(kind, value)
+        const { hmac, bytes, complete } = fingerprint
+        const validHmac = typeof hmac === 'string' && /^h:[a-f0-9]{24}$/.test(hmac)
+        return {
+          hmac: validHmac ? hmac : 'unavailable',
+          bytes: typeof bytes === 'number' && Number.isSafeInteger(bytes) && bytes >= 0 ? bytes : null,
+          complete: complete === true && validHmac,
+        }
+      } catch {
+        failures += 1
+        return undefined
+      }
+    },
+    collect(factory) {
+      if (current === undefined) return undefined
+      try {
+        return factory()
+      } catch {
+        failures += 1
+        return undefined
+      }
+    },
+    emit(event) {
+      const state = current
+      if (state === undefined) return
+      // Reserve before calling user code so reentrant disposal also awaits this write.
+      const completion = Promise.withResolvers<void>()
+      state.pending.add(completion.promise)
+      const settle = (): void => {
+        state.pending.delete(completion.promise)
+        if (state.closed && state.pending.size === 0) states.delete(state)
+        completion.resolve()
+      }
+      try {
+        void Promise.resolve(state.sink(event)).then(settle, () => {
+          failures += 1
+          settle()
+        })
+      } catch {
+        failures += 1
+        settle()
+      }
+    },
+    noteFailure() {
+      if (current !== undefined) failures += 1
+    },
+    failureCount() {
+      return failures
+    },
+    dispose() {
+      if (disposing !== undefined) return disposing
+      disposed = true
+      current = undefined
+      disposing = Promise.all([...states].map(closeState)).then(() => undefined)
+      return disposing
+    },
   }
-}
-
-/** Fingerprint input through the test run's in-memory HMAC key. */
-export function liveDiagnosticFingerprint(
-  kind: string,
-  value: unknown,
-): { readonly hmac: string; readonly bytes: number | null; readonly complete: boolean } | undefined {
-  try {
-    const fingerprint = currentState()?.sink.fingerprint(kind, value)
-    if (fingerprint === undefined) return undefined
-    const hmac = fingerprint.hmac
-    const bytes = fingerprint.bytes
-    const complete = fingerprint.complete
-    return {
-      hmac: typeof hmac === 'string' && /^h:[a-f0-9]{24}$/.test(hmac) ? hmac : 'unavailable',
-      bytes: typeof bytes === 'number' && Number.isSafeInteger(bytes) && bytes >= 0 ? bytes : null,
-      complete: complete === true && typeof hmac === 'string' && /^h:[a-f0-9]{24}$/.test(hmac),
-    }
-  } catch {
-    noteFailure()
-    return undefined
-  }
-}
-
-/** Count diagnostic preparation failures without allowing them to affect host work. */
-export function noteLiveDiagnosticFailure(): void {
-  noteFailure()
-}
-
-/** Safely collect diagnostic fields; the factory is skipped without a sink. */
-export function collectLiveDiagnostic<T>(factory: () => T): T | undefined {
-  const state = currentState()
-  if (state === undefined) return undefined
-  try {
-    return factory()
-  } catch {
-    state.failures += 1
-    return undefined
-  }
-}
-
-/** A diagnostics sink is observational only; callback failures never escape into Host behavior. */
-export function emitLiveDiagnostic(event: LiveDiagnosticEvent): void {
-  const state = currentState()
-  if (state === undefined) return
-  try {
-    const result = state.sink(event)
-    if (result !== undefined && typeof (result as PromiseLike<void>).then === 'function') {
-      void Promise.resolve(result).catch(() => {
-        state.failures += 1
-      })
-    }
-  } catch {
-    state.failures += 1
-  }
-}
-
-export function liveDiagnosticTraceFailureCount(): number {
-  return currentState()?.failures ?? 0
-}
-
-export function liveDiagnosticTraceEnabled(): boolean {
-  return currentState() !== undefined
-}
-
-function noteFailure(): void {
-  const state = currentState()
-  if (state !== undefined) state.failures += 1
 }

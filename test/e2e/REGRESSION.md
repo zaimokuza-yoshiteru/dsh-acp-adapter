@@ -1,5 +1,7 @@
 # 历史回归记录
 
+> 历史验收记录按当时版本保留。本版已移除 Kimi 支持；下方旧版 Kimi 结果不代表当前支持范围。
+
 本页保留历史验收快照，不表示当前版本的验证状态。复现步骤与验收矩阵统一维护在 [E2E 指南](README.md)；后续逐次结果记录在对应 PR／CI，避免重复维护测试数量、本机路径和发布状态。
 
 `0.1.6-alpha.1.4` 的变更见 [PR #6](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/pull/6)，自动检查见 [PR CI](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/actions/runs/35117367723)，发布状态见 [发布工作流](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/actions/runs/35119168694)。该次本机验收明细可在 [当时提交的记录](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/ce1893edd49dfc333cb8b0bc64d566308b41c39b/test/e2e/REGRESSION.md) 中追溯；其中候选包和未发布状态属于当时快照。真实模型、本机 Electron 与 CI 协议夹具结果不可相互替代。
@@ -645,3 +647,19 @@ ACP 主会话的成员管理新增同 profile 原生模型下拉，保留按 pro
 早期并行只读核查误调用无 help 分支的 stale-build 脚本，重建被忽略的 lib 导致若干回归导入失败；中断后产物不完整。恢复并固定最终构建后重测，不将这些受干扰结果计为产品通过证据。发布证据保存在 gitignored `.local/release-0.1.6-alpha.1.1/`，临时预览和旧 dist 产物不进入提交。
 
 最终完整 Chrome 回归：13 文件、109 项通过；默认跳过的 4 项真实连接已按上面的真实验证结果单独记录。成员模型与模式的两项专项另外通过。
+
+## 2026-11-13：Agent 差异收拢、Kimi 退役与 ACP 预设原型
+
+目标仍为 `0.2.2-alpha`，版本号保持 `0.2.2-rc.1.1`，不发布。上游源码固定于 RC.1 `66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db`，未改上游；开发依赖使用精确 npm RC.1 包。Node 24.19.0、pnpm 10.7.0。
+
+集中小型无状态 Agent 规则，删除 Kimi 的活动接入、私有权限／推理／委派／输入猜测和测试矩阵；旧配置仅保留停用诊断，原始目录快照和历史 fingerprint 槽保持兼容。独立的 SessionControls 管理控件写入与模式意图，ToolDirectoryOwner 管理目录和审批有效期；已接收执行、补存、恢复顺序仍由原 owner 负责。回归覆盖关闭等待 RPC／快照写入、旧 owner 排队写入、工具撤回后不可复活，以及同一 ACP prompt 跨 Host step 的 Auto／手动 elicitation 失效。
+
+全源码回归：217 文件通过、1 跳过；2775 用例通过、3 跳过。后续三个控件时序负例在其 owning suite 通过。类型检查、构建、E2E 类型检查、格式与 diff 检查通过；构建验证 114 个精确开发包、321 个 tarball 文件、130 个 JavaScript 相对导入闭包及严格公共类型消费。
+
+新增两项浏览器回归均通过。ACP 预设使用真实 Loader 注册，确认标准／创造预设保留、默认不变、实际 ACP scope 不提供宿主 compaction；调用 MCP 技能工具并验证 390px 明暗菜单、单 entry／整个 bundle 热停启及原会话续接。Creator 场景走原生 Plugins 创建入口，读取官方 `cordis-plugin-development` 技能，通过原生审批调用 `plugin_manager` 安装临时本地工具 bundle，覆盖后续目录、停用、重新启用、ACP 重挂后 `session/load` 和原标准草稿保留。
+
+浏览器首次失败分别属于测试菜单角色错误与技能夹具继承了脚手架仓库的项目根目录；修正为原生 `menuitem` 和独立 Git 项目根后，相关测试通过，没有更改生产技能发现规则。所有新流程均为确定性 ACP 协议夹具，不消耗真实模型配额，也不扩大真实 Agent 认证范围。
+
+独立 macOS arm64 Electron 验证通过 13 组检查：7 组基础生命周期与 6 组 Creator／预设场景，共保留 31 张有效截图。DS Bot 0.2.2 共存、空闲／运行中热停启、延迟首次绑定无重连提示、通用 Agent 首次会话、切模出口、恢复及 390px 明暗布局通过；Creator 连续 8 轮验证官方技能、真实本地插件安装和两次启停目录变化、同 ACP binding 恢复，以及原标准草稿保留。两组有效运行的 renderer error 记录为空，已人工查看控件、恢复、预设菜单和创造恢复截图。
+
+桌面使用 RC.1 源码 shell／私有 Host glue，加精确 npm 公共模块及独立 `DSH_HOME`，未改用户日常 profile。首次启动因本机应用的 runtime 旁缺少 Office skills 失败；在临时 runtime 目录引用精确 RC.1 npm `dsh-skill-office/assets` 后正常启动，没有修改应用安装目录或上游。桌面补充脚本另修正了区域语言标识、菜单角色和空 composer 的完成断言；这些初始脚本失败不计为产品通过。没有进行真实模型、Windows 桌面或发行安装包验收。证据位于 `.local/agent-modules-preset/`，隔离桌面测试后关闭。

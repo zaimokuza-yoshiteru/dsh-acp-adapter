@@ -109,13 +109,11 @@ export async function teamTurn(
           ? { _meta: { claudeCode: { toolName: name } } }
           : profile === 'devin'
             ? { title: `Calling ${tool.name} from ${server.name}` }
-            : profile === 'kimi'
-              ? { title: name }
-              : {
-                  title: `mcp.${server.name}.${tool.name}`,
-                  _meta: { is_mcp_tool_call: true },
-                  rawInput: { server: server.name, tool: tool.name, arguments: args },
-                }),
+            : {
+                title: `mcp.${server.name}.${tool.name}`,
+                _meta: { is_mcp_tool_call: true },
+                rawInput: { server: server.name, tool: tool.name, arguments: args },
+              }),
       }
       sendUpdate(session.id, { sessionUpdate: 'tool_call', ...toolCall })
       if (profile === 'codex') {

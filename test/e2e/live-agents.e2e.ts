@@ -19,7 +19,6 @@ const profiles = [
   { id: 'claude', command: 'claude-agent-acp', args: [] },
   { id: 'codex', command: 'codex-acp', args: [] },
   { id: 'devin', command: 'devin', args: ['acp'] },
-  { id: 'kimi', command: 'kimi', args: ['acp'] },
 ]
 const selected = process.env.DSH_E2E_LIVE_PROFILES?.split(',')
 const retain = process.env.DSH_E2E_RETAIN === '1'
@@ -78,11 +77,9 @@ describe.skipIf(process.env.DSH_E2E_LIVE !== '1')('live ACP smoke', () => {
         const preferences =
           profile.id === 'claude'
             ? [/^haiku$/i]
-            : profile.id === 'kimi'
-              ? [/^kimi-code\/kimi-for-coding$/i]
-              : profile.id === 'devin'
-                ? [/^swe-1-7-medium$/i, /^gpt-5-4-mini-low$/i, /flash.*(?:low|minimal)$/i]
-                : [/mini/i, /spark/i]
+            : profile.id === 'devin'
+              ? [/^swe-1-7-medium$/i, /^gpt-5-4-mini-low$/i, /flash.*(?:low|minimal)$/i]
+              : [/mini/i, /spark/i]
         const explicitModel = process.env[`DSH_E2E_LIVE_${profile.id.toUpperCase()}_MODEL`]
         const chosen =
           explicitModel === undefined
@@ -147,7 +144,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE !== '1')('live ACP smoke', () => {
             expect(second, 'The approved second small model must be in the current catalog').toBeDefined()
             await page
               .locator('[data-team-action]')
-              .getByRole('button', { name: /Agent Team/ })
+              .getByRole('button', { name: /Agent team/ })
               .click()
             await page.getByRole('button', { name: /^Select model/ }).click()
             await page.getByRole('menuitem', { name: /^Model/ }).click()

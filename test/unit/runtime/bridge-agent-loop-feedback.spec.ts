@@ -1,3 +1,4 @@
+import { NativeToolExecutor } from '@deepseek-ai/dsh-tool-executor-native'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import type { Fiber } from '@deepseek-ai/cordis'
@@ -5,7 +6,7 @@ import LlmRuntime, { createUserMessage, LlmAdapter, ToolCallId } from '@deepseek
 import type { GenerateOptions, LlmResolvedModelInfo, StreamChunk } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
-import ToolRuntime, { defineContentToolFixture } from '@deepseek-ai/dsh-tools'
+import ToolRuntime, { defineTool } from '@deepseek-ai/dsh-tools'
 import type { PostToolDecision } from '@deepseek-ai/dsh-tools'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import type { Agent } from '@deepseek-ai/dsh-agent'
@@ -111,6 +112,7 @@ async function createHarness(sessionId: string) {
     await ctx.plugin(AgentRegistry),
     await ctx.plugin(AgentLoop, { agents: [] }),
   ]
+  ctx.tools.setExecutor(new NativeToolExecutor(ctx))
   cleanup.push(async () => {
     for (const fiber of fibers.reverse()) await fiber.dispose()
   })
@@ -121,24 +123,26 @@ async function createHarness(sessionId: string) {
   const bridgedExecute = vi.fn(async () => {
     bridgeExecutionEntered.resolve()
     await bridgeGate
-    return [{ type: 'text' as const, text: 'host tool completed' }]
+    return 'host tool completed'
   })
   let feedbackMessageId: string | undefined
   ctx.tools.register(
-    defineContentToolFixture({
+    defineTool({
       name: 'bridge_feedback',
       description: 'A local test tool exposed over the bridge.',
       parameters: {},
+      output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
       execute: bridgedExecute,
     }),
   )
   ctx.tools.register(
-    defineContentToolFixture({
+    defineTool({
       name: 'native_step',
       description: 'Continue the native agent loop.',
       parameters: {},
+      output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
       async execute() {
-        return [{ type: 'text', text: 'native step completed' }]
+        return 'native step completed'
       },
     }),
   )

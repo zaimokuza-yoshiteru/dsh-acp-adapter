@@ -3,14 +3,21 @@ import {
   localSettlementText,
   projectionIsAcp,
   publishRecoveryActionResult,
+  recoveryPrefersReconnect,
 } from '../../../src/client/ui/AcpRecoveryDock.ts'
 import type { AcpRecoveryView } from '../../../src/contract/remote.ts'
 
 describe('ACP recovery dock projection gate', () => {
+  it('prefers reconnect only while original context can still be recovered, never reset or new-session', () => {
+    for (const kind of ['reconnect-required', 'resumed-unverified', 'outcome-unknown'] as const)
+      expect(recoveryPrefersReconnect({ kind } as AcpRecoveryView)).toBe(true)
+    for (const kind of ['session-lost', 'local-history-damaged', 'reconciliation-required'] as const)
+      expect(recoveryPrefersReconnect({ kind } as AcpRecoveryView)).toBe(false)
+  })
   it('only reads recovery state for an ACP selection', () => {
-    const owns = (provider: string | undefined): boolean => provider === 'acp-kimi' || provider === 'acp-codex'
+    const owns = (provider: string | undefined): boolean => provider === 'acp-generic' || provider === 'acp-codex'
     expect(projectionIsAcp({ lastUsed: { provider: 'openai' }, next: { provider: 'openai' } }, owns)).toBe(false)
-    expect(projectionIsAcp({ lastUsed: null, next: { provider: 'acp-kimi' } }, owns)).toBe(true)
+    expect(projectionIsAcp({ lastUsed: null, next: { provider: 'acp-generic' } }, owns)).toBe(true)
     expect(projectionIsAcp({ lastUsed: { provider: 'acp-codex' }, next: { provider: 'acp-codex' } }, owns)).toBe(true)
     expect(projectionIsAcp(undefined, owns)).toBe(false)
   })
@@ -46,7 +53,7 @@ describe('ACP recovery dock projection gate', () => {
       kind: 'healthy',
       cause: null,
       detail: null,
-      provider: 'acp-kimi',
+      provider: 'acp-generic',
       acpSessionId: 'agent-session',
       generation: 3,
       interruptedTurnId: null,

@@ -2,6 +2,8 @@ import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Page } from 'playwright'
 import { expect, it } from 'vitest'
+import { SessionId } from '@deepseek-ai/dsh-session'
+import { LlmAdapter, type GenerateOptions, type StreamChunk } from '@deepseek-ai/dsh-llm'
 import { connectFreshWorkspace, writeComposerDraft } from '#host-support'
 import { launchBrowser, newEnglishPage, type TestBrowser } from './browser.ts'
 import { launchAdapterWorld, root } from './scaffold.ts'
@@ -25,7 +27,7 @@ async function openAcpFromNativeMore(page: Page): Promise<void> {
   expect(await detail.locator('[data-dsh-acp-panel]').count()).toBe(1)
 }
 
-it('keeps ACP drafts and diagnostics reachable through RC.4 native navigation without dispatching extra work', async () => {
+it('keeps ACP drafts and diagnostics scoped through alpha.2 native navigation without extra ACP work', async () => {
   const host = await launchAdapterWorld()
   let browser: TestBrowser | undefined
   const createdSessions: string[] = []
@@ -106,8 +108,8 @@ it('keeps ACP drafts and diagnostics reachable through RC.4 native navigation wi
     expect(await page.locator('[data-question-key]:visible').count()).toBe(0)
     await capture('native-new-session-preserved-draft-wide.png')
 
-    // Establish the binding through the real ACP process; the diagnostics View
-    // is deliberately registered only after this first successful turn.
+    // Establish the binding through the real ACP process; the stable diagnostic
+    // registration becomes visible to this Session only after verification.
     const settled = host.whenTurnSettled(30_000)
     await page.getByRole('button', { name: 'Send message', exact: true }).click()
     expect(await settled).toBe(sessionId)
@@ -127,8 +129,8 @@ it('keeps ACP drafts and diagnostics reachable through RC.4 native navigation wi
     await returnToConversation(page, sessionId)
     await page.getByRole('button', { name: 'Collapse right sidebar', exact: true }).click()
 
-    // The native width budget folds later Views. The adapter's dynamically
-    // registered View must remain selectable through More, without its own menu.
+    // The native width budget folds later Views. The adapter's Session-visible
+    // View must remain selectable through More, without its own menu.
     await page.setViewportSize({ width: 390, height: 844 })
     const moreViews = page.getByRole('button', { name: 'More conversation views', exact: true })
     await moreViews.click()
@@ -148,6 +150,61 @@ it('keeps ACP drafts and diagnostics reachable through RC.4 native navigation wi
     expect(promptCount()).toBe(1)
     expect(acpPermissionAudit(host, 'asked')).toHaveLength(0)
     expect(await page.locator('[data-question-key]:visible').count()).toBe(0)
+
+    // Keep Diagnostics selected while switching to genuine native history.
+    // This independent local adapter performs one deterministic native turn.
+    const nativeRoute = 'native-navigation-fixture'
+    const nativeModel = 'native-navigation-model'
+    const nativeReply = 'E2E_NATIVE_NAVIGATION_DONE'
+    const nativeCalls: Array<{ provider: string; model: string }> = []
+    class NativeFixture extends LlmAdapter {
+      override providerInfo(id: string) {
+        return { id, name: 'Native navigation fixture' }
+      }
+      override async listModels(provider: string) {
+        return [{ provider, id: nativeModel, name: 'Native Navigation Model' }]
+      }
+      override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+        nativeCalls.push({ provider: options.provider, model: options.model })
+        yield { type: 'block-start', index: 0, blockType: 'text' }
+        yield { type: 'text-delta', index: 0, text: nativeReply }
+        yield { type: 'block-end', index: 0, block: { type: 'text', text: nativeReply } }
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      }
+    }
+    host.ctx.effect(() => host.ctx.llm.registerAdapter([nativeRoute], new NativeFixture()))
+    await diagnosticsTab.click()
+    await diagnostics.waitFor({ state: 'visible' })
+    await host.ctx.agentDefaultModel.saveSelection({ provider: nativeRoute, model: nativeModel })
+    await page.getByRole('button', { name: 'New session', exact: true }).last().click()
+    await page.getByText('Into the Unknown', { exact: true }).waitFor()
+    await expect.poll(() => conversation.getAttribute('data-conversation-session')).not.toBe(sessionId)
+    const nativeSessionId = required(await conversation.getAttribute('data-conversation-session'))
+    await page.getByRole('button', { name: /^Select model, current Native Navigation Model/ }).waitFor()
+    expect(nativeCalls).toHaveLength(0)
+    expect(promptCount()).toBe(1)
+
+    const nativeSettled = host.whenTurnSettled(30_000)
+    await writeComposerDraft(page, input, 'Check native navigation visibility')
+    await page.getByRole('button', { name: 'Send message', exact: true }).click()
+    expect(await nativeSettled).toBe(nativeSessionId)
+    const nativeSession = required(host.ctx.sessions.get(SessionId(nativeSessionId)))
+    expect(nativeSession.header.isSeeded).not.toBe(true)
+    expect(nativeSession.requestHeader()?.config).toMatchObject({ provider: nativeRoute, model: nativeModel })
+    await conversation.getByText(nativeReply, { exact: true }).waitFor()
+    await expect.poll(() => diagnosticsTab.count()).toBe(0)
+    await diagnostics.waitFor({ state: 'hidden' })
+    await capture('native-session-hides-acp-diagnostics.png')
+    expect(nativeCalls).toEqual([{ provider: nativeRoute, model: nativeModel }])
+    expect(promptCount()).toBe(1)
+
+    await returnToConversation(page, sessionId)
+    await diagnosticsTab.waitFor({ state: 'visible' })
+    await expect.poll(() => diagnosticsTab.getAttribute('aria-selected')).toBe('true')
+    await diagnostics.waitFor({ state: 'visible' })
+    await capture('native-return-restores-acp-diagnostics.png')
+    expect(nativeCalls).toEqual([{ provider: nativeRoute, model: nativeModel }])
+    expect(promptCount()).toBe(1)
     expect(errors).toEqual([])
   } finally {
     try {

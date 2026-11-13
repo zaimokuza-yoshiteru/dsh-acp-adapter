@@ -4,6 +4,28 @@
 
 User-facing changes and upgrade notes. See [GitHub Releases](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/releases) for publication dates, exact installation instructions, and checksums. Historical entries were reconstructed from tag diffs; npm packages were not republished.
 
+## 0.2.2-rc.1.1
+
+### 中文
+
+- 适配 DSH `0.2.2-rc.1`，修复该版本下的 DSH 工具调用失败，并显示 CodeBuddy 当前模型可用的推理档位。安装前请匹配 RC.1 宿主；本版不扩大到 RC.2。
+- 新增可选 **ACP** 模式：使用 DSH 工具，由 Agent 管理上下文。标准、PTC、极简和创造模式继续可用，不改变默认选择或已有会话；创建插件仍从原生创造入口开始。
+- 支持未提供模型目录的 ACP Agent，选择 **Agent current configuration** 即可开始会话。Kimi 已停止支持，不再启动或探测；已保存的配置和历史保留，配置可手动删除。
+- 已有 ACP 会话尝试更换模型时，保留原模型、历史和草稿，并提供独立新会话入口；新会话不继承原 Agent 上下文。同模型的推理强度仍可调整。实验性 **Auto Review** 尚未完整支持，**Auto** 审批不等于 Auto Review。
+- 恢复时优先重连原上下文，重置为空白上下文需确认。分叉已成功但记录清理失败时只重试清理；结果未知时可明确放弃该尝试，不自动重复创建。
+- 改善与 ds-bot 共存及插件热启停，停用时等待已受理工具结果和反馈收尾。修复 Teams 成员在会话重建后保存过期模式、以及中断后无法继续保存模式的问题；升级前尚未应用的旧成员偏好可能需要重选一次。
+- 精简中英文插件详情、设置和恢复提示，切换语言时保留当前操作并更新反馈文案；改善窄屏控件、触屏与键盘操作。
+
+### English
+
+- Target DSH `0.2.2-rc.1`, fixing DSH tool-call failures on that version and showing CodeBuddy reasoning options available for the current model. Match the RC.1 host before installing; this release does not extend compatibility to RC.2.
+- Add an optional **ACP** mode with DSH tools and Agent-managed context. Standard, PTC, Minimal and Creator remain available without changing defaults or existing sessions; start plugin creation through the native Creator entry point.
+- Support ACP Agents without a model catalog through **Agent current configuration**. Retire Kimi support: it is no longer launched or probed. Saved configurations and history remain; configurations can be deleted manually.
+- Keep the original model, history and draft when attempting to change models in an established ACP session, and offer an independent new session. The new session does not inherit the original Agent context. Reasoning effort can still change on the same model. Experimental **Auto Review** remains incompletely supported; **Auto** approval is a separate feature.
+- Prefer reconnecting to the original context and confirm resets to blank context. If a fork succeeds but record cleanup fails, retry only the cleanup. Unknown creation outcomes can be explicitly abandoned without automatically creating another session.
+- Improve ds-bot coexistence and plugin hot reloads, draining accepted tool results and feedback on disable. Fix stale Teams member mode selections after session replacement and modes remaining unsavable after interruption. Older, unapplied member preferences may need to be selected again once after upgrading.
+- Simplify bilingual plugin details, settings and recovery guidance. Keep current actions and translate their feedback when changing languages; improve narrow layouts, touch and keyboard interaction.
+
 ## 0.2.1-rc.4.1
 
 ### 中文

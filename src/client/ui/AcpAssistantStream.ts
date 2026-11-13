@@ -11,6 +11,7 @@ import {
 } from 'react'
 import type { ComponentType, ReactNode } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
+import type { ObservableSnapshot } from '@deepseek-ai/dsh-client-store'
 import type { StoredEntry, PropsRenderFactories } from '@deepseek-ai/dsh-client-ui-slots'
 import type {
   ChatSnapshot,
@@ -34,6 +35,7 @@ import {
 import type { ActivityNodeProps, ActivityPresentationRow } from './AcpActivityNode.ts'
 import { mountNativeEntry, type EntryProps } from './native-tool-renderer.ts'
 import { nativeHeaderViewRegistration, ownsNativeHeaderViews } from './native-header-views.ts'
+import type { AcpAuditViewVisibility } from './audit-view-visibility.ts'
 export { uniqueViewTabs } from './native-header-views.ts'
 import { ActivityAnchorSubscriptions } from './activity-anchor-subscriptions.ts'
 import {
@@ -45,7 +47,10 @@ import {
 } from './acp-chat-normalization.ts'
 export { activityBoundaries, finalAnswerStart } from './acp-chat-normalization.ts'
 
-type Dependencies = Pick<ActivityNodeProps, 'journalHub' | 't' | 'onOpenProjectedChild' | 'jsonStringWrapping'>
+type Dependencies = Pick<ActivityNodeProps, 'journalHub' | 't' | 'onOpenProjectedChild' | 'jsonStringWrapping'> & {
+  readonly forkAt?: (sessionId: string, seq: number) => void
+  readonly auditVisibility?: AcpAuditViewVisibility
+}
 type NativeChatProps = ChatViewSlotProps & PropsRenderFactories
 
 class SnapshotSource<T> {
@@ -103,16 +108,20 @@ function groupSource(projection: ChatProjection, key: GroupKey) {
   return source
 }
 
-const emptyChatSource = new SnapshotSource(null as unknown as ChatSnapshot)
-const emptyNodeSource = new SnapshotSource<ChatConversationViewNode | undefined>(undefined)
-const emptyProcessSource = new SnapshotSource<unknown>(undefined)
-const emptyBottomSource = new SnapshotSource(false)
-const emptyGroupSource = new SnapshotSource<GroupSnapshot<ConversationGroupData<'chat'>> | undefined>(undefined)
-const emptyGroupRevisionSource = new SnapshotSource(0)
+function constantSource<T>(value: T): ObservableSnapshot<T> {
+  return { getSnapshot: () => value, subscribe: () => () => {} }
+}
+
+const emptyChatSource = constantSource(null as unknown as ChatSnapshot)
+const emptyNodeSource = constantSource<ChatConversationViewNode | undefined>(undefined)
+const emptyProcessSource = constantSource<unknown>(undefined)
+const emptyBottomSource = constantSource(false)
+const emptyGroupSource = constantSource<GroupSnapshot<ConversationGroupData<'chat'>> | undefined>(undefined)
+const emptyGroupRevisionSource = constantSource(0)
 
 interface ProjectionBinding {
-  readonly projectionRef: { current: ChatProjection | undefined }
-  readonly projectionModeSource: SnapshotSource<number>
+  readonly projectionRef: { readonly current: ChatProjection | undefined }
+  readonly projectionModeSource: ObservableSnapshot<number>
 }
 
 // One binding per rendered Chat view, including two viewports of the same Session.
@@ -346,10 +355,21 @@ function NormalizedChat({
   }, [projection, change, props])
   const binding = useMemo(() => ({ projectionRef, projectionModeSource }), [])
   const adapters = useProjectedChatHooks(props, binding)
+  // Native history rows memoize their flow owner, including forkAt. A journal
+  // update must not replace that owner for every already committed reply.
+  const forkAt = useMemo(() => {
+    const fork = dependencies.forkAt
+    const sessionId = props.sessionId
+    return fork === undefined ? undefined : (seq: number) => fork(sessionId, seq)
+  }, [dependencies.forkAt, props.sessionId])
   return h(
     ProjectionContext.Provider,
     { value: binding },
-    h(Native, { ...props, ...adapters } as unknown as EntryProps),
+    h(Native, {
+      ...props,
+      ...adapters,
+      ...(hasAcp && forkAt !== undefined ? { forkAt } : {}),
+    } as unknown as EntryProps),
   )
 }
 
@@ -519,6 +539,15 @@ function composeSlot(
 }
 
 export function installAcpAssistantStream(ctx: Context, dependencies: Dependencies): void {
+  if (dependencies.auditVisibility !== undefined) {
+    composeSlot(
+      ctx,
+      'conversation.session',
+      (entry) => entry.children?.['conversation.view'] !== undefined && entry.inject !== undefined,
+      (Native, props) => h(Native, props),
+      (entry) => nativeHeaderViewRegistration(entry, dependencies.auditVisibility),
+    )
+  }
   composeSlot(
     ctx,
     'conversation.view',
@@ -543,7 +572,7 @@ export function installAcpAssistantStream(ctx: Context, dependencies: Dependenci
     'conversation.session.header',
     ownsNativeHeaderViews,
     (Native, props) => h(Native, props),
-    nativeHeaderViewRegistration,
+    (entry) => nativeHeaderViewRegistration(entry, dependencies.auditVisibility),
   )
   // Native tool nodes still use the native Tool tree. Only their sidecar detail
   // loader/inspector and external-child navigation belong to ACP.

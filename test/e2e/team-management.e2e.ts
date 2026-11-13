@@ -200,10 +200,13 @@ it(
       await memberApprovals.getByRole('button', { name: 'Allow once', exact: true }).click()
       await expect
         .poll(
-          async () => (await (host.ctx.get('dshAcp') as AcpRemoteService).agentSessionSnapshot(childId)).freshness,
+          async () => {
+            const snapshot = await (host.ctx.get('dshAcp') as AcpRemoteService).agentSessionSnapshot(childId)
+            return { freshness: snapshot.freshness, modeWritable: snapshot.modeWritable }
+          },
           { timeout: 15000 },
         )
-        .toBe('stale')
+        .toEqual({ freshness: 'stale', modeWritable: true })
       rmSync(policyGate, { force: true })
       await expect(
         (host.ctx.get('dshAcp') as AcpRemoteService).setAgentSessionOption(childId, {
@@ -556,15 +559,19 @@ it(
         await expect(
           (host.ctx.get('dshAcp') as AcpRemoteService).setTeamMemberMode(demoLead.id, demoLead.id, 'plan'),
         ).rejects.toThrow()
-        await expect
-          .poll(async () =>
-            Promise.all(
-              demoMembers.map(
-                async (m) => (await (host.ctx.get('dshAcp') as AcpRemoteService).agentSessionSnapshot(m.id)).freshness,
-              ),
-            ),
-          )
-          .toEqual(['stale', 'stale'])
+        // Interrupt acceptance does not include teardown; join the owners before checking dormant controls.
+        await host.ctx.subagents.waitForChildren(demoLead)
+        expect(
+          await Promise.all(
+            demoMembers.map(async (m) => {
+              const snapshot = await (host.ctx.get('dshAcp') as AcpRemoteService).agentSessionSnapshot(m.id)
+              return { freshness: snapshot.freshness, modeWritable: snapshot.modeWritable }
+            }),
+          ),
+        ).toEqual([
+          { freshness: 'stale', modeWritable: true },
+          { freshness: 'stale', modeWritable: true },
+        ])
         await expect.poll(() => interrupt.isDisabled()).toBe(true)
         expect(demoLead.status).toBe('running')
         await panel.getByRole('button', { name: '批量调整模式', exact: true }).click()
@@ -669,7 +676,7 @@ it(
         await page.getByText('E2E_NATIVE_MODE_ONLY', { exact: true }).waitFor()
         expect(await panel.count()).toBe(0)
         expect(await page.getByRole('button', { name: /^(?:Session|会话) ·/ }).count()).toBe(0)
-        expect(await page.getByRole('button', { name: 'Agent Team', exact: true }).count()).toBeGreaterThan(0)
+        expect(await page.getByRole('button', { name: 'Agent team', exact: true }).count()).toBeGreaterThan(0)
       }
       if (retain) {
         await panel.getByRole('button', { name: '关闭成员管理', exact: true }).click()

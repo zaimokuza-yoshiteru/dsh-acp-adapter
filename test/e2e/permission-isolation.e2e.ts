@@ -25,7 +25,7 @@ class NativeControl extends LlmAdapter {
   }
 }
 
-const profiles = ['kimi', 'devin', 'codex', 'claude', 'codebuddy'] as const
+const profiles = ['devin', 'codex', 'claude', 'codebuddy'] as const
 
 describe.each(profiles)('permission isolation: %s', (profile) => {
   it('preserves native DSH tool policies when selecting and executing ACP', async () => {
@@ -92,7 +92,7 @@ describe.each(profiles)('permission isolation: %s', (profile) => {
       await prompt(blank)
       expect(preset(blank)).toBe('workspace-write')
       expect(native.requests).toHaveLength(1)
-      expect(JSON.stringify(native.requests[0].messages)).toContain('Approval policy: ask.')
+      expect(JSON.stringify(native.requests[0].messages)).toContain('Approval prompts are enabled in this session')
       // Even bypassing the browser's new-session guard must not change native permissions.
       await select(blank, acp)
       await prompt(blank, false)
@@ -134,7 +134,7 @@ describe.each(profiles)('permission isolation: %s', (profile) => {
             event.type === 'user/message' && 'form' in event.data.source && event.data.source.form === 'snapshot',
         )
       expect(JSON.stringify(snapshot)).toContain('Approval prompts are disabled in this session')
-      expect(JSON.stringify(snapshot)).not.toContain('Approval policy: ask.')
+      expect(JSON.stringify(snapshot)).not.toContain('Approval prompts are enabled in this session')
       const applied = policyEvents(agent)
       await prompt(agent)
       expect(policyEvents(agent)).toEqual(applied)

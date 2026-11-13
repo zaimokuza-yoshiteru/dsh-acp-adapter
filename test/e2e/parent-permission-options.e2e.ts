@@ -50,7 +50,7 @@ class NativeParent extends LlmAdapter {
 async function fixture(parentKind: 'native' | 'acp' = 'native', locale: 'en' | 'zh' = 'en') {
   const host = await launchAdapterWorld({
     adapterDirectory: process.env.DSH_E2E_ADAPTER_DIRECTORY ?? root,
-    toolsMode: 'native',
+    toolExecutor: 'native',
   })
   const browser = await launchBrowser({ headless: true })
   const page = await newEnglishPage(browser)

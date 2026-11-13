@@ -25,7 +25,6 @@ describe.each([
   ['claude', false],
   ['devin', true],
   ['codex', true],
-  ['kimi', false],
 ])('native Teams over ACP: %s, HTTP=%s', (profile, http) => {
   it.each(['allow', 'deny', 'cancel'])(
     'creates matching members, uses native roster/tasks, routes %s on the original approval and continues messaging',
@@ -195,12 +194,12 @@ describe.each([
             .getByRole('button', { name: 'calculator · Pending request', exact: true })
             .waitFor({ timeout: 20_000 })
         const action = page.locator('[data-team-action]')
-        await action.getByRole('button', { name: /Agent Team/ }).click()
-        const panel = page.getByRole('dialog', { name: 'Agent Team', exact: true })
+        await action.getByRole('button', { name: /Agent team/ }).click()
+        const panel = page.getByRole('dialog', { name: 'Agent team', exact: true })
         await panel.getByText('Compute fixture', { exact: true }).first().waitFor()
         await panel.getByText('calculator', { exact: true }).first().waitFor()
         if (profile === 'devin' && decision === 'allow') await verifyTaskBoard(panel, host, lead)
-        await action.getByRole('button', { name: /Agent Team/ }).click()
+        await action.getByRole('button', { name: /Agent team/ }).click()
         if (profile !== 'codex') {
           await page.getByRole('button', { name: 'calculator · Pending request', exact: true }).click()
           await page.locator('[data-acp-team-approvals]').waitFor()
@@ -426,7 +425,9 @@ describe.each([
         lead.steer(
           createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'E2E_TEAM_INTERRUPT' }] }),
         )
-        await vi.waitFor(() => expect(readFileSync(log, 'utf8')).toContain('E2E_TEAM_INTERRUPTED'), { timeout: 30_000 })
+        await vi.waitFor(() => expect(readFileSync(log, 'utf8')).toContain('E2E_TEAM_INTERRUPTED'), {
+          timeout: 30_000,
+        })
         expect(new Set(executions.filter((item) => !item.isError).map((item) => item.name)).size).toBe(9)
         await lead.whenIdle()
         finishSetup(interrupt)

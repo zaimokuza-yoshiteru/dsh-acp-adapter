@@ -115,15 +115,19 @@ it('keeps long teammate cards and reserved notices aligned in both languages and
     setStage('reject teammate approvals')
     await approvals.getByRole('button', { name: 'Reject all', exact: true }).click()
     setStage('wait for teammate sessions to stop')
-    await expect
-      .poll(async () =>
-        Promise.all(
-          members.map(
-            async (m) => (await (host.ctx.get('dshAcp') as AcpRemoteService).agentSessionSnapshot(m.id)).freshness,
-          ),
-        ),
-      )
-      .toEqual(['stale', 'stale'])
+    // A stale snapshot can precede process teardown; join the owning activations before checking writability.
+    await host.ctx.subagents.waitForChildren(lead)
+    expect(
+      await Promise.all(
+        members.map(async (m) => {
+          const snapshot = await (host.ctx.get('dshAcp') as AcpRemoteService).agentSessionSnapshot(m.id)
+          return { freshness: snapshot.freshness, modeWritable: snapshot.modeWritable }
+        }),
+      ),
+    ).toEqual([
+      { freshness: 'stale', modeWritable: true },
+      { freshness: 'stale', modeWritable: true },
+    ])
     await lead.whenIdle()
     notices.finish()
     for (const pending of pendingShells) {
@@ -153,9 +157,16 @@ it('keeps long teammate cards and reserved notices aligned in both languages and
     // Electron and Chromium can round the two half-pixel borders differently.
     expect(before.height + 1).toBeGreaterThanOrEqual(220)
     setStage('configure teammate model and mode')
-    await (host.ctx.get('dshAcp') as AcpRemoteService).setTeamMemberModel(lead.id, members[0].id, 'mock-model-b')
-    await (host.ctx.get('dshAcp') as AcpRemoteService).setTeamMemberMode(lead.id, members[0].id, 'plan')
     const service = host.ctx.get('dshAcp') as AcpRemoteService
+    await expect(service.setTeamMemberModel(lead.id, members[0].id, 'mock-model-b')).rejects.toMatchObject({
+      code: 'dsh-acp/model-switch-unavailable',
+    })
+    expect(await service.teamMemberModels(lead.id, members[0].id)).toMatchObject({
+      currentModel: 'mock-model-a',
+      pendingModel: null,
+      unavailableReason: 'model-switch',
+    })
+    await service.setTeamMemberMode(lead.id, members[0].id, 'plan')
     const teamMembers = service.teamMembers.bind(service)
     let releaseRefresh!: () => void
     const refreshGate = new Promise<void>((resolve) => {

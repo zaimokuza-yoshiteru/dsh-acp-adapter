@@ -48,7 +48,7 @@ function nodes(value: unknown): Tree[] {
   if (Array.isArray(value)) return value.flatMap(nodes)
   if (typeof value !== 'object' || value === null || !('props' in value)) return []
   const node = value as Tree
-  return [node, ...nodes(node.props.children)]
+  return [node, ...nodes(node.props.children), ...nodes(node.props.footer)]
 }
 function seed(values: unknown[]) {
   hooks.values = values
@@ -122,13 +122,14 @@ function setup(owner = false, workspace = true) {
       feedback: { report: vi.fn() },
     } as never) as Tree
   }
-  const model = (status: 'inactive' | 'running' = 'inactive') => {
+  const model = (status: 'inactive' | 'running' = 'inactive', blocked = false, memberBlocked = false) => {
     seed([
       false,
       {
         currentModel: 'a',
         pendingModel: null,
         writable: true,
+        ...(blocked ? { unavailableReason: 'model-switch' } : {}),
         models: [
           { id: 'a', name: 'A' },
           { id: 'b', name: 'B' },
@@ -148,6 +149,7 @@ function setup(owner = false, workspace = true) {
         name: 'Child',
         model: 'a',
         modelWritable: true,
+        ...(memberBlocked ? { modelUnavailableReason: 'model-switch' } : {}),
         status,
         description: null,
       },
@@ -157,7 +159,7 @@ function setup(owner = false, workspace = true) {
       onMenuOpen: () => {},
     } as never)
   }
-  const recovery = () => {
+  const recovery = (confirmRebind = false) => {
     seed([
       { dshSessionId: 'lead', kind: 'outcome-unknown', cause: null, detail: null },
       true,
@@ -168,6 +170,7 @@ function setup(owner = false, workspace = true) {
       false,
       false,
       0,
+      confirmRebind,
     ])
     return AcpRecoveryDock({ ...common, createNewSession } as never)
   }
@@ -257,6 +260,36 @@ it('keeps native owner model controls enabled without granting a busy member a w
   expect((busy.props.items as { disabled: boolean }[]).every((item) => item.disabled)).toBe(true)
   ;(busy.props.onSelect as (id: string) => void)('b')
   expect(h.remote.setTeamMemberModel).not.toHaveBeenCalled()
+})
+
+it('explains member model-switch refusal and permits only restoring the current model', () => {
+  for (const fromMember of [false, true]) {
+    const h = setup(true)
+    const menu = modelMenu(h.model('inactive', !fromMember, fromMember))
+    expect(menu.props.items).toEqual([
+      { id: 'a', label: 'A', disabled: false },
+      { id: 'b', label: 'B', disabled: true },
+    ])
+    expect(menu.props.footer).toEqual([{ type: 'label', id: 'read-only', text: 'teamModelSwitchUnavailable' }])
+    ;(menu.props.onSelect as (id: string) => void)('b')
+    expect(h.remote.setTeamMemberModel).not.toHaveBeenCalled()
+    ;(menu.props.onSelect as (id: string) => void)('a')
+    expect(h.remote.setTeamMemberModel).toHaveBeenCalledExactlyOnceWith('lead', 'child', 'a')
+  }
+})
+
+it('requires confirmation before blank rebind and rechecks grants at the final confirmation', () => {
+  const h = setup()
+  grants(h.state, 'lead', ['dshAcp/rebindRecoveryBlank'])
+  ;(recoveryButton(h.recovery(), 'recoveryRebind').props.onClick as () => void)()
+  expect(h.remote.rebindRecoveryBlank).not.toHaveBeenCalled()
+  const confirmation = recoveryButton(h.recovery(true), 'recoveryRebindConfirm')
+  grants(h.state, 'lead', [])
+  ;(confirmation.props.onClick as () => void)()
+  expect(h.remote.rebindRecoveryBlank).not.toHaveBeenCalled()
+  grants(h.state, 'lead', ['dshAcp/rebindRecoveryBlank'])
+  ;(recoveryButton(h.recovery(true), 'recoveryRebindConfirm').props.onClick as () => void)()
+  expect(h.remote.rebindRecoveryBlank).toHaveBeenCalledExactlyOnceWith('lead')
 })
 
 it('disables ACP recovery writes for a reader and rechecks a previously opened recovery action', async () => {

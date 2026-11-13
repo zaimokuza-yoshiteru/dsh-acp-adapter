@@ -318,12 +318,12 @@ describe('M3a binding-first ACP provider', () => {
   it.each([
     ['codex', '1.6.2', null],
     ['claude', '0.70.0', null],
-    ['kimi', null, '0.36.1'],
+    [undefined, null, '0.36.1'],
   ] as const)(
     'restores a saved %s binding across the registry upgrade without creating a blank session',
     async (runtime, adapterVersion, wrappedCliVersion) => {
       const { sidecar, root } = sidecarAt()
-      const config = () => ({ ...profile(), runtime })
+      const config = () => ({ ...profile(), ...(runtime === undefined ? {} : { runtime }) })
       const message = user('first')
       const initial = new AcpProfileAdapter(
         'test',
@@ -1450,22 +1450,18 @@ describe('durable Team member modes', () => {
       }
       let message = user('first')
       let events = [...session(message).events]
+      const live = withSessionFacts({
+        header: { cwd: os.tmpdir() },
+        inheritedEventCount: 0,
+        snapshotEvents: () => events,
+      })
       const create = () =>
-        new AcpProfileAdapter(
-          'test',
-          profile,
-          seam(),
-          () =>
-            withSessionFacts({ header: { cwd: os.tmpdir() }, inheritedEventCount: 0, snapshotEvents: () => events }),
-          ledgerFor(sidecar),
-          undefined,
-          factory,
-          sidecar,
-        )
+        new AcpProfileAdapter('test', profile, seam(), () => live, ledgerFor(sidecar), undefined, factory, sidecar)
       let adapter = create()
       try {
         await drain(adapter.stream(request('member-mode', message)))
         await adapter.close()
+        adapter = create()
         const before = [...calls]
         expect(await adapter.setTeamMemberMode('member-mode', 'plan')).toMatchObject({
           freshness: 'stale',
@@ -1473,6 +1469,7 @@ describe('durable Team member modes', () => {
           modeWritable: true,
         })
         expect(calls).toEqual(before) // Saving never spawns or sends a task.
+        await adapter.close()
         await sidecar.dispose() // Reopen the actual SQLite file, not an in-memory preference.
         adapter = create()
         expect(await adapter.agentSessionSnapshot('member-mode')).toMatchObject({ pendingModeId: 'plan' })

@@ -1,3 +1,4 @@
+import { retiredAgentReason } from '../../contract/agent-config.ts'
 /**
  * ACP provider 使用的 stub LLM adapter。
  *
@@ -36,7 +37,7 @@ import type * as acp from '@agentclientprotocol/sdk'
 import { acpProbeConfigKey, acpProbeFresh } from '../../domain/session/agent-config.ts'
 import type { AcpStubAgentConfig } from '../../domain/session/agent-config.ts'
 import { effectiveRuntimeOf } from '../../contract/agent-config.ts'
-import { modelProbeOptions } from '../../domain/session/agent-compatibility.ts'
+import { modelProbeOptions } from '../../agents/compatibility.ts'
 import { acpConfigOptionsSnapshot } from '../../domain/session/acp-config-options.ts'
 import { acpCanonicalHash16 } from '../../persistence/sidecar.ts'
 import { AcpClientConnection } from '../../protocol/v1/connection.ts'
@@ -51,6 +52,12 @@ import type {
 import type { AcpSpawnPlanView } from '../../runtime/process/types.ts'
 import type { SubprocessSeamResolution } from '../../runtime/process/subprocess.ts'
 import { normalizeAcpConfigOptionKey } from '../../contract/config-options.ts'
+import {
+  ACP_CURRENT_CONFIG_MODEL_ID,
+  acpDeclaredModelRoute,
+  acpModelConfigOption,
+  acpModelSelection,
+} from '../../contract/model-selection.ts'
 import { redactSecretText } from '../../domain/observability/redaction.ts'
 
 // probe 缓存键的真源下沉到 domain/session/agent-config.ts（remote/创建门
@@ -115,6 +122,8 @@ export interface AcpStubAdapterOptions {
    * 结果）。缺席时写 `process.stderr` 保底。
    */
   onWarn?: (message: string) => void
+  /** Process teardown warnings retain the affected provider's identity. */
+  onProcessWarn?: (provider: string, message: string) => void
 }
 
 /** One cached probe outcome; failures are cached too (see {@link AcpStubAdapter.listModels}). */
@@ -149,13 +158,13 @@ export interface AcpProbeCacheEntry {
         readonly protocolVersion: number | undefined
         /**
          * configOptions 是否含 `category=model` 项（ 五态目录口径的输入事实）：
-         * kimi 的模型目录只经 configOptions 提供（实际 ACP 行为 legacy `models` 为空），
+         * generic 的模型目录只经 configOptions 提供（实际 ACP 行为 legacy `models` 为空），
          * 此项在场即视为有目录。与 models 同为 probe 结果——进条目不进缓存键。
          */
         readonly hasModelConfigOption: boolean
         /** Bounded session-scoped configuration snapshot used for exact model resolution. */
         readonly configOptions: readonly acp.SessionConfigOption[] | undefined
-        /** Model-scoped snapshots for Agents such as Kimi whose reasoning
+        /** Model-scoped snapshots for Agents whose reasoning
          * catalogue changes when the selected model changes. */
         readonly modelConfigOptions?: Readonly<Record<string, readonly acp.SessionConfigOption[]>>
       }
@@ -174,7 +183,6 @@ type AcpVerifiedModelCatalog = Pick<
   'models' | 'configOptions' | 'modelConfigOptions'
 > & { readonly key: string }
 
-/** Extract the `category: 'model'` select options from a probe, flattening grouped options. */
 /** Resolve ACP thought-level metadata into DSH's adapter-owned reasoning shape. */
 export function reasoningInfoFromConfigOptions(
   _profileId: string,
@@ -184,11 +192,11 @@ export function reasoningInfoFromConfigOptions(
   const option = configOptions?.find((candidate) => {
     if (candidate.type !== 'select') return false
     const id = candidate.id.toLowerCase().replaceAll('-', '_')
+    const category = normalizeAcpConfigOptionKey(candidate.category ?? '')
     return (
-      normalizeAcpConfigOptionKey(candidate.category ?? '') === 'thought_level' ||
-      normalizeAcpConfigOptionKey(candidate.category ?? '') === 'reasoning_effort' ||
-      id === 'thought_level' ||
-      id === 'reasoning_effort'
+      category === 'thought_level' ||
+      category === 'reasoning_effort' ||
+      (category === '' && (id === 'thought_level' || id === 'reasoning_effort'))
     )
   })
   if (option === undefined || option.type !== 'select') return undefined
@@ -232,11 +240,10 @@ export function disambiguateProbeModels(models: readonly LlmModelInfo[]): LlmMod
 }
 
 export function probeModels(provider: string, configOptions: AcpProbeResult['configOptions']): LlmModelInfo[] {
-  const option = configOptions?.find((candidate) => normalizeAcpConfigOptionKey(candidate.category ?? '') === 'model')
-  if (option === undefined || option.type !== 'select') return []
+  const option = acpModelConfigOption(configOptions)
   const seen = new Set<string>()
   const models: LlmModelInfo[] = []
-  for (const entry of option.options) {
+  for (const entry of option?.options ?? []) {
     // SessionConfigSelectOptions is a flat option list OR a group list; devin's
     // 40-variant catalog arrives grouped. Flatten without assuming either.
     const options = 'options' in entry ? entry.options : [entry]
@@ -247,13 +254,15 @@ export function probeModels(provider: string, configOptions: AcpProbeResult['con
       seen.add(item.value)
       models.push({
         provider,
-        id: item.value,
+        id: acpDeclaredModelRoute(item.value),
         name: item.name,
         ...(item.description === undefined || item.description === null ? {} : { description: item.description }),
       })
     }
   }
-  return disambiguateProbeModels(models)
+  return models.length === 0
+    ? [{ provider, id: ACP_CURRENT_CONFIG_MODEL_ID, name: 'Agent current configuration' }]
+    : disambiguateProbeModels(models)
 }
 
 /**
@@ -374,6 +383,8 @@ export class AcpStubAdapter extends LlmAdapter {
         'ACP_UNKNOWN_PROVIDER',
       )
     }
+    const retired = retiredAgentReason(provider.replace(/^acp-/, ''), config)
+    if (retired !== undefined) throw new LlmError(retired, 'ACP_AGENT_RETIRED')
     const key = acpProbeConfigKey(config)
     const cached = this.cache.get(provider)
     // 新鲜度集中判定（agent-config.ts acpProbeFresh）：key 相等且未过期
@@ -436,10 +447,11 @@ export class AcpStubAdapter extends LlmAdapter {
   configOptionsForModel(provider: string, model: string): readonly acp.SessionConfigOption[] | undefined {
     const catalog = this.currentCatalog(provider)
     if (catalog === undefined) return undefined
-    return catalog.modelConfigOptions === undefined
+    const selection = acpModelSelection(model)
+    return catalog.modelConfigOptions === undefined || selection.kind === 'current-config'
       ? catalog.configOptions
-      : Object.hasOwn(catalog.modelConfigOptions, model)
-        ? catalog.modelConfigOptions[model]
+      : Object.hasOwn(catalog.modelConfigOptions, selection.value)
+        ? catalog.modelConfigOptions[selection.value]
         : undefined
   }
 
@@ -471,11 +483,16 @@ export class AcpStubAdapter extends LlmAdapter {
       const preparer = this.options.prepareProbe
       preparation = preparer === undefined ? undefined : await preparer({ provider, config, argv })
       const runtimeId = effectiveRuntimeOf(provider.replace(/^acp-/, ''), config)
-      // Kimi and Codex both expose reasoning choices that vary by model. Capture
+      // Agents and Codex both expose reasoning choices that vary by model. Capture
       // the confirmed options from the disposable probe session so DSH does not
       // offer a level (for example Codex Mini + Ultra) that the live session
       // would immediately reject.
       const modelDiscovery = modelProbeOptions(runtimeId)
+      const onProcessWarn =
+        this.probeOptions.onProcessWarn ??
+        (this.options.onProcessWarn === undefined
+          ? undefined
+          : (message: string) => this.options.onProcessWarn!(provider, message))
       const probe = await AcpClientConnection.probe(
         preparation === undefined
           ? { argv, cwd: os.tmpdir(), env: { ...config.env }, subprocess: resolution.seam }
@@ -492,11 +509,13 @@ export class AcpStubAdapter extends LlmAdapter {
           ? {
               ...this.probeOptions,
               ...modelDiscovery,
+              ...(onProcessWarn === undefined ? {} : { onProcessWarn }),
             }
           : {
               ...this.probeOptions,
               cwd: preparation.cwd,
               ...modelDiscovery,
+              ...(onProcessWarn === undefined ? {} : { onProcessWarn }),
             },
       )
       const models = probeModels(provider, probe.configOptions)
@@ -515,10 +534,8 @@ export class AcpStubAdapter extends LlmAdapter {
           capabilityHash: acpCanonicalHash16(probe.agentCapabilities ?? null),
           // readiness：协商的协议版本随缓存保留（health 行展示）
           protocolVersion: probe.protocolVersion,
-          // configOptions-only 目录事实（Kimi 形态），供五态派生放行。
-          hasModelConfigOption:
-            probe.configOptions?.some((option) => normalizeAcpConfigOptionKey(option.category ?? '') === 'model') ??
-            false,
+          // configOptions-only 目录事实（Agents 形态），供五态派生放行。
+          hasModelConfigOption: acpModelConfigOption(probe.configOptions) !== undefined,
           configOptions: acpConfigOptionsSnapshot(probe.configOptions),
           ...(probe.modelConfigOptions === undefined
             ? {}

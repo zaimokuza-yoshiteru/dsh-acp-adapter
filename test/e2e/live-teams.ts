@@ -163,9 +163,9 @@ Wait for its message. Get/list the shared tasks, confirm the compute task is com
   }
   await page
     .locator('[data-team-action]')
-    .getByRole('button', { name: /Agent Team/ })
+    .getByRole('button', { name: /Agent team/ })
     .click()
-  const panel = page.getByRole('dialog', { name: 'Agent Team', exact: true })
+  const panel = page.getByRole('dialog', { name: 'Agent team', exact: true })
   await panel.getByText(memberName, { exact: true }).first().waitFor()
   await panel.getByText(`Compute ${token}`, { exact: true }).waitFor()
   await panel.getByText(`Review ${token}`, { exact: true }).waitFor()

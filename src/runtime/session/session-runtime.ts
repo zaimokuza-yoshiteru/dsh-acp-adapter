@@ -18,12 +18,7 @@ import { waitWithin } from '../process/timeout.ts'
 import { AcpHostSettlementError } from './mcp-lease.ts'
 import type { AcpMcpLease } from './mcp-lease.ts'
 import type { AcpPermissionCheck } from '../../domain/policy/permission-check.ts'
-import {
-  collectLiveDiagnostic,
-  emitLiveDiagnostic,
-  liveDiagnosticId,
-  liveDiagnosticTraceEnabled,
-} from '../../contract/live-diagnostic-trace.ts'
+import type { LiveDiagnosticTrace } from '../../contract/live-diagnostic-trace.ts'
 import { AcpClientError } from '../../protocol/v1/errors.ts'
 import { performance } from 'node:perf_hooks'
 import { generatedContextBlock } from '../text-block-boundary.ts'
@@ -118,6 +113,8 @@ export interface AcpRuntimeContextUsage {
 }
 
 export interface AcpSessionRuntimeOptions {
+  /** Optional observer borrowed from the Host/run owner; the runtime never owns its sink. */
+  readonly diagnosticTrace?: LiveDiagnosticTrace
   /** DSH session id used only by the opt-in live-test diagnostic observer. */
   readonly diagnosticDshSessionId?: string
   readonly mcpKey?: () => unknown
@@ -155,6 +152,8 @@ export interface AcpSessionRuntimeOptions {
   ) => Promise<acp.CreateElicitationResponse>
   /** One-shot diagnostic for optional private capability degradation. */
   readonly onCapabilityDegraded?: (message: string) => void
+  /** Host-owned structured process warning sink; teardown contains reporting failures. */
+  readonly onProcessWarn?: (message: string) => void
   /** Best-effort notification when a terminal ACP response is waiting on Host settlement. */
   readonly onHostSettlementChanged?: () => void
   /** Reopen a confirmed-cancelled native session before its next bound prompt. */
@@ -191,6 +190,16 @@ export class AcpForkPreDispatchError extends Error {
     super(messages[code], { cause })
     this.name = 'AcpForkPreDispatchError'
     this.code = code
+  }
+}
+
+/** A stale connection was detected before this input could cross the RPC boundary. */
+export class AcpPromptNotDispatchedError extends Error {
+  readonly code = 'ACP_PROMPT_NOT_DISPATCHED'
+
+  constructor() {
+    super('The ACP connection changed before this request was sent. Retry to continue the original session.')
+    this.name = 'AcpPromptNotDispatchedError'
   }
 }
 
@@ -387,100 +396,13 @@ function mergeToolCallSnapshot(
   return structuredClone(next)
 }
 
-/**
- * Some ACP agents stream a complete JSON argument object through tool content
- * immediately before requesting permission, but omit `rawInput` from the
- * request itself.  Recover only a complete, bounded execute-command object;
- * partial JSON and arbitrary prose remain unusable rather than being guessed.
- */
-function executeInputFromContent(content: unknown): Record<string, unknown> | undefined {
-  const parts: string[] = []
-  const visit = (value: unknown): void => {
-    if (Array.isArray(value)) {
-      for (const item of value) visit(item)
-      return
-    }
-    if (typeof value !== 'object' || value === null) return
-    const block = value as Record<string, unknown>
-    if (block.type === 'text' && typeof block.text === 'string') parts.push(block.text)
-    else if (block.type === 'content') visit(block.content)
-  }
-  visit(content)
-  const serialized = parts.join('').trim()
-  if (serialized === '' || Buffer.byteLength(serialized, 'utf8') > 64 * 1024) return undefined
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(serialized)
-  } catch {
-    return undefined
-  }
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined
-  const input = parsed as Record<string, unknown>
-  const command = input.command ?? input.cmd
-  const argv = input.argv
-  if (
-    !(typeof command === 'string' && command.trim() !== '') &&
-    !(Array.isArray(argv) && argv.length > 0 && argv.every((item) => typeof item === 'string'))
-  )
-    return undefined
-  return structuredClone(input)
-}
-
-function permissionToolCall(prior: acp.ToolCallUpdate | undefined, request: acp.ToolCallUpdate): acp.ToolCallUpdate {
-  const toolCall = prior === undefined ? structuredClone(request) : mergeToolCallSnapshot(prior, request)
-  if (toolCall.kind === 'execute' && toolCall.rawInput === undefined) {
-    // Kimi replaces the streamed JSON argument content with human-readable
-    // approval prose on the request itself. Prefer the request when it still
-    // contains structured input, then fall back to the preceding snapshot.
-    const recovered = executeInputFromContent(toolCall.content) ?? executeInputFromContent(prior?.content)
-    if (recovered !== undefined) toolCall.rawInput = recovered
-  }
-  return toolCall
-}
-
-/** Kimi namespaces permission ids as `<turn>:<tool-id>` while its preceding
- * standard tool updates use the unprefixed id.  Accept that one documented
- * numeric namespace form only, and only when the candidate is unambiguous and
- * kind-compatible; all other opaque ids remain exact-match only. */
-function permissionPriorSnapshot(
+/** Permission requests may omit details already published for the same opaque call id. */
+function permissionToolCall(
   snapshots: ReadonlyMap<string, acp.ToolCallUpdate> | undefined,
   request: acp.ToolCallUpdate,
-): acp.ToolCallUpdate | undefined {
-  const exact = snapshots?.get(request.toolCallId)
-  if (exact !== undefined) return exact
-  const match = /^(\d+):(.+)$/.exec(request.toolCallId)
-  if (match?.[2] !== undefined) {
-    const candidate = snapshots?.get(match[2])
-    if (candidate !== undefined) {
-      if (request.kind !== undefined && candidate.kind !== undefined && request.kind !== candidate.kind)
-        return undefined
-      return candidate
-    }
-  }
-  // A sole candidate can belong to an earlier operation, including a completed
-  // one. Without a matching identity, keep the request's own details only.
-  return undefined
-}
-
-const ACP_PERMISSION_INPUT_GRACE_MS = 1_500
-
-async function completePermissionToolCall(
-  snapshots: ReadonlyMap<string, acp.ToolCallUpdate> | undefined,
-  request: acp.ToolCallUpdate,
-  signal: AbortSignal | undefined,
-): Promise<acp.ToolCallUpdate> {
-  const deadline = Date.now() + ACP_PERMISSION_INPUT_GRACE_MS
-  let toolCall = permissionToolCall(permissionPriorSnapshot(snapshots, request), request)
-  while (
-    toolCall.kind === 'execute' &&
-    toolCall.rawInput === undefined &&
-    Date.now() < deadline &&
-    !isAborted(signal)
-  ) {
-    await new Promise<void>((resolve) => setTimeout(resolve, 20))
-    toolCall = permissionToolCall(permissionPriorSnapshot(snapshots, request), request)
-  }
-  return toolCall
+): acp.ToolCallUpdate {
+  const prior = snapshots?.get(request.toolCallId)
+  return prior === undefined ? structuredClone(request) : mergeToolCallSnapshot(prior, request)
 }
 
 async function raceAbort<T>(pending: Promise<T>, signal: AbortSignal | undefined, onAbort: () => T): Promise<T> {
@@ -579,6 +501,7 @@ export class AcpSessionRuntime {
       !this.connection.isTransportAvailable ||
       this.connectionAbort?.signal.aborted === true ||
       this.mcpLease?.signal.aborted === true ||
+      this.mcpLease?.needsRefresh?.() === true ||
       this.mcpKey !== this.options.mcpKey?.()
     )
       return undefined
@@ -684,7 +607,11 @@ export class AcpSessionRuntime {
   private wirePromptActive = false
   private qwenTasks: QwenBackgroundTasks | undefined
   get canSteer(): boolean {
-    return this.connection?.supportsSteering === true && this.pendingQuestions === 0
+    return (
+      this.connection?.supportsSteering === true &&
+      this.pendingQuestions === 0 &&
+      this.mcpLease?.needsRefresh?.() !== true
+    )
   }
 
   async steer(content: acp.ContentBlock[], onDispatch?: () => void): Promise<'injected' | 'promptRequired'> {
@@ -710,11 +637,10 @@ export class AcpSessionRuntime {
     // A closed transport here must never create a new session or replay its wake.
     if (this.agentTurnFailure !== undefined) return
     if (this.closing !== undefined) await this.closing
-    if (
-      this.connection !== undefined &&
-      (this.connection.isClosed || this.mcpLease?.signal.aborted === true || this.mcpKey !== this.options.mcpKey?.())
-    )
-      await this.close()
+    // An Agent that exited while idle leaves a connection object whose
+    // transport is gone. Replace it here, before any prompt is claimed, so the
+    // next input restores the saved session instead of failing as a crash.
+    if (this.connectionNeedsRefresh()) await this.close()
     if (this.connection !== undefined) return
     const starting = this.starting ?? this.beginStartup((owner) => this.createConnection(owner, signal))
     try {
@@ -722,6 +648,17 @@ export class AcpSessionRuntime {
     } finally {
       if (this.starting === starting) this.starting = undefined
     }
+  }
+
+  private connectionNeedsRefresh(): boolean {
+    return (
+      this.connection !== undefined &&
+      (this.connection.isClosed ||
+        this.connection.isTransportAvailable === false ||
+        this.mcpLease?.signal.aborted === true ||
+        this.mcpLease?.needsRefresh?.() === true ||
+        this.mcpKey !== this.options.mcpKey?.())
+    )
   }
 
   private beginStartup(operation: (owner: RuntimeStartup) => Promise<void>): RuntimeStartup {
@@ -766,7 +703,7 @@ export class AcpSessionRuntime {
     // remote session id is still cached. Clear local state before deciding
     // whether this binding can be reused; the caller's durable recovery guard
     // remains responsible for authorizing a resume after an unknown outcome.
-    if (this.connection?.isClosed === true) await this.close()
+    if (this.connection?.isClosed === true || this.connection?.isTransportAvailable === false) await this.close()
     if (this.sessionId !== undefined) {
       if (this.sessionId !== binding.agentSessionId)
         throw new Error('ACP binding session id does not match the active runtime')
@@ -961,6 +898,12 @@ export class AcpSessionRuntime {
       await this.configWrite
       if (setupSignal.aborted) return { stopReason: 'cancelled' }
       this.throwPendingAgentTurnFailure(onUpdate)
+      // The Host may already have restored a binding and written its WAL.
+      // Let it retire this transport and retry that exact binding instead of
+      // initialize() aborting our setup and disguising non-dispatch as a crash.
+      // Automatic turns already belong to the Agent, even before adoption.
+      if (promptOptions.adoptAgentTurn !== true && this.agentTurns.length === 0 && this.connectionNeedsRefresh())
+        throw new AcpPromptNotDispatchedError()
       await this.start(setupSignal)
       this.throwPendingAgentTurnFailure(onUpdate)
       const connection = this.connection
@@ -981,18 +924,18 @@ export class AcpSessionRuntime {
       let phaseAbort = new AbortController()
       this.promptPhaseAbort = phaseAbort
       this.promptSignal = signal
-      const diagnosticsEnabled = liveDiagnosticTraceEnabled()
+      const diagnosticsEnabled = this.options.diagnosticTrace?.enabled() === true
       const promptOrdinal = diagnosticsEnabled ? ++this.promptOrdinal : undefined
       const promptStartedAt = diagnosticsEnabled ? performance.now() : 0
       const diagnosticLeaseId = diagnosticsEnabled ? this.mcpLease?.diagnosticLeaseId : undefined
       const diagnosticSessionId = diagnosticsEnabled
-        ? (liveDiagnosticId('dsh-session', this.options.diagnosticDshSessionId) ?? 'unavailable')
+        ? (this.options.diagnosticTrace?.id('dsh-session', this.options.diagnosticDshSessionId) ?? 'unavailable')
         : 'unavailable'
       const diagnosticAcpSessionId = diagnosticsEnabled
-        ? (liveDiagnosticId('acp-session', sessionId) ?? 'unavailable')
+        ? (this.options.diagnosticTrace?.id('acp-session', sessionId) ?? 'unavailable')
         : undefined
       if (diagnosticsEnabled)
-        emitLiveDiagnostic({
+        this.options.diagnosticTrace?.emit({
           type: 'adapter-prompt/start',
           sessionId: diagnosticSessionId,
           ...(diagnosticAcpSessionId === undefined ? {} : { acpSessionId: diagnosticAcpSessionId }),
@@ -1163,7 +1106,7 @@ export class AcpSessionRuntime {
           feedbackCommitFailure && promptError !== undefined ? promptError : (drainError ?? promptError)
         const structuredFailure =
           diagnosticsEnabled && structuredFailureError !== undefined
-            ? collectLiveDiagnostic(() => ({
+            ? this.options.diagnosticTrace?.collect(() => ({
                 operation: 'session/prompt' as const,
                 errorCode: structuredAcpErrorCode(structuredFailureError),
                 providerErrorKind: structuredProviderErrorKind(structuredFailureError),
@@ -1171,7 +1114,7 @@ export class AcpSessionRuntime {
               }))
             : undefined
         if (diagnosticsEnabled)
-          emitLiveDiagnostic({
+          this.options.diagnosticTrace?.emit({
             type: 'adapter-prompt/end',
             sessionId: diagnosticSessionId,
             ...(diagnosticAcpSessionId === undefined ? {} : { acpSessionId: diagnosticAcpSessionId }),
@@ -1476,6 +1419,7 @@ export class AcpSessionRuntime {
     const fileSystemHandlers = this.options.createFileSystemHandlers?.({ cwd: this.options.cwd, env: launch.env })
     const terminalHandlers = this.options.createTerminalHandlers?.({ cwd: this.options.cwd, env: launch.env })
     const connection = new AcpClientConnection(spec, {
+      ...(this.options.onProcessWarn === undefined ? {} : { onProcessWarn: this.options.onProcessWarn }),
       ...(this.options.enableClaudeDraftSubagents === true ? { enableClaudeDraftSubagents: true } : {}),
       ...(this.options.onCapabilityDegraded === undefined
         ? {}
@@ -1502,7 +1446,7 @@ export class AcpSessionRuntime {
             onElicitationRequest: async (
               params: acp.CreateElicitationRequest,
             ): Promise<acp.CreateElicitationResponse> => {
-              const signal = this.permissionSignal()
+              let signal = this.permissionSignal()
               if (!this.promptActive || isAborted(signal)) return { action: 'cancel' }
               const scope = params as { sessionId?: unknown; toolCallId?: unknown }
               const toolCall =
@@ -1512,34 +1456,48 @@ export class AcpSessionRuntime {
               this.pendingQuestions += 1
               try {
                 const lease = this.mcpLease
+                const targetSignal = lease?.elicitationSignal?.(params, toolCall)
+                if (targetSignal !== undefined)
+                  signal = AbortSignal.any(signal === undefined ? [targetSignal] : [signal, targetSignal])
+                const decisionCurrent = () =>
+                  !isAborted(signal) &&
+                  lease === this.mcpLease &&
+                  lease?.signal.aborted !== true &&
+                  lease?.validateElicitationDecision?.(params, toolCall) !== false
                 const automaticPromise = Promise.resolve(lease?.elicitation?.(params, toolCall))
                 let automatic: acp.CreateElicitationResponse | undefined
                 if (signal === undefined) automatic = await automaticPromise
                 else {
+                  const capturedSignal = signal
                   const abortToken = Symbol('abort')
                   let onAbort: (() => void) | undefined
                   const aborted = new Promise<typeof abortToken>((resolve) => {
                     onAbort = () => resolve(abortToken)
-                    if (isAborted(signal)) onAbort()
-                    else signal.addEventListener('abort', onAbort, { once: true })
+                    if (isAborted(capturedSignal)) onAbort()
+                    else capturedSignal.addEventListener('abort', onAbort, { once: true })
                   })
                   try {
                     const result = await Promise.race([automaticPromise, aborted])
                     if (result === abortToken) return { action: 'cancel' }
                     automatic = result
                   } finally {
-                    if (onAbort !== undefined) signal.removeEventListener('abort', onAbort)
+                    if (onAbort !== undefined) capturedSignal.removeEventListener('abort', onAbort)
                   }
                 }
-                if (isAborted(signal) || lease !== this.mcpLease || lease?.signal.aborted) return { action: 'cancel' }
+                if (!decisionCurrent()) return { action: 'cancel' }
                 if (automatic !== undefined) return automatic
                 const hostToolName = this.mcpLease?.elicitationToolName?.(params, toolCall)
-                return await this.options.onElicitationRequest!(
-                  params,
+                const response = await raceAbort(
+                  this.options.onElicitationRequest!(
+                    params,
+                    signal,
+                    hostToolName,
+                    hostToolName === undefined ? undefined : toolCall,
+                  ),
                   signal,
-                  hostToolName,
-                  hostToolName === undefined ? undefined : toolCall,
+                  () => ({ action: 'cancel' as const }),
                 )
+                return decisionCurrent() ? response : { action: 'cancel' }
               } finally {
                 this.pendingQuestions -= 1
               }
@@ -1601,12 +1559,12 @@ export class AcpSessionRuntime {
     // parent's model, mode, usage or permission snapshots.
     if (notification.sessionId !== (this.sessionId ?? this.restoringSessionId)) return
     const update = notification.update
-    const diagnosticsEnabled = liveDiagnosticTraceEnabled()
+    const diagnosticsEnabled = this.options.diagnosticTrace?.enabled() === true
     const diagnosticSessionId = diagnosticsEnabled
-      ? (liveDiagnosticId('dsh-session', this.options.diagnosticDshSessionId) ?? 'unavailable')
+      ? (this.options.diagnosticTrace?.id('dsh-session', this.options.diagnosticDshSessionId) ?? 'unavailable')
       : 'unavailable'
     const diagnosticAcpSessionId = diagnosticsEnabled
-      ? (liveDiagnosticId('acp-session', notification.sessionId) ?? 'unavailable')
+      ? (this.options.diagnosticTrace?.id('acp-session', notification.sessionId) ?? 'unavailable')
       : undefined
     if (diagnosticsEnabled && (update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update')) {
       const toolNames = new Set([
@@ -1622,13 +1580,13 @@ export class AcpSessionRuntime {
       ])
       const rawToolName = (update as { readonly name?: unknown }).name
       const rawStatus = update.status
-      emitLiveDiagnostic({
+      this.options.diagnosticTrace?.emit({
         type: 'acp-tool/update',
         sessionId: diagnosticSessionId,
         ...(diagnosticAcpSessionId === undefined ? {} : { acpSessionId: diagnosticAcpSessionId }),
         ...(this.mcpLease?.diagnosticLeaseId === undefined ? {} : { leaseId: this.mcpLease.diagnosticLeaseId }),
         ...(this.promptActive ? { adapterPromptOrdinal: this.promptOrdinal } : {}),
-        providerToolCallId: liveDiagnosticId('acp-tool-call', update.toolCallId) ?? 'unavailable',
+        providerToolCallId: this.options.diagnosticTrace?.id('acp-tool-call', update.toolCallId) ?? 'unavailable',
         tool: typeof rawToolName === 'string' && toolNames.has(rawToolName) ? (rawToolName as never) : 'other',
         providerToolStatus:
           rawStatus === 'pending' || rawStatus === 'in_progress' || rawStatus === 'completed' || rawStatus === 'failed'
@@ -1637,7 +1595,7 @@ export class AcpSessionRuntime {
       })
     }
     if (diagnosticsEnabled && update.sessionUpdate === 'usage_update') {
-      emitLiveDiagnostic({
+      this.options.diagnosticTrace?.emit({
         type: 'acp-usage/update',
         sessionId: diagnosticSessionId,
         ...(diagnosticAcpSessionId === undefined ? {} : { acpSessionId: diagnosticAcpSessionId }),
@@ -1651,7 +1609,7 @@ export class AcpSessionRuntime {
       notification.sessionId === this.sessionId &&
       (update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update')
     ) {
-      // Keep permission enrichment prompt- and session-scoped. Kimi streams
+      // Keep permission enrichment prompt- and session-scoped. Agents stream
       // tool arguments before requesting permission, so the map is cleared at
       // every turn boundary and can never authorize data from another turn.
       const snapshots = this.promptToolSnapshots
@@ -2087,26 +2045,31 @@ export class AcpSessionRuntime {
     }
     const request = {
       ...params,
-      toolCall: await completePermissionToolCall(this.promptToolSnapshots, params.toolCall, signal),
+      toolCall: permissionToolCall(this.promptToolSnapshots, params.toolCall),
     }
     const lease = this.mcpLease
     const inspectPromise = Promise.resolve(lease?.inspectPermission?.(request))
+    const targetSignal = lease?.permissionSignal?.(request)
+    const inspectionSignal =
+      targetSignal === undefined
+        ? signal
+        : AbortSignal.any(signal === undefined ? [targetSignal] : [signal, targetSignal])
     let inspected: Awaited<typeof inspectPromise>
-    if (signal === undefined) inspected = await inspectPromise
+    if (inspectionSignal === undefined) inspected = await inspectPromise
     else {
       const abortToken = Symbol('permission-abort')
       let onAbort: (() => void) | undefined
       const aborted = new Promise<typeof abortToken>((resolve) => {
         onAbort = () => resolve(abortToken)
-        if (isAborted(signal)) onAbort()
-        else signal.addEventListener('abort', onAbort, { once: true })
+        if (isAborted(inspectionSignal)) onAbort()
+        else inspectionSignal.addEventListener('abort', onAbort, { once: true })
       })
       try {
         const result = await Promise.race([inspectPromise, aborted])
         if (result === abortToken) return cancelled()
         inspected = result
       } finally {
-        if (onAbort !== undefined) signal.removeEventListener('abort', onAbort)
+        if (onAbort !== undefined) inspectionSignal.removeEventListener('abort', onAbort)
       }
     }
     if (this.options.onPermissionCheck !== undefined) {
@@ -2120,10 +2083,15 @@ export class AcpSessionRuntime {
     // A matching DSH title alone grants no identity or Auto approval, but it
     // is ambiguous ownership and must retain the bridge's revocation fence.
     const ownedByBridge = inspected?.reason !== 'identity-unmatched' || inspected.titleMatchesCurrentTool === true
+    const decisionRevoked = () =>
+      (targetSignal !== undefined ||
+        inspected?.reason === 'auto-approved' ||
+        inspected?.reason === 'approval-required') &&
+      lease?.validatePermissionDecision?.(request) === false
     if (
-      isAborted(signal) ||
+      isAborted(inspectionSignal) ||
       (ownedByBridge && (lease !== this.mcpLease || lease?.signal.aborted)) ||
-      (inspected?.reason === 'auto-approved' && lease?.validatePermissionDecision?.(request) === false)
+      decisionRevoked()
     )
       return cancelled()
     // Use the very policy resolution that was audited above. Re-reading here
@@ -2137,8 +2105,8 @@ export class AcpSessionRuntime {
     // a late answer cannot authorize a retired capability.
     const approvalSignal =
       ownedByBridge && lease !== undefined
-        ? AbortSignal.any(signal === undefined ? [lease.signal] : [signal, lease.signal])
-        : signal
+        ? AbortSignal.any(inspectionSignal === undefined ? [lease.signal] : [inspectionSignal, lease.signal])
+        : inspectionSignal
     const pending = handler(
       { ...request, toolCall: lease?.presentTool?.(request.toolCall) ?? request.toolCall },
       approvalSignal,
@@ -2159,7 +2127,8 @@ export class AcpSessionRuntime {
       const response = await Promise.race([pending, aborted])
       // A resolved answer can win the race before cancellation's microtask
       // runs. Recheck the owning lifetime at the actual RPC reply boundary.
-      if (isAborted(approvalSignal) || (ownedByBridge && lease !== this.mcpLease)) return cancelled()
+      if (isAborted(approvalSignal) || (ownedByBridge && lease !== this.mcpLease) || decisionRevoked())
+        return cancelled()
       return response
     } finally {
       if (onAbort !== undefined) approvalSignal.removeEventListener('abort', onAbort)

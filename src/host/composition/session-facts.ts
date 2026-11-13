@@ -1,9 +1,8 @@
-import type { Context } from '@deepseek-ai/cordis'
+import { Service, type Context } from '@deepseek-ai/cordis'
 import { z } from 'zod'
 import type { AcpExecutionView } from '../../contract/external-subagent.ts'
 import type { Session, SessionEventMap } from '@deepseek-ai/dsh-session'
-import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection'
-import type {} from '@deepseek-ai/dsh-permission-presets'
+import type { ProjectionDefinition, ProjectionHandle } from '@deepseek-ai/dsh-session-projection'
 import type {} from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-tool-todo'
 import type {} from '@deepseek-ai/dsh-working-directory'
@@ -16,18 +15,18 @@ import {
 } from '../../domain/session/session-facts.ts'
 import { currentModelContextSnapshots } from '../../domain/session/model-context-snapshots.ts'
 
-declare module '@deepseek-ai/dsh-session-projection' {
-  interface SessionProjectionStateMap {
-    acpExecution: SessionFacts
+declare module '@deepseek-ai/cordis' {
+  interface Context {
+    acpSessionFacts: AcpSessionFacts
   }
 }
 
 const externalRecordView: AcpExecutionView = { externalSubagent: true }
 const ordinarySessionView: AcpExecutionView = { externalSubagent: false }
 
-export const acpExecutionProjection = {
+const acpExecutionProjection = {
   key: 'acpExecution',
-  stateVersion: 2,
+  stateVersion: 4,
   stateSchema: sessionFactsSchema,
   init: (_header, inheritedEventCount) => initialSessionFacts(inheritedEventCount),
   apply: applySessionFact,
@@ -35,17 +34,47 @@ export const acpExecutionProjection = {
     viewSchema: z.object({ externalSubagent: z.boolean() }),
     view: (state) => (state.externalSubagent ? externalRecordView : ordinarySessionView),
   },
-} satisfies ProjectionDefinition<'acpExecution'>
+} satisfies ProjectionDefinition<'acpExecution', SessionFacts>
+
+/** Own the ready projection; consumers read domain facts without knowing its key or handle. */
+export class AcpSessionFacts extends Service {
+  static inject = ['sessionProjections']
+  private handle!: ProjectionHandle<SessionFacts>
+
+  constructor(ctx: Context) {
+    super(ctx, 'acpSessionFacts')
+  }
+
+  protected async [Service.init](): Promise<void> {
+    this.handle = await this.ctx.sessionProjections.register(acpExecutionProjection)
+  }
+
+  read(session: Session): SessionFacts {
+    return this.handle.stateOf(session)
+  }
+}
+
+export type SessionFactsReader = (session: Session) => SessionFacts
+
+/** Capture the ready owner so accepted work can drain after service unpublication. */
+export function sessionFactsReader(ctx: Context): SessionFactsReader {
+  const owner = ctx.get('acpSessionFacts')
+  if (owner === undefined) throw new Error('ACP execution facts owner is unavailable')
+  return (session) => owner.read(session)
+}
 
 export function readSessionFacts(ctx: Context, session: Session): SessionFacts {
-  const state = ctx.sessionProjections.stateOf(session, 'acpExecution')
-  if (state === undefined) throw new Error('ACP execution projection is unavailable')
-  return state
+  return sessionFactsReader(ctx)(session)
 }
 
 /** Accessors always read the host's current cut, including after a policy append. */
-export function acpSessionView(ctx: Context, session: Session | undefined): SessionLike | undefined {
+export function acpSessionView(
+  ctx: Context,
+  session: Session | undefined,
+  readFacts?: SessionFactsReader,
+): SessionLike | undefined {
   if (session === undefined) return undefined
+  const factsOf = readFacts ?? sessionFactsReader(ctx)
   return {
     identity: session,
     header: session.header,
@@ -57,13 +86,13 @@ export function acpSessionView(ctx: Context, session: Session | undefined): Sess
       return session.seq
     },
     get facts() {
-      return readSessionFacts(ctx, session)
+      return factsOf(session)
     },
     captureRemoteCancelledTurn: (scope) => {
       const registry = ctx.get('agents', false)
       const owner = registry?.get(session.id)
       const matchesScope = () => {
-        const facts = readSessionFacts(ctx, session)
+        const facts = factsOf(session)
         return (
           facts.turnOpen &&
           facts.openSteps.some(
@@ -86,11 +115,6 @@ export function acpSessionView(ctx: Context, session: Session | undefined): Sess
       const skillEntryPointAvailable =
         agent !== undefined && tools?.schemas(agent).some((schema) => schema.name === 'skill') === true
       return currentModelContextSnapshots(session.deriveMessages(), skillEntryPointAvailable)
-    },
-    get permissions() {
-      const state = ctx.sessionProjections.stateOf(session, 'permissions')
-      if (state === undefined) throw new Error('DSH permission projection is unavailable')
-      return state
     },
     append: (type, data) => session.append(type as keyof SessionEventMap, data as never),
     watchTurnEnd: (listener) =>
@@ -132,7 +156,7 @@ export function acpSessionView(ctx: Context, session: Session | undefined): Sess
     },
     publishPlan: (todos) => {
       // tool-todo is optional. Its projection owns current plan state and the native dock.
-      if (ctx.sessionProjections.stateOf(session, 'todos') === undefined) return
+      if (ctx.sessionProjections.snapshot(session, new Set(['todos'])).values.todos === undefined) return
       session.append('todo/write', { todos: [...todos] })
     },
   }

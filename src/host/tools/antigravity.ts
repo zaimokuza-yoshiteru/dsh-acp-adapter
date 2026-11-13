@@ -1,6 +1,6 @@
 import type * as acp from '@agentclientprotocol/sdk'
 
-export function toPlainRecord(value: unknown): Record<string, unknown> | undefined {
+function toPlainRecord(value: unknown): Record<string, unknown> | undefined {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : undefined

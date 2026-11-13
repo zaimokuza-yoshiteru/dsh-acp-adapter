@@ -71,8 +71,11 @@ it('keeps a verified catalog and live session usable while reporting failed refr
     const failed = required((await remote.health()).providers.find((entry) => entry.id === profile))
     const detail = await openAcpPluginDetail(page)
     const row = detail.locator(`[data-dsh-acp-agent="${profile}"]`)
-    await expect.poll(async () => /protocol available|not signed in/.test(await row.innerText())).toBe(true)
+    await expect.poll(async () => /Check passed|not signed in/.test(await row.innerText())).toBe(true)
     const failedText = await row.innerText()
+    // A failed check is labelled as such, distinct from an Agent that was never checked.
+    expect(failedText).toContain('last check failed')
+    expect(failedText).not.toContain('Not checked')
     await page.screenshot({ path: join(evidence, 'refresh-failed.png'), fullPage: true })
     writeFileSync(join(evidence, 'refresh-failed.txt'), failedText)
     // Collect the entire before/after scenario before the regression assertion,
@@ -90,7 +93,7 @@ it('keeps a verified catalog and live session usable while reporting failed refr
         return check?.status === 'ok' && check.at >= recoveryStarted
       })
       .toBe(true)
-    await recoveryRow.getByText('protocol available', { exact: true }).waitFor()
+    await recoveryRow.getByText('Check passed', { exact: true }).waitFor()
     const recovered = required((await remote.health()).providers.find((entry) => entry.id === profile))
     await page.screenshot({ path: join(evidence, 'recovered.png'), fullPage: true })
     const recoveredText = await recoveryRow.innerText()

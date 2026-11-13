@@ -229,6 +229,14 @@ it('uses Qwen model-specific reasoning menus and sends the selected effort to th
       await picker().click()
       await page!.getByRole('menuitem', { name: /^Model/ }).click()
       await page!.getByRole('menuitemradio', { name, exact: true }).click()
+      const confirmation = page!.getByRole('dialog')
+      await confirmation
+        .getByRole('heading', { name: 'Existing ACP sessions cannot switch models yet', exact: true })
+        .waitFor()
+      await confirmation
+        .getByRole('button', { name: 'Create an independent session with this model', exact: true })
+        .click()
+      await confirmation.waitFor({ state: 'hidden' })
       await expect.poll(() => picker().getAttribute('aria-expanded')).toBe('false')
       await page!.getByRole('button', { name: new RegExp(`^Select model, current ${name}`) }).waitFor()
     }
@@ -260,14 +268,16 @@ it('uses Qwen model-specific reasoning menus and sends the selected effort to th
     await capture(page, 'graded-reasoning')
     await page.getByRole('menuitemradio', { name: 'Extra high', exact: true }).click()
     await expect.poll(() => picker().getAttribute('aria-expanded')).toBe('false')
-    expect(await run('QWEN_UI_LEVELS_MODEL', 'qwen-levels', 'xhigh')).toBe(session)
+    const levelsSession = await run('QWEN_UI_LEVELS_MODEL', 'qwen-levels', 'xhigh')
+    expect(levelsSession).not.toBe(session)
 
     phase = 'model without reasoning'
     await selectModel('Qwen Basic')
     await picker().click()
     expect(await page.getByRole('menuitem', { name: /^Effort/ }).count()).toBe(0)
     await page.keyboard.press('Escape')
-    expect(await run('QWEN_UI_BASIC_MODEL', 'qwen-basic', null)).toBe(session)
+    const basicSession = await run('QWEN_UI_BASIC_MODEL', 'qwen-basic', null)
+    expect(basicSession).not.toBe(levelsSession)
 
     phase = 'return to toggle-only reasoning'
     await selectModel('Qwen Toggle')
@@ -275,7 +285,9 @@ it('uses Qwen model-specific reasoning menus and sends the selected effort to th
     expect(await page.getByRole('menuitemradio').allTextContents()).toEqual(['Off', 'On'])
     await page.getByRole('menuitemradio', { name: 'Off', exact: true }).click()
     await expect.poll(() => picker().getAttribute('aria-expanded')).toBe('false')
-    expect(await run('QWEN_UI_TOGGLE_AGAIN', 'qwen-toggle', 'none')).toBe(session)
+    const finalSession = await run('QWEN_UI_TOGGLE_AGAIN', 'qwen-toggle', 'none')
+    expect(new Set([session, levelsSession, basicSession, finalSession]).size).toBe(4)
+    expect(host.ctx.sessions.get(session)?.requestHeader()?.config.model).toBe('qwen-toggle')
     expect(
       events(log)
         .filter((entry) => entry.method === 'session/set_config_option' && entry.configId === 'reasoning_effort')

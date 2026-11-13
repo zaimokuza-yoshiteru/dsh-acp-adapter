@@ -1,5 +1,20 @@
 export type AcpUiOutcome =
-  'saved' | 'save-failed' | 'deleted' | 'delete-failed' | 'session-option-failed' | 'tool-approval-failed'
+  | 'saved'
+  | 'save-failed'
+  | 'deleted'
+  | 'delete-failed'
+  | 'session-option-failed'
+  | 'tool-approval-failed'
+  | 'fork-failed'
+  | 'fork-workspace-attach-failed'
+  | 'fork-storage-failed'
+  | 'fork-access-denied'
+  | 'fork-unavailable'
+  | 'fork-invalid-seed'
+  | 'fork-source-conflict'
+  | 'fork-child-bound'
+  | 'fork-source-unavailable'
+  | 'fork-child-changed'
 
 export type AcpUiOutcomeSnapshot = {
   readonly sequence: number

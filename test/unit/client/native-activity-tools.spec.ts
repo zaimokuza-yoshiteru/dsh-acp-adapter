@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { ReactElement, ReactNode } from 'react'
+import * as React from 'react'
 import { nativeActivityToolBlock, renderNativeActivityTool } from '../../../src/client/ui/AcpActivityNode.ts'
 import { NativeTerminalOutputNotice, type NativeToolOwner } from '../../../src/client/ui/native-tool-renderer.ts'
 import type { AcpActivityView } from '../../../src/contract/remote.ts'
+import { en, zh, type AcpLocaleKey } from '../../../src/client/ui/locales.ts'
 
 const row: AcpActivityView = {
   dshSessionId: 'view',
@@ -24,6 +26,55 @@ const normalize = (detail: unknown, patch: Partial<AcpActivityView> = {}) =>
   })
 
 describe('ACP presentation normalization into native tool blocks', () => {
+  it('refreshes fallback names with the same mounted row and stable locale translator', () => {
+    const cached: { dependencies: readonly unknown[] | undefined; value: unknown }[] = []
+    let cursor = 0
+    const memo = vi
+      .spyOn(React, 'useMemo')
+      .mockImplementation(<T>(factory: () => T, dependencies: readonly unknown[] | undefined): T => {
+        const index = cursor++
+        const previous = cached[index]
+        if (
+          previous &&
+          dependencies &&
+          previous.dependencies?.length === dependencies.length &&
+          dependencies.every((value, i) => Object.is(value, previous.dependencies![i]))
+        )
+          return previous.value as T
+        const value = factory()
+        cached[index] = { dependencies, value }
+        return value
+      })
+    const activity = {
+      ...row,
+      presentation: 'Agent tool activity',
+      rawDetail: JSON.stringify({ titleSource: 'adapter-fallback', rawOutput: 'Result' }),
+    }
+    let locale: typeof en | typeof zh = en
+    const translate = (key: AcpLocaleKey) => locale[key]
+    const owner = { node: { kind: 'assistant-step', key: 'same-tool', data: {} } }
+    const render = () => {
+      const element = renderNativeActivityTool(owner as never, activity, translate) as ReactElement
+      return (
+        element.type as (props: typeof element.props) => ReactElement<{
+          children: ReactElement<{ props: { node: { data: { root: { name: string } } } } }>
+        }>
+      )(element.props)
+    }
+    try {
+      const english = render()
+      expect(english.props.children.props.props.node.data.root.name).toBe('Agent tool activity')
+      locale = zh
+      cursor = 0
+      const chinese = render()
+      expect(chinese.props.children.props.props.node.data.root.name).toBe('Agent 工具活动')
+      expect(chinese.type).toBe(english.type)
+      expect(chinese.props.children.type).toBe(english.props.children.type)
+    } finally {
+      memo.mockRestore()
+    }
+  })
+
   it.each(['completed', 'failed', 'cancelled'] as const)(
     'unwraps Codex MCP output while retaining the %s protocol state and recorded payload',
     (status) => {

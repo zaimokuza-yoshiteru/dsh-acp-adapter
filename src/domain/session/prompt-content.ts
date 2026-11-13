@@ -58,6 +58,58 @@ export function reboundAgentInstructions(
   return instructions
 }
 
+const UNDELIVERED_HISTORY_MAX_CHARS = 60_000
+const UNDELIVERED_ENTRY_MAX_CHARS = 12_000
+
+/**
+ * Conversation the Agent never received: turns answered by another plugin on
+ * this route, or input from a first turn that failed before an Agent session
+ * existed. Only for the first prompt of a session with no ACP history. Text is
+ * carried as context; the newest entries win when the bound is reached.
+ */
+export function undeliveredHistoryText(
+  admitted: readonly UserMessage[],
+  projected: readonly RequestMessage[],
+): string | undefined {
+  const current = new Set(admitted.map((message) => String(message.id)))
+  const entries: string[] = []
+  for (const message of projected) {
+    if (message.role !== 'user' && message.role !== 'assistant') continue
+    if (message.role === 'user') {
+      if (current.has(String(message.id))) continue
+      const kind = (message.source as { readonly kind?: unknown } | undefined)?.kind
+      // Host instructions and context snapshots are re-supplied through their own channels.
+      if (kind === 'agent-instructions' || kind === 'runtime-context' || kind === 'skill-catalog') continue
+    }
+    const parts: string[] = []
+    for (const block of message.content as readonly { readonly type: string; readonly text?: unknown }[]) {
+      if (block.type === 'text' && typeof block.text === 'string' && block.text.trim() !== '') parts.push(block.text)
+      else if (block.type === 'image' || block.type === 'file') parts.push(`[${block.type} attachment not included]`)
+    }
+    if (parts.length === 0) continue
+    const text = parts.join('\n')
+    entries.push(
+      `[${message.role === 'user' ? 'User' : 'Assistant'}]\n${
+        text.length > UNDELIVERED_ENTRY_MAX_CHARS ? `${text.slice(0, UNDELIVERED_ENTRY_MAX_CHARS)}… [truncated]` : text
+      }`,
+    )
+  }
+  if (entries.length === 0) return undefined
+  const kept: string[] = []
+  let size = 0
+  for (const entry of entries.toReversed()) {
+    if (size + entry.length > UNDELIVERED_HISTORY_MAX_CHARS && kept.length > 0) break
+    kept.unshift(entry)
+    size += entry.length
+  }
+  const omitted = entries.length - kept.length
+  return [
+    'Earlier messages of this DSH conversation that were not delivered to you. They are context only; answer the current request that follows.',
+    ...(omitted === 0 ? [] : [`[${String(omitted)} earlier message(s) omitted]`]),
+    ...kept,
+  ].join('\n\n')
+}
+
 const PTC_SKILL_ROUTE_NOTICE =
   'For any instruction above to call `skill`, use only `tools.skill(...)` inside `run_code` through its generated SDK; do not call `skill` as a standalone tool. This note adds no tools or permissions.'
 const DISABLED_SKILL_ROUTE_NOTICE =
@@ -105,6 +157,8 @@ export async function toAcpPrompt(
     readonly modelContextSnapshots?: readonly ModelContextSnapshot[]
     /** Effective frozen request history, supplied only for an explicit blank rebind. */
     readonly reboundAgentInstructions?: readonly RequestMessage[]
+    /** Effective frozen request history, supplied only when starting an Agent session over undelivered conversation. */
+    readonly undeliveredHistory?: readonly RequestMessage[]
     /** Route exposed by the final tool presentation for this model request. */
     readonly skillRoute?: SkillRoute
     /** Whether the current Agent scope has the Skill tool used by either route. */
@@ -240,6 +294,10 @@ export async function toAcpPrompt(
     throw new AcpPromptContentError(
       'dsh-acp: the claimed message(s) carry no supported content; nothing to send to the ACP agent',
     )
+  }
+  if (options.undeliveredHistory !== undefined) {
+    const history = undeliveredHistoryText(admittedMessages, options.undeliveredHistory)
+    if (history !== undefined) blocks.unshift({ type: 'text', text: generatedContextBlock(history) })
   }
   if (options.reboundAgentInstructions !== undefined) {
     const instructions = reboundAgentInstructions(admittedMessages, options.reboundAgentInstructions)

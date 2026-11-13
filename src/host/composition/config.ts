@@ -8,7 +8,7 @@ import {
   acpRouteId,
   effectiveRuntimeOf,
 } from '../../domain/session/agent-config.ts'
-import type { AcpAgentConfig, AcpAgentId } from '../../domain/session/agent-config.ts'
+import type { AcpAgentConfig, AcpAgentId, AcpConfiguredRuntime } from '../../domain/session/agent-config.ts'
 
 export type AcpToolApprovalPolicy = 'auto' | 'ask'
 export interface AcpSettings {
@@ -75,7 +75,7 @@ function agentConfigOf(id: string, raw: unknown): AcpAgentConfig {
     throw new TypeError(`dsh-acp settings: agents.${id}.catalogId must be a registry identifier`)
   }
   const runtime = raw['runtime']
-  if (runtime !== undefined && !ACP_AGENT_IDS.includes(runtime as AcpAgentId)) {
+  if (runtime !== undefined && runtime !== 'kimi' && !ACP_AGENT_IDS.includes(runtime as AcpAgentId)) {
     throw new TypeError(
       `dsh-acp settings: agents.${id}.runtime must be one of ${ACP_AGENT_IDS.map((value) => JSON.stringify(value)).join(', ')} (it binds the profile to a specialized runtime)`,
     )
@@ -86,14 +86,14 @@ function agentConfigOf(id: string, raw: unknown): AcpAgentConfig {
     args: [...args] as string[],
     env: { ...env } as Record<string, string>,
     ...(loginHint === undefined ? {} : { loginHint }),
-    ...(runtime === undefined ? {} : { runtime: runtime as AcpAgentId }),
+    ...(runtime === undefined ? {} : { runtime: runtime as AcpConfiguredRuntime }),
     ...(catalogId === undefined ? {} : { catalogId }),
   }
 }
 
 /**
  * （ 内置 runtime 唯一性）内置 runtime singleton 的跨条目校验：每个内置 runtime
- * （devin/codex/kimi/claude/codebuddy）至多一个 profile。生效绑定 = 显式 `runtime`
+ * （devin/codex/claude/codebuddy/antigravity）至多一个 profile。生效绑定 = 显式 `runtime`
  * 字段优先，缺席时按 agent id 回退（与 effectiveRuntimeOf 同口径）。重复的
  * 内置 runtime 会让安装检查、模型目录与会话恢复无法稳定指向唯一配置，
  * 因此必须拒绝。
@@ -147,7 +147,9 @@ const AgentSchema = z.object({
   env: z.dict(z.string()).default({}),
   loginHint: z.string(),
   catalogId: z.string(),
-  runtime: z.union([...ACP_AGENT_IDS]),
+  // The business validator accepts active identities and one retained retirement marker.
+  // Do not expose the retired marker as a selectable runtime in a native enum.
+  runtime: z.string(),
 })
 const AgentsSchema = z.dict(AgentSchema)
 const SettingsSchema = z.object({

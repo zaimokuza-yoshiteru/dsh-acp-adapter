@@ -69,25 +69,6 @@
   flex: 1 1 0;
   min-width: 180px;
 }
-/* Reads the resolved frame clearance without taking space or participating in hit testing. */
-.catalogGeometryProbe {
-  position: fixed;
-  top: 0;
-  left: -10000px;
-  width: 0;
-  height: max(12px, var(--dsh-frame-overlay-top, 12px));
-  visibility: hidden;
-  pointer-events: none;
-  contain: strict;
-}
-/* The native Menu owns material, keyboard interaction, and its pinned footer.
-   Its public listClassName hook scopes sizing to this catalog card in portal mode. */
-.catalogMenu {
-  width: min(var(--acp-catalog-menu-width, 180px), calc(100vw - 24px));
-  min-width: 0;
-  max-width: calc(100vw - 24px);
-  max-height: var(--acp-catalog-menu-max-height, calc(100vh - 12px - max(12px, var(--dsh-frame-overlay-top, 12px))));
-}
 .catalogEntry {
   display: flex;
   align-items: baseline;
@@ -129,8 +110,10 @@
   width: 100%;
   min-width: 0;
 }
-.addButton:hover:not(:disabled) {
-  background: var(--dsw-alias-interactive-bg-hover);
+@media (hover: hover) {
+  .addButton:hover:not(:disabled) {
+    background: var(--dsw-alias-interactive-bg-hover);
+  }
 }
 .addButton:disabled {
   opacity: 0.4;
@@ -159,8 +142,10 @@
   text-align: left;
   cursor: pointer;
 }
-.approvalButton:hover:not(:disabled) {
-  background: var(--dsw-alias-interactive-bg-hover);
+@media (hover: hover) {
+  .approvalButton:hover:not(:disabled) {
+    background: var(--dsw-alias-interactive-bg-hover);
+  }
 }
 .approvalButton:focus-visible {
   outline: none;
@@ -286,8 +271,10 @@
   line-height: 18px;
   cursor: pointer;
 }
-.advancedToggle:hover {
-  color: var(--dsw-alias-label-primary);
+@media (hover: hover) {
+  .advancedToggle:hover {
+    color: var(--dsw-alias-label-primary);
+  }
 }
 .advancedToggle:focus-visible {
   outline: none;
@@ -347,8 +334,10 @@
 .dangerButton {
   color: var(--dsw-alias-state-error-primary);
 }
-.dangerButton:hover:not(:disabled) {
-  background: var(--dsw-alias-interactive-bg-hover-danger);
+@media (hover: hover) {
+  .dangerButton:hover:not(:disabled) {
+    background: var(--dsw-alias-interactive-bg-hover-danger);
+  }
 }
 .deleteBlock {
   display: flex;

@@ -11,7 +11,7 @@ import { stopSubprocess } from '../../runtime/process/cleanup.ts'
 import { finished } from 'node:stream/promises'
 import type { AcpMcpLease } from '../../runtime/session/mcp-lease.ts'
 
-export const DEVIN_MCP_NAME = 'dsh'
+const DEVIN_MCP_NAME = 'dsh'
 
 interface DevinMcpOptions {
   subprocess: SubprocessSeam

@@ -386,3 +386,52 @@ it('does not respawn after close cancels a cancelled-session refresh backoff', a
     rmSync(cwd, { recursive: true, force: true })
   }
 })
+
+it('restores the saved session in a new process after the Agent exited while idle', async () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'acp-idle-exit-'))
+  const callsFile = join(cwd, 'rpc-methods.log')
+  const source = `
+    const fs = require('node:fs');
+    const readline = require('node:readline');
+    const send = value => process.stdout.write(JSON.stringify(value) + '\\n');
+    readline.createInterface({ input: process.stdin }).on('line', line => {
+      const request = JSON.parse(line);
+      fs.appendFileSync(process.env.CALLS_FILE, process.pid + ' ' + request.method + '\\n');
+      if (request.method === 'initialize') send({ jsonrpc: '2.0', id: request.id, result: {
+        protocolVersion: 1, agentCapabilities: { loadSession: true }
+      }});
+      else if (request.method === 'session/new') {
+        send({ jsonrpc: '2.0', id: request.id, result: { sessionId: 'live' }});
+        // The Agent goes away between turns: an upgrade, an expired login, a kill.
+        setTimeout(() => process.exit(0), 50);
+      }
+      else if (request.method === 'session/load') send({ jsonrpc: '2.0', id: request.id, result: {} });
+      else if (request.id !== undefined) send({ jsonrpc: '2.0', id: request.id, error: { code: -32601, message: 'unexpected RPC' } });
+    });
+  `
+  const argv = [process.execPath, '-e', source]
+  const env = { CALLS_FILE: callsFile }
+  const runtime = new AcpSessionRuntime({
+    profileId: 'test',
+    config: { command: process.execPath, args: argv.slice(1), env },
+    cwd,
+    subprocess: (await sharedTestSubprocess()).seam,
+    prepareLaunch: async () => ({ argv, env, spawnPlan: { argv, env } }),
+  })
+  try {
+    await runtime.start()
+    expect(runtime.acpSessionId).toBe('live')
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    await runtime.initialize()
+    await expect(runtime.restore({ agentSessionId: 'live' })).resolves.toBe('loaded')
+    const calls = readFileSync(callsFile, 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => line.split(' '))
+    expect(calls.map(([, method]) => method)).toEqual(['initialize', 'session/new', 'initialize', 'session/load'])
+    expect(calls[0]![0]).not.toBe(calls[2]![0])
+  } finally {
+    await runtime.close()
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})

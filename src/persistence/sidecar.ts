@@ -113,7 +113,7 @@ import {
   boundedActivityPresentation,
   type AcpActivityPresentation,
 } from '../domain/policy/activity-presentation.ts'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, readdirSync } from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync, type SQLInputValue, type SQLOutputValue, type StatementSync } from 'node:sqlite'
@@ -127,8 +127,10 @@ import type {
 } from '../domain/policy/events.ts'
 import { ACP_SNAPSHOT_TOTAL_BYTES, acpOptionsSnapshotOf, toOptionsSnapshotRecord } from './options-snapshot.ts'
 import { ACP_CONFIG_IDENTIFIER_MAX } from '../contract/config-options.ts'
+import { isAcpModelRouteWithinBounds } from '../contract/model-selection.ts'
 import type { AcpOptionsSnapshotRecord } from './options-snapshot.ts'
 import { isSensitiveActivityField, redactSecretText } from '../domain/observability/redaction.ts'
+import { nativeForkSourceSchema, type AcpNativeForkSource } from './native-fork-source.ts'
 
 // Compatibility facade: snapshot callers keep importing from sidecar while the
 // bounded codec stays an independent persistence concern.
@@ -156,9 +158,9 @@ export const ACP_SIDECAR_DB_FILENAME = 'sidecar.sqlite'
 export const ACP_SIDECAR_AUDIT_QUEUE_LIMIT = 1024 as const
 
 /** Activity presentation/detail bounds keep the journal safe to render and page. */
-export const ACP_ACTIVITY_PRESENTATION_MAX = 2_048 as const
+const ACP_ACTIVITY_PRESENTATION_MAX = 2_048 as const
 export const ACP_ACTIVITY_RAW_MAX = 16_384 as const
-export const ACP_ACTIVITY_REF_MAX = 512 as const
+const ACP_ACTIVITY_REF_MAX = 512 as const
 
 /** Durable provider dispatch state. A committed `dispatch-uncertain` row is
  * intentionally visible after a host crash; a later request must not silently
@@ -269,13 +271,16 @@ export interface AcpModeIntent {
   readonly modeId: string
 }
 
-/** A member's selected model stays binding-scoped and is retained after application. */
+/** A member's unapplied model intent belongs to one exact ACP binding. */
 export interface AcpMemberModelSelection {
   readonly bindingKey: string
   readonly model: string
+  /** Exact next Session event sequence before this unapplied intent was saved. Absent on legacy rows. */
+  readonly sessionSeq?: number
+  /** Native recorded selection at that cut, serialized as a bounded comparison key. */
+  readonly nativeSelectionKey?: string
 }
 
-const ACP_MEMBER_MODEL_MAX = 512
 const ACP_MEMBER_BINDING_KEY_MAX = 8192
 
 export function modeIntentBindingKey(binding: AcpBindingData): string {
@@ -570,6 +575,12 @@ type StampedEntry = {
 export interface AcpSidecar {
   /** 存储根目录（`<dshHome>/dsh-acp`）。 */
   readonly root: string
+  /** Synchronously initialize a durable journal identity; storage failure throws before publication. */
+  initializeNativeForkScope(): string
+  /** Record one verified ordinary native fork; retries agree exactly or fail. */
+  recordNativeFork(source: AcpNativeForkSource): Promise<void>
+  /** Durable explicit source; absence never licenses guessing from copied events. */
+  readNativeFork(sessionId: SessionId): Promise<AcpNativeForkSource | undefined>
   /**
    * 追加一条记录。`binding`/`permission` 同步落库 commit 后才 resolve（durable
    * 语义）；其余 kind 进有界内存队列、入队即 resolve（绝不阻塞 turn，flush 落齐，
@@ -588,7 +599,7 @@ export interface AcpSidecar {
   settleDispatch(sessionId: SessionId, key: string, settledAt?: number): Promise<void>
   /** Read a dispatch ledger row after restart. */
   readDispatch(sessionId: SessionId, key: string): Promise<AcpDispatchRecord | undefined>
-  /** Explicitly resolve a user-reviewed uncertain dispatch without replaying it. */
+  /** Clear a user-reviewed dispatch, or an exact key proven not to have crossed the RPC boundary. */
   clearDispatch(sessionId: SessionId, key?: string): Promise<void>
   /** Upsert one external ACP activity, preserving its first-seen sequence. */
   upsertActivity(record: AcpActivityInput): Promise<AcpActivityRecord>
@@ -672,9 +683,10 @@ export interface AcpSidecar {
   readModeIntent(sessionId: SessionId): Promise<AcpModeIntent | undefined>
   writeModeIntent(sessionId: SessionId, intent: AcpModeIntent): Promise<void>
   clearModeIntent(sessionId: SessionId, intent: AcpModeIntent): Promise<void>
-  /** Persist the latest selected model for a teammate binding. */
+  /** Persist an unapplied model intent for a teammate binding. */
   readMemberModelSelection(sessionId: SessionId): Promise<AcpMemberModelSelection | undefined>
   writeMemberModelSelection(sessionId: SessionId, selection: AcpMemberModelSelection): Promise<void>
+  clearMemberModelSelection(sessionId: SessionId, selection: AcpMemberModelSelection): Promise<void>
   /** Read or durably initialize the session's host-owned DSH tool approval policy. */
   readToolApprovalPolicy(sessionId: SessionId, initialize?: 'auto' | 'ask'): Promise<'auto' | 'ask' | undefined>
   /** Persist a session-scoped override. */
@@ -932,7 +944,9 @@ CREATE TABLE IF NOT EXISTS mode_intents (
 CREATE TABLE IF NOT EXISTS member_model_selections (
   dsh_session_id TEXT PRIMARY KEY,
   binding_key TEXT NOT NULL,
-  model_id TEXT NOT NULL
+  model_id TEXT NOT NULL,
+  session_seq INTEGER,
+  native_selection_key TEXT
 ) STRICT;
 CREATE TABLE IF NOT EXISTS tool_approval_policies (
   dsh_session_id TEXT PRIMARY KEY,
@@ -949,6 +963,14 @@ CREATE TABLE IF NOT EXISTS recovery_states (
   last_attempt_at INTEGER,
   last_user_action TEXT,
   payload TEXT NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS native_fork_sources (
+  dsh_session_id TEXT PRIMARY KEY,
+  payload TEXT NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS native_fork_scope (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  scope_id TEXT NOT NULL
 ) STRICT;
 CREATE TABLE IF NOT EXISTS dispatch_ledger (
   dsh_session_id TEXT NOT NULL,
@@ -1182,6 +1204,15 @@ class SidecarStore implements AcpSidecar {
         (db.prepare('PRAGMA table_info(dispatch_ledger)').all() as Array<{ name?: string }>).map((row) => row.name),
       )
       if (!dispatchColumns.has('provenance')) db.exec('ALTER TABLE dispatch_ledger ADD COLUMN provenance TEXT')
+      const memberModelColumns = new Set(
+        (db.prepare('PRAGMA table_info(member_model_selections)').all() as Array<{ name?: string }>).map(
+          (row) => row.name,
+        ),
+      )
+      if (!memberModelColumns.has('session_seq'))
+        db.exec('ALTER TABLE member_model_selections ADD COLUMN session_seq INTEGER')
+      if (!memberModelColumns.has('native_selection_key'))
+        db.exec('ALTER TABLE member_model_selections ADD COLUMN native_selection_key TEXT')
       let activityLegacyConflictCount = 0
       const activitySql = (
         db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'activity_journal'").get() as
@@ -1332,10 +1363,10 @@ class SidecarStore implements AcpSidecar {
       'INSERT INTO recovery_states (dsh_session_id, time, last_attempt_at, last_user_action, payload) VALUES (?, ?, ?, ?, ?) ON CONFLICT(dsh_session_id) DO UPDATE SET time = excluded.time, last_attempt_at = excluded.last_attempt_at, last_user_action = excluded.last_user_action, payload = excluded.payload',
     )
     this.stmtGetMemberModelSelection = db.prepare(
-      'SELECT binding_key, model_id FROM member_model_selections WHERE dsh_session_id = ?',
+      'SELECT binding_key, model_id, session_seq, native_selection_key FROM member_model_selections WHERE dsh_session_id = ?',
     )
     this.stmtUpsertMemberModelSelection = db.prepare(
-      'INSERT INTO member_model_selections (dsh_session_id, binding_key, model_id) VALUES (?, ?, ?) ON CONFLICT(dsh_session_id) DO UPDATE SET binding_key = excluded.binding_key, model_id = excluded.model_id',
+      'INSERT INTO member_model_selections (dsh_session_id, binding_key, model_id, session_seq, native_selection_key) VALUES (?, ?, ?, ?, ?) ON CONFLICT(dsh_session_id) DO UPDATE SET binding_key = excluded.binding_key, model_id = excluded.model_id, session_seq = excluded.session_seq, native_selection_key = excluded.native_selection_key',
     )
     try {
       chmodSync(this.dbPath, 0o600)
@@ -2227,6 +2258,63 @@ class SidecarStore implements AcpSidecar {
     }
   }
 
+  initializeNativeForkScope(): string {
+    const db = this.ensureDb()
+    db.prepare('INSERT OR IGNORE INTO native_fork_scope (singleton, scope_id) VALUES (1, ?)').run(randomUUID())
+    const row = db.prepare('SELECT scope_id FROM native_fork_scope WHERE singleton = 1').get() as
+      { scope_id: unknown } | undefined
+    if (typeof row?.scope_id !== 'string' || !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(row.scope_id))
+      throw new Error('ACP native fork scope is malformed')
+    return row.scope_id
+  }
+
+  readNativeFork(sessionId: SessionId): Promise<AcpNativeForkSource | undefined> {
+    assertSafeSessionId(sessionId)
+    try {
+      const row = this.openIfExists()
+        ?.prepare('SELECT payload FROM native_fork_sources WHERE dsh_session_id = ?')
+        .get(sessionId) as { payload: string } | undefined
+      if (row === undefined) return Promise.resolve(undefined)
+      const source = nativeForkSourceSchema.parse(JSON.parse(row.payload))
+      if (source.dshSessionId !== sessionId || source.sourceSessionId === sessionId)
+        throw new Error('ACP native fork source is malformed')
+      return Promise.resolve(source)
+    } catch (error) {
+      return Promise.reject(error)
+    }
+  }
+
+  recordNativeFork(source: AcpNativeForkSource): Promise<void> {
+    const validated = nativeForkSourceSchema.parse(source)
+    assertSafeSessionId(validated.dshSessionId)
+    assertSafeSessionId(validated.sourceSessionId)
+    if (validated.dshSessionId === validated.sourceSessionId) throw new Error('ACP native fork cannot source itself')
+    try {
+      const db = this.ensureDb()
+      const payload = stableStringify(validated)
+      db.exec('BEGIN IMMEDIATE')
+      try {
+        const existing = db
+          .prepare('SELECT payload FROM native_fork_sources WHERE dsh_session_id = ?')
+          .get(validated.dshSessionId) as { payload: string } | undefined
+        if (existing !== undefined && existing.payload !== payload)
+          throw new Error('ACP native fork already has a different source or cut')
+        if (existing === undefined)
+          db.prepare('INSERT INTO native_fork_sources (dsh_session_id, payload) VALUES (?, ?)').run(
+            validated.dshSessionId,
+            payload,
+          )
+        db.exec('COMMIT')
+      } catch (error) {
+        db.exec('ROLLBACK')
+        throw error
+      }
+      return Promise.resolve()
+    } catch (error) {
+      return Promise.reject(error)
+    }
+  }
+
   readRecoveryState(sessionId: SessionId): Promise<AcpRecoveryState | undefined> {
     assertSafeSessionId(sessionId)
     try {
@@ -2468,22 +2556,30 @@ class SidecarStore implements AcpSidecar {
       this.openIfExists() === undefined
         ? undefined
         : (this.stmtGetMemberModelSelection?.get(sessionId) as
-            { binding_key?: unknown; model_id?: unknown } | undefined)
+            | { binding_key?: unknown; model_id?: unknown; session_seq?: unknown; native_selection_key?: unknown }
+            | undefined)
     if (row === undefined) return undefined
     if (
       typeof row.binding_key !== 'string' ||
       row.binding_key.length === 0 ||
       row.binding_key.length > ACP_MEMBER_BINDING_KEY_MAX ||
       typeof row.model_id !== 'string' ||
-      row.model_id.length === 0 ||
-      row.model_id.length > ACP_MEMBER_MODEL_MAX
+      !isAcpModelRouteWithinBounds(row.model_id) ||
+      (row.session_seq != null && (!Number.isSafeInteger(row.session_seq) || Number(row.session_seq) < 0)) ||
+      (row.native_selection_key != null &&
+        (typeof row.native_selection_key !== 'string' || row.native_selection_key.length > ACP_MEMBER_BINDING_KEY_MAX))
     ) {
       this.warn(
         `dsh-acp sidecar: malformed member model selection row for session ${JSON.stringify(sessionId as string)}; ignoring it`,
       )
       return undefined
     }
-    return { bindingKey: row.binding_key, model: row.model_id }
+    return {
+      bindingKey: row.binding_key,
+      model: row.model_id,
+      ...(row.session_seq == null ? {} : { sessionSeq: Number(row.session_seq) }),
+      ...(row.native_selection_key == null ? {} : { nativeSelectionKey: String(row.native_selection_key) }),
+    }
   }
 
   async writeMemberModelSelection(sessionId: SessionId, selection: AcpMemberModelSelection): Promise<void> {
@@ -2494,13 +2590,38 @@ class SidecarStore implements AcpSidecar {
       selection.bindingKey.length === 0 ||
       selection.bindingKey.length > ACP_MEMBER_BINDING_KEY_MAX ||
       typeof selection.model !== 'string' ||
-      selection.model.length === 0 ||
-      selection.model.length > ACP_MEMBER_MODEL_MAX
+      !isAcpModelRouteWithinBounds(selection.model) ||
+      (selection.sessionSeq !== undefined &&
+        (!Number.isSafeInteger(selection.sessionSeq) || selection.sessionSeq < 0)) ||
+      (selection.nativeSelectionKey !== undefined &&
+        (typeof selection.nativeSelectionKey !== 'string' ||
+          selection.nativeSelectionKey.length > ACP_MEMBER_BINDING_KEY_MAX))
     ) {
       throw new TypeError('Invalid ACP member model selection')
     }
     this.ensureDb()
-    this.stmtUpsertMemberModelSelection?.run(sessionId, selection.bindingKey, selection.model)
+    this.stmtUpsertMemberModelSelection?.run(
+      sessionId,
+      selection.bindingKey,
+      selection.model,
+      selection.sessionSeq ?? null,
+      selection.nativeSelectionKey ?? null,
+    )
+  }
+
+  async clearMemberModelSelection(sessionId: SessionId, selection: AcpMemberModelSelection): Promise<void> {
+    assertSafeSessionId(sessionId)
+    this.openIfExists()
+      ?.prepare(
+        'DELETE FROM member_model_selections WHERE dsh_session_id = ? AND binding_key = ? AND model_id = ? AND session_seq IS ? AND native_selection_key IS ?',
+      )
+      .run(
+        sessionId,
+        selection.bindingKey,
+        selection.model,
+        selection.sessionSeq ?? null,
+        selection.nativeSelectionKey ?? null,
+      )
   }
 
   async readToolApprovalPolicy(sessionId: SessionId, initialize?: 'auto' | 'ask'): Promise<'auto' | 'ask' | undefined> {

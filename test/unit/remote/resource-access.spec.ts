@@ -8,6 +8,9 @@ import type { RemoteAccessAction, RemoteAccessBinding } from '@deepseek-ai/dsh-a
 import type {} from '@deepseek-ai/dsh-api-gateway'
 import { AcpRemoteService } from '../../../src/remote/service.ts'
 import type { AcpTeamMemberView } from '../../../src/contract/remote.ts'
+import { AcpNativeForkError } from '../../../src/domain/session/native-fork-error.ts'
+import { ACP_CONFIG_IDENTIFIER_MAX } from '../../../src/contract/config-options.ts'
+import { acpDeclaredModelRoute } from '../../../src/contract/model-selection.ts'
 
 // Exercise the exact published Host dispatch and principal implementation,
 // without depending on generated plugin artifacts or starting an HTTP server.
@@ -36,6 +39,8 @@ const actions: readonly RemoteAccessAction[] = [
   'dshAcp/health',
   'dshAcp/projectedSubagentIds',
   'dshAcp/backendOf',
+  'dshAcp/registerNativeFork',
+  'dshAcp/nativeForkScope',
 ]
 
 const member: AcpTeamMemberView = {
@@ -66,8 +71,12 @@ async function fixture() {
     writable: true,
   }))
   const backend = vi.fn(async () => 'acp-test')
+  const nativeFork = vi.fn(async () => {})
+  const nativeForkScope = vi.fn(() => '11111111-1111-4111-8111-111111111111')
   new AcpRemoteService(ctx, {
     registry: { agents: () => new Map(), probeCacheFor: () => undefined },
+    nativeFork,
+    nativeForkScope,
     checkExecutable: async () => true,
     queryVersion: async () => null,
     ownedSessionReadGate: async () => true,
@@ -119,10 +128,81 @@ async function fixture() {
   }
   const call = (peer: PeerScope, method: string, args: Record<string, unknown> = {}) =>
     ctx.typertGateway.invoke({ peer, namespace: 'dshAcp', method, args })
-  return { ctx, owner, restricted, hold, call, members, models, selectModel, backend, bindings }
+  return {
+    ctx,
+    owner,
+    restricted,
+    hold,
+    call,
+    members,
+    models,
+    selectModel,
+    backend,
+    bindings,
+    nativeFork,
+    nativeForkScope,
+  }
 }
 
 describe('ACP resources through the published RC1 Gateway and Peer', () => {
+  it('accepts a framed maximum-length member model while rejecting oversized Agent values', async () => {
+    const h = await fixture()
+    h.hold(['lead', 'member'])
+    const model = acpDeclaredModelRoute('dsh-acp:'.padEnd(ACP_CONFIG_IDENTIFIER_MAX, 'x'))
+    await expect(
+      h.call(h.restricted, 'setTeamMemberModel', { lead: 'lead', sessionId: 'member', model }),
+    ).resolves.toMatchObject({ currentModel: 'test-model' })
+    expect(h.selectModel).toHaveBeenCalledExactlyOnceWith('lead', 'member', model)
+    for (const invalid of [`${model}x`, 'x'.repeat(ACP_CONFIG_IDENTIFIER_MAX + 1)])
+      await expect(
+        h.call(h.restricted, 'setTeamMemberModel', { lead: 'lead', sessionId: 'member', model: invalid }),
+      ).rejects.toMatchObject({ message: 'Invalid member model' })
+    expect(h.selectModel).toHaveBeenCalledOnce()
+  })
+
+  it('gates the stable fork journal scope by source access and reports initialization failure', async () => {
+    const h = await fixture()
+    await expect(h.call(h.restricted, 'nativeForkScope', { sessionId: 'source' })).rejects.toMatchObject({
+      code: 'remote-access/denied',
+    })
+    expect(h.nativeForkScope).not.toHaveBeenCalled()
+    h.hold(['source'])
+    await expect(h.call(h.restricted, 'nativeForkScope', { sessionId: 'source' })).resolves.toBe(
+      '11111111-1111-4111-8111-111111111111',
+    )
+    h.nativeForkScope.mockImplementation(() => {
+      throw new Error('storage unavailable')
+    })
+    await expect(h.call(h.restricted, 'nativeForkScope', { sessionId: 'source' })).rejects.toMatchObject({
+      code: 'dsh-acp/native-fork-scope-unavailable',
+      details: { sessionId: 'source' },
+    })
+  })
+
+  it('preserves typed fork refusal details through the real Gateway', async () => {
+    const h = await fixture()
+    h.hold(['source', 'child'])
+    h.nativeFork.mockRejectedValueOnce(new AcpNativeForkError('child-changed', 'child has new activity'))
+    await expect(
+      h.call(h.restricted, 'registerNativeFork', { sessionId: 'child', sourceSessionId: 'source', atSeq: 7 }),
+    ).rejects.toMatchObject({
+      code: 'dsh-acp/native-fork-rejected',
+      details: { sessionId: 'child', sourceSessionId: 'source', atSeq: 7, reason: 'child-changed' },
+    })
+  })
+  it('requires access to both the source and child before accepting fork provenance', async () => {
+    const h = await fixture()
+    for (const allowed of [['source'], ['child'], []]) {
+      h.hold(allowed)
+      await expect(
+        h.call(h.restricted, 'registerNativeFork', { sessionId: 'child', sourceSessionId: 'source', atSeq: 7 }),
+      ).rejects.toMatchObject({ code: 'remote-access/denied' })
+      expect(h.nativeFork).not.toHaveBeenCalled()
+    }
+    h.hold(['source', 'child'])
+    await h.call(h.restricted, 'registerNativeFork', { sessionId: 'child', sourceSessionId: 'source', atSeq: 7 })
+    expect(h.nativeFork).toHaveBeenCalledExactlyOnceWith('child', 'source', 7)
+  })
   it('filters child approvals by every current path resource and permits native parent discovery', async () => {
     const h = await fixture()
     h.hold(['lead'])

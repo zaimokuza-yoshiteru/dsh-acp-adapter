@@ -19,6 +19,7 @@
 import {
   decodeBoundSessions,
   decodeHealthResponse,
+  decodeHostVersionMismatch,
   errorMessageOf,
   panelSettingsOf,
   validateAgentDraft,
@@ -120,6 +121,7 @@ export class AcpPanelController {
         return
       }
       const fetchedAt = Date.now()
+      const hostVersion = decodeHostVersionMismatch(result.value)
       this.health = {
         status: 'ready',
         rows,
@@ -127,8 +129,9 @@ export class AcpPanelController {
         message: undefined,
         checkingAgentIds: [],
         agentErrors: {},
+        ...(hostVersion === undefined ? {} : { hostVersion }),
       }
-      this.sink?.healthReady(rows, fetchedAt)
+      this.sink?.healthReady(rows, fetchedAt, hostVersion)
     } catch (error: unknown) {
       this.failHealth(errorMessageOf(error))
     }

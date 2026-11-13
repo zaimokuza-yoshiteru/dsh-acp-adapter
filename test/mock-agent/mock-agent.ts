@@ -131,7 +131,10 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 // ---------- scenario 行为谓词 ----------
 const fullCaps = () => state.scenario !== 'minimal-caps'
-const hasConfigOptions = () => state.scenario !== 'minimal-caps' && state.scenario !== 'no-config-options'
+const hasConfigOptions = () =>
+  state.scenario !== 'minimal-caps' &&
+  state.scenario !== 'no-config-options' &&
+  process.env.MOCK_NO_CONFIG_OPTIONS !== '1'
 const MODEL_THOUGHT_LEVELS: Record<string, unknown> = (() => {
   try {
     const parsed = JSON.parse(process.env.MOCK_MODEL_THOUGHT_LEVELS ?? '{}')
@@ -210,9 +213,11 @@ function freshConfigOptions() {
     },
     {
       id: 'model',
-      name: 'Model',
+      name: process.env.MOCK_MODEL_OPTION_CATEGORY === undefined ? 'Model' : 'Agent choice',
       description: 'AI model to use',
-      category: 'model',
+      ...(process.env.MOCK_MODEL_OPTION_CATEGORY === 'absent'
+        ? {}
+        : { category: process.env.MOCK_MODEL_OPTION_CATEGORY ?? 'model' }),
       type: 'select',
       currentValue: MODEL_OPTIONS[0].value,
       options: MODEL_OPTIONS,

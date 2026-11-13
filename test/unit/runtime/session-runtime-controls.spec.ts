@@ -2,14 +2,14 @@ import { afterEach, expect, it } from 'vitest'
 import { createHmac } from 'node:crypto'
 import { AcpSessionRuntime } from '../../../src/runtime/session/session-runtime.ts'
 import type { AcpMcpLease } from '../../../src/runtime/session/mcp-lease.ts'
-import { installLiveDiagnosticTrace } from '../../../src/contract/live-diagnostic-trace.ts'
-import type { LiveDiagnosticEvent } from '../../../src/contract/live-diagnostic-trace.ts'
+import { createLiveDiagnosticTrace } from '../../../src/contract/live-diagnostic-trace.ts'
+import type { LiveDiagnosticEvent, LiveDiagnosticTrace } from '../../../src/contract/live-diagnostic-trace.ts'
 import { sharedTestSubprocess } from '../../fixtures/subprocess-seam-testing.ts'
 
 const runtimes: AcpSessionRuntime[] = []
-const diagnosticRemovers: Array<() => void> = []
+const diagnosticRemovers: Array<() => Promise<void>> = []
 afterEach(async () => {
-  for (const remove of diagnosticRemovers.splice(0)) remove()
+  for (const remove of diagnosticRemovers.splice(0)) await remove()
   await Promise.allSettled(runtimes.splice(0).map((runtime) => runtime.close()))
 })
 
@@ -21,6 +21,7 @@ async function fixture(
   sessionNewUpdates: 'none' | 'both' | 'child' = 'none',
   responseConfig: 'code' | 'empty' | 'omitted' = 'code',
   responseMode: 'code' | 'null' | 'omitted' = 'code',
+  diagnosticTrace?: LiveDiagnosticTrace,
 ) {
   const script = `
     const send = value => process.stdout.write(JSON.stringify(value)+'\\n');
@@ -59,6 +60,7 @@ async function fixture(
     });`
   const argv = [process.execPath, '-e', script]
   const runtime = new AcpSessionRuntime({
+    ...(diagnosticTrace === undefined ? {} : { diagnosticTrace }),
     profileId: 'fixture',
     cwd: process.cwd(),
     config: { command: argv[0]!, args: argv.slice(1), env: {} },
@@ -74,7 +76,8 @@ async function fixture(
 
 it('collects live provider prompt start/end events from the real runtime prompt boundary', async () => {
   const events: LiveDiagnosticEvent[] = []
-  const remove = installLiveDiagnosticTrace(
+  const diagnosticTrace = createLiveDiagnosticTrace()
+  const remove = diagnosticTrace.install(
     Object.assign(
       (event: LiveDiagnosticEvent) => {
         events.push(event)
@@ -90,7 +93,7 @@ it('collects live provider prompt start/end events from the real runtime prompt 
     ),
   )
   diagnosticRemovers.push(remove)
-  const runtime = await fixture(false, 'host-session-123')
+  const runtime = await fixture(false, 'host-session-123', undefined, false, 'none', 'code', 'code', diagnosticTrace)
   await runtime.prompt([{ type: 'text', text: 'safe fixture prompt' }], () => {})
   const promptEvents = events.filter(
     (event) => event.type === 'adapter-prompt/start' || event.type === 'adapter-prompt/end',
@@ -101,6 +104,38 @@ it('collects live provider prompt start/end events from the real runtime prompt 
     promptOrdinal: 1,
   })
   expect(promptEvents[1]).toMatchObject({ stopReason: 'end_turn' })
+})
+
+it('keeps concurrent runtime diagnostics in their own Host owner and stops a revoked sink', async () => {
+  const firstTrace = createLiveDiagnosticTrace()
+  const secondTrace = createLiveDiagnosticTrace()
+  const firstEvents: LiveDiagnosticEvent[] = []
+  const secondEvents: LiveDiagnosticEvent[] = []
+  const install = (trace: LiveDiagnosticTrace, events: LiveDiagnosticEvent[]) =>
+    trace.install(
+      Object.assign(
+        (event: LiveDiagnosticEvent) => {
+          events.push(event)
+        },
+        {
+          id: () => `h:${'a'.repeat(24)}`,
+          fingerprint: () => ({ hmac: `h:${'b'.repeat(24)}`, bytes: 1, complete: true }),
+        },
+      ),
+    )
+  diagnosticRemovers.push(install(firstTrace, firstEvents), install(secondTrace, secondEvents))
+  const first = await fixture(false, 'same-session-id', undefined, false, 'none', 'code', 'code', firstTrace)
+  const second = await fixture(false, 'same-session-id', undefined, false, 'none', 'code', 'code', secondTrace)
+  const prompt = [{ type: 'text' as const, text: 'fixture' }]
+  await first.prompt(prompt, () => {})
+  expect(firstEvents.filter((event) => event.type === 'adapter-prompt/start')).toHaveLength(1)
+  expect(secondEvents).toHaveLength(0)
+  const before = firstEvents.length
+  await firstTrace.dispose()
+  await first.prompt(prompt, () => {})
+  await second.prompt(prompt, () => {})
+  expect(firstEvents).toHaveLength(before)
+  expect(secondEvents.filter((event) => event.type === 'adapter-prompt/start')).toHaveLength(1)
 })
 
 it('does not let external child notifications overwrite the parent controls or usage', async () => {

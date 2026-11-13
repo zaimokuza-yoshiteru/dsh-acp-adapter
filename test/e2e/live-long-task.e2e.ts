@@ -44,7 +44,12 @@ import {
   type RejectedCancellationExpectation,
   type RejectedCancellationFacts,
 } from './live-long-task-rejection-cancel.ts'
-import type { LiveDiagnosticEvent, LiveDiagnosticTraceSink } from '../../src/contract/live-diagnostic-trace.ts'
+import type {
+  LiveDiagnosticEvent,
+  LiveDiagnosticTraceSink,
+  LiveDiagnosticTrace,
+} from '../../src/contract/live-diagnostic-trace.ts'
+import type {} from '../../src/host/composition/live-diagnostics.ts'
 import type { AcpRemoteService } from '../../src/remote/service.js'
 import { waitForLongTask } from './live-long-task-wait.ts'
 import {
@@ -151,12 +156,6 @@ type RuntimePrompt = (
   ...args: unknown[]
 ) => unknown
 type NativeRuntimeModule = { AcpSessionRuntime: { prototype: { prompt: RuntimePrompt } } }
-type NativeDiagnosticModule = {
-  installLiveDiagnosticTrace: (sink: LiveDiagnosticTraceSink) => () => void
-  liveDiagnosticTraceFailureCount: () => number
-  liveDiagnosticTraceEnabled: () => boolean
-  liveDiagnosticId: (kind: string, value: unknown) => string | undefined
-}
 
 type PromptTrace = {
   readonly scene: LongTaskScene
@@ -270,7 +269,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
       let host!: AdapterWorld
       let browser: TestBrowser | undefined
       let page: Page | undefined
-      let removeTrace: (() => void) | undefined
+      let removeTrace: (() => Promise<void>) | undefined
       let restoreRuntimePrompt: (() => void) | undefined
       const restoreRuntimePermissionHandlers: Array<() => void> = []
       const wrappedPermissionOptions = new WeakSet<object>()
@@ -284,7 +283,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
       let removeJobEvents: (() => void) | undefined
       let runtimePromptChecks = 0
       let nativeTraceEvents = 0
-      let nativeDiagnosticModule: NativeDiagnosticModule | undefined
+      let nativeDiagnosticTrace: LiveDiagnosticTrace | undefined
       let primaryFailure: unknown
       let primaryFailureRecord: LongTaskFailure | undefined
       let evidenceFailure: unknown
@@ -438,7 +437,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
           violate('LONG_TASK_PAGE_ERROR')
           throw new Error('LONG_TASK_PAGE_ERROR')
         }
-        if ((nativeDiagnosticModule?.liveDiagnosticTraceFailureCount() ?? 0) > 0) {
+        if ((nativeDiagnosticTrace?.failureCount() ?? 0) > 0) {
           violate('LONG_TASK_DIAGNOSTIC_TRACE_FAILURE')
           throw new Error('LONG_TASK_DIAGNOSTIC_TRACE_FAILURE')
         }
@@ -671,7 +670,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
               scene,
               phase: activePhase,
               operation: cancelState.expected.operation,
-              owner: nativeDiagnosticModule?.liveDiagnosticId('dsh-session', String(sessionId)) ?? 'unavailable',
+              owner: nativeDiagnosticTrace?.id('dsh-session', String(sessionId)) ?? 'unavailable',
               acpSession: cancelState.prompt.acpSession,
               requestId: safeId(`approval-request:${cancelState.requestIdRaw}`),
               decidedOutcome: isApprovalDecided(decisionRow) ? decisionRow.data.outcome : '',
@@ -1003,14 +1002,8 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
         const runtimeModule = (await nativeLoader.import(
           pathToFileURL(resolve(root, 'lib/runtime/session/session-runtime.js')).href,
         )) as NativeRuntimeModule
-        nativeDiagnosticModule = (await nativeLoader.import(
-          pathToFileURL(resolve(root, 'lib/contract/live-diagnostic-trace.js')).href,
-        )) as NativeDiagnosticModule
-        if (
-          typeof (nativeDiagnosticModule as { liveDiagnosticTraceEnabled?: unknown }).liveDiagnosticTraceEnabled !==
-          'function'
-        )
-          throw new Error('LONG_TASK_NATIVE_DIAGNOSTIC_ENABLEMENT_CHECK_UNAVAILABLE')
+        nativeDiagnosticTrace = host.ctx.get('acpLiveDiagnostics')
+        if (nativeDiagnosticTrace === undefined) throw new Error('LONG_TASK_DIAGNOSTIC_OWNER_UNAVAILABLE')
         const runtimePrototype = (
           runtimeModule.AcpSessionRuntime as unknown as { prototype: { prompt: RuntimePrompt } }
         ).prototype
@@ -1078,10 +1071,8 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
                     state.prompt.promptOrdinal === state.expected.promptOrdinal &&
                     state.prompt.leaseId === state.expected.leaseId &&
                     state.prompt.stopReason === undefined &&
-                    state.expected.owner ===
-                      nativeDiagnosticModule?.liveDiagnosticId('dsh-session', runtimeDshSessionId) &&
-                    state.expected.acpSession ===
-                      nativeDiagnosticModule?.liveDiagnosticId('acp-session', runtimeState.acpSessionId) &&
+                    state.expected.owner === nativeDiagnosticTrace?.id('dsh-session', runtimeDshSessionId) &&
+                    state.expected.acpSession === nativeDiagnosticTrace?.id('acp-session', runtimeState.acpSessionId) &&
                     isRecord(params) &&
                     params.sessionId === runtimeState.acpSessionId &&
                     isRecord(params.toolCall) &&
@@ -1159,9 +1150,8 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
           const promptTrace: PromptTrace = {
             scene: activeScene,
             phase: activePhase,
-            owner: nativeDiagnosticModule?.liveDiagnosticId('dsh-session', runtimeDshSessionId) ?? 'unavailable',
-            acpSession:
-              nativeDiagnosticModule?.liveDiagnosticId('acp-session', runtimeState.acpSessionId) ?? 'unavailable',
+            owner: nativeDiagnosticTrace?.id('dsh-session', runtimeDshSessionId) ?? 'unavailable',
+            acpSession: nativeDiagnosticTrace?.id('acp-session', runtimeState.acpSessionId) ?? 'unavailable',
             ...(abortSignalLike(args[2]) === undefined ? {} : { signal: abortSignalLike(args[2]) }),
           }
           const promptKey = JSON.stringify([promptTrace.owner, promptTrace.acpSession])
@@ -1611,8 +1601,8 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
           modelRouteObservations.push({ provider: request.provider, model: request.model, session: safeId(sessionId) })
           return next()
         })
-        if (nativeDiagnosticModule === undefined) throw new Error('LONG_TASK_NATIVE_DIAGNOSTIC_MODULE_UNAVAILABLE')
-        const removeSink = nativeDiagnosticModule.installLiveDiagnosticTrace(
+        if (nativeDiagnosticTrace === undefined) throw new Error('LONG_TASK_DIAGNOSTIC_OWNER_UNAVAILABLE')
+        const removeSink = nativeDiagnosticTrace.install(
           diagnosticSink(runSecret, (event) => {
             nativeTraceEvents += 1
             if (event.type === 'adapter-prompt/start') {
@@ -1680,8 +1670,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
           }),
         )
         removeTrace = removeSink
-        if (!nativeDiagnosticModule.liveDiagnosticTraceEnabled())
-          throw new Error('LONG_TASK_NATIVE_DIAGNOSTIC_SINK_NOT_ENABLED')
+        if (!nativeDiagnosticTrace.enabled()) throw new Error('LONG_TASK_NATIVE_DIAGNOSTIC_SINK_NOT_ENABLED')
 
         const evidenceSource = exportPinnedSource(join(host.workspaceCwd, 'workspace'))
         expect(evidenceSource.totalBytes).toBeLessThanOrEqual(SOURCE_MAX_BYTES)
@@ -2300,7 +2289,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
                 isNativeOperation
               ) {
                 if (rejectionCancellation !== undefined) throw new Error('LONG_TASK_REJECTION_GATE_ALREADY_ACTIVE')
-                const diagnosticOwner = nativeDiagnosticModule?.liveDiagnosticId('dsh-session', requestOwner)
+                const diagnosticOwner = nativeDiagnosticTrace?.id('dsh-session', requestOwner)
                 const prompt = [...promptTraces]
                   .reverse()
                   .find(
@@ -2503,7 +2492,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
             )
             await checkModelSnapshot(String(resumedSession), 'after-approval-resume')
             if (rejectionCancellation !== undefined) {
-              const resumeOwner = nativeDiagnosticModule?.liveDiagnosticId('dsh-session', String(resumedSession))
+              const resumeOwner = nativeDiagnosticTrace?.id('dsh-session', String(resumedSession))
               const resumePrompt = [...promptTraces]
                 .reverse()
                 .find(
@@ -2941,7 +2930,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
 
         expect(stickyViolation).toBeUndefined()
         expect(errorTexts).toEqual([])
-        expect(nativeDiagnosticModule.liveDiagnosticTraceFailureCount()).toBe(0)
+        expect(nativeDiagnosticTrace.failureCount()).toBe(0)
         expect(nativeTraceEvents).toBeGreaterThan(0)
         expect(screenshotFailures).toEqual([])
         await Promise.all([...pendingScreenshotPromises])
@@ -3162,7 +3151,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE_LONG_TASK !== '1')('opt-in live ACP lon
               ? 'LONG_TASK_SCREENSHOT_FAILURE'
               : errorTexts.length > 0
                 ? 'LONG_TASK_PAGE_ERROR'
-                : (nativeDiagnosticModule?.liveDiagnosticTraceFailureCount() ?? 0) > 0
+                : (nativeDiagnosticTrace?.failureCount() ?? 0) > 0
                   ? 'LONG_TASK_DIAGNOSTIC_TRACE_FAILURE'
                   : undefined)
           if (lateFailure !== undefined) {

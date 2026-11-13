@@ -19,7 +19,6 @@ export interface AcpPermissionCheck {
     | 'claude-meta'
     | 'devin-meta'
     | 'devin-title'
-    | 'kimi-title'
     | 'antigravity-meta'
     | 'antigravity-title'
   readonly structuredIdentityPresent?: boolean

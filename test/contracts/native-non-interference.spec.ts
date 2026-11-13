@@ -4,6 +4,9 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { describe, expect, it } from 'vitest'
 import { LlmAdapter } from '@deepseek-ai/dsh-llm'
+import { Context } from '@deepseek-ai/cordis'
+import SessionStore from '@deepseek-ai/dsh-session'
+import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
 import { apply } from '../../src/host/composition/index.ts'
 
@@ -46,41 +49,23 @@ describe('native DSH non-interference contract', () => {
     const routes = new Map<string, LlmAdapter>()
     const native = new NativeAdapter()
     const home = mkdtempSync(`${tmpdir()}/dsh-acp-native-`)
-    const settings = {
-      register: () => ({
-        get: () => ({ agents: { devin: { name: 'Devin', command: 'devin', args: ['acp'], env: {} } } }),
-        watch: () => () => undefined,
-      }),
-    }
-    const context = {
-      sessionProjections: { register: () => () => undefined },
-      get: (name: string) =>
-        name === 'settings'
-          ? settings
-          : name === 'dshHomePath'
-            ? (...segments: string[]) => [home, ...segments].join('/')
-            : undefined,
-      inject: (deps: string[], callback: (ctx: unknown) => void) => {
-        if (
-          !deps.includes('settings') &&
-          !deps.includes('configEditor') &&
-          deps.every((name) => context.get(name) !== undefined)
-        )
-          callback({ get: context.get, on: context.on })
+    const context = new Context()
+    await context.plugin(SessionStore)
+    await context.plugin(SessionProjectionRegistry)
+    context.provide('dshHomePath', (...segments: string[]) => [home, ...segments].join('/'))
+    context.provide('llm', {
+      registerAdapter: (providers: string[], adapter: LlmAdapter) => {
+        for (const provider of providers) routes.set(provider, adapter)
+        return Object.assign(() => undefined, { replace: () => undefined })
       },
-      on: () => () => undefined,
-      effect: () => undefined,
-      llm: {
-        registerAdapter: (providers: string[], adapter: LlmAdapter) => {
-          for (const provider of providers) routes.set(provider, adapter)
-          return Object.assign(() => undefined, { replace: () => undefined })
-        },
-      },
-      logger: { warn: () => undefined, error: () => undefined },
-      fiber: { state: 2 },
-    }
+    })
     context.llm.registerAdapter(['native-a', 'native-b'], native)
-    apply(context as never, Config({ agents: { devin: { name: 'Devin', command: 'devin', args: ['acp'] } } }))
+    await context.plugin({
+      name: 'native-non-interference',
+      inject: ['llm', 'sessionProjections'],
+      apply: (ctx: Context) =>
+        apply(ctx, Config({ agents: { devin: { name: 'Devin', command: 'devin', args: ['acp'] } } })),
+    })
     const sidecarBeforeNative = existsSync(`${home}/dsh-acp/sidecar.sqlite`)
     const dispatch = async (provider: string, model = 'm') => {
       const adapter = routes.get(provider)
@@ -95,6 +80,7 @@ describe('native DSH non-interference contract', () => {
     expect(nativeCalls).toEqual(['native-a', 'native-b', 'native-a'])
     expect([...routes.keys()]).toEqual(['native-a', 'native-b', 'acp-devin'])
     expect(existsSync(`${home}/dsh-acp/sidecar.sqlite`)).toBe(sidecarBeforeNative)
+    await context.fiber.dispose()
     rmSync(home, { recursive: true, force: true })
   })
 })

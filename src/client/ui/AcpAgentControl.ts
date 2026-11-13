@@ -17,6 +17,7 @@ import { toolApprovalPolicyStream, type ToolApprovalPolicySnapshot } from '../da
 import { toolApprovalPolicyGroup } from './agent-session-controls.ts'
 import type { AcpUiFeedback } from '../data/feedback.ts'
 import type { SessionAccessSource } from './session-action-access.ts'
+import { localizedDiagnostic } from '../data/diagnostics.ts'
 
 type AgentControlProps = PropsRuntime<'conversation.input.left'> &
   PropsLocale<'acpActivity'> & {
@@ -94,12 +95,14 @@ export function AcpAgentControl({
   const isAcp = snapshotIsAcp(projection, ownsRoute, defaultProvider)
   const [snapshot, setSnapshot] = useState<AcpAgentSessionSnapshotView | null>(null)
   const [policySnapshot, setPolicySnapshot] = useState<ToolApprovalPolicySnapshot | null>(null)
-  const [policyError, setPolicyError] = useState<string | null>(null)
+  const [policyError, setPolicyError] = useState<'toolApprovalUnavailable' | 'toolApprovalChangeFailed' | null>(null)
   const [policyStale, setPolicyStale] = useState(false)
   const [policyReadFailed, setPolicyReadFailed] = useState(false)
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<{ key: 'agentControlUnavailable' | 'actionSaveFailed'; detail?: string } | null>(
+    null,
+  )
   const [readFailed, setReadFailed] = useState(false)
   const epoch = useRef(0)
   const [retry, setRetry] = useState(0)
@@ -129,7 +132,7 @@ export function AcpAgentControl({
       () => {
         if (current !== epoch.current) return
         setSnapshot((value) => (value === null ? null : { ...value, editable: false, freshness: 'stale' }))
-        setError(t('agentControlUnavailable'))
+        setError({ key: 'agentControlUnavailable' })
         setReadFailed(true)
       },
     )
@@ -138,7 +141,7 @@ export function AcpAgentControl({
       ++epoch.current
       void stream.dispose()
     }
-  }, [epoch, isAcp, remote, streamFactory, sessionId, t, retry])
+  }, [isAcp, remote, streamFactory, sessionId, retry])
 
   const policyEpoch = useRef(0)
   useEffect(() => {
@@ -167,7 +170,7 @@ export function AcpAgentControl({
       },
       () => {
         if (current !== policyEpoch.current) return
-        setPolicyError(t('toolApprovalUnavailable'))
+        setPolicyError('toolApprovalUnavailable')
         setPolicyStale(true)
         setPolicyReadFailed(true)
       },
@@ -177,7 +180,7 @@ export function AcpAgentControl({
       ++policyEpoch.current
       void stream.dispose()
     }
-  }, [isAcp, remote, streamFactory, sessionId, t, retry])
+  }, [isAcp, remote, streamFactory, sessionId, retry])
 
   if (
     !isAcp ||
@@ -195,7 +198,7 @@ export function AcpAgentControl({
         onClick: () => setRetry((value) => value + 1),
         title: t(policyError !== null ? 'toolApprovalRetry' : 'agentControlRetry'),
       },
-      policyError ?? error,
+      policyError !== null ? t(policyError) : localizedDiagnostic(t, error!.key, error!.detail),
     )
   }
   // The native running projection also locks the small interval before ACP prompt begins.
@@ -214,8 +217,8 @@ export function AcpAgentControl({
     return null
   if (snapshot !== null && (running || (!visibleSnapshot?.editable && snapshot.freshness === 'live')))
     footer.push({ type: 'label', id: 'read-only', text: t(running ? 'agentControlRunning' : 'agentControlReadOnly') })
-  if (error !== null) footer.push({ type: 'label', id: 'error', text: error })
-  if (policyError !== null) footer.push({ type: 'label', id: 'policy-error', text: policyError })
+  if (error !== null) footer.push({ type: 'label', id: 'error', text: localizedDiagnostic(t, error.key, error.detail) })
+  if (policyError !== null) footer.push({ type: 'label', id: 'policy-error', text: t(policyError) })
   const select = (item: AgentControlChoice): void => {
     if (sessionId === undefined) return
     const current = epoch.current
@@ -240,11 +243,11 @@ export function AcpAgentControl({
         .then((result) => {
           if (result.ok) return
           feedback.report('tool-approval-failed', current === epoch.current ? undefined : sourceSession)
-          if (current === epoch.current) setPolicyError(t('toolApprovalChangeFailed'))
+          if (current === epoch.current) setPolicyError('toolApprovalChangeFailed')
         })
         .catch(() => {
           feedback.report('tool-approval-failed', current === epoch.current ? undefined : sourceSession)
-          if (current === epoch.current) setPolicyError(t('toolApprovalChangeFailed'))
+          if (current === epoch.current) setPolicyError('toolApprovalChangeFailed')
         })
         .finally(() => {
           if (current === epoch.current) setBusy(false)
@@ -268,11 +271,12 @@ export function AcpAgentControl({
       .then((result) => {
         if (result.ok) return
         feedback.report('session-option-failed', current === epoch.current ? undefined : sourceSession)
-        if (current === epoch.current) setError(result.error.message)
+        if (current === epoch.current) setError({ key: 'actionSaveFailed', detail: result.error.message })
       })
-      .catch((reason) => {
+      .catch((reason: unknown) => {
         feedback.report('session-option-failed', current === epoch.current ? undefined : sourceSession)
-        if (current === epoch.current) setError(reason instanceof Error ? reason.message : String(reason))
+        if (current === epoch.current)
+          setError({ key: 'actionSaveFailed', detail: reason instanceof Error ? reason.message : String(reason) })
       })
       .finally(() => {
         if (current === epoch.current) setBusy(false)

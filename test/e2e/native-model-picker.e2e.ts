@@ -30,14 +30,14 @@ class SearchFixture extends LlmAdapter {
   }
 }
 
-it('uses DSH native model search, IME-safe keyboard selection and ACP reasoning levels', async () => {
+it('keeps native search and reasoning usable while model changes offer an independent ACP session', async () => {
   const host = await launchAdapterWorld()
   let browser: TestBrowser | undefined
   try {
     const evidenceDir = process.env.DSH_E2E_EVIDENCE_DIR
     const logDir = evidenceDir ?? join(root, '.local/rc2-adaptation/evidence')
     mkdirSync(logDir, { recursive: true })
-    const agentLog = resolve(logDir, 'native-model-picker-agent.log')
+    const agentLog = resolve(host.workspaceCwd, 'native-model-picker-agent.log')
     const capture = async (page: import('playwright').Page, name: string): Promise<void> => {
       if (evidenceDir !== undefined) await page.screenshot({ path: join(evidenceDir, name), animations: 'disabled' })
     }
@@ -81,6 +81,8 @@ it('uses DSH native model search, IME-safe keyboard selection and ACP reasoning 
     }
     const sessionId = await send('E2E_MESSAGE')
     await page.getByText('E2E_DONE mock-model-a', { exact: true }).waitFor()
+    const draft = 'E2E_MESSAGE_AFTER_NATIVE_SELECTION'
+    await writeComposerDraft(page, page.locator('[data-composer-input]').first(), draft)
     const trigger = page.getByRole('button', { name: /^Select model/ })
     await trigger.click()
     await page.getByRole('menuitem', { name: /^Model/ }).click()
@@ -102,6 +104,33 @@ it('uses DSH native model search, IME-safe keyboard selection and ACP reasoning 
     await page.getByRole('menuitemradio', { name: 'Mock Model B', exact: true }).waitFor()
     await search.press('ArrowDown')
     await search.press('Enter')
+    const dialog = page.getByRole('dialog', { name: 'Existing ACP sessions cannot switch models yet', exact: true })
+    await dialog.waitFor()
+    await page.getByRole('button', { name: /^Select model, current Mock Model A/ }).waitFor()
+    expect(await page.locator('[data-composer-input]').first().innerText()).toBe(draft)
+    for (const theme of ['light', 'dark']) {
+      await host.ctx.settings.replace('ui-theme', { preference: theme })
+      await expect.poll(() => page.evaluate(() => document.documentElement.style.colorScheme)).toBe(theme)
+      await page.setViewportSize({ width: 390, height: 844 })
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+      const box = await dialog.boundingBox()
+      expect(box).not.toBeNull()
+      expect(box!.x).toBeGreaterThanOrEqual(0)
+      expect(box!.x + box!.width).toBeLessThanOrEqual(390)
+      await capture(page, `model-switch-390-${theme}.png`)
+    }
+    await page.setViewportSize({ width: 1680, height: 1000 })
+    await host.ctx.settings.replace('ui-theme', { preference: 'light' })
+    await dialog.getByRole('button', { name: 'Keep the current model', exact: true }).last().click()
+    await dialog.waitFor({ state: 'hidden' })
+    expect(await page.locator('[data-composer-input]').first().innerText()).toBe(draft)
+    expect(readFileSync(agentLog, 'utf8').split('regression prompt=').length - 1).toBe(1)
+    await trigger.click()
+    await page.getByRole('menuitem', { name: /^Model/ }).click()
+    await page.getByRole('searchbox', { name: 'Search models…', exact: true }).fill('Mock Model B')
+    await page.getByRole('menuitemradio', { name: 'Mock Model B', exact: true }).click()
+    await dialog.getByRole('button', { name: 'Create an independent session with this model', exact: true }).click()
+    await dialog.waitFor({ state: 'hidden' })
     const selected = page.getByRole('button', { name: /^Select model, current Mock Model B/ })
     await selected.waitFor()
     await expect.poll(() => selected.getAttribute('aria-expanded')).toBe('false')
@@ -109,7 +138,9 @@ it('uses DSH native model search, IME-safe keyboard selection and ACP reasoning 
     await page.getByRole('menuitem', { name: /^Effort/ }).click()
     await capture(page, 'native-reasoning-levels.png')
     await page.getByRole('menuitemradio', { name: 'High', exact: true }).click()
-    expect(await send('E2E_MESSAGE_AFTER_NATIVE_SELECTION')).toBe(sessionId)
+    const independent = await send(draft)
+    expect(independent).not.toBe(sessionId)
+    expect(host.ctx.sessions.get(sessionId)?.requestHeader()?.config.model).toBe('mock-model-a')
     await page.getByText('E2E_DONE mock-model-b', { exact: true }).waitFor()
     const selectedTurn = readFileSync(agentLog, 'utf8')
       .split('\n')

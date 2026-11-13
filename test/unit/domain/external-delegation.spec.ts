@@ -388,29 +388,6 @@ describe('external delegation normalizer', () => {
     expect(complete('independent-child')?.result.text).toBe('independent result')
   })
 
-  it('keeps Kimi Activity-only until its live/load identity collision gate passes', () => {
-    const normalizer = new ExternalDelegationNormalizer('kimi')
-    normalizer.accept(
-      {
-        toolCallId: '0:tool-x',
-        title: 'Launching plan agent: Check',
-        status: 'in_progress',
-        rawInput: { prompt: 'Do work', description: 'Check' },
-      },
-      10,
-    )
-    expect(
-      normalizer.accept(
-        { toolCallId: '0:tool-x', status: 'completed', rawOutput: 'agent_id: agent-0\nstatus: completed\n\nDONE' },
-        50,
-      ),
-    ).toMatchObject({
-      profileKind: 'kimi',
-      projectionEligible: false,
-      vendorDelegationKey: '0:tool-x',
-    })
-  })
-
   it('does not infer a Codex task/result from child identity or wait metadata', () => {
     const normalizer = new ExternalDelegationNormalizer('codex')
     expect(

@@ -3,6 +3,7 @@ import type {} from '@deepseek-ai/dsh-experimental-agent-team'
 import type {} from '@deepseek-ai/dsh-api-session-controller'
 import type { AcpRemoteServiceDeps } from '../../remote/service.ts'
 import { createMemberModels, type MemberModelDependencies } from './member-models.ts'
+import { LlmError } from '@deepseek-ai/dsh-llm'
 
 /** Read member facts from native Team ownership and each member’s own session. */
 export function createTeamManagement(
@@ -17,9 +18,7 @@ export function createTeamManagement(
     const agent = ctx.get('agents', false)?.get(id as never)
     if (teams === undefined || agent === undefined || teams.tryMembership(agent)?.role !== 'lead')
       throw new Error('ACP_TEAM_LEAD_UNAVAILABLE')
-    const selection = ctx.get('sessionProjections')?.stateOf(agent.session, 'modelSelection')
-    const provider =
-      selection?.pending?.provider ?? agent.session.requestHeader()?.config.provider ?? agent.options.provider
+    const provider = agent.model.current()?.provider
     if (provider === undefined || !owns(provider)) throw new Error('ACP_TEAM_LEAD_REQUIRED')
     return { teams, agent, provider }
   }
@@ -47,7 +46,15 @@ export function createTeamManagement(
     const catalog = await models.catalog(provider)
     const facts = await models.facts(id, provider)
     const { member } = await resolveMember(lead, id)
-    return { ...facts, models: catalog, writable: facts.writable && member.status === 'inactive' }
+    // The committed route remains a valid undo target even after discovery no
+    // longer advertises it. Preserve that exit from an older pending selection.
+    const choices =
+      facts.unavailableReason === 'model-switch' &&
+      facts.currentModel !== null &&
+      !catalog.some((model) => model.id === facts.currentModel)
+        ? [...catalog, { id: facts.currentModel, name: facts.currentModel }]
+        : catalog
+    return { ...facts, models: choices, writable: facts.writable && member.status === 'inactive' }
   }
   return {
     async members(id) {
@@ -59,10 +66,8 @@ export function createTeamManagement(
           .map(async (row) => {
             const child = ctx.get('agents', false)?.get(row.id)
             const session = child?.session ?? ctx.get('sessions')?.get(row.id)
-            const selection =
-              session === undefined ? undefined : ctx.get('sessionProjections')?.stateOf(session, 'modelSelection')
             const provider =
-              selection?.pending?.provider ??
+              child?.model.current()?.provider ??
               session?.requestHeader()?.config.provider ??
               child?.options.provider ??
               (await readBindingProvider(row.id))
@@ -76,6 +81,7 @@ export function createTeamManagement(
               model: facts?.currentModel ?? session?.requestHeader()?.config.model ?? child?.options.model ?? null,
               pendingModel: facts?.pendingModel ?? null,
               modelWritable: facts?.writable === true && row.status === 'inactive',
+              modelUnavailableReason: facts?.unavailableReason ?? null,
             }
           }),
       )
@@ -87,6 +93,11 @@ export function createTeamManagement(
         throw new Error('ACP_TEAM_MODEL_READ_ONLY_OR_UNAVAILABLE')
       const { provider, member } = await resolveMember(lead, id)
       if (member.status !== 'inactive') throw new Error('ACP_TEAM_MEMBER_BUSY')
+      if (view.unavailableReason === 'model-switch' && model !== view.currentModel)
+        throw new LlmError(
+          'This ACP member cannot change models after its first request. Keep its current model or create an independent session.',
+          'ACP_MODEL_SWITCH_UNAVAILABLE',
+        )
       await models!.save(id, provider, model, () => {
         const owner = resolve(lead)
         const current = owner.teams.listMembers(owner.agent).find((row) => row.id === id && row.role === 'teammate')

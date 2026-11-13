@@ -66,7 +66,7 @@ describe('M6b backend transition classifier', () => {
   it.each([
     ['native to ACP', input({ lastUsed: native(), next: acp('codex'), blank: false })],
     ['ACP to native', input({ lastUsed: acp('codex'), next: native(), blank: false })],
-    ['ACP profile change', input({ lastUsed: acp('codex'), next: acp('kimi'), blank: false })],
+    ['ACP profile change', input({ lastUsed: acp('codex'), next: acp('generic'), blank: false })],
     [
       'nonblank without last-used selection',
       input({ next: acp('codex'), blank: false, hasPriorSemanticHistory: true }),
@@ -77,7 +77,7 @@ describe('M6b backend transition classifier', () => {
 
   it.each([
     ['binding missing', undefined],
-    ['binding belongs to another profile', 'kimi'],
+    ['binding belongs to another profile', 'generic'],
   ])('reports recovery conflict for same ACP with %s', (_label, bindingProfileId) => {
     const selection: Partial<BackendTransitionInput> = {
       lastUsed: acp('codex'),

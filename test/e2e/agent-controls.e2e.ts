@@ -10,7 +10,7 @@ import { connectFreshWorkspace, writeComposerDraft } from '#host-support'
 import { launchAdapterWorld, root } from './scaffold.ts'
 
 // These use the real host and plugin UI. Only the ACP peer is deterministic/keyless.
-const profiles = ['kimi', 'devin', 'codex', 'claude', 'codebuddy'] as const
+const profiles = ['devin', 'codex', 'claude', 'codebuddy'] as const
 
 describe.each(profiles)('Agent controls: %s', (profile) => {
   it.each(['response', 'deferred'])(
@@ -70,7 +70,7 @@ describe.each(profiles)('Agent controls: %s', (profile) => {
           vi.spyOn(service, 'setAgentSessionOption').mockImplementation(async (sessionId, request) => {
             if (failNextOptionWrite) {
               failNextOptionWrite = false
-              throw new Error('test session option write failure')
+              throw new Error('test session option write failure ACP_OPTION_WRITE_FAILED')
             }
             return await writeOption(sessionId, request)
           })
@@ -292,7 +292,11 @@ describe.each(profiles)('Agent controls: %s', (profile) => {
           expect(await controls().innerText()).toMatch(/plan/i)
           await page.screenshot({ path: join(root, '.local/ui-review/session-option-write-error-closed-menu.png') })
           await openControls()
-          await page.getByRole('menu').getByText('test session option write failure', { exact: true }).waitFor()
+          await page
+            .getByRole('menu')
+            .getByText('Saving failed. Try again. (ACP_OPTION_WRITE_FAILED)', { exact: true })
+            .waitFor()
+          expect(await page.getByRole('menu').innerText()).not.toContain('test session option write failure')
           expect(
             await page
               .getByRole('menuitem', { name: /^Plan(?:\s|$)/ })
@@ -449,6 +453,8 @@ it.each([
       for (const operation of ['option', 'policy'] as const) {
         for (const change of ['session', 'locale'] as const) {
           const before = await service.agentSessionSnapshot(sourceId)
+          const writeSpy = operation === 'option' ? optionSpy : policySpy
+          const callsBefore = writeSpy.mock.calls.length
           let entered!: () => void
           const started = new Promise<void>((resolve) => {
             entered = resolve
@@ -464,6 +470,8 @@ it.each([
             .click()
           await page.getByRole('menuitem', { name: operation === 'option' ? /^Plan(?:\s|$)/ : /^Ask(?:\s|$)/ }).click()
           await started
+          expect(writeSpy).toHaveBeenCalledTimes(callsBefore + 1)
+          expect(await controls().isDisabled()).toBe(true)
           expect(await page.getByRole('alert').count()).toBe(0)
 
           if (change === 'session') {
@@ -474,15 +482,23 @@ it.each([
             await host.ctx.settings.replace('locale', { preference: 'zh' })
             await host.ctx.settings.replace('ui-theme', { preference: 'dark' })
             await page.getByRole('button', { name: /^会话 ·/ }).waitFor()
+            // Locale updates presentation within the same session; it must not
+            // release an in-flight write or restart the control subscriptions.
+            expect(await controls().isDisabled()).toBe(true)
+            expect(await conversation.getAttribute('data-conversation-session')).toBe(sourceId)
           }
           releaseWrite!()
           releaseWrite = undefined
-          const toast = page.getByRole('alert').filter({ hasText: sourceTitle })
+          const toast =
+            change === 'session' ? page.getByRole('alert').filter({ hasText: sourceTitle }) : page.getByRole('alert')
           await toast.waitFor()
           expect(await toast.count()).toBe(1)
           const text = await toast.innerText()
           expect(text).toContain(change === 'locale' ? '请重试' : operation === 'option' ? 'Try again' : 'Please retry')
           expect(text).not.toContain('PRIVATE_LATE_')
+          if (change === 'session') expect(text).toContain(sourceTitle)
+          else expect(text).not.toContain(sourceTitle)
+          expect(writeSpy).toHaveBeenCalledTimes(callsBefore + 1)
           await page.setViewportSize({ width: 390, height: 900 })
           // Capture the native Toast's full-opacity hold, not its entrance/fade frame.
           await expect.poll(() => toast.evaluate((element) => getComputedStyle(element).opacity)).toBe('1')
@@ -524,7 +540,15 @@ it.each([
           await page.getByRole('button', { name: /^Session ·/ }).waitFor()
           await expect.poll(() => controls().isEnabled()).toBe(true)
           await controls().click()
-          expect(await page.getByRole('menu').innerText()).not.toContain('PRIVATE_LATE_')
+          const menuText = await page.getByRole('menu').innerText()
+          expect(menuText).not.toContain('PRIVATE_LATE_')
+          if (change === 'locale')
+            expect(menuText).toContain(
+              operation === 'option'
+                ? 'Saving failed. Try again.'
+                : 'Could not save the DSH tool approval setting. Please retry.',
+            )
+          expect(writeSpy).toHaveBeenCalledTimes(callsBefore + 1)
           await page.keyboard.press('Escape')
         }
       }
