@@ -39,6 +39,7 @@ import { createTeamToolContext } from '../teams/tool-context.ts'
 import { DEFERRED_WAIT_TEXT, DeferredWaitReceipts } from './deferred-wait-receipts.ts'
 import { redactSecretText } from '../../contract/redaction.ts'
 import { createAcpLogger } from '../../domain/observability/logging.ts'
+import { toolDiscoveryInstructions } from '../../agents/compatibility.ts'
 
 const TEAM_TOOLS = [
   'subagent',
@@ -1479,7 +1480,7 @@ export async function createDshToolBridge(
   const lease: AcpMcpLease = {
     signal: lifetime.signal,
     needsRefresh: () => directory.needsRefresh(),
-    instructions: `Current DSH tools connection: MCP server ${serverName}. When discovering this connection's tools in a shared catalog, first select the exact server namespace ${serverName} and list only tool names, then inspect the definitions of the tools you need. A truncated or partial catalog is not evidence that a tool is unavailable; narrow the lookup before deciding. ${scopedInstructions} Each session has its own connection and caller identity. Do not copy a connection address or server identity to another session.${hasTeams ? ' Agent names resolve within the caller’s subagent tree.' : ''} Pending DSH messages are delivered after you end the current response; give a brief progress update when asked to yield.`,
+    instructions: `Current DSH tools connection: MCP server ${serverName}. ${toolDiscoveryInstructions(wireProfile)} ${scopedInstructions} Each session has its own connection and caller identity. Do not copy a connection address or server identity to another session.${hasTeams ? ' Agent names resolve within the caller’s subagent tree.' : ''} Pending DSH messages are delivered after you end the current response; give a brief progress update when asked to yield.`,
     servers,
     ...(diagnosticLeaseId === undefined ? {} : { diagnosticLeaseId }),
     beginPrompt(signal, reportCallback, promptOrdinal, concludedCallback, bodySignal, successfulToolResultCallback) {

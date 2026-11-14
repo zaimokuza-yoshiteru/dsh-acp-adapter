@@ -98,13 +98,19 @@ it.each([undefined, 'devin'])(
     expect(fixture.lease.instructions).toContain('Agent names resolve within the caller’s subagent tree')
     const serverName = fixture.lease.servers[0]!.name
     expect(serverName).toMatch(/^(?:dsh|dshteam_[a-f0-9]{16})$/)
-    expect(fixture.lease.instructions).toContain(
-      `select the exact server namespace ${serverName} and list only tool names`,
-    )
-    expect(fixture.lease.instructions).toContain('then inspect the definitions of the tools you need')
-    expect(fixture.lease.instructions).toContain(
-      'A truncated or partial catalog is not evidence that a tool is unavailable',
-    )
+    expect(fixture.lease.instructions).toContain(`Current DSH tools connection: MCP server ${serverName}`)
+    expect(fixture.lease.instructions).not.toContain('list only tool names')
+    if (wireProfile === 'devin') {
+      expect(fixture.lease.instructions).toContain('To discover this server’s tools, use mcp_list_tools')
+      expect(fixture.lease.instructions).toContain('built-in grep')
+      expect(fixture.lease.instructions).toContain('Never use exec, shell commands or DSH file tools')
+      expect(fixture.lease.instructions).toContain('that exact returned file')
+      expect(fixture.lease.instructions).toContain('Your native tool permissions still apply')
+    } else {
+      expect(fixture.lease.instructions).toContain('supported discovery operations')
+      expect(fixture.lease.instructions).not.toContain('mcp_list_tools')
+      expect(fixture.lease.instructions).not.toContain('Devin')
+    }
     expect(fixture.lease.instructions).not.toMatch(/ALL_TOOLS|functions\.exec|tools\.exec/)
   },
 )

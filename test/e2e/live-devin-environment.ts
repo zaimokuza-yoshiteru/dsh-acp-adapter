@@ -1,7 +1,13 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { copyDevinLiveCredentials, devinCredentialsPath } from '../../scripts/devin-live-auth.ts'
+
+import type { DevinManualApprovalContext } from './live-devin-team-approval.ts'
+
+export interface DevinLiveFixtureContext extends DevinManualApprovalContext {
+  readonly tempDirectory: string
+}
 
 /** Isolate credentials, native configuration and history; DSH MCP belongs to each ACP session. */
 export async function prepareLiveDevinEnvironment<T extends Readonly<Record<string, string>>>(
@@ -16,8 +22,13 @@ export async function prepareLiveDevinEnvironment<T extends Readonly<Record<stri
   try {
     if (authMode === 'existing')
       await copyDevinLiveCredentials(devinCredentialsPath(source.platform, source.home, source.environment), root)
+    const tempDirectory = join(root, 'tmp')
+    await mkdir(tempDirectory, { mode: 0o700 })
     const env = {
       ...forwarded,
+      TMPDIR: tempDirectory,
+      TMP: tempDirectory,
+      TEMP: tempDirectory,
       HOME: join(root, 'native-home'),
       USERPROFILE: join(root, 'native-home'),
       APPDATA: join(root, 'native-data'),

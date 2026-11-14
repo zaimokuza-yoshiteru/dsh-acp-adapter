@@ -8,7 +8,7 @@ import type { Locator, Page } from 'playwright'
 import { expect, vi } from 'vitest'
 import { writeComposerDraft } from '#host-support'
 import type { AdapterWorld } from './scaffold.ts'
-import type { DevinManualApprovalContext } from './live-devin-team-approval.ts'
+import type { DevinLiveFixtureContext } from './live-devin-environment.ts'
 import type { AcpNativeUserQuestionService } from '../../src/domain/policy/elicitation.ts'
 import type { LiveDiagnosticEvent, LiveDiagnosticTrace } from '../../src/contract/live-diagnostic-trace.ts'
 import { summarizeRawInputForAudit } from '../../src/domain/policy/events.ts'
@@ -16,6 +16,8 @@ import { DevinLiveTrace } from '../../scripts/devin-live-trace.ts'
 import { acpPermissionAudit } from './acp-permission-audit.ts'
 import { openNativeMemberAside } from './native-team-ui.ts'
 import { required } from './required.ts'
+import { assertDevinDiscovery, captureDevinDiscovery, type ReviewedDevinCall } from './live-devin-discovery.ts'
+import type { AcpRemoteService } from '../../src/remote/service.ts'
 import {
   assertDevinMarkerDecision,
   validateDevinMarkerPermission,
@@ -36,7 +38,7 @@ export async function verifyLiveDevinPermissionLifecycle({
   provider: string
   model: string
   evidence: Record<string, unknown> & { directory: string }
-  context: DevinManualApprovalContext
+  context: DevinLiveFixtureContext
 }) {
   if (provider !== 'acp-devin' || model.trim() === '') throw new Error('LIVE_DEVIN_PERMISSION_EXPLICIT_ROUTE_REQUIRED')
   const token = `PERMISSION_${randomUUID().slice(0, 8)}`
@@ -52,6 +54,17 @@ export async function verifyLiveDevinPermissionLifecycle({
   const turns: { sessionId: string; turn: number; reason: string }[] = []
   const prompts: Extract<LiveDiagnosticEvent, { type: 'adapter-prompt/start' | 'adapter-prompt/end' }>[] = []
   const results: Record<string, unknown>[] = []
+  const reviewed: ReviewedDevinCall[] = []
+  const captureDiscovery = async () => {
+    const discovery = await captureDevinDiscovery(
+      host.ctx.get('dshAcp') as AcpRemoteService,
+      required(childId),
+      context.tempDirectory,
+      reviewed,
+    )
+    evidence.discovery = discovery
+    return discovery
+  }
   const diagnostics = required(host.ctx.get('acpLiveDiagnostics', false)) as LiveDiagnosticTrace
   if (diagnostics.enabled()) throw new Error('LIVE_DEVIN_PERMISSION_DIAGNOSTIC_OWNER_BUSY')
   const trace = new DevinLiveTrace({ directory: evidence.directory })
@@ -157,6 +170,7 @@ export async function verifyLiveDevinPermissionLifecycle({
     turns,
     childCreation: 'fixture-controlled-native-startActivation',
     permissionRoute: 'real-Devin-ACP-original-options-via-native-question',
+    toolSchemaInjection: false,
     stopScope: 'pending-ACP-permission-via-native-child-Stop; no running-shell claim',
     traceFile: trace.filePath,
   })
@@ -166,8 +180,8 @@ export async function verifyLiveDevinPermissionLifecycle({
     await expect.poll(() => input.innerText()).toBe(text)
     await scope.getByRole('button', { name: 'Send message', exact: true }).click()
   }
-  const writePrompt = (expected: MarkerWrite, schema: unknown) =>
-    `This is one authorized permission test in an isolated temporary workspace. Call the DSH MCP write tool exactly once with ${JSON.stringify(expected)}. Its current schema is ${JSON.stringify(schema)}. If deferred, discover only this exact tool, not the full server or overflow files. Do not use private tools, another server, shell, reads, subagents or a substitute. Wait for human approval. If rejected or cancelled, report it and stop without retry. After success, reply only ${expected.content}. Earlier denied or cancelled operations must never be retried.`
+  const writePrompt = (expected: MarkerWrite) =>
+    `Please use DSH to create the file ${expected.file_path} in this empty workspace. Write exactly ${expected.content}, with no trailing newline. Normal read-only tool discovery is allowed. Do not use shell tools, read other workspace files or delegate this task. Request my approval for this one write. If I reject or stop it, leave the file absent and finish without retrying. After success, reply with ${expected.content}.`
   const childPane = () =>
     page.locator('[data-sidebar-chat]').filter({
       has: page.locator(`[data-conversation-session="${String(childId)}"]`),
@@ -202,7 +216,6 @@ export async function verifyLiveDevinPermissionLifecycle({
     expect(lead.session.requestHeader()?.config).toMatchObject({ provider, model })
     evidence.leadId = lead.id
     const rootUrl = page.url()
-    const schema = required(host.ctx.tools.schemas(lead).find((tool) => tool.name === 'write'))
     for (const entry of phases) expect(existsSync(entry.expected.file_path)).toBe(false)
     phase = phases[0]
     let phaseTurnStart = turns.length
@@ -213,7 +226,7 @@ export async function verifyLiveDevinPermissionLifecycle({
       label: 'Devin permission lifecycle',
       delivery: 'caller',
       agentOptions: { provider, model },
-      prompt: [{ type: 'text', text: writePrompt(phase.expected, schema) }],
+      prompt: [{ type: 'text', text: writePrompt(phase.expected) }],
       signal: new AbortController().signal,
     })
     void activation.result.catch(() => undefined)
@@ -223,7 +236,7 @@ export async function verifyLiveDevinPermissionLifecycle({
       phase = phases[index]!
       if (index > 0) {
         phaseTurnStart = turns.length
-        await send(childPane(), writePrompt(phase.expected, schema))
+        await send(childPane(), writePrompt(phase.expected))
       }
       const currentPhase = phase
       let state = 'waiting'
@@ -320,6 +333,7 @@ export async function verifyLiveDevinPermissionLifecycle({
       expect(decision.sessionId).toBe(childId)
       assertDevinMarkerDecision(asked, decision.data, phase.kind)
       expect(decision.data.presentation).toEqual({ rootSessionId: lead.id, path: [childId] })
+      reviewed.push({ callId: asked.toolCall.toolCallId, tool: 'write' })
       row.decision = decision.data
       row.turn = await waitForEnd(phaseTurnStart)
       expect(host.ctx.approval.overrideOf(child.session)).toBe(standingApproval)
@@ -374,8 +388,18 @@ export async function verifyLiveDevinPermissionLifecycle({
     await childPane().getByText(resumeMarker, { exact: true }).waitFor()
     expect(await page.locator('[data-question-key]:visible, [data-acp-team-approvals]').count()).toBe(0)
     healthy()
+    assertDevinDiscovery(await captureDiscovery())
     Object.assign(evidence, { status: 'passed', sameDurableChild: true, sameAcpSession: true, resumed, phases })
     passed = true
+  } catch (error) {
+    if (childId !== undefined && evidence.discovery === undefined) {
+      try {
+        await captureDiscovery()
+      } catch {
+        evidence.discoveryCaptureError = 'Activity evidence unavailable'
+      }
+    }
+    throw error
   } finally {
     try {
       if (childId !== undefined) {

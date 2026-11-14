@@ -8,6 +8,9 @@ import { summarizeRawInputForAudit } from '../../../src/domain/policy/events.ts'
 import { createAcpNativePermissionHandler } from '../../../src/domain/policy/permissions.ts'
 import { installLiveDevinTeamApprovals } from '../../e2e/live-devin-team-approval.ts'
 import { devinManualPermission } from '../../fixtures/devin-manual-permission.ts'
+import { createLiveDiagnosticTrace } from '../../../src/contract/live-diagnostic-trace.ts'
+import type { LiveDiagnosticEvent } from '../../../src/contract/live-diagnostic-trace.ts'
+import type { AcpActivityView } from '../../../src/contract/remote.ts'
 
 const audit = vi.hoisted(() => ({ asked: [] as unknown[], bridge: [] as unknown[], decided: [] as unknown[] }))
 vi.mock('../../e2e/acp-permission-audit.ts', () => ({
@@ -33,6 +36,12 @@ function fixture(
     session: { header: { cwd: '/synthetic-workspace' } },
   } as Agent
   const foreign = { ...lead, id: SessionId('foreign') } as Agent
+  const member = {
+    ...lead,
+    id: SessionId('child'),
+    session: { header: { ...lead.session.header, parentSession: lead.id } },
+  } as Agent
+  const resident = [lead, foreign, member]
   const choices = options.recorded?.asked.options ?? [
     { optionId: 'once', kind: 'allow_once' as const, name: 'Allow' },
     ...['tool-session', 'tool-always', 'server-session', 'server-always', 'bypass'].map((id) => ({
@@ -45,8 +54,16 @@ function fixture(
   const answers: ReturnType<typeof Promise.withResolvers<Awaited<ReturnType<AcpNativeUserQuestionService['ask']>>>>[] =
     []
   const whenAsked = Promise.withResolvers<Parameters<AcpNativeUserQuestionService['ask']>[0]>()
+  const requests = new Map<string, Parameters<AcpNativeUserQuestionService['ask']>[0]['questions'][number]>()
+  const ui: { visible: string | undefined; beforeScreenshot?: () => void; beforeClick?: (role: string) => void } = {
+    visible: undefined,
+  }
   const nativeQuestions: AcpNativeUserQuestionService = {
     ask: (request) => {
+      for (const question of request.questions) {
+        requests.set(question.id, question)
+        ui.visible = question.id
+      }
       const answer = Promise.withResolvers<Awaited<ReturnType<AcpNativeUserQuestionService['ask']>>>()
       answers.push(answer)
       whenAsked.resolve(request)
@@ -58,14 +75,24 @@ function fixture(
   let guard: Guard | undefined
   let result: ((execution: Execution, result: { isError: boolean }) => void) | undefined
   const tasks: { id: string; subject: string; status: string; revision: number; ready: boolean }[] = []
+  const diagnostics = createLiveDiagnosticTrace()
+  const activities: AcpActivityView[] = []
+  const remote = {
+    activitySnapshot: async () => ({ activities }),
+    activityDetail: async (_id: string, row: AcpActivityView) => row,
+  }
   const host = {
     ctx: {
-      get: () => nativeQuestions,
+      get: (key: string) =>
+        key === 'userQuestions' ? nativeQuestions : key === 'acpLiveDiagnostics' ? diagnostics : remote,
       agents: {
-        get: (id: string) => (id === lead.id ? lead : id === foreign.id ? foreign : undefined),
-        list: () => [lead, foreign],
+        get: (id: string) => resident.find((agent) => agent.id === id),
+        list: () => resident,
       },
-      subagents: { rootOf: (agent: Agent) => (agent === foreign ? foreign : lead), namesOf: () => ({ self: 'lead' }) },
+      subagents: {
+        rootOf: (agent: Agent) => (agent === foreign ? foreign : lead),
+        namesOf: (agent: Agent) => ({ self: agent === member ? 'calculator' : 'lead' }),
+      },
       agentTeams: { listTasks: () => tasks },
       tools: {
         guard: (value: Guard) => {
@@ -80,19 +107,48 @@ function fixture(
     },
   } as unknown as { ctx: Context }
   const clicks: string[] = []
-  const card = {
-    filter: () => card,
-    count: async () => 1,
-    screenshot: vi.fn(async () => {}),
-    getByRole: (role: string, options?: { name?: string | RegExp }) => ({
-      count: async () => choices.length,
-      waitFor: async () => {},
-      click: async () => {
-        clicks.push(`${role}:${String(options?.name)}`)
+  const timeout = () => Object.assign(new Error('This native card left the foreground'), { name: 'TimeoutError' })
+  const selectors: string[] = []
+  const card = (key?: string, texts: string[] = []) => {
+    const visible = () => {
+      const question = ui.visible === undefined ? undefined : requests.get(ui.visible)
+      return question !== undefined &&
+        (key === undefined || key === `native:${question.id}`) &&
+        texts.every((text) => text === question.question || text === question.header)
+        ? question
+        : undefined
+    }
+    return {
+      filter: (options: { hasText?: string }) =>
+        card(key, options.hasText === undefined ? texts : [...texts, options.hasText]),
+      count: async () => (visible() === undefined ? 0 : 1),
+      evaluateAll: async () => {
+        const question = visible()
+        return question === undefined
+          ? []
+          : [{ key: `native:${question.id}`, labels: choices.map((choice) => choice.name) }]
       },
-    }),
+      screenshot: vi.fn(async () => {
+        ui.beforeScreenshot?.()
+        if (visible() === undefined) throw timeout()
+      }),
+      getByRole: (role: string, options?: { name?: string | RegExp }) => ({
+        count: async () => (visible() === undefined ? 0 : choices.length),
+        click: async () => {
+          ui.beforeClick?.(role)
+          if (visible() === undefined) throw timeout()
+          clicks.push(`${role}:${String(options?.name)}`)
+        },
+      }),
+    }
   }
-  const page = { locator: () => card } as unknown as Parameters<typeof installLiveDevinTeamApprovals>[0]['page']
+  const page = {
+    locator: (selector: string) => {
+      selectors.push(selector)
+      const key = /^\[data-question-key=(".*")\]$/.exec(selector)?.[1]
+      return card(key === undefined ? undefined : (JSON.parse(key) as string))
+    },
+  } as unknown as Parameters<typeof installLiveDevinTeamApprovals>[0]['page']
   const evidence: Record<string, unknown> = {}
   const driver = installLiveDevinTeamApprovals({
     host,
@@ -153,18 +209,24 @@ function fixture(
     })
     return input
   }
-  const admit = (callId: string, tool: string, input: unknown) => {
-    const execution = { agent: lead, callId: ToolCallId(callId), name: tool, arguments: input } as Execution
+  const admit = (callId: string, tool: string, input: unknown, agent = lead) => {
+    const execution = { agent, callId: ToolCallId(callId), name: tool, arguments: input } as Execution
     return { execution, denial: guard!(execution) }
   }
   return {
     driver,
     ask,
+    ui,
+    selectors,
     clicks,
     evidence,
+    diagnostics,
+    activities,
     admit,
     tasks,
     foreign,
+    member,
+    resident,
     result: (execution: Execution) => result!(execution, { isError: false }),
     whenAsked: whenAsked.promise,
     answer: (id: string) => answers[0]!.resolve({ answers: [{ id, selected: ['Allow'] }] }),
@@ -227,7 +289,7 @@ it('answers the captured title-only request only through the known CLI isolated 
   expect(admitted.denial).toBeUndefined()
   f.result(admitted.execution)
   await f.driver.answerPending()
-  f.driver.assertComplete()
+  await f.driver.assertComplete()
   expect(f.evidence.devinPermissions).toMatchObject([
     {
       identity: 'known-cli-manual',
@@ -323,7 +385,7 @@ it('uses the real question builder to approve an exact input whose Token prose w
   expect(admitted.denial).toBeUndefined()
   f.result(admitted.execution)
   await f.driver.answerPending()
-  f.driver.assertComplete()
+  await f.driver.assertComplete()
   expect(f.evidence.devinPermissions).toMatchObject([{ input, scope: 'once', status: 'allowed-once' }])
 })
 
@@ -351,7 +413,7 @@ it('clicks only the original once option and correlates its decision with the sc
   expect(admitted.denial).toBeUndefined()
   f.result(admitted.execution)
   await f.driver.answerPending()
-  f.driver.assertComplete()
+  await f.driver.assertComplete()
   expect(f.evidence.devinPermissions).toMatchObject([
     {
       scope: 'once',
@@ -359,6 +421,151 @@ it('clicks only the original once option and correlates its decision with the sc
       optionId: 'once',
       status: 'allowed-once',
       effects: [{ callId: 'host-call', isError: false }],
+    },
+  ])
+})
+
+function recordOnceDecision(requestId: string, sessionId = 'lead') {
+  audit.decided.push({
+    sessionId,
+    data: {
+      requestId,
+      agentSessionId: 'acp',
+      toolCallId: requestId,
+      outcome: 'selected',
+      selectedOptionKind: 'allow_once',
+      optionId: 'once',
+      decisionVia: 'native-question',
+    },
+  })
+}
+
+async function allowOnce(
+  f: ReturnType<typeof fixture>,
+  tool: string,
+  input: unknown,
+  requestId: string,
+  owner?: Agent,
+) {
+  f.ask(requestId, tool, input, owner === undefined ? {} : { owner })
+  await f.driver.answerPending()
+  recordOnceDecision(requestId, owner?.id)
+  await f.driver.answerPending()
+}
+
+it('requires a real scoped Ask and ignores historical and unrelated requests', async () => {
+  audit.asked.push({ sessionId: 'lead', data: { requestId: 'earlier-team' } })
+  const f = fixture()
+  const noAsk = f.admit('host-no-ask', 'list_agents', {})
+  f.result(noAsk.execution)
+  await expect(f.driver.assertComplete()).rejects.toThrow()
+  audit.asked.push({ sessionId: 'foreign', data: { requestId: 'different-team' } })
+  await allowOnce(f, 'list_agents', {}, 'fresh-request')
+  const admitted = f.admit('host-allowed', 'list_agents', {})
+  f.result(admitted.execution)
+  await f.driver.assertComplete()
+  expect(f.driver.reviewedCalls('lead')).toEqual([{ callId: 'fresh-request', tool: 'list_agents' }])
+  audit.asked.push({ sessionId: 'lead', data: { requestId: 'missing-native-question' } })
+  await expect(f.driver.assertComplete()).rejects.toThrow()
+})
+
+it('retains the verified owner of a finished member after the Host releases the child', async () => {
+  const f = fixture()
+  for (const [owner, request] of [
+    [undefined, 'lead-request'],
+    [f.member, 'child-request'],
+  ] as const) {
+    await allowOnce(f, 'list_agents', {}, request, owner)
+    const admitted = f.admit(`host-${request}`, 'list_agents', {}, owner)
+    expect(admitted.denial).toBeUndefined()
+    f.result(admitted.execution)
+  }
+  f.resident.splice(f.resident.indexOf(f.member), 1)
+  await f.driver.assertComplete()
+  // Releasing the actor must not hide an additional durable request with no corresponding native answer.
+  audit.asked.push({ sessionId: f.member.id, data: { requestId: 'unhandled-child-request' } })
+  await expect(f.driver.assertComplete()).rejects.toThrow()
+})
+
+it('does not attribute a previously admitted call to a later Ask with identical input', async () => {
+  const f = fixture()
+  const earlier = f.admit('before-ask', 'list_agents', {})
+  await allowOnce(f, 'list_agents', {}, 'new-ask')
+  f.result(earlier.execution)
+  await expect(f.driver.assertComplete()).rejects.toThrow()
+})
+
+it('does not attribute work dispatched while a submitted native answer still lacks a durable decision', async () => {
+  const f = fixture()
+  f.ask('unsettled', 'list_agents', {})
+  await f.driver.answerPending()
+  const premature = f.admit('premature', 'list_agents', {})
+  recordOnceDecision('unsettled')
+  f.result(premature.execution)
+  await f.driver.answerPending()
+  await expect(f.driver.assertComplete()).rejects.toThrow()
+})
+
+it.each([
+  'exact',
+  'missing-host-control',
+  'different-session',
+  'different-arguments',
+  'host-dispatched',
+  'no-peer-message',
+  'different-acp-call',
+  'different-activity-input',
+  'completed-activity',
+])('requires the original failed ACP wait and the matching pre-dispatch Host control (%s)', async (kind) => {
+  const f = fixture()
+  const input = { timeout_ms: 300000 }
+  // First wait with identical input did execute. Only the second request can own the later control.
+  await allowOnce(f, 'wait_agent', input, 'first')
+  const first = f.admit('host-wait', 'wait_agent', input)
+  f.result(first.execution)
+  await allowOnce(f, 'wait_agent', input, 'second')
+  const event: LiveDiagnosticEvent = {
+    type: 'mcp-handler/returned',
+    tool: 'wait_agent',
+    resultStatus: 'error',
+    handlerIsError: true,
+    sessionId: f.diagnostics.id('dsh-session', kind === 'different-session' ? 'foreign' : 'lead')!,
+    argsHmac: f.diagnostics.fingerprint('mcp-tool-arguments', kind === 'different-arguments' ? {} : input)!.hmac,
+    argsFingerprintComplete: true,
+    inboxCountStatus: 'available',
+    inboxSnapshotStage: 'before-host-call',
+    nextStepTeamMessageCount: kind === 'no-peer-message' ? 0 : 1,
+    leaseId: f.diagnostics.id('lease', 'lease')!,
+    mcpRequestId: f.diagnostics.id('mcp-request', 'request')!,
+    ...(kind === 'host-dispatched' ? { hostCallId: 'executed' } : {}),
+  }
+  if (kind !== 'missing-host-control') f.diagnostics.emit(event)
+  f.activities.push({
+    kind: 'tool',
+    status: kind === 'completed-activity' ? 'completed' : 'failed',
+    presentation: 'wait_agent',
+    activityId: `prompt:tool:${kind === 'different-acp-call' ? 'other' : 'second'}`,
+    rawDetail: JSON.stringify({
+      toolName: 'wait_agent',
+      rawInput: kind === 'different-activity-input' ? { ...input, wrong: true } : input,
+    }),
+    dshSessionId: 'lead',
+    ownerDshSessionId: 'lead',
+    promptAnchorMessageId: 'prompt',
+    activitySeq: 1,
+    revisionSeq: 1,
+    time: 0,
+  })
+  if (kind !== 'exact') {
+    await expect(f.driver.assertComplete()).rejects.toThrow()
+    return
+  }
+  await f.driver.assertComplete()
+  expect(f.evidence.devinPermissions).toMatchObject([
+    { effects: [{ callId: 'host-wait' }] },
+    {
+      effects: [],
+      deferredWait: { activityId: 'prompt:tool:second', leaseId: event.leaseId, mcpRequestId: event.mcpRequestId },
     },
   ])
 })
@@ -426,4 +633,65 @@ it('stops before a twenty-fifth permission instead of widening the scope', async
   f.ask('extra', 'list_agents', {})
   await expect(f.driver.answerPending()).rejects.toThrow('PERMISSION_BUDGET_EXCEEDED')
   expect(f.clicks).toHaveLength(48)
+})
+
+it('defers a card that disappears after its atomic snapshot and answers the new foreground question', async () => {
+  const f = fixture()
+  f.ask('first', 'list_agents', {})
+  f.ui.beforeScreenshot = () => {
+    delete f.ui.beforeScreenshot
+    f.ask('second', 'list_agents', {})
+  }
+  await f.driver.answerPending()
+  expect(f.clicks).toEqual([])
+  expect(f.evidence.devinPermissions).toEqual([])
+  await f.driver.answerPending()
+  expect(f.clicks).toEqual(['radio:Allow', 'button:/^(Submit|Send)$/'])
+  expect(f.evidence.devinPermissions).toMatchObject([{ requestId: 'second', status: 'submitted' }])
+  f.ui.visible = 'acp-permission:first'
+  await f.driver.answerPending()
+  expect(f.evidence.devinPermissions).toMatchObject([
+    { requestId: 'second', status: 'submitted' },
+    { requestId: 'first', status: 'submitted' },
+  ])
+  expect(f.selectors).toContain('[data-question-key="native:acp-permission:first"]')
+  expect(f.selectors).toContain('[data-question-key="native:acp-permission:second"]')
+})
+
+it('does not submit on a replacement card after selecting Allow, and resumes the original request once', async () => {
+  const f = fixture()
+  f.ask('first', 'list_agents', {})
+  f.ui.beforeClick = (role) => {
+    if (role !== 'button') return
+    delete f.ui.beforeClick
+    f.ask('second', 'list_agents', {})
+  }
+  await f.driver.answerPending()
+  expect(f.clicks).toEqual(['radio:Allow'])
+  expect(f.evidence.devinPermissions).toMatchObject([{ requestId: 'first', status: 'pending' }])
+  await f.driver.answerPending()
+  expect(f.evidence.devinPermissions).toMatchObject([
+    { requestId: 'first', status: 'pending' },
+    { requestId: 'second', status: 'submitted' },
+  ])
+  f.ui.visible = 'acp-permission:first'
+  await f.driver.answerPending()
+  expect(f.evidence.devinPermissions).toHaveLength(2)
+  expect(f.evidence.devinPermissions).toMatchObject([
+    { requestId: 'first', status: 'submitted' },
+    { requestId: 'second', status: 'submitted' },
+  ])
+  expect(f.clicks.filter((click) => click.startsWith('button:'))).toHaveLength(2)
+})
+
+it.each(['TimeoutError', 'Error'])('does not suppress a %s while the same card remains visible', async (name) => {
+  const f = fixture()
+  f.ask('first', 'list_agents', {})
+  const original = Object.assign(new Error('Stable card failed'), { name })
+  f.ui.beforeScreenshot = () => {
+    throw original
+  }
+  await expect(f.driver.answerPending()).rejects.toBe(original)
+  expect(f.clicks).toEqual([])
+  expect(f.evidence.devinPermissions).toEqual([])
 })

@@ -5,13 +5,19 @@ import { antigravityCompatibility } from './antigravity.ts'
 import { claudeCompatibility } from './claude.ts'
 import { codebuddyHasModelSpecificConfiguration, codebuddySessionOptions } from './codebuddy.ts'
 import { codexModelProbeOptions } from './codex.ts'
-import { devinModelProbeOptions } from './devin.ts'
+import { devinModelProbeOptions, devinToolDiscoveryInstructions } from './devin.ts'
 import { qwenHasModelSpecificConfiguration } from './qwen.ts'
 
 export function executableOverrideEnvFor(runtime: AcpAgentId | undefined): string | undefined {
   if (runtime === 'claude') return claudeCompatibility.executableOverrideEnv
   if (runtime === 'antigravity') return antigravityCompatibility.executableOverrideEnv
   return undefined
+}
+
+export function toolDiscoveryInstructions(runtime: string | undefined): string {
+  return runtime === 'devin'
+    ? devinToolDiscoveryInstructions
+    : 'Use your MCP client’s supported discovery operations for this server to obtain the tool definitions you need. A truncated or partial catalog is not evidence that a tool is unavailable; retrieve the missing definitions before calling it.'
 }
 
 export function modelProbeOptions(runtime: AcpAgentId | undefined): {

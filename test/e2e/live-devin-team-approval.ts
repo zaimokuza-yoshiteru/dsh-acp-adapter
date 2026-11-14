@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto'
 import { join } from 'node:path'
 import { expect, vi } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
@@ -6,7 +7,10 @@ import type {} from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-agent-team'
 import type {} from '@deepseek-ai/dsh-subagent'
 import type { AcpNativeUserQuestionService } from '../../src/domain/policy/elicitation.ts'
+import type { LiveDiagnosticEvent, LiveDiagnosticTrace } from '../../src/contract/live-diagnostic-trace.ts'
+import type { AcpRemoteService } from '../../src/remote/service.ts'
 import { acpPermissionAudit } from './acp-permission-audit.ts'
+import { longTaskEffectFingerprint } from './live-long-task-budget.ts'
 import { summarizeRawInputForAudit } from '../../src/domain/policy/events.ts'
 import {
   exactOnceOption,
@@ -21,10 +25,10 @@ import { required } from './required.ts'
 interface ApprovalCard {
   filter(options: { visible?: boolean; hasText?: string }): ApprovalCard
   count(): Promise<number>
+  evaluateAll<T>(read: (elements: Element[]) => T): Promise<T>
   getByRole(role: 'radio' | 'button', options?: { name?: string | RegExp; exact?: boolean }): ApprovalCard
-  waitFor(): Promise<void>
-  click(): Promise<void>
-  screenshot(options: { path: string }): Promise<unknown>
+  click(options?: { timeout: number }): Promise<void>
+  screenshot(options: { path: string; timeout?: number }): Promise<unknown>
 }
 
 export interface DevinManualApprovalContext {
@@ -72,6 +76,7 @@ export function installLiveDevinTeamApprovals({
     decision?: unknown
     screenshot?: string
     effects: { callId: string; isError: boolean }[]
+    deferredWait?: { leaseId: string; mcpRequestId: string; activityId?: string }
   }[] = []
   const admissions: {
     sessionId: string
@@ -80,6 +85,7 @@ export function installLiveDevinTeamApprovals({
     rawInputHash: string
     input: unknown
     isError?: boolean
+    permissionRequestId?: string
   }[] = []
   const violations: string[] = []
   const permissionChecks: {
@@ -90,6 +96,9 @@ export function installLiveDevinTeamApprovals({
     detailPresent: boolean
   }[] = []
   const nativeQuestions = host.ctx.get('userQuestions') as AcpNativeUserQuestionService
+  // Two successive tasks can share a lead session. Verify only requests generated within this task.
+  const previousRequests = new Set(acpPermissionAudit(host, 'asked').map((row) => row.data.requestId))
+  const verifiedOwners = new Set<string>()
   const views = new Map<string, { request: Parameters<AcpNativeUserQuestionService['ask']>[0]; settled: boolean }>()
   const subjects = new Set<string>()
   let childReserved = false,
@@ -99,6 +108,68 @@ export function installLiveDevinTeamApprovals({
     violations.push(code)
     throw new Error(code)
   }
+  const unclaimed = (entry: (typeof permissions)[number]) =>
+    entry.deferredWait === undefined && !admissions.some((item) => item.permissionRequestId === entry.requestId)
+  // The Host can execute before the next browser poll. Its authorization must already be durable at dispatch.
+  const decidedOnce = (entry: (typeof permissions)[number]) => {
+    const rows = acpPermissionAudit(host, 'decided').filter((row) => row.data.requestId === entry.requestId)
+    const decision = rows[0]
+    return (
+      rows.length === 1 &&
+      decision?.sessionId === entry.sessionId &&
+      decision.data.agentSessionId === entry.agentSessionId &&
+      decision.data.toolCallId === entry.callId &&
+      decision.data.outcome === 'selected' &&
+      decision.data.decisionVia === 'native-question' &&
+      decision.data.selectedOptionKind === 'allow_once' &&
+      decision.data.optionId === entry.optionId
+    )
+  }
+  const diagnostics = required(host.ctx.get('acpLiveDiagnostics', false)) as LiveDiagnosticTrace
+  if (diagnostics.enabled()) throw new Error('LIVE_TEAM_DIAGNOSTIC_OWNER_BUSY')
+  const initialTraceFailures = diagnostics.failureCount()
+  const secret = randomBytes(32).toString('hex')
+  const id = (kind: string, value: unknown) => `h:${longTaskEffectFingerprint(secret, kind, value).slice(0, 24)}`
+  const stopDiagnostics = diagnostics.install(
+    Object.assign(
+      (event: LiveDiagnosticEvent) => {
+        // The bridge returns this exact result before Host dispatch when a peer message is queued.
+        if (
+          event.type !== 'mcp-handler/returned' ||
+          event.tool !== 'wait_agent' ||
+          event.hostCallId !== undefined ||
+          event.resultStatus !== 'error' ||
+          event.handlerIsError !== true ||
+          event.inboxCountStatus !== 'available' ||
+          event.inboxSnapshotStage !== 'before-host-call' ||
+          (event.nextStepTeamMessageCount ?? 0) < 1 ||
+          event.argsFingerprintComplete !== true ||
+          !event.leaseId?.startsWith('h:') ||
+          !event.mcpRequestId?.startsWith('h:')
+        )
+          return
+        const matches = permissions.filter(
+          (entry) =>
+            entry.tool === 'wait_agent' &&
+            unclaimed(entry) &&
+            id('dsh-session', entry.sessionId) === event.sessionId &&
+            id('mcp-tool-arguments', entry.input) === event.argsHmac &&
+            decidedOnce(entry),
+        )
+        if (matches.length === 0) return
+        if (matches.length !== 1) return fail('LIVE_TEAM_DEFERRED_WAIT_NOT_UNIQUE')
+        required(matches[0]).deferredWait = { leaseId: event.leaseId, mcpRequestId: event.mcpRequestId }
+      },
+      {
+        id,
+        fingerprint: (kind: string, value: unknown) => ({
+          hmac: id(kind, value),
+          bytes: Buffer.byteLength(JSON.stringify(value)),
+          complete: true,
+        }),
+      },
+    ),
+  )
   const roleOf = (agent: Agent): 'lead' | 'member' | undefined => {
     const lead = getLead()
     if (lead === undefined || host.ctx.agents.get(lead.id) !== lead || host.ctx.agents.get(agent.id) !== agent)
@@ -114,6 +185,8 @@ export function installLiveDevinTeamApprovals({
   const scopeFor = (agent: Agent): DevinTeamScope => {
     const role = roleOf(agent)
     if (role === undefined) return fail('LIVE_TEAM_PERMISSION_OWNER_OUT_OF_SCOPE')
+    // The Host releases finished members. Retain this task's verified identity solely for its historical audit.
+    verifiedOwners.add(agent.id)
     const lead = required(getLead())
     return {
       role,
@@ -167,12 +240,22 @@ export function installLiveDevinTeamApprovals({
       }
       if (execution.name === 'subagent') childReserved = true
       if (execution.name === 'send_message') messageReserved = true
+      const matches = permissions.filter(
+        (entry) =>
+          entry.sessionId === agent.id &&
+          entry.tool === execution.name &&
+          entry.rawInputHash === inputHash &&
+          unclaimed(entry) &&
+          decidedOnce(entry),
+      )
+      if (matches.length > 1) return fail('LIVE_TEAM_ADMISSION_PERMISSION_AMBIGUOUS')
       admissions.push({
         sessionId: agent.id,
         callId: execution.callId,
         tool: execution.name,
         rawInputHash: inputHash,
         input: execution.arguments,
+        ...(matches[0] === undefined ? {} : { permissionRequestId: matches[0].requestId }),
       })
     } catch {
       if (violations.length === 0) violations.push('LIVE_TEAM_FIXTURE_SCOPE_REJECTED')
@@ -191,13 +274,7 @@ export function installLiveDevinTeamApprovals({
     )
     if (admission === undefined) return
     admission.isError = result.isError
-    const permission = permissions.find(
-      (entry) =>
-        entry.sessionId === admission.sessionId &&
-        entry.tool === admission.tool &&
-        entry.rawInputHash === admission.rawInputHash &&
-        entry.effects.length === 0,
-    )
+    const permission = permissions.find((entry) => entry.requestId === admission.permissionRequestId)
     permission?.effects.push({ callId: admission.callId, isError: result.isError })
   })
   Object.assign(evidence, {
@@ -216,7 +293,7 @@ export function installLiveDevinTeamApprovals({
     const asked = acpPermissionAudit(host, 'asked')
     const checked = acpPermissionAudit(host, 'bridge')
     const decided = acpPermissionAudit(host, 'decided')
-    for (const entry of permissions.filter((entry) => entry.status === 'submitted')) {
+    for (const entry of permissions.filter((entry) => entry.status !== 'allowed-once')) {
       const rows = decided.filter((row) => row.data.requestId === entry.requestId)
       if (rows.length === 0) continue
       expect(rows).toHaveLength(1)
@@ -237,8 +314,9 @@ export function installLiveDevinTeamApprovals({
     for (const [questionId, view] of activeViews) {
       if (!questionId.startsWith('acp-permission:')) return fail('LIVE_TEAM_UNEXPECTED_NATIVE_QUESTION')
       const requestId = questionId.slice('acp-permission:'.length)
-      if (permissions.some((entry) => entry.requestId === requestId)) continue
-      if (permissions.length >= 24) return fail('LIVE_TEAM_PERMISSION_BUDGET_EXCEEDED')
+      const pending = permissions.find((entry) => entry.requestId === requestId)
+      if (pending !== undefined && pending.status !== 'pending') continue
+      if (pending === undefined && permissions.length >= 24) return fail('LIVE_TEAM_PERMISSION_BUDGET_EXCEEDED')
       if (view.request.signal?.aborted) continue
       const rows = asked.filter((row) => row.data.requestId === requestId)
       const check = permissionChecks.find((entry) => entry.requestId === requestId) ?? {
@@ -295,46 +373,123 @@ export function installLiveDevinTeamApprovals({
       check.stage = 'native-options'
       expect(question.options?.map((item) => item.label)).toEqual(row.data.options.map((item) => item.name))
       check.stage = 'native-ui'
-      let card = page.locator('[data-question-key]').filter({ visible: true }).filter({ hasText: question.question })
-      if (question.header !== undefined) card = card.filter({ hasText: question.header })
-      if ((await card.count()) === 0) continue
-      expect(await card.count()).toBe(1)
-      expect(await card.getByRole('radio').count()).toBe(row.data.options.length)
-      for (const choice of row.data.options) await card.getByRole('radio', { name: choice.name, exact: true }).waitFor()
-      const entry: (typeof permissions)[number] = {
-        sessionId: row.sessionId,
-        agentSessionId: row.data.agentSessionId,
-        requestId,
-        callId: row.data.toolCall.toolCallId,
-        tool,
-        rawInputHash: required(row.data.toolCall.rawInputHash),
-        input,
-        options: row.data.options,
-        optionId: option.optionId,
-        scope: 'once',
-        identity,
-        status: 'pending',
-        effects: [],
+      // The native composer can replace its foreground card between awaits.
+      // Snapshot once, then pin all actions to that DOM identity, never to the
+      // next question that happens to have the same Allow/Submit buttons.
+      let candidate = page
+        .locator('[data-question-key]')
+        .filter({ visible: true })
+        .filter({ hasText: question.question })
+      if (question.header !== undefined) candidate = candidate.filter({ hasText: question.header })
+      const cards = await candidate.evaluateAll((elements) =>
+        elements.map((element) => ({
+          key: element.getAttribute('data-question-key'),
+          labels: Array.from(element.querySelectorAll('[role="radio"]')).map((radio) =>
+            radio.getAttribute('aria-label'),
+          ),
+        })),
+      )
+      if (cards.length === 0 || view.settled || view.request.signal?.aborted) continue
+      expect(cards).toHaveLength(1)
+      const snapshot = required(cards[0])
+      expect(snapshot.labels).toEqual(row.data.options.map((choice) => choice.name))
+      const key = required(snapshot.key)
+      const card = page.locator(`[data-question-key=${JSON.stringify(key)}]`).filter({ visible: true })
+      const stillOwned = () =>
+        views.get(questionId) === view &&
+        !view.settled &&
+        !view.request.signal?.aborted &&
+        permitsDevinTeamTool(tool, input, scopeFor(owner))
+      let entry = pending
+      try {
+        const screenshot = join(
+          directory,
+          `${token}-permission-${permissions.length + (pending === undefined ? 1 : 0)}.png`,
+        )
+        if (entry === undefined) await card.screenshot({ path: screenshot, timeout: 1_000 })
+        if (!stillOwned()) return fail('LIVE_TEAM_PERMISSION_CHANGED_BEFORE_DECISION')
+        if (entry === undefined) {
+          entry = {
+            sessionId: row.sessionId,
+            agentSessionId: row.data.agentSessionId,
+            requestId,
+            callId: row.data.toolCall.toolCallId,
+            tool,
+            rawInputHash: required(row.data.toolCall.rawInputHash),
+            input,
+            options: row.data.options,
+            optionId: option.optionId,
+            scope: 'once',
+            identity,
+            status: 'pending',
+            effects: [],
+            screenshot,
+          }
+          permissions.push(entry)
+        }
+        await card.getByRole('radio', { name: option.name, exact: true }).click({ timeout: 1_000 })
+        if (!stillOwned()) return fail('LIVE_TEAM_PERMISSION_CHANGED_BEFORE_DECISION')
+        await card.getByRole('button', { name: /^(Submit|Send)$/ }).click({ timeout: 1_000 })
+      } catch (error) {
+        // A different pending question can take the foreground. Leave this one
+        // pending and let the outer poll answer the visible request; do not
+        // retry a UI action on a replacement card or suppress other failures.
+        if (error instanceof Error && error.name === 'TimeoutError' && (await card.count()) === 0) continue
+        throw error
       }
-      permissions.push(entry)
-      entry.screenshot = join(directory, `${token}-permission-${permissions.length}.png`)
-      await card.screenshot({ path: entry.screenshot })
-      // Recheck ownership, cancellation and current task facts immediately before the one-shot UI decision.
-      if (view.request.signal?.aborted || !permitsDevinTeamTool(tool, input, scopeFor(owner)))
-        return fail('LIVE_TEAM_PERMISSION_CHANGED_BEFORE_DECISION')
-      await card.getByRole('radio', { name: option.name, exact: true }).click()
-      await card.getByRole('button', { name: /^(Submit|Send)$/ }).click()
       entry.status = 'submitted'
       check.stage = 'submitted'
     }
   }
   return {
     answerPending,
-    assertComplete() {
+    reviewedCalls(sessionId: string) {
+      return permissions
+        .filter((entry) => entry.sessionId === sessionId && entry.status === 'allowed-once')
+        .map(({ callId, tool }) => ({ callId, tool }))
+    },
+    async assertComplete() {
       expect(violations).toEqual([])
+      expect(diagnostics.failureCount()).toBe(initialTraceFailures)
+      const lead = required(getLead())
+      const answeredIds = permissions.map((entry) => entry.requestId).sort()
+      const presentedIds = [...views]
+        .filter(([, view]) => view.request.agent === lead)
+        .map(([questionId]) => questionId.slice('acp-permission:'.length))
+        .sort()
+      expect(presentedIds).toEqual(answeredIds)
+      const asked = acpPermissionAudit(host, 'asked').filter(
+        (row) =>
+          (row.sessionId === lead.id || verifiedOwners.has(row.sessionId)) && !previousRequests.has(row.data.requestId),
+      )
+      expect(asked.map((row) => row.data.requestId).sort()).toEqual(answeredIds)
+      expect(
+        permissions.some((entry) => entry.effects.some((effect) => !effect.isError)),
+        'A real native Ask must authorize a successful Host call',
+      ).toBe(true)
       for (const entry of permissions) {
         expect(entry.status).toBe('allowed-once')
         expect(entry.scope).toBe('once')
+        if (entry.deferredWait !== undefined) {
+          expect(entry.effects).toHaveLength(0)
+          const service = host.ctx.get('dshAcp') as AcpRemoteService
+          const snapshot = await service.activitySnapshot(entry.sessionId, { limit: 100 })
+          const rows = snapshot.activities.filter(
+            (row) =>
+              row.ownerDshSessionId === entry.sessionId &&
+              row.dshSessionId === entry.sessionId &&
+              row.kind === 'tool' &&
+              row.activityId.endsWith(`:tool:${entry.callId}`),
+          )
+          expect(rows).toHaveLength(1)
+          const activity = await service.activityDetail(entry.sessionId, required(rows[0]))
+          expect(activity.status).toBe('failed')
+          const detail = JSON.parse(required(activity.rawDetail)) as { toolName?: unknown; rawInput?: unknown }
+          expect(detail.toolName).toBe('wait_agent')
+          expect(detail.rawInput).toEqual(entry.input)
+          entry.deferredWait.activityId = activity.activityId
+          continue
+        }
         expect(entry.effects).toHaveLength(1)
         expect(entry.effects[0]?.isError).toBe(false)
       }
@@ -343,6 +498,7 @@ export function installLiveDevinTeamApprovals({
       observer.mockRestore()
       disposeGuard()
       disposeResults()
+      void stopDiagnostics()
     },
   }
 }

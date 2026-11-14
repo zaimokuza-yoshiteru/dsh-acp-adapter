@@ -1,4 +1,6 @@
 import { treeMembers } from './subagent-tree.ts'
+import type { AcpRemoteService } from '../../src/remote/service.ts'
+import { captureDevinDiscovery, assertDevinDiscovery } from './live-devin-discovery.ts'
 import { required } from './required.ts'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { ObservedEvent } from './types.ts'
@@ -9,7 +11,8 @@ import { randomUUID } from 'node:crypto'
 import { writeComposerDraft } from '#host-support'
 import { closeNativeMembers, openNativeMembers } from './native-team-ui.ts'
 import { createLiveTeamProgress } from './live-team-progress.ts'
-import { installLiveDevinTeamApprovals, type DevinManualApprovalContext } from './live-devin-team-approval.ts'
+import { installLiveDevinTeamApprovals } from './live-devin-team-approval.ts'
+import type { DevinLiveFixtureContext } from './live-devin-environment.ts'
 
 /** Small real-Agent check. It cannot pass by merely describing a teammate. */
 export async function verifyLiveTeam({
@@ -21,6 +24,7 @@ export async function verifyLiveTeam({
   evidence,
   evidenceDirectory,
   devinManualApproval,
+  previousLead,
   memberName = 'calculator',
   expectedMembers = 2,
 }: {
@@ -31,7 +35,8 @@ export async function verifyLiveTeam({
   selectChildModel?: boolean
   evidence: Record<string, unknown>
   evidenceDirectory: string
-  devinManualApproval?: DevinManualApprovalContext | undefined
+  previousLead?: SessionId
+  devinManualApproval?: DevinLiveFixtureContext | undefined
   memberName?: string
   expectedMembers?: number
 }) {
@@ -99,62 +104,43 @@ export async function verifyLiveTeam({
         })
       : undefined
   const wait: typeof progress.wait = (check, options) => progress.wait(check, options, approvals?.answerPending)
-  // Observe the real admitted view: plain agents.create() does not mount the
-  // session-controller's preset, so its registry cannot certify this tool set.
-  const definitions: Record<string, string[]> = {}
-  if (provider === 'acp-devin') evidence.toolDefinitions = { source: 'admitted-native-toolset', sessions: definitions }
-  const stopDefinitions =
-    provider === 'acp-devin'
-      ? host.ctx.systemPrompt.section({
-          name: `live-team-definitions-${token}`,
-          order: 0,
-          interpolate: false,
-          text: ({ agent, scope, toolSet }) => {
-            if (
-              agent === undefined ||
-              host.ctx.agents.get(agent.id) !== agent ||
-              agent.options.provider !== provider ||
-              toolSet === undefined
-            )
-              return ''
-            const names =
-              agent.session.header.origin === 'subagent'
-                ? ['team_task_get', 'team_task_update', 'send_message']
-                : [
-                    'team_task_create',
-                    'team_task_get',
-                    'team_task_update',
-                    'team_task_list',
-                    'subagent',
-                    'send_message',
-                    'list_agents',
-                    'wait_agent',
-                  ]
-            const schemas = host.ctx.tools.schemas(scope, toolSet)
-            const selected = names.map((name) => {
-              const schema = schemas.find((tool) => tool.name === name)
-              expect(schema, `Admitted test tool ${name} must be available`).toBeDefined()
-              return { name, parameters: schema!.parameters }
-            })
-            definitions[agent.id] = names
-            return `For this isolated Teams execution test, these are your current DSH tool definitions: ${JSON.stringify(selected)}. Use them on your own DSH MCP connection. Do not request the full catalog or read overflow files; if your CLI automatically lists the server, continue using these definitions. They do not grant permission to perform other work.`
-          },
-        })
-      : undefined
-  try {
-    const discovery =
-      provider === 'acp-devin'
-        ? "The host supplies the required current tool definitions in each session's instructions. Use those definitions directly on your own MCP connection, including in the child; do not read overflow files."
-        : 'Use the exact names and schemas supplied by your MCP client. Each teammate uses its own connection; never pass connection identities to it.'
-    const prompt =
-      `Start a NEW independent Agent Teams task now. Earlier completed tasks and teammates do not satisfy this request: create the new tasks and the new teammate named below. Do the actual MCP tool calls before answering; a calculation or token-only reply is not completion. This is explicitly authorized in an empty temporary workspace. Use ONLY the current DSH tools MCP connection identified in the latest host instructions; do not use your own subagent tools, shell, web or files. ${discovery}
-Create a shared task with subject "Compute ${token}" and a second task "Review ${token}" blocked_by the compute task. Use DSH subagent to create exactly one fresh child named ${memberName}.${selectChildModel ? ` Set that new child's provider to ${JSON.stringify(provider)} and model to ${JSON.stringify(model)}; do not change the Lead's model or any existing child's model.` : ''} Give it the compute task ID and ask it to get the task, claim it with its current revision, calculate 1+1, get the latest revision and complete the task, then use DSH send_message with agent "lead" to send the lead the result and token ${token}, and end its response.
-Wait for its message. If using wait_agent, omit timeout_ms or set it to at most 300000; new input wakes the wait early. Get/list the shared tasks, confirm the compute task is completed and the review task unblocked, claim and complete the review task yourself using current revisions. Reply with the token and result. Do not claim or complete the member's compute task yourself. If a tool says DSH has pending input, end the current response with a brief progress update so DSH can deliver the message; the host will continue automatically. Do not resend accepted messages. Stop after both tasks are completed.`.replaceAll(
-        '\n',
-        ' ',
+  evidence.testSetup = { toolSchemaInjection: false }
+  const discoveryEvidence: Record<string, Awaited<ReturnType<typeof captureDevinDiscovery>>> = {}
+  const service = host.ctx.get('dshAcp') as AcpRemoteService
+  const previousHead =
+    provider === 'acp-devin' && previousLead !== undefined
+      ? (await service.activitySnapshot(previousLead, { limit: 1 })).head
+      : 0
+  if (provider === 'acp-devin') evidence.discovery = discoveryEvidence
+  const captureDiscovery = async () => {
+    if (!approvals || taskRoot === undefined) return
+    const lead = host.ctx.agents.get(taskRoot)
+    if (lead === undefined) return
+    for (const member of await treeMembers(host.ctx, lead)) {
+      if (member.id !== lead.id && member.name !== memberName) continue
+      discoveryEvidence[member.id] = await captureDevinDiscovery(
+        service,
+        member.id,
+        required(devinManualApproval).tempDirectory,
+        approvals.reviewedCalls(member.id),
+        member.id === previousLead ? previousHead : 0,
       )
+    }
+  }
+  try {
+    const childModel = selectChildModel
+      ? ` Use provider ${provider} and model ${model} for this new teammate. Keep the Lead and existing teammates on their current models.`
+      : ''
+    const prompt =
+      provider === 'acp-devin'
+        ? `Please use DSH Teams for a new task in this empty workspace. Normal read-only tool discovery is allowed. Keep the work on the DSH task board and in team messages. Do not use shell or web tools, or read or change workspace files.
+Create two shared tasks named "Compute ${token}" and "Review ${token}". Review depends on Compute. Create one new teammate named ${memberName}.${childModel} Give them the Compute task ID. Ask them to open it, claim it, calculate 1+1, mark it complete, and message the Lead with the result and ${token}.
+Wait for their message, up to five minutes at a time. Verify on the task board that Compute is complete and Review is ready. Claim and complete Review yourself, then reply with ${token} and the numeric result. Leave Compute to ${memberName}.`
+        : `Start a NEW independent Agent Teams task now. Earlier completed tasks and teammates do not satisfy this request: create the new tasks and the new teammate named below. Do the actual MCP tool calls before answering; a calculation or token-only reply is not completion. This is explicitly authorized in an empty temporary workspace. Use ONLY the current DSH tools MCP connection identified in the latest host instructions; do not use your own subagent tools, shell, web or files. Use the exact names and schemas supplied by your MCP client. Each teammate uses its own connection; never pass connection identities to it.
+Create a shared task with subject "Compute ${token}" and a second task "Review ${token}" blocked_by the compute task. Use DSH subagent to create exactly one fresh child named ${memberName}.${childModel} Give it the compute task ID and ask it to get the task, claim it with its current revision, calculate 1+1, get the latest revision and complete the task, then use DSH send_message with agent "lead" to send the lead the result and token ${token}, and end its response.
+Wait for its message. If using wait_agent, omit timeout_ms or set it to at most 300000; new input wakes the wait early. Get/list the shared tasks, confirm the compute task is completed and the review task unblocked, claim and complete the review task yourself using current revisions. Reply with the token and result. Do not claim or complete the member's compute task yourself. If a tool says DSH has pending input, end the current response with a brief progress update so DSH can deliver the message; the host will continue automatically. Do not resend accepted messages. Stop after both tasks are completed.`
     await closeNativeMembers(page)
-    await writeComposerDraft(page, page.locator('[data-composer-input]').first(), prompt)
+    await writeComposerDraft(page, page.locator('[data-composer-input]').first(), prompt.replaceAll('\n', ' '))
     await page.getByRole('button', { name: 'Send message', exact: true }).click()
     await wait(() => expect(executions.some((item) => item.name === 'subagent' && !item.isError)).toBe(true), {
       timeout: 120_000,
@@ -271,10 +257,23 @@ Wait for its message. If using wait_agent, omit timeout_ms or set it to at most 
       expect(await task.locator('[data-team-task-owner]').innerText()).toContain(owner)
     }
     await approvals?.answerPending()
-    approvals?.assertComplete()
+    await approvals?.assertComplete()
+    await captureDiscovery()
+    if (provider === 'acp-devin') {
+      for (const actor of [lead, child]) {
+        const discovery = required(discoveryEvidence[actor.id])
+        assertDevinDiscovery(discovery)
+      }
+    }
     return { lead, child }
+  } catch (error) {
+    try {
+      await captureDiscovery()
+    } catch (captureError) {
+      evidence.discoveryCaptureError = captureError instanceof Error ? captureError.message : String(captureError)
+    }
+    throw error
   } finally {
-    stopDefinitions?.()
     approvals?.dispose()
     disposeResults()
     disposeEvents()

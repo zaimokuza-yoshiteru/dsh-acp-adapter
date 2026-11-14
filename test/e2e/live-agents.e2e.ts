@@ -198,6 +198,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE !== '1')('live ACP smoke', () => {
             devinCliVersion !== undefined && devinEnvironment !== undefined
               ? {
                   cliVersion: devinCliVersion,
+                  tempDirectory: devinEnvironment.env.TMPDIR,
                   assertIsolatedSessionMcp: devinEnvironment.assertIsolatedSessionMcp,
                 }
               : undefined
@@ -237,6 +238,7 @@ describe.skipIf(process.env.DSH_E2E_LIVE !== '1')('live ACP smoke', () => {
                 evidence: teamEvidence.secondRun,
                 evidenceDirectory: evidence,
                 devinManualApproval,
+                previousLead: firstTeam.lead.id,
                 memberName: 'checker',
                 expectedMembers: 3,
               })
