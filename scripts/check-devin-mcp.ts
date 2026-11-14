@@ -1,14 +1,15 @@
 /** Verify session-supplied MCP with real Devin. Only the local /mcp command runs; no login or inference. */
 import assert from 'node:assert/strict'
 import { execFile, spawn } from 'node:child_process'
-import { access, mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises'
+import { access, mkdtemp, mkdir, open, readdir, readFile, writeFile, rm } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir, userInfo } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { Readable, Writable } from 'node:stream'
 import { setTimeout as sleep } from 'node:timers/promises'
-import { promisify } from 'node:util'
+import { promisify, stripVTControlCharacters } from 'node:util'
 import * as acp from '@agentclientprotocol/sdk'
+import { redactSecretText } from '../src/contract/redaction.ts'
 
 const executable = process.argv[2]
 assert.ok(executable, 'Pass the real Devin executable path')
@@ -46,8 +47,35 @@ const environment: NodeJS.ProcessEnv = {
   NO_PROXY: '127.0.0.1,localhost',
   no_proxy: '127.0.0.1,localhost',
 }
-for (const key of ['SystemRoot', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'PATHEXT']) {
-  if (process.env[key] !== undefined) environment[key] = process.env[key]
+if (process.platform === 'win32') {
+  // This account is the isolation boundary. Native Windows tools resolve known
+  // folders through its loaded profile as well as their environment.
+  for (const key of [
+    'USERPROFILE',
+    'LOCALAPPDATA',
+    'HOMEDRIVE',
+    'HOMEPATH',
+    'USERNAME',
+    'USERDOMAIN',
+    'COMPUTERNAME',
+    'SystemDrive',
+    'SystemRoot',
+    'WINDIR',
+    'COMSPEC',
+    'PATHEXT',
+    'ProgramData',
+    'ALLUSERSPROFILE',
+    'ProgramFiles',
+    'ProgramFiles(x86)',
+    'ProgramW6432',
+    'CommonProgramFiles',
+    'CommonProgramFiles(x86)',
+    'CommonProgramW6432',
+    'PSModulePath',
+  ]) {
+    if (process.env[key] !== undefined) environment[key] = process.env[key]
+  }
+  environment.HOME = userInfo().homedir
 }
 const exec = promisify(execFile)
 const httpMethods: Array<{ path: string; method: string }> = []
@@ -55,6 +83,35 @@ let configCreated = false
 let nativeMcpCreated = false
 let toolCalls = 0
 let slashCommands = 0
+
+// Devin's file log can contain more than stderr. Read only error lines from
+// this exact process in the verified disposable Windows profile.
+async function windowsStartupErrors(pid: number | undefined): Promise<string[]> {
+  if (process.platform !== 'win32' || pid === undefined) return []
+  const directory = join(dirname(configFile), 'cli', 'logs')
+  const file = (await readdir(directory, { withFileTypes: true })).find(
+    (entry) => entry.isFile() && /^devin_\d{8}-\d{6}_\d+\.log$/.test(entry.name) && entry.name.endsWith(`_${pid}.log`),
+  )
+  if (!file) return []
+  const log = await open(join(directory, file.name), 'r')
+  try {
+    const size = (await log.stat()).size
+    const buffer = Buffer.alloc(Math.min(size, 8192))
+    const { bytesRead } = await log.read(buffer, 0, buffer.length, size - buffer.length)
+    const lines = stripVTControlCharacters(buffer.subarray(0, bytesRead).toString('utf8')).split(/\r?\n/)
+    if (size > buffer.length) lines.shift()
+    return lines
+      .filter((line) => /\sERROR\s|panicked at/i.test(line))
+      .slice(-3)
+      .map((line) =>
+        redactSecretText(line)
+          .replace(/https?:\/\/\S+/gi, '<url>')
+          .slice(0, 512),
+      )
+  } finally {
+    await log.close()
+  }
+}
 
 async function bounded<T>(operation: Promise<T>, label: string, timeoutMs = 30_000): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -150,7 +207,13 @@ async function inspect(phase: string, baseUrl: string, priorSessionId?: string):
     child.stdin.once('error', reject)
   })
   void spawnFailure.catch(() => {})
-  child.stderr.resume()
+  let stage = 'initialize'
+  const stderr: Buffer[] = []
+  let stderrBytes = 0
+  child.stderr.on('data', (chunk: Buffer) => {
+    stderrBytes += chunk.byteLength
+    if (stderrBytes <= 8192) stderr.push(chunk)
+  })
   try {
     return await bounded(
       Promise.race([
@@ -168,6 +231,7 @@ async function inspect(phase: string, baseUrl: string, priorSessionId?: string):
             // Slash commands do not create conversation history. Persist the empty
             // fixture explicitly so a fresh process can exercise standard load.
             assert.equal(init.agentCapabilities?._meta?.['cognition.ai/persistOnCreate'], true)
+            stage = 'session/new'
             sessionId = (
               await connection.agent.request('session/new', {
                 cwd,
@@ -176,8 +240,10 @@ async function inspect(phase: string, baseUrl: string, priorSessionId?: string):
               })
             ).sessionId
           } else {
+            stage = 'session/load'
             await connection.agent.request('session/load', { sessionId, cwd, mcpServers: servers })
           }
+          stage = '/mcp'
           const deadline = Date.now() + 15_000
           while (true) {
             listing = ''
@@ -209,6 +275,24 @@ async function inspect(phase: string, baseUrl: string, priorSessionId?: string):
         })(),
       ]),
       `Devin ${phase} discovery`,
+    )
+  } catch (error) {
+    // An ACP EOF can arrive before Node reports the exit status and last stderr
+    // line. Allow a short drain without waiting on a still-running faulty peer.
+    await Promise.race([closed, sleep(250)])
+    // Do not print a truncated credential or PEM fragment.
+    const detail = redactSecretText(Buffer.concat(stderr).toString('utf8'))
+    throw new Error(
+      JSON.stringify({
+        check: phase,
+        stage,
+        error: redactSecretText(String(error)),
+        exitCode: child.exitCode,
+        signal: child.signalCode,
+        stderrBytes,
+        stderr: stderrBytes > 8192 || detail.includes('-----BEGIN') ? '<omitted>' : detail,
+        logErrors: await windowsStartupErrors(child.pid).catch(() => []),
+      }),
     )
   } finally {
     connection.close()
