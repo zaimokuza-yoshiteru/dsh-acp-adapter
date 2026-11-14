@@ -171,6 +171,8 @@ const http = createServer(async (request, response) => {
 
 async function inspect(phase: string, baseUrl: string, priorSessionId?: string): Promise<string> {
   const stdioLog = join(root, `${phase}-stdio.jsonl`)
+  const fixturePids = join(root, 'fixture-pids')
+  await writeFile(fixturePids, '')
   const stdioName = `wire_stdio_${phase}`
   const servers: acp.McpServer[] = [
     { type: 'http', name: 'dsh', url: `${baseUrl}/${phase}`, headers: [] },
@@ -295,11 +297,18 @@ async function inspect(phase: string, baseUrl: string, priorSessionId?: string):
       }),
     )
   } finally {
+    child.stdin.end()
+    // EOF lets Devin close its own stdio servers, including a prewarmed stale
+    // registration. Reap the owned process before considering a forced kill.
+    await bounded(closed, 'Devin graceful shutdown', 2_000).catch(() => {})
     connection.close()
+    let terminationError: unknown
     if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) {
       if (process.platform === 'win32') {
         await exec('taskkill', ['/PID', String(child.pid), '/T', '/F'], { timeout: 10_000 }).catch((error) => {
-          if (child.exitCode === null && child.signalCode === null) throw error
+          // /T can report an already-exited descendant even when it successfully
+          // killed the root. Judge the result from actual process state below.
+          terminationError = error
         })
       } else {
         try {
@@ -312,7 +321,7 @@ async function inspect(phase: string, baseUrl: string, priorSessionId?: string):
     try {
       await bounded(closed, 'Devin process cleanup', process.platform === 'win32' ? 10_000 : 2_000)
     } catch (error) {
-      if (process.platform === 'win32' || child.pid === undefined) throw error
+      if (process.platform === 'win32' || child.pid === undefined) throw terminationError ?? error
       // Terminate the same owned group if either Devin or its MCP child ignores TERM.
       try {
         process.kill(-child.pid, 'SIGKILL')
@@ -320,6 +329,21 @@ async function inspect(phase: string, baseUrl: string, priorSessionId?: string):
         if ((killError as NodeJS.ErrnoException).code !== 'ESRCH') throw killError
       }
       await bounded(closed, 'Devin process forced cleanup', 10_000)
+    }
+    const pids = (await readFile(fixturePids, 'utf8')).trim().split(/\s+/).filter(Boolean).map(Number)
+    const deadline = Date.now() + 2_000
+    for (const pid of new Set(pids)) {
+      while (true) {
+        try {
+          process.kill(pid, 0)
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'ESRCH') break
+          throw error
+        }
+        if (Date.now() >= deadline)
+          throw new Error(`Devin ${phase}: MCP process ${pid} survived shutdown`, { cause: terminationError })
+        await sleep(50)
+      }
     }
   }
 }
@@ -347,6 +371,7 @@ try {
   await writeFile(
     join(root, 'mcp.mjs'),
     `import {appendFileSync} from 'node:fs';import{createInterface}from'node:readline';
+appendFileSync(new URL('./fixture-pids', import.meta.url), process.pid+'\\n');
 appendFileSync(process.argv[2],JSON.stringify({method:'process/start'})+'\\n');for await(const line of createInterface({input:process.stdin})){const m=JSON.parse(line);appendFileSync(process.argv[2],JSON.stringify({method:m.method})+'\\n');if(m.id===undefined)continue;const result=m.method==='initialize'?{protocolVersion:m.params.protocolVersion,capabilities:{tools:{}},serverInfo:{name:'isolated-stdio',version:'1'}}:m.method==='tools/list'?{tools:[]}:undefined;process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,...(result===undefined?{error:{code:-32601,message:'Discovery only'}}:{result})})+'\\n')}`,
   )
   await new Promise<void>((done, reject) => {
