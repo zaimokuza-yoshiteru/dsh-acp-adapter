@@ -6,4 +6,4 @@
 
 Standard mode works with ACP Agents. Choose **Creator mode** to create plugins. The optional **ACP** mode lets the Agent manage conversation context.
 
-[Help](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/v0.2.2-rc.1.2/README.en.md#connect-an-agent) · [Report a problem](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/issues)
+[Help](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/blob/v0.2.2-rc.2.1/README.en.md#connect-an-agent) · [Report a problem](https://github.com/zaimokuza-yoshiteru/dsh-acp-adapter/issues)
