@@ -33,9 +33,14 @@ it('copies only the authorized file with private permissions and never changes i
 })
 
 it('uses the documented per-platform location without searching user history', () => {
-  expect(devinCredentialsPath('darwin', '/home/user', {})).toBe('/home/user/.local/share/devin/credentials.toml')
+  expect(devinCredentialsPath('darwin', '/home/user', {})).toBe(
+    join('/home/user', '.local', 'share', 'devin', 'credentials.toml'),
+  )
   expect(devinCredentialsPath('linux', '/home/user', { XDG_DATA_HOME: '/isolated-data' })).toBe(
-    '/isolated-data/devin/credentials.toml',
+    join('/isolated-data', 'devin', 'credentials.toml'),
+  )
+  expect(devinCredentialsPath('win32', '/home/user', { APPDATA: '/roaming' })).toBe(
+    join('/roaming', 'devin', 'credentials.toml'),
   )
   expect(() => devinCredentialsPath('win32', '/home/user', {})).toThrow('LIVE_AUTH_APPDATA_REQUIRED')
 })

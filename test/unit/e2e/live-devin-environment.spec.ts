@@ -67,7 +67,8 @@ async function manualConfiguration() {
   cleanups.push(live.dispose)
   const cwd = await mkdtemp(join(tmpdir(), 'devin-manual-workspace-'))
   cleanups.push(() => rm(cwd, { recursive: true, force: true }))
-  const config = join(live.env.XDG_CONFIG_HOME, 'devin', 'mcp_config.json')
+  const configRoot = process.platform === 'win32' ? live.env.APPDATA : live.env.XDG_CONFIG_HOME
+  const config = join(configRoot, 'devin', 'mcp_config.json')
   await mkdir(dirname(config), { recursive: true })
   return { live, cwd, config }
 }
